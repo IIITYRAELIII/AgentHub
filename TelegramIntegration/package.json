@@ -1,0 +1,11 @@
+{
+  "name": "telegram-codex-bridge",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node bot.mjs",
+    "check": "node --check bot.mjs"
+  }
+}
+

@@ -1,0 +1,37 @@
+$ErrorActionPreference = 'Stop'
+
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$Startup = [Environment]::GetFolderPath('Startup')
+$Shell = New-Object -ComObject WScript.Shell
+
+$BotShortcut = $Shell.CreateShortcut((Join-Path $Startup 'Codex Telegram Bot.lnk'))
+$BotShortcut.TargetPath = (Get-Command powershell.exe).Source
+$BotShortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'start.ps1')`""
+$BotShortcut.WorkingDirectory = $ProjectRoot
+$BotShortcut.WindowStyle = 7
+$BotShortcut.Description = 'Telegram bridge for local Codex'
+$BotShortcut.Save()
+
+$CodeCandidates = @(
+    (Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code\Code.exe'),
+    (Join-Path $env:ProgramFiles 'Microsoft VS Code\Code.exe')
+)
+$CodeExe = $CodeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $CodeExe) {
+    $CodeCommand = Get-Command code.exe -ErrorAction SilentlyContinue
+    if ($CodeCommand) { $CodeExe = $CodeCommand.Source }
+}
+if (-not $CodeExe) {
+    throw 'VS Code executable was not found.'
+}
+
+$CodeShortcut = $Shell.CreateShortcut((Join-Path $Startup 'VSC_Tyrael - VS Code.lnk'))
+$CodeShortcut.TargetPath = $CodeExe
+$CodeShortcut.Arguments = "`"$ProjectRoot`""
+$CodeShortcut.WorkingDirectory = $ProjectRoot
+$CodeShortcut.WindowStyle = 1
+$CodeShortcut.Description = 'Open VSC_Tyrael in Visual Studio Code'
+$CodeShortcut.Save()
+
+Write-Output "Created: $(Join-Path $Startup 'Codex Telegram Bot.lnk')"
+Write-Output "Created: $(Join-Path $Startup 'VSC_Tyrael - VS Code.lnk')"
