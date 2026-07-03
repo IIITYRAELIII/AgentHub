@@ -16,6 +16,7 @@ const THREAD_LIST_LIMIT = 10;
 const PYTHON_EXE = config.pythonExe;
 const TRANSCRIBE_SCRIPT = path.join(import.meta.dirname, "transcribe.py");
 const AUDIO_DIR = config.audioDir;
+const IMAGE_DIR = path.join(config.dataDir, "images");
 const BOT_COMMANDS = [
   { command: "projects", description: "Сменить активный проект" },
   { command: "new", description: "Новый контекст" },
@@ -78,6 +79,7 @@ const pendingRpc = new Map();
 const pendingApprovals = new Map();
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
+const turnTemporaryFiles = new Map();
 
 function samePath(left, right) {
   const a = path.resolve(left);
@@ -401,28 +403,35 @@ async function sendStatus() {
   );
 }
 
-async function startTurn(text) {
+async function startTurn(input, temporaryFiles = []) {
   if (activeTurnId) {
     await sendMessage("Предыдущая задача ещё выполняется. Используйте /cancel или дождитесь завершения.");
     return;
   }
   responseText = "";
   latestDiff = "";
-  const result = await sendRpc("turn/start", {
-    threadId,
-    input: [{ type: "text", text }],
-    approvalPolicy: "on-request",
-    sandboxPolicy: {
-      type: "workspaceWrite",
-      writableRoots: [activeProjectRoot],
-      networkAccess: false,
-    },
-  });
-  activeTurnId = result.turn.id;
-  if (!turnTokenUsage.has(activeTurnId)) {
-    turnTokenUsage.set(activeTurnId, { usage: emptyTokenUsage(), reported: false });
+  const items = typeof input === "string" ? [{ type: "text", text: input }] : input;
+  try {
+    const result = await sendRpc("turn/start", {
+      threadId,
+      input: items,
+      approvalPolicy: "on-request",
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [activeProjectRoot],
+        networkAccess: false,
+      },
+    });
+    activeTurnId = result.turn.id;
+    if (temporaryFiles.length) turnTemporaryFiles.set(activeTurnId, temporaryFiles);
+    if (!turnTokenUsage.has(activeTurnId)) {
+      turnTokenUsage.set(activeTurnId, { usage: emptyTokenUsage(), reported: false });
+    }
+    await sendMessage("Задача принята.");
+  } catch (error) {
+    await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
+    throw error;
   }
-  await sendMessage("Задача принята.");
 }
 
 async function handleCodexMessage(message) {
@@ -455,6 +464,9 @@ async function handleCodexMessage(message) {
     const completedTurnId = params.turn?.id ?? activeTurnId;
     const tokenSummary = formatTurnTokenUsage(turnTokenUsage.get(completedTurnId));
     turnTokenUsage.delete(completedTurnId);
+    const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
+    turnTemporaryFiles.delete(completedTurnId);
+    await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
     activeTurnId = null;
     const status = params.turn?.status ?? "completed";
     const error = params.turn?.error?.message;
@@ -619,6 +631,44 @@ async function transcribeVoice(message) {
     await sendMessage(`Ошибка распознавания: ${error.message}`);
   } finally {
     await unlink(audioPath).catch(() => {});
+  }
+}
+
+async function analyzeImage(message) {
+  if (activeTurnId) {
+    await sendMessage("Предыдущая задача ещё выполняется. Дождитесь завершения или нажмите «Стоп».");
+    return;
+  }
+  const photo = message.photo?.at(-1);
+  const document = message.document?.mime_type?.startsWith("image/") ? message.document : null;
+  const media = photo ?? document;
+  if (!media?.file_id) return;
+  if ((media.file_size ?? 0) > 20 * 1024 * 1024) {
+    await sendMessage("Изображение слишком большое. Максимальный размер — 20 МБ.");
+    return;
+  }
+
+  await sendMessage("🖼 Изображение получено, начинаю анализ…");
+  await mkdir(IMAGE_DIR, { recursive: true });
+  let imagePath;
+  try {
+    const file = await telegram("getFile", { file_id: media.file_id });
+    const extension = path.extname(document?.file_name ?? file.file_path ?? "") || ".jpg";
+    imagePath = path.join(IMAGE_DIR, `${randomUUID()}${extension}`);
+    const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`, {
+      signal: AbortSignal.timeout(60000),
+    });
+    if (!response.ok) throw new Error(`Telegram file download: HTTP ${response.status}`);
+    await writeFile(imagePath, Buffer.from(await response.arrayBuffer()));
+    const prompt = message.caption?.trim() ||
+      "Проанализируй это изображение с учётом предыдущих сообщений пользователя.";
+    await startTurn([
+      { type: "text", text: prompt },
+      { type: "localImage", path: imagePath },
+    ], [imagePath]);
+  } catch (error) {
+    if (imagePath) await unlink(imagePath).catch(() => {});
+    await sendMessage(`Не удалось обработать изображение: ${error.message}`);
   }
 }
 
@@ -791,6 +841,10 @@ async function handleTelegramMessage(message) {
   }
   chatId = message.chat.id;
   await saveState();
+  if (message.photo || message.document?.mime_type?.startsWith("image/")) {
+    await analyzeImage(message);
+    return;
+  }
   if (message.voice || message.audio) {
     await transcribeVoice(message);
     return;
@@ -801,7 +855,7 @@ async function handleTelegramMessage(message) {
 
   if (text === "/start" || text === "/help") {
     await sendMessage(
-      "Бот подключён к локальному Codex. Отправьте задачу обычным сообщением.\n\n" +
+      "Бот подключён к локальному Codex. Отправьте текст, изображение или голосовое сообщение.\n\n" +
         "/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/status — статус и текущая задача\n/limits — остаток лимитов\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
       { reply_markup: BOT_MENU },
     );
