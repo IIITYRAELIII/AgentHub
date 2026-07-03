@@ -29,7 +29,8 @@ const BOT_COMMANDS = [
 const BOT_MENU = {
   keyboard: [
     [{ text: "📋 Задачи" }, { text: "📊 Лимиты" }, { text: "ℹ️ Статус" }],
-    [{ text: "⛔ Стоп" }, { text: "🔄 Рестарт" }, { text: "🔐 Доступ" }, { text: "❓ Помощь" }],
+    [{ text: "⛔ Стоп" }, { text: "🔐 Доступ" }],
+    [{ text: "❓ Помощь" }, { text: "🔄 Рестарт" }],
   ],
   resize_keyboard: true,
   is_persistent: true,
