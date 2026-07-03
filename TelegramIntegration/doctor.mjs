@@ -12,10 +12,12 @@ function check(label, ok, detail = "") {
 try {
   const config = await loadConfig();
   check("configuration", true, config.configPath);
-  await access(config.projectRoot).then(
-    () => check("projectRoot", true, config.projectRoot),
-    () => check("projectRoot", false, config.projectRoot),
-  );
+  for (const project of config.projects) {
+    await access(project.path).then(
+      () => check(`project ${project.name}`, true, project.path),
+      () => check(`project ${project.name}`, false, project.path),
+    );
+  }
   check("allowed users", config.allowedUserIds.size > 0, String(config.allowedUserIds.size));
   check("private chat restriction", config.privateChatsOnly);
   if (config.voiceEnabled) {
