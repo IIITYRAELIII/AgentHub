@@ -81,6 +81,7 @@ try {
   const saved = JSON.parse(await readFile(STATE_FILE, "utf8"));
   if (typeof saved.threadId === "string") threadId = saved.threadId;
   if (Number.isSafeInteger(saved.chatId)) chatId = saved.chatId;
+  if (Number.isSafeInteger(saved.updateOffset) && saved.updateOffset >= 0) updateOffset = saved.updateOffset;
 } catch (error) {
   if (error?.code !== "ENOENT") console.error("Cannot read state:", error.message);
 }
@@ -102,7 +103,9 @@ codex.on("exit", async (code, signal) => {
 const lines = createInterface({ input: codex.stdout });
 lines.on("line", (line) => {
   try {
-    void handleCodexMessage(JSON.parse(line));
+    void handleCodexMessage(JSON.parse(line)).catch((error) => {
+      console.error("Codex event handling error:", error.message);
+    });
   } catch (error) {
     console.error("Invalid app-server message:", error.message);
   }
@@ -137,7 +140,6 @@ async function initializeCodex() {
     try {
       await sendRpc("thread/resume", {
         threadId,
-        cwd: PROJECT_ROOT,
         approvalPolicy: "on-request",
         sandbox: "workspace-write",
       });
@@ -163,13 +165,25 @@ async function createThread() {
 }
 
 async function listThreads() {
-  const result = await sendRpc("thread/list", {
-    cwd: PROJECT_ROOT,
-    limit: THREAD_LIST_LIMIT,
-    sortKey: "updated_at",
-    sortDirection: "desc",
-  });
-  return result.data ?? [];
+  const threads = [];
+  let cursor = null;
+  do {
+    const result = await sendRpc("thread/list", {
+      cursor,
+      limit: 50,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+    });
+    threads.push(...(result.data ?? []).filter(isWorkspaceThread));
+    cursor = result.nextCursor ?? null;
+  } while (cursor && threads.length < THREAD_LIST_LIMIT);
+  return threads.slice(0, THREAD_LIST_LIMIT);
+}
+
+function isWorkspaceThread(thread) {
+  if (!thread.cwd) return false;
+  const relative = path.relative(PROJECT_ROOT, path.resolve(thread.cwd));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function threadTitle(thread) {
@@ -180,14 +194,15 @@ function threadTitle(thread) {
 function formatThread(thread) {
   const current = thread.id === threadId ? " (текущая)" : "";
   const updated = new Date(thread.updatedAt * 1000).toLocaleString("ru-RU");
-  return `${threadTitle(thread)}${current}\nОбновлена: ${updated}\nID: ${thread.id}`;
+  const project = path.relative(PROJECT_ROOT, thread.cwd) || path.basename(PROJECT_ROOT);
+  return `${threadTitle(thread)}${current}\nПроект: ${project}\nОбновлена: ${updated}\nID: ${thread.id}`;
 }
 
 async function sendThreadPicker() {
   const threads = await listThreads();
   if (!threads.length) return sendMessage("Существующих задач в этом проекте нет.");
   const keyboard = threads.map((thread) => [{
-    text: `${thread.id === threadId ? "✓ " : ""}${threadTitle(thread)}`,
+    text: `${thread.id === threadId ? "✓ " : ""}${path.basename(thread.cwd)} · ${threadTitle(thread)}`,
     callback_data: `t:${thread.id}`,
   }]);
   await sendMessage("Выберите задачу:", { reply_markup: { inline_keyboard: keyboard } });
@@ -200,7 +215,6 @@ async function resumeThread(selectedThreadId) {
   }
   const result = await sendRpc("thread/resume", {
     threadId: selectedThreadId,
-    cwd: PROJECT_ROOT,
     approvalPolicy: "on-request",
     sandbox: "workspace-write",
   });
@@ -222,7 +236,6 @@ async function startTurn(text) {
   const result = await sendRpc("turn/start", {
     threadId,
     input: [{ type: "text", text }],
-    cwd: PROJECT_ROOT,
     approvalPolicy: "on-request",
     sandboxPolicy: {
       type: "workspaceWrite",
@@ -559,6 +572,7 @@ async function pollTelegram() {
       });
       for (const update of updates) {
         updateOffset = update.update_id + 1;
+        await saveState();
         if (update.callback_query?.from?.id === ALLOWED_USER_ID) {
           await handleApprovalCallback(update.callback_query);
         } else if (update.message) {
@@ -597,7 +611,7 @@ async function sendLongMessage(text) {
 }
 
 async function saveState() {
-  await writeFile(STATE_FILE, `${JSON.stringify({ chatId, threadId }, null, 2)}\n`, "utf8");
+  await writeFile(STATE_FILE, `${JSON.stringify({ chatId, threadId, updateOffset }, null, 2)}\n`, "utf8");
 }
 
 function delay(ms) {
@@ -610,6 +624,10 @@ async function shutdown(signal) {
   console.log(`Stopping on ${signal}...`);
   codex.kill();
 }
+
+process.on("unhandledRejection", (error) => {
+  console.error("Unhandled asynchronous error:", error);
+});
 
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
