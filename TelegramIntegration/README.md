@@ -47,7 +47,9 @@ npm start
 
 В Windows также доступны `start.ps1` и `install-autostart.ps1`. PowerShell используется только для интеграции с автозапуском Windows; сам бот запускается Node.js.
 
-Команды: `/new`, `/tasks`, `/resume`, `/current`, `/status`, `/limits`, `/approvals`, `/restart`, `/diff`, `/cancel`, `/help`.
+Команды: `/new`, `/tasks`, `/resume`, `/current`, `/thread`, `/status`, `/limits`, `/approvals`, `/restart`, `/diff`, `/cancel`, `/help`.
+
+`/thread` показывает ID текущего общего потока. Откройте тот же `projectRoot` в Codex App или VS Code и выберите этот поток в истории; из CLI его можно продолжить командой `codex resume <ID>`. Не отправляйте сообщения одновременно из нескольких интерфейсов, пока в потоке выполняется активная задача.
 
 ## Голосовые сообщения
 

@@ -19,6 +19,7 @@ const BOT_COMMANDS = [
   { command: "tasks", description: "Список задач" },
   { command: "resume", description: "Выбрать существующую задачу" },
   { command: "current", description: "Текущая задача" },
+  { command: "thread", description: "Текущий поток Codex" },
   { command: "status", description: "Состояние Codex" },
   { command: "limits", description: "Остаток лимитов Codex" },
   { command: "approvals", description: "Режим подтверждений" },
@@ -31,6 +32,7 @@ const BOT_MENU = {
   keyboard: [
     [{ text: "🆕 Новая задача" }, { text: "📋 Задачи" }],
     [{ text: "🎯 Текущая" }, { text: "📊 Лимиты" }],
+    [{ text: "🧵 Поток Codex" }],
     [{ text: "ℹ️ Статус" }, { text: "📝 Изменения" }],
     [{ text: "🔐 Подтверждения" }],
     [{ text: "⛔ Остановить" }, { text: "🔄 Перезапустить" }],
@@ -44,6 +46,7 @@ const MENU_COMMANDS = new Map([
   ["📋 Задачи", "/tasks"],
   ["🎯 Текущая", "/current"],
   ["📊 Лимиты", "/limits"],
+  ["🧵 Поток Codex", "/thread"],
   ["ℹ️ Статус", "/status"],
   ["📝 Изменения", "/diff"],
   ["🔐 Подтверждения", "/approvals"],
@@ -87,8 +90,16 @@ codex.stderr.setEncoding("utf8");
 codex.stderr.on("data", (data) => console.error(`[codex] ${data.trimEnd()}`));
 codex.on("exit", async (code, signal) => {
   console.error(`Codex app-server stopped (code=${code}, signal=${signal}).`);
-  if (!stopping && chatId) await sendMessage(`Codex app-server остановлен (код ${code ?? "?"}).`);
-  process.exitCode = code || 1;
+  if (stopping) return;
+  stopping = true;
+  const error = new Error(`Codex app-server stopped (code=${code}, signal=${signal})`);
+  for (const pending of pendingRpc.values()) pending.reject(error);
+  pendingRpc.clear();
+  if (chatId) {
+    await sendMessage(`Codex app-server остановлен (код ${code ?? "?"}). Перезапустите бот.`)
+      .catch((sendError) => console.error("Cannot report Codex shutdown:", sendError.message));
+  }
+  process.exit(code || 1);
 });
 
 const lines = createInterface({ input: codex.stdout });
@@ -129,11 +140,12 @@ async function initializeCodex() {
 
   if (threadId) {
     try {
-      await sendRpc("thread/resume", {
+      const result = await sendRpc("thread/resume", {
         threadId,
         approvalPolicy: "on-request",
         sandbox: "workspace-write",
       });
+      if (!result.thread?.name) await nameTelegramThread(threadId);
       return;
     } catch (error) {
       console.error("Cannot resume saved thread:", error.message);
@@ -151,8 +163,20 @@ async function createThread() {
     serviceName: "telegram_codex_bridge",
   });
   threadId = result.thread.id;
+  await nameTelegramThread(threadId);
   latestDiff = "";
   await saveState();
+}
+
+async function nameTelegramThread(id) {
+  const timestamp = new Date().toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  await sendRpc("thread/name/set", { threadId: id, name: `Telegram · ${timestamp}` });
 }
 
 async function listThreads() {
@@ -215,6 +239,18 @@ async function resumeThread(selectedThreadId) {
   await saveState();
   await sendMessage(`Выбрана задача: ${threadTitle(result.thread ?? {})}`);
   return true;
+}
+
+async function sendCurrentThread() {
+  if (!threadId) return sendMessage("Текущий поток Codex не выбран.");
+  const threads = await listThreads();
+  const current = threads.find((thread) => thread.id === threadId);
+  const name = current ? threadTitle(current) : "Telegram";
+  await sendMessage(
+    `Текущий поток Codex\n\n${name}\nID: ${threadId}\nПроект: ${PROJECT_ROOT}\n\n` +
+      `VS Code и Codex App: откройте этот проект и выберите поток в истории.\n` +
+      `CLI: codex resume ${threadId}`,
+  );
 }
 
 async function startTurn(text) {
@@ -519,7 +555,7 @@ async function handleTelegramMessage(message) {
   if (text === "/start" || text === "/help") {
     await sendMessage(
       "Бот подключён к локальному Codex. Отправьте задачу обычным сообщением.\n\n" +
-        "/new — новый контекст\n/tasks — список задач\n/resume — выбрать задачу\n/current — текущая задача\n/status — состояние\n/limits — остаток лимитов\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
+        "/new — новый контекст\n/tasks — список задач\n/resume — выбрать задачу\n/current — текущая задача\n/thread — общий поток Codex\n/status — состояние\n/limits — остаток лимитов\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
       { reply_markup: BOT_MENU },
     );
   } else if (text === "/new") {
@@ -551,6 +587,8 @@ async function handleTelegramMessage(message) {
     const threads = await listThreads();
     const current = threads.find((thread) => thread.id === threadId);
     await sendMessage(current ? formatThread(current) : `Текущая задача\nID: ${threadId ?? "не выбран"}`);
+  } else if (text === "/thread") {
+    await sendCurrentThread();
   } else if (text === "/diff") {
     await sendLongMessage(latestDiff || "В последней задаче изменений файлов нет.");
   } else if (text === "/cancel") {
