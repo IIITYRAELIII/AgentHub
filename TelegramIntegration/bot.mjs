@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -7,7 +8,8 @@ import process from "node:process";
 import { INTEGRATION_ROOT, loadConfig } from "./config.mjs";
 
 const config = await loadConfig();
-const PROJECT_ROOT = config.projectRoot;
+const PROJECTS = config.projects;
+const DEFAULT_PROJECT_ROOT = config.projectRoot;
 const STATE_FILE = config.stateFile;
 const TELEGRAM_LIMIT = 3900;
 const THREAD_LIST_LIMIT = 10;
@@ -15,6 +17,7 @@ const PYTHON_EXE = config.pythonExe;
 const TRANSCRIBE_SCRIPT = path.join(import.meta.dirname, "transcribe.py");
 const AUDIO_DIR = config.audioDir;
 const BOT_COMMANDS = [
+  { command: "projects", description: "Сменить активную папку" },
   { command: "new", description: "Новый контекст" },
   { command: "tasks", description: "Список задач" },
   { command: "resume", description: "Выбрать существующую задачу" },
@@ -28,7 +31,8 @@ const BOT_COMMANDS = [
 ];
 const BOT_MENU = {
   keyboard: [
-    [{ text: "📋 Задачи" }, { text: "📊 Лимиты" }, { text: "ℹ️ Статус" }],
+    [{ text: "📁 Папка" }, { text: "📋 Задачи" }],
+    [{ text: "📊 Лимиты" }, { text: "ℹ️ Статус" }],
     [{ text: "⛔ Стоп" }, { text: "🔐 Доступ" }],
     [{ text: "❓ Помощь" }, { text: "🔄 Рестарт" }],
   ],
@@ -36,6 +40,8 @@ const BOT_MENU = {
   is_persistent: true,
 };
 const MENU_COMMANDS = new Map([
+  ["📁 Папка", "/projects"],
+  ["📁 Проект", "/projects"],
   ["🆕 Новая", "/new"],
   ["🆕 Новая задача", "/new"],
   ["📋 Задачи", "/tasks"],
@@ -59,6 +65,7 @@ await mkdir(path.dirname(STATE_FILE), { recursive: true });
 
 let updateOffset = 0;
 let chatId = null;
+let activeProjectRoot = DEFAULT_PROJECT_ROOT;
 let threadId = null;
 let activeTurnId = null;
 let latestDiff = "";
@@ -71,6 +78,20 @@ const pendingRpc = new Map();
 const pendingApprovals = new Map();
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
+
+function samePath(left, right) {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function findProject(projectRoot) {
+  return PROJECTS.find((project) => samePath(project.path, projectRoot));
+}
+
+function activeProject() {
+  return findProject(activeProjectRoot) ?? PROJECTS[0];
+}
 
 const TOKEN_USAGE_FIELDS = [
   "inputTokens",
@@ -130,6 +151,10 @@ function formatTurnTokenUsage(tracker) {
 
 try {
   const saved = JSON.parse(await readFile(STATE_FILE, "utf8"));
+  if (typeof saved.activeProjectRoot === "string") {
+    const savedProject = findProject(saved.activeProjectRoot);
+    if (savedProject) activeProjectRoot = savedProject.path;
+  }
   if (typeof saved.threadId === "string") threadId = saved.threadId;
   if (Number.isSafeInteger(saved.chatId)) chatId = saved.chatId;
   if (Number.isSafeInteger(saved.updateOffset) && saved.updateOffset >= 0) updateOffset = saved.updateOffset;
@@ -137,22 +162,23 @@ try {
   if (error?.code !== "ENOENT") console.error("Cannot read state:", error.message);
 }
 
+function resolveCodexExecutable() {
+  if (process.platform !== "win32") return "codex";
+  const explicit = path.join(process.env.USERPROFILE ?? "", ".codex", ".sandbox-bin", "codex.exe");
+  if (existsSync(explicit)) return explicit;
+  return "codex";
+}
+
 function spawnCodex(args) {
-  if (process.platform === "win32") {
-    return spawn("cmd.exe", ["/c", "codex", ...args], {
-      cwd: PROJECT_ROOT,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-  }
-  return spawn("codex", args, {
-    cwd: PROJECT_ROOT,
+  const command = resolveCodexExecutable();
+  return spawn(command, args, {
+    cwd: activeProjectRoot,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
 }
 
-const codex = spawnCodex(["app-server"]);
+const codex = spawnCodex(["app-server", "--stdio"]);
 
 codex.stderr.setEncoding("utf8");
 codex.stderr.on("data", (data) => console.error(`[codex] ${data.trimEnd()}`));
@@ -214,6 +240,9 @@ async function initializeCodex() {
         approvalPolicy: "on-request",
         sandbox: "workspace-write",
       });
+      if (!isWorkspaceThread(result.thread ?? {})) {
+        throw new Error("saved thread belongs to another project");
+      }
       if (!result.thread?.name) await nameTelegramThread(threadId);
       return;
     } catch (error) {
@@ -226,7 +255,7 @@ async function initializeCodex() {
 
 async function createThread() {
   const result = await sendRpc("thread/start", {
-    cwd: PROJECT_ROOT,
+    cwd: activeProjectRoot,
     approvalPolicy: "on-request",
     sandbox: "workspace-write",
     serviceName: "telegram_codex_bridge",
@@ -266,8 +295,7 @@ async function listThreads() {
 
 function isWorkspaceThread(thread) {
   if (!thread.cwd) return false;
-  const relative = path.relative(PROJECT_ROOT, path.resolve(thread.cwd));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  return samePath(thread.cwd, activeProjectRoot);
 }
 
 function threadTitle(thread) {
@@ -278,7 +306,7 @@ function threadTitle(thread) {
 function formatThread(thread) {
   const current = thread.id === threadId ? " (текущая)" : "";
   const updated = new Date(thread.updatedAt * 1000).toLocaleString("ru-RU");
-  const project = path.relative(PROJECT_ROOT, thread.cwd) || path.basename(PROJECT_ROOT);
+  const project = activeProject().name;
   return `${threadTitle(thread)}${current}\nПроект: ${project}\nОбновлена: ${updated}\nID: ${thread.id}`;
 }
 
@@ -295,6 +323,44 @@ async function sendThreadPicker() {
   await sendMessage(text, { reply_markup: { inline_keyboard: keyboard } });
 }
 
+async function sendProjectPicker() {
+  const project = activeProject();
+  const keyboard = PROJECTS.map((item, index) => [{
+    text: `${samePath(item.path, activeProjectRoot) ? "✓ " : ""}${item.name}`,
+    callback_data: `p:${index}`,
+  }]);
+  await sendMessage(
+    `Активная папка: ${project.name}\n${activeProjectRoot}\n\nВыберите папку:`,
+    { reply_markup: { inline_keyboard: keyboard } },
+  );
+}
+
+async function switchProject(index) {
+  if (activeTurnId) return null;
+  const project = PROJECTS[index];
+  if (!project) throw new Error("unknown project");
+  if (samePath(project.path, activeProjectRoot)) return { project, changed: false };
+
+  const previous = {
+    activeProjectRoot,
+    threadId,
+    latestDiff,
+    responseText,
+  };
+  activeProjectRoot = project.path;
+  threadId = null;
+  latestDiff = "";
+  responseText = "";
+  try {
+    await createThread();
+  } catch (error) {
+    ({ activeProjectRoot, threadId, latestDiff, responseText } = previous);
+    await saveState();
+    throw error;
+  }
+  return { project, changed: true };
+}
+
 async function resumeThread(selectedThreadId) {
   if (activeTurnId) {
     await sendMessage("Сначала завершите или отмените текущую задачу.");
@@ -305,6 +371,9 @@ async function resumeThread(selectedThreadId) {
     approvalPolicy: "on-request",
     sandbox: "workspace-write",
   });
+  if (!isWorkspaceThread(result.thread ?? {})) {
+    throw new Error("задача относится к другой активной папке");
+  }
   threadId = result.thread?.id ?? selectedThreadId;
   latestDiff = "";
   responseText = "";
@@ -314,15 +383,19 @@ async function resumeThread(selectedThreadId) {
 }
 
 async function sendStatus() {
+  const project = activeProject();
   if (!threadId) {
-    return sendMessage(`Codex ${activeTurnId ? "выполняет задачу" : "готов"}.\nТекущая задача не выбрана.`);
+    return sendMessage(
+      `Codex ${activeTurnId ? "выполняет задачу" : "готов"}.\n` +
+      `Активная папка: ${project.name}\n${activeProjectRoot}\nТекущая задача не выбрана.`,
+    );
   }
   const threads = await listThreads();
   const current = threads.find((thread) => thread.id === threadId);
   const name = current ? threadTitle(current) : "Telegram";
   await sendMessage(
     `Codex: ${activeTurnId ? `выполняет задачу ${activeTurnId}` : "готов"}\n\n` +
-      `Текущая задача\n${name}\nID: ${threadId}\nПроект: ${PROJECT_ROOT}\n\n` +
+      `Текущая задача\n${name}\nID: ${threadId}\nПапка: ${project.name}\n${activeProjectRoot}\n\n` +
       `VS Code и Codex App: откройте этот проект и выберите поток в истории.\n` +
       `CLI: codex resume ${threadId}`,
   );
@@ -341,7 +414,7 @@ async function startTurn(text) {
     approvalPolicy: "on-request",
     sandboxPolicy: {
       type: "workspaceWrite",
-      writableRoots: [PROJECT_ROOT],
+      writableRoots: [activeProjectRoot],
       networkAccess: false,
     },
   });
@@ -410,7 +483,7 @@ async function requestApproval(rpcId, kind, params, text) {
 
 function formatCommandApproval(params) {
   const command = params.command ?? "(команда не указана)";
-  const cwd = params.cwd ?? PROJECT_ROOT;
+  const cwd = params.cwd ?? activeProjectRoot;
   const reason = params.reason ? `\nПричина: ${params.reason}` : "";
   return `Codex запрашивает запуск команды:\n\n${command}\n\nКаталог: ${cwd}${reason}`;
 }
@@ -496,7 +569,7 @@ async function restartBot() {
     process.execPath,
     [path.join(import.meta.dirname, "bot.mjs")],
     {
-      cwd: PROJECT_ROOT,
+      cwd: INTEGRATION_ROOT,
       detached: true,
       stdio: "ignore",
       windowsHide: true,
@@ -552,7 +625,7 @@ async function transcribeVoice(message) {
 function runTranscription(audioPath) {
   return new Promise((resolve, reject) => {
     const worker = spawn(PYTHON_EXE, [TRANSCRIBE_SCRIPT, audioPath], {
-      cwd: PROJECT_ROOT,
+      cwd: activeProjectRoot,
       windowsHide: true,
       env: { ...process.env, PYTHONUTF8: "1", WHISPER_MODEL: config.whisperModel },
     });
@@ -592,6 +665,42 @@ async function handleApprovalCallback(callback) {
       text: formatApprovalMode(),
       reply_markup: approvalModeKeyboard(),
     });
+    return;
+  }
+  const projectMatch = /^p:(\d+)$/.exec(callback.data ?? "");
+  if (projectMatch) {
+    try {
+      const switched = await switchProject(Number(projectMatch[1]));
+      if (!switched) {
+        await telegram("answerCallbackQuery", {
+          callback_query_id: callback.id,
+          text: "Сначала завершите или отмените текущую задачу",
+          show_alert: true,
+        });
+        return;
+      }
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: switched.changed ? "Папка изменена" : "Эта папка уже активна",
+      });
+      await telegram("editMessageReplyMarkup", {
+        chat_id: callback.message.chat.id,
+        message_id: callback.message.message_id,
+        reply_markup: { inline_keyboard: [] },
+      });
+      if (switched.changed) {
+        await sendMessage(
+          `Активная папка: ${switched.project.name}\n${switched.project.path}\nСоздана новая задача Codex.`,
+        );
+      }
+    } catch (error) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Не удалось сменить папку",
+        show_alert: true,
+      });
+      await sendMessage(`Ошибка смены папки: ${error.message}`);
+    }
     return;
   }
   if (callback.data === "thread:new") {
@@ -693,9 +802,11 @@ async function handleTelegramMessage(message) {
   if (text === "/start" || text === "/help") {
     await sendMessage(
       "Бот подключён к локальному Codex. Отправьте задачу обычным сообщением.\n\n" +
-        "/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/status — статус и текущая задача\n/limits — остаток лимитов\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
+        "/projects — сменить активную папку\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/status — статус и текущая задача\n/limits — остаток лимитов\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
       { reply_markup: BOT_MENU },
     );
+  } else if (text === "/projects" || text === "/folders" || text === "/folder") {
+    await sendProjectPicker();
   } else if (text === "/new") {
     if (activeTurnId) return sendMessage("Сначала завершите или отмените текущую задачу.");
     await createThread();
@@ -796,7 +907,11 @@ async function sendLongMessage(text) {
 }
 
 async function saveState() {
-  await writeFile(STATE_FILE, `${JSON.stringify({ chatId, threadId, updateOffset }, null, 2)}\n`, "utf8");
+  await writeFile(
+    STATE_FILE,
+    `${JSON.stringify({ chatId, activeProjectRoot, threadId, updateOffset }, null, 2)}\n`,
+    "utf8",
+  );
 }
 
 function delay(ms) {
@@ -830,5 +945,5 @@ if (chatId) {
     console.error("Cannot update Telegram keyboard:", error.message);
   });
 }
-console.log(`Telegram/Codex bridge ready for ${config.allowedUserIds.size} user(s); project: ${PROJECT_ROOT}`);
+console.log(`Telegram/Codex bridge ready for ${config.allowedUserIds.size} user(s); project: ${activeProjectRoot}`);
 await pollTelegram();

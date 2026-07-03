@@ -4,6 +4,16 @@
   "allowedChatIds": [123456789],
   "privateChatsOnly": true,
   "projectRoot": "C:\\Projects\\MyProject",
+  "projects": [
+    {
+      "name": "Основной проект",
+      "path": "C:\\Projects\\MyProject"
+    },
+    {
+      "name": "Другой проект",
+      "path": "C:\\Projects\\AnotherProject"
+    }
+  ],
   "voiceEnabled": true,
   "whisperModel": "small",
   "dataDir": "data"

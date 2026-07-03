@@ -15,6 +15,43 @@ function requireIntegerArray(value, name) {
   return new Set(value);
 }
 
+function samePath(left, right) {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function loadProjects(raw, defaultRoot) {
+  if (raw.projects == null) {
+    return [{ name: path.basename(defaultRoot) || defaultRoot, path: defaultRoot }];
+  }
+  if (!Array.isArray(raw.projects) || raw.projects.length === 0) {
+    throw new Error("projects must be a non-empty array");
+  }
+
+  const projects = raw.projects.map((project, index) => {
+    if (!project || typeof project !== "object" || Array.isArray(project)) {
+      throw new Error(`projects[${index}] must be an object with name and path`);
+    }
+    const projectPath = String(project.path ?? "").trim();
+    if (!projectPath) throw new Error(`projects[${index}].path is missing`);
+    const resolvedPath = path.resolve(projectPath);
+    const name = String(project.name ?? path.basename(resolvedPath) ?? "").trim();
+    if (!name) throw new Error(`projects[${index}].name is missing`);
+    return { name, path: resolvedPath };
+  });
+
+  for (let index = 0; index < projects.length; index += 1) {
+    if (projects.findIndex((project) => samePath(project.path, projects[index].path)) !== index) {
+      throw new Error(`projects contains duplicate path: ${projects[index].path}`);
+    }
+  }
+  if (!projects.some((project) => samePath(project.path, defaultRoot))) {
+    throw new Error("projectRoot must match one of the paths in projects");
+  }
+  return projects;
+}
+
 export async function loadConfig() {
   const configPath = path.resolve(
     process.env.TELEGRAM_CODEX_CONFIG ?? path.join(INTEGRATION_ROOT, "config.json"),
@@ -37,6 +74,9 @@ export async function loadConfig() {
   const projectRoot = path.resolve(
     process.env.CODEX_PROJECT_ROOT ?? raw.projectRoot ?? path.join(INTEGRATION_ROOT, "..", ".."),
   );
+  const projects = process.env.CODEX_PROJECT_ROOT
+    ? [{ name: path.basename(projectRoot) || projectRoot, path: projectRoot }]
+    : loadProjects(raw, projectRoot);
   const allowedUserIds = requireIntegerArray(raw.allowedUserIds, "allowedUserIds");
   const allowedChatIds = raw.allowedChatIds == null
     ? null
@@ -47,6 +87,7 @@ export async function loadConfig() {
     configPath,
     token,
     projectRoot,
+    projects,
     allowedUserIds,
     allowedChatIds,
     privateChatsOnly: raw.privateChatsOnly !== false,
