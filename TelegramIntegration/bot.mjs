@@ -31,7 +31,7 @@ const BOT_COMMANDS = [
 ];
 const BOT_MENU = {
   keyboard: [
-    [{ text: "📁 Папка" }, { text: "📋 Задачи" }],
+    [{ text: "📁 Проект" }, { text: "📋 Задачи" }],
     [{ text: "📊 Лимиты" }, { text: "ℹ️ Статус" }],
     [{ text: "⛔ Стоп" }, { text: "🔐 Доступ" }],
     [{ text: "❓ Помощь" }, { text: "🔄 Рестарт" }],
