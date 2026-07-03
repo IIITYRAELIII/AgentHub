@@ -119,10 +119,13 @@ function trackTurnTokenUsage(params) {
 function formatTurnTokenUsage(tracker) {
   if (!tracker?.reported) return "📊 Токены за задачу: нет данных.";
   const { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, totalTokens } = tracker.usage;
+  const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens);
   const number = (value) => value.toLocaleString("ru-RU");
   return `📊 Токены за задачу: ${number(totalTokens)}\n` +
-    `Вход: ${number(inputTokens)} (из кэша: ${number(cachedInputTokens)}), ` +
-    `выход: ${number(outputTokens)} (рассуждения: ${number(reasoningOutputTokens)}).`;
+    `Вход: ${number(inputTokens)}\n` +
+    `Вход без кэша: ${number(uncachedInputTokens)}\n` +
+    `Из кэша: ${number(cachedInputTokens)}\n` +
+    `Выход: ${number(outputTokens)} (рассуждения: ${number(reasoningOutputTokens)}).`;
 }
 
 try {
@@ -200,6 +203,7 @@ async function initializeCodex() {
       title: "Telegram Codex Bridge",
       version: "0.1.0",
     },
+    capabilities: { experimentalApi: true },
   });
   sendNotification("initialized");
 
@@ -445,6 +449,26 @@ function formatRateLimits(result) {
   return lines.join("\n");
 }
 
+function formatAccountTokenUsage(result) {
+  const number = (value) => Number(value ?? 0).toLocaleString("ru-RU");
+  const buckets = Array.isArray(result?.dailyUsageBuckets) ? result.dailyUsageBuckets : [];
+  const recent = [...buckets]
+    .sort((left, right) => String(right.startDate).localeCompare(String(left.startDate)))
+    .slice(0, 7);
+  const today = new Date().toISOString().slice(0, 10);
+  const todayTokens = buckets.find((bucket) => bucket.startDate === today)?.tokens ?? 0;
+  const lastSevenDays = recent.reduce((sum, bucket) => sum + Number(bucket.tokens ?? 0), 0);
+  const summary = result?.summary ?? {};
+  const lines = [
+    "Использование токенов:",
+    `Сегодня: ${number(todayTokens)}`,
+    `Последние 7 дней: ${number(lastSevenDays)}`,
+  ];
+  if (summary.lifetimeTokens != null) lines.push(`Всего: ${number(summary.lifetimeTokens)}`);
+  if (summary.peakDailyTokens != null) lines.push(`Максимум за день: ${number(summary.peakDailyTokens)}`);
+  return lines.join("\n");
+}
+
 function formatDuration(minutes) {
   if (minutes % 1440 === 0) return `${minutes / 1440} дн.`;
   if (minutes % 60 === 0) return `${minutes / 60} ч.`;
@@ -679,12 +703,16 @@ async function handleTelegramMessage(message) {
   } else if (text === "/status") {
     await sendStatus();
   } else if (text === "/limits") {
-    try {
-      const limits = await sendRpc("account/rateLimits/read");
-      await sendMessage(formatRateLimits(limits));
-    } catch (error) {
-      await sendMessage(`Не удалось получить лимиты Codex: ${error.message}`);
-    }
+    const [limits, usage] = await Promise.allSettled([
+      sendRpc("account/rateLimits/read"),
+      sendRpc("account/usage/read", null),
+    ]);
+    const sections = [];
+    if (limits.status === "fulfilled") sections.push(formatRateLimits(limits.value));
+    else sections.push(`Не удалось получить лимиты Codex: ${limits.reason.message}`);
+    if (usage.status === "fulfilled") sections.push(formatAccountTokenUsage(usage.value));
+    else sections.push(`Не удалось получить статистику токенов: ${usage.reason.message}`);
+    await sendLongMessage(sections.join("\n\n"));
   } else if (text === "/approvals") {
     await sendMessage(formatApprovalMode(), { reply_markup: approvalModeKeyboard() });
   } else if (text === "/restart") {
