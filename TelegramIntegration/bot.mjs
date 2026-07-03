@@ -17,7 +17,7 @@ const PYTHON_EXE = config.pythonExe;
 const TRANSCRIBE_SCRIPT = path.join(import.meta.dirname, "transcribe.py");
 const AUDIO_DIR = config.audioDir;
 const BOT_COMMANDS = [
-  { command: "projects", description: "Сменить активную папку" },
+  { command: "projects", description: "Сменить активный проект" },
   { command: "new", description: "Новый контекст" },
   { command: "tasks", description: "Список задач" },
   { command: "resume", description: "Выбрать существующую задачу" },
@@ -330,7 +330,7 @@ async function sendProjectPicker() {
     callback_data: `p:${index}`,
   }]);
   await sendMessage(
-    `Активная папка: ${project.name}\n${activeProjectRoot}\n\nВыберите папку:`,
+    `Активный проект: ${project.name}\n${activeProjectRoot}\n\nВыберите проект:`,
     { reply_markup: { inline_keyboard: keyboard } },
   );
 }
@@ -696,7 +696,7 @@ async function handleApprovalCallback(callback) {
     } catch (error) {
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
-        text: "Не удалось сменить папку",
+        text: "Не удалось сменить проект",
         show_alert: true,
       });
       await sendMessage(`Ошибка смены папки: ${error.message}`);
@@ -802,7 +802,7 @@ async function handleTelegramMessage(message) {
   if (text === "/start" || text === "/help") {
     await sendMessage(
       "Бот подключён к локальному Codex. Отправьте задачу обычным сообщением.\n\n" +
-        "/projects — сменить активную папку\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/status — статус и текущая задача\n/limits — остаток лимитов\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
+        "/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/status — статус и текущая задача\n/limits — остаток лимитов\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
       { reply_markup: BOT_MENU },
     );
   } else if (text === "/projects" || text === "/folders" || text === "/folder") {
