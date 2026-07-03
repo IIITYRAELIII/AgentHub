@@ -68,6 +68,61 @@ let stopping = false;
 let autoApprove = false;
 const pendingRpc = new Map();
 const pendingApprovals = new Map();
+const threadTokenTotals = new Map();
+const turnTokenUsage = new Map();
+
+const TOKEN_USAGE_FIELDS = [
+  "inputTokens",
+  "cachedInputTokens",
+  "outputTokens",
+  "reasoningOutputTokens",
+  "totalTokens",
+];
+
+function emptyTokenUsage() {
+  return Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) => [field, 0]));
+}
+
+function normalizeTokenUsage(usage) {
+  const normalized = emptyTokenUsage();
+  for (const field of TOKEN_USAGE_FIELDS) {
+    const value = Number(usage?.[field]);
+    if (Number.isFinite(value) && value >= 0) normalized[field] = Math.trunc(value);
+  }
+  return normalized;
+}
+
+function tokenUsageDelta(current, previous, fallback) {
+  if (!previous || TOKEN_USAGE_FIELDS.some((field) => current[field] < previous[field])) {
+    return normalizeTokenUsage(fallback);
+  }
+  return Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) => [field, current[field] - previous[field]]));
+}
+
+function addTokenUsage(total, addition) {
+  return Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) => [field, total[field] + addition[field]]));
+}
+
+function trackTurnTokenUsage(params) {
+  const current = normalizeTokenUsage(params.tokenUsage?.total);
+  const previous = threadTokenTotals.get(params.threadId);
+  threadTokenTotals.set(params.threadId, current);
+
+  const tracker = turnTokenUsage.get(params.turnId);
+  if (!tracker) return;
+  const delta = tokenUsageDelta(current, previous, params.tokenUsage?.last);
+  tracker.usage = addTokenUsage(tracker.usage, delta);
+  tracker.reported = true;
+}
+
+function formatTurnTokenUsage(tracker) {
+  if (!tracker?.reported) return "📊 Токены за задачу: нет данных.";
+  const { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, totalTokens } = tracker.usage;
+  const number = (value) => value.toLocaleString("ru-RU");
+  return `📊 Токены за задачу: ${number(totalTokens)}\n` +
+    `Вход: ${number(inputTokens)} (из кэша: ${number(cachedInputTokens)}), ` +
+    `выход: ${number(outputTokens)} (рассуждения: ${number(reasoningOutputTokens)}).`;
+}
 
 try {
   const saved = JSON.parse(await readFile(STATE_FILE, "utf8"));
@@ -78,11 +133,22 @@ try {
   if (error?.code !== "ENOENT") console.error("Cannot read state:", error.message);
 }
 
-const codex = spawn("codex", ["app-server"], {
-  cwd: PROJECT_ROOT,
-  stdio: ["pipe", "pipe", "pipe"],
-  windowsHide: true,
-});
+function spawnCodex(args) {
+  if (process.platform === "win32") {
+    return spawn("cmd.exe", ["/c", "codex", ...args], {
+      cwd: PROJECT_ROOT,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+  }
+  return spawn("codex", args, {
+    cwd: PROJECT_ROOT,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+}
+
+const codex = spawnCodex(["app-server"]);
 
 codex.stderr.setEncoding("utf8");
 codex.stderr.on("data", (data) => console.error(`[codex] ${data.trimEnd()}`));
@@ -275,6 +341,9 @@ async function startTurn(text) {
     },
   });
   activeTurnId = result.turn.id;
+  if (!turnTokenUsage.has(activeTurnId)) {
+    turnTokenUsage.set(activeTurnId, { usage: emptyTokenUsage(), reported: false });
+  }
   await sendMessage("Задача принята.");
 }
 
@@ -290,7 +359,13 @@ async function handleCodexMessage(message) {
   }
 
   const { method, params = {}, id } = message;
-  if (method === "turn/started") activeTurnId = params.turn?.id ?? activeTurnId;
+  if (method === "turn/started") {
+    activeTurnId = params.turn?.id ?? activeTurnId;
+    if (activeTurnId && !turnTokenUsage.has(activeTurnId)) {
+      turnTokenUsage.set(activeTurnId, { usage: emptyTokenUsage(), reported: false });
+    }
+  }
+  if (method === "thread/tokenUsage/updated") trackTurnTokenUsage(params);
   if (method === "turn/diff/updated") latestDiff = params.diff ?? latestDiff;
   if (method === "item/agentMessage/delta") responseText += params.delta ?? "";
 
@@ -299,12 +374,15 @@ async function handleCodexMessage(message) {
   } else if (method === "item/fileChange/requestApproval") {
     await requestApproval(id, "file", params, formatFileApproval(params));
   } else if (method === "turn/completed") {
+    const completedTurnId = params.turn?.id ?? activeTurnId;
+    const tokenSummary = formatTurnTokenUsage(turnTokenUsage.get(completedTurnId));
+    turnTokenUsage.delete(completedTurnId);
     activeTurnId = null;
     const status = params.turn?.status ?? "completed";
     const error = params.turn?.error?.message;
     const answer = responseText.trim() || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
     responseText = "";
-    await sendLongMessage(answer);
+    await sendLongMessage(`${answer}\n\n${tokenSummary}`);
     if (latestDiff) await sendMessage("Изменения доступны по команде /diff.");
   }
 }

@@ -28,11 +28,18 @@ try {
   check("configuration", false, error.message);
 }
 
+function runCommand(command, args) {
+  if (process.platform === "win32" && command === "codex") {
+    return spawnSync("cmd.exe", ["/c", "codex", ...args], { encoding: "utf8", windowsHide: true });
+  }
+  return spawnSync(command, args, { encoding: "utf8", windowsHide: true });
+}
+
 for (const [name, command, args] of [
   ["Node.js", process.execPath, ["--version"]],
   ["Codex CLI", "codex", ["--version"]],
 ]) {
-  const result = spawnSync(command, args, { encoding: "utf8", windowsHide: true });
+  const result = runCommand(command, args);
   check(name, result.status === 0, (result.stdout || result.stderr || result.error?.message || "").trim());
 }
 
