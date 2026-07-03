@@ -4,23 +4,16 @@ import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
+import { INTEGRATION_ROOT, loadConfig } from "./config.mjs";
 
-const INTEGRATION_ROOT = path.resolve(import.meta.dirname);
-const PROJECT_ROOT = path.resolve(
-  process.env.CODEX_PROJECT_ROOT ?? path.join(import.meta.dirname, "..", ".."),
-);
-const TOKEN_FILE = path.resolve(
-  process.env.TELEGRAM_BOT_TOKEN_FILE ?? path.join(INTEGRATION_ROOT, "TGBotToken.txt"),
-);
-const STATE_FILE = path.join(INTEGRATION_ROOT, ".telegram-codex-state.json");
-const ALLOWED_USER_ID = Number(process.env.TELEGRAM_USER_ID ?? "859219009");
+const config = await loadConfig();
+const PROJECT_ROOT = config.projectRoot;
+const STATE_FILE = config.stateFile;
 const TELEGRAM_LIMIT = 3900;
 const THREAD_LIST_LIMIT = 10;
-const PYTHON_EXE = path.resolve(
-  process.env.WHISPER_PYTHON ?? path.join(INTEGRATION_ROOT, ".venv-telegram", "Scripts", "python.exe"),
-);
+const PYTHON_EXE = config.pythonExe;
 const TRANSCRIBE_SCRIPT = path.join(import.meta.dirname, "transcribe.py");
-const AUDIO_DIR = path.join(INTEGRATION_ROOT, ".telegram-audio");
+const AUDIO_DIR = config.audioDir;
 const BOT_COMMANDS = [
   { command: "new", description: "Новый контекст" },
   { command: "tasks", description: "Список задач" },
@@ -59,10 +52,8 @@ const MENU_COMMANDS = new Map([
   ["❓ Помощь", "/help"],
 ]);
 
-const token = (await readFile(TOKEN_FILE, "utf8")).trim();
-if (!/^\d+:[A-Za-z0-9_-]+$/.test(token)) {
-  throw new Error(`Invalid Telegram bot token in ${TOKEN_FILE}`);
-}
+const token = config.token;
+await mkdir(path.dirname(STATE_FILE), { recursive: true });
 
 let updateOffset = 0;
 let chatId = null;
@@ -358,10 +349,9 @@ function approvalModeKeyboard() {
 
 async function restartBot() {
   await sendMessage("🔄 Перезапускаю бота…");
-  const startScript = path.join(import.meta.dirname, "start.ps1");
   const replacement = spawn(
-    "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", startScript],
+    process.execPath,
+    [path.join(import.meta.dirname, "bot.mjs")],
     {
       cwd: PROJECT_ROOT,
       detached: true,
@@ -376,6 +366,10 @@ async function restartBot() {
 }
 
 async function transcribeVoice(message) {
+  if (!config.voiceEnabled) {
+    await sendMessage("Голосовые сообщения отключены в конфигурации.");
+    return;
+  }
   if (activeTurnId) {
     await sendMessage("Предыдущая задача ещё выполняется. Дождитесь завершения или нажмите «Остановить».");
     return;
@@ -417,7 +411,7 @@ function runTranscription(audioPath) {
     const worker = spawn(PYTHON_EXE, [TRANSCRIBE_SCRIPT, audioPath], {
       cwd: PROJECT_ROOT,
       windowsHide: true,
-      env: { ...process.env, PYTHONUTF8: "1" },
+      env: { ...process.env, PYTHONUTF8: "1", WHISPER_MODEL: config.whisperModel },
     });
     let stdout = "";
     let stderr = "";
@@ -500,8 +494,16 @@ async function handleApprovalCallback(callback) {
 
 async function handleTelegramMessage(message) {
   const senderId = message.from?.id;
-  if (senderId !== ALLOWED_USER_ID) {
+  if (!config.allowedUserIds.has(senderId)) {
     console.warn(`Rejected Telegram user ${senderId ?? "unknown"}`);
+    return;
+  }
+  if (config.privateChatsOnly && message.chat?.type !== "private") {
+    console.warn(`Rejected non-private Telegram chat ${message.chat?.id ?? "unknown"}`);
+    return;
+  }
+  if (config.allowedChatIds && !config.allowedChatIds.has(message.chat?.id)) {
+    console.warn(`Rejected Telegram chat ${message.chat?.id ?? "unknown"}`);
     return;
   }
   chatId = message.chat.id;
@@ -573,7 +575,7 @@ async function pollTelegram() {
       for (const update of updates) {
         updateOffset = update.update_id + 1;
         await saveState();
-        if (update.callback_query?.from?.id === ALLOWED_USER_ID) {
+        if (update.callback_query && isAllowedCallback(update.callback_query)) {
           await handleApprovalCallback(update.callback_query);
         } else if (update.message) {
           await handleTelegramMessage(update.message);
@@ -584,6 +586,13 @@ async function pollTelegram() {
       await delay(3000);
     }
   }
+}
+
+function isAllowedCallback(callback) {
+  const chat = callback.message?.chat;
+  return config.allowedUserIds.has(callback.from?.id)
+    && (!config.privateChatsOnly || chat?.type === "private")
+    && (!config.allowedChatIds || config.allowedChatIds.has(chat?.id));
 }
 
 async function telegram(method, body) {
@@ -640,5 +649,5 @@ try {
 } catch (error) {
   console.error("Cannot register Telegram commands:", error.message);
 }
-console.log(`Telegram/Codex bridge ready for user ${ALLOWED_USER_ID}; project: ${PROJECT_ROOT}`);
+console.log(`Telegram/Codex bridge ready for ${config.allowedUserIds.size} user(s); project: ${PROJECT_ROOT}`);
 await pollTelegram();

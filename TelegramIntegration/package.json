@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node bot.mjs",
-    "check": "node --check bot.mjs"
+    "check": "node --check bot.mjs && node --check config.mjs && node --check doctor.mjs",
+    "doctor": "node doctor.mjs"
   }
 }
-

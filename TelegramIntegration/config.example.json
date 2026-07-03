@@ -1,0 +1,10 @@
+{
+  "telegramBotToken": "123456789:replace_with_your_bot_token",
+  "allowedUserIds": [123456789],
+  "allowedChatIds": [123456789],
+  "privateChatsOnly": true,
+  "projectRoot": "C:\\Projects\\MyProject",
+  "voiceEnabled": true,
+  "whisperModel": "small",
+  "dataDir": "data"
+}

@@ -1,38 +1,54 @@
 # Telegram/Codex bridge
 
-Локальный Telegram-интерфейс к Codex App Server для проекта `VSC_Tyrael`.
+Однопользовательский Telegram-интерфейс к локальному Codex App Server. Каждый владелец запускает отдельный экземпляр со своим Telegram-ботом, Codex-аккаунтом и рабочей папкой.
+
+## Требования
+
+- Node.js 20 или новее;
+- установленный и авторизованный Codex CLI;
+- Python 3.10 или новее — только для голосовых сообщений.
+
+## Установка
+
+Создайте бота через `@BotFather`, узнайте свой числовой Telegram user ID, затем выполните из этой папки:
+
+```powershell
+python install.py
+npm run doctor
+npm start
+```
+
+Установщик создаёт локальный `config.json`. Он содержит токен и исключён из Git. Для голосовых сообщений используйте:
+
+```powershell
+python install.py --install-voice
+```
+
+Для ручной настройки скопируйте `config.example.json` в `config.json`. Путь к другому конфигу можно передать через `TELEGRAM_CODEX_CONFIG`, а токен — через `TELEGRAM_BOT_TOKEN`.
 
 ## Безопасность
 
-- Бот принимает команды только от Telegram user ID `859219009`.
-- Токен читается из `Utilities/TelegramIntegration/TGBotToken.txt` и не выводится в журнал.
-- Codex работает в режиме `workspaceWrite` только в каталоге проекта.
-- Сеть для команд агента отключена.
-- Команды и изменения файлов, требующие разрешения, подтверждаются кнопками Telegram.
-- Токен и локальное состояние исключены из Git корневым `.gitignore`.
+- Доступ проверяется одновременно по `allowedUserIds` и `allowedChatIds`.
+- По умолчанию принимаются сообщения только из приватных чатов.
+- Codex работает с `workspaceWrite`, без сетевого доступа для команд агента.
+- Подтверждения команд и изменений файлов отправляются владельцу в Telegram.
+- Автоподтверждение выключено после каждого перезапуска.
+- Не публикуйте `config.json`, каталоги `data`, `.venv-telegram`, `.whisper-models` и логи.
 
-## Запуск
+Бот предоставляет удалённый доступ к Codex и файлам в `projectRoot`. Не добавляйте недоверенных пользователей в разрешённый список. Текущая версия не предназначена для совместного использования одного процесса несколькими людьми: состояние Codex и активная задача общие.
 
-Из корня проекта:
-
-```powershell
-.\Utilities\TelegramIntegration\start.ps1
-```
-
-Процесс должен оставаться запущенным. После запуска отправьте боту `/start`.
-
-## Автозапуск
-
-Чтобы запускать бота и открывать проект в VS Code при входе в Windows:
+## Проверка и запуск
 
 ```powershell
-.\Utilities\TelegramIntegration\install-autostart.ps1
+npm run check
+npm run doctor
+npm start
 ```
 
-Команды: `/new`, `/tasks`, `/resume`, `/current`, `/status`, `/diff`, `/cancel`, `/help`.
+В Windows также доступны `start.ps1` и `install-autostart.ps1`. PowerShell используется только для интеграции с автозапуском Windows; сам бот запускается Node.js.
 
-Это отдельный клиент Codex, работающий с той же папкой и Git-репозиторием, что и VS Code. Он не управляет интерфейсом расширения VS Code и не продолжает его текущий чат.
+Команды: `/new`, `/tasks`, `/resume`, `/current`, `/status`, `/limits`, `/approvals`, `/restart`, `/diff`, `/cancel`, `/help`.
 
 ## Голосовые сообщения
 
-Голосовые и аудиосообщения распознаются локально через `faster-whisper` с моделью `small`, после чего текст передаётся Codex как обычная команда. Окружение `Utilities\TelegramIntegration\.venv-telegram`, модель `Utilities\TelegramIntegration\.whisper-models` и временные аудиофайлы не попадают в Git.
+Голос распознаётся локально через `faster-whisper`. Модель выбирается параметром `whisperModel`; файлы модели и временные аудиофайлы не попадают в Git.
