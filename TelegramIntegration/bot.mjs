@@ -18,9 +18,7 @@ const BOT_COMMANDS = [
   { command: "new", description: "Новый контекст" },
   { command: "tasks", description: "Список задач" },
   { command: "resume", description: "Выбрать существующую задачу" },
-  { command: "current", description: "Текущая задача" },
-  { command: "thread", description: "Текущий поток Codex" },
-  { command: "status", description: "Состояние Codex" },
+  { command: "status", description: "Статус и текущая задача" },
   { command: "limits", description: "Остаток лимитов Codex" },
   { command: "approvals", description: "Режим подтверждений" },
   { command: "restart", description: "Перезапустить бота" },
@@ -30,27 +28,27 @@ const BOT_COMMANDS = [
 ];
 const BOT_MENU = {
   keyboard: [
-    [{ text: "🆕 Новая задача" }, { text: "📋 Задачи" }],
-    [{ text: "🎯 Текущая" }, { text: "📊 Лимиты" }],
-    [{ text: "🧵 Поток Codex" }],
-    [{ text: "ℹ️ Статус" }, { text: "📝 Изменения" }],
-    [{ text: "🔐 Подтверждения" }],
-    [{ text: "⛔ Остановить" }, { text: "🔄 Перезапустить" }],
-    [{ text: "❓ Помощь" }],
+    [{ text: "📋 Задачи" }, { text: "📊 Лимиты" }, { text: "ℹ️ Статус" }],
+    [{ text: "⛔ Стоп" }, { text: "🔄 Рестарт" }, { text: "🔐 Доступ" }, { text: "❓ Помощь" }],
   ],
   resize_keyboard: true,
   is_persistent: true,
 };
 const MENU_COMMANDS = new Map([
+  ["🆕 Новая", "/new"],
   ["🆕 Новая задача", "/new"],
   ["📋 Задачи", "/tasks"],
   ["🎯 Текущая", "/current"],
   ["📊 Лимиты", "/limits"],
+  ["🧵 Поток", "/thread"],
   ["🧵 Поток Codex", "/thread"],
   ["ℹ️ Статус", "/status"],
   ["📝 Изменения", "/diff"],
+  ["🔐 Доступ", "/approvals"],
   ["🔐 Подтверждения", "/approvals"],
   ["🔄 Перезапустить", "/restart"],
+  ["🔄 Рестарт", "/restart"],
+  ["⛔ Стоп", "/cancel"],
   ["⛔ Остановить", "/cancel"],
   ["❓ Помощь", "/help"],
 ]);
@@ -215,12 +213,15 @@ function formatThread(thread) {
 
 async function sendThreadPicker() {
   const threads = await listThreads();
-  if (!threads.length) return sendMessage("Существующих задач в этом проекте нет.");
-  const keyboard = threads.map((thread) => [{
+  const keyboard = [[{
+    text: "➕ Создать новую задачу",
+    callback_data: "thread:new",
+  }], ...threads.map((thread) => [{
     text: `${thread.id === threadId ? "✓ " : ""}${path.basename(thread.cwd)} · ${threadTitle(thread)}`,
     callback_data: `t:${thread.id}`,
-  }]);
-  await sendMessage("Выберите задачу:", { reply_markup: { inline_keyboard: keyboard } });
+  }])];
+  const text = threads.length ? "Выберите задачу:" : "В этом проекте пока нет задач.";
+  await sendMessage(text, { reply_markup: { inline_keyboard: keyboard } });
 }
 
 async function resumeThread(selectedThreadId) {
@@ -241,13 +242,16 @@ async function resumeThread(selectedThreadId) {
   return true;
 }
 
-async function sendCurrentThread() {
-  if (!threadId) return sendMessage("Текущий поток Codex не выбран.");
+async function sendStatus() {
+  if (!threadId) {
+    return sendMessage(`Codex ${activeTurnId ? "выполняет задачу" : "готов"}.\nТекущая задача не выбрана.`);
+  }
   const threads = await listThreads();
   const current = threads.find((thread) => thread.id === threadId);
   const name = current ? threadTitle(current) : "Telegram";
   await sendMessage(
-    `Текущий поток Codex\n\n${name}\nID: ${threadId}\nПроект: ${PROJECT_ROOT}\n\n` +
+    `Codex: ${activeTurnId ? `выполняет задачу ${activeTurnId}` : "готов"}\n\n` +
+      `Текущая задача\n${name}\nID: ${threadId}\nПроект: ${PROJECT_ROOT}\n\n` +
       `VS Code и Codex App: откройте этот проект и выберите поток в истории.\n` +
       `CLI: codex resume ${threadId}`,
   );
@@ -487,6 +491,37 @@ async function handleApprovalCallback(callback) {
     });
     return;
   }
+  if (callback.data === "thread:new") {
+    if (activeTurnId) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Сначала завершите или отмените текущую задачу",
+        show_alert: true,
+      });
+      return;
+    }
+    try {
+      await createThread();
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Новая задача создана",
+      });
+      await telegram("editMessageReplyMarkup", {
+        chat_id: callback.message.chat.id,
+        message_id: callback.message.message_id,
+        reply_markup: { inline_keyboard: [] },
+      });
+      await sendMessage("Создана новая задача Codex в текущем проекте.");
+    } catch (error) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Не удалось создать задачу",
+        show_alert: true,
+      });
+      console.error("Cannot create thread:", error.message);
+    }
+    return;
+  }
   const threadMatch = /^t:([0-9a-f-]+)$/i.exec(callback.data ?? "");
   if (threadMatch) {
     try {
@@ -555,7 +590,7 @@ async function handleTelegramMessage(message) {
   if (text === "/start" || text === "/help") {
     await sendMessage(
       "Бот подключён к локальному Codex. Отправьте задачу обычным сообщением.\n\n" +
-        "/new — новый контекст\n/tasks — список задач\n/resume — выбрать задачу\n/current — текущая задача\n/thread — общий поток Codex\n/status — состояние\n/limits — остаток лимитов\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
+        "/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/status — статус и текущая задача\n/limits — остаток лимитов\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
       { reply_markup: BOT_MENU },
     );
   } else if (text === "/new") {
@@ -563,7 +598,7 @@ async function handleTelegramMessage(message) {
     await createThread();
     await sendMessage("Создан новый контекст Codex.");
   } else if (text === "/status") {
-    await sendMessage(activeTurnId ? `Codex выполняет задачу ${activeTurnId}.` : "Codex готов к новой задаче.");
+    await sendStatus();
   } else if (text === "/limits") {
     try {
       const limits = await sendRpc("account/rateLimits/read");
@@ -583,12 +618,8 @@ async function handleTelegramMessage(message) {
       return sendMessage("Укажите корректный ID задачи или используйте /resume без параметров.");
     }
     await resumeThread(selectedThreadId);
-  } else if (text === "/current") {
-    const threads = await listThreads();
-    const current = threads.find((thread) => thread.id === threadId);
-    await sendMessage(current ? formatThread(current) : `Текущая задача\nID: ${threadId ?? "не выбран"}`);
-  } else if (text === "/thread") {
-    await sendCurrentThread();
+  } else if (text === "/current" || text === "/thread") {
+    await sendStatus();
   } else if (text === "/diff") {
     await sendLongMessage(latestDiff || "В последней задаче изменений файлов нет.");
   } else if (text === "/cancel") {
@@ -686,6 +717,11 @@ try {
   });
 } catch (error) {
   console.error("Cannot register Telegram commands:", error.message);
+}
+if (chatId) {
+  await sendMessage("Клавиатура обновлена.", { reply_markup: BOT_MENU }).catch((error) => {
+    console.error("Cannot update Telegram keyboard:", error.message);
+  });
 }
 console.log(`Telegram/Codex bridge ready for ${config.allowedUserIds.size} user(s); project: ${PROJECT_ROOT}`);
 await pollTelegram();
