@@ -9,9 +9,16 @@ import { INTEGRATION_ROOT, loadConfig } from "./config.mjs";
 import { buildClaudeArgs, buildClaudePrompt, formatClaudeUsage, parseClaudeResult } from "./claude.mjs";
 
 const config = await loadConfig();
-const PROVIDER = config.provider;
-const IS_CODEX = PROVIDER === "codex";
-const PROVIDER_TITLE = IS_CODEX ? "Codex" : "Claude Code";
+let activeProvider = config.provider === "codex" ? "codex" : "claude";
+function isCodex() {
+  return activeProvider === "codex";
+}
+function providerTitle() {
+  return isCodex() ? "Codex" : "Claude Code";
+}
+const CLAUDE_MODELS = ["sonnet", "opus", "haiku"];
+const CLAUDE_MODEL_LABELS = { sonnet: "Sonnet", opus: "Opus", haiku: "Haiku" };
+let claudeModel = CLAUDE_MODELS.includes(config.claudeModel) ? config.claudeModel : "sonnet";
 const PROJECTS = config.projects;
 const DEFAULT_PROJECT_ROOT = config.projectRoot;
 const STATE_FILE = config.stateFile;
@@ -22,6 +29,8 @@ const TRANSCRIBE_SCRIPT = path.join(import.meta.dirname, "transcribe.py");
 const AUDIO_DIR = config.audioDir;
 const IMAGE_DIR = path.join(config.dataDir, "images");
 const BOT_COMMANDS = [
+  { command: "engine", description: "Переключить Claude Code/Codex" },
+  { command: "model", description: "Сменить модель Claude Code" },
   { command: "projects", description: "Сменить активный проект" },
   { command: "new", description: "Новый контекст" },
   { command: "tasks", description: "Список задач" },
@@ -36,6 +45,7 @@ const BOT_COMMANDS = [
 ];
 const BOT_MENU = {
   keyboard: [
+    [{ text: "🤖 Движок" }, { text: "🎛 Модель" }],
     [{ text: "📁 Проект" }, { text: "📋 Задачи" }],
     [{ text: "📊 Лимиты" }, { text: "ℹ️ Статус" }],
     [{ text: "⛔ Стоп" }, { text: "🔐 Доступ" }],
@@ -45,6 +55,8 @@ const BOT_MENU = {
   is_persistent: true,
 };
 const MENU_COMMANDS = new Map([
+  ["🤖 Движок", "/engine"],
+  ["🎛 Модель", "/model"],
   ["📁 Папка", "/projects"],
   ["📁 Проект", "/projects"],
   ["🆕 Новая", "/new"],
@@ -71,6 +83,7 @@ await mkdir(path.dirname(STATE_FILE), { recursive: true });
 let updateOffset = 0;
 let chatId = null;
 let activeProjectRoot = DEFAULT_PROJECT_ROOT;
+const threadIdsByProvider = { codex: null, claude: null };
 let threadId = null;
 let activeTurnId = null;
 let latestDiff = "";
@@ -162,9 +175,16 @@ try {
     const savedProject = findProject(saved.activeProjectRoot);
     if (savedProject) activeProjectRoot = savedProject.path;
   }
-  if ((saved.provider ?? "codex") === PROVIDER && typeof saved.threadId === "string") {
-    threadId = saved.threadId;
+  const savedProvider = saved.activeProvider ?? saved.provider;
+  if (savedProvider === "codex" || savedProvider === "claude") activeProvider = savedProvider;
+  if (saved.threadIds && typeof saved.threadIds === "object") {
+    if (typeof saved.threadIds.codex === "string") threadIdsByProvider.codex = saved.threadIds.codex;
+    if (typeof saved.threadIds.claude === "string") threadIdsByProvider.claude = saved.threadIds.claude;
+  } else if (typeof saved.threadId === "string" && typeof saved.provider === "string") {
+    threadIdsByProvider[saved.provider] = saved.threadId;
   }
+  threadId = threadIdsByProvider[activeProvider] ?? null;
+  if (CLAUDE_MODELS.includes(saved.claudeModel)) claudeModel = saved.claudeModel;
   if (Number.isSafeInteger(saved.chatId)) chatId = saved.chatId;
   if (Number.isSafeInteger(saved.updateOffset) && saved.updateOffset >= 0) updateOffset = saved.updateOffset;
 } catch (error) {
@@ -194,18 +214,23 @@ function startCodexAppServer() {
   codex = spawnCodex(["app-server", "--stdio"]);
   codex.stderr.setEncoding("utf8");
   codex.stderr.on("data", (data) => console.error(`[codex] ${data.trimEnd()}`));
+  codex.on("error", (error) => console.error("Codex app-server failed to start:", error.message));
   codex.on("exit", async (code, signal) => {
     console.error(`Codex app-server stopped (code=${code}, signal=${signal}).`);
-    if (stopping) return;
-    stopping = true;
     const error = new Error(`Codex app-server stopped (code=${code}, signal=${signal})`);
     for (const pending of pendingRpc.values()) pending.reject(error);
     pendingRpc.clear();
+    const wasActive = isCodex();
+    codex = null;
+    codexLines = null;
+    if (stopping) return;
+    if (wasActive) activeTurnId = null;
     if (chatId) {
-      await sendMessage(`Codex app-server остановлен (код ${code ?? "?"}). Перезапустите бот.`)
-        .catch((sendError) => console.error("Cannot report Codex shutdown:", sendError.message));
+      await sendMessage(
+        `⚠️ Codex app-server остановлен (код ${code ?? "?"}).` +
+          (wasActive ? " Переключитесь на движок командой /engine — Codex перезапустится при следующем выборе." : ""),
+      ).catch((sendError) => console.error("Cannot report Codex shutdown:", sendError.message));
     }
-    process.exit(code || 1);
   });
 
   codexLines = createInterface({ input: codex.stdout });
@@ -239,7 +264,7 @@ function respondRpc(id, result) {
 }
 
 async function initializeProvider() {
-  if (!IS_CODEX) {
+  if (!isCodex()) {
     if (!threadId) await createThread();
     return;
   }
@@ -257,7 +282,10 @@ async function initializeCodex() {
     capabilities: { experimentalApi: true },
   });
   sendNotification("initialized");
+  await attachCodexThread();
+}
 
+async function attachCodexThread() {
   if (threadId) {
     try {
       const result = await sendRpc("thread/resume", {
@@ -279,7 +307,7 @@ async function initializeCodex() {
 }
 
 async function createThread() {
-  if (!IS_CODEX) {
+  if (!isCodex()) {
     threadId = null;
     latestDiff = "";
     responseText = "";
@@ -310,7 +338,7 @@ async function nameTelegramThread(id) {
 }
 
 async function listThreads() {
-  if (!IS_CODEX) {
+  if (!isCodex()) {
     return threadId ? [{
       id: threadId,
       cwd: activeProjectRoot,
@@ -351,7 +379,7 @@ function formatThread(thread) {
 }
 
 async function sendThreadPicker() {
-  if (!IS_CODEX) {
+  if (!isCodex()) {
     const keyboard = [[{ text: "➕ Создать новую задачу", callback_data: "thread:new" }]];
     const current = threadId ? `\n\nТекущая сессия: ${threadId}` : "";
     await sendMessage(
@@ -384,6 +412,39 @@ async function sendProjectPicker() {
   );
 }
 
+async function sendEnginePicker() {
+  const keyboard = [
+    [{ text: `${!isCodex() ? "✓ " : ""}Claude Code`, callback_data: "engine:claude" }],
+    [{ text: `${isCodex() ? "✓ " : ""}Codex`, callback_data: "engine:codex" }],
+  ];
+  await sendMessage(
+    `Активный движок: ${providerTitle()}\n\nВыберите движок:`,
+    { reply_markup: { inline_keyboard: keyboard } },
+  );
+}
+
+async function sendModelPicker() {
+  if (isCodex()) {
+    await sendMessage("Выбор модели в этом мосте доступен только для Claude Code. Переключитесь на него командой /engine.");
+    return;
+  }
+  const keyboard = CLAUDE_MODELS.map((value) => [{
+    text: `${value === claudeModel ? "✓ " : ""}${CLAUDE_MODEL_LABELS[value]}`,
+    callback_data: `model:${value}`,
+  }]);
+  await sendMessage(
+    `Текущая модель Claude Code: ${CLAUDE_MODEL_LABELS[claudeModel]}\n\nВыберите модель:`,
+    { reply_markup: { inline_keyboard: keyboard } },
+  );
+}
+
+function switchModel(value) {
+  if (!CLAUDE_MODELS.includes(value)) throw new Error("unknown model");
+  if (value === claudeModel) return { changed: false };
+  claudeModel = value;
+  return { changed: true };
+}
+
 async function switchProject(index) {
   if (activeTurnId) return null;
   const project = PROJECTS[index];
@@ -395,19 +456,55 @@ async function switchProject(index) {
     threadId,
     latestDiff,
     responseText,
+    threadIdsByProvider: { ...threadIdsByProvider },
   };
   activeProjectRoot = project.path;
   threadId = null;
+  threadIdsByProvider.codex = null;
+  threadIdsByProvider.claude = null;
   latestDiff = "";
   responseText = "";
   try {
     await createThread();
   } catch (error) {
     ({ activeProjectRoot, threadId, latestDiff, responseText } = previous);
+    Object.assign(threadIdsByProvider, previous.threadIdsByProvider);
     await saveState();
     throw error;
   }
   return { project, changed: true };
+}
+
+async function switchProvider(target) {
+  if (activeTurnId) return null;
+  if (target !== "codex" && target !== "claude") throw new Error("unknown provider");
+  if (target === activeProvider) return { changed: false };
+
+  const previous = { activeProvider, threadId };
+  threadIdsByProvider[activeProvider] = threadId;
+  activeProvider = target;
+  threadId = threadIdsByProvider[target] ?? null;
+  latestDiff = "";
+  responseText = "";
+  try {
+    if (isCodex()) {
+      if (!codex) {
+        startCodexAppServer();
+        await initializeCodex();
+      } else {
+        await attachCodexThread();
+      }
+    } else if (!threadId) {
+      await createThread();
+    }
+  } catch (error) {
+    threadIdsByProvider[target] = threadId;
+    ({ activeProvider, threadId } = previous);
+    await saveState();
+    throw error;
+  }
+  await saveState();
+  return { changed: true };
 }
 
 async function resumeThread(selectedThreadId) {
@@ -415,7 +512,7 @@ async function resumeThread(selectedThreadId) {
     await sendMessage("Сначала завершите или отмените текущую задачу.");
     return false;
   }
-  if (!IS_CODEX) {
+  if (!isCodex()) {
     threadId = selectedThreadId;
     latestDiff = "";
     responseText = "";
@@ -443,18 +540,18 @@ async function sendStatus() {
   const project = activeProject();
   if (!threadId) {
     return sendMessage(
-      `${PROVIDER_TITLE} ${activeTurnId ? "выполняет задачу" : "готов"}.\n` +
+      `${providerTitle()} ${activeTurnId ? "выполняет задачу" : "готов"}.\n` +
       `Активная папка: ${project.name}\n${activeProjectRoot}\nНовая сессия будет создана при следующем запросе.`,
     );
   }
   const threads = await listThreads();
   const current = threads.find((thread) => thread.id === threadId);
   const name = current ? threadTitle(current) : "Telegram";
-  const openHint = IS_CODEX
+  const openHint = isCodex()
     ? `VS Code и Codex App: откройте этот проект и выберите поток в истории.\nCLI: codex resume ${threadId}`
     : `CLI: claude --resume ${threadId}`;
   await sendMessage(
-    `${PROVIDER_TITLE}: ${activeTurnId ? `выполняет задачу ${activeTurnId}` : "готов"}\n\n` +
+    `${providerTitle()}: ${activeTurnId ? `выполняет задачу ${activeTurnId}` : "готов"}\n\n` +
       `Текущая задача\n${name}\nID: ${threadId}\nПапка: ${project.name}\n${activeProjectRoot}\n\n` +
       openHint,
   );
@@ -467,7 +564,7 @@ async function startTurn(input, temporaryFiles = []) {
   }
   responseText = "";
   latestDiff = "";
-  if (!IS_CODEX) {
+  if (!isCodex()) {
     await startClaudeTurn(input, temporaryFiles);
     return;
   }
@@ -556,7 +653,7 @@ async function startClaudeTurn(input, temporaryFiles) {
   const args = buildClaudeArgs({
     prompt,
     sessionId: threadId,
-    model: config.claudeModel,
+    model: claudeModel,
     permissionMode: config.claudePermissionMode,
     autoApprove,
     additionalDirectories,
@@ -738,7 +835,7 @@ function formatDuration(minutes) {
 }
 
 function formatApprovalMode() {
-  if (!IS_CODEX) {
+  if (!isCodex()) {
     return autoApprove
       ? "⚠️ Claude Code: bypassPermissions включён до перезапуска. Все действия выполняются без проверки разрешений."
       : `Claude Code: режим ${config.claudePermissionMode}. Для headless CLI отдельные запросы разрешений в Telegram недоступны.`;
@@ -923,7 +1020,7 @@ async function handleApprovalCallback(callback) {
       });
       if (switched.changed) {
         await sendMessage(
-          `Активная папка: ${switched.project.name}\n${switched.project.path}\nСоздан новый контекст ${PROVIDER_TITLE}.`,
+          `Активная папка: ${switched.project.name}\n${switched.project.path}\nСоздан новый контекст ${providerTitle()}.`,
         );
       }
     } catch (error) {
@@ -933,6 +1030,67 @@ async function handleApprovalCallback(callback) {
         show_alert: true,
       });
       await sendMessage(`Ошибка смены папки: ${error.message}`);
+    }
+    return;
+  }
+  const engineMatch = /^engine:(codex|claude)$/.exec(callback.data ?? "");
+  if (engineMatch) {
+    try {
+      const switched = await switchProvider(engineMatch[1]);
+      if (!switched) {
+        await telegram("answerCallbackQuery", {
+          callback_query_id: callback.id,
+          text: "Сначала завершите или отмените текущую задачу",
+          show_alert: true,
+        });
+        return;
+      }
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: switched.changed ? "Движок переключён" : "Этот движок уже активен",
+      });
+      await telegram("editMessageReplyMarkup", {
+        chat_id: callback.message.chat.id,
+        message_id: callback.message.message_id,
+        reply_markup: { inline_keyboard: [] },
+      });
+      if (switched.changed) {
+        await sendMessage(`Активный движок: ${providerTitle()}\nПроект: ${activeProject().name}`);
+      }
+    } catch (error) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Не удалось переключить движок",
+        show_alert: true,
+      });
+      await sendMessage(`Ошибка переключения движка: ${error.message}`);
+    }
+    return;
+  }
+  const modelMatch = /^model:(sonnet|opus|haiku)$/.exec(callback.data ?? "");
+  if (modelMatch) {
+    try {
+      const switched = switchModel(modelMatch[1]);
+      await saveState();
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: switched.changed ? "Модель изменена" : "Эта модель уже выбрана",
+      });
+      await telegram("editMessageReplyMarkup", {
+        chat_id: callback.message.chat.id,
+        message_id: callback.message.message_id,
+        reply_markup: { inline_keyboard: [] },
+      });
+      if (switched.changed) {
+        await sendMessage(`Модель Claude Code: ${CLAUDE_MODEL_LABELS[claudeModel]}`);
+      }
+    } catch (error) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Не удалось сменить модель",
+        show_alert: true,
+      });
+      await sendMessage(`Ошибка смены модели: ${error.message}`);
     }
     return;
   }
@@ -956,7 +1114,7 @@ async function handleApprovalCallback(callback) {
         message_id: callback.message.message_id,
         reply_markup: { inline_keyboard: [] },
       });
-      await sendMessage(`Создана новая задача ${PROVIDER_TITLE} в текущем проекте.`);
+      await sendMessage(`Создана новая задача ${providerTitle()} в текущем проекте.`);
     } catch (error) {
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
@@ -1038,20 +1196,24 @@ async function handleTelegramMessage(message) {
 
   if (text === "/start" || text === "/help") {
     await sendMessage(
-      `Бот подключён к локальному ${PROVIDER_TITLE}. Отправьте текст, изображение или голосовое сообщение.\n\n` +
-        "/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/status — статус и текущая задача\n/limits — остаток лимитов\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
+      `Бот подключён к Claude Code и Codex. Текущий движок: ${providerTitle()}. Отправьте текст, изображение или голосовое сообщение.\n\n` +
+        "/engine — переключить Claude Code/Codex\n/model — сменить модель Claude Code\n/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/status — статус и текущая задача\n/limits — остаток лимитов\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
       { reply_markup: BOT_MENU },
     );
+  } else if (text === "/engine") {
+    await sendEnginePicker();
+  } else if (text === "/model") {
+    await sendModelPicker();
   } else if (text === "/projects" || text === "/folders" || text === "/folder") {
     await sendProjectPicker();
   } else if (text === "/new") {
     if (activeTurnId) return sendMessage("Сначала завершите или отмените текущую задачу.");
     await createThread();
-    await sendMessage(`Создан новый контекст ${PROVIDER_TITLE}.`);
+    await sendMessage(`Создан новый контекст ${providerTitle()}.`);
   } else if (text === "/status") {
     await sendStatus();
   } else if (text === "/limits") {
-    if (!IS_CODEX) {
+    if (!isCodex()) {
       await sendMessage("Claude Code CLI не предоставляет API для просмотра лимитов аккаунта. Расход текущей задачи показывается после её завершения.");
       return;
     }
@@ -1083,7 +1245,7 @@ async function handleTelegramMessage(message) {
     await sendLongMessage(latestDiff || "В последней задаче изменений файлов нет.");
   } else if (text === "/cancel") {
     if (!activeTurnId) return sendMessage("Активной задачи нет.");
-    if (IS_CODEX) await sendRpc("turn/interrupt", { threadId, turnId: activeTurnId });
+    if (isCodex()) await sendRpc("turn/interrupt", { threadId, turnId: activeTurnId });
     else activeClaudeProcess?.kill();
     await sendMessage("Запрошена остановка задачи.");
   } else if (text.startsWith("/")) {
@@ -1149,9 +1311,10 @@ async function sendLongMessage(text) {
 }
 
 async function saveState() {
+  threadIdsByProvider[activeProvider] = threadId;
   await writeFile(
     STATE_FILE,
-    `${JSON.stringify({ chatId, activeProjectRoot, provider: PROVIDER, threadId, updateOffset }, null, 2)}\n`,
+    `${JSON.stringify({ chatId, activeProjectRoot, activeProvider, threadIds: threadIdsByProvider, claudeModel, updateOffset }, null, 2)}\n`,
     "utf8",
   );
 }
@@ -1188,5 +1351,5 @@ if (chatId) {
     console.error("Cannot update Telegram keyboard:", error.message);
   });
 }
-console.log(`Telegram/${PROVIDER_TITLE} bridge ready for ${config.allowedUserIds.size} user(s); project: ${activeProjectRoot}`);
+console.log(`Telegram/${providerTitle()} bridge ready for ${config.allowedUserIds.size} user(s); project: ${activeProjectRoot}`);
 await pollTelegram();
