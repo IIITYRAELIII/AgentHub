@@ -3,6 +3,8 @@ import { spawnSync } from "node:child_process";
 import { loadConfig } from "./config.mjs";
 
 let failed = false;
+let provider = "codex";
+let claudeExecutable = "claude";
 
 function check(label, ok, detail = "") {
   console.log(`${ok ? "OK" : "ERROR"}  ${label}${detail ? `: ${detail}` : ""}`);
@@ -11,7 +13,10 @@ function check(label, ok, detail = "") {
 
 try {
   const config = await loadConfig();
+  provider = config.provider;
+  claudeExecutable = config.claudeExecutable;
   check("configuration", true, config.configPath);
+  check("AI provider", true, provider);
   for (const project of config.projects) {
     await access(project.path).then(
       () => check(`project ${project.name}`, true, project.path),
@@ -31,15 +36,21 @@ try {
 }
 
 function runCommand(command, args) {
-  if (process.platform === "win32" && command === "codex") {
-    return spawnSync("cmd.exe", ["/c", "codex", ...args], { encoding: "utf8", windowsHide: true });
+  if (process.platform === "win32" && (
+    command === "codex" || command === "claude" || /\.(cmd|bat)$/i.test(command)
+  )) {
+    return spawnSync("cmd.exe", ["/d", "/s", "/c", command, ...args], { encoding: "utf8", windowsHide: true });
   }
   return spawnSync(command, args, { encoding: "utf8", windowsHide: true });
 }
 
+const providerCommand = provider === "claude"
+  ? ["Claude Code CLI", claudeExecutable, ["--version"]]
+  : ["Codex CLI", "codex", ["--version"]];
+
 for (const [name, command, args] of [
   ["Node.js", process.execPath, ["--version"]],
-  ["Codex CLI", "codex", ["--version"]],
+  providerCommand,
 ]) {
   const result = runCommand(command, args);
   check(name, result.status === 0, (result.stdout || result.stderr || result.error?.message || "").trim());

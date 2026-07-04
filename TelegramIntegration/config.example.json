@@ -3,6 +3,10 @@
   "allowedUserIds": [123456789],
   "allowedChatIds": [123456789],
   "privateChatsOnly": true,
+  "provider": "codex",
+  "claudeExecutable": "claude",
+  "claudeModel": "sonnet",
+  "claudePermissionMode": "acceptEdits",
   "projectRoot": "C:\\Projects\\MyProject",
   "projects": [
     {

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { CLAUDE_PERMISSION_MODES } from "./claude.mjs";
 
 export const INTEGRATION_ROOT = path.resolve(import.meta.dirname);
 
@@ -82,12 +83,26 @@ export async function loadConfig() {
     ? null
     : requireIntegerArray(raw.allowedChatIds, "allowedChatIds");
   const dataDir = resolveFromIntegration(raw.dataDir ?? "data");
+  const provider = String(process.env.AI_PROVIDER ?? raw.provider ?? "codex").trim().toLowerCase();
+  if (provider !== "codex" && provider !== "claude") {
+    throw new Error('provider must be either "codex" or "claude"');
+  }
+  const claudePermissionMode = String(raw.claudePermissionMode ?? "acceptEdits").trim();
+  if (!CLAUDE_PERMISSION_MODES.has(claudePermissionMode)) {
+    throw new Error(
+      `claudePermissionMode must be one of: ${[...CLAUDE_PERMISSION_MODES].join(", ")}`,
+    );
+  }
 
   return {
     configPath,
     token,
     projectRoot,
     projects,
+    provider,
+    claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
+    claudeModel: String(process.env.CLAUDE_MODEL ?? raw.claudeModel ?? "").trim(),
+    claudePermissionMode,
     allowedUserIds,
     allowedChatIds,
     privateChatsOnly: raw.privateChatsOnly !== false,

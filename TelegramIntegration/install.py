@@ -24,10 +24,11 @@ def install_voice() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Configure the Telegram/Codex bridge")
+    parser = argparse.ArgumentParser(description="Configure the Telegram AI coding bridge")
     parser.add_argument("--token-file", type=Path)
     parser.add_argument("--user-id", type=int)
     parser.add_argument("--project-root", type=Path, default=ROOT.parent.parent)
+    parser.add_argument("--provider", choices=("codex", "claude"), default="codex")
     parser.add_argument("--with-voice", action="store_true", help="enable voice messages")
     parser.add_argument("--install-voice", action="store_true", help="create venv and install Whisper")
     args = parser.parse_args()
@@ -39,6 +40,8 @@ def main() -> int:
         "allowedUserIds": [user_id],
         "allowedChatIds": [user_id],
         "privateChatsOnly": True,
+        "provider": args.provider,
+        "claudePermissionMode": "acceptEdits",
         "projectRoot": str(args.project_root.resolve()),
         "voiceEnabled": args.with_voice or args.install_voice,
         "whisperModel": "small",

@@ -1,11 +1,11 @@
-# Telegram/Codex bridge
+# Telegram AI coding bridge
 
-Однопользовательский Telegram-интерфейс к локальному Codex App Server. Каждый владелец запускает отдельный экземпляр со своим Telegram-ботом, Codex-аккаунтом и рабочей папкой.
+Однопользовательский Telegram-интерфейс к локальному Codex App Server или Claude Code CLI. Каждый владелец запускает отдельный экземпляр со своим Telegram-ботом, AI-аккаунтом и рабочей папкой.
 
 ## Требования
 
 - Node.js 20 или новее;
-- установленный и авторизованный Codex CLI;
+- установленный и авторизованный Codex CLI либо Claude Code CLI;
 - Python 3.10 или новее — только для голосовых сообщений.
 
 ## Установка
@@ -25,6 +25,23 @@ python install.py --install-voice
 ```
 
 Для ручной настройки скопируйте `config.example.json` в `config.json`. Путь к другому конфигу можно передать через `TELEGRAM_CODEX_CONFIG`, а токен — через `TELEGRAM_BOT_TOKEN`.
+
+### Claude Code (опционально)
+
+Codex остаётся провайдером по умолчанию. Чтобы использовать Claude Code, сначала установите и авторизуйте CLI, затем укажите:
+
+```json
+{
+  "provider": "claude",
+  "claudeExecutable": "claude",
+  "claudeModel": "sonnet",
+  "claudePermissionMode": "acceptEdits"
+}
+```
+
+Либо запустите установщик с `python install.py --provider claude`. Провайдер также переопределяется переменной `AI_PROVIDER`, путь к CLI — `CLAUDE_EXECUTABLE`, модель — `CLAUDE_MODEL`.
+
+Claude запускается в headless-режиме и сохраняет `session_id`; продолжение доступно через `/resume <ID>`. CLI не предоставляет машиночитаемый список сессий и API лимитов, поэтому `/tasks` показывает только текущую сессию, а `/limits` объясняет это ограничение. Режим `acceptEdits` разрешает правки в рабочей папке, но не произвольные команды. Telegram-кнопка автоподтверждения включает `bypassPermissions` только до перезапуска и должна использоваться лишь в доверенной рабочей папке.
 
 ### Несколько рабочих папок
 
@@ -47,6 +64,7 @@ python install.py --install-voice
 - Доступ проверяется одновременно по `allowedUserIds` и `allowedChatIds`.
 - По умолчанию принимаются сообщения только из приватных чатов.
 - Codex работает с `workspaceWrite`, без сетевого доступа для команд агента.
+- Claude Code использует собственную систему разрешений; рекомендуемый режим — `acceptEdits`.
 - Подтверждения команд и изменений файлов отправляются владельцу в Telegram.
 - Автоподтверждение выключено после каждого перезапуска.
 - Не публикуйте `config.json`, каталоги `data`, `.venv-telegram`, `.whisper-models` и логи.
@@ -57,6 +75,7 @@ python install.py --install-voice
 
 ```powershell
 npm run check
+npm test
 npm run doctor
 npm start
 ```
