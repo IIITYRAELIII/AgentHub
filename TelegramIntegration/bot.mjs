@@ -505,14 +505,21 @@ function resolveClaudeInvocation() {
   } else if (/\.exe$/i.test(requested)) {
     nativeCandidates.push(requested);
   }
-  const nativeExecutable = nativeCandidates.find((candidate) => candidate && existsSync(candidate));
-  if (nativeExecutable) return { command: nativeExecutable, prefixArgs: [] };
-
   const shimDirectory = /\.(cmd|bat)$/i.test(requested)
     ? path.dirname(path.resolve(requested))
     : path.join(process.env.APPDATA ?? "", "npm");
+  if (requested === "claude" || /\.(cmd|bat)$/i.test(requested)) {
+    nativeCandidates.push(
+      path.join(shimDirectory, "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe"),
+    );
+  }
+  const nativeExecutable = nativeCandidates.find((candidate) => candidate && existsSync(candidate));
+  if (nativeExecutable) return { command: nativeExecutable, prefixArgs: [] };
+
   const npmCli = path.join(shimDirectory, "node_modules", "@anthropic-ai", "claude-code", "cli.js");
   if (existsSync(npmCli)) return { command: process.execPath, prefixArgs: [npmCli] };
+  const npmCliWrapper = path.join(shimDirectory, "node_modules", "@anthropic-ai", "claude-code", "cli-wrapper.cjs");
+  if (existsSync(npmCliWrapper)) return { command: process.execPath, prefixArgs: [npmCliWrapper] };
   return { command: requested, prefixArgs: [] };
 }
 
@@ -1177,7 +1184,7 @@ try {
   console.error("Cannot register Telegram commands:", error.message);
 }
 if (chatId) {
-  await sendMessage("Клавиатура обновлена.", { reply_markup: BOT_MENU }).catch((error) => {
+  await sendMessage("Бот запущен.", { reply_markup: BOT_MENU }).catch((error) => {
     console.error("Cannot update Telegram keyboard:", error.message);
   });
 }
