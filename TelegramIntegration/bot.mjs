@@ -93,6 +93,7 @@ let approvalSequence = 1;
 let stopping = false;
 let autoApprove = false;
 let activeClaudeProcess = null;
+let typingInterval = null;
 const pendingRpc = new Map();
 const pendingApprovals = new Map();
 const threadTokenTotals = new Map();
@@ -224,7 +225,10 @@ function startCodexAppServer() {
     codex = null;
     codexLines = null;
     if (stopping) return;
-    if (wasActive) activeTurnId = null;
+    if (wasActive) {
+      activeTurnId = null;
+      stopTyping();
+    }
     if (chatId) {
       await sendMessage(
         `⚠️ Codex app-server остановлен (код ${code ?? "?"}).` +
@@ -585,6 +589,7 @@ async function startTurn(input, temporaryFiles = []) {
     if (!turnTokenUsage.has(activeTurnId)) {
       turnTokenUsage.set(activeTurnId, { usage: emptyTokenUsage(), reported: false });
     }
+    startTyping();
     await sendMessage("Задача принята.");
   } catch (error) {
     await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
@@ -668,6 +673,7 @@ async function startClaudeTurn(input, temporaryFiles) {
     windowsHide: true,
   });
   activeClaudeProcess = worker;
+  startTyping();
   let stdout = "";
   let stderr = "";
   let settled = false;
@@ -680,6 +686,7 @@ async function startClaudeTurn(input, temporaryFiles) {
     if (settled) return;
     settled = true;
     activeClaudeProcess = null;
+    stopTyping();
     const files = turnTemporaryFiles.get(turnId) ?? [];
     turnTemporaryFiles.delete(turnId);
     await Promise.all(files.map((file) => unlink(file).catch(() => {})));
@@ -735,6 +742,7 @@ async function handleCodexMessage(message) {
   } else if (method === "item/fileChange/requestApproval") {
     await requestApproval(id, "file", params, formatFileApproval(params));
   } else if (method === "turn/completed") {
+    stopTyping();
     const completedTurnId = params.turn?.id ?? activeTurnId;
     const tokenSummary = formatTurnTokenUsage(turnTokenUsage.get(completedTurnId));
     turnTokenUsage.delete(completedTurnId);
@@ -1308,6 +1316,19 @@ async function sendLongMessage(text) {
   for (let start = 0; start < value.length; start += TELEGRAM_LIMIT) {
     await sendMessage(value.slice(start, start + TELEGRAM_LIMIT));
   }
+}
+
+function startTyping() {
+  if (typingInterval || !chatId) return;
+  const tick = () => telegram("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
+  tick();
+  typingInterval = setInterval(tick, 4000);
+}
+
+function stopTyping() {
+  if (!typingInterval) return;
+  clearInterval(typingInterval);
+  typingInterval = null;
 }
 
 async function saveState() {
