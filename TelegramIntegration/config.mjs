@@ -53,6 +53,41 @@ function loadProjects(raw, defaultRoot) {
   return projects;
 }
 
+function loadCodexModels(raw) {
+  const defaultModels = [
+    { value: "gpt-5.5", label: "GPT-5.5" },
+    { value: "gpt-5.4", label: "GPT-5.4" },
+    { value: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
+    { value: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
+  ];
+  const source = raw.codexModels ?? defaultModels;
+  if (!Array.isArray(source) || source.length === 0) {
+    throw new Error("codexModels must be a non-empty array");
+  }
+
+  const models = source.map((model, index) => {
+    if (typeof model === "string") {
+      const value = model.trim();
+      if (!value) throw new Error(`codexModels[${index}] is empty`);
+      return { value, label: value };
+    }
+    if (!model || typeof model !== "object" || Array.isArray(model)) {
+      throw new Error(`codexModels[${index}] must be a string or object`);
+    }
+    const value = String(model.value ?? model.slug ?? "").trim();
+    if (!value) throw new Error(`codexModels[${index}].value is missing`);
+    const label = String(model.label ?? model.displayName ?? model.display_name ?? value).trim();
+    return { value, label: label || value };
+  });
+
+  for (let index = 0; index < models.length; index += 1) {
+    if (models.findIndex((model) => model.value === models[index].value) !== index) {
+      throw new Error(`codexModels contains duplicate value: ${models[index].value}`);
+    }
+  }
+  return models;
+}
+
 export async function loadConfig() {
   const configPath = path.resolve(
     process.env.TELEGRAM_CODEX_CONFIG ?? path.join(INTEGRATION_ROOT, "config.json"),
@@ -100,6 +135,8 @@ export async function loadConfig() {
     projectRoot,
     projects,
     provider,
+    codexModel: String(process.env.CODEX_MODEL ?? raw.codexModel ?? "").trim(),
+    codexModels: loadCodexModels(raw),
     claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
     claudeModel: String(process.env.CLAUDE_MODEL ?? raw.claudeModel ?? "").trim(),
     claudePermissionMode,

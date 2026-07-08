@@ -19,6 +19,15 @@ function providerTitle() {
 const CLAUDE_MODELS = ["sonnet", "opus", "haiku"];
 const CLAUDE_MODEL_LABELS = { sonnet: "Sonnet", opus: "Opus", haiku: "Haiku" };
 let claudeModel = CLAUDE_MODELS.includes(config.claudeModel) ? config.claudeModel : "sonnet";
+const CODEX_MODELS = config.codexModels;
+const CODEX_MODEL_VALUES = new Set(CODEX_MODELS.map((model) => model.value));
+function normalizeCodexModel(value) {
+  return CODEX_MODEL_VALUES.has(value) ? value : CODEX_MODELS[0].value;
+}
+function codexModelLabel(value) {
+  return CODEX_MODELS.find((model) => model.value === value)?.label ?? value;
+}
+let codexModel = normalizeCodexModel(config.codexModel);
 const PROJECTS = config.projects;
 const DEFAULT_PROJECT_ROOT = config.projectRoot;
 const STATE_FILE = config.stateFile;
@@ -186,6 +195,7 @@ try {
   }
   threadId = threadIdsByProvider[activeProvider] ?? null;
   if (CLAUDE_MODELS.includes(saved.claudeModel)) claudeModel = saved.claudeModel;
+  if (typeof saved.codexModel === "string") codexModel = normalizeCodexModel(saved.codexModel);
   if (Number.isSafeInteger(saved.chatId)) chatId = saved.chatId;
   if (Number.isSafeInteger(saved.updateOffset) && saved.updateOffset >= 0) updateOffset = saved.updateOffset;
 } catch (error) {
@@ -429,7 +439,16 @@ async function sendEnginePicker() {
 
 async function sendModelPicker() {
   if (isCodex()) {
-    await sendMessage("Выбор модели в этом мосте доступен только для Claude Code. Переключитесь на него командой /engine.");
+    const keyboard = CODEX_MODELS.map((model) => [{
+      text: `${model.value === codexModel ? "? " : ""}${model.label}`,
+      callback_data: `codex-model:${model.value}`,
+    }]);
+    await sendMessage(
+      `Current Codex model: ${codexModelLabel(codexModel)}
+
+Choose model for next Codex turns:`,
+      { reply_markup: { inline_keyboard: keyboard } },
+    );
     return;
   }
   const keyboard = CLAUDE_MODELS.map((value) => [{
@@ -440,6 +459,13 @@ async function sendModelPicker() {
     `Текущая модель Claude Code: ${CLAUDE_MODEL_LABELS[claudeModel]}\n\nВыберите модель:`,
     { reply_markup: { inline_keyboard: keyboard } },
   );
+}
+
+function switchCodexModel(value) {
+  if (!CODEX_MODEL_VALUES.has(value)) throw new Error("unknown Codex model");
+  if (value === codexModel) return { changed: false };
+  codexModel = value;
+  return { changed: true };
 }
 
 function switchModel(value) {
@@ -577,6 +603,7 @@ async function startTurn(input, temporaryFiles = []) {
     const result = await sendRpc("turn/start", {
       threadId,
       input: items,
+      model: codexModel,
       approvalPolicy: "on-request",
       sandboxPolicy: {
         type: "workspaceWrite",
@@ -1075,6 +1102,33 @@ async function handleApprovalCallback(callback) {
     }
     return;
   }
+  const codexModelMatch = /^codex-model:(.+)$/.exec(callback.data ?? "");
+  if (codexModelMatch) {
+    try {
+      const switched = switchCodexModel(codexModelMatch[1]);
+      await saveState();
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: switched.changed ? "Codex model changed" : "This Codex model is already selected",
+      });
+      await telegram("editMessageReplyMarkup", {
+        chat_id: callback.message.chat.id,
+        message_id: callback.message.message_id,
+        reply_markup: { inline_keyboard: [] },
+      });
+      if (switched.changed) {
+        await sendMessage(`Codex model: ${codexModelLabel(codexModel)}`);
+      }
+    } catch (error) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Cannot change Codex model",
+        show_alert: true,
+      });
+      await sendMessage(`Codex model switch error: ${error.message}`);
+    }
+    return;
+  }
   const modelMatch = /^model:(sonnet|opus|haiku)$/.exec(callback.data ?? "");
   if (modelMatch) {
     try {
@@ -1335,7 +1389,7 @@ async function saveState() {
   threadIdsByProvider[activeProvider] = threadId;
   await writeFile(
     STATE_FILE,
-    `${JSON.stringify({ chatId, activeProjectRoot, activeProvider, threadIds: threadIdsByProvider, claudeModel, updateOffset }, null, 2)}\n`,
+    `${JSON.stringify({ chatId, activeProjectRoot, activeProvider, threadIds: threadIdsByProvider, claudeModel, codexModel, updateOffset }, null, 2)}\n`,
     "utf8",
   );
 }

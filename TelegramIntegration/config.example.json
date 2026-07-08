@@ -1,9 +1,32 @@
 {
   "telegramBotToken": "123456789:replace_with_your_bot_token",
-  "allowedUserIds": [123456789],
-  "allowedChatIds": [123456789],
+  "allowedUserIds": [
+    123456789
+  ],
+  "allowedChatIds": [
+    123456789
+  ],
   "privateChatsOnly": true,
   "provider": "codex",
+  "codexModel": "gpt-5.5",
+  "codexModels": [
+    {
+      "value": "gpt-5.5",
+      "label": "GPT-5.5"
+    },
+    {
+      "value": "gpt-5.4",
+      "label": "GPT-5.4"
+    },
+    {
+      "value": "gpt-5.4-mini",
+      "label": "GPT-5.4-Mini"
+    },
+    {
+      "value": "gpt-5.3-codex-spark",
+      "label": "GPT-5.3-Codex-Spark"
+    }
+  ],
   "claudeExecutable": "claude",
   "claudeModel": "sonnet",
   "claudePermissionMode": "acceptEdits",

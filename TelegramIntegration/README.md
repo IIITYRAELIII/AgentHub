@@ -26,6 +26,24 @@ python install.py --install-voice
 
 Для ручной настройки скопируйте `config.example.json` в `config.json`. Путь к другому конфигу можно передать через `TELEGRAM_CODEX_CONFIG`, а токен — через `TELEGRAM_BOT_TOKEN`.
 
+### Codex models
+
+`/model` switches the Codex model used for the next `turn/start` request. The selected value is saved in `data/state.json` and sent as the `model` field, so it remains sticky for later Codex turns in the same thread. Defaults are configured by `codexModel` and `codexModels` in `config.json`:
+
+```json
+{
+  "codexModel": "gpt-5.5",
+  "codexModels": [
+    { "value": "gpt-5.5", "label": "GPT-5.5" },
+    { "value": "gpt-5.4", "label": "GPT-5.4" },
+    { "value": "gpt-5.4-mini", "label": "GPT-5.4-Mini" },
+    { "value": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark" }
+  ]
+}
+```
+
+For Claude Code, `/model` still switches `sonnet`, `opus`, or `haiku`.
+
 ### Claude Code (опционально)
 
 Codex остаётся провайдером по умолчанию. Чтобы использовать Claude Code, сначала установите и авторизуйте CLI, затем укажите:
