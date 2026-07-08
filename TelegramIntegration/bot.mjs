@@ -115,6 +115,15 @@ function samePath(left, right) {
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
+function pathInsideOrSame(child, parent) {
+  const childPath = path.resolve(child);
+  const parentPath = path.resolve(parent);
+  const relative = path.relative(parentPath, childPath);
+  if (!relative) return true;
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  return true;
+}
+
 function findProject(projectRoot) {
   return PROJECTS.find((project) => samePath(project.path, projectRoot));
 }
@@ -377,7 +386,7 @@ async function listThreads() {
 
 function isWorkspaceThread(thread) {
   if (!thread.cwd) return false;
-  return samePath(thread.cwd, activeProjectRoot);
+  return pathInsideOrSame(thread.cwd, activeProjectRoot);
 }
 
 function threadTitle(thread) {
