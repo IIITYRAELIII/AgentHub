@@ -823,16 +823,42 @@ function formatFileApproval(params) {
   return `Codex запрашивает изменение файлов.${reason}\n\nИспользуйте /diff после выполнения для просмотра общего diff.`;
 }
 
+function isHiddenRateLimitBucket(bucket) {
+  const text = [bucket.limitName, bucket.limitId, bucket.model]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return text.includes("gpt-5.3-codex-spark") || text.includes("codex-spark");
+}
+
+function formatResetRemaining(resetsAtSeconds) {
+  const resetsAtMs = Number(resetsAtSeconds) * 1000;
+  if (!Number.isFinite(resetsAtMs)) return "";
+  const diffMs = resetsAtMs - Date.now();
+  if (diffMs <= 0) return "сейчас";
+
+  const totalMinutes = Math.ceil(diffMs / 60000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [];
+  if (days) parts.push(`${days} дн.`);
+  if (hours) parts.push(`${hours} ч.`);
+  if (!days && minutes) parts.push(`${minutes} мин.`);
+  return parts.join(" ") || "меньше минуты";
+}
+
 function formatRateLimits(result) {
   const buckets = result.rateLimitsByLimitId
     ? Object.values(result.rateLimitsByLimitId)
     : result.rateLimits
       ? [result.rateLimits]
       : [];
-  if (!buckets.length) return "Codex не вернул сведения о лимитах.";
+  const visibleBuckets = buckets.filter((bucket) => !isHiddenRateLimitBucket(bucket));
+  if (!visibleBuckets.length) return "Codex не вернул сведения о лимитах.";
 
   const lines = ["Лимиты Codex:"];
-  for (const bucket of buckets) {
+  for (const bucket of visibleBuckets) {
     const name = bucket.limitName || bucket.limitId || "Основной лимит";
     lines.push(`\n${name}`);
     for (const [label, window] of [["Основной", bucket.primary], ["Дополнительный", bucket.secondary]]) {
@@ -841,7 +867,7 @@ function formatRateLimits(result) {
       const remaining = Math.max(0, 100 - used);
       const duration = window.windowDurationMins ? `, окно ${formatDuration(window.windowDurationMins)}` : "";
       const reset = window.resetsAt
-        ? `\nСброс: ${new Date(window.resetsAt * 1000).toLocaleString("ru-RU")}`
+        ? `\nСброс: ${new Date(window.resetsAt * 1000).toLocaleString("ru-RU")} (через ${formatResetRemaining(window.resetsAt)})`
         : "";
       lines.push(`${label}: осталось ${remaining.toFixed(1)}% (использовано ${used.toFixed(1)}%${duration})${reset}`);
     }
