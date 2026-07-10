@@ -8,6 +8,7 @@
   ],
   "privateChatsOnly": true,
   "provider": "codex",
+  "showProjectButton": true,
   "codexExecutable": "",
   "codexModel": "gpt-5.5",
   "codexModels": [

@@ -148,6 +148,7 @@ export async function loadConfig() {
     token,
     projectRoot,
     projects,
+    showProjectButton: raw.showProjectButton !== false,
     provider,
     codexExecutable: String(process.env.CODEX_EXECUTABLE ?? raw.codexExecutable ?? "").trim(),
     codexModel: String(process.env.CODEX_MODEL ?? raw.codexModel ?? "").trim(),

@@ -6,7 +6,8 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { INTEGRATION_ROOT, loadConfig } from "./config.mjs";
-import { buildClaudeArgs, buildClaudePrompt, formatClaudeUsage, parseClaudeLimits, parseClaudeResult } from "./claude.mjs";
+import { buildClaudeArgs, buildClaudePrompt, formatClaudeUsage, parseClaudeResult } from "./claude.mjs";
+import { formatClaudeRateLimits, formatCodexRateLimits, formatStatusMessage } from "./status.mjs";
 import { formatTaskTokenUsage } from "./token-usage.mjs";
 
 const config = await loadConfig();
@@ -50,7 +51,6 @@ const BOT_COMMANDS = [
   { command: "tasks", description: "Список задач" },
   { command: "resume", description: "Выбрать существующую задачу" },
   { command: "status", description: "Статус и текущая задача" },
-  { command: "limits", description: "Лимиты AI-провайдера" },
   { command: "approvals", description: "Режим подтверждений" },
   { command: "restart", description: "Перезапустить бота" },
   { command: "diff", description: "Последние изменения" },
@@ -60,8 +60,8 @@ const BOT_COMMANDS = [
 const BOT_MENU = {
   keyboard: [
     [{ text: "🤖 Движок" }, { text: "🎛 Модель" }],
-    [{ text: "📁 Проект" }, { text: "📋 Задачи" }],
-    [{ text: "📊 Лимиты" }, { text: "ℹ️ Статус" }],
+    [...(config.showProjectButton ? [{ text: "📁 Проект" }] : []), { text: "📋 Задачи" }],
+    [{ text: "ℹ️ Статус" }],
     [{ text: "⛔ Стоп" }, { text: "🔐 Доступ" }],
     [{ text: "❓ Помощь" }, { text: "🔄 Рестарт" }],
   ],
@@ -77,7 +77,6 @@ const MENU_COMMANDS = new Map([
   ["🆕 Новая задача", "/new"],
   ["📋 Задачи", "/tasks"],
   ["🎯 Текущая", "/current"],
-  ["📊 Лимиты", "/limits"],
   ["🧵 Поток", "/thread"],
   ["🧵 Поток Codex", "/thread"],
   ["ℹ️ Статус", "/status"],
@@ -614,23 +613,35 @@ async function resumeThread(selectedThreadId) {
 
 async function sendStatus() {
   const project = activeProject();
-  if (!threadId) {
-    return sendMessage(
-      `${providerTitle()} ${activeTurnId ? "выполняет задачу" : "готов"}.\n` +
-      `Активная папка: ${project.name}\n${activeProjectRoot}\nНовая сессия будет создана при следующем запросе.`,
-    );
+  let task = "Не выбрана";
+  if (threadId) {
+    try {
+      const threads = await listThreads();
+      const current = threads.find((thread) => thread.id === threadId);
+      task = current ? threadTitle(current) : "Telegram";
+    } catch (error) {
+      console.error("Cannot read current task for status:", error.message);
+      task = "Telegram";
+    }
   }
-  const threads = await listThreads();
-  const current = threads.find((thread) => thread.id === threadId);
-  const name = current ? threadTitle(current) : "Telegram";
-  const openHint = isCodex()
-    ? `VS Code и Codex App: откройте этот проект и выберите поток в истории.\nCLI: codex resume ${threadId}`
-    : `CLI: claude --resume ${threadId}`;
-  await sendMessage(
-    `${providerTitle()}: ${activeTurnId ? `выполняет задачу ${activeTurnId}` : "готов"}\n\n` +
-      `Текущая задача\n${name}\nID: ${threadId}\nПапка: ${project.name}\n${activeProjectRoot}\n\n` +
-      openHint,
-  );
+
+  let limits;
+  try {
+    limits = isCodex()
+      ? formatCodexRateLimits(await sendRpc("account/rateLimits/read"))
+      : formatClaudeRateLimits(await readClaudeRateLimits());
+  } catch (error) {
+    console.error(`Cannot read ${providerTitle()} limits for status:`, error.message);
+    limits = `Не удалось получить: ${error.message}`;
+  }
+
+  await sendMessage(formatStatusMessage({
+    provider: isCodex() ? "CODEX" : "CLAUDE",
+    busy: Boolean(activeTurnId),
+    task,
+    project: project.name,
+    limits,
+  }));
 }
 
 async function startTurn(input, temporaryFiles = []) {
@@ -858,82 +869,6 @@ function formatCommandApproval(params) {
 function formatFileApproval(params) {
   const reason = params.reason ? `\nПричина: ${params.reason}` : "";
   return `Codex запрашивает изменение файлов.${reason}\n\nИспользуйте /diff после выполнения для просмотра общего diff.`;
-}
-
-function formatResetRemaining(resetsAtSeconds) {
-  const resetsAtMs = Number(resetsAtSeconds) * 1000;
-  if (!Number.isFinite(resetsAtMs)) return "";
-  const diffMs = resetsAtMs - Date.now();
-  if (diffMs <= 0) return "сейчас";
-
-  const totalMinutes = Math.ceil(diffMs / 60000);
-  const days = Math.floor(totalMinutes / 1440);
-  const hours = Math.floor((totalMinutes % 1440) / 60);
-  const minutes = totalMinutes % 60;
-  const parts = [];
-  if (days) parts.push(`${days} дн.`);
-  if (hours) parts.push(`${hours} ч.`);
-  if (!days && minutes) parts.push(`${minutes} мин.`);
-  return parts.join(" ") || "меньше минуты";
-}
-
-function formatRateLimits(result) {
-  const buckets = result.rateLimitsByLimitId
-    ? Object.values(result.rateLimitsByLimitId)
-    : result.rateLimits
-      ? [result.rateLimits]
-      : [];
-  if (!buckets.length) return "Codex не вернул сведения о лимитах.";
-
-  buckets.sort((left, right) => (left.limitId === "codex" ? -1 : right.limitId === "codex" ? 1 : 0));
-  const lines = [];
-  for (const bucket of buckets) {
-    if (lines.length) lines.push("");
-    lines.push(bucket.limitName || bucket.limitId || "codex");
-    for (const window of [bucket.primary, bucket.secondary]) {
-      if (!window) continue;
-      const used = Number(window.usedPercent ?? 0);
-      const remaining = Math.max(0, 100 - used);
-      const reset = window.resetsAt ? formatResetRemaining(window.resetsAt) : "неизвестно";
-      lines.push(`${remaining.toFixed(1)}% - ${reset}`);
-    }
-    if (bucket.rateLimitReachedType) lines.push(`Ограничение достигнуто: ${bucket.rateLimitReachedType}`);
-  }
-  const resetCredits = result.rateLimitResetCredits?.availableCount;
-  if (resetCredits != null) lines.push(`\nДоступно сбросов: ${resetCredits}`);
-  return lines.join("\n");
-}
-
-function parseClaudeResetTime(value) {
-  const match = String(value ?? "").match(/^([A-Z][a-z]{2}) (\d{1,2}), (\d{1,2}):(\d{2})(am|pm)/);
-  if (!match) return null;
-  const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(match[1]);
-  if (month < 0) return null;
-  let hour = Number(match[3]) % 12;
-  if (match[5] === "pm") hour += 12;
-  const now = new Date();
-  let reset = new Date(now.getFullYear(), month, Number(match[2]), hour, Number(match[4]));
-  if (reset.getTime() < now.getTime() - 86400000) {
-    reset = new Date(now.getFullYear() + 1, month, Number(match[2]), hour, Number(match[4]));
-  }
-  return Math.floor(reset.getTime() / 1000);
-}
-
-function formatClaudeRateLimits(text) {
-  const limits = parseClaudeLimits(text);
-  if (!limits.length) return "claude\nНе удалось распознать данные о лимитах.";
-  const lines = ["claude"];
-  for (const limit of limits.filter((item) => !item.model)) {
-    const remaining = Math.max(0, 100 - limit.usedPercent);
-    const resetAt = parseClaudeResetTime(limit.resetsText);
-    lines.push(`${remaining.toFixed(1)}% - ${resetAt ? formatResetRemaining(resetAt) : "неизвестно"}`);
-  }
-  for (const limit of limits.filter((item) => item.model)) {
-    const remaining = Math.max(0, 100 - limit.usedPercent);
-    const resetAt = parseClaudeResetTime(limit.resetsText);
-    lines.push("", `Claude ${limit.model}`, `${remaining.toFixed(1)}% - ${resetAt ? formatResetRemaining(resetAt) : "неизвестно"}`);
-  }
-  return lines.join("\n");
 }
 
 async function readClaudeRateLimits() {
@@ -1463,7 +1398,7 @@ async function handleTelegramMessage(message) {
   if (text === "/start" || text === "/help") {
     await sendMessage(
       `Бот подключён к Claude Code и Codex. Текущий движок: ${providerTitle()}. Отправьте текст, изображение или голосовое сообщение.\n\n` +
-        "/engine — переключить Claude Code/Codex\n/model — сменить модель Claude Code\n/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/status — статус и текущая задача\n/limits — остаток лимитов\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
+        "/engine — переключить Claude Code/Codex\n/model — сменить модель Claude Code\n/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/status — статус, текущая задача и лимиты\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
       { reply_markup: BOT_MENU },
     );
   } else if (text === "/engine") {
@@ -1478,20 +1413,6 @@ async function handleTelegramMessage(message) {
     await sendMessage(`Создан новый контекст ${providerTitle()}.`);
   } else if (text === "/status") {
     await sendStatus();
-  } else if (text === "/limits") {
-    if (!isCodex()) {
-      try {
-        await sendMessage(formatClaudeRateLimits(await readClaudeRateLimits()));
-      } catch (error) {
-        await sendMessage(`Не удалось получить лимиты Claude: ${error.message}`);
-      }
-      return;
-    }
-    try {
-      await sendMessage(formatRateLimits(await sendRpc("account/rateLimits/read")));
-    } catch (error) {
-      await sendMessage(`Не удалось получить лимиты Codex: ${error.message}`);
-    }
   } else if (text === "/approvals") {
     await sendMessage(formatApprovalMode(), { reply_markup: approvalModeKeyboard() });
   } else if (text === "/restart") {
