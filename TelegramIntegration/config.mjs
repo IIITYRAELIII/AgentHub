@@ -4,6 +4,7 @@ import process from "node:process";
 import { CLAUDE_PERMISSION_MODES } from "./claude.mjs";
 
 export const INTEGRATION_ROOT = path.resolve(import.meta.dirname);
+const CODEX_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
 
 function resolveFromIntegration(value) {
   return path.resolve(INTEGRATION_ROOT, value);
@@ -142,6 +143,14 @@ export async function loadConfig() {
       `claudePermissionMode must be one of: ${[...CLAUDE_PERMISSION_MODES].join(", ")}`,
     );
   }
+  const codexReasoningEffort = String(
+    process.env.CODEX_REASONING_EFFORT ?? raw.codexReasoningEffort ?? "high",
+  ).trim().toLowerCase();
+  if (!CODEX_REASONING_EFFORTS.has(codexReasoningEffort)) {
+    throw new Error(
+      `codexReasoningEffort must be one of: ${[...CODEX_REASONING_EFFORTS].join(", ")}`,
+    );
+  }
 
   return {
     configPath,
@@ -152,6 +161,7 @@ export async function loadConfig() {
     provider,
     codexExecutable: String(process.env.CODEX_EXECUTABLE ?? raw.codexExecutable ?? "").trim(),
     codexModel: String(process.env.CODEX_MODEL ?? raw.codexModel ?? "").trim(),
+    codexReasoningEffort,
     codexModels: loadCodexModels(raw),
     claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
     claudeModel: String(process.env.CLAUDE_MODEL ?? raw.claudeModel ?? "").trim(),

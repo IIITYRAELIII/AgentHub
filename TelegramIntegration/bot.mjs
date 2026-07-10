@@ -660,6 +660,7 @@ async function startTurn(input, temporaryFiles = [], { forceSpeechButton = false
       threadId,
       input: items,
       model: codexModel,
+      effort: config.codexReasoningEffort,
       approvalPolicy: "on-request",
       sandboxPolicy: {
         type: "workspaceWrite",

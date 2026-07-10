@@ -28,14 +28,15 @@ python install.py --install-voice
 
 ### Codex models
 
-`/model` switches the Codex model used for the next `turn/start` request. The selected value is saved in `data/state.json` and sent as the `model` field, so it remains sticky for later Codex turns in the same thread. Defaults are configured by `codexModel` and `codexModels` in `config.json`:
+`/model` switches the Codex model used for the next `turn/start` request. The selected value is saved in `data/state.json` and sent as the `model` field, so it remains sticky for later Codex turns in the same thread. `codexReasoningEffort` is sent explicitly with every Codex turn, including turns in resumed tasks. Defaults are configured in `config.json`:
 
 On Windows, the bot prefers the newest Codex binary bundled with the VS Code extension. Set `codexExecutable` or `CODEX_EXECUTABLE` only if you need to force a specific CLI path.
 
 ```json
 {
   "codexExecutable": "",
-  "codexModel": "gpt-5.5",
+  "codexModel": "gpt-5.6-sol",
+  "codexReasoningEffort": "high",
   "codexModels": [
     { "value": "gpt-5.5", "label": "GPT-5.5" },
     { "value": "gpt-5.6-sol", "label": "GPT-5.6-Sol" },

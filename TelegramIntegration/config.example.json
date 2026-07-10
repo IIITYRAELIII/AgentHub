@@ -10,7 +10,8 @@
   "provider": "codex",
   "showProjectButton": true,
   "codexExecutable": "",
-  "codexModel": "gpt-5.5",
+  "codexModel": "gpt-5.6-sol",
+  "codexReasoningEffort": "high",
   "codexModels": [
     {
       "value": "gpt-5.5",
