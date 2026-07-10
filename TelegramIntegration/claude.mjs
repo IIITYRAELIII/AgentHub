@@ -1,4 +1,5 @@
 import path from "node:path";
+import { formatTaskTokenUsage } from "./token-usage.mjs";
 
 export const CLAUDE_PERMISSION_MODES = new Set([
   "default",
@@ -45,6 +46,21 @@ export function buildClaudeArgs({
   return args;
 }
 
+export function parseClaudeLimits(text) {
+  const limits = [];
+  for (const line of String(text ?? "").split(/\r?\n/)) {
+    const match = line.match(/^Current (session|week \(all models\)|week \((.+)\)):\s+([\d.]+)% used(?:\s+·\s+resets (.+))?$/i);
+    if (!match) continue;
+    limits.push({
+      kind: match[1].toLowerCase(),
+      model: match[2] || null,
+      usedPercent: Number(match[3]),
+      resetsText: match[4] || null,
+    });
+  }
+  return limits;
+}
+
 export function parseClaudeResult(stdout) {
   const text = String(stdout ?? "").trim();
   if (!text) throw new Error("Claude Code returned an empty response");
@@ -78,15 +94,14 @@ export function formatClaudeUsage(result) {
   const cacheCreation = Number(usage.cache_creation_input_tokens ?? 0);
   const cached = Number(usage.cache_read_input_tokens ?? 0);
   const output = Number(usage.output_tokens ?? 0);
-  const input = uncachedInput + cacheCreation + cached;
-  const total = input + output;
-  const number = (value) => value.toLocaleString("ru-RU");
-  const lines = [`📊 Токены за задачу: ${number(total)}`, `Вход: ${number(input)}`];
-  if (cached) lines.push(`Из кэша: ${number(cached)}`);
-  if (cacheCreation) lines.push(`Записано в кэш: ${number(cacheCreation)}`);
-  lines.push(`Выход: ${number(output)}`);
-  if (Number.isFinite(Number(result?.total_cost_usd))) {
-    lines.push(`Стоимость API: $${Number(result.total_cost_usd).toFixed(4)}`);
-  }
-  return lines.join("\n");
+  const reasoning = Number(
+    usage.reasoning_output_tokens ?? usage.thinking_tokens ?? usage.reasoning_tokens ?? 0,
+  );
+  return formatTaskTokenUsage({
+    totalTokens: uncachedInput + cacheCreation + cached + output,
+    inputTokens: uncachedInput,
+    cachedInputTokens: cacheCreation + cached,
+    outputTokens: output,
+    reasoningOutputTokens: reasoning,
+  });
 }

@@ -8,6 +8,7 @@
   ],
   "privateChatsOnly": true,
   "provider": "codex",
+  "codexExecutable": "",
   "codexModel": "gpt-5.5",
   "codexModels": [
     {
@@ -55,5 +56,11 @@
   ],
   "voiceEnabled": true,
   "whisperModel": "small",
+  "ttsEnabled": true,
+  "ttsModel": "v5_5_ru",
+  "ttsSpeaker": "xenia",
+  "ttsIdleTimeoutSeconds": 900,
+  "ttsButtonMinChars": 600,
+  "ttsMaxChars": 20000,
   "dataDir": "data"
 }

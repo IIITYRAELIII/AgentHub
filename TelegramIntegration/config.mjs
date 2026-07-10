@@ -16,6 +16,14 @@ function requireIntegerArray(value, name) {
   return new Set(value);
 }
 
+function positiveInteger(value, fallback, name) {
+  const number = Number(value ?? fallback);
+  if (!Number.isSafeInteger(number) || number <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return number;
+}
+
 function samePath(left, right) {
   const a = path.resolve(left);
   const b = path.resolve(right);
@@ -121,6 +129,9 @@ export async function loadConfig() {
     ? null
     : requireIntegerArray(raw.allowedChatIds, "allowedChatIds");
   const dataDir = resolveFromIntegration(raw.dataDir ?? "data");
+  const defaultTtsVenv = process.platform === "win32"
+    ? path.join(process.env.LOCALAPPDATA ?? INTEGRATION_ROOT, "TelegramIntegration", "tts-venv")
+    : path.join(INTEGRATION_ROOT, ".venv-tts");
   const provider = String(process.env.AI_PROVIDER ?? raw.provider ?? "codex").trim().toLowerCase();
   if (provider !== "codex" && provider !== "claude") {
     throw new Error('provider must be either "codex" or "claude"');
@@ -138,6 +149,7 @@ export async function loadConfig() {
     projectRoot,
     projects,
     provider,
+    codexExecutable: String(process.env.CODEX_EXECUTABLE ?? raw.codexExecutable ?? "").trim(),
     codexModel: String(process.env.CODEX_MODEL ?? raw.codexModel ?? "").trim(),
     codexModels: loadCodexModels(raw),
     claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
@@ -148,6 +160,16 @@ export async function loadConfig() {
     privateChatsOnly: raw.privateChatsOnly !== false,
     voiceEnabled: raw.voiceEnabled !== false,
     whisperModel: String(raw.whisperModel ?? "small"),
+    ttsEnabled: raw.ttsEnabled !== false,
+    ttsModel: String(raw.ttsModel ?? "v5_5_ru").trim(),
+    ttsSpeaker: String(raw.ttsSpeaker ?? "xenia").trim(),
+    ttsIdleTimeoutSeconds: positiveInteger(
+      process.env.TTS_IDLE_TIMEOUT_SECONDS ?? raw.ttsIdleTimeoutSeconds,
+      900,
+      "ttsIdleTimeoutSeconds",
+    ),
+    ttsButtonMinChars: positiveInteger(raw.ttsButtonMinChars, 600, "ttsButtonMinChars"),
+    ttsMaxChars: positiveInteger(raw.ttsMaxChars, 20000, "ttsMaxChars"),
     pythonExe: path.resolve(
       process.env.WHISPER_PYTHON ?? raw.pythonExe ?? path.join(
         INTEGRATION_ROOT,
@@ -155,8 +177,15 @@ export async function loadConfig() {
         process.platform === "win32" ? path.join("Scripts", "python.exe") : path.join("bin", "python"),
       ),
     ),
+    ttsPythonExe: path.resolve(
+      process.env.TTS_PYTHON ?? raw.ttsPythonExe ?? path.join(
+        defaultTtsVenv,
+        process.platform === "win32" ? path.join("Scripts", "python.exe") : path.join("bin", "python"),
+      ),
+    ),
     dataDir,
     stateFile: path.join(dataDir, "state.json"),
     audioDir: path.join(dataDir, "audio"),
+    ttsDir: path.join(dataDir, "tts"),
   };
 }

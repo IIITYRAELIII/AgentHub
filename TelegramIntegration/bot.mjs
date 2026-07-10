@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { INTEGRATION_ROOT, loadConfig } from "./config.mjs";
-import { buildClaudeArgs, buildClaudePrompt, formatClaudeUsage, parseClaudeResult } from "./claude.mjs";
+import { buildClaudeArgs, buildClaudePrompt, formatClaudeUsage, parseClaudeLimits, parseClaudeResult } from "./claude.mjs";
+import { formatTaskTokenUsage } from "./token-usage.mjs";
 
 const config = await loadConfig();
 let activeProvider = config.provider === "codex" ? "codex" : "claude";
@@ -34,9 +35,13 @@ const STATE_FILE = config.stateFile;
 const TELEGRAM_LIMIT = 3900;
 const THREAD_LIST_LIMIT = 10;
 const PYTHON_EXE = config.pythonExe;
+const TTS_PYTHON_EXE = config.ttsPythonExe;
 const TRANSCRIBE_SCRIPT = path.join(import.meta.dirname, "transcribe.py");
+const TTS_WORKER_SCRIPT = path.join(import.meta.dirname, "tts_worker.py");
+const TTS_CACHE_DIR = path.join(INTEGRATION_ROOT, ".silero-models");
 const AUDIO_DIR = config.audioDir;
 const IMAGE_DIR = path.join(config.dataDir, "images");
+const TTS_DIR = config.ttsDir;
 const BOT_COMMANDS = [
   { command: "engine", description: "Переключить Claude Code/Codex" },
   { command: "model", description: "Сменить модель Claude Code" },
@@ -102,12 +107,17 @@ let approvalSequence = 1;
 let stopping = false;
 let autoApprove = false;
 let activeClaudeProcess = null;
+let ttsWorker = null;
+let ttsLines = null;
+let ttsSequence = 1;
 let typingInterval = null;
 const pendingRpc = new Map();
 const pendingApprovals = new Map();
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
 const turnTemporaryFiles = new Map();
+const pendingTts = new Map();
+const speechTexts = new Map();
 
 function samePath(left, right) {
   const a = path.resolve(left);
@@ -180,12 +190,13 @@ function formatTurnTokenUsage(tracker) {
   if (!tracker?.reported) return "📊 Токены за задачу: нет данных.";
   const { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, totalTokens } = tracker.usage;
   const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens);
-  const number = (value) => value.toLocaleString("ru-RU");
-  return `📊 Токены за задачу: ${number(totalTokens)}\n` +
-    `Вход: ${number(inputTokens)}\n` +
-    `Вход без кэша: ${number(uncachedInputTokens)}\n` +
-    `Из кэша: ${number(cachedInputTokens)}\n` +
-    `Выход: ${number(outputTokens)} (рассуждения: ${number(reasoningOutputTokens)}).`;
+  return formatTaskTokenUsage({
+    totalTokens,
+    inputTokens: uncachedInputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+  });
 }
 
 try {
@@ -211,15 +222,41 @@ try {
   if (error?.code !== "ENOENT") console.error("Cannot read state:", error.message);
 }
 
-function resolveCodexExecutable() {
+async function findVscodeCodexExecutable() {
+  if (process.platform !== "win32") return null;
+  const extensionsDir = path.join(process.env.USERPROFILE ?? "", ".vscode", "extensions");
+  let entries;
+  try {
+    entries = await readdir(extensionsDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("openai.chatgpt-")) continue;
+    const executable = path.join(extensionsDir, entry.name, "bin", "windows-x86_64", "codex.exe");
+    if (!existsSync(executable)) continue;
+    const info = await stat(executable);
+    candidates.push({ executable, mtimeMs: info.mtimeMs });
+  }
+  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  return candidates[0]?.executable ?? null;
+}
+
+async function resolveCodexExecutable() {
+  if (config.codexExecutable) return config.codexExecutable;
+  const vscodeExecutable = await findVscodeCodexExecutable();
+  if (vscodeExecutable) return vscodeExecutable;
   if (process.platform !== "win32") return "codex";
   const explicit = path.join(process.env.USERPROFILE ?? "", ".codex", ".sandbox-bin", "codex.exe");
   if (existsSync(explicit)) return explicit;
   return "codex";
 }
 
-function spawnCodex(args) {
-  const command = resolveCodexExecutable();
+async function spawnCodex(args) {
+  const command = await resolveCodexExecutable();
+  console.error(`Starting Codex: ${command}`);
   return spawn(command, args, {
     cwd: activeProjectRoot,
     stdio: ["pipe", "pipe", "pipe"],
@@ -230,8 +267,8 @@ function spawnCodex(args) {
 let codex = null;
 let codexLines = null;
 
-function startCodexAppServer() {
-  codex = spawnCodex(["app-server", "--stdio"]);
+async function startCodexAppServer() {
+  codex = await spawnCodex(["app-server", "--stdio"]);
   codex.stderr.setEncoding("utf8");
   codex.stderr.on("data", (data) => console.error(`[codex] ${data.trimEnd()}`));
   codex.on("error", (error) => console.error("Codex app-server failed to start:", error.message));
@@ -291,7 +328,7 @@ async function initializeProvider() {
     if (!threadId) await createThread();
     return;
   }
-  startCodexAppServer();
+  await startCodexAppServer();
   await initializeCodex();
 }
 
@@ -528,7 +565,7 @@ async function switchProvider(target) {
   try {
     if (isCodex()) {
       if (!codex) {
-        startCodexAppServer();
+        await startCodexAppServer();
         await initializeCodex();
       } else {
         await attachCodexThread();
@@ -739,7 +776,7 @@ async function startClaudeTurn(input, temporaryFiles) {
       latestDiff = await readGitDiff();
       const answer = String(result.result ?? "").trim()
         || (result.is_error ? "Claude Code завершил задачу с ошибкой." : "Задача завершена.");
-      await sendLongMessage(`${answer}\n\n${formatClaudeUsage(result)}`);
+      await sendLongMessage(`${answer}\n\n${formatClaudeUsage(result)}`, { speechText: answer });
       if (latestDiff) await sendMessage("Изменения доступны по команде /diff.");
     } catch (error) {
       await sendLongMessage(`Ошибка Claude Code: ${error.message}`);
@@ -790,7 +827,7 @@ async function handleCodexMessage(message) {
     const error = params.turn?.error?.message;
     const answer = responseText.trim() || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
     responseText = "";
-    await sendLongMessage(`${answer}\n\n${tokenSummary}`);
+    await sendLongMessage(`${answer}\n\n${tokenSummary}`, { speechText: answer });
     if (latestDiff) await sendMessage("Изменения доступны по команде /diff.");
   }
 }
@@ -823,14 +860,6 @@ function formatFileApproval(params) {
   return `Codex запрашивает изменение файлов.${reason}\n\nИспользуйте /diff после выполнения для просмотра общего diff.`;
 }
 
-function isHiddenRateLimitBucket(bucket) {
-  const text = [bucket.limitName, bucket.limitId, bucket.model]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return text.includes("gpt-5.3-codex-spark") || text.includes("codex-spark");
-}
-
 function formatResetRemaining(resetsAtSeconds) {
   const resetsAtMs = Number(resetsAtSeconds) * 1000;
   if (!Number.isFinite(resetsAtMs)) return "";
@@ -854,22 +883,19 @@ function formatRateLimits(result) {
     : result.rateLimits
       ? [result.rateLimits]
       : [];
-  const visibleBuckets = buckets.filter((bucket) => !isHiddenRateLimitBucket(bucket));
-  if (!visibleBuckets.length) return "Codex не вернул сведения о лимитах.";
+  if (!buckets.length) return "Codex не вернул сведения о лимитах.";
 
-  const lines = ["Лимиты Codex:"];
-  for (const bucket of visibleBuckets) {
-    const name = bucket.limitName || bucket.limitId || "Основной лимит";
-    lines.push(`\n${name}`);
-    for (const [label, window] of [["Основной", bucket.primary], ["Дополнительный", bucket.secondary]]) {
+  buckets.sort((left, right) => (left.limitId === "codex" ? -1 : right.limitId === "codex" ? 1 : 0));
+  const lines = [];
+  for (const bucket of buckets) {
+    if (lines.length) lines.push("");
+    lines.push(bucket.limitName || bucket.limitId || "codex");
+    for (const window of [bucket.primary, bucket.secondary]) {
       if (!window) continue;
       const used = Number(window.usedPercent ?? 0);
       const remaining = Math.max(0, 100 - used);
-      const duration = window.windowDurationMins ? `, окно ${formatDuration(window.windowDurationMins)}` : "";
-      const reset = window.resetsAt
-        ? `\nСброс: ${new Date(window.resetsAt * 1000).toLocaleString("ru-RU")} (через ${formatResetRemaining(window.resetsAt)})`
-        : "";
-      lines.push(`${label}: осталось ${remaining.toFixed(1)}% (использовано ${used.toFixed(1)}%${duration})${reset}`);
+      const reset = window.resetsAt ? formatResetRemaining(window.resetsAt) : "неизвестно";
+      lines.push(`${remaining.toFixed(1)}% - ${reset}`);
     }
     if (bucket.rateLimitReachedType) lines.push(`Ограничение достигнуто: ${bucket.rateLimitReachedType}`);
   }
@@ -878,24 +904,47 @@ function formatRateLimits(result) {
   return lines.join("\n");
 }
 
-function formatAccountTokenUsage(result) {
-  const number = (value) => Number(value ?? 0).toLocaleString("ru-RU");
-  const buckets = Array.isArray(result?.dailyUsageBuckets) ? result.dailyUsageBuckets : [];
-  const recent = [...buckets]
-    .sort((left, right) => String(right.startDate).localeCompare(String(left.startDate)))
-    .slice(0, 7);
-  const today = new Date().toISOString().slice(0, 10);
-  const todayTokens = buckets.find((bucket) => bucket.startDate === today)?.tokens ?? 0;
-  const lastSevenDays = recent.reduce((sum, bucket) => sum + Number(bucket.tokens ?? 0), 0);
-  const summary = result?.summary ?? {};
-  const lines = [
-    "Использование токенов:",
-    `Сегодня: ${number(todayTokens)}`,
-    `Последние 7 дней: ${number(lastSevenDays)}`,
-  ];
-  if (summary.lifetimeTokens != null) lines.push(`Всего: ${number(summary.lifetimeTokens)}`);
-  if (summary.peakDailyTokens != null) lines.push(`Максимум за день: ${number(summary.peakDailyTokens)}`);
+function parseClaudeResetTime(value) {
+  const match = String(value ?? "").match(/^([A-Z][a-z]{2}) (\d{1,2}), (\d{1,2}):(\d{2})(am|pm)/);
+  if (!match) return null;
+  const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(match[1]);
+  if (month < 0) return null;
+  let hour = Number(match[3]) % 12;
+  if (match[5] === "pm") hour += 12;
+  const now = new Date();
+  let reset = new Date(now.getFullYear(), month, Number(match[2]), hour, Number(match[4]));
+  if (reset.getTime() < now.getTime() - 86400000) {
+    reset = new Date(now.getFullYear() + 1, month, Number(match[2]), hour, Number(match[4]));
+  }
+  return Math.floor(reset.getTime() / 1000);
+}
+
+function formatClaudeRateLimits(text) {
+  const limits = parseClaudeLimits(text);
+  if (!limits.length) return "claude\nНе удалось распознать данные о лимитах.";
+  const lines = ["claude"];
+  for (const limit of limits.filter((item) => !item.model)) {
+    const remaining = Math.max(0, 100 - limit.usedPercent);
+    const resetAt = parseClaudeResetTime(limit.resetsText);
+    lines.push(`${remaining.toFixed(1)}% - ${resetAt ? formatResetRemaining(resetAt) : "неизвестно"}`);
+  }
+  for (const limit of limits.filter((item) => item.model)) {
+    const remaining = Math.max(0, 100 - limit.usedPercent);
+    const resetAt = parseClaudeResetTime(limit.resetsText);
+    lines.push("", `Claude ${limit.model}`, `${remaining.toFixed(1)}% - ${resetAt ? formatResetRemaining(resetAt) : "неизвестно"}`);
+  }
   return lines.join("\n");
+}
+
+async function readClaudeRateLimits() {
+  const invocation = resolveClaudeInvocation();
+  const result = await spawnCapture(invocation.command, [
+    ...invocation.prefixArgs,
+    "--print", "--output-format", "text", "--permission-mode", "dontAsk", "/usage",
+  ]);
+  if (result.error) throw result.error;
+  if (result.code !== 0) throw new Error(result.stderr.trim() || `Claude Code завершился с кодом ${result.code}`);
+  return result.stdout;
 }
 
 function formatDuration(minutes) {
@@ -1051,7 +1100,127 @@ function runTranscription(audioPath) {
   });
 }
 
+async function ensureTtsWorker() {
+  if (ttsWorker) return;
+  await mkdir(TTS_DIR, { recursive: true });
+  ttsWorker = spawn(TTS_PYTHON_EXE, [
+    TTS_WORKER_SCRIPT,
+    "--idle-timeout", String(config.ttsIdleTimeoutSeconds),
+    "--model", config.ttsModel,
+    "--speaker", config.ttsSpeaker,
+    "--cache-dir", TTS_CACHE_DIR,
+    "--max-chars", String(config.ttsMaxChars),
+  ], {
+    cwd: INTEGRATION_ROOT,
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, PYTHONUTF8: "1", TORCH_HOME: TTS_CACHE_DIR },
+  });
+  ttsWorker.stderr.setEncoding("utf8");
+  ttsWorker.stderr.on("data", (data) => console.error(`[tts] ${data.trimEnd()}`));
+  ttsWorker.on("error", (error) => console.error("TTS worker failed to start:", error.message));
+  ttsWorker.on("exit", (code, signal) => {
+    const error = new Error(`TTS worker stopped (code=${code}, signal=${signal})`);
+    for (const request of pendingTts.values()) {
+      clearTimeout(request.timer);
+      request.reject(error);
+    }
+    pendingTts.clear();
+    ttsLines?.close();
+    ttsLines = null;
+    ttsWorker = null;
+  });
+  ttsLines = createInterface({ input: ttsWorker.stdout });
+  ttsLines.on("line", (line) => {
+    try {
+      const message = JSON.parse(line);
+      const request = pendingTts.get(message.id);
+      if (!request) return;
+      pendingTts.delete(message.id);
+      clearTimeout(request.timer);
+      if (message.ok) request.resolve(message.outputPath);
+      else request.reject(new Error(message.error || "Неизвестная ошибка TTS"));
+    } catch (error) {
+      console.error("Invalid TTS worker message:", error.message);
+    }
+  });
+}
+
+async function synthesizeSpeech(text) {
+  await ensureTtsWorker();
+  const id = ttsSequence++;
+  const outputPath = path.join(TTS_DIR, `${randomUUID()}.ogg`);
+  const promise = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingTts.delete(id);
+      reject(new Error("превышено время озвучивания (10 минут)"));
+    }, 10 * 60 * 1000);
+    pendingTts.set(id, { resolve, reject, timer });
+  });
+  ttsWorker.stdin.write(`${JSON.stringify({ id, text, outputPath })}\n`);
+  return promise;
+}
+
+function rememberSpeechText(text) {
+  if (!config.ttsEnabled || String(text).trim().length < config.ttsButtonMinChars) return null;
+  while (speechTexts.size >= 20) speechTexts.delete(speechTexts.keys().next().value);
+  const id = randomUUID().replaceAll("-", "").slice(0, 16);
+  speechTexts.set(id, String(text).trim());
+  return id;
+}
+
+async function sendVoiceFile(targetChatId, voicePath) {
+  const form = new FormData();
+  form.append("chat_id", String(targetChatId));
+  form.append("voice", new Blob([await readFile(voicePath)], { type: "audio/ogg" }), path.basename(voicePath));
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendVoice`, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(5 * 60 * 1000),
+  });
+  const payload = await response.json();
+  if (!payload.ok) throw new Error(`Telegram sendVoice: ${payload.description ?? response.status}`);
+  return payload.result;
+}
+
+async function processSpeechRequest(callback, text) {
+  const targetChatId = callback.message.chat.id;
+  const tick = () => telegram("sendChatAction", { chat_id: targetChatId, action: "record_voice" }).catch(() => {});
+  const activity = setInterval(tick, 4000);
+  tick();
+  let voicePath;
+  try {
+    voicePath = await synthesizeSpeech(text);
+    await sendVoiceFile(targetChatId, voicePath);
+  } catch (error) {
+    await sendMessage(`Не удалось озвучить ответ: ${error.message}`);
+  } finally {
+    clearInterval(activity);
+    if (voicePath) await unlink(voicePath).catch(() => {});
+  }
+}
+
 async function handleApprovalCallback(callback) {
+  const speechMatch = /^speech:([0-9a-f]+)$/.exec(callback.data ?? "");
+  if (speechMatch) {
+    const text = speechTexts.get(speechMatch[1]);
+    if (!text) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Текст ответа уже недоступен",
+        show_alert: true,
+      });
+      return;
+    }
+    await telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: "Готовлю голосовое сообщение…",
+    });
+    void processSpeechRequest(callback, text).catch((error) => {
+      console.error("Speech request failed:", error.message);
+    });
+    return;
+  }
   const modeMatch = /^approval-mode:(manual|auto)$/.exec(callback.data ?? "");
   if (modeMatch) {
     autoApprove = modeMatch[1] === "auto";
@@ -1311,19 +1480,18 @@ async function handleTelegramMessage(message) {
     await sendStatus();
   } else if (text === "/limits") {
     if (!isCodex()) {
-      await sendMessage("Claude Code CLI не предоставляет API для просмотра лимитов аккаунта. Расход текущей задачи показывается после её завершения.");
+      try {
+        await sendMessage(formatClaudeRateLimits(await readClaudeRateLimits()));
+      } catch (error) {
+        await sendMessage(`Не удалось получить лимиты Claude: ${error.message}`);
+      }
       return;
     }
-    const [limits, usage] = await Promise.allSettled([
-      sendRpc("account/rateLimits/read"),
-      sendRpc("account/usage/read", null),
-    ]);
-    const sections = [];
-    if (limits.status === "fulfilled") sections.push(formatRateLimits(limits.value));
-    else sections.push(`Не удалось получить лимиты Codex: ${limits.reason.message}`);
-    if (usage.status === "fulfilled") sections.push(formatAccountTokenUsage(usage.value));
-    else sections.push(`Не удалось получить статистику токенов: ${usage.reason.message}`);
-    await sendLongMessage(sections.join("\n\n"));
+    try {
+      await sendMessage(formatRateLimits(await sendRpc("account/rateLimits/read")));
+    } catch (error) {
+      await sendMessage(`Не удалось получить лимиты Codex: ${error.message}`);
+    }
   } else if (text === "/approvals") {
     await sendMessage(formatApprovalMode(), { reply_markup: approvalModeKeyboard() });
   } else if (text === "/restart") {
@@ -1400,10 +1568,15 @@ async function sendMessage(text, extra = {}) {
   return telegram("sendMessage", { chat_id: chatId, text: String(text), ...extra });
 }
 
-async function sendLongMessage(text) {
+async function sendLongMessage(text, { speechText = null } = {}) {
   const value = String(text);
+  const speechId = rememberSpeechText(speechText);
   for (let start = 0; start < value.length; start += TELEGRAM_LIMIT) {
-    await sendMessage(value.slice(start, start + TELEGRAM_LIMIT));
+    const isLast = start + TELEGRAM_LIMIT >= value.length;
+    const extra = isLast && speechId
+      ? { reply_markup: { inline_keyboard: [[{ text: "🔊 Озвучить", callback_data: `speech:${speechId}` }]] } }
+      : {};
+    await sendMessage(value.slice(start, start + TELEGRAM_LIMIT), extra);
   }
 }
 
@@ -1439,6 +1612,7 @@ async function shutdown(signal) {
   console.log(`Stopping on ${signal}...`);
   codex?.kill();
   activeClaudeProcess?.kill();
+  ttsWorker?.kill();
 }
 
 process.on("unhandledRejection", (error) => {

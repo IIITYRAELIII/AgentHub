@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import venv
@@ -22,6 +23,24 @@ def install_voice() -> None:
     )
     subprocess.run([str(python), str(ROOT / "transcribe.py"), "--download"], check=True)
 
+    if sys.platform == "win32":
+        tts_venv_dir = Path(os.environ.get("LOCALAPPDATA", ROOT)) / "TelegramIntegration" / "tts-venv"
+    else:
+        tts_venv_dir = ROOT / ".venv-tts"
+    venv.EnvBuilder(with_pip=True).create(tts_venv_dir)
+    tts_python = tts_venv_dir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    subprocess.run(
+        [str(tts_python), "-m", "pip", "install", "-r", str(ROOT / "requirements-tts.txt")],
+        check=True,
+    )
+    subprocess.run([
+        str(tts_python), str(ROOT / "tts_worker.py"),
+        "--cache-dir", str(ROOT / ".silero-models"),
+        "--model", "v5_5_ru",
+        "--speaker", "xenia",
+        "--download",
+    ], check=True)
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Configure the Telegram AI coding bridge")
@@ -30,7 +49,7 @@ def main() -> int:
     parser.add_argument("--project-root", type=Path, default=ROOT.parent.parent)
     parser.add_argument("--provider", choices=("codex", "claude"), default="codex")
     parser.add_argument("--with-voice", action="store_true", help="enable voice messages")
-    parser.add_argument("--install-voice", action="store_true", help="create venv and install Whisper")
+    parser.add_argument("--install-voice", action="store_true", help="install Whisper and Silero TTS")
     args = parser.parse_args()
 
     token = args.token_file.read_text(encoding="utf-8").strip() if args.token_file else input("Telegram bot token: ").strip()
@@ -45,6 +64,10 @@ def main() -> int:
         "projectRoot": str(args.project_root.resolve()),
         "voiceEnabled": args.with_voice or args.install_voice,
         "whisperModel": "small",
+        "ttsEnabled": args.with_voice or args.install_voice,
+        "ttsModel": "v5_5_ru",
+        "ttsSpeaker": "xenia",
+        "ttsIdleTimeoutSeconds": 900,
         "dataDir": "data",
     }
     (ROOT / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

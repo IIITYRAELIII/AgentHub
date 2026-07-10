@@ -31,6 +31,12 @@ try {
       () => check("Whisper Python", false, `${config.pythonExe}; run python install.py --with-voice`),
     );
   }
+  if (config.ttsEnabled) {
+    await access(config.ttsPythonExe).then(
+      () => check("Silero TTS Python", true, config.ttsPythonExe),
+      () => check("Silero TTS Python", false, `${config.ttsPythonExe}; run python install.py --install-voice`),
+    );
+  }
 } catch (error) {
   check("configuration", false, error.message);
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildClaudeArgs, buildClaudePrompt, formatClaudeUsage, parseClaudeResult } from "./claude.mjs";
+import { buildClaudeArgs, buildClaudePrompt, formatClaudeUsage, parseClaudeLimits, parseClaudeResult } from "./claude.mjs";
 
 test("buildClaudeArgs creates a resumable safe invocation", () => {
   assert.deepEqual(buildClaudeArgs({
@@ -38,10 +38,33 @@ test("parseClaudeResult and formatClaudeUsage handle CLI JSON", () => {
     type: "result",
     result: "done",
     session_id: "session-1",
-    usage: { input_tokens: 10, cache_read_input_tokens: 4, output_tokens: 3 },
+    usage: {
+      input_tokens: 17678,
+      cache_creation_input_tokens: 100000,
+      cache_read_input_tokens: 622432,
+      output_tokens: 3059,
+      reasoning_output_tokens: 974,
+    },
     total_cost_usd: 0.01,
   }));
   assert.equal(result.result, "done");
-  assert.match(formatClaudeUsage(result), /17/);
-  assert.match(formatClaudeUsage(result), /\$0\.0100/);
+  const formatted = formatClaudeUsage(result);
+  assert.match(formatted, /743.169/);
+  assert.match(formatted, /Вход: 17.678/);
+  assert.match(formatted, /Кэш: 722.432/);
+  assert.match(formatted, /Выход: 2.085/);
+  assert.match(formatted, /Думы: 974/);
+});
+
+test("parseClaudeLimits reads session, weekly, and model limits", () => {
+  const limits = parseClaudeLimits([
+    "Current session: 2% used · resets Jul 10, 5:40pm (Asia/Yekaterinburg)",
+    "Current week (all models): 6% used · resets Jul 17, 1:59am (Asia/Yekaterinburg)",
+    "Current week (Fable): 0% used",
+  ].join("\n"));
+  assert.deepEqual(limits.map(({ model, usedPercent }) => ({ model, usedPercent })), [
+    { model: null, usedPercent: 2 },
+    { model: null, usedPercent: 6 },
+    { model: "Fable", usedPercent: 0 },
+  ]);
 });

@@ -6,7 +6,7 @@
 
 - Node.js 20 или новее;
 - установленный и авторизованный Codex CLI либо Claude Code CLI;
-- Python 3.10 или новее — только для голосовых сообщений.
+- Python 3.10 или новее — только для распознавания и синтеза голосовых сообщений.
 
 ## Установка
 
@@ -30,8 +30,11 @@ python install.py --install-voice
 
 `/model` switches the Codex model used for the next `turn/start` request. The selected value is saved in `data/state.json` and sent as the `model` field, so it remains sticky for later Codex turns in the same thread. Defaults are configured by `codexModel` and `codexModels` in `config.json`:
 
+On Windows, the bot prefers the newest Codex binary bundled with the VS Code extension. Set `codexExecutable` or `CODEX_EXECUTABLE` only if you need to force a specific CLI path.
+
 ```json
 {
+  "codexExecutable": "",
   "codexModel": "gpt-5.5",
   "codexModels": [
     { "value": "gpt-5.5", "label": "GPT-5.5" },
@@ -62,7 +65,7 @@ Codex остаётся провайдером по умолчанию. Чтоб�
 
 Либо запустите установщик с `python install.py --provider claude`. Провайдер также переопределяется переменной `AI_PROVIDER`, путь к CLI — `CLAUDE_EXECUTABLE`, модель — `CLAUDE_MODEL`.
 
-Claude запускается в headless-режиме и сохраняет `session_id`; продолжение доступно через `/resume <ID>`. CLI не предоставляет машиночитаемый список сессий и API лимитов, поэтому `/tasks` показывает только текущую сессию, а `/limits` объясняет это ограничение. Режим `acceptEdits` разрешает правки в рабочей папке, но не произвольные команды. Telegram-кнопка автоподтверждения включает `bypassPermissions` только до перезапуска и должна использоваться лишь в доверенной рабочей папке.
+Claude запускается в headless-режиме и сохраняет `session_id`; продолжение доступно через `/resume <ID>`. CLI не предоставляет машиночитаемый список сессий, поэтому `/tasks` показывает только текущую сессию. `/limits` получает актуальные лимиты через встроенную команду Claude Code `/usage`, не обращаясь к модели. Режим `acceptEdits` разрешает правки в рабочей папке, но не произвольные команды. Telegram-кнопка автоподтверждения включает `bypassPermissions` только до перезапуска и должна использоваться лишь в доверенной рабочей папке.
 
 ### Несколько рабочих папок
 
@@ -110,6 +113,8 @@ npm start
 ## Голосовые сообщения
 
 Голос распознаётся локально через `faster-whisper`. Модель выбирается параметром `whisperModel`; файлы модели и временные аудиофайлы не попадают в Git.
+
+Для длинных ответов бот показывает кнопку `🔊 Озвучить`. Синтез выполняется локально через Silero TTS, а результат отправляется как Telegram voice message в OGG Opus. Worker загружается при первом нажатии и остаётся в памяти в течение `ttsIdleTimeoutSeconds` (по умолчанию 900 секунд), после чего автоматически завершается. Модель, голос, минимальная длина ответа и максимальный объём озвучиваемого текста задаются параметрами `ttsModel`, `ttsSpeaker`, `ttsButtonMinChars` и `ttsMaxChars`. При первом озвучивании Silero скачивает модель в локальный кэш `.silero-models`.
 
 ## Изображения
 
