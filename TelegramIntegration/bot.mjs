@@ -59,11 +59,9 @@ const BOT_COMMANDS = [
 ];
 const BOT_MENU = {
   keyboard: [
-    [{ text: "🤖 Движок" }, { text: "🎛 Модель" }],
-    [...(config.showProjectButton ? [{ text: "📁 Проект" }] : []), { text: "📋 Задачи" }],
-    [{ text: "ℹ️ Статус" }],
-    [{ text: "⛔ Стоп" }, { text: "🔐 Доступ" }],
-    [{ text: "❓ Помощь" }, { text: "🔄 Рестарт" }],
+    [{ text: "🤖 Движок" }, { text: "🎛 Модель" }, ...(config.showProjectButton ? [{ text: "📁 Проект" }] : [])],
+    [{ text: "📋 Задачи" }, { text: "ℹ️ Статус" }, { text: "🔐 Доступ" }],
+    [{ text: "⛔ Стоп" }{ text: "❓ Помощь" }, { text: "🔄 Рестарт" }],
   ],
   resize_keyboard: true,
   is_persistent: true,
