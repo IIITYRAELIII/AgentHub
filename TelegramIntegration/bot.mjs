@@ -61,7 +61,7 @@ const BOT_MENU = {
   keyboard: [
     [{ text: "🤖 Движок" }, { text: "🎛 Модель" }, ...(config.showProjectButton ? [{ text: "📁 Проект" }] : [])],
     [{ text: "📋 Задачи" }, { text: "ℹ️ Статус" }, { text: "🔐 Доступ" }],
-    [{ text: "⛔ Стоп" }{ text: "❓ Помощь" }, { text: "🔄 Рестарт" }],
+    [{ text: "⛔ Стоп" }, { text: "❓ Помощь" }, { text: "🔄 Рестарт" }],
   ],
   resize_keyboard: true,
   is_persistent: true,
@@ -113,6 +113,7 @@ const pendingApprovals = new Map();
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
 const turnTemporaryFiles = new Map();
+const turnSpeechButtons = new Map();
 const pendingTts = new Map();
 const speechTexts = new Map();
 
@@ -642,7 +643,7 @@ async function sendStatus() {
   }));
 }
 
-async function startTurn(input, temporaryFiles = []) {
+async function startTurn(input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
   if (activeTurnId) {
     await sendMessage("Предыдущая задача ещё выполняется. Используйте /cancel или дождитесь завершения.");
     return;
@@ -650,7 +651,7 @@ async function startTurn(input, temporaryFiles = []) {
   responseText = "";
   latestDiff = "";
   if (!isCodex()) {
-    await startClaudeTurn(input, temporaryFiles);
+    await startClaudeTurn(input, temporaryFiles, { forceSpeechButton });
     return;
   }
   const items = typeof input === "string" ? [{ type: "text", text: input }] : input;
@@ -667,6 +668,7 @@ async function startTurn(input, temporaryFiles = []) {
       },
     });
     activeTurnId = result.turn.id;
+    turnSpeechButtons.set(activeTurnId, forceSpeechButton);
     if (temporaryFiles.length) turnTemporaryFiles.set(activeTurnId, temporaryFiles);
     if (!turnTokenUsage.has(activeTurnId)) {
       turnTokenUsage.set(activeTurnId, { usage: emptyTokenUsage(), reported: false });
@@ -730,7 +732,7 @@ async function readGitDiff() {
   return result.code === 0 ? result.stdout.trim() : "";
 }
 
-async function startClaudeTurn(input, temporaryFiles) {
+async function startClaudeTurn(input, temporaryFiles, { forceSpeechButton = false } = {}) {
   const turnId = randomUUID();
   const prompt = buildClaudePrompt(input);
   const contentItems = Array.isArray(input) ? input : [];
@@ -785,7 +787,7 @@ async function startClaudeTurn(input, temporaryFiles) {
       latestDiff = await readGitDiff();
       const answer = String(result.result ?? "").trim()
         || (result.is_error ? "Claude Code завершил задачу с ошибкой." : "Задача завершена.");
-      await sendLongMessage(`${answer}\n\n${formatClaudeUsage(result)}`, { speechText: answer });
+      await sendLongMessage(`${answer}\n\n${formatClaudeUsage(result)}`, { speechText: answer, forceSpeechButton });
       if (latestDiff) await sendMessage("Изменения доступны по команде /diff.");
     } catch (error) {
       await sendLongMessage(`Ошибка Claude Code: ${error.message}`);
@@ -830,13 +832,15 @@ async function handleCodexMessage(message) {
     turnTokenUsage.delete(completedTurnId);
     const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
     turnTemporaryFiles.delete(completedTurnId);
+    const forceSpeechButton = turnSpeechButtons.get(completedTurnId) ?? false;
+    turnSpeechButtons.delete(completedTurnId);
     await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
     activeTurnId = null;
     const status = params.turn?.status ?? "completed";
     const error = params.turn?.error?.message;
     const answer = responseText.trim() || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
     responseText = "";
-    await sendLongMessage(`${answer}\n\n${tokenSummary}`, { speechText: answer });
+    await sendLongMessage(`${answer}\n\n${tokenSummary}`, { speechText: answer, forceSpeechButton });
     if (latestDiff) await sendMessage("Изменения доступны по команде /diff.");
   }
 }
@@ -958,7 +962,7 @@ async function transcribeVoice(message) {
       return;
     }
     await sendMessage(`📝 Распознано:\n${transcript}`);
-    await startTurn(transcript);
+    await startTurn(transcript, [], { forceSpeechButton: true });
   } catch (error) {
     await sendMessage(`Ошибка распознавания: ${error.message}`);
   } finally {
@@ -1094,11 +1098,12 @@ async function synthesizeSpeech(text) {
   return promise;
 }
 
-function rememberSpeechText(text) {
-  if (!config.ttsEnabled || String(text).trim().length < config.ttsButtonMinChars) return null;
+function rememberSpeechText(text, force = false) {
+  const value = String(text ?? "").trim();
+  if (!config.ttsEnabled || !value || (!force && value.length < config.ttsButtonMinChars)) return null;
   while (speechTexts.size >= 20) speechTexts.delete(speechTexts.keys().next().value);
   const id = randomUUID().replaceAll("-", "").slice(0, 16);
-  speechTexts.set(id, String(text).trim());
+  speechTexts.set(id, value);
   return id;
 }
 
@@ -1487,9 +1492,9 @@ async function sendMessage(text, extra = {}) {
   return telegram("sendMessage", { chat_id: chatId, text: String(text), ...extra });
 }
 
-async function sendLongMessage(text, { speechText = null } = {}) {
+async function sendLongMessage(text, { speechText = null, forceSpeechButton = false } = {}) {
   const value = String(text);
-  const speechId = rememberSpeechText(speechText);
+  const speechId = rememberSpeechText(speechText, forceSpeechButton);
   for (let start = 0; start < value.length; start += TELEGRAM_LIMIT) {
     const isLast = start + TELEGRAM_LIMIT >= value.length;
     const extra = isLast && speechId
