@@ -9,6 +9,7 @@
   "privateChatsOnly": true,
   "provider": "codex",
   "showProjectButton": true,
+  "showTaskProject": true,
   "codexExecutable": "",
   "codexModel": "gpt-5.6-sol",
   "codexReasoningEffort": "high",
@@ -45,6 +46,7 @@
   "claudeExecutable": "claude",
   "claudeModel": "sonnet",
   "claudePermissionMode": "acceptEdits",
+  "autoApproveOnStart": false,
   "projectRoot": "C:\\Projects\\MyProject",
   "projects": [
     {

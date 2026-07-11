@@ -34,7 +34,12 @@ export function buildClaudeArgs({
     throw new Error(`Unsupported Claude permission mode: ${permissionMode}`);
   }
 
-  const args = ["--print", "--output-format", "json"];
+  const args = [
+    "--print",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+  ];
   if (autoApprove) args.push("--permission-mode", "bypassPermissions");
   else args.push("--permission-mode", permissionMode);
   if (model) args.push("--model", model);
@@ -44,6 +49,30 @@ export function buildClaudeArgs({
   }
   args.push(prompt);
   return args;
+}
+
+export function parseClaudeStreamEvent(line) {
+  const text = String(line ?? "").trim();
+  if (!text) return null;
+
+  let event;
+  try {
+    event = JSON.parse(text);
+  } catch {
+    return null;
+  }
+
+  const delta = event?.type === "stream_event"
+    && event.event?.type === "content_block_delta"
+    && event.event?.delta?.type === "text_delta"
+      ? String(event.event.delta.text ?? "")
+      : "";
+  return {
+    event,
+    sessionId: typeof event.session_id === "string" ? event.session_id : null,
+    textDelta: delta,
+    result: event?.type === "result" ? event : null,
+  };
 }
 
 export function parseClaudeLimits(text) {

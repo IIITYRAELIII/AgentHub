@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildClaudeArgs, buildClaudePrompt, formatClaudeUsage, parseClaudeLimits, parseClaudeResult } from "./claude.mjs";
+import {
+  buildClaudeArgs,
+  buildClaudePrompt,
+  formatClaudeUsage,
+  parseClaudeLimits,
+  parseClaudeResult,
+  parseClaudeStreamEvent,
+} from "./claude.mjs";
 
 test("buildClaudeArgs creates a resumable safe invocation", () => {
   assert.deepEqual(buildClaudeArgs({
@@ -9,7 +16,7 @@ test("buildClaudeArgs creates a resumable safe invocation", () => {
     model: "sonnet",
     permissionMode: "acceptEdits",
   }), [
-    "--print", "--output-format", "json",
+    "--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
     "--permission-mode", "acceptEdits",
     "--model", "sonnet",
     "--resume", "session-1",
@@ -19,9 +26,21 @@ test("buildClaudeArgs creates a resumable safe invocation", () => {
 
 test("auto approval maps only to bypassPermissions", () => {
   const args = buildClaudeArgs({ prompt: "run", autoApprove: true });
-  assert.deepEqual(args.slice(0, 5), [
-    "--print", "--output-format", "json", "--permission-mode", "bypassPermissions",
+  assert.deepEqual(args.slice(0, 7), [
+    "--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+    "--permission-mode", "bypassPermissions",
   ]);
+});
+
+test("parseClaudeStreamEvent extracts session and text deltas", () => {
+  const init = parseClaudeStreamEvent(JSON.stringify({ type: "system", subtype: "init", session_id: "session-1" }));
+  assert.equal(init.sessionId, "session-1");
+  const delta = parseClaudeStreamEvent(JSON.stringify({
+    type: "stream_event",
+    session_id: "session-1",
+    event: { type: "content_block_delta", delta: { type: "text_delta", text: "часть" } },
+  }));
+  assert.equal(delta.textDelta, "часть");
 });
 
 test("buildClaudePrompt includes local image paths", () => {
