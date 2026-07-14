@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node bot.mjs",
-    "check": "node --check bot.mjs && node --check config.mjs && node --check claude.mjs && node --check status.mjs && node --check token-usage.mjs && node --check doctor.mjs",
-    "test": "node --test claude.test.mjs status.test.mjs",
+    "check": "node --check bot.mjs && node --check config.mjs && node --check codex-settings.mjs && node --check claude.mjs && node --check status.mjs && node --check token-usage.mjs && node --check doctor.mjs",
+    "test": "node --test claude.test.mjs codex-settings.test.mjs status.test.mjs",
     "doctor": "node doctor.mjs"
   }
 }

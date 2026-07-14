@@ -2,9 +2,9 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { CLAUDE_PERMISSION_MODES } from "./claude.mjs";
+import { CODEX_COLLABORATION_MODES, CODEX_REASONING_EFFORTS } from "./codex-settings.mjs";
 
 export const INTEGRATION_ROOT = path.resolve(import.meta.dirname);
-const CODEX_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
 
 function resolveFromIntegration(value) {
   return path.resolve(INTEGRATION_ROOT, value);
@@ -146,9 +146,17 @@ export async function loadConfig() {
   const codexReasoningEffort = String(
     process.env.CODEX_REASONING_EFFORT ?? raw.codexReasoningEffort ?? "high",
   ).trim().toLowerCase();
-  if (!CODEX_REASONING_EFFORTS.has(codexReasoningEffort)) {
+  if (!CODEX_REASONING_EFFORTS.includes(codexReasoningEffort)) {
     throw new Error(
-      `codexReasoningEffort must be one of: ${[...CODEX_REASONING_EFFORTS].join(", ")}`,
+      `codexReasoningEffort must be one of: ${CODEX_REASONING_EFFORTS.join(", ")}`,
+    );
+  }
+  const codexCollaborationMode = String(
+    process.env.CODEX_COLLABORATION_MODE ?? raw.codexCollaborationMode ?? "default",
+  ).trim().toLowerCase();
+  if (!CODEX_COLLABORATION_MODES.includes(codexCollaborationMode)) {
+    throw new Error(
+      `codexCollaborationMode must be one of: ${CODEX_COLLABORATION_MODES.join(", ")}`,
     );
   }
 
@@ -163,10 +171,17 @@ export async function loadConfig() {
     codexExecutable: String(process.env.CODEX_EXECUTABLE ?? raw.codexExecutable ?? "").trim(),
     codexModel: String(process.env.CODEX_MODEL ?? raw.codexModel ?? "").trim(),
     codexReasoningEffort,
+    codexCollaborationMode,
     codexModels: loadCodexModels(raw),
     claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
     claudeModel: String(process.env.CLAUDE_MODEL ?? raw.claudeModel ?? "").trim(),
     claudePermissionMode,
+    claudeReasoningEffort: String(
+      process.env.CLAUDE_REASONING_EFFORT ?? raw.claudeReasoningEffort ?? "high",
+    ).trim().toLowerCase(),
+    claudeCollaborationMode: String(
+      process.env.CLAUDE_COLLABORATION_MODE ?? raw.claudeCollaborationMode ?? "default",
+    ).trim().toLowerCase(),
     autoApproveOnStart: raw.autoApproveOnStart === true,
     allowedUserIds,
     allowedChatIds,

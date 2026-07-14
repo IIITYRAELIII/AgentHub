@@ -57,11 +57,11 @@ python install.py --install-voice
 
 - `showTaskProject` управляет префиксом проекта в `/tasks`; при `false` список остаётся компактным.
 - `autoApproveOnStart` включает автоматические подтверждения после каждого запуска. Для Codex автоматически принимаются запросы команд и файловых изменений, для Claude используется `bypassPermissions`. В публичном примере значение оставлено `false`.
-- Выбранные проект, движок, задача и модели сохраняются между перезапусками.
+- Выбранные проект, движок, задача, модели, Reasoning и режим Plan/Work сохраняются между перезапусками.
 
 ### Codex models
 
-`/model` switches the Codex model used for the next `turn/start` request. The selected value is saved in `data/state.json` and sent as the `model` field, so it remains sticky for later Codex turns in the same thread. `codexReasoningEffort` is sent explicitly with every Codex turn, including turns in resumed tasks. Defaults are configured in `config.json`:
+`/model` switches the Codex model used for the next `turn/start` request. `/reasoning` selects the reasoning effort, and `/mode` selects `Work` (`default`) or `Plan` (`plan`). The Reasoning and Plan/Work buttons are in the second menu row. The selected values are saved in `data/state.json` and sent explicitly with every Codex turn, including turns in resumed tasks. Defaults are configured in `config.json`:
 
 On Windows, the bot prefers the newest Codex binary bundled with the VS Code extension. Set `codexExecutable` or `CODEX_EXECUTABLE` only if you need to force a specific CLI path.
 
@@ -70,6 +70,7 @@ On Windows, the bot prefers the newest Codex binary bundled with the VS Code ext
   "codexExecutable": "",
   "codexModel": "gpt-5.6-sol",
   "codexReasoningEffort": "high",
+  "codexCollaborationMode": "default",
   "codexModels": [
     { "value": "gpt-5.5", "label": "GPT-5.5" },
     { "value": "gpt-5.6-sol", "label": "GPT-5.6-Sol" },

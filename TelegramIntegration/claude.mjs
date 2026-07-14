@@ -9,6 +9,22 @@ export const CLAUDE_PERMISSION_MODES = new Set([
   "dontAsk",
 ]);
 
+// Бюджет «расширенного мышления» Claude Code для каждого уровня «силы дум».
+// Значение передаётся процессу через переменную окружения MAX_THINKING_TOKENS
+// и одновременно включает вывод блоков рассуждения в потоке.
+export const CLAUDE_THINKING_TOKENS = {
+  low: 2000,
+  medium: 4000,
+  high: 8000,
+  xhigh: 16000,
+  max: 24000,
+  ultra: 32000,
+};
+
+export function claudeThinkingTokens(level) {
+  return CLAUDE_THINKING_TOKENS[level] ?? CLAUDE_THINKING_TOKENS.high;
+}
+
 export function buildClaudePrompt(input) {
   if (typeof input === "string") return input;
   if (!Array.isArray(input)) throw new Error("Claude input must be text or an array of content items");
@@ -62,15 +78,23 @@ export function parseClaudeStreamEvent(line) {
     return null;
   }
 
-  const delta = event?.type === "stream_event"
-    && event.event?.type === "content_block_delta"
-    && event.event?.delta?.type === "text_delta"
-      ? String(event.event.delta.text ?? "")
-      : "";
+  const streamDelta = event?.type === "stream_event" && event.event?.type === "content_block_delta"
+    ? event.event.delta
+    : null;
+  const textDelta = streamDelta?.type === "text_delta" ? String(streamDelta.text ?? "") : "";
+  // Claude Code в headless-режиме отдаёт thinking-блоки без текста рассуждений
+  // (только сигнатуру и оценку числа токенов). Текст (thinking) обычно пустой,
+  // поэтому для индикатора прогресса ориентируемся на estimated_tokens.
+  const thinkingDelta = streamDelta?.type === "thinking_delta" ? String(streamDelta.thinking ?? "") : "";
+  const thinkingTokens = streamDelta?.type === "thinking_delta" && Number.isFinite(Number(streamDelta.estimated_tokens))
+    ? Number(streamDelta.estimated_tokens)
+    : null;
   return {
     event,
     sessionId: typeof event.session_id === "string" ? event.session_id : null,
-    textDelta: delta,
+    textDelta,
+    thinkingDelta,
+    thinkingTokens,
     result: event?.type === "result" ? event : null,
   };
 }
@@ -117,15 +141,18 @@ export function parseClaudeResult(stdout) {
   return result;
 }
 
-export function formatClaudeUsage(result) {
+export function formatClaudeUsage(result, estimatedReasoning = 0) {
   const usage = result?.usage ?? {};
   const uncachedInput = Number(usage.input_tokens ?? 0);
   const cacheCreation = Number(usage.cache_creation_input_tokens ?? 0);
   const cached = Number(usage.cache_read_input_tokens ?? 0);
   const output = Number(usage.output_tokens ?? 0);
-  const reasoning = Number(
+  // Claude не отдаёт thinking-токены отдельным полем usage (они внутри output_tokens),
+  // поэтому при отсутствии точного значения используем оценку из потока (estimated_tokens).
+  const reportedReasoning = Number(
     usage.reasoning_output_tokens ?? usage.thinking_tokens ?? usage.reasoning_tokens ?? 0,
   );
+  const reasoning = reportedReasoning > 0 ? reportedReasoning : Math.max(0, Number(estimatedReasoning) || 0);
   return formatTaskTokenUsage({
     totalTokens: uncachedInput + cacheCreation + cached + output,
     inputTokens: uncachedInput,

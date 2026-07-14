@@ -9,10 +9,18 @@ import { INTEGRATION_ROOT, loadConfig } from "./config.mjs";
 import {
   buildClaudeArgs,
   buildClaudePrompt,
+  claudeThinkingTokens,
   formatClaudeUsage,
   parseClaudeResult,
   parseClaudeStreamEvent,
 } from "./claude.mjs";
+import {
+  buildCodexCollaborationMode,
+  CODEX_COLLABORATION_MODE_LABELS,
+  CODEX_COLLABORATION_MODES,
+  CODEX_REASONING_EFFORTS,
+  CODEX_REASONING_LABELS,
+} from "./codex-settings.mjs";
 import { formatClaudeRateLimits, formatCodexRateLimits, formatStatusMessage } from "./status.mjs";
 import { formatTaskTokenUsage } from "./token-usage.mjs";
 
@@ -27,6 +35,14 @@ function providerTitle() {
 const CLAUDE_MODELS = ["sonnet", "opus", "haiku"];
 const CLAUDE_MODEL_LABELS = { sonnet: "Sonnet", opus: "Opus", haiku: "Haiku" };
 let claudeModel = CLAUDE_MODELS.includes(config.claudeModel) ? config.claudeModel : "sonnet";
+// Claude использует те же уровни «силы дум» и режимы Plan/Work, что и Codex,
+// но применяет их по-своему: сила дум -> бюджет thinking-токенов, режим -> permission-mode.
+let claudeReasoningEffort = CODEX_REASONING_EFFORTS.includes(config.claudeReasoningEffort)
+  ? config.claudeReasoningEffort
+  : "high";
+let claudeCollaborationMode = CODEX_COLLABORATION_MODES.includes(config.claudeCollaborationMode)
+  ? config.claudeCollaborationMode
+  : "default";
 const CODEX_MODELS = config.codexModels;
 const CODEX_MODEL_VALUES = new Set(CODEX_MODELS.map((model) => model.value));
 function normalizeCodexModel(value) {
@@ -36,6 +52,8 @@ function codexModelLabel(value) {
   return CODEX_MODELS.find((model) => model.value === value)?.label ?? value;
 }
 let codexModel = normalizeCodexModel(config.codexModel);
+let codexReasoningEffort = config.codexReasoningEffort;
+let codexCollaborationMode = config.codexCollaborationMode;
 const PROJECTS = config.projects;
 const DEFAULT_PROJECT_ROOT = config.projectRoot;
 const STATE_FILE = config.stateFile;
@@ -53,7 +71,9 @@ const IMAGE_DIR = path.join(config.dataDir, "images");
 const TTS_DIR = config.ttsDir;
 const BOT_COMMANDS = [
   { command: "engine", description: "Переключить Claude Code/Codex" },
-  { command: "model", description: "Сменить модель Claude Code" },
+  { command: "model", description: "Сменить модель" },
+  { command: "reasoning", description: "Сменить силу дум (Codex/Claude)" },
+  { command: "mode", description: "Переключить Plan/Work (Codex/Claude)" },
   { command: "projects", description: "Сменить активный проект" },
   { command: "new", description: "Новый контекст" },
   { command: "tasks", description: "Список задач" },
@@ -67,8 +87,9 @@ const BOT_COMMANDS = [
 ];
 const BOT_MENU = {
   keyboard: [
-    [{ text: "🤖 Движок" }, { text: "🎛 Модель" }, ...(config.showProjectButton ? [{ text: "📁 Проект" }] : [])],
-    [{ text: "📋 Задачи" }, { text: "ℹ️ Статус" }, { text: "🔐 Доступ" }],
+    [{ text: "🤖 Движок" },{ text: "🎛 Модель" },...(config.showProjectButton ? [{ text: "📁 Проект" }] : []),],
+    [{ text: "🧠 Сила дум" },{ text: "🛠 Plan/Work" },],
+    [{ text: "📋 Задачи" },{ text: "ℹ️ Статус" },{ text: "🔐 Доступ" },],
     [{ text: "⛔ Стоп" }, { text: "❓ Помощь" }, { text: "🔄 Рестарт" }],
   ],
   resize_keyboard: true,
@@ -77,6 +98,8 @@ const BOT_MENU = {
 const MENU_COMMANDS = new Map([
   ["🤖 Движок", "/engine"],
   ["🎛 Модель", "/model"],
+  ["🧠 Сила дум", "/reasoning"],
+  ["🛠 Plan/Work", "/mode"],
   ["📁 Папка", "/projects"],
   ["📁 Проект", "/projects"],
   ["🆕 Новая", "/new"],
@@ -279,6 +302,18 @@ try {
   threadId = threadIdsByProvider[activeProvider] ?? null;
   if (CLAUDE_MODELS.includes(saved.claudeModel)) claudeModel = saved.claudeModel;
   if (typeof saved.codexModel === "string") codexModel = normalizeCodexModel(saved.codexModel);
+  if (CODEX_REASONING_EFFORTS.includes(saved.codexReasoningEffort)) {
+    codexReasoningEffort = saved.codexReasoningEffort;
+  }
+  if (CODEX_COLLABORATION_MODES.includes(saved.codexCollaborationMode)) {
+    codexCollaborationMode = saved.codexCollaborationMode;
+  }
+  if (CODEX_REASONING_EFFORTS.includes(saved.claudeReasoningEffort)) {
+    claudeReasoningEffort = saved.claudeReasoningEffort;
+  }
+  if (CODEX_COLLABORATION_MODES.includes(saved.claudeCollaborationMode)) {
+    claudeCollaborationMode = saved.claudeCollaborationMode;
+  }
   if (Number.isSafeInteger(saved.chatId)) chatId = saved.chatId;
   if (Number.isSafeInteger(saved.updateOffset) && saved.updateOffset >= 0) updateOffset = saved.updateOffset;
   if (saved.activeRun && typeof saved.activeRun === "object" && saved.activeRun.status === "running") {
@@ -727,6 +762,38 @@ async function sendStatus() {
   }));
 }
 
+async function sendReasoningPicker() {
+  const current = isCodex() ? codexReasoningEffort : claudeReasoningEffort;
+  const prefix = isCodex() ? "codex-reasoning" : "claude-reasoning";
+  const keyboard = CODEX_REASONING_EFFORTS.map((value) => [{
+    text: `${value === current ? "✓ " : ""}${CODEX_REASONING_LABELS[value]}`,
+    callback_data: `${prefix}:${value}`,
+  }]);
+  const hint = isCodex()
+    ? "Выберите уровень для следующих запросов:"
+    : "Выберите уровень (для Claude это бюджет «расширенного мышления»):";
+  await sendMessage(
+    `Reasoning ${providerTitle()}: ${CODEX_REASONING_LABELS[current]}\n\n${hint}`,
+    { reply_markup: { inline_keyboard: keyboard } },
+  );
+}
+
+async function sendCollaborationModePicker() {
+  const current = isCodex() ? codexCollaborationMode : claudeCollaborationMode;
+  const prefix = isCodex() ? "codex-mode" : "claude-mode";
+  const keyboard = [CODEX_COLLABORATION_MODES.map((value) => ({
+    text: `${value === current ? "✓ " : ""}${CODEX_COLLABORATION_MODE_LABELS[value]}`,
+    callback_data: `${prefix}:${value}`,
+  }))];
+  const hint = isCodex()
+    ? "Выберите режим для следующих запросов:"
+    : "Выберите режим (Plan — Claude только планирует, ничего не меняя):";
+  await sendMessage(
+    `Режим ${providerTitle()}: ${CODEX_COLLABORATION_MODE_LABELS[current]}\n\n${hint}`,
+    { reply_markup: { inline_keyboard: keyboard } },
+  );
+}
+
 function inputPreview(input) {
   const text = typeof input === "string"
     ? input
@@ -872,7 +939,12 @@ async function startTurn(input, temporaryFiles = [], { forceSpeechButton = false
       threadId,
       input: items,
       model: codexModel,
-      effort: config.codexReasoningEffort,
+      effort: codexReasoningEffort,
+      collaborationMode: buildCodexCollaborationMode({
+        mode: codexCollaborationMode,
+        model: codexModel,
+        reasoningEffort: codexReasoningEffort,
+      }),
       approvalPolicy: "on-request",
       sandboxPolicy: {
         type: "workspaceWrite",
@@ -957,12 +1029,13 @@ async function startClaudeTurn(input, temporaryFiles, { forceSpeechButton = fals
   const additionalDirectories = contentItems
     .filter((item) => item?.type === "localImage" && item.path)
     .map((item) => path.dirname(item.path));
+  const planMode = claudeCollaborationMode === "plan";
   const args = buildClaudeArgs({
     prompt,
     sessionId: threadId,
     model: claudeModel,
-    permissionMode: config.claudePermissionMode,
-    autoApprove,
+    permissionMode: planMode ? "plan" : config.claudePermissionMode,
+    autoApprove: planMode ? false : autoApprove,
     additionalDirectories,
   });
 
@@ -974,6 +1047,10 @@ async function startClaudeTurn(input, temporaryFiles, { forceSpeechButton = fals
     cwd: activeProjectRoot,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    env: {
+      ...process.env,
+      MAX_THINKING_TOKENS: String(claudeThinkingTokens(claudeReasoningEffort)),
+    },
   });
   activeClaudeProcess = worker;
   activeRun.pid = worker.pid ?? null;
@@ -983,6 +1060,7 @@ async function startClaudeTurn(input, temporaryFiles, { forceSpeechButton = fals
   let stderr = "";
   let streamedResult = null;
   let claudeFailureText = "";
+  let peakThinkingTokens = 0;
   let settled = false;
   worker.stdout.setEncoding("utf8");
   worker.stderr.setEncoding("utf8");
@@ -1002,6 +1080,16 @@ async function startClaudeTurn(input, temporaryFiles, { forceSpeechButton = fals
     if (parsed.textDelta) {
       responseText += parsed.textDelta;
       scheduleProgressUpdate();
+    }
+    // Claude Code headless не раскрывает текст мышления, поэтому показываем
+    // индикатор с оценкой числа «думательных» токенов. Если текст всё же придёт
+    // (в будущих версиях) — выводим и его в блок рассуждений.
+    if (parsed.thinkingDelta) appendProgressReasoning(parsed.thinkingDelta);
+    if (parsed.thinkingTokens != null) {
+      peakThinkingTokens = Math.max(peakThinkingTokens, parsed.thinkingTokens);
+      if (!responseText.trim()) {
+        setProgressStage(`🧠 Claude размышляет (~${parsed.thinkingTokens} токенов)…`);
+      }
     }
     if (parsed.event?.type === "system" && parsed.event?.subtype === "api_retry") {
       const reason = parsed.event.error ? `: ${parsed.event.error}` : "";
@@ -1059,7 +1147,7 @@ async function startClaudeTurn(input, temporaryFiles, { forceSpeechButton = fals
       const failed = code !== 0 || result.is_error;
       await finishProgress(failed ? `Claude остановлен: ${answer}` : "Задача завершена.");
       const response = failed ? `Ошибка Claude Code: ${answer}` : answer;
-      await sendLongMessage(`${response}\n\n${formatClaudeUsage(result)}`, { speechText: answer, forceSpeechButton });
+      await sendLongMessage(`${response}\n\n${formatClaudeUsage(result, peakThinkingTokens)}`, { speechText: answer, forceSpeechButton });
       if (latestDiff) await sendMessage("Изменения доступны по команде /diff.");
       activeRun = null;
       await saveState();
@@ -1640,6 +1728,78 @@ async function handleApprovalCallback(callback) {
     }
     return;
   }
+  const codexReasoningMatch = /^codex-reasoning:(low|medium|high|xhigh|max|ultra)$/.exec(callback.data ?? "");
+  if (codexReasoningMatch) {
+    const value = codexReasoningMatch[1];
+    const changed = value !== codexReasoningEffort;
+    codexReasoningEffort = value;
+    await saveState();
+    await telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: changed ? "Reasoning изменён" : "Этот уровень уже выбран",
+    });
+    await telegram("editMessageReplyMarkup", {
+      chat_id: callback.message.chat.id,
+      message_id: callback.message.message_id,
+      reply_markup: { inline_keyboard: [] },
+    });
+    if (changed) await sendMessage(`Reasoning Codex: ${CODEX_REASONING_LABELS[codexReasoningEffort]}`);
+    return;
+  }
+  const codexModeMatch = /^codex-mode:(default|plan)$/.exec(callback.data ?? "");
+  if (codexModeMatch) {
+    const value = codexModeMatch[1];
+    const changed = value !== codexCollaborationMode;
+    codexCollaborationMode = value;
+    await saveState();
+    await telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: changed ? "Режим Codex изменён" : "Этот режим уже выбран",
+    });
+    await telegram("editMessageReplyMarkup", {
+      chat_id: callback.message.chat.id,
+      message_id: callback.message.message_id,
+      reply_markup: { inline_keyboard: [] },
+    });
+    if (changed) await sendMessage(`Режим Codex: ${CODEX_COLLABORATION_MODE_LABELS[codexCollaborationMode]}`);
+    return;
+  }
+  const claudeReasoningMatch = /^claude-reasoning:(low|medium|high|xhigh|max|ultra)$/.exec(callback.data ?? "");
+  if (claudeReasoningMatch) {
+    const value = claudeReasoningMatch[1];
+    const changed = value !== claudeReasoningEffort;
+    claudeReasoningEffort = value;
+    await saveState();
+    await telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: changed ? "Reasoning изменён" : "Этот уровень уже выбран",
+    });
+    await telegram("editMessageReplyMarkup", {
+      chat_id: callback.message.chat.id,
+      message_id: callback.message.message_id,
+      reply_markup: { inline_keyboard: [] },
+    });
+    if (changed) await sendMessage(`Reasoning Claude Code: ${CODEX_REASONING_LABELS[claudeReasoningEffort]}`);
+    return;
+  }
+  const claudeModeMatch = /^claude-mode:(default|plan)$/.exec(callback.data ?? "");
+  if (claudeModeMatch) {
+    const value = claudeModeMatch[1];
+    const changed = value !== claudeCollaborationMode;
+    claudeCollaborationMode = value;
+    await saveState();
+    await telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: changed ? "Режим Claude изменён" : "Этот режим уже выбран",
+    });
+    await telegram("editMessageReplyMarkup", {
+      chat_id: callback.message.chat.id,
+      message_id: callback.message.message_id,
+      reply_markup: { inline_keyboard: [] },
+    });
+    if (changed) await sendMessage(`Режим Claude Code: ${CODEX_COLLABORATION_MODE_LABELS[claudeCollaborationMode]}`);
+    return;
+  }
   const modelMatch = /^model:(sonnet|opus|haiku)$/.exec(callback.data ?? "");
   if (modelMatch) {
     try {
@@ -1770,13 +1930,17 @@ async function handleTelegramMessage(message) {
   if (text === "/start" || text === "/help") {
     await sendMessage(
       `Бот подключён к Claude Code и Codex. Текущий движок: ${providerTitle()}. Отправьте текст, изображение или голосовое сообщение.\n\n` +
-        "/engine — переключить Claude Code/Codex\n/model — сменить модель Claude Code\n/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/status — статус, текущая задача и лимиты\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
+        "/engine — переключить Claude Code/Codex\n/model — сменить модель\n/reasoning — уровень Reasoning Codex\n/mode — режим Plan/Work Codex\n/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/status — статус, текущая задача и лимиты\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
       { reply_markup: BOT_MENU },
     );
   } else if (text === "/engine") {
     await sendEnginePicker();
   } else if (text === "/model") {
     await sendModelPicker();
+  } else if (text === "/reasoning") {
+    await sendReasoningPicker();
+  } else if (text === "/mode") {
+    await sendCollaborationModePicker();
   } else if (text === "/projects" || text === "/folders" || text === "/folder") {
     await sendProjectPicker();
   } else if (text === "/new") {
@@ -1895,6 +2059,10 @@ function saveState() {
     threadIds: threadIdsByProvider,
     claudeModel,
     codexModel,
+    codexReasoningEffort,
+    codexCollaborationMode,
+    claudeReasoningEffort,
+    claudeCollaborationMode,
     updateOffset,
     activeRun,
   }, null, 2)}\n`;
