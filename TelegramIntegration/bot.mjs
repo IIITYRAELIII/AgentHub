@@ -21,7 +21,12 @@ import {
   CODEX_REASONING_EFFORTS,
   CODEX_REASONING_LABELS,
 } from "./codex-settings.mjs";
-import { formatClaudeRateLimits, formatCodexRateLimits, formatStatusMessage } from "./status.mjs";
+import {
+  formatArchiveMessage,
+  formatClaudeRateLimits,
+  formatCodexRateLimits,
+  formatStatusMessage,
+} from "./status.mjs";
 import { formatTaskTokenUsage } from "./token-usage.mjs";
 
 const config = await loadConfig();
@@ -78,6 +83,7 @@ const BOT_COMMANDS = [
   { command: "new", description: "Новый контекст" },
   { command: "tasks", description: "Список задач" },
   { command: "resume", description: "Выбрать существующую задачу" },
+  { command: "archive", description: "Архивировать текущую задачу" },
   { command: "status", description: "Статус и текущая задача" },
   { command: "approvals", description: "Режим подтверждений" },
   { command: "restart", description: "Перезапустить бота" },
@@ -573,6 +579,12 @@ async function sendThreadPicker() {
     text: `${thread.id === threadId ? "✓ " : ""}${config.showTaskProject ? `${activeProject().name} · ` : ""}${threadTitle(thread)}`,
     callback_data: `t:${thread.id}`,
   }])];
+  if (threadId) {
+    keyboard.push([{
+      text: "❌ Архивировать текущую задачу",
+      callback_data: "thread:archive",
+    }]);
+  }
   const text = threads.length ? "Выберите задачу:" : "В этом проекте пока нет задач.";
   await sendMessage(text, { reply_markup: { inline_keyboard: keyboard } });
 }
@@ -700,7 +712,7 @@ async function switchProvider(target) {
   return { changed: true };
 }
 
-async function resumeThread(selectedThreadId) {
+async function resumeThread(selectedThreadId, { notify = true } = {}) {
   if (activeTurnId) {
     await sendMessage("Сначала завершите или отмените текущую задачу.");
     return false;
@@ -710,7 +722,7 @@ async function resumeThread(selectedThreadId) {
     latestDiff = "";
     responseText = "";
     await saveState();
-    await sendMessage(`Выбрана сессия Claude: ${threadId}`);
+    if (notify) await sendMessage(`Выбрана сессия Claude: ${threadId}`);
     return true;
   }
   const result = await sendRpc("thread/resume", {
@@ -725,8 +737,39 @@ async function resumeThread(selectedThreadId) {
   latestDiff = "";
   responseText = "";
   await saveState();
-  await sendMessage(`Выбрана задача: ${threadTitle(result.thread ?? {})}`);
+  if (notify) await sendMessage(`Выбрана задача: ${threadTitle(result.thread ?? {})}`);
   return true;
+}
+
+async function archiveCurrentThread() {
+  if (activeTurnId) return { archived: false, reason: "active-turn" };
+  if (!isCodex()) return { archived: false, reason: "unsupported" };
+  if (!threadId) return { archived: false, reason: "no-current" };
+
+  const archivedThreadId = threadId;
+  const archivedResult = await sendRpc("thread/read", {
+    threadId: archivedThreadId,
+    includeTurns: false,
+  });
+  const archivedThread = archivedResult.thread ?? { id: archivedThreadId };
+  await sendRpc("thread/archive", { threadId: archivedThreadId });
+  threadId = null;
+  threadIdsByProvider.codex = null;
+  latestDiff = "";
+  responseText = "";
+  await saveState();
+
+  const [nextThread] = (await listThreads()).filter((thread) => thread.id !== archivedThreadId);
+  if (nextThread) await resumeThread(nextThread.id, { notify: false });
+
+  return { archived: true, archivedThread, nextThread: nextThread ?? null };
+}
+
+function archiveMessage(result) {
+  return formatArchiveMessage({
+    archivedTask: threadTitle(result.archivedThread),
+    activeTask: result.nextThread ? threadTitle(result.nextThread) : null,
+  });
 }
 
 async function sendStatus() {
@@ -756,6 +799,9 @@ async function sendStatus() {
   await sendMessage(formatStatusMessage({
     provider: isCodex() ? "CODEX" : "CLAUDE",
     busy: Boolean(activeTurnId),
+    model: isCodex() ? codexModelLabel(codexModel) : CLAUDE_MODEL_LABELS[claudeModel],
+    reasoning: CODEX_REASONING_LABELS[isCodex() ? codexReasoningEffort : claudeReasoningEffort],
+    mode: CODEX_COLLABORATION_MODE_LABELS[isCodex() ? codexCollaborationMode : claudeCollaborationMode],
     task,
     project: project.name,
     limits,
@@ -1299,7 +1345,6 @@ async function recoverActiveRun() {
 async function requestApproval(rpcId, kind, params, text) {
   if (autoApprove) {
     respondRpc(rpcId, { decision: "accept" });
-    await sendMessage(`⚡ Автоматически разрешено: ${kind === "command" ? "команда" : "изменение файлов"}.`);
     return;
   }
   const key = String(approvalSequence++);
@@ -1858,6 +1903,43 @@ async function handleApprovalCallback(callback) {
     }
     return;
   }
+  if (callback.data === "thread:archive") {
+    try {
+      const result = await archiveCurrentThread();
+      if (!result.archived) {
+        const messages = {
+          "active-turn": "Сначала завершите или отмените текущую задачу",
+          unsupported: "Архивация доступна только для задач Codex",
+          "no-current": "Текущая задача не выбрана",
+        };
+        await telegram("answerCallbackQuery", {
+          callback_query_id: callback.id,
+          text: messages[result.reason] ?? "Архивация недоступна",
+          show_alert: true,
+        });
+        return;
+      }
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Задача архивирована",
+      });
+      await telegram("editMessageReplyMarkup", {
+        chat_id: callback.message.chat.id,
+        message_id: callback.message.message_id,
+        reply_markup: { inline_keyboard: [] },
+      });
+      await sendMessage(archiveMessage(result));
+      await sendThreadPicker();
+    } catch (error) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Не удалось архивировать задачу",
+        show_alert: true,
+      });
+      await sendMessage(`Ошибка архивации задачи: ${error.message}`);
+    }
+    return;
+  }
   const threadMatch = /^t:([0-9a-f-]+)$/i.exec(callback.data ?? "");
   if (threadMatch) {
     try {
@@ -1930,7 +2012,7 @@ async function handleTelegramMessage(message) {
   if (text === "/start" || text === "/help") {
     await sendMessage(
       `Бот подключён к Claude Code и Codex. Текущий движок: ${providerTitle()}. Отправьте текст, изображение или голосовое сообщение.\n\n` +
-        "/engine — переключить Claude Code/Codex\n/model — сменить модель\n/reasoning — уровень Reasoning Codex\n/mode — режим Plan/Work Codex\n/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/status — статус, текущая задача и лимиты\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
+        "/engine — переключить Claude Code/Codex\n/model — сменить модель\n/reasoning — уровень Reasoning Codex\n/mode — режим Plan/Work Codex\n/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/archive — архивировать текущую задачу\n/status — статус, текущая задача и лимиты\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
       { reply_markup: BOT_MENU },
     );
   } else if (text === "/engine") {
@@ -1961,6 +2043,14 @@ async function handleTelegramMessage(message) {
       return sendMessage("Укажите корректный ID задачи или используйте /resume без параметров.");
     }
     await resumeThread(selectedThreadId);
+  } else if (text === "/archive") {
+    const result = await archiveCurrentThread();
+    if (!result.archived) {
+      if (result.reason === "active-turn") return sendMessage("Сначала завершите или отмените текущую задачу.");
+      if (result.reason === "unsupported") return sendMessage("Архивация доступна только для задач Codex.");
+      return sendMessage("Текущая задача не выбрана.");
+    }
+    await sendMessage(archiveMessage(result));
   } else if (text === "/current" || text === "/thread") {
     await sendStatus();
   } else if (text === "/diff") {

@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatClaudeRateLimits, formatCodexRateLimits, formatStatusMessage } from "./status.mjs";
+import {
+  formatArchiveMessage,
+  formatClaudeRateLimits,
+  formatCodexRateLimits,
+  formatStatusMessage,
+} from "./status.mjs";
 
 test("formatCodexRateLimits puts both windows on one line", () => {
   const nowMs = new Date(2026, 6, 10, 15, 0).getTime();
@@ -53,11 +58,16 @@ test("formatStatusMessage matches Telegram status layout", () => {
   assert.equal(formatStatusMessage({
     provider: "CODEX",
     busy: false,
+    model: "GPT-5.3 Codex Spark",
+    reasoning: "High",
+    mode: "Work",
     task: "Обсуждения",
     project: "VSC_Tyrael",
     limits: "CODEX\n100.0% - 5 ч. | 94.0% - 6 дн. 7 ч.",
   }), [
     "CODEX: Готов",
+    "GPT-5.3 Codex Spark - High",
+    "Work",
     "",
     "Текущая задача: Обсуждения",
     "Каталог: VSC_Tyrael",
@@ -65,5 +75,49 @@ test("formatStatusMessage matches Telegram status layout", () => {
     "Лимиты:",
     "CODEX",
     "100.0% - 5 ч. | 94.0% - 6 дн. 7 ч.",
+  ].join("\n"));
+});
+
+test("formatStatusMessage shows Claude model, reasoning, and Plan mode", () => {
+  assert.equal(formatStatusMessage({
+    provider: "CLAUDE",
+    busy: true,
+    model: "Sonnet",
+    reasoning: "XHigh",
+    mode: "Plan",
+    task: "Проверка",
+    project: "VSC_Tyrael",
+    limits: "CLAUDE\n100.0% - 5 ч.",
+  }), [
+    "CLAUDE: Выполняет задачу",
+    "Sonnet - XHigh",
+    "Plan",
+    "",
+    "Текущая задача: Проверка",
+    "Каталог: VSC_Tyrael",
+    "",
+    "Лимиты:",
+    "CLAUDE",
+    "100.0% - 5 ч.",
+  ].join("\n"));
+});
+
+test("formatArchiveMessage names archived and newly active tasks", () => {
+  assert.equal(formatArchiveMessage({
+    archivedTask: "Такая-то",
+    activeTask: "Такая-то2",
+  }), [
+    "❌ Задача \"Такая-то\" архивирована.",
+    "🟢 Задача \"Такая-то2\" активна.",
+  ].join("\n"));
+});
+
+test("formatArchiveMessage reports when no active task remains", () => {
+  assert.equal(formatArchiveMessage({
+    archivedTask: "Последняя",
+    activeTask: null,
+  }), [
+    "❌ Задача \"Последняя\" архивирована.",
+    "⚪ Активных задач нет.",
   ].join("\n"));
 });
