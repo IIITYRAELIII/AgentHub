@@ -28,6 +28,7 @@ import {
   formatStatusMessage,
 } from "./status.mjs";
 import { formatTaskTokenUsage } from "./token-usage.mjs";
+import { telegramPrompt } from "./telegram-message.mjs";
 
 const config = await loadConfig();
 let activeProvider = config.provider === "codex" ? "codex" : "claude";
@@ -561,14 +562,22 @@ function formatThread(thread) {
   return `${threadTitle(thread)}${current}\nПроект: ${project}\nОбновлена: ${updated}\nID: ${thread.id}`;
 }
 
-async function sendThreadPicker() {
+async function sendThreadPicker({ editMessage = null } = {}) {
   if (!isCodex()) {
     const keyboard = [[{ text: "➕ Создать новую задачу", callback_data: "thread:new" }]];
     const current = threadId ? `\n\nТекущая сессия: ${threadId}` : "";
-    await sendMessage(
-      `Claude Code не предоставляет CLI для списка сессий.${current}\nДля известного ID используйте /resume <ID>.`,
-      { reply_markup: { inline_keyboard: keyboard } },
-    );
+    const text = `Claude Code не предоставляет CLI для списка сессий.${current}\nДля известного ID используйте /resume <ID>.`;
+    const replyMarkup = { inline_keyboard: keyboard };
+    if (editMessage) {
+      await telegram("editMessageText", {
+        chat_id: editMessage.chat.id,
+        message_id: editMessage.message_id,
+        text,
+        reply_markup: replyMarkup,
+      });
+    } else {
+      await sendMessage(text, { reply_markup: replyMarkup });
+    }
     return;
   }
   const threads = await listThreads();
@@ -586,7 +595,17 @@ async function sendThreadPicker() {
     }]);
   }
   const text = threads.length ? "Выберите задачу:" : "В этом проекте пока нет задач.";
-  await sendMessage(text, { reply_markup: { inline_keyboard: keyboard } });
+  const replyMarkup = { inline_keyboard: keyboard };
+  if (editMessage) {
+    await telegram("editMessageText", {
+      chat_id: editMessage.chat.id,
+      message_id: editMessage.message_id,
+      text,
+      reply_markup: replyMarkup,
+    });
+  } else {
+    await sendMessage(text, { reply_markup: replyMarkup });
+  }
 }
 
 async function sendProjectPicker() {
@@ -742,9 +761,8 @@ async function resumeThread(selectedThreadId, { notify = true } = {}) {
 }
 
 async function archiveCurrentThread() {
-  if (activeTurnId) return { archived: false, reason: "active-turn" };
-  if (!isCodex()) return { archived: false, reason: "unsupported" };
-  if (!threadId) return { archived: false, reason: "no-current" };
+  const blockedReason = archiveBlockedReason();
+  if (blockedReason) return { archived: false, reason: blockedReason };
 
   const archivedThreadId = threadId;
   const archivedResult = await sendRpc("thread/read", {
@@ -763,6 +781,13 @@ async function archiveCurrentThread() {
   if (nextThread) await resumeThread(nextThread.id, { notify: false });
 
   return { archived: true, archivedThread, nextThread: nextThread ?? null };
+}
+
+function archiveBlockedReason() {
+  if (activeTurnId) return "active-turn";
+  if (!isCodex()) return "unsupported";
+  if (!threadId) return "no-current";
+  return null;
 }
 
 function archiveMessage(result) {
@@ -1335,7 +1360,7 @@ async function recoverActiveRun() {
     || turn.error?.message
     || `Сохранённый запуск завершён со статусом ${turn.status}.`;
   await finishProgress(turn.status === "completed" ? "Задача завершена." : `Задача остановлена: ${turn.status}.`);
-  await sendLongMessage(answer);
+  await sendLongMessage(answer, { speechText: answer });
   activeTurnId = null;
   activeRun = null;
   responseText = "";
@@ -1459,7 +1484,7 @@ async function transcribeVoice(message) {
       return;
     }
     await sendMessage(`📝 Распознано:\n${transcript}`);
-    await startTurn(transcript, [], { forceSpeechButton: true });
+    await startTurn(telegramPrompt(message, transcript), [], { forceSpeechButton: true });
   } catch (error) {
     await sendMessage(`Ошибка распознавания: ${error.message}`);
   } finally {
@@ -1587,18 +1612,35 @@ async function synthesizeSpeech(text) {
   const promise = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingTts.delete(id);
-      reject(new Error("превышено время озвучивания (10 минут)"));
-    }, 10 * 60 * 1000);
+      stopTtsWorker();
+      reject(new Error(`превышено время озвучивания (${config.ttsRequestTimeoutSeconds} сек.)`));
+    }, config.ttsRequestTimeoutSeconds * 1000);
     pendingTts.set(id, { resolve, reject, timer });
   });
-  ttsWorker.stdin.write(`${JSON.stringify({ id, text, outputPath })}\n`);
+  // The Windows venv launcher may keep a piped stdin line buffered until EOF.
+  // Close stdin after the single request so the Python worker receives it immediately.
+  ttsWorker.stdin.end(`${JSON.stringify({ id, text, outputPath })}\n`);
   return promise;
+}
+
+function stopTtsWorker() {
+  const worker = ttsWorker;
+  if (!worker) return;
+  if (process.platform === "win32" && worker.pid) {
+    const killer = spawn("taskkill.exe", ["/PID", String(worker.pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    killer.unref();
+  } else {
+    worker.kill();
+  }
 }
 
 function rememberSpeechText(text, force = false) {
   const value = String(text ?? "").trim();
   if (!config.ttsEnabled || !value || (!force && value.length < config.ttsButtonMinChars)) return null;
-  while (speechTexts.size >= 20) speechTexts.delete(speechTexts.keys().next().value);
+  while (speechTexts.size >= 100) speechTexts.delete(speechTexts.keys().next().value);
   const id = randomUUID().replaceAll("-", "").slice(0, 16);
   speechTexts.set(id, value);
   void saveSpeechTexts().catch((error) => console.error("Cannot save speech texts:", error.message));
@@ -1633,7 +1675,7 @@ async function processSpeechRequest(callback, text) {
     voicePath = await synthesizeSpeech(text);
     await sendVoiceFile(targetChatId, voicePath);
   } catch (error) {
-    await sendMessage(`Не удалось озвучить ответ: ${error.message}`);
+    await sendMessageTo(targetChatId, `Не удалось озвучить ответ: ${error.message}`);
   } finally {
     clearInterval(activity);
     if (voicePath) await unlink(voicePath).catch(() => {});
@@ -1904,56 +1946,54 @@ async function handleApprovalCallback(callback) {
     return;
   }
   if (callback.data === "thread:archive") {
+    const blockedReason = archiveBlockedReason();
+    if (blockedReason) {
+      const messages = {
+        "active-turn": "Сначала завершите или отмените текущую задачу",
+        unsupported: "Архивация доступна только для задач Codex",
+        "no-current": "Текущая задача не выбрана",
+      };
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: messages[blockedReason] ?? "Архивация недоступна",
+        show_alert: true,
+      });
+      return;
+    }
+    await telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: "Архивирую задачу…",
+    });
     try {
       const result = await archiveCurrentThread();
       if (!result.archived) {
-        const messages = {
-          "active-turn": "Сначала завершите или отмените текущую задачу",
-          unsupported: "Архивация доступна только для задач Codex",
-          "no-current": "Текущая задача не выбрана",
-        };
-        await telegram("answerCallbackQuery", {
-          callback_query_id: callback.id,
-          text: messages[result.reason] ?? "Архивация недоступна",
-          show_alert: true,
-        });
+        await sendMessageTo(callback.message.chat.id, "Архивация задачи стала недоступна. Обновите список задач.");
         return;
       }
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Задача архивирована",
-      });
-      await telegram("editMessageReplyMarkup", {
-        chat_id: callback.message.chat.id,
-        message_id: callback.message.message_id,
-        reply_markup: { inline_keyboard: [] },
-      });
-      await sendMessage(archiveMessage(result));
-      await sendThreadPicker();
+      const outcomes = await Promise.allSettled([
+        sendMessageTo(callback.message.chat.id, archiveMessage(result)),
+        sendThreadPicker({ editMessage: callback.message }),
+      ]);
+      const failures = outcomes.filter((outcome) => outcome.status === "rejected");
+      if (failures.length) {
+        throw new AggregateError(failures.map((failure) => failure.reason), "Не удалось полностью обновить меню архивации");
+      }
     } catch (error) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Не удалось архивировать задачу",
-        show_alert: true,
-      });
-      await sendMessage(`Ошибка архивации задачи: ${error.message}`);
+      console.error("Cannot archive thread:", error.message);
+      await sendMessageTo(callback.message.chat.id, `Ошибка архивации задачи: ${error.message}`);
     }
     return;
   }
   const threadMatch = /^t:([0-9a-f-]+)$/i.exec(callback.data ?? "");
   if (threadMatch) {
     try {
-      const resumed = await resumeThread(threadMatch[1]);
+      const resumed = await resumeThread(threadMatch[1], { notify: false });
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
         text: resumed ? "Задача выбрана" : "Переключение недоступно",
       });
       if (resumed) {
-        await telegram("editMessageReplyMarkup", {
-          chat_id: callback.message.chat.id,
-          message_id: callback.message.message_id,
-          reply_markup: { inline_keyboard: [] },
-        });
+        await sendThreadPicker({ editMessage: callback.message });
       }
     } catch (error) {
       await telegram("answerCallbackQuery", { callback_query_id: callback.id, text: "Не удалось выбрать задачу" });
@@ -2051,6 +2091,7 @@ async function handleTelegramMessage(message) {
       return sendMessage("Текущая задача не выбрана.");
     }
     await sendMessage(archiveMessage(result));
+    await sendThreadPicker();
   } else if (text === "/current" || text === "/thread") {
     await sendStatus();
   } else if (text === "/diff") {
@@ -2063,7 +2104,7 @@ async function handleTelegramMessage(message) {
   } else if (text.startsWith("/")) {
     await sendMessage("Неизвестная команда. Используйте /help.");
   } else {
-    await startTurn(text);
+    await startTurn(telegramPrompt(message, text));
   }
 }
 
@@ -2112,7 +2153,11 @@ async function telegram(method, body) {
 
 async function sendMessage(text, extra = {}) {
   if (!chatId) return;
-  return telegram("sendMessage", { chat_id: chatId, text: String(text), ...extra });
+  return sendMessageTo(chatId, text, extra);
+}
+
+async function sendMessageTo(targetChatId, text, extra = {}) {
+  return telegram("sendMessage", { chat_id: targetChatId, text: String(text), ...extra });
 }
 
 async function sendLongMessage(text, { speechText = null, forceSpeechButton = false } = {}) {
@@ -2172,7 +2217,7 @@ async function shutdown(signal) {
   console.log(`Stopping on ${signal}...`);
   codex?.kill();
   activeClaudeProcess?.kill();
-  ttsWorker?.kill();
+  stopTtsWorker();
   await releaseInstanceLock();
 }
 

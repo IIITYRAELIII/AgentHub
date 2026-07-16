@@ -65,7 +65,8 @@
   "ttsModel": "v5_5_ru",
   "ttsSpeaker": "xenia",
   "ttsIdleTimeoutSeconds": 900,
-  "ttsButtonMinChars": 600,
+  "ttsRequestTimeoutSeconds": 600,
+  "ttsButtonMinChars": 1,
   "ttsMaxChars": 20000,
   "dataDir": "data"
 }

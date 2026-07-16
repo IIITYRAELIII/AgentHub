@@ -196,7 +196,8 @@ export async function loadConfig() {
       900,
       "ttsIdleTimeoutSeconds",
     ),
-    ttsButtonMinChars: positiveInteger(raw.ttsButtonMinChars, 600, "ttsButtonMinChars"),
+    ttsRequestTimeoutSeconds: positiveInteger(raw.ttsRequestTimeoutSeconds, 600, "ttsRequestTimeoutSeconds"),
+    ttsButtonMinChars: positiveInteger(raw.ttsButtonMinChars, 1, "ttsButtonMinChars"),
     ttsMaxChars: positiveInteger(raw.ttsMaxChars, 20000, "ttsMaxChars"),
     pythonExe: path.resolve(
       process.env.WHISPER_PYTHON ?? raw.pythonExe ?? path.join(
