@@ -4,7 +4,7 @@ function messageBody(message) {
 
 export function telegramPrompt(message, currentText = messageBody(message)) {
   const text = String(currentText ?? "").trim();
-  const quoted = messageBody(message?.reply_to_message);
+  const quoted = String(message?.quote?.text ?? messageBody(message?.reply_to_message)).trim();
   if (!quoted) return text;
 
   const quote = quoted

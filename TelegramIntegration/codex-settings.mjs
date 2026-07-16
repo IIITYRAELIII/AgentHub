@@ -15,6 +15,20 @@ export const CODEX_COLLABORATION_MODE_LABELS = {
   plan: "Plan",
 };
 
+export function resolveCodexThreadSettings(payload, current = {}) {
+  const source = payload?.threadSettings ?? payload ?? {};
+  const collaborationSettings = source.collaborationMode?.settings ?? {};
+  const modelCandidate = source.model ?? collaborationSettings.model;
+  const reasoningCandidate = source.reasoningEffort
+    ?? source.effort
+    ?? collaborationSettings.reasoning_effort;
+  const model = String(modelCandidate ?? "").trim() || current.model;
+  const reasoningEffort = CODEX_REASONING_EFFORTS.includes(reasoningCandidate)
+    ? reasoningCandidate
+    : current.reasoningEffort;
+  return { model, reasoningEffort };
+}
+
 export function buildCodexCollaborationMode({ mode, model, reasoningEffort }) {
   if (!CODEX_COLLABORATION_MODES.includes(mode)) throw new Error("unknown Codex collaboration mode");
   if (!CODEX_REASONING_EFFORTS.includes(reasoningEffort)) throw new Error("unknown Codex reasoning effort");

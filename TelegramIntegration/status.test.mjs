@@ -5,6 +5,7 @@ import {
   formatClaudeRateLimits,
   formatCodexRateLimits,
   formatStatusMessage,
+  formatTaskSwitchMessage,
 } from "./status.mjs";
 
 test("formatCodexRateLimits puts both windows on one line", () => {
@@ -120,4 +121,24 @@ test("formatArchiveMessage reports when no active task remains", () => {
     "❌ Задача \"Последняя\" архивирована.",
     "⚪ Активных задач нет.",
   ].join("\n"));
+});
+
+test("formatTaskSwitchMessage shows project and italic task when project button is enabled", () => {
+  assert.equal(formatTaskSwitchMessage({
+    task: "Задача <1>",
+    project: "Проект & тест",
+    showProject: true,
+    model: "GPT-5.6-Sol",
+    reasoning: "Medium",
+  }), "🔄 Текущая задача изменена.\n\n<b>Проект &amp; тест</b>\n<i>Задача &lt;1&gt;</i>\nGPT-5.6-Sol - Medium");
+});
+
+test("formatTaskSwitchMessage shows only bold task when project button is disabled", () => {
+  assert.equal(formatTaskSwitchMessage({
+    task: "Задача <1>",
+    project: "Скрытый проект",
+    showProject: false,
+    model: "GPT-5.6-Sol",
+    reasoning: "Medium",
+  }), "🔄 Текущая задача изменена.\n\n<b>Задача &lt;1&gt;</b>\nGPT-5.6-Sol - Medium");
 });

@@ -20,15 +20,18 @@ import {
   CODEX_COLLABORATION_MODES,
   CODEX_REASONING_EFFORTS,
   CODEX_REASONING_LABELS,
+  resolveCodexThreadSettings,
 } from "./codex-settings.mjs";
 import {
   formatArchiveMessage,
   formatClaudeRateLimits,
   formatCodexRateLimits,
   formatStatusMessage,
+  formatTaskSwitchMessage,
 } from "./status.mjs";
 import { formatTaskTokenUsage } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
+import { findMessageBinding } from "./message-bindings.mjs";
 
 const config = await loadConfig();
 let activeProvider = config.provider === "codex" ? "codex" : "claude";
@@ -57,9 +60,14 @@ function normalizeCodexModel(value) {
 function codexModelLabel(value) {
   return CODEX_MODELS.find((model) => model.value === value)?.label ?? value;
 }
-let codexModel = normalizeCodexModel(config.codexModel);
-let codexReasoningEffort = config.codexReasoningEffort;
+const defaultCodexModel = normalizeCodexModel(config.codexModel);
+const defaultCodexReasoningEffort = CODEX_REASONING_EFFORTS.includes(config.codexReasoningEffort)
+  ? config.codexReasoningEffort
+  : "high";
+let codexModel = defaultCodexModel;
+let codexReasoningEffort = defaultCodexReasoningEffort;
 let codexCollaborationMode = config.codexCollaborationMode;
+const codexTaskSettings = {};
 const PROJECTS = config.projects;
 const DEFAULT_PROJECT_ROOT = config.projectRoot;
 const STATE_FILE = config.stateFile;
@@ -170,6 +178,7 @@ let chatId = null;
 let activeProjectRoot = DEFAULT_PROJECT_ROOT;
 const threadIdsByProvider = { codex: null, claude: null };
 let threadId = null;
+let activeThreadTitle = "";
 let activeTurnId = null;
 let latestDiff = "";
 let responseText = "";
@@ -292,6 +301,76 @@ function formatTurnTokenUsage(tracker) {
   });
 }
 
+function rememberCodexTaskSettings(id = isCodex() ? threadId : null) {
+  if (!id) return;
+  codexTaskSettings[id] = {
+    model: codexModel,
+    reasoningEffort: codexReasoningEffort,
+  };
+}
+
+function restoreCodexTaskSettings(id, { inheritCurrent = false } = {}) {
+  if (!id) return;
+  const saved = codexTaskSettings[id];
+  const fallbackModel = inheritCurrent ? codexModel : defaultCodexModel;
+  const fallbackReasoning = inheritCurrent ? codexReasoningEffort : defaultCodexReasoningEffort;
+  codexModel = saved && typeof saved.model === "string" && saved.model.trim()
+    ? saved.model.trim()
+    : fallbackModel;
+  codexReasoningEffort = saved && CODEX_REASONING_EFFORTS.includes(saved.reasoningEffort)
+    ? saved.reasoningEffort
+    : fallbackReasoning;
+  rememberCodexTaskSettings(id);
+}
+
+function applyCodexThreadSettings(id, payload) {
+  if (!id) return;
+  const current = codexTaskSettings[id] ?? {
+    model: codexModel,
+    reasoningEffort: codexReasoningEffort,
+  };
+  const resolved = resolveCodexThreadSettings(payload, current);
+  codexTaskSettings[id] = resolved;
+  if (isCodex() && id === threadId) {
+    codexModel = resolved.model;
+    codexReasoningEffort = resolved.reasoningEffort;
+  }
+}
+
+async function syncActiveCodexThreadSettings() {
+  if (!isCodex() || !threadId) return;
+  const result = await sendRpc("thread/resume", {
+    threadId,
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+  });
+  if (!isWorkspaceThread(result.thread ?? {})) {
+    throw new Error("задача относится к другой активной папке");
+  }
+  activeThreadTitle = threadTitle(result.thread ?? {});
+  applyCodexThreadSettings(threadId, result);
+  await saveState();
+}
+
+async function updateActiveCodexThreadSettings() {
+  if (!isCodex() || !threadId) return;
+  rememberCodexTaskSettings();
+  await sendRpc("thread/settings/update", {
+    threadId,
+    model: codexModel,
+    effort: codexReasoningEffort,
+  });
+  await saveState();
+}
+
+function taskSwitchSettings() {
+  if (!isCodex()) return {};
+  return {
+    model: codexModelLabel(codexModel),
+    reasoning: CODEX_REASONING_LABELS[codexReasoningEffort],
+  };
+}
+
 try {
   const saved = JSON.parse(await readFile(STATE_FILE, "utf8"));
   if (typeof saved.activeProjectRoot === "string") {
@@ -307,10 +386,22 @@ try {
     threadIdsByProvider[saved.provider] = saved.threadId;
   }
   threadId = threadIdsByProvider[activeProvider] ?? null;
+  if (typeof saved.activeThreadTitle === "string") activeThreadTitle = saved.activeThreadTitle;
   if (CLAUDE_MODELS.includes(saved.claudeModel)) claudeModel = saved.claudeModel;
   if (typeof saved.codexModel === "string") codexModel = normalizeCodexModel(saved.codexModel);
   if (CODEX_REASONING_EFFORTS.includes(saved.codexReasoningEffort)) {
     codexReasoningEffort = saved.codexReasoningEffort;
+  }
+  if (saved.codexTaskSettings && typeof saved.codexTaskSettings === "object") {
+    for (const [savedThreadId, settings] of Object.entries(saved.codexTaskSettings)) {
+      if (!settings || typeof settings !== "object") continue;
+      if (typeof settings.model !== "string" || !settings.model.trim()) continue;
+      if (!CODEX_REASONING_EFFORTS.includes(settings.reasoningEffort)) continue;
+      codexTaskSettings[savedThreadId] = {
+        model: settings.model.trim(),
+        reasoningEffort: settings.reasoningEffort,
+      };
+    }
   }
   if (CODEX_COLLABORATION_MODES.includes(saved.codexCollaborationMode)) {
     codexCollaborationMode = saved.codexCollaborationMode;
@@ -328,6 +419,10 @@ try {
     if (Number.isSafeInteger(saved.activeRun.progressMessageId)) {
       progressMessageId = saved.activeRun.progressMessageId;
     }
+  }
+  if (activeProvider === "codex" && threadId) {
+    if (codexTaskSettings[threadId]) restoreCodexTaskSettings(threadId);
+    else rememberCodexTaskSettings(threadId);
   }
 } catch (error) {
   if (error?.code !== "ENOENT") console.error("Cannot read state:", error.message);
@@ -480,6 +575,8 @@ async function attachCodexThread() {
       if (!isWorkspaceThread(result.thread ?? {})) {
         throw new Error("saved thread belongs to another project");
       }
+      activeThreadTitle = threadTitle(result.thread ?? {});
+      applyCodexThreadSettings(threadId, result);
       if (!result.thread?.name) await nameTelegramThread(threadId);
       return;
     } catch (error) {
@@ -505,7 +602,9 @@ async function createThread() {
     serviceName: "telegram_codex_bridge",
   });
   threadId = result.thread.id;
-  await nameTelegramThread(threadId);
+  restoreCodexTaskSettings(threadId, { inheritCurrent: true });
+  await updateActiveCodexThreadSettings();
+  activeThreadTitle = await nameTelegramThread(threadId);
   latestDiff = "";
   await saveState();
 }
@@ -518,7 +617,9 @@ async function nameTelegramThread(id) {
     hour: "2-digit",
     minute: "2-digit",
   });
-  await sendRpc("thread/name/set", { threadId: id, name: `Telegram · ${timestamp}` });
+  const title = `Telegram · ${timestamp}`;
+  await sendRpc("thread/name/set", { threadId: id, name: title });
+  return title;
 }
 
 async function listThreads() {
@@ -675,6 +776,7 @@ async function switchProject(index) {
   if (!project) throw new Error("unknown project");
   if (samePath(project.path, activeProjectRoot)) return { project, changed: false };
 
+  rememberCodexTaskSettings();
   const previous = {
     activeProjectRoot,
     threadId,
@@ -704,10 +806,12 @@ async function switchProvider(target) {
   if (target !== "codex" && target !== "claude") throw new Error("unknown provider");
   if (target === activeProvider) return { changed: false };
 
-  const previous = { activeProvider, threadId };
+  rememberCodexTaskSettings();
+  const previous = { activeProvider, threadId, codexModel, codexReasoningEffort };
   threadIdsByProvider[activeProvider] = threadId;
   activeProvider = target;
   threadId = threadIdsByProvider[target] ?? null;
+  if (target === "codex" && threadId) restoreCodexTaskSettings(threadId);
   latestDiff = "";
   responseText = "";
   try {
@@ -723,7 +827,7 @@ async function switchProvider(target) {
     }
   } catch (error) {
     threadIdsByProvider[target] = threadId;
-    ({ activeProvider, threadId } = previous);
+    ({ activeProvider, threadId, codexModel, codexReasoningEffort } = previous);
     await saveState();
     throw error;
   }
@@ -738,12 +842,14 @@ async function resumeThread(selectedThreadId, { notify = true } = {}) {
   }
   if (!isCodex()) {
     threadId = selectedThreadId;
+    activeThreadTitle = `Сессия Claude · ${selectedThreadId.slice(0, 8)}`;
     latestDiff = "";
     responseText = "";
     await saveState();
     if (notify) await sendMessage(`Выбрана сессия Claude: ${threadId}`);
     return true;
   }
+  rememberCodexTaskSettings();
   const result = await sendRpc("thread/resume", {
     threadId: selectedThreadId,
     approvalPolicy: "on-request",
@@ -753,11 +859,79 @@ async function resumeThread(selectedThreadId, { notify = true } = {}) {
     throw new Error("задача относится к другой активной папке");
   }
   threadId = result.thread?.id ?? selectedThreadId;
+  restoreCodexTaskSettings(threadId);
+  applyCodexThreadSettings(threadId, result);
+  activeThreadTitle = threadTitle(result.thread ?? {});
   latestDiff = "";
   responseText = "";
   await saveState();
-  if (notify) await sendMessage(`Выбрана задача: ${threadTitle(result.thread ?? {})}`);
+  if (notify) {
+    await sendMessage(formatTaskSwitchMessage({
+      task: activeThreadTitle,
+      project: activeProject().name,
+      showProject: config.showProjectButton,
+      ...taskSwitchSettings(),
+    }), { parse_mode: "HTML" });
+  }
   return true;
+}
+
+async function activateMessageBinding(binding) {
+  if (activeTurnId) return { changed: false, reason: "active-turn" };
+  const project = findProject(binding.projectRoot);
+  if (!project) throw new Error("проект привязанного сообщения больше не разрешён");
+  if (binding.provider !== "codex" && binding.provider !== "claude") {
+    throw new Error("неизвестный движок привязанного сообщения");
+  }
+  const alreadyActive = samePath(project.path, activeProjectRoot)
+    && binding.provider === activeProvider
+    && binding.threadId === threadId;
+  if (alreadyActive) return { changed: false };
+
+  rememberCodexTaskSettings();
+  const previous = {
+    activeProjectRoot,
+    activeProvider,
+    threadId,
+    latestDiff,
+    responseText,
+    activeThreadTitle,
+    codexModel,
+    codexReasoningEffort,
+    threadIdsByProvider: { ...threadIdsByProvider },
+  };
+  activeProjectRoot = project.path;
+  activeProvider = binding.provider;
+  threadId = binding.threadId;
+  activeThreadTitle = binding.taskTitle?.trim() || `${binding.provider === "codex" ? "Codex" : "Claude"} · ${binding.threadId.slice(0, 8)}`;
+  threadIdsByProvider[activeProvider] = threadId;
+  if (isCodex()) restoreCodexTaskSettings(threadId);
+  latestDiff = "";
+  responseText = "";
+  try {
+    if (isCodex() && !codex) {
+      await startCodexAppServer();
+      await initializeCodex();
+    } else {
+      await resumeThread(binding.threadId, { notify: false });
+    }
+    await saveState();
+    return { changed: true, activeTitle: activeThreadTitle };
+  } catch (error) {
+    ({
+      activeProjectRoot,
+      activeProvider,
+      threadId,
+      latestDiff,
+      responseText,
+      activeThreadTitle,
+      codexModel,
+      codexReasoningEffort,
+    } = previous);
+    Object.assign(threadIdsByProvider, previous.threadIdsByProvider);
+    await saveState();
+    throw error;
+  }
 }
 
 async function archiveCurrentThread() {
@@ -771,6 +945,7 @@ async function archiveCurrentThread() {
   });
   const archivedThread = archivedResult.thread ?? { id: archivedThreadId };
   await sendRpc("thread/archive", { threadId: archivedThreadId });
+  delete codexTaskSettings[archivedThreadId];
   threadId = null;
   threadIdsByProvider.codex = null;
   latestDiff = "";
@@ -881,6 +1056,8 @@ async function beginRun(input) {
     turnId: null,
     sessionId: isCodex() ? null : threadId,
     promptPreview: inputPreview(input),
+    model: isCodex() ? codexModelLabel(codexModel) : CLAUDE_MODEL_LABELS[claudeModel],
+    reasoning: CODEX_REASONING_LABELS[isCodex() ? codexReasoningEffort : claudeReasoningEffort],
     responseText: "",
     status: "running",
     startedAt: new Date().toISOString(),
@@ -928,7 +1105,14 @@ function appendProgressReasoning(delta) {
 
 function renderProgress(done = false) {
   const title = `${done ? "✅" : "⏳"} ${activeRun?.provider === "claude" ? "Claude Code" : "Codex"} · ${activeProject().name}`;
-  const parts = [title, progressStage || "Выполняется…"];
+  const fallbackModel = activeRun?.provider === "claude"
+    ? CLAUDE_MODEL_LABELS[claudeModel]
+    : codexModelLabel(codexModel);
+  const fallbackReasoning = CODEX_REASONING_LABELS[
+    activeRun?.provider === "claude" ? claudeReasoningEffort : codexReasoningEffort
+  ];
+  const settings = `${activeRun?.model ?? fallbackModel} - ${activeRun?.reasoning ?? fallbackReasoning}`;
+  const parts = [`${title}\n${settings}`, progressStage || "Выполняется…"];
   if (done) return parts.join("\n\n").slice(0, TELEGRAM_LIMIT);
   if (progressReasoning.trim()) {
     const reasoning = progressReasoning.trim();
@@ -997,6 +1181,13 @@ async function startTurn(input, temporaryFiles = [], { forceSpeechButton = false
   if (activeTurnId) {
     await sendMessage("Предыдущая задача ещё выполняется. Используйте /cancel или дождитесь завершения.");
     return;
+  }
+  if (isCodex()) {
+    try {
+      await syncActiveCodexThreadSettings();
+    } catch (error) {
+      console.error("Cannot sync Codex thread settings before turn:", error.message);
+    }
   }
   await beginRun(input);
   latestDiff = "";
@@ -1246,6 +1437,10 @@ async function handleCodexMessage(message) {
   }
 
   const { method, params = {}, id } = message;
+  if (method === "thread/settings/updated") {
+    applyCodexThreadSettings(params.threadId, params.threadSettings);
+    void saveState();
+  }
   if (method === "turn/started") {
     activeTurnId = params.turn?.id ?? activeTurnId;
     if (activeRun && activeTurnId) {
@@ -1327,7 +1522,10 @@ async function recoverActiveRun() {
 
   progressMessageId = activeRun.progressMessageId ?? progressMessageId;
   responseText = String(activeRun.responseText ?? "");
-  threadId = activeRun.threadId ?? activeRun.sessionId ?? threadId;
+  const recoveredThreadId = activeRun.threadId ?? activeRun.sessionId ?? threadId;
+  if (isCodex() && recoveredThreadId !== threadId) rememberCodexTaskSettings();
+  threadId = recoveredThreadId;
+  if (isCodex()) restoreCodexTaskSettings(threadId);
   if (!isCodex()) {
     await finishProgress("Процесс Claude прервался, но сессия сохранена.");
     await sendMessage(`⚠️ Запуск Claude был прерван. Сессия ${threadId ?? "не успела получить ID"} сохранена и остаётся выбранной.`);
@@ -1792,7 +1990,7 @@ async function handleApprovalCallback(callback) {
   if (codexModelMatch) {
     try {
       const switched = switchCodexModel(codexModelMatch[1]);
-      await saveState();
+      await updateActiveCodexThreadSettings();
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
         text: switched.changed ? "Codex model changed" : "This Codex model is already selected",
@@ -1820,7 +2018,17 @@ async function handleApprovalCallback(callback) {
     const value = codexReasoningMatch[1];
     const changed = value !== codexReasoningEffort;
     codexReasoningEffort = value;
-    await saveState();
+    try {
+      await updateActiveCodexThreadSettings();
+    } catch (error) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Не удалось изменить Reasoning",
+        show_alert: true,
+      });
+      await sendMessage(`Ошибка смены Reasoning Codex: ${error.message}`);
+      return;
+    }
     await telegram("answerCallbackQuery", {
       callback_query_id: callback.id,
       text: changed ? "Reasoning изменён" : "Этот уровень уже выбран",
@@ -1986,18 +2194,37 @@ async function handleApprovalCallback(callback) {
   }
   const threadMatch = /^t:([0-9a-f-]+)$/i.exec(callback.data ?? "");
   if (threadMatch) {
+    const selectedThreadId = threadMatch[1];
+    const alreadySelected = selectedThreadId === threadId;
+    await telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: alreadySelected ? "Эта задача уже выбрана" : "Переключаю задачу…",
+    });
     try {
-      const resumed = await resumeThread(threadMatch[1], { notify: false });
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: resumed ? "Задача выбрана" : "Переключение недоступно",
-      });
-      if (resumed) {
-        await sendThreadPicker({ editMessage: callback.message });
+      if (!alreadySelected) {
+        const resumed = await resumeThread(selectedThreadId, { notify: false });
+        if (!resumed) return;
+        await sendMessageTo(
+          callback.message.chat.id,
+          formatTaskSwitchMessage({
+            task: activeThreadTitle,
+            project: activeProject().name,
+            showProject: config.showProjectButton,
+            ...taskSwitchSettings(),
+          }),
+          { parse_mode: "HTML" },
+        );
       }
+      await telegram("deleteMessage", {
+        chat_id: callback.message.chat.id,
+        message_id: callback.message.message_id,
+      }).catch(() => telegram("editMessageReplyMarkup", {
+        chat_id: callback.message.chat.id,
+        message_id: callback.message.message_id,
+        reply_markup: { inline_keyboard: [] },
+      }));
     } catch (error) {
-      await telegram("answerCallbackQuery", { callback_query_id: callback.id, text: "Не удалось выбрать задачу" });
-      await sendMessage(`Ошибка выбора задачи: ${error.message}`);
+      await sendMessageTo(callback.message.chat.id, `Ошибка выбора задачи: ${error.message}`);
     }
     return;
   }
@@ -2037,6 +2264,28 @@ async function handleTelegramMessage(message) {
   }
   chatId = message.chat.id;
   await saveState();
+  const repliedMessageId = message.reply_to_message?.message_id;
+  if (Number.isSafeInteger(repliedMessageId)) {
+    const binding = await findMessageBinding(config.dataDir, message.chat.id, repliedMessageId);
+    if (binding) {
+      const activated = await activateMessageBinding(binding);
+      if (activated.reason === "active-turn") {
+        await sendMessage("Нельзя переключиться на задачу из этого сообщения: другая задача ещё выполняется. Дождитесь завершения или остановите её.");
+        return;
+      }
+      if (activated.changed) {
+        await sendMessage(
+          formatTaskSwitchMessage({
+            task: activated.activeTitle,
+            project: activeProject().name,
+            showProject: config.showProjectButton,
+            ...taskSwitchSettings(),
+          }),
+          { parse_mode: "HTML" },
+        );
+      }
+    }
+  }
   if (message.photo || message.document?.mime_type?.startsWith("image/")) {
     await analyzeImage(message);
     return;
@@ -2186,15 +2435,18 @@ function stopTyping() {
 }
 
 function saveState() {
+  rememberCodexTaskSettings();
   threadIdsByProvider[activeProvider] = threadId;
   const content = `${JSON.stringify({
     chatId,
     activeProjectRoot,
+    activeThreadTitle,
     activeProvider,
     threadIds: threadIdsByProvider,
     claudeModel,
     codexModel,
     codexReasoningEffort,
+    codexTaskSettings,
     codexCollaborationMode,
     claudeReasoningEffort,
     claudeCollaborationMode,

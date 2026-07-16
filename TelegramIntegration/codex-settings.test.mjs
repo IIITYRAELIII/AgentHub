@@ -4,6 +4,7 @@ import {
   buildCodexCollaborationMode,
   CODEX_COLLABORATION_MODES,
   CODEX_REASONING_EFFORTS,
+  resolveCodexThreadSettings,
 } from "./codex-settings.mjs";
 
 test("buildCodexCollaborationMode preserves selected model and reasoning", () => {
@@ -35,4 +36,32 @@ test("buildCodexCollaborationMode rejects invalid selections", () => {
     () => buildCodexCollaborationMode({ mode: "default", model: "gpt-5.6-sol", reasoningEffort: "huge" }),
     /unknown Codex reasoning effort/,
   );
+});
+
+test("resolveCodexThreadSettings reads effective settings from thread resume", () => {
+  assert.deepEqual(resolveCodexThreadSettings({
+    model: "gpt-5.6-terra",
+    reasoningEffort: "medium",
+  }, {
+    model: "gpt-5.6-sol",
+    reasoningEffort: "high",
+  }), {
+    model: "gpt-5.6-terra",
+    reasoningEffort: "medium",
+  });
+});
+
+test("resolveCodexThreadSettings reads thread settings notifications and keeps valid fallbacks", () => {
+  assert.deepEqual(resolveCodexThreadSettings({
+    threadSettings: {
+      model: "gpt-5.6-luna",
+      effort: "unsupported",
+    },
+  }, {
+    model: "gpt-5.6-sol",
+    reasoningEffort: "xhigh",
+  }), {
+    model: "gpt-5.6-luna",
+    reasoningEffort: "xhigh",
+  });
 });

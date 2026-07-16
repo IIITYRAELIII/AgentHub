@@ -16,3 +16,11 @@ test("telegramPrompt includes replied-to Telegram text", () => {
 test("telegramPrompt supports quoted captions", () => {
   assert.match(telegramPrompt({ text: "Проверь", reply_to_message: { caption: "Описание файла" } }), /> Описание файла/);
 });
+
+test("telegramPrompt prefers a selected Telegram quote", () => {
+  assert.match(telegramPrompt({
+    text: "Вот про это",
+    quote: { text: "выделенный фрагмент" },
+    reply_to_message: { text: "Полное исходное сообщение" },
+  }), /> выделенный фрагмент/);
+});

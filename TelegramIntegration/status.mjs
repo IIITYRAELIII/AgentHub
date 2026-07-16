@@ -1,5 +1,9 @@
 import { parseClaudeLimits } from "./claude.mjs";
 
+function escapeTelegramHtml(value) {
+  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
 export function formatResetRemaining(resetsAtSeconds, nowMs = Date.now()) {
   const resetsAtMs = Number(resetsAtSeconds) * 1000;
   if (!Number.isFinite(resetsAtMs)) return "";
@@ -102,4 +106,13 @@ export function formatArchiveMessage({ archivedTask, activeTask }) {
     ? `🟢 Задача "${activeTask}" активна.`
     : "⚪ Активных задач нет.";
   return `${archived}\n${active}`;
+}
+
+export function formatTaskSwitchMessage({ task, project, showProject, model, reasoning }) {
+  const taskText = escapeTelegramHtml(task);
+  const settingsText = model && reasoning
+    ? `\n${escapeTelegramHtml(model)} - ${escapeTelegramHtml(reasoning)}`
+    : "";
+  if (!showProject) return `🔄 Текущая задача изменена.\n\n<b>${taskText}</b>${settingsText}`;
+  return `🔄 Текущая задача изменена.\n\n<b>${escapeTelegramHtml(project)}</b>\n<i>${taskText}</i>${settingsText}`;
 }
