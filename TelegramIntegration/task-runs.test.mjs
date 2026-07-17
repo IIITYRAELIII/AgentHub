@@ -6,6 +6,7 @@ import {
   serializableTaskRun,
   taskRunKey,
   updateObservedResponse,
+  updateTaskRunTitle,
 } from "./task-runs.mjs";
 
 function run(overrides = {}) {
@@ -105,4 +106,12 @@ test("an observed task delivers only an answer that changed after attachment", (
   assert.equal(updateObservedResponse(observed, "Старый ответ"), false);
   assert.equal(updateObservedResponse(observed, "Новый итоговый ответ"), true);
   assert.equal(updateObservedResponse(observed, "Старый ответ"), true);
+});
+
+test("a restored task run adopts the current title of the same thread", () => {
+  const restored = run({ taskTitle: "Старое название" });
+  assert.equal(updateTaskRunTitle(restored, "  Новое\n название  "), true);
+  assert.equal(restored.taskTitle, "Новое название");
+  assert.equal(updateTaskRunTitle(restored, "Новое название"), false);
+  assert.equal(updateTaskRunTitle(restored, ""), false);
 });

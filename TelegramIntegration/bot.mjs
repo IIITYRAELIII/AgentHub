@@ -49,6 +49,7 @@ import {
   TaskRunRegistry,
   taskRunKey,
   updateObservedResponse,
+  updateTaskRunTitle,
 } from "./task-runs.mjs";
 import {
   codexTurnAnswer,
@@ -886,6 +887,17 @@ async function refreshTaskCatalog() {
     ...run,
     projectName: runProject(run).name,
   })));
+  let titleChanged = false;
+  for (const run of taskRuns.values()) {
+    const entry = taskCatalog.find((item) => catalogEntryIsSelected(item, run));
+    if (entry) titleChanged = updateTaskRunTitle(run, entry.title) || titleChanged;
+  }
+  const current = taskCatalog.find((entry) => catalogEntryIsSelected(entry, selectedTask()));
+  if (current?.title && current.title !== activeThreadTitle) {
+    activeThreadTitle = current.title;
+    titleChanged = true;
+  }
+  if (titleChanged) await saveState();
   return taskCatalog;
 }
 
@@ -2095,6 +2107,11 @@ async function showTaskMessage(binding, targetChatId) {
   if (dismissedExternalTasks.delete(task)) await saveState();
   const running = taskRuns.forTask(task);
   if (running) {
+    const selectedTitle = isSelectedRun(running) ? activeThreadTitle : null;
+    const catalogTitle = taskCatalog.find((entry) => catalogEntryIsSelected(entry, running))?.title;
+    if (updateTaskRunTitle(running, selectedTitle || catalogTitle || binding.taskTitle)) {
+      await saveState();
+    }
     running.chatId = targetChatId;
     await startProgressMessage(running, { forceNew: true });
     return;

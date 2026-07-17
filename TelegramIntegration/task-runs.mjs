@@ -128,6 +128,13 @@ export function updateObservedResponse(run, answer) {
   return run.observedResponseChanged === true;
 }
 
+export function updateTaskRunTitle(run, title) {
+  const value = String(title ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (!run || !value || run.taskTitle === value) return false;
+  run.taskTitle = value;
+  return true;
+}
+
 export function serializableTaskRun(run) {
   const {
     process: _process,
