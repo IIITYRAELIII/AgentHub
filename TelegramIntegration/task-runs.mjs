@@ -1,0 +1,99 @@
+import path from "node:path";
+
+function normalizedProjectRoot(projectRoot) {
+  const resolved = path.resolve(String(projectRoot ?? ""));
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+export function taskRunKey({ provider, projectRoot, threadId }) {
+  const normalizedProvider = String(provider ?? "").trim().toLowerCase();
+  const normalizedThreadId = String(threadId ?? "").trim();
+  return `${normalizedProvider}\0${normalizedProjectRoot(projectRoot)}\0${normalizedThreadId}`;
+}
+
+export class TaskRunRegistry {
+  #byId = new Map();
+  #byTask = new Map();
+  #byTurn = new Map();
+
+  constructor(runs = []) {
+    for (const run of runs) this.add(run);
+  }
+
+  add(run) {
+    if (!run?.id) throw new Error("run id is required");
+    const key = taskRunKey(run);
+    const existing = this.#byTask.get(key);
+    if (existing && existing !== run) throw new Error("this task is already running");
+    this.#byId.set(run.id, run);
+    this.#byTask.set(key, run);
+    if (run.turnId) this.#byTurn.set(run.turnId, run);
+    return run;
+  }
+
+  reindex(run, previous = {}) {
+    const oldKey = taskRunKey({ ...run, ...previous });
+    if (this.#byTask.get(oldKey) === run) this.#byTask.delete(oldKey);
+    if (previous.turnId && this.#byTurn.get(previous.turnId) === run) {
+      this.#byTurn.delete(previous.turnId);
+    }
+    const newKey = taskRunKey(run);
+    const existing = this.#byTask.get(newKey);
+    if (existing && existing !== run) throw new Error("this task is already running");
+    this.#byTask.set(newKey, run);
+    if (run.turnId) this.#byTurn.set(run.turnId, run);
+    return run;
+  }
+
+  remove(runOrId) {
+    const run = typeof runOrId === "string" ? this.#byId.get(runOrId) : runOrId;
+    if (!run) return null;
+    this.#byId.delete(run.id);
+    const key = taskRunKey(run);
+    if (this.#byTask.get(key) === run) this.#byTask.delete(key);
+    if (run.turnId && this.#byTurn.get(run.turnId) === run) this.#byTurn.delete(run.turnId);
+    return run;
+  }
+
+  forTask(task) {
+    return this.#byTask.get(taskRunKey(task)) ?? null;
+  }
+
+  forEvent({ turnId, threadId, provider = "codex" }) {
+    if (turnId && this.#byTurn.has(turnId)) return this.#byTurn.get(turnId);
+    const normalizedThreadId = String(threadId ?? "").trim();
+    if (!normalizedThreadId) return null;
+    const matches = this.values().filter((run) => (
+      run.provider === provider && String(run.threadId ?? "").trim() === normalizedThreadId
+    ));
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  inProject(projectRoot, { excludeTask = null } = {}) {
+    const root = normalizedProjectRoot(projectRoot);
+    const excludedKey = excludeTask ? taskRunKey(excludeTask) : null;
+    return this.values().filter((run) => (
+      normalizedProjectRoot(run.projectRoot) === root
+      && (!excludedKey || taskRunKey(run) !== excludedKey)
+    ));
+  }
+
+  values() {
+    return [...this.#byId.values()];
+  }
+
+  get size() {
+    return this.#byId.size;
+  }
+}
+
+export function serializableTaskRun(run) {
+  const {
+    process: _process,
+    progressStartTimer: _progressStartTimer,
+    progressTimer: _progressTimer,
+    progressUpdateInFlight: _progressUpdateInFlight,
+    ...value
+  } = run;
+  return value;
+}

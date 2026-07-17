@@ -37,7 +37,8 @@ import {
 } from "./status.mjs";
 import { formatTaskTokenUsage } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
-import { findMessageBinding } from "./message-bindings.mjs";
+import { appendMessageBindings, findMessageBinding } from "./message-bindings.mjs";
+import { serializableTaskRun, TaskRunRegistry, taskRunKey } from "./task-runs.mjs";
 
 const config = await loadConfig();
 let activeProvider = config.provider === "codex" ? "codex" : "claude";
@@ -190,24 +191,14 @@ let activeProjectRoot = DEFAULT_PROJECT_ROOT;
 const threadIdsByProvider = { codex: null, claude: null };
 let threadId = null;
 let activeThreadTitle = "";
-let activeTurnId = null;
 let latestDiff = "";
-let responseText = "";
 let requestSequence = 1;
 let approvalSequence = 1;
 let stopping = false;
 let autoApprove = config.autoApproveOnStart;
-let activeClaudeProcess = null;
-let activeRun = null;
-let progressMessageId = null;
-let progressStartTimer = null;
-let progressStage = "";
-let progressReasoning = "";
-let progressTimer = null;
-let lastProgressText = "";
-let progressUpdateInFlight = false;
 let codexRestarting = false;
 let stateWriteQueue = Promise.resolve();
+let bindingWriteQueue = Promise.resolve();
 let ttsWorker = null;
 let ttsLines = null;
 let ttsSequence = 1;
@@ -220,6 +211,8 @@ const turnTemporaryFiles = new Map();
 const turnSpeechButtons = new Map();
 const pendingTts = new Map();
 const speechTexts = new Map();
+const taskRuns = new TaskRunRegistry();
+const taskDiffs = new Map();
 
 try {
   const savedSpeechTexts = JSON.parse(await readFile(SPEECH_TEXTS_FILE, "utf8"));
@@ -238,6 +231,74 @@ function findProject(projectRoot) {
 
 function activeProject() {
   return findProject(activeProjectRoot) ?? PROJECTS[0];
+}
+
+function selectedTask() {
+  return { provider: activeProvider, projectRoot: activeProjectRoot, threadId };
+}
+
+function selectedRun() {
+  return taskRuns.forTask(selectedTask());
+}
+
+function isSelectedRun(run) {
+  return Boolean(run)
+    && run.provider === activeProvider
+    && samePath(run.projectRoot, activeProjectRoot)
+    && String(run.threadId ?? "") === String(threadId ?? "");
+}
+
+function runProject(run) {
+  return findProject(run?.projectRoot) ?? { name: path.basename(run?.projectRoot ?? "") || "Проект" };
+}
+
+function runTaskTitle(run) {
+  return String(run?.taskTitle ?? "").trim()
+    || `${run?.provider === "claude" ? "Claude" : "Codex"} · ${String(run?.threadId ?? run?.id ?? "").slice(0, 8)}`;
+}
+
+async function bindRunMessage(run, message) {
+  if (!run?.threadId || !Number.isSafeInteger(run.chatId) || !Number.isSafeInteger(message?.message_id)) return;
+  const binding = {
+    chatId: run.chatId,
+    messageId: message.message_id,
+    provider: run.provider,
+    threadId: run.threadId,
+    projectRoot: run.projectRoot,
+    taskTitle: runTaskTitle(run),
+    createdAt: new Date().toISOString(),
+  };
+  bindingWriteQueue = bindingWriteQueue
+    .catch(() => {})
+    .then(() => appendMessageBindings(config.dataDir, [binding]));
+  await bindingWriteQueue;
+}
+
+async function sendRunMessage(run, text, extra = {}) {
+  const message = await sendMessageTo(run.chatId, text, extra);
+  await bindRunMessage(run, message).catch((error) => {
+    console.error("Cannot bind task message:", error.message);
+  });
+  return message;
+}
+
+async function sendRunLongMessage(run, text, { speechText = null, forceSpeechButton = false } = {}) {
+  const value = `🧵 ${runTaskTitle(run)}\n\n${String(text)}`;
+  const speechId = rememberSpeechText(speechText, forceSpeechButton);
+  for (let start = 0; start < value.length; start += TELEGRAM_LIMIT) {
+    const isLast = start + TELEGRAM_LIMIT >= value.length;
+    const extra = isLast && speechId
+      ? { reply_markup: { inline_keyboard: [[{ text: "🔊 Озвучить", callback_data: `speech:${speechId}` }]] } }
+      : {};
+    await sendRunMessage(run, value.slice(start, start + TELEGRAM_LIMIT), extra);
+  }
+}
+
+function runningProjectWarning(run) {
+  const others = taskRuns.inProject(run.projectRoot, { excludeTask: run });
+  if (!others.length) return "";
+  return `⚠️ В проекте «${runProject(run).name}» уже выполняется ${others.length} задач(а). `
+    + "Параллельные изменения одних файлов могут конфликтовать.";
 }
 
 const TOKEN_USAGE_FIELDS = [
@@ -410,11 +471,25 @@ try {
   }
   if (Number.isSafeInteger(saved.chatId)) chatId = saved.chatId;
   if (Number.isSafeInteger(saved.updateOffset) && saved.updateOffset >= 0) updateOffset = saved.updateOffset;
-  if (saved.activeRun && typeof saved.activeRun === "object" && saved.activeRun.status === "running") {
-    activeRun = saved.activeRun;
-    if (Number.isSafeInteger(saved.activeRun.progressMessageId)) {
-      progressMessageId = saved.activeRun.progressMessageId;
-    }
+  const savedRuns = Array.isArray(saved.activeRuns)
+    ? saved.activeRuns
+    : saved.activeRun && typeof saved.activeRun === "object"
+      ? [saved.activeRun]
+      : [];
+  for (const savedRun of savedRuns) {
+    if (!savedRun || typeof savedRun !== "object" || savedRun.status !== "running") continue;
+    taskRuns.add({
+      ...savedRun,
+      chatId: Number.isSafeInteger(savedRun.chatId) ? savedRun.chatId : chatId,
+      responseText: String(savedRun.responseText ?? ""),
+      progressStage: String(savedRun.progressStage ?? "Восстановление задачи…"),
+      progressReasoning: String(savedRun.progressReasoning ?? ""),
+      lastProgressText: String(savedRun.lastProgressText ?? ""),
+      progressStartTimer: null,
+      progressTimer: null,
+      progressUpdateInFlight: false,
+      process: null,
+    });
   }
   if (activeProvider === "codex" && threadId) {
     if (codexTaskSettings[threadId]) restoreCodexTaskSettings(threadId);
@@ -481,12 +556,14 @@ async function startCodexAppServer() {
     for (const pending of pendingRpc.values()) pending.reject(error);
     pendingRpc.clear();
     const wasActive = isCodex();
+    const hadCodexRuns = taskRuns.values().some((run) => run.provider === "codex");
     codex = null;
     codexLines = null;
     if (stopping) return;
-    if (!wasActive) return;
-    stopTyping();
-    setProgressStage("Связь с Codex потеряна. Переподключаюсь…");
+    if (!wasActive && !hadCodexRuns) return;
+    for (const run of taskRuns.values().filter((item) => item.provider === "codex")) {
+      setProgressStage(run, "Связь с Codex потеряна. Переподключаюсь…");
+    }
     if (!codexRestarting) setTimeout(() => void restartCodexAfterCrash(), 2000);
   });
 
@@ -503,18 +580,23 @@ async function startCodexAppServer() {
 }
 
 async function restartCodexAfterCrash() {
-  if (stopping || !isCodex() || codexRestarting) return;
+  const hasCodexRuns = taskRuns.values().some((run) => run.provider === "codex");
+  if (stopping || (!isCodex() && !hasCodexRuns) || codexRestarting) return;
   codexRestarting = true;
   try {
     await startCodexAppServer();
-    await initializeCodex();
-    await recoverActiveRun();
-    if (activeTurnId) startTyping();
-    setProgressStage("Соединение с Codex восстановлено.");
+    await initializeCodex({ attachSelectedThread: isCodex() });
+    await recoverActiveRuns({ provider: "codex" });
+    if (taskRuns.size) startTyping();
+    for (const run of taskRuns.values().filter((item) => item.provider === "codex")) {
+      setProgressStage(run, "Соединение с Codex восстановлено.");
+    }
   } catch (error) {
     console.error("Cannot restart Codex app-server:", error.message);
-    setProgressStage(`Codex пока недоступен: ${error.message}`);
-    if (!stopping && isCodex()) setTimeout(() => void restartCodexAfterCrash(), 5000);
+    for (const run of taskRuns.values().filter((item) => item.provider === "codex")) {
+      setProgressStage(run, `Codex пока недоступен: ${error.message}`);
+    }
+    if (!stopping && (isCodex() || hasCodexRuns)) setTimeout(() => void restartCodexAfterCrash(), 5000);
   } finally {
     codexRestarting = false;
   }
@@ -547,7 +629,7 @@ async function initializeProvider() {
   await initializeCodex();
 }
 
-async function initializeCodex() {
+async function initializeCodex({ attachSelectedThread = true } = {}) {
   await sendRpc("initialize", {
     clientInfo: {
       name: "telegram_codex_bridge",
@@ -557,7 +639,7 @@ async function initializeCodex() {
     capabilities: { experimentalApi: true },
   });
   sendNotification("initialized");
-  await attachCodexThread();
+  if (attachSelectedThread) await attachCodexThread();
 }
 
 async function attachCodexThread() {
@@ -586,8 +668,8 @@ async function attachCodexThread() {
 async function createThread() {
   if (!isCodex()) {
     threadId = null;
+    activeThreadTitle = "Новая задача Claude";
     latestDiff = "";
-    responseText = "";
     await saveState();
     return;
   }
@@ -661,9 +743,24 @@ function formatThread(thread) {
 
 async function sendThreadPicker({ editMessage = null } = {}) {
   if (!isCodex()) {
-    const keyboard = [[{ text: "➕ Создать новую задачу", callback_data: "thread:new" }]];
+    const knownSessions = new Map();
+    if (threadId) knownSessions.set(threadId, activeThreadTitle || `Claude · ${threadId.slice(0, 8)}`);
+    for (const run of taskRuns.inProject(activeProjectRoot)) {
+      if (run.provider === "claude" && run.threadId) knownSessions.set(run.threadId, runTaskTitle(run));
+    }
+    const keyboard = [
+      [{ text: "➕ Создать новую задачу", callback_data: "thread:new" }],
+      ...[...knownSessions].map(([sessionId, title]) => [{
+        text: `${sessionId === threadId ? "✓ " : ""}${taskRuns.forTask({
+          provider: "claude",
+          projectRoot: activeProjectRoot,
+          threadId: sessionId,
+        }) ? "⏳ " : ""}${title}`,
+        callback_data: `t:${sessionId}`,
+      }]),
+    ];
     const current = threadId ? `\n\nТекущая сессия: ${threadId}` : "";
-    const text = `Claude Code не предоставляет CLI для списка сессий.${current}\nДля известного ID используйте /resume <ID>.`;
+    const text = `Показаны текущая и выполняющиеся сессии Claude.${current}\nДля другого известного ID используйте /resume <ID>.`;
     const replyMarkup = { inline_keyboard: keyboard };
     if (editMessage) {
       await telegram("editMessageText", {
@@ -682,7 +779,11 @@ async function sendThreadPicker({ editMessage = null } = {}) {
     text: "➕ Создать новую задачу",
     callback_data: "thread:new",
   }], ...threads.map((thread) => [{
-    text: `${thread.id === threadId ? "✓ " : ""}${config.showTaskProject ? `${activeProject().name} · ` : ""}${threadTitle(thread)}`,
+    text: `${thread.id === threadId ? "✓ " : ""}${taskRuns.forTask({
+      provider: "codex",
+      projectRoot: activeProjectRoot,
+      threadId: thread.id,
+    }) ? "⏳ " : ""}${config.showTaskProject ? `${activeProject().name} · ` : ""}${threadTitle(thread)}`,
     callback_data: `t:${thread.id}`,
   }])];
   if (threadId) {
@@ -767,7 +868,6 @@ function switchModel(value) {
 }
 
 async function switchProject(index) {
-  if (activeTurnId) return null;
   const project = PROJECTS[index];
   if (!project) throw new Error("unknown project");
   if (samePath(project.path, activeProjectRoot)) return { project, changed: false };
@@ -777,7 +877,6 @@ async function switchProject(index) {
     activeProjectRoot,
     threadId,
     latestDiff,
-    responseText,
     threadIdsByProvider: { ...threadIdsByProvider },
   };
   activeProjectRoot = project.path;
@@ -785,11 +884,10 @@ async function switchProject(index) {
   threadIdsByProvider.codex = null;
   threadIdsByProvider.claude = null;
   latestDiff = "";
-  responseText = "";
   try {
     await createThread();
   } catch (error) {
-    ({ activeProjectRoot, threadId, latestDiff, responseText } = previous);
+    ({ activeProjectRoot, threadId, latestDiff } = previous);
     Object.assign(threadIdsByProvider, previous.threadIdsByProvider);
     await saveState();
     throw error;
@@ -798,7 +896,6 @@ async function switchProject(index) {
 }
 
 async function switchProvider(target) {
-  if (activeTurnId) return null;
   if (target !== "codex" && target !== "claude") throw new Error("unknown provider");
   if (target === activeProvider) return { changed: false };
 
@@ -809,7 +906,6 @@ async function switchProvider(target) {
   threadId = threadIdsByProvider[target] ?? null;
   if (target === "codex" && threadId) restoreCodexTaskSettings(threadId);
   latestDiff = "";
-  responseText = "";
   try {
     if (isCodex()) {
       if (!codex) {
@@ -827,20 +923,16 @@ async function switchProvider(target) {
     await saveState();
     throw error;
   }
+  latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
   await saveState();
   return { changed: true };
 }
 
 async function resumeThread(selectedThreadId, { notify = true } = {}) {
-  if (activeTurnId) {
-    await sendMessage("Сначала завершите или отмените текущую задачу.");
-    return false;
-  }
   if (!isCodex()) {
     threadId = selectedThreadId;
     activeThreadTitle = `Сессия Claude · ${selectedThreadId.slice(0, 8)}`;
-    latestDiff = "";
-    responseText = "";
+    latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
     await saveState();
     if (notify) await sendMessage(`Выбрана сессия Claude: ${threadId}`);
     return true;
@@ -858,8 +950,7 @@ async function resumeThread(selectedThreadId, { notify = true } = {}) {
   restoreCodexTaskSettings(threadId);
   applyCodexThreadSettings(threadId, result);
   activeThreadTitle = threadTitle(result.thread ?? {});
-  latestDiff = "";
-  responseText = "";
+  latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
   await saveState();
   if (notify) {
     await sendMessage(formatTaskSwitchMessage({
@@ -873,7 +964,6 @@ async function resumeThread(selectedThreadId, { notify = true } = {}) {
 }
 
 async function activateMessageBinding(binding) {
-  if (activeTurnId) return { changed: false, reason: "active-turn" };
   const project = findProject(binding.projectRoot);
   if (!project) throw new Error("проект привязанного сообщения больше не разрешён");
   if (binding.provider !== "codex" && binding.provider !== "claude") {
@@ -890,7 +980,6 @@ async function activateMessageBinding(binding) {
     activeProvider,
     threadId,
     latestDiff,
-    responseText,
     activeThreadTitle,
     codexModel,
     codexReasoningEffort,
@@ -902,8 +991,7 @@ async function activateMessageBinding(binding) {
   activeThreadTitle = binding.taskTitle?.trim() || `${binding.provider === "codex" ? "Codex" : "Claude"} · ${binding.threadId.slice(0, 8)}`;
   threadIdsByProvider[activeProvider] = threadId;
   if (isCodex()) restoreCodexTaskSettings(threadId);
-  latestDiff = "";
-  responseText = "";
+  latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
   try {
     if (isCodex() && !codex) {
       await startCodexAppServer();
@@ -919,7 +1007,6 @@ async function activateMessageBinding(binding) {
       activeProvider,
       threadId,
       latestDiff,
-      responseText,
       activeThreadTitle,
       codexModel,
       codexReasoningEffort,
@@ -945,7 +1032,6 @@ async function archiveCurrentThread() {
   threadId = null;
   threadIdsByProvider.codex = null;
   latestDiff = "";
-  responseText = "";
   await saveState();
 
   const [nextThread] = (await listThreads()).filter((thread) => thread.id !== archivedThreadId);
@@ -955,7 +1041,7 @@ async function archiveCurrentThread() {
 }
 
 function archiveBlockedReason() {
-  if (activeTurnId) return "active-turn";
+  if (selectedRun()) return "active-turn";
   if (!isCodex()) return "unsupported";
   if (!threadId) return "no-current";
   return null;
@@ -994,7 +1080,8 @@ async function sendStatus() {
 
   await sendMessage(formatStatusMessage({
     provider: isCodex() ? "CODEX" : "CLAUDE",
-    busy: Boolean(activeTurnId),
+    busy: Boolean(selectedRun()),
+    runningTasks: taskRuns.size,
     model: isCodex() ? codexModelLabel(codexModel) : CLAUDE_MODEL_LABELS[claudeModel],
     reasoning: CODEX_REASONING_LABELS[isCodex() ? codexReasoningEffort : claudeReasoningEffort],
     mode: CODEX_COLLABORATION_MODE_LABELS[isCodex() ? codexCollaborationMode : claudeCollaborationMode],
@@ -1044,138 +1131,159 @@ function inputPreview(input) {
 }
 
 async function beginRun(input) {
-  activeRun = {
+  const run = {
     id: randomUUID(),
     provider: activeProvider,
+    chatId,
     projectRoot: activeProjectRoot,
+    projectName: activeProject().name,
     threadId,
     turnId: null,
     sessionId: isCodex() ? null : threadId,
+    taskTitle: activeThreadTitle,
     promptPreview: inputPreview(input),
     model: isCodex() ? codexModelLabel(codexModel) : CLAUDE_MODEL_LABELS[claudeModel],
+    modelId: isCodex() ? codexModel : claudeModel,
     reasoning: CODEX_REASONING_LABELS[isCodex() ? codexReasoningEffort : claudeReasoningEffort],
+    reasoningId: isCodex() ? codexReasoningEffort : claudeReasoningEffort,
+    collaborationMode: isCodex() ? codexCollaborationMode : claudeCollaborationMode,
     responseText: "",
     status: "running",
     startedAt: new Date().toISOString(),
     progressMessageId: null,
+    progressStage: "Задача принята.",
+    progressReasoning: "",
+    lastProgressText: "",
+    progressStartTimer: null,
+    progressTimer: null,
+    progressUpdateInFlight: false,
+    latestDiff: "",
+    process: null,
   };
-  progressStage = "Задача принята.";
-  progressReasoning = "";
-  responseText = "";
-  lastProgressText = "";
+  taskRuns.add(run);
+  taskDiffs.set(taskRunKey(run), "");
+  if (isSelectedRun(run)) latestDiff = "";
   await saveState();
-  progressStartTimer = setTimeout(() => {
-    progressStartTimer = null;
-    void startProgressMessage();
+  run.progressStartTimer = setTimeout(() => {
+    run.progressStartTimer = null;
+    void startProgressMessage(run);
   }, 3000);
+  return run;
 }
 
-async function startProgressMessage() {
-  if (!activeRun || activeRun.status !== "running" || progressMessageId) return;
-  const runId = activeRun.id;
-  const initialProgress = renderProgress();
-  const message = await sendMessage(initialProgress);
-  if (!activeRun || activeRun.id !== runId || activeRun.status !== "running") {
+async function startProgressMessage(run) {
+  if (!run || run.status !== "running" || run.progressMessageId) return;
+  const initialProgress = renderProgress(run);
+  const message = await sendRunMessage(run, initialProgress);
+  if (taskRuns.forTask(run) !== run || run.status !== "running") {
     if (message?.message_id) {
-      await telegram("deleteMessage", { chat_id: chatId, message_id: message.message_id }).catch(() => {});
+      await telegram("deleteMessage", { chat_id: run.chatId, message_id: message.message_id }).catch(() => {});
     }
     return;
   }
-  progressMessageId = message?.message_id ?? null;
-  lastProgressText = initialProgress;
-  activeRun.progressMessageId = progressMessageId;
+  run.progressMessageId = message?.message_id ?? null;
+  run.lastProgressText = initialProgress;
   await saveState();
 }
 
-function setProgressStage(stage) {
+function setProgressStage(run, stage) {
+  if (!run) return;
   const value = String(stage ?? "").trim();
-  if (value) progressStage = value;
-  scheduleProgressUpdate();
+  if (value) run.progressStage = value;
+  scheduleProgressUpdate(run);
 }
 
-function appendProgressReasoning(delta) {
-  progressReasoning += String(delta ?? "");
-  if (progressReasoning.length > 5000) progressReasoning = progressReasoning.slice(-5000);
-  scheduleProgressUpdate();
+function appendProgressReasoning(run, delta) {
+  if (!run) return;
+  run.progressReasoning += String(delta ?? "");
+  if (run.progressReasoning.length > 5000) run.progressReasoning = run.progressReasoning.slice(-5000);
+  scheduleProgressUpdate(run);
 }
 
-function renderProgress(done = false) {
-  const title = `${done ? "✅" : "⏳"} ${activeRun?.provider === "claude" ? "Claude Code" : "Codex"} · ${activeProject().name}`;
-  const fallbackModel = activeRun?.provider === "claude"
+function renderProgress(run, done = false) {
+  const title = `${done ? "✅" : "⏳"} ${run?.provider === "claude" ? "Claude Code" : "Codex"} · ${runProject(run).name}`;
+  const fallbackModel = run?.provider === "claude"
     ? CLAUDE_MODEL_LABELS[claudeModel]
     : codexModelLabel(codexModel);
   const fallbackReasoning = CODEX_REASONING_LABELS[
-    activeRun?.provider === "claude" ? claudeReasoningEffort : codexReasoningEffort
+    run?.provider === "claude" ? claudeReasoningEffort : codexReasoningEffort
   ];
-  const settings = `${activeRun?.model ?? fallbackModel} - ${activeRun?.reasoning ?? fallbackReasoning}`;
-  const parts = [`${title}\n${settings}`, progressStage || "Выполняется…"];
+  const settings = `${run?.model ?? fallbackModel} - ${run?.reasoning ?? fallbackReasoning}`;
+  const parts = [`${title}\n${settings}\n🧵 ${runTaskTitle(run)}`, run?.progressStage || "Выполняется…"];
   if (done) return parts.join("\n\n").slice(0, TELEGRAM_LIMIT);
-  if (progressReasoning.trim()) {
-    const reasoning = progressReasoning.trim();
+  if (run?.progressReasoning.trim()) {
+    const reasoning = run.progressReasoning.trim();
     parts.push(`💭 ${reasoning.length > 900 ? `…${reasoning.slice(-900)}` : reasoning}`);
   }
-  if (responseText.trim()) {
-    const answer = responseText.trim();
+  if (run?.responseText.trim()) {
+    const answer = run.responseText.trim();
     parts.push(`✍️ Ответ формируется:\n${answer.length > 2400 ? `…${answer.slice(-2400)}` : answer}`);
   }
   return parts.join("\n\n").slice(0, TELEGRAM_LIMIT);
 }
 
-function scheduleProgressUpdate() {
-  if (!progressMessageId || progressTimer) return;
-  progressTimer = setTimeout(() => {
-    progressTimer = null;
-    void flushProgressUpdate();
+function scheduleProgressUpdate(run) {
+  if (!run?.progressMessageId || run.progressTimer) return;
+  run.progressTimer = setTimeout(() => {
+    run.progressTimer = null;
+    void flushProgressUpdate(run);
   }, 1500);
 }
 
-async function flushProgressUpdate(done = false) {
-  if (!progressMessageId || progressUpdateInFlight) return;
-  const text = renderProgress(done);
-  if (text === lastProgressText) return;
-  progressUpdateInFlight = true;
+async function flushProgressUpdate(run, done = false) {
+  if (!run?.progressMessageId || run.progressUpdateInFlight) return;
+  const text = renderProgress(run, done);
+  if (text === run.lastProgressText) return;
+  run.progressUpdateInFlight = true;
   try {
-    await telegram("editMessageText", { chat_id: chatId, message_id: progressMessageId, text });
-    lastProgressText = text;
-    if (activeRun) {
-      activeRun.responseText = responseText;
-      await saveState();
-    }
+    await telegram("editMessageText", { chat_id: run.chatId, message_id: run.progressMessageId, text });
+    run.lastProgressText = text;
+    await saveState();
   } catch (error) {
     if (!String(error.message).includes("message is not modified")) {
       console.error("Cannot update task progress:", error.message);
     }
   } finally {
-    progressUpdateInFlight = false;
+    run.progressUpdateInFlight = false;
   }
 }
 
-async function finishProgress(stage) {
-  if (activeRun) activeRun.status = "finishing";
-  if (progressStartTimer) {
-    clearTimeout(progressStartTimer);
-    progressStartTimer = null;
+async function finishProgress(run, stage) {
+  if (!run) return;
+  run.status = "finishing";
+  if (run.progressStartTimer) {
+    clearTimeout(run.progressStartTimer);
+    run.progressStartTimer = null;
   }
-  if (progressTimer) {
-    clearTimeout(progressTimer);
-    progressTimer = null;
+  if (run.progressTimer) {
+    clearTimeout(run.progressTimer);
+    run.progressTimer = null;
   }
-  progressStage = stage;
-  if (!progressMessageId) {
-    progressReasoning = "";
-    lastProgressText = "";
+  run.progressStage = stage;
+  if (!run.progressMessageId) {
+    run.progressReasoning = "";
+    run.lastProgressText = "";
     return;
   }
-  while (progressUpdateInFlight) await delay(50);
-  await flushProgressUpdate(true);
-  progressMessageId = null;
-  progressReasoning = "";
-  lastProgressText = "";
+  while (run.progressUpdateInFlight) await delay(50);
+  await flushProgressUpdate(run, true);
+  run.progressMessageId = null;
+  run.progressReasoning = "";
+  run.lastProgressText = "";
+}
+
+async function completeRun(run) {
+  if (!run) return;
+  taskRuns.remove(run);
+  run.status = "completed";
+  run.process = null;
+  if (!taskRuns.size) stopTyping();
+  await saveState();
 }
 
 async function startTurn(input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
-  if (activeTurnId) {
-    await sendMessage("Предыдущая задача ещё выполняется. Используйте /cancel или дождитесь завершения.");
+  if (selectedRun()) {
+    await sendMessage("Эта задача уже выполняется. Используйте /cancel или выберите другую задачу.");
     return;
   }
   if (isCodex()) {
@@ -1185,46 +1293,46 @@ async function startTurn(input, temporaryFiles = [], { forceSpeechButton = false
       console.error("Cannot sync Codex thread settings before turn:", error.message);
     }
   }
-  await beginRun(input);
-  latestDiff = "";
+  const run = await beginRun(input);
+  const warning = runningProjectWarning(run);
+  if (warning) await sendRunMessage(run, warning);
   if (!isCodex()) {
-    await startClaudeTurn(input, temporaryFiles, { forceSpeechButton });
+    await startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton });
     return;
   }
   const items = typeof input === "string" ? [{ type: "text", text: input }] : input;
   try {
     const result = await sendRpc("turn/start", {
-      threadId,
+      threadId: run.threadId,
       input: items,
-      model: codexModel,
-      effort: codexReasoningEffort,
+      model: run.modelId,
+      effort: run.reasoningId,
       collaborationMode: buildCodexCollaborationMode({
-        mode: codexCollaborationMode,
-        model: codexModel,
-        reasoningEffort: codexReasoningEffort,
+        mode: run.collaborationMode,
+        model: run.modelId,
+        reasoningEffort: run.reasoningId,
       }),
       approvalPolicy: "on-request",
       sandboxPolicy: {
         type: "workspaceWrite",
-        writableRoots: [activeProjectRoot],
+        writableRoots: [run.projectRoot],
         networkAccess: false,
       },
     });
-    activeTurnId = result.turn.id;
-    activeRun.threadId = threadId;
-    activeRun.turnId = activeTurnId;
+    const previousTurnId = run.turnId;
+    run.turnId = result.turn.id;
+    taskRuns.reindex(run, { turnId: previousTurnId });
     await saveState();
-    turnSpeechButtons.set(activeTurnId, forceSpeechButton);
-    if (temporaryFiles.length) turnTemporaryFiles.set(activeTurnId, temporaryFiles);
-    if (!turnTokenUsage.has(activeTurnId)) {
-      turnTokenUsage.set(activeTurnId, { usage: emptyTokenUsage(), reported: false });
+    turnSpeechButtons.set(run.turnId, forceSpeechButton);
+    if (temporaryFiles.length) turnTemporaryFiles.set(run.turnId, temporaryFiles);
+    if (!turnTokenUsage.has(run.turnId)) {
+      turnTokenUsage.set(run.turnId, { usage: emptyTokenUsage(), reported: false });
     }
     startTyping();
   } catch (error) {
     await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
-    await finishProgress(`Ошибка запуска: ${error.message}`);
-    activeRun = null;
-    await saveState();
+    await finishProgress(run, `Ошибка запуска: ${error.message}`);
+    await completeRun(run);
     throw error;
   }
 }
@@ -1275,43 +1383,43 @@ function spawnCapture(command, args, options = {}) {
   });
 }
 
-async function readGitDiff() {
-  const result = await spawnCapture("git", ["diff", "--no-ext-diff", "--"]);
+async function readGitDiff(projectRoot = activeProjectRoot) {
+  const result = await spawnCapture("git", ["diff", "--no-ext-diff", "--"], { cwd: projectRoot });
   return result.code === 0 ? result.stdout.trim() : "";
 }
 
-async function startClaudeTurn(input, temporaryFiles, { forceSpeechButton = false } = {}) {
+async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton = false } = {}) {
   const turnId = randomUUID();
   const prompt = buildClaudePrompt(input);
   const contentItems = Array.isArray(input) ? input : [];
   const additionalDirectories = contentItems
     .filter((item) => item?.type === "localImage" && item.path)
     .map((item) => path.dirname(item.path));
-  const planMode = claudeCollaborationMode === "plan";
+  const planMode = run.collaborationMode === "plan";
   const args = buildClaudeArgs({
     prompt,
-    sessionId: threadId,
-    model: claudeModel,
-    permissionMode: planMode ? "plan" : config.claudePermissionMode,
+    sessionId: run.threadId,
+    model: run.modelId,
+    permissionMode: run.collaborationMode === "plan" ? "plan" : config.claudePermissionMode,
     autoApprove: planMode ? false : autoApprove,
     additionalDirectories,
   });
 
-  activeTurnId = turnId;
-  activeRun.turnId = turnId;
+  run.turnId = turnId;
+  taskRuns.reindex(run, { turnId: null });
   if (temporaryFiles.length) turnTemporaryFiles.set(turnId, temporaryFiles);
   const invocation = resolveClaudeInvocation();
   const worker = spawn(invocation.command, [...invocation.prefixArgs, ...args], {
-    cwd: activeProjectRoot,
+    cwd: run.projectRoot,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
     env: {
       ...process.env,
-      MAX_THINKING_TOKENS: String(claudeThinkingTokens(claudeReasoningEffort)),
+      MAX_THINKING_TOKENS: String(claudeThinkingTokens(run.reasoningId)),
     },
   });
-  activeClaudeProcess = worker;
-  activeRun.pid = worker.pid ?? null;
+  run.process = worker;
+  run.pid = worker.pid ?? null;
   await saveState();
   startTyping();
   let stdout = "";
@@ -1327,31 +1435,44 @@ async function startClaudeTurn(input, temporaryFiles, { forceSpeechButton = fals
     stdout += `${line}\n`;
     const parsed = parseClaudeStreamEvent(line);
     if (!parsed) return;
-    if (parsed.sessionId && parsed.sessionId !== threadId) {
-      threadId = parsed.sessionId;
-      if (activeRun) {
-        activeRun.sessionId = parsed.sessionId;
-        activeRun.threadId = parsed.sessionId;
+    if (parsed.sessionId && parsed.sessionId !== run.threadId) {
+      const previousThreadId = run.threadId;
+      const wasSelected = isSelectedRun(run);
+      run.sessionId = parsed.sessionId;
+      run.threadId = parsed.sessionId;
+      if (!run.taskTitle || run.taskTitle === "Новая задача Claude") {
+        run.taskTitle = `Сессия Claude · ${parsed.sessionId.slice(0, 8)}`;
+      }
+      taskRuns.reindex(run, { threadId: previousThreadId });
+      if (wasSelected) {
+        threadId = parsed.sessionId;
+        threadIdsByProvider.claude = parsed.sessionId;
+        activeThreadTitle = runTaskTitle(run);
+      }
+      if (run.progressMessageId) {
+        void bindRunMessage(run, { message_id: run.progressMessageId }).catch((error) => {
+          console.error("Cannot bind Claude progress message:", error.message);
+        });
       }
       void saveState();
     }
     if (parsed.textDelta) {
-      responseText += parsed.textDelta;
-      scheduleProgressUpdate();
+      run.responseText += parsed.textDelta;
+      scheduleProgressUpdate(run);
     }
     // Claude Code headless не раскрывает текст мышления, поэтому показываем
     // индикатор с оценкой числа «думательных» токенов. Если текст всё же придёт
     // (в будущих версиях) — выводим и его в блок рассуждений.
-    if (parsed.thinkingDelta) appendProgressReasoning(parsed.thinkingDelta);
+    if (parsed.thinkingDelta) appendProgressReasoning(run, parsed.thinkingDelta);
     if (parsed.thinkingTokens != null) {
       peakThinkingTokens = Math.max(peakThinkingTokens, parsed.thinkingTokens);
-      if (!responseText.trim()) {
-        setProgressStage(`🧠 Claude размышляет (~${parsed.thinkingTokens} токенов)…`);
+      if (!run.responseText.trim()) {
+        setProgressStage(run, `🧠 Claude размышляет (~${parsed.thinkingTokens} токенов)…`);
       }
     }
     if (parsed.event?.type === "system" && parsed.event?.subtype === "api_retry") {
       const reason = parsed.event.error ? `: ${parsed.event.error}` : "";
-      setProgressStage(`Claude повторяет запрос (${parsed.event.attempt}/${parsed.event.max_retries})${reason}…`);
+      setProgressStage(run, `Claude повторяет запрос (${parsed.event.attempt}/${parsed.event.max_retries})${reason}…`);
     }
     if (parsed.event?.type === "rate_limit_event" && parsed.event.rate_limit_info?.status === "rejected") {
       const resetAt = Number(parsed.event.rate_limit_info.resetsAt);
@@ -1359,7 +1480,7 @@ async function startClaudeTurn(input, temporaryFiles, { forceSpeechButton = fals
         ? new Date(resetAt * 1000).toLocaleString("ru-RU")
         : "неизвестно";
       claudeFailureText = `Исчерпан лимит Claude. Сброс: ${resetText}.`;
-      setProgressStage(claudeFailureText);
+      setProgressStage(run, claudeFailureText);
     }
     if (parsed.event?.type === "assistant" && parsed.event.error) {
       const messageText = parsed.event.message?.content
@@ -1371,7 +1492,7 @@ async function startClaudeTurn(input, temporaryFiles, { forceSpeechButton = fals
     }
     const streamEvent = parsed.event?.type === "stream_event" ? parsed.event.event : null;
     if (streamEvent?.type === "content_block_start" && streamEvent.content_block?.type === "tool_use") {
-      setProgressStage(`Claude использует инструмент ${streamEvent.content_block.name ?? ""}…`);
+      setProgressStage(run, `Claude использует инструмент ${streamEvent.content_block.name ?? ""}…`);
     }
     if (parsed.result) streamedResult = parsed.result;
   });
@@ -1380,12 +1501,10 @@ async function startClaudeTurn(input, temporaryFiles, { forceSpeechButton = fals
   const finish = async (code, spawnError = null) => {
     if (settled) return;
     settled = true;
-    activeClaudeProcess = null;
-    stopTyping();
+    run.process = null;
     const files = turnTemporaryFiles.get(turnId) ?? [];
     turnTemporaryFiles.delete(turnId);
     await Promise.all(files.map((file) => unlink(file).catch(() => {})));
-    activeTurnId = null;
 
     try {
       if (spawnError) throw spawnError;
@@ -1395,25 +1514,37 @@ async function startClaudeTurn(input, temporaryFiles, { forceSpeechButton = fals
       }
       if (!result) throw new Error("Claude Code не вернул результат");
       if (result.session_id) {
-        threadId = result.session_id;
+        const previousThreadId = run.threadId;
+        const wasSelected = isSelectedRun(run);
+        run.threadId = result.session_id;
+        run.sessionId = result.session_id;
+        if (!run.taskTitle || run.taskTitle === "Новая задача Claude") {
+          run.taskTitle = `Сессия Claude · ${result.session_id.slice(0, 8)}`;
+        }
+        taskRuns.reindex(run, { threadId: previousThreadId });
+        if (wasSelected) {
+          threadId = result.session_id;
+          threadIdsByProvider.claude = result.session_id;
+          activeThreadTitle = run.taskTitle;
+        }
         await saveState();
       }
-      latestDiff = await readGitDiff();
+      run.latestDiff = await readGitDiff(run.projectRoot);
+      taskDiffs.set(taskRunKey(run), run.latestDiff);
+      if (isSelectedRun(run)) latestDiff = run.latestDiff;
       const answer = String(result.result ?? "").trim()
         || claudeFailureText
         || (result.is_error ? "Claude Code завершил задачу с ошибкой." : "Задача завершена.");
       const failed = code !== 0 || result.is_error;
-      await finishProgress(failed ? `Claude остановлен: ${answer}` : "Задача завершена.");
+      await finishProgress(run, failed ? `Claude остановлен: ${answer}` : "Задача завершена.");
       const response = failed ? `Ошибка Claude Code: ${answer}` : answer;
-      await sendLongMessage(`${response}\n\n${formatClaudeUsage(result, peakThinkingTokens)}`, { speechText: answer, forceSpeechButton });
-      if (latestDiff) await sendMessage("Изменения доступны по команде /diff.");
-      activeRun = null;
-      await saveState();
+      await sendRunLongMessage(run, `${response}\n\n${formatClaudeUsage(result, peakThinkingTokens)}`, { speechText: answer, forceSpeechButton });
+      if (run.latestDiff) await sendRunMessage(run, "Изменения этой задачи доступны после её выбора по команде /diff.");
+      await completeRun(run);
     } catch (error) {
-      await finishProgress(`Claude остановлен: ${error.message}`);
-      await sendLongMessage(`Ошибка Claude Code: ${error.message}`);
-      activeRun = null;
-      await saveState();
+      await finishProgress(run, `Claude остановлен: ${error.message}`);
+      await sendRunLongMessage(run, `Ошибка Claude Code: ${error.message}`);
+      await completeRun(run);
     }
   };
 
@@ -1433,40 +1564,54 @@ async function handleCodexMessage(message) {
   }
 
   const { method, params = {}, id } = message;
+  const eventTurnId = params.turn?.id ?? params.turnId ?? null;
+  let run = taskRuns.forEvent({
+    turnId: eventTurnId,
+    threadId: params.threadId,
+    provider: "codex",
+  });
   if (method === "thread/settings/updated") {
     applyCodexThreadSettings(params.threadId, params.threadSettings);
     void saveState();
   }
   if (method === "turn/started") {
-    activeTurnId = params.turn?.id ?? activeTurnId;
-    if (activeRun && activeTurnId) {
-      activeRun.turnId = activeTurnId;
-      activeRun.threadId = params.threadId ?? threadId;
+    if (run && eventTurnId) {
+      const previous = { turnId: run.turnId, threadId: run.threadId };
+      run.turnId = eventTurnId;
+      run.threadId = params.threadId ?? run.threadId;
+      taskRuns.reindex(run, previous);
       void saveState();
     }
-    if (activeTurnId && !turnTokenUsage.has(activeTurnId)) {
-      turnTokenUsage.set(activeTurnId, { usage: emptyTokenUsage(), reported: false });
+    if (eventTurnId && !turnTokenUsage.has(eventTurnId)) {
+      turnTokenUsage.set(eventTurnId, { usage: emptyTokenUsage(), reported: false });
     }
   }
   if (method === "thread/tokenUsage/updated") trackTurnTokenUsage(params);
-  if (method === "turn/diff/updated") latestDiff = params.diff ?? latestDiff;
-  if (method === "item/agentMessage/delta") {
-    responseText += params.delta ?? "";
-    scheduleProgressUpdate();
+  if (method === "turn/diff/updated" && run) {
+    run.latestDiff = params.diff ?? run.latestDiff;
+    taskDiffs.set(taskRunKey(run), run.latestDiff);
+    if (isSelectedRun(run)) latestDiff = run.latestDiff;
   }
-  if (method === "item/reasoning/summaryTextDelta" || method === "item/plan/delta") {
-    appendProgressReasoning(params.delta);
+  if (method === "item/agentMessage/delta" && run) {
+    run.responseText += params.delta ?? "";
+    scheduleProgressUpdate(run);
   }
-  if (method === "item/started") setProgressStage(describeCodexItem(params.item, false));
-  if (method === "item/completed") setProgressStage(describeCodexItem(params.item, true));
+  if ((method === "item/reasoning/summaryTextDelta" || method === "item/plan/delta") && run) {
+    appendProgressReasoning(run, params.delta);
+  }
+  if (method === "item/started" && run) setProgressStage(run, describeCodexItem(params.item, false));
+  if (method === "item/completed" && run) setProgressStage(run, describeCodexItem(params.item, true));
 
   if (method === "item/commandExecution/requestApproval") {
-    await requestApproval(id, "command", params, formatCommandApproval(params));
+    await requestApproval(id, "command", params, formatCommandApproval(params, run), run);
   } else if (method === "item/fileChange/requestApproval") {
-    await requestApproval(id, "file", params, formatFileApproval(params));
+    await requestApproval(id, "file", params, formatFileApproval(params), run);
   } else if (method === "turn/completed") {
-    stopTyping();
-    const completedTurnId = params.turn?.id ?? activeTurnId;
+    if (!run) {
+      console.warn(`Completed Codex turn ${eventTurnId ?? "unknown"} has no registered task run`);
+      return;
+    }
+    const completedTurnId = eventTurnId ?? run.turnId;
     const tokenSummary = formatTurnTokenUsage(turnTokenUsage.get(completedTurnId));
     turnTokenUsage.delete(completedTurnId);
     const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
@@ -1474,16 +1619,13 @@ async function handleCodexMessage(message) {
     const forceSpeechButton = turnSpeechButtons.get(completedTurnId) ?? false;
     turnSpeechButtons.delete(completedTurnId);
     await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
-    activeTurnId = null;
     const status = params.turn?.status ?? "completed";
     const error = params.turn?.error?.message;
-    const answer = responseText.trim() || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
-    await finishProgress(error || status === "failed" ? `Задача завершилась с ошибкой: ${error ?? status}` : "Задача завершена.");
-    await sendLongMessage(`${answer}\n\n${tokenSummary}`, { speechText: answer, forceSpeechButton });
-    if (latestDiff) await sendMessage("Изменения доступны по команде /diff.");
-    activeRun = null;
-    responseText = "";
-    await saveState();
+    const answer = run.responseText.trim() || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
+    await finishProgress(run, error || status === "failed" ? `Задача завершилась с ошибкой: ${error ?? status}` : "Задача завершена.");
+    await sendRunLongMessage(run, `${answer}\n\n${tokenSummary}`, { speechText: answer, forceSpeechButton });
+    if (run.latestDiff) await sendRunMessage(run, "Изменения этой задачи доступны после её выбора по команде /diff.");
+    await completeRun(run);
   }
 }
 
@@ -1501,7 +1643,7 @@ function describeCodexItem(item, completed) {
   if (item.type === "imageView") return `${mark} ${completed ? "Изображение изучено" : "Изучается изображение…"}`;
   if (item.type === "reasoning") return completed ? "✓ Анализ завершён." : "Анализирую задачу…";
   if (item.type === "plan") return completed ? "✓ План подготовлен." : "Составляю план…";
-  return progressStage || (completed ? "Этап завершён." : "Выполняется следующий этап…");
+  return completed ? "Этап завершён." : "Выполняется следующий этап…";
 }
 
 function recoveredCodexAnswer(turn) {
@@ -1509,76 +1651,79 @@ function recoveredCodexAnswer(turn) {
   return messages.at(-1)?.text?.trim() ?? "";
 }
 
-async function recoverActiveRun() {
-  if (!activeRun || activeRun.status !== "running") return;
-  if (activeRun.provider !== activeProvider || !samePath(activeRun.projectRoot, activeProjectRoot)) {
-    await sendMessage("⚠️ Найдена незавершённая задача из другого проекта или движка. Её идентификаторы сохранены в state.json.");
+async function recoverTaskRun(run) {
+  if (run.provider !== "codex" || !codex) {
+    await finishProgress(run, "Локальный процесс прервался при перезапуске бота.");
+    await sendRunMessage(
+      run,
+      `⚠️ Запуск ${run.provider === "claude" ? "Claude" : "Codex"} был прерван. `
+        + `Контекст ${run.threadId ?? "не успел получить ID"} сохранён и доступен для продолжения.`,
+    );
+    await completeRun(run);
     return;
   }
 
-  progressMessageId = activeRun.progressMessageId ?? progressMessageId;
-  responseText = String(activeRun.responseText ?? "");
-  const recoveredThreadId = activeRun.threadId ?? activeRun.sessionId ?? threadId;
-  if (isCodex() && recoveredThreadId !== threadId) rememberCodexTaskSettings();
-  threadId = recoveredThreadId;
-  if (isCodex()) restoreCodexTaskSettings(threadId);
-  if (!isCodex()) {
-    await finishProgress("Процесс Claude прервался, но сессия сохранена.");
-    await sendMessage(`⚠️ Запуск Claude был прерван. Сессия ${threadId ?? "не успела получить ID"} сохранена и остаётся выбранной.`);
-    activeRun = null;
-    await saveState();
-    return;
-  }
-
-  const result = await sendRpc("thread/read", { threadId, includeTurns: true });
-  const turn = result.thread?.turns?.find((item) => item.id === activeRun.turnId)
+  const result = await sendRpc("thread/read", { threadId: run.threadId, includeTurns: true });
+  const turn = result.thread?.turns?.find((item) => item.id === run.turnId)
     ?? result.thread?.turns?.at(-1);
   if (!turn) {
-    await finishProgress("Не удалось найти сохранённый запуск.");
-    activeRun = null;
-    await saveState();
+    await finishProgress(run, "Не удалось найти сохранённый запуск.");
+    await completeRun(run);
     return;
   }
-  responseText = recoveredCodexAnswer(turn) || responseText;
+  run.responseText = recoveredCodexAnswer(turn) || run.responseText;
   if (turn.status === "inProgress") {
-    activeTurnId = turn.id;
-    activeRun.turnId = turn.id;
-    setProgressStage("Подключено к продолжающейся задаче.");
+    const previousTurnId = run.turnId;
+    run.turnId = turn.id;
+    taskRuns.reindex(run, { turnId: previousTurnId });
+    setProgressStage(run, "Подключено к продолжающейся задаче.");
     startTyping();
     await saveState();
     return;
   }
 
   const answer = recoveredCodexAnswer(turn)
-    || responseText.trim()
+    || run.responseText.trim()
     || turn.error?.message
     || `Сохранённый запуск завершён со статусом ${turn.status}.`;
-  await finishProgress(turn.status === "completed" ? "Задача завершена." : `Задача остановлена: ${turn.status}.`);
-  await sendLongMessage(answer, { speechText: answer });
-  activeTurnId = null;
-  activeRun = null;
-  responseText = "";
-  await saveState();
+  await finishProgress(run, turn.status === "completed" ? "Задача завершена." : `Задача остановлена: ${turn.status}.`);
+  await sendRunLongMessage(run, answer, { speechText: answer });
+  await completeRun(run);
 }
 
-async function requestApproval(rpcId, kind, params, text) {
+async function recoverActiveRuns({ provider = null } = {}) {
+  const runs = taskRuns.values().filter((run) => !provider || run.provider === provider);
+  for (const run of runs) {
+    try {
+      await recoverTaskRun(run);
+    } catch (error) {
+      console.error(`Cannot recover task ${run.id}:`, error.message);
+      await sendRunMessage(run, `⚠️ Не удалось восстановить задачу: ${error.message}`).catch(() => {});
+      await completeRun(run);
+    }
+  }
+}
+
+async function requestApproval(rpcId, kind, params, text, run = null) {
   if (autoApprove) {
     respondRpc(rpcId, { decision: "accept" });
     return;
   }
   const key = String(approvalSequence++);
-  pendingApprovals.set(key, { rpcId, kind });
+  pendingApprovals.set(key, { rpcId, kind, runId: run?.id ?? null });
   const decisions = [
     [{ text: "✅ Разрешить", callback_data: `a:${key}:once` }],
     [{ text: "✅ На сессию", callback_data: `a:${key}:session` }],
     [{ text: "❌ Отклонить", callback_data: `a:${key}:decline` }],
   ];
-  await sendMessage(text, { reply_markup: { inline_keyboard: decisions } });
+  const extra = { reply_markup: { inline_keyboard: decisions } };
+  if (run) await sendRunMessage(run, text, extra);
+  else await sendMessage(text, extra);
 }
 
-function formatCommandApproval(params) {
+function formatCommandApproval(params, run = null) {
   const command = params.command ?? "(команда не указана)";
-  const cwd = params.cwd ?? activeProjectRoot;
+  const cwd = params.cwd ?? run?.projectRoot ?? activeProjectRoot;
   const reason = params.reason ? `\nПричина: ${params.reason}` : "";
   return `Codex запрашивает запуск команды:\n\n${command}\n\nКаталог: ${cwd}${reason}`;
 }
@@ -1641,7 +1786,7 @@ async function restartBot() {
   replacement.unref();
   stopping = true;
   codex?.kill();
-  activeClaudeProcess?.kill();
+  for (const run of taskRuns.values()) run.process?.kill();
   setTimeout(() => process.exit(0), 500).unref();
 }
 
@@ -1650,8 +1795,8 @@ async function transcribeVoice(message) {
     await sendMessage("Голосовые сообщения отключены в конфигурации.");
     return;
   }
-  if (activeTurnId) {
-    await sendMessage("Предыдущая задача ещё выполняется. Дождитесь завершения или нажмите «Остановить».");
+  if (selectedRun()) {
+    await sendMessage("Выбранная задача ещё выполняется. Выберите другую задачу или остановите эту.");
     return;
   }
   const media = message.voice ?? message.audio;
@@ -1687,8 +1832,8 @@ async function transcribeVoice(message) {
 }
 
 async function analyzeImage(message) {
-  if (activeTurnId) {
-    await sendMessage("Предыдущая задача ещё выполняется. Дождитесь завершения или нажмите «Стоп».");
+  if (selectedRun()) {
+    await sendMessage("Выбранная задача ещё выполняется. Выберите другую задачу или остановите эту.");
     return;
   }
   const photo = message.photo?.at(-1);
@@ -1916,14 +2061,6 @@ async function handleApprovalCallback(callback) {
   if (projectMatch) {
     try {
       const switched = await switchProject(Number(projectMatch[1]));
-      if (!switched) {
-        await telegram("answerCallbackQuery", {
-          callback_query_id: callback.id,
-          text: "Сначала завершите или отмените текущую задачу",
-          show_alert: true,
-        });
-        return;
-      }
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
         text: switched.changed ? "Папка изменена" : "Эта папка уже активна",
@@ -1952,14 +2089,6 @@ async function handleApprovalCallback(callback) {
   if (engineMatch) {
     try {
       const switched = await switchProvider(engineMatch[1]);
-      if (!switched) {
-        await telegram("answerCallbackQuery", {
-          callback_query_id: callback.id,
-          text: "Сначала завершите или отмените текущую задачу",
-          show_alert: true,
-        });
-        return;
-      }
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
         text: switched.changed ? "Агент переключён" : "Этот агент уже активен",
@@ -2119,14 +2248,6 @@ async function handleApprovalCallback(callback) {
     return;
   }
   if (callback.data === "thread:new") {
-    if (activeTurnId) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Сначала завершите или отмените текущую задачу",
-        show_alert: true,
-      });
-      return;
-    }
     try {
       await createThread();
       await telegram("answerCallbackQuery", {
@@ -2271,10 +2392,6 @@ async function handleTelegramMessage(message) {
         await sendMessage(`Не удалось открыть задачу из этого сообщения: ${error.message}`);
         return;
       }
-      if (activated.reason === "active-turn") {
-        await sendMessage("Нельзя переключиться на задачу из этого сообщения: другая задача ещё выполняется. Дождитесь завершения или остановите её.");
-        return;
-      }
       if (activated.changed) {
         await sendMessage(
           formatTaskSwitchMessage({
@@ -2317,7 +2434,6 @@ async function handleTelegramMessage(message) {
   } else if (text === "/projects" || text === "/folders" || text === "/folder") {
     await sendProjectPicker();
   } else if (text === "/new") {
-    if (activeTurnId) return sendMessage("Сначала завершите или отмените текущую задачу.");
     await createThread();
     await sendMessage(`Создан новый контекст ${providerTitle()}.`);
   } else if (text === "/status") {
@@ -2348,10 +2464,14 @@ async function handleTelegramMessage(message) {
   } else if (text === "/diff") {
     await sendLongMessage(latestDiff || "В последней задаче изменений файлов нет.");
   } else if (text === "/cancel") {
-    if (!activeTurnId) return sendMessage("Активной задачи нет.");
-    if (isCodex()) await sendRpc("turn/interrupt", { threadId, turnId: activeTurnId });
-    else activeClaudeProcess?.kill();
-    await sendMessage("Запрошена остановка задачи.");
+    const run = selectedRun();
+    if (!run) return sendMessage("В выбранной задаче сейчас ничего не выполняется.");
+    if (run.provider === "codex") {
+      await sendRpc("turn/interrupt", { threadId: run.threadId, turnId: run.turnId });
+    } else {
+      run.process?.kill();
+    }
+    await sendRunMessage(run, "Запрошена остановка этой задачи.");
   } else if (text.startsWith("/")) {
     await sendMessage("Неизвестная команда. Используйте /help.");
   } else {
@@ -2453,7 +2573,7 @@ function saveState() {
     claudeReasoningEffort,
     claudeCollaborationMode,
     updateOffset,
-    activeRun,
+    activeRuns: taskRuns.values().map(serializableTaskRun),
   }, null, 2)}\n`;
   stateWriteQueue = stateWriteQueue
     .catch(() => {})
@@ -2470,7 +2590,7 @@ async function shutdown(signal) {
   stopping = true;
   console.log(`Stopping on ${signal}...`);
   codex?.kill();
-  activeClaudeProcess?.kill();
+  for (const run of taskRuns.values()) run.process?.kill();
   stopTtsWorker();
   await releaseInstanceLock();
 }
@@ -2483,9 +2603,9 @@ process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
 await initializeProvider();
-await recoverActiveRun().catch(async (error) => {
-  console.error("Cannot recover active task:", error.message);
-  await sendMessage(`⚠️ Не удалось восстановить активную задачу: ${error.message}`).catch(() => {});
+await recoverActiveRuns().catch(async (error) => {
+  console.error("Cannot recover active tasks:", error.message);
+  await sendMessage(`⚠️ Не удалось восстановить активные задачи: ${error.message}`).catch(() => {});
 });
 try {
   await telegram("setMyCommands", {

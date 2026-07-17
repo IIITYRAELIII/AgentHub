@@ -91,12 +91,13 @@ export function formatClaudeRateLimits(text, nowMs = Date.now()) {
   return lines.join("\n");
 }
 
-export function formatStatusMessage({ provider, busy, model, reasoning, mode, task, project, limits }) {
-  return `${provider}: ${busy ? "Выполняет задачу" : "Готов"}\n` +
+export function formatStatusMessage({ provider, busy, runningTasks = 0, model, reasoning, mode, task, project, limits }) {
+  return `${provider}: ${busy ? "Выполняет выбранную задачу" : "Готов"}\n` +
     `${model} - ${reasoning}\n` +
     `${mode}\n\n` +
     `Текущая задача: ${task}\n` +
     `Каталог: ${project}\n\n` +
+    `Выполняется задач: ${runningTasks}\n\n` +
     `Лимиты:\n${limits}`;
 }
 

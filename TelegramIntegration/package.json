@@ -6,8 +6,8 @@
   "scripts": {
     "start": "node bot.mjs",
     "send": "node send-message.mjs",
-    "check": "node --check bot.mjs && node --check config.mjs && node --check codex-settings.mjs && node --check claude.mjs && node --check status.mjs && node --check telegram-message.mjs && node --check message-bindings.mjs && node --check send-message.mjs && node --check token-usage.mjs && node --check doctor.mjs",
-    "test": "node --test claude.test.mjs codex-settings.test.mjs config.test.mjs status.test.mjs telegram-message.test.mjs message-bindings.test.mjs send-message.test.mjs token-usage.test.mjs",
+    "check": "node --check bot.mjs && node --check config.mjs && node --check codex-settings.mjs && node --check claude.mjs && node --check status.mjs && node --check telegram-message.mjs && node --check message-bindings.mjs && node --check task-runs.mjs && node --check send-message.mjs && node --check token-usage.mjs && node --check doctor.mjs",
+    "test": "node --test claude.test.mjs codex-settings.test.mjs config.test.mjs status.test.mjs telegram-message.test.mjs message-bindings.test.mjs task-runs.test.mjs send-message.test.mjs token-usage.test.mjs",
     "doctor": "node doctor.mjs"
   }
 }
