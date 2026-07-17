@@ -4,9 +4,11 @@ import {
   formatArchiveMessage,
   formatClaudeRateLimits,
   formatCodexRateLimits,
+  formatRestartCompleteMessage,
   formatStatusMessage,
   formatTaskSwitchMessage,
   showLastMessageReplyMarkup,
+  statusHeaderFileName,
 } from "./status.mjs";
 
 test("formatCodexRateLimits puts both windows on one line", () => {
@@ -150,6 +152,25 @@ test("formatStatusMessage omits the active heading when nothing runs", () => {
   assert.doesNotMatch(result, /АКТИВНЫЕ ЗАДАЧИ/);
   assert.match(result, /Задача &lt;1&gt;/);
   assert.match(result, /VSC &amp; Main/);
+});
+
+test("statusHeaderFileName selects the current agent artwork", () => {
+  assert.equal(statusHeaderFileName("codex"), "codex-header.png");
+  assert.equal(statusHeaderFileName("claude"), "claude-header.png");
+});
+
+test("formatRestartCompleteMessage renders a safe final restart card", () => {
+  assert.equal(formatRestartCompleteMessage({
+    provider: "Codex",
+    task: "Задача <1>",
+    runningTasks: 2,
+  }), [
+    "✅ <b>БОТ ПЕРЕЗАПУЩЕН</b>",
+    "",
+    "Агент: Codex",
+    "Текущая задача: Задача &lt;1&gt;",
+    "Активных задач восстановлено: 2",
+  ].join("\n"));
 });
 
 test("formatArchiveMessage names archived and newly active tasks", () => {

@@ -32,9 +32,11 @@ import {
   formatArchiveMessage,
   formatClaudeRateLimits,
   formatCodexRateLimits,
+  formatRestartCompleteMessage,
   formatStatusMessage,
   formatTaskSwitchMessage,
   showLastMessageReplyMarkup,
+  statusHeaderFileName,
 } from "./status.mjs";
 import { formatTaskTokenUsage } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
@@ -106,6 +108,7 @@ const TTS_WORKER_SCRIPT = path.join(import.meta.dirname, "tts_worker.py");
 const TTS_CACHE_DIR = path.join(INTEGRATION_ROOT, ".silero-models");
 const AUDIO_DIR = config.audioDir;
 const IMAGE_DIR = path.join(config.dataDir, "images");
+const STATUS_HEADER_DIR = path.join(import.meta.dirname, "assets", "status");
 const TTS_DIR = config.ttsDir;
 const AGENT_ICONS = ["👾", "🦉", "🐙", "🕶️", "🚀", "⚡", "💻", "🔮", "🛰️", "🔥", "✨"];
 const agentIcon = AGENT_ICONS[Math.floor(Math.random() * AGENT_ICONS.length)];
@@ -214,6 +217,7 @@ let approvalSequence = 1;
 let stopping = false;
 let autoApprove = config.autoApproveOnStart;
 let codexRestarting = false;
+let restartRequest = null;
 let stateWriteQueue = Promise.resolve();
 let bindingWriteQueue = Promise.resolve();
 let ttsWorker = null;
@@ -528,6 +532,16 @@ try {
       if (!Array.isArray(entry) || typeof entry[0] !== "string" || typeof entry[1]?.text !== "string") continue;
       lastTaskMessages.set(entry[0], entry[1]);
     }
+  }
+  if (saved.restartRequest && typeof saved.restartRequest === "object"
+    && Number.isSafeInteger(saved.restartRequest.chatId)
+    && Number.isSafeInteger(saved.restartRequest.messageId)) {
+    restartRequest = {
+      chatId: saved.restartRequest.chatId,
+      messageId: saved.restartRequest.messageId,
+      requestedAt: String(saved.restartRequest.requestedAt ?? ""),
+      waitingForRuns: saved.restartRequest.waitingForRuns === true,
+    };
   }
   const savedRuns = Array.isArray(saved.activeRuns)
     ? saved.activeRuns
@@ -1194,7 +1208,7 @@ async function sendStatus() {
     limits,
   });
   const replyMarkup = runningTaskReplyMarkup(catalog, selectedTask());
-  await sendMessage(statusText, replyMarkup.inline_keyboard.length
+  await sendStatusCard(statusText, replyMarkup.inline_keyboard.length
     ? { parse_mode: "HTML", reply_markup: replyMarkup }
     : { parse_mode: "HTML" });
 }
@@ -1400,6 +1414,9 @@ async function completeRun(run) {
   run.process = null;
   if (!taskRuns.size) stopTyping();
   await saveState();
+  if (restartRequest?.waitingForRuns && !restartBlockingRuns().length && !stopping) {
+    setTimeout(() => void performRestart(), 0);
+  }
 }
 
 async function startTurn(input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
@@ -1837,7 +1854,17 @@ async function readCodexTaskSnapshot(run) {
   const result = await sendRpc("thread/read", { threadId: run.threadId, includeTurns: true });
   const turn = result.thread?.turns?.find((item) => item.id === run.turnId)
     ?? result.thread?.turns?.at(-1);
-  return turn ? { ...codexTurnSnapshot(turn), turnId: turn.id } : null;
+  if (!turn) return null;
+  const snapshot = { ...codexTurnSnapshot(turn), turnId: turn.id };
+  if (!snapshot.active && await readCodexRolloutRunning(result.thread?.path)) {
+    return {
+      ...snapshot,
+      completed: false,
+      active: true,
+      stage: "Подключено к продолжающейся внешней задаче.",
+    };
+  }
+  return snapshot;
 }
 
 async function finishObservedRun(run, snapshot) {
@@ -1992,6 +2019,21 @@ async function recoverTaskRun(run) {
     return;
   }
 
+  if (restartRequest && turn.status === "interrupted") {
+    while (run.progressUpdateInFlight) await delay(50);
+    for (const messageId of run.progressMessageIds) {
+      await telegram("deleteMessage", {
+        chat_id: run.chatId,
+        message_id: messageId,
+      }).catch(() => {});
+    }
+    run.progressMessageIds = [];
+    run.progressReasoning = "";
+    run.lastProgressText = "";
+    await completeRun(run);
+    return;
+  }
+
   const answer = recoveredCodexAnswer(turn)
     || run.responseText.trim()
     || turn.error?.message
@@ -2085,8 +2127,47 @@ function approvalModeKeyboard() {
   };
 }
 
-async function restartBot() {
-  await sendMessage("🔄 Перезапускаю бота…");
+function restartBlockingRuns() {
+  return taskRuns.values().filter((run) => !run.observer);
+}
+
+async function updateRestartMessage(text, extra = {}) {
+  if (!restartRequest) return;
+  await telegram("editMessageText", {
+    chat_id: restartRequest.chatId,
+    message_id: restartRequest.messageId,
+    text,
+    ...extra,
+  });
+}
+
+async function finalizeRestartMessage() {
+  if (!restartRequest) return false;
+  const request = restartRequest;
+  const text = formatRestartCompleteMessage({
+    provider: providerTitle(),
+    task: activeThreadTitle || (threadId ? `${providerTitle()} · ${threadId.slice(0, 8)}` : "Не выбрана"),
+    runningTasks: taskRuns.size,
+  });
+  try {
+    await updateRestartMessage(text, { parse_mode: "HTML" });
+  } catch (error) {
+    console.error("Cannot update restart message:", error.message);
+    await sendMessageTo(request.chatId, text, {
+      parse_mode: "HTML",
+      reply_markup: BOT_MENU,
+    });
+  }
+  restartRequest = null;
+  await saveState();
+  return true;
+}
+
+async function performRestart() {
+  if (stopping || !restartRequest) return;
+  restartRequest.waitingForRuns = false;
+  await updateRestartMessage("🔄 Перезапускаю бота…").catch(() => {});
+  await saveState();
   await releaseInstanceLock();
   const replacement = spawn(
     process.execPath,
@@ -2101,8 +2182,30 @@ async function restartBot() {
   replacement.unref();
   stopping = true;
   codex?.kill();
-  for (const run of taskRuns.values()) run.process?.kill();
+  for (const run of restartBlockingRuns()) run.process?.kill();
   setTimeout(() => process.exit(0), 500).unref();
+}
+
+async function restartBot() {
+  if (restartRequest) {
+    await sendMessage(restartRequest.waitingForRuns
+      ? "Перезапуск уже ожидает завершения выполняющихся задач."
+      : "Бот уже перезапускается.");
+    return;
+  }
+  const blockingRuns = restartBlockingRuns();
+  const message = await sendMessage(blockingRuns.length
+    ? `🔄 Перезапущу бота после завершения выполняющихся задач: ${blockingRuns.length}.`
+    : "🔄 Перезапускаю бота…");
+  if (!message?.message_id) throw new Error("Telegram не вернул ID сообщения перезапуска");
+  restartRequest = {
+    chatId,
+    messageId: message.message_id,
+    requestedAt: new Date().toISOString(),
+    waitingForRuns: blockingRuns.length > 0,
+  };
+  await saveState();
+  if (!blockingRuns.length) await performRestart();
 }
 
 async function transcribeVoice(message) {
@@ -2915,6 +3018,43 @@ async function telegram(method, body) {
   return payload.result;
 }
 
+async function telegramMultipart(method, body, fileField, filePath) {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(body)) {
+    if (value == null) continue;
+    form.set(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+  }
+  form.set(
+    fileField,
+    new Blob([await readFile(filePath)], { type: "image/png" }),
+    path.basename(filePath),
+  );
+  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(40000),
+  });
+  const payload = await response.json();
+  if (!payload.ok) throw new Error(`Telegram ${method}: ${payload.description ?? response.status}`);
+  return payload.result;
+}
+
+async function sendStatusCard(text, extra = {}) {
+  if (!chatId) return;
+  const headerPath = path.join(STATUS_HEADER_DIR, statusHeaderFileName(activeProvider));
+  if (!existsSync(headerPath)) return sendMessage(text, extra);
+  const caption = String(text);
+  if (caption.length > 1000) {
+    await telegramMultipart("sendPhoto", { chat_id: chatId }, "photo", headerPath);
+    return sendMessage(caption, extra);
+  }
+  return telegramMultipart("sendPhoto", {
+    chat_id: chatId,
+    caption,
+    ...extra,
+  }, "photo", headerPath);
+}
+
 async function sendMessage(text, extra = {}) {
   if (!chatId) return;
   return sendMessageTo(chatId, text, extra);
@@ -2968,6 +3108,7 @@ function saveState() {
     updateOffset,
     activeRuns: taskRuns.values().map(serializableTaskRun),
     lastTaskMessages: [...lastTaskMessages.entries()].slice(-500),
+    restartRequest,
   }, null, 2)}\n`;
   stateWriteQueue = stateWriteQueue
     .catch(() => {})
@@ -3008,7 +3149,14 @@ try {
 } catch (error) {
   console.error("Cannot register Telegram commands:", error.message);
 }
-if (chatId) {
+let restartFinalized = false;
+if (restartRequest) {
+  restartFinalized = await finalizeRestartMessage().catch((error) => {
+    console.error("Cannot finalize bot restart:", error.message);
+    return false;
+  });
+}
+if (chatId && !restartFinalized) {
   await sendMessage("Бот запущен.", { reply_markup: BOT_MENU }).catch((error) => {
     console.error("Cannot update Telegram keyboard:", error.message);
   });

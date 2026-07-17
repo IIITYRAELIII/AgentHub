@@ -115,6 +115,24 @@ export function formatStatusMessage({
     `Лимиты:\n${escapeTelegramHtml(limits)}${activeHeading}`;
 }
 
+export function statusHeaderFileName(provider) {
+  return String(provider).toLowerCase() === "codex"
+    ? "codex-header.png"
+    : "claude-header.png";
+}
+
+export function formatRestartCompleteMessage({
+  provider,
+  task,
+  runningTasks = 0,
+}) {
+  const count = Math.max(0, Number(runningTasks) || 0);
+  return "✅ <b>БОТ ПЕРЕЗАПУЩЕН</b>\n\n" +
+    `Агент: ${escapeTelegramHtml(provider)}\n` +
+    `Текущая задача: ${escapeTelegramHtml(task || "Не выбрана")}\n` +
+    `Активных задач восстановлено: ${count}`;
+}
+
 export function formatArchiveMessage({ archivedTask, activeTask }) {
   const archived = `❌ Задача "${archivedTask}" архивирована.`;
   const active = activeTask
