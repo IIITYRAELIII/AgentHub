@@ -29,6 +29,17 @@ function promptText(entry) {
     .trim();
 }
 
+function catalogPromptTitle(entries) {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (!isUserPrompt(entries[index])) continue;
+    const value = promptText(entries[index]).replace(/\s+/g, " ").trim();
+    if (!value || /<command-name>\s*\/[^<]+\s*<\/command-name>/i.test(value)
+      || /^<local-command-/i.test(value)) continue;
+    return value.slice(0, 80);
+  }
+  return null;
+}
+
 export function codexTurnAnswer(turn) {
   return (turn?.items ?? [])
     .filter((item) => item?.type === "agentMessage" && String(item.text ?? "").trim())
@@ -92,6 +103,7 @@ export function parseClaudeTranscript(text) {
     sessionId: entries.map((entry) => entry?.sessionId).filter(Boolean).at(-1) ?? null,
     cwd: entries.map((entry) => entry?.cwd).filter(Boolean).at(-1) ?? null,
     title: promptText(promptEntry).replace(/\s+/g, " ").slice(0, 80) || null,
+    catalogTitle: catalogPromptTitle(entries),
     isSidechain: entries.some((entry) => entry?.isSidechain === true),
   };
 }
@@ -202,7 +214,7 @@ export async function listClaudeSessionSnapshots(
       try {
         const info = await stat(transcriptPath);
         const snapshot = parseClaudeTranscript(await readCatalogSample(transcriptPath, info.size));
-        if (snapshot.isSidechain) return null;
+        if (snapshot.isSidechain || !snapshot.catalogTitle) return null;
         return {
           ...snapshot,
           sessionId: snapshot.sessionId || path.basename(transcriptPath, ".jsonl"),

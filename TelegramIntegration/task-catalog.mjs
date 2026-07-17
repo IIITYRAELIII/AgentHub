@@ -35,7 +35,7 @@ export function claudeCatalogEntry(snapshot, project, nowMs = Date.now()) {
     threadId: String(snapshot.sessionId),
     projectRoot: project.path,
     projectName: project.name,
-    title: String(snapshot.title ?? `Claude · ${String(snapshot.sessionId).slice(0, 8)}`),
+    title: String(snapshot.catalogTitle ?? snapshot.title ?? `Claude · ${String(snapshot.sessionId).slice(0, 8)}`),
     updatedAtMs: modifiedAtMs,
     running: Boolean(snapshot.active)
       && modifiedAtMs > 0

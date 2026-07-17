@@ -58,6 +58,7 @@ test("parseClaudeTranscript returns the current partial answer", () => {
     sessionId: null,
     cwd: null,
     title: "Сделай задачу",
+    catalogTitle: "Сделай задачу",
     isSidechain: false,
   });
 });
@@ -135,5 +136,48 @@ test("listClaudeSessionSnapshots discovers independent sessions but skips subage
   assert.equal(snapshots[0].sessionId, "session-2");
   assert.equal(snapshots[0].cwd, "C:\\Projects\\Main");
   assert.equal(snapshots[0].title, "Проверить каталог задач");
+  assert.equal(snapshots[0].catalogTitle, "Проверить каталог задач");
   assert.equal(snapshots[0].active, true);
+});
+
+test("listClaudeSessionSnapshots excludes command-only utility sessions", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-claude-commands-"));
+  const project = path.join(root, "project");
+  await mkdir(project);
+  await writeFile(path.join(project, "usage-session.jsonl"), [
+    line({
+      type: "user",
+      cwd: "C:\\Projects\\Main",
+      sessionId: "usage-session",
+      message: {
+        role: "user",
+        content: "<local-command-caveat>Caveat: generated locally</local-command-caveat>",
+      },
+    }),
+    line({
+      type: "user",
+      cwd: "C:\\Projects\\Main",
+      sessionId: "usage-session",
+      message: {
+        role: "user",
+        content: "<command-name>/usage</command-name><command-message>usage</command-message>",
+      },
+    }),
+  ].join("\n"), "utf8");
+
+  assert.deepEqual(await listClaudeSessionSnapshots({ projectsRoot: root }), []);
+});
+
+test("Claude catalog keeps a real task even when its latest prompt is a command", () => {
+  const result = parseClaudeTranscript([
+    line({ type: "user", message: { role: "user", content: "Настроить проект" } }),
+    line({ type: "assistant", message: { role: "assistant", stop_reason: "end_turn", content: "Готово" } }),
+    line({
+      type: "user",
+      message: { role: "user", content: "<command-name>/usage</command-name><command-message>usage</command-message>" },
+    }),
+  ].join("\n"));
+
+  assert.equal(result.title.startsWith("<command-name>"), true);
+  assert.equal(result.catalogTitle, "Настроить проект");
 });
