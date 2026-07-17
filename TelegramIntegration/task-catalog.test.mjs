@@ -123,6 +123,18 @@ test("Codex turn selection prefers a genuinely in-progress turn", () => {
   }).id, "running");
 });
 
+test("a bot-managed Codex run stays attached to its own parallel turn", () => {
+  const turns = [
+    { id: "managed", status: "completed" },
+    { id: "external", status: "inProgress" },
+  ];
+  assert.equal(selectCodexTurn(turns, {
+    requestedTurnId: "managed",
+    rolloutActiveTurnIds: ["external"],
+    strictRequested: true,
+  }).id, "managed");
+});
+
 test("readCodexRolloutRunning reads a fresh local rollout", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "telegram-codex-rollout-"));
   const rollout = path.join(root, "rollout.jsonl");

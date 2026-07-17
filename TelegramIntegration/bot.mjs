@@ -1572,6 +1572,7 @@ async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton =
       turnTokenUsage.set(run.turnId, { usage: emptyTokenUsage(), reported: false });
     }
     startTyping();
+    scheduleObservedRun(run);
   } catch (error) {
     await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
     await finishProgress(run, `Ошибка запуска: ${error.message}`);
@@ -1930,6 +1931,8 @@ async function handleCodexMessage(message) {
       console.warn(`Completed Codex turn ${eventTurnId ?? "unknown"} has no registered task run`);
       return;
     }
+    if (run.status !== "running") return;
+    run.status = "finishing";
     const completedTurnId = eventTurnId ?? run.turnId;
     const tokenSummary = formatTurnTokenUsage(turnTokenUsage.get(completedTurnId));
     turnTokenUsage.delete(completedTurnId);
@@ -2040,12 +2043,21 @@ async function readCodexTaskSnapshot(run) {
   const turn = selectCodexTurn(turns, {
     requestedTurnId: run.turnId,
     rolloutActiveTurnIds: activity.activeTurnIds,
+    strictRequested: run.observer !== true,
   });
   if (!turn) return null;
   const snapshot = {
     ...codexTurnSnapshot(turn),
     turnId: turn.id,
   };
+  if (!snapshot.active && activity.activeTurnIds.includes(turn.id)) {
+    return {
+      ...snapshot,
+      completed: false,
+      active: true,
+      stage: describeCodexItem(turn.items?.at(-1), false),
+    };
+  }
   return snapshot;
 }
 
@@ -2061,8 +2073,36 @@ async function finishObservedRun(run, snapshot) {
   await completeRun(run);
 }
 
+async function finishManagedCodexSnapshot(run, snapshot) {
+  if (taskRuns.forTask(run) !== run || run.status !== "running") return;
+  run.status = "finishing";
+  const completedTurnId = run.turnId;
+  const tokenSummary = formatTurnTokenUsage(turnTokenUsage.get(completedTurnId));
+  turnTokenUsage.delete(completedTurnId);
+  const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
+  turnTemporaryFiles.delete(completedTurnId);
+  const forceSpeechButton = turnSpeechButtons.get(completedTurnId) ?? false;
+  turnSpeechButtons.delete(completedTurnId);
+  await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
+  const answer = String(snapshot?.answer ?? "").trim()
+    || run.responseText.trim()
+    || "Ход завершён без текстового ответа.";
+  await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
+  rememberLastTaskMessage(run, answer);
+  await sendRunLongMessage(run, `${answer}\n\n${tokenSummary}`, {
+    speechText: answer,
+    forceSpeechButton,
+  });
+  if (run.latestDiff) {
+    await sendRunMessage(run, "Изменения этой задачи доступны после её выбора по команде /diff.");
+  }
+  await completeRun(run);
+}
+
 function scheduleObservedRun(run) {
-  if (!run?.observer || run.observerTimer || taskRuns.forTask(run) !== run) return;
+  if ((!run?.observer && run?.provider !== "codex")
+    || run.observerTimer
+    || taskRuns.forTask(run) !== run) return;
   run.observerTimer = setTimeout(() => {
     run.observerTimer = null;
     void pollObservedRun(run);
@@ -2070,7 +2110,7 @@ function scheduleObservedRun(run) {
 }
 
 async function pollObservedRun(run) {
-  if (!run?.observer || taskRuns.forTask(run) !== run) return;
+  if ((!run?.observer && run?.provider !== "codex") || taskRuns.forTask(run) !== run) return;
   try {
     const snapshot = run.provider === "codex"
       ? await readCodexTaskSnapshot(run)
@@ -2086,10 +2126,22 @@ async function pollObservedRun(run) {
       taskRuns.reindex(run, { turnId: previousTurnId });
     }
     if (snapshot.completed) {
-      await finishObservedRun(run, snapshot);
+      if (run.observer) {
+        await finishObservedRun(run, snapshot);
+      } else {
+        await finishManagedCodexSnapshot(run, snapshot);
+      }
       return;
     }
-    updateObservedRun(run, snapshot);
+    if (run.observer) {
+      updateObservedRun(run, snapshot);
+    } else {
+      const answer = String(snapshot.answer ?? "").trim();
+      if (answer && answer !== run.responseText) run.responseText = answer;
+      run.progressReasoning = String(snapshot.reasoning ?? run.progressReasoning);
+      run.progressStage = String(snapshot.stage ?? run.progressStage);
+      scheduleProgressUpdate(run);
+    }
     scheduleObservedRun(run);
   } catch (error) {
     console.error(`Cannot observe ${run.provider} task ${run.threadId}:`, error.message);
@@ -2202,6 +2254,7 @@ async function recoverTaskRun(run) {
     run.turnId = turn.id;
     taskRuns.reindex(run, { turnId: previousTurnId });
     setProgressStage(run, "Подключено к продолжающейся задаче.");
+    scheduleObservedRun(run);
     startTyping();
     await saveState();
     return;

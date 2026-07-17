@@ -144,10 +144,11 @@ export function codexThreadRunning(thread) {
 
 export function selectCodexTurn(
   turns,
-  { requestedTurnId = null, rolloutActiveTurnIds = [] } = {},
+  { requestedTurnId = null, rolloutActiveTurnIds = [], strictRequested = false } = {},
 ) {
   const values = Array.isArray(turns) ? turns : [];
   const requested = values.find((turn) => turn?.id === requestedTurnId);
+  if (strictRequested && requested) return requested;
   if (requested?.status === "inProgress") return requested;
   const rolloutIds = new Set(rolloutActiveTurnIds);
   return values.findLast((turn) => (
