@@ -134,13 +134,15 @@ export function taskCatalogCallback(entry) {
   return `task:${provider}:${entry.threadId}`;
 }
 
-export function runningTaskReplyMarkup(entries) {
+export function runningTaskReplyMarkup(entries, selected = null) {
   return {
     inline_keyboard: entries
       .filter((entry) => entry.running)
       .map((entry) => [{
-        text: `🧵 ${entry.provider === "codex" ? "Codex" : "Claude"} · ${entry.projectName} · ${entry.title}`
-          .slice(0, 90),
+        text: (
+          `${selected && catalogEntryIsSelected(entry, selected) ? "✅ ТЕКУЩАЯ" : "🧵"} · `
+          + `${entry.provider === "codex" ? "Codex" : "Claude"} · ${entry.projectName} · ${entry.title}`
+        ).slice(0, 90),
         callback_data: taskCatalogCallback(entry),
       }]),
   };

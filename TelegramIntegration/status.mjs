@@ -95,7 +95,6 @@ export function formatStatusMessage({
   provider,
   busy,
   runningTasks = [],
-  totalTasks = null,
   model,
   reasoning,
   mode,
@@ -106,16 +105,14 @@ export function formatStatusMessage({
   const running = Array.isArray(runningTasks)
     ? runningTasks
     : Array.from({ length: Number(runningTasks) || 0 }, () => "");
-  const runningDetails = running.filter(Boolean).map((value) => `• ${value}`).join("\n");
-  const totals = totalTasks == null ? "" : `\nВсего найдено задач: ${totalTasks}`;
-  return `${provider}: ${busy ? "Выполняет выбранную задачу" : "Готов"}\n` +
-    `${model} - ${reasoning}\n` +
-    `${mode}\n\n` +
-    `Текущая задача: ${task}\n` +
-    `Каталог: ${project}\n\n` +
-    `Выполняется задач: ${running.length}` +
-    `${runningDetails ? `\n${runningDetails}` : ""}${totals}\n\n` +
-    `Лимиты:\n${limits}`;
+  const activeHeading = running.length ? "\n\n<b>🧵АКТИВНЫЕ ЗАДАЧИ🧵</b>" : "";
+  return `${escapeTelegramHtml(provider)}: ${busy ? "Выполняет выбранную задачу" : "Готов"}\n` +
+    `${escapeTelegramHtml(model)} - ${escapeTelegramHtml(reasoning)}\n` +
+    `${escapeTelegramHtml(mode)}\n\n` +
+    `Текущая задача: ${escapeTelegramHtml(task)}\n` +
+    `Каталог: ${escapeTelegramHtml(project)}\n\n` +
+    `Выполняется задач: ${running.length}\n\n` +
+    `Лимиты:\n${escapeTelegramHtml(limits)}${activeHeading}`;
 }
 
 export function formatArchiveMessage({ archivedTask, activeTask }) {

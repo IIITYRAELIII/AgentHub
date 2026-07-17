@@ -1186,7 +1186,6 @@ async function sendStatus() {
     provider: isCodex() ? "CODEX" : "CLAUDE",
     busy: selectedBusy,
     runningTasks,
-    totalTasks: catalog.length,
     model: isCodex() ? codexModelLabel(codexModel) : CLAUDE_MODEL_LABELS[claudeModel],
     reasoning: CODEX_REASONING_LABELS[isCodex() ? codexReasoningEffort : claudeReasoningEffort],
     mode: CODEX_COLLABORATION_MODE_LABELS[isCodex() ? codexCollaborationMode : claudeCollaborationMode],
@@ -1194,10 +1193,10 @@ async function sendStatus() {
     project: project.name,
     limits,
   });
-  const replyMarkup = runningTaskReplyMarkup(catalog);
+  const replyMarkup = runningTaskReplyMarkup(catalog, selectedTask());
   await sendMessage(statusText, replyMarkup.inline_keyboard.length
-    ? { reply_markup: replyMarkup }
-    : {});
+    ? { parse_mode: "HTML", reply_markup: replyMarkup }
+    : { parse_mode: "HTML" });
 }
 
 async function sendReasoningPicker() {

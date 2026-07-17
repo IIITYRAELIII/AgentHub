@@ -119,6 +119,7 @@ test("runningTaskReplyMarkup creates switch buttons only for active tasks", () =
   const markup = runningTaskReplyMarkup([{
     provider: "codex",
     threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
+    projectRoot: "C:\\Projects\\Main",
     projectName: "VSC_Tyrael",
     title: "Тестирование обмена документами",
     running: true,
@@ -128,10 +129,14 @@ test("runningTaskReplyMarkup creates switch buttons only for active tasks", () =
     projectName: "Utilities",
     title: "Завершённая",
     running: false,
-  }]);
+  }], {
+    provider: "codex",
+    threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
+    projectRoot: "C:\\Projects\\Main",
+  });
   assert.deepEqual(markup, {
     inline_keyboard: [[{
-      text: "🧵 Codex · VSC_Tyrael · Тестирование обмена документами",
+      text: "✅ ТЕКУЩАЯ · Codex · VSC_Tyrael · Тестирование обмена документами",
       callback_data: "task:c:019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
     }]],
   });

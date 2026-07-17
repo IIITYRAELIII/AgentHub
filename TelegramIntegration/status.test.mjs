@@ -80,6 +80,8 @@ test("formatStatusMessage matches Telegram status layout", () => {
     "Лимиты:",
     "CODEX",
     "100.0% - 5 ч. | 94.0% - 6 дн. 7 ч.",
+    "",
+    "<b>🧵АКТИВНЫЕ ЗАДАЧИ🧵</b>",
   ].join("\n"));
 });
 
@@ -107,10 +109,12 @@ test("formatStatusMessage shows Claude model, reasoning, and Plan mode", () => {
     "Лимиты:",
     "CLAUDE",
     "100.0% - 5 ч.",
+    "",
+    "<b>🧵АКТИВНЫЕ ЗАДАЧИ🧵</b>",
   ].join("\n"));
 });
 
-test("formatStatusMessage lists discovered running tasks and total catalog size", () => {
+test("formatStatusMessage keeps task details in buttons and adds the active heading", () => {
   const result = formatStatusMessage({
     provider: "CODEX",
     busy: true,
@@ -118,7 +122,6 @@ test("formatStatusMessage lists discovered running tasks and total catalog size"
       "Codex · VSC_Tyrael · Перенос файлов",
       "Claude · Utilities · Проверка инструментов",
     ],
-    totalTasks: 47,
     model: "GPT-5.6-Sol",
     reasoning: "High",
     mode: "Work",
@@ -127,9 +130,26 @@ test("formatStatusMessage lists discovered running tasks and total catalog size"
     limits: "CODEX\n80.0% - 5 дн.",
   });
   assert.match(result, /Выполняется задач: 2/);
-  assert.match(result, /• Codex · VSC_Tyrael · Перенос файлов/);
-  assert.match(result, /• Claude · Utilities · Проверка инструментов/);
-  assert.match(result, /Всего найдено задач: 47/);
+  assert.doesNotMatch(result, /• Codex/);
+  assert.doesNotMatch(result, /Всего найдено задач/);
+  assert.match(result, /<b>🧵АКТИВНЫЕ ЗАДАЧИ🧵<\/b>$/);
+});
+
+test("formatStatusMessage omits the active heading when nothing runs", () => {
+  const result = formatStatusMessage({
+    provider: "CODEX",
+    busy: false,
+    runningTasks: [],
+    model: "GPT-5.6-Sol",
+    reasoning: "High",
+    mode: "Work",
+    task: "Задача <1>",
+    project: "VSC & Main",
+    limits: "CODEX\n100%",
+  });
+  assert.doesNotMatch(result, /АКТИВНЫЕ ЗАДАЧИ/);
+  assert.match(result, /Задача &lt;1&gt;/);
+  assert.match(result, /VSC &amp; Main/);
 });
 
 test("formatArchiveMessage names archived and newly active tasks", () => {
