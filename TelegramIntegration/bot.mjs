@@ -5,7 +5,13 @@ import { mkdir, open, readdir, readFile, stat, unlink, writeFile } from "node:fs
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
-import { INTEGRATION_ROOT, loadConfig } from "./config.mjs";
+import {
+  findContainingProject,
+  INTEGRATION_ROOT,
+  loadConfig,
+  pathInsideOrSame,
+  samePath,
+} from "./config.mjs";
 import {
   buildClaudeArgs,
   buildClaudePrompt,
@@ -44,8 +50,8 @@ function providerTitle() {
 const CLAUDE_MODELS = ["sonnet", "opus", "haiku"];
 const CLAUDE_MODEL_LABELS = { sonnet: "Sonnet", opus: "Opus", haiku: "Haiku" };
 let claudeModel = CLAUDE_MODELS.includes(config.claudeModel) ? config.claudeModel : "sonnet";
-// Claude использует те же уровни «силы дум» и режимы Plan/Work, что и Codex,
-// но применяет их по-своему: сила дум -> бюджет thinking-токенов, режим -> permission-mode.
+// Claude использует те же уровни «мощи дум» и режимы Plan/Work, что и Codex,
+// но применяет их по-своему: мощь дум -> бюджет thinking-токенов, режим -> permission-mode.
 let claudeReasoningEffort = CODEX_REASONING_EFFORTS.includes(config.claudeReasoningEffort)
   ? config.claudeReasoningEffort
   : "high";
@@ -83,10 +89,12 @@ const TTS_CACHE_DIR = path.join(INTEGRATION_ROOT, ".silero-models");
 const AUDIO_DIR = config.audioDir;
 const IMAGE_DIR = path.join(config.dataDir, "images");
 const TTS_DIR = config.ttsDir;
+const AGENT_ICONS = ["👾", "🦉", "🐙", "🕶️", "🚀", "⚡", "💻", "🔮", "🛰️", "🔥", "✨"];
+const agentIcon = AGENT_ICONS[Math.floor(Math.random() * AGENT_ICONS.length)];
 const BOT_COMMANDS = [
-  { command: "engine", description: "Переключить Claude Code/Codex" },
+  { command: "agent", description: "Переключить Claude Code/Codex" },
   { command: "model", description: "Сменить модель" },
-  { command: "reasoning", description: "Сменить силу дум (Codex/Claude)" },
+  { command: "reasoning", description: "Сменить мощь дум (Codex/Claude)" },
   { command: "mode", description: "Переключить Plan/Work (Codex/Claude)" },
   { command: "projects", description: "Сменить активный проект" },
   { command: "new", description: "Новый контекст" },
@@ -102,8 +110,8 @@ const BOT_COMMANDS = [
 ];
 const BOT_MENU = {
   keyboard: [
-    [{ text: "🤖 Движок" },{ text: "🎛 Модель" },...(config.showProjectButton ? [{ text: "📁 Проект" }] : []),],
-    [{ text: "🧠 Сила дум" },{ text: "🛠 Plan/Work" },],
+    [{ text: `${agentIcon} Агент` },{ text: "🎛 Модель" },...(config.showProjectButton ? [{ text: "📁 Проект" }] : []),],
+    [{ text: "🧠 Мощь дум" },{ text: "🛠 Plan/Work" },],
     [{ text: "📋 Задачи" },{ text: "ℹ️ Статус" },{ text: "🔐 Доступ" },],
     [{ text: "⛔ Стоп" }, { text: "❓ Помощь" }, { text: "🔄 Рестарт" }],
   ],
@@ -111,8 +119,11 @@ const BOT_MENU = {
   is_persistent: true,
 };
 const MENU_COMMANDS = new Map([
-  ["🤖 Движок", "/engine"],
+  ...AGENT_ICONS.map((icon) => [`${icon} Агент`, "/agent"]),
+  ["🧑‍💻 Агент", "/agent"],
+  ["🤖 Движок", "/agent"],
   ["🎛 Модель", "/model"],
+  ["🧠 Мощь дум", "/reasoning"],
   ["🧠 Сила дум", "/reasoning"],
   ["🛠 Plan/Work", "/mode"],
   ["📁 Папка", "/projects"],
@@ -221,23 +232,8 @@ try {
   if (error?.code !== "ENOENT") console.error("Cannot read saved speech texts:", error.message);
 }
 
-function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
-function pathInsideOrSame(child, parent) {
-  const childPath = path.resolve(child);
-  const parentPath = path.resolve(parent);
-  const relative = path.relative(parentPath, childPath);
-  if (!relative) return true;
-  if (relative.startsWith("..") || path.isAbsolute(relative)) return false;
-  return true;
-}
-
 function findProject(projectRoot) {
-  return PROJECTS.find((project) => samePath(project.path, projectRoot));
+  return findContainingProject(PROJECTS, projectRoot);
 }
 
 function activeProject() {
@@ -721,13 +717,13 @@ async function sendProjectPicker() {
   );
 }
 
-async function sendEnginePicker() {
+async function sendAgentPicker() {
   const keyboard = [
     [{ text: `${!isCodex() ? "✓ " : ""}Claude Code`, callback_data: "engine:claude" }],
     [{ text: `${isCodex() ? "✓ " : ""}Codex`, callback_data: "engine:codex" }],
   ];
   await sendMessage(
-    `Активный движок: ${providerTitle()}\n\nВыберите движок:`,
+    `Активный агент: ${providerTitle()}\n\nВыберите агента:`,
     { reply_markup: { inline_keyboard: keyboard } },
   );
 }
@@ -881,7 +877,7 @@ async function activateMessageBinding(binding) {
   const project = findProject(binding.projectRoot);
   if (!project) throw new Error("проект привязанного сообщения больше не разрешён");
   if (binding.provider !== "codex" && binding.provider !== "claude") {
-    throw new Error("неизвестный движок привязанного сообщения");
+    throw new Error("неизвестный агент привязанного сообщения");
   }
   const alreadyActive = samePath(project.path, activeProjectRoot)
     && binding.provider === activeProvider
@@ -1966,7 +1962,7 @@ async function handleApprovalCallback(callback) {
       }
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
-        text: switched.changed ? "Движок переключён" : "Этот движок уже активен",
+        text: switched.changed ? "Агент переключён" : "Этот агент уже активен",
       });
       await telegram("editMessageReplyMarkup", {
         chat_id: callback.message.chat.id,
@@ -1974,15 +1970,15 @@ async function handleApprovalCallback(callback) {
         reply_markup: { inline_keyboard: [] },
       });
       if (switched.changed) {
-        await sendMessage(`Активный движок: ${providerTitle()}\nПроект: ${activeProject().name}`);
+        await sendMessage(`Активный агент: ${providerTitle()}\nПроект: ${activeProject().name}`);
       }
     } catch (error) {
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
-        text: "Не удалось переключить движок",
+        text: "Не удалось переключить агента",
         show_alert: true,
       });
-      await sendMessage(`Ошибка переключения движка: ${error.message}`);
+      await sendMessage(`Ошибка переключения агента: ${error.message}`);
     }
     return;
   }
@@ -2268,7 +2264,13 @@ async function handleTelegramMessage(message) {
   if (Number.isSafeInteger(repliedMessageId)) {
     const binding = await findMessageBinding(config.dataDir, message.chat.id, repliedMessageId);
     if (binding) {
-      const activated = await activateMessageBinding(binding);
+      let activated;
+      try {
+        activated = await activateMessageBinding(binding);
+      } catch (error) {
+        await sendMessage(`Не удалось открыть задачу из этого сообщения: ${error.message}`);
+        return;
+      }
       if (activated.reason === "active-turn") {
         await sendMessage("Нельзя переключиться на задачу из этого сообщения: другая задача ещё выполняется. Дождитесь завершения или остановите её.");
         return;
@@ -2300,12 +2302,12 @@ async function handleTelegramMessage(message) {
 
   if (text === "/start" || text === "/help") {
     await sendMessage(
-      `Бот подключён к Claude Code и Codex. Текущий движок: ${providerTitle()}. Отправьте текст, изображение или голосовое сообщение.\n\n` +
-        "/engine — переключить Claude Code/Codex\n/model — сменить модель\n/reasoning — уровень Reasoning Codex\n/mode — режим Plan/Work Codex\n/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/archive — архивировать текущую задачу\n/status — статус, текущая задача и лимиты\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
+      `Бот подключён к Claude Code и Codex. Текущий агент: ${providerTitle()}. Отправьте текст, изображение или голосовое сообщение.\n\n` +
+        "/agent — переключить Claude Code/Codex\n/model — сменить модель\n/reasoning — мощь дум Codex/Claude\n/mode — режим Plan/Work Codex/Claude\n/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/archive — архивировать текущую задачу\n/status — статус, текущая задача и лимиты\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
       { reply_markup: BOT_MENU },
     );
-  } else if (text === "/engine") {
-    await sendEnginePicker();
+  } else if (text === "/agent" || text === "/engine") {
+    await sendAgentPicker();
   } else if (text === "/model") {
     await sendModelPicker();
   } else if (text === "/reasoning") {

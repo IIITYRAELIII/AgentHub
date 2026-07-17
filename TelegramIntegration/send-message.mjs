@@ -1,10 +1,20 @@
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { loadConfig } from "./config.mjs";
+import { findContainingProject, loadConfig } from "./config.mjs";
 import { appendMessageBindings } from "./message-bindings.mjs";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
+
+export const NOTIFICATION_CATEGORIES = Object.freeze({
+  action: Object.freeze({ emoji: "🚨", title: "ТРЕБУЕТСЯ ДЕЙСТВИЕ" }),
+  done: Object.freeze({ emoji: "✅", title: "ЗАДАЧА ВЫПОЛНЕНА" }),
+  progress: Object.freeze({ emoji: "⏳", title: "ЗАДАЧА ВЫПОЛНЯЕТСЯ" }),
+  warning: Object.freeze({ emoji: "⚠️", title: "ВНИМАНИЕ" }),
+  info: Object.freeze({ emoji: "ℹ️", title: "ИНФОРМАЦИЯ" }),
+});
 
 export function escapeHtml(value) {
   return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -18,6 +28,15 @@ export function splitTelegramText(value, limit = TELEGRAM_MESSAGE_LIMIT) {
     chunks.push(text.slice(start, start + limit));
   }
   return chunks;
+}
+
+export function resolveNotificationCategory(value = "info") {
+  const key = String(value || "info").trim().toLowerCase();
+  const category = NOTIFICATION_CATEGORIES[key];
+  if (!category) {
+    throw new Error(`Unknown --category value "${value}"; use ${Object.keys(NOTIFICATION_CATEGORIES).join(", ")}`);
+  }
+  return { key, ...category };
 }
 
 export function resolveChatId(config, explicitChatId = null) {
@@ -37,6 +56,8 @@ export function parseArguments(args) {
   let chatId = null;
   let silent = false;
   let bindCurrent = false;
+  let bindActive = false;
+  let category = "info";
   const textParts = [];
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -47,13 +68,21 @@ export function parseArguments(args) {
       silent = true;
     } else if (argument === "--bind-current") {
       bindCurrent = true;
+    } else if (argument === "--bind-active") {
+      bindActive = true;
+    } else if (argument === "--category") {
+      if (index + 1 >= args.length) throw new Error("--category requires a value");
+      category = resolveNotificationCategory(args[++index]).key;
+    } else if (argument.startsWith("--category=")) {
+      category = resolveNotificationCategory(argument.slice("--category=".length)).key;
     } else if (argument === "--help" || argument === "-h") {
-      return { help: true, chatId, silent, bindCurrent, text: "" };
+      return { help: true, chatId, silent, bindCurrent, bindActive, category, text: "" };
     } else {
       textParts.push(argument);
     }
   }
-  return { help: false, chatId, silent, bindCurrent, text: textParts.join(" ").trim() };
+  if (bindCurrent && bindActive) throw new Error("Use either --bind-current or --bind-active, not both");
+  return { help: false, chatId, silent, bindCurrent, bindActive, category, text: textParts.join(" ").trim() };
 }
 
 export function currentThreadBinding(state) {
@@ -75,10 +104,80 @@ export function currentThreadBinding(state) {
   return { provider, threadId, projectRoot: state.activeProjectRoot, taskTitle };
 }
 
-export function notificationParts(taskTitle, text) {
+export function codexThreadTitleFromIndex(indexText, threadId) {
+  let title = "";
+  for (const line of String(indexText ?? "").split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (entry.id === threadId && typeof entry.thread_name === "string" && entry.thread_name.trim()) {
+        title = entry.thread_name.trim();
+      }
+    } catch {
+      // Ignore an incomplete line while Codex is updating the append-only index.
+    }
+  }
+  return title.replace(/\s+/g, " ").slice(0, 120);
+}
+
+function matchingStateTitle(state, provider, threadId) {
+  const activeProvider = state?.activeProvider ?? state?.provider;
+  const activeThreadId = state?.threadIds?.[activeProvider]
+    ?? state?.threadId
+    ?? (state?.activeRun?.provider === activeProvider
+      ? state.activeRun.threadId ?? state.activeRun.sessionId
+      : null);
+  if (activeProvider !== provider || activeThreadId !== threadId) return "";
+  return String(state?.activeThreadTitle ?? "").trim().replace(/\s+/g, " ").slice(0, 120);
+}
+
+export async function currentCallerBinding(state, environment = process.env, cwd = process.cwd()) {
+  const codexThreadId = String(environment.CODEX_THREAD_ID ?? "").trim();
+  const claudeThreadId = String(environment.CLAUDE_CODE_SESSION_ID ?? "").trim();
+  if (codexThreadId && claudeThreadId) {
+    throw new Error("Cannot identify the caller: both CODEX_THREAD_ID and CLAUDE_CODE_SESSION_ID are set");
+  }
+
+  if (claudeThreadId) {
+    return {
+      provider: "claude",
+      threadId: claudeThreadId,
+      projectRoot: path.resolve(environment.CLAUDE_PROJECT_DIR || cwd),
+      taskTitle: matchingStateTitle(state, "claude", claudeThreadId) || `Claude · ${claudeThreadId.slice(0, 8)}`,
+    };
+  }
+
+  if (!codexThreadId) {
+    const detail = environment.CLAUDECODE
+      ? "CLAUDECODE is set, but CLAUDE_CODE_SESSION_ID is missing"
+      : "neither CODEX_THREAD_ID nor CLAUDE_CODE_SESSION_ID is set";
+    throw new Error(`--bind-current cannot identify the calling AI session: ${detail}; use --bind-active only to intentionally bind to the task selected in the Telegram bot`);
+  }
+
+  const codexHome = path.resolve(environment.CODEX_HOME || path.join(homedir(), ".codex"));
+  let taskTitle = "";
+  try {
+    const indexText = await readFile(path.join(codexHome, "session_index.jsonl"), "utf8");
+    taskTitle = codexThreadTitleFromIndex(indexText, codexThreadId);
+  } catch {
+    // The environment thread ID is still safer than binding to another task from bot state.
+  }
+
+  return {
+    provider: "codex",
+    threadId: codexThreadId,
+    projectRoot: path.resolve(environment.CODEX_PROJECT_ROOT || cwd),
+    taskTitle: taskTitle
+      || matchingStateTitle(state, "codex", codexThreadId)
+      || `Codex · ${codexThreadId.slice(0, 8)}`,
+  };
+}
+
+export function notificationParts(taskTitle, text, categoryName = "info") {
   const title = String(taskTitle).trim() || "Задача";
   const value = String(text).trim();
-  const escapedHeader = `🧵 <b>${escapeHtml(title)}</b> 🧵\n\n`;
+  const category = resolveNotificationCategory(categoryName);
+  const escapedHeader = `${category.emoji} <b><u>${category.title}</u></b> ${category.emoji}\n\n🧵 <b>${escapeHtml(title)}</b>\n\n`;
   const firstLimit = Math.max(1, TELEGRAM_MESSAGE_LIMIT - escapedHeader.length - 32);
   const firstText = value.slice(0, firstLimit);
   return {
@@ -116,8 +215,9 @@ async function sendTelegramMessage(token, chatId, text, silent, parseMode = null
 export async function main(args = process.argv.slice(2)) {
   const options = parseArguments(args);
   if (options.help) {
-    console.log("Usage: node send-message.mjs [--chat-id <id>] [--silent] [--bind-current] <message>");
-    console.log("       <command> | node send-message.mjs [--chat-id <id>] [--silent] [--bind-current]");
+    console.log("Usage: node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--category <name>] <message>");
+    console.log("       <command> | node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--category <name>]");
+    console.log(`Categories: ${Object.keys(NOTIFICATION_CATEGORIES).join(", ")} (default: info; used with a binding option)`);
     return;
   }
   const text = options.text || await readStdin();
@@ -125,10 +225,17 @@ export async function main(args = process.argv.slice(2)) {
   const chatId = resolveChatId(config, options.chatId);
   const sent = [];
   let parts;
-  if (options.bindCurrent) {
+  if (options.bindCurrent || options.bindActive) {
     const state = JSON.parse(await readFile(config.stateFile, "utf8"));
-    const task = currentThreadBinding(state);
-    const notification = notificationParts(task.taskTitle, text);
+    const task = options.bindCurrent
+      ? await currentCallerBinding(state)
+      : currentThreadBinding(state);
+    const project = findContainingProject(config.projects, task.projectRoot);
+    if (!project) {
+      throw new Error(`cannot bind a reply: ${task.projectRoot} is outside the configured Telegram projects`);
+    }
+    task.projectRoot = project.path;
+    const notification = notificationParts(task.taskTitle, text, options.category);
     sent.push(await sendTelegramMessage(config.token, chatId, notification.message, options.silent, "HTML"));
     parts = notification.remaining ? splitTelegramText(notification.remaining) : [];
     for (const part of parts) sent.push(await sendTelegramMessage(config.token, chatId, part, options.silent));

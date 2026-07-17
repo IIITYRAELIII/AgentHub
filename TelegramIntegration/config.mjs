@@ -25,10 +25,21 @@ function positiveInteger(value, fallback, name) {
   return number;
 }
 
-function samePath(left, right) {
+export function samePath(left, right) {
   const a = path.resolve(left);
   const b = path.resolve(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+export function pathInsideOrSame(child, parent) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return !relative || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+export function findContainingProject(projects, candidatePath) {
+  return projects
+    .filter((project) => pathInsideOrSame(candidatePath, project.path))
+    .sort((left, right) => right.path.length - left.path.length)[0];
 }
 
 function loadProjects(raw, defaultRoot) {
