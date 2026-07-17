@@ -157,7 +157,7 @@ test("notificationParts adds a bold underlined category above the task title", (
 test("bound notifications expose the show-message callback", () => {
   assert.deepEqual(showMessageReplyMarkup(), {
     inline_keyboard: [[{
-      text: "👁 Показать сообщение",
+      text: "👀 Показать сообщение",
       callback_data: "show-message",
     }]],
   });

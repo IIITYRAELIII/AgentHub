@@ -11,7 +11,7 @@ test("pendingInputKeyboard preserves every deferred-message action", () => {
     inline_keyboard: [
       [{ text: "🆕 Отправить в новую задачу", callback_data: `pending:new:${id}` }],
       [{ text: "⏳ Поставить в очередь", callback_data: `pending:queue:${id}` }],
-      [{ text: "👁 Показать текущий ход", callback_data: `pending:show:${id}` }],
+    [{ text: "👀 Показать текущий ход", callback_data: `pending:show:${id}` }],
       [{ text: "❌ Отменить сообщение", callback_data: `pending:cancel:${id}` }],
     ],
   });

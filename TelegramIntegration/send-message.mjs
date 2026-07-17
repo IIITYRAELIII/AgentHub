@@ -189,7 +189,7 @@ export function notificationParts(taskTitle, text, categoryName = "info") {
 export function showMessageReplyMarkup() {
   return {
     inline_keyboard: [[{
-      text: "👁 Показать сообщение",
+        text: "👀 Показать сообщение",
       callback_data: "show-message",
     }]],
   };

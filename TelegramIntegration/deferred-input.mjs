@@ -5,7 +5,7 @@ export function pendingInputKeyboard(id) {
     inline_keyboard: [
       [{ text: "🆕 Отправить в новую задачу", callback_data: `pending:new:${value}` }],
       [{ text: "⏳ Поставить в очередь", callback_data: `pending:queue:${value}` }],
-      [{ text: "👁 Показать текущий ход", callback_data: `pending:show:${value}` }],
+    [{ text: "👀 Показать текущий ход", callback_data: `pending:show:${value}` }],
       [{ text: "❌ Отменить сообщение", callback_data: `pending:cancel:${value}` }],
     ],
   };
