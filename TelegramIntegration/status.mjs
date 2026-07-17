@@ -30,7 +30,10 @@ function formatWindow(window, nowMs) {
 
 function codexLimitName(bucket) {
   const name = bucket.limitName || bucket.limitId || "CODEX";
-  return String(bucket.limitId ?? name).toLowerCase() === "codex" ? "CODEX" : name;
+  const id = String(bucket.limitId ?? name).toLowerCase();
+  if (id === "codex") return "CODEX";
+  if (id === "spark" || String(name).toLowerCase().includes("spark")) return "Spark";
+  return name;
 }
 
 export function formatCodexRateLimits(result, nowMs = Date.now()) {
@@ -44,14 +47,13 @@ export function formatCodexRateLimits(result, nowMs = Date.now()) {
   buckets.sort((left, right) => (left.limitId === "codex" ? -1 : right.limitId === "codex" ? 1 : 0));
   const lines = [];
   for (const bucket of buckets) {
-    if (lines.length) lines.push("");
-    lines.push(codexLimitName(bucket));
-    const windows = [bucket.primary, bucket.secondary].filter(Boolean);
-    if (windows.length) lines.push(windows.map((window) => formatWindow(window, nowMs)).join(" | "));
+    const window = bucket.secondary ?? bucket.primary;
+    if (window) lines.push(`${codexLimitName(bucket)} - ${formatWindow(window, nowMs)}`);
+    else lines.push(codexLimitName(bucket));
     if (bucket.rateLimitReachedType) lines.push(`Ограничение достигнуто: ${bucket.rateLimitReachedType}`);
   }
   const resetCredits = result.rateLimitResetCredits?.availableCount;
-  if (resetCredits != null) lines.push("", `Доступно сбросов: ${resetCredits}`);
+  if (resetCredits != null) lines.push(`Доступно сбросов: ${resetCredits}`);
   return lines.join("\n");
 }
 
@@ -80,13 +82,17 @@ export function formatClaudeRateLimits(text, nowMs = Date.now()) {
   const limits = parseClaudeLimits(text);
   if (!limits.length) return "Не удалось распознать данные о лимитах Claude.";
 
-  const lines = ["CLAUDE"];
   const sharedLimits = limits.filter((item) => !item.model);
-  if (sharedLimits.length) {
-    lines.push(sharedLimits.map((limit) => formatClaudeWindow(limit, nowMs)).join(" | "));
-  }
+  const sharedLimit = sharedLimits.find((item) => item.kind === "week (all models)")
+    ?? sharedLimits.at(-1);
+  const lines = sharedLimit
+    ? [`CLAUDE - ${formatClaudeWindow(sharedLimit, nowMs)}`]
+    : ["CLAUDE"];
   for (const limit of limits.filter((item) => item.model)) {
-    lines.push("", `CLAUDE ${limit.model}`, formatClaudeWindow(limit, nowMs));
+    const modelLimit = limit.resetsText || !sharedLimit
+      ? limit
+      : { ...limit, resetsText: sharedLimit.resetsText };
+    lines.push(`${limit.model} - ${formatClaudeWindow(modelLimit, nowMs)}`);
   }
   return lines.join("\n");
 }

@@ -40,6 +40,19 @@ function catalogPromptTitle(entries) {
   return null;
 }
 
+// Claude Code сам генерирует короткое название задачи и пишет его записями
+// {"type":"ai-title","aiTitle":"…"} — это то, что видно в списке /resume. Оно куда
+// осмысленнее последнего сообщения; берём самое свежее (последнее по транскрипту).
+function claudeAiTitle(entries) {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.type !== "ai-title") continue;
+    const value = String(entry.aiTitle ?? "").replace(/\s+/g, " ").trim();
+    if (value) return value.slice(0, 80);
+  }
+  return null;
+}
+
 export function codexTurnAnswer(turn) {
   return (turn?.items ?? [])
     .filter((item) => item?.type === "agentMessage" && String(item.text ?? "").trim())
@@ -86,6 +99,7 @@ export function parseClaudeTranscript(text) {
     || assistantEntries.some((entry) => entry.message?.stop_reason === "end_turn");
   const answer = answerParts.join("\n\n").trim();
   const reasoning = thinkingParts.at(-1)?.slice(-1500) ?? "";
+  const aiTitle = claudeAiTitle(entries);
   const stage = completed
     ? "Задача завершена."
     : lastTool
@@ -102,8 +116,8 @@ export function parseClaudeTranscript(text) {
     updatedAt: turnEntries.map((entry) => entry?.timestamp).filter(Boolean).at(-1) ?? null,
     sessionId: entries.map((entry) => entry?.sessionId).filter(Boolean).at(-1) ?? null,
     cwd: entries.map((entry) => entry?.cwd).filter(Boolean).at(-1) ?? null,
-    title: promptText(promptEntry).replace(/\s+/g, " ").slice(0, 80) || null,
-    catalogTitle: catalogPromptTitle(entries),
+    title: aiTitle || promptText(promptEntry).replace(/\s+/g, " ").slice(0, 80) || null,
+    catalogTitle: aiTitle || catalogPromptTitle(entries),
     isSidechain: entries.some((entry) => entry?.isSidechain === true),
   };
 }

@@ -168,6 +168,28 @@ test("listClaudeSessionSnapshots excludes command-only utility sessions", async 
   assert.deepEqual(await listClaudeSessionSnapshots({ projectsRoot: root }), []);
 });
 
+test("parseClaudeTranscript prefers the Claude-generated ai-title over the last prompt", () => {
+  const result = parseClaudeTranscript([
+    line({ type: "user", message: { role: "user", content: "Собери обработку из расширения" } }),
+    line({ type: "ai-title", aiTitle: "Сборка агрегатной обработки 1С", sessionId: "s1" }),
+    line({ type: "assistant", message: { role: "assistant", stop_reason: "end_turn", content: "Готово" } }),
+    line({ type: "user", message: { role: "user", content: "продолжай" } }),
+  ].join("\n"));
+
+  assert.equal(result.title, "Сборка агрегатной обработки 1С");
+  assert.equal(result.catalogTitle, "Сборка агрегатной обработки 1С");
+});
+
+test("parseClaudeTranscript uses the freshest ai-title when several are present", () => {
+  const result = parseClaudeTranscript([
+    line({ type: "ai-title", aiTitle: "Старое название", sessionId: "s1" }),
+    line({ type: "user", message: { role: "user", content: "шаг" } }),
+    line({ type: "ai-title", aiTitle: "Актуальное название задачи", sessionId: "s1" }),
+  ].join("\n"));
+
+  assert.equal(result.catalogTitle, "Актуальное название задачи");
+});
+
 test("Claude catalog keeps a real task even when its latest prompt is a command", () => {
   const result = parseClaudeTranscript([
     line({ type: "user", message: { role: "user", content: "Настроить проект" } }),

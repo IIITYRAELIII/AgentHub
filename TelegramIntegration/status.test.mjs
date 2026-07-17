@@ -12,7 +12,7 @@ import {
   statusHeaderFileName,
 } from "./status.mjs";
 
-test("formatCodexRateLimits puts both windows on one line", () => {
+test("formatCodexRateLimits shows one weekly line per limit", () => {
   const nowMs = new Date(2026, 6, 10, 15, 0).getTime();
   const result = {
     rateLimitsByLimitId: {
@@ -32,17 +32,13 @@ test("formatCodexRateLimits puts both windows on one line", () => {
   };
 
   assert.equal(formatCodexRateLimits(result, nowMs), [
-    "CODEX",
-    "100.0% - 5 ч. | 94.0% - 6 дн. 7 ч.",
-    "",
-    "GPT 5.3 CODEX-Spark",
-    "100.0% - 5 ч. | 100.0% - 7 дн.",
-    "",
+    "CODEX - 94.0% - 6 дн. 7 ч.",
+    "Spark - 100.0% - 7 дн.",
     "Доступно сбросов: 0",
   ].join("\n"));
 });
 
-test("formatClaudeRateLimits uses the same compact layout", () => {
+test("formatClaudeRateLimits shows weekly Claude and model limits on separate lines", () => {
   const nowMs = new Date(2026, 6, 10, 15, 0).getTime();
   const usage = [
     "Current session: 0% used · resets Jul 10, 08:00pm",
@@ -51,11 +47,21 @@ test("formatClaudeRateLimits uses the same compact layout", () => {
   ].join("\n");
 
   assert.equal(formatClaudeRateLimits(usage, nowMs), [
-    "CLAUDE",
-    "100.0% - 5 ч. | 94.0% - 6 дн. 7 ч.",
-    "",
-    "CLAUDE Sonnet",
-    "90.0% - 7 дн.",
+    "CLAUDE - 94.0% - 6 дн. 7 ч.",
+    "Sonnet - 90.0% - 7 дн.",
+  ].join("\n"));
+});
+
+test("formatClaudeRateLimits inherits the weekly reset for an unused Fable limit", () => {
+  const nowMs = new Date(2026, 6, 10, 15, 0).getTime();
+  const usage = [
+    "Current week (all models): 6% used · resets Jul 16, 10:00pm",
+    "Current week (Fable): 0% used",
+  ].join("\n");
+
+  assert.equal(formatClaudeRateLimits(usage, nowMs), [
+    "CLAUDE - 94.0% - 6 дн. 7 ч.",
+    "Fable - 100.0% - 6 дн. 7 ч.",
   ].join("\n"));
 });
 
@@ -69,7 +75,7 @@ test("formatStatusMessage matches Telegram status layout", () => {
     mode: "Work",
     task: "Обсуждения",
     project: "VSC_Tyrael",
-    limits: "CODEX\n100.0% - 5 ч. | 94.0% - 6 дн. 7 ч.",
+    limits: "CODEX - 94.0% - 6 дн. 7 ч.\nSpark - 100.0% - 7 дн.",
   }), [
     "CODEX: GPT-5.3 Codex Spark - High",
     "Work | Готов",
@@ -80,8 +86,8 @@ test("formatStatusMessage matches Telegram status layout", () => {
     "Выполняется задач: 2",
     "",
     "Лимиты:",
-    "CODEX",
-    "100.0% - 5 ч. | 94.0% - 6 дн. 7 ч.",
+    "CODEX - 94.0% - 6 дн. 7 ч.",
+    "Spark - 100.0% - 7 дн.",
     "",
     "<b>🧵АКТИВНЫЕ ЗАДАЧИ🧵</b>",
   ].join("\n"));
