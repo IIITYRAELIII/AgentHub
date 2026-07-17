@@ -37,8 +37,8 @@ import {
   formatStatusMessage,
   formatTaskSwitchMessage,
   showLastMessageReplyMarkup,
-  statusHeaderFileName,
 } from "./status.mjs";
+import { randomStatusHeaderFileName } from "./status-header.mjs";
 import { formatTaskTokenUsage } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
 import { parsePendingInputCallback, pendingInputKeyboard } from "./deferred-input.mjs";
@@ -1251,6 +1251,9 @@ async function sendStatus() {
   const runningTasks = catalog
     .filter((entry) => entry.running)
     .map((entry) => `${entry.provider === "codex" ? "Codex" : "Claude"} · ${entry.projectName} · ${entry.title}`);
+  const runningProviders = [...new Set(catalog
+    .filter((entry) => entry.running)
+    .map((entry) => entry.provider))];
   const selectedBusy = catalog.some((entry) => (
     entry.running && catalogEntryIsSelected(entry, selectedTask())
   ));
@@ -1266,9 +1269,13 @@ async function sendStatus() {
     limits,
   });
   const replyMarkup = runningTaskReplyMarkup(catalog, selectedTask());
-  await sendStatusCard(statusText, replyMarkup.inline_keyboard.length
-    ? { parse_mode: "HTML", reply_markup: replyMarkup }
-    : { parse_mode: "HTML" });
+  await sendStatusCard(
+    statusText,
+    replyMarkup.inline_keyboard.length
+      ? { parse_mode: "HTML", reply_markup: replyMarkup }
+      : { parse_mode: "HTML" },
+    runningProviders,
+  );
 }
 
 async function sendReasoningPicker() {
@@ -3388,9 +3395,12 @@ async function telegramMultipart(method, body, fileField, filePath) {
   return payload.result;
 }
 
-async function sendStatusCard(text, extra = {}) {
+async function sendStatusCard(text, extra = {}, activeProviders = []) {
   if (!chatId) return;
-  const headerPath = path.join(STATUS_HEADER_DIR, statusHeaderFileName(activeProvider));
+  const headerPath = path.join(
+    STATUS_HEADER_DIR,
+    randomStatusHeaderFileName(activeProvider, activeProviders),
+  );
   if (!existsSync(headerPath)) return sendMessage(text, extra);
   const caption = String(text);
   if (caption.length > 1000) {
