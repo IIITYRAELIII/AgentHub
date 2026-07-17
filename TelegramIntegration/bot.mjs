@@ -44,6 +44,10 @@ import { telegramPrompt } from "./telegram-message.mjs";
 import { parsePendingInputCallback, pendingInputKeyboard } from "./deferred-input.mjs";
 import { appendMessageBindings, findMessageBinding } from "./message-bindings.mjs";
 import {
+  formatProgressHeartbeat,
+  markProgressHeartbeat,
+} from "./progress-heartbeat.mjs";
+import {
   serializableTaskRun,
   TaskDismissalRegistry,
   TaskRunRegistry,
@@ -1409,6 +1413,8 @@ function renderProgress(run, done = false) {
   });
   const parts = [heading, run?.progressStage || "Выполняется…"];
   if (done) return parts.join("\n\n").slice(0, TELEGRAM_LIMIT);
+  const heartbeat = formatProgressHeartbeat(run);
+  if (heartbeat) parts.push(heartbeat);
   if (run?.progressReasoning.trim()) {
     const reasoning = run.progressReasoning.trim();
     parts.push(`💭 ${reasoning.length > 900 ? `…${reasoning.slice(-900)}` : reasoning}`);
@@ -2117,6 +2123,7 @@ async function pollObservedRun(run) {
       : await readClaudeSessionSnapshot(run.threadId);
     if (!snapshot) {
       setProgressStage(run, "Ожидаю данные текущего хода…");
+      if (markProgressHeartbeat(run, "waiting")) scheduleProgressUpdate(run);
       scheduleObservedRun(run);
       return;
     }
@@ -2133,6 +2140,7 @@ async function pollObservedRun(run) {
       }
       return;
     }
+    if (markProgressHeartbeat(run, "active")) scheduleProgressUpdate(run);
     if (run.observer) {
       updateObservedRun(run, snapshot);
     } else {
@@ -2146,6 +2154,7 @@ async function pollObservedRun(run) {
   } catch (error) {
     console.error(`Cannot observe ${run.provider} task ${run.threadId}:`, error.message);
     setProgressStage(run, `Не удалось обновить ход: ${error.message}`);
+    if (markProgressHeartbeat(run, "error")) scheduleProgressUpdate(run);
     scheduleObservedRun(run);
   }
 }
