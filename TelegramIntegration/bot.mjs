@@ -53,6 +53,7 @@ import {
   codexCatalogEntry,
   mergeTaskCatalog,
   parseTaskCatalogCallback,
+  readCodexRolloutActivity,
   readCodexRolloutRunning,
   runningTaskReplyMarkup,
   taskCatalogCallback,
@@ -1419,11 +1420,42 @@ async function completeRun(run) {
   }
 }
 
+async function attachSelectedExternalRun() {
+  if (!threadId) return false;
+  let active = false;
+  try {
+    if (isCodex()) {
+      const result = await sendRpc("thread/read", { threadId, includeTurns: true });
+      active = result.thread?.status?.type === "active"
+        || result.thread?.turns?.some((turn) => turn.status === "inProgress")
+        || await readCodexRolloutRunning(result.thread?.path);
+    } else {
+      active = Boolean((await readClaudeSessionSnapshot(threadId))?.active);
+    }
+  } catch (error) {
+    console.error(`Cannot check selected ${providerTitle()} task activity:`, error.message);
+    return false;
+  }
+  if (!active) return false;
+
+  await sendMessage(
+    "Эта задача уже выполняется во внешнем интерфейсе. Новый запрос не отправлен; подключаю текущий ход.",
+  );
+  await showTaskMessage({
+    provider: activeProvider,
+    projectRoot: activeProjectRoot,
+    threadId,
+    taskTitle: activeThreadTitle,
+  }, chatId);
+  return true;
+}
+
 async function startTurn(input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
   if (selectedRun()) {
     await sendMessage("Эта задача уже выполняется. Используйте /cancel или выберите другую задачу.");
     return;
   }
+  if (await attachSelectedExternalRun()) return;
   if (isCodex()) {
     try {
       await syncActiveCodexThreadSettings();
@@ -1852,11 +1884,20 @@ function updateObservedRun(run, snapshot) {
 
 async function readCodexTaskSnapshot(run) {
   const result = await sendRpc("thread/read", { threadId: run.threadId, includeTurns: true });
-  const turn = result.thread?.turns?.find((item) => item.id === run.turnId)
-    ?? result.thread?.turns?.at(-1);
+  const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
+  const activity = await readCodexRolloutActivity(result.thread?.path);
+  const activeTurnIds = new Set(activity.activeTurnIds);
+  const requestedTurn = turns.find((item) => item.id === run.turnId);
+  const rolloutTurn = turns.find((item) => activeTurnIds.has(item.id));
+  const turn = requestedTurn?.status === "inProgress"
+    ? requestedTurn
+    : rolloutTurn ?? requestedTurn ?? turns.at(-1);
   if (!turn) return null;
-  const snapshot = { ...codexTurnSnapshot(turn), turnId: turn.id };
-  if (!snapshot.active && await readCodexRolloutRunning(result.thread?.path)) {
+  const snapshot = {
+    ...codexTurnSnapshot(turn),
+    turnId: rolloutTurn?.id ?? activity.activeTurnIds[0] ?? turn.id,
+  };
+  if (!snapshot.active && activity.running) {
     return {
       ...snapshot,
       completed: false,

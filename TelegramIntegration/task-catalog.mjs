@@ -1,9 +1,12 @@
+import { createReadStream } from "node:fs";
 import path from "node:path";
-import { open, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
+import { createInterface } from "node:readline";
 
 const CLAUDE_ACTIVE_FRESHNESS_MS = 30 * 60 * 1000;
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
-const MAX_CODEX_STATUS_TAIL = 4 * 1024 * 1024;
+const LEGACY_TURN_ID = "__legacy__";
+const codexActivityCache = new Map();
 
 function normalizedPath(value) {
   const resolved = path.resolve(String(value ?? ""));
@@ -14,47 +17,83 @@ export function catalogTaskKey({ provider, threadId }) {
   return `${String(provider ?? "").toLowerCase()}\0${String(threadId ?? "")}`;
 }
 
-export function parseCodexRolloutRunning(text) {
-  const terminalEvents = new Set(["task_started", "task_complete", "turn_aborted"]);
-  const lines = String(text).split(/\r?\n/);
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (!lines[index]) continue;
-    try {
-      const entry = JSON.parse(lines[index]);
-      const event = entry?.type === "event_msg" ? entry.payload?.type : null;
-      if (terminalEvents.has(event)) return event === "task_started";
-    } catch {
-      // The first line of a byte-limited tail can be partial.
-    }
+function applyCodexLifecycleEntry(activeTurnIds, entry) {
+  if (entry?.type !== "event_msg") return;
+  const event = entry.payload?.type;
+  if (!["task_started", "task_complete", "turn_aborted"].includes(event)) return;
+  const turnId = String(entry.payload?.turn_id ?? "").trim() || LEGACY_TURN_ID;
+  if (event === "task_started") {
+    activeTurnIds.add(turnId);
+  } else {
+    activeTurnIds.delete(turnId);
   }
-  return false;
 }
 
-export async function readCodexRolloutRunning(
+function codexActivity(activeTurnIds) {
+  return {
+    running: activeTurnIds.size > 0,
+    activeTurnIds: [...activeTurnIds].filter((turnId) => turnId !== LEGACY_TURN_ID),
+  };
+}
+
+export function parseCodexRolloutActivity(text) {
+  const activeTurnIds = new Set();
+  for (const line of String(text).split(/\r?\n/)) {
+    if (!line) continue;
+    try {
+      applyCodexLifecycleEntry(activeTurnIds, JSON.parse(line));
+    } catch {
+      // Ignore incomplete or unrelated JSONL lines.
+    }
+  }
+  return codexActivity(activeTurnIds);
+}
+
+export function parseCodexRolloutRunning(text) {
+  return parseCodexRolloutActivity(text).running;
+}
+
+export async function readCodexRolloutActivity(
   rolloutPath,
   { nowMs = Date.now(), freshnessMs = CODEX_ACTIVE_FRESHNESS_MS } = {},
 ) {
   const normalized = String(rolloutPath ?? "").trim();
-  if (!normalized) return false;
+  if (!normalized) return { running: false, activeTurnIds: [] };
   let info;
   try {
     info = await stat(normalized);
   } catch (error) {
-    if (error?.code === "ENOENT") return false;
+    if (error?.code === "ENOENT") return { running: false, activeTurnIds: [] };
     throw error;
   }
-  if (nowMs - info.mtimeMs > freshnessMs) return false;
-  const handle = await open(normalized, "r");
+  if (nowMs - info.mtimeMs > freshnessMs) return { running: false, activeTurnIds: [] };
+  const cached = codexActivityCache.get(normalized);
+  if (cached?.size === info.size && cached?.mtimeMs === info.mtimeMs) return cached.activity;
+
+  const activeTurnIds = new Set();
+  const input = createReadStream(normalized, { encoding: "utf8" });
+  const lines = createInterface({ input, crlfDelay: Infinity });
   try {
-    const length = Math.min(info.size, MAX_CODEX_STATUS_TAIL);
-    const buffer = Buffer.alloc(length);
-    await handle.read(buffer, 0, length, info.size - length);
-    let text = buffer.toString("utf8");
-    if (info.size > length) text = text.slice(text.indexOf("\n") + 1);
-    return parseCodexRolloutRunning(text);
+    for await (const line of lines) {
+      if (!line) continue;
+      try {
+        applyCodexLifecycleEntry(activeTurnIds, JSON.parse(line));
+      } catch {
+        // A rollout can be appended while it is being read.
+      }
+    }
   } finally {
-    await handle.close();
+    lines.close();
+    input.destroy();
   }
+  const activity = codexActivity(activeTurnIds);
+  codexActivityCache.set(normalized, { size: info.size, mtimeMs: info.mtimeMs, activity });
+  if (codexActivityCache.size > 200) codexActivityCache.delete(codexActivityCache.keys().next().value);
+  return activity;
+}
+
+export async function readCodexRolloutRunning(rolloutPath, options = {}) {
+  return (await readCodexRolloutActivity(rolloutPath, options)).running;
 }
 
 export function codexCatalogEntry(thread, project, { rolloutRunning = false } = {}) {

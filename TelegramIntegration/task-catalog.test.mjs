@@ -9,6 +9,7 @@ import {
   codexCatalogEntry,
   mergeTaskCatalog,
   parseTaskCatalogCallback,
+  parseCodexRolloutActivity,
   parseCodexRolloutRunning,
   readCodexRolloutRunning,
   runningTaskReplyMarkup,
@@ -45,6 +46,23 @@ test("parseCodexRolloutRunning follows the latest turn lifecycle marker", () => 
     line("task_started"),
     line("turn_aborted"),
   ].join("\n")), false);
+});
+
+test("Codex rollout activity keeps another concurrent turn active after one is aborted", () => {
+  const line = (type, turnId) => JSON.stringify({
+    type: "event_msg",
+    payload: { type, turn_id: turnId },
+  });
+  const text = [
+    line("task_started", "original"),
+    line("task_started", "parallel"),
+    line("turn_aborted", "parallel"),
+  ].join("\n");
+  assert.deepEqual(parseCodexRolloutActivity(text), {
+    running: true,
+    activeTurnIds: ["original"],
+  });
+  assert.equal(parseCodexRolloutRunning(`${text}\n${line("task_complete", "original")}`), false);
 });
 
 test("readCodexRolloutRunning reads a fresh local rollout", async () => {
