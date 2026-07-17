@@ -29,24 +29,53 @@ function applyCodexLifecycleEntry(activeTurnIds, entry) {
   }
 }
 
-function codexActivity(activeTurnIds) {
+function codexEntryTurnId(entry) {
+  return String(
+    entry?.payload?.turn_id
+      ?? entry?.payload?.internal_chat_message_metadata_passthrough?.turn_id
+      ?? "",
+  ).trim();
+}
+
+function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, entry) {
+  const lifecycle = entry?.type === "event_msg"
+    && ["task_started", "task_complete", "turn_aborted"].includes(entry.payload?.type);
+  const turnId = codexEntryTurnId(entry) || (lifecycle ? LEGACY_TURN_ID : "");
+  const timestamp = Date.parse(entry?.timestamp);
+  if (turnId && Number.isFinite(timestamp)) lastSeenAtByTurnId.set(turnId, timestamp);
+  applyCodexLifecycleEntry(activeTurnIds, entry);
+}
+
+function codexActivity(
+  activeTurnIds,
+  lastSeenAtByTurnId = new Map(),
+  { nowMs = null, freshnessMs = null } = {},
+) {
+  const useFreshness = Number.isFinite(nowMs) && Number.isFinite(freshnessMs);
+  const activeIds = [...activeTurnIds].filter((turnId) => {
+    if (!useFreshness) return true;
+    const lastSeenAt = lastSeenAtByTurnId.get(turnId);
+    if (turnId === LEGACY_TURN_ID && !Number.isFinite(lastSeenAt)) return true;
+    return Number.isFinite(lastSeenAt) && nowMs - lastSeenAt <= freshnessMs;
+  });
   return {
-    running: activeTurnIds.size > 0,
-    activeTurnIds: [...activeTurnIds].filter((turnId) => turnId !== LEGACY_TURN_ID),
+    running: activeIds.length > 0,
+    activeTurnIds: activeIds.filter((turnId) => turnId !== LEGACY_TURN_ID),
   };
 }
 
-export function parseCodexRolloutActivity(text) {
+export function parseCodexRolloutActivity(text, options = {}) {
   const activeTurnIds = new Set();
+  const lastSeenAtByTurnId = new Map();
   for (const line of String(text).split(/\r?\n/)) {
     if (!line) continue;
     try {
-      applyCodexLifecycleEntry(activeTurnIds, JSON.parse(line));
+      observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, JSON.parse(line));
     } catch {
       // Ignore incomplete or unrelated JSONL lines.
     }
   }
-  return codexActivity(activeTurnIds);
+  return codexActivity(activeTurnIds, lastSeenAtByTurnId, options);
 }
 
 export function parseCodexRolloutRunning(text) {
@@ -68,16 +97,23 @@ export async function readCodexRolloutActivity(
   }
   if (nowMs - info.mtimeMs > freshnessMs) return { running: false, activeTurnIds: [] };
   const cached = codexActivityCache.get(normalized);
-  if (cached?.size === info.size && cached?.mtimeMs === info.mtimeMs) return cached.activity;
+  if (cached?.size === info.size && cached?.mtimeMs === info.mtimeMs) {
+    return codexActivity(
+      new Set(cached.activeTurnIds),
+      new Map(cached.lastSeenAtByTurnId),
+      { nowMs, freshnessMs },
+    );
+  }
 
   const activeTurnIds = new Set();
+  const lastSeenAtByTurnId = new Map();
   const input = createReadStream(normalized, { encoding: "utf8" });
   const lines = createInterface({ input, crlfDelay: Infinity });
   try {
     for await (const line of lines) {
       if (!line) continue;
       try {
-        applyCodexLifecycleEntry(activeTurnIds, JSON.parse(line));
+        observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, JSON.parse(line));
       } catch {
         // A rollout can be appended while it is being read.
       }
@@ -86,8 +122,13 @@ export async function readCodexRolloutActivity(
     lines.close();
     input.destroy();
   }
-  const activity = codexActivity(activeTurnIds);
-  codexActivityCache.set(normalized, { size: info.size, mtimeMs: info.mtimeMs, activity });
+  const activity = codexActivity(activeTurnIds, lastSeenAtByTurnId, { nowMs, freshnessMs });
+  codexActivityCache.set(normalized, {
+    size: info.size,
+    mtimeMs: info.mtimeMs,
+    activeTurnIds: [...activeTurnIds],
+    lastSeenAtByTurnId: [...lastSeenAtByTurnId],
+  });
   if (codexActivityCache.size > 200) codexActivityCache.delete(codexActivityCache.keys().next().value);
   return activity;
 }

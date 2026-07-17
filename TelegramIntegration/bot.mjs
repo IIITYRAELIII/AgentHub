@@ -864,7 +864,10 @@ async function refreshTaskCatalog() {
       const values = await Promise.all(batch.map(async (thread) => {
         const project = findProject(thread.cwd);
         if (!project) return null;
-        return codexCatalogEntry(thread, project);
+        const rolloutRunning = thread.status?.type === "active"
+          ? true
+          : await readCodexRolloutActivity(thread.path).then((activity) => activity.running);
+        return codexCatalogEntry(thread, project, { rolloutRunning });
       }));
       entries.push(...values.filter(Boolean));
     }

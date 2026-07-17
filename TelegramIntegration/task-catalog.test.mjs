@@ -67,6 +67,38 @@ test("Codex rollout activity keeps another concurrent turn active after one is a
   assert.equal(parseCodexRolloutRunning(`${text}\n${line("task_complete", "original")}`), false);
 });
 
+test("Codex rollout activity ignores stale unmatched starts but keeps a fresh live turn", () => {
+  const line = (value) => JSON.stringify(value);
+  const nowMs = Date.parse("2026-07-17T19:30:00Z");
+  const text = [
+    line({
+      timestamp: "2026-07-17T18:00:00Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "stale" },
+    }),
+    line({
+      timestamp: "2026-07-17T19:29:00Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "live" },
+    }),
+    line({
+      timestamp: "2026-07-17T19:29:30Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        internal_chat_message_metadata_passthrough: { turn_id: "live" },
+      },
+    }),
+  ].join("\n");
+  assert.deepEqual(parseCodexRolloutActivity(text, {
+    nowMs,
+    freshnessMs: 10 * 60 * 1000,
+  }), {
+    running: true,
+    activeTurnIds: ["live"],
+  });
+});
+
 test("stale rollout markers do not make an idle Codex thread active", () => {
   const turns = [
     { id: "stale", status: "completed" },
