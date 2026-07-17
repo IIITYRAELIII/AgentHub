@@ -41,6 +41,7 @@ import {
 } from "./status.mjs";
 import { formatTaskTokenUsage } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
+import { parsePendingInputCallback, pendingInputKeyboard } from "./deferred-input.mjs";
 import { appendMessageBindings, findMessageBinding } from "./message-bindings.mjs";
 import {
   serializableTaskRun,
@@ -242,6 +243,9 @@ const pendingTts = new Map();
 const speechTexts = new Map();
 const taskRuns = new TaskRunRegistry();
 const dismissedExternalTasks = new TaskDismissalRegistry();
+const pendingInputs = new Map();
+const queuedInputs = new Map();
+const queueTimers = new Map();
 const taskDiffs = new Map();
 const lastTaskMessages = new Map();
 let taskCatalog = [];
@@ -537,6 +541,12 @@ try {
   }
   if (Array.isArray(saved.dismissedExternalTasks)) {
     dismissedExternalTasks.restore(saved.dismissedExternalTasks);
+  }
+  for (const item of Array.isArray(saved.pendingInputs) ? saved.pendingInputs : []) {
+    if (item?.id && item?.threadId && item?.provider) pendingInputs.set(item.id, item);
+  }
+  for (const item of Array.isArray(saved.queuedInputs) ? saved.queuedInputs : []) {
+    if (item?.id && item?.threadId && item?.provider) queuedInputs.set(item.id, item);
   }
   if (saved.restartRequest && typeof saved.restartRequest === "object"
     && Number.isSafeInteger(saved.restartRequest.chatId)
@@ -1283,23 +1293,38 @@ function inputPreview(input) {
   return String(text ?? "").trim().slice(0, 500);
 }
 
-async function beginRun(input) {
+async function beginRun(input, target = null) {
+  const provider = target?.provider ?? activeProvider;
+  const projectRoot = target?.projectRoot ?? activeProjectRoot;
+  const project = findProject(projectRoot);
+  const targetThreadId = target?.threadId ?? threadId;
+  const targetTaskTitle = target?.taskTitle ?? activeThreadTitle;
+  const savedCodexSettings = provider === "codex"
+    ? codexTaskSettings[targetThreadId] ?? {}
+    : {};
+  const modelId = provider === "codex"
+    ? savedCodexSettings.model ?? (targetThreadId === threadId ? codexModel : defaultCodexModel)
+    : claudeModel;
+  const reasoningId = provider === "codex"
+    ? savedCodexSettings.reasoningEffort
+      ?? (targetThreadId === threadId ? codexReasoningEffort : defaultCodexReasoningEffort)
+    : claudeReasoningEffort;
   const run = {
     id: randomUUID(),
-    provider: activeProvider,
-    chatId,
-    projectRoot: activeProjectRoot,
-    projectName: activeProject().name,
-    threadId,
+    provider,
+    chatId: target?.chatId ?? chatId,
+    projectRoot,
+    projectName: project?.name ?? path.basename(projectRoot),
+    threadId: targetThreadId,
     turnId: null,
-    sessionId: isCodex() ? null : threadId,
-    taskTitle: activeThreadTitle,
+    sessionId: provider === "codex" ? null : targetThreadId,
+    taskTitle: targetTaskTitle,
     promptPreview: inputPreview(input),
-    model: isCodex() ? codexModelLabel(codexModel) : CLAUDE_MODEL_LABELS[claudeModel],
-    modelId: isCodex() ? codexModel : claudeModel,
-    reasoning: CODEX_REASONING_LABELS[isCodex() ? codexReasoningEffort : claudeReasoningEffort],
-    reasoningId: isCodex() ? codexReasoningEffort : claudeReasoningEffort,
-    collaborationMode: isCodex() ? codexCollaborationMode : claudeCollaborationMode,
+    model: provider === "codex" ? codexModelLabel(modelId) : CLAUDE_MODEL_LABELS[modelId],
+    modelId,
+    reasoning: CODEX_REASONING_LABELS[reasoningId],
+    reasoningId,
+    collaborationMode: provider === "codex" ? codexCollaborationMode : claudeCollaborationMode,
     responseText: "",
     status: "running",
     startedAt: new Date().toISOString(),
@@ -1457,63 +1482,53 @@ async function completeRun(run) {
   }
 }
 
-async function attachSelectedExternalRun() {
-  if (!threadId) return false;
-  const dismissed = dismissedExternalTasks.has(selectedTask());
-  let active = false;
+async function taskIsExternallyActive(target) {
+  if (!target?.threadId) return false;
   try {
-    if (isCodex()) {
-      const result = await sendRpc("thread/read", { threadId, includeTurns: true });
-      active = result.thread?.status?.type === "active"
+    if (target.provider === "codex") {
+      if (!codex) {
+        await startCodexAppServer();
+        await initializeCodex({ attachSelectedThread: false });
+      }
+      const result = await sendRpc("thread/read", { threadId: target.threadId, includeTurns: true });
+      return result.thread?.status?.type === "active"
         || result.thread?.turns?.some((turn) => turn.status === "inProgress")
         || await readCodexRolloutRunning(result.thread?.path);
-    } else {
-      active = Boolean((await readClaudeSessionSnapshot(threadId))?.active);
     }
+    return Boolean((await readClaudeSessionSnapshot(target.threadId))?.active);
   } catch (error) {
-    console.error(`Cannot check selected ${providerTitle()} task activity:`, error.message);
-    return false;
-  }
-  if (!active) {
-    if (dismissedExternalTasks.delete(selectedTask())) await saveState();
-    return false;
-  }
-
-  if (dismissed) {
-    await sendMessage(
-      "Внешняя задача всё ещё выполняется. Новый запрос не отправлен; наблюдение отключено. "
-        + "Чтобы снова подключить прогресс, нажмите «Показать сообщение».",
-    );
+    console.error(`Cannot check ${target.provider} task activity:`, error.message);
     return true;
   }
+}
 
-  await sendMessage(
-    "Эта задача уже выполняется во внешнем интерфейсе. Новый запрос не отправлен; подключаю текущий ход.",
-  );
-  await showTaskMessage({
+async function deferConflictingInput(input, temporaryFiles, { forceSpeechButton = false } = {}) {
+  const item = {
+    id: randomUUID(),
+    chatId,
     provider: activeProvider,
     projectRoot: activeProjectRoot,
     threadId,
     taskTitle: activeThreadTitle,
-  }, chatId);
-  return true;
+    input,
+    temporaryFiles,
+    forceSpeechButton,
+    createdAt: new Date().toISOString(),
+  };
+  pendingInputs.set(item.id, item);
+  await saveState();
+  const preview = inputPreview(input);
+  const message = await sendMessageTo(chatId,
+    "Выбранная задача уже выполняется. Новое сообщение сохранено и не потеряно."
+      + `${preview ? `\n\n${preview.slice(0, 700)}` : ""}\n\nЧто сделать?`,
+    { reply_markup: pendingInputKeyboard(item.id) });
+  item.messageId = message?.message_id ?? null;
+  await saveState();
+  return { deferred: true, id: item.id };
 }
 
-async function startTurn(input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
-  if (selectedRun()) {
-    await sendMessage("Эта задача уже выполняется. Используйте /cancel или выберите другую задачу.");
-    return;
-  }
-  if (await attachSelectedExternalRun()) return;
-  if (isCodex()) {
-    try {
-      await syncActiveCodexThreadSettings();
-    } catch (error) {
-      console.error("Cannot sync Codex thread settings before turn:", error.message);
-    }
-  }
-  const run = await beginRun(input);
-  if (!isCodex()) {
+async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
+  if (run.provider !== "codex") {
     await startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton });
     return;
   }
@@ -1551,6 +1566,81 @@ async function startTurn(input, temporaryFiles = [], { forceSpeechButton = false
     await finishProgress(run, `Ошибка запуска: ${error.message}`);
     await completeRun(run);
     throw error;
+  }
+}
+
+async function startTurn(input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
+  const target = {
+    provider: activeProvider,
+    projectRoot: activeProjectRoot,
+    threadId,
+    taskTitle: activeThreadTitle,
+    chatId,
+  };
+  if (taskRuns.forTask(target) || await taskIsExternallyActive(target)) {
+    return deferConflictingInput(input, temporaryFiles, { forceSpeechButton });
+  }
+  if (target.provider === "codex") {
+    try {
+      await syncActiveCodexThreadSettings();
+    } catch (error) {
+      console.error("Cannot sync Codex thread settings before turn:", error.message);
+    }
+  }
+  const run = await beginRun(input, target);
+  await launchTurn(run, input, temporaryFiles, { forceSpeechButton });
+  return { started: true, runId: run.id };
+}
+
+async function cleanupDeferredFiles(item) {
+  await Promise.all((item?.temporaryFiles ?? []).map((file) => unlink(file).catch(() => {})));
+}
+
+async function updateDeferredMessage(item, text, replyMarkup = { inline_keyboard: [] }) {
+  if (!item?.messageId) return;
+  await telegram("editMessageText", {
+    chat_id: item.chatId,
+    message_id: item.messageId,
+    text,
+    reply_markup: replyMarkup,
+  }).catch(() => {});
+}
+
+function scheduleQueuedInput(item, delayMs = 2000) {
+  if (!item || queueTimers.has(item.id)) return;
+  const timer = setTimeout(() => {
+    queueTimers.delete(item.id);
+    void processQueuedInput(item.id);
+  }, delayMs);
+  queueTimers.set(item.id, timer);
+}
+
+async function processQueuedInput(id) {
+  const item = queuedInputs.get(id);
+  if (!item) return;
+  const target = {
+    provider: item.provider,
+    projectRoot: item.projectRoot,
+    threadId: item.threadId,
+    taskTitle: item.taskTitle,
+    chatId: item.chatId,
+  };
+  if (taskRuns.forTask(target) || await taskIsExternallyActive(target)) {
+    scheduleQueuedInput(item);
+    return;
+  }
+
+  queuedInputs.delete(id);
+  await saveState();
+  try {
+    const run = await beginRun(item.input, target);
+    await launchTurn(run, item.input, item.temporaryFiles ?? [], {
+      forceSpeechButton: item.forceSpeechButton === true,
+    });
+    await updateDeferredMessage(item, `▶️ Сообщение из очереди отправлено в задачу «${item.taskTitle}».`);
+  } catch (error) {
+    await updateDeferredMessage(item, `⚠️ Не удалось запустить сообщение из очереди: ${error.message}`);
+    await sendMessageTo(item.chatId, `Не удалось выполнить сообщение из очереди: ${error.message}`);
   }
 }
 
@@ -2305,10 +2395,6 @@ async function transcribeVoice(message) {
     await sendMessage("Голосовые сообщения отключены в конфигурации.");
     return;
   }
-  if (selectedRun()) {
-    await sendMessage("Выбранная задача ещё выполняется. Выберите другую задачу или остановите эту.");
-    return;
-  }
   const media = message.voice ?? message.audio;
   if (!media?.file_id) return;
   if ((media.file_size ?? 0) > 20 * 1024 * 1024) {
@@ -2342,10 +2428,6 @@ async function transcribeVoice(message) {
 }
 
 async function analyzeImage(message) {
-  if (selectedRun()) {
-    await sendMessage("Выбранная задача ещё выполняется. Выберите другую задачу или остановите эту.");
-    return;
-  }
   const photo = message.photo?.at(-1);
   const document = message.document?.mime_type?.startsWith("image/") ? message.document : null;
   const media = photo ?? document;
@@ -2532,6 +2614,80 @@ async function processSpeechRequest(callback, text) {
 }
 
 async function handleApprovalCallback(callback) {
+  const pendingAction = parsePendingInputCallback(callback.data);
+  if (pendingAction) {
+    const { action, id } = pendingAction;
+    const item = pendingInputs.get(id);
+    if (!item) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Сохранённое сообщение уже обработано",
+        show_alert: true,
+      });
+      return;
+    }
+    const binding = {
+      provider: item.provider,
+      projectRoot: item.projectRoot,
+      threadId: item.threadId,
+      taskTitle: item.taskTitle,
+    };
+    await telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: action === "new" ? "Создаю новую задачу…"
+        : action === "queue" ? "Ставлю сообщение в очередь…"
+          : action === "show" ? "Показываю текущий ход…"
+            : "Сообщение отменено",
+    });
+    try {
+      if (action === "cancel") {
+        pendingInputs.delete(id);
+        await cleanupDeferredFiles(item);
+        await saveState();
+        await updateDeferredMessage(item, "❌ Сохранённое сообщение отменено.");
+        return;
+      }
+      if (action === "show") {
+        const activated = await activateMessageBinding(binding);
+        if (activated.changed) {
+          await sendTaskSwitchNotification({
+            targetChatId: item.chatId,
+            showLastMessage: false,
+          });
+        }
+        await showTaskMessage(binding, item.chatId);
+        return;
+      }
+      if (action === "queue") {
+        pendingInputs.delete(id);
+        queuedInputs.set(id, item);
+        await saveState();
+        await updateDeferredMessage(
+          item,
+          `⏳ Сообщение поставлено в очередь задачи «${item.taskTitle}» и будет отправлено после завершения текущего хода.`,
+        );
+        scheduleQueuedInput(item, 500);
+        return;
+      }
+
+      await activateMessageBinding(binding);
+      await createThread();
+      const newTaskTitle = activeThreadTitle;
+      const outcome = await startTurn(item.input, item.temporaryFiles ?? [], {
+        forceSpeechButton: item.forceSpeechButton === true,
+      });
+      if (outcome?.deferred) throw new Error("новая задача неожиданно оказалась занята");
+      pendingInputs.delete(id);
+      await saveState();
+      await updateDeferredMessage(item, `🆕 Сообщение отправлено в новую задачу «${newTaskTitle}».`);
+      await sendTaskSwitchNotification({ targetChatId: item.chatId });
+    } catch (error) {
+      console.error(`Cannot process pending input ${id}:`, error.message);
+      await sendMessageTo(item.chatId, `Не удалось обработать сохранённое сообщение: ${error.message}`);
+    }
+    return;
+  }
+
   const speechMatch = /^speech:([0-9a-f]+)$/.exec(callback.data ?? "");
   if (speechMatch) {
     const text = speechTexts.get(speechMatch[1]);
@@ -3233,6 +3389,8 @@ function saveState() {
     updateOffset,
     activeRuns: taskRuns.values().map(serializableTaskRun),
     dismissedExternalTasks: dismissedExternalTasks.values(),
+    pendingInputs: [...pendingInputs.values()],
+    queuedInputs: [...queuedInputs.values()],
     lastTaskMessages: [...lastTaskMessages.entries()].slice(-500),
     restartRequest,
   }, null, 2)}\n`;
@@ -3268,6 +3426,7 @@ await recoverActiveRuns().catch(async (error) => {
   console.error("Cannot recover active tasks:", error.message);
   await sendMessage(`⚠️ Не удалось восстановить активные задачи: ${error.message}`).catch(() => {});
 });
+for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
 try {
   await telegram("setMyCommands", {
     commands: BOT_COMMANDS,
