@@ -861,7 +861,7 @@ async function sendThreadPicker({ editMessage = null, page = 0 } = {}) {
     (safePage + 1) * TASK_PICKER_PAGE_SIZE,
   );
   const keyboard = [[{
-    text: `➕ Новая: ${providerTitle()} · ${activeProject().name}`,
+    text: `🟢 + Новая: ${providerTitle()} · ${activeProject().name}`,
     callback_data: "thread:new",
   }], ...visible.map((entry) => [{
     text: taskPickerButtonText(entry),
