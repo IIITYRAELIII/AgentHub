@@ -110,6 +110,28 @@ test("formatStatusMessage shows Claude model, reasoning, and Plan mode", () => {
   ].join("\n"));
 });
 
+test("formatStatusMessage lists discovered running tasks and total catalog size", () => {
+  const result = formatStatusMessage({
+    provider: "CODEX",
+    busy: true,
+    runningTasks: [
+      "Codex · VSC_Tyrael · Перенос файлов",
+      "Claude · Utilities · Проверка инструментов",
+    ],
+    totalTasks: 47,
+    model: "GPT-5.6-Sol",
+    reasoning: "High",
+    mode: "Work",
+    task: "Перенос файлов",
+    project: "VSC_Tyrael",
+    limits: "CODEX\n80.0% - 5 дн.",
+  });
+  assert.match(result, /Выполняется задач: 2/);
+  assert.match(result, /• Codex · VSC_Tyrael · Перенос файлов/);
+  assert.match(result, /• Claude · Utilities · Проверка инструментов/);
+  assert.match(result, /Всего найдено задач: 47/);
+});
+
 test("formatArchiveMessage names archived and newly active tasks", () => {
   assert.equal(formatArchiveMessage({
     archivedTask: "Такая-то",

@@ -40,7 +40,19 @@ import { formatTaskTokenUsage } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
 import { appendMessageBindings, findMessageBinding } from "./message-bindings.mjs";
 import { serializableTaskRun, TaskRunRegistry, taskRunKey } from "./task-runs.mjs";
-import { codexTurnAnswer, readClaudeSessionSnapshot } from "./last-message.mjs";
+import {
+  codexTurnAnswer,
+  listClaudeSessionSnapshots,
+  readClaudeSessionSnapshot,
+} from "./last-message.mjs";
+import {
+  catalogEntryIsSelected,
+  claudeCatalogEntry,
+  codexCatalogEntry,
+  mergeTaskCatalog,
+  parseTaskCatalogCallback,
+  taskCatalogCallback,
+} from "./task-catalog.mjs";
 
 const config = await loadConfig();
 let activeProvider = config.provider === "codex" ? "codex" : "claude";
@@ -84,6 +96,7 @@ const INSTANCE_LOCK_FILE = path.join(config.dataDir, "bot.lock");
 const SPEECH_TEXTS_FILE = path.join(config.dataDir, "speech-texts.json");
 const TELEGRAM_LIMIT = 3900;
 const THREAD_LIST_LIMIT = 10;
+const TASK_PICKER_PAGE_SIZE = 8;
 const PYTHON_EXE = config.pythonExe;
 const TTS_PYTHON_EXE = config.ttsPythonExe;
 const TRANSCRIBE_SCRIPT = path.join(import.meta.dirname, "transcribe.py");
@@ -216,6 +229,7 @@ const speechTexts = new Map();
 const taskRuns = new TaskRunRegistry();
 const taskDiffs = new Map();
 const lastTaskMessages = new Map();
+let taskCatalog = [];
 
 try {
   const savedSpeechTexts = JSON.parse(await readFile(SPEECH_TEXTS_FILE, "utf8"));
@@ -747,6 +761,29 @@ async function nameTelegramThread(id) {
   return title;
 }
 
+async function listAllCodexThreads() {
+  if (!codex) {
+    await startCodexAppServer();
+    await initializeCodex({ attachSelectedThread: false });
+  }
+  const threads = [];
+  let cursor = null;
+  const seenCursors = new Set();
+  do {
+    if (cursor && seenCursors.has(cursor)) break;
+    if (cursor) seenCursors.add(cursor);
+    const result = await sendRpc("thread/list", {
+      cursor,
+      limit: 100,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+    });
+    threads.push(...(result.data ?? []));
+    cursor = result.nextCursor ?? null;
+  } while (cursor);
+  return threads;
+}
+
 async function listThreads() {
   if (!isCodex()) {
     return threadId ? [{
@@ -756,19 +793,9 @@ async function listThreads() {
       updatedAt: Math.floor(Date.now() / 1000),
     }] : [];
   }
-  const threads = [];
-  let cursor = null;
-  do {
-    const result = await sendRpc("thread/list", {
-      cursor,
-      limit: 50,
-      sortKey: "updated_at",
-      sortDirection: "desc",
-    });
-    threads.push(...(result.data ?? []).filter(isWorkspaceThread));
-    cursor = result.nextCursor ?? null;
-  } while (cursor && threads.length < THREAD_LIST_LIMIT);
-  return threads.slice(0, THREAD_LIST_LIMIT);
+  return (await listAllCodexThreads())
+    .filter(isWorkspaceThread)
+    .slice(0, THREAD_LIST_LIMIT);
 }
 
 function isWorkspaceThread(thread) {
@@ -788,58 +815,75 @@ function formatThread(thread) {
   return `${threadTitle(thread)}${current}\nПроект: ${project}\nОбновлена: ${updated}\nID: ${thread.id}`;
 }
 
-async function sendThreadPicker({ editMessage = null } = {}) {
-  if (!isCodex()) {
-    const knownSessions = new Map();
-    if (threadId) knownSessions.set(threadId, activeThreadTitle || `Claude · ${threadId.slice(0, 8)}`);
-    for (const run of taskRuns.inProject(activeProjectRoot)) {
-      if (run.provider === "claude" && run.threadId) knownSessions.set(run.threadId, runTaskTitle(run));
+async function refreshTaskCatalog() {
+  const [codexResult, claudeResult] = await Promise.allSettled([
+    listAllCodexThreads(),
+    listClaudeSessionSnapshots(),
+  ]);
+  const entries = [];
+  if (codexResult.status === "fulfilled") {
+    for (const thread of codexResult.value) {
+      const project = findProject(thread.cwd);
+      if (project) entries.push(codexCatalogEntry(thread, project));
     }
-    const keyboard = [
-      [{ text: "➕ Создать новую задачу", callback_data: "thread:new" }],
-      ...[...knownSessions].map(([sessionId, title]) => [{
-        text: `${sessionId === threadId ? "✓ " : ""}${taskRuns.forTask({
-          provider: "claude",
-          projectRoot: activeProjectRoot,
-          threadId: sessionId,
-        }) ? "⏳ " : ""}${title}`,
-        callback_data: `t:${sessionId}`,
-      }]),
-    ];
-    const current = threadId ? `\n\nТекущая сессия: ${threadId}` : "";
-    const text = `Показаны текущая и выполняющиеся сессии Claude.${current}\nДля другого известного ID используйте /resume <ID>.`;
-    const replyMarkup = { inline_keyboard: keyboard };
-    if (editMessage) {
-      await telegram("editMessageText", {
-        chat_id: editMessage.chat.id,
-        message_id: editMessage.message_id,
-        text,
-        reply_markup: replyMarkup,
-      });
-    } else {
-      await sendMessage(text, { reply_markup: replyMarkup });
-    }
-    return;
+  } else {
+    console.error("Cannot discover Codex tasks:", codexResult.reason?.message ?? codexResult.reason);
   }
-  const threads = await listThreads();
+  if (claudeResult.status === "fulfilled") {
+    for (const snapshot of claudeResult.value) {
+      const project = snapshot.cwd ? findProject(snapshot.cwd) : null;
+      if (project && snapshot.sessionId) entries.push(claudeCatalogEntry(snapshot, project));
+    }
+  } else {
+    console.error("Cannot discover Claude tasks:", claudeResult.reason?.message ?? claudeResult.reason);
+  }
+  taskCatalog = mergeTaskCatalog(entries, taskRuns.values().map((run) => ({
+    ...run,
+    projectName: runProject(run).name,
+  })));
+  return taskCatalog;
+}
+
+function taskPickerButtonText(entry) {
+  const selected = catalogEntryIsSelected(entry, selectedTask()) ? "✓ " : "";
+  const running = entry.running ? "⏳ " : "";
+  const provider = entry.provider === "codex" ? "Codex" : "Claude";
+  const project = config.showTaskProject ? `${entry.projectName} · ` : "";
+  return `${selected}${running}${provider} · ${project}${entry.title}`.slice(0, 90);
+}
+
+async function sendThreadPicker({ editMessage = null, page = 0 } = {}) {
+  const catalog = await refreshTaskCatalog();
+  const pageCount = Math.max(1, Math.ceil(catalog.length / TASK_PICKER_PAGE_SIZE));
+  const safePage = Math.max(0, Math.min(Number(page) || 0, pageCount - 1));
+  const visible = catalog.slice(
+    safePage * TASK_PICKER_PAGE_SIZE,
+    (safePage + 1) * TASK_PICKER_PAGE_SIZE,
+  );
   const keyboard = [[{
-    text: "➕ Создать новую задачу",
+    text: `➕ Новая: ${providerTitle()} · ${activeProject().name}`,
     callback_data: "thread:new",
-  }], ...threads.map((thread) => [{
-    text: `${thread.id === threadId ? "✓ " : ""}${taskRuns.forTask({
-      provider: "codex",
-      projectRoot: activeProjectRoot,
-      threadId: thread.id,
-    }) ? "⏳ " : ""}${config.showTaskProject ? `${activeProject().name} · ` : ""}${threadTitle(thread)}`,
-    callback_data: `t:${thread.id}`,
+  }], ...visible.map((entry) => [{
+    text: taskPickerButtonText(entry),
+    callback_data: taskCatalogCallback(entry),
   }])];
-  if (threadId) {
+  if (pageCount > 1) {
+    const navigation = [];
+    if (safePage > 0) navigation.push({ text: "←", callback_data: `tasks-page:${safePage - 1}` });
+    navigation.push({ text: `${safePage + 1}/${pageCount}`, callback_data: `tasks-page:${safePage}` });
+    if (safePage + 1 < pageCount) navigation.push({ text: "→", callback_data: `tasks-page:${safePage + 1}` });
+    keyboard.push(navigation);
+  }
+  if (isCodex() && threadId) {
     keyboard.push([{
       text: "❌ Архивировать текущую задачу",
       callback_data: "thread:archive",
     }]);
   }
-  const text = threads.length ? "Выберите задачу:" : "В этом проекте пока нет задач.";
+  const runningCount = catalog.filter((entry) => entry.running).length;
+  const text = catalog.length
+    ? `Все задачи Codex и Claude в разрешённых папках: ${catalog.length}\nВыполняются: ${runningCount}\n\nВыберите задачу:`
+    : "В разрешённых папках пока нет задач Codex или Claude.";
   const replyMarkup = { inline_keyboard: keyboard };
   if (editMessage) {
     await telegram("editMessageText", {
@@ -1098,16 +1142,17 @@ function archiveMessage(result) {
 
 async function sendStatus() {
   const project = activeProject();
+  let catalog = taskCatalog;
+  try {
+    catalog = await refreshTaskCatalog();
+  } catch (error) {
+    console.error("Cannot refresh task catalog for status:", error.message);
+    catalog = mergeTaskCatalog(taskCatalog, taskRuns.values());
+  }
   let task = "Не выбрана";
   if (threadId) {
-    try {
-      const threads = await listThreads();
-      const current = threads.find((thread) => thread.id === threadId);
-      task = current ? threadTitle(current) : "Telegram";
-    } catch (error) {
-      console.error("Cannot read current task for status:", error.message);
-      task = "Telegram";
-    }
+    const current = catalog.find((entry) => catalogEntryIsSelected(entry, selectedTask()));
+    task = current?.title || activeThreadTitle || `${providerTitle()} · ${threadId.slice(0, 8)}`;
   }
 
   let limits;
@@ -1120,10 +1165,17 @@ async function sendStatus() {
     limits = `Не удалось получить: ${error.message}`;
   }
 
+  const runningTasks = catalog
+    .filter((entry) => entry.running)
+    .map((entry) => `${entry.provider === "codex" ? "Codex" : "Claude"} · ${entry.projectName} · ${entry.title}`);
+  const selectedBusy = catalog.some((entry) => (
+    entry.running && catalogEntryIsSelected(entry, selectedTask())
+  ));
   await sendMessage(formatStatusMessage({
     provider: isCodex() ? "CODEX" : "CLAUDE",
-    busy: Boolean(selectedRun()),
-    runningTasks: taskRuns.size,
+    busy: selectedBusy,
+    runningTasks,
+    totalTasks: catalog.length,
     model: isCodex() ? codexModelLabel(codexModel) : CLAUDE_MODEL_LABELS[claudeModel],
     reasoning: CODEX_REASONING_LABELS[isCodex() ? codexReasoningEffort : claudeReasoningEffort],
     mode: CODEX_COLLABORATION_MODE_LABELS[isCodex() ? codexCollaborationMode : claudeCollaborationMode],
@@ -2524,6 +2576,65 @@ async function handleApprovalCallback(callback) {
         show_alert: true,
       });
       await sendMessage(`Ошибка смены модели: ${error.message}`);
+    }
+    return;
+  }
+  const taskPageMatch = /^tasks-page:(\d+)$/.exec(callback.data ?? "");
+  if (taskPageMatch) {
+    await telegram("answerCallbackQuery", { callback_query_id: callback.id });
+    try {
+      await sendThreadPicker({
+        editMessage: callback.message,
+        page: Number(taskPageMatch[1]),
+      });
+    } catch (error) {
+      await sendMessageTo(callback.message.chat.id, `Не удалось обновить список задач: ${error.message}`);
+    }
+    return;
+  }
+  const catalogSelection = parseTaskCatalogCallback(callback.data);
+  if (catalogSelection) {
+    let entry = taskCatalog.find((item) => (
+      item.provider === catalogSelection.provider && item.threadId === catalogSelection.threadId
+    ));
+    if (!entry) {
+      entry = (await refreshTaskCatalog()).find((item) => (
+        item.provider === catalogSelection.provider && item.threadId === catalogSelection.threadId
+      ));
+    }
+    if (!entry) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Задача больше не найдена",
+        show_alert: true,
+      });
+      return;
+    }
+    const alreadySelected = catalogEntryIsSelected(entry, selectedTask());
+    await telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: alreadySelected ? "Эта задача уже выбрана" : "Переключаю задачу…",
+    });
+    try {
+      if (!alreadySelected) {
+        await activateMessageBinding({
+          provider: entry.provider,
+          projectRoot: entry.projectRoot,
+          threadId: entry.threadId,
+          taskTitle: entry.title,
+        });
+        await sendTaskSwitchNotification({ targetChatId: callback.message.chat.id });
+      }
+      await telegram("deleteMessage", {
+        chat_id: callback.message.chat.id,
+        message_id: callback.message.message_id,
+      }).catch(() => telegram("editMessageReplyMarkup", {
+        chat_id: callback.message.chat.id,
+        message_id: callback.message.message_id,
+        reply_markup: { inline_keyboard: [] },
+      }));
+    } catch (error) {
+      await sendMessageTo(callback.message.chat.id, `Ошибка выбора задачи: ${error.message}`);
     }
     return;
   }

@@ -1,8 +1,10 @@
-import { open, readdir } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 const MAX_TRANSCRIPT_TAIL = 4 * 1024 * 1024;
+const MAX_CATALOG_TRANSCRIPT_TAIL = 512 * 1024;
+const MAX_CATALOG_TRANSCRIPT_HEAD = 64 * 1024;
 
 function contentBlocks(message) {
   if (Array.isArray(message?.content)) return message.content;
@@ -14,6 +16,17 @@ function isUserPrompt(entry) {
   if (entry?.type !== "user" || entry.message?.role !== "user") return false;
   const blocks = contentBlocks(entry.message);
   return blocks.some((block) => block?.type === "text" && String(block.text ?? "").trim());
+}
+
+function promptText(entry) {
+  return contentBlocks(entry?.message)
+    .filter((block) => block?.type === "text")
+    .map((block) => String(block.text ?? "")
+      .replace(/<ide_[^>]+>[\s\S]*?<\/ide_[^>]+>/g, "")
+      .trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
 }
 
 export function codexTurnAnswer(turn) {
@@ -40,6 +53,7 @@ export function parseClaudeTranscript(text) {
     if (isUserPrompt(entries[index])) promptIndex = index;
   }
   const turnEntries = entries.slice(promptIndex + 1);
+  const promptEntry = promptIndex >= 0 ? entries[promptIndex] : null;
   const assistantEntries = turnEntries.filter((entry) => (
     entry?.type === "assistant" && entry.message?.role === "assistant"
   ));
@@ -75,6 +89,10 @@ export function parseClaudeTranscript(text) {
     active: promptIndex >= 0 && !completed,
     stage,
     updatedAt: turnEntries.map((entry) => entry?.timestamp).filter(Boolean).at(-1) ?? null,
+    sessionId: entries.map((entry) => entry?.sessionId).filter(Boolean).at(-1) ?? null,
+    cwd: entries.map((entry) => entry?.cwd).filter(Boolean).at(-1) ?? null,
+    title: promptText(promptEntry).replace(/\s+/g, " ").slice(0, 80) || null,
+    isSidechain: entries.some((entry) => entry?.isSidechain === true),
   };
 }
 
@@ -112,6 +130,52 @@ async function readTail(filePath, maximumBytes = MAX_TRANSCRIPT_TAIL) {
   }
 }
 
+async function readHead(filePath, maximumBytes) {
+  const handle = await open(filePath, "r");
+  try {
+    const stats = await handle.stat();
+    const length = Math.min(stats.size, maximumBytes);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, 0);
+    let text = buffer.toString("utf8");
+    if (stats.size > length) text = text.slice(0, text.lastIndexOf("\n"));
+    return text;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readCatalogSample(filePath, size) {
+  if (size <= MAX_CATALOG_TRANSCRIPT_HEAD + MAX_CATALOG_TRANSCRIPT_TAIL) {
+    return readTail(filePath, size);
+  }
+  const [head, tail] = await Promise.all([
+    readHead(filePath, MAX_CATALOG_TRANSCRIPT_HEAD),
+    readTail(filePath, MAX_CATALOG_TRANSCRIPT_TAIL),
+  ]);
+  return `${head}\n${tail}`;
+}
+
+async function findTranscriptFiles(directory, results = []) {
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return results;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+      results.push(path.join(directory, entry.name));
+    }
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === "subagents") continue;
+    await findTranscriptFiles(path.join(directory, entry.name), results);
+  }
+  return results;
+}
+
 export async function readClaudeSessionSnapshot(
   sessionId,
   { projectsRoot = path.join(os.homedir(), ".claude", "projects") } = {},
@@ -124,4 +188,33 @@ export async function readClaudeSessionSnapshot(
     ...parseClaudeTranscript(await readTail(transcriptPath)),
     transcriptPath,
   };
+}
+
+export async function listClaudeSessionSnapshots(
+  { projectsRoot = path.join(os.homedir(), ".claude", "projects") } = {},
+) {
+  const transcriptPaths = await findTranscriptFiles(projectsRoot);
+  const snapshots = [];
+  const batchSize = 12;
+  for (let start = 0; start < transcriptPaths.length; start += batchSize) {
+    const batch = transcriptPaths.slice(start, start + batchSize);
+    const values = await Promise.all(batch.map(async (transcriptPath) => {
+      try {
+        const info = await stat(transcriptPath);
+        const snapshot = parseClaudeTranscript(await readCatalogSample(transcriptPath, info.size));
+        if (snapshot.isSidechain) return null;
+        return {
+          ...snapshot,
+          sessionId: snapshot.sessionId || path.basename(transcriptPath, ".jsonl"),
+          transcriptPath,
+          modifiedAtMs: info.mtimeMs,
+        };
+      } catch (error) {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      }
+    }));
+    snapshots.push(...values.filter(Boolean));
+  }
+  return snapshots;
 }

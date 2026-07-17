@@ -3,7 +3,12 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { codexTurnAnswer, parseClaudeTranscript, readClaudeSessionSnapshot } from "./last-message.mjs";
+import {
+  codexTurnAnswer,
+  listClaudeSessionSnapshots,
+  parseClaudeTranscript,
+  readClaudeSessionSnapshot,
+} from "./last-message.mjs";
 
 function line(value) {
   return JSON.stringify(value);
@@ -50,6 +55,10 @@ test("parseClaudeTranscript returns the current partial answer", () => {
     active: true,
     stage: "Claude использует инструмент Read…",
     updatedAt: null,
+    sessionId: null,
+    cwd: null,
+    title: "Сделай задачу",
+    isSidechain: false,
   });
 });
 
@@ -94,4 +103,37 @@ test("readClaudeSessionSnapshot finds a nested session transcript", async () => 
   assert.equal(result.answer, "Ответ");
   assert.equal(result.completed, true);
   assert.equal(path.basename(result.transcriptPath), "session-1.jsonl");
+});
+
+test("listClaudeSessionSnapshots discovers independent sessions but skips subagents", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-claude-catalog-"));
+  const project = path.join(root, "project");
+  const subagents = path.join(project, "subagents");
+  await mkdir(subagents, { recursive: true });
+  await writeFile(path.join(project, "session-2.jsonl"), [
+    line({
+      type: "user",
+      cwd: "C:\\Projects\\Main",
+      sessionId: "session-2",
+      message: { role: "user", content: "Проверить каталог задач" },
+    }),
+    line({
+      type: "assistant",
+      sessionId: "session-2",
+      message: { role: "assistant", stop_reason: null, content: [{ type: "text", text: "Проверяю" }] },
+    }),
+  ].join("\n"), "utf8");
+  await writeFile(path.join(subagents, "agent-1.jsonl"), line({
+    type: "user",
+    isSidechain: true,
+    sessionId: "agent-1",
+    message: { role: "user", content: "Подзадача" },
+  }), "utf8");
+
+  const snapshots = await listClaudeSessionSnapshots({ projectsRoot: root });
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].sessionId, "session-2");
+  assert.equal(snapshots[0].cwd, "C:\\Projects\\Main");
+  assert.equal(snapshots[0].title, "Проверить каталог задач");
+  assert.equal(snapshots[0].active, true);
 });

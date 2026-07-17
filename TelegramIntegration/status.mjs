@@ -91,13 +91,30 @@ export function formatClaudeRateLimits(text, nowMs = Date.now()) {
   return lines.join("\n");
 }
 
-export function formatStatusMessage({ provider, busy, runningTasks = 0, model, reasoning, mode, task, project, limits }) {
+export function formatStatusMessage({
+  provider,
+  busy,
+  runningTasks = [],
+  totalTasks = null,
+  model,
+  reasoning,
+  mode,
+  task,
+  project,
+  limits,
+}) {
+  const running = Array.isArray(runningTasks)
+    ? runningTasks
+    : Array.from({ length: Number(runningTasks) || 0 }, () => "");
+  const runningDetails = running.filter(Boolean).map((value) => `• ${value}`).join("\n");
+  const totals = totalTasks == null ? "" : `\nВсего найдено задач: ${totalTasks}`;
   return `${provider}: ${busy ? "Выполняет выбранную задачу" : "Готов"}\n` +
     `${model} - ${reasoning}\n` +
     `${mode}\n\n` +
     `Текущая задача: ${task}\n` +
     `Каталог: ${project}\n\n` +
-    `Выполняется задач: ${runningTasks}\n\n` +
+    `Выполняется задач: ${running.length}` +
+    `${runningDetails ? `\n${runningDetails}` : ""}${totals}\n\n` +
     `Лимиты:\n${limits}`;
 }
 
