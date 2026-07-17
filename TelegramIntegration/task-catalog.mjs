@@ -96,6 +96,27 @@ export async function readCodexRolloutRunning(rolloutPath, options = {}) {
   return (await readCodexRolloutActivity(rolloutPath, options)).running;
 }
 
+export function codexThreadRunning(thread) {
+  return thread?.status?.type === "active"
+    || (thread?.turns ?? []).some((turn) => turn?.status === "inProgress");
+}
+
+export function selectCodexTurn(
+  turns,
+  { requestedTurnId = null, rolloutActiveTurnIds = [] } = {},
+) {
+  const values = Array.isArray(turns) ? turns : [];
+  const requested = values.find((turn) => turn?.id === requestedTurnId);
+  if (requested?.status === "inProgress") return requested;
+  const rolloutIds = new Set(rolloutActiveTurnIds);
+  return values.findLast((turn) => (
+    turn?.status === "inProgress" && rolloutIds.has(turn.id)
+  )) ?? values.findLast((turn) => turn?.status === "inProgress")
+    ?? requested
+    ?? values.at(-1)
+    ?? null;
+}
+
 export function codexCatalogEntry(thread, project, { rolloutRunning = false } = {}) {
   const title = String(thread?.name ?? thread?.preview ?? "Без названия")
     .replace(/\s+/g, " ")
@@ -108,9 +129,7 @@ export function codexCatalogEntry(thread, project, { rolloutRunning = false } = 
     projectName: project.name,
     title: title || "Без названия",
     updatedAtMs: Number(thread.updatedAt ?? 0) * 1000,
-    running: rolloutRunning
-      || thread?.status?.type === "active"
-      || thread?.turns?.at(-1)?.status === "inProgress",
+    running: rolloutRunning || codexThreadRunning(thread),
   };
 }
 

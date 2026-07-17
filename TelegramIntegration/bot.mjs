@@ -59,11 +59,12 @@ import {
   catalogEntryIsSelected,
   claudeCatalogEntry,
   codexCatalogEntry,
+  codexThreadRunning,
   mergeTaskCatalog,
   parseTaskCatalogCallback,
   readCodexRolloutActivity,
-  readCodexRolloutRunning,
   runningTaskReplyMarkup,
+  selectCodexTurn,
   taskCatalogCallback,
 } from "./task-catalog.mjs";
 
@@ -863,10 +864,7 @@ async function refreshTaskCatalog() {
       const values = await Promise.all(batch.map(async (thread) => {
         const project = findProject(thread.cwd);
         if (!project) return null;
-        const rolloutRunning = thread.status?.type === "active"
-          ? true
-          : await readCodexRolloutRunning(thread.path);
-        return codexCatalogEntry(thread, project, { rolloutRunning });
+        return codexCatalogEntry(thread, project);
       }));
       entries.push(...values.filter(Boolean));
     }
@@ -1491,9 +1489,7 @@ async function taskIsExternallyActive(target) {
         await initializeCodex({ attachSelectedThread: false });
       }
       const result = await sendRpc("thread/read", { threadId: target.threadId, includeTurns: true });
-      return result.thread?.status?.type === "active"
-        || result.thread?.turns?.some((turn) => turn.status === "inProgress")
-        || await readCodexRolloutRunning(result.thread?.path);
+      return codexThreadRunning(result.thread);
     }
     return Boolean((await readClaudeSessionSnapshot(target.threadId))?.active);
   } catch (error) {
@@ -2026,25 +2022,15 @@ async function readCodexTaskSnapshot(run) {
   const result = await sendRpc("thread/read", { threadId: run.threadId, includeTurns: true });
   const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
   const activity = await readCodexRolloutActivity(result.thread?.path);
-  const activeTurnIds = new Set(activity.activeTurnIds);
-  const requestedTurn = turns.find((item) => item.id === run.turnId);
-  const rolloutTurn = turns.find((item) => activeTurnIds.has(item.id));
-  const turn = requestedTurn?.status === "inProgress"
-    ? requestedTurn
-    : rolloutTurn ?? requestedTurn ?? turns.at(-1);
+  const turn = selectCodexTurn(turns, {
+    requestedTurnId: run.turnId,
+    rolloutActiveTurnIds: activity.activeTurnIds,
+  });
   if (!turn) return null;
   const snapshot = {
     ...codexTurnSnapshot(turn),
-    turnId: rolloutTurn?.id ?? activity.activeTurnIds[0] ?? turn.id,
+    turnId: turn.id,
   };
-  if (!snapshot.active && activity.running) {
-    return {
-      ...snapshot,
-      completed: false,
-      active: true,
-      stage: "Подключено к продолжающейся внешней задаче.",
-    };
-  }
   return snapshot;
 }
 

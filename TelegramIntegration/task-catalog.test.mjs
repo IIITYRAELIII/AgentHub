@@ -7,12 +7,14 @@ import {
   catalogEntryIsSelected,
   claudeCatalogEntry,
   codexCatalogEntry,
+  codexThreadRunning,
   mergeTaskCatalog,
   parseTaskCatalogCallback,
   parseCodexRolloutActivity,
   parseCodexRolloutRunning,
   readCodexRolloutRunning,
   runningTaskReplyMarkup,
+  selectCodexTurn,
   taskCatalogCallback,
 } from "./task-catalog.mjs";
 
@@ -63,6 +65,30 @@ test("Codex rollout activity keeps another concurrent turn active after one is a
     activeTurnIds: ["original"],
   });
   assert.equal(parseCodexRolloutRunning(`${text}\n${line("task_complete", "original")}`), false);
+});
+
+test("stale rollout markers do not make an idle Codex thread active", () => {
+  const turns = [
+    { id: "stale", status: "completed" },
+    { id: "latest", status: "completed" },
+  ];
+  const thread = { status: { type: "idle" }, turns };
+  assert.equal(codexThreadRunning(thread), false);
+  assert.equal(selectCodexTurn(turns, {
+    rolloutActiveTurnIds: ["stale"],
+  }).id, "latest");
+});
+
+test("Codex turn selection prefers a genuinely in-progress turn", () => {
+  const turns = [
+    { id: "stale", status: "completed" },
+    { id: "running", status: "inProgress" },
+  ];
+  assert.equal(codexThreadRunning({ status: { type: "idle" }, turns }), true);
+  assert.equal(selectCodexTurn(turns, {
+    requestedTurnId: "stale",
+    rolloutActiveTurnIds: ["stale", "running"],
+  }).id, "running");
 });
 
 test("readCodexRolloutRunning reads a fresh local rollout", async () => {
