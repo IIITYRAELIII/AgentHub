@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TaskRunRegistry, serializableTaskRun, taskRunKey } from "./task-runs.mjs";
+import {
+  TaskDismissalRegistry,
+  TaskRunRegistry,
+  serializableTaskRun,
+  taskRunKey,
+  updateObservedResponse,
+} from "./task-runs.mjs";
 
 function run(overrides = {}) {
   return {
@@ -75,4 +81,28 @@ test("serialization excludes process and timer handles", () => {
   assert.equal(serialized.progressUpdateInFlight, undefined);
   assert.equal(serialized.observerTimer, undefined);
   assert.equal(serialized.id, source.id);
+});
+
+test("dismissed external tasks survive state serialization and clear exactly once", () => {
+  const task = run();
+  const dismissals = new TaskDismissalRegistry();
+  dismissals.add(task);
+
+  assert.equal(dismissals.has(task), true);
+  assert.equal(new TaskDismissalRegistry(dismissals.values()).has(task), true);
+  assert.equal(dismissals.has(run({ threadId: "thread-2" })), false);
+  assert.equal(dismissals.delete(task), true);
+  assert.equal(dismissals.has(task), false);
+});
+
+test("an observed task delivers only an answer that changed after attachment", () => {
+  const observed = run({
+    responseText: "Старый ответ",
+    observedInitialResponseText: "Старый ответ",
+    observedResponseChanged: false,
+  });
+
+  assert.equal(updateObservedResponse(observed, "Старый ответ"), false);
+  assert.equal(updateObservedResponse(observed, "Новый итоговый ответ"), true);
+  assert.equal(updateObservedResponse(observed, "Старый ответ"), true);
 });

@@ -4,6 +4,7 @@ import {
   formatArchiveMessage,
   formatClaudeRateLimits,
   formatCodexRateLimits,
+  formatProgressHeading,
   formatRestartCompleteMessage,
   formatStatusMessage,
   formatTaskSwitchMessage,
@@ -70,9 +71,8 @@ test("formatStatusMessage matches Telegram status layout", () => {
     project: "VSC_Tyrael",
     limits: "CODEX\n100.0% - 5 ч. | 94.0% - 6 дн. 7 ч.",
   }), [
-    "CODEX: Готов",
-    "GPT-5.3 Codex Spark - High",
-    "Work",
+    "CODEX: GPT-5.3 Codex Spark - High",
+    "Work | Готов",
     "",
     "Текущая задача: Обсуждения",
     "Каталог: VSC_Tyrael",
@@ -99,9 +99,8 @@ test("formatStatusMessage shows Claude model, reasoning, and Plan mode", () => {
     project: "VSC_Tyrael",
     limits: "CLAUDE\n100.0% - 5 ч.",
   }), [
-    "CLAUDE: Выполняет выбранную задачу",
-    "Sonnet - XHigh",
-    "Plan",
+    "CLAUDE: Sonnet - XHigh",
+    "Plan | Выполняет выбранную задачу",
     "",
     "Текущая задача: Проверка",
     "Каталог: VSC_Tyrael",
@@ -152,6 +151,47 @@ test("formatStatusMessage omits the active heading when nothing runs", () => {
   assert.doesNotMatch(result, /АКТИВНЫЕ ЗАДАЧИ/);
   assert.match(result, /Задача &lt;1&gt;/);
   assert.match(result, /VSC &amp; Main/);
+});
+
+test("formatStatusMessage omits the project when the project button is hidden", () => {
+  const result = formatStatusMessage({
+    provider: "CODEX",
+    busy: true,
+    runningTasks: 2,
+    model: "GPT-5.6-Sol",
+    reasoning: "High",
+    mode: "Work",
+    task: "Telegram · 17.07.2026, 22:39",
+    project: null,
+    limits: "CODEX - 78.0% - 5 дн. 10 ч.",
+  });
+
+  assert.match(result, /^CODEX: GPT-5\.6-Sol - High\nWork \| Выполняет выбранную задачу/);
+  assert.doesNotMatch(result, /Каталог:/);
+});
+
+test("formatProgressHeading keeps optional project on the compact first line", () => {
+  assert.equal(formatProgressHeading({
+    provider: "Codex",
+    model: "GPT-5.6-Sol",
+    reasoning: "High",
+    task: "Telegram · 17.07.2026, 22:39",
+    project: "VSC_Tyrael",
+  }), [
+    "⏳ Codex · GPT-5.6-Sol - High VSC_Tyrael",
+    "🧵 Telegram · 17.07.2026, 22:39",
+  ].join("\n"));
+
+  assert.equal(formatProgressHeading({
+    done: true,
+    provider: "Claude Code",
+    model: "Sonnet",
+    reasoning: "XHigh",
+    task: "Проверка",
+  }), [
+    "✅ Claude Code · Sonnet - XHigh",
+    "🧵 Проверка",
+  ].join("\n"));
 });
 
 test("statusHeaderFileName selects the current agent artwork", () => {

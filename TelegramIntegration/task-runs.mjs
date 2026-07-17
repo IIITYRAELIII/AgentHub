@@ -87,6 +87,47 @@ export class TaskRunRegistry {
   }
 }
 
+export class TaskDismissalRegistry {
+  #keys = new Set();
+
+  constructor(keys = []) {
+    this.restore(keys);
+  }
+
+  restore(keys) {
+    for (const key of keys) {
+      if (typeof key === "string" && key) this.#keys.add(key);
+    }
+  }
+
+  has(task) {
+    return this.#keys.has(taskRunKey(task));
+  }
+
+  add(task) {
+    this.#keys.add(taskRunKey(task));
+  }
+
+  delete(task) {
+    return this.#keys.delete(taskRunKey(task));
+  }
+
+  values() {
+    return [...this.#keys];
+  }
+}
+
+export function updateObservedResponse(run, answer) {
+  const previous = String(run?.responseText ?? "");
+  if (typeof run.observedInitialResponseText !== "string") {
+    run.observedInitialResponseText = previous;
+  }
+  const next = String(answer ?? previous);
+  if (next !== run.observedInitialResponseText) run.observedResponseChanged = true;
+  run.responseText = next;
+  return run.observedResponseChanged === true;
+}
+
 export function serializableTaskRun(run) {
   const {
     process: _process,

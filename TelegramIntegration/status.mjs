@@ -106,13 +106,25 @@ export function formatStatusMessage({
     ? runningTasks
     : Array.from({ length: Number(runningTasks) || 0 }, () => "");
   const activeHeading = running.length ? "\n\n<b>🧵АКТИВНЫЕ ЗАДАЧИ🧵</b>" : "";
-  return `${escapeTelegramHtml(provider)}: ${busy ? "Выполняет выбранную задачу" : "Готов"}\n` +
-    `${escapeTelegramHtml(model)} - ${escapeTelegramHtml(reasoning)}\n` +
-    `${escapeTelegramHtml(mode)}\n\n` +
-    `Текущая задача: ${escapeTelegramHtml(task)}\n` +
-    `Каталог: ${escapeTelegramHtml(project)}\n\n` +
+  const projectLine = project ? `\nКаталог: ${escapeTelegramHtml(project)}` : "";
+  return `${escapeTelegramHtml(provider)}: ${escapeTelegramHtml(model)} - ${escapeTelegramHtml(reasoning)}\n` +
+    `${escapeTelegramHtml(mode)} | ${busy ? "Выполняет выбранную задачу" : "Готов"}\n\n` +
+    `Текущая задача: ${escapeTelegramHtml(task)}${projectLine}\n\n` +
     `Выполняется задач: ${running.length}\n\n` +
     `Лимиты:\n${escapeTelegramHtml(limits)}${activeHeading}`;
+}
+
+export function formatProgressHeading({
+  done = false,
+  provider,
+  model,
+  reasoning,
+  task,
+  project = null,
+}) {
+  const projectSuffix = project ? ` ${project}` : "";
+  return `${done ? "✅" : "⏳"} ${provider} · ${model} - ${reasoning}${projectSuffix}\n` +
+    `🧵 ${task}`;
 }
 
 export function statusHeaderFileName(provider) {
