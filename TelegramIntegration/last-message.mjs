@@ -16,6 +16,14 @@ function isUserPrompt(entry) {
   return blocks.some((block) => block?.type === "text" && String(block.text ?? "").trim());
 }
 
+export function codexTurnAnswer(turn) {
+  return (turn?.items ?? [])
+    .filter((item) => item?.type === "agentMessage" && String(item.text ?? "").trim())
+    .map((item) => String(item.text).trim())
+    .join("\n\n")
+    .trim();
+}
+
 export function parseClaudeTranscript(text) {
   const entries = String(text)
     .split(/\r?\n/)

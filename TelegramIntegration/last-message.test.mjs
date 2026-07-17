@@ -3,11 +3,23 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { parseClaudeTranscript, readClaudeSessionSnapshot } from "./last-message.mjs";
+import { codexTurnAnswer, parseClaudeTranscript, readClaudeSessionSnapshot } from "./last-message.mjs";
 
 function line(value) {
   return JSON.stringify(value);
 }
+
+test("codexTurnAnswer preserves every visible agent message in the turn", () => {
+  assert.equal(codexTurnAnswer({
+    items: [
+      { type: "reasoning", text: "hidden" },
+      { type: "agentMessage", text: "Первое сообщение" },
+      { type: "commandExecution", command: "test" },
+      { type: "agentMessage", text: "Второе сообщение" },
+      { type: "agentMessage", text: "Последний абзац" },
+    ],
+  }), "Первое сообщение\n\nВторое сообщение\n\nПоследний абзац");
+});
 
 test("parseClaudeTranscript returns the current partial answer", () => {
   const transcript = [

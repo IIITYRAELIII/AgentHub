@@ -40,7 +40,7 @@ import { formatTaskTokenUsage } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
 import { appendMessageBindings, findMessageBinding } from "./message-bindings.mjs";
 import { serializableTaskRun, TaskRunRegistry, taskRunKey } from "./task-runs.mjs";
-import { readClaudeSessionSnapshot } from "./last-message.mjs";
+import { codexTurnAnswer, readClaudeSessionSnapshot } from "./last-message.mjs";
 
 const config = await loadConfig();
 let activeProvider = config.provider === "codex" ? "codex" : "claude";
@@ -1704,8 +1704,7 @@ function describeCodexItem(item, completed) {
 }
 
 function recoveredCodexAnswer(turn) {
-  const messages = (turn?.items ?? []).filter((item) => item?.type === "agentMessage" && item.text?.trim());
-  return messages.at(-1)?.text?.trim() ?? "";
+  return codexTurnAnswer(turn);
 }
 
 function codexTurnSnapshot(turn) {
