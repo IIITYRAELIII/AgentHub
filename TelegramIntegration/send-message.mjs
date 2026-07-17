@@ -186,6 +186,15 @@ export function notificationParts(taskTitle, text, categoryName = "info") {
   };
 }
 
+export function showMessageReplyMarkup() {
+  return {
+    inline_keyboard: [[{
+      text: "👁 Показать сообщение",
+      callback_data: "show-message",
+    }]],
+  };
+}
+
 async function readStdin() {
   if (process.stdin.isTTY) return "";
   const chunks = [];
@@ -194,13 +203,14 @@ async function readStdin() {
   return chunks.join("").trim();
 }
 
-async function sendTelegramMessage(token, chatId, text, silent, parseMode = null) {
+async function sendTelegramMessage(token, chatId, text, silent, parseMode = null, replyMarkup = null) {
   const body = {
     chat_id: chatId,
     text,
     disable_notification: silent,
   };
   if (parseMode) body.parse_mode = parseMode;
+  if (replyMarkup) body.reply_markup = replyMarkup;
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -236,7 +246,14 @@ export async function main(args = process.argv.slice(2)) {
     }
     task.projectRoot = project.path;
     const notification = notificationParts(task.taskTitle, text, options.category);
-    sent.push(await sendTelegramMessage(config.token, chatId, notification.message, options.silent, "HTML"));
+    sent.push(await sendTelegramMessage(
+      config.token,
+      chatId,
+      notification.message,
+      options.silent,
+      "HTML",
+      showMessageReplyMarkup(),
+    ));
     parts = notification.remaining ? splitTelegramText(notification.remaining) : [];
     for (const part of parts) sent.push(await sendTelegramMessage(config.token, chatId, part, options.silent));
     const createdAt = new Date().toISOString();

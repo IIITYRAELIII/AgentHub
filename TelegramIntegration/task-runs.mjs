@@ -90,9 +90,11 @@ export class TaskRunRegistry {
 export function serializableTaskRun(run) {
   const {
     process: _process,
+    progressMessageId: _progressMessageId,
     progressStartTimer: _progressStartTimer,
     progressTimer: _progressTimer,
     progressUpdateInFlight: _progressUpdateInFlight,
+    observerTimer: _observerTimer,
     ...value
   } = run;
   return value;

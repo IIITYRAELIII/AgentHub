@@ -34,11 +34,13 @@ import {
   formatCodexRateLimits,
   formatStatusMessage,
   formatTaskSwitchMessage,
+  showLastMessageReplyMarkup,
 } from "./status.mjs";
 import { formatTaskTokenUsage } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
 import { appendMessageBindings, findMessageBinding } from "./message-bindings.mjs";
 import { serializableTaskRun, TaskRunRegistry, taskRunKey } from "./task-runs.mjs";
+import { readClaudeSessionSnapshot } from "./last-message.mjs";
 
 const config = await loadConfig();
 let activeProvider = config.provider === "codex" ? "codex" : "claude";
@@ -213,6 +215,7 @@ const pendingTts = new Map();
 const speechTexts = new Map();
 const taskRuns = new TaskRunRegistry();
 const taskDiffs = new Map();
+const lastTaskMessages = new Map();
 
 try {
   const savedSpeechTexts = JSON.parse(await readFile(SPEECH_TEXTS_FILE, "utf8"));
@@ -294,11 +297,44 @@ async function sendRunLongMessage(run, text, { speechText = null, forceSpeechBut
   }
 }
 
+async function sendTaskSwitchNotification({ targetChatId = chatId, showLastMessage = true } = {}) {
+  const task = {
+    ...selectedTask(),
+    chatId: targetChatId,
+    taskTitle: activeThreadTitle,
+  };
+  const extra = { parse_mode: "HTML" };
+  if (showLastMessage && task.threadId) extra.reply_markup = showLastMessageReplyMarkup();
+  const message = await sendMessageTo(targetChatId, formatTaskSwitchMessage({
+    task: activeThreadTitle,
+    project: activeProject().name,
+    showProject: config.showProjectButton,
+    ...taskSwitchSettings(),
+  }), extra);
+  await bindRunMessage(task, message).catch((error) => {
+    console.error("Cannot bind task-switch message:", error.message);
+  });
+  return message;
+}
+
 function runningProjectWarning(run) {
   const others = taskRuns.inProject(run.projectRoot, { excludeTask: run });
   if (!others.length) return "";
   return `⚠️ В проекте «${runProject(run).name}» уже выполняется ${others.length} задач(а). `
     + "Параллельные изменения одних файлов могут конфликтовать.";
+}
+
+function rememberLastTaskMessage(run, text) {
+  const value = String(text ?? "").trim();
+  if (!run?.threadId || !value) return;
+  lastTaskMessages.set(taskRunKey(run), {
+    text: value,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function savedLastTaskMessage(task) {
+  return lastTaskMessages.get(taskRunKey(task))?.text ?? "";
 }
 
 const TOKEN_USAGE_FIELDS = [
@@ -471,6 +507,12 @@ try {
   }
   if (Number.isSafeInteger(saved.chatId)) chatId = saved.chatId;
   if (Number.isSafeInteger(saved.updateOffset) && saved.updateOffset >= 0) updateOffset = saved.updateOffset;
+  if (Array.isArray(saved.lastTaskMessages)) {
+    for (const entry of saved.lastTaskMessages) {
+      if (!Array.isArray(entry) || typeof entry[0] !== "string" || typeof entry[1]?.text !== "string") continue;
+      lastTaskMessages.set(entry[0], entry[1]);
+    }
+  }
   const savedRuns = Array.isArray(saved.activeRuns)
     ? saved.activeRuns
     : saved.activeRun && typeof saved.activeRun === "object"
@@ -485,6 +527,11 @@ try {
       progressStage: String(savedRun.progressStage ?? "Восстановление задачи…"),
       progressReasoning: String(savedRun.progressReasoning ?? ""),
       lastProgressText: String(savedRun.lastProgressText ?? ""),
+      progressMessageIds: Array.isArray(savedRun.progressMessageIds)
+        ? savedRun.progressMessageIds.filter(Number.isSafeInteger)
+        : Number.isSafeInteger(savedRun.progressMessageId)
+          ? [savedRun.progressMessageId]
+          : [],
       progressStartTimer: null,
       progressTimer: null,
       progressUpdateInFlight: false,
@@ -953,12 +1000,7 @@ async function resumeThread(selectedThreadId, { notify = true } = {}) {
   latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
   await saveState();
   if (notify) {
-    await sendMessage(formatTaskSwitchMessage({
-      task: activeThreadTitle,
-      project: activeProject().name,
-      showProject: config.showProjectButton,
-      ...taskSwitchSettings(),
-    }), { parse_mode: "HTML" });
+    await sendTaskSwitchNotification();
   }
   return true;
 }
@@ -1150,7 +1192,7 @@ async function beginRun(input) {
     responseText: "",
     status: "running",
     startedAt: new Date().toISOString(),
-    progressMessageId: null,
+    progressMessageIds: [],
     progressStage: "Задача принята.",
     progressReasoning: "",
     lastProgressText: "",
@@ -1171,8 +1213,8 @@ async function beginRun(input) {
   return run;
 }
 
-async function startProgressMessage(run) {
-  if (!run || run.status !== "running" || run.progressMessageId) return;
+async function startProgressMessage(run, { forceNew = false } = {}) {
+  if (!run || run.status !== "running" || (!forceNew && run.progressMessageIds.length)) return;
   const initialProgress = renderProgress(run);
   const message = await sendRunMessage(run, initialProgress);
   if (taskRuns.forTask(run) !== run || run.status !== "running") {
@@ -1181,7 +1223,7 @@ async function startProgressMessage(run) {
     }
     return;
   }
-  run.progressMessageId = message?.message_id ?? null;
+  if (Number.isSafeInteger(message?.message_id)) run.progressMessageIds.push(message.message_id);
   run.lastProgressText = initialProgress;
   await saveState();
 }
@@ -1223,7 +1265,7 @@ function renderProgress(run, done = false) {
 }
 
 function scheduleProgressUpdate(run) {
-  if (!run?.progressMessageId || run.progressTimer) return;
+  if (!run?.progressMessageIds.length || run.progressTimer) return;
   run.progressTimer = setTimeout(() => {
     run.progressTimer = null;
     void flushProgressUpdate(run);
@@ -1231,18 +1273,27 @@ function scheduleProgressUpdate(run) {
 }
 
 async function flushProgressUpdate(run, done = false) {
-  if (!run?.progressMessageId || run.progressUpdateInFlight) return;
+  if (!run?.progressMessageIds.length || run.progressUpdateInFlight) return;
   const text = renderProgress(run, done);
   if (text === run.lastProgressText) return;
   run.progressUpdateInFlight = true;
   try {
-    await telegram("editMessageText", { chat_id: run.chatId, message_id: run.progressMessageId, text });
+    const retained = [];
+    for (const messageId of run.progressMessageIds) {
+      try {
+        await telegram("editMessageText", { chat_id: run.chatId, message_id: messageId, text });
+        retained.push(messageId);
+      } catch (error) {
+        if (String(error.message).includes("message is not modified")) {
+          retained.push(messageId);
+        } else {
+          console.error(`Cannot update task progress message ${messageId}:`, error.message);
+        }
+      }
+    }
+    run.progressMessageIds = retained;
     run.lastProgressText = text;
     await saveState();
-  } catch (error) {
-    if (!String(error.message).includes("message is not modified")) {
-      console.error("Cannot update task progress:", error.message);
-    }
   } finally {
     run.progressUpdateInFlight = false;
   }
@@ -1260,20 +1311,24 @@ async function finishProgress(run, stage) {
     run.progressTimer = null;
   }
   run.progressStage = stage;
-  if (!run.progressMessageId) {
+  if (!run.progressMessageIds.length) {
     run.progressReasoning = "";
     run.lastProgressText = "";
     return;
   }
   while (run.progressUpdateInFlight) await delay(50);
   await flushProgressUpdate(run, true);
-  run.progressMessageId = null;
+  run.progressMessageIds = [];
   run.progressReasoning = "";
   run.lastProgressText = "";
 }
 
 async function completeRun(run) {
   if (!run) return;
+  if (run.observerTimer) {
+    clearTimeout(run.observerTimer);
+    run.observerTimer = null;
+  }
   taskRuns.remove(run);
   run.status = "completed";
   run.process = null;
@@ -1449,8 +1504,8 @@ async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton =
         threadIdsByProvider.claude = parsed.sessionId;
         activeThreadTitle = runTaskTitle(run);
       }
-      if (run.progressMessageId) {
-        void bindRunMessage(run, { message_id: run.progressMessageId }).catch((error) => {
+      for (const messageId of run.progressMessageIds) {
+        void bindRunMessage(run, { message_id: messageId }).catch((error) => {
           console.error("Cannot bind Claude progress message:", error.message);
         });
       }
@@ -1538,6 +1593,7 @@ async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton =
       const failed = code !== 0 || result.is_error;
       await finishProgress(run, failed ? `Claude остановлен: ${answer}` : "Задача завершена.");
       const response = failed ? `Ошибка Claude Code: ${answer}` : answer;
+      rememberLastTaskMessage(run, response);
       await sendRunLongMessage(run, `${response}\n\n${formatClaudeUsage(result, peakThinkingTokens)}`, { speechText: answer, forceSpeechButton });
       if (run.latestDiff) await sendRunMessage(run, "Изменения этой задачи доступны после её выбора по команде /diff.");
       await completeRun(run);
@@ -1623,6 +1679,7 @@ async function handleCodexMessage(message) {
     const error = params.turn?.error?.message;
     const answer = run.responseText.trim() || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
     await finishProgress(run, error || status === "failed" ? `Задача завершилась с ошибкой: ${error ?? status}` : "Задача завершена.");
+    rememberLastTaskMessage(run, answer);
     await sendRunLongMessage(run, `${answer}\n\n${tokenSummary}`, { speechText: answer, forceSpeechButton });
     if (run.latestDiff) await sendRunMessage(run, "Изменения этой задачи доступны после её выбора по команде /diff.");
     await completeRun(run);
@@ -1651,7 +1708,195 @@ function recoveredCodexAnswer(turn) {
   return messages.at(-1)?.text?.trim() ?? "";
 }
 
+function codexTurnSnapshot(turn) {
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  const lastItem = items.at(-1);
+  const answer = recoveredCodexAnswer(turn);
+  return {
+    answer,
+    reasoning: "",
+    completed: turn?.status !== "inProgress",
+    active: turn?.status === "inProgress",
+    stage: turn?.status === "inProgress"
+      ? describeCodexItem(lastItem, false)
+      : turn?.status === "completed"
+        ? "Задача завершена."
+        : `Задача остановлена: ${turn?.status ?? "неизвестно"}.`,
+  };
+}
+
+function observedRun(binding, targetChatId, snapshot, turnId = null) {
+  const run = {
+    id: randomUUID(),
+    provider: binding.provider,
+    chatId: targetChatId,
+    projectRoot: binding.projectRoot,
+    projectName: findProject(binding.projectRoot)?.name ?? path.basename(binding.projectRoot),
+    threadId: binding.threadId,
+    sessionId: binding.provider === "claude" ? binding.threadId : null,
+    turnId,
+    taskTitle: binding.taskTitle,
+    promptPreview: "",
+    model: binding.provider === "claude" ? "Claude Code" : "Codex",
+    modelId: null,
+    reasoning: "Подключённый ход",
+    reasoningId: null,
+    collaborationMode: "default",
+    responseText: snapshot.answer ?? "",
+    status: "running",
+    startedAt: new Date().toISOString(),
+    progressMessageIds: [],
+    progressStage: snapshot.stage ?? "Подключение к выполняющейся задаче…",
+    progressReasoning: snapshot.reasoning ?? "",
+    lastProgressText: "",
+    progressStartTimer: null,
+    progressTimer: null,
+    progressUpdateInFlight: false,
+    observerTimer: null,
+    observer: true,
+    latestDiff: "",
+    process: null,
+  };
+  taskRuns.add(run);
+  return run;
+}
+
+function updateObservedRun(run, snapshot) {
+  run.responseText = String(snapshot?.answer ?? run.responseText);
+  run.progressReasoning = String(snapshot?.reasoning ?? run.progressReasoning);
+  run.progressStage = String(snapshot?.stage ?? run.progressStage);
+  scheduleProgressUpdate(run);
+}
+
+async function readCodexTaskSnapshot(run) {
+  const result = await sendRpc("thread/read", { threadId: run.threadId, includeTurns: true });
+  const turn = result.thread?.turns?.find((item) => item.id === run.turnId)
+    ?? result.thread?.turns?.at(-1);
+  return turn ? { ...codexTurnSnapshot(turn), turnId: turn.id } : null;
+}
+
+async function finishObservedRun(run, snapshot) {
+  if (taskRuns.forTask(run) !== run) return;
+  updateObservedRun(run, snapshot);
+  const answer = String(snapshot?.answer ?? "").trim()
+    || savedLastTaskMessage(run)
+    || "Ход завершён без текстового ответа.";
+  await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
+  rememberLastTaskMessage(run, answer);
+  await sendRunLongMessage(run, answer, { speechText: answer });
+  await completeRun(run);
+}
+
+function scheduleObservedRun(run) {
+  if (!run?.observer || run.observerTimer || taskRuns.forTask(run) !== run) return;
+  run.observerTimer = setTimeout(() => {
+    run.observerTimer = null;
+    void pollObservedRun(run);
+  }, 1500);
+}
+
+async function pollObservedRun(run) {
+  if (!run?.observer || taskRuns.forTask(run) !== run) return;
+  try {
+    const snapshot = run.provider === "codex"
+      ? await readCodexTaskSnapshot(run)
+      : await readClaudeSessionSnapshot(run.threadId);
+    if (!snapshot) {
+      setProgressStage(run, "Ожидаю данные текущего хода…");
+      scheduleObservedRun(run);
+      return;
+    }
+    if (snapshot.turnId && snapshot.turnId !== run.turnId) {
+      const previousTurnId = run.turnId;
+      run.turnId = snapshot.turnId;
+      taskRuns.reindex(run, { turnId: previousTurnId });
+    }
+    if (snapshot.completed) {
+      await finishObservedRun(run, snapshot);
+      return;
+    }
+    updateObservedRun(run, snapshot);
+    scheduleObservedRun(run);
+  } catch (error) {
+    console.error(`Cannot observe ${run.provider} task ${run.threadId}:`, error.message);
+    setProgressStage(run, `Не удалось обновить ход: ${error.message}`);
+    scheduleObservedRun(run);
+  }
+}
+
+async function showTaskMessage(binding, targetChatId) {
+  const task = {
+    provider: binding.provider,
+    projectRoot: binding.projectRoot,
+    threadId: binding.threadId,
+  };
+  const running = taskRuns.forTask(task);
+  if (running) {
+    running.chatId = targetChatId;
+    await startProgressMessage(running, { forceNew: true });
+    return;
+  }
+
+  if (binding.provider === "codex") {
+    const probe = { ...binding, chatId: targetChatId, turnId: null };
+    const snapshot = await readCodexTaskSnapshot(probe);
+    if (snapshot?.active) {
+      const run = observedRun(binding, targetChatId, snapshot, snapshot.turnId);
+      await startProgressMessage(run, { forceNew: true });
+      scheduleObservedRun(run);
+      await saveState();
+      return;
+    }
+    const answer = snapshot?.answer || savedLastTaskMessage(task);
+    if (answer) {
+      rememberLastTaskMessage(task, answer);
+      await sendRunLongMessage({ ...task, chatId: targetChatId, taskTitle: binding.taskTitle }, answer);
+      await saveState();
+      return;
+    }
+  } else {
+    const snapshot = await readClaudeSessionSnapshot(binding.threadId);
+    if (snapshot?.active) {
+      const run = observedRun(binding, targetChatId, snapshot);
+      await startProgressMessage(run, { forceNew: true });
+      scheduleObservedRun(run);
+      await saveState();
+      return;
+    }
+    const answer = snapshot?.answer || savedLastTaskMessage(task);
+    if (answer) {
+      rememberLastTaskMessage(task, answer);
+      await sendRunLongMessage({ ...task, chatId: targetChatId, taskTitle: binding.taskTitle }, answer);
+      await saveState();
+      return;
+    }
+  }
+
+  await sendRunMessage(
+    { ...task, chatId: targetChatId, taskTitle: binding.taskTitle },
+    "У этой задачи пока нет выполняющегося хода или сохранённого ответа.",
+  );
+}
+
 async function recoverTaskRun(run) {
+  if (run.observer) {
+    const snapshot = run.provider === "codex" && codex
+      ? await readCodexTaskSnapshot(run)
+      : run.provider === "claude"
+        ? await readClaudeSessionSnapshot(run.threadId)
+        : null;
+    if (snapshot?.active) {
+      updateObservedRun(run, snapshot);
+      scheduleObservedRun(run);
+      startTyping();
+      await saveState();
+      return;
+    }
+    if (snapshot?.completed) {
+      await finishObservedRun(run, snapshot);
+      return;
+    }
+  }
   if (run.provider !== "codex" || !codex) {
     await finishProgress(run, "Локальный процесс прервался при перезапуске бота.");
     await sendRunMessage(
@@ -1687,12 +1932,17 @@ async function recoverTaskRun(run) {
     || turn.error?.message
     || `Сохранённый запуск завершён со статусом ${turn.status}.`;
   await finishProgress(run, turn.status === "completed" ? "Задача завершена." : `Задача остановлена: ${turn.status}.`);
+  rememberLastTaskMessage(run, answer);
   await sendRunLongMessage(run, answer, { speechText: answer });
   await completeRun(run);
 }
 
 async function recoverActiveRuns({ provider = null } = {}) {
   const runs = taskRuns.values().filter((run) => !provider || run.provider === provider);
+  if (runs.some((run) => run.provider === "codex") && !codex) {
+    await startCodexAppServer();
+    await initializeCodex({ attachSelectedThread: isCodex() });
+  }
   for (const run of runs) {
     try {
       await recoverTaskRun(run);
@@ -2042,6 +2292,37 @@ async function handleApprovalCallback(callback) {
     });
     return;
   }
+  if (callback.data === "show-message" || callback.data === "show-last-message") {
+    const targetChatId = callback.message?.chat?.id;
+    const sourceMessageId = callback.message?.message_id;
+    const binding = await findMessageBinding(config.dataDir, targetChatId, sourceMessageId);
+    if (!binding) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Привязка задачи уже недоступна",
+        show_alert: true,
+      });
+      return;
+    }
+    await telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: "Открываю задачу…",
+    });
+    try {
+      const activated = await activateMessageBinding(binding);
+      if (activated.changed) {
+        await sendTaskSwitchNotification({
+          targetChatId,
+          showLastMessage: false,
+        });
+      }
+      await showTaskMessage(binding, targetChatId);
+    } catch (error) {
+      console.error("Cannot show bound task message:", error.message);
+      await sendMessageTo(targetChatId, `Не удалось показать сообщение задачи: ${error.message}`);
+    }
+    return;
+  }
   const modeMatch = /^approval-mode:(manual|auto)$/.exec(callback.data ?? "");
   if (modeMatch) {
     autoApprove = modeMatch[1] === "auto";
@@ -2321,16 +2602,7 @@ async function handleApprovalCallback(callback) {
       if (!alreadySelected) {
         const resumed = await resumeThread(selectedThreadId, { notify: false });
         if (!resumed) return;
-        await sendMessageTo(
-          callback.message.chat.id,
-          formatTaskSwitchMessage({
-            task: activeThreadTitle,
-            project: activeProject().name,
-            showProject: config.showProjectButton,
-            ...taskSwitchSettings(),
-          }),
-          { parse_mode: "HTML" },
-        );
+        await sendTaskSwitchNotification({ targetChatId: callback.message.chat.id });
       }
       await telegram("deleteMessage", {
         chat_id: callback.message.chat.id,
@@ -2393,15 +2665,7 @@ async function handleTelegramMessage(message) {
         return;
       }
       if (activated.changed) {
-        await sendMessage(
-          formatTaskSwitchMessage({
-            task: activated.activeTitle,
-            project: activeProject().name,
-            showProject: config.showProjectButton,
-            ...taskSwitchSettings(),
-          }),
-          { parse_mode: "HTML" },
-        );
+        await sendTaskSwitchNotification();
       }
     }
   }
@@ -2468,8 +2732,13 @@ async function handleTelegramMessage(message) {
     if (!run) return sendMessage("В выбранной задаче сейчас ничего не выполняется.");
     if (run.provider === "codex") {
       await sendRpc("turn/interrupt", { threadId: run.threadId, turnId: run.turnId });
+    } else if (run.process) {
+      run.process.kill();
     } else {
-      run.process?.kill();
+      await finishProgress(run, "Наблюдение отключено; внешний Claude продолжает работу.");
+      await completeRun(run);
+      await sendRunMessage(run, "Отключил наблюдение. Остановить внешний процесс Claude из этой сессии бот не может.");
+      return;
     }
     await sendRunMessage(run, "Запрошена остановка этой задачи.");
   } else if (text.startsWith("/")) {
@@ -2574,6 +2843,7 @@ function saveState() {
     claudeCollaborationMode,
     updateOffset,
     activeRuns: taskRuns.values().map(serializableTaskRun),
+    lastTaskMessages: [...lastTaskMessages.entries()].slice(-500),
   }, null, 2)}\n`;
   stateWriteQueue = stateWriteQueue
     .catch(() => {})

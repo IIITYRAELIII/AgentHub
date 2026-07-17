@@ -117,3 +117,12 @@ export function formatTaskSwitchMessage({ task, project, showProject, model, rea
   if (!showProject) return `🔄 Текущая задача изменена.\n\n<b>${taskText}</b>${settingsText}`;
   return `🔄 Текущая задача изменена.\n\n<b>${escapeTelegramHtml(project)}</b>\n<i>${taskText}</i>${settingsText}`;
 }
+
+export function showLastMessageReplyMarkup() {
+  return {
+    inline_keyboard: [[{
+      text: "👁 Показать последнее сообщение",
+      callback_data: "show-last-message",
+    }]],
+  };
+}

@@ -8,6 +8,7 @@ import {
   parseArguments,
   resolveNotificationCategory,
   resolveChatId,
+  showMessageReplyMarkup,
   splitTelegramText,
 } from "./send-message.mjs";
 import { findContainingProject } from "./config.mjs";
@@ -151,6 +152,15 @@ test("notificationParts adds a bold underlined category above the task title", (
     notificationParts("Задача <1>", "Готово", "done").message,
     "✅ <b><u>ЗАДАЧА ВЫПОЛНЕНА</u></b> ✅\n\n🧵 <b>Задача &lt;1&gt;</b>\n\nГотово",
   );
+});
+
+test("bound notifications expose the show-message callback", () => {
+  assert.deepEqual(showMessageReplyMarkup(), {
+    inline_keyboard: [[{
+      text: "👁 Показать сообщение",
+      callback_data: "show-message",
+    }]],
+  });
 });
 
 test("resolveNotificationCategory defaults to information", () => {

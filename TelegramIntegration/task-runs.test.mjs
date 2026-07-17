@@ -60,15 +60,19 @@ test("task keys normalize Windows project path casing", () => {
 test("serialization excludes process and timer handles", () => {
   const source = run({
     process: { pid: 42 },
+    progressMessageId: 123,
     progressStartTimer: { timer: true },
     progressTimer: { timer: true },
     progressUpdateInFlight: true,
+    observerTimer: { timer: true },
   });
   const serialized = serializableTaskRun(source);
 
   assert.equal(serialized.process, undefined);
+  assert.equal(serialized.progressMessageId, undefined);
   assert.equal(serialized.progressStartTimer, undefined);
   assert.equal(serialized.progressTimer, undefined);
   assert.equal(serialized.progressUpdateInFlight, undefined);
+  assert.equal(serialized.observerTimer, undefined);
   assert.equal(serialized.id, source.id);
 });

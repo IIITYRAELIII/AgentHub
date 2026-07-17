@@ -6,6 +6,7 @@ import {
   formatCodexRateLimits,
   formatStatusMessage,
   formatTaskSwitchMessage,
+  showLastMessageReplyMarkup,
 } from "./status.mjs";
 
 test("formatCodexRateLimits puts both windows on one line", () => {
@@ -147,4 +148,13 @@ test("formatTaskSwitchMessage shows only bold task when project button is disabl
     model: "GPT-5.6-Sol",
     reasoning: "Medium",
   }), "🔄 Текущая задача изменена.\n\n<b>Задача &lt;1&gt;</b>\nGPT-5.6-Sol - Medium");
+});
+
+test("task switch messages expose the show-last callback", () => {
+  assert.deepEqual(showLastMessageReplyMarkup(), {
+    inline_keyboard: [[{
+      text: "👁 Показать последнее сообщение",
+      callback_data: "show-last-message",
+    }]],
+  });
 });
