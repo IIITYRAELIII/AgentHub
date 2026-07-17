@@ -51,6 +51,7 @@ import {
   codexCatalogEntry,
   mergeTaskCatalog,
   parseTaskCatalogCallback,
+  readCodexRolloutRunning,
   taskCatalogCallback,
 } from "./task-catalog.mjs";
 
@@ -822,9 +823,18 @@ async function refreshTaskCatalog() {
   ]);
   const entries = [];
   if (codexResult.status === "fulfilled") {
-    for (const thread of codexResult.value) {
-      const project = findProject(thread.cwd);
-      if (project) entries.push(codexCatalogEntry(thread, project));
+    const batchSize = 16;
+    for (let start = 0; start < codexResult.value.length; start += batchSize) {
+      const batch = codexResult.value.slice(start, start + batchSize);
+      const values = await Promise.all(batch.map(async (thread) => {
+        const project = findProject(thread.cwd);
+        if (!project) return null;
+        const rolloutRunning = thread.status?.type === "active"
+          ? true
+          : await readCodexRolloutRunning(thread.path);
+        return codexCatalogEntry(thread, project, { rolloutRunning });
+      }));
+      entries.push(...values.filter(Boolean));
     }
   } else {
     console.error("Cannot discover Codex tasks:", codexResult.reason?.message ?? codexResult.reason);

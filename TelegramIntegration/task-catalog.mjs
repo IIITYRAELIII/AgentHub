@@ -1,6 +1,9 @@
 import path from "node:path";
+import { open, stat } from "node:fs/promises";
 
 const CLAUDE_ACTIVE_FRESHNESS_MS = 30 * 60 * 1000;
+const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
+const MAX_CODEX_STATUS_TAIL = 4 * 1024 * 1024;
 
 function normalizedPath(value) {
   const resolved = path.resolve(String(value ?? ""));
@@ -11,7 +14,50 @@ export function catalogTaskKey({ provider, threadId }) {
   return `${String(provider ?? "").toLowerCase()}\0${String(threadId ?? "")}`;
 }
 
-export function codexCatalogEntry(thread, project) {
+export function parseCodexRolloutRunning(text) {
+  const terminalEvents = new Set(["task_started", "task_complete", "turn_aborted"]);
+  const lines = String(text).split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!lines[index]) continue;
+    try {
+      const entry = JSON.parse(lines[index]);
+      const event = entry?.type === "event_msg" ? entry.payload?.type : null;
+      if (terminalEvents.has(event)) return event === "task_started";
+    } catch {
+      // The first line of a byte-limited tail can be partial.
+    }
+  }
+  return false;
+}
+
+export async function readCodexRolloutRunning(
+  rolloutPath,
+  { nowMs = Date.now(), freshnessMs = CODEX_ACTIVE_FRESHNESS_MS } = {},
+) {
+  const normalized = String(rolloutPath ?? "").trim();
+  if (!normalized) return false;
+  let info;
+  try {
+    info = await stat(normalized);
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+  if (nowMs - info.mtimeMs > freshnessMs) return false;
+  const handle = await open(normalized, "r");
+  try {
+    const length = Math.min(info.size, MAX_CODEX_STATUS_TAIL);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, info.size - length);
+    let text = buffer.toString("utf8");
+    if (info.size > length) text = text.slice(text.indexOf("\n") + 1);
+    return parseCodexRolloutRunning(text);
+  } finally {
+    await handle.close();
+  }
+}
+
+export function codexCatalogEntry(thread, project, { rolloutRunning = false } = {}) {
   const title = String(thread?.name ?? thread?.preview ?? "Без названия")
     .replace(/\s+/g, " ")
     .trim()
@@ -23,7 +69,8 @@ export function codexCatalogEntry(thread, project) {
     projectName: project.name,
     title: title || "Без названия",
     updatedAtMs: Number(thread.updatedAt ?? 0) * 1000,
-    running: thread?.status?.type === "active"
+    running: rolloutRunning
+      || thread?.status?.type === "active"
       || thread?.turns?.at(-1)?.status === "inProgress",
   };
 }

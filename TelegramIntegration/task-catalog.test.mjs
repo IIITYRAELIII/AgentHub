@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   catalogEntryIsSelected,
@@ -6,6 +9,8 @@ import {
   codexCatalogEntry,
   mergeTaskCatalog,
   parseTaskCatalogCallback,
+  parseCodexRolloutRunning,
+  readCodexRolloutRunning,
   taskCatalogCallback,
 } from "./task-catalog.mjs";
 
@@ -26,6 +31,31 @@ test("codexCatalogEntry preserves persistent task metadata and active status", (
     updatedAtMs: 123000,
     running: true,
   });
+});
+
+test("parseCodexRolloutRunning follows the latest turn lifecycle marker", () => {
+  const line = (type) => JSON.stringify({ type: "event_msg", payload: { type } });
+  assert.equal(parseCodexRolloutRunning([
+    line("task_started"),
+    line("task_complete"),
+    line("task_started"),
+  ].join("\n")), true);
+  assert.equal(parseCodexRolloutRunning([
+    line("task_started"),
+    line("turn_aborted"),
+  ].join("\n")), false);
+});
+
+test("readCodexRolloutRunning reads a fresh local rollout", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-codex-rollout-"));
+  const rollout = path.join(root, "rollout.jsonl");
+  await writeFile(rollout, [
+    JSON.stringify({ type: "event_msg", payload: { type: "task_complete" } }),
+    JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+    JSON.stringify({ type: "response_item", payload: { type: "reasoning" } }),
+  ].join("\n"), "utf8");
+
+  assert.equal(await readCodexRolloutRunning(rollout), true);
 });
 
 test("claudeCatalogEntry treats only a fresh incomplete transcript as running", () => {
