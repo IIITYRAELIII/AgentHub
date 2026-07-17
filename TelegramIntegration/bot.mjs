@@ -52,6 +52,7 @@ import {
   mergeTaskCatalog,
   parseTaskCatalogCallback,
   readCodexRolloutRunning,
+  runningTaskReplyMarkup,
   taskCatalogCallback,
 } from "./task-catalog.mjs";
 
@@ -1181,7 +1182,7 @@ async function sendStatus() {
   const selectedBusy = catalog.some((entry) => (
     entry.running && catalogEntryIsSelected(entry, selectedTask())
   ));
-  await sendMessage(formatStatusMessage({
+  const statusText = formatStatusMessage({
     provider: isCodex() ? "CODEX" : "CLAUDE",
     busy: selectedBusy,
     runningTasks,
@@ -1192,7 +1193,11 @@ async function sendStatus() {
     task,
     project: project.name,
     limits,
-  }));
+  });
+  const replyMarkup = runningTaskReplyMarkup(catalog);
+  await sendMessage(statusText, replyMarkup.inline_keyboard.length
+    ? { reply_markup: replyMarkup }
+    : {});
 }
 
 async function sendReasoningPicker() {

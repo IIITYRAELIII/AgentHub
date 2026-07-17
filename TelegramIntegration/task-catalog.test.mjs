@@ -11,6 +11,7 @@ import {
   parseTaskCatalogCallback,
   parseCodexRolloutRunning,
   readCodexRolloutRunning,
+  runningTaskReplyMarkup,
   taskCatalogCallback,
 } from "./task-catalog.mjs";
 
@@ -112,6 +113,28 @@ test("task catalog callbacks identify provider and task", () => {
     threadId: entry.threadId,
   });
   assert.equal(parseTaskCatalogCallback("task:x:nope"), null);
+});
+
+test("runningTaskReplyMarkup creates switch buttons only for active tasks", () => {
+  const markup = runningTaskReplyMarkup([{
+    provider: "codex",
+    threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
+    projectName: "VSC_Tyrael",
+    title: "Тестирование обмена документами",
+    running: true,
+  }, {
+    provider: "claude",
+    threadId: "a2ea7518-5826-4480-aaff-bb80915953d8",
+    projectName: "Utilities",
+    title: "Завершённая",
+    running: false,
+  }]);
+  assert.deepEqual(markup, {
+    inline_keyboard: [[{
+      text: "🧵 Codex · VSC_Tyrael · Тестирование обмена документами",
+      callback_data: "task:c:019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
+    }]],
+  });
 });
 
 test("catalogEntryIsSelected compares provider, task, and normalized project path", () => {

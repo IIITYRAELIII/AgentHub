@@ -134,6 +134,18 @@ export function taskCatalogCallback(entry) {
   return `task:${provider}:${entry.threadId}`;
 }
 
+export function runningTaskReplyMarkup(entries) {
+  return {
+    inline_keyboard: entries
+      .filter((entry) => entry.running)
+      .map((entry) => [{
+        text: `🧵 ${entry.provider === "codex" ? "Codex" : "Claude"} · ${entry.projectName} · ${entry.title}`
+          .slice(0, 90),
+        callback_data: taskCatalogCallback(entry),
+      }]),
+  };
+}
+
 export function parseTaskCatalogCallback(value) {
   const match = /^task:([cl]):([0-9a-f-]+)$/i.exec(String(value ?? ""));
   if (!match) return null;
