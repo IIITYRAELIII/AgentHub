@@ -171,7 +171,7 @@ export function formatTaskSwitchMessage({ task, project, showProject, model, rea
 export function showLastMessageReplyMarkup() {
   return {
     inline_keyboard: [[{
-      text: "👁 Показать последнее сообщение",
+      text: "👀 Показать последнее сообщение",
       callback_data: "show-last-message",
     }]],
   };

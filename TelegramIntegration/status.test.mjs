@@ -262,7 +262,7 @@ test("formatTaskSwitchMessage shows only bold task when project button is disabl
 test("task switch messages expose the show-last callback", () => {
   assert.deepEqual(showLastMessageReplyMarkup(), {
     inline_keyboard: [[{
-      text: "👁 Показать последнее сообщение",
+      text: "👀 Показать последнее сообщение",
       callback_data: "show-last-message",
     }]],
   });
