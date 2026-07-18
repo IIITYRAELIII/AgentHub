@@ -50,6 +50,17 @@ export async function appendMessageBindings(dataDir, additions) {
   await rename(temporary, target);
 }
 
+export async function removeMessageBindings(dataDir, predicate) {
+  const current = await readMessageBindings(dataDir);
+  const retained = current.filter((item) => !predicate(item));
+  await mkdir(dataDir, { recursive: true });
+  const target = bindingsPath(dataDir);
+  const temporary = `${target}.${process.pid}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(retained, null, 2)}\n`, "utf8");
+  await rename(temporary, target);
+  return current.length - retained.length;
+}
+
 export async function findMessageBinding(dataDir, chatId, messageId) {
   if (!Number.isSafeInteger(chatId) || !Number.isSafeInteger(messageId)) return null;
   const bindings = await readMessageBindings(dataDir);

@@ -4,7 +4,9 @@ import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { findContainingProject, loadConfig } from "./config.mjs";
+import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { appendMessageBindings } from "./message-bindings.mjs";
+import { callTelegramJson } from "./telegram-api.mjs";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 
@@ -241,7 +243,15 @@ async function readStdin() {
   return chunks.join("").trim();
 }
 
-async function sendTelegramMessage(token, chatId, text, silent, parseMode = null, replyMarkup = null) {
+async function sendTelegramMessage(
+  token,
+  chatId,
+  text,
+  silent,
+  parseMode = null,
+  replyMarkup = null,
+  { outbox = null, binding = null } = {},
+) {
   const body = {
     chat_id: chatId,
     text,
@@ -249,15 +259,13 @@ async function sendTelegramMessage(token, chatId, text, silent, parseMode = null
   };
   if (parseMode) body.parse_mode = parseMode;
   if (replyMarkup) body.reply_markup = replyMarkup;
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(40000),
-  });
-  const payload = await response.json();
-  if (!payload.ok) throw new Error(`Telegram sendMessage: ${payload.description ?? response.status}`);
-  return payload.result;
+  try {
+    return await callTelegramJson({ token, method: "sendMessage", body });
+  } catch (error) {
+    if (!outbox || error?.retryable !== true) throw error;
+    const item = await outbox.enqueue({ method: "sendMessage", body, binding });
+    return { queued: true, outboxId: item.id };
+  }
 }
 
 export async function main(args = process.argv.slice(2)) {
@@ -271,6 +279,10 @@ export async function main(args = process.argv.slice(2)) {
   const text = options.text || await readStdin();
   const config = await loadConfig();
   const chatId = resolveChatId(config, options.chatId);
+  const outbox = new PersistentDeliveryOutbox({
+    directoryPath: config.deliveryOutboxDir,
+    deliver: async () => {},
+  });
   const sent = [];
   let parts;
   if (options.bindCurrent || options.bindActive) {
@@ -283,6 +295,11 @@ export async function main(args = process.argv.slice(2)) {
       throw new Error(`cannot bind a reply: ${task.projectRoot} is outside the configured Telegram projects`);
     }
     task.projectRoot = project.path;
+    const binding = {
+      chatId,
+      ...task,
+      createdAt: new Date().toISOString(),
+    };
     const notification = notificationParts(task.taskTitle, text, options.category);
     sent.push(await sendTelegramMessage(
       config.token,
@@ -291,21 +308,44 @@ export async function main(args = process.argv.slice(2)) {
       options.silent,
       "HTML",
       showMessageReplyMarkup(),
+      { outbox, binding },
     ));
     parts = notification.remaining ? splitTelegramText(notification.remaining) : [];
-    for (const part of parts) sent.push(await sendTelegramMessage(config.token, chatId, part, options.silent));
-    const createdAt = new Date().toISOString();
-    await appendMessageBindings(config.dataDir, sent.map((message) => ({
-      chatId,
-      messageId: message.message_id,
-      ...task,
-      createdAt,
-    })));
+    for (const part of parts) {
+      sent.push(await sendTelegramMessage(
+        config.token,
+        chatId,
+        part,
+        options.silent,
+        null,
+        null,
+        { outbox, binding },
+      ));
+    }
+    await appendMessageBindings(config.dataDir, sent
+      .filter((message) => Number.isSafeInteger(message?.message_id))
+      .map((message) => ({
+        ...binding,
+        messageId: message.message_id,
+      })));
   } else {
     parts = splitTelegramText(text);
-    for (const part of parts) sent.push(await sendTelegramMessage(config.token, chatId, part, options.silent));
+    for (const part of parts) {
+      sent.push(await sendTelegramMessage(
+        config.token,
+        chatId,
+        part,
+        options.silent,
+        null,
+        null,
+        { outbox },
+      ));
+    }
   }
-  console.log(`Sent ${sent.length} message(s) to Telegram chat ${chatId}.`);
+  const queued = sent.filter((message) => message?.queued).length;
+  console.log(queued
+    ? `Queued ${queued} Telegram message(s) for chat ${chatId}.`
+    : `Sent ${sent.length} message(s) to Telegram chat ${chatId}.`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

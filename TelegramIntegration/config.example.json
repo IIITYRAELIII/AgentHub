@@ -68,5 +68,8 @@
   "ttsRequestTimeoutSeconds": 600,
   "ttsButtonMinChars": 1,
   "ttsMaxChars": 20000,
+  "logMaxBytes": 5242880,
+  "logMaxFiles": 5,
+  "deliveryRetryIntervalSeconds": 15,
   "dataDir": "data"
 }

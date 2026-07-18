@@ -210,6 +210,13 @@ export async function loadConfig() {
     ttsRequestTimeoutSeconds: positiveInteger(raw.ttsRequestTimeoutSeconds, 600, "ttsRequestTimeoutSeconds"),
     ttsButtonMinChars: positiveInteger(raw.ttsButtonMinChars, 1, "ttsButtonMinChars"),
     ttsMaxChars: positiveInteger(raw.ttsMaxChars, 20000, "ttsMaxChars"),
+    logMaxBytes: positiveInteger(raw.logMaxBytes, 5 * 1024 * 1024, "logMaxBytes"),
+    logMaxFiles: positiveInteger(raw.logMaxFiles, 5, "logMaxFiles"),
+    deliveryRetryIntervalSeconds: positiveInteger(
+      raw.deliveryRetryIntervalSeconds,
+      15,
+      "deliveryRetryIntervalSeconds",
+    ),
     pythonExe: path.resolve(
       process.env.WHISPER_PYTHON ?? raw.pythonExe ?? path.join(
         INTEGRATION_ROOT,
@@ -225,6 +232,7 @@ export async function loadConfig() {
     ),
     dataDir,
     stateFile: path.join(dataDir, "state.json"),
+    deliveryOutboxDir: path.join(dataDir, "delivery-outbox"),
     audioDir: path.join(dataDir, "audio"),
     ttsDir: path.join(dataDir, "tts"),
   };

@@ -42,8 +42,14 @@ import {
 import { randomStatusHeaderFileName } from "./status-header.mjs";
 import { formatTaskTokenUsage } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
+import { callTelegramJson } from "./telegram-api.mjs";
 import { parsePendingInputCallback, pendingInputKeyboard } from "./deferred-input.mjs";
-import { appendMessageBindings, findMessageBinding } from "./message-bindings.mjs";
+import {
+  appendMessageBindings,
+  findMessageBinding,
+  readMessageBindings,
+  removeMessageBindings,
+} from "./message-bindings.mjs";
 import {
   readCodexThreadTitleHistories,
   readCodexThreadTitleHistory,
@@ -63,10 +69,15 @@ import {
 } from "./task-runs.mjs";
 import {
   codexTurnAnswer,
-  lastCompletedCodexAnswer,
   listClaudeSessionSnapshots,
   readClaudeSessionSnapshot,
 } from "./last-message.mjs";
+import {
+  codexThreadHistory,
+  visibleTaskHistory,
+} from "./task-history.mjs";
+import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
+import { installRotatingConsole } from "./rotating-log.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 import {
   catalogEntryIsSelected,
@@ -82,6 +93,13 @@ import {
 } from "./task-catalog.mjs";
 
 const config = await loadConfig();
+installRotatingConsole({
+  stdoutFile: path.join(INTEGRATION_ROOT, "telegram-codex.log"),
+  stderrFile: path.join(INTEGRATION_ROOT, "telegram-codex-error.log"),
+  maxBytes: config.logMaxBytes,
+  maxFiles: config.logMaxFiles,
+  mirror: process.stdout.isTTY || process.stderr.isTTY,
+});
 let activeProvider = config.provider === "codex" ? "codex" : "claude";
 function isCodex() {
   return activeProvider === "codex";
@@ -119,6 +137,7 @@ const codexTaskSettings = {};
 const PROJECTS = config.projects;
 const DEFAULT_PROJECT_ROOT = config.projectRoot;
 const STATE_FILE = config.stateFile;
+const DELIVERY_OUTBOX_DIR = config.deliveryOutboxDir;
 const INSTANCE_LOCK_FILE = path.join(config.dataDir, "bot.lock");
 const SPEECH_TEXTS_FILE = path.join(config.dataDir, "speech-texts.json");
 const TELEGRAM_LIMIT = 3900;
@@ -248,6 +267,7 @@ let ttsWorker = null;
 let ttsLines = null;
 let ttsSequence = 1;
 let typingInterval = null;
+let deliveryOutboxTimer = null;
 const pendingRpc = new Map();
 const pendingApprovals = new Map();
 const threadTokenTotals = new Map();
@@ -264,6 +284,28 @@ const queueTimers = new Map();
 const taskDiffs = new Map();
 const lastTaskMessages = new Map();
 let taskCatalog = [];
+const deliveryOutbox = new PersistentDeliveryOutbox({
+  directoryPath: DELIVERY_OUTBOX_DIR,
+  deliver: (method, body) => telegram(method, body),
+  onDelivered: async (item, result) => {
+    if (!item.binding || !Number.isSafeInteger(result?.message_id)) return;
+    try {
+      bindingWriteQueue = bindingWriteQueue
+        .catch(() => {})
+        .then(() => appendMessageBindings(config.dataDir, [{
+          ...item.binding,
+          messageId: result.message_id,
+        }]));
+      await bindingWriteQueue;
+    } catch (error) {
+      console.error(`Cannot bind queued Telegram delivery ${item.id}:`, error.message);
+    }
+  },
+  onPermanentFailure: async (item, error) => {
+    console.error(`Dropping permanent Telegram delivery ${item.id}:`, error.message);
+  },
+});
+await deliveryOutbox.load();
 
 try {
   const savedSpeechTexts = JSON.parse(await readFile(SPEECH_TEXTS_FILE, "utf8"));
@@ -308,16 +350,58 @@ function runTaskTitle(run) {
     || `${run?.provider === "claude" ? "Claude" : "Codex"} · ${String(run?.threadId ?? run?.id ?? "").slice(0, 8)}`;
 }
 
-async function bindRunMessage(run, message) {
-  if (!run?.threadId || !Number.isSafeInteger(run.chatId) || !Number.isSafeInteger(message?.message_id)) return;
-  const binding = {
+function runMessageBinding(run, metadata = {}) {
+  if (!run?.threadId || !Number.isSafeInteger(run.chatId)) return null;
+  return {
     chatId: run.chatId,
-    messageId: message.message_id,
     provider: run.provider,
     threadId: run.threadId,
     projectRoot: run.projectRoot,
     taskTitle: runTaskTitle(run),
     createdAt: new Date().toISOString(),
+    ...metadata,
+  };
+}
+
+async function bindRunMessage(run, message, metadata = {}) {
+  const binding = runMessageBinding(run, metadata);
+  if (!binding || !Number.isSafeInteger(message?.message_id)) return;
+  bindingWriteQueue = bindingWriteQueue
+    .catch(() => {})
+    .then(() => appendMessageBindings(config.dataDir, [{
+      ...binding,
+      messageId: message.message_id,
+    }]));
+  await bindingWriteQueue;
+}
+
+async function sendRunMessage(run, text, extra = {}, bindingMetadata = {}) {
+  const message = await sendMessageTo(run.chatId, text, extra);
+  await bindRunMessage(run, message, bindingMetadata).catch((error) => {
+    console.error("Cannot bind task message:", error.message);
+  });
+  return message;
+}
+
+function sameTaskBinding(binding, task, targetChatId = null) {
+  return binding?.provider === task?.provider
+    && String(binding?.threadId ?? "") === String(task?.threadId ?? "")
+    && samePath(binding?.projectRoot, task?.projectRoot)
+    && (targetChatId == null || binding.chatId === targetChatId);
+}
+
+async function bindIncomingTaskMessage(message, text) {
+  const task = selectedTask();
+  if (!task.threadId || !Number.isSafeInteger(message?.message_id)) return;
+  const binding = {
+    ...task,
+    chatId: message.chat.id,
+    messageId: message.message_id,
+    taskTitle: activeThreadTitle,
+    createdAt: new Date((Number(message.date) || Math.floor(Date.now() / 1000)) * 1000).toISOString(),
+    kind: "incoming-user",
+    role: "user",
+    text: String(text ?? "").trim().slice(0, 12000),
   };
   bindingWriteQueue = bindingWriteQueue
     .catch(() => {})
@@ -325,15 +409,104 @@ async function bindRunMessage(run, message) {
   await bindingWriteQueue;
 }
 
-async function sendRunMessage(run, text, extra = {}) {
-  const message = await sendMessageTo(run.chatId, text, extra);
-  await bindRunMessage(run, message).catch((error) => {
-    console.error("Cannot bind task message:", error.message);
-  });
-  return message;
+async function deleteTaskTelegramMessages(task, targetChatId) {
+  const bindings = await readMessageBindings(config.dataDir);
+  const protectedIds = new Set([...pendingApprovals.values()]
+    .filter((approval) => approval.chatId === targetChatId)
+    .map((approval) => approval.messageId)
+    .filter(Number.isSafeInteger));
+  const maximumAgeMs = 47 * 60 * 60 * 1000;
+  const now = Date.now();
+  const messageIds = [...new Set(bindings
+    .filter((binding) => sameTaskBinding(binding, task, targetChatId))
+    .filter((binding) => !protectedIds.has(binding.messageId))
+    .filter((binding) => {
+      const createdAt = Date.parse(String(binding.createdAt ?? ""));
+      return Number.isFinite(createdAt) && now - createdAt < maximumAgeMs;
+    })
+    .map((binding) => binding.messageId))]
+    .sort((left, right) => left - right);
+  if (!messageIds.length) return 0;
+
+  const removed = new Set();
+  for (let start = 0; start < messageIds.length; start += 100) {
+    const batch = messageIds.slice(start, start + 100);
+    try {
+      await telegram("deleteMessages", {
+        chat_id: targetChatId,
+        message_ids: batch,
+      });
+      batch.forEach((messageId) => removed.add(messageId));
+    } catch (batchError) {
+      console.warn(`Cannot batch-delete task messages: ${batchError.message}`);
+      for (const messageId of batch) {
+        try {
+          await telegram("deleteMessage", {
+            chat_id: targetChatId,
+            message_id: messageId,
+          });
+          removed.add(messageId);
+        } catch (error) {
+          console.warn(`Cannot delete Telegram message ${messageId}: ${error.message}`);
+        }
+      }
+    }
+  }
+  if (removed.size) {
+    bindingWriteQueue = bindingWriteQueue
+      .catch(() => {})
+      .then(() => removeMessageBindings(
+        config.dataDir,
+        (binding) => binding.chatId === targetChatId && removed.has(binding.messageId),
+      ));
+    await bindingWriteQueue;
+  }
+  const run = taskRuns.forTask(task);
+  if (run) {
+    run.progressMessageIds = run.progressMessageIds.filter((messageId) => !removed.has(messageId));
+    if (!run.progressMessageIds.length) run.lastProgressText = "";
+  }
+  return removed.size;
 }
 
-async function sendRunLongMessage(run, text, { speechText = null, forceSpeechButton = false } = {}) {
+async function sendTaskViewText(run, heading, text, kind) {
+  const value = `${heading}\n\n${String(text ?? "").trim()}`;
+  for (let start = 0; start < value.length; start += TELEGRAM_LIMIT) {
+    await sendRunMessage(
+      run,
+      value.slice(start, start + TELEGRAM_LIMIT),
+      {},
+      { kind, role: kind === "task-view-user" ? "user" : "assistant" },
+    );
+  }
+}
+
+async function sendReliableRunMessage(run, text, extra = {}) {
+  const body = { chat_id: run.chatId, text: String(text), ...extra };
+  try {
+    const message = await telegram("sendMessage", body);
+    await bindRunMessage(run, message).catch((error) => {
+      console.error("Cannot bind task message:", error.message);
+    });
+    return message;
+  } catch (error) {
+    if (error?.retryable !== true) throw error;
+    const queued = await deliveryOutbox.enqueue({
+      method: "sendMessage",
+      body,
+      binding: runMessageBinding(run),
+    });
+    console.warn(`Queued Telegram delivery ${queued.id}: ${error.message}`);
+    scheduleDeliveryOutboxFlush();
+    return { queued: true, outboxId: queued.id };
+  }
+}
+
+async function sendRunLongMessage(run, text, {
+  speechText = null,
+  forceSpeechButton = false,
+  reliable = false,
+} = {}) {
   const value = `🧵 ${runTaskTitle(run)}\n\n${String(text)}`;
   const speechId = rememberSpeechText(speechText, forceSpeechButton);
   for (let start = 0; start < value.length; start += TELEGRAM_LIMIT) {
@@ -341,7 +514,8 @@ async function sendRunLongMessage(run, text, { speechText = null, forceSpeechBut
     const extra = isLast && speechId
       ? { reply_markup: { inline_keyboard: [[{ text: "🔊 Озвучить", callback_data: `speech:${speechId}` }]] } }
       : {};
-    await sendRunMessage(run, value.slice(start, start + TELEGRAM_LIMIT), extra);
+    const send = reliable ? sendReliableRunMessage : sendRunMessage;
+    await send(run, value.slice(start, start + TELEGRAM_LIMIT), extra);
   }
 }
 
@@ -368,14 +542,21 @@ async function finalizeRunDelivery(run, {
   if (deliver) {
     await safelyDeliverRunMessage(
       run,
-      () => sendRunLongMessage(run, message, { speechText, forceSpeechButton }),
+      () => sendRunLongMessage(run, message, {
+        speechText,
+        forceSpeechButton,
+        reliable: true,
+      }),
       description,
     );
   }
   if (includeDiff && run.latestDiff) {
     await safelyDeliverRunMessage(
       run,
-      () => sendRunMessage(run, "Изменения этой задачи доступны после её выбора по команде /diff."),
+      () => sendReliableRunMessage(
+        run,
+        "Изменения этой задачи доступны после её выбора по команде /diff.",
+      ),
       "уведомление об изменениях",
     );
   }
@@ -2328,13 +2509,139 @@ async function pollObservedRun(run) {
   }
 }
 
-async function showTaskMessage(binding, targetChatId) {
+function taskViewRun(binding, targetChatId) {
+  return {
+    provider: binding.provider,
+    projectRoot: binding.projectRoot,
+    threadId: binding.threadId,
+    chatId: targetChatId,
+    taskTitle: binding.taskTitle,
+  };
+}
+
+async function readTaskViewHistory(binding, { completedOnly = false } = {}) {
+  const task = taskViewRun(binding, binding.chatId);
+  if (binding.provider === "codex") {
+    if (!codex) {
+      await startCodexAppServer();
+      await initializeCodex({ attachSelectedThread: false });
+    }
+    const result = await sendRpc("thread/read", {
+      threadId: binding.threadId,
+      includeTurns: true,
+    });
+    const history = codexThreadHistory(result.thread?.turns);
+    const snapshot = completedOnly ? null : await readCodexTaskSnapshot({
+      ...task,
+      turnId: null,
+      observer: true,
+    });
+    if (snapshot?.active) {
+      const current = history.findLast((item) => item.id === snapshot.turnId);
+      if (current) {
+        current.active = true;
+        current.completed = false;
+        current.status = "inProgress";
+        if (snapshot.answer) current.answer = snapshot.answer;
+      }
+    }
+    return { history, snapshot };
+  }
+  const snapshot = await readClaudeSessionSnapshot(binding.threadId);
+  return {
+    history: snapshot?.history ?? [],
+    snapshot: completedOnly ? null : snapshot,
+  };
+}
+
+async function renderTaskView(binding, targetChatId, {
+  count = 1,
+  completedOnly = false,
+} = {}) {
+  const task = taskViewRun(binding, targetChatId);
+  const { history, snapshot } = await readTaskViewHistory(binding, { completedOnly });
+  const running = taskRuns.forTask(task);
+  if (running) {
+    const current = history.findLast((item) => item.id === running.turnId);
+    if (current) {
+      current.active = true;
+      current.completed = false;
+      current.status = "inProgress";
+      if (running.responseText) current.answer = running.responseText;
+    } else {
+      history.push({
+        id: running.turnId ?? running.id,
+        prompt: running.promptPreview || "Текущее сообщение",
+        answer: running.responseText,
+        status: "inProgress",
+        active: true,
+        completed: false,
+      });
+    }
+  }
+  const view = visibleTaskHistory(history, count, { completedOnly });
+  await deleteTaskTelegramMessages(task, targetChatId);
+
+  const historyButton = view.hasMore
+    ? {
+      reply_markup: {
+        inline_keyboard: [[{
+          text: `👀 Показать ещё · ${view.shown}/${view.total}`,
+          callback_data: `history-more:${completedOnly ? "l" : "a"}:${view.nextCount}`,
+        }]],
+      },
+    }
+    : {};
+  await sendRunMessage(
+    task,
+    `🧵 ${runTaskTitle(task)}\n\n`
+      + (view.total
+        ? `Показано сообщений: ${view.shown} из ${view.total}.`
+        : "История этой задачи пока пуста."),
+    historyButton,
+    { kind: "task-view-navigation" },
+  );
+
+  let rendered = false;
+  for (const exchange of view.items) {
+    if (exchange.prompt) {
+      await sendTaskViewText(task, "👤 Вы", exchange.prompt, "task-view-user");
+      rendered = true;
+    }
+    if (!exchange.active && exchange.answer) {
+      await sendTaskViewText(
+        task,
+        binding.provider === "claude" ? "🤖 Claude" : "🤖 Codex",
+        exchange.answer,
+        "task-view-assistant",
+      );
+      rendered = true;
+    }
+  }
+
+  if (!rendered && completedOnly) {
+    const answer = savedLastTaskMessage(task);
+    if (answer) {
+      await sendTaskViewText(
+        task,
+        binding.provider === "claude" ? "🤖 Claude" : "🤖 Codex",
+        answer,
+        "task-view-assistant",
+      );
+      rendered = true;
+    }
+  }
+  return { snapshot, rendered };
+}
+
+async function showTaskMessage(binding, targetChatId, { count = 1 } = {}) {
   const task = {
     provider: binding.provider,
     projectRoot: binding.projectRoot,
     threadId: binding.threadId,
   };
   if (dismissedExternalTasks.delete(task)) await saveState();
+  const view = await renderTaskView(binding, targetChatId, { count });
   const running = taskRuns.forTask(task);
   if (running) {
     const selectedTitle = isSelectedRun(running) ? activeThreadTitle : null;
@@ -2347,80 +2654,39 @@ async function showTaskMessage(binding, targetChatId) {
     return;
   }
 
-  if (binding.provider === "codex") {
-    const probe = { ...binding, chatId: targetChatId, turnId: null };
-    const snapshot = await readCodexTaskSnapshot(probe);
-    if (snapshot?.active) {
-      const run = observedRun(binding, targetChatId, snapshot, snapshot.turnId);
-      await startProgressMessage(run, { forceNew: true });
-      scheduleObservedRun(run);
-      await saveState();
-      return;
-    }
-    const answer = snapshot?.answer || savedLastTaskMessage(task);
-    if (answer) {
-      rememberLastTaskMessage(task, answer);
-      await sendRunLongMessage({ ...task, chatId: targetChatId, taskTitle: binding.taskTitle }, answer);
-      await saveState();
-      return;
-    }
-  } else {
-    const snapshot = await readClaudeSessionSnapshot(binding.threadId);
-    if (snapshot?.active) {
-      const run = observedRun(binding, targetChatId, snapshot);
-      await startProgressMessage(run, { forceNew: true });
-      scheduleObservedRun(run);
-      await saveState();
-      return;
-    }
-    const answer = snapshot?.answer || savedLastTaskMessage(task);
-    if (answer) {
-      rememberLastTaskMessage(task, answer);
-      await sendRunLongMessage({ ...task, chatId: targetChatId, taskTitle: binding.taskTitle }, answer);
-      await saveState();
-      return;
-    }
-  }
-
-  await sendRunMessage(
-    { ...task, chatId: targetChatId, taskTitle: binding.taskTitle },
-    "У этой задачи пока нет выполняющегося хода или сохранённого ответа.",
-  );
-}
-
-async function showLastTaskMessage(binding, targetChatId) {
-  const task = {
-    provider: binding.provider,
-    projectRoot: binding.projectRoot,
-    threadId: binding.threadId,
-  };
-  let answer = savedLastTaskMessage(task);
-  if (!answer && binding.provider === "codex") {
-    if (!codex) {
-      await startCodexAppServer();
-      await initializeCodex({ attachSelectedThread: false });
-    }
-    const result = await sendRpc("thread/read", {
-      threadId: binding.threadId,
-      includeTurns: true,
-    });
-    answer = lastCompletedCodexAnswer(result.thread?.turns);
-  } else if (!answer && binding.provider === "claude") {
-    const snapshot = await readClaudeSessionSnapshot(binding.threadId);
-    if (snapshot?.completed) answer = snapshot.answer;
-  }
-  if (!String(answer ?? "").trim()) {
-    await sendRunMessage(
-      { ...task, chatId: targetChatId, taskTitle: binding.taskTitle },
-      "У этой задачи пока нет сохранённого завершённого ответа.",
+  if (view.snapshot?.active) {
+    const run = observedRun(
+      binding,
+      targetChatId,
+      view.snapshot,
+      binding.provider === "codex" ? view.snapshot.turnId : null,
     );
+    await startProgressMessage(run, { forceNew: true });
+    scheduleObservedRun(run);
+    await saveState();
     return;
   }
-  rememberLastTaskMessage(task, answer);
-  await sendRunLongMessage(
-    { ...task, chatId: targetChatId, taskTitle: binding.taskTitle },
-    answer,
-  );
+
+  if (!view.rendered) {
+    await sendRunMessage(
+      { ...task, chatId: targetChatId, taskTitle: binding.taskTitle },
+      "У этой задачи пока нет выполняющегося хода или сохранённого ответа.",
+    );
+  }
+  await saveState();
+}
+
+async function showLastTaskMessage(binding, targetChatId, { count = 1 } = {}) {
+  const view = await renderTaskView(binding, targetChatId, {
+    count,
+    completedOnly: true,
+  });
+  if (!view.rendered) {
+    await sendRunMessage(
+      { ...binding, chatId: targetChatId },
+      "У этой задачи пока нет сохранённого завершённого ответа.",
+    );
+  }
   await saveState();
 }
 
@@ -2527,15 +2793,18 @@ async function requestApproval(rpcId, kind, params, text, run = null) {
     return;
   }
   const key = String(approvalSequence++);
-  pendingApprovals.set(key, { rpcId, kind, runId: run?.id ?? null });
+  const approval = { rpcId, kind, runId: run?.id ?? null, chatId: run?.chatId ?? chatId };
+  pendingApprovals.set(key, approval);
   const decisions = [
     [{ text: "✅ Разрешить", callback_data: `a:${key}:once` }],
     [{ text: "✅ На сессию", callback_data: `a:${key}:session` }],
     [{ text: "❌ Отклонить", callback_data: `a:${key}:decline` }],
   ];
   const extra = { reply_markup: { inline_keyboard: decisions } };
-  if (run) await sendRunMessage(run, text, extra);
-  else await sendMessage(text, extra);
+  const message = run
+    ? await sendRunMessage(run, text, extra, { kind: "approval" })
+    : await sendMessage(text, extra);
+  approval.messageId = message?.message_id ?? null;
 }
 
 function formatCommandApproval(params, run = null) {
@@ -3025,6 +3294,37 @@ async function handleApprovalCallback(callback) {
     });
     return;
   }
+  const historyMatch = /^history-more:([al]):(\d+)$/.exec(callback.data ?? "");
+  if (historyMatch) {
+    const targetChatId = callback.message?.chat?.id;
+    const sourceMessageId = callback.message?.message_id;
+    const binding = await findMessageBinding(config.dataDir, targetChatId, sourceMessageId);
+    if (!binding) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "История этой задачи уже недоступна",
+        show_alert: true,
+      });
+      return;
+    }
+    await telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: "Загружаю предыдущие сообщения…",
+    });
+    const count = Math.max(1, Math.min(Number(historyMatch[2]) || 1, 50));
+    try {
+      await activateMessageBinding(binding);
+      if (historyMatch[1] === "l") {
+        await showLastTaskMessage(binding, targetChatId, { count });
+      } else {
+        await showTaskMessage(binding, targetChatId, { count });
+      }
+    } catch (error) {
+      console.error("Cannot load task history:", error.message);
+      await sendMessageTo(targetChatId, `Не удалось загрузить историю задачи: ${error.message}`);
+    }
+    return;
+  }
   if (callback.data === "show-message" || callback.data === "show-last-message") {
     const showLast = callback.data === "show-last-message";
     const targetChatId = callback.message?.chat?.id;
@@ -3424,10 +3724,15 @@ async function handleTelegramMessage(message) {
     }
   }
   if (message.photo || message.document?.mime_type?.startsWith("image/")) {
+    await bindIncomingTaskMessage(
+      message,
+      message.caption?.trim() || "Изображение без подписи",
+    );
     await analyzeImage(message);
     return;
   }
   if (message.voice || message.audio) {
+    await bindIncomingTaskMessage(message, "Голосовое сообщение");
     await transcribeVoice(message);
     return;
   }
@@ -3521,6 +3826,7 @@ async function handleTelegramMessage(message) {
   } else if (text.startsWith("/")) {
     await sendMessage("Неизвестная команда. Используйте /help.");
   } else {
+    await bindIncomingTaskMessage(message, text);
     await startTurn(telegramPrompt(message, text));
   }
 }
@@ -3568,15 +3874,28 @@ function isAllowedCallback(callback) {
 }
 
 async function telegram(method, body) {
-  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(40000),
-  });
-  const payload = await response.json();
-  if (!payload.ok) throw new Error(`Telegram ${method}: ${payload.description ?? response.status}`);
-  return payload.result;
+  return callTelegramJson({ token, method, body });
+}
+
+function scheduleDeliveryOutboxFlush(delayMs = config.deliveryRetryIntervalSeconds * 1000) {
+  if (deliveryOutboxTimer || stopping) return;
+  deliveryOutboxTimer = setTimeout(() => {
+    deliveryOutboxTimer = null;
+    void flushDeliveryOutbox();
+  }, delayMs);
+}
+
+async function flushDeliveryOutbox() {
+  try {
+    const result = await deliveryOutbox.flush();
+    if (result.delivered) {
+      console.log(`Delivered ${result.delivered} queued Telegram message(s); remaining: ${result.remaining}.`);
+    }
+  } catch (error) {
+    console.error("Cannot flush Telegram delivery outbox:", error.message);
+  } finally {
+    scheduleDeliveryOutboxFlush();
+  }
 }
 
 async function telegramMultipart(method, body, fileField, filePath) {
@@ -3692,6 +4011,10 @@ async function shutdown(signal) {
   stopping = true;
   console.log(`Stopping on ${signal}...`);
   stopTyping();
+  if (deliveryOutboxTimer) {
+    clearTimeout(deliveryOutboxTimer);
+    deliveryOutboxTimer = null;
+  }
   for (const timer of queueTimers.values()) clearTimeout(timer);
   queueTimers.clear();
   for (const run of taskRuns.values()) {
@@ -3705,7 +4028,12 @@ async function shutdown(signal) {
   codex?.kill();
   for (const run of taskRuns.values()) run.process?.kill();
   stopTtsWorker();
-  await Promise.allSettled([stateWriteQueue, speechWriteQueue, bindingWriteQueue]);
+  await Promise.allSettled([
+    stateWriteQueue,
+    speechWriteQueue,
+    bindingWriteQueue,
+    deliveryOutbox.waitForWrites(),
+  ]);
   await releaseInstanceLock();
 }
 
@@ -3722,6 +4050,7 @@ await recoverActiveRuns().catch(async (error) => {
   await sendMessage(`⚠️ Не удалось восстановить активные задачи: ${error.message}`).catch(() => {});
 });
 for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
+scheduleDeliveryOutboxFlush(1_000);
 try {
   await telegram("setMyCommands", {
     commands: BOT_COMMANDS,

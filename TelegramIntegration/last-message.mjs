@@ -1,6 +1,7 @@
 import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { claudeTranscriptHistory } from "./task-history.mjs";
 
 const MAX_TRANSCRIPT_TAIL = 4 * 1024 * 1024;
 const MAX_CATALOG_TRANSCRIPT_TAIL = 512 * 1024;
@@ -216,8 +217,10 @@ export async function readClaudeSessionSnapshot(
   if (!normalized) return null;
   const transcriptPath = await findTranscript(projectsRoot, `${normalized}.jsonl`);
   if (!transcriptPath) return null;
+  const transcript = await readTail(transcriptPath);
   return {
-    ...parseClaudeTranscript(await readTail(transcriptPath)),
+    ...parseClaudeTranscript(transcript),
+    history: claudeTranscriptHistory(transcript),
     transcriptPath,
   };
 }
