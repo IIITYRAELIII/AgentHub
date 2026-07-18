@@ -13,6 +13,7 @@ const TELEGRAM_MESSAGE_LIMIT = 4096;
 export const NOTIFICATION_CATEGORIES = Object.freeze({
   action: Object.freeze({ emoji: "🚨", title: "ТРЕБУЕТСЯ ДЕЙСТВИЕ" }),
   done: Object.freeze({ emoji: "✅", title: "ЗАДАЧА ВЫПОЛНЕНА" }),
+  intermediate: Object.freeze({ emoji: "📌", title: "ПРОМЕЖУТОЧНЫЙ РЕЗУЛЬТАТ" }),
   progress: Object.freeze({ emoji: "⏳", title: "ЗАДАЧА ВЫПОЛНЯЕТСЯ" }),
   warning: Object.freeze({ emoji: "⚠️", title: "ВНИМАНИЕ" }),
   info: Object.freeze({ emoji: "ℹ️", title: "ИНФОРМАЦИЯ" }),

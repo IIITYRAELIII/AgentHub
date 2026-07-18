@@ -42,6 +42,10 @@ test("parseArguments keeps active bot task binding explicit", () => {
 test("parseArguments reads and validates the notification category", () => {
   assert.equal(parseArguments(["--category", "done", "Готово"]).category, "done");
   assert.equal(parseArguments(["--category=action", "Нужен ответ"]).category, "action");
+  assert.equal(
+    parseArguments(["--category", "intermediate", "Этап готов"]).category,
+    "intermediate",
+  );
   assert.throws(() => parseArguments(["--category", "unknown", "Текст"]), /Unknown --category value/);
 });
 
@@ -189,6 +193,13 @@ test("notificationParts adds a bold underlined category above the task title", (
   assert.equal(
     notificationParts("Задача <1>", "Готово", "done").message,
     "✅ <b><u>ЗАДАЧА ВЫПОЛНЕНА</u></b> ✅\n\n🧵 <b>Задача &lt;1&gt;</b>\n\nГотово",
+  );
+});
+
+test("notificationParts formats an intermediate result", () => {
+  assert.equal(
+    notificationParts("Большая задача", "Первый этап готов", "intermediate").message,
+    "📌 <b><u>ПРОМЕЖУТОЧНЫЙ РЕЗУЛЬТАТ</u></b> 📌\n\n🧵 <b>Большая задача</b>\n\nПервый этап готов",
   );
 });
 
