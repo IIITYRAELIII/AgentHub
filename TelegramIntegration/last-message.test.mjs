@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  codexFinalTurnAnswer,
   codexTurnAnswer,
   lastCompletedCodexAnswer,
   listClaudeSessionSnapshots,
@@ -25,6 +26,25 @@ test("codexTurnAnswer preserves every visible agent message in the turn", () => 
       { type: "agentMessage", text: "Последний абзац" },
     ],
   }), "Первое сообщение\n\nВторое сообщение\n\nПоследний абзац");
+});
+
+test("codexFinalTurnAnswer returns the explicit final answer instead of commentary", () => {
+  assert.equal(codexFinalTurnAnswer({
+    items: [
+      { type: "agentMessage", phase: "commentary", text: "Проверяю." },
+      { type: "agentMessage", phase: "commentary", text: "Почти готово." },
+      { type: "agentMessage", phase: "final_answer", text: "Готовый итог." },
+    ],
+  }), "Готовый итог.");
+});
+
+test("codexFinalTurnAnswer falls back to the last agent message for legacy turns", () => {
+  assert.equal(codexFinalTurnAnswer({
+    items: [
+      { type: "agentMessage", text: "Промежуточный текст" },
+      { type: "agentMessage", text: "Последний ответ" },
+    ],
+  }), "Последний ответ");
 });
 
 test("lastCompletedCodexAnswer ignores the currently running partial answer", () => {

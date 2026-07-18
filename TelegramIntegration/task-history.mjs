@@ -20,17 +20,29 @@ export function displayUserPrompt(value) {
   return text;
 }
 
+export function codexFinalTurnAnswer(turn) {
+  const messages = (turn?.items ?? [])
+    .filter((item) => item?.type === "agentMessage" && String(item.text ?? "").trim());
+  const explicitFinal = messages.findLast((item) => (
+    ["final", "final_answer", "finalAnswer"].includes(String(item.phase ?? ""))
+  ));
+  return String(explicitFinal?.text ?? messages.at(-1)?.text ?? "").trim();
+}
+
 export function codexThreadHistory(turns) {
   return (Array.isArray(turns) ? turns : []).flatMap((turn) => {
     const items = Array.isArray(turn?.items) ? turn.items : [];
     const user = items.find((item) => item?.type === "userMessage");
     const prompt = displayUserPrompt(textContent(user?.content));
     if (!prompt) return [];
-    const answer = items
+    const visibleAnswer = items
       .filter((item) => item?.type === "agentMessage" && String(item.text ?? "").trim())
       .map((item) => String(item.text).trim())
       .join("\n\n")
       .trim();
+    const answer = turn?.status === "completed"
+      ? codexFinalTurnAnswer(turn)
+      : visibleAnswer;
     return [{
       id: String(turn?.id ?? ""),
       prompt,

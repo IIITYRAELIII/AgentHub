@@ -1,11 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  codexFinalTurnAnswer,
   claudeTranscriptHistory,
   codexThreadHistory,
   displayUserPrompt,
   visibleTaskHistory,
 } from "./task-history.mjs";
+
+test("completed Codex history shows only the final answer", () => {
+  const [exchange] = codexThreadHistory([{
+    id: "turn-1",
+    status: "completed",
+    items: [
+      { type: "userMessage", content: [{ type: "text", text: "Вопрос" }] },
+      { type: "agentMessage", phase: "commentary", text: "Проверяю." },
+      { type: "agentMessage", phase: "final_answer", text: "Финальный ответ." },
+    ],
+  }]);
+  assert.equal(codexFinalTurnAnswer({
+    items: [{ type: "agentMessage", phase: "final_answer", text: "Финальный ответ." }],
+  }), "Финальный ответ.");
+  assert.equal(exchange.answer, "Финальный ответ.");
+});
 
 test("displayUserPrompt unwraps Telegram replies and removes IDE context", () => {
   assert.equal(displayUserPrompt(

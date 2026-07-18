@@ -68,6 +68,7 @@ import {
   updateTaskRunTitle,
 } from "./task-runs.mjs";
 import {
+  codexFinalTurnAnswer,
   codexTurnAnswer,
   listClaudeSessionSnapshots,
   readClaudeSessionSnapshot,
@@ -2281,7 +2282,8 @@ async function handleCodexMessage(message) {
     await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
     const status = params.turn?.status ?? "completed";
     const error = params.turn?.error?.message;
-    const answer = run.responseText.trim() || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
+    const answer = await completedCodexAnswer(run, completedTurnId, params.turn)
+      || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
     await finishProgress(run, error || status === "failed" ? `Задача завершилась с ошибкой: ${error ?? status}` : "Задача завершена.");
     await finalizeRunDelivery(run, {
       answer,
@@ -2291,6 +2293,27 @@ async function handleCodexMessage(message) {
       description: "финальный ответ Codex",
     });
   }
+}
+
+async function completedCodexAnswer(run, completedTurnId, eventTurn = null) {
+  let answer = codexFinalTurnAnswer(eventTurn);
+  if (answer) return answer;
+  for (const waitMs of [0, 100, 250, 500]) {
+    if (waitMs) await delay(waitMs);
+    try {
+      const result = await sendRpc("thread/read", {
+        threadId: run.threadId,
+        includeTurns: true,
+      });
+      const completedTurn = (result.thread?.turns ?? [])
+        .find((turn) => String(turn?.id ?? "") === String(completedTurnId ?? ""));
+      answer = codexFinalTurnAnswer(completedTurn);
+      if (answer) return answer;
+    } catch (readError) {
+      console.warn(`Cannot read completed Codex turn ${completedTurnId ?? "unknown"}: ${readError.message}`);
+    }
+  }
+  return run.responseText.trim();
 }
 
 function describeCodexItem(item, completed) {
@@ -2320,6 +2343,7 @@ function codexTurnSnapshot(turn) {
   const answer = recoveredCodexAnswer(turn);
   return {
     answer,
+    finalAnswer: codexFinalTurnAnswer(turn),
     reasoning: "",
     completed: turn?.status !== "inProgress",
     active: turn?.status === "inProgress",
@@ -2436,7 +2460,8 @@ async function finishManagedCodexSnapshot(run, snapshot) {
   const forceSpeechButton = turnSpeechButtons.get(completedTurnId) ?? false;
   turnSpeechButtons.delete(completedTurnId);
   await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
-  const answer = String(snapshot?.answer ?? "").trim()
+  const answer = String(snapshot?.finalAnswer ?? "").trim()
+    || String(snapshot?.answer ?? "").trim()
     || run.responseText.trim()
     || "Ход завершён без текстового ответа.";
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");

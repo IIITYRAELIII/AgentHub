@@ -1,7 +1,12 @@
 import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { claudeTranscriptHistory } from "./task-history.mjs";
+import {
+  claudeTranscriptHistory,
+  codexFinalTurnAnswer,
+} from "./task-history.mjs";
+
+export { codexFinalTurnAnswer };
 
 const MAX_TRANSCRIPT_TAIL = 4 * 1024 * 1024;
 const MAX_CATALOG_TRANSCRIPT_TAIL = 512 * 1024;
@@ -64,8 +69,8 @@ export function codexTurnAnswer(turn) {
 
 export function lastCompletedCodexAnswer(turns) {
   const completed = (Array.isArray(turns) ? turns : [])
-    .findLast((turn) => turn?.status === "completed" && codexTurnAnswer(turn));
-  return completed ? codexTurnAnswer(completed) : "";
+    .findLast((turn) => turn?.status === "completed" && codexFinalTurnAnswer(turn));
+  return completed ? codexFinalTurnAnswer(completed) : "";
 }
 
 export function parseClaudeTranscript(text) {
