@@ -16,6 +16,20 @@ export function catalogTaskKey({ provider, threadId }) {
   return `${String(provider ?? "").toLowerCase()}\0${String(threadId ?? "")}`;
 }
 
+export function pinnedTaskTitle(titles, provider, threadId) {
+  return String(titles?.[catalogTaskKey({ provider, threadId })] ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+}
+
+export function pinTaskTitle(titles, provider, threadId, title) {
+  const value = String(title ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (!titles || !threadId || !value) return "";
+  titles[catalogTaskKey({ provider, threadId })] = value;
+  return value;
+}
+
 function applyCodexLifecycleEntry(activeTurnIds, entry) {
   if (entry?.type !== "event_msg") return;
   const event = entry.payload?.type;

@@ -9,6 +9,8 @@ import {
   codexCatalogEntry,
   codexThreadRunning,
   mergeTaskCatalog,
+  pinnedTaskTitle,
+  pinTaskTitle,
   parseTaskCatalogCallback,
   parseCodexRolloutActivity,
   parseCodexRolloutRunning,
@@ -20,6 +22,15 @@ import {
 } from "./task-catalog.mjs";
 
 const project = { name: "Основной", path: "C:\\Projects\\Main" };
+
+test("pinned task titles are stable per provider and thread", () => {
+  const titles = {};
+  assert.equal(pinTaskTitle(titles, "codex", "thread-a", "  FB   Фаровон обмен1  "), "FB Фаровон обмен1");
+  assert.equal(pinTaskTitle(titles, "codex", "thread-b", "Правки ТГ Бота"), "Правки ТГ Бота");
+  assert.equal(pinnedTaskTitle(titles, "codex", "thread-a"), "FB Фаровон обмен1");
+  assert.equal(pinnedTaskTitle(titles, "codex", "thread-b"), "Правки ТГ Бота");
+  assert.equal(pinnedTaskTitle(titles, "claude", "thread-a"), "");
+});
 
 test("codexCatalogEntry preserves persistent task metadata and active status", () => {
   assert.deepEqual(codexCatalogEntry({

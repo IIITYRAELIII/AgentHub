@@ -87,6 +87,8 @@ import {
   codexThreadRunning,
   mergeTaskCatalog,
   parseTaskCatalogCallback,
+  pinnedTaskTitle as readPinnedTaskTitle,
+  pinTaskTitle as writePinnedTaskTitle,
   readCodexRolloutActivity,
   runningTaskReplyMarkup,
   selectCodexTurn,
@@ -141,6 +143,7 @@ const STATE_FILE = config.stateFile;
 const DELIVERY_OUTBOX_DIR = config.deliveryOutboxDir;
 const INSTANCE_LOCK_FILE = path.join(config.dataDir, "bot.lock");
 const SPEECH_TEXTS_FILE = path.join(config.dataDir, "speech-texts.json");
+const PINNED_TASK_TITLES_FILE = path.join(config.dataDir, "pinned-task-titles.json");
 const TELEGRAM_LIMIT = 3900;
 const THREAD_LIST_LIMIT = 10;
 const TASK_PICKER_PAGE_SIZE = 8;
@@ -164,6 +167,7 @@ const BOT_COMMANDS = [
   { command: "new", description: "Новый контекст" },
   { command: "tasks", description: "Список задач" },
   { command: "resume", description: "Выбрать существующую задачу" },
+  { command: "rename", description: "Закрепить название текущей задачи" },
   { command: "archive", description: "Архивировать текущую задачу" },
   { command: "status", description: "Статус и текущая задача" },
   { command: "approvals", description: "Режим подтверждений" },
@@ -252,6 +256,7 @@ let updateOffset = 0;
 let chatId = null;
 let activeProjectRoot = DEFAULT_PROJECT_ROOT;
 const threadIdsByProvider = { codex: null, claude: null };
+const pinnedTaskTitles = {};
 let threadId = null;
 let activeThreadTitle = "";
 let latestDiff = "";
@@ -349,6 +354,14 @@ function runProject(run) {
 function runTaskTitle(run) {
   return String(run?.taskTitle ?? "").trim()
     || `${run?.provider === "claude" ? "Claude" : "Codex"} · ${String(run?.threadId ?? run?.id ?? "").slice(0, 8)}`;
+}
+
+function pinnedTaskTitle(provider, id) {
+  return readPinnedTaskTitle(pinnedTaskTitles, provider, id);
+}
+
+function pinTaskTitle(provider, id, title) {
+  return writePinnedTaskTitle(pinnedTaskTitles, provider, id, title);
 }
 
 function runMessageBinding(run, metadata = {}) {
@@ -713,6 +726,8 @@ function codexThreadResponseTitle(thread) {
 }
 
 async function storedCodexThreadTitle(id, fallback = "") {
+  const pinnedTitle = pinnedTaskTitle("codex", id);
+  if (pinnedTitle) return pinnedTitle;
   const titleHistory = await readCodexThreadTitleHistory(id);
   return titleHistory.recoverableTitle
     || titleHistory.currentTitle
@@ -722,6 +737,13 @@ async function storedCodexThreadTitle(id, fallback = "") {
 
 async function resolveResumedCodexThreadTitle(id, thread) {
   const resumedTitle = codexThreadResponseTitle(thread);
+  const pinnedTitle = pinnedTaskTitle("codex", id);
+  if (pinnedTitle) {
+    if (resumedTitle !== pinnedTitle) {
+      await sendRpc("thread/name/set", { threadId: id, name: pinnedTitle });
+    }
+    return pinnedTitle;
+  }
   const titleHistory = await readCodexThreadTitleHistory(id);
   const recoveredTitle = titleHistory.recoverableTitle
     && (!resumedTitle || resumedTitle === titleHistory.currentTitle)
@@ -787,6 +809,12 @@ try {
   }
   threadId = threadIdsByProvider[activeProvider] ?? null;
   if (typeof saved.activeThreadTitle === "string") activeThreadTitle = saved.activeThreadTitle;
+  if (saved.pinnedTaskTitles && typeof saved.pinnedTaskTitles === "object") {
+    for (const [key, value] of Object.entries(saved.pinnedTaskTitles)) {
+      const title = String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+      if (key.includes("\0") && title) pinnedTaskTitles[key] = title;
+    }
+  }
   if (CLAUDE_MODELS.includes(saved.claudeModel)) claudeModel = saved.claudeModel;
   if (typeof saved.codexModel === "string") codexModel = normalizeCodexModel(saved.codexModel);
   if (CODEX_REASONING_EFFORTS.includes(saved.codexReasoningEffort)) {
@@ -882,6 +910,18 @@ try {
   }
 } catch (error) {
   if (error?.code !== "ENOENT") console.error("Cannot read state:", error.message);
+}
+
+try {
+  const savedPinnedTitles = JSON.parse(await readFile(PINNED_TASK_TITLES_FILE, "utf8"));
+  if (savedPinnedTitles && typeof savedPinnedTitles === "object") {
+    for (const [key, value] of Object.entries(savedPinnedTitles)) {
+      const title = String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+      if (key.includes("\0") && title) pinnedTaskTitles[key] = title;
+    }
+  }
+} catch (error) {
+  if (error?.code !== "ENOENT") console.error("Cannot read pinned task titles:", error.message);
 }
 
 async function findVscodeCodexExecutable() {
@@ -1156,6 +1196,11 @@ async function refreshTaskCatalog() {
           && (entry.title === titleHistory.currentTitle || entry.title === "Без названия")) {
           entry.title = titleHistory.recoverableTitle.slice(0, 80);
         }
+        const pinnedTitle = pinnedTaskTitle(entry.provider, entry.threadId);
+        if (pinnedTitle && codexThreadResponseTitle(thread) !== pinnedTitle) {
+          await sendRpc("thread/name/set", { threadId: entry.threadId, name: pinnedTitle });
+        }
+        entry.title = pinnedTitle || entry.title;
         return entry;
       }));
       entries.push(...values.filter(Boolean));
@@ -1396,6 +1441,23 @@ async function resumeThread(selectedThreadId, { notify = true } = {}) {
     await sendTaskSwitchNotification();
   }
   return true;
+}
+
+async function renameCurrentTask(title) {
+  if (!threadId) throw new Error("текущая задача не выбрана");
+  const pinnedTitle = pinTaskTitle(activeProvider, threadId, title);
+  if (!pinnedTitle) throw new Error("укажите непустое название после /rename");
+  if (isCodex()) {
+    await sendRpc("thread/name/set", { threadId, name: pinnedTitle });
+  }
+  activeThreadTitle = pinnedTitle;
+  const run = selectedRun();
+  if (run) updateTaskRunTitle(run, pinnedTitle);
+  const entry = taskCatalog.find((item) => catalogEntryIsSelected(item, selectedTask()));
+  if (entry) entry.title = pinnedTitle;
+  await savePinnedTaskTitles();
+  await saveState();
+  return pinnedTitle;
 }
 
 async function activateMessageBinding(binding) {
@@ -3768,7 +3830,7 @@ async function handleTelegramMessage(message) {
   if (text === "/start" || text === "/help") {
     await sendMessage(
       `Бот подключён к Claude Code и Codex. Текущий агент: ${providerTitle()}. Отправьте текст, изображение или голосовое сообщение.\n\n` +
-        "/agent — переключить Claude Code/Codex\n/model — сменить модель\n/reasoning — мощь дум Codex/Claude\n/mode — режим Plan/Work Codex/Claude\n/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/archive — архивировать текущую задачу\n/status — статус, текущая задача и лимиты\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
+        "/agent — переключить Claude Code/Codex\n/model — сменить модель\n/reasoning — мощь дум Codex/Claude\n/mode — режим Plan/Work Codex/Claude\n/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/rename — закрепить название текущей задачи\n/archive — архивировать текущую задачу\n/status — статус, текущая задача и лимиты\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
       { reply_markup: BOT_MENU },
     );
   } else if (text === "/agent" || text === "/engine") {
@@ -3798,6 +3860,15 @@ async function handleTelegramMessage(message) {
       return sendMessage("Укажите корректный ID задачи или используйте /resume без параметров.");
     }
     await resumeThread(selectedThreadId);
+  } else if (text === "/rename") {
+    await sendMessage("Укажите новое постоянное название: /rename Название задачи");
+  } else if (text.startsWith("/rename ")) {
+    try {
+      const title = await renameCurrentTask(text.slice("/rename ".length));
+      await sendMessage(`✅ Название закреплено: «${title}». Автозаголовки Codex больше его не изменят.`);
+    } catch (error) {
+      await sendMessage(`Не удалось переименовать задачу: ${error.message}`);
+    }
   } else if (text === "/archive") {
     const result = await archiveCurrentThread();
     if (!result.archived) {
@@ -4006,6 +4077,7 @@ function saveState() {
     activeThreadTitle,
     activeProvider,
     threadIds: threadIdsByProvider,
+    pinnedTaskTitles,
     claudeModel,
     codexModel,
     codexReasoningEffort,
@@ -4025,6 +4097,13 @@ function saveState() {
     .catch(() => {})
     .then(() => writeTextAtomic(STATE_FILE, content));
   return stateWriteQueue;
+}
+
+function savePinnedTaskTitles() {
+  return writeTextAtomic(
+    PINNED_TASK_TITLES_FILE,
+    `${JSON.stringify(pinnedTaskTitles, null, 2)}\n`,
+  );
 }
 
 function delay(ms) {
