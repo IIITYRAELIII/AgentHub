@@ -825,6 +825,7 @@ async function attachCodexThread() {
       }
       activeThreadTitle = await resolveResumedCodexThreadTitle(threadId, result.thread);
       applyCodexThreadSettings(threadId, result);
+      await saveState();
       return;
     } catch (error) {
       console.error("Cannot resume saved thread:", error.message);
