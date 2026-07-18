@@ -61,6 +61,12 @@ export function codexTurnAnswer(turn) {
     .trim();
 }
 
+export function lastCompletedCodexAnswer(turns) {
+  const completed = (Array.isArray(turns) ? turns : [])
+    .findLast((turn) => turn?.status === "completed" && codexTurnAnswer(turn));
+  return completed ? codexTurnAnswer(completed) : "";
+}
+
 export function parseClaudeTranscript(text) {
   const entries = String(text)
     .split(/\r?\n/)

@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   codexTurnAnswer,
+  lastCompletedCodexAnswer,
   listClaudeSessionSnapshots,
   parseClaudeTranscript,
   readClaudeSessionSnapshot,
@@ -24,6 +25,19 @@ test("codexTurnAnswer preserves every visible agent message in the turn", () => 
       { type: "agentMessage", text: "Последний абзац" },
     ],
   }), "Первое сообщение\n\nВторое сообщение\n\nПоследний абзац");
+});
+
+test("lastCompletedCodexAnswer ignores the currently running partial answer", () => {
+  const turns = [{
+    id: "completed",
+    status: "completed",
+    items: [{ type: "agentMessage", text: "Готовый ответ" }],
+  }, {
+    id: "running",
+    status: "inProgress",
+    items: [{ type: "agentMessage", text: "Незавершённый ответ" }],
+  }];
+  assert.equal(lastCompletedCodexAnswer(turns), "Готовый ответ");
 });
 
 test("parseClaudeTranscript returns the current partial answer", () => {

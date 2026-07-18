@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -12,6 +12,7 @@ import {
   parseTaskCatalogCallback,
   parseCodexRolloutActivity,
   parseCodexRolloutRunning,
+  readCodexRolloutActivity,
   readCodexRolloutRunning,
   runningTaskReplyMarkup,
   selectCodexTurn,
@@ -152,6 +153,55 @@ test("readCodexRolloutRunning reads a fresh local rollout", async () => {
   ].join("\n"), "utf8");
 
   assert.equal(await readCodexRolloutRunning(rollout), true);
+});
+
+test("readCodexRolloutActivity follows append-only lifecycle updates", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-codex-rollout-append-"));
+  const rollout = path.join(root, "rollout.jsonl");
+  const line = (type, turnId) => JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type: "event_msg",
+    payload: { type, turn_id: turnId },
+  });
+  await writeFile(rollout, `${line("task_started", "first")}\n`, "utf8");
+  assert.deepEqual(
+    (await readCodexRolloutActivity(rollout)).activeTurnIds,
+    ["first"],
+  );
+  await appendFile(
+    rollout,
+    `${line("task_started", "second")}\n${line("task_complete", "first")}\n`,
+    "utf8",
+  );
+  assert.deepEqual(
+    (await readCodexRolloutActivity(rollout)).activeTurnIds,
+    ["second"],
+  );
+});
+
+test("readCodexRolloutActivity preserves a JSONL line split across reads", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-codex-rollout-partial-"));
+  const rollout = path.join(root, "rollout.jsonl");
+  const line = (type) => JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type: "event_msg",
+    payload: { type, turn_id: "split" },
+  });
+  const completed = line("task_complete");
+  await writeFile(
+    rollout,
+    `${line("task_started")}\n${completed.slice(0, -4)}`,
+    "utf8",
+  );
+  assert.deepEqual(
+    (await readCodexRolloutActivity(rollout)).activeTurnIds,
+    ["split"],
+  );
+  await appendFile(rollout, `${completed.slice(-4)}\n`, "utf8");
+  assert.deepEqual(
+    (await readCodexRolloutActivity(rollout)).activeTurnIds,
+    [],
+  );
 });
 
 test("claudeCatalogEntry treats only a fresh incomplete transcript as running", () => {

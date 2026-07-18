@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   codexThreadTitleFromIndex,
+  codexThreadTitleHistoriesFromIndex,
   codexThreadTitleHistoryFromIndex,
   currentCallerBinding,
   currentThreadBinding,
@@ -78,6 +79,22 @@ test("codexThreadTitleHistoryFromIndex detects a generated title that overwrote 
     "thread-2",
   ), {
     currentTitle: "Telegram · 18.07.2026, 02:54",
+    recoverableTitle: "",
+  });
+});
+
+test("codexThreadTitleHistoriesFromIndex parses every task in one pass", () => {
+  const histories = codexThreadTitleHistoriesFromIndex([
+    JSON.stringify({ id: "one", thread_name: "Первая" }),
+    JSON.stringify({ id: "two", thread_name: "Вторая" }),
+    JSON.stringify({ id: "one", thread_name: "Telegram · 18.07.2026, 21:00" }),
+  ].join("\n"));
+  assert.deepEqual(histories.get("one"), {
+    currentTitle: "Telegram · 18.07.2026, 21:00",
+    recoverableTitle: "Первая",
+  });
+  assert.deepEqual(histories.get("two"), {
+    currentTitle: "Вторая",
     recoverableTitle: "",
   });
 });

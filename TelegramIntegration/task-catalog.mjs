@@ -1,7 +1,6 @@
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import { stat } from "node:fs/promises";
-import { createInterface } from "node:readline";
 
 const CLAUDE_ACTIVE_FRESHNESS_MS = 30 * 60 * 1000;
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
@@ -110,22 +109,37 @@ export async function readCodexRolloutActivity(
     };
   }
 
-  const activeTurnIds = new Set();
-  const lastSeenAtByTurnId = new Map();
-  const input = createReadStream(normalized, { encoding: "utf8" });
-  const lines = createInterface({ input, crlfDelay: Infinity });
+  const appendOnly = cached && info.size > cached.size;
+  const activeTurnIds = new Set(appendOnly ? cached.activeTurnIds : []);
+  const lastSeenAtByTurnId = new Map(appendOnly ? cached.lastSeenAtByTurnId : []);
+  const input = createReadStream(normalized, {
+    encoding: "utf8",
+    ...(appendOnly ? { start: cached.size } : {}),
+    end: Math.max(0, info.size - 1),
+  });
+  let text = appendOnly ? String(cached.trailingText ?? "") : "";
   try {
-    for await (const line of lines) {
-      if (!line) continue;
-      try {
-        observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, JSON.parse(line));
-      } catch {
-        // A rollout can be appended while it is being read.
-      }
-    }
+    for await (const chunk of input) text += chunk;
   } finally {
-    lines.close();
     input.destroy();
+  }
+  const lines = text.split(/\r?\n/);
+  let trailingText = lines.pop() ?? "";
+  for (const line of lines) {
+    if (!line) continue;
+    try {
+      observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, JSON.parse(line));
+    } catch {
+      // Ignore an unrelated complete JSONL line.
+    }
+  }
+  if (trailingText) {
+    try {
+      observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, JSON.parse(trailingText));
+      trailingText = "";
+    } catch {
+      // Preserve a line caught in the middle of an append for the next read.
+    }
   }
   const activity = codexActivity(activeTurnIds, lastSeenAtByTurnId, { nowMs, freshnessMs });
   codexActivityCache.set(normalized, {
@@ -133,6 +147,7 @@ export async function readCodexRolloutActivity(
     mtimeMs: info.mtimeMs,
     activeTurnIds: [...activeTurnIds],
     lastSeenAtByTurnId: [...lastSeenAtByTurnId],
+    trailingText,
   });
   if (codexActivityCache.size > 200) codexActivityCache.delete(codexActivityCache.keys().next().value);
   return { ...activity, lastActivityAtMs: info.mtimeMs };

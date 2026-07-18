@@ -116,19 +116,7 @@ function generatedTelegramThreadTitle(value) {
   return /^Telegram · \d{2}\.\d{2}\.\d{4}, \d{2}:\d{2}$/.test(value);
 }
 
-export function codexThreadTitleHistoryFromIndex(indexText, threadId) {
-  const titles = [];
-  for (const line of String(indexText ?? "").split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line);
-      if (entry.id === threadId && typeof entry.thread_name === "string" && entry.thread_name.trim()) {
-        titles.push(normalizedThreadTitle(entry.thread_name));
-      }
-    } catch {
-      // Ignore an incomplete line while Codex is updating the append-only index.
-    }
-  }
+function codexThreadTitleHistory(titles = []) {
   const currentTitle = titles.at(-1) ?? "";
   const recoverableTitle = generatedTelegramThreadTitle(currentTitle)
     ? titles.findLast((title) => title !== currentTitle && !generatedTelegramThreadTitle(title)) ?? ""
@@ -136,14 +124,45 @@ export function codexThreadTitleHistoryFromIndex(indexText, threadId) {
   return { currentTitle, recoverableTitle };
 }
 
-export async function readCodexThreadTitleHistory(threadId, environment = process.env) {
+export function codexThreadTitleHistoriesFromIndex(indexText) {
+  const titlesByThreadId = new Map();
+  for (const line of String(indexText ?? "").split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (typeof entry.id !== "string"
+        || typeof entry.thread_name !== "string"
+        || !entry.thread_name.trim()) continue;
+      const titles = titlesByThreadId.get(entry.id) ?? [];
+      titles.push(normalizedThreadTitle(entry.thread_name));
+      titlesByThreadId.set(entry.id, titles);
+    } catch {
+      // Ignore an incomplete line while Codex is updating the append-only index.
+    }
+  }
+  return new Map([...titlesByThreadId].map(([threadId, titles]) => (
+    [threadId, codexThreadTitleHistory(titles)]
+  )));
+}
+
+export function codexThreadTitleHistoryFromIndex(indexText, threadId) {
+  return codexThreadTitleHistoriesFromIndex(indexText).get(threadId)
+    ?? { currentTitle: "", recoverableTitle: "" };
+}
+
+export async function readCodexThreadTitleHistories(environment = process.env) {
   const codexHome = path.resolve(environment.CODEX_HOME || path.join(homedir(), ".codex"));
   try {
     const indexText = await readFile(path.join(codexHome, "session_index.jsonl"), "utf8");
-    return codexThreadTitleHistoryFromIndex(indexText, threadId);
+    return codexThreadTitleHistoriesFromIndex(indexText);
   } catch {
-    return { currentTitle: "", recoverableTitle: "" };
+    return new Map();
   }
+}
+
+export async function readCodexThreadTitleHistory(threadId, environment = process.env) {
+  return (await readCodexThreadTitleHistories(environment)).get(threadId)
+    ?? { currentTitle: "", recoverableTitle: "" };
 }
 
 function matchingStateTitle(state, provider, threadId) {
