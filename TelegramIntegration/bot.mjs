@@ -35,6 +35,7 @@ import {
   formatProgressHeading,
   formatRestartCompleteMessage,
   formatStatusMessage,
+  formatTaskAlreadySelectedMessage,
   formatTaskSwitchMessage,
   showLastMessageReplyMarkup,
 } from "./status.mjs";
@@ -43,9 +44,11 @@ import { formatTaskTokenUsage } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
 import { parsePendingInputCallback, pendingInputKeyboard } from "./deferred-input.mjs";
 import { appendMessageBindings, findMessageBinding } from "./message-bindings.mjs";
+import { readCodexThreadTitleHistory } from "./send-message.mjs";
 import {
   formatProgressHeartbeat,
   markProgressHeartbeat,
+  PROGRESS_STALLED_AFTER_MS,
 } from "./progress-heartbeat.mjs";
 import {
   serializableTaskRun,
@@ -336,7 +339,21 @@ async function sendRunLongMessage(run, text, { speechText = null, forceSpeechBut
   }
 }
 
-async function sendTaskSwitchNotification({ targetChatId = chatId, showLastMessage = true } = {}) {
+async function safelyDeliverRunMessage(run, delivery, description = "сообщение задачи") {
+  try {
+    await delivery();
+    return true;
+  } catch (error) {
+    console.error(`Cannot deliver ${description} for task ${run?.threadId ?? run?.id ?? "unknown"}:`, error.message);
+    return false;
+  }
+}
+
+async function sendTaskSelectionNotification({
+  targetChatId = chatId,
+  showLastMessage = true,
+  alreadySelected = false,
+} = {}) {
   const task = {
     ...selectedTask(),
     chatId: targetChatId,
@@ -344,7 +361,10 @@ async function sendTaskSwitchNotification({ targetChatId = chatId, showLastMessa
   };
   const extra = { parse_mode: "HTML" };
   if (showLastMessage && task.threadId) extra.reply_markup = showLastMessageReplyMarkup();
-  const message = await sendMessageTo(targetChatId, formatTaskSwitchMessage({
+  const formatMessage = alreadySelected
+    ? formatTaskAlreadySelectedMessage
+    : formatTaskSwitchMessage;
+  const message = await sendMessageTo(targetChatId, formatMessage({
     task: activeThreadTitle,
     project: activeProject().name,
     showProject: config.showProjectButton,
@@ -354,6 +374,14 @@ async function sendTaskSwitchNotification({ targetChatId = chatId, showLastMessa
     console.error("Cannot bind task-switch message:", error.message);
   });
   return message;
+}
+
+function sendTaskSwitchNotification(options = {}) {
+  return sendTaskSelectionNotification(options);
+}
+
+function sendTaskAlreadySelectedNotification(options = {}) {
+  return sendTaskSelectionNotification({ ...options, alreadySelected: true });
 }
 
 function rememberLastTaskMessage(run, text) {
@@ -462,6 +490,38 @@ function applyCodexThreadSettings(id, payload) {
   }
 }
 
+function codexThreadResponseTitle(thread) {
+  return String(thread?.name ?? thread?.preview ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+}
+
+async function storedCodexThreadTitle(id, fallback = "") {
+  const titleHistory = await readCodexThreadTitleHistory(id);
+  return titleHistory.recoverableTitle
+    || titleHistory.currentTitle
+    || fallback
+    || `Codex · ${id.slice(0, 8)}`;
+}
+
+async function resolveResumedCodexThreadTitle(id, thread) {
+  const resumedTitle = codexThreadResponseTitle(thread);
+  const titleHistory = await readCodexThreadTitleHistory(id);
+  const recoveredTitle = titleHistory.recoverableTitle
+    && (!resumedTitle || resumedTitle === titleHistory.currentTitle)
+    ? titleHistory.recoverableTitle
+    : "";
+  if (recoveredTitle) {
+    await sendRpc("thread/name/set", { threadId: id, name: recoveredTitle });
+  }
+  return resumedTitle && !recoveredTitle
+    ? resumedTitle
+    : recoveredTitle
+      || titleHistory.currentTitle
+      || `Codex · ${id.slice(0, 8)}`;
+}
+
 async function syncActiveCodexThreadSettings() {
   if (!isCodex() || !threadId) return;
   const result = await sendRpc("thread/resume", {
@@ -472,7 +532,7 @@ async function syncActiveCodexThreadSettings() {
   if (!isWorkspaceThread(result.thread ?? {})) {
     throw new Error("задача относится к другой активной папке");
   }
-  activeThreadTitle = threadTitle(result.thread ?? {});
+  activeThreadTitle = await resolveResumedCodexThreadTitle(threadId, result.thread);
   applyCodexThreadSettings(threadId, result);
   await saveState();
 }
@@ -570,9 +630,11 @@ try {
       ? [saved.activeRun]
       : [];
   for (const savedRun of savedRuns) {
-    if (!savedRun || typeof savedRun !== "object" || savedRun.status !== "running") continue;
+    if (!savedRun || typeof savedRun !== "object"
+      || !["running", "finishing"].includes(savedRun.status)) continue;
     taskRuns.add({
       ...savedRun,
+      status: "running",
       chatId: Number.isSafeInteger(savedRun.chatId) ? savedRun.chatId : chatId,
       responseText: String(savedRun.responseText ?? ""),
       observedInitialResponseText: typeof savedRun.observedInitialResponseText === "string"
@@ -581,6 +643,12 @@ try {
       observedResponseChanged: savedRun.observedResponseChanged === true,
       progressStage: String(savedRun.progressStage ?? "Восстановление задачи…"),
       progressReasoning: String(savedRun.progressReasoning ?? ""),
+      lastMeaningfulProgressAt: String(
+        savedRun.lastMeaningfulProgressAt
+          ?? savedRun.progressHeartbeatAt
+          ?? savedRun.startedAt
+          ?? new Date().toISOString(),
+      ),
       lastProgressText: String(savedRun.lastProgressText ?? ""),
       progressMessageIds: Array.isArray(savedRun.progressMessageIds)
         ? savedRun.progressMessageIds.filter(Number.isSafeInteger)
@@ -755,9 +823,8 @@ async function attachCodexThread() {
       if (!isWorkspaceThread(result.thread ?? {})) {
         throw new Error("saved thread belongs to another project");
       }
-      activeThreadTitle = threadTitle(result.thread ?? {});
+      activeThreadTitle = await resolveResumedCodexThreadTitle(threadId, result.thread);
       applyCodexThreadSettings(threadId, result);
-      if (!result.thread?.name) await nameTelegramThread(threadId);
       return;
     } catch (error) {
       console.error("Cannot resume saved thread:", error.message);
@@ -872,7 +939,13 @@ async function refreshTaskCatalog() {
         const rolloutRunning = thread.status?.type === "active"
           ? true
           : await readCodexRolloutActivity(thread.path).then((activity) => activity.running);
-        return codexCatalogEntry(thread, project, { rolloutRunning });
+        const entry = codexCatalogEntry(thread, project, { rolloutRunning });
+        const titleHistory = await readCodexThreadTitleHistory(thread.id);
+        if (titleHistory.recoverableTitle
+          && (entry.title === titleHistory.currentTitle || entry.title === "Без названия")) {
+          entry.title = titleHistory.recoverableTitle.slice(0, 80);
+        }
+        return entry;
       }));
       entries.push(...values.filter(Boolean));
     }
@@ -1081,6 +1154,10 @@ async function switchProvider(target) {
 }
 
 async function resumeThread(selectedThreadId, { notify = true } = {}) {
+  if (selectedThreadId === threadId) {
+    if (notify) await sendTaskAlreadySelectedNotification();
+    return true;
+  }
   if (!isCodex()) {
     threadId = selectedThreadId;
     activeThreadTitle = `Сессия Claude · ${selectedThreadId.slice(0, 8)}`;
@@ -1101,7 +1178,7 @@ async function resumeThread(selectedThreadId, { notify = true } = {}) {
   threadId = result.thread?.id ?? selectedThreadId;
   restoreCodexTaskSettings(threadId);
   applyCodexThreadSettings(threadId, result);
-  activeThreadTitle = threadTitle(result.thread ?? {});
+  activeThreadTitle = await resolveResumedCodexThreadTitle(threadId, result.thread);
   latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
   await saveState();
   if (notify) {
@@ -1137,7 +1214,10 @@ async function activateMessageBinding(binding) {
   threadId = binding.threadId;
   activeThreadTitle = binding.taskTitle?.trim() || `${binding.provider === "codex" ? "Codex" : "Claude"} · ${binding.threadId.slice(0, 8)}`;
   threadIdsByProvider[activeProvider] = threadId;
-  if (isCodex()) restoreCodexTaskSettings(threadId);
+  if (isCodex()) {
+    restoreCodexTaskSettings(threadId);
+    activeThreadTitle = await storedCodexThreadTitle(threadId, activeThreadTitle);
+  }
   latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
   try {
     if (isCodex() && !codex) {
@@ -1355,6 +1435,7 @@ async function beginRun(input, target = null) {
     progressMessageIds: [],
     progressStage: "Задача принята.",
     progressReasoning: "",
+    lastMeaningfulProgressAt: new Date().toISOString(),
     lastProgressText: "",
     progressStartTimer: null,
     progressTimer: null,
@@ -1392,15 +1473,37 @@ async function startProgressMessage(run, { forceNew = false } = {}) {
 function setProgressStage(run, stage) {
   if (!run) return;
   const value = String(stage ?? "").trim();
-  if (value) run.progressStage = value;
+  if (value && value !== run.progressStage) {
+    run.progressStage = value;
+    noteRunActivity(run);
+  }
   scheduleProgressUpdate(run);
 }
 
 function appendProgressReasoning(run, delta) {
   if (!run) return;
-  run.progressReasoning += String(delta ?? "");
+  const value = String(delta ?? "");
+  run.progressReasoning += value;
   if (run.progressReasoning.length > 5000) run.progressReasoning = run.progressReasoning.slice(-5000);
+  if (value) noteRunActivity(run);
   scheduleProgressUpdate(run);
+}
+
+function noteRunActivity(run, value = Date.now()) {
+  if (!run) return;
+  const timestamp = value instanceof Date ? value.getTime() : Number(value);
+  if (!Number.isFinite(timestamp)) return;
+  const previous = Date.parse(String(run.lastMeaningfulProgressAt ?? ""));
+  if (!Number.isFinite(previous) || timestamp > previous) {
+    run.lastMeaningfulProgressAt = new Date(timestamp).toISOString();
+  }
+}
+
+function progressHeartbeatState(run, now = Date.now()) {
+  const lastActivity = Date.parse(String(run?.lastMeaningfulProgressAt ?? run?.startedAt ?? ""));
+  return Number.isFinite(lastActivity) && now - lastActivity >= PROGRESS_STALLED_AFTER_MS
+    ? "stalled"
+    : "active";
 }
 
 function renderProgress(run, done = false) {
@@ -1517,7 +1620,9 @@ async function taskIsExternallyActive(target) {
         await initializeCodex({ attachSelectedThread: false });
       }
       const result = await sendRpc("thread/read", { threadId: target.threadId, includeTurns: true });
-      return codexThreadRunning(result.thread);
+      if (codexThreadRunning(result.thread)) return true;
+      const activity = await readCodexRolloutActivity(result.thread?.path);
+      return codexThreadRunning(result.thread, { rolloutRunning: activity.running });
     }
     return Boolean((await readClaudeSessionSnapshot(target.threadId))?.active);
   } catch (error) {
@@ -1871,12 +1976,30 @@ async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton =
       await finishProgress(run, failed ? `Claude остановлен: ${answer}` : "Задача завершена.");
       const response = failed ? `Ошибка Claude Code: ${answer}` : answer;
       rememberLastTaskMessage(run, response);
-      await sendRunLongMessage(run, `${response}\n\n${formatClaudeUsage(result, peakThinkingTokens)}`, { speechText: answer, forceSpeechButton });
-      if (run.latestDiff) await sendRunMessage(run, "Изменения этой задачи доступны после её выбора по команде /diff.");
+      await safelyDeliverRunMessage(
+        run,
+        () => sendRunLongMessage(
+          run,
+          `${response}\n\n${formatClaudeUsage(result, peakThinkingTokens)}`,
+          { speechText: answer, forceSpeechButton },
+        ),
+        "финальный ответ Claude",
+      );
+      if (run.latestDiff) {
+        await safelyDeliverRunMessage(
+          run,
+          () => sendRunMessage(run, "Изменения этой задачи доступны после её выбора по команде /diff."),
+          "уведомление об изменениях",
+        );
+      }
       await completeRun(run);
     } catch (error) {
       await finishProgress(run, `Claude остановлен: ${error.message}`);
-      await sendRunLongMessage(run, `Ошибка Claude Code: ${error.message}`);
+      await safelyDeliverRunMessage(
+        run,
+        () => sendRunLongMessage(run, `Ошибка Claude Code: ${error.message}`),
+        "ошибка Claude",
+      );
       await completeRun(run);
     }
   };
@@ -1902,6 +2025,7 @@ async function handleCodexMessage(message) {
     turnId: eventTurnId,
     threadId: params.threadId,
     provider: "codex",
+    allowThreadFallback: method === "turn/started",
   });
   if (method === "thread/settings/updated") {
     applyCodexThreadSettings(params.threadId, params.threadSettings);
@@ -1926,7 +2050,9 @@ async function handleCodexMessage(message) {
     if (isSelectedRun(run)) latestDiff = run.latestDiff;
   }
   if (method === "item/agentMessage/delta" && run) {
-    run.responseText += params.delta ?? "";
+    const delta = params.delta ?? "";
+    run.responseText += delta;
+    if (delta) noteRunActivity(run);
     scheduleProgressUpdate(run);
   }
   if ((method === "item/reasoning/summaryTextDelta" || method === "item/plan/delta") && run) {
@@ -1959,8 +2085,18 @@ async function handleCodexMessage(message) {
     const answer = run.responseText.trim() || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
     await finishProgress(run, error || status === "failed" ? `Задача завершилась с ошибкой: ${error ?? status}` : "Задача завершена.");
     rememberLastTaskMessage(run, answer);
-    await sendRunLongMessage(run, `${answer}\n\n${tokenSummary}`, { speechText: answer, forceSpeechButton });
-    if (run.latestDiff) await sendRunMessage(run, "Изменения этой задачи доступны после её выбора по команде /diff.");
+    await safelyDeliverRunMessage(
+      run,
+      () => sendRunLongMessage(run, `${answer}\n\n${tokenSummary}`, { speechText: answer, forceSpeechButton }),
+      "финальный ответ Codex",
+    );
+    if (run.latestDiff) {
+      await safelyDeliverRunMessage(
+        run,
+        () => sendRunMessage(run, "Изменения этой задачи доступны после её выбора по команде /diff."),
+        "уведомление об изменениях",
+      );
+    }
     await completeRun(run);
   }
 }
@@ -2028,6 +2164,7 @@ function observedRun(binding, targetChatId, snapshot, turnId = null) {
     progressMessageIds: [],
     progressStage: snapshot.stage ?? "Подключение к выполняющейся задаче…",
     progressReasoning: snapshot.reasoning ?? "",
+    lastMeaningfulProgressAt: new Date().toISOString(),
     lastProgressText: "",
     progressStartTimer: null,
     progressTimer: null,
@@ -2042,9 +2179,16 @@ function observedRun(binding, targetChatId, snapshot, turnId = null) {
 }
 
 function updateObservedRun(run, snapshot) {
+  const previousReasoning = run.progressReasoning;
+  const previousStage = run.progressStage;
   const responseChanged = updateObservedResponse(run, snapshot?.answer);
   run.progressReasoning = String(snapshot?.reasoning ?? run.progressReasoning);
   run.progressStage = String(snapshot?.stage ?? run.progressStage);
+  const activityAtMs = Number(snapshot?.activityAtMs ?? snapshot?.modifiedAtMs);
+  if (Number.isFinite(activityAtMs)) noteRunActivity(run, activityAtMs);
+  if (responseChanged || run.progressReasoning !== previousReasoning || run.progressStage !== previousStage) {
+    noteRunActivity(run);
+  }
   scheduleProgressUpdate(run);
   return responseChanged;
 }
@@ -2062,6 +2206,7 @@ async function readCodexTaskSnapshot(run) {
   const snapshot = {
     ...codexTurnSnapshot(turn),
     turnId: turn.id,
+    activityAtMs: activity.lastActivityAtMs,
   };
   if (!snapshot.active && activity.activeTurnIds.includes(turn.id)) {
     return {
@@ -2082,7 +2227,13 @@ async function finishObservedRun(run, snapshot) {
     || "Ход завершён без текстового ответа.";
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
   rememberLastTaskMessage(run, answer);
-  if (responseChanged) await sendRunLongMessage(run, answer, { speechText: answer });
+  if (responseChanged) {
+    await safelyDeliverRunMessage(
+      run,
+      () => sendRunLongMessage(run, answer, { speechText: answer }),
+      "финальный ответ наблюдаемого хода",
+    );
+  }
   await completeRun(run);
 }
 
@@ -2102,12 +2253,20 @@ async function finishManagedCodexSnapshot(run, snapshot) {
     || "Ход завершён без текстового ответа.";
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
   rememberLastTaskMessage(run, answer);
-  await sendRunLongMessage(run, `${answer}\n\n${tokenSummary}`, {
-    speechText: answer,
-    forceSpeechButton,
-  });
+  await safelyDeliverRunMessage(
+    run,
+    () => sendRunLongMessage(run, `${answer}\n\n${tokenSummary}`, {
+      speechText: answer,
+      forceSpeechButton,
+    }),
+    "восстановленный финальный ответ Codex",
+  );
   if (run.latestDiff) {
-    await sendRunMessage(run, "Изменения этой задачи доступны после её выбора по команде /diff.");
+    await safelyDeliverRunMessage(
+      run,
+      () => sendRunMessage(run, "Изменения этой задачи доступны после её выбора по команде /diff."),
+      "уведомление об изменениях",
+    );
   }
   await completeRun(run);
 }
@@ -2147,12 +2306,18 @@ async function pollObservedRun(run) {
       }
       return;
     }
-    if (markProgressHeartbeat(run, "active")) scheduleProgressUpdate(run);
+    if (Number.isFinite(Number(snapshot.activityAtMs ?? snapshot.modifiedAtMs))) {
+      noteRunActivity(run, Number(snapshot.activityAtMs ?? snapshot.modifiedAtMs));
+    }
+    if (markProgressHeartbeat(run, progressHeartbeatState(run))) scheduleProgressUpdate(run);
     if (run.observer) {
       updateObservedRun(run, snapshot);
     } else {
       const answer = String(snapshot.answer ?? "").trim();
-      if (answer && answer !== run.responseText) run.responseText = answer;
+      if (answer && answer !== run.responseText) {
+        run.responseText = answer;
+        noteRunActivity(run);
+      }
       run.progressReasoning = String(snapshot.reasoning ?? run.progressReasoning);
       run.progressStage = String(snapshot.stage ?? run.progressStage);
       scheduleProgressUpdate(run);
@@ -2247,10 +2412,14 @@ async function recoverTaskRun(run) {
   }
   if (run.provider !== "codex" || !codex) {
     await finishProgress(run, "Локальный процесс прервался при перезапуске бота.");
-    await sendRunMessage(
+    await safelyDeliverRunMessage(
       run,
-      `⚠️ Запуск ${run.provider === "claude" ? "Claude" : "Codex"} был прерван. `
-        + `Контекст ${run.threadId ?? "не успел получить ID"} сохранён и доступен для продолжения.`,
+      () => sendRunMessage(
+        run,
+        `⚠️ Запуск ${run.provider === "claude" ? "Claude" : "Codex"} был прерван. `
+          + `Контекст ${run.threadId ?? "не успел получить ID"} сохранён и доступен для продолжения.`,
+      ),
+      "уведомление о прерывании",
     );
     await completeRun(run);
     return;
@@ -2297,7 +2466,11 @@ async function recoverTaskRun(run) {
     || `Сохранённый запуск завершён со статусом ${turn.status}.`;
   await finishProgress(run, turn.status === "completed" ? "Задача завершена." : `Задача остановлена: ${turn.status}.`);
   rememberLastTaskMessage(run, answer);
-  await sendRunLongMessage(run, answer, { speechText: answer });
+  await safelyDeliverRunMessage(
+    run,
+    () => sendRunLongMessage(run, answer, { speechText: answer }),
+    "восстановленный ответ",
+  );
   await completeRun(run);
 }
 
@@ -3076,7 +3249,10 @@ async function handleApprovalCallback(callback) {
           removePicker,
         ]);
       } else {
-        await removePicker;
+        await Promise.all([
+          sendTaskAlreadySelectedNotification({ targetChatId: callback.message.chat.id }),
+          removePicker,
+        ]);
       }
     } catch (error) {
       await sendMessageTo(callback.message.chat.id, `Ошибка выбора задачи: ${error.message}`);
@@ -3170,7 +3346,10 @@ async function handleApprovalCallback(callback) {
           removePicker,
         ]);
       } else {
-        await removePicker;
+        await Promise.all([
+          sendTaskAlreadySelectedNotification({ targetChatId: callback.message.chat.id }),
+          removePicker,
+        ]);
       }
     } catch (error) {
       await sendMessageTo(callback.message.chat.id, `Ошибка выбора задачи: ${error.message}`);

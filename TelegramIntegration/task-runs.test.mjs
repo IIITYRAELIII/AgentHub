@@ -43,7 +43,30 @@ test("turn and thread events resolve to their own runs", () => {
   const registry = new TaskRunRegistry([first, second]);
 
   assert.equal(registry.forEvent({ turnId: "turn-2" }), second);
-  assert.equal(registry.forEvent({ threadId: "thread-1" }), first);
+  assert.equal(registry.forEvent({ threadId: "thread-1" }), null);
+  assert.equal(registry.forEvent({ threadId: "thread-1", allowThreadFallback: true }), first);
+});
+
+test("an unknown turn never falls back to a different turn in the same thread", () => {
+  const existing = run({ id: "run-1", turnId: "turn-1" });
+  const registry = new TaskRunRegistry([existing]);
+
+  assert.equal(registry.forEvent({
+    turnId: "parallel-turn",
+    threadId: existing.threadId,
+    allowThreadFallback: true,
+  }), null);
+});
+
+test("turn started can bind a provisional run by thread exactly once", () => {
+  const provisional = run({ id: "run-1", turnId: null });
+  const registry = new TaskRunRegistry([provisional]);
+
+  assert.equal(registry.forEvent({
+    turnId: "turn-1",
+    threadId: provisional.threadId,
+    allowThreadFallback: true,
+  }), provisional);
 });
 
 test("reindex follows a Claude session id assigned after startup", () => {

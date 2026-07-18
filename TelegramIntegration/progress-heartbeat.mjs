@@ -1,4 +1,5 @@
 export const PROGRESS_HEARTBEAT_INTERVAL_MS = 10_000;
+export const PROGRESS_STALLED_AFTER_MS = 2 * 60 * 1000;
 
 function validTimestamp(value) {
   const timestamp = Date.parse(String(value ?? ""));
@@ -37,6 +38,14 @@ export function formatProgressHeartbeat(run, options = {}) {
   }
   if (run.progressHeartbeatState === "waiting") {
     return `🟡 Жду данные хода · проверено ${time}`;
+  }
+  if (run.progressHeartbeatState === "stalled") {
+    const lastActivity = validTimestamp(run?.lastMeaningfulProgressAt);
+    const elapsed = lastActivity === null ? null : Math.max(0, timestamp - lastActivity);
+    const duration = elapsed === null
+      ? ""
+      : ` ${Math.max(1, Math.floor(elapsed / 60_000))} мин`;
+    return `🟠 Нет новых событий${duration} · проверено ${time}`;
   }
   return `🟢 Ход активен · проверено ${time}`;
 }

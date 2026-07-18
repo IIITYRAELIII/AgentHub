@@ -85,9 +85,13 @@ export function formatClaudeRateLimits(text, nowMs = Date.now()) {
   const sharedLimits = limits.filter((item) => !item.model);
   const sharedLimit = sharedLimits.find((item) => item.kind === "week (all models)")
     ?? sharedLimits.at(-1);
+  const sessionLimit = sharedLimits.find((item) => item.kind === "session");
   const lines = sharedLimit
     ? [`CLAUDE - ${formatClaudeWindow(sharedLimit, nowMs)}`]
     : ["CLAUDE"];
+  if (sessionLimit && sessionLimit !== sharedLimit) {
+    lines.push(`Session - ${formatClaudeWindow(sessionLimit, nowMs)}`);
+  }
   for (const limit of limits.filter((item) => item.model)) {
     const modelLimit = limit.resetsText || !sharedLimit
       ? limit
@@ -166,6 +170,15 @@ export function formatTaskSwitchMessage({ task, project, showProject, model, rea
     : "";
   if (!showProject) return `🔄 Текущая задача изменена.\n\n<b>${taskText}</b>${settingsText}`;
   return `🔄 Текущая задача изменена.\n\n<b>${escapeTelegramHtml(project)}</b>\n<i>${taskText}</i>${settingsText}`;
+}
+
+export function formatTaskAlreadySelectedMessage({ task, project, showProject, model, reasoning }) {
+  const taskText = escapeTelegramHtml(task);
+  const settingsText = model && reasoning
+    ? `\n${escapeTelegramHtml(model)} - ${escapeTelegramHtml(reasoning)}`
+    : "";
+  if (!showProject) return `✅ Текущая задача уже выбрана.\n\n<b>${taskText}</b>${settingsText}`;
+  return `✅ Текущая задача уже выбрана.\n\n<b>${escapeTelegramHtml(project)}</b>\n<i>${taskText}</i>${settingsText}`;
 }
 
 export function showLastMessageReplyMarkup() {

@@ -7,6 +7,7 @@ import {
   formatProgressHeading,
   formatRestartCompleteMessage,
   formatStatusMessage,
+  formatTaskAlreadySelectedMessage,
   formatTaskSwitchMessage,
   showLastMessageReplyMarkup,
   statusHeaderFileName,
@@ -38,7 +39,7 @@ test("formatCodexRateLimits shows one weekly line per limit", () => {
   ].join("\n"));
 });
 
-test("formatClaudeRateLimits shows weekly Claude and model limits on separate lines", () => {
+test("formatClaudeRateLimits shows weekly, session, and model limits on separate lines", () => {
   const nowMs = new Date(2026, 6, 10, 15, 0).getTime();
   const usage = [
     "Current session: 0% used · resets Jul 10, 08:00pm",
@@ -48,6 +49,7 @@ test("formatClaudeRateLimits shows weekly Claude and model limits on separate li
 
   assert.equal(formatClaudeRateLimits(usage, nowMs), [
     "CLAUDE - 94.0% - 6 дн. 7 ч.",
+    "Session - 100.0% - 5 ч.",
     "Sonnet - 90.0% - 7 дн.",
   ].join("\n"));
 });
@@ -257,6 +259,16 @@ test("formatTaskSwitchMessage shows only bold task when project button is disabl
     model: "GPT-5.6-Sol",
     reasoning: "Medium",
   }), "🔄 Текущая задача изменена.\n\n<b>Задача &lt;1&gt;</b>\nGPT-5.6-Sol - Medium");
+});
+
+test("formatTaskAlreadySelectedMessage confirms the current task without changing the card layout", () => {
+  assert.equal(formatTaskAlreadySelectedMessage({
+    task: "Задача <1>",
+    project: "Проект & тест",
+    showProject: true,
+    model: "GPT-5.6-Sol",
+    reasoning: "Medium",
+  }), "✅ Текущая задача уже выбрана.\n\n<b>Проект &amp; тест</b>\n<i>Задача &lt;1&gt;</i>\nGPT-5.6-Sol - Medium");
 });
 
 test("task switch messages expose the show-last callback", () => {

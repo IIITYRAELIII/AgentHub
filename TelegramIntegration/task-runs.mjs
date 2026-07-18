@@ -59,12 +59,14 @@ export class TaskRunRegistry {
     return this.#byTask.get(taskRunKey(task)) ?? null;
   }
 
-  forEvent({ turnId, threadId, provider = "codex" }) {
+  forEvent({ turnId, threadId, provider = "codex", allowThreadFallback = false }) {
     if (turnId && this.#byTurn.has(turnId)) return this.#byTurn.get(turnId);
+    if (!allowThreadFallback) return null;
     const normalizedThreadId = String(threadId ?? "").trim();
     if (!normalizedThreadId) return null;
     const matches = this.values().filter((run) => (
       run.provider === provider && String(run.threadId ?? "").trim() === normalizedThreadId
+      && (!turnId || !run.turnId)
     ));
     return matches.length === 1 ? matches[0] : null;
   }

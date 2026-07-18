@@ -32,3 +32,15 @@ test("progress heartbeat renders explicit active, waiting and error states", () 
   run.progressHeartbeatState = "error";
   assert.equal(formatProgressHeartbeat(run, options), "🔴 Проверка хода не удалась · 20:00:00");
 });
+
+test("progress heartbeat distinguishes a live connection from real stalled work", () => {
+  const run = {
+    progressHeartbeatAt: "2026-07-17T20:05:30.000Z",
+    progressHeartbeatState: "stalled",
+    lastMeaningfulProgressAt: "2026-07-17T20:00:00.000Z",
+  };
+  assert.equal(
+    formatProgressHeartbeat(run, { locale: "ru-RU", timeZone: "UTC" }),
+    "🟠 Нет новых событий 5 мин · проверено 20:05:30",
+  );
+});

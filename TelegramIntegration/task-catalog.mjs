@@ -87,22 +87,27 @@ export async function readCodexRolloutActivity(
   { nowMs = Date.now(), freshnessMs = CODEX_ACTIVE_FRESHNESS_MS } = {},
 ) {
   const normalized = String(rolloutPath ?? "").trim();
-  if (!normalized) return { running: false, activeTurnIds: [] };
+  if (!normalized) return { running: false, activeTurnIds: [], lastActivityAtMs: null };
   let info;
   try {
     info = await stat(normalized);
   } catch (error) {
-    if (error?.code === "ENOENT") return { running: false, activeTurnIds: [] };
+    if (error?.code === "ENOENT") return { running: false, activeTurnIds: [], lastActivityAtMs: null };
     throw error;
   }
-  if (nowMs - info.mtimeMs > freshnessMs) return { running: false, activeTurnIds: [] };
+  if (nowMs - info.mtimeMs > freshnessMs) {
+    return { running: false, activeTurnIds: [], lastActivityAtMs: info.mtimeMs };
+  }
   const cached = codexActivityCache.get(normalized);
   if (cached?.size === info.size && cached?.mtimeMs === info.mtimeMs) {
-    return codexActivity(
-      new Set(cached.activeTurnIds),
-      new Map(cached.lastSeenAtByTurnId),
-      { nowMs, freshnessMs },
-    );
+    return {
+      ...codexActivity(
+        new Set(cached.activeTurnIds),
+        new Map(cached.lastSeenAtByTurnId),
+        { nowMs, freshnessMs },
+      ),
+      lastActivityAtMs: info.mtimeMs,
+    };
   }
 
   const activeTurnIds = new Set();
@@ -130,15 +135,16 @@ export async function readCodexRolloutActivity(
     lastSeenAtByTurnId: [...lastSeenAtByTurnId],
   });
   if (codexActivityCache.size > 200) codexActivityCache.delete(codexActivityCache.keys().next().value);
-  return activity;
+  return { ...activity, lastActivityAtMs: info.mtimeMs };
 }
 
 export async function readCodexRolloutRunning(rolloutPath, options = {}) {
   return (await readCodexRolloutActivity(rolloutPath, options)).running;
 }
 
-export function codexThreadRunning(thread) {
-  return thread?.status?.type === "active"
+export function codexThreadRunning(thread, { rolloutRunning = false } = {}) {
+  return Boolean(rolloutRunning)
+    || thread?.status?.type === "active"
     || (thread?.turns ?? []).some((turn) => turn?.status === "inProgress");
 }
 
@@ -171,7 +177,7 @@ export function codexCatalogEntry(thread, project, { rolloutRunning = false } = 
     projectName: project.name,
     title: title || "Без названия",
     updatedAtMs: Number(thread.updatedAt ?? 0) * 1000,
-    running: rolloutRunning || codexThreadRunning(thread),
+    running: codexThreadRunning(thread, { rolloutRunning }),
   };
 }
 

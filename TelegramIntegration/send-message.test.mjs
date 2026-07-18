@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   codexThreadTitleFromIndex,
+  codexThreadTitleHistoryFromIndex,
   currentCallerBinding,
   currentThreadBinding,
   notificationParts,
@@ -59,6 +60,26 @@ test("codexThreadTitleFromIndex reads the latest matching title", () => {
     JSON.stringify({ id: "thread-1", thread_name: "Продолжить копирование томов RDP" }),
   ].join("\n");
   assert.equal(codexThreadTitleFromIndex(index, "thread-1"), "Продолжить копирование томов RDP");
+});
+
+test("codexThreadTitleHistoryFromIndex detects a generated title that overwrote a named task", () => {
+  const index = [
+    JSON.stringify({ id: "thread-1", thread_name: "Тестировать обмен документами" }),
+    JSON.stringify({ id: "thread-1", thread_name: "FB Фаровон - Тестирование обмена документами" }),
+    JSON.stringify({ id: "thread-1", thread_name: "Telegram · 18.07.2026, 02:42" }),
+  ].join("\n");
+
+  assert.deepEqual(codexThreadTitleHistoryFromIndex(index, "thread-1"), {
+    currentTitle: "Telegram · 18.07.2026, 02:42",
+    recoverableTitle: "FB Фаровон - Тестирование обмена документами",
+  });
+  assert.deepEqual(codexThreadTitleHistoryFromIndex(
+    JSON.stringify({ id: "thread-2", thread_name: "Telegram · 18.07.2026, 02:54" }),
+    "thread-2",
+  ), {
+    currentTitle: "Telegram · 18.07.2026, 02:54",
+    recoverableTitle: "",
+  });
 });
 
 test("currentCallerBinding prefers the calling Codex thread over bot state", async () => {

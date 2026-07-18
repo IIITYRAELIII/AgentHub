@@ -111,6 +111,13 @@ test("stale rollout markers do not make an idle Codex thread active", () => {
   }).id, "latest");
 });
 
+test("rollout activity makes an externally running Codex thread active", () => {
+  assert.equal(codexThreadRunning(
+    { status: { type: "idle" }, turns: [{ id: "external", status: "completed" }] },
+    { rolloutRunning: true },
+  ), true);
+});
+
 test("Codex turn selection prefers a genuinely in-progress turn", () => {
   const turns = [
     { id: "stale", status: "completed" },

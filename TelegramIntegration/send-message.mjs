@@ -105,19 +105,45 @@ export function currentThreadBinding(state) {
 }
 
 export function codexThreadTitleFromIndex(indexText, threadId) {
-  let title = "";
+  return codexThreadTitleHistoryFromIndex(indexText, threadId).currentTitle;
+}
+
+function normalizedThreadTitle(value) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").slice(0, 120);
+}
+
+function generatedTelegramThreadTitle(value) {
+  return /^Telegram · \d{2}\.\d{2}\.\d{4}, \d{2}:\d{2}$/.test(value);
+}
+
+export function codexThreadTitleHistoryFromIndex(indexText, threadId) {
+  const titles = [];
   for (const line of String(indexText ?? "").split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
       const entry = JSON.parse(line);
       if (entry.id === threadId && typeof entry.thread_name === "string" && entry.thread_name.trim()) {
-        title = entry.thread_name.trim();
+        titles.push(normalizedThreadTitle(entry.thread_name));
       }
     } catch {
       // Ignore an incomplete line while Codex is updating the append-only index.
     }
   }
-  return title.replace(/\s+/g, " ").slice(0, 120);
+  const currentTitle = titles.at(-1) ?? "";
+  const recoverableTitle = generatedTelegramThreadTitle(currentTitle)
+    ? titles.findLast((title) => title !== currentTitle && !generatedTelegramThreadTitle(title)) ?? ""
+    : "";
+  return { currentTitle, recoverableTitle };
+}
+
+export async function readCodexThreadTitleHistory(threadId, environment = process.env) {
+  const codexHome = path.resolve(environment.CODEX_HOME || path.join(homedir(), ".codex"));
+  try {
+    const indexText = await readFile(path.join(codexHome, "session_index.jsonl"), "utf8");
+    return codexThreadTitleHistoryFromIndex(indexText, threadId);
+  } catch {
+    return { currentTitle: "", recoverableTitle: "" };
+  }
 }
 
 function matchingStateTitle(state, provider, threadId) {
@@ -154,14 +180,7 @@ export async function currentCallerBinding(state, environment = process.env, cwd
     throw new Error(`--bind-current cannot identify the calling AI session: ${detail}; use --bind-active only to intentionally bind to the task selected in the Telegram bot`);
   }
 
-  const codexHome = path.resolve(environment.CODEX_HOME || path.join(homedir(), ".codex"));
-  let taskTitle = "";
-  try {
-    const indexText = await readFile(path.join(codexHome, "session_index.jsonl"), "utf8");
-    taskTitle = codexThreadTitleFromIndex(indexText, codexThreadId);
-  } catch {
-    // The environment thread ID is still safer than binding to another task from bot state.
-  }
+  const { currentTitle: taskTitle } = await readCodexThreadTitleHistory(codexThreadId, environment);
 
   return {
     provider: "codex",
@@ -270,7 +289,7 @@ export async function main(args = process.argv.slice(2)) {
   console.log(`Sent ${sent.length} message(s) to Telegram chat ${chatId}.`);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     console.error(`Cannot send Telegram message: ${error.message}`);
     process.exitCode = 1;
