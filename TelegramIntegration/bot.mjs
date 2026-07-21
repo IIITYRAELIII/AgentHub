@@ -134,6 +134,7 @@ import {
 import { botReplacementInvocation } from "./runtime-restart.mjs";
 import { RuntimeCommandServer } from "./runtime-command.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
+import { routeTtsWorkerMessage } from "./tts-progress.mjs";
 
 const config = await loadConfig();
 const defaultDataDirectory = path.join(INTEGRATION_ROOT, "data");
@@ -4214,17 +4215,7 @@ async function startTtsWorker() {
   ttsWorker = worker;
   worker.stderr.setEncoding("utf8");
   worker.stderr.on("data", (data) => console.error(`[tts] ${data.trimEnd()}`));
-  const stopped = (error) => {
-    if (ttsWorker !== worker) return;
-    for (const request of pendingTts.values()) {
-      clearTimeout(request.timer);
-      request.reject(error);
-    }
-    pendingTts.clear();
-    ttsLines?.close();
-    ttsLines = null;
-    ttsWorker = null;
-  };
+  const stopped = (error) => detachTtsWorker(worker, error);
   worker.on("error", (error) => stopped(new Error(`TTS worker error: ${error.message}`, { cause: error })));
   worker.on("close", (code, signal) => stopped(new Error(`TTS worker stopped (code=${code}, signal=${signal})`)));
   worker.stdin.on("error", (error) => stopped(new Error(`TTS worker stdin failed: ${error.message}`, { cause: error })));
@@ -4232,12 +4223,7 @@ async function startTtsWorker() {
   ttsLines.on("line", (line) => {
     try {
       const message = JSON.parse(line);
-      const request = pendingTts.get(message.id);
-      if (!request) return;
-      pendingTts.delete(message.id);
-      clearTimeout(request.timer);
-      if (message.ok) request.resolve(message.outputPath);
-      else request.reject(new Error(message.error || "Неизвестная ошибка TTS"));
+      routeTtsWorkerMessage(pendingTts, message);
     } catch (error) {
       console.error("Invalid TTS worker message:", error.message);
     }
@@ -4260,7 +4246,7 @@ async function synthesizeSpeech(text) {
     const timer = setTimeout(() => {
       pendingTts.delete(id);
       stopTtsWorker();
-      reject(new Error(`превышено время озвучивания (${config.ttsRequestTimeoutSeconds} сек.)`));
+      reject(new Error(`нет прогресса озвучивания более ${config.ttsRequestTimeoutSeconds} сек.`));
     }, config.ttsRequestTimeoutSeconds * 1000);
     pendingTts.set(id, { resolve, reject, timer });
   });
@@ -4275,9 +4261,22 @@ async function synthesizeSpeech(text) {
   return promise;
 }
 
+function detachTtsWorker(worker, error) {
+  if (ttsWorker !== worker) return;
+  for (const request of pendingTts.values()) {
+    clearTimeout(request.timer);
+    request.reject(error);
+  }
+  pendingTts.clear();
+  ttsLines?.close();
+  ttsLines = null;
+  ttsWorker = null;
+}
+
 function stopTtsWorker() {
   const worker = ttsWorker;
   if (!worker) return;
+  detachTtsWorker(worker, new Error("TTS worker остановлен"));
   if (process.platform === "win32" && worker.pid) {
     const killer = spawn("taskkill.exe", ["/PID", String(worker.pid), "/T", "/F"], {
       windowsHide: true,

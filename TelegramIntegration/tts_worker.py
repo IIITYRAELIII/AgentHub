@@ -114,13 +114,14 @@ class Synthesizer:
         self.speaker = speaker
         self.sample_rate = 48000
 
-    def synthesize(self, text: str, output_path: Path, max_chars: int) -> None:
+    def synthesize(self, text: str, output_path: Path, max_chars: int, progress=None) -> None:
         cleaned = clean_text(text, max_chars)
         if not cleaned:
             raise ValueError("После очистки в ответе не осталось текста для озвучивания")
         pieces = []
         silence = self.torch.zeros(int(self.sample_rate * 0.2))
-        for index, chunk in enumerate(split_text(cleaned)):
+        chunks = split_text(cleaned)
+        for index, chunk in enumerate(chunks):
             if index:
                 pieces.append(silence)
             pieces.append(self.model.apply_tts(
@@ -130,6 +131,8 @@ class Synthesizer:
                 put_accent=True,
                 put_yo=True,
             ))
+            if progress is not None:
+                progress(index + 1, len(chunks))
         audio = self.torch.cat(pieces)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         wav_path = output_path.with_suffix(".wav")
@@ -175,7 +178,17 @@ def main() -> int:
             if synthesizer is None:
                 synthesizer = Synthesizer(args.model, args.speaker, args.cache_dir.resolve())
             output_path = Path(request["outputPath"]).resolve()
-            synthesizer.synthesize(str(request.get("text", "")), output_path, args.max_chars)
+            synthesizer.synthesize(
+                str(request.get("text", "")),
+                output_path,
+                args.max_chars,
+                lambda completed, total: respond({
+                    "id": request_id,
+                    "progress": True,
+                    "completed": completed,
+                    "total": total,
+                }),
+            )
             respond({"id": request_id, "ok": True, "outputPath": str(output_path)})
         except Exception as error:
             respond({"id": request_id, "ok": False, "error": str(error)})

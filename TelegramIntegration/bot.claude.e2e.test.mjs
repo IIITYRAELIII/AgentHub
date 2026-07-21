@@ -57,6 +57,8 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
       env: {
         ...process.env,
         TELEGRAM_CODEX_CONFIG: configPath,
+        TELEGRAM_INTEGRATION_RUNTIME_ROOT: temporaryRoot,
+        TELEGRAM_INTEGRATION_LAUNCHER: "",
         USERPROFILE: fakeHome,
         HOME: fakeHome,
         FAKE_CLAUDE_HOLD_DIR: holdDirectory,

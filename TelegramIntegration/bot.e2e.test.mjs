@@ -52,7 +52,12 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   async function startBot() {
     bot = spawn(process.execPath, [BOT_FILE], {
       cwd: INTEGRATION_ROOT,
-      env: { ...process.env, TELEGRAM_CODEX_CONFIG: configPath },
+      env: {
+        ...process.env,
+        TELEGRAM_CODEX_CONFIG: configPath,
+        TELEGRAM_INTEGRATION_RUNTIME_ROOT: temporaryRoot,
+        TELEGRAM_INTEGRATION_LAUNCHER: "",
+      },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
