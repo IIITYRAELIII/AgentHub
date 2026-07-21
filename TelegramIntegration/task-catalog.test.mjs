@@ -361,7 +361,7 @@ test("task catalog callbacks identify provider and task", () => {
   assert.equal(parseTaskCatalogCallback("task:x:nope"), null);
 });
 
-test("runningTaskReplyMarkup creates switch buttons only for active tasks", () => {
+test("runningTaskReplyMarkup shows active tasks first and fills four rows with recent tasks", () => {
   const markup = runningTaskReplyMarkup([{
     provider: "codex",
     threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
@@ -370,12 +370,40 @@ test("runningTaskReplyMarkup creates switch buttons only for active tasks", () =
     title: "Тестирование обмена документами",
     running: true,
     executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
+    lastActivityAtMs: 300,
   }, {
     provider: "claude",
     threadId: "a2ea7518-5826-4480-aaff-bb80915953d8",
+    projectRoot: "C:\\Projects\\Utilities",
     projectName: "Utilities",
     title: "Завершённая",
     running: false,
+    updatedAtMs: 500,
+  }, {
+    provider: "codex",
+    threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf014",
+    projectRoot: "C:\\Projects\\Main",
+    projectName: "VSC_Tyrael",
+    title: "Вторая активная",
+    running: true,
+    executionOwner: TASK_EXECUTION_OWNERS.TELEGRAM,
+    lastActivityAtMs: 200,
+  }, {
+    provider: "codex",
+    threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf015",
+    projectRoot: "C:\\Projects\\Main",
+    projectName: "VSC_Tyrael",
+    title: "Недавняя",
+    running: false,
+    lastActivityAtMs: 400,
+  }, {
+    provider: "codex",
+    threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf016",
+    projectRoot: "C:\\Projects\\Main",
+    projectName: "VSC_Tyrael",
+    title: "Старая не помещается",
+    running: false,
+    updatedAtMs: 100,
   }], {
     provider: "codex",
     threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
@@ -385,6 +413,15 @@ test("runningTaskReplyMarkup creates switch buttons only for active tasks", () =
     inline_keyboard: [[{
       text: "✅ ТЕКУЩАЯ · VSC · Codex · Тестирование обмена документами",
       callback_data: "task:c:019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
+    }], [{
+      text: "🧵 · INT · Codex · Вторая активная",
+      callback_data: "task:c:019f70ed-d8e8-7b21-bcd1-b6f57bcdf014",
+    }], [{
+      text: "🕘 · Claude · Завершённая",
+      callback_data: "task:l:a2ea7518-5826-4480-aaff-bb80915953d8",
+    }], [{
+      text: "🕘 · Codex · Недавняя",
+      callback_data: "task:c:019f70ed-d8e8-7b21-bcd1-b6f57bcdf015",
     }]],
   });
 });

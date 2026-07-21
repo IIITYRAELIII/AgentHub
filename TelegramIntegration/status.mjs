@@ -112,17 +112,18 @@ export function formatStatusMessage({
   task,
   project,
   limits,
+  showTaskButtons = false,
 }) {
   const running = Array.isArray(runningTasks)
     ? runningTasks
     : Array.from({ length: Number(runningTasks) || 0 }, () => "");
-  const activeHeading = running.length ? "\n\n<b>🧵АКТИВНЫЕ ЗАДАЧИ🧵</b>" : "";
+  const taskHeading = showTaskButtons ? "\n\n<b>🧵НЕДАВНИЕ ЗАДАЧИ🧵</b>" : "";
   const projectLine = project ? `\nКаталог: ${escapeTelegramHtml(project)}` : "";
   return `${escapeTelegramHtml(provider)}: ${escapeTelegramHtml(model)} - ${escapeTelegramHtml(reasoning)}\n` +
     `${escapeTelegramHtml(mode)} | ${busy ? "Выполняет выбранную задачу" : "Готов"}\n\n` +
     `Текущая задача: ${escapeTelegramHtml(task)}${projectLine}\n\n` +
     `Выполняется задач: ${running.length}\n\n` +
-    `Лимиты:\n${escapeTelegramHtml(limits)}${activeHeading}`;
+    `Лимиты:\n${escapeTelegramHtml(limits)}${taskHeading}`;
 }
 
 export function formatProgressHeading({

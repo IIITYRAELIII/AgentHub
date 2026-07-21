@@ -423,14 +423,31 @@ export function taskCatalogCallback(entry) {
   return `task:${provider}:${entry.threadId}`;
 }
 
-export function runningTaskReplyMarkup(entries, selected = null, { showProject = false } = {}) {
+function taskActivityAtMs(entry) {
+  return Math.max(
+    Number(entry?.lastActivityAtMs) || 0,
+    Number(entry?.updatedAtMs) || 0,
+  );
+}
+
+export function statusTaskEntries(entries, limit = 4) {
+  const count = Math.max(0, Number(limit) || 0);
+  return [...entries]
+    .sort((left, right) => (
+      Number(right.running) - Number(left.running)
+      || taskActivityAtMs(right) - taskActivityAtMs(left)
+      || left.title.localeCompare(right.title, "ru")
+    ))
+    .slice(0, count);
+}
+
+export function runningTaskReplyMarkup(entries, selected = null, { showProject = false, limit = 4 } = {}) {
   return {
-    inline_keyboard: entries
-      .filter((entry) => entry.running)
+    inline_keyboard: statusTaskEntries(entries, limit)
       .map((entry) => [{
         text: (
-          `${selected && catalogEntryIsSelected(entry, selected) ? "✅ ТЕКУЩАЯ" : "🧵"} · `
-          + `${taskExecutionRuntimeShortLabel(entry.executionOwner)} · `
+          `${selected && catalogEntryIsSelected(entry, selected) ? "✅ ТЕКУЩАЯ" : entry.running ? "🧵" : "🕘"} · `
+          + `${entry.running ? `${taskExecutionRuntimeShortLabel(entry.executionOwner)} · ` : ""}`
           + `${entry.provider === "codex" ? "Codex" : "Claude"} · `
           + `${showProject ? `${entry.projectName} · ` : ""}${entry.title}`
         ).slice(0, 90),

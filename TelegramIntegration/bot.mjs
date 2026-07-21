@@ -2010,6 +2010,9 @@ async function sendStatus(snapshot = currentStatusSnapshot()) {
   const selectedBusy = catalog.some((entry) => (
     entry.running && catalogEntryIsSelected(entry, selected)
   ));
+  const replyMarkup = runningTaskReplyMarkup(catalog, selected, {
+    showProject: config.showProjectButton,
+  });
   const statusText = formatStatusMessage({
     provider: codexSelected ? "CODEX" : "CLAUDE",
     busy: selectedBusy,
@@ -2022,9 +2025,7 @@ async function sendStatus(snapshot = currentStatusSnapshot()) {
     task,
     project: config.showProjectButton ? project.name : null,
     limits,
-  });
-  const replyMarkup = runningTaskReplyMarkup(catalog, selected, {
-    showProject: config.showProjectButton,
+    showTaskButtons: replyMarkup.inline_keyboard.length > 0,
   });
   await sendStatusCard(
     statusText,

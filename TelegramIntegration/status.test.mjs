@@ -78,6 +78,7 @@ test("formatStatusMessage matches Telegram status layout", () => {
     task: "Обсуждения",
     project: "VSC_Tyrael",
     limits: "CODEX - 94.0% - 6 дн. 7 ч.\nSpark - 100.0% - 7 дн.",
+    showTaskButtons: true,
   }), [
     "CODEX: GPT-5.3 Codex Spark - High",
     "Work | Готов",
@@ -91,7 +92,7 @@ test("formatStatusMessage matches Telegram status layout", () => {
     "CODEX - 94.0% - 6 дн. 7 ч.",
     "Spark - 100.0% - 7 дн.",
     "",
-    "<b>🧵АКТИВНЫЕ ЗАДАЧИ🧵</b>",
+    "<b>🧵НЕДАВНИЕ ЗАДАЧИ🧵</b>",
   ].join("\n"));
 });
 
@@ -106,6 +107,7 @@ test("formatStatusMessage shows Claude model, reasoning, and Plan mode", () => {
     task: "Проверка",
     project: "VSC_Tyrael",
     limits: "CLAUDE\n100.0% - 5 ч.",
+    showTaskButtons: true,
   }), [
     "CLAUDE: Sonnet - XHigh",
     "Plan | Выполняет выбранную задачу",
@@ -119,11 +121,11 @@ test("formatStatusMessage shows Claude model, reasoning, and Plan mode", () => {
     "CLAUDE",
     "100.0% - 5 ч.",
     "",
-    "<b>🧵АКТИВНЫЕ ЗАДАЧИ🧵</b>",
+    "<b>🧵НЕДАВНИЕ ЗАДАЧИ🧵</b>",
   ].join("\n"));
 });
 
-test("formatStatusMessage keeps task details in buttons and adds the active heading", () => {
+test("formatStatusMessage keeps task details in buttons and adds the task heading", () => {
   const result = formatStatusMessage({
     provider: "CODEX",
     busy: true,
@@ -137,14 +139,15 @@ test("formatStatusMessage keeps task details in buttons and adds the active head
     task: "Перенос файлов",
     project: "VSC_Tyrael",
     limits: "CODEX\n80.0% - 5 дн.",
+    showTaskButtons: true,
   });
   assert.match(result, /Выполняется задач: 2/);
   assert.doesNotMatch(result, /• Codex/);
   assert.doesNotMatch(result, /Всего найдено задач/);
-  assert.match(result, /<b>🧵АКТИВНЫЕ ЗАДАЧИ🧵<\/b>$/);
+  assert.match(result, /<b>🧵НЕДАВНИЕ ЗАДАЧИ🧵<\/b>$/);
 });
 
-test("formatStatusMessage omits the active heading when nothing runs", () => {
+test("formatStatusMessage can show recent task buttons when nothing runs", () => {
   const result = formatStatusMessage({
     provider: "CODEX",
     busy: false,
@@ -155,8 +158,9 @@ test("formatStatusMessage omits the active heading when nothing runs", () => {
     task: "Задача <1>",
     project: "VSCode & Main",
     limits: "CODEX\n100%",
+    showTaskButtons: true,
   });
-  assert.doesNotMatch(result, /АКТИВНЫЕ ЗАДАЧИ/);
+  assert.match(result, /<b>🧵НЕДАВНИЕ ЗАДАЧИ🧵<\/b>$/);
   assert.match(result, /Задача &lt;1&gt;/);
   assert.match(result, /VSCode &amp; Main/);
 });
