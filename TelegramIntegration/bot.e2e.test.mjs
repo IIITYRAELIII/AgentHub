@@ -220,6 +220,77 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   await telegram.waitForText("Название закреплено: «E2E основная»", { after: mark });
   assert.equal((await readJson(statePath)).activeThreadTitle, "E2E основная");
 
+  // A slow media download must not block the Telegram update loop, and the
+  // resulting turn must remain bound to the task selected when media arrived.
+  telegram.fileDownloadDelayMs = 1_200;
+  const downloadIndex = telegram.fileDownloads.length;
+  mark = telegram.calls.length;
+  telegram.pushMessage(null, {
+    caption: "[media] медленная картинка",
+    photo: [{ file_id: "e2e-photo", file_size: 128 }],
+  });
+  await telegram.waitForText("Изображение получено", { after: mark });
+  await waitFor(() => telegram.fileDownloads[downloadIndex], "delayed media download start");
+
+  const menuMark = telegram.calls.length;
+  telegram.pushMessage("/menu");
+  const menuDuringDownload = await telegram.waitForText("Панель кнопок показана", {
+    after: menuMark,
+    timeoutMs: 800,
+  });
+  assert.equal(telegram.fileDownloads[downloadIndex].completedAt, null,
+    "commands must be handled while media is still downloading");
+
+  mark = telegram.calls.length;
+  telegram.pushMessage("/tasks");
+  const mediaTaskPicker = await telegram.waitForText("Выберите задачу:", { after: mark, timeoutMs: 800 });
+  const selectSecondDuringDownload = mediaTaskPicker.body.reply_markup.inline_keyboard.flat()
+    .find((button) => button.callback_data === `task:c:${secondThreadId}`);
+  assert.ok(selectSecondDuringDownload, "second task must remain selectable during media processing");
+  mark = telegram.calls.length;
+  telegram.pushCallback(selectSecondDuringDownload.callback_data, mediaTaskPicker.result);
+  await telegram.waitForText("Текущая задача изменена", { after: mark, timeoutMs: 800 });
+  assert.equal((await readJson(statePath)).threadIds.codex, secondThreadId);
+
+  await telegram.waitForText("Готово: [media] медленная картинка", { after: menuMark, timeoutMs: 8_000 });
+  assert.ok(telegram.fileDownloads[downloadIndex].completedAt >= menuDuringDownload.at,
+    "the menu response must precede completion of the delayed download");
+  assert.equal((await readJson(statePath)).threadIds.codex, secondThreadId,
+    "finishing delayed media must not switch the selected task back");
+  telegram.fileDownloadDelayMs = 0;
+
+  mark = telegram.calls.length;
+  telegram.pushMessage("/tasks");
+  const returnAfterMediaPicker = await telegram.waitForText("Выберите задачу:", { after: mark });
+  const returnToFirstAfterMedia = returnAfterMediaPicker.body.reply_markup.inline_keyboard.flat()
+    .find((button) => button.callback_data === `task:c:${firstThreadId}`);
+  assert.ok(returnToFirstAfterMedia, "original media task must remain selectable");
+  mark = telegram.calls.length;
+  telegram.pushCallback(returnToFirstAfterMedia.callback_data, returnAfterMediaPicker.result);
+  await telegram.waitForText("Текущая задача изменена", { after: mark });
+
+  telegram.fileDownloadDelayMs = 500;
+  mark = telegram.calls.length;
+  telegram.pushMessage(null, {
+    caption: "[media-race-a] первая картинка",
+    photo: [{ file_id: "e2e-photo-race-a", file_size: 128 }],
+  });
+  telegram.pushMessage(null, {
+    caption: "[media-race-b] вторая картинка",
+    photo: [{ file_id: "e2e-photo-race-b", file_size: 128 }],
+  });
+  const deferredMedia = await telegram.waitForText("Новое сообщение сохранено и не потеряно", {
+    after: mark,
+    timeoutMs: 8_000,
+  });
+  await telegram.waitForText("Готово: [media-race-a] первая картинка", { after: mark, timeoutMs: 8_000 });
+  const cancelDeferredMedia = deferredMedia.body.reply_markup.inline_keyboard.flat()
+    .find((button) => button.callback_data.startsWith("pending:cancel:"));
+  assert.ok(cancelDeferredMedia, "the concurrently prepared media input must be deferred, not lost");
+  telegram.pushCallback(cancelDeferredMedia.callback_data, deferredMedia.result);
+  await telegram.waitForCall("editMessageText", (call) => String(call.body.text).includes("отменено"), { after: mark });
+  telegram.fileDownloadDelayMs = 0;
+
   mark = telegram.calls.length;
   telegram.pushMessage("[slow] обычное завершение");
   const normalFinal = await telegram.waitForText("Готово: [slow] обычное завершение", { after: mark });

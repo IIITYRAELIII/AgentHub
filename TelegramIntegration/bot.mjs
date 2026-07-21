@@ -306,7 +306,9 @@ const turnSpeechButtons = new Map();
 const pendingTts = new Map();
 const speechTexts = new Map();
 const taskRuns = new TaskRunRegistry();
+const backgroundMediaJobs = new Set();
 const dismissedExternalTasks = new TaskDismissalRegistry();
+const cancelledManagedClaudeTasks = new Map();
 const pendingInputs = new Map();
 const queuedInputs = new Map();
 const queueTimers = new Map();
@@ -410,6 +412,17 @@ function activeProject() {
 
 function selectedTask() {
   return { provider: activeProvider, projectRoot: activeProjectRoot, threadId };
+}
+
+function selectedTurnTarget(targetChatId = chatId) {
+  return {
+    ...selectedTask(),
+    taskTitle: activeThreadTitle,
+    chatId: targetChatId,
+    modelId: activeProvider === "codex" ? codexModel : claudeModel,
+    reasoningId: activeProvider === "codex" ? codexReasoningEffort : claudeReasoningEffort,
+    collaborationMode: activeProvider === "codex" ? codexCollaborationMode : claudeCollaborationMode,
+  };
 }
 
 function currentUiContextToken() {
@@ -1005,6 +1018,13 @@ try {
   if (Array.isArray(saved.dismissedExternalTasks)) {
     dismissedExternalTasks.restore(saved.dismissedExternalTasks);
   }
+  for (const [key, cancelledAtMs] of Array.isArray(saved.cancelledManagedClaudeTasks)
+    ? saved.cancelledManagedClaudeTasks
+    : []) {
+    if (typeof key === "string" && Number.isFinite(Number(cancelledAtMs))) {
+      setBoundedMapValue(cancelledManagedClaudeTasks, key, Number(cancelledAtMs), 200);
+    }
+  }
   for (const item of Array.isArray(saved.pendingInputs) ? saved.pendingInputs : []) {
     if (item?.id && item?.threadId && item?.provider) pendingInputs.set(item.id, item);
   }
@@ -1506,7 +1526,9 @@ async function buildTaskCatalog() {
   if (claudeResult.status === "fulfilled") {
     for (const snapshot of claudeResult.value) {
       const project = snapshot.cwd ? findProject(snapshot.cwd) : null;
-      if (project && snapshot.sessionId) entries.push(claudeCatalogEntry(snapshot, project));
+      if (project && snapshot.sessionId) {
+        entries.push(claudeCatalogEntry(applyManagedClaudeCancellation(snapshot), project));
+      }
     }
   } else {
     console.error("Cannot discover Claude tasks:", claudeResult.reason?.message ?? claudeResult.reason);
@@ -1996,16 +2018,23 @@ async function beginRun(input, target = null) {
   const project = findProject(projectRoot);
   const targetThreadId = target?.threadId ?? threadId;
   const targetTaskTitle = target?.taskTitle ?? activeThreadTitle;
+  if (provider === "claude") {
+    cancelledManagedClaudeTasks.delete(taskRunKey({
+      provider,
+      projectRoot,
+      threadId: targetThreadId,
+    }));
+  }
   const savedCodexSettings = provider === "codex"
     ? codexTaskSettings[targetThreadId] ?? {}
     : {};
-  const modelId = provider === "codex"
+  const modelId = target?.modelId ?? (provider === "codex"
     ? savedCodexSettings.model ?? (targetThreadId === threadId ? codexModel : defaultCodexModel)
-    : claudeModel;
-  const reasoningId = provider === "codex"
+    : claudeModel);
+  const reasoningId = target?.reasoningId ?? (provider === "codex"
     ? savedCodexSettings.reasoningEffort
       ?? (targetThreadId === threadId ? codexReasoningEffort : defaultCodexReasoningEffort)
-    : claudeReasoningEffort;
+    : claudeReasoningEffort);
   const run = {
     id: randomUUID(),
     provider,
@@ -2025,7 +2054,8 @@ async function beginRun(input, target = null) {
     appServer: provider === "codex"
       ? taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.TELEGRAM)
       : "Telegram CLI",
-    collaborationMode: provider === "codex" ? codexCollaborationMode : claudeCollaborationMode,
+    collaborationMode: target?.collaborationMode
+      ?? (provider === "codex" ? codexCollaborationMode : claudeCollaborationMode),
     responseText: "",
     status: "running",
     startedAt: new Date().toISOString(),
@@ -2274,7 +2304,7 @@ async function completeRun(run) {
   syncTaskRun(run, { active: false });
   if (!taskRuns.size) stopTyping();
   await saveState();
-  if (restartRequest?.waitingForRuns && !restartBlockingRuns().length && !stopping) {
+  if (restartRequest?.waitingForRuns && !restartHasBlockingWork() && !stopping) {
     setTimeout(() => void performRestart(), 0);
   }
 }
@@ -2282,8 +2312,33 @@ async function completeRun(run) {
 // Единая точка чтения состояния сессии Claude: у неё нет живого App Server,
 // поэтому «активность» из транскрипта дополнительно проверяется на свежесть.
 // Брошенный незавершённый транскрипт помечается stale и не блокирует задачу.
+function applyManagedClaudeCancellation(snapshot) {
+  if (!snapshot?.sessionId || !snapshot.cwd) return snapshot;
+  const project = findProject(snapshot.cwd);
+  if (!project) return snapshot;
+  const key = taskRunKey({
+    provider: "claude",
+    projectRoot: project.path,
+    threadId: snapshot.sessionId,
+  });
+  const cancelledAtMs = cancelledManagedClaudeTasks.get(key);
+  if (!Number.isFinite(cancelledAtMs)) return snapshot;
+  const activityAtMs = claudeSnapshotActivityAtMs(snapshot);
+  if (Number.isFinite(activityAtMs) && activityAtMs > cancelledAtMs) {
+    cancelledManagedClaudeTasks.delete(key);
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    active: false,
+    completed: true,
+    cancelled: true,
+  };
+}
+
 async function readClaudeTaskSnapshot(sessionId) {
-  const snapshot = await readClaudeSessionSnapshot(sessionId);
+  const rawSnapshot = await readClaudeSessionSnapshot(sessionId);
+  const snapshot = applyManagedClaudeCancellation(rawSnapshot);
   if (!snapshot) return null;
   const active = claudeSnapshotIsActive(snapshot);
   return {
@@ -2317,6 +2372,7 @@ async function taskIsExternallyActive(target) {
 async function deferConflictingInput(input, temporaryFiles, {
   forceSpeechButton = false,
   executionOwner = TASK_EXECUTION_OWNERS.EXTERNAL,
+  target = selectedTurnTarget(),
 } = {}) {
   if (pendingInputs.size + queuedInputs.size >= MAX_DEFERRED_INPUTS) {
     await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
@@ -2324,11 +2380,14 @@ async function deferConflictingInput(input, temporaryFiles, {
   }
   const item = {
     id: randomUUID(),
-    chatId,
-    provider: activeProvider,
-    projectRoot: activeProjectRoot,
-    threadId,
-    taskTitle: activeThreadTitle,
+    chatId: target.chatId,
+    provider: target.provider,
+    projectRoot: target.projectRoot,
+    threadId: target.threadId,
+    taskTitle: target.taskTitle,
+    modelId: target.modelId,
+    reasoningId: target.reasoningId,
+    collaborationMode: target.collaborationMode,
     input,
     temporaryFiles,
     forceSpeechButton,
@@ -2337,10 +2396,10 @@ async function deferConflictingInput(input, temporaryFiles, {
   pendingInputs.set(item.id, item);
   await saveState();
   const preview = inputPreview(input);
-  const runtime = activeProvider === "codex"
+  const runtime = target.provider === "codex"
     ? taskExecutionRuntimeLabel(executionOwner)
     : executionOwner === TASK_EXECUTION_OWNERS.TELEGRAM ? "Telegram CLI" : "Внешний Claude CLI";
-  const message = await sendMessageTo(chatId,
+  const message = await sendMessageTo(target.chatId,
     `Выбранная задача уже выполняется через ${runtime}. Новое сообщение сохранено и не потеряно.`
       + `${preview ? `\n\n${preview.slice(0, 700)}` : ""}\n\nЧто сделать?`,
     { reply_markup: pendingInputKeyboard(item.id) });
@@ -2401,11 +2460,12 @@ async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton =
   }
 }
 
-async function startTurn(input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
-  const target = {
-    provider: activeProvider,
-    projectRoot: activeProjectRoot,
-    threadId,
+async function startTurn(input, temporaryFiles = [], {
+  forceSpeechButton = false,
+  target = null,
+} = {}) {
+  target ??= {
+    ...selectedTask(),
     taskTitle: activeThreadTitle,
     chatId,
   };
@@ -2414,16 +2474,28 @@ async function startTurn(input, temporaryFiles = [], { forceSpeechButton = false
     return deferConflictingInput(input, temporaryFiles, {
       forceSpeechButton,
       executionOwner: existingRun?.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL,
+      target,
     });
   }
-  if (target.provider === "codex") {
+  if (target.provider === "codex" && catalogEntryIsSelected(target, selectedTask())) {
     try {
       await syncActiveCodexThreadSettings();
     } catch (error) {
       console.error("Cannot sync Codex thread settings before turn:", error.message);
     }
   }
-  const run = await beginRun(input, target);
+  let run;
+  try {
+    run = await beginRun(input, target);
+  } catch (error) {
+    const concurrentRun = taskRuns.forTask(target);
+    if (error.message !== "this task is already running" || !concurrentRun) throw error;
+    return deferConflictingInput(input, temporaryFiles, {
+      forceSpeechButton,
+      executionOwner: concurrentRun.executionOwner ?? TASK_EXECUTION_OWNERS.TELEGRAM,
+      target,
+    });
+  }
   await launchTurn(run, input, temporaryFiles, { forceSpeechButton });
   return { started: true, runId: run.id };
 }
@@ -2460,6 +2532,9 @@ async function processQueuedInput(id) {
     threadId: item.threadId,
     taskTitle: item.taskTitle,
     chatId: item.chatId,
+    modelId: item.modelId,
+    reasoningId: item.reasoningId,
+    collaborationMode: item.collaborationMode,
   };
   if (taskRuns.forTask(target) || await taskIsExternallyActive(target)) {
     scheduleQueuedInput(item);
@@ -3824,6 +3899,25 @@ function restartBlockingRuns() {
   return taskRuns.values().filter((run) => !run.observer && run.provider === "codex");
 }
 
+function restartHasBlockingWork() {
+  return restartBlockingRuns().length > 0 || backgroundMediaJobs.size > 0;
+}
+
+function trackBackgroundMediaJob(job, label) {
+  const tracked = Promise.resolve(job)
+    .catch((error) => {
+      console.error(`Background ${label} processing failed:`, error.message);
+    })
+    .finally(() => {
+      backgroundMediaJobs.delete(tracked);
+      if (restartRequest?.waitingForRuns && !restartHasBlockingWork() && !stopping) {
+        setTimeout(() => void performRestart(), 0);
+      }
+    });
+  backgroundMediaJobs.add(tracked);
+  return tracked;
+}
+
 async function updateRestartMessage(text, extra = {}) {
   if (!restartRequest) return;
   await telegram("editMessageText", {
@@ -3859,6 +3953,10 @@ async function finalizeRestartMessage() {
 async function performRestart() {
   if (stopping || !restartRequest) return;
   if (updateOffset < Number(restartRequest.minimumUpdateOffset ?? 0)) return;
+  if (restartHasBlockingWork()) {
+    restartRequest.waitingForRuns = true;
+    return;
+  }
   restartRequest.waitingForRuns = false;
   await updateRestartMessage("🔄 Перезапускаю бота…").catch(() => {});
   await saveState();
@@ -3897,36 +3995,37 @@ async function restartBot() {
     return;
   }
   const blockingRuns = restartBlockingRuns();
-  const message = await sendMessage(blockingRuns.length
-    ? `🔄 Перезапущу бота после завершения выполняющихся задач: ${blockingRuns.length}.`
+  const blockingWorkCount = blockingRuns.length + backgroundMediaJobs.size;
+  const message = await sendMessage(blockingWorkCount
+    ? `🔄 Перезапущу бота после завершения выполняющихся задач: ${blockingWorkCount}.`
     : "🔄 Перезапускаю бота…");
   if (!message?.message_id) throw new Error("Telegram не вернул ID сообщения перезапуска");
   restartRequest = {
     chatId,
     messageId: message.message_id,
     requestedAt: new Date().toISOString(),
-    waitingForRuns: blockingRuns.length > 0,
+    waitingForRuns: blockingWorkCount > 0,
     minimumUpdateOffset: Number.isSafeInteger(processingUpdateId)
       ? processingUpdateId + 1
       : updateOffset,
   };
   await saveState();
-  if (!blockingRuns.length && processingUpdateId == null) await performRestart();
+  if (!blockingWorkCount && processingUpdateId == null) await performRestart();
 }
 
-async function transcribeVoice(message) {
+async function transcribeVoice(message, target) {
   if (!config.voiceEnabled) {
-    await sendMessage("Голосовые сообщения отключены в конфигурации.");
+    await sendMessageTo(target.chatId, "Голосовые сообщения отключены в конфигурации.");
     return;
   }
   const media = message.voice ?? message.audio;
   if (!media?.file_id) return;
   if ((media.file_size ?? 0) > 20 * 1024 * 1024) {
-    await sendMessage("Голосовой файл слишком большой. Максимальный размер — 20 МБ.");
+    await sendMessageTo(target.chatId, "Голосовой файл слишком большой. Максимальный размер — 20 МБ.");
     return;
   }
 
-  await sendMessage("🎙 Распознаю голосовое сообщение…");
+  await sendMessageTo(target.chatId, "🎙 Распознаю голосовое сообщение…");
   await mkdir(AUDIO_DIR, { recursive: true });
   const extension = message.voice ? ".ogg" : path.extname(media.file_name ?? "") || ".audio";
   const audioPath = path.join(AUDIO_DIR, `${randomUUID()}${extension}`);
@@ -3939,29 +4038,32 @@ async function transcribeVoice(message) {
     await writeFile(audioPath, Buffer.from(await response.arrayBuffer()));
     const transcript = await runTranscription(audioPath);
     if (!transcript) {
-      await sendMessage("Не удалось распознать речь в сообщении.");
+      await sendMessageTo(target.chatId, "Не удалось распознать речь в сообщении.");
       return;
     }
-    await sendMessage(`📝 Распознано:\n${transcript}`);
-    await startTurn(telegramPrompt(message, transcript), [], { forceSpeechButton: true });
+    await sendMessageTo(target.chatId, `📝 Распознано:\n${transcript}`);
+    await startTurn(telegramPrompt(message, transcript), [], {
+      forceSpeechButton: true,
+      target,
+    });
   } catch (error) {
-    await sendMessage(`Ошибка распознавания: ${error.message}`);
+    await sendMessageTo(target.chatId, `Ошибка распознавания: ${error.message}`);
   } finally {
     await unlink(audioPath).catch(() => {});
   }
 }
 
-async function analyzeImage(message) {
+async function analyzeImage(message, target) {
   const photo = message.photo?.at(-1);
   const document = message.document?.mime_type?.startsWith("image/") ? message.document : null;
   const media = photo ?? document;
   if (!media?.file_id) return;
   if ((media.file_size ?? 0) > 20 * 1024 * 1024) {
-    await sendMessage("Изображение слишком большое. Максимальный размер — 20 МБ.");
+    await sendMessageTo(target.chatId, "Изображение слишком большое. Максимальный размер — 20 МБ.");
     return;
   }
 
-  await sendMessage("🖼 Изображение получено, начинаю анализ…");
+  await sendMessageTo(target.chatId, "🖼 Изображение получено, начинаю анализ…");
   await mkdir(IMAGE_DIR, { recursive: true });
   let imagePath;
   try {
@@ -3978,10 +4080,10 @@ async function analyzeImage(message) {
     await startTurn([
       { type: "text", text: prompt },
       { type: "localImage", path: imagePath },
-    ], [imagePath]);
+    ], [imagePath], { target });
   } catch (error) {
     if (imagePath) await unlink(imagePath).catch(() => {});
-    await sendMessage(`Не удалось обработать изображение: ${error.message}`);
+    await sendMessageTo(target.chatId, `Не удалось обработать изображение: ${error.message}`);
   }
 }
 
@@ -4751,16 +4853,18 @@ async function handleTelegramMessage(message) {
     }
   }
   if (message.photo || message.document?.mime_type?.startsWith("image/")) {
+    const target = selectedTurnTarget(message.chat.id);
     await bindIncomingTaskMessage(
       message,
       message.caption?.trim() || "Изображение без подписи",
     );
-    await analyzeImage(message);
+    trackBackgroundMediaJob(analyzeImage(message, target), "image");
     return;
   }
   if (message.voice || message.audio) {
+    const target = selectedTurnTarget(message.chat.id);
     await bindIncomingTaskMessage(message, "Голосовое сообщение");
-    await transcribeVoice(message);
+    trackBackgroundMediaJob(transcribeVoice(message, target), "voice");
     return;
   }
   const rawText = message.text?.trim();
@@ -4863,6 +4967,13 @@ async function handleTelegramMessage(message) {
         await sendRunMessage(run, "Не удалось остановить дерево процессов Claude; задача остаётся активной.");
         return;
       }
+      setBoundedMapValue(
+        cancelledManagedClaudeTasks,
+        taskRunKey(run),
+        Date.now(),
+        200,
+      );
+      await saveState();
     } else {
       await finishProgress(run, "Наблюдение отключено; внешний Claude продолжает работу.");
       await completeRun(run);
@@ -5080,6 +5191,7 @@ function saveState() {
     updateOffset,
     activeRuns: taskRuns.values().map(serializableTaskRun),
     dismissedExternalTasks: dismissedExternalTasks.values(),
+    cancelledManagedClaudeTasks: [...cancelledManagedClaudeTasks.entries()],
     pendingInputs: [...pendingInputs.values()],
     queuedInputs: [...queuedInputs.values()],
     lastTaskMessages: [...lastTaskMessages.entries()].slice(-500),

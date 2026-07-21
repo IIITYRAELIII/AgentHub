@@ -58,6 +58,8 @@ export class FakeTelegramApi {
     this.calls = [];
     this.messages = new Map();
     this.failures = new Map();
+    this.fileDownloadDelayMs = 0;
+    this.fileDownloads = [];
   }
 
   async start() {
@@ -80,6 +82,15 @@ export class FakeTelegramApi {
   }
 
   async handle(request, response) {
+    if (request.url?.includes("/file/")) {
+      const download = { startedAt: Date.now(), completedAt: null };
+      this.fileDownloads.push(download);
+      if (this.fileDownloadDelayMs > 0) await delay(this.fileDownloadDelayMs);
+      response.writeHead(200, { "content-type": "image/jpeg" });
+      response.end(Buffer.from("fake-image"));
+      download.completedAt = Date.now();
+      return;
+    }
     const method = request.url?.split("/").at(-1) ?? "";
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -101,6 +112,10 @@ export class FakeTelegramApi {
       await delay(15);
       const offset = Number(body.offset ?? 0);
       this.respond(response, this.updates.filter((update) => update.update_id >= offset));
+      return;
+    }
+    if (method === "getFile") {
+      this.respond(response, { file_path: "e2e/fake-image.jpg" });
       return;
     }
     if (method === "sendMessage" || method === "sendPhoto") {
