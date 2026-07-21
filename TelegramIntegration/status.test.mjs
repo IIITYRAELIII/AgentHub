@@ -86,13 +86,11 @@ test("formatStatusMessage matches Telegram status layout", () => {
     "Текущая задача: Обсуждения",
     "Каталог: VSC_Tyrael",
     "",
-    "Выполняется задач: 2",
-    "",
     "Лимиты:",
     "CODEX - 94.0% - 6 дн. 7 ч.",
     "Spark - 100.0% - 7 дн.",
     "",
-    "<b>🧵НЕДАВНИЕ ЗАДАЧИ🧵</b>",
+    "<b>🧵НЕДАВНИЕ ЗАДАЧИ (2)🧵</b>",
   ].join("\n"));
 });
 
@@ -115,13 +113,11 @@ test("formatStatusMessage shows Claude model, reasoning, and Plan mode", () => {
     "Текущая задача: Проверка",
     "Каталог: VSC_Tyrael",
     "",
-    "Выполняется задач: 1",
-    "",
     "Лимиты:",
     "CLAUDE",
     "100.0% - 5 ч.",
     "",
-    "<b>🧵НЕДАВНИЕ ЗАДАЧИ🧵</b>",
+    "<b>🧵НЕДАВНИЕ ЗАДАЧИ (1)🧵</b>",
   ].join("\n"));
 });
 
@@ -141,10 +137,10 @@ test("formatStatusMessage keeps task details in buttons and adds the task headin
     limits: "CODEX\n80.0% - 5 дн.",
     showTaskButtons: true,
   });
-  assert.match(result, /Выполняется задач: 2/);
+  assert.doesNotMatch(result, /Выполняется задач:/);
   assert.doesNotMatch(result, /• Codex/);
   assert.doesNotMatch(result, /Всего найдено задач/);
-  assert.match(result, /<b>🧵НЕДАВНИЕ ЗАДАЧИ🧵<\/b>$/);
+  assert.match(result, /<b>🧵НЕДАВНИЕ ЗАДАЧИ \(2\)🧵<\/b>$/);
 });
 
 test("formatStatusMessage can show recent task buttons when nothing runs", () => {
@@ -160,7 +156,7 @@ test("formatStatusMessage can show recent task buttons when nothing runs", () =>
     limits: "CODEX\n100%",
     showTaskButtons: true,
   });
-  assert.match(result, /<b>🧵НЕДАВНИЕ ЗАДАЧИ🧵<\/b>$/);
+  assert.match(result, /<b>🧵НЕДАВНИЕ ЗАДАЧИ \(0\)🧵<\/b>$/);
   assert.match(result, /Задача &lt;1&gt;/);
   assert.match(result, /VSCode &amp; Main/);
 });

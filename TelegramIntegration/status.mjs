@@ -117,12 +117,13 @@ export function formatStatusMessage({
   const running = Array.isArray(runningTasks)
     ? runningTasks
     : Array.from({ length: Number(runningTasks) || 0 }, () => "");
-  const taskHeading = showTaskButtons ? "\n\n<b>🧵НЕДАВНИЕ ЗАДАЧИ🧵</b>" : "";
+  const taskHeading = showTaskButtons
+    ? `\n\n<b>🧵НЕДАВНИЕ ЗАДАЧИ (${running.length})🧵</b>`
+    : "";
   const projectLine = project ? `\nКаталог: ${escapeTelegramHtml(project)}` : "";
   return `${escapeTelegramHtml(provider)}: ${escapeTelegramHtml(model)} - ${escapeTelegramHtml(reasoning)}\n` +
     `${escapeTelegramHtml(mode)} | ${busy ? "Выполняет выбранную задачу" : "Готов"}\n\n` +
     `Текущая задача: ${escapeTelegramHtml(task)}${projectLine}\n\n` +
-    `Выполняется задач: ${running.length}\n\n` +
     `Лимиты:\n${escapeTelegramHtml(limits)}${taskHeading}`;
 }
 

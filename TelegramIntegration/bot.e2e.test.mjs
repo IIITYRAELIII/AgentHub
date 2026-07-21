@@ -761,7 +761,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const statusCard = await telegram.waitForCall("sendPhoto", () => true, { after: mark });
   const statusMarkup = JSON.parse(multipartField(statusCard, "reply_markup"));
   assert.equal(statusMarkup.inline_keyboard.length, 4);
-  assert.match(multipartField(statusCard, "caption"), /🧵НЕДАВНИЕ ЗАДАЧИ🧵/);
+  assert.match(multipartField(statusCard, "caption"), /🧵НЕДАВНИЕ ЗАДАЧИ \(0\)🧵/);
 
   mark = telegram.calls.length;
   telegram.pushMessage("/agent");
