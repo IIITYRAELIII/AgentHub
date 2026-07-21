@@ -1,4 +1,5 @@
 import { parseClaudeLimits } from "./claude.mjs";
+import { taskViewCallbackData } from "./task-view-callback.mjs";
 
 function escapeTelegramHtml(value) {
   return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -188,11 +189,11 @@ export function formatTaskAlreadySelectedMessage({ task, project, showProject, m
   return `✅ Текущая задача уже выбрана.\n\n<b>${escapeTelegramHtml(project)}</b>\n<i>${taskText}</i>${settingsText}`;
 }
 
-export function showLastMessageReplyMarkup() {
+export function showLastMessageReplyMarkup(binding = null) {
   return {
     inline_keyboard: [[{
       text: "👀 Показать сообщение",
-      callback_data: "show-message",
+      callback_data: taskViewCallbackData({ action: "show", ...binding }) ?? "show-message",
     }]],
   };
 }

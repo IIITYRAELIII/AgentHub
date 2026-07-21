@@ -63,6 +63,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
         HOME: fakeHome,
         FAKE_CLAUDE_HOLD_DIR: holdDirectory,
         FAKE_CLAUDE_TRANSCRIPT_ROOT: transcriptRoot,
+        FAKE_CLAUDE_USAGE_DELAY_MS: "3000",
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -240,11 +241,22 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
     "switch to the first live Claude task");
 
   mark = telegram.calls.length;
-  telegram.pushCallback("show-message", switched.result);
+  const durableEye = switched.body.reply_markup.inline_keyboard.flat()
+    .find((button) => button.callback_data === `task-view:s:l:${firstRun.threadId}`);
+  assert.ok(durableEye, "task switch must carry a self-contained task identity");
+  await Promise.all([
+    rm(path.join(dataDir, "telegram-thread-bindings.json"), { force: true }),
+    rm(path.join(dataDir, "telegram-thread-bindings.d"), { recursive: true, force: true }),
+  ]);
+  telegram.pushCallback(durableEye.callback_data, switched.result);
   await telegram.waitForVisibleText(firstPrompt, { after: mark, timeoutMs: 15_000 });
   assert.equal((await activeRuns()).length, 2, "opening a live view must not stop either task");
 
-  // Отмена касается только выбранной задачи.
+  // Медленный /status выполняется вне последовательного polling и не задерживает
+  // следующую критичную команду /cancel.
+  const cancelStartedAt = Date.now();
+  telegram.pushMessage("/status");
+  await delay(100);
   mark = telegram.calls.length;
   telegram.pushMessage("/cancel");
   try {
@@ -259,6 +271,8 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
       + `\nstderr:\n${stderr}`,
     );
   }
+  assert.ok(Date.now() - cancelStartedAt < 2_500,
+    "a slow status probe must not delay cancellation in the Telegram update loop");
   const remaining = await waitFor(async () => {
     const runs = await activeRuns();
     return runs.length === 1 ? runs[0] : null;

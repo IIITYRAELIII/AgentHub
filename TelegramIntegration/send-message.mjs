@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { findContainingProject, loadConfig } from "./config.mjs";
 import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { appendMessageBindings } from "./message-bindings.mjs";
+import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { callTelegramJson, telegramBotApiUrl } from "./telegram-api.mjs";
 import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
 
@@ -298,11 +299,11 @@ export function notificationParts(taskTitle, text, categoryName = "info") {
   };
 }
 
-export function showMessageReplyMarkup() {
+export function showMessageReplyMarkup(binding = null) {
   return {
     inline_keyboard: [[{
         text: "👀 Показать сообщение",
-      callback_data: "show-message",
+      callback_data: taskViewCallbackData({ action: "show", ...binding }) ?? "show-message",
     }]],
   };
 }
@@ -436,7 +437,7 @@ export async function main(args = process.argv.slice(2)) {
         notification.cardPath,
         notification.caption,
         options.silent,
-        showMessageReplyMarkup(),
+        showMessageReplyMarkup(binding),
       ));
     } catch (error) {
       if (error?.retryable === true) {
@@ -447,7 +448,7 @@ export async function main(args = process.argv.slice(2)) {
             file: notification.cardPath,
             caption: notification.caption,
             silent: options.silent,
-            replyMarkup: showMessageReplyMarkup(),
+            replyMarkup: showMessageReplyMarkup(binding),
           }),
           binding,
         });
@@ -462,7 +463,7 @@ export async function main(args = process.argv.slice(2)) {
           notification.fallbackMessage,
           options.silent,
           "HTML",
-          showMessageReplyMarkup(),
+          showMessageReplyMarkup(binding),
           { outbox, binding },
         ));
       }

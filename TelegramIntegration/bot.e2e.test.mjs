@@ -178,7 +178,10 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushCallback(selectFirst.callback_data, currentPickerCall.result);
   const switched = await telegram.waitForText("Текущая задача изменена", { after: mark });
   assert.equal((await readJson(statePath)).threadIds.codex, firstThreadId);
-  assert.equal(switched.body.reply_markup.inline_keyboard[0][0].callback_data, "show-message");
+  assert.equal(
+    switched.body.reply_markup.inline_keyboard[0][0].callback_data,
+    `task-view:s:c:${firstThreadId}`,
+  );
 
   mark = telegram.calls.length;
   telegram.pushCallback(staleArchiveButton.callback_data, picker);
@@ -586,7 +589,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     "the live progress card must be recreated below the compact history");
 
   const showMore = historyNavigation.body.reply_markup.inline_keyboard.flat()
-    .find((button) => button.callback_data.startsWith("history-more:a:"));
+    .find((button) => button.callback_data === `task-view:ha:c:${firstThreadId}:2`);
   assert.ok(showMore, "live history must expose show-more navigation");
   mark = telegram.calls.length;
   telegram.pushCallback(showMore.callback_data, historyNavigation.result);
@@ -594,7 +597,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   await telegram.waitForText("[hold] ход для глазок", { after: mark });
 
   const showThird = secondHistoryNavigation.body.reply_markup.inline_keyboard.flat()
-    .find((button) => button.callback_data === "history-more:a:3");
+    .find((button) => button.callback_data === `task-view:ha:c:${firstThreadId}:3`);
   assert.ok(showThird, "the next history expansion must request exactly one additional exchange");
   mark = telegram.calls.length;
   telegram.pushCallback(showThird.callback_data, secondHistoryNavigation.result);
@@ -692,7 +695,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushCallback(externalButton.callback_data, externalPicker.result);
   const externalSelected = await telegram.waitForText("Текущая задача уже выбрана", { after: mark });
   const externalEye = externalSelected.body.reply_markup.inline_keyboard.flat()
-    .find((button) => button.callback_data === "show-message");
+    .find((button) => button.callback_data === `task-view:s:c:${externalRun.threadId}`);
   assert.ok(externalEye);
   mark = telegram.calls.length;
   telegram.pushCallback(externalEye.callback_data, externalSelected.result);

@@ -2,6 +2,9 @@ import { access } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { INTEGRATION_ROOT, loadConfig, pathInsideOrSame } from "./config.mjs";
 import { resolveClaudeInvocation } from "./claude-invocation.mjs";
+import { resolveCodexExecutable } from "./codex-invocation.mjs";
+import { probeCodexAppServer, probeTelegramConnectivity } from "./doctor-probes.mjs";
+import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
 
 let failed = false;
 let config = null;
@@ -49,22 +52,22 @@ try {
   check("configuration", false, error.message);
 }
 
-function runCommand(command, args) {
+function runCommand(command, args, { timeoutMs = 10_000 } = {}) {
   if (process.platform === "win32" && (
     command === "codex" || command === "claude" || /\.(cmd|bat)$/i.test(command)
   )) {
     return spawnSync("cmd.exe", ["/d", "/s", "/c", command, ...args], {
-      encoding: "utf8", windowsHide: true, timeout: 10_000, input: "",
+      encoding: "utf8", windowsHide: true, timeout: timeoutMs, input: "",
     });
   }
-  return spawnSync(command, args, { encoding: "utf8", windowsHide: true, timeout: 10_000, input: "" });
+  return spawnSync(command, args, { encoding: "utf8", windowsHide: true, timeout: timeoutMs, input: "" });
 }
 
 const claudeInvocation = resolveClaudeInvocation({
   requested: config?.claudeExecutable || "claude",
   prefixArgs: config?.claudeExecutableArgs ?? [],
 });
-const codexCommand = config?.codexExecutable || "codex";
+const codexCommand = await resolveCodexExecutable({ requested: config?.codexExecutable || "" });
 const codexArgs = [...(config?.codexExecutableArgs ?? []), "--version"];
 
 for (const [name, command, args] of [
@@ -77,6 +80,50 @@ for (const [name, command, args] of [
 ]) {
   const result = runCommand(command, args);
   check(name, result.status === 0, (result.stdout || result.stderr || result.error?.message || "").trim());
+}
+
+if (config) {
+  try {
+    const telegramBot = await probeTelegramConnectivity({
+      token: config.token,
+      apiBaseUrl: config.telegramApiBaseUrl,
+    });
+    check(
+      "Telegram Bot API connectivity",
+      true,
+      `${telegramBot.username ? `@${telegramBot.username} · ` : ""}id=${telegramBot.id}`,
+    );
+  } catch (error) {
+    check("Telegram Bot API connectivity", false, error.message);
+  }
+
+  try {
+    const mcp = await unavailableLocalMcpOverrides();
+    const appServer = await probeCodexAppServer({
+      command: codexCommand,
+      prefixArgs: [...config.codexExecutableArgs, ...mcp.args],
+      cwd: config.projectRoot,
+      timeoutMs: Math.min(config.codexRpcTimeoutSeconds * 1000, 15_000),
+    });
+    check(
+      "Codex App Server handshake",
+      true,
+      `${appServer.userAgent || "initialized"}; thread/list OK${mcp.disabled.length ? `; disabled unavailable local MCP: ${mcp.disabled.length}` : ""}`,
+    );
+  } catch (error) {
+    check("Codex App Server handshake", false, error.message);
+  }
+
+  const claudeUsage = runCommand(claudeInvocation.command, [
+    ...claudeInvocation.prefixArgs,
+    "--print", "--output-format", "text", "--permission-mode", "dontAsk", "/usage",
+  ], { timeoutMs: 15_000 });
+  const claudeUsageText = String(claudeUsage.stdout || claudeUsage.stderr || claudeUsage.error?.message || "").trim();
+  check(
+    "Claude Code session probe",
+    claudeUsage.status === 0 && Boolean(claudeUsageText),
+    claudeUsageText,
+  );
 }
 
 if (process.platform === "win32") {

@@ -22,6 +22,12 @@ const childMatch = /\[child:([^\]]+)\]/.exec(prompt);
 const shouldFail = prompt.includes("[fail]");
 const cwd = process.cwd();
 
+if (prompt === "/usage") {
+  sleep(Number(process.env.FAKE_CLAUDE_USAGE_DELAY_MS ?? 0));
+  process.stdout.write("Current session\n5h 80% · resets in 2h\n");
+  process.exit(0);
+}
+
 if (childMatch && holdDirectory) {
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     stdio: "ignore",

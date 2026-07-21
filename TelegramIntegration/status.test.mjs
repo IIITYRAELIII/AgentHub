@@ -292,4 +292,9 @@ test("task switch messages expose the same live-message callback as notification
       callback_data: "show-message",
     }]],
   });
+  assert.equal(showLastMessageReplyMarkup({
+    provider: "claude",
+    threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
+  }).inline_keyboard[0][0].callback_data,
+  "task-view:s:l:019f70ed-d8e8-7b21-bcd1-b6f57bcdf013");
 });

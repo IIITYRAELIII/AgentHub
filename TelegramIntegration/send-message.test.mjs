@@ -274,6 +274,11 @@ test("bound notifications expose the show-message callback", () => {
       callback_data: "show-message",
     }]],
   });
+  assert.equal(showMessageReplyMarkup({
+    provider: "codex",
+    threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
+  }).inline_keyboard[0][0].callback_data,
+  "task-view:s:c:019f70ed-d8e8-7b21-bcd1-b6f57bcdf013");
 });
 
 test("retryable notification delivery preserves the image in the outbox", () => {
