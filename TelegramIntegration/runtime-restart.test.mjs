@@ -36,6 +36,16 @@ test("independent Windows launch is delegated to WMI instead of the exiting pare
   assert.equal(result.options.detached, true);
 });
 
+test("visual basic runtime launcher uses the windowless Windows script host", () => {
+  const result = independentWindowsLauncherInvocation({
+    environment: { SystemRoot: "C:\\Windows" },
+    launcher: "C:\\Runtime Path\\launch.vbs",
+  });
+  assert.match(result.options.env.TELEGRAM_RUNTIME_TARGET_COMMAND, /wscript\.exe/);
+  assert.match(result.options.env.TELEGRAM_RUNTIME_TARGET_COMMAND, /\/\/B \/\/Nologo/);
+  assert.match(result.options.env.TELEGRAM_RUNTIME_TARGET_COMMAND, /"C:\\Runtime Path\\launch\.vbs"/);
+});
+
 test("Windows WMI launcher survives completion of its helper process", {
   skip: process.platform !== "win32",
 }, async () => {

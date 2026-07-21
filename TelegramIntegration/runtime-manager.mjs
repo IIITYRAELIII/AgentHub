@@ -25,6 +25,7 @@ const TOP_LEVEL_FILES = new Set([
   "requirements.txt",
   "requirements-tts.txt",
   "runtime-launch.ps1",
+  "runtime-launch.vbs",
   "runtime-launch.sh",
   "start.ps1",
   "transcribe.py",
@@ -128,9 +129,13 @@ export async function deployRuntime({
       updatedAt: new Date().toISOString(),
     };
     await atomicJson(layout.currentFile, pointer);
-    const launcherName = process.platform === "win32" ? "runtime-launch.ps1" : "runtime-launch.sh";
-    await cp(path.join(sourceRoot, launcherName), layout.launcherFile, { force: true });
-    if (process.platform !== "win32") await chmod(layout.launcherFile, 0o700);
+    if (process.platform === "win32") {
+      await cp(path.join(sourceRoot, "runtime-launch.vbs"), layout.launcherFile, { force: true });
+      await cp(path.join(sourceRoot, "runtime-launch.ps1"), layout.powershellLauncherFile, { force: true });
+    } else {
+      await cp(path.join(sourceRoot, "runtime-launch.sh"), layout.launcherFile, { force: true });
+      await chmod(layout.launcherFile, 0o700);
+    }
     await pruneRuntimeReleases(layout, new Set([pointer.current, pointer.previous].filter(Boolean)));
     return { layout, releaseId, releaseRoot };
   } catch (error) {

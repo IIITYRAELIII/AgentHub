@@ -10,6 +10,7 @@ if (Test-Path -LiteralPath $RuntimeConfig) {
 $Startup = [Environment]::GetFolderPath('Startup')
 $Shell = New-Object -ComObject WScript.Shell
 $RuntimeLauncher = Join-Path $RuntimeRoot 'launch.ps1'
+$RuntimeGuiLauncher = Join-Path $RuntimeRoot 'launch.vbs'
 $BotEntryPoint = if (Test-Path -LiteralPath $RuntimeLauncher) {
     $RuntimeLauncher
 } else {
@@ -17,8 +18,13 @@ $BotEntryPoint = if (Test-Path -LiteralPath $RuntimeLauncher) {
 }
 
 $BotShortcut = $Shell.CreateShortcut((Join-Path $Startup 'Codex Telegram Bot.lnk'))
-$BotShortcut.TargetPath = (Get-Command powershell.exe).Source
-$BotShortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$BotEntryPoint`""
+if (Test-Path -LiteralPath $RuntimeGuiLauncher) {
+    $BotShortcut.TargetPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
+    $BotShortcut.Arguments = "//B //Nologo `"$RuntimeGuiLauncher`""
+} else {
+    $BotShortcut.TargetPath = (Get-Command powershell.exe).Source
+    $BotShortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$BotEntryPoint`""
+}
 $BotShortcut.WorkingDirectory = Split-Path -Parent $BotEntryPoint
 $BotShortcut.WindowStyle = 7
 $BotShortcut.Description = 'Telegram bridge for local Codex'

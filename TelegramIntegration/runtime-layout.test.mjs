@@ -15,6 +15,10 @@ test("runtimeLayout groups config, state and versioned releases", () => {
   const layout = runtimeLayout("C:\\Runtime");
   assert.equal(layout.configFile, path.resolve("C:\\Runtime", "config.json"));
   assert.equal(layout.dataDir, path.resolve("C:\\Runtime", "data"));
+  if (process.platform === "win32") {
+    assert.equal(layout.launcherFile, path.resolve("C:\\Runtime", "launch.vbs"));
+    assert.equal(layout.powershellLauncherFile, path.resolve("C:\\Runtime", "launch.ps1"));
+  }
   assert.equal(runtimeReleaseDirectory(layout.root, "release-1"), path.resolve("C:\\Runtime", "releases", "release-1"));
   assert.throws(() => runtimeReleaseDirectory(layout.root, "../escape"), /unsupported characters/);
 });

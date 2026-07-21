@@ -29,7 +29,8 @@ export function runtimeLayout(runtimeRoot = defaultRuntimeRoot()) {
     dataDir: path.join(root, "data"),
     currentFile: path.join(root, "current.json"),
     activationFile: path.join(root, "active.json"),
-    launcherFile: path.join(root, process.platform === "win32" ? "launch.ps1" : "launch.sh"),
+    launcherFile: path.join(root, process.platform === "win32" ? "launch.vbs" : "launch.sh"),
+    powershellLauncherFile: path.join(root, "launch.ps1"),
   };
 }
 

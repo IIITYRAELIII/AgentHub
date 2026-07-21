@@ -11,17 +11,26 @@ export function independentWindowsLauncherInvocation({
   const powershell = environment.SystemRoot
     ? path.join(environment.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
     : "powershell.exe";
-  const targetCommandLine = [
-    quotedWindowsArgument(powershell),
-    "-NoProfile",
-    "-NonInteractive",
-    "-WindowStyle",
-    "Hidden",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    quotedWindowsArgument(path.resolve(launcher)),
-  ].join(" ");
+  const resolvedLauncher = path.resolve(launcher);
+  const isVisualBasicLauncher = path.extname(resolvedLauncher).toLowerCase() === ".vbs";
+  const targetCommandLine = isVisualBasicLauncher
+    ? [
+      quotedWindowsArgument(path.join(environment.SystemRoot ?? "C:\\Windows", "System32", "wscript.exe")),
+      "//B",
+      "//Nologo",
+      quotedWindowsArgument(resolvedLauncher),
+    ].join(" ")
+    : [
+      quotedWindowsArgument(powershell),
+      "-NoProfile",
+      "-NonInteractive",
+      "-WindowStyle",
+      "Hidden",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      quotedWindowsArgument(resolvedLauncher),
+    ].join(" ");
   return {
     command: powershell,
     args: [
@@ -33,7 +42,7 @@ export function independentWindowsLauncherInvocation({
         + "if ($result.ReturnValue -ne 0) { throw ('Win32_Process.Create failed: ' + $result.ReturnValue) }",
     ],
     options: {
-      cwd: path.dirname(path.resolve(launcher)),
+      cwd: path.dirname(resolvedLauncher),
       detached: true,
       stdio: "ignore",
       windowsHide: true,

@@ -7,7 +7,8 @@ if (-not (Test-Path -LiteralPath $Bot)) {
     throw "TelegramIntegration runtime release is incomplete: $Bot"
 }
 $env:TELEGRAM_CODEX_CONFIG = Join-Path $RuntimeRoot 'config.json'
-$env:TELEGRAM_INTEGRATION_LAUNCHER = $PSCommandPath
+$GuiLauncher = Join-Path $RuntimeRoot 'launch.vbs'
+$env:TELEGRAM_INTEGRATION_LAUNCHER = if (Test-Path -LiteralPath $GuiLauncher) { $GuiLauncher } else { $PSCommandPath }
 $env:TELEGRAM_INTEGRATION_RUNTIME_ROOT = $RuntimeRoot
 Set-Location $ReleaseRoot
 & node $Bot
