@@ -1,0 +1,161 @@
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
+import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
+
+const DEFAULT_MAX_DIFF_BYTES = 64 * 1024;
+
+function runGit(args, { cwd, env = {}, timeoutMs = 20_000, maxOutputBytes = 1024 * 1024 } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn("git", args, {
+      cwd,
+      env: { ...process.env, ...env },
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    let stdout = "";
+    let stderr = "";
+    let stdoutBytes = 0;
+    let stdoutTruncated = false;
+    let settled = false;
+    const append = (current, chunk, decoder, isStdout) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (isStdout) {
+        const remaining = Math.max(0, maxOutputBytes - stdoutBytes);
+        stdoutBytes += buffer.length;
+        if (buffer.length > remaining) stdoutTruncated = true;
+        return current + decoder.write(buffer.subarray(0, remaining));
+      }
+      return current + decoder.write(buffer);
+    };
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
+      resolve({ ...result, stdout, stderr, stdoutTruncated });
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish({ code: null, error: new Error(`git timed out after ${timeoutMs} ms`) });
+    }, timeoutMs);
+    child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk, stdoutDecoder, true); });
+    child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk, stderrDecoder, false); });
+    child.on("error", (error) => finish({ code: null, error }));
+    child.on("close", (code) => finish({ code }));
+  });
+}
+
+async function gitText(args, options) {
+  const result = await runGit(args, options);
+  if (result.error || result.code !== 0) {
+    throw result.error ?? new Error(result.stderr.trim() || `git ${args[0]} exited with ${result.code}`);
+  }
+  return result.stdout.trim();
+}
+
+async function worktreeTree(repoRoot, dataDir, token = randomUUID()) {
+  const indexDir = path.join(dataDir, "task-diff-indexes");
+  const indexPath = path.join(indexDir, `${token}.index`);
+  await mkdir(indexDir, { recursive: true });
+  const env = { GIT_INDEX_FILE: indexPath };
+  try {
+    const gitIndex = await gitText(["rev-parse", "--git-path", "index"], { cwd: repoRoot });
+    const sourceIndex = path.isAbsolute(gitIndex) ? gitIndex : path.resolve(repoRoot, gitIndex);
+    try {
+      await copyFile(sourceIndex, indexPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      await gitText(["read-tree", "--empty"], { cwd: repoRoot, env });
+    }
+    const relativeIndexDir = path.relative(repoRoot, indexDir);
+    const indexInsideRepo = relativeIndexDir
+      && relativeIndexDir !== ".."
+      && !relativeIndexDir.startsWith(`..${path.sep}`)
+      && !path.isAbsolute(relativeIndexDir);
+    const addArgs = ["add", "-A", "--", "."];
+    if (indexInsideRepo) {
+      addArgs.push(`:(exclude)${relativeIndexDir.split(path.sep).join("/")}/**`);
+    }
+    await gitText(addArgs, { cwd: repoRoot, env, timeoutMs: 60_000 });
+    return await gitText(["write-tree"], { cwd: repoRoot, env });
+  } finally {
+    await Promise.all([
+      rm(indexPath, { force: true }),
+      rm(`${indexPath}.lock`, { force: true }),
+    ].map((operation) => operation.catch(() => {})));
+  }
+}
+
+export async function captureTaskGitBaseline(projectRoot, dataDir, token = randomUUID()) {
+  try {
+    const repoRoot = await gitText(["rev-parse", "--show-toplevel"], { cwd: projectRoot });
+    const tree = await worktreeTree(repoRoot, dataDir, `${token}-before`);
+    const indexTree = await gitText(["write-tree"], { cwd: repoRoot }).catch(() => null);
+    return { repoRoot: path.resolve(repoRoot), tree, indexTree, capturedAt: new Date().toISOString() };
+  } catch {
+    return null;
+  }
+}
+
+export async function taskGitDiff(
+  baseline,
+  dataDir,
+  token = randomUUID(),
+  { maxOutputBytes = DEFAULT_MAX_DIFF_BYTES } = {},
+) {
+  if (!baseline?.repoRoot || !baseline?.tree) return null;
+  try {
+    const currentTree = await worktreeTree(baseline.repoRoot, dataDir, `${token}-after`);
+    const currentIndexTree = await gitText(["write-tree"], { cwd: baseline.repoRoot }).catch(() => null);
+    const worktreeChanged = currentTree !== baseline.tree;
+    const indexChanged = Boolean(
+      baseline.indexTree && currentIndexTree && currentIndexTree !== baseline.indexTree,
+    );
+    if (!worktreeChanged && !indexChanged) return "";
+    const leftTree = worktreeChanged ? baseline.tree : baseline.indexTree;
+    const rightTree = worktreeChanged ? currentTree : currentIndexTree;
+    const result = await runGit([
+      "diff", "--no-ext-diff", "--find-renames", leftTree, rightTree, "--",
+    ], {
+      cwd: baseline.repoRoot,
+      maxOutputBytes,
+      timeoutMs: 30_000,
+    });
+    if (result.error || result.code !== 0) throw result.error ?? new Error(result.stderr.trim());
+    let diff = result.stdout.trim();
+    if (worktreeChanged && indexChanged) {
+      const stagedFiles = await gitText([
+        "diff", "--name-status", "--find-renames", baseline.indexTree, currentIndexTree, "--",
+      ], { cwd: baseline.repoRoot, maxOutputBytes: 16 * 1024 });
+      if (stagedFiles) diff += `\n\nИзменения индекса (staged):\n${stagedFiles}`;
+    }
+    if (result.stdoutTruncated) {
+      const files = await gitText([
+        "diff", "--name-status", "--find-renames", baseline.tree, currentTree, "--",
+      ], { cwd: baseline.repoRoot, maxOutputBytes: 16 * 1024 });
+      diff += `\n\n… diff усечён до ${Math.round(maxOutputBytes / 1024)} КиБ.\n\nИзменённые файлы:\n${files}`;
+    }
+    return diff;
+  } catch {
+    return null;
+  }
+}
+
+export async function cleanupTaskGitIndexes(dataDir) {
+  const indexDir = path.join(dataDir, "task-diff-indexes");
+  let entries;
+  try {
+    entries = await readdir(indexDir, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return 0;
+    throw error;
+  }
+  const stale = entries.filter((entry) => entry.isFile() && entry.name.includes(".index"));
+  await Promise.all(stale.map((entry) => rm(path.join(indexDir, entry.name), { force: true })));
+  return stale.length;
+}

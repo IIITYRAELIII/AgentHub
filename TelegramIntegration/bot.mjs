@@ -51,6 +51,8 @@ import {
 import { randomStatusHeaderFileName } from "./status-header.mjs";
 import { formatTaskTokenUsage } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
+import { captureTaskGitBaseline, cleanupTaskGitIndexes, taskGitDiff } from "./task-git-diff.mjs";
+import { TaskDiffStore } from "./task-diff-store.mjs";
 import { callTelegramJson, telegramBotApiUrl, telegramFileApiUrl } from "./telegram-api.mjs";
 import { parsePendingInputCallback, pendingInputKeyboard } from "./deferred-input.mjs";
 import {
@@ -196,6 +198,7 @@ const INSTANCE_LOCK_FILE = path.join(config.dataDir, "bot.lock");
 const SPEECH_TEXTS_FILE = path.join(config.dataDir, "speech-texts.json");
 const PINNED_TASK_TITLES_FILE = path.join(config.dataDir, "pinned-task-titles.json");
 const TASK_SYNC_FILE = path.join(config.dataDir, "task-sync.json");
+const TASK_DIFFS_FILE = path.join(config.dataDir, "task-diffs.json");
 const TELEGRAM_LIMIT = 3900;
 const THREAD_LIST_LIMIT = 10;
 const TASK_PICKER_PAGE_SIZE = 8;
@@ -367,7 +370,8 @@ const cancelledManagedClaudeTasks = new Map();
 const pendingInputs = new Map();
 const queuedInputs = new Map();
 const queueTimers = new Map();
-const taskDiffs = new Map();
+const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
+await taskDiffs.load();
 const lastTaskMessages = new Map();
 const lastSeenTaskTurnIds = new Map();
 const uiContextNonce = randomUUID();
@@ -523,6 +527,15 @@ function setBoundedMapValue(map, key, value, limit) {
   if (map.has(key)) map.delete(key);
   map.set(key, value);
   while (map.size > limit) map.delete(map.keys().next().value);
+}
+
+async function persistTaskDiff(key, value) {
+  taskDiffs.remember(key, value);
+  try {
+    await taskDiffs.set(key, value);
+  } catch (error) {
+    console.error("Cannot persist task diff:", error.message);
+  }
 }
 
 function setBoundedObjectValue(object, key, value, limit) {
@@ -1184,6 +1197,13 @@ try {
   }
 } catch (error) {
   console.warn("Cannot clean orphaned Claude run files:", error.message);
+}
+
+try {
+  const removed = await cleanupTaskGitIndexes(config.dataDir);
+  if (removed) console.log(`Removed ${removed} orphaned task diff index(es).`);
+} catch (error) {
+  console.warn("Cannot clean orphaned task diff indexes:", error.message);
 }
 
 try {
@@ -2135,12 +2155,14 @@ async function beginRun(input, target = null) {
     observer: false,
     displayRequested: true,
     latestDiff: "",
+    gitBaseline: null,
     process: null,
   };
   taskRuns.add(run);
   invalidateTaskCatalog();
-  setBoundedMapValue(taskDiffs, taskRunKey(run), "", 100);
+  await persistTaskDiff(taskRunKey(run), "");
   if (isSelectedRun(run)) latestDiff = "";
+  run.gitBaseline = await captureTaskGitBaseline(run.projectRoot, config.dataDir, run.id);
   syncTaskRun(run);
   await saveState();
   run.progressStartTimer = setTimeout(() => {
@@ -2692,15 +2714,13 @@ function spawnCapture(command, args, options = {}) {
   });
 }
 
-async function readGitDiff(projectRoot = activeProjectRoot) {
-  const result = await spawnCapture("git", ["diff", "--no-ext-diff", "--"], {
-    cwd: projectRoot,
-    timeoutMs: 20_000,
-    maxOutputBytes: 64 * 1024,
-  });
-  if (result.code !== 0) return "";
-  const suffix = result.stdoutTruncated ? "\n\n… diff усечён до 64 КиБ." : "";
-  return `${result.stdout.trim()}${suffix}`;
+async function refreshTaskDiff(run) {
+  if (!run) return "";
+  const captured = await taskGitDiff(run.gitBaseline, config.dataDir, run.id);
+  if (captured !== null) run.latestDiff = captured;
+  await persistTaskDiff(taskRunKey(run), run.latestDiff ?? "");
+  if (isSelectedRun(run)) latestDiff = run.latestDiff ?? "";
+  return run.latestDiff ?? "";
 }
 
 async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton = false } = {}) {
@@ -2978,9 +2998,7 @@ async function finishClaudeRun(run, { spawnError = null } = {}) {
       }
       await saveState();
     }
-    run.latestDiff = await readGitDiff(run.projectRoot);
-    setBoundedMapValue(taskDiffs, taskRunKey(run), run.latestDiff, 100);
-    if (isSelectedRun(run)) latestDiff = run.latestDiff;
+    await refreshTaskDiff(run);
     const answer = String(result.result ?? "").trim()
       || run.claudeFailureText
       || (result.is_error ? "Claude Code завершил задачу с ошибкой." : "Задача завершена.");
@@ -3086,7 +3104,7 @@ async function handleCodexMessage(message) {
   if (method === "thread/tokenUsage/updated") trackTurnTokenUsage(params);
   if (method === "turn/diff/updated" && run) {
     run.latestDiff = params.diff ?? run.latestDiff;
-    setBoundedMapValue(taskDiffs, taskRunKey(run), run.latestDiff, 100);
+    taskDiffs.remember(taskRunKey(run), run.latestDiff);
     if (isSelectedRun(run)) latestDiff = run.latestDiff;
   }
   if (method === "item/agentMessage/delta" && run) {
@@ -3133,6 +3151,7 @@ async function handleCodexMessage(message) {
     const error = params.turn?.error?.message;
     const answer = await completedCodexAnswer(run, completedTurnId, params.turn)
       || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
+    await refreshTaskDiff(run);
     await finishProgress(run, error || status === "failed" ? `Задача завершилась с ошибкой: ${error ?? status}` : "Задача завершена.");
     await finalizeRunDelivery(run, {
       answer,
@@ -3251,6 +3270,7 @@ function observedRun(binding, targetChatId, snapshot, turnId = null) {
     observer: true,
     displayRequested: false,
     latestDiff: "",
+    gitBaseline: null,
     process: null,
   };
   taskRuns.add(run);
@@ -3260,6 +3280,11 @@ function observedRun(binding, targetChatId, snapshot, turnId = null) {
     stage: snapshot.stage,
     answer: snapshot.answer,
     activityAtMs: snapshot.activityAtMs ?? snapshot.modifiedAtMs ?? Date.now(),
+  });
+  void captureTaskGitBaseline(run.projectRoot, config.dataDir, run.id).then(async (baseline) => {
+    if (taskRuns.forTask(run) !== run) return;
+    run.gitBaseline = baseline;
+    await saveState();
   });
   return run;
 }
@@ -3323,10 +3348,12 @@ async function finishObservedRun(run, snapshot) {
   const answer = String(snapshot?.answer ?? "").trim()
     || savedLastTaskMessage(run)
     || "Ход завершён без текстового ответа.";
+  await refreshTaskDiff(run);
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
   await finalizeRunDelivery(run, {
     answer,
     deliver: true,
+    includeDiff: true,
     description: "финальный ответ наблюдаемого хода",
   });
 }
@@ -3366,6 +3393,7 @@ async function finishManagedCodexSnapshot(run, snapshot) {
     || String(snapshot?.answer ?? "").trim()
     || run.responseText.trim()
     || "Ход завершён без текстового ответа.";
+  await refreshTaskDiff(run);
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
   await finalizeRunDelivery(run, {
     answer,
@@ -5098,11 +5126,15 @@ async function handleTelegramMessage(message) {
     const snapshot = currentStatusSnapshot(message.chat.id);
     scheduleInteractiveJob("Текущая задача", message.chat.id, () => sendStatus(snapshot));
   } else if (text === "/diff") {
-    const diff = latestDiff;
+    const target = selectedTask();
+    const run = taskRuns.forTask(target);
     scheduleInteractiveJob(
       "Изменения",
       message.chat.id,
-      () => sendLongMessage(diff || "В последней задаче изменений файлов нет.", { maxParts: 8 }),
+      async () => {
+        const diff = run ? await refreshTaskDiff(run) : taskDiffs.get(taskRunKey(target)) ?? "";
+        await sendLongMessage(diff || "В выбранной задаче изменений файлов нет.", { maxParts: 8 });
+      },
     );
   } else if (text === "/cancel") {
     const run = selectedRun();

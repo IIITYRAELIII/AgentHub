@@ -30,6 +30,15 @@ function callbackButton(call, action) {
     .find((button) => callbackAction(button.callback_data) === action);
 }
 
+function multipartField(call, name) {
+  const marker = `name="${name}"\r\n\r\n`;
+  const start = call.rawBody.indexOf(marker);
+  if (start < 0) return "";
+  const valueStart = start + marker.length;
+  const valueEnd = call.rawBody.indexOf("\r\n--", valueStart);
+  return call.rawBody.slice(valueStart, valueEnd < 0 ? undefined : valueEnd);
+}
+
 test("bot routes tasks, live views, queues, parallel turns, failures and restarts headlessly", { timeout: 60_000 }, async (t) => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-bot-e2e-"));
   const dataDir = path.join(temporaryRoot, "data");
@@ -345,6 +354,9 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const normalFinal = await telegram.waitForText("Готово: [slow] обычное завершение", { after: mark });
   assert.match(normalFinal.body.text, /За задачу:/);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0, "normal turn completion");
+  mark = telegram.calls.length;
+  telegram.pushMessage("/diff");
+  await telegram.waitForText("diff --fake", { after: mark });
 
   const normalSpeechButton = normalFinal.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data.startsWith("speech:"));
@@ -742,8 +754,14 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     "a short external turn completed between polls must still deliver its final answer");
 
   mark = telegram.calls.length;
+  telegram.pushMessage("/new");
+  await telegram.waitForText("Создан новый контекст Codex", { after: mark });
+  mark = telegram.calls.length;
   telegram.pushMessage("/status");
-  await telegram.waitForCall("sendPhoto", () => true, { after: mark });
+  const statusCard = await telegram.waitForCall("sendPhoto", () => true, { after: mark });
+  const statusMarkup = JSON.parse(multipartField(statusCard, "reply_markup"));
+  assert.equal(statusMarkup.inline_keyboard.length, 4);
+  assert.match(multipartField(statusCard, "caption"), /🧵НЕДАВНИЕ ЗАДАЧИ🧵/);
 
   mark = telegram.calls.length;
   telegram.pushMessage("/agent");
