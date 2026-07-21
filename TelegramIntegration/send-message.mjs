@@ -7,6 +7,7 @@ import { findContainingProject, loadConfig } from "./config.mjs";
 import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { appendMessageBindings } from "./message-bindings.mjs";
 import { callTelegramJson, telegramBotApiUrl } from "./telegram-api.mjs";
+import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 const TELEGRAM_CAPTION_LIMIT = 1024;
@@ -507,7 +508,20 @@ export async function main(args = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error) => {
+  const run = async () => {
+    const args = process.argv.slice(2);
+    if (process.env.TELEGRAM_INTEGRATION_DIRECT !== "1") {
+      try {
+        const result = await forwardRuntimeCommand("send-message", args);
+        if (result) console.log(result);
+        return;
+      } catch (error) {
+        if (!runtimeCommandUnavailable(error)) throw error;
+      }
+    }
+    await main(args);
+  };
+  run().catch((error) => {
     console.error(`Cannot send Telegram message: ${error.message}`);
     process.exitCode = 1;
   });

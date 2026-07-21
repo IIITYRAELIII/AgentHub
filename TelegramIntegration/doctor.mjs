@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
-import { loadConfig } from "./config.mjs";
+import { INTEGRATION_ROOT, loadConfig, pathInsideOrSame } from "./config.mjs";
 import { resolveClaudeInvocation } from "./claude-invocation.mjs";
 
 let failed = false;
@@ -14,6 +14,16 @@ function check(label, ok, detail = "") {
 try {
   config = await loadConfig();
   check("configuration", true, config.configPath);
+  check(
+    "external control-plane config",
+    !pathInsideOrSame(config.configPath, INTEGRATION_ROOT),
+    config.configPath,
+  );
+  check(
+    "external runtime state",
+    !pathInsideOrSame(config.dataDir, INTEGRATION_ROOT),
+    config.dataDir,
+  );
   check("AI provider", true, config.provider);
   for (const project of config.projects) {
     await access(project.path).then(

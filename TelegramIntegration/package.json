@@ -8,8 +8,12 @@
     "send": "node send-message.mjs",
     "render-code": "python render-code-images.py",
     "send-images": "node send-images.mjs",
+    "runtime:deploy": "node runtime-manager.mjs deploy",
+    "runtime:activate": "node runtime-manager.mjs activate",
+    "runtime:status": "node runtime-manager.mjs status",
+    "runtime:rollback": "node runtime-manager.mjs rollback",
     "check": "node --no-warnings --experimental-vm-modules syntax-check.mjs",
-    "test": "node --test background-job-queue.test.mjs callback-context.test.mjs claude.test.mjs claude-invocation.test.mjs claude-run-io.test.mjs codex-approvals.test.mjs codex-recovery.test.mjs codex-settings.test.mjs config.test.mjs status.test.mjs status-header.test.mjs telegram-api.test.mjs telegram-message.test.mjs message-bindings.test.mjs instance-lock.test.mjs task-runs.test.mjs task-catalog.test.mjs task-sync-store.test.mjs task-history.test.mjs deferred-input.test.mjs last-message.test.mjs state-store.test.mjs delivery-outbox.test.mjs rotating-log.test.mjs progress-heartbeat.test.mjs poll-retry.test.mjs local-mcp-preflight.test.mjs send-message.test.mjs send-images.test.mjs token-usage.test.mjs",
+    "test": "node --test background-job-queue.test.mjs callback-context.test.mjs claude.test.mjs claude-invocation.test.mjs claude-run-io.test.mjs codex-approvals.test.mjs codex-recovery.test.mjs codex-settings.test.mjs config.test.mjs status.test.mjs status-header.test.mjs telegram-api.test.mjs telegram-message.test.mjs message-bindings.test.mjs instance-lock.test.mjs task-runs.test.mjs task-catalog.test.mjs task-sync-store.test.mjs task-history.test.mjs deferred-input.test.mjs last-message.test.mjs state-store.test.mjs delivery-outbox.test.mjs rotating-log.test.mjs progress-heartbeat.test.mjs poll-retry.test.mjs local-mcp-preflight.test.mjs runtime-command.test.mjs runtime-cutover.test.mjs runtime-layout.test.mjs runtime-manager.test.mjs runtime-restart.test.mjs send-message.test.mjs send-images.test.mjs token-usage.test.mjs",
     "test:e2e": "node --test --test-concurrency=1 bot.e2e.test.mjs bot.claude.e2e.test.mjs",
     "test:all": "npm run check && npm test && npm run test:e2e",
     "doctor": "node doctor.mjs"

@@ -1,13 +1,27 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { CLAUDE_PERMISSION_MODES } from "./claude.mjs";
 import { CODEX_COLLABORATION_MODES, CODEX_REASONING_EFFORTS } from "./codex-settings.mjs";
+import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 
 export const INTEGRATION_ROOT = path.resolve(import.meta.dirname);
 
-function resolveFromIntegration(value) {
-  return path.resolve(INTEGRATION_ROOT, value);
+export async function resolveConfigPath({
+  environment = process.env,
+  integrationRoot = INTEGRATION_ROOT,
+  accessImpl = access,
+} = {}) {
+  if (environment.TELEGRAM_CODEX_CONFIG) return path.resolve(environment.TELEGRAM_CODEX_CONFIG);
+  const layout = runtimeLayout(defaultRuntimeRoot({ environment }));
+  const external = layout.configFile;
+  const activation = layout.activationFile;
+  try {
+    await Promise.all([accessImpl(external), accessImpl(activation)]);
+    return external;
+  } catch {
+    return path.join(integrationRoot, "config.json");
+  }
 }
 
 function requireIntegerArray(value, name) {
@@ -140,9 +154,8 @@ function loadCodexModels(raw) {
 }
 
 export async function loadConfig() {
-  const configPath = path.resolve(
-    process.env.TELEGRAM_CODEX_CONFIG ?? path.join(INTEGRATION_ROOT, "config.json"),
-  );
+  const configPath = await resolveConfigPath();
+  const configDirectory = path.dirname(configPath);
   let raw;
   try {
     raw = JSON.parse(await readFile(configPath, "utf8"));
@@ -168,7 +181,7 @@ export async function loadConfig() {
   const allowedChatIds = raw.allowedChatIds == null
     ? null
     : requireIntegerArray(raw.allowedChatIds, "allowedChatIds");
-  const dataDir = resolveFromIntegration(raw.dataDir ?? "data");
+  const dataDir = path.resolve(configDirectory, raw.dataDir ?? "data");
   const defaultTtsVenv = process.platform === "win32"
     ? path.join(process.env.LOCALAPPDATA ?? INTEGRATION_ROOT, "TelegramIntegration", "tts-venv")
     : path.join(INTEGRATION_ROOT, ".venv-tts");
@@ -269,6 +282,16 @@ export async function loadConfig() {
         defaultTtsVenv,
         process.platform === "win32" ? path.join("Scripts", "python.exe") : path.join("bin", "python"),
       ),
+    ),
+    whisperModelDir: path.resolve(
+      process.env.WHISPER_MODEL_DIR
+        ?? (raw.whisperModelDir ? path.resolve(configDirectory, raw.whisperModelDir) : null)
+        ?? path.join(dataDir, "models", "whisper"),
+    ),
+    ttsCacheDir: path.resolve(
+      process.env.TTS_CACHE_DIR
+        ?? (raw.ttsCacheDir ? path.resolve(configDirectory, raw.ttsCacheDir) : null)
+        ?? path.join(dataDir, "models", "silero"),
     ),
     dataDir,
     stateFile: path.join(dataDir, "state.json"),

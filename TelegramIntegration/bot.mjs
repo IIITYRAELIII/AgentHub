@@ -131,6 +131,9 @@ import {
   taskExecutionRuntimeShortLabel,
   taskCatalogCallback,
 } from "./task-catalog.mjs";
+import { botReplacementInvocation } from "./runtime-restart.mjs";
+import { RuntimeCommandServer } from "./runtime-command.mjs";
+import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 
 const config = await loadConfig();
 const defaultDataDirectory = path.join(INTEGRATION_ROOT, "data");
@@ -198,7 +201,8 @@ const PYTHON_EXE = config.pythonExe;
 const TTS_PYTHON_EXE = config.ttsPythonExe;
 const TRANSCRIBE_SCRIPT = path.join(import.meta.dirname, "transcribe.py");
 const TTS_WORKER_SCRIPT = path.join(import.meta.dirname, "tts_worker.py");
-const TTS_CACHE_DIR = path.join(INTEGRATION_ROOT, ".silero-models");
+const WHISPER_MODEL_DIR = config.whisperModelDir;
+const TTS_CACHE_DIR = config.ttsCacheDir;
 const AUDIO_DIR = config.audioDir;
 const IMAGE_DIR = path.join(config.dataDir, "images");
 const STATUS_HEADER_DIR = path.join(import.meta.dirname, "assets", "status");
@@ -266,6 +270,34 @@ await mkdir(path.dirname(STATE_FILE), { recursive: true });
 
 const instanceGuard = new SingleInstanceGuard({ dataDir: config.dataDir, lockFile: INSTANCE_LOCK_FILE });
 await instanceGuard.acquire();
+const runtimeCommandRoot = process.env.TELEGRAM_INTEGRATION_RUNTIME_ROOT
+  ?? (process.env.TELEGRAM_CODEX_CONFIG ? path.dirname(config.configPath) : defaultRuntimeRoot());
+const runtimeCommandServer = new RuntimeCommandServer({
+  runtimeRoot: runtimeCommandRoot,
+  handler: async (request) => {
+    const script = request.command === "send-message" ? "send-message.mjs" : "send-images.mjs";
+    const result = await spawnCapture(
+      process.execPath,
+      [path.join(import.meta.dirname, script), ...request.args],
+      {
+        cwd: request.cwd,
+        env: {
+          ...process.env,
+          ...request.environment,
+          TELEGRAM_CODEX_CONFIG: config.configPath,
+          TELEGRAM_INTEGRATION_DIRECT: "1",
+        },
+        timeoutMs: 180_000,
+        maxOutputBytes: 256 * 1024,
+      },
+    );
+    if (result.code !== 0) {
+      throw new Error(result.stderr.trim() || result.error?.message || `${script} failed`);
+    }
+    return result.stdout.trim();
+  },
+});
+await runtimeCommandServer.start();
 
 let updateOffset = 0;
 let chatId = null;
@@ -4008,17 +4040,13 @@ async function performRestart() {
   stopRuntimeTimers();
   await stopCodexAppServerTree();
   stopTtsWorker();
+  await runtimeCommandServer.close();
   await instanceGuard.release();
-  const replacement = spawn(
-    process.execPath,
-    [path.join(import.meta.dirname, "bot.mjs")],
-    {
-      cwd: INTEGRATION_ROOT,
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-    },
-  );
+  const invocation = botReplacementInvocation({
+    botFile: path.join(import.meta.dirname, "bot.mjs"),
+    integrationRoot: INTEGRATION_ROOT,
+  });
+  const replacement = spawn(invocation.command, invocation.args, invocation.options);
   replacement.unref();
   // Процессы Claude намеренно переживают перезапуск: новый бот подхватит их
   // по сохранённому PID и файлу вывода.
@@ -4132,7 +4160,12 @@ function runTranscription(audioPath) {
     const worker = spawn(PYTHON_EXE, [TRANSCRIBE_SCRIPT, audioPath], {
       cwd: activeProjectRoot,
       windowsHide: true,
-      env: { ...process.env, PYTHONUTF8: "1", WHISPER_MODEL: config.whisperModel },
+      env: {
+        ...process.env,
+        PYTHONUTF8: "1",
+        WHISPER_MODEL: config.whisperModel,
+        WHISPER_MODEL_DIR,
+      },
     });
     let stdout = "";
     let stderr = "";
@@ -5311,6 +5344,7 @@ async function shutdown(signal) {
     if (run.provider === "codex") run.process?.kill();
   }
   stopTtsWorker();
+  await runtimeCommandServer.close();
   await Promise.allSettled([
     stateWriteQueue,
     speechWriteQueue,

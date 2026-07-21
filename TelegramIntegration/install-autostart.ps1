@@ -3,11 +3,17 @@ $ErrorActionPreference = 'Stop'
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $Startup = [Environment]::GetFolderPath('Startup')
 $Shell = New-Object -ComObject WScript.Shell
+$RuntimeLauncher = Join-Path $env:LOCALAPPDATA 'Tyrael\TelegramIntegration\launch.ps1'
+$BotEntryPoint = if (Test-Path -LiteralPath $RuntimeLauncher) {
+    $RuntimeLauncher
+} else {
+    Join-Path $PSScriptRoot 'start.ps1'
+}
 
 $BotShortcut = $Shell.CreateShortcut((Join-Path $Startup 'Codex Telegram Bot.lnk'))
 $BotShortcut.TargetPath = (Get-Command powershell.exe).Source
-$BotShortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'start.ps1')`""
-$BotShortcut.WorkingDirectory = $ProjectRoot
+$BotShortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$BotEntryPoint`""
+$BotShortcut.WorkingDirectory = Split-Path -Parent $BotEntryPoint
 $BotShortcut.WindowStyle = 7
 $BotShortcut.Description = 'Telegram bridge for local Codex'
 $BotShortcut.Save()
