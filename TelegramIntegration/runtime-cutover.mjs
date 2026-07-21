@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 
 import { activateRuntime } from "./runtime-manager.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
+import { independentWindowsLauncherInvocation } from "./runtime-restart.mjs";
 
 export function runtimeStateIsIdle(value) {
   return Array.isArray(value?.activeRuns) && value.activeRuns.length === 0;
@@ -64,29 +65,14 @@ function stopOldProcessTree(pid) {
 
 function launchRuntime(launcherFile) {
   if (process.platform === "win32") {
-    const powershell = path.join(
-      process.env.SystemRoot ?? "C:\\Windows",
-      "System32",
-      "WindowsPowerShell",
-      "v1.0",
-      "powershell.exe",
-    );
-    const child = spawn(powershell, [
-      "-NoProfile",
-      "-NonInteractive",
-      "-WindowStyle",
-      "Hidden",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      launcherFile,
-    ], {
-      cwd: path.dirname(launcherFile),
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
+    const invocation = independentWindowsLauncherInvocation({
+      environment: process.env,
+      launcher: launcherFile,
     });
-    child.unref();
+    const options = { ...invocation.options };
+    delete options.detached;
+    const result = spawnSync(invocation.command, invocation.args, options);
+    if (result.status !== 0) throw new Error("Cannot launch TelegramIntegration through WMI");
     return;
   }
   const child = spawn(launcherFile, [], {
