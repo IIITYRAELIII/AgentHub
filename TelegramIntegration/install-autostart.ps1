@@ -1,9 +1,15 @@
 $ErrorActionPreference = 'Stop'
 
-$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$RuntimeRoot = Join-Path $env:LOCALAPPDATA 'Tyrael\TelegramIntegration'
+$RuntimeConfig = Join-Path $RuntimeRoot 'config.json'
+if (Test-Path -LiteralPath $RuntimeConfig) {
+    $ProjectRoot = (Get-Content -LiteralPath $RuntimeConfig -Raw -Encoding UTF8 | ConvertFrom-Json).projectRoot
+} else {
+    $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+}
 $Startup = [Environment]::GetFolderPath('Startup')
 $Shell = New-Object -ComObject WScript.Shell
-$RuntimeLauncher = Join-Path $env:LOCALAPPDATA 'Tyrael\TelegramIntegration\launch.ps1'
+$RuntimeLauncher = Join-Path $RuntimeRoot 'launch.ps1'
 $BotEntryPoint = if (Test-Path -LiteralPath $RuntimeLauncher) {
     $RuntimeLauncher
 } else {

@@ -97,6 +97,27 @@ function launchRuntime(launcherFile) {
   child.unref();
 }
 
+function installRuntimeAutostart(runtimeRoot, releaseId) {
+  if (process.platform !== "win32") return;
+  const powershell = path.join(
+    process.env.SystemRoot ?? "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  const script = path.join(runtimeRoot, "releases", releaseId, "install-autostart.ps1");
+  const result = spawnSync(powershell, [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    script,
+  ], { windowsHide: true, stdio: "ignore" });
+  if (result.status !== 0) throw new Error("Cannot update the TelegramIntegration autostart shortcut");
+}
+
 export async function cutoverRuntime({
   sourceRoot = path.resolve(import.meta.dirname),
   runtimeRoot = defaultRuntimeRoot(),
@@ -120,6 +141,7 @@ export async function cutoverRuntime({
     retireLegacyConfig: true,
     replaceData: true,
   });
+  installRuntimeAutostart(runtimeRoot, result.releaseId);
   launchRuntime(result.layout.launcherFile);
   await log(`External runtime launched: ${result.releaseId}`);
 }

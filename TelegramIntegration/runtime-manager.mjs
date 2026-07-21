@@ -21,10 +21,12 @@ import { writeTextAtomic } from "./state-store.mjs";
 const SOURCE_ROOT = path.resolve(import.meta.dirname);
 const TOP_LEVEL_FILES = new Set([
   "package.json",
+  "install-autostart.ps1",
   "requirements.txt",
   "requirements-tts.txt",
   "runtime-launch.ps1",
   "runtime-launch.sh",
+  "start.ps1",
   "transcribe.py",
   "tts_worker.py",
 ]);
