@@ -295,6 +295,44 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   );
   telegram.fileDownloadDelayMs = 0;
 
+  // Once Telegram's offset has advanced, an accepted media job must survive a
+  // hard process loss instead of requiring the user to resend the image.
+  telegram.fileDownloadDelayMs = 5_000;
+  mark = telegram.calls.length;
+  const durableMediaUpdateId = telegram.nextUpdateId;
+  const durableDownloadIndex = telegram.fileDownloads.length;
+  telegram.pushMessage(null, {
+    caption: "[media-restart] картинка после аварийного рестарта",
+    photo: [{ file_id: "e2e-photo-restart", file_size: 128 }],
+  });
+  await waitFor(async () => {
+    const names = await readdir(path.join(dataDir, "background-jobs")).catch(() => []);
+    return names.some((name) => name.endsWith(".json"));
+  }, "durable media job persistence");
+  await waitFor(async () => (await readJson(statePath)).updateOffset > durableMediaUpdateId,
+    "Telegram offset committed after durable media acceptance");
+  await waitFor(() => telegram.fileDownloads[durableDownloadIndex], "durable media download start");
+  const botBeforeMediaRestore = bot;
+  botBeforeMediaRestore.kill("SIGKILL");
+  await new Promise((resolve) => botBeforeMediaRestore.once("exit", resolve));
+  telegram.fileDownloadDelayMs = 0;
+  await startBot();
+  await telegram.waitForText("Готово: [media-restart] картинка после аварийного рестарта", {
+    after: mark,
+    timeoutMs: 12_000,
+  });
+  await waitFor(async () => {
+    const names = await readdir(path.join(dataDir, "background-jobs")).catch(() => []);
+    return names.filter((name) => name.endsWith(".json")).length === 0;
+  }, "restored media job cleanup", 12_000);
+  assert.equal(
+    telegram.callsAfter(mark, "sendMessage").filter((call) => (
+      String(call.body.text ?? "").includes("Готово: [media-restart] картинка после аварийного рестарта")
+    )).length,
+    1,
+    "a recovered media job must complete once",
+  );
+
   mark = telegram.calls.length;
   telegram.pushMessage("[slow] обычное завершение");
   const normalFinal = await telegram.waitForText("Готово: [slow] обычное завершение", { after: mark });

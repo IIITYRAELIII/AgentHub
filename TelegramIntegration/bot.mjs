@@ -110,6 +110,7 @@ import { shouldLogPollingFailure, telegramPollingRetryDelay } from "./poll-retry
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
 import { SingleInstanceGuard } from "./instance-lock.mjs";
 import { BackgroundJobQueue } from "./background-job-queue.mjs";
+import { PersistentBackgroundJobStore } from "./background-job-store.mjs";
 import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "./claude-invocation.mjs";
 import {
   catalogEntryIsSelected,
@@ -188,6 +189,7 @@ const DEFAULT_PROJECT_ROOT = config.projectRoot;
 const STATE_FILE = config.stateFile;
 const STATE_BACKUP_FILE = `${STATE_FILE}.bak`;
 const DELIVERY_OUTBOX_DIR = config.deliveryOutboxDir;
+const BACKGROUND_JOBS_DIR = path.join(config.dataDir, "background-jobs");
 const INSTANCE_LOCK_FILE = path.join(config.dataDir, "bot.lock");
 const SPEECH_TEXTS_FILE = path.join(config.dataDir, "speech-texts.json");
 const PINNED_TASK_TITLES_FILE = path.join(config.dataDir, "pinned-task-titles.json");
@@ -342,6 +344,11 @@ const turnSpeechButtons = new Map();
 const pendingTts = new Map();
 const speechTexts = new Map();
 const taskRuns = new TaskRunRegistry();
+const backgroundJobStore = new PersistentBackgroundJobStore({
+  directoryPath: BACKGROUND_JOBS_DIR,
+  maxItems: MAX_BACKGROUND_MEDIA_JOBS + MAX_BACKGROUND_SPEECH_JOBS,
+});
+const scheduledBackgroundJobIds = new Set();
 const backgroundMediaJobs = new BackgroundJobQueue({
   concurrency: 1,
   maxJobs: MAX_BACKGROUND_MEDIA_JOBS,
@@ -3969,23 +3976,85 @@ function handleBackgroundJobQueueChange({ size }) {
   }
 }
 
-function trackBackgroundMediaJob(work, label, targetChatId) {
+function backgroundJobQueue(kind) {
+  return kind === "speech" ? backgroundSpeechJobs : backgroundMediaJobs;
+}
+
+function persistedBackgroundJobCount(kind) {
+  if (kind === "speech") return backgroundJobStore.count("speech");
+  return backgroundJobStore.count("image") + backgroundJobStore.count("voice");
+}
+
+async function executeBackgroundJob(item) {
+  if (item.kind === "image") {
+    await analyzeImage(item.payload.message, item.payload.target);
+    return;
+  }
+  if (item.kind === "voice") {
+    await transcribeVoice(item.payload.message, item.payload.target);
+    return;
+  }
+  if (item.kind === "speech") {
+    await processSpeechRequest(item.payload.chatId, item.payload.text);
+    return;
+  }
+  throw new Error(`unsupported background job kind: ${item.kind}`);
+}
+
+function scheduleBackgroundJob(item) {
+  if (scheduledBackgroundJobIds.has(item.id)) return true;
+  const queue = backgroundJobQueue(item.kind);
   try {
-    const job = backgroundMediaJobs.enqueue(work);
-    void job.catch((error) => {
-      console.error(`Background ${label} processing failed:`, error.message);
+    const job = queue.enqueue(async () => {
+      try {
+        if (stopping) return;
+        await executeBackgroundJob(item);
+      } finally {
+        // A service stop may tear down App Server/TTS while the work is still
+        // running. Keep the durable record in that case so the next process can
+        // retry it instead of treating an interrupted attempt as completed.
+        if (!stopping) await backgroundJobStore.remove(item.id);
+        scheduledBackgroundJobIds.delete(item.id);
+      }
     });
-    return job;
+    scheduledBackgroundJobIds.add(item.id);
+    void job.catch((error) => {
+      console.error(`Background ${item.kind} processing failed:`, error.message);
+    });
+    return true;
   } catch (error) {
     if (error?.code !== "QUEUE_FULL") throw error;
-    void sendMessageTo(
-      targetChatId,
-      `Очередь медиа переполнена (${MAX_BACKGROUND_MEDIA_JOBS}). Отправьте файл позже.`,
-    ).catch((sendError) => {
-      console.error("Cannot report media queue overflow:", sendError.message);
-    });
+    return false;
+  }
+}
+
+async function enqueueBackgroundJob(kind, payload, targetChatId) {
+  await backgroundJobStore.load();
+  const limit = kind === "speech" ? MAX_BACKGROUND_SPEECH_JOBS : MAX_BACKGROUND_MEDIA_JOBS;
+  if (persistedBackgroundJobCount(kind) >= limit) {
+    if (kind !== "speech") {
+      await sendMessageTo(
+        targetChatId,
+        `Очередь медиа переполнена (${MAX_BACKGROUND_MEDIA_JOBS}). Отправьте файл позже.`,
+      );
+    }
     return null;
   }
+  const item = await backgroundJobStore.enqueue({ kind, payload });
+  if (!scheduleBackgroundJob(item)) {
+    console.warn(`Persistent background job ${item.id} is waiting for a free ${kind} queue slot.`);
+  }
+  return item;
+}
+
+async function restoreBackgroundJobs() {
+  const count = await backgroundJobStore.load();
+  if (!count) return;
+  let scheduled = 0;
+  for (const item of backgroundJobStore.values()) {
+    if (scheduleBackgroundJob(item)) scheduled += 1;
+  }
+  console.log(`Restored ${scheduled}/${count} persistent background job(s).`);
 }
 
 async function updateRestartMessage(text, extra = {}) {
@@ -4036,6 +4105,7 @@ async function performRestart() {
     speechWriteQueue,
     taskSyncStore.save(),
     deliveryOutbox.waitForWrites(),
+    backgroundJobStore.waitForWrites(),
   ]);
   stopping = true;
   stopRuntimeTimers();
@@ -4320,8 +4390,7 @@ async function sendVoiceFile(targetChatId, voicePath) {
   return payload.result;
 }
 
-async function processSpeechRequest(callback, text) {
-  const targetChatId = callback.message.chat.id;
+async function processSpeechRequest(targetChatId, text) {
   const tick = () => telegram("sendChatAction", { chat_id: targetChatId, action: "record_voice" }).catch(() => {});
   const activity = setInterval(tick, 4000);
   tick();
@@ -4468,11 +4537,11 @@ async function handleApprovalCallback(callback) {
       });
       return;
     }
-    let speechJob;
-    try {
-      speechJob = backgroundSpeechJobs.enqueue(() => processSpeechRequest(callback, text));
-    } catch (error) {
-      if (error?.code !== "QUEUE_FULL") throw error;
+    const speechJob = await enqueueBackgroundJob("speech", {
+      chatId: callback.message.chat.id,
+      text,
+    }, callback.message.chat.id);
+    if (!speechJob) {
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
         text: `Очередь озвучивания заполнена (${MAX_BACKGROUND_SPEECH_JOBS})`,
@@ -4485,9 +4554,6 @@ async function handleApprovalCallback(callback) {
       text: backgroundSpeechJobs.pending
         ? `Озвучивание поставлено в очередь: ${backgroundSpeechJobs.pending}`
         : "Готовлю голосовое сообщение…",
-    });
-    void speechJob.catch((error) => {
-      console.error("Speech request failed:", error.message);
     });
     return;
   }
@@ -4944,13 +5010,13 @@ async function handleTelegramMessage(message) {
       message,
       message.caption?.trim() || "Изображение без подписи",
     );
-    trackBackgroundMediaJob(() => analyzeImage(message, target), "image", target.chatId);
+    await enqueueBackgroundJob("image", { message, target }, target.chatId);
     return;
   }
   if (message.voice || message.audio) {
     const target = selectedTurnTarget(message.chat.id);
     await bindIncomingTaskMessage(message, "Голосовое сообщение");
-    trackBackgroundMediaJob(() => transcribeVoice(message, target), "voice", target.chatId);
+    await enqueueBackgroundJob("voice", { message, target }, target.chatId);
     return;
   }
   const rawText = message.text?.trim();
@@ -5350,6 +5416,7 @@ async function shutdown(signal) {
     bindingWriteQueue,
     taskSyncStore.save(),
     deliveryOutbox.waitForWrites(),
+    backgroundJobStore.waitForWrites(),
   ]);
   await instanceGuard.release();
 }
@@ -5365,6 +5432,10 @@ await initializeProvider();
 await recoverActiveRuns().catch(async (error) => {
   console.error("Cannot recover active tasks:", error.message);
   await sendMessage(`⚠️ Не удалось восстановить активные задачи: ${error.message}`).catch(() => {});
+});
+await restoreBackgroundJobs().catch(async (error) => {
+  console.error("Cannot recover background jobs:", error.message);
+  await sendMessage(`⚠️ Не удалось восстановить фоновые медиа-задачи: ${error.message}`).catch(() => {});
 });
 for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
 scheduleDeliveryOutboxFlush(1_000);
