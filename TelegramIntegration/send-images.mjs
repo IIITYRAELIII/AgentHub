@@ -9,6 +9,7 @@ import {
   resolveChatId,
 } from "./send-message.mjs";
 import { appendMessageBindings } from "./message-bindings.mjs";
+import { telegramBotApiUrl } from "./telegram-api.mjs";
 
 const MAX_ALBUM_SIZE = 10;
 
@@ -82,7 +83,7 @@ async function sendSingleImage(config, chatId, file, caption, silent) {
   if (caption) form.append("caption", caption);
   form.append("photo", new Blob([await readFile(file)], { type: "image/png" }), path.basename(file));
 
-  const response = await fetch(`https://api.telegram.org/bot${config.token}/sendPhoto`, {
+  const response = await fetch(telegramBotApiUrl(config.telegramApiBaseUrl, config.token, "sendPhoto"), {
     method: "POST",
     body: form,
     signal: AbortSignal.timeout(40000),
@@ -107,7 +108,7 @@ async function sendAlbum(config, chatId, files, caption, silent) {
     );
   }
 
-  const response = await fetch(`https://api.telegram.org/bot${config.token}/sendMediaGroup`, {
+  const response = await fetch(telegramBotApiUrl(config.telegramApiBaseUrl, config.token, "sendMediaGroup"), {
     method: "POST",
     body: form,
     signal: AbortSignal.timeout(40000),

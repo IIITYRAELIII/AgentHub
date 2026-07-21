@@ -116,6 +116,32 @@ export function visibleTaskHistory(history, count = 1, { completedOnly = false }
     shown: Math.min(safeCount, values.length),
     total: values.length,
     hasMore: values.length > safeCount,
-    nextCount: Math.min(values.length, Math.max(safeCount + 1, safeCount * 2)),
+    nextCount: Math.min(values.length, safeCount + 1),
   };
+}
+
+export function mergeActiveTaskHistory(history, activeTurn = {}) {
+  const values = Array.isArray(history) ? history : [];
+  if (activeTurn?.active !== true) return values;
+
+  const turnId = String(activeTurn.turnId ?? activeTurn.id ?? "").trim();
+  let current = turnId
+    ? values.findLast((item) => String(item?.id ?? "") === turnId)
+    : values.findLast((item) => item?.active === true);
+
+  if (!current) {
+    current = {
+      id: turnId || "active-turn",
+      prompt: String(activeTurn.prompt ?? "").trim() || "Текущее сообщение",
+      answer: "",
+    };
+    values.push(current);
+  }
+
+  current.active = true;
+  current.completed = false;
+  current.status = "inProgress";
+  const answer = String(activeTurn.answer ?? "").trim();
+  if (answer) current.answer = answer;
+  return values;
 }

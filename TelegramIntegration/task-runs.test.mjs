@@ -4,10 +4,28 @@ import {
   TaskDismissalRegistry,
   TaskRunRegistry,
   serializableTaskRun,
+  shouldAutoObserveTask,
   taskRunKey,
   updateObservedResponse,
   updateTaskRunTitle,
 } from "./task-runs.mjs";
+
+test("selected external task is observed automatically only while its turn is active", () => {
+  const task = {
+    provider: "codex",
+    projectRoot: "C:\\Projects\\Main",
+    threadId: "thread-1",
+  };
+  assert.equal(shouldAutoObserveTask({ task, snapshot: { active: true } }), true);
+  assert.equal(shouldAutoObserveTask({ task, snapshot: { active: false } }), false);
+  assert.equal(shouldAutoObserveTask({ task, snapshot: { active: true }, existingRun: {} }), false);
+  assert.equal(shouldAutoObserveTask({ task, snapshot: { active: true }, dismissed: true }), false);
+  assert.equal(shouldAutoObserveTask({
+    task,
+    selectedTask: { ...task, threadId: "thread-2" },
+    snapshot: { active: true },
+  }), false);
+});
 
 function run(overrides = {}) {
   return {
@@ -94,6 +112,7 @@ test("serialization excludes process and timer handles", () => {
     progressStartTimer: { timer: true },
     progressTimer: { timer: true },
     progressUpdateInFlight: true,
+    progressUpdatePending: true,
     observerTimer: { timer: true },
   });
   const serialized = serializableTaskRun(source);
@@ -103,6 +122,7 @@ test("serialization excludes process and timer handles", () => {
   assert.equal(serialized.progressStartTimer, undefined);
   assert.equal(serialized.progressTimer, undefined);
   assert.equal(serialized.progressUpdateInFlight, undefined);
+  assert.equal(serialized.progressUpdatePending, undefined);
   assert.equal(serialized.observerTimer, undefined);
   assert.equal(serialized.id, source.id);
 });

@@ -129,12 +129,19 @@ export function formatProgressHeading({
   provider,
   model,
   reasoning,
+  runtime = null,
   task,
   project = null,
 }) {
   const projectSuffix = project ? ` ${project}` : "";
-  return `${done ? "✅" : "⏳"} ${provider} · ${model} - ${reasoning}${projectSuffix}\n` +
-    `🧵 ${task}`;
+  const runtimeLine = runtime ? `\n⚙ ${runtime}` : "";
+  const modelText = String(model ?? "").trim();
+  const reasoningText = String(reasoning ?? "").trim();
+  const details = modelText
+    ? ` · ${modelText}${reasoningText ? ` - ${reasoningText}` : ""}`
+    : reasoningText ? ` · ${reasoningText}` : "";
+  return `${done ? "✅" : "⏳"} ${provider}${details}${projectSuffix}\n` +
+    `🧵 ${task}${runtimeLine}`;
 }
 
 export function statusHeaderFileName(provider) {
@@ -184,8 +191,8 @@ export function formatTaskAlreadySelectedMessage({ task, project, showProject, m
 export function showLastMessageReplyMarkup() {
   return {
     inline_keyboard: [[{
-      text: "👀 Показать последнее сообщение",
-      callback_data: "show-last-message",
+      text: "👀 Показать сообщение",
+      callback_data: "show-message",
     }]],
   };
 }

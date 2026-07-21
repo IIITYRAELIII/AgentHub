@@ -1,6 +1,11 @@
 export const PROGRESS_HEARTBEAT_INTERVAL_MS = 10_000;
 export const PROGRESS_STALLED_AFTER_MS = 2 * 60 * 1000;
 
+export function retainProgressMessageAfterEditError(error) {
+  return error?.retryable === true
+    || String(error?.message ?? error ?? "").includes("message is not modified");
+}
+
 function validTimestamp(value) {
   const timestamp = Date.parse(String(value ?? ""));
   return Number.isFinite(timestamp) ? timestamp : null;

@@ -137,6 +137,24 @@ export function updateTaskRunTitle(run, title) {
   return true;
 }
 
+export function shouldAutoObserveTask({
+  task,
+  selectedTask = task,
+  snapshot,
+  existingRun = null,
+  dismissed = false,
+} = {}) {
+  return Boolean(
+    task?.provider
+      && task?.projectRoot
+      && task?.threadId
+      && taskRunKey(selectedTask) === taskRunKey(task)
+      && snapshot?.active
+      && !existingRun
+      && !dismissed,
+  );
+}
+
 export function serializableTaskRun(run) {
   const {
     process: _process,
@@ -144,7 +162,14 @@ export function serializableTaskRun(run) {
     progressStartTimer: _progressStartTimer,
     progressTimer: _progressTimer,
     progressUpdateInFlight: _progressUpdateInFlight,
+    progressUpdatePending: _progressUpdatePending,
     observerTimer: _observerTimer,
+    // Чтение вывода Claude пересоздаётся при подключении к ходу после перезапуска.
+    claudeReader: _claudeReader,
+    claudeDrainTimer: _claudeDrainTimer,
+    claudeDrainInFlight: _claudeDrainInFlight,
+    claudeDrainPending: _claudeDrainPending,
+    latestDiff: _latestDiff,
     ...value
   } = run;
   return value;

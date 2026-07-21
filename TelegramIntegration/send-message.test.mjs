@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
+import { appendFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   codexThreadTitleFromIndex,
   codexThreadTitleHistoriesFromIndex,
   codexThreadTitleHistoryFromIndex,
+  compactNotificationTaskTitle,
   currentCallerBinding,
   currentThreadBinding,
+  notificationCardPath,
+  notificationCardOutboxBody,
   notificationParts,
   parseArguments,
+  readCodexThreadTitleHistories,
   resolveNotificationCategory,
   resolveChatId,
   showMessageReplyMarkup,
@@ -47,6 +54,21 @@ test("parseArguments reads and validates the notification category", () => {
     "intermediate",
   );
   assert.throws(() => parseArguments(["--category", "unknown", "Текст"]), /Unknown --category value/);
+});
+
+test("thread title index is cached until the append-only file changes", async () => {
+  const codexHome = await mkdtemp(path.join(os.tmpdir(), "codex-title-cache-"));
+  await mkdir(codexHome, { recursive: true });
+  const indexPath = path.join(codexHome, "session_index.jsonl");
+  await writeFile(indexPath, `${JSON.stringify({ id: "thread-1", thread_name: "Первое" })}\n`, "utf8");
+  const environment = { CODEX_HOME: codexHome };
+  const first = await readCodexThreadTitleHistories(environment);
+  const cached = await readCodexThreadTitleHistories(environment);
+  assert.equal(cached, first);
+  await appendFile(indexPath, `${JSON.stringify({ id: "thread-1", thread_name: "Второе" })}\n`, "utf8");
+  const updated = await readCodexThreadTitleHistories(environment);
+  assert.notEqual(updated, first);
+  assert.equal(updated.get("thread-1").currentTitle, "Второе");
 });
 
 test("currentThreadBinding reads the active provider task", () => {
@@ -190,16 +212,30 @@ test("findContainingProject maps a nested caller directory to the configured pro
 });
 
 test("notificationParts adds a bold underlined category above the task title", () => {
+  const notification = notificationParts("Задача <1>", "Готово", "done");
+  assert.equal(notification.caption, "🧵 <b>Задача &lt;1&gt;</b>\n\nГотово");
   assert.equal(
-    notificationParts("Задача <1>", "Готово", "done").message,
+    notification.fallbackMessage,
     "✅ <b><u>ЗАДАЧА ВЫПОЛНЕНА</u></b> ✅\n\n🧵 <b>Задача &lt;1&gt;</b>\n\nГотово",
+  );
+  assert.equal(notification.cardPath, notificationCardPath("done"));
+});
+
+test("compactNotificationTaskTitle keeps notification cards readable", () => {
+  assert.equal(
+    compactNotificationTaskTitle("Utilities/WIP/UI/_tmp/_comtest/PROMPT_CODEX_acceptance.md"),
+    "PROMPT_CODEX_acceptance.md",
+  );
+  assert.equal(
+    compactNotificationTaskTitle("Очень длинное название задачи, которое не должно растягивать карточку", 32),
+    "Очень длинное название задачи,…",
   );
 });
 
 test("notificationParts formats an intermediate result", () => {
   assert.equal(
-    notificationParts("Большая задача", "Первый этап готов", "intermediate").message,
-    "📌 <b><u>ПРОМЕЖУТОЧНЫЙ РЕЗУЛЬТАТ</u></b> 📌\n\n🧵 <b>Большая задача</b>\n\nПервый этап готов",
+    notificationParts("Большая задача", "Первый этап готов", "intermediate").caption,
+    "🧵 <b>Большая задача</b>\n\nПервый этап готов",
   );
 });
 
@@ -209,6 +245,23 @@ test("bound notifications expose the show-message callback", () => {
       text: "👀 Показать сообщение",
       callback_data: "show-message",
     }]],
+  });
+});
+
+test("retryable notification delivery preserves the image in the outbox", () => {
+  assert.deepEqual(notificationCardOutboxBody({
+    chatId: 123,
+    file: "cards/info.png",
+    caption: "Информация",
+    silent: false,
+    replyMarkup: showMessageReplyMarkup(),
+  }), {
+    chat_id: 123,
+    caption: "Информация",
+    disable_notification: false,
+    parse_mode: "HTML",
+    reply_markup: showMessageReplyMarkup(),
+    photo_path: "cards/info.png",
   });
 });
 

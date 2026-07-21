@@ -99,3 +99,36 @@ test("PersistentDeliveryOutbox discovers a message enqueued by another process",
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("PersistentDeliveryOutbox keeps group sequence and supersedes stale progress", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-groups-"));
+  const outboxDirectory = path.join(directory, "outbox");
+  const delivered = [];
+  try {
+    const outbox = new PersistentDeliveryOutbox({
+      directoryPath: outboxDirectory,
+      now: () => 1_000,
+      deliver: async (_method, body) => {
+        delivered.push(body.text);
+        return { message_id: delivered.length };
+      },
+    });
+    await outbox.enqueue({
+      method: "sendMessage",
+      body: { chat_id: 1, text: "old progress" },
+      supersedeKey: "progress:task",
+    });
+    await outbox.enqueue({
+      method: "sendMessage",
+      body: { chat_id: 1, text: "new progress" },
+      supersedeKey: "progress:task",
+    });
+    await outbox.enqueue({ method: "sendMessage", body: { chat_id: 1, text: "part 2" }, groupId: "final", sequence: 2 });
+    await outbox.enqueue({ method: "sendMessage", body: { chat_id: 1, text: "part 1" }, groupId: "final", sequence: 1 });
+    assert.equal(await outbox.discard({ supersedeKey: "progress:task" }), 1);
+    await outbox.flush();
+    assert.deepEqual(delivered, ["part 1", "part 2"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

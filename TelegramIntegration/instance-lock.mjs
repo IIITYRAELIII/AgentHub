@@ -1,0 +1,116 @@
+import { createHash, randomUUID } from "node:crypto";
+import { createServer } from "node:net";
+import { mkdir, open, readFile, unlink } from "node:fs/promises";
+import path from "node:path";
+import { processIsAlive } from "./claude-run-io.mjs";
+
+function pipeName(dataDir) {
+  const id = createHash("sha256").update(path.resolve(dataDir).toLowerCase()).digest("hex").slice(0, 24);
+  return process.platform === "win32"
+    ? `\\\\.\\pipe\\telegram-integration-${id}`
+    : `\0telegram-integration-${id}`;
+}
+
+function listen(server, endpoint) {
+  return new Promise((resolve, reject) => {
+    const failed = (error) => {
+      server.off("listening", ready);
+      reject(error);
+    };
+    const ready = () => {
+      server.off("error", failed);
+      resolve();
+    };
+    server.once("error", failed);
+    server.once("listening", ready);
+    server.listen(endpoint);
+  });
+}
+
+function close(server) {
+  if (!server?.listening) return Promise.resolve();
+  return new Promise((resolve) => server.close(() => resolve()));
+}
+
+function parseLock(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+  try {
+    const value = JSON.parse(text);
+    if (Number.isSafeInteger(value)) return { pid: value, legacy: true };
+    if (Number.isSafeInteger(value?.pid) && typeof value?.instanceToken === "string") return value;
+  } catch {
+    const pid = Number.parseInt(text, 10);
+    if (Number.isSafeInteger(pid)) return { pid, legacy: true };
+  }
+  return null;
+}
+
+export class SingleInstanceGuard {
+  #dataDir;
+  #lockFile;
+  #isAlive;
+  #server = null;
+  #handle = null;
+  #token = randomUUID();
+
+  constructor({ dataDir, lockFile = path.join(dataDir, "bot.lock"), isAlive = processIsAlive }) {
+    this.#dataDir = dataDir;
+    this.#lockFile = lockFile;
+    this.#isAlive = isAlive;
+  }
+
+  async acquire() {
+    await mkdir(this.#dataDir, { recursive: true });
+    const endpoint = pipeName(this.#dataDir);
+    const server = createServer((socket) => socket.end(this.#token));
+    try {
+      await listen(server, endpoint);
+    } catch (error) {
+      server.close();
+      if (error?.code === "EADDRINUSE") {
+        throw new Error("Telegram bot is already running for this data directory");
+      }
+      throw error;
+    }
+    this.#server = server;
+
+    try {
+      const existing = parseLock(await readFile(this.#lockFile, "utf8").catch((error) => {
+        if (error?.code === "ENOENT") return "";
+        throw error;
+      }));
+      // Старый бот не держит системный канал. Его числовой lock нельзя отбирать,
+      // пока PID жив: это обеспечивает безопасное обновление со старой версии.
+      if (existing?.legacy && this.#isAlive(existing.pid)) {
+        throw new Error(`Telegram bot is already running (PID ${existing.pid})`);
+      }
+      // Для нового формата свободный системный канал является источником истины:
+      // даже переиспользованный системой PID не превращает аварийный lock в вечный.
+      await unlink(this.#lockFile).catch((error) => {
+        if (error?.code !== "ENOENT") throw error;
+      });
+      this.#handle = await open(this.#lockFile, "wx");
+      await this.#handle.writeFile(`${JSON.stringify({
+        pid: process.pid,
+        instanceToken: this.#token,
+        startedAt: new Date().toISOString(),
+        endpoint,
+      })}\n`, "utf8");
+      return this;
+    } catch (error) {
+      await close(this.#server);
+      this.#server = null;
+      throw error;
+    }
+  }
+
+  async release() {
+    await this.#handle?.close().catch(() => {});
+    this.#handle = null;
+    const current = parseLock(await readFile(this.#lockFile, "utf8").catch(() => ""));
+    if (current?.instanceToken === this.#token) await unlink(this.#lockFile).catch(() => {});
+    await close(this.#server);
+    this.#server = null;
+  }
+}

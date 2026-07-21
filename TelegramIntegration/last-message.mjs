@@ -223,10 +223,14 @@ export async function readClaudeSessionSnapshot(
   const transcriptPath = await findTranscript(projectsRoot, `${normalized}.jsonl`);
   if (!transcriptPath) return null;
   const transcript = await readTail(transcriptPath);
+  // Время последней записи нужно вызывающему коду, чтобы отличить действительно
+  // выполняющийся ход от давно брошенного незавершённого транскрипта.
+  const modifiedAtMs = await stat(transcriptPath).then((info) => info.mtimeMs, () => null);
   return {
     ...parseClaudeTranscript(transcript),
     history: claudeTranscriptHistory(transcript),
     transcriptPath,
+    modifiedAtMs,
   };
 }
 

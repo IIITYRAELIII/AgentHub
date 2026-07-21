@@ -1,18 +1,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { callTelegramJson } from "./telegram-api.mjs";
+import { callTelegramJson, telegramBotApiUrl, telegramFileApiUrl } from "./telegram-api.mjs";
+
+test("Telegram API URLs honor a custom base for JSON, media and downloads", () => {
+  assert.equal(
+    telegramBotApiUrl("http://127.0.0.1:8081/", "123:test", "/sendPhoto"),
+    "http://127.0.0.1:8081/bot123:test/sendPhoto",
+  );
+  assert.equal(
+    telegramFileApiUrl("http://127.0.0.1:8081/", "123:test", "/voice/file.ogg"),
+    "http://127.0.0.1:8081/file/bot123:test/voice/file.ogg",
+  );
+});
 
 test("callTelegramJson returns a successful Telegram result", async () => {
+  let requestedUrl = "";
   const result = await callTelegramJson({
     token: "token",
     method: "sendMessage",
     body: { text: "ok" },
-    fetchImpl: async () => new Response(JSON.stringify({
-      ok: true,
-      result: { message_id: 7 },
-    }), { status: 200 }),
+    apiBaseUrl: "http://127.0.0.1:9876/",
+    fetchImpl: async (url) => {
+      requestedUrl = String(url);
+      return new Response(JSON.stringify({
+        ok: true,
+        result: { message_id: 7 },
+      }), { status: 200 });
+    },
   });
   assert.deepEqual(result, { message_id: 7 });
+  assert.equal(requestedUrl, "http://127.0.0.1:9876/bottoken/sendMessage");
 });
 
 test("callTelegramJson marks rate limits as retryable and preserves Retry-After", async () => {

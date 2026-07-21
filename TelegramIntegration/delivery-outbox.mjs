@@ -69,8 +69,16 @@ export class PersistentDeliveryOutbox {
     return this.size;
   }
 
-  async enqueue({ method, body, binding = null }) {
+  async enqueue({
+    method,
+    body,
+    binding = null,
+    groupId = null,
+    sequence = 0,
+    supersedeKey = null,
+  }) {
     await this.load();
+    if (supersedeKey) await this.#discardLoaded((item) => item.supersedeKey === supersedeKey);
     if (this.#items.size >= this.maxItems) {
       throw new Error(`delivery outbox limit reached (${this.maxItems})`);
     }
@@ -80,6 +88,9 @@ export class PersistentDeliveryOutbox {
       method,
       body,
       binding,
+      groupId,
+      sequence,
+      supersedeKey,
       createdAt: new Date(timestamp).toISOString(),
       attempts: 0,
       nextAttemptAt: timestamp,
@@ -87,7 +98,7 @@ export class PersistentDeliveryOutbox {
     };
     const filePath = path.join(
       this.directoryPath,
-      `${String(timestamp).padStart(13, "0")}-${item.id}.json`,
+      `${String(timestamp).padStart(13, "0")}-${process.hrtime.bigint().toString().padStart(20, "0")}-${item.id}.json`,
     );
     await this.#persist(filePath, item);
     this.#items.set(filePath, item);
@@ -100,7 +111,27 @@ export class PersistentDeliveryOutbox {
     let delivered = 0;
     try {
       await this.load();
-      for (const [filePath, item] of this.#items) {
+      const ordered = [...this.#items.entries()].sort(([leftPath], [rightPath]) => leftPath.localeCompare(rightPath));
+      const grouped = new Map();
+      for (const entry of ordered) {
+        const groupId = entry[1].groupId;
+        if (groupId) grouped.set(groupId, [...(grouped.get(groupId) ?? []), entry]);
+      }
+      const emittedGroups = new Set();
+      const entries = [];
+      for (const entry of ordered) {
+        const groupId = entry[1].groupId;
+        if (!groupId) {
+          entries.push(entry);
+          continue;
+        }
+        if (emittedGroups.has(groupId)) continue;
+        emittedGroups.add(groupId);
+        entries.push(...grouped.get(groupId).sort((left, right) => (
+          Number(left[1].sequence ?? 0) - Number(right[1].sequence ?? 0)
+        )));
+      }
+      for (const [filePath, item] of entries) {
         if (delivered >= limit || item.nextAttemptAt > this.now()) break;
         let result;
         try {
@@ -138,6 +169,22 @@ export class PersistentDeliveryOutbox {
       .catch(() => {})
       .then(() => writeTextAtomic(filePath, content));
     return this.#writeQueue;
+  }
+
+  async #discardLoaded(predicate) {
+    const removals = [];
+    for (const [filePath, item] of this.#items) {
+      if (!predicate(item)) continue;
+      this.#items.delete(filePath);
+      removals.push(unlink(filePath).catch(() => {}));
+    }
+    await Promise.all(removals);
+    return removals.length;
+  }
+
+  async discard({ supersedeKey }) {
+    await this.load();
+    return this.#discardLoaded((item) => item.supersedeKey === supersedeKey);
   }
 
   waitForWrites() {

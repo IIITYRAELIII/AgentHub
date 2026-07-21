@@ -5,6 +5,7 @@ import {
   claudeTranscriptHistory,
   codexThreadHistory,
   displayUserPrompt,
+  mergeActiveTaskHistory,
   visibleTaskHistory,
 } from "./task-history.mjs";
 
@@ -75,6 +76,54 @@ test("visibleTaskHistory grows newest-first window without changing chronology",
     shown: 2,
     total: 4,
     hasMore: true,
-    nextCount: 4,
+    nextCount: 3,
   });
+  assert.equal(visibleTaskHistory(history, 1).nextCount, 2);
+  assert.equal(visibleTaskHistory(history, 3).nextCount, 4);
+});
+
+test("an active snapshot missing from thread history replaces the stale completed tail", () => {
+  const history = [{
+    id: "old-turn",
+    prompt: "Старый вопрос",
+    answer: "Старый ответ",
+    status: "completed",
+    active: false,
+    completed: true,
+  }];
+
+  mergeActiveTaskHistory(history, {
+    active: true,
+    turnId: "live-turn",
+    answer: "Текущий частичный ответ",
+  });
+
+  assert.deepEqual(visibleTaskHistory(history, 1).items, [{
+    id: "live-turn",
+    prompt: "Текущее сообщение",
+    answer: "Текущий частичный ответ",
+    status: "inProgress",
+    active: true,
+    completed: false,
+  }]);
+});
+
+test("an active snapshot updates the matching turn without duplicating it", () => {
+  const history = [{
+    id: "live-turn",
+    prompt: "Новый вопрос",
+    answer: "",
+    status: "inProgress",
+    active: true,
+    completed: false,
+  }];
+
+  mergeActiveTaskHistory(history, {
+    active: true,
+    turnId: "live-turn",
+    answer: "Ответ формируется",
+  });
+
+  assert.equal(history.length, 1);
+  assert.equal(history[0].answer, "Ответ формируется");
 });

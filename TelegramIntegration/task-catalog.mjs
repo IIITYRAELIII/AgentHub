@@ -2,10 +2,34 @@ import { createReadStream } from "node:fs";
 import path from "node:path";
 import { stat } from "node:fs/promises";
 
-const CLAUDE_ACTIVE_FRESHNESS_MS = 30 * 60 * 1000;
+export const CLAUDE_ACTIVE_FRESHNESS_MS = 30 * 60 * 1000;
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
 const LEGACY_TURN_ID = "__legacy__";
 const codexActivityCache = new Map();
+
+export const TASK_EXECUTION_OWNERS = Object.freeze({
+  TELEGRAM: "telegram",
+  VSCODE: "vscode",
+  DESKTOP: "desktop",
+  CLI: "cli",
+  EXTERNAL: "external",
+});
+
+export function taskExecutionRuntimeLabel(owner) {
+  if (owner === TASK_EXECUTION_OWNERS.TELEGRAM) return "Integration App Server";
+  if (owner === TASK_EXECUTION_OWNERS.VSCODE) return "VSCode App Server";
+  if (owner === TASK_EXECUTION_OWNERS.DESKTOP) return "Codex Desktop App";
+  if (owner === TASK_EXECUTION_OWNERS.CLI) return "Codex CLI";
+  return "External Codex";
+}
+
+export function taskExecutionRuntimeShortLabel(owner) {
+  if (owner === TASK_EXECUTION_OWNERS.TELEGRAM) return "INT";
+  if (owner === TASK_EXECUTION_OWNERS.VSCODE) return "VSC";
+  if (owner === TASK_EXECUTION_OWNERS.DESKTOP) return "APP";
+  if (owner === TASK_EXECUTION_OWNERS.CLI) return "CLI";
+  return "EXT";
+}
 
 function normalizedPath(value) {
   const resolved = path.resolve(String(value ?? ""));
@@ -50,7 +74,17 @@ function codexEntryTurnId(entry) {
   ).trim();
 }
 
-function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, entry) {
+function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
+  if (entry?.type === "session_meta") {
+    metadata.originator = String(entry.payload?.originator ?? "").trim();
+    metadata.source = String(entry.payload?.source ?? "").trim();
+  }
+  if (entry?.type === "event_msg" && entry.payload?.type === "thread_settings_applied") {
+    metadata.model = String(entry.payload?.thread_settings?.model ?? "").trim();
+    metadata.reasoningEffort = String(
+      entry.payload?.thread_settings?.reasoning_effort ?? "",
+    ).trim();
+  }
   const lifecycle = entry?.type === "event_msg"
     && ["task_started", "task_complete", "turn_aborted"].includes(entry.payload?.type);
   const turnId = codexEntryTurnId(entry) || (lifecycle ? LEGACY_TURN_ID : "");
@@ -80,15 +114,27 @@ function codexActivity(
 export function parseCodexRolloutActivity(text, options = {}) {
   const activeTurnIds = new Set();
   const lastSeenAtByTurnId = new Map();
+  const metadata = {
+    originator: "",
+    source: "",
+    model: "",
+    reasoningEffort: "",
+  };
   for (const line of String(text).split(/\r?\n/)) {
     if (!line) continue;
     try {
-      observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, JSON.parse(line));
+      observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, JSON.parse(line));
     } catch {
       // Ignore incomplete or unrelated JSONL lines.
     }
   }
-  return codexActivity(activeTurnIds, lastSeenAtByTurnId, options);
+  return {
+    ...codexActivity(activeTurnIds, lastSeenAtByTurnId, options),
+    originator: metadata.originator || null,
+    source: metadata.source || null,
+    model: metadata.model || null,
+    reasoningEffort: metadata.reasoningEffort || null,
+  };
 }
 
 export function parseCodexRolloutRunning(text) {
@@ -100,16 +146,45 @@ export async function readCodexRolloutActivity(
   { nowMs = Date.now(), freshnessMs = CODEX_ACTIVE_FRESHNESS_MS } = {},
 ) {
   const normalized = String(rolloutPath ?? "").trim();
-  if (!normalized) return { running: false, activeTurnIds: [], lastActivityAtMs: null };
+  if (!normalized) {
+    return {
+      running: false,
+      activeTurnIds: [],
+      lastActivityAtMs: null,
+      originator: null,
+      source: null,
+      model: null,
+      reasoningEffort: null,
+    };
+  }
   let info;
   try {
     info = await stat(normalized);
   } catch (error) {
-    if (error?.code === "ENOENT") return { running: false, activeTurnIds: [], lastActivityAtMs: null };
+    if (error?.code === "ENOENT") {
+      return {
+        running: false,
+        activeTurnIds: [],
+        lastActivityAtMs: null,
+        originator: null,
+        source: null,
+        model: null,
+        reasoningEffort: null,
+      };
+    }
     throw error;
   }
   if (nowMs - info.mtimeMs > freshnessMs) {
-    return { running: false, activeTurnIds: [], lastActivityAtMs: info.mtimeMs };
+    const cached = codexActivityCache.get(normalized);
+    return {
+      running: false,
+      activeTurnIds: [],
+      lastActivityAtMs: info.mtimeMs,
+      originator: cached?.originator || null,
+      source: cached?.source || null,
+      model: cached?.model || null,
+      reasoningEffort: cached?.reasoningEffort || null,
+    };
   }
   const cached = codexActivityCache.get(normalized);
   if (cached?.size === info.size && cached?.mtimeMs === info.mtimeMs) {
@@ -120,12 +195,22 @@ export async function readCodexRolloutActivity(
         { nowMs, freshnessMs },
       ),
       lastActivityAtMs: info.mtimeMs,
+      originator: cached.originator || null,
+      source: cached.source || null,
+      model: cached.model || null,
+      reasoningEffort: cached.reasoningEffort || null,
     };
   }
 
   const appendOnly = cached && info.size > cached.size;
   const activeTurnIds = new Set(appendOnly ? cached.activeTurnIds : []);
   const lastSeenAtByTurnId = new Map(appendOnly ? cached.lastSeenAtByTurnId : []);
+  const metadata = {
+    originator: appendOnly ? String(cached.originator ?? "") : "",
+    source: appendOnly ? String(cached.source ?? "") : "",
+    model: appendOnly ? String(cached.model ?? "") : "",
+    reasoningEffort: appendOnly ? String(cached.reasoningEffort ?? "") : "",
+  };
   const input = createReadStream(normalized, {
     encoding: "utf8",
     ...(appendOnly ? { start: cached.size } : {}),
@@ -142,14 +227,14 @@ export async function readCodexRolloutActivity(
   for (const line of lines) {
     if (!line) continue;
     try {
-      observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, JSON.parse(line));
+      observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, JSON.parse(line));
     } catch {
       // Ignore an unrelated complete JSONL line.
     }
   }
   if (trailingText) {
     try {
-      observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, JSON.parse(trailingText));
+      observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, JSON.parse(trailingText));
       trailingText = "";
     } catch {
       // Preserve a line caught in the middle of an append for the next read.
@@ -162,9 +247,20 @@ export async function readCodexRolloutActivity(
     activeTurnIds: [...activeTurnIds],
     lastSeenAtByTurnId: [...lastSeenAtByTurnId],
     trailingText,
+    originator: metadata.originator,
+    source: metadata.source,
+    model: metadata.model,
+    reasoningEffort: metadata.reasoningEffort,
   });
   if (codexActivityCache.size > 200) codexActivityCache.delete(codexActivityCache.keys().next().value);
-  return { ...activity, lastActivityAtMs: info.mtimeMs };
+  return {
+    ...activity,
+    lastActivityAtMs: info.mtimeMs,
+    originator: metadata.originator || null,
+    source: metadata.source || null,
+    model: metadata.model || null,
+    reasoningEffort: metadata.reasoningEffort || null,
+  };
 }
 
 export async function readCodexRolloutRunning(rolloutPath, options = {}) {
@@ -175,6 +271,24 @@ export function codexThreadRunning(thread, { rolloutRunning = false } = {}) {
   return Boolean(rolloutRunning)
     || thread?.status?.type === "active"
     || (thread?.turns ?? []).some((turn) => turn?.status === "inProgress");
+}
+
+export function codexExecutionOwner({ originator = "", source = "" } = {}) {
+  const normalizedOriginator = String(originator).trim().toLowerCase();
+  const normalizedSource = String(source).trim().toLowerCase();
+  if (normalizedOriginator === "telegram_codex_bridge") {
+    return TASK_EXECUTION_OWNERS.TELEGRAM;
+  }
+  if (normalizedOriginator.includes("codex desktop")) {
+    return TASK_EXECUTION_OWNERS.DESKTOP;
+  }
+  if (normalizedOriginator.includes("codex_vscode") || normalizedSource === "vscode") {
+    return TASK_EXECUTION_OWNERS.VSCODE;
+  }
+  if (normalizedOriginator.includes("codex_cli") || normalizedSource === "cli") {
+    return TASK_EXECUTION_OWNERS.CLI;
+  }
+  return TASK_EXECUTION_OWNERS.EXTERNAL;
 }
 
 export function selectCodexTurn(
@@ -194,7 +308,11 @@ export function selectCodexTurn(
     ?? null;
 }
 
-export function codexCatalogEntry(thread, project, { rolloutRunning = false } = {}) {
+export function codexCatalogEntry(thread, project, {
+  rolloutRunning = false,
+  executionOwner = null,
+  lastActivityAtMs = null,
+} = {}) {
   const title = String(thread?.name ?? thread?.preview ?? "Без названия")
     .replace(/\s+/g, " ")
     .trim()
@@ -207,11 +325,35 @@ export function codexCatalogEntry(thread, project, { rolloutRunning = false } = 
     title: title || "Без названия",
     updatedAtMs: Number(thread.updatedAt ?? 0) * 1000,
     running: codexThreadRunning(thread, { rolloutRunning }),
+    executionOwner,
+    lastActivityAtMs,
   };
+}
+
+// Активность Claude видна только через JSONL-транскрипт, живого App Server нет.
+// Незавершённый транскрипт остаётся «активным» навсегда, поэтому единственный
+// признак выполняющегося хода — свежесть последней записи. Предикат общий для
+// каталога, наблюдения и проверки занятости перед отправкой сообщения.
+export function claudeSnapshotActivityAtMs(snapshot) {
+  const values = [
+    Number(snapshot?.modifiedAtMs ?? 0),
+    Date.parse(String(snapshot?.updatedAt ?? "")),
+  ].filter((value) => Number.isFinite(value) && value > 0);
+  return values.length ? Math.max(...values) : null;
+}
+
+export function claudeSnapshotIsActive(
+  snapshot,
+  { nowMs = Date.now(), freshnessMs = CLAUDE_ACTIVE_FRESHNESS_MS } = {},
+) {
+  if (!snapshot?.active) return false;
+  const activityAtMs = claudeSnapshotActivityAtMs(snapshot);
+  return activityAtMs != null && nowMs - activityAtMs <= freshnessMs;
 }
 
 export function claudeCatalogEntry(snapshot, project, nowMs = Date.now()) {
   const modifiedAtMs = Number(snapshot?.modifiedAtMs ?? 0);
+  const running = claudeSnapshotIsActive(snapshot, { nowMs });
   return {
     provider: "claude",
     threadId: String(snapshot.sessionId),
@@ -219,9 +361,9 @@ export function claudeCatalogEntry(snapshot, project, nowMs = Date.now()) {
     projectName: project.name,
     title: String(snapshot.catalogTitle ?? snapshot.title ?? `Claude · ${String(snapshot.sessionId).slice(0, 8)}`),
     updatedAtMs: modifiedAtMs,
-    running: Boolean(snapshot.active)
-      && modifiedAtMs > 0
-      && nowMs - modifiedAtMs <= CLAUDE_ACTIVE_FRESHNESS_MS,
+    running,
+    executionOwner: running ? TASK_EXECUTION_OWNERS.EXTERNAL : null,
+    lastActivityAtMs: modifiedAtMs || null,
   };
 }
 
@@ -238,6 +380,13 @@ export function mergeTaskCatalog(entries, runs = []) {
     const existing = byTask.get(key);
     if (existing) {
       existing.running = true;
+      existing.executionOwner = run.observer
+        ? existing.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
+        : TASK_EXECUTION_OWNERS.TELEGRAM;
+      existing.turnId = run.turnId ?? existing.turnId ?? null;
+      existing.lastActivityAtMs = Date.parse(run.lastMeaningfulProgressAt ?? run.startedAt ?? "")
+        || existing.lastActivityAtMs
+        || Date.now();
       if (!existing.title && run.taskTitle) existing.title = run.taskTitle;
       continue;
     }
@@ -249,6 +398,11 @@ export function mergeTaskCatalog(entries, runs = []) {
       title: String(run.taskTitle ?? `${run.provider} · ${String(run.threadId).slice(0, 8)}`),
       updatedAtMs: Date.parse(run.startedAt ?? "") || Date.now(),
       running: true,
+      executionOwner: run.observer
+        ? TASK_EXECUTION_OWNERS.EXTERNAL
+        : TASK_EXECUTION_OWNERS.TELEGRAM,
+      turnId: run.turnId ?? null,
+      lastActivityAtMs: Date.parse(run.lastMeaningfulProgressAt ?? run.startedAt ?? "") || Date.now(),
     });
   }
   return [...byTask.values()].sort((left, right) => (
@@ -269,14 +423,16 @@ export function taskCatalogCallback(entry) {
   return `task:${provider}:${entry.threadId}`;
 }
 
-export function runningTaskReplyMarkup(entries, selected = null) {
+export function runningTaskReplyMarkup(entries, selected = null, { showProject = false } = {}) {
   return {
     inline_keyboard: entries
       .filter((entry) => entry.running)
       .map((entry) => [{
         text: (
           `${selected && catalogEntryIsSelected(entry, selected) ? "✅ ТЕКУЩАЯ" : "🧵"} · `
-          + `${entry.provider === "codex" ? "Codex" : "Claude"} · ${entry.projectName} · ${entry.title}`
+          + `${taskExecutionRuntimeShortLabel(entry.executionOwner)} · `
+          + `${entry.provider === "codex" ? "Codex" : "Claude"} · `
+          + `${showProject ? `${entry.projectName} · ` : ""}${entry.title}`
         ).slice(0, 90),
         callback_data: taskCatalogCallback(entry),
       }]),

@@ -25,6 +25,34 @@ function positiveInteger(value, fallback, name) {
   return number;
 }
 
+function stringArray(value, name) {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`${name} must be an array of strings`);
+  }
+  return value.map((item) => item.trim()).filter(Boolean);
+}
+
+export function httpBaseUrl(value, name) {
+  const normalized = String(value).trim().replace(/\/$/, "");
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error(`${name} must be an absolute HTTP(S) URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`${name} must use HTTP or HTTPS`);
+  }
+  const loopback = parsed.hostname === "localhost"
+    || parsed.hostname === "127.0.0.1"
+    || parsed.hostname === "[::1]";
+  if (parsed.protocol === "http:" && !loopback) {
+    throw new Error(`${name} must use HTTPS unless it points to loopback`);
+  }
+  return normalized;
+}
+
 export function samePath(left, right) {
   const a = path.resolve(left);
   const b = path.resolve(right);
@@ -179,12 +207,23 @@ export async function loadConfig() {
     showProjectButton: raw.showProjectButton !== false,
     showTaskProject: raw.showTaskProject !== false,
     provider,
+    telegramApiBaseUrl: httpBaseUrl(
+      process.env.TELEGRAM_API_BASE_URL ?? raw.telegramApiBaseUrl ?? "https://api.telegram.org",
+      "telegramApiBaseUrl",
+    ),
     codexExecutable: String(process.env.CODEX_EXECUTABLE ?? raw.codexExecutable ?? "").trim(),
+    codexExecutableArgs: stringArray(raw.codexExecutableArgs, "codexExecutableArgs"),
+    codexRpcTimeoutSeconds: positiveInteger(
+      process.env.CODEX_RPC_TIMEOUT_SECONDS ?? raw.codexRpcTimeoutSeconds,
+      30,
+      "codexRpcTimeoutSeconds",
+    ),
     codexModel: String(process.env.CODEX_MODEL ?? raw.codexModel ?? "").trim(),
     codexReasoningEffort,
     codexCollaborationMode,
     codexModels: loadCodexModels(raw),
     claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
+    claudeExecutableArgs: stringArray(raw.claudeExecutableArgs, "claudeExecutableArgs"),
     claudeModel: String(process.env.CLAUDE_MODEL ?? raw.claudeModel ?? "").trim(),
     claudePermissionMode,
     claudeReasoningEffort: String(
@@ -207,7 +246,7 @@ export async function loadConfig() {
       900,
       "ttsIdleTimeoutSeconds",
     ),
-    ttsRequestTimeoutSeconds: positiveInteger(raw.ttsRequestTimeoutSeconds, 600, "ttsRequestTimeoutSeconds"),
+    ttsRequestTimeoutSeconds: positiveInteger(raw.ttsRequestTimeoutSeconds, 60, "ttsRequestTimeoutSeconds"),
     ttsButtonMinChars: positiveInteger(raw.ttsButtonMinChars, 1, "ttsButtonMinChars"),
     ttsMaxChars: positiveInteger(raw.ttsMaxChars, 20000, "ttsMaxChars"),
     logMaxBytes: positiveInteger(raw.logMaxBytes, 5 * 1024 * 1024, "logMaxBytes"),
@@ -217,6 +256,7 @@ export async function loadConfig() {
       15,
       "deliveryRetryIntervalSeconds",
     ),
+    progressStartDelayMs: positiveInteger(raw.progressStartDelayMs, 3000, "progressStartDelayMs"),
     pythonExe: path.resolve(
       process.env.WHISPER_PYTHON ?? raw.pythonExe ?? path.join(
         INTEGRATION_ROOT,

@@ -4,6 +4,7 @@ import {
   formatProgressHeartbeat,
   markProgressHeartbeat,
   PROGRESS_HEARTBEAT_INTERVAL_MS,
+  retainProgressMessageAfterEditError,
 } from "./progress-heartbeat.mjs";
 
 test("progress heartbeat refreshes on state changes and then at a bounded interval", () => {
@@ -43,4 +44,10 @@ test("progress heartbeat distinguishes a live connection from real stalled work"
     formatProgressHeartbeat(run, { locale: "ru-RU", timeZone: "UTC" }),
     "🟠 Нет новых событий 5 мин · проверено 20:05:30",
   );
+});
+
+test("temporary Telegram edit failures keep the progress message attached", () => {
+  assert.equal(retainProgressMessageAfterEditError({ retryable: true, message: "fetch failed" }), true);
+  assert.equal(retainProgressMessageAfterEditError(new Error("message is not modified")), true);
+  assert.equal(retainProgressMessageAfterEditError(new Error("message to edit not found")), false);
 });

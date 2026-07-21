@@ -153,12 +153,12 @@ test("formatStatusMessage omits the active heading when nothing runs", () => {
     reasoning: "High",
     mode: "Work",
     task: "Задача <1>",
-    project: "VSC & Main",
+    project: "VSCode & Main",
     limits: "CODEX\n100%",
   });
   assert.doesNotMatch(result, /АКТИВНЫЕ ЗАДАЧИ/);
   assert.match(result, /Задача &lt;1&gt;/);
-  assert.match(result, /VSC &amp; Main/);
+  assert.match(result, /VSCode &amp; Main/);
 });
 
 test("formatStatusMessage omits the project when the project button is hidden", () => {
@@ -183,11 +183,13 @@ test("formatProgressHeading keeps optional project on the compact first line", (
     provider: "Codex",
     model: "GPT-5.6-Sol",
     reasoning: "High",
+    runtime: "VSCode App Server",
     task: "Telegram · 17.07.2026, 22:39",
     project: "VSC_Tyrael",
   }), [
     "⏳ Codex · GPT-5.6-Sol - High VSC_Tyrael",
     "🧵 Telegram · 17.07.2026, 22:39",
+    "⚙ VSCode App Server",
   ].join("\n"));
 
   assert.equal(formatProgressHeading({
@@ -199,6 +201,18 @@ test("formatProgressHeading keeps optional project on the compact first line", (
   }), [
     "✅ Claude Code · Sonnet - XHigh",
     "🧵 Проверка",
+  ].join("\n"));
+
+  assert.equal(formatProgressHeading({
+    provider: "Codex",
+    model: null,
+    reasoning: "Подключённый ход",
+    runtime: "VSCode App Server",
+    task: "Ключник",
+  }), [
+    "⏳ Codex · Подключённый ход",
+    "🧵 Ключник",
+    "⚙ VSCode App Server",
   ].join("\n"));
 });
 
@@ -271,11 +285,11 @@ test("formatTaskAlreadySelectedMessage confirms the current task without changin
   }), "✅ Текущая задача уже выбрана.\n\n<b>Проект &amp; тест</b>\n<i>Задача &lt;1&gt;</i>\nGPT-5.6-Sol - Medium");
 });
 
-test("task switch messages expose the show-last callback", () => {
+test("task switch messages expose the same live-message callback as notifications", () => {
   assert.deepEqual(showLastMessageReplyMarkup(), {
     inline_keyboard: [[{
-      text: "👀 Показать последнее сообщение",
-      callback_data: "show-last-message",
+      text: "👀 Показать сообщение",
+      callback_data: "show-message",
     }]],
   });
 });

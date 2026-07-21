@@ -13,16 +13,29 @@ export class TelegramRequestError extends Error {
   }
 }
 
+function normalizedTelegramApiBaseUrl(apiBaseUrl) {
+  return String(apiBaseUrl || "https://api.telegram.org").replace(/\/+$/, "");
+}
+
+export function telegramBotApiUrl(apiBaseUrl, token, method) {
+  return `${normalizedTelegramApiBaseUrl(apiBaseUrl)}/bot${token}/${String(method).replace(/^\/+/, "")}`;
+}
+
+export function telegramFileApiUrl(apiBaseUrl, token, filePath) {
+  return `${normalizedTelegramApiBaseUrl(apiBaseUrl)}/file/bot${token}/${String(filePath).replace(/^\/+/, "")}`;
+}
+
 export async function callTelegramJson({
   token,
   method,
   body,
   fetchImpl = fetch,
   timeoutMs = 40_000,
+  apiBaseUrl = "https://api.telegram.org",
 }) {
   let response;
   try {
-    response = await fetchImpl(`https://api.telegram.org/bot${token}/${method}`, {
+    response = await fetchImpl(telegramBotApiUrl(apiBaseUrl, token, method), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),

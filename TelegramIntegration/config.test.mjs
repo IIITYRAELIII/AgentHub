@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { findContainingProject, pathInsideOrSame, samePath } from "./config.mjs";
+import { findContainingProject, httpBaseUrl, pathInsideOrSame, samePath } from "./config.mjs";
 
 
 test("pathInsideOrSame accepts the project itself and nested caller directories", () => {
@@ -24,4 +24,10 @@ test("findContainingProject chooses the most specific allowed project", () => {
 
 test("samePath normalizes equivalent paths", () => {
   assert.equal(samePath("C:\\Workspace\\Project\\..\\Project", "C:\\Workspace\\Project"), true);
+});
+
+test("Telegram API URL allows plaintext HTTP only on loopback", () => {
+  assert.equal(httpBaseUrl("http://127.0.0.1:8081/", "api"), "http://127.0.0.1:8081");
+  assert.equal(httpBaseUrl("https://telegram.example", "api"), "https://telegram.example");
+  assert.throws(() => httpBaseUrl("http://telegram.example", "api"), /must use HTTPS/);
 });

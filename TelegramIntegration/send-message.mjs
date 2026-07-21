@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -6,9 +6,16 @@ import { pathToFileURL } from "node:url";
 import { findContainingProject, loadConfig } from "./config.mjs";
 import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { appendMessageBindings } from "./message-bindings.mjs";
-import { callTelegramJson } from "./telegram-api.mjs";
+import { callTelegramJson, telegramBotApiUrl } from "./telegram-api.mjs";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
+const TELEGRAM_CAPTION_LIMIT = 1024;
+const NOTIFICATION_CARD_DIRECTORY = path.join(
+  import.meta.dirname,
+  "assets",
+  "notification-cards",
+);
+const titleHistoryFileCache = new Map();
 
 export const NOTIFICATION_CATEGORIES = Object.freeze({
   action: Object.freeze({ emoji: "🚨", title: "ТРЕБУЕТСЯ ДЕЙСТВИЕ" }),
@@ -155,9 +162,18 @@ export function codexThreadTitleHistoryFromIndex(indexText, threadId) {
 
 export async function readCodexThreadTitleHistories(environment = process.env) {
   const codexHome = path.resolve(environment.CODEX_HOME || path.join(homedir(), ".codex"));
+  const indexPath = path.join(codexHome, "session_index.jsonl");
   try {
-    const indexText = await readFile(path.join(codexHome, "session_index.jsonl"), "utf8");
-    return codexThreadTitleHistoriesFromIndex(indexText);
+    const info = await stat(indexPath);
+    const cached = titleHistoryFileCache.get(indexPath);
+    if (cached?.size === info.size && cached?.mtimeMs === info.mtimeMs) return cached.value;
+    const indexText = await readFile(indexPath, "utf8");
+    const value = codexThreadTitleHistoriesFromIndex(indexText);
+    titleHistoryFileCache.set(indexPath, { size: info.size, mtimeMs: info.mtimeMs, value });
+    if (titleHistoryFileCache.size > 8) {
+      titleHistoryFileCache.delete(titleHistoryFileCache.keys().next().value);
+    }
+    return value;
   } catch {
     return new Map();
   }
@@ -214,15 +230,33 @@ export async function currentCallerBinding(state, environment = process.env, cwd
   };
 }
 
+export function compactNotificationTaskTitle(taskTitle, maxLength = 56) {
+  const value = String(taskTitle).trim().replace(/\s+/g, " ");
+  if (!value) return "Задача";
+
+  const pathParts = value.split(/[\\/]/).filter(Boolean);
+  const title = pathParts.length > 1 ? pathParts.at(-1) : value;
+  if (title.length <= maxLength) return title;
+  return `${title.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+export function notificationCardPath(categoryName = "info") {
+  const category = resolveNotificationCategory(categoryName);
+  return path.join(NOTIFICATION_CARD_DIRECTORY, `${category.key}.png`);
+}
+
 export function notificationParts(taskTitle, text, categoryName = "info") {
-  const title = String(taskTitle).trim() || "Задача";
+  const title = compactNotificationTaskTitle(taskTitle);
   const value = String(text).trim();
   const category = resolveNotificationCategory(categoryName);
-  const escapedHeader = `${category.emoji} <b><u>${category.title}</u></b> ${category.emoji}\n\n🧵 <b>${escapeHtml(title)}</b>\n\n`;
-  const firstLimit = Math.max(1, TELEGRAM_MESSAGE_LIMIT - escapedHeader.length - 32);
+  const escapedHeader = `🧵 <b>${escapeHtml(title)}</b>\n\n`;
+  const fallbackHeader = `${category.emoji} <b><u>${category.title}</u></b> ${category.emoji}\n\n`;
+  const firstLimit = Math.max(1, TELEGRAM_CAPTION_LIMIT - escapedHeader.length - 32);
   const firstText = value.slice(0, firstLimit);
   return {
-    message: `${escapedHeader}${escapeHtml(firstText)}`,
+    caption: `${escapedHeader}${escapeHtml(firstText)}`,
+    fallbackMessage: `${fallbackHeader}${escapedHeader}${escapeHtml(firstText)}`,
+    cardPath: notificationCardPath(category.key),
     remaining: value.slice(firstText.length).trimStart(),
   };
 }
@@ -246,6 +280,7 @@ async function readStdin() {
 
 async function sendTelegramMessage(
   token,
+  apiBaseUrl,
   chatId,
   text,
   silent,
@@ -261,12 +296,66 @@ async function sendTelegramMessage(
   if (parseMode) body.parse_mode = parseMode;
   if (replyMarkup) body.reply_markup = replyMarkup;
   try {
-    return await callTelegramJson({ token, method: "sendMessage", body });
+    return await callTelegramJson({ token, apiBaseUrl, method: "sendMessage", body });
   } catch (error) {
     if (!outbox || error?.retryable !== true) throw error;
     const item = await outbox.enqueue({ method: "sendMessage", body, binding });
     return { queued: true, outboxId: item.id };
   }
+}
+
+async function sendTelegramNotificationCard(
+  token,
+  apiBaseUrl,
+  chatId,
+  file,
+  caption,
+  silent,
+  replyMarkup,
+) {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("disable_notification", String(silent));
+  form.append("parse_mode", "HTML");
+  form.append("caption", caption);
+  form.append("reply_markup", JSON.stringify(replyMarkup));
+  form.append("photo", new Blob([await readFile(file)], { type: "image/png" }), path.basename(file));
+
+  try {
+    const response = await fetch(telegramBotApiUrl(apiBaseUrl, token, "sendPhoto"), {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(40_000),
+    });
+    const payload = await response.json();
+    if (!payload.ok) {
+      const error = new Error(`Telegram sendPhoto: ${payload.description ?? response.status}`);
+      error.retryable = response.status === 429 || response.status >= 500;
+      error.retryAfterMs = Number(payload.parameters?.retry_after ?? 0) * 1000;
+      throw error;
+    }
+    return payload.result;
+  } catch (error) {
+    if (typeof error.retryable !== "boolean") error.retryable = true;
+    throw error;
+  }
+}
+
+export function notificationCardOutboxBody({
+  chatId,
+  file,
+  caption,
+  silent,
+  replyMarkup,
+}) {
+  return {
+    chat_id: chatId,
+    caption,
+    disable_notification: silent,
+    parse_mode: "HTML",
+    reply_markup: replyMarkup,
+    photo_path: file,
+  };
 }
 
 export async function main(args = process.argv.slice(2)) {
@@ -302,19 +391,50 @@ export async function main(args = process.argv.slice(2)) {
       createdAt: new Date().toISOString(),
     };
     const notification = notificationParts(task.taskTitle, text, options.category);
-    sent.push(await sendTelegramMessage(
-      config.token,
-      chatId,
-      notification.message,
-      options.silent,
-      "HTML",
-      showMessageReplyMarkup(),
-      { outbox, binding },
-    ));
+    try {
+      sent.push(await sendTelegramNotificationCard(
+        config.token,
+        config.telegramApiBaseUrl,
+        chatId,
+        notification.cardPath,
+        notification.caption,
+        options.silent,
+        showMessageReplyMarkup(),
+      ));
+    } catch (error) {
+      if (error?.retryable === true) {
+        const item = await outbox.enqueue({
+          method: "sendPhotoFile",
+          body: notificationCardOutboxBody({
+            chatId,
+            file: notification.cardPath,
+            caption: notification.caption,
+            silent: options.silent,
+            replyMarkup: showMessageReplyMarkup(),
+          }),
+          binding,
+        });
+        sent.push({ queued: true, outboxId: item.id });
+        console.error(`Cannot send notification card now; queued the image: ${error.message}`);
+      } else {
+        console.error(`Cannot send notification card; falling back to text: ${error.message}`);
+        sent.push(await sendTelegramMessage(
+          config.token,
+          config.telegramApiBaseUrl,
+          chatId,
+          notification.fallbackMessage,
+          options.silent,
+          "HTML",
+          showMessageReplyMarkup(),
+          { outbox, binding },
+        ));
+      }
+    }
     parts = notification.remaining ? splitTelegramText(notification.remaining) : [];
     for (const part of parts) {
       sent.push(await sendTelegramMessage(
         config.token,
+        config.telegramApiBaseUrl,
         chatId,
         part,
         options.silent,
@@ -334,6 +454,7 @@ export async function main(args = process.argv.slice(2)) {
     for (const part of parts) {
       sent.push(await sendTelegramMessage(
         config.token,
+        config.telegramApiBaseUrl,
         chatId,
         part,
         options.silent,

@@ -1,0 +1,415 @@
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { createInterface } from "node:readline";
+
+const stateArgument = process.argv.indexOf("--state");
+const statePath = stateArgument >= 0 ? process.argv[stateArgument + 1] : "";
+const initialState = {
+  nextThread: 1,
+  nextTurn: 1,
+  threads: [],
+  crashedOnce: false,
+  requestCounts: {},
+};
+let state = statePath && existsSync(statePath)
+  ? JSON.parse(readFileSync(statePath, "utf8"))
+  : structuredClone(initialState);
+state.requestCounts ??= {};
+const pendingApprovals = new Map();
+const timers = new Set();
+
+function save() {
+  if (statePath) writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+function send(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+function reply(id, result) {
+  send({ id, result });
+}
+
+function notify(method, params = {}) {
+  send({ method, params });
+}
+
+function request(id, method, params = {}) {
+  send({ id, method, params });
+}
+
+function uuid(kind, value) {
+  const suffix = String(value).padStart(12, "0");
+  return kind === "thread"
+    ? `10000000-0000-4000-8000-${suffix}`
+    : `20000000-0000-4000-8000-${suffix}`;
+}
+
+function threadById(id) {
+  return state.threads.find((thread) => thread.id === id && !thread.archived);
+}
+
+function publicThread(thread, includeTurns = true) {
+  const waitingOnApproval = thread.turns.some((turn) => (
+    turn.status === "inProgress" && turn.prompt.startsWith("[orphan-approval]")
+  ));
+  return {
+    id: thread.id,
+    cwd: thread.cwd,
+    name: thread.name,
+    preview: thread.preview,
+    updatedAt: thread.updatedAt,
+    status: {
+      type: thread.turns.some((turn) => turn.status === "inProgress") ? "active" : "idle",
+      ...(waitingOnApproval ? { activeFlags: ["waitingOnApproval"] } : {}),
+    },
+    ...(thread.path ? { path: thread.path } : {}),
+    ...(includeTurns ? { turns: thread.turns } : {}),
+  };
+}
+
+function promptText(input) {
+  return (Array.isArray(input) ? input : [])
+    .filter((item) => item?.type === "text")
+    .map((item) => String(item.text ?? ""))
+    .join("\n")
+    .trim();
+}
+
+function schedule(callback, delayMs) {
+  const timer = setTimeout(() => {
+    timers.delete(timer);
+    callback();
+  }, delayMs);
+  timers.add(timer);
+}
+
+function finishTurn(thread, turn, { status = "completed", answer = null } = {}) {
+  if (turn.status !== "inProgress") return;
+  const text = answer ?? `Готово: ${turn.prompt}`;
+  turn.status = status;
+  if (thread.externalRolloutPath && turn.external === true) {
+    appendFileSync(thread.externalRolloutPath, `${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type: "event_msg",
+      payload: {
+        type: status === "interrupted" ? "turn_aborted" : "task_complete",
+        turn_id: turn.id,
+      },
+    })}\n`, "utf8");
+  }
+  turn.items.push({ type: "agentMessage", text, phase: "final_answer" });
+  thread.updatedAt = Math.floor(Date.now() / 1000);
+  save();
+  notify("item/agentMessage/delta", {
+    threadId: thread.id,
+    turnId: turn.id,
+    delta: text,
+  });
+  notify("thread/tokenUsage/updated", {
+    threadId: thread.id,
+    turnId: turn.id,
+    tokenUsage: {
+      total: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningOutputTokens: 10, totalTokens: 130 },
+      last: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningOutputTokens: 10, totalTokens: 130 },
+    },
+  });
+  notify("turn/diff/updated", { threadId: thread.id, turnId: turn.id, diff: `diff --fake ${turn.id}` });
+  notify("turn/completed", {
+    threadId: thread.id,
+    turn: structuredClone(turn),
+  });
+}
+
+function startTurn(params) {
+  const thread = threadById(params.threadId);
+  if (!thread) throw new Error(`thread not found: ${params.threadId}`);
+  const prompt = promptText(params.input);
+  const turn = {
+    id: uuid("turn", state.nextTurn++),
+    status: "inProgress",
+    prompt,
+    items: [{ type: "userMessage", content: [{ type: "text", text: prompt }] }],
+  };
+  thread.turns.push(turn);
+  thread.preview = prompt || thread.preview;
+  thread.updatedAt = Math.floor(Date.now() / 1000);
+  save();
+  schedule(() => notify("turn/started", { threadId: thread.id, turn: structuredClone(turn) }), 10);
+  schedule(() => notify("item/reasoning/summaryTextDelta", {
+    threadId: thread.id,
+    turnId: turn.id,
+    delta: `Проверяю сценарий: ${prompt}`,
+  }), 25);
+
+  if (prompt.includes("[hold]")) return turn;
+  if (prompt.startsWith("[orphan-approval]")) return turn;
+  if (prompt.includes("[approval]")) {
+    const approvalId = 10_000 + state.nextTurn;
+    pendingApprovals.set(approvalId, { thread, turn });
+    schedule(() => request(approvalId, "item/commandExecution/requestApproval", {
+      threadId: thread.id,
+      turnId: turn.id,
+      command: "fake-command --safe",
+      cwd: thread.cwd,
+      reason: "E2E approval",
+    }), 50);
+    return turn;
+  }
+  if (prompt.includes("[elicitation]")) {
+    const approvalId = 20_000 + state.nextTurn;
+    pendingApprovals.set(approvalId, { thread, turn, kind: "elicitation" });
+    schedule(() => request(approvalId, "mcpServer/elicitation/request", {
+      serverName: "fake-permission-mcp",
+      threadId: thread.id,
+      turnId: turn.id,
+      mode: "form",
+      message: "Разрешить безопасное тестовое действие?",
+      requestedSchema: {
+        type: "object",
+        required: ["approved"],
+        properties: { approved: { type: "boolean", title: "Разрешить" } },
+      },
+    }), 50);
+    return turn;
+  }
+  if (prompt.includes("[crash-once]") && !state.crashedOnce) {
+    state.crashedOnce = true;
+    save();
+    schedule(() => process.exit(23), 80);
+    return turn;
+  }
+  const failed = prompt.includes("[fail]");
+  schedule(() => finishTurn(thread, turn, {
+    status: failed ? "failed" : "completed",
+    answer: failed ? "Имитированная ошибка хода" : null,
+  }), prompt.includes("[slow]") ? 800 : 120);
+  return turn;
+}
+
+function startExternalTurn(thread, {
+  prompt,
+  answer,
+  delayMs,
+}) {
+  if (thread.turns.some((turn) => turn.status === "inProgress")) return;
+  const turn = {
+    id: uuid("turn", state.nextTurn++),
+    status: "inProgress",
+    prompt,
+    external: true,
+    items: [{ type: "userMessage", content: [{ type: "text", text: prompt }] }],
+  };
+  thread.turns.push(turn);
+  thread.preview = prompt;
+  thread.updatedAt = Math.floor(Date.now() / 1000);
+  thread.externalRolloutPath = path.join(path.dirname(statePath), `${thread.id}-vscode-rollout.jsonl`);
+  thread.path = thread.externalRolloutPath;
+  writeFileSync(thread.externalRolloutPath, [
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type: "session_meta",
+      payload: { originator: "codex_vscode", source: "vscode" },
+    }),
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: turn.id },
+    }),
+    "",
+  ].join("\n"), "utf8");
+  save();
+  schedule(() => finishTurn(thread, turn, { answer }), delayMs);
+}
+
+function startSilentExternalTurn(thread) {
+  startExternalTurn(thread, {
+    prompt: "[external-hold] VSCode task",
+    answer: "Внешний VSCode-ход завершён",
+    delayMs: 20_000,
+  });
+}
+
+function startShortExternalTurn(thread) {
+  startExternalTurn(thread, {
+    prompt: "[external-short] VSCode task",
+    answer: "Короткий внешний VSCode-ход завершён",
+    delayMs: 100,
+  });
+}
+
+function resumeInterruptedTurns() {
+  for (const thread of state.threads) {
+    for (const turn of thread.turns.filter((item) => item.status === "inProgress" && item.prompt.includes("[crash-once]"))) {
+      schedule(() => finishTurn(thread, turn, { answer: `Восстановлено: ${turn.prompt}` }), 250);
+    }
+  }
+}
+
+function handleRequest(message) {
+  const { id, method, params = {} } = message;
+  state.requestCounts[method] = Number(state.requestCounts[method] ?? 0) + 1;
+  if (method === "initialize") {
+    reply(id, { userAgent: "fake-codex-e2e" });
+    resumeInterruptedTurns();
+    return;
+  }
+  if (method === "thread/start") {
+    const thread = {
+      id: uuid("thread", state.nextThread++),
+      cwd: params.cwd,
+      name: "Новая тестовая задача",
+      preview: "",
+      updatedAt: Math.floor(Date.now() / 1000),
+      turns: [],
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      archived: false,
+    };
+    state.threads.push(thread);
+    save();
+    reply(id, { thread: publicThread(thread) });
+    return;
+  }
+  if (method === "thread/resume") {
+    const thread = threadById(params.threadId);
+    if (!thread) return send({ id, error: { message: `thread not found: ${params.threadId}` } });
+    if (thread.failResumeOnce) {
+      delete thread.failResumeOnce;
+      save();
+      return send({
+        id,
+        error: { message: "Custom tool call output is missing for call id: fake-resume-race" },
+      });
+    }
+    reply(id, {
+      thread: publicThread(thread),
+      model: thread.model,
+      reasoningEffort: thread.reasoningEffort,
+    });
+    return;
+  }
+  if (method === "thread/list") {
+    reply(id, {
+      data: state.threads.filter((thread) => !thread.archived).map((thread) => publicThread(thread, false)),
+      nextCursor: null,
+    });
+    return;
+  }
+  if (method === "thread/read") {
+    const thread = threadById(params.threadId);
+    if (!thread) return send({ id, error: { message: `thread not found: ${params.threadId}` } });
+    save();
+    reply(id, { thread: publicThread(thread, params.includeTurns !== false) });
+    return;
+  }
+  if (method === "thread/name/set") {
+    const thread = threadById(params.threadId);
+    if (thread) {
+      thread.name = params.name;
+      if (params.name === "__E2E_EXTERNAL_HOLD__") startSilentExternalTurn(thread);
+      if (params.name === "__E2E_EXTERNAL_SHORT__") startShortExternalTurn(thread);
+      if (params.name === "__E2E_EXTERNAL_RELEASE__") {
+        const externalTurn = thread.turns.find((turn) => (
+          turn.status === "inProgress" && turn.prompt === "[external-hold] VSCode task"
+        ));
+        if (externalTurn) finishTurn(thread, externalTurn, {
+          status: "completed",
+          answer: "Внешний ход завершён тестом",
+        });
+      }
+    }
+    save();
+    reply(id, {});
+    return;
+  }
+  if (method === "thread/settings/update") {
+    const thread = threadById(params.threadId);
+    if (thread) {
+      thread.model = params.model;
+      thread.reasoningEffort = params.effort;
+    }
+    save();
+    reply(id, { threadSettings: { model: params.model, reasoningEffort: params.effort } });
+    return;
+  }
+  if (method === "thread/archive") {
+    const thread = threadById(params.threadId);
+    if (thread) thread.archived = true;
+    save();
+    reply(id, {});
+    return;
+  }
+  if (method === "thread/rollback") {
+    const thread = threadById(params.threadId);
+    if (thread) thread.turns.splice(Math.max(0, thread.turns.length - Number(params.numTurns ?? 1)));
+    save();
+    reply(id, { thread: publicThread(thread) });
+    return;
+  }
+  if (method === "turn/start") {
+    try {
+      const thread = threadById(params.threadId);
+      if (thread?.turns.at(-1)?.status === "inProgress"
+        && thread.turns.at(-1).prompt.startsWith("[orphan-approval]")) {
+        throw new Error("Custom tool call output is missing for call id: fake-orphaned-elicitation");
+      }
+      const turn = startTurn(params);
+      if (turn.prompt.includes("[resume-error]")) {
+        thread.failResumeOnce = true;
+        save();
+      }
+      reply(id, { turn });
+    } catch (error) {
+      send({ id, error: { message: error.message } });
+    }
+    return;
+  }
+  if (method === "turn/interrupt") {
+    const thread = threadById(params.threadId);
+    const turn = thread?.turns.find((item) => item.id === params.turnId);
+    if (turn?.prompt === "[external-hold] VSCode task") {
+      send({ id, error: { message: "no active turn to interrupt" } });
+      return;
+    }
+    if (turn?.status === "inProgress") finishTurn(thread, turn, { status: "interrupted", answer: "Ход остановлен тестом" });
+    reply(id, {});
+    return;
+  }
+  reply(id, {});
+}
+
+function handleApprovalResponse(message) {
+  const pending = pendingApprovals.get(message.id);
+  if (!pending) return;
+  pendingApprovals.delete(message.id);
+  if (pending.kind === "elicitation") {
+    const accepted = message.result?.action === "accept"
+      && message.result?.content?.approved === true;
+    finishTurn(pending.thread, pending.turn, {
+      status: accepted ? "completed" : "failed",
+      answer: `MCP elicitation: ${message.result?.action ?? "missing"}:${accepted}`,
+    });
+    return;
+  }
+  const decision = message.result?.decision ?? "decline";
+  finishTurn(pending.thread, pending.turn, {
+    status: decision === "decline" ? "failed" : "completed",
+    answer: `Подтверждение: ${decision}`,
+  });
+}
+
+const lines = createInterface({ input: process.stdin });
+lines.on("line", (line) => {
+  try {
+    const message = JSON.parse(line);
+    if (message.method && message.id !== undefined) handleRequest(message);
+    else if (message.id !== undefined && message.result !== undefined) handleApprovalResponse(message);
+  } catch (error) {
+    send({ method: "fake/error", params: { message: error.message } });
+  }
+});
+
+process.on("exit", () => {
+  for (const timer of timers) clearTimeout(timer);
+});

@@ -11,6 +11,7 @@
   "showProjectButton": true,
   "showTaskProject": true,
   "codexExecutable": "",
+  "codexRpcTimeoutSeconds": 30,
   "codexModel": "gpt-5.6-sol",
   "codexReasoningEffort": "high",
   "codexCollaborationMode": "default",
@@ -65,11 +66,12 @@
   "ttsModel": "v5_5_ru",
   "ttsSpeaker": "xenia",
   "ttsIdleTimeoutSeconds": 900,
-  "ttsRequestTimeoutSeconds": 600,
+  "ttsRequestTimeoutSeconds": 60,
   "ttsButtonMinChars": 1,
   "ttsMaxChars": 20000,
   "logMaxBytes": 5242880,
   "logMaxFiles": 5,
   "deliveryRetryIntervalSeconds": 15,
+  "progressStartDelayMs": 3000,
   "dataDir": "data"
 }

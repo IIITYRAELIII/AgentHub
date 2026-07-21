@@ -6,7 +6,10 @@ import test from "node:test";
 import {
   catalogEntryIsSelected,
   claudeCatalogEntry,
+  claudeSnapshotActivityAtMs,
+  claudeSnapshotIsActive,
   codexCatalogEntry,
+  codexExecutionOwner,
   codexThreadRunning,
   mergeTaskCatalog,
   pinnedTaskTitle,
@@ -18,6 +21,9 @@ import {
   readCodexRolloutRunning,
   runningTaskReplyMarkup,
   selectCodexTurn,
+  TASK_EXECUTION_OWNERS,
+  taskExecutionRuntimeLabel,
+  taskExecutionRuntimeShortLabel,
   taskCatalogCallback,
 } from "./task-catalog.mjs";
 
@@ -46,7 +52,63 @@ test("codexCatalogEntry preserves persistent task metadata and active status", (
     title: "Первая задача",
     updatedAtMs: 123000,
     running: true,
+    executionOwner: null,
+    lastActivityAtMs: null,
   });
+});
+
+test("Codex runtime owner distinguishes Integration, VSC, Desktop and CLI", () => {
+  assert.equal(codexExecutionOwner({
+    originator: "codex_vscode",
+    source: "vscode",
+  }), TASK_EXECUTION_OWNERS.VSCODE);
+  assert.equal(codexExecutionOwner({
+    originator: "telegram_codex_bridge",
+    source: "vscode",
+  }), TASK_EXECUTION_OWNERS.TELEGRAM);
+  assert.equal(codexExecutionOwner({
+    originator: "Codex Desktop",
+    source: { subagent: null },
+  }), TASK_EXECUTION_OWNERS.DESKTOP);
+  assert.equal(codexExecutionOwner({
+    originator: "codex_cli_rs",
+    source: "cli",
+  }), TASK_EXECUTION_OWNERS.CLI);
+  assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.VSCODE), "VSCode App Server");
+  assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.TELEGRAM), "Integration App Server");
+  assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.DESKTOP), "Codex Desktop App");
+  assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.CLI), "Codex CLI");
+  assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.EXTERNAL), "External Codex");
+  assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.VSCODE), "VSC");
+  assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.TELEGRAM), "INT");
+  assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.DESKTOP), "APP");
+  assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.CLI), "CLI");
+  assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.EXTERNAL), "EXT");
+});
+
+test("Codex rollout activity reads local session source metadata", () => {
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "session_meta",
+      payload: { originator: "codex_vscode", source: "vscode" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "thread_settings_applied",
+        thread_settings: { model: "gpt-5.6-sol", reasoning_effort: "medium" },
+      },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "one" },
+    }),
+  ].join("\n"));
+  assert.equal(result.originator, "codex_vscode");
+  assert.equal(result.source, "vscode");
+  assert.equal(result.model, "gpt-5.6-sol");
+  assert.equal(result.reasoningEffort, "medium");
+  assert.deepEqual(result.activeTurnIds, ["one"]);
 });
 
 test("parseCodexRolloutRunning follows the latest turn lifecycle marker", () => {
@@ -75,6 +137,10 @@ test("Codex rollout activity keeps another concurrent turn active after one is a
   assert.deepEqual(parseCodexRolloutActivity(text), {
     running: true,
     activeTurnIds: ["original"],
+    originator: null,
+    source: null,
+    model: null,
+    reasoningEffort: null,
   });
   assert.equal(parseCodexRolloutRunning(`${text}\n${line("task_complete", "original")}`), false);
 });
@@ -108,6 +174,10 @@ test("Codex rollout activity ignores stale unmatched starts but keeps a fresh li
   }), {
     running: true,
     activeTurnIds: ["live"],
+    originator: null,
+    source: null,
+    model: null,
+    reasoningEffort: null,
   });
 });
 
@@ -232,6 +302,26 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
   assert.equal(stale.running, false);
 });
 
+test("claudeSnapshotIsActive ignores an abandoned incomplete transcript", () => {
+  const now = 2_000_000;
+  assert.equal(claudeSnapshotIsActive({ active: true, modifiedAtMs: now - 60_000 }, { nowMs: now }), true);
+  assert.equal(claudeSnapshotIsActive({ active: true, modifiedAtMs: now - 31 * 60_000 }, { nowMs: now }), false);
+  assert.equal(claudeSnapshotIsActive({ active: false, modifiedAtMs: now }, { nowMs: now }), false);
+  assert.equal(claudeSnapshotIsActive(null, { nowMs: now }), false);
+  assert.equal(claudeSnapshotIsActive({ active: true }, { nowMs: now }), false);
+});
+
+test("claudeSnapshotIsActive accepts a transcript timestamp without file mtime", () => {
+  const now = Date.parse("2026-07-21T12:00:00.000Z");
+  const snapshot = { active: true, updatedAt: "2026-07-21T11:55:00.000Z" };
+  assert.equal(claudeSnapshotActivityAtMs(snapshot), Date.parse(snapshot.updatedAt));
+  assert.equal(claudeSnapshotIsActive(snapshot, { nowMs: now }), true);
+  assert.equal(
+    claudeSnapshotIsActive({ active: true, updatedAt: "2026-07-21T10:00:00.000Z" }, { nowMs: now }),
+    false,
+  );
+});
+
 test("mergeTaskCatalog adds bot runs and promotes them to the top", () => {
   const entries = [{
     provider: "codex",
@@ -279,6 +369,7 @@ test("runningTaskReplyMarkup creates switch buttons only for active tasks", () =
     projectName: "VSC_Tyrael",
     title: "Тестирование обмена документами",
     running: true,
+    executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
   }, {
     provider: "claude",
     threadId: "a2ea7518-5826-4480-aaff-bb80915953d8",
@@ -292,10 +383,30 @@ test("runningTaskReplyMarkup creates switch buttons only for active tasks", () =
   });
   assert.deepEqual(markup, {
     inline_keyboard: [[{
-      text: "✅ ТЕКУЩАЯ · Codex · VSC_Tyrael · Тестирование обмена документами",
+      text: "✅ ТЕКУЩАЯ · VSC · Codex · Тестирование обмена документами",
       callback_data: "task:c:019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
     }]],
   });
+});
+
+test("running task buttons include project only when requested", () => {
+  const entries = [{
+    provider: "codex",
+    threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
+    projectRoot: "C:\\Projects\\Main",
+    projectName: "VSC_Tyrael",
+    title: "Фаровон",
+    running: true,
+    executionOwner: TASK_EXECUTION_OWNERS.TELEGRAM,
+  }];
+  assert.equal(
+    runningTaskReplyMarkup(entries, null).inline_keyboard[0][0].text,
+      "🧵 · INT · Codex · Фаровон",
+  );
+  assert.equal(
+    runningTaskReplyMarkup(entries, null, { showProject: true }).inline_keyboard[0][0].text,
+      "🧵 · INT · Codex · VSC_Tyrael · Фаровон",
+  );
 });
 
 test("catalogEntryIsSelected compares provider, task, and normalized project path", () => {
