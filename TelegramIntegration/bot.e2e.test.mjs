@@ -19,6 +19,7 @@ const INTEGRATION_ROOT = path.resolve(import.meta.dirname);
 const BOT_FILE = path.join(INTEGRATION_ROOT, "bot.mjs");
 const FAKE_CODEX_FILE = path.join(INTEGRATION_ROOT, "e2e", "fake-codex-app-server.mjs");
 const FAKE_CLAUDE_FILE = path.join(INTEGRATION_ROOT, "e2e", "fake-claude-cli.mjs");
+const FAKE_TTS_FILE = path.join(INTEGRATION_ROOT, "e2e", "fake-tts-worker.mjs");
 
 function callbackAction(value) {
   return String(value ?? "").replace(/:u:[0-9a-f]{12}$/i, "");
@@ -111,7 +112,10 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     showProjectButton: false,
     showTaskProject: false,
     voiceEnabled: false,
-    ttsEnabled: false,
+    ttsEnabled: true,
+    ttsPythonExe: process.execPath,
+    ttsWorkerScript: FAKE_TTS_FILE,
+    ttsRequestTimeoutSeconds: 2,
     claudeExecutable: process.execPath,
     claudeExecutableArgs: [FAKE_CLAUDE_FILE],
     progressStartDelayMs: 50,
@@ -338,6 +342,69 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const normalFinal = await telegram.waitForText("Готово: [slow] обычное завершение", { after: mark });
   assert.match(normalFinal.body.text, /За задачу:/);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0, "normal turn completion");
+
+  const normalSpeechButton = normalFinal.body.reply_markup.inline_keyboard.flat()
+    .find((button) => button.callback_data.startsWith("speech:"));
+  assert.ok(normalSpeechButton, "a completed answer must expose speech synthesis");
+  mark = telegram.calls.length;
+  telegram.pushCallback(normalSpeechButton.callback_data, normalFinal.result);
+  await telegram.waitForCall("sendVoice", (call) => call.rawBody.includes("OggS-fake-voice"), {
+    after: mark,
+    timeoutMs: 4_000,
+  });
+  await waitFor(async () => {
+    const names = await readdir(path.join(dataDir, "background-jobs")).catch(() => []);
+    return names.filter((name) => name.endsWith(".json")).length === 0;
+  }, "successful speech job cleanup");
+
+  mark = telegram.calls.length;
+  telegram.pushMessage("[tts-stall] проверка зависшего синтеза");
+  const stalledSpeechFinal = await telegram.waitForText("Готово: [tts-stall] проверка зависшего синтеза", { after: mark });
+  await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0, "stalled speech source completion");
+  const stalledSpeechButton = stalledSpeechFinal.body.reply_markup.inline_keyboard.flat()
+    .find((button) => button.callback_data.startsWith("speech:"));
+  mark = telegram.calls.length;
+  telegram.pushCallback(stalledSpeechButton.callback_data, stalledSpeechFinal.result);
+  await telegram.waitForText("нет прогресса озвучивания более 2 сек.", { after: mark, timeoutMs: 5_000 });
+
+  mark = telegram.calls.length;
+  telegram.pushCallback(normalSpeechButton.callback_data, normalFinal.result);
+  await telegram.waitForCall("sendVoice", (call) => call.rawBody.includes("OggS-fake-voice"), {
+    after: mark,
+    timeoutMs: 4_000,
+  });
+
+  mark = telegram.calls.length;
+  telegram.pushMessage("[tts-hold] озвучка после аварийного рестарта");
+  const durableSpeechFinal = await telegram.waitForText("Готово: [tts-hold] озвучка после аварийного рестарта", { after: mark });
+  await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0, "durable speech source completion");
+  const durableSpeechButton = durableSpeechFinal.body.reply_markup.inline_keyboard.flat()
+    .find((button) => button.callback_data.startsWith("speech:"));
+  const speechMarkersBeforeRestart = (await readdir(path.join(dataDir, "tts")).catch(() => []))
+    .filter((name) => name.endsWith(".started")).length;
+  telegram.pushCallback(durableSpeechButton.callback_data, durableSpeechFinal.result);
+  await waitFor(async () => {
+    const names = await readdir(path.join(dataDir, "tts")).catch(() => []);
+    return names.filter((name) => name.endsWith(".started")).length > speechMarkersBeforeRestart;
+  }, "durable speech worker start");
+  await waitFor(async () => {
+    const names = await readdir(path.join(dataDir, "background-jobs")).catch(() => []);
+    return names.some((name) => name.endsWith(".json"));
+  }, "durable speech job persistence");
+  const botBeforeSpeechRestore = bot;
+  botBeforeSpeechRestore.kill("SIGKILL");
+  await new Promise((resolve) => botBeforeSpeechRestore.once("exit", resolve));
+  await startBot();
+  await telegram.waitForCall("sendVoice", (call) => call.rawBody.includes("OggS-fake-voice"), {
+    after: mark,
+    timeoutMs: 6_000,
+  });
+  await waitFor(async () => {
+    const names = await readdir(path.join(dataDir, "background-jobs")).catch(() => []);
+    return names.filter((name) => name.endsWith(".json")).length === 0;
+  }, "restored speech job cleanup", 6_000);
+  assert.equal(telegram.callsAfter(mark, "sendVoice").length, 1,
+    "a restored speech job must upload exactly one voice message");
 
   mark = telegram.calls.length;
   telegram.pushMessage("[approval] подтверждение команды");

@@ -18,7 +18,7 @@ const startedAt = Date.now();
 try {
   const result = await runTtsWorkerRequest({
     spawnWorker: () => spawn(config.ttsPythonExe, [
-      path.join(import.meta.dirname, "tts_worker.py"),
+      config.ttsWorkerScript,
       "--idle-timeout", String(config.ttsIdleTimeoutSeconds),
       "--model", config.ttsModel,
       "--speaker", config.ttsSpeaker,

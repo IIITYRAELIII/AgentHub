@@ -18,15 +18,15 @@ test("one-shot TTS worker receives one request and extends its timeout on progre
     process.stdin.on("data", chunk => input += chunk);
     process.stdin.on("end", () => {
       const request = JSON.parse(input);
-      setTimeout(() => console.log(JSON.stringify({ id: request.id, progress: true, phase: "chunk-1" })), 100);
-      setTimeout(() => console.log(JSON.stringify({ id: request.id, ok: true, outputPath: request.outputPath })), 220);
+      setTimeout(() => console.log(JSON.stringify({ id: request.id, progress: true, phase: "chunk-1" })), 800);
+      setTimeout(() => console.log(JSON.stringify({ id: request.id, ok: true, outputPath: request.outputPath })), 2200);
     });
   `;
   const workers = [];
   const outputPath = await runTtsWorkerRequest({
     spawnWorker: nodeWorker(source),
     request: { id: "request-1", text: "Тест", outputPath: "voice.ogg" },
-    timeoutMs: 180,
+    timeoutMs: 2000,
     onWorkerChange: (worker) => workers.push(worker),
   });
 

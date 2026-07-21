@@ -283,6 +283,11 @@ export async function loadConfig() {
         process.platform === "win32" ? path.join("Scripts", "python.exe") : path.join("bin", "python"),
       ),
     ),
+    ttsWorkerScript: path.resolve(
+      process.env.TTS_WORKER_SCRIPT
+        ?? (raw.ttsWorkerScript ? path.resolve(configDirectory, raw.ttsWorkerScript) : null)
+        ?? path.join(INTEGRATION_ROOT, "tts_worker.py"),
+    ),
     whisperModelDir: path.resolve(
       process.env.WHISPER_MODEL_DIR
         ?? (raw.whisperModelDir ? path.resolve(configDirectory, raw.whisperModelDir) : null)
