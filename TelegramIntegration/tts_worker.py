@@ -122,6 +122,8 @@ class Synthesizer:
         silence = self.torch.zeros(int(self.sample_rate * 0.2))
         chunks = split_text(cleaned)
         for index, chunk in enumerate(chunks):
+            if progress is not None:
+                progress("chunk", index, len(chunks))
             if index:
                 pieces.append(silence)
             pieces.append(self.model.apply_tts(
@@ -132,11 +134,13 @@ class Synthesizer:
                 put_yo=True,
             ))
             if progress is not None:
-                progress(index + 1, len(chunks))
+                progress("chunk-complete", index + 1, len(chunks))
         audio = self.torch.cat(pieces)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         wav_path = output_path.with_suffix(".wav")
         try:
+            if progress is not None:
+                progress("encoding", len(chunks), len(chunks))
             save_wav(audio, wav_path, self.sample_rate)
             wav_to_ogg_opus(wav_path, output_path, self.sample_rate)
         finally:
@@ -175,16 +179,20 @@ def main() -> int:
             return 0
         request_id = request.get("id")
         try:
+            respond({"id": request_id, "progress": True, "phase": "accepted"})
             if synthesizer is None:
+                respond({"id": request_id, "progress": True, "phase": "loading-model"})
                 synthesizer = Synthesizer(args.model, args.speaker, args.cache_dir.resolve())
+                respond({"id": request_id, "progress": True, "phase": "model-ready"})
             output_path = Path(request["outputPath"]).resolve()
             synthesizer.synthesize(
                 str(request.get("text", "")),
                 output_path,
                 args.max_chars,
-                lambda completed, total: respond({
+                lambda phase, completed, total: respond({
                     "id": request_id,
                     "progress": True,
+                    "phase": phase,
                     "completed": completed,
                     "total": total,
                 }),

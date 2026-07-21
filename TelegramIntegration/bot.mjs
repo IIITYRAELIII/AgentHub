@@ -135,7 +135,7 @@ import {
 import { botReplacementInvocation } from "./runtime-restart.mjs";
 import { RuntimeCommandServer } from "./runtime-command.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
-import { routeTtsWorkerMessage } from "./tts-progress.mjs";
+import { runTtsWorkerRequest } from "./tts-worker-client.mjs";
 
 const config = await loadConfig();
 const defaultDataDirectory = path.join(INTEGRATION_ROOT, "data");
@@ -321,9 +321,6 @@ let lastStateBackupAt = 0;
 let speechWriteQueue = Promise.resolve();
 let bindingWriteQueue = Promise.resolve();
 let ttsWorker = null;
-let ttsLines = null;
-let ttsWorkerStarting = null;
-let ttsSequence = 1;
 let typingInterval = null;
 let deliveryOutboxTimer = null;
 let selectedTaskWatchTimer = null;
@@ -341,7 +338,6 @@ const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
 const turnTemporaryFiles = new Map();
 const turnSpeechButtons = new Map();
-const pendingTts = new Map();
 const speechTexts = new Map();
 const taskRuns = new TaskRunRegistry();
 const backgroundJobStore = new PersistentBackgroundJobStore({
@@ -4260,102 +4256,47 @@ function runTranscription(audioPath) {
   });
 }
 
-async function startTtsWorker() {
-  await mkdir(TTS_DIR, { recursive: true });
-  const worker = spawn(TTS_PYTHON_EXE, [
-    TTS_WORKER_SCRIPT,
-    "--idle-timeout", String(config.ttsIdleTimeoutSeconds),
-    "--model", config.ttsModel,
-    "--speaker", config.ttsSpeaker,
-    "--cache-dir", TTS_CACHE_DIR,
-    "--max-chars", String(config.ttsMaxChars),
-  ], {
-    cwd: INTEGRATION_ROOT,
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, PYTHONUTF8: "1", TORCH_HOME: TTS_CACHE_DIR },
-  });
-  await new Promise((resolve, reject) => {
-    worker.once("spawn", resolve);
-    worker.once("error", reject);
-  }).catch((error) => {
-    worker.kill();
-    throw new Error(`TTS worker failed to start: ${error.message}`, { cause: error });
-  });
-  ttsWorker = worker;
-  worker.stderr.setEncoding("utf8");
-  worker.stderr.on("data", (data) => console.error(`[tts] ${data.trimEnd()}`));
-  const stopped = (error) => detachTtsWorker(worker, error);
-  worker.on("error", (error) => stopped(new Error(`TTS worker error: ${error.message}`, { cause: error })));
-  worker.on("close", (code, signal) => stopped(new Error(`TTS worker stopped (code=${code}, signal=${signal})`)));
-  worker.stdin.on("error", (error) => stopped(new Error(`TTS worker stdin failed: ${error.message}`, { cause: error })));
-  ttsLines = createInterface({ input: worker.stdout });
-  ttsLines.on("line", (line) => {
-    try {
-      const message = JSON.parse(line);
-      routeTtsWorkerMessage(pendingTts, message);
-    } catch (error) {
-      console.error("Invalid TTS worker message:", error.message);
-    }
-  });
-}
-
-async function ensureTtsWorker() {
-  if (ttsWorker) return;
-  if (!ttsWorkerStarting) {
-    ttsWorkerStarting = startTtsWorker().finally(() => { ttsWorkerStarting = null; });
-  }
-  await ttsWorkerStarting;
-}
-
 async function synthesizeSpeech(text) {
-  await ensureTtsWorker();
-  const id = ttsSequence++;
+  await mkdir(TTS_DIR, { recursive: true });
+  const id = randomUUID();
   const outputPath = path.join(TTS_DIR, `${randomUUID()}.ogg`);
-  const promise = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pendingTts.delete(id);
-      stopTtsWorker();
-      reject(new Error(`нет прогресса озвучивания более ${config.ttsRequestTimeoutSeconds} сек.`));
-    }, config.ttsRequestTimeoutSeconds * 1000);
-    pendingTts.set(id, { resolve, reject, timer });
+  let currentWorker = null;
+  return runTtsWorkerRequest({
+    spawnWorker: () => spawn(TTS_PYTHON_EXE, [
+      TTS_WORKER_SCRIPT,
+      "--idle-timeout", String(config.ttsIdleTimeoutSeconds),
+      "--model", config.ttsModel,
+      "--speaker", config.ttsSpeaker,
+      "--cache-dir", TTS_CACHE_DIR,
+      "--max-chars", String(config.ttsMaxChars),
+    ], {
+      cwd: INTEGRATION_ROOT,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, PYTHONUTF8: "1", TORCH_HOME: TTS_CACHE_DIR },
+    }),
+    request: { id, text, outputPath },
+    timeoutMs: config.ttsRequestTimeoutSeconds * 1000,
+    terminateWorker: (worker) => stopProcessTree(worker.pid).catch(() => worker.kill()),
+    onWorkerChange: (worker) => {
+      if (worker) {
+        currentWorker = worker;
+        ttsWorker = worker;
+      } else if (ttsWorker === currentWorker) {
+        ttsWorker = null;
+      }
+    },
+    onDiagnostic: (message) => {
+      if (message) console.error(`[tts] ${message}`);
+    },
   });
-  ttsWorker.stdin.write(`${JSON.stringify({ id, text, outputPath })}\n`, (error) => {
-    if (!error) return;
-    const request = pendingTts.get(id);
-    if (!request) return;
-    pendingTts.delete(id);
-    clearTimeout(request.timer);
-    request.reject(error);
-  });
-  return promise;
-}
-
-function detachTtsWorker(worker, error) {
-  if (ttsWorker !== worker) return;
-  for (const request of pendingTts.values()) {
-    clearTimeout(request.timer);
-    request.reject(error);
-  }
-  pendingTts.clear();
-  ttsLines?.close();
-  ttsLines = null;
-  ttsWorker = null;
 }
 
 function stopTtsWorker() {
   const worker = ttsWorker;
   if (!worker) return;
-  detachTtsWorker(worker, new Error("TTS worker остановлен"));
-  if (process.platform === "win32" && worker.pid) {
-    const killer = spawn("taskkill.exe", ["/PID", String(worker.pid), "/T", "/F"], {
-      windowsHide: true,
-      stdio: "ignore",
-    });
-    killer.unref();
-  } else {
-    worker.kill();
-  }
+  ttsWorker = null;
+  void stopProcessTree(worker.pid).catch(() => worker.kill());
 }
 
 function rememberSpeechText(text, force = false) {
