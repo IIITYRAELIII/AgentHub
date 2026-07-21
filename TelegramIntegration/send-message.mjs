@@ -68,6 +68,7 @@ export function parseArguments(args) {
   let bindCurrent = false;
   let bindActive = false;
   let category = "info";
+  let messageFile = null;
   const textParts = [];
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -85,14 +86,49 @@ export function parseArguments(args) {
       category = resolveNotificationCategory(args[++index]).key;
     } else if (argument.startsWith("--category=")) {
       category = resolveNotificationCategory(argument.slice("--category=".length)).key;
+    } else if (argument === "--message-file") {
+      if (index + 1 >= args.length) throw new Error("--message-file requires a value");
+      messageFile = args[++index];
+    } else if (argument.startsWith("--message-file=")) {
+      messageFile = argument.slice("--message-file=".length);
+      if (!messageFile) throw new Error("--message-file requires a value");
     } else if (argument === "--help" || argument === "-h") {
-      return { help: true, chatId, silent, bindCurrent, bindActive, category, text: "" };
+      return { help: true, chatId, silent, bindCurrent, bindActive, category, messageFile, text: "" };
     } else {
       textParts.push(argument);
     }
   }
   if (bindCurrent && bindActive) throw new Error("Use either --bind-current or --bind-active, not both");
-  return { help: false, chatId, silent, bindCurrent, bindActive, category, text: textParts.join(" ").trim() };
+  const text = textParts.join(" ").trim();
+  if (messageFile && text) throw new Error("Use either --message-file or positional message text, not both");
+  return { help: false, chatId, silent, bindCurrent, bindActive, category, messageFile, text };
+}
+
+export function looksLikeUtf8Mojibake(value) {
+  const cyrillic = String(value ?? "").match(/[А-Яа-яЁё]/g) ?? [];
+  if (cyrillic.length < 20) return false;
+  const suspiciousLeads = cyrillic.filter((character) => character === "Р" || character === "С").length;
+  return suspiciousLeads / cyrillic.length >= 0.42;
+}
+
+export function validateMessageText(value) {
+  const text = String(value ?? "").replace(/^\uFEFF/, "").trim();
+  if (!text) throw new Error("Message text is empty");
+  if (looksLikeUtf8Mojibake(text)) {
+    throw new Error("Message text looks like corrupted UTF-8; use --message-file with a UTF-8 file");
+  }
+  return text;
+}
+
+export async function resolveMessageText(options, {
+  readFileImpl = readFile,
+  readStdinImpl = readStdin,
+} = {}) {
+  if (options.messageFile) {
+    return validateMessageText(await readFileImpl(path.resolve(options.messageFile), "utf8"));
+  }
+  if (options.text) return validateMessageText(options.text);
+  return validateMessageText(await readStdinImpl());
 }
 
 export function currentThreadBinding(state) {
@@ -361,12 +397,12 @@ export function notificationCardOutboxBody({
 export async function main(args = process.argv.slice(2)) {
   const options = parseArguments(args);
   if (options.help) {
-    console.log("Usage: node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--category <name>] <message>");
+    console.log("Usage: node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--category <name>] [--message-file <utf8-file> | <message>]");
     console.log("       <command> | node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--category <name>]");
     console.log(`Categories: ${Object.keys(NOTIFICATION_CATEGORIES).join(", ")} (default: info; used with a binding option)`);
     return;
   }
-  const text = options.text || await readStdin();
+  const text = await resolveMessageText(options);
   const config = await loadConfig();
   const chatId = resolveChatId(config, options.chatId);
   const outbox = new PersistentDeliveryOutbox({

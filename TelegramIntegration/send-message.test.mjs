@@ -13,8 +13,10 @@ import {
   notificationCardPath,
   notificationCardOutboxBody,
   notificationParts,
+  looksLikeUtf8Mojibake,
   parseArguments,
   readCodexThreadTitleHistories,
+  resolveMessageText,
   resolveNotificationCategory,
   resolveChatId,
   showMessageReplyMarkup,
@@ -30,8 +32,34 @@ test("parseArguments reads text and options", () => {
     bindCurrent: false,
     bindActive: false,
     category: "info",
+    messageFile: null,
     text: "Готово",
   });
+});
+
+test("parseArguments accepts a UTF-8 message file instead of positional text", () => {
+  assert.equal(parseArguments(["--message-file", "message.txt"]).messageFile, "message.txt");
+  assert.equal(parseArguments(["--message-file=message.txt"]).messageFile, "message.txt");
+  assert.throws(
+    () => parseArguments(["--message-file", "message.txt", "Готово"]),
+    /either --message-file or positional message text/,
+  );
+});
+
+test("resolveMessageText reads UTF-8 files and rejects likely mojibake", async () => {
+  const text = await resolveMessageText(
+    { messageFile: "message.txt", text: "" },
+    { readFileImpl: async () => "\uFEFFТретий проход стабилизации завершён." },
+  );
+  assert.equal(text, "Третий проход стабилизации завершён.");
+  const corrupted = "РўСЂРµС‚РёР№ РїСЂРѕС…РѕРґ СЃС‚Р°Р±РёР»РёР·Р°С†РёРё Р·Р°РІРµСЂС€С‘РЅ";
+  assert.equal(looksLikeUtf8Mojibake(corrupted), true);
+  await assert.rejects(
+    resolveMessageText({ messageFile: "message.txt", text: "" }, {
+      readFileImpl: async () => corrupted,
+    }),
+    /corrupted UTF-8/,
+  );
 });
 
 test("parseArguments enables current task binding", () => {
