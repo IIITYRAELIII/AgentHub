@@ -109,6 +109,7 @@ import { LocalTaskSyncStore } from "./task-sync-store.mjs";
 import { shouldLogPollingFailure, telegramPollingRetryDelay } from "./poll-retry.mjs";
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
 import { SingleInstanceGuard } from "./instance-lock.mjs";
+import { BackgroundJobQueue } from "./background-job-queue.mjs";
 import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "./claude-invocation.mjs";
 import {
   catalogEntryIsSelected,
@@ -191,6 +192,8 @@ const TELEGRAM_LIMIT = 3900;
 const THREAD_LIST_LIMIT = 10;
 const TASK_PICKER_PAGE_SIZE = 8;
 const MAX_DEFERRED_INPUTS = 500;
+const MAX_BACKGROUND_MEDIA_JOBS = 20;
+const MAX_BACKGROUND_SPEECH_JOBS = 10;
 const PYTHON_EXE = config.pythonExe;
 const TTS_PYTHON_EXE = config.ttsPythonExe;
 const TRANSCRIBE_SCRIPT = path.join(import.meta.dirname, "transcribe.py");
@@ -306,7 +309,16 @@ const turnSpeechButtons = new Map();
 const pendingTts = new Map();
 const speechTexts = new Map();
 const taskRuns = new TaskRunRegistry();
-const backgroundMediaJobs = new Set();
+const backgroundMediaJobs = new BackgroundJobQueue({
+  concurrency: 1,
+  maxJobs: MAX_BACKGROUND_MEDIA_JOBS,
+  onChange: handleBackgroundJobQueueChange,
+});
+const backgroundSpeechJobs = new BackgroundJobQueue({
+  concurrency: 1,
+  maxJobs: MAX_BACKGROUND_SPEECH_JOBS,
+  onChange: handleBackgroundJobQueueChange,
+});
 const dismissedExternalTasks = new TaskDismissalRegistry();
 const cancelledManagedClaudeTasks = new Map();
 const pendingInputs = new Map();
@@ -1252,6 +1264,16 @@ async function startCodexAppServer() {
       console.error("Invalid app-server message:", error.message);
     }
   });
+}
+
+async function stopCodexAppServerTree() {
+  const child = codex;
+  if (!child) return;
+  if (!child.pid) {
+    child.kill();
+    return;
+  }
+  await stopProcessTree(child.pid).catch(() => child.kill());
 }
 
 function writeCodexMessage(message) {
@@ -2326,6 +2348,9 @@ function applyManagedClaudeCancellation(snapshot) {
   const activityAtMs = claudeSnapshotActivityAtMs(snapshot);
   if (Number.isFinite(activityAtMs) && activityAtMs > cancelledAtMs) {
     cancelledManagedClaudeTasks.delete(key);
+    void saveState().catch((error) => {
+      console.error("Cannot persist cleared Claude cancellation marker:", error.message);
+    });
     return snapshot;
   }
   return {
@@ -3900,22 +3925,34 @@ function restartBlockingRuns() {
 }
 
 function restartHasBlockingWork() {
-  return restartBlockingRuns().length > 0 || backgroundMediaJobs.size > 0;
+  return restartBlockingRuns().length > 0
+    || backgroundMediaJobs.size > 0
+    || backgroundSpeechJobs.size > 0;
 }
 
-function trackBackgroundMediaJob(job, label) {
-  const tracked = Promise.resolve(job)
-    .catch((error) => {
+function handleBackgroundJobQueueChange({ size }) {
+  if (size === 0 && restartRequest?.waitingForRuns && !restartHasBlockingWork() && !stopping) {
+    setTimeout(() => void performRestart(), 0);
+  }
+}
+
+function trackBackgroundMediaJob(work, label, targetChatId) {
+  try {
+    const job = backgroundMediaJobs.enqueue(work);
+    void job.catch((error) => {
       console.error(`Background ${label} processing failed:`, error.message);
-    })
-    .finally(() => {
-      backgroundMediaJobs.delete(tracked);
-      if (restartRequest?.waitingForRuns && !restartHasBlockingWork() && !stopping) {
-        setTimeout(() => void performRestart(), 0);
-      }
     });
-  backgroundMediaJobs.add(tracked);
-  return tracked;
+    return job;
+  } catch (error) {
+    if (error?.code !== "QUEUE_FULL") throw error;
+    void sendMessageTo(
+      targetChatId,
+      `Очередь медиа переполнена (${MAX_BACKGROUND_MEDIA_JOBS}). Отправьте файл позже.`,
+    ).catch((sendError) => {
+      console.error("Cannot report media queue overflow:", sendError.message);
+    });
+    return null;
+  }
 }
 
 async function updateRestartMessage(text, extra = {}) {
@@ -3967,6 +4004,10 @@ async function performRestart() {
     taskSyncStore.save(),
     deliveryOutbox.waitForWrites(),
   ]);
+  stopping = true;
+  stopRuntimeTimers();
+  await stopCodexAppServerTree();
+  stopTtsWorker();
   await instanceGuard.release();
   const replacement = spawn(
     process.execPath,
@@ -3979,9 +4020,6 @@ async function performRestart() {
     },
   );
   replacement.unref();
-  stopping = true;
-  codex?.kill();
-  for (const run of restartBlockingRuns()) run.process?.kill();
   // Процессы Claude намеренно переживают перезапуск: новый бот подхватит их
   // по сохранённому PID и файлу вывода.
   setTimeout(() => process.exit(0), 500).unref();
@@ -3995,7 +4033,9 @@ async function restartBot() {
     return;
   }
   const blockingRuns = restartBlockingRuns();
-  const blockingWorkCount = blockingRuns.length + backgroundMediaJobs.size;
+  const blockingWorkCount = blockingRuns.length
+    + backgroundMediaJobs.size
+    + backgroundSpeechJobs.size;
   const message = await sendMessage(blockingWorkCount
     ? `🔄 Перезапущу бота после завершения выполняющихся задач: ${blockingWorkCount}.`
     : "🔄 Перезапускаю бота…");
@@ -4396,11 +4436,25 @@ async function handleApprovalCallback(callback) {
       });
       return;
     }
+    let speechJob;
+    try {
+      speechJob = backgroundSpeechJobs.enqueue(() => processSpeechRequest(callback, text));
+    } catch (error) {
+      if (error?.code !== "QUEUE_FULL") throw error;
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: `Очередь озвучивания заполнена (${MAX_BACKGROUND_SPEECH_JOBS})`,
+        show_alert: true,
+      });
+      return;
+    }
     await telegram("answerCallbackQuery", {
       callback_query_id: callback.id,
-      text: "Готовлю голосовое сообщение…",
+      text: backgroundSpeechJobs.pending
+        ? `Озвучивание поставлено в очередь: ${backgroundSpeechJobs.pending}`
+        : "Готовлю голосовое сообщение…",
     });
-    void processSpeechRequest(callback, text).catch((error) => {
+    void speechJob.catch((error) => {
       console.error("Speech request failed:", error.message);
     });
     return;
@@ -4858,13 +4912,13 @@ async function handleTelegramMessage(message) {
       message,
       message.caption?.trim() || "Изображение без подписи",
     );
-    trackBackgroundMediaJob(analyzeImage(message, target), "image");
+    trackBackgroundMediaJob(() => analyzeImage(message, target), "image", target.chatId);
     return;
   }
   if (message.voice || message.audio) {
     const target = selectedTurnTarget(message.chat.id);
     await bindIncomingTaskMessage(message, "Голосовое сообщение");
-    trackBackgroundMediaJob(transcribeVoice(message, target), "voice");
+    trackBackgroundMediaJob(() => transcribeVoice(message, target), "voice", target.chatId);
     return;
   }
   const rawText = message.text?.trim();
@@ -5023,6 +5077,7 @@ async function pollTelegram() {
         if (restartRequest && !restartRequest.waitingForRuns && !stopping) {
           await performRestart();
         }
+        if (stopping) break;
       }
     } catch (error) {
       consecutiveFailures += 1;
@@ -5221,10 +5276,7 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function shutdown(signal) {
-  if (stopping) return;
-  stopping = true;
-  console.log(`Stopping on ${signal}...`);
+function stopRuntimeTimers() {
   stopTyping();
   if (deliveryOutboxTimer) {
     clearTimeout(deliveryOutboxTimer);
@@ -5246,7 +5298,14 @@ async function shutdown(signal) {
     run.observerTimer = null;
     run.claudeDrainTimer = null;
   }
-  codex?.kill();
+}
+
+async function shutdown(signal) {
+  if (stopping) return;
+  stopping = true;
+  console.log(`Stopping on ${signal}...`);
+  stopRuntimeTimers();
+  await stopCodexAppServerTree();
   // Ходы Claude оставляем работать: следующий запуск бота подключится к ним заново.
   for (const run of taskRuns.values()) {
     if (run.provider === "codex") run.process?.kill();

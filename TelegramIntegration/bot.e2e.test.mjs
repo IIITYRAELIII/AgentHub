@@ -279,16 +279,15 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     caption: "[media-race-b] вторая картинка",
     photo: [{ file_id: "e2e-photo-race-b", file_size: 128 }],
   });
-  const deferredMedia = await telegram.waitForText("Новое сообщение сохранено и не потеряно", {
-    after: mark,
-    timeoutMs: 8_000,
-  });
   await telegram.waitForText("Готово: [media-race-a] первая картинка", { after: mark, timeoutMs: 8_000 });
-  const cancelDeferredMedia = deferredMedia.body.reply_markup.inline_keyboard.flat()
-    .find((button) => button.callback_data.startsWith("pending:cancel:"));
-  assert.ok(cancelDeferredMedia, "the concurrently prepared media input must be deferred, not lost");
-  telegram.pushCallback(cancelDeferredMedia.callback_data, deferredMedia.result);
-  await telegram.waitForCall("editMessageText", (call) => String(call.body.text).includes("отменено"), { after: mark });
+  await telegram.waitForText("Готово: [media-race-b] вторая картинка", { after: mark, timeoutMs: 8_000 });
+  assert.equal(
+    telegram.callsAfter(mark, "sendMessage").filter((call) => (
+      String(call.body.text ?? "").includes("Готово: [media-race-")
+    )).length,
+    2,
+    "two rapidly submitted images must be processed once each in queue order",
+  );
   telegram.fileDownloadDelayMs = 0;
 
   mark = telegram.calls.length;
@@ -665,12 +664,24 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("/restart");
+  telegram.pushMessage("сообщение из того же пакета после рестарта");
   const restarting = await telegram.waitForText("Перезапускаю бота", { after: mark });
   await telegram.waitForCall(
     "editMessageText",
     (call) => call.body.message_id === restarting.result.message_id
       && String(call.body.text).includes("БОТ ПЕРЕЗАПУЩЕН"),
     { after: mark, timeoutMs: 12_000 },
+  );
+  await telegram.waitForText("Готово: сообщение из того же пакета после рестарта", {
+    after: mark,
+    timeoutMs: 12_000,
+  });
+  assert.equal(
+    telegram.callsAfter(mark, "sendMessage").filter((call) => (
+      String(call.body.text ?? "").includes("Готово: сообщение из того же пакета после рестарта")
+    )).length,
+    1,
+    "an update already fetched beside /restart must be handled exactly once by the replacement",
   );
 
   mark = telegram.calls.length;
