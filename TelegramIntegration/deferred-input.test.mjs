@@ -24,3 +24,10 @@ test("parsePendingInputCallback accepts only known actions and ids", () => {
   );
   assert.equal(parsePendingInputCallback("pending:drop:nope"), null);
 });
+
+test("pendingInputKeyboard can explicitly allow a risky same-task launch", () => {
+  const id = "019f7152-726b-7b62-a595-62a3fccef0bf";
+  const keyboard = pendingInputKeyboard(id, { allowForce: true });
+  assert.equal(keyboard.inline_keyboard[2][0].callback_data, `pending:force:${id}`);
+  assert.deepEqual(parsePendingInputCallback(`pending:force:${id}`), { action: "force", id });
+});

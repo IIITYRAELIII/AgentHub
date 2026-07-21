@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
   codexFinalTurnAnswer,
   codexTurnAnswer,
+  claudeTranscriptCacheStats,
   lastCompletedCodexAnswer,
   listClaudeSessionSnapshots,
   parseClaudeTranscript,
   readClaudeSessionSnapshot,
+  resetClaudeTranscriptCache,
 } from "./last-message.mjs";
 
 function line(value) {
@@ -172,6 +174,30 @@ test("listClaudeSessionSnapshots discovers independent sessions but skips subage
   assert.equal(snapshots[0].title, "Проверить каталог задач");
   assert.equal(snapshots[0].catalogTitle, "Проверить каталог задач");
   assert.equal(snapshots[0].active, true);
+});
+
+test("Claude transcript cache reuses unchanged files and invalidates on size change", async () => {
+  resetClaudeTranscriptCache();
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-claude-cache-"));
+  const project = path.join(root, "project");
+  const transcriptPath = path.join(project, "cached-session.jsonl");
+  await mkdir(project);
+  const first = line({
+    type: "user",
+    cwd: "C:\\Projects\\Main",
+    sessionId: "cached-session",
+    message: { role: "user", content: "Название A" },
+  });
+  await writeFile(transcriptPath, first, "utf8");
+
+  assert.equal((await listClaudeSessionSnapshots({ projectsRoot: root }))[0].title, "Название A");
+  assert.deepEqual(claudeTranscriptCacheStats(), { entries: 1, hits: 0, misses: 1 });
+  assert.equal((await listClaudeSessionSnapshots({ projectsRoot: root }))[0].title, "Название A");
+  assert.deepEqual(claudeTranscriptCacheStats(), { entries: 1, hits: 1, misses: 1 });
+
+  await appendFile(transcriptPath, `\n${line({ type: "ai-title", aiTitle: "Название C" })}`, "utf8");
+  assert.equal((await listClaudeSessionSnapshots({ projectsRoot: root }))[0].title, "Название C");
+  assert.deepEqual(claudeTranscriptCacheStats(), { entries: 1, hits: 1, misses: 2 });
 });
 
 test("listClaudeSessionSnapshots excludes command-only utility sessions", async () => {

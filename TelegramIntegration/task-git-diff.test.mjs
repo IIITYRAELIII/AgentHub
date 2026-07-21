@@ -5,13 +5,34 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { captureTaskGitBaseline, cleanupTaskGitIndexes, taskGitDiff } from "./task-git-diff.mjs";
+import {
+  captureTaskGitBaseline,
+  cleanupTaskGitIndexes,
+  resolveTaskGitRepoRoots,
+  taskGitDiff,
+} from "./task-git-diff.mjs";
 
 const execFileAsync = promisify(execFile);
 
 async function git(cwd, ...args) {
   return execFileAsync("git", args, { cwd, encoding: "utf8" });
 }
+
+test("repository discovery finds nested repos in a multi-repository workspace", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "telegram-repo-roots-"));
+  const first = path.join(root, "First");
+  const second = path.join(root, "Nested", "Second");
+  await Promise.all([mkdir(first, { recursive: true }), mkdir(second, { recursive: true })]);
+  try {
+    await Promise.all([git(first, "init"), git(second, "init")]);
+    assert.deepEqual(await resolveTaskGitRepoRoots(root), [
+      path.resolve(first),
+      path.resolve(second),
+    ].sort((left, right) => left.localeCompare(right)));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("task Git diff uses the real repository and excludes pre-existing dirt", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "telegram-task-diff-"));

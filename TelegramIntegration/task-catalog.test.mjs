@@ -7,6 +7,7 @@ import {
   catalogEntryIsSelected,
   claudeCatalogEntry,
   claudeSnapshotActivityAtMs,
+  claudeSnapshotActivityState,
   claudeSnapshotIsActive,
   codexCatalogEntry,
   codexExecutionOwner,
@@ -66,6 +67,10 @@ test("Codex runtime owner distinguishes Integration, VSC, Desktop and CLI", () =
     originator: "telegram_codex_bridge",
     source: "vscode",
   }), TASK_EXECUTION_OWNERS.TELEGRAM);
+  assert.equal(codexExecutionOwner({
+    originator: "Codex Desktop",
+    source: "vscode",
+  }), TASK_EXECUTION_OWNERS.VSCODE);
   assert.equal(codexExecutionOwner({
     originator: "Codex Desktop",
     source: { subagent: null },
@@ -320,6 +325,24 @@ test("claudeSnapshotIsActive accepts a transcript timestamp without file mtime",
     claudeSnapshotIsActive({ active: true, updatedAt: "2026-07-21T10:00:00.000Z" }, { nowMs: now }),
     false,
   );
+});
+
+test("stale incomplete Claude transcript has unknown rather than inactive activity", () => {
+  const now = 2_000_000;
+  assert.equal(claudeSnapshotActivityState({
+    active: true,
+    modifiedAtMs: now - 31 * 60_000,
+  }, { nowMs: now }), "unknown");
+  assert.equal(claudeSnapshotActivityState({
+    active: true,
+    modifiedAtMs: now - 60_000,
+  }, { nowMs: now }), "active");
+  assert.equal(claudeSnapshotActivityState({ completed: true }, { nowMs: now }), "inactive");
+  assert.equal(claudeCatalogEntry({
+    sessionId: "claude-stale",
+    active: true,
+    modifiedAtMs: now - 31 * 60_000,
+  }, project, now).activityUnknown, true);
 });
 
 test("mergeTaskCatalog adds bot runs and promotes them to the top", () => {

@@ -279,10 +279,16 @@ export function codexExecutionOwner({ originator = "", source = "" } = {}) {
   if (normalizedOriginator === "telegram_codex_bridge") {
     return TASK_EXECUTION_OWNERS.TELEGRAM;
   }
+  // `source` describes the surface that started the current Codex session more
+  // precisely than the historical product label in `originator`. Older threads
+  // can retain `Codex Desktop` after they are continued from VS Code.
+  if (normalizedSource === "vscode") {
+    return TASK_EXECUTION_OWNERS.VSCODE;
+  }
   if (normalizedOriginator.includes("codex desktop")) {
     return TASK_EXECUTION_OWNERS.DESKTOP;
   }
-  if (normalizedOriginator.includes("codex_vscode") || normalizedSource === "vscode") {
+  if (normalizedOriginator.includes("codex_vscode")) {
     return TASK_EXECUTION_OWNERS.VSCODE;
   }
   if (normalizedOriginator.includes("codex_cli") || normalizedSource === "cli") {
@@ -351,9 +357,18 @@ export function claudeSnapshotIsActive(
   return activityAtMs != null && nowMs - activityAtMs <= freshnessMs;
 }
 
+export function claudeSnapshotActivityState(
+  snapshot,
+  { nowMs = Date.now(), freshnessMs = CLAUDE_ACTIVE_FRESHNESS_MS } = {},
+) {
+  if (!snapshot || snapshot.completed || snapshot.active !== true) return "inactive";
+  return claudeSnapshotIsActive(snapshot, { nowMs, freshnessMs }) ? "active" : "unknown";
+}
+
 export function claudeCatalogEntry(snapshot, project, nowMs = Date.now()) {
   const modifiedAtMs = Number(snapshot?.modifiedAtMs ?? 0);
-  const running = claudeSnapshotIsActive(snapshot, { nowMs });
+  const activityState = claudeSnapshotActivityState(snapshot, { nowMs });
+  const running = activityState === "active";
   return {
     provider: "claude",
     threadId: String(snapshot.sessionId),
@@ -362,6 +377,7 @@ export function claudeCatalogEntry(snapshot, project, nowMs = Date.now()) {
     title: String(snapshot.catalogTitle ?? snapshot.title ?? `Claude · ${String(snapshot.sessionId).slice(0, 8)}`),
     updatedAtMs: modifiedAtMs,
     running,
+    activityUnknown: activityState === "unknown",
     executionOwner: running ? TASK_EXECUTION_OWNERS.EXTERNAL : null,
     lastActivityAtMs: modifiedAtMs || null,
   };
@@ -446,7 +462,7 @@ export function runningTaskReplyMarkup(entries, selected = null, { showProject =
     inline_keyboard: statusTaskEntries(entries, limit)
       .map((entry) => [{
         text: (
-          `${selected && catalogEntryIsSelected(entry, selected) ? "✅ ТЕКУЩАЯ" : entry.running ? "🧵" : "🕘"} · `
+          `${selected && catalogEntryIsSelected(entry, selected) ? "✅ ТЕКУЩАЯ" : entry.running ? "🧵" : entry.activityUnknown ? "❔" : "🕘"} · `
           + `${entry.running ? `${taskExecutionRuntimeShortLabel(entry.executionOwner)} · ` : ""}`
           + `${entry.provider === "codex" ? "Codex" : "Claude"} · `
           + `${showProject ? `${entry.projectName} · ` : ""}${entry.title}`

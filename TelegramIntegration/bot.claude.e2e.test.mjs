@@ -333,7 +333,8 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   await waitFor(async () => (await activeRuns()).length === 0,
     "reattached Claude turn delivered its final answer", 20_000);
 
-  // Брошенный незавершённый транскрипт не должен считаться выполняющимся ходом.
+  // Брошенный незавершённый транскрипт имеет неопределённую живость: он не
+  // считается активным, но новый ход требует явного подтверждения пользователя.
   const staleSessionId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
   const staleTranscript = path.join(
     transcriptRoot,
@@ -376,14 +377,24 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   mark = telegram.calls.length;
   const stalePrompt = "сообщение в брошенную сессию";
   telegram.pushMessage(stalePrompt);
-  await telegram.waitForText(`Claude готово: ${stalePrompt}`, { after: mark, timeoutMs: 25_000 });
+  const uncertain = await telegram.waitForText("Нельзя надёжно определить", {
+    after: mark,
+    timeoutMs: 15_000,
+  });
+  const forceButton = uncertain.body.reply_markup.inline_keyboard.flat()
+    .find((button) => button.callback_data.startsWith("pending:force:"));
+  assert.ok(forceButton, "unknown Claude activity must require an explicit force action");
   assert.equal(
     telegram.callsAfter(mark, "sendMessage").some((call) => (
-      String(call.body.text ?? "").includes("уже выполняется")
+      String(call.body.text ?? "").includes(`Claude готово: ${stalePrompt}`)
     )),
     false,
-    "an abandoned transcript must not block a new turn",
+    "an uncertain transcript must not start a new turn automatically",
   );
+
+  mark = telegram.calls.length;
+  telegram.pushCallback(forceButton.callback_data, uncertain.result);
+  await telegram.waitForText(`Claude готово: ${stalePrompt}`, { after: mark, timeoutMs: 25_000 });
   try {
     await waitFor(async () => (await activeRuns()).length === 0, "stale session turn completion", 15_000);
   } catch (error) {

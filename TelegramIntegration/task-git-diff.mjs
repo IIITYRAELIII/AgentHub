@@ -93,13 +93,59 @@ async function worktreeTree(repoRoot, dataDir, token = randomUUID()) {
 
 export async function captureTaskGitBaseline(projectRoot, dataDir, token = randomUUID()) {
   try {
-    const repoRoot = await gitText(["rev-parse", "--show-toplevel"], { cwd: projectRoot });
+    const repoRoot = await resolveTaskGitRepoRoot(projectRoot);
+    if (!repoRoot) return null;
     const tree = await worktreeTree(repoRoot, dataDir, `${token}-before`);
     const indexTree = await gitText(["write-tree"], { cwd: repoRoot }).catch(() => null);
     return { repoRoot: path.resolve(repoRoot), tree, indexTree, capturedAt: new Date().toISOString() };
   } catch {
     return null;
   }
+}
+
+export async function resolveTaskGitRepoRoot(projectRoot) {
+  try {
+    const repoRoot = await gitText(["rev-parse", "--show-toplevel"], { cwd: projectRoot });
+    return path.resolve(repoRoot);
+  } catch {
+    return null;
+  }
+}
+
+const REPOSITORY_SCAN_IGNORED_DIRECTORIES = new Set([
+  ".git", ".idea", ".vscode", "node_modules", "dist", "build", "coverage", "data", "Import", "WIP",
+]);
+
+async function findNestedGitRepoRoots(directory, roots, depth, maximumDepth) {
+  if (depth > maximumDepth) return;
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const marker = entries.find((entry) => entry.name === ".git");
+  if (marker) {
+    const validMarker = marker.isFile() || await readdir(path.join(directory, ".git"))
+      .then((gitEntries) => gitEntries.includes("HEAD"), () => false);
+    if (validMarker) {
+      roots.push(path.resolve(directory));
+      return;
+    }
+  }
+  await Promise.all(entries
+    .filter((entry) => entry.isDirectory() && !REPOSITORY_SCAN_IGNORED_DIRECTORIES.has(entry.name))
+    .map((entry) => findNestedGitRepoRoots(
+      path.join(directory, entry.name), roots, depth + 1, maximumDepth,
+    )));
+}
+
+export async function resolveTaskGitRepoRoots(projectRoot, { maximumDepth = 5 } = {}) {
+  const containing = await resolveTaskGitRepoRoot(projectRoot);
+  if (containing) return [containing];
+  const roots = [];
+  await findNestedGitRepoRoots(path.resolve(projectRoot), roots, 0, maximumDepth);
+  return [...new Set(roots)].sort((left, right) => left.localeCompare(right));
 }
 
 export async function taskGitDiff(

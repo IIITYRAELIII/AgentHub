@@ -51,8 +51,14 @@ import {
 import { randomStatusHeaderFileName } from "./status-header.mjs";
 import { formatTaskTokenUsage } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
-import { captureTaskGitBaseline, cleanupTaskGitIndexes, taskGitDiff } from "./task-git-diff.mjs";
+import {
+  captureTaskGitBaseline,
+  cleanupTaskGitIndexes,
+  resolveTaskGitRepoRoots,
+  taskGitDiff,
+} from "./task-git-diff.mjs";
 import { TaskDiffStore } from "./task-diff-store.mjs";
+import { findRepositoryWriteConflict } from "./repository-conflict.mjs";
 import { callTelegramJson, telegramBotApiUrl, telegramFileApiUrl } from "./telegram-api.mjs";
 import { parsePendingInputCallback, pendingInputKeyboard } from "./deferred-input.mjs";
 import {
@@ -118,7 +124,7 @@ import {
   catalogEntryIsSelected,
   claudeCatalogEntry,
   claudeSnapshotActivityAtMs,
-  claudeSnapshotIsActive,
+  claudeSnapshotActivityState,
   codexCatalogEntry,
   codexExecutionOwner,
   codexThreadRunning,
@@ -368,6 +374,7 @@ const interactiveJobs = new BackgroundJobQueue({
 const dismissedExternalTasks = new TaskDismissalRegistry();
 const cancelledManagedClaudeTasks = new Map();
 const pendingInputs = new Map();
+const gitRepoRoots = new Map();
 const queuedInputs = new Map();
 const queueTimers = new Map();
 const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
@@ -1627,7 +1634,7 @@ async function refreshTaskCatalog({ force = false } = {}) {
 
 function taskPickerButtonText(entry) {
   const selected = catalogEntryIsSelected(entry, selectedTask()) ? "✓ " : "";
-  const running = entry.running ? "⏳ " : "";
+  const running = entry.running ? "⏳ " : entry.activityUnknown ? "❔ " : "";
   const runtime = entry.running ? `${taskExecutionRuntimeShortLabel(entry.executionOwner)} · ` : "";
   const provider = entry.provider === "codex" ? "Codex" : "Claude";
   const project = config.showProjectButton && config.showTaskProject
@@ -2429,17 +2436,18 @@ async function readClaudeTaskSnapshot(sessionId) {
   const rawSnapshot = await readClaudeSessionSnapshot(sessionId);
   const snapshot = applyManagedClaudeCancellation(rawSnapshot);
   if (!snapshot) return null;
-  const active = claudeSnapshotIsActive(snapshot);
+  const activityState = claudeSnapshotActivityState(snapshot);
   return {
     ...snapshot,
-    active,
-    stale: snapshot.active === true && !active,
+    active: activityState === "active",
+    activityUnknown: activityState === "unknown",
+    stale: activityState === "unknown",
     activityAtMs: claudeSnapshotActivityAtMs(snapshot),
   };
 }
 
-async function taskIsExternallyActive(target) {
-  if (!target?.threadId) return false;
+async function taskExternalActivity(target) {
+  if (!target?.threadId) return { state: "inactive", executionOwner: null };
   try {
     if (target.provider === "codex") {
       if (!codex) {
@@ -2447,21 +2455,61 @@ async function taskIsExternallyActive(target) {
         await initializeCodex({ attachSelectedThread: false });
       }
       const result = await readCodexThread(target.threadId, { fresh: true });
-      if (codexThreadRunning(result.thread)) return true;
+      if (codexThreadRunning(result.thread)) {
+        return { state: "active", executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL };
+      }
       const activity = await readCodexRolloutActivity(result.thread?.path);
-      return codexThreadRunning(result.thread, { rolloutRunning: activity.running });
+      return {
+        state: codexThreadRunning(result.thread, { rolloutRunning: activity.running }) ? "active" : "inactive",
+        executionOwner: codexExecutionOwner(activity),
+      };
     }
-    return Boolean((await readClaudeTaskSnapshot(target.threadId))?.active);
+    const snapshot = await readClaudeTaskSnapshot(target.threadId);
+    return {
+      state: snapshot?.activityUnknown ? "unknown" : snapshot?.active ? "active" : "inactive",
+      executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
+    };
   } catch (error) {
     console.error(`Cannot check ${target.provider} task activity:`, error.message);
-    return true;
+    return { state: "unknown", executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL };
   }
+}
+
+async function taskRepositoryRoots(projectRoot) {
+  const resolved = path.resolve(String(projectRoot ?? ""));
+  const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  if (gitRepoRoots.has(key)) return gitRepoRoots.get(key);
+  const repoRoots = await resolveTaskGitRepoRoots(projectRoot);
+  // Cache only successful discovery: a non-repository directory can become a
+  // repository later without requiring a bot restart.
+  if (repoRoots.length) gitRepoRoots.set(key, repoRoots);
+  return repoRoots;
+}
+
+async function activeRepositoryConflict(target) {
+  const repoRoots = await taskRepositoryRoots(target.projectRoot);
+  if (!repoRoots.length) return null;
+  const catalog = await refreshTaskCatalog();
+  const candidates = [
+    ...taskRuns.values(),
+    ...catalog.filter((entry) => entry.running),
+  ];
+  const enriched = await Promise.all(candidates.map(async (candidate) => ({
+    ...candidate,
+    repoRoots: candidate.gitBaseline?.repoRoot
+      ? [candidate.gitBaseline.repoRoot]
+      : await taskRepositoryRoots(candidate.projectRoot),
+  })));
+  return findRepositoryWriteConflict(target, repoRoots, enriched);
 }
 
 async function deferConflictingInput(input, temporaryFiles, {
   forceSpeechButton = false,
   executionOwner = TASK_EXECUTION_OWNERS.EXTERNAL,
   target = selectedTurnTarget(),
+  allowForce = false,
+  conflictKind = "task-running",
+  conflictTask = null,
 } = {}) {
   if (pendingInputs.size + queuedInputs.size >= MAX_DEFERRED_INPUTS) {
     await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
@@ -2480,6 +2528,8 @@ async function deferConflictingInput(input, temporaryFiles, {
     input,
     temporaryFiles,
     forceSpeechButton,
+    allowForce,
+    conflictKind,
     createdAt: new Date().toISOString(),
   };
   pendingInputs.set(item.id, item);
@@ -2488,10 +2538,15 @@ async function deferConflictingInput(input, temporaryFiles, {
   const runtime = target.provider === "codex"
     ? taskExecutionRuntimeLabel(executionOwner)
     : executionOwner === TASK_EXECUTION_OWNERS.TELEGRAM ? "Telegram CLI" : "Внешний Claude CLI";
+  const conflictText = conflictKind === "repository"
+    ? `Задача «${conflictTask?.taskTitle ?? "Без названия"}» уже работает с тем же Git-репозиторием через ${runtime}. Параллельная запись может смешать изменения.`
+    : conflictKind === "activity-unknown"
+      ? "Claude оставил незавершённый транскрипт, но давно не записывал новые события. Нельзя надёжно определить, продолжает ли работать внешний процесс."
+      : `Выбранная задача уже выполняется через ${runtime}.`;
   const message = await sendMessageTo(target.chatId,
-    `Выбранная задача уже выполняется через ${runtime}. Новое сообщение сохранено и не потеряно.`
+    `${conflictText} Новое сообщение сохранено и не потеряно.`
       + `${preview ? `\n\n${preview.slice(0, 700)}` : ""}\n\nЧто сделать?`,
-    { reply_markup: pendingInputKeyboard(item.id) });
+    { reply_markup: pendingInputKeyboard(item.id, { allowForce }) });
   item.messageId = message?.message_id ?? null;
   await saveState();
   return { deferred: true, id: item.id };
@@ -2552,6 +2607,8 @@ async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton =
 async function startTurn(input, temporaryFiles = [], {
   forceSpeechButton = false,
   target = null,
+  allowRepositoryConflict = false,
+  allowUnknownExternalActivity = false,
 } = {}) {
   target ??= {
     ...selectedTask(),
@@ -2559,12 +2616,35 @@ async function startTurn(input, temporaryFiles = [], {
     chatId,
   };
   const existingRun = taskRuns.forTask(target);
-  if (existingRun || await taskIsExternallyActive(target)) {
+  const externalActivity = existingRun
+    ? { state: "active", executionOwner: existingRun.executionOwner }
+    : await taskExternalActivity(target);
+  if (existingRun || externalActivity.state === "active"
+    || (externalActivity.state === "unknown" && !allowUnknownExternalActivity)) {
     return deferConflictingInput(input, temporaryFiles, {
       forceSpeechButton,
-      executionOwner: existingRun?.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL,
+      executionOwner: existingRun?.executionOwner
+        ?? externalActivity.executionOwner
+        ?? TASK_EXECUTION_OWNERS.EXTERNAL,
       target,
+      allowForce: externalActivity.state === "unknown" && !existingRun,
+      conflictKind: externalActivity.state === "unknown" && !existingRun
+        ? "activity-unknown"
+        : "task-running",
     });
+  }
+  if (!allowRepositoryConflict) {
+    const repositoryConflict = await activeRepositoryConflict(target);
+    if (repositoryConflict) {
+      return deferConflictingInput(input, temporaryFiles, {
+        forceSpeechButton,
+        executionOwner: repositoryConflict.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL,
+        target,
+        allowForce: true,
+        conflictKind: "repository",
+        conflictTask: repositoryConflict,
+      });
+    }
   }
   if (target.provider === "codex" && catalogEntryIsSelected(target, selectedTask())) {
     try {
@@ -2625,7 +2705,11 @@ async function processQueuedInput(id) {
     reasoningId: item.reasoningId,
     collaborationMode: item.collaborationMode,
   };
-  if (taskRuns.forTask(target) || await taskIsExternallyActive(target)) {
+  const externalActivity = taskRuns.forTask(target)
+    ? { state: "active" }
+    : await taskExternalActivity(target);
+  if (taskRuns.forTask(target) || externalActivity.state !== "inactive"
+    || await activeRepositoryConflict(target)) {
     scheduleQueuedInput(item);
     return;
   }
@@ -2648,7 +2732,7 @@ async function processQueuedInput(id) {
     await updateDeferredMessage(
       item,
       `⚠️ Не удалось запустить сообщение из очереди: ${item.lastError}\n\nСообщение сохранено. Выберите дальнейшее действие:`,
-      pendingInputKeyboard(item.id),
+      pendingInputKeyboard(item.id, { allowForce: item.allowForce === true }),
     );
     await sendMessageTo(item.chatId, "Сообщение не потеряно и возвращено в сохранённые после ошибки запуска.");
   }
@@ -3358,24 +3442,22 @@ async function finishObservedRun(run, snapshot) {
   });
 }
 
-// Внешний Claude может уйти, не дописав ход: транскрипт остаётся незакрытым.
-// Тогда снимаем наблюдение и блокировку задачи, отдав то, что успело прийти.
-async function finishStaleObservedClaudeRun(run, snapshot) {
+// Незавершённый транскрипт после долгой тишины не доказывает ни завершение, ни
+// продолжение процесса. Снимаем live-наблюдение, но не выдаём частичный текст за
+// финальный ответ; следующий запуск в этом треде потребует явного подтверждения.
+async function finishUnknownObservedClaudeRun(run, snapshot) {
   if (taskRuns.forTask(run) !== run) return;
   const activityAtMs = Number(snapshot?.activityAtMs);
   const idleMinutes = Number.isFinite(activityAtMs)
     ? Math.max(1, Math.round((Date.now() - activityAtMs) / 60_000))
     : null;
   const stage = idleMinutes
-    ? `Наблюдение снято: транскрипт Claude не обновлялся ${idleMinutes} мин.`
-    : "Наблюдение снято: транскрипт Claude не обновляется.";
-  if (updateObservedResponse(run, snapshot?.answer)) {
-    await finishObservedRun(run, { ...snapshot, stage });
-    return;
-  }
+    ? `Активность Claude неизвестна: нет новых событий ${idleMinutes} мин.`
+    : "Активность Claude неизвестна: новых событий нет.";
+  updateObservedRun(run, { ...snapshot, stage });
   await finishProgress(run, stage);
   await completeRun(run);
-  console.log(`Dropped stale Claude observation for ${run.threadId}`);
+  console.log(`Claude activity became unknown for ${run.threadId}`);
 }
 
 async function finishManagedCodexSnapshot(run, snapshot) {
@@ -3423,9 +3505,8 @@ async function pollObservedRun(run) {
     const snapshot = run.provider === "codex"
       ? await readCodexTaskSnapshot(run)
       : await readClaudeTaskSnapshot(run.threadId);
-    if (snapshot?.stale) {
-      // Транскрипт давно не пополняется: внешний Claude ушёл, не закрыв ход.
-      await finishStaleObservedClaudeRun(run, snapshot);
+    if (snapshot?.activityUnknown) {
+      await finishUnknownObservedClaudeRun(run, snapshot);
       return;
     }
     if (!snapshot) {
@@ -3723,6 +3804,15 @@ async function showTaskMessage(binding, targetChatId, { count = 1 } = {}) {
     return;
   }
 
+  if (view.snapshot?.activityUnknown) {
+    await sendRunMessage(
+      { ...task, chatId: targetChatId, taskTitle: binding.taskTitle },
+      "❔ Активность Claude неизвестна: транскрипт не завершён, но давно не обновлялся. Новое сообщение не будет запущено в этом треде без явного подтверждения.",
+    );
+    await saveState();
+    return;
+  }
+
   if (!view.rendered) {
     await sendRunMessage(
       { ...task, chatId: targetChatId, taskTitle: binding.taskTitle },
@@ -3805,6 +3895,10 @@ async function recoverTaskRun(run) {
     }
     if (snapshot?.completed) {
       await finishObservedRun(run, snapshot);
+      return;
+    }
+    if (snapshot?.activityUnknown) {
+      await finishUnknownObservedClaudeRun(run, snapshot);
       return;
     }
   }
@@ -4491,6 +4585,7 @@ async function handleApprovalCallback(callback) {
       callback_query_id: callback.id,
       text: action === "new" ? "Создаю новую задачу…"
         : action === "queue" ? "Ставлю сообщение в очередь…"
+          : action === "force" ? "Запускаю после явного подтверждения…"
           : action === "show" ? "Показываю текущий ход…"
             : "Сообщение отменено",
     });
@@ -4522,6 +4617,28 @@ async function handleApprovalCallback(callback) {
           `⏳ Сообщение поставлено в очередь задачи «${item.taskTitle}» и будет отправлено после завершения текущего хода.`,
         );
         scheduleQueuedInput(item, 500);
+        return;
+      }
+
+      if (action === "force") {
+        if (item.allowForce !== true) throw new Error("принудительный запуск для этого сообщения не разрешён");
+        await activateMessageBinding(binding);
+        const outcome = await startTurn(item.input, item.temporaryFiles ?? [], {
+          forceSpeechButton: item.forceSpeechButton === true,
+          target: {
+            ...binding,
+            chatId: item.chatId,
+            modelId: item.modelId,
+            reasoningId: item.reasoningId,
+            collaborationMode: item.collaborationMode,
+          },
+          allowRepositoryConflict: item.conflictKind === "repository",
+          allowUnknownExternalActivity: item.conflictKind === "activity-unknown",
+        });
+        if (outcome?.deferred) throw new Error("условие безопасного запуска всё ещё не выполнено");
+        pendingInputs.delete(id);
+        await saveState();
+        await updateDeferredMessage(item, `⚠️ Сообщение отправлено в задачу «${item.taskTitle}» после явного подтверждения.`);
         return;
       }
 

@@ -11,6 +11,56 @@ export { codexFinalTurnAnswer };
 const MAX_TRANSCRIPT_TAIL = 4 * 1024 * 1024;
 const MAX_CATALOG_TRANSCRIPT_TAIL = 512 * 1024;
 const MAX_CATALOG_TRANSCRIPT_HEAD = 64 * 1024;
+const MAX_CLAUDE_TRANSCRIPT_CACHE_ENTRIES = 1000;
+const claudeTranscriptCache = new Map();
+let claudeTranscriptCacheHits = 0;
+let claudeTranscriptCacheMisses = 0;
+
+export function claudeTranscriptCacheStats() {
+  return {
+    entries: claudeTranscriptCache.size,
+    hits: claudeTranscriptCacheHits,
+    misses: claudeTranscriptCacheMisses,
+  };
+}
+
+export function resetClaudeTranscriptCache() {
+  claudeTranscriptCache.clear();
+  claudeTranscriptCacheHits = 0;
+  claudeTranscriptCacheMisses = 0;
+}
+
+function cacheKey(mode, transcriptPath) {
+  return `${mode}:${path.resolve(transcriptPath).toLowerCase()}`;
+}
+
+function cachedTranscriptSnapshot(mode, transcriptPath, info) {
+  const key = cacheKey(mode, transcriptPath);
+  const cached = claudeTranscriptCache.get(key);
+  if (!cached || cached.size !== info.size || cached.modifiedAtMs !== info.mtimeMs) {
+    claudeTranscriptCacheMisses += 1;
+    return null;
+  }
+  claudeTranscriptCacheHits += 1;
+  // Refresh insertion order so frequently used sessions survive bounded eviction.
+  claudeTranscriptCache.delete(key);
+  claudeTranscriptCache.set(key, cached);
+  return cached.snapshot;
+}
+
+function rememberTranscriptSnapshot(mode, transcriptPath, info, snapshot) {
+  const key = cacheKey(mode, transcriptPath);
+  claudeTranscriptCache.delete(key);
+  claudeTranscriptCache.set(key, {
+    size: info.size,
+    modifiedAtMs: info.mtimeMs,
+    snapshot,
+  });
+  while (claudeTranscriptCache.size > MAX_CLAUDE_TRANSCRIPT_CACHE_ENTRIES) {
+    claudeTranscriptCache.delete(claudeTranscriptCache.keys().next().value);
+  }
+  return snapshot;
+}
 
 function contentBlocks(message) {
   if (Array.isArray(message?.content)) return message.content;
@@ -222,16 +272,24 @@ export async function readClaudeSessionSnapshot(
   if (!normalized) return null;
   const transcriptPath = await findTranscript(projectsRoot, `${normalized}.jsonl`);
   if (!transcriptPath) return null;
+  const info = await stat(transcriptPath).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!info) return null;
+  const cached = cachedTranscriptSnapshot("session", transcriptPath, info);
+  if (cached) return { ...cached };
   const transcript = await readTail(transcriptPath);
   // Время последней записи нужно вызывающему коду, чтобы отличить действительно
   // выполняющийся ход от давно брошенного незавершённого транскрипта.
-  const modifiedAtMs = await stat(transcriptPath).then((info) => info.mtimeMs, () => null);
-  return {
+  const snapshot = {
     ...parseClaudeTranscript(transcript),
     history: claudeTranscriptHistory(transcript),
     transcriptPath,
-    modifiedAtMs,
+    modifiedAtMs: info.mtimeMs,
   };
+  rememberTranscriptSnapshot("session", transcriptPath, info, snapshot);
+  return { ...snapshot };
 }
 
 export async function listClaudeSessionSnapshots(
@@ -245,7 +303,11 @@ export async function listClaudeSessionSnapshots(
     const values = await Promise.all(batch.map(async (transcriptPath) => {
       try {
         const info = await stat(transcriptPath);
-        const snapshot = parseClaudeTranscript(await readCatalogSample(transcriptPath, info.size));
+        let snapshot = cachedTranscriptSnapshot("catalog", transcriptPath, info);
+        if (!snapshot) {
+          snapshot = parseClaudeTranscript(await readCatalogSample(transcriptPath, info.size));
+          rememberTranscriptSnapshot("catalog", transcriptPath, info, snapshot);
+        }
         if (snapshot.isSidechain || !snapshot.catalogTitle) return null;
         return {
           ...snapshot,
