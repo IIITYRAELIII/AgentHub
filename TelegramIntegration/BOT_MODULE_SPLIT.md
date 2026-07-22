@@ -17,7 +17,7 @@
 | 2 | ✅ | Учёт токенов: нормализация, delta, суммирование и форматирование вынесены в `token-usage.mjs`. |
 | 3 | ✅ | `CodexAppServerTransport`: процесс, JSON-RPC, таймауты, сигнал разрыва/reconnect, остановка дерева и ограниченный кэш `thread/read`. Политика восстановления ходов остаётся в композиции бота. |
 | 4 | ✅ | `ClaudeRunController`: detached-процесс, файлы stdout/stderr, чтение и разбор `stream-json`, polling, завершение, отмена дерева и восстановление по PID/офсету. |
-| 5 | ⬜ | Task lifecycle: запуск, progress, observer, очередь и восстановление ходов. |
+| 5 | 🟡 | Task lifecycle: `TaskProgressController` уже владеет progress-таймерами, карточками, heartbeat, retry и завершением UI. Остаются запуск/завершение run, observer, очередь и восстановление ходов. |
 | 6 | ⬜ | Telegram controllers: выбор задач, просмотр истории, approvals, команды и callback routing. |
 | 7 | ⬜ | Media services: изображения, распознавание голоса и TTS orchestration. |
 | 8 | ⬜ | Финальная композиция: `bot.mjs` не содержит протокольной реализации и остаётся тонкой точкой запуска. |

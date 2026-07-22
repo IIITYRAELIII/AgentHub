@@ -149,6 +149,7 @@ import { runTtsWorkerRequest } from "./tts-worker-client.mjs";
 import { parseTaskViewCallbackData, taskViewCallbackData } from "./task-view-callback.mjs";
 import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "./codex-invocation.mjs";
 import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
+import { TaskProgressController } from "./task-progress-controller.mjs";
 
 const config = await loadConfig();
 const defaultDataDirectory = path.join(INTEGRATION_ROOT, "data");
@@ -2001,6 +2002,39 @@ async function sendCollaborationModePicker() {
   );
 }
 
+const taskProgress = new TaskProgressController({
+  isCurrentRun: (run) => taskRuns.forTask(run) === run,
+  render: renderProgress,
+  sendInitial: (run, text) => sendReliableRunMessage(
+    run,
+    text,
+    {},
+    { kind: "progress" },
+    { supersedeKey: progressOutboxKey(run) },
+  ),
+  deleteMessage: (run, messageId) => telegram("deleteMessage", {
+    chat_id: run.chatId,
+    message_id: messageId,
+  }),
+  removeBindings: async (run, messageIds) => {
+    const removed = new Set(messageIds);
+    bindingWriteQueue = bindingWriteQueue
+      .catch(() => {})
+      .then(() => removeMessageBindings(
+        config.dataDir,
+        (binding) => binding.chatId === run.chatId && removed.has(binding.messageId),
+      ));
+    await bindingWriteQueue;
+  },
+  editMessage: (run, messageId, text) => telegram("editMessageText", {
+    chat_id: run.chatId,
+    message_id: messageId,
+    text,
+  }),
+  persist: () => saveState(),
+  retainAfterEditError: retainProgressMessageAfterEditError,
+});
+
 function inputPreview(input) {
   const text = typeof input === "string"
     ? input
@@ -2077,100 +2111,36 @@ async function beginRun(input, target = null) {
   run.gitBaseline = await captureTaskGitBaseline(run.projectRoot, config.dataDir, run.id);
   syncTaskRun(run);
   await saveState();
-  run.progressStartTimer = setTimeout(() => {
-    run.progressStartTimer = null;
-    void startProgressMessage(run);
-  }, config.progressStartDelayMs);
+  taskProgress.scheduleStart(run, config.progressStartDelayMs);
   return run;
 }
 
 async function startProgressMessage(run, { forceNew = false } = {}) {
-  if (!run || run.status !== "running" || (!forceNew && run.progressMessageIds.length)) return;
-  if (run.observer) run.displayRequested = true;
-  const initialProgress = renderProgress(run);
-  const message = await sendReliableRunMessage(
-    run,
-    initialProgress,
-    {},
-    { kind: "progress" },
-    { supersedeKey: progressOutboxKey(run) },
-  );
-  if (taskRuns.forTask(run) !== run || run.status !== "running") {
-    if (message?.message_id) {
-      await telegram("deleteMessage", { chat_id: run.chatId, message_id: message.message_id }).catch(() => {});
-    }
-    return;
-  }
-  if (Number.isSafeInteger(message?.message_id)) run.progressMessageIds.push(message.message_id);
-  run.lastProgressText = initialProgress;
-  await saveState();
+  return taskProgress.start(run, { forceNew });
 }
 
 async function clearRunProgressMessages(run) {
-  if (!run) return;
-  while (run.progressUpdateInFlight) await delay(50);
-  const previousIds = [...run.progressMessageIds];
-  run.progressMessageIds = [];
-  run.lastProgressText = "";
-  for (const messageId of previousIds) {
-    await telegram("deleteMessage", {
-      chat_id: run.chatId,
-      message_id: messageId,
-    }).catch((error) => {
-      console.warn(`Cannot remove old progress message ${messageId}:`, error.message);
-    });
-  }
-  if (previousIds.length) {
-    const removed = new Set(previousIds);
-    bindingWriteQueue = bindingWriteQueue
-      .catch(() => {})
-      .then(() => removeMessageBindings(
-        config.dataDir,
-        (binding) => binding.chatId === run.chatId && removed.has(binding.messageId),
-      ));
-    await bindingWriteQueue;
-  }
+  return taskProgress.clear(run);
 }
 
 async function replaceRunProgressMessage(run) {
-  await clearRunProgressMessages(run);
-  await startProgressMessage(run, { forceNew: true });
+  return taskProgress.replace(run);
 }
 
 function setProgressStage(run, stage) {
-  if (!run) return;
-  const value = String(stage ?? "").trim();
-  if (value && value !== run.progressStage) {
-    run.progressStage = value;
-    noteRunActivity(run);
-  }
-  scheduleProgressUpdate(run);
+  taskProgress.setStage(run, stage);
 }
 
 function appendProgressReasoning(run, delta) {
-  if (!run) return;
-  const value = String(delta ?? "");
-  run.progressReasoning += value;
-  if (run.progressReasoning.length > 5000) run.progressReasoning = run.progressReasoning.slice(-5000);
-  if (value) noteRunActivity(run);
-  scheduleProgressUpdate(run);
+  taskProgress.appendReasoning(run, delta);
 }
 
 function noteRunActivity(run, value = Date.now()) {
-  if (!run) return;
-  const timestamp = value instanceof Date ? value.getTime() : Number(value);
-  if (!Number.isFinite(timestamp)) return;
-  const previous = Date.parse(String(run.lastMeaningfulProgressAt ?? ""));
-  if (!Number.isFinite(previous) || timestamp > previous) {
-    run.lastMeaningfulProgressAt = new Date(timestamp).toISOString();
-  }
+  taskProgress.noteActivity(run, value);
 }
 
 function progressHeartbeatState(run, now = Date.now()) {
-  const lastActivity = Date.parse(String(run?.lastMeaningfulProgressAt ?? run?.startedAt ?? ""));
-  return Number.isFinite(lastActivity) && now - lastActivity >= PROGRESS_STALLED_AFTER_MS
-    ? "stalled"
-    : "active";
+  return taskProgress.heartbeatState(run, now, PROGRESS_STALLED_AFTER_MS);
 }
 
 function renderProgress(run, done = false) {
@@ -2213,73 +2183,15 @@ function renderProgress(run, done = false) {
 }
 
 function scheduleProgressUpdate(run, delayMs = 1500) {
-  if (!run?.progressMessageIds.length || run.progressTimer) return;
-  run.progressTimer = setTimeout(() => {
-    run.progressTimer = null;
-    void flushProgressUpdate(run);
-  }, delayMs);
+  taskProgress.schedule(run, delayMs);
 }
 
 async function flushProgressUpdate(run, done = false) {
-  if (!run?.progressMessageIds.length) return;
-  if (run.progressUpdateInFlight) {
-    run.progressUpdatePending = true;
-    return;
-  }
-  const text = renderProgress(run, done);
-  if (text === run.lastProgressText) return;
-  run.progressUpdateInFlight = true;
-  let retryNeeded = false;
-  try {
-    const retained = [];
-    for (const messageId of run.progressMessageIds) {
-      try {
-        await telegram("editMessageText", { chat_id: run.chatId, message_id: messageId, text });
-        retained.push(messageId);
-      } catch (error) {
-        if (retainProgressMessageAfterEditError(error)) {
-          retained.push(messageId);
-          if (error?.retryable === true) retryNeeded = true;
-        } else {
-          console.error(`Cannot update task progress message ${messageId}:`, error.message);
-        }
-      }
-    }
-    run.progressMessageIds = retained;
-    if (!retryNeeded && retained.length) run.lastProgressText = text;
-    await saveState();
-  } finally {
-    run.progressUpdateInFlight = false;
-    if (run.progressUpdatePending) {
-      run.progressUpdatePending = false;
-      scheduleProgressUpdate(run, 0);
-    }
-  }
-  if (retryNeeded) scheduleProgressUpdate(run);
+  return taskProgress.flush(run, done);
 }
 
 async function finishProgress(run, stage) {
-  if (!run) return;
-  run.status = "finishing";
-  if (run.progressStartTimer) {
-    clearTimeout(run.progressStartTimer);
-    run.progressStartTimer = null;
-  }
-  if (run.progressTimer) {
-    clearTimeout(run.progressTimer);
-    run.progressTimer = null;
-  }
-  run.progressStage = stage;
-  if (!run.progressMessageIds.length) {
-    run.progressReasoning = "";
-    run.lastProgressText = "";
-    return;
-  }
-  while (run.progressUpdateInFlight) await delay(50);
-  await flushProgressUpdate(run, true);
-  run.progressMessageIds = [];
-  run.progressReasoning = "";
-  run.lastProgressText = "";
+  return taskProgress.finish(run, stage);
 }
 
 async function completeRun(run) {
@@ -5224,12 +5136,9 @@ function stopRuntimeTimers() {
   for (const timer of queueTimers.values()) clearTimeout(timer);
   queueTimers.clear();
   for (const run of taskRuns.values()) {
-    if (run.progressStartTimer) clearTimeout(run.progressStartTimer);
-    if (run.progressTimer) clearTimeout(run.progressTimer);
+    taskProgress.pause(run);
     if (run.observerTimer) clearTimeout(run.observerTimer);
     claudeRunController.pause(run);
-    run.progressStartTimer = null;
-    run.progressTimer = null;
     run.observerTimer = null;
   }
 }
