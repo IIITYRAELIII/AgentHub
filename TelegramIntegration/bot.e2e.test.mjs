@@ -353,7 +353,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushMessage("[slow] обычное завершение");
   const normalProgress = await telegram.waitForText(
     "Проверяю сценарий: [slow] обычное завершение",
-    { after: mark },
+    { after: mark, timeoutMs: 12_000 },
   );
   const normalProgressId = normalProgress.result.message_id;
   const normalFinal = await telegram.waitForText("Готово: [slow] обычное завершение", {

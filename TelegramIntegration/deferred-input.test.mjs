@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   parsePendingInputCallback,
   pendingInputKeyboard,
+  restoreDeferredInput,
 } from "./deferred-input.mjs";
 
 test("pendingInputKeyboard preserves every deferred-message action", () => {
@@ -30,4 +31,23 @@ test("pendingInputKeyboard can explicitly allow a risky same-task launch", () =>
   const keyboard = pendingInputKeyboard(id, { allowForce: true });
   assert.equal(keyboard.inline_keyboard[2][0].callback_data, `pending:force:${id}`);
   assert.deepEqual(parsePendingInputCallback(`pending:force:${id}`), { action: "force", id });
+});
+
+test("legacy repository conflicts resume automatically as queued inputs", () => {
+  const item = {
+    id: "019f7152-726b-7b62-a595-62a3fccef0bf",
+    provider: "codex",
+    threadId: "thread-1",
+    conflictKind: "repository",
+    allowForce: true,
+  };
+  assert.deepEqual(restoreDeferredInput(item), {
+    destination: "queued",
+    item: {
+      ...item,
+      conflictKind: null,
+      allowForce: false,
+    },
+  });
+  assert.equal(restoreDeferredInput({ id: "broken" }), null);
 });

@@ -23,3 +23,16 @@ export function parsePendingInputCallback(value) {
     id: match[2],
   };
 }
+
+export function restoreDeferredInput(item) {
+  if (!item?.id || !item?.threadId || !item?.provider) return null;
+  if (item.conflictKind !== "repository") return { destination: "pending", item };
+  return {
+    destination: "queued",
+    item: {
+      ...item,
+      allowForce: false,
+      conflictKind: null,
+    },
+  };
+}
