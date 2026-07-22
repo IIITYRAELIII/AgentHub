@@ -54,7 +54,7 @@ namespace TyraelIntegrationDesktop
 
         public async Task<Dictionary<string, object>> CallAsync(string action, Dictionary<string, object> parameters)
         {
-            if (!File.Exists(secretFile)) throw new InvalidOperationException("Integration App Server ещё не опубликовал desktop-интерфейс.");
+            if (!File.Exists(secretFile)) throw new InvalidOperationException("Integration Server ещё не опубликовал desktop-интерфейс.");
             var secret = File.ReadAllText(secretFile, Encoding.UTF8).Trim();
             var request = json.Serialize(new Dictionary<string, object>
             {
@@ -70,9 +70,9 @@ namespace TyraelIntegrationDesktop
                 {
                     await writer.WriteLineAsync(request);
                     var line = await reader.ReadLineAsync();
-                    if (String.IsNullOrWhiteSpace(line)) throw new IOException("Integration App Server закрыл соединение без ответа.");
+                    if (String.IsNullOrWhiteSpace(line)) throw new IOException("Integration Server закрыл соединение без ответа.");
                     var response = json.Deserialize<Dictionary<string, object>>(line);
-                    if (!Bool(response, "ok")) throw new InvalidOperationException(Text(response, "error", "Неизвестная ошибка Integration App Server"));
+                    if (!Bool(response, "ok")) throw new InvalidOperationException(Text(response, "error", "Неизвестная ошибка Integration Server"));
                     return Object(response, "result");
                 }
             }

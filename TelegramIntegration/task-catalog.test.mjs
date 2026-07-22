@@ -60,7 +60,7 @@ test("codexCatalogEntry preserves persistent task metadata and active status", (
 
 test("Codex runtime labels distinguish supported app servers", () => {
   assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.VSCODE), "VSCode App Server");
-  assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.TELEGRAM), "Integration App Server");
+  assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.TELEGRAM), "Integration Server");
   assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.DESKTOP), "Codex Desktop App");
   assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.CLI), "Codex CLI");
   assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.EXTERNAL), "External Codex");

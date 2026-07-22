@@ -31,7 +31,7 @@ export const TASK_EXECUTION_OWNERS = Object.freeze({
 });
 
 export function taskExecutionRuntimeLabel(owner) {
-  if (owner === TASK_EXECUTION_OWNERS.TELEGRAM) return "Integration App Server";
+  if (owner === TASK_EXECUTION_OWNERS.TELEGRAM) return "Integration Server";
   if (owner === TASK_EXECUTION_OWNERS.VSCODE) return "VSCode App Server";
   if (owner === TASK_EXECUTION_OWNERS.DESKTOP) return "Codex Desktop App";
   if (owner === TASK_EXECUTION_OWNERS.CLI) return "Codex CLI";

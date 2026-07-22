@@ -381,7 +381,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   });
   assert.match(normalFinal.body.text, /^✅ Codex · /);
   assert.match(normalFinal.body.text, /\n🧵 /);
-  assert.match(normalFinal.body.text, /\n⚙ Integration App Server/);
+  assert.match(normalFinal.body.text, /\n⚙ Integration Server/);
   assert.match(normalFinal.body.text, /За задачу:/);
   const normalProgressDeletion = await telegram.waitForCall("deleteMessage", (call) => (
     call.body.message_id === normalProgressId
@@ -502,7 +502,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const heldRun = (await readJson(statePath)).activeRuns[0];
   assert.equal(heldRun.observer, false, "Telegram run must persist as managed");
   assert.equal(heldRun.executionOwner, "telegram", "Telegram run owner must survive progress polling");
-  assert.equal(heldRun.appServer, "Integration App Server");
+  assert.equal(heldRun.appServer, "Integration Server");
   assert.equal(
     Number((await readJson(codexStatePath)).requestCounts?.["thread/read"] ?? 0),
     readsBeforeManagedFallback,
@@ -627,7 +627,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushCallback("show-last-message", finalSource);
   await telegram.waitForText("[hold] ход для глазок", { after: mark });
   const historyNavigation = await telegram.waitForText("Показано сообщений: 1", { after: mark });
-  await telegram.waitForText("⚙ Integration App Server", { after: mark });
+  await telegram.waitForText("⚙ Integration Server", { after: mark });
   const lastViewTexts = telegram.callsAfter(mark, "sendMessage").map((call) => String(call.body.text ?? ""));
   assert.equal(lastViewTexts.some((text) => text.includes("[hold] ход для глазок")), true,
     "show-last-message must attach to the current live turn");

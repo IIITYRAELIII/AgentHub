@@ -1329,7 +1329,7 @@ async function spawnCodex(args) {
     const endpoints = mcp.disabled
       .map((server) => `${server.name} (${server.host}:${server.port})`)
       .join(", ");
-    console.log(`Local MCP unavailable; disabled for Integration App Server: ${endpoints}`);
+    console.log(`Local MCP unavailable; disabled for Integration Server: ${endpoints}`);
   }
   console.error(`Starting Codex: ${command}`);
   const child = spawn(command, [...config.codexExecutableArgs, ...mcp.args, ...args], {

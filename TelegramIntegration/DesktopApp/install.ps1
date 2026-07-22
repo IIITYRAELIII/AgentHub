@@ -16,7 +16,7 @@ if (-not $NoShortcut) {
     $shortcut = $shell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $target
     $shortcut.WorkingDirectory = $installRoot
-    $shortcut.Description = "Tyrael Integration App Server Windows client"
+    $shortcut.Description = "Tyrael Integration Server Windows client"
     $shortcut.Save()
 }
 
