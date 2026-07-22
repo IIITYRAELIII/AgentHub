@@ -79,12 +79,56 @@ test("desktop client shares tasks and parallel runs with the Integration backend
   );
   assert.equal(initial.tasks.length, 1);
   const firstThreadId = initial.selected.threadId;
+  assert.equal(initial.settings.provider, "codex");
+  assert.equal(initial.settings.reasoning, "high");
+  assert.equal(initial.settings.mode, "default");
+  assert.equal(initial.settings.approvalMode, "manual");
+  assert.ok(initial.settings.models.some((model) => model.value === "gpt-5.6-sol"));
+  const statusDetails = await callDesktopControl("status-details", {}, { runtimeRoot });
+  assert.equal(statusDetails.provider, "codex");
+  assert.equal(statusDetails.model, "GPT-5.6-Sol");
+  assert.equal(typeof statusDetails.limits, "string");
+
+  const configured = await callDesktopControl("update-setting", {
+    name: "reasoning",
+    value: "medium",
+  }, { runtimeRoot });
+  assert.equal(configured.settings.reasoning, "medium");
+  const automatic = await callDesktopControl("update-setting", {
+    name: "approvalMode",
+    value: "auto",
+  }, { runtimeRoot });
+  assert.equal(automatic.settings.approvalMode, "auto");
+  await callDesktopControl("update-setting", { name: "approvalMode", value: "manual" }, { runtimeRoot });
+  const approvalStart = await callDesktopControl("send-message", { text: "[approval] desktop" }, { runtimeRoot });
+  assert.equal(approvalStart.accepted, true);
+  const approvalSnapshot = await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    return snapshot.pendingApprovals.length ? snapshot : null;
+  }, "desktop approval request", 5_000);
+  assert.match(approvalSnapshot.pendingApprovals[0].text, /E2E approval|command/i);
+  await callDesktopControl("resolve-approval", {
+    key: approvalSnapshot.pendingApprovals[0].key,
+    decision: "once",
+  }, { runtimeRoot });
+  await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    return snapshot.activeCount === 0 ? snapshot : null;
+  }, "desktop approval completion", 5_000);
 
   const firstStart = await callDesktopControl("send-message", { text: "[slow] desktop A" }, { runtimeRoot });
   assert.equal(firstStart.accepted, true);
   const duplicate = await callDesktopControl("send-message", { text: "parallel duplicate" }, { runtimeRoot });
   assert.equal(duplicate.accepted, false);
   assert.equal(duplicate.reason, "task-running");
+  assert.equal(duplicate.deferred, true);
+  assert.equal(duplicate.snapshot.deferredInputs.length, 1);
+  const cancelledDeferred = await callDesktopControl("deferred-input", {
+    id: duplicate.id,
+    action: "cancel",
+  }, { runtimeRoot });
+  assert.equal(cancelledDeferred.accepted, true);
+  assert.equal((await callDesktopControl("snapshot", {}, { runtimeRoot })).deferredInputs.length, 0);
 
   const secondTask = await callDesktopControl("new-task", { provider: "codex" }, { runtimeRoot });
   assert.notEqual(secondTask.selected.threadId, firstThreadId);
@@ -110,8 +154,45 @@ test("desktop client shares tasks and parallel runs with the Integration backend
     threadId: firstThreadId,
     limit: 10,
   }, { runtimeRoot });
-  assert.equal(history.total, 1);
-  assert.equal(history.items[0].prompt, "[slow] desktop A");
-  assert.match(history.items[0].answer, /Готово: \[slow\] desktop A/);
+  assert.equal(history.total, 2);
+  const slowExchange = history.items.find((item) => item.prompt === "[slow] desktop A");
+  assert.ok(slowExchange);
+  assert.match(slowExchange.answer, /Готово: \[slow\] desktop A/);
+
+  const attachmentRoot = path.join(runtimeRoot, "DesktopApp", "attachments");
+  const imagePath = path.join(attachmentRoot, "desktop.png");
+  await mkdir(attachmentRoot, { recursive: true });
+  await writeFile(imagePath, Buffer.from("fake-png-for-e2e"));
+  await assert.rejects(
+    callDesktopControl("send-message", {
+      text: "outside image",
+      attachments: [configPath],
+    }, { runtimeRoot }),
+    /вне каталога Desktop-приложения/,
+  );
+  const imageStart = await callDesktopControl("send-message", {
+    text: "desktop image",
+    attachments: [imagePath],
+  }, { runtimeRoot });
+  assert.equal(imageStart.accepted, true);
+  await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    return snapshot.activeCount === 0 ? snapshot : null;
+  }, "desktop image turn completion", 10_000);
+
+  const renamed = await callDesktopControl("rename-task", { title: "Desktop renamed" }, { runtimeRoot });
+  assert.equal(renamed.selected.title, "Desktop renamed");
+  const diff = await callDesktopControl("task-diff", {}, { runtimeRoot });
+  assert.equal(typeof diff.text, "string");
+  const cancelStart = await callDesktopControl("send-message", { text: "[hold] desktop cancel" }, { runtimeRoot });
+  assert.equal(cancelStart.accepted, true);
+  const cancelResult = await callDesktopControl("cancel-run", {}, { runtimeRoot });
+  assert.equal(cancelResult.accepted, true);
+  await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    return snapshot.activeCount === 0 ? snapshot : null;
+  }, "desktop cancellation", 5_000);
+  const archived = await callDesktopControl("archive-task", {}, { runtimeRoot });
+  assert.notEqual(archived.selected.threadId, firstThreadId);
   assert.doesNotMatch(stderr, /Unhandled asynchronous error|Cannot start desktop control/i);
 });

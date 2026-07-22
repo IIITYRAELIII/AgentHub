@@ -55,3 +55,16 @@ test("stale approval button is consumed without responding to RPC", async () => 
   assert.equal(responses.length, 0);
   assert.equal(calls.at(-1)[1].text, "Запрос уже закрыт");
 });
+
+test("desktop sees and resolves the same pending approval", async () => {
+  const { controller, responses, calls } = fixture();
+  await controller.request("rpc", "commandExecution", { command: "echo ok" }, "Разрешить echo ok?");
+  const [pending] = controller.snapshot();
+  assert.equal(pending.text, "Разрешить echo ok?");
+  assert.equal(pending.canAllowSession, true);
+  const result = await controller.resolveFromDesktop(pending.key, "once");
+  assert.equal(result.decision, "allowed");
+  assert.equal(controller.snapshot().length, 0);
+  assert.equal(responses.length, 1);
+  assert.ok(calls.some(([method]) => method === "editMessageReplyMarkup"));
+});

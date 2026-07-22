@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
@@ -1755,7 +1755,53 @@ async function desktopSnapshot({ refresh = false } = {}) {
       reasoning: CODEX_REASONING_LABELS[
         activeProvider === "codex" ? codexReasoningEffort : claudeReasoningEffort
       ],
+      mode: CODEX_COLLABORATION_MODE_LABELS[
+        activeProvider === "codex" ? codexCollaborationMode : claudeCollaborationMode
+      ],
     },
+    settings: {
+      provider: activeProvider,
+      model: activeProvider === "codex" ? codexModel : claudeModel,
+      reasoning: activeProvider === "codex" ? codexReasoningEffort : claudeReasoningEffort,
+      mode: activeProvider === "codex" ? codexCollaborationMode : claudeCollaborationMode,
+      approvalMode: autoApprove ? "auto" : "manual",
+      models: activeProvider === "codex"
+        ? CODEX_MODELS.map((model) => ({ value: model.value, label: model.label }))
+        : CLAUDE_MODELS.map((value) => ({ value, label: CLAUDE_MODEL_LABELS[value] })),
+      reasoningOptions: CODEX_REASONING_EFFORTS.map((value) => ({
+        value,
+        label: CODEX_REASONING_LABELS[value],
+      })),
+      modeOptions: CODEX_COLLABORATION_MODES.map((value) => ({
+        value,
+        label: CODEX_COLLABORATION_MODE_LABELS[value],
+      })),
+      projects: PROJECTS.map((project) => ({
+        name: project.name,
+        path: project.path,
+        selected: samePath(project.path, activeProjectRoot),
+      })),
+    },
+    pendingApprovals: approvalController.snapshot(),
+    deferredInputs: [
+      ...[...pendingInputs.values()].map((item) => ({
+        id: item.id,
+        state: "pending",
+        taskTitle: item.taskTitle,
+        preview: inputPreview(item.input).slice(0, 1_000),
+        allowForce: item.allowForce === true,
+        conflictKind: item.conflictKind ?? null,
+      })),
+      ...[...queuedInputs.values()].map((item) => ({
+        id: item.id,
+        state: "queued",
+        taskTitle: item.taskTitle,
+        preview: inputPreview(item.input).slice(0, 1_000),
+        allowForce: false,
+        conflictKind: item.conflictKind ?? null,
+      })),
+    ],
+    restartPending: Boolean(restartRequest),
     activeCount: tasks.filter((item) => item.running).length,
     tasks,
   };
@@ -1833,8 +1879,15 @@ async function desktopSelectTask(params) {
 
 async function desktopSendMessage(params) {
   const text = String(params.text ?? "").trim();
-  if (!text) throw new Error("Введите сообщение");
+  const attachments = await desktopAttachmentPaths(params.attachments);
+  if (!text && !attachments.length) throw new Error("Введите сообщение или добавьте изображение");
   if (text.length > 100_000) throw new Error("Сообщение слишком длинное");
+  const input = attachments.length
+    ? [
+      { type: "text", text: text || "Проанализируй приложенное изображение." },
+      ...attachments.map((file) => ({ type: "localImage", path: file })),
+    ]
+    : text;
   const target = selectedTurnTarget(chatId);
   if (!target.threadId) throw new Error("Сначала выберите или создайте задачу");
   const existingRun = taskRuns.forTask(target);
@@ -1842,25 +1895,268 @@ async function desktopSendMessage(params) {
     ? { state: "active", executionOwner: existingRun.executionOwner }
     : await taskExternalActivity(target);
   if (existingRun || externalActivity.state !== "inactive") {
+    const deferred = await deferConflictingInput(input, attachments, {
+      executionOwner: existingRun?.executionOwner
+        ?? externalActivity.executionOwner
+        ?? TASK_EXECUTION_OWNERS.EXTERNAL,
+      target,
+      allowForce: externalActivity.state === "unknown" && !existingRun,
+      conflictKind: externalActivity.state === "unknown" && !existingRun
+        ? "activity-unknown"
+        : "task-running",
+    });
     return {
       accepted: false,
+      deferred: true,
+      id: deferred.id,
       reason: externalActivity.state === "unknown" ? "activity-unknown" : "task-running",
       message: externalActivity.state === "unknown"
-        ? "Нельзя надёжно определить, завершён ли предыдущий ход."
-        : "В этой задаче уже выполняется ход. Выберите другую задачу или дождитесь завершения.",
+        ? "Сообщение сохранено: нельзя надёжно определить, завершён ли предыдущий ход."
+        : "Сообщение сохранено: выберите новую задачу, очередь или отмену справа.",
+      snapshot: await desktopSnapshot(),
     };
   }
   const repositoryConflict = await activeRepositoryConflict(target);
   if (repositoryConflict) {
+    const deferred = await deferConflictingInput(input, attachments, {
+      executionOwner: repositoryConflict.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL,
+      target,
+      allowForce: true,
+      conflictKind: "repository",
+      conflictTask: repositoryConflict,
+    });
     return {
       accepted: false,
+      deferred: true,
+      id: deferred.id,
       reason: "repository-conflict",
-      message: `Задача «${repositoryConflict.taskTitle ?? "Без названия"}» уже изменяет тот же Git-репозиторий.`,
+      message: `Сообщение сохранено: задача «${repositoryConflict.taskTitle ?? "Без названия"}» уже изменяет тот же Git-репозиторий.`,
+      snapshot: await desktopSnapshot(),
     };
   }
-  const run = await beginRun(text, target);
-  await launchTurn(run, text);
+  const run = await beginRun(input, target);
+  await launchTurn(run, input, attachments);
   return { accepted: true, runId: run.id, snapshot: await desktopSnapshot() };
+}
+
+async function desktopAttachmentPaths(values) {
+  if (values == null) return [];
+  if (!Array.isArray(values) || values.length > 8) throw new Error("Можно приложить не более восьми изображений");
+  const allowedRoot = path.join(runtimeCommandRoot, "DesktopApp", "attachments");
+  const result = [];
+  for (const value of values) {
+    const file = path.resolve(String(value ?? ""));
+    if (!pathInsideOrSame(file, allowedRoot)) throw new Error("Изображение находится вне каталога Desktop-приложения");
+    if (!/\.(?:png|jpe?g|webp|gif|bmp)$/i.test(file)) throw new Error("Неподдерживаемый формат изображения");
+    const info = await stat(file);
+    if (!info.isFile() || info.size <= 0 || info.size > 20 * 1024 * 1024) {
+      throw new Error("Изображение отсутствует или превышает 20 МБ");
+    }
+    result.push(file);
+  }
+  return result;
+}
+
+async function desktopUpdateSetting(params) {
+  const name = String(params.name ?? "").trim();
+  const value = String(params.value ?? "").trim();
+  if (name === "provider") {
+    await switchProvider(value);
+  } else if (name === "model") {
+    if (isCodex()) {
+      switchCodexModel(value);
+      await updateActiveCodexThreadSettings();
+    } else {
+      switchModel(value);
+      await saveState();
+    }
+  } else if (name === "reasoning") {
+    if (!CODEX_REASONING_EFFORTS.includes(value)) throw new Error("Неизвестный уровень reasoning");
+    if (isCodex()) {
+      codexReasoningEffort = value;
+      await updateActiveCodexThreadSettings();
+    } else {
+      claudeReasoningEffort = value;
+      await saveState();
+    }
+  } else if (name === "mode") {
+    if (!CODEX_COLLABORATION_MODES.includes(value)) throw new Error("Неизвестный режим работы");
+    if (isCodex()) codexCollaborationMode = value;
+    else claudeCollaborationMode = value;
+    await saveState();
+  } else if (name === "approvalMode") {
+    if (value !== "auto" && value !== "manual") throw new Error("Неизвестный режим подтверждений");
+    autoApprove = value === "auto";
+  } else if (name === "project") {
+    const index = PROJECTS.findIndex((project) => samePath(project.path, value));
+    if (index < 0) throw new Error("Проект не найден");
+    await switchProject(index);
+  } else {
+    throw new Error("Неизвестная настройка Desktop-приложения");
+  }
+  return desktopSnapshot({ refresh: true });
+}
+
+async function desktopRenameTask(params) {
+  await renameCurrentTask(String(params.title ?? ""));
+  return desktopSnapshot({ refresh: true });
+}
+
+async function desktopArchiveTask() {
+  const result = await archiveCurrentThread();
+  if (!result.archived) throw new Error(result.reason === "active-turn"
+    ? "Сначала остановите активный ход"
+    : result.reason === "unsupported" ? "Claude не поддерживает архивирование" : "Задача не выбрана");
+  return desktopSnapshot({ refresh: true });
+}
+
+async function desktopTaskDiff() {
+  const target = selectedTask();
+  const run = taskRuns.forTask(target);
+  const text = run ? await refreshTaskDiff(run) : taskDiffs.get(taskRunKey(target)) ?? "";
+  return { text, empty: !text };
+}
+
+async function desktopCancelRun() {
+  const run = selectedRun();
+  if (!run) return { accepted: false, message: "В выбранной задаче сейчас ничего не выполняется" };
+  if (run.provider === "codex") {
+    await sendRpc("turn/interrupt", { threadId: run.threadId, turnId: run.turnId });
+    return { accepted: true, message: "Остановка Codex запрошена" };
+  }
+  if (run.process || processIsAlive(run.pid)) {
+    if (!await stopClaudeRunProcess(run)) throw new Error("Не удалось остановить дерево процессов Claude");
+    return { accepted: true, message: "Claude остановлен" };
+  }
+  return { accepted: false, message: "Внешний Claude нельзя остановить из Integration Server" };
+}
+
+async function desktopResolveApproval(params) {
+  return approvalController.resolveFromDesktop(
+    String(params.key ?? ""),
+    String(params.decision ?? ""),
+  );
+}
+
+async function desktopDeferredInput(params) {
+  const id = String(params.id ?? "");
+  const action = String(params.action ?? "");
+  const item = pendingInputs.get(id) ?? queuedInputs.get(id);
+  if (!item) throw new Error("Сохранённое сообщение уже обработано");
+  if (action === "cancel") {
+    pendingInputs.delete(id);
+    queuedInputs.delete(id);
+    await cleanupDeferredFiles(item);
+    await saveState();
+    await updateDeferredMessage(item, "❌ Сохранённое сообщение отменено.");
+    return { accepted: true, message: "Сохранённое сообщение отменено" };
+  }
+  if (!pendingInputs.has(id)) throw new Error("Сообщение уже находится в очереди");
+  if (action === "queue") {
+    pendingInputs.delete(id);
+    queuedInputs.set(id, item);
+    await saveState();
+    await updateDeferredMessage(item, `⏳ Сообщение поставлено в очередь задачи «${item.taskTitle}».`);
+    scheduleQueuedInput(item, 500);
+    return { accepted: true, message: "Сообщение поставлено в очередь" };
+  }
+  const binding = {
+    provider: item.provider,
+    projectRoot: item.projectRoot,
+    threadId: item.threadId,
+    taskTitle: item.taskTitle,
+  };
+  if (action === "force") {
+    if (item.allowForce !== true) throw new Error("Принудительный запуск для этого сообщения не разрешён");
+    await activateMessageBinding(binding);
+    const outcome = await startTurn(item.input, item.temporaryFiles ?? [], {
+      forceSpeechButton: item.forceSpeechButton === true,
+      target: {
+        ...binding,
+        chatId: item.chatId,
+        modelId: item.modelId,
+        reasoningId: item.reasoningId,
+        collaborationMode: item.collaborationMode,
+      },
+      allowRepositoryConflict: item.conflictKind === "repository",
+      allowUnknownExternalActivity: item.conflictKind === "activity-unknown",
+    });
+    if (outcome?.deferred) throw new Error("Условие безопасного запуска всё ещё не выполнено");
+    pendingInputs.delete(id);
+    await saveState();
+    await updateDeferredMessage(item, `⚠️ Сообщение отправлено в задачу «${item.taskTitle}».`);
+    return { accepted: true, message: "Сообщение принудительно запущено" };
+  }
+  if (action === "new") {
+    await activateMessageBinding(binding);
+    await createThread();
+    const outcome = await startTurn(item.input, item.temporaryFiles ?? [], {
+      forceSpeechButton: item.forceSpeechButton === true,
+    });
+    if (outcome?.deferred) throw new Error("Новая задача неожиданно оказалась занята");
+    pendingInputs.delete(id);
+    await saveState();
+    await updateDeferredMessage(item, `🆕 Сообщение отправлено в новую задачу «${activeThreadTitle}».`);
+    return { accepted: true, message: "Сообщение отправлено в новую задачу", snapshot: await desktopSnapshot() };
+  }
+  throw new Error("Неизвестное действие с сохранённым сообщением");
+}
+
+async function desktopStatusDetails() {
+  const codexSelected = isCodex();
+  let limits;
+  try {
+    limits = codexSelected
+      ? formatCodexRateLimits(await sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 }))
+      : formatClaudeRateLimits(await readClaudeRateLimits());
+  } catch (error) {
+    limits = `Не удалось получить: ${error.message}`;
+  }
+  return {
+    provider: activeProvider,
+    model: codexSelected ? codexModelLabel(codexModel) : CLAUDE_MODEL_LABELS[claudeModel],
+    reasoning: CODEX_REASONING_LABELS[codexSelected ? codexReasoningEffort : claudeReasoningEffort],
+    mode: CODEX_COLLABORATION_MODE_LABELS[codexSelected ? codexCollaborationMode : claudeCollaborationMode],
+    limits,
+    activeCount: taskRuns.values().length,
+    backgroundJobs: backgroundMediaJobs.size + backgroundSpeechJobs.size,
+  };
+}
+
+async function desktopSpeakLastAnswer() {
+  const target = selectedTask();
+  const message = savedLastTaskMessageRecord(target);
+  const text = String(message?.text ?? "").trim();
+  if (!text) throw new Error("У задачи ещё нет завершённого ответа");
+  const job = await enqueueBackgroundJob("speech", { chatId, text }, chatId, {
+    dedupeKey: `desktop:${target.provider}:${target.threadId}:speech`,
+  });
+  if (!job) throw new Error(`Очередь озвучивания заполнена (${MAX_BACKGROUND_SPEECH_JOBS})`);
+  return { accepted: true, message: "Озвучивание будет отправлено в Telegram" };
+}
+
+async function desktopRestartServer() {
+  if (restartRequest) return { accepted: false, message: "Перезапуск уже запрошен" };
+  const blockingRuns = restartBlockingRuns();
+  const blockingWorkCount = blockingRuns.length + backgroundMediaJobs.size + backgroundSpeechJobs.size;
+  const message = await sendMessage(blockingWorkCount
+    ? `🔄 Integration Server перезапустится после завершения выполняющихся задач: ${blockingWorkCount}.`
+    : "🔄 Перезапускаю Integration Server…");
+  if (!message?.message_id) throw new Error("Telegram не вернул ID сообщения перезапуска");
+  restartRequest = {
+    chatId,
+    messageId: message.message_id,
+    requestedAt: new Date().toISOString(),
+    waitingForRuns: blockingWorkCount > 0,
+    minimumUpdateOffset: updateOffset,
+  };
+  await saveState();
+  if (!blockingWorkCount) setTimeout(() => void performRestart(), 250).unref();
+  return {
+    accepted: true,
+    waiting: blockingWorkCount > 0,
+    message: blockingWorkCount > 0 ? "Перезапуск ожидает завершения задач" : "Integration Server перезапускается",
+  };
 }
 
 async function desktopNewTask(params) {
@@ -1883,6 +2179,16 @@ async function handleDesktopControl({ action, params }) {
   if (action === "select-task") return serializeDesktopMutation(() => desktopSelectTask(params));
   if (action === "send-message") return serializeDesktopMutation(() => desktopSendMessage(params));
   if (action === "new-task") return serializeDesktopMutation(() => desktopNewTask(params));
+  if (action === "update-setting") return serializeDesktopMutation(() => desktopUpdateSetting(params));
+  if (action === "rename-task") return serializeDesktopMutation(() => desktopRenameTask(params));
+  if (action === "archive-task") return serializeDesktopMutation(() => desktopArchiveTask());
+  if (action === "task-diff") return desktopTaskDiff();
+  if (action === "cancel-run") return serializeDesktopMutation(() => desktopCancelRun());
+  if (action === "resolve-approval") return serializeDesktopMutation(() => desktopResolveApproval(params));
+  if (action === "deferred-input") return serializeDesktopMutation(() => desktopDeferredInput(params));
+  if (action === "status-details") return desktopStatusDetails();
+  if (action === "speak-last-answer") return desktopSpeakLastAnswer();
+  if (action === "restart-server") return serializeDesktopMutation(() => desktopRestartServer());
   throw new Error(`Неизвестная desktop-команда: ${action}`);
 }
 

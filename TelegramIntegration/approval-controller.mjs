@@ -40,6 +40,7 @@ export class ApprovalController {
       rpcId,
       kind,
       params,
+      text,
       runId: run?.id ?? null,
       chatId: run?.chatId ?? this.currentChatId(),
     };
@@ -79,6 +80,7 @@ export class ApprovalController {
       acceptResponse,
       runId: run?.id ?? null,
       chatId: run?.chatId ?? this.currentChatId(),
+      text: formatMcpElicitation(params),
     };
     this.pending.set(key, approval);
     const decisions = [];
@@ -153,5 +155,43 @@ export class ApprovalController {
       reply_markup: { inline_keyboard: [] },
     });
     return true;
+  }
+
+  snapshot() {
+    return [...this.pending.entries()].map(([key, approval]) => ({
+      key,
+      kind: approval.kind,
+      runId: approval.runId,
+      text: String(approval.text ?? "Требуется подтверждение"),
+      canAllowSession: approval.kind !== "mcp-elicitation",
+      canAccept: approval.kind !== "mcp-elicitation" || Boolean(approval.acceptResponse),
+    }));
+  }
+
+  async resolveFromDesktop(key, action) {
+    const approval = this.pending.get(String(key ?? ""));
+    if (!approval) throw new Error("Запрос подтверждения уже закрыт");
+    if (approval.runId && !this.runExists(approval.runId)) {
+      this.pending.delete(key);
+      throw new Error("Запрос больше не относится к активному ходу");
+    }
+    if (!["once", "session", "decline"].includes(action)) throw new Error("Неизвестное решение подтверждения");
+    const response = approval.kind === "mcp-elicitation"
+      ? action === "decline" ? { action: "decline" } : approval.acceptResponse
+      : codexApprovalResponse(approval.kind, action, approval.params);
+    if (!response) throw new Error("Для этой формы нужен явный ввод данных");
+    this.pending.delete(key);
+    this.respond(approval.rpcId, response);
+    if (approval.messageId && approval.chatId) {
+      await this.telegram("editMessageReplyMarkup", {
+        chat_id: approval.chatId,
+        message_id: approval.messageId,
+        reply_markup: { inline_keyboard: [] },
+      }).catch(() => {});
+    }
+    return {
+      decision: action === "once" ? "allowed"
+        : action === "session" ? "session" : "declined",
+    };
   }
 }
