@@ -106,6 +106,7 @@ import {
 } from "./last-message.mjs";
 import {
   codexThreadHistory,
+  mergeActiveTaskHistory,
 } from "./task-history.mjs";
 import { startCodexTurnWithRecovery } from "./codex-recovery.mjs";
 import {
@@ -1690,6 +1691,7 @@ function desktopRunSnapshot(run) {
     model: run.model ?? null,
     reasoning: run.reasoning ?? null,
     stage: String(run.progressStage ?? "Выполняется…"),
+    prompt: String(run.promptPreview ?? ""),
     progress: String(run.progressReasoning ?? ""),
     response: String(run.responseText ?? ""),
     startedAt: run.startedAt ?? null,
@@ -1759,6 +1761,58 @@ async function desktopSnapshot({ refresh = false } = {}) {
   };
 }
 
+async function desktopTaskHistory(params) {
+  const provider = String(params.provider ?? activeProvider).trim();
+  const selectedThreadId = String(params.threadId ?? threadId ?? "").trim();
+  if (!['codex', 'claude'].includes(provider) || !selectedThreadId) {
+    throw new Error("Укажите корректную задачу");
+  }
+  const catalog = await refreshTaskCatalog();
+  const entry = catalog.find((item) => item.provider === provider && item.threadId === selectedThreadId);
+  if (!entry) throw new Error("Задача не найдена в локальном каталоге");
+  const binding = {
+    provider: entry.provider,
+    projectRoot: entry.projectRoot,
+    threadId: entry.threadId,
+    taskTitle: entry.title,
+    chatId,
+  };
+  const { history } = await taskViewController.readHistory(binding);
+  const running = taskRuns.forTask(binding);
+  if (running) {
+    mergeActiveTaskHistory(history, {
+      active: true,
+      turnId: running.turnId ?? running.id,
+      prompt: running.promptPreview,
+      answer: running.responseText,
+    });
+  }
+  const total = history.length;
+  const requestedEnd = Number(params.before);
+  const end = Number.isSafeInteger(requestedEnd)
+    ? Math.max(0, Math.min(requestedEnd, total))
+    : total;
+  const limit = Math.max(1, Math.min(Number(params.limit) || 10, 20));
+  const start = Math.max(0, end - limit);
+  return {
+    provider,
+    threadId: selectedThreadId,
+    title: entry.title,
+    total,
+    start,
+    end,
+    nextBefore: start > 0 ? start : null,
+    items: history.slice(start, end).map((item) => ({
+      id: String(item.id ?? ""),
+      prompt: String(item.prompt ?? "").slice(0, 100_000),
+      answer: String(item.answer ?? "").slice(0, 200_000),
+      status: String(item.status ?? ""),
+      active: item.active === true,
+      completed: item.completed === true,
+    })),
+  };
+}
+
 async function desktopSelectTask(params) {
   const provider = String(params.provider ?? "").trim();
   const selectedThreadId = String(params.threadId ?? "").trim();
@@ -1825,6 +1879,7 @@ function serializeDesktopMutation(operation) {
 
 async function handleDesktopControl({ action, params }) {
   if (action === "snapshot") return desktopSnapshot(params);
+  if (action === "task-history") return desktopTaskHistory(params);
   if (action === "select-task") return serializeDesktopMutation(() => desktopSelectTask(params));
   if (action === "send-message") return serializeDesktopMutation(() => desktopSendMessage(params));
   if (action === "new-task") return serializeDesktopMutation(() => desktopNewTask(params));

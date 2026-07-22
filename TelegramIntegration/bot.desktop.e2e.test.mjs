@@ -105,5 +105,13 @@ test("desktop client shares tasks and parallel runs with the Integration backend
     return snapshot.activeCount === 0 ? snapshot : null;
   }, "parallel desktop turns completion", 10_000);
   assert.ok(completed.tasks.every((item) => !item.running));
+  const history = await callDesktopControl("task-history", {
+    provider: "codex",
+    threadId: firstThreadId,
+    limit: 10,
+  }, { runtimeRoot });
+  assert.equal(history.total, 1);
+  assert.equal(history.items[0].prompt, "[slow] desktop A");
+  assert.match(history.items[0].answer, /Готово: \[slow\] desktop A/);
   assert.doesNotMatch(stderr, /Unhandled asynchronous error|Cannot start desktop control/i);
 });

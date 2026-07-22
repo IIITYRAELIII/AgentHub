@@ -1,7 +1,3 @@
-param(
-    [string]$Configuration = "Release"
-)
-
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $framework = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319"

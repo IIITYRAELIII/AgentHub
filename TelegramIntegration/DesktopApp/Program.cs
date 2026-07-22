@@ -157,11 +157,17 @@ namespace TyraelIntegrationDesktop
         private readonly TextBox output = new TextBox();
         private readonly TextBox input = new TextBox();
         private readonly Button sendButton = new Button();
+        private readonly Button historyButton = new Button();
         private readonly TextBlock footer = new TextBlock();
         private readonly Dictionary<string, TaskItem> tasks = new Dictionary<string, TaskItem>();
+        private readonly List<Dictionary<string, object>> historyItems = new List<Dictionary<string, object>>();
         private bool refreshRunning;
+        private bool historyLoading;
         private bool selectionInternal;
         private string selectedKey;
+        private string historyKey;
+        private int? historyBefore;
+        private bool? selectedWasRunning;
 
         public MainWindow()
         {
@@ -186,6 +192,7 @@ namespace TyraelIntegrationDesktop
             Closed += delegate { timer.Stop(); };
             taskList.SelectionChanged += async delegate { await SelectTaskAsync(); };
             sendButton.Click += async delegate { await SendAsync(); };
+            historyButton.Click += async delegate { await LoadHistoryAsync(true); };
             input.PreviewKeyDown += async delegate(object sender, KeyEventArgs args)
             {
                 if (args.Key == System.Windows.Input.Key.Enter && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
@@ -260,6 +267,17 @@ namespace TyraelIntegrationDesktop
             var titleStack = new StackPanel();
             titleStack.Children.Add(taskTitle);
             titleStack.Children.Add(taskMeta);
+            historyButton.Content = "Показать ранние сообщения";
+            historyButton.Foreground = AccentBrush;
+            historyButton.Background = PanelAltBrush;
+            historyButton.BorderBrush = BorderLineBrush;
+            historyButton.BorderThickness = new Thickness(1);
+            historyButton.Padding = new Thickness(10, 6, 10, 6);
+            historyButton.Margin = new Thickness(0, 0, 0, 10);
+            historyButton.HorizontalAlignment = HorizontalAlignment.Left;
+            historyButton.Cursor = Cursors.Hand;
+            historyButton.Visibility = Visibility.Collapsed;
+            titleStack.Children.Add(historyButton);
             main.Children.Add(titleStack);
 
             output.IsReadOnly = true;
@@ -345,6 +363,13 @@ namespace TyraelIntegrationDesktop
             {
                 var snapshot = await client.CallAsync("snapshot", new Dictionary<string, object> { { "refresh", force } });
                 ApplySnapshot(snapshot);
+                TaskItem selected;
+                if (!String.IsNullOrWhiteSpace(selectedKey) && tasks.TryGetValue(selectedKey, out selected))
+                {
+                    var completedNow = selectedWasRunning == true && !selected.Running;
+                    selectedWasRunning = selected.Running;
+                    if (historyKey != selectedKey || completedNow) await LoadHistoryAsync(false);
+                }
                 connectionText.Text = "● Подключено · активных: " + Convert.ToString(snapshot.ContainsKey("activeCount") ? snapshot["activeCount"] : 0);
                 connectionText.Foreground = RunningBrush;
             }
@@ -418,25 +443,90 @@ namespace TyraelIntegrationDesktop
             taskMeta.Text = (item.Provider == "claude" ? "Claude" : "Codex")
                 + (String.IsNullOrWhiteSpace(item.Runtime) ? "" : " · " + item.Runtime)
                 + (item.Running ? " · выполняется" : " · готова");
+            var sections = new List<string>();
+            foreach (var exchange in historyItems)
+            {
+                if (IntegrationClient.Bool(exchange, "active") && item.Run.Count > 0) continue;
+                var prompt = IntegrationClient.Text(exchange, "prompt");
+                var answer = IntegrationClient.Text(exchange, "answer");
+                if (!String.IsNullOrWhiteSpace(prompt)) sections.Add("ВЫ\r\n" + prompt);
+                if (!String.IsNullOrWhiteSpace(answer)) sections.Add((item.Provider == "claude" ? "CLAUDE" : "CODEX") + "\r\n" + answer);
+            }
             var run = item.Run;
             if (run.Count > 0)
             {
-                var sections = new List<string>();
+                var prompt = IntegrationClient.Text(run, "prompt");
                 var stage = IntegrationClient.Text(run, "stage");
                 var progress = IntegrationClient.Text(run, "progress");
                 var response = IntegrationClient.Text(run, "response");
-                if (!String.IsNullOrWhiteSpace(stage)) sections.Add(stage);
-                if (!String.IsNullOrWhiteSpace(progress)) sections.Add("Ход работы\r\n" + progress);
-                if (!String.IsNullOrWhiteSpace(response)) sections.Add("Ответ формируется\r\n" + response);
-                output.Text = String.Join("\r\n\r\n", sections.ToArray());
+                if (!String.IsNullOrWhiteSpace(prompt)) sections.Add("ВЫ\r\n" + prompt);
+                var live = new List<string>();
+                if (!String.IsNullOrWhiteSpace(stage)) live.Add(stage);
+                if (!String.IsNullOrWhiteSpace(progress)) live.Add("Ход работы\r\n" + progress);
+                if (!String.IsNullOrWhiteSpace(response)) live.Add("Ответ формируется\r\n" + response);
+                if (live.Count > 0) sections.Add((item.Provider == "claude" ? "CLAUDE · СЕЙЧАС" : "CODEX · СЕЙЧАС") + "\r\n" + String.Join("\r\n\r\n", live.ToArray()));
             }
-            else
+            if (sections.Count == 0 && !String.IsNullOrWhiteSpace(item.LastAnswer)) sections.Add((item.Provider == "claude" ? "CLAUDE" : "CODEX") + "\r\n" + item.LastAnswer);
+            var rendered = sections.Count == 0
+                ? "У задачи пока нет сохранённой истории."
+                : String.Join("\r\n\r\n────────────────────────\r\n\r\n", sections.ToArray());
+            if (output.Text != rendered)
             {
-                output.Text = String.IsNullOrWhiteSpace(item.LastAnswer)
-                    ? "У задачи пока нет сохранённого ответа."
-                    : item.LastAnswer;
+                output.Text = rendered;
+                output.ScrollToEnd();
             }
-            output.ScrollToEnd();
+        }
+
+        private async Task LoadHistoryAsync(bool older)
+        {
+            if (historyLoading || String.IsNullOrWhiteSpace(selectedKey)) return;
+            TaskItem item;
+            if (!tasks.TryGetValue(selectedKey, out item)) return;
+            historyLoading = true;
+            historyButton.IsEnabled = false;
+            try
+            {
+                var parameters = new Dictionary<string, object>
+                {
+                    { "provider", item.Provider },
+                    { "threadId", item.ThreadId },
+                    { "limit", 10 }
+                };
+                if (older && historyBefore.HasValue) parameters["before"] = historyBefore.Value;
+                var page = await client.CallAsync("task-history", parameters);
+                var loaded = new List<Dictionary<string, object>>();
+                foreach (var raw in IntegrationClient.Array(page, "items"))
+                {
+                    var exchange = raw as Dictionary<string, object>;
+                    if (exchange != null) loaded.Add(exchange);
+                }
+                if (older) historyItems.InsertRange(0, loaded);
+                else
+                {
+                    historyItems.Clear();
+                    historyItems.AddRange(loaded);
+                    historyKey = selectedKey;
+                }
+                object before;
+                historyBefore = page.TryGetValue("nextBefore", out before) && before != null
+                    ? (int?)Convert.ToInt32(before)
+                    : null;
+                historyButton.Visibility = historyBefore.HasValue ? Visibility.Visible : Visibility.Collapsed;
+                historyButton.Content = historyBefore.HasValue
+                    ? "Показать ещё ранние сообщения"
+                    : "Вся история загружена";
+                RenderTask(item);
+                footer.Text = "Показано сообщений: " + historyItems.Count + " из " + IntegrationClient.Text(page, "total", Convert.ToString(historyItems.Count));
+            }
+            catch (Exception error)
+            {
+                footer.Text = "Не удалось загрузить историю: " + error.Message;
+            }
+            finally
+            {
+                historyButton.IsEnabled = true;
+                historyLoading = false;
+            }
         }
 
         private async Task SelectTaskAsync()
@@ -455,7 +545,12 @@ namespace TyraelIntegrationDesktop
                     { "threadId", item.ThreadId }
                 });
                 selectedKey = key;
+                historyKey = null;
+                historyBefore = null;
+                historyItems.Clear();
+                selectedWasRunning = null;
                 ApplySnapshot(snapshot);
+                await LoadHistoryAsync(false);
                 footer.Text = "Задача выбрана";
             }
             catch (Exception error)
@@ -479,6 +574,7 @@ namespace TyraelIntegrationDesktop
                     return;
                 }
                 input.Clear();
+                historyKey = null;
                 footer.Text = "Сообщение принято Integration App Server";
                 await RefreshAsync(false);
             }
@@ -498,7 +594,12 @@ namespace TyraelIntegrationDesktop
             {
                 footer.Text = "Создаю задачу " + provider + "…";
                 var snapshot = await client.CallAsync("new-task", new Dictionary<string, object> { { "provider", provider } });
+                historyKey = null;
+                historyBefore = null;
+                historyItems.Clear();
+                selectedWasRunning = null;
                 ApplySnapshot(snapshot);
+                await LoadHistoryAsync(false);
                 footer.Text = "Новая задача создана";
             }
             catch (Exception error)
