@@ -105,6 +105,7 @@ export class MediaController {
         env: { ...process.env, PYTHONUTF8: "1", TORCH_HOME: this.config.ttsCacheDir },
       }),
       timeoutMs: this.config.ttsRequestTimeoutSeconds * 1000,
+      idleTimeoutMs: this.config.ttsIdleTimeoutSeconds * 1000,
       terminateWorker: (worker) => this.stopProcessTree(worker.pid).catch(() => worker.kill()),
       onWorkerChange: (worker) => { this.ttsWorker = worker; },
       onDiagnostic: (message) => {

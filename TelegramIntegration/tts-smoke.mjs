@@ -30,6 +30,7 @@ const client = new PersistentTtsWorkerClient({
     env: { ...process.env, PYTHONUTF8: "1", TORCH_HOME: config.ttsCacheDir },
   }),
   timeoutMs: config.ttsRequestTimeoutSeconds * 1000,
+  idleTimeoutMs: config.ttsIdleTimeoutSeconds * 1000,
   terminateWorker: (worker) => stopProcessTree(worker.pid).catch(() => worker.kill()),
   onDiagnostic: (message) => {
     if (message) console.error(`[tts] ${message}`);

@@ -3,21 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import queue
 import re
 import sys
-import threading
 import wave
 from pathlib import Path
-
-
-def read_requests(target: queue.Queue[dict | None]) -> None:
-    for line in sys.stdin:
-        try:
-            target.put(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    target.put(None)
 
 
 def clean_text(value: str, max_chars: int) -> str:
@@ -166,17 +155,16 @@ def main() -> int:
         print(f"Model {args.model} is ready", flush=True)
         return 0
 
-    requests: queue.Queue[dict | None] = queue.Queue()
-    threading.Thread(target=read_requests, args=(requests,), daemon=True).start()
     synthesizer: Synthesizer | None = None
 
-    while True:
+    # Keep all Python work on one thread. On Windows a background thread blocked
+    # in TextIOWrapper.readline() can deadlock torch.package while stdin remains
+    # open for the persistent protocol. The Node owner enforces the idle timeout.
+    for line in sys.stdin:
         try:
-            request = requests.get(timeout=max(1, args.idle_timeout))
-        except queue.Empty:
-            return 0
-        if request is None:
-            return 0
+            request = json.loads(line)
+        except json.JSONDecodeError:
+            continue
         request_id = request.get("id")
         try:
             respond({"id": request_id, "progress": True, "phase": "accepted"})
@@ -200,6 +188,7 @@ def main() -> int:
             respond({"id": request_id, "ok": True, "outputPath": str(output_path)})
         except Exception as error:
             respond({"id": request_id, "ok": False, "error": str(error)})
+    return 0
 
 
 if __name__ == "__main__":

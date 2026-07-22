@@ -88,3 +88,28 @@ test("persistent TTS client reuses one worker for consecutive requests", async (
     client.close();
   }
 });
+
+test("persistent TTS client retires an idle worker and starts a clean one", async () => {
+  const source = String.raw`
+    const readline = require("node:readline");
+    const lines = readline.createInterface({ input: process.stdin });
+    lines.on("line", line => {
+      const request = JSON.parse(line);
+      console.log(JSON.stringify({ id: request.id, ok: true, outputPath: request.outputPath }));
+    });
+  `;
+  let spawns = 0;
+  const client = new PersistentTtsWorkerClient({
+    spawnWorker: () => { spawns += 1; return nodeWorker(source)(); },
+    timeoutMs: 1000,
+    idleTimeoutMs: 30,
+  });
+  try {
+    assert.equal(await client.request({ id: "one", outputPath: "one.ogg" }), "one.ogg");
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(await client.request({ id: "two", outputPath: "two.ogg" }), "two.ogg");
+    assert.equal(spawns, 2);
+  } finally {
+    client.close();
+  }
+});

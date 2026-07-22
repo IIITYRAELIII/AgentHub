@@ -103,22 +103,43 @@ export class PersistentTtsWorkerClient {
   constructor({
     spawnWorker,
     timeoutMs,
+    idleTimeoutMs = 0,
     terminateWorker = (worker) => worker.kill(),
     onWorkerChange = () => {},
     onDiagnostic = () => {},
   }) {
     this.spawnWorker = spawnWorker;
     this.timeoutMs = timeoutMs;
+    this.idleTimeoutMs = idleTimeoutMs;
     this.terminateWorker = terminateWorker;
     this.onWorkerChange = onWorkerChange;
     this.onDiagnostic = onDiagnostic;
     this.worker = null;
     this.lines = null;
     this.pending = null;
+    this.idleTimer = null;
     this.stderr = "";
   }
 
+  clearIdleTimeout() {
+    clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+  }
+
+  armIdleTimeout() {
+    this.clearIdleTimeout();
+    if (!this.worker || !(this.idleTimeoutMs > 0)) return;
+    const worker = this.worker;
+    this.idleTimer = setTimeout(() => {
+      if (this.worker !== worker || this.pending) return;
+      this.clearWorker(worker);
+      Promise.resolve(this.terminateWorker(worker)).catch(() => worker.kill());
+    }, this.idleTimeoutMs);
+    this.idleTimer.unref?.();
+  }
+
   ensureWorker() {
+    this.clearIdleTimeout();
     if (this.worker) return this.worker;
     const worker = this.spawnWorker();
     this.worker = worker;
@@ -182,10 +203,12 @@ export class PersistentTtsWorkerClient {
     clearTimeout(pending.timer);
     if (error) pending.reject(error);
     else pending.resolve(outputPath);
+    this.armIdleTimeout();
   }
 
   clearWorker(worker = this.worker) {
     if (!worker || this.worker !== worker) return;
+    this.clearIdleTimeout();
     this.lines?.close();
     this.lines = null;
     this.worker = null;
@@ -201,6 +224,7 @@ export class PersistentTtsWorkerClient {
 
   request(request) {
     if (this.pending) return Promise.reject(new Error("TTS worker is already processing a request"));
+    this.clearIdleTimeout();
     let worker;
     try {
       worker = this.ensureWorker();
