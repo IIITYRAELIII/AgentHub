@@ -51,3 +51,17 @@ test("legacy repository conflicts resume automatically as queued inputs", () => 
   });
   assert.equal(restoreDeferredInput({ id: "broken" }), null);
 });
+
+test("repository conflicts remain pending when the optional guard is enabled", () => {
+  const item = {
+    id: "019f7152-726b-7b62-a595-62a3fccef0bf",
+    provider: "codex",
+    threadId: "thread-1",
+    conflictKind: "repository",
+    allowForce: true,
+  };
+  assert.deepEqual(
+    restoreDeferredInput(item, { guardConcurrentRepositoryWrites: true }),
+    { destination: "pending", item },
+  );
+});

@@ -6,9 +6,18 @@ import {
   findContainingProject,
   httpBaseUrl,
   pathInsideOrSame,
+  repositoryWriteGuardEnabled,
   resolveConfigPath,
   samePath,
 } from "./config.mjs";
+
+test("concurrent repository write guard is opt-in", () => {
+  assert.equal(repositoryWriteGuardEnabled(), false);
+  assert.equal(repositoryWriteGuardEnabled({}), false);
+  assert.equal(repositoryWriteGuardEnabled({ guardConcurrentRepositoryWrites: false }), false);
+  assert.equal(repositoryWriteGuardEnabled({ guardConcurrentRepositoryWrites: true }), true);
+  assert.equal(repositoryWriteGuardEnabled({ guardConcurrentRepositoryWrites: "true" }), false);
+});
 
 
 test("pathInsideOrSame accepts the project itself and nested caller directories", () => {

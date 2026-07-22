@@ -24,9 +24,10 @@ export function parsePendingInputCallback(value) {
   };
 }
 
-export function restoreDeferredInput(item) {
+export function restoreDeferredInput(item, { guardConcurrentRepositoryWrites = false } = {}) {
   if (!item?.id || !item?.threadId || !item?.provider) return null;
   if (item.conflictKind !== "repository") return { destination: "pending", item };
+  if (guardConcurrentRepositoryWrites) return { destination: "pending", item };
   return {
     destination: "queued",
     item: {

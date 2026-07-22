@@ -54,9 +54,11 @@ import { telegramPrompt } from "./telegram-message.mjs";
 import {
   captureTaskGitBaseline,
   cleanupTaskGitIndexes,
+  resolveTaskGitRepoRoots,
   taskGitDiff,
 } from "./task-git-diff.mjs";
 import { TaskDiffStore } from "./task-diff-store.mjs";
+import { findRepositoryWriteConflict } from "./repository-conflict.mjs";
 import { pendingInputKeyboard, restoreDeferredInput } from "./deferred-input.mjs";
 import {
   appendMessageBindings,
@@ -355,6 +357,7 @@ const interactiveJobs = new BackgroundJobQueue({
 const dismissedExternalTasks = new TaskDismissalRegistry();
 const cancelledManagedClaudeTasks = new Map();
 const pendingInputs = new Map();
+const gitRepoRoots = new Map();
 const queuedInputs = new Map();
 const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
 await taskDiffs.load();
@@ -1118,7 +1121,9 @@ try {
     }
   }
   for (const item of Array.isArray(saved.pendingInputs) ? saved.pendingInputs : []) {
-    const restored = restoreDeferredInput(item);
+    const restored = restoreDeferredInput(item, {
+      guardConcurrentRepositoryWrites: config.guardConcurrentRepositoryWrites,
+    });
     if (!restored) continue;
     (restored.destination === "queued" ? queuedInputs : pendingInputs)
       .set(restored.item.id, restored.item);
@@ -2283,12 +2288,42 @@ async function taskExternalActivity(target) {
   }
 }
 
+async function taskRepositoryRoots(projectRoot) {
+  const resolved = path.resolve(String(projectRoot ?? ""));
+  const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  if (gitRepoRoots.has(key)) return gitRepoRoots.get(key);
+  const repoRoots = await resolveTaskGitRepoRoots(projectRoot);
+  // Cache only successful discovery: a non-repository directory can become a
+  // repository later without requiring a bot restart.
+  if (repoRoots.length) gitRepoRoots.set(key, repoRoots);
+  return repoRoots;
+}
+
+async function activeRepositoryConflict(target) {
+  if (!config.guardConcurrentRepositoryWrites) return null;
+  const repoRoots = await taskRepositoryRoots(target.projectRoot);
+  if (!repoRoots.length) return null;
+  const catalog = await refreshTaskCatalog();
+  const candidates = [
+    ...taskRuns.values(),
+    ...catalog.filter((entry) => entry.running),
+  ];
+  const enriched = await Promise.all(candidates.map(async (candidate) => ({
+    ...candidate,
+    repoRoots: candidate.gitBaseline?.repoRoot
+      ? [candidate.gitBaseline.repoRoot]
+      : await taskRepositoryRoots(candidate.projectRoot),
+  })));
+  return findRepositoryWriteConflict(target, repoRoots, enriched);
+}
+
 async function deferConflictingInput(input, temporaryFiles, {
   forceSpeechButton = false,
   executionOwner = TASK_EXECUTION_OWNERS.EXTERNAL,
   target = selectedTurnTarget(),
   allowForce = false,
   conflictKind = "task-running",
+  conflictTask = null,
 } = {}) {
   if (pendingInputs.size + queuedInputs.size >= MAX_DEFERRED_INPUTS) {
     await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
@@ -2317,9 +2352,11 @@ async function deferConflictingInput(input, temporaryFiles, {
   const runtime = target.provider === "codex"
     ? taskExecutionRuntimeLabel(executionOwner)
     : executionOwner === TASK_EXECUTION_OWNERS.TELEGRAM ? "Telegram CLI" : "Внешний Claude CLI";
-  const conflictText = conflictKind === "activity-unknown"
-    ? "Claude оставил незавершённый транскрипт, но давно не записывал новые события. Нельзя надёжно определить, продолжает ли работать внешний процесс."
-    : `Выбранная задача уже выполняется через ${runtime}.`;
+  const conflictText = conflictKind === "repository"
+    ? `Задача «${conflictTask?.taskTitle ?? "Без названия"}» уже работает с тем же Git-репозиторием через ${runtime}. Параллельная запись может смешать изменения.`
+    : conflictKind === "activity-unknown"
+      ? "Claude оставил незавершённый транскрипт, но давно не записывал новые события. Нельзя надёжно определить, продолжает ли работать внешний процесс."
+      : `Выбранная задача уже выполняется через ${runtime}.`;
   const message = await sendMessageTo(target.chatId,
     `${conflictText} Новое сообщение сохранено и не потеряно.`
       + `${preview ? `\n\n${preview.slice(0, 700)}` : ""}\n\nЧто сделать?`,
@@ -2384,6 +2421,7 @@ async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton =
 async function startTurn(input, temporaryFiles = [], {
   forceSpeechButton = false,
   target = null,
+  allowRepositoryConflict = false,
   allowUnknownExternalActivity = false,
 } = {}) {
   target ??= {
@@ -2408,6 +2446,19 @@ async function startTurn(input, temporaryFiles = [], {
         ? "activity-unknown"
         : "task-running",
     });
+  }
+  if (!allowRepositoryConflict) {
+    const repositoryConflict = await activeRepositoryConflict(target);
+    if (repositoryConflict) {
+      return deferConflictingInput(input, temporaryFiles, {
+        forceSpeechButton,
+        executionOwner: repositoryConflict.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL,
+        target,
+        allowForce: true,
+        conflictKind: "repository",
+        conflictTask: repositoryConflict,
+      });
+    }
   }
   if (target.provider === "codex" && catalogEntryIsSelected(target, selectedTask())) {
     try {
@@ -2464,7 +2515,8 @@ const deferredInputController = new DeferredInputController({
     ? { state: "active" }
     : await taskExternalActivity(target);
     return Boolean(taskRuns.forTask(target)
-      || externalActivity.state !== "inactive");
+      || externalActivity.state !== "inactive"
+      || await activeRepositoryConflict(target));
   },
   start: async (item) => {
     const target = {
@@ -3799,6 +3851,7 @@ async function dispatchTelegramCallback(callback, route) {
             reasoningId: item.reasoningId,
             collaborationMode: item.collaborationMode,
           },
+          allowRepositoryConflict: item.conflictKind === "repository",
           allowUnknownExternalActivity: item.conflictKind === "activity-unknown",
         });
         if (outcome?.deferred) throw new Error("условие безопасного запуска всё ещё не выполнено");

@@ -73,6 +73,10 @@ export function samePath(left, right) {
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
+export function repositoryWriteGuardEnabled(raw = {}) {
+  return raw.guardConcurrentRepositoryWrites === true;
+}
+
 export function pathInsideOrSame(child, parent) {
   const relative = path.relative(path.resolve(parent), path.resolve(child));
   return !relative || (!relative.startsWith("..") && !path.isAbsolute(relative));
@@ -219,6 +223,7 @@ export async function loadConfig() {
     projects,
     showProjectButton: raw.showProjectButton !== false,
     showTaskProject: raw.showTaskProject !== false,
+    guardConcurrentRepositoryWrites: repositoryWriteGuardEnabled(raw),
     provider,
     telegramApiBaseUrl: httpBaseUrl(
       process.env.TELEGRAM_API_BASE_URL ?? raw.telegramApiBaseUrl ?? "https://api.telegram.org",
