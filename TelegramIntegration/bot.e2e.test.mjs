@@ -351,8 +351,22 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("[slow] обычное завершение");
-  const normalFinal = await telegram.waitForText("Готово: [slow] обычное завершение", { after: mark });
+  const normalProgress = await telegram.waitForText(
+    "Проверяю сценарий: [slow] обычное завершение",
+    { after: mark },
+  );
+  const normalProgressId = normalProgress.result.message_id;
+  const normalFinal = await telegram.waitForText("Готово: [slow] обычное завершение", {
+    after: mark,
+    timeoutMs: 12_000,
+  });
+  assert.match(normalFinal.body.text, /^✅ Codex · /);
+  assert.match(normalFinal.body.text, /\n🧵 /);
+  assert.match(normalFinal.body.text, /\n⚙ Integration App Server/);
   assert.match(normalFinal.body.text, /За задачу:/);
+  await telegram.waitForCall("deleteMessage", (call) => (
+    call.body.message_id === normalProgressId
+  ), { after: mark });
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0, "normal turn completion");
   mark = telegram.calls.length;
   telegram.pushMessage("/diff");
@@ -551,6 +565,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     /За задачу:/,
     "a managed Codex turn completed after bot restart must retain its token signature",
   );
+  assert.match(restoredFinal.body.text, /^✅ Codex · /);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 1,
     "cancelling the selected parallel task only");
 
@@ -849,6 +864,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     1,
     "an update already fetched beside /restart must be handled exactly once by the replacement",
   );
+  await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0,
+    "post-restart turn completion");
 
   mark = telegram.calls.length;
   telegram.pushMessage("/archive");

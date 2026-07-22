@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   codexFinalTurnAnswer,
+  codexTurnHasExplicitFinalAnswer,
   claudeTranscriptHistory,
   codexThreadHistory,
   displayUserPrompt,
@@ -22,6 +23,14 @@ test("completed Codex history shows only the final answer", () => {
   assert.equal(codexFinalTurnAnswer({
     items: [{ type: "agentMessage", phase: "final_answer", text: "Финальный ответ." }],
   }), "Финальный ответ.");
+  assert.equal(codexTurnHasExplicitFinalAnswer({
+    status: "interrupted",
+    items: [{ type: "agentMessage", phase: "final_answer", text: "Финальный ответ." }],
+  }), true);
+  assert.equal(codexTurnHasExplicitFinalAnswer({
+    status: "interrupted",
+    items: [{ type: "agentMessage", phase: "commentary", text: "Промежуточно." }],
+  }), false);
   assert.equal(exchange.answer, "Финальный ответ.");
 });
 

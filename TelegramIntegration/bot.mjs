@@ -91,6 +91,7 @@ import {
 } from "./task-runs.mjs";
 import {
   codexFinalTurnAnswer,
+  codexTurnHasExplicitFinalAnswer,
   codexTurnAnswer,
   listClaudeSessionSnapshots,
   readClaudeSessionSnapshot,
@@ -740,7 +741,7 @@ async function sendRunLongMessage(run, text, {
   reliable = false,
   deliveryGroupId = randomUUID(),
 } = {}) {
-  const value = `🧵 ${runTaskTitle(run)}\n\n${String(text)}`;
+  const value = `${runProgressHeading(run, true)}\n\n${String(text)}`;
   const speechId = mediaController.rememberSpeechText(speechText, forceSpeechButton);
   let queued = false;
   let sequence = 0;
@@ -764,6 +765,27 @@ async function sendRunLongMessage(run, text, {
     sequence += 1;
   }
   return { queued, groupId: deliveryGroupId, nextSequence: sequence };
+}
+
+async function clearFinishedRunProgressMessages(run) {
+  const messageIds = [...new Set(run?.finishedProgressMessageIds ?? [])]
+    .filter(Number.isSafeInteger);
+  run.finishedProgressMessageIds = [];
+  if (!messageIds.length) return;
+  for (const messageId of messageIds) {
+    await telegram("deleteMessage", {
+      chat_id: run.chatId,
+      message_id: messageId,
+    }).catch((error) => {
+      console.warn(`Cannot remove completed progress message ${messageId}:`, error.message);
+    });
+  }
+  await removeMessageBindings(
+    config.dataDir,
+    (binding) => binding.chatId === run.chatId && messageIds.includes(binding.messageId),
+  ).catch((error) => {
+    console.warn("Cannot remove completed progress bindings:", error.message);
+  });
 }
 
 async function safelyDeliverRunMessage(run, delivery, description = "сообщение задачи") {
@@ -801,6 +823,7 @@ async function finalizeRunDelivery(run, {
       }),
       description,
     );
+    if (finalDelivery) await clearFinishedRunProgressMessages(run);
   }
   if (includeDiff && run.latestDiff) {
     await safelyDeliverRunMessage(
@@ -884,6 +907,16 @@ function trackTurnTokenUsage(params) {
   const delta = tokenUsageDelta(current, previous, params.tokenUsage?.last);
   tracker.usage = addTokenUsage(tracker.usage, delta);
   tracker.reported = true;
+}
+
+function consumeTurnTokenSummary(turnId) {
+  const tracker = turnTokenUsage.get(turnId);
+  turnTokenUsage.delete(turnId);
+  return tracker?.reported ? formatTurnTokenUsage(tracker) : "";
+}
+
+function appendTokenSummary(answer, tokenSummary) {
+  return tokenSummary ? `${answer}\n\n${tokenSummary}` : answer;
 }
 
 function rememberCodexTaskSettings(id = isCodex() ? threadId : null) {
@@ -2099,13 +2132,30 @@ function progressHeartbeatState(run, now = Date.now()) {
 }
 
 function renderProgress(run, done = false) {
+  const heading = runProgressHeading(run, done);
+  const parts = [heading, run?.progressStage || "Выполняется…"];
+  if (done) return parts.join("\n\n").slice(0, TELEGRAM_LIMIT);
+  const heartbeat = formatProgressHeartbeat(run);
+  if (heartbeat) parts.push(heartbeat);
+  if (run?.progressReasoning.trim()) {
+    const reasoning = run.progressReasoning.trim();
+    parts.push(`💭 ${reasoning.length > 900 ? `…${reasoning.slice(-900)}` : reasoning}`);
+  }
+  if (run?.responseText.trim()) {
+    const answer = run.responseText.trim();
+    parts.push(`✍️ Ответ формируется:\n${answer.length > 2400 ? `…${answer.slice(-2400)}` : answer}`);
+  }
+  return parts.join("\n\n").slice(0, TELEGRAM_LIMIT);
+}
+
+function runProgressHeading(run, done = false) {
   const fallbackModel = run?.provider === "claude"
     ? CLAUDE_MODEL_LABELS[claudeModel]
     : codexModelLabel(codexModel);
   const fallbackReasoning = CODEX_REASONING_LABELS[
     run?.provider === "claude" ? claudeReasoningEffort : codexReasoningEffort
   ];
-  const heading = formatProgressHeading({
+  return formatProgressHeading({
     done,
     provider: run?.provider === "claude" ? "Claude Code" : "Codex",
     model: run?.observer ? run.model || null : run?.model ?? fallbackModel,
@@ -2122,19 +2172,6 @@ function renderProgress(run, done = false) {
     task: runTaskTitle(run),
     project: config.showProjectButton ? runProject(run).name : null,
   });
-  const parts = [heading, run?.progressStage || "Выполняется…"];
-  if (done) return parts.join("\n\n").slice(0, TELEGRAM_LIMIT);
-  const heartbeat = formatProgressHeartbeat(run);
-  if (heartbeat) parts.push(heartbeat);
-  if (run?.progressReasoning.trim()) {
-    const reasoning = run.progressReasoning.trim();
-    parts.push(`💭 ${reasoning.length > 900 ? `…${reasoning.slice(-900)}` : reasoning}`);
-  }
-  if (run?.responseText.trim()) {
-    const answer = run.responseText.trim();
-    parts.push(`✍️ Ответ формируется:\n${answer.length > 2400 ? `…${answer.slice(-2400)}` : answer}`);
-  }
-  return parts.join("\n\n").slice(0, TELEGRAM_LIMIT);
 }
 
 function scheduleProgressUpdate(run, delayMs = 1500) {
@@ -2146,6 +2183,11 @@ async function flushProgressUpdate(run, done = false) {
 }
 
 async function finishProgress(run, stage) {
+  const completedMessageIds = [...run?.progressMessageIds ?? []];
+  run.finishedProgressMessageIds = [...new Set([
+    ...(run.finishedProgressMessageIds ?? []),
+    ...completedMessageIds,
+  ])];
   return taskProgress.finish(run, stage);
 }
 
@@ -2849,8 +2891,7 @@ async function handleCodexMessage(message) {
     }
     run.status = "finishing";
     const completedTurnId = eventTurnId ?? run.turnId;
-    const tokenSummary = formatTurnTokenUsage(turnTokenUsage.get(completedTurnId));
-    turnTokenUsage.delete(completedTurnId);
+    const tokenSummary = consumeTurnTokenSummary(completedTurnId);
     const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
     turnTemporaryFiles.delete(completedTurnId);
     const forceSpeechButton = turnSpeechButtons.get(completedTurnId) ?? false;
@@ -2864,7 +2905,7 @@ async function handleCodexMessage(message) {
     await finishProgress(run, error || status === "failed" ? `Задача завершилась с ошибкой: ${error ?? status}` : "Задача завершена.");
     await finalizeRunDelivery(run, {
       answer,
-      message: `${answer}\n\n${tokenSummary}`,
+      message: appendTokenSummary(answer, tokenSummary),
       forceSpeechButton,
       includeDiff: true,
       description: "финальный ответ Codex",
@@ -2915,6 +2956,7 @@ function codexTurnSnapshot(turn, threadStatus = null) {
   const items = Array.isArray(turn?.items) ? turn.items : [];
   const lastItem = items.at(-1);
   const answer = recoveredCodexAnswer(turn);
+  const hasExplicitFinalAnswer = codexTurnHasExplicitFinalAnswer(turn);
   const waitingOnApproval = codexThreadWaitingOnApproval(threadStatus);
   return {
     answer,
@@ -2927,7 +2969,7 @@ function codexTurnSnapshot(turn, threadStatus = null) {
       ? waitingOnApproval
         ? "🔐 Ожидается подтверждение разрешений."
         : describeCodexItem(lastItem, false)
-      : turn?.status === "completed"
+      : turn?.status === "completed" || hasExplicitFinalAnswer
         ? "Задача завершена."
         : `Задача остановлена: ${turn?.status ?? "неизвестно"}.`,
   };
@@ -3076,8 +3118,7 @@ async function finishManagedCodexSnapshot(run, snapshot) {
   if (taskRuns.forTask(run) !== run || run.status !== "running") return;
   run.status = "finishing";
   const completedTurnId = run.turnId;
-  const tokenSummary = formatTurnTokenUsage(turnTokenUsage.get(completedTurnId));
-  turnTokenUsage.delete(completedTurnId);
+  const tokenSummary = consumeTurnTokenSummary(completedTurnId);
   const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
   turnTemporaryFiles.delete(completedTurnId);
   const forceSpeechButton = turnSpeechButtons.get(completedTurnId) ?? false;
@@ -3421,12 +3462,12 @@ async function recoverTaskRun(run) {
     || run.responseText.trim()
     || turn.error?.message
     || `Сохранённый запуск завершён со статусом ${turn.status}.`;
-  const tokenSummary = formatTurnTokenUsage(turnTokenUsage.get(run.turnId));
-  turnTokenUsage.delete(run.turnId);
-  await finishProgress(run, turn.status === "completed" ? "Задача завершена." : `Задача остановлена: ${turn.status}.`);
+  const tokenSummary = consumeTurnTokenSummary(run.turnId);
+  const recoveredAsCompleted = turn.status === "completed" || codexTurnHasExplicitFinalAnswer(turn);
+  await finishProgress(run, recoveredAsCompleted ? "Задача завершена." : `Задача остановлена: ${turn.status}.`);
   await finalizeRunDelivery(run, {
     answer,
-    message: `${answer}\n\n${tokenSummary}`,
+    message: appendTokenSummary(answer, tokenSummary),
     description: "восстановленный ответ",
   });
 }

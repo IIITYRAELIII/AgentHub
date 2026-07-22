@@ -4,9 +4,10 @@ import path from "node:path";
 import {
   claudeTranscriptHistory,
   codexFinalTurnAnswer,
+  codexTurnHasExplicitFinalAnswer,
 } from "./task-history.mjs";
 
-export { codexFinalTurnAnswer };
+export { codexFinalTurnAnswer, codexTurnHasExplicitFinalAnswer };
 
 const MAX_TRANSCRIPT_TAIL = 4 * 1024 * 1024;
 const MAX_CATALOG_TRANSCRIPT_TAIL = 512 * 1024;

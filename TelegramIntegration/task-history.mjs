@@ -29,6 +29,14 @@ export function codexFinalTurnAnswer(turn) {
   return String(explicitFinal?.text ?? messages.at(-1)?.text ?? "").trim();
 }
 
+export function codexTurnHasExplicitFinalAnswer(turn) {
+  return (turn?.items ?? []).some((item) => (
+    item?.type === "agentMessage"
+      && String(item.text ?? "").trim()
+      && ["final", "final_answer", "finalAnswer"].includes(String(item.phase ?? ""))
+  ));
+}
+
 export function codexThreadHistory(turns) {
   return (Array.isArray(turns) ? turns : []).flatMap((turn) => {
     const items = Array.isArray(turn?.items) ? turn.items : [];
