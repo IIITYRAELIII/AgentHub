@@ -11,7 +11,7 @@ async function withTempDir(run) {
   try {
     return await run(directory);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 });
   }
 }
 

@@ -59,6 +59,29 @@ test("deployRuntime publishes an atomic release without tests or local config", 
   await assert.rejects(readFile(path.join(runtimeRoot, "releases", "release-1", "bot.mjs"), "utf8"), /ENOENT/);
 });
 
+test("deployRuntime keeps a locked old release without failing the published pointer", async () => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-2" });
+  const warnings = [];
+  await deployRuntime({
+    sourceRoot,
+    runtimeRoot,
+    releaseId: "release-3",
+    removeRelease: async (target) => {
+      const error = new Error("locked by running bot");
+      error.code = "EBUSY";
+      throw error;
+    },
+    onPruneWarning: (error, target) => warnings.push({ error, target }),
+  });
+  const pointer = JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8"));
+  assert.equal(pointer.current, "release-3");
+  assert.equal(pointer.previous, "release-2");
+  assert.equal(warnings.length, 1);
+  assert.match(await readFile(path.join(runtimeRoot, "releases", "release-1", "bot.mjs"), "utf8"), /ready/);
+});
+
 test("runtime config and data are external, activation is explicit and rollback is atomic", async () => {
   const { sourceRoot, runtimeRoot } = await fixture();
   await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });

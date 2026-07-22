@@ -88,10 +88,19 @@ function newReleaseId(now = new Date()) {
   return `${now.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${randomUUID().slice(0, 8)}`;
 }
 
-async function pruneRuntimeReleases(layout, keep) {
+async function pruneRuntimeReleases(layout, keep, {
+  removeRelease = (target) => rm(target, { recursive: true, force: true }),
+  onWarning = (error, target) => console.warn(`Cannot prune runtime release ${target}: ${error.message}`),
+} = {}) {
   for (const entry of await readdir(layout.releasesDir, { withFileTypes: true })) {
     if (!entry.isDirectory() || keep.has(entry.name)) continue;
-    await rm(path.join(layout.releasesDir, entry.name), { recursive: true, force: true });
+    const target = path.join(layout.releasesDir, entry.name);
+    try {
+      await removeRelease(target);
+    } catch (error) {
+      if (!["EBUSY", "EPERM", "EACCES"].includes(error?.code)) throw error;
+      onWarning(error, target);
+    }
   }
 }
 
@@ -99,6 +108,8 @@ export async function deployRuntime({
   sourceRoot = SOURCE_ROOT,
   runtimeRoot = defaultRuntimeRoot(),
   releaseId = newReleaseId(),
+  removeRelease,
+  onPruneWarning,
 } = {}) {
   const layout = runtimeLayout(runtimeRoot);
   const releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId);
@@ -137,7 +148,11 @@ export async function deployRuntime({
       await cp(path.join(sourceRoot, "runtime-launch.sh"), layout.launcherFile, { force: true });
       await chmod(layout.launcherFile, 0o700);
     }
-    await pruneRuntimeReleases(layout, new Set([pointer.current, pointer.previous].filter(Boolean)));
+    await pruneRuntimeReleases(
+      layout,
+      new Set([pointer.current, pointer.previous].filter(Boolean)),
+      { removeRelease, onWarning: onPruneWarning },
+    );
     return { layout, releaseId, releaseRoot };
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
