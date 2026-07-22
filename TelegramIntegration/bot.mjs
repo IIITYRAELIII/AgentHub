@@ -150,6 +150,7 @@ import { parseTaskViewCallbackData, taskViewCallbackData } from "./task-view-cal
 import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "./codex-invocation.mjs";
 import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
 import { TaskProgressController } from "./task-progress-controller.mjs";
+import { TaskObserverController } from "./task-observer-controller.mjs";
 
 const config = await loadConfig();
 const defaultDataDirectory = path.join(INTEGRATION_ROOT, "data");
@@ -2199,10 +2200,7 @@ async function completeRun(run) {
   for (const [key, approval] of pendingApprovals) {
     if (approval.runId === run.id) pendingApprovals.delete(key);
   }
-  if (run.observerTimer) {
-    clearTimeout(run.observerTimer);
-    run.observerTimer = null;
-  }
+  taskObserver.pause(run);
   claudeRunController.pause(run);
   taskRuns.remove(run);
   invalidateTaskCatalog();
@@ -3166,48 +3164,32 @@ async function finishManagedCodexSnapshot(run, snapshot) {
   });
 }
 
-function scheduleObservedRun(run) {
-  if ((!run?.observer && run?.provider !== "codex")
-    || run.observerTimer
-    || taskRuns.forTask(run) !== run) return;
-  const delayMs = run.observer === true
+const taskObserver = new TaskObserverController({
+  canObserve: (run) => Boolean(
+    (run?.observer || run?.provider === "codex")
+      && taskRuns.forTask(run) === run,
+  ),
+  readSnapshot: (run) => run.provider === "codex"
+    ? readCodexTaskSnapshot(run)
+    : readClaudeTaskSnapshot(run.threadId),
+  pollDelay: (run) => run.observer === true
     ? EXTERNAL_TASK_POLL_INTERVAL_MS
-    : MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS;
-  run.observerTimer = setTimeout(() => {
-    run.observerTimer = null;
-    void pollObservedRun(run);
-  }, delayMs);
-}
-
-async function pollObservedRun(run) {
-  if ((!run?.observer && run?.provider !== "codex") || taskRuns.forTask(run) !== run) return;
-  try {
-    const snapshot = run.provider === "codex"
-      ? await readCodexTaskSnapshot(run)
-      : await readClaudeTaskSnapshot(run.threadId);
-    if (snapshot?.activityUnknown) {
-      await finishUnknownObservedClaudeRun(run, snapshot);
-      return;
-    }
-    if (!snapshot) {
-      setProgressStage(run, "Ожидаю данные текущего хода…");
-      if (markProgressHeartbeat(run, "waiting")) scheduleProgressUpdate(run);
-      scheduleObservedRun(run);
-      return;
-    }
-    if (snapshot.turnId && snapshot.turnId !== run.turnId) {
-      const previousTurnId = run.turnId;
-      run.turnId = snapshot.turnId;
-      taskRuns.reindex(run, { turnId: previousTurnId });
-    }
-    if (snapshot.completed) {
-      if (run.observer) {
-        await finishObservedRun(run, snapshot);
-      } else {
-        await finishManagedCodexSnapshot(run, snapshot);
-      }
-      return;
-    }
+    : MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS,
+  onUnknown: finishUnknownObservedClaudeRun,
+  onMissing: async (run) => {
+    setProgressStage(run, "Ожидаю данные текущего хода…");
+    if (markProgressHeartbeat(run, "waiting")) scheduleProgressUpdate(run);
+  },
+  onTurnChanged: async (run, turnId) => {
+    const previousTurnId = run.turnId;
+    run.turnId = turnId;
+    taskRuns.reindex(run, { turnId: previousTurnId });
+  },
+  onCompleted: async (run, snapshot) => {
+    if (run.observer) await finishObservedRun(run, snapshot);
+    else await finishManagedCodexSnapshot(run, snapshot);
+  },
+  onActive: async (run, snapshot) => {
     run.executionOwner = run.observer === true
       ? snapshot.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
       : TASK_EXECUTION_OWNERS.TELEGRAM;
@@ -3236,13 +3218,20 @@ async function pollObservedRun(run) {
       answer: snapshot.answer,
       activityAtMs: snapshot.activityAtMs ?? snapshot.modifiedAtMs ?? Date.now(),
     });
-    scheduleObservedRun(run);
-  } catch (error) {
+  },
+  onError: async (run, error) => {
     console.error(`Cannot observe ${run.provider} task ${run.threadId}:`, error.message);
     setProgressStage(run, `Не удалось обновить ход: ${error.message}`);
     if (markProgressHeartbeat(run, "error")) scheduleProgressUpdate(run);
-    scheduleObservedRun(run);
-  }
+  },
+});
+
+function scheduleObservedRun(run) {
+  taskObserver.schedule(run);
+}
+
+async function pollObservedRun(run) {
+  return taskObserver.poll(run);
 }
 
 function scheduleSelectedTaskWatch(delayMs = SELECTED_TASK_WATCH_INTERVAL_MS) {
@@ -5137,9 +5126,8 @@ function stopRuntimeTimers() {
   queueTimers.clear();
   for (const run of taskRuns.values()) {
     taskProgress.pause(run);
-    if (run.observerTimer) clearTimeout(run.observerTimer);
+    taskObserver.pause(run);
     claudeRunController.pause(run);
-    run.observerTimer = null;
   }
 }
 

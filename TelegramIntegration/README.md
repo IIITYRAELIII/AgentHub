@@ -296,6 +296,8 @@ Lifecycle Claude CLI вынесен в `claude-run-controller.mjs`: контро
 
 Lifecycle progress-карточки вынесен в `task-progress-controller.mjs`: модуль владеет отложенным созданием, последовательными edit, heartbeat-активностью, повтором временных ошибок, удалением старых bindings и финальным закрытием карточки. Формат текста и фактический Telegram transport передаются ему как зависимости.
 
+Polling уже подключённого внешнего или восстанавливаемого хода вынесен в `task-observer-controller.mjs`. Контроллер управляет таймером и переходами `active/completed/unknown/error`, а после каждого асинхронного чтения повторно проверяет, что run всё ещё актуален; поэтому поздний snapshot не применяется к завершённой или переключённой задаче.
+
 `npm run doctor` не ограничивается поиском файлов: он проверяет Telegram Bot API через `getMe`, запускает изолированный Codex App Server и выполняет `initialize + thread/list`, а также проверяет авторизованную сессию Claude через `/usage`. Все live-probes имеют таймаут и не создают новых задач.
 
 В Windows также доступны `start.ps1` и `install-autostart.ps1`. После активации они направляют запуск во внешний runtime; PowerShell используется только как launcher и для интеграции с автозапуском Windows, сам бот работает в Node.js.
