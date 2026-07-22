@@ -149,7 +149,9 @@ namespace TyraelIntegrationDesktop
         private static readonly Brush BorderLineBrush = Brush("#26394C");
 
         private readonly IntegrationClient client = new IntegrationClient();
+        private readonly JavaScriptSerializer json = new JavaScriptSerializer();
         private readonly DispatcherTimer timer;
+        private readonly DispatcherTimer draftTimer;
         private readonly ListBox taskList = new ListBox();
         private readonly TextBlock connectionText = new TextBlock();
         private readonly TextBlock taskTitle = new TextBlock();
@@ -160,10 +162,15 @@ namespace TyraelIntegrationDesktop
         private readonly Button historyButton = new Button();
         private readonly TextBlock footer = new TextBlock();
         private readonly Dictionary<string, TaskItem> tasks = new Dictionary<string, TaskItem>();
+        private readonly Dictionary<string, string> drafts = new Dictionary<string, string>();
         private readonly List<Dictionary<string, object>> historyItems = new List<Dictionary<string, object>>();
+        private readonly string draftFile = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Tyrael", "TelegramIntegration", "DesktopApp", "drafts.json");
         private bool refreshRunning;
         private bool historyLoading;
         private bool selectionInternal;
+        private bool restoringDraft;
         private string selectedKey;
         private string historyKey;
         private int? historyBefore;
@@ -181,18 +188,36 @@ namespace TyraelIntegrationDesktop
             FontFamily = new FontFamily("Segoe UI");
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             Content = BuildLayout();
+            LoadDrafts();
 
             timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             timer.Tick += async delegate { await RefreshAsync(false); };
+            draftTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
+            draftTimer.Tick += delegate
+            {
+                draftTimer.Stop();
+                SaveCurrentDraft();
+            };
             Loaded += async delegate
             {
                 timer.Start();
                 await RefreshAsync(true);
             };
-            Closed += delegate { timer.Stop(); };
+            Closed += delegate
+            {
+                timer.Stop();
+                draftTimer.Stop();
+                SaveCurrentDraft();
+            };
             taskList.SelectionChanged += async delegate { await SelectTaskAsync(); };
             sendButton.Click += async delegate { await SendAsync(); };
             historyButton.Click += async delegate { await LoadHistoryAsync(true); };
+            input.TextChanged += delegate
+            {
+                if (restoringDraft) return;
+                draftTimer.Stop();
+                draftTimer.Start();
+            };
             input.PreviewKeyDown += async delegate(object sender, KeyEventArgs args)
             {
                 if (args.Key == System.Windows.Input.Key.Enter && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
@@ -218,7 +243,7 @@ namespace TyraelIntegrationDesktop
             headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var brand = new StackPanel();
             brand.Children.Add(new TextBlock { Text = "TYRAEL INTEGRATION", FontSize = 19, FontWeight = FontWeights.SemiBold, Foreground = TextBrush });
-            brand.Children.Add(new TextBlock { Text = "Telegram и Windows · один App Server", FontSize = 12, Foreground = MutedBrush, Margin = new Thickness(0, 3, 0, 0) });
+            brand.Children.Add(new TextBlock { Text = "Telegram и Windows · один Integration Server", FontSize = 12, Foreground = MutedBrush, Margin = new Thickness(0, 3, 0, 0) });
             connectionText.Text = "Подключение…";
             connectionText.Foreground = MutedBrush;
             connectionText.VerticalAlignment = VerticalAlignment.Center;
@@ -432,8 +457,73 @@ namespace TyraelIntegrationDesktop
             if (selected == null) selected = previous;
             if (selected != null)
             {
-                selectedKey = Key(selected.Provider, selected.ThreadId);
+                var nextKey = Key(selected.Provider, selected.ThreadId);
+                if (nextKey != selectedKey)
+                {
+                    SaveCurrentDraft();
+                    selectedKey = nextKey;
+                    RestoreCurrentDraft();
+                }
                 RenderTask(selected);
+            }
+        }
+
+        private void LoadDrafts()
+        {
+            try
+            {
+                if (!File.Exists(draftFile)) return;
+                var loaded = json.Deserialize<Dictionary<string, string>>(File.ReadAllText(draftFile, Encoding.UTF8));
+                if (loaded == null) return;
+                foreach (var item in loaded) drafts[item.Key] = item.Value ?? "";
+            }
+            catch
+            {
+                // A damaged optional draft file must never prevent the client from starting.
+            }
+        }
+
+        private void SaveCurrentDraft()
+        {
+            if (String.IsNullOrWhiteSpace(selectedKey)) return;
+            var value = input.Text ?? "";
+            if (String.IsNullOrEmpty(value)) drafts.Remove(selectedKey);
+            else drafts[selectedKey] = value;
+            try
+            {
+                var directory = Path.GetDirectoryName(draftFile);
+                Directory.CreateDirectory(directory);
+                var temporary = draftFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                File.WriteAllText(temporary, json.Serialize(drafts), new UTF8Encoding(false));
+                if (File.Exists(draftFile))
+                {
+                    try { File.Replace(temporary, draftFile, null); }
+                    catch
+                    {
+                        File.Copy(temporary, draftFile, true);
+                        File.Delete(temporary);
+                    }
+                }
+                else File.Move(temporary, draftFile);
+            }
+            catch (Exception error)
+            {
+                footer.Text = "Не удалось сохранить черновик: " + error.Message;
+            }
+        }
+
+        private void RestoreCurrentDraft()
+        {
+            string value;
+            restoringDraft = true;
+            try
+            {
+                input.Text = drafts.TryGetValue(selectedKey, out value) ? value : "";
+                input.CaretIndex = input.Text.Length;
+            }
+            finally
+            {
+                restoringDraft = false;
             }
         }
 
@@ -538,13 +628,13 @@ namespace TyraelIntegrationDesktop
             if (String.IsNullOrWhiteSpace(key) || !tasks.TryGetValue(key, out item) || key == selectedKey) return;
             try
             {
+                SaveCurrentDraft();
                 footer.Text = "Переключаю задачу…";
                 var snapshot = await client.CallAsync("select-task", new Dictionary<string, object>
                 {
                     { "provider", item.Provider },
                     { "threadId", item.ThreadId }
                 });
-                selectedKey = key;
                 historyKey = null;
                 historyBefore = null;
                 historyItems.Clear();
@@ -574,8 +664,9 @@ namespace TyraelIntegrationDesktop
                     return;
                 }
                 input.Clear();
+                SaveCurrentDraft();
                 historyKey = null;
-                footer.Text = "Сообщение принято Integration App Server";
+                footer.Text = "Сообщение принято Integration Server";
                 await RefreshAsync(false);
             }
             catch (Exception error)
@@ -592,6 +683,7 @@ namespace TyraelIntegrationDesktop
         {
             try
             {
+                SaveCurrentDraft();
                 footer.Text = "Создаю задачу " + provider + "…";
                 var snapshot = await client.CallAsync("new-task", new Dictionary<string, object> { { "provider", provider } });
                 historyKey = null;
