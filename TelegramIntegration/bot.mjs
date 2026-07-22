@@ -84,8 +84,10 @@ import {
   retainProgressMessageAfterEditError,
 } from "./progress-heartbeat.mjs";
 import {
+  isRecentDuplicateTaskAnswer,
   serializableTaskRun,
   shouldAutoObserveTask,
+  shouldDeliverObservedCompletion,
   TaskDismissalRegistry,
   TaskRunRegistry,
   taskRunKey,
@@ -882,6 +884,10 @@ function rememberLastTaskMessage(run, text) {
 
 function savedLastTaskMessage(task) {
   return lastTaskMessages.get(taskRunKey(task))?.text ?? "";
+}
+
+function savedLastTaskMessageRecord(task) {
+  return lastTaskMessages.get(taskRunKey(task)) ?? null;
 }
 
 function trackTurnTokenUsage(params) {
@@ -3215,6 +3221,20 @@ async function handleCodexMessage(message) {
       return;
     }
     if (run.status !== "running") return;
+    if (run.observer === true) {
+      const completedTurnId = eventTurnId ?? run.turnId;
+      turnTokenUsage.delete(completedTurnId);
+      turnSpeechButtons.delete(completedTurnId);
+      const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
+      turnTemporaryFiles.delete(completedTurnId);
+      await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
+      await finishObservedRun(run, {
+        ...codexTurnSnapshot(params.turn),
+        turnId: completedTurnId,
+        executionOwner: run.executionOwner,
+      });
+      return;
+    }
     run.status = "finishing";
     const completedTurnId = eventTurnId ?? run.turnId;
     const tokenSummary = formatTurnTokenUsage(turnTokenUsage.get(completedTurnId));
@@ -3429,11 +3449,16 @@ async function finishObservedRun(run, snapshot) {
   const answer = String(snapshot?.answer ?? "").trim()
     || savedLastTaskMessage(run)
     || "Ход завершён без текстового ответа.";
+  const deliver = shouldDeliverObservedCompletion(
+    run,
+    answer,
+    savedLastTaskMessageRecord(run),
+  );
   await refreshTaskDiff(run);
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
   await finalizeRunDelivery(run, {
     answer,
-    deliver: true,
+    deliver,
     includeDiff: true,
     description: "финальный ответ наблюдаемого хода",
   });
@@ -3601,7 +3626,8 @@ async function watchSelectedTask() {
         && previousTurnId !== snapshot.turnId
         && answer
         && taskRunKey(currentTask) === key
-        && !dismissedExternalTasks.has(task);
+        && !dismissedExternalTasks.has(task)
+        && !isRecentDuplicateTaskAnswer(savedLastTaskMessageRecord(task), answer);
       if (missedCompletedTurn) {
         const completedRun = {
           ...task,

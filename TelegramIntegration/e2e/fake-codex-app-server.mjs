@@ -121,6 +121,24 @@ function finishTurn(thread, turn, { status = "completed", answer = null } = {}) 
   });
 }
 
+function finishTurnWithoutNewAnswer(thread, turn) {
+  if (turn.status !== "inProgress") return;
+  turn.status = "completed";
+  if (thread.externalRolloutPath && turn.external === true) {
+    appendFileSync(thread.externalRolloutPath, `${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: turn.id },
+    })}\n`, "utf8");
+  }
+  thread.updatedAt = Math.floor(Date.now() / 1000);
+  save();
+  notify("turn/completed", {
+    threadId: thread.id,
+    turn: structuredClone(turn),
+  });
+}
+
 function startTurn(params) {
   const thread = threadById(params.threadId);
   if (!thread) throw new Error(`thread not found: ${params.threadId}`);
@@ -191,6 +209,7 @@ function startExternalTurn(thread, {
   prompt,
   answer,
   delayMs,
+  initialAnswer = "",
 }) {
   if (thread.turns.some((turn) => turn.status === "inProgress")) return;
   const turn = {
@@ -198,7 +217,10 @@ function startExternalTurn(thread, {
     status: "inProgress",
     prompt,
     external: true,
-    items: [{ type: "userMessage", content: [{ type: "text", text: prompt }] }],
+    items: [
+      { type: "userMessage", content: [{ type: "text", text: prompt }] },
+      ...(initialAnswer ? [{ type: "agentMessage", text: initialAnswer, phase: "commentary" }] : []),
+    ],
   };
   thread.turns.push(turn);
   thread.preview = prompt;
@@ -244,6 +266,15 @@ function startShortExternalTurn(thread) {
     prompt: "[external-short] VSCode task",
     answer: "Короткий внешний VSCode-ход завершён",
     delayMs: 100,
+  });
+}
+
+function startUnchangedExternalTurn(thread) {
+  startExternalTurn(thread, {
+    prompt: "[external-unchanged] VSCode task",
+    answer: "Накопленный внешний текст",
+    initialAnswer: "Накопленный внешний текст",
+    delayMs: 20_000,
   });
 }
 
@@ -318,6 +349,7 @@ function handleRequest(message) {
       thread.name = params.name;
       if (params.name === "__E2E_EXTERNAL_HOLD__") startSilentExternalTurn(thread);
       if (params.name === "__E2E_EXTERNAL_SHORT__") startShortExternalTurn(thread);
+      if (params.name === "__E2E_EXTERNAL_UNCHANGED__") startUnchangedExternalTurn(thread);
       if (params.name === "__E2E_EXTERNAL_RELEASE__") {
         const externalTurn = thread.turns.find((turn) => (
           turn.status === "inProgress" && turn.prompt === "[external-hold] VSCode task"
@@ -326,6 +358,12 @@ function handleRequest(message) {
           status: "completed",
           answer: "Внешний ход завершён тестом",
         });
+      }
+      if (params.name === "__E2E_EXTERNAL_UNCHANGED_RELEASE__") {
+        const externalTurn = thread.turns.find((turn) => (
+          turn.status === "inProgress" && turn.prompt === "[external-unchanged] VSCode task"
+        ));
+        if (externalTurn) finishTurnWithoutNewAnswer(thread, externalTurn);
       }
     }
     save();

@@ -130,6 +130,24 @@ export function updateObservedResponse(run, answer) {
   return run.observedResponseChanged === true;
 }
 
+export function isRecentDuplicateTaskAnswer(previousMessage, answer, {
+  now = Date.now(),
+  windowMs = 30 * 60_000,
+} = {}) {
+  const value = String(answer ?? "").trim();
+  const previous = String(previousMessage?.text ?? "").trim();
+  if (!value || value !== previous) return false;
+  const updatedAtMs = Date.parse(previousMessage?.updatedAt ?? "");
+  return Number.isFinite(updatedAtMs)
+    && now >= updatedAtMs
+    && now - updatedAtMs <= windowMs;
+}
+
+export function shouldDeliverObservedCompletion(run, answer, previousMessage, options = {}) {
+  if (isRecentDuplicateTaskAnswer(previousMessage, answer, options)) return false;
+  return run?.displayRequested === true || run?.observedResponseChanged === true;
+}
+
 export function updateTaskRunTitle(run, title) {
   const value = String(title ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
   if (!run || !value || run.taskTitle === value) return false;

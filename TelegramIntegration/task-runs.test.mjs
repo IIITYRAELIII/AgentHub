@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  isRecentDuplicateTaskAnswer,
   TaskDismissalRegistry,
   TaskRunRegistry,
   serializableTaskRun,
   shouldAutoObserveTask,
+  shouldDeliverObservedCompletion,
   taskRunKey,
   updateObservedResponse,
   updateTaskRunTitle,
@@ -149,6 +151,25 @@ test("an observed task delivers only an answer that changed after attachment", (
   assert.equal(updateObservedResponse(observed, "Старый ответ"), false);
   assert.equal(updateObservedResponse(observed, "Новый итоговый ответ"), true);
   assert.equal(updateObservedResponse(observed, "Старый ответ"), true);
+});
+
+test("an unchanged or recently repeated observed completion is not delivered again", () => {
+  const now = Date.parse("2026-07-22T12:57:00.000Z");
+  const unchanged = run({
+    displayRequested: false,
+    observedResponseChanged: false,
+  });
+  assert.equal(shouldDeliverObservedCompletion(unchanged, "Накопленный ответ", null, { now }), false);
+
+  const changed = run({
+    displayRequested: false,
+    observedResponseChanged: true,
+  });
+  assert.equal(shouldDeliverObservedCompletion(changed, "Новый ответ", null, { now }), true);
+  const previous = { text: "Новый ответ", updatedAt: "2026-07-22T12:47:00.000Z" };
+  assert.equal(isRecentDuplicateTaskAnswer(previous, "Новый ответ", { now }), true);
+  assert.equal(shouldDeliverObservedCompletion(changed, "Новый ответ", previous, { now }), false);
+  assert.equal(shouldDeliverObservedCompletion(changed, "Другой ответ", previous, { now }), true);
 });
 
 test("a restored task run adopts the current title of the same thread", () => {

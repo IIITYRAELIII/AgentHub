@@ -39,7 +39,7 @@ function multipartField(call, name) {
   return call.rawBody.slice(valueStart, valueEnd < 0 ? undefined : valueEnd);
 }
 
-test("bot routes tasks, live views, queues, parallel turns, failures and restarts headlessly", { timeout: 60_000 }, async (t) => {
+test("bot routes tasks, live views, queues, parallel turns, failures and restarts headlessly", { timeout: 75_000 }, async (t) => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-bot-e2e-"));
   const dataDir = path.join(temporaryRoot, "data");
   const projectRoot = path.join(temporaryRoot, "project");
@@ -752,6 +752,35 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   });
   assert.equal((await readJson(statePath)).activeRuns.length, 0,
     "a short external turn completed between polls must still deliver its final answer");
+
+  mark = telegram.calls.length;
+  telegram.pushMessage("/rename __E2E_EXTERNAL_UNCHANGED__");
+  await telegram.waitForText("Название закреплено", { after: mark });
+  await waitFor(async () => {
+    const runs = (await readJson(statePath)).activeRuns;
+    return runs.length === 1 && runs[0].observer === true ? runs[0] : null;
+  }, "external task with an existing answer is observed", 8_000);
+  const botBeforeUnchangedRestore = bot;
+  botBeforeUnchangedRestore.kill("SIGTERM");
+  await new Promise((resolve) => botBeforeUnchangedRestore.once("exit", resolve));
+  await startBot();
+  await waitFor(async () => {
+    const runs = (await readJson(statePath)).activeRuns;
+    return runs.length === 1 && runs[0].observer === true ? runs[0] : null;
+  }, "unchanged external task restored after restart", 8_000);
+
+  mark = telegram.calls.length;
+  telegram.pushMessage("/rename __E2E_EXTERNAL_UNCHANGED_RELEASE__");
+  await telegram.waitForText("Название закреплено", { after: mark });
+  await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0,
+    "unchanged external observer completes", 8_000);
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  const repeatedUnchangedAnswers = telegram.calls.slice(mark).filter((call) => (
+    call.method === "sendMessage"
+      && String(call.body.text ?? "").includes("Накопленный внешний текст")
+  ));
+  assert.deepEqual(repeatedUnchangedAnswers, [],
+    "restored observer must not resend an unchanged accumulated answer");
 
   mark = telegram.calls.length;
   telegram.pushMessage("/new");
