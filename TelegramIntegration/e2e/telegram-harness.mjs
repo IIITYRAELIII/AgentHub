@@ -13,8 +13,20 @@ export function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export function e2eTimeoutMs(timeoutMs, {
+  platform = process.platform,
+  environment = process.env,
+} = {}) {
+  const configured = Number(environment.TELEGRAM_E2E_TIMEOUT_MULTIPLIER);
+  const multiplier = Number.isFinite(configured) && configured > 0
+    ? configured
+    : platform === "win32" ? 2 : 1;
+  return Math.ceil(timeoutMs * multiplier);
+}
+
 export async function waitFor(check, description, timeoutMs = 8_000) {
-  const deadline = Date.now() + timeoutMs;
+  const effectiveTimeoutMs = e2eTimeoutMs(timeoutMs);
+  const deadline = Date.now() + effectiveTimeoutMs;
   let lastError = null;
   while (Date.now() < deadline) {
     try {
@@ -25,7 +37,10 @@ export async function waitFor(check, description, timeoutMs = 8_000) {
     }
     await delay(25);
   }
-  throw new Error(`Timeout waiting for ${description}${lastError ? `: ${lastError.message}` : ""}`);
+  throw new Error(
+    `Timeout waiting for ${description} after ${effectiveTimeoutMs} ms`
+      + `${lastError ? `: ${lastError.message}` : ""}`,
+  );
 }
 
 export async function readJson(filePath) {
@@ -199,24 +214,46 @@ export class FakeTelegramApi {
     return this.calls.slice(index).filter((call) => !method || call.method === method);
   }
 
+  recentCalls(after = 0, limit = 12) {
+    return this.calls.slice(after).slice(-limit).map((call) => ({
+      method: call.method,
+      text: String(call.body?.text ?? call.body?.caption ?? "").slice(0, 240),
+      completed: Boolean(call.result),
+    }));
+  }
+
   async waitForCall(method, predicate = () => true, { after = 0, timeoutMs = 8_000 } = {}) {
-    return waitFor(
-      () => this.callsAfter(after, method).find((call) => predicate(call)),
-      `${method} call`,
-      timeoutMs,
-    );
+    try {
+      return await waitFor(
+        () => this.callsAfter(after, method).find((call) => predicate(call)),
+        `${method} call`,
+        timeoutMs,
+      );
+    } catch (error) {
+      throw new Error(
+        `${error.message}\nRecent Telegram calls:\n${JSON.stringify(this.recentCalls(after), null, 2)}`,
+        { cause: error },
+      );
+    }
   }
 
   // Живой прогресс приходит правкой карточки, а не новым сообщением.
   async waitForVisibleText(fragment, { after = 0, timeoutMs = 8_000 } = {}) {
-    return waitFor(
-      () => this.calls.slice(after).find((call) => (
-        (call.method === "sendMessage" || call.method === "editMessageText")
-          && String(call.body.text ?? "").includes(fragment)
-      )),
-      `visible text «${fragment}»`,
-      timeoutMs,
-    );
+    try {
+      return await waitFor(
+        () => this.calls.slice(after).find((call) => (
+          (call.method === "sendMessage" || call.method === "editMessageText")
+            && String(call.body.text ?? "").includes(fragment)
+        )),
+        `visible text «${fragment}»`,
+        timeoutMs,
+      );
+    } catch (error) {
+      throw new Error(
+        `${error.message}\nRecent Telegram calls:\n${JSON.stringify(this.recentCalls(after), null, 2)}`,
+        { cause: error },
+      );
+    }
   }
 
   async waitForText(fragment, options = {}) {

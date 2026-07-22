@@ -286,7 +286,7 @@ npm run doctor
 npm start
 ```
 
-`npm run test:e2e` выполняет полностью локальную CLI-приёмку настоящего `bot.mjs` через fake Telegram Bot API, Codex App Server и Claude CLI. Рабочий бот, токен, задачи и `data` не затрагиваются. Полное покрытие сценариев перечислено в [E2E_TEST_MATRIX.md](E2E_TEST_MATRIX.md). `telegramApiBaseUrl`, `codexExecutableArgs`, `claudeExecutableArgs` и `progressStartDelayMs` служат безопасными точками подмены для стенда; производственные значения по умолчанию остаются прежними.
+`npm run test:e2e` выполняет полностью локальную CLI-приёмку настоящего `bot.mjs` через fake Telegram Bot API, Codex App Server и Claude CLI. Рабочий бот, токен, задачи и `data` не затрагиваются. Полное покрытие сценариев перечислено в [E2E_TEST_MATRIX.md](E2E_TEST_MATRIX.md). `telegramApiBaseUrl`, `codexExecutableArgs`, `claudeExecutableArgs` и `progressStartDelayMs` служат безопасными точками подмены для стенда; производственные значения по умолчанию остаются прежними. На Windows процессные ожидания автоматически получают двукратный запас для нестабильного времени запуска дочерних процессов; это не меняет проверяемые лимиты отзывчивости. Для диагностики медленной машины множитель можно переопределить через `TELEGRAM_E2E_TIMEOUT_MULTIPLIER`.
 
 `npm run check` одним процессом синтаксически разбирает все `.mjs` модули без их исполнения. `npm test` проверяет модули функционально, а `npm run test:e2e` — жизненный цикл отдельного процесса бота.
 
