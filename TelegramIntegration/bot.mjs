@@ -126,7 +126,6 @@ import {
   claudeSnapshotActivityAtMs,
   claudeSnapshotActivityState,
   codexCatalogEntry,
-  codexObservedExecutionOwner,
   codexThreadRunning,
   mergeTaskCatalog,
   parseTaskCatalogCallback,
@@ -140,6 +139,7 @@ import {
   taskExecutionRuntimeShortLabel,
   taskCatalogCallback,
 } from "./task-catalog.mjs";
+import { resolveCodexObservedExecutionOwner } from "./codex-runtime-owner.mjs";
 import { botReplacementInvocation } from "./runtime-restart.mjs";
 import { RuntimeCommandServer } from "./runtime-command.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
@@ -1570,7 +1570,10 @@ async function buildTaskCatalog() {
         });
         const executionOwner = existingRun?.observer === false
           ? TASK_EXECUTION_OWNERS.TELEGRAM
-          : codexObservedExecutionOwner(activity);
+          : await resolveCodexObservedExecutionOwner(activity, {
+            rolloutPath: thread.path,
+            integrationPid: codex?.pid,
+          });
         const entry = codexCatalogEntry(thread, project, {
           rolloutRunning,
           executionOwner: rolloutRunning ? executionOwner : null,
@@ -2466,7 +2469,10 @@ async function taskExternalActivity(target) {
       const activity = await readCodexRolloutActivity(result.thread?.path);
       return {
         state: codexThreadRunning(result.thread, { rolloutRunning: activity.running }) ? "active" : "inactive",
-        executionOwner: codexObservedExecutionOwner(activity),
+        executionOwner: await resolveCodexObservedExecutionOwner(activity, {
+          rolloutPath: result.thread?.path,
+          integrationPid: codex?.pid,
+        }),
       };
     }
     const snapshot = await readClaudeTaskSnapshot(target.threadId);
@@ -3417,7 +3423,11 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
     model: activity.model,
     reasoningEffort: activity.reasoningEffort,
     executionOwner: run?.observer === true
-      ? codexObservedExecutionOwner(activity, turn.id)
+      ? await resolveCodexObservedExecutionOwner(activity, {
+        turnId: turn.id,
+        rolloutPath: result.thread?.path,
+        integrationPid: codex?.pid,
+      })
       : TASK_EXECUTION_OWNERS.TELEGRAM,
   };
   if (!snapshot.active && activity.activeTurnIds.includes(turn.id)) {

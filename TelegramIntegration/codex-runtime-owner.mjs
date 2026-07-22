@@ -1,0 +1,151 @@
+import { spawn } from "node:child_process";
+import path from "node:path";
+
+import {
+  codexObservedExecutionOwner,
+  TASK_EXECUTION_OWNERS,
+} from "./task-catalog.mjs";
+
+const OWNER_PROBE_CACHE_MS = 5_000;
+const OWNER_PROBE_TIMEOUT_MS = 5_000;
+const ownerProbeCache = new Map();
+const ownerProbeInFlight = new Map();
+
+function normalizedProcessName(value) {
+  return String(value ?? "").trim().toLowerCase().replace(/\.exe$/, "");
+}
+
+function processAncestry(processId, byId) {
+  const result = [];
+  const seen = new Set();
+  let current = Number(processId);
+  while (Number.isInteger(current) && current > 0 && !seen.has(current) && result.length < 32) {
+    seen.add(current);
+    const process = byId.get(current);
+    if (!process) break;
+    result.push(process);
+    current = Number(process.parentProcessId);
+  }
+  return result;
+}
+
+export function classifyCodexRolloutProcesses(snapshot, { integrationPid = null } = {}) {
+  const roots = [...new Set((snapshot?.rootProcessIds ?? [])
+    .map(Number)
+    .filter((value) => Number.isInteger(value) && value > 0 && value !== Number(integrationPid)))];
+  const byId = new Map((snapshot?.processes ?? []).map((process) => [
+    Number(process.processId),
+    process,
+  ]));
+  if (!roots.length) return TASK_EXECUTION_OWNERS.EXTERNAL;
+
+  const owners = roots.map((processId) => {
+    const ancestry = processAncestry(processId, byId);
+    const names = ancestry.map((process) => normalizedProcessName(process.name));
+    if (names.includes("code")) return TASK_EXECUTION_OWNERS.VSCODE;
+    if (names.some((name) => name === "chatgpt" || name.includes("openai") || name === "codex desktop")) {
+      return TASK_EXECUTION_OWNERS.DESKTOP;
+    }
+    const root = ancestry[0];
+    const rootName = normalizedProcessName(root?.name);
+    const commandLine = String(root?.commandLine ?? "").toLowerCase();
+    if (rootName === "codex" && !/(^|\s)app-server(?:\s|$)/.test(commandLine)) {
+      return TASK_EXECUTION_OWNERS.CLI;
+    }
+    return TASK_EXECUTION_OWNERS.EXTERNAL;
+  });
+  const distinct = new Set(owners);
+  return distinct.size === 1 && !distinct.has(TASK_EXECUTION_OWNERS.EXTERNAL)
+    ? owners[0]
+    : TASK_EXECUTION_OWNERS.EXTERNAL;
+}
+
+function powershellExecutable(environment = process.env) {
+  const systemRoot = environment.SystemRoot || environment.WINDIR || "C:\\Windows";
+  return path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
+function readWindowsRolloutProcesses(rolloutPath, {
+  integrationPid = null,
+  spawnImpl = spawn,
+  environment = process.env,
+  timeoutMs = OWNER_PROBE_TIMEOUT_MS,
+} = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawnImpl(powershellExecutable(environment), [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy", "Bypass",
+      "-File", path.join(import.meta.dirname, "codex-rollout-processes.ps1"),
+      "-RolloutPath", rolloutPath,
+      "-IntegrationPid", String(Number(integrationPid) || 0),
+    ], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: environment,
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("Codex runtime owner probe timed out"));
+    }, timeoutMs);
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => { stdout += chunk; });
+    child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `Codex runtime owner probe exited with ${code}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout.trim() || "{}"));
+      } catch (error) {
+        reject(new Error(`Invalid Codex runtime owner probe output: ${error.message}`));
+      }
+    });
+  });
+}
+
+export async function resolveCodexObservedExecutionOwner(activity = {}, {
+  turnId = null,
+  rolloutPath = null,
+  integrationPid = null,
+  platform = process.platform,
+  nowMs = Date.now(),
+  probe = readWindowsRolloutProcesses,
+} = {}) {
+  const direct = codexObservedExecutionOwner(activity, turnId);
+  if (direct === TASK_EXECUTION_OWNERS.VSCODE || !activity.running) return direct;
+  if (platform !== "win32" || !rolloutPath) return TASK_EXECUTION_OWNERS.EXTERNAL;
+
+  const cacheKey = `${path.resolve(rolloutPath)}\0${Number(integrationPid) || 0}`;
+  const cached = ownerProbeCache.get(cacheKey);
+  if (cached && nowMs - cached.checkedAtMs < OWNER_PROBE_CACHE_MS) return cached.owner;
+  if (ownerProbeInFlight.has(cacheKey)) return ownerProbeInFlight.get(cacheKey);
+  const pending = (async () => {
+    let owner = TASK_EXECUTION_OWNERS.EXTERNAL;
+    try {
+      const snapshot = await probe(rolloutPath, { integrationPid });
+      owner = classifyCodexRolloutProcesses(snapshot, { integrationPid });
+    } catch {
+      owner = TASK_EXECUTION_OWNERS.EXTERNAL;
+    }
+    ownerProbeCache.set(cacheKey, { owner, checkedAtMs: nowMs });
+    if (ownerProbeCache.size > 100) ownerProbeCache.delete(ownerProbeCache.keys().next().value);
+    return owner;
+  })();
+  ownerProbeInFlight.set(cacheKey, pending);
+  try {
+    return await pending;
+  } finally {
+    ownerProbeInFlight.delete(cacheKey);
+  }
+}
