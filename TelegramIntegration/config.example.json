@@ -75,6 +75,7 @@
   "logMaxBytes": 5242880,
   "logMaxFiles": 5,
   "deliveryRetryIntervalSeconds": 15,
+  "deferredInputTtlHours": 168,
   "progressStartDelayMs": 3000,
   "dataDir": "data"
 }

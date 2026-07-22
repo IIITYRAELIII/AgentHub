@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
-import { runTtsWorkerRequest } from "./tts-worker-client.mjs";
+import { PersistentTtsWorkerClient, runTtsWorkerRequest } from "./tts-worker-client.mjs";
 
 function nodeWorker(source) {
   return () => spawn(process.execPath, ["-e", source], {
@@ -64,4 +64,27 @@ test("one-shot TTS worker returns its structured synthesis error", async () => {
     request: { id: "request-3", text: "Тест", outputPath: "voice.ogg" },
     timeoutMs: 1000,
   }), /ошибка модели/);
+});
+
+test("persistent TTS client reuses one worker for consecutive requests", async () => {
+  const source = String.raw`
+    const readline = require("node:readline");
+    const lines = readline.createInterface({ input: process.stdin });
+    lines.on("line", line => {
+      const request = JSON.parse(line);
+      console.log(JSON.stringify({ id: request.id, ok: true, outputPath: request.outputPath }));
+    });
+  `;
+  let spawns = 0;
+  const client = new PersistentTtsWorkerClient({
+    spawnWorker: () => { spawns += 1; return nodeWorker(source)(); },
+    timeoutMs: 1000,
+  });
+  try {
+    assert.equal(await client.request({ id: "one", outputPath: "one.ogg" }), "one.ogg");
+    assert.equal(await client.request({ id: "two", outputPath: "two.ogg" }), "two.ogg");
+    assert.equal(spawns, 1);
+  } finally {
+    client.close();
+  }
 });

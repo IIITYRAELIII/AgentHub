@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -131,4 +131,87 @@ test("PersistentDeliveryOutbox keeps group sequence and supersedes stale progres
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("a delayed delivery does not block an unrelated ready message", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-hol-"));
+  let now = 1_000;
+  let failFirst = true;
+  const delivered = [];
+  const outbox = new PersistentDeliveryOutbox({
+    directoryPath: root,
+    now: () => now,
+    deliver: async (_method, body) => {
+      if (body.text === "first" && failFirst) {
+        failFirst = false;
+        const error = new Error("retry later");
+        error.retryable = true;
+        throw error;
+      }
+      delivered.push(body.text);
+      return {};
+    },
+  });
+  await outbox.enqueue({ method: "sendMessage", body: { text: "first" } });
+  await outbox.flush();
+  await outbox.enqueue({ method: "sendMessage", body: { text: "second" } });
+  await outbox.flush();
+  assert.deepEqual(delivered, ["second"]);
+  assert.equal(outbox.size, 1);
+});
+
+test("a delayed group preserves its own order without blocking another group", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-group-hol-"));
+  let now = 1_000;
+  const delivered = [];
+  const outbox = new PersistentDeliveryOutbox({
+    directoryPath: root,
+    now: () => now,
+    deliver: async (_method, body) => {
+      if (body.text === "a1") {
+        const error = new Error("retry later");
+        error.retryable = true;
+        throw error;
+      }
+      delivered.push(body.text);
+      return {};
+    },
+  });
+  await outbox.enqueue({ method: "sendMessage", body: { text: "a1" }, groupId: "a", sequence: 0 });
+  await outbox.enqueue({ method: "sendMessage", body: { text: "a2" }, groupId: "a", sequence: 1 });
+  await outbox.enqueue({ method: "sendMessage", body: { text: "b1" }, groupId: "b", sequence: 0 });
+  await outbox.flush();
+  assert.deepEqual(delivered, ["b1"]);
+  assert.equal(outbox.size, 2);
+});
+
+test("a corrupt outbox record is quarantined without blocking valid delivery", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-corrupt-"));
+  await writeFile(path.join(root, "0000000000000-bad.json"), "{broken", "utf8");
+  const delivered = [];
+  const outbox = new PersistentDeliveryOutbox({
+    directoryPath: root,
+    deliver: async (_method, body) => {
+      delivered.push(body.text);
+      return {};
+    },
+  });
+  await outbox.enqueue({ method: "sendMessage", body: { text: "valid" } });
+  await outbox.flush();
+  assert.deepEqual(delivered, ["valid"]);
+  assert.equal((await readdir(root)).some((name) => name.includes(".invalid-")), true);
+});
+
+test("a permanently rejected delivery is retained for diagnosis", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-permanent-"));
+  const outbox = new PersistentDeliveryOutbox({
+    directoryPath: root,
+    now: () => 3_000,
+    deliver: async () => { throw new Error("bad request"); },
+  });
+  await outbox.enqueue({ method: "sendMessage", body: { text: "final answer" } });
+  assert.deepEqual(await outbox.flush(), { delivered: 0, remaining: 0 });
+  const names = await readdir(root);
+  assert.equal(names.some((name) => name.includes(".json.failed-3000")), true);
+  assert.match(await readFile(path.join(root, names[0]), "utf8"), /final answer/);
 });

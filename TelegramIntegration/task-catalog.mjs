@@ -1,11 +1,26 @@
 import { createReadStream } from "node:fs";
 import path from "node:path";
-import { stat } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 
 export const CLAUDE_ACTIVE_FRESHNESS_MS = 30 * 60 * 1000;
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
+const CODEX_ROLLOUT_TAIL_BYTES = 64 * 1024 * 1024;
+const CODEX_ROLLOUT_LINE_BYTES = 4 * 1024 * 1024;
 const LEGACY_TURN_ID = "__legacy__";
 const codexActivityCache = new Map();
+
+async function rolloutSuffix(filePath, size, maximumBytes = 256) {
+  const length = Math.min(Math.max(0, Number(size) || 0), maximumBytes);
+  if (!length) return "";
+  const handle = await open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, size - length);
+    return buffer.subarray(0, bytesRead).toString("base64");
+  } finally {
+    await handle.close();
+  }
+}
 
 export const TASK_EXECUTION_OWNERS = Object.freeze({
   TELEGRAM: "telegram",
@@ -84,8 +99,30 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
   const lifecycle = entry?.type === "event_msg"
     && ["task_started", "task_complete", "turn_aborted"].includes(entry.payload?.type);
   const turnId = codexEntryTurnId(entry) || (lifecycle ? LEGACY_TURN_ID : "");
-  if ((entry?.type === "turn_context" || entry?.payload?.type === "task_started") && turnId) {
+  if ((entry?.type === "turn_context" || lifecycle) && turnId) {
     metadata.latestTurnId = turnId;
+  }
+  if (entry?.type === "event_msg" && entry.payload?.type === "agent_message") {
+    const messageTurnId = turnId || metadata.latestTurnId
+      || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+    const message = String(entry.payload?.message ?? "").trim();
+    if (messageTurnId && message) {
+      metadata.latestMessages.set(messageTurnId, message.slice(-40_000));
+      while (metadata.latestMessages.size > 8) {
+        metadata.latestMessages.delete(metadata.latestMessages.keys().next().value);
+      }
+    } else if (message) {
+      metadata.unscopedLatestMessage = message.slice(-40_000);
+    }
+  }
+  if (entry?.type === "event_msg" && entry.payload?.type === "task_complete" && turnId) {
+    const message = String(entry.payload?.last_agent_message ?? "").trim();
+    if (message) {
+      metadata.finalMessages.set(turnId, message.slice(-40_000));
+      while (metadata.finalMessages.size > 8) {
+        metadata.finalMessages.delete(metadata.finalMessages.keys().next().value);
+      }
+    }
   }
   if (entry?.type === "event_msg" && entry.payload?.type === "user_message") {
     const messageTurnId = turnId || metadata.latestTurnId
@@ -128,6 +165,9 @@ export function parseCodexRolloutActivity(text, options = {}) {
     vscodeTurnIds: new Set(),
     model: "",
     reasoningEffort: "",
+    latestMessages: new Map(),
+    finalMessages: new Map(),
+    unscopedLatestMessage: "",
   };
   for (const line of String(text).split(/\r?\n/)) {
     if (!line) continue;
@@ -144,6 +184,10 @@ export function parseCodexRolloutActivity(text, options = {}) {
     }),
     model: metadata.model || null,
     reasoningEffort: metadata.reasoningEffort || null,
+    latestTurnId: metadata.latestTurnId || null,
+    latestMessages: Object.fromEntries(metadata.latestMessages),
+    finalMessages: Object.fromEntries(metadata.finalMessages),
+    unscopedLatestMessage: metadata.unscopedLatestMessage || null,
   };
 }
 
@@ -153,7 +197,12 @@ export function parseCodexRolloutRunning(text) {
 
 export async function readCodexRolloutActivity(
   rolloutPath,
-  { nowMs = Date.now(), freshnessMs = CODEX_ACTIVE_FRESHNESS_MS } = {},
+  {
+    nowMs = Date.now(),
+    freshnessMs = CODEX_ACTIVE_FRESHNESS_MS,
+    tailBytes = CODEX_ROLLOUT_TAIL_BYTES,
+    maximumLineBytes = CODEX_ROLLOUT_LINE_BYTES,
+  } = {},
 ) {
   const normalized = String(rolloutPath ?? "").trim();
   if (!normalized) {
@@ -164,6 +213,10 @@ export async function readCodexRolloutActivity(
       lastActivityAtMs: null,
       model: null,
       reasoningEffort: null,
+      latestTurnId: null,
+    latestMessages: {},
+    finalMessages: {},
+    unscopedLatestMessage: null,
     };
   }
   let info;
@@ -178,6 +231,10 @@ export async function readCodexRolloutActivity(
         lastActivityAtMs: null,
         model: null,
         reasoningEffort: null,
+        latestTurnId: null,
+        latestMessages: {},
+        finalMessages: {},
+        unscopedLatestMessage: null,
       };
     }
     throw error;
@@ -191,6 +248,10 @@ export async function readCodexRolloutActivity(
       lastActivityAtMs: info.mtimeMs,
       model: cached?.model || null,
       reasoningEffort: cached?.reasoningEffort || null,
+      latestTurnId: cached?.latestTurnId || null,
+      latestMessages: Object.fromEntries(cached?.latestMessages ?? []),
+      finalMessages: Object.fromEntries(cached?.finalMessages ?? []),
+      unscopedLatestMessage: cached?.unscopedLatestMessage || null,
     };
   }
   const cached = codexActivityCache.get(normalized);
@@ -208,10 +269,18 @@ export async function readCodexRolloutActivity(
       lastActivityAtMs: info.mtimeMs,
       model: cached.model || null,
       reasoningEffort: cached.reasoningEffort || null,
+      latestTurnId: cached.latestTurnId || null,
+      latestMessages: Object.fromEntries(cached.latestMessages ?? []),
+      finalMessages: Object.fromEntries(cached.finalMessages ?? []),
+      unscopedLatestMessage: cached.unscopedLatestMessage || null,
     };
   }
 
-  const appendOnly = cached && info.size > cached.size;
+  const appendOnly = Boolean(
+    cached
+      && info.size > cached.size
+      && cached.suffix === await rolloutSuffix(normalized, cached.size),
+  );
   const activeTurnIds = new Set(appendOnly ? cached.activeTurnIds : []);
   const lastSeenAtByTurnId = new Map(appendOnly ? cached.lastSeenAtByTurnId : []);
   const metadata = {
@@ -219,28 +288,52 @@ export async function readCodexRolloutActivity(
     vscodeTurnIds: new Set(appendOnly ? cached.vscodeTurnIds ?? [] : []),
     model: appendOnly ? String(cached.model ?? "") : "",
     reasoningEffort: appendOnly ? String(cached.reasoningEffort ?? "") : "",
+    latestMessages: new Map(appendOnly ? cached.latestMessages ?? [] : []),
+    finalMessages: new Map(appendOnly ? cached.finalMessages ?? [] : []),
+    unscopedLatestMessage: appendOnly ? String(cached.unscopedLatestMessage ?? "") : "",
   };
+  const start = appendOnly
+    ? cached.size
+    : Math.max(0, info.size - Math.max(1, Number(tailBytes) || CODEX_ROLLOUT_TAIL_BYTES));
   const input = createReadStream(normalized, {
     encoding: "utf8",
-    ...(appendOnly ? { start: cached.size } : {}),
+    ...(start > 0 ? { start } : {}),
     end: Math.max(0, info.size - 1),
   });
   let text = appendOnly ? String(cached.trailingText ?? "") : "";
-  try {
-    for await (const chunk of input) text += chunk;
-  } finally {
-    input.destroy();
-  }
-  const lines = text.split(/\r?\n/);
-  let trailingText = lines.pop() ?? "";
-  for (const line of lines) {
-    if (!line) continue;
+  let discardUntilNewline = appendOnly
+    ? cached.discardUntilNewline === true
+    : start > 0;
+  const observeLine = (line) => {
+    if (!line) return;
     try {
       observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, JSON.parse(line));
     } catch {
       // Ignore an unrelated complete JSONL line.
     }
+  };
+  try {
+    for await (const chunk of input) {
+      text += chunk;
+      let newline;
+      while ((newline = text.indexOf("\n")) >= 0) {
+        const line = text.slice(0, newline).replace(/\r$/, "");
+        text = text.slice(newline + 1);
+        if (discardUntilNewline) {
+          discardUntilNewline = false;
+          continue;
+        }
+        observeLine(line);
+      }
+      if (Buffer.byteLength(text, "utf8") > maximumLineBytes) {
+        text = "";
+        discardUntilNewline = true;
+      }
+    }
+  } finally {
+    input.destroy();
   }
+  let trailingText = discardUntilNewline ? "" : text;
   if (trailingText) {
     try {
       observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, JSON.parse(trailingText));
@@ -264,6 +357,11 @@ export async function readCodexRolloutActivity(
     vscodeTurnIds: [...metadata.vscodeTurnIds],
     model: metadata.model,
     reasoningEffort: metadata.reasoningEffort,
+    latestMessages: [...metadata.latestMessages],
+    finalMessages: [...metadata.finalMessages],
+    unscopedLatestMessage: metadata.unscopedLatestMessage,
+    discardUntilNewline,
+    suffix: await rolloutSuffix(normalized, info.size),
   });
   if (codexActivityCache.size > 200) codexActivityCache.delete(codexActivityCache.keys().next().value);
   return {
@@ -271,6 +369,10 @@ export async function readCodexRolloutActivity(
     lastActivityAtMs: info.mtimeMs,
     model: metadata.model || null,
     reasoningEffort: metadata.reasoningEffort || null,
+    latestTurnId: metadata.latestTurnId || null,
+    latestMessages: Object.fromEntries(metadata.latestMessages),
+    finalMessages: Object.fromEntries(metadata.finalMessages),
+    unscopedLatestMessage: metadata.unscopedLatestMessage || null,
   };
 }
 

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { MediaController } from "./media-controller.mjs";
+import { MediaController, runBoundedProcess } from "./media-controller.mjs";
 
 function controller(dataDir, overrides = {}) {
   return new MediaController({
@@ -40,4 +41,34 @@ test("speech button policy rejects disabled and short text", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "media-controller-policy-"));
   assert.equal(controller(dataDir).rememberSpeechText("abc"), null);
   assert.equal(controller(dataDir, { ttsEnabled: false }).rememberSpeechText("long enough"), null);
+});
+
+test("bounded media process stops its whole tree on excess output", async () => {
+  let stoppedPid = null;
+  await assert.rejects(runBoundedProcess({
+    spawnProcess: spawn,
+    command: process.execPath,
+    args: ["-e", "process.stdout.write('x'.repeat(10000)); setInterval(() => {}, 1000)"],
+    options: { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+    stopProcessTree: async (pid) => { stoppedPid = pid; process.kill(pid); },
+    timeoutMs: 5_000,
+    maxOutputBytes: 100,
+    timeoutMessage: "timeout",
+  }), /превысил/);
+  assert.equal(Number.isSafeInteger(stoppedPid), true);
+});
+
+test("bounded media process stops its whole tree on timeout", async () => {
+  let stoppedPid = null;
+  await assert.rejects(runBoundedProcess({
+    spawnProcess: spawn,
+    command: process.execPath,
+    args: ["-e", "setInterval(() => {}, 1000)"],
+    options: { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+    stopProcessTree: async (pid) => { stoppedPid = pid; process.kill(pid); },
+    timeoutMs: 30,
+    maxOutputBytes: 100,
+    timeoutMessage: "timeout",
+  }), /timeout/);
+  assert.equal(Number.isSafeInteger(stoppedPid), true);
 });

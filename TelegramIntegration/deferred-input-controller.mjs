@@ -8,6 +8,9 @@ export class DeferredInputController {
     updateMessage,
     pendingKeyboard,
     notifyReturned,
+    expire = async () => {},
+    maxAgeMs = 7 * 24 * 60 * 60 * 1000,
+    now = Date.now,
     retryDelayMs = 2_000,
     setTimeoutImpl = setTimeout,
     clearTimeoutImpl = clearTimeout,
@@ -20,6 +23,9 @@ export class DeferredInputController {
     this.updateMessage = updateMessage;
     this.pendingKeyboard = pendingKeyboard;
     this.notifyReturned = notifyReturned;
+    this.expire = expire;
+    this.maxAgeMs = maxAgeMs;
+    this.now = now;
     this.retryDelayMs = retryDelayMs;
     this.setTimeoutImpl = setTimeoutImpl;
     this.clearTimeoutImpl = clearTimeoutImpl;
@@ -38,6 +44,13 @@ export class DeferredInputController {
   async process(id) {
     const item = this.queuedInputs.get(id);
     if (!item) return;
+    const createdAt = Date.parse(String(item.createdAt ?? ""));
+    if (Number.isFinite(createdAt) && this.now() - createdAt >= this.maxAgeMs) {
+      this.queuedInputs.delete(id);
+      await this.expire(item);
+      await this.persist();
+      return;
+    }
     if (await this.isBlocked(item)) {
       this.schedule(item);
       return;

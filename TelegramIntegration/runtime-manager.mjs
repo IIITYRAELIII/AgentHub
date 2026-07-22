@@ -17,6 +17,7 @@ import { pathToFileURL } from "node:url";
 
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "./runtime-layout.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
+import { protectRuntimeConfig } from "./runtime-security.mjs";
 
 const SOURCE_ROOT = path.resolve(import.meta.dirname);
 const TOP_LEVEL_FILES = new Set([
@@ -166,7 +167,10 @@ export async function prepareRuntimeConfig({
   overwrite = false,
 } = {}) {
   const layout = runtimeLayout(runtimeRoot);
-  if (!overwrite && await exists(layout.configFile)) return layout.configFile;
+  if (!overwrite && await exists(layout.configFile)) {
+    await protectRuntimeConfig(layout.configFile);
+    return layout.configFile;
+  }
   const sourceConfig = path.join(sourceRoot, "config.json");
   const raw = JSON.parse(await readFile(sourceConfig, "utf8"));
   raw.dataDir = "data";
@@ -185,6 +189,7 @@ export async function prepareRuntimeConfig({
   raw.whisperModelDir = "data/models/whisper";
   raw.ttsCacheDir = "data/models/silero";
   await atomicJson(layout.configFile, raw);
+  await protectRuntimeConfig(layout.configFile);
   return layout.configFile;
 }
 

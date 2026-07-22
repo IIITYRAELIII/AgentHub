@@ -69,7 +69,15 @@ import {
 import {
   readCodexThreadTitleHistories,
   readCodexThreadTitleHistory,
+  parseArguments as parseSendMessageArguments,
+  resolveChatId as resolveNotificationChatId,
 } from "./send-message.mjs";
+import { parseArguments as parseSendImagesArguments } from "./send-images.mjs";
+import {
+  cleanRuntimeCallerEnvironment,
+  resolveAllowedNotificationCwd,
+  resolveAllowedNotificationPath,
+} from "./notification-security.mjs";
 import {
   formatProgressHeartbeat,
   markProgressHeartbeat,
@@ -113,6 +121,7 @@ import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
 import { SingleInstanceGuard } from "./instance-lock.mjs";
 import { BackgroundJobQueue } from "./background-job-queue.mjs";
 import { PersistentBackgroundJobStore } from "./background-job-store.mjs";
+import { FailedTelegramUpdateStore } from "./failed-update-store.mjs";
 import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "./claude-invocation.mjs";
 import {
   catalogEntryIsSelected,
@@ -136,6 +145,7 @@ import {
   directWindowsLauncherInvocation,
   launchReplacementAndWait,
 } from "./runtime-restart.mjs";
+import { restorePreviousBotAfterFailedReplacement } from "./restart-recovery.mjs";
 import { RuntimeCommandServer } from "./runtime-command.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import { MediaController } from "./media-controller.mjs";
@@ -205,6 +215,7 @@ const STATE_FILE = config.stateFile;
 const STATE_BACKUP_FILE = `${STATE_FILE}.bak`;
 const DELIVERY_OUTBOX_DIR = config.deliveryOutboxDir;
 const BACKGROUND_JOBS_DIR = path.join(config.dataDir, "background-jobs");
+const FAILED_UPDATES_DIR = path.join(config.dataDir, "failed-updates");
 const INSTANCE_LOCK_FILE = path.join(config.dataDir, "bot.lock");
 const PINNED_TASK_TITLES_FILE = path.join(config.dataDir, "pinned-task-titles.json");
 const TASK_SYNC_FILE = path.join(config.dataDir, "task-sync.json");
@@ -286,14 +297,32 @@ const runtimeCommandServer = new RuntimeCommandServer({
   runtimeRoot: runtimeCommandRoot,
   handler: async (request) => {
     const script = request.command === "send-message" ? "send-message.mjs" : "send-images.mjs";
+    const options = request.command === "send-message"
+      ? parseSendMessageArguments(request.args)
+      : parseSendImagesArguments(request.args);
+    resolveNotificationChatId(config, options.chatId);
+    await resolveAllowedNotificationCwd(request.cwd, {
+      roots: config.projects.map((project) => project.path),
+    });
+    if (request.command === "send-message" && options.messageFile) {
+      await resolveAllowedNotificationPath(options.messageFile, {
+        roots: config.projects.map((project) => project.path),
+        cwd: request.cwd,
+      });
+    }
+    if (request.command === "send-images") {
+      await Promise.all(options.files.map((file) => resolveAllowedNotificationPath(file, {
+        roots: config.projects.map((project) => project.path),
+        cwd: request.cwd,
+      })));
+    }
     const result = await spawnCapture(
       process.execPath,
       [path.join(import.meta.dirname, script), ...request.args],
       {
         cwd: request.cwd,
         env: {
-          ...process.env,
-          ...request.environment,
+          ...cleanRuntimeCallerEnvironment(process.env, request.environment),
           TELEGRAM_CODEX_CONFIG: config.configPath,
           TELEGRAM_INTEGRATION_DIRECT: "1",
         },
@@ -343,6 +372,8 @@ const backgroundJobStore = new PersistentBackgroundJobStore({
   directoryPath: BACKGROUND_JOBS_DIR,
   maxItems: MAX_BACKGROUND_MEDIA_JOBS + MAX_BACKGROUND_SPEECH_JOBS,
 });
+const failedUpdateStore = new FailedTelegramUpdateStore({ directoryPath: FAILED_UPDATES_DIR });
+await failedUpdateStore.load();
 const scheduledBackgroundJobIds = new Set();
 const backgroundMediaJobs = new BackgroundJobQueue({
   concurrency: 1,
@@ -481,7 +512,7 @@ const deliveryOutbox = new PersistentDeliveryOutbox({
     }
   },
   onPermanentFailure: async (item, error) => {
-    console.error(`Dropping permanent Telegram delivery ${item.id}:`, error.message);
+    console.error(`Quarantined permanent Telegram delivery ${item.id}:`, error.message);
   },
 });
 await deliveryOutbox.load();
@@ -743,11 +774,12 @@ async function sendRunLongMessage(run, text, {
   speechText = null,
   forceSpeechButton = false,
   reliable = false,
+  durable = false,
   deliveryGroupId = randomUUID(),
 } = {}) {
   const value = `${runProgressHeading(run, true)}\n\n${String(text)}`;
   const speechId = mediaController.rememberSpeechText(speechText, forceSpeechButton);
-  let queued = false;
+  let queued = durable;
   let sequence = 0;
   for (let start = 0; start < value.length; start += TELEGRAM_LIMIT) {
     const isLast = start + TELEGRAM_LIMIT >= value.length;
@@ -818,15 +850,15 @@ async function finalizeRunDelivery(run, {
   if (run?.turnId) setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(run), run.turnId, 500);
   let finalDelivery = null;
   if (deliver) {
-    finalDelivery = await safelyDeliverRunMessage(
-      run,
-      () => sendRunLongMessage(run, message, {
-        speechText,
-        forceSpeechButton,
-        reliable: true,
-      }),
-      description,
-    );
+    // A completed run must never disappear between remembering its answer and
+    // sending it to Telegram. Persist every final part in the outbox first;
+    // the run can then be closed safely even if Telegram is temporarily down.
+    finalDelivery = await sendRunLongMessage(run, message, {
+      speechText,
+      forceSpeechButton,
+      reliable: true,
+      durable: true,
+    });
     if (finalDelivery) await clearFinishedRunProgressMessages(run);
   }
   if (includeDiff && run.latestDiff) {
@@ -1141,6 +1173,15 @@ try {
   ].sort((left, right) => (
     (Date.parse(left.item.createdAt ?? "") || 0) - (Date.parse(right.item.createdAt ?? "") || 0)
   ));
+  const deferredCutoff = Date.now() - config.deferredInputTtlHours * 60 * 60 * 1000;
+  for (let index = restoredDeferred.length - 1; index >= 0; index -= 1) {
+    const entry = restoredDeferred[index];
+    const createdAt = Date.parse(String(entry.item.createdAt ?? ""));
+    if (!Number.isFinite(createdAt) || createdAt >= deferredCutoff) continue;
+    entry.collection.delete(entry.item.id);
+    restoredDeferred.splice(index, 1);
+    await Promise.all((entry.item.temporaryFiles ?? []).map((file) => unlink(file).catch(() => {})));
+  }
   while (restoredDeferred.length > MAX_DEFERRED_INPUTS) {
     const oldest = restoredDeferred.shift();
     oldest.collection.delete(oldest.item.id);
@@ -2271,7 +2312,10 @@ async function taskExternalActivity(target) {
         await startCodexAppServer();
         await initializeCodex({ attachSelectedThread: false });
       }
-      const result = await readCodexThread(target.threadId, { fresh: true });
+      const result = await readCodexThread(target.threadId, {
+        fresh: true,
+        includeTurns: false,
+      });
       const activity = await readCodexRolloutActivity(result.thread?.path);
       return {
         state: codexThreadRunning(result.thread, { rolloutRunning: activity.running }) ? "active" : "inactive",
@@ -2545,6 +2589,14 @@ const deferredInputController = new DeferredInputController({
     item.chatId,
     "Сообщение не потеряно и возвращено в сохранённые после ошибки запуска.",
   ),
+  expire: async (item) => {
+    await cleanupDeferredFiles(item);
+    await updateDeferredMessage(
+      item,
+      `⌛ Сохранённое сообщение для задачи «${item.taskTitle}» удалено: срок ожидания истёк.`,
+    );
+  },
+  maxAgeMs: config.deferredInputTtlHours * 60 * 60 * 1000,
 });
 
 function scheduleQueuedInput(item, delayMs = 2000) {
@@ -3032,6 +3084,10 @@ function updateObservedRun(run, snapshot) {
   const previousReasoning = run.progressReasoning;
   const previousStage = run.progressStage;
   const responseChanged = updateObservedResponse(run, snapshot?.answer);
+  if (run.provider === "codex" && !run.turnId && snapshot?.turnId) {
+    run.turnId = snapshot.turnId;
+    taskRuns.reindex(run);
+  }
   run.progressReasoning = String(snapshot?.reasoning ?? run.progressReasoning);
   run.progressStage = String(snapshot?.stage ?? run.progressStage);
   if (run.provider === "codex" && snapshot?.model) {
@@ -3051,9 +3107,47 @@ function updateObservedRun(run, snapshot) {
 }
 
 async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false } = {}) {
-  const result = threadResult ?? await readCodexThread(run.threadId, { fresh });
+  const result = threadResult ?? await readCodexThread(run.threadId, {
+    fresh,
+    includeTurns: false,
+  });
   const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
   const activity = await readCodexRolloutActivity(result.thread?.path);
+  if (!turns.length) {
+    const requestedTurnId = String(run.turnId ?? "").trim();
+    const activeTurnId = activity.activeTurnIds.includes(requestedTurnId)
+      ? requestedTurnId
+      : activity.activeTurnIds.at(-1) ?? null;
+    const turnId = activeTurnId || requestedTurnId || activity.latestTurnId;
+    const threadActive = result.thread?.status?.type === "active";
+    const active = Boolean(activeTurnId) || threadActive;
+    const latestAnswer = turnId
+      ? String(activity.latestMessages?.[turnId] ?? "").trim()
+      : String(activity.unscopedLatestMessage ?? "").trim();
+    const finalAnswer = turnId ? String(activity.finalMessages?.[turnId] ?? "").trim() : "";
+    return {
+      answer: active ? latestAnswer : finalAnswer,
+      finalAnswer,
+      reasoning: "",
+      completed: !active,
+      active,
+      waitingOnApproval: false,
+      stage: active
+        ? latestAnswer ? "Внешний ход выполняется…" : "Выполняется следующий этап…"
+        : finalAnswer ? "Задача завершена." : "Задача остановлена или неактивна.",
+      turnId,
+      activityAtMs: activity.lastActivityAtMs,
+      model: activity.model,
+      reasoningEffort: activity.reasoningEffort,
+      executionOwner: run?.observer === true
+        ? await resolveCodexObservedExecutionOwner(activity, {
+          turnId,
+          rolloutPath: result.thread?.path,
+          integrationPid: codexTransport.pid,
+        })
+        : TASK_EXECUTION_OWNERS.TELEGRAM,
+    };
+  }
   const turn = selectCodexTurn(turns, {
     requestedTurnId: run.turnId,
     rolloutActiveTurnIds: activity.activeTurnIds,
@@ -3705,6 +3799,7 @@ async function performRestart() {
     taskSyncStore.save(),
     deliveryOutbox.waitForWrites(),
     backgroundJobStore.waitForWrites(),
+    failedUpdateStore.waitForWrites(),
   ]);
   stopping = true;
   stopRuntimeTimers();
@@ -3732,7 +3827,30 @@ async function performRestart() {
     );
   } catch (error) {
     console.error("Cannot start replacement bot:", error.message);
-    process.exitCode = 1;
+    try {
+      await restorePreviousBotAfterFailedReplacement({
+        replacementError: error,
+        acquireLock: () => instanceGuard.acquire(),
+        startCommandServer: () => runtimeCommandServer.start(),
+        setStopping: (value) => { stopping = value; },
+        restoreProvider: async () => {
+          if (isCodex() || taskRuns.values().some((run) => run.provider === "codex")) {
+            await startCodexAppServer();
+            await initializeCodex({ attachSelectedThread: isCodex() });
+          }
+        },
+        recoverRuns: recoverActiveRuns,
+        updateMessage: (message) => updateRestartMessage(message).catch(() => {}),
+        clearRestartRequest: () => { restartRequest = null; },
+        saveState,
+        startTimers: startRuntimeTimers,
+        markReady: () => instanceGuard.markReady(),
+      });
+      return;
+    } catch (restoreError) {
+      console.error("Cannot restore the previous bot after failed replacement:", restoreError.message);
+      process.exitCode = 1;
+    }
   }
   // Процессы Claude намеренно переживают перезапуск: новый бот подхватит их
   // по сохранённому PID и файлу вывода.
@@ -4498,6 +4616,7 @@ const telegramPollingController = new TelegramPollingController({
   handleCallback: handleTelegramCallback,
   sendMessage: sendMessageTo,
   saveState,
+  preserveFailedUpdate: (update, error) => failedUpdateStore.add(update, error),
   afterUpdate: async () => {
     if (restartRequest && !restartRequest.waitingForRuns && !stopping) await performRestart();
   },
@@ -4599,6 +4718,12 @@ function stopRuntimeTimers() {
   }
 }
 
+function startRuntimeTimers() {
+  for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
+  scheduleDeliveryOutboxFlush(1_000);
+  scheduleSelectedTaskWatch(500);
+}
+
 async function shutdown(signal) {
   if (stopping) return;
   stopping = true;
@@ -4618,6 +4743,7 @@ async function shutdown(signal) {
     taskSyncStore.save(),
     deliveryOutbox.waitForWrites(),
     backgroundJobStore.waitForWrites(),
+    failedUpdateStore.waitForWrites(),
   ]);
   await instanceGuard.release();
 }
@@ -4638,9 +4764,7 @@ await restoreBackgroundJobs().catch(async (error) => {
   console.error("Cannot recover background jobs:", error.message);
   await sendMessage(`⚠️ Не удалось восстановить фоновые медиа-задачи: ${error.message}`).catch(() => {});
 });
-for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
-scheduleDeliveryOutboxFlush(1_000);
-scheduleSelectedTaskWatch(500);
+startRuntimeTimers();
 try {
   await telegram("setMyCommands", {
     commands: BOT_COMMANDS,
@@ -4655,5 +4779,6 @@ if (restartRequest) {
     return false;
   });
 }
+await instanceGuard.markReady();
 console.log(`Telegram/${providerTitle()} bridge ready for ${config.allowedUserIds.size} user(s); project: ${activeProjectRoot}`);
 await pollTelegram();

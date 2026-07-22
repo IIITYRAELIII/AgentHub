@@ -15,6 +15,9 @@ test("single-instance guard rejects a concurrent owner and releases cleanly", as
   const lock = JSON.parse(await readFile(path.join(dataDir, "bot.lock"), "utf8"));
   assert.equal(lock.pid, process.pid);
   assert.ok(lock.instanceToken);
+  assert.equal(lock.ready, false);
+  await first.markReady();
+  assert.equal(JSON.parse(await readFile(path.join(dataDir, "bot.lock"), "utf8")).ready, true);
   await first.release();
   await second.acquire();
   await second.release();

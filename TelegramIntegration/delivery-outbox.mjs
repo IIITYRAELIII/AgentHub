@@ -3,6 +3,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  rename,
   unlink,
 } from "node:fs/promises";
 import path from "node:path";
@@ -52,7 +53,14 @@ export class PersistentDeliveryOutbox {
 
   async load() {
     await mkdir(this.directoryPath, { recursive: true });
-    const names = (await readdir(this.directoryPath))
+    const allNames = await readdir(this.directoryPath);
+    const quarantined = allNames
+      .filter((name) => name.includes(".invalid-") || name.includes(".failed-"))
+      .sort();
+    await Promise.all(quarantined.slice(0, -100).map((name) => (
+      unlink(path.join(this.directoryPath, name)).catch(() => {})
+    )));
+    const names = allNames
       .filter((name) => name.endsWith(".json"))
       .sort();
     const present = new Set();
@@ -60,8 +68,15 @@ export class PersistentDeliveryOutbox {
       const filePath = path.join(this.directoryPath, name);
       present.add(filePath);
       if (this.#items.has(filePath)) continue;
-      const item = JSON.parse(await readFile(filePath, "utf8"));
-      if (validDelivery(item)) this.#items.set(filePath, item);
+      try {
+        const item = JSON.parse(await readFile(filePath, "utf8"));
+        if (!validDelivery(item)) throw new Error("invalid delivery outbox item");
+        this.#items.set(filePath, item);
+      } catch (error) {
+        if (error?.code === "ENOENT") continue;
+        await rename(filePath, `${filePath}.invalid-${this.now()}`).catch(() => {});
+        present.delete(filePath);
+      }
     }
     for (const filePath of this.#items.keys()) {
       if (!present.has(filePath)) this.#items.delete(filePath);
@@ -131,15 +146,21 @@ export class PersistentDeliveryOutbox {
           Number(left[1].sequence ?? 0) - Number(right[1].sequence ?? 0)
         )));
       }
+      const blockedGroups = new Set();
       for (const [filePath, item] of entries) {
-        if (delivered >= limit || item.nextAttemptAt > this.now()) break;
+        if (delivered >= limit) break;
+        if (item.groupId && blockedGroups.has(item.groupId)) continue;
+        if (item.nextAttemptAt > this.now()) {
+          if (item.groupId) blockedGroups.add(item.groupId);
+          continue;
+        }
         let result;
         try {
           result = await this.deliver(item.method, item.body);
         } catch (error) {
           if (error?.retryable !== true) {
             this.#items.delete(filePath);
-            await unlink(filePath).catch(() => {});
+            await rename(filePath, `${filePath}.failed-${this.now()}`).catch(() => {});
             await this.onPermanentFailure(item, error);
             continue;
           }
@@ -150,7 +171,8 @@ export class PersistentDeliveryOutbox {
             Number(error.retryAfterMs ?? 0),
           );
           await this.#persist(filePath, item);
-          break;
+          if (item.groupId) blockedGroups.add(item.groupId);
+          continue;
         }
         this.#items.delete(filePath);
         await unlink(filePath).catch(() => {});

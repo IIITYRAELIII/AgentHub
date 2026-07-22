@@ -46,3 +46,73 @@ test("polling controller ignores unauthorized callbacks", async () => {
   });
   assert.equal(callbacks, 0);
 });
+
+test("polling controller preserves a failed update before advancing offset", async () => {
+  let offset = 0;
+  const events = [];
+  const controller = new TelegramPollingController({
+    telegram: async () => [],
+    config: { allowedUserIds: new Set([7]), allowedChatIds: null, privateChatsOnly: true },
+    getOffset: () => offset,
+    setOffset: (value) => { offset = value; },
+    setProcessingUpdateId: () => {},
+    handleMessage: async () => { throw new Error("boom"); },
+    handleCallback: async () => {},
+    preserveFailedUpdate: async (update) => events.push(`stored:${update.update_id}`),
+    sendMessage: async () => events.push("notified"),
+    saveState: async () => events.push("saved"),
+    afterUpdate: async () => {},
+    stopping: () => false,
+    logger: { error: () => {} },
+  });
+  await controller.process({ update_id: 12, message: { text: "hello", chat: { id: 9 } } });
+  assert.equal(offset, 13);
+  assert.deepEqual(events, ["stored:12", "notified", "saved"]);
+});
+
+test("polling controller does not acknowledge a failure that could not be preserved", async () => {
+  let offset = 0;
+  const controller = new TelegramPollingController({
+    telegram: async () => [],
+    config: { allowedUserIds: new Set([7]), allowedChatIds: null, privateChatsOnly: true },
+    getOffset: () => offset,
+    setOffset: (value) => { offset = value; },
+    setProcessingUpdateId: () => {},
+    handleMessage: async () => { throw new Error("handler"); },
+    handleCallback: async () => {},
+    preserveFailedUpdate: async () => { throw new Error("disk"); },
+    sendMessage: async () => {},
+    saveState: async () => {},
+    afterUpdate: async () => {},
+    stopping: () => false,
+    logger: { error: () => {} },
+  });
+  await assert.rejects(
+    controller.process({ update_id: 12, message: { text: "hello", chat: { id: 9 } } }),
+    /disk/,
+  );
+  assert.equal(offset, 0);
+});
+
+test("polling controller rolls its in-memory offset back when state persistence fails", async () => {
+  let offset = 4;
+  const controller = new TelegramPollingController({
+    telegram: async () => [],
+    config: { allowedUserIds: new Set([7]), allowedChatIds: null, privateChatsOnly: true },
+    getOffset: () => offset,
+    setOffset: (value) => { offset = value; },
+    setProcessingUpdateId: () => {},
+    handleMessage: async () => {},
+    handleCallback: async () => {},
+    preserveFailedUpdate: async () => {},
+    sendMessage: async () => {},
+    saveState: async () => { throw new Error("disk"); },
+    afterUpdate: async () => {},
+    stopping: () => false,
+  });
+  await assert.rejects(
+    controller.process({ update_id: 12, message: { text: "hello", chat: { id: 9 } } }),
+    /disk/,
+  );
+  assert.equal(offset, 4);
+});

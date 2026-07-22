@@ -63,6 +63,16 @@ function runCommand(command, args, { timeoutMs = 10_000 } = {}) {
   return spawnSync(command, args, { encoding: "utf8", windowsHide: true, timeout: timeoutMs, input: "" });
 }
 
+if (config && process.platform === "win32") {
+  const acl = runCommand("icacls.exe", [config.configPath]);
+  const aclText = String(acl.stdout || acl.stderr || acl.error?.message || "").trim();
+  check(
+    "runtime config ACL excludes CodexSandboxUsers",
+    acl.status === 0 && !/CodexSandboxUsers/i.test(aclText),
+    aclText,
+  );
+}
+
 const claudeInvocation = resolveClaudeInvocation({
   requested: config?.claudeExecutable || "claude",
   prefixArgs: config?.claudeExecutableArgs ?? [],

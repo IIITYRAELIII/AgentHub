@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rm, stat, unlink } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, unlink } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
 import { writeTextAtomic } from "./state-store.mjs";
@@ -53,6 +53,11 @@ async function readLegacyBindings(dataDir) {
     return Array.isArray(value) ? value.filter(validBinding) : [];
   } catch (error) {
     if (error?.code === "ENOENT") return [];
+    if (error instanceof SyntaxError) {
+      const file = bindingsPath(dataDir);
+      await rename(file, `${file}.invalid-${Date.now()}`).catch(() => {});
+      return [];
+    }
     throw error;
   }
 }
@@ -80,7 +85,11 @@ async function readBindingEvents(dataDir, names = null) {
         events.push({ type: "remove", keys: event.keys.filter((key) => typeof key === "string") });
       }
     } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      if (error?.code === "ENOENT") continue;
+      await rename(
+        path.join(directory, name),
+        path.join(directory, `${name}.invalid-${Date.now()}`),
+      ).catch(() => {});
     }
   }
   return events;

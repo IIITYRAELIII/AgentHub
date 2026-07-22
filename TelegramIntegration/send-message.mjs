@@ -9,6 +9,10 @@ import { appendMessageBindings } from "./message-bindings.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { callTelegramJson, telegramBotApiUrl } from "./telegram-api.mjs";
 import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
+import {
+  resolveAllowedNotificationChatId,
+  resolveAllowedNotificationPath,
+} from "./notification-security.mjs";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 const TELEGRAM_CAPTION_LIMIT = 1024;
@@ -52,16 +56,7 @@ export function resolveNotificationCategory(value = "info") {
 }
 
 export function resolveChatId(config, explicitChatId = null) {
-  if (explicitChatId != null) {
-    const value = Number(explicitChatId);
-    if (!Number.isSafeInteger(value)) throw new Error("--chat-id must be an integer");
-    return value;
-  }
-  const allowedChats = [...(config.allowedChatIds ?? [])];
-  if (allowedChats.length === 1) return allowedChats[0];
-  const allowedUsers = [...config.allowedUserIds];
-  if (allowedChats.length === 0 && allowedUsers.length === 1) return allowedUsers[0];
-  throw new Error("Cannot choose the recipient automatically; specify --chat-id <id>");
+  return resolveAllowedNotificationChatId(config, explicitChatId);
 }
 
 export function parseArguments(args) {
@@ -404,8 +399,13 @@ export async function main(args = process.argv.slice(2)) {
     console.log(`Categories: ${Object.keys(NOTIFICATION_CATEGORIES).join(", ")} (default: info; used with a binding option)`);
     return;
   }
-  const text = await resolveMessageText(options);
   const config = await loadConfig();
+  if (options.messageFile) {
+    options.messageFile = await resolveAllowedNotificationPath(options.messageFile, {
+      roots: config.projects.map((project) => project.path),
+    });
+  }
+  const text = await resolveMessageText(options);
   const chatId = resolveChatId(config, options.chatId);
   const outbox = new PersistentDeliveryOutbox({
     directoryPath: config.deliveryOutboxDir,

@@ -124,18 +124,21 @@ export class CodexAppServerTransport {
 
   invalidateThreadRead(threadId) {
     const key = String(threadId ?? "").trim();
-    if (key) this.threadReadCache.delete(key);
+    if (!key) return;
+    this.threadReadCache.delete(`${key}\0full`);
+    this.threadReadCache.delete(`${key}\0metadata`);
   }
 
-  async readThread(threadId, { fresh = false } = {}) {
-    const key = String(threadId ?? "").trim();
-    if (!key) throw new Error("Codex thread id is missing");
+  async readThread(threadId, { fresh = false, includeTurns = true } = {}) {
+    const threadKey = String(threadId ?? "").trim();
+    if (!threadKey) throw new Error("Codex thread id is missing");
+    const key = `${threadKey}\0${includeTurns ? "full" : "metadata"}`;
     const cached = this.threadReadCache.get(key);
     if (cached?.promise) return cached.promise;
     if (!fresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
 
     const entry = { value: null, expiresAt: 0, promise: null };
-    entry.promise = this.request("thread/read", { threadId: key, includeTurns: true });
+    entry.promise = this.request("thread/read", { threadId: threadKey, includeTurns });
     this.threadReadCache.set(key, entry);
     try {
       entry.value = await entry.promise;

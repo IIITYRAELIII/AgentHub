@@ -93,6 +93,23 @@ test("CodexAppServerTransport deduplicates, caches and invalidates thread reads"
   assert.equal((await refreshed).thread.fresh, true);
 });
 
+test("CodexAppServerTransport keeps lightweight metadata separate from full history", async () => {
+  const { child, transport } = await startedTransport({ threadReadCacheMs: 10_000 });
+  const metadataWrite = nextWrittenJson(child.stdin);
+  const metadata = transport.readThread("thread-1", { includeTurns: false });
+  const metadataRequest = await metadataWrite;
+  assert.equal(metadataRequest.params.includeTurns, false);
+  child.stdout.write(`${JSON.stringify({ id: metadataRequest.id, result: { thread: { id: "thread-1" } } })}\n`);
+  await metadata;
+
+  const fullWrite = nextWrittenJson(child.stdin);
+  const full = transport.readThread("thread-1");
+  const fullRequest = await fullWrite;
+  assert.equal(fullRequest.params.includeTurns, true);
+  child.stdout.write(`${JSON.stringify({ id: fullRequest.id, result: { thread: { id: "thread-1", turns: [] } } })}\n`);
+  await full;
+});
+
 test("CodexAppServerTransport owns notifications, responses and process-tree stop", async () => {
   const stopped = [];
   const { child, transport } = await startedTransport({

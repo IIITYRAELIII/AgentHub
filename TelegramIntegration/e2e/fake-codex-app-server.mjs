@@ -95,6 +95,7 @@ function finishTurn(thread, turn, { status = "completed", answer = null } = {}) 
       payload: {
         type: status === "interrupted" ? "turn_aborted" : "task_complete",
         turn_id: turn.id,
+        ...(status === "interrupted" ? {} : { last_agent_message: text }),
       },
     })}\n`, "utf8");
   }
@@ -247,6 +248,15 @@ function startExternalTurn(thread, {
         message: prompt,
       },
     }),
+    ...(initialAnswer ? [JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type: "event_msg",
+      payload: {
+        type: "agent_message",
+        message: initialAnswer,
+        phase: "commentary",
+      },
+    })] : []),
     "",
   ].join("\n"), "utf8");
   save();

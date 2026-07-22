@@ -61,8 +61,8 @@ test("direct visual basic fallback bypasses WMI but remains hidden", () => {
 
 test("replacement readiness requires a new process lock", async () => {
   const locks = [
-    JSON.stringify({ pid: 42, instanceToken: "old" }),
-    JSON.stringify({ pid: 84, instanceToken: "new" }),
+    JSON.stringify({ pid: 42, instanceToken: "old", ready: true }),
+    JSON.stringify({ pid: 84, instanceToken: "new", ready: true }),
   ];
   const lock = await waitForReplacementLock({
     lockFile: "bot.lock",
@@ -71,8 +71,26 @@ test("replacement readiness requires a new process lock", async () => {
     pollMs: 1,
     readFileImpl: async () => locks.shift() ?? "",
     delayImpl: async () => {},
+    isAlive: (pid) => pid === 84,
   });
   assert.equal(lock?.pid, 84);
+});
+
+test("replacement readiness ignores a lock owned by a dead process", async () => {
+  const locks = [
+    JSON.stringify({ pid: 84, instanceToken: "dead", ready: true }),
+    JSON.stringify({ pid: 85, instanceToken: "live", ready: true }),
+  ];
+  const lock = await waitForReplacementLock({
+    lockFile: "bot.lock",
+    currentPid: 42,
+    timeoutMs: 100,
+    pollMs: 1,
+    readFileImpl: async () => locks.shift() ?? "",
+    delayImpl: async () => {},
+    isAlive: (pid) => pid === 85,
+  });
+  assert.equal(lock?.pid, 85);
 });
 
 test("replacement retries WMI and then uses direct fallback until a bot owns the lock", async () => {
@@ -89,9 +107,10 @@ test("replacement retries WMI and then uses direct fallback until a bot owns the
       return { once() {}, unref() {} };
     },
     readFileImpl: async () => launches >= 3
-      ? JSON.stringify({ pid: 84, instanceToken: "ready" })
+      ? JSON.stringify({ pid: 84, instanceToken: "ready", ready: true })
       : "",
     delayImpl: async () => {},
+    isAlive: (pid) => pid === 84,
   });
   assert.equal(launches, 3);
   assert.equal(result.usedFallback, true);
@@ -136,7 +155,7 @@ test("Windows WMI restart is not accepted until the replacement owns bot.lock", 
   const lockFile = path.join(directory, "bot.lock");
   await writeFile(
     launcher,
-    `$ErrorActionPreference='Stop'\nSet-Content -LiteralPath '${lockFile.replaceAll("'", "''")}' -Value '{"pid":424242,"instanceToken":"ready"}' -Encoding UTF8\n`,
+    `$ErrorActionPreference='Stop'\nSet-Content -LiteralPath '${lockFile.replaceAll("'", "''")}' -Value '{"pid":424242,"instanceToken":"ready","ready":true}' -Encoding UTF8\n`,
     "utf8",
   );
   const result = await launchReplacementAndWait({
@@ -148,6 +167,7 @@ test("Windows WMI restart is not accepted until the replacement owns bot.lock", 
     currentPid: process.pid,
     attempts: 1,
     readinessTimeoutMs: 5_000,
+    isAlive: () => true,
   });
   assert.equal(result.lock.pid, 424242);
   assert.equal(result.usedFallback, false);

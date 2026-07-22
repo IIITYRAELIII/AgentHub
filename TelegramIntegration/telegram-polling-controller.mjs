@@ -13,6 +13,7 @@ export class TelegramPollingController {
     handleCallback,
     sendMessage,
     saveState,
+    preserveFailedUpdate = null,
     afterUpdate,
     stopping,
     logger = console,
@@ -26,6 +27,7 @@ export class TelegramPollingController {
     this.handleCallback = handleCallback;
     this.sendMessage = sendMessage;
     this.saveState = saveState;
+    this.preserveFailedUpdate = preserveFailedUpdate;
     this.afterUpdate = afterUpdate;
     this.stopping = stopping;
     this.logger = logger;
@@ -48,16 +50,27 @@ export class TelegramPollingController {
       }
     } catch (error) {
       this.logger.error(`Telegram update ${update.update_id} failed:`, error.message);
+      if (!this.preserveFailedUpdate) throw error;
+      // Never acknowledge a failed update until its complete payload and error
+      // are durable. This avoids the previous silent offset advance/data loss.
+      await this.preserveFailedUpdate(update, error);
       const targetChatId = update.message?.chat?.id ?? update.callback_query?.message?.chat?.id;
       if (Number.isSafeInteger(targetChatId)) {
         await this.sendMessage(
           targetChatId,
-          `Не удалось обработать сообщение: ${error.message}`,
+          `Не удалось обработать сообщение: ${error.message}\n\nОбновление сохранено для диагностики и не потеряно.`,
         ).catch(() => {});
       }
     }
+    const previousOffset = this.getOffset();
     this.setOffset(update.update_id + 1);
-    await this.saveState();
+    try {
+      await this.saveState();
+    } catch (error) {
+      this.setOffset(previousOffset);
+      this.setProcessingUpdateId(null);
+      throw error;
+    }
     this.setProcessingUpdateId(null);
     await this.afterUpdate();
   }

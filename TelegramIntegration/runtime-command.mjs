@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, stat, unlink } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
+import os from "node:os";
 import path from "node:path";
 
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
+import { writeTextAtomic } from "./state-store.mjs";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const ALLOWED_COMMANDS = new Set(["send-message", "send-images"]);
@@ -14,12 +17,25 @@ const FORWARDED_ENVIRONMENT = [
   "CLAUDE_PROJECT_DIR",
   "AI_PROVIDER",
 ];
+const SPOOL_POLL_MS = 100;
+const SPOOL_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+function runtimeCommandId(runtimeRoot) {
+  return createHash("sha256").update(path.resolve(runtimeRoot).toLowerCase()).digest("hex").slice(0, 24);
+}
 
 export function runtimeCommandEndpoint(runtimeRoot = defaultRuntimeRoot()) {
-  const id = createHash("sha256").update(path.resolve(runtimeRoot).toLowerCase()).digest("hex").slice(0, 24);
+  const id = runtimeCommandId(runtimeRoot);
   return process.platform === "win32"
     ? `\\\\.\\pipe\\telegram-integration-command-${id}`
     : path.join(runtimeRoot, `command-${id}.sock`);
+}
+
+export function runtimeCommandSpoolDirectory(
+  runtimeRoot = defaultRuntimeRoot(),
+  temporaryRoot = os.tmpdir(),
+) {
+  return path.join(temporaryRoot, `telegram-integration-command-${runtimeCommandId(runtimeRoot)}`);
 }
 
 export function runtimeCommandEnvironment(environment = process.env) {
@@ -50,9 +66,13 @@ export class RuntimeCommandServer {
   #endpoint;
   #handler;
   #server = null;
+  #spoolDirectory;
+  #spoolTimer = null;
+  #spoolDrain = null;
 
-  constructor({ runtimeRoot = defaultRuntimeRoot(), handler }) {
+  constructor({ runtimeRoot = defaultRuntimeRoot(), handler, temporaryRoot = os.tmpdir() }) {
     this.#endpoint = runtimeCommandEndpoint(runtimeRoot);
+    this.#spoolDirectory = runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot);
     this.#handler = handler;
   }
 
@@ -91,13 +111,98 @@ export class RuntimeCommandServer {
       });
     });
     this.#server = server;
+    await mkdir(this.#spoolDirectory, { recursive: true });
+    this.#scheduleSpoolDrain(0);
+  }
+
+  #scheduleSpoolDrain(delayMs = SPOOL_POLL_MS) {
+    if (!this.#server || this.#spoolTimer) return;
+    this.#spoolTimer = setTimeout(() => {
+      this.#spoolTimer = null;
+      this.#spoolDrain = this.#drainSpool()
+        .catch((error) => console.error("Cannot process runtime command spool:", error.message))
+        .finally(() => {
+          this.#spoolDrain = null;
+          this.#scheduleSpoolDrain();
+        });
+    }, delayMs);
+    this.#spoolTimer.unref?.();
+  }
+
+  async #drainSpool() {
+    const allNames = await readdir(this.#spoolDirectory);
+    for (const name of allNames.filter((item) => item.endsWith(".response.json"))) {
+      const filePath = path.join(this.#spoolDirectory, name);
+      const info = await stat(filePath).catch(() => null);
+      if (info && Date.now() - info.mtimeMs >= SPOOL_RETENTION_MS) await unlink(filePath).catch(() => {});
+    }
+    const names = allNames
+      .filter((name) => name.endsWith(".request.json"))
+      .sort();
+    for (const name of names) {
+      const requestPath = path.join(this.#spoolDirectory, name);
+      const responsePath = requestPath.replace(/\.request\.json$/, ".response.json");
+      let response;
+      try {
+        if ((await stat(requestPath)).size > MAX_REQUEST_BYTES) throw new Error("Runtime command is too large");
+        const request = validateRuntimeCommand(JSON.parse(await readFile(requestPath, "utf8")));
+        const result = await this.#handler(request);
+        response = { ok: true, result: String(result ?? "") };
+      } catch (error) {
+        response = { ok: false, error: String(error?.message ?? error) };
+      }
+      await writeTextAtomic(responsePath, `${JSON.stringify(response)}\n`);
+      await unlink(requestPath).catch(() => {});
+    }
   }
 
   async close() {
     const server = this.#server;
     this.#server = null;
+    if (this.#spoolTimer) clearTimeout(this.#spoolTimer);
+    this.#spoolTimer = null;
+    await this.#spoolDrain;
     if (!server?.listening) return;
     await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function forwardRuntimeCommandThroughSpool(command, args, {
+  runtimeRoot = defaultRuntimeRoot(),
+  temporaryRoot = os.tmpdir(),
+  cwd = process.cwd(),
+  environment = process.env,
+  timeoutMs = 120_000,
+} = {}) {
+  const request = validateRuntimeCommand({
+    id: randomUUID(),
+    command,
+    args,
+    cwd,
+    environment: runtimeCommandEnvironment(environment),
+  });
+  const spoolDirectory = runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot);
+  await mkdir(spoolDirectory, { recursive: true });
+  const requestPath = path.join(spoolDirectory, `${request.id}.request.json`);
+  const responsePath = path.join(spoolDirectory, `${request.id}.response.json`);
+  await writeTextAtomic(requestPath, `${JSON.stringify(request)}\n`);
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      try {
+        const response = JSON.parse(await readFile(responsePath, "utf8"));
+        if (!response.ok) throw new Error(response.error || "Runtime command failed");
+        return response.result;
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      await delay(SPOOL_POLL_MS);
+    }
+    throw new Error("TelegramIntegration runtime command spool timed out");
+  } finally {
+    await Promise.all([unlink(requestPath).catch(() => {}), unlink(responsePath).catch(() => {})]);
   }
 }
 
@@ -114,33 +219,54 @@ export async function forwardRuntimeCommand(command, args, {
     cwd,
     environment: runtimeCommandEnvironment(environment),
   }));
-  return new Promise((resolve, reject) => {
+  try {
+    return await new Promise((resolve, reject) => {
     const socket = createConnection(runtimeCommandEndpoint(runtimeRoot));
     let response = "";
+    let settled = false;
+    const finish = (operation, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      operation(value);
+    };
     const timer = setTimeout(() => {
       socket.destroy();
-      reject(new Error("TelegramIntegration runtime command timed out"));
+      finish(reject, new Error("TelegramIntegration runtime command timed out"));
     }, timeoutMs);
     timer.unref?.();
     socket.setEncoding("utf8");
     socket.on("connect", () => socket.write(`${payload}\n`));
     socket.on("data", (chunk) => { response += chunk; });
     socket.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
+      finish(reject, error);
     });
     socket.on("close", () => {
-      clearTimeout(timer);
-      if (!response) return;
+      if (!response) {
+        finish(reject, new Error("TelegramIntegration runtime command closed without a response"));
+        return;
+      }
       try {
         const value = JSON.parse(response);
-        if (!value.ok) reject(new Error(value.error || "Runtime command failed"));
-        else resolve(value.result);
+        if (!value.ok) finish(reject, new Error(value.error || "Runtime command failed"));
+        else finish(resolve, value.result);
       } catch (error) {
-        reject(new Error(`Invalid runtime command response: ${error.message}`));
+        finish(reject, new Error(`Invalid runtime command response: ${error.message}`));
       }
     });
-  });
+    });
+  } catch (error) {
+    // Some Codex sandboxes deny named-pipe connections even though a narrow,
+    // validated local notification request is allowed. Use a token-free file
+    // spool only for that access failure; a missing bot keeps the old fallback.
+    if (!["EACCES", "EPERM"].includes(error?.code)) throw error;
+    return forwardRuntimeCommandThroughSpool(command, args, {
+      runtimeRoot,
+      cwd,
+      environment,
+      timeoutMs,
+    });
+  }
 }
 
 export function runtimeCommandUnavailable(error) {

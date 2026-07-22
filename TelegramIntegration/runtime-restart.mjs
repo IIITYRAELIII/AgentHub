@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { processIsAlive } from "./claude-run-io.mjs";
 
 function quotedWindowsArgument(value) {
   return `"${String(value).replaceAll("\"", "\"\"")}\"`;
@@ -117,6 +118,7 @@ export async function waitForReplacementLock({
   timeoutMs = 15_000,
   pollMs = 100,
   readFileImpl = readFile,
+  isAlive = processIsAlive,
   delayImpl = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 } = {}) {
   const deadline = Date.now() + timeoutMs;
@@ -124,7 +126,7 @@ export async function waitForReplacementLock({
     const lock = parseReplacementLock(
       await readFileImpl(lockFile, "utf8").catch(() => ""),
     );
-    if (lock && lock.pid !== currentPid) return lock;
+    if (lock?.ready === true && lock.pid !== currentPid && isAlive(lock.pid)) return lock;
     await delayImpl(pollMs);
   }
   return null;
@@ -140,6 +142,7 @@ export async function launchReplacementAndWait({
   spawnImpl = spawn,
   readFileImpl = readFile,
   delayImpl,
+  isAlive = processIsAlive,
 } = {}) {
   const primaryAttempts = Math.max(1, attempts);
   const invocations = [
@@ -162,6 +165,7 @@ export async function launchReplacementAndWait({
       timeoutMs: readinessTimeoutMs,
       readFileImpl,
       delayImpl,
+      isAlive,
     });
     if (lock) {
       return {

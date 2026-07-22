@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -25,6 +25,24 @@ test("message bindings persist and resolve by chat and message", async (context)
   await appendMessageBindings(directory, [binding]);
   assert.deepEqual(await findMessageBinding(directory, 123, 456), binding);
   assert.equal((await readMessageBindings(directory)).length, 1);
+});
+
+test("corrupt binding records are isolated without breaking valid buttons", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-bindings-corrupt-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  await appendMessageBindings(directory, [{
+    chatId: 1,
+    messageId: 2,
+    provider: "codex",
+    threadId: "thread-1",
+    projectRoot: "C:\\Project",
+    taskTitle: "Task",
+  }]);
+  const events = path.join(directory, "telegram-thread-bindings.d");
+  await mkdir(events, { recursive: true });
+  await writeFile(path.join(events, "000-corrupt.json"), "{broken", "utf8");
+  assert.equal((await findMessageBinding(directory, 1, 2))?.threadId, "thread-1");
+  assert.equal((await readdir(events)).some((name) => name.includes(".invalid-")), true);
 });
 
 test("removeMessageBindings removes only matching task messages", async (context) => {

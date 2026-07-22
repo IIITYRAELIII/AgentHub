@@ -53,6 +53,7 @@ export class SingleInstanceGuard {
   #server = null;
   #handle = null;
   #token = randomUUID();
+  #startedAt = new Date().toISOString();
 
   constructor({ dataDir, lockFile = path.join(dataDir, "bot.lock"), isAlive = processIsAlive }) {
     this.#dataDir = dataDir;
@@ -91,18 +92,32 @@ export class SingleInstanceGuard {
         if (error?.code !== "ENOENT") throw error;
       });
       this.#handle = await open(this.#lockFile, "wx");
-      await this.#handle.writeFile(`${JSON.stringify({
-        pid: process.pid,
-        instanceToken: this.#token,
-        startedAt: new Date().toISOString(),
-        endpoint,
-      })}\n`, "utf8");
+      await this.#writeLock(false);
       return this;
     } catch (error) {
       await close(this.#server);
       this.#server = null;
       throw error;
     }
+  }
+
+  async #writeLock(ready) {
+    if (!this.#handle) throw new Error("Telegram bot instance lock is not acquired");
+    const value = `${JSON.stringify({
+        pid: process.pid,
+        instanceToken: this.#token,
+        startedAt: this.#startedAt,
+        endpoint: pipeName(this.#dataDir),
+        ready,
+      })}\n`;
+    await this.#handle.truncate(0);
+    await this.#handle.write(value, 0, "utf8");
+    await this.#handle.sync();
+  }
+
+  async markReady() {
+    await this.#writeLock(true);
+    return this;
   }
 
   async release() {

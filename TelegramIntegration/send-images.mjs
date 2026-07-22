@@ -11,6 +11,7 @@ import {
 import { appendMessageBindings } from "./message-bindings.mjs";
 import { telegramBotApiUrl } from "./telegram-api.mjs";
 import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
+import { resolveAllowedNotificationPath } from "./notification-security.mjs";
 
 const MAX_ALBUM_SIZE = 10;
 
@@ -129,7 +130,9 @@ export async function main(args = process.argv.slice(2)) {
 
   const config = await loadConfig();
   const chatId = resolveChatId(config, options.chatId);
-  const files = options.files.map((file) => path.resolve(file));
+  const files = await Promise.all(options.files.map((file) => resolveAllowedNotificationPath(file, {
+    roots: config.projects.map((project) => project.path),
+  })));
   const task = await resolveBinding(config, options);
   const caption = options.caption || (task ? `Код — ${task.taskTitle}` : "");
   const sent = files.length === 1

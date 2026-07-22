@@ -6,9 +6,64 @@ import process from "node:process";
 import { telegramBotApiUrl, telegramFileApiUrl } from "./telegram-api.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
-import { runTtsWorkerRequest } from "./tts-worker-client.mjs";
+import { PersistentTtsWorkerClient } from "./tts-worker-client.mjs";
 
 const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
+const MAX_TRANSCRIPTION_OUTPUT_BYTES = 1024 * 1024;
+
+export function runBoundedProcess({
+  spawnProcess,
+  command,
+  args,
+  options,
+  stopProcessTree,
+  timeoutMs,
+  maxOutputBytes,
+  timeoutMessage,
+}) {
+  return new Promise((resolve, reject) => {
+    let worker;
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timer = null;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const stop = (error) => {
+      if (worker?.pid) void Promise.resolve(stopProcessTree(worker.pid)).catch(() => worker.kill());
+      finish(error);
+    };
+    try {
+      worker = spawnProcess(command, args, options);
+    } catch (error) {
+      finish(error);
+      return;
+    }
+    timer = setTimeout(() => stop(new Error(timeoutMessage)), timeoutMs);
+    const append = (current, chunk) => {
+      const value = current + String(chunk);
+      if (Buffer.byteLength(value, "utf8") > maxOutputBytes) {
+        stop(new Error(`вывод процесса превысил ${maxOutputBytes} байт`));
+        return current;
+      }
+      return value;
+    };
+    worker.stdout.setEncoding("utf8");
+    worker.stderr.setEncoding("utf8");
+    worker.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
+    worker.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
+    worker.once("error", (error) => finish(error));
+    worker.once("close", (code) => {
+      if (code === 0) finish(null, stdout.trim());
+      else finish(new Error(stderr.trim() || `Процесс завершился с кодом ${code}`));
+    });
+  });
+}
 
 export class MediaController {
   constructor({
@@ -35,6 +90,27 @@ export class MediaController {
     this.speechTexts = new Map();
     this.writeQueue = Promise.resolve();
     this.ttsWorker = null;
+    this.ttsClient = new PersistentTtsWorkerClient({
+      spawnWorker: () => spawn(this.config.ttsPythonExe, [
+        this.config.ttsWorkerScript,
+        "--idle-timeout", String(this.config.ttsIdleTimeoutSeconds),
+        "--model", this.config.ttsModel,
+        "--speaker", this.config.ttsSpeaker,
+        "--cache-dir", this.config.ttsCacheDir,
+        "--max-chars", String(this.config.ttsMaxChars),
+      ], {
+        cwd: this.integrationRoot,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, PYTHONUTF8: "1", TORCH_HOME: this.config.ttsCacheDir },
+      }),
+      timeoutMs: this.config.ttsRequestTimeoutSeconds * 1000,
+      terminateWorker: (worker) => this.stopProcessTree(worker.pid).catch(() => worker.kill()),
+      onWorkerChange: (worker) => { this.ttsWorker = worker; },
+      onDiagnostic: (message) => {
+        if (message) console.error(`[tts] ${message}`);
+      },
+    });
   }
 
   async load() {
@@ -162,36 +238,25 @@ export class MediaController {
   }
 
   runTranscription(audioPath) {
-    return new Promise((resolve, reject) => {
-      const worker = spawn(this.config.pythonExe, [this.transcribeScript, audioPath], {
+    return runBoundedProcess({
+      spawnProcess: spawn,
+      command: this.config.pythonExe,
+      args: [this.transcribeScript, audioPath],
+      options: {
         cwd: this.activeProjectRoot(),
         windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
           PYTHONUTF8: "1",
           WHISPER_MODEL: this.config.whisperModel,
           WHISPER_MODEL_DIR: this.config.whisperModelDir,
         },
-      });
-      let stdout = "";
-      let stderr = "";
-      const timer = setTimeout(() => {
-        worker.kill();
-        reject(new Error("превышено время распознавания (5 минут)"));
-      }, 5 * 60 * 1000);
-      worker.stdout.setEncoding("utf8");
-      worker.stderr.setEncoding("utf8");
-      worker.stdout.on("data", (chunk) => { stdout += chunk; });
-      worker.stderr.on("data", (chunk) => { stderr += chunk; });
-      worker.on("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-      worker.on("exit", (code) => {
-        clearTimeout(timer);
-        if (code === 0) resolve(stdout.trim());
-        else reject(new Error(stderr.trim() || `Whisper завершился с кодом ${code}`));
-      });
+      },
+      stopProcessTree: this.stopProcessTree,
+      timeoutMs: 5 * 60 * 1000,
+      maxOutputBytes: MAX_TRANSCRIPTION_OUTPUT_BYTES,
+      timeoutMessage: "превышено время распознавания (5 минут)",
     });
   }
 
@@ -199,43 +264,11 @@ export class MediaController {
     await mkdir(this.config.ttsDir, { recursive: true });
     const id = randomUUID();
     const outputPath = path.join(this.config.ttsDir, `${randomUUID()}.ogg`);
-    let currentWorker = null;
-    return runTtsWorkerRequest({
-      spawnWorker: () => spawn(this.config.ttsPythonExe, [
-        this.config.ttsWorkerScript,
-        "--idle-timeout", String(this.config.ttsIdleTimeoutSeconds),
-        "--model", this.config.ttsModel,
-        "--speaker", this.config.ttsSpeaker,
-        "--cache-dir", this.config.ttsCacheDir,
-        "--max-chars", String(this.config.ttsMaxChars),
-      ], {
-        cwd: this.integrationRoot,
-        windowsHide: true,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, PYTHONUTF8: "1", TORCH_HOME: this.config.ttsCacheDir },
-      }),
-      request: { id, text, outputPath },
-      timeoutMs: this.config.ttsRequestTimeoutSeconds * 1000,
-      terminateWorker: (worker) => this.stopProcessTree(worker.pid).catch(() => worker.kill()),
-      onWorkerChange: (worker) => {
-        if (worker) {
-          currentWorker = worker;
-          this.ttsWorker = worker;
-        } else if (this.ttsWorker === currentWorker) {
-          this.ttsWorker = null;
-        }
-      },
-      onDiagnostic: (message) => {
-        if (message) console.error(`[tts] ${message}`);
-      },
-    });
+    return this.ttsClient.request({ id, text, outputPath });
   }
 
   stop() {
-    const worker = this.ttsWorker;
-    if (!worker) return;
-    this.ttsWorker = null;
-    void this.stopProcessTree(worker.pid).catch(() => worker.kill());
+    this.ttsClient.close();
   }
 
   async sendVoiceFile(targetChatId, voicePath) {

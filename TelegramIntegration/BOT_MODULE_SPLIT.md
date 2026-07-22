@@ -20,7 +20,7 @@
 | 5 | ✅ | Task lifecycle: фабрики managed/observed run находятся в `task-runs.mjs`; `TaskProgressController` владеет progress UI, `TaskObserverController` — snapshot polling, `DeferredInputController` — очередью сообщений, а `task-recovery.mjs` — решениями восстановления после рестарта. |
 | 6 | ✅ | Telegram controllers: `TelegramMessageController` маршрутизирует команды, reply и медиа; `TelegramCallbackController` и `telegram-callback-router.mjs` — callback-протокол; `ApprovalController` — подтверждения; `task-picker.mjs` и `TaskViewController` — выбор задач и историю. |
 | 7 | ✅ | `MediaController`: загрузка изображений и аудио, Whisper, хранилище кнопок озвучивания, TTS worker и отправка voice. Сохраняемые очереди фоновых заданий остаются общей политикой композиции. |
-| 8 | ✅ | Финальная композиция: `TelegramPollingController` владеет Bot API polling; transports, controllers, storage и форматирование вынесены. `bot.mjs` связывает сервисы и содержит только прикладную политику задач, провайдеров и восстановления. |
+| 8 | ✅ | Финальная композиция: `TelegramPollingController` владеет Bot API polling; transports, controllers, storage и форматирование вынесены. `bot.mjs` остаётся крупной точкой композиции (около 4,8 тыс. строк): он связывает сервисы и по-прежнему содержит значительную прикладную политику задач, провайдеров, доставки и восстановления. Дальнейшее уменьшение возможно, но не является условием текущей стабилизации. |
 
 ## Критерий завершения
 

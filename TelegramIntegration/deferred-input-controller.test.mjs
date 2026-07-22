@@ -35,6 +35,19 @@ test("DeferredInputController starts a free queued item exactly once", async () 
   assert.match(state.updates[0][1], /отправлено/);
 });
 
+test("DeferredInputController expires an abandoned queued item", async () => {
+  const expired = [];
+  const { controller, queuedInputs } = fixture({
+    now: () => 10_000,
+    maxAgeMs: 1_000,
+    expire: async (item) => expired.push(item.id),
+  });
+  queuedInputs.set("old", { id: "old", createdAt: new Date(1_000).toISOString() });
+  await controller.process("old");
+  assert.deepEqual(expired, ["old"]);
+  assert.equal(queuedInputs.has("old"), false);
+});
+
 test("DeferredInputController reschedules while the task is blocked", async () => {
   const state = fixture({ isBlocked: async () => true });
   state.queuedInputs.set("one", { id: "one" });

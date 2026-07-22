@@ -149,6 +149,10 @@ test("Codex rollout activity keeps another concurrent turn active after one is a
     activeVscodeTurnIds: [],
     model: null,
     reasoningEffort: null,
+    latestTurnId: "parallel",
+    latestMessages: {},
+    finalMessages: {},
+    unscopedLatestMessage: null,
   });
   assert.equal(parseCodexRolloutRunning(`${text}\n${line("task_complete", "original")}`), false);
 });
@@ -185,6 +189,10 @@ test("Codex rollout activity ignores stale unmatched starts but keeps a fresh li
     activeVscodeTurnIds: [],
     model: null,
     reasoningEffort: null,
+    latestTurnId: "live",
+    latestMessages: {},
+    finalMessages: {},
+    unscopedLatestMessage: null,
   });
 });
 
@@ -290,6 +298,78 @@ test("readCodexRolloutActivity preserves a JSONL line split across reads", async
     (await readCodexRolloutActivity(rollout)).activeTurnIds,
     [],
   );
+});
+
+test("rollout activity exposes current and final messages without thread/read", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-codex-rollout-message-"));
+  const rollout = path.join(root, "rollout.jsonl");
+  const entry = (type, payload) => JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type,
+    payload,
+  });
+  await writeFile(rollout, [
+    entry("event_msg", { type: "task_started", turn_id: "turn-1" }),
+    entry("event_msg", { type: "agent_message", message: "Текущий этап" }),
+  ].join("\n") + "\n", "utf8");
+  let activity = await readCodexRolloutActivity(rollout);
+  assert.equal(activity.latestTurnId, "turn-1");
+  assert.equal(activity.latestMessages["turn-1"], "Текущий этап");
+  await appendFile(rollout, `${entry("event_msg", {
+    type: "task_complete",
+    turn_id: "turn-1",
+    last_agent_message: "Итог",
+  })}\n`, "utf8");
+  activity = await readCodexRolloutActivity(rollout);
+  assert.equal(activity.running, false);
+  assert.equal(activity.finalMessages["turn-1"], "Итог");
+});
+
+test("a bounded cold tail keeps an unscoped current message when task_started is older", () => {
+  const activity = parseCodexRolloutActivity(JSON.stringify({
+    timestamp: "2026-07-22T00:00:00.000Z",
+    type: "event_msg",
+    payload: { type: "agent_message", message: "still working" },
+  }));
+  assert.equal(activity.unscopedLatestMessage, "still working");
+  assert.equal(activity.latestTurnId, null);
+});
+
+test("cold rollout reads only a bounded tail and skips an oversized line", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-codex-rollout-tail-"));
+  const rollout = path.join(root, "rollout.jsonl");
+  const line = (type, turnId, extra = {}) => JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type: "event_msg",
+    payload: { type, turn_id: turnId, ...extra },
+  });
+  await writeFile(rollout, `${"x".repeat(32_000)}\n${line("task_started", "tail")}\n`, "utf8");
+  const activity = await readCodexRolloutActivity(rollout, {
+    tailBytes: 2_000,
+    maximumLineBytes: 1_000,
+  });
+  assert.deepEqual(activity.activeTurnIds, ["tail"]);
+});
+
+test("rollout cache detects a truncated file that regrew before the next poll", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-codex-rollout-replaced-"));
+  const rollout = path.join(root, "rollout.jsonl");
+  const line = (type, turnId, extra = {}) => JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type: "event_msg",
+    payload: { type, turn_id: turnId, ...extra },
+  });
+  await writeFile(rollout, `${line("task_started", "old")}\n`, "utf8");
+  assert.deepEqual((await readCodexRolloutActivity(rollout)).activeTurnIds, ["old"]);
+  await writeFile(rollout, [
+    line("task_started", "new"),
+    line("task_complete", "new", { last_agent_message: "Новый итог" }),
+    JSON.stringify({ padding: "x".repeat(500) }),
+  ].join("\n") + "\n", "utf8");
+  const activity = await readCodexRolloutActivity(rollout);
+  assert.deepEqual(activity.activeTurnIds, []);
+  assert.equal(activity.latestTurnId, "new");
+  assert.equal(activity.finalMessages.new, "Новый итог");
 });
 
 test("claudeCatalogEntry treats only a fresh incomplete transcript as running", () => {
