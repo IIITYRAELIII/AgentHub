@@ -297,6 +297,17 @@ export function codexExecutionOwner({ originator = "", source = "" } = {}) {
   return TASK_EXECUTION_OWNERS.EXTERNAL;
 }
 
+export function codexObservedExecutionOwner(activity = {}) {
+  const owner = codexExecutionOwner(activity);
+  if (owner !== TASK_EXECUTION_OWNERS.TELEGRAM) return owner;
+  // An observer is, by definition, attached to a turn that this bot did not
+  // start. A reused thread can retain telegram_codex_bridge in immutable
+  // session metadata even when its current turn was started from VS Code.
+  return String(activity.source ?? "").trim().toLowerCase() === "vscode"
+    ? TASK_EXECUTION_OWNERS.VSCODE
+    : TASK_EXECUTION_OWNERS.EXTERNAL;
+}
+
 export function selectCodexTurn(
   turns,
   { requestedTurnId = null, rolloutActiveTurnIds = [], strictRequested = false } = {},
@@ -397,7 +408,7 @@ export function mergeTaskCatalog(entries, runs = []) {
     if (existing) {
       existing.running = true;
       existing.executionOwner = run.observer
-        ? existing.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
+        ? run.executionOwner ?? existing.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
         : TASK_EXECUTION_OWNERS.TELEGRAM;
       existing.turnId = run.turnId ?? existing.turnId ?? null;
       existing.lastActivityAtMs = Date.parse(run.lastMeaningfulProgressAt ?? run.startedAt ?? "")

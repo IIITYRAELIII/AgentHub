@@ -11,6 +11,7 @@ import {
   claudeSnapshotIsActive,
   codexCatalogEntry,
   codexExecutionOwner,
+  codexObservedExecutionOwner,
   codexThreadRunning,
   mergeTaskCatalog,
   pinnedTaskTitle,
@@ -89,6 +90,17 @@ test("Codex runtime owner distinguishes Integration, VSC, Desktop and CLI", () =
   assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.DESKTOP), "APP");
   assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.CLI), "CLI");
   assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.EXTERNAL), "EXT");
+});
+
+test("an observed VSC turn is not attributed to the Integration that created its thread", () => {
+  assert.equal(codexObservedExecutionOwner({
+    originator: "telegram_codex_bridge",
+    source: "vscode",
+  }), TASK_EXECUTION_OWNERS.VSCODE);
+  assert.equal(codexObservedExecutionOwner({
+    originator: "telegram_codex_bridge",
+    source: "unknown",
+  }), TASK_EXECUTION_OWNERS.EXTERNAL);
 });
 
 test("Codex rollout activity reads local session source metadata", () => {
@@ -371,6 +383,27 @@ test("mergeTaskCatalog adds bot runs and promotes them to the top", () => {
   }]);
   assert.equal(merged.length, 2);
   assert.equal(merged.every((entry) => entry.running), true);
+});
+
+test("observer ownership overrides historical catalog ownership", () => {
+  const [entry] = mergeTaskCatalog([{
+    provider: "codex",
+    threadId: "codex-observed",
+    projectRoot: project.path,
+    projectName: project.name,
+    title: "Наблюдаемая",
+    updatedAtMs: 1,
+    running: true,
+    executionOwner: TASK_EXECUTION_OWNERS.TELEGRAM,
+  }], [{
+    id: "observer",
+    provider: "codex",
+    threadId: "codex-observed",
+    projectRoot: project.path,
+    observer: true,
+    executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
+  }]);
+  assert.equal(entry.executionOwner, TASK_EXECUTION_OWNERS.VSCODE);
 });
 
 test("task catalog callbacks identify provider and task", () => {

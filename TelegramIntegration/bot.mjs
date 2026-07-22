@@ -126,7 +126,7 @@ import {
   claudeSnapshotActivityAtMs,
   claudeSnapshotActivityState,
   codexCatalogEntry,
-  codexExecutionOwner,
+  codexObservedExecutionOwner,
   codexThreadRunning,
   mergeTaskCatalog,
   parseTaskCatalogCallback,
@@ -1563,9 +1563,17 @@ async function buildTaskCatalog() {
         if (!project) return null;
         const activity = await readCodexRolloutActivity(thread.path);
         const rolloutRunning = thread.status?.type === "active" || activity.running;
+        const existingRun = taskRuns.forTask({
+          provider: "codex",
+          projectRoot: project.path,
+          threadId: thread.id,
+        });
+        const executionOwner = existingRun?.observer === false
+          ? TASK_EXECUTION_OWNERS.TELEGRAM
+          : codexObservedExecutionOwner(activity);
         const entry = codexCatalogEntry(thread, project, {
           rolloutRunning,
-          executionOwner: rolloutRunning ? codexExecutionOwner(activity) : null,
+          executionOwner: rolloutRunning ? executionOwner : null,
           lastActivityAtMs: activity.lastActivityAtMs,
         });
         const titleHistory = titleHistories.get(thread.id)
@@ -2461,7 +2469,7 @@ async function taskExternalActivity(target) {
       const activity = await readCodexRolloutActivity(result.thread?.path);
       return {
         state: codexThreadRunning(result.thread, { rolloutRunning: activity.running }) ? "active" : "inactive",
-        executionOwner: codexExecutionOwner(activity),
+        executionOwner: codexObservedExecutionOwner(activity),
       };
     }
     const snapshot = await readClaudeTaskSnapshot(target.threadId);
@@ -3412,7 +3420,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
     model: activity.model,
     reasoningEffort: activity.reasoningEffort,
     executionOwner: run?.observer === true
-      ? codexExecutionOwner(activity)
+      ? codexObservedExecutionOwner(activity)
       : TASK_EXECUTION_OWNERS.TELEGRAM,
   };
   if (!snapshot.active && activity.activeTurnIds.includes(turn.id)) {
