@@ -14,6 +14,7 @@ const SUPPORTED_KINDS = new Set(["image", "voice", "speech"]);
 function validJob(item) {
   return item
     && typeof item.id === "string"
+    && (item.dedupeKey === undefined || item.dedupeKey === null || typeof item.dedupeKey === "string")
     && SUPPORTED_KINDS.has(item.kind)
     && item.payload
     && typeof item.payload === "object"
@@ -59,10 +60,17 @@ export class PersistentBackgroundJobStore {
     return this.size;
   }
 
-  async enqueue({ kind, payload }) {
+  async enqueue({ kind, payload, dedupeKey = null }) {
     if (!SUPPORTED_KINDS.has(kind)) throw new TypeError(`unsupported background job kind: ${kind}`);
     if (!payload || typeof payload !== "object") throw new TypeError("payload must be an object");
+    if (dedupeKey !== null && (typeof dedupeKey !== "string" || !dedupeKey.trim())) {
+      throw new TypeError("dedupeKey must be a non-empty string or null");
+    }
     await this.load();
+    if (dedupeKey) {
+      const existing = this.values().find((item) => item.dedupeKey === dedupeKey);
+      if (existing) return existing;
+    }
     if (this.size >= this.maxItems) {
       const error = new Error(`background job store is full (${this.maxItems})`);
       error.code = "QUEUE_FULL";
@@ -74,6 +82,7 @@ export class PersistentBackgroundJobStore {
       id: randomUUID(),
       kind,
       payload,
+      dedupeKey,
       createdAt: new Date(timestamp).toISOString(),
     };
     const filePath = path.join(
@@ -106,6 +115,11 @@ export class PersistentBackgroundJobStore {
 
   count(kind) {
     return this.values().filter((item) => item.kind === kind).length;
+  }
+
+  findByDedupeKey(dedupeKey) {
+    if (!dedupeKey) return null;
+    return this.values().find((item) => item.dedupeKey === dedupeKey) ?? null;
   }
 
   waitForWrites() {

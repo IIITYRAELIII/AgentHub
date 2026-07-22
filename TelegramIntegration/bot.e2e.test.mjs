@@ -351,10 +351,28 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("[slow] обычное завершение");
-  const normalProgress = await telegram.waitForText(
-    "Проверяю сценарий: [slow] обычное завершение",
-    { after: mark, timeoutMs: 12_000 },
-  );
+  let normalProgress;
+  try {
+    normalProgress = await telegram.waitForText(
+      "Проверяю сценарий: [slow] обычное завершение",
+      { after: mark, timeoutMs: 12_000 },
+    );
+  } catch (error) {
+    const failedState = await readJson(statePath).catch(() => null);
+    const failedOutbox = await readdir(path.join(dataDir, "delivery-outbox")).catch(() => []);
+    throw new Error(
+      `${error.message}\nstateOffset=${failedState?.updateOffset} nextUpdateId=${telegram.nextUpdateId}`
+      + ` activeRuns=${JSON.stringify(failedState?.activeRuns)}`
+      + ` pending=${JSON.stringify(failedState?.pendingInputs)}`
+      + ` queued=${JSON.stringify(failedState?.queuedInputs)}`
+      + ` lastMessages=${JSON.stringify(failedState?.lastTaskMessages)}`
+      + ` restart=${JSON.stringify(failedState?.restartRequest)}`
+      + ` outbox=${JSON.stringify(failedOutbox)}`
+      + `\nupdates=${JSON.stringify(telegram.updates.slice(-5))}`
+      + `\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+      { cause: error },
+    );
+  }
   const normalProgressId = normalProgress.result.message_id;
   const normalFinal = await telegram.waitForText("Готово: [slow] обычное завершение", {
     after: mark,

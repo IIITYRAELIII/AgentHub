@@ -116,3 +116,28 @@ test("polling controller rolls its in-memory offset back when state persistence 
   );
   assert.equal(offset, 4);
 });
+
+test("polling controller records slow handler and state phases", async () => {
+  let offset = 0;
+  const warnings = [];
+  const times = [10_000, 10_080, 10_125];
+  const controller = new TelegramPollingController({
+    telegram: async () => [],
+    config: { allowedUserIds: new Set([7]), allowedChatIds: null, privateChatsOnly: true },
+    getOffset: () => offset,
+    setOffset: (value) => { offset = value; },
+    setProcessingUpdateId: () => {},
+    handleMessage: async () => {},
+    handleCallback: async () => {},
+    sendMessage: async () => {},
+    saveState: async () => {},
+    afterUpdate: async () => {},
+    stopping: () => false,
+    now: () => times.shift(),
+    slowUpdateThresholdMs: 100,
+    logger: { error: () => {}, warn: (message) => warnings.push(message) },
+  });
+  await controller.process({ update_id: 12, message: { date: 9, text: "hello", chat: { id: 9 } } });
+  assert.equal(offset, 13);
+  assert.match(warnings[0], /handler=80 ms, state=45 ms, transport<=1000 ms/);
+});

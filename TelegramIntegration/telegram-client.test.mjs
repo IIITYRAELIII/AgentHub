@@ -35,16 +35,33 @@ test("TelegramClient attaches the persistent menu only when reply markup is omit
 });
 
 test("TelegramClient sends a short status as one media caption", async () => {
+  const fileIds = new Map();
   const { result, requests } = client({
     fileExists: () => true,
     readFileImpl: async () => Buffer.from("image"),
+    getStatusFileId: (name) => fileIds.get(name),
+    rememberStatusFileId: async (name, fileId) => {
+      if (fileId) fileIds.set(name, fileId);
+      else fileIds.delete(name);
+    },
+    fetchImpl: async (url, options) => {
+      requests.push({ url: String(url), options });
+      return new Response(JSON.stringify({
+        ok: true,
+        result: { message_id: requests.length, photo: [{ file_id: "cached-photo" }] },
+      }));
+    },
   });
   await result.sendStatusCard("status", { parse_mode: "HTML" }, ["codex"]);
+  await result.sendStatusCard("status 2", { parse_mode: "HTML" }, ["codex"]);
 
-  assert.equal(requests.length, 1);
+  assert.equal(requests.length, 2);
   assert.match(requests[0].url, /sendPhoto$/);
   assert.equal(requests[0].options.body.get("caption"), "status");
   assert.equal(requests[0].options.body.get("parse_mode"), "HTML");
+  const cachedBody = JSON.parse(requests[1].options.body);
+  assert.equal(cachedBody.photo, "cached-photo");
+  assert.equal(cachedBody.caption, "status 2");
 });
 
 test("TelegramClient splits long output and puts speech action on the last part", async () => {

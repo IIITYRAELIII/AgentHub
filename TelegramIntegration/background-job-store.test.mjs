@@ -44,3 +44,26 @@ test("background job store enforces its limit and isolates corrupt records", asy
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("background job store deduplicates a replayed Telegram update", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-background-jobs-"));
+  try {
+    const first = new PersistentBackgroundJobStore({ directoryPath: root, now: () => 3_000 });
+    const original = await first.enqueue({
+      kind: "speech",
+      payload: { text: "hello" },
+      dedupeKey: "callback:42",
+    });
+    const restored = new PersistentBackgroundJobStore({ directoryPath: root, now: () => 4_000 });
+    const replay = await restored.enqueue({
+      kind: "speech",
+      payload: { text: "hello" },
+      dedupeKey: "callback:42",
+    });
+    assert.equal(replay.id, original.id);
+    assert.equal(restored.size, 1);
+    assert.equal((await readdir(root)).filter((name) => name.endsWith(".json")).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

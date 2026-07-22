@@ -220,6 +220,7 @@ const INSTANCE_LOCK_FILE = path.join(config.dataDir, "bot.lock");
 const PINNED_TASK_TITLES_FILE = path.join(config.dataDir, "pinned-task-titles.json");
 const TASK_SYNC_FILE = path.join(config.dataDir, "task-sync.json");
 const TASK_DIFFS_FILE = path.join(config.dataDir, "task-diffs.json");
+const STATUS_LIMITS_CACHE_MS = 60_000;
 const TELEGRAM_LIMIT = 3900;
 const THREAD_LIST_LIMIT = 10;
 const TASK_PICKER_PAGE_SIZE = 8;
@@ -398,6 +399,9 @@ const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
 await taskDiffs.load();
 const lastTaskMessages = new Map();
 const lastSeenTaskTurnIds = new Map();
+const statusMediaFileIds = new Map();
+const statusLimitsCache = new Map();
+const statusLimitsInFlight = new Map();
 const uiContextNonce = randomUUID();
 let taskCatalog = [];
 let taskCatalogRefreshedAt = 0;
@@ -412,6 +416,12 @@ const telegramClient = new TelegramClient({
   menu: BOT_MENU,
   statusHeaderDirectory: STATUS_HEADER_DIR,
   selectStatusHeader: randomStatusHeaderFileName,
+  getStatusFileId: (name) => statusMediaFileIds.get(name) ?? null,
+  rememberStatusFileId: async (name, fileId) => {
+    if (fileId) statusMediaFileIds.set(name, fileId);
+    else statusMediaFileIds.delete(name);
+    await saveState();
+  },
   getDefaultChatId: () => chatId,
   getDefaultProvider: () => activeProvider,
   rememberSpeechText: (...args) => mediaController?.rememberSpeechText(...args) ?? null,
@@ -1032,21 +1042,6 @@ async function resolveResumedCodexThreadTitle(id, thread) {
       || `Codex · ${id.slice(0, 8)}`;
 }
 
-async function syncActiveCodexThreadSettings() {
-  if (!isCodex() || !threadId) return;
-  const result = await sendRpc("thread/resume", {
-    threadId,
-    approvalPolicy: "on-request",
-    sandbox: "workspace-write",
-  });
-  if (!isWorkspaceThread(result.thread ?? {})) {
-    throw new Error("задача относится к другой активной папке");
-  }
-  activeThreadTitle = await resolveResumedCodexThreadTitle(threadId, result.thread);
-  applyCodexThreadSettings(threadId, result);
-  await saveState();
-}
-
 async function updateActiveCodexThreadSettings() {
   if (!isCodex() || !threadId) return;
   rememberCodexTaskSettings();
@@ -1072,6 +1067,13 @@ try {
   if (!loadedState.value) throw Object.assign(new Error("state file is missing"), { code: "ENOENT" });
   if (loadedState.recovered) console.warn(`Recovered runtime state from ${loadedState.source}`);
   const saved = loadedState.value;
+  if (Array.isArray(saved.statusMediaFileIds)) {
+    for (const [name, fileId] of saved.statusMediaFileIds.slice(-50)) {
+      if (typeof name === "string" && typeof fileId === "string" && fileId) {
+        statusMediaFileIds.set(name, fileId);
+      }
+    }
+  }
   if (typeof saved.activeProjectRoot === "string") {
     const savedProject = findProject(saved.activeProjectRoot);
     if (savedProject) activeProjectRoot = savedProject.path;
@@ -1968,11 +1970,34 @@ async function sendStatus(snapshot = currentStatusSnapshot()) {
     threadId: snapshot.threadId,
   };
   const codexSelected = snapshot.provider === "codex";
+  const limitsKey = codexSelected ? "codex" : "claude";
+  const readLimits = async () => {
+    const cached = statusLimitsCache.get(limitsKey);
+    if (cached && Date.now() - cached.at < STATUS_LIMITS_CACHE_MS) return cached.value;
+    if (statusLimitsInFlight.has(limitsKey)) return statusLimitsInFlight.get(limitsKey);
+    const request = (async () => {
+      const value = codexSelected
+        ? formatCodexRateLimits(await sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 }))
+        : formatClaudeRateLimits(await readClaudeRateLimits());
+      statusLimitsCache.set(limitsKey, { at: Date.now(), value });
+      return value;
+    })();
+    statusLimitsInFlight.set(limitsKey, request);
+    try {
+      return await request;
+    } finally {
+      statusLimitsInFlight.delete(limitsKey);
+    }
+  };
+  const [catalogResult, limitsResult] = await Promise.allSettled([
+    refreshTaskCatalog(),
+    readLimits(),
+  ]);
   let catalog = taskCatalog;
-  try {
-    catalog = await refreshTaskCatalog();
-  } catch (error) {
-    console.error("Cannot refresh task catalog for status:", error.message);
+  if (catalogResult.status === "fulfilled") {
+    catalog = catalogResult.value;
+  } else {
+    console.error("Cannot refresh task catalog for status:", catalogResult.reason?.message ?? catalogResult.reason);
     catalog = mergeTaskCatalog(taskCatalog, taskRuns.values());
   }
   let task = "Не выбрана";
@@ -1983,13 +2008,12 @@ async function sendStatus(snapshot = currentStatusSnapshot()) {
   }
 
   let limits;
-  try {
-    limits = codexSelected
-      ? formatCodexRateLimits(await sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 }))
-      : formatClaudeRateLimits(await readClaudeRateLimits());
-  } catch (error) {
-    console.error(`Cannot read ${codexSelected ? "Codex" : "Claude"} limits for status:`, error.message);
-    limits = `Не удалось получить: ${error.message}`;
+  if (limitsResult.status === "fulfilled") {
+    limits = limitsResult.value;
+  } else {
+    const error = limitsResult.reason;
+    console.error(`Cannot read ${codexSelected ? "Codex" : "Claude"} limits for status:`, error?.message ?? error);
+    limits = `Не удалось получить: ${error?.message ?? error}`;
   }
 
   const runningTasks = catalog
@@ -2477,10 +2501,19 @@ async function startTurn(input, temporaryFiles = [], {
     taskTitle: activeThreadTitle,
     chatId,
   };
+  // Give Telegram immediate, non-persistent feedback while activity checks and
+  // App Server preflight run. The regular progress card follows after launch.
+  void telegram("sendChatAction", {
+    chat_id: target.chatId ?? chatId,
+    action: "typing",
+  }).catch(() => {});
   const existingRun = taskRuns.forTask(target);
-  const externalActivity = existingRun
-    ? { state: "active", executionOwner: existingRun.executionOwner }
-    : await taskExternalActivity(target);
+  const [externalActivity, repositoryConflict] = existingRun
+    ? [{ state: "active", executionOwner: existingRun.executionOwner }, null]
+    : await Promise.all([
+      taskExternalActivity(target),
+      allowRepositoryConflict ? null : activeRepositoryConflict(target),
+    ]);
   if (existingRun || externalActivity.state === "active"
     || (externalActivity.state === "unknown" && !allowUnknownExternalActivity)) {
     return deferConflictingInput(input, temporaryFiles, {
@@ -2495,25 +2528,15 @@ async function startTurn(input, temporaryFiles = [], {
         : "task-running",
     });
   }
-  if (!allowRepositoryConflict) {
-    const repositoryConflict = await activeRepositoryConflict(target);
-    if (repositoryConflict) {
-      return deferConflictingInput(input, temporaryFiles, {
-        forceSpeechButton,
-        executionOwner: repositoryConflict.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL,
-        target,
-        allowForce: true,
-        conflictKind: "repository",
-        conflictTask: repositoryConflict,
-      });
-    }
-  }
-  if (target.provider === "codex" && catalogEntryIsSelected(target, selectedTask())) {
-    try {
-      await syncActiveCodexThreadSettings();
-    } catch (error) {
-      console.error("Cannot sync Codex thread settings before turn:", error.message);
-    }
+  if (repositoryConflict) {
+    return deferConflictingInput(input, temporaryFiles, {
+      forceSpeechButton,
+      executionOwner: repositoryConflict.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL,
+      target,
+      allowForce: true,
+      conflictKind: "repository",
+      conflictTask: repositoryConflict,
+    });
   }
   let run;
   try {
@@ -3721,8 +3744,13 @@ function scheduleBackgroundJob(item) {
   }
 }
 
-async function enqueueBackgroundJob(kind, payload, targetChatId) {
+async function enqueueBackgroundJob(kind, payload, targetChatId, { dedupeKey = null } = {}) {
   await backgroundJobStore.load();
+  const replayed = backgroundJobStore.findByDedupeKey(dedupeKey);
+  if (replayed) {
+    scheduleBackgroundJob(replayed);
+    return replayed;
+  }
   const limit = kind === "speech" ? MAX_BACKGROUND_SPEECH_JOBS : MAX_BACKGROUND_MEDIA_JOBS;
   if (persistedBackgroundJobCount(kind) >= limit) {
     if (kind !== "speech") {
@@ -3733,7 +3761,7 @@ async function enqueueBackgroundJob(kind, payload, targetChatId) {
     }
     return null;
   }
-  const item = await backgroundJobStore.enqueue({ kind, payload });
+  const item = await backgroundJobStore.enqueue({ kind, payload, dedupeKey });
   if (!scheduleBackgroundJob(item)) {
     console.warn(`Persistent background job ${item.id} is waiting for a free ${kind} queue slot.`);
   }
@@ -4030,7 +4058,7 @@ async function dispatchTelegramCallback(callback, route) {
     const speechJob = await enqueueBackgroundJob("speech", {
       chatId: callback.message.chat.id,
       text,
-    }, callback.message.chat.id);
+    }, callback.message.chat.id, { dedupeKey: `callback:${callback.id}:speech` });
     if (!speechJob) {
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
@@ -4675,6 +4703,7 @@ function saveState() {
     lastSeenTaskTurnIds: [...lastSeenTaskTurnIds.entries()].slice(-500),
     threadTokenTotals: [...threadTokenTotals.entries()].slice(-500),
     turnTokenUsage: [...turnTokenUsage.entries()].slice(-200),
+    statusMediaFileIds: [...statusMediaFileIds.entries()].slice(-50),
     restartRequest,
   }, null, 2)}\n`;
   stateWriteQueue = stateWriteQueue

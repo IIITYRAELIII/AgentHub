@@ -11,6 +11,8 @@ export class TelegramClient {
     menu,
     statusHeaderDirectory,
     selectStatusHeader,
+    getStatusFileId = () => null,
+    rememberStatusFileId = async () => {},
     getDefaultChatId,
     getDefaultProvider,
     rememberSpeechText,
@@ -26,6 +28,8 @@ export class TelegramClient {
     this.menu = menu;
     this.statusHeaderDirectory = statusHeaderDirectory;
     this.selectStatusHeader = selectStatusHeader;
+    this.getStatusFileId = getStatusFileId;
+    this.rememberStatusFileId = rememberStatusFileId;
     this.getDefaultChatId = getDefaultChatId;
     this.getDefaultProvider = getDefaultProvider;
     this.rememberSpeechText = rememberSpeechText;
@@ -106,21 +110,34 @@ export class TelegramClient {
     { targetChatId = this.getDefaultChatId(), provider = this.getDefaultProvider() } = {},
   ) {
     if (!targetChatId) return undefined;
-    const headerPath = path.join(
-      this.statusHeaderDirectory,
-      this.selectStatusHeader(provider, activeProviders),
-    );
+    const headerName = this.selectStatusHeader(provider, activeProviders);
+    const headerPath = path.join(this.statusHeaderDirectory, headerName);
     if (!this.fileExists(headerPath)) return this.sendMessageTo(targetChatId, text, extra);
+    const sendPhoto = async (body) => {
+      const cachedFileId = this.getStatusFileId(headerName);
+      if (cachedFileId) {
+        try {
+          return await this.request("sendPhoto", { ...body, photo: cachedFileId });
+        } catch (error) {
+          if (error?.retryable === true) throw error;
+          await this.rememberStatusFileId(headerName, null);
+        }
+      }
+      const result = await this.multipart("sendPhoto", body, "photo", headerPath);
+      const fileId = Array.isArray(result?.photo) ? result.photo.at(-1)?.file_id : null;
+      if (fileId) await this.rememberStatusFileId(headerName, fileId);
+      return result;
+    };
     const caption = String(text);
     if (caption.length > 1000) {
-      await this.multipart("sendPhoto", { chat_id: targetChatId }, "photo", headerPath);
+      await sendPhoto({ chat_id: targetChatId });
       return this.sendMessageTo(targetChatId, caption, extra);
     }
-    return this.multipart("sendPhoto", {
+    return sendPhoto({
       chat_id: targetChatId,
       caption,
       ...extra,
-    }, "photo", headerPath);
+    });
   }
 
   async sendLongMessage(text, {

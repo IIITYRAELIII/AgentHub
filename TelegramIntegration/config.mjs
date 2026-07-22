@@ -275,7 +275,7 @@ export async function loadConfig() {
       "deliveryRetryIntervalSeconds",
     ),
     deferredInputTtlHours: positiveInteger(raw.deferredInputTtlHours, 168, "deferredInputTtlHours"),
-    progressStartDelayMs: positiveInteger(raw.progressStartDelayMs, 3000, "progressStartDelayMs"),
+    progressStartDelayMs: positiveInteger(raw.progressStartDelayMs, 500, "progressStartDelayMs"),
     pythonExe: path.resolve(
       process.env.WHISPER_PYTHON ?? raw.pythonExe ?? path.join(
         INTEGRATION_ROOT,

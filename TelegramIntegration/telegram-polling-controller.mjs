@@ -17,6 +17,8 @@ export class TelegramPollingController {
     afterUpdate,
     stopping,
     logger = console,
+    now = Date.now,
+    slowUpdateThresholdMs = 2_000,
   }) {
     this.telegram = telegram;
     this.config = config;
@@ -31,6 +33,8 @@ export class TelegramPollingController {
     this.afterUpdate = afterUpdate;
     this.stopping = stopping;
     this.logger = logger;
+    this.now = now;
+    this.slowUpdateThresholdMs = slowUpdateThresholdMs;
   }
 
   allowedCallback(callback) {
@@ -41,6 +45,8 @@ export class TelegramPollingController {
   }
 
   async process(update) {
+    const startedAt = this.now();
+    let handledAt = startedAt;
     this.setProcessingUpdateId(update.update_id);
     try {
       if (update.callback_query && this.allowedCallback(update.callback_query)) {
@@ -48,6 +54,7 @@ export class TelegramPollingController {
       } else if (update.message) {
         await this.handleMessage(update.message);
       }
+      handledAt = this.now();
     } catch (error) {
       this.logger.error(`Telegram update ${update.update_id} failed:`, error.message);
       if (!this.preserveFailedUpdate) throw error;
@@ -73,6 +80,19 @@ export class TelegramPollingController {
     }
     this.setProcessingUpdateId(null);
     await this.afterUpdate();
+    const completedAt = this.now();
+    const totalMs = completedAt - startedAt;
+    if (totalMs >= this.slowUpdateThresholdMs) {
+      const telegramDate = update.message?.date ?? update.callback_query?.message?.date;
+      const transportMs = Number.isFinite(telegramDate)
+        ? Math.max(0, startedAt - telegramDate * 1000)
+        : null;
+      this.logger.warn?.(
+        `Slow Telegram update ${update.update_id}: handler=${handledAt - startedAt} ms, `
+        + `state=${completedAt - handledAt} ms`
+        + (transportMs === null ? "" : `, transport<=${transportMs} ms`),
+      );
+    }
   }
 
   async run() {

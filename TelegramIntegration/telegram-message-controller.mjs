@@ -65,13 +65,17 @@ export class TelegramMessageController {
     if (message.photo || message.document?.mime_type?.startsWith("image/")) {
       const target = this.selectedTurnTarget(message.chat.id);
       await this.bindIncomingMessage(message, message.caption?.trim() || "Изображение без подписи");
-      await this.enqueueMedia("image", { message, target }, target.chatId);
+      await this.enqueueMedia("image", { message, target }, target.chatId, {
+        dedupeKey: `message:${message.chat.id}:${message.message_id}:image`,
+      });
       return true;
     }
     if (message.voice || message.audio) {
       const target = this.selectedTurnTarget(message.chat.id);
       await this.bindIncomingMessage(message, "Голосовое сообщение");
-      await this.enqueueMedia("voice", { message, target }, target.chatId);
+      await this.enqueueMedia("voice", { message, target }, target.chatId, {
+        dedupeKey: `message:${message.chat.id}:${message.message_id}:voice`,
+      });
       return true;
     }
     return false;
