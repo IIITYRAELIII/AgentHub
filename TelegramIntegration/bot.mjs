@@ -131,7 +131,11 @@ import {
   taskExecutionRuntimeLabel,
 } from "./task-catalog.mjs";
 import { resolveCodexObservedExecutionOwner } from "./codex-runtime-owner.mjs";
-import { botReplacementInvocation } from "./runtime-restart.mjs";
+import {
+  botReplacementInvocation,
+  directWindowsLauncherInvocation,
+  launchReplacementAndWait,
+} from "./runtime-restart.mjs";
 import { RuntimeCommandServer } from "./runtime-command.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import { MediaController } from "./media-controller.mjs";
@@ -3712,8 +3716,24 @@ async function performRestart() {
     botFile: path.join(import.meta.dirname, "bot.mjs"),
     integrationRoot: INTEGRATION_ROOT,
   });
-  const replacement = spawn(invocation.command, invocation.args, invocation.options);
-  replacement.unref();
+  const launcher = String(process.env.TELEGRAM_INTEGRATION_LAUNCHER ?? "").trim();
+  const fallbackInvocation = process.platform === "win32" && launcher
+    ? directWindowsLauncherInvocation({ launcher })
+    : null;
+  try {
+    const replacement = await launchReplacementAndWait({
+      invocation,
+      fallbackInvocation,
+      lockFile: INSTANCE_LOCK_FILE,
+    });
+    console.log(
+      `Replacement bot ready: PID ${replacement.lock.pid}; attempt ${replacement.attempt}`
+        + `${replacement.usedFallback ? " (direct launcher fallback)" : ""}.`,
+    );
+  } catch (error) {
+    console.error("Cannot start replacement bot:", error.message);
+    process.exitCode = 1;
+  }
   // Процессы Claude намеренно переживают перезапуск: новый бот подхватит их
   // по сохранённому PID и файлу вывода.
   setTimeout(() => process.exit(0), 500).unref();
