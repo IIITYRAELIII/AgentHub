@@ -67,6 +67,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
         TELEGRAM_CODEX_CONFIG: configPath,
         TELEGRAM_INTEGRATION_RUNTIME_ROOT: temporaryRoot,
         TELEGRAM_INTEGRATION_LAUNCHER: "",
+        TELEGRAM_INTEGRATION_DISABLE_SECRET_ACL: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,

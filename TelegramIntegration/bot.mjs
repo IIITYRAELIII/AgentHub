@@ -147,6 +147,7 @@ import {
 } from "./runtime-restart.mjs";
 import { restorePreviousBotAfterFailedReplacement } from "./restart-recovery.mjs";
 import { RuntimeCommandServer } from "./runtime-command.mjs";
+import { DesktopControlServer } from "./desktop-control.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import { MediaController } from "./media-controller.mjs";
 import { TelegramMessageController } from "./telegram-message-controller.mjs";
@@ -338,6 +339,8 @@ const runtimeCommandServer = new RuntimeCommandServer({
   },
 });
 await runtimeCommandServer.start();
+let desktopControlServer = null;
+let desktopMutationQueue = Promise.resolve();
 
 let updateOffset = 0;
 let chatId = null;
@@ -1670,6 +1673,162 @@ async function sendThreadPicker({ editMessage = null, page = 0 } = {}) {
   } else {
     await sendMessage(view.text, { reply_markup: view.replyMarkup });
   }
+}
+
+function desktopRunSnapshot(run) {
+  if (!run) return null;
+  return {
+    id: run.id,
+    turnId: run.turnId ?? null,
+    provider: run.provider,
+    threadId: run.threadId,
+    taskTitle: runTaskTitle(run),
+    status: run.status,
+    observer: run.observer === true,
+    executionOwner: run.executionOwner ?? null,
+    runtime: run.appServer ?? null,
+    model: run.model ?? null,
+    reasoning: run.reasoning ?? null,
+    stage: String(run.progressStage ?? "Выполняется…"),
+    progress: String(run.progressReasoning ?? ""),
+    response: String(run.responseText ?? ""),
+    startedAt: run.startedAt ?? null,
+    lastActivityAt: run.lastMeaningfulProgressAt ?? run.progressHeartbeatAt ?? run.startedAt ?? null,
+  };
+}
+
+function desktopTaskSnapshot(entry) {
+  const task = {
+    provider: entry.provider,
+    projectRoot: entry.projectRoot,
+    threadId: entry.threadId,
+  };
+  const run = taskRuns.forTask(task);
+  const lastMessage = savedLastTaskMessageRecord(task);
+  return {
+    provider: entry.provider,
+    projectRoot: entry.projectRoot,
+    projectName: entry.projectName ?? findProject(entry.projectRoot)?.name ?? path.basename(entry.projectRoot),
+    threadId: entry.threadId,
+    title: entry.title,
+    selected: catalogEntryIsSelected(entry, selectedTask()),
+    running: Boolean(run || entry.running),
+    activityUnknown: entry.activityUnknown === true,
+    executionOwner: run?.executionOwner ?? entry.executionOwner ?? null,
+    runtime: run?.appServer ?? (entry.executionOwner ? taskExecutionRuntimeLabel(entry.executionOwner) : null),
+    updatedAtMs: Math.max(
+      Number(entry.lastActivityAtMs) || 0,
+      Number(entry.updatedAtMs) || 0,
+      Date.parse(run?.lastMeaningfulProgressAt ?? run?.startedAt ?? "") || 0,
+    ),
+    lastAnswer: lastMessage?.text ?? "",
+    lastAnswerAt: lastMessage?.updatedAt ?? null,
+    run: desktopRunSnapshot(run),
+  };
+}
+
+async function desktopSnapshot({ refresh = false } = {}) {
+  const catalogStale = Date.now() - taskCatalogRefreshedAt >= 5_000;
+  if (refresh || !taskCatalog.length || catalogStale) {
+    await refreshTaskCatalog({ force: Boolean(refresh || catalogStale) }).catch((error) => {
+      console.warn("Cannot refresh desktop task catalog:", error.message);
+    });
+  }
+  let catalog = taskCatalog;
+  if (!catalog.some((entry) => catalogEntryIsSelected(entry, selectedTask())) && threadId) {
+    catalog = mergeTaskCatalog(catalog, [{
+      ...selectedTurnTarget(),
+      projectName: activeProject().name,
+      startedAt: new Date().toISOString(),
+    }]);
+  }
+  const tasks = catalog.map(desktopTaskSnapshot);
+  return {
+    generatedAt: new Date().toISOString(),
+    selected: {
+      ...selectedTask(),
+      title: activeThreadTitle,
+      projectName: activeProject().name,
+      model: activeProvider === "codex" ? codexModelLabel(codexModel) : CLAUDE_MODEL_LABELS[claudeModel],
+      reasoning: CODEX_REASONING_LABELS[
+        activeProvider === "codex" ? codexReasoningEffort : claudeReasoningEffort
+      ],
+    },
+    activeCount: tasks.filter((item) => item.running).length,
+    tasks,
+  };
+}
+
+async function desktopSelectTask(params) {
+  const provider = String(params.provider ?? "").trim();
+  const selectedThreadId = String(params.threadId ?? "").trim();
+  if (!['codex', 'claude'].includes(provider) || !selectedThreadId) {
+    throw new Error("Укажите корректную задачу");
+  }
+  const catalog = await refreshTaskCatalog();
+  const entry = catalog.find((item) => item.provider === provider && item.threadId === selectedThreadId);
+  if (!entry) throw new Error("Задача не найдена в локальном каталоге");
+  await activateMessageBinding({
+    provider: entry.provider,
+    projectRoot: entry.projectRoot,
+    threadId: entry.threadId,
+    taskTitle: entry.title,
+  });
+  return desktopSnapshot();
+}
+
+async function desktopSendMessage(params) {
+  const text = String(params.text ?? "").trim();
+  if (!text) throw new Error("Введите сообщение");
+  if (text.length > 100_000) throw new Error("Сообщение слишком длинное");
+  const target = selectedTurnTarget(chatId);
+  if (!target.threadId) throw new Error("Сначала выберите или создайте задачу");
+  const existingRun = taskRuns.forTask(target);
+  const externalActivity = existingRun
+    ? { state: "active", executionOwner: existingRun.executionOwner }
+    : await taskExternalActivity(target);
+  if (existingRun || externalActivity.state !== "inactive") {
+    return {
+      accepted: false,
+      reason: externalActivity.state === "unknown" ? "activity-unknown" : "task-running",
+      message: externalActivity.state === "unknown"
+        ? "Нельзя надёжно определить, завершён ли предыдущий ход."
+        : "В этой задаче уже выполняется ход. Выберите другую задачу или дождитесь завершения.",
+    };
+  }
+  const repositoryConflict = await activeRepositoryConflict(target);
+  if (repositoryConflict) {
+    return {
+      accepted: false,
+      reason: "repository-conflict",
+      message: `Задача «${repositoryConflict.taskTitle ?? "Без названия"}» уже изменяет тот же Git-репозиторий.`,
+    };
+  }
+  const run = await beginRun(text, target);
+  await launchTurn(run, text);
+  return { accepted: true, runId: run.id, snapshot: await desktopSnapshot() };
+}
+
+async function desktopNewTask(params) {
+  const provider = String(params.provider ?? activeProvider).trim();
+  if (!['codex', 'claude'].includes(provider)) throw new Error("Неизвестный агент");
+  if (provider !== activeProvider) await switchProvider(provider);
+  await createThread();
+  return desktopSnapshot({ refresh: true });
+}
+
+function serializeDesktopMutation(operation) {
+  const next = desktopMutationQueue.catch(() => {}).then(operation);
+  desktopMutationQueue = next.catch(() => {});
+  return next;
+}
+
+async function handleDesktopControl({ action, params }) {
+  if (action === "snapshot") return desktopSnapshot(params);
+  if (action === "select-task") return serializeDesktopMutation(() => desktopSelectTask(params));
+  if (action === "send-message") return serializeDesktopMutation(() => desktopSendMessage(params));
+  if (action === "new-task") return serializeDesktopMutation(() => desktopNewTask(params));
+  throw new Error(`Неизвестная desktop-команда: ${action}`);
 }
 
 async function sendProjectPicker() {
@@ -3860,6 +4019,7 @@ async function performRestart() {
   stopRuntimeTimers();
   await stopCodexAppServerTree();
   mediaController.stop();
+  await desktopControlServer?.close();
   await runtimeCommandServer.close();
   await instanceGuard.release();
   const invocation = botReplacementInvocation({
@@ -3886,7 +4046,10 @@ async function performRestart() {
       await restorePreviousBotAfterFailedReplacement({
         replacementError: error,
         acquireLock: () => instanceGuard.acquire(),
-        startCommandServer: () => runtimeCommandServer.start(),
+        startCommandServer: async () => {
+          await runtimeCommandServer.start();
+          await desktopControlServer?.start();
+        },
         setStopping: (value) => { stopping = value; },
         restoreProvider: async () => {
           if (isCodex() || taskRuns.values().some((run) => run.provider === "codex")) {
@@ -4801,6 +4964,7 @@ async function shutdown(signal) {
     if (run.provider === "codex") run.process?.kill();
   }
   mediaController.stop();
+  await desktopControlServer?.close();
   await runtimeCommandServer.close();
   await Promise.allSettled([
     stateWriteQueue,
@@ -4830,6 +4994,14 @@ await restoreBackgroundJobs().catch(async (error) => {
   console.error("Cannot recover background jobs:", error.message);
   await sendMessage(`⚠️ Не удалось восстановить фоновые медиа-задачи: ${error.message}`).catch(() => {});
 });
+desktopControlServer = new DesktopControlServer({
+  runtimeRoot: runtimeCommandRoot,
+  handler: handleDesktopControl,
+  protectSecret: process.env.TELEGRAM_INTEGRATION_DISABLE_SECRET_ACL === "1"
+    ? async () => {}
+    : undefined,
+});
+await desktopControlServer.start();
 startRuntimeTimers();
 try {
   await telegram("setMyCommands", {

@@ -59,6 +59,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
         TELEGRAM_CODEX_CONFIG: configPath,
         TELEGRAM_INTEGRATION_RUNTIME_ROOT: temporaryRoot,
         TELEGRAM_INTEGRATION_LAUNCHER: "",
+        TELEGRAM_INTEGRATION_DISABLE_SECRET_ACL: "1",
         USERPROFILE: fakeHome,
         HOME: fakeHome,
         FAKE_CLAUDE_HOLD_DIR: holdDirectory,
