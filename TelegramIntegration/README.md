@@ -290,6 +290,8 @@ npm start
 
 Текущий план выделения компонентов из исторически выросшего `bot.mjs`, границы этапов и критерий завершения описаны в [BOT_MODULE_SPLIT.md](BOT_MODULE_SPLIT.md). Стабилизационные исправления и архитектурная декомпозиция учитываются раздельно в [STABILIZATION_CHECKLIST.md](STABILIZATION_CHECKLIST.md).
 
+Низкоуровневый Codex App Server transport вынесен в `codex-app-server-transport.mjs`: модуль владеет дочерним процессом, JSON-RPC request/response, таймаутами, разбором событий, остановкой дерева и коротким ограниченным кэшем `thread/read`. `bot.mjs` получает уже разобранные события и определяет прикладную политику переподключения и восстановления конкретных задач.
+
 `npm run doctor` не ограничивается поиском файлов: он проверяет Telegram Bot API через `getMe`, запускает изолированный Codex App Server и выполняет `initialize + thread/list`, а также проверяет авторизованную сессию Claude через `/usage`. Все live-probes имеют таймаут и не создают новых задач.
 
 В Windows также доступны `start.ps1` и `install-autostart.ps1`. После активации они направляют запуск во внешний runtime; PowerShell используется только как launcher и для интеграции с автозапуском Windows, сам бот работает в Node.js.

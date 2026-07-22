@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -154,6 +153,7 @@ import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import { runTtsWorkerRequest } from "./tts-worker-client.mjs";
 import { parseTaskViewCallbackData, taskViewCallbackData } from "./task-view-callback.mjs";
 import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "./codex-invocation.mjs";
+import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
 
 const config = await loadConfig();
 const defaultDataDirectory = path.join(INTEGRATION_ROOT, "data");
@@ -330,7 +330,6 @@ const pinnedTaskTitles = {};
 let threadId = null;
 let activeThreadTitle = "";
 let latestDiff = "";
-let requestSequence = 1;
 let stopping = false;
 let autoApprove = config.autoApproveOnStart;
 let codexRestarting = false;
@@ -348,10 +347,8 @@ const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
 const EXTERNAL_TASK_POLL_INTERVAL_MS = 1_500;
 const MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS = 5_000;
 const CLAUDE_OUTPUT_POLL_INTERVAL_MS = 250;
-const CODEX_THREAD_READ_CACHE_MS = 250;
 const TASK_CATALOG_CACHE_MS = 1_500;
 const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
-const pendingRpc = new Map();
 const pendingApprovals = new Map();
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
@@ -392,7 +389,6 @@ const uiContextNonce = randomUUID();
 let taskCatalog = [];
 let taskCatalogRefreshedAt = 0;
 let taskCatalogRefreshInFlight = null;
-const codexThreadReadCache = new Map();
 const taskSyncStore = new LocalTaskSyncStore({ filePath: TASK_SYNC_FILE });
 await taskSyncStore.load();
 
@@ -1227,30 +1223,22 @@ async function spawnCodex(args) {
     console.log(`Local MCP unavailable; disabled for Integration App Server: ${endpoints}`);
   }
   console.error(`Starting Codex: ${command}`);
-  return spawn(command, [...config.codexExecutableArgs, ...mcp.args, ...args], {
+  const child = spawn(command, [...config.codexExecutableArgs, ...mcp.args, ...args], {
     cwd: activeProjectRoot,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
+  await new Promise((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+  return child;
 }
 
-let codex = null;
-let codexLines = null;
-
-async function handleCodexTransportExit(instance, code, signal, cause = null) {
-  if (codex !== instance) return;
-  const detail = cause?.message ?? `code=${code}, signal=${signal}`;
+async function handleCodexTransportExit({ detail }) {
   console.error(`Codex app-server stopped (${detail}).`);
-  const error = new Error(`Codex app-server stopped (${detail})`);
-  for (const pending of pendingRpc.values()) {
-    clearTimeout(pending.timer);
-    pending.reject(error);
-  }
-  pendingRpc.clear();
   const wasActive = isCodex();
   const hadCodexRuns = taskRuns.values().some((run) => run.provider === "codex");
-  codex = null;
-  codexLines = null;
   if (stopping) return;
   if (!wasActive && !hadCodexRuns) return;
   for (const run of taskRuns.values().filter((item) => item.provider === "codex")) {
@@ -1259,60 +1247,20 @@ async function handleCodexTransportExit(instance, code, signal, cause = null) {
   if (!codexRestarting) setTimeout(() => void restartCodexAfterCrash(), 2000);
 }
 
-async function startCodexAppServer() {
-  if (codex) return;
-  const child = await spawnCodex(["app-server", "--stdio"]);
-  try {
-    await new Promise((resolve, reject) => {
-      child.once("spawn", resolve);
-      child.once("error", reject);
-    });
-  } catch (error) {
-    child.kill();
-    throw new Error(`Codex app-server failed to start: ${error.message}`, { cause: error });
-  }
-  codex = child;
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (data) => console.error(`[codex] ${data.trimEnd()}`));
-  child.on("error", (error) => {
-    void handleCodexTransportExit(child, null, null, error);
-  });
-  child.stdin.on("error", (error) => {
-    void handleCodexTransportExit(child, null, null, error);
-  });
-  child.on("exit", (code, signal) => {
-    void handleCodexTransportExit(child, code, signal);
-  });
+const codexTransport = new CodexAppServerTransport({
+  spawnProcess: spawnCodex,
+  stopProcessTree,
+  onMessage: handleCodexMessage,
+  onExit: handleCodexTransportExit,
+  rpcTimeoutMs: CODEX_RPC_TIMEOUT_MS,
+});
 
-  codexLines = createInterface({ input: child.stdout });
-  codexLines.on("line", (line) => {
-    try {
-      void handleCodexMessage(JSON.parse(line)).catch((error) => {
-        console.error("Codex event handling error:", error.message);
-      });
-    } catch (error) {
-      console.error("Invalid app-server message:", error.message);
-    }
-  });
+async function startCodexAppServer() {
+  await codexTransport.start();
 }
 
 async function stopCodexAppServerTree() {
-  const child = codex;
-  if (!child) return;
-  if (!child.pid) {
-    child.kill();
-    return;
-  }
-  await stopProcessTree(child.pid).catch(() => child.kill());
-}
-
-function writeCodexMessage(message) {
-  if (!codex) throw new Error("Codex App Server is not running");
-  if (typeof codex.send === "function") {
-    codex.send(message);
-    return;
-  }
-  codex.stdin.write(`${JSON.stringify(message)}\n`);
+  await codexTransport.stop();
 }
 
 async function restartCodexAfterCrash() {
@@ -1339,60 +1287,23 @@ async function restartCodexAfterCrash() {
 }
 
 function sendRpc(method, params = {}, { timeoutMs = CODEX_RPC_TIMEOUT_MS } = {}) {
-  if (!codex) return Promise.reject(new Error("Codex App Server is not running"));
-  const id = requestSequence++;
-  const promise = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      if (!pendingRpc.delete(id)) return;
-      reject(new Error(`Codex RPC ${method} timed out after ${timeoutMs} ms`));
-    }, timeoutMs);
-    pendingRpc.set(id, { resolve, reject, timer, method });
-  });
-  try {
-    writeCodexMessage({ method, id, params });
-  } catch (error) {
-    clearTimeout(pendingRpc.get(id)?.timer);
-    pendingRpc.delete(id);
-    return Promise.reject(error);
-  }
-  return promise;
+  return codexTransport.request(method, params, { timeoutMs });
 }
 
 function invalidateCodexThreadRead(threadId) {
-  const key = String(threadId ?? "").trim();
-  if (key) codexThreadReadCache.delete(key);
+  codexTransport.invalidateThreadRead(threadId);
 }
 
-async function readCodexThread(threadId, { fresh = false } = {}) {
-  const key = String(threadId ?? "").trim();
-  if (!key) throw new Error("Codex thread id is missing");
-  const cached = codexThreadReadCache.get(key);
-  if (cached?.promise) return cached.promise;
-  if (!fresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
-
-  const entry = { value: null, expiresAt: 0, promise: null };
-  entry.promise = sendRpc("thread/read", { threadId: key, includeTurns: true });
-  codexThreadReadCache.set(key, entry);
-  try {
-    entry.value = await entry.promise;
-    entry.expiresAt = Date.now() + CODEX_THREAD_READ_CACHE_MS;
-    entry.promise = null;
-    if (codexThreadReadCache.size > 200) {
-      codexThreadReadCache.delete(codexThreadReadCache.keys().next().value);
-    }
-    return entry.value;
-  } catch (error) {
-    if (codexThreadReadCache.get(key) === entry) codexThreadReadCache.delete(key);
-    throw error;
-  }
+function readCodexThread(threadId, options = {}) {
+  return codexTransport.readThread(threadId, options);
 }
 
 function sendNotification(method, params = {}) {
-  writeCodexMessage({ method, params });
+  codexTransport.notify(method, params);
 }
 
 function respondRpc(id, result) {
-  writeCodexMessage({ id, result });
+  codexTransport.respond(id, result);
 }
 
 async function initializeProvider() {
@@ -1488,7 +1399,7 @@ async function nameTelegramThread(id) {
 }
 
 async function listAllCodexThreads() {
-  if (!codex) {
+  if (!codexTransport.running) {
     await startCodexAppServer();
     await initializeCodex({ attachSelectedThread: false });
   }
@@ -1560,7 +1471,7 @@ async function buildTaskCatalog() {
           ? TASK_EXECUTION_OWNERS.TELEGRAM
           : await resolveCodexObservedExecutionOwner(activity, {
             rolloutPath: thread.path,
-            integrationPid: codex?.pid,
+            integrationPid: codexTransport.pid,
           });
         const entry = codexCatalogEntry(thread, project, {
           rolloutRunning,
@@ -1790,7 +1701,7 @@ async function switchProvider(target) {
   latestDiff = "";
   try {
     if (isCodex()) {
-      if (!codex) {
+      if (!codexTransport.running) {
         await startCodexAppServer();
         await initializeCodex();
       } else {
@@ -1895,7 +1806,7 @@ async function activateMessageBinding(binding) {
   }
   latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
   try {
-    if (isCodex() && !codex) {
+    if (isCodex() && !codexTransport.running) {
       await startCodexAppServer();
       await initializeCodex({ attachSelectedThread: false });
     }
@@ -2449,7 +2360,7 @@ async function taskExternalActivity(target) {
   if (!target?.threadId) return { state: "inactive", executionOwner: null };
   try {
     if (target.provider === "codex") {
-      if (!codex) {
+      if (!codexTransport.running) {
         await startCodexAppServer();
         await initializeCodex({ attachSelectedThread: false });
       }
@@ -2459,7 +2370,7 @@ async function taskExternalActivity(target) {
         state: codexThreadRunning(result.thread, { rolloutRunning: activity.running }) ? "active" : "inactive",
         executionOwner: await resolveCodexObservedExecutionOwner(activity, {
           rolloutPath: result.thread?.path,
-          integrationPid: codex?.pid,
+          integrationPid: codexTransport.pid,
         }),
       };
     }
@@ -3145,17 +3056,6 @@ async function attachClaudeRunAfterRestart(run) {
 }
 
 async function handleCodexMessage(message) {
-  if (message.id !== undefined && (message.result !== undefined || message.error !== undefined)) {
-    const pending = pendingRpc.get(message.id);
-    if (pending) {
-      pendingRpc.delete(message.id);
-      clearTimeout(pending.timer);
-      if (message.error) pending.reject(new Error(message.error.message ?? JSON.stringify(message.error)));
-      else pending.resolve(message.result);
-    }
-    return;
-  }
-
   const { method, params = {}, id } = message;
   if (params.threadId) invalidateCodexThreadRead(params.threadId);
   if (id !== undefined && method) {
@@ -3428,7 +3328,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
       ? await resolveCodexObservedExecutionOwner(activity, {
         turnId: turn.id,
         rolloutPath: result.thread?.path,
-        integrationPid: codex?.pid,
+        integrationPid: codexTransport.pid,
       })
       : TASK_EXECUTION_OWNERS.TELEGRAM,
   };
@@ -3681,7 +3581,7 @@ async function readTaskViewHistory(binding, { completedOnly = false } = {}) {
   const task = taskViewRun(binding, binding.chatId);
   try {
     if (binding.provider === "codex") {
-      if (!codex) {
+      if (!codexTransport.running) {
         await startCodexAppServer();
         await initializeCodex({ attachSelectedThread: false });
       }
@@ -3899,7 +3799,7 @@ async function resolveTaskViewBinding(identity, targetChatId, sourceMessageId) {
 async function recoverTaskRun(run) {
   if (run.observer) {
     run.displayRequested = run.displayRequested === true;
-    const snapshot = run.provider === "codex" && codex
+    const snapshot = run.provider === "codex" && codexTransport.running
       ? await readCodexTaskSnapshot(run)
       : run.provider === "claude"
         ? await readClaudeTaskSnapshot(run.threadId)
@@ -3929,7 +3829,7 @@ async function recoverTaskRun(run) {
     await attachClaudeRunAfterRestart(run);
     return;
   }
-  if (run.provider !== "codex" || !codex) {
+  if (run.provider !== "codex" || !codexTransport.running) {
     await finishProgress(run, "Локальный процесс прервался при перезапуске бота.");
     await safelyDeliverRunMessage(
       run,
@@ -4010,7 +3910,7 @@ async function recoverTaskRun(run) {
 
 async function recoverActiveRuns({ provider = null } = {}) {
   const runs = taskRuns.values().filter((run) => !provider || run.provider === provider);
-  if (runs.some((run) => run.provider === "codex") && !codex) {
+  if (runs.some((run) => run.provider === "codex") && !codexTransport.running) {
     await startCodexAppServer();
     await initializeCodex({ attachSelectedThread: isCodex() });
   }

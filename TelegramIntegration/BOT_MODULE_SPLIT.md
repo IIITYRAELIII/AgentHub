@@ -15,7 +15,7 @@
 |---:|:---:|---|
 | 1 | ✅ | `TelegramClient`: JSON/multipart transport, обычные и длинные сообщения, status-card и typing lifecycle. |
 | 2 | ✅ | Учёт токенов: нормализация, delta, суммирование и форматирование вынесены в `token-usage.mjs`. |
-| 3 | ⬜ | Codex App Server transport: процесс, JSON-RPC, таймауты, reconnect и кэш чтения thread. |
+| 3 | ✅ | `CodexAppServerTransport`: процесс, JSON-RPC, таймауты, сигнал разрыва/reconnect, остановка дерева и ограниченный кэш `thread/read`. Политика восстановления ходов остаётся в композиции бота. |
 | 4 | ⬜ | Claude run controller: detached-процесс, чтение stream-json, завершение и восстановление. |
 | 5 | ⬜ | Task lifecycle: запуск, progress, observer, очередь и восстановление ходов. |
 | 6 | ⬜ | Telegram controllers: выбор задач, просмотр истории, approvals, команды и callback routing. |
