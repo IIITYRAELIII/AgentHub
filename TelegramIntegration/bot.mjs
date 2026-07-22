@@ -15,18 +15,13 @@ import {
   buildClaudePrompt,
   claudeThinkingTokens,
   formatClaudeUsage,
-  parseClaudeResult,
-  parseClaudeStreamEvent,
 } from "./claude.mjs";
 import {
-  ClaudeOutputReader,
   cleanupOrphanedClaudeRunOutputs,
-  openClaudeRunOutput,
   processIsAlive,
-  removeClaudeRunOutput,
-  spawnClaudeWorker,
   stopProcessTree,
 } from "./claude-run-io.mjs";
+import { ClaudeRunController } from "./claude-run-controller.mjs";
 import {
   buildCodexCollaborationMode,
   CODEX_COLLABORATION_MODE_LABELS,
@@ -2296,10 +2291,7 @@ async function completeRun(run) {
     clearTimeout(run.observerTimer);
     run.observerTimer = null;
   }
-  if (run.claudeDrainTimer) {
-    clearTimeout(run.claudeDrainTimer);
-    run.claudeDrainTimer = null;
-  }
+  claudeRunController.pause(run);
   taskRuns.remove(run);
   invalidateTaskCatalog();
   run.status = "completed";
@@ -2717,6 +2709,20 @@ async function refreshTaskDiff(run) {
   return run.latestDiff ?? "";
 }
 
+const claudeRunController = new ClaudeRunController({
+  dataDir: config.dataDir,
+  pollIntervalMs: CLAUDE_OUTPUT_POLL_INTERVAL_MS,
+  isCurrentRun: (run) => taskRuns.forTask(run) === run,
+  isStopping: () => stopping,
+  onStreamEvent: handleClaudeStreamEvent,
+  onComplete: finishClaudeRun,
+  onPersist: () => saveState(),
+  onActive: () => startTyping(),
+  onReconnect: (run, alive) => setProgressStage(run, alive
+    ? "Переподключился к выполняющемуся ходу Claude."
+    : "Дочитываю прерванный ход Claude…"),
+});
+
 async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton = false } = {}) {
   const turnId = randomUUID();
   const prompt = buildClaudePrompt(input);
@@ -2739,128 +2745,19 @@ async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton =
   if (temporaryFiles.length) turnTemporaryFiles.set(turnId, temporaryFiles);
   run.claudeTemporaryFiles = [...temporaryFiles];
   run.claudeForceSpeechButton = forceSpeechButton === true;
-  const output = await openClaudeRunOutput(config.dataDir, turnId);
-  run.claudeOutputPath = output.outputPath;
-  run.claudeErrorPath = output.errorPath;
-  run.claudeReadOffset = 0;
-  run.claudeThinkingPeak = 0;
-  run.claudeFailureText = "";
-  run.claudeResult = null;
-  run.claudeExitCode = null;
-  run.claudeExited = false;
-  run.claudeSettled = false;
   const invocation = resolveClaudeInvocation();
-  let worker;
-  let outputClosed = false;
-  let callbacksEnabled = false;
-  let spawnError = null;
-  try {
-    // Вывод уходит в файл, а процесс отвязан от бота: перезапуск бота больше не
-    // рвёт поток stream-json и не убивает начатый ход. Обработчики навешиваются
-    // синхронно внутри spawnClaudeWorker, иначе ошибка запуска теряется.
-    worker = spawnClaudeWorker({
-      command: invocation.command,
-      args: [...invocation.prefixArgs, ...args],
-      cwd: run.projectRoot,
-      stdout: output.outputHandle.fd,
-      stderr: output.errorHandle.fd,
-      env: {
-        ...process.env,
-        MAX_THINKING_TOKENS: String(claudeThinkingTokens(run.reasoningId)),
-      },
-      onError: (error) => {
-        spawnError = error;
-        if (callbacksEnabled) void finishClaudeRun(run, { spawnError: error });
-      },
-      onExit: (code) => {
-        run.claudeExitCode = code;
-        run.claudeExited = true;
-        if (callbacksEnabled) void drainClaudeRun(run);
-      },
-    });
-  } finally {
-    await Promise.all([
-      output.outputHandle.close().catch(() => {}),
-      output.errorHandle.close().catch(() => {}),
-    ]);
-    outputClosed = true;
-  }
-  if (!outputClosed) return;
-  if (spawnError) {
-    await finishClaudeRun(run, { spawnError });
-    return;
-  }
-  run.process = worker;
-  run.pid = worker.pid ?? null;
-  await saveState();
-  callbacksEnabled = true;
-  if (spawnError) {
-    await finishClaudeRun(run, { spawnError });
-    return;
-  }
-  if (run.claudeExited) {
-    await drainClaudeRun(run);
-    return;
-  }
-  if (run.claudeSettled || taskRuns.forTask(run) !== run) return;
-  startTyping();
-  scheduleClaudeRunDrain(run, 0);
+  await claudeRunController.start(run, {
+    command: invocation.command,
+    args: [...invocation.prefixArgs, ...args],
+    cwd: run.projectRoot,
+    env: {
+      ...process.env,
+      MAX_THINKING_TOKENS: String(claudeThinkingTokens(run.reasoningId)),
+    },
+  });
 }
 
-function claudeRunReader(run) {
-  if (!run.claudeReader || run.claudeReader.path !== run.claudeOutputPath) {
-    run.claudeReader = new ClaudeOutputReader(run.claudeOutputPath, {
-      offset: run.claudeReadOffset ?? 0,
-    });
-    run.claudeReader.path = run.claudeOutputPath;
-  }
-  return run.claudeReader;
-}
-
-function scheduleClaudeRunDrain(run, delayMs = CLAUDE_OUTPUT_POLL_INTERVAL_MS) {
-  if (!run || run.claudeSettled || run.claudeDrainTimer || stopping) return;
-  if (taskRuns.forTask(run) !== run) return;
-  run.claudeDrainTimer = setTimeout(() => {
-    run.claudeDrainTimer = null;
-    void drainClaudeRun(run);
-  }, delayMs);
-}
-
-// Читает всё, что CLI успел дописать в файл хода, и решает, продолжать ли
-// наблюдение: ход завершён, когда пришёл result либо процесс больше не жив.
-async function drainClaudeRun(run) {
-  if (!run || run.claudeSettled || taskRuns.forTask(run) !== run) return;
-  if (run.claudeDrainInFlight) {
-    run.claudeDrainPending = true;
-    return;
-  }
-  run.claudeDrainInFlight = true;
-  try {
-    do {
-      run.claudeDrainPending = false;
-      const reader = claudeRunReader(run);
-      const lines = await reader.read();
-      run.claudeReadOffset = reader.offset;
-      for (const line of lines) handleClaudeStreamLine(run, line);
-    } while (run.claudeDrainPending);
-  } catch (error) {
-    console.error(`Cannot read Claude output for task ${run.threadId}:`, error.message);
-  } finally {
-    run.claudeDrainInFlight = false;
-  }
-  if (run.claudeSettled || taskRuns.forTask(run) !== run) return;
-  const processGone = run.claudeExited === true
-    || (run.pid ? !processIsAlive(run.pid) : !run.process);
-  if (run.claudeResult || processGone) {
-    await finishClaudeRun(run);
-    return;
-  }
-  scheduleClaudeRunDrain(run);
-}
-
-function handleClaudeStreamLine(run, line) {
-  const parsed = parseClaudeStreamEvent(line);
-  if (!parsed) return;
+function handleClaudeStreamEvent(run, parsed) {
   if (parsed.sessionId && parsed.sessionId !== run.threadId) {
     const previousThreadId = run.threadId;
     const wasSelected = isSelectedRun(run);
@@ -2921,56 +2818,28 @@ function handleClaudeStreamLine(run, line) {
   if (streamEvent?.type === "content_block_start" && streamEvent.content_block?.type === "tool_use") {
     setProgressStage(run, `Claude использует инструмент ${streamEvent.content_block.name ?? ""}…`);
   }
-  if (parsed.result) run.claudeResult = parsed.result;
 }
 
-async function readClaudeRunResult(run) {
-  if (run.claudeResult) return run.claudeResult;
-  if (!run.claudeOutputPath) return null;
-  try {
-    const text = await readFile(run.claudeOutputPath, "utf8");
-    return text.trim() ? parseClaudeResult(text) : null;
-  } catch {
-    // Файл потерян или не содержит разбираемого результата.
-    return null;
-  }
-}
-
-async function readClaudeRunError(run) {
-  if (!run.claudeErrorPath) return "";
-  try {
-    return String(await readFile(run.claudeErrorPath, "utf8")).trim().slice(-2000);
-  } catch {
-    return "";
-  }
-}
-
-async function finishClaudeRun(run, { spawnError = null } = {}) {
-  if (!run || run.claudeSettled) return;
-  run.claudeSettled = true;
-  if (run.claudeDrainTimer) {
-    clearTimeout(run.claudeDrainTimer);
-    run.claudeDrainTimer = null;
-  }
-  run.process = null;
+async function finishClaudeRun(run, {
+  spawnError = null,
+  result,
+  errorText = "",
+  exitCode = null,
+} = {}) {
+  if (!run) return;
   const turnId = run.turnId;
   const files = turnTemporaryFiles.get(turnId) ?? run.claudeTemporaryFiles ?? [];
   turnTemporaryFiles.delete(turnId);
   run.claudeTemporaryFiles = [];
   await Promise.all(files.map((file) => unlink(file).catch(() => {})));
-  const outputPaths = { outputPath: run.claudeOutputPath, errorPath: run.claudeErrorPath };
-  // Код возврата известен только когда ход завершился при живом боте; после
-  // перезапуска о нём судим по содержимому файла хода.
-  const exitCode = Number.isInteger(run.claudeExitCode) ? run.claudeExitCode : null;
   const forceSpeechButton = run.claudeForceSpeechButton === true;
 
   try {
     if (spawnError) throw spawnError;
-    const result = await readClaudeRunResult(run);
     if (!result) {
       throw new Error(
         run.claudeFailureText
-          || await readClaudeRunError(run)
+          || errorText
           || (exitCode === null
             ? "Claude Code завершился, не вернув результат"
             : `Claude Code завершился с кодом ${exitCode}`),
@@ -3015,20 +2884,13 @@ async function finishClaudeRun(run, { spawnError = null } = {}) {
       description: "ошибка Claude",
     });
   }
-  await removeClaudeRunOutput(outputPaths);
 }
 
 // Отменить ход можно и после перезапуска бота, когда объекта процесса уже нет,
 // поэтому останавливаем по сохранённому PID. Дочитывание файла само завершит ход.
 async function stopClaudeRunProcess(run) {
-  if (!run) return false;
-  const pid = Number(run.pid ?? run.process?.pid);
-  if (!processIsAlive(pid)) {
-    run.claudeExited = true;
-    void drainClaudeRun(run);
-    return true;
-  }
-  const stopped = await stopProcessTree(pid);
+  const pid = Number(run?.pid ?? run?.process?.pid);
+  const stopped = await claudeRunController.stop(run);
   if (!stopped) console.error(`Cannot stop Claude process tree ${pid}`);
   return stopped;
 }
@@ -3036,23 +2898,7 @@ async function stopClaudeRunProcess(run) {
 // После перезапуска бота дочерний процесс CLI потерян как объект, но сам ход
 // продолжается: подключаемся к нему заново через файл вывода и живой PID.
 async function attachClaudeRunAfterRestart(run) {
-  const alive = processIsAlive(run.pid);
-  run.process = null;
-  run.claudeReader = null;
-  run.claudeSettled = false;
-  run.claudeExited = !alive;
-  run.claudeExitCode = null;
-  run.claudeReadOffset = 0;
-  run.claudeThinkingPeak = 0;
-  run.claudeFailureText = "";
-  run.claudeResult = null;
-  run.responseText = "";
-  setProgressStage(run, alive
-    ? "Переподключился к выполняющемуся ходу Claude."
-    : "Дочитываю прерванный ход Claude…");
-  if (alive) startTyping();
-  await saveState();
-  await drainClaudeRun(run);
+  await claudeRunController.attachAfterRestart(run);
 }
 
 async function handleCodexMessage(message) {
@@ -5381,11 +5227,10 @@ function stopRuntimeTimers() {
     if (run.progressStartTimer) clearTimeout(run.progressStartTimer);
     if (run.progressTimer) clearTimeout(run.progressTimer);
     if (run.observerTimer) clearTimeout(run.observerTimer);
-    if (run.claudeDrainTimer) clearTimeout(run.claudeDrainTimer);
+    claudeRunController.pause(run);
     run.progressStartTimer = null;
     run.progressTimer = null;
     run.observerTimer = null;
-    run.claudeDrainTimer = null;
   }
 }
 
