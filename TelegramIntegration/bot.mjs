@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -49,7 +48,14 @@ import {
   showLastMessageReplyMarkup,
 } from "./status.mjs";
 import { randomStatusHeaderFileName } from "./status-header.mjs";
-import { formatTaskTokenUsage } from "./token-usage.mjs";
+import { TelegramClient } from "./telegram-client.mjs";
+import {
+  addTokenUsage,
+  emptyTokenUsage,
+  formatTurnTokenUsage,
+  normalizeTokenUsage,
+  tokenUsageDelta,
+} from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
 import {
   captureTaskGitBaseline,
@@ -59,7 +65,7 @@ import {
 } from "./task-git-diff.mjs";
 import { TaskDiffStore } from "./task-diff-store.mjs";
 import { findRepositoryWriteConflict } from "./repository-conflict.mjs";
-import { callTelegramJson, telegramBotApiUrl, telegramFileApiUrl } from "./telegram-api.mjs";
+import { telegramBotApiUrl, telegramFileApiUrl } from "./telegram-api.mjs";
 import { parsePendingInputCallback, pendingInputKeyboard } from "./deferred-input.mjs";
 import {
   appendMessageBindings,
@@ -333,7 +339,6 @@ let lastStateBackupAt = 0;
 let speechWriteQueue = Promise.resolve();
 let bindingWriteQueue = Promise.resolve();
 let ttsWorker = null;
-let typingInterval = null;
 let deliveryOutboxTimer = null;
 let selectedTaskWatchTimer = null;
 let selectedTaskWatchInFlight = false;
@@ -388,6 +393,28 @@ let taskCatalogRefreshInFlight = null;
 const codexThreadReadCache = new Map();
 const taskSyncStore = new LocalTaskSyncStore({ filePath: TASK_SYNC_FILE });
 await taskSyncStore.load();
+
+const telegramClient = new TelegramClient({
+  token,
+  apiBaseUrl: config.telegramApiBaseUrl,
+  menu: BOT_MENU,
+  statusHeaderDirectory: STATUS_HEADER_DIR,
+  selectStatusHeader: randomStatusHeaderFileName,
+  getDefaultChatId: () => chatId,
+  getDefaultProvider: () => activeProvider,
+  rememberSpeechText,
+  messageLimit: TELEGRAM_LIMIT,
+});
+const telegram = (method, body) => telegramClient.request(method, body);
+const telegramMultipart = (method, body, fileField, filePath) => (
+  telegramClient.multipart(method, body, fileField, filePath)
+);
+const sendStatusCard = (...args) => telegramClient.sendStatusCard(...args);
+const sendMessage = (...args) => telegramClient.sendMessage(...args);
+const sendMessageTo = (...args) => telegramClient.sendMessageTo(...args);
+const sendLongMessage = (...args) => telegramClient.sendLongMessage(...args);
+const startTyping = () => telegramClient.startTyping();
+const stopTyping = () => telegramClient.stopTyping();
 
 function invalidateTaskCatalog() {
   taskCatalogRefreshedAt = 0;
@@ -857,38 +884,6 @@ function savedLastTaskMessage(task) {
   return lastTaskMessages.get(taskRunKey(task))?.text ?? "";
 }
 
-const TOKEN_USAGE_FIELDS = [
-  "inputTokens",
-  "cachedInputTokens",
-  "outputTokens",
-  "reasoningOutputTokens",
-  "totalTokens",
-];
-
-function emptyTokenUsage() {
-  return Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) => [field, 0]));
-}
-
-function normalizeTokenUsage(usage) {
-  const normalized = emptyTokenUsage();
-  for (const field of TOKEN_USAGE_FIELDS) {
-    const value = Number(usage?.[field]);
-    if (Number.isFinite(value) && value >= 0) normalized[field] = Math.trunc(value);
-  }
-  return normalized;
-}
-
-function tokenUsageDelta(current, previous, fallback) {
-  if (!previous || TOKEN_USAGE_FIELDS.some((field) => current[field] < previous[field])) {
-    return normalizeTokenUsage(fallback);
-  }
-  return Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) => [field, current[field] - previous[field]]));
-}
-
-function addTokenUsage(total, addition) {
-  return Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) => [field, total[field] + addition[field]]));
-}
-
 function trackTurnTokenUsage(params) {
   const current = normalizeTokenUsage(params.tokenUsage?.total);
   const previous = threadTokenTotals.get(params.threadId);
@@ -899,19 +894,6 @@ function trackTurnTokenUsage(params) {
   const delta = tokenUsageDelta(current, previous, params.tokenUsage?.last);
   tracker.usage = addTokenUsage(tracker.usage, delta);
   tracker.reported = true;
-}
-
-function formatTurnTokenUsage(tracker) {
-  if (!tracker?.reported) return "📊 Токены за задачу: нет данных.";
-  const { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, totalTokens } = tracker.usage;
-  const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens);
-  return formatTaskTokenUsage({
-    totalTokens,
-    inputTokens: uncachedInputTokens,
-    cachedInputTokens,
-    outputTokens,
-    reasoningOutputTokens,
-  });
 }
 
 function rememberCodexTaskSettings(id = isCodex() ? threadId : null) {
@@ -5386,15 +5368,6 @@ function isAllowedCallback(callback) {
     && (!config.allowedChatIds || config.allowedChatIds.has(chat?.id));
 }
 
-async function telegram(method, body) {
-  return callTelegramJson({
-    token,
-    method,
-    body,
-    apiBaseUrl: config.telegramApiBaseUrl,
-  });
-}
-
 function scheduleDeliveryOutboxFlush(delayMs = config.deliveryRetryIntervalSeconds * 1000) {
   if (deliveryOutboxTimer || stopping) return;
   deliveryOutboxTimer = setTimeout(() => {
@@ -5414,107 +5387,6 @@ async function flushDeliveryOutbox() {
   } finally {
     scheduleDeliveryOutboxFlush();
   }
-}
-
-async function telegramMultipart(method, body, fileField, filePath) {
-  const form = new FormData();
-  for (const [key, value] of Object.entries(body)) {
-    if (value == null) continue;
-    form.set(key, typeof value === "object" ? JSON.stringify(value) : String(value));
-  }
-  form.set(
-    fileField,
-    new Blob([await readFile(filePath)], { type: "image/png" }),
-    path.basename(filePath),
-  );
-  try {
-    const response = await fetch(`${config.telegramApiBaseUrl}/bot${token}/${method}`, {
-      method: "POST",
-      body: form,
-      signal: AbortSignal.timeout(40000),
-    });
-    const payload = await response.json();
-    if (!payload.ok) {
-      const error = new Error(`Telegram ${method}: ${payload.description ?? response.status}`);
-      error.retryable = response.status === 429 || response.status >= 500;
-      error.retryAfterMs = Number(payload.parameters?.retry_after ?? 0) * 1000;
-      throw error;
-    }
-    return payload.result;
-  } catch (error) {
-    if (typeof error.retryable !== "boolean") error.retryable = true;
-    throw error;
-  }
-}
-
-async function sendStatusCard(
-  text,
-  extra = {},
-  activeProviders = [],
-  { targetChatId = chatId, provider = activeProvider } = {},
-) {
-  if (!targetChatId) return;
-  const headerPath = path.join(
-    STATUS_HEADER_DIR,
-    randomStatusHeaderFileName(provider, activeProviders),
-  );
-  if (!existsSync(headerPath)) return sendMessageTo(targetChatId, text, extra);
-  const caption = String(text);
-  if (caption.length > 1000) {
-    await telegramMultipart("sendPhoto", { chat_id: targetChatId }, "photo", headerPath);
-    return sendMessageTo(targetChatId, caption, extra);
-  }
-  return telegramMultipart("sendPhoto", {
-    chat_id: targetChatId,
-    caption,
-    ...extra,
-  }, "photo", headerPath);
-}
-
-async function sendMessage(text, extra = {}) {
-  if (!chatId) return;
-  return sendMessageTo(chatId, text, extra);
-}
-
-async function sendMessageTo(targetChatId, text, extra = {}) {
-  const options = Object.hasOwn(extra, "reply_markup")
-    ? extra
-    : { ...extra, reply_markup: BOT_MENU };
-  return telegram("sendMessage", { chat_id: targetChatId, text: String(text), ...options });
-}
-
-async function sendLongMessage(text, {
-  speechText = null,
-  forceSpeechButton = false,
-  maxParts = Number.POSITIVE_INFINITY,
-} = {}) {
-  const value = String(text);
-  const speechId = rememberSpeechText(speechText, forceSpeechButton);
-  const maximumLength = Number.isFinite(maxParts) ? TELEGRAM_LIMIT * Math.max(1, maxParts) : value.length;
-  const truncated = value.length > maximumLength;
-  const visible = truncated
-    ? `${value.slice(0, Math.max(0, maximumLength - 80))}\n\n… вывод ограничен ${maxParts} сообщениями.`
-    : value;
-  for (let start = 0; start < visible.length; start += TELEGRAM_LIMIT) {
-    const isLast = start + TELEGRAM_LIMIT >= visible.length;
-    const extra = isLast && speechId
-      ? { reply_markup: { inline_keyboard: [[{ text: "🔊 Озвучить", callback_data: `speech:${speechId}` }]] } }
-      : {};
-    await sendMessage(visible.slice(start, start + TELEGRAM_LIMIT), extra);
-  }
-}
-
-function startTyping() {
-  if (typingInterval || !chatId) return;
-  const tick = () => telegram("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
-  tick();
-  typingInterval = setInterval(tick, 4000);
-}
-
-function stopTyping() {
-  if (!typingInterval) return;
-  clearInterval(typingInterval);
-  typingInterval = null;
 }
 
 function saveState() {

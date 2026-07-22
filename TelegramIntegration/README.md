@@ -288,6 +288,8 @@ npm start
 
 `npm run check` одним процессом синтаксически разбирает все `.mjs` модули без их исполнения. `npm test` проверяет модули функционально, а `npm run test:e2e` — жизненный цикл отдельного процесса бота.
 
+Текущий план выделения компонентов из исторически выросшего `bot.mjs`, границы этапов и критерий завершения описаны в [BOT_MODULE_SPLIT.md](BOT_MODULE_SPLIT.md). Стабилизационные исправления и архитектурная декомпозиция учитываются раздельно в [STABILIZATION_CHECKLIST.md](STABILIZATION_CHECKLIST.md).
+
 `npm run doctor` не ограничивается поиском файлов: он проверяет Telegram Bot API через `getMe`, запускает изолированный Codex App Server и выполняет `initialize + thread/list`, а также проверяет авторизованную сессию Claude через `/usage`. Все live-probes имеют таймаут и не создают новых задач.
 
 В Windows также доступны `start.ps1` и `install-autostart.ps1`. После активации они направляют запуск во внешний runtime; PowerShell используется только как launcher и для интеграции с автозапуском Windows, сам бот работает в Node.js.

@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatTaskTokenUsage } from "./token-usage.mjs";
+import {
+  addTokenUsage,
+  emptyTokenUsage,
+  formatTaskTokenUsage,
+  formatTurnTokenUsage,
+  normalizeTokenUsage,
+  tokenUsageDelta,
+} from "./token-usage.mjs";
 
 test("formatTaskTokenUsage converts token categories to conditional units", () => {
   const formatted = formatTaskTokenUsage({
@@ -47,4 +54,45 @@ test("formatTaskTokenUsage labels every category and percentages total exactly 1
   assert.match(formatted, /Выход: 210 \(1%\)/);
   assert.match(formatted, /Думы: 90 \(0,5%\)/);
   assert.equal((formatted.match(/у\.е\./g) ?? []).length, 1);
+});
+
+test("turn token helpers normalize counters and handle counter resets", () => {
+  assert.deepEqual(emptyTokenUsage(), {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+  });
+  assert.deepEqual(normalizeTokenUsage({ inputTokens: 12.9, outputTokens: -1 }), {
+    inputTokens: 12,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+  });
+  assert.equal(tokenUsageDelta(
+    normalizeTokenUsage({ inputTokens: 5 }),
+    normalizeTokenUsage({ inputTokens: 10 }),
+    { inputTokens: 3 },
+  ).inputTokens, 3);
+  assert.equal(addTokenUsage(
+    normalizeTokenUsage({ inputTokens: 2 }),
+    normalizeTokenUsage({ inputTokens: 4 }),
+  ).inputTokens, 6);
+});
+
+test("formatTurnTokenUsage excludes cached tokens from uncached input", () => {
+  const formatted = formatTurnTokenUsage({
+    reported: true,
+    usage: normalizeTokenUsage({
+      inputTokens: 100,
+      cachedInputTokens: 80,
+      outputTokens: 2,
+      totalTokens: 102,
+    }),
+  });
+  assert.match(formatted, /Вход: 20 /);
+  assert.match(formatted, /Кэш: 8 /);
+  assert.equal(formatTurnTokenUsage(null), "📊 Токены за задачу: нет данных.");
 });

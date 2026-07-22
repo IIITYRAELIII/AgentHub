@@ -1,6 +1,13 @@
 const NBSP = "\u00a0";
 const CACHE_UNIT_DIVISOR = 10;
 const OUTPUT_UNIT_MULTIPLIER = 6;
+const TOKEN_USAGE_FIELDS = [
+  "inputTokens",
+  "cachedInputTokens",
+  "outputTokens",
+  "reasoningOutputTokens",
+  "totalTokens",
+];
 
 function tokenCount(value) {
   const number = Number(value ?? 0);
@@ -52,4 +59,41 @@ export function formatTaskTokenUsage(usage) {
   return `📊 За задачу: ${number(unitTotal)} у.е.\n` +
     `${left[0].padEnd(width, NBSP)} | Кэш: ${unitWithPercent(unitCache, cachePercent)}\n` +
     `${left[1].padEnd(width, NBSP)} | Думы: ${unitWithPercent(unitReasoning, reasoningPercent)}`;
+}
+
+export function emptyTokenUsage() {
+  return Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) => [field, 0]));
+}
+
+export function normalizeTokenUsage(usage) {
+  const normalized = emptyTokenUsage();
+  for (const field of TOKEN_USAGE_FIELDS) {
+    const value = Number(usage?.[field]);
+    if (Number.isFinite(value) && value >= 0) normalized[field] = Math.trunc(value);
+  }
+  return normalized;
+}
+
+export function tokenUsageDelta(current, previous, fallback) {
+  if (!previous || TOKEN_USAGE_FIELDS.some((field) => current[field] < previous[field])) {
+    return normalizeTokenUsage(fallback);
+  }
+  return Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) => [field, current[field] - previous[field]]));
+}
+
+export function addTokenUsage(total, addition) {
+  return Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) => [field, total[field] + addition[field]]));
+}
+
+export function formatTurnTokenUsage(tracker) {
+  if (!tracker?.reported) return "📊 Токены за задачу: нет данных.";
+  const { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, totalTokens } = tracker.usage;
+  const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens);
+  return formatTaskTokenUsage({
+    totalTokens,
+    inputTokens: uncachedInputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+  });
 }
