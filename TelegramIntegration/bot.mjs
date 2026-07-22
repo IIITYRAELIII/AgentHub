@@ -1062,6 +1062,21 @@ try {
       lastSeenTaskTurnIds.set(entry[0], entry[1]);
     }
   }
+  if (Array.isArray(saved.threadTokenTotals)) {
+    for (const entry of saved.threadTokenTotals.slice(-500)) {
+      if (!Array.isArray(entry) || typeof entry[0] !== "string" || !entry[1]) continue;
+      threadTokenTotals.set(entry[0], normalizeTokenUsage(entry[1]));
+    }
+  }
+  if (Array.isArray(saved.turnTokenUsage)) {
+    for (const entry of saved.turnTokenUsage.slice(-200)) {
+      if (!Array.isArray(entry) || typeof entry[0] !== "string" || !entry[1]) continue;
+      turnTokenUsage.set(entry[0], {
+        usage: normalizeTokenUsage(entry[1].usage),
+        reported: entry[1].reported === true,
+      });
+    }
+  }
   if (Array.isArray(saved.dismissedExternalTasks)) {
     dismissedExternalTasks.restore(saved.dismissedExternalTasks);
   }
@@ -2339,12 +2354,12 @@ async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton =
     const previousTurnId = run.turnId;
     run.turnId = result.turn.id;
     taskRuns.reindex(run, { turnId: previousTurnId });
-    await saveState();
     turnSpeechButtons.set(run.turnId, forceSpeechButton);
     if (temporaryFiles.length) turnTemporaryFiles.set(run.turnId, temporaryFiles);
     if (!turnTokenUsage.has(run.turnId)) {
       setBoundedMapValue(turnTokenUsage, run.turnId, { usage: emptyTokenUsage(), reported: false }, 200);
     }
+    await saveState();
     startTyping();
     scheduleObservedRun(run);
   } catch (error) {
@@ -2772,13 +2787,16 @@ async function handleCodexMessage(message) {
       run.turnId = eventTurnId;
       run.threadId = params.threadId ?? run.threadId;
       taskRuns.reindex(run, previous);
-      void saveState();
     }
     if (eventTurnId && !turnTokenUsage.has(eventTurnId)) {
       setBoundedMapValue(turnTokenUsage, eventTurnId, { usage: emptyTokenUsage(), reported: false }, 200);
     }
+    if (run && eventTurnId) void saveState();
   }
-  if (method === "thread/tokenUsage/updated") trackTurnTokenUsage(params);
+  if (method === "thread/tokenUsage/updated") {
+    trackTurnTokenUsage(params);
+    void saveState();
+  }
   if (method === "turn/diff/updated" && run) {
     run.latestDiff = params.diff ?? run.latestDiff;
     taskDiffs.remember(taskRunKey(run), run.latestDiff);
@@ -3374,6 +3392,9 @@ async function recoverTaskRun(run) {
     const previousTurnId = run.turnId;
     run.turnId = turn.id;
     taskRuns.reindex(run, { turnId: previousTurnId });
+    if (!turnTokenUsage.has(run.turnId)) {
+      setBoundedMapValue(turnTokenUsage, run.turnId, { usage: emptyTokenUsage(), reported: false }, 200);
+    }
     setProgressStage(run, "Подключено к продолжающейся задаче.");
     scheduleObservedRun(run);
     startTyping();
@@ -3400,9 +3421,12 @@ async function recoverTaskRun(run) {
     || run.responseText.trim()
     || turn.error?.message
     || `Сохранённый запуск завершён со статусом ${turn.status}.`;
+  const tokenSummary = formatTurnTokenUsage(turnTokenUsage.get(run.turnId));
+  turnTokenUsage.delete(run.turnId);
   await finishProgress(run, turn.status === "completed" ? "Задача завершена." : `Задача остановлена: ${turn.status}.`);
   await finalizeRunDelivery(run, {
     answer,
+    message: `${answer}\n\n${tokenSummary}`,
     description: "восстановленный ответ",
   });
 }
@@ -4463,6 +4487,8 @@ function saveState() {
     queuedInputs: [...queuedInputs.values()],
     lastTaskMessages: [...lastTaskMessages.entries()].slice(-500),
     lastSeenTaskTurnIds: [...lastSeenTaskTurnIds.entries()].slice(-500),
+    threadTokenTotals: [...threadTokenTotals.entries()].slice(-500),
+    turnTokenUsage: [...turnTokenUsage.entries()].slice(-200),
     restartRequest,
   }, null, 2)}\n`;
   stateWriteQueue = stateWriteQueue

@@ -545,6 +545,12 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   mark = telegram.calls.length;
   telegram.pushMessage("/cancel");
   await telegram.waitForText("Запрошена остановка этой задачи", { after: mark });
+  const restoredFinal = await telegram.waitForText("Ход остановлен тестом", { after: mark });
+  assert.match(
+    restoredFinal.body.text,
+    /За задачу:/,
+    "a managed Codex turn completed after bot restart must retain its token signature",
+  );
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 1,
     "cancelling the selected parallel task only");
 
