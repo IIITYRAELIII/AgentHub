@@ -1746,6 +1746,7 @@ async function desktopSnapshot({ refresh = false } = {}) {
   }
   const tasks = catalog.map(desktopTaskSnapshot);
   return {
+    apiVersion: 2,
     generatedAt: new Date().toISOString(),
     selected: {
       ...selectedTask(),

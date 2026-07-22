@@ -77,6 +77,7 @@ test("desktop client shares tasks and parallel runs with the Integration backend
     () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
     "desktop control startup",
   );
+  assert.equal(initial.apiVersion, 2);
   assert.equal(initial.tasks.length, 1);
   const firstThreadId = initial.selected.threadId;
   assert.equal(initial.settings.provider, "codex");

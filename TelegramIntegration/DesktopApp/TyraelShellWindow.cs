@@ -52,6 +52,7 @@ namespace TyraelIntegrationDesktop
         private bool refreshing;
         private bool switching;
         private bool restoringDraft;
+        private int desktopApiVersion;
         private string selectedKey;
         private string historyKey;
         private int? historyBefore;
@@ -500,6 +501,13 @@ namespace TyraelIntegrationDesktop
 
         private void ApplySnapshot(Dictionary<string, object> snapshot)
         {
+            object apiVersion;
+            int parsedApiVersion;
+            if (snapshot.TryGetValue("apiVersion", out apiVersion)
+                && Int32.TryParse(Convert.ToString(apiVersion), out parsedApiVersion))
+            {
+                desktopApiVersion = parsedApiVersion;
+            }
             var previous = selectedKey;
             tasks.Clear();
             TaskItem selected = null;
@@ -1492,6 +1500,11 @@ namespace TyraelIntegrationDesktop
         {
             var text = (composer.Text ?? "").Trim();
             if (text.Length == 0 && attachments.Count == 0) return;
+            if (attachments.Count > 0 && desktopApiVersion < 2)
+            {
+                footer.Text = "Integration Server устарел: изображения сохранены, дождитесь его обновления.";
+                return;
+            }
             if (annotations.Count > 0) text = AnnotatedPrompt(text);
             sendButton.IsEnabled = false;
             try
