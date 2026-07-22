@@ -216,6 +216,15 @@ function startExternalTurn(thread, {
       type: "event_msg",
       payload: { type: "task_started", turn_id: turn.id },
     }),
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type: "event_msg",
+      payload: {
+        type: "user_message",
+        client_id: `fake-vscode-${turn.id}`,
+        message: prompt,
+      },
+    }),
     "",
   ].join("\n"), "utf8");
   save();

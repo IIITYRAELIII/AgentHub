@@ -75,10 +75,6 @@ function codexEntryTurnId(entry) {
 }
 
 function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
-  if (entry?.type === "session_meta") {
-    metadata.originator = String(entry.payload?.originator ?? "").trim();
-    metadata.source = String(entry.payload?.source ?? "").trim();
-  }
   if (entry?.type === "event_msg" && entry.payload?.type === "thread_settings_applied") {
     metadata.model = String(entry.payload?.thread_settings?.model ?? "").trim();
     metadata.reasoningEffort = String(
@@ -88,6 +84,18 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
   const lifecycle = entry?.type === "event_msg"
     && ["task_started", "task_complete", "turn_aborted"].includes(entry.payload?.type);
   const turnId = codexEntryTurnId(entry) || (lifecycle ? LEGACY_TURN_ID : "");
+  if ((entry?.type === "turn_context" || entry?.payload?.type === "task_started") && turnId) {
+    metadata.latestTurnId = turnId;
+  }
+  if (entry?.type === "event_msg" && entry.payload?.type === "user_message") {
+    const messageTurnId = turnId || metadata.latestTurnId
+      || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+    if (messageTurnId) {
+      const clientId = String(entry.payload?.client_id ?? "").trim();
+      if (clientId) metadata.vscodeTurnIds.add(messageTurnId);
+      else metadata.vscodeTurnIds.delete(messageTurnId);
+    }
+  }
   const timestamp = Date.parse(entry?.timestamp);
   if (turnId && Number.isFinite(timestamp)) lastSeenAtByTurnId.set(turnId, timestamp);
   applyCodexLifecycleEntry(activeTurnIds, entry);
@@ -96,7 +104,7 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
 function codexActivity(
   activeTurnIds,
   lastSeenAtByTurnId = new Map(),
-  { nowMs = null, freshnessMs = null } = {},
+  { nowMs = null, freshnessMs = null, vscodeTurnIds = new Set() } = {},
 ) {
   const useFreshness = Number.isFinite(nowMs) && Number.isFinite(freshnessMs);
   const activeIds = [...activeTurnIds].filter((turnId) => {
@@ -108,6 +116,7 @@ function codexActivity(
   return {
     running: activeIds.length > 0,
     activeTurnIds: activeIds.filter((turnId) => turnId !== LEGACY_TURN_ID),
+    activeVscodeTurnIds: activeIds.filter((turnId) => vscodeTurnIds.has(turnId)),
   };
 }
 
@@ -115,8 +124,8 @@ export function parseCodexRolloutActivity(text, options = {}) {
   const activeTurnIds = new Set();
   const lastSeenAtByTurnId = new Map();
   const metadata = {
-    originator: "",
-    source: "",
+    latestTurnId: "",
+    vscodeTurnIds: new Set(),
     model: "",
     reasoningEffort: "",
   };
@@ -129,9 +138,10 @@ export function parseCodexRolloutActivity(text, options = {}) {
     }
   }
   return {
-    ...codexActivity(activeTurnIds, lastSeenAtByTurnId, options),
-    originator: metadata.originator || null,
-    source: metadata.source || null,
+    ...codexActivity(activeTurnIds, lastSeenAtByTurnId, {
+      ...options,
+      vscodeTurnIds: metadata.vscodeTurnIds,
+    }),
     model: metadata.model || null,
     reasoningEffort: metadata.reasoningEffort || null,
   };
@@ -150,9 +160,8 @@ export async function readCodexRolloutActivity(
     return {
       running: false,
       activeTurnIds: [],
+      activeVscodeTurnIds: [],
       lastActivityAtMs: null,
-      originator: null,
-      source: null,
       model: null,
       reasoningEffort: null,
     };
@@ -165,9 +174,8 @@ export async function readCodexRolloutActivity(
       return {
         running: false,
         activeTurnIds: [],
+        activeVscodeTurnIds: [],
         lastActivityAtMs: null,
-        originator: null,
-        source: null,
         model: null,
         reasoningEffort: null,
       };
@@ -179,9 +187,8 @@ export async function readCodexRolloutActivity(
     return {
       running: false,
       activeTurnIds: [],
+      activeVscodeTurnIds: [],
       lastActivityAtMs: info.mtimeMs,
-      originator: cached?.originator || null,
-      source: cached?.source || null,
       model: cached?.model || null,
       reasoningEffort: cached?.reasoningEffort || null,
     };
@@ -192,11 +199,13 @@ export async function readCodexRolloutActivity(
       ...codexActivity(
         new Set(cached.activeTurnIds),
         new Map(cached.lastSeenAtByTurnId),
-        { nowMs, freshnessMs },
+        {
+          nowMs,
+          freshnessMs,
+          vscodeTurnIds: new Set(cached.vscodeTurnIds ?? []),
+        },
       ),
       lastActivityAtMs: info.mtimeMs,
-      originator: cached.originator || null,
-      source: cached.source || null,
       model: cached.model || null,
       reasoningEffort: cached.reasoningEffort || null,
     };
@@ -206,8 +215,8 @@ export async function readCodexRolloutActivity(
   const activeTurnIds = new Set(appendOnly ? cached.activeTurnIds : []);
   const lastSeenAtByTurnId = new Map(appendOnly ? cached.lastSeenAtByTurnId : []);
   const metadata = {
-    originator: appendOnly ? String(cached.originator ?? "") : "",
-    source: appendOnly ? String(cached.source ?? "") : "",
+    latestTurnId: appendOnly ? String(cached.latestTurnId ?? "") : "",
+    vscodeTurnIds: new Set(appendOnly ? cached.vscodeTurnIds ?? [] : []),
     model: appendOnly ? String(cached.model ?? "") : "",
     reasoningEffort: appendOnly ? String(cached.reasoningEffort ?? "") : "",
   };
@@ -240,15 +249,19 @@ export async function readCodexRolloutActivity(
       // Preserve a line caught in the middle of an append for the next read.
     }
   }
-  const activity = codexActivity(activeTurnIds, lastSeenAtByTurnId, { nowMs, freshnessMs });
+  const activity = codexActivity(activeTurnIds, lastSeenAtByTurnId, {
+    nowMs,
+    freshnessMs,
+    vscodeTurnIds: metadata.vscodeTurnIds,
+  });
   codexActivityCache.set(normalized, {
     size: info.size,
     mtimeMs: info.mtimeMs,
     activeTurnIds: [...activeTurnIds],
     lastSeenAtByTurnId: [...lastSeenAtByTurnId],
     trailingText,
-    originator: metadata.originator,
-    source: metadata.source,
+    latestTurnId: metadata.latestTurnId,
+    vscodeTurnIds: [...metadata.vscodeTurnIds],
     model: metadata.model,
     reasoningEffort: metadata.reasoningEffort,
   });
@@ -256,8 +269,6 @@ export async function readCodexRolloutActivity(
   return {
     ...activity,
     lastActivityAtMs: info.mtimeMs,
-    originator: metadata.originator || null,
-    source: metadata.source || null,
     model: metadata.model || null,
     reasoningEffort: metadata.reasoningEffort || null,
   };
@@ -273,37 +284,14 @@ export function codexThreadRunning(thread, { rolloutRunning = false } = {}) {
     || (thread?.turns ?? []).some((turn) => turn?.status === "inProgress");
 }
 
-export function codexExecutionOwner({ originator = "", source = "" } = {}) {
-  const normalizedOriginator = String(originator).trim().toLowerCase();
-  const normalizedSource = String(source).trim().toLowerCase();
-  if (normalizedOriginator === "telegram_codex_bridge") {
-    return TASK_EXECUTION_OWNERS.TELEGRAM;
+export function codexObservedExecutionOwner(activity = {}, turnId = null) {
+  const vscodeTurnIds = new Set(activity.activeVscodeTurnIds ?? []);
+  if (turnId) {
+    return vscodeTurnIds.has(String(turnId))
+      ? TASK_EXECUTION_OWNERS.VSCODE
+      : TASK_EXECUTION_OWNERS.EXTERNAL;
   }
-  // `source` describes the surface that started the current Codex session more
-  // precisely than the historical product label in `originator`. Older threads
-  // can retain `Codex Desktop` after they are continued from VS Code.
-  if (normalizedSource === "vscode") {
-    return TASK_EXECUTION_OWNERS.VSCODE;
-  }
-  if (normalizedOriginator.includes("codex desktop")) {
-    return TASK_EXECUTION_OWNERS.DESKTOP;
-  }
-  if (normalizedOriginator.includes("codex_vscode")) {
-    return TASK_EXECUTION_OWNERS.VSCODE;
-  }
-  if (normalizedOriginator.includes("codex_cli") || normalizedSource === "cli") {
-    return TASK_EXECUTION_OWNERS.CLI;
-  }
-  return TASK_EXECUTION_OWNERS.EXTERNAL;
-}
-
-export function codexObservedExecutionOwner(activity = {}) {
-  const owner = codexExecutionOwner(activity);
-  if (owner !== TASK_EXECUTION_OWNERS.TELEGRAM) return owner;
-  // An observer is, by definition, attached to a turn that this bot did not
-  // start. A reused thread can retain telegram_codex_bridge in immutable
-  // session metadata even when its current turn was started from VS Code.
-  return String(activity.source ?? "").trim().toLowerCase() === "vscode"
+  return vscodeTurnIds.size > 0
     ? TASK_EXECUTION_OWNERS.VSCODE
     : TASK_EXECUTION_OWNERS.EXTERNAL;
 }

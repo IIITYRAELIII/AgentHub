@@ -2463,9 +2463,6 @@ async function taskExternalActivity(target) {
         await initializeCodex({ attachSelectedThread: false });
       }
       const result = await readCodexThread(target.threadId, { fresh: true });
-      if (codexThreadRunning(result.thread)) {
-        return { state: "active", executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL };
-      }
       const activity = await readCodexRolloutActivity(result.thread?.path);
       return {
         state: codexThreadRunning(result.thread, { rolloutRunning: activity.running }) ? "active" : "inactive",
@@ -3420,7 +3417,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
     model: activity.model,
     reasoningEffort: activity.reasoningEffort,
     executionOwner: run?.observer === true
-      ? codexObservedExecutionOwner(activity)
+      ? codexObservedExecutionOwner(activity, turn.id)
       : TASK_EXECUTION_OWNERS.TELEGRAM,
   };
   if (!snapshot.active && activity.activeTurnIds.includes(turn.id)) {

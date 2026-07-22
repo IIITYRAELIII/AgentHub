@@ -10,7 +10,6 @@ import {
   claudeSnapshotActivityState,
   claudeSnapshotIsActive,
   codexCatalogEntry,
-  codexExecutionOwner,
   codexObservedExecutionOwner,
   codexThreadRunning,
   mergeTaskCatalog,
@@ -59,27 +58,7 @@ test("codexCatalogEntry preserves persistent task metadata and active status", (
   });
 });
 
-test("Codex runtime owner distinguishes Integration, VSC, Desktop and CLI", () => {
-  assert.equal(codexExecutionOwner({
-    originator: "codex_vscode",
-    source: "vscode",
-  }), TASK_EXECUTION_OWNERS.VSCODE);
-  assert.equal(codexExecutionOwner({
-    originator: "telegram_codex_bridge",
-    source: "vscode",
-  }), TASK_EXECUTION_OWNERS.TELEGRAM);
-  assert.equal(codexExecutionOwner({
-    originator: "Codex Desktop",
-    source: "vscode",
-  }), TASK_EXECUTION_OWNERS.VSCODE);
-  assert.equal(codexExecutionOwner({
-    originator: "Codex Desktop",
-    source: { subagent: null },
-  }), TASK_EXECUTION_OWNERS.DESKTOP);
-  assert.equal(codexExecutionOwner({
-    originator: "codex_cli_rs",
-    source: "cli",
-  }), TASK_EXECUTION_OWNERS.CLI);
+test("Codex runtime labels distinguish supported app servers", () => {
   assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.VSCODE), "VSCode App Server");
   assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.TELEGRAM), "Integration App Server");
   assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.DESKTOP), "Codex Desktop App");
@@ -92,18 +71,28 @@ test("Codex runtime owner distinguishes Integration, VSC, Desktop and CLI", () =
   assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.EXTERNAL), "EXT");
 });
 
-test("an observed VSC turn is not attributed to the Integration that created its thread", () => {
-  assert.equal(codexObservedExecutionOwner({
-    originator: "telegram_codex_bridge",
-    source: "vscode",
-  }), TASK_EXECUTION_OWNERS.VSCODE);
+test("observed ownership follows the active turn instead of historical session metadata", () => {
   assert.equal(codexObservedExecutionOwner({
     originator: "telegram_codex_bridge",
     source: "unknown",
+    activeVscodeTurnIds: ["vsc-turn"],
+  }), TASK_EXECUTION_OWNERS.VSCODE);
+  assert.equal(codexObservedExecutionOwner({
+    originator: "Codex Desktop",
+    source: "vscode",
+    activeVscodeTurnIds: [],
   }), TASK_EXECUTION_OWNERS.EXTERNAL);
+  assert.equal(codexObservedExecutionOwner({
+    originator: "Codex Desktop",
+    activeVscodeTurnIds: ["vsc-turn"],
+  }, "vsc-turn"), TASK_EXECUTION_OWNERS.VSCODE);
+  assert.equal(codexObservedExecutionOwner({
+    originator: "Codex Desktop",
+    activeVscodeTurnIds: ["vsc-turn"],
+  }, "other-turn"), TASK_EXECUTION_OWNERS.EXTERNAL);
 });
 
-test("Codex rollout activity reads local session source metadata", () => {
+test("Codex rollout activity identifies the current VSC turn by client id", () => {
   const result = parseCodexRolloutActivity([
     JSON.stringify({
       type: "session_meta",
@@ -120,12 +109,15 @@ test("Codex rollout activity reads local session source metadata", () => {
       type: "event_msg",
       payload: { type: "task_started", turn_id: "one" },
     }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "user_message", client_id: "vscode-client", message: "Продолжай" },
+    }),
   ].join("\n"));
-  assert.equal(result.originator, "codex_vscode");
-  assert.equal(result.source, "vscode");
   assert.equal(result.model, "gpt-5.6-sol");
   assert.equal(result.reasoningEffort, "medium");
   assert.deepEqual(result.activeTurnIds, ["one"]);
+  assert.deepEqual(result.activeVscodeTurnIds, ["one"]);
 });
 
 test("parseCodexRolloutRunning follows the latest turn lifecycle marker", () => {
@@ -154,8 +146,7 @@ test("Codex rollout activity keeps another concurrent turn active after one is a
   assert.deepEqual(parseCodexRolloutActivity(text), {
     running: true,
     activeTurnIds: ["original"],
-    originator: null,
-    source: null,
+    activeVscodeTurnIds: [],
     model: null,
     reasoningEffort: null,
   });
@@ -191,8 +182,7 @@ test("Codex rollout activity ignores stale unmatched starts but keeps a fresh li
   }), {
     running: true,
     activeTurnIds: ["live"],
-    originator: null,
-    source: null,
+    activeVscodeTurnIds: [],
     model: null,
     reasoningEffort: null,
   });
