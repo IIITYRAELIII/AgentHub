@@ -38,7 +38,7 @@ npm run doctor
 
 `runtime:deploy` создаёт новый неизменяемый release и атомарно переключает `current.json`, сохраняя предыдущую версию для `npm run runtime:rollback`. Команда `runtime:activate` один раз переносит конфигурацию, данные и модели из рабочей папки во внешний runtime, создаёт маркер активации и удаляет старый workspace-`config.json`. Выполняйте её только при остановленном старом боте; для живой установки сначала дождитесь завершения ходов.
 
-Текущий runtime можно проверить через `npm run runtime:status`. После активации `/restart` запускает release, указанный в `current.json`, поэтому новая публикация начинает действовать при следующем штатном рестарте. Автозапуск Windows также указывает на внешний launcher. В Windows фоновый запуск проходит через GUI-хост `wscript.exe` и `launch.vbs`, поэтому бот не создаёт окно PowerShell или вкладку Windows Terminal.
+Текущий runtime можно проверить через `npm run runtime:status`. После активации `/restart` запускает release, указанный в `current.json`, поэтому новая публикация начинает действовать при следующем штатном рестарте. Автозапуск Windows также указывает на внешний launcher. В Windows фоновый запуск проходит через GUI-хост `wscript.exe` и `launch.vbs`, поэтому бот не создаёт окно PowerShell или вкладку Windows Terminal. Для совместимости с прежними служебными updater-скриптами рядом устанавливается эквивалентный alias `runtime-launch.vbs`; штатной точкой входа остаётся `launch.vbs`.
 
 Для ручной настройки используйте `%LOCALAPPDATA%\Tyrael\TelegramIntegration\config.json`. Путь к другому конфигу можно передать через `TELEGRAM_CODEX_CONFIG`, а токен — через `TELEGRAM_BOT_TOKEN`.
 

@@ -17,6 +17,7 @@ test("runtimeLayout groups config, state and versioned releases", () => {
   assert.equal(layout.dataDir, path.resolve("C:\\Runtime", "data"));
   if (process.platform === "win32") {
     assert.equal(layout.launcherFile, path.resolve("C:\\Runtime", "launch.vbs"));
+    assert.equal(layout.legacyWindowsLauncherFile, path.resolve("C:\\Runtime", "runtime-launch.vbs"));
     assert.equal(layout.powershellLauncherFile, path.resolve("C:\\Runtime", "launch.ps1"));
   }
   assert.equal(runtimeReleaseDirectory(layout.root, "release-1"), path.resolve("C:\\Runtime", "releases", "release-1"));

@@ -44,6 +44,7 @@ test("deployRuntime publishes an atomic release without tests or local config", 
   assert.match(await readFile(path.join(first.releaseRoot, "install-autostart.ps1"), "utf8"), /installed/);
   if (process.platform === "win32") {
     assert.match(await readFile(path.join(runtimeRoot, "launch.vbs"), "utf8"), /WScript/);
+    assert.match(await readFile(path.join(runtimeRoot, "runtime-launch.vbs"), "utf8"), /WScript/);
     assert.match(await readFile(path.join(runtimeRoot, "launch.ps1"), "utf8"), /node bot/);
   }
   await assert.rejects(readFile(path.join(first.releaseRoot, "helper.test.mjs"), "utf8"), /ENOENT/);

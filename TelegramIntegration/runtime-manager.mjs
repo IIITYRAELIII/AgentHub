@@ -144,6 +144,10 @@ export async function deployRuntime({
     await atomicJson(layout.currentFile, pointer);
     if (process.platform === "win32") {
       await cp(path.join(sourceRoot, "runtime-launch.vbs"), layout.launcherFile, { force: true });
+      // Keep the source filename as a compatibility alias. One-off deployment
+      // helpers historically referred to runtime-launch.vbs while the stable
+      // installed entry point is launch.vbs.
+      await cp(path.join(sourceRoot, "runtime-launch.vbs"), layout.legacyWindowsLauncherFile, { force: true });
       await cp(path.join(sourceRoot, "runtime-launch.ps1"), layout.powershellLauncherFile, { force: true });
     } else {
       await cp(path.join(sourceRoot, "runtime-launch.sh"), layout.launcherFile, { force: true });
