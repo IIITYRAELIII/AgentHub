@@ -147,6 +147,7 @@ test("Codex rollout activity keeps another concurrent turn active after one is a
     running: true,
     activeTurnIds: ["original"],
     activeVscodeTurnIds: [],
+    activityAtMsByTurnId: {},
     model: null,
     reasoningEffort: null,
     latestTurnId: "parallel",
@@ -187,6 +188,9 @@ test("Codex rollout activity ignores stale unmatched starts but keeps a fresh li
     running: true,
     activeTurnIds: ["live"],
     activeVscodeTurnIds: [],
+    activityAtMsByTurnId: {
+      live: Date.parse("2026-07-17T19:29:30Z"),
+    },
     model: null,
     reasoningEffort: null,
     latestTurnId: "live",
@@ -323,6 +327,35 @@ test("rollout activity exposes current and final messages without thread/read", 
   activity = await readCodexRolloutActivity(rollout);
   assert.equal(activity.running, false);
   assert.equal(activity.finalMessages["turn-1"], "Итог");
+});
+
+test("concurrent rollout messages stay attached to their response_item turn ids", () => {
+  const entry = (timestamp, type, payload) => JSON.stringify({ timestamp, type, payload });
+  const assistant = (turnId, text) => entry("2026-07-22T12:00:00.000Z", "response_item", {
+    type: "message",
+    role: "assistant",
+    content: [{ type: "output_text", text }],
+    internal_chat_message_metadata_passthrough: { turn_id: turnId },
+  });
+  const activity = parseCodexRolloutActivity([
+    entry("2026-07-22T11:59:00.000Z", "event_msg", { type: "task_started", turn_id: "first" }),
+    entry("2026-07-22T11:59:01.000Z", "event_msg", { type: "task_started", turn_id: "second" }),
+    entry("2026-07-22T11:59:02.000Z", "event_msg", { type: "agent_message", message: "Текст второго" }),
+    assistant("second", "Текст второго"),
+    entry("2026-07-22T12:00:01.000Z", "event_msg", { type: "agent_message", message: "Текст первого" }),
+    entry("2026-07-22T12:00:01.000Z", "response_item", {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Текст первого" }],
+      internal_chat_message_metadata_passthrough: { turn_id: "first" },
+    }),
+  ].join("\n"));
+
+  assert.deepEqual(activity.activeTurnIds, ["second", "first"]);
+  assert.equal(activity.latestTurnId, "first");
+  assert.equal(activity.latestMessages.first, "Текст первого");
+  assert.equal(activity.latestMessages.second, "Текст второго");
+  assert.equal(activity.latestMessages.first.includes("Текст второго"), false);
 });
 
 test("a bounded cold tail keeps an unscoped current message when task_started is older", () => {

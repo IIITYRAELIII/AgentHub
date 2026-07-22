@@ -356,6 +356,7 @@ let stateWriteQueue = Promise.resolve();
 let lastStateBackupAt = 0;
 let bindingWriteQueue = Promise.resolve();
 let deliveryOutboxTimer = null;
+let deliveryOutboxTimerDueAt = 0;
 let selectedTaskWatchTimer = null;
 let selectedTaskWatchInFlight = false;
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
@@ -495,11 +496,15 @@ const deliveryOutbox = new PersistentDeliveryOutbox({
   },
   onDelivered: async (item, result) => {
     if (!item.binding || !Number.isSafeInteger(result?.message_id)) return;
+    const {
+      replacesProgressMessageIds = [],
+      ...storedBinding
+    } = item.binding;
     try {
       bindingWriteQueue = bindingWriteQueue
         .catch(() => {})
         .then(() => appendMessageBindings(config.dataDir, [{
-          ...item.binding,
+          ...storedBinding,
           messageId: result.message_id,
         }]));
       await bindingWriteQueue;
@@ -519,6 +524,16 @@ const deliveryOutbox = new PersistentDeliveryOutbox({
       }
     } catch (error) {
       console.error(`Cannot bind queued Telegram delivery ${item.id}:`, error.message);
+    }
+    if (Array.isArray(replacesProgressMessageIds) && replacesProgressMessageIds.length) {
+      try {
+        await clearDeliveredProgressMessages(
+          item.body?.chat_id ?? item.binding.chatId,
+          replacesProgressMessageIds,
+        );
+      } catch (error) {
+        console.error(`Cannot replace progress after Telegram delivery ${item.id}:`, error.message);
+      }
     }
   },
   onPermanentFailure: async (item, error) => {
@@ -776,7 +791,7 @@ async function sendReliableRunMessage(
     sequence: delivery.sequence ?? 0,
     supersedeKey: delivery.supersedeKey ?? null,
   });
-  scheduleDeliveryOutboxFlush();
+  scheduleDeliveryOutboxFlush(0);
   return { queued: true, outboxId: queued.id };
 }
 
@@ -786,6 +801,7 @@ async function sendRunLongMessage(run, text, {
   reliable = false,
   durable = false,
   deliveryGroupId = randomUUID(),
+  replaceProgressMessageIds = [],
 } = {}) {
   const value = `${runProgressHeading(run, true)}\n\n${String(text)}`;
   const speechId = mediaController.rememberSpeechText(speechText, forceSpeechButton);
@@ -801,7 +817,9 @@ async function sendRunLongMessage(run, text, {
         run,
         value.slice(start, start + TELEGRAM_LIMIT),
         extra,
-        {},
+        isLast && replaceProgressMessageIds.length
+          ? { replacesProgressMessageIds: [...replaceProgressMessageIds] }
+          : {},
         { forceQueue: queued, groupId: deliveryGroupId, sequence },
       );
       queued ||= result?.queued === true;
@@ -813,14 +831,13 @@ async function sendRunLongMessage(run, text, {
   return { queued, groupId: deliveryGroupId, nextSequence: sequence };
 }
 
-async function clearFinishedRunProgressMessages(run) {
-  const messageIds = [...new Set(run?.finishedProgressMessageIds ?? [])]
+async function clearDeliveredProgressMessages(targetChatId, values) {
+  const messageIds = [...new Set(values ?? [])]
     .filter(Number.isSafeInteger);
-  run.finishedProgressMessageIds = [];
   if (!messageIds.length) return;
   for (const messageId of messageIds) {
     await telegram("deleteMessage", {
-      chat_id: run.chatId,
+      chat_id: targetChatId,
       message_id: messageId,
     }).catch((error) => {
       console.warn(`Cannot remove completed progress message ${messageId}:`, error.message);
@@ -828,7 +845,7 @@ async function clearFinishedRunProgressMessages(run) {
   }
   await removeMessageBindings(
     config.dataDir,
-    (binding) => binding.chatId === run.chatId && messageIds.includes(binding.messageId),
+    (binding) => binding.chatId === targetChatId && messageIds.includes(binding.messageId),
   ).catch((error) => {
     console.warn("Cannot remove completed progress bindings:", error.message);
   });
@@ -868,8 +885,8 @@ async function finalizeRunDelivery(run, {
       forceSpeechButton,
       reliable: true,
       durable: true,
+      replaceProgressMessageIds: run.finishedProgressMessageIds ?? [],
     });
-    if (finalDelivery) await clearFinishedRunProgressMessages(run);
   }
   if (includeDiff && run.latestDiff) {
     await safelyDeliverRunMessage(
@@ -2209,6 +2226,9 @@ function renderProgress(run, done = false) {
   const heading = runProgressHeading(run, done);
   const parts = [heading, run?.progressStage || "Выполняется…"];
   if (done) return parts.join("\n\n").slice(0, TELEGRAM_LIMIT);
+  if (Number(run?.activeTurnCount) > 1) {
+    parts.push(`🔀 Активных ходов в этой задаче: ${Number(run.activeTurnCount)}`);
+  }
   const heartbeat = formatProgressHeartbeat(run);
   if (heartbeat) parts.push(heartbeat);
   if (run?.progressReasoning.trim()) {
@@ -3082,6 +3102,7 @@ function observedRun(binding, targetChatId, snapshot, turnId = null) {
       : "Подключённый ход",
     reasoningId: null,
     executionOwner,
+    activeTurnCount: Number(snapshot.activeTurnCount) || 1,
     appServer: binding.provider === "codex"
       ? taskExecutionRuntimeLabel(executionOwner)
       : "Внешний Claude CLI",
@@ -3113,6 +3134,7 @@ function updateObservedRun(run, snapshot) {
   }
   run.progressReasoning = String(snapshot?.reasoning ?? run.progressReasoning);
   run.progressStage = String(snapshot?.stage ?? run.progressStage);
+  run.activeTurnCount = Math.max(1, Number(snapshot?.activeTurnCount) || 1);
   if (run.provider === "codex" && snapshot?.model) {
     run.model = codexModelLabel(snapshot.model);
   }
@@ -3156,10 +3178,12 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
       active,
       waitingOnApproval: false,
       stage: active
-        ? latestAnswer ? "Внешний ход выполняется…" : "Выполняется следующий этап…"
+        ? "Выполняется следующий этап…"
         : finalAnswer ? "Задача завершена." : "Задача остановлена или неактивна.",
       turnId,
-      activityAtMs: activity.lastActivityAtMs,
+      activeTurnCount: activity.activeTurnIds.length,
+      activityAtMs: Number(activity.activityAtMsByTurnId?.[turnId])
+        || activity.lastActivityAtMs,
       model: activity.model,
       reasoningEffort: activity.reasoningEffort,
       executionOwner: run?.observer === true
@@ -3180,7 +3204,9 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
   const snapshot = {
     ...codexTurnSnapshot(turn, result.thread?.status),
     turnId: turn.id,
-    activityAtMs: activity.lastActivityAtMs,
+    activeTurnCount: activity.activeTurnIds.length || (turn?.status === "inProgress" ? 1 : 0),
+    activityAtMs: Number(activity.activityAtMsByTurnId?.[turn.id])
+      || activity.lastActivityAtMs,
     model: activity.model,
     reasoningEffort: activity.reasoningEffort,
     executionOwner: run?.observer === true
@@ -3297,6 +3323,7 @@ const taskObserver = new TaskObserverController({
       : TASK_EXECUTION_OWNERS.TELEGRAM;
     if (run.provider === "codex") {
       run.appServer = taskExecutionRuntimeLabel(run.executionOwner);
+      run.activeTurnCount = Math.max(1, Number(snapshot.activeTurnCount) || 1);
     }
     if (Number.isFinite(Number(snapshot.activityAtMs ?? snapshot.modifiedAtMs))) {
       noteRunActivity(run, Number(snapshot.activityAtMs ?? snapshot.modifiedAtMs));
@@ -4656,11 +4683,20 @@ async function pollTelegram() {
 }
 
 function scheduleDeliveryOutboxFlush(delayMs = config.deliveryRetryIntervalSeconds * 1000) {
-  if (deliveryOutboxTimer || stopping) return;
+  if (stopping) return;
+  const delayValue = Math.max(0, Number(delayMs) || 0);
+  const dueAt = Date.now() + delayValue;
+  if (deliveryOutboxTimer) {
+    if (deliveryOutboxTimerDueAt <= dueAt) return;
+    clearTimeout(deliveryOutboxTimer);
+    deliveryOutboxTimer = null;
+  }
+  deliveryOutboxTimerDueAt = dueAt;
   deliveryOutboxTimer = setTimeout(() => {
     deliveryOutboxTimer = null;
+    deliveryOutboxTimerDueAt = 0;
     void flushDeliveryOutbox();
-  }, delayMs);
+  }, delayValue);
 }
 
 async function flushDeliveryOutbox() {
@@ -4735,6 +4771,7 @@ function stopRuntimeTimers() {
     clearTimeout(deliveryOutboxTimer);
     deliveryOutboxTimer = null;
   }
+  deliveryOutboxTimerDueAt = 0;
   if (selectedTaskWatchTimer) {
     clearTimeout(selectedTaskWatchTimer);
     selectedTaskWatchTimer = null;

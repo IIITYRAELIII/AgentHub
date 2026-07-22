@@ -382,9 +382,13 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.match(normalFinal.body.text, /\n🧵 /);
   assert.match(normalFinal.body.text, /\n⚙ Integration App Server/);
   assert.match(normalFinal.body.text, /За задачу:/);
-  await telegram.waitForCall("deleteMessage", (call) => (
+  const normalProgressDeletion = await telegram.waitForCall("deleteMessage", (call) => (
     call.body.message_id === normalProgressId
   ), { after: mark });
+  assert.ok(
+    telegram.calls.indexOf(normalFinal) < telegram.calls.indexOf(normalProgressDeletion),
+    "the live progress card must remain visible until the final answer is delivered",
+  );
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0, "normal turn completion");
   mark = telegram.calls.length;
   telegram.pushMessage("/diff");

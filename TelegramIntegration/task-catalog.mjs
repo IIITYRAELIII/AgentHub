@@ -89,6 +89,32 @@ function codexEntryTurnId(entry) {
   ).trim();
 }
 
+function codexResponseItemMessage(entry, role) {
+  if (entry?.type !== "response_item"
+    || entry.payload?.type !== "message"
+    || entry.payload?.role !== role) return "";
+  return (entry.payload?.content ?? [])
+    .filter((item) => ["input_text", "output_text", "text"].includes(item?.type))
+    .map((item) => String(item?.text ?? "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function rememberCodexTurnMessage(metadata, turnId, message) {
+  const value = String(message ?? "").trim();
+  if (!turnId || !value) return;
+  const previous = String(metadata.latestMessages.get(turnId) ?? "").trim();
+  const combined = !previous
+    ? value
+    : previous === value || previous.endsWith(`\n\n${value}`)
+      ? previous
+      : `${previous}\n\n${value}`;
+  metadata.latestMessages.set(turnId, combined.slice(-40_000));
+  while (metadata.latestMessages.size > 8) {
+    metadata.latestMessages.delete(metadata.latestMessages.keys().next().value);
+  }
+}
+
 function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
   if (entry?.type === "event_msg" && entry.payload?.type === "thread_settings_applied") {
     metadata.model = String(entry.payload?.thread_settings?.model ?? "").trim();
@@ -99,18 +125,21 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
   const lifecycle = entry?.type === "event_msg"
     && ["task_started", "task_complete", "turn_aborted"].includes(entry.payload?.type);
   const turnId = codexEntryTurnId(entry) || (lifecycle ? LEGACY_TURN_ID : "");
-  if ((entry?.type === "turn_context" || lifecycle) && turnId) {
+  if ((entry?.type === "turn_context" || entry?.type === "response_item" || lifecycle) && turnId) {
     metadata.latestTurnId = turnId;
   }
+  const responseItemMessage = codexResponseItemMessage(entry, "assistant");
+  if (turnId && responseItemMessage) {
+    // response_item duplicates the neighbouring unscoped agent_message, but it
+    // carries the real turn_id. It is therefore the authoritative source when
+    // VS Code has concurrent turns in one thread.
+    rememberCodexTurnMessage(metadata, turnId, responseItemMessage);
+  }
   if (entry?.type === "event_msg" && entry.payload?.type === "agent_message") {
-    const messageTurnId = turnId || metadata.latestTurnId
-      || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+    const messageTurnId = turnId || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     const message = String(entry.payload?.message ?? "").trim();
     if (messageTurnId && message) {
-      metadata.latestMessages.set(messageTurnId, message.slice(-40_000));
-      while (metadata.latestMessages.size > 8) {
-        metadata.latestMessages.delete(metadata.latestMessages.keys().next().value);
-      }
+      rememberCodexTurnMessage(metadata, messageTurnId, message);
     } else if (message) {
       metadata.unscopedLatestMessage = message.slice(-40_000);
     }
@@ -125,8 +154,9 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
     }
   }
   if (entry?.type === "event_msg" && entry.payload?.type === "user_message") {
-    const messageTurnId = turnId || metadata.latestTurnId
-      || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+    const messageTurnId = turnId
+      || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "")
+      || (activeTurnIds.has(metadata.latestTurnId) ? metadata.latestTurnId : "");
     if (messageTurnId) {
       const clientId = String(entry.payload?.client_id ?? "").trim();
       if (clientId) metadata.vscodeTurnIds.add(messageTurnId);
@@ -149,11 +179,16 @@ function codexActivity(
     const lastSeenAt = lastSeenAtByTurnId.get(turnId);
     if (turnId === LEGACY_TURN_ID && !Number.isFinite(lastSeenAt)) return true;
     return Number.isFinite(lastSeenAt) && nowMs - lastSeenAt <= freshnessMs;
-  });
+  }).sort((left, right) => (
+    Number(lastSeenAtByTurnId.get(left) ?? 0) - Number(lastSeenAtByTurnId.get(right) ?? 0)
+  ));
   return {
     running: activeIds.length > 0,
     activeTurnIds: activeIds.filter((turnId) => turnId !== LEGACY_TURN_ID),
     activeVscodeTurnIds: activeIds.filter((turnId) => vscodeTurnIds.has(turnId)),
+    activityAtMsByTurnId: Object.fromEntries(activeIds
+      .filter((turnId) => turnId !== LEGACY_TURN_ID && Number.isFinite(lastSeenAtByTurnId.get(turnId)))
+      .map((turnId) => [turnId, lastSeenAtByTurnId.get(turnId)])),
   };
 }
 
@@ -210,6 +245,7 @@ export async function readCodexRolloutActivity(
       running: false,
       activeTurnIds: [],
       activeVscodeTurnIds: [],
+      activityAtMsByTurnId: {},
       lastActivityAtMs: null,
       model: null,
       reasoningEffort: null,
@@ -228,6 +264,7 @@ export async function readCodexRolloutActivity(
         running: false,
         activeTurnIds: [],
         activeVscodeTurnIds: [],
+        activityAtMsByTurnId: {},
         lastActivityAtMs: null,
         model: null,
         reasoningEffort: null,
@@ -245,6 +282,7 @@ export async function readCodexRolloutActivity(
       running: false,
       activeTurnIds: [],
       activeVscodeTurnIds: [],
+      activityAtMsByTurnId: {},
       lastActivityAtMs: info.mtimeMs,
       model: cached?.model || null,
       reasoningEffort: cached?.reasoningEffort || null,
