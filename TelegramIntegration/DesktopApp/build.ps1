@@ -19,13 +19,14 @@ $target = Join-Path $output "TyraelIntegration.exe"
 
 & $compiler /nologo /target:winexe /optimize+ /platform:anycpu `
     "/out:$target" `
+    "/win32manifest:$(Join-Path $root 'app.manifest')" `
     "/reference:$(Find-GacAssembly 'PresentationCore.dll')" `
     "/reference:$(Find-GacAssembly 'PresentationFramework.dll')" `
     "/reference:$(Find-GacAssembly 'WindowsBase.dll')" `
     "/reference:$(Find-GacAssembly 'System.Xaml.dll')" `
     /reference:System.dll `
     /reference:System.Core.dll `
-    (Join-Path $root "Program.cs")
+    (Get-ChildItem -LiteralPath $root -Filter "*.cs" | ForEach-Object { $_.FullName })
 if ($LASTEXITCODE -ne 0) { throw "Desktop build failed with exit code $LASTEXITCODE" }
 
 Write-Output $target
