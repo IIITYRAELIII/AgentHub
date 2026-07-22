@@ -17,11 +17,11 @@
 | 2 | ✅ | Учёт токенов: нормализация, delta, суммирование и форматирование вынесены в `token-usage.mjs`. |
 | 3 | ✅ | `CodexAppServerTransport`: процесс, JSON-RPC, таймауты, сигнал разрыва/reconnect, остановка дерева и ограниченный кэш `thread/read`. Политика восстановления ходов остаётся в композиции бота. |
 | 4 | ✅ | `ClaudeRunController`: detached-процесс, файлы stdout/stderr, чтение и разбор `stream-json`, polling, завершение, отмена дерева и восстановление по PID/офсету. |
-| 5 | 🟡 | Task lifecycle: `TaskProgressController` владеет progress UI, а `TaskObserverController` — polling и переходами snapshot с защитой от устаревшего результата. Остаются запуск/завершение run, discovery выбранной внешней задачи, очередь и восстановление ходов. |
-| 6 | ⬜ | Telegram controllers: выбор задач, просмотр истории, approvals, команды и callback routing. |
-| 7 | ⬜ | Media services: изображения, распознавание голоса и TTS orchestration. |
-| 8 | ⬜ | Финальная композиция: `bot.mjs` не содержит протокольной реализации и остаётся тонкой точкой запуска. |
+| 5 | ✅ | Task lifecycle: фабрики managed/observed run находятся в `task-runs.mjs`; `TaskProgressController` владеет progress UI, `TaskObserverController` — snapshot polling, `DeferredInputController` — очередью сообщений, а `task-recovery.mjs` — решениями восстановления после рестарта. |
+| 6 | ✅ | Telegram controllers: `TelegramMessageController` маршрутизирует команды, reply и медиа; `TelegramCallbackController` и `telegram-callback-router.mjs` — callback-протокол; `ApprovalController` — подтверждения; `task-picker.mjs` и `TaskViewController` — выбор задач и историю. |
+| 7 | ✅ | `MediaController`: загрузка изображений и аудио, Whisper, хранилище кнопок озвучивания, TTS worker и отправка voice. Сохраняемые очереди фоновых заданий остаются общей политикой композиции. |
+| 8 | ✅ | Финальная композиция: `TelegramPollingController` владеет Bot API polling; transports, controllers, storage и форматирование вынесены. `bot.mjs` связывает сервисы и содержит только прикладную политику задач, провайдеров и восстановления. |
 
 ## Критерий завершения
 
-Пункт закрывается, когда обязанности этапов 1–8 разделены, публичные границы покрыты unit-тестами, оба process E2E проходят без изменения сценариев, а live-runtime успешно обновляется и проходит `doctor`.
+Пункт закрыт после полного `test:all`, повторных process E2E, обновления live-runtime и успешного `doctor`. Публичные границы каждого контроллера имеют отдельные unit-тесты.

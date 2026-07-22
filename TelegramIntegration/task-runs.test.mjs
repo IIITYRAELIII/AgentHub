@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createManagedTaskRun,
+  createObservedTaskRun,
   isRecentDuplicateTaskAnswer,
   TaskDismissalRegistry,
   TaskRunRegistry,
@@ -11,6 +13,21 @@ import {
   updateObservedResponse,
   updateTaskRunTitle,
 } from "./task-runs.mjs";
+
+test("task run factories initialize managed and observed lifecycle state", () => {
+  const managed = createManagedTaskRun({ provider: "claude", threadId: "session-1" });
+  assert.equal(managed.sessionId, "session-1");
+  assert.equal(managed.observer, false);
+  assert.equal(managed.progressStage, "Задача принята.");
+  const observed = createObservedTaskRun(
+    { provider: "codex", threadId: "thread-1", turnId: "turn-1" },
+    { answer: "часть", stage: "Работаю", reasoning: "анализ" },
+  );
+  assert.equal(observed.observer, true);
+  assert.equal(observed.responseText, "часть");
+  assert.equal(observed.observedInitialResponseText, "часть");
+  assert.equal(observed.progressStage, "Работаю");
+});
 
 test("selected external task is observed automatically only while its turn is active", () => {
   const task = {

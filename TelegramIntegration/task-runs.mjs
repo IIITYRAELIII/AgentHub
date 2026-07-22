@@ -11,6 +11,58 @@ export function taskRunKey({ provider, projectRoot, threadId }) {
   return `${normalizedProvider}\0${normalizedProjectRoot(projectRoot)}\0${normalizedThreadId}`;
 }
 
+function progressState({ stage, reasoning = "", displayRequested }) {
+  const now = new Date().toISOString();
+  return {
+    responseText: "",
+    status: "running",
+    startedAt: now,
+    progressMessageIds: [],
+    progressStage: stage,
+    progressReasoning: reasoning,
+    lastMeaningfulProgressAt: now,
+    lastProgressText: "",
+    progressStartTimer: null,
+    progressTimer: null,
+    progressUpdateInFlight: false,
+    progressUpdatePending: false,
+    displayRequested,
+    latestDiff: "",
+    gitBaseline: null,
+    process: null,
+  };
+}
+
+export function createManagedTaskRun(value) {
+  return {
+    id: crypto.randomUUID(),
+    turnId: null,
+    sessionId: value.provider === "claude" ? value.threadId : null,
+    ...value,
+    ...progressState({ stage: "Задача принята.", displayRequested: true }),
+    observer: false,
+  };
+}
+
+export function createObservedTaskRun(value, snapshot = {}) {
+  return {
+    id: crypto.randomUUID(),
+    turnId: value.turnId ?? null,
+    sessionId: value.provider === "claude" ? value.threadId : null,
+    ...value,
+    ...progressState({
+      stage: snapshot.stage ?? "Подключение к выполняющейся задаче…",
+      reasoning: snapshot.reasoning ?? "",
+      displayRequested: false,
+    }),
+    responseText: snapshot.answer ?? "",
+    observedInitialResponseText: String(snapshot.answer ?? ""),
+    observedResponseChanged: false,
+    observerTimer: null,
+    observer: true,
+  };
+}
+
 export class TaskRunRegistry {
   #byId = new Map();
   #byTask = new Map();

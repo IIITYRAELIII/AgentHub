@@ -290,6 +290,8 @@ npm start
 
 Текущий план выделения компонентов из исторически выросшего `bot.mjs`, границы этапов и критерий завершения описаны в [BOT_MODULE_SPLIT.md](BOT_MODULE_SPLIT.md). Стабилизационные исправления и архитектурная декомпозиция учитываются раздельно в [STABILIZATION_CHECKLIST.md](STABILIZATION_CHECKLIST.md).
 
+Декомпозиция завершена. Telegram Bot API обслуживают `TelegramClient` и `TelegramPollingController`; входящие сообщения и callback-кнопки разбирают `TelegramMessageController` и `TelegramCallbackController`; подтверждения принадлежат `ApprovalController`, список и история задач — `task-picker.mjs` и `TaskViewController`, изображения/голос/TTS — `MediaController`. Жизненный цикл хода разделён между фабриками `task-runs.mjs`, `TaskProgressController`, `TaskObserverController`, `DeferredInputController` и политикой `task-recovery.mjs`. `bot.mjs` связывает эти компоненты с прикладными правилами Codex/Claude и persistent runtime-state.
+
 Низкоуровневый Codex App Server transport вынесен в `codex-app-server-transport.mjs`: модуль владеет дочерним процессом, JSON-RPC request/response, таймаутами, разбором событий, остановкой дерева и коротким ограниченным кэшем `thread/read`. `bot.mjs` получает уже разобранные события и определяет прикладную политику переподключения и восстановления конкретных задач.
 
 Lifecycle Claude CLI вынесен в `claude-run-controller.mjs`: контроллер запускает detached-процесс, ведёт файлы потока, читает `stream-json` с сохранённого офсета, завершает или отменяет дерево и подключается к ходу после рестарта. Смысловая реакция на события, progress и доставка ответа остаются в композиции бота.

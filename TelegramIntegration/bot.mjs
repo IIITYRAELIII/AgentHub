@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
@@ -59,8 +59,7 @@ import {
 } from "./task-git-diff.mjs";
 import { TaskDiffStore } from "./task-diff-store.mjs";
 import { findRepositoryWriteConflict } from "./repository-conflict.mjs";
-import { telegramBotApiUrl, telegramFileApiUrl } from "./telegram-api.mjs";
-import { parsePendingInputCallback, pendingInputKeyboard } from "./deferred-input.mjs";
+import { pendingInputKeyboard } from "./deferred-input.mjs";
 import {
   appendMessageBindings,
   findMessageBinding,
@@ -78,6 +77,8 @@ import {
   retainProgressMessageAfterEditError,
 } from "./progress-heartbeat.mjs";
 import {
+  createManagedTaskRun,
+  createObservedTaskRun,
   isRecentDuplicateTaskAnswer,
   serializableTaskRun,
   shouldAutoObserveTask,
@@ -96,27 +97,17 @@ import {
 } from "./last-message.mjs";
 import {
   codexThreadHistory,
-  mergeActiveTaskHistory,
-  visibleTaskHistory,
 } from "./task-history.mjs";
 import { startCodexTurnWithRecovery } from "./codex-recovery.mjs";
 import {
-  approvalCallbackData,
-  approvalMatchesTelegramMessage,
-  codexApprovalResponse,
   codexThreadWaitingOnApproval,
-  createApprovalKey,
-  formatMcpElicitation,
   formatPermissionsApproval,
-  mcpElicitationAutoResponse,
-  parseApprovalCallback,
 } from "./codex-approvals.mjs";
-import { contextualCallback, resolveContextualCallback } from "./callback-context.mjs";
+import { contextualCallback } from "./callback-context.mjs";
 import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { installRotatingConsole } from "./rotating-log.mjs";
 import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
 import { LocalTaskSyncStore } from "./task-sync-store.mjs";
-import { shouldLogPollingFailure, telegramPollingRetryDelay } from "./poll-retry.mjs";
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
 import { SingleInstanceGuard } from "./instance-lock.mjs";
 import { BackgroundJobQueue } from "./background-job-queue.mjs";
@@ -130,7 +121,6 @@ import {
   codexCatalogEntry,
   codexThreadRunning,
   mergeTaskCatalog,
-  parseTaskCatalogCallback,
   pinnedTaskTitle as readPinnedTaskTitle,
   pinTaskTitle as writePinnedTaskTitle,
   readCodexRolloutActivity,
@@ -138,19 +128,24 @@ import {
   selectCodexTurn,
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
-  taskExecutionRuntimeShortLabel,
-  taskCatalogCallback,
 } from "./task-catalog.mjs";
 import { resolveCodexObservedExecutionOwner } from "./codex-runtime-owner.mjs";
 import { botReplacementInvocation } from "./runtime-restart.mjs";
 import { RuntimeCommandServer } from "./runtime-command.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
-import { runTtsWorkerRequest } from "./tts-worker-client.mjs";
-import { parseTaskViewCallbackData, taskViewCallbackData } from "./task-view-callback.mjs";
+import { MediaController } from "./media-controller.mjs";
+import { TelegramMessageController } from "./telegram-message-controller.mjs";
+import { ApprovalController } from "./approval-controller.mjs";
+import { TelegramCallbackController } from "./telegram-callback-controller.mjs";
+import { buildTaskPicker } from "./task-picker.mjs";
+import { TaskViewController } from "./task-view-controller.mjs";
+import { TelegramPollingController } from "./telegram-polling-controller.mjs";
 import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "./codex-invocation.mjs";
 import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
 import { TaskProgressController } from "./task-progress-controller.mjs";
 import { TaskObserverController } from "./task-observer-controller.mjs";
+import { DeferredInputController } from "./deferred-input-controller.mjs";
+import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "./task-recovery.mjs";
 
 const config = await loadConfig();
 const defaultDataDirectory = path.join(INTEGRATION_ROOT, "data");
@@ -206,7 +201,6 @@ const STATE_BACKUP_FILE = `${STATE_FILE}.bak`;
 const DELIVERY_OUTBOX_DIR = config.deliveryOutboxDir;
 const BACKGROUND_JOBS_DIR = path.join(config.dataDir, "background-jobs");
 const INSTANCE_LOCK_FILE = path.join(config.dataDir, "bot.lock");
-const SPEECH_TEXTS_FILE = path.join(config.dataDir, "speech-texts.json");
 const PINNED_TASK_TITLES_FILE = path.join(config.dataDir, "pinned-task-titles.json");
 const TASK_SYNC_FILE = path.join(config.dataDir, "task-sync.json");
 const TASK_DIFFS_FILE = path.join(config.dataDir, "task-diffs.json");
@@ -217,16 +211,7 @@ const MAX_DEFERRED_INPUTS = 500;
 const MAX_BACKGROUND_MEDIA_JOBS = 20;
 const MAX_BACKGROUND_SPEECH_JOBS = 10;
 const MAX_INTERACTIVE_JOBS = 10;
-const PYTHON_EXE = config.pythonExe;
-const TTS_PYTHON_EXE = config.ttsPythonExe;
-const TRANSCRIBE_SCRIPT = path.join(import.meta.dirname, "transcribe.py");
-const TTS_WORKER_SCRIPT = config.ttsWorkerScript;
-const WHISPER_MODEL_DIR = config.whisperModelDir;
-const TTS_CACHE_DIR = config.ttsCacheDir;
-const AUDIO_DIR = config.audioDir;
-const IMAGE_DIR = path.join(config.dataDir, "images");
 const STATUS_HEADER_DIR = path.join(import.meta.dirname, "assets", "status");
-const TTS_DIR = config.ttsDir;
 const AGENT_ICONS = ["👾", "🦉", "🐙", "🕶️", "🚀", "⚡", "💻", "🔮", "🛰️", "🔥", "✨"];
 const agentIcon = AGENT_ICONS[Math.floor(Math.random() * AGENT_ICONS.length)];
 const BOT_COMMANDS = [
@@ -334,9 +319,7 @@ let restartRequest = null;
 let processingUpdateId = null;
 let stateWriteQueue = Promise.resolve();
 let lastStateBackupAt = 0;
-let speechWriteQueue = Promise.resolve();
 let bindingWriteQueue = Promise.resolve();
-let ttsWorker = null;
 let deliveryOutboxTimer = null;
 let selectedTaskWatchTimer = null;
 let selectedTaskWatchInFlight = false;
@@ -346,12 +329,10 @@ const MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS = 5_000;
 const CLAUDE_OUTPUT_POLL_INTERVAL_MS = 250;
 const TASK_CATALOG_CACHE_MS = 1_500;
 const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
-const pendingApprovals = new Map();
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
 const turnTemporaryFiles = new Map();
 const turnSpeechButtons = new Map();
-const speechTexts = new Map();
 const taskRuns = new TaskRunRegistry();
 const backgroundJobStore = new PersistentBackgroundJobStore({
   directoryPath: BACKGROUND_JOBS_DIR,
@@ -377,7 +358,6 @@ const cancelledManagedClaudeTasks = new Map();
 const pendingInputs = new Map();
 const gitRepoRoots = new Map();
 const queuedInputs = new Map();
-const queueTimers = new Map();
 const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
 await taskDiffs.load();
 const lastTaskMessages = new Map();
@@ -389,6 +369,7 @@ let taskCatalogRefreshInFlight = null;
 const taskSyncStore = new LocalTaskSyncStore({ filePath: TASK_SYNC_FILE });
 await taskSyncStore.load();
 
+let mediaController;
 const telegramClient = new TelegramClient({
   token,
   apiBaseUrl: config.telegramApiBaseUrl,
@@ -397,7 +378,7 @@ const telegramClient = new TelegramClient({
   selectStatusHeader: randomStatusHeaderFileName,
   getDefaultChatId: () => chatId,
   getDefaultProvider: () => activeProvider,
-  rememberSpeechText,
+  rememberSpeechText: (...args) => mediaController?.rememberSpeechText(...args) ?? null,
   messageLimit: TELEGRAM_LIMIT,
 });
 const telegram = (method, body) => telegramClient.request(method, body);
@@ -410,6 +391,27 @@ const sendMessageTo = (...args) => telegramClient.sendMessageTo(...args);
 const sendLongMessage = (...args) => telegramClient.sendLongMessage(...args);
 const startTyping = () => telegramClient.startTyping();
 const stopTyping = () => telegramClient.stopTyping();
+mediaController = new MediaController({
+  config,
+  token,
+  integrationRoot: INTEGRATION_ROOT,
+  telegram,
+  sendMessage: sendMessageTo,
+  startTurn,
+  activeProjectRoot: () => activeProjectRoot,
+  stopProcessTree,
+});
+await mediaController.load();
+const approvalController = new ApprovalController({
+  autoApprove: () => autoApprove,
+  respond: respondRpc,
+  send: sendMessage,
+  sendForRun: sendRunMessage,
+  runExists: (id) => taskRuns.values().some((run) => run.id === id),
+  setProgressStage,
+  telegram,
+  currentChatId: () => chatId,
+});
 
 function invalidateTaskCatalog() {
   taskCatalogRefreshedAt = 0;
@@ -478,17 +480,6 @@ const deliveryOutbox = new PersistentDeliveryOutbox({
   },
 });
 await deliveryOutbox.load();
-
-try {
-  const savedSpeechTexts = JSON.parse(await readFile(SPEECH_TEXTS_FILE, "utf8"));
-  if (Array.isArray(savedSpeechTexts)) {
-    for (const [id, text] of savedSpeechTexts.slice(-20)) {
-      if (/^[0-9a-f]+$/.test(id) && typeof text === "string" && text.trim()) speechTexts.set(id, text);
-    }
-  }
-} catch (error) {
-  if (error?.code !== "ENOENT") console.error("Cannot read saved speech texts:", error.message);
-}
 
 function findProject(projectRoot) {
   return findContainingProject(PROJECTS, projectRoot);
@@ -634,7 +625,7 @@ async function bindIncomingTaskMessage(message, text) {
 
 async function deleteTaskTelegramMessages(task, targetChatId) {
   const bindings = await readMessageBindings(config.dataDir);
-  const protectedIds = new Set([...pendingApprovals.values()]
+  const protectedIds = new Set([...approvalController.pending.values()]
     .filter((approval) => approval.chatId === targetChatId)
     .map((approval) => approval.messageId)
     .filter(Number.isSafeInteger));
@@ -750,7 +741,7 @@ async function sendRunLongMessage(run, text, {
   deliveryGroupId = randomUUID(),
 } = {}) {
   const value = `🧵 ${runTaskTitle(run)}\n\n${String(text)}`;
-  const speechId = rememberSpeechText(speechText, forceSpeechButton);
+  const speechId = mediaController.rememberSpeechText(speechText, forceSpeechButton);
   let queued = false;
   let sequence = 0;
   for (let start = 0; start < value.length; start += TELEGRAM_LIMIT) {
@@ -1539,60 +1530,28 @@ async function refreshTaskCatalog({ force = false } = {}) {
   }
 }
 
-function taskPickerButtonText(entry) {
-  const selected = catalogEntryIsSelected(entry, selectedTask()) ? "✓ " : "";
-  const running = entry.running ? "⏳ " : entry.activityUnknown ? "❔ " : "";
-  const runtime = entry.running ? `${taskExecutionRuntimeShortLabel(entry.executionOwner)} · ` : "";
-  const provider = entry.provider === "codex" ? "Codex" : "Claude";
-  const project = config.showProjectButton && config.showTaskProject
-    ? `${entry.projectName} · `
-    : "";
-  return `${selected}${running}${runtime}${provider} · ${project}${entry.title}`.slice(0, 90);
-}
-
 async function sendThreadPicker({ editMessage = null, page = 0 } = {}) {
   const catalog = await refreshTaskCatalog();
-  const pageCount = Math.max(1, Math.ceil(catalog.length / TASK_PICKER_PAGE_SIZE));
-  const safePage = Math.max(0, Math.min(Number(page) || 0, pageCount - 1));
-  const visible = catalog.slice(
-    safePage * TASK_PICKER_PAGE_SIZE,
-    (safePage + 1) * TASK_PICKER_PAGE_SIZE,
-  );
-  const keyboard = visible.map((entry) => [{
-    text: taskPickerButtonText(entry),
-    callback_data: taskCatalogCallback(entry),
-  }]);
-  if (pageCount > 1) {
-    const navigation = [];
-    if (safePage > 0) navigation.push({ text: "←", callback_data: `tasks-page:${safePage - 1}` });
-    navigation.push({ text: `${safePage + 1}/${pageCount}`, callback_data: `tasks-page:${safePage}` });
-    if (safePage + 1 < pageCount) navigation.push({ text: "→", callback_data: `tasks-page:${safePage + 1}` });
-    keyboard.push(navigation);
-  }
-  keyboard.push([{
-    text: `🆕 Новая задача: ${providerTitle()} · ${activeProject().name}`,
-    callback_data: uiCallback("thread:new"),
-  }]);
-  if (isCodex() && threadId) {
-    keyboard.push([{
-      text: "❌ Архивировать текущую задачу",
-      callback_data: uiCallback("thread:archive"),
-    }]);
-  }
-  const runningCount = catalog.filter((entry) => entry.running).length;
-  const text = catalog.length
-    ? `Все задачи Codex и Claude в разрешённых папках: ${catalog.length}\nВыполняются: ${runningCount}\n\nВыберите задачу:`
-    : "В разрешённых папках пока нет задач Codex или Claude.";
-  const replyMarkup = { inline_keyboard: keyboard };
+  const view = buildTaskPicker({
+    catalog,
+    selectedTask: selectedTask(),
+    page,
+    pageSize: TASK_PICKER_PAGE_SIZE,
+    showProject: config.showProjectButton && config.showTaskProject,
+    providerTitle: providerTitle(),
+    projectName: activeProject().name,
+    newTaskCallback: uiCallback("thread:new"),
+    archiveCallback: isCodex() && threadId ? uiCallback("thread:archive") : null,
+  });
   if (editMessage) {
     await telegram("editMessageText", {
       chat_id: editMessage.chat.id,
       message_id: editMessage.message_id,
-      text,
-      reply_markup: replyMarkup,
+      text: view.text,
+      reply_markup: view.replyMarkup,
     });
   } else {
-    await sendMessage(text, { reply_markup: replyMarkup });
+    await sendMessage(view.text, { reply_markup: view.replyMarkup });
   }
 }
 
@@ -2066,15 +2025,12 @@ async function beginRun(input, target = null) {
     ? savedCodexSettings.reasoningEffort
       ?? (targetThreadId === threadId ? codexReasoningEffort : defaultCodexReasoningEffort)
     : claudeReasoningEffort);
-  const run = {
-    id: randomUUID(),
+  const run = createManagedTaskRun({
     provider,
     chatId: target?.chatId ?? chatId,
     projectRoot,
     projectName: project?.name ?? path.basename(projectRoot),
     threadId: targetThreadId,
-    turnId: null,
-    sessionId: provider === "codex" ? null : targetThreadId,
     taskTitle: targetTaskTitle,
     promptPreview: inputPreview(input),
     model: provider === "codex" ? codexModelLabel(modelId) : CLAUDE_MODEL_LABELS[modelId],
@@ -2087,24 +2043,7 @@ async function beginRun(input, target = null) {
       : "Telegram CLI",
     collaborationMode: target?.collaborationMode
       ?? (provider === "codex" ? codexCollaborationMode : claudeCollaborationMode),
-    responseText: "",
-    status: "running",
-    startedAt: new Date().toISOString(),
-    progressMessageIds: [],
-    progressStage: "Задача принята.",
-    progressReasoning: "",
-    lastMeaningfulProgressAt: new Date().toISOString(),
-    lastProgressText: "",
-    progressStartTimer: null,
-    progressTimer: null,
-    progressUpdateInFlight: false,
-    progressUpdatePending: false,
-    observer: false,
-    displayRequested: true,
-    latestDiff: "",
-    gitBaseline: null,
-    process: null,
-  };
+  });
   taskRuns.add(run);
   invalidateTaskCatalog();
   await persistTaskDiff(taskRunKey(run), "");
@@ -2197,8 +2136,8 @@ async function finishProgress(run, stage) {
 
 async function completeRun(run) {
   if (!run) return;
-  for (const [key, approval] of pendingApprovals) {
-    if (approval.runId === run.id) pendingApprovals.delete(key);
+  for (const [key, approval] of approvalController.pending) {
+    if (approval.runId === run.id) approvalController.pending.delete(key);
   }
   taskObserver.pause(run);
   claudeRunController.pause(run);
@@ -2495,18 +2434,10 @@ async function updateDeferredMessage(item, text, replyMarkup = { inline_keyboard
   }).catch(() => {});
 }
 
-function scheduleQueuedInput(item, delayMs = 2000) {
-  if (!item || queueTimers.has(item.id)) return;
-  const timer = setTimeout(() => {
-    queueTimers.delete(item.id);
-    void processQueuedInput(item.id);
-  }, delayMs);
-  queueTimers.set(item.id, timer);
-}
-
-async function processQueuedInput(id) {
-  const item = queuedInputs.get(id);
-  if (!item) return;
+const deferredInputController = new DeferredInputController({
+  pendingInputs,
+  queuedInputs,
+  isBlocked: async (item) => {
   const target = {
     provider: item.provider,
     projectRoot: item.projectRoot,
@@ -2517,37 +2448,44 @@ async function processQueuedInput(id) {
     reasoningId: item.reasoningId,
     collaborationMode: item.collaborationMode,
   };
-  const externalActivity = taskRuns.forTask(target)
+    const externalActivity = taskRuns.forTask(target)
     ? { state: "active" }
     : await taskExternalActivity(target);
-  if (taskRuns.forTask(target) || externalActivity.state !== "inactive"
-    || await activeRepositoryConflict(target)) {
-    scheduleQueuedInput(item);
-    return;
-  }
-
-  try {
+    return Boolean(taskRuns.forTask(target)
+      || externalActivity.state !== "inactive"
+      || await activeRepositoryConflict(target));
+  },
+  start: async (item) => {
+    const target = {
+      provider: item.provider,
+      projectRoot: item.projectRoot,
+      threadId: item.threadId,
+      taskTitle: item.taskTitle,
+      chatId: item.chatId,
+      modelId: item.modelId,
+      reasoningId: item.reasoningId,
+      collaborationMode: item.collaborationMode,
+    };
     const run = await beginRun(item.input, target);
     await launchTurn(run, item.input, item.temporaryFiles ?? [], {
       forceSpeechButton: item.forceSpeechButton === true,
     });
-    queuedInputs.delete(id);
-    await saveState();
-    await updateDeferredMessage(item, `▶️ Сообщение из очереди отправлено в задачу «${item.taskTitle}».`);
-  } catch (error) {
-    queuedInputs.delete(id);
-    item.lastError = String(error.message ?? error);
-    item.lastAttemptAt = new Date().toISOString();
-    item.attempts = Number(item.attempts ?? 0) + 1;
-    pendingInputs.set(id, item);
-    await saveState();
-    await updateDeferredMessage(
-      item,
-      `⚠️ Не удалось запустить сообщение из очереди: ${item.lastError}\n\nСообщение сохранено. Выберите дальнейшее действие:`,
-      pendingInputKeyboard(item.id, { allowForce: item.allowForce === true }),
-    );
-    await sendMessageTo(item.chatId, "Сообщение не потеряно и возвращено в сохранённые после ошибки запуска.");
-  }
+  },
+  persist: () => saveState(),
+  updateMessage: updateDeferredMessage,
+  pendingKeyboard: (item) => pendingInputKeyboard(item.id, { allowForce: item.allowForce === true }),
+  notifyReturned: (item) => sendMessageTo(
+    item.chatId,
+    "Сообщение не потеряно и возвращено в сохранённые после ошибки запуска.",
+  ),
+});
+
+function scheduleQueuedInput(item, delayMs = 2000) {
+  deferredInputController.schedule(item, delayMs);
+}
+
+async function processQueuedInput(id) {
+  return deferredInputController.process(id);
 }
 
 function resolveClaudeInvocation() {
@@ -2981,14 +2919,12 @@ function observedRun(binding, targetChatId, snapshot, turnId = null) {
   const executionOwner = binding.provider === "codex"
     ? snapshot.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
     : TASK_EXECUTION_OWNERS.EXTERNAL;
-  const run = {
-    id: randomUUID(),
+  const run = createObservedTaskRun({
     provider: binding.provider,
     chatId: targetChatId,
     projectRoot: binding.projectRoot,
     projectName: findProject(binding.projectRoot)?.name ?? path.basename(binding.projectRoot),
     threadId: binding.threadId,
-    sessionId: binding.provider === "claude" ? binding.threadId : null,
     turnId,
     taskTitle: binding.taskTitle,
     promptPreview: "",
@@ -3005,27 +2941,7 @@ function observedRun(binding, targetChatId, snapshot, turnId = null) {
       ? taskExecutionRuntimeLabel(executionOwner)
       : "Внешний Claude CLI",
     collaborationMode: "default",
-    responseText: snapshot.answer ?? "",
-    observedInitialResponseText: String(snapshot.answer ?? ""),
-    observedResponseChanged: false,
-    status: "running",
-    startedAt: new Date().toISOString(),
-    progressMessageIds: [],
-    progressStage: snapshot.stage ?? "Подключение к выполняющейся задаче…",
-    progressReasoning: snapshot.reasoning ?? "",
-    lastMeaningfulProgressAt: new Date().toISOString(),
-    lastProgressText: "",
-    progressStartTimer: null,
-    progressTimer: null,
-    progressUpdateInFlight: false,
-    progressUpdatePending: false,
-    observerTimer: null,
-    observer: true,
-    displayRequested: false,
-    latestDiff: "",
-    gitBaseline: null,
-    process: null,
-  };
+  }, snapshot);
   taskRuns.add(run);
   invalidateTaskCatalog();
   syncTaskRun(run, {
@@ -3314,245 +3230,71 @@ async function watchSelectedTask() {
   }
 }
 
-function taskViewRun(binding, targetChatId) {
-  return {
-    provider: binding.provider,
-    projectRoot: binding.projectRoot,
-    threadId: binding.threadId,
-    chatId: targetChatId,
-    taskTitle: binding.taskTitle,
-  };
-}
-
-async function readTaskViewHistory(binding, { completedOnly = false } = {}) {
-  const task = taskViewRun(binding, binding.chatId);
-  try {
-    if (binding.provider === "codex") {
-      if (!codexTransport.running) {
-        await startCodexAppServer();
-        await initializeCodex({ attachSelectedThread: false });
-      }
-      const result = await readCodexThread(binding.threadId, { fresh: true });
-      const history = codexThreadHistory(result.thread?.turns);
-      const snapshot = completedOnly ? null : await readCodexTaskSnapshot({
-        ...task,
-        turnId: null,
-        observer: true,
-      }, { threadResult: result });
-      mergeActiveTaskHistory(history, snapshot);
-      taskSyncStore.recordHistory(task, history, snapshot);
-      await taskSyncStore.save();
-      return { history, snapshot };
-    }
-    const snapshot = await readClaudeTaskSnapshot(binding.threadId);
-    const history = snapshot?.history ?? [];
-    taskSyncStore.recordHistory(task, history, completedOnly ? null : snapshot);
-    await taskSyncStore.save();
-    return {
-      history,
-      snapshot: completedOnly ? null : snapshot,
-    };
-  } catch (error) {
-    const history = taskSyncStore.history(task)
-      .filter((item) => !completedOnly || item.completed);
-    if (!history.length) throw error;
-    console.warn(`Using cached local history for ${binding.provider} task ${binding.threadId}:`, error.message);
-    return {
-      history,
-      snapshot: completedOnly ? null : taskSyncStore.snapshot(task),
-    };
-  }
-}
-
-async function renderTaskView(binding, targetChatId, {
-  count = 1,
-  completedOnly = false,
-} = {}) {
-  const task = taskViewRun(binding, targetChatId);
-  const { history, snapshot } = await readTaskViewHistory(binding, { completedOnly });
-  const running = taskRuns.forTask(task);
-  if (running) {
-    mergeActiveTaskHistory(history, {
-      active: true,
-      turnId: running.turnId ?? running.id,
-      prompt: running.promptPreview,
-      answer: running.responseText,
-    });
-  }
-  const view = visibleTaskHistory(history, count, { completedOnly });
-  await deleteTaskTelegramMessages(task, targetChatId);
-
-  const historyButton = view.hasMore
-    ? {
-      reply_markup: {
-        inline_keyboard: [[{
-          text: `👀 Показать ещё · ${view.shown}/${view.total}`,
-          callback_data: taskViewCallbackData({
-            action: completedOnly ? "history-last" : "history-all",
-            provider: task.provider,
-            threadId: task.threadId,
-            count: view.nextCount,
-          }) ?? `history-more:${completedOnly ? "l" : "a"}:${view.nextCount}`,
-        }]],
-      },
-    }
-    : {};
-  await sendRunMessage(
-    task,
-    `🧵 ${runTaskTitle(task)}\n\n`
-      + (view.total
-        ? `Показано сообщений: ${view.shown} из ${view.total}.`
-        : "История этой задачи пока пуста."),
-    historyButton,
-    { kind: "task-view-navigation" },
-  );
-
-  let rendered = false;
-  for (const exchange of view.items) {
-    if (exchange.prompt) {
-      await sendTaskViewText(task, "👤 Вы", exchange.prompt, "task-view-user");
-      rendered = true;
-    }
-    if (!exchange.active && exchange.answer) {
-      await sendTaskViewText(
-        task,
-        binding.provider === "claude" ? "🤖 Claude" : "🤖 Codex",
-        exchange.answer,
-        "task-view-assistant",
-      );
-      rendered = true;
-    }
-  }
-
-  if (!rendered && completedOnly) {
-    const answer = savedLastTaskMessage(task);
-    if (answer) {
-      await sendTaskViewText(
-        task,
-        binding.provider === "claude" ? "🤖 Claude" : "🤖 Codex",
-        answer,
-        "task-view-assistant",
-      );
-      rendered = true;
-    }
-  }
-  return { snapshot, rendered };
-}
-
-async function showTaskMessage(binding, targetChatId, { count = 1 } = {}) {
-  const task = {
-    provider: binding.provider,
-    projectRoot: binding.projectRoot,
-    threadId: binding.threadId,
-  };
-  if (dismissedExternalTasks.delete(task)) await saveState();
-  const view = await renderTaskView(binding, targetChatId, { count });
-  const running = taskRuns.forTask(task);
-  if (running) {
+const taskViewController = new TaskViewController({
+  ensureCodex: async () => {
+    if (codexTransport.running) return;
+    await startCodexAppServer();
+    await initializeCodex({ attachSelectedThread: false });
+  },
+  readCodexThread,
+  readCodexSnapshot: readCodexTaskSnapshot,
+  readClaudeSnapshot: readClaudeTaskSnapshot,
+  taskSyncStore,
+  taskRuns,
+  deleteTaskMessages: deleteTaskTelegramMessages,
+  sendRunMessage,
+  sendTaskViewText,
+  runTaskTitle,
+  savedLastTaskMessage,
+  dismissedExternalTasks,
+  saveState,
+  resolveRunningTitle: (running, binding) => {
     const selectedTitle = isSelectedRun(running) ? activeThreadTitle : null;
     const catalogTitle = taskCatalog.find((entry) => catalogEntryIsSelected(entry, running))?.title;
-    if (updateTaskRunTitle(running, selectedTitle || catalogTitle || binding.taskTitle)) {
-      await saveState();
+    return selectedTitle || catalogTitle || binding.taskTitle;
+  },
+  startProgressMessage,
+  createObservedRun: observedRun,
+  scheduleObservedRun,
+  findMessageBinding: (targetChatId, messageId) => (
+    findMessageBinding(config.dataDir, targetChatId, messageId)
+  ),
+  findCatalogEntry: async (identity) => {
+    let entry = taskCatalog.find((item) => taskViewController.identityMatches(item, identity));
+    if (!entry) {
+      entry = (await refreshTaskCatalog()).find((item) => taskViewController.identityMatches(item, identity));
     }
-    running.chatId = targetChatId;
-    if (running.observer) running.displayRequested = true;
-    await startProgressMessage(running, { forceNew: true });
-    return;
-  }
+    return entry ?? null;
+  },
+  selectedTask,
+  activeThreadTitle: () => activeThreadTitle,
+  logger: console,
+});
 
-  if (view.snapshot?.active) {
-    const run = observedRun(
-      binding,
-      targetChatId,
-      view.snapshot,
-      binding.provider === "codex" ? view.snapshot.turnId : null,
-    );
-    run.displayRequested = true;
-    await startProgressMessage(run, { forceNew: true });
-    scheduleObservedRun(run);
-    await saveState();
-    return;
-  }
-
-  if (view.snapshot?.activityUnknown) {
-    await sendRunMessage(
-      { ...task, chatId: targetChatId, taskTitle: binding.taskTitle },
-      "❔ Активность Claude неизвестна: транскрипт не завершён, но давно не обновлялся. Новое сообщение не будет запущено в этом треде без явного подтверждения.",
-    );
-    await saveState();
-    return;
-  }
-
-  if (!view.rendered) {
-    await sendRunMessage(
-      { ...task, chatId: targetChatId, taskTitle: binding.taskTitle },
-      "У этой задачи пока нет выполняющегося хода или сохранённого ответа.",
-    );
-  }
-  await saveState();
+async function showTaskMessage(binding, targetChatId, { count = 1 } = {}) {
+  return taskViewController.show(binding, targetChatId, { count });
 }
 
 async function showLastTaskMessage(binding, targetChatId, { count = 1 } = {}) {
-  const view = await renderTaskView(binding, targetChatId, {
-    count,
-    completedOnly: true,
-  });
-  if (!view.rendered) {
-    await sendRunMessage(
-      { ...binding, chatId: targetChatId },
-      "У этой задачи пока нет сохранённого завершённого ответа.",
-    );
-  }
-  await saveState();
-}
-
-function taskViewIdentityMatches(binding, identity) {
-  return binding?.provider === identity?.provider
-    && String(binding?.threadId ?? "").toLowerCase() === String(identity?.threadId ?? "").toLowerCase();
+  return taskViewController.showLast(binding, targetChatId, { count });
 }
 
 async function resolveTaskViewBinding(identity, targetChatId, sourceMessageId) {
-  const stored = await findMessageBinding(config.dataDir, targetChatId, sourceMessageId);
-  if (!identity) return stored;
-  if (taskViewIdentityMatches(stored, identity)) return stored;
-
-  let entry = taskCatalog.find((item) => taskViewIdentityMatches(item, identity));
-  if (!entry) {
-    entry = (await refreshTaskCatalog()).find((item) => taskViewIdentityMatches(item, identity));
-  }
-  if (entry) {
-    return {
-      chatId: targetChatId,
-      messageId: sourceMessageId,
-      provider: entry.provider,
-      threadId: entry.threadId,
-      projectRoot: entry.projectRoot,
-      taskTitle: entry.title,
-      createdAt: new Date().toISOString(),
-    };
-  }
-
-  const selected = selectedTask();
-  if (!taskViewIdentityMatches(selected, identity)) return null;
-  return {
-    chatId: targetChatId,
-    messageId: sourceMessageId,
-    ...selected,
-    taskTitle: activeThreadTitle,
-    createdAt: new Date().toISOString(),
-  };
+  return taskViewController.resolveBinding(identity, targetChatId, sourceMessageId);
 }
 
 async function recoverTaskRun(run) {
+  let observerSnapshot = null;
   if (run.observer) {
     run.displayRequested = run.displayRequested === true;
-    const snapshot = run.provider === "codex" && codexTransport.running
+    observerSnapshot = run.provider === "codex" && codexTransport.running
       ? await readCodexTaskSnapshot(run)
       : run.provider === "claude"
         ? await readClaudeTaskSnapshot(run.threadId)
         : null;
-    if (snapshot?.active) {
-      updateObservedRun(run, snapshot);
+    const observerAction = resolveTaskRecoveryAction({ run, observerSnapshot });
+    if (observerAction === TASK_RECOVERY_ACTIONS.OBSERVE) {
+      updateObservedRun(run, observerSnapshot);
       if (run.displayRequested === true) {
         await replaceRunProgressMessage(run);
       } else {
@@ -3563,20 +3305,25 @@ async function recoverTaskRun(run) {
       await saveState();
       return;
     }
-    if (snapshot?.completed) {
-      await finishObservedRun(run, snapshot);
+    if (observerAction === TASK_RECOVERY_ACTIONS.FINISH_OBSERVED) {
+      await finishObservedRun(run, observerSnapshot);
       return;
     }
-    if (snapshot?.activityUnknown) {
-      await finishUnknownObservedClaudeRun(run, snapshot);
+    if (observerAction === TASK_RECOVERY_ACTIONS.UNKNOWN_OBSERVED) {
+      await finishUnknownObservedClaudeRun(run, observerSnapshot);
       return;
     }
   }
-  if (run.provider === "claude" && run.claudeOutputPath) {
+  const initialAction = resolveTaskRecoveryAction({
+    run,
+    observerSnapshot,
+    codexAvailable: codexTransport.running,
+  });
+  if (initialAction === TASK_RECOVERY_ACTIONS.ATTACH_CLAUDE) {
     await attachClaudeRunAfterRestart(run);
     return;
   }
-  if (run.provider !== "codex" || !codexTransport.running) {
+  if (initialAction === TASK_RECOVERY_ACTIONS.INTERRUPTED_LOCAL) {
     await finishProgress(run, "Локальный процесс прервался при перезапуске бота.");
     await safelyDeliverRunMessage(
       run,
@@ -3594,16 +3341,21 @@ async function recoverTaskRun(run) {
   const result = await readCodexThread(run.threadId, { fresh: true });
   const turn = result.thread?.turns?.find((item) => item.id === run.turnId)
     ?? result.thread?.turns?.at(-1);
-  if (!turn) {
+  const recoveryAction = resolveTaskRecoveryAction({
+    run,
+    codexAvailable: codexTransport.running,
+    codexTurn: turn,
+    waitingOnApproval: codexThreadWaitingOnApproval(result.thread?.status),
+    autoApprove,
+    restartRequested: Boolean(restartRequest),
+  });
+  if (recoveryAction === TASK_RECOVERY_ACTIONS.MISSING_CODEX_TURN) {
     await finishProgress(run, "Не удалось найти сохранённый запуск.");
     await completeRun(run);
     return;
   }
   run.responseText = recoveredCodexAnswer(turn) || run.responseText;
-  if (turn.status === "inProgress"
-    && autoApprove
-    && run.observer !== true
-    && codexThreadWaitingOnApproval(result.thread?.status)) {
+  if (recoveryAction === TASK_RECOVERY_ACTIONS.RETRY_LOST_APPROVAL) {
     const originalPrompt = codexThreadHistory([turn]).at(-1)?.prompt
       || run.promptPreview
       || "текущую задачу";
@@ -3618,7 +3370,7 @@ async function recoverTaskRun(run) {
     );
     return;
   }
-  if (turn.status === "inProgress") {
+  if (recoveryAction === TASK_RECOVERY_ACTIONS.ATTACH_CODEX) {
     const previousTurnId = run.turnId;
     run.turnId = turn.id;
     taskRuns.reindex(run, { turnId: previousTurnId });
@@ -3629,7 +3381,7 @@ async function recoverTaskRun(run) {
     return;
   }
 
-  if (restartRequest && turn.status === "interrupted") {
+  if (recoveryAction === TASK_RECOVERY_ACTIONS.DISMISS_RESTART_INTERRUPTION) {
     while (run.progressUpdateInFlight) await delay(50);
     for (const messageId of run.progressMessageIds) {
       await telegram("deleteMessage", {
@@ -3673,75 +3425,11 @@ async function recoverActiveRuns({ provider = null } = {}) {
 }
 
 async function requestApproval(rpcId, kind, params, text, run = null) {
-  if (autoApprove) {
-    respondRpc(rpcId, codexApprovalResponse(kind, "once", params));
-    return;
-  }
-  const key = createApprovalKey();
-  const approval = {
-    rpcId,
-    kind,
-    params,
-    runId: run?.id ?? null,
-    chatId: run?.chatId ?? chatId,
-  };
-  pendingApprovals.set(key, approval);
-  const decisions = [
-    [{ text: "✅ Разрешить", callback_data: approvalCallbackData(key, "once") }],
-    [{ text: "✅ На сессию", callback_data: approvalCallbackData(key, "session") }],
-    [{ text: "❌ Отклонить", callback_data: approvalCallbackData(key, "decline") }],
-  ];
-  const extra = { reply_markup: { inline_keyboard: decisions } };
-  try {
-    const message = run
-      ? await sendRunMessage(run, text, extra, { kind: "approval" })
-      : await sendMessage(text, extra);
-    approval.messageId = message?.message_id ?? null;
-  } catch (error) {
-    pendingApprovals.delete(key);
-    throw error;
-  }
+  return approvalController.request(rpcId, kind, params, text, run);
 }
 
 async function requestMcpElicitation(rpcId, params, run = null) {
-  const acceptResponse = mcpElicitationAutoResponse(params);
-  if (autoApprove && acceptResponse) {
-    respondRpc(rpcId, acceptResponse);
-    if (run) setProgressStage(run, "MCP-запрос подтверждён автоматически. Продолжаю…");
-    return;
-  }
-  const key = createApprovalKey();
-  const approval = {
-    rpcId,
-    kind: "mcp-elicitation",
-    params,
-    acceptResponse,
-    runId: run?.id ?? null,
-    chatId: run?.chatId ?? chatId,
-  };
-  pendingApprovals.set(key, approval);
-  const decisions = [];
-  if (acceptResponse) {
-    decisions.push([{ text: "✅ Принять", callback_data: approvalCallbackData(key, "once") }]);
-  }
-  if (params.mode === "url" && params.url) {
-    decisions.push([{ text: "🌐 Открыть ссылку", url: params.url }]);
-  }
-  decisions.push([{ text: "❌ Отклонить", callback_data: approvalCallbackData(key, "decline") }]);
-  const text = formatMcpElicitation(params)
-    + (!acceptResponse && params.mode === "form"
-      ? "\n\nАвтоматически заполнить эту форму безопасно нельзя."
-      : "");
-  const extra = { reply_markup: { inline_keyboard: decisions } };
-  try {
-    const message = run
-      ? await sendRunMessage(run, text, extra, { kind: "approval" })
-      : await sendMessage(text, extra);
-    approval.messageId = message?.message_id ?? null;
-  } catch (error) {
-    pendingApprovals.delete(key);
-    throw error;
-  }
+  return approvalController.requestMcp(rpcId, params, run);
 }
 
 function formatCommandApproval(params, run = null) {
@@ -3823,15 +3511,15 @@ function persistedBackgroundJobCount(kind) {
 
 async function executeBackgroundJob(item) {
   if (item.kind === "image") {
-    await analyzeImage(item.payload.message, item.payload.target);
+    await mediaController.analyzeImage(item.payload.message, item.payload.target);
     return;
   }
   if (item.kind === "voice") {
-    await transcribeVoice(item.payload.message, item.payload.target);
+    await mediaController.transcribeVoice(item.payload.message, item.payload.target);
     return;
   }
   if (item.kind === "speech") {
-    await processSpeechRequest(item.payload.chatId, item.payload.text);
+    await mediaController.processSpeechRequest(item.payload.chatId, item.payload.text);
     return;
   }
   throw new Error(`unsupported background job kind: ${item.kind}`);
@@ -3938,7 +3626,7 @@ async function performRestart() {
   await Promise.allSettled([
     stateWriteQueue,
     bindingWriteQueue,
-    speechWriteQueue,
+    mediaController.waitForWrites(),
     taskSyncStore.save(),
     deliveryOutbox.waitForWrites(),
     backgroundJobStore.waitForWrites(),
@@ -3946,7 +3634,7 @@ async function performRestart() {
   stopping = true;
   stopRuntimeTimers();
   await stopCodexAppServerTree();
-  stopTtsWorker();
+  mediaController.stop();
   await runtimeCommandServer.close();
   await instanceGuard.release();
   const invocation = botReplacementInvocation({
@@ -3988,205 +3676,6 @@ async function restartBot() {
   if (!blockingWorkCount && processingUpdateId == null) await performRestart();
 }
 
-async function transcribeVoice(message, target) {
-  if (!config.voiceEnabled) {
-    await sendMessageTo(target.chatId, "Голосовые сообщения отключены в конфигурации.");
-    return;
-  }
-  const media = message.voice ?? message.audio;
-  if (!media?.file_id) return;
-  if ((media.file_size ?? 0) > 20 * 1024 * 1024) {
-    await sendMessageTo(target.chatId, "Голосовой файл слишком большой. Максимальный размер — 20 МБ.");
-    return;
-  }
-
-  await sendMessageTo(target.chatId, "🎙 Распознаю голосовое сообщение…");
-  await mkdir(AUDIO_DIR, { recursive: true });
-  const extension = message.voice ? ".ogg" : path.extname(media.file_name ?? "") || ".audio";
-  const audioPath = path.join(AUDIO_DIR, `${randomUUID()}${extension}`);
-  try {
-    const file = await telegram("getFile", { file_id: media.file_id });
-    const response = await fetch(telegramFileApiUrl(config.telegramApiBaseUrl, token, file.file_path), {
-      signal: AbortSignal.timeout(60000),
-    });
-    if (!response.ok) throw new Error(`Telegram file download: HTTP ${response.status}`);
-    await writeFile(audioPath, Buffer.from(await response.arrayBuffer()));
-    const transcript = await runTranscription(audioPath);
-    if (!transcript) {
-      await sendMessageTo(target.chatId, "Не удалось распознать речь в сообщении.");
-      return;
-    }
-    await sendMessageTo(target.chatId, `📝 Распознано:\n${transcript}`);
-    await startTurn(telegramPrompt(message, transcript), [], {
-      forceSpeechButton: true,
-      target,
-    });
-  } catch (error) {
-    await sendMessageTo(target.chatId, `Ошибка распознавания: ${error.message}`);
-  } finally {
-    await unlink(audioPath).catch(() => {});
-  }
-}
-
-async function analyzeImage(message, target) {
-  const photo = message.photo?.at(-1);
-  const document = message.document?.mime_type?.startsWith("image/") ? message.document : null;
-  const media = photo ?? document;
-  if (!media?.file_id) return;
-  if ((media.file_size ?? 0) > 20 * 1024 * 1024) {
-    await sendMessageTo(target.chatId, "Изображение слишком большое. Максимальный размер — 20 МБ.");
-    return;
-  }
-
-  await sendMessageTo(target.chatId, "🖼 Изображение получено, начинаю анализ…");
-  await mkdir(IMAGE_DIR, { recursive: true });
-  let imagePath;
-  try {
-    const file = await telegram("getFile", { file_id: media.file_id });
-    const extension = path.extname(document?.file_name ?? file.file_path ?? "") || ".jpg";
-    imagePath = path.join(IMAGE_DIR, `${randomUUID()}${extension}`);
-    const response = await fetch(telegramFileApiUrl(config.telegramApiBaseUrl, token, file.file_path), {
-      signal: AbortSignal.timeout(60000),
-    });
-    if (!response.ok) throw new Error(`Telegram file download: HTTP ${response.status}`);
-    await writeFile(imagePath, Buffer.from(await response.arrayBuffer()));
-    const prompt = message.caption?.trim() ||
-      "Проанализируй это изображение с учётом предыдущих сообщений пользователя.";
-    await startTurn([
-      { type: "text", text: prompt },
-      { type: "localImage", path: imagePath },
-    ], [imagePath], { target });
-  } catch (error) {
-    if (imagePath) await unlink(imagePath).catch(() => {});
-    await sendMessageTo(target.chatId, `Не удалось обработать изображение: ${error.message}`);
-  }
-}
-
-function runTranscription(audioPath) {
-  return new Promise((resolve, reject) => {
-    const worker = spawn(PYTHON_EXE, [TRANSCRIBE_SCRIPT, audioPath], {
-      cwd: activeProjectRoot,
-      windowsHide: true,
-      env: {
-        ...process.env,
-        PYTHONUTF8: "1",
-        WHISPER_MODEL: config.whisperModel,
-        WHISPER_MODEL_DIR,
-      },
-    });
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      worker.kill();
-      reject(new Error("превышено время распознавания (5 минут)"));
-    }, 5 * 60 * 1000);
-    worker.stdout.setEncoding("utf8");
-    worker.stderr.setEncoding("utf8");
-    worker.stdout.on("data", (chunk) => { stdout += chunk; });
-    worker.stderr.on("data", (chunk) => { stderr += chunk; });
-    worker.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    worker.on("exit", (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve(stdout.trim());
-      else reject(new Error(stderr.trim() || `Whisper завершился с кодом ${code}`));
-    });
-  });
-}
-
-async function synthesizeSpeech(text) {
-  await mkdir(TTS_DIR, { recursive: true });
-  const id = randomUUID();
-  const outputPath = path.join(TTS_DIR, `${randomUUID()}.ogg`);
-  let currentWorker = null;
-  return runTtsWorkerRequest({
-    spawnWorker: () => spawn(TTS_PYTHON_EXE, [
-      TTS_WORKER_SCRIPT,
-      "--idle-timeout", String(config.ttsIdleTimeoutSeconds),
-      "--model", config.ttsModel,
-      "--speaker", config.ttsSpeaker,
-      "--cache-dir", TTS_CACHE_DIR,
-      "--max-chars", String(config.ttsMaxChars),
-    ], {
-      cwd: INTEGRATION_ROOT,
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, PYTHONUTF8: "1", TORCH_HOME: TTS_CACHE_DIR },
-    }),
-    request: { id, text, outputPath },
-    timeoutMs: config.ttsRequestTimeoutSeconds * 1000,
-    terminateWorker: (worker) => stopProcessTree(worker.pid).catch(() => worker.kill()),
-    onWorkerChange: (worker) => {
-      if (worker) {
-        currentWorker = worker;
-        ttsWorker = worker;
-      } else if (ttsWorker === currentWorker) {
-        ttsWorker = null;
-      }
-    },
-    onDiagnostic: (message) => {
-      if (message) console.error(`[tts] ${message}`);
-    },
-  });
-}
-
-function stopTtsWorker() {
-  const worker = ttsWorker;
-  if (!worker) return;
-  ttsWorker = null;
-  void stopProcessTree(worker.pid).catch(() => worker.kill());
-}
-
-function rememberSpeechText(text, force = false) {
-  const value = String(text ?? "").trim();
-  if (!config.ttsEnabled || !value || (!force && value.length < config.ttsButtonMinChars)) return null;
-  while (speechTexts.size >= 100) speechTexts.delete(speechTexts.keys().next().value);
-  const id = randomUUID().replaceAll("-", "").slice(0, 16);
-  speechTexts.set(id, value);
-  void saveSpeechTexts().catch((error) => console.error("Cannot save speech texts:", error.message));
-  return id;
-}
-
-function saveSpeechTexts() {
-  const content = `${JSON.stringify([...speechTexts], null, 2)}\n`;
-  speechWriteQueue = speechWriteQueue
-    .catch(() => {})
-    .then(() => writeTextAtomic(SPEECH_TEXTS_FILE, content));
-  return speechWriteQueue;
-}
-
-async function sendVoiceFile(targetChatId, voicePath) {
-  const form = new FormData();
-  form.append("chat_id", String(targetChatId));
-  form.append("voice", new Blob([await readFile(voicePath)], { type: "audio/ogg" }), path.basename(voicePath));
-  const response = await fetch(telegramBotApiUrl(config.telegramApiBaseUrl, token, "sendVoice"), {
-    method: "POST",
-    body: form,
-    signal: AbortSignal.timeout(5 * 60 * 1000),
-  });
-  const payload = await response.json();
-  if (!payload.ok) throw new Error(`Telegram sendVoice: ${payload.description ?? response.status}`);
-  return payload.result;
-}
-
-async function processSpeechRequest(targetChatId, text) {
-  const tick = () => telegram("sendChatAction", { chat_id: targetChatId, action: "record_voice" }).catch(() => {});
-  const activity = setInterval(tick, 4000);
-  tick();
-  let voicePath;
-  try {
-    voicePath = await synthesizeSpeech(text);
-    await sendVoiceFile(targetChatId, voicePath);
-  } catch (error) {
-    await sendMessageTo(targetChatId, `Не удалось озвучить ответ: ${error.message}`);
-  } finally {
-    clearInterval(activity);
-    if (voicePath) await unlink(voicePath).catch(() => {});
-  }
-}
-
 async function dismissCallbackMenu(message) {
   if (!message?.chat?.id || !message?.message_id) return;
   await telegram("deleteMessage", {
@@ -4222,20 +3711,9 @@ async function selectCatalogTask(callback, entry) {
   ]);
 }
 
-async function handleApprovalCallback(callback) {
-  const resolvedCallback = resolveContextualCallback(callback.data, currentUiContextToken());
-  if (resolvedCallback.stale) {
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: "Это меню устарело. Откройте его заново.",
-      show_alert: true,
-    });
-    return;
-  }
-  if (resolvedCallback.contextual) callback = { ...callback, data: resolvedCallback.action };
-  const pendingAction = parsePendingInputCallback(callback.data);
-  if (pendingAction) {
-    const { action, id } = pendingAction;
+async function dispatchTelegramCallback(callback, route) {
+  if (route.kind === "pending-input") {
+    const { action, id } = route;
     const item = pendingInputs.get(id);
     if (!item) {
       await telegram("answerCallbackQuery", {
@@ -4330,9 +3808,8 @@ async function handleApprovalCallback(callback) {
     return;
   }
 
-  const speechMatch = /^speech:([0-9a-f]+)$/.exec(callback.data ?? "");
-  if (speechMatch) {
-    const text = speechTexts.get(speechMatch[1]);
+  if (route.kind === "speech") {
+    const text = mediaController.speechText(route.id);
     if (!text) {
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
@@ -4361,9 +3838,9 @@ async function handleApprovalCallback(callback) {
     });
     return;
   }
-  const taskViewAction = parseTaskViewCallbackData(callback.data);
-  const historyMatch = /^history-more:([al]):(\d+)$/.exec(callback.data ?? "");
-  if (historyMatch || taskViewAction?.action.startsWith("history-")) {
+  const taskViewAction = route.taskView;
+  const historyMatch = route.legacyHistory;
+  if (route.kind === "task-history") {
     const targetChatId = callback.message?.chat?.id;
     const sourceMessageId = callback.message?.message_id;
     const binding = await resolveTaskViewBinding(taskViewAction, targetChatId, sourceMessageId);
@@ -4381,9 +3858,9 @@ async function handleApprovalCallback(callback) {
     });
     const completedOnly = taskViewAction
       ? taskViewAction.action === "history-last"
-      : historyMatch[1] === "l";
+      : historyMatch.scope === "l";
     const count = taskViewAction?.count
-      ?? Math.max(1, Math.min(Number(historyMatch[2]) || 1, 50));
+      ?? Math.max(1, Math.min(Number(historyMatch.count) || 1, 50));
     try {
       await activateMessageBinding(binding);
       if (completedOnly) {
@@ -4397,9 +3874,7 @@ async function handleApprovalCallback(callback) {
     }
     return;
   }
-  if (taskViewAction?.action === "show"
-    || callback.data === "show-message"
-    || callback.data === "show-last-message") {
+  if (route.kind === "task-view") {
     const targetChatId = callback.message?.chat?.id;
     const sourceMessageId = callback.message?.message_id;
     const binding = await resolveTaskViewBinding(taskViewAction, targetChatId, sourceMessageId);
@@ -4430,9 +3905,8 @@ async function handleApprovalCallback(callback) {
     }
     return;
   }
-  const modeMatch = /^approval-mode:(manual|auto)$/.exec(callback.data ?? "");
-  if (modeMatch) {
-    autoApprove = modeMatch[1] === "auto";
+  if (route.kind === "approval-mode") {
+    autoApprove = route.mode === "auto";
     await telegram("answerCallbackQuery", {
       callback_query_id: callback.id,
       text: autoApprove ? "Автоподтверждение включено" : "Ручной режим включён",
@@ -4445,10 +3919,9 @@ async function handleApprovalCallback(callback) {
     });
     return;
   }
-  const projectMatch = /^p:(\d+)$/.exec(callback.data ?? "");
-  if (projectMatch) {
+  if (route.kind === "project") {
     try {
-      const switched = await switchProject(Number(projectMatch[1]));
+      const switched = await switchProject(route.index);
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
         text: switched.changed ? "Папка изменена" : "Эта папка уже активна",
@@ -4473,10 +3946,9 @@ async function handleApprovalCallback(callback) {
     }
     return;
   }
-  const engineMatch = /^engine:(codex|claude)$/.exec(callback.data ?? "");
-  if (engineMatch) {
+  if (route.kind === "engine") {
     try {
-      const switched = await switchProvider(engineMatch[1]);
+      const switched = await switchProvider(route.provider);
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
         text: switched.changed ? "Агент переключён" : "Этот агент уже активен",
@@ -4499,10 +3971,9 @@ async function handleApprovalCallback(callback) {
     }
     return;
   }
-  const codexModelMatch = /^codex-model:(.+)$/.exec(callback.data ?? "");
-  if (codexModelMatch) {
+  if (route.kind === "codex-model") {
     try {
-      const switched = switchCodexModel(codexModelMatch[1]);
+      const switched = switchCodexModel(route.model);
       await updateActiveCodexThreadSettings();
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
@@ -4526,9 +3997,8 @@ async function handleApprovalCallback(callback) {
     }
     return;
   }
-  const codexReasoningMatch = /^codex-reasoning:(low|medium|high|xhigh|max|ultra)$/.exec(callback.data ?? "");
-  if (codexReasoningMatch) {
-    const value = codexReasoningMatch[1];
+  if (route.kind === "codex-reasoning") {
+    const value = route.value;
     const changed = value !== codexReasoningEffort;
     codexReasoningEffort = value;
     try {
@@ -4554,9 +4024,8 @@ async function handleApprovalCallback(callback) {
     if (changed) await sendMessage(`Reasoning Codex: ${CODEX_REASONING_LABELS[codexReasoningEffort]}`);
     return;
   }
-  const codexModeMatch = /^codex-mode:(default|plan)$/.exec(callback.data ?? "");
-  if (codexModeMatch) {
-    const value = codexModeMatch[1];
+  if (route.kind === "codex-mode") {
+    const value = route.value;
     const changed = value !== codexCollaborationMode;
     codexCollaborationMode = value;
     await saveState();
@@ -4572,9 +4041,8 @@ async function handleApprovalCallback(callback) {
     if (changed) await sendMessage(`Режим Codex: ${CODEX_COLLABORATION_MODE_LABELS[codexCollaborationMode]}`);
     return;
   }
-  const claudeReasoningMatch = /^claude-reasoning:(low|medium|high|xhigh|max|ultra)$/.exec(callback.data ?? "");
-  if (claudeReasoningMatch) {
-    const value = claudeReasoningMatch[1];
+  if (route.kind === "claude-reasoning") {
+    const value = route.value;
     const changed = value !== claudeReasoningEffort;
     claudeReasoningEffort = value;
     await saveState();
@@ -4590,9 +4058,8 @@ async function handleApprovalCallback(callback) {
     if (changed) await sendMessage(`Reasoning Claude Code: ${CODEX_REASONING_LABELS[claudeReasoningEffort]}`);
     return;
   }
-  const claudeModeMatch = /^claude-mode:(default|plan)$/.exec(callback.data ?? "");
-  if (claudeModeMatch) {
-    const value = claudeModeMatch[1];
+  if (route.kind === "claude-mode") {
+    const value = route.value;
     const changed = value !== claudeCollaborationMode;
     claudeCollaborationMode = value;
     await saveState();
@@ -4608,10 +4075,9 @@ async function handleApprovalCallback(callback) {
     if (changed) await sendMessage(`Режим Claude Code: ${CODEX_COLLABORATION_MODE_LABELS[claudeCollaborationMode]}`);
     return;
   }
-  const modelMatch = /^model:(sonnet|opus|haiku)$/.exec(callback.data ?? "");
-  if (modelMatch) {
+  if (route.kind === "claude-model") {
     try {
-      const switched = switchModel(modelMatch[1]);
+      const switched = switchModel(route.model);
       await saveState();
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
@@ -4635,17 +4101,16 @@ async function handleApprovalCallback(callback) {
     }
     return;
   }
-  const taskPageMatch = /^tasks-page:(\d+)$/.exec(callback.data ?? "");
-  if (taskPageMatch) {
+  if (route.kind === "task-page") {
     await telegram("answerCallbackQuery", { callback_query_id: callback.id });
     scheduleInteractiveJob("Страница списка задач", callback.message.chat.id, () => sendThreadPicker({
         editMessage: callback.message,
-        page: Number(taskPageMatch[1]),
+        page: route.page,
       }));
     return;
   }
-  const catalogSelection = parseTaskCatalogCallback(callback.data);
-  if (catalogSelection) {
+  if (route.kind === "catalog-task") {
+    const catalogSelection = route.catalogTask;
     let entry = taskCatalog.find((item) => (
       item.provider === catalogSelection.provider && item.threadId === catalogSelection.threadId
     ));
@@ -4669,7 +4134,7 @@ async function handleApprovalCallback(callback) {
     }
     return;
   }
-  if (callback.data === "thread:new") {
+  if (route.kind === "thread-new") {
     try {
       await createThread();
       await telegram("answerCallbackQuery", {
@@ -4692,7 +4157,7 @@ async function handleApprovalCallback(callback) {
     }
     return;
   }
-  if (callback.data === "thread:archive") {
+  if (route.kind === "thread-archive") {
     const blockedReason = archiveBlockedReason();
     if (blockedReason) {
       const messages = {
@@ -4731,53 +4196,23 @@ async function handleApprovalCallback(callback) {
     }
     return;
   }
-  const approvalCallback = parseApprovalCallback(callback.data);
-  if (!approvalCallback) {
+  if (route.kind !== "approval" || !await approvalController.handleCallback(callback)) {
     await telegram("answerCallbackQuery", {
       callback_query_id: callback.id,
       text: "Эта кнопка устарела",
       show_alert: true,
     });
-    return;
   }
-  const { key, action } = approvalCallback;
-  const approval = pendingApprovals.get(key);
-  if (!approval) {
-    await telegram("answerCallbackQuery", { callback_query_id: callback.id, text: "Запрос уже закрыт" });
-    return;
-  }
-  if (!approvalMatchesTelegramMessage(approval, callback)
-    || (approval.runId && !taskRuns.values().some((run) => run.id === approval.runId))) {
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: "Этот запрос больше не относится к активному ходу",
-      show_alert: true,
-    });
-    return;
-  }
-  pendingApprovals.delete(key);
-  const response = approval.kind === "mcp-elicitation"
-    ? action === "decline"
-      ? { action: "decline" }
-      : approval.acceptResponse
-    : codexApprovalResponse(approval.kind, action, approval.params);
-  if (!response) {
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: "Для этой формы нужен явный ввод данных",
-      show_alert: true,
-    });
-    pendingApprovals.set(key, approval);
-    return;
-  }
-  respondRpc(approval.rpcId, response);
-  const decision = action === "once" ? "разрешено" : action === "session" ? "разрешено на сессию" : "отклонено";
-  await telegram("answerCallbackQuery", { callback_query_id: callback.id, text: `Решение: ${decision}` });
-  await telegram("editMessageReplyMarkup", {
-    chat_id: callback.message.chat.id,
-    message_id: callback.message.message_id,
-    reply_markup: { inline_keyboard: [] },
-  });
+}
+
+const telegramCallbackController = new TelegramCallbackController({
+  currentContextToken: currentUiContextToken,
+  telegram,
+  dispatch: dispatchTelegramCallback,
+});
+
+async function handleTelegramCallback(callback) {
+  return telegramCallbackController.handle(callback);
 }
 
 function scheduleInteractiveJob(label, targetChatId, operation) {
@@ -4805,56 +4240,7 @@ function scheduleInteractiveJob(label, targetChatId, operation) {
   }
 }
 
-async function handleTelegramMessage(message) {
-  const senderId = message.from?.id;
-  if (!config.allowedUserIds.has(senderId)) {
-    console.warn(`Rejected Telegram user ${senderId ?? "unknown"}`);
-    return;
-  }
-  if (config.privateChatsOnly && message.chat?.type !== "private") {
-    console.warn(`Rejected non-private Telegram chat ${message.chat?.id ?? "unknown"}`);
-    return;
-  }
-  if (config.allowedChatIds && !config.allowedChatIds.has(message.chat?.id)) {
-    console.warn(`Rejected Telegram chat ${message.chat?.id ?? "unknown"}`);
-    return;
-  }
-  chatId = message.chat.id;
-  const repliedMessageId = message.reply_to_message?.message_id;
-  if (Number.isSafeInteger(repliedMessageId)) {
-    const binding = await findMessageBinding(config.dataDir, message.chat.id, repliedMessageId);
-    if (binding) {
-      let activated;
-      try {
-        activated = await activateMessageBinding(binding);
-      } catch (error) {
-        await sendMessage(`Не удалось открыть задачу из этого сообщения: ${error.message}`);
-        return;
-      }
-      if (activated.changed) {
-        await sendTaskSwitchNotification();
-      }
-    }
-  }
-  if (message.photo || message.document?.mime_type?.startsWith("image/")) {
-    const target = selectedTurnTarget(message.chat.id);
-    await bindIncomingTaskMessage(
-      message,
-      message.caption?.trim() || "Изображение без подписи",
-    );
-    await enqueueBackgroundJob("image", { message, target }, target.chatId);
-    return;
-  }
-  if (message.voice || message.audio) {
-    const target = selectedTurnTarget(message.chat.id);
-    await bindIncomingTaskMessage(message, "Голосовое сообщение");
-    await enqueueBackgroundJob("voice", { message, target }, target.chatId);
-    return;
-  }
-  const rawText = message.text?.trim();
-  const text = MENU_COMMANDS.get(rawText) ?? rawText;
-  if (!text) return;
-
+async function handleTelegramCommand(message, text) {
   if (text === "/menu" || text === "/keyboard") {
     await sendMessage("⌨️ Панель кнопок показана.", { reply_markup: BOT_MENU });
   } else if (text === "/start" || text === "/help") {
@@ -4984,61 +4370,51 @@ async function handleTelegramMessage(message) {
   }
 }
 
-async function pollTelegram() {
-  let consecutiveFailures = 0;
-  while (!stopping) {
-    try {
-      const updates = await telegram("getUpdates", {
-        offset: updateOffset,
-        timeout: 30,
-        allowed_updates: ["message", "callback_query"],
-      });
-      consecutiveFailures = 0;
-      for (const update of updates) {
-        processingUpdateId = update.update_id;
-        try {
-          if (update.callback_query && isAllowedCallback(update.callback_query)) {
-            await handleApprovalCallback(update.callback_query);
-          } else if (update.message) {
-            await handleTelegramMessage(update.message);
-          }
-        } catch (error) {
-          console.error(`Telegram update ${update.update_id} failed:`, error.message);
-          const targetChatId = update.message?.chat?.id ?? update.callback_query?.message?.chat?.id;
-          if (Number.isSafeInteger(targetChatId)) {
-            await sendMessageTo(
-              targetChatId,
-              `Не удалось обработать сообщение: ${error.message}`,
-            ).catch(() => {});
-          }
-        }
-        updateOffset = update.update_id + 1;
-        await saveState();
-        processingUpdateId = null;
-        if (restartRequest && !restartRequest.waitingForRuns && !stopping) {
-          await performRestart();
-        }
-        if (stopping) break;
-      }
-    } catch (error) {
-      consecutiveFailures += 1;
-      const retryDelayMs = telegramPollingRetryDelay(consecutiveFailures);
-      if (shouldLogPollingFailure(consecutiveFailures)) {
-        console.error(
-          `Telegram polling error (${consecutiveFailures}; retry in ${retryDelayMs} ms):`,
-          error.message,
-        );
-      }
-      await delay(retryDelayMs);
-    }
-  }
+const telegramCommandHandlers = Object.fromEntries([
+  "menu", "keyboard", "start", "help", "agent", "engine", "model", "reasoning", "mode",
+  "projects", "folders", "folder", "new", "status", "approvals", "restart", "tasks", "resume",
+  "rename", "archive", "current", "thread", "diff", "cancel",
+].map((command) => [command, ({ message, text }) => handleTelegramCommand(message, text)]));
+
+const telegramMessageController = new TelegramMessageController({
+  config,
+  menuCommands: MENU_COMMANDS,
+  setChatId: (value) => { chatId = value; },
+  findReplyBinding: (targetChatId, messageId) => (
+    findMessageBinding(config.dataDir, targetChatId, messageId)
+  ),
+  activateBinding: activateMessageBinding,
+  notifyTaskSwitch: sendTaskSwitchNotification,
+  selectedTurnTarget,
+  bindIncomingMessage: bindIncomingTaskMessage,
+  enqueueMedia: enqueueBackgroundJob,
+  commandHandlers: telegramCommandHandlers,
+  handleText: (message, text) => startTurn(telegramPrompt(message, text)),
+  sendMessage,
+});
+
+async function handleTelegramMessage(message) {
+  return telegramMessageController.handle(message);
 }
 
-function isAllowedCallback(callback) {
-  const chat = callback.message?.chat;
-  return config.allowedUserIds.has(callback.from?.id)
-    && (!config.privateChatsOnly || chat?.type === "private")
-    && (!config.allowedChatIds || config.allowedChatIds.has(chat?.id));
+const telegramPollingController = new TelegramPollingController({
+  telegram,
+  config,
+  getOffset: () => updateOffset,
+  setOffset: (value) => { updateOffset = value; },
+  setProcessingUpdateId: (value) => { processingUpdateId = value; },
+  handleMessage: handleTelegramMessage,
+  handleCallback: handleTelegramCallback,
+  sendMessage: sendMessageTo,
+  saveState,
+  afterUpdate: async () => {
+    if (restartRequest && !restartRequest.waitingForRuns && !stopping) await performRestart();
+  },
+  stopping: () => stopping,
+});
+
+async function pollTelegram() {
+  return telegramPollingController.run();
 }
 
 function scheduleDeliveryOutboxFlush(delayMs = config.deliveryRetryIntervalSeconds * 1000) {
@@ -5122,8 +4498,7 @@ function stopRuntimeTimers() {
     clearTimeout(selectedTaskWatchTimer);
     selectedTaskWatchTimer = null;
   }
-  for (const timer of queueTimers.values()) clearTimeout(timer);
-  queueTimers.clear();
+  deferredInputController.stop();
   for (const run of taskRuns.values()) {
     taskProgress.pause(run);
     taskObserver.pause(run);
@@ -5141,11 +4516,11 @@ async function shutdown(signal) {
   for (const run of taskRuns.values()) {
     if (run.provider === "codex") run.process?.kill();
   }
-  stopTtsWorker();
+  mediaController.stop();
   await runtimeCommandServer.close();
   await Promise.allSettled([
     stateWriteQueue,
-    speechWriteQueue,
+    mediaController.waitForWrites(),
     bindingWriteQueue,
     taskSyncStore.save(),
     deliveryOutbox.waitForWrites(),
