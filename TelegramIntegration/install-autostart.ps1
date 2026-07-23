@@ -43,9 +43,14 @@ if (-not $CodeExe) {
     throw 'VS Code executable was not found.'
 }
 
+$WorkspaceFile = Join-Path $ProjectRoot 'VSC_Tyrael.code-workspace'
+if (-not (Test-Path -LiteralPath $WorkspaceFile)) {
+    throw "VS Code workspace file was not found: $WorkspaceFile"
+}
+
 $CodeShortcut = $Shell.CreateShortcut((Join-Path $Startup 'VSC_Tyrael - VS Code.lnk'))
 $CodeShortcut.TargetPath = $CodeExe
-$CodeShortcut.Arguments = "`"$ProjectRoot`""
+$CodeShortcut.Arguments = "`"$WorkspaceFile`""
 $CodeShortcut.WorkingDirectory = $ProjectRoot
 $CodeShortcut.WindowStyle = 1
 $CodeShortcut.Description = 'Open VSC_Tyrael in Visual Studio Code'
