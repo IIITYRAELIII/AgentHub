@@ -804,6 +804,7 @@ async function sendRunLongMessage(run, text, {
   forceSpeechButton = false,
   reliable = false,
   durable = false,
+  silent = false,
   deliveryGroupId = randomUUID(),
   replaceProgressMessageIds = [],
 } = {}) {
@@ -813,9 +814,12 @@ async function sendRunLongMessage(run, text, {
   let sequence = 0;
   for (let start = 0; start < value.length; start += TELEGRAM_LIMIT) {
     const isLast = start + TELEGRAM_LIMIT >= value.length;
-    const extra = isLast && speechId
-      ? { reply_markup: { inline_keyboard: [[{ text: "🔊 Озвучить", callback_data: `speech:${speechId}` }]] } }
-      : {};
+    const extra = {
+      ...(silent ? { disable_notification: true } : {}),
+      ...(isLast && speechId
+        ? { reply_markup: { inline_keyboard: [[{ text: "🔊 Озвучить", callback_data: `speech:${speechId}` }]] } }
+        : {}),
+    };
     if (reliable) {
       const result = await sendReliableRunMessage(
         run,
@@ -871,6 +875,7 @@ async function finalizeRunDelivery(run, {
   forceSpeechButton = false,
   deliver = true,
   includeDiff = false,
+  silent = false,
   description = "финальный ответ",
 } = {}) {
   run.finalizing = true;
@@ -889,6 +894,7 @@ async function finalizeRunDelivery(run, {
       forceSpeechButton,
       reliable: true,
       durable: true,
+      silent,
       replaceProgressMessageIds: run.finishedProgressMessageIds ?? [],
     });
   }
@@ -898,7 +904,7 @@ async function finalizeRunDelivery(run, {
       () => sendReliableRunMessage(
         run,
         "Изменения этой задачи доступны после её выбора по команде /diff.",
-        {},
+        silent ? { disable_notification: true } : {},
         {},
         {
           forceQueue: finalDelivery?.queued === true,
@@ -3766,6 +3772,7 @@ async function finishObservedRun(run, snapshot) {
     answer,
     deliver,
     includeDiff: true,
+    silent: run.displayRequested !== true,
     description: "финальный ответ наблюдаемого хода",
   });
 }
@@ -3935,7 +3942,11 @@ async function watchSelectedTask() {
         rememberLastTaskMessage(completedRun, answer);
         await safelyDeliverRunMessage(
           completedRun,
-          () => sendRunLongMessage(completedRun, answer, { speechText: answer, reliable: true }),
+          () => sendRunLongMessage(completedRun, answer, {
+            speechText: answer,
+            reliable: true,
+            silent: true,
+          }),
           "пропущенный короткий внешний финал",
         );
       }

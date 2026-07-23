@@ -777,6 +777,12 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   mark = telegram.calls.length;
   telegram.pushMessage("/rename __E2E_EXTERNAL_RELEASE__");
   await telegram.waitForText("Название закреплено", { after: mark });
+  const requestedExternalFinal = await telegram.waitForText("Внешний ход завершён тестом", {
+    after: mark,
+    timeoutMs: 12_000,
+  });
+  assert.notEqual(requestedExternalFinal.body.disable_notification, true,
+    "an explicitly displayed external turn must keep a normal final notification");
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0,
     "external observer completes only after the external turn really stops", 12_000);
 
@@ -790,10 +796,12 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   mark = telegram.calls.length;
   telegram.pushMessage("/rename __E2E_EXTERNAL_SHORT__");
   await telegram.waitForText("Название закреплено", { after: mark });
-  await telegram.waitForText("Короткий внешний VSCode-ход завершён", {
+  const shortExternalFinal = await telegram.waitForText("Короткий внешний VSCode-ход завершён", {
     after: mark,
     timeoutMs: 8_000,
   });
+  assert.equal(shortExternalFinal.body.disable_notification, true,
+    "an automatically discovered external final must be delivered silently");
   assert.equal((await readJson(statePath)).activeRuns.length, 0,
     "a short external turn completed between polls must still deliver its final answer");
 
