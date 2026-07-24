@@ -74,6 +74,17 @@ export function normalizeTokenUsage(usage) {
   return normalized;
 }
 
+export function turnConditionalUnits(usage) {
+  const normalized = normalizeTokenUsage(usage);
+  const uncachedInput = Math.max(0, normalized.inputTokens - normalized.cachedInputTokens);
+  const reasoning = Math.min(normalized.outputTokens, normalized.reasoningOutputTokens);
+  const output = normalized.outputTokens - reasoning;
+  return uncachedInput
+    + normalized.cachedInputTokens / CACHE_UNIT_DIVISOR
+    + output * OUTPUT_UNIT_MULTIPLIER
+    + reasoning * OUTPUT_UNIT_MULTIPLIER;
+}
+
 export function tokenUsageDelta(current, previous, fallback) {
   if (!previous || TOKEN_USAGE_FIELDS.some((field) => current[field] < previous[field])) {
     return normalizeTokenUsage(fallback);

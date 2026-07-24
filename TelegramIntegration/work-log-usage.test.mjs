@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   applyWorkLogUsage,
   normalizeWorkLogId,
+  projectWorkLogUsage,
   WorkLogUsageStore,
 } from "./work-log-usage.mjs";
 
@@ -42,6 +43,45 @@ test("applyWorkLogUsage replaces only the matching per-turn placeholder", () => 
   assert.throws(() => applyWorkLogUsage("<table></table>", WORK_ID, 10), /found 0/);
 });
 
+test("projectWorkLogUsage aggregates tasks and calculates their share of the day", () => {
+  const source = [
+    "<details open>",
+    "<summary><strong>25.07.2026</strong></summary>",
+    "<table><tbody>",
+    `<tr><td>Task A</td><td><span data-usage-id="${WORK_ID}">${WORK_ID}</span><br>`,
+    `<span data-usage-id="${SECOND_WORK_ID}">${SECOND_WORK_ID}</span></td></tr>`,
+    `<tr><td>Task B</td><td><span data-usage-id="323e4567-e89b-42d3-a456-426614174000">pending</span></td></tr>`,
+    `<tr><td>Task C</td><td><span data-usage-id="423e4567-e89b-42d3-a456-426614174000">recorded</span></td></tr>`,
+    "</tbody></table>",
+    "</details>",
+  ].join("");
+  const turns = {
+    first: {
+      workLogId: WORK_ID,
+      usage: { inputTokens: 50, cachedInputTokens: 0, outputTokens: 0 },
+    },
+    second: {
+      workLogId: SECOND_WORK_ID,
+      usage: { inputTokens: 50, cachedInputTokens: 0, outputTokens: 0 },
+    },
+    third: {
+      workLogId: "423e4567-e89b-42d3-a456-426614174000",
+      usage: { inputTokens: 100, cachedInputTokens: 0, outputTokens: 0 },
+    },
+  };
+  const projected = projectWorkLogUsage(source, turns);
+  assert.match(projected, /data-day-usage>За день: 200 у\.е\./);
+  assert.match(projected, /Task A[\s\S]*?За задачу: 100 у\.е\. \(50%\)/);
+  assert.match(projected, /Task C[\s\S]*?За задачу: 100 у\.е\. \(50%\)/);
+  assert.match(
+    projected,
+    /Task B<\/td><td><span data-usage-id="323e4567-e89b-42d3-a456-426614174000" hidden>/,
+  );
+  assert.equal((projected.match(/data-task-usage/g) ?? []).length, 2);
+  assert.equal((projected.match(/data-usage-id=/g) ?? []).length, 4);
+  assert.equal((projected.match(/data-usage-id=[^>]+hidden/g) ?? []).length, 4);
+});
+
 test("usage store projects each turn into its own placeholder and deduplicates retries", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-usage-"));
   try {
@@ -50,10 +90,10 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     await writeFile(
       workLogFile,
       [
-        "<td>",
+        "<details open><summary><strong>25.07.2026</strong></summary><table><tbody><tr><td>Task</td><td>",
         `<span data-usage-id="${WORK_ID}">${WORK_ID}</span> + `,
         `<span data-usage-id="${SECOND_WORK_ID}">${SECOND_WORK_ID}</span>`,
-        "</td>",
+        "</td></tr></tbody></table></details>",
       ].join(""),
       "utf8",
     );
@@ -75,8 +115,10 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     await store.recordAndProject({ ...base, turnId: "turn-1" });
     await store.recordAndProject({ ...base, turnId: "turn-2", workLogId: SECOND_WORK_ID });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, new RegExp(`data-usage-id="${WORK_ID}">За задачу: 32 у\\.е\\.<br>Вход:`));
-    assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}">За задачу: 32 у\\.е\\.<br>Вход:`));
+    assert.match(projected, /data-day-usage>За день: 64 у\.е\./);
+    assert.match(projected, /data-task-usage>За задачу: 64 у\.е\. \(100%\)<br>Вход:/);
+    assert.match(projected, new RegExp(`data-usage-id="${WORK_ID}" hidden>`));
+    assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.keys(ledger.turns).length, 2);
     await assert.rejects(

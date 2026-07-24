@@ -2,7 +2,13 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { writeTextAtomic } from "./state-store.mjs";
-import { formatTurnTokenUsage, normalizeTokenUsage } from "./token-usage.mjs";
+import {
+  addTokenUsage,
+  emptyTokenUsage,
+  formatTurnTokenUsage,
+  normalizeTokenUsage,
+  turnConditionalUnits,
+} from "./token-usage.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -50,6 +56,91 @@ export function formatWorkLogUsage(usage) {
     .split("\n")
     .flatMap((line) => line.split(/\s+\|\s+/))
     .join("<br>");
+}
+
+function formatNumber(value) {
+  return value.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
+}
+
+function formatTaskShare(usage, dayUnits) {
+  const taskUnits = turnConditionalUnits(usage);
+  const percent = dayUnits > 0 ? Math.round(taskUnits / dayUnits * 100) : 0;
+  return formatWorkLogUsage(usage).replace(
+    /^(За задачу:\s*[\d\s\u00a0,.]+\s+у\.е\.)/u,
+    `$1 (${percent}%)`,
+  );
+}
+
+function ledgerByWorkLogId(turns = {}) {
+  const records = new Map();
+  for (const record of Object.values(turns)) {
+    const id = normalizeWorkLogId(record?.workLogId);
+    if (records.has(id)) throw new Error(`WORK_LOG placeholder ${id} is assigned more than once`);
+    records.set(id, { ...record, usage: normalizeTokenUsage(record?.usage) });
+  }
+  return records;
+}
+
+function usageIds(source) {
+  return [...source.matchAll(/data-usage-id=["']([^"']+)["']/gi)]
+    .map((match) => normalizeWorkLogId(match[1]));
+}
+
+function replaceLastCell(row, content) {
+  const cells = [...row.matchAll(/<td>([\s\S]*?)<\/td>/gi)];
+  if (!cells.length) return row;
+  const cell = cells.at(-1);
+  return `${row.slice(0, cell.index)}<td>${content}</td>${row.slice(cell.index + cell[0].length)}`;
+}
+
+function projectDaySection(section, date, records) {
+  const rows = [...section.matchAll(/<tr>([\s\S]*?)<\/tr>/gi)]
+    .map((match) => {
+      const ids = usageIds(match[0]);
+      const recorded = ids.map((id) => records.get(id)).filter(Boolean);
+      const usage = recorded.reduce(
+        (total, record) => addTokenUsage(total, record.usage),
+        emptyTokenUsage(),
+      );
+      return { match, ids, usage, units: turnConditionalUnits(usage) };
+    })
+    .filter((row) => row.ids.length);
+  const dayUnits = rows.reduce((total, row) => total + row.units, 0);
+
+  let projected = section;
+  for (const row of rows.reverse()) {
+    const visible = row.units > 0
+      ? `<span data-task-usage>${formatTaskShare(row.usage, dayUnits)}</span>\n`
+      : "";
+    const markers = row.ids.map((id) => (
+      `<span data-usage-id="${id}" hidden>${records.has(id) ? "" : id}</span>`
+    )).join("\n");
+    const replacement = replaceLastCell(row.match[0], `${visible}${markers}`);
+    projected = `${projected.slice(0, row.match.index)}${replacement}`
+      + projected.slice(row.match.index + row.match[0].length);
+  }
+
+  const summary = dayUnits > 0
+    ? `<summary><strong>${date}</strong> — <span data-day-usage>За день: ${formatNumber(dayUnits)} у.е.</span></summary>`
+    : `<summary><strong>${date}</strong></summary>`;
+  return projected.replace(/<summary>[\s\S]*?<\/summary>/i, summary);
+}
+
+export function projectWorkLogUsage(workLogText, turns = {}) {
+  const text = String(workLogText ?? "");
+  const records = ledgerByWorkLogId(turns);
+  const dayStarts = [...text.matchAll(
+    /<details(?:\s+open)?\s*>\s*<summary><strong>(\d{2}\.\d{2}\.\d{4})<\/strong>[\s\S]*?<\/summary>/gi,
+  )];
+  let projected = text;
+  for (let index = dayStarts.length - 1; index >= 0; index -= 1) {
+    const start = dayStarts[index].index;
+    const end = index + 1 < dayStarts.length ? dayStarts[index + 1].index : text.length;
+    const section = text.slice(start, end);
+    const replacement = projectDaySection(section, dayStarts[index][1], records);
+    projected = `${projected.slice(0, start)}${replacement}${projected.slice(end)}`;
+  }
+  return projected;
 }
 
 export function applyWorkLogUsage(workLogText, workLogId, usage) {
@@ -125,7 +216,12 @@ export class WorkLogUsageStore {
       }
       const recordedUsage = this.#ledger.turns[key].usage;
       const logPath = path.resolve(workLogFile);
-      const updated = applyWorkLogUsage(await readFile(logPath, "utf8"), id, recordedUsage);
+      const current = await readFile(logPath, "utf8");
+      const occurrences = usageIds(current).filter((workLogId) => workLogId === id).length;
+      if (occurrences !== 1) {
+        throw new Error(`WORK_LOG must contain exactly one usage placeholder for ${id}; found ${occurrences}`);
+      }
+      const updated = projectWorkLogUsage(current, this.#ledger.turns);
       await writeTextAtomic(logPath, updated);
       return { recorded: !existing, usage: recordedUsage, workLogId: id };
     });

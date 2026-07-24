@@ -7,6 +7,7 @@ import {
   formatTurnTokenUsage,
   normalizeTokenUsage,
   tokenUsageDelta,
+  turnConditionalUnits,
 } from "./token-usage.mjs";
 
 test("formatTaskTokenUsage converts token categories to conditional units", () => {
@@ -94,5 +95,10 @@ test("formatTurnTokenUsage excludes cached tokens from uncached input", () => {
   });
   assert.match(formatted, /Вход: 20 /);
   assert.match(formatted, /Кэш: 8 /);
+  assert.equal(turnConditionalUnits({
+    inputTokens: 100,
+    cachedInputTokens: 80,
+    outputTokens: 2,
+  }), 40);
   assert.equal(formatTurnTokenUsage(null), "📊 Токены за задачу: нет данных.");
 });
