@@ -77,6 +77,13 @@ function formatTaskUsageDetails(usage, dayUnits) {
     + `<details data-task-usage-details><summary>Details</summary>${breakdown.join("<br>")}</details>\n`;
 }
 
+function formatDayUsageDetails(usage) {
+  const [, ...breakdown] = formatWorkLogUsage(usage).split("<br>");
+  return `<details data-day-usage-details style="display:inline">`
+    + `<summary style="display:inline list-item">Details</summary>&nbsp;`
+    + `${breakdown.join("&nbsp;&nbsp;")}</details>`;
+}
+
 function ledgerByWorkLogId(turns = {}) {
   const records = new Map();
   for (const record of Object.values(turns)) {
@@ -111,6 +118,10 @@ function projectDaySection(section, date, records) {
       return { match, ids, usage, units: turnConditionalUnits(usage) };
     })
     .filter((row) => row.ids.length);
+  const dayUsage = rows.reduce(
+    (total, row) => addTokenUsage(total, row.usage),
+    emptyTokenUsage(),
+  );
   const dayUnits = rows.reduce((total, row) => total + row.units, 0);
 
   let projected = section;
@@ -127,16 +138,20 @@ function projectDaySection(section, date, records) {
   }
 
   const summary = dayUnits > 0
-    ? `<summary><strong>${date}</strong> — <span data-day-usage>${formatNumber(dayUnits)} у.е.</span></summary>`
+    ? `<summary style="display:inline list-item"><strong>${date}</strong> — <span data-day-usage>${formatNumber(dayUnits)} у.е.</span></summary>`
     : `<summary><strong>${date}</strong></summary>`;
-  return projected.replace(/<summary>[\s\S]*?<\/summary>/i, summary);
+  const details = dayUnits > 0 ? ` ${formatDayUsageDetails(dayUsage)}` : "";
+  return projected.replace(
+    /<summary[^>]*>[\s\S]*?<\/summary>(?:\s*<details data-day-usage-details[^>]*>[\s\S]*?<\/details>)?/i,
+    `${summary}${details}`,
+  );
 }
 
 export function projectWorkLogUsage(workLogText, turns = {}) {
   const text = String(workLogText ?? "");
   const records = ledgerByWorkLogId(turns);
   const dayStarts = [...text.matchAll(
-    /<details(?:\s+open)?\s*>\s*<summary><strong>(\d{2}\.\d{2}\.\d{4})<\/strong>[\s\S]*?<\/summary>/gi,
+    /<details(?:\s+open)?\s*>\s*<summary[^>]*><strong>(\d{2}\.\d{2}\.\d{4})<\/strong>[\s\S]*?<\/summary>/gi,
   )];
   let projected = text;
   for (let index = dayStarts.length - 1; index >= 0; index -= 1) {
