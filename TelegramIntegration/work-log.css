@@ -1,0 +1,39 @@
+summary[data-work-log-day] {
+  display: inline;
+  list-style: none;
+}
+
+summary[data-work-log-day]::-webkit-details-marker {
+  display: none;
+}
+
+summary[data-work-log-day]::before {
+  content: "▶ ";
+}
+
+details[open] > summary[data-work-log-day]::before {
+  content: "▼ ";
+}
+
+details[data-day-usage-details] {
+  display: inline;
+  margin-left: 0.35em;
+}
+
+details[data-day-usage-details] > summary {
+  cursor: pointer;
+  display: inline;
+  list-style: none;
+}
+
+details[data-day-usage-details] > summary::-webkit-details-marker {
+  display: none;
+}
+
+details[data-day-usage-details] > summary::before {
+  content: "▶ ";
+}
+
+details[data-day-usage-details][open] > summary::before {
+  content: "▼ ";
+}

@@ -79,8 +79,8 @@ function formatTaskUsageDetails(usage, dayUnits) {
 
 function formatDayUsageDetails(usage) {
   const [, ...breakdown] = formatWorkLogUsage(usage).split("<br>");
-  return `<details data-day-usage-details style="display:inline">`
-    + `<summary style="display:inline list-item">Details</summary>&nbsp;`
+  return `<details data-day-usage-details>`
+    + `<summary>Details</summary>&nbsp;`
     + `${breakdown.join("&nbsp;&nbsp;")}</details>`;
 }
 
@@ -138,7 +138,7 @@ function projectDaySection(section, date, records) {
   }
 
   const summary = dayUnits > 0
-    ? `<summary style="display:inline list-item"><strong>${date}</strong> — <span data-day-usage>${formatNumber(dayUnits)} у.е.</span></summary>`
+    ? `<summary data-work-log-day><strong>${date}</strong> — <span data-day-usage>${formatNumber(dayUnits)} у.е.</span></summary>`
     : `<summary><strong>${date}</strong></summary>`;
   const details = dayUnits > 0 ? ` ${formatDayUsageDetails(dayUsage)}` : "";
   return projected.replace(
