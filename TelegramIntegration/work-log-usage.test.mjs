@@ -74,7 +74,7 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
     projected,
-    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> — <span data-day-usage>200 у\.е\.<\/span><\/summary> <details data-day-usage-details><summary>Details<\/summary>&nbsp;Вход: 200 \(100%\)&nbsp;&nbsp;Кэш: 0 \(0%\)&nbsp;&nbsp;Выход: 0 \(0%\)&nbsp;&nbsp;Думы: 0 \(0%\)<\/details>/,
+    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> — <span data-day-usage>200 у\.е\.<\/span><\/summary> <details data-day-usage-details><summary>Details<\/summary><div data-day-usage-breakdown>Вход: 200 \(100%\)&nbsp;&nbsp;Кэш: 0 \(0%\)&nbsp;&nbsp;Выход: 0 \(0%\)&nbsp;&nbsp;Думы: 0 \(0%\)<\/div><\/details>/,
   );
   assert.doesNotMatch(
     projected.match(/<details data-day-usage-details[^>]*>[\s\S]*?<\/details>/)?.[0] ?? "",

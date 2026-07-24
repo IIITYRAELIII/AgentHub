@@ -80,8 +80,8 @@ function formatTaskUsageDetails(usage, dayUnits) {
 function formatDayUsageDetails(usage) {
   const [, ...breakdown] = formatWorkLogUsage(usage).split("<br>");
   return `<details data-day-usage-details>`
-    + `<summary>Details</summary>&nbsp;`
-    + `${breakdown.join("&nbsp;&nbsp;")}</details>`;
+    + `<summary>Details</summary>`
+    + `<div data-day-usage-breakdown>${breakdown.join("&nbsp;&nbsp;")}</div></details>`;
 }
 
 function ledgerByWorkLogId(turns = {}) {

@@ -1,5 +1,5 @@
 summary[data-work-log-day] {
-  display: inline;
+  float: left;
   list-style: none;
 }
 
@@ -16,14 +16,14 @@ details[open] > summary[data-work-log-day]::before {
 }
 
 details[data-day-usage-details] {
-  display: inline;
-  margin-left: 0.35em;
+  display: contents;
 }
 
 details[data-day-usage-details] > summary {
   cursor: pointer;
-  display: inline;
+  float: left;
   list-style: none;
+  margin-left: 0.35em;
 }
 
 details[data-day-usage-details] > summary::-webkit-details-marker {
@@ -36,4 +36,12 @@ details[data-day-usage-details] > summary::before {
 
 details[data-day-usage-details][open] > summary::before {
   content: "▼ ";
+}
+
+div[data-day-usage-breakdown] {
+  clear: both;
+}
+
+details[data-day-usage-details] + table {
+  clear: both;
 }
