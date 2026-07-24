@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -60,6 +60,31 @@ test("local task sync persists catalog, runtime owner, status and history", asyn
   }]);
   assert.equal(restored.history(task)[0].answer, "Выполняю");
   assert.equal(restored.snapshot(task).stage, "Изменяются файлы");
+});
+
+test("local task sync canonicalizes persisted project roots on load", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "task-sync-root-"));
+  try {
+    const filePath = path.join(directory, "task-sync.json");
+    await writeFile(filePath, JSON.stringify({
+      version: 1,
+      tasks: [{
+        provider: "codex",
+        threadId: "thread-1",
+        projectRoot: "C:\\OldWorkspace",
+      }],
+    }), "utf8");
+    const store = new LocalTaskSyncStore({
+      filePath,
+      canonicalizeProjectRoot: () => "D:\\Workspace",
+    });
+    await store.load();
+    await store.save();
+    assert.equal(store.catalog()[0].projectRoot, "D:\\Workspace");
+    assert.match(await readFile(filePath, "utf8"), /D:\\\\Workspace/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("cached running status expires instead of creating a phantom task", async () => {

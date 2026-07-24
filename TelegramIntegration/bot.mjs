@@ -389,8 +389,12 @@ const uiContextNonce = randomUUID();
 let taskCatalog = [];
 let taskCatalogRefreshedAt = 0;
 let taskCatalogRefreshInFlight = null;
-const taskSyncStore = new LocalTaskSyncStore({ filePath: TASK_SYNC_FILE });
+const taskSyncStore = new LocalTaskSyncStore({
+  filePath: TASK_SYNC_FILE,
+  canonicalizeProjectRoot: (projectRoot) => findProject(projectRoot)?.path ?? projectRoot,
+});
 await taskSyncStore.load();
+await taskSyncStore.save();
 
 let mediaController;
 const telegramClient = new TelegramClient({

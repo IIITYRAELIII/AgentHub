@@ -142,7 +142,11 @@ async function appendBindingEvent(dataDir, event) {
   await writeTextAtomic(target, `${JSON.stringify(event)}\n`);
 }
 
-async function compactMessageBindingsUnlocked(dataDir, names = null) {
+async function compactMessageBindingsUnlocked(
+  dataDir,
+  names = null,
+  canonicalizeProjectRoot = (projectRoot) => projectRoot,
+) {
   const eventNames = names ?? await bindingEventNames(dataDir);
   if (!eventNames.length) return 0;
   const [legacy, events] = await Promise.all([
@@ -157,7 +161,10 @@ async function compactMessageBindingsUnlocked(dataDir, names = null) {
       for (const binding of event.bindings) byKey.set(bindingKey(binding), binding);
     }
   }
-  const compacted = recentBindings([...byKey.values()]);
+  const compacted = recentBindings([...byKey.values()]).map((binding) => ({
+    ...binding,
+    projectRoot: canonicalizeProjectRoot(binding.projectRoot),
+  }));
   await writeTextAtomic(bindingsPath(dataDir), `${JSON.stringify(compacted, null, 2)}\n`);
   await Promise.all(eventNames.map((name) => unlink(path.join(bindingsEventsPath(dataDir), name)).catch((error) => {
     if (error?.code !== "ENOENT") throw error;
@@ -165,8 +172,13 @@ async function compactMessageBindingsUnlocked(dataDir, names = null) {
   return eventNames.length;
 }
 
-export async function compactMessageBindings(dataDir) {
-  return withBindingsLock(dataDir, () => compactMessageBindingsUnlocked(dataDir));
+export async function compactMessageBindings(dataDir, {
+  canonicalizeProjectRoot = (projectRoot) => projectRoot,
+} = {}) {
+  return withBindingsLock(
+    dataDir,
+    () => compactMessageBindingsUnlocked(dataDir, null, canonicalizeProjectRoot),
+  );
 }
 
 export async function readMessageBindings(dataDir) {

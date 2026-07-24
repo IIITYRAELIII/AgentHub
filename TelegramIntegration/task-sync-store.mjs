@@ -24,14 +24,15 @@ function cleanHistory(history, limit) {
     }));
 }
 
-function persistedTask(value = {}) {
+function persistedTask(value = {}, canonicalizeProjectRoot = (projectRoot) => projectRoot) {
   const provider = cleanText(value.provider, 20).toLowerCase();
   const threadId = cleanText(value.threadId, 100);
   if (!provider || !threadId) return null;
+  const projectRoot = cleanText(value.projectRoot, 2_000);
   return {
     provider,
     threadId,
-    projectRoot: cleanText(value.projectRoot, 2_000),
+    projectRoot: cleanText(canonicalizeProjectRoot(projectRoot), 2_000),
     projectName: cleanText(value.projectName, 200),
     title: cleanText(value.title ?? value.taskTitle, 200),
     updatedAtMs: Number(value.updatedAtMs) || 0,
@@ -59,6 +60,7 @@ export class LocalTaskSyncStore {
   #filePath;
   #historyLimit;
   #taskLimit;
+  #canonicalizeProjectRoot;
   #tasks = new Map();
   #dirty = false;
   #writeQueue = Promise.resolve();
@@ -67,10 +69,12 @@ export class LocalTaskSyncStore {
     filePath,
     historyLimit = DEFAULT_HISTORY_LIMIT,
     taskLimit = DEFAULT_TASK_LIMIT,
+    canonicalizeProjectRoot = (projectRoot) => projectRoot,
   }) {
     this.#filePath = filePath;
     this.#historyLimit = Math.max(1, Number(historyLimit) || DEFAULT_HISTORY_LIMIT);
     this.#taskLimit = Math.max(1, Number(taskLimit) || DEFAULT_TASK_LIMIT);
+    this.#canonicalizeProjectRoot = canonicalizeProjectRoot;
   }
 
   #prune() {
@@ -99,8 +103,11 @@ export class LocalTaskSyncStore {
     }
     if (Number(parsed?.version) !== FORMAT_VERSION) return this;
     for (const value of Array.isArray(parsed.tasks) ? parsed.tasks : []) {
-      const task = persistedTask(value);
-      if (task) this.#tasks.set(catalogTaskKey(task), task);
+      const task = persistedTask(value, this.#canonicalizeProjectRoot);
+      if (task) {
+        this.#tasks.set(catalogTaskKey(task), task);
+        if (task.projectRoot !== cleanText(value.projectRoot, 2_000)) this.#dirty = true;
+      }
     }
     this.#prune();
     return this;
@@ -144,7 +151,7 @@ export class LocalTaskSyncStore {
         ...entry,
         syncedAtMs: nowMs,
         history: existing.history,
-      });
+      }, this.#canonicalizeProjectRoot);
       if (!next) continue;
       if (taskContentChanged(existing, next)) {
         this.#tasks.set(key, next);
@@ -175,7 +182,7 @@ export class LocalTaskSyncStore {
       answer: snapshot.answer ?? existing.answer,
       syncedAtMs: nowMs,
       history: existing.history,
-    });
+    }, this.#canonicalizeProjectRoot);
     if (!next || !taskContentChanged(existing, next)) return false;
     this.#tasks.set(key, next);
     this.#dirty = true;
@@ -198,7 +205,7 @@ export class LocalTaskSyncStore {
       answer: snapshot?.answer ?? existing.answer,
       syncedAtMs: nowMs,
       history: cleanHistory(history, this.#historyLimit),
-    });
+    }, this.#canonicalizeProjectRoot);
     if (!next || !taskContentChanged(existing, next)) return false;
     this.#tasks.set(key, next);
     this.#dirty = true;
