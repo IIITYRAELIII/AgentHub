@@ -58,12 +58,14 @@ test("filesystem aliases resolve to the configured canonical project path", asyn
       canonicalizeProjectRoots({
         activeProjectRoot: alias,
         nested: [{ projectRoot: path.join(alias, "repo") }],
-        text: alias,
+        text: `Open ${path.join(alias, "README.md")}`,
+        composite: `codex\0${alias.toLowerCase()}\0thread`,
       }, projects),
       {
         activeProjectRoot: canonical,
         nested: [{ projectRoot: canonical }],
-        text: alias,
+        text: `Open ${path.join(canonical, "README.md")}`,
+        composite: `codex\0${canonical.toLowerCase()}\0thread`,
       },
     );
   } finally {

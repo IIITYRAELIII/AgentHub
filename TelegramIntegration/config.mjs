@@ -106,17 +106,46 @@ export function findContainingProject(projects, candidatePath) {
 }
 
 export function canonicalizeProjectRoots(value, projects) {
-  if (Array.isArray(value)) {
-    return value.map((item) => canonicalizeProjectRoots(item, projects));
-  }
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
-    if ((key === "projectRoot" || key === "activeProjectRoot") && typeof item === "string") {
-      const project = findContainingProject(projects, item);
-      return [key, project?.path ?? item];
+  const aliases = new Map(projects.map((project) => [project.path, project.path]));
+  const collectAliases = (item) => {
+    if (Array.isArray(item)) {
+      item.forEach(collectAliases);
+      return;
     }
-    return [key, canonicalizeProjectRoots(item, projects)];
-  }));
+    if (!item || typeof item !== "object") return;
+    for (const [key, nested] of Object.entries(item)) {
+      if ((key === "projectRoot" || key === "activeProjectRoot") && typeof nested === "string") {
+        const project = findContainingProject(projects, nested);
+        if (project) aliases.set(nested, project.path);
+      }
+      collectAliases(nested);
+    }
+  };
+  collectAliases(value);
+
+  const orderedAliases = [...aliases.entries()]
+    .filter(([alias, canonical]) => !samePath(alias, canonical) || alias !== canonical)
+    .sort((left, right) => right[0].length - left[0].length);
+  const rewriteString = (text) => {
+    let result = text;
+    for (const [alias, canonical] of orderedAliases) {
+      const pattern = new RegExp(alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+      result = result.replace(pattern, (match) => (
+        match === match.toLowerCase() ? canonical.toLowerCase() : canonical
+      ));
+    }
+    return result;
+  };
+  const rewrite = (item) => {
+    if (typeof item === "string") return rewriteString(item);
+    if (Array.isArray(item)) return item.map(rewrite);
+    if (!item || typeof item !== "object") return item;
+    return Object.fromEntries(Object.entries(item).map(([key, nested]) => [
+      rewriteString(key),
+      rewrite(nested),
+    ]));
+  };
+  return rewrite(value);
 }
 
 function loadProjects(raw, defaultRoot) {

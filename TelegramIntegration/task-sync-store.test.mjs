@@ -87,6 +87,40 @@ test("local task sync canonicalizes persisted project roots on load", async () =
   }
 });
 
+test("local task sync canonicalizes project references inside saved history", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "task-sync-history-root-"));
+  try {
+    const filePath = path.join(directory, "task-sync.json");
+    await writeFile(filePath, JSON.stringify({
+      version: 1,
+      tasks: [{
+        provider: "codex",
+        threadId: "thread-1",
+        projectRoot: "C:\\OldWorkspace",
+        answer: "See C:\\OldWorkspace\\README.md",
+        history: [{ answer: "[file](C:\\OldWorkspace\\file.txt)" }],
+      }],
+    }), "utf8");
+    const store = new LocalTaskSyncStore({
+      filePath,
+      canonicalizeProjectRoot: (value) => (
+        value === "C:\\OldWorkspace" ? "D:\\Workspace" : value
+      ),
+      canonicalizeValue: (value) => JSON.parse(
+        JSON.stringify(value).replaceAll("C:\\\\OldWorkspace", "D:\\\\Workspace"),
+      ),
+    });
+    await store.load();
+    await store.save();
+    const saved = JSON.parse(await readFile(filePath, "utf8"));
+    assert.equal(saved.tasks[0].projectRoot, "D:\\Workspace");
+    assert.equal(saved.tasks[0].answer, "See D:\\Workspace\\README.md");
+    assert.equal(saved.tasks[0].history[0].answer, "[file](D:\\Workspace\\file.txt)");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("cached running status expires instead of creating a phantom task", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });

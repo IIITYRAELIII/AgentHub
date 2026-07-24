@@ -61,6 +61,7 @@ export class LocalTaskSyncStore {
   #historyLimit;
   #taskLimit;
   #canonicalizeProjectRoot;
+  #canonicalizeValue;
   #tasks = new Map();
   #dirty = false;
   #writeQueue = Promise.resolve();
@@ -70,11 +71,13 @@ export class LocalTaskSyncStore {
     historyLimit = DEFAULT_HISTORY_LIMIT,
     taskLimit = DEFAULT_TASK_LIMIT,
     canonicalizeProjectRoot = (projectRoot) => projectRoot,
+    canonicalizeValue = (value) => value,
   }) {
     this.#filePath = filePath;
     this.#historyLimit = Math.max(1, Number(historyLimit) || DEFAULT_HISTORY_LIMIT);
     this.#taskLimit = Math.max(1, Number(taskLimit) || DEFAULT_TASK_LIMIT);
     this.#canonicalizeProjectRoot = canonicalizeProjectRoot;
+    this.#canonicalizeValue = canonicalizeValue;
   }
 
   #prune() {
@@ -102,6 +105,9 @@ export class LocalTaskSyncStore {
       throw error;
     }
     if (Number(parsed?.version) !== FORMAT_VERSION) return this;
+    const original = JSON.stringify(parsed);
+    parsed = this.#canonicalizeValue(parsed);
+    if (JSON.stringify(parsed) !== original) this.#dirty = true;
     for (const value of Array.isArray(parsed.tasks) ? parsed.tasks : []) {
       const task = persistedTask(value, this.#canonicalizeProjectRoot);
       if (task) {

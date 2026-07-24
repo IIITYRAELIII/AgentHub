@@ -392,6 +392,7 @@ let taskCatalogRefreshInFlight = null;
 const taskSyncStore = new LocalTaskSyncStore({
   filePath: TASK_SYNC_FILE,
   canonicalizeProjectRoot: (projectRoot) => findProject(projectRoot)?.path ?? projectRoot,
+  canonicalizeValue: (value) => canonicalizeProjectRoots(value, PROJECTS),
 });
 await taskSyncStore.load();
 await taskSyncStore.save();
