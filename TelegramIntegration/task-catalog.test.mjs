@@ -573,7 +573,7 @@ test("runningTaskReplyMarkup shows active tasks first and fills four rows with r
       text: "✅ ТЕКУЩАЯ · VSC · Codex · Тестирование обмена документами",
       callback_data: "task:c:019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
     }], [{
-      text: "🤖 · INT · Codex · Вторая активная",
+      text: "⚡ · INT · Codex · Вторая активная",
       callback_data: "task:c:019f70ed-d8e8-7b21-bcd1-b6f57bcdf014",
     }], [{
       text: "🕘 · Claude · Завершённая",
@@ -597,15 +597,15 @@ test("running task buttons include project only when requested", () => {
   }];
   assert.equal(
     runningTaskReplyMarkup(entries, null).inline_keyboard[0][0].text,
-      "🤖 · INT · Codex · Фаровон",
+      "⚡ · INT · Codex · Фаровон",
   );
   assert.equal(
     runningTaskReplyMarkup(entries, null, { showProject: true }).inline_keyboard[0][0].text,
-      "🤖 · INT · Codex · VSC_Tyrael · Фаровон",
+      "⚡ · INT · Codex · VSC_Tyrael · Фаровон",
   );
   assert.equal(
     runningTaskReplyMarkup(entries, entries[0]).inline_keyboard[0][0].text,
-      "✅ ТЕКУЩАЯ · 🤖 INT · Codex · Фаровон",
+      "✅ ТЕКУЩАЯ · ⚡ INT · Codex · Фаровон",
   );
 });
 

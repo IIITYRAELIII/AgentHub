@@ -47,7 +47,7 @@ export function taskExecutionRuntimeShortLabel(owner) {
 }
 
 export function taskExecutionRunningEmoji(owner, fallback = "🧵") {
-  return owner === TASK_EXECUTION_OWNERS.TELEGRAM ? "🤖" : fallback;
+  return owner === TASK_EXECUTION_OWNERS.TELEGRAM ? "⚡" : fallback;
 }
 
 function normalizedPath(value) {

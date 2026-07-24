@@ -610,8 +610,7 @@ namespace TyraelIntegrationDesktop
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             if (item.Running && ShortRuntime(item.Runtime) == "INT")
             {
-                var marker = Theme.Label("🤖", 13, Theme.Solid(Theme.Good), FontWeights.Normal);
-                marker.FontFamily = new FontFamily("Segoe UI Emoji");
+                var marker = Theme.Label("⚡", 13, Theme.Solid(Theme.Good), FontWeights.Normal);
                 marker.Margin = new Thickness(0, 0, 8, 0);
                 marker.VerticalAlignment = VerticalAlignment.Top;
                 grid.Children.Add(marker);

@@ -22,7 +22,7 @@ test("task picker distinguishes a running Integration task", () => {
     ...task,
     executionOwner: "telegram",
   }, null);
-  assert.equal(text, "🤖 INT · Codex · Задача");
+  assert.equal(text, "⚡ INT · Codex · Задача");
 });
 
 test("task picker paginates and keeps new/archive actions last", () => {
