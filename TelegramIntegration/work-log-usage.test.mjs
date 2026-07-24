@@ -70,7 +70,8 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
     },
   };
   const projected = projectWorkLogUsage(source, turns);
-  assert.match(projected, /data-day-usage>За день: 200 у\.е\./);
+  assert.match(projected, /data-day-usage>200 у\.е\./);
+  assert.doesNotMatch(projected, /За день:/);
   assert.match(projected, /Task A[\s\S]*?За задачу: 100 у\.е\. \(50%\)/);
   assert.match(projected, /Task C[\s\S]*?За задачу: 100 у\.е\. \(50%\)/);
   assert.match(
@@ -121,7 +122,7 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     await store.recordAndProject({ ...base, turnId: "turn-1" });
     await store.recordAndProject({ ...base, turnId: "turn-2", workLogId: SECOND_WORK_ID });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /data-day-usage>За день: 64 у\.е\./);
+    assert.match(projected, /data-day-usage>64 у\.е\./);
     assert.match(
       projected,
       /data-task-usage>За задачу: 64 у\.е\. \(100%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,

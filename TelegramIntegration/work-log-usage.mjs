@@ -127,7 +127,7 @@ function projectDaySection(section, date, records) {
   }
 
   const summary = dayUnits > 0
-    ? `<summary><strong>${date}</strong> — <span data-day-usage>За день: ${formatNumber(dayUnits)} у.е.</span></summary>`
+    ? `<summary><strong>${date}</strong> — <span data-day-usage>${formatNumber(dayUnits)} у.е.</span></summary>`
     : `<summary><strong>${date}</strong></summary>`;
   return projected.replace(/<summary>[\s\S]*?<\/summary>/i, summary);
 }
