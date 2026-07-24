@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { normalizeTokenUsage } from "./token-usage.mjs";
+import { normalizeWorkLogId } from "./work-log-usage.mjs";
 
 export function turnEndThreadKey({ provider, threadId }) {
   return `${String(provider ?? "").trim().toLowerCase()}\0${String(threadId ?? "").trim()}`;
@@ -23,6 +24,12 @@ function normalizedMessage(value) {
   const text = String(value?.text ?? "").trim();
   const projectRoot = String(value?.projectRoot ?? "").trim();
   if (!base || !text || !projectRoot) return null;
+  let workLogId = null;
+  try {
+    workLogId = value.workLogId ? normalizeWorkLogId(value.workLogId) : null;
+  } catch {
+    workLogId = null;
+  }
   return {
     ...base,
     id: String(value.id ?? crypto.randomUUID()),
@@ -32,6 +39,7 @@ function normalizedMessage(value) {
     chatId: Number(value.chatId),
     category: String(value.category ?? "done").trim() || "done",
     silent: value.silent === true,
+    workLogId,
     text,
     createdAt: String(value.createdAt ?? new Date().toISOString()),
   };

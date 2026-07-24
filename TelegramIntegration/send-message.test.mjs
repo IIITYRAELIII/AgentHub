@@ -34,6 +34,7 @@ test("parseArguments reads text and options", () => {
     afterTurn: false,
     category: "info",
     messageFile: null,
+    workLogId: null,
     text: "Готово",
   });
 });
@@ -96,6 +97,22 @@ test("parseArguments requires a current binding for deferred end-of-turn deliver
   assert.throws(
     () => parseArguments(["--after-turn", "--bind-active", "Готово"]),
     /requires --bind-current/,
+  );
+});
+
+test("parseArguments binds a validated WORK_LOG id only to end-of-turn delivery", () => {
+  const id = "123e4567-e89b-42d3-a456-426614174000";
+  assert.equal(
+    parseArguments(["--after-turn", "--bind-current", "--work-log-id", id, "Готово"]).workLogId,
+    id,
+  );
+  assert.throws(
+    () => parseArguments(["--bind-current", "--work-log-id", id, "Готово"]),
+    /requires --after-turn/,
+  );
+  assert.throws(
+    () => parseArguments(["--after-turn", "--bind-current", "--work-log-id", "wrong", "Готово"]),
+    /UUID/,
   );
 });
 

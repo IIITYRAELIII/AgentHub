@@ -15,6 +15,7 @@ function message(overrides = {}) {
     chatId: 42,
     category: "done",
     text: "Готово",
+    workLogId: "123e4567-e89b-42d3-a456-426614174000",
     ...overrides,
   };
 }
@@ -45,6 +46,7 @@ test("turn-end registry binds a deferred message to the completed turn", () => {
   registry.registerMessage(message());
   const ready = registry.recordCompletion(completion());
   assert.equal(ready.message.text, "Готово");
+  assert.equal(ready.message.workLogId, "123e4567-e89b-42d3-a456-426614174000");
   assert.equal(ready.usage.inputTokens, 10);
 });
 

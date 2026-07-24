@@ -17,6 +17,7 @@ import {
   resolveAllowedNotificationChatId,
   resolveAllowedNotificationPath,
 } from "./notification-security.mjs";
+import { normalizeWorkLogId } from "./work-log-usage.mjs";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 const TELEGRAM_CAPTION_LIMIT = 1024;
@@ -71,6 +72,7 @@ export function parseArguments(args) {
   let afterTurn = false;
   let category = "info";
   let messageFile = null;
+  let workLogId = null;
   const textParts = [];
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -96,6 +98,11 @@ export function parseArguments(args) {
     } else if (argument.startsWith("--message-file=")) {
       messageFile = argument.slice("--message-file=".length);
       if (!messageFile) throw new Error("--message-file requires a value");
+    } else if (argument === "--work-log-id") {
+      if (index + 1 >= args.length) throw new Error("--work-log-id requires a value");
+      workLogId = normalizeWorkLogId(args[++index]);
+    } else if (argument.startsWith("--work-log-id=")) {
+      workLogId = normalizeWorkLogId(argument.slice("--work-log-id=".length));
     } else if (argument === "--help" || argument === "-h") {
       return {
         help: true,
@@ -106,6 +113,7 @@ export function parseArguments(args) {
         afterTurn,
         category,
         messageFile,
+        workLogId,
         text: "",
       };
     } else {
@@ -114,6 +122,7 @@ export function parseArguments(args) {
   }
   if (bindCurrent && bindActive) throw new Error("Use either --bind-current or --bind-active, not both");
   if (afterTurn && !bindCurrent) throw new Error("--after-turn requires --bind-current");
+  if (workLogId && !afterTurn) throw new Error("--work-log-id requires --after-turn");
   const text = textParts.join(" ").trim();
   if (messageFile && text) throw new Error("Use either --message-file or positional message text, not both");
   return {
@@ -125,6 +134,7 @@ export function parseArguments(args) {
     afterTurn,
     category,
     messageFile,
+    workLogId,
     text,
   };
 }
@@ -422,7 +432,7 @@ export function notificationCardOutboxBody({
 export async function main(args = process.argv.slice(2)) {
   const options = parseArguments(args);
   if (options.help) {
-    console.log("Usage: node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--after-turn] [--category <name>] [--message-file <utf8-file> | <message>]");
+    console.log("Usage: node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--after-turn] [--work-log-id <uuid>] [--category <name>] [--message-file <utf8-file> | <message>]");
     console.log("       <command> | node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--category <name>]");
     console.log(`Categories: ${Object.keys(NOTIFICATION_CATEGORIES).join(", ")} (default: info; used with a binding option)`);
     return;

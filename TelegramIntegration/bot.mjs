@@ -173,8 +173,12 @@ import { TaskProgressController } from "./task-progress-controller.mjs";
 import { TaskObserverController } from "./task-observer-controller.mjs";
 import { DeferredInputController } from "./deferred-input-controller.mjs";
 import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "./task-recovery.mjs";
+import { WorkLogUsageStore } from "./work-log-usage.mjs";
 
 const config = await loadConfig();
+const workLogUsageStore = new WorkLogUsageStore({
+  ledgerFile: path.join(config.dataDir, "work-log-usage.json"),
+});
 const defaultDataDirectory = path.join(INTEGRATION_ROOT, "data");
 const logDirectory = samePath(config.dataDir, defaultDataDirectory)
   ? INTEGRATION_ROOT
@@ -968,6 +972,23 @@ function fallbackTurnEndMessage(status) {
   return status === "completed" ? "Ход завершён." : `Ход завершён со статусом ${status}.`;
 }
 
+async function projectTurnUsageToWorkLog(completion) {
+  const workLogId = completion?.message?.workLogId;
+  if (!workLogId) return false;
+  const project = findProject(completion.projectRoot);
+  if (!project) throw new Error(`Cannot find WORK_LOG project for ${completion.projectRoot}`);
+  return workLogUsageStore.recordAndProject({
+    provider: completion.provider,
+    threadId: completion.threadId,
+    turnId: completion.turnId,
+    workLogId,
+    usage: completion.usage,
+    usageReported: completion.usageReported,
+    completedAt: completion.completedAt,
+    workLogFile: path.join(project.path, "WORK_LOG.md"),
+  });
+}
+
 async function finalizeCodexRunDelivery(run, {
   answer,
   turnId: completedTurnId = run?.turnId,
@@ -1007,6 +1028,11 @@ async function finalizeCodexRunDelivery(run, {
   const resolvedTracker = completion
     ? { usage: completion.usage, reported: completion.usageReported }
     : tracker;
+  if (completion) {
+    await projectTurnUsageToWorkLog(completion).catch((error) => {
+      console.error(`Cannot update WORK_LOG usage for turn ${completedTurnId}:`, error.message);
+    });
+  }
   const shouldDeliver = deliver || Boolean(existingCompletion);
   const message = [
     answer,
@@ -1036,6 +1062,9 @@ async function deliverTurnEndNotification(completion) {
   if (turnEndNotifications.hasDelivered(key) || deliveringTurnEndKeys.has(key)) return false;
   deliveringTurnEndKeys.add(key);
   try {
+    await projectTurnUsageToWorkLog(completion).catch((error) => {
+      console.error(`Cannot update WORK_LOG usage for turn ${completion.turnId}:`, error.message);
+    });
     const message = completion.message;
     const category = message?.category
       ?? (completion.status === "completed" ? "done" : "warning");
@@ -3505,6 +3534,7 @@ async function handleRuntimeCommand(request) {
       chatId: resolveNotificationChatId(config, options.chatId),
       category: options.category,
       silent: options.silent,
+      workLogId: options.workLogId,
       text: await resolveNotificationMessageText(options, { readStdinImpl: async () => "" }),
     });
     await saveState();
