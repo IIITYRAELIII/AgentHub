@@ -27,7 +27,22 @@ test("rejects stale contextual controls before domain dispatch", () => {
 
 test("keeps legacy task view callbacks compatible", () => {
   assert.equal(routeTelegramCallback("show-message", "abc").kind, "task-view");
+  assert.equal(routeTelegramCallback("task-diff", "abc").kind, "task-diff");
   const history = routeTelegramCallback("history-more:l:3", "abc");
   assert.equal(history.kind, "task-history");
   assert.equal(history.legacyHistory.count, "3");
+});
+
+test("routes an identity-bound task diff callback", () => {
+  const route = routeTelegramCallback(
+    "task-view:d:c:019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
+    "abc",
+  );
+  assert.equal(route.kind, "task-diff");
+  assert.deepEqual(route.taskView, {
+    action: "diff",
+    provider: "codex",
+    threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf013",
+    count: null,
+  });
 });

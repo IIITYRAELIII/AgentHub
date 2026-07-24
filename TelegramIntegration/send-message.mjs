@@ -2,13 +2,13 @@ import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
 import { findContainingProject, loadConfig } from "./config.mjs";
 import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { appendMessageBindings } from "./message-bindings.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { callTelegramJson, telegramBotApiUrl } from "./telegram-api.mjs";
 import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
+import { isMainModule } from "./main-module.mjs";
 import {
   resolveAllowedNotificationChatId,
   resolveAllowedNotificationPath,
@@ -508,7 +508,7 @@ export async function main(args = process.argv.slice(2)) {
     : `Sent ${sent.length} message(s) to Telegram chat ${chatId}.`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   const run = async () => {
     const args = process.argv.slice(2);
     if (process.env.TELEGRAM_INTEGRATION_DIRECT !== "1") {

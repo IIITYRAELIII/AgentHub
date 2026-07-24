@@ -13,8 +13,8 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
 
+import { isMainModule } from "./main-module.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "./runtime-layout.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 import { protectRuntimeConfig } from "./runtime-security.mjs";
@@ -331,7 +331,7 @@ export async function main(args = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main().catch((error) => {
     console.error(`Runtime manager failed: ${error.message}`);
     process.exitCode = 1;

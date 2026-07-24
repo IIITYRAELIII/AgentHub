@@ -2,8 +2,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { appendFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
 
+import { isMainModule } from "./main-module.mjs";
 import { activateRuntime } from "./runtime-manager.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 import { independentWindowsLauncherInvocation } from "./runtime-restart.mjs";
@@ -141,7 +141,7 @@ export async function main(args = process.argv.slice(2)) {
   await cutoverRuntime({ runtimeRoot });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main().catch(async (error) => {
     const logFile = path.join(runtimeLayout().root, "cutover.log");
     await appendFile(logFile, `${new Date().toISOString()} ERROR ${error.stack ?? error.message}\n`, "utf8").catch(() => {});

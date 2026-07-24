@@ -114,6 +114,7 @@ import {
   formatPermissionsApproval,
 } from "./codex-approvals.mjs";
 import { contextualCallback } from "./callback-context.mjs";
+import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { installRotatingConsole } from "./rotating-log.mjs";
 import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
@@ -810,14 +811,28 @@ async function sendRunLongMessage(run, text, {
 } = {}) {
   const value = `${runProgressHeading(run, true)}\n\n${String(text)}`;
   const speechId = mediaController.rememberSpeechText(speechText, forceSpeechButton);
+  const diffCallbackData = taskViewCallbackData({
+    action: "diff",
+    provider: run.provider,
+    threadId: run.threadId,
+  }) ?? "task-diff";
   let queued = durable;
   let sequence = 0;
   for (let start = 0; start < value.length; start += TELEGRAM_LIMIT) {
     const isLast = start + TELEGRAM_LIMIT >= value.length;
     const extra = {
       ...(silent ? { disable_notification: true } : {}),
-      ...(isLast && speechId
-        ? { reply_markup: { inline_keyboard: [[{ text: "🔊 Озвучить", callback_data: `speech:${speechId}` }]] } }
+      ...(isLast
+        ? {
+          reply_markup: {
+            inline_keyboard: [
+              ...(speechId
+                ? [[{ text: "🔊 Озвучить", callback_data: `speech:${speechId}` }]]
+                : []),
+              [{ text: "Изменения", callback_data: diffCallbackData }],
+            ],
+          },
+        }
         : {}),
     };
     if (reliable) {
@@ -874,7 +889,6 @@ async function finalizeRunDelivery(run, {
   speechText = answer,
   forceSpeechButton = false,
   deliver = true,
-  includeDiff = false,
   silent = false,
   description = "финальный ответ",
 } = {}) {
@@ -884,12 +898,14 @@ async function finalizeRunDelivery(run, {
   });
   rememberLastTaskMessage(run, answer);
   if (run?.turnId) setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(run), run.turnId, 500);
-  let finalDelivery = null;
+  await refreshTaskDiff(run).catch((error) => {
+    console.error(`Cannot refresh final diff for task ${run?.threadId ?? run?.id ?? "unknown"}:`, error.message);
+  });
   if (deliver) {
     // A completed run must never disappear between remembering its answer and
     // sending it to Telegram. Persist every final part in the outbox first;
     // the run can then be closed safely even if Telegram is temporarily down.
-    finalDelivery = await sendRunLongMessage(run, message, {
+    await sendRunLongMessage(run, message, {
       speechText,
       forceSpeechButton,
       reliable: true,
@@ -897,23 +913,6 @@ async function finalizeRunDelivery(run, {
       silent,
       replaceProgressMessageIds: run.finishedProgressMessageIds ?? [],
     });
-  }
-  if (includeDiff && run.latestDiff) {
-    await safelyDeliverRunMessage(
-      run,
-      () => sendReliableRunMessage(
-        run,
-        "Изменения этой задачи доступны после её выбора по команде /diff.",
-        silent ? { disable_notification: true } : {},
-        {},
-        {
-          forceQueue: finalDelivery?.queued === true,
-          groupId: finalDelivery?.groupId ?? randomUUID(),
-          sequence: finalDelivery?.nextSequence ?? 0,
-        },
-      ),
-      "уведомление об изменениях",
-    );
   }
   await completeRun(run);
 }
@@ -3398,7 +3397,6 @@ async function finishClaudeRun(run, {
       }
       await saveState();
     }
-    await refreshTaskDiff(run);
     const answer = String(result.result ?? "").trim()
       || run.claudeFailureText
       || (result.is_error ? "Claude Code завершил задачу с ошибкой." : "Задача завершена.");
@@ -3410,7 +3408,6 @@ async function finishClaudeRun(run, {
       message: `${response}\n\n${formatClaudeUsage(result, run.claudeThinkingPeak ?? 0)}`,
       speechText: answer,
       forceSpeechButton,
-      includeDiff: true,
       description: "финальный ответ Claude",
     });
   } catch (error) {
@@ -3533,13 +3530,11 @@ async function handleCodexMessage(message) {
     const error = params.turn?.error?.message;
     const answer = await completedCodexAnswer(run, completedTurnId, params.turn)
       || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
-    await refreshTaskDiff(run);
     await finishProgress(run, error || status === "failed" ? `Задача завершилась с ошибкой: ${error ?? status}` : "Задача завершена.");
     await finalizeRunDelivery(run, {
       answer,
       message: appendTokenSummary(answer, tokenSummary),
       forceSpeechButton,
-      includeDiff: true,
       description: "финальный ответ Codex",
     });
   }
@@ -3766,12 +3761,10 @@ async function finishObservedRun(run, snapshot) {
     answer,
     savedLastTaskMessageRecord(run),
   );
-  await refreshTaskDiff(run);
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
   await finalizeRunDelivery(run, {
     answer,
     deliver,
-    includeDiff: true,
     silent: run.displayRequested !== true,
     description: "финальный ответ наблюдаемого хода",
   });
@@ -3809,13 +3802,11 @@ async function finishManagedCodexSnapshot(run, snapshot) {
     || String(snapshot?.answer ?? "").trim()
     || run.responseText.trim()
     || "Ход завершён без текстового ответа.";
-  await refreshTaskDiff(run);
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
   await finalizeRunDelivery(run, {
     answer,
     message: `${answer}\n\n${tokenSummary}`,
     forceSpeechButton,
-    includeDiff: true,
     description: "восстановленный финальный ответ Codex",
   });
 }
@@ -4640,6 +4631,34 @@ async function dispatchTelegramCallback(callback, route) {
   }
   const taskViewAction = route.taskView;
   const historyMatch = route.legacyHistory;
+  if (route.kind === "task-diff") {
+    const targetChatId = callback.message?.chat?.id;
+    const sourceMessageId = callback.message?.message_id;
+    const binding = await resolveTaskViewBinding(taskViewAction, targetChatId, sourceMessageId);
+    if (!binding) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Изменения этой задачи уже недоступны",
+        show_alert: true,
+      });
+      return;
+    }
+    await telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: "Загружаю изменения…",
+    });
+    scheduleInteractiveJob("Изменения", targetChatId, async () => {
+      const run = taskRuns.forTask(binding);
+      const diff = run
+        ? await refreshTaskDiff(run)
+        : taskDiffs.get(taskRunKey(binding)) ?? "";
+      await sendLongMessage(
+        diff || "В этой задаче изменений файлов нет.",
+        { maxParts: 8, targetChatId },
+      );
+    });
+    return;
+  }
   if (route.kind === "task-history") {
     const targetChatId = callback.message?.chat?.id;
     const sourceMessageId = callback.message?.message_id;

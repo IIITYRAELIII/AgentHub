@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
 import { findContainingProject, loadConfig } from "./config.mjs";
 import {
   currentCallerBinding,
@@ -11,6 +10,7 @@ import {
 import { appendMessageBindings } from "./message-bindings.mjs";
 import { telegramBotApiUrl } from "./telegram-api.mjs";
 import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
+import { isMainModule } from "./main-module.mjs";
 import { resolveAllowedNotificationPath } from "./notification-security.mjs";
 
 const MAX_ALBUM_SIZE = 10;
@@ -152,7 +152,7 @@ export async function main(args = process.argv.slice(2)) {
   console.log(`Sent ${sent.length} image(s) to Telegram chat ${chatId}.`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   const run = async () => {
     const args = process.argv.slice(2);
     if (process.env.TELEGRAM_INTEGRATION_DIRECT !== "1") {

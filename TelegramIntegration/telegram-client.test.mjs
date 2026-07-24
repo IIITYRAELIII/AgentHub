@@ -69,11 +69,13 @@ test("TelegramClient splits long output and puts speech action on the last part"
     messageLimit: 10,
     rememberSpeechText: () => "abc",
   });
-  await result.sendLongMessage("1234567890ABCDE", { speechText: "spoken" });
+  await result.sendLongMessage("1234567890ABCDE", { speechText: "spoken", targetChatId: 99 });
 
   assert.equal(requests.length, 2);
   const first = JSON.parse(requests[0].options.body);
   const second = JSON.parse(requests[1].options.body);
+  assert.equal(first.chat_id, 99);
+  assert.equal(second.chat_id, 99);
   assert.equal(first.text, "1234567890");
   assert.equal(second.text, "ABCDE");
   assert.deepEqual(second.reply_markup.inline_keyboard[0][0], {

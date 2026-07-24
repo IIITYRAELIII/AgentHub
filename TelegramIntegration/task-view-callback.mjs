@@ -1,5 +1,5 @@
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const CALLBACK_PATTERN = /^task-view:(s|ha|hl):(c|l):([0-9a-f-]{36})(?::(\d+))?$/i;
+const CALLBACK_PATTERN = /^task-view:(s|d|ha|hl):(c|l):([0-9a-f-]{36})(?::(\d+))?$/i;
 
 const PROVIDER_CODES = {
   codex: "c",
@@ -23,11 +23,12 @@ export function taskViewCallbackData({
 
   let actionCode;
   if (action === "show") actionCode = "s";
+  else if (action === "diff") actionCode = "d";
   else if (action === "history-all") actionCode = "ha";
   else if (action === "history-last") actionCode = "hl";
   else return null;
 
-  const suffix = actionCode === "s"
+  const suffix = actionCode === "s" || actionCode === "d"
     ? ""
     : `:${Math.max(1, Math.min(Number(count) || 1, 50))}`;
   const value = `task-view:${actionCode}:${providerCode}:${id}${suffix}`;
@@ -40,12 +41,15 @@ export function parseTaskViewCallbackData(value) {
   const [, actionCode, providerCode, threadId, rawCount] = match;
   const provider = CODE_PROVIDERS[providerCode.toLowerCase()];
   if (!provider || !UUID_PATTERN.test(threadId)) return null;
-  if (actionCode.toLowerCase() === "s" && rawCount != null) return null;
-  if (actionCode.toLowerCase() !== "s" && rawCount == null) return null;
+  const normalizedActionCode = actionCode.toLowerCase();
+  if ((normalizedActionCode === "s" || normalizedActionCode === "d") && rawCount != null) return null;
+  if (normalizedActionCode !== "s" && normalizedActionCode !== "d" && rawCount == null) return null;
   return {
-    action: actionCode.toLowerCase() === "s"
+    action: normalizedActionCode === "s"
       ? "show"
-      : actionCode.toLowerCase() === "ha" ? "history-all" : "history-last",
+      : normalizedActionCode === "d"
+        ? "diff"
+        : normalizedActionCode === "ha" ? "history-all" : "history-last",
     provider,
     threadId: threadId.toLowerCase(),
     count: rawCount == null ? null : Math.max(1, Math.min(Number(rawCount) || 1, 50)),

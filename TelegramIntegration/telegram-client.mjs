@@ -144,6 +144,7 @@ export class TelegramClient {
     speechText = null,
     forceSpeechButton = false,
     maxParts = Number.POSITIVE_INFINITY,
+    targetChatId = this.getDefaultChatId(),
   } = {}) {
     const value = String(text);
     const speechId = this.rememberSpeechText(speechText, forceSpeechButton);
@@ -159,7 +160,7 @@ export class TelegramClient {
       const extra = isLast && speechId
         ? { reply_markup: { inline_keyboard: [[{ text: "🔊 Озвучить", callback_data: `speech:${speechId}` }]] } }
         : {};
-      await this.sendMessage(visible.slice(start, start + this.messageLimit), extra);
+      await this.sendMessageTo(targetChatId, visible.slice(start, start + this.messageLimit), extra);
     }
   }
 

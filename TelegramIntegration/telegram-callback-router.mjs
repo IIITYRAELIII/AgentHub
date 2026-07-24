@@ -20,7 +20,9 @@ export function routeTelegramCallback(rawData, contextToken) {
   if (speech) return { kind: "speech", data, ...speech };
   const taskView = parseTaskViewCallbackData(data);
   if (taskView) return {
-    kind: taskView.action.startsWith("history-") ? "task-history" : "task-view",
+    kind: taskView.action === "diff"
+      ? "task-diff"
+      : taskView.action.startsWith("history-") ? "task-history" : "task-view",
     data,
     taskView,
   };
@@ -29,6 +31,7 @@ export function routeTelegramCallback(rawData, contextToken) {
   if (data === "show-message" || data === "show-last-message") {
     return { kind: "task-view", data, legacy: true };
   }
+  if (data === "task-diff") return { kind: "task-diff", data, legacy: true };
   const approvalMode = match(/^approval-mode:(manual|auto)$/, data, ["mode"]);
   if (approvalMode) return { kind: "approval-mode", data, ...approvalMode };
   const project = match(/^p:(\d+)$/, data, ["index"]);

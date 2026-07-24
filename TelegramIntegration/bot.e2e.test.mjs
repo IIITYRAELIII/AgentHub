@@ -391,6 +391,20 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     "the live progress card must remain visible until the final answer is delivered",
   );
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0, "normal turn completion");
+  assert.equal(
+    telegram.callsAfter(mark, "sendMessage").some((call) => (
+      String(call.body.text ?? "").includes("Изменения этой задачи доступны после её выбора по команде /diff.")
+    )),
+    false,
+    "the final answer must not be followed by a separate diff notification",
+  );
+  const normalDiffButton = normalFinal.body.reply_markup.inline_keyboard.flat()
+    .find((button) => button.text === "Изменения");
+  assert.ok(normalDiffButton, "every completed answer must expose its task diff");
+  mark = telegram.calls.length;
+  telegram.pushCallback(normalDiffButton.callback_data, normalFinal.result);
+  await telegram.waitForText("diff --fake", { after: mark });
+
   mark = telegram.calls.length;
   telegram.pushMessage("/diff");
   await telegram.waitForText("diff --fake", { after: mark });
