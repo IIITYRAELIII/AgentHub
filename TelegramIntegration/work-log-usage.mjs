@@ -71,6 +71,12 @@ function formatTaskShare(usage, dayUnits) {
   );
 }
 
+function formatTaskUsageDetails(usage, dayUnits) {
+  const [total, ...breakdown] = formatTaskShare(usage, dayUnits).split("<br>");
+  return `<span data-task-usage>${total}</span>\n`
+    + `<details data-task-usage-details><summary>Details</summary>${breakdown.join("<br>")}</details>\n`;
+}
+
 function ledgerByWorkLogId(turns = {}) {
   const records = new Map();
   for (const record of Object.values(turns)) {
@@ -110,7 +116,7 @@ function projectDaySection(section, date, records) {
   let projected = section;
   for (const row of rows.reverse()) {
     const visible = row.units > 0
-      ? `<span data-task-usage>${formatTaskShare(row.usage, dayUnits)}</span>\n`
+      ? formatTaskUsageDetails(row.usage, dayUnits)
       : "";
     const markers = row.ids.map((id) => (
       `<span data-usage-id="${id}" hidden>${records.has(id) ? "" : id}</span>`

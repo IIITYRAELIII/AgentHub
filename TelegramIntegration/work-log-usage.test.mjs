@@ -75,9 +75,15 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.match(projected, /Task C[\s\S]*?За задачу: 100 у\.е\. \(50%\)/);
   assert.match(
     projected,
+    /data-task-usage>За задачу: 100 у\.е\. \(50%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
+  );
+  assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
+  assert.match(
+    projected,
     /Task B<\/td><td><span data-usage-id="323e4567-e89b-42d3-a456-426614174000" hidden>/,
   );
-  assert.equal((projected.match(/data-task-usage/g) ?? []).length, 2);
+  assert.equal((projected.match(/data-task-usage>/g) ?? []).length, 2);
+  assert.equal((projected.match(/data-task-usage-details/g) ?? []).length, 2);
   assert.equal((projected.match(/data-usage-id=/g) ?? []).length, 4);
   assert.equal((projected.match(/data-usage-id=[^>]+hidden/g) ?? []).length, 4);
 });
@@ -116,7 +122,10 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     await store.recordAndProject({ ...base, turnId: "turn-2", workLogId: SECOND_WORK_ID });
     const projected = await readFile(workLogFile, "utf8");
     assert.match(projected, /data-day-usage>За день: 64 у\.е\./);
-    assert.match(projected, /data-task-usage>За задачу: 64 у\.е\. \(100%\)<br>Вход:/);
+    assert.match(
+      projected,
+      /data-task-usage>За задачу: 64 у\.е\. \(100%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
+    );
     assert.match(projected, new RegExp(`data-usage-id="${WORK_ID}" hidden>`));
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
