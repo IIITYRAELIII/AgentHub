@@ -17,6 +17,14 @@ test("task picker marks selected running task and optional project", () => {
   assert.match(text, /^✓ ⏳ VSC · Codex · Repo · Задача$/);
 });
 
+test("task picker distinguishes a running Integration task", () => {
+  const text = taskPickerButtonText({
+    ...task,
+    executionOwner: "telegram",
+  }, null);
+  assert.equal(text, "🤖 INT · Codex · Задача");
+});
+
 test("task picker paginates and keeps new/archive actions last", () => {
   const catalog = Array.from({ length: 9 }, (_, index) => ({
     ...task,

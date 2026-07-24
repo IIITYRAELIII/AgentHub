@@ -46,6 +46,10 @@ export function taskExecutionRuntimeShortLabel(owner) {
   return "EXT";
 }
 
+export function taskExecutionRunningEmoji(owner, fallback = "🧵") {
+  return owner === TASK_EXECUTION_OWNERS.TELEGRAM ? "🤖" : fallback;
+}
+
 function normalizedPath(value) {
   const resolved = path.resolve(String(value ?? ""));
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
@@ -599,15 +603,24 @@ export function statusTaskEntries(entries, limit = 4) {
 export function runningTaskReplyMarkup(entries, selected = null, { showProject = false, limit = 4 } = {}) {
   return {
     inline_keyboard: statusTaskEntries(entries, limit)
-      .map((entry) => [{
-        text: (
-          `${selected && catalogEntryIsSelected(entry, selected) ? "✅ ТЕКУЩАЯ" : entry.running ? "🧵" : entry.activityUnknown ? "❔" : "🕘"} · `
-          + `${entry.running ? `${taskExecutionRuntimeShortLabel(entry.executionOwner)} · ` : ""}`
-          + `${entry.provider === "codex" ? "Codex" : "Claude"} · `
-          + `${showProject ? `${entry.projectName} · ` : ""}${entry.title}`
-        ).slice(0, 90),
-        callback_data: taskCatalogCallback(entry),
-      }]),
+      .map((entry) => {
+        const isSelected = selected && catalogEntryIsSelected(entry, selected);
+        const runningEmoji = taskExecutionRunningEmoji(entry.executionOwner);
+        const runtimeEmoji = isSelected
+          && entry.running
+          && entry.executionOwner === TASK_EXECUTION_OWNERS.TELEGRAM
+          ? `${runningEmoji} `
+          : "";
+        return [{
+          text: (
+            `${isSelected ? "✅ ТЕКУЩАЯ" : entry.running ? runningEmoji : entry.activityUnknown ? "❔" : "🕘"} · `
+            + `${entry.running ? `${runtimeEmoji}${taskExecutionRuntimeShortLabel(entry.executionOwner)} · ` : ""}`
+            + `${entry.provider === "codex" ? "Codex" : "Claude"} · `
+            + `${showProject ? `${entry.projectName} · ` : ""}${entry.title}`
+          ).slice(0, 90),
+          callback_data: taskCatalogCallback(entry),
+        }];
+      }),
   };
 }
 

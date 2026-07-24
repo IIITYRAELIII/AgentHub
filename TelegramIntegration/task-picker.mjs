@@ -1,6 +1,7 @@
 import {
   catalogEntryIsSelected,
   taskCatalogCallback,
+  taskExecutionRunningEmoji,
   taskExecutionRuntimeShortLabel,
 } from "./task-catalog.mjs";
 
@@ -8,7 +9,9 @@ export function taskPickerButtonText(entry, selectedTask, {
   showProject = false,
 } = {}) {
   const selected = selectedTask && catalogEntryIsSelected(entry, selectedTask) ? "✓ " : "";
-  const running = entry.running ? "⏳ " : entry.activityUnknown ? "❔ " : "";
+  const running = entry.running
+    ? `${taskExecutionRunningEmoji(entry.executionOwner, "⏳")} `
+    : entry.activityUnknown ? "❔ " : "";
   const runtime = entry.running ? `${taskExecutionRuntimeShortLabel(entry.executionOwner)} · ` : "";
   const provider = entry.provider === "codex" ? "Codex" : "Claude";
   const project = showProject ? `${entry.projectName} · ` : "";

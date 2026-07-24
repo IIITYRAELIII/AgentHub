@@ -608,16 +608,27 @@ namespace TyraelIntegrationDesktop
             var grid = new Grid();
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            var dot = new Ellipse
+            if (item.Running && ShortRuntime(item.Runtime) == "INT")
             {
-                Width = item.Running ? 9 : 7,
-                Height = item.Running ? 9 : 7,
-                Fill = item.Running ? Theme.Solid(Theme.Good) : Theme.Provider(item.Provider),
-                Opacity = item.Running ? 1 : .55,
-                Margin = new Thickness(0, 4, 10, 0),
-                VerticalAlignment = VerticalAlignment.Top
-            };
-            grid.Children.Add(dot);
+                var marker = Theme.Label("🤖", 13, Theme.Solid(Theme.Good), FontWeights.Normal);
+                marker.FontFamily = new FontFamily("Segoe UI Emoji");
+                marker.Margin = new Thickness(0, 0, 8, 0);
+                marker.VerticalAlignment = VerticalAlignment.Top;
+                grid.Children.Add(marker);
+            }
+            else
+            {
+                var dot = new Ellipse
+                {
+                    Width = item.Running ? 9 : 7,
+                    Height = item.Running ? 9 : 7,
+                    Fill = item.Running ? Theme.Solid(Theme.Good) : Theme.Provider(item.Provider),
+                    Opacity = item.Running ? 1 : .55,
+                    Margin = new Thickness(0, 4, 10, 0),
+                    VerticalAlignment = VerticalAlignment.Top
+                };
+                grid.Children.Add(dot);
+            }
             var text = new StackPanel();
             var title = Theme.Label(item.Title, 13, Theme.Solid(Theme.Text), selected ? FontWeights.SemiBold : FontWeights.Normal);
             title.TextTrimming = TextTrimming.CharacterEllipsis;
