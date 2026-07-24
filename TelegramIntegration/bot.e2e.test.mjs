@@ -382,10 +382,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.match(normalFinal.body.text, /^✅ Codex · /);
   assert.match(normalFinal.body.text, /\n🧵 /);
   assert.match(normalFinal.body.text, /\n⚙ Integration Server/);
-  assert.doesNotMatch(normalFinal.body.text, /За задачу:/);
-  await telegram.waitForCall("sendPhoto", (call) => (
-    call.rawBody.includes("Ход завершён.") && call.rawBody.includes("За задачу:")
-  ), { after: normalFinal.index + 1, timeoutMs: 12_000 });
+  assert.match(normalFinal.body.text, /За задачу:/);
   const normalProgressDeletion = await telegram.waitForCall("deleteMessage", (call) => (
     call.body.message_id === normalProgressId
   ), { after: mark });
@@ -394,6 +391,13 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     "the live progress card must remain visible until the final answer is delivered",
   );
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0, "normal turn completion");
+  assert.equal(
+    telegram.callsAfter(normalFinal.index + 1, "sendPhoto").some((call) => (
+      call.rawBody.includes("Ход завершён.") && call.rawBody.includes("За задачу:")
+    )),
+    false,
+    "turn usage must be appended to the final answer instead of a separate card",
+  );
   assert.equal(
     telegram.callsAfter(mark, "sendMessage").some((call) => (
       String(call.body.text ?? "").includes("Изменения этой задачи доступны после её выбора по команде /diff.")
@@ -609,13 +613,17 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushMessage("/cancel");
   await telegram.waitForText("Запрошена остановка этой задачи", { after: mark });
   const restoredFinal = await telegram.waitForText("Ход остановлен тестом", { after: mark });
-  assert.doesNotMatch(restoredFinal.body.text, /За задачу:/);
+  assert.match(restoredFinal.body.text, /За задачу:/);
   assert.match(restoredFinal.body.text, /^✅ Codex · /);
-  await telegram.waitForCall("sendPhoto", (call) => (
-    call.rawBody.includes("За задачу:")
-  ), { after: restoredFinal.index + 1, timeoutMs: 12_000 });
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 1,
     "cancelling the selected parallel task only");
+  assert.equal(
+    telegram.callsAfter(restoredFinal.index + 1, "sendPhoto").some((call) => (
+      call.rawBody.includes("За задачу:")
+    )),
+    false,
+    "recovered turn usage must stay in the final answer",
+  );
 
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");

@@ -862,6 +862,7 @@ async function finalizeRunDelivery(run, {
   forceSpeechButton = false,
   deliver = true,
   silent = false,
+  complete = true,
   description = "финальный ответ",
 } = {}) {
   run.finalizing = true;
@@ -887,7 +888,7 @@ async function finalizeRunDelivery(run, {
       replaceProgressMessageIds: run.finishedProgressMessageIds ?? [],
     });
   }
-  await completeRun(run);
+  if (complete) await completeRun(run);
   return deliveryResult;
 }
 
@@ -965,6 +966,68 @@ function consumeTurnTokenTracker(turnId) {
 
 function fallbackTurnEndMessage(status) {
   return status === "completed" ? "Ход завершён." : `Ход завершён со статусом ${status}.`;
+}
+
+async function finalizeCodexRunDelivery(run, {
+  answer,
+  turnId: completedTurnId = run?.turnId,
+  status = "completed",
+  tracker = { usage: emptyTokenUsage(), reported: false },
+  forceSpeechButton = false,
+  deliver = true,
+  silent = false,
+  description = "финальный ответ Codex",
+} = {}) {
+  if (!run || !completedTurnId) {
+    return finalizeRunDelivery(run, {
+      answer,
+      forceSpeechButton,
+      deliver,
+      silent,
+      description,
+    });
+  }
+  const existingCompletion = turnEndNotifications.get({
+    provider: "codex",
+    threadId: run.threadId,
+    turnId: completedTurnId,
+  });
+  const completion = turnEndNotifications.recordCompletion({
+    provider: "codex",
+    threadId: run.threadId,
+    turnId: completedTurnId,
+    projectRoot: run.projectRoot,
+    taskTitle: runTaskTitle(run),
+    chatId: run.chatId ?? chatId ?? resolveNotificationChatId(config, null),
+    status,
+    usage: tracker.usage,
+    usageReported: tracker.reported === true,
+  });
+  await saveState();
+  const resolvedTracker = completion
+    ? { usage: completion.usage, reported: completion.usageReported }
+    : tracker;
+  const shouldDeliver = deliver || Boolean(existingCompletion);
+  const message = [
+    answer,
+    formatTurnTokenUsage(resolvedTracker),
+  ].filter(Boolean).join("\n\n");
+  const delivery = await finalizeRunDelivery(run, {
+    answer,
+    message,
+    speechText: answer,
+    forceSpeechButton,
+    deliver: shouldDeliver,
+    silent,
+    complete: false,
+    description,
+  });
+  if (completion) {
+    turnEndNotifications.markDelivered(completion);
+    await saveState();
+  }
+  await completeRun(run);
+  return delivery;
 }
 
 async function deliverTurnEndNotification(completion) {
@@ -1045,30 +1108,6 @@ async function deliverTurnEndNotification(completion) {
   } finally {
     deliveringTurnEndKeys.delete(key);
   }
-}
-
-async function finishCodexTurnEndNotification(run, {
-  turnId: completedTurnId = run?.turnId,
-  status = "completed",
-  tracker = { usage: emptyTokenUsage(), reported: false },
-  delivery = null,
-} = {}) {
-  if (!run || !completedTurnId) return false;
-  const completion = turnEndNotifications.recordCompletion({
-    provider: "codex",
-    threadId: run.threadId,
-    turnId: completedTurnId,
-    projectRoot: run.projectRoot,
-    taskTitle: runTaskTitle(run),
-    chatId: run.chatId ?? chatId ?? resolveNotificationChatId(config, null),
-    status,
-    usage: tracker.usage,
-    usageReported: tracker.reported === true,
-    deliveryGroupId: delivery?.groupId,
-    deliverySequence: delivery?.nextSequence,
-  });
-  await saveState();
-  return deliverTurnEndNotification(completion);
 }
 
 async function retryPendingTurnEndNotifications() {
@@ -3771,18 +3810,13 @@ async function handleCodexMessage(message) {
     const answer = await completedCodexAnswer(run, completedTurnId, params.turn)
       || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
     await finishProgress(run, error || status === "failed" ? `Задача завершилась с ошибкой: ${error ?? status}` : "Задача завершена.");
-    const delivery = await finalizeRunDelivery(run, {
+    await finalizeCodexRunDelivery(run, {
       answer,
-      forceSpeechButton,
-      description: "финальный ответ Codex",
-    });
-    await finishCodexTurnEndNotification(run, {
       turnId: completedTurnId,
       status,
       tracker,
-      delivery,
-    }).catch((notificationError) => {
-      console.error(`Cannot deliver Codex turn-end notification ${completedTurnId}:`, notificationError.message);
+      forceSpeechButton,
+      description: "финальный ответ Codex",
     });
   }
 }
@@ -4013,12 +4047,6 @@ async function finishObservedRun(run, snapshot) {
     savedLastTaskMessageRecord(run),
   );
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
-  const delivery = await finalizeRunDelivery(run, {
-    answer,
-    deliver,
-    silent: run.displayRequested !== true,
-    description: "финальный ответ наблюдаемого хода",
-  });
   if (run.provider === "codex") {
     if (!tracker?.reported && run.executionOwner !== TASK_EXECUTION_OWNERS.TELEGRAM) {
       await waitForTurnEndCompletion({
@@ -4027,13 +4055,21 @@ async function finishObservedRun(run, snapshot) {
         turnId: completedTurnId,
       });
     }
-    await finishCodexTurnEndNotification(run, {
+    await finalizeCodexRunDelivery(run, {
+      answer,
       turnId: completedTurnId,
       status: snapshot?.status ?? "completed",
       tracker,
-      delivery,
-    }).catch((error) => {
-      console.error(`Cannot deliver observed Codex turn-end notification ${completedTurnId}:`, error.message);
+      deliver,
+      silent: run.displayRequested !== true,
+      description: "финальный ответ наблюдаемого хода",
+    });
+  } else {
+    await finalizeRunDelivery(run, {
+      answer,
+      deliver,
+      silent: run.displayRequested !== true,
+      description: "финальный ответ наблюдаемого хода",
     });
   }
 }
@@ -4071,18 +4107,13 @@ async function finishManagedCodexSnapshot(run, snapshot) {
     || run.responseText.trim()
     || "Ход завершён без текстового ответа.";
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
-  const delivery = await finalizeRunDelivery(run, {
+  await finalizeCodexRunDelivery(run, {
     answer,
-    forceSpeechButton,
-    description: "восстановленный финальный ответ Codex",
-  });
-  await finishCodexTurnEndNotification(run, {
     turnId: completedTurnId,
     status: snapshot?.status ?? "completed",
     tracker,
-    delivery,
-  }).catch((error) => {
-    console.error(`Cannot deliver recovered Codex turn-end notification ${completedTurnId}:`, error.message);
+    forceSpeechButton,
+    description: "восстановленный финальный ответ Codex",
   });
 }
 
@@ -4417,17 +4448,12 @@ async function recoverTaskRun(run) {
   const tracker = consumeTurnTokenTracker(run.turnId);
   const recoveredAsCompleted = turn.status === "completed" || codexTurnHasExplicitFinalAnswer(turn);
   await finishProgress(run, recoveredAsCompleted ? "Задача завершена." : `Задача остановлена: ${turn.status}.`);
-  const delivery = await finalizeRunDelivery(run, {
+  await finalizeCodexRunDelivery(run, {
     answer,
-    description: "восстановленный ответ",
-  });
-  await finishCodexTurnEndNotification(run, {
     turnId: run.turnId,
     status: turn.status ?? "completed",
     tracker,
-    delivery,
-  }).catch((error) => {
-    console.error(`Cannot deliver recovered Codex turn-end notification ${run.turnId}:`, error.message);
+    description: "восстановленный ответ",
   });
 }
 
