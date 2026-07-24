@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import {
+  canonicalizeProjectRoots,
   findContainingProject,
   INTEGRATION_ROOT,
   loadConfig,
@@ -1265,7 +1266,7 @@ try {
   const loadedState = await readJsonWithBackup(STATE_FILE, { backupFile: STATE_BACKUP_FILE });
   if (!loadedState.value) throw Object.assign(new Error("state file is missing"), { code: "ENOENT" });
   if (loadedState.recovered) console.warn(`Recovered runtime state from ${loadedState.source}`);
-  const saved = loadedState.value;
+  const saved = canonicalizeProjectRoots(loadedState.value, PROJECTS);
   if (Array.isArray(saved.statusMediaFileIds)) {
     for (const [name, fileId] of saved.statusMediaFileIds.slice(-50)) {
       if (typeof name === "string" && typeof fileId === "string" && fileId) {

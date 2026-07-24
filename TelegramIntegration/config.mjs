@@ -1,4 +1,5 @@
 import { access, readFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { CLAUDE_PERMISSION_MODES } from "./claude.mjs";
@@ -67,9 +68,25 @@ export function httpBaseUrl(value, name) {
   return normalized;
 }
 
+export function canonicalPath(value) {
+  const resolved = path.resolve(value);
+  let existing = resolved;
+  const missingTail = [];
+  while (true) {
+    try {
+      return path.join(realpathSync.native(existing), ...missingTail.reverse());
+    } catch {
+      const parent = path.dirname(existing);
+      if (parent === existing) return resolved;
+      missingTail.push(path.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
 export function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
+  const a = canonicalPath(left);
+  const b = canonicalPath(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
@@ -78,7 +95,7 @@ export function repositoryWriteGuardEnabled(raw = {}) {
 }
 
 export function pathInsideOrSame(child, parent) {
-  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  const relative = path.relative(canonicalPath(parent), canonicalPath(child));
   return !relative || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
@@ -86,6 +103,20 @@ export function findContainingProject(projects, candidatePath) {
   return projects
     .filter((project) => pathInsideOrSame(candidatePath, project.path))
     .sort((left, right) => right.path.length - left.path.length)[0];
+}
+
+export function canonicalizeProjectRoots(value, projects) {
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalizeProjectRoots(item, projects));
+  }
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+    if ((key === "projectRoot" || key === "activeProjectRoot") && typeof item === "string") {
+      const project = findContainingProject(projects, item);
+      return [key, project?.path ?? item];
+    }
+    return [key, canonicalizeProjectRoots(item, projects)];
+  }));
 }
 
 function loadProjects(raw, defaultRoot) {

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import {
+  canonicalizeProjectRoots,
   findContainingProject,
   httpBaseUrl,
   pathInsideOrSame,
@@ -40,6 +43,32 @@ test("findContainingProject chooses the most specific allowed project", () => {
 
 test("samePath normalizes equivalent paths", () => {
   assert.equal(samePath("C:\\Workspace\\Project\\..\\Project", "C:\\Workspace\\Project"), true);
+});
+
+test("filesystem aliases resolve to the configured canonical project path", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-project-alias-"));
+  try {
+    const canonical = path.join(root, "canonical");
+    const alias = path.join(root, "alias");
+    await mkdir(canonical);
+    await symlink(canonical, alias, process.platform === "win32" ? "junction" : "dir");
+    const projects = [{ name: "Workspace", path: canonical }];
+    assert.equal(findContainingProject(projects, alias), projects[0]);
+    assert.deepEqual(
+      canonicalizeProjectRoots({
+        activeProjectRoot: alias,
+        nested: [{ projectRoot: path.join(alias, "repo") }],
+        text: alias,
+      }, projects),
+      {
+        activeProjectRoot: canonical,
+        nested: [{ projectRoot: canonical }],
+        text: alias,
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("Telegram API URL allows plaintext HTTP only on loopback", () => {
