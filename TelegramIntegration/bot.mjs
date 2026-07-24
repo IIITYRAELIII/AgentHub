@@ -3399,10 +3399,11 @@ async function handleRuntimeCommand(request) {
       || payload.threadId !== identity.threadId) {
       throw new Error("turn-complete caller identity does not match its payload");
     }
-    const projectRoot = await resolveAllowedNotificationCwd(payload.projectRoot ?? requestCwd, {
+    const requestedProjectRoot = payload.projectRoot ?? request.cwd;
+    await resolveAllowedNotificationCwd(requestedProjectRoot, {
       roots: allowedRoots,
     });
-    const project = findProject(projectRoot);
+    const project = findProject(requestedProjectRoot);
     if (!project) throw new Error("Cannot match the completed turn to a configured project");
     const run = taskRuns.forEvent({
       provider: "codex",
@@ -3451,7 +3452,7 @@ async function handleRuntimeCommand(request) {
   if (request.command === "turn-end-message") {
     if (!options.afterTurn) throw new Error("turn-end-message requires --after-turn");
     const identity = runtimeCommandIdentity(request.environment);
-    const project = findProject(requestCwd);
+    const project = findProject(request.cwd);
     if (!project) throw new Error("Cannot match the deferred notification to a configured project");
     const run = taskRuns.forEvent({
       ...identity,
