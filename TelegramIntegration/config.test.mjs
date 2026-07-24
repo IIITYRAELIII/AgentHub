@@ -56,8 +56,8 @@ test("filesystem aliases resolve to the configured canonical project path", asyn
     assert.equal(findContainingProject(projects, alias), projects[0]);
     assert.deepEqual(
       canonicalizeProjectRoots({
-        activeProjectRoot: alias,
-        nested: [{ projectRoot: path.join(alias, "repo") }],
+        activeProjectRoot: canonical,
+        nested: [{ projectRoot: alias }],
         text: `Open ${path.join(alias, "README.md")}`,
         composite: `codex\0${alias.toLowerCase()}\0thread`,
       }, projects),

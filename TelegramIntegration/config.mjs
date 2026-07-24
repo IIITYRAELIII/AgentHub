@@ -107,13 +107,38 @@ export function findContainingProject(projects, candidatePath) {
 
 export function canonicalizeProjectRoots(value, projects) {
   const aliases = new Map(projects.map((project) => [project.path, project.path]));
+  const discoverAliases = (text) => {
+    const starts = text.matchAll(/[A-Za-z]:[\\/]/g);
+    for (const match of starts) {
+      const start = match.index;
+      for (let end = start + 3; end <= text.length; end += 1) {
+        const terminator = end === text.length || text[end] === "\\" || text[end] === "/" || text[end] === "\0";
+        if (!terminator) continue;
+        const candidate = text.slice(start, end);
+        try {
+          const project = findContainingProject(projects, candidate);
+          if (project) {
+            aliases.set(candidate, project.path);
+            break;
+          }
+        } catch {
+          // Arbitrary saved text may only resemble a filesystem path.
+        }
+      }
+    }
+  };
   const collectAliases = (item) => {
+    if (typeof item === "string") {
+      discoverAliases(item);
+      return;
+    }
     if (Array.isArray(item)) {
       item.forEach(collectAliases);
       return;
     }
     if (!item || typeof item !== "object") return;
     for (const [key, nested] of Object.entries(item)) {
+      discoverAliases(key);
       if ((key === "projectRoot" || key === "activeProjectRoot") && typeof nested === "string") {
         const project = findContainingProject(projects, nested);
         if (project) aliases.set(nested, project.path);
