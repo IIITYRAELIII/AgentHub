@@ -382,7 +382,10 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.match(normalFinal.body.text, /^✅ Codex · /);
   assert.match(normalFinal.body.text, /\n🧵 /);
   assert.match(normalFinal.body.text, /\n⚙ Integration Server/);
-  assert.match(normalFinal.body.text, /За задачу:/);
+  assert.doesNotMatch(normalFinal.body.text, /За задачу:/);
+  await telegram.waitForCall("sendPhoto", (call) => (
+    call.rawBody.includes("Ход завершён.") && call.rawBody.includes("За задачу:")
+  ), { after: normalFinal.index + 1, timeoutMs: 12_000 });
   const normalProgressDeletion = await telegram.waitForCall("deleteMessage", (call) => (
     call.body.message_id === normalProgressId
   ), { after: mark });
@@ -474,7 +477,16 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("[approval] подтверждение команды");
-  const approval = await telegram.waitForText("Codex запрашивает запуск команды", { after: mark });
+  let approval;
+  try {
+    approval = await telegram.waitForText("Codex запрашивает запуск команды", { after: mark });
+  } catch (error) {
+    const failedState = await readJson(statePath).catch(() => null);
+    throw new Error(
+      `${error.message}\nstate=${JSON.stringify(failedState)}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+      { cause: error },
+    );
+  }
   const approveOnce = approval.body.reply_markup.inline_keyboard.flat()
     .find((button) => /^a:[0-9a-f-]{36}:once$/i.test(button.callback_data));
   assert.ok(approveOnce, "approval message must expose one-time acceptance");
@@ -597,12 +609,11 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushMessage("/cancel");
   await telegram.waitForText("Запрошена остановка этой задачи", { after: mark });
   const restoredFinal = await telegram.waitForText("Ход остановлен тестом", { after: mark });
-  assert.match(
-    restoredFinal.body.text,
-    /За задачу:/,
-    "a managed Codex turn completed after bot restart must retain its token signature",
-  );
+  assert.doesNotMatch(restoredFinal.body.text, /За задачу:/);
   assert.match(restoredFinal.body.text, /^✅ Codex · /);
+  await telegram.waitForCall("sendPhoto", (call) => (
+    call.rawBody.includes("За задачу:")
+  ), { after: restoredFinal.index + 1, timeoutMs: 12_000 });
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 1,
     "cancelling the selected parallel task only");
 

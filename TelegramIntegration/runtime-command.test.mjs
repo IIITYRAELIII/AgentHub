@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  enqueueRuntimeCommandThroughSpool,
   forwardRuntimeCommand,
   forwardRuntimeCommandThroughSpool,
   RuntimeCommandServer,
@@ -47,6 +48,42 @@ test("runtime command validation rejects arbitrary processes and environment sec
     CLAUDE_CODE_SESSION_ID: "session-1",
     TELEGRAM_BOT_TOKEN: "secret",
   }), { CLAUDE_CODE_SESSION_ID: "session-1" });
+  assert.equal(validateRuntimeCommand({
+    command: "turn-complete",
+    args: ["{}"],
+    cwd: "C:\\",
+  }).command, "turn-complete");
+});
+
+test("runtime command can queue a durable fire-and-forget request", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-command-queued-runtime-"));
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-command-queued-temp-"));
+  let received = null;
+  await enqueueRuntimeCommandThroughSpool("turn-complete", ["{\"turnId\":\"turn-1\"}"], {
+    runtimeRoot,
+    temporaryRoot,
+    cwd: runtimeRoot,
+    environment: { CODEX_THREAD_ID: "thread-1" },
+  });
+  const server = new RuntimeCommandServer({
+    runtimeRoot,
+    temporaryRoot,
+    handler: async (request) => {
+      received = request;
+      return "accepted";
+    },
+  });
+  await server.start();
+  try {
+    const deadline = Date.now() + 5_000;
+    while (!received && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(received.command, "turn-complete");
+    assert.equal(received.environment.CODEX_THREAD_ID, "thread-1");
+  } finally {
+    await server.close();
+  }
 });
 
 test("runtime command rejects when the server closes without a response", async () => {

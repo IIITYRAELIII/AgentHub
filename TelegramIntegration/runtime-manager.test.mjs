@@ -23,6 +23,11 @@ async function fixture() {
   await writeFile(path.join(sourceRoot, "runtime-launch.ps1"), "node bot.mjs\n", "utf8");
   await writeFile(path.join(sourceRoot, "runtime-launch.vbs"), "WScript.Quit 0\n", "utf8");
   await writeFile(path.join(sourceRoot, "runtime-launch.sh"), "#!/usr/bin/env sh\nexec node bot.mjs\n", "utf8");
+  await writeFile(
+    path.join(sourceRoot, "codex-stop-hook-launcher.mjs"),
+    "export const ready = true;\n",
+    "utf8",
+  );
   await writeFile(path.join(sourceRoot, "install-autostart.ps1"), "Write-Output 'installed'\n", "utf8");
   await writeFile(path.join(sourceRoot, "start.ps1"), "node bot.mjs\n", "utf8");
   await writeFile(path.join(sourceRoot, "package.json"), "{}\n", "utf8");
@@ -47,6 +52,10 @@ test("deployRuntime publishes an atomic release without tests or local config", 
     assert.match(await readFile(path.join(runtimeRoot, "runtime-launch.vbs"), "utf8"), /WScript/);
     assert.match(await readFile(path.join(runtimeRoot, "launch.ps1"), "utf8"), /node bot/);
   }
+  assert.match(
+    await readFile(path.join(runtimeRoot, "codex-stop-hook-launcher.mjs"), "utf8"),
+    /ready/,
+  );
   await assert.rejects(readFile(path.join(first.releaseRoot, "helper.test.mjs"), "utf8"), /ENOENT/);
   await assert.rejects(readFile(path.join(first.releaseRoot, "config.json"), "utf8"), /ENOENT/);
 

@@ -31,6 +31,7 @@ test("parseArguments reads text and options", () => {
     silent: true,
     bindCurrent: false,
     bindActive: false,
+    afterTurn: false,
     category: "info",
     messageFile: null,
     text: "Готово",
@@ -82,6 +83,20 @@ test("parseArguments reads and validates the notification category", () => {
     "intermediate",
   );
   assert.throws(() => parseArguments(["--category", "unknown", "Текст"]), /Unknown --category value/);
+});
+
+test("parseArguments requires a current binding for deferred end-of-turn delivery", () => {
+  const parsed = parseArguments(["--after-turn", "--bind-current", "--category", "done", "Готово"]);
+  assert.equal(parsed.afterTurn, true);
+  assert.equal(parsed.bindCurrent, true);
+  assert.throws(
+    () => parseArguments(["--after-turn", "Готово"]),
+    /requires --bind-current/,
+  );
+  assert.throws(
+    () => parseArguments(["--after-turn", "--bind-active", "Готово"]),
+    /requires --bind-current/,
+  );
 });
 
 test("thread title index is cached until the append-only file changes", async () => {

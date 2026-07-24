@@ -15,6 +15,10 @@ test("runtimeLayout groups config, state and versioned releases", () => {
   const layout = runtimeLayout("C:\\Runtime");
   assert.equal(layout.configFile, path.resolve("C:\\Runtime", "config.json"));
   assert.equal(layout.dataDir, path.resolve("C:\\Runtime", "data"));
+  assert.equal(
+    layout.codexHookLauncherFile,
+    path.resolve("C:\\Runtime", "codex-stop-hook-launcher.mjs"),
+  );
   if (process.platform === "win32") {
     assert.equal(layout.launcherFile, path.resolve("C:\\Runtime", "launch.vbs"));
     assert.equal(layout.legacyWindowsLauncherFile, path.resolve("C:\\Runtime", "runtime-launch.vbs"));

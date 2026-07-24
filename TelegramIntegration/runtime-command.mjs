@@ -8,7 +8,12 @@ import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
-const ALLOWED_COMMANDS = new Set(["send-message", "send-images"]);
+const ALLOWED_COMMANDS = new Set([
+  "send-message",
+  "send-images",
+  "turn-complete",
+  "turn-end-message",
+]);
 const FORWARDED_ENVIRONMENT = [
   "CODEX_THREAD_ID",
   "CODEX_HOME",
@@ -204,6 +209,26 @@ export async function forwardRuntimeCommandThroughSpool(command, args, {
   } finally {
     await Promise.all([unlink(requestPath).catch(() => {}), unlink(responsePath).catch(() => {})]);
   }
+}
+
+export async function enqueueRuntimeCommandThroughSpool(command, args, {
+  runtimeRoot = defaultRuntimeRoot(),
+  temporaryRoot = os.tmpdir(),
+  cwd = process.cwd(),
+  environment = process.env,
+} = {}) {
+  const request = validateRuntimeCommand({
+    id: randomUUID(),
+    command,
+    args,
+    cwd,
+    environment: runtimeCommandEnvironment(environment),
+  });
+  const spoolDirectory = runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot);
+  await mkdir(spoolDirectory, { recursive: true });
+  const requestPath = path.join(spoolDirectory, `${request.id}.request.json`);
+  await writeTextAtomic(requestPath, `${JSON.stringify(request)}\n`);
+  return request.id;
 }
 
 export async function forwardRuntimeCommand(command, args, {

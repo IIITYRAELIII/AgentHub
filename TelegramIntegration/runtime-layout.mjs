@@ -32,6 +32,7 @@ export function runtimeLayout(runtimeRoot = defaultRuntimeRoot()) {
     launcherFile: path.join(root, process.platform === "win32" ? "launch.vbs" : "launch.sh"),
     legacyWindowsLauncherFile: path.join(root, "runtime-launch.vbs"),
     powershellLauncherFile: path.join(root, "launch.ps1"),
+    codexHookLauncherFile: path.join(root, "codex-stop-hook-launcher.mjs"),
   };
 }
 

@@ -142,6 +142,11 @@ export async function deployRuntime({
       updatedAt: new Date().toISOString(),
     };
     await atomicJson(layout.currentFile, pointer);
+    await cp(
+      path.join(sourceRoot, "codex-stop-hook-launcher.mjs"),
+      layout.codexHookLauncherFile,
+      { force: true },
+    );
     if (process.platform === "win32") {
       await cp(path.join(sourceRoot, "runtime-launch.vbs"), layout.launcherFile, { force: true });
       // Keep the source filename as a compatibility alias. One-off deployment
@@ -152,6 +157,7 @@ export async function deployRuntime({
     } else {
       await cp(path.join(sourceRoot, "runtime-launch.sh"), layout.launcherFile, { force: true });
       await chmod(layout.launcherFile, 0o700);
+      await chmod(layout.codexHookLauncherFile, 0o700);
     }
     await pruneRuntimeReleases(
       layout,

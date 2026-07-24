@@ -7,7 +7,11 @@ import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { appendMessageBindings } from "./message-bindings.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { callTelegramJson, telegramBotApiUrl } from "./telegram-api.mjs";
-import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
+import {
+  enqueueRuntimeCommandThroughSpool,
+  forwardRuntimeCommand,
+  runtimeCommandUnavailable,
+} from "./runtime-command.mjs";
 import { isMainModule } from "./main-module.mjs";
 import {
   resolveAllowedNotificationChatId,
@@ -64,6 +68,7 @@ export function parseArguments(args) {
   let silent = false;
   let bindCurrent = false;
   let bindActive = false;
+  let afterTurn = false;
   let category = "info";
   let messageFile = null;
   const textParts = [];
@@ -78,6 +83,8 @@ export function parseArguments(args) {
       bindCurrent = true;
     } else if (argument === "--bind-active") {
       bindActive = true;
+    } else if (argument === "--after-turn") {
+      afterTurn = true;
     } else if (argument === "--category") {
       if (index + 1 >= args.length) throw new Error("--category requires a value");
       category = resolveNotificationCategory(args[++index]).key;
@@ -90,15 +97,36 @@ export function parseArguments(args) {
       messageFile = argument.slice("--message-file=".length);
       if (!messageFile) throw new Error("--message-file requires a value");
     } else if (argument === "--help" || argument === "-h") {
-      return { help: true, chatId, silent, bindCurrent, bindActive, category, messageFile, text: "" };
+      return {
+        help: true,
+        chatId,
+        silent,
+        bindCurrent,
+        bindActive,
+        afterTurn,
+        category,
+        messageFile,
+        text: "",
+      };
     } else {
       textParts.push(argument);
     }
   }
   if (bindCurrent && bindActive) throw new Error("Use either --bind-current or --bind-active, not both");
+  if (afterTurn && !bindCurrent) throw new Error("--after-turn requires --bind-current");
   const text = textParts.join(" ").trim();
   if (messageFile && text) throw new Error("Use either --message-file or positional message text, not both");
-  return { help: false, chatId, silent, bindCurrent, bindActive, category, messageFile, text };
+  return {
+    help: false,
+    chatId,
+    silent,
+    bindCurrent,
+    bindActive,
+    afterTurn,
+    category,
+    messageFile,
+    text,
+  };
 }
 
 export function looksLikeUtf8Mojibake(value) {
@@ -394,10 +422,13 @@ export function notificationCardOutboxBody({
 export async function main(args = process.argv.slice(2)) {
   const options = parseArguments(args);
   if (options.help) {
-    console.log("Usage: node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--category <name>] [--message-file <utf8-file> | <message>]");
+    console.log("Usage: node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--after-turn] [--category <name>] [--message-file <utf8-file> | <message>]");
     console.log("       <command> | node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--category <name>]");
     console.log(`Categories: ${Object.keys(NOTIFICATION_CATEGORIES).join(", ")} (default: info; used with a binding option)`);
     return;
+  }
+  if (options.afterTurn) {
+    throw new Error("--after-turn must be registered through the running Integration Server");
   }
   const config = await loadConfig();
   if (options.messageFile) {
@@ -511,13 +542,20 @@ export async function main(args = process.argv.slice(2)) {
 if (isMainModule(import.meta.url)) {
   const run = async () => {
     const args = process.argv.slice(2);
+    const options = parseArguments(args);
+    const runtimeCommand = options.afterTurn ? "turn-end-message" : "send-message";
     if (process.env.TELEGRAM_INTEGRATION_DIRECT !== "1") {
       try {
-        const result = await forwardRuntimeCommand("send-message", args);
+        const result = await forwardRuntimeCommand(runtimeCommand, args);
         if (result) console.log(result);
         return;
       } catch (error) {
         if (!runtimeCommandUnavailable(error)) throw error;
+        if (options.afterTurn) {
+          const id = await enqueueRuntimeCommandThroughSpool(runtimeCommand, args);
+          console.log(`Queued deferred end-of-turn registration ${id}.`);
+          return;
+        }
       }
     }
     await main(args);
