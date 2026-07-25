@@ -105,11 +105,6 @@ table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))
 
 table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))
   col[data-work-log-turns-column] {
-  width: 20%;
-}
-
-table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))
-  col[data-work-log-usage-column] {
   width: 0;
 }
 

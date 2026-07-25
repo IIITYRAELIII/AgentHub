@@ -80,9 +80,9 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.match(projected, /<col data-work-log-turns-column>/);
   assert.match(
     projected,
-    /<th>Итог <details data-work-log-turns-toggle><summary>Ходы<\/summary><\/details><\/th><th data-work-log-turns>Дата · расход<\/th>/,
+    /<th>Итог <details data-work-log-turns-toggle><summary>Ходы<\/summary><\/details><\/th><th>Расход<\/th><th data-work-log-turns>Время · расход<\/th>/,
   );
-  assert.match(projected, /<td data-work-log-turns>25\.07\.2026 13:45 — 0 К у\.е\.<br>\s*25\.07\.2026 12:34 — 0 К у\.е\.<\/td>/);
+  assert.match(projected, /<td data-work-log-turns>12:34 — 0 К у\.е\.<br>\s*13:45 — 0 К у\.е\.<\/td>/);
   assert.match(projected, /data-day-usage>0 К у\.е\./);
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
@@ -102,7 +102,7 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
     projected,
-    /Task B<\/td><td data-work-log-turns><\/td>\s*<td><span data-usage-id="323e4567-e89b-42d3-a456-426614174000" hidden>/,
+    /Task B<\/td><td data-work-log-usage><span data-usage-id="323e4567-e89b-42d3-a456-426614174000" hidden>[\s\S]*?<\/td>\s*<td data-work-log-turns><\/td>/,
   );
   assert.equal((projected.match(/data-task-usage>/g) ?? []).length, 2);
   assert.equal((projected.match(/data-task-usage-details/g) ?? []).length, 2);
@@ -135,7 +135,7 @@ test("work log CSS keeps dates equal and collapses the turns column by default",
   );
   assert.match(
     css,
-    /col\[data-work-log-turns-column\][\s\S]*?width:\s*20%[\s\S]*?col\[data-work-log-usage-column\][\s\S]*?width:\s*0/,
+    /:not\(:has\(details\[data-work-log-turns-toggle\]\[open\]\)\)[\s\S]*?col\[data-work-log-turns-column\]\s*\{\s*width:\s*0/,
   );
 });
 

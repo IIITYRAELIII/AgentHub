@@ -95,8 +95,7 @@ function formatCompletedAt(value) {
   const completedAt = new Date(String(value ?? ""));
   if (!Number.isFinite(completedAt.getTime())) return "Время неизвестно";
   const twoDigits = (part) => String(part).padStart(2, "0");
-  return `${twoDigits(completedAt.getDate())}.${twoDigits(completedAt.getMonth() + 1)}.${completedAt.getFullYear()} `
-    + `${twoDigits(completedAt.getHours())}:${twoDigits(completedAt.getMinutes())}`;
+  return `${twoDigits(completedAt.getHours())}:${twoDigits(completedAt.getMinutes())}`;
 }
 
 function formatTurnEntry(record) {
@@ -109,23 +108,28 @@ function usageIds(source) {
     .map((match) => normalizeWorkLogId(match[1]));
 }
 
-function replaceLastCell(row, content) {
-  const cells = [...row.matchAll(/<td\b[^>]*>[\s\S]*?<\/td>/gi)];
-  if (!cells.length) return row;
-  const cell = cells.at(-1);
-  return `${row.slice(0, cell.index)}<td>${content}</td>${row.slice(cell.index + cell[0].length)}`;
-}
-
-function replaceTurnsCell(row, content) {
-  const turnsCell = /<td\b[^>]*\bdata-work-log-turns\b[^>]*>[\s\S]*?<\/td>/i;
-  if (turnsCell.test(row)) {
-    return row.replace(turnsCell, `<td data-work-log-turns>${content}</td>`);
+function replaceUsageCell(row, content) {
+  const usageCell = /<td\b[^>]*\bdata-work-log-usage\b[^>]*>[\s\S]*?<\/td>/i;
+  if (usageCell.test(row)) {
+    return row.replace(usageCell, `<td data-work-log-usage>${content}</td>`);
   }
   const cells = [...row.matchAll(/<td\b[^>]*>[\s\S]*?<\/td>/gi)];
   if (!cells.length) return row;
-  const lastCell = cells.at(-1);
-  return `${row.slice(0, lastCell.index)}<td data-work-log-turns>${content}</td>\n`
-    + row.slice(lastCell.index);
+  const turnsCellIndex = cells.findIndex((cell) => /\bdata-work-log-turns\b/i.test(cell[0]));
+  const cell = turnsCellIndex >= 0 && turnsCellIndex === cells.length - 1
+    ? cells.at(-2)
+    : cells.at(-1);
+  return `${row.slice(0, cell.index)}<td data-work-log-usage>${content}</td>`
+    + row.slice(cell.index + cell[0].length);
+}
+
+function replaceTurnsCell(row, content) {
+  const turnsCell = /\s*<td\b[^>]*\bdata-work-log-turns\b[^>]*>[\s\S]*?<\/td>\s*/i;
+  const withoutTurns = row.replace(turnsCell, "");
+  return withoutTurns.replace(
+    /<\/tr>$/i,
+    `\n<td data-work-log-turns>${content}</td>\n</tr>`,
+  );
 }
 
 function markWorkLogTable(section) {
@@ -140,15 +144,15 @@ function markWorkLogTable(section) {
       "<colgroup>",
       "<col data-work-log-task-column>",
       "<col data-work-log-outcome-column>",
-      "<col data-work-log-turns-column>",
       "<col data-work-log-usage-column>",
+      "<col data-work-log-turns-column>",
       "</colgroup>",
     ].join("\n"),
   );
   return marked.replace(
-    /<tr>\s*<th>Задача<\/th>\s*<th>Итог(?:\s*<details\b[^>]*data-work-log-turns-toggle[\s\S]*?<\/details>)?<\/th>\s*(?:<th\b[^>]*data-work-log-turns[^>]*>[\s\S]*?<\/th>\s*)?<th>Расход<\/th>\s*<\/tr>/i,
-    "<tr><th>Задача</th><th>Итог <details data-work-log-turns-toggle><summary>Ходы</summary></details></th>"
-      + "<th data-work-log-turns>Дата · расход</th><th>Расход</th></tr>",
+    /<thead>[\s\S]*?<\/thead>/i,
+    "<thead>\n<tr><th>Задача</th><th>Итог <details data-work-log-turns-toggle><summary>Ходы</summary></details></th>"
+      + "<th>Расход</th><th data-work-log-turns>Время · расход</th></tr>\n</thead>",
   );
 }
 
@@ -188,11 +192,11 @@ function projectDaySection(section, date, records) {
       `<span data-usage-id="${id}" hidden>${records.has(id) ? "" : id}</span>`
     )).join("\n");
     const turns = [...row.recorded]
-      .sort((left, right) => (Date.parse(right.completedAt) || 0) - (Date.parse(left.completedAt) || 0))
+      .sort((left, right) => (Date.parse(left.completedAt) || 0) - (Date.parse(right.completedAt) || 0))
       .map(formatTurnEntry)
       .join("<br>\n");
     const replacement = replaceTurnsCell(
-      replaceLastCell(row.match[0], `${visible}${markers}`),
+      replaceUsageCell(row.match[0], `${visible}${markers}`),
       turns,
     );
     projected = `${projected.slice(0, row.match.index)}${replacement}`
