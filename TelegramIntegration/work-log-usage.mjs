@@ -63,7 +63,7 @@ function formatTaskShare(usage, dayUnits) {
   const taskUnits = turnConditionalUnits(usage);
   const percent = dayUnits > 0 ? Math.round(taskUnits / dayUnits * 100) : 0;
   return formatWorkLogUsage(usage).replace(
-    /^(За задачу:[^<\r\n]+?\sу\.е\.)/u,
+    /^(За задачу:[^<\r\n]+?кТЭ)/u,
     `$1 (${percent}%)`,
   );
 }
@@ -98,7 +98,7 @@ function formatCompletedAt(value) {
 
 function formatTurnEntry(record) {
   const units = formatConditionalUnits(turnConditionalUnits(record?.usage));
-  return `${formatCompletedAt(record?.completedAt)} — ${units} у.е.`;
+  return `${formatCompletedAt(record?.completedAt)} — ${units}`;
 }
 
 function usageIds(source) {
@@ -189,7 +189,7 @@ function projectDaySection(section, date, records) {
 
   const breakdown = dayUnits > 0 ? ` ${formatDayUsageBreakdown(dayUsage)}` : "";
   const summary = dayUnits > 0
-    ? `<summary data-work-log-day><strong>${date}</strong> — <span data-day-usage>${formatConditionalUnits(dayUnits)} у.е.</span>${breakdown}</summary>`
+    ? `<summary data-work-log-day><strong>${date}</strong> — <span data-day-usage>${formatConditionalUnits(dayUnits)}</span>${breakdown}</summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
   return projected.replace(
     /<summary[^>]*>[\s\S]*?<\/summary>(?:\s*(?:<details data-day-usage-details[^>]*>[\s\S]*?<\/details>|<span data-day-usage-breakdown>[\s\S]*?<\/span>))?/i,

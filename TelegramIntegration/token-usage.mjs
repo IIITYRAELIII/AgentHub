@@ -33,7 +33,7 @@ function percentagesAddingUpToHundred(values) {
 export function formatConditionalUnits(value) {
   const units = Number(value ?? 0);
   const thousands = Number.isFinite(units) ? Math.round(units / 1000) : 0;
-  return `${thousands.toLocaleString("ru-RU")} К`;
+  return `${thousands.toLocaleString("ru-RU")} кТЭ`;
 }
 
 export function formatTaskTokenUsage(usage) {
@@ -56,7 +56,7 @@ export function formatTaskTokenUsage(usage) {
   ]);
   const unitWithPercent = (value, percent) => `${formatConditionalUnits(value)} (${number(percent)}%)`;
   return [
-    `📊 За задачу: ${formatConditionalUnits(unitTotal)} у.е.`,
+    `📊 За задачу: ${formatConditionalUnits(unitTotal)}`,
     `Вход: ${unitWithPercent(unitInput, inputPercent)}`,
     `Кэш: ${unitWithPercent(unitCache, cachePercent)}`,
     `Выход: ${unitWithPercent(unitOutput, outputPercent)}`,

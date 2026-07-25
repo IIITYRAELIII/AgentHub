@@ -35,7 +35,7 @@ test("applyWorkLogUsage replaces only the matching per-turn placeholder", () => 
     }),
     [
       "<tr><td>",
-      `<span data-usage-id="${WORK_ID}">За задачу: 49 К у.е.<br>Вход: 8 К (17,1%)<br>Кэш: 35 К (71,8%)<br>Выход: 1 К (2,8%)<br>Думы: 4 К (8,3%)</span> + `,
+      `<span data-usage-id="${WORK_ID}">За задачу: 49 кТЭ<br>Вход: 8 кТЭ (17,1%)<br>Кэш: 35 кТЭ (71,8%)<br>Выход: 1 кТЭ (2,8%)<br>Думы: 4 кТЭ (8,3%)</span> + `,
       `<span data-usage-id="${SECOND_WORK_ID}">${SECOND_WORK_ID}</span>`,
       "</td></tr>",
     ].join(""),
@@ -84,23 +84,23 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
     projected,
     /<th>Итог <details data-work-log-turns-toggle><summary>Ходы<\/summary><\/details><\/th><th>Расход<\/th><th data-work-log-turns>Время · расход<\/th>/,
   );
-  assert.match(projected, /<td data-work-log-turns>12:34 — 0 К у\.е\.<br>\s*13:45 — 0 К у\.е\.<\/td>/);
-  assert.match(projected, /data-day-usage>0 К у\.е\./);
+  assert.match(projected, /<td data-work-log-turns>12:34 — 0 кТЭ<br>\s*13:45 — 0 кТЭ<\/td>/);
+  assert.match(projected, /data-day-usage>0 кТЭ/);
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
     projected,
-    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> — <span data-day-usage>0 К у\.е\.<\/span> <span data-day-usage-breakdown>Вход: 0 К \(100%\)&nbsp;&nbsp;Кэш: 0 К \(0%\)&nbsp;&nbsp;Выход: 0 К \(0%\)&nbsp;&nbsp;Думы: 0 К \(0%\)<\/span><\/summary>/,
+    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> — <span data-day-usage>0 кТЭ<\/span> <span data-day-usage-breakdown>Вход: 0 кТЭ \(100%\)&nbsp;&nbsp;Кэш: 0 кТЭ \(0%\)&nbsp;&nbsp;Выход: 0 кТЭ \(0%\)&nbsp;&nbsp;Думы: 0 кТЭ \(0%\)<\/span><\/summary>/,
   );
   assert.doesNotMatch(projected, /data-day-usage-details/);
   assert.doesNotMatch(
     projected.match(/<span data-day-usage-breakdown>[\s\S]*?<\/span>/)?.[0] ?? "",
     /<br>/,
   );
-  assert.match(projected, /Task A[\s\S]*?За задачу: 0 К у\.е\. \(50%\)/);
-  assert.match(projected, /Task C[\s\S]*?За задачу: 0 К у\.е\. \(50%\)/);
+  assert.match(projected, /Task A[\s\S]*?За задачу: 0 кТЭ \(50%\)/);
+  assert.match(projected, /Task C[\s\S]*?За задачу: 0 кТЭ \(50%\)/);
   assert.match(
     projected,
-    /data-task-usage>За задачу: 0 К у\.е\. \(50%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
+    /data-task-usage>За задачу: 0 кТЭ \(50%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
   );
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
@@ -179,11 +179,11 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     await store.recordAndProject({ ...base, turnId: "turn-1" });
     await store.recordAndProject({ ...base, turnId: "turn-2", workLogId: SECOND_WORK_ID });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /data-day-usage>0 К у\.е\./);
+    assert.match(projected, /data-day-usage>0 кТЭ/);
     assert.equal((projected.match(/data-day-usage-breakdown/g) ?? []).length, 1);
     assert.match(
       projected,
-      /data-task-usage>За задачу: 0 К у\.е\. \(100%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
+      /data-task-usage>За задачу: 0 кТЭ \(100%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
     );
     assert.match(projected, new RegExp(`data-usage-id="${WORK_ID}" hidden>`));
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));
@@ -232,7 +232,7 @@ test("a fresh usage store reprojects an existing work log with its persisted led
 
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
-    assert.match(await readFile(workLogFile, "utf8"), /За задачу: 1 757 К у\.е\. \(100%\)/);
+    assert.match(await readFile(workLogFile, "utf8"), /За задачу: 1 757 кТЭ \(100%\)/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
