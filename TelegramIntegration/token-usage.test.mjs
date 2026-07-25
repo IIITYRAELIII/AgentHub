@@ -25,6 +25,8 @@ test("formatTaskTokenUsage converts token categories to conditional units", () =
   assert.match(formatted, /Кэш: 72.243,2 \(66,7%\)/);
   assert.match(formatted, /Выход: 12.510 \(11,6%\)/);
   assert.match(formatted, /Думы: 5.844 \(5,4%\)/);
+  assert.equal(formatted.split("\n").length, 5);
+  assert.doesNotMatch(formatted, /\|/);
 });
 
 test("formatTaskTokenUsage keeps one decimal for cache units when needed", () => {

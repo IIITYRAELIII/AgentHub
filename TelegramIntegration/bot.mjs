@@ -43,6 +43,7 @@ import {
   showLastMessageReplyMarkup,
 } from "./status.mjs";
 import { readCodexTurnUsage } from "./codex-turn-usage.mjs";
+import { routeCodexFinalDelivery } from "./codex-final-delivery.mjs";
 import { randomStatusHeaderFileName } from "./status-header.mjs";
 import { TelegramClient } from "./telegram-client.mjs";
 import {
@@ -1042,32 +1043,39 @@ async function finalizeCodexRunDelivery(run, {
   const resolvedTracker = completion
     ? { usage: completion.usage, reported: completion.usageReported }
     : tracker;
-  if (completion) {
-    await projectTurnUsageToWorkLog(completion).catch((error) => {
-      console.error(`Cannot update WORK_LOG usage for turn ${completedTurnId}:`, error.message);
-    });
-  }
   const shouldDeliver = deliver || Boolean(existingCompletion);
   const message = [
     answer,
     formatTurnTokenUsage(resolvedTracker),
   ].filter(Boolean).join("\n\n");
-  const delivery = await finalizeRunDelivery(run, {
-    answer,
-    message,
-    speechText: answer,
-    forceSpeechButton,
-    deliver: shouldDeliver,
-    silent,
-    complete: false,
-    description,
+  const delivery = await routeCodexFinalDelivery({
+    completion,
+    deliverRegistered: deliverTurnEndNotification,
+    deliverStandard: async () => {
+      if (completion) {
+        await projectTurnUsageToWorkLog(completion).catch((error) => {
+          console.error(`Cannot update WORK_LOG usage for turn ${completedTurnId}:`, error.message);
+        });
+      }
+      const result = await finalizeRunDelivery(run, {
+        answer,
+        message,
+        speechText: answer,
+        forceSpeechButton,
+        deliver: shouldDeliver,
+        silent,
+        complete: false,
+        description,
+      });
+      if (completion) {
+        turnEndNotifications.markDelivered(completion);
+        await saveState();
+      }
+      return result;
+    },
   });
-  if (completion) {
-    turnEndNotifications.markDelivered(completion);
-    await saveState();
-  }
   await completeRun(run);
-  return delivery;
+  return delivery.result;
 }
 
 async function deliverTurnEndNotification(completion) {
@@ -3445,15 +3453,21 @@ async function spawnRuntimeNotification(script, args, requestCwd, callerEnvironm
   return result.stdout.trim();
 }
 
-function runtimeCommandTaskTitle({ provider, threadId: targetThreadId, run = null }) {
+function runtimeCommandTaskTitle({
+  provider,
+  threadId: targetThreadId,
+  run = null,
+  thread = null,
+}) {
   if (run) return runTaskTitle(run);
   const catalogTask = taskCatalog.find((task) => (
     task.provider === provider && task.threadId === targetThreadId
   ));
-  if (catalogTask?.taskTitle) return catalogTask.taskTitle;
+  if (catalogTask?.title) return catalogTask.title;
   if (activeProvider === provider && threadId === targetThreadId && activeThreadTitle) {
     return activeThreadTitle;
   }
+  if (thread) return threadTitle(thread);
   return `${provider === "codex" ? "Codex" : "Claude"} · ${targetThreadId.slice(0, 8)}`;
 }
 
@@ -3600,7 +3614,11 @@ async function handleRuntimeCommand(request) {
     });
     const exactTurn = await exactRuntimeCommandTurn(identity, run);
     const targetChatId = resolveNotificationChatId(config, options.chatId);
-    const taskTitle = runtimeCommandTaskTitle({ ...identity, run });
+    const taskTitle = runtimeCommandTaskTitle({
+      ...identity,
+      run,
+      thread: exactTurn.threadResult?.thread,
+    });
     await ensureDeferredCodexTurnObserved({
       identity,
       project,

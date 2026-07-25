@@ -1,4 +1,3 @@
-const NBSP = "\u00a0";
 const CACHE_UNIT_DIVISOR = 10;
 const OUTPUT_UNIT_MULTIPLIER = 6;
 const TOKEN_USAGE_FIELDS = [
@@ -50,15 +49,13 @@ export function formatTaskTokenUsage(usage) {
     unitReasoning,
   ]);
   const unitWithPercent = (value, percent) => `${number(value)} (${number(percent)}%)`;
-  const left = [
+  return [
+    `📊 За задачу: ${number(unitTotal)} у.е.`,
     `Вход: ${unitWithPercent(unitInput, inputPercent)}`,
+    `Кэш: ${unitWithPercent(unitCache, cachePercent)}`,
     `Выход: ${unitWithPercent(unitOutput, outputPercent)}`,
-  ];
-  const width = Math.max(...left.map((value) => value.length));
-
-  return `📊 За задачу: ${number(unitTotal)} у.е.\n` +
-    `${left[0].padEnd(width, NBSP)} | Кэш: ${unitWithPercent(unitCache, cachePercent)}\n` +
-    `${left[1].padEnd(width, NBSP)} | Думы: ${unitWithPercent(unitReasoning, reasoningPercent)}`;
+    `Думы: ${unitWithPercent(unitReasoning, reasoningPercent)}`,
+  ].join("\n");
 }
 
 export function emptyTokenUsage() {
