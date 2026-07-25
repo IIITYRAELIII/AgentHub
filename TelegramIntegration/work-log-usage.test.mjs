@@ -70,6 +70,7 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
     },
   };
   const projected = projectWorkLogUsage(source, turns);
+  assert.match(projected, /^<details data-work-log-day-section open>/);
   assert.match(projected, /data-day-usage>200 у\.е\./);
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
@@ -95,6 +96,21 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.equal((projected.match(/data-task-usage-details/g) ?? []).length, 2);
   assert.equal((projected.match(/data-usage-id=/g) ?? []).length, 4);
   assert.equal((projected.match(/data-usage-id=[^>]+hidden/g) ?? []).length, 4);
+  const reprojected = projectWorkLogUsage(projected, turns);
+  assert.equal((reprojected.match(/data-work-log-day-section/g) ?? []).length, 1);
+  assert.equal(reprojected, projected);
+});
+
+test("projectWorkLogUsage marks every day as an independent layout section", () => {
+  const source = [
+    "<details open><summary><strong>25.07.2026</strong></summary></details>",
+    "<details><summary><strong>24.07.2026</strong></summary></details>",
+  ].join("\n");
+  const projected = projectWorkLogUsage(source);
+
+  assert.match(projected, /^<details data-work-log-day-section open>/);
+  assert.match(projected, /\n<details data-work-log-day-section>/);
+  assert.equal((projected.match(/data-work-log-day-section/g) ?? []).length, 2);
 });
 
 test("usage store projects each turn into its own placeholder and deduplicates retries", async () => {

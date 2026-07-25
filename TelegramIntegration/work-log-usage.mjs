@@ -106,8 +106,17 @@ function replaceLastCell(row, content) {
   return `${row.slice(0, cell.index)}<td>${content}</td>${row.slice(cell.index + cell[0].length)}`;
 }
 
+function markDaySection(section) {
+  return section.replace(/^<details\b([^>]*)>/i, (opening, attributes) => (
+    /\bdata-work-log-day-section\b/i.test(attributes)
+      ? opening
+      : `<details data-work-log-day-section${attributes}>`
+  ));
+}
+
 function projectDaySection(section, date, records) {
-  const rows = [...section.matchAll(/<tr>([\s\S]*?)<\/tr>/gi)]
+  const markedSection = markDaySection(section);
+  const rows = [...markedSection.matchAll(/<tr>([\s\S]*?)<\/tr>/gi)]
     .map((match) => {
       const ids = usageIds(match[0]);
       const recorded = ids.map((id) => records.get(id)).filter(Boolean);
@@ -124,7 +133,7 @@ function projectDaySection(section, date, records) {
   );
   const dayUnits = rows.reduce((total, row) => total + row.units, 0);
 
-  let projected = section;
+  let projected = markedSection;
   for (const row of rows.reverse()) {
     const visible = row.units > 0
       ? formatTaskUsageDetails(row.usage, dayUnits)
@@ -151,7 +160,7 @@ export function projectWorkLogUsage(workLogText, turns = {}) {
   const text = String(workLogText ?? "");
   const records = ledgerByWorkLogId(turns);
   const dayStarts = [...text.matchAll(
-    /<details(?:\s+open)?\s*>\s*<summary[^>]*><strong>(\d{2}\.\d{2}\.\d{4})<\/strong>[\s\S]*?<\/summary>/gi,
+    /<details\b[^>]*>\s*<summary[^>]*><strong>(\d{2}\.\d{2}\.\d{4})<\/strong>[\s\S]*?<\/summary>/gi,
   )];
   let projected = text;
   for (let index = dayStarts.length - 1; index >= 0; index -= 1) {

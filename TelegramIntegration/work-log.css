@@ -1,3 +1,8 @@
+details[data-work-log-day-section] {
+  clear: both;
+  display: flow-root;
+}
+
 summary[data-work-log-day] {
   float: left;
   font-size: 0.8em;
