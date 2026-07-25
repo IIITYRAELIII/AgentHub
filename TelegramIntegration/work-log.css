@@ -42,7 +42,7 @@ table[data-work-log-table] tbody {
 
 table[data-work-log-table] tr {
   display: grid;
-  grid-template-columns: 12fr 48fr 20fr 20fr;
+  grid-template-columns: 12fr 56fr 20fr 12fr;
   position: relative;
   width: 100%;
 }
