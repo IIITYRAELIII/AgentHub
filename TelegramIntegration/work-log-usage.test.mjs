@@ -51,10 +51,12 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
     "<summary><strong>25.07.2026</strong></summary>",
     "<table><colgroup><col><col><col></colgroup><thead>",
     "<tr><th>Задача</th><th>Итог</th><th>Расход</th></tr></thead><tbody>",
-    `<tr><td>Task A</td><td><span data-usage-id="${WORK_ID}">${WORK_ID}</span><br>`,
+    `<tr><td>Task A</td><td>Outcome A</td><td data-work-log-usage><span data-usage-id="${WORK_ID}">${WORK_ID}</span><br>`,
+    `<span data-usage-id="${SECOND_WORK_ID}">${SECOND_WORK_ID}</span></td>`,
+    `<td data-work-log-turns>legacy</td><td><span data-usage-id="${WORK_ID}">${WORK_ID}</span><br>`,
     `<span data-usage-id="${SECOND_WORK_ID}">${SECOND_WORK_ID}</span></td></tr>`,
-    `<tr><td>Task B</td><td><span data-usage-id="323e4567-e89b-42d3-a456-426614174000">pending</span></td></tr>`,
-    `<tr><td>Task C</td><td><span data-usage-id="423e4567-e89b-42d3-a456-426614174000">recorded</span></td></tr>`,
+    `<tr><td>Task B</td><td>Outcome B</td><td><span data-usage-id="323e4567-e89b-42d3-a456-426614174000">pending</span></td></tr>`,
+    `<tr><td>Task C</td><td>Outcome C</td><td><span data-usage-id="423e4567-e89b-42d3-a456-426614174000">recorded</span></td></tr>`,
     "</tbody></table>",
     "</details>",
   ].join("");
@@ -102,7 +104,7 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
     projected,
-    /Task B<\/td><td data-work-log-usage><span data-usage-id="323e4567-e89b-42d3-a456-426614174000" hidden>[\s\S]*?<\/td>\s*<td data-work-log-turns><\/td>/,
+    /Task B<\/td>\s*<td>Outcome B<\/td>\s*<td data-work-log-usage><span data-usage-id="323e4567-e89b-42d3-a456-426614174000" hidden>[\s\S]*?<\/td>\s*<td data-work-log-turns><\/td>/,
   );
   assert.equal((projected.match(/data-task-usage>/g) ?? []).length, 2);
   assert.equal((projected.match(/data-task-usage-details/g) ?? []).length, 2);
@@ -135,7 +137,7 @@ test("work log CSS keeps dates equal and collapses the turns column by default",
   );
   assert.match(
     css,
-    /:not\(:has\(details\[data-work-log-turns-toggle\]\[open\]\)\)[\s\S]*?col\[data-work-log-turns-column\]\s*\{\s*width:\s*0/,
+    /grid-template-columns:\s*12fr 48fr 20fr 20fr[\s\S]*?grid-template-columns:\s*12fr 68fr 20fr/,
   );
 });
 
@@ -147,7 +149,7 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     await writeFile(
       workLogFile,
       [
-        "<details open><summary><strong>25.07.2026</strong></summary><table><tbody><tr><td>Task</td><td>",
+        "<details open><summary><strong>25.07.2026</strong></summary><table><tbody><tr><td>Task</td><td>Outcome</td><td>",
         `<span data-usage-id="${WORK_ID}">${WORK_ID}</span> + `,
         `<span data-usage-id="${SECOND_WORK_ID}">${SECOND_WORK_ID}</span>`,
         "</td></tr></tbody></table></details>",
@@ -218,7 +220,7 @@ test("a fresh usage store reprojects an existing work log with its persisted led
     await writeFile(
       workLogFile,
       `<details open><summary><strong>25.07.2026</strong></summary><table><tbody>`
-        + `<tr><td>Task</td><td><span data-usage-id="${WORK_ID}" hidden></span></td></tr>`
+        + `<tr><td>Task</td><td>Outcome</td><td><span data-usage-id="${WORK_ID}" hidden></span></td></tr>`
         + "</tbody></table></details>",
       "utf8",
     );

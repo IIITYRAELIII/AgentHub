@@ -56,17 +56,30 @@ details[data-day-usage-details] + table {
   clear: both;
 }
 
-table[data-work-log-table] col[data-work-log-task-column] {
-  width: 12%;
+table[data-work-log-table] {
+  display: block;
+  width: 100%;
 }
 
-table[data-work-log-table] col[data-work-log-outcome-column] {
-  width: 48%;
+table[data-work-log-table] colgroup {
+  display: none;
 }
 
-table[data-work-log-table] col[data-work-log-turns-column],
-table[data-work-log-table] col[data-work-log-usage-column] {
-  width: 20%;
+table[data-work-log-table] thead,
+table[data-work-log-table] tbody {
+  display: block;
+  width: 100%;
+}
+
+table[data-work-log-table] tr {
+  display: grid;
+  grid-template-columns: 12fr 48fr 20fr 20fr;
+  width: 100%;
+}
+
+table[data-work-log-table] th,
+table[data-work-log-table] td {
+  min-width: 0;
 }
 
 details[data-work-log-turns-toggle] {
@@ -99,13 +112,8 @@ td[data-work-log-turns] {
 }
 
 table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))
-  col[data-work-log-outcome-column] {
-  width: 68%;
-}
-
-table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))
-  col[data-work-log-turns-column] {
-  width: 0;
+  tr {
+  grid-template-columns: 12fr 68fr 20fr;
 }
 
 table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))

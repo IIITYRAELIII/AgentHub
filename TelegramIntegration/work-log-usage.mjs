@@ -108,28 +108,13 @@ function usageIds(source) {
     .map((match) => normalizeWorkLogId(match[1]));
 }
 
-function replaceUsageCell(row, content) {
-  const usageCell = /<td\b[^>]*\bdata-work-log-usage\b[^>]*>[\s\S]*?<\/td>/i;
-  if (usageCell.test(row)) {
-    return row.replace(usageCell, `<td data-work-log-usage>${content}</td>`);
-  }
+function replaceProjectedCells(row, usageContent, turnsContent) {
   const cells = [...row.matchAll(/<td\b[^>]*>[\s\S]*?<\/td>/gi)];
-  if (!cells.length) return row;
-  const turnsCellIndex = cells.findIndex((cell) => /\bdata-work-log-turns\b/i.test(cell[0]));
-  const cell = turnsCellIndex >= 0 && turnsCellIndex === cells.length - 1
-    ? cells.at(-2)
-    : cells.at(-1);
-  return `${row.slice(0, cell.index)}<td data-work-log-usage>${content}</td>`
-    + row.slice(cell.index + cell[0].length);
-}
-
-function replaceTurnsCell(row, content) {
-  const turnsCell = /\s*<td\b[^>]*\bdata-work-log-turns\b[^>]*>[\s\S]*?<\/td>\s*/i;
-  const withoutTurns = row.replace(turnsCell, "");
-  return withoutTurns.replace(
-    /<\/tr>$/i,
-    `\n<td data-work-log-turns>${content}</td>\n</tr>`,
-  );
+  if (cells.length < 3) return row;
+  const opening = row.match(/^<tr\b[^>]*>/i)?.[0] ?? "<tr>";
+  return `${opening}\n${cells[0][0]}\n${cells[1][0]}\n`
+    + `<td data-work-log-usage>${usageContent}</td>\n`
+    + `<td data-work-log-turns>${turnsContent}</td>\n</tr>`;
 }
 
 function markWorkLogTable(section) {
@@ -168,7 +153,7 @@ function projectDaySection(section, date, records) {
   const markedSection = markWorkLogTable(markDaySection(section));
   const rows = [...markedSection.matchAll(/<tr>([\s\S]*?)<\/tr>/gi)]
     .map((match) => {
-      const ids = usageIds(match[0]);
+      const ids = [...new Set(usageIds(match[0]))];
       const recorded = ids.map((id) => records.get(id)).filter(Boolean);
       const usage = recorded.reduce(
         (total, record) => addTokenUsage(total, record.usage),
@@ -195,8 +180,9 @@ function projectDaySection(section, date, records) {
       .sort((left, right) => (Date.parse(left.completedAt) || 0) - (Date.parse(right.completedAt) || 0))
       .map(formatTurnEntry)
       .join("<br>\n");
-    const replacement = replaceTurnsCell(
-      replaceUsageCell(row.match[0], `${visible}${markers}`),
+    const replacement = replaceProjectedCells(
+      row.match[0],
+      `${visible}${markers}`,
       turns,
     );
     projected = `${projected.slice(0, row.match.index)}${replacement}`
