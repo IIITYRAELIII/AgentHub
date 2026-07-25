@@ -105,6 +105,9 @@ export class TurnEndNotificationRegistry {
   registerMessage(value) {
     const message = normalizedMessage(value);
     if (!message) throw new Error("Invalid deferred end-of-turn message");
+    if (!message.turnId) {
+      throw new Error("Deferred end-of-turn messages require an exact turn ID");
+    }
     if (message.turnId) {
       const key = turnEndKey(message);
       const completion = this.#completions.get(key);
@@ -122,9 +125,8 @@ export class TurnEndNotificationRegistry {
     const key = turnEndThreadKey(completion);
     const values = this.#pendingByThread.get(key) ?? [];
     const exactIndex = values.findIndex((message) => message.turnId === completion.turnId);
-    const index = exactIndex >= 0 ? exactIndex : values.findIndex((message) => !message.turnId);
-    if (index < 0) return null;
-    const [message] = values.splice(index, 1);
+    if (exactIndex < 0) return null;
+    const [message] = values.splice(exactIndex, 1);
     if (values.length) this.#pendingByThread.set(key, values);
     else this.#pendingByThread.delete(key);
     return message;

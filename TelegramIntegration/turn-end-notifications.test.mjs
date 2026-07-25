@@ -43,7 +43,7 @@ function completion(overrides = {}) {
 
 test("turn-end registry binds a deferred message to the completed turn", () => {
   const registry = new TurnEndNotificationRegistry();
-  registry.registerMessage(message());
+  registry.registerMessage(message({ turnId: "turn-1" }));
   const ready = registry.recordCompletion(completion());
   assert.equal(ready.message.text, "Готово");
   assert.equal(ready.message.workLogId, "123e4567-e89b-42d3-a456-426614174000");
@@ -61,7 +61,7 @@ test("turn-end registry deduplicates a delivered turn", () => {
 
 test("turn-end registry persists pending, completed and delivered state", () => {
   const registry = new TurnEndNotificationRegistry();
-  registry.registerMessage(message({ threadId: "thread-pending" }));
+  registry.registerMessage(message({ threadId: "thread-pending", turnId: "turn-pending" }));
   registry.recordCompletion(completion());
   const delivered = completion({ threadId: "thread-delivered", turnId: "turn-delivered" });
   registry.recordCompletion(delivered);
@@ -75,6 +75,18 @@ test("turn-end registry persists pending, completed and delivered state", () => 
     turnId: "turn-pending",
   }));
   assert.equal(pendingReady.message.text, "Готово");
+});
+
+test("turn-end registry rejects ambiguous messages and never consumes legacy FIFO entries", () => {
+  const registry = new TurnEndNotificationRegistry({
+    pending: [message({ text: "Старая запись без turn ID" })],
+  });
+  assert.throws(
+    () => registry.registerMessage(message()),
+    /exact turn ID/,
+  );
+  assert.equal(registry.recordCompletion(completion()).message, null);
+  assert.equal(registry.snapshot().pending[0].text, "Старая запись без turn ID");
 });
 
 test("exact turn messages remain attached during parallel completions", () => {

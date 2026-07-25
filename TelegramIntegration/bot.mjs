@@ -144,6 +144,7 @@ import {
   readCodexRolloutActivity,
   runningTaskReplyMarkup,
   selectCodexTurn,
+  selectExactActiveCodexTurnId,
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
 } from "./task-catalog.mjs";
@@ -3466,6 +3467,24 @@ function runtimeCommandIdentity(environment = {}) {
   throw new Error("Cannot identify the runtime caller");
 }
 
+async function exactRuntimeCommandTurnId(identity, run) {
+  if (identity.provider === "codex") {
+    const result = await readCodexThread(identity.threadId, {
+      fresh: true,
+      includeTurns: false,
+    });
+    const rolloutPath = String(result.thread?.path ?? "").trim();
+    if (rolloutPath) {
+      const turnId = selectExactActiveCodexTurnId(
+        await readCodexRolloutActivity(rolloutPath),
+      );
+      if (turnId) return turnId;
+    }
+  }
+  if (run?.turnId && ["running", "finishing"].includes(run.status)) return run.turnId;
+  throw new Error("Cannot bind the deferred notification to one exact active turn");
+}
+
 async function handleRuntimeCommand(request) {
   const allowedRoots = config.projects.map((project) => project.path);
   const requestCwd = await resolveAllowedNotificationCwd(request.cwd, { roots: allowedRoots });
@@ -3538,9 +3557,10 @@ async function handleRuntimeCommand(request) {
       ...identity,
       allowThreadFallback: true,
     });
+    const exactTurnId = await exactRuntimeCommandTurnId(identity, run);
     const message = turnEndNotifications.registerMessage({
       ...identity,
-      turnId: run?.turnId ?? null,
+      turnId: exactTurnId,
       projectRoot: project.path,
       taskTitle: runtimeCommandTaskTitle({ ...identity, run }),
       chatId: resolveNotificationChatId(config, options.chatId),

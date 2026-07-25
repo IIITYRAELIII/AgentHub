@@ -457,6 +457,24 @@ export function selectCodexTurn(
     ?? null;
 }
 
+export function selectExactActiveCodexTurnId(activity = {}) {
+  const vscodeTurnIds = [...new Set(
+    (activity.activeVscodeTurnIds ?? []).map((value) => String(value ?? "").trim()).filter(Boolean),
+  )];
+  if (vscodeTurnIds.length === 1) return vscodeTurnIds[0];
+  if (vscodeTurnIds.length > 1) {
+    throw new Error("Cannot bind the notification: several VS Code turns are active in this task");
+  }
+  const activeTurnIds = [...new Set(
+    (activity.activeTurnIds ?? []).map((value) => String(value ?? "").trim()).filter(Boolean),
+  )];
+  if (activeTurnIds.length === 1) return activeTurnIds[0];
+  if (activeTurnIds.length > 1) {
+    throw new Error("Cannot bind the notification: several Codex turns are active in this task");
+  }
+  return null;
+}
+
 export function codexCatalogEntry(thread, project, {
   rolloutRunning = false,
   executionOwner = null,

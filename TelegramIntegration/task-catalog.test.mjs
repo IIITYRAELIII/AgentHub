@@ -22,6 +22,7 @@ import {
   readCodexRolloutRunning,
   runningTaskReplyMarkup,
   selectCodexTurn,
+  selectExactActiveCodexTurnId,
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
   taskExecutionRuntimeShortLabel,
@@ -241,6 +242,29 @@ test("a bot-managed Codex run stays attached to its own parallel turn", () => {
     rolloutActiveTurnIds: ["external"],
     strictRequested: true,
   }).id, "managed");
+});
+
+test("deferred notifications select one exact active VS Code turn", () => {
+  assert.equal(selectExactActiveCodexTurnId({
+    activeTurnIds: ["integration", "vscode"],
+    activeVscodeTurnIds: ["vscode"],
+  }), "vscode");
+  assert.equal(selectExactActiveCodexTurnId({
+    activeTurnIds: ["only"],
+    activeVscodeTurnIds: [],
+  }), "only");
+  assert.equal(selectExactActiveCodexTurnId({
+    activeTurnIds: [],
+    activeVscodeTurnIds: [],
+  }), null);
+  assert.throws(() => selectExactActiveCodexTurnId({
+    activeTurnIds: ["first", "second"],
+    activeVscodeTurnIds: [],
+  }), /several Codex turns/);
+  assert.throws(() => selectExactActiveCodexTurnId({
+    activeTurnIds: ["first", "second"],
+    activeVscodeTurnIds: ["first", "second"],
+  }), /several VS Code turns/);
 });
 
 test("readCodexRolloutRunning reads a fresh local rollout", async () => {
