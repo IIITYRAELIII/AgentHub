@@ -5,7 +5,7 @@ details[data-work-log-day-section] {
 
 summary[data-work-log-day] {
   float: left;
-  font-size: 0.8em;
+  font-size: 1em;
   list-style: none;
 }
 
@@ -54,4 +54,61 @@ div[data-day-usage-breakdown] {
 
 details[data-day-usage-details] + table {
   clear: both;
+}
+
+table[data-work-log-table] col[data-work-log-task-column] {
+  width: 12%;
+}
+
+table[data-work-log-table] col[data-work-log-outcome-column] {
+  width: 48%;
+}
+
+table[data-work-log-table] col[data-work-log-turns-column],
+table[data-work-log-table] col[data-work-log-usage-column] {
+  width: 20%;
+}
+
+details[data-work-log-turns-toggle] {
+  display: inline-block;
+  font-weight: normal;
+  margin-left: 0.35em;
+}
+
+details[data-work-log-turns-toggle] > summary {
+  cursor: pointer;
+  display: inline;
+  list-style: none;
+}
+
+details[data-work-log-turns-toggle] > summary::-webkit-details-marker {
+  display: none;
+}
+
+details[data-work-log-turns-toggle] > summary::before {
+  content: "▶ ";
+}
+
+details[data-work-log-turns-toggle][open] > summary::before {
+  content: "▼ ";
+}
+
+td[data-work-log-turns] {
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+
+table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))
+  col[data-work-log-outcome-column] {
+  width: 68%;
+}
+
+table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))
+  col[data-work-log-turns-column] {
+  width: 0;
+}
+
+table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))
+  [data-work-log-turns] {
+  display: none;
 }

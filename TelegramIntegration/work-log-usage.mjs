@@ -91,16 +91,65 @@ function ledgerByWorkLogId(turns = {}) {
   return records;
 }
 
+function formatCompletedAt(value) {
+  const completedAt = new Date(String(value ?? ""));
+  if (!Number.isFinite(completedAt.getTime())) return "Время неизвестно";
+  const twoDigits = (part) => String(part).padStart(2, "0");
+  return `${twoDigits(completedAt.getDate())}.${twoDigits(completedAt.getMonth() + 1)}.${completedAt.getFullYear()} `
+    + `${twoDigits(completedAt.getHours())}:${twoDigits(completedAt.getMinutes())}`;
+}
+
+function formatTurnEntry(record) {
+  const units = formatConditionalUnits(turnConditionalUnits(record?.usage));
+  return `${formatCompletedAt(record?.completedAt)} — ${units} у.е.`;
+}
+
 function usageIds(source) {
   return [...source.matchAll(/data-usage-id=["']([^"']+)["']/gi)]
     .map((match) => normalizeWorkLogId(match[1]));
 }
 
 function replaceLastCell(row, content) {
-  const cells = [...row.matchAll(/<td>([\s\S]*?)<\/td>/gi)];
+  const cells = [...row.matchAll(/<td\b[^>]*>[\s\S]*?<\/td>/gi)];
   if (!cells.length) return row;
   const cell = cells.at(-1);
   return `${row.slice(0, cell.index)}<td>${content}</td>${row.slice(cell.index + cell[0].length)}`;
+}
+
+function replaceTurnsCell(row, content) {
+  const turnsCell = /<td\b[^>]*\bdata-work-log-turns\b[^>]*>[\s\S]*?<\/td>/i;
+  if (turnsCell.test(row)) {
+    return row.replace(turnsCell, `<td data-work-log-turns>${content}</td>`);
+  }
+  const cells = [...row.matchAll(/<td\b[^>]*>[\s\S]*?<\/td>/gi)];
+  if (!cells.length) return row;
+  const lastCell = cells.at(-1);
+  return `${row.slice(0, lastCell.index)}<td data-work-log-turns>${content}</td>\n`
+    + row.slice(lastCell.index);
+}
+
+function markWorkLogTable(section) {
+  let marked = section.replace(/<table\b([^>]*)>/i, (opening, attributes) => (
+    /\bdata-work-log-table\b/i.test(attributes)
+      ? opening
+      : `<table data-work-log-table${attributes}>`
+  ));
+  marked = marked.replace(
+    /<colgroup>[\s\S]*?<\/colgroup>/i,
+    [
+      "<colgroup>",
+      "<col data-work-log-task-column>",
+      "<col data-work-log-outcome-column>",
+      "<col data-work-log-turns-column>",
+      "<col data-work-log-usage-column>",
+      "</colgroup>",
+    ].join("\n"),
+  );
+  return marked.replace(
+    /<tr>\s*<th>Задача<\/th>\s*<th>Итог(?:\s*<details\b[^>]*data-work-log-turns-toggle[\s\S]*?<\/details>)?<\/th>\s*(?:<th\b[^>]*data-work-log-turns[^>]*>[\s\S]*?<\/th>\s*)?<th>Расход<\/th>\s*<\/tr>/i,
+    "<tr><th>Задача</th><th>Итог <details data-work-log-turns-toggle><summary>Ходы</summary></details></th>"
+      + "<th data-work-log-turns>Дата · расход</th><th>Расход</th></tr>",
+  );
 }
 
 function markDaySection(section) {
@@ -112,7 +161,7 @@ function markDaySection(section) {
 }
 
 function projectDaySection(section, date, records) {
-  const markedSection = markDaySection(section);
+  const markedSection = markWorkLogTable(markDaySection(section));
   const rows = [...markedSection.matchAll(/<tr>([\s\S]*?)<\/tr>/gi)]
     .map((match) => {
       const ids = usageIds(match[0]);
@@ -121,7 +170,7 @@ function projectDaySection(section, date, records) {
         (total, record) => addTokenUsage(total, record.usage),
         emptyTokenUsage(),
       );
-      return { match, ids, usage, units: turnConditionalUnits(usage) };
+      return { match, ids, recorded, usage, units: turnConditionalUnits(usage) };
     })
     .filter((row) => row.ids.length);
   const dayUsage = rows.reduce(
@@ -138,14 +187,21 @@ function projectDaySection(section, date, records) {
     const markers = row.ids.map((id) => (
       `<span data-usage-id="${id}" hidden>${records.has(id) ? "" : id}</span>`
     )).join("\n");
-    const replacement = replaceLastCell(row.match[0], `${visible}${markers}`);
+    const turns = [...row.recorded]
+      .sort((left, right) => (Date.parse(right.completedAt) || 0) - (Date.parse(left.completedAt) || 0))
+      .map(formatTurnEntry)
+      .join("<br>\n");
+    const replacement = replaceTurnsCell(
+      replaceLastCell(row.match[0], `${visible}${markers}`),
+      turns,
+    );
     projected = `${projected.slice(0, row.match.index)}${replacement}`
       + projected.slice(row.match.index + row.match[0].length);
   }
 
   const summary = dayUnits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> — <span data-day-usage>${formatConditionalUnits(dayUnits)} у.е.</span></summary>`
-    : `<summary><strong>${date}</strong></summary>`;
+    : `<summary data-work-log-day><strong>${date}</strong></summary>`;
   const details = dayUnits > 0 ? ` ${formatDayUsageDetails(dayUsage)}` : "";
   return projected.replace(
     /<summary[^>]*>[\s\S]*?<\/summary>(?:\s*<details data-day-usage-details[^>]*>[\s\S]*?<\/details>)?/i,
