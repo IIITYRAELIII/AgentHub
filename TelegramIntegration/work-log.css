@@ -42,7 +42,7 @@ table[data-work-log-table] tbody {
 
 table[data-work-log-table] tr {
   display: grid;
-  grid-template-columns: 14fr 58fr 20fr 8fr;
+  grid-template-columns: 14fr 62fr 16fr 8fr;
   position: relative;
   width: 100%;
 }
@@ -92,7 +92,7 @@ th[data-work-log-turns] {
 
 table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))
   tr {
-  grid-template-columns: 14fr 66fr 20fr;
+  grid-template-columns: 14fr 70fr 16fr;
 }
 
 table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))
