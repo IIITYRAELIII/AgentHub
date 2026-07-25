@@ -156,10 +156,50 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.keys(ledger.turns).length, 2);
+    const restored = new WorkLogUsageStore({ ledgerFile });
+    assert.deepEqual(await restored.project(workLogFile), {
+      projected: false,
+      reason: "unchanged",
+    });
+    assert.deepEqual(await restored.project(path.join(root, "MISSING.md")), {
+      projected: false,
+      reason: "work-log-missing",
+    });
     await assert.rejects(
       store.recordAndProject({ ...base, turnId: "turn-3" }),
       /already assigned to another turn/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a fresh usage store reprojects an existing work log with its persisted ledger", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-reproject-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    await writeFile(ledgerFile, `${JSON.stringify({
+      version: 1,
+      turns: {
+        turn: {
+          workLogId: WORK_ID,
+          usage: { inputTokens: 1_756_500 },
+          completedAt: "2026-07-25T00:00:00.000Z",
+        },
+      },
+    })}\n`, "utf8");
+    await writeFile(
+      workLogFile,
+      `<details open><summary><strong>25.07.2026</strong></summary><table><tbody>`
+        + `<tr><td>Task</td><td><span data-usage-id="${WORK_ID}" hidden></span></td></tr>`
+        + "</tbody></table></details>",
+      "utf8",
+    );
+
+    const store = new WorkLogUsageStore({ ledgerFile });
+    assert.deepEqual(await store.project(workLogFile), { projected: true });
+    assert.match(await readFile(workLogFile, "utf8"), /За задачу: 1 757 К у\.е\. \(100%\)/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

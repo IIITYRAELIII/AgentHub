@@ -195,6 +195,11 @@ installRotatingConsole({
   maxFiles: config.logMaxFiles,
   mirror: process.stdout.isTTY || process.stderr.isTTY,
 });
+for (const project of config.projects) {
+  await workLogUsageStore.project(path.join(project.path, "WORK_LOG.md")).catch((error) => {
+    console.error(`Cannot refresh WORK_LOG usage for ${project.path}:`, error.message);
+  });
+}
 let activeProvider = config.provider === "codex" ? "codex" : "claude";
 function isCodex() {
   return activeProvider === "codex";

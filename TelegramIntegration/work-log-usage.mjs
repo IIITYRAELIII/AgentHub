@@ -207,6 +207,26 @@ export class WorkLogUsageStore {
     this.#loaded = true;
   }
 
+  project(workLogFile) {
+    const operation = this.#tail.catch(() => {}).then(async () => {
+      await this.#load();
+      const logPath = path.resolve(workLogFile);
+      let current;
+      try {
+        current = await readFile(logPath, "utf8");
+      } catch (error) {
+        if (error?.code === "ENOENT") return { projected: false, reason: "work-log-missing" };
+        throw error;
+      }
+      const updated = projectWorkLogUsage(current, this.#ledger.turns);
+      if (updated === current) return { projected: false, reason: "unchanged" };
+      await writeTextAtomic(logPath, updated);
+      return { projected: true };
+    });
+    this.#tail = operation;
+    return operation;
+  }
+
   recordAndProject({
     provider = "codex",
     threadId,
