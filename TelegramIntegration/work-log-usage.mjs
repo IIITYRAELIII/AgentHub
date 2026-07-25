@@ -53,7 +53,9 @@ export function formatWorkLogUsage(usage) {
   const telegramText = formatTurnTokenUsage({
     reported: true,
     usage: normalizeTokenUsage(usage),
-  }).replace(/^📊\s*/, "");
+  })
+    .replace(/^📊\s*/, "")
+    .replace(/^За задачу:\s*/u, "");
   return telegramText
     .split("\n")
     .flatMap((line) => line.split(/\s+\|\s+/))
@@ -64,7 +66,7 @@ function formatTaskShare(usage, dayUnits) {
   const taskUnits = turnConditionalUnits(usage);
   const percent = dayUnits > 0 ? Math.round(taskUnits / dayUnits * 100) : 0;
   return formatWorkLogUsage(usage).replace(
-    /^(За задачу:[^<\r\n]+?кТЭ)/u,
+    /^([^<\r\n]+?кТЭ)/u,
     `$1 (${percent}%)`,
   );
 }

@@ -35,7 +35,7 @@ test("applyWorkLogUsage replaces only the matching per-turn placeholder", () => 
     }),
     [
       "<tr><td>",
-      `<span data-usage-id="${WORK_ID}">За задачу: 49 кТЭ<br>Вход: 8 кТЭ (17,1%)<br>Кэш: 35 кТЭ (71,8%)<br>Выход: 1 кТЭ (2,8%)<br>Думы: 4 кТЭ (8,3%)</span> + `,
+      `<span data-usage-id="${WORK_ID}">49 кТЭ<br>Вход: 8 кТЭ (17,1%)<br>Кэш: 35 кТЭ (71,8%)<br>Выход: 1 кТЭ (2,8%)<br>Думы: 4 кТЭ (8,3%)</span> + `,
       `<span data-usage-id="${SECOND_WORK_ID}">${SECOND_WORK_ID}</span>`,
       "</td></tr>",
     ].join(""),
@@ -96,11 +96,11 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
     projected.match(/<span data-day-usage-breakdown>[\s\S]*?<\/span>/)?.[0] ?? "",
     /<br>/,
   );
-  assert.match(projected, /Task A[\s\S]*?За задачу: 0 кТЭ \(50%\)/);
-  assert.match(projected, /Task C[\s\S]*?За задачу: 0 кТЭ \(50%\)/);
+  assert.match(projected, /Task A[\s\S]*?0 кТЭ \(50%\)/);
+  assert.match(projected, /Task C[\s\S]*?0 кТЭ \(50%\)/);
   assert.match(
     projected,
-    /data-task-usage>За задачу: 0 кТЭ \(50%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
+    /data-task-usage>0 кТЭ \(50%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
   );
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
@@ -183,7 +183,7 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     assert.equal((projected.match(/data-day-usage-breakdown/g) ?? []).length, 1);
     assert.match(
       projected,
-      /data-task-usage>За задачу: 0 кТЭ \(100%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
+      /data-task-usage>0 кТЭ \(100%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
     );
     assert.match(projected, new RegExp(`data-usage-id="${WORK_ID}" hidden>`));
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));
@@ -232,7 +232,7 @@ test("a fresh usage store reprojects an existing work log with its persisted led
 
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
-    assert.match(await readFile(workLogFile, "utf8"), /За задачу: 1 757 кТЭ \(100%\)/);
+    assert.match(await readFile(workLogFile, "utf8"), /data-task-usage>1 757 кТЭ \(100%\)/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -317,7 +317,7 @@ test("automatic usage creates an explicit fallback row for an ambiguous thread",
     assert.match(projected, /data-work-log-unbound-thread="thread-1"/);
     assert.match(projected, /Codex - Автоматически учтённые ходы/);
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden`));
-    assert.match(projected, /За задачу: 0 кТЭ \(100%\)/);
+    assert.match(projected, /data-task-usage>0 кТЭ \(100%\)/);
     assert.match(projected, /13:45 — 0 кТЭ/);
   } finally {
     await rm(root, { recursive: true, force: true });
