@@ -15,6 +15,7 @@ import {
   mergeTaskCatalog,
   pinnedTaskTitle,
   pinTaskTitle,
+  codexRolloutTurnState,
   parseTaskCatalogCallback,
   parseCodexRolloutActivity,
   parseCodexRolloutRunning,
@@ -242,6 +243,32 @@ test("a bot-managed Codex run stays attached to its own parallel turn", () => {
     rolloutActiveTurnIds: ["external"],
     strictRequested: true,
   }).id, "managed");
+});
+
+test("an exact Codex observer completes its requested turn instead of following a newer turn", () => {
+  const activity = {
+    activeTurnIds: ["new-turn"],
+    latestTurnId: "new-turn",
+    latestMessages: {
+      "new-turn": "still working",
+    },
+    finalMessages: {
+      "old-turn": "old turn finished",
+    },
+  };
+  assert.deepEqual(codexRolloutTurnState(activity, "old-turn", {
+    exact: true,
+    threadActive: true,
+  }), {
+    turnId: "old-turn",
+    active: false,
+    completed: true,
+    latestAnswer: "",
+    finalAnswer: "old turn finished",
+  });
+  assert.equal(codexRolloutTurnState(activity, "old-turn", {
+    threadActive: true,
+  }).turnId, "new-turn");
 });
 
 test("deferred notifications select one exact active VS Code turn", () => {

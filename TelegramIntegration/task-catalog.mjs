@@ -457,6 +457,40 @@ export function selectCodexTurn(
     ?? null;
 }
 
+export function codexRolloutTurnState(
+  activity = {},
+  requestedTurnId = null,
+  { exact = false, threadActive = false } = {},
+) {
+  const requested = String(requestedTurnId ?? "").trim();
+  const activeTurnIds = [...new Set(
+    (activity.activeTurnIds ?? []).map((value) => String(value ?? "").trim()).filter(Boolean),
+  )];
+  const requestedActive = Boolean(requested) && activeTurnIds.includes(requested);
+  const activeTurnId = requestedActive
+    ? requested
+    : exact ? null : activeTurnIds.at(-1) ?? null;
+  const turnId = exact && requested
+    ? requested
+    : activeTurnId || requested || String(activity.latestTurnId ?? "").trim() || null;
+  const active = exact
+    ? requestedActive
+    : Boolean(activeTurnId) || Boolean(threadActive);
+  const latestAnswer = turnId
+    ? String(activity.latestMessages?.[turnId] ?? "").trim()
+    : String(activity.unscopedLatestMessage ?? "").trim();
+  const finalAnswer = turnId
+    ? String(activity.finalMessages?.[turnId] ?? "").trim()
+    : "";
+  return {
+    turnId,
+    active,
+    completed: !active,
+    latestAnswer,
+    finalAnswer,
+  };
+}
+
 export function selectExactActiveCodexTurnId(activity = {}) {
   const vscodeTurnIds = [...new Set(
     (activity.activeVscodeTurnIds ?? []).map((value) => String(value ?? "").trim()).filter(Boolean),

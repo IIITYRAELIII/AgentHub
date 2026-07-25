@@ -138,6 +138,7 @@ import {
   claudeCatalogEntry,
   claudeSnapshotActivityAtMs,
   claudeSnapshotActivityState,
+  codexRolloutTurnState,
   codexCatalogEntry,
   codexThreadRunning,
   mergeTaskCatalog,
@@ -3517,6 +3518,7 @@ async function ensureDeferredCodexTurnObserved({
     threadId: identity.threadId,
     turnId,
     observer: true,
+    exactTurnObserver: true,
   };
   const snapshot = await readCodexTaskSnapshot(task, { threadResult, fresh: !threadResult });
   if (!snapshot?.active || snapshot.turnId !== turnId) {
@@ -3525,16 +3527,25 @@ async function ensureDeferredCodexTurnObserved({
   let observed = taskRuns.forTask(task);
   if (observed) {
     if (observed.observer !== true) return observed;
-    const previousTurnId = observed.turnId;
-    observed.turnId = turnId;
-    taskRuns.reindex(observed, { turnId: previousTurnId });
+    if (observed.exactTurnObserver === true && observed.turnId !== turnId) {
+      await pollObservedRun(observed);
+      observed = taskRuns.forTask(task);
+      if (observed) {
+        throw new Error(`Cannot replace exact Codex turn observer ${observed.turnId} with ${turnId}`);
+      }
+    }
+  }
+  if (observed) {
+    observed.exactTurnObserver = true;
     updateObservedRun(observed, snapshot);
   } else {
     observed = observedRun({
       ...identity,
       projectRoot: project.path,
       taskTitle,
+      exactTurnObserver: true,
     }, targetChatId, snapshot, turnId);
+    observed.exactTurnObserver = true;
   }
   scheduleObservedRun(observed);
   return observed;
@@ -4091,24 +4102,28 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
     includeTurns: false,
   });
   const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
-  const activity = await readCodexRolloutActivity(result.thread?.path);
+  const exactTurnObserver = run.exactTurnObserver === true;
+  const activity = await readCodexRolloutActivity(
+    result.thread?.path,
+    exactTurnObserver ? { freshnessMs: Number.POSITIVE_INFINITY } : {},
+  );
   if (!turns.length) {
-    const requestedTurnId = String(run.turnId ?? "").trim();
-    const activeTurnId = activity.activeTurnIds.includes(requestedTurnId)
-      ? requestedTurnId
-      : activity.activeTurnIds.at(-1) ?? null;
-    const turnId = activeTurnId || requestedTurnId || activity.latestTurnId;
     const threadActive = result.thread?.status?.type === "active";
-    const active = Boolean(activeTurnId) || threadActive;
-    const latestAnswer = turnId
-      ? String(activity.latestMessages?.[turnId] ?? "").trim()
-      : String(activity.unscopedLatestMessage ?? "").trim();
-    const finalAnswer = turnId ? String(activity.finalMessages?.[turnId] ?? "").trim() : "";
+    const {
+      turnId,
+      active,
+      completed,
+      latestAnswer,
+      finalAnswer,
+    } = codexRolloutTurnState(activity, run.turnId, {
+      exact: exactTurnObserver,
+      threadActive,
+    });
     return {
       answer: active ? latestAnswer : finalAnswer,
       finalAnswer,
       reasoning: "",
-      completed: !active,
+      completed,
       active,
       waitingOnApproval: false,
       stage: active
@@ -4132,7 +4147,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
   const turn = selectCodexTurn(turns, {
     requestedTurnId: run.turnId,
     rolloutActiveTurnIds: activity.activeTurnIds,
-    strictRequested: run.observer !== true,
+    strictRequested: exactTurnObserver || run.observer !== true,
   });
   if (!turn) return null;
   const snapshot = {
@@ -4283,6 +4298,9 @@ const taskObserver = new TaskObserverController({
     if (markProgressHeartbeat(run, "waiting")) scheduleProgressUpdate(run);
   },
   onTurnChanged: async (run, turnId) => {
+    if (run.exactTurnObserver === true) {
+      throw new Error(`Exact Codex turn observer cannot move from ${run.turnId} to ${turnId}`);
+    }
     const previousTurnId = run.turnId;
     run.turnId = turnId;
     taskRuns.reindex(run, { turnId: previousTurnId });
