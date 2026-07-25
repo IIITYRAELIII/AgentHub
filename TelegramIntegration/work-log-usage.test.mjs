@@ -35,7 +35,7 @@ test("applyWorkLogUsage replaces only the matching per-turn placeholder", () => 
     }),
     [
       "<tr><td>",
-      `<span data-usage-id="${WORK_ID}">За задачу: 48 532,2 у.е.<br>Вход: 8 301 (17,1%)<br>Кэш: 34 867,2 (71,8%)<br>Выход: 1 332 (2,8%)<br>Думы: 4 032 (8,3%)</span> + `,
+      `<span data-usage-id="${WORK_ID}">За задачу: 49 К у.е.<br>Вход: 8 К (17,1%)<br>Кэш: 35 К (71,8%)<br>Выход: 1 К (2,8%)<br>Думы: 4 К (8,3%)</span> + `,
       `<span data-usage-id="${SECOND_WORK_ID}">${SECOND_WORK_ID}</span>`,
       "</td></tr>",
     ].join(""),
@@ -71,21 +71,21 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   };
   const projected = projectWorkLogUsage(source, turns);
   assert.match(projected, /^<details data-work-log-day-section open>/);
-  assert.match(projected, /data-day-usage>200 у\.е\./);
+  assert.match(projected, /data-day-usage>0 К у\.е\./);
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
     projected,
-    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> — <span data-day-usage>200 у\.е\.<\/span><\/summary> <details data-day-usage-details><summary>Details<\/summary><div data-day-usage-breakdown>Вход: 200 \(100%\)&nbsp;&nbsp;Кэш: 0 \(0%\)&nbsp;&nbsp;Выход: 0 \(0%\)&nbsp;&nbsp;Думы: 0 \(0%\)<\/div><\/details>/,
+    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> — <span data-day-usage>0 К у\.е\.<\/span><\/summary> <details data-day-usage-details><summary>Details<\/summary><div data-day-usage-breakdown>Вход: 0 К \(100%\)&nbsp;&nbsp;Кэш: 0 К \(0%\)&nbsp;&nbsp;Выход: 0 К \(0%\)&nbsp;&nbsp;Думы: 0 К \(0%\)<\/div><\/details>/,
   );
   assert.doesNotMatch(
     projected.match(/<details data-day-usage-details[^>]*>[\s\S]*?<\/details>/)?.[0] ?? "",
     /<br>/,
   );
-  assert.match(projected, /Task A[\s\S]*?За задачу: 100 у\.е\. \(50%\)/);
-  assert.match(projected, /Task C[\s\S]*?За задачу: 100 у\.е\. \(50%\)/);
+  assert.match(projected, /Task A[\s\S]*?За задачу: 0 К у\.е\. \(50%\)/);
+  assert.match(projected, /Task C[\s\S]*?За задачу: 0 К у\.е\. \(50%\)/);
   assert.match(
     projected,
-    /data-task-usage>За задачу: 100 у\.е\. \(50%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
+    /data-task-usage>За задачу: 0 К у\.е\. \(50%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
   );
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
@@ -146,11 +146,11 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     await store.recordAndProject({ ...base, turnId: "turn-1" });
     await store.recordAndProject({ ...base, turnId: "turn-2", workLogId: SECOND_WORK_ID });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /data-day-usage>64 у\.е\./);
+    assert.match(projected, /data-day-usage>0 К у\.е\./);
     assert.equal((projected.match(/data-day-usage-details/g) ?? []).length, 1);
     assert.match(
       projected,
-      /data-task-usage>За задачу: 64 у\.е\. \(100%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
+      /data-task-usage>За задачу: 0 К у\.е\. \(100%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
     );
     assert.match(projected, new RegExp(`data-usage-id="${WORK_ID}" hidden>`));
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));

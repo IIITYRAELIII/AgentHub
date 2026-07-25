@@ -68,12 +68,12 @@ test("parseClaudeResult and formatClaudeUsage handle CLI JSON", () => {
   }));
   assert.equal(result.result, "done");
   const formatted = formatClaudeUsage(result);
-  assert.match(formatted, /За задачу: 108.275,2 у\.е\./);
+  assert.match(formatted, /За задачу: 108 К у\.е\./);
   assert.doesNotMatch(formatted, /743.169/);
-  assert.match(formatted, /Вход: 17.678/);
-  assert.match(formatted, /Кэш: 72.243,2/);
-  assert.match(formatted, /Выход: 12.510/);
-  assert.match(formatted, /Думы: 5.844/);
+  assert.match(formatted, /Вход: 18 К/);
+  assert.match(formatted, /Кэш: 72 К/);
+  assert.match(formatted, /Выход: 13 К/);
+  assert.match(formatted, /Думы: 6 К/);
 });
 
 test("parseClaudeLimits reads session, weekly, and model limits", () => {

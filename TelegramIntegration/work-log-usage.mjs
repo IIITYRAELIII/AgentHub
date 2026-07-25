@@ -5,6 +5,7 @@ import { writeTextAtomic } from "./state-store.mjs";
 import {
   addTokenUsage,
   emptyTokenUsage,
+  formatConditionalUnits,
   formatTurnTokenUsage,
   normalizeTokenUsage,
   turnConditionalUnits,
@@ -58,15 +59,11 @@ export function formatWorkLogUsage(usage) {
     .join("<br>");
 }
 
-function formatNumber(value) {
-  return value.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
-}
-
 function formatTaskShare(usage, dayUnits) {
   const taskUnits = turnConditionalUnits(usage);
   const percent = dayUnits > 0 ? Math.round(taskUnits / dayUnits * 100) : 0;
   return formatWorkLogUsage(usage).replace(
-    /^(За задачу:\s*[\d\s\u00a0,.]+\s+у\.е\.)/u,
+    /^(За задачу:[^<\r\n]+?\sу\.е\.)/u,
     `$1 (${percent}%)`,
   );
 }
@@ -147,7 +144,7 @@ function projectDaySection(section, date, records) {
   }
 
   const summary = dayUnits > 0
-    ? `<summary data-work-log-day><strong>${date}</strong> — <span data-day-usage>${formatNumber(dayUnits)} у.е.</span></summary>`
+    ? `<summary data-work-log-day><strong>${date}</strong> — <span data-day-usage>${formatConditionalUnits(dayUnits)} у.е.</span></summary>`
     : `<summary><strong>${date}</strong></summary>`;
   const details = dayUnits > 0 ? ` ${formatDayUsageDetails(dayUsage)}` : "";
   return projected.replace(

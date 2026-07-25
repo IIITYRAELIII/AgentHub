@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   addTokenUsage,
   emptyTokenUsage,
+  formatConditionalUnits,
   formatTaskTokenUsage,
   formatTurnTokenUsage,
   normalizeTokenUsage,
@@ -19,17 +20,17 @@ test("formatTaskTokenUsage converts token categories to conditional units", () =
     reasoningOutputTokens: 974,
   });
 
-  assert.match(formatted, /За задачу: 108.275,2 у\.е\./);
+  assert.match(formatted, /За задачу: 108 К у\.е\./);
   assert.doesNotMatch(formatted, /743.169/);
-  assert.match(formatted, /Вход: 17.678 \(16,3%\)/);
-  assert.match(formatted, /Кэш: 72.243,2 \(66,7%\)/);
-  assert.match(formatted, /Выход: 12.510 \(11,6%\)/);
-  assert.match(formatted, /Думы: 5.844 \(5,4%\)/);
+  assert.match(formatted, /Вход: 18 К \(16,3%\)/);
+  assert.match(formatted, /Кэш: 72 К \(66,7%\)/);
+  assert.match(formatted, /Выход: 13 К \(11,6%\)/);
+  assert.match(formatted, /Думы: 6 К \(5,4%\)/);
   assert.equal(formatted.split("\n").length, 5);
   assert.doesNotMatch(formatted, /\|/);
 });
 
-test("formatTaskTokenUsage keeps one decimal for cache units when needed", () => {
+test("formatTaskTokenUsage always renders whole thousands", () => {
   const formatted = formatTaskTokenUsage({
     inputTokens: 1,
     cachedInputTokens: 1,
@@ -37,9 +38,10 @@ test("formatTaskTokenUsage keeps one decimal for cache units when needed", () =>
     reasoningOutputTokens: 0,
   });
 
-  assert.match(formatted, /За задачу: 1,1 у\.е\./);
-  assert.match(formatted, /Вход: 1 \(90,9%\)/);
-  assert.match(formatted, /Кэш: 0,1 \(9,1%\)/);
+  assert.match(formatted, /За задачу: 0 К у\.е\./);
+  assert.match(formatted, /Вход: 0 К \(90,9%\)/);
+  assert.match(formatted, /Кэш: 0 К \(9,1%\)/);
+  assert.equal(formatConditionalUnits(1_756_500), "1 757 К");
 });
 
 test("formatTaskTokenUsage labels every category and percentages total exactly 100%", () => {
@@ -51,11 +53,11 @@ test("formatTaskTokenUsage labels every category and percentages total exactly 1
     reasoningOutputTokens: 15,
   });
 
-  assert.match(formatted, /За задачу: 20.704,6 у\.е\./);
-  assert.match(formatted, /Вход: 667 \(3,2%\)/);
-  assert.match(formatted, /Кэш: 19.737,6 \(95,3%\)/);
-  assert.match(formatted, /Выход: 210 \(1%\)/);
-  assert.match(formatted, /Думы: 90 \(0,5%\)/);
+  assert.match(formatted, /За задачу: 21 К у\.е\./);
+  assert.match(formatted, /Вход: 1 К \(3,2%\)/);
+  assert.match(formatted, /Кэш: 20 К \(95,3%\)/);
+  assert.match(formatted, /Выход: 0 К \(1%\)/);
+  assert.match(formatted, /Думы: 0 К \(0,5%\)/);
   assert.equal((formatted.match(/у\.е\./g) ?? []).length, 1);
 });
 
@@ -95,8 +97,8 @@ test("formatTurnTokenUsage excludes cached tokens from uncached input", () => {
       totalTokens: 102,
     }),
   });
-  assert.match(formatted, /Вход: 20 /);
-  assert.match(formatted, /Кэш: 8 /);
+  assert.match(formatted, /Вход: 0 К /);
+  assert.match(formatted, /Кэш: 0 К /);
   assert.equal(turnConditionalUnits({
     inputTokens: 100,
     cachedInputTokens: 80,
