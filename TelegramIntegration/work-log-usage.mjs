@@ -74,11 +74,9 @@ function formatTaskUsageDetails(usage, dayUnits) {
     + `<details data-task-usage-details><summary>Details</summary>${breakdown.join("<br>")}</details>\n`;
 }
 
-function formatDayUsageDetails(usage) {
+function formatDayUsageBreakdown(usage) {
   const [, ...breakdown] = formatWorkLogUsage(usage).split("<br>");
-  return `<details data-day-usage-details>`
-    + `<summary>Details</summary>`
-    + `<div data-day-usage-breakdown>${breakdown.join("&nbsp;&nbsp;")}</div></details>`;
+  return `<span data-day-usage-breakdown>${breakdown.join("&nbsp;&nbsp;")}</span>`;
 }
 
 function ledgerByWorkLogId(turns = {}) {
@@ -192,10 +190,10 @@ function projectDaySection(section, date, records) {
   const summary = dayUnits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> — <span data-day-usage>${formatConditionalUnits(dayUnits)} у.е.</span></summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
-  const details = dayUnits > 0 ? ` ${formatDayUsageDetails(dayUsage)}` : "";
+  const breakdown = dayUnits > 0 ? ` ${formatDayUsageBreakdown(dayUsage)}` : "";
   return projected.replace(
-    /<summary[^>]*>[\s\S]*?<\/summary>(?:\s*<details data-day-usage-details[^>]*>[\s\S]*?<\/details>)?/i,
-    `${summary}${details}`,
+    /<summary[^>]*>[\s\S]*?<\/summary>(?:\s*(?:<details data-day-usage-details[^>]*>[\s\S]*?<\/details>|<span data-day-usage-breakdown>[\s\S]*?<\/span>))?/i,
+    `${summary}${breakdown}`,
   );
 }
 

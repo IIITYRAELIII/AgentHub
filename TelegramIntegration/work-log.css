@@ -21,38 +21,14 @@ details[open] > summary[data-work-log-day]::before {
   content: "▼ ";
 }
 
-details[data-day-usage-details] {
-  display: contents;
-}
-
-details[data-day-usage-details] > summary {
-  cursor: pointer;
-  float: left;
-  font-size: 0.8em;
-  list-style: none;
-  margin-left: 0.35em;
-}
-
-details[data-day-usage-details] > summary::-webkit-details-marker {
-  display: none;
-}
-
-details[data-day-usage-details] > summary::before {
-  content: "▶ ";
-}
-
-details[data-day-usage-details][open] > summary::before {
-  content: "▼ ";
-}
-
-div[data-day-usage-breakdown] {
+span[data-day-usage-breakdown] {
   float: left;
   font-size: 0.8em;
   margin-left: 0.35em;
   white-space: nowrap;
 }
 
-details[data-day-usage-details] + table {
+span[data-day-usage-breakdown] + table {
   clear: both;
 }
 

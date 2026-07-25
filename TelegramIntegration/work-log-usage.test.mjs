@@ -89,10 +89,11 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
     projected,
-    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> — <span data-day-usage>0 К у\.е\.<\/span><\/summary> <details data-day-usage-details><summary>Details<\/summary><div data-day-usage-breakdown>Вход: 0 К \(100%\)&nbsp;&nbsp;Кэш: 0 К \(0%\)&nbsp;&nbsp;Выход: 0 К \(0%\)&nbsp;&nbsp;Думы: 0 К \(0%\)<\/div><\/details>/,
+    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> — <span data-day-usage>0 К у\.е\.<\/span><\/summary> <span data-day-usage-breakdown>Вход: 0 К \(100%\)&nbsp;&nbsp;Кэш: 0 К \(0%\)&nbsp;&nbsp;Выход: 0 К \(0%\)&nbsp;&nbsp;Думы: 0 К \(0%\)<\/span>/,
   );
+  assert.doesNotMatch(projected, /data-day-usage-details/);
   assert.doesNotMatch(
-    projected.match(/<details data-day-usage-details[^>]*>[\s\S]*?<\/details>/)?.[0] ?? "",
+    projected.match(/<span data-day-usage-breakdown>[\s\S]*?<\/span>/)?.[0] ?? "",
     /<br>/,
   );
   assert.match(projected, /Task A[\s\S]*?За задачу: 0 К у\.е\. \(50%\)/);
@@ -179,7 +180,7 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     await store.recordAndProject({ ...base, turnId: "turn-2", workLogId: SECOND_WORK_ID });
     const projected = await readFile(workLogFile, "utf8");
     assert.match(projected, /data-day-usage>0 К у\.е\./);
-    assert.equal((projected.match(/data-day-usage-details/g) ?? []).length, 1);
+    assert.equal((projected.match(/data-day-usage-breakdown/g) ?? []).length, 1);
     assert.match(
       projected,
       /data-task-usage>За задачу: 0 К у\.е\. \(100%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary>Вход:/,
