@@ -20,7 +20,7 @@ details[open] > summary[data-work-log-day]::before {
   content: "▼ ";
 }
 
-span[data-day-usage-breakdown] {
+span[data-day-usage-table] {
   border: 1px solid rgba(127, 127, 127, 0.45);
   border-radius: 0.25em;
   display: inline-flex;
@@ -30,12 +30,58 @@ span[data-day-usage-breakdown] {
   white-space: nowrap;
 }
 
+span[data-day-usage-breakdown] {
+  display: contents;
+}
+
+span[data-day-usage],
 span[data-day-usage-part] {
+  box-sizing: border-box;
+  flex: 0 0 auto;
   padding: 0.05em 0.4em;
 }
 
-span[data-day-usage-part] + span[data-day-usage-part] {
+span[data-day-usage] {
+  width: 17ch;
+}
+
+span[data-day-usage-part] {
   border-left: 1px solid rgba(127, 127, 127, 0.45);
+  width: 21ch;
+}
+
+span[data-task-usage] {
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  border-radius: 0.25em;
+  box-sizing: border-box;
+  display: block;
+  padding: 0.05em 0.4em;
+  white-space: nowrap;
+  width: 21ch;
+}
+
+details[data-task-usage-details] {
+  width: 21ch;
+}
+
+span[data-task-usage-breakdown] {
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  border-radius: 0.25em;
+  display: block;
+  overflow: hidden;
+  width: 21ch;
+}
+
+span[data-task-usage-part] {
+  box-sizing: border-box;
+  display: block;
+  padding: 0.05em 0.4em;
+  white-space: nowrap;
+  width: 100%;
+}
+
+span[data-task-usage-part] + span[data-task-usage-part] {
+  border-top: 1px solid rgba(127, 127, 127, 0.45);
 }
 
 table[data-work-log-table] {

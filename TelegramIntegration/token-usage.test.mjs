@@ -41,7 +41,9 @@ test("formatTaskTokenUsage always renders whole thousands", () => {
   assert.match(formatted, /За задачу: 0 кТЭ/);
   assert.match(formatted, /Вход: 0 кТЭ \(90,9%\)/);
   assert.match(formatted, /Кэш: 0 кТЭ \(9,1%\)/);
-  assert.equal(formatConditionalUnits(1_756_500), "1 757 кТЭ");
+  assert.equal(formatConditionalUnits(999_000), "999 кТЭ");
+  assert.equal(formatConditionalUnits(1_000_000), "1 МТЭ");
+  assert.equal(formatConditionalUnits(1_756_500), "1,757 МТЭ");
 });
 
 test("formatTaskTokenUsage labels every category and percentages total exactly 100%", () => {

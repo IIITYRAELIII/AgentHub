@@ -55,7 +55,7 @@ export function formatWorkLogUsage(usage) {
     usage: normalizeTokenUsage(usage),
   })
     .replace(/^📊\s*/, "")
-    .replace(/^За задачу:\s*/u, "");
+    .replace(/^За задачу:\s*/u, "Итого ");
   return telegramText
     .split("\n")
     .flatMap((line) => line.split(/\s+\|\s+/))
@@ -66,7 +66,7 @@ function formatTaskShare(usage, dayUnits) {
   const taskUnits = turnConditionalUnits(usage);
   const percent = dayUnits > 0 ? Math.round(taskUnits / dayUnits * 100) : 0;
   return formatWorkLogUsage(usage).replace(
-    /^([^<\r\n]+?кТЭ)/u,
+    /^(Итого [^<\r\n]+?(?:к|М)ТЭ)/u,
     `$1 (${percent}%)`,
   );
 }
@@ -74,7 +74,10 @@ function formatTaskShare(usage, dayUnits) {
 function formatTaskUsageDetails(usage, dayUnits) {
   const [total, ...breakdown] = formatTaskShare(usage, dayUnits).split("<br>");
   return `<span data-task-usage>${total}</span>\n`
-    + `<details data-task-usage-details><summary>Details</summary>${breakdown.join("<br>")}</details>\n`;
+    + "<details data-task-usage-details><summary>Details</summary>"
+    + `<span data-task-usage-breakdown>${breakdown
+      .map((part) => `<span data-task-usage-part>${part}</span>`)
+      .join("")}</span></details>\n`;
 }
 
 function formatDayUsageBreakdown(usage) {
@@ -323,9 +326,10 @@ function projectDaySection(section, date, records) {
       + projected.slice(row.match.index + row.match[0].length);
   }
 
-  const breakdown = dayUnits > 0 ? ` ${formatDayUsageBreakdown(dayUsage)}` : "";
   const summary = dayUnits > 0
-    ? `<summary data-work-log-day><strong>${date}</strong> — <span data-day-usage>${formatConditionalUnits(dayUnits)}</span>${breakdown}</summary>`
+    ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
+      + `<span data-day-usage>Итого ${formatConditionalUnits(dayUnits)}</span>`
+      + `${formatDayUsageBreakdown(dayUsage)}</span></summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
   return projected.replace(
     /<summary[^>]*>[\s\S]*?<\/summary>(?:\s*(?:<details data-day-usage-details[^>]*>[\s\S]*?<\/details>|<span data-day-usage-breakdown>[\s\S]*?<\/span>))?/i,
