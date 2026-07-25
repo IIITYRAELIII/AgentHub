@@ -133,6 +133,10 @@ test("work log CSS keeps dates equal and collapses the turns column by default",
     css,
     /table\[data-work-log-table\]:not\(:has\(details\[data-work-log-turns-toggle\]\[open\]\)\)[\s\S]*?\[data-work-log-turns\][\s\S]*?display:\s*none/,
   );
+  assert.match(
+    css,
+    /col\[data-work-log-turns-column\][\s\S]*?width:\s*20%[\s\S]*?col\[data-work-log-usage-column\][\s\S]*?width:\s*0/,
+  );
 });
 
 test("usage store projects each turn into its own placeholder and deduplicates retries", async () => {
