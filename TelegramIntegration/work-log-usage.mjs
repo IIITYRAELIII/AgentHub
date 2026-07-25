@@ -170,7 +170,7 @@ function workLogDaySection(date, row, open = false) {
     "<th>Задача</th>",
     "<th>Итог <details data-work-log-turns-toggle><summary>Ходы</summary></details></th>",
     "<th>Расход</th>",
-    "<th data-work-log-turns>Время · расход</th>",
+    "<th data-work-log-turns></th>",
     "</tr>",
     "</thead>",
     "<tbody>",
@@ -267,7 +267,7 @@ function markWorkLogTable(section) {
   return marked.replace(
     /<thead>[\s\S]*?<\/thead>/i,
     "<thead>\n<tr><th>Задача</th><th>Итог <details data-work-log-turns-toggle><summary>Ходы</summary></details></th>"
-      + "<th>Расход</th><th data-work-log-turns>Время · расход</th></tr>\n</thead>",
+      + "<th>Расход</th><th data-work-log-turns></th></tr>\n</thead>",
   );
 }
 

@@ -82,7 +82,7 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.match(projected, /<col data-work-log-turns-column>/);
   assert.match(
     projected,
-    /<th>Итог <details data-work-log-turns-toggle><summary>Ходы<\/summary><\/details><\/th><th>Расход<\/th><th data-work-log-turns>Время · расход<\/th>/,
+    /<th>Итог <details data-work-log-turns-toggle><summary>Ходы<\/summary><\/details><\/th><th>Расход<\/th><th data-work-log-turns><\/th>/,
   );
   assert.match(projected, /<td data-work-log-turns>12:34 — 0 кТЭ<br>\s*13:45 — 0 кТЭ<\/td>/);
   assert.match(projected, /data-day-usage>0 кТЭ/);
