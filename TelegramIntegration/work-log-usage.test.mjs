@@ -89,7 +89,7 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
     projected,
-    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> <span data-day-usage-table><span data-day-usage>Итого 0 кТЭ<\/span><span data-day-usage-breakdown><span data-day-usage-part>Вход: 0 кТЭ \(100%\)<\/span><span data-day-usage-part>Кэш: 0 кТЭ \(0%\)<\/span><span data-day-usage-part>Выход: 0 кТЭ \(0%\)<\/span><span data-day-usage-part>Думы: 0 кТЭ \(0%\)<\/span><\/span><\/span><\/summary>/,
+    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> <span data-day-usage-table><span data-day-usage>Итого 0 кТЭ<\/span><span data-day-usage-breakdown><span data-day-usage-part>Вход: 0 кТЭ <span data-usage-percent>\(100%\)<\/span><\/span><span data-day-usage-part>Кэш: 0 кТЭ <span data-usage-percent>\(0%\)<\/span><\/span><span data-day-usage-part>Выход: 0 кТЭ <span data-usage-percent>\(0%\)<\/span><\/span><span data-day-usage-part>Думы: 0 кТЭ <span data-usage-percent>\(0%\)<\/span><\/span><\/span><\/span><\/summary>/,
   );
   assert.doesNotMatch(projected, /data-day-usage-details/);
   assert.doesNotMatch(
@@ -97,11 +97,11 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
     /<br>/,
   );
   assert.equal((projected.match(/data-day-usage-part/g) ?? []).length, 4);
-  assert.match(projected, /Task A[\s\S]*?Итого 0 кТЭ \(50%\)/);
-  assert.match(projected, /Task C[\s\S]*?Итого 0 кТЭ \(50%\)/);
+  assert.match(projected, /Task A[\s\S]*?Итого 0 кТЭ <span data-usage-percent>\(50%\)<\/span>/);
+  assert.match(projected, /Task C[\s\S]*?Итого 0 кТЭ <span data-usage-percent>\(50%\)<\/span>/);
   assert.match(
     projected,
-    /data-task-usage>Итого 0 кТЭ \(50%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
+    /data-task-usage>Итого 0 кТЭ <span data-usage-percent>\(50%\)<\/span><\/span>\s*<details data-task-usage-details><summary>Details<\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
   );
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
@@ -185,7 +185,7 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     assert.equal((projected.match(/data-day-usage-breakdown/g) ?? []).length, 1);
     assert.match(
       projected,
-      /data-task-usage>Итого 0 кТЭ \(100%\)<\/span>\s*<details data-task-usage-details><summary>Details<\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
+      /data-task-usage>Итого 0 кТЭ <span data-usage-percent>\(100%\)<\/span><\/span>\s*<details data-task-usage-details><summary>Details<\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
     );
     assert.match(projected, new RegExp(`data-usage-id="${WORK_ID}" hidden>`));
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));
@@ -234,7 +234,7 @@ test("a fresh usage store reprojects an existing work log with its persisted led
 
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
-    assert.match(await readFile(workLogFile, "utf8"), /data-task-usage>Итого 1,757 МТЭ \(100%\)/);
+    assert.match(await readFile(workLogFile, "utf8"), /data-task-usage>Итого 1,757 МТЭ <span data-usage-percent>\(100%\)<\/span>/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -319,7 +319,7 @@ test("automatic usage creates an explicit fallback row for an ambiguous thread",
     assert.match(projected, /data-work-log-unbound-thread="thread-1"/);
     assert.match(projected, /Codex - Автоматически учтённые ходы/);
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden`));
-    assert.match(projected, /data-task-usage>Итого 0 кТЭ \(100%\)/);
+    assert.match(projected, /data-task-usage>Итого 0 кТЭ <span data-usage-percent>\(100%\)<\/span>/);
     assert.match(projected, /13:45 — 0 кТЭ/);
   } finally {
     await rm(root, { recursive: true, force: true });

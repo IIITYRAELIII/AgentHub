@@ -71,19 +71,26 @@ function formatTaskShare(usage, dayUnits) {
   );
 }
 
+function alignUsagePercent(text) {
+  return String(text).replace(
+    /\s+(\([^()]+%\))$/u,
+    " <span data-usage-percent>$1</span>",
+  );
+}
+
 function formatTaskUsageDetails(usage, dayUnits) {
   const [total, ...breakdown] = formatTaskShare(usage, dayUnits).split("<br>");
-  return `<span data-task-usage>${total}</span>\n`
+  return `<span data-task-usage>${alignUsagePercent(total)}</span>\n`
     + "<details data-task-usage-details><summary>Details</summary>"
     + `<span data-task-usage-breakdown>${breakdown
-      .map((part) => `<span data-task-usage-part>${part}</span>`)
+      .map((part) => `<span data-task-usage-part>${alignUsagePercent(part)}</span>`)
       .join("")}</span></details>\n`;
 }
 
 function formatDayUsageBreakdown(usage) {
   const [, ...breakdown] = formatWorkLogUsage(usage).split("<br>");
   return `<span data-day-usage-breakdown>${breakdown
-    .map((part) => `<span data-day-usage-part>${part}</span>`)
+    .map((part) => `<span data-day-usage-part>${alignUsagePercent(part)}</span>`)
     .join("")}</span>`;
 }
 

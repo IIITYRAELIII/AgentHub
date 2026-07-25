@@ -47,6 +47,8 @@ span[data-day-usage] {
 
 span[data-day-usage-part] {
   border-left: 1px solid rgba(127, 127, 127, 0.45);
+  display: inline-flex;
+  justify-content: space-between;
   width: 21ch;
 }
 
@@ -54,7 +56,8 @@ span[data-task-usage] {
   border: 1px solid rgba(127, 127, 127, 0.45);
   border-radius: 0.25em;
   box-sizing: border-box;
-  display: block;
+  display: flex;
+  justify-content: space-between;
   padding: 0.05em 0.4em;
   white-space: nowrap;
   width: 21ch;
@@ -74,7 +77,8 @@ span[data-task-usage-breakdown] {
 
 span[data-task-usage-part] {
   box-sizing: border-box;
-  display: block;
+  display: flex;
+  justify-content: space-between;
   padding: 0.05em 0.4em;
   white-space: nowrap;
   width: 100%;
