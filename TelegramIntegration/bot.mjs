@@ -995,9 +995,19 @@ function fallbackTurnEndMessage(status) {
 
 async function projectTurnUsageToWorkLog(completion) {
   const workLogId = completion?.message?.workLogId;
-  if (!workLogId) return false;
   const project = findProject(completion.projectRoot);
   if (!project) throw new Error(`Cannot find WORK_LOG project for ${completion.projectRoot}`);
+  if (!workLogId) {
+    return workLogUsageStore.recordAutomaticAndProject({
+      provider: completion.provider,
+      threadId: completion.threadId,
+      turnId: completion.turnId,
+      usage: completion.usage,
+      usageReported: completion.usageReported,
+      completedAt: completion.completedAt,
+      workLogFile: path.join(project.path, "WORK_LOG.md"),
+    });
+  }
   return workLogUsageStore.recordAndProject({
     provider: completion.provider,
     threadId: completion.threadId,

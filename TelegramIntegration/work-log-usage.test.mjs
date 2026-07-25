@@ -237,3 +237,89 @@ test("a fresh usage store reprojects an existing work log with its persisted led
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("automatic usage attaches to the only row for the thread and is idempotent", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-automatic-exact-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    const completedAt = new Date(2026, 6, 25, 12, 34).toISOString();
+    await writeFile(
+      workLogFile,
+      `<details><summary><strong>25.07.2026</strong></summary><table><tbody>`
+        + `<tr><td><a href="vscode://openai.chatgpt/local/thread-1">Task</a></td>`
+        + "<td>Outcome</td><td></td></tr></tbody></table></details>",
+      "utf8",
+    );
+    const store = new WorkLogUsageStore({
+      ledgerFile,
+      randomUUID: () => WORK_ID,
+    });
+    const input = {
+      threadId: "thread-1",
+      turnId: "turn-aborted",
+      usageReported: true,
+      usage: { inputTokens: 1_756_500 },
+      completedAt,
+      workLogFile,
+    };
+    assert.deepEqual(await store.recordAutomaticAndProject(input), {
+      recorded: true,
+      usage: {
+        inputTokens: 1_756_500,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: 0,
+      },
+      workLogId: WORK_ID,
+      target: "exact-thread-row",
+    });
+    assert.equal((await readFile(workLogFile, "utf8")).match(/data-usage-id=/g)?.length, 1);
+    assert.equal((await store.recordAutomaticAndProject(input)).recorded, false);
+    assert.equal((await readFile(workLogFile, "utf8")).match(/data-usage-id=/g)?.length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("automatic usage creates an explicit fallback row for an ambiguous thread", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-automatic-fallback-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    const completedAt = new Date(2026, 6, 25, 13, 45).toISOString();
+    const linkedRow = (title) => (
+      `<tr><td><a href="vscode://openai.chatgpt/local/thread-1">${title}</a></td>`
+      + "<td>Outcome</td><td></td></tr>"
+    );
+    await writeFile(
+      workLogFile,
+      `<details><summary><strong>25.07.2026</strong></summary><table><tbody>`
+        + linkedRow("Task A") + linkedRow("Task B")
+        + "</tbody></table></details>",
+      "utf8",
+    );
+    const store = new WorkLogUsageStore({
+      ledgerFile,
+      randomUUID: () => SECOND_WORK_ID,
+    });
+    const result = await store.recordAutomaticAndProject({
+      threadId: "thread-1",
+      turnId: "turn-aborted",
+      usageReported: true,
+      usage: { inputTokens: 100 },
+      completedAt,
+      workLogFile,
+    });
+    assert.equal(result.target, "fallback-ambiguous");
+    const projected = await readFile(workLogFile, "utf8");
+    assert.match(projected, /data-work-log-unbound-thread="thread-1"/);
+    assert.match(projected, /Codex - Автоматически учтённые ходы/);
+    assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden`));
+    assert.match(projected, /За задачу: 0 кТЭ \(100%\)/);
+    assert.match(projected, /13:45 — 0 кТЭ/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
