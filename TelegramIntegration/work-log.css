@@ -21,8 +21,21 @@ details[open] > summary[data-work-log-day]::before {
 }
 
 span[data-day-usage-breakdown] {
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  border-radius: 0.25em;
+  display: inline-flex;
   margin-left: 0.35em;
+  overflow: hidden;
+  vertical-align: middle;
   white-space: nowrap;
+}
+
+span[data-day-usage-part] {
+  padding: 0.05em 0.4em;
+}
+
+span[data-day-usage-part] + span[data-day-usage-part] {
+  border-left: 1px solid rgba(127, 127, 127, 0.45);
 }
 
 table[data-work-log-table] {

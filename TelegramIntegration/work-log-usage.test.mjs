@@ -89,13 +89,14 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
     projected,
-    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> — <span data-day-usage>0 кТЭ<\/span> <span data-day-usage-breakdown>Вход: 0 кТЭ \(100%\)&nbsp;&nbsp;Кэш: 0 кТЭ \(0%\)&nbsp;&nbsp;Выход: 0 кТЭ \(0%\)&nbsp;&nbsp;Думы: 0 кТЭ \(0%\)<\/span><\/summary>/,
+    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> — <span data-day-usage>0 кТЭ<\/span> <span data-day-usage-breakdown><span data-day-usage-part>Вход: 0 кТЭ \(100%\)<\/span><span data-day-usage-part>Кэш: 0 кТЭ \(0%\)<\/span><span data-day-usage-part>Выход: 0 кТЭ \(0%\)<\/span><span data-day-usage-part>Думы: 0 кТЭ \(0%\)<\/span><\/span><\/summary>/,
   );
   assert.doesNotMatch(projected, /data-day-usage-details/);
   assert.doesNotMatch(
     projected.match(/<span data-day-usage-breakdown>[\s\S]*?<\/span>/)?.[0] ?? "",
     /<br>/,
   );
+  assert.equal((projected.match(/data-day-usage-part/g) ?? []).length, 4);
   assert.match(projected, /Task A[\s\S]*?0 кТЭ \(50%\)/);
   assert.match(projected, /Task C[\s\S]*?0 кТЭ \(50%\)/);
   assert.match(

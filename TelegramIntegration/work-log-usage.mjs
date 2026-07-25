@@ -79,7 +79,9 @@ function formatTaskUsageDetails(usage, dayUnits) {
 
 function formatDayUsageBreakdown(usage) {
   const [, ...breakdown] = formatWorkLogUsage(usage).split("<br>");
-  return `<span data-day-usage-breakdown>${breakdown.join("&nbsp;&nbsp;")}</span>`;
+  return `<span data-day-usage-breakdown>${breakdown
+    .map((part) => `<span data-day-usage-part>${part}</span>`)
+    .join("")}</span>`;
 }
 
 function ledgerByWorkLogId(turns = {}) {
