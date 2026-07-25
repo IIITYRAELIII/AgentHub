@@ -80,8 +80,8 @@ function alignUsagePercent(text) {
 
 function formatTaskUsageDetails(usage, dayUnits) {
   const [total, ...breakdown] = formatTaskShare(usage, dayUnits).split("<br>");
-  return `<span data-task-usage>${alignUsagePercent(total)}</span>\n`
-    + "<details data-task-usage-details><summary>Details</summary>"
+  return "<details data-task-usage-details>"
+    + `<summary data-task-usage>${alignUsagePercent(total)}</summary>`
     + `<span data-task-usage-breakdown>${breakdown
       .map((part) => `<span data-task-usage-part>${alignUsagePercent(part)}</span>`)
       .join("")}</span></details>\n`;

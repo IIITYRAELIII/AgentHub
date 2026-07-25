@@ -101,7 +101,7 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.match(projected, /Task C[\s\S]*?Итого 0 кТЭ <span data-usage-percent>\(50%\)<\/span>/);
   assert.match(
     projected,
-    /data-task-usage>Итого 0 кТЭ <span data-usage-percent>\(50%\)<\/span><\/span>\s*<details data-task-usage-details><summary>Details<\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
+    /<details data-task-usage-details><summary data-task-usage>Итого 0 кТЭ <span data-usage-percent>\(50%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
   );
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
@@ -185,7 +185,7 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     assert.equal((projected.match(/data-day-usage-breakdown/g) ?? []).length, 1);
     assert.match(
       projected,
-      /data-task-usage>Итого 0 кТЭ <span data-usage-percent>\(100%\)<\/span><\/span>\s*<details data-task-usage-details><summary>Details<\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
+      /<details data-task-usage-details><summary data-task-usage>Итого 0 кТЭ <span data-usage-percent>\(100%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
     );
     assert.match(projected, new RegExp(`data-usage-id="${WORK_ID}" hidden>`));
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));

@@ -52,15 +52,21 @@ span[data-day-usage-part] {
   width: 21ch;
 }
 
-span[data-task-usage] {
+summary[data-task-usage] {
   border: 1px solid rgba(127, 127, 127, 0.45);
   border-radius: 0.25em;
   box-sizing: border-box;
+  cursor: pointer;
   display: flex;
   justify-content: space-between;
+  list-style: none;
   padding: 0.05em 0.4em;
   white-space: nowrap;
   width: 21ch;
+}
+
+summary[data-task-usage]::-webkit-details-marker {
+  display: none;
 }
 
 details[data-task-usage-details] {
