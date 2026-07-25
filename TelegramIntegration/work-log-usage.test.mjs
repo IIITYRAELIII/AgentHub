@@ -139,6 +139,10 @@ test("work log CSS keeps dates equal and collapses the turns column by default",
     css,
     /grid-template-columns:\s*12fr 48fr 20fr 20fr[\s\S]*?grid-template-columns:\s*12fr 68fr 20fr/,
   );
+  assert.match(
+    css,
+    /details\[data-work-log-turns-toggle\][\s\S]*?position:\s*absolute[\s\S]*?right:\s*0\.5em/,
+  );
 });
 
 test("usage store projects each turn into its own placeholder and deduplicates retries", async () => {

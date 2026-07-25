@@ -74,6 +74,7 @@ table[data-work-log-table] tbody {
 table[data-work-log-table] tr {
   display: grid;
   grid-template-columns: 12fr 48fr 20fr 20fr;
+  position: relative;
   width: 100%;
 }
 
@@ -85,7 +86,12 @@ table[data-work-log-table] td {
 details[data-work-log-turns-toggle] {
   display: inline-block;
   font-weight: normal;
-  margin-left: 0.35em;
+  margin: 0;
+  position: absolute;
+  right: 0.5em;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
 }
 
 details[data-work-log-turns-toggle] > summary {
@@ -109,6 +115,10 @@ details[data-work-log-turns-toggle][open] > summary::before {
 td[data-work-log-turns] {
   font-size: 0.9em;
   white-space: nowrap;
+}
+
+th[data-work-log-turns] {
+  padding-right: 5em;
 }
 
 table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))
