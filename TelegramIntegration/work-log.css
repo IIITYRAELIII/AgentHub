@@ -52,6 +52,10 @@ span[data-day-usage-part] {
   width: 21ch;
 }
 
+span[data-mega-usage] {
+  color: var(--vscode-textLink-foreground, #3794ff);
+}
+
 summary[data-task-usage] {
   border: 1px solid rgba(127, 127, 127, 0.45);
   border-radius: 0.25em;

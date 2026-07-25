@@ -78,19 +78,26 @@ function alignUsagePercent(text) {
   );
 }
 
+function highlightMegaUnits(text) {
+  return String(text).replace(
+    /(\d+(?:[  ]\d{3})*(?:,\d+)? МТЭ)/gu,
+    "<span data-mega-usage>$1</span>",
+  );
+}
+
 function formatTaskUsageDetails(usage, dayUnits) {
   const [total, ...breakdown] = formatTaskShare(usage, dayUnits).split("<br>");
   return "<details data-task-usage-details>"
-    + `<summary data-task-usage>${alignUsagePercent(total)}</summary>`
+    + `<summary data-task-usage>${highlightMegaUnits(alignUsagePercent(total))}</summary>`
     + `<span data-task-usage-breakdown>${breakdown
-      .map((part) => `<span data-task-usage-part>${alignUsagePercent(part)}</span>`)
+      .map((part) => `<span data-task-usage-part>${highlightMegaUnits(alignUsagePercent(part))}</span>`)
       .join("")}</span></details>\n`;
 }
 
 function formatDayUsageBreakdown(usage) {
   const [, ...breakdown] = formatWorkLogUsage(usage).split("<br>");
   return `<span data-day-usage-breakdown>${breakdown
-    .map((part) => `<span data-day-usage-part>${alignUsagePercent(part)}</span>`)
+    .map((part) => `<span data-day-usage-part>${highlightMegaUnits(alignUsagePercent(part))}</span>`)
     .join("")}</span>`;
 }
 
@@ -113,7 +120,7 @@ function formatCompletedAt(value) {
 }
 
 function formatTurnEntry(record) {
-  const units = formatConditionalUnits(turnConditionalUnits(record?.usage));
+  const units = highlightMegaUnits(formatConditionalUnits(turnConditionalUnits(record?.usage)));
   return `${formatCompletedAt(record?.completedAt)} — ${units}`;
 }
 
@@ -335,7 +342,7 @@ function projectDaySection(section, date, records) {
 
   const summary = dayUnits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
-      + `<span data-day-usage>Итого ${formatConditionalUnits(dayUnits)}</span>`
+      + `<span data-day-usage>Итого ${highlightMegaUnits(formatConditionalUnits(dayUnits))}</span>`
       + `${formatDayUsageBreakdown(dayUsage)}</span></summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
   return projected.replace(

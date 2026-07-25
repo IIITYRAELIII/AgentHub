@@ -146,6 +146,10 @@ test("work log CSS keeps dates equal and collapses the turns column by default",
     css,
     /details\[data-work-log-turns-toggle\][\s\S]*?position:\s*absolute[\s\S]*?right:\s*0\.5em/,
   );
+  assert.match(
+    css,
+    /span\[data-mega-usage\][\s\S]*?color:\s*var\(--vscode-textLink-foreground,\s*#3794ff\)/,
+  );
 });
 
 test("usage store projects each turn into its own placeholder and deduplicates retries", async () => {
@@ -234,7 +238,9 @@ test("a fresh usage store reprojects an existing work log with its persisted led
 
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
-    assert.match(await readFile(workLogFile, "utf8"), /data-task-usage>Итого 1,757 МТЭ <span data-usage-percent>\(100%\)<\/span>/);
+    const projected = await readFile(workLogFile, "utf8");
+    assert.match(projected, /data-task-usage>Итого <span data-mega-usage>1,757 МТЭ<\/span> <span data-usage-percent>\(100%\)<\/span>/);
+    assert.doesNotMatch(projected, /data-mega-usage>[^<]*кТЭ/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
