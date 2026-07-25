@@ -138,7 +138,7 @@ test("work log CSS keeps dates equal and collapses the turns column by default",
   );
   assert.match(
     css,
-    /grid-template-columns:\s*12fr 56fr 20fr 12fr[\s\S]*?grid-template-columns:\s*12fr 68fr 20fr/,
+    /grid-template-columns:\s*14fr 58fr 20fr 8fr[\s\S]*?grid-template-columns:\s*14fr 66fr 20fr/,
   );
   assert.match(
     css,
