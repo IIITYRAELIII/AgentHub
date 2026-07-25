@@ -4,7 +4,6 @@ details[data-work-log-day-section] {
 }
 
 summary[data-work-log-day] {
-  float: left;
   font-size: 1em;
   list-style: none;
 }
@@ -22,14 +21,8 @@ details[open] > summary[data-work-log-day]::before {
 }
 
 span[data-day-usage-breakdown] {
-  float: left;
-  font-size: 0.8em;
   margin-left: 0.35em;
   white-space: nowrap;
-}
-
-span[data-day-usage-breakdown] + table {
-  clear: both;
 }
 
 table[data-work-log-table] {

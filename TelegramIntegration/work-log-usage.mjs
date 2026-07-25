@@ -187,13 +187,13 @@ function projectDaySection(section, date, records) {
       + projected.slice(row.match.index + row.match[0].length);
   }
 
-  const summary = dayUnits > 0
-    ? `<summary data-work-log-day><strong>${date}</strong> — <span data-day-usage>${formatConditionalUnits(dayUnits)} у.е.</span></summary>`
-    : `<summary data-work-log-day><strong>${date}</strong></summary>`;
   const breakdown = dayUnits > 0 ? ` ${formatDayUsageBreakdown(dayUsage)}` : "";
+  const summary = dayUnits > 0
+    ? `<summary data-work-log-day><strong>${date}</strong> — <span data-day-usage>${formatConditionalUnits(dayUnits)} у.е.</span>${breakdown}</summary>`
+    : `<summary data-work-log-day><strong>${date}</strong></summary>`;
   return projected.replace(
     /<summary[^>]*>[\s\S]*?<\/summary>(?:\s*(?:<details data-day-usage-details[^>]*>[\s\S]*?<\/details>|<span data-day-usage-breakdown>[\s\S]*?<\/span>))?/i,
-    `${summary}${breakdown}`,
+    summary,
   );
 }
 

@@ -89,7 +89,7 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
     projected,
-    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> — <span data-day-usage>0 К у\.е\.<\/span><\/summary> <span data-day-usage-breakdown>Вход: 0 К \(100%\)&nbsp;&nbsp;Кэш: 0 К \(0%\)&nbsp;&nbsp;Выход: 0 К \(0%\)&nbsp;&nbsp;Думы: 0 К \(0%\)<\/span>/,
+    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> — <span data-day-usage>0 К у\.е\.<\/span> <span data-day-usage-breakdown>Вход: 0 К \(100%\)&nbsp;&nbsp;Кэш: 0 К \(0%\)&nbsp;&nbsp;Выход: 0 К \(0%\)&nbsp;&nbsp;Думы: 0 К \(0%\)<\/span><\/summary>/,
   );
   assert.doesNotMatch(projected, /data-day-usage-details/);
   assert.doesNotMatch(
