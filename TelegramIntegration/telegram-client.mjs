@@ -42,14 +42,22 @@ export class TelegramClient {
     this.typingInterval = null;
   }
 
-  request(method, body) {
+  request(method, body, { timeoutMs = 40_000 } = {}) {
     return callTelegramJson({
       token: this.token,
       method,
       body,
       apiBaseUrl: this.apiBaseUrl,
       fetchImpl: this.fetchImpl,
+      timeoutMs,
     });
+  }
+
+  answerCallback(body, {
+    onError = () => {},
+    timeoutMs = 5_000,
+  } = {}) {
+    void this.request("answerCallbackQuery", body, { timeoutMs }).catch(onError);
   }
 
   async multipart(method, body, fileField, filePath) {
@@ -130,14 +138,18 @@ export class TelegramClient {
     };
     const caption = String(text);
     if (caption.length > 1000) {
-      await sendPhoto({ chat_id: targetChatId });
+      await sendPhoto({ chat_id: targetChatId }).catch(() => undefined);
       return this.sendMessageTo(targetChatId, caption, extra);
     }
-    return sendPhoto({
-      chat_id: targetChatId,
-      caption,
-      ...extra,
-    });
+    try {
+      return await sendPhoto({
+        chat_id: targetChatId,
+        caption,
+        ...extra,
+      });
+    } catch {
+      return this.sendMessageTo(targetChatId, caption, extra);
+    }
   }
 
   async sendLongMessage(text, {

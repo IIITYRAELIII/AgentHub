@@ -64,6 +64,45 @@ test("TelegramClient sends a short status as one media caption", async () => {
   assert.equal(cachedBody.caption, "status 2");
 });
 
+test("TelegramClient falls back to text when a status media request fails", async () => {
+  const { result, requests } = client({
+    fileExists: () => true,
+    readFileImpl: async () => Buffer.from("image"),
+    fetchImpl: async (url, options) => {
+      requests.push({ url: String(url), options });
+      if (String(url).endsWith("/sendPhoto")) throw new Error("media transport failed");
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 2 } }));
+    },
+  });
+
+  const message = await result.sendStatusCard("status", { parse_mode: "HTML" }, ["codex"]);
+
+  assert.equal(message.message_id, 2);
+  assert.equal(requests.length, 2);
+  assert.match(requests[0].url, /sendPhoto$/);
+  assert.match(requests[1].url, /sendMessage$/);
+  assert.equal(JSON.parse(requests[1].options.body).text, "status");
+});
+
+test("TelegramClient answers callbacks in the background and reports transport errors", async () => {
+  let rejectRequest;
+  const errors = [];
+  const { result } = client({
+    fetchImpl: () => new Promise((_resolve, reject) => {
+      rejectRequest = reject;
+    }),
+  });
+
+  const returned = result.answerCallback(
+    { callback_query_id: "callback-1" },
+    { onError: (error) => errors.push(error.message) },
+  );
+  assert.equal(returned, undefined);
+  rejectRequest(new Error("callback transport failed"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(errors, ["Telegram answerCallbackQuery: callback transport failed"]);
+});
+
 test("TelegramClient splits long output and puts speech action on the last part", async () => {
   const { result, requests } = client({
     messageLimit: 10,

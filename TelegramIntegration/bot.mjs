@@ -415,7 +415,13 @@ const telegramClient = new TelegramClient({
   rememberSpeechText: (...args) => mediaController?.rememberSpeechText(...args) ?? null,
   messageLimit: TELEGRAM_LIMIT,
 });
-const telegram = (method, body) => telegramClient.request(method, body);
+const telegram = (method, body) => {
+  if (method !== "answerCallbackQuery") return telegramClient.request(method, body);
+  telegramClient.answerCallback(body, {
+    onError: (error) => console.warn(`Telegram callback acknowledgement failed: ${error.message}`),
+  });
+  return Promise.resolve(undefined);
+};
 const telegramMultipart = (method, body, fileField, filePath) => (
   telegramClient.multipart(method, body, fileField, filePath)
 );
