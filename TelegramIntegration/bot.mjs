@@ -42,6 +42,7 @@ import {
   formatTaskSwitchMessage,
   showLastMessageReplyMarkup,
 } from "./status.mjs";
+import { readCodexTurnUsage } from "./codex-turn-usage.mjs";
 import { randomStatusHeaderFileName } from "./status-header.mjs";
 import { TelegramClient } from "./telegram-client.mjs";
 import {
@@ -3467,7 +3468,7 @@ function runtimeCommandIdentity(environment = {}) {
   throw new Error("Cannot identify the runtime caller");
 }
 
-async function exactRuntimeCommandTurnId(identity, run) {
+async function exactRuntimeCommandTurn(identity, run) {
   if (identity.provider === "codex") {
     const result = await readCodexThread(identity.threadId, {
       fresh: true,
@@ -3478,11 +3479,51 @@ async function exactRuntimeCommandTurnId(identity, run) {
       const turnId = selectExactActiveCodexTurnId(
         await readCodexRolloutActivity(rolloutPath),
       );
-      if (turnId) return turnId;
+      if (turnId) return { turnId, threadResult: result };
     }
   }
-  if (run?.turnId && ["running", "finishing"].includes(run.status)) return run.turnId;
+  if (run?.turnId && ["running", "finishing"].includes(run.status)) {
+    return { turnId: run.turnId, threadResult: null };
+  }
   throw new Error("Cannot bind the deferred notification to one exact active turn");
+}
+
+async function ensureDeferredCodexTurnObserved({
+  identity,
+  project,
+  taskTitle,
+  targetChatId,
+  turnId,
+  threadResult,
+}) {
+  if (identity.provider !== "codex") return null;
+  const task = {
+    provider: "codex",
+    projectRoot: project.path,
+    threadId: identity.threadId,
+    turnId,
+    observer: true,
+  };
+  const snapshot = await readCodexTaskSnapshot(task, { threadResult, fresh: !threadResult });
+  if (!snapshot?.active || snapshot.turnId !== turnId) {
+    throw new Error("Cannot observe the exact Codex turn selected for deferred delivery");
+  }
+  let observed = taskRuns.forTask(task);
+  if (observed) {
+    if (observed.observer !== true) return observed;
+    const previousTurnId = observed.turnId;
+    observed.turnId = turnId;
+    taskRuns.reindex(observed, { turnId: previousTurnId });
+    updateObservedRun(observed, snapshot);
+  } else {
+    observed = observedRun({
+      ...identity,
+      projectRoot: project.path,
+      taskTitle,
+    }, targetChatId, snapshot, turnId);
+  }
+  scheduleObservedRun(observed);
+  return observed;
 }
 
 async function handleRuntimeCommand(request) {
@@ -3557,13 +3598,23 @@ async function handleRuntimeCommand(request) {
       ...identity,
       allowThreadFallback: true,
     });
-    const exactTurnId = await exactRuntimeCommandTurnId(identity, run);
+    const exactTurn = await exactRuntimeCommandTurn(identity, run);
+    const targetChatId = resolveNotificationChatId(config, options.chatId);
+    const taskTitle = runtimeCommandTaskTitle({ ...identity, run });
+    await ensureDeferredCodexTurnObserved({
+      identity,
+      project,
+      taskTitle,
+      targetChatId,
+      turnId: exactTurn.turnId,
+      threadResult: exactTurn.threadResult,
+    });
     const message = turnEndNotifications.registerMessage({
       ...identity,
-      turnId: exactTurnId,
+      turnId: exactTurn.turnId,
       projectRoot: project.path,
-      taskTitle: runtimeCommandTaskTitle({ ...identity, run }),
-      chatId: resolveNotificationChatId(config, options.chatId),
+      taskTitle,
+      chatId: targetChatId,
       category: options.category,
       silent: options.silent,
       workLogId: options.workLogId,
@@ -4096,7 +4147,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
 async function finishObservedRun(run, snapshot) {
   if (taskRuns.forTask(run) !== run) return;
   const completedTurnId = snapshot?.turnId ?? run.turnId;
-  const tracker = run.provider === "codex"
+  let tracker = run.provider === "codex"
     ? snapshot?.tokenTracker ?? consumeTurnTokenTracker(completedTurnId)
     : null;
   updateObservedRun(run, snapshot);
@@ -4111,11 +4162,29 @@ async function finishObservedRun(run, snapshot) {
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
   if (run.provider === "codex") {
     if (!tracker?.reported && run.executionOwner !== TASK_EXECUTION_OWNERS.TELEGRAM) {
-      await waitForTurnEndCompletion({
+      const hooked = await waitForTurnEndCompletion({
         provider: "codex",
         threadId: run.threadId,
         turnId: completedTurnId,
       });
+      if (!hooked?.usageReported) {
+        try {
+          const result = await readCodexThread(run.threadId, {
+            fresh: true,
+            includeTurns: false,
+          });
+          const usageResult = await readCodexTurnUsage(
+            result.thread?.path,
+            completedTurnId,
+          );
+          tracker = {
+            usage: usageResult.usage,
+            reported: usageResult.reported === true,
+          };
+        } catch (error) {
+          console.error(`Cannot read fallback usage for Codex turn ${completedTurnId}:`, error.message);
+        }
+      }
     }
     await finalizeCodexRunDelivery(run, {
       answer,
