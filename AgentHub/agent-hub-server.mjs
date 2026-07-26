@@ -999,7 +999,11 @@ function consumeTurnTokenTracker(turnId) {
 }
 
 function fallbackTurnEndMessage(status) {
-  return status === "completed" ? "Ход завершён." : `Ход завершён со статусом ${status}.`;
+  if (status === "completed") return "Ход завершён.";
+  if (status === "aborted") return "Ход остановлен пользователем.";
+  if (status === "cancelled") return "Ход отменён.";
+  if (status === "failed") return "Ход завершился с ошибкой.";
+  return `Ход завершён со статусом ${status}.`;
 }
 
 function conciseTurnTitle(value, status = "completed") {
