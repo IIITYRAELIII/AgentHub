@@ -111,25 +111,26 @@ table[data-work-log-table] {
   width: 100%;
 }
 
-table[data-work-log-table] colgroup {
+table[data-work-log-table] > colgroup {
   display: none;
 }
 
-table[data-work-log-table] thead,
-table[data-work-log-table] tbody {
+table[data-work-log-table] > thead,
+table[data-work-log-table] > tbody {
   display: block;
   width: 100%;
 }
 
-table[data-work-log-table] tr {
+table[data-work-log-table] > thead > tr,
+table[data-work-log-table] > tbody > tr {
   display: grid;
   grid-template-columns: 14fr 70fr 16fr;
   position: relative;
   width: 100%;
 }
 
-table[data-work-log-table] th,
-table[data-work-log-table] td {
+table[data-work-log-table] > thead > tr > th,
+table[data-work-log-table] > tbody > tr > td {
   min-width: 0;
 }
 
