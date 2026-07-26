@@ -1,9 +1,21 @@
 details[data-work-log-day-section] {
+  background-color: rgba(127, 127, 127, 0.045);
+  border: 1px solid rgba(127, 127, 127, 0.25);
+  border-radius: 0.45em;
+  box-sizing: border-box;
   clear: both;
   display: flow-root;
+  margin: 0.65em 0;
+  padding: 0.4em 0.7em;
+}
+
+details[data-work-log-day-section][open] {
+  background-color: rgba(127, 127, 127, 0.075);
+  padding-bottom: 0.7em;
 }
 
 summary[data-work-log-day] {
+  cursor: pointer;
   font-size: 1em;
   list-style: none;
 }

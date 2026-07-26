@@ -166,6 +166,14 @@ test("work log colors kilo, mega and giga-or-higher usage independently", () => 
 
 test("work log CSS keeps dates equal and shows a compact always-visible turn list", async () => {
   const css = await readFile(new URL("./work-log.css", import.meta.url), "utf8");
+  assert.match(
+    css,
+    /details\[data-work-log-day-section\][\s\S]*?background-color:[\s\S]*?border-radius:[\s\S]*?padding:/,
+  );
+  assert.match(
+    css,
+    /details\[data-work-log-day-section\]\[open\][\s\S]*?background-color:/,
+  );
   assert.match(css, /summary\[data-work-log-day\][\s\S]*?font-size:\s*1em/);
   assert.match(
     css,
