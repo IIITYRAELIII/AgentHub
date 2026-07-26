@@ -84,7 +84,7 @@ summary[data-task-usage] {
   display: flex;
   justify-content: space-between;
   list-style: none;
-  padding: 0.05em 0.4em;
+  padding: 0.3em 0.45em;
   white-space: nowrap;
   width: var(--work-log-task-card-width);
 }
@@ -119,7 +119,7 @@ span[data-task-usage-part] + span[data-task-usage-part] {
 }
 
 table[data-work-log-table] {
-  --work-log-task-card-width: 21ch;
+  --work-log-task-card-width: 26ch;
   display: block;
   width: 100%;
 }
@@ -137,7 +137,7 @@ table[data-work-log-table] > tbody {
 table[data-work-log-table] > thead > tr,
 table[data-work-log-table] > tbody > tr {
   display: grid;
-  grid-template-columns: 23ch minmax(0, 1fr);
+  grid-template-columns: 28ch minmax(0, 1fr);
   position: relative;
   width: 100%;
 }
@@ -270,7 +270,7 @@ td[data-work-log-task-cell] div[data-work-log-task-content] {
   border-radius: 0.25em;
   box-sizing: border-box;
   overflow-wrap: anywhere;
-  padding: 0.05em 0.4em;
+  padding: 0.3em 0.45em;
   width: var(--work-log-task-card-width);
 }
 

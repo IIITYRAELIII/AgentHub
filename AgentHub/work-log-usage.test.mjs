@@ -241,20 +241,20 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
   assert.match(css, /summary\[data-work-log-day\][\s\S]*?font-size:\s*1em/);
   assert.match(
     css,
-    /table\[data-work-log-table\] > thead > tr,[\s\S]*?table\[data-work-log-table\] > tbody > tr[\s\S]*?grid-template-columns:\s*23ch minmax\(0, 1fr\)/,
+    /table\[data-work-log-table\] > thead > tr,[\s\S]*?table\[data-work-log-table\] > tbody > tr[\s\S]*?grid-template-columns:\s*28ch minmax\(0, 1fr\)/,
   );
-  assert.match(css, /--work-log-task-card-width:\s*21ch/);
+  assert.match(css, /--work-log-task-card-width:\s*26ch/);
   assert.match(
     css,
     /table\[data-work-log-turn-table\][\s\S]*?border-spacing:\s*0;[\s\S]*?tr \+ tr > td[\s\S]*?padding-top:\s*0\.35em/,
   );
   assert.match(
     css,
-    /td\[data-work-log-task-cell\] div\[data-work-log-task-content\][\s\S]*?border:[\s\S]*?width:\s*var\(--work-log-task-card-width\)/,
+    /td\[data-work-log-task-cell\] div\[data-work-log-task-content\][\s\S]*?border:[\s\S]*?padding:\s*0\.3em 0\.45em[\s\S]*?width:\s*var\(--work-log-task-card-width\)/,
   );
   assert.match(
     css,
-    /summary\[data-task-usage\][\s\S]*?width:\s*var\(--work-log-task-card-width\)/,
+    /summary\[data-task-usage\][\s\S]*?padding:\s*0\.3em 0\.45em[\s\S]*?width:\s*var\(--work-log-task-card-width\)/,
   );
   assert.doesNotMatch(css, /table\[data-work-log-table\] tr\s*\{/);
   assert.match(
