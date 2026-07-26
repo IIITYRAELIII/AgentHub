@@ -124,7 +124,7 @@ table[data-work-log-table] > tbody {
 table[data-work-log-table] > thead > tr,
 table[data-work-log-table] > tbody > tr {
   display: grid;
-  grid-template-columns: 14fr 70fr 16fr;
+  grid-template-columns: 18fr 82fr;
   position: relative;
   width: 100%;
 }
@@ -201,8 +201,17 @@ div[data-work-log-turn-body-details] {
 }
 
 span[data-work-log-turn-meta] {
+  align-items: baseline;
+  display: flex;
   font-size: 0.9em;
+  gap: 0.5em;
+  justify-content: space-between;
   white-space: nowrap;
+}
+
+span[data-work-log-turn-share] {
+  margin-left: auto;
+  text-align: right;
 }
 
 div[data-work-log-turn-expanded] {
@@ -237,4 +246,12 @@ tr[data-work-log-legacy-outcome] td {
 
 td[data-work-log-turn-list] > details {
   margin-top: 0.3em;
+}
+
+td[data-work-log-task-cell] div[data-work-log-usage] {
+  margin-top: 0.55em;
+}
+
+td[data-work-log-task-cell] details[data-task-usage-details] {
+  width: 100%;
 }

@@ -48,6 +48,7 @@ test("applyWorkLogUsage replaces only the matching per-turn placeholder", () => 
 test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and calculates shares", () => {
   const firstCompletedAt = new Date(2026, 6, 25, 12, 34).toISOString();
   const secondCompletedAt = new Date(2026, 6, 25, 13, 45).toISOString();
+  const firstStartedAt = new Date(2026, 6, 25, 12, 30, 30).toISOString();
   const source = [
     "<details open>",
     "<summary><strong>25.07.2026</strong></summary>",
@@ -65,6 +66,7 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
     first: {
       workLogId: WORK_ID,
       usage: { inputTokens: 50, cachedInputTokens: 0, outputTokens: 0 },
+      startedAt: firstStartedAt,
       completedAt: firstCompletedAt,
       text: "Первый <ход>\nСтрока",
     },
@@ -86,14 +88,20 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.doesNotMatch(projected, /data-work-log-turns-column/);
   assert.match(
     projected,
-    /<th>Задача<\/th><th>Ходы<\/th><th>Расход<\/th>/,
+    /<th>Задача<\/th><th>Ходы<\/th>/,
+  );
+  assert.doesNotMatch(projected, /<th>Расход<\/th>/);
+  assert.match(
+    projected,
+    /data-work-log-task-content>Task A<\/div><div data-work-log-usage><details data-task-usage-details>/,
   );
   assert.match(projected, /data-work-log-legacy-outcome><td colspan="2">Outcome A<\/td>/);
   assert.match(projected, /data-work-log-legacy-outcome><td colspan="2">Outcome B<\/td>/);
   assert.match(
     projected,
-    /<table data-work-log-turn-table>[\s\S]*?data-work-log-turn-meta>12:34 — <span data-kilo-usage>0 кТЭ<\/span>[\s\S]*?data-work-log-turn-title>Первый &lt;ход&gt; Строка<\/span>[\s\S]*?data-work-log-turn-meta>13:45 — <span data-kilo-usage>0 кТЭ<\/span>[\s\S]*?data-work-log-turn-title>Второй &amp; ход<\/span>[\s\S]*?data-work-log-turn-files[^>]*>a\.mjs<\/div>/,
+    /<table data-work-log-turn-table>[\s\S]*?data-work-log-turn-measure>12:34 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Первый &lt;ход&gt; Строка<\/span>[\s\S]*?data-work-log-turn-measure>13:45 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Второй &amp; ход<\/span>[\s\S]*?data-work-log-turn-files[^>]*>a\.mjs<\/div>/,
   );
+  assert.match(projected, /<strong>Продолжительность:<\/strong> 3 мин 30 с/);
   assert.doesNotMatch(projected, /data-work-log-legacy-files/);
   assert.match(projected, /data-day-usage>Итого <span data-kilo-usage>0 кТЭ<\/span>/);
   assert.doesNotMatch(projected, /За день:/);
@@ -116,7 +124,7 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
     projected,
-    /Task B<\/td>[\s\S]*?data-work-log-legacy-outcome><td colspan="2">Outcome B<\/td>[\s\S]*?<td data-work-log-usage><span data-usage-id="323e4567-e89b-42d3-a456-426614174000" hidden>/,
+    /data-work-log-task-content>Task B<\/div><div data-work-log-usage><span data-usage-id="323e4567-e89b-42d3-a456-426614174000" hidden>[\s\S]*?data-work-log-legacy-outcome><td colspan="2">Outcome B<\/td>/,
   );
   assert.equal((projected.match(/data-task-usage>/g) ?? []).length, 2);
   assert.equal((projected.match(/data-task-usage-details/g) ?? []).length, 2);
@@ -161,7 +169,7 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
   assert.match(css, /summary\[data-work-log-day\][\s\S]*?font-size:\s*1em/);
   assert.match(
     css,
-    /table\[data-work-log-table\] > thead > tr,[\s\S]*?table\[data-work-log-table\] > tbody > tr[\s\S]*?grid-template-columns:\s*14fr 70fr 16fr/,
+    /table\[data-work-log-table\] > thead > tr,[\s\S]*?table\[data-work-log-table\] > tbody > tr[\s\S]*?grid-template-columns:\s*18fr 82fr/,
   );
   assert.doesNotMatch(css, /table\[data-work-log-table\] tr\s*\{/);
   assert.match(
@@ -169,6 +177,10 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
     /table\[data-work-log-turn-table\][\s\S]*?table-layout:\s*fixed[\s\S]*?data-work-log-turn-meta-column\][\s\S]*?width:\s*14em/,
   );
   assert.match(css, /details\[data-work-log-turn-details\] > summary[\s\S]*?display:\s*grid/);
+  assert.match(
+    css,
+    /span\[data-work-log-turn-meta\][\s\S]*?display:\s*flex[\s\S]*?justify-content:\s*space-between/,
+  );
   assert.match(css, /summary::-webkit-details-marker[\s\S]*?display:\s*none/);
   assert.match(
     css,

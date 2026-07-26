@@ -837,6 +837,13 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     "an explicitly displayed external turn must keep a normal final notification");
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0,
     "external observer completes only after the external turn really stops", 12_000);
+  const externalJournalTurn = await waitFor(async () => {
+    const ledger = await readJson(workLogLedgerPath).catch(() => null);
+    return Object.values(ledger?.turns ?? {}).find((item) => (
+      String(item.body ?? item.text ?? "").includes("Внешний ход завершён тестом")
+    )) ?? null;
+  }, "external Codex turn context in journal");
+  assert.equal(externalJournalTurn.prompt, "[external-hold] VSCode task");
 
   mark = telegram.calls.length;
   telegram.pushMessage("сообщение после реальной остановки внешнего хода");

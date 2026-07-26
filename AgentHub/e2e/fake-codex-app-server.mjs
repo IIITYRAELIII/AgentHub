@@ -241,6 +241,16 @@ function startExternalTurn(thread, {
     }),
     JSON.stringify({
       timestamp: new Date().toISOString(),
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: prompt }],
+        internal_chat_message_metadata_passthrough: { turn_id: turn.id },
+      },
+    }),
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
       type: "event_msg",
       payload: {
         type: "user_message",

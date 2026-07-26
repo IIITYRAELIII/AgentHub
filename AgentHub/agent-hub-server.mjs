@@ -1006,13 +1006,27 @@ function structuredTurnText(title, body) {
   return [String(title ?? "").trim(), String(body ?? "").trim()].filter(Boolean).join("\n\n");
 }
 
+function applyCodexRolloutContext(run, usageResult) {
+  if (!run || !usageResult) return;
+  if (usageResult.startedAt) run.startedAt = usageResult.startedAt;
+  if (usageResult.prompt) run.promptPreview = String(usageResult.prompt).slice(0, 100_000);
+  const changedFiles = [];
+  for (const file of Array.isArray(usageResult.changedFiles) ? usageResult.changedFiles : []) {
+    const absolute = path.isAbsolute(file) ? path.resolve(file) : path.resolve(run.projectRoot, file);
+    const relative = path.relative(run.projectRoot, absolute);
+    if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+    changedFiles.push(relative.replaceAll(path.sep, "/"));
+  }
+  if (changedFiles.length) run.rolloutChangedFiles = [...new Set(changedFiles)];
+}
+
 function changedFilesForRun(run) {
   const diff = String(run?.latestDiff ?? "");
   const repoRoot = String(
     run?.gitBaseline?.projectRoot ?? run?.gitBaseline?.repoRoot ?? "",
   ).trim();
   if (!diff || !repoRoot) return [];
-  const files = new Set();
+  const files = new Set(Array.isArray(run?.rolloutChangedFiles) ? run.rolloutChangedFiles : []);
   for (const match of diff.matchAll(/^(?:\+\+\+|---) (.+)$/gm)) {
     const token = match[1].trim();
     let gitPath = token;
@@ -3673,6 +3687,17 @@ async function ensureDeferredCodexTurnObserved({
     }, targetChatId, snapshot, turnId);
     observed.exactTurnObserver = true;
   }
+  const rolloutPath = String(threadResult?.thread?.path ?? "").trim();
+  if (rolloutPath) {
+    try {
+      applyCodexRolloutContext(
+        observed,
+        await readCodexTurnUsage(rolloutPath, turnId, { attempts: 1 }),
+      );
+    } catch (error) {
+      console.error(`Cannot read Codex turn context ${turnId}:`, error.message);
+    }
+  }
   scheduleObservedRun(observed);
   return observed;
 }
@@ -4441,7 +4466,7 @@ async function finishObservedRun(run, snapshot) {
             usage: usageResult.usage,
             reported: usageResult.reported === true,
           };
-          if (usageResult.startedAt) run.startedAt = usageResult.startedAt;
+          applyCodexRolloutContext(run, usageResult);
         } catch (error) {
           console.error(`Cannot read fallback usage for Codex turn ${completedTurnId}:`, error.message);
         }

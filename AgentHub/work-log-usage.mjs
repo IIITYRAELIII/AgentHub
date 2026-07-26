@@ -145,10 +145,21 @@ function formatCompletedAt(value) {
   return `${twoDigits(completedAt.getHours())}:${twoDigits(completedAt.getMinutes())}`;
 }
 
-function formatStartedAt(value) {
-  const startedAt = new Date(String(value ?? ""));
-  if (!Number.isFinite(startedAt.getTime())) return "неизвестно";
-  return `${twoDigits(startedAt.getHours())}:${twoDigits(startedAt.getMinutes())}:${twoDigits(startedAt.getSeconds())}`;
+function formatDuration(startedValue, completedValue) {
+  const startedAt = new Date(String(startedValue ?? ""));
+  const completedAt = new Date(String(completedValue ?? ""));
+  if (!Number.isFinite(startedAt.getTime()) || !Number.isFinite(completedAt.getTime())) {
+    return "неизвестно";
+  }
+  const totalSeconds = Math.max(0, Math.round((completedAt.getTime() - startedAt.getTime()) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor(totalSeconds % 3600 / 60);
+  const seconds = totalSeconds % 60;
+  return [
+    hours ? `${hours} ч` : "",
+    minutes ? `${minutes} мин` : "",
+    `${seconds} с`,
+  ].filter(Boolean).join(" ");
 }
 
 function escapeHtmlText(value) {
@@ -180,17 +191,23 @@ function changedFileLinks(files) {
     .join("; ");
 }
 
-function formatTurnEntry(record, legacyFiles = "") {
+function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
+  const recordUnits = record?.usageReported === false ? 0 : turnConditionalUnits(record?.usage);
   const units = record?.usageReported === false
     ? "нет данных"
-    : highlightUsageUnits(formatConditionalUnits(turnConditionalUnits(record?.usage)));
+    : highlightUsageUnits(formatConditionalUnits(recordUnits));
+  const share = taskUnits > 0 && record?.usageReported !== false
+    ? `${Math.round(recordUnits / taskUnits * 100)}%`
+    : "";
   const title = escapeHtmlText(turnTitle(record));
   const body = escapeHtmlText(String(record?.body ?? record?.text ?? "").trim());
   const prompt = escapeHtmlText(String(record?.prompt ?? "").trim());
   const files = changedFileLinks(record?.changedFiles);
   const migratedFiles = String(legacyFiles ?? "").trim();
   const metaDetails = [
-    `<div data-work-log-turn-context><strong>Начало:</strong> ${formatStartedAt(record?.startedAt)}</div>`,
+    `<div data-work-log-turn-context><strong>Продолжительность:</strong> ${
+      formatDuration(record?.startedAt, record?.completedAt)
+    }</div>`,
     prompt ? `<div data-work-log-turn-prompt><strong>Запрос:</strong> ${prompt}</div>` : "",
   ].filter(Boolean).join("");
   const bodyDetails = [
@@ -204,7 +221,10 @@ function formatTurnEntry(record, legacyFiles = "") {
     + '<td colspan="2" data-work-log-turn-row>'
     + "<details data-work-log-turn-details>"
     + "<summary>"
-    + `<span data-work-log-turn-meta>${formatCompletedAt(record?.completedAt)} — ${units}</span>`
+    + '<span data-work-log-turn-meta>'
+    + `<span data-work-log-turn-measure>${formatCompletedAt(record?.completedAt)} — ${units}</span>`
+    + (share ? `<span data-work-log-turn-share>(${share})</span>` : "")
+    + "</span>"
     + `<span data-work-log-turn-title>${title}</span>`
     + "</summary>"
     + '<div data-work-log-turn-expanded>'
@@ -214,6 +234,12 @@ function formatTurnEntry(record, legacyFiles = "") {
 }
 
 function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
+  const taskUnits = records.reduce(
+    (total, record) => total + (
+      record?.usageReported === false ? 0 : turnConditionalUnits(record?.usage)
+    ),
+    0,
+  );
   const legacyFilesTarget = records.findLastIndex((record) => record?.workLogId) >= 0
     ? records.findLastIndex((record) => record?.workLogId)
     : records.length - 1;
@@ -221,6 +247,7 @@ function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
     .map((record, index) => formatTurnEntry(
       record,
       index === legacyFilesTarget ? legacyFiles : "",
+      taskUnits,
     ))
     .join("\n");
   const legacy = legacyOutcome
@@ -290,8 +317,8 @@ function topLevelElements(source, tagName) {
 
 function appendMarkerToRow(row, workLogId) {
   const cells = topLevelElements(row, "td");
-  if (cells.length < 3) throw new Error("WORK_LOG task row must contain a usage cell");
-  const usageCell = cells[2];
+  if (cells.length < 2) throw new Error("WORK_LOG task row must contain task and turn cells");
+  const usageCell = cells.length >= 3 ? cells[2] : cells[0];
   const marker = `<span data-usage-id="${workLogId}" hidden>${workLogId}</span>`;
   const updatedCell = usageCell.text.replace(/<\/td>$/i, `\n${marker}</td>`);
   return `${row.slice(0, usageCell.start)}${updatedCell}${row.slice(usageCell.end)}`;
@@ -317,9 +344,11 @@ function taskRow({ provider = "codex", threadId, taskTitle, workLogId = null }) 
     : "";
   return [
     `<tr data-work-log-provider="${escapedProvider}" data-work-log-thread-id="${escapedThreadId}">`,
-    `<td>${taskCell({ provider: normalizedProvider, threadId, taskTitle })}</td>`,
+    '<td data-work-log-task-cell>',
+    `<div data-work-log-task-content>${taskCell({ provider: normalizedProvider, threadId, taskTitle })}</div>`,
+    `<div data-work-log-usage>${marker}</div>`,
+    "</td>",
     "<td data-work-log-turn-list></td>",
-    `<td>${marker}</td>`,
     "</tr>",
   ].join("\n");
 }
@@ -332,13 +361,11 @@ function workLogDaySection(date, row, open = false) {
     "<colgroup>",
     "<col data-work-log-task-column>",
     "<col data-work-log-turn-list-column>",
-    "<col data-work-log-usage-column>",
     "</colgroup>",
     "<thead>",
     "<tr>",
     "<th>Задача</th>",
     "<th>Ходы</th>",
-    "<th>Расход</th>",
     "</tr>",
     "</thead>",
     "<tbody>",
@@ -439,7 +466,7 @@ function legacyOutcome(source) {
 }
 
 function taskCellKey(source) {
-  return String(source ?? "")
+  return taskCellContent(source)
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -447,6 +474,18 @@ function taskCellKey(source) {
 
 function cellInner(source) {
   return String(source ?? "").replace(/^<td\b[^>]*>/i, "").replace(/<\/td>$/i, "").trim();
+}
+
+function taskCellContent(source) {
+  const text = String(source ?? "");
+  const explicit = text.match(
+    /<div\b[^>]*data-work-log-task-content[^>]*>([\s\S]*?)<\/div>/iu,
+  )?.[1]?.trim();
+  if (explicit) return explicit;
+  return cellInner(text)
+    .replace(/<div\b[^>]*data-work-log-usage[^>]*>[\s\S]*?<\/div>/giu, "")
+    .replace(/<span\b[^>]*data-usage-id[^>]*>[\s\S]*?<\/span>/giu, "")
+    .trim();
 }
 
 export function restoreLegacyOutcomes(workLogText, previousWorkLogText) {
@@ -526,7 +565,7 @@ function ensureCanonicalRows(section, date, turns) {
   }
   for (const [key, records] of groups) {
     const [provider, threadId] = key.split("\0");
-    const rows = topLevelElements(updated, "tr").filter((row) => topLevelElements(row.text, "td").length >= 3);
+    const rows = topLevelElements(updated, "tr").filter((row) => topLevelElements(row.text, "td").length >= 2);
     if (rows.some((row) => {
       const identity = rowIdentity(row.text);
       return identity?.provider === provider && identity.threadId === threadId;
@@ -557,10 +596,11 @@ function ensureCanonicalRows(section, date, turns) {
 
 function replaceProjectedCells(row, usageContent, records) {
   const cells = topLevelElements(row, "td");
-  if (cells.length < 3) return row;
+  if (cells.length < 2) return row;
   const opening = row.match(/^<tr\b[^>]*>/i)?.[0] ?? "<tr>";
-  const changedFiles = changedFilesContent(cells[1].text);
-  const outcome = legacyOutcome(cells[1].text);
+  const turnCell = cells.find((cell) => /\bdata-work-log-turn-list\b/i.test(cell.text)) ?? cells[1];
+  const changedFiles = changedFilesContent(turnCell.text);
+  const outcome = legacyOutcome(turnCell.text);
   const turnTable = records.length || outcome
     ? formatTurnTable(records, outcome, changedFiles)
     : "";
@@ -572,11 +612,12 @@ function replaceProjectedCells(row, usageContent, records) {
     (left, right) => (Date.parse(left.completedAt) || 0) - (Date.parse(right.completedAt) || 0),
   ).at(-1);
   const task = identity && latest?.taskTitle
-    ? `<td>${taskCell({ ...identity, taskTitle: latest.taskTitle })}</td>`
-    : cells[0].text;
-  return `${opening}\n${task}\n`
-    + `<td data-work-log-turn-list>${turnList}</td>\n`
-    + `<td data-work-log-usage>${usageContent}</td>\n</tr>`;
+    ? taskCell({ ...identity, taskTitle: latest.taskTitle })
+    : taskCellContent(cells[0].text);
+  return `${opening}\n<td data-work-log-task-cell>`
+    + `<div data-work-log-task-content>${task}</div>`
+    + `<div data-work-log-usage>${usageContent}</div></td>\n`
+    + `<td data-work-log-turn-list>${turnList}</td>\n</tr>`;
 }
 
 function markWorkLogTable(section) {
@@ -591,13 +632,12 @@ function markWorkLogTable(section) {
       "<colgroup>",
       "<col data-work-log-task-column>",
       "<col data-work-log-turn-list-column>",
-      "<col data-work-log-usage-column>",
       "</colgroup>",
     ].join("\n"),
   );
   return marked.replace(
     /<thead>[\s\S]*?<\/thead>/i,
-    "<thead>\n<tr><th>Задача</th><th>Ходы</th><th>Расход</th></tr>\n</thead>",
+    "<thead>\n<tr><th>Задача</th><th>Ходы</th></tr>\n</thead>",
   );
 }
 
@@ -612,7 +652,7 @@ function markDaySection(section) {
 function projectDaySection(section, date, turns, recordsById) {
   const markedSection = markWorkLogTable(markDaySection(ensureCanonicalRows(section, date, turns)));
   const rows = topLevelElements(markedSection, "tr")
-    .filter((match) => topLevelElements(match.text, "td").length >= 3)
+    .filter((match) => topLevelElements(match.text, "td").length >= 2)
     .map((match) => {
       const ids = [...new Set(usageIds(match.text))];
       const identity = rowIdentity(match.text);
@@ -636,6 +676,9 @@ function projectDaySection(section, date, turns, recordsById) {
         emptyTokenUsage(),
       );
       const cells = topLevelElements(match.text, "td");
+      const turnCell = cells.find(
+        (cell) => /\bdata-work-log-turn-list\b/i.test(cell.text),
+      ) ?? cells[1];
       return {
         match,
         ids,
@@ -643,7 +686,7 @@ function projectDaySection(section, date, turns, recordsById) {
         usage,
         units: turnConditionalUnits(usage),
         identity,
-        hasLegacyOutcome: Boolean(legacyOutcome(cells[1]?.text)),
+        hasLegacyOutcome: Boolean(legacyOutcome(turnCell?.text)),
       };
     })
     .filter((row) => row.ids.length || row.recorded.length || row.hasLegacyOutcome);
