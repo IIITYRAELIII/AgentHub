@@ -375,6 +375,13 @@ test("a fresh usage store reprojects an existing work log with its persisted led
           usage: { inputTokens: 1_756_500 },
           completedAt: "2026-07-25T00:00:00.000Z",
           text: "Сохранённый результат",
+          prompt: [
+            "# Response annotations:",
+            "<response-annotations>",
+            '[{"text":"Старый ответ","annotation":"Сохранённый вопрос"}]',
+            "</response-annotations>",
+            "## My request for Codex:",
+          ].join("\n"),
         },
       },
     })}\n`, "utf8");
@@ -391,7 +398,12 @@ test("a fresh usage store reprojects an existing work log with its persisted led
     const projected = await readFile(workLogFile, "utf8");
     assert.match(projected, /data-task-usage>Итого <span data-mega-usage>1,757 МТЭ<\/span> <span data-usage-percent>\(100%\)<\/span>/);
     assert.match(projected, /data-work-log-turn-body>Сохранённый результат<\/div>/);
+    assert.match(projected, /<strong>Запрос:<\/strong> Сохранённый вопрос/);
+    assert.doesNotMatch(projected, /response-annotations|Старый ответ/);
     assert.doesNotMatch(projected, /data-mega-usage>[^<]*кТЭ/);
+    await store.mergeTurnTexts([{ workLogId: WORK_ID, text: "Обновлённый результат" }]);
+    const persisted = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.equal(persisted.turns.turn.prompt, "Сохранённый вопрос");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

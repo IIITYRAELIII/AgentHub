@@ -56,7 +56,7 @@ function normalizedLedger(value = {}) {
         taskTitle: String(record?.taskTitle ?? "").trim(),
         title: String(record?.title ?? "").trim(),
         body: String(record?.body ?? record?.text ?? "").trim(),
-        prompt: String(record?.prompt ?? "").trim(),
+        prompt: displayUserPrompt(record?.prompt),
         changedFiles: Array.isArray(record?.changedFiles)
           ? record.changedFiles.map((file) => String(file).trim()).filter(Boolean)
           : [],
