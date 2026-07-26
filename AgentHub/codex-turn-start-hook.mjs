@@ -46,37 +46,46 @@ export async function handleCodexTurnStartHook(value, {
 } = {}) {
   const input = validateTurnStartHookInput(value);
   const startedAt = now().toISOString();
-  const gitBaseline = await captureBaseline(
-    input.projectRoot,
-    dataDir,
-    `codex-turn-${input.turnId}`,
-  );
-  const payload = {
+  const basePayload = {
     provider: "codex",
     threadId: input.threadId,
     turnId: input.turnId,
     projectRoot: input.projectRoot,
     prompt: input.prompt || null,
     startedAt,
-    gitBaseline,
     source: "codex-user-prompt-submit-hook",
   };
-  const args = [JSON.stringify(payload)];
-  try {
-    await forward("turn-start", args, {
-      cwd: input.projectRoot,
-      environment: { ...environment, CODEX_THREAD_ID: input.threadId },
-      timeoutMs: 10_000,
-    });
-    return { queued: false, payload };
-  } catch (error) {
-    if (!runtimeCommandUnavailable(error)) throw error;
-    await enqueue("turn-start", args, {
-      cwd: input.projectRoot,
-      environment: { ...environment, CODEX_THREAD_ID: input.threadId },
-    });
-    return { queued: true, payload };
-  }
+  const register = async (payload) => {
+    const args = [JSON.stringify(payload)];
+    try {
+      await forward("turn-start", args, {
+        cwd: input.projectRoot,
+        environment: { ...environment, CODEX_THREAD_ID: input.threadId },
+        timeoutMs: 10_000,
+      });
+      return false;
+    } catch (error) {
+      if (!runtimeCommandUnavailable(error)) throw error;
+      await enqueue("turn-start", args, {
+        cwd: input.projectRoot,
+        environment: { ...environment, CODEX_THREAD_ID: input.threadId },
+      });
+      return true;
+    }
+  };
+
+  // Persist the exact prompt before the potentially expensive multi-repository
+  // Git snapshot. Codex limits hook execution time, so snapshotting first could
+  // lose the prompt entirely when a large workspace exceeded that limit.
+  const initiallyQueued = await register({ ...basePayload, gitBaseline: null });
+  const gitBaseline = await captureBaseline(
+    input.projectRoot,
+    dataDir,
+    `codex-turn-${input.turnId}`,
+  );
+  const payload = { ...basePayload, gitBaseline };
+  const baselineQueued = await register(payload);
+  return { queued: initiallyQueued || baselineQueued, payload };
 }
 
 export async function main() {

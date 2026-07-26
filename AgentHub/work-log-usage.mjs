@@ -180,7 +180,7 @@ function changedFileLinks(files) {
     .join("; ");
 }
 
-function formatTurnEntry(record) {
+function formatTurnEntry(record, legacyFiles = "") {
   const units = record?.usageReported === false
     ? "нет данных"
     : highlightUsageUnits(formatConditionalUnits(turnConditionalUnits(record?.usage)));
@@ -188,13 +188,17 @@ function formatTurnEntry(record) {
   const body = escapeHtmlText(String(record?.body ?? record?.text ?? "").trim());
   const prompt = escapeHtmlText(String(record?.prompt ?? "").trim());
   const files = changedFileLinks(record?.changedFiles);
+  const migratedFiles = String(legacyFiles ?? "").trim();
   const metaDetails = [
     `<div data-work-log-turn-context><strong>Начало:</strong> ${formatStartedAt(record?.startedAt)}</div>`,
-    prompt ? `<div data-work-log-turn-prompt>${prompt}</div>` : "",
+    prompt ? `<div data-work-log-turn-prompt><strong>Запрос:</strong> ${prompt}</div>` : "",
   ].filter(Boolean).join("");
   const bodyDetails = [
     body ? `<div data-work-log-turn-body>${body}</div>` : "",
     files ? `<div data-work-log-turn-files>${files}</div>` : "",
+    migratedFiles
+      ? `<div data-work-log-turn-files data-work-log-migrated-files>${migratedFiles}</div>`
+      : "",
   ].filter(Boolean).join("");
   return `<tr data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}">`
     + '<td colspan="2" data-work-log-turn-row>'
@@ -209,8 +213,16 @@ function formatTurnEntry(record) {
     + "</div></details></td></tr>";
 }
 
-function formatTurnTable(records, legacyOutcome = "") {
-  const turns = records.map(formatTurnEntry).join("\n");
+function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
+  const legacyFilesTarget = records.findLastIndex((record) => record?.workLogId) >= 0
+    ? records.findLastIndex((record) => record?.workLogId)
+    : records.length - 1;
+  const turns = records
+    .map((record, index) => formatTurnEntry(
+      record,
+      index === legacyFilesTarget ? legacyFiles : "",
+    ))
+    .join("\n");
   const legacy = legacyOutcome
     ? `<tr data-work-log-legacy-outcome><td colspan="2">${legacyOutcome}</td></tr>`
     : "";
@@ -400,6 +412,8 @@ function changedFilesContent(source) {
   return text.match(
     /<div\b[^>]*data-work-log-legacy-files[^>]*>([\s\S]*?)<\/div>/iu,
   )?.[1]?.trim() ?? text.match(
+    /<div\b[^>]*data-work-log-migrated-files[^>]*>([\s\S]*?)<\/div>/iu,
+  )?.[1]?.trim() ?? text.match(
     /<details\b[^>]*>\s*<summary\b[^>]*>\s*Изменённые файлы\s*<\/summary>([\s\S]*?)<\/details>/iu,
   )?.[1]?.trim() ?? "";
 }
@@ -547,11 +561,12 @@ function replaceProjectedCells(row, usageContent, records) {
   const opening = row.match(/^<tr\b[^>]*>/i)?.[0] ?? "<tr>";
   const changedFiles = changedFilesContent(cells[1].text);
   const outcome = legacyOutcome(cells[1].text);
-  const turnTable = records.length || outcome ? formatTurnTable(records, outcome) : "";
-  const turnList = [
-    turnTable,
-    changedFiles ? `<div data-work-log-legacy-files>${changedFiles}</div>` : "",
-  ].filter(Boolean).join("\n");
+  const turnTable = records.length || outcome
+    ? formatTurnTable(records, outcome, changedFiles)
+    : "";
+  const turnList = turnTable || (
+    changedFiles ? `<div data-work-log-legacy-files>${changedFiles}</div>` : ""
+  );
   const identity = rowIdentity(row);
   const latest = [...records].sort(
     (left, right) => (Date.parse(left.completedAt) || 0) - (Date.parse(right.completedAt) || 0),
