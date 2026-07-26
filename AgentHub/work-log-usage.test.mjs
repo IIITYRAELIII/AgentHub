@@ -241,7 +241,16 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
   assert.match(css, /summary\[data-work-log-day\][\s\S]*?font-size:\s*1em/);
   assert.match(
     css,
-    /table\[data-work-log-table\] > thead > tr,[\s\S]*?table\[data-work-log-table\] > tbody > tr[\s\S]*?grid-template-columns:\s*18fr 82fr/,
+    /table\[data-work-log-table\] > thead > tr,[\s\S]*?table\[data-work-log-table\] > tbody > tr[\s\S]*?grid-template-columns:\s*23ch minmax\(0, 1fr\)/,
+  );
+  assert.match(css, /--work-log-task-card-width:\s*21ch/);
+  assert.match(
+    css,
+    /td\[data-work-log-task-cell\] div\[data-work-log-task-content\][\s\S]*?border:[\s\S]*?width:\s*var\(--work-log-task-card-width\)/,
+  );
+  assert.match(
+    css,
+    /summary\[data-task-usage\][\s\S]*?width:\s*var\(--work-log-task-card-width\)/,
   );
   assert.doesNotMatch(css, /table\[data-work-log-table\] tr\s*\{/);
   assert.match(

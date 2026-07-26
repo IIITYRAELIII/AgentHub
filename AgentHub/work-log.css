@@ -86,7 +86,7 @@ summary[data-task-usage] {
   list-style: none;
   padding: 0.05em 0.4em;
   white-space: nowrap;
-  width: 21ch;
+  width: var(--work-log-task-card-width);
 }
 
 summary[data-task-usage]::-webkit-details-marker {
@@ -94,7 +94,7 @@ summary[data-task-usage]::-webkit-details-marker {
 }
 
 details[data-task-usage-details] {
-  width: 21ch;
+  width: var(--work-log-task-card-width);
 }
 
 span[data-task-usage-breakdown] {
@@ -102,7 +102,7 @@ span[data-task-usage-breakdown] {
   border-radius: 0.25em;
   display: block;
   overflow: hidden;
-  width: 21ch;
+  width: var(--work-log-task-card-width);
 }
 
 span[data-task-usage-part] {
@@ -119,6 +119,7 @@ span[data-task-usage-part] + span[data-task-usage-part] {
 }
 
 table[data-work-log-table] {
+  --work-log-task-card-width: 21ch;
   display: block;
   width: 100%;
 }
@@ -136,7 +137,7 @@ table[data-work-log-table] > tbody {
 table[data-work-log-table] > thead > tr,
 table[data-work-log-table] > tbody > tr {
   display: grid;
-  grid-template-columns: 18fr 82fr;
+  grid-template-columns: 23ch minmax(0, 1fr);
   position: relative;
   width: 100%;
 }
@@ -260,10 +261,19 @@ td[data-work-log-turn-list] > details {
   margin-top: 0.3em;
 }
 
+td[data-work-log-task-cell] div[data-work-log-task-content] {
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  border-radius: 0.25em;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  padding: 0.05em 0.4em;
+  width: var(--work-log-task-card-width);
+}
+
 td[data-work-log-task-cell] div[data-work-log-usage] {
-  margin-top: 0.55em;
+  margin-top: 0.35em;
 }
 
 td[data-work-log-task-cell] details[data-task-usage-details] {
-  width: 100%;
+  width: var(--work-log-task-card-width);
 }
