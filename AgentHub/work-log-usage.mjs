@@ -591,6 +591,32 @@ function ensureCanonicalRows(section, date, turns) {
     if (insertion < 0) throw new Error(`WORK_LOG day ${date} has no table body`);
     updated = `${updated.slice(0, insertion)}${row}\n${updated.slice(insertion)}`;
   }
+  const rows = topLevelElements(updated, "tr")
+    .filter((row) => topLevelElements(row.text, "td").length >= 2);
+  const linkedRows = new Map();
+  for (const row of rows) {
+    if (rowIdentity(row.text)) continue;
+    const threadId = linkedThreadId(row.text);
+    if (!threadId) continue;
+    const values = linkedRows.get(threadId) ?? [];
+    values.push(row);
+    linkedRows.set(threadId, values);
+  }
+  const datedTurns = Object.values(turns).filter((record) => formatLocalDate(record.completedAt) === date);
+  const identityTargets = [];
+  for (const [threadId, matches] of linkedRows) {
+    if (matches.length !== 1) continue;
+    if (!datedTurns.some((record) => record.provider === "codex" && record.threadId === threadId)) {
+      continue;
+    }
+    identityTargets.push({ target: matches[0], threadId });
+  }
+  for (const { target, threadId } of identityTargets.sort(
+    (left, right) => right.target.start - left.target.start,
+  )) {
+    const replacement = withRowIdentity(target.text, { provider: "codex", threadId });
+    updated = `${updated.slice(0, target.start)}${replacement}${updated.slice(target.end)}`;
+  }
   return updated;
 }
 

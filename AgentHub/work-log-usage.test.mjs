@@ -149,6 +149,70 @@ test("projectWorkLogUsage marks every day as an independent layout section", () 
   assert.equal((projected.match(/summary data-work-log-day/g) ?? []).length, 2);
 });
 
+test("projectWorkLogUsage canonicalizes a unique legacy row and refreshes its task title", () => {
+  const workLogId = "823e4567-e89b-42d3-a456-426614174000";
+  const completedAt = new Date(2026, 6, 27, 10, 0).toISOString();
+  const source = "<details open><summary><strong>27.07.2026</strong></summary><table><tbody>"
+    + '<tr><td><a href="vscode://openai.chatgpt/local/thread-legacy">Codex - Старое имя</a></td>'
+    + `<td></td><td><span data-usage-id="${workLogId}" hidden></span></td></tr>`
+    + "</tbody></table></details>";
+  const turns = {
+    "codex\0thread-legacy\0turn-legacy": {
+      provider: "codex",
+      threadId: "thread-legacy",
+      turnId: "turn-legacy",
+      workLogId,
+      taskTitle: "Название из Agent Hub",
+      completedAt,
+      usageReported: true,
+      usage: { inputTokens: 100 },
+    },
+  };
+
+  const projected = projectWorkLogUsage(source, turns);
+
+  assert.match(
+    projected,
+    /<tr data-work-log-provider="codex" data-work-log-thread-id="thread-legacy">/,
+  );
+  assert.match(projected, />Codex - Название из Agent Hub<\/a>/);
+  assert.doesNotMatch(projected, />Codex - Старое имя<\/a>/);
+});
+
+test("projectWorkLogUsage keeps ambiguous legacy rows with one thread separate", () => {
+  const firstId = "923e4567-e89b-42d3-a456-426614174000";
+  const secondId = "a23e4567-e89b-42d3-a456-426614174000";
+  const completedAt = new Date(2026, 6, 26, 10, 0).toISOString();
+  const source = "<details><summary><strong>26.07.2026</strong></summary><table><tbody>"
+    + '<tr><td><a href="vscode://openai.chatgpt/local/thread-shared">Codex - Первая работа</a></td>'
+    + `<td></td><td><span data-usage-id="${firstId}" hidden></span></td></tr>`
+    + '<tr><td><a href="vscode://openai.chatgpt/local/thread-shared">Codex - Вторая работа</a></td>'
+    + `<td></td><td><span data-usage-id="${secondId}" hidden></span></td></tr>`
+    + "</tbody></table></details>";
+  const turns = Object.fromEntries([
+    ["turn-first", firstId],
+    ["turn-second", secondId],
+  ].map(([turnId, workLogId]) => [
+    `codex\0thread-shared\0${turnId}`,
+    {
+      provider: "codex",
+      threadId: "thread-shared",
+      turnId,
+      workLogId,
+      taskTitle: "Общее имя",
+      completedAt,
+      usageReported: true,
+      usage: { inputTokens: 100 },
+    },
+  ]));
+
+  const projected = projectWorkLogUsage(source, turns);
+
+  assert.equal((projected.match(/data-work-log-thread-id="thread-shared"/g) ?? []).length, 0);
+  assert.match(projected, />Codex - Первая работа<\/a>/);
+  assert.match(projected, />Codex - Вторая работа<\/a>/);
+});
+
 test("work log colors kilo, mega and giga-or-higher usage independently", () => {
   const source = `<details><summary><strong>25.07.2026</strong></summary><table><tbody>`
     + `<tr><td>Task</td><td></td><td><span data-usage-id="${GIGA_WORK_ID}" hidden></span></td></tr>`
