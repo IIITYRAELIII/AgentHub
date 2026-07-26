@@ -43,9 +43,9 @@ import {
   showLastMessageReplyMarkup,
 } from "./status.mjs";
 import {
-  readCodexRecentTerminalTurns,
   readCodexTurnUsage,
 } from "./codex-turn-usage.mjs";
+import { CodexTerminalAudit } from "./codex-terminal-audit.mjs";
 import { routeCodexFinalDelivery } from "./codex-final-delivery.mjs";
 import { randomStatusHeaderFileName } from "./status-header.mjs";
 import { TelegramClient } from "./telegram-client.mjs";
@@ -352,12 +352,8 @@ let deliveryOutboxTimer = null;
 let deliveryOutboxTimerDueAt = 0;
 let selectedTaskWatchTimer = null;
 let selectedTaskWatchInFlight = false;
-let recentCodexTerminalAuditInFlight = false;
 const reconcilingCodexTerminalTurns = new Set();
-const recentCodexTerminalAuditCache = new Map();
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
-const RECENT_CODEX_TERMINAL_LIMIT = 25;
-const RECENT_CODEX_TERMINAL_WINDOW_MS = 30 * 60_000;
 const COMPLETED_CODEX_TERMINAL_GRACE_MS = 10_000;
 const EXTERNAL_TASK_POLL_INTERVAL_MS = 1_500;
 const MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS = 5_000;
@@ -367,6 +363,17 @@ const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
 const codexTurnStarts = new Map();
+const codexTerminalAudit = new CodexTerminalAudit({
+  listPage: (cursor, limit) => sendRpc("thread/list", {
+    cursor,
+    limit,
+    sortKey: "updated_at",
+    sortDirection: "desc",
+    sourceKinds: CODEX_TASK_SOURCE_KINDS,
+  }),
+  resolveProject: (thread) => findProject(thread.cwd),
+  reconcile: reconcileRecentCodexTerminalTurn,
+});
 const turnTemporaryFiles = new Map();
 const turnSpeechButtons = new Map();
 const taskRuns = new TaskRunRegistry();
@@ -1503,6 +1510,7 @@ try {
       codexTurnStarts.set(entry[0], entry[1]);
     }
   }
+  codexTerminalAudit.restore(saved.codexTerminalAudit);
   restoredTurnEndSnapshot = saved.turnEndNotifications ?? {};
   turnEndNotifications.restore(restoredTurnEndSnapshot);
   if (Array.isArray(saved.dismissedExternalTasks)) {
@@ -4625,16 +4633,11 @@ async function pollObservedRun(run) {
   return taskObserver.poll(run);
 }
 
-function codexThreadUpdatedAtMs(thread) {
-  const numeric = Number(thread?.updatedAt);
-  if (Number.isFinite(numeric) && numeric > 0) {
-    return numeric < 1_000_000_000_000 ? numeric * 1_000 : numeric;
-  }
-  const parsed = Date.parse(String(thread?.updatedAt ?? ""));
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
 async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
+  const completedAtMs = Date.parse(String(terminal?.completedAt ?? ""));
+  if (terminal?.status === "completed"
+    && Number.isFinite(completedAtMs)
+    && Date.now() - completedAtMs < COMPLETED_CODEX_TERMINAL_GRACE_MS) return false;
   const identity = {
     provider: "codex",
     threadId: String(thread.id),
@@ -4643,11 +4646,11 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
   const key = turnEndKey(identity);
   if (turnEndNotifications.hasDelivered(identity)
     || turnEndNotifications.get(identity)
-    || reconcilingCodexTerminalTurns.has(key)) return;
+    || reconcilingCodexTerminalTurns.has(key)) return true;
   reconcilingCodexTerminalTurns.add(key);
   try {
     const usageResult = await readCodexTurnUsage(thread.path, identity.turnId);
-    if (!usageResult.terminal) return;
+    if (!usageResult.terminal) return false;
     const changedFiles = (usageResult.changedFiles ?? []).flatMap((file) => {
       const absolute = path.resolve(String(file));
       const relative = path.relative(project.path, absolute);
@@ -4673,58 +4676,22 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       await deliverTurnEndNotification(completion);
       console.log(`Recovered unhooked Codex terminal turn ${identity.turnId} (${completion.status})`);
     }
+    return true;
   } catch (error) {
     console.error(`Cannot recover unhooked Codex turn ${identity.turnId}:`, error.message);
+    throw error;
   } finally {
     reconcilingCodexTerminalTurns.delete(key);
   }
 }
 
 async function auditRecentCodexTerminalTurns() {
-  if (recentCodexTerminalAuditInFlight || stopping) return;
-  recentCodexTerminalAuditInFlight = true;
+  if (stopping || !codexTransport.running) return;
   try {
-    if (!codexTransport.running) return;
-    const nowMs = Date.now();
-    const result = await sendRpc("thread/list", {
-      cursor: null,
-      limit: RECENT_CODEX_TERMINAL_LIMIT,
-      sortKey: "updated_at",
-      sortDirection: "desc",
-      sourceKinds: CODEX_TASK_SOURCE_KINDS,
-    });
-    for (const thread of result.data ?? []) {
-      const project = findProject(thread.cwd);
-      if (!project || !thread.path) continue;
-      if (thread.status?.type === "active") continue;
-      const updatedAtMs = codexThreadUpdatedAtMs(thread);
-      if (updatedAtMs && nowMs - updatedAtMs > RECENT_CODEX_TERMINAL_WINDOW_MS) continue;
-      const info = await stat(thread.path);
-      const cached = recentCodexTerminalAuditCache.get(thread.path);
-      const terminals = cached?.size === info.size && cached?.mtimeMs === info.mtimeMs
-        ? cached.terminals
-        : await readCodexRecentTerminalTurns(thread.path);
-      recentCodexTerminalAuditCache.set(thread.path, {
-        size: info.size,
-        mtimeMs: info.mtimeMs,
-        terminals,
-      });
-      if (recentCodexTerminalAuditCache.size > RECENT_CODEX_TERMINAL_LIMIT) {
-        recentCodexTerminalAuditCache.delete(recentCodexTerminalAuditCache.keys().next().value);
-      }
-      for (const terminal of terminals) {
-        const completedAtMs = Date.parse(terminal.completedAt);
-        if (!Number.isFinite(completedAtMs)
-          || nowMs - completedAtMs > RECENT_CODEX_TERMINAL_WINDOW_MS) continue;
-        if (terminal.status === "completed"
-          && nowMs - completedAtMs < COMPLETED_CODEX_TERMINAL_GRACE_MS) continue;
-        await reconcileRecentCodexTerminalTurn(thread, project, terminal);
-      }
-    }
+    const changed = await codexTerminalAudit.run();
+    if (changed) await saveState();
   } catch (error) {
-    console.error("Cannot audit recent Codex terminal turns:", error.message);
-  } finally {
-    recentCodexTerminalAuditInFlight = false;
+    console.error("Cannot audit Codex terminal turns:", error.message);
   }
 }
 
@@ -6146,6 +6113,7 @@ function saveState() {
     threadTokenTotals: [...threadTokenTotals.entries()].slice(-500),
     turnTokenUsage: [...turnTokenUsage.entries()].slice(-200),
     codexTurnStarts: [...codexTurnStarts.entries()].slice(-500),
+    codexTerminalAudit: codexTerminalAudit.snapshot(),
     turnEndNotifications: turnEndNotifications.snapshot(),
     statusMediaFileIds: [...statusMediaFileIds.entries()].slice(-50),
     restartRequest,

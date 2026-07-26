@@ -584,6 +584,10 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.notEqual(parallelThreadId, firstThreadId);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 2,
     "two independently active tasks");
+  const terminalAuditBeforeRestart = await waitFor(async () => {
+    const snapshot = (await readJson(statePath)).codexTerminalAudit;
+    return Date.parse(snapshot?.completedThrough ?? "") > 0 ? snapshot : null;
+  }, "persistent Codex terminal audit cursor");
   const botBeforeParallelRestart = bot;
   botBeforeParallelRestart.kill("SIGTERM");
   await new Promise((resolve) => botBeforeParallelRestart.once("exit", resolve));
@@ -596,6 +600,13 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.equal(restoredParallelRuns.every((run) => run.executionOwner === "telegram"), true);
   assert.equal((await readJson(statePath)).threadIds.codex, parallelThreadId,
     "a transient resume error must not replace the selected active task with a new thread");
+  const terminalAuditAfterRestart = await waitFor(async () => {
+    const snapshot = (await readJson(statePath)).codexTerminalAudit;
+    return Date.parse(snapshot?.completedThrough ?? "") >= Date.parse(
+      terminalAuditBeforeRestart.completedThrough,
+    ) ? snapshot : null;
+  }, "Codex terminal audit cursor restored after process restart");
+  assert.equal(Array.isArray(terminalAuditAfterRestart.positions), true);
 
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");

@@ -204,6 +204,74 @@ export async function readCodexRecentTerminalTurns(transcriptPath, {
   );
 }
 
+export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
+  startOffset = 0,
+  createReadStreamImpl = createReadStream,
+} = {}) {
+  const terminals = new Map();
+  const start = Math.max(0, Number(startOffset) || 0);
+  const input = createReadStreamImpl(transcriptPath, { start });
+  let pending = Buffer.alloc(0);
+  let bytesRead = 0;
+
+  for await (const chunk of input) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytesRead += buffer.length;
+    pending = pending.length ? Buffer.concat([pending, buffer]) : buffer;
+    let newline;
+    while ((newline = pending.indexOf(0x0a)) >= 0) {
+      const line = pending.subarray(0, newline).toString("utf8").replace(/\r$/u, "");
+      pending = pending.subarray(newline + 1);
+      if (!line) continue;
+      try {
+        const entry = JSON.parse(line);
+        const lifecycle = entry?.type === "event_msg"
+          ? String(entry.payload?.type ?? "")
+          : "";
+        const status = lifecycleTerminalStatus(lifecycle);
+        const turnId = String(entry?.payload?.turn_id ?? "").trim();
+        if (!status || !turnId) continue;
+        terminals.set(turnId, {
+          turnId,
+          status,
+          completedAt: String(entry?.timestamp ?? ""),
+        });
+      } catch {
+        // Ignore one malformed complete line without losing later terminal events.
+      }
+    }
+  }
+
+  if (pending.length) {
+    try {
+      const entry = JSON.parse(pending.toString("utf8").replace(/\r$/u, ""));
+      const lifecycle = entry?.type === "event_msg"
+        ? String(entry.payload?.type ?? "")
+        : "";
+      const status = lifecycleTerminalStatus(lifecycle);
+      const turnId = String(entry?.payload?.turn_id ?? "").trim();
+      if (status && turnId) {
+        terminals.set(turnId, {
+          turnId,
+          status,
+          completedAt: String(entry?.timestamp ?? ""),
+        });
+      }
+      return {
+        terminals: [...terminals.values()],
+        nextOffset: start + bytesRead,
+      };
+    } catch {
+      // Preserve an incomplete final JSONL record for the next audit.
+    }
+  }
+
+  return {
+    terminals: [...terminals.values()],
+    nextOffset: start + bytesRead - pending.length,
+  };
+}
+
 export async function scanCodexTurnJsonl(transcriptPath, turnId, {
   createReadStreamImpl = createReadStream,
 } = {}) {

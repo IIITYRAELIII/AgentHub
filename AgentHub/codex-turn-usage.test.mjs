@@ -7,6 +7,7 @@ import {
   codexTurnUsageFromJsonl,
   readCodexRolloutTail,
   readCodexTurnUsage,
+  scanCodexTerminalEventsFromOffset,
   scanCodexTurnJsonl,
   scanCodexTurnJsonlIncrementally,
 } from "./codex-turn-usage.mjs";
@@ -144,6 +145,41 @@ test("recent terminal scan distinguishes completed and aborted turns", () => {
       completedAt: "2026-07-26T19:05:03.527Z",
     },
   ]);
+});
+
+test("terminal event scanner resumes from the last complete JSONL byte", async () => {
+  const first = `${line({
+    timestamp: "2026-07-27T03:00:00.000Z",
+    type: "event_msg",
+    payload: { type: "turn_aborted", turn_id: "turn-1" },
+  })}\n`;
+  const incomplete = line({
+    timestamp: "2026-07-27T03:01:00.000Z",
+    type: "event_msg",
+    payload: { type: "task_complete", turn_id: "turn-2" },
+  });
+  const partialLength = Math.floor(Buffer.byteLength(incomplete) / 2);
+  const starts = [];
+  let source = `${first}${Buffer.from(incomplete).subarray(0, partialLength).toString("utf8")}`;
+  const createReadStreamImpl = (_path, { start }) => {
+    starts.push(start);
+    return Readable.from([Buffer.from(source).subarray(start)]);
+  };
+
+  const firstResult = await scanCodexTerminalEventsFromOffset("rollout.jsonl", {
+    createReadStreamImpl,
+  });
+  assert.deepEqual(firstResult.terminals.map((value) => value.turnId), ["turn-1"]);
+  assert.equal(firstResult.nextOffset, Buffer.byteLength(first));
+
+  source = `${first}${incomplete}\n`;
+  const secondResult = await scanCodexTerminalEventsFromOffset("rollout.jsonl", {
+    startOffset: firstResult.nextOffset,
+    createReadStreamImpl,
+  });
+  assert.deepEqual(secondResult.terminals.map((value) => value.turnId), ["turn-2"]);
+  assert.equal(secondResult.nextOffset, Buffer.byteLength(source));
+  assert.deepEqual(starts, [0, Buffer.byteLength(first)]);
 });
 
 test("Codex usage reader uses the incremental streaming scanner by default", async () => {
