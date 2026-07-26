@@ -51,10 +51,9 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
     "<summary><strong>25.07.2026</strong></summary>",
     "<table><colgroup><col><col><col></colgroup><thead>",
     "<tr><th>Задача</th><th>Итог</th><th>Расход</th></tr></thead><tbody>",
-    `<tr><td>Task A</td><td>Outcome A</td><td data-work-log-usage><span data-usage-id="${WORK_ID}">${WORK_ID}</span><br>`,
+    `<tr><td>Task A</td><td>Outcome A<details><summary>Изменённые файлы</summary>a.mjs</details></td><td data-work-log-usage><span data-usage-id="${WORK_ID}">${WORK_ID}</span><br>`,
     `<span data-usage-id="${SECOND_WORK_ID}">${SECOND_WORK_ID}</span></td>`,
-    `<td data-work-log-turns>legacy</td><td><span data-usage-id="${WORK_ID}">${WORK_ID}</span><br>`,
-    `<span data-usage-id="${SECOND_WORK_ID}">${SECOND_WORK_ID}</span></td></tr>`,
+    "<td data-work-log-turns>legacy</td></tr>",
     `<tr><td>Task B</td><td>Outcome B</td><td><span data-usage-id="323e4567-e89b-42d3-a456-426614174000">pending</span></td></tr>`,
     `<tr><td>Task C</td><td>Outcome C</td><td><span data-usage-id="423e4567-e89b-42d3-a456-426614174000">recorded</span></td></tr>`,
     "</tbody></table>",
@@ -65,11 +64,13 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
       workLogId: WORK_ID,
       usage: { inputTokens: 50, cachedInputTokens: 0, outputTokens: 0 },
       completedAt: firstCompletedAt,
+      text: "Первый <ход>\nСтрока",
     },
     second: {
       workLogId: SECOND_WORK_ID,
       usage: { inputTokens: 50, cachedInputTokens: 0, outputTokens: 0 },
       completedAt: secondCompletedAt,
+      text: "Второй & ход",
     },
     third: {
       workLogId: "423e4567-e89b-42d3-a456-426614174000",
@@ -79,12 +80,17 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   const projected = projectWorkLogUsage(source, turns);
   assert.match(projected, /^<details data-work-log-day-section open>/);
   assert.match(projected, /<table data-work-log-table>/);
-  assert.match(projected, /<col data-work-log-turns-column>/);
+  assert.match(projected, /<col data-work-log-turn-list-column>/);
+  assert.doesNotMatch(projected, /data-work-log-turns-column/);
   assert.match(
     projected,
-    /<th>Итог <details data-work-log-turns-toggle><summary>Ходы<\/summary><\/details><\/th><th>Расход<\/th><th data-work-log-turns><\/th>/,
+    /<th>Задача<\/th><th>Ходы<\/th><th>Расход<\/th>/,
   );
-  assert.match(projected, /<td data-work-log-turns>12:34 — 0 кТЭ<br>\s*13:45 — 0 кТЭ<\/td>/);
+  assert.doesNotMatch(projected, /Outcome A|Outcome B|Outcome C/);
+  assert.match(
+    projected,
+    /<td data-work-log-turn-list><div data-work-log-turn><span data-work-log-turn-meta>12:34 — 0 кТЭ<\/span><span data-work-log-turn-text>Первый &lt;ход&gt;<br>Строка<\/span><\/div>\s*<div data-work-log-turn><span data-work-log-turn-meta>13:45 — 0 кТЭ<\/span><span data-work-log-turn-text>Второй &amp; ход<\/span><\/div>\s*<details><summary>Изменённые файлы<\/summary>a\.mjs<\/details><\/td>/,
+  );
   assert.match(projected, /data-day-usage>Итого 0 кТЭ/);
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
@@ -106,7 +112,7 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
     projected,
-    /Task B<\/td>\s*<td>Outcome B<\/td>\s*<td data-work-log-usage><span data-usage-id="323e4567-e89b-42d3-a456-426614174000" hidden>[\s\S]*?<\/td>\s*<td data-work-log-turns><\/td>/,
+    /Task B<\/td>\s*<td data-work-log-turn-list><\/td>\s*<td data-work-log-usage><span data-usage-id="323e4567-e89b-42d3-a456-426614174000" hidden>/,
   );
   assert.equal((projected.match(/data-task-usage>/g) ?? []).length, 2);
   assert.equal((projected.match(/data-task-usage-details/g) ?? []).length, 2);
@@ -131,21 +137,18 @@ test("projectWorkLogUsage marks every day as an independent layout section", () 
   assert.equal((projected.match(/summary data-work-log-day/g) ?? []).length, 2);
 });
 
-test("work log CSS keeps dates equal and collapses the turns column by default", async () => {
+test("work log CSS keeps dates equal and shows a compact always-visible turn list", async () => {
   const css = await readFile(new URL("./work-log.css", import.meta.url), "utf8");
   assert.match(css, /summary\[data-work-log-day\][\s\S]*?font-size:\s*1em/);
   assert.match(
     css,
-    /table\[data-work-log-table\]:not\(:has\(details\[data-work-log-turns-toggle\]\[open\]\)\)[\s\S]*?\[data-work-log-turns\][\s\S]*?display:\s*none/,
+    /grid-template-columns:\s*14fr 70fr 16fr/,
   );
   assert.match(
     css,
-    /grid-template-columns:\s*14fr 62fr 16fr 8fr[\s\S]*?grid-template-columns:\s*14fr 70fr 16fr/,
+    /div\[data-work-log-turn\][\s\S]*?grid-template-columns:\s*8\.5em minmax\(0,\s*1fr\)/,
   );
-  assert.match(
-    css,
-    /details\[data-work-log-turns-toggle\][\s\S]*?position:\s*absolute[\s\S]*?right:\s*0\.5em/,
-  );
+  assert.doesNotMatch(css, /data-work-log-turns-toggle/);
   assert.match(
     css,
     /span\[data-mega-usage\][\s\S]*?color:\s*var\(--vscode-textLink-foreground,\s*#3794ff\)/,
@@ -180,10 +183,16 @@ test("usage store projects each turn into its own placeholder and deduplicates r
         outputTokens: 2,
         reasoningOutputTokens: 1,
       },
+      text: "Первый результат",
     };
     await store.recordAndProject({ ...base, turnId: "turn-1" });
     await store.recordAndProject({ ...base, turnId: "turn-1" });
-    await store.recordAndProject({ ...base, turnId: "turn-2", workLogId: SECOND_WORK_ID });
+    await store.recordAndProject({
+      ...base,
+      turnId: "turn-2",
+      workLogId: SECOND_WORK_ID,
+      text: "Второй результат",
+    });
     const projected = await readFile(workLogFile, "utf8");
     assert.match(projected, /data-day-usage>Итого 0 кТЭ/);
     assert.equal((projected.match(/data-day-usage-breakdown/g) ?? []).length, 1);
@@ -195,6 +204,10 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.keys(ledger.turns).length, 2);
+    assert.deepEqual(
+      Object.values(ledger.turns).map((record) => record.text),
+      ["Первый результат", "Второй результат"],
+    );
     const restored = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await restored.project(workLogFile), {
       projected: false,
@@ -225,6 +238,7 @@ test("a fresh usage store reprojects an existing work log with its persisted led
           workLogId: WORK_ID,
           usage: { inputTokens: 1_756_500 },
           completedAt: "2026-07-25T00:00:00.000Z",
+          text: "Сохранённый результат",
         },
       },
     })}\n`, "utf8");
@@ -240,7 +254,37 @@ test("a fresh usage store reprojects an existing work log with its persisted led
     assert.deepEqual(await store.project(workLogFile), { projected: true });
     const projected = await readFile(workLogFile, "utf8");
     assert.match(projected, /data-task-usage>Итого <span data-mega-usage>1,757 МТЭ<\/span> <span data-usage-percent>\(100%\)<\/span>/);
+    assert.match(projected, /data-work-log-turn-text>Сохранённый результат<\/span>/);
     assert.doesNotMatch(projected, /data-mega-usage>[^<]*кТЭ/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("usage store restores exact turn texts from deferred notification state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-text-restore-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    await writeFile(ledgerFile, `${JSON.stringify({
+      version: 1,
+      turns: {
+        turn: {
+          workLogId: WORK_ID,
+          usage: { inputTokens: 100 },
+          completedAt: "2026-07-25T00:00:00.000Z",
+        },
+      },
+    })}\n`, "utf8");
+    const store = new WorkLogUsageStore({ ledgerFile });
+    assert.deepEqual(await store.mergeTurnTexts([
+      { workLogId: WORK_ID, text: "Точный текст из Telegram" },
+      { workLogId: "invalid", text: "Не попадёт" },
+    ]), { updated: 1 });
+    assert.deepEqual(await store.mergeTurnTexts([
+      { workLogId: WORK_ID, text: "Точный текст из Telegram" },
+    ]), { updated: 0 });
+    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.equal(ledger.turns.turn.text, "Точный текст из Telegram");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -269,6 +313,7 @@ test("automatic usage attaches to the only row for the thread and is idempotent"
       usageReported: true,
       usage: { inputTokens: 1_756_500 },
       completedAt,
+      text: "Остановленный ход",
       workLogFile,
     };
     assert.deepEqual(await store.recordAutomaticAndProject(input), {
@@ -284,6 +329,7 @@ test("automatic usage attaches to the only row for the thread and is idempotent"
       target: "exact-thread-row",
     });
     assert.equal((await readFile(workLogFile, "utf8")).match(/data-usage-id=/g)?.length, 1);
+    assert.match(await readFile(workLogFile, "utf8"), /Остановленный ход/);
     assert.equal((await store.recordAutomaticAndProject(input)).recorded, false);
     assert.equal((await readFile(workLogFile, "utf8")).match(/data-usage-id=/g)?.length, 1);
   } finally {
@@ -318,6 +364,7 @@ test("automatic usage creates an explicit fallback row for an ambiguous thread",
       usageReported: true,
       usage: { inputTokens: 100 },
       completedAt,
+      text: "Автоматически учтённый ход",
       workLogFile,
     });
     assert.equal(result.target, "fallback-ambiguous");
@@ -327,6 +374,7 @@ test("automatic usage creates an explicit fallback row for an ambiguous thread",
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden`));
     assert.match(projected, /data-task-usage>Итого 0 кТЭ <span data-usage-percent>\(100%\)<\/span>/);
     assert.match(projected, /13:45 — 0 кТЭ/);
+    assert.match(projected, /Автоматически учтённый ход/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

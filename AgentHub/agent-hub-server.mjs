@@ -195,11 +195,6 @@ installRotatingConsole({
   maxFiles: config.logMaxFiles,
   mirror: process.stdout.isTTY || process.stderr.isTTY,
 });
-for (const project of config.projects) {
-  await workLogUsageStore.project(path.join(project.path, "WORK_LOG.md")).catch((error) => {
-    console.error(`Cannot refresh WORK_LOG usage for ${project.path}:`, error.message);
-  });
-}
 let activeProvider = config.provider === "codex" ? "codex" : "claude";
 function isCodex() {
   return activeProvider === "codex";
@@ -996,7 +991,7 @@ function fallbackTurnEndMessage(status) {
   return status === "completed" ? "Ход завершён." : `Ход завершён со статусом ${status}.`;
 }
 
-async function projectTurnUsageToWorkLog(completion) {
+async function projectTurnUsageToWorkLog(completion, text = "") {
   const workLogId = completion?.message?.workLogId;
   const project = findProject(completion.projectRoot);
   if (!project) throw new Error(`Cannot find WORK_LOG project for ${completion.projectRoot}`);
@@ -1008,6 +1003,7 @@ async function projectTurnUsageToWorkLog(completion) {
       usage: completion.usage,
       usageReported: completion.usageReported,
       completedAt: completion.completedAt,
+      text,
       workLogFile: path.join(project.path, "WORK_LOG.md"),
     });
   }
@@ -1019,6 +1015,7 @@ async function projectTurnUsageToWorkLog(completion) {
     usage: completion.usage,
     usageReported: completion.usageReported,
     completedAt: completion.completedAt,
+    text,
     workLogFile: path.join(project.path, "WORK_LOG.md"),
   });
 }
@@ -1072,7 +1069,7 @@ async function finalizeCodexRunDelivery(run, {
     deliverRegistered: deliverTurnEndNotification,
     deliverStandard: async () => {
       if (completion) {
-        await projectTurnUsageToWorkLog(completion).catch((error) => {
+        await projectTurnUsageToWorkLog(completion, answer).catch((error) => {
           console.error(`Cannot update WORK_LOG usage for turn ${completedTurnId}:`, error.message);
         });
       }
@@ -1103,14 +1100,15 @@ async function deliverTurnEndNotification(completion) {
   if (turnEndNotifications.hasDelivered(key) || deliveringTurnEndKeys.has(key)) return false;
   deliveringTurnEndKeys.add(key);
   try {
-    await projectTurnUsageToWorkLog(completion).catch((error) => {
+    const message = completion.message;
+    const notificationText = message?.text || fallbackTurnEndMessage(completion.status);
+    await projectTurnUsageToWorkLog(completion, notificationText).catch((error) => {
       console.error(`Cannot update WORK_LOG usage for turn ${completion.turnId}:`, error.message);
     });
-    const message = completion.message;
     const category = message?.category
       ?? (completion.status === "completed" ? "done" : "warning");
     const text = [
-      message?.text || fallbackTurnEndMessage(completion.status),
+      notificationText,
       formatTurnTokenUsage({
         usage: completion.usage,
         reported: completion.usageReported,
@@ -1302,6 +1300,7 @@ function taskSwitchSettings() {
 }
 
 let stateLoadFailed = false;
+let restoredTurnEndSnapshot = {};
 try {
   const loadedState = await readJsonWithBackup(STATE_FILE, { backupFile: STATE_BACKUP_FILE });
   if (!loadedState.value) throw Object.assign(new Error("state file is missing"), { code: "ENOENT" });
@@ -1388,7 +1387,8 @@ try {
       });
     }
   }
-  turnEndNotifications.restore(saved.turnEndNotifications);
+  restoredTurnEndSnapshot = saved.turnEndNotifications ?? {};
+  turnEndNotifications.restore(restoredTurnEndSnapshot);
   if (Array.isArray(saved.dismissedExternalTasks)) {
     dismissedExternalTasks.restore(saved.dismissedExternalTasks);
   }
@@ -1502,6 +1502,21 @@ try {
     stateLoadFailed = true;
     console.error("Cannot read state:", error.message);
   }
+}
+
+const restoredTurnMessages = [
+  ...(Array.isArray(restoredTurnEndSnapshot.pending) ? restoredTurnEndSnapshot.pending : []),
+  ...(Array.isArray(restoredTurnEndSnapshot.completions)
+    ? restoredTurnEndSnapshot.completions.map((completion) => completion?.message)
+    : []),
+].filter(Boolean);
+await workLogUsageStore.mergeTurnTexts(restoredTurnMessages).catch((error) => {
+  console.error("Cannot restore WORK_LOG turn texts:", error.message);
+});
+for (const project of config.projects) {
+  await workLogUsageStore.project(path.join(project.path, "WORK_LOG.md")).catch((error) => {
+    console.error(`Cannot refresh WORK_LOG usage for ${project.path}:`, error.message);
+  });
 }
 
 try {

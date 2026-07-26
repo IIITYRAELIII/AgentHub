@@ -115,7 +115,7 @@ table[data-work-log-table] tbody {
 
 table[data-work-log-table] tr {
   display: grid;
-  grid-template-columns: 14fr 62fr 16fr 8fr;
+  grid-template-columns: 14fr 70fr 16fr;
   position: relative;
   width: 100%;
 }
@@ -125,50 +125,27 @@ table[data-work-log-table] td {
   min-width: 0;
 }
 
-details[data-work-log-turns-toggle] {
-  display: inline-block;
-  font-weight: normal;
-  margin: 0;
-  position: absolute;
-  right: 0.5em;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 1;
+div[data-work-log-turn] {
+  display: grid;
+  gap: 0.15em 0.65em;
+  grid-template-columns: 8.5em minmax(0, 1fr);
+  padding: 0.12em 0;
 }
 
-details[data-work-log-turns-toggle] > summary {
-  cursor: pointer;
-  display: inline;
-  list-style: none;
+div[data-work-log-turn] + div[data-work-log-turn] {
+  border-top: 1px solid rgba(127, 127, 127, 0.25);
 }
 
-details[data-work-log-turns-toggle] > summary::-webkit-details-marker {
-  display: none;
-}
-
-details[data-work-log-turns-toggle] > summary::before {
-  content: "▶ ";
-}
-
-details[data-work-log-turns-toggle][open] > summary::before {
-  content: "▼ ";
-}
-
-td[data-work-log-turns] {
+span[data-work-log-turn-meta] {
   font-size: 0.9em;
   white-space: nowrap;
 }
 
-th[data-work-log-turns] {
-  padding-right: 5em;
+span[data-work-log-turn-text] {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))
-  tr {
-  grid-template-columns: 14fr 70fr 16fr;
-}
-
-table[data-work-log-table]:not(:has(details[data-work-log-turns-toggle][open]))
-  [data-work-log-turns] {
-  display: none;
+td[data-work-log-turn-list] > details {
+  margin-top: 0.3em;
 }

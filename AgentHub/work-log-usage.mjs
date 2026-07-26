@@ -41,6 +41,7 @@ function normalizedLedger(value = {}) {
         workLogId,
         usage: normalizeTokenUsage(record?.usage),
         completedAt: String(record?.completedAt ?? ""),
+        text: String(record?.text ?? "").trim(),
       };
     } catch {
       // A damaged record is ignored without making the whole ledger unusable.
@@ -119,9 +120,22 @@ function formatCompletedAt(value) {
   return `${twoDigits(completedAt.getHours())}:${twoDigits(completedAt.getMinutes())}`;
 }
 
+function escapeHtmlText(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replace(/\r\n?|\n/g, "<br>");
+}
+
 function formatTurnEntry(record) {
   const units = highlightMegaUnits(formatConditionalUnits(turnConditionalUnits(record?.usage)));
-  return `${formatCompletedAt(record?.completedAt)} — ${units}`;
+  const text = escapeHtmlText(String(record?.text ?? "").trim());
+  return "<div data-work-log-turn>"
+    + `<span data-work-log-turn-meta>${formatCompletedAt(record?.completedAt)} — ${units}</span>`
+    + (text ? `<span data-work-log-turn-text>${text}</span>` : "")
+    + "</div>";
 }
 
 function formatLocalDate(value) {
@@ -168,9 +182,8 @@ function fallbackTaskRow(threadId, workLogId) {
   return [
     `<tr data-work-log-unbound-thread="${escapedThreadId}">`,
     `<td><a href="vscode://openai.chatgpt/local/${escapedThreadId}">Codex - Автоматически учтённые ходы</a></td>`,
-    "<td>Расход ходов без зарегистрированного UUID; точная задача не выбрана автоматически.</td>",
+    "<td data-work-log-turn-list></td>",
     `<td><span data-usage-id="${workLogId}" hidden>${workLogId}</span></td>`,
-    "<td data-work-log-turns></td>",
     "</tr>",
   ].join("\n");
 }
@@ -182,16 +195,14 @@ function workLogDaySection(date, row, open = false) {
     "<table>",
     "<colgroup>",
     "<col data-work-log-task-column>",
-    "<col data-work-log-outcome-column>",
+    "<col data-work-log-turn-list-column>",
     "<col data-work-log-usage-column>",
-    "<col data-work-log-turns-column>",
     "</colgroup>",
     "<thead>",
     "<tr>",
     "<th>Задача</th>",
-    "<th>Итог <details data-work-log-turns-toggle><summary>Ходы</summary></details></th>",
+    "<th>Ходы</th>",
     "<th>Расход</th>",
-    "<th data-work-log-turns></th>",
     "</tr>",
     "</thead>",
     "<tbody>",
@@ -259,13 +270,21 @@ function usageIds(source) {
     .map((match) => normalizeWorkLogId(match[1]));
 }
 
+function changedFilesDetails(source) {
+  return String(source ?? "").match(
+    /<details\b[^>]*>\s*<summary\b[^>]*>\s*Изменённые файлы\s*<\/summary>[\s\S]*?<\/details>/iu,
+  )?.[0] ?? "";
+}
+
 function replaceProjectedCells(row, usageContent, turnsContent) {
   const cells = [...row.matchAll(/<td\b[^>]*>[\s\S]*?<\/td>/gi)];
   if (cells.length < 3) return row;
   const opening = row.match(/^<tr\b[^>]*>/i)?.[0] ?? "<tr>";
-  return `${opening}\n${cells[0][0]}\n${cells[1][0]}\n`
-    + `<td data-work-log-usage>${usageContent}</td>\n`
-    + `<td data-work-log-turns>${turnsContent}</td>\n</tr>`;
+  const changedFiles = changedFilesDetails(cells[1][0]);
+  const turnList = [turnsContent, changedFiles].filter(Boolean).join("\n");
+  return `${opening}\n${cells[0][0]}\n`
+    + `<td data-work-log-turn-list>${turnList}</td>\n`
+    + `<td data-work-log-usage>${usageContent}</td>\n</tr>`;
 }
 
 function markWorkLogTable(section) {
@@ -279,16 +298,14 @@ function markWorkLogTable(section) {
     [
       "<colgroup>",
       "<col data-work-log-task-column>",
-      "<col data-work-log-outcome-column>",
+      "<col data-work-log-turn-list-column>",
       "<col data-work-log-usage-column>",
-      "<col data-work-log-turns-column>",
       "</colgroup>",
     ].join("\n"),
   );
   return marked.replace(
     /<thead>[\s\S]*?<\/thead>/i,
-    "<thead>\n<tr><th>Задача</th><th>Итог <details data-work-log-turns-toggle><summary>Ходы</summary></details></th>"
-      + "<th>Расход</th><th data-work-log-turns></th></tr>\n</thead>",
+    "<thead>\n<tr><th>Задача</th><th>Ходы</th><th>Расход</th></tr>\n</thead>",
   );
 }
 
@@ -330,7 +347,7 @@ function projectDaySection(section, date, records) {
     const turns = [...row.recorded]
       .sort((left, right) => (Date.parse(left.completedAt) || 0) - (Date.parse(right.completedAt) || 0))
       .map(formatTurnEntry)
-      .join("<br>\n");
+      .join("\n");
     const replacement = replaceProjectedCells(
       row.match[0],
       `${visible}${markers}`,
@@ -407,6 +424,37 @@ export class WorkLogUsageStore {
     this.#loaded = true;
   }
 
+  async #save() {
+    await mkdir(path.dirname(this.#ledgerFile), { recursive: true });
+    await writeTextAtomic(this.#ledgerFile, `${JSON.stringify(this.#ledger, null, 2)}\n`);
+  }
+
+  mergeTurnTexts(messages = []) {
+    const operation = this.#tail.catch(() => {}).then(async () => {
+      await this.#load();
+      let updated = 0;
+      for (const message of messages) {
+        const text = String(message?.text ?? "").trim();
+        if (!text || !message?.workLogId) continue;
+        let workLogId;
+        try {
+          workLogId = normalizeWorkLogId(message.workLogId);
+        } catch {
+          continue;
+        }
+        const records = Object.values(this.#ledger.turns)
+          .filter((record) => record.workLogId === workLogId);
+        if (records.length !== 1 || records[0].text === text) continue;
+        records[0].text = text;
+        updated += 1;
+      }
+      if (updated) await this.#save();
+      return { updated };
+    });
+    this.#tail = operation;
+    return operation;
+  }
+
   project(workLogFile) {
     const operation = this.#tail.catch(() => {}).then(async () => {
       await this.#load();
@@ -435,6 +483,7 @@ export class WorkLogUsageStore {
     usage,
     usageReported,
     completedAt,
+    text,
     workLogFile,
   }) {
     const operation = this.#tail.catch(() => {}).then(async () => {
@@ -457,9 +506,15 @@ export class WorkLogUsageStore {
           workLogId: id,
           usage: normalizedUsage,
           completedAt: String(completedAt ?? new Date().toISOString()),
+          text: String(text ?? "").trim(),
         };
-        await mkdir(path.dirname(this.#ledgerFile), { recursive: true });
-        await writeTextAtomic(this.#ledgerFile, `${JSON.stringify(this.#ledger, null, 2)}\n`);
+        await this.#save();
+      } else {
+        const normalizedText = String(text ?? "").trim();
+        if (normalizedText && existing.text !== normalizedText) {
+          existing.text = normalizedText;
+          await this.#save();
+        }
       }
       const recordedUsage = this.#ledger.turns[key].usage;
       const logPath = path.resolve(workLogFile);
@@ -483,6 +538,7 @@ export class WorkLogUsageStore {
     usage,
     usageReported,
     completedAt,
+    text,
     workLogFile,
   }) {
     const operation = this.#tail.catch(() => {}).then(async () => {
@@ -509,9 +565,15 @@ export class WorkLogUsageStore {
           workLogId,
           usage: normalizeTokenUsage(usage),
           completedAt: String(completedAt ?? new Date().toISOString()),
+          text: String(text ?? "").trim(),
         };
-        await mkdir(path.dirname(this.#ledgerFile), { recursive: true });
-        await writeTextAtomic(this.#ledgerFile, `${JSON.stringify(this.#ledger, null, 2)}\n`);
+        await this.#save();
+      } else {
+        const normalizedText = String(text ?? "").trim();
+        if (normalizedText && existing.text !== normalizedText) {
+          existing.text = normalizedText;
+          await this.#save();
+        }
       }
       const updated = projectWorkLogUsage(attached.text, this.#ledger.turns);
       await writeTextAtomic(logPath, updated);
