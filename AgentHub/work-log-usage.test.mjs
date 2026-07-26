@@ -69,6 +69,13 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
       startedAt: firstStartedAt,
       completedAt: firstCompletedAt,
       text: "Первый <ход>\nСтрока",
+      prompt: [
+        "# Response annotations:",
+        "<response-annotations>",
+        '[{"text":"Старый ответ","annotation":"Короткий вопрос"}]',
+        "</response-annotations>",
+        "## My request for Codex:",
+      ].join("\n"),
     },
     second: {
       workLogId: SECOND_WORK_ID,
@@ -102,6 +109,8 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
     /<table data-work-log-turn-table>[\s\S]*?data-work-log-turn-measure>12:34 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Первый &lt;ход&gt; Строка<\/span>[\s\S]*?data-work-log-turn-measure>13:45 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Второй &amp; ход<\/span>[\s\S]*?data-work-log-turn-files[^>]*>a\.mjs<\/div>/,
   );
   assert.match(projected, /<strong>Длит\.:<\/strong> 3 мин 30 с/);
+  assert.match(projected, /<strong>Запрос:<\/strong> Короткий вопрос/);
+  assert.doesNotMatch(projected, /Response annotations|response-annotations|Старый ответ/);
   assert.doesNotMatch(projected, /data-work-log-legacy-files/);
   assert.match(projected, /data-day-usage>Итого <span data-kilo-usage>0 кТЭ<\/span>/);
   assert.doesNotMatch(projected, /За день:/);

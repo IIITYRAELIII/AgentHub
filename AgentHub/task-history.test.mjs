@@ -41,6 +41,36 @@ test("displayUserPrompt unwraps Telegram replies and removes IDE context", () =>
   assert.equal(displayUserPrompt("<ide_context>служебное</ide_context>\nМой вопрос"), "Мой вопрос");
 });
 
+test("displayUserPrompt extracts comments and requests from response annotations", () => {
+  const wrapper = (annotations, request = "") => [
+    "# Response annotations:",
+    "Technical instructions that must not be shown.",
+    "<response-annotations>",
+    JSON.stringify(annotations),
+    "</response-annotations>",
+    "",
+    "## My request for Codex:",
+    request,
+  ].join("\n");
+
+  assert.equal(displayUserPrompt(wrapper([{
+    text: "проверяются 25 последних потоков; окно восстановления — 30 минут;",
+    annotation: "думаешь, мало?",
+  }])), "думаешь, мало?");
+  assert.equal(displayUserPrompt(wrapper([
+    { text: "Первый фрагмент", annotation: "Первый комментарий" },
+    { text: "Второй фрагмент", annotation: "Второй комментарий" },
+  ], "Общий вопрос")), [
+    "Аннотация 1: Первый комментарий",
+    "Аннотация 2: Второй комментарий",
+    "",
+    "Общий вопрос",
+  ].join("\n"));
+  assert.equal(displayUserPrompt(wrapper([
+    { text: "Выбранный фрагмент" },
+  ])), "Выделено: Выбранный фрагмент");
+});
+
 test("codexThreadHistory returns user and assistant pairs", () => {
   assert.deepEqual(codexThreadHistory([{
     id: "turn-1",

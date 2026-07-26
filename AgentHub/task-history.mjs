@@ -8,6 +8,46 @@ function textContent(content) {
     .trim();
 }
 
+function responseAnnotationPrompt(value) {
+  const text = String(value ?? "");
+  const block = text.match(/<response-annotations>\s*([\s\S]*?)\s*<\/response-annotations>/i);
+  if (!block) return null;
+
+  let annotations = [];
+  try {
+    const parsed = JSON.parse(block[1]);
+    if (Array.isArray(parsed)) annotations = parsed;
+  } catch {
+    // A malformed annotation container falls back to the explicit request text.
+  }
+
+  const comments = annotations.flatMap((item, index) => {
+    const annotation = String(item?.annotation ?? "").trim();
+    return annotation ? [{ index: index + 1, annotation }] : [];
+  });
+  const requestTail = text.slice((block.index ?? 0) + block[0].length);
+  const request = requestTail
+    .replace(/^\s*##\s*My request for Codex:\s*/i, "")
+    .trim();
+  const selections = annotations
+    .map((item) => String(item?.text ?? "").trim())
+    .filter(Boolean);
+  const annotationText = comments.length === 1
+    ? comments[0].annotation
+    : comments
+      .map((item) => `Аннотация ${item.index}: ${item.annotation}`)
+      .join("\n");
+  const selectedText = !annotationText && !request
+    ? selections.length === 1
+      ? `Выделено: ${selections[0]}`
+      : selections.map((selection, index) => `Выделено ${index + 1}: ${selection}`).join("\n")
+    : "";
+  return [annotationText, selectedText, request]
+    .filter(Boolean)
+    .join("\n\n")
+    .trim() || "Аннотация к предыдущему ответу";
+}
+
 export function displayUserPrompt(value) {
   let text = String(value ?? "").trim();
   const telegramReplyMarker = "\nТекст пользователя:\n";
@@ -17,6 +57,8 @@ export function displayUserPrompt(value) {
     .replace(/<ide_[^>]+>[\s\S]*?<\/ide_[^>]+>/gi, "")
     .replace(/<environment_context>[\s\S]*?<\/environment_context>/gi, "")
     .trim();
+  const annotated = responseAnnotationPrompt(text);
+  if (annotated !== null) return annotated;
   return text;
 }
 

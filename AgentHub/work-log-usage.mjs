@@ -3,6 +3,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { writeTextAtomic } from "./state-store.mjs";
+import { displayUserPrompt } from "./task-history.mjs";
 import {
   addTokenUsage,
   emptyTokenUsage,
@@ -201,7 +202,7 @@ function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
     : "";
   const title = escapeHtmlText(turnTitle(record));
   const body = escapeHtmlText(String(record?.body ?? record?.text ?? "").trim());
-  const prompt = escapeHtmlText(String(record?.prompt ?? "").trim());
+  const prompt = escapeHtmlText(displayUserPrompt(record?.prompt));
   const files = changedFileLinks(record?.changedFiles);
   const migratedFiles = String(legacyFiles ?? "").trim();
   const metaDetails = [
@@ -826,7 +827,7 @@ function incomingLedgerRecord({
     taskTitle: String(taskTitle ?? "").trim(),
     title: String(title ?? "").trim(),
     body: String(body ?? text ?? "").trim(),
-    prompt: String(prompt ?? "").trim(),
+    prompt: displayUserPrompt(prompt),
     changedFiles: Array.isArray(changedFiles)
       ? changedFiles.map((file) => String(file).trim()).filter(Boolean)
       : [],
