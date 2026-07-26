@@ -246,6 +246,10 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
   assert.match(css, /--work-log-task-card-width:\s*21ch/);
   assert.match(
     css,
+    /table\[data-work-log-turn-table\][\s\S]*?border-spacing:\s*0;[\s\S]*?tr \+ tr > td[\s\S]*?padding-top:\s*0\.35em/,
+  );
+  assert.match(
+    css,
     /td\[data-work-log-task-cell\] div\[data-work-log-task-content\][\s\S]*?border:[\s\S]*?width:\s*var\(--work-log-task-card-width\)/,
   );
   assert.match(

@@ -149,9 +149,13 @@ table[data-work-log-table] > tbody > tr > td {
 
 table[data-work-log-turn-table] {
   border-collapse: separate;
-  border-spacing: 0 0.35em;
+  border-spacing: 0;
   table-layout: fixed;
   width: 100%;
+}
+
+table[data-work-log-turn-table] tr + tr > td {
+  padding-top: 0.35em;
 }
 
 table[data-work-log-turn-table] col[data-work-log-turn-meta-column] {

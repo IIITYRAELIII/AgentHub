@@ -123,6 +123,7 @@ export class TurnEndNotificationRegistry {
       const completion = this.#completions.get(key);
       if (completion) {
         completion.message = message;
+        completion.taskTitle = message.taskTitle || completion.taskTitle;
         return message;
       }
     }
@@ -150,7 +151,6 @@ export class TurnEndNotificationRegistry {
     const existing = this.#completions.get(key);
     const completion = existing ?? incoming;
     completion.projectRoot = incoming.projectRoot || completion.projectRoot;
-    completion.taskTitle = incoming.taskTitle || completion.taskTitle;
     completion.chatId = Number.isSafeInteger(incoming.chatId) ? incoming.chatId : completion.chatId;
     completion.status = incoming.status || completion.status;
     completion.completedAt = completion.completedAt || incoming.completedAt;
@@ -164,6 +164,7 @@ export class TurnEndNotificationRegistry {
       completion.usageReported = incoming.usageReported;
     }
     completion.message = incoming.message ?? completion.message ?? this.#takeMessage(completion);
+    completion.taskTitle = completion.message?.taskTitle || incoming.taskTitle || completion.taskTitle;
     this.#completions.set(key, completion);
     this.#trim();
     return completion;

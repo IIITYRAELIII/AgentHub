@@ -3600,6 +3600,10 @@ function runtimeCommandTaskTitle({
   run = null,
   thread = null,
 }) {
+  const pinnedTitle = pinnedTaskTitle(provider, targetThreadId);
+  if (pinnedTitle) return pinnedTitle;
+  const currentThreadTitle = provider === "codex" ? codexThreadResponseTitle(thread) : "";
+  if (currentThreadTitle) return currentThreadTitle;
   if (run) return runTaskTitle(run);
   const catalogTask = taskCatalog.find((task) => (
     task.provider === provider && task.threadId === targetThreadId
