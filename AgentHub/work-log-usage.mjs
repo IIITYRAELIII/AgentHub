@@ -67,7 +67,7 @@ function formatTaskShare(usage, dayUnits) {
   const taskUnits = turnConditionalUnits(usage);
   const percent = dayUnits > 0 ? Math.round(taskUnits / dayUnits * 100) : 0;
   return formatWorkLogUsage(usage).replace(
-    /^(Итого [^<\r\n]+?(?:к|М)ТЭ)/u,
+    /^(Итого [^<\r\n]+?(?:Кв|[кМГТПЭЗИР])ТЭ)/u,
     `$1 (${percent}%)`,
   );
 }
@@ -79,26 +79,29 @@ function alignUsagePercent(text) {
   );
 }
 
-function highlightMegaUnits(text) {
+function highlightUsageUnits(text) {
   return String(text).replace(
-    /(\d+(?:[  ]\d{3})*(?:,\d+)? МТЭ)/gu,
-    "<span data-mega-usage>$1</span>",
+    /(\d+(?:[  ]\d{3})*(?:,\d+)? ((?:Кв|[кМГТПЭЗИР])ТЭ))/gu,
+    (match, _value, unit) => {
+      const level = unit === "кТЭ" ? "kilo" : unit === "МТЭ" ? "mega" : "high";
+      return `<span data-${level}-usage>${match}</span>`;
+    },
   );
 }
 
 function formatTaskUsageDetails(usage, dayUnits) {
   const [total, ...breakdown] = formatTaskShare(usage, dayUnits).split("<br>");
   return "<details data-task-usage-details>"
-    + `<summary data-task-usage>${highlightMegaUnits(alignUsagePercent(total))}</summary>`
+    + `<summary data-task-usage>${highlightUsageUnits(alignUsagePercent(total))}</summary>`
     + `<span data-task-usage-breakdown>${breakdown
-      .map((part) => `<span data-task-usage-part>${highlightMegaUnits(alignUsagePercent(part))}</span>`)
+      .map((part) => `<span data-task-usage-part>${highlightUsageUnits(alignUsagePercent(part))}</span>`)
       .join("")}</span></details>\n`;
 }
 
 function formatDayUsageBreakdown(usage) {
   const [, ...breakdown] = formatWorkLogUsage(usage).split("<br>");
   return `<span data-day-usage-breakdown>${breakdown
-    .map((part) => `<span data-day-usage-part>${highlightMegaUnits(alignUsagePercent(part))}</span>`)
+    .map((part) => `<span data-day-usage-part>${highlightUsageUnits(alignUsagePercent(part))}</span>`)
     .join("")}</span>`;
 }
 
@@ -130,7 +133,7 @@ function escapeHtmlText(value) {
 }
 
 function formatTurnEntry(record) {
-  const units = highlightMegaUnits(formatConditionalUnits(turnConditionalUnits(record?.usage)));
+  const units = highlightUsageUnits(formatConditionalUnits(turnConditionalUnits(record?.usage)));
   const text = escapeHtmlText(String(record?.text ?? "").trim());
   return "<div data-work-log-turn>"
     + `<span data-work-log-turn-meta>${formatCompletedAt(record?.completedAt)} — ${units}</span>`
@@ -359,7 +362,7 @@ function projectDaySection(section, date, records) {
 
   const summary = dayUnits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
-      + `<span data-day-usage>Итого ${highlightMegaUnits(formatConditionalUnits(dayUnits))}</span>`
+      + `<span data-day-usage>Итого ${highlightUsageUnits(formatConditionalUnits(dayUnits))}</span>`
       + `${formatDayUsageBreakdown(dayUsage)}</span></summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
   return projected.replace(

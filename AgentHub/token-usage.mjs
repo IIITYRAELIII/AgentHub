@@ -32,12 +32,25 @@ function percentagesAddingUpToHundred(values) {
 
 export function formatConditionalUnits(value) {
   const units = Number(value ?? 0);
-  const thousands = Number.isFinite(units) ? Math.round(units / 1000) : 0;
-  if (Math.abs(thousands) >= 1_000) {
-    return `${(thousands / 1000).toLocaleString("ru-RU", {
+  const normalized = Number.isFinite(units) ? units : 0;
+  const scales = [
+    [1e30, "КвТЭ"],
+    [1e27, "РТЭ"],
+    [1e24, "ИТЭ"],
+    [1e21, "ЗТЭ"],
+    [1e18, "ЭТЭ"],
+    [1e15, "ПТЭ"],
+    [1e12, "ТТЭ"],
+    [1e9, "ГТЭ"],
+    [1e6, "МТЭ"],
+  ];
+  const scale = scales.find(([divisor]) => Math.abs(normalized) >= divisor);
+  if (scale) {
+    return `${(normalized / scale[0]).toLocaleString("ru-RU", {
       maximumFractionDigits: 3,
-    })} МТЭ`;
+    })} ${scale[1]}`;
   }
+  const thousands = Math.round(normalized / 1000);
   return `${thousands.toLocaleString("ru-RU")} кТЭ`;
 }
 

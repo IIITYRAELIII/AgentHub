@@ -52,8 +52,16 @@ span[data-day-usage-part] {
   width: 21ch;
 }
 
+span[data-kilo-usage] {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
 span[data-mega-usage] {
-  color: var(--vscode-textLink-foreground, #3794ff);
+  color: var(--vscode-charts-orange, #d18616);
+}
+
+span[data-high-usage] {
+  color: var(--vscode-errorForeground, #f14c4c);
 }
 
 summary[data-task-usage] {

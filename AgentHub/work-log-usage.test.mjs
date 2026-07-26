@@ -13,6 +13,7 @@ import {
 
 const WORK_ID = "123e4567-e89b-42d3-a456-426614174000";
 const SECOND_WORK_ID = "223e4567-e89b-42d3-a456-426614174000";
+const GIGA_WORK_ID = "323e4567-e89b-42d3-a456-426614174001";
 
 test("work-log ids are normalized and validated", () => {
   assert.equal(normalizeWorkLogId(WORK_ID.toUpperCase()), WORK_ID);
@@ -89,13 +90,13 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
   assert.doesNotMatch(projected, /Outcome A|Outcome B|Outcome C/);
   assert.match(
     projected,
-    /<td data-work-log-turn-list><div data-work-log-turn><span data-work-log-turn-meta>12:34 — 0 кТЭ<\/span><span data-work-log-turn-text>Первый &lt;ход&gt;<br>Строка<\/span><\/div>\s*<div data-work-log-turn><span data-work-log-turn-meta>13:45 — 0 кТЭ<\/span><span data-work-log-turn-text>Второй &amp; ход<\/span><\/div>\s*<details><summary>Изменённые файлы<\/summary>a\.mjs<\/details><\/td>/,
+    /<td data-work-log-turn-list><div data-work-log-turn><span data-work-log-turn-meta>12:34 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-text>Первый &lt;ход&gt;<br>Строка<\/span><\/div>\s*<div data-work-log-turn><span data-work-log-turn-meta>13:45 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-text>Второй &amp; ход<\/span><\/div>\s*<details><summary>Изменённые файлы<\/summary>a\.mjs<\/details><\/td>/,
   );
-  assert.match(projected, /data-day-usage>Итого 0 кТЭ/);
+  assert.match(projected, /data-day-usage>Итого <span data-kilo-usage>0 кТЭ<\/span>/);
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
     projected,
-    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> <span data-day-usage-table><span data-day-usage>Итого 0 кТЭ<\/span><span data-day-usage-breakdown><span data-day-usage-part>Вход: 0 кТЭ <span data-usage-percent>\(100%\)<\/span><\/span><span data-day-usage-part>Кэш: 0 кТЭ <span data-usage-percent>\(0%\)<\/span><\/span><span data-day-usage-part>Выход: 0 кТЭ <span data-usage-percent>\(0%\)<\/span><\/span><span data-day-usage-part>Думы: 0 кТЭ <span data-usage-percent>\(0%\)<\/span><\/span><\/span><\/span><\/summary>/,
+    /<summary data-work-log-day><strong>25\.07\.2026<\/strong> <span data-day-usage-table>[\s\S]*?<\/summary>/,
   );
   assert.doesNotMatch(projected, /data-day-usage-details/);
   assert.doesNotMatch(
@@ -103,11 +104,11 @@ test("projectWorkLogUsage aggregates tasks and calculates their share of the day
     /<br>/,
   );
   assert.equal((projected.match(/data-day-usage-part/g) ?? []).length, 4);
-  assert.match(projected, /Task A[\s\S]*?Итого 0 кТЭ <span data-usage-percent>\(50%\)<\/span>/);
-  assert.match(projected, /Task C[\s\S]*?Итого 0 кТЭ <span data-usage-percent>\(50%\)<\/span>/);
+  assert.match(projected, /Task A[\s\S]*?Итого <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(50%\)<\/span>/);
+  assert.match(projected, /Task C[\s\S]*?Итого <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(50%\)<\/span>/);
   assert.match(
     projected,
-    /<details data-task-usage-details><summary data-task-usage>Итого 0 кТЭ <span data-usage-percent>\(50%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
+    /<details data-task-usage-details><summary data-task-usage>Итого <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(50%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
   );
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
@@ -137,6 +138,21 @@ test("projectWorkLogUsage marks every day as an independent layout section", () 
   assert.equal((projected.match(/summary data-work-log-day/g) ?? []).length, 2);
 });
 
+test("work log colors kilo, mega and giga-or-higher usage independently", () => {
+  const source = `<details><summary><strong>25.07.2026</strong></summary><table><tbody>`
+    + `<tr><td>Task</td><td></td><td><span data-usage-id="${GIGA_WORK_ID}" hidden></span></td></tr>`
+    + "</tbody></table></details>";
+  const projected = projectWorkLogUsage(source, {
+    turn: {
+      workLogId: GIGA_WORK_ID,
+      usage: { inputTokens: 1_000_000_000 },
+      completedAt: "2026-07-25T00:00:00.000Z",
+      text: "Большой ход",
+    },
+  });
+  assert.match(projected, /data-high-usage>1 ГТЭ<\/span>/);
+});
+
 test("work log CSS keeps dates equal and shows a compact always-visible turn list", async () => {
   const css = await readFile(new URL("./work-log.css", import.meta.url), "utf8");
   assert.match(css, /summary\[data-work-log-day\][\s\S]*?font-size:\s*1em/);
@@ -151,7 +167,7 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
   assert.doesNotMatch(css, /data-work-log-turns-toggle/);
   assert.match(
     css,
-    /span\[data-mega-usage\][\s\S]*?color:\s*var\(--vscode-textLink-foreground,\s*#3794ff\)/,
+    /span\[data-kilo-usage\][\s\S]*?#cca700[\s\S]*?span\[data-mega-usage\][\s\S]*?#d18616[\s\S]*?span\[data-high-usage\][\s\S]*?#f14c4c/,
   );
 });
 
@@ -194,11 +210,11 @@ test("usage store projects each turn into its own placeholder and deduplicates r
       text: "Второй результат",
     });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /data-day-usage>Итого 0 кТЭ/);
+    assert.match(projected, /data-day-usage>Итого <span data-kilo-usage>0 кТЭ<\/span>/);
     assert.equal((projected.match(/data-day-usage-breakdown/g) ?? []).length, 1);
     assert.match(
       projected,
-      /<details data-task-usage-details><summary data-task-usage>Итого 0 кТЭ <span data-usage-percent>\(100%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
+      /<details data-task-usage-details><summary data-task-usage>Итого <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(100%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
     );
     assert.match(projected, new RegExp(`data-usage-id="${WORK_ID}" hidden>`));
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));
@@ -372,8 +388,8 @@ test("automatic usage creates an explicit fallback row for an ambiguous thread",
     assert.match(projected, /data-work-log-unbound-thread="thread-1"/);
     assert.match(projected, /Codex - Автоматически учтённые ходы/);
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden`));
-    assert.match(projected, /data-task-usage>Итого 0 кТЭ <span data-usage-percent>\(100%\)<\/span>/);
-    assert.match(projected, /13:45 — 0 кТЭ/);
+    assert.match(projected, /data-task-usage>Итого <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(100%\)<\/span>/);
+    assert.match(projected, /13:45 — <span data-kilo-usage>0 кТЭ<\/span>/);
     assert.match(projected, /Автоматически учтённый ход/);
   } finally {
     await rm(root, { recursive: true, force: true });
