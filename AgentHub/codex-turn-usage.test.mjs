@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { codexTurnUsageFromJsonl, readCodexTurnUsage } from "./codex-turn-usage.mjs";
+import {
+  codexTurnUsageFromJsonl,
+  readCodexRolloutTail,
+  readCodexTurnUsage,
+} from "./codex-turn-usage.mjs";
 
 function line(value) {
   return JSON.stringify(value);
@@ -37,13 +41,15 @@ function token(input, cache, output, reasoning) {
 }
 
 test("Codex rollout usage sums every model response and sees the final token event", () => {
+  const startedAt = "2026-07-26T19:03:03.527Z";
+  const completedAt = "2026-07-26T19:09:33.227Z";
   const text = [
-    line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
+    line({ timestamp: startedAt, type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
     line(response("turn-1")),
     line(token(100, 80, 10, 4)),
     line(response("turn-1", "message", { role: "assistant", phase: "final_answer" })),
     line(token(50, 40, 5, 1)),
-    line({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-1" } }),
+    line({ timestamp: completedAt, type: "event_msg", payload: { type: "task_complete", turn_id: "turn-1" } }),
   ].join("\n");
 
   const result = codexTurnUsageFromJsonl(text, "turn-1");
@@ -51,6 +57,8 @@ test("Codex rollout usage sums every model response and sees the final token eve
   assert.equal(result.finalAnswerSeen, true);
   assert.equal(result.finalTokenSeen, true);
   assert.equal(result.terminal, true);
+  assert.equal(result.startedAt, startedAt);
+  assert.equal(result.completedAt, completedAt);
   assert.deepEqual(result.usage, {
     inputTokens: 150,
     cachedInputTokens: 120,
@@ -104,4 +112,29 @@ test("Codex rollout reader retries until the final token event is flushed", asyn
   });
   assert.equal(reads, 2);
   assert.equal(result.finalTokenSeen, true);
+});
+
+test("Codex rollout tail reads only the bounded suffix and drops its partial first line", async () => {
+  const source = Buffer.from(`ignored-prefix\n${line(response("turn-1"))}\n${line(token(50, 40, 5, 1))}`);
+  let requested = null;
+  let closed = false;
+  const text = await readCodexRolloutTail("large-rollout.jsonl", {
+    maxBytes: source.length - 5,
+    openImpl: async () => ({
+      stat: async () => ({ size: source.length }),
+      read: async (buffer, offset, length, position) => {
+        requested = { length, position };
+        const chunk = source.subarray(position, position + length);
+        chunk.copy(buffer, offset);
+        return { bytesRead: chunk.length };
+      },
+      close: async () => {
+        closed = true;
+      },
+    }),
+  });
+
+  assert.deepEqual(requested, { length: source.length - 5, position: 5 });
+  assert.equal(text, `${line(response("turn-1"))}\n${line(token(50, 40, 5, 1))}`);
+  assert.equal(closed, true);
 });

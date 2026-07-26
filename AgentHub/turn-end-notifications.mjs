@@ -3,6 +3,9 @@ import path from "node:path";
 import { normalizeTokenUsage } from "./token-usage.mjs";
 import { normalizeWorkLogId } from "./work-log-usage.mjs";
 
+const TURN_END_TITLE_LIMIT = 80;
+const TURN_END_BODY_LIMIT = 700;
+
 export function turnEndThreadKey({ provider, threadId }) {
   return `${String(provider ?? "").trim().toLowerCase()}\0${String(threadId ?? "").trim()}`;
 }
@@ -21,7 +24,8 @@ function validBase(value) {
 
 function normalizedMessage(value) {
   const base = validBase(value);
-  const text = String(value?.text ?? "").trim();
+  const text = String(value?.text ?? "").trim().slice(0, TURN_END_BODY_LIMIT);
+  const title = String(value?.title ?? "").trim().replace(/\s+/g, " ").slice(0, TURN_END_TITLE_LIMIT);
   const projectRoot = String(value?.projectRoot ?? "").trim();
   if (!base || !text || !projectRoot) return null;
   let workLogId = null;
@@ -40,6 +44,7 @@ function normalizedMessage(value) {
     category: String(value.category ?? "done").trim() || "done",
     silent: value.silent === true,
     workLogId,
+    title,
     text,
     createdAt: String(value.createdAt ?? new Date().toISOString()),
   };
@@ -61,7 +66,12 @@ function normalizedCompletion(value) {
     usageReported: value.usageReported === true,
     deliveryGroupId: String(value.deliveryGroupId ?? "").trim() || null,
     deliverySequence: Number.isSafeInteger(value.deliverySequence) ? value.deliverySequence : null,
+    startedAt: String(value.startedAt ?? ""),
     completedAt: String(value.completedAt ?? new Date().toISOString()),
+    prompt: String(value.prompt ?? "").trim(),
+    changedFiles: Array.isArray(value.changedFiles)
+      ? value.changedFiles.map((file) => String(file).trim()).filter(Boolean)
+      : [],
     message: value.message ? normalizedMessage(value.message) : null,
   };
 }
@@ -143,7 +153,10 @@ export class TurnEndNotificationRegistry {
     completion.taskTitle = incoming.taskTitle || completion.taskTitle;
     completion.chatId = Number.isSafeInteger(incoming.chatId) ? incoming.chatId : completion.chatId;
     completion.status = incoming.status || completion.status;
-    completion.completedAt = incoming.completedAt || completion.completedAt;
+    completion.completedAt = completion.completedAt || incoming.completedAt;
+    completion.startedAt = completion.startedAt || incoming.startedAt;
+    completion.prompt = incoming.prompt || completion.prompt;
+    if (incoming.changedFiles.length) completion.changedFiles = incoming.changedFiles;
     completion.deliveryGroupId = incoming.deliveryGroupId ?? completion.deliveryGroupId;
     completion.deliverySequence = incoming.deliverySequence ?? completion.deliverySequence;
     if (incoming.usageReported || !completion.usageReported) {

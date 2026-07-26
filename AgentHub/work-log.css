@@ -53,15 +53,15 @@ span[data-day-usage-part] {
 }
 
 span[data-kilo-usage] {
-  color: var(--vscode-editorWarning-foreground, #cca700);
+  color: #e5c07b !important;
 }
 
 span[data-mega-usage] {
-  color: var(--vscode-charts-orange, #d18616);
+  color: #ff9d00 !important;
 }
 
 span[data-high-usage] {
-  color: var(--vscode-errorForeground, #f14c4c);
+  color: #f14c4c !important;
 }
 
 summary[data-task-usage] {
@@ -133,25 +133,53 @@ table[data-work-log-table] td {
   min-width: 0;
 }
 
-div[data-work-log-turn] {
-  display: grid;
-  gap: 0.15em 0.65em;
-  grid-template-columns: 8.5em minmax(0, 1fr);
-  padding: 0.12em 0;
+table[data-work-log-turn-table] {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
 }
 
-div[data-work-log-turn] + div[data-work-log-turn] {
+table[data-work-log-turn-table] col[data-work-log-turn-meta-column] {
+  width: 9.5em;
+}
+
+table[data-work-log-turn-table] td {
+  min-width: 0;
+  padding: 0.12em 0.35em 0.12em 0;
+  vertical-align: top;
+}
+
+table[data-work-log-turn-table] tr + tr td {
   border-top: 1px solid rgba(127, 127, 127, 0.25);
 }
 
-span[data-work-log-turn-meta] {
+td[data-work-log-turn-meta] {
   font-size: 0.9em;
   white-space: nowrap;
 }
 
-span[data-work-log-turn-text] {
+td[data-work-log-turn-description] {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+details[data-work-log-turn-details] > summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+div[data-work-log-turn-body],
+div[data-work-log-turn-context] {
+  margin-top: 0.3em;
+}
+
+div[data-work-log-turn-context] {
+  font-size: 0.9em;
+  opacity: 0.85;
+}
+
+tr[data-work-log-legacy-outcome] td {
+  padding-top: 0.45em;
 }
 
 td[data-work-log-turn-list] > details {

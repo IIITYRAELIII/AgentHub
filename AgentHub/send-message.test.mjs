@@ -35,8 +35,23 @@ test("parseArguments reads text and options", () => {
     category: "info",
     messageFile: null,
     workLogId: null,
+    title: null,
     text: "Готово",
   });
+});
+
+test("parseArguments reads a bounded end-of-turn title", () => {
+  const parsed = parseArguments([
+    "--bind-current",
+    "--after-turn",
+    "--title",
+    "Краткий итог",
+    "--category",
+    "done",
+    "Пояснение",
+  ]);
+  assert.equal(parsed.title, "Краткий итог");
+  assert.equal(parsed.text, "Пояснение");
 });
 
 test("parseArguments accepts a UTF-8 message file instead of positional text", () => {

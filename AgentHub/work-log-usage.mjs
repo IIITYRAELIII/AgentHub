@@ -36,18 +36,38 @@ function normalizedLedger(value = {}) {
   const turns = {};
   for (const [key, record] of Object.entries(value?.turns ?? {})) {
     try {
-      const workLogId = normalizeWorkLogId(record?.workLogId);
+      const keyParts = key.split("\0");
+      const provider = keyParts.length >= 3
+        ? keyParts[0]
+        : String(record?.provider ?? "codex").trim().toLowerCase();
+      const threadId = keyParts.length >= 3 ? keyParts[1] : String(record?.threadId ?? "").trim();
+      const turnId = keyParts.length >= 3 ? keyParts[2] : String(record?.turnId ?? key).trim();
+      if (!provider || !turnId) continue;
+      let workLogId = null;
+      if (record?.workLogId) workLogId = normalizeWorkLogId(record.workLogId);
       turns[key] = {
         workLogId,
         usage: normalizeTokenUsage(record?.usage),
+        usageReported: record?.usageReported !== false,
+        provider,
+        threadId,
+        turnId,
+        taskTitle: String(record?.taskTitle ?? "").trim(),
+        title: String(record?.title ?? "").trim(),
+        body: String(record?.body ?? record?.text ?? "").trim(),
+        prompt: String(record?.prompt ?? "").trim(),
+        changedFiles: Array.isArray(record?.changedFiles)
+          ? record.changedFiles.map((file) => String(file).trim()).filter(Boolean)
+          : [],
+        startedAt: String(record?.startedAt ?? ""),
         completedAt: String(record?.completedAt ?? ""),
-        text: String(record?.text ?? "").trim(),
+        status: String(record?.status ?? "completed").trim() || "completed",
       };
     } catch {
       // A damaged record is ignored without making the whole ledger unusable.
     }
   }
-  return { version: 1, turns };
+  return { version: 2, turns };
 }
 
 export function formatWorkLogUsage(usage) {
@@ -108,6 +128,7 @@ function formatDayUsageBreakdown(usage) {
 function ledgerByWorkLogId(turns = {}) {
   const records = new Map();
   for (const record of Object.values(turns)) {
+    if (!record?.workLogId) continue;
     const id = normalizeWorkLogId(record?.workLogId);
     if (records.has(id)) throw new Error(`WORK_LOG placeholder ${id} is assigned more than once`);
     records.set(id, { ...record, usage: normalizeTokenUsage(record?.usage) });
@@ -123,6 +144,12 @@ function formatCompletedAt(value) {
   return `${twoDigits(completedAt.getHours())}:${twoDigits(completedAt.getMinutes())}`;
 }
 
+function formatStartedAt(value) {
+  const startedAt = new Date(String(value ?? ""));
+  if (!Number.isFinite(startedAt.getTime())) return "неизвестно";
+  return `${twoDigits(startedAt.getHours())}:${twoDigits(startedAt.getMinutes())}:${twoDigits(startedAt.getSeconds())}`;
+}
+
 function escapeHtmlText(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -132,13 +159,45 @@ function escapeHtmlText(value) {
     .replace(/\r\n?|\n/g, "<br>");
 }
 
+function turnTitle(record) {
+  const explicit = String(record?.title ?? "").trim().replace(/\s+/g, " ");
+  if (explicit) return explicit.slice(0, 80);
+  const body = String(record?.body ?? record?.text ?? "").trim().replace(/\s+/g, " ");
+  if (!body) return record?.status && record.status !== "completed" ? "Ход остановлен" : "Ход завершён";
+  const sentence = body.match(/^.{1,80}?(?=[.!?](?:\s|$)|$)/u)?.[0] ?? body.slice(0, 80);
+  return sentence.trim().replace(/[.!?]+$/u, "") || "Ход завершён";
+}
+
 function formatTurnEntry(record) {
-  const units = highlightUsageUnits(formatConditionalUnits(turnConditionalUnits(record?.usage)));
-  const text = escapeHtmlText(String(record?.text ?? "").trim());
-  return "<div data-work-log-turn>"
-    + `<span data-work-log-turn-meta>${formatCompletedAt(record?.completedAt)} — ${units}</span>`
-    + (text ? `<span data-work-log-turn-text>${text}</span>` : "")
-    + "</div>";
+  const units = record?.usageReported === false
+    ? "нет данных"
+    : highlightUsageUnits(formatConditionalUnits(turnConditionalUnits(record?.usage)));
+  const title = escapeHtmlText(turnTitle(record));
+  const body = escapeHtmlText(String(record?.body ?? record?.text ?? "").trim());
+  const prompt = escapeHtmlText(String(record?.prompt ?? "").trim());
+  const details = [
+    body ? `<div data-work-log-turn-body>${body}</div>` : "",
+    `<div data-work-log-turn-context><strong>Начало:</strong> ${formatStartedAt(record?.startedAt)}</div>`,
+    prompt ? `<div data-work-log-turn-context><strong>Запрос:</strong> ${prompt}</div>` : "",
+  ].filter(Boolean).join("");
+  return `<tr data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}">`
+    + `<td data-work-log-turn-meta>${formatCompletedAt(record?.completedAt)} — ${units}</td>`
+    + "<td data-work-log-turn-description>"
+    + `<details data-work-log-turn-details><summary>${title}</summary>${details}</details>`
+    + "</td></tr>";
+}
+
+function formatTurnTable(records, legacyOutcome = "") {
+  const turns = records.map(formatTurnEntry).join("\n");
+  const legacy = legacyOutcome
+    ? `<tr data-work-log-legacy-outcome><td colspan="2">${legacyOutcome}</td></tr>`
+    : "";
+  return [
+    "<table data-work-log-turn-table>",
+    "<colgroup><col data-work-log-turn-meta-column><col data-work-log-turn-description-column></colgroup>",
+    `<tbody>${[turns, legacy].filter(Boolean).join("\n")}</tbody>`,
+    "</table>",
+  ].join("\n");
 }
 
 function formatLocalDate(value) {
@@ -170,23 +229,63 @@ function daySectionRanges(text) {
   }));
 }
 
+function topLevelElements(source, tagName) {
+  const text = String(source ?? "");
+  const tag = String(tagName).replace(/[^a-z0-9]/gi, "");
+  const pattern = new RegExp(`<\\/?${tag}\\b[^>]*>`, "gi");
+  const ranges = [];
+  let depth = 0;
+  let start = -1;
+  for (const match of text.matchAll(pattern)) {
+    const closing = /^<\//.test(match[0]);
+    if (!closing) {
+      if (depth === 0) start = match.index;
+      depth += 1;
+      continue;
+    }
+    if (depth <= 0) continue;
+    depth -= 1;
+    if (depth === 0 && start >= 0) {
+      const end = match.index + match[0].length;
+      ranges.push({ start, end, text: text.slice(start, end) });
+      start = -1;
+    }
+  }
+  return ranges;
+}
+
 function appendMarkerToRow(row, workLogId) {
-  const cells = [...String(row).matchAll(/<td\b[^>]*>[\s\S]*?<\/td>/gi)];
+  const cells = topLevelElements(row, "td");
   if (cells.length < 3) throw new Error("WORK_LOG task row must contain a usage cell");
   const usageCell = cells[2];
   const marker = `<span data-usage-id="${workLogId}" hidden>${workLogId}</span>`;
-  const updatedCell = usageCell[0].replace(/<\/td>$/i, `\n${marker}</td>`);
-  return `${row.slice(0, usageCell.index)}${updatedCell}`
-    + row.slice(usageCell.index + usageCell[0].length);
+  const updatedCell = usageCell.text.replace(/<\/td>$/i, `\n${marker}</td>`);
+  return `${row.slice(0, usageCell.start)}${updatedCell}${row.slice(usageCell.end)}`;
 }
 
-function fallbackTaskRow(threadId, workLogId) {
+function taskCell({ provider = "codex", threadId, taskTitle }) {
+  const normalizedProvider = String(provider).trim().toLowerCase() || "codex";
   const escapedThreadId = escapeHtmlAttribute(threadId);
+  const label = `${normalizedProvider === "claude" ? "Claude" : "Codex"} - ${
+    escapeHtmlText(String(taskTitle ?? "").trim() || "Без названия")
+  }`;
+  return normalizedProvider === "codex"
+    ? `<a href="vscode://openai.chatgpt/local/${escapedThreadId}">${label}</a>`
+    : label;
+}
+
+function taskRow({ provider = "codex", threadId, taskTitle, workLogId = null }) {
+  const normalizedProvider = String(provider).trim().toLowerCase() || "codex";
+  const escapedThreadId = escapeHtmlAttribute(threadId);
+  const escapedProvider = escapeHtmlAttribute(normalizedProvider);
+  const marker = workLogId
+    ? `<span data-usage-id="${workLogId}" hidden>${workLogId}</span>`
+    : "";
   return [
-    `<tr data-work-log-unbound-thread="${escapedThreadId}">`,
-    `<td><a href="vscode://openai.chatgpt/local/${escapedThreadId}">Codex - Автоматически учтённые ходы</a></td>`,
+    `<tr data-work-log-provider="${escapedProvider}" data-work-log-thread-id="${escapedThreadId}">`,
+    `<td>${taskCell({ provider: normalizedProvider, threadId, taskTitle })}</td>`,
     "<td data-work-log-turn-list></td>",
-    `<td><span data-usage-id="${workLogId}" hidden>${workLogId}</span></td>`,
+    `<td>${marker}</td>`,
     "</tr>",
   ].join("\n");
 }
@@ -217,8 +316,10 @@ function workLogDaySection(date, row, open = false) {
 }
 
 function attachAutomaticMarker(workLogText, {
+  provider = "codex",
   threadId,
   workLogId,
+  taskTitle = "Автоматически учтённые ходы",
   completedAt,
 }) {
   const text = String(workLogText ?? "");
@@ -227,7 +328,7 @@ function attachAutomaticMarker(workLogText, {
   if (!range) {
     const section = workLogDaySection(
       date,
-      fallbackTaskRow(threadId, workLogId),
+      taskRow({ provider, threadId, taskTitle, workLogId }),
       date === formatLocalDate(new Date()),
     );
     const first = daySectionRanges(text)[0];
@@ -240,24 +341,23 @@ function attachAutomaticMarker(workLogText, {
 
   const section = text.slice(range.start, range.end);
   const escapedThreadId = escapeHtmlAttribute(threadId);
-  const linkedRows = [...section.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)]
+  const linkedRows = topLevelElements(section, "tr")
     .filter((match) => (
-      !/\bdata-work-log-unbound-thread=/i.test(match[0])
-      && match[0].includes(`href="vscode://openai.chatgpt/local/${escapedThreadId}"`)
+      !/\bdata-work-log-thread-id=/i.test(match.text)
+      && match.text.includes(`href="vscode://openai.chatgpt/local/${escapedThreadId}"`)
     ));
-  const fallback = [...section.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)]
-    .find((match) => match[0].includes(`data-work-log-unbound-thread="${escapedThreadId}"`));
+  const fallback = topLevelElements(section, "tr")
+    .find((match) => match.text.includes(`data-work-log-thread-id="${escapedThreadId}"`));
   const target = linkedRows.length === 1 ? linkedRows[0] : fallback;
 
   let updatedSection;
   let targetKind;
   if (target) {
-    const updatedRow = appendMarkerToRow(target[0], workLogId);
-    updatedSection = `${section.slice(0, target.index)}${updatedRow}`
-      + section.slice(target.index + target[0].length);
+    const updatedRow = appendMarkerToRow(target.text, workLogId);
+    updatedSection = `${section.slice(0, target.start)}${updatedRow}${section.slice(target.end)}`;
     targetKind = linkedRows.length === 1 ? "exact-thread-row" : "fallback-existing";
   } else {
-    const row = fallbackTaskRow(threadId, workLogId);
+    const row = taskRow({ provider, threadId, taskTitle, workLogId });
     if (!/<\/tbody>/i.test(section)) throw new Error(`WORK_LOG day ${date} has no table body`);
     updatedSection = section.replace(/<\/tbody>/i, `${row}\n</tbody>`);
     targetKind = linkedRows.length > 1 ? "fallback-ambiguous" : "fallback-missing";
@@ -279,13 +379,169 @@ function changedFilesDetails(source) {
   )?.[0] ?? "";
 }
 
-function replaceProjectedCells(row, usageContent, turnsContent) {
-  const cells = [...row.matchAll(/<td\b[^>]*>[\s\S]*?<\/td>/gi)];
+function recordedChangedFilesDetails(records) {
+  const files = [...new Set(records.flatMap((record) => record?.changedFiles ?? []))];
+  if (!files.length) return "";
+  return "<details><summary>Изменённые файлы</summary>"
+    + files.map((file) => {
+      const normalized = String(file).replaceAll("\\", "/");
+      return `<a href="${escapeHtmlAttribute(normalized)}">${escapeHtmlText(normalized)}</a>`;
+    }).join("; ")
+    + "</details>";
+}
+
+function legacyOutcome(source) {
+  const explicit = String(source ?? "").match(
+    /<tr\b[^>]*data-work-log-legacy-outcome[^>]*>\s*<td\b[^>]*>([\s\S]*?)<\/td>\s*<\/tr>/iu,
+  )?.[1]?.trim();
+  if (explicit) return explicit;
+  const restored = String(source ?? "").match(
+    /<div\b[^>]*data-work-log-restored-outcome[^>]*>([\s\S]*?)<\/div>/iu,
+  )?.[1]?.trim();
+  if (restored) return restored;
+  const cell = String(source ?? "")
+    .replace(/^<td\b[^>]*>/i, "")
+    .replace(/<\/td>$/i, "")
+    .replace(/<table\b[^>]*data-work-log-turn-table[^>]*>[\s\S]*?<\/table>/giu, "")
+    .replace(/<div\b[^>]*data-work-log-turn[^>]*>[\s\S]*?<\/div>/giu, "")
+    .replace(/<details\b[^>]*>\s*<summary\b[^>]*>\s*Изменённые файлы\s*<\/summary>[\s\S]*?<\/details>/giu, "")
+    .trim();
+  return cell;
+}
+
+function taskCellKey(source) {
+  return String(source ?? "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cellInner(source) {
+  return String(source ?? "").replace(/^<td\b[^>]*>/i, "").replace(/<\/td>$/i, "").trim();
+}
+
+export function restoreLegacyOutcomes(workLogText, previousWorkLogText) {
+  const outcomes = new Map();
+  for (const range of daySectionRanges(previousWorkLogText)) {
+    const section = String(previousWorkLogText).slice(range.start, range.end);
+    for (const row of topLevelElements(section, "tr")) {
+      const cells = topLevelElements(row.text, "td");
+      if (cells.length < 2) continue;
+      const outcome = cellInner(cells[1].text)
+        .replace(/<details\b[^>]*>\s*<summary\b[^>]*>\s*Изменённые файлы\s*<\/summary>[\s\S]*?<\/details>/giu, "")
+        .trim();
+      if (!outcome) continue;
+      outcomes.set(`${range.date}\0${taskCellKey(cells[0].text)}`, outcome);
+    }
+  }
+  let updated = String(workLogText ?? "");
+  for (const range of daySectionRanges(updated).reverse()) {
+    let section = updated.slice(range.start, range.end);
+    for (const row of topLevelElements(section, "tr").reverse()) {
+      const cells = topLevelElements(row.text, "td");
+      if (cells.length < 2 || legacyOutcome(cells[1].text)) continue;
+      const outcome = outcomes.get(`${range.date}\0${taskCellKey(cells[0].text)}`);
+      if (!outcome) continue;
+      const replacementCell = cells[1].text.replace(
+        /<\/td>$/i,
+        `\n<div data-work-log-restored-outcome>${outcome}</div></td>`,
+      );
+      const replacementRow = `${row.text.slice(0, cells[1].start)}${replacementCell}`
+        + row.text.slice(cells[1].end);
+      section = `${section.slice(0, row.start)}${replacementRow}${section.slice(row.end)}`;
+    }
+    updated = `${updated.slice(0, range.start)}${section}${updated.slice(range.end)}`;
+  }
+  return updated;
+}
+
+function rowIdentity(row) {
+  const opening = String(row).match(/^<tr\b[^>]*>/i)?.[0] ?? "";
+  const provider = opening.match(/\bdata-work-log-provider=["']([^"']+)["']/i)?.[1]?.trim().toLowerCase();
+  const threadId = opening.match(/\bdata-work-log-thread-id=["']([^"']+)["']/i)?.[1]?.trim();
+  return provider && threadId ? { provider, threadId } : null;
+}
+
+function linkedThreadId(row) {
+  return String(row).match(/href=["']vscode:\/\/openai\.chatgpt\/local\/([^"']+)["']/i)?.[1] ?? "";
+}
+
+function withRowIdentity(row, { provider, threadId }) {
+  if (rowIdentity(row)) return row;
+  return String(row).replace(
+    /^<tr\b([^>]*)>/i,
+    `<tr data-work-log-provider="${escapeHtmlAttribute(provider)}" data-work-log-thread-id="${
+      escapeHtmlAttribute(threadId)
+    }"$1>`,
+  );
+}
+
+function automaticRecordsForDay(turns, date) {
+  return Object.values(turns)
+    .filter((record) => (
+      !record.workLogId
+      && formatLocalDate(record.completedAt) === date
+      && record.provider
+      && record.threadId
+    ));
+}
+
+function ensureCanonicalRows(section, date, turns) {
+  let updated = String(section);
+  const groups = new Map();
+  for (const record of automaticRecordsForDay(turns, date)) {
+    const key = `${record.provider}\0${record.threadId}`;
+    const values = groups.get(key) ?? [];
+    values.push(record);
+    groups.set(key, values);
+  }
+  for (const [key, records] of groups) {
+    const [provider, threadId] = key.split("\0");
+    const rows = topLevelElements(updated, "tr").filter((row) => topLevelElements(row.text, "td").length >= 3);
+    if (rows.some((row) => {
+      const identity = rowIdentity(row.text);
+      return identity?.provider === provider && identity.threadId === threadId;
+    })) continue;
+    const linked = provider === "codex"
+      ? rows.filter((row) => linkedThreadId(row.text) === threadId)
+      : [];
+    if (linked.length === 1) {
+      const target = linked[0];
+      const replacement = withRowIdentity(target.text, { provider, threadId });
+      updated = `${updated.slice(0, target.start)}${replacement}${updated.slice(target.end)}`;
+      continue;
+    }
+    const latest = [...records].sort(
+      (left, right) => (Date.parse(left.completedAt) || 0) - (Date.parse(right.completedAt) || 0),
+    ).at(-1);
+    const row = taskRow({
+      provider,
+      threadId,
+      taskTitle: latest?.taskTitle,
+    });
+    const insertion = updated.lastIndexOf("</tbody>");
+    if (insertion < 0) throw new Error(`WORK_LOG day ${date} has no table body`);
+    updated = `${updated.slice(0, insertion)}${row}\n${updated.slice(insertion)}`;
+  }
+  return updated;
+}
+
+function replaceProjectedCells(row, usageContent, records) {
+  const cells = topLevelElements(row, "td");
   if (cells.length < 3) return row;
   const opening = row.match(/^<tr\b[^>]*>/i)?.[0] ?? "<tr>";
-  const changedFiles = changedFilesDetails(cells[1][0]);
-  const turnList = [turnsContent, changedFiles].filter(Boolean).join("\n");
-  return `${opening}\n${cells[0][0]}\n`
+  const changedFiles = changedFilesDetails(cells[1].text) || recordedChangedFilesDetails(records);
+  const outcome = legacyOutcome(cells[1].text);
+  const turnTable = records.length || outcome ? formatTurnTable(records, outcome) : "";
+  const turnList = [turnTable, changedFiles].filter(Boolean).join("\n");
+  const identity = rowIdentity(row);
+  const latest = [...records].sort(
+    (left, right) => (Date.parse(left.completedAt) || 0) - (Date.parse(right.completedAt) || 0),
+  ).at(-1);
+  const task = identity && latest?.taskTitle
+    ? `<td>${taskCell({ ...identity, taskTitle: latest.taskTitle })}</td>`
+    : cells[0].text;
+  return `${opening}\n${task}\n`
     + `<td data-work-log-turn-list>${turnList}</td>\n`
     + `<td data-work-log-usage>${usageContent}</td>\n</tr>`;
 }
@@ -320,19 +576,44 @@ function markDaySection(section) {
   ));
 }
 
-function projectDaySection(section, date, records) {
-  const markedSection = markWorkLogTable(markDaySection(section));
-  const rows = [...markedSection.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)]
+function projectDaySection(section, date, turns, recordsById) {
+  const markedSection = markWorkLogTable(markDaySection(ensureCanonicalRows(section, date, turns)));
+  const rows = topLevelElements(markedSection, "tr")
+    .filter((match) => topLevelElements(match.text, "td").length >= 3)
     .map((match) => {
-      const ids = [...new Set(usageIds(match[0]))];
-      const recorded = ids.map((id) => records.get(id)).filter(Boolean);
+      const ids = [...new Set(usageIds(match.text))];
+      const identity = rowIdentity(match.text);
+      const legacyRecords = ids.map((id) => recordsById.get(id)).filter(Boolean);
+      const automaticRecords = identity
+        ? automaticRecordsForDay(turns, date).filter((record) => (
+          record.provider === identity.provider && record.threadId === identity.threadId
+        ))
+        : [];
+      const seen = new Set();
+      const recorded = [...legacyRecords, ...automaticRecords].filter((record) => {
+        const key = `${record.provider}\0${record.threadId}\0${record.turnId}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
       const usage = recorded.reduce(
-        (total, record) => addTokenUsage(total, record.usage),
+        (total, record) => record.usageReported === false
+          ? total
+          : addTokenUsage(total, record.usage),
         emptyTokenUsage(),
       );
-      return { match, ids, recorded, usage, units: turnConditionalUnits(usage) };
+      const cells = topLevelElements(match.text, "td");
+      return {
+        match,
+        ids,
+        recorded,
+        usage,
+        units: turnConditionalUnits(usage),
+        identity,
+        hasLegacyOutcome: Boolean(legacyOutcome(cells[1]?.text)),
+      };
     })
-    .filter((row) => row.ids.length);
+    .filter((row) => row.ids.length || row.recorded.length || row.hasLegacyOutcome);
   const dayUsage = rows.reduce(
     (total, row) => addTokenUsage(total, row.usage),
     emptyTokenUsage(),
@@ -345,19 +626,12 @@ function projectDaySection(section, date, records) {
       ? formatTaskUsageDetails(row.usage, dayUnits)
       : "";
     const markers = row.ids.map((id) => (
-      `<span data-usage-id="${id}" hidden>${records.has(id) ? "" : id}</span>`
+      `<span data-usage-id="${id}" hidden>${recordsById.has(id) ? "" : id}</span>`
     )).join("\n");
-    const turns = [...row.recorded]
+    const turnsContent = [...row.recorded]
       .sort((left, right) => (Date.parse(left.completedAt) || 0) - (Date.parse(right.completedAt) || 0))
-      .map(formatTurnEntry)
-      .join("\n");
-    const replacement = replaceProjectedCells(
-      row.match[0],
-      `${visible}${markers}`,
-      turns,
-    );
-    projected = `${projected.slice(0, row.match.index)}${replacement}`
-      + projected.slice(row.match.index + row.match[0].length);
+    const replacement = replaceProjectedCells(row.match.text, `${visible}${markers}`, turnsContent);
+    projected = `${projected.slice(0, row.match.start)}${replacement}${projected.slice(row.match.end)}`;
   }
 
   const summary = dayUnits > 0
@@ -372,8 +646,26 @@ function projectDaySection(section, date, records) {
 }
 
 export function projectWorkLogUsage(workLogText, turns = {}) {
-  const text = String(workLogText ?? "");
-  const records = ledgerByWorkLogId(turns);
+  let text = String(workLogText ?? "");
+  const normalizedTurns = normalizedLedger({ turns }).turns;
+  const records = ledgerByWorkLogId(normalizedTurns);
+  const existingDates = new Set(daySectionRanges(text).map((range) => range.date));
+  const requiredDates = [...new Set(Object.values(normalizedTurns)
+    .filter((record) => !record.workLogId)
+    .map((record) => formatLocalDate(record.completedAt))
+    .filter(Boolean))]
+    .filter((date) => !existingDates.has(date))
+    .sort((left, right) => {
+      const [ld, lm, ly] = left.split(".").map(Number);
+      const [rd, rm, ry] = right.split(".").map(Number);
+      return Date.UTC(ry, rm - 1, rd) - Date.UTC(ly, lm - 1, ld);
+    });
+  for (const date of requiredDates.reverse()) {
+    const section = workLogDaySection(date, "", date === formatLocalDate(new Date()));
+    const first = daySectionRanges(text)[0];
+    const insertion = first?.start ?? text.length;
+    text = `${text.slice(0, insertion)}${section}\n\n${text.slice(insertion)}`;
+  }
   const dayStarts = [...text.matchAll(
     /<details\b[^>]*>\s*<summary[^>]*><strong>(\d{2}\.\d{2}\.\d{4})<\/strong>[\s\S]*?<\/summary>/gi,
   )];
@@ -382,7 +674,7 @@ export function projectWorkLogUsage(workLogText, turns = {}) {
     const start = dayStarts[index].index;
     const end = index + 1 < dayStarts.length ? dayStarts[index + 1].index : text.length;
     const section = text.slice(start, end);
-    const replacement = projectDaySection(section, dayStarts[index][1], records);
+    const replacement = projectDaySection(section, dayStarts[index][1], normalizedTurns, records);
     projected = `${projected.slice(0, start)}${replacement}${projected.slice(end)}`;
   }
   return projected;
@@ -403,6 +695,72 @@ export function applyWorkLogUsage(workLogText, workLogId, usage) {
     pattern,
     (_match, opening, closing) => `${opening}${formatWorkLogUsage(usage)}${closing}`,
   );
+}
+
+function incomingLedgerRecord({
+  provider = "codex",
+  threadId,
+  turnId,
+  workLogId = null,
+  usage,
+  usageReported,
+  taskTitle,
+  title,
+  body,
+  text,
+  prompt,
+  changedFiles,
+  startedAt,
+  completedAt,
+  status,
+}) {
+  return {
+    workLogId,
+    usage: normalizeTokenUsage(usage),
+    usageReported: usageReported === true,
+    provider: String(provider).trim().toLowerCase(),
+    threadId: String(threadId).trim(),
+    turnId: String(turnId).trim(),
+    taskTitle: String(taskTitle ?? "").trim(),
+    title: String(title ?? "").trim(),
+    body: String(body ?? text ?? "").trim(),
+    prompt: String(prompt ?? "").trim(),
+    changedFiles: Array.isArray(changedFiles)
+      ? changedFiles.map((file) => String(file).trim()).filter(Boolean)
+      : [],
+    startedAt: String(startedAt ?? ""),
+    completedAt: String(completedAt ?? new Date().toISOString()),
+    status: String(status ?? "completed").trim() || "completed",
+  };
+}
+
+function mergeLedgerRecord(existing, incoming) {
+  if (!existing) return incoming;
+  if (incoming.workLogId) existing.workLogId = incoming.workLogId;
+  if (incoming.usageReported || !existing.usageReported) {
+    existing.usage = incoming.usage;
+    existing.usageReported = incoming.usageReported;
+  }
+  for (const field of [
+    "provider",
+    "threadId",
+    "turnId",
+    "taskTitle",
+    "title",
+    "body",
+    "prompt",
+    "changedFiles",
+    "startedAt",
+    "completedAt",
+    "status",
+  ]) {
+    if (field === "changedFiles") {
+      if (incoming.changedFiles.length) existing.changedFiles = incoming.changedFiles;
+    } else if (incoming[field]) {
+      existing[field] = incoming[field];
+    }
+  }
+  return existing;
 }
 
 export class WorkLogUsageStore {
@@ -438,17 +796,25 @@ export class WorkLogUsageStore {
       let updated = 0;
       for (const message of messages) {
         const text = String(message?.text ?? "").trim();
-        if (!text || !message?.workLogId) continue;
-        let workLogId;
-        try {
-          workLogId = normalizeWorkLogId(message.workLogId);
-        } catch {
-          continue;
+        const title = String(message?.title ?? "").trim();
+        let records = [];
+        if (message?.workLogId) {
+          try {
+            const workLogId = normalizeWorkLogId(message.workLogId);
+            records = Object.values(this.#ledger.turns)
+              .filter((record) => record.workLogId === workLogId);
+          } catch {
+            records = [];
+          }
+        } else if (message?.provider && message?.threadId && message?.turnId) {
+          const key = workLogTurnKey(message);
+          if (this.#ledger.turns[key]) records = [this.#ledger.turns[key]];
         }
-        const records = Object.values(this.#ledger.turns)
-          .filter((record) => record.workLogId === workLogId);
-        if (records.length !== 1 || records[0].text === text) continue;
-        records[0].text = text;
+        if (records.length !== 1) continue;
+        const record = records[0];
+        if (record.body === text && record.title === title) continue;
+        if (text) record.body = text;
+        if (title) record.title = title;
         updated += 1;
       }
       if (updated) await this.#save();
@@ -485,40 +851,49 @@ export class WorkLogUsageStore {
     workLogId,
     usage,
     usageReported,
+    taskTitle,
+    title,
+    body,
+    prompt,
+    changedFiles,
+    startedAt,
     completedAt,
+    status,
     text,
     workLogFile,
   }) {
     const operation = this.#tail.catch(() => {}).then(async () => {
-      if (usageReported !== true) return { recorded: false, reason: "usage-unavailable" };
       await this.#load();
       const id = normalizeWorkLogId(workLogId);
       const key = workLogTurnKey({ provider, threadId, turnId });
       const existing = this.#ledger.turns[key];
       const reusedId = Object.entries(this.#ledger.turns)
         .find(([existingKey, record]) => existingKey !== key && record.workLogId === id);
-      if (existing && existing.workLogId !== id) {
+      if (existing?.workLogId && existing.workLogId !== id) {
         throw new Error(`Turn ${turnId} is already assigned to another WORK_LOG placeholder`);
       }
       if (reusedId) {
         throw new Error(`WORK_LOG placeholder ${id} is already assigned to another turn`);
       }
-      if (!existing) {
-        const normalizedUsage = normalizeTokenUsage(usage);
-        this.#ledger.turns[key] = {
-          workLogId: id,
-          usage: normalizedUsage,
-          completedAt: String(completedAt ?? new Date().toISOString()),
-          text: String(text ?? "").trim(),
-        };
-        await this.#save();
-      } else {
-        const normalizedText = String(text ?? "").trim();
-        if (normalizedText && existing.text !== normalizedText) {
-          existing.text = normalizedText;
-          await this.#save();
-        }
-      }
+      const incoming = incomingLedgerRecord({
+        provider,
+        threadId,
+        turnId,
+        workLogId: id,
+        usage,
+        usageReported,
+        taskTitle,
+        title,
+        body,
+        text,
+        prompt,
+        changedFiles,
+        startedAt,
+        completedAt,
+        status,
+      });
+      this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
+      await this.#save();
       const recordedUsage = this.#ledger.turns[key].usage;
       const logPath = path.resolve(workLogFile);
       const current = await readFile(logPath, "utf8");
@@ -540,51 +915,48 @@ export class WorkLogUsageStore {
     turnId,
     usage,
     usageReported,
+    taskTitle,
+    title,
+    body,
+    prompt,
+    changedFiles,
+    startedAt,
     completedAt,
+    status,
     text,
     workLogFile,
   }) {
     const operation = this.#tail.catch(() => {}).then(async () => {
-      if (usageReported !== true) return { recorded: false, reason: "usage-unavailable" };
-      if (String(provider).toLowerCase() !== "codex") {
-        return { recorded: false, reason: "provider-unsupported" };
-      }
       await this.#load();
       const key = workLogTurnKey({ provider, threadId, turnId });
       const existing = this.#ledger.turns[key];
-      const workLogId = existing?.workLogId ?? normalizeWorkLogId(this.#randomUUID());
       const logPath = path.resolve(workLogFile);
       const current = await readFile(logPath, "utf8");
-      const occurrences = usageIds(current).filter((id) => id === workLogId).length;
-      const attached = occurrences === 1
-        ? { text: current, target: "existing-marker" }
-        : attachAutomaticMarker(current, {
-          threadId,
-          workLogId,
-          completedAt,
-        });
-      if (!existing) {
-        this.#ledger.turns[key] = {
-          workLogId,
-          usage: normalizeTokenUsage(usage),
-          completedAt: String(completedAt ?? new Date().toISOString()),
-          text: String(text ?? "").trim(),
-        };
-        await this.#save();
-      } else {
-        const normalizedText = String(text ?? "").trim();
-        if (normalizedText && existing.text !== normalizedText) {
-          existing.text = normalizedText;
-          await this.#save();
-        }
-      }
-      const updated = projectWorkLogUsage(attached.text, this.#ledger.turns);
+      const incoming = incomingLedgerRecord({
+        provider,
+        threadId,
+        turnId,
+        usage,
+        usageReported,
+        taskTitle,
+        title,
+        body,
+        text,
+        prompt,
+        changedFiles,
+        startedAt,
+        completedAt,
+        status,
+      });
+      this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
+      await this.#save();
+      const updated = projectWorkLogUsage(current, this.#ledger.turns);
       await writeTextAtomic(logPath, updated);
       return {
         recorded: !existing,
         usage: this.#ledger.turns[key].usage,
-        workLogId,
-        target: attached.target,
+        workLogId: null,
+        target: "thread-day-row",
       };
     });
     this.#tail = operation;

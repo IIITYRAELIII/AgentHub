@@ -21,6 +21,8 @@ import { normalizeWorkLogId } from "./work-log-usage.mjs";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 const TELEGRAM_CAPTION_LIMIT = 1024;
+export const TURN_END_TITLE_LIMIT = 80;
+export const TURN_END_BODY_LIMIT = 700;
 const NOTIFICATION_CARD_DIRECTORY = path.join(
   import.meta.dirname,
   "assets",
@@ -73,6 +75,7 @@ export function parseArguments(args) {
   let category = "info";
   let messageFile = null;
   let workLogId = null;
+  let title = null;
   const textParts = [];
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -103,6 +106,12 @@ export function parseArguments(args) {
       workLogId = normalizeWorkLogId(args[++index]);
     } else if (argument.startsWith("--work-log-id=")) {
       workLogId = normalizeWorkLogId(argument.slice("--work-log-id=".length));
+    } else if (argument === "--title") {
+      if (index + 1 >= args.length) throw new Error("--title requires a value");
+      title = String(args[++index]).trim();
+    } else if (argument.startsWith("--title=")) {
+      title = String(argument.slice("--title=".length)).trim();
+      if (!title) throw new Error("--title requires a value");
     } else if (argument === "--help" || argument === "-h") {
       return {
         help: true,
@@ -114,6 +123,7 @@ export function parseArguments(args) {
         category,
         messageFile,
         workLogId,
+        title,
         text: "",
       };
     } else {
@@ -135,6 +145,7 @@ export function parseArguments(args) {
     category,
     messageFile,
     workLogId,
+    title,
     text,
   };
 }
@@ -432,7 +443,7 @@ export function notificationCardOutboxBody({
 export async function main(args = process.argv.slice(2)) {
   const options = parseArguments(args);
   if (options.help) {
-    console.log("Usage: node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--after-turn] [--work-log-id <uuid>] [--category <name>] [--message-file <utf8-file> | <message>]");
+    console.log("Usage: node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--after-turn] [--title <short-title>] [--category <name>] [--message-file <utf8-file> | <message>]");
     console.log("       <command> | node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--category <name>]");
     console.log(`Categories: ${Object.keys(NOTIFICATION_CATEGORIES).join(", ")} (default: info; used with a binding option)`);
     return;

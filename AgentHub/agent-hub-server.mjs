@@ -991,32 +991,61 @@ function fallbackTurnEndMessage(status) {
   return status === "completed" ? "Ход завершён." : `Ход завершён со статусом ${status}.`;
 }
 
-async function projectTurnUsageToWorkLog(completion, text = "") {
+function conciseTurnTitle(value, status = "completed") {
+  const text = String(value ?? "").trim().replace(/\s+/g, " ");
+  if (!text) return status === "completed" ? "Ход завершён" : "Ход остановлен";
+  const sentence = text.match(/^.{1,80}?(?=[.!?](?:\s|$)|$)/u)?.[0] ?? text.slice(0, 80);
+  return sentence.trim().replace(/[.!?]+$/u, "") || "Ход завершён";
+}
+
+function structuredTurnText(title, body) {
+  return [String(title ?? "").trim(), String(body ?? "").trim()].filter(Boolean).join("\n\n");
+}
+
+function changedFilesForRun(run) {
+  const diff = String(run?.latestDiff ?? "");
+  const repoRoot = String(run?.gitBaseline?.repoRoot ?? "").trim();
+  if (!diff || !repoRoot) return [];
+  const files = new Set();
+  for (const match of diff.matchAll(/^(?:\+\+\+ b\/|--- a\/)(.+)$/gm)) {
+    const gitPath = match[1].trim().replace(/^"(.*)"$/, "$1");
+    if (!gitPath || gitPath === "/dev/null") continue;
+    const absolute = path.resolve(repoRoot, gitPath.replaceAll("/", path.sep));
+    const relative = path.relative(run.projectRoot, absolute);
+    if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+    files.add(relative.replaceAll(path.sep, "/"));
+  }
+  return [...files].sort((left, right) => left.localeCompare(right));
+}
+
+async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } = {}) {
   const workLogId = completion?.message?.workLogId;
   const project = findProject(completion.projectRoot);
   if (!project) throw new Error(`Cannot find WORK_LOG project for ${completion.projectRoot}`);
-  if (!workLogId) {
-    return workLogUsageStore.recordAutomaticAndProject({
-      provider: completion.provider,
-      threadId: completion.threadId,
-      turnId: completion.turnId,
-      usage: completion.usage,
-      usageReported: completion.usageReported,
-      completedAt: completion.completedAt,
-      text,
-      workLogFile: path.join(project.path, "WORK_LOG.md"),
-    });
-  }
-  return workLogUsageStore.recordAndProject({
+  const fields = {
     provider: completion.provider,
     threadId: completion.threadId,
     turnId: completion.turnId,
-    workLogId,
     usage: completion.usage,
     usageReported: completion.usageReported,
+    taskTitle: completion.taskTitle,
+    title: title || (body ? conciseTurnTitle(body, completion.status) : ""),
+    body,
+    prompt: completion.prompt,
+    changedFiles: completion.changedFiles,
+    startedAt: completion.startedAt,
     completedAt: completion.completedAt,
-    text,
+    status: completion.status,
     workLogFile: path.join(project.path, "WORK_LOG.md"),
+  };
+  if (!workLogId) {
+    return workLogUsageStore.recordAutomaticAndProject({
+      ...fields,
+    });
+  }
+  return workLogUsageStore.recordAndProject({
+    ...fields,
+    workLogId,
   });
 }
 
@@ -1039,6 +1068,9 @@ async function finalizeCodexRunDelivery(run, {
       description,
     });
   }
+  await refreshTaskDiff(run).catch((error) => {
+    console.error(`Cannot capture changed files for turn ${completedTurnId}:`, error.message);
+  });
   const existingCompletion = turnEndNotifications.get({
     provider: "codex",
     threadId: run.threadId,
@@ -1054,7 +1086,24 @@ async function finalizeCodexRunDelivery(run, {
     status,
     usage: tracker.usage,
     usageReported: tracker.reported === true,
+    startedAt: run.startedAt,
+    prompt: run.promptPreview,
+    changedFiles: changedFilesForRun(run),
   });
+  if (completion && run.observer === true && !completion.message) {
+    turnEndNotifications.registerMessage({
+      provider: "codex",
+      threadId: run.threadId,
+      turnId: completedTurnId,
+      projectRoot: run.projectRoot,
+      taskTitle: runTaskTitle(run),
+      chatId: run.chatId ?? chatId ?? resolveNotificationChatId(config, null),
+      category: status === "completed" ? "done" : "warning",
+      silent,
+      title: conciseTurnTitle(answer, status),
+      text: String(answer ?? "").trim().slice(0, 700) || fallbackTurnEndMessage(status),
+    });
+  }
   await saveState();
   const resolvedTracker = completion
     ? { usage: completion.usage, reported: completion.usageReported }
@@ -1069,7 +1118,10 @@ async function finalizeCodexRunDelivery(run, {
     deliverRegistered: deliverTurnEndNotification,
     deliverStandard: async () => {
       if (completion) {
-        await projectTurnUsageToWorkLog(completion, answer).catch((error) => {
+        await projectTurnUsageToWorkLog(completion, {
+          title: conciseTurnTitle(answer, status),
+          body: answer,
+        }).catch((error) => {
           console.error(`Cannot update WORK_LOG usage for turn ${completedTurnId}:`, error.message);
         });
       }
@@ -1101,8 +1153,13 @@ async function deliverTurnEndNotification(completion) {
   deliveringTurnEndKeys.add(key);
   try {
     const message = completion.message;
-    const notificationText = message?.text || fallbackTurnEndMessage(completion.status);
-    await projectTurnUsageToWorkLog(completion, notificationText).catch((error) => {
+    const notificationBody = message?.text || fallbackTurnEndMessage(completion.status);
+    const notificationTitle = message?.title || conciseTurnTitle(notificationBody, completion.status);
+    const notificationText = structuredTurnText(notificationTitle, notificationBody);
+    await projectTurnUsageToWorkLog(completion, {
+      title: notificationTitle,
+      body: notificationBody,
+    }).catch((error) => {
       console.error(`Cannot update WORK_LOG usage for turn ${completion.turnId}:`, error.message);
     });
     const category = message?.category
@@ -3611,18 +3668,44 @@ async function handleRuntimeCommand(request) {
       turnId: payload.turnId,
       allowThreadFallback: true,
     });
+    const deliveredIdentity = {
+      provider: "codex",
+      threadId: identity.threadId,
+      turnId: payload.turnId,
+    };
+    const alreadyDelivered = turnEndNotifications.hasDelivered(deliveredIdentity);
+    const taskTitle = runtimeCommandTaskTitle({ ...identity, run });
     const completion = turnEndNotifications.recordCompletion({
       provider: "codex",
       threadId: identity.threadId,
       turnId: payload.turnId,
       projectRoot: project.path,
-      taskTitle: runtimeCommandTaskTitle({ ...identity, run }),
+      taskTitle,
       chatId: resolveNotificationChatId(config, null),
       status: payload.status,
       usage: payload.usage,
       usageReported: payload.usageReported === true,
+      startedAt: payload.startedAt ?? run?.startedAt,
       completedAt: payload.completedAt,
+      prompt: payload.prompt ?? run?.promptPreview,
     });
+    if (!completion && alreadyDelivered && payload.usageReported === true) {
+      await projectTurnUsageToWorkLog({
+        ...deliveredIdentity,
+        projectRoot: project.path,
+        taskTitle,
+        status: payload.status,
+        usage: normalizeTokenUsage(payload.usage),
+        usageReported: true,
+        startedAt: payload.startedAt ?? run?.startedAt,
+        completedAt: payload.completedAt,
+        prompt: payload.prompt ?? run?.promptPreview,
+        changedFiles: changedFilesForRun(run),
+        message: null,
+      }).catch((error) => {
+        console.error(`Cannot update late WORK_LOG usage for turn ${payload.turnId}:`, error.message);
+      });
+    }
     await saveState();
     if (completion && (!run || !["running", "finishing"].includes(run.status))) {
       await deliverTurnEndNotification(completion);
@@ -3682,6 +3765,7 @@ async function handleRuntimeCommand(request) {
       category: options.category,
       silent: options.silent,
       workLogId: options.workLogId,
+      title: options.title,
       text: await resolveNotificationMessageText(options, { readStdinImpl: async () => "" }),
     });
     await saveState();
@@ -4043,12 +4127,15 @@ function codexTurnSnapshot(turn, threadStatus = null) {
   const answer = recoveredCodexAnswer(turn);
   const hasExplicitFinalAnswer = codexTurnHasExplicitFinalAnswer(turn);
   const waitingOnApproval = codexThreadWaitingOnApproval(threadStatus);
+  const prompt = codexThreadHistory([turn]).at(-1)?.prompt ?? "";
   return {
     answer,
     finalAnswer: codexFinalTurnAnswer(turn),
     reasoning: "",
+    prompt,
     completed: turn?.status !== "inProgress",
     active: turn?.status === "inProgress",
+    status: turn?.status === "completed" ? "completed" : String(turn?.status ?? "stopped"),
     waitingOnApproval,
     stage: turn?.status === "inProgress"
       ? waitingOnApproval
@@ -4112,6 +4199,7 @@ function updateObservedRun(run, snapshot) {
     run.turnId = snapshot.turnId;
     taskRuns.reindex(run);
   }
+  if (!run.promptPreview && snapshot?.prompt) run.promptPreview = String(snapshot.prompt).slice(0, 4_000);
   run.progressReasoning = String(snapshot?.reasoning ?? run.progressReasoning);
   run.progressStage = String(snapshot?.stage ?? run.progressStage);
   run.activeTurnCount = Math.max(1, Number(snapshot?.activeTurnCount) || 1);
@@ -4160,6 +4248,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
       reasoning: "",
       completed,
       active,
+      status: completed ? "completed" : active ? "inProgress" : "stopped",
       waitingOnApproval: false,
       stage: active
         ? "Выполняется следующий этап…"
@@ -4249,6 +4338,7 @@ async function finishObservedRun(run, snapshot) {
             usage: usageResult.usage,
             reported: usageResult.reported === true,
           };
+          if (usageResult.startedAt) run.startedAt = usageResult.startedAt;
         } catch (error) {
           console.error(`Cannot read fallback usage for Codex turn ${completedTurnId}:`, error.message);
         }

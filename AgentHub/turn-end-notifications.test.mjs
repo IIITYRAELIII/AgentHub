@@ -14,6 +14,7 @@ function message(overrides = {}) {
     taskTitle: "Задача",
     chatId: 42,
     category: "done",
+    title: "Краткий итог",
     text: "Готово",
     workLogId: "123e4567-e89b-42d3-a456-426614174000",
     ...overrides,
@@ -29,6 +30,8 @@ function completion(overrides = {}) {
     taskTitle: "Задача",
     chatId: 42,
     status: "completed",
+    startedAt: "2026-07-27T00:00:00.000Z",
+    prompt: "Сделай задачу",
     usageReported: true,
     usage: {
       inputTokens: 10,
@@ -46,8 +49,10 @@ test("turn-end registry binds a deferred message to the completed turn", () => {
   registry.registerMessage(message({ turnId: "turn-1" }));
   const ready = registry.recordCompletion(completion());
   assert.equal(ready.message.text, "Готово");
+  assert.equal(ready.message.title, "Краткий итог");
   assert.equal(ready.message.workLogId, "123e4567-e89b-42d3-a456-426614174000");
   assert.equal(ready.usage.inputTokens, 10);
+  assert.equal(ready.prompt, "Сделай задачу");
 });
 
 test("turn-end registry deduplicates a delivered turn", () => {
