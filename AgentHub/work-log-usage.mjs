@@ -205,7 +205,7 @@ function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
   const files = changedFileLinks(record?.changedFiles);
   const migratedFiles = String(legacyFiles ?? "").trim();
   const metaDetails = [
-    `<div data-work-log-turn-context><strong>Продолжительность:</strong> ${
+    `<div data-work-log-turn-context><strong>Длит.:</strong> ${
       formatDuration(record?.startedAt, record?.completedAt)
     }</div>`,
     prompt ? `<div data-work-log-turn-prompt><strong>Запрос:</strong> ${prompt}</div>` : "",

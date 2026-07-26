@@ -155,6 +155,7 @@ export function codexTurnUsageFromJsonl(text, turnId) {
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const DEFAULT_ROLLOUT_TAIL_BYTES = 64 * 1024 * 1024;
+const DEFAULT_TERMINAL_TAIL_BYTES = 16 * 1024 * 1024;
 
 export async function readCodexRolloutTail(transcriptPath, {
   openImpl = open,
@@ -176,6 +177,31 @@ export async function readCodexRolloutTail(transcriptPath, {
   } finally {
     await handle.close();
   }
+}
+
+export function codexRecentTerminalTurnsFromJsonl(text) {
+  const values = new Map();
+  for (const { value: entry } of parsedEntries(text)) {
+    const lifecycle = entry?.type === "event_msg" ? String(entry.payload?.type ?? "") : "";
+    const status = lifecycleTerminalStatus(lifecycle);
+    const turnId = String(entry?.payload?.turn_id ?? "").trim();
+    if (!status || !turnId) continue;
+    values.set(turnId, {
+      turnId,
+      status,
+      completedAt: String(entry?.timestamp ?? ""),
+    });
+  }
+  return [...values.values()].slice(-16);
+}
+
+export async function readCodexRecentTerminalTurns(transcriptPath, {
+  readTailImpl = readCodexRolloutTail,
+  maxBytes = DEFAULT_TERMINAL_TAIL_BYTES,
+} = {}) {
+  return codexRecentTerminalTurnsFromJsonl(
+    await readTailImpl(transcriptPath, { maxBytes }),
+  );
 }
 
 export async function scanCodexTurnJsonl(transcriptPath, turnId, {
@@ -253,7 +279,7 @@ export async function scanCodexTurnJsonlIncrementally(transcriptPath, turnId, {
         { createReadStreamImpl },
       );
       result = accumulator.result();
-      if (result.reported && result.finalTokenSeen) return result;
+      if (result.reported && result.finalTokenSeen && result.terminal) return result;
     } catch (currentError) {
       error = currentError;
     }
@@ -287,7 +313,7 @@ export async function readCodexTurnUsage(transcriptPath, turnId, {
       } else {
         result = await scanImpl(transcriptPath, turnId);
       }
-      if (result.reported && result.finalTokenSeen) return result;
+      if (result.reported && result.finalTokenSeen && result.terminal) return result;
     } catch (currentError) {
       error = currentError;
     }

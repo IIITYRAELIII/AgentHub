@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import test from "node:test";
 
 import {
+  codexRecentTerminalTurnsFromJsonl,
   codexTurnUsageFromJsonl,
   readCodexRolloutTail,
   readCodexTurnUsage,
@@ -120,6 +121,31 @@ test("streaming rollout scan extracts the exact prompt, terminal status and chan
   assert.equal(result.usage.inputTokens, 100);
 });
 
+test("recent terminal scan distinguishes completed and aborted turns", () => {
+  const values = codexRecentTerminalTurnsFromJsonl([
+    line({ timestamp: "2026-07-26T19:04:03.527Z", type: "event_msg", payload: {
+      type: "turn_aborted",
+      turn_id: "turn-aborted",
+    } }),
+    line({ timestamp: "2026-07-26T19:05:03.527Z", type: "event_msg", payload: {
+      type: "task_complete",
+      turn_id: "turn-completed",
+    } }),
+  ].join("\n"));
+  assert.deepEqual(values, [
+    {
+      turnId: "turn-aborted",
+      status: "aborted",
+      completedAt: "2026-07-26T19:04:03.527Z",
+    },
+    {
+      turnId: "turn-completed",
+      status: "completed",
+      completedAt: "2026-07-26T19:05:03.527Z",
+    },
+  ]);
+});
+
 test("Codex usage reader uses the incremental streaming scanner by default", async () => {
   let scans = 0;
   const result = await readCodexTurnUsage("large-rollout.jsonl", "turn-1", {
@@ -142,7 +168,11 @@ test("incremental retries scan only bytes appended after the first large pass", 
     line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
     line(response("turn-1", "message", { role: "assistant", phase: "final_answer" })),
   ].join("\n") + "\n";
-  const complete = `${base}${line(token(50, 40, 5, 1))}\n`;
+  const complete = `${base}${line(token(50, 40, 5, 1))}\n${line({
+    timestamp: "2026-07-27T01:00:00.000Z",
+    type: "event_msg",
+    payload: { type: "task_complete", turn_id: "turn-1" },
+  })}\n`;
   const starts = [];
   let reads = 0;
   const result = await scanCodexTurnJsonlIncrementally("growing-rollout.jsonl", "turn-1", {
@@ -158,6 +188,7 @@ test("incremental retries scan only bytes appended after the first large pass", 
 
   assert.deepEqual(starts, [0, Buffer.byteLength(base)]);
   assert.equal(result.finalTokenSeen, true);
+  assert.equal(result.completedAt, "2026-07-27T01:00:00.000Z");
   assert.equal(result.usage.inputTokens, 50);
 });
 

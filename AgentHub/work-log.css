@@ -159,7 +159,7 @@ table[data-work-log-turn-table] tr + tr > td {
 }
 
 table[data-work-log-turn-table] col[data-work-log-turn-meta-column] {
-  width: 14em;
+  width: 12em;
 }
 
 table[data-work-log-turn-table] td {
@@ -175,7 +175,7 @@ td[data-work-log-turn-row] {
 details[data-work-log-turn-details] > summary {
   cursor: pointer;
   display: grid;
-  grid-template-columns: 14em minmax(0, 1fr);
+  grid-template-columns: 12em minmax(0, 1fr);
   list-style: none;
   overflow-wrap: anywhere;
 }
@@ -233,7 +233,7 @@ span[data-work-log-turn-share] {
 
 div[data-work-log-turn-expanded] {
   display: grid;
-  grid-template-columns: 14em minmax(0, 1fr);
+  grid-template-columns: 12em minmax(0, 1fr);
 }
 
 div[data-work-log-turn-body],
