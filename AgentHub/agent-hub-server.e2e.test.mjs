@@ -47,6 +47,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const configPath = path.join(temporaryRoot, "config.json");
   const codexStatePath = path.join(temporaryRoot, "fake-codex-state.json");
   const statePath = path.join(dataDir, "state.json");
+  const workLogPath = path.join(projectRoot, "WORK_LOG.md");
+  const workLogLedgerPath = path.join(dataDir, "work-log-usage.json");
   const lockPath = path.join(dataDir, "bot.lock");
   await Promise.all([
     mkdir(dataDir, { recursive: true }),
@@ -133,6 +135,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     logMaxBytes: 1_000_000,
     logMaxFiles: 2,
   }, null, 2)}\n`, "utf8");
+  await writeFile(workLogPath, "# Глобальный журнал работ\n", "utf8");
 
   telegram.failNext("getUpdates", 500);
   await startBot();
@@ -391,6 +394,14 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     "the live progress card must remain visible until the final answer is delivered",
   );
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0, "normal turn completion");
+  const normalJournalTurn = await waitFor(async () => {
+    const ledger = await readJson(workLogLedgerPath).catch(() => null);
+    return Object.values(ledger?.turns ?? {}).find((item) => (
+      String(item.body ?? item.text ?? "").includes("Готово: [slow] обычное завершение")
+    )) ?? null;
+  }, "normal Codex turn journal projection");
+  assert.equal(normalJournalTurn.status, "completed");
+  assert.match(await readFile(workLogPath, "utf8"), /Готово: \[slow\] обычное завершение/);
   assert.equal(
     telegram.callsAfter(normalFinal.index + 1, "sendPhoto").some((call) => (
       call.rawBody.includes("Ход завершён.") && call.rawBody.includes("За задачу:")
@@ -617,6 +628,14 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.match(restoredFinal.body.text, /^✅ Codex · /);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 1,
     "cancelling the selected parallel task only");
+  const stoppedJournalTurn = await waitFor(async () => {
+    const ledger = await readJson(workLogLedgerPath).catch(() => null);
+    return Object.values(ledger?.turns ?? {}).find((item) => (
+      String(item.body ?? item.text ?? "").includes("Ход остановлен тестом")
+    )) ?? null;
+  }, "aborted Codex turn journal projection after restart");
+  assert.notEqual(stoppedJournalTurn.status, "completed");
+  assert.match(await readFile(workLogPath, "utf8"), /Ход остановлен тестом/);
   assert.equal(
     telegram.callsAfter(restoredFinal.index + 1, "sendPhoto").some((call) => (
       call.rawBody.includes("За задачу:")

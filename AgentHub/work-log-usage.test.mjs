@@ -92,7 +92,7 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.match(projected, /data-work-log-legacy-outcome><td colspan="2">Outcome B<\/td>/);
   assert.match(
     projected,
-    /<table data-work-log-turn-table>[\s\S]*?12:34 — <span data-kilo-usage>0 кТЭ<\/span>[\s\S]*?<summary>Первый &lt;ход&gt; Строка<\/summary>[\s\S]*?13:45 — <span data-kilo-usage>0 кТЭ<\/span>[\s\S]*?<summary>Второй &amp; ход<\/summary>[\s\S]*?<details><summary>Изменённые файлы<\/summary>a\.mjs<\/details>/,
+    /<table data-work-log-turn-table>[\s\S]*?data-work-log-turn-meta>12:34 — <span data-kilo-usage>0 кТЭ<\/span>[\s\S]*?data-work-log-turn-title>Первый &lt;ход&gt; Строка<\/span>[\s\S]*?data-work-log-turn-meta>13:45 — <span data-kilo-usage>0 кТЭ<\/span>[\s\S]*?data-work-log-turn-title>Второй &amp; ход<\/span>[\s\S]*?data-work-log-legacy-files>a\.mjs<\/div>/,
   );
   assert.match(projected, /data-day-usage>Итого <span data-kilo-usage>0 кТЭ<\/span>/);
   assert.doesNotMatch(projected, /За день:/);
@@ -164,8 +164,11 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
   );
   assert.match(
     css,
-    /table\[data-work-log-turn-table\][\s\S]*?table-layout:\s*fixed[\s\S]*?data-work-log-turn-meta-column\][\s\S]*?width:\s*9\.5em/,
+    /table\[data-work-log-turn-table\][\s\S]*?table-layout:\s*fixed[\s\S]*?data-work-log-turn-meta-column\][\s\S]*?width:\s*14em/,
   );
+  assert.match(css, /details\[data-work-log-turn-details\] > summary[\s\S]*?display:\s*grid/);
+  assert.match(css, /summary::-webkit-details-marker[\s\S]*?display:\s*none/);
+  assert.match(css, /data-work-log-turn-title[\s\S]*?border:\s*1px solid/);
   assert.doesNotMatch(css, /data-work-log-turns-toggle/);
   assert.match(
     css,
@@ -428,8 +431,8 @@ test("automatic journal records a stopped turn even when usage is unavailable", 
     const projected = await readFile(workLogFile, "utf8");
     assert.match(projected, /Codex - Остановленная задача/);
     assert.match(projected, /12:01 — нет данных/);
-    assert.match(projected, /<summary>Ход остановлен<\/summary>/);
-    assert.match(projected, /<strong>Запрос:<\/strong> Сделай работу/);
+    assert.match(projected, /data-work-log-turn-title>Ход остановлен<\/span>/);
+    assert.match(projected, /data-work-log-turn-prompt>Сделай работу<\/div>/);
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.values(ledger.turns)[0].usageReported, false);
   } finally {

@@ -6,6 +6,28 @@ import { StringDecoder } from "node:string_decoder";
 
 const DEFAULT_MAX_DIFF_BYTES = 64 * 1024;
 
+function decodedGitPathToken(value) {
+  const token = String(value ?? "").trim();
+  if (!token.startsWith('"')) return token;
+  try {
+    return JSON.parse(token);
+  } catch {
+    return token;
+  }
+}
+
+function encodedGitPathToken(value) {
+  return /\s/u.test(value) ? JSON.stringify(value) : value;
+}
+
+function prefixGitDiffMarkerPaths(diff, prefix) {
+  return String(diff).replace(/^(---|\+\+\+) (.+)$/gm, (_line, marker, rawPath) => {
+    const gitPath = decodedGitPathToken(rawPath);
+    if (gitPath === "/dev/null" || !/^[ab]\//u.test(gitPath)) return `${marker} ${rawPath}`;
+    return `${marker} ${encodedGitPathToken(`${gitPath.slice(0, 2)}${prefix}/${gitPath.slice(2)}`)}`;
+  });
+}
+
 function runGit(args, { cwd, env = {}, timeoutMs = 20_000, maxOutputBytes = 1024 * 1024 } = {}) {
   return new Promise((resolve) => {
     const child = spawn("git", args, {
@@ -91,16 +113,29 @@ async function worktreeTree(repoRoot, dataDir, token = randomUUID()) {
   }
 }
 
-export async function captureTaskGitBaseline(projectRoot, dataDir, token = randomUUID()) {
+async function captureRepositoryBaseline(repoRoot, dataDir, token) {
   try {
-    const repoRoot = await resolveTaskGitRepoRoot(projectRoot);
-    if (!repoRoot) return null;
     const tree = await worktreeTree(repoRoot, dataDir, `${token}-before`);
     const indexTree = await gitText(["write-tree"], { cwd: repoRoot }).catch(() => null);
     return { repoRoot: path.resolve(repoRoot), tree, indexTree, capturedAt: new Date().toISOString() };
   } catch {
     return null;
   }
+}
+
+export async function captureTaskGitBaseline(projectRoot, dataDir, token = randomUUID()) {
+  const resolvedProjectRoot = path.resolve(projectRoot);
+  const repoRoots = await resolveTaskGitRepoRoots(resolvedProjectRoot);
+  const repositories = (await Promise.all(repoRoots.map(
+    (repoRoot, index) => captureRepositoryBaseline(repoRoot, dataDir, `${token}-${index}`),
+  ))).filter(Boolean);
+  if (!repositories.length) return null;
+  if (repositories.length === 1) return repositories[0];
+  return {
+    projectRoot: resolvedProjectRoot,
+    repositories,
+    capturedAt: new Date().toISOString(),
+  };
 }
 
 export async function resolveTaskGitRepoRoot(projectRoot) {
@@ -154,6 +189,26 @@ export async function taskGitDiff(
   token = randomUUID(),
   { maxOutputBytes = DEFAULT_MAX_DIFF_BYTES } = {},
 ) {
+  if (Array.isArray(baseline?.repositories)) {
+    const projectRoot = path.resolve(baseline.projectRoot);
+    const parts = [];
+    for (const [index, repository] of baseline.repositories.entries()) {
+      const diff = await taskGitDiff(repository, dataDir, `${token}-${index}`, { maxOutputBytes });
+      if (!diff) continue;
+      const prefix = path.relative(projectRoot, repository.repoRoot).replaceAll(path.sep, "/");
+      const withPrefix = prefix
+        ? prefixGitDiffMarkerPaths(
+          diff.replace(
+            /^(diff --git a\/)(\S+)( b\/)(\S+)$/gm,
+            `$1${prefix}/$2$3${prefix}/$4`,
+          ),
+          prefix,
+        )
+        : diff;
+      parts.push(withPrefix);
+    }
+    return parts.join("\n\n");
+  }
   if (!baseline?.repoRoot || !baseline?.tree) return null;
   try {
     const currentTree = await worktreeTree(baseline.repoRoot, dataDir, `${token}-after`);
@@ -166,6 +221,7 @@ export async function taskGitDiff(
     const leftTree = worktreeChanged ? baseline.tree : baseline.indexTree;
     const rightTree = worktreeChanged ? currentTree : currentIndexTree;
     const result = await runGit([
+      "-c", "core.quotePath=false",
       "diff", "--no-ext-diff", "--find-renames", leftTree, rightTree, "--",
     ], {
       cwd: baseline.repoRoot,
@@ -176,12 +232,14 @@ export async function taskGitDiff(
     let diff = result.stdout.trim();
     if (worktreeChanged && indexChanged) {
       const stagedFiles = await gitText([
+        "-c", "core.quotePath=false",
         "diff", "--name-status", "--find-renames", baseline.indexTree, currentIndexTree, "--",
       ], { cwd: baseline.repoRoot, maxOutputBytes: 16 * 1024 });
       if (stagedFiles) diff += `\n\nИзменения индекса (staged):\n${stagedFiles}`;
     }
     if (result.stdoutTruncated) {
       const files = await gitText([
+        "-c", "core.quotePath=false",
         "diff", "--name-status", "--find-renames", baseline.tree, currentTree, "--",
       ], { cwd: baseline.repoRoot, maxOutputBytes: 16 * 1024 });
       diff += `\n\n… diff усечён до ${Math.round(maxOutputBytes / 1024)} КиБ.\n\nИзменённые файлы:\n${files}`;

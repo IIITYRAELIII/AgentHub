@@ -53,6 +53,11 @@ test("runtime command validation rejects arbitrary processes and environment sec
     args: ["{}"],
     cwd: "C:\\",
   }).command, "turn-complete");
+  assert.equal(validateRuntimeCommand({
+    command: "turn-start",
+    args: ["{\"turnId\":\"turn-1\"}"],
+    cwd: process.cwd(),
+  }).command, "turn-start");
 });
 
 test("runtime command can queue a durable fire-and-forget request", async () => {

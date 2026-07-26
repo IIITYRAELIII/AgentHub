@@ -11,6 +11,7 @@ const MAX_REQUEST_BYTES = 1024 * 1024;
 const ALLOWED_COMMANDS = new Set([
   "send-message",
   "send-images",
+  "turn-start",
   "turn-complete",
   "turn-end-message",
 ]);

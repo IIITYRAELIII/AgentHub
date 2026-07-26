@@ -160,6 +160,7 @@ import {
 import { restorePreviousBotAfterFailedReplacement } from "./restart-recovery.mjs";
 import { RuntimeCommandServer } from "./runtime-command.mjs";
 import {
+  TURN_END_TITLE_LIMIT,
   TurnEndNotificationRegistry,
   turnEndKey,
 } from "./turn-end-notifications.mjs";
@@ -356,6 +357,7 @@ const TASK_CATALOG_CACHE_MS = 1_500;
 const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
+const codexTurnStarts = new Map();
 const turnTemporaryFiles = new Map();
 const turnSpeechButtons = new Map();
 const taskRuns = new TaskRunRegistry();
@@ -994,7 +996,9 @@ function fallbackTurnEndMessage(status) {
 function conciseTurnTitle(value, status = "completed") {
   const text = String(value ?? "").trim().replace(/\s+/g, " ");
   if (!text) return status === "completed" ? "Ход завершён" : "Ход остановлен";
-  const sentence = text.match(/^.{1,80}?(?=[.!?](?:\s|$)|$)/u)?.[0] ?? text.slice(0, 80);
+  const sentence = text.match(
+    new RegExp(`^.{1,${TURN_END_TITLE_LIMIT}}?(?=[.!?](?:\\s|$)|$)`, "u"),
+  )?.[0] ?? text.slice(0, TURN_END_TITLE_LIMIT);
   return sentence.trim().replace(/[.!?]+$/u, "") || "Ход завершён";
 }
 
@@ -1004,13 +1008,23 @@ function structuredTurnText(title, body) {
 
 function changedFilesForRun(run) {
   const diff = String(run?.latestDiff ?? "");
-  const repoRoot = String(run?.gitBaseline?.repoRoot ?? "").trim();
+  const repoRoot = String(
+    run?.gitBaseline?.projectRoot ?? run?.gitBaseline?.repoRoot ?? "",
+  ).trim();
   if (!diff || !repoRoot) return [];
   const files = new Set();
-  for (const match of diff.matchAll(/^(?:\+\+\+ b\/|--- a\/)(.+)$/gm)) {
-    const gitPath = match[1].trim().replace(/^"(.*)"$/, "$1");
-    if (!gitPath || gitPath === "/dev/null") continue;
-    const absolute = path.resolve(repoRoot, gitPath.replaceAll("/", path.sep));
+  for (const match of diff.matchAll(/^(?:\+\+\+|---) (.+)$/gm)) {
+    const token = match[1].trim();
+    let gitPath = token;
+    if (token.startsWith('"')) {
+      try {
+        gitPath = JSON.parse(token);
+      } catch {
+        continue;
+      }
+    }
+    if (!gitPath || gitPath === "/dev/null" || !/^[ab]\//u.test(gitPath)) continue;
+    const absolute = path.resolve(repoRoot, gitPath.slice(2).replaceAll("/", path.sep));
     const relative = path.relative(run.projectRoot, absolute);
     if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
     files.add(relative.replaceAll(path.sep, "/"));
@@ -1068,6 +1082,17 @@ async function finalizeCodexRunDelivery(run, {
       description,
     });
   }
+  const startKey = turnEndKey({
+    provider: "codex",
+    threadId: run.threadId,
+    turnId: completedTurnId,
+  });
+  const turnStart = codexTurnStarts.get(startKey);
+  if (turnStart) {
+    run.gitBaseline = turnStart.gitBaseline ?? run.gitBaseline;
+    run.startedAt = turnStart.startedAt || run.startedAt;
+    run.promptPreview = turnStart.prompt || run.promptPreview;
+  }
   await refreshTaskDiff(run).catch((error) => {
     console.error(`Cannot capture changed files for turn ${completedTurnId}:`, error.message);
   });
@@ -1090,6 +1115,7 @@ async function finalizeCodexRunDelivery(run, {
     prompt: run.promptPreview,
     changedFiles: changedFilesForRun(run),
   });
+  codexTurnStarts.delete(startKey);
   if (completion && run.observer === true && !completion.message) {
     turnEndNotifications.registerMessage({
       provider: "codex",
@@ -1442,6 +1468,12 @@ try {
         usage: normalizeTokenUsage(entry[1].usage),
         reported: entry[1].reported === true,
       });
+    }
+  }
+  if (Array.isArray(saved.codexTurnStarts)) {
+    for (const entry of saved.codexTurnStarts.slice(-500)) {
+      if (!Array.isArray(entry) || typeof entry[0] !== "string" || !entry[1]) continue;
+      codexTurnStarts.set(entry[0], entry[1]);
     }
   }
   restoredTurnEndSnapshot = saved.turnEndNotifications ?? {};
@@ -3215,9 +3247,11 @@ async function activeRepositoryConflict(target) {
   ];
   const enriched = await Promise.all(candidates.map(async (candidate) => ({
     ...candidate,
-    repoRoots: candidate.gitBaseline?.repoRoot
-      ? [candidate.gitBaseline.repoRoot]
-      : await taskRepositoryRoots(candidate.projectRoot),
+    repoRoots: Array.isArray(candidate.gitBaseline?.repositories)
+      ? candidate.gitBaseline.repositories.map((repository) => repository.repoRoot)
+      : candidate.gitBaseline?.repoRoot
+        ? [candidate.gitBaseline.repoRoot]
+        : await taskRepositoryRoots(candidate.projectRoot),
   })));
   return findRepositoryWriteConflict(target, repoRoots, enriched);
 }
@@ -3631,7 +3665,7 @@ async function ensureDeferredCodexTurnObserved({
     observed.exactTurnObserver = true;
     updateObservedRun(observed, snapshot);
   } else {
-    observed = observedRun({
+    observed = await observedRun({
       ...identity,
       projectRoot: project.path,
       taskTitle,
@@ -3646,6 +3680,53 @@ async function ensureDeferredCodexTurnObserved({
 async function handleRuntimeCommand(request) {
   const allowedRoots = config.projects.map((project) => project.path);
   const requestCwd = await resolveAllowedNotificationCwd(request.cwd, { roots: allowedRoots });
+
+  if (request.command === "turn-start") {
+    if (request.args.length !== 1) throw new Error("turn-start requires one JSON payload");
+    const payload = JSON.parse(request.args[0]);
+    const identity = runtimeCommandIdentity(request.environment);
+    if (identity.provider !== "codex"
+      || payload.provider !== identity.provider
+      || payload.threadId !== identity.threadId) {
+      throw new Error("turn-start caller identity does not match its payload");
+    }
+    const requestedProjectRoot = payload.projectRoot ?? request.cwd;
+    await resolveAllowedNotificationCwd(requestedProjectRoot, { roots: allowedRoots });
+    const project = findProject(requestedProjectRoot);
+    if (!project) throw new Error("Cannot match the started turn to a configured project");
+    const turnId = String(payload.turnId ?? "").trim();
+    if (!turnId) throw new Error("turn-start payload is missing turnId");
+    const startedAt = String(payload.startedAt ?? new Date().toISOString());
+    const prompt = String(payload.prompt ?? "").trim().slice(0, 100_000);
+    const key = turnEndKey({ provider: "codex", threadId: identity.threadId, turnId });
+    const record = {
+      provider: "codex",
+      threadId: identity.threadId,
+      turnId,
+      projectRoot: project.path,
+      startedAt,
+      prompt,
+      gitBaseline: payload.gitBaseline && typeof payload.gitBaseline === "object"
+        ? payload.gitBaseline
+        : null,
+    };
+    setBoundedMapValue(codexTurnStarts, key, record, 500);
+    const run = taskRuns.forEvent({
+      provider: "codex",
+      threadId: identity.threadId,
+      turnId,
+      allowThreadFallback: true,
+    });
+    if (run) {
+      run.turnId ||= turnId;
+      run.startedAt = startedAt || run.startedAt;
+      run.promptPreview = prompt || run.promptPreview;
+      run.gitBaseline = record.gitBaseline ?? run.gitBaseline;
+      taskRuns.reindex(run);
+    }
+    await saveState();
+    return `Recorded Codex turn start ${turnId}.`;
+  }
 
   if (request.command === "turn-complete") {
     if (request.args.length !== 1) throw new Error("turn-complete requires one JSON payload");
@@ -3673,8 +3754,32 @@ async function handleRuntimeCommand(request) {
       threadId: identity.threadId,
       turnId: payload.turnId,
     };
+    const turnStart = codexTurnStarts.get(turnEndKey(deliveredIdentity));
+    if (run && turnStart) {
+      run.gitBaseline = turnStart.gitBaseline ?? run.gitBaseline;
+      run.startedAt = turnStart.startedAt || run.startedAt;
+      run.promptPreview = turnStart.prompt || run.promptPreview;
+    }
     const alreadyDelivered = turnEndNotifications.hasDelivered(deliveredIdentity);
     const taskTitle = runtimeCommandTaskTitle({ ...identity, run });
+    let baselineChangedFiles = [];
+    if (turnStart?.gitBaseline) {
+      const diff = await taskGitDiff(
+        turnStart.gitBaseline,
+        config.dataDir,
+        `turn-complete-${payload.turnId}`,
+      );
+      baselineChangedFiles = changedFilesForRun({
+        projectRoot: project.path,
+        gitBaseline: turnStart.gitBaseline,
+        latestDiff: diff,
+      });
+    }
+    const changedFiles = [...new Set([
+      ...(Array.isArray(payload.changedFiles) ? payload.changedFiles : []),
+      ...baselineChangedFiles,
+      ...changedFilesForRun(run),
+    ])];
     const completion = turnEndNotifications.recordCompletion({
       provider: "codex",
       threadId: identity.threadId,
@@ -3685,9 +3790,10 @@ async function handleRuntimeCommand(request) {
       status: payload.status,
       usage: payload.usage,
       usageReported: payload.usageReported === true,
-      startedAt: payload.startedAt ?? run?.startedAt,
+      startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
       completedAt: payload.completedAt,
-      prompt: payload.prompt ?? run?.promptPreview,
+      prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
+      changedFiles,
     });
     if (!completion && alreadyDelivered && payload.usageReported === true) {
       await projectTurnUsageToWorkLog({
@@ -3697,15 +3803,16 @@ async function handleRuntimeCommand(request) {
         status: payload.status,
         usage: normalizeTokenUsage(payload.usage),
         usageReported: true,
-        startedAt: payload.startedAt ?? run?.startedAt,
+        startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
         completedAt: payload.completedAt,
-        prompt: payload.prompt ?? run?.promptPreview,
-        changedFiles: changedFilesForRun(run),
+        prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
+        changedFiles,
         message: null,
       }).catch((error) => {
         console.error(`Cannot update late WORK_LOG usage for turn ${payload.turnId}:`, error.message);
       });
     }
+    codexTurnStarts.delete(turnEndKey(deliveredIdentity));
     await saveState();
     if (completion && (!run || !["running", "finishing"].includes(run.status))) {
       await deliverTurnEndNotification(completion);
@@ -4147,7 +4254,7 @@ function codexTurnSnapshot(turn, threadStatus = null) {
   };
 }
 
-function observedRun(binding, targetChatId, snapshot, turnId = null) {
+async function observedRun(binding, targetChatId, snapshot, turnId = null) {
   const executionOwner = binding.provider === "codex"
     ? snapshot.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
     : TASK_EXECUTION_OWNERS.EXTERNAL;
@@ -4175,6 +4282,7 @@ function observedRun(binding, targetChatId, snapshot, turnId = null) {
       : "Внешний Claude CLI",
     collaborationMode: "default",
   }, snapshot);
+  run.gitBaseline = await captureTaskGitBaseline(run.projectRoot, config.dataDir, run.id);
   taskRuns.add(run);
   invalidateTaskCatalog();
   syncTaskRun(run, {
@@ -4182,11 +4290,6 @@ function observedRun(binding, targetChatId, snapshot, turnId = null) {
     stage: snapshot.stage,
     answer: snapshot.answer,
     activityAtMs: snapshot.activityAtMs ?? snapshot.modifiedAtMs ?? Date.now(),
-  });
-  void captureTaskGitBaseline(run.projectRoot, config.dataDir, run.id).then(async (baseline) => {
-    if (taskRuns.forTask(run) !== run) return;
-    run.gitBaseline = baseline;
-    await saveState();
   });
   return run;
 }
@@ -4548,7 +4651,7 @@ async function watchSelectedTask() {
       existingRun: currentRun,
       dismissed: dismissedExternalTasks.has(task),
     })) return;
-    const run = observedRun({
+    const run = await observedRun({
       ...task,
       chatId,
       taskTitle: activeThreadTitle,
@@ -5896,6 +5999,7 @@ function saveState() {
     lastSeenTaskTurnIds: [...lastSeenTaskTurnIds.entries()].slice(-500),
     threadTokenTotals: [...threadTokenTotals.entries()].slice(-500),
     turnTokenUsage: [...turnTokenUsage.entries()].slice(-200),
+    codexTurnStarts: [...codexTurnStarts.entries()].slice(-500),
     turnEndNotifications: turnEndNotifications.snapshot(),
     statusMediaFileIds: [...statusMediaFileIds.entries()].slice(-50),
     restartRequest,

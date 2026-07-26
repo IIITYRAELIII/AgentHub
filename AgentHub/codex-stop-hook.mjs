@@ -1,5 +1,7 @@
 import process from "node:process";
 
+import path from "node:path";
+
 import { readCodexTurnUsage } from "./codex-turn-usage.mjs";
 import {
   enqueueRuntimeCommandThroughSpool,
@@ -47,14 +49,22 @@ export async function handleCodexStopHook(value, {
   } else {
     usageError = "Stop hook did not provide transcript_path";
   }
+  const changedFiles = (usageResult?.changedFiles ?? []).flatMap((file) => {
+    const absolute = path.resolve(String(file));
+    const relative = path.relative(input.projectRoot, absolute);
+    if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
+    return [relative.replaceAll(path.sep, "/")];
+  });
   const payload = {
     provider: "codex",
     threadId: input.threadId,
     turnId: input.turnId,
     projectRoot: input.projectRoot,
-    status: "completed",
+    status: usageResult?.status || "completed",
     startedAt: usageResult?.startedAt || null,
     completedAt: usageResult?.completedAt || new Date().toISOString(),
+    prompt: usageResult?.prompt || null,
+    changedFiles,
     usage: usageResult?.usage ?? null,
     usageReported: usageResult?.reported === true,
     usageError,

@@ -3,8 +3,8 @@ import path from "node:path";
 import { normalizeTokenUsage } from "./token-usage.mjs";
 import { normalizeWorkLogId } from "./work-log-usage.mjs";
 
-const TURN_END_TITLE_LIMIT = 80;
-const TURN_END_BODY_LIMIT = 700;
+export const TURN_END_TITLE_LIMIT = 160;
+export const TURN_END_BODY_LIMIT = 700;
 
 export function turnEndThreadKey({ provider, threadId }) {
   return `${String(provider ?? "").trim().toLowerCase()}\0${String(threadId ?? "").trim()}`;

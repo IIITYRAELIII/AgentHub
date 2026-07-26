@@ -21,7 +21,7 @@ import { normalizeWorkLogId } from "./work-log-usage.mjs";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 const TELEGRAM_CAPTION_LIMIT = 1024;
-export const TURN_END_TITLE_LIMIT = 80;
+export const TURN_END_TITLE_LIMIT = 160;
 export const TURN_END_BODY_LIMIT = 700;
 const NOTIFICATION_CARD_DIRECTORY = path.join(
   import.meta.dirname,

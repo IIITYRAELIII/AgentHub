@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import { handleCodexStopHook, validateStopHookInput } from "./codex-stop-hook.mjs";
@@ -16,6 +17,14 @@ test("Codex Stop hook forwards exact turn usage to the Agent Hub Server", async 
   const result = await handleCodexStopHook(hookInput, {
     readUsage: async () => ({
       reported: true,
+      status: "aborted",
+      startedAt: "2026-07-26T19:03:03.527Z",
+      completedAt: "2026-07-26T19:04:03.527Z",
+      prompt: "Точный запрос",
+      changedFiles: [
+        path.join(process.cwd(), "AgentHub", "first.mjs"),
+        path.resolve(process.cwd(), "..", "outside.mjs"),
+      ],
       usage: {
         inputTokens: 10,
         cachedInputTokens: 8,
@@ -32,6 +41,9 @@ test("Codex Stop hook forwards exact turn usage to the Agent Hub Server", async 
   assert.equal(result.queued, false);
   assert.equal(received.command, "turn-complete");
   assert.equal(received.payload.turnId, "turn-1");
+  assert.equal(received.payload.status, "aborted");
+  assert.equal(received.payload.prompt, "Точный запрос");
+  assert.deepEqual(received.payload.changedFiles, ["AgentHub/first.mjs"]);
   assert.equal(received.payload.usage.inputTokens, 10);
   assert.equal(received.options.environment.CODEX_THREAD_ID, "thread-1");
 });

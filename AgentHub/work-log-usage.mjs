@@ -137,6 +137,7 @@ function ledgerByWorkLogId(turns = {}) {
 }
 
 const twoDigits = (part) => String(part).padStart(2, "0");
+const WORK_LOG_TURN_TITLE_LIMIT = 160;
 
 function formatCompletedAt(value) {
   const completedAt = new Date(String(value ?? ""));
@@ -161,11 +162,22 @@ function escapeHtmlText(value) {
 
 function turnTitle(record) {
   const explicit = String(record?.title ?? "").trim().replace(/\s+/g, " ");
-  if (explicit) return explicit.slice(0, 80);
+  if (explicit) return explicit.slice(0, WORK_LOG_TURN_TITLE_LIMIT);
   const body = String(record?.body ?? record?.text ?? "").trim().replace(/\s+/g, " ");
   if (!body) return record?.status && record.status !== "completed" ? "Ход остановлен" : "Ход завершён";
-  const sentence = body.match(/^.{1,80}?(?=[.!?](?:\s|$)|$)/u)?.[0] ?? body.slice(0, 80);
+  const sentence = body.match(
+    new RegExp(`^.{1,${WORK_LOG_TURN_TITLE_LIMIT}}?(?=[.!?](?:\\s|$)|$)`, "u"),
+  )?.[0] ?? body.slice(0, WORK_LOG_TURN_TITLE_LIMIT);
   return sentence.trim().replace(/[.!?]+$/u, "") || "Ход завершён";
+}
+
+function changedFileLinks(files) {
+  return [...new Set(Array.isArray(files) ? files : [])]
+    .map((file) => {
+      const normalized = String(file).replaceAll("\\", "/");
+      return `<a href="${escapeHtmlAttribute(normalized)}">${escapeHtmlText(normalized)}</a>`;
+    })
+    .join("; ");
 }
 
 function formatTurnEntry(record) {
@@ -175,16 +187,26 @@ function formatTurnEntry(record) {
   const title = escapeHtmlText(turnTitle(record));
   const body = escapeHtmlText(String(record?.body ?? record?.text ?? "").trim());
   const prompt = escapeHtmlText(String(record?.prompt ?? "").trim());
-  const details = [
-    body ? `<div data-work-log-turn-body>${body}</div>` : "",
+  const files = changedFileLinks(record?.changedFiles);
+  const metaDetails = [
     `<div data-work-log-turn-context><strong>Начало:</strong> ${formatStartedAt(record?.startedAt)}</div>`,
-    prompt ? `<div data-work-log-turn-context><strong>Запрос:</strong> ${prompt}</div>` : "",
+    prompt ? `<div data-work-log-turn-prompt>${prompt}</div>` : "",
+  ].filter(Boolean).join("");
+  const bodyDetails = [
+    body ? `<div data-work-log-turn-body>${body}</div>` : "",
+    files ? `<div data-work-log-turn-files>${files}</div>` : "",
   ].filter(Boolean).join("");
   return `<tr data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}">`
-    + `<td data-work-log-turn-meta>${formatCompletedAt(record?.completedAt)} — ${units}</td>`
-    + "<td data-work-log-turn-description>"
-    + `<details data-work-log-turn-details><summary>${title}</summary>${details}</details>`
-    + "</td></tr>";
+    + '<td colspan="2" data-work-log-turn-row>'
+    + "<details data-work-log-turn-details>"
+    + "<summary>"
+    + `<span data-work-log-turn-meta>${formatCompletedAt(record?.completedAt)} — ${units}</span>`
+    + `<span data-work-log-turn-title>${title}</span>`
+    + "</summary>"
+    + '<div data-work-log-turn-expanded>'
+    + `<div data-work-log-turn-meta-details>${metaDetails}</div>`
+    + `<div data-work-log-turn-body-details>${bodyDetails}</div>`
+    + "</div></details></td></tr>";
 }
 
 function formatTurnTable(records, legacyOutcome = "") {
@@ -373,21 +395,13 @@ function usageIds(source) {
     .map((match) => normalizeWorkLogId(match[1]));
 }
 
-function changedFilesDetails(source) {
-  return String(source ?? "").match(
-    /<details\b[^>]*>\s*<summary\b[^>]*>\s*Изменённые файлы\s*<\/summary>[\s\S]*?<\/details>/iu,
-  )?.[0] ?? "";
-}
-
-function recordedChangedFilesDetails(records) {
-  const files = [...new Set(records.flatMap((record) => record?.changedFiles ?? []))];
-  if (!files.length) return "";
-  return "<details><summary>Изменённые файлы</summary>"
-    + files.map((file) => {
-      const normalized = String(file).replaceAll("\\", "/");
-      return `<a href="${escapeHtmlAttribute(normalized)}">${escapeHtmlText(normalized)}</a>`;
-    }).join("; ")
-    + "</details>";
+function changedFilesContent(source) {
+  const text = String(source ?? "");
+  return text.match(
+    /<div\b[^>]*data-work-log-legacy-files[^>]*>([\s\S]*?)<\/div>/iu,
+  )?.[1]?.trim() ?? text.match(
+    /<details\b[^>]*>\s*<summary\b[^>]*>\s*Изменённые файлы\s*<\/summary>([\s\S]*?)<\/details>/iu,
+  )?.[1]?.trim() ?? "";
 }
 
 function legacyOutcome(source) {
@@ -404,6 +418,7 @@ function legacyOutcome(source) {
     .replace(/<\/td>$/i, "")
     .replace(/<table\b[^>]*data-work-log-turn-table[^>]*>[\s\S]*?<\/table>/giu, "")
     .replace(/<div\b[^>]*data-work-log-turn[^>]*>[\s\S]*?<\/div>/giu, "")
+    .replace(/<div\b[^>]*data-work-log-legacy-files[^>]*>[\s\S]*?<\/div>/giu, "")
     .replace(/<details\b[^>]*>\s*<summary\b[^>]*>\s*Изменённые файлы\s*<\/summary>[\s\S]*?<\/details>/giu, "")
     .trim();
   return cell;
@@ -530,10 +545,13 @@ function replaceProjectedCells(row, usageContent, records) {
   const cells = topLevelElements(row, "td");
   if (cells.length < 3) return row;
   const opening = row.match(/^<tr\b[^>]*>/i)?.[0] ?? "<tr>";
-  const changedFiles = changedFilesDetails(cells[1].text) || recordedChangedFilesDetails(records);
+  const changedFiles = changedFilesContent(cells[1].text);
   const outcome = legacyOutcome(cells[1].text);
   const turnTable = records.length || outcome ? formatTurnTable(records, outcome) : "";
-  const turnList = [turnTable, changedFiles].filter(Boolean).join("\n");
+  const turnList = [
+    turnTable,
+    changedFiles ? `<div data-work-log-legacy-files>${changedFiles}</div>` : "",
+  ].filter(Boolean).join("\n");
   const identity = rowIdentity(row);
   const latest = [...records].sort(
     (left, right) => (Date.parse(left.completedAt) || 0) - (Date.parse(right.completedAt) || 0),

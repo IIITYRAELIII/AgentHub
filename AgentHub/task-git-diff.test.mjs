@@ -71,6 +71,37 @@ test("task Git diff uses the real repository and excludes pre-existing dirt", as
   }
 });
 
+test("task Git baseline captures and prefixes every repository in a workspace", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "telegram-task-diff-workspace-"));
+  const dataDir = path.join(root, "runtime");
+  const first = path.join(root, "First");
+  const second = path.join(root, "Second");
+  try {
+    for (const repo of [first, second]) {
+      await mkdir(repo, { recursive: true });
+      await git(repo, "init");
+      await git(repo, "config", "user.email", "test@example.invalid");
+      await git(repo, "config", "user.name", "Test");
+      await writeFile(path.join(repo, "file.txt"), "base\n", "utf8");
+      await git(repo, "add", ".");
+      await git(repo, "commit", "-m", "base");
+    }
+    const baseline = await captureTaskGitBaseline(root, dataDir, "workspace");
+    assert.equal(baseline.repositories.length, 2);
+
+    await writeFile(path.join(first, "file.txt"), "first change\n", "utf8");
+    await writeFile(path.join(second, "file.txt"), "second change\n", "utf8");
+    await writeFile(path.join(second, "файл с пробелом.txt"), "новый\n", "utf8");
+    const diff = await taskGitDiff(baseline, dataDir, "workspace");
+
+    assert.match(diff, /diff --git a\/First\/file\.txt b\/First\/file\.txt/);
+    assert.match(diff, /diff --git a\/Second\/file\.txt b\/Second\/file\.txt/);
+    assert.match(diff, /\+\+\+ "b\/Second\/файл с пробелом\.txt"/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("staged-only task changes remain visible when the worktree matches its baseline", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "telegram-task-diff-staged-"));
   const dataDir = path.join(root, "runtime");

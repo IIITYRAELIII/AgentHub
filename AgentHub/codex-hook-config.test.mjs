@@ -11,7 +11,7 @@ const options = {
   launcherFile: "C:\\Runtime\\codex-stop-hook-launcher.mjs",
 };
 
-test("Codex hook config preserves unrelated hooks and installs one Stop handler", () => {
+test("Codex hook config preserves unrelated hooks and installs start and stop handlers", () => {
   const existing = {
     description: "Personal hooks",
     hooks: {
@@ -23,7 +23,12 @@ test("Codex hook config preserves unrelated hooks and installs one Stop handler"
   assert.equal(updated.description, "Personal hooks");
   assert.equal(updated.hooks.SessionStart.length, 1);
   assert.equal(updated.hooks.Stop.length, 2);
+  assert.equal(updated.hooks.UserPromptSubmit.length, 1);
   assert.match(updated.hooks.Stop[1].hooks[0].commandWindows, /codex-stop-hook-launcher\.mjs/);
+  assert.match(
+    updated.hooks.UserPromptSubmit[0].hooks[0].commandWindows,
+    /codex-stop-hook-launcher\.mjs/,
+  );
 });
 
 test("Codex hook config update replaces its previous handler without duplicates", () => {
@@ -33,6 +38,7 @@ test("Codex hook config update replaces its previous handler without duplicates"
     launcherFile: "D:\\Runtime\\codex-stop-hook-launcher.mjs",
   });
   assert.equal(twice.hooks.Stop.length, 1);
+  assert.equal(twice.hooks.UserPromptSubmit.length, 1);
   assert.match(twice.hooks.Stop[0].hooks[0].command, /D:\\Runtime/);
 });
 
@@ -42,4 +48,5 @@ test("Codex hook config removal leaves unrelated handlers intact", () => {
   }, options);
   const removed = removeCodexStopHookConfig(installed);
   assert.deepEqual(removed.hooks.Stop, [{ hooks: [{ type: "command", command: "other.exe" }] }]);
+  assert.equal(removed.hooks.UserPromptSubmit, undefined);
 });

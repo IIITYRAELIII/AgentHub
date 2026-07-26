@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { Readable } from "node:stream";
 import test from "node:test";
 
 import {
   codexTurnUsageFromJsonl,
   readCodexRolloutTail,
   readCodexTurnUsage,
+  scanCodexTurnJsonl,
+  scanCodexTurnJsonlIncrementally,
 } from "./codex-turn-usage.mjs";
 
 function line(value) {
@@ -57,6 +60,7 @@ test("Codex rollout usage sums every model response and sees the final token eve
   assert.equal(result.finalAnswerSeen, true);
   assert.equal(result.finalTokenSeen, true);
   assert.equal(result.terminal, true);
+  assert.equal(result.status, "completed");
   assert.equal(result.startedAt, startedAt);
   assert.equal(result.completedAt, completedAt);
   assert.deepEqual(result.usage, {
@@ -66,6 +70,121 @@ test("Codex rollout usage sums every model response and sees the final token eve
     reasoningOutputTokens: 5,
     totalTokens: 165,
   });
+});
+
+test("streaming rollout scan extracts the exact prompt, terminal status and changed files", async () => {
+  const startedAt = "2026-07-26T19:03:03.527Z";
+  const completedAt = "2026-07-26T19:04:03.527Z";
+  const text = [
+    line({ timestamp: startedAt, type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
+    line(response("turn-other", "message", {
+      role: "user",
+      content: [{ type: "input_text", text: "Чужой запрос" }],
+    })),
+    line(response("turn-1", "message", {
+      role: "user",
+      content: [{
+        type: "input_text",
+        text: "Служебное начало\n<environment_context>скрыть</environment_context>\nТочный запрос",
+      }],
+    })),
+    line({
+      type: "event_msg",
+      payload: {
+        type: "patch_apply_end",
+        turn_id: "turn-1",
+        changes: {
+          "D:\\repo\\first.mjs": { type: "update" },
+          "D:\\repo\\second.mjs": { type: "add" },
+        },
+      },
+    }),
+    line(response("turn-1")),
+    line(token(100, 80, 10, 4)),
+    line({ timestamp: completedAt, type: "event_msg", payload: { type: "turn_aborted", turn_id: "turn-1" } }),
+  ].join("\n");
+
+  const result = await scanCodexTurnJsonl("large-rollout.jsonl", "turn-1", {
+    createReadStreamImpl: () => Readable.from(text.split("\n").map((value) => `${value}\n`)),
+  });
+
+  assert.equal(result.prompt, "Служебное начало\n\nТочный запрос");
+  assert.equal(result.status, "aborted");
+  assert.equal(result.terminal, true);
+  assert.equal(result.startedAt, startedAt);
+  assert.equal(result.completedAt, completedAt);
+  assert.deepEqual(result.changedFiles, [
+    "D:\\repo\\first.mjs",
+    "D:\\repo\\second.mjs",
+  ]);
+  assert.equal(result.usage.inputTokens, 100);
+});
+
+test("Codex usage reader uses the incremental streaming scanner by default", async () => {
+  let scans = 0;
+  const result = await readCodexTurnUsage("large-rollout.jsonl", "turn-1", {
+    attempts: 1,
+    scanIncrementalImpl: async () => {
+      scans += 1;
+      return {
+        reported: true,
+        finalTokenSeen: true,
+        usage: { inputTokens: 10 },
+      };
+    },
+  });
+  assert.equal(scans, 1);
+  assert.equal(result.usage.inputTokens, 10);
+});
+
+test("incremental retries scan only bytes appended after the first large pass", async () => {
+  const base = [
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
+    line(response("turn-1", "message", { role: "assistant", phase: "final_answer" })),
+  ].join("\n") + "\n";
+  const complete = `${base}${line(token(50, 40, 5, 1))}\n`;
+  const starts = [];
+  let reads = 0;
+  const result = await scanCodexTurnJsonlIncrementally("growing-rollout.jsonl", "turn-1", {
+    attempts: 2,
+    retryDelayMs: 0,
+    createReadStreamImpl: (_file, options) => {
+      starts.push(options.start);
+      reads += 1;
+      const current = reads === 1 ? base : complete;
+      return Readable.from([Buffer.from(current).subarray(options.start)]);
+    },
+  });
+
+  assert.deepEqual(starts, [0, Buffer.byteLength(base)]);
+  assert.equal(result.finalTokenSeen, true);
+  assert.equal(result.usage.inputTokens, 50);
+});
+
+test("streaming scan finds an exact turn beyond the former 64 MiB tail boundary", async () => {
+  const padding = `${line({
+    type: "event_msg",
+    payload: { type: "unrelated", padding: "x".repeat(64 * 1024) },
+  })}\n`;
+  const chunks = Array.from({ length: 1_040 }, () => padding);
+  chunks.push(
+    `${line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-large" } })}\n`,
+    `${line(response("turn-large"))}\n`,
+    `${line(token(321, 300, 21, 8))}\n`,
+    `${line({
+      timestamp: "2026-07-27T01:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: "turn-large" },
+    })}\n`,
+  );
+
+  const result = await scanCodexTurnJsonl("huge-rollout.jsonl", "turn-large", {
+    createReadStreamImpl: () => Readable.from(chunks),
+  });
+
+  assert.equal(Buffer.byteLength(padding) * 1_040 > 64 * 1024 * 1024, true);
+  assert.equal(result.status, "completed");
+  assert.equal(result.usage.inputTokens, 321);
 });
 
 test("Codex rollout usage keeps interleaved turns separate", () => {

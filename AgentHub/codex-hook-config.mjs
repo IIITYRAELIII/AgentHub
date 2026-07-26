@@ -34,31 +34,38 @@ function isOurHandler(value) {
     ));
 }
 
-export function mergeCodexStopHookConfig(existing = {}, options) {
-  const result = structuredClone(existing && typeof existing === "object" ? existing : {});
-  if (!result.hooks || typeof result.hooks !== "object" || Array.isArray(result.hooks)) {
-    result.hooks = {};
-  }
-  const groups = Array.isArray(result.hooks.Stop) ? result.hooks.Stop : [];
+function mergeEventHandler(result, eventName, options) {
+  const groups = Array.isArray(result.hooks[eventName]) ? result.hooks[eventName] : [];
   const retained = [];
   for (const group of groups) {
     const hooks = Array.isArray(group?.hooks) ? group.hooks.filter((hook) => !isOurHandler(hook)) : [];
     if (hooks.length) retained.push({ ...group, hooks });
   }
   retained.push({ hooks: [handlerFor(options)] });
-  result.hooks.Stop = retained;
+  result.hooks[eventName] = retained;
+}
+
+export function mergeCodexStopHookConfig(existing = {}, options) {
+  const result = structuredClone(existing && typeof existing === "object" ? existing : {});
+  if (!result.hooks || typeof result.hooks !== "object" || Array.isArray(result.hooks)) {
+    result.hooks = {};
+  }
+  mergeEventHandler(result, "UserPromptSubmit", options);
+  mergeEventHandler(result, "Stop", options);
   return result;
 }
 
 export function removeCodexStopHookConfig(existing = {}) {
   const result = structuredClone(existing && typeof existing === "object" ? existing : {});
   if (!result.hooks || typeof result.hooks !== "object" || Array.isArray(result.hooks)) return result;
-  const groups = Array.isArray(result.hooks.Stop) ? result.hooks.Stop : [];
-  result.hooks.Stop = groups.flatMap((group) => {
-    const hooks = Array.isArray(group?.hooks) ? group.hooks.filter((hook) => !isOurHandler(hook)) : [];
-    return hooks.length ? [{ ...group, hooks }] : [];
-  });
-  if (!result.hooks.Stop.length) delete result.hooks.Stop;
+  for (const eventName of ["UserPromptSubmit", "Stop"]) {
+    const groups = Array.isArray(result.hooks[eventName]) ? result.hooks[eventName] : [];
+    result.hooks[eventName] = groups.flatMap((group) => {
+      const hooks = Array.isArray(group?.hooks) ? group.hooks.filter((hook) => !isOurHandler(hook)) : [];
+      return hooks.length ? [{ ...group, hooks }] : [];
+    });
+    if (!result.hooks[eventName].length) delete result.hooks[eventName];
+  }
   if (!Object.keys(result.hooks).length) delete result.hooks;
   return result;
 }
@@ -100,10 +107,13 @@ export async function codexStopHookStatus({
   hooksFile = path.join(defaultCodexHome(), "hooks.json"),
 } = {}) {
   const current = await readConfig(hooksFile);
-  const configured = (current.hooks?.Stop ?? []).some((group) => (
-    Array.isArray(group?.hooks) && group.hooks.some(isOurHandler)
-  ));
-  return { hooksFile, configured };
+  const events = Object.fromEntries(["UserPromptSubmit", "Stop"].map((eventName) => [
+    eventName,
+    (current.hooks?.[eventName] ?? []).some((group) => (
+      Array.isArray(group?.hooks) && group.hooks.some(isOurHandler)
+    )),
+  ]));
+  return { hooksFile, configured: Object.values(events).every(Boolean), events };
 }
 
 export async function main(args = process.argv.slice(2)) {

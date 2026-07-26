@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  TURN_END_TITLE_LIMIT,
   TurnEndNotificationRegistry,
   turnEndKey,
 } from "./turn-end-notifications.mjs";
@@ -53,6 +54,21 @@ test("turn-end registry binds a deferred message to the completed turn", () => {
   assert.equal(ready.message.workLogId, "123e4567-e89b-42d3-a456-426614174000");
   assert.equal(ready.usage.inputTokens, 10);
   assert.equal(ready.prompt, "Сделай задачу");
+});
+
+test("turn-end titles retain up to 160 characters", () => {
+  const registry = new TurnEndNotificationRegistry();
+  registry.registerMessage(message({
+    threadId: "thread-title",
+    turnId: "turn-title",
+    title: "Т".repeat(200),
+  }));
+  const ready = registry.recordCompletion(completion({
+    threadId: "thread-title",
+    turnId: "turn-title",
+  }));
+  assert.equal(TURN_END_TITLE_LIMIT, 160);
+  assert.equal(ready.message.title.length, 160);
 });
 
 test("turn-end registry deduplicates a delivered turn", () => {
