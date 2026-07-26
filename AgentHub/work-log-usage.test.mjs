@@ -401,7 +401,6 @@ test("a fresh usage store reprojects an existing work log with its persisted led
     assert.match(projected, /<strong>Запрос:<\/strong> Сохранённый вопрос/);
     assert.doesNotMatch(projected, /response-annotations|Старый ответ/);
     assert.doesNotMatch(projected, /data-mega-usage>[^<]*кТЭ/);
-    await store.mergeTurnTexts([{ workLogId: WORK_ID, text: "Обновлённый результат" }]);
     const persisted = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(persisted.turns.turn.prompt, "Сохранённый вопрос");
   } finally {

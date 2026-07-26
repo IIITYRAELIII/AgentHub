@@ -881,7 +881,13 @@ export class WorkLogUsageStore {
   async #load() {
     if (this.#loaded) return;
     try {
-      this.#ledger = normalizedLedger(JSON.parse(await readFile(this.#ledgerFile, "utf8")));
+      const persisted = JSON.parse(await readFile(this.#ledgerFile, "utf8"));
+      this.#ledger = normalizedLedger(persisted);
+      const promptsChanged = Object.entries(persisted?.turns ?? {}).some(
+        ([key, record]) => String(record?.prompt ?? "").trim() !== String(this.#ledger.turns[key]?.prompt ?? ""),
+      );
+      this.#loaded = true;
+      if (promptsChanged) await this.#save();
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
