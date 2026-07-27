@@ -170,23 +170,23 @@ test("an observed task delivers only an answer that changed after attachment", (
   assert.equal(updateObservedResponse(observed, "Старый ответ"), true);
 });
 
-test("an unchanged or recently repeated observed completion is not delivered again", () => {
+test("an observed completion is delivered only after an explicit live view request", () => {
   const now = Date.parse("2026-07-22T12:57:00.000Z");
-  const unchanged = run({
-    displayRequested: false,
-    observedResponseChanged: false,
-  });
-  assert.equal(shouldDeliverObservedCompletion(unchanged, "Накопленный ответ", null, { now }), false);
-
-  const changed = run({
+  const background = run({
     displayRequested: false,
     observedResponseChanged: true,
   });
-  assert.equal(shouldDeliverObservedCompletion(changed, "Новый ответ", null, { now }), true);
+  assert.equal(shouldDeliverObservedCompletion(background, "Новый ответ", null, { now }), false);
+
+  const displayed = run({
+    displayRequested: true,
+    observedResponseChanged: true,
+  });
+  assert.equal(shouldDeliverObservedCompletion(displayed, "Новый ответ", null, { now }), true);
   const previous = { text: "Новый ответ", updatedAt: "2026-07-22T12:47:00.000Z" };
   assert.equal(isRecentDuplicateTaskAnswer(previous, "Новый ответ", { now }), true);
-  assert.equal(shouldDeliverObservedCompletion(changed, "Новый ответ", previous, { now }), false);
-  assert.equal(shouldDeliverObservedCompletion(changed, "Другой ответ", previous, { now }), true);
+  assert.equal(shouldDeliverObservedCompletion(displayed, "Новый ответ", previous, { now }), false);
+  assert.equal(shouldDeliverObservedCompletion(displayed, "Другой ответ", previous, { now }), true);
 });
 
 test("a restored task run adopts the current title of the same thread", () => {

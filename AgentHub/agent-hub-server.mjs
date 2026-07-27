@@ -98,7 +98,6 @@ import {
 import {
   createManagedTaskRun,
   createObservedTaskRun,
-  isRecentDuplicateTaskAnswer,
   serializableTaskRun,
   shouldAutoObserveTask,
   shouldDeliverObservedCompletion,
@@ -4793,13 +4792,7 @@ async function watchSelectedTask() {
       const turnChanged = previousTurnId !== snapshot.turnId;
       if (turnChanged) setBoundedMapValue(lastSeenTaskTurnIds, key, snapshot.turnId, 500);
       const answer = String(snapshot.answer ?? "").trim();
-      const missedCompletedTurn = previousTurnId
-        && previousTurnId !== snapshot.turnId
-        && answer
-        && taskRunKey(currentTask) === key
-        && !dismissedExternalTasks.has(task)
-        && !isRecentDuplicateTaskAnswer(savedLastTaskMessageRecord(task), answer);
-      if (missedCompletedTurn) {
+      if (turnChanged && answer) {
         const completedRun = {
           ...task,
           chatId,
@@ -4807,15 +4800,6 @@ async function watchSelectedTask() {
           turnId: snapshot.turnId,
         };
         rememberLastTaskMessage(completedRun, answer);
-        await safelyDeliverRunMessage(
-          completedRun,
-          () => sendRunLongMessage(completedRun, answer, {
-            speechText: answer,
-            reliable: true,
-            silent: true,
-          }),
-          "пропущенный короткий внешний финал",
-        );
       }
       if (turnChanged) await saveState();
     }

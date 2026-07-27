@@ -868,14 +868,19 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   mark = telegram.calls.length;
   telegram.pushMessage("/rename __E2E_EXTERNAL_SHORT__");
   await telegram.waitForText("Название закреплено", { after: mark });
-  const shortExternalFinal = await telegram.waitForText("Короткий внешний VSCode-ход завершён", {
-    after: mark,
-    timeoutMs: 8_000,
-  });
-  assert.equal(shortExternalFinal.body.disable_notification, true,
-    "an automatically discovered external final must be delivered silently");
-  assert.equal((await readJson(statePath)).activeRuns.length, 0,
-    "a short external turn completed between polls must still deliver its final answer");
+  await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0,
+    "short external turn completed between polls", 8_000);
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const backgroundExternalFinals = telegram.calls.slice(mark).filter((call) => (
+    call.method === "sendMessage"
+      && String(call.body.text ?? "").includes("Короткий внешний VSCode-ход завершён")
+  ));
+  assert.deepEqual(backgroundExternalFinals, [],
+    "selecting a task must not deliver the full final of its background external turn");
+  const shortExternalSaved = (await readJson(statePath)).lastTaskMessages
+    .some(([, message]) => String(message?.text ?? "").includes("Короткий внешний VSCode-ход завершён"));
+  assert.equal(shortExternalSaved, true,
+    "the suppressed external final must remain available through task history and eye buttons");
 
   mark = telegram.calls.length;
   telegram.pushMessage("/rename __E2E_EXTERNAL_UNCHANGED__");

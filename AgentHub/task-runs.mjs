@@ -197,7 +197,7 @@ export function isRecentDuplicateTaskAnswer(previousMessage, answer, {
 
 export function shouldDeliverObservedCompletion(run, answer, previousMessage, options = {}) {
   if (isRecentDuplicateTaskAnswer(previousMessage, answer, options)) return false;
-  return run?.displayRequested === true || run?.observedResponseChanged === true;
+  return run?.displayRequested === true;
 }
 
 export function updateTaskRunTitle(run, title) {
