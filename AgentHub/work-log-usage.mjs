@@ -484,11 +484,12 @@ function legacyOutcome(source) {
   const explicit = String(source ?? "").match(
     /<tr\b[^>]*data-work-log-legacy-outcome[^>]*>\s*<td\b[^>]*>([\s\S]*?)<\/td>\s*<\/tr>/iu,
   )?.[1]?.trim();
-  if (explicit) return explicit;
+  if (explicit?.replace(/<[^>]+>/gu, "").trim()) return explicit;
   const restored = String(source ?? "").match(
     /<div\b[^>]*data-work-log-restored-outcome[^>]*>([\s\S]*?)<\/div>/iu,
   )?.[1]?.trim();
   if (restored) return restored;
+  if (/<table\b[^>]*data-work-log-turn-table/iu.test(source)) return "";
   const cell = String(source ?? "")
     .replace(/^<td\b[^>]*>/i, "")
     .replace(/<\/td>$/i, "")

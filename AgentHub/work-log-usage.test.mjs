@@ -331,6 +331,30 @@ test("work log limits visible turn titles to 100 characters", () => {
   assert.doesNotMatch(projected, new RegExp("Т{101}"));
 });
 
+test("collapsed previous turns remain idempotent without a legacy outcome", () => {
+  const source = "<details open><summary><strong>27.07.2026</strong></summary>"
+    + '<table><tbody><tr data-work-log-provider="codex" data-work-log-thread-id="thread-idempotent">'
+    + "<td>Task</td><td></td></tr></tbody></table></details>";
+  const turns = Object.fromEntries(["first", "second"].map((turnId, index) => [
+    `codex\0thread-idempotent\0${turnId}`,
+    {
+      provider: "codex",
+      threadId: "thread-idempotent",
+      turnId,
+      taskTitle: "Title",
+      title: `Ход ${index + 1}`,
+      usageReported: true,
+      usage: { inputTokens: 100 },
+      completedAt: `2026-07-27T00:0${index}:00.000Z`,
+    },
+  ]));
+  const projected = projectWorkLogUsage(source, turns);
+  const reprojected = projectWorkLogUsage(projected, turns);
+  assert.equal(reprojected, projected);
+  assert.equal((reprojected.match(/data-work-log-turn-id=/g) ?? []).length, 2);
+  assert.equal((reprojected.match(/data-work-log-legacy-outcome/g) ?? []).length, 0);
+});
+
 test("usage store projects each turn into its own placeholder and deduplicates retries", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-usage-"));
   try {
