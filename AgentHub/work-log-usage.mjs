@@ -59,6 +59,7 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       const threadId = keyParts.length >= 3 ? keyParts[1] : String(record?.threadId ?? "").trim();
       const turnId = keyParts.length >= 3 ? keyParts[2] : String(record?.turnId ?? key).trim();
       if (!provider || !turnId) continue;
+      const taskThreadId = String(record?.taskThreadId ?? threadId).trim() || threadId;
       let workLogId = null;
       if (record?.workLogId) workLogId = normalizeWorkLogId(record.workLogId);
       turns[key] = {
@@ -68,6 +69,9 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         usageReported: record?.usageReported !== false,
         provider,
         threadId,
+        taskThreadId,
+        parentThreadId: String(record?.parentThreadId ?? "").trim(),
+        aggregateOnly: record?.aggregateOnly === true,
         turnId,
         taskTitle: String(record?.taskTitle ?? "").trim(),
         title: String(record?.title ?? "").trim(),
@@ -88,7 +92,7 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       });
     }
   }
-  return { ledger: { version: 3, turns }, invalidRecords };
+  return { ledger: { version: 4, turns }, invalidRecords };
 }
 
 export function formatWorkLogUsage(usage) {
@@ -667,11 +671,15 @@ function automaticRecordsForDay(turns, date) {
     ));
 }
 
+function taskThreadId(record) {
+  return String(record?.taskThreadId ?? record?.threadId ?? "").trim();
+}
+
 function ensureCanonicalRows(section, date, turns) {
   let updated = String(section);
   const groups = new Map();
   for (const record of automaticRecordsForDay(turns, date)) {
-    const key = `${record.provider}\0${record.threadId}`;
+    const key = `${record.provider}\0${taskThreadId(record)}`;
     const values = groups.get(key) ?? [];
     values.push(record);
     groups.set(key, values);
@@ -716,7 +724,9 @@ function ensureCanonicalRows(section, date, turns) {
   const identityTargets = [];
   for (const [threadId, matches] of linkedRows) {
     if (matches.length !== 1) continue;
-    if (!datedTurns.some((record) => record.provider === "codex" && record.threadId === threadId)) {
+    if (!datedTurns.some((record) => (
+      record.provider === "codex" && taskThreadId(record) === threadId
+    ))) {
       continue;
     }
     identityTargets.push({ target: matches[0], threadId });
@@ -738,8 +748,9 @@ function replaceProjectedCells(row, usageContent, records) {
   ) ?? cells[1];
   const changedFiles = changedFilesContent(turnCell.text);
   const outcome = legacyOutcome(turnCell.text);
-  const turnTable = records.length || outcome
-    ? formatTurnTable(records, outcome, changedFiles)
+  const visibleRecords = records.filter((record) => record.aggregateOnly !== true);
+  const turnTable = visibleRecords.length || outcome
+    ? formatTurnTable(visibleRecords, outcome, changedFiles)
     : "";
   const turnList = turnTable || (
     changedFiles ? `<div data-work-log-legacy-files>${changedFiles}</div>` : ""
@@ -771,7 +782,7 @@ function projectDaySection(section, date, turns, recordsById) {
       const legacyRecords = ids.map((id) => recordsById.get(id)).filter(Boolean);
       const automaticRecords = identity
         ? automaticRecordsForDay(turns, date).filter((record) => (
-          record.provider === identity.provider && record.threadId === identity.threadId
+          record.provider === identity.provider && taskThreadId(record) === identity.threadId
         ))
         : [];
       const seen = new Set();
@@ -900,6 +911,9 @@ function incomingLedgerRecord({
   usage,
   usageReported,
   taskTitle,
+  taskThreadId,
+  parentThreadId,
+  aggregateOnly,
   title,
   body,
   text,
@@ -916,6 +930,9 @@ function incomingLedgerRecord({
     usageReported: usageReported === true,
     provider: String(provider).trim().toLowerCase(),
     threadId: String(threadId).trim(),
+    taskThreadId: String(taskThreadId ?? threadId).trim(),
+    parentThreadId: String(parentThreadId ?? "").trim(),
+    aggregateOnly: aggregateOnly === true,
     turnId: String(turnId).trim(),
     taskTitle: String(taskTitle ?? "").trim(),
     title: String(title ?? "").trim(),
@@ -941,6 +958,8 @@ function mergeLedgerRecord(existing, incoming) {
     "projectRoot",
     "provider",
     "threadId",
+    "taskThreadId",
+    "parentThreadId",
     "turnId",
     "taskTitle",
     "title",
@@ -956,6 +975,7 @@ function mergeLedgerRecord(existing, incoming) {
       existing[field] = incoming[field];
     }
   }
+  if (incoming.aggregateOnly) existing.aggregateOnly = true;
   if (incoming.status && (incoming.status !== "unknown" || !existing.status || existing.status === "unknown")) {
     existing.status = incoming.status;
   }
@@ -1093,6 +1113,9 @@ export class WorkLogUsageStore {
     workLogId,
     usage,
     usageReported,
+    taskThreadId,
+    parentThreadId,
+    aggregateOnly,
     taskTitle,
     title,
     body,
@@ -1125,6 +1148,9 @@ export class WorkLogUsageStore {
         workLogId: id,
         usage,
         usageReported,
+        taskThreadId,
+        parentThreadId,
+        aggregateOnly,
         taskTitle,
         title,
         body,
@@ -1174,6 +1200,9 @@ export class WorkLogUsageStore {
     projectRoot = this.#defaultProjectRoot,
     usage,
     usageReported,
+    taskThreadId,
+    parentThreadId,
+    aggregateOnly,
     taskTitle,
     title,
     body,
@@ -1197,6 +1226,9 @@ export class WorkLogUsageStore {
         projectRoot,
         usage,
         usageReported,
+        taskThreadId,
+        parentThreadId,
+        aggregateOnly,
         taskTitle,
         title,
         body,

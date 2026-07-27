@@ -46,6 +46,11 @@ import {
   readCodexTurnUsage,
 } from "./codex-turn-usage.mjs";
 import { CodexTerminalAudit } from "./codex-terminal-audit.mjs";
+import {
+  CODEX_AUDIT_SOURCE_KINDS,
+  CODEX_TASK_SOURCE_KINDS,
+  resolveCodexAccountingThread,
+} from "./codex-subagent-accounting.mjs";
 import { routeCodexFinalDelivery } from "./codex-final-delivery.mjs";
 import { randomStatusHeaderFileName } from "./status-header.mjs";
 import { TelegramClient } from "./telegram-client.mjs";
@@ -208,7 +213,6 @@ function providerTitle() {
 }
 const CLAUDE_MODELS = ["sonnet", "opus", "haiku"];
 const CLAUDE_MODEL_LABELS = { sonnet: "Sonnet", opus: "Opus", haiku: "Haiku" };
-const CODEX_TASK_SOURCE_KINDS = ["cli", "vscode", "exec", "appServer", "unknown"];
 let claudeModel = CLAUDE_MODELS.includes(config.claudeModel) ? config.claudeModel : "sonnet";
 // Claude использует те же уровни «мощи дум» и режимы Plan/Work, что и Codex,
 // но применяет их по-своему: мощь дум -> бюджет thinking-токенов, режим -> permission-mode.
@@ -363,6 +367,7 @@ const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
 const codexTurnStarts = new Map();
+const codexAccountingThreadRoots = new Map();
 let codexHookReceipts = { start: null, stop: null };
 const codexTerminalAudit = new CodexTerminalAudit({
   listPage: (cursor, limit) => sendRpc("thread/list", {
@@ -370,7 +375,7 @@ const codexTerminalAudit = new CodexTerminalAudit({
     limit,
     sortKey: "updated_at",
     sortDirection: "desc",
-    sourceKinds: CODEX_TASK_SOURCE_KINDS,
+    sourceKinds: CODEX_AUDIT_SOURCE_KINDS,
   }),
   resolveProject: (thread) => findProject(thread.cwd),
   reconcile: reconcileRecentCodexTerminalTurn,
@@ -1077,6 +1082,9 @@ async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } =
     turnId: completion.turnId,
     usage: completion.usage,
     usageReported: completion.usageReported,
+    taskThreadId: completion.taskThreadId,
+    parentThreadId: completion.parentThreadId,
+    aggregateOnly: completion.aggregateOnly,
     taskTitle: completion.taskTitle,
     title: title || (body ? conciseTurnTitle(body, completion.status) : ""),
     body,
@@ -4668,6 +4676,25 @@ async function pollObservedRun(run) {
   return taskObserver.poll(run);
 }
 
+async function codexAccountingThread(thread) {
+  const targetThreadId = String(thread?.id ?? "").trim();
+  const cached = codexAccountingThreadRoots.get(targetThreadId);
+  if (cached) return cached;
+  const resolved = await resolveCodexAccountingThread(thread, {
+    readThread: async (parentThreadId) => {
+      const response = await sendRpc("thread/read", {
+        threadId: parentThreadId,
+        includeTurns: false,
+      });
+      return response?.thread;
+    },
+  });
+  if (resolved.isSubagent) {
+    setBoundedMapValue(codexAccountingThreadRoots, targetThreadId, resolved, 2_000);
+  }
+  return resolved;
+}
+
 async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
   const completedAtMs = Date.parse(String(terminal?.completedAt ?? ""));
   if (terminal?.status === "completed"
@@ -4679,14 +4706,17 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
     turnId: String(terminal.turnId),
   };
   const key = turnEndKey(identity);
+  const subagentThread = Boolean(String(thread?.parentThreadId ?? "").trim());
   const alreadyDelivered = turnEndNotifications.hasDelivered(identity);
   const pendingCompletion = turnEndNotifications.get(identity);
-  if (pendingCompletion
+  if (!subagentThread
+    && pendingCompletion
     && pendingCompletion.status !== "unknown"
     && pendingCompletion.usageReported) return true;
   if (reconcilingCodexTerminalTurns.has(key)) return false;
   reconcilingCodexTerminalTurns.add(key);
   try {
+    const accountingThread = await codexAccountingThread(thread);
     const usageResult = await readCodexTurnUsage(thread.path, identity.turnId);
     if (!usageResult.terminal) return false;
     const changedFiles = (usageResult.changedFiles ?? []).flatMap((file) => {
@@ -4695,6 +4725,38 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
       return [relative.replaceAll(path.sep, "/")];
     });
+    if (accountingThread.isSubagent) {
+      const journal = await projectTurnUsageToWorkLog({
+        ...identity,
+        taskThreadId: accountingThread.threadId,
+        parentThreadId: accountingThread.parentThreadId,
+        aggregateOnly: true,
+        projectRoot: project.path,
+        taskTitle: runtimeCommandTaskTitle({
+          provider: "codex",
+          threadId: accountingThread.threadId,
+          thread: accountingThread.thread,
+        }),
+        status: usageResult.status || terminal.status,
+        usage: usageResult.usage,
+        usageReported: usageResult.reported === true,
+        startedAt: usageResult.startedAt,
+        completedAt: usageResult.completedAt || terminal.completedAt,
+        prompt: usageResult.prompt,
+        changedFiles,
+        message: null,
+      });
+      if (journal?.projectionError) {
+        console.error(
+          `WORK_LOG subagent projection deferred for turn ${identity.turnId}: ${journal.projectionError}`,
+        );
+      }
+      codexTurnStarts.delete(key);
+      console.log(
+        `Accounted Codex subagent turn ${identity.turnId} to thread ${accountingThread.threadId}`,
+      );
+      return true;
+    }
     if (alreadyDelivered) {
       const journal = await projectTurnUsageToWorkLog({
         ...identity,

@@ -382,6 +382,56 @@ test("collapsed previous turns remain idempotent without a legacy outcome", () =
   assert.equal((reprojected.match(/data-work-log-legacy-outcome/g) ?? []).length, 0);
 });
 
+test("subagent usage is summed into its root task without a visible child turn", () => {
+  const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
+    "codex\0root\0root-turn": {
+      provider: "codex",
+      threadId: "root",
+      turnId: "root-turn",
+      taskTitle: "Root task",
+      title: "Основной результат",
+      usageReported: true,
+      usage: { inputTokens: 100_000 },
+      completedAt: "2026-07-27T00:01:00.000Z",
+    },
+    "codex\0child\0child-turn": {
+      provider: "codex",
+      threadId: "child",
+      taskThreadId: "root",
+      parentThreadId: "root",
+      aggregateOnly: true,
+      turnId: "child-turn",
+      taskTitle: "Root task",
+      title: "Скрытый результат субагента",
+      usageReported: true,
+      usage: { inputTokens: 50_000 },
+      completedAt: "2026-07-27T00:02:00.000Z",
+    },
+    "codex\0child-2\0child-turn-2": {
+      provider: "codex",
+      threadId: "child-2",
+      taskThreadId: "root",
+      parentThreadId: "root",
+      aggregateOnly: true,
+      turnId: "child-turn-2",
+      taskTitle: "Root task",
+      title: "Прерванный скрытый результат субагента",
+      status: "aborted",
+      usageReported: true,
+      usage: { inputTokens: 25_000 },
+      completedAt: "2026-07-27T00:03:00.000Z",
+    },
+  });
+
+  assert.match(projected, /data-work-log-thread-id="root"/);
+  assert.match(projected, /Итого <span data-kilo-usage>175 кТЭ<\/span>/);
+  assert.equal((projected.match(/data-work-log-turn-id=/g) ?? []).length, 1);
+  assert.match(projected, /Основной результат/);
+  assert.doesNotMatch(projected, /Скрытый результат субагента/);
+  assert.doesNotMatch(projected, /Прерванный скрытый результат субагента/);
+  assert.doesNotMatch(projected, /data-work-log-thread-id="child"/);
+});
+
 test("usage store projects each turn into its own placeholder and deduplicates retries", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-usage-"));
   try {
@@ -654,7 +704,7 @@ test("usage store recovers a damaged primary ledger from its backup", async () =
     await recovered.project(workLogFile, { projectRoot: root });
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.keys(ledger.turns).length, 1);
-    assert.equal(ledger.version, 3);
+    assert.equal(ledger.version, 4);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
