@@ -64,7 +64,7 @@ test("late deferred message refreshes the completed task title", () => {
   assert.equal(registry.get(completion()).taskTitle, "Новое название");
 });
 
-test("turn-end titles retain up to 160 characters", () => {
+test("turn-end titles retain up to 100 characters", () => {
   const registry = new TurnEndNotificationRegistry();
   registry.registerMessage(message({
     threadId: "thread-title",
@@ -75,8 +75,8 @@ test("turn-end titles retain up to 160 characters", () => {
     threadId: "thread-title",
     turnId: "turn-title",
   }));
-  assert.equal(TURN_END_TITLE_LIMIT, 160);
-  assert.equal(ready.message.title.length, 160);
+  assert.equal(TURN_END_TITLE_LIMIT, 100);
+  assert.equal(ready.message.title.length, 100);
 });
 
 test("turn-end registry deduplicates a delivered turn", () => {

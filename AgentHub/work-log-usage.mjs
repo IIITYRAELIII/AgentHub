@@ -158,7 +158,7 @@ function ledgerByWorkLogId(turns = {}) {
 }
 
 const twoDigits = (part) => String(part).padStart(2, "0");
-const WORK_LOG_TURN_TITLE_LIMIT = 160;
+const WORK_LOG_TURN_TITLE_LIMIT = 100;
 
 function formatCompletedAt(value) {
   const completedAt = new Date(String(value ?? ""));
@@ -264,20 +264,34 @@ function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
   const legacyFilesTarget = records.findLastIndex((record) => record?.workLogId) >= 0
     ? records.findLastIndex((record) => record?.workLogId)
     : records.length - 1;
-  const turns = records
-    .map((record, index) => formatTurnEntry(
-      record,
-      index === legacyFilesTarget ? legacyFiles : "",
-      taskUnits,
-    ))
-    .join("\n");
+  const turnRows = records.map((record, index) => formatTurnEntry(
+    record,
+    index === legacyFilesTarget ? legacyFiles : "",
+    taskUnits,
+  ));
+  const previousTurns = turnRows.length > 1
+    ? [
+      '<tr data-work-log-previous-turns-row><td colspan="2">',
+      "<details data-work-log-previous-turns>",
+      "<summary>",
+      `<span data-work-log-previous-turns-closed>Показать предыдущие ходы (${turnRows.length - 1})</span>`,
+      '<span data-work-log-previous-turns-open>Свернуть</span>',
+      "</summary>",
+      "<table data-work-log-previous-turn-table>",
+      "<colgroup><col data-work-log-turn-meta-column><col data-work-log-turn-description-column></colgroup>",
+      `<tbody>${turnRows.slice(0, -1).join("\n")}</tbody>`,
+      "</table>",
+      "</details></td></tr>",
+    ].join("")
+    : "";
+  const latestTurn = turnRows.at(-1) ?? "";
   const legacy = legacyOutcome
     ? `<tr data-work-log-legacy-outcome><td colspan="2">${legacyOutcome}</td></tr>`
     : "";
   return [
     "<table data-work-log-turn-table>",
     "<colgroup><col data-work-log-turn-meta-column><col data-work-log-turn-description-column></colgroup>",
-    `<tbody>${[turns, legacy].filter(Boolean).join("\n")}</tbody>`,
+    `<tbody>${[previousTurns, latestTurn, legacy].filter(Boolean).join("\n")}</tbody>`,
     "</table>",
   ].join("\n");
 }

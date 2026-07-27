@@ -158,14 +158,60 @@ table[data-work-log-turn-table] tr + tr > td {
   padding-top: 0.35em;
 }
 
-table[data-work-log-turn-table] col[data-work-log-turn-meta-column] {
+table[data-work-log-turn-table] col[data-work-log-turn-meta-column],
+table[data-work-log-previous-turn-table] col[data-work-log-turn-meta-column] {
   width: 12em;
 }
 
-table[data-work-log-turn-table] td {
+table[data-work-log-turn-table] td,
+table[data-work-log-previous-turn-table] td {
   min-width: 0;
   padding: 0;
   vertical-align: top;
+}
+
+details[data-work-log-previous-turns] {
+  border: 1px solid rgba(127, 127, 127, 0.55);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+details[data-work-log-previous-turns] > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.3em 0.45em;
+}
+
+details[data-work-log-previous-turns] > summary::-webkit-details-marker {
+  display: none;
+}
+
+details[data-work-log-previous-turns] > summary::marker {
+  content: "";
+}
+
+details[data-work-log-previous-turns] > summary [data-work-log-previous-turns-open] {
+  display: none;
+}
+
+details[data-work-log-previous-turns][open] > summary {
+  background: rgba(127, 127, 127, 0.08);
+  border-bottom: 1px solid rgba(127, 127, 127, 0.55);
+}
+
+details[data-work-log-previous-turns][open] > summary [data-work-log-previous-turns-closed] {
+  display: none;
+}
+
+details[data-work-log-previous-turns][open] > summary [data-work-log-previous-turns-open] {
+  display: inline;
+}
+
+table[data-work-log-previous-turn-table] {
+  border-collapse: separate;
+  border-spacing: 0.35em;
+  table-layout: fixed;
+  width: 100%;
 }
 
 td[data-work-log-turn-row] {

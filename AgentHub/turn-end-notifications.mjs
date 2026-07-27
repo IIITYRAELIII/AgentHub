@@ -3,7 +3,7 @@ import path from "node:path";
 import { normalizeTokenUsage } from "./token-usage.mjs";
 import { normalizeWorkLogId } from "./work-log-usage.mjs";
 
-export const TURN_END_TITLE_LIMIT = 160;
+export const TURN_END_TITLE_LIMIT = 100;
 export const TURN_END_BODY_LIMIT = 700;
 
 export function turnEndThreadKey({ provider, threadId }) {

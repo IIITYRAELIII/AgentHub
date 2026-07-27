@@ -108,6 +108,15 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
     projected,
     /<table data-work-log-turn-table>[\s\S]*?data-work-log-turn-measure>12:34 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Первый &lt;ход&gt; Строка<\/span>[\s\S]*?data-work-log-turn-measure>13:45 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Второй &amp; ход<\/span>[\s\S]*?data-work-log-turn-files[^>]*>a\.mjs<\/div>/,
   );
+  assert.match(
+    projected,
+    /<details data-work-log-previous-turns><summary><span data-work-log-previous-turns-closed>Показать предыдущие ходы \(1\)<\/span><span data-work-log-previous-turns-open>Свернуть<\/span><\/summary>/,
+  );
+  assert.doesNotMatch(projected, /<details data-work-log-previous-turns open>/);
+  assert.match(
+    projected,
+    /data-work-log-previous-turn-table>[\s\S]*?Первый &lt;ход&gt; Строка[\s\S]*?<\/table><\/details><\/td><\/tr>[\s\S]*?Второй &amp; ход/,
+  );
   assert.match(projected, /<strong>Длит\.:<\/strong> 3 мин 30 с/);
   assert.match(projected, /<strong>Запрос:<\/strong> Короткий вопрос/);
   assert.doesNotMatch(projected, /Response annotations|response-annotations|Старый ответ/);
@@ -284,11 +293,42 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
     css,
     /details\[data-work-log-turn-details\]\[open\]\s*\{[\s\S]*?border:\s*2px solid var\(--vscode-focusBorder/,
   );
+  assert.match(
+    css,
+    /details\[data-work-log-previous-turns\]\s*\{[\s\S]*?border:\s*1px solid[\s\S]*?border-radius:\s*4px/,
+  );
+  assert.match(
+    css,
+    /data-work-log-previous-turns\]\[open\][\s\S]*?data-work-log-previous-turns-closed[\s\S]*?display:\s*none/,
+  );
+  assert.match(
+    css,
+    /data-work-log-previous-turns\]\[open\][\s\S]*?data-work-log-previous-turns-open[\s\S]*?display:\s*inline/,
+  );
   assert.doesNotMatch(css, /data-work-log-turns-toggle/);
   assert.match(
     css,
     /span\[data-kilo-usage\][\s\S]*?#e5c07b[\s\S]*?span\[data-mega-usage\][\s\S]*?#ff9d00[\s\S]*?span\[data-high-usage\][\s\S]*?#f14c4c/,
   );
+});
+
+test("work log limits visible turn titles to 100 characters", () => {
+  const source = "<details open><summary><strong>27.07.2026</strong></summary>"
+    + "<table><tbody><tr><td>Task</td><td></td><td></td></tr></tbody></table></details>";
+  const projected = projectWorkLogUsage(source, {
+    turn: {
+      provider: "codex",
+      threadId: "thread-title",
+      turnId: "turn-title",
+      taskTitle: "Title",
+      title: "Т".repeat(120),
+      usageReported: true,
+      usage: { inputTokens: 100 },
+      completedAt: "2026-07-27T00:00:00.000Z",
+    },
+  });
+  assert.match(projected, new RegExp(`data-work-log-turn-title>${"Т".repeat(100)}<\\/span>`));
+  assert.doesNotMatch(projected, new RegExp("Т{101}"));
 });
 
 test("usage store projects each turn into its own placeholder and deduplicates retries", async () => {
