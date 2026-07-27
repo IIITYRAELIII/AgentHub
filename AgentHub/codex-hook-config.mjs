@@ -5,7 +5,7 @@ import process from "node:process";
 
 import { isMainModule } from "./main-module.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
-import { writeTextAtomic } from "./state-store.mjs";
+import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
 
 const HOOK_FILE_NAME = "codex-stop-hook-launcher.mjs";
 
@@ -105,15 +105,41 @@ export async function uninstallCodexStopHook({
 
 export async function codexStopHookStatus({
   hooksFile = path.join(defaultCodexHome(), "hooks.json"),
+  runtimeRoot = defaultRuntimeRoot(),
 } = {}) {
   const current = await readConfig(hooksFile);
+  const launcherFile = runtimeLayout(runtimeRoot).codexHookLauncherFile;
+  const launcherAvailable = await access(launcherFile).then(() => true, () => false);
   const events = Object.fromEntries(["UserPromptSubmit", "Stop"].map((eventName) => [
     eventName,
     (current.hooks?.[eventName] ?? []).some((group) => (
       Array.isArray(group?.hooks) && group.hooks.some(isOurHandler)
     )),
   ]));
-  return { hooksFile, configured: Object.values(events).every(Boolean), events };
+  const stateFile = path.join(runtimeLayout(runtimeRoot).dataDir, "state.json");
+  let receipts = { start: null, stop: null };
+  let activeTurnStarts = 0;
+  try {
+    const state = await readJsonWithBackup(stateFile);
+    receipts = {
+      start: state.value?.codexHookReceipts?.start ?? null,
+      stop: state.value?.codexHookReceipts?.stop ?? null,
+    };
+    activeTurnStarts = Array.isArray(state.value?.codexTurnStarts)
+      ? state.value.codexTurnStarts.length
+      : 0;
+  } catch (error) {
+    receipts = { start: null, stop: null, error: String(error?.message ?? error) };
+  }
+  return {
+    hooksFile,
+    launcherFile,
+    launcherAvailable,
+    configured: launcherAvailable && Object.values(events).every(Boolean),
+    events,
+    receipts,
+    activeTurnStarts,
+  };
 }
 
 export async function main(args = process.argv.slice(2)) {

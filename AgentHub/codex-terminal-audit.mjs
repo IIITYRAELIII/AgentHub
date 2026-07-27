@@ -35,6 +35,7 @@ export class CodexTerminalAudit {
     pageSize = DEFAULT_PAGE_SIZE,
     bootstrapWindowMs = DEFAULT_BOOTSTRAP_WINDOW_MS,
     boundaryOverlapMs = DEFAULT_BOUNDARY_OVERLAP_MS,
+    maxPositions = 5_000,
   }) {
     this.listPage = listPage;
     this.resolveProject = resolveProject;
@@ -45,6 +46,7 @@ export class CodexTerminalAudit {
     this.pageSize = pageSize;
     this.bootstrapWindowMs = bootstrapWindowMs;
     this.boundaryOverlapMs = boundaryOverlapMs;
+    this.maxPositions = Math.max(100, Number(maxPositions) || 5_000);
     this.completedThroughMs = 0;
     this.positions = new Map();
     this.running = false;
@@ -56,7 +58,7 @@ export class CodexTerminalAudit {
     for (const entry of Array.isArray(snapshot?.positions) ? snapshot.positions : []) {
       if (!Array.isArray(entry) || typeof entry[0] !== "string") continue;
       const position = restoredPosition(entry[1]);
-      if (position) this.positions.set(entry[0], position);
+      if (position) this.#setPosition(entry[0], position);
     }
   }
 
@@ -67,6 +69,14 @@ export class CodexTerminalAudit {
         : "",
       positions: [...this.positions.entries()],
     };
+  }
+
+  #setPosition(threadId, position) {
+    this.positions.delete(threadId);
+    this.positions.set(threadId, position);
+    while (this.positions.size > this.maxPositions) {
+      this.positions.delete(this.positions.keys().next().value);
+    }
   }
 
   async #auditThread(thread, project, lowerBoundMs) {
@@ -94,7 +104,7 @@ export class CodexTerminalAudit {
     if (!allHandled) {
       return false;
     }
-    this.positions.set(threadId, {
+    this.#setPosition(threadId, {
       path: transcriptPath,
       offset: result.nextOffset,
     });
@@ -133,7 +143,7 @@ export class CodexTerminalAudit {
 
           if (bootstrapping && olderThanBoundary) {
             const info = await this.statFile(thread.path);
-            this.positions.set(String(thread.id), {
+            this.#setPosition(String(thread.id), {
               path: String(thread.path),
               offset: info.size,
             });

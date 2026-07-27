@@ -122,6 +122,25 @@ test("streaming rollout scan extracts the exact prompt, terminal status and chan
   assert.equal(result.usage.inputTokens, 100);
 });
 
+test("streaming rollout scan extracts files from the apply_patch tool call", async () => {
+  const text = [
+    line({ type: "session_meta", payload: { cwd: "D:\\repo" } }),
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
+    line(response("turn-1", "custom_tool_call", {
+      name: "apply_patch",
+      input: "*** Begin Patch\n*** Update File: src/one.mjs\n@@\n-old\n+new\n*** Add File: D:\\repo\\src\\two.mjs\n+two\n*** End Patch",
+    })),
+    line({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-1" } }),
+  ].join("\n");
+  const result = await scanCodexTurnJsonl("rollout.jsonl", "turn-1", {
+    createReadStreamImpl: () => Readable.from(text.split("\n").map((value) => `${value}\n`)),
+  });
+  assert.deepEqual(result.changedFiles, [
+    "D:\\repo\\src\\one.mjs",
+    "D:\\repo\\src\\two.mjs",
+  ]);
+});
+
 test("recent terminal scan distinguishes completed and aborted turns", () => {
   const values = codexRecentTerminalTurnsFromJsonl([
     line({ timestamp: "2026-07-26T19:04:03.527Z", type: "event_msg", payload: {

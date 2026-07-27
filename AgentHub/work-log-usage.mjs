@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { writeTextAtomic } from "./state-store.mjs";
+import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import {
   addTokenUsage,
@@ -33,8 +33,23 @@ export function workLogTurnKey({ provider = "codex", threadId, turnId }) {
   return `${normalizedProvider}\0${normalizedThreadId}\0${normalizedTurnId}`;
 }
 
-function normalizedLedger(value = {}) {
+function normalizeProjectRoot(value, fallback = "") {
+  const candidate = String(value ?? fallback).trim();
+  return candidate ? path.resolve(candidate) : "";
+}
+
+function sameProjectRoot(left, right) {
+  const normalizedLeft = normalizeProjectRoot(left);
+  const normalizedRight = normalizeProjectRoot(right);
+  if (!normalizedLeft || !normalizedRight) return normalizedLeft === normalizedRight;
+  return process.platform === "win32"
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
+
+function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
   const turns = {};
+  const invalidRecords = [];
   for (const [key, record] of Object.entries(value?.turns ?? {})) {
     try {
       const keyParts = key.split("\0");
@@ -48,6 +63,7 @@ function normalizedLedger(value = {}) {
       if (record?.workLogId) workLogId = normalizeWorkLogId(record.workLogId);
       turns[key] = {
         workLogId,
+        projectRoot: normalizeProjectRoot(record?.projectRoot, defaultProjectRoot),
         usage: normalizeTokenUsage(record?.usage),
         usageReported: record?.usageReported !== false,
         provider,
@@ -64,11 +80,15 @@ function normalizedLedger(value = {}) {
         completedAt: String(record?.completedAt ?? ""),
         status: String(record?.status ?? "completed").trim() || "completed",
       };
-    } catch {
-      // A damaged record is ignored without making the whole ledger unusable.
+    } catch (error) {
+      invalidRecords.push({
+        key,
+        record,
+        error: String(error?.message ?? error),
+      });
     }
   }
-  return { version: 2, turns };
+  return { ledger: { version: 3, turns }, invalidRecords };
 }
 
 export function formatWorkLogUsage(usage) {
@@ -750,7 +770,7 @@ function projectDaySection(section, date, turns, recordsById) {
 
 export function projectWorkLogUsage(workLogText, turns = {}) {
   let text = String(workLogText ?? "");
-  const normalizedTurns = normalizedLedger({ turns }).turns;
+  const normalizedTurns = normalizedLedger({ turns }).ledger.turns;
   const records = ledgerByWorkLogId(normalizedTurns);
   const existingDates = new Set(daySectionRanges(text).map((range) => range.date));
   const requiredDates = [...new Set(Object.values(normalizedTurns)
@@ -804,6 +824,7 @@ function incomingLedgerRecord({
   provider = "codex",
   threadId,
   turnId,
+  projectRoot,
   workLogId = null,
   usage,
   usageReported,
@@ -819,6 +840,7 @@ function incomingLedgerRecord({
 }) {
   return {
     workLogId,
+    projectRoot: normalizeProjectRoot(projectRoot),
     usage: normalizeTokenUsage(usage),
     usageReported: usageReported === true,
     provider: String(provider).trim().toLowerCase(),
@@ -845,6 +867,7 @@ function mergeLedgerRecord(existing, incoming) {
     existing.usageReported = incoming.usageReported;
   }
   for (const field of [
+    "projectRoot",
     "provider",
     "threadId",
     "turnId",
@@ -868,35 +891,66 @@ function mergeLedgerRecord(existing, incoming) {
 
 export class WorkLogUsageStore {
   #ledgerFile;
+  #backupFile;
+  #quarantineFile;
+  #defaultProjectRoot;
   #randomUUID;
   #loaded = false;
-  #ledger = normalizedLedger();
+  #ledger = normalizedLedger().ledger;
   #tail = Promise.resolve();
 
-  constructor({ ledgerFile, randomUUID = crypto.randomUUID } = {}) {
+  constructor({
+    ledgerFile,
+    defaultProjectRoot = "",
+    randomUUID = crypto.randomUUID,
+  } = {}) {
     this.#ledgerFile = path.resolve(ledgerFile);
+    this.#backupFile = `${this.#ledgerFile}.bak`;
+    this.#quarantineFile = `${this.#ledgerFile}.invalid-records.json`;
+    this.#defaultProjectRoot = normalizeProjectRoot(defaultProjectRoot);
     this.#randomUUID = randomUUID;
   }
 
   async #load() {
     if (this.#loaded) return;
-    try {
-      const persisted = JSON.parse(await readFile(this.#ledgerFile, "utf8"));
-      this.#ledger = normalizedLedger(persisted);
-      const promptsChanged = Object.entries(persisted?.turns ?? {}).some(
-        ([key, record]) => String(record?.prompt ?? "").trim() !== String(this.#ledger.turns[key]?.prompt ?? ""),
+    const loaded = await readJsonWithBackup(this.#ledgerFile, {
+      backupFile: this.#backupFile,
+    });
+    const persisted = loaded.value ?? {};
+    const normalized = normalizedLedger(persisted, {
+      defaultProjectRoot: this.#defaultProjectRoot,
+    });
+    this.#ledger = normalized.ledger;
+    if (normalized.invalidRecords.length) {
+      await mkdir(path.dirname(this.#quarantineFile), { recursive: true });
+      await writeTextAtomic(
+        this.#quarantineFile,
+        `${JSON.stringify({
+          detectedAt: new Date().toISOString(),
+          source: loaded.source,
+          records: normalized.invalidRecords,
+        }, null, 2)}\n`,
       );
-      this.#loaded = true;
-      if (promptsChanged) await this.#save();
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      console.error(
+        `Quarantined ${normalized.invalidRecords.length} invalid work-log ledger record(s) in ${this.#quarantineFile}`,
+      );
     }
     this.#loaded = true;
+    const migrated = Number(persisted?.version ?? 0) !== this.#ledger.version
+      || Object.entries(persisted?.turns ?? {}).some(
+        ([key, record]) => (
+          String(record?.prompt ?? "").trim() !== String(this.#ledger.turns[key]?.prompt ?? "")
+          || normalizeProjectRoot(record?.projectRoot) !== this.#ledger.turns[key]?.projectRoot
+        ),
+      );
+    if (loaded.recovered || migrated || normalized.invalidRecords.length) await this.#save();
   }
 
   async #save() {
     await mkdir(path.dirname(this.#ledgerFile), { recursive: true });
-    await writeTextAtomic(this.#ledgerFile, `${JSON.stringify(this.#ledger, null, 2)}\n`);
+    const content = `${JSON.stringify(this.#ledger, null, 2)}\n`;
+    await writeTextAtomic(this.#ledgerFile, content);
+    await writeTextAtomic(this.#backupFile, content);
   }
 
   mergeTurnTexts(messages = []) {
@@ -933,18 +987,23 @@ export class WorkLogUsageStore {
     return operation;
   }
 
-  project(workLogFile) {
+  project(workLogFile, { projectRoot = this.#defaultProjectRoot } = {}) {
     const operation = this.#tail.catch(() => {}).then(async () => {
       await this.#load();
       const logPath = path.resolve(workLogFile);
+      const selectedTurns = Object.fromEntries(
+        Object.entries(this.#ledger.turns).filter(([, record]) => (
+          sameProjectRoot(record.projectRoot, projectRoot)
+        )),
+      );
       let current;
       try {
         current = await readFile(logPath, "utf8");
       } catch (error) {
-        if (error?.code === "ENOENT") return { projected: false, reason: "work-log-missing" };
-        throw error;
+        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
+        else throw error;
       }
-      const updated = projectWorkLogUsage(current, this.#ledger.turns);
+      const updated = projectWorkLogUsage(current, selectedTurns);
       if (updated === current) return { projected: false, reason: "unchanged" };
       await writeTextAtomic(logPath, updated);
       return { projected: true };
@@ -957,6 +1016,7 @@ export class WorkLogUsageStore {
     provider = "codex",
     threadId,
     turnId,
+    projectRoot = this.#defaultProjectRoot,
     workLogId,
     usage,
     usageReported,
@@ -988,6 +1048,7 @@ export class WorkLogUsageStore {
         provider,
         threadId,
         turnId,
+        projectRoot,
         workLogId: id,
         usage,
         usageReported,
@@ -1005,14 +1066,29 @@ export class WorkLogUsageStore {
       await this.#save();
       const recordedUsage = this.#ledger.turns[key].usage;
       const logPath = path.resolve(workLogFile);
-      const current = await readFile(logPath, "utf8");
-      const occurrences = usageIds(current).filter((workLogId) => workLogId === id).length;
-      if (occurrences !== 1) {
-        throw new Error(`WORK_LOG must contain exactly one usage placeholder for ${id}; found ${occurrences}`);
+      try {
+        const current = await readFile(logPath, "utf8");
+        const occurrences = usageIds(current).filter((workLogId) => workLogId === id).length;
+        if (occurrences !== 1) {
+          throw new Error(`WORK_LOG must contain exactly one usage placeholder for ${id}; found ${occurrences}`);
+        }
+        const selectedTurns = Object.fromEntries(
+          Object.entries(this.#ledger.turns).filter(([, record]) => (
+            sameProjectRoot(record.projectRoot, projectRoot)
+          )),
+        );
+        const updated = projectWorkLogUsage(current, selectedTurns);
+        await writeTextAtomic(logPath, updated);
+        return { recorded: !existing, usage: recordedUsage, workLogId: id, projected: true };
+      } catch (error) {
+        return {
+          recorded: !existing,
+          usage: recordedUsage,
+          workLogId: id,
+          projected: false,
+          projectionError: String(error?.message ?? error),
+        };
       }
-      const updated = projectWorkLogUsage(current, this.#ledger.turns);
-      await writeTextAtomic(logPath, updated);
-      return { recorded: !existing, usage: recordedUsage, workLogId: id };
     });
     this.#tail = operation;
     return operation;
@@ -1022,6 +1098,7 @@ export class WorkLogUsageStore {
     provider = "codex",
     threadId,
     turnId,
+    projectRoot = this.#defaultProjectRoot,
     usage,
     usageReported,
     taskTitle,
@@ -1040,11 +1117,11 @@ export class WorkLogUsageStore {
       const key = workLogTurnKey({ provider, threadId, turnId });
       const existing = this.#ledger.turns[key];
       const logPath = path.resolve(workLogFile);
-      const current = await readFile(logPath, "utf8");
       const incoming = incomingLedgerRecord({
         provider,
         threadId,
         turnId,
+        projectRoot,
         usage,
         usageReported,
         taskTitle,
@@ -1059,14 +1136,54 @@ export class WorkLogUsageStore {
       });
       this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
       await this.#save();
-      const updated = projectWorkLogUsage(current, this.#ledger.turns);
-      await writeTextAtomic(logPath, updated);
-      return {
-        recorded: !existing,
-        usage: this.#ledger.turns[key].usage,
-        workLogId: null,
-        target: "thread-day-row",
-      };
+      try {
+        let current;
+        current = await readFile(logPath, "utf8");
+        const selectedTurns = Object.fromEntries(
+          Object.entries(this.#ledger.turns).filter(([, record]) => (
+            sameProjectRoot(record.projectRoot, projectRoot)
+          )),
+        );
+        const updated = projectWorkLogUsage(current, selectedTurns);
+        await writeTextAtomic(logPath, updated);
+        return {
+          recorded: !existing,
+          usage: this.#ledger.turns[key].usage,
+          workLogId: null,
+          target: "thread-day-row",
+          projected: true,
+        };
+      } catch (error) {
+        if (error?.code === "ENOENT") {
+          try {
+            const selectedTurns = Object.fromEntries(
+              Object.entries(this.#ledger.turns).filter(([, record]) => (
+                sameProjectRoot(record.projectRoot, projectRoot)
+              )),
+            );
+            const created = projectWorkLogUsage("# Глобальный журнал работ\n", selectedTurns);
+            await writeTextAtomic(logPath, created);
+            return {
+              recorded: !existing,
+              usage: this.#ledger.turns[key].usage,
+              workLogId: null,
+              target: "thread-day-row",
+              projected: true,
+              createdWorkLog: true,
+            };
+          } catch (createError) {
+            error = createError;
+          }
+        }
+        return {
+          recorded: !existing,
+          usage: this.#ledger.turns[key].usage,
+          workLogId: null,
+          target: "thread-day-row",
+          projected: false,
+          projectionError: String(error?.message ?? error),
+        };
+      }
     });
     this.#tail = operation;
     return operation;

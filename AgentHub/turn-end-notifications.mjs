@@ -81,16 +81,40 @@ export class TurnEndNotificationRegistry {
   #completions = new Map();
   #delivered = new Set();
   #limit;
+  #pendingTtlMs;
+  #now;
 
-  constructor(snapshot = {}, { limit = 1_000 } = {}) {
+  constructor(snapshot = {}, {
+    limit = 1_000,
+    pendingTtlMs = 7 * 24 * 60 * 60 * 1_000,
+    now = Date.now,
+  } = {}) {
     this.#limit = Math.max(10, Number(limit) || 1_000);
+    this.#pendingTtlMs = Math.max(60_000, Number(pendingTtlMs) || 7 * 24 * 60 * 60 * 1_000);
+    this.#now = now;
     this.restore(snapshot);
   }
 
   restore(snapshot = {}) {
+    this.#pendingByThread.clear();
+    this.#completions.clear();
+    this.#delivered.clear();
+    let droppedLegacyPending = 0;
+    let droppedStalePending = 0;
+    const cutoff = this.#now() - this.#pendingTtlMs;
     for (const value of Array.isArray(snapshot.pending) ? snapshot.pending : []) {
       const message = normalizedMessage(value);
-      if (message) this.#queueMessage(message);
+      if (!message) continue;
+      if (!message.turnId) {
+        droppedLegacyPending += 1;
+        continue;
+      }
+      const createdAt = Date.parse(message.createdAt);
+      if (!Number.isFinite(createdAt) || createdAt < cutoff) {
+        droppedStalePending += 1;
+        continue;
+      }
+      this.#queueMessage(message);
     }
     for (const value of Array.isArray(snapshot.completions) ? snapshot.completions : []) {
       const completion = normalizedCompletion(value);
@@ -100,6 +124,7 @@ export class TurnEndNotificationRegistry {
       if (typeof key === "string" && key) this.#delivered.add(key);
     }
     this.#trim();
+    return { droppedLegacyPending, droppedStalePending };
   }
 
   #queueMessage(message) {

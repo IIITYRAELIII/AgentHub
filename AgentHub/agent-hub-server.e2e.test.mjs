@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -48,6 +48,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const codexStatePath = path.join(temporaryRoot, "fake-codex-state.json");
   const statePath = path.join(dataDir, "state.json");
   const workLogPath = path.join(projectRoot, "WORK_LOG.md");
+  const secondWorkLogPath = path.join(secondProjectRoot, "WORK_LOG.md");
   const workLogLedgerPath = path.join(dataDir, "work-log-usage.json");
   const lockPath = path.join(dataDir, "bot.lock");
   await Promise.all([
@@ -136,6 +137,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     logMaxFiles: 2,
   }, null, 2)}\n`, "utf8");
   await writeFile(workLogPath, "# Глобальный журнал работ\n", "utf8");
+  await writeFile(secondWorkLogPath, "# Глобальный журнал работ\n", "utf8");
 
   telegram.failNext("getUpdates", 500);
   await startBot();
@@ -885,17 +887,31 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const botBeforeUnchangedRestore = bot;
   botBeforeUnchangedRestore.kill("SIGTERM");
   await new Promise((resolve) => botBeforeUnchangedRestore.once("exit", resolve));
-  await startBot();
-  await waitFor(async () => {
-    const runs = (await readJson(statePath)).activeRuns;
-    return runs.length === 1 && runs[0].observer === true ? runs[0] : null;
-  }, "unchanged external task restored after restart", 8_000);
-
+  const offlineCodexState = await readJson(codexStatePath);
+  const offlineThread = offlineCodexState.threads.find((thread) => (
+    thread.turns.some((turn) => turn.prompt === "[external-unchanged] VSCode task")
+  ));
+  const offlineTurn = offlineThread.turns.find((turn) => (
+    turn.prompt === "[external-unchanged] VSCode task"
+  ));
+  offlineTurn.status = "completed";
+  offlineThread.updatedAt = Math.floor(Date.now() / 1000);
+  await writeFile(codexStatePath, `${JSON.stringify(offlineCodexState, null, 2)}\n`, "utf8");
+  await appendFile(offlineThread.externalRolloutPath, `${JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type: "event_msg",
+    payload: { type: "task_complete", turn_id: offlineTurn.id },
+  })}\n`, "utf8");
   mark = telegram.calls.length;
-  telegram.pushMessage("/rename __E2E_EXTERNAL_UNCHANGED_RELEASE__");
-  await telegram.waitForText("Название закреплено", { after: mark });
+  await startBot();
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0,
-    "unchanged external observer completes", 8_000);
+    "offline external terminal reconciled after restart", 12_000);
+  const offlineJournalTurn = await waitFor(async () => {
+    const ledger = await readJson(workLogLedgerPath).catch(() => null);
+    return Object.values(ledger?.turns ?? {}).find((turn) => turn.turnId === offlineTurn.id) ?? null;
+  }, "offline external terminal written to the journal", 12_000);
+  assert.equal(offlineJournalTurn.prompt, "[external-unchanged] VSCode task");
+  assert.equal(offlineJournalTurn.status, "completed");
   await new Promise((resolve) => setTimeout(resolve, 2_500));
   const repeatedUnchangedAnswers = telegram.calls.slice(mark).filter((call) => (
     call.method === "sendMessage"
@@ -937,6 +953,19 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushCallback(callbackButton(projectPicker, "p:1").callback_data, projectPicker.result);
   await telegram.waitForText("Активная папка: E2E-2", { after: mark });
   assert.equal(path.resolve((await readJson(statePath)).activeProjectRoot), path.resolve(secondProjectRoot));
+  mark = telegram.calls.length;
+  telegram.pushMessage("/new");
+  await telegram.waitForText("Создан новый контекст Codex", { after: mark });
+  mark = telegram.calls.length;
+  telegram.pushMessage("[multi-project] изоляция журнала");
+  await telegram.waitForText("Готово: [multi-project] изоляция журнала", {
+    after: mark,
+    timeoutMs: 12_000,
+  });
+  await waitFor(async () => (
+    (await readFile(secondWorkLogPath, "utf8")).includes("[multi-project] изоляция журнала")
+  ), "second project journal projection");
+  assert.doesNotMatch(await readFile(workLogPath, "utf8"), /\[multi-project\] изоляция журнала/);
   mark = telegram.calls.length;
   telegram.pushMessage("/projects");
   const returnProjectPicker = await telegram.waitForText("Выберите проект:", { after: mark });

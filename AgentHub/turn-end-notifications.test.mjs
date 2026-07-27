@@ -106,7 +106,7 @@ test("turn-end registry persists pending, completed and delivered state", () => 
   assert.equal(pendingReady.message.text, "Готово");
 });
 
-test("turn-end registry rejects ambiguous messages and never consumes legacy FIFO entries", () => {
+test("turn-end registry rejects ambiguous messages and removes legacy FIFO entries on restore", () => {
   const registry = new TurnEndNotificationRegistry({
     pending: [message({ text: "Старая запись без turn ID" })],
   });
@@ -115,7 +115,18 @@ test("turn-end registry rejects ambiguous messages and never consumes legacy FIF
     /exact turn ID/,
   );
   assert.equal(registry.recordCompletion(completion()).message, null);
-  assert.equal(registry.snapshot().pending[0].text, "Старая запись без turn ID");
+  assert.deepEqual(registry.snapshot().pending, []);
+});
+
+test("turn-end registry removes expired exact pending messages", () => {
+  const now = Date.parse("2026-07-27T00:00:00.000Z");
+  const registry = new TurnEndNotificationRegistry({
+    pending: [message({
+      turnId: "turn-old",
+      createdAt: "2026-07-19T00:00:00.000Z",
+    })],
+  }, { now: () => now });
+  assert.deepEqual(registry.snapshot().pending, []);
 });
 
 test("exact turn messages remain attached during parallel completions", () => {

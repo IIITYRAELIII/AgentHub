@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -351,7 +351,7 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     });
     assert.deepEqual(await restored.project(path.join(root, "MISSING.md")), {
       projected: false,
-      reason: "work-log-missing",
+      reason: "unchanged",
     });
     await assert.rejects(
       store.recordAndProject({ ...base, turnId: "turn-3" }),
@@ -474,6 +474,7 @@ test("automatic usage attaches to the only row for the thread and is idempotent"
       },
       workLogId: null,
       target: "thread-day-row",
+      projected: true,
     });
     assert.equal((await readFile(workLogFile, "utf8")).match(/data-usage-id=/g)?.length ?? 0, 0);
     assert.match(await readFile(workLogFile, "utf8"), /data-work-log-thread-id="thread-1"/);
@@ -481,6 +482,107 @@ test("automatic usage attaches to the only row for the thread and is idempotent"
     assert.match(await readFile(workLogFile, "utf8"), /Остановленный ход/);
     assert.equal((await store.recordAutomaticAndProject(input)).recorded, false);
     assert.equal((await readFile(workLogFile, "utf8")).match(/data-usage-id=/g)?.length ?? 0, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("automatic ledger survives a projection failure and reprojects later", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-durable-"));
+  try {
+    const ledgerFile = path.join(root, "data", "work-log-usage.json");
+    const blockedWorkLog = path.join(root, "directory-instead-of-file");
+    await mkdir(blockedWorkLog);
+    const store = new WorkLogUsageStore({
+      ledgerFile,
+      defaultProjectRoot: root,
+    });
+    const result = await store.recordAutomaticAndProject({
+      threadId: "thread-durable",
+      turnId: "turn-durable",
+      projectRoot: root,
+      usageReported: true,
+      usage: { inputTokens: 100 },
+      completedAt: "2026-07-27T00:00:00.000Z",
+      text: "Сохранено до проекции",
+      workLogFile: blockedWorkLog,
+    });
+    assert.equal(result.recorded, true);
+    assert.equal(result.projected, false);
+    assert.match(result.projectionError, /directory|EISDIR/i);
+    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.equal(Object.keys(ledger.turns).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("usage store recovers a damaged primary ledger from its backup", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-recovery-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    const seed = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    await seed.recordAutomaticAndProject({
+      threadId: "thread-recovery",
+      turnId: "turn-recovery",
+      projectRoot: root,
+      usageReported: true,
+      usage: { inputTokens: 100 },
+      completedAt: "2026-07-27T00:00:00.000Z",
+      text: "Восстановлено",
+      workLogFile,
+    });
+    await writeFile(ledgerFile, "{damaged", "utf8");
+    const recovered = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    await recovered.project(workLogFile, { projectRoot: root });
+    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.equal(Object.keys(ledger.turns).length, 1);
+    assert.equal(ledger.version, 3);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("one ledger projects only turns belonging to the requested project", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-projects-"));
+  try {
+    const firstRoot = path.join(root, "first");
+    const secondRoot = path.join(root, "second");
+    const firstLog = path.join(firstRoot, "WORK_LOG.md");
+    const secondLog = path.join(secondRoot, "WORK_LOG.md");
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    await mkdir(firstRoot);
+    await mkdir(secondRoot);
+    const store = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: firstRoot });
+    await store.recordAutomaticAndProject({
+      threadId: "thread-first",
+      turnId: "turn-first",
+      projectRoot: firstRoot,
+      usageReported: true,
+      usage: { inputTokens: 100 },
+      completedAt: "2026-07-27T00:00:00.000Z",
+      taskTitle: "Первая задача",
+      text: "Первый проект",
+      workLogFile: firstLog,
+    });
+    await store.recordAutomaticAndProject({
+      threadId: "thread-second",
+      turnId: "turn-second",
+      projectRoot: secondRoot,
+      usageReported: true,
+      usage: { inputTokens: 200 },
+      completedAt: "2026-07-27T00:01:00.000Z",
+      taskTitle: "Вторая задача",
+      text: "Второй проект",
+      workLogFile: secondLog,
+    });
+    const first = await readFile(firstLog, "utf8");
+    const second = await readFile(secondLog, "utf8");
+    assert.match(first, /Первый проект/);
+    assert.doesNotMatch(first, /Второй проект/);
+    assert.match(second, /Второй проект/);
+    assert.doesNotMatch(second, /Первый проект/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

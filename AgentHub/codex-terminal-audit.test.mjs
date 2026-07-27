@@ -233,3 +233,20 @@ test("terminal audit advances through an active rollout and reads its later term
   assert.deepEqual(recovered, ["turn-active"]);
   assert.equal(audit.snapshot().positions[0][1].offset, 120);
 });
+
+test("terminal audit bounds persisted per-thread positions", () => {
+  const audit = new CodexTerminalAudit({
+    listPage: async () => ({ data: [], nextCursor: null }),
+    resolveProject: () => project,
+    reconcile: async () => true,
+    maxPositions: 100,
+  });
+  audit.restore({
+    positions: Array.from({ length: 120 }, (_, index) => [
+      `thread-${index}`,
+      { path: `thread-${index}.jsonl`, offset: index },
+    ]),
+  });
+  assert.equal(audit.snapshot().positions.length, 100);
+  assert.equal(audit.snapshot().positions[0][0], "thread-20");
+});

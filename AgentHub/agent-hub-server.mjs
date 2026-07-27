@@ -187,6 +187,7 @@ import { WorkLogUsageStore } from "./work-log-usage.mjs";
 const config = await loadConfig();
 const workLogUsageStore = new WorkLogUsageStore({
   ledgerFile: path.join(config.dataDir, "work-log-usage.json"),
+  defaultProjectRoot: config.projectRoot,
 });
 const defaultDataDirectory = path.join(AGENT_HUB_ROOT, "data");
 const logDirectory = samePath(config.dataDir, defaultDataDirectory)
@@ -363,6 +364,7 @@ const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
 const codexTurnStarts = new Map();
+let codexHookReceipts = { start: null, stop: null };
 const codexTerminalAudit = new CodexTerminalAudit({
   listPage: (cursor, limit) => sendRpc("thread/list", {
     cursor,
@@ -1084,6 +1086,7 @@ async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } =
     startedAt: completion.startedAt,
     completedAt: completion.completedAt,
     status: completion.status,
+    projectRoot: project.path,
     workLogFile: path.join(project.path, "WORK_LOG.md"),
   };
   if (!workLogId) {
@@ -1216,12 +1219,15 @@ async function deliverTurnEndNotification(completion) {
     const notificationBody = message?.text || fallbackTurnEndMessage(completion.status);
     const notificationTitle = message?.title || conciseTurnTitle(notificationBody, completion.status);
     const notificationText = structuredTurnText(notificationTitle, notificationBody);
-    await projectTurnUsageToWorkLog(completion, {
+    const journal = await projectTurnUsageToWorkLog(completion, {
       title: notificationTitle,
       body: notificationBody,
-    }).catch((error) => {
-      console.error(`Cannot update WORK_LOG usage for turn ${completion.turnId}:`, error.message);
     });
+    if (journal?.projectionError) {
+      console.error(
+        `WORK_LOG projection deferred for turn ${completion.turnId}: ${journal.projectionError}`,
+      );
+    }
     const category = message?.category
       ?? (completion.status === "completed" ? "done" : "warning");
     const text = [
@@ -1510,9 +1516,20 @@ try {
       codexTurnStarts.set(entry[0], entry[1]);
     }
   }
+  if (saved.codexHookReceipts && typeof saved.codexHookReceipts === "object") {
+    codexHookReceipts = {
+      start: saved.codexHookReceipts.start ?? null,
+      stop: saved.codexHookReceipts.stop ?? null,
+    };
+  }
   codexTerminalAudit.restore(saved.codexTerminalAudit);
   restoredTurnEndSnapshot = saved.turnEndNotifications ?? {};
-  turnEndNotifications.restore(restoredTurnEndSnapshot);
+  const restoredNotificationStats = turnEndNotifications.restore(restoredTurnEndSnapshot);
+  if (restoredNotificationStats.droppedLegacyPending || restoredNotificationStats.droppedStalePending) {
+    console.warn(
+      `Discarded deferred turn-end messages: legacy=${restoredNotificationStats.droppedLegacyPending}, stale=${restoredNotificationStats.droppedStalePending}`,
+    );
+  }
   if (Array.isArray(saved.dismissedExternalTasks)) {
     dismissedExternalTasks.restore(saved.dismissedExternalTasks);
   }
@@ -1638,7 +1655,9 @@ await workLogUsageStore.mergeTurnTexts(restoredTurnMessages).catch((error) => {
   console.error("Cannot restore WORK_LOG turn texts:", error.message);
 });
 for (const project of config.projects) {
-  await workLogUsageStore.project(path.join(project.path, "WORK_LOG.md")).catch((error) => {
+  await workLogUsageStore.project(path.join(project.path, "WORK_LOG.md"), {
+    projectRoot: project.path,
+  }).catch((error) => {
     console.error(`Cannot refresh WORK_LOG usage for ${project.path}:`, error.message);
   });
 }
@@ -3749,18 +3768,28 @@ async function handleRuntimeCommand(request) {
     const startedAt = String(payload.startedAt ?? new Date().toISOString());
     const prompt = String(payload.prompt ?? "").trim().slice(0, 100_000);
     const key = turnEndKey({ provider: "codex", threadId: identity.threadId, turnId });
+    const existing = codexTurnStarts.get(key);
     const record = {
       provider: "codex",
       threadId: identity.threadId,
       turnId,
       projectRoot: project.path,
-      startedAt,
-      prompt,
+      startedAt: existing?.startedAt || startedAt,
+      prompt: prompt || existing?.prompt || "",
       gitBaseline: payload.gitBaseline && typeof payload.gitBaseline === "object"
         ? payload.gitBaseline
-        : null,
+        : existing?.gitBaseline ?? null,
     };
     setBoundedMapValue(codexTurnStarts, key, record, 500);
+    codexHookReceipts.start = {
+      receivedAt: new Date().toISOString(),
+      threadId: identity.threadId,
+      turnId,
+      projectRoot: project.path,
+      source: String(payload.source ?? "turn-start"),
+      hasPrompt: Boolean(record.prompt),
+      hasGitBaseline: Boolean(record.gitBaseline),
+    };
     const run = taskRuns.forEvent({
       provider: "codex",
       threadId: identity.threadId,
@@ -3769,8 +3798,8 @@ async function handleRuntimeCommand(request) {
     });
     if (run) {
       run.turnId ||= turnId;
-      run.startedAt = startedAt || run.startedAt;
-      run.promptPreview = prompt || run.promptPreview;
+      run.startedAt = record.startedAt || run.startedAt;
+      run.promptPreview = record.prompt || run.promptPreview;
       run.gitBaseline = record.gitBaseline ?? run.gitBaseline;
       taskRuns.reindex(run);
     }
@@ -3793,6 +3822,15 @@ async function handleRuntimeCommand(request) {
     });
     const project = findProject(requestedProjectRoot);
     if (!project) throw new Error("Cannot match the completed turn to a configured project");
+    codexHookReceipts.stop = {
+      receivedAt: new Date().toISOString(),
+      threadId: identity.threadId,
+      turnId: String(payload.turnId ?? ""),
+      projectRoot: project.path,
+      source: String(payload.source ?? "turn-complete"),
+      status: String(payload.status ?? "unknown"),
+      usageReported: payload.usageReported === true,
+    };
     const run = taskRuns.forEvent({
       provider: "codex",
       threadId: identity.threadId,
@@ -3845,21 +3883,19 @@ async function handleRuntimeCommand(request) {
       prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
       changedFiles,
     });
-    if (!completion && alreadyDelivered && payload.usageReported === true) {
+    if (!completion && alreadyDelivered) {
       await projectTurnUsageToWorkLog({
         ...deliveredIdentity,
         projectRoot: project.path,
         taskTitle,
         status: payload.status,
         usage: normalizeTokenUsage(payload.usage),
-        usageReported: true,
+        usageReported: payload.usageReported === true,
         startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
         completedAt: payload.completedAt,
         prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
         changedFiles,
         message: null,
-      }).catch((error) => {
-        console.error(`Cannot update late WORK_LOG usage for turn ${payload.turnId}:`, error.message);
       });
     }
     codexTurnStarts.delete(turnEndKey(deliveredIdentity));
@@ -4644,9 +4680,8 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
     turnId: String(terminal.turnId),
   };
   const key = turnEndKey(identity);
-  if (turnEndNotifications.hasDelivered(identity)
-    || turnEndNotifications.get(identity)
-    || reconcilingCodexTerminalTurns.has(key)) return true;
+  const alreadyDelivered = turnEndNotifications.hasDelivered(identity);
+  if (turnEndNotifications.get(identity) || reconcilingCodexTerminalTurns.has(key)) return true;
   reconcilingCodexTerminalTurns.add(key);
   try {
     const usageResult = await readCodexTurnUsage(thread.path, identity.turnId);
@@ -4657,6 +4692,29 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
       return [relative.replaceAll(path.sep, "/")];
     });
+    if (alreadyDelivered) {
+      const journal = await projectTurnUsageToWorkLog({
+        ...identity,
+        projectRoot: project.path,
+        taskTitle: runtimeCommandTaskTitle({ ...identity, thread }),
+        status: usageResult.status || terminal.status,
+        usage: usageResult.usage,
+        usageReported: usageResult.reported === true,
+        startedAt: usageResult.startedAt,
+        completedAt: usageResult.completedAt || terminal.completedAt,
+        prompt: usageResult.prompt,
+        changedFiles,
+        message: null,
+      });
+      if (journal?.projectionError) {
+        console.error(
+          `WORK_LOG correction deferred for turn ${identity.turnId}: ${journal.projectionError}`,
+        );
+      }
+      codexTurnStarts.delete(key);
+      console.log(`Reconciled delivered Codex terminal turn ${identity.turnId} (${usageResult.status || terminal.status})`);
+      return true;
+    }
     const completion = turnEndNotifications.recordCompletion({
       ...identity,
       projectRoot: project.path,
@@ -6113,6 +6171,7 @@ function saveState() {
     threadTokenTotals: [...threadTokenTotals.entries()].slice(-500),
     turnTokenUsage: [...turnTokenUsage.entries()].slice(-200),
     codexTurnStarts: [...codexTurnStarts.entries()].slice(-500),
+    codexHookReceipts,
     codexTerminalAudit: codexTerminalAudit.snapshot(),
     turnEndNotifications: turnEndNotifications.snapshot(),
     statusMediaFileIds: [...statusMediaFileIds.entries()].slice(-50),

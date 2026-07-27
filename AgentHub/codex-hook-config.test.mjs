@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
+  codexStopHookStatus,
   mergeCodexStopHookConfig,
   removeCodexStopHookConfig,
 } from "./codex-hook-config.mjs";
+import { runtimeLayout } from "./runtime-layout.mjs";
 
 const options = {
   nodeExecutable: "C:\\Program Files\\nodejs\\node.exe",
@@ -49,4 +54,31 @@ test("Codex hook config removal leaves unrelated handlers intact", () => {
   const removed = removeCodexStopHookConfig(installed);
   assert.deepEqual(removed.hooks.Stop, [{ hooks: [{ type: "command", command: "other.exe" }] }]);
   assert.equal(removed.hooks.UserPromptSubmit, undefined);
+});
+
+test("Codex hook status reports executable configuration and runtime receipts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-hook-status-"));
+  try {
+    const layout = runtimeLayout(root);
+    const hooksFile = path.join(root, "hooks.json");
+    await mkdir(layout.dataDir, { recursive: true });
+    await writeFile(layout.codexHookLauncherFile, "// launcher\n", "utf8");
+    await writeFile(hooksFile, `${JSON.stringify(mergeCodexStopHookConfig({}, {
+      nodeExecutable: process.execPath,
+      launcherFile: layout.codexHookLauncherFile,
+    }))}\n`, "utf8");
+    await writeFile(path.join(layout.dataDir, "state.json"), `${JSON.stringify({
+      codexHookReceipts: {
+        start: { turnId: "turn-1", receivedAt: "2026-07-27T00:00:00.000Z" },
+        stop: { turnId: "turn-1", receivedAt: "2026-07-27T00:01:00.000Z" },
+      },
+    })}\n`, "utf8");
+    const status = await codexStopHookStatus({ hooksFile, runtimeRoot: root });
+    assert.equal(status.configured, true);
+    assert.equal(status.launcherAvailable, true);
+    assert.equal(status.receipts.start.turnId, "turn-1");
+    assert.equal(status.receipts.stop.turnId, "turn-1");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

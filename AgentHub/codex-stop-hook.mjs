@@ -60,7 +60,7 @@ export async function handleCodexStopHook(value, {
     threadId: input.threadId,
     turnId: input.turnId,
     projectRoot: input.projectRoot,
-    status: usageResult?.status || "completed",
+    status: usageResult?.status || "unknown",
     startedAt: usageResult?.startedAt || null,
     completedAt: usageResult?.completedAt || new Date().toISOString(),
     prompt: usageResult?.prompt || null,

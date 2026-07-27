@@ -1,10 +1,12 @@
 import { access } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import path from "node:path";
 import { AGENT_HUB_ROOT, loadConfig, pathInsideOrSame } from "./config.mjs";
 import { resolveClaudeInvocation } from "./claude-invocation.mjs";
 import { resolveCodexExecutable } from "./codex-invocation.mjs";
 import { probeCodexAppServer, probeTelegramConnectivity } from "./doctor-probes.mjs";
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
+import { codexStopHookStatus } from "./codex-hook-config.mjs";
 
 let failed = false;
 let config = null;
@@ -52,25 +54,71 @@ try {
   check("configuration", false, error.message);
 }
 
-function runCommand(command, args, { timeoutMs = 10_000 } = {}) {
+function decodeBuffer(value, encoding) {
+  if (!Buffer.isBuffer(value)) return value;
+  try {
+    return new TextDecoder(encoding).decode(value);
+  } catch {
+    return value.toString("utf8");
+  }
+}
+
+function warn(label, detail = "") {
+  console.log(`WARN  ${label}${detail ? `: ${detail}` : ""}`);
+}
+
+function runCommand(command, args, { timeoutMs = 10_000, outputEncoding = "utf8" } = {}) {
+  const encoding = outputEncoding === "utf8" ? "utf8" : null;
   if (process.platform === "win32" && (
     command === "codex" || command === "claude" || /\.(cmd|bat)$/i.test(command)
   )) {
-    return spawnSync("cmd.exe", ["/d", "/s", "/c", command, ...args], {
-      encoding: "utf8", windowsHide: true, timeout: timeoutMs, input: "",
+    const result = spawnSync("cmd.exe", ["/d", "/s", "/c", command, ...args], {
+      encoding, windowsHide: true, timeout: timeoutMs, input: "",
     });
+    return {
+      ...result,
+      stdout: decodeBuffer(result.stdout, outputEncoding),
+      stderr: decodeBuffer(result.stderr, outputEncoding),
+    };
   }
-  return spawnSync(command, args, { encoding: "utf8", windowsHide: true, timeout: timeoutMs, input: "" });
+  const result = spawnSync(command, args, {
+    encoding, windowsHide: true, timeout: timeoutMs, input: "",
+  });
+  return {
+    ...result,
+    stdout: decodeBuffer(result.stdout, outputEncoding),
+    stderr: decodeBuffer(result.stderr, outputEncoding),
+  };
 }
 
 if (config && process.platform === "win32") {
-  const acl = runCommand("icacls.exe", [config.configPath]);
+  const acl = runCommand("icacls.exe", [config.configPath], { outputEncoding: "ibm866" });
   const aclText = String(acl.stdout || acl.stderr || acl.error?.message || "").trim();
   check(
     "runtime config ACL excludes CodexSandboxUsers",
     acl.status === 0 && !/CodexSandboxUsers/i.test(aclText),
     aclText,
   );
+}
+
+if (config) {
+  try {
+    const hooks = await codexStopHookStatus({
+      runtimeRoot: path.dirname(config.configPath),
+    });
+    check(
+      "Codex UserPromptSubmit/Stop hooks configured",
+      hooks.configured,
+      JSON.stringify(hooks.events),
+    );
+    if (hooks.receipts.start || hooks.receipts.stop) {
+      check("Codex hook receipts", true, JSON.stringify(hooks.receipts));
+    } else {
+      warn("Codex hook receipts", "no invocation has been observed by this runtime yet");
+    }
+  } catch (error) {
+    check("Codex hook receipts", false, error.message);
+  }
 }
 
 const claudeInvocation = resolveClaudeInvocation({

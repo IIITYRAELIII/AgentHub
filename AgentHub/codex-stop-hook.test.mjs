@@ -60,6 +60,7 @@ test("Codex Stop hook keeps completion delivery even when usage parsing fails", 
     },
   });
   assert.equal(received.usageReported, false);
+  assert.equal(received.status, "unknown");
   assert.match(received.usageError, /rollout changed/);
 });
 

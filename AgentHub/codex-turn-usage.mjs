@@ -1,5 +1,6 @@
 import { createReadStream } from "node:fs";
 import { open } from "node:fs/promises";
+import path from "node:path";
 import { createInterface } from "node:readline";
 
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "./token-usage.mjs";
@@ -61,6 +62,21 @@ function lifecycleTerminalStatus(value) {
   return "";
 }
 
+function patchInputFiles(value, workspaceRoot = "") {
+  const files = [];
+  const text = String(value ?? "");
+  for (const match of text.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gmu)) {
+    const candidate = String(match[1] ?? "").trim();
+    if (!candidate) continue;
+    files.push(path.isAbsolute(candidate)
+      ? path.resolve(candidate)
+      : workspaceRoot
+        ? path.resolve(workspaceRoot, candidate)
+        : candidate);
+  }
+  return files;
+}
+
 function createTurnAccumulator(turnId) {
   const requestedTurnId = String(turnId ?? "").trim();
   if (!requestedTurnId) throw new Error("Codex turn id is required");
@@ -77,11 +93,15 @@ function createTurnAccumulator(turnId) {
   let completedAt = "";
   let prompt = "";
   let status = "";
+  let workspaceRoot = "";
   let index = -1;
   const changedFiles = new Set();
 
   const accept = (entry) => {
     index += 1;
+    if (entry?.type === "session_meta") {
+      workspaceRoot ||= String(entry.payload?.cwd ?? "").trim();
+    }
     const lifecycle = entry?.type === "event_msg" ? String(entry.payload?.type ?? "") : "";
     const lifecycleTurnId = lifecycle ? String(entry.payload?.turn_id ?? "").trim() : "";
     if (lifecycle === "task_started" && lifecycleTurnId) {
@@ -115,6 +135,12 @@ function createTurnAccumulator(turnId) {
       && entry.payload?.role === "user") {
       const candidate = displayUserPrompt(messageText(entry.payload));
       if (candidate) prompt = candidate;
+    }
+    if (entry?.type === "response_item"
+      && exactTurnId === requestedTurnId
+      && entry.payload?.type === "custom_tool_call"
+      && entry.payload?.name === "apply_patch") {
+      for (const file of patchInputFiles(entry.payload.input, workspaceRoot)) changedFiles.add(file);
     }
     if (isFinalAssistantItem(entry, requestedTurnId)) finalAnswerIndex = index;
 
