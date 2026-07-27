@@ -32,6 +32,7 @@ const TOP_LEVEL_FILES = new Set([
   "start.ps1",
   "transcribe.py",
   "tts_worker.py",
+  "work-log.css",
 ]);
 
 async function exists(target) {
