@@ -4793,11 +4793,16 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
     }
     if (alreadyDelivered) {
       const registeredMessage = turnEndNotifications.takePendingMessage(identity);
-      const correctedBody = registeredMessage?.text
-        || usageResult.finalAnswer
-        || fallbackTurnEndMessage(resolvedStatus);
-      const correctedTitle = registeredMessage?.title
-        || conciseTurnTitle(correctedBody, resolvedStatus);
+      const journalTurn = await workLogUsageStore.getTurn(identity);
+      const correctText = Boolean(registeredMessage || !journalTurn || journalTurn.provisional);
+      const correctedBody = correctText
+        ? registeredMessage?.text
+          || usageResult.finalAnswer
+          || fallbackTurnEndMessage(resolvedStatus)
+        : "";
+      const correctedTitle = correctText
+        ? registeredMessage?.title || conciseTurnTitle(correctedBody, resolvedStatus)
+        : "";
       const journal = await projectTurnUsageToWorkLog({
         ...identity,
         projectRoot: project.path,

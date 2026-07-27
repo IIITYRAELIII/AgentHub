@@ -1090,6 +1090,16 @@ export class WorkLogUsageStore {
     return operation;
   }
 
+  getTurn({ provider = "codex", threadId, turnId }) {
+    const operation = this.#tail.catch(() => {}).then(async () => {
+      await this.#load();
+      const record = this.#ledger.turns[workLogTurnKey({ provider, threadId, turnId })];
+      return record ? structuredClone(record) : null;
+    });
+    this.#tail = operation;
+    return operation;
+  }
+
   project(workLogFile, { projectRoot = this.#defaultProjectRoot } = {}) {
     const operation = this.#tail.catch(() => {}).then(async () => {
       await this.#load();

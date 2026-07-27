@@ -707,6 +707,11 @@ test("legacy synthetic interruptions are provisional and retract from the projec
     }, null, 2)}\n`, "utf8");
     await writeFile(workLogFile, "# Глобальный журнал работ\n", "utf8");
     const store = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    assert.equal((await store.getTurn({
+      provider: "codex",
+      threadId: "thread-live",
+      turnId: "turn-live",
+    })).provisional, true);
 
     const result = await store.retractProvisionalAndProject({
       provider: "codex",
