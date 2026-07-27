@@ -151,6 +151,7 @@ import {
   mergeTaskCatalog,
   pinnedTaskTitle as readPinnedTaskTitle,
   pinTaskTitle as writePinnedTaskTitle,
+  preferredCodexTaskTitle,
   reconcilePinnedTaskTitle,
   readCodexRolloutActivity,
   runningTaskReplyMarkup,
@@ -2001,15 +2002,16 @@ async function buildTaskCatalog() {
         });
         const titleHistory = titleHistories.get(thread.id)
           ?? { currentTitle: "", recoverableTitle: "" };
-        if (titleHistory.recoverableTitle
-          && (entry.title === titleHistory.currentTitle || entry.title === "Без названия")) {
-          entry.title = titleHistory.recoverableTitle.slice(0, 80);
+        const appServerTitle = codexThreadResponseTitle(thread);
+        const discoveredTitle = preferredCodexTaskTitle(appServerTitle, titleHistory);
+        if (discoveredTitle && appServerTitle !== discoveredTitle) {
+          await sendRpc("thread/name/set", { threadId: entry.threadId, name: discoveredTitle });
         }
         const resolvedTitle = reconcilePinnedTaskTitle(
           pinnedTaskTitles,
           entry.provider,
           entry.threadId,
-          codexThreadResponseTitle(thread),
+          discoveredTitle,
         );
         pinnedTitlesChanged = resolvedTitle.changed || pinnedTitlesChanged;
         entry.title = resolvedTitle.title || entry.title;

@@ -83,6 +83,15 @@ export function reconcilePinnedTaskTitle(titles, provider, threadId, discoveredT
   return { title: discovered, changed: true };
 }
 
+export function preferredCodexTaskTitle(threadTitle, titleHistory = {}) {
+  return String(
+    titleHistory.recoverableTitle
+      || titleHistory.currentTitle
+      || threadTitle
+      || "",
+  ).replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
 function applyCodexLifecycleEntry(activeTurnIds, entry) {
   if (entry?.type !== "event_msg") return;
   const event = entry.payload?.type;

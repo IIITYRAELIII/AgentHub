@@ -15,6 +15,7 @@ import {
   mergeTaskCatalog,
   pinnedTaskTitle,
   pinTaskTitle,
+  preferredCodexTaskTitle,
   reconcilePinnedTaskTitle,
   codexRolloutTurnState,
   parseTaskCatalogCallback,
@@ -54,6 +55,23 @@ test("a title discovered from Codex replaces a stale pinned title", () => {
   assert.deepEqual(
     reconcilePinnedTaskTitle(titles, "codex", "thread-a", "Agent HUB"),
     { title: "Agent HUB", changed: false },
+  );
+});
+
+test("the latest Codex index title wins over stale App Server metadata", () => {
+  assert.equal(
+    preferredCodexTaskTitle("Integration", {
+      currentTitle: "Agent HUB",
+      recoverableTitle: "",
+    }),
+    "Agent HUB",
+  );
+  assert.equal(
+    preferredCodexTaskTitle("Telegram · 27.07.2026, 12:00", {
+      currentTitle: "Telegram · 27.07.2026, 12:00",
+      recoverableTitle: "Agent HUB",
+    }),
+    "Agent HUB",
   );
 });
 
