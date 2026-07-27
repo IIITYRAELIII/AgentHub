@@ -166,3 +166,15 @@ test("a delivered turn can consume a late exact message for journal correction",
   });
   assert.equal(registry.snapshot().pending.length, 0);
 });
+
+test("a provisional delivered turn can be retracted before its real terminal", () => {
+  const registry = new TurnEndNotificationRegistry();
+  const value = completion({ provisional: true });
+  registry.recordCompletion(value);
+  registry.markDelivered(value);
+  registry.retract(value);
+
+  assert.equal(registry.hasDelivered(value), false);
+  assert.equal(registry.get(value), null);
+  assert.notEqual(registry.recordCompletion(completion()), null);
+});

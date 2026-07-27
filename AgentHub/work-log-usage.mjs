@@ -48,6 +48,7 @@ function sameProjectRoot(left, right) {
 }
 
 function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
+  const legacyLedger = Number(value?.version ?? 0) < 5;
   const turns = {};
   const invalidRecords = [];
   for (const [key, record] of Object.entries(value?.turns ?? {})) {
@@ -72,6 +73,12 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         taskThreadId,
         parentThreadId: String(record?.parentThreadId ?? "").trim(),
         aggregateOnly: record?.aggregateOnly === true,
+        provisional: record?.provisional === true || (
+          legacyLedger
+          && String(record?.status ?? "") === "aborted"
+          && String(record?.title ?? "") === "Ход остановлен пользователем"
+          && String(record?.body ?? record?.text ?? "") === "Ход остановлен пользователем."
+        ),
         turnId,
         taskTitle: String(record?.taskTitle ?? "").trim(),
         title: String(record?.title ?? "").trim(),
@@ -92,7 +99,7 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       });
     }
   }
-  return { ledger: { version: 4, turns }, invalidRecords };
+  return { ledger: { version: 5, turns }, invalidRecords };
 }
 
 export function formatWorkLogUsage(usage) {
@@ -914,6 +921,7 @@ function incomingLedgerRecord({
   taskThreadId,
   parentThreadId,
   aggregateOnly,
+  provisional,
   title,
   body,
   text,
@@ -933,6 +941,7 @@ function incomingLedgerRecord({
     taskThreadId: String(taskThreadId ?? threadId).trim(),
     parentThreadId: String(parentThreadId ?? "").trim(),
     aggregateOnly: aggregateOnly === true,
+    provisional: provisional === true,
     turnId: String(turnId).trim(),
     taskTitle: String(taskTitle ?? "").trim(),
     title: String(title ?? "").trim(),
@@ -976,6 +985,7 @@ function mergeLedgerRecord(existing, incoming) {
     }
   }
   if (incoming.aggregateOnly) existing.aggregateOnly = true;
+  existing.provisional = incoming.provisional === true;
   if (incoming.status && (incoming.status !== "unknown" || !existing.status || existing.status === "unknown")) {
     existing.status = incoming.status;
   }
@@ -1116,6 +1126,7 @@ export class WorkLogUsageStore {
     taskThreadId,
     parentThreadId,
     aggregateOnly,
+    provisional,
     taskTitle,
     title,
     body,
@@ -1151,6 +1162,7 @@ export class WorkLogUsageStore {
         taskThreadId,
         parentThreadId,
         aggregateOnly,
+        provisional,
         taskTitle,
         title,
         body,
@@ -1203,6 +1215,7 @@ export class WorkLogUsageStore {
     taskThreadId,
     parentThreadId,
     aggregateOnly,
+    provisional,
     taskTitle,
     title,
     body,
@@ -1229,6 +1242,7 @@ export class WorkLogUsageStore {
         taskThreadId,
         parentThreadId,
         aggregateOnly,
+        provisional,
         taskTitle,
         title,
         body,
@@ -1285,6 +1299,43 @@ export class WorkLogUsageStore {
           usage: this.#ledger.turns[key].usage,
           workLogId: null,
           target: "thread-day-row",
+          projected: false,
+          projectionError: String(error?.message ?? error),
+        };
+      }
+    });
+    this.#tail = operation;
+    return operation;
+  }
+
+  retractProvisionalAndProject({
+    provider = "codex",
+    threadId,
+    turnId,
+    projectRoot = this.#defaultProjectRoot,
+    workLogFile,
+  }) {
+    const operation = this.#tail.catch(() => {}).then(async () => {
+      await this.#load();
+      const key = workLogTurnKey({ provider, threadId, turnId });
+      const existing = this.#ledger.turns[key];
+      if (!existing?.provisional) return { retracted: false, projected: false };
+      delete this.#ledger.turns[key];
+      await this.#save();
+      const logPath = path.resolve(workLogFile);
+      try {
+        const current = await readFile(logPath, "utf8");
+        const selectedTurns = Object.fromEntries(
+          Object.entries(this.#ledger.turns).filter(([, record]) => (
+            sameProjectRoot(record.projectRoot, projectRoot)
+          )),
+        );
+        const updated = projectWorkLogUsage(current, selectedTurns);
+        await writeTextAtomic(logPath, updated);
+        return { retracted: true, projected: true };
+      } catch (error) {
+        return {
+          retracted: true,
           projected: false,
           projectionError: String(error?.message ?? error),
         };

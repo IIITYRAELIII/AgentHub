@@ -87,7 +87,7 @@ test("terminal audit resumes byte positions after a long server outage", async (
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 3,
+    version: 4,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "rollout.jsonl", offset: 100 }]],
   });
@@ -142,7 +142,7 @@ test("terminal audit follows every thread-list page newer than its cursor", asyn
     reconcile: async (_thread, _project, terminal) => reconciled.push(terminal.turnId),
   });
   audit.restore({
-    version: 3,
+    version: 4,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [],
   });
@@ -181,7 +181,7 @@ test("terminal audit does not advance its cursor past a deferred terminal", asyn
     reconcile: async () => false,
   });
   audit.restore({
-    version: 3,
+    version: 4,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "thread-1.jsonl", offset: 10 }]],
   });
@@ -222,7 +222,7 @@ test("terminal audit advances through an active rollout and reads its later term
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 3,
+    version: 4,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-active", { path: "active.jsonl", offset: 50 }]],
   });
@@ -299,6 +299,7 @@ test("terminal audit does not trust interrupted status while the exact rollout t
   let nowMs = Date.parse("2026-07-27T04:00:00.000Z");
   let active = true;
   const recovered = [];
+  const retracted = [];
   const audit = new CodexTerminalAudit({
     now: () => nowMs,
     statusIdleMs: 5_000,
@@ -313,6 +314,7 @@ test("terminal audit does not trust interrupted status while the exact rollout t
       },
     }),
     isTurnActive: async (_thread, turnId) => active && turnId === "turn-compacting",
+    onTurnActive: async (_thread, _project, turnId) => retracted.push(turnId),
     resolveProject: () => project,
     statFile: async () => ({ size: 100, mtimeMs: nowMs }),
     scanFile: async () => ({
@@ -334,6 +336,7 @@ test("terminal audit does not trust interrupted status while the exact rollout t
   nowMs += 6_000;
   await audit.run();
   assert.deepEqual(recovered, []);
+  assert.deepEqual(retracted, ["turn-compacting"]);
   assert.equal(audit.snapshot().pendingTurns.length, 1);
 
   active = false;
@@ -366,7 +369,7 @@ test("terminal audit bounds persisted per-thread positions", () => {
     maxPositions: 100,
   });
   audit.restore({
-    version: 3,
+    version: 4,
     positions: Array.from({ length: 120 }, (_, index) => [
       `thread-${index}`,
       { path: `thread-${index}.jsonl`, offset: index },

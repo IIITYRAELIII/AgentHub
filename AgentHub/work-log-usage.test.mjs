@@ -683,6 +683,49 @@ test("a late unknown Stop result cannot overwrite an exact terminal status", asy
   }
 });
 
+test("legacy synthetic interruptions are provisional and retract from the projected journal", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-provisional-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    await writeFile(ledgerFile, `${JSON.stringify({
+      version: 4,
+      turns: {
+        "codex\u0000thread-live\u0000turn-live": {
+          provider: "codex",
+          threadId: "thread-live",
+          turnId: "turn-live",
+          projectRoot: root,
+          taskTitle: "Живая задача",
+          title: "Ход остановлен пользователем",
+          body: "Ход остановлен пользователем.",
+          status: "aborted",
+          completedAt: "2026-07-27T04:00:00.000Z",
+          usageReported: false,
+        },
+      },
+    }, null, 2)}\n`, "utf8");
+    await writeFile(workLogFile, "# Глобальный журнал работ\n", "utf8");
+    const store = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+
+    const result = await store.retractProvisionalAndProject({
+      provider: "codex",
+      threadId: "thread-live",
+      turnId: "turn-live",
+      projectRoot: root,
+      workLogFile,
+    });
+
+    assert.equal(result.retracted, true);
+    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.equal(ledger.version, 5);
+    assert.deepEqual(ledger.turns, {});
+    assert.doesNotMatch(await readFile(workLogFile, "utf8"), /Живая задача/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("usage store recovers a damaged primary ledger from its backup", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-recovery-"));
   try {
@@ -704,7 +747,7 @@ test("usage store recovers a damaged primary ledger from its backup", async () =
     await recovered.project(workLogFile, { projectRoot: root });
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.keys(ledger.turns).length, 1);
-    assert.equal(ledger.version, 4);
+    assert.equal(ledger.version, 5);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

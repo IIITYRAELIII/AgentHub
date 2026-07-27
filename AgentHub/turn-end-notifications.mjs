@@ -64,6 +64,7 @@ function normalizedCompletion(value) {
     status: String(value.status ?? "completed").trim() || "completed",
     usage: normalizeTokenUsage(value.usage),
     usageReported: value.usageReported === true,
+    provisional: value.provisional === true,
     deliveryGroupId: String(value.deliveryGroupId ?? "").trim() || null,
     deliverySequence: Number.isSafeInteger(value.deliverySequence) ? value.deliverySequence : null,
     startedAt: String(value.startedAt ?? ""),
@@ -178,6 +179,7 @@ export class TurnEndNotificationRegistry {
     completion.projectRoot = incoming.projectRoot || completion.projectRoot;
     completion.chatId = Number.isSafeInteger(incoming.chatId) ? incoming.chatId : completion.chatId;
     completion.status = incoming.status || completion.status;
+    completion.provisional = incoming.provisional === true;
     completion.completedAt = completion.completedAt || incoming.completedAt;
     completion.startedAt = completion.startedAt || incoming.startedAt;
     completion.prompt = incoming.prompt || completion.prompt;
@@ -201,6 +203,12 @@ export class TurnEndNotificationRegistry {
 
   takePendingMessage(value) {
     return this.#takeMessage(value);
+  }
+
+  retract(value) {
+    const key = typeof value === "string" ? value : turnEndKey(value);
+    this.#completions.delete(key);
+    this.#delivered.delete(key);
   }
 
   values() {

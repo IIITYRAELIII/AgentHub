@@ -385,6 +385,22 @@ const codexTerminalAudit = new CodexTerminalAudit({
     const activity = await readCodexRolloutActivity(thread?.path);
     return activity.activeTurnIds.includes(String(turnId));
   },
+  onTurnActive: async (thread, project, turnId) => {
+    const identity = {
+      provider: "codex",
+      threadId: String(thread?.id ?? ""),
+      turnId: String(turnId),
+    };
+    const result = await workLogUsageStore.retractProvisionalAndProject({
+      ...identity,
+      projectRoot: project.path,
+      workLogFile: path.join(project.path, "WORK_LOG.md"),
+    });
+    if (!result.retracted) return;
+    turnEndNotifications.retract(identity);
+    await saveState();
+    console.log(`Retracted premature Codex terminal turn ${identity.turnId}`);
+  },
   resolveProject: (thread) => findProject(thread.cwd),
   reconcile: reconcileRecentCodexTerminalTurn,
 });
@@ -1093,6 +1109,7 @@ async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } =
     taskThreadId: completion.taskThreadId,
     parentThreadId: completion.parentThreadId,
     aggregateOnly: completion.aggregateOnly,
+    provisional: completion.provisional,
     taskTitle: completion.taskTitle,
     title: title || (body ? conciseTurnTitle(body, completion.status) : ""),
     body,
@@ -4734,6 +4751,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
     const resolvedCompletedAt = usageResult.terminal
       ? (usageResult.completedAt || terminal.completedAt)
       : terminal.completedAt;
+    const provisional = authoritativeStatus && !usageResult.terminal;
     const changedFiles = (usageResult.changedFiles ?? []).flatMap((file) => {
       const absolute = path.resolve(String(file));
       const relative = path.relative(project.path, absolute);
@@ -4753,6 +4771,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
           thread: accountingThread.thread,
         }),
         status: resolvedStatus,
+        provisional,
         usage: usageResult.usage,
         usageReported: usageResult.reported === true,
         startedAt: usageResult.startedAt,
@@ -4811,6 +4830,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       taskTitle: runtimeCommandTaskTitle({ ...identity, thread }),
       chatId: resolveNotificationChatId(config, null),
       status: resolvedStatus,
+      provisional,
       usage: usageResult.usage,
       usageReported: usageResult.reported === true,
       startedAt: usageResult.startedAt,
