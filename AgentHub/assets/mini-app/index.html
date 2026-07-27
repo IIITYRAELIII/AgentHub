@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>Agent Hub — журнал работ</title>
+  <link rel="stylesheet" href="/work-log.css">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">Agent Hub</p>
+      <h1>Журнал работ</h1>
+    </div>
+    <div class="connection" data-connection="connecting">
+      <span class="connection-dot" aria-hidden="true"></span>
+      <span data-connection-label>Подключение…</span>
+    </div>
+  </header>
+  <main>
+    <div class="journal-meta">
+      <span data-updated-at>Загрузка журнала…</span>
+      <button type="button" data-refresh>Обновить</button>
+    </div>
+    <section class="journal" data-journal aria-live="polite" aria-busy="true"></section>
+  </main>
+</body>
+</html>

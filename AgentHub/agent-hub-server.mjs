@@ -189,12 +189,19 @@ import { TaskObserverController } from "./task-observer-controller.mjs";
 import { DeferredInputController } from "./deferred-input-controller.mjs";
 import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "./task-recovery.mjs";
 import { WorkLogUsageStore } from "./work-log-usage.mjs";
+import { MiniAppServer } from "./mini-app-server.mjs";
 
 const config = await loadConfig();
 const workLogUsageStore = new WorkLogUsageStore({
   ledgerFile: path.join(config.dataDir, "work-log-usage.json"),
   defaultProjectRoot: config.projectRoot,
 });
+const miniAppServer = config.miniApp.enabled
+  ? new MiniAppServer({
+    ...config.miniApp,
+    workLogFile: path.join(config.projectRoot, "WORK_LOG.md"),
+  })
+  : null;
 const defaultDataDirectory = path.join(AGENT_HUB_ROOT, "data");
 const logDirectory = samePath(config.dataDir, defaultDataDirectory)
   ? AGENT_HUB_ROOT
@@ -5378,6 +5385,7 @@ async function performRestart() {
   stopRuntimeTimers();
   await stopCodexAppServerTree();
   mediaController.stop();
+  await miniAppServer?.close();
   await desktopControlServer?.close();
   await runtimeCommandServer.close();
   await instanceGuard.release();
@@ -5410,6 +5418,7 @@ async function performRestart() {
         startCommandServer: async () => {
           await runtimeCommandServer.start();
           await desktopControlServer?.start();
+          await miniAppServer?.start();
         },
         setStopping: (value) => { stopping = value; },
         restoreProvider: async () => {
@@ -6357,6 +6366,7 @@ async function shutdown(signal) {
     if (run.provider === "codex") run.process?.kill();
   }
   mediaController.stop();
+  await miniAppServer?.close();
   await desktopControlServer?.close();
   await runtimeCommandServer.close();
   await Promise.allSettled([
@@ -6397,6 +6407,14 @@ desktopControlServer = new DesktopControlServer({
     : undefined,
 });
 await desktopControlServer.start();
+if (miniAppServer) {
+  try {
+    const address = await miniAppServer.start();
+    console.log(`Mini App ready at ${address.url}`);
+  } catch (error) {
+    console.error("Cannot start Mini App:", error.message);
+  }
+}
 startRuntimeTimers();
 try {
   await telegram("setMyCommands", {

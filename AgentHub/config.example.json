@@ -11,6 +11,11 @@
   "showProjectButton": true,
   "showTaskProject": true,
   "guardConcurrentRepositoryWrites": false,
+  "miniApp": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8787
+  },
   "codexExecutable": "",
   "codexRpcTimeoutSeconds": 30,
   "codexModel": "gpt-5.6-sol",

@@ -8,6 +8,7 @@ import {
   canonicalizeProjectRoots,
   findContainingProject,
   httpBaseUrl,
+  miniAppSettings,
   pathInsideOrSame,
   repositoryWriteGuardEnabled,
   resolveConfigPath,
@@ -43,6 +44,21 @@ test("findContainingProject chooses the most specific allowed project", () => {
 
 test("samePath normalizes equivalent paths", () => {
   assert.equal(samePath("C:\\Workspace\\Project\\..\\Project", "C:\\Workspace\\Project"), true);
+});
+
+test("Mini App pilot is loopback-only and enabled by default", () => {
+  assert.deepEqual(miniAppSettings(), {
+    enabled: true,
+    host: "127.0.0.1",
+    port: 8787,
+  });
+  assert.deepEqual(miniAppSettings({ enabled: false, host: "localhost", port: 9000 }), {
+    enabled: false,
+    host: "localhost",
+    port: 9000,
+  });
+  assert.throws(() => miniAppSettings({ host: "0.0.0.0" }), /loopback/);
+  assert.throws(() => miniAppSettings({ port: 65_536 }), /at most 65535/);
 });
 
 test("filesystem aliases resolve to the configured canonical project path", async () => {

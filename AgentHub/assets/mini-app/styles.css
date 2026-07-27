@@ -1,0 +1,250 @@
+:root {
+  color-scheme: dark;
+  --app-accent: #67b7ff;
+  --app-bg: #0c1118;
+  --app-border: rgba(180, 198, 219, 0.18);
+  --app-card: rgba(23, 31, 42, 0.92);
+  --app-muted: #91a0b2;
+  --app-text: #e8eef7;
+  --vscode-focusBorder: #67b7ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--app-bg);
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(circle at 85% -10%, rgba(35, 118, 178, 0.22), transparent 42%),
+    linear-gradient(180deg, #111923 0, var(--app-bg) 28rem);
+  color: var(--app-text);
+  font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  margin: 0;
+  min-height: 100vh;
+  padding: max(1rem, env(safe-area-inset-top)) max(0.8rem, env(safe-area-inset-right))
+    max(1.5rem, env(safe-area-inset-bottom)) max(0.8rem, env(safe-area-inset-left));
+}
+
+a,
+[role="link"] {
+  color: var(--app-accent);
+  text-decoration: none;
+}
+
+[role="link"][aria-disabled="true"] {
+  cursor: default;
+}
+
+.app-header,
+main {
+  margin: 0 auto;
+  max-width: 92rem;
+}
+
+.app-header {
+  align-items: flex-end;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 0.35rem 0.2rem 1rem;
+}
+
+.eyebrow {
+  color: var(--app-accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  margin: 0 0 0.2rem;
+  text-transform: uppercase;
+}
+
+h1 {
+  font-size: clamp(1.55rem, 5vw, 2.35rem);
+  letter-spacing: -0.035em;
+  line-height: 1;
+  margin: 0;
+}
+
+.connection {
+  align-items: center;
+  color: var(--app-muted);
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  gap: 0.42rem;
+  padding-bottom: 0.15rem;
+}
+
+.connection-dot {
+  background: #f0b95b;
+  border-radius: 50%;
+  box-shadow: 0 0 0 0.22rem rgba(240, 185, 91, 0.12);
+  height: 0.45rem;
+  width: 0.45rem;
+}
+
+.connection[data-connection="online"] .connection-dot {
+  background: #55d68b;
+  box-shadow: 0 0 0 0.22rem rgba(85, 214, 139, 0.12);
+}
+
+.journal-meta {
+  align-items: center;
+  border-bottom: 1px solid var(--app-border);
+  color: var(--app-muted);
+  display: flex;
+  font-size: 0.78rem;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+  padding: 0 0.2rem 0.7rem;
+}
+
+button {
+  background: rgba(103, 183, 255, 0.1);
+  border: 1px solid rgba(103, 183, 255, 0.28);
+  border-radius: 999px;
+  color: var(--app-accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.28rem 0.7rem;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+.journal {
+  min-height: 40vh;
+}
+
+.journal[aria-busy="true"]::before {
+  color: var(--app-muted);
+  content: "Загружаю журнал…";
+  display: block;
+  padding: 2rem 0.2rem;
+}
+
+.journal details[data-work-log-day-section] {
+  backdrop-filter: blur(12px);
+  background: var(--app-card);
+  border-color: var(--app-border);
+  border-radius: 0.7rem;
+  box-shadow: 0 0.75rem 2.5rem rgba(0, 0, 0, 0.16);
+  margin: 0.55rem 0;
+}
+
+.journal details[data-work-log-day-section][open] {
+  background: rgba(24, 33, 45, 0.96);
+}
+
+.journal summary,
+.journal details {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.journal summary[data-work-log-day] {
+  overflow-x: auto;
+  padding-bottom: 0.08rem;
+  scrollbar-width: none;
+}
+
+.journal summary[data-work-log-day]::-webkit-scrollbar {
+  display: none;
+}
+
+.journal div[data-work-log-turn-table],
+.journal details[data-work-log-turn-details],
+.journal div[data-work-log-task-cell] > div[data-work-log-task-content],
+.journal summary[data-task-usage],
+.journal span[data-task-usage-breakdown] {
+  border-color: var(--app-border);
+}
+
+[data-mini-app-fallback] {
+  font: inherit;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+[data-mini-app-empty] {
+  color: var(--app-muted);
+  padding: 2rem 0;
+  text-align: center;
+}
+
+@media (max-width: 760px) {
+  body {
+    font-size: 14px;
+  }
+
+  .app-header {
+    align-items: flex-start;
+  }
+
+  .connection {
+    max-width: 8.5rem;
+    text-align: right;
+  }
+
+  .journal details[data-work-log-day-section] {
+    padding: 0.55rem;
+  }
+
+  .journal div[data-work-log-header] {
+    display: none;
+  }
+
+  .journal div[data-work-log-row] {
+    display: block;
+    padding: 0.45rem 0;
+  }
+
+  .journal div[data-work-log-task-cell],
+  .journal div[data-work-log-turn-list] {
+    padding: 0.2rem;
+  }
+
+  .journal div[data-work-log-table] {
+    --work-log-task-card-width: 100%;
+  }
+
+  .journal div[data-work-log-task-cell] > div[data-work-log-task-content],
+  .journal details[data-task-usage-details],
+  .journal summary[data-task-usage],
+  .journal span[data-task-usage-breakdown] {
+    width: 100%;
+  }
+
+  .journal details[data-work-log-turn-details] > summary,
+  .journal div[data-work-log-turn-expanded] {
+    grid-template-columns: 9.4rem minmax(0, 1fr);
+  }
+
+  .journal span[data-work-log-turn-meta] {
+    font-size: 0.82em;
+  }
+}
+
+@media (max-width: 430px) {
+  .journal details[data-work-log-turn-details] > summary,
+  .journal div[data-work-log-turn-expanded] {
+    grid-template-columns: 1fr;
+  }
+
+  .journal span[data-work-log-turn-title],
+  .journal div[data-work-log-turn-body-details] {
+    border-left: 0;
+    border-top: 1px solid var(--app-border);
+  }
+
+  .journal div[data-work-log-turn-meta-details] {
+    border-bottom: 1px solid var(--app-border);
+  }
+}

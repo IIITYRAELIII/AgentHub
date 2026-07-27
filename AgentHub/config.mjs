@@ -49,6 +49,24 @@ function stringArray(value, name) {
   return value.map((item) => item.trim()).filter(Boolean);
 }
 
+export function miniAppSettings(value) {
+  const raw = value ?? {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("miniApp must be an object");
+  }
+  const host = String(raw.host ?? "127.0.0.1").trim().toLowerCase();
+  if (!["127.0.0.1", "localhost", "::1"].includes(host)) {
+    throw new Error("miniApp.host must be a loopback address for the local pilot");
+  }
+  const port = positiveInteger(raw.port, 8787, "miniApp.port");
+  if (port > 65_535) throw new Error("miniApp.port must be at most 65535");
+  return {
+    enabled: raw.enabled !== false,
+    host,
+    port,
+  };
+}
+
 export function httpBaseUrl(value, name) {
   const normalized = String(value).trim().replace(/\/$/, "");
   let parsed;
@@ -310,6 +328,7 @@ export async function loadConfig() {
     showProjectButton: raw.showProjectButton !== false,
     showTaskProject: raw.showTaskProject !== false,
     guardConcurrentRepositoryWrites: repositoryWriteGuardEnabled(raw),
+    miniApp: miniAppSettings(raw.miniApp),
     provider,
     telegramApiBaseUrl: httpBaseUrl(
       process.env.TELEGRAM_API_BASE_URL ?? raw.telegramApiBaseUrl ?? "https://api.telegram.org",
