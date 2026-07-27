@@ -5,6 +5,16 @@ const connectionLabel = document.querySelector("[data-connection-label]");
 const refreshButton = document.querySelector("[data-refresh]");
 let currentVersion = "";
 let loading = null;
+const telegram = window.Telegram?.WebApp;
+const telegramInitData = String(telegram?.initData ?? "");
+const telegramMode = Boolean(telegramInitData);
+
+telegram?.ready();
+telegram?.expand();
+
+function requestHeaders() {
+  return telegramMode ? { Authorization: `tma ${telegramInitData}` } : {};
+}
 
 function setConnection(state, label) {
   connection.dataset.connection = state;
@@ -70,7 +80,10 @@ async function loadJournal({ force = false } = {}) {
   loading = (async () => {
     refreshButton.disabled = true;
     try {
-      const response = await fetch(`/api/journal?now=${Date.now()}`, { cache: "no-store" });
+      const response = await fetch(`/api/journal?now=${Date.now()}`, {
+        cache: "no-store",
+        headers: requestHeaders(),
+      });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
       if (force || payload.version !== currentVersion) {
@@ -98,13 +111,19 @@ async function loadJournal({ force = false } = {}) {
 
 refreshButton.addEventListener("click", () => void loadJournal({ force: true }));
 
-const events = new EventSource("/events");
-events.addEventListener("open", () => setConnection("online", "Автообновление"));
-events.addEventListener("ready", () => {
+if (telegramMode) {
   setConnection("online", "Автообновление");
-  void loadJournal();
-});
-events.addEventListener("journal", () => void loadJournal());
-events.addEventListener("error", () => setConnection("retrying", "Переподключение…"));
+  const polling = setInterval(() => void loadJournal(), 5_000);
+  window.addEventListener("pagehide", () => clearInterval(polling), { once: true });
+} else {
+  const events = new EventSource("/events");
+  events.addEventListener("open", () => setConnection("online", "Автообновление"));
+  events.addEventListener("ready", () => {
+    setConnection("online", "Автообновление");
+    void loadJournal();
+  });
+  events.addEventListener("journal", () => void loadJournal());
+  events.addEventListener("error", () => setConnection("retrying", "Переподключение…"));
+}
 
 void loadJournal({ force: true });

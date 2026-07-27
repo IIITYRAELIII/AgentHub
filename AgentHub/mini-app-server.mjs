@@ -1,5 +1,6 @@
 import { watch } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import path from "node:path";
 
@@ -16,12 +17,61 @@ const STATIC_FILES = new Map([
 ]);
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const CHANGE_DEBOUNCE_MS = 75;
+const TELEGRAM_AUTH_MAX_AGE_SECONDS = 86_400;
 
 function escapeHtmlText(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+export function validateTelegramInitData(initData, {
+  botToken,
+  allowedUserIds,
+  maxAgeSeconds = TELEGRAM_AUTH_MAX_AGE_SECONDS,
+  now = Date.now(),
+} = {}) {
+  const params = new URLSearchParams(String(initData ?? ""));
+  const receivedHash = params.get("hash") ?? "";
+  if (!/^[a-f0-9]{64}$/iu.test(receivedHash)) throw new Error("invalid hash");
+  params.delete("hash");
+  const dataCheckString = [...params.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+  const secret = createHmac("sha256", "WebAppData").update(String(botToken ?? "")).digest();
+  const expectedHash = createHmac("sha256", secret).update(dataCheckString).digest();
+  const suppliedHash = Buffer.from(receivedHash, "hex");
+  if (suppliedHash.length !== expectedHash.length || !timingSafeEqual(suppliedHash, expectedHash)) {
+    throw new Error("signature mismatch");
+  }
+  const authDate = Number(params.get("auth_date"));
+  const ageSeconds = Math.floor(now / 1_000) - authDate;
+  if (!Number.isSafeInteger(authDate) || ageSeconds < -30 || ageSeconds > maxAgeSeconds) {
+    throw new Error("expired auth date");
+  }
+  let user;
+  try {
+    user = JSON.parse(params.get("user") ?? "");
+  } catch {
+    throw new Error("invalid user");
+  }
+  const userId = Number(user?.id);
+  if (!Number.isSafeInteger(userId) || !allowedUserIds?.has(userId)) {
+    throw new Error("user is not allowed");
+  }
+  return { ...user, id: userId };
+}
+
+function loopbackHost(hostHeader) {
+  const value = String(hostHeader ?? "").trim();
+  if (!value) return false;
+  try {
+    return ["127.0.0.1", "localhost", "::1"].includes(new URL(`http://${value}`).hostname);
+  } catch {
+    return false;
+  }
 }
 
 export function extractWorkLogHtml(markdown) {
@@ -48,7 +98,7 @@ function responseHeaders(contentType) {
       "frame-ancestors 'none'",
       "img-src 'self' data:",
       "object-src 'none'",
-      "script-src 'self'",
+      "script-src 'self' https://telegram.org",
       "style-src 'self'",
     ].join("; "),
     "Content-Type": contentType,
@@ -73,7 +123,9 @@ function json(response, statusCode, value, method = "GET") {
 }
 
 export class MiniAppServer {
+  #allowedUserIds;
   #assetsDirectory;
+  #botToken;
   #clients = new Set();
   #changeTimer = null;
   #heartbeatTimer = null;
@@ -88,12 +140,16 @@ export class MiniAppServer {
     host = "127.0.0.1",
     port = 8787,
     workLogFile,
+    botToken = "",
+    allowedUserIds = new Set(),
     assetsDirectory = path.join(import.meta.dirname, "assets", "mini-app"),
     workLogCssFile = path.join(import.meta.dirname, "work-log.css"),
   } = {}) {
     this.#host = String(host);
     this.#port = Number(port);
     this.#workLogFile = path.resolve(workLogFile);
+    this.#botToken = String(botToken);
+    this.#allowedUserIds = new Set(allowedUserIds);
     this.#assetsDirectory = path.resolve(assetsDirectory);
     this.#workLogCssFile = path.resolve(workLogCssFile);
   }
@@ -119,6 +175,33 @@ export class MiniAppServer {
 
   #writeEvent(response, event, data) {
     response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  }
+
+  #requestNeedsTelegramAuth(request) {
+    return Boolean(
+      request.headers["cf-connecting-ip"]
+      || request.headers["x-forwarded-for"]
+      || !loopbackHost(request.headers.host),
+    );
+  }
+
+  #authorize(request, response) {
+    if (!this.#requestNeedsTelegramAuth(request)) return true;
+    const authorization = String(request.headers.authorization ?? "");
+    if (!authorization.startsWith("tma ")) {
+      json(response, 401, { error: "Откройте журнал из Telegram." });
+      return false;
+    }
+    try {
+      validateTelegramInitData(authorization.slice(4), {
+        botToken: this.#botToken,
+        allowedUserIds: this.#allowedUserIds,
+      });
+      return true;
+    } catch {
+      json(response, 403, { error: "Telegram-авторизация недействительна." });
+      return false;
+    }
   }
 
   #broadcastChange() {
@@ -151,6 +234,7 @@ export class MiniAppServer {
       return;
     }
     if (url.pathname === "/api/journal") {
+      if (!this.#authorize(request, response)) return;
       try {
         json(response, 200, await this.#journal(), method);
       } catch (error) {
@@ -159,6 +243,7 @@ export class MiniAppServer {
       return;
     }
     if (url.pathname === "/events") {
+      if (!this.#authorize(request, response)) return;
       if (method === "HEAD") {
         send(response, 200, "text/event-stream; charset=utf-8", "", method);
         return;

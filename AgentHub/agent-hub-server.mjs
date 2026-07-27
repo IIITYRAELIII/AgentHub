@@ -190,6 +190,7 @@ import { DeferredInputController } from "./deferred-input-controller.mjs";
 import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "./task-recovery.mjs";
 import { WorkLogUsageStore } from "./work-log-usage.mjs";
 import { MiniAppServer } from "./mini-app-server.mjs";
+import { QuickTunnelController } from "./quick-tunnel.mjs";
 
 const config = await loadConfig();
 const workLogUsageStore = new WorkLogUsageStore({
@@ -200,6 +201,8 @@ const miniAppServer = config.miniApp.enabled
   ? new MiniAppServer({
     ...config.miniApp,
     workLogFile: path.join(config.projectRoot, "WORK_LOG.md"),
+    botToken: config.token,
+    allowedUserIds: config.allowedUserIds,
   })
   : null;
 const defaultDataDirectory = path.join(AGENT_HUB_ROOT, "data");
@@ -486,6 +489,29 @@ const telegram = (method, body) => {
   });
   return Promise.resolve(undefined);
 };
+let quickTunnelController = null;
+
+async function startMiniApp() {
+  if (!miniAppServer) return null;
+  const address = await miniAppServer.start();
+  if (!config.miniApp.quickTunnel.enabled) return address;
+  quickTunnelController ??= new QuickTunnelController({
+    executable: config.miniApp.quickTunnel.executable,
+    localUrl: address.url,
+    onUrl: async (url) => {
+      await telegram("setChatMenuButton", {
+        menu_button: {
+          type: "web_app",
+          text: config.miniApp.quickTunnel.menuText,
+          web_app: { url },
+        },
+      });
+    },
+  });
+  const publicUrl = await quickTunnelController.start();
+  console.log(`Telegram Mini App ready at ${publicUrl}`);
+  return { ...address, publicUrl };
+}
 const telegramMultipart = (method, body, fileField, filePath) => (
   telegramClient.multipart(method, body, fileField, filePath)
 );
@@ -5385,6 +5411,7 @@ async function performRestart() {
   stopRuntimeTimers();
   await stopCodexAppServerTree();
   mediaController.stop();
+  await quickTunnelController?.close();
   await miniAppServer?.close();
   await desktopControlServer?.close();
   await runtimeCommandServer.close();
@@ -5418,7 +5445,7 @@ async function performRestart() {
         startCommandServer: async () => {
           await runtimeCommandServer.start();
           await desktopControlServer?.start();
-          await miniAppServer?.start();
+          await startMiniApp();
         },
         setStopping: (value) => { stopping = value; },
         restoreProvider: async () => {
@@ -6366,6 +6393,7 @@ async function shutdown(signal) {
     if (run.provider === "codex") run.process?.kill();
   }
   mediaController.stop();
+  await quickTunnelController?.close();
   await miniAppServer?.close();
   await desktopControlServer?.close();
   await runtimeCommandServer.close();
@@ -6409,7 +6437,7 @@ desktopControlServer = new DesktopControlServer({
 await desktopControlServer.start();
 if (miniAppServer) {
   try {
-    const address = await miniAppServer.start();
+    const address = await startMiniApp();
     console.log(`Mini App ready at ${address.url}`);
   } catch (error) {
     console.error("Cannot start Mini App:", error.message);

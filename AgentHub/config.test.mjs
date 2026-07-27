@@ -51,14 +51,35 @@ test("Mini App pilot is loopback-only and enabled by default", () => {
     enabled: true,
     host: "127.0.0.1",
     port: 8787,
+    quickTunnel: {
+      enabled: false,
+      executable: "cloudflared",
+      menuText: "Журнал",
+    },
   });
-  assert.deepEqual(miniAppSettings({ enabled: false, host: "localhost", port: 9000 }), {
+  assert.deepEqual(miniAppSettings({
     enabled: false,
     host: "localhost",
     port: 9000,
+    quickTunnel: {
+      enabled: true,
+      executable: "C:\\Tools\\cloudflared.exe",
+      menuText: "Работы",
+    },
+  }), {
+    enabled: false,
+    host: "localhost",
+    port: 9000,
+    quickTunnel: {
+      enabled: true,
+      executable: "C:\\Tools\\cloudflared.exe",
+      menuText: "Работы",
+    },
   });
   assert.throws(() => miniAppSettings({ host: "0.0.0.0" }), /loopback/);
   assert.throws(() => miniAppSettings({ port: 65_536 }), /at most 65535/);
+  assert.throws(() => miniAppSettings({ quickTunnel: [] }), /must be an object/);
+  assert.throws(() => miniAppSettings({ quickTunnel: { menuText: "" } }), /1-64/);
 });
 
 test("filesystem aliases resolve to the configured canonical project path", async () => {

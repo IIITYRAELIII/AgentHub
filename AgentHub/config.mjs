@@ -60,10 +60,27 @@ export function miniAppSettings(value) {
   }
   const port = positiveInteger(raw.port, 8787, "miniApp.port");
   if (port > 65_535) throw new Error("miniApp.port must be at most 65535");
+  const quickTunnelRaw = raw.quickTunnel ?? {};
+  if (!quickTunnelRaw || typeof quickTunnelRaw !== "object" || Array.isArray(quickTunnelRaw)) {
+    throw new Error("miniApp.quickTunnel must be an object");
+  }
+  const executable = String(
+    process.env.CLOUDFLARED_EXECUTABLE ?? quickTunnelRaw.executable ?? "cloudflared",
+  ).trim();
+  if (!executable) throw new Error("miniApp.quickTunnel.executable must not be empty");
+  const menuText = String(quickTunnelRaw.menuText ?? "Журнал").trim();
+  if (!menuText || menuText.length > 64) {
+    throw new Error("miniApp.quickTunnel.menuText must contain 1-64 characters");
+  }
   return {
     enabled: raw.enabled !== false,
     host,
     port,
+    quickTunnel: {
+      enabled: quickTunnelRaw.enabled === true,
+      executable,
+      menuText,
+    },
   };
 }
 
