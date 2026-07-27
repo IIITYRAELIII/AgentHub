@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { isInheritedSubagentTurn } from "./codex-subagent-accounting.mjs";
 import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import {
@@ -61,6 +62,13 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       const turnId = keyParts.length >= 3 ? keyParts[2] : String(record?.turnId ?? key).trim();
       if (!provider || !turnId) continue;
       const taskThreadId = String(record?.taskThreadId ?? threadId).trim() || threadId;
+      if (isInheritedSubagentTurn({
+        aggregateOnly: record?.aggregateOnly,
+        threadId,
+        turnId,
+      })) {
+        throw new Error("inherited parent turn was copied into a subagent rollout");
+      }
       let workLogId = null;
       if (record?.workLogId) workLogId = normalizeWorkLogId(record.workLogId);
       turns[key] = {

@@ -236,6 +236,45 @@ test("terminal event scanner preserves turns that started without a lifecycle te
   assert.deepEqual(result.terminals.map((value) => value.turnId), ["turn-completed"]);
 });
 
+test("terminal event scanner skips parent history copied into a subagent fork", async () => {
+  const childThreadId = "019fa366-e7a9-7aa1-b38a-6823c3a67e77";
+  const inheritedTurnId = "019fa362-ffaf-7cd3-9c8f-480d9724657a";
+  const childTurnId = "019fa366-e87d-7933-8ae8-f33a5200b24e";
+  const source = [
+    line({
+      timestamp: "2026-07-27T11:47:38.191Z",
+      type: "session_meta",
+      payload: { id: childThreadId, parent_thread_id: "019f865d-0a7f-7c01-b61c-543d38995372" },
+    }),
+    line({
+      timestamp: "2026-07-27T11:47:38.192Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: inheritedTurnId },
+    }),
+    line({
+      timestamp: "2026-07-27T11:47:38.192Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: inheritedTurnId },
+    }),
+    line({
+      timestamp: "2026-07-27T11:47:38.300Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: childTurnId },
+    }),
+    line({
+      timestamp: "2026-07-27T11:50:38.875Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: childTurnId },
+    }),
+  ].join("\n");
+  const result = await scanCodexTerminalEventsFromOffset("forked-rollout.jsonl", {
+    createReadStreamImpl: () => Readable.from([source]),
+  });
+
+  assert.deepEqual(result.terminals.map((value) => value.turnId), [childTurnId]);
+  assert.deepEqual(result.activeTurns, []);
+});
+
 test("Codex usage reader uses the incremental streaming scanner by default", async () => {
   let scans = 0;
   const result = await readCodexTurnUsage("large-rollout.jsonl", "turn-1", {

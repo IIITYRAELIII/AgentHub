@@ -5,7 +5,9 @@ import {
   CODEX_AUDIT_SOURCE_KINDS,
   CODEX_SUBAGENT_SOURCE_KINDS,
   CODEX_TASK_SOURCE_KINDS,
+  isInheritedSubagentTurn,
   resolveCodexAccountingThread,
+  uuidV7TimestampMs,
 } from "./codex-subagent-accounting.mjs";
 
 test("Codex terminal audit includes every public subagent source kind", () => {
@@ -63,4 +65,28 @@ test("Codex subagent parent cycles are rejected", async () => {
     }),
     /parent cycle/,
   );
+});
+
+test("UUIDv7 timestamps distinguish inherited parent turns from a subagent's own turn", () => {
+  const childThreadId = "019fa366-e7a9-7aa1-b38a-6823c3a67e77";
+  const inheritedTurnId = "019fa362-ffaf-7cd3-9c8f-480d9724657a";
+  const childTurnId = "019fa366-e87d-7933-8ae8-f33a5200b24e";
+
+  assert.ok(uuidV7TimestampMs(inheritedTurnId) < uuidV7TimestampMs(childThreadId));
+  assert.ok(uuidV7TimestampMs(childTurnId) >= uuidV7TimestampMs(childThreadId));
+  assert.equal(isInheritedSubagentTurn({
+    aggregateOnly: true,
+    threadId: childThreadId,
+    turnId: inheritedTurnId,
+  }), true);
+  assert.equal(isInheritedSubagentTurn({
+    aggregateOnly: true,
+    threadId: childThreadId,
+    turnId: childTurnId,
+  }), false);
+  assert.equal(isInheritedSubagentTurn({
+    aggregateOnly: false,
+    threadId: childThreadId,
+    turnId: inheritedTurnId,
+  }), false);
 });

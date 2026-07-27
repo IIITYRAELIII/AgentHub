@@ -438,6 +438,62 @@ test("subagent usage is summed into its root task and shown as child turns", () 
   assert.doesNotMatch(projected, /data-work-log-thread-id="child"/);
 });
 
+test("usage store quarantines inherited parent turns copied into a subagent rollout", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-subagent-fork-"));
+  try {
+    const ledgerFile = path.join(root, "data", "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    const childThreadId = "019fa366-e7a9-7aa1-b38a-6823c3a67e77";
+    const inheritedTurnId = "019fa362-ffaf-7cd3-9c8f-480d9724657a";
+    const childTurnId = "019fa366-e87d-7933-8ae8-f33a5200b24e";
+    await mkdir(path.dirname(ledgerFile), { recursive: true });
+    await writeFile(ledgerFile, `${JSON.stringify({
+      version: 5,
+      turns: {
+        [`codex\0${childThreadId}\0${inheritedTurnId}`]: {
+          provider: "codex",
+          threadId: childThreadId,
+          taskThreadId: "root",
+          parentThreadId: "root",
+          aggregateOnly: true,
+          turnId: inheritedTurnId,
+          taskTitle: "Root task",
+          title: "Copied parent turn",
+          usage: { inputTokens: 100_000 },
+          completedAt: "2026-07-27T11:47:38.192Z",
+        },
+        [`codex\0${childThreadId}\0${childTurnId}`]: {
+          provider: "codex",
+          threadId: childThreadId,
+          taskThreadId: "root",
+          parentThreadId: "root",
+          aggregateOnly: true,
+          turnId: childTurnId,
+          taskTitle: "Root task",
+          title: "Real child turn",
+          usage: { inputTokens: 50_000 },
+          completedAt: "2026-07-27T11:50:38.875Z",
+        },
+      },
+    }, null, 2)}\n`, "utf8");
+    await writeFile(workLogFile, "# Глобальный журнал работ\n", "utf8");
+
+    const store = new WorkLogUsageStore({ ledgerFile });
+    assert.deepEqual(await store.project(workLogFile), { projected: true });
+    const projected = await readFile(workLogFile, "utf8");
+    assert.match(projected, /Итого <span data-kilo-usage>50 кТЭ<\/span>/);
+    assert.match(projected, /Субагент · Real child turn/);
+    assert.doesNotMatch(projected, /Copied parent turn/);
+    const persisted = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.deepEqual(Object.keys(persisted.turns), [`codex\0${childThreadId}\0${childTurnId}`]);
+    const quarantined = JSON.parse(await readFile(`${ledgerFile}.invalid-records.json`, "utf8"));
+    assert.equal(quarantined.records.length, 1);
+    assert.equal(quarantined.records[0].record.turnId, inheritedTurnId);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("usage store projects each turn into its own placeholder and deduplicates retries", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-usage-"));
   try {

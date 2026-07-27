@@ -3,6 +3,7 @@ import { open } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
+import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "./token-usage.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 
@@ -245,8 +246,12 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
   const input = createReadStreamImpl(transcriptPath, { start });
   let pending = Buffer.alloc(0);
   let bytesRead = 0;
+  let rolloutCreatedAt = 0;
 
   function acceptEntry(entry) {
+    if (!rolloutCreatedAt && entry?.type === "session_meta") {
+      rolloutCreatedAt = uuidV7TimestampMs(entry?.payload?.id);
+    }
     const lifecycle = entry?.type === "event_msg"
       ? String(entry.payload?.type ?? "")
       : "";
@@ -257,6 +262,8 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
       ?? "",
     ).trim();
     if (!turnId) return;
+    const turnCreatedAt = uuidV7TimestampMs(turnId);
+    if (rolloutCreatedAt > 0 && turnCreatedAt > 0 && turnCreatedAt < rolloutCreatedAt) return;
     if (lifecycle === "task_started") {
       activeTurns.set(turnId, {
         turnId,
