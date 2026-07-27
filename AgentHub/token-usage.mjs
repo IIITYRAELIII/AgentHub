@@ -47,7 +47,8 @@ export function formatConditionalUnits(value) {
   const scale = scales.find(([divisor]) => Math.abs(normalized) >= divisor);
   if (scale) {
     return `${(normalized / scale[0]).toLocaleString("ru-RU", {
-      maximumFractionDigits: 3,
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
     })} ${scale[1]}`;
   }
   const thousands = Math.round(normalized / 1000);

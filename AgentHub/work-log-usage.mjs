@@ -204,14 +204,21 @@ function escapeHtmlText(value) {
 }
 
 function turnTitle(record) {
+  const prefix = record?.aggregateOnly === true ? "Субагент · " : "";
+  const titleLimit = Math.max(1, WORK_LOG_TURN_TITLE_LIMIT - prefix.length);
   const explicit = String(record?.title ?? "").trim().replace(/\s+/g, " ");
-  if (explicit) return explicit.slice(0, WORK_LOG_TURN_TITLE_LIMIT);
+  if (explicit) return `${prefix}${explicit.slice(0, titleLimit)}`;
   const body = String(record?.body ?? record?.text ?? "").trim().replace(/\s+/g, " ");
-  if (!body) return record?.status && record.status !== "completed" ? "Ход остановлен" : "Ход завершён";
+  if (!body) {
+    const fallback = record?.status && record.status !== "completed"
+      ? "Ход остановлен"
+      : "Ход завершён";
+    return `${prefix}${fallback}`;
+  }
   const sentence = body.match(
-    new RegExp(`^.{1,${WORK_LOG_TURN_TITLE_LIMIT}}?(?=[.!?](?:\\s|$)|$)`, "u"),
-  )?.[0] ?? body.slice(0, WORK_LOG_TURN_TITLE_LIMIT);
-  return sentence.trim().replace(/[.!?]+$/u, "") || "Ход завершён";
+    new RegExp(`^.{1,${titleLimit}}?(?=[.!?](?:\\s|$)|$)`, "u"),
+  )?.[0] ?? body.slice(0, titleLimit);
+  return `${prefix}${sentence.trim().replace(/[.!?]+$/u, "") || "Ход завершён"}`;
 }
 
 function changedFileLinks(files) {
@@ -757,9 +764,8 @@ function replaceProjectedCells(row, usageContent, records) {
   ) ?? cells[1];
   const changedFiles = changedFilesContent(turnCell.text);
   const outcome = legacyOutcome(turnCell.text);
-  const visibleRecords = records.filter((record) => record.aggregateOnly !== true);
-  const turnTable = visibleRecords.length || outcome
-    ? formatTurnTable(visibleRecords, outcome, changedFiles)
+  const turnTable = records.length || outcome
+    ? formatTurnTable(records, outcome, changedFiles)
     : "";
   const turnList = turnTable || (
     changedFiles ? `<div data-work-log-legacy-files>${changedFiles}</div>` : ""

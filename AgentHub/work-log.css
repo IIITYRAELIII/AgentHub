@@ -54,14 +54,14 @@ span[data-day-usage-part] {
 }
 
 span[data-day-usage] {
-  width: 17ch;
+  width: 18ch;
 }
 
 span[data-day-usage-part] {
   border-left: 1px solid rgba(127, 127, 127, 0.45);
   display: inline-flex;
   justify-content: space-between;
-  width: 21ch;
+  width: 22ch;
 }
 
 span[data-kilo-usage] {

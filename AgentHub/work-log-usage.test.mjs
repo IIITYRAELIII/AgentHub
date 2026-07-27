@@ -272,7 +272,7 @@ test("work log colors kilo, mega and giga-or-higher usage independently", () => 
       text: "Большой ход",
     },
   });
-  assert.match(projected, /data-high-usage>1 ГТЭ<\/span>/);
+  assert.match(projected, /data-high-usage>1,0 ГТЭ<\/span>/);
 });
 
 test("work log CSS keeps dates equal and shows a compact always-visible turn list", async () => {
@@ -388,7 +388,7 @@ test("collapsed previous turns remain idempotent without a legacy outcome", () =
   assert.equal((reprojected.match(/data-work-log-legacy-outcome/g) ?? []).length, 0);
 });
 
-test("subagent usage is summed into its root task without a visible child turn", () => {
+test("subagent usage is summed into its root task and shown as child turns", () => {
   const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
     "codex\0root\0root-turn": {
       provider: "codex",
@@ -431,10 +431,10 @@ test("subagent usage is summed into its root task without a visible child turn",
 
   assert.match(projected, /data-work-log-thread-id="root"/);
   assert.match(projected, /Итого <span data-kilo-usage>175 кТЭ<\/span>/);
-  assert.equal((projected.match(/data-work-log-turn-id=/g) ?? []).length, 1);
+  assert.equal((projected.match(/data-work-log-turn-id=/g) ?? []).length, 3);
   assert.match(projected, /Основной результат/);
-  assert.doesNotMatch(projected, /Скрытый результат субагента/);
-  assert.doesNotMatch(projected, /Прерванный скрытый результат субагента/);
+  assert.match(projected, /Субагент · Скрытый результат субагента/);
+  assert.match(projected, /Субагент · Прерванный скрытый результат субагента/);
   assert.doesNotMatch(projected, /data-work-log-thread-id="child"/);
 });
 
@@ -543,7 +543,7 @@ test("a fresh usage store reprojects an existing work log with its persisted led
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /data-task-usage>Итого <span data-mega-usage>1,757 МТЭ<\/span> <span data-usage-percent>\(100%\)<\/span>/);
+    assert.match(projected, /data-task-usage>Итого <span data-mega-usage>1,8 МТЭ<\/span> <span data-usage-percent>\(100%\)<\/span>/);
     assert.match(projected, /data-work-log-turn-body>Сохранённый результат<\/div>/);
     assert.match(projected, /<strong>Запрос:<\/strong> Сохранённый вопрос/);
     assert.doesNotMatch(projected, /response-annotations|Старый ответ/);

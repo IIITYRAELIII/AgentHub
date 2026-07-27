@@ -30,7 +30,7 @@ test("formatTaskTokenUsage converts token categories to conditional units", () =
   assert.doesNotMatch(formatted, /\|/);
 });
 
-test("formatTaskTokenUsage always renders whole thousands", () => {
+test("formatTaskTokenUsage renders whole kilo units and one decimal for larger scales", () => {
   const formatted = formatTaskTokenUsage({
     inputTokens: 1,
     cachedInputTokens: 1,
@@ -42,11 +42,11 @@ test("formatTaskTokenUsage always renders whole thousands", () => {
   assert.match(formatted, /Вход: 0 кТЭ \(90,9%\)/);
   assert.match(formatted, /Кэш: 0 кТЭ \(9,1%\)/);
   assert.equal(formatConditionalUnits(999_000), "999 кТЭ");
-  assert.equal(formatConditionalUnits(1_000_000), "1 МТЭ");
-  assert.equal(formatConditionalUnits(1_756_500), "1,757 МТЭ");
-  assert.equal(formatConditionalUnits(1_000_000_000), "1 ГТЭ");
-  assert.equal(formatConditionalUnits(1_000_000_000_000), "1 ТТЭ");
-  assert.equal(formatConditionalUnits(1e30), "1 КвТЭ");
+  assert.equal(formatConditionalUnits(1_000_000), "1,0 МТЭ");
+  assert.equal(formatConditionalUnits(1_756_500), "1,8 МТЭ");
+  assert.equal(formatConditionalUnits(1_000_000_000), "1,0 ГТЭ");
+  assert.equal(formatConditionalUnits(1_000_000_000_000), "1,0 ТТЭ");
+  assert.equal(formatConditionalUnits(1e30), "1,0 КвТЭ");
 });
 
 test("formatTaskTokenUsage labels every category and percentages total exactly 100%", () => {
