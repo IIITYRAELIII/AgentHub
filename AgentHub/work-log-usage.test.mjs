@@ -113,6 +113,8 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
     projected,
     /<details data-work-log-previous-turns><summary><span data-work-log-previous-turns-closed>Показать предыдущие ходы \(1\)<\/span><span data-work-log-previous-turns-open>Свернуть<\/span><\/summary>/,
   );
+  assert.equal((projected.match(/data-work-log-no-previous-turns/g) ?? []).length, 1);
+  assert.match(projected, /data-work-log-no-previous-turns>Предыдущих ходов нет\.<\/div>/);
   assert.doesNotMatch(projected, /<details data-work-log-previous-turns open>/);
   assert.match(
     projected,
@@ -323,6 +325,10 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
   assert.match(
     css,
     /details\[data-work-log-previous-turns\]\s*\{[\s\S]*?border-bottom:\s*1px solid/,
+  );
+  assert.match(
+    css,
+    /div\[data-work-log-no-previous-turns\]\s*\{[\s\S]*?border-bottom:\s*1px solid[\s\S]*?padding:\s*0\.3em 0\.45em/,
   );
   assert.match(
     css,
@@ -653,6 +659,42 @@ test("automatic ledger survives a projection failure and reprojects later", asyn
     assert.match(result.projectionError, /directory|EISDIR/i);
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.keys(ledger.turns).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("task title synchronization updates existing ledger turns and the projected journal", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-task-title-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    const store = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    await store.recordAutomaticAndProject({
+      threadId: "thread-title",
+      turnId: "turn-title",
+      projectRoot: root,
+      taskTitle: "Integration",
+      usageReported: true,
+      usage: { inputTokens: 100 },
+      completedAt: "2026-07-27T00:00:00.000Z",
+      text: "Готово",
+      workLogFile,
+    });
+
+    const result = await store.synchronizeTaskTitlesAndProject({
+      titles: [{ provider: "codex", threadId: "thread-title", taskTitle: "Agent HUB" }],
+      projectRoot: root,
+      workLogFile,
+    });
+
+    assert.equal(result.updated, 1);
+    assert.equal(result.projected, true);
+    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.equal(Object.values(ledger.turns)[0].taskTitle, "Agent HUB");
+    const projected = await readFile(workLogFile, "utf8");
+    assert.match(projected, />Codex - Agent HUB<\/a>/);
+    assert.doesNotMatch(projected, />Codex - Integration<\/a>/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

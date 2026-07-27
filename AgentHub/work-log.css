@@ -169,6 +169,11 @@ details[data-work-log-previous-turns] {
   border-bottom: 1px solid rgba(127, 127, 127, 0.55);
 }
 
+div[data-work-log-no-previous-turns] {
+  border-bottom: 1px solid rgba(127, 127, 127, 0.55);
+  padding: 0.3em 0.45em;
+}
+
 details[data-work-log-previous-turns] > summary {
   cursor: pointer;
   list-style: none;

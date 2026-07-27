@@ -289,7 +289,9 @@ function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
       `<div data-work-log-previous-turn-list>${turnRows.slice(0, -1).join("\n")}</div>`,
       "</details>",
     ].join("")
-    : "";
+    : turnRows.length === 1
+      ? "<div data-work-log-no-previous-turns>Предыдущих ходов нет.</div>"
+      : "";
   const latestTurn = turnRows.at(-1) ?? "";
   const legacy = legacyOutcome
     ? `<div data-work-log-legacy-outcome>${legacyOutcome}</div>`
@@ -1095,6 +1097,56 @@ export class WorkLogUsageStore {
       await this.#load();
       const record = this.#ledger.turns[workLogTurnKey({ provider, threadId, turnId })];
       return record ? structuredClone(record) : null;
+    });
+    this.#tail = operation;
+    return operation;
+  }
+
+  synchronizeTaskTitlesAndProject({
+    titles = [],
+    projectRoot = this.#defaultProjectRoot,
+    workLogFile,
+  }) {
+    const operation = this.#tail.catch(() => {}).then(async () => {
+      await this.#load();
+      const byTask = new Map(
+        titles
+          .map((item) => {
+            const provider = String(item?.provider ?? "").trim().toLowerCase();
+            const threadId = String(item?.threadId ?? "").trim();
+            const taskTitle = String(item?.taskTitle ?? "").replace(/\s+/g, " ").trim();
+            return provider && threadId && taskTitle
+              ? [`${provider}\0${threadId}`, taskTitle]
+              : null;
+          })
+          .filter(Boolean),
+      );
+      let updated = 0;
+      for (const record of Object.values(this.#ledger.turns)) {
+        if (!sameProjectRoot(record.projectRoot, projectRoot)) continue;
+        const title = byTask.get(`${record.provider}\0${taskThreadId(record)}`);
+        if (!title || record.taskTitle === title) continue;
+        record.taskTitle = title;
+        updated += 1;
+      }
+      if (!updated) return { updated: 0, projected: false, reason: "unchanged" };
+      await this.#save();
+      const logPath = path.resolve(workLogFile);
+      let current;
+      try {
+        current = await readFile(logPath, "utf8");
+      } catch (error) {
+        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
+        else throw error;
+      }
+      const selectedTurns = Object.fromEntries(
+        Object.entries(this.#ledger.turns).filter(([, record]) => (
+          sameProjectRoot(record.projectRoot, projectRoot)
+        )),
+      );
+      const projected = projectWorkLogUsage(current, selectedTurns);
+      if (projected !== current) await writeTextAtomic(logPath, projected);
+      return { updated, projected: projected !== current };
     });
     this.#tail = operation;
     return operation;

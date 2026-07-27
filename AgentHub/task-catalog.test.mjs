@@ -15,6 +15,7 @@ import {
   mergeTaskCatalog,
   pinnedTaskTitle,
   pinTaskTitle,
+  reconcilePinnedTaskTitle,
   codexRolloutTurnState,
   parseTaskCatalogCallback,
   parseCodexRolloutActivity,
@@ -39,6 +40,21 @@ test("pinned task titles are stable per provider and thread", () => {
   assert.equal(pinnedTaskTitle(titles, "codex", "thread-a"), "FB Фаровон обмен1");
   assert.equal(pinnedTaskTitle(titles, "codex", "thread-b"), "Правки ТГ Бота");
   assert.equal(pinnedTaskTitle(titles, "claude", "thread-a"), "");
+});
+
+test("a title discovered from Codex replaces a stale pinned title", () => {
+  const titles = {};
+  pinTaskTitle(titles, "codex", "thread-a", "Integration");
+
+  assert.deepEqual(
+    reconcilePinnedTaskTitle(titles, "codex", "thread-a", "Agent HUB"),
+    { title: "Agent HUB", changed: true },
+  );
+  assert.equal(pinnedTaskTitle(titles, "codex", "thread-a"), "Agent HUB");
+  assert.deepEqual(
+    reconcilePinnedTaskTitle(titles, "codex", "thread-a", "Agent HUB"),
+    { title: "Agent HUB", changed: false },
+  );
 });
 
 test("codexCatalogEntry preserves persistent task metadata and active status", () => {

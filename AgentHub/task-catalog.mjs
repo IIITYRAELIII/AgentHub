@@ -73,6 +73,16 @@ export function pinTaskTitle(titles, provider, threadId, title) {
   return value;
 }
 
+export function reconcilePinnedTaskTitle(titles, provider, threadId, discoveredTitle) {
+  const discovered = String(discoveredTitle ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+  const pinned = pinnedTaskTitle(titles, provider, threadId);
+  if (!discovered || !pinned || discovered === pinned) {
+    return { title: pinned || discovered, changed: false };
+  }
+  pinTaskTitle(titles, provider, threadId, discovered);
+  return { title: discovered, changed: true };
+}
+
 function applyCodexLifecycleEntry(activeTurnIds, entry) {
   if (entry?.type !== "event_msg") return;
   const event = entry.payload?.type;

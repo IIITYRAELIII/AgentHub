@@ -151,6 +151,7 @@ import {
   mergeTaskCatalog,
   pinnedTaskTitle as readPinnedTaskTitle,
   pinTaskTitle as writePinnedTaskTitle,
+  reconcilePinnedTaskTitle,
   readCodexRolloutActivity,
   runningTaskReplyMarkup,
   selectCodexTurn,
@@ -1971,6 +1972,7 @@ async function buildTaskCatalog() {
     listClaudeSessionSnapshots(),
   ]);
   const entries = [];
+  let pinnedTitlesChanged = false;
   if (codexResult.status === "fulfilled") {
     const titleHistories = await readCodexThreadTitleHistories();
     const batchSize = 16;
@@ -2003,11 +2005,14 @@ async function buildTaskCatalog() {
           && (entry.title === titleHistory.currentTitle || entry.title === "Без названия")) {
           entry.title = titleHistory.recoverableTitle.slice(0, 80);
         }
-        const pinnedTitle = pinnedTaskTitle(entry.provider, entry.threadId);
-        if (pinnedTitle && codexThreadResponseTitle(thread) !== pinnedTitle) {
-          await sendRpc("thread/name/set", { threadId: entry.threadId, name: pinnedTitle });
-        }
-        entry.title = pinnedTitle || entry.title;
+        const resolvedTitle = reconcilePinnedTaskTitle(
+          pinnedTaskTitles,
+          entry.provider,
+          entry.threadId,
+          codexThreadResponseTitle(thread),
+        );
+        pinnedTitlesChanged = resolvedTitle.changed || pinnedTitlesChanged;
+        entry.title = resolvedTitle.title || entry.title;
         return entry;
       }));
       entries.push(...values.filter(Boolean));
@@ -2031,6 +2036,20 @@ async function buildTaskCatalog() {
     ...run,
     projectName: runProject(run).name,
   })));
+  if (pinnedTitlesChanged) await savePinnedTaskTitles();
+  for (const project of config.projects) {
+    await workLogUsageStore.synchronizeTaskTitlesAndProject({
+      titles: taskCatalog
+        .filter((entry) => samePath(entry.projectRoot, project.path))
+        .map((entry) => ({
+          provider: entry.provider,
+          threadId: entry.threadId,
+          taskTitle: entry.title,
+        })),
+      projectRoot: project.path,
+      workLogFile: path.join(project.path, "WORK_LOG.md"),
+    });
+  }
   let titleChanged = false;
   for (const run of taskRuns.values()) {
     const entry = taskCatalog.find((item) => catalogEntryIsSelected(item, run));
