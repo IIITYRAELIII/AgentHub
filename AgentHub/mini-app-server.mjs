@@ -74,6 +74,25 @@ function loopbackHost(hostHeader) {
   }
 }
 
+export function miniAppMenuButtonRequests({
+  url,
+  text = "Журнал",
+  chatIds = [],
+} = {}) {
+  const menuButton = {
+    type: "web_app",
+    text: String(text),
+    web_app: { url: String(url) },
+  };
+  return [
+    { menu_button: menuButton },
+    ...[...chatIds].map((chatId) => ({
+      chat_id: chatId,
+      menu_button: menuButton,
+    })),
+  ];
+}
+
 export function extractWorkLogHtml(markdown) {
   const source = String(markdown ?? "");
   const firstDay = source.search(/<details\b[^>]*data-work-log-day-section/iu);

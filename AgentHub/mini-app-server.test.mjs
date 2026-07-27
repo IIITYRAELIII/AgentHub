@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   extractWorkLogHtml,
+  miniAppMenuButtonRequests,
   MiniAppServer,
   validateTelegramInitData,
 } from "./mini-app-server.mjs";
@@ -36,6 +37,39 @@ function signedInitData({
   params.set("hash", createHmac("sha256", secret).update(dataCheckString).digest("hex"));
   return params.toString();
 }
+
+test("Mini App menu button is registered globally and for every allowed chat", () => {
+  const requests = miniAppMenuButtonRequests({
+    url: "https://journal.example/",
+    text: "Журнал",
+    chatIds: new Set([42, 84]),
+  });
+  assert.deepEqual(requests, [
+    {
+      menu_button: {
+        type: "web_app",
+        text: "Журнал",
+        web_app: { url: "https://journal.example/" },
+      },
+    },
+    {
+      chat_id: 42,
+      menu_button: {
+        type: "web_app",
+        text: "Журнал",
+        web_app: { url: "https://journal.example/" },
+      },
+    },
+    {
+      chat_id: 84,
+      menu_button: {
+        type: "web_app",
+        text: "Журнал",
+        web_app: { url: "https://journal.example/" },
+      },
+    },
+  ]);
+});
 
 test("extractWorkLogHtml returns generated journal days without the Markdown heading", () => {
   assert.equal(

@@ -189,7 +189,7 @@ import { TaskObserverController } from "./task-observer-controller.mjs";
 import { DeferredInputController } from "./deferred-input-controller.mjs";
 import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "./task-recovery.mjs";
 import { WorkLogUsageStore } from "./work-log-usage.mjs";
-import { MiniAppServer } from "./mini-app-server.mjs";
+import { miniAppMenuButtonRequests, MiniAppServer } from "./mini-app-server.mjs";
 import { QuickTunnelController } from "./quick-tunnel.mjs";
 
 const config = await loadConfig();
@@ -512,13 +512,11 @@ async function startMiniApp() {
     controlPort: config.miniApp.quickTunnel.controlPort,
     localUrl: publicAddress.url,
     onUrl: async (url) => {
-      await telegram("setChatMenuButton", {
-        menu_button: {
-          type: "web_app",
-          text: config.miniApp.quickTunnel.menuText,
-          web_app: { url },
-        },
-      });
+      await Promise.all(miniAppMenuButtonRequests({
+        url,
+        text: config.miniApp.quickTunnel.menuText,
+        chatIds: config.allowedUserIds,
+      }).map((body) => telegram("setChatMenuButton", body)));
     },
   });
   const publicUrl = await quickTunnelController.start();
