@@ -17,8 +17,11 @@
     "port": 8787,
     "quickTunnel": {
       "enabled": false,
-      "executable": "cloudflared",
-      "menuText": "Журнал"
+      "provider": "pinggy",
+      "executable": "ssh",
+      "menuText": "Журнал",
+      "publicPort": 8788,
+      "controlPort": 4300
     }
   },
   "codexExecutable": "",

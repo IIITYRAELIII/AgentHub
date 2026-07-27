@@ -152,3 +152,28 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("Mini App can require Telegram authorization on a dedicated public listener", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-public-mini-app-"));
+  const workLogFile = path.join(directory, "WORK_LOG.md");
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    workLogFile,
+    botToken: BOT_TOKEN,
+    allowedUserIds: new Set([42]),
+    requireTelegramAuth: true,
+  });
+  try {
+    await writeFile(workLogFile, `# Глобальный журнал работ\n\n${DAY_HTML}\n`, "utf8");
+    const address = await server.start();
+    assert.equal((await fetch(`${address.url}health`)).status, 200);
+    assert.equal((await fetch(`${address.url}api/journal`)).status, 401);
+    assert.equal((await fetch(`${address.url}api/journal`, {
+      headers: { Authorization: `tma ${signedInitData()}` },
+    })).status, 200);
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

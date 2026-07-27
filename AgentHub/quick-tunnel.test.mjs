@@ -71,3 +71,47 @@ test("QuickTunnelController reports an early cloudflared exit", async () => {
   });
   await assert.rejects(controller.start(), /exited before startup/u);
 });
+
+test("QuickTunnelController discovers a Pinggy URL through its local debugger API", async () => {
+  const child = fakeChild();
+  const requests = [];
+  const controller = new QuickTunnelController({
+    provider: "pinggy",
+    executable: "ssh",
+    localUrl: "http://127.0.0.1:8788/",
+    controlPort: 4300,
+    spawnImpl: (...args) => {
+      requests.push({ spawn: args });
+      return child;
+    },
+    fetchImpl: async (url) => {
+      requests.push({ fetch: url });
+      if (url.includes("127.0.0.1:4300")) {
+        return {
+          ok: true,
+          json: async () => ({
+            urls: ["https://pilot.free.pinggy.net"],
+          }),
+        };
+      }
+      return { ok: true, status: 200 };
+    },
+  });
+
+  assert.equal(await controller.start(), "https://pilot.free.pinggy.net");
+  assert.deepEqual(requests[0].spawn[1], [
+    "-p",
+    "443",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "ExitOnForwardFailure=yes",
+    "-o",
+    "ServerAliveInterval=30",
+    "-T",
+    "-R0:127.0.0.1:8788",
+    "-L4300:127.0.0.1:4300",
+    "free.pinggy.io",
+  ]);
+  await controller.close();
+});

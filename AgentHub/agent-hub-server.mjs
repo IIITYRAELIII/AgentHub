@@ -205,6 +205,16 @@ const miniAppServer = config.miniApp.enabled
     allowedUserIds: config.allowedUserIds,
   })
   : null;
+const publicMiniAppServer = config.miniApp.enabled && config.miniApp.quickTunnel.enabled
+  ? new MiniAppServer({
+    host: config.miniApp.host,
+    port: config.miniApp.quickTunnel.publicPort,
+    workLogFile: path.join(config.projectRoot, "WORK_LOG.md"),
+    botToken: config.token,
+    allowedUserIds: config.allowedUserIds,
+    requireTelegramAuth: true,
+  })
+  : null;
 const defaultDataDirectory = path.join(AGENT_HUB_ROOT, "data");
 const logDirectory = samePath(config.dataDir, defaultDataDirectory)
   ? AGENT_HUB_ROOT
@@ -495,9 +505,12 @@ async function startMiniApp() {
   if (!miniAppServer) return null;
   const address = await miniAppServer.start();
   if (!config.miniApp.quickTunnel.enabled) return address;
+  const publicAddress = await publicMiniAppServer.start();
   quickTunnelController ??= new QuickTunnelController({
     executable: config.miniApp.quickTunnel.executable,
-    localUrl: address.url,
+    provider: config.miniApp.quickTunnel.provider,
+    controlPort: config.miniApp.quickTunnel.controlPort,
+    localUrl: publicAddress.url,
     onUrl: async (url) => {
       await telegram("setChatMenuButton", {
         menu_button: {
@@ -5412,6 +5425,7 @@ async function performRestart() {
   await stopCodexAppServerTree();
   mediaController.stop();
   await quickTunnelController?.close();
+  await publicMiniAppServer?.close();
   await miniAppServer?.close();
   await desktopControlServer?.close();
   await runtimeCommandServer.close();
@@ -6394,6 +6408,7 @@ async function shutdown(signal) {
   }
   mediaController.stop();
   await quickTunnelController?.close();
+  await publicMiniAppServer?.close();
   await miniAppServer?.close();
   await desktopControlServer?.close();
   await runtimeCommandServer.close();

@@ -131,6 +131,7 @@ export class MiniAppServer {
   #heartbeatTimer = null;
   #host;
   #port;
+  #requireTelegramAuth;
   #server = null;
   #watcher = null;
   #workLogCssFile;
@@ -142,6 +143,7 @@ export class MiniAppServer {
     workLogFile,
     botToken = "",
     allowedUserIds = new Set(),
+    requireTelegramAuth = false,
     assetsDirectory = path.join(import.meta.dirname, "assets", "mini-app"),
     workLogCssFile = path.join(import.meta.dirname, "work-log.css"),
   } = {}) {
@@ -150,6 +152,7 @@ export class MiniAppServer {
     this.#workLogFile = path.resolve(workLogFile);
     this.#botToken = String(botToken);
     this.#allowedUserIds = new Set(allowedUserIds);
+    this.#requireTelegramAuth = requireTelegramAuth === true;
     this.#assetsDirectory = path.resolve(assetsDirectory);
     this.#workLogCssFile = path.resolve(workLogCssFile);
   }
@@ -178,7 +181,7 @@ export class MiniAppServer {
   }
 
   #requestNeedsTelegramAuth(request) {
-    return Boolean(
+    return this.#requireTelegramAuth || Boolean(
       request.headers["cf-connecting-ip"]
       || request.headers["x-forwarded-for"]
       || !loopbackHost(request.headers.host),

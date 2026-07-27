@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
 const QUICK_TUNNEL_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com\b/iu;
+const PINGGY_URL_PATTERN = /^https:\/\/[a-z0-9.-]+\.(?:free\.pinggy\.net|run\.pinggy-free\.link)\/?$/iu;
 
 export function findQuickTunnelUrl(output) {
   return String(output ?? "").match(QUICK_TUNNEL_URL_PATTERN)?.[0] ?? null;
@@ -8,9 +9,11 @@ export function findQuickTunnelUrl(output) {
 
 export class QuickTunnelController {
   #child = null;
+  #controlPort;
   #executable;
   #localUrl;
   #onUrl;
+  #provider;
   #fetch;
   #spawn;
   #startPromise = null;
@@ -21,6 +24,8 @@ export class QuickTunnelController {
     executable = "cloudflared",
     localUrl,
     onUrl,
+    provider = "cloudflare",
+    controlPort = 4300,
     spawnImpl = spawn,
     fetchImpl = fetch,
     timeoutMs = 30_000,
@@ -28,6 +33,8 @@ export class QuickTunnelController {
     this.#executable = executable;
     this.#localUrl = String(localUrl);
     this.#onUrl = onUrl;
+    this.#provider = provider;
+    this.#controlPort = controlPort;
     this.#spawn = spawnImpl;
     this.#fetch = fetchImpl;
     this.#timeoutMs = timeoutMs;
@@ -49,13 +56,54 @@ export class QuickTunnelController {
     throw new Error(`Quick Tunnel health check failed: ${lastStatus}`);
   }
 
+  async #waitForPinggyUrl() {
+    const deadline = Date.now() + this.#timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const response = await this.#fetch(`http://127.0.0.1:${this.#controlPort}/urls`, {
+          cache: "no-store",
+        });
+        if (response.ok) {
+          const payload = await response.json();
+          const url = payload.urls?.find((item) => PINGGY_URL_PATTERN.test(String(item)));
+          if (url) return String(url).replace(/\/$/u, "");
+        }
+      } catch {
+        // The local debugger API appears only after SSH forwarding is ready.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error("Pinggy did not publish an HTTPS URL in time");
+  }
+
+  #spawnArguments() {
+    if (this.#provider === "pinggy") {
+      const origin = new URL(this.#localUrl);
+      return [
+        "-p",
+        "443",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=30",
+        "-T",
+        `-R0:${origin.hostname}:${origin.port}`,
+        `-L${this.#controlPort}:127.0.0.1:${this.#controlPort}`,
+        "free.pinggy.io",
+      ];
+    }
+    return ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", this.#localUrl];
+  }
+
   async start() {
     if (this.#url && this.#child) return this.#url;
     if (this.#startPromise) return this.#startPromise;
     this.#startPromise = new Promise((resolve, reject) => {
       const child = this.#spawn(
         this.#executable,
-        ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", this.#localUrl],
+        this.#spawnArguments(),
         {
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
@@ -90,6 +138,30 @@ export class QuickTunnelController {
       };
       child.stdout?.on("data", consume);
       child.stderr?.on("data", consume);
+      if (this.#provider === "pinggy") {
+        this.#waitForPinggyUrl().then((url) => {
+          if (!settled && !publishing) {
+            output += ` ${url}`;
+            publishing = true;
+            clearTimeout(timeout);
+            this.#waitUntilReachable(url)
+              .then(() => this.#onUrl?.(url))
+              .then(() => {
+                settled = true;
+                this.#url = url;
+                resolve(url);
+              }, (error) => {
+                settled = true;
+                reject(error);
+              });
+          }
+        }, (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          reject(error);
+        });
+      }
       child.once("error", (error) => {
         if (settled) return;
         settled = true;

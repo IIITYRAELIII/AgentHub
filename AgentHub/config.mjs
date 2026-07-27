@@ -64,10 +64,32 @@ export function miniAppSettings(value) {
   if (!quickTunnelRaw || typeof quickTunnelRaw !== "object" || Array.isArray(quickTunnelRaw)) {
     throw new Error("miniApp.quickTunnel must be an object");
   }
+  const tunnelProvider = String(quickTunnelRaw.provider ?? "cloudflare").trim().toLowerCase();
+  if (!["cloudflare", "pinggy"].includes(tunnelProvider)) {
+    throw new Error("miniApp.quickTunnel.provider must be cloudflare or pinggy");
+  }
   const executable = String(
-    process.env.CLOUDFLARED_EXECUTABLE ?? quickTunnelRaw.executable ?? "cloudflared",
+    process.env.CLOUDFLARED_EXECUTABLE
+      ?? quickTunnelRaw.executable
+      ?? (tunnelProvider === "pinggy" ? "ssh" : "cloudflared"),
   ).trim();
   if (!executable) throw new Error("miniApp.quickTunnel.executable must not be empty");
+  const publicPort = positiveInteger(
+    quickTunnelRaw.publicPort,
+    port + 1,
+    "miniApp.quickTunnel.publicPort",
+  );
+  if (publicPort > 65_535 || publicPort === port) {
+    throw new Error("miniApp.quickTunnel.publicPort must be a different valid port");
+  }
+  const controlPort = positiveInteger(
+    quickTunnelRaw.controlPort,
+    4300,
+    "miniApp.quickTunnel.controlPort",
+  );
+  if (controlPort > 65_535 || controlPort === port || controlPort === publicPort) {
+    throw new Error("miniApp.quickTunnel.controlPort must be a different valid port");
+  }
   const menuText = String(quickTunnelRaw.menuText ?? "Журнал").trim();
   if (!menuText || menuText.length > 64) {
     throw new Error("miniApp.quickTunnel.menuText must contain 1-64 characters");
@@ -78,8 +100,11 @@ export function miniAppSettings(value) {
     port,
     quickTunnel: {
       enabled: quickTunnelRaw.enabled === true,
+      provider: tunnelProvider,
       executable,
       menuText,
+      publicPort,
+      controlPort,
     },
   };
 }
