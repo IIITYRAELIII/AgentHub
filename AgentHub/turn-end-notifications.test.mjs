@@ -136,3 +136,33 @@ test("exact turn messages remain attached during parallel completions", () => {
   assert.equal(registry.recordCompletion(completion({ turnId: "turn-1" })).message.text, "Первый");
   assert.equal(registry.recordCompletion(completion({ turnId: "turn-2" })).message.text, "Второй");
 });
+
+test("a delivered turn can consume a late exact message for journal correction", () => {
+  const registry = new TurnEndNotificationRegistry();
+  const identity = { provider: "codex", threadId: "thread-1", turnId: "turn-1" };
+  registry.recordCompletion(completion({ ...identity, usageReported: true }));
+  registry.markDelivered(identity);
+  registry.registerMessage(message({
+    ...identity,
+    title: "Правильный итог",
+    text: "Ход завершён штатно.",
+  }));
+  const [pending] = registry.snapshot().pending;
+
+  assert.deepEqual(registry.takePendingMessage(identity), {
+    provider: "codex",
+    threadId: "thread-1",
+    id: pending.id,
+    turnId: "turn-1",
+    projectRoot: pending.projectRoot,
+    taskTitle: pending.taskTitle,
+    chatId: pending.chatId,
+    category: "done",
+    silent: false,
+    workLogId: pending.workLogId,
+    title: "Правильный итог",
+    text: "Ход завершён штатно.",
+    createdAt: pending.createdAt,
+  });
+  assert.equal(registry.snapshot().pending.length, 0);
+});

@@ -89,6 +89,7 @@ function createTurnAccumulator(turnId) {
   let terminal = false;
   let finalAnswerIndex = -1;
   let finalTokenIndex = -1;
+  let finalAnswer = "";
   let startedAt = "";
   let completedAt = "";
   let prompt = "";
@@ -142,7 +143,10 @@ function createTurnAccumulator(turnId) {
       && entry.payload?.name === "apply_patch") {
       for (const file of patchInputFiles(entry.payload.input, workspaceRoot)) changedFiles.add(file);
     }
-    if (isFinalAssistantItem(entry, requestedTurnId)) finalAnswerIndex = index;
+    if (isFinalAssistantItem(entry, requestedTurnId)) {
+      finalAnswerIndex = index;
+      finalAnswer = messageText(entry.payload) || finalAnswer;
+    }
 
     if (entry?.type !== "event_msg" || entry.payload?.type !== "token_count") return;
     const attributedTurnId = latestResponseTurnId
@@ -162,6 +166,7 @@ function createTurnAccumulator(turnId) {
     started,
     terminal,
     finalAnswerSeen: finalAnswerIndex >= 0,
+    finalAnswer,
     finalTokenSeen: finalAnswerIndex < 0 ? reported : finalTokenIndex > finalAnswerIndex,
     startedAt,
     completedAt,

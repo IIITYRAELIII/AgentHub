@@ -199,6 +199,10 @@ export class TurnEndNotificationRegistry {
     return this.#completions.get(typeof value === "string" ? value : turnEndKey(value)) ?? null;
   }
 
+  takePendingMessage(value) {
+    return this.#takeMessage(value);
+  }
+
   values() {
     return [...this.#completions.values()];
   }

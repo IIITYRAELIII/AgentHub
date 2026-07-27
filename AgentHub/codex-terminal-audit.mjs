@@ -7,7 +7,7 @@ const DEFAULT_BOOTSTRAP_WINDOW_MS = 30 * 60_000;
 const DEFAULT_BOUNDARY_OVERLAP_MS = 2_000;
 const DEFAULT_STATUS_IDLE_MS = 5_000;
 const DEFAULT_STATUS_POLL_MS = 30_000;
-const SNAPSHOT_VERSION = 2;
+const SNAPSHOT_VERSION = 3;
 
 function timestampMs(value) {
   const numeric = Number(value);
@@ -73,6 +73,7 @@ export class CodexTerminalAudit {
   constructor({
     listPage,
     readThread,
+    isTurnActive,
     resolveProject,
     reconcile,
     statFile = stat,
@@ -87,6 +88,7 @@ export class CodexTerminalAudit {
   }) {
     this.listPage = listPage;
     this.readThread = readThread;
+    this.isTurnActive = isTurnActive;
     this.resolveProject = resolveProject;
     this.reconcile = reconcile;
     this.statFile = statFile;
@@ -269,6 +271,10 @@ export class CodexTerminalAudit {
       current.thread = threadReference(fullThread);
       const turns = new Map((fullThread.turns ?? []).map((turn) => [String(turn?.id ?? ""), turn]));
       for (const turn of [...current.turns.values()]) {
+        if (typeof this.isTurnActive === "function"
+          && await this.isTurnActive(current.thread, turn.turnId)) {
+          continue;
+        }
         const exactTurn = turns.get(turn.turnId);
         const status = terminalTurnStatus(exactTurn?.status);
         if (!status) continue;

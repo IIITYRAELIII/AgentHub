@@ -381,6 +381,10 @@ const codexTerminalAudit = new CodexTerminalAudit({
     threadId,
     includeTurns: true,
   }),
+  isTurnActive: async (thread, turnId) => {
+    const activity = await readCodexRolloutActivity(thread?.path);
+    return activity.activeTurnIds.includes(String(turnId));
+  },
   resolveProject: (thread) => findProject(thread.cwd),
   reconcile: reconcileRecentCodexTerminalTurn,
 });
@@ -4769,6 +4773,12 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       return true;
     }
     if (alreadyDelivered) {
+      const registeredMessage = turnEndNotifications.takePendingMessage(identity);
+      const correctedBody = registeredMessage?.text
+        || usageResult.finalAnswer
+        || fallbackTurnEndMessage(resolvedStatus);
+      const correctedTitle = registeredMessage?.title
+        || conciseTurnTitle(correctedBody, resolvedStatus);
       const journal = await projectTurnUsageToWorkLog({
         ...identity,
         projectRoot: project.path,
@@ -4781,6 +4791,9 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         prompt: usageResult.prompt,
         changedFiles,
         message: null,
+      }, {
+        title: correctedTitle,
+        body: correctedBody,
       });
       if (journal?.projectionError) {
         console.error(
@@ -4788,6 +4801,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         );
       }
       codexTurnStarts.delete(key);
+      if (registeredMessage) await saveState();
       console.log(`Reconciled delivered Codex terminal turn ${identity.turnId} (${resolvedStatus})`);
       return true;
     }

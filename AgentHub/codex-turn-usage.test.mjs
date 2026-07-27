@@ -52,7 +52,11 @@ test("Codex rollout usage sums every model response and sees the final token eve
     line({ timestamp: startedAt, type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
     line(response("turn-1")),
     line(token(100, 80, 10, 4)),
-    line(response("turn-1", "message", { role: "assistant", phase: "final_answer" })),
+    line(response("turn-1", "message", {
+      role: "assistant",
+      phase: "final_answer",
+      content: [{ type: "output_text", text: "Готовый результат" }],
+    })),
     line(token(50, 40, 5, 1)),
     line({ timestamp: completedAt, type: "event_msg", payload: { type: "task_complete", turn_id: "turn-1" } }),
   ].join("\n");
@@ -60,6 +64,7 @@ test("Codex rollout usage sums every model response and sees the final token eve
   const result = codexTurnUsageFromJsonl(text, "turn-1");
   assert.equal(result.reported, true);
   assert.equal(result.finalAnswerSeen, true);
+  assert.equal(result.finalAnswer, "Готовый результат");
   assert.equal(result.finalTokenSeen, true);
   assert.equal(result.terminal, true);
   assert.equal(result.status, "completed");
