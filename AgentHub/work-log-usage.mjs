@@ -238,8 +238,7 @@ function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
       ? `<div data-work-log-turn-files data-work-log-migrated-files>${migratedFiles}</div>`
       : "",
   ].filter(Boolean).join("");
-  return `<tr data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}">`
-    + '<td colspan="2" data-work-log-turn-row>'
+  return `<div data-work-log-turn-entry data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}">`
     + "<details data-work-log-turn-details>"
     + "<summary>"
     + '<span data-work-log-turn-meta>'
@@ -251,7 +250,7 @@ function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
     + '<div data-work-log-turn-expanded>'
     + `<div data-work-log-turn-meta-details>${metaDetails}</div>`
     + `<div data-work-log-turn-body-details>${bodyDetails}</div>`
-    + "</div></details></td></tr>";
+    + "</div></details></div>";
 }
 
 function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
@@ -271,28 +270,23 @@ function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
   ));
   const previousTurns = turnRows.length > 1
     ? [
-      '<tr data-work-log-previous-turns-row><td colspan="2">',
       "<details data-work-log-previous-turns>",
       "<summary>",
       `<span data-work-log-previous-turns-closed>Показать предыдущие ходы (${turnRows.length - 1})</span>`,
       '<span data-work-log-previous-turns-open>Свернуть</span>',
       "</summary>",
-      "<table data-work-log-previous-turn-table>",
-      "<colgroup><col data-work-log-turn-meta-column><col data-work-log-turn-description-column></colgroup>",
-      `<tbody>${turnRows.slice(0, -1).join("\n")}</tbody>`,
-      "</table>",
-      "</details></td></tr>",
+      `<div data-work-log-previous-turn-list>${turnRows.slice(0, -1).join("\n")}</div>`,
+      "</details>",
     ].join("")
     : "";
   const latestTurn = turnRows.at(-1) ?? "";
   const legacy = legacyOutcome
-    ? `<tr data-work-log-legacy-outcome><td colspan="2">${legacyOutcome}</td></tr>`
+    ? `<div data-work-log-legacy-outcome>${legacyOutcome}</div>`
     : "";
   return [
-    "<table data-work-log-turn-table>",
-    "<colgroup><col data-work-log-turn-meta-column><col data-work-log-turn-description-column></colgroup>",
-    `<tbody>${[previousTurns, latestTurn, legacy].filter(Boolean).join("\n")}</tbody>`,
-    "</table>",
+    "<div data-work-log-turn-table>",
+    [previousTurns, latestTurn, legacy].filter(Boolean).join("\n"),
+    "</div>",
   ].join("\n");
 }
 
@@ -481,6 +475,10 @@ function changedFilesContent(source) {
 }
 
 function legacyOutcome(source) {
+  const projected = String(source ?? "").match(
+    /<div\b[^>]*data-work-log-legacy-outcome[^>]*>([\s\S]*?)<\/div>/iu,
+  )?.[1]?.trim();
+  if (projected?.replace(/<[^>]+>/gu, "").trim()) return projected;
   const explicit = String(source ?? "").match(
     /<tr\b[^>]*data-work-log-legacy-outcome[^>]*>\s*<td\b[^>]*>([\s\S]*?)<\/td>\s*<\/tr>/iu,
   )?.[1]?.trim();
@@ -489,7 +487,7 @@ function legacyOutcome(source) {
     /<div\b[^>]*data-work-log-restored-outcome[^>]*>([\s\S]*?)<\/div>/iu,
   )?.[1]?.trim();
   if (restored) return restored;
-  if (/<table\b[^>]*data-work-log-turn-table/iu.test(source)) return "";
+  if (/<(?:table|div)\b[^>]*data-work-log-turn-table/iu.test(source)) return "";
   const cell = String(source ?? "")
     .replace(/^<td\b[^>]*>/i, "")
     .replace(/<\/td>$/i, "")

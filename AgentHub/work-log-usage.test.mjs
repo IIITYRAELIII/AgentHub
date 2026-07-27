@@ -91,6 +91,8 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   const projected = projectWorkLogUsage(source, turns);
   assert.match(projected, /^<details data-work-log-day-section open>/);
   assert.match(projected, /<table data-work-log-table>/);
+  assert.equal((projected.match(/<table\b/g) ?? []).length, 1);
+  assert.doesNotMatch(projected, /data-work-log-previous-turn-table/);
   assert.match(projected, /<col data-work-log-turn-list-column>/);
   assert.doesNotMatch(projected, /data-work-log-turns-column/);
   assert.match(
@@ -102,11 +104,11 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
     projected,
     /data-work-log-task-content>Task A<\/div><div data-work-log-usage><details data-task-usage-details>/,
   );
-  assert.match(projected, /data-work-log-legacy-outcome><td colspan="2">Outcome A<\/td>/);
-  assert.match(projected, /data-work-log-legacy-outcome><td colspan="2">Outcome B<\/td>/);
+  assert.match(projected, /data-work-log-legacy-outcome>Outcome A<\/div>/);
+  assert.match(projected, /data-work-log-legacy-outcome>Outcome B<\/div>/);
   assert.match(
     projected,
-    /<table data-work-log-turn-table>[\s\S]*?data-work-log-turn-measure>12:34 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Первый &lt;ход&gt; Строка<\/span>[\s\S]*?data-work-log-turn-measure>13:45 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Второй &amp; ход<\/span>[\s\S]*?data-work-log-turn-files[^>]*>a\.mjs<\/div>/,
+    /<div data-work-log-turn-table>[\s\S]*?data-work-log-turn-measure>12:34 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Первый &lt;ход&gt; Строка<\/span>[\s\S]*?data-work-log-turn-measure>13:45 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Второй &amp; ход<\/span>[\s\S]*?data-work-log-turn-files[^>]*>a\.mjs<\/div>/,
   );
   assert.match(
     projected,
@@ -115,7 +117,7 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.doesNotMatch(projected, /<details data-work-log-previous-turns open>/);
   assert.match(
     projected,
-    /data-work-log-previous-turn-table>[\s\S]*?Первый &lt;ход&gt; Строка[\s\S]*?<\/table><\/details><\/td><\/tr>[\s\S]*?Второй &amp; ход/,
+    /data-work-log-previous-turn-list>[\s\S]*?Первый &lt;ход&gt; Строка[\s\S]*?<\/div><\/details>[\s\S]*?Второй &amp; ход/,
   );
   assert.match(projected, /<strong>Длит\.:<\/strong> 3 мин 30 с/);
   assert.match(projected, /<strong>Запрос:<\/strong> Короткий вопрос/);
@@ -142,7 +144,7 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
     projected,
-    /data-work-log-task-content>Task B<\/div><div data-work-log-usage><span data-usage-id="323e4567-e89b-42d3-a456-426614174000" hidden>[\s\S]*?data-work-log-legacy-outcome><td colspan="2">Outcome B<\/td>/,
+    /data-work-log-task-content>Task B<\/div><div data-work-log-usage><span data-usage-id="323e4567-e89b-42d3-a456-426614174000" hidden>[\s\S]*?data-work-log-legacy-outcome>Outcome B<\/div>/,
   );
   assert.equal((projected.match(/data-task-usage>/g) ?? []).length, 2);
   assert.equal((projected.match(/data-task-usage-details/g) ?? []).length, 2);
@@ -264,7 +266,7 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
   assert.match(css, /--work-log-task-card-width:\s*26ch/);
   assert.match(
     css,
-    /table\[data-work-log-turn-table\][\s\S]*?border-spacing:\s*0;[\s\S]*?tr \+ tr > td[\s\S]*?padding-top:\s*0\.35em/,
+    /div\[data-work-log-turn-table\][\s\S]*?width:\s*100%[\s\S]*?data-work-log-turn-entry\] \+ div\[data-work-log-turn-entry\][\s\S]*?margin-top:\s*0\.35em/,
   );
   assert.match(
     css,
@@ -275,10 +277,6 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
     /summary\[data-task-usage\][\s\S]*?padding:\s*0\.3em 0\.45em[\s\S]*?width:\s*var\(--work-log-task-card-width\)/,
   );
   assert.doesNotMatch(css, /table\[data-work-log-table\] tr\s*\{/);
-  assert.match(
-    css,
-    /table\[data-work-log-turn-table\][\s\S]*?table-layout:\s*fixed[\s\S]*?data-work-log-turn-meta-column\][\s\S]*?width:\s*12em/,
-  );
   assert.match(css, /details\[data-work-log-turn-details\] > summary[\s\S]*?display:\s*grid/);
   assert.match(
     css,
@@ -800,5 +798,5 @@ test("legacy outcome restoration matches rows by date and task title", () => {
     + "</tbody></table></details>";
   const restored = restoreLegacyOutcomes(current, previous);
   assert.match(restored, /data-work-log-restored-outcome>Старый итог<\/div>/);
-  assert.match(projectWorkLogUsage(restored), /data-work-log-legacy-outcome><td colspan="2">Старый итог<\/td>/);
+  assert.match(projectWorkLogUsage(restored), /data-work-log-legacy-outcome>Старый итог<\/div>/);
 });

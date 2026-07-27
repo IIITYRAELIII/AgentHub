@@ -147,27 +147,14 @@ table[data-work-log-table] > tbody > tr > td {
   min-width: 0;
 }
 
-table[data-work-log-turn-table] {
-  border-collapse: separate;
-  border-spacing: 0;
-  table-layout: fixed;
+div[data-work-log-turn-table] {
   width: 100%;
 }
 
-table[data-work-log-turn-table] tr + tr > td {
-  padding-top: 0.35em;
-}
-
-table[data-work-log-turn-table] col[data-work-log-turn-meta-column],
-table[data-work-log-previous-turn-table] col[data-work-log-turn-meta-column] {
-  width: 12em;
-}
-
-table[data-work-log-turn-table] td,
-table[data-work-log-previous-turn-table] td {
-  min-width: 0;
-  padding: 0;
-  vertical-align: top;
+div[data-work-log-turn-entry] + div[data-work-log-turn-entry],
+details[data-work-log-previous-turns] + div[data-work-log-turn-entry],
+div[data-work-log-turn-entry] + div[data-work-log-legacy-outcome] {
+  margin-top: 0.35em;
 }
 
 details[data-work-log-previous-turns] {
@@ -207,15 +194,13 @@ details[data-work-log-previous-turns][open] > summary [data-work-log-previous-tu
   display: inline;
 }
 
-table[data-work-log-previous-turn-table] {
-  border-collapse: separate;
-  border-spacing: 0.35em;
-  table-layout: fixed;
-  width: 100%;
+div[data-work-log-previous-turn-list] {
+  padding: 0.35em;
 }
 
-td[data-work-log-turn-row] {
-  border: 0;
+div[data-work-log-previous-turn-list] > div[data-work-log-turn-entry]
+  + div[data-work-log-turn-entry] {
+  margin-top: 0.35em;
 }
 
 details[data-work-log-turn-details] > summary {
@@ -302,7 +287,7 @@ div[data-work-log-turn-files] {
   margin-top: 0.45em;
 }
 
-tr[data-work-log-legacy-outcome] td {
+div[data-work-log-legacy-outcome] {
   border: 1px solid rgba(127, 127, 127, 0.45);
   padding: 0.4em 0.45em;
 }
