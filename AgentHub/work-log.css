@@ -150,19 +150,23 @@ div[data-work-log-body] > div[data-work-log-row]:last-child {
 }
 
 div[data-work-log-turn-table] {
+  border: 1px solid rgba(127, 127, 127, 0.55);
+  border-radius: 4px;
+  overflow: hidden;
   width: 100%;
 }
 
+div[data-work-log-turn-table] > div[data-work-log-turn-entry] {
+  margin: 0.35em;
+}
+
 div[data-work-log-turn-entry] + div[data-work-log-turn-entry],
-details[data-work-log-previous-turns] + div[data-work-log-turn-entry],
 div[data-work-log-turn-entry] + div[data-work-log-legacy-outcome] {
   margin-top: 0.35em;
 }
 
 details[data-work-log-previous-turns] {
-  border: 1px solid rgba(127, 127, 127, 0.55);
-  border-radius: 4px;
-  overflow: hidden;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.55);
 }
 
 details[data-work-log-previous-turns] > summary {

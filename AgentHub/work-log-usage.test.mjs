@@ -318,7 +318,11 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
   );
   assert.match(
     css,
-    /details\[data-work-log-previous-turns\]\s*\{[\s\S]*?border:\s*1px solid[\s\S]*?border-radius:\s*4px/,
+    /div\[data-work-log-turn-table\]\s*\{[\s\S]*?border:\s*1px solid[\s\S]*?border-radius:\s*4px[\s\S]*?overflow:\s*hidden/,
+  );
+  assert.match(
+    css,
+    /details\[data-work-log-previous-turns\]\s*\{[\s\S]*?border-bottom:\s*1px solid/,
   );
   assert.match(
     css,
