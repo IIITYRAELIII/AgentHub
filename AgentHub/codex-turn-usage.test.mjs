@@ -201,6 +201,36 @@ test("terminal event scanner resumes from the last complete JSONL byte", async (
   assert.deepEqual(starts, [0, Buffer.byteLength(first)]);
 });
 
+test("terminal event scanner preserves turns that started without a lifecycle terminal", async () => {
+  const source = [
+    line({
+      timestamp: "2026-07-27T03:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn-interrupted-without-event" },
+    }),
+    line({
+      timestamp: "2026-07-27T03:01:00.000Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn-completed" },
+    }),
+    line({
+      timestamp: "2026-07-27T03:02:00.000Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: "turn-completed" },
+    }),
+  ].join("\n");
+  const result = await scanCodexTerminalEventsFromOffset("rollout.jsonl", {
+    createReadStreamImpl: () => Readable.from([source]),
+  });
+
+  assert.deepEqual(result.activeTurns, [{
+    turnId: "turn-interrupted-without-event",
+    startedAt: "2026-07-27T03:00:00.000Z",
+    lastActivityAt: "2026-07-27T03:00:00.000Z",
+  }]);
+  assert.deepEqual(result.terminals.map((value) => value.turnId), ["turn-completed"]);
+});
+
 test("Codex usage reader uses the incremental streaming scanner by default", async () => {
   let scans = 0;
   const result = await readCodexTurnUsage("large-rollout.jsonl", "turn-1", {

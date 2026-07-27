@@ -235,10 +235,42 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
   createReadStreamImpl = createReadStream,
 } = {}) {
   const terminals = new Map();
+  const activeTurns = new Map();
   const start = Math.max(0, Number(startOffset) || 0);
   const input = createReadStreamImpl(transcriptPath, { start });
   let pending = Buffer.alloc(0);
   let bytesRead = 0;
+
+  function acceptEntry(entry) {
+    const lifecycle = entry?.type === "event_msg"
+      ? String(entry.payload?.type ?? "")
+      : "";
+    const timestamp = String(entry?.timestamp ?? "");
+    const turnId = String(
+      entry?.payload?.turn_id
+      ?? entry?.payload?.internal_chat_message_metadata_passthrough?.turn_id
+      ?? "",
+    ).trim();
+    if (!turnId) return;
+    if (lifecycle === "task_started") {
+      activeTurns.set(turnId, {
+        turnId,
+        startedAt: timestamp,
+        lastActivityAt: timestamp,
+      });
+      return;
+    }
+    const active = activeTurns.get(turnId);
+    if (active) active.lastActivityAt = timestamp;
+    const status = lifecycleTerminalStatus(lifecycle);
+    if (!status) return;
+    activeTurns.delete(turnId);
+    terminals.set(turnId, {
+      turnId,
+      status,
+      completedAt: String(entry?.timestamp ?? ""),
+    });
+  }
 
   for await (const chunk of input) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -250,18 +282,7 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
       pending = pending.subarray(newline + 1);
       if (!line) continue;
       try {
-        const entry = JSON.parse(line);
-        const lifecycle = entry?.type === "event_msg"
-          ? String(entry.payload?.type ?? "")
-          : "";
-        const status = lifecycleTerminalStatus(lifecycle);
-        const turnId = String(entry?.payload?.turn_id ?? "").trim();
-        if (!status || !turnId) continue;
-        terminals.set(turnId, {
-          turnId,
-          status,
-          completedAt: String(entry?.timestamp ?? ""),
-        });
+        acceptEntry(JSON.parse(line));
       } catch {
         // Ignore one malformed complete line without losing later terminal events.
       }
@@ -270,21 +291,10 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
 
   if (pending.length) {
     try {
-      const entry = JSON.parse(pending.toString("utf8").replace(/\r$/u, ""));
-      const lifecycle = entry?.type === "event_msg"
-        ? String(entry.payload?.type ?? "")
-        : "";
-      const status = lifecycleTerminalStatus(lifecycle);
-      const turnId = String(entry?.payload?.turn_id ?? "").trim();
-      if (status && turnId) {
-        terminals.set(turnId, {
-          turnId,
-          status,
-          completedAt: String(entry?.timestamp ?? ""),
-        });
-      }
+      acceptEntry(JSON.parse(pending.toString("utf8").replace(/\r$/u, "")));
       return {
         terminals: [...terminals.values()],
+        activeTurns: [...activeTurns.values()],
         nextOffset: start + bytesRead,
       };
     } catch {
@@ -294,6 +304,7 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
 
   return {
     terminals: [...terminals.values()],
+    activeTurns: [...activeTurns.values()],
     nextOffset: start + bytesRead - pending.length,
   };
 }

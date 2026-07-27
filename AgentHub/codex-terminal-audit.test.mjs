@@ -87,6 +87,7 @@ test("terminal audit resumes byte positions after a long server outage", async (
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
+    version: 2,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "rollout.jsonl", offset: 100 }]],
   });
@@ -141,6 +142,7 @@ test("terminal audit follows every thread-list page newer than its cursor", asyn
     reconcile: async (_thread, _project, terminal) => reconciled.push(terminal.turnId),
   });
   audit.restore({
+    version: 2,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [],
   });
@@ -179,6 +181,7 @@ test("terminal audit does not advance its cursor past a deferred terminal", asyn
     reconcile: async () => false,
   });
   audit.restore({
+    version: 2,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "thread-1.jsonl", offset: 10 }]],
   });
@@ -219,6 +222,7 @@ test("terminal audit advances through an active rollout and reads its later term
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
+    version: 2,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-active", { path: "active.jsonl", offset: 50 }]],
   });
@@ -234,6 +238,78 @@ test("terminal audit advances through an active rollout and reads its later term
   assert.equal(audit.snapshot().positions[0][1].offset, 120);
 });
 
+test("terminal audit recovers an interrupted turn when rollout has no terminal event", async () => {
+  let nowMs = Date.parse("2026-07-27T04:00:00.000Z");
+  let scans = 0;
+  const recovered = [];
+  const audit = new CodexTerminalAudit({
+    now: () => nowMs,
+    statusIdleMs: 5_000,
+    listPage: async () => ({
+      data: [thread("thread-missing-terminal", "2026-07-27T04:00:00.000Z", "missing.jsonl")],
+      nextCursor: null,
+    }),
+    readThread: async () => ({
+      thread: {
+        ...thread(
+          "thread-missing-terminal",
+          "2026-07-27T04:00:04.000Z",
+          "missing.jsonl",
+        ),
+        turns: [{
+          id: "turn-missing-terminal",
+          status: "interrupted",
+        }],
+      },
+    }),
+    resolveProject: () => project,
+    statFile: async () => ({ size: 100, mtimeMs: nowMs }),
+    scanFile: async () => ({
+      terminals: [],
+      activeTurns: scans++ === 0
+        ? [{
+          turnId: "turn-missing-terminal",
+          startedAt: "2026-07-27T03:59:00.000Z",
+          lastActivityAt: "2026-07-27T04:00:04.000Z",
+        }]
+        : [],
+      nextOffset: 100,
+    }),
+    reconcile: async (_thread, _project, terminal) => {
+      recovered.push(terminal);
+      return true;
+    },
+  });
+
+  await audit.run();
+  assert.equal(audit.snapshot().pendingTurns.length, 1);
+  nowMs += 6_000;
+  await audit.run();
+
+  assert.deepEqual(recovered, [{
+    turnId: "turn-missing-terminal",
+    status: "aborted",
+    completedAt: "2026-07-27T04:00:04.000Z",
+    authoritative: true,
+  }]);
+  assert.equal(audit.snapshot().pendingTurns.length, 0);
+});
+
+test("terminal audit performs one compatible bootstrap after the pending-turn upgrade", () => {
+  const audit = new CodexTerminalAudit({
+    listPage: async () => ({ data: [], nextCursor: null }),
+    resolveProject: () => project,
+    reconcile: async () => true,
+  });
+  audit.restore({
+    completedThrough: "2026-07-27T04:00:00.000Z",
+    positions: [["legacy", { path: "legacy.jsonl", offset: 100 }]],
+  });
+
+  assert.equal(audit.snapshot().completedThrough, "");
+  assert.deepEqual(audit.snapshot().positions, []);
+});
+
 test("terminal audit bounds persisted per-thread positions", () => {
   const audit = new CodexTerminalAudit({
     listPage: async () => ({ data: [], nextCursor: null }),
@@ -242,6 +318,7 @@ test("terminal audit bounds persisted per-thread positions", () => {
     maxPositions: 100,
   });
   audit.restore({
+    version: 2,
     positions: Array.from({ length: 120 }, (_, index) => [
       `thread-${index}`,
       { path: `thread-${index}.jsonl`, offset: index },

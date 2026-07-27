@@ -377,6 +377,10 @@ const codexTerminalAudit = new CodexTerminalAudit({
     sortDirection: "desc",
     sourceKinds: CODEX_AUDIT_SOURCE_KINDS,
   }),
+  readThread: (threadId) => sendRpc("thread/read", {
+    threadId,
+    includeTurns: true,
+  }),
   resolveProject: (thread) => findProject(thread.cwd),
   reconcile: reconcileRecentCodexTerminalTurn,
 });
@@ -4718,7 +4722,14 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
   try {
     const accountingThread = await codexAccountingThread(thread);
     const usageResult = await readCodexTurnUsage(thread.path, identity.turnId);
-    if (!usageResult.terminal) return false;
+    const authoritativeStatus = terminal?.authoritative === true;
+    if (!usageResult.terminal && !authoritativeStatus) return false;
+    const resolvedStatus = usageResult.terminal
+      ? (usageResult.status || terminal.status)
+      : terminal.status;
+    const resolvedCompletedAt = usageResult.terminal
+      ? (usageResult.completedAt || terminal.completedAt)
+      : terminal.completedAt;
     const changedFiles = (usageResult.changedFiles ?? []).flatMap((file) => {
       const absolute = path.resolve(String(file));
       const relative = path.relative(project.path, absolute);
@@ -4737,11 +4748,11 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
           threadId: accountingThread.threadId,
           thread: accountingThread.thread,
         }),
-        status: usageResult.status || terminal.status,
+        status: resolvedStatus,
         usage: usageResult.usage,
         usageReported: usageResult.reported === true,
         startedAt: usageResult.startedAt,
-        completedAt: usageResult.completedAt || terminal.completedAt,
+        completedAt: resolvedCompletedAt,
         prompt: usageResult.prompt,
         changedFiles,
         message: null,
@@ -4762,11 +4773,11 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         ...identity,
         projectRoot: project.path,
         taskTitle: runtimeCommandTaskTitle({ ...identity, thread }),
-        status: usageResult.status || terminal.status,
+        status: resolvedStatus,
         usage: usageResult.usage,
         usageReported: usageResult.reported === true,
         startedAt: usageResult.startedAt,
-        completedAt: usageResult.completedAt || terminal.completedAt,
+        completedAt: resolvedCompletedAt,
         prompt: usageResult.prompt,
         changedFiles,
         message: null,
@@ -4777,7 +4788,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         );
       }
       codexTurnStarts.delete(key);
-      console.log(`Reconciled delivered Codex terminal turn ${identity.turnId} (${usageResult.status || terminal.status})`);
+      console.log(`Reconciled delivered Codex terminal turn ${identity.turnId} (${resolvedStatus})`);
       return true;
     }
     const completion = turnEndNotifications.recordCompletion({
@@ -4785,11 +4796,11 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       projectRoot: project.path,
       taskTitle: runtimeCommandTaskTitle({ ...identity, thread }),
       chatId: resolveNotificationChatId(config, null),
-      status: usageResult.status || terminal.status,
+      status: resolvedStatus,
       usage: usageResult.usage,
       usageReported: usageResult.reported === true,
       startedAt: usageResult.startedAt,
-      completedAt: usageResult.completedAt || terminal.completedAt,
+      completedAt: resolvedCompletedAt,
       prompt: usageResult.prompt,
       changedFiles,
     });
