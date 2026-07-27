@@ -11,6 +11,7 @@ export class QuickTunnelController {
   #executable;
   #localUrl;
   #onUrl;
+  #fetch;
   #spawn;
   #startPromise = null;
   #timeoutMs;
@@ -21,13 +22,31 @@ export class QuickTunnelController {
     localUrl,
     onUrl,
     spawnImpl = spawn,
+    fetchImpl = fetch,
     timeoutMs = 30_000,
   } = {}) {
     this.#executable = executable;
     this.#localUrl = String(localUrl);
     this.#onUrl = onUrl;
     this.#spawn = spawnImpl;
+    this.#fetch = fetchImpl;
     this.#timeoutMs = timeoutMs;
+  }
+
+  async #waitUntilReachable(url) {
+    const deadline = Date.now() + this.#timeoutMs;
+    let lastStatus = "unavailable";
+    while (Date.now() < deadline) {
+      try {
+        const response = await this.#fetch(`${url}/health`, { cache: "no-store" });
+        lastStatus = `HTTP ${response.status}`;
+        if (response.ok) return;
+      } catch (error) {
+        lastStatus = error.message;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new Error(`Quick Tunnel health check failed: ${lastStatus}`);
   }
 
   async start() {
@@ -36,7 +55,7 @@ export class QuickTunnelController {
     this.#startPromise = new Promise((resolve, reject) => {
       const child = this.#spawn(
         this.#executable,
-        ["tunnel", "--no-autoupdate", "--url", this.#localUrl],
+        ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", this.#localUrl],
         {
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
@@ -45,6 +64,7 @@ export class QuickTunnelController {
       this.#child = child;
       let output = "";
       let settled = false;
+      let publishing = false;
       const timeout = setTimeout(() => {
         if (settled) return;
         settled = true;
@@ -54,11 +74,19 @@ export class QuickTunnelController {
       const consume = (chunk) => {
         output = `${output}${String(chunk)}`.slice(-16_384);
         const url = findQuickTunnelUrl(output);
-        if (!url || settled) return;
-        settled = true;
+        if (!url || settled || publishing) return;
+        publishing = true;
         clearTimeout(timeout);
-        this.#url = url;
-        Promise.resolve(this.#onUrl?.(url)).then(() => resolve(url), reject);
+        this.#waitUntilReachable(url)
+          .then(() => this.#onUrl?.(url))
+          .then(() => {
+            settled = true;
+            this.#url = url;
+            resolve(url);
+          }, (error) => {
+            settled = true;
+            reject(error);
+          });
       };
       child.stdout?.on("data", consume);
       child.stderr?.on("data", consume);

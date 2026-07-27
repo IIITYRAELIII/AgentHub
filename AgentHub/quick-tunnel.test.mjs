@@ -41,6 +41,7 @@ test("QuickTunnelController starts cloudflared, publishes the URL and closes it"
       ));
       return child;
     },
+    fetchImpl: async () => ({ ok: true, status: 200 }),
     onUrl: (url) => published.push(url),
   });
 
@@ -48,6 +49,8 @@ test("QuickTunnelController starts cloudflared, publishes the URL and closes it"
   assert.deepEqual(calls[0][1], [
     "tunnel",
     "--no-autoupdate",
+    "--protocol",
+    "http2",
     "--url",
     "http://127.0.0.1:8787",
   ]);
