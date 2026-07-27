@@ -118,33 +118,35 @@ span[data-task-usage-part] + span[data-task-usage-part] {
   border-top: 1px solid rgba(127, 127, 127, 0.45);
 }
 
-table[data-work-log-table] {
+div[data-work-log-table] {
   --work-log-task-card-width: 26ch;
-  display: block;
   width: 100%;
 }
 
-table[data-work-log-table] > colgroup {
-  display: none;
-}
-
-table[data-work-log-table] > thead,
-table[data-work-log-table] > tbody {
-  display: block;
-  width: 100%;
-}
-
-table[data-work-log-table] > thead > tr,
-table[data-work-log-table] > tbody > tr {
+div[data-work-log-header],
+div[data-work-log-row] {
   display: grid;
   grid-template-columns: 28ch minmax(0, 1fr);
-  position: relative;
   width: 100%;
 }
 
-table[data-work-log-table] > thead > tr > th,
-table[data-work-log-table] > tbody > tr > td {
+div[data-work-log-header] {
+  border-bottom: 1px solid rgba(127, 127, 127, 0.65);
+}
+
+div[data-work-log-header] > strong,
+div[data-work-log-task-cell],
+div[data-work-log-turn-list] {
   min-width: 0;
+  padding: 0.35em 0.5em;
+}
+
+div[data-work-log-body] > div[data-work-log-row] {
+  border-bottom: 1px solid rgba(127, 127, 127, 0.3);
+}
+
+div[data-work-log-body] > div[data-work-log-row]:last-child {
+  border-bottom: 0;
 }
 
 div[data-work-log-turn-table] {
@@ -292,11 +294,11 @@ div[data-work-log-legacy-outcome] {
   padding: 0.4em 0.45em;
 }
 
-td[data-work-log-turn-list] > details {
+div[data-work-log-turn-list] > details {
   margin-top: 0.3em;
 }
 
-td[data-work-log-task-cell] div[data-work-log-task-content] {
+div[data-work-log-task-cell] > div[data-work-log-task-content] {
   border: 1px solid rgba(127, 127, 127, 0.45);
   border-radius: 0.25em;
   box-sizing: border-box;
@@ -305,10 +307,10 @@ td[data-work-log-task-cell] div[data-work-log-task-content] {
   width: var(--work-log-task-card-width);
 }
 
-td[data-work-log-task-cell] div[data-work-log-usage] {
+div[data-work-log-task-cell] > div[data-work-log-usage] {
   margin-top: 0.35em;
 }
 
-td[data-work-log-task-cell] details[data-task-usage-details] {
+div[data-work-log-task-cell] details[data-task-usage-details] {
   width: var(--work-log-task-card-width);
 }

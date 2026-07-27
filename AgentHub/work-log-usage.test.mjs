@@ -90,16 +90,15 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   };
   const projected = projectWorkLogUsage(source, turns);
   assert.match(projected, /^<details data-work-log-day-section open>/);
-  assert.match(projected, /<table data-work-log-table>/);
-  assert.equal((projected.match(/<table\b/g) ?? []).length, 1);
+  assert.match(projected, /<div data-work-log-table>/);
+  assert.equal((projected.match(/<table\b/g) ?? []).length, 0);
+  assert.equal((projected.match(/<div data-work-log-row/g) ?? []).length, 3);
   assert.doesNotMatch(projected, /data-work-log-previous-turn-table/);
-  assert.match(projected, /<col data-work-log-turn-list-column>/);
-  assert.doesNotMatch(projected, /data-work-log-turns-column/);
   assert.match(
     projected,
-    /<th>Задача<\/th><th>Ходы<\/th>/,
+    /<div data-work-log-header><strong>Задача<\/strong><strong>Ходы<\/strong><\/div>/,
   );
-  assert.doesNotMatch(projected, /<th>Расход<\/th>/);
+  assert.doesNotMatch(projected, /<strong>Расход<\/strong>/);
   assert.match(
     projected,
     /data-work-log-task-content>Task A<\/div><div data-work-log-usage><details data-task-usage-details>/,
@@ -169,6 +168,32 @@ test("projectWorkLogUsage marks every day as an independent layout section", () 
   assert.equal((projected.match(/summary data-work-log-day/g) ?? []).length, 2);
 });
 
+test("projectWorkLogUsage removes stale table fragments from a partially migrated day", () => {
+  const source = [
+    '<details open><summary><strong>27.07.2026</strong></summary>',
+    '<div data-work-log-table><div data-work-log-body>',
+    '<div data-work-log-row><div data-work-log-task-cell>',
+    `<div data-work-log-task-content>Task</div><div data-work-log-usage><span data-usage-id="${WORK_ID}" hidden></span></div>`,
+    '</div><div data-work-log-turn-list></div></div></div></div>',
+    '<tr><td>stale task</td><td>stale turn</td></tr></tbody></table>',
+    "</details>",
+  ].join("");
+  const turns = {
+    turn: {
+      workLogId: WORK_ID,
+      turnId: "turn",
+      usage: { inputTokens: 100 },
+      completedAt: new Date(2026, 6, 27, 10, 0).toISOString(),
+    },
+  };
+
+  const projected = projectWorkLogUsage(source, turns);
+
+  assert.equal((projected.match(/<div data-work-log-row/g) ?? []).length, 1);
+  assert.doesNotMatch(projected, /<(?:table|tr|td)\b|stale task|stale turn/);
+  assert.equal(projectWorkLogUsage(projected, turns), projected);
+});
+
 test("projectWorkLogUsage canonicalizes a unique legacy row and refreshes its task title", () => {
   const workLogId = "823e4567-e89b-42d3-a456-426614174000";
   const completedAt = new Date(2026, 6, 27, 10, 0).toISOString();
@@ -193,7 +218,7 @@ test("projectWorkLogUsage canonicalizes a unique legacy row and refreshes its ta
 
   assert.match(
     projected,
-    /<tr data-work-log-provider="codex" data-work-log-thread-id="thread-legacy">/,
+    /<div data-work-log-row data-work-log-provider="codex" data-work-log-thread-id="thread-legacy">/,
   );
   assert.match(projected, />Codex - Название из Agent Hub<\/a>/);
   assert.doesNotMatch(projected, />Codex - Старое имя<\/a>/);
@@ -261,7 +286,7 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
   assert.match(css, /summary\[data-work-log-day\][\s\S]*?font-size:\s*1em/);
   assert.match(
     css,
-    /table\[data-work-log-table\] > thead > tr,[\s\S]*?table\[data-work-log-table\] > tbody > tr[\s\S]*?grid-template-columns:\s*28ch minmax\(0, 1fr\)/,
+    /div\[data-work-log-header\],[\s\S]*?div\[data-work-log-row\][\s\S]*?grid-template-columns:\s*28ch minmax\(0, 1fr\)/,
   );
   assert.match(css, /--work-log-task-card-width:\s*26ch/);
   assert.match(
@@ -270,13 +295,13 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
   );
   assert.match(
     css,
-    /td\[data-work-log-task-cell\] div\[data-work-log-task-content\][\s\S]*?border:[\s\S]*?padding:\s*0\.3em 0\.45em[\s\S]*?width:\s*var\(--work-log-task-card-width\)/,
+    /div\[data-work-log-task-cell\] > div\[data-work-log-task-content\][\s\S]*?border:[\s\S]*?padding:\s*0\.3em 0\.45em[\s\S]*?width:\s*var\(--work-log-task-card-width\)/,
   );
   assert.match(
     css,
     /summary\[data-task-usage\][\s\S]*?padding:\s*0\.3em 0\.45em[\s\S]*?width:\s*var\(--work-log-task-card-width\)/,
   );
-  assert.doesNotMatch(css, /table\[data-work-log-table\] tr\s*\{/);
+  assert.doesNotMatch(css, /table\[data-work-log-table\]/);
   assert.match(css, /details\[data-work-log-turn-details\] > summary[\s\S]*?display:\s*grid/);
   assert.match(
     css,

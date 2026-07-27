@@ -344,12 +344,101 @@ function topLevelElements(source, tagName) {
   return ranges;
 }
 
+function nestedElements(source, tagName) {
+  const text = String(source ?? "");
+  const tag = String(tagName).replace(/[^a-z0-9]/gi, "");
+  const pattern = new RegExp(`<\\/?${tag}\\b[^>]*>`, "gi");
+  const stack = [];
+  const ranges = [];
+  for (const match of text.matchAll(pattern)) {
+    const closing = /^<\//.test(match[0]);
+    if (!closing) {
+      stack.push({ start: match.index, opening: match[0] });
+      continue;
+    }
+    const started = stack.pop();
+    if (!started) continue;
+    const end = match.index + match[0].length;
+    ranges.push({
+      start: started.start,
+      end,
+      opening: started.opening,
+      text: text.slice(started.start, end),
+    });
+  }
+  return ranges.sort((left, right) => left.start - right.start);
+}
+
+function hasBareAttribute(opening, name) {
+  const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\s${escaped}(?:\\s|=|>)`, "i").test(String(opening ?? ""));
+}
+
+function workLogTaskRows(source) {
+  const divRows = nestedElements(source, "div")
+    .filter((element) => hasBareAttribute(element.opening, "data-work-log-row"));
+  if (divRows.length) return divRows;
+  return topLevelElements(source, "tr")
+    .filter((element) => topLevelElements(element.text, "td").length >= 2)
+    .map((element) => ({
+      ...element,
+      opening: element.text.match(/^<tr\b[^>]*>/i)?.[0] ?? "<tr>",
+    }));
+}
+
+function workLogRowCells(row) {
+  const divCells = nestedElements(row, "div")
+    .filter((element) => (
+      hasBareAttribute(element.opening, "data-work-log-task-cell")
+      || hasBareAttribute(element.opening, "data-work-log-turn-list")
+    ));
+  if (divCells.length >= 2) return divCells;
+  return topLevelElements(row, "td").map((element) => ({
+    ...element,
+    opening: element.text.match(/^<td\b[^>]*>/i)?.[0] ?? "<td>",
+  }));
+}
+
+function layoutContainer(content) {
+  return [
+    "<div data-work-log-table>",
+    '<div data-work-log-header><strong>Задача</strong><strong>Ходы</strong></div>',
+    `<div data-work-log-body>${content}</div>`,
+    "</div>",
+  ].join("\n");
+}
+
+function insertTaskRow(section, row) {
+  const body = nestedElements(section, "div")
+    .find((element) => hasBareAttribute(element.opening, "data-work-log-body"));
+  if (body) {
+    const insertion = body.end - "</div>".length;
+    return `${section.slice(0, insertion)}${row}\n${section.slice(insertion)}`;
+  }
+  const tbodyEnd = section.lastIndexOf("</tbody>");
+  if (tbodyEnd < 0) throw new Error("WORK_LOG day has no task container");
+  return `${section.slice(0, tbodyEnd)}${row}\n${section.slice(tbodyEnd)}`;
+}
+
 function appendMarkerToRow(row, workLogId) {
-  const cells = topLevelElements(row, "td");
+  const cells = workLogRowCells(row);
   if (cells.length < 2) throw new Error("WORK_LOG task row must contain task and turn cells");
+  const usage = nestedElements(cells[0].text, "div")
+    .find((element) => hasBareAttribute(element.opening, "data-work-log-usage"));
   const usageCell = cells.length >= 3 ? cells[2] : cells[0];
   const marker = `<span data-usage-id="${workLogId}" hidden>${workLogId}</span>`;
-  const updatedCell = usageCell.text.replace(/<\/td>$/i, `\n${marker}</td>`);
+  if (usage) {
+    const updatedUsage = usage.text.replace(/<\/div>$/i, `\n${marker}</div>`);
+    const updatedCell = `${cells[0].text.slice(0, usage.start)}${updatedUsage}${
+      cells[0].text.slice(usage.end)
+    }`;
+    return `${row.slice(0, cells[0].start)}${updatedCell}${row.slice(cells[0].end)}`;
+  }
+  const closing = /^<div\b/i.test(usageCell.text) ? "</div>" : "</td>";
+  const updatedCell = usageCell.text.replace(
+    new RegExp(`${closing.replace("/", "\\/")}$`, "i"),
+    `\n${marker}${closing}`,
+  );
   return `${row.slice(0, usageCell.start)}${updatedCell}${row.slice(usageCell.end)}`;
 }
 
@@ -372,13 +461,13 @@ function taskRow({ provider = "codex", threadId, taskTitle, workLogId = null }) 
     ? `<span data-usage-id="${workLogId}" hidden>${workLogId}</span>`
     : "";
   return [
-    `<tr data-work-log-provider="${escapedProvider}" data-work-log-thread-id="${escapedThreadId}">`,
-    '<td data-work-log-task-cell>',
+    `<div data-work-log-row data-work-log-provider="${escapedProvider}" data-work-log-thread-id="${escapedThreadId}">`,
+    '<div data-work-log-task-cell>',
     `<div data-work-log-task-content>${taskCell({ provider: normalizedProvider, threadId, taskTitle })}</div>`,
     `<div data-work-log-usage>${marker}</div>`,
-    "</td>",
-    "<td data-work-log-turn-list></td>",
-    "</tr>",
+    "</div>",
+    "<div data-work-log-turn-list></div>",
+    "</div>",
   ].join("\n");
 }
 
@@ -386,21 +475,7 @@ function workLogDaySection(date, row, open = false) {
   return [
     `<details${open ? " open" : ""}>`,
     `<summary><strong>${date}</strong></summary>`,
-    "<table>",
-    "<colgroup>",
-    "<col data-work-log-task-column>",
-    "<col data-work-log-turn-list-column>",
-    "</colgroup>",
-    "<thead>",
-    "<tr>",
-    "<th>Задача</th>",
-    "<th>Ходы</th>",
-    "</tr>",
-    "</thead>",
-    "<tbody>",
-    row,
-    "</tbody>",
-    "</table>",
+    layoutContainer(row),
     "</details>",
   ].join("\n");
 }
@@ -431,12 +506,13 @@ function attachAutomaticMarker(workLogText, {
 
   const section = text.slice(range.start, range.end);
   const escapedThreadId = escapeHtmlAttribute(threadId);
-  const linkedRows = topLevelElements(section, "tr")
+  const rows = workLogTaskRows(section);
+  const linkedRows = rows
     .filter((match) => (
       !/\bdata-work-log-thread-id=/i.test(match.text)
       && match.text.includes(`href="vscode://openai.chatgpt/local/${escapedThreadId}"`)
     ));
-  const fallback = topLevelElements(section, "tr")
+  const fallback = rows
     .find((match) => match.text.includes(`data-work-log-thread-id="${escapedThreadId}"`));
   const target = linkedRows.length === 1 ? linkedRows[0] : fallback;
 
@@ -448,8 +524,7 @@ function attachAutomaticMarker(workLogText, {
     targetKind = linkedRows.length === 1 ? "exact-thread-row" : "fallback-existing";
   } else {
     const row = taskRow({ provider, threadId, taskTitle, workLogId });
-    if (!/<\/tbody>/i.test(section)) throw new Error(`WORK_LOG day ${date} has no table body`);
-    updatedSection = section.replace(/<\/tbody>/i, `${row}\n</tbody>`);
+    updatedSection = insertTaskRow(section, row);
     targetKind = linkedRows.length > 1 ? "fallback-ambiguous" : "fallback-missing";
   }
   return {
@@ -507,7 +582,10 @@ function taskCellKey(source) {
 }
 
 function cellInner(source) {
-  return String(source ?? "").replace(/^<td\b[^>]*>/i, "").replace(/<\/td>$/i, "").trim();
+  return String(source ?? "")
+    .replace(/^<(?:td|div)\b[^>]*>/i, "")
+    .replace(/<\/(?:td|div)>$/i, "")
+    .trim();
 }
 
 function taskCellContent(source) {
@@ -526,8 +604,8 @@ export function restoreLegacyOutcomes(workLogText, previousWorkLogText) {
   const outcomes = new Map();
   for (const range of daySectionRanges(previousWorkLogText)) {
     const section = String(previousWorkLogText).slice(range.start, range.end);
-    for (const row of topLevelElements(section, "tr")) {
-      const cells = topLevelElements(row.text, "td");
+    for (const row of workLogTaskRows(section)) {
+      const cells = workLogRowCells(row.text);
       if (cells.length < 2) continue;
       const outcome = cellInner(cells[1].text)
         .replace(/<details\b[^>]*>\s*<summary\b[^>]*>\s*Изменённые файлы\s*<\/summary>[\s\S]*?<\/details>/giu, "")
@@ -539,14 +617,15 @@ export function restoreLegacyOutcomes(workLogText, previousWorkLogText) {
   let updated = String(workLogText ?? "");
   for (const range of daySectionRanges(updated).reverse()) {
     let section = updated.slice(range.start, range.end);
-    for (const row of topLevelElements(section, "tr").reverse()) {
-      const cells = topLevelElements(row.text, "td");
+    for (const row of workLogTaskRows(section).reverse()) {
+      const cells = workLogRowCells(row.text);
       if (cells.length < 2 || legacyOutcome(cells[1].text)) continue;
       const outcome = outcomes.get(`${range.date}\0${taskCellKey(cells[0].text)}`);
       if (!outcome) continue;
+      const closing = /^<div\b/i.test(cells[1].text) ? "</div>" : "</td>";
       const replacementCell = cells[1].text.replace(
-        /<\/td>$/i,
-        `\n<div data-work-log-restored-outcome>${outcome}</div></td>`,
+        new RegExp(`${closing.replace("/", "\\/")}$`, "i"),
+        `\n<div data-work-log-restored-outcome>${outcome}</div>${closing}`,
       );
       const replacementRow = `${row.text.slice(0, cells[1].start)}${replacementCell}`
         + row.text.slice(cells[1].end);
@@ -558,7 +637,7 @@ export function restoreLegacyOutcomes(workLogText, previousWorkLogText) {
 }
 
 function rowIdentity(row) {
-  const opening = String(row).match(/^<tr\b[^>]*>/i)?.[0] ?? "";
+  const opening = String(row).match(/^<(?:tr|div)\b[^>]*>/i)?.[0] ?? "";
   const provider = opening.match(/\bdata-work-log-provider=["']([^"']+)["']/i)?.[1]?.trim().toLowerCase();
   const threadId = opening.match(/\bdata-work-log-thread-id=["']([^"']+)["']/i)?.[1]?.trim();
   return provider && threadId ? { provider, threadId } : null;
@@ -571,10 +650,10 @@ function linkedThreadId(row) {
 function withRowIdentity(row, { provider, threadId }) {
   if (rowIdentity(row)) return row;
   return String(row).replace(
-    /^<tr\b([^>]*)>/i,
-    `<tr data-work-log-provider="${escapeHtmlAttribute(provider)}" data-work-log-thread-id="${
+    /^<(tr|div)\b([^>]*)>/i,
+    `<$1 data-work-log-provider="${escapeHtmlAttribute(provider)}" data-work-log-thread-id="${
       escapeHtmlAttribute(threadId)
-    }"$1>`,
+    }"$2>`,
   );
 }
 
@@ -599,7 +678,7 @@ function ensureCanonicalRows(section, date, turns) {
   }
   for (const [key, records] of groups) {
     const [provider, threadId] = key.split("\0");
-    const rows = topLevelElements(updated, "tr").filter((row) => topLevelElements(row.text, "td").length >= 2);
+    const rows = workLogTaskRows(updated);
     if (rows.some((row) => {
       const identity = rowIdentity(row.text);
       return identity?.provider === provider && identity.threadId === threadId;
@@ -621,12 +700,9 @@ function ensureCanonicalRows(section, date, turns) {
       threadId,
       taskTitle: latest?.taskTitle,
     });
-    const insertion = updated.lastIndexOf("</tbody>");
-    if (insertion < 0) throw new Error(`WORK_LOG day ${date} has no table body`);
-    updated = `${updated.slice(0, insertion)}${row}\n${updated.slice(insertion)}`;
+    updated = insertTaskRow(updated, row);
   }
-  const rows = topLevelElements(updated, "tr")
-    .filter((row) => topLevelElements(row.text, "td").length >= 2);
+  const rows = workLogTaskRows(updated);
   const linkedRows = new Map();
   for (const row of rows) {
     if (rowIdentity(row.text)) continue;
@@ -655,10 +731,11 @@ function ensureCanonicalRows(section, date, turns) {
 }
 
 function replaceProjectedCells(row, usageContent, records) {
-  const cells = topLevelElements(row, "td");
+  const cells = workLogRowCells(row);
   if (cells.length < 2) return row;
-  const opening = row.match(/^<tr\b[^>]*>/i)?.[0] ?? "<tr>";
-  const turnCell = cells.find((cell) => /\bdata-work-log-turn-list\b/i.test(cell.text)) ?? cells[1];
+  const turnCell = cells.find(
+    (cell) => hasBareAttribute(cell.opening, "data-work-log-turn-list"),
+  ) ?? cells[1];
   const changedFiles = changedFilesContent(turnCell.text);
   const outcome = legacyOutcome(turnCell.text);
   const turnTable = records.length || outcome
@@ -674,45 +751,20 @@ function replaceProjectedCells(row, usageContent, records) {
   const task = identity && latest?.taskTitle
     ? taskCell({ ...identity, taskTitle: latest.taskTitle })
     : taskCellContent(cells[0].text);
-  return `${opening}\n<td data-work-log-task-cell>`
+  const attributes = identity
+    ? ` data-work-log-provider="${escapeHtmlAttribute(identity.provider)}"`
+      + ` data-work-log-thread-id="${escapeHtmlAttribute(identity.threadId)}"`
+    : "";
+  return `<div data-work-log-row${attributes}>\n`
+    + '<div data-work-log-task-cell>'
     + `<div data-work-log-task-content>${task}</div>`
-    + `<div data-work-log-usage>${usageContent}</div></td>\n`
-    + `<td data-work-log-turn-list>${turnList}</td>\n</tr>`;
-}
-
-function markWorkLogTable(section) {
-  let marked = section.replace(/<table\b([^>]*)>/i, (opening, attributes) => (
-    /\bdata-work-log-table\b/i.test(attributes)
-      ? opening
-      : `<table data-work-log-table${attributes}>`
-  ));
-  marked = marked.replace(
-    /<colgroup>[\s\S]*?<\/colgroup>/i,
-    [
-      "<colgroup>",
-      "<col data-work-log-task-column>",
-      "<col data-work-log-turn-list-column>",
-      "</colgroup>",
-    ].join("\n"),
-  );
-  return marked.replace(
-    /<thead>[\s\S]*?<\/thead>/i,
-    "<thead>\n<tr><th>Задача</th><th>Ходы</th></tr>\n</thead>",
-  );
-}
-
-function markDaySection(section) {
-  return section.replace(/^<details\b([^>]*)>/i, (opening, attributes) => (
-    /\bdata-work-log-day-section\b/i.test(attributes)
-      ? opening
-      : `<details data-work-log-day-section${attributes}>`
-  ));
+    + `<div data-work-log-usage>${usageContent}</div></div>\n`
+    + `<div data-work-log-turn-list>${turnList}</div>\n</div>`;
 }
 
 function projectDaySection(section, date, turns, recordsById) {
-  const markedSection = markWorkLogTable(markDaySection(ensureCanonicalRows(section, date, turns)));
-  const rows = topLevelElements(markedSection, "tr")
-    .filter((match) => topLevelElements(match.text, "td").length >= 2)
+  const canonicalSection = ensureCanonicalRows(section, date, turns);
+  const rows = workLogTaskRows(canonicalSection)
     .map((match) => {
       const ids = [...new Set(usageIds(match.text))];
       const identity = rowIdentity(match.text);
@@ -735,9 +787,9 @@ function projectDaySection(section, date, turns, recordsById) {
           : addTokenUsage(total, record.usage),
         emptyTokenUsage(),
       );
-      const cells = topLevelElements(match.text, "td");
+      const cells = workLogRowCells(match.text);
       const turnCell = cells.find(
-        (cell) => /\bdata-work-log-turn-list\b/i.test(cell.text),
+        (cell) => hasBareAttribute(cell.opening, "data-work-log-turn-list"),
       ) ?? cells[1];
       return {
         match,
@@ -748,16 +800,17 @@ function projectDaySection(section, date, turns, recordsById) {
         identity,
         hasLegacyOutcome: Boolean(legacyOutcome(turnCell?.text)),
       };
-    })
-    .filter((row) => row.ids.length || row.recorded.length || row.hasLegacyOutcome);
-  const dayUsage = rows.reduce(
+    });
+  const trackedRows = rows.filter(
+    (row) => row.ids.length || row.recorded.length || row.hasLegacyOutcome,
+  );
+  const dayUsage = trackedRows.reduce(
     (total, row) => addTokenUsage(total, row.usage),
     emptyTokenUsage(),
   );
-  const dayUnits = rows.reduce((total, row) => total + row.units, 0);
+  const dayUnits = trackedRows.reduce((total, row) => total + row.units, 0);
 
-  let projected = markedSection;
-  for (const row of rows.reverse()) {
+  const renderedRows = rows.map((row) => {
     const visible = row.units > 0
       ? formatTaskUsageDetails(row.usage, dayUnits)
       : "";
@@ -765,20 +818,25 @@ function projectDaySection(section, date, turns, recordsById) {
       `<span data-usage-id="${id}" hidden>${recordsById.has(id) ? "" : id}</span>`
     )).join("\n");
     const turnsContent = [...row.recorded]
-      .sort((left, right) => (Date.parse(left.completedAt) || 0) - (Date.parse(right.completedAt) || 0))
-    const replacement = replaceProjectedCells(row.match.text, `${visible}${markers}`, turnsContent);
-    projected = `${projected.slice(0, row.match.start)}${replacement}${projected.slice(row.match.end)}`;
-  }
-
+      .sort(
+        (left, right) => (Date.parse(left.completedAt) || 0) - (Date.parse(right.completedAt) || 0),
+      );
+    return replaceProjectedCells(row.match.text, `${visible}${markers}`, turnsContent);
+  });
   const summary = dayUnits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
       + `<span data-day-usage>Итого ${highlightUsageUnits(formatConditionalUnits(dayUnits))}</span>`
       + `${formatDayUsageBreakdown(dayUsage)}</span></summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
-  return projected.replace(
-    /<summary[^>]*>[\s\S]*?<\/summary>(?:\s*(?:<details data-day-usage-details[^>]*>[\s\S]*?<\/details>|<span data-day-usage-breakdown>[\s\S]*?<\/span>))?/i,
+  const open = /^<details\b[^>]*\bopen\b/i.test(section);
+  return [
+    `<details data-work-log-day-section${open ? " open" : ""}>`,
     summary,
-  );
+    layoutContainer(renderedRows.join("\n")),
+    "</details>",
+    "",
+    "",
+  ].join("\n");
 }
 
 export function projectWorkLogUsage(workLogText, turns = {}) {
