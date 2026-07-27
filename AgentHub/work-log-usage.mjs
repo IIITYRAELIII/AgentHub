@@ -878,13 +878,15 @@ function mergeLedgerRecord(existing, incoming) {
     "changedFiles",
     "startedAt",
     "completedAt",
-    "status",
   ]) {
     if (field === "changedFiles") {
       if (incoming.changedFiles.length) existing.changedFiles = incoming.changedFiles;
     } else if (incoming[field]) {
       existing[field] = incoming[field];
     }
+  }
+  if (incoming.status && (incoming.status !== "unknown" || !existing.status || existing.status === "unknown")) {
+    existing.status = incoming.status;
   }
   return existing;
 }

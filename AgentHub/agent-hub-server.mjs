@@ -4681,7 +4681,11 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
   };
   const key = turnEndKey(identity);
   const alreadyDelivered = turnEndNotifications.hasDelivered(identity);
-  if (turnEndNotifications.get(identity) || reconcilingCodexTerminalTurns.has(key)) return true;
+  const pendingCompletion = turnEndNotifications.get(identity);
+  if (pendingCompletion
+    && pendingCompletion.status !== "unknown"
+    && pendingCompletion.usageReported) return true;
+  if (reconcilingCodexTerminalTurns.has(key)) return false;
   reconcilingCodexTerminalTurns.add(key);
   try {
     const usageResult = await readCodexTurnUsage(thread.path, identity.turnId);

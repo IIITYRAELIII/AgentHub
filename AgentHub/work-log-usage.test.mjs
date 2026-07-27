@@ -517,6 +517,31 @@ test("automatic ledger survives a projection failure and reprojects later", asyn
   }
 });
 
+test("a late unknown Stop result cannot overwrite an exact terminal status", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-status-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    const store = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    const input = {
+      threadId: "thread-status",
+      turnId: "turn-status",
+      projectRoot: root,
+      usageReported: false,
+      usage: {},
+      completedAt: "2026-07-27T00:00:00.000Z",
+      text: "Статус",
+      workLogFile,
+    };
+    await store.recordAutomaticAndProject({ ...input, status: "aborted" });
+    await store.recordAutomaticAndProject({ ...input, status: "unknown" });
+    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.equal(Object.values(ledger.turns)[0].status, "aborted");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("usage store recovers a damaged primary ledger from its backup", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-recovery-"));
   try {
