@@ -3814,6 +3814,10 @@ function runtimeCommandIdentity(environment = {}) {
 
 async function exactRuntimeCommandTurn(identity, run) {
   if (identity.provider === "codex") {
+    if (!codexTransport.running) {
+      await startCodexAppServer();
+      await initializeCodex({ attachSelectedThread: false });
+    }
     const result = await readCodexThread(identity.threadId, {
       fresh: true,
       includeTurns: false,
