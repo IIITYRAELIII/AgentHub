@@ -145,11 +145,15 @@ export class QuickTunnelController {
       timeout.unref?.();
       const consume = (chunk) => {
         output = `${output}${String(chunk)}`.slice(-16_384);
-        if (this.#mode === "named" && !settled && !publishing) {
+        if (
+          this.#mode === "named"
+          && /Registered tunnel connection/iu.test(output)
+          && !settled
+          && !publishing
+        ) {
           publishing = true;
           clearTimeout(timeout);
-          this.#waitUntilReachable(this.#publicUrl)
-            .then(() => this.#onUrl?.(this.#publicUrl))
+          Promise.resolve(this.#onUrl?.(this.#publicUrl))
             .then(() => {
               settled = true;
               this.#url = this.#publicUrl;

@@ -88,10 +88,9 @@ test("QuickTunnelController starts a named Cloudflare Tunnel from a token file",
       queueMicrotask(() => child.stderr.write("INF Registered tunnel connection\n"));
       return child;
     },
-    fetchImpl: async (url) => ({
-      ok: url === "https://hub.example.test/health",
-      status: 200,
-    }),
+    fetchImpl: async () => {
+      throw new Error("Named Tunnel startup must not depend on public DNS");
+    },
     onUrl: (url) => published.push(url),
   });
 
