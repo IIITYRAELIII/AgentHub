@@ -9,12 +9,18 @@ const CONTENT_TYPES = new Map([
   ["/app.js", "text/javascript; charset=utf-8"],
   ["/styles.css", "text/css; charset=utf-8"],
   ["/work-log.css", "text/css; charset=utf-8"],
+  ["/blackhole-blue.png", "image/png"],
 ]);
 const STATIC_FILES = new Map([
   ["/", "index.html"],
   ["/app.js", "app.js"],
   ["/styles.css", "styles.css"],
+  ["/blackhole-blue.png", "blackhole-blue.png"],
 ]);
+/* Разметка и стили обязаны быть свежими, поэтому у них no-store. Фон темы —
+   неизменяемый файл в несколько мегабайт: без долгого кэша он выкачивался бы
+   заново при каждом открытии, что заметно через Telegram-туннель. */
+const IMMUTABLE_FILES = new Set(["/blackhole-blue.png"]);
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const CHANGE_DEBOUNCE_MS = 75;
 const TELEGRAM_AUTH_MAX_AGE_SECONDS = 86_400;
@@ -106,9 +112,9 @@ export function extractWorkLogHtml(markdown) {
     : '<p data-mini-app-empty>Журнал пока пуст.</p>';
 }
 
-function responseHeaders(contentType) {
+function responseHeaders(contentType, { immutable = false } = {}) {
   return {
-    "Cache-Control": "no-store",
+    "Cache-Control": immutable ? "public, max-age=31536000, immutable" : "no-store",
     "Content-Security-Policy": [
       "default-src 'self'",
       "base-uri 'none'",
@@ -126,8 +132,8 @@ function responseHeaders(contentType) {
   };
 }
 
-function send(response, statusCode, contentType, body, method = "GET") {
-  response.writeHead(statusCode, responseHeaders(contentType));
+function send(response, statusCode, contentType, body, method = "GET", options = {}) {
+  response.writeHead(statusCode, responseHeaders(contentType, options));
   response.end(method === "HEAD" ? "" : body);
 }
 
@@ -192,7 +198,9 @@ export class MiniAppServer {
     if (pathname === "/work-log.css") return readFile(this.#workLogCssFile, "utf8");
     const file = STATIC_FILES.get(pathname);
     if (!file) return null;
-    return readFile(path.join(this.#assetsDirectory, file), "utf8");
+    const target = path.join(this.#assetsDirectory, file);
+    // изображение читается буфером: utf8-декодирование испортило бы PNG
+    return IMMUTABLE_FILES.has(pathname) ? readFile(target) : readFile(target, "utf8");
   }
 
   #writeEvent(response, event, data) {
@@ -291,6 +299,7 @@ export class MiniAppServer {
         CONTENT_TYPES.get(url.pathname),
         await this.#staticBody(url.pathname),
         method,
+        { immutable: IMMUTABLE_FILES.has(url.pathname) },
       );
     } catch (error) {
       send(response, 500, "text/plain; charset=utf-8", `Cannot load Mini App: ${error.message}\n`, method);

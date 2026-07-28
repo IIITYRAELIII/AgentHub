@@ -406,18 +406,6 @@ html[data-theme="blackhole"] {
   --space-base: radial-gradient(120% 80% at 50% -6%, #04060c 0, #000 62%);
   --space-star: rgba(240, 248, 255, 0.5);
   --star-opacity: 0.32;
-
-  /* Диск рисует не градиент, а встроенный SVG: feTurbulence + feDisplacementMap
-     рвут ровное кольцо на плазменные языки, чего CSS-градиентами не получить. */
-  --bh-disc-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 760' preserveAspectRatio='none'%3E%3Cdefs%3E%3CradialGradient id='g'%3E%3Cstop offset='.40' stop-color='%23eaf6ff' stop-opacity='0'/%3E%3Cstop offset='.47' stop-color='%23f2fbff' stop-opacity='.98'/%3E%3Cstop offset='.53' stop-color='%23c8e8ff' stop-opacity='.85'/%3E%3Cstop offset='.62' stop-color='%2378bcff' stop-opacity='.55'/%3E%3Cstop offset='.78' stop-color='%233470e0' stop-opacity='.2'/%3E%3Cstop offset='1' stop-color='%23132a5c' stop-opacity='0'/%3E%3C/radialGradient%3E%3Cfilter id='f' x='-25%25' y='-80%25' width='150%25' height='260%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.0032 0.013' numOctaves='4' seed='9' result='n'/%3E%3CfeDisplacementMap in='SourceGraphic' in2='n' scale='150' xChannelSelector='R' yChannelSelector='G'/%3E%3CfeGaussianBlur stdDeviation='2.5'/%3E%3C/filter%3E%3C/defs%3E%3Cellipse cx='800' cy='380' rx='775' ry='250' fill='url(%23g)' filter='url(%23f)'/%3E%3C/svg%3E");
-
-  /* геометрия сцены: сфера и диск, повёрнутый почти на ребро */
-  --bh-size: min(62vh, 33rem);
-  --bh-x: 50%;
-  --bh-y: 46%;
-  --bh-disc-width: calc(var(--bh-size) * 3.5);
-  --bh-disc-height: calc(var(--bh-size) * 1.18);
-  --bh-tilt: -7deg;
 }
 
 /* ================================================================== база === */
@@ -1605,65 +1593,29 @@ html[data-theme="gothic"] .journal span[data-high-usage] {
 
 /* ============================ «BlackHole»: аккреционный диск и горизонт === */
 
-/* Сцена собрана из трёх фиксированных слоёв. Порядок отрисовки в корневом
-   контексте — html::before → html::after → body::after, поэтому диск уходит
-   за сферу сверху и проходит перед ней снизу, как при взгляде почти с ребра. */
-html[data-theme="blackhole"]::before,
-html[data-theme="blackhole"]::after {
-  content: "";
-  left: var(--bh-x);
-  pointer-events: none;
-  position: fixed;
-  top: var(--bh-y);
-  z-index: 0;
+/* Фон — готовый рендер, а не рисунок из градиентов: закрученную плазму диска
+   и линзирование CSS воспроизвести не может. Слой закреплён во вьюпорте и
+   лежит под контентом (main имеет z-index: 1).
+   Путь переопределяем там, где картинка отдаётся иначе — в панели VS Code её
+   адрес выдаёт webview. */
+html[data-theme="blackhole"] {
+  --bh-image: url("/blackhole-blue.png");
 }
 
-/* дальняя половина диска и внешнее гало */
-html[data-theme="blackhole"]::before {
-  background-image: var(--bh-disc-image);
-  background-position: 50% 50%;
-  background-repeat: no-repeat;
-  background-size: 100% 100%;
-  filter: blur(4px) saturate(115%);
-  height: var(--bh-disc-height);
-  transform: translate(-50%, -50%) rotate(var(--bh-tilt));
-  width: var(--bh-disc-width);
-}
-
-/* горизонт событий с фотонным кольцом */
-html[data-theme="blackhole"]::after {
-  background: radial-gradient(
-    closest-side,
-    #000 0 93%,
-    rgba(150, 205, 255, 0.35) 95.5%,
-    rgba(226, 244, 255, 0.95) 98%,
-    rgba(140, 200, 255, 0.5) 99.4%,
-    transparent 100%
-  );
-  border-radius: 50%;
-  box-shadow:
-    0 0 18px 1px rgba(150, 205, 255, 0.5),
-    0 0 60px 10px rgba(70, 140, 235, 0.35);
-  height: var(--bh-size);
-  transform: translate(-50%, -50%);
-  width: var(--bh-size);
-}
-
-/* ближняя половина диска — единственный слой поверх сферы */
 html[data-theme="blackhole"] body::after {
-  background-image: var(--bh-disc-image);
-  background-position: 50% 50%;
+  background-color: #000;
+  background-image: var(--bh-image);
+  background-position: 50% 42%;
   background-repeat: no-repeat;
-  background-size: 100% 100%;
-  filter: blur(2px) brightness(115%);
-  height: var(--bh-disc-height);
-  inset: auto;
-  left: var(--bh-x);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0 48%, #000 57%);
-  mask-image: linear-gradient(to bottom, transparent 0 48%, #000 57%);
-  top: var(--bh-y);
-  transform: translate(-50%, -50%) rotate(var(--bh-tilt));
-  width: var(--bh-disc-width);
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 0.92;
+}
+
+/* звёздная пыль поверх готового рендера была бы лишней */
+html[data-theme="blackhole"] body::before {
+  content: none;
 }
 
 /* сквозь панели видно диск: тёмное стекло вместо глухой заливки */

@@ -155,6 +155,11 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
       assert.equal(response.status, 200, pathname || "/");
       assert.ok((await response.text()).length > 20);
     }
+    const blackHole = await fetch(`${address.url}blackhole-blue.png`);
+    assert.equal(blackHole.status, 200);
+    assert.equal(blackHole.headers.get("content-type"), "image/png");
+    assert.match(blackHole.headers.get("cache-control"), /immutable/u);
+    assert.ok((await blackHole.arrayBuffer()).byteLength > 100_000);
     const page = await (await fetch(address.url)).text();
     assert.match(page, /data-theme="orbit"/u);
     assert.match(page, /data-surface="desktop"/u);
@@ -182,6 +187,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /html\[data-theme="nebula"\]/u);
     assert.match(styles, /html\[data-theme="pulsar"\]/u);
     assert.match(styles, /html\[data-theme="gothic"\]/u);
+    assert.match(styles, /url\("\/blackhole-blue\.png"\)/u);
     assert.match(styles, /html\[data-surface="mobile"\] \.journal div\[data-work-log-row\]/u);
     assert.match(styles, /span\[data-day-usage-table\]\[data-mobile-expanded\]/u);
     assert.match(styles, /div\[data-work-log-row\]\[data-mobile-open\]/u);
