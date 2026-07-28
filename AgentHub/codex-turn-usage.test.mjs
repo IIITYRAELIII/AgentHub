@@ -144,6 +144,9 @@ test("streaming rollout scan extracts files from the apply_patch tool call", asy
     "D:\\repo\\src\\one.mjs",
     "D:\\repo\\src\\two.mjs",
   ]);
+  assert.match(result.diff, /^\*\*\* Begin Patch/mu);
+  assert.match(result.diff, /^\*\*\* Update File: src\/one\.mjs$/mu);
+  assert.match(result.diff, /^\+new$/mu);
 });
 
 test("rollout scan counts completed imagegen calls for the exact turn", () => {

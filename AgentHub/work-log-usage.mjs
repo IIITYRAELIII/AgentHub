@@ -263,15 +263,6 @@ function turnTitle(record) {
   return `${prefix}${sentence.trim().replace(/[.!?]+$/u, "") || "Ход завершён"}`;
 }
 
-function changedFileLinks(files) {
-  return [...new Set(Array.isArray(files) ? files : [])]
-    .map((file) => {
-      const normalized = String(file).replaceAll("\\", "/");
-      return `<a href="${escapeHtmlAttribute(normalized)}">${escapeHtmlText(normalized)}</a>`;
-    })
-    .join("; ");
-}
-
 function diffLineKind(line) {
   if (/^diff --git /u.test(line) || /^(?:---|\+\+\+) /u.test(line)) return "file";
   if (/^@@/u.test(line)) return "hunk";
@@ -308,7 +299,6 @@ function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
   const body = escapeHtmlText(String(record?.body ?? record?.text ?? "").trim());
   const prompt = escapeHtmlText(displayUserPrompt(record?.prompt));
   const diff = formatTurnDiff(record?.diff);
-  const files = changedFileLinks(record?.changedFiles);
   const migratedFiles = String(legacyFiles ?? "").trim();
   const metaDetails = [
     `<div data-work-log-turn-context><strong>Длит.:</strong> ${
@@ -319,7 +309,6 @@ function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
   const bodyDetails = [
     body ? `<div data-work-log-turn-body>${body}</div>` : "",
     diff,
-    !diff && files ? `<div data-work-log-turn-files>${files}</div>` : "",
     migratedFiles
       ? `<div data-work-log-turn-files data-work-log-migrated-files>${migratedFiles}</div>`
       : "",

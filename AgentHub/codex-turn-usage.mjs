@@ -79,6 +79,12 @@ function patchInputFiles(value, workspaceRoot = "") {
   return files;
 }
 
+function normalizedApplyPatch(value) {
+  const text = String(value ?? "").trim();
+  if (!text.startsWith("*** Begin Patch") || !text.endsWith("*** End Patch")) return "";
+  return text;
+}
+
 function createTurnAccumulator(turnId) {
   const requestedTurnId = String(turnId ?? "").trim();
   if (!requestedTurnId) throw new Error("Codex turn id is required");
@@ -99,6 +105,7 @@ function createTurnAccumulator(turnId) {
   let workspaceRoot = "";
   let index = -1;
   const changedFiles = new Set();
+  const patches = [];
   const imageGenerationCalls = new Map();
   const completedImageGenerationCalls = new Set();
 
@@ -159,6 +166,8 @@ function createTurnAccumulator(turnId) {
       && entry.payload?.type === "custom_tool_call"
       && entry.payload?.name === "apply_patch") {
       for (const file of patchInputFiles(entry.payload.input, workspaceRoot)) changedFiles.add(file);
+      const patch = normalizedApplyPatch(entry.payload.input);
+      if (patch) patches.push(patch);
     }
     if (isFinalAssistantItem(entry, requestedTurnId)) {
       finalAnswerIndex = index;
@@ -191,6 +200,7 @@ function createTurnAccumulator(turnId) {
       completedAt,
       prompt,
       changedFiles: [...changedFiles],
+      diff: patches.join("\n\n"),
       imageGenerationCount,
       estimatedUnits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_UNITS,
       estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",

@@ -196,6 +196,7 @@ test("terminal audit advances through an active rollout and reads its later term
   let fileSize = 100;
   let active = true;
   const starts = [];
+  const observedStarts = [];
   const recovered = [];
   const audit = new CodexTerminalAudit({
     now: () => nowMs,
@@ -211,13 +212,21 @@ test("terminal audit advances through an active rollout and reads its later term
     scanFile: async (_path, { startOffset }) => {
       starts.push(startOffset);
       return {
-        terminals: active ? [] : [{
+        terminals: active || startOffset >= fileSize ? [] : [{
           turnId: "turn-active",
           status: "aborted",
           completedAt: new Date(nowMs).toISOString(),
         }],
+        activeTurns: active ? [{
+          turnId: "turn-active",
+          startedAt: "2026-07-27T04:00:30.000Z",
+          lastActivityAt: "2026-07-27T04:01:00.000Z",
+        }] : [],
         nextOffset: fileSize,
       };
+    },
+    onTurnStarted: async (observedThread, observedProject, turn) => {
+      observedStarts.push([observedThread.id, observedProject.path, turn.turnId]);
     },
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
@@ -233,7 +242,8 @@ test("terminal audit advances through an active rollout and reads its later term
   nowMs += 60_000;
   await audit.run();
 
-  assert.deepEqual(starts, [50, 100]);
+  assert.deepEqual(starts, [50, 100, 120]);
+  assert.deepEqual(observedStarts, [["thread-active", project.path, "turn-active"]]);
   assert.deepEqual(recovered, ["turn-active"]);
   assert.equal(audit.snapshot().positions[0][1].offset, 120);
 });

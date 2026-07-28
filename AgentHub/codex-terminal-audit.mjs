@@ -74,6 +74,7 @@ export class CodexTerminalAudit {
     listPage,
     readThread,
     isTurnActive,
+    onTurnStarted,
     onTurnActive,
     resolveProject,
     reconcile,
@@ -90,6 +91,7 @@ export class CodexTerminalAudit {
     this.listPage = listPage;
     this.readThread = readThread;
     this.isTurnActive = isTurnActive;
+    this.onTurnStarted = onTurnStarted;
     this.onTurnActive = onTurnActive;
     this.resolveProject = resolveProject;
     this.reconcile = reconcile;
@@ -165,7 +167,7 @@ export class CodexTerminalAudit {
     if (!pending.turns.size) this.pendingTurns.delete(threadId);
   }
 
-  #rememberActiveTurns(thread, activeTurns, {
+  async #rememberActiveTurns(thread, project, activeTurns, {
     lowerBoundMs,
     canResume,
     activityMs,
@@ -185,6 +187,14 @@ export class CodexTerminalAudit {
     for (const turn of eligible) {
       const turnId = String(turn?.turnId ?? "").trim();
       if (!turnId) continue;
+      const newlyObserved = !pending.turns.has(turnId);
+      if (newlyObserved && typeof this.onTurnStarted === "function") {
+        await this.onTurnStarted(thread, project, {
+          turnId,
+          startedAt: String(turn?.startedAt ?? ""),
+          lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
+        });
+      }
       pending.turns.set(turnId, {
         turnId,
         startedAt: String(turn?.startedAt ?? ""),
@@ -220,7 +230,7 @@ export class CodexTerminalAudit {
         pending.nextStatusCheckMs = activityMs + this.statusIdleMs;
       }
     }
-    this.#rememberActiveTurns(thread, result.activeTurns, {
+    await this.#rememberActiveTurns(thread, project, result.activeTurns, {
       lowerBoundMs,
       canResume,
       activityMs,

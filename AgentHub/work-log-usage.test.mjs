@@ -208,6 +208,33 @@ test("projectWorkLogUsage renders the exact turn diff instead of changed-file ch
   assert.doesNotMatch(projected, /data-work-log-turn-files>[\s\S]*src\/a\.mjs/u);
 });
 
+test("projectWorkLogUsage does not present changed-file paths as a missing diff", () => {
+  const source = [
+    "<details open>",
+    "<summary><strong>25.07.2026</strong></summary>",
+    "<table><tbody><tr>",
+    "<td>Task</td><td></td>",
+    `<td data-work-log-usage><span data-usage-id="${WORK_ID}">${WORK_ID}</span></td>`,
+    "</tr></tbody></table>",
+    "</details>",
+  ].join("");
+  const projected = projectWorkLogUsage(source, {
+    missingDiff: {
+      workLogId: WORK_ID,
+      provider: "codex",
+      threadId: "thread-no-diff",
+      turnId: "turn-no-diff",
+      taskThreadId: "thread-no-diff",
+      taskTitle: "Task",
+      completedAt: new Date(2026, 6, 25, 13, 45).toISOString(),
+      changedFiles: ["src/noisy-path.mjs"],
+      diff: "",
+    },
+  });
+  assert.doesNotMatch(projected, /noisy-path\.mjs/u);
+  assert.doesNotMatch(projected, /data-work-log-turn-diff/u);
+});
+
 test("projectWorkLogUsage marks every day as an independent layout section", () => {
   const source = [
     "<details open><summary><strong>25.07.2026</strong></summary></details>",

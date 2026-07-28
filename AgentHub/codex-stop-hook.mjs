@@ -65,6 +65,7 @@ export async function handleCodexStopHook(value, {
     completedAt: usageResult?.completedAt || new Date().toISOString(),
     prompt: usageResult?.prompt || null,
     changedFiles,
+    diff: usageResult?.diff || "",
     usage: usageResult?.usage ?? null,
     usageReported: usageResult?.reported === true,
     imageGenerationCount: usageResult?.imageGenerationCount ?? 0,

@@ -25,6 +25,7 @@ test("Codex Stop hook forwards exact turn usage to the Agent Hub Server", async 
         path.join(process.cwd(), "AgentHub", "first.mjs"),
         path.resolve(process.cwd(), "..", "outside.mjs"),
       ],
+      diff: "*** Begin Patch\n*** Update File: AgentHub/first.mjs\n+new\n*** End Patch",
       usage: {
         inputTokens: 10,
         cachedInputTokens: 8,
@@ -44,6 +45,7 @@ test("Codex Stop hook forwards exact turn usage to the Agent Hub Server", async 
   assert.equal(received.payload.status, "aborted");
   assert.equal(received.payload.prompt, "Точный запрос");
   assert.deepEqual(received.payload.changedFiles, ["AgentHub/first.mjs"]);
+  assert.match(received.payload.diff, /Update File: AgentHub\/first\.mjs/u);
   assert.equal(received.payload.usage.inputTokens, 10);
   assert.equal(received.options.environment.CODEX_THREAD_ID, "thread-1");
 });

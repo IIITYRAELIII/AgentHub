@@ -394,6 +394,43 @@ const turnTokenUsage = new Map();
 const codexTurnStarts = new Map();
 const codexAccountingThreadRoots = new Map();
 let codexHookReceipts = { start: null, stop: null };
+
+async function rememberAuditedCodexTurnStart(thread, project, turn) {
+  const identity = {
+    provider: "codex",
+    threadId: String(thread?.id ?? "").trim(),
+    turnId: String(turn?.turnId ?? "").trim(),
+  };
+  if (!identity.threadId || !identity.turnId) return;
+  const key = turnEndKey(identity);
+  const existing = codexTurnStarts.get(key);
+  if (existing?.gitBaseline) return;
+  const gitBaseline = await captureTaskGitBaseline(
+    project.path,
+    config.dataDir,
+    `terminal-audit-${identity.turnId}`,
+  );
+  const record = {
+    ...existing,
+    ...identity,
+    projectRoot: project.path,
+    startedAt: existing?.startedAt || String(turn?.startedAt ?? ""),
+    prompt: existing?.prompt || "",
+    gitBaseline: gitBaseline ?? existing?.gitBaseline ?? null,
+  };
+  setBoundedMapValue(codexTurnStarts, key, record, 500);
+  const run = taskRuns.forEvent({
+    ...identity,
+    allowThreadFallback: true,
+  });
+  if (run) {
+    run.turnId ||= identity.turnId;
+    run.startedAt = record.startedAt || run.startedAt;
+    run.gitBaseline = record.gitBaseline ?? run.gitBaseline;
+    taskRuns.reindex(run);
+  }
+}
+
 const codexTerminalAudit = new CodexTerminalAudit({
   listPage: (cursor, limit) => sendRpc("thread/list", {
     cursor,
@@ -410,6 +447,7 @@ const codexTerminalAudit = new CodexTerminalAudit({
     const activity = await readCodexRolloutActivity(thread?.path);
     return activity.activeTurnIds.includes(String(turnId));
   },
+  onTurnStarted: rememberAuditedCodexTurnStart,
   onTurnActive: async (thread, project, turnId) => {
     const identity = {
       provider: "codex",
@@ -1913,6 +1951,8 @@ function respondRpc(id, result) {
 
 async function initializeProvider() {
   if (!isCodex()) {
+    await startCodexAppServer();
+    await initializeCodex({ attachSelectedThread: false });
     if (!threadId) await createThread();
     return;
   }
@@ -4000,13 +4040,14 @@ async function handleRuntimeCommand(request) {
     const alreadyDelivered = turnEndNotifications.hasDelivered(deliveredIdentity);
     const taskTitle = await runtimeCommandTaskTitle({ ...identity, run });
     let baselineChangedFiles = [];
-    let turnDiff = "";
+    let turnDiff = String(payload.diff ?? "");
     if (turnStart?.gitBaseline) {
-      turnDiff = await taskGitDiff(
+      const baselineDiff = await taskGitDiff(
         turnStart.gitBaseline,
         config.dataDir,
         `turn-complete-${payload.turnId}`,
       ) ?? "";
+      turnDiff = baselineDiff || turnDiff;
       baselineChangedFiles = changedFilesForRun({
         projectRoot: project.path,
         gitBaseline: turnStart.gitBaseline,
@@ -4907,13 +4948,14 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       : terminal.completedAt;
     const provisional = authoritativeStatus && !usageResult.terminal;
     const turnStart = codexTurnStarts.get(key);
-    const turnDiff = turnStart?.gitBaseline
+    const baselineDiff = turnStart?.gitBaseline
       ? await taskGitDiff(
         turnStart.gitBaseline,
         config.dataDir,
         `terminal-audit-${identity.turnId}`,
       ) ?? ""
       : "";
+    const turnDiff = baselineDiff || usageResult.diff || "";
     const changedFiles = [...new Set([
       ...(usageResult.changedFiles ?? []).flatMap((file) => {
         const absolute = path.resolve(String(file));
