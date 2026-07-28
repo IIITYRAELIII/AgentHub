@@ -77,3 +77,38 @@ test("ClaudeRunController reattaches from a saved offset and finalizes a result"
     assert.equal(run.claudeSettled, true);
   });
 });
+
+test("ClaudeRunController preserves stderr when Claude also returns an error result", async () => {
+  await withTempDir(async (directory) => {
+    let resolveCompletion;
+    const completed = new Promise((resolve) => { resolveCompletion = resolve; });
+    const run = { turnId: "turn-error", threadId: "session-error" };
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      pollIntervalMs: 5,
+      isCurrentRun: (candidate) => candidate === run,
+      onComplete: (_run, value) => resolveCompletion(value),
+    });
+    const payload = JSON.stringify({
+      type: "result",
+      subtype: "error_during_execution",
+      result: "",
+      is_error: true,
+      session_id: "session-error",
+      usage: {},
+    });
+    await controller.start(run, {
+      command: process.execPath,
+      args: ["-e", [
+        `process.stdout.write(${JSON.stringify(`${payload}\n`)});`,
+        "process.stderr.write('resume failed in nested cwd');",
+        "process.exitCode = 1;",
+      ].join("")],
+      cwd: directory,
+      env: process.env,
+    });
+    const completion = await completed;
+    assert.equal(completion.result.is_error, true);
+    assert.equal(completion.errorText, "resume failed in nested cwd");
+  });
+});

@@ -14,8 +14,10 @@ import {
 import {
   buildClaudeArgs,
   buildClaudePrompt,
+  claudeFailureMessage,
   claudeThinkingTokens,
   formatClaudeUsage,
+  resolveClaudeSessionCwd,
 } from "./claude.mjs";
 import {
   cleanupOrphanedClaudeRunOutputs,
@@ -672,8 +674,11 @@ function selectedTask() {
 }
 
 function selectedTurnTarget(targetChatId = chatId) {
+  const selected = selectedTask();
+  const catalogEntry = taskCatalog.find((entry) => catalogEntryIsSelected(entry, selected));
   return {
-    ...selectedTask(),
+    ...selected,
+    sessionCwd: catalogEntry?.sessionCwd ?? null,
     taskTitle: activeThreadTitle,
     chatId: targetChatId,
     modelId: activeProvider === "codex" ? codexModel : claudeModel,
@@ -3198,6 +3203,7 @@ async function beginRun(input, target = null) {
     chatId: target?.chatId ?? chatId,
     projectRoot,
     projectName: project?.name ?? path.basename(projectRoot),
+    sessionCwd: target?.sessionCwd ?? null,
     threadId: targetThreadId,
     taskTitle: targetTaskTitle,
     promptPreview: inputPreview(input),
@@ -4148,11 +4154,23 @@ async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton =
   if (temporaryFiles.length) turnTemporaryFiles.set(turnId, temporaryFiles);
   run.claudeTemporaryFiles = [...temporaryFiles];
   run.claudeForceSpeechButton = forceSpeechButton === true;
+  let snapshot = null;
+  if (run.threadId) {
+    snapshot = await readClaudeTaskSnapshot(run.threadId).catch((error) => {
+      console.warn(`Cannot resolve Claude session directory ${run.threadId}:`, error.message);
+      return null;
+    });
+  }
+  const sessionCwd = resolveClaudeSessionCwd(
+    run.projectRoot,
+    snapshot?.cwd ?? run.sessionCwd,
+  );
+  run.sessionCwd = sessionCwd;
   const invocation = resolveClaudeInvocation();
   await claudeRunController.start(run, {
     command: invocation.command,
     args: [...invocation.prefixArgs, ...args],
-    cwd: run.projectRoot,
+    cwd: sessionCwd,
     env: {
       ...process.env,
       MAX_THINKING_TOKENS: String(claudeThinkingTokens(run.reasoningId)),
@@ -4264,10 +4282,17 @@ async function finishClaudeRun(run, {
       }
       await saveState();
     }
-    const answer = String(result.result ?? "").trim()
-      || run.claudeFailureText
-      || (result.is_error ? "Claude Code завершил задачу с ошибкой." : "Задача завершена.");
     const failed = (exitCode !== null && exitCode !== 0) || result.is_error === true;
+    const answer = failed
+      ? claudeFailureMessage(result, {
+        streamFailureText: run.claudeFailureText,
+        errorText,
+        exitCode,
+      })
+      : String(result.result ?? "").trim() || "Задача завершена.";
+    if (failed) {
+      console.error(`Claude turn ${run.turnId ?? "unknown"} failed: ${answer}`);
+    }
     await finishProgress(run, failed ? `Claude остановлен: ${answer}` : "Задача завершена.");
     const response = failed ? `Ошибка Claude Code: ${answer}` : answer;
     await finalizeRunDelivery(run, {

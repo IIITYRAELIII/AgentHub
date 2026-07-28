@@ -495,6 +495,7 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
   const fresh = claudeCatalogEntry({
     sessionId: "claude-1",
     title: "Вторая задача",
+    cwd: "C:\\Projects\\Main\\Utilities\\AgentHub",
     modifiedAtMs: now - 60_000,
     active: true,
   }, project, now);
@@ -504,6 +505,7 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
     active: true,
   }, project, now);
   assert.equal(fresh.running, true);
+  assert.equal(fresh.sessionCwd, path.resolve("C:\\Projects\\Main\\Utilities\\AgentHub"));
   assert.equal(stale.running, false);
 });
 
@@ -567,10 +569,15 @@ test("mergeTaskCatalog adds bot runs and promotes them to the top", () => {
     threadId: "claude-1",
     projectRoot: project.path,
     projectName: project.name,
+    sessionCwd: "C:\\Projects\\Main\\Utilities\\AgentHub",
     taskTitle: "Новая",
   }]);
   assert.equal(merged.length, 2);
   assert.equal(merged.every((entry) => entry.running), true);
+  assert.equal(
+    merged.find((entry) => entry.threadId === "claude-1").sessionCwd,
+    path.resolve("C:\\Projects\\Main\\Utilities\\AgentHub"),
+  );
 });
 
 test("observer ownership overrides historical catalog ownership", () => {

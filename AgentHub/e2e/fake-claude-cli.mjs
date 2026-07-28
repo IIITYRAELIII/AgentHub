@@ -1,4 +1,11 @@
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -44,6 +51,25 @@ const transcriptPath = transcriptRoot
   ? path.join(transcriptRoot, encodedProjectDirectory(cwd), `${sessionId}.jsonl`)
   : "";
 
+function findSessionTranscript(directory, fileName) {
+  if (!directory || !existsSync(directory)) return "";
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const candidate = path.join(directory, entry.name);
+    if (entry.isFile() && entry.name === fileName) return candidate;
+    if (entry.isDirectory()) {
+      const nested = findSessionTranscript(candidate, fileName);
+      if (nested) return nested;
+    }
+  }
+  return "";
+}
+
+function samePath(left, right) {
+  const a = path.resolve(String(left ?? ""));
+  const b = path.resolve(String(right ?? ""));
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 function writeTranscript(entries) {
   if (!transcriptPath) return;
   mkdirSync(path.dirname(transcriptPath), { recursive: true });
@@ -63,6 +89,37 @@ function emit(event) {
 
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+if (resumeIndex >= 0 && transcriptRoot) {
+  const existingTranscript = findSessionTranscript(transcriptRoot, `${sessionId}.jsonl`);
+  if (existingTranscript) {
+    const firstEntry = readFileSync(existingTranscript, "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .find((entry) => entry?.cwd);
+    if (firstEntry?.cwd && !samePath(firstEntry.cwd, cwd)) {
+      process.stderr.write(
+        `No conversation found with session ID ${sessionId} in working directory ${cwd}`,
+      );
+      emit({
+        type: "result",
+        subtype: "error_during_execution",
+        session_id: sessionId,
+        result: "",
+        is_error: true,
+        usage: {},
+      });
+      process.exit(1);
+    }
+  }
 }
 
 writeTranscript([

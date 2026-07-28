@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import {
   buildClaudeArgs,
   buildClaudePrompt,
+  claudeFailureMessage,
   formatClaudeUsage,
   parseClaudeLimits,
   parseClaudeResult,
   parseClaudeStreamEvent,
+  resolveClaudeSessionCwd,
 } from "./claude.mjs";
 
 test("buildClaudeArgs creates a resumable safe invocation", () => {
@@ -30,6 +33,34 @@ test("auto approval maps only to bypassPermissions", () => {
     "--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
     "--permission-mode", "bypassPermissions",
   ]);
+});
+
+test("resolveClaudeSessionCwd keeps a nested Claude session inside its configured project", () => {
+  const projectRoot = path.resolve("project");
+  const sessionCwd = path.join(projectRoot, "Utilities", "AgentHub");
+  assert.equal(resolveClaudeSessionCwd(projectRoot, sessionCwd), sessionCwd);
+  assert.equal(resolveClaudeSessionCwd(projectRoot), projectRoot);
+  assert.throws(
+    () => resolveClaudeSessionCwd(projectRoot, path.resolve("outside")),
+    /outside the allowed project/,
+  );
+});
+
+test("claudeFailureMessage preserves stderr for an empty error result", () => {
+  assert.equal(claudeFailureMessage({
+    type: "result",
+    subtype: "error_during_execution",
+    is_error: true,
+    result: "",
+  }, {
+    errorText: "No conversation found with session ID session-1",
+    exitCode: 1,
+  }), "No conversation found with session ID session-1");
+  assert.equal(claudeFailureMessage({
+    type: "result",
+    subtype: "error_during_execution",
+    is_error: true,
+  }), "Claude Code завершился с ошибкой error_during_execution.");
 });
 
 test("parseClaudeStreamEvent extracts session and text deltas", () => {

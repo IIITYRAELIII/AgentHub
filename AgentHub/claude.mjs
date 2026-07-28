@@ -67,6 +67,48 @@ export function buildClaudeArgs({
   return args;
 }
 
+export function resolveClaudeSessionCwd(projectRoot, sessionCwd = null) {
+  const rootText = String(projectRoot ?? "").trim();
+  if (!rootText) throw new Error("Claude project root is required");
+  const root = path.resolve(rootText);
+  const candidateText = String(sessionCwd ?? "").trim();
+  const candidate = candidateText ? path.resolve(candidateText) : root;
+  const relative = path.relative(root, candidate);
+  if (relative && (relative.startsWith("..") || path.isAbsolute(relative))) {
+    throw new Error(`Claude session directory is outside the allowed project: ${candidate}`);
+  }
+  return candidate;
+}
+
+export function claudeFailureMessage(result, {
+  streamFailureText = "",
+  errorText = "",
+  exitCode = null,
+} = {}) {
+  const resultError = typeof result?.error === "string"
+    ? result.error
+    : result?.error?.message;
+  const candidates = [
+    result?.result,
+    streamFailureText,
+    resultError,
+    result?.message,
+    errorText,
+  ];
+  for (const candidate of candidates) {
+    const text = String(candidate ?? "").trim();
+    if (text) return text;
+  }
+  const subtype = String(result?.subtype ?? "").trim();
+  if (subtype && subtype !== "success") {
+    return `Claude Code завершился с ошибкой ${subtype}.`;
+  }
+  if (Number.isInteger(exitCode) && exitCode !== 0) {
+    return `Claude Code завершился с кодом ${exitCode}.`;
+  }
+  return "Claude Code завершил задачу с ошибкой.";
+}
+
 export function parseClaudeStreamEvent(line) {
   const text = String(line ?? "").trim();
   if (!text) return null;

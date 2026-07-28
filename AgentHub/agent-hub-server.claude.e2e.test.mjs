@@ -44,6 +44,38 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
     mkdir(transcriptRoot, { recursive: true }),
     mkdir(holdDirectory, { recursive: true }),
   ]);
+  const nestedSessionId = "11111111-2222-4333-8444-555555555555";
+  const nestedSessionCwd = path.join(projectRoot, "Utilities", "AgentHub");
+  const nestedTranscriptDirectory = path.join(
+    transcriptRoot,
+    encodedProjectDirectory(nestedSessionCwd),
+  );
+  await Promise.all([
+    mkdir(nestedSessionCwd, { recursive: true }),
+    mkdir(nestedTranscriptDirectory, { recursive: true }),
+  ]);
+  const nestedTranscriptEntry = (value) => JSON.stringify({
+    sessionId: nestedSessionId,
+    cwd: nestedSessionCwd,
+    timestamp: new Date().toISOString(),
+    ...value,
+  });
+  await writeFile(path.join(nestedTranscriptDirectory, `${nestedSessionId}.jsonl`), [
+    nestedTranscriptEntry({
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: "Вложенная задача Claude" }] },
+    }),
+    nestedTranscriptEntry({ type: "ai-title", aiTitle: "Вложенная задача Claude" }),
+    nestedTranscriptEntry({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Исходный ответ" }],
+      },
+    }),
+    nestedTranscriptEntry({ type: "last-prompt" }),
+  ].join("\n") + "\n", "utf8");
   const telegram = new FakeTelegramApi();
   await telegram.start();
   let bot = null;
@@ -166,8 +198,42 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   }
   assert.equal((await readJson(statePath)).activeProvider, "claude");
 
-  // Первая задача Claude виснет до снятия удержания и остаётся управляемой ботом.
+  // Сессия, созданная из вложенной папки проекта, продолжается из того же cwd.
+  // Fake Claude намеренно отклоняет --resume из другого каталога.
   let mark = telegram.calls.length;
+  telegram.pushMessage("/tasks");
+  const nestedPicker = await telegram.waitForText("Выберите задачу:", {
+    after: mark,
+    timeoutMs: 15_000,
+  });
+  const nestedTaskButton = nestedPicker.body.reply_markup.inline_keyboard.flat()
+    .find((button) => button.callback_data === `task:l:${nestedSessionId}`);
+  assert.ok(nestedTaskButton, "nested Claude session must be present in the task catalog");
+  telegram.pushCallback(nestedTaskButton.callback_data, nestedPicker.result);
+  await waitFor(async () => (await readJson(statePath)).threadIds.claude === nestedSessionId,
+    "select nested Claude session");
+  mark = telegram.calls.length;
+  const nestedPrompt = "Продолжить вложенную задачу";
+  telegram.pushMessage(nestedPrompt);
+  try {
+    await telegram.waitForVisibleText(`Claude готово: ${nestedPrompt}`, {
+      after: mark,
+      timeoutMs: 15_000,
+    });
+  } catch (error) {
+    throw new Error(
+      `${error.message}\nstate:\n${JSON.stringify(await readJson(statePath).catch(() => null), null, 2)}`
+      + `\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+    );
+  }
+  const nestedTranscript = await readFile(
+    path.join(nestedTranscriptDirectory, `${nestedSessionId}.jsonl`),
+    "utf8",
+  );
+  assert.match(nestedTranscript, /Продолжить вложенную задачу/);
+
+  // Первая задача Claude виснет до снятия удержания и остаётся управляемой ботом.
+  mark = telegram.calls.length;
   const firstPrompt = "[hold:alpha] [child:alpha-child] первая задача Claude";
   telegram.pushMessage(firstPrompt);
   await telegram.waitForVisibleText(`Claude выполняет: ${firstPrompt}`, {

@@ -153,6 +153,23 @@ test("managed Telegram snapshot records Agent Hub ownership", async () => {
   assert.equal(entry.turnId, "turn-telegram");
 });
 
+test("Claude session cwd survives the local task catalog cache", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath });
+  const claudeTask = {
+    ...task,
+    provider: "claude",
+    threadId: "claude-session",
+    sessionCwd: "C:\\Projects\\Main\\Utilities\\AgentHub",
+  };
+  store.recordCatalog([claudeTask], 5_000);
+  await store.save();
+
+  const restored = new LocalTaskSyncStore({ filePath });
+  await restored.load();
+  assert.equal(restored.catalog()[0].sessionCwd, claudeTask.sessionCwd);
+});
+
 test("unchanged polling snapshots do not dirty the persistent store", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });

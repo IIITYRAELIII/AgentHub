@@ -148,7 +148,9 @@ export class ClaudeRunController {
     const outputPaths = { outputPath: run.claudeOutputPath, errorPath: run.claudeErrorPath };
     const exitCode = Number.isInteger(run.claudeExitCode) ? run.claudeExitCode : null;
     const result = spawnError ? null : await this.#readResult(run);
-    const errorText = result ? "" : await this.#readError(run);
+    // Claude may return an is_error JSON result while writing the useful
+    // diagnostic only to stderr. Keep both channels until completion handling.
+    const errorText = await this.#readError(run);
     try {
       await this.onComplete(run, { spawnError, result, errorText, exitCode, outputPaths });
     } finally {
