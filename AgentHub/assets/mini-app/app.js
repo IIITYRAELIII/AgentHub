@@ -56,13 +56,6 @@ function applyTheme(theme, { persist = false } = {}) {
 
 telegram?.ready();
 telegram?.expand();
-if (telegramMode && !mobileTelegramPlatforms.has(telegramPlatform)) {
-  try {
-    telegram?.requestFullscreen?.();
-  } catch {
-    // Старый Telegram Desktop останется в компактной адаптивной раскладке.
-  }
-}
 applyTheme(savedTheme());
 themeSelect.addEventListener("change", () => applyTheme(themeSelect.value, { persist: true }));
 
@@ -248,6 +241,14 @@ function toggleMobileTask(cell) {
 }
 
 journal.addEventListener("click", (event) => {
+  const collapse = event.target.closest("[data-work-log-collapse-turns]");
+  if (collapse) {
+    event.preventDefault();
+    event.stopPropagation();
+    const previous = collapse.closest("details[data-work-log-previous-turns]");
+    if (previous) previous.open = false;
+    return;
+  }
   if (surface !== "mobile") return;
   const total = event.target.closest("[data-day-usage]");
   if (total) {

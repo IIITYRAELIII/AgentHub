@@ -169,7 +169,9 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(script, /mobileTelegramPlatforms\.has\(telegramPlatform\)/u);
     assert.match(script, /window\.innerWidth < compactTelegramWidth/u);
     assert.match(script, /document\.documentElement\.dataset\.surface = surface/u);
-    assert.match(script, /requestFullscreen/u);
+    assert.match(script, /telegram\?\.expand\(\)/u);
+    assert.doesNotMatch(script, /requestFullscreen/u);
+    assert.match(script, /closest\("\[data-work-log-collapse-turns\]"\)/u);
     assert.match(script, /window\.addEventListener\("resize", syncSurface\)/u);
     assert.match(script, /data-mobile-expanded/u);
     assert.match(script, /data-mobile-open/u);
@@ -182,6 +184,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /html\[data-surface="mobile"\] \.journal div\[data-work-log-row\]/u);
     assert.match(styles, /span\[data-day-usage-table\]\[data-mobile-expanded\]/u);
     assert.match(styles, /div\[data-work-log-row\]\[data-mobile-open\]/u);
+    assert.match(styles, /button\[data-work-log-collapse-turns\]/u);
     assert.match(
       styles,
       /grid-template-columns: auto minmax\(3\.15rem, 1fr\) 7\.4ch 5ch/u,

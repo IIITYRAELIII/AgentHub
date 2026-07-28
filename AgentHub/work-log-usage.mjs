@@ -307,6 +307,7 @@ function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
       `<span data-work-log-previous-turns-closed>Показать предыдущие ходы (${turnRows.length - 1})</span>`,
       '<span data-work-log-previous-turns-open>Свернуть</span>',
       "</summary>",
+      '<button type="button" data-work-log-collapse-turns>Свернуть ходы</button>',
       `<div data-work-log-previous-turn-list>${turnRows.slice(1).join("\n")}</div>`,
       "</details>",
     ].join("")

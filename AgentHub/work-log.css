@@ -183,6 +183,24 @@ details[data-work-log-previous-turns] > summary {
   padding: 0.3em 0.45em;
 }
 
+button[data-work-log-collapse-turns] {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid rgba(127, 127, 127, 0.55);
+  border-radius: 0.25em;
+  color: inherit;
+  cursor: pointer;
+  display: none;
+  font: inherit;
+  margin: 0.35em;
+  order: 0;
+  padding: 0.3em 0.45em;
+}
+
+details[data-work-log-previous-turns][open] > button[data-work-log-collapse-turns] {
+  display: block;
+}
+
 details[data-work-log-previous-turns] > summary::-webkit-details-marker {
   display: none;
 }

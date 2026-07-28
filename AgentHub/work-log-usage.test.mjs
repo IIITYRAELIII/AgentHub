@@ -113,6 +113,10 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
     projected,
     /<details data-work-log-previous-turns><summary><span data-work-log-previous-turns-closed>Показать предыдущие ходы \(1\)<\/span><span data-work-log-previous-turns-open>Свернуть<\/span><\/summary>/,
   );
+  assert.match(
+    projected,
+    /<button type="button" data-work-log-collapse-turns>Свернуть ходы<\/button>/,
+  );
   assert.equal((projected.match(/data-work-log-no-previous-turns/g) ?? []).length, 1);
   assert.match(projected, /data-work-log-no-previous-turns>Предыдущих ходов нет\.<\/div>/);
   assert.doesNotMatch(projected, /<details data-work-log-previous-turns open>/);
@@ -333,6 +337,14 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
   assert.match(
     css,
     /details\[data-work-log-previous-turns\] > summary[\s\S]*?order:\s*2/,
+  );
+  assert.match(
+    css,
+    /button\[data-work-log-collapse-turns\]\s*\{[\s\S]*?align-self:\s*flex-start[\s\S]*?display:\s*none/,
+  );
+  assert.match(
+    css,
+    /details\[data-work-log-previous-turns\]\[open\] > button\[data-work-log-collapse-turns\][\s\S]*?display:\s*block/,
   );
   assert.match(
     css,
