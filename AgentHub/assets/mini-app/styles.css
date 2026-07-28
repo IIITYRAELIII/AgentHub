@@ -265,71 +265,78 @@ html[data-theme="gothic"] {
   --radius-chip: 2px;
   --rail-width: 3px;
 
-  --bg: #060708;
-  --surface-1: rgba(214, 226, 238, 0.035);
-  --surface-2: rgba(214, 226, 238, 0.06);
-  --surface-3: rgba(214, 226, 238, 0.1);
+  --bg: #05070a;
+  --surface-1: rgba(214, 228, 242, 0.035);
+  --surface-2: rgba(214, 228, 242, 0.06);
+  --surface-3: rgba(214, 228, 242, 0.1);
   --sunken: rgba(0, 0, 0, 0.5);
 
-  --line: rgba(186, 199, 212, 0.18);
-  --line-strong: rgba(200, 212, 224, 0.32);
+  --line: rgba(184, 199, 214, 0.2);
+  --line-strong: rgba(202, 216, 230, 0.34);
 
-  --card-bg: linear-gradient(180deg, rgba(22, 24, 26, 0.96), rgba(9, 10, 11, 0.97));
-  --card-bg-open: linear-gradient(180deg, rgba(27, 29, 32, 0.97), rgba(11, 12, 13, 0.98));
+  /* Плита клинка: продольная шлифовка, косой блик и редкие задиры.
+     Полосы идут почти горизонтально — так металл брашируют вдоль лезвия. */
+  --card-bg: linear-gradient(178deg, rgba(30, 35, 40, 0.96), rgba(10, 12, 14, 0.97));
+  --card-bg-open: linear-gradient(178deg, rgba(36, 42, 48, 0.97), rgba(12, 14, 17, 0.98));
   --card-texture:
-    linear-gradient(134deg, rgba(214, 226, 238, 0.03), transparent 30%),
-    repeating-linear-gradient(21deg, rgba(226, 238, 250, 0.012) 0 1px, transparent 1px 9px),
-    repeating-linear-gradient(-64deg, rgba(0, 0, 0, 0.3) 0 1px, transparent 1px 14px);
-  --card-border: rgba(186, 199, 212, 0.2);
-  --card-border-open: rgba(200, 212, 224, 0.32);
+    linear-gradient(101deg, transparent 20%, rgba(216, 231, 246, 0.06) 37%, transparent 53%),
+    repeating-linear-gradient(179deg, rgba(226, 240, 252, 0.024) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(181deg, rgba(0, 0, 0, 0.26) 0 1px, transparent 1px 5px),
+    repeating-linear-gradient(176.5deg, transparent 0 4.6rem, rgba(226, 240, 252, 0.06) 4.6rem 4.66rem, transparent 4.66rem 11rem),
+    repeating-linear-gradient(183deg, transparent 0 7.4rem, rgba(0, 0, 0, 0.34) 7.4rem 7.48rem, transparent 7.48rem 16rem);
+  --card-border: rgba(184, 199, 214, 0.22);
+  --card-border-open: rgba(202, 216, 230, 0.34);
   --card-shadow:
-    inset 0 1px 0 rgba(226, 238, 250, 0.1),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.85),
+    inset 0 1px 0 rgba(230, 242, 254, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.9),
     0 24px 46px -28px rgba(0, 0, 0, 0.98);
 
-  --plate-bg: linear-gradient(180deg, rgba(38, 41, 44, 0.95), rgba(16, 17, 18, 0.97));
-  --plate-texture: repeating-linear-gradient(24deg, rgba(226, 238, 250, 0.013) 0 1px, transparent 1px 8px);
+  --plate-bg: linear-gradient(178deg, rgba(48, 55, 62, 0.95), rgba(17, 19, 22, 0.97));
+  --plate-texture:
+    linear-gradient(99deg, transparent 24%, rgba(216, 231, 246, 0.055) 40%, transparent 55%),
+    repeating-linear-gradient(179deg, rgba(226, 240, 252, 0.022) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(181deg, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 4px);
   --plate-shadow:
-    inset 0 1px 0 rgba(226, 238, 250, 0.12),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.8);
+    inset 0 1px 0 rgba(230, 242, 254, 0.16),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.85);
   --turn-shadow: 0 12px 24px -20px rgba(0, 0, 0, 1);
 
-  --text: #dfe4e9;
-  --text-soft: #b4bbc2;
-  --text-muted: #8d959c;
-  --text-faint: #666d74;
+  --text: #dfe6ec;
+  --text-soft: #b3bcc5;
+  --text-muted: #8c959e;
+  --text-faint: #656d76;
 
-  --accent: #c3cdd7;
-  --accent-soft: rgba(195, 205, 215, 0.12);
-  --accent-line: rgba(195, 205, 215, 0.44);
-  --accent-glow: 0 0 18px -8px rgba(210, 222, 234, 0.75);
-  --selection: rgba(195, 205, 215, 0.26);
+  --accent: #c6d3e0;
+  --accent-soft: rgba(198, 211, 224, 0.12);
+  --accent-line: rgba(198, 211, 224, 0.46);
+  --accent-glow: 0 0 18px -8px rgba(214, 228, 242, 0.8);
+  --selection: rgba(198, 211, 224, 0.26);
   --brand-gradient:
-    radial-gradient(circle at 38% 26%, rgba(230, 240, 250, 0.22), transparent 40%),
-    linear-gradient(148deg, #34383c, #101113);
+    linear-gradient(101deg, transparent 18%, rgba(226, 240, 254, 0.3) 38%, transparent 58%),
+    linear-gradient(178deg, #3a424a, #0f1114);
   --brand-shadow:
-    inset 0 1px 0 rgba(230, 240, 250, 0.16),
-    inset 0 -8px 14px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(230, 242, 254, 0.2),
+    inset 0 -8px 14px rgba(0, 0, 0, 0.45),
     0 8px 20px -12px rgba(0, 0, 0, 0.95);
 
-  --provider-none: #7f878e;
-  --provider-codex: #d7dfe7;
-  --provider-claude: #9fb2c4;
+  --provider-none: #7e868f;
+  --provider-codex: #d8e2ec;
+  --provider-claude: #9db0c4;
 
-  /* холодный камень: ни зелёного, ни красного — живое соединение серебрится */
-  --ok: #cfd8e1;
-  --pending: #7e858c;
+  /* холодная сталь: ни зелёного, ни красного — живое соединение бликует */
+  --ok: #d4dee8;
+  --pending: #7d848c;
 
-  --dot-input: #d7dfe7;
-  --dot-cache: #a9b6c2;
-  --dot-output: #c3cdd7;
-  --dot-think: #8b939b;
+  --dot-input: #d8e2ec;
+  --dot-cache: #a8b6c4;
+  --dot-output: #c6d3e0;
+  --dot-think: #8a939c;
 
-  --space-glow-a: rgba(214, 226, 238, 0.1);
-  --space-glow-b: rgba(104, 114, 124, 0.12);
-  --space-base: linear-gradient(180deg, #141618 0, #0a0b0c 22rem, var(--bg) 100%);
-  --space-star: rgba(222, 232, 242, 0.14);
-  --star-opacity: 0.5;
+  --space-glow-a: rgba(206, 222, 238, 0.1);
+  --space-glow-b: rgba(96, 108, 120, 0.12);
+  --space-base: linear-gradient(178deg, #14181c 0, #0a0c0f 22rem, var(--bg) 100%);
+  --space-star: rgba(220, 232, 244, 0.12);
+  --star-opacity: 0.4;
 }
 
 /* ====================================================== тема «BlackHole» === */
@@ -353,50 +360,50 @@ html[data-theme="blackhole"] {
   --line: rgba(226, 232, 244, 0.12);
   --line-strong: rgba(226, 232, 244, 0.26);
 
-  --card-bg: linear-gradient(180deg, rgba(8, 8, 10, 0.9), rgba(0, 0, 0, 0.94));
-  --card-bg-open: linear-gradient(180deg, rgba(12, 12, 15, 0.92), rgba(0, 0, 0, 0.95));
-  --card-border: rgba(226, 232, 244, 0.14);
-  --card-border-open: rgba(255, 190, 120, 0.34);
+  --card-bg: linear-gradient(180deg, rgba(8, 10, 14, 0.9), rgba(0, 0, 0, 0.94));
+  --card-bg-open: linear-gradient(180deg, rgba(11, 14, 20, 0.92), rgba(0, 0, 0, 0.95));
+  --card-border: rgba(226, 236, 255, 0.14);
+  --card-border-open: rgba(122, 190, 255, 0.36);
   --card-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 0 42px -22px rgba(255, 158, 76, 0.55),
+    0 0 42px -22px rgba(96, 176, 255, 0.6),
     0 30px 60px -34px rgba(0, 0, 0, 1);
 
-  --plate-bg: linear-gradient(180deg, rgba(232, 238, 252, 0.06), rgba(0, 0, 0, 0.35));
+  --plate-bg: linear-gradient(180deg, rgba(226, 238, 255, 0.06), rgba(0, 0, 0, 0.35));
   --plate-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  --turn-shadow: 0 0 26px -18px rgba(255, 168, 84, 0.85);
+  --turn-shadow: 0 0 26px -18px rgba(110, 186, 255, 0.9);
 
-  --text: #f4f7fd;
-  --text-soft: #c3c9d6;
-  --text-muted: #8d93a1;
-  --text-faint: #646a78;
+  --text: #f2f6fd;
+  --text-soft: #c0c9da;
+  --text-muted: #8a93a5;
+  --text-faint: #626b7c;
 
-  --accent: #eef2ff;
-  --accent-soft: rgba(238, 242, 255, 0.1);
-  --accent-line: rgba(238, 242, 255, 0.36);
-  --accent-glow: 0 0 22px -8px rgba(255, 255, 255, 0.85);
-  --selection: rgba(255, 168, 84, 0.32);
+  --accent: #9ecbff;
+  --accent-soft: rgba(158, 203, 255, 0.12);
+  --accent-line: rgba(158, 203, 255, 0.42);
+  --accent-glow: 0 0 22px -8px rgba(140, 200, 255, 0.95);
+  --selection: rgba(110, 186, 255, 0.32);
   --brand-gradient:
-    radial-gradient(circle at 50% 50%, #000 0 34%, rgba(255, 178, 96, 0.9) 44%,
-      rgba(255, 120, 30, 0.45) 62%, rgba(0, 0, 0, 0.9) 88%);
-  --brand-shadow: 0 0 26px -8px rgba(255, 158, 76, 0.9);
+    radial-gradient(circle at 50% 50%, #000 0 36%, rgba(150, 205, 255, 0.95) 44%,
+      rgba(70, 140, 255, 0.5) 64%, rgba(0, 0, 0, 0.92) 88%);
+  --brand-shadow: 0 0 26px -8px rgba(110, 186, 255, 0.95);
 
-  --provider-none: #7f8593;
-  --provider-codex: #eef2ff;
-  --provider-claude: #ffa854;
+  --provider-none: #7c8494;
+  --provider-codex: #9ecbff;
+  --provider-claude: #c9a6ff;
 
-  --ok: #ffffff;
-  --pending: #ffa854;
+  --ok: #a9d6ff;
+  --pending: #7c8494;
 
-  --dot-input: #eef2ff;
-  --dot-cache: #9fb6ff;
-  --dot-output: #ffa854;
-  --dot-think: #d0a8ff;
+  --dot-input: #9ecbff;
+  --dot-cache: #7ee3ff;
+  --dot-output: #eef4ff;
+  --dot-think: #c9a6ff;
 
-  --space-glow-a: rgba(255, 150, 60, 0.16);
-  --space-glow-b: rgba(70, 96, 210, 0.14);
-  --space-base: radial-gradient(120% 80% at 50% -6%, #0a0910 0, #000 62%);
-  --space-star: rgba(240, 246, 255, 0.55);
+  --space-glow-a: rgba(70, 150, 255, 0.16);
+  --space-glow-b: rgba(120, 90, 220, 0.12);
+  --space-base: radial-gradient(120% 80% at 50% -6%, #05070e 0, #000 62%);
+  --space-star: rgba(240, 248, 255, 0.55);
   --star-opacity: 0.6;
 }
 
@@ -1452,16 +1459,20 @@ html[data-theme="pulsar"] .eyebrow {
 
 html[data-theme="gothic"] body::after {
   background-image:
-    radial-gradient(ellipse 24rem 18rem at 50% -2%, rgba(214, 226, 238, 0.07), transparent 72%),
-    repeating-linear-gradient(101deg, rgba(226, 238, 250, 0.016) 0 1px, transparent 1px 11px),
-    repeating-linear-gradient(-72deg, rgba(0, 0, 0, 0.24) 0 2px, transparent 2px 17px),
-    radial-gradient(120% 90% at 50% 42%, transparent 42%, rgba(0, 0, 0, 0.58) 100%);
+    linear-gradient(101deg, transparent 14%, rgba(214, 230, 246, 0.05) 33%, transparent 50%),
+    linear-gradient(101deg, transparent 56%, rgba(214, 230, 246, 0.03) 70%, transparent 84%),
+    repeating-linear-gradient(179deg, rgba(226, 240, 252, 0.016) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(181deg, rgba(0, 0, 0, 0.2) 0 1px, transparent 1px 5px),
+    repeating-linear-gradient(177deg, transparent 0 8.5rem, rgba(226, 240, 252, 0.045) 8.5rem 8.56rem, transparent 8.56rem 19rem),
+    repeating-linear-gradient(183.5deg, transparent 0 12.5rem, rgba(0, 0, 0, 0.34) 12.5rem 12.6rem, transparent 12.6rem 27rem),
+    radial-gradient(120% 90% at 50% 42%, transparent 40%, rgba(0, 0, 0, 0.62) 100%);
 }
 
 html[data-theme="gothic"] .app-header {
   background:
-    linear-gradient(180deg, rgba(15, 16, 17, 0.97), rgba(8, 9, 10, 0.84)),
-    repeating-linear-gradient(110deg, transparent 0 0.45rem, rgba(226, 238, 250, 0.016) 0.5rem 0.55rem);
+    linear-gradient(101deg, transparent 16%, rgba(216, 231, 246, 0.05) 36%, transparent 54%),
+    repeating-linear-gradient(179deg, rgba(226, 240, 252, 0.022) 0 1px, transparent 1px 3px),
+    linear-gradient(178deg, rgba(20, 23, 27, 0.97), rgba(8, 9, 11, 0.86));
   border-bottom-color: var(--accent-line);
 }
 
@@ -1477,12 +1488,31 @@ html[data-theme="gothic"] .eyebrow {
 }
 
 html[data-theme="gothic"] .journal details[data-work-log-day-section]::before {
-  border: 1px solid rgba(226, 238, 250, 0.07);
+  border: 1px solid rgba(226, 240, 252, 0.06);
   border-radius: 1px;
   content: "";
   inset: 3px;
   pointer-events: none;
   position: absolute;
+}
+
+/* иззубренная кромка клинка: два зубца разного шага дают неровный скол */
+html[data-theme="gothic"] .journal details[data-work-log-day-section]::after {
+  background-image:
+    linear-gradient(135deg, rgba(6, 8, 10, 0.95) 26%, transparent 26%),
+    linear-gradient(225deg, rgba(6, 8, 10, 0.95) 26%, transparent 26%),
+    linear-gradient(135deg, rgba(226, 240, 252, 0.16) 30%, transparent 30%),
+    linear-gradient(225deg, rgba(226, 240, 252, 0.16) 30%, transparent 30%);
+  background-position: 0 0, 0 0, 0 1px, 0 1px;
+  background-repeat: repeat-x;
+  background-size: 0.72rem 0.34rem, 0.72rem 0.34rem, 1.15rem 0.4rem, 1.15rem 0.4rem;
+  content: "";
+  height: 0.4rem;
+  left: 0.15rem;
+  pointer-events: none;
+  position: absolute;
+  right: 0.15rem;
+  top: 0;
 }
 
 html[data-theme="gothic"] .journal summary[data-work-log-day] > strong {
@@ -1529,13 +1559,16 @@ html[data-theme="gothic"] .journal span[data-high-usage] {
 
 /* ============================ «BlackHole»: аккреционный диск и горизонт === */
 
+/* Порядок слоёв важен: чёрное ядро лежит поверх диска, поэтому светится
+   только то, что снаружи горизонта событий. */
 html[data-theme="blackhole"] body::after {
   background-image:
-    radial-gradient(52% 26% at 50% 1%, rgba(255, 176, 96, 0.26), transparent 68%),
-    radial-gradient(circle at 50% 1%, transparent 0 12.6rem, rgba(255, 186, 110, 0.5) 12.75rem 13.05rem, transparent 13.6rem),
-    radial-gradient(circle at 50% 1%, transparent 0 15.6rem, rgba(255, 138, 58, 0.18) 15.75rem 16rem, transparent 16.8rem),
-    radial-gradient(circle at 50% 1%, rgba(0, 0, 0, 0.95) 0 12.2rem, transparent 12.5rem),
-    radial-gradient(70% 40% at 50% 108%, rgba(80, 110, 220, 0.16), transparent 70%);
+    radial-gradient(circle at 50% 3%, #000 0 12.1rem, transparent 12.35rem),
+    radial-gradient(circle at 50% 3%, transparent 0 12.1rem, rgba(168, 214, 255, 0.62) 12.3rem 12.75rem, transparent 13.7rem),
+    radial-gradient(circle at 50% 3%, transparent 0 14rem, rgba(96, 166, 255, 0.3) 14.2rem 14.8rem, transparent 16.2rem),
+    radial-gradient(circle at 50% 3%, transparent 0 17rem, rgba(70, 130, 255, 0.14) 17.2rem 18.2rem, transparent 21rem),
+    radial-gradient(58% 32% at 50% 3%, rgba(90, 160, 255, 0.2), transparent 74%),
+    radial-gradient(70% 40% at 50% 108%, rgba(110, 90, 220, 0.14), transparent 70%);
   mask-image: linear-gradient(to bottom, black, rgba(0, 0, 0, 0.55) 62%, transparent 96%);
 }
 
@@ -1544,29 +1577,29 @@ html[data-theme="blackhole"] .app-header {
 }
 
 html[data-theme="blackhole"] .app-header::after {
-  background: linear-gradient(90deg, transparent, rgba(255, 176, 96, 0.7), transparent);
+  background: linear-gradient(90deg, transparent, rgba(150, 205, 255, 0.75), transparent);
 }
 
 html[data-theme="blackhole"] .brand-mark {
-  border-color: rgba(255, 186, 110, 0.5);
-  color: #ffce9a;
+  border-color: rgba(150, 205, 255, 0.5);
+  color: #cfe6ff;
 }
 
 html[data-theme="blackhole"] .journal details[data-work-log-day-section][open] {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.07),
-    0 0 54px -20px rgba(255, 158, 76, 0.75),
+    0 0 54px -20px rgba(96, 176, 255, 0.8),
     0 30px 60px -34px rgba(0, 0, 0, 1);
 }
 
 html[data-theme="blackhole"] .journal details[data-work-log-turn-details][open] {
-  border-color: rgba(255, 186, 110, 0.42);
-  box-shadow: inset var(--rail-width) 0 0 #ffa854, 0 0 30px -18px rgba(255, 168, 84, 0.95);
+  border-color: rgba(150, 205, 255, 0.44);
+  box-shadow: inset var(--rail-width) 0 0 #9ecbff, 0 0 30px -18px rgba(120, 190, 255, 1);
 }
 
 html[data-theme="blackhole"] .journal span[data-day-usage] {
-  border-color: rgba(255, 186, 110, 0.42);
-  box-shadow: var(--plate-shadow), 0 0 22px -10px rgba(255, 168, 84, 0.9);
+  border-color: rgba(150, 205, 255, 0.44);
+  box-shadow: var(--plate-shadow), 0 0 22px -10px rgba(120, 190, 255, 0.95);
 }
 
 /* =========================================================== адаптивность === */
