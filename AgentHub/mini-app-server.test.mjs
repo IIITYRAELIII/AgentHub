@@ -159,12 +159,17 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.equal(blackHole.status, 200);
     assert.equal(blackHole.headers.get("content-type"), "image/png");
     assert.match(blackHole.headers.get("cache-control"), /immutable/u);
+    const pulsar = await fetch(`${address.url}pulsar-beams.png`);
+    assert.equal(pulsar.status, 200);
+    assert.equal(pulsar.headers.get("content-type"), "image/png");
+    assert.match(pulsar.headers.get("cache-control"), /immutable/u);
     const taiga = await fetch(`${address.url}rainforest-night.png`);
     assert.equal(taiga.status, 200);
     assert.equal(taiga.headers.get("content-type"), "image/png");
     assert.match(taiga.headers.get("cache-control"), /immutable/u);
     assert.ok((await blackHole.arrayBuffer()).byteLength > 100_000);
     assert.ok((await taiga.arrayBuffer()).byteLength > 100_000);
+    assert.ok((await pulsar.arrayBuffer()).byteLength > 100_000);
     const page = await (await fetch(address.url)).text();
     assert.match(page, /data-theme="orbit"/u);
     assert.match(page, /<option value="taiga">Тайга<\/option>/u);
@@ -201,6 +206,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /html\[data-theme="gothic"\]/u);
     assert.match(styles, /url\("\/blackhole-blue\.png"\)/u);
     assert.match(styles, /html\[data-theme="taiga"\]/u);
+    assert.match(styles, /url\("\/pulsar-beams\.png"\)/u);
     assert.match(styles, /url\("\/rainforest-night\.png"\)/u);
     assert.match(styles, /html\[data-surface="mobile"\] \.journal div\[data-work-log-row\]/u);
     assert.match(styles, /span\[data-day-usage-table\]\[data-mobile-expanded\]/u);

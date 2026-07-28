@@ -1108,8 +1108,9 @@ test("automatic journal marks only the image-generated turn while task and day t
     });
     const projected = await readFile(workLogFile, "utf8");
     assert.match(projected, /Итого<\/span> <span data-kilo-usage>820 кТЭ<\/span>/);
-    assert.match(projected, /Оценка imagegen: <span data-kilo-usage>720 кТЭ<\/span> <span data-usage-percent>\(87,8%\)<\/span>/);
-    assert.match(projected, /12:03 — ≈<span data-kilo-usage>820 кТЭ<\/span>/);
+    assert.match(projected, /ImageGen: <span data-kilo-usage>720 кТЭ<\/span> <span data-usage-percent>\(87,8%\)<\/span>/);
+    assert.match(projected, /12:03 — <span data-kilo-usage>820 кТЭ<\/span>/);
+    assert.doesNotMatch(projected, /≈/u);
     assert.doesNotMatch(projected, /Итого<\/span> ≈/);
   } finally {
     await rm(root, { recursive: true, force: true });

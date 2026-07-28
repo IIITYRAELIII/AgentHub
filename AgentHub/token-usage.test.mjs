@@ -119,7 +119,7 @@ test("formatTurnTokenUsage includes image generation estimate without marking ag
     estimatedUnits: 720_000,
   });
   assert.match(formatted, /За задачу: 720 кТЭ/);
-  assert.match(formatted, /Оценка imagegen: 720 кТЭ \(100%\)/);
+  assert.match(formatted, /ImageGen: 720 кТЭ \(100%\)/);
   assert.doesNotMatch(formatted, /≈/);
   assert.doesNotMatch(formatted, /нет данных/);
 });
@@ -135,6 +135,6 @@ test("formatTurnTokenUsage sums ordinary Codex usage and imagegen estimate", () 
     estimatedUnits: 720_000,
   });
   assert.match(formatted, /За задачу: 880 кТЭ/);
-  assert.match(formatted, /Оценка imagegen: 720 кТЭ \(81,8%\)/);
+  assert.match(formatted, /ImageGen: 720 кТЭ \(81,8%\)/);
   assert.doesNotMatch(formatted, /≈/);
 });

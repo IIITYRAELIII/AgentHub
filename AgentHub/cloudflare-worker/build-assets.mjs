@@ -7,7 +7,14 @@ const output = path.join(import.meta.dirname, "public");
 
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
-for (const file of ["index.html", "app.js", "styles.css", "blackhole-blue.png", "rainforest-night.png"]) {
+for (const file of [
+  "index.html",
+  "app.js",
+  "styles.css",
+  "blackhole-blue.png",
+  "pulsar-beams.png",
+  "rainforest-night.png",
+]) {
   await copyFile(path.join(source, file), path.join(output, file));
 }
 await copyFile(path.join(root, "work-log.css"), path.join(output, "work-log.css"));

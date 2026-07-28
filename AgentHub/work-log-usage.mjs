@@ -287,11 +287,11 @@ function formatTurnDiff(value) {
 
 function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
   const recordUnits = recordConditionalUnits(record);
+  // Знак «≈» разрывал строку перед бейджем расхода; наличие оценки видно
+  // в детализации задачи отдельной строкой ImageGen.
   const units = record?.usageReported === false && recordUnits <= 0
     ? "нет данных"
-    : `${normalizeEstimatedUnits(record?.estimatedUnits) > 0 ? "≈" : ""}${
-      highlightUsageUnits(formatConditionalUnits(recordUnits))
-    }`;
+    : highlightUsageUnits(formatConditionalUnits(recordUnits));
   const share = taskUnits > 0 && recordUnits > 0
     ? `${Math.round(recordUnits / taskUnits * 100)}%`
     : "";

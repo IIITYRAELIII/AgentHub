@@ -89,7 +89,7 @@ export function formatTaskTokenUsage(usage, { estimatedUnits = 0 } = {}) {
     `Выход: ${unitWithPercent(unitOutput, outputPercent)}`,
     `Думы: ${unitWithPercent(unitReasoning, reasoningPercent)}`,
   ];
-  if (estimate > 0) lines.push(`Оценка imagegen: ${unitWithPercent(estimate, estimatePercent)}`);
+  if (estimate > 0) lines.push(`ImageGen: ${unitWithPercent(estimate, estimatePercent)}`);
   return lines.join("\n");
 }
 

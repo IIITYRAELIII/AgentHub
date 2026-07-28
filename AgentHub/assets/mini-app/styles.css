@@ -1161,20 +1161,24 @@ main {
   width: fit-content;
 }
 
+/* Переключатель, а не третья карточка: во всю ширину колонки он вставал
+   вровень с названием задачи и её расходом, и рамка — единственная во всём
+   журнале взятая из --line-strong — читалась ярче самих данных. */
 .journal button[data-work-log-collapse-turns] {
   background: transparent;
-  border: 1px dashed var(--line-strong);
+  border: 1px dashed var(--line);
   border-radius: var(--radius-chip);
   box-sizing: border-box;
   color: var(--text-muted);
   cursor: pointer;
   font: inherit;
   font-size: 0.75rem;
-  margin: 0.35rem 0 0;
+  margin: 0.35rem auto 0;
+  max-width: 100%;
   padding: 0.28rem 0.8rem;
   text-align: center;
   transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
-  width: 100%;
+  width: fit-content;
 }
 
 .journal button[data-work-log-collapse-turns]:hover {
@@ -1570,16 +1574,76 @@ html[data-theme="nebula"] .journal summary[data-work-log-day] > strong {
 
 /* ================================= «Пульсар»: сканлайны, скобки, импульс === */
 
+html[data-theme="pulsar"] {
+  --pulsar-image: url("/pulsar-beams.png");
+}
+
+/* Фон — рендер магнетара; сканлайны оставлены поверх него: это язык темы,
+   и в отличие от «Тайги» здесь под ними ровный космос, а не силуэты,
+   которые сеткой было бы жалко стирать. */
 html[data-theme="pulsar"] body::after {
+  background-color: #03151a;
   background-image:
-    repeating-radial-gradient(
-      circle at 50% 0%,
-      transparent 0 6.8rem,
-      rgba(60, 230, 212, 0.06) 6.8rem 6.9rem,
-      transparent 6.9rem 7.4rem
-    ),
-    repeating-linear-gradient(0deg, rgba(60, 230, 212, 0.035) 0 1px, transparent 1px 4px);
-  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9), transparent 82%);
+    repeating-linear-gradient(0deg, rgba(60, 230, 212, 0.03) 0 1px, transparent 1px 4px),
+    linear-gradient(180deg, rgba(2, 12, 16, 0) 44%, rgba(2, 10, 14, 0.4)),
+    var(--pulsar-image);
+  background-position: center, center, 50% 46%;
+  background-repeat: repeat, no-repeat, no-repeat;
+  background-size: auto, cover, cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+html[data-theme="pulsar"] body::before {
+  content: none;
+}
+
+/* стеклянные панели, иначе джеты гаснут под сплошной заливкой */
+html[data-theme="pulsar"] .app-header {
+  backdrop-filter: blur(12px) saturate(120%);
+  -webkit-backdrop-filter: blur(12px) saturate(120%);
+  background: rgba(2, 12, 16, 0.6);
+}
+
+html[data-theme="pulsar"] .journal details[data-work-log-day-section] {
+  backdrop-filter: blur(5px) saturate(118%);
+  -webkit-backdrop-filter: blur(5px) saturate(118%);
+  background-color: rgba(2, 12, 16, 0.46);
+  background-image: var(--card-texture);
+}
+
+html[data-theme="pulsar"] .journal details[data-work-log-day-section][open] {
+  background-color: rgba(2, 12, 16, 0.5);
+}
+
+html[data-theme="pulsar"] .journal details[data-work-log-turn-details] {
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  background-color: rgba(3, 16, 20, 0.34);
+}
+
+html[data-theme="pulsar"] .journal details[data-work-log-turn-details]:hover {
+  background-color: rgba(5, 22, 27, 0.46);
+}
+
+html[data-theme="pulsar"] .journal details[data-work-log-turn-details][open] {
+  background-color: rgba(3, 16, 20, 0.52);
+}
+
+/* оба магнетара сидят по краям кадра — на узком экране держим левый */
+@media (max-width: 720px) {
+  html[data-theme="pulsar"] body::after {
+    background-position: center, center, 24% 52%;
+  }
+
+  html[data-theme="pulsar"] .journal details[data-work-log-day-section] {
+    background-color: rgba(2, 12, 16, 0.58);
+  }
+
+  html[data-theme="pulsar"] .journal details[data-work-log-turn-details] {
+    background-color: rgba(3, 16, 20, 0.48);
+  }
 }
 
 html[data-theme="pulsar"] .journal details[data-work-log-day-section]::before,
