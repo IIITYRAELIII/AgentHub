@@ -3,14 +3,46 @@ const updatedAt = document.querySelector("[data-updated-at]");
 const connection = document.querySelector("[data-connection]");
 const connectionLabel = document.querySelector("[data-connection-label]");
 const refreshButton = document.querySelector("[data-refresh]");
+const themeSelect = document.querySelector("[data-theme-select]");
+const themeColor = document.querySelector("[data-theme-color]");
 let currentVersion = "";
 let loading = null;
 const telegram = window.Telegram?.WebApp;
 const telegramInitData = String(telegram?.initData ?? "");
 const telegramMode = Boolean(telegramInitData);
+const themes = {
+  orbit: "#080b11",
+  nebula: "#10091a",
+  pulsar: "#041217",
+};
+
+function savedTheme() {
+  try {
+    const value = localStorage.getItem("agent-hub-theme");
+    return Object.hasOwn(themes, value) ? value : "orbit";
+  } catch {
+    return "orbit";
+  }
+}
+
+function applyTheme(theme, { persist = false } = {}) {
+  const selected = Object.hasOwn(themes, theme) ? theme : "orbit";
+  document.documentElement.dataset.theme = selected;
+  themeSelect.value = selected;
+  themeColor.content = themes[selected];
+  if (persist) {
+    try {
+      localStorage.setItem("agent-hub-theme", selected);
+    } catch {
+      // Тема останется активной до закрытия WebView.
+    }
+  }
+}
 
 telegram?.ready();
 telegram?.expand();
+applyTheme(savedTheme());
+themeSelect.addEventListener("change", () => applyTheme(themeSelect.value, { persist: true }));
 
 function requestHeaders() {
   return telegramMode ? { Authorization: `tma ${telegramInitData}` } : {};

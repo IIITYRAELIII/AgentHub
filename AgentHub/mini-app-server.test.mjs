@@ -155,6 +155,19 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
       assert.equal(response.status, 200, pathname || "/");
       assert.ok((await response.text()).length > 20);
     }
+    const page = await (await fetch(address.url)).text();
+    assert.match(page, /data-theme="orbit"/u);
+    assert.match(page, /data-theme-select/u);
+    assert.match(page, />Орбита</u);
+    assert.match(page, />Туманность</u);
+    assert.match(page, />Пульсар</u);
+    const script = await (await fetch(`${address.url}app.js`)).text();
+    assert.match(script, /agent-hub-theme/u);
+    assert.match(script, /document\.documentElement\.dataset\.theme/u);
+    const styles = await (await fetch(`${address.url}styles.css`)).text();
+    assert.match(styles, /html\[data-theme="nebula"\]/u);
+    assert.match(styles, /html\[data-theme="pulsar"\]/u);
+    assert.match(styles, /grid-template-columns: minmax\(0, 1fr\) auto 5\.2ch/u);
     assert.equal((await fetch(`${address.url}missing`)).status, 404);
     assert.equal((await fetch(`${address.url}`, { method: "POST" })).status, 405);
 

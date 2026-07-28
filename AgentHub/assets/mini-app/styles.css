@@ -44,10 +44,57 @@
   --content-width: 92rem;
   --gutter-left: max(0.9rem, env(safe-area-inset-left));
   --gutter-right: max(0.9rem, env(safe-area-inset-right));
+  --space-glow-a: rgba(56, 124, 196, 0.2);
+  --space-glow-b: rgba(126, 78, 190, 0.13);
+  --space-star: rgba(188, 220, 255, 0.32);
 
   /* work-log.css использует эти переменные для раскрытого хода */
   --vscode-focusBorder: var(--accent);
   --vscode-foreground: var(--text);
+}
+
+html[data-theme="nebula"] {
+  --bg: #10091a;
+  --surface-1: rgba(255, 244, 255, 0.035);
+  --surface-2: rgba(255, 238, 255, 0.065);
+  --surface-3: rgba(255, 225, 255, 0.1);
+  --sunken: rgba(17, 3, 28, 0.38);
+  --line: rgba(218, 174, 255, 0.17);
+  --line-strong: rgba(225, 188, 255, 0.3);
+  --text: #f4ebff;
+  --text-soft: #d4c2e6;
+  --text-muted: #a995bb;
+  --text-faint: #806e91;
+  --accent: #c38cff;
+  --accent-soft: rgba(195, 140, 255, 0.16);
+  --accent-line: rgba(195, 140, 255, 0.48);
+  --provider-codex: #7bc8ff;
+  --provider-claude: #ff9b75;
+  --space-glow-a: rgba(200, 75, 255, 0.24);
+  --space-glow-b: rgba(67, 129, 255, 0.2);
+  --space-star: rgba(235, 205, 255, 0.42);
+}
+
+html[data-theme="pulsar"] {
+  --bg: #041217;
+  --surface-1: rgba(223, 255, 252, 0.03);
+  --surface-2: rgba(215, 255, 252, 0.055);
+  --surface-3: rgba(203, 255, 251, 0.09);
+  --sunken: rgba(0, 15, 20, 0.38);
+  --line: rgba(116, 224, 216, 0.16);
+  --line-strong: rgba(116, 224, 216, 0.28);
+  --text: #e4fbf8;
+  --text-soft: #b6d9d5;
+  --text-muted: #80aaa7;
+  --text-faint: #5d8582;
+  --accent: #55e6d7;
+  --accent-soft: rgba(85, 230, 215, 0.13);
+  --accent-line: rgba(85, 230, 215, 0.44);
+  --provider-codex: #55e6d7;
+  --provider-claude: #ffad72;
+  --space-glow-a: rgba(0, 219, 199, 0.2);
+  --space-glow-b: rgba(27, 103, 255, 0.16);
+  --space-star: rgba(185, 255, 247, 0.4);
 }
 
 *,
@@ -65,8 +112,8 @@ html {
 
 body {
   background:
-    radial-gradient(115% 55% at 84% -14%, rgba(56, 124, 196, 0.2), transparent 60%),
-    radial-gradient(85% 50% at 6% -10%, rgba(126, 78, 190, 0.13), transparent 58%),
+    radial-gradient(115% 55% at 84% -14%, var(--space-glow-a), transparent 60%),
+    radial-gradient(85% 50% at 6% -10%, var(--space-glow-b), transparent 58%),
     linear-gradient(180deg, #0d1219 0, var(--bg) 32rem);
   color: var(--text);
   font-family: var(--font-sans);
@@ -75,6 +122,35 @@ body {
   margin: 0;
   min-height: 100vh;
   padding: 0;
+}
+
+html[data-theme="nebula"] body {
+  background:
+    radial-gradient(90% 65% at 88% -8%, var(--space-glow-a), transparent 62%),
+    radial-gradient(100% 70% at -8% 20%, var(--space-glow-b), transparent 66%),
+    linear-gradient(180deg, #170c24 0, var(--bg) 35rem);
+}
+
+html[data-theme="pulsar"] body {
+  background:
+    radial-gradient(90% 60% at 82% -5%, var(--space-glow-a), transparent 62%),
+    radial-gradient(75% 55% at 8% 8%, var(--space-glow-b), transparent 66%),
+    linear-gradient(180deg, #061c23 0, var(--bg) 34rem);
+}
+
+body::before {
+  background-image:
+    radial-gradient(circle, var(--space-star) 0 0.65px, transparent 0.9px),
+    radial-gradient(circle, var(--space-star) 0 0.55px, transparent 0.8px);
+  background-position: 0 0, 2.7rem 1.8rem;
+  background-size: 4.8rem 4.8rem, 6.4rem 6.4rem;
+  content: "";
+  inset: 0;
+  mask-image: linear-gradient(to bottom, black, transparent 72%);
+  opacity: 0.34;
+  pointer-events: none;
+  position: fixed;
+  z-index: 0;
 }
 
 ::selection {
@@ -201,6 +277,42 @@ h1 {
   gap: 0.55rem;
 }
 
+.theme-picker {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: 0.74rem;
+  gap: 0.35rem;
+  padding: 0.2rem 0.38rem 0.2rem 0.6rem;
+}
+
+.theme-picker-label {
+  color: var(--text-faint);
+}
+
+.theme-picker select {
+  appearance: none;
+  background:
+    linear-gradient(45deg, transparent 50%, var(--accent) 50%) calc(100% - 0.72rem) 50% / 0.28rem 0.28rem no-repeat,
+    linear-gradient(135deg, var(--accent) 50%, transparent 50%) calc(100% - 0.52rem) 50% / 0.28rem 0.28rem no-repeat,
+    var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  min-width: 7.3rem;
+  padding: 0.18rem 1.15rem 0.18rem 0.55rem;
+}
+
+.theme-picker option {
+  background: var(--bg);
+  color: var(--text);
+}
+
 .connection {
   align-items: center;
   background: var(--surface-2);
@@ -297,6 +409,8 @@ main {
   margin: 0 auto;
   max-width: var(--content-width);
   padding: 1.1rem var(--gutter-right) max(2.5rem, env(safe-area-inset-bottom)) var(--gutter-left);
+  position: relative;
+  z-index: 1;
 }
 
 .journal {
@@ -334,7 +448,7 @@ main {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.016));
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), var(--shadow-card);
   margin: 0 0 0.8rem;
   padding: 0.4rem 0.5rem;
 }
@@ -396,8 +510,17 @@ main {
   display: flex;
   flex-wrap: wrap;
   gap: 0.3rem;
-  margin-left: auto;
+  flex: 1 1 auto;
+  margin-left: 0;
   overflow: visible;
+}
+
+.journal span[data-day-usage-breakdown] {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-left: auto;
 }
 
 .journal span[data-day-usage],
@@ -470,13 +593,27 @@ main {
 }
 
 .journal div[data-work-log-task-cell] > div[data-work-log-task-content] {
-  background: var(--surface-2);
+  background:
+    linear-gradient(115deg, color-mix(in srgb, var(--row-accent) 8%, transparent), transparent 42%),
+    var(--surface-2);
   border: 1px solid var(--line);
   border-left: 2px solid var(--row-accent);
   border-radius: var(--radius-sm);
   font-weight: 560;
   line-height: 1.35;
+  overflow: hidden;
   padding: 0.42rem 0.6rem;
+  position: relative;
+}
+
+.journal div[data-work-log-task-cell] > div[data-work-log-task-content]::after {
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--row-accent) 24%, transparent), transparent);
+  content: "";
+  height: 1px;
+  inset: 0.05rem 12% auto;
+  opacity: 0.55;
+  pointer-events: none;
+  position: absolute;
 }
 
 .journal div[data-work-log-task-content] a,
@@ -493,9 +630,11 @@ main {
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   color: var(--text-muted);
-  font-size: 0.77rem;
+  display: grid;
+  font-size: 0.75rem;
   gap: 0.4rem;
-  padding: 0.3rem 0.55rem;
+  grid-template-columns: minmax(0, 1fr) auto 5.2ch;
+  padding: 0.24rem 0.55rem;
   transition: background 0.16s ease, border-color 0.16s ease;
 }
 
@@ -518,8 +657,17 @@ main {
 
 .journal span[data-task-usage-part] {
   color: var(--text-muted);
-  font-size: 0.73rem;
-  padding: 0.2rem 0.55rem;
+  column-gap: 0.4rem;
+  display: grid;
+  font-size: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) auto 5.2ch;
+  padding: 0.24rem 0.55rem;
+}
+
+.journal summary[data-task-usage] > span[data-usage-percent],
+.journal span[data-task-usage-part] > span[data-usage-percent] {
+  justify-self: end;
+  text-align: right;
 }
 
 .journal span[data-task-usage-part] + span[data-task-usage-part] {
@@ -847,7 +995,12 @@ main {
   }
 
   .toolbar {
+    flex-wrap: wrap;
     width: 100%;
+  }
+
+  .theme-picker-label {
+    display: none;
   }
 
   .stamp {
@@ -872,7 +1025,13 @@ main {
 
   .journal span[data-day-usage-table] {
     margin-left: 0;
-    width: 100%;
+    min-width: 0;
+  }
+
+  .journal span[data-day-usage-breakdown] {
+    flex-basis: 100%;
+    margin-left: 0;
+    margin-top: 0.3rem;
   }
 
   .journal details[data-work-log-day-section] {
@@ -908,6 +1067,19 @@ main {
 }
 
 @media (max-width: 460px) {
+  .stamp {
+    display: none;
+  }
+
+  .theme-picker {
+    flex: 1 1 7rem;
+  }
+
+  .theme-picker select {
+    min-width: 0;
+    width: 100%;
+  }
+
   .journal span[data-day-usage],
   .journal span[data-day-usage-part] {
     font-size: 0.72rem;

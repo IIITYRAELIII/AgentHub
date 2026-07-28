@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" data-theme="orbit">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#080b11">
+  <meta name="theme-color" content="#080b11" data-theme-color>
   <title>Agent Hub — журнал работ</title>
   <link rel="stylesheet" href="/work-log.css">
   <link rel="stylesheet" href="/styles.css">
@@ -28,6 +28,14 @@
         </div>
       </div>
       <div class="toolbar">
+        <label class="theme-picker">
+          <span class="theme-picker-label">Тема</span>
+          <select data-theme-select aria-label="Тема оформления">
+            <option value="orbit">Орбита</option>
+            <option value="nebula">Туманность</option>
+            <option value="pulsar">Пульсар</option>
+          </select>
+        </label>
         <span class="connection" data-connection="connecting">
           <span class="connection-dot" aria-hidden="true"></span>
           <span data-connection-label>Подключение…</span>
