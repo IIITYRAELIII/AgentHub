@@ -4,6 +4,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 
 import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
+import { IMAGE_GENERATION_ESTIMATE_UNITS } from "./codex-usage-estimate.mjs";
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "./token-usage.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 
@@ -98,6 +99,8 @@ function createTurnAccumulator(turnId) {
   let workspaceRoot = "";
   let index = -1;
   const changedFiles = new Set();
+  const imageGenerationCalls = new Map();
+  const completedImageGenerationCalls = new Set();
 
   const accept = (entry) => {
     index += 1;
@@ -132,6 +135,19 @@ function createTurnAccumulator(turnId) {
       if (exactTurnId === requestedTurnId) started = true;
     }
     if (entry?.type === "response_item"
+      && entry.payload?.type === "function_call"
+      && entry.payload?.name === "imagegen"
+      && entry.payload?.call_id
+      && exactTurnId) {
+      imageGenerationCalls.set(String(entry.payload.call_id), exactTurnId);
+    }
+    if (entry?.type === "event_msg"
+      && entry.payload?.type === "image_generation_end"
+      && entry.payload?.status === "completed"
+      && imageGenerationCalls.get(String(entry.payload?.call_id ?? "")) === requestedTurnId) {
+      completedImageGenerationCalls.add(String(entry.payload.call_id));
+    }
+    if (entry?.type === "response_item"
       && exactTurnId === requestedTurnId
       && entry.payload?.type === "message"
       && entry.payload?.role === "user") {
@@ -160,21 +176,27 @@ function createTurnAccumulator(turnId) {
     latestResponseTurnId = "";
   };
 
-  const result = () => ({
-    turnId: requestedTurnId,
-    usage,
-    reported,
-    started,
-    terminal,
-    finalAnswerSeen: finalAnswerIndex >= 0,
-    finalAnswer,
-    finalTokenSeen: finalAnswerIndex < 0 ? reported : finalTokenIndex > finalAnswerIndex,
-    startedAt,
-    completedAt,
-    prompt,
-    changedFiles: [...changedFiles],
-    status: status || (terminal ? "completed" : started ? "inProgress" : ""),
-  });
+  const result = () => {
+    const imageGenerationCount = completedImageGenerationCalls.size;
+    return {
+      turnId: requestedTurnId,
+      usage,
+      reported,
+      started,
+      terminal,
+      finalAnswerSeen: finalAnswerIndex >= 0,
+      finalAnswer,
+      finalTokenSeen: finalAnswerIndex < 0 ? reported : finalTokenIndex > finalAnswerIndex,
+      startedAt,
+      completedAt,
+      prompt,
+      changedFiles: [...changedFiles],
+      imageGenerationCount,
+      estimatedUnits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_UNITS,
+      estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",
+      status: status || (terminal ? "completed" : started ? "inProgress" : ""),
+    };
+  };
 
   return { accept, result };
 }

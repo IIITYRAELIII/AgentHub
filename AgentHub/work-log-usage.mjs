@@ -55,9 +55,8 @@ function normalizeEstimatedUnits(value) {
 }
 
 function recordConditionalUnits(record) {
-  return record?.usageReported === false
-    ? normalizeEstimatedUnits(record?.estimatedUnits)
-    : turnConditionalUnits(record?.usage);
+  return (record?.usageReported === false ? 0 : turnConditionalUnits(record?.usage))
+    + normalizeEstimatedUnits(record?.estimatedUnits);
 }
 
 function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
@@ -85,7 +84,12 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       const status = String(record?.status ?? "completed").trim() || "completed";
       const usageReported = record?.usageReported !== false;
       const estimate = provider === "codex"
-        ? estimateMissingCodexUsage({ status, usageReported, prompt })
+        ? estimateMissingCodexUsage({
+          status,
+          usageReported,
+          prompt,
+          imageGenerationCount: record?.imageGenerationCount,
+        })
         : null;
       let workLogId = null;
       if (record?.workLogId) workLogId = normalizeWorkLogId(record.workLogId);
@@ -94,12 +98,8 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         projectRoot: normalizeProjectRoot(record?.projectRoot, defaultProjectRoot),
         usage: normalizeTokenUsage(record?.usage),
         usageReported,
-        estimatedUnits: !usageReported
-          ? normalizeEstimatedUnits(record?.estimatedUnits ?? estimate?.estimatedUnits)
-          : 0,
-        estimateKind: !usageReported
-          ? String(record?.estimateKind ?? estimate?.estimateKind ?? "").trim()
-          : "",
+        estimatedUnits: normalizeEstimatedUnits(record?.estimatedUnits ?? estimate?.estimatedUnits),
+        estimateKind: String(record?.estimateKind ?? estimate?.estimateKind ?? "").trim(),
         provider,
         threadId,
         taskThreadId,
@@ -275,7 +275,9 @@ function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
   const recordUnits = recordConditionalUnits(record);
   const units = record?.usageReported === false && recordUnits <= 0
     ? "нет данных"
-    : `${record?.usageReported === false ? "≈" : ""}${highlightUsageUnits(formatConditionalUnits(recordUnits))}`;
+    : `${normalizeEstimatedUnits(record?.estimatedUnits) > 0 ? "≈" : ""}${
+      highlightUsageUnits(formatConditionalUnits(recordUnits))
+    }`;
   const share = taskUnits > 0 && recordUnits > 0
     ? `${Math.round(recordUnits / taskUnits * 100)}%`
     : "";
@@ -852,9 +854,7 @@ function projectDaySection(section, date, turns, recordsById, open) {
         emptyTokenUsage(),
       );
       const estimatedUnits = recorded.reduce(
-        (total, record) => total + (
-          record.usageReported === false ? normalizeEstimatedUnits(record.estimatedUnits) : 0
-        ),
+        (total, record) => total + normalizeEstimatedUnits(record.estimatedUnits),
         0,
       );
       const cells = workLogRowCells(match.text);
@@ -905,7 +905,7 @@ function projectDaySection(section, date, turns, recordsById, open) {
   const summary = dayUnits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
       + `<span data-day-usage><span data-usage-label>Итого</span> ${
-        `${dayEstimatedUnits > 0 ? "≈" : ""}${highlightUsageUnits(formatConditionalUnits(dayUnits))}`
+        highlightUsageUnits(formatConditionalUnits(dayUnits))
       }</span>`
       + `${formatDayUsageBreakdown(
         dayUsage,
@@ -1013,8 +1013,8 @@ function incomingLedgerRecord({
     projectRoot: normalizeProjectRoot(projectRoot),
     usage: normalizeTokenUsage(usage),
     usageReported: usageReported === true,
-    estimatedUnits: usageReported === true ? 0 : normalizeEstimatedUnits(estimatedUnits),
-    estimateKind: usageReported === true ? "" : String(estimateKind ?? "").trim(),
+    estimatedUnits: normalizeEstimatedUnits(estimatedUnits),
+    estimateKind: String(estimateKind ?? "").trim(),
     provider: String(provider).trim().toLowerCase(),
     threadId: String(threadId).trim(),
     taskThreadId: String(taskThreadId ?? threadId).trim(),
@@ -1041,6 +1041,8 @@ function mergeLedgerRecord(existing, incoming) {
   if (incoming.usageReported || !existing.usageReported) {
     existing.usage = incoming.usage;
     existing.usageReported = incoming.usageReported;
+  }
+  if (incoming.estimatedUnits > 0) {
     existing.estimatedUnits = incoming.estimatedUnits;
     existing.estimateKind = incoming.estimateKind;
   }

@@ -83,13 +83,13 @@ export function formatTaskTokenUsage(usage, { estimatedUnits = 0 } = {}) {
   ]);
   const unitWithPercent = (value, percent) => `${formatConditionalUnits(value)} (${number(percent)}%)`;
   const lines = [
-    `📊 За задачу: ${estimate > 0 ? "≈" : ""}${formatConditionalUnits(unitTotal)}`,
+    `📊 За задачу: ${formatConditionalUnits(unitTotal)}`,
     `Вход: ${unitWithPercent(unitInput, inputPercent)}`,
     `Кэш: ${unitWithPercent(unitCache, cachePercent)}`,
     `Выход: ${unitWithPercent(unitOutput, outputPercent)}`,
     `Думы: ${unitWithPercent(unitReasoning, reasoningPercent)}`,
   ];
-  if (estimate > 0) lines.push(`Оценка imagegen: ≈${unitWithPercent(estimate, estimatePercent)}`);
+  if (estimate > 0) lines.push(`Оценка imagegen: ${unitWithPercent(estimate, estimatePercent)}`);
   return lines.join("\n");
 }
 

@@ -146,6 +146,45 @@ test("streaming rollout scan extracts files from the apply_patch tool call", asy
   ]);
 });
 
+test("rollout scan counts completed imagegen calls for the exact turn", () => {
+  const text = [
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
+    line(response("turn-1", "function_call", {
+      name: "imagegen",
+      call_id: "call-image-1",
+    })),
+    line({
+      type: "event_msg",
+      payload: {
+        type: "image_generation_end",
+        call_id: "call-image-1",
+        status: "completed",
+      },
+    }),
+    line(response("turn-other", "function_call", {
+      name: "imagegen",
+      call_id: "call-image-other",
+    })),
+    line({
+      type: "event_msg",
+      payload: {
+        type: "image_generation_end",
+        call_id: "call-image-other",
+        status: "completed",
+      },
+    }),
+    line(response("turn-1")),
+    line(token(100, 80, 10, 4)),
+    line({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-1" } }),
+  ].join("\n");
+
+  const result = codexTurnUsageFromJsonl(text, "turn-1");
+  assert.equal(result.reported, true);
+  assert.equal(result.imageGenerationCount, 1);
+  assert.equal(result.estimatedUnits, 720_000);
+  assert.equal(result.estimateKind, "imagegen-default");
+});
+
 test("recent terminal scan distinguishes completed and aborted turns", () => {
   const values = codexRecentTerminalTurnsFromJsonl([
     line({ timestamp: "2026-07-26T19:04:03.527Z", type: "event_msg", payload: {

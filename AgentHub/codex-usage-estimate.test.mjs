@@ -33,3 +33,23 @@ test("missing completed image generation usage gets a fixed rough estimate", () 
     prompt: "Нарисуй фон",
   }), null);
 });
+
+test("exact completed image generation calls are estimated in addition to reported Codex usage", () => {
+  assert.deepEqual(estimateMissingCodexUsage({
+    status: "completed",
+    usageReported: true,
+    prompt: "Обнови тему",
+    imageGenerationCount: 2,
+  }), {
+    estimatedUnits: IMAGE_GENERATION_ESTIMATE_UNITS * 2,
+    estimateKind: "imagegen-default",
+  });
+  assert.deepEqual(estimateMissingCodexUsage({
+    status: "aborted",
+    usageReported: true,
+    imageGenerationCount: 1,
+  }), {
+    estimatedUnits: IMAGE_GENERATION_ESTIMATE_UNITS,
+    estimateKind: "imagegen-default",
+  });
+});

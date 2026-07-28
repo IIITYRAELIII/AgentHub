@@ -62,8 +62,13 @@ function normalizedCompletion(value) {
       status: value.status,
       usageReported,
       prompt: value.prompt,
+      imageGenerationCount: value.imageGenerationCount,
     })
     : null;
+  const estimatedUnits = Math.max(
+    0,
+    Math.round(Number(value.estimatedUnits ?? estimate?.estimatedUnits) || 0),
+  );
   return {
     ...base,
     turnId,
@@ -73,12 +78,10 @@ function normalizedCompletion(value) {
     status: String(value.status ?? "completed").trim() || "completed",
     usage: normalizeTokenUsage(value.usage),
     usageReported,
-    estimatedUnits: usageReported
-      ? 0
-      : Math.max(0, Math.round(Number(value.estimatedUnits ?? estimate?.estimatedUnits) || 0)),
-    estimateKind: usageReported
-      ? ""
-      : String(value.estimateKind ?? estimate?.estimateKind ?? "").trim(),
+    estimatedUnits,
+    estimateKind: estimatedUnits > 0
+      ? String(value.estimateKind ?? estimate?.estimateKind ?? "").trim()
+      : "",
     provisional: value.provisional === true,
     deliveryGroupId: String(value.deliveryGroupId ?? "").trim() || null,
     deliverySequence: Number.isSafeInteger(value.deliverySequence) ? value.deliverySequence : null,
@@ -204,6 +207,8 @@ export class TurnEndNotificationRegistry {
     if (incoming.usageReported || !completion.usageReported) {
       completion.usage = incoming.usage;
       completion.usageReported = incoming.usageReported;
+    }
+    if (incoming.estimatedUnits > 0) {
       completion.estimatedUnits = incoming.estimatedUnits;
       completion.estimateKind = incoming.estimateKind;
     }

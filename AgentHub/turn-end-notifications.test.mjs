@@ -76,6 +76,17 @@ test("completed Codex image generation without token events receives a rough est
   assert.equal(ready.estimateKind, "imagegen-default");
 });
 
+test("completed imagegen estimate is added when ordinary Codex usage is reported", () => {
+  const registry = new TurnEndNotificationRegistry();
+  const ready = registry.recordCompletion(completion({
+    imageGenerationCount: 2,
+  }));
+  assert.equal(ready.usageReported, true);
+  assert.equal(ready.usage.inputTokens, 10);
+  assert.equal(ready.estimatedUnits, 1_440_000);
+  assert.equal(ready.estimateKind, "imagegen-default");
+});
+
 test("turn-end titles retain up to 100 characters", () => {
   const registry = new TurnEndNotificationRegistry();
   registry.registerMessage(message({

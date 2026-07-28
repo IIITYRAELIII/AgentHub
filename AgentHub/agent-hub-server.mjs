@@ -1251,6 +1251,9 @@ async function finalizeCodexRunDelivery(run, {
     status,
     usage: tracker.usage,
     usageReported: tracker.reported === true,
+    imageGenerationCount: tracker.imageGenerationCount ?? 0,
+    estimatedUnits: tracker.estimatedUnits ?? 0,
+    estimateKind: tracker.estimateKind ?? "",
     startedAt: run.startedAt,
     prompt: run.promptPreview,
     changedFiles: changedFilesForRun(run),
@@ -1428,7 +1431,7 @@ async function waitForTurnEndCompletion(identity, timeoutMs = 2_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const completion = turnEndNotifications.get(identity);
-    if (completion?.usageReported) return completion;
+    if (completion?.usageReported || Number(completion?.estimatedUnits) > 0) return completion;
     await delay(50);
   }
   return turnEndNotifications.get(identity);
@@ -4005,6 +4008,9 @@ async function handleRuntimeCommand(request) {
       status: payload.status,
       usage: payload.usage,
       usageReported: payload.usageReported === true,
+      imageGenerationCount: payload.imageGenerationCount ?? 0,
+      estimatedUnits: payload.estimatedUnits ?? 0,
+      estimateKind: payload.estimateKind ?? "",
       startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
       completedAt: payload.completedAt,
       prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
@@ -4018,6 +4024,8 @@ async function handleRuntimeCommand(request) {
         status: payload.status,
         usage: normalizeTokenUsage(payload.usage),
         usageReported: payload.usageReported === true,
+        estimatedUnits: payload.estimatedUnits ?? 0,
+        estimateKind: payload.estimateKind ?? "",
         startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
         completedAt: payload.completedAt,
         prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
@@ -4634,13 +4642,20 @@ async function finishObservedRun(run, snapshot) {
   );
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
   if (run.provider === "codex") {
-    if (!tracker?.reported && run.executionOwner !== TASK_EXECUTION_OWNERS.TELEGRAM) {
+    if (run.executionOwner !== TASK_EXECUTION_OWNERS.TELEGRAM) {
       const hooked = await waitForTurnEndCompletion({
         provider: "codex",
         threadId: run.threadId,
         turnId: completedTurnId,
       });
-      if (!hooked?.usageReported) {
+      if (hooked?.usageReported || Number(hooked?.estimatedUnits) > 0) {
+        tracker = {
+          usage: hooked.usage,
+          reported: hooked.usageReported === true,
+          estimatedUnits: hooked.estimatedUnits,
+          estimateKind: hooked.estimateKind,
+        };
+      } else if (!tracker?.reported) {
         try {
           const result = await readCodexThread(run.threadId, {
             fresh: true,
@@ -4653,6 +4668,9 @@ async function finishObservedRun(run, snapshot) {
           tracker = {
             usage: usageResult.usage,
             reported: usageResult.reported === true,
+            imageGenerationCount: usageResult.imageGenerationCount,
+            estimatedUnits: usageResult.estimatedUnits,
+            estimateKind: usageResult.estimateKind,
           };
           applyCodexRolloutContext(run, usageResult);
         } catch (error) {
@@ -4869,6 +4887,8 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         provisional,
         usage: usageResult.usage,
         usageReported: usageResult.reported === true,
+        estimatedUnits: usageResult.estimatedUnits,
+        estimateKind: usageResult.estimateKind,
         startedAt: usageResult.startedAt,
         completedAt: resolvedCompletedAt,
         prompt: usageResult.prompt,
@@ -4905,6 +4925,8 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         status: resolvedStatus,
         usage: usageResult.usage,
         usageReported: usageResult.reported === true,
+        estimatedUnits: usageResult.estimatedUnits,
+        estimateKind: usageResult.estimateKind,
         startedAt: usageResult.startedAt,
         completedAt: resolvedCompletedAt,
         prompt: usageResult.prompt,
@@ -4933,6 +4955,9 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       provisional,
       usage: usageResult.usage,
       usageReported: usageResult.reported === true,
+      imageGenerationCount: usageResult.imageGenerationCount,
+      estimatedUnits: usageResult.estimatedUnits,
+      estimateKind: usageResult.estimateKind,
       startedAt: usageResult.startedAt,
       completedAt: resolvedCompletedAt,
       prompt: usageResult.prompt,

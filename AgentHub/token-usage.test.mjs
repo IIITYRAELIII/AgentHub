@@ -112,13 +112,29 @@ test("formatTurnTokenUsage excludes cached tokens from uncached input", () => {
   assert.equal(formatTurnTokenUsage(null), "📊 Токены за задачу: нет данных.");
 });
 
-test("formatTurnTokenUsage renders a clearly marked image generation estimate", () => {
+test("formatTurnTokenUsage includes image generation estimate without marking aggregate values approximate", () => {
   const formatted = formatTurnTokenUsage({
     reported: false,
     usage: emptyTokenUsage(),
     estimatedUnits: 720_000,
   });
-  assert.match(formatted, /За задачу: ≈720 кТЭ/);
-  assert.match(formatted, /Оценка imagegen: ≈720 кТЭ \(100%\)/);
+  assert.match(formatted, /За задачу: 720 кТЭ/);
+  assert.match(formatted, /Оценка imagegen: 720 кТЭ \(100%\)/);
+  assert.doesNotMatch(formatted, /≈/);
   assert.doesNotMatch(formatted, /нет данных/);
+});
+
+test("formatTurnTokenUsage sums ordinary Codex usage and imagegen estimate", () => {
+  const formatted = formatTurnTokenUsage({
+    reported: true,
+    usage: normalizeTokenUsage({
+      inputTokens: 100_000,
+      outputTokens: 10_000,
+      reasoningOutputTokens: 4_000,
+    }),
+    estimatedUnits: 720_000,
+  });
+  assert.match(formatted, /За задачу: 880 кТЭ/);
+  assert.match(formatted, /Оценка imagegen: 720 кТЭ \(81,8%\)/);
+  assert.doesNotMatch(formatted, /≈/);
 });

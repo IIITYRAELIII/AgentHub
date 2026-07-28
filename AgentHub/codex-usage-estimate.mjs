@@ -17,11 +17,19 @@ export function estimateMissingCodexUsage({
   status,
   usageReported,
   prompt,
+  imageGenerationCount,
 } = {}) {
-  if (usageReported === true || String(status ?? "") !== "completed") return null;
-  if (!looksLikeImageGenerationPrompt(prompt)) return null;
+  const exactCount = Math.max(0, Math.floor(Number(imageGenerationCount) || 0));
+  const count = exactCount || (
+    String(status ?? "") === "completed"
+      && usageReported !== true
+      && looksLikeImageGenerationPrompt(prompt)
+      ? 1
+      : 0
+  );
+  if (!count) return null;
   return {
-    estimatedUnits: IMAGE_GENERATION_ESTIMATE_UNITS,
+    estimatedUnits: IMAGE_GENERATION_ESTIMATE_UNITS * count,
     estimateKind: "imagegen-default",
   };
 }
