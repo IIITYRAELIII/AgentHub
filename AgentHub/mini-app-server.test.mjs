@@ -157,6 +157,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     }
     const page = await (await fetch(address.url)).text();
     assert.match(page, /data-theme="orbit"/u);
+    assert.match(page, /data-surface="desktop"/u);
     assert.match(page, /data-theme-select/u);
     assert.match(page, />Орбита</u);
     assert.match(page, />Туманность</u);
@@ -165,10 +166,13 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     const script = await (await fetch(`${address.url}app.js`)).text();
     assert.match(script, /agent-hub-theme/u);
     assert.match(script, /document\.documentElement\.dataset\.theme/u);
+    assert.match(script, /mobileTelegramPlatforms\.has\(telegramPlatform\)/u);
+    assert.match(script, /document\.documentElement\.dataset\.surface = surface/u);
     const styles = await (await fetch(`${address.url}styles.css`)).text();
     assert.match(styles, /html\[data-theme="nebula"\]/u);
     assert.match(styles, /html\[data-theme="pulsar"\]/u);
     assert.match(styles, /html\[data-theme="gothic"\]/u);
+    assert.match(styles, /html\[data-surface="mobile"\] \.journal div\[data-work-log-row\]/u);
     assert.match(styles, /"Palatino Linotype"/u);
     assert.match(styles, /grid-template-columns: minmax\(0, 1fr\) 8\.6ch 6ch/u);
     assert.equal((await fetch(`${address.url}missing`)).status, 404);

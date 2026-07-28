@@ -1711,133 +1711,131 @@ html[data-theme="blackhole"] .journal span[data-day-usage] {
   }
 }
 
-@media (max-width: 760px) {
-  body {
-    font-size: 14px;
-  }
+html[data-surface="mobile"] body {
+  font-size: 14px;
+}
 
-  :root {
-    --header-height: 3.75rem;
-  }
+html[data-surface="mobile"] {
+  --header-height: 3.75rem;
+}
 
-  .brand-mark {
-    height: 2.05rem;
-    width: 2.05rem;
-  }
+html[data-surface="mobile"] .brand-mark {
+  height: 2.05rem;
+  width: 2.05rem;
+}
 
-  h1 {
-    font-size: 1.06rem;
-  }
+html[data-surface="mobile"] h1 {
+  font-size: 1.06rem;
+}
 
-  .app-header-inner {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
+html[data-surface="mobile"] .app-header-inner {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 0.5rem;
+}
 
-  .toolbar {
-    flex-wrap: wrap;
-    width: 100%;
-  }
+html[data-surface="mobile"] .toolbar {
+  flex-wrap: wrap;
+  width: 100%;
+}
 
-  .stamp {
-    margin-left: auto;
-  }
+html[data-surface="mobile"] .stamp {
+  margin-left: auto;
+}
 
-  .refresh-label {
-    display: none;
-  }
+html[data-surface="mobile"] .refresh-label {
+  display: none;
+}
 
-  .refresh {
-    padding: 0.3rem 0.55rem;
-  }
+html[data-surface="mobile"] .refresh {
+  padding: 0.3rem 0.55rem;
+}
 
-  main {
-    padding-top: 0.85rem;
-  }
+html[data-surface="mobile"] main {
+  padding-top: 0.85rem;
+}
 
-  .journal summary[data-work-log-day] > strong {
-    font-size: 0.95rem;
-  }
+html[data-surface="mobile"] .journal summary[data-work-log-day] > strong {
+  font-size: 0.95rem;
+}
 
-  .journal span[data-day-usage-table] {
-    margin-left: 0;
-    min-width: 0;
-  }
+html[data-surface="mobile"] .journal span[data-day-usage-table] {
+  margin-left: 0;
+  min-width: 0;
+}
 
-  .journal span[data-day-usage-breakdown] {
-    flex-basis: 100%;
-    margin-left: 0;
-    margin-top: 0.3rem;
-  }
+html[data-surface="mobile"] .journal span[data-day-usage-breakdown] {
+  flex-basis: 100%;
+  margin-left: 0;
+  margin-top: 0.3rem;
+}
 
-  .journal details[data-work-log-day-section] {
-    padding: 0.35rem 0.4rem;
-  }
+html[data-surface="mobile"] .journal details[data-work-log-day-section] {
+  padding: 0.35rem 0.4rem;
+}
 
-  .journal div[data-work-log-header] {
-    display: none;
-  }
+html[data-surface="mobile"] .journal div[data-work-log-header] {
+  display: none;
+}
 
-  .journal div[data-work-log-row] {
-    display: block;
-    padding: 0.35rem 0 0.5rem;
-  }
+html[data-surface="mobile"] .journal div[data-work-log-row] {
+  display: block;
+  padding: 0.35rem 0 0.5rem;
+}
 
-  .journal div[data-work-log-task-cell] {
-    padding: 0.2rem;
-    position: static;
-  }
+html[data-surface="mobile"] .journal div[data-work-log-task-cell] {
+  padding: 0.2rem;
+  position: static;
+}
 
-  .journal div[data-work-log-turn-list] {
-    padding: 0.2rem;
-  }
+html[data-surface="mobile"] .journal div[data-work-log-turn-list] {
+  padding: 0.2rem;
+}
 
-  .journal details[data-work-log-turn-details] > summary {
-    grid-template-columns: 9rem minmax(0, 1fr);
-  }
+html[data-surface="mobile"] .journal details[data-work-log-turn-details] > summary {
+  grid-template-columns: 9rem minmax(0, 1fr);
+}
 
-  .journal span[data-work-log-turn-meta] {
-    font-size: 0.75rem;
-    gap: 0.25rem;
-  }
+html[data-surface="mobile"] .journal span[data-work-log-turn-meta] {
+  font-size: 0.75rem;
+  gap: 0.25rem;
 }
 
 @media (max-width: 460px) {
-  .stamp {
+  html[data-surface="mobile"] .stamp {
     display: none;
   }
 
-  .theme-picker {
+  html[data-surface="mobile"] .theme-picker {
     flex: 1 1 7rem;
   }
 
-  .theme-picker select {
+  html[data-surface="mobile"] .theme-picker select {
     min-width: 0;
     width: 100%;
   }
 
-  .journal span[data-day-usage],
-  .journal span[data-day-usage-part] {
+  html[data-surface="mobile"] .journal span[data-day-usage],
+  html[data-surface="mobile"] .journal span[data-day-usage-part] {
     font-size: 0.72rem;
     padding: 0.16rem 0.5rem;
   }
 
-  .journal details[data-work-log-turn-details] > summary {
+  html[data-surface="mobile"] .journal details[data-work-log-turn-details] > summary {
     grid-template-columns: minmax(0, 1fr);
     row-gap: 0.05rem;
   }
 
-  .journal span[data-work-log-turn-meta] {
+  html[data-surface="mobile"] .journal span[data-work-log-turn-meta] {
     justify-content: flex-start;
     padding-bottom: 0;
   }
 
-  .journal span[data-work-log-turn-share] {
+  html[data-surface="mobile"] .journal span[data-work-log-turn-share] {
     margin-left: 0.4rem;
   }
 
-  .journal span[data-work-log-turn-title] {
+  html[data-surface="mobile"] .journal span[data-work-log-turn-title] {
     border-left: 0;
     padding-top: 0;
   }

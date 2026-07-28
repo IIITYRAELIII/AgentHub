@@ -10,6 +10,10 @@ let loading = null;
 const telegram = window.Telegram?.WebApp;
 const telegramInitData = String(telegram?.initData ?? "");
 const telegramMode = Boolean(telegramInitData);
+const telegramPlatform = String(telegram?.platform ?? "").toLowerCase();
+const mobileTelegramPlatforms = new Set(["android", "ios"]);
+const surface = telegramMode && mobileTelegramPlatforms.has(telegramPlatform) ? "mobile" : "desktop";
+document.documentElement.dataset.surface = surface;
 const themes = {
   orbit: "#080b11",
   nebula: "#0f0819",
