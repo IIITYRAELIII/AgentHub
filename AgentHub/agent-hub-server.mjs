@@ -3772,7 +3772,7 @@ async function spawnRuntimeNotification(script, args, requestCwd, callerEnvironm
   return result.stdout.trim();
 }
 
-function runtimeCommandTaskTitle({
+function runtimeCommandTaskTitleFallback({
   provider,
   threadId: targetThreadId,
   run = null,
@@ -3792,6 +3792,13 @@ function runtimeCommandTaskTitle({
   }
   if (thread) return threadTitle(thread);
   return `${provider === "codex" ? "Codex" : "Claude"} · ${targetThreadId.slice(0, 8)}`;
+}
+
+async function runtimeCommandTaskTitle(options) {
+  const fallback = runtimeCommandTaskTitleFallback(options);
+  return options.provider === "codex"
+    ? storedCodexThreadTitle(options.threadId, fallback)
+    : fallback;
 }
 
 function runtimeCommandIdentity(environment = {}) {
@@ -3987,7 +3994,7 @@ async function handleRuntimeCommand(request) {
       run.promptPreview = turnStart.prompt || run.promptPreview;
     }
     const alreadyDelivered = turnEndNotifications.hasDelivered(deliveredIdentity);
-    const taskTitle = runtimeCommandTaskTitle({ ...identity, run });
+    const taskTitle = await runtimeCommandTaskTitle({ ...identity, run });
     let baselineChangedFiles = [];
     let turnDiff = "";
     if (turnStart?.gitBaseline) {
@@ -4082,7 +4089,7 @@ async function handleRuntimeCommand(request) {
     });
     const exactTurn = await exactRuntimeCommandTurn(identity, run);
     const targetChatId = resolveNotificationChatId(config, options.chatId);
-    const taskTitle = runtimeCommandTaskTitle({
+    const taskTitle = await runtimeCommandTaskTitle({
       ...identity,
       run,
       thread: exactTurn.threadResult?.thread,
@@ -4923,7 +4930,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         parentThreadId: accountingThread.parentThreadId,
         aggregateOnly: true,
         projectRoot: project.path,
-        taskTitle: runtimeCommandTaskTitle({
+        taskTitle: await runtimeCommandTaskTitle({
           provider: "codex",
           threadId: accountingThread.threadId,
           thread: accountingThread.thread,
@@ -4967,7 +4974,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       const journal = await projectTurnUsageToWorkLog({
         ...identity,
         projectRoot: project.path,
-        taskTitle: runtimeCommandTaskTitle({ ...identity, thread }),
+        taskTitle: await runtimeCommandTaskTitle({ ...identity, thread }),
         status: resolvedStatus,
         usage: usageResult.usage,
         usageReported: usageResult.reported === true,
@@ -4996,7 +5003,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
     const completion = turnEndNotifications.recordCompletion({
       ...identity,
       projectRoot: project.path,
-      taskTitle: runtimeCommandTaskTitle({ ...identity, thread }),
+      taskTitle: await runtimeCommandTaskTitle({ ...identity, thread }),
       chatId: resolveNotificationChatId(config, null),
       status: resolvedStatus,
       provisional,
