@@ -265,78 +265,79 @@ html[data-theme="gothic"] {
   --radius-chip: 2px;
   --rail-width: 3px;
 
-  --bg: #05070a;
-  --surface-1: rgba(214, 228, 242, 0.035);
-  --surface-2: rgba(214, 228, 242, 0.06);
-  --surface-3: rgba(214, 228, 242, 0.1);
-  --sunken: rgba(0, 0, 0, 0.5);
+  --bg: #0b0c0d;
+  --surface-1: rgba(216, 222, 228, 0.035);
+  --surface-2: rgba(216, 222, 228, 0.06);
+  --surface-3: rgba(216, 222, 228, 0.1);
+  --sunken: rgba(0, 0, 0, 0.42);
 
-  --line: rgba(184, 199, 214, 0.2);
-  --line-strong: rgba(202, 216, 230, 0.34);
+  --line: rgba(190, 199, 208, 0.18);
+  --line-strong: rgba(206, 214, 222, 0.3);
 
-  /* Плита клинка: продольная шлифовка, косой блик и редкие задиры.
-     Полосы идут почти горизонтально — так металл брашируют вдоль лезвия. */
-  --card-bg: linear-gradient(178deg, rgba(30, 35, 40, 0.96), rgba(10, 12, 14, 0.97));
-  --card-bg-open: linear-gradient(178deg, rgba(36, 42, 48, 0.97), rgba(12, 14, 17, 0.98));
+  /* Тёмный бетон: облачные пятна разной плотности, без направленных полос.
+     Мелкое зерно добавляется отдельным слоем в ::after — ему нужен свой шаг. */
+  --card-bg: linear-gradient(176deg, #26292b 0, #1c1e20 46%, #141516 100%);
+  --card-bg-open: linear-gradient(176deg, #2c2f32 0, #202224 46%, #171819 100%);
   --card-texture:
-    linear-gradient(101deg, transparent 20%, rgba(216, 231, 246, 0.06) 37%, transparent 53%),
-    repeating-linear-gradient(179deg, rgba(226, 240, 252, 0.024) 0 1px, transparent 1px 3px),
-    repeating-linear-gradient(181deg, rgba(0, 0, 0, 0.26) 0 1px, transparent 1px 5px),
-    repeating-linear-gradient(176.5deg, transparent 0 4.6rem, rgba(226, 240, 252, 0.06) 4.6rem 4.66rem, transparent 4.66rem 11rem),
-    repeating-linear-gradient(183deg, transparent 0 7.4rem, rgba(0, 0, 0, 0.34) 7.4rem 7.48rem, transparent 7.48rem 16rem);
-  --card-border: rgba(184, 199, 214, 0.22);
-  --card-border-open: rgba(202, 216, 230, 0.34);
+    radial-gradient(42% 46% at 16% 20%, rgba(226, 232, 240, 0.055), transparent 72%),
+    radial-gradient(34% 38% at 74% 10%, rgba(0, 0, 0, 0.42), transparent 74%),
+    radial-gradient(46% 42% at 88% 72%, rgba(226, 232, 240, 0.04), transparent 72%),
+    radial-gradient(38% 46% at 32% 88%, rgba(0, 0, 0, 0.38), transparent 76%),
+    radial-gradient(30% 34% at 56% 44%, rgba(226, 232, 240, 0.03), transparent 74%),
+    radial-gradient(26% 30% at 8% 62%, rgba(0, 0, 0, 0.3), transparent 76%);
+  --card-border: rgba(190, 199, 208, 0.2);
+  --card-border-open: rgba(206, 214, 222, 0.3);
   --card-shadow:
-    inset 0 1px 0 rgba(230, 242, 254, 0.14),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.9),
-    0 24px 46px -28px rgba(0, 0, 0, 0.98);
+    inset 0 1px 0 rgba(232, 238, 244, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.8),
+    0 24px 46px -30px rgba(0, 0, 0, 0.95);
 
-  --plate-bg: linear-gradient(178deg, rgba(48, 55, 62, 0.95), rgba(17, 19, 22, 0.97));
+  --plate-bg: linear-gradient(176deg, #2b2e31 0, #1d1f21 55%, #16181a 100%);
   --plate-texture:
-    linear-gradient(99deg, transparent 24%, rgba(216, 231, 246, 0.055) 40%, transparent 55%),
-    repeating-linear-gradient(179deg, rgba(226, 240, 252, 0.022) 0 1px, transparent 1px 3px),
-    repeating-linear-gradient(181deg, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 4px);
+    radial-gradient(52% 60% at 22% 24%, rgba(226, 232, 240, 0.05), transparent 74%),
+    radial-gradient(46% 54% at 82% 78%, rgba(0, 0, 0, 0.34), transparent 76%),
+    radial-gradient(34% 40% at 64% 18%, rgba(226, 232, 240, 0.03), transparent 76%);
   --plate-shadow:
-    inset 0 1px 0 rgba(230, 242, 254, 0.16),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.85);
+    inset 0 1px 0 rgba(232, 238, 244, 0.09),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.75);
   --turn-shadow: 0 12px 24px -20px rgba(0, 0, 0, 1);
 
-  --text: #dfe6ec;
-  --text-soft: #b3bcc5;
-  --text-muted: #8c959e;
-  --text-faint: #656d76;
+  --text: #e0e4e8;
+  --text-soft: #b4bac0;
+  --text-muted: #8d939a;
+  --text-faint: #676d73;
 
-  --accent: #c6d3e0;
-  --accent-soft: rgba(198, 211, 224, 0.12);
-  --accent-line: rgba(198, 211, 224, 0.46);
-  --accent-glow: 0 0 18px -8px rgba(214, 228, 242, 0.8);
-  --selection: rgba(198, 211, 224, 0.26);
+  --accent: #c2c9d0;
+  --accent-soft: rgba(194, 201, 208, 0.11);
+  --accent-line: rgba(194, 201, 208, 0.42);
+  --accent-glow: 0 0 18px -9px rgba(214, 222, 230, 0.7);
+  --selection: rgba(194, 201, 208, 0.25);
   --brand-gradient:
-    linear-gradient(101deg, transparent 18%, rgba(226, 240, 254, 0.3) 38%, transparent 58%),
-    linear-gradient(178deg, #3a424a, #0f1114);
+    radial-gradient(64% 70% at 30% 26%, rgba(226, 232, 240, 0.14), transparent 74%),
+    linear-gradient(176deg, #34383c, #131416);
   --brand-shadow:
-    inset 0 1px 0 rgba(230, 242, 254, 0.2),
-    inset 0 -8px 14px rgba(0, 0, 0, 0.45),
-    0 8px 20px -12px rgba(0, 0, 0, 0.95);
+    inset 0 1px 0 rgba(232, 238, 244, 0.13),
+    inset 0 -8px 14px rgba(0, 0, 0, 0.42),
+    0 8px 20px -12px rgba(0, 0, 0, 0.9);
 
-  --provider-none: #7e868f;
-  --provider-codex: #d8e2ec;
-  --provider-claude: #9db0c4;
+  --provider-none: #7f858c;
+  --provider-codex: #d5dbe1;
+  --provider-claude: #9aa4ae;
 
-  /* холодная сталь: ни зелёного, ни красного — живое соединение бликует */
-  --ok: #d4dee8;
-  --pending: #7d848c;
+  /* серый бетон: ни зелёного, ни красного — живое соединение светлеет */
+  --ok: #ced5dc;
+  --pending: #7d838a;
 
-  --dot-input: #d8e2ec;
-  --dot-cache: #a8b6c4;
-  --dot-output: #c6d3e0;
-  --dot-think: #8a939c;
+  --dot-input: #d5dbe1;
+  --dot-cache: #a6aeb6;
+  --dot-output: #c2c9d0;
+  --dot-think: #8b9299;
 
-  --space-glow-a: rgba(206, 222, 238, 0.1);
-  --space-glow-b: rgba(96, 108, 120, 0.12);
-  --space-base: linear-gradient(178deg, #14181c 0, #0a0c0f 22rem, var(--bg) 100%);
-  --space-star: rgba(220, 232, 244, 0.12);
-  --star-opacity: 0.4;
+  --space-glow-a: rgba(206, 214, 222, 0.07);
+  --space-glow-b: rgba(96, 102, 108, 0.1);
+  --space-base: linear-gradient(176deg, #16181a 0, #0e0f10 24rem, var(--bg) 100%);
+  --space-star: rgba(220, 226, 232, 0.1);
+  --star-opacity: 0.22;
 }
 
 /* ====================================================== тема «BlackHole» === */
@@ -400,11 +401,19 @@ html[data-theme="blackhole"] {
   --dot-output: #eef4ff;
   --dot-think: #c9a6ff;
 
-  --space-glow-a: rgba(70, 150, 255, 0.16);
-  --space-glow-b: rgba(120, 90, 220, 0.12);
-  --space-base: radial-gradient(120% 80% at 50% -6%, #05070e 0, #000 62%);
-  --space-star: rgba(240, 248, 255, 0.55);
-  --star-opacity: 0.6;
+  --space-glow-a: rgba(70, 150, 255, 0.1);
+  --space-glow-b: rgba(120, 90, 220, 0.08);
+  --space-base: radial-gradient(120% 80% at 50% -6%, #04060c 0, #000 62%);
+  --space-star: rgba(240, 248, 255, 0.5);
+  --star-opacity: 0.32;
+
+  /* геометрия сцены: сфера и диск, повёрнутый почти на ребро */
+  --bh-size: min(62vh, 33rem);
+  --bh-x: 50%;
+  --bh-y: 46%;
+  --bh-disc-width: calc(var(--bh-size) * 3.5);
+  --bh-disc-height: calc(var(--bh-size) * 1.18);
+  --bh-tilt: -7deg;
 }
 
 /* ================================================================== база === */
@@ -1457,22 +1466,29 @@ html[data-theme="pulsar"] .eyebrow {
 
 /* ======================================== «Gothic»: камень, свод, фаска === */
 
+/* полотно: крупные разводы бетона, зерно и виньетка */
 html[data-theme="gothic"] body::after {
   background-image:
-    linear-gradient(101deg, transparent 14%, rgba(214, 230, 246, 0.05) 33%, transparent 50%),
-    linear-gradient(101deg, transparent 56%, rgba(214, 230, 246, 0.03) 70%, transparent 84%),
-    repeating-linear-gradient(179deg, rgba(226, 240, 252, 0.016) 0 1px, transparent 1px 3px),
-    repeating-linear-gradient(181deg, rgba(0, 0, 0, 0.2) 0 1px, transparent 1px 5px),
-    repeating-linear-gradient(177deg, transparent 0 8.5rem, rgba(226, 240, 252, 0.045) 8.5rem 8.56rem, transparent 8.56rem 19rem),
-    repeating-linear-gradient(183.5deg, transparent 0 12.5rem, rgba(0, 0, 0, 0.34) 12.5rem 12.6rem, transparent 12.6rem 27rem),
-    radial-gradient(120% 90% at 50% 42%, transparent 40%, rgba(0, 0, 0, 0.62) 100%);
+    radial-gradient(38% 30% at 14% 12%, rgba(226, 232, 240, 0.05), transparent 72%),
+    radial-gradient(32% 26% at 78% 6%, rgba(0, 0, 0, 0.4), transparent 74%),
+    radial-gradient(44% 34% at 88% 52%, rgba(226, 232, 240, 0.035), transparent 72%),
+    radial-gradient(40% 32% at 26% 62%, rgba(0, 0, 0, 0.36), transparent 76%),
+    radial-gradient(34% 28% at 58% 88%, rgba(226, 232, 240, 0.03), transparent 74%),
+    radial-gradient(circle, rgba(232, 238, 244, 0.03) 0 0.5px, transparent 0.9px),
+    radial-gradient(circle, rgba(0, 0, 0, 0.24) 0 0.5px, transparent 0.9px),
+    radial-gradient(circle, rgba(232, 238, 244, 0.02) 0 0.5px, transparent 0.9px),
+    radial-gradient(125% 95% at 50% 42%, transparent 38%, rgba(0, 0, 0, 0.6) 100%);
+  background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 3px 5px, 8px 2px, 0 0;
+  background-size:
+    100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%,
+    7px 7px, 11px 11px, 17px 17px, 100% 100%;
 }
 
 html[data-theme="gothic"] .app-header {
   background:
-    linear-gradient(101deg, transparent 16%, rgba(216, 231, 246, 0.05) 36%, transparent 54%),
-    repeating-linear-gradient(179deg, rgba(226, 240, 252, 0.022) 0 1px, transparent 1px 3px),
-    linear-gradient(178deg, rgba(20, 23, 27, 0.97), rgba(8, 9, 11, 0.86));
+    radial-gradient(60% 140% at 18% 0%, rgba(226, 232, 240, 0.05), transparent 72%),
+    radial-gradient(50% 130% at 82% 100%, rgba(0, 0, 0, 0.35), transparent 74%),
+    linear-gradient(176deg, rgba(28, 30, 33, 0.97), rgba(13, 14, 15, 0.88));
   border-bottom-color: var(--accent-line);
 }
 
@@ -1496,23 +1512,21 @@ html[data-theme="gothic"] .journal details[data-work-log-day-section]::before {
   position: absolute;
 }
 
-/* иззубренная кромка клинка: два зубца разного шага дают неровный скол */
+/* Зерно бетона поверх плиты — отдельный слой, потому что нужен свой шаг.
+   Три взаимно простых периода не совпадают фазами, поэтому точки не
+   складываются в видимую решётку. */
 html[data-theme="gothic"] .journal details[data-work-log-day-section]::after {
   background-image:
-    linear-gradient(135deg, rgba(6, 8, 10, 0.95) 26%, transparent 26%),
-    linear-gradient(225deg, rgba(6, 8, 10, 0.95) 26%, transparent 26%),
-    linear-gradient(135deg, rgba(226, 240, 252, 0.16) 30%, transparent 30%),
-    linear-gradient(225deg, rgba(226, 240, 252, 0.16) 30%, transparent 30%);
-  background-position: 0 0, 0 0, 0 1px, 0 1px;
-  background-repeat: repeat-x;
-  background-size: 0.72rem 0.34rem, 0.72rem 0.34rem, 1.15rem 0.4rem, 1.15rem 0.4rem;
+    radial-gradient(circle, rgba(232, 238, 244, 0.035) 0 0.5px, transparent 0.9px),
+    radial-gradient(circle, rgba(0, 0, 0, 0.26) 0 0.5px, transparent 0.9px),
+    radial-gradient(circle, rgba(232, 238, 244, 0.022) 0 0.5px, transparent 0.9px);
+  background-position: 0 0, 3px 5px, 8px 2px;
+  background-size: 7px 7px, 11px 11px, 17px 17px;
+  border-radius: inherit;
   content: "";
-  height: 0.4rem;
-  left: 0.15rem;
+  inset: 0;
   pointer-events: none;
   position: absolute;
-  right: 0.15rem;
-  top: 0;
 }
 
 html[data-theme="gothic"] .journal summary[data-work-log-day] > strong {
@@ -1531,7 +1545,7 @@ html[data-theme="gothic"] .journal div[data-work-log-task-cell] > div[data-work-
 }
 
 html[data-theme="gothic"] .journal details[data-work-log-turn-details] {
-  background-image: var(--plate-texture), linear-gradient(180deg, rgba(40, 43, 46, 0.8), rgba(21, 22, 24, 0.9));
+  background-image: var(--plate-texture), linear-gradient(176deg, rgba(38, 41, 44, 0.85), rgba(21, 23, 25, 0.92));
 }
 
 html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
@@ -1559,21 +1573,106 @@ html[data-theme="gothic"] .journal span[data-high-usage] {
 
 /* ============================ «BlackHole»: аккреционный диск и горизонт === */
 
-/* Порядок слоёв важен: чёрное ядро лежит поверх диска, поэтому светится
-   только то, что снаружи горизонта событий. */
-html[data-theme="blackhole"] body::after {
-  background-image:
-    radial-gradient(circle at 50% 3%, #000 0 12.1rem, transparent 12.35rem),
-    radial-gradient(circle at 50% 3%, transparent 0 12.1rem, rgba(168, 214, 255, 0.62) 12.3rem 12.75rem, transparent 13.7rem),
-    radial-gradient(circle at 50% 3%, transparent 0 14rem, rgba(96, 166, 255, 0.3) 14.2rem 14.8rem, transparent 16.2rem),
-    radial-gradient(circle at 50% 3%, transparent 0 17rem, rgba(70, 130, 255, 0.14) 17.2rem 18.2rem, transparent 21rem),
-    radial-gradient(58% 32% at 50% 3%, rgba(90, 160, 255, 0.2), transparent 74%),
-    radial-gradient(70% 40% at 50% 108%, rgba(110, 90, 220, 0.14), transparent 70%);
-  mask-image: linear-gradient(to bottom, black, rgba(0, 0, 0, 0.55) 62%, transparent 96%);
+/* Сцена собрана из трёх фиксированных слоёв. Порядок отрисовки в корневом
+   контексте — html::before → html::after → body::after, поэтому диск уходит
+   за сферу сверху и проходит перед ней снизу, как при взгляде почти с ребра. */
+html[data-theme="blackhole"]::before,
+html[data-theme="blackhole"]::after {
+  content: "";
+  left: var(--bh-x);
+  pointer-events: none;
+  position: fixed;
+  top: var(--bh-y);
+  z-index: 0;
 }
 
+/* дальняя половина диска и внешнее гало */
+html[data-theme="blackhole"]::before {
+  background:
+    radial-gradient(
+      closest-side,
+      transparent 0 44%,
+      rgba(214, 238, 255, 0.95) 50%,
+      rgba(120, 190, 255, 0.62) 58%,
+      rgba(56, 116, 225, 0.26) 74%,
+      transparent 92%
+    );
+  filter: blur(13px);
+  height: var(--bh-disc-height);
+  transform: translate(-50%, -50%) rotate(var(--bh-tilt));
+  width: var(--bh-disc-width);
+}
+
+/* горизонт событий с фотонным кольцом */
+html[data-theme="blackhole"]::after {
+  background: radial-gradient(
+    closest-side,
+    #000 0 93%,
+    rgba(150, 205, 255, 0.35) 95.5%,
+    rgba(226, 244, 255, 0.95) 98%,
+    rgba(140, 200, 255, 0.5) 99.4%,
+    transparent 100%
+  );
+  border-radius: 50%;
+  box-shadow:
+    0 0 18px 1px rgba(150, 205, 255, 0.5),
+    0 0 60px 10px rgba(70, 140, 235, 0.35);
+  height: var(--bh-size);
+  transform: translate(-50%, -50%);
+  width: var(--bh-size);
+}
+
+/* ближняя половина диска — единственный слой поверх сферы */
+html[data-theme="blackhole"] body::after {
+  background: radial-gradient(
+    closest-side,
+    transparent 0 44%,
+    rgba(232, 246, 255, 1) 50%,
+    rgba(130, 196, 255, 0.7) 58%,
+    rgba(60, 120, 230, 0.28) 74%,
+    transparent 92%
+  );
+  filter: blur(9px);
+  height: var(--bh-disc-height);
+  inset: auto;
+  left: var(--bh-x);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0 48%, #000 57%);
+  mask-image: linear-gradient(to bottom, transparent 0 48%, #000 57%);
+  top: var(--bh-y);
+  transform: translate(-50%, -50%) rotate(var(--bh-tilt));
+  width: var(--bh-disc-width);
+}
+
+/* сквозь панели видно диск: тёмное стекло вместо глухой заливки */
 html[data-theme="blackhole"] .app-header {
-  background: rgba(0, 0, 0, 0.86);
+  background: rgba(0, 0, 0, 0.62);
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-day-section] {
+  /* лёгкое размытие: сильное стирало бы фотонное кольцо под панелью */
+  backdrop-filter: blur(6px) saturate(130%);
+  -webkit-backdrop-filter: blur(6px) saturate(130%);
+  background-color: rgba(2, 4, 8, 0.54);
+  background-image: none;
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-day-section][open] {
+  background-color: rgba(2, 4, 8, 0.56);
+  background-image: none;
+}
+
+/* карточки ходов тоже стеклянные, иначе диск гаснет под сплошной заливкой */
+html[data-theme="blackhole"] .journal details[data-work-log-turn-details] {
+  background-color: rgba(6, 10, 16, 0.42);
+  background-image: none;
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-turn-details]:hover {
+  background-color: rgba(10, 16, 24, 0.55);
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-turn-details][open] {
+  background-color: rgba(6, 10, 16, 0.62);
 }
 
 html[data-theme="blackhole"] .app-header::after {
