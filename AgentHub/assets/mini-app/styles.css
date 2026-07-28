@@ -1082,6 +1082,9 @@ main {
 
 .journal details[data-work-log-previous-turns] {
   border-bottom: 0;
+  border-top: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .journal details[data-work-log-previous-turns] > summary {
@@ -1095,6 +1098,7 @@ main {
   gap: 0.35rem;
   justify-content: center;
   margin-inline: auto;
+  order: 2;
   padding: 0.28rem 0.8rem;
   transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
   width: fit-content;
@@ -1103,6 +1107,7 @@ main {
 .journal details[data-work-log-previous-turns][open] > summary {
   background: transparent;
   border-bottom: 1px dashed var(--line-strong);
+  margin-top: 0.4rem;
 }
 
 .journal details[data-work-log-previous-turns] > summary:hover {
@@ -1115,7 +1120,8 @@ main {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
-  padding: 0.4rem 0 0;
+  order: 1;
+  padding: 0;
 }
 
 .journal div[data-work-log-no-previous-turns] {

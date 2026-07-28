@@ -293,9 +293,8 @@ function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
     ),
     0,
   );
-  const legacyFilesTarget = records.findLastIndex((record) => record?.workLogId) >= 0
-    ? records.findLastIndex((record) => record?.workLogId)
-    : records.length - 1;
+  const firstRegisteredTurn = records.findIndex((record) => record?.workLogId);
+  const legacyFilesTarget = firstRegisteredTurn >= 0 ? firstRegisteredTurn : 0;
   const turnRows = records.map((record, index) => formatTurnEntry(
     record,
     index === legacyFilesTarget ? legacyFiles : "",
@@ -308,19 +307,19 @@ function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
       `<span data-work-log-previous-turns-closed>Показать предыдущие ходы (${turnRows.length - 1})</span>`,
       '<span data-work-log-previous-turns-open>Свернуть</span>',
       "</summary>",
-      `<div data-work-log-previous-turn-list>${turnRows.slice(0, -1).join("\n")}</div>`,
+      `<div data-work-log-previous-turn-list>${turnRows.slice(1).join("\n")}</div>`,
       "</details>",
     ].join("")
     : turnRows.length === 1
       ? "<div data-work-log-no-previous-turns>Предыдущих ходов нет.</div>"
       : "";
-  const latestTurn = turnRows.at(-1) ?? "";
+  const latestTurn = turnRows[0] ?? "";
   const legacy = legacyOutcome
     ? `<div data-work-log-legacy-outcome>${legacyOutcome}</div>`
     : "";
   return [
     "<div data-work-log-turn-table>",
-    [previousTurns, latestTurn, legacy].filter(Boolean).join("\n"),
+    [latestTurn, previousTurns, legacy].filter(Boolean).join("\n"),
     "</div>",
   ].join("\n");
 }
@@ -860,7 +859,7 @@ function projectDaySection(section, date, turns, recordsById, open) {
     )).join("\n");
     const turnsContent = [...row.recorded]
       .sort(
-        (left, right) => (Date.parse(left.completedAt) || 0) - (Date.parse(right.completedAt) || 0),
+        (left, right) => (Date.parse(right.completedAt) || 0) - (Date.parse(left.completedAt) || 0),
       );
     return replaceProjectedCells(row.match.text, `${visible}${markers}`, turnsContent);
   });

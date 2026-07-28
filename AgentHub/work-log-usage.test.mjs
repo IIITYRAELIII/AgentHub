@@ -107,7 +107,7 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.match(projected, /data-work-log-legacy-outcome>Outcome B<\/div>/);
   assert.match(
     projected,
-    /<div data-work-log-turn-table>[\s\S]*?data-work-log-turn-measure>12:34 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Первый &lt;ход&gt; Строка<\/span>[\s\S]*?data-work-log-turn-measure>13:45 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Второй &amp; ход<\/span>[\s\S]*?data-work-log-turn-files[^>]*>a\.mjs<\/div>/,
+    /<div data-work-log-turn-table>[\s\S]*?data-work-log-turn-measure>13:45 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Второй &amp; ход<\/span>[\s\S]*?data-work-log-turn-files[^>]*>a\.mjs<\/div>[\s\S]*?<details data-work-log-previous-turns>[\s\S]*?data-work-log-turn-measure>12:34 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Первый &lt;ход&gt; Строка<\/span>/,
   );
   assert.match(
     projected,
@@ -118,7 +118,7 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.doesNotMatch(projected, /<details data-work-log-previous-turns open>/);
   assert.match(
     projected,
-    /data-work-log-previous-turn-list>[\s\S]*?Первый &lt;ход&gt; Строка[\s\S]*?<\/div><\/details>[\s\S]*?Второй &amp; ход/,
+    /Второй &amp; ход[\s\S]*?<details data-work-log-previous-turns>[\s\S]*?data-work-log-previous-turn-list>[\s\S]*?Первый &lt;ход&gt; Строка[\s\S]*?<\/div><\/details>/,
   );
   assert.match(projected, /<strong>Длит\.:<\/strong> 3 мин 30 с/);
   assert.match(projected, /<strong>Запрос:<\/strong> Короткий вопрос/);
@@ -328,7 +328,15 @@ test("work log CSS keeps dates equal and shows a compact always-visible turn lis
   );
   assert.match(
     css,
-    /details\[data-work-log-previous-turns\]\s*\{[\s\S]*?border-bottom:\s*1px solid/,
+    /details\[data-work-log-previous-turns\]\s*\{[\s\S]*?border-top:\s*1px solid[\s\S]*?flex-direction:\s*column/,
+  );
+  assert.match(
+    css,
+    /details\[data-work-log-previous-turns\] > summary[\s\S]*?order:\s*2/,
+  );
+  assert.match(
+    css,
+    /div\[data-work-log-previous-turn-list\]\s*\{[\s\S]*?order:\s*1/,
   );
   assert.match(
     css,
