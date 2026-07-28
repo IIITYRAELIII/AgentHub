@@ -13,7 +13,15 @@ const telegramInitData = String(telegram?.initData ?? "");
 const telegramMode = Boolean(telegramInitData);
 const telegramPlatform = String(telegram?.platform ?? "").toLowerCase();
 const mobileTelegramPlatforms = new Set(["android", "ios"]);
-const surface = telegramMode && mobileTelegramPlatforms.has(telegramPlatform) ? "mobile" : "desktop";
+const compactTelegramWidth = 720;
+
+function resolveSurface() {
+  if (!telegramMode) return "desktop";
+  if (mobileTelegramPlatforms.has(telegramPlatform)) return "mobile";
+  return window.innerWidth < compactTelegramWidth ? "mobile" : "desktop";
+}
+
+let surface = resolveSurface();
 document.documentElement.dataset.surface = surface;
 const themes = {
   orbit: "#080b11",
@@ -48,6 +56,13 @@ function applyTheme(theme, { persist = false } = {}) {
 
 telegram?.ready();
 telegram?.expand();
+if (telegramMode && !mobileTelegramPlatforms.has(telegramPlatform)) {
+  try {
+    telegram?.requestFullscreen?.();
+  } catch {
+    // Старый Telegram Desktop останется в компактной адаптивной раскладке.
+  }
+}
 applyTheme(savedTheme());
 themeSelect.addEventListener("change", () => applyTheme(themeSelect.value, { persist: true }));
 
@@ -113,6 +128,18 @@ function prepareMobileControls() {
     title.setAttribute("aria-expanded", "false");
   }
 }
+
+function syncSurface() {
+  const nextSurface = resolveSurface();
+  if (nextSurface === surface) return;
+  surface = nextSurface;
+  document.documentElement.dataset.surface = surface;
+  if (journalRendered) prepareMobileControls();
+}
+
+window.addEventListener("resize", syncSurface);
+telegram?.onEvent?.("viewportChanged", syncSurface);
+telegram?.onEvent?.("fullscreenChanged", syncSurface);
 
 function restoreOpenState(state) {
   for (const details of journal.querySelectorAll("details[data-work-log-day-section]")) {

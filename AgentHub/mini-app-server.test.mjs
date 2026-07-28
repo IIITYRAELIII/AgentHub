@@ -167,7 +167,10 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(script, /agent-hub-theme/u);
     assert.match(script, /document\.documentElement\.dataset\.theme/u);
     assert.match(script, /mobileTelegramPlatforms\.has\(telegramPlatform\)/u);
+    assert.match(script, /window\.innerWidth < compactTelegramWidth/u);
     assert.match(script, /document\.documentElement\.dataset\.surface = surface/u);
+    assert.match(script, /requestFullscreen/u);
+    assert.match(script, /window\.addEventListener\("resize", syncSurface\)/u);
     assert.match(script, /data-mobile-expanded/u);
     assert.match(script, /data-mobile-open/u);
     assert.match(script, /journalRendered/u);
