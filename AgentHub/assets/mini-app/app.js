@@ -14,6 +14,7 @@ const themes = {
   orbit: "#080b11",
   nebula: "#10091a",
   pulsar: "#041217",
+  gothic: "#090909",
 };
 
 function savedTheme() {

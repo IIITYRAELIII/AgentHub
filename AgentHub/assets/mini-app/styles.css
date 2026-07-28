@@ -97,6 +97,32 @@ html[data-theme="pulsar"] {
   --space-star: rgba(185, 255, 247, 0.4);
 }
 
+html[data-theme="gothic"] {
+  --bg: #090909;
+  --surface-1: rgba(226, 222, 209, 0.035);
+  --surface-2: rgba(226, 222, 209, 0.065);
+  --surface-3: rgba(226, 222, 209, 0.1);
+  --sunken: rgba(0, 0, 0, 0.42);
+  --line: rgba(199, 194, 179, 0.18);
+  --line-strong: rgba(211, 205, 187, 0.32);
+  --text: #dedbd1;
+  --text-soft: #bbb7ab;
+  --text-muted: #918d83;
+  --text-faint: #69665f;
+  --accent: #c5b78f;
+  --accent-soft: rgba(197, 183, 143, 0.12);
+  --accent-line: rgba(197, 183, 143, 0.42);
+  --provider-none: #8d8a82;
+  --provider-codex: #d0ccc0;
+  --provider-claude: #b7a47a;
+  --ok: #b9a36e;
+  --pending: #8f8b82;
+  --space-glow-a: rgba(216, 212, 199, 0.14);
+  --space-glow-b: rgba(105, 102, 94, 0.12);
+  --space-star: rgba(220, 216, 204, 0.18);
+  --shadow-card: 0 24px 46px -28px rgba(0, 0, 0, 0.98);
+}
+
 *,
 *::before,
 *::after {
@@ -138,6 +164,15 @@ html[data-theme="pulsar"] body {
     linear-gradient(180deg, #061c23 0, var(--bg) 34rem);
 }
 
+html[data-theme="gothic"] body {
+  background:
+    radial-gradient(ellipse at 50% -16%, rgba(218, 214, 200, 0.16), transparent 36rem),
+    radial-gradient(ellipse at 10% 34%, rgba(112, 108, 98, 0.1), transparent 30rem),
+    repeating-linear-gradient(107deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 9px),
+    repeating-linear-gradient(17deg, rgba(0, 0, 0, 0.16) 0 2px, transparent 2px 13px),
+    linear-gradient(180deg, #171717 0, #0b0b0b 24rem, var(--bg) 100%);
+}
+
 body::before {
   background-image:
     radial-gradient(circle, var(--space-star) 0 0.65px, transparent 0.9px),
@@ -151,6 +186,16 @@ body::before {
   pointer-events: none;
   position: fixed;
   z-index: 0;
+}
+
+html[data-theme="gothic"] body::before {
+  background-image:
+    radial-gradient(ellipse at 50% 4%, transparent 0 7rem, rgba(222, 218, 205, 0.035) 7.2rem 7.35rem, transparent 7.55rem),
+    repeating-radial-gradient(ellipse at 50% 12%, transparent 0 1.8rem, rgba(214, 209, 194, 0.025) 1.9rem 2rem),
+    repeating-linear-gradient(72deg, transparent 0 1.1rem, rgba(219, 215, 201, 0.022) 1.15rem 1.2rem);
+  background-size: 100% 34rem, 100% 39rem, 13rem 13rem;
+  mask-image: linear-gradient(to bottom, black, rgba(0, 0, 0, 0.45) 58%, transparent 92%);
+  opacity: 0.72;
 }
 
 ::selection {
@@ -313,6 +358,47 @@ h1 {
   color: var(--text);
 }
 
+html[data-theme="gothic"] .app-header {
+  background:
+    linear-gradient(180deg, rgba(15, 15, 15, 0.97), rgba(10, 10, 10, 0.82)),
+    repeating-linear-gradient(110deg, transparent 0 0.45rem, rgba(255, 255, 255, 0.018) 0.5rem 0.55rem);
+  border-bottom-color: rgba(197, 183, 143, 0.24);
+}
+
+html[data-theme="gothic"] .brand-mark {
+  background:
+    radial-gradient(circle at 40% 28%, rgba(232, 228, 214, 0.2), transparent 36%),
+    linear-gradient(145deg, #34332f, #141414);
+  border-color: rgba(205, 199, 181, 0.42);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -8px 14px rgba(0, 0, 0, 0.36),
+    0 7px 20px -11px rgba(0, 0, 0, 0.95);
+  color: #d3cdbd;
+}
+
+html[data-theme="gothic"] .brand-text h1,
+html[data-theme="gothic"] .journal summary[data-work-log-day] > strong {
+  color: #d7d3c7;
+  font-family: "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
+  font-weight: 600;
+  letter-spacing: 0.045em;
+  text-shadow:
+    0 1px 0 #050505,
+    0 0 12px rgba(218, 212, 195, 0.14);
+}
+
+html[data-theme="gothic"] .brand-text h1 {
+  font-size: 1.34rem;
+  text-transform: uppercase;
+}
+
+html[data-theme="gothic"] .eyebrow {
+  color: #8f897a;
+  font-family: "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
+  letter-spacing: 0.22em;
+}
+
 .connection {
   align-items: center;
   background: var(--surface-2);
@@ -457,6 +543,18 @@ main {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02));
   border-color: var(--line-strong);
   padding-bottom: 0.55rem;
+}
+
+html[data-theme="gothic"] .journal details[data-work-log-day-section] {
+  background:
+    linear-gradient(135deg, rgba(226, 222, 209, 0.06), transparent 34%),
+    repeating-linear-gradient(18deg, rgba(255, 255, 255, 0.012) 0 1px, transparent 1px 8px),
+    linear-gradient(180deg, rgba(35, 35, 33, 0.94), rgba(17, 17, 17, 0.97));
+  border-color: rgba(195, 190, 174, 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.7),
+    var(--shadow-card);
 }
 
 .journal summary[data-work-log-day] {
@@ -614,6 +712,34 @@ main {
   opacity: 0.55;
   pointer-events: none;
   position: absolute;
+}
+
+html[data-theme="gothic"] .journal div[data-work-log-task-cell] > div[data-work-log-task-content] {
+  background:
+    linear-gradient(110deg, color-mix(in srgb, var(--row-accent) 9%, transparent), transparent 44%),
+    repeating-linear-gradient(22deg, rgba(255, 255, 255, 0.014) 0 1px, transparent 1px 7px),
+    linear-gradient(180deg, #292927, #1a1a19);
+  border-color: rgba(196, 190, 172, 0.24);
+  border-left-color: var(--row-accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.7);
+  color: #d5d1c5;
+  font-family: "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
+  font-size: 1.01rem;
+  letter-spacing: 0.015em;
+}
+
+html[data-theme="gothic"] .journal details[data-work-log-turn-details] {
+  background:
+    repeating-linear-gradient(105deg, rgba(255, 255, 255, 0.01) 0 1px, transparent 1px 8px),
+    linear-gradient(180deg, rgba(41, 41, 39, 0.82), rgba(24, 24, 23, 0.9));
+  border-color: rgba(190, 184, 168, 0.2);
+}
+
+html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
+  border-color: var(--accent-line);
+  box-shadow: inset 2px 0 0 var(--accent), 0 12px 24px -20px #000;
 }
 
 .journal div[data-work-log-task-content] a,
@@ -997,10 +1123,6 @@ main {
   .toolbar {
     flex-wrap: wrap;
     width: 100%;
-  }
-
-  .theme-picker-label {
-    display: none;
   }
 
   .stamp {
