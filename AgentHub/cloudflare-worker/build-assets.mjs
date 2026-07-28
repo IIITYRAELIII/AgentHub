@@ -12,6 +12,7 @@ for (const file of [
   "app.js",
   "styles.css",
   "blackhole-blue.png",
+  "magma-crust.png",
   "pulsar-beams.png",
   "rainforest-night.png",
 ]) {

@@ -477,6 +477,78 @@ html[data-theme="taiga"] {
   --star-opacity: 0;
 }
 
+/* ========================================================= тема «Магма» === */
+
+html[data-theme="magma"] {
+  --display-weight: 640;
+  --display-spacing: -0.012em;
+  --title-weight: 550;
+  --label-spacing: 0.15em;
+
+  /* колотый базальт: углы жёстче «Орбиты», но мягче «Пульсара» */
+  --radius-lg: 10px;
+  --radius-md: 8px;
+  --radius-sm: 6px;
+  --radius-chip: 999px;
+  --rail-width: 2px;
+
+  --bg: #0a0605;
+  --surface-1: rgba(255, 226, 205, 0.028);
+  --surface-2: rgba(255, 226, 205, 0.05);
+  --surface-3: rgba(255, 226, 205, 0.088);
+  --sunken: rgba(8, 3, 2, 0.5);
+
+  --line: rgba(226, 168, 128, 0.14);
+  --line-strong: rgba(232, 178, 140, 0.28);
+
+  --card-bg: linear-gradient(180deg, rgba(20, 11, 8, 0.5), rgba(9, 5, 4, 0.58));
+  --card-bg-open: linear-gradient(180deg, rgba(20, 11, 8, 0.56), rgba(9, 5, 4, 0.64));
+  --card-texture: none;
+  --card-border: rgba(226, 168, 128, 0.17);
+  --card-border-open: rgba(255, 154, 92, 0.4);
+  --card-shadow:
+    inset 0 1px 0 rgba(255, 226, 205, 0.05),
+    0 24px 56px -34px rgba(0, 0, 0, 0.95);
+
+  --plate-bg: linear-gradient(180deg, rgba(255, 226, 205, 0.07), rgba(9, 5, 4, 0.3));
+  --plate-shadow: inset 0 1px 0 rgba(255, 226, 205, 0.06);
+  --turn-shadow: 0 0 28px -20px rgba(255, 138, 61, 0.85);
+
+  --text: #f1e7e0;
+  --text-soft: #ccbcb2;
+  --text-muted: #9c8b81;
+  --text-faint: #766862;
+
+  /* акцент светлее и мягче оранжевого бейджа МТЭ, чтобы рамки не спорили
+     с цветовым кодом расхода */
+  --accent: #ff9a5c;
+  --accent-soft: rgba(255, 154, 92, 0.13);
+  --accent-line: rgba(255, 154, 92, 0.42);
+  --accent-glow: 0 0 22px -10px rgba(255, 138, 61, 0.9);
+  --selection: rgba(255, 154, 92, 0.3);
+  --brand-gradient: linear-gradient(150deg, rgba(255, 138, 61, 0.32), rgba(120, 40, 20, 0.3));
+  --brand-shadow: 0 0 24px -10px rgba(255, 138, 61, 0.85);
+
+  /* провайдер Codex холодный: тонкий рейл на чёрном базальте иначе теряется
+     среди лавы */
+  --provider-none: #8a7a72;
+  --provider-codex: #86b6cf;
+  --provider-claude: #ffb066;
+  --ok: #c6d18a;
+  --pending: #d9a866;
+
+  --dot-input: #86b6cf;
+  --dot-cache: #d0a07a;
+  --dot-output: #ffb066;
+  --dot-think: #b09ad0;
+
+  --space-glow-a: rgba(255, 138, 61, 0.1);
+  --space-glow-b: rgba(120, 50, 30, 0.1);
+  --space-base: #0a0605;
+  --space-star: transparent;
+  --star-opacity: 0;
+}
+
 /* ================================================================== база === */
 
 *,
@@ -1946,6 +2018,85 @@ html[data-theme="taiga"] .journal details[data-work-log-turn-details]:hover {
 
 html[data-theme="taiga"] .journal details[data-work-log-turn-details][open] {
   background-color: rgba(6, 12, 14, 0.5);
+}
+
+/* ================================ «Магма»: остывшая корка и живые трещины === */
+
+html[data-theme="magma"] {
+  --magma-image: url("/magma-crust.png");
+}
+
+/* Лава сама по себе яркая, поэтому затемняем её справа — там, где идут
+   заголовки ходов; свободная левая треть кадра остаётся как есть. Нижний
+   градиент гасит хвост страницы: под последним днём контента уже нет, и
+   открытая лава там перетягивала бы взгляд с журнала. */
+html[data-theme="magma"] body::after {
+  background-color: #0a0605;
+  background-image:
+    linear-gradient(180deg, rgba(8, 4, 3, 0) 62%, rgba(8, 4, 3, 0.55)),
+    linear-gradient(90deg, rgba(8, 4, 3, 0) 34%, rgba(8, 4, 3, 0.46)),
+    var(--magma-image);
+  background-position: center, center, 58% 50%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+html[data-theme="magma"] body::before {
+  content: none;
+}
+
+html[data-theme="magma"] .app-header {
+  backdrop-filter: blur(12px) saturate(115%);
+  -webkit-backdrop-filter: blur(12px) saturate(115%);
+  background: rgba(8, 4, 3, 0.62);
+}
+
+html[data-theme="magma"] .app-header::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 138, 61, 0.6), transparent);
+}
+
+html[data-theme="magma"] .journal details[data-work-log-day-section] {
+  backdrop-filter: blur(5px) saturate(116%);
+  -webkit-backdrop-filter: blur(5px) saturate(116%);
+  background-color: rgba(8, 4, 3, 0.5);
+  background-image: none;
+}
+
+html[data-theme="magma"] .journal details[data-work-log-day-section][open] {
+  background-color: rgba(8, 4, 3, 0.54);
+}
+
+html[data-theme="magma"] .journal details[data-work-log-turn-details] {
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  background-color: rgba(11, 6, 5, 0.4);
+  background-image: none;
+}
+
+html[data-theme="magma"] .journal details[data-work-log-turn-details]:hover {
+  background-color: rgba(18, 10, 7, 0.52);
+}
+
+html[data-theme="magma"] .journal details[data-work-log-turn-details][open] {
+  background-color: rgba(11, 6, 5, 0.58);
+}
+
+/* на узком экране кадр сдвигается к трещинам, поэтому стекло плотнее */
+@media (max-width: 720px) {
+  html[data-theme="magma"] body::after {
+    background-position: center, center, 72% 56%;
+  }
+
+  html[data-theme="magma"] .journal details[data-work-log-day-section] {
+    background-color: rgba(8, 4, 3, 0.62);
+  }
+
+  html[data-theme="magma"] .journal details[data-work-log-turn-details] {
+    background-color: rgba(11, 6, 5, 0.52);
+  }
 }
 
 /* =========================================================== адаптивность === */

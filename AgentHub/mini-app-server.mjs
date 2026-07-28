@@ -11,6 +11,7 @@ const CONTENT_TYPES = new Map([
   ["/work-log.css", "text/css; charset=utf-8"],
   ["/blackhole-blue.png", "image/png"],
   ["/pulsar-beams.png", "image/png"],
+  ["/magma-crust.png", "image/png"],
   ["/rainforest-night.png", "image/png"],
 ]);
 const STATIC_FILES = new Map([
@@ -19,6 +20,7 @@ const STATIC_FILES = new Map([
   ["/styles.css", "styles.css"],
   ["/blackhole-blue.png", "blackhole-blue.png"],
   ["/pulsar-beams.png", "pulsar-beams.png"],
+  ["/magma-crust.png", "magma-crust.png"],
   ["/rainforest-night.png", "rainforest-night.png"],
 ]);
 /* Разметка и стили обязаны быть свежими, поэтому у них no-store. Фон темы —
@@ -26,6 +28,7 @@ const STATIC_FILES = new Map([
    заново при каждом открытии, что заметно через Telegram-туннель. */
 const IMMUTABLE_FILES = new Set([
   "/blackhole-blue.png",
+  "/magma-crust.png",
   "/pulsar-beams.png",
   "/rainforest-night.png",
 ]);

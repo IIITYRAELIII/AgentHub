@@ -29,6 +29,7 @@ const themes = {
   gothic: "#060708",
   blackhole: "#000000",
   taiga: "#070c12",
+  magma: "#0a0605",
 };
 
 function savedTheme() {
