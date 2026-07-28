@@ -10,6 +10,7 @@ export function findQuickTunnelUrl(output) {
 export class QuickTunnelController {
   #child = null;
   #controlPort;
+  #edgeBindAddress;
   #executable;
   #localUrl;
   #mode;
@@ -31,6 +32,7 @@ export class QuickTunnelController {
     mode = "quick",
     publicUrl = null,
     tokenFile = null,
+    edgeBindAddress = null,
     controlPort = 4300,
     spawnImpl = spawn,
     fetchImpl = fetch,
@@ -43,6 +45,7 @@ export class QuickTunnelController {
     this.#mode = mode;
     this.#publicUrl = publicUrl;
     this.#tokenFile = tokenFile;
+    this.#edgeBindAddress = edgeBindAddress;
     this.#controlPort = controlPort;
     this.#spawn = spawnImpl;
     this.#fetch = fetchImpl;
@@ -92,6 +95,7 @@ export class QuickTunnelController {
         "--no-autoupdate",
         "--protocol",
         "http2",
+        ...(this.#edgeBindAddress ? ["--edge-bind-address", this.#edgeBindAddress] : []),
         "run",
         "--token-file",
         this.#tokenFile,

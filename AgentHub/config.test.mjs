@@ -59,6 +59,7 @@ test("Mini App pilot is loopback-only and enabled by default", () => {
       menuText: "Журнал",
       publicPort: 8788,
       controlPort: 4300,
+      edgeBindAddress: null,
       publicUrl: null,
       tokenFile: null,
     },
@@ -75,6 +76,7 @@ test("Mini App pilot is loopback-only and enabled by default", () => {
       menuText: "Работы",
       publicPort: 9001,
       controlPort: 4301,
+      edgeBindAddress: null,
       publicUrl: null,
       tokenFile: null,
     },
@@ -90,6 +92,7 @@ test("Mini App pilot is loopback-only and enabled by default", () => {
       menuText: "Работы",
       publicPort: 9001,
       controlPort: 4301,
+      edgeBindAddress: null,
       publicUrl: null,
       tokenFile: null,
     },
@@ -110,6 +113,7 @@ test("Mini App named Cloudflare Tunnel resolves its private token file", () => {
       mode: "named",
       publicUrl: "https://hub.example.test/",
       tokenFile: "cloudflare-tunnel.token",
+      edgeBindAddress: "192.0.2.10",
     },
   }, {
     configDirectory: "C:\\AgentHub",
@@ -121,6 +125,7 @@ test("Mini App named Cloudflare Tunnel resolves its private token file", () => {
     menuText: "Журнал",
     publicPort: 8788,
     controlPort: 4300,
+    edgeBindAddress: "192.0.2.10",
     publicUrl: "https://hub.example.test",
     tokenFile: path.resolve("C:\\AgentHub", "cloudflare-tunnel.token"),
   });
@@ -140,6 +145,10 @@ test("Mini App named Cloudflare Tunnel resolves its private token file", () => {
       },
     }),
     /tokenFile is required/u,
+  );
+  assert.throws(
+    () => miniAppSettings({ quickTunnel: { edgeBindAddress: "Ethernet" } }),
+    /must be an IPv4 or IPv6 address/u,
   );
 });
 

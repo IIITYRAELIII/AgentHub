@@ -512,6 +512,7 @@ async function startMiniApp() {
     mode: config.miniApp.quickTunnel.mode,
     publicUrl: config.miniApp.quickTunnel.publicUrl,
     tokenFile: config.miniApp.quickTunnel.tokenFile,
+    edgeBindAddress: config.miniApp.quickTunnel.edgeBindAddress,
     controlPort: config.miniApp.quickTunnel.controlPort,
     localUrl: publicAddress.url,
     onUrl: async (url) => {

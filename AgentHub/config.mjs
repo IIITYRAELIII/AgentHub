@@ -1,5 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
+import { isIP } from "node:net";
 import path from "node:path";
 import process from "node:process";
 import { CLAUDE_PERMISSION_MODES } from "./claude.mjs";
@@ -101,6 +102,10 @@ export function miniAppSettings(value, { configDirectory = process.cwd() } = {})
   if (!menuText || menuText.length > 64) {
     throw new Error("miniApp.quickTunnel.menuText must contain 1-64 characters");
   }
+  const edgeBindAddress = String(quickTunnelRaw.edgeBindAddress ?? "").trim() || null;
+  if (edgeBindAddress && !isIP(edgeBindAddress)) {
+    throw new Error("miniApp.quickTunnel.edgeBindAddress must be an IPv4 or IPv6 address");
+  }
   let publicUrl = null;
   let tokenFile = null;
   if (tunnelMode === "named") {
@@ -140,6 +145,7 @@ export function miniAppSettings(value, { configDirectory = process.cwd() } = {})
       menuText,
       publicPort,
       controlPort,
+      edgeBindAddress,
       publicUrl,
       tokenFile,
     },
