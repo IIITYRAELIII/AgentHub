@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { estimateMissingCodexUsage } from "./codex-usage-estimate.mjs";
 import { isInheritedSubagentTurn } from "./codex-subagent-accounting.mjs";
 import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
@@ -48,6 +49,17 @@ function sameProjectRoot(left, right) {
     : normalizedLeft === normalizedRight;
 }
 
+function normalizeEstimatedUnits(value) {
+  const units = Number(value ?? 0);
+  return Number.isFinite(units) && units > 0 ? Math.round(units) : 0;
+}
+
+function recordConditionalUnits(record) {
+  return record?.usageReported === false
+    ? normalizeEstimatedUnits(record?.estimatedUnits)
+    : turnConditionalUnits(record?.usage);
+}
+
 function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
   const legacyLedger = Number(value?.version ?? 0) < 5;
   const turns = {};
@@ -69,13 +81,25 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       })) {
         throw new Error("inherited parent turn was copied into a subagent rollout");
       }
+      const prompt = displayUserPrompt(record?.prompt);
+      const status = String(record?.status ?? "completed").trim() || "completed";
+      const usageReported = record?.usageReported !== false;
+      const estimate = provider === "codex"
+        ? estimateMissingCodexUsage({ status, usageReported, prompt })
+        : null;
       let workLogId = null;
       if (record?.workLogId) workLogId = normalizeWorkLogId(record.workLogId);
       turns[key] = {
         workLogId,
         projectRoot: normalizeProjectRoot(record?.projectRoot, defaultProjectRoot),
         usage: normalizeTokenUsage(record?.usage),
-        usageReported: record?.usageReported !== false,
+        usageReported,
+        estimatedUnits: !usageReported
+          ? normalizeEstimatedUnits(record?.estimatedUnits ?? estimate?.estimatedUnits)
+          : 0,
+        estimateKind: !usageReported
+          ? String(record?.estimateKind ?? estimate?.estimateKind ?? "").trim()
+          : "",
         provider,
         threadId,
         taskThreadId,
@@ -91,13 +115,13 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         taskTitle: String(record?.taskTitle ?? "").trim(),
         title: String(record?.title ?? "").trim(),
         body: String(record?.body ?? record?.text ?? "").trim(),
-        prompt: displayUserPrompt(record?.prompt),
+        prompt,
         changedFiles: Array.isArray(record?.changedFiles)
           ? record.changedFiles.map((file) => String(file).trim()).filter(Boolean)
           : [],
         startedAt: String(record?.startedAt ?? ""),
         completedAt: String(record?.completedAt ?? ""),
-        status: String(record?.status ?? "completed").trim() || "completed",
+        status,
       };
     } catch (error) {
       invalidRecords.push({
@@ -110,10 +134,11 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
   return { ledger: { version: 5, turns }, invalidRecords };
 }
 
-export function formatWorkLogUsage(usage) {
+export function formatWorkLogUsage(usage, { estimatedUnits = 0 } = {}) {
   const telegramText = formatTurnTokenUsage({
     reported: true,
     usage: normalizeTokenUsage(usage),
+    estimatedUnits: normalizeEstimatedUnits(estimatedUnits),
   })
     .replace(/^📊\s*/, "")
     .replace(/^За задачу:\s*/u, "Итого ");
@@ -123,11 +148,12 @@ export function formatWorkLogUsage(usage) {
     .join("<br>");
 }
 
-function formatTaskShare(usage, dayUnits) {
-  const taskUnits = turnConditionalUnits(usage);
+function formatTaskShare(usage, dayUnits, estimatedUnits = 0) {
+  const estimate = normalizeEstimatedUnits(estimatedUnits);
+  const taskUnits = turnConditionalUnits(usage) + estimate;
   const percent = dayUnits > 0 ? Math.round(taskUnits / dayUnits * 100) : 0;
-  return formatWorkLogUsage(usage).replace(
-    /^(Итого [^<\r\n]+?(?:Кв|[кМГТПЭЗИР])ТЭ)/u,
+  return formatWorkLogUsage(usage, { estimatedUnits: estimate }).replace(
+    /^(Итого ≈?[^<\r\n]+?(?:Кв|[кМГТПЭЗИР])ТЭ)/u,
     `$1 (${percent}%)`,
   );
 }
@@ -156,8 +182,8 @@ function markUsageLabel(text) {
   );
 }
 
-function formatTaskUsageDetails(usage, dayUnits) {
-  const [total, ...breakdown] = formatTaskShare(usage, dayUnits).split("<br>");
+function formatTaskUsageDetails(usage, dayUnits, estimatedUnits = 0) {
+  const [total, ...breakdown] = formatTaskShare(usage, dayUnits, estimatedUnits).split("<br>");
   return "<details data-task-usage-details>"
     + `<summary data-task-usage>${highlightUsageUnits(alignUsagePercent(markUsageLabel(total)))}</summary>`
     + `<span data-task-usage-breakdown>${breakdown
@@ -165,8 +191,8 @@ function formatTaskUsageDetails(usage, dayUnits) {
       .join("")}</span></details>\n`;
 }
 
-function formatDayUsageBreakdown(usage) {
-  const [, ...breakdown] = formatWorkLogUsage(usage).split("<br>");
+function formatDayUsageBreakdown(usage, estimatedUnits = 0) {
+  const [, ...breakdown] = formatWorkLogUsage(usage, { estimatedUnits }).split("<br>");
   return `<span data-day-usage-breakdown>${breakdown
     .map((part) => `<span data-day-usage-part>${highlightUsageUnits(alignUsagePercent(part))}</span>`)
     .join("")}</span>`;
@@ -246,11 +272,11 @@ function changedFileLinks(files) {
 }
 
 function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
-  const recordUnits = record?.usageReported === false ? 0 : turnConditionalUnits(record?.usage);
-  const units = record?.usageReported === false
+  const recordUnits = recordConditionalUnits(record);
+  const units = record?.usageReported === false && recordUnits <= 0
     ? "нет данных"
-    : highlightUsageUnits(formatConditionalUnits(recordUnits));
-  const share = taskUnits > 0 && record?.usageReported !== false
+    : `${record?.usageReported === false ? "≈" : ""}${highlightUsageUnits(formatConditionalUnits(recordUnits))}`;
+  const share = taskUnits > 0 && recordUnits > 0
     ? `${Math.round(recordUnits / taskUnits * 100)}%`
     : "";
   const title = escapeHtmlText(turnTitle(record));
@@ -288,9 +314,7 @@ function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
 
 function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
   const taskUnits = records.reduce(
-    (total, record) => total + (
-      record?.usageReported === false ? 0 : turnConditionalUnits(record?.usage)
-    ),
+    (total, record) => total + recordConditionalUnits(record),
     0,
   );
   const firstRegisteredTurn = records.findIndex((record) => record?.workLogId);
@@ -827,6 +851,12 @@ function projectDaySection(section, date, turns, recordsById, open) {
           : addTokenUsage(total, record.usage),
         emptyTokenUsage(),
       );
+      const estimatedUnits = recorded.reduce(
+        (total, record) => total + (
+          record.usageReported === false ? normalizeEstimatedUnits(record.estimatedUnits) : 0
+        ),
+        0,
+      );
       const cells = workLogRowCells(match.text);
       const turnCell = cells.find(
         (cell) => hasBareAttribute(cell.opening, "data-work-log-turn-list"),
@@ -836,7 +866,8 @@ function projectDaySection(section, date, turns, recordsById, open) {
         ids,
         recorded,
         usage,
-        units: turnConditionalUnits(usage),
+        estimatedUnits,
+        units: turnConditionalUnits(usage) + estimatedUnits,
         identity,
         hasLegacyOutcome: Boolean(legacyOutcome(turnCell?.text)),
       };
@@ -852,7 +883,7 @@ function projectDaySection(section, date, turns, recordsById, open) {
 
   const renderedRows = rows.map((row) => {
     const visible = row.units > 0
-      ? formatTaskUsageDetails(row.usage, dayUnits)
+      ? formatTaskUsageDetails(row.usage, dayUnits, row.estimatedUnits)
       : "";
     const markers = row.ids.map((id) => (
       `<span data-usage-id="${id}" hidden>${recordsById.has(id) ? "" : id}</span>`
@@ -870,12 +901,16 @@ function projectDaySection(section, date, turns, recordsById, open) {
       turnsContent,
     );
   });
+  const dayEstimatedUnits = trackedRows.reduce((total, row) => total + row.estimatedUnits, 0);
   const summary = dayUnits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
       + `<span data-day-usage><span data-usage-label>Итого</span> ${
-        highlightUsageUnits(formatConditionalUnits(dayUnits))
+        `${dayEstimatedUnits > 0 ? "≈" : ""}${highlightUsageUnits(formatConditionalUnits(dayUnits))}`
       }</span>`
-      + `${formatDayUsageBreakdown(dayUsage)}</span></summary>`
+      + `${formatDayUsageBreakdown(
+        dayUsage,
+        dayEstimatedUnits,
+      )}</span></summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
   return [
     `<details data-work-log-day-section${open ? " open" : ""}>`,
@@ -957,6 +992,8 @@ function incomingLedgerRecord({
   workLogId = null,
   usage,
   usageReported,
+  estimatedUnits,
+  estimateKind,
   taskTitle,
   taskThreadId,
   parentThreadId,
@@ -976,6 +1013,8 @@ function incomingLedgerRecord({
     projectRoot: normalizeProjectRoot(projectRoot),
     usage: normalizeTokenUsage(usage),
     usageReported: usageReported === true,
+    estimatedUnits: usageReported === true ? 0 : normalizeEstimatedUnits(estimatedUnits),
+    estimateKind: usageReported === true ? "" : String(estimateKind ?? "").trim(),
     provider: String(provider).trim().toLowerCase(),
     threadId: String(threadId).trim(),
     taskThreadId: String(taskThreadId ?? threadId).trim(),
@@ -1002,6 +1041,8 @@ function mergeLedgerRecord(existing, incoming) {
   if (incoming.usageReported || !existing.usageReported) {
     existing.usage = incoming.usage;
     existing.usageReported = incoming.usageReported;
+    existing.estimatedUnits = incoming.estimatedUnits;
+    existing.estimateKind = incoming.estimateKind;
   }
   for (const field of [
     "projectRoot",
@@ -1084,6 +1125,10 @@ export class WorkLogUsageStore {
         ([key, record]) => (
           String(record?.prompt ?? "").trim() !== String(this.#ledger.turns[key]?.prompt ?? "")
           || normalizeProjectRoot(record?.projectRoot) !== this.#ledger.turns[key]?.projectRoot
+          || normalizeEstimatedUnits(record?.estimatedUnits)
+            !== this.#ledger.turns[key]?.estimatedUnits
+          || String(record?.estimateKind ?? "").trim()
+            !== this.#ledger.turns[key]?.estimateKind
         ),
       );
     if (loaded.recovered || migrated || normalized.invalidRecords.length) await this.#save();
@@ -1223,6 +1268,8 @@ export class WorkLogUsageStore {
     workLogId,
     usage,
     usageReported,
+    estimatedUnits,
+    estimateKind,
     taskThreadId,
     parentThreadId,
     aggregateOnly,
@@ -1259,6 +1306,8 @@ export class WorkLogUsageStore {
         workLogId: id,
         usage,
         usageReported,
+        estimatedUnits,
+        estimateKind,
         taskThreadId,
         parentThreadId,
         aggregateOnly,
@@ -1312,6 +1361,8 @@ export class WorkLogUsageStore {
     projectRoot = this.#defaultProjectRoot,
     usage,
     usageReported,
+    estimatedUnits,
+    estimateKind,
     taskThreadId,
     parentThreadId,
     aggregateOnly,
@@ -1339,6 +1390,8 @@ export class WorkLogUsageStore {
         projectRoot,
         usage,
         usageReported,
+        estimatedUnits,
+        estimateKind,
         taskThreadId,
         parentThreadId,
         aggregateOnly,

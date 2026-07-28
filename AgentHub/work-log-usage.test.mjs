@@ -1015,6 +1015,37 @@ test("automatic journal records a stopped turn even when usage is unavailable", 
   }
 });
 
+test("automatic journal includes a marked image generation estimate in turn, task and day totals", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-image-estimate-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    await writeFile(workLogFile, "# Глобальный журнал работ\n", "utf8");
+    const store = new WorkLogUsageStore({ ledgerFile });
+    await store.recordAutomaticAndProject({
+      provider: "codex",
+      threadId: "thread-art",
+      turnId: "turn-art",
+      taskTitle: "Art",
+      status: "completed",
+      title: "Фон создан",
+      prompt: "Нарисуй чёрную дыру — это будет фон журнала",
+      startedAt: new Date(2026, 6, 25, 12, 0).toISOString(),
+      completedAt: new Date(2026, 6, 25, 12, 3).toISOString(),
+      usageReported: false,
+      estimatedUnits: 720_000,
+      estimateKind: "imagegen-default",
+      workLogFile,
+    });
+    const projected = await readFile(workLogFile, "utf8");
+    assert.match(projected, /Итого<\/span> ≈<span data-kilo-usage>720 кТЭ<\/span>/);
+    assert.match(projected, /Оценка imagegen: ≈<span data-kilo-usage>720 кТЭ<\/span> <span data-usage-percent>\(100%\)<\/span>/);
+    assert.match(projected, /12:03 — ≈<span data-kilo-usage>720 кТЭ<\/span>/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("automatic journal creates the missing local-date section", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-new-day-"));
   try {

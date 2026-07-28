@@ -64,6 +64,18 @@ test("late deferred message refreshes the completed task title", () => {
   assert.equal(registry.get(completion()).taskTitle, "Новое название");
 });
 
+test("completed Codex image generation without token events receives a rough estimate", () => {
+  const registry = new TurnEndNotificationRegistry();
+  const ready = registry.recordCompletion(completion({
+    usageReported: false,
+    usage: {},
+    prompt: "Нарисуй чёрную дыру — это будет фон журнала",
+  }));
+  assert.equal(ready.usageReported, false);
+  assert.equal(ready.estimatedUnits, 720_000);
+  assert.equal(ready.estimateKind, "imagegen-default");
+});
+
 test("turn-end titles retain up to 100 characters", () => {
   const registry = new TurnEndNotificationRegistry();
   registry.registerMessage(message({

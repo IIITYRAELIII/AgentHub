@@ -55,32 +55,42 @@ export function formatConditionalUnits(value) {
   return `${thousands.toLocaleString("ru-RU")} кТЭ`;
 }
 
-export function formatTaskTokenUsage(usage) {
+export function formatTaskTokenUsage(usage, { estimatedUnits = 0 } = {}) {
   const input = tokenCount(usage?.inputTokens);
   const cache = tokenCount(usage?.cachedInputTokens);
   const outputWithReasoning = tokenCount(usage?.outputTokens);
   const reasoning = Math.min(outputWithReasoning, tokenCount(usage?.reasoningOutputTokens));
   const output = outputWithReasoning - reasoning;
+  const estimate = Math.max(0, Number(estimatedUnits) || 0);
   const unitInput = input;
   const unitCache = cache / CACHE_UNIT_DIVISOR;
   const unitOutput = output * OUTPUT_UNIT_MULTIPLIER;
   const unitReasoning = reasoning * OUTPUT_UNIT_MULTIPLIER;
-  const unitTotal = unitInput + unitCache + unitOutput + unitReasoning;
+  const unitTotal = unitInput + unitCache + unitOutput + unitReasoning + estimate;
   const number = (value) => value.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
-  const [inputPercent, cachePercent, outputPercent, reasoningPercent] = percentagesAddingUpToHundred([
+  const [
+    inputPercent,
+    cachePercent,
+    outputPercent,
+    reasoningPercent,
+    estimatePercent,
+  ] = percentagesAddingUpToHundred([
     unitInput,
     unitCache,
     unitOutput,
     unitReasoning,
+    estimate,
   ]);
   const unitWithPercent = (value, percent) => `${formatConditionalUnits(value)} (${number(percent)}%)`;
-  return [
-    `📊 За задачу: ${formatConditionalUnits(unitTotal)}`,
+  const lines = [
+    `📊 За задачу: ${estimate > 0 ? "≈" : ""}${formatConditionalUnits(unitTotal)}`,
     `Вход: ${unitWithPercent(unitInput, inputPercent)}`,
     `Кэш: ${unitWithPercent(unitCache, cachePercent)}`,
     `Выход: ${unitWithPercent(unitOutput, outputPercent)}`,
     `Думы: ${unitWithPercent(unitReasoning, reasoningPercent)}`,
-  ].join("\n");
+  ];
+  if (estimate > 0) lines.push(`Оценка imagegen: ≈${unitWithPercent(estimate, estimatePercent)}`);
+  return lines.join("\n");
 }
 
 export function emptyTokenUsage() {
@@ -119,7 +129,8 @@ export function addTokenUsage(total, addition) {
 }
 
 export function formatTurnTokenUsage(tracker) {
-  if (!tracker?.reported) return "📊 Токены за задачу: нет данных.";
+  const estimatedUnits = Math.max(0, Number(tracker?.estimatedUnits) || 0);
+  if (!tracker?.reported && estimatedUnits <= 0) return "📊 Токены за задачу: нет данных.";
   const { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, totalTokens } = tracker.usage;
   const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens);
   return formatTaskTokenUsage({
@@ -128,5 +139,7 @@ export function formatTurnTokenUsage(tracker) {
     cachedInputTokens,
     outputTokens,
     reasoningOutputTokens,
+  }, {
+    estimatedUnits,
   });
 }

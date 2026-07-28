@@ -1,5 +1,6 @@
 import path from "node:path";
 
+import { estimateMissingCodexUsage } from "./codex-usage-estimate.mjs";
 import { normalizeTokenUsage } from "./token-usage.mjs";
 import { normalizeWorkLogId } from "./work-log-usage.mjs";
 
@@ -55,6 +56,14 @@ function normalizedCompletion(value) {
   const turnId = String(value?.turnId ?? "").trim();
   const projectRoot = String(value?.projectRoot ?? "").trim();
   if (!base || !turnId || !projectRoot) return null;
+  const usageReported = value.usageReported === true;
+  const estimate = base.provider === "codex"
+    ? estimateMissingCodexUsage({
+      status: value.status,
+      usageReported,
+      prompt: value.prompt,
+    })
+    : null;
   return {
     ...base,
     turnId,
@@ -63,7 +72,13 @@ function normalizedCompletion(value) {
     chatId: Number(value.chatId),
     status: String(value.status ?? "completed").trim() || "completed",
     usage: normalizeTokenUsage(value.usage),
-    usageReported: value.usageReported === true,
+    usageReported,
+    estimatedUnits: usageReported
+      ? 0
+      : Math.max(0, Math.round(Number(value.estimatedUnits ?? estimate?.estimatedUnits) || 0)),
+    estimateKind: usageReported
+      ? ""
+      : String(value.estimateKind ?? estimate?.estimateKind ?? "").trim(),
     provisional: value.provisional === true,
     deliveryGroupId: String(value.deliveryGroupId ?? "").trim() || null,
     deliverySequence: Number.isSafeInteger(value.deliverySequence) ? value.deliverySequence : null,
@@ -189,6 +204,8 @@ export class TurnEndNotificationRegistry {
     if (incoming.usageReported || !completion.usageReported) {
       completion.usage = incoming.usage;
       completion.usageReported = incoming.usageReported;
+      completion.estimatedUnits = incoming.estimatedUnits;
+      completion.estimateKind = incoming.estimateKind;
     }
     completion.message = incoming.message ?? completion.message ?? this.#takeMessage(completion);
     completion.taskTitle = completion.message?.taskTitle || incoming.taskTitle || completion.taskTitle;

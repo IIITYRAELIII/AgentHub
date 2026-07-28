@@ -1175,6 +1175,8 @@ async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } =
     turnId: completion.turnId,
     usage: completion.usage,
     usageReported: completion.usageReported,
+    estimatedUnits: completion.estimatedUnits,
+    estimateKind: completion.estimateKind,
     taskThreadId: completion.taskThreadId,
     parentThreadId: completion.parentThreadId,
     aggregateOnly: completion.aggregateOnly,
@@ -1270,7 +1272,11 @@ async function finalizeCodexRunDelivery(run, {
   }
   await saveState();
   const resolvedTracker = completion
-    ? { usage: completion.usage, reported: completion.usageReported }
+    ? {
+      usage: completion.usage,
+      reported: completion.usageReported,
+      estimatedUnits: completion.estimatedUnits,
+    }
     : tracker;
   const shouldDeliver = deliver || Boolean(existingCompletion);
   const message = [
@@ -1336,6 +1342,7 @@ async function deliverTurnEndNotification(completion) {
       formatTurnTokenUsage({
         usage: completion.usage,
         reported: completion.usageReported,
+        estimatedUnits: completion.estimatedUnits,
       }),
     ].filter(Boolean).join("\n\n");
     const targetChatId = message?.chatId ?? completion.chatId;
