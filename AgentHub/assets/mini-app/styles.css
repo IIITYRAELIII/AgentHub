@@ -1840,7 +1840,8 @@ html[data-surface="mobile"]
 html[data-surface="mobile"] .journal span[data-day-usage-part] {
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: minmax(3.15rem, 1fr) 7.4ch 5ch;
+  column-gap: 0.3rem;
+  grid-template-columns: auto minmax(3.15rem, 1fr) 7.4ch 5ch;
   justify-content: stretch;
   width: 100%;
 }

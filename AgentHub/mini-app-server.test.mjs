@@ -170,6 +170,8 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(script, /document\.documentElement\.dataset\.surface = surface/u);
     assert.match(script, /data-mobile-expanded/u);
     assert.match(script, /data-mobile-open/u);
+    assert.match(script, /journalRendered/u);
+    assert.match(script, /details\[data-work-log-day-section\]\[open\]/u);
     const styles = await (await fetch(`${address.url}styles.css`)).text();
     assert.match(styles, /html\[data-theme="nebula"\]/u);
     assert.match(styles, /html\[data-theme="pulsar"\]/u);
@@ -177,6 +179,10 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /html\[data-surface="mobile"\] \.journal div\[data-work-log-row\]/u);
     assert.match(styles, /span\[data-day-usage-table\]\[data-mobile-expanded\]/u);
     assert.match(styles, /div\[data-work-log-row\]\[data-mobile-open\]/u);
+    assert.match(
+      styles,
+      /grid-template-columns: auto minmax\(3\.15rem, 1fr\) 7\.4ch 5ch/u,
+    );
     assert.match(styles, /"Palatino Linotype"/u);
     assert.match(styles, /grid-template-columns: minmax\(0, 1fr\) 8\.6ch 6ch/u);
     assert.equal((await fetch(`${address.url}missing`)).status, 404);

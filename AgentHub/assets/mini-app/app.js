@@ -7,6 +7,7 @@ const themeSelect = document.querySelector("[data-theme-select]");
 const themeColor = document.querySelector("[data-theme-color]");
 let currentVersion = "";
 let loading = null;
+let journalRendered = false;
 const telegram = window.Telegram?.WebApp;
 const telegramInitData = String(telegram?.initData ?? "");
 const telegramMode = Boolean(telegramInitData);
@@ -99,6 +100,8 @@ function setMobileTaskOpen(row, open) {
 
 function prepareMobileControls() {
   if (surface !== "mobile") return;
+  const openDays = [...journal.querySelectorAll("details[data-work-log-day-section][open]")];
+  for (const details of openDays.slice(1)) details.open = false;
   for (const total of journal.querySelectorAll("[data-day-usage]")) {
     total.setAttribute("role", "button");
     total.setAttribute("tabindex", "0");
@@ -112,7 +115,11 @@ function prepareMobileControls() {
 }
 
 function restoreOpenState(state) {
-  for (const day of state.days) {
+  for (const details of journal.querySelectorAll("details[data-work-log-day-section]")) {
+    details.open = false;
+  }
+  const days = surface === "mobile" ? state.days.slice(0, 1) : state.days;
+  for (const day of days) {
     for (const details of journal.querySelectorAll("details[data-work-log-day-section]")) {
       if (details.querySelector("summary[data-work-log-day] strong")?.textContent.trim() === day) {
         details.open = true;
@@ -173,11 +180,12 @@ async function loadJournal({ force = false } = {}) {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
       if (force || payload.version !== currentVersion) {
-        const state = captureOpenState();
+        const state = journalRendered ? captureOpenState() : null;
         journal.innerHTML = payload.html;
         disableLocalLinks();
         prepareMobileControls();
-        restoreOpenState(state);
+        if (state) restoreOpenState(state);
+        journalRendered = true;
         currentVersion = payload.version;
       }
       const date = new Date(payload.updatedAt);
@@ -232,6 +240,15 @@ journal.addEventListener("click", (event) => {
   event.preventDefault();
   toggleMobileTask(cell);
 });
+
+journal.addEventListener("toggle", (event) => {
+  if (surface !== "mobile") return;
+  const opened = event.target;
+  if (!opened.matches?.("details[data-work-log-day-section][open]")) return;
+  for (const details of journal.querySelectorAll("details[data-work-log-day-section][open]")) {
+    if (details !== opened) details.open = false;
+  }
+}, true);
 
 journal.addEventListener("keydown", (event) => {
   if (surface !== "mobile" || !["Enter", " "].includes(event.key)) return;

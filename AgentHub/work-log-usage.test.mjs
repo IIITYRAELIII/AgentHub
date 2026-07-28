@@ -163,12 +163,13 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
 test("projectWorkLogUsage marks every day as an independent layout section", () => {
   const source = [
     "<details open><summary><strong>25.07.2026</strong></summary></details>",
-    "<details><summary><strong>24.07.2026</strong></summary></details>",
+    "<details open><summary><strong>24.07.2026</strong></summary></details>",
   ].join("\n");
   const projected = projectWorkLogUsage(source);
 
   assert.match(projected, /^<details data-work-log-day-section open>/);
   assert.match(projected, /\n<details data-work-log-day-section>/);
+  assert.equal((projected.match(/data-work-log-day-section open/g) ?? []).length, 1);
   assert.equal((projected.match(/data-work-log-day-section/g) ?? []).length, 2);
   assert.equal((projected.match(/summary data-work-log-day/g) ?? []).length, 2);
 });

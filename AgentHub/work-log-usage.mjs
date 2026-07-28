@@ -803,7 +803,7 @@ function replaceProjectedCells(row, usageContent, records) {
     + `<div data-work-log-turn-list>${turnList}</div>\n</div>`;
 }
 
-function projectDaySection(section, date, turns, recordsById) {
+function projectDaySection(section, date, turns, recordsById, open) {
   const canonicalSection = ensureCanonicalRows(section, date, turns);
   const rows = workLogTaskRows(canonicalSection)
     .map((match) => {
@@ -871,7 +871,6 @@ function projectDaySection(section, date, turns, recordsById) {
       }</span>`
       + `${formatDayUsageBreakdown(dayUsage)}</span></summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
-  const open = /^<details\b[^>]*\bopen\b/i.test(section);
   return [
     `<details data-work-log-day-section${open ? " open" : ""}>`,
     summary,
@@ -906,12 +905,22 @@ export function projectWorkLogUsage(workLogText, turns = {}) {
   const dayStarts = [...text.matchAll(
     /<details\b[^>]*>\s*<summary[^>]*><strong>(\d{2}\.\d{2}\.\d{4})<\/strong>[\s\S]*?<\/summary>/gi,
   )];
+  const currentDate = formatLocalDate(new Date());
+  const defaultOpenDate = dayStarts.some((match) => match[1] === currentDate)
+    ? currentDate
+    : dayStarts[0]?.[1];
   let projected = text;
   for (let index = dayStarts.length - 1; index >= 0; index -= 1) {
     const start = dayStarts[index].index;
     const end = index + 1 < dayStarts.length ? dayStarts[index + 1].index : text.length;
     const section = text.slice(start, end);
-    const replacement = projectDaySection(section, dayStarts[index][1], normalizedTurns, records);
+    const replacement = projectDaySection(
+      section,
+      dayStarts[index][1],
+      normalizedTurns,
+      records,
+      dayStarts[index][1] === defaultOpenDate,
+    );
     projected = `${projected.slice(0, start)}${replacement}${projected.slice(end)}`;
   }
   return projected;
