@@ -1105,17 +1105,19 @@ main {
 }
 
 .journal button[data-work-log-collapse-turns] {
-  align-self: flex-start;
   background: transparent;
   border: 1px dashed var(--line-strong);
   border-radius: var(--radius-chip);
+  box-sizing: border-box;
   color: var(--text-muted);
   cursor: pointer;
   font: inherit;
   font-size: 0.75rem;
-  margin: 0 0 0.4rem;
+  margin: 0.35rem 0 0;
   padding: 0.28rem 0.8rem;
+  text-align: center;
   transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+  width: 100%;
 }
 
 .journal button[data-work-log-collapse-turns]:hover {

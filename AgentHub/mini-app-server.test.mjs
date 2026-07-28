@@ -172,6 +172,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(script, /telegram\?\.expand\(\)/u);
     assert.doesNotMatch(script, /requestFullscreen/u);
     assert.match(script, /closest\("\[data-work-log-collapse-turns\]"\)/u);
+    assert.match(script, /row\?\.querySelector\("details\[data-work-log-previous-turns\]"\)/u);
     assert.match(script, /window\.addEventListener\("resize", syncSurface\)/u);
     assert.match(script, /data-mobile-expanded/u);
     assert.match(script, /data-mobile-open/u);

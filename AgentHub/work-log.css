@@ -183,21 +183,22 @@ details[data-work-log-previous-turns] > summary {
   padding: 0.3em 0.45em;
 }
 
-button[data-work-log-collapse-turns] {
-  align-self: flex-start;
+div[data-work-log-usage] > button[data-work-log-collapse-turns] {
   background: transparent;
   border: 1px solid rgba(127, 127, 127, 0.55);
   border-radius: 0.25em;
+  box-sizing: border-box;
   color: inherit;
   cursor: pointer;
   display: none;
   font: inherit;
-  margin: 0.35em;
-  order: 0;
+  margin: 0.35em 0 0;
   padding: 0.3em 0.45em;
+  width: 100%;
 }
 
-details[data-work-log-previous-turns][open] > button[data-work-log-collapse-turns] {
+div[data-work-log-row]:has(details[data-work-log-previous-turns][open])
+  div[data-work-log-usage] > button[data-work-log-collapse-turns] {
   display: block;
 }
 

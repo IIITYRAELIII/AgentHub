@@ -245,7 +245,8 @@ journal.addEventListener("click", (event) => {
   if (collapse) {
     event.preventDefault();
     event.stopPropagation();
-    const previous = collapse.closest("details[data-work-log-previous-turns]");
+    const row = collapse.closest("[data-work-log-row]");
+    const previous = row?.querySelector("details[data-work-log-previous-turns]");
     if (previous) previous.open = false;
     return;
   }

@@ -307,7 +307,6 @@ function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
       `<span data-work-log-previous-turns-closed>Показать предыдущие ходы (${turnRows.length - 1})</span>`,
       '<span data-work-log-previous-turns-open>Свернуть</span>',
       "</summary>",
-      '<button type="button" data-work-log-collapse-turns>Свернуть ходы</button>',
       `<div data-work-log-previous-turn-list>${turnRows.slice(1).join("\n")}</div>`,
       "</details>",
     ].join("")
@@ -862,7 +861,14 @@ function projectDaySection(section, date, turns, recordsById, open) {
       .sort(
         (left, right) => (Date.parse(right.completedAt) || 0) - (Date.parse(left.completedAt) || 0),
       );
-    return replaceProjectedCells(row.match.text, `${visible}${markers}`, turnsContent);
+    const collapseTurns = turnsContent.length > 1
+      ? '<button type="button" data-work-log-collapse-turns>Свернуть ходы</button>'
+      : "";
+    return replaceProjectedCells(
+      row.match.text,
+      `${visible}${markers}${collapseTurns}`,
+      turnsContent,
+    );
   });
   const summary = dayUnits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
