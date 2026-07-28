@@ -1,123 +1,302 @@
+/* Agent Hub Mini App — визуальный слой журнала работ.
+   Оформление лежит поверх work-log.css: разметка и семантика не меняются,
+   поэтому та же проекция WORK_LOG.md остаётся читаемой в VS Code. */
+
 :root {
   color-scheme: dark;
-  --app-accent: #67b7ff;
-  --app-bg: #0c1118;
-  --app-border: rgba(180, 198, 219, 0.18);
-  --app-card: rgba(23, 31, 42, 0.92);
-  --app-muted: #91a0b2;
-  --app-text: #e8eef7;
-  --vscode-focusBorder: #67b7ff;
-  --vscode-foreground: var(--tg-theme-text-color, #e8eef7);
+
+  --font-sans: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto,
+    "Helvetica Neue", sans-serif;
+
+  --bg: #080b11;
+  --surface-1: rgba(255, 255, 255, 0.026);
+  --surface-2: rgba(255, 255, 255, 0.045);
+  --surface-3: rgba(255, 255, 255, 0.07);
+  --sunken: rgba(0, 0, 0, 0.18);
+
+  --line: rgba(150, 178, 214, 0.13);
+  --line-strong: rgba(150, 178, 214, 0.24);
+
+  --text: #e9eff8;
+  --text-soft: #b6c3d5;
+  --text-muted: #8797ab;
+  --text-faint: #667689;
+
+  --accent: #6cb2ff;
+  --accent-soft: rgba(108, 178, 255, 0.13);
+  --accent-line: rgba(108, 178, 255, 0.4);
+
+  --provider-none: #8797ab;
+  --provider-codex: #6cb2ff;
+  --provider-claude: #e08a63;
+
+  --ok: #4fd08a;
+  --pending: #f0b95b;
+
+  --radius-lg: 16px;
+  --radius-md: 11px;
+  --radius-sm: 8px;
+
+  --shadow-card: 0 18px 40px -26px rgba(0, 0, 0, 0.9);
+  --shadow-turn: 0 1px 2px rgba(0, 0, 0, 0.35);
+
+  --header-height: 4.15rem;
+  --content-width: 92rem;
+  --gutter-left: max(0.9rem, env(safe-area-inset-left));
+  --gutter-right: max(0.9rem, env(safe-area-inset-right));
+
+  /* work-log.css использует эти переменные для раскрытого хода */
+  --vscode-focusBorder: var(--accent);
+  --vscode-foreground: var(--text);
 }
 
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
 html {
-  background: var(--app-bg);
+  background: var(--bg);
   min-height: 100%;
+  scroll-padding-top: calc(var(--header-height) + 1rem);
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   background:
-    radial-gradient(circle at 85% -10%, rgba(35, 118, 178, 0.22), transparent 42%),
-    linear-gradient(180deg, #111923 0, var(--app-bg) 28rem);
-  color: var(--tg-theme-text-color, var(--app-text));
-  font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+    radial-gradient(115% 55% at 84% -14%, rgba(56, 124, 196, 0.2), transparent 60%),
+    radial-gradient(85% 50% at 6% -10%, rgba(126, 78, 190, 0.13), transparent 58%),
+    linear-gradient(180deg, #0d1219 0, var(--bg) 32rem);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.45;
   margin: 0;
   min-height: 100vh;
-  padding: max(1rem, env(safe-area-inset-top)) max(0.8rem, env(safe-area-inset-right))
-    max(1.5rem, env(safe-area-inset-bottom)) max(0.8rem, env(safe-area-inset-left));
+  padding: 0;
+}
+
+::selection {
+  background: rgba(108, 178, 255, 0.3);
+}
+
+:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+* {
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  height: 0.5rem;
+  width: 0.5rem;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 a,
 [role="link"] {
-  color: var(--app-accent);
+  color: var(--accent);
   text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
 }
 
 [role="link"][aria-disabled="true"] {
   cursor: default;
 }
 
-.app-header,
-main {
-  margin: 0 auto;
-  max-width: 92rem;
-}
+/* ------------------------------------------------------------------ шапка */
 
 .app-header {
-  align-items: flex-end;
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  background: linear-gradient(180deg, rgba(9, 13, 19, 0.93), rgba(9, 13, 19, 0.74));
+  border-bottom: 1px solid var(--line);
+  padding: max(0.55rem, env(safe-area-inset-top)) 0 0.55rem;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.app-header-inner {
+  align-items: center;
   display: flex;
   gap: 1rem;
   justify-content: space-between;
-  padding: 0.35rem 0.2rem 1rem;
+  margin: 0 auto;
+  max-width: var(--content-width);
+  padding-left: var(--gutter-left);
+  padding-right: var(--gutter-right);
+}
+
+.brand {
+  align-items: center;
+  display: flex;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.brand-mark {
+  align-items: center;
+  background: linear-gradient(150deg, rgba(108, 178, 255, 0.28), rgba(126, 78, 190, 0.22));
+  border: 1px solid var(--accent-line);
+  border-radius: 11px;
+  box-shadow: 0 6px 18px -10px rgba(108, 178, 255, 0.7);
+  color: var(--accent);
+  display: flex;
+  flex: 0 0 auto;
+  height: 2.3rem;
+  justify-content: center;
+  width: 2.3rem;
+}
+
+.brand-mark svg {
+  height: 1.25rem;
+  width: 1.25rem;
+}
+
+.brand-text {
+  min-width: 0;
 }
 
 .eyebrow {
-  color: var(--app-accent);
-  font-size: 0.72rem;
+  color: var(--text-faint);
+  font-size: 0.63rem;
   font-weight: 700;
-  letter-spacing: 0.14em;
-  margin: 0 0 0.2rem;
+  letter-spacing: 0.16em;
+  margin: 0;
   text-transform: uppercase;
 }
 
 h1 {
-  font-size: clamp(1.55rem, 5vw, 2.35rem);
-  letter-spacing: -0.035em;
-  line-height: 1;
+  font-size: 1.22rem;
+  font-weight: 620;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
   margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolbar {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.55rem;
 }
 
 .connection {
   align-items: center;
-  color: var(--app-muted);
-  display: flex;
-  flex: 0 0 auto;
-  font-size: 0.78rem;
-  gap: 0.42rem;
-  padding-bottom: 0.15rem;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: 0.74rem;
+  gap: 0.4rem;
+  padding: 0.24rem 0.65rem 0.24rem 0.5rem;
+  white-space: nowrap;
 }
 
 .connection-dot {
-  background: #f0b95b;
+  background: var(--pending);
   border-radius: 50%;
-  box-shadow: 0 0 0 0.22rem rgba(240, 185, 91, 0.12);
-  height: 0.45rem;
-  width: 0.45rem;
+  box-shadow: 0 0 0 0.2rem rgba(240, 185, 91, 0.14);
+  flex: 0 0 auto;
+  height: 0.42rem;
+  width: 0.42rem;
 }
 
 .connection[data-connection="online"] .connection-dot {
-  background: #55d68b;
-  box-shadow: 0 0 0 0.22rem rgba(85, 214, 139, 0.12);
+  animation: pulse 2.4s ease-in-out infinite;
+  background: var(--ok);
+  box-shadow: 0 0 0 0.2rem rgba(79, 208, 138, 0.14);
 }
 
-.journal-meta {
-  align-items: center;
-  border-bottom: 1px solid var(--app-border);
-  color: var(--app-muted);
-  display: flex;
-  font-size: 0.78rem;
-  justify-content: space-between;
-  margin-bottom: 0.75rem;
-  padding: 0 0.2rem 0.7rem;
+@keyframes pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0.2rem rgba(79, 208, 138, 0.14);
+  }
+
+  50% {
+    box-shadow: 0 0 0 0.32rem rgba(79, 208, 138, 0.04);
+  }
+}
+
+.stamp {
+  color: var(--text-faint);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 button {
-  background: rgba(103, 183, 255, 0.1);
-  border: 1px solid rgba(103, 183, 255, 0.28);
-  border-radius: 999px;
-  color: var(--app-accent);
-  cursor: pointer;
   font: inherit;
-  padding: 0.28rem 0.7rem;
 }
 
-button:disabled {
-  cursor: wait;
-  opacity: 0.5;
+.refresh {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-soft);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.76rem;
+  gap: 0.35rem;
+  padding: 0.3rem 0.75rem 0.3rem 0.6rem;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.refresh:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.refresh:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+.refresh:disabled .refresh-icon {
+  animation: spin 0.9s linear infinite;
+}
+
+.refresh-icon {
+  height: 0.85rem;
+  width: 0.85rem;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ------------------------------------------------------------ полотно дня */
+
+main {
+  margin: 0 auto;
+  max-width: var(--content-width);
+  padding: 1.1rem var(--gutter-right) max(2.5rem, env(safe-area-inset-bottom)) var(--gutter-left);
 }
 
 .journal {
@@ -125,23 +304,24 @@ button:disabled {
 }
 
 .journal[aria-busy="true"]::before {
-  color: var(--app-muted);
-  content: "Загружаю журнал…";
+  animation: shimmer 1.4s ease-in-out infinite;
+  background: linear-gradient(100deg, var(--surface-1) 30%, var(--surface-3) 50%, var(--surface-1) 70%);
+  background-size: 220% 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  content: "";
   display: block;
-  padding: 2rem 0.2rem;
+  height: 11rem;
 }
 
-.journal details[data-work-log-day-section] {
-  backdrop-filter: blur(12px);
-  background: var(--app-card);
-  border-color: var(--app-border);
-  border-radius: 0.7rem;
-  box-shadow: 0 0.75rem 2.5rem rgba(0, 0, 0, 0.16);
-  margin: 0.55rem 0;
-}
+@keyframes shimmer {
+  from {
+    background-position: 140% 0;
+  }
 
-.journal details[data-work-log-day-section][open] {
-  background: rgba(24, 33, 45, 0.96);
+  to {
+    background-position: -40% 0;
+  }
 }
 
 .journal summary,
@@ -149,35 +329,497 @@ button:disabled {
   -webkit-tap-highlight-color: transparent;
 }
 
+.journal details[data-work-log-day-section] {
+  backdrop-filter: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.016));
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  margin: 0 0 0.8rem;
+  padding: 0.4rem 0.5rem;
+}
+
+.journal details[data-work-log-day-section][open] {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02));
+  border-color: var(--line-strong);
+  padding-bottom: 0.55rem;
+}
+
 .journal summary[data-work-log-day] {
-  overflow-x: auto;
-  padding-bottom: 0.08rem;
-  scrollbar-width: none;
+  align-items: center;
+  border-radius: 10px;
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 1em;
+  gap: 0.35rem 0.5rem;
+  overflow-x: visible;
+  padding: 0.45rem 0.55rem;
+  transition: background 0.16s ease;
 }
 
-.journal summary[data-work-log-day]::-webkit-scrollbar {
-  display: none;
+.journal summary[data-work-log-day]:hover {
+  background: var(--surface-2);
 }
 
-.journal div[data-work-log-turn-table],
-.journal details[data-work-log-turn-details],
-.journal div[data-work-log-task-cell] > div[data-work-log-task-content],
-.journal summary[data-task-usage],
+.journal summary[data-work-log-day]::before,
+.journal details[open] > summary[data-work-log-day]::before {
+  border: 0.3rem solid transparent;
+  border-left-color: var(--text-muted);
+  border-right-width: 0;
+  content: "";
+  flex: 0 0 auto;
+  height: 0;
+  margin-right: 0.15rem;
+  transform-origin: 35% 50%;
+  transition: transform 0.18s ease;
+  width: 0;
+}
+
+.journal details[open] > summary[data-work-log-day]::before {
+  border-left-color: var(--accent);
+  transform: rotate(90deg);
+}
+
+.journal summary[data-work-log-day] > strong {
+  font-size: 1.02rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+  margin-right: 0.2rem;
+}
+
+.journal span[data-day-usage-table] {
+  align-items: center;
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-left: auto;
+  overflow: visible;
+}
+
+.journal span[data-day-usage],
+.journal span[data-day-usage-part] {
+  align-items: baseline;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: 0.75rem;
+  gap: 0.3rem;
+  padding: 0.2rem 0.6rem;
+  width: auto;
+}
+
+.journal span[data-day-usage] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------- задача и её ходы */
+
+.journal div[data-work-log-table] {
+  --work-log-task-card-width: 100%;
+}
+
+.journal div[data-work-log-header] {
+  border-bottom: 0;
+  color: var(--text-faint);
+  grid-template-columns: 17.5rem minmax(0, 1fr);
+  padding: 0.5rem 0 0.05rem;
+}
+
+.journal div[data-work-log-header] > strong {
+  font-size: 0.64rem;
+  font-weight: 650;
+  letter-spacing: 0.15em;
+  padding: 0 0.55rem;
+  text-transform: uppercase;
+}
+
+.journal div[data-work-log-row] {
+  --row-accent: var(--provider-none);
+
+  column-gap: 0.4rem;
+  grid-template-columns: 17.5rem minmax(0, 1fr);
+  padding: 0.15rem 0;
+}
+
+.journal div[data-work-log-row][data-work-log-provider="codex"] {
+  --row-accent: var(--provider-codex);
+}
+
+.journal div[data-work-log-row][data-work-log-provider="claude"] {
+  --row-accent: var(--provider-claude);
+}
+
+.journal div[data-work-log-body] > div[data-work-log-row] {
+  border-bottom: 1px solid var(--line);
+}
+
+.journal div[data-work-log-task-cell] {
+  align-self: start;
+  padding: 0.4rem;
+  position: sticky;
+  top: calc(var(--header-height) + 0.6rem);
+}
+
+.journal div[data-work-log-task-cell] > div[data-work-log-task-content] {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--row-accent);
+  border-radius: var(--radius-sm);
+  font-weight: 560;
+  line-height: 1.35;
+  padding: 0.42rem 0.6rem;
+}
+
+.journal div[data-work-log-task-content] a,
+.journal div[data-work-log-task-content] [role="link"] {
+  color: color-mix(in srgb, var(--row-accent) 45%, var(--text));
+}
+
+.journal div[data-work-log-task-cell] > div[data-work-log-usage] {
+  margin-top: 0.32rem;
+}
+
+.journal summary[data-task-usage] {
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 0.77rem;
+  gap: 0.4rem;
+  padding: 0.3rem 0.55rem;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.journal summary[data-task-usage]:hover {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+.journal details[data-task-usage-details][open] > summary[data-task-usage] {
+  background: var(--surface-2);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 .journal span[data-task-usage-breakdown] {
-  border-color: var(--app-border);
+  border: 1px solid var(--line);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  border-top: 0;
 }
+
+.journal span[data-task-usage-part] {
+  color: var(--text-muted);
+  font-size: 0.73rem;
+  padding: 0.2rem 0.55rem;
+}
+
+.journal span[data-task-usage-part] + span[data-task-usage-part] {
+  border-top: 1px solid var(--line);
+}
+
+.journal div[data-work-log-turn-list] {
+  padding: 0.4rem;
+}
+
+.journal div[data-work-log-turn-table] {
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  overflow: visible;
+}
+
+.journal div[data-work-log-turn-table] > div[data-work-log-turn-entry],
+.journal div[data-work-log-turn-entry] + div[data-work-log-turn-entry],
+.journal div[data-work-log-turn-entry] + div[data-work-log-legacy-outcome],
+.journal div[data-work-log-turn-list] > details,
+.journal div[data-work-log-previous-turn-list] > div[data-work-log-turn-entry]
+  + div[data-work-log-turn-entry] {
+  margin: 0;
+}
+
+/* предыдущие ходы */
+
+.journal details[data-work-log-previous-turns] {
+  border-bottom: 0;
+}
+
+.journal details[data-work-log-previous-turns] > summary {
+  align-items: center;
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+  border-radius: 999px;
+  color: var(--text-muted);
+  display: flex;
+  font-size: 0.75rem;
+  gap: 0.35rem;
+  justify-content: center;
+  margin-inline: auto;
+  padding: 0.28rem 0.8rem;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+  width: fit-content;
+}
+
+.journal details[data-work-log-previous-turns][open] > summary {
+  background: transparent;
+  border-bottom: 1px dashed var(--line-strong);
+}
+
+.journal details[data-work-log-previous-turns] > summary:hover {
+  background: var(--surface-2);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.journal div[data-work-log-previous-turn-list] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.4rem 0 0;
+}
+
+.journal div[data-work-log-no-previous-turns] {
+  border-bottom: 0;
+  color: var(--text-faint);
+  font-size: 0.75rem;
+  padding: 0.15rem 0.2rem;
+  text-align: center;
+}
+
+/* карточка хода */
+
+.journal details[data-work-log-turn-details] {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.journal details[data-work-log-turn-details]:hover {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+.journal details[data-work-log-turn-details][open] {
+  background: var(--surface-2);
+  border: 1px solid var(--accent-line);
+  box-shadow: inset 2px 0 0 var(--accent), var(--shadow-turn);
+}
+
+.journal details[data-work-log-turn-details] > summary {
+  align-items: center;
+  grid-template-columns: 11.5rem minmax(0, 1fr);
+}
+
+/* только снятие оформления work-log.css — без свойств, которые ниже
+   переопределяются медиазапросами (специфичность [open] выше) */
+.journal details[data-work-log-turn-details][open] > summary {
+  background: transparent;
+  border-bottom: 0;
+}
+
+.journal span[data-work-log-turn-meta] {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  gap: 0.45rem;
+  padding: 0.42rem 0.6rem;
+}
+
+.journal span[data-work-log-turn-share] {
+  color: var(--text-faint);
+}
+
+.journal span[data-work-log-turn-title] {
+  border-left: 1px solid var(--line);
+  color: var(--text);
+  font-weight: 545;
+  padding: 0.42rem 0.7rem;
+}
+
+/* Раскрытый ход: полоса «Длит. + Запрос» сверху, ответ на всю ширину снизу —
+   длинный запрос не сжимается в узкую колонку. */
+
+.journal div[data-work-log-turn-expanded] {
+  animation: reveal 0.18s ease;
+  border-top: 1px solid var(--line);
+  display: block;
+}
+
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-0.2rem);
+  }
+}
+
+.journal div[data-work-log-turn-meta-details] {
+  background: var(--sunken);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 1.5rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.journal div[data-work-log-turn-body-details] {
+  border-left: 0;
+  padding: 0.6rem 0.75rem 0.7rem;
+}
+
+.journal div[data-work-log-turn-context],
+.journal div[data-work-log-turn-prompt] {
+  color: var(--text-soft);
+  font-size: 0.8rem;
+}
+
+.journal div[data-work-log-turn-context] > strong,
+.journal div[data-work-log-turn-prompt] > strong {
+  color: var(--text-faint);
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 620;
+  letter-spacing: 0.02em;
+  margin-bottom: 0.05rem;
+}
+
+.journal div[data-work-log-turn-context] {
+  flex: 0 0 auto;
+  min-width: 7rem;
+}
+
+.journal div[data-work-log-turn-prompt] {
+  border-left: 2px solid var(--line-strong);
+  flex: 1 1 24rem;
+  margin-top: 0;
+  opacity: 1;
+  padding-left: 0.55rem;
+}
+
+.journal div[data-work-log-turn-body] {
+  color: var(--text-soft);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.journal div[data-work-log-turn-files] {
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0;
+  gap: 0.3rem;
+  margin-top: 0.65rem;
+}
+
+.journal div[data-work-log-turn-files]::before {
+  color: var(--text-faint);
+  content: "Изменённые файлы:";
+  font-size: 0.68rem;
+  font-weight: 620;
+  letter-spacing: 0.02em;
+  width: 100%;
+}
+
+.journal div[data-work-log-turn-files] a,
+.journal div[data-work-log-turn-files] [role="link"] {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  padding: 0.14rem 0.5rem;
+}
+
+.journal div[data-work-log-turn-files] a:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.journal div[data-work-log-legacy-outcome] {
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
+  padding: 0.5rem 0.7rem;
+}
+
+/* ----------------------------------------------------------- расход в ТЭ */
+
+.journal span[data-kilo-usage],
+.journal span[data-mega-usage],
+.journal span[data-high-usage] {
+  border-radius: 0.35rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 620;
+  padding: 0.02rem 0.28rem;
+  white-space: nowrap;
+}
+
+.journal span[data-kilo-usage] {
+  background: rgba(229, 192, 123, 0.11);
+}
+
+.journal span[data-mega-usage] {
+  background: rgba(255, 157, 0, 0.12);
+}
+
+.journal span[data-high-usage] {
+  background: rgba(241, 76, 76, 0.13);
+}
+
+.journal span[data-usage-percent] {
+  color: var(--text-faint);
+  font-size: 0.92em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------- нестандартные случаи */
 
 [data-mini-app-fallback] {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
   font: inherit;
   margin: 0;
   overflow-wrap: anywhere;
+  padding: 1rem;
   white-space: pre-wrap;
 }
 
 [data-mini-app-empty] {
-  color: var(--app-muted);
-  padding: 2rem 0;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+  color: var(--text-muted);
+  padding: 3rem 1rem;
   text-align: center;
+}
+
+/* ------------------------------------------------------------- адаптивность */
+
+@media (max-width: 1100px) {
+  .journal div[data-work-log-header],
+  .journal div[data-work-log-row] {
+    grid-template-columns: 15rem minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 860px) {
+  .journal details[data-work-log-turn-details] > summary {
+    grid-template-columns: 10rem minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 760px) {
@@ -185,17 +827,56 @@ button:disabled {
     font-size: 14px;
   }
 
-  .app-header {
-    align-items: flex-start;
+  :root {
+    --header-height: 3.75rem;
   }
 
-  .connection {
-    max-width: 8.5rem;
-    text-align: right;
+  .brand-mark {
+    height: 2.05rem;
+    width: 2.05rem;
+  }
+
+  h1 {
+    font-size: 1.06rem;
+  }
+
+  .app-header-inner {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .toolbar {
+    width: 100%;
+  }
+
+  .stamp {
+    margin-left: auto;
+  }
+
+  .refresh-label {
+    display: none;
+  }
+
+  .refresh {
+    padding: 0.3rem 0.55rem;
+  }
+
+  main {
+    padding-top: 0.85rem;
+  }
+
+  .journal summary[data-work-log-day] > strong {
+    font-size: 0.95rem;
+  }
+
+  .journal span[data-day-usage-table] {
+    margin-left: 0;
+    width: 100%;
   }
 
   .journal details[data-work-log-day-section] {
-    padding: 0.55rem;
+    padding: 0.35rem 0.4rem;
   }
 
   .journal div[data-work-log-header] {
@@ -204,48 +885,61 @@ button:disabled {
 
   .journal div[data-work-log-row] {
     display: block;
-    padding: 0.45rem 0;
+    padding: 0.35rem 0 0.5rem;
   }
 
-  .journal div[data-work-log-task-cell],
+  .journal div[data-work-log-task-cell] {
+    padding: 0.2rem;
+    position: static;
+  }
+
   .journal div[data-work-log-turn-list] {
     padding: 0.2rem;
   }
 
-  .journal div[data-work-log-table] {
-    --work-log-task-card-width: 100%;
-  }
-
-  .journal div[data-work-log-task-cell] > div[data-work-log-task-content],
-  .journal details[data-task-usage-details],
-  .journal summary[data-task-usage],
-  .journal span[data-task-usage-breakdown] {
-    width: 100%;
-  }
-
-  .journal details[data-work-log-turn-details] > summary,
-  .journal div[data-work-log-turn-expanded] {
-    grid-template-columns: 9.4rem minmax(0, 1fr);
+  .journal details[data-work-log-turn-details] > summary {
+    grid-template-columns: 9rem minmax(0, 1fr);
   }
 
   .journal span[data-work-log-turn-meta] {
-    font-size: 0.82em;
+    font-size: 0.75rem;
+    gap: 0.25rem;
   }
 }
 
-@media (max-width: 430px) {
-  .journal details[data-work-log-turn-details] > summary,
-  .journal div[data-work-log-turn-expanded] {
-    grid-template-columns: 1fr;
+@media (max-width: 460px) {
+  .journal span[data-day-usage],
+  .journal span[data-day-usage-part] {
+    font-size: 0.72rem;
+    padding: 0.16rem 0.5rem;
   }
 
-  .journal span[data-work-log-turn-title],
-  .journal div[data-work-log-turn-body-details] {
+  .journal details[data-work-log-turn-details] > summary {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 0.05rem;
+  }
+
+  .journal span[data-work-log-turn-meta] {
+    justify-content: flex-start;
+    padding-bottom: 0;
+  }
+
+  .journal span[data-work-log-turn-share] {
+    margin-left: 0.4rem;
+  }
+
+  .journal span[data-work-log-turn-title] {
     border-left: 0;
-    border-top: 1px solid var(--app-border);
+    padding-top: 0;
   }
+}
 
-  .journal div[data-work-log-turn-meta-details] {
-    border-bottom: 1px solid var(--app-border);
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

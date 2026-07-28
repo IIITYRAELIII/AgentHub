@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="dark light">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#080b11">
   <title>Agent Hub — журнал работ</title>
   <link rel="stylesheet" href="/work-log.css">
   <link rel="stylesheet" href="/styles.css">
@@ -12,20 +13,38 @@
 </head>
 <body>
   <header class="app-header">
-    <div>
-      <p class="eyebrow">Agent Hub</p>
-      <h1>Журнал работ</h1>
-    </div>
-    <div class="connection" data-connection="connecting">
-      <span class="connection-dot" aria-hidden="true"></span>
-      <span data-connection-label>Подключение…</span>
+    <div class="app-header-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2.7 20 7.2v9.6L12 21.3 4 16.8V7.2z"></path>
+            <path d="M7.6 12.1h2.2l1.3-2.9 1.9 5.4 1.2-2.5h1.9"></path>
+          </svg>
+        </span>
+        <div class="brand-text">
+          <p class="eyebrow">Agent Hub</p>
+          <h1>Журнал работ</h1>
+        </div>
+      </div>
+      <div class="toolbar">
+        <span class="connection" data-connection="connecting">
+          <span class="connection-dot" aria-hidden="true"></span>
+          <span data-connection-label>Подключение…</span>
+        </span>
+        <span class="stamp" data-updated-at>Загрузка журнала…</span>
+        <button class="refresh" type="button" data-refresh title="Обновить журнал">
+          <svg class="refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20.2 12a8.2 8.2 0 1 1-2.6-6"></path>
+            <path d="M20.4 4.6v5.6h-5.6"></path>
+          </svg>
+          <span class="refresh-label">Обновить</span>
+        </button>
+      </div>
     </div>
   </header>
   <main>
-    <div class="journal-meta">
-      <span data-updated-at>Загрузка журнала…</span>
-      <button type="button" data-refresh>Обновить</button>
-    </div>
     <section class="journal" data-journal aria-live="polite" aria-busy="true"></section>
   </main>
 </body>
