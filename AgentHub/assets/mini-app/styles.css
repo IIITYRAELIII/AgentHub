@@ -2018,8 +2018,9 @@ html[data-surface="mobile"]
 
 html[data-surface="mobile"] .journal details[data-work-log-previous-turns] > summary,
 html[data-surface="mobile"] .journal button[data-work-log-collapse-turns],
+html[data-surface="mobile"] .journal button[data-work-log-collapse-turns][hidden],
 html[data-surface="mobile"] .journal div[data-work-log-no-previous-turns] {
-  display: none;
+  display: none !important;
 }
 
 html[data-surface="mobile"] .journal div[data-work-log-previous-turn-list] {

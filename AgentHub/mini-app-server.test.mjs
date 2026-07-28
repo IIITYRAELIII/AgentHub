@@ -187,6 +187,8 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(script, /window\.addEventListener\("resize", syncSurface\)/u);
     assert.match(script, /data-mobile-expanded/u);
     assert.match(script, /data-mobile-open/u);
+    assert.match(script, /button\.hidden = hidden/u);
+    assert.match(script, /collapse && surface !== "mobile"/u);
     assert.match(script, /journalRendered/u);
     assert.match(script, /details\[data-work-log-day-section\]\[open\]/u);
     const styles = await (await fetch(`${address.url}styles.css`)).text();
@@ -200,6 +202,10 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /span\[data-day-usage-table\]\[data-mobile-expanded\]/u);
     assert.match(styles, /div\[data-work-log-row\]\[data-mobile-open\]/u);
     assert.match(styles, /button\[data-work-log-collapse-turns\]/u);
+    assert.match(
+      styles,
+      /button\[data-work-log-collapse-turns\]\[hidden\][\s\S]*display: none !important/u,
+    );
     assert.match(
       styles,
       /grid-template-columns: auto minmax\(3\.15rem, 1fr\) 7\.4ch 5ch/u,

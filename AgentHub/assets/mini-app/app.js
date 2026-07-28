@@ -107,6 +107,13 @@ function setMobileTaskOpen(row, open) {
   if (previous) previous.open = open;
 }
 
+function syncCollapseTurnButtons() {
+  const hidden = surface === "mobile";
+  for (const button of journal.querySelectorAll("[data-work-log-collapse-turns]")) {
+    button.hidden = hidden;
+  }
+}
+
 function prepareMobileControls() {
   if (surface !== "mobile") return;
   const openDays = [...journal.querySelectorAll("details[data-work-log-day-section][open]")];
@@ -128,6 +135,7 @@ function syncSurface() {
   if (nextSurface === surface) return;
   surface = nextSurface;
   document.documentElement.dataset.surface = surface;
+  syncCollapseTurnButtons();
   if (journalRendered) prepareMobileControls();
 }
 
@@ -204,6 +212,7 @@ async function loadJournal({ force = false } = {}) {
         const state = journalRendered ? captureOpenState() : null;
         journal.innerHTML = payload.html;
         disableLocalLinks();
+        syncCollapseTurnButtons();
         prepareMobileControls();
         if (state) restoreOpenState(state);
         journalRendered = true;
@@ -243,7 +252,7 @@ function toggleMobileTask(cell) {
 
 journal.addEventListener("click", (event) => {
   const collapse = event.target.closest("[data-work-log-collapse-turns]");
-  if (collapse) {
+  if (collapse && surface !== "mobile") {
     event.preventDefault();
     event.stopPropagation();
     const row = collapse.closest("[data-work-log-row]");
