@@ -771,6 +771,70 @@ test("usage store backfills exact model and Fast tier before recalculating credi
   }
 });
 
+test("usage store backfills a verified image generation estimate and reprojects credits", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-image-estimate-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    const turnId = "turn-image";
+    await writeFile(ledgerFile, `${JSON.stringify({
+      version: 6,
+      turns: {
+        [`codex\u0000thread-image\u0000${turnId}`]: {
+          provider: "codex",
+          threadId: "thread-image",
+          turnId,
+          workLogId: WORK_ID,
+          projectRoot: root,
+          usageReported: true,
+          usage: { inputTokens: 100_000 },
+          prompt: "Сгенерируй навыком imagegen фон ночного леса",
+          model: "gpt-5.6-sol",
+          serviceTier: "default",
+          startedAt: "2026-07-25T00:00:00.000Z",
+          completedAt: "2026-07-25T00:03:00.000Z",
+          title: "Фон создан",
+        },
+      },
+    })}\n`, "utf8");
+    await writeFile(
+      workLogFile,
+      `<details open><summary><strong>25.07.2026</strong></summary><table><tbody>`
+        + `<tr><td>Task</td><td>Outcome</td><td><span data-usage-id="${WORK_ID}" hidden></span></td></tr>`
+        + "</tbody></table></details>",
+      "utf8",
+    );
+
+    const store = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    assert.deepEqual(await store.missingImageGenerationEstimateTurns(), [{
+      provider: "codex",
+      threadId: "thread-image",
+      turnId,
+      projectRoot: root,
+      startedAt: "2026-07-25T00:00:00.000Z",
+    }]);
+    assert.deepEqual(await store.synchronizeUsageEstimatesAndProject({
+      items: [{
+        provider: "codex",
+        threadId: "thread-image",
+        turnId,
+        estimatedCredits: 90,
+        estimateKind: "imagegen-default",
+      }],
+      projectRoot: root,
+      workLogFile,
+    }), {
+      updated: 1,
+      projected: true,
+    });
+    const projected = await readFile(workLogFile, "utf8");
+    assert.match(projected, /ImageGen: <span data-kilo-usage>90 cr<\/span>/);
+    assert.deepEqual(await store.missingImageGenerationEstimateTurns(), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("usage store restores exact turn texts from deferred notification state", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-text-restore-"));
   try {

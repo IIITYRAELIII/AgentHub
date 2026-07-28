@@ -198,6 +198,33 @@ test("rollout scan counts completed imagegen calls for the exact turn", () => {
   assert.equal(result.estimateKind, "imagegen-default");
 });
 
+test("rollout scan counts imagegen completed inside an exec orchestration call", () => {
+  const text = [
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
+    line(response("turn-1", "custom_tool_call", {
+      name: "exec",
+      call_id: "call-exec-1",
+      input: "await tools.image_gen__imagegen({ prompt: 'night forest' })",
+    })),
+    line({
+      type: "event_msg",
+      payload: {
+        type: "image_generation_end",
+        call_id: "exec-image-1",
+        status: "completed",
+      },
+    }),
+    line(response("turn-1")),
+    line(token(100, 80, 10, 4)),
+    line({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-1" } }),
+  ].join("\n");
+
+  const result = codexTurnUsageFromJsonl(text, "turn-1");
+  assert.equal(result.imageGenerationCount, 1);
+  assert.equal(result.estimatedCredits, 90);
+  assert.equal(result.estimateKind, "imagegen-default");
+});
+
 test("pricing metadata scan resolves each turn model and Fast tier in one pass", async () => {
   const text = [
     line({ type: "event_msg", payload: {

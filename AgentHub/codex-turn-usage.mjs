@@ -165,9 +165,14 @@ function createTurnAccumulator(turnId) {
     }
     if (entry?.type === "event_msg"
       && entry.payload?.type === "image_generation_end"
-      && entry.payload?.status === "completed"
-      && imageGenerationCalls.get(String(entry.payload?.call_id ?? "")) === requestedTurnId) {
-      completedImageGenerationCalls.add(String(entry.payload.call_id));
+      && entry.payload?.status === "completed") {
+      const callId = String(entry.payload?.call_id ?? "").trim();
+      const attributedTurnId = imageGenerationCalls.get(callId)
+        || latestResponseTurnId
+        || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+      if (callId && attributedTurnId === requestedTurnId) {
+        completedImageGenerationCalls.add(callId);
+      }
     }
     if (entry?.type === "response_item"
       && exactTurnId === requestedTurnId

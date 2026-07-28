@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { estimateMissingCodexUsage } from "./codex-usage-estimate.mjs";
+import {
+  estimateMissingCodexUsage,
+  looksLikeImageGenerationPrompt,
+} from "./codex-usage-estimate.mjs";
 import { isInheritedSubagentTurn } from "./codex-subagent-accounting.mjs";
 import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
@@ -1252,6 +1255,73 @@ export class WorkLogUsageStore {
           projectRoot: record.projectRoot,
           startedAt: record.startedAt,
         }));
+    });
+    this.#tail = operation;
+    return operation;
+  }
+
+  missingImageGenerationEstimateTurns({ provider = "codex" } = {}) {
+    const operation = this.#tail.catch(() => {}).then(async () => {
+      await this.#load();
+      const normalizedProvider = String(provider ?? "").trim().toLowerCase();
+      return Object.values(this.#ledger.turns)
+        .filter((record) => (
+          record.provider === normalizedProvider
+          && normalizeEstimatedCredits(record.estimatedCredits) === 0
+          && looksLikeImageGenerationPrompt(record.prompt)
+        ))
+        .map((record) => ({
+          provider: record.provider,
+          threadId: record.threadId,
+          turnId: record.turnId,
+          projectRoot: record.projectRoot,
+          startedAt: record.startedAt,
+        }));
+    });
+    this.#tail = operation;
+    return operation;
+  }
+
+  synchronizeUsageEstimatesAndProject({
+    items = [],
+    projectRoot = this.#defaultProjectRoot,
+    workLogFile,
+  }) {
+    const operation = this.#tail.catch(() => {}).then(async () => {
+      await this.#load();
+      let updated = 0;
+      for (const item of items) {
+        const provider = String(item?.provider ?? "codex").trim().toLowerCase();
+        const threadId = String(item?.threadId ?? "").trim();
+        const turnId = String(item?.turnId ?? "").trim();
+        const estimatedCredits = normalizeEstimatedCredits(item?.estimatedCredits);
+        if (!provider || !threadId || !turnId || !estimatedCredits) continue;
+        const record = this.#ledger.turns[workLogTurnKey({ provider, threadId, turnId })];
+        if (!record || !sameProjectRoot(record.projectRoot, projectRoot)) continue;
+        const estimateKind = String(item?.estimateKind ?? "").trim();
+        if (record.estimatedCredits === estimatedCredits && record.estimateKind === estimateKind) continue;
+        record.estimatedCredits = estimatedCredits;
+        record.estimateKind = estimateKind;
+        updated += 1;
+      }
+      if (!updated) return { updated: 0, projected: false, reason: "unchanged" };
+      await this.#save();
+      const logPath = path.resolve(workLogFile);
+      let current;
+      try {
+        current = await readFile(logPath, "utf8");
+      } catch (error) {
+        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
+        else throw error;
+      }
+      const selectedTurns = Object.fromEntries(
+        Object.entries(this.#ledger.turns).filter(([, record]) => (
+          sameProjectRoot(record.projectRoot, projectRoot)
+        )),
+      );
+      const projected = projectWorkLogUsage(current, selectedTurns);
+      if (projected !== current) await writeTextAtomic(logPath, projected);
+      return { updated, projected: projected !== current };
     });
     this.#tail = operation;
     return operation;

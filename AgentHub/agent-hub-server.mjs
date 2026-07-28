@@ -2141,8 +2141,36 @@ async function backfillWorkLogPricingMetadata(codexThreads) {
         workLogFile: path.join(project.path, "WORK_LOG.md"),
       });
     }
+    const missingImageEstimates = await workLogUsageStore
+      .missingImageGenerationEstimateTurns({ provider: "codex" });
+    const imageEstimates = [];
+    for (const item of missingImageEstimates) {
+      let rolloutPath = String(threadsById.get(item.threadId)?.path ?? "").trim();
+      if (!rolloutPath) {
+        rolloutPath = await findCodexRolloutPath(item.threadId, item.startedAt);
+      }
+      if (!rolloutPath) continue;
+      const usage = await readCodexTurnUsage(rolloutPath, item.turnId);
+      if (Number(usage?.estimatedCredits) > 0) {
+        imageEstimates.push({
+          ...item,
+          estimatedCredits: usage.estimatedCredits,
+          estimateKind: usage.estimateKind,
+        });
+      }
+    }
+    for (const project of config.projects) {
+      await workLogUsageStore.synchronizeUsageEstimatesAndProject({
+        items: imageEstimates,
+        projectRoot: project.path,
+        workLogFile: path.join(project.path, "WORK_LOG.md"),
+      });
+    }
     if (resolved.length) {
       console.log(`Backfilled credit pricing metadata for ${resolved.length} WORK_LOG turn(s)`);
+    }
+    if (imageEstimates.length) {
+      console.log(`Backfilled image generation estimates for ${imageEstimates.length} WORK_LOG turn(s)`);
     }
   } catch (error) {
     console.error("Cannot backfill WORK_LOG credit pricing metadata:", error.message);
