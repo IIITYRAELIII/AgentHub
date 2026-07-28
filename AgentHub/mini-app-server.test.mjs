@@ -177,8 +177,12 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     const script = await (await fetch(`${address.url}app.js`)).text();
     assert.match(script, /agent-hub-theme/u);
     assert.match(script, /document\.documentElement\.dataset\.theme/u);
-    assert.match(script, /mobileTelegramPlatforms\.has\(telegramPlatform\)/u);
-    assert.match(script, /window\.innerWidth < compactTelegramWidth/u);
+    assert.match(
+      script,
+      /telegramMode && mobileTelegramPlatforms\.has\(telegramPlatform\)/u,
+    );
+    assert.match(script, /window\.innerWidth < compactSurfaceWidth/u);
+    assert.doesNotMatch(script, /if \(!telegramMode\) return "desktop"/u);
     assert.match(script, /document\.documentElement\.dataset\.surface = surface/u);
     assert.match(script, /telegram\?\.expand\(\)/u);
     assert.doesNotMatch(script, /requestFullscreen/u);

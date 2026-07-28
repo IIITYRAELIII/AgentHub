@@ -1917,9 +1917,7 @@ html[data-theme="taiga"][data-surface="mobile"] .journal details[data-work-log-t
   background-color: rgba(6, 12, 14, 0.44);
 }
 
-/* resolveSurface() вне Telegram всегда возвращает desktop, поэтому узкая
-   боковая панель VS Code ловится только шириной вьюпорта; 720px — та же
-   граница, что и compactTelegramWidth в app.js */
+/* Узкие панели используют тот же компактный порог, что resolveSurface(). */
 @media (max-width: 720px) {
   html[data-theme="taiga"] body::after {
     background-position: center, center, 74% 28%;

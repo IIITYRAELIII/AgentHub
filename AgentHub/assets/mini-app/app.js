@@ -13,12 +13,11 @@ const telegramInitData = String(telegram?.initData ?? "");
 const telegramMode = Boolean(telegramInitData);
 const telegramPlatform = String(telegram?.platform ?? "").toLowerCase();
 const mobileTelegramPlatforms = new Set(["android", "ios"]);
-const compactTelegramWidth = 720;
+const compactSurfaceWidth = 720;
 
 function resolveSurface() {
-  if (!telegramMode) return "desktop";
-  if (mobileTelegramPlatforms.has(telegramPlatform)) return "mobile";
-  return window.innerWidth < compactTelegramWidth ? "mobile" : "desktop";
+  if (telegramMode && mobileTelegramPlatforms.has(telegramPlatform)) return "mobile";
+  return window.innerWidth < compactSurfaceWidth ? "mobile" : "desktop";
 }
 
 let surface = resolveSurface();
