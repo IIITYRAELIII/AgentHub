@@ -724,9 +724,10 @@ test("usage store backfills exact model and Fast tier before recalculating credi
           turnId,
           workLogId: WORK_ID,
           projectRoot: root,
-          usageReported: true,
-          usage: { inputTokens: 1_000_000 },
-          completedAt: "2026-07-25T00:00:00.000Z",
+           usageReported: true,
+           usage: { inputTokens: 1_000_000 },
+           startedAt: "2026-07-25T00:00:00.000Z",
+           completedAt: "2026-07-25T00:00:00.000Z",
           title: "Тариф восстановлен",
         },
       },
@@ -745,6 +746,7 @@ test("usage store backfills exact model and Fast tier before recalculating credi
       threadId: "thread-pricing",
       turnId,
       projectRoot: root,
+      startedAt: "2026-07-25T00:00:00.000Z",
     }]);
     assert.deepEqual(await store.synchronizePricingMetadataAndProject({
       items: [{

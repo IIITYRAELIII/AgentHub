@@ -1250,6 +1250,7 @@ export class WorkLogUsageStore {
           threadId: record.threadId,
           turnId: record.turnId,
           projectRoot: record.projectRoot,
+          startedAt: record.startedAt,
         }));
     });
     this.#tail = operation;
