@@ -72,6 +72,42 @@ test("QuickTunnelController reports an early cloudflared exit", async () => {
   await assert.rejects(controller.start(), /exited before startup/u);
 });
 
+test("QuickTunnelController starts a named Cloudflare Tunnel from a token file", async () => {
+  const child = fakeChild();
+  const calls = [];
+  const published = [];
+  const controller = new QuickTunnelController({
+    executable: "cloudflared.exe",
+    mode: "named",
+    publicUrl: "https://hub.example.test",
+    tokenFile: "C:\\AgentHub\\cloudflare-tunnel.token",
+    localUrl: "http://127.0.0.1:8788",
+    spawnImpl: (...args) => {
+      calls.push(args);
+      queueMicrotask(() => child.stderr.write("INF Registered tunnel connection\n"));
+      return child;
+    },
+    fetchImpl: async (url) => ({
+      ok: url === "https://hub.example.test/health",
+      status: 200,
+    }),
+    onUrl: (url) => published.push(url),
+  });
+
+  assert.equal(await controller.start(), "https://hub.example.test");
+  assert.deepEqual(calls[0][1], [
+    "tunnel",
+    "--no-autoupdate",
+    "--protocol",
+    "http2",
+    "run",
+    "--token-file",
+    "C:\\AgentHub\\cloudflare-tunnel.token",
+  ]);
+  assert.deepEqual(published, ["https://hub.example.test"]);
+  await controller.close();
+});
+
 test("QuickTunnelController discovers a Pinggy URL through its local debugger API", async () => {
   const child = fakeChild();
   const requests = [];

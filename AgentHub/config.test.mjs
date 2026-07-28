@@ -54,10 +54,13 @@ test("Mini App pilot is loopback-only and enabled by default", () => {
     quickTunnel: {
       enabled: false,
       provider: "cloudflare",
+      mode: "quick",
       executable: "cloudflared",
       menuText: "Журнал",
       publicPort: 8788,
       controlPort: 4300,
+      publicUrl: null,
+      tokenFile: null,
     },
   });
   assert.deepEqual(miniAppSettings({
@@ -67,10 +70,13 @@ test("Mini App pilot is loopback-only and enabled by default", () => {
     quickTunnel: {
       enabled: true,
       provider: "pinggy",
+      mode: "quick",
       executable: "ssh",
       menuText: "Работы",
       publicPort: 9001,
       controlPort: 4301,
+      publicUrl: null,
+      tokenFile: null,
     },
   }), {
     enabled: false,
@@ -79,10 +85,13 @@ test("Mini App pilot is loopback-only and enabled by default", () => {
     quickTunnel: {
       enabled: true,
       provider: "pinggy",
+      mode: "quick",
       executable: "ssh",
       menuText: "Работы",
       publicPort: 9001,
       controlPort: 4301,
+      publicUrl: null,
+      tokenFile: null,
     },
   });
   assert.throws(() => miniAppSettings({ host: "0.0.0.0" }), /loopback/);
@@ -91,6 +100,47 @@ test("Mini App pilot is loopback-only and enabled by default", () => {
   assert.throws(() => miniAppSettings({ quickTunnel: { menuText: "" } }), /1-64/);
   assert.throws(() => miniAppSettings({ quickTunnel: { provider: "unknown" } }), /cloudflare or pinggy/);
   assert.throws(() => miniAppSettings({ quickTunnel: { publicPort: 8787 } }), /different valid port/);
+});
+
+test("Mini App named Cloudflare Tunnel resolves its private token file", () => {
+  assert.deepEqual(miniAppSettings({
+    quickTunnel: {
+      enabled: true,
+      provider: "cloudflare",
+      mode: "named",
+      publicUrl: "https://hub.example.test/",
+      tokenFile: "cloudflare-tunnel.token",
+    },
+  }, {
+    configDirectory: "C:\\AgentHub",
+  }).quickTunnel, {
+    enabled: true,
+    provider: "cloudflare",
+    mode: "named",
+    executable: "cloudflared",
+    menuText: "Журнал",
+    publicPort: 8788,
+    controlPort: 4300,
+    publicUrl: "https://hub.example.test",
+    tokenFile: path.resolve("C:\\AgentHub", "cloudflare-tunnel.token"),
+  });
+  assert.throws(
+    () => miniAppSettings({ quickTunnel: { mode: "named", provider: "pinggy" } }),
+    /requires provider cloudflare/u,
+  );
+  assert.throws(
+    () => miniAppSettings({ quickTunnel: { mode: "named", publicUrl: "http://hub.example.test" } }),
+    /absolute HTTPS URL|HTTPS origin/u,
+  );
+  assert.throws(
+    () => miniAppSettings({
+      quickTunnel: {
+        mode: "named",
+        publicUrl: "https://hub.example.test",
+      },
+    }),
+    /tokenFile is required/u,
+  );
 });
 
 test("filesystem aliases resolve to the configured canonical project path", async () => {

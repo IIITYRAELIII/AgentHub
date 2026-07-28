@@ -18,6 +18,7 @@
     "quickTunnel": {
       "enabled": false,
       "provider": "pinggy",
+      "mode": "quick",
       "executable": "ssh",
       "menuText": "Журнал",
       "publicPort": 8788,

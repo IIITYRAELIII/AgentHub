@@ -12,12 +12,15 @@ export class QuickTunnelController {
   #controlPort;
   #executable;
   #localUrl;
+  #mode;
   #onUrl;
   #provider;
+  #publicUrl;
   #fetch;
   #spawn;
   #startPromise = null;
   #timeoutMs;
+  #tokenFile;
   #url = null;
 
   constructor({
@@ -25,6 +28,9 @@ export class QuickTunnelController {
     localUrl,
     onUrl,
     provider = "cloudflare",
+    mode = "quick",
+    publicUrl = null,
+    tokenFile = null,
     controlPort = 4300,
     spawnImpl = spawn,
     fetchImpl = fetch,
@@ -34,6 +40,9 @@ export class QuickTunnelController {
     this.#localUrl = String(localUrl);
     this.#onUrl = onUrl;
     this.#provider = provider;
+    this.#mode = mode;
+    this.#publicUrl = publicUrl;
+    this.#tokenFile = tokenFile;
     this.#controlPort = controlPort;
     this.#spawn = spawnImpl;
     this.#fetch = fetchImpl;
@@ -53,7 +62,7 @@ export class QuickTunnelController {
       }
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    throw new Error(`Quick Tunnel health check failed: ${lastStatus}`);
+    throw new Error(`Tunnel health check failed: ${lastStatus}`);
   }
 
   async #waitForPinggyUrl() {
@@ -77,6 +86,17 @@ export class QuickTunnelController {
   }
 
   #spawnArguments() {
+    if (this.#mode === "named") {
+      return [
+        "tunnel",
+        "--no-autoupdate",
+        "--protocol",
+        "http2",
+        "run",
+        "--token-file",
+        this.#tokenFile,
+      ];
+    }
     if (this.#provider === "pinggy") {
       const origin = new URL(this.#localUrl);
       return [
@@ -121,6 +141,21 @@ export class QuickTunnelController {
       timeout.unref?.();
       const consume = (chunk) => {
         output = `${output}${String(chunk)}`.slice(-16_384);
+        if (this.#mode === "named" && !settled && !publishing) {
+          publishing = true;
+          clearTimeout(timeout);
+          this.#waitUntilReachable(this.#publicUrl)
+            .then(() => this.#onUrl?.(this.#publicUrl))
+            .then(() => {
+              settled = true;
+              this.#url = this.#publicUrl;
+              resolve(this.#publicUrl);
+            }, (error) => {
+              settled = true;
+              reject(error);
+            });
+          return;
+        }
         const url = findQuickTunnelUrl(output);
         if (!url || settled || publishing) return;
         publishing = true;
@@ -138,7 +173,7 @@ export class QuickTunnelController {
       };
       child.stdout?.on("data", consume);
       child.stderr?.on("data", consume);
-      if (this.#provider === "pinggy") {
+      if (this.#provider === "pinggy" && this.#mode === "quick") {
         this.#waitForPinggyUrl().then((url) => {
           if (!settled && !publishing) {
             output += ` ${url}`;

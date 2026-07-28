@@ -99,7 +99,32 @@ Agent Hub поднимает локальный адаптивный интер�
 
 Параметры `miniApp.enabled`, `miniApp.host` и `miniApp.port` задаются в `config.json`. Для локального сервера разрешены только loopback-адреса `127.0.0.1`, `localhost` и `::1`.
 
-Для временного Telegram-пилота `miniApp.quickTunnel.enabled` запускает HTTPS-туннель и обновляет через `setChatMenuButton` общую кнопку меню бота и явную кнопку каждого чата из `allowedUserIds`. Поддержаны `provider: "pinggy"` через системный OpenSSH на порту 443 и `provider: "cloudflare"` через внешний `cloudflared`. Туннель направляется на отдельный локальный listener, который всегда требует корректную подпись Telegram Mini App и пользователя из `allowedUserIds`; обычный локальный просмотр на основном порту остаётся доступным без Telegram. Внутри Telegram журнал обновляется опросом раз в пять секунд. Бесплатные адреса меняются после перезапуска и не имеют гарантии доступности; Hub автоматически записывает новый адрес в кнопку при каждом успешном запуске.
+Параметр `miniApp.quickTunnel.enabled` запускает HTTPS-туннель и обновляет через `setChatMenuButton` общую кнопку меню бота и явную кнопку каждого чата из `allowedUserIds`. В режиме `mode: "quick"` поддержаны временные адреса Pinggy через системный OpenSSH на порту 443 и Cloudflare Quick Tunnel через внешний `cloudflared`. Бесплатные адреса меняются после перезапуска; Hub автоматически записывает новый адрес в кнопку при каждом успешном запуске.
+
+Для постоянного Cloudflare Named Tunnel укажите `provider: "cloudflare"`, `mode: "named"`, стабильный `publicUrl` и путь `tokenFile`, относительный к внешнему `config.json`. Файл должен содержать только tunnel token и не должен попадать в Git:
+
+```json
+{
+  "miniApp": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8787,
+    "quickTunnel": {
+      "enabled": true,
+      "provider": "cloudflare",
+      "mode": "named",
+      "executable": "cloudflared",
+      "publicUrl": "https://hub.example.com",
+      "tokenFile": "cloudflare-tunnel.token",
+      "menuText": "Журнал",
+      "publicPort": 8788,
+      "controlPort": 4300
+    }
+  }
+}
+```
+
+Маршрут опубликованного hostname в Cloudflare должен вести на `http://127.0.0.1:<publicPort>`. Туннель в обоих режимах направляется на отдельный локальный listener, который требует корректную подпись Telegram Mini App и пользователя из `allowedUserIds`; обычный локальный просмотр на основном порту остаётся доступным без Telegram. Внутри Telegram журнал обновляется опросом раз в пять секунд.
 
 Если требуется осознанно привязать сообщение именно к задаче, выбранной сейчас в Telegram-боте, используйте отдельный параметр:
 

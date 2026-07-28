@@ -49,7 +49,7 @@ function stringArray(value, name) {
   return value.map((item) => item.trim()).filter(Boolean);
 }
 
-export function miniAppSettings(value) {
+export function miniAppSettings(value, { configDirectory = process.cwd() } = {}) {
   const raw = value ?? {};
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("miniApp must be an object");
@@ -67,6 +67,13 @@ export function miniAppSettings(value) {
   const tunnelProvider = String(quickTunnelRaw.provider ?? "cloudflare").trim().toLowerCase();
   if (!["cloudflare", "pinggy"].includes(tunnelProvider)) {
     throw new Error("miniApp.quickTunnel.provider must be cloudflare or pinggy");
+  }
+  const tunnelMode = String(quickTunnelRaw.mode ?? "quick").trim().toLowerCase();
+  if (!["quick", "named"].includes(tunnelMode)) {
+    throw new Error("miniApp.quickTunnel.mode must be quick or named");
+  }
+  if (tunnelMode === "named" && tunnelProvider !== "cloudflare") {
+    throw new Error("miniApp.quickTunnel.mode named requires provider cloudflare");
   }
   const executable = String(
     process.env.CLOUDFLARED_EXECUTABLE
@@ -94,6 +101,33 @@ export function miniAppSettings(value) {
   if (!menuText || menuText.length > 64) {
     throw new Error("miniApp.quickTunnel.menuText must contain 1-64 characters");
   }
+  let publicUrl = null;
+  let tokenFile = null;
+  if (tunnelMode === "named") {
+    const rawPublicUrl = String(quickTunnelRaw.publicUrl ?? "").trim().replace(/\/+$/u, "");
+    let parsedPublicUrl;
+    try {
+      parsedPublicUrl = new URL(rawPublicUrl);
+    } catch {
+      throw new Error("miniApp.quickTunnel.publicUrl must be an absolute HTTPS URL");
+    }
+    if (
+      parsedPublicUrl.protocol !== "https:"
+      || parsedPublicUrl.username
+      || parsedPublicUrl.password
+      || parsedPublicUrl.search
+      || parsedPublicUrl.hash
+      || parsedPublicUrl.pathname !== "/"
+    ) {
+      throw new Error("miniApp.quickTunnel.publicUrl must be an HTTPS origin without credentials, path, query or hash");
+    }
+    publicUrl = rawPublicUrl;
+    const rawTokenFile = String(quickTunnelRaw.tokenFile ?? "").trim();
+    if (!rawTokenFile) {
+      throw new Error("miniApp.quickTunnel.tokenFile is required in named mode");
+    }
+    tokenFile = path.resolve(configDirectory, rawTokenFile);
+  }
   return {
     enabled: raw.enabled !== false,
     host,
@@ -101,10 +135,13 @@ export function miniAppSettings(value) {
     quickTunnel: {
       enabled: quickTunnelRaw.enabled === true,
       provider: tunnelProvider,
+      mode: tunnelMode,
       executable,
       menuText,
       publicPort,
       controlPort,
+      publicUrl,
+      tokenFile,
     },
   };
 }
@@ -370,7 +407,7 @@ export async function loadConfig() {
     showProjectButton: raw.showProjectButton !== false,
     showTaskProject: raw.showTaskProject !== false,
     guardConcurrentRepositoryWrites: repositoryWriteGuardEnabled(raw),
-    miniApp: miniAppSettings(raw.miniApp),
+    miniApp: miniAppSettings(raw.miniApp, { configDirectory }),
     provider,
     telegramApiBaseUrl: httpBaseUrl(
       process.env.TELEGRAM_API_BASE_URL ?? raw.telegramApiBaseUrl ?? "https://api.telegram.org",
