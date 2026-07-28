@@ -1801,6 +1801,111 @@ html[data-surface="mobile"] .journal span[data-work-log-turn-meta] {
   gap: 0.25rem;
 }
 
+/* Мобильный профиль: сводки находятся в заголовках, содержимое раскрывается
+   самими заголовками без промежуточных кнопок. */
+html[data-surface="mobile"] .journal summary[data-work-log-day] {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+html[data-surface="mobile"] .journal span[data-day-usage-table] {
+  display: contents;
+}
+
+html[data-surface="mobile"] .journal span[data-day-usage] {
+  cursor: pointer;
+  grid-column: 3;
+  justify-self: end;
+}
+
+html[data-surface="mobile"] .journal [data-usage-label] {
+  display: none;
+}
+
+html[data-surface="mobile"] .journal span[data-day-usage-breakdown] {
+  display: none;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0.35rem 0 0;
+  width: 100%;
+}
+
+html[data-surface="mobile"]
+  .journal
+  span[data-day-usage-table][data-mobile-expanded]
+  > span[data-day-usage-breakdown] {
+  display: grid;
+}
+
+html[data-surface="mobile"] .journal span[data-day-usage-part] {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(3.15rem, 1fr) 7.4ch 5ch;
+  justify-content: stretch;
+  width: 100%;
+}
+
+html[data-surface="mobile"] .journal span[data-day-usage-part] > span {
+  justify-self: end;
+  text-align: right;
+}
+
+html[data-surface="mobile"] .journal div[data-work-log-task-cell] {
+  align-items: stretch;
+  cursor: pointer;
+  display: grid;
+  gap: 0.32rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+html[data-surface="mobile"]
+  .journal
+  div[data-work-log-task-cell]
+  > div[data-work-log-task-content] {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+html[data-surface="mobile"] .journal div[data-work-log-task-cell] > div[data-work-log-usage],
+html[data-surface="mobile"] .journal details[data-task-usage-details] {
+  display: contents;
+}
+
+html[data-surface="mobile"] .journal summary[data-task-usage] {
+  align-self: stretch;
+  grid-column: 2;
+  grid-row: 1;
+  grid-template-columns: 8.6ch 5ch;
+  margin: 0;
+  width: auto;
+}
+
+html[data-surface="mobile"] .journal span[data-task-usage-breakdown] {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  width: 100%;
+}
+
+html[data-surface="mobile"] .journal div[data-work-log-turn-list] {
+  display: none;
+}
+
+html[data-surface="mobile"]
+  .journal
+  div[data-work-log-row][data-mobile-open]
+  > div[data-work-log-turn-list] {
+  display: block;
+}
+
+html[data-surface="mobile"] .journal details[data-work-log-previous-turns] > summary,
+html[data-surface="mobile"] .journal div[data-work-log-no-previous-turns] {
+  display: none;
+}
+
+html[data-surface="mobile"] .journal div[data-work-log-previous-turn-list] {
+  padding-top: 0;
+}
+
 @media (max-width: 460px) {
   html[data-surface="mobile"] .stamp {
     display: none;

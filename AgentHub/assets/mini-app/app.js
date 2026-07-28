@@ -77,7 +77,38 @@ function captureOpenState() {
     turns: [...journal.querySelectorAll("details[data-work-log-turn-details][open]")]
       .map((item) => item.closest("[data-work-log-turn-id]")?.dataset.workLogTurnId)
       .filter(Boolean),
+    mobileDays: [...journal.querySelectorAll("[data-day-usage-table][data-mobile-expanded]")]
+      .map((item) => item.closest("details[data-work-log-day-section]")
+        ?.querySelector("summary[data-work-log-day] strong")?.textContent.trim())
+      .filter(Boolean),
+    mobileTasks: [...journal.querySelectorAll("[data-work-log-row][data-mobile-open]")]
+      .map((item) => ({
+        provider: item.dataset.workLogProvider,
+        threadId: item.dataset.workLogThreadId,
+      }))
+      .filter((item) => item.provider && item.threadId),
   };
+}
+
+function setMobileTaskOpen(row, open) {
+  row.toggleAttribute("data-mobile-open", open);
+  row.querySelector("[data-work-log-task-content]")?.setAttribute("aria-expanded", String(open));
+  const previous = row.querySelector("details[data-work-log-previous-turns]");
+  if (previous) previous.open = open;
+}
+
+function prepareMobileControls() {
+  if (surface !== "mobile") return;
+  for (const total of journal.querySelectorAll("[data-day-usage]")) {
+    total.setAttribute("role", "button");
+    total.setAttribute("tabindex", "0");
+    total.setAttribute("aria-expanded", "false");
+  }
+  for (const title of journal.querySelectorAll("[data-work-log-task-content]")) {
+    title.setAttribute("role", "button");
+    title.setAttribute("tabindex", "0");
+    title.setAttribute("aria-expanded", "false");
+  }
 }
 
 function restoreOpenState(state) {
@@ -102,6 +133,23 @@ function restoreOpenState(state) {
     journal.querySelector(
       `[data-work-log-turn-id="${selectorValue(turnId)}"] details[data-work-log-turn-details]`,
     )?.setAttribute("open", "");
+  }
+  for (const day of state.mobileDays ?? []) {
+    for (const details of journal.querySelectorAll("details[data-work-log-day-section]")) {
+      if (details.querySelector("summary[data-work-log-day] strong")?.textContent.trim() !== day) {
+        continue;
+      }
+      const table = details.querySelector("[data-day-usage-table]");
+      table?.setAttribute("data-mobile-expanded", "");
+      table?.querySelector("[data-day-usage]")?.setAttribute("aria-expanded", "true");
+    }
+  }
+  for (const task of state.mobileTasks ?? []) {
+    const row = journal.querySelector(
+      `[data-work-log-provider="${selectorValue(task.provider)}"]`
+      + `[data-work-log-thread-id="${selectorValue(task.threadId)}"]`,
+    );
+    if (row) setMobileTaskOpen(row, true);
   }
 }
 
@@ -128,6 +176,7 @@ async function loadJournal({ force = false } = {}) {
         const state = captureOpenState();
         journal.innerHTML = payload.html;
         disableLocalLinks();
+        prepareMobileControls();
         restoreOpenState(state);
         currentVersion = payload.version;
       }
@@ -148,6 +197,56 @@ async function loadJournal({ force = false } = {}) {
 }
 
 refreshButton.addEventListener("click", () => void loadJournal({ force: true }));
+
+function toggleMobileDayUsage(total) {
+  const table = total.closest("[data-day-usage-table]");
+  if (!table) return;
+  const open = !table.hasAttribute("data-mobile-expanded");
+  table.toggleAttribute("data-mobile-expanded", open);
+  total.setAttribute("aria-expanded", String(open));
+}
+
+function toggleMobileTask(cell) {
+  const row = cell.closest("[data-work-log-row]");
+  if (!row) return;
+  setMobileTaskOpen(row, !row.hasAttribute("data-mobile-open"));
+}
+
+journal.addEventListener("click", (event) => {
+  if (surface !== "mobile") return;
+  const total = event.target.closest("[data-day-usage]");
+  if (total) {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleMobileDayUsage(total);
+    return;
+  }
+  if (event.target.closest("[data-day-usage-breakdown]")) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  if (event.target.closest("[data-task-usage-details]")) return;
+  const cell = event.target.closest("[data-work-log-task-cell]");
+  if (!cell) return;
+  event.preventDefault();
+  toggleMobileTask(cell);
+});
+
+journal.addEventListener("keydown", (event) => {
+  if (surface !== "mobile" || !["Enter", " "].includes(event.key)) return;
+  const total = event.target.closest("[data-day-usage]");
+  if (total) {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleMobileDayUsage(total);
+    return;
+  }
+  const title = event.target.closest("[data-work-log-task-content]");
+  if (!title) return;
+  event.preventDefault();
+  toggleMobileTask(title);
+});
 
 if (telegramMode) {
   setConnection("online", "Автообновление");

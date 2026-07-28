@@ -124,7 +124,10 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.match(projected, /<strong>Запрос:<\/strong> Короткий вопрос/);
   assert.doesNotMatch(projected, /Response annotations|response-annotations|Старый ответ/);
   assert.doesNotMatch(projected, /data-work-log-legacy-files/);
-  assert.match(projected, /data-day-usage>Итого <span data-kilo-usage>0 кТЭ<\/span>/);
+  assert.match(
+    projected,
+    /data-day-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span>/,
+  );
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
     projected,
@@ -136,11 +139,11 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
     /<br>/,
   );
   assert.equal((projected.match(/data-day-usage-part/g) ?? []).length, 4);
-  assert.match(projected, /Task A[\s\S]*?Итого <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(50%\)<\/span>/);
-  assert.match(projected, /Task C[\s\S]*?Итого <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(50%\)<\/span>/);
+  assert.match(projected, /Task A[\s\S]*?<span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(50%\)<\/span>/);
+  assert.match(projected, /Task C[\s\S]*?<span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(50%\)<\/span>/);
   assert.match(
     projected,
-    /<details data-task-usage-details><summary data-task-usage>Итого <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(50%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
+    /<details data-task-usage-details><summary data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(50%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
   );
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
@@ -430,7 +433,7 @@ test("subagent usage is summed into its root task and shown as child turns", () 
   });
 
   assert.match(projected, /data-work-log-thread-id="root"/);
-  assert.match(projected, /Итого <span data-kilo-usage>175 кТЭ<\/span>/);
+  assert.match(projected, /<span data-usage-label>Итого<\/span> <span data-kilo-usage>175 кТЭ<\/span>/);
   assert.equal((projected.match(/data-work-log-turn-id=/g) ?? []).length, 3);
   assert.match(projected, /Основной результат/);
   assert.match(projected, /Субагент · Скрытый результат субагента/);
@@ -481,7 +484,7 @@ test("usage store quarantines inherited parent turns copied into a subagent roll
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /Итого <span data-kilo-usage>50 кТЭ<\/span>/);
+    assert.match(projected, /<span data-usage-label>Итого<\/span> <span data-kilo-usage>50 кТЭ<\/span>/);
     assert.match(projected, /Субагент · Real child turn/);
     assert.doesNotMatch(projected, /Copied parent turn/);
     const persisted = JSON.parse(await readFile(ledgerFile, "utf8"));
@@ -533,11 +536,14 @@ test("usage store projects each turn into its own placeholder and deduplicates r
       text: "Второй результат",
     });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /data-day-usage>Итого <span data-kilo-usage>0 кТЭ<\/span>/);
+    assert.match(
+      projected,
+      /data-day-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span>/,
+    );
     assert.equal((projected.match(/data-day-usage-breakdown/g) ?? []).length, 1);
     assert.match(
       projected,
-      /<details data-task-usage-details><summary data-task-usage>Итого <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(100%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
+      /<details data-task-usage-details><summary data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(100%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
     );
     assert.match(projected, new RegExp(`data-usage-id="${WORK_ID}" hidden>`));
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));
@@ -599,7 +605,7 @@ test("a fresh usage store reprojects an existing work log with its persisted led
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /data-task-usage>Итого <span data-mega-usage>1,8 МТЭ<\/span> <span data-usage-percent>\(100%\)<\/span>/);
+    assert.match(projected, /data-task-usage><span data-usage-label>Итого<\/span> <span data-mega-usage>1,8 МТЭ<\/span> <span data-usage-percent>\(100%\)<\/span>/);
     assert.match(projected, /data-work-log-turn-body>Сохранённый результат<\/div>/);
     assert.match(projected, /<strong>Запрос:<\/strong> Сохранённый вопрос/);
     assert.doesNotMatch(projected, /response-annotations|Старый ответ/);
@@ -935,7 +941,7 @@ test("automatic usage creates an explicit fallback row for an ambiguous thread",
     assert.match(projected, /data-work-log-thread-id="thread-1"/);
     assert.match(projected, /Codex - Без названия/);
     assert.doesNotMatch(projected, /data-usage-id=/);
-    assert.match(projected, /data-task-usage>Итого <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(100%\)<\/span>/);
+    assert.match(projected, /data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(100%\)<\/span>/);
     assert.match(projected, /13:45 — <span data-kilo-usage>0 кТЭ<\/span>/);
     assert.match(projected, /Автоматически учтённый ход/);
   } finally {

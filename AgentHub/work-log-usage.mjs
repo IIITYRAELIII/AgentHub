@@ -149,10 +149,17 @@ function highlightUsageUnits(text) {
   );
 }
 
+function markUsageLabel(text) {
+  return String(text).replace(
+    /^Итого\s+/u,
+    "<span data-usage-label>Итого</span> ",
+  );
+}
+
 function formatTaskUsageDetails(usage, dayUnits) {
   const [total, ...breakdown] = formatTaskShare(usage, dayUnits).split("<br>");
   return "<details data-task-usage-details>"
-    + `<summary data-task-usage>${highlightUsageUnits(alignUsagePercent(total))}</summary>`
+    + `<summary data-task-usage>${highlightUsageUnits(alignUsagePercent(markUsageLabel(total)))}</summary>`
     + `<span data-task-usage-breakdown>${breakdown
       .map((part) => `<span data-task-usage-part>${highlightUsageUnits(alignUsagePercent(part))}</span>`)
       .join("")}</span></details>\n`;
@@ -859,7 +866,9 @@ function projectDaySection(section, date, turns, recordsById) {
   });
   const summary = dayUnits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
-      + `<span data-day-usage>Итого ${highlightUsageUnits(formatConditionalUnits(dayUnits))}</span>`
+      + `<span data-day-usage><span data-usage-label>Итого</span> ${
+        highlightUsageUnits(formatConditionalUnits(dayUnits))
+      }</span>`
       + `${formatDayUsageBreakdown(dayUsage)}</span></summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
   const open = /^<details\b[^>]*\bopen\b/i.test(section);
