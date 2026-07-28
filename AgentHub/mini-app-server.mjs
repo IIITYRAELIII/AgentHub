@@ -10,17 +10,19 @@ const CONTENT_TYPES = new Map([
   ["/styles.css", "text/css; charset=utf-8"],
   ["/work-log.css", "text/css; charset=utf-8"],
   ["/blackhole-blue.png", "image/png"],
+  ["/rainforest-night.png", "image/png"],
 ]);
 const STATIC_FILES = new Map([
   ["/", "index.html"],
   ["/app.js", "app.js"],
   ["/styles.css", "styles.css"],
   ["/blackhole-blue.png", "blackhole-blue.png"],
+  ["/rainforest-night.png", "rainforest-night.png"],
 ]);
 /* Разметка и стили обязаны быть свежими, поэтому у них no-store. Фон темы —
    неизменяемый файл в несколько мегабайт: без долгого кэша он выкачивался бы
    заново при каждом открытии, что заметно через Telegram-туннель. */
-const IMMUTABLE_FILES = new Set(["/blackhole-blue.png"]);
+const IMMUTABLE_FILES = new Set(["/blackhole-blue.png", "/rainforest-night.png"]);
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const CHANGE_DEBOUNCE_MS = 75;
 const TELEGRAM_AUTH_MAX_AGE_SECONDS = 86_400;

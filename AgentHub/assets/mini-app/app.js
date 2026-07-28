@@ -29,6 +29,7 @@ const themes = {
   pulsar: "#03151a",
   gothic: "#060708",
   blackhole: "#000000",
+  taiga: "#070c12",
 };
 
 function savedTheme() {
