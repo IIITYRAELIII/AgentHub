@@ -136,10 +136,11 @@ npm run worker:build
 npx wrangler login
 npx wrangler secret put TELEGRAM_BOT_TOKEN --config cloudflare-worker/wrangler.jsonc
 npx wrangler secret put SYNC_SECRET --config cloudflare-worker/wrangler.jsonc
+npx wrangler secret put ALLOWED_USER_IDS --config cloudflare-worker/wrangler.jsonc
 npm run worker:deploy
 ```
 
-В `cloudflare-worker/wrangler.jsonc` задаются Custom Domain и `ALLOWED_USER_IDS`. Локальный секрет хранится вне Git рядом с внешним `config.json`; Worker включается так:
+В `cloudflare-worker/wrangler.jsonc` задаётся публичный маршрут Worker. Значения `TELEGRAM_BOT_TOKEN`, `SYNC_SECRET` и `ALLOWED_USER_IDS` хранятся как Cloudflare secrets и не попадают в Git. Локальная копия `SYNC_SECRET` хранится рядом с внешним `config.json`; Worker включается так:
 
 ```json
 {

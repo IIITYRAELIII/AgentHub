@@ -24,8 +24,8 @@
   ],
   "routes": [
     {
-      "pattern": "hub.darksanctuary.ru",
-      "custom_domain": true
+      "pattern": "hub.darksanctuary.ru/*",
+      "zone_name": "darksanctuary.ru"
     }
   ]
 }
