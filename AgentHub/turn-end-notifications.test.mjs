@@ -48,13 +48,17 @@ function completion(overrides = {}) {
 test("turn-end registry binds a deferred message to the completed turn", () => {
   const registry = new TurnEndNotificationRegistry();
   registry.registerMessage(message({ turnId: "turn-1", taskTitle: "Новое название" }));
-  const ready = registry.recordCompletion(completion({ taskTitle: "Старое название" }));
+  const ready = registry.recordCompletion(completion({
+    taskTitle: "Старое название",
+    diff: "diff --git a/a.mjs b/a.mjs\n+const ready = true;",
+  }));
   assert.equal(ready.message.text, "Готово");
   assert.equal(ready.message.title, "Краткий итог");
   assert.equal(ready.message.workLogId, "123e4567-e89b-42d3-a456-426614174000");
   assert.equal(ready.taskTitle, "Новое название");
   assert.equal(ready.usage.inputTokens, 10);
   assert.equal(ready.prompt, "Сделай задачу");
+  assert.match(ready.diff, /const ready = true/u);
 });
 
 test("late deferred message refreshes the completed task title", () => {

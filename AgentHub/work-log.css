@@ -321,6 +321,72 @@ div[data-work-log-turn-files] {
   margin-top: 0.45em;
 }
 
+details[data-work-log-turn-diff] {
+  margin-top: 0.55em;
+}
+
+details[data-work-log-turn-diff] > summary {
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  border-radius: 0.35em;
+  cursor: pointer;
+  display: inline-block;
+  list-style: none;
+  padding: 0.2em 0.55em;
+}
+
+details[data-work-log-turn-diff] > summary::-webkit-details-marker {
+  display: none;
+}
+
+details[data-work-log-turn-diff] > summary::before {
+  content: "▸ ";
+}
+
+details[data-work-log-turn-diff][open] > summary::before {
+  content: "▾ ";
+}
+
+details[data-work-log-turn-diff] pre {
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  border-radius: 0.35em;
+  box-sizing: border-box;
+  font-size: 0.82em;
+  line-height: 1.45;
+  margin: 0.45em 0 0;
+  max-height: 34em;
+  overflow: auto;
+  padding: 0.55em 0;
+  white-space: pre;
+  width: 100%;
+}
+
+span[data-work-log-diff-line] {
+  display: block;
+  min-height: 1.45em;
+  padding: 0 0.65em;
+}
+
+span[data-work-log-diff-line="file"] {
+  color: #8ecbff;
+  font-weight: 600;
+}
+
+span[data-work-log-diff-line="hunk"] {
+  background: rgba(49, 131, 189, 0.18);
+  color: #9cdcfe;
+}
+
+span[data-work-log-diff-line="added"] {
+  background: rgba(46, 160, 67, 0.18);
+  color: #b7f5c5;
+}
+
+span[data-work-log-diff-line="removed"] {
+  background: rgba(248, 81, 73, 0.16);
+  color: #ffc1bd;
+}
+
 div[data-work-log-legacy-outcome] {
   border: 1px solid rgba(127, 127, 127, 0.45);
   padding: 0.4em 0.45em;

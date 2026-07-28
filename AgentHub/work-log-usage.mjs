@@ -119,6 +119,7 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         changedFiles: Array.isArray(record?.changedFiles)
           ? record.changedFiles.map((file) => String(file).trim()).filter(Boolean)
           : [],
+        diff: String(record?.diff ?? ""),
         startedAt: String(record?.startedAt ?? ""),
         completedAt: String(record?.completedAt ?? ""),
         status,
@@ -271,6 +272,28 @@ function changedFileLinks(files) {
     .join("; ");
 }
 
+function diffLineKind(line) {
+  if (/^diff --git /u.test(line) || /^(?:---|\+\+\+) /u.test(line)) return "file";
+  if (/^@@/u.test(line)) return "hunk";
+  if (/^\+/u.test(line)) return "added";
+  if (/^-/u.test(line)) return "removed";
+  return "context";
+}
+
+function formatTurnDiff(value) {
+  const diff = String(value ?? "").trimEnd();
+  if (!diff) return "";
+  const lines = diff.split(/\r?\n/u).map((line) => (
+    `<span data-work-log-diff-line="${diffLineKind(line)}">${
+      escapeHtmlText(line) || " "
+    }</span>`
+  )).join("");
+  return "<details data-work-log-turn-diff>"
+    + "<summary>Изменения</summary>"
+    + `<pre><code>${lines}</code></pre>`
+    + "</details>";
+}
+
 function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
   const recordUnits = recordConditionalUnits(record);
   const units = record?.usageReported === false && recordUnits <= 0
@@ -284,6 +307,7 @@ function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
   const title = escapeHtmlText(turnTitle(record));
   const body = escapeHtmlText(String(record?.body ?? record?.text ?? "").trim());
   const prompt = escapeHtmlText(displayUserPrompt(record?.prompt));
+  const diff = formatTurnDiff(record?.diff);
   const files = changedFileLinks(record?.changedFiles);
   const migratedFiles = String(legacyFiles ?? "").trim();
   const metaDetails = [
@@ -294,7 +318,8 @@ function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
   ].filter(Boolean).join("");
   const bodyDetails = [
     body ? `<div data-work-log-turn-body>${body}</div>` : "",
-    files ? `<div data-work-log-turn-files>${files}</div>` : "",
+    diff,
+    !diff && files ? `<div data-work-log-turn-files>${files}</div>` : "",
     migratedFiles
       ? `<div data-work-log-turn-files data-work-log-migrated-files>${migratedFiles}</div>`
       : "",
@@ -1004,6 +1029,7 @@ function incomingLedgerRecord({
   text,
   prompt,
   changedFiles,
+  diff,
   startedAt,
   completedAt,
   status,
@@ -1029,6 +1055,7 @@ function incomingLedgerRecord({
     changedFiles: Array.isArray(changedFiles)
       ? changedFiles.map((file) => String(file).trim()).filter(Boolean)
       : [],
+    diff: String(diff ?? ""),
     startedAt: String(startedAt ?? ""),
     completedAt: String(completedAt ?? new Date().toISOString()),
     status: String(status ?? "completed").trim() || "completed",
@@ -1058,11 +1085,14 @@ function mergeLedgerRecord(existing, incoming) {
     "body",
     "prompt",
     "changedFiles",
+    "diff",
     "startedAt",
     "completedAt",
   ]) {
     if (field === "changedFiles") {
       if (incoming.changedFiles.length) existing.changedFiles = incoming.changedFiles;
+    } else if (field === "diff") {
+      if (incoming.diff) existing.diff = incoming.diff;
     } else if (incoming[field]) {
       existing[field] = incoming[field];
     }
@@ -1281,6 +1311,7 @@ export class WorkLogUsageStore {
     body,
     prompt,
     changedFiles,
+    diff,
     startedAt,
     completedAt,
     status,
@@ -1320,6 +1351,7 @@ export class WorkLogUsageStore {
         text,
         prompt,
         changedFiles,
+        diff,
         startedAt,
         completedAt,
         status,
@@ -1374,6 +1406,7 @@ export class WorkLogUsageStore {
     body,
     prompt,
     changedFiles,
+    diff,
     startedAt,
     completedAt,
     status,
@@ -1404,6 +1437,7 @@ export class WorkLogUsageStore {
         text,
         prompt,
         changedFiles,
+        diff,
         startedAt,
         completedAt,
         status,

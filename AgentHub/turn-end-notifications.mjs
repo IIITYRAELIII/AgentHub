@@ -91,6 +91,7 @@ function normalizedCompletion(value) {
     changedFiles: Array.isArray(value.changedFiles)
       ? value.changedFiles.map((file) => String(file).trim()).filter(Boolean)
       : [],
+    diff: String(value.diff ?? ""),
     message: value.message ? normalizedMessage(value.message) : null,
   };
 }
@@ -202,6 +203,7 @@ export class TurnEndNotificationRegistry {
     completion.startedAt = completion.startedAt || incoming.startedAt;
     completion.prompt = incoming.prompt || completion.prompt;
     if (incoming.changedFiles.length) completion.changedFiles = incoming.changedFiles;
+    if (incoming.diff) completion.diff = incoming.diff;
     completion.deliveryGroupId = incoming.deliveryGroupId ?? completion.deliveryGroupId;
     completion.deliverySequence = incoming.deliverySequence ?? completion.deliverySequence;
     if (incoming.usageReported || !completion.usageReported) {

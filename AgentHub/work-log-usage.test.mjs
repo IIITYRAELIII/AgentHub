@@ -172,6 +172,42 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.equal(reprojected, projected);
 });
 
+test("projectWorkLogUsage renders the exact turn diff instead of changed-file chips", () => {
+  const source = [
+    "<details open>",
+    "<summary><strong>25.07.2026</strong></summary>",
+    "<table><tbody><tr>",
+    "<td>Task</td><td></td>",
+    `<td data-work-log-usage><span data-usage-id="${WORK_ID}">${WORK_ID}</span></td>`,
+    "</tr></tbody></table>",
+    "</details>",
+  ].join("");
+  const projected = projectWorkLogUsage(source, {
+    diff: {
+      workLogId: WORK_ID,
+      provider: "codex",
+      threadId: "thread-diff",
+      turnId: "turn-diff",
+      taskThreadId: "thread-diff",
+      taskTitle: "Task",
+      completedAt: new Date(2026, 6, 25, 13, 45).toISOString(),
+      changedFiles: ["src/a.mjs"],
+      diff: [
+        "diff --git a/src/a.mjs b/src/a.mjs",
+        "--- a/src/a.mjs",
+        "+++ b/src/a.mjs",
+        "@@ -1 +1 @@",
+        "-const value = 1;",
+        "+const value = 2;",
+      ].join("\n"),
+    },
+  });
+  assert.match(projected, /<details data-work-log-turn-diff>/u);
+  assert.match(projected, /data-work-log-diff-line="removed">-const value = 1;<\/span>/u);
+  assert.match(projected, /data-work-log-diff-line="added">\+const value = 2;<\/span>/u);
+  assert.doesNotMatch(projected, /data-work-log-turn-files>[\s\S]*src\/a\.mjs/u);
+});
+
 test("projectWorkLogUsage marks every day as an independent layout section", () => {
   const source = [
     "<details open><summary><strong>25.07.2026</strong></summary></details>",
@@ -998,6 +1034,8 @@ test("automatic journal records a stopped turn even when usage is unavailable", 
       title: "Ход остановлен",
       body: "Промежуточный результат сохранён.",
       prompt: "Сделай работу",
+      changedFiles: ["src/stopped.mjs"],
+      diff: "diff --git a/src/stopped.mjs b/src/stopped.mjs\n+const stopped = true;",
       startedAt: new Date(2026, 6, 25, 12, 0).toISOString(),
       completedAt: new Date(2026, 6, 25, 12, 1).toISOString(),
       usageReported: false,
@@ -1008,8 +1046,11 @@ test("automatic journal records a stopped turn even when usage is unavailable", 
     assert.match(projected, /12:01 — нет данных/);
     assert.match(projected, /data-work-log-turn-title>Ход остановлен<\/span>/);
     assert.match(projected, /data-work-log-turn-prompt><strong>Запрос:<\/strong> Сделай работу<\/div>/);
+    assert.match(projected, /data-work-log-turn-diff/u);
+    assert.doesNotMatch(projected, /data-work-log-turn-files>[\s\S]*stopped\.mjs/u);
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.values(ledger.turns)[0].usageReported, false);
+    assert.match(Object.values(ledger.turns)[0].diff, /stopped = true/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

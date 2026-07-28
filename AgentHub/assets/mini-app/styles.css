@@ -1361,6 +1361,79 @@ main {
   text-decoration: none;
 }
 
+.journal details[data-work-log-turn-diff] {
+  margin-top: 0.7rem;
+}
+
+.journal details[data-work-log-turn-diff] > summary {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.75rem;
+  gap: 0.35rem;
+  list-style: none;
+  padding: 0.25rem 0.65rem;
+}
+
+.journal details[data-work-log-turn-diff] > summary::-webkit-details-marker {
+  display: none;
+}
+
+.journal details[data-work-log-turn-diff] > summary::before {
+  content: "▸";
+}
+
+.journal details[data-work-log-turn-diff][open] > summary::before {
+  content: "▾";
+}
+
+.journal details[data-work-log-turn-diff] pre {
+  background: color-mix(in srgb, var(--surface-0) 92%, #000);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  box-sizing: border-box;
+  color: var(--text-muted);
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  margin: 0.5rem 0 0;
+  max-height: 32rem;
+  overflow: auto;
+  padding: 0.55rem 0;
+  white-space: pre;
+  width: 100%;
+}
+
+.journal span[data-work-log-diff-line] {
+  display: block;
+  min-height: 1.45em;
+  padding: 0 0.7rem;
+}
+
+.journal span[data-work-log-diff-line="file"] {
+  color: #8ecbff;
+  font-weight: 650;
+}
+
+.journal span[data-work-log-diff-line="hunk"] {
+  background: rgba(49, 131, 189, 0.2);
+  color: #9cdcfe;
+}
+
+.journal span[data-work-log-diff-line="added"] {
+  background: rgba(46, 160, 67, 0.2);
+  color: #b7f5c5;
+}
+
+.journal span[data-work-log-diff-line="removed"] {
+  background: rgba(248, 81, 73, 0.18);
+  color: #ffc1bd;
+}
+
 .journal div[data-work-log-legacy-outcome] {
   background: var(--sunken);
   border: 1px solid var(--line);

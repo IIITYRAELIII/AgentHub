@@ -1191,6 +1191,7 @@ async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } =
     body,
     prompt: completion.prompt,
     changedFiles: completion.changedFiles,
+    diff: completion.diff,
     startedAt: completion.startedAt,
     completedAt: completion.completedAt,
     status: completion.status,
@@ -1262,6 +1263,7 @@ async function finalizeCodexRunDelivery(run, {
     startedAt: run.startedAt,
     prompt: run.promptPreview,
     changedFiles: changedFilesForRun(run),
+    diff: run.latestDiff ?? "",
   });
   codexTurnStarts.delete(startKey);
   if (completion && run.observer === true && !completion.message) {
@@ -3987,16 +3989,17 @@ async function handleRuntimeCommand(request) {
     const alreadyDelivered = turnEndNotifications.hasDelivered(deliveredIdentity);
     const taskTitle = runtimeCommandTaskTitle({ ...identity, run });
     let baselineChangedFiles = [];
+    let turnDiff = "";
     if (turnStart?.gitBaseline) {
-      const diff = await taskGitDiff(
+      turnDiff = await taskGitDiff(
         turnStart.gitBaseline,
         config.dataDir,
         `turn-complete-${payload.turnId}`,
-      );
+      ) ?? "";
       baselineChangedFiles = changedFilesForRun({
         projectRoot: project.path,
         gitBaseline: turnStart.gitBaseline,
-        latestDiff: diff,
+        latestDiff: turnDiff,
       });
     }
     const changedFiles = [...new Set([
@@ -4021,6 +4024,7 @@ async function handleRuntimeCommand(request) {
       completedAt: payload.completedAt,
       prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
       changedFiles,
+      diff: turnDiff || run?.latestDiff || "",
     });
     if (!completion && alreadyDelivered) {
       await projectTurnUsageToWorkLog({
@@ -4036,6 +4040,7 @@ async function handleRuntimeCommand(request) {
         completedAt: payload.completedAt,
         prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
         changedFiles,
+        diff: turnDiff || run?.latestDiff || "",
         message: null,
       });
     }
@@ -4890,12 +4895,27 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       ? (usageResult.completedAt || terminal.completedAt)
       : terminal.completedAt;
     const provisional = authoritativeStatus && !usageResult.terminal;
-    const changedFiles = (usageResult.changedFiles ?? []).flatMap((file) => {
-      const absolute = path.resolve(String(file));
-      const relative = path.relative(project.path, absolute);
-      if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
-      return [relative.replaceAll(path.sep, "/")];
-    });
+    const turnStart = codexTurnStarts.get(key);
+    const turnDiff = turnStart?.gitBaseline
+      ? await taskGitDiff(
+        turnStart.gitBaseline,
+        config.dataDir,
+        `terminal-audit-${identity.turnId}`,
+      ) ?? ""
+      : "";
+    const changedFiles = [...new Set([
+      ...(usageResult.changedFiles ?? []).flatMap((file) => {
+        const absolute = path.resolve(String(file));
+        const relative = path.relative(project.path, absolute);
+        if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
+        return [relative.replaceAll(path.sep, "/")];
+      }),
+      ...changedFilesForRun({
+        projectRoot: project.path,
+        gitBaseline: turnStart?.gitBaseline,
+        latestDiff: turnDiff,
+      }),
+    ])];
     if (accountingThread.isSubagent) {
       const journal = await projectTurnUsageToWorkLog({
         ...identity,
@@ -4918,6 +4938,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         completedAt: resolvedCompletedAt,
         prompt: usageResult.prompt,
         changedFiles,
+        diff: turnDiff,
         message: null,
       });
       if (journal?.projectionError) {
@@ -4956,6 +4977,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         completedAt: resolvedCompletedAt,
         prompt: usageResult.prompt,
         changedFiles,
+        diff: turnDiff,
         message: null,
       }, {
         title: correctedTitle,
@@ -4987,6 +5009,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       completedAt: resolvedCompletedAt,
       prompt: usageResult.prompt,
       changedFiles,
+      diff: turnDiff,
     });
     codexTurnStarts.delete(key);
     await saveState();
