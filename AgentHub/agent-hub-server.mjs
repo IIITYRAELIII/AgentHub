@@ -190,6 +190,7 @@ import { DeferredInputController } from "./deferred-input-controller.mjs";
 import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "./task-recovery.mjs";
 import { WorkLogUsageStore } from "./work-log-usage.mjs";
 import { miniAppMenuButtonRequests, MiniAppServer } from "./mini-app-server.mjs";
+import { MiniAppPublisher } from "./mini-app-publisher.mjs";
 import { QuickTunnelController } from "./quick-tunnel.mjs";
 
 const config = await loadConfig();
@@ -500,10 +501,28 @@ const telegram = (method, body) => {
   return Promise.resolve(undefined);
 };
 let quickTunnelController = null;
+let miniAppPublisher = null;
 
 async function startMiniApp() {
   if (!miniAppServer) return null;
   const address = await miniAppServer.start();
+  if (config.miniApp.worker.enabled) {
+    miniAppPublisher ??= new MiniAppPublisher({
+      workLogFile: path.join(config.projectRoot, "WORK_LOG.md"),
+      ...config.miniApp.worker,
+      onPublished: async (url) => {
+        await Promise.all(miniAppMenuButtonRequests({
+          url,
+          text: config.miniApp.worker.menuText,
+          chatIds: config.allowedUserIds,
+        }).map((body) => telegram("setChatMenuButton", body)));
+        console.log(`Telegram Mini App Worker ready at ${url}`);
+      },
+    });
+    await miniAppPublisher.start().catch((error) => {
+      console.warn(`Cannot publish Mini App journal yet: ${error.message}`);
+    });
+  }
   if (!config.miniApp.quickTunnel.enabled) return address;
   const publicAddress = await publicMiniAppServer.start();
   quickTunnelController ??= new QuickTunnelController({
@@ -5426,6 +5445,7 @@ async function performRestart() {
   stopRuntimeTimers();
   await stopCodexAppServerTree();
   mediaController.stop();
+  await miniAppPublisher?.close();
   await quickTunnelController?.close();
   await publicMiniAppServer?.close();
   await miniAppServer?.close();
@@ -6409,6 +6429,7 @@ async function shutdown(signal) {
     if (run.provider === "codex") run.process?.kill();
   }
   mediaController.stop();
+  await miniAppPublisher?.close();
   await quickTunnelController?.close();
   await publicMiniAppServer?.close();
   await miniAppServer?.close();

@@ -133,6 +133,42 @@ export function miniAppSettings(value, { configDirectory = process.cwd() } = {})
     }
     tokenFile = path.resolve(configDirectory, rawTokenFile);
   }
+  const workerRaw = raw.worker ?? {};
+  if (!workerRaw || typeof workerRaw !== "object" || Array.isArray(workerRaw)) {
+    throw new Error("miniApp.worker must be an object");
+  }
+  const workerEnabled = workerRaw.enabled === true;
+  const workerMenuText = String(workerRaw.menuText ?? "Журнал").trim();
+  if (!workerMenuText || workerMenuText.length > 64) {
+    throw new Error("miniApp.worker.menuText must contain 1-64 characters");
+  }
+  let workerPublicUrl = null;
+  let workerSyncSecretFile = null;
+  if (workerEnabled) {
+    const rawWorkerPublicUrl = String(workerRaw.publicUrl ?? "").trim().replace(/\/+$/u, "");
+    let parsedWorkerPublicUrl;
+    try {
+      parsedWorkerPublicUrl = new URL(rawWorkerPublicUrl);
+    } catch {
+      throw new Error("miniApp.worker.publicUrl must be an absolute HTTPS URL");
+    }
+    if (
+      parsedWorkerPublicUrl.protocol !== "https:"
+      || parsedWorkerPublicUrl.username
+      || parsedWorkerPublicUrl.password
+      || parsedWorkerPublicUrl.search
+      || parsedWorkerPublicUrl.hash
+      || parsedWorkerPublicUrl.pathname !== "/"
+    ) {
+      throw new Error("miniApp.worker.publicUrl must be an HTTPS origin without credentials, path, query or hash");
+    }
+    workerPublicUrl = rawWorkerPublicUrl;
+    const rawSyncSecretFile = String(workerRaw.syncSecretFile ?? "").trim();
+    if (!rawSyncSecretFile) {
+      throw new Error("miniApp.worker.syncSecretFile is required when the Worker publisher is enabled");
+    }
+    workerSyncSecretFile = path.resolve(configDirectory, rawSyncSecretFile);
+  }
   return {
     enabled: raw.enabled !== false,
     host,
@@ -148,6 +184,14 @@ export function miniAppSettings(value, { configDirectory = process.cwd() } = {})
       edgeBindAddress,
       publicUrl,
       tokenFile,
+    },
+    worker: {
+      enabled: workerEnabled,
+      publicUrl: workerPublicUrl,
+      syncSecretFile: workerSyncSecretFile,
+      menuText: workerMenuText,
+      retrySeconds: positiveInteger(workerRaw.retrySeconds, 15, "miniApp.worker.retrySeconds"),
+      refreshSeconds: positiveInteger(workerRaw.refreshSeconds, 60, "miniApp.worker.refreshSeconds"),
     },
   };
 }

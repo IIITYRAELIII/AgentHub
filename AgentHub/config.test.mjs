@@ -63,6 +63,14 @@ test("Mini App pilot is loopback-only and enabled by default", () => {
       publicUrl: null,
       tokenFile: null,
     },
+    worker: {
+      enabled: false,
+      publicUrl: null,
+      syncSecretFile: null,
+      menuText: "Журнал",
+      retrySeconds: 15,
+      refreshSeconds: 60,
+    },
   });
   assert.deepEqual(miniAppSettings({
     enabled: false,
@@ -96,6 +104,14 @@ test("Mini App pilot is loopback-only and enabled by default", () => {
       publicUrl: null,
       tokenFile: null,
     },
+    worker: {
+      enabled: false,
+      publicUrl: null,
+      syncSecretFile: null,
+      menuText: "Журнал",
+      retrySeconds: 15,
+      refreshSeconds: 60,
+    },
   });
   assert.throws(() => miniAppSettings({ host: "0.0.0.0" }), /loopback/);
   assert.throws(() => miniAppSettings({ port: 65_536 }), /at most 65535/);
@@ -103,6 +119,37 @@ test("Mini App pilot is loopback-only and enabled by default", () => {
   assert.throws(() => miniAppSettings({ quickTunnel: { menuText: "" } }), /1-64/);
   assert.throws(() => miniAppSettings({ quickTunnel: { provider: "unknown" } }), /cloudflare or pinggy/);
   assert.throws(() => miniAppSettings({ quickTunnel: { publicPort: 8787 } }), /different valid port/);
+});
+
+test("Mini App Worker publisher resolves its private secret file", () => {
+  const settings = miniAppSettings({
+    worker: {
+      enabled: true,
+      publicUrl: "https://hub.example.test/",
+      syncSecretFile: "worker-sync.secret",
+      menuText: "Работы",
+      retrySeconds: 20,
+      refreshSeconds: 90,
+    },
+  }, {
+    configDirectory: "C:\\AgentHub",
+  });
+  assert.deepEqual(settings.worker, {
+    enabled: true,
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: path.resolve("C:\\AgentHub", "worker-sync.secret"),
+    menuText: "Работы",
+    retrySeconds: 20,
+    refreshSeconds: 90,
+  });
+  assert.throws(
+    () => miniAppSettings({ worker: { enabled: true, publicUrl: "http://hub.example.test" } }),
+    /HTTPS URL|HTTPS origin/u,
+  );
+  assert.throws(
+    () => miniAppSettings({ worker: { enabled: true, publicUrl: "https://hub.example.test" } }),
+    /syncSecretFile is required/u,
+  );
 });
 
 test("Mini App named Cloudflare Tunnel resolves its private token file", () => {

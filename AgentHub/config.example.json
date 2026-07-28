@@ -23,6 +23,14 @@
       "menuText": "Журнал",
       "publicPort": 8788,
       "controlPort": 4300
+    },
+    "worker": {
+      "enabled": false,
+      "publicUrl": "https://hub.example.com",
+      "syncSecretFile": "cloudflare-worker-sync.secret",
+      "menuText": "Журнал",
+      "retrySeconds": 15,
+      "refreshSeconds": 60
     }
   },
   "codexExecutable": "",

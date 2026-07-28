@@ -170,7 +170,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /html\[data-theme="pulsar"\]/u);
     assert.match(styles, /html\[data-theme="gothic"\]/u);
     assert.match(styles, /"Palatino Linotype"/u);
-    assert.match(styles, /grid-template-columns: minmax\(0, 1fr\) auto 5\.2ch/u);
+    assert.match(styles, /grid-template-columns: minmax\(0, 1fr\) 8\.6ch 6ch/u);
     assert.equal((await fetch(`${address.url}missing`)).status, 404);
     assert.equal((await fetch(`${address.url}`, { method: "POST" })).status, 405);
 
