@@ -159,6 +159,11 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.equal(blackHole.status, 200);
     assert.equal(blackHole.headers.get("content-type"), "image/png");
     assert.match(blackHole.headers.get("cache-control"), /immutable/u);
+    const storm = await fetch(`${address.url}storm-rain.png`);
+    assert.equal(storm.status, 200);
+    assert.equal(storm.headers.get("content-type"), "image/png");
+    assert.match(storm.headers.get("cache-control"), /immutable/u);
+    assert.ok((await storm.arrayBuffer()).byteLength > 100_000);
     const magma = await fetch(`${address.url}magma-crust.png`);
     assert.equal(magma.status, 200);
     assert.equal(magma.headers.get("content-type"), "image/png");
@@ -179,6 +184,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(page, /data-theme="orbit"/u);
     assert.match(page, /<option value="taiga">Тайга<\/option>/u);
     assert.match(page, /<option value="magma">Магма<\/option>/u);
+    assert.match(page, /<option value="storm">Гроза<\/option>/u);
     assert.match(page, /data-surface="desktop"/u);
     assert.match(page, /data-theme-select/u);
     assert.match(page, />Орбита</u);
@@ -215,6 +221,8 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /url\("\/pulsar-beams\.png"\)/u);
     assert.match(styles, /url\("\/magma-crust\.png"\)/u);
     assert.match(styles, /html\[data-theme="magma"\]/u);
+    assert.match(styles, /url\("\/storm-rain\.png"\)/u);
+    assert.match(styles, /html\[data-theme="storm"\]/u);
     assert.match(styles, /url\("\/rainforest-night\.png"\)/u);
     assert.match(styles, /html\[data-surface="mobile"\] \.journal div\[data-work-log-row\]/u);
     assert.match(styles, /span\[data-day-usage-table\]\[data-mobile-expanded\]/u);

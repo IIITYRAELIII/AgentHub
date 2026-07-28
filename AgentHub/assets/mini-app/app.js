@@ -30,6 +30,7 @@ const themes = {
   blackhole: "#000000",
   taiga: "#070c12",
   magma: "#0a0605",
+  storm: "#070b12",
 };
 
 function savedTheme() {

@@ -13,6 +13,7 @@ const CONTENT_TYPES = new Map([
   ["/pulsar-beams.png", "image/png"],
   ["/magma-crust.png", "image/png"],
   ["/rainforest-night.png", "image/png"],
+  ["/storm-rain.png", "image/png"],
 ]);
 const STATIC_FILES = new Map([
   ["/", "index.html"],
@@ -22,6 +23,7 @@ const STATIC_FILES = new Map([
   ["/pulsar-beams.png", "pulsar-beams.png"],
   ["/magma-crust.png", "magma-crust.png"],
   ["/rainforest-night.png", "rainforest-night.png"],
+  ["/storm-rain.png", "storm-rain.png"],
 ]);
 /* Разметка и стили обязаны быть свежими, поэтому у них no-store. Фон темы —
    неизменяемый файл в несколько мегабайт: без долгого кэша он выкачивался бы
@@ -31,6 +33,7 @@ const IMMUTABLE_FILES = new Set([
   "/magma-crust.png",
   "/pulsar-beams.png",
   "/rainforest-night.png",
+  "/storm-rain.png",
 ]);
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const CHANGE_DEBOUNCE_MS = 75;
