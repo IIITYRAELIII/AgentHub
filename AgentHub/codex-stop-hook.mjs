@@ -69,8 +69,10 @@ export async function handleCodexStopHook(value, {
     usage: usageResult?.usage ?? null,
     usageReported: usageResult?.reported === true,
     imageGenerationCount: usageResult?.imageGenerationCount ?? 0,
-    estimatedUnits: usageResult?.estimatedUnits ?? 0,
+    estimatedCredits: usageResult?.estimatedCredits ?? 0,
     estimateKind: usageResult?.estimateKind ?? "",
+    model: usageResult?.model ?? "",
+    serviceTier: usageResult?.serviceTier ?? "default",
     usageError,
     source: "codex-stop-hook",
   };

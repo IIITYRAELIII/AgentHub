@@ -34,6 +34,8 @@ function completion(overrides = {}) {
     startedAt: "2026-07-27T00:00:00.000Z",
     prompt: "Сделай задачу",
     usageReported: true,
+    model: "gpt-5.6-sol",
+    serviceTier: "default",
     usage: {
       inputTokens: 10,
       cachedInputTokens: 8,
@@ -68,6 +70,21 @@ test("late deferred message refreshes the completed task title", () => {
   assert.equal(registry.get(completion()).taskTitle, "Новое название");
 });
 
+test("a late completion without pricing metadata preserves an exact Fast tier", () => {
+  const registry = new TurnEndNotificationRegistry();
+  registry.recordCompletion(completion({
+    model: "gpt-5.4",
+    serviceTier: "fast",
+  }));
+  const ready = registry.recordCompletion(completion({
+    model: "",
+    serviceTier: undefined,
+    usage: { inputTokens: 20 },
+  }));
+  assert.equal(ready.model, "gpt-5.4");
+  assert.equal(ready.serviceTier, "fast");
+});
+
 test("completed Codex image generation without token events receives a rough estimate", () => {
   const registry = new TurnEndNotificationRegistry();
   const ready = registry.recordCompletion(completion({
@@ -76,7 +93,7 @@ test("completed Codex image generation without token events receives a rough est
     prompt: "Нарисуй чёрную дыру — это будет фон журнала",
   }));
   assert.equal(ready.usageReported, false);
-  assert.equal(ready.estimatedUnits, 720_000);
+  assert.equal(ready.estimatedCredits, 90);
   assert.equal(ready.estimateKind, "imagegen-default");
 });
 
@@ -87,7 +104,7 @@ test("completed imagegen estimate is added when ordinary Codex usage is reported
   }));
   assert.equal(ready.usageReported, true);
   assert.equal(ready.usage.inputTokens, 10);
-  assert.equal(ready.estimatedUnits, 1_440_000);
+  assert.equal(ready.estimatedCredits, 180);
   assert.equal(ready.estimateKind, "imagegen-default");
 });
 

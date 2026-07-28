@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   estimateMissingCodexUsage,
-  IMAGE_GENERATION_ESTIMATE_UNITS,
+  IMAGE_GENERATION_ESTIMATE_CREDITS,
   looksLikeImageGenerationPrompt,
 } from "./codex-usage-estimate.mjs";
 
@@ -19,7 +19,7 @@ test("missing completed image generation usage gets a fixed rough estimate", () 
     usageReported: false,
     prompt: "Нарисуй такую чёрную дыру, это будет фон журнала",
   }), {
-    estimatedUnits: IMAGE_GENERATION_ESTIMATE_UNITS,
+    estimatedCredits: IMAGE_GENERATION_ESTIMATE_CREDITS,
     estimateKind: "imagegen-default",
   });
   assert.equal(estimateMissingCodexUsage({
@@ -41,7 +41,7 @@ test("exact completed image generation calls are estimated in addition to report
     prompt: "Обнови тему",
     imageGenerationCount: 2,
   }), {
-    estimatedUnits: IMAGE_GENERATION_ESTIMATE_UNITS * 2,
+    estimatedCredits: IMAGE_GENERATION_ESTIMATE_CREDITS * 2,
     estimateKind: "imagegen-default",
   });
   assert.deepEqual(estimateMissingCodexUsage({
@@ -49,7 +49,7 @@ test("exact completed image generation calls are estimated in addition to report
     usageReported: true,
     imageGenerationCount: 1,
   }), {
-    estimatedUnits: IMAGE_GENERATION_ESTIMATE_UNITS,
+    estimatedCredits: IMAGE_GENERATION_ESTIMATE_CREDITS,
     estimateKind: "imagegen-default",
   });
 });

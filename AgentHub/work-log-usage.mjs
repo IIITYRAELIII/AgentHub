@@ -7,12 +7,13 @@ import { isInheritedSubagentTurn } from "./codex-subagent-accounting.mjs";
 import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import {
-  addTokenUsage,
-  emptyTokenUsage,
-  formatConditionalUnits,
-  formatTurnTokenUsage,
+  addCreditBreakdown,
+  emptyCreditBreakdown,
+  formatCredits,
+  formatTaskCreditBreakdown,
+  normalizeServiceTier,
   normalizeTokenUsage,
-  turnConditionalUnits,
+  turnCreditBreakdown,
 } from "./token-usage.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -49,18 +50,32 @@ function sameProjectRoot(left, right) {
     : normalizedLeft === normalizedRight;
 }
 
-function normalizeEstimatedUnits(value) {
-  const units = Number(value ?? 0);
-  return Number.isFinite(units) && units > 0 ? Math.round(units) : 0;
+function normalizeEstimatedCredits(value) {
+  const credits = Number(value ?? 0);
+  return Number.isFinite(credits) && credits > 0 ? credits : 0;
 }
 
-function recordConditionalUnits(record) {
-  return (record?.usageReported === false ? 0 : turnConditionalUnits(record?.usage))
-    + normalizeEstimatedUnits(record?.estimatedUnits);
+function recordCreditBreakdown(record) {
+  return turnCreditBreakdown(
+    record?.usageReported === false ? null : record?.usage,
+    {
+      // Ledgers written before v6 have no model. Price them temporarily as Sol
+      // so the journal remains usable while the startup backfill reads the exact
+      // model and Fast tier from each rollout.
+      model: record?.model || "gpt-5.6-sol",
+      serviceTier: record?.serviceTier,
+      estimatedCredits: normalizeEstimatedCredits(record?.estimatedCredits),
+    },
+  );
+}
+
+function recordCredits(record) {
+  return recordCreditBreakdown(record).total;
 }
 
 function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
-  const legacyLedger = Number(value?.version ?? 0) < 5;
+  const sourceVersion = Number(value?.version ?? 0);
+  const legacyLedger = sourceVersion < 5;
   const turns = {};
   const invalidRecords = [];
   for (const [key, record] of Object.entries(value?.turns ?? {})) {
@@ -98,8 +113,15 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         projectRoot: normalizeProjectRoot(record?.projectRoot, defaultProjectRoot),
         usage: normalizeTokenUsage(record?.usage),
         usageReported,
-        estimatedUnits: normalizeEstimatedUnits(record?.estimatedUnits ?? estimate?.estimatedUnits),
+        estimatedCredits: normalizeEstimatedCredits(
+          record?.estimatedCredits
+            ?? (sourceVersion < 6 && record?.estimatedUnits != null
+              ? Number(record.estimatedUnits) / 8_000
+              : estimate?.estimatedCredits),
+        ),
         estimateKind: String(record?.estimateKind ?? estimate?.estimateKind ?? "").trim(),
+        model: String(record?.model ?? "").trim().toLowerCase(),
+        serviceTier: normalizeServiceTier(record?.serviceTier ?? record?.service_tier),
         provider,
         threadId,
         taskThreadId,
@@ -132,15 +154,11 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       });
     }
   }
-  return { ledger: { version: 5, turns }, invalidRecords };
+  return { ledger: { version: 6, turns }, invalidRecords };
 }
 
-export function formatWorkLogUsage(usage, { estimatedUnits = 0 } = {}) {
-  const telegramText = formatTurnTokenUsage({
-    reported: true,
-    usage: normalizeTokenUsage(usage),
-    estimatedUnits: normalizeEstimatedUnits(estimatedUnits),
-  })
+export function formatWorkLogUsage(breakdown) {
+  const telegramText = formatTaskCreditBreakdown(breakdown)
     .replace(/^📊\s*/, "")
     .replace(/^За задачу:\s*/u, "Итого ");
   return telegramText
@@ -149,12 +167,11 @@ export function formatWorkLogUsage(usage, { estimatedUnits = 0 } = {}) {
     .join("<br>");
 }
 
-function formatTaskShare(usage, dayUnits, estimatedUnits = 0) {
-  const estimate = normalizeEstimatedUnits(estimatedUnits);
-  const taskUnits = turnConditionalUnits(usage) + estimate;
-  const percent = dayUnits > 0 ? Math.round(taskUnits / dayUnits * 100) : 0;
-  return formatWorkLogUsage(usage, { estimatedUnits: estimate }).replace(
-    /^(Итого ≈?[^<\r\n]+?(?:Кв|[кМГТПЭЗИР])ТЭ)/u,
+function formatTaskShare(breakdown, dayCredits) {
+  const taskCredits = Number(breakdown?.total) || 0;
+  const percent = dayCredits > 0 ? Math.round(taskCredits / dayCredits * 100) : 0;
+  return formatWorkLogUsage(breakdown).replace(
+    /^(Итого [^<\r\n]+?(?:Gcr|Mcr|kcr|cr))/u,
     `$1 (${percent}%)`,
   );
 }
@@ -168,9 +185,9 @@ function alignUsagePercent(text) {
 
 function highlightUsageUnits(text) {
   return String(text).replace(
-    /(\d+(?:[  ]\d{3})*(?:,\d+)? ((?:Кв|[кМГТПЭЗИР])ТЭ))/gu,
+    /(\d+(?:[  ]\d{3})*(?:,\d+)? (Gcr|Mcr|kcr|cr))/gu,
     (match, _value, unit) => {
-      const level = unit === "кТЭ" ? "kilo" : unit === "МТЭ" ? "mega" : "high";
+      const level = unit === "cr" ? "kilo" : unit === "kcr" ? "mega" : "high";
       return `<span data-${level}-usage>${match}</span>`;
     },
   );
@@ -183,8 +200,8 @@ function markUsageLabel(text) {
   );
 }
 
-function formatTaskUsageDetails(usage, dayUnits, estimatedUnits = 0) {
-  const [total, ...breakdown] = formatTaskShare(usage, dayUnits, estimatedUnits).split("<br>");
+function formatTaskUsageDetails(creditBreakdown, dayCredits) {
+  const [total, ...breakdown] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
   return "<details data-task-usage-details>"
     + `<summary data-task-usage>${highlightUsageUnits(alignUsagePercent(markUsageLabel(total)))}</summary>`
     + `<span data-task-usage-breakdown>${breakdown
@@ -192,8 +209,8 @@ function formatTaskUsageDetails(usage, dayUnits, estimatedUnits = 0) {
       .join("")}</span></details>\n`;
 }
 
-function formatDayUsageBreakdown(usage, estimatedUnits = 0) {
-  const [, ...breakdown] = formatWorkLogUsage(usage, { estimatedUnits }).split("<br>");
+function formatDayUsageBreakdown(creditBreakdown) {
+  const [, ...breakdown] = formatWorkLogUsage(creditBreakdown).split("<br>");
   return `<span data-day-usage-breakdown>${breakdown
     .map((part) => `<span data-day-usage-part>${highlightUsageUnits(alignUsagePercent(part))}</span>`)
     .join("")}</span>`;
@@ -285,15 +302,16 @@ function formatTurnDiff(value) {
     + "</details>";
 }
 
-function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
-  const recordUnits = recordConditionalUnits(record);
-  // Знак «≈» разрывал строку перед бейджем расхода; наличие оценки видно
-  // в детализации задачи отдельной строкой ImageGen.
-  const units = record?.usageReported === false && recordUnits <= 0
+function formatTurnEntry(record, legacyFiles = "", taskCredits = 0) {
+  const breakdown = recordCreditBreakdown(record);
+  const recordTotal = breakdown.total;
+  const credits = record?.usageReported === false && recordTotal <= 0
     ? "нет данных"
-    : highlightUsageUnits(formatConditionalUnits(recordUnits));
-  const share = taskUnits > 0 && recordUnits > 0
-    ? `${Math.round(recordUnits / taskUnits * 100)}%`
+    : !breakdown.priced && recordTotal <= 0
+      ? "нет тарифа"
+      : highlightUsageUnits(formatCredits(recordTotal));
+  const share = taskCredits > 0 && recordTotal > 0
+    ? `${Math.round(recordTotal / taskCredits * 100)}%`
     : "";
   const title = escapeHtmlText(turnTitle(record));
   const body = escapeHtmlText(String(record?.body ?? record?.text ?? "").trim());
@@ -304,6 +322,13 @@ function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
     `<div data-work-log-turn-context><strong>Длит.:</strong> ${
       formatDuration(record?.startedAt, record?.completedAt)
     }</div>`,
+    record?.model
+      ? `<div data-work-log-turn-pricing><strong>Модель:</strong> ${
+        escapeHtmlText(record.model)
+      }${record.serviceTier === "fast" ? " · Fast ×" + (
+        String(record.model).startsWith("gpt-5.4") ? "2" : "2,5"
+      ) : ""}</div>`
+      : "",
     prompt ? `<div data-work-log-turn-prompt><strong>Запрос:</strong> ${prompt}</div>` : "",
   ].filter(Boolean).join("");
   const bodyDetails = [
@@ -317,7 +342,7 @@ function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
     + "<details data-work-log-turn-details>"
     + "<summary>"
     + '<span data-work-log-turn-meta>'
-    + `<span data-work-log-turn-measure>${formatCompletedAt(record?.completedAt)} — ${units}</span>`
+    + `<span data-work-log-turn-measure>${formatCompletedAt(record?.completedAt)} — ${credits}</span>`
     + (share ? `<span data-work-log-turn-share>(${share})</span>` : "")
     + "</span>"
     + `<span data-work-log-turn-title>${title}</span>`
@@ -329,8 +354,8 @@ function formatTurnEntry(record, legacyFiles = "", taskUnits = 0) {
 }
 
 function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
-  const taskUnits = records.reduce(
-    (total, record) => total + recordConditionalUnits(record),
+  const taskCredits = records.reduce(
+    (total, record) => total + recordCredits(record),
     0,
   );
   const firstRegisteredTurn = records.findIndex((record) => record?.workLogId);
@@ -338,7 +363,7 @@ function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
   const turnRows = records.map((record, index) => formatTurnEntry(
     record,
     index === legacyFilesTarget ? legacyFiles : "",
-    taskUnits,
+    taskCredits,
   ));
   const previousTurns = turnRows.length > 1
     ? [
@@ -861,15 +886,9 @@ function projectDaySection(section, date, turns, recordsById, open) {
         seen.add(key);
         return true;
       });
-      const usage = recorded.reduce(
-        (total, record) => record.usageReported === false
-          ? total
-          : addTokenUsage(total, record.usage),
-        emptyTokenUsage(),
-      );
-      const estimatedUnits = recorded.reduce(
-        (total, record) => total + normalizeEstimatedUnits(record.estimatedUnits),
-        0,
+      const creditBreakdown = recorded.reduce(
+        (total, record) => addCreditBreakdown(total, recordCreditBreakdown(record)),
+        emptyCreditBreakdown(),
       );
       const cells = workLogRowCells(match.text);
       const turnCell = cells.find(
@@ -879,9 +898,8 @@ function projectDaySection(section, date, turns, recordsById, open) {
         match,
         ids,
         recorded,
-        usage,
-        estimatedUnits,
-        units: turnConditionalUnits(usage) + estimatedUnits,
+        creditBreakdown,
+        credits: creditBreakdown.total,
         identity,
         hasLegacyOutcome: Boolean(legacyOutcome(turnCell?.text)),
       };
@@ -889,15 +907,15 @@ function projectDaySection(section, date, turns, recordsById, open) {
   const trackedRows = rows.filter(
     (row) => row.ids.length || row.recorded.length || row.hasLegacyOutcome,
   );
-  const dayUsage = trackedRows.reduce(
-    (total, row) => addTokenUsage(total, row.usage),
-    emptyTokenUsage(),
+  const dayBreakdown = trackedRows.reduce(
+    (total, row) => addCreditBreakdown(total, row.creditBreakdown),
+    emptyCreditBreakdown(),
   );
-  const dayUnits = trackedRows.reduce((total, row) => total + row.units, 0);
+  const dayCredits = dayBreakdown.total;
 
   const renderedRows = rows.map((row) => {
-    const visible = row.units > 0
-      ? formatTaskUsageDetails(row.usage, dayUnits, row.estimatedUnits)
+    const visible = row.credits > 0
+      ? formatTaskUsageDetails(row.creditBreakdown, dayCredits)
       : "";
     const markers = row.ids.map((id) => (
       `<span data-usage-id="${id}" hidden>${recordsById.has(id) ? "" : id}</span>`
@@ -915,16 +933,12 @@ function projectDaySection(section, date, turns, recordsById, open) {
       turnsContent,
     );
   });
-  const dayEstimatedUnits = trackedRows.reduce((total, row) => total + row.estimatedUnits, 0);
-  const summary = dayUnits > 0
+  const summary = dayCredits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
       + `<span data-day-usage><span data-usage-label>Итого</span> ${
-        highlightUsageUnits(formatConditionalUnits(dayUnits))
+        highlightUsageUnits(formatCredits(dayCredits))
       }</span>`
-      + `${formatDayUsageBreakdown(
-        dayUsage,
-        dayEstimatedUnits,
-      )}</span></summary>`
+      + `${formatDayUsageBreakdown(dayBreakdown)}</span></summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
   return [
     `<details data-work-log-day-section${open ? " open" : ""}>`,
@@ -994,7 +1008,9 @@ export function applyWorkLogUsage(workLogText, workLogId, usage) {
   }
   return String(workLogText).replace(
     pattern,
-    (_match, opening, closing) => `${opening}${formatWorkLogUsage(usage)}${closing}`,
+    (_match, opening, closing) => `${opening}${formatWorkLogUsage(turnCreditBreakdown(usage, {
+      model: "gpt-5.6-sol",
+    }))}${closing}`,
   );
 }
 
@@ -1006,8 +1022,10 @@ function incomingLedgerRecord({
   workLogId = null,
   usage,
   usageReported,
-  estimatedUnits,
+  estimatedCredits,
   estimateKind,
+  model,
+  serviceTier,
   taskTitle,
   taskThreadId,
   parentThreadId,
@@ -1028,8 +1046,10 @@ function incomingLedgerRecord({
     projectRoot: normalizeProjectRoot(projectRoot),
     usage: normalizeTokenUsage(usage),
     usageReported: usageReported === true,
-    estimatedUnits: normalizeEstimatedUnits(estimatedUnits),
+    estimatedCredits: normalizeEstimatedCredits(estimatedCredits),
     estimateKind: String(estimateKind ?? "").trim(),
+    model: String(model ?? "").trim().toLowerCase(),
+    serviceTier: serviceTier == null ? "" : normalizeServiceTier(serviceTier),
     provider: String(provider).trim().toLowerCase(),
     threadId: String(threadId).trim(),
     taskThreadId: String(taskThreadId ?? threadId).trim(),
@@ -1058,8 +1078,8 @@ function mergeLedgerRecord(existing, incoming) {
     existing.usage = incoming.usage;
     existing.usageReported = incoming.usageReported;
   }
-  if (incoming.estimatedUnits > 0) {
-    existing.estimatedUnits = incoming.estimatedUnits;
+  if (incoming.estimatedCredits > 0) {
+    existing.estimatedCredits = incoming.estimatedCredits;
     existing.estimateKind = incoming.estimateKind;
   }
   for (const field of [
@@ -1077,6 +1097,8 @@ function mergeLedgerRecord(existing, incoming) {
     "diff",
     "startedAt",
     "completedAt",
+    "model",
+    "serviceTier",
   ]) {
     if (field === "changedFiles") {
       if (incoming.changedFiles.length) existing.changedFiles = incoming.changedFiles;
@@ -1146,10 +1168,18 @@ export class WorkLogUsageStore {
         ([key, record]) => (
           String(record?.prompt ?? "").trim() !== String(this.#ledger.turns[key]?.prompt ?? "")
           || normalizeProjectRoot(record?.projectRoot) !== this.#ledger.turns[key]?.projectRoot
-          || normalizeEstimatedUnits(record?.estimatedUnits)
-            !== this.#ledger.turns[key]?.estimatedUnits
+          || normalizeEstimatedCredits(
+            record?.estimatedCredits
+              ?? (Number(persisted?.version ?? 0) < 6
+                ? Number(record?.estimatedUnits ?? 0) / 8_000
+                : 0),
+          ) !== this.#ledger.turns[key]?.estimatedCredits
           || String(record?.estimateKind ?? "").trim()
             !== this.#ledger.turns[key]?.estimateKind
+          || String(record?.model ?? "").trim().toLowerCase()
+            !== this.#ledger.turns[key]?.model
+          || normalizeServiceTier(record?.serviceTier ?? record?.service_tier)
+            !== this.#ledger.turns[key]?.serviceTier
         ),
       );
     if (loaded.recovered || migrated || normalized.invalidRecords.length) await this.#save();
@@ -1201,6 +1231,71 @@ export class WorkLogUsageStore {
       await this.#load();
       const record = this.#ledger.turns[workLogTurnKey({ provider, threadId, turnId })];
       return record ? structuredClone(record) : null;
+    });
+    this.#tail = operation;
+    return operation;
+  }
+
+  missingPricingTurns({ provider = "codex" } = {}) {
+    const operation = this.#tail.catch(() => {}).then(async () => {
+      await this.#load();
+      const normalizedProvider = String(provider ?? "").trim().toLowerCase();
+      return Object.values(this.#ledger.turns)
+        .filter((record) => (
+          record.provider === normalizedProvider
+          && !record.model
+        ))
+        .map((record) => ({
+          provider: record.provider,
+          threadId: record.threadId,
+          turnId: record.turnId,
+          projectRoot: record.projectRoot,
+        }));
+    });
+    this.#tail = operation;
+    return operation;
+  }
+
+  synchronizePricingMetadataAndProject({
+    items = [],
+    projectRoot = this.#defaultProjectRoot,
+    workLogFile,
+  }) {
+    const operation = this.#tail.catch(() => {}).then(async () => {
+      await this.#load();
+      let updated = 0;
+      for (const item of items) {
+        const provider = String(item?.provider ?? "codex").trim().toLowerCase();
+        const threadId = String(item?.threadId ?? "").trim();
+        const turnId = String(item?.turnId ?? "").trim();
+        const model = String(item?.model ?? "").trim().toLowerCase();
+        if (!provider || !threadId || !turnId || !model) continue;
+        const record = this.#ledger.turns[workLogTurnKey({ provider, threadId, turnId })];
+        if (!record || !sameProjectRoot(record.projectRoot, projectRoot)) continue;
+        const serviceTier = normalizeServiceTier(item?.serviceTier);
+        if (record.model === model && record.serviceTier === serviceTier) continue;
+        record.model = model;
+        record.serviceTier = serviceTier;
+        updated += 1;
+      }
+      if (!updated) return { updated: 0, projected: false, reason: "unchanged" };
+      await this.#save();
+      const logPath = path.resolve(workLogFile);
+      let current;
+      try {
+        current = await readFile(logPath, "utf8");
+      } catch (error) {
+        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
+        else throw error;
+      }
+      const selectedTurns = Object.fromEntries(
+        Object.entries(this.#ledger.turns).filter(([, record]) => (
+          sameProjectRoot(record.projectRoot, projectRoot)
+        )),
+      );
+      const projected = projectWorkLogUsage(current, selectedTurns);
+      if (projected !== current) await writeTextAtomic(logPath, projected);
+      return { updated, projected: projected !== current };
     });
     this.#tail = operation;
     return operation;
@@ -1289,8 +1384,10 @@ export class WorkLogUsageStore {
     workLogId,
     usage,
     usageReported,
-    estimatedUnits,
+    estimatedCredits,
     estimateKind,
+    model,
+    serviceTier,
     taskThreadId,
     parentThreadId,
     aggregateOnly,
@@ -1328,8 +1425,10 @@ export class WorkLogUsageStore {
         workLogId: id,
         usage,
         usageReported,
-        estimatedUnits,
+        estimatedCredits,
         estimateKind,
+        model,
+        serviceTier,
         taskThreadId,
         parentThreadId,
         aggregateOnly,
@@ -1384,8 +1483,10 @@ export class WorkLogUsageStore {
     projectRoot = this.#defaultProjectRoot,
     usage,
     usageReported,
-    estimatedUnits,
+    estimatedCredits,
     estimateKind,
+    model,
+    serviceTier,
     taskThreadId,
     parentThreadId,
     aggregateOnly,
@@ -1414,8 +1515,10 @@ export class WorkLogUsageStore {
         projectRoot,
         usage,
         usageReported,
-        estimatedUnits,
+        estimatedCredits,
         estimateKind,
+        model,
+        serviceTier,
         taskThreadId,
         parentThreadId,
         aggregateOnly,

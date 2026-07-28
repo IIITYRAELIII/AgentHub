@@ -46,6 +46,7 @@ import {
 } from "./status.mjs";
 import {
   readCodexTurnUsage,
+  scanCodexTurnPricingMetadata,
 } from "./codex-turn-usage.mjs";
 import { CodexTerminalAudit } from "./codex-terminal-audit.mjs";
 import {
@@ -507,6 +508,7 @@ const uiContextNonce = randomUUID();
 let taskCatalog = [];
 let taskCatalogRefreshedAt = 0;
 let taskCatalogRefreshInFlight = null;
+let workLogPricingBackfillAttempted = false;
 const taskSyncStore = new LocalTaskSyncStore({
   filePath: TASK_SYNC_FILE,
   canonicalizeProjectRoot: (projectRoot) => findProject(projectRoot)?.path ?? projectRoot,
@@ -1171,6 +1173,8 @@ function structuredTurnText(title, body) {
 function applyCodexRolloutContext(run, usageResult) {
   if (!run || !usageResult) return;
   if (usageResult.startedAt) run.startedAt = usageResult.startedAt;
+  if (usageResult.model) run.modelId = usageResult.model;
+  if (usageResult.serviceTier) run.serviceTier = usageResult.serviceTier;
   if (usageResult.prompt) run.promptPreview = String(usageResult.prompt).slice(0, 100_000);
   const changedFiles = [];
   for (const file of Array.isArray(usageResult.changedFiles) ? usageResult.changedFiles : []) {
@@ -1218,8 +1222,10 @@ async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } =
     turnId: completion.turnId,
     usage: completion.usage,
     usageReported: completion.usageReported,
-    estimatedUnits: completion.estimatedUnits,
+    estimatedCredits: completion.estimatedCredits,
     estimateKind: completion.estimateKind,
+    model: completion.model,
+    serviceTier: completion.serviceTier,
     taskThreadId: completion.taskThreadId,
     parentThreadId: completion.parentThreadId,
     aggregateOnly: completion.aggregateOnly,
@@ -1296,8 +1302,10 @@ async function finalizeCodexRunDelivery(run, {
     usage: tracker.usage,
     usageReported: tracker.reported === true,
     imageGenerationCount: tracker.imageGenerationCount ?? 0,
-    estimatedUnits: tracker.estimatedUnits ?? 0,
+    estimatedCredits: tracker.estimatedCredits ?? 0,
     estimateKind: tracker.estimateKind ?? "",
+    model: tracker.model ?? run.modelId ?? "",
+    serviceTier: tracker.serviceTier ?? run.serviceTier ?? "default",
     startedAt: run.startedAt,
     prompt: run.promptPreview,
     changedFiles: changedFilesForRun(run),
@@ -1323,7 +1331,9 @@ async function finalizeCodexRunDelivery(run, {
     ? {
       usage: completion.usage,
       reported: completion.usageReported,
-      estimatedUnits: completion.estimatedUnits,
+      estimatedCredits: completion.estimatedCredits,
+      model: completion.model,
+      serviceTier: completion.serviceTier,
     }
     : tracker;
   const shouldDeliver = deliver || Boolean(existingCompletion);
@@ -1390,7 +1400,9 @@ async function deliverTurnEndNotification(completion) {
       formatTurnTokenUsage({
         usage: completion.usage,
         reported: completion.usageReported,
-        estimatedUnits: completion.estimatedUnits,
+        estimatedCredits: completion.estimatedCredits,
+        model: completion.model,
+        serviceTier: completion.serviceTier,
       }),
     ].filter(Boolean).join("\n\n");
     const targetChatId = message?.chatId ?? completion.chatId;
@@ -1476,7 +1488,7 @@ async function waitForTurnEndCompletion(identity, timeoutMs = 2_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const completion = turnEndNotifications.get(identity);
-    if (completion?.usageReported || Number(completion?.estimatedUnits) > 0) return completion;
+    if (completion?.usageReported || Number(completion?.estimatedCredits) > 0) return completion;
     await delay(50);
   }
   return turnEndNotifications.get(identity);
@@ -2099,6 +2111,46 @@ async function buildTaskCatalog() {
   const entries = [];
   let pinnedTitlesChanged = false;
   if (codexResult.status === "fulfilled") {
+    if (!workLogPricingBackfillAttempted) {
+      workLogPricingBackfillAttempted = true;
+      try {
+        const missing = await workLogUsageStore.missingPricingTurns({ provider: "codex" });
+        const missingByThread = new Map();
+        for (const item of missing) {
+          const values = missingByThread.get(item.threadId) ?? [];
+          values.push(item);
+          missingByThread.set(item.threadId, values);
+        }
+        const threadsById = new Map(
+          codexResult.value.map((thread) => [String(thread.id), thread]),
+        );
+        const resolved = [];
+        for (const [missingThreadId, turns] of missingByThread) {
+          const rolloutPath = String(threadsById.get(missingThreadId)?.path ?? "").trim();
+          if (!rolloutPath) continue;
+          const metadata = await scanCodexTurnPricingMetadata(
+            rolloutPath,
+            turns.map((item) => item.turnId),
+          );
+          for (const item of turns) {
+            const pricing = metadata.get(item.turnId);
+            if (pricing?.model) resolved.push({ ...item, ...pricing });
+          }
+        }
+        for (const project of config.projects) {
+          await workLogUsageStore.synchronizePricingMetadataAndProject({
+            items: resolved,
+            projectRoot: project.path,
+            workLogFile: path.join(project.path, "WORK_LOG.md"),
+          });
+        }
+        if (resolved.length) {
+          console.log(`Backfilled credit pricing metadata for ${resolved.length} WORK_LOG turn(s)`);
+        }
+      } catch (error) {
+        console.error("Cannot backfill WORK_LOG credit pricing metadata:", error.message);
+      }
+    }
     const titleHistories = await readCodexThreadTitleHistories();
     const batchSize = 16;
     for (let start = 0; start < codexResult.value.length; start += batchSize) {
@@ -4070,8 +4122,11 @@ async function handleRuntimeCommand(request) {
       usage: payload.usage,
       usageReported: payload.usageReported === true,
       imageGenerationCount: payload.imageGenerationCount ?? 0,
-      estimatedUnits: payload.estimatedUnits ?? 0,
+      estimatedCredits: payload.estimatedCredits
+        ?? (payload.estimatedUnits != null ? Number(payload.estimatedUnits) / 8_000 : 0),
       estimateKind: payload.estimateKind ?? "",
+      model: payload.model ?? "",
+      serviceTier: payload.serviceTier ?? payload.service_tier ?? "default",
       startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
       completedAt: payload.completedAt,
       prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
@@ -4086,8 +4141,11 @@ async function handleRuntimeCommand(request) {
         status: payload.status,
         usage: normalizeTokenUsage(payload.usage),
         usageReported: payload.usageReported === true,
-        estimatedUnits: payload.estimatedUnits ?? 0,
+        estimatedCredits: payload.estimatedCredits
+          ?? (payload.estimatedUnits != null ? Number(payload.estimatedUnits) / 8_000 : 0),
         estimateKind: payload.estimateKind ?? "",
+        model: payload.model ?? "",
+        serviceTier: payload.serviceTier ?? payload.service_tier ?? "default",
         startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
         completedAt: payload.completedAt,
         prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
@@ -4730,12 +4788,14 @@ async function finishObservedRun(run, snapshot) {
         threadId: run.threadId,
         turnId: completedTurnId,
       });
-      if (hooked?.usageReported || Number(hooked?.estimatedUnits) > 0) {
+      if (hooked?.usageReported || Number(hooked?.estimatedCredits) > 0) {
         tracker = {
           usage: hooked.usage,
           reported: hooked.usageReported === true,
-          estimatedUnits: hooked.estimatedUnits,
+          estimatedCredits: hooked.estimatedCredits,
           estimateKind: hooked.estimateKind,
+          model: hooked.model,
+          serviceTier: hooked.serviceTier,
         };
       } else if (!tracker?.reported) {
         try {
@@ -4751,8 +4811,10 @@ async function finishObservedRun(run, snapshot) {
             usage: usageResult.usage,
             reported: usageResult.reported === true,
             imageGenerationCount: usageResult.imageGenerationCount,
-            estimatedUnits: usageResult.estimatedUnits,
+            estimatedCredits: usageResult.estimatedCredits,
             estimateKind: usageResult.estimateKind,
+            model: usageResult.model,
+            serviceTier: usageResult.serviceTier,
           };
           applyCodexRolloutContext(run, usageResult);
         } catch (error) {
@@ -4985,8 +5047,10 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         provisional,
         usage: usageResult.usage,
         usageReported: usageResult.reported === true,
-        estimatedUnits: usageResult.estimatedUnits,
+        estimatedCredits: usageResult.estimatedCredits,
         estimateKind: usageResult.estimateKind,
+        model: usageResult.model,
+        serviceTier: usageResult.serviceTier,
         startedAt: usageResult.startedAt,
         completedAt: resolvedCompletedAt,
         prompt: usageResult.prompt,
@@ -5024,8 +5088,10 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         status: resolvedStatus,
         usage: usageResult.usage,
         usageReported: usageResult.reported === true,
-        estimatedUnits: usageResult.estimatedUnits,
+        estimatedCredits: usageResult.estimatedCredits,
         estimateKind: usageResult.estimateKind,
+        model: usageResult.model,
+        serviceTier: usageResult.serviceTier,
         startedAt: usageResult.startedAt,
         completedAt: resolvedCompletedAt,
         prompt: usageResult.prompt,
@@ -5056,8 +5122,10 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       usage: usageResult.usage,
       usageReported: usageResult.reported === true,
       imageGenerationCount: usageResult.imageGenerationCount,
-      estimatedUnits: usageResult.estimatedUnits,
+      estimatedCredits: usageResult.estimatedCredits,
       estimateKind: usageResult.estimateKind,
+      model: usageResult.model,
+      serviceTier: usageResult.serviceTier,
       startedAt: usageResult.startedAt,
       completedAt: resolvedCompletedAt,
       prompt: usageResult.prompt,

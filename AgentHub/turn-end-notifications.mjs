@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import { estimateMissingCodexUsage } from "./codex-usage-estimate.mjs";
-import { normalizeTokenUsage } from "./token-usage.mjs";
+import { normalizeServiceTier, normalizeTokenUsage } from "./token-usage.mjs";
 import { normalizeWorkLogId } from "./work-log-usage.mjs";
 
 export const TURN_END_TITLE_LIMIT = 100;
@@ -65,9 +65,13 @@ function normalizedCompletion(value) {
       imageGenerationCount: value.imageGenerationCount,
     })
     : null;
-  const estimatedUnits = Math.max(
+  const estimatedCredits = Math.max(
     0,
-    Math.round(Number(value.estimatedUnits ?? estimate?.estimatedUnits) || 0),
+    Number(
+      value.estimatedCredits
+        ?? (value.estimatedUnits != null ? Number(value.estimatedUnits) / 8_000 : null)
+        ?? estimate?.estimatedCredits,
+    ) || 0,
   );
   return {
     ...base,
@@ -78,9 +82,13 @@ function normalizedCompletion(value) {
     status: String(value.status ?? "completed").trim() || "completed",
     usage: normalizeTokenUsage(value.usage),
     usageReported,
-    estimatedUnits,
-    estimateKind: estimatedUnits > 0
+    estimatedCredits,
+    estimateKind: estimatedCredits > 0
       ? String(value.estimateKind ?? estimate?.estimateKind ?? "").trim()
+      : "",
+    model: String(value.model ?? "").trim().toLowerCase(),
+    serviceTier: value.serviceTier != null || value.service_tier != null
+      ? normalizeServiceTier(value.serviceTier ?? value.service_tier)
       : "",
     provisional: value.provisional === true,
     deliveryGroupId: String(value.deliveryGroupId ?? "").trim() || null,
@@ -210,10 +218,12 @@ export class TurnEndNotificationRegistry {
       completion.usage = incoming.usage;
       completion.usageReported = incoming.usageReported;
     }
-    if (incoming.estimatedUnits > 0) {
-      completion.estimatedUnits = incoming.estimatedUnits;
+    if (incoming.estimatedCredits > 0) {
+      completion.estimatedCredits = incoming.estimatedCredits;
       completion.estimateKind = incoming.estimateKind;
     }
+    if (incoming.model) completion.model = incoming.model;
+    completion.serviceTier = incoming.serviceTier || completion.serviceTier;
     completion.message = incoming.message ?? completion.message ?? this.#takeMessage(completion);
     completion.taskTitle = completion.message?.taskTitle || incoming.taskTitle || completion.taskTitle;
     this.#completions.set(key, completion);

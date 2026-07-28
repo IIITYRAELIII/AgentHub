@@ -37,7 +37,7 @@ test("applyWorkLogUsage replaces only the matching per-turn placeholder", () => 
     }),
     [
       "<tr><td>",
-      `<span data-usage-id="${WORK_ID}">Итого 49 кТЭ<br>Вход: 8 кТЭ (17,1%)<br>Кэш: 35 кТЭ (71,8%)<br>Выход: 1 кТЭ (2,8%)<br>Думы: 4 кТЭ (8,3%)</span> + `,
+      `<span data-usage-id="${WORK_ID}">Итого 6,1 cr<br>Вход: 1,0 cr (17,1%)<br>Кэш: 4,4 cr (71,8%)<br>Выход: 0,2 cr (2,8%)<br>Думы: 0,5 cr (8,3%)</span> + `,
       `<span data-usage-id="${SECOND_WORK_ID}">${SECOND_WORK_ID}</span>`,
       "</td></tr>",
     ].join(""),
@@ -107,7 +107,7 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.match(projected, /data-work-log-legacy-outcome>Outcome B<\/div>/);
   assert.match(
     projected,
-    /<div data-work-log-turn-table>[\s\S]*?data-work-log-turn-measure>13:45 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Второй &amp; ход<\/span>[\s\S]*?data-work-log-turn-files[^>]*>a\.mjs<\/div>[\s\S]*?<details data-work-log-previous-turns>[\s\S]*?data-work-log-turn-measure>12:34 — <span data-kilo-usage>0 кТЭ<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Первый &lt;ход&gt; Строка<\/span>/,
+    /<div data-work-log-turn-table>[\s\S]*?data-work-log-turn-measure>13:45 — <span data-kilo-usage>0,0 cr<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Второй &amp; ход<\/span>[\s\S]*?data-work-log-turn-files[^>]*>a\.mjs<\/div>[\s\S]*?<details data-work-log-previous-turns>[\s\S]*?data-work-log-turn-measure>12:34 — <span data-kilo-usage>0,0 cr<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Первый &lt;ход&gt; Строка<\/span>/,
   );
   assert.match(
     projected,
@@ -138,7 +138,7 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.doesNotMatch(projected, /data-work-log-legacy-files/);
   assert.match(
     projected,
-    /data-day-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span>/,
+    /data-day-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span>/,
   );
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
@@ -151,11 +151,11 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
     /<br>/,
   );
   assert.equal((projected.match(/data-day-usage-part/g) ?? []).length, 4);
-  assert.match(projected, /Task A[\s\S]*?<span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(50%\)<\/span>/);
-  assert.match(projected, /Task C[\s\S]*?<span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(50%\)<\/span>/);
+  assert.match(projected, /Task A[\s\S]*?<span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span> <span data-usage-percent>\(50%\)<\/span>/);
+  assert.match(projected, /Task C[\s\S]*?<span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span> <span data-usage-percent>\(50%\)<\/span>/);
   assert.match(
     projected,
-    /<details data-task-usage-details><summary data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(50%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
+    /<details data-task-usage-details><summary data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span> <span data-usage-percent>\(50%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
   );
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
@@ -351,7 +351,7 @@ test("work log colors kilo, mega and giga-or-higher usage independently", () => 
       text: "Большой ход",
     },
   });
-  assert.match(projected, /data-high-usage>1,0 ГТЭ<\/span>/);
+  assert.match(projected, /data-mega-usage>125,0 kcr<\/span>/);
 });
 
 test("work log CSS keeps dates equal and shows a compact always-visible turn list", async () => {
@@ -525,7 +525,7 @@ test("subagent usage is summed into its root task and shown as child turns", () 
   });
 
   assert.match(projected, /data-work-log-thread-id="root"/);
-  assert.match(projected, /<span data-usage-label>Итого<\/span> <span data-kilo-usage>175 кТЭ<\/span>/);
+  assert.match(projected, /<span data-usage-label>Итого<\/span> <span data-kilo-usage>21,9 cr<\/span>/);
   assert.equal((projected.match(/data-work-log-turn-id=/g) ?? []).length, 3);
   assert.match(projected, /Основной результат/);
   assert.match(projected, /Субагент · Скрытый результат субагента/);
@@ -576,7 +576,7 @@ test("usage store quarantines inherited parent turns copied into a subagent roll
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /<span data-usage-label>Итого<\/span> <span data-kilo-usage>50 кТЭ<\/span>/);
+    assert.match(projected, /<span data-usage-label>Итого<\/span> <span data-kilo-usage>6,3 cr<\/span>/);
     assert.match(projected, /Субагент · Real child turn/);
     assert.doesNotMatch(projected, /Copied parent turn/);
     const persisted = JSON.parse(await readFile(ledgerFile, "utf8"));
@@ -630,12 +630,12 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     const projected = await readFile(workLogFile, "utf8");
     assert.match(
       projected,
-      /data-day-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span>/,
+      /data-day-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span>/,
     );
     assert.equal((projected.match(/data-day-usage-breakdown/g) ?? []).length, 1);
     assert.match(
       projected,
-      /<details data-task-usage-details><summary data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(100%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
+      /<details data-task-usage-details><summary data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span> <span data-usage-percent>\(100%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
     );
     assert.match(projected, new RegExp(`data-usage-id="${WORK_ID}" hidden>`));
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));
@@ -697,13 +697,73 @@ test("a fresh usage store reprojects an existing work log with its persisted led
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /data-task-usage><span data-usage-label>Итого<\/span> <span data-mega-usage>1,8 МТЭ<\/span> <span data-usage-percent>\(100%\)<\/span>/);
+    assert.match(projected, /data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>219,6 cr<\/span> <span data-usage-percent>\(100%\)<\/span>/);
     assert.match(projected, /data-work-log-turn-body>Сохранённый результат<\/div>/);
     assert.match(projected, /<strong>Запрос:<\/strong> Сохранённый вопрос/);
     assert.doesNotMatch(projected, /response-annotations|Старый ответ/);
-    assert.doesNotMatch(projected, /data-mega-usage>[^<]*кТЭ/);
+    assert.doesNotMatch(projected, /data-mega-usage>[^<]*cr/);
     const persisted = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(persisted.turns.turn.prompt, "Сохранённый вопрос");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("usage store backfills exact model and Fast tier before recalculating credits", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-pricing-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    const turnId = "turn-pricing";
+    await writeFile(ledgerFile, `${JSON.stringify({
+      version: 6,
+      turns: {
+        [`codex\u0000thread-pricing\u0000${turnId}`]: {
+          provider: "codex",
+          threadId: "thread-pricing",
+          turnId,
+          workLogId: WORK_ID,
+          projectRoot: root,
+          usageReported: true,
+          usage: { inputTokens: 1_000_000 },
+          completedAt: "2026-07-25T00:00:00.000Z",
+          title: "Тариф восстановлен",
+        },
+      },
+    })}\n`, "utf8");
+    await writeFile(
+      workLogFile,
+      `<details open><summary><strong>25.07.2026</strong></summary><table><tbody>`
+        + `<tr><td>Task</td><td>Outcome</td><td><span data-usage-id="${WORK_ID}" hidden></span></td></tr>`
+        + "</tbody></table></details>",
+      "utf8",
+    );
+
+    const store = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    assert.deepEqual(await store.missingPricingTurns(), [{
+      provider: "codex",
+      threadId: "thread-pricing",
+      turnId,
+      projectRoot: root,
+    }]);
+    assert.deepEqual(await store.synchronizePricingMetadataAndProject({
+      items: [{
+        provider: "codex",
+        threadId: "thread-pricing",
+        turnId,
+        model: "gpt-5.4",
+        serviceTier: "fast",
+      }],
+      projectRoot: root,
+      workLogFile,
+    }), {
+      updated: 1,
+      projected: true,
+    });
+    const projected = await readFile(workLogFile, "utf8");
+    assert.match(projected, /Итого<\/span> <span data-kilo-usage>125 cr<\/span>/);
+    assert.match(projected, /<strong>Модель:<\/strong> gpt-5\.4 · Fast ×2/);
+    assert.deepEqual(await store.missingPricingTurns(), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -919,7 +979,7 @@ test("legacy synthetic interruptions are provisional and retract from the projec
 
     assert.equal(result.retracted, true);
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
-    assert.equal(ledger.version, 5);
+    assert.equal(ledger.version, 6);
     assert.deepEqual(ledger.turns, {});
     assert.doesNotMatch(await readFile(workLogFile, "utf8"), /Живая задача/);
   } finally {
@@ -948,7 +1008,7 @@ test("usage store recovers a damaged primary ledger from its backup", async () =
     await recovered.project(workLogFile, { projectRoot: root });
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.keys(ledger.turns).length, 1);
-    assert.equal(ledger.version, 5);
+    assert.equal(ledger.version, 6);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1033,8 +1093,8 @@ test("automatic usage creates an explicit fallback row for an ambiguous thread",
     assert.match(projected, /data-work-log-thread-id="thread-1"/);
     assert.match(projected, /Codex - Без названия/);
     assert.doesNotMatch(projected, /data-usage-id=/);
-    assert.match(projected, /data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0 кТЭ<\/span> <span data-usage-percent>\(100%\)<\/span>/);
-    assert.match(projected, /13:45 — <span data-kilo-usage>0 кТЭ<\/span>/);
+    assert.match(projected, /data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span> <span data-usage-percent>\(100%\)<\/span>/);
+    assert.match(projected, /13:45 — <span data-kilo-usage>0,0 cr<\/span>/);
     assert.match(projected, /Автоматически учтённый ход/);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1102,14 +1162,14 @@ test("automatic journal marks only the image-generated turn while task and day t
       completedAt: new Date(2026, 6, 25, 12, 3).toISOString(),
       usageReported: true,
       usage: { inputTokens: 100_000 },
-      estimatedUnits: 720_000,
+      estimatedCredits: 90,
       estimateKind: "imagegen-default",
       workLogFile,
     });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /Итого<\/span> <span data-kilo-usage>820 кТЭ<\/span>/);
-    assert.match(projected, /ImageGen: <span data-kilo-usage>720 кТЭ<\/span> <span data-usage-percent>\(87,8%\)<\/span>/);
-    assert.match(projected, /12:03 — <span data-kilo-usage>820 кТЭ<\/span>/);
+    assert.match(projected, /Итого<\/span> <span data-kilo-usage>102,5 cr<\/span>/);
+    assert.match(projected, /ImageGen: <span data-kilo-usage>90 cr<\/span> <span data-usage-percent>\(87,8%\)<\/span>/);
+    assert.match(projected, /12:03 — <span data-kilo-usage>102,5 cr<\/span>/);
     assert.doesNotMatch(projected, /≈/u);
     assert.doesNotMatch(projected, /Итого<\/span> ≈/);
   } finally {

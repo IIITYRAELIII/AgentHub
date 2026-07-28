@@ -387,7 +387,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.match(normalFinal.body.text, /^✅ Codex · /);
   assert.match(normalFinal.body.text, /\n🧵 /);
   assert.match(normalFinal.body.text, /\n⚙ Agent Hub Server/);
-  assert.match(normalFinal.body.text, /За задачу:/);
+  assert.match(normalFinal.body.text, /Кредиты за задачу: нет тарифа для gpt-e2e/);
   const normalProgressDeletion = await telegram.waitForCall("deleteMessage", (call) => (
     call.body.message_id === normalProgressId
   ), { after: mark });
@@ -406,7 +406,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.match(await readFile(workLogPath, "utf8"), /Готово: \[slow\] обычное завершение/);
   assert.equal(
     telegram.callsAfter(normalFinal.index + 1, "sendPhoto").some((call) => (
-      call.rawBody.includes("Ход завершён.") && call.rawBody.includes("За задачу:")
+      call.rawBody.includes("Ход завершён.") && call.rawBody.includes("Кредиты за задачу:")
     )),
     false,
     "turn usage must be appended to the final answer instead of a separate card",
@@ -637,7 +637,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushMessage("/cancel");
   await telegram.waitForText("Запрошена остановка этой задачи", { after: mark });
   const restoredFinal = await telegram.waitForText("Ход остановлен тестом", { after: mark });
-  assert.match(restoredFinal.body.text, /За задачу:/);
+  assert.match(restoredFinal.body.text, /Кредиты за задачу: нет тарифа для gpt-e2e/);
   assert.match(restoredFinal.body.text, /^✅ Codex · /);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 1,
     "cancelling the selected parallel task only");
@@ -651,7 +651,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.match(await readFile(workLogPath, "utf8"), /Ход остановлен тестом/);
   assert.equal(
     telegram.callsAfter(restoredFinal.index + 1, "sendPhoto").some((call) => (
-      call.rawBody.includes("За задачу:")
+      call.rawBody.includes("Кредиты за задачу:")
     )),
     false,
     "recovered turn usage must stay in the final answer",

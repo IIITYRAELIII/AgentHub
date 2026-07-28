@@ -1,5 +1,5 @@
 import path from "node:path";
-import { formatTaskTokenUsage } from "./token-usage.mjs";
+import { formatLegacyTokenEquivalents } from "./token-usage.mjs";
 
 export const CLAUDE_PERMISSION_MODES = new Set([
   "default",
@@ -195,7 +195,7 @@ export function formatClaudeUsage(result, estimatedReasoning = 0) {
     usage.reasoning_output_tokens ?? usage.thinking_tokens ?? usage.reasoning_tokens ?? 0,
   );
   const reasoning = reportedReasoning > 0 ? reportedReasoning : Math.max(0, Number(estimatedReasoning) || 0);
-  return formatTaskTokenUsage({
+  return formatLegacyTokenEquivalents({
     totalTokens: uncachedInput + cacheCreation + cached + output,
     inputTokens: uncachedInput,
     cachedInputTokens: cacheCreation + cached,

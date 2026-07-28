@@ -1,4 +1,4 @@
-export const IMAGE_GENERATION_ESTIMATE_UNITS = 720_000;
+export const IMAGE_GENERATION_ESTIMATE_CREDITS = 90;
 
 const IMAGE_GENERATION_PROMPT_PATTERNS = [
   /\bimagegen\b/iu,
@@ -29,7 +29,7 @@ export function estimateMissingCodexUsage({
   );
   if (!count) return null;
   return {
-    estimatedUnits: IMAGE_GENERATION_ESTIMATE_UNITS * count,
+    estimatedCredits: IMAGE_GENERATION_ESTIMATE_CREDITS * count,
     estimateKind: "imagegen-default",
   };
 }

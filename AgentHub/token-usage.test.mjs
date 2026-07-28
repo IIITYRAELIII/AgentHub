@@ -1,72 +1,139 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  addCreditBreakdown,
   addTokenUsage,
+  emptyCreditBreakdown,
   emptyTokenUsage,
-  formatConditionalUnits,
+  fastModeCreditMultiplier,
+  formatCredits,
   formatTaskTokenUsage,
   formatTurnTokenUsage,
+  modelCreditRates,
   normalizeTokenUsage,
   tokenUsageDelta,
-  turnConditionalUnits,
+  turnCreditBreakdown,
+  turnCredits,
 } from "./token-usage.mjs";
 
-test("formatTaskTokenUsage converts token categories to conditional units", () => {
-  const formatted = formatTaskTokenUsage({
-    totalTokens: 743169,
-    inputTokens: 17678,
-    cachedInputTokens: 722432,
-    outputTokens: 3059,
+const SOL = "gpt-5.6-sol";
+
+test("official model rates and Fast multipliers are explicit", () => {
+  assert.deepEqual(modelCreditRates(SOL), {
+    input: 125,
+    cachedInput: 12.5,
+    output: 750,
+  });
+  assert.deepEqual(modelCreditRates("gpt-5.6-terra"), {
+    input: 62.5,
+    cachedInput: 6.25,
+    output: 375,
+  });
+  assert.deepEqual(modelCreditRates("gpt-5.6-luna"), {
+    input: 25,
+    cachedInput: 2.5,
+    output: 150,
+  });
+  assert.deepEqual(modelCreditRates("gpt-5.3-codex-spark"), {
+    input: 0,
+    cachedInput: 0,
+    output: 0,
+  });
+  assert.deepEqual(modelCreditRates("gpt-5.5-codex"), modelCreditRates(SOL));
+  assert.deepEqual(modelCreditRates("gpt-5.4-codex"), modelCreditRates("gpt-5.6-terra"));
+  assert.equal(fastModeCreditMultiplier(SOL, "fast"), 2.5);
+  assert.equal(fastModeCreditMultiplier("gpt-5.5", "fast"), 2.5);
+  assert.equal(fastModeCreditMultiplier("gpt-5.4", "fast"), 2);
+  assert.equal(fastModeCreditMultiplier(SOL, "default"), 1);
+});
+
+test("credit calculation separates uncached input, cache, output and reasoning", () => {
+  const breakdown = turnCreditBreakdown({
+    inputTokens: 740_110,
+    cachedInputTokens: 722_432,
+    outputTokens: 3_059,
     reasoningOutputTokens: 974,
-  });
+  }, { model: SOL });
 
-  assert.match(formatted, /За задачу: 108 кТЭ/);
-  assert.doesNotMatch(formatted, /743.169/);
-  assert.match(formatted, /Вход: 18 кТЭ \(16,3%\)/);
-  assert.match(formatted, /Кэш: 72 кТЭ \(66,7%\)/);
-  assert.match(formatted, /Выход: 13 кТЭ \(11,6%\)/);
-  assert.match(formatted, /Думы: 6 кТЭ \(5,4%\)/);
+  assert.deepEqual(breakdown, {
+    input: 2.20975,
+    cache: 9.0304,
+    output: 1.56375,
+    reasoning: 0.7305,
+    estimate: 0,
+    total: 13.5344,
+    priced: true,
+  });
+  const formatted = formatTaskTokenUsage({
+    inputTokens: 740_110,
+    cachedInputTokens: 722_432,
+    outputTokens: 3_059,
+    reasoningOutputTokens: 974,
+  }, { model: SOL });
+  assert.match(formatted, /За задачу: 13,5 cr/);
+  assert.match(formatted, /Вход: 2,2 cr \(16,3%\)/);
+  assert.match(formatted, /Кэш: 9,0 cr \(66,7%\)/);
+  assert.match(formatted, /Выход: 1,6 cr \(11,6%\)/);
+  assert.match(formatted, /Думы: 0,7 cr \(5,4%\)/);
   assert.equal(formatted.split("\n").length, 5);
-  assert.doesNotMatch(formatted, /\|/);
 });
 
-test("formatTaskTokenUsage renders whole kilo units and one decimal for larger scales", () => {
-  const formatted = formatTaskTokenUsage({
-    inputTokens: 1,
-    cachedInputTokens: 1,
-    outputTokens: 0,
-    reasoningOutputTokens: 0,
+test("credits use SI scales with one decimal", () => {
+  assert.equal(formatCredits(999), "999 cr");
+  assert.equal(formatCredits(1_000), "1,0 kcr");
+  assert.equal(formatCredits(1_756_500), "1,8 Mcr");
+  assert.equal(formatCredits(1_000_000_000), "1,0 Gcr");
+});
+
+test("Fast mode multiplies all priced token categories", () => {
+  const usage = {
+    inputTokens: 100_000,
+    cachedInputTokens: 80_000,
+    outputTokens: 10_000,
+    reasoningOutputTokens: 4_000,
+  };
+  assert.equal(
+    turnCredits(usage, { model: SOL, serviceTier: "fast" }),
+    turnCredits(usage, { model: SOL }) * 2.5,
+  );
+  assert.equal(
+    turnCredits(usage, { model: "gpt-5.4", serviceTier: "fast" }),
+    turnCredits(usage, { model: "gpt-5.4" }) * 2,
+  );
+});
+
+test("Spark is accounted as zero credits and unknown models stay unpriced", () => {
+  const usage = { inputTokens: 1_000_000, outputTokens: 1_000_000 };
+  assert.deepEqual(turnCreditBreakdown(usage, {
+    model: "gpt-5.3-codex-spark",
+  }), {
+    input: 0,
+    cache: 0,
+    output: 0,
+    reasoning: 0,
+    estimate: 0,
+    total: 0,
+    priced: true,
   });
-
-  assert.match(formatted, /За задачу: 0 кТЭ/);
-  assert.match(formatted, /Вход: 0 кТЭ \(90,9%\)/);
-  assert.match(formatted, /Кэш: 0 кТЭ \(9,1%\)/);
-  assert.equal(formatConditionalUnits(999_000), "999 кТЭ");
-  assert.equal(formatConditionalUnits(1_000_000), "1,0 МТЭ");
-  assert.equal(formatConditionalUnits(1_756_500), "1,8 МТЭ");
-  assert.equal(formatConditionalUnits(1_000_000_000), "1,0 ГТЭ");
-  assert.equal(formatConditionalUnits(1_000_000_000_000), "1,0 ТТЭ");
-  assert.equal(formatConditionalUnits(1e30), "1,0 КвТЭ");
+  assert.match(
+    formatTaskTokenUsage(usage, { model: "future-model" }),
+    /нет тарифа для future-model/,
+  );
 });
 
-test("formatTaskTokenUsage labels every category and percentages total exactly 100%", () => {
-  const formatted = formatTaskTokenUsage({
-    totalTokens: 198093,
-    inputTokens: 667,
-    cachedInputTokens: 197376,
-    outputTokens: 50,
-    reasoningOutputTokens: 15,
+test("credit breakdowns and token counters add without losing fields", () => {
+  assert.deepEqual(addCreditBreakdown(
+    { ...emptyCreditBreakdown(), input: 1, total: 1 },
+    { ...emptyCreditBreakdown(), cache: 2, total: 2 },
+  ), {
+    input: 1,
+    cache: 2,
+    output: 0,
+    reasoning: 0,
+    estimate: 0,
+    total: 3,
+    priced: true,
   });
-
-  assert.match(formatted, /За задачу: 21 кТЭ/);
-  assert.match(formatted, /Вход: 1 кТЭ \(3,2%\)/);
-  assert.match(formatted, /Кэш: 20 кТЭ \(95,3%\)/);
-  assert.match(formatted, /Выход: 0 кТЭ \(1%\)/);
-  assert.match(formatted, /Думы: 0 кТЭ \(0,5%\)/);
-  assert.doesNotMatch(formatted, /у\.е\./);
-});
-
-test("turn token helpers normalize counters and handle counter resets", () => {
   assert.deepEqual(emptyTokenUsage(), {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -92,49 +159,27 @@ test("turn token helpers normalize counters and handle counter resets", () => {
   ).inputTokens, 6);
 });
 
-test("formatTurnTokenUsage excludes cached tokens from uncached input", () => {
-  const formatted = formatTurnTokenUsage({
-    reported: true,
-    usage: normalizeTokenUsage({
-      inputTokens: 100,
-      cachedInputTokens: 80,
-      outputTokens: 2,
-      totalTokens: 102,
-    }),
-  });
-  assert.match(formatted, /Вход: 0 кТЭ /);
-  assert.match(formatted, /Кэш: 0 кТЭ /);
-  assert.equal(turnConditionalUnits({
-    inputTokens: 100,
-    cachedInputTokens: 80,
-    outputTokens: 2,
-  }), 40);
-  assert.equal(formatTurnTokenUsage(null), "📊 Токены за задачу: нет данных.");
-});
-
-test("formatTurnTokenUsage includes image generation estimate without marking aggregate values approximate", () => {
-  const formatted = formatTurnTokenUsage({
+test("turn formatting includes a fixed image generation credit estimate", () => {
+  const estimateOnly = formatTurnTokenUsage({
     reported: false,
     usage: emptyTokenUsage(),
-    estimatedUnits: 720_000,
+    estimatedCredits: 90,
   });
-  assert.match(formatted, /За задачу: 720 кТЭ/);
-  assert.match(formatted, /ImageGen: 720 кТЭ \(100%\)/);
-  assert.doesNotMatch(formatted, /≈/);
-  assert.doesNotMatch(formatted, /нет данных/);
-});
+  assert.match(estimateOnly, /За задачу: 90 cr/);
+  assert.match(estimateOnly, /ImageGen: 90 cr \(100%\)/);
+  assert.doesNotMatch(estimateOnly, /нет данных/);
 
-test("formatTurnTokenUsage sums ordinary Codex usage and imagegen estimate", () => {
-  const formatted = formatTurnTokenUsage({
+  const combined = formatTurnTokenUsage({
     reported: true,
+    model: SOL,
     usage: normalizeTokenUsage({
       inputTokens: 100_000,
       outputTokens: 10_000,
       reasoningOutputTokens: 4_000,
     }),
-    estimatedUnits: 720_000,
+    estimatedCredits: 90,
   });
-  assert.match(formatted, /За задачу: 880 кТЭ/);
-  assert.match(formatted, /ImageGen: 720 кТЭ \(81,8%\)/);
-  assert.doesNotMatch(formatted, /≈/);
+  assert.match(combined, /За задачу: 110 cr/);
+  assert.match(combined, /ImageGen: 90 cr \(81,8%\)/);
+  assert.equal(formatTurnTokenUsage(null), "📊 Кредиты за задачу: нет данных.");
 });

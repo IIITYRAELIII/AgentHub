@@ -4,7 +4,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 
 import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
-import { IMAGE_GENERATION_ESTIMATE_UNITS } from "./codex-usage-estimate.mjs";
+import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "./codex-usage-estimate.mjs";
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "./token-usage.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 
@@ -103,6 +103,10 @@ function createTurnAccumulator(turnId) {
   let prompt = "";
   let status = "";
   let workspaceRoot = "";
+  let latestModel = "";
+  let latestServiceTier = "default";
+  let model = "";
+  let serviceTier = "default";
   let index = -1;
   const changedFiles = new Set();
   const patches = [];
@@ -113,6 +117,12 @@ function createTurnAccumulator(turnId) {
     index += 1;
     if (entry?.type === "session_meta") {
       workspaceRoot ||= String(entry.payload?.cwd ?? "").trim();
+    }
+    if (entry?.type === "event_msg" && entry.payload?.type === "thread_settings_applied") {
+      latestModel = String(entry.payload?.thread_settings?.model ?? latestModel).trim();
+      latestServiceTier = String(
+        entry.payload?.thread_settings?.service_tier ?? latestServiceTier,
+      ).trim() || "default";
     }
     const lifecycle = entry?.type === "event_msg" ? String(entry.payload?.type ?? "") : "";
     const lifecycleTurnId = lifecycle ? String(entry.payload?.turn_id ?? "").trim() : "";
@@ -140,6 +150,10 @@ function createTurnAccumulator(turnId) {
     if (exactTurnId && ["response_item", "turn_context"].includes(String(entry?.type ?? ""))) {
       latestResponseTurnId = exactTurnId;
       if (exactTurnId === requestedTurnId) started = true;
+    }
+    if (entry?.type === "turn_context" && exactTurnId === requestedTurnId) {
+      model = String(entry.payload?.model ?? latestModel).trim();
+      serviceTier = String(entry.payload?.service_tier ?? latestServiceTier).trim() || "default";
     }
     if (entry?.type === "response_item"
       && entry.payload?.type === "function_call"
@@ -202,8 +216,10 @@ function createTurnAccumulator(turnId) {
       changedFiles: [...changedFiles],
       diff: patches.join("\n\n"),
       imageGenerationCount,
-      estimatedUnits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_UNITS,
+      estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
       estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",
+      model: model || latestModel,
+      serviceTier,
       status: status || (terminal ? "completed" : started ? "inProgress" : ""),
     };
   };
@@ -372,6 +388,51 @@ export async function scanCodexTurnJsonl(transcriptPath, turnId, {
     lines.close();
   }
   return accumulator.result();
+}
+
+export async function scanCodexTurnPricingMetadata(transcriptPath, turnIds, {
+  createReadStreamImpl = createReadStream,
+} = {}) {
+  const requested = new Set(
+    [...(turnIds ?? [])].map((value) => String(value ?? "").trim()).filter(Boolean),
+  );
+  const result = new Map();
+  if (!requested.size) return result;
+  let latestModel = "";
+  let latestServiceTier = "default";
+  const input = createReadStreamImpl(transcriptPath, { encoding: "utf8" });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (!line) continue;
+      let entry;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (entry?.type === "event_msg" && entry.payload?.type === "thread_settings_applied") {
+        latestModel = String(entry.payload?.thread_settings?.model ?? latestModel).trim();
+        latestServiceTier = String(
+          entry.payload?.thread_settings?.service_tier ?? latestServiceTier,
+        ).trim() || "default";
+        continue;
+      }
+      if (entry?.type !== "turn_context") continue;
+      const turnId = entryTurnId(entry);
+      if (!requested.has(turnId)) continue;
+      result.set(turnId, {
+        model: String(entry.payload?.model ?? latestModel).trim(),
+        serviceTier: String(
+          entry.payload?.service_tier ?? latestServiceTier,
+        ).trim() || "default",
+      });
+      if (result.size === requested.size) break;
+    }
+  } finally {
+    lines.close();
+  }
+  return result;
 }
 
 async function scanCodexTurnJsonlFromOffset(

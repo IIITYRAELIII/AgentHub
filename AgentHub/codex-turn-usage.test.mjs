@@ -10,6 +10,7 @@ import {
   scanCodexTerminalEventsFromOffset,
   scanCodexTurnJsonl,
   scanCodexTurnJsonlIncrementally,
+  scanCodexTurnPricingMetadata,
 } from "./codex-turn-usage.mjs";
 
 function line(value) {
@@ -49,7 +50,12 @@ test("Codex rollout usage sums every model response and sees the final token eve
   const startedAt = "2026-07-26T19:03:03.527Z";
   const completedAt = "2026-07-26T19:09:33.227Z";
   const text = [
+    line({ type: "event_msg", payload: {
+      type: "thread_settings_applied",
+      thread_settings: { model: "gpt-5.6-sol", service_tier: "fast" },
+    } }),
     line({ timestamp: startedAt, type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
+    line({ type: "turn_context", payload: { turn_id: "turn-1", model: "gpt-5.6-sol" } }),
     line(response("turn-1")),
     line(token(100, 80, 10, 4)),
     line(response("turn-1", "message", {
@@ -70,6 +76,8 @@ test("Codex rollout usage sums every model response and sees the final token eve
   assert.equal(result.status, "completed");
   assert.equal(result.startedAt, startedAt);
   assert.equal(result.completedAt, completedAt);
+  assert.equal(result.model, "gpt-5.6-sol");
+  assert.equal(result.serviceTier, "fast");
   assert.deepEqual(result.usage, {
     inputTokens: 150,
     cachedInputTokens: 120,
@@ -184,8 +192,45 @@ test("rollout scan counts completed imagegen calls for the exact turn", () => {
   const result = codexTurnUsageFromJsonl(text, "turn-1");
   assert.equal(result.reported, true);
   assert.equal(result.imageGenerationCount, 1);
-  assert.equal(result.estimatedUnits, 720_000);
+  assert.equal(result.estimatedCredits, 90);
   assert.equal(result.estimateKind, "imagegen-default");
+});
+
+test("pricing metadata scan resolves each turn model and Fast tier in one pass", async () => {
+  const text = [
+    line({ type: "event_msg", payload: {
+      type: "thread_settings_applied",
+      thread_settings: { model: "gpt-5.6-sol", service_tier: "default" },
+    } }),
+    line({ type: "turn_context", payload: {
+      turn_id: "turn-sol",
+      model: "gpt-5.6-sol",
+    } }),
+    line({ type: "event_msg", payload: {
+      type: "thread_settings_applied",
+      thread_settings: { model: "gpt-5.4", service_tier: "fast" },
+    } }),
+    line({ type: "turn_context", payload: {
+      turn_id: "turn-terra-fast",
+      model: "gpt-5.4",
+    } }),
+  ].join("\n");
+
+  const metadata = await scanCodexTurnPricingMetadata(
+    "rollout.jsonl",
+    ["turn-sol", "turn-terra-fast"],
+    {
+      createReadStreamImpl: () => Readable.from(text.split("\n").map((value) => `${value}\n`)),
+    },
+  );
+  assert.deepEqual(metadata.get("turn-sol"), {
+    model: "gpt-5.6-sol",
+    serviceTier: "default",
+  });
+  assert.deepEqual(metadata.get("turn-terra-fast"), {
+    model: "gpt-5.4",
+    serviceTier: "fast",
+  });
 });
 
 test("recent terminal scan distinguishes completed and aborted turns", () => {
