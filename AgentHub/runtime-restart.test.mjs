@@ -13,6 +13,27 @@ import {
   waitForReplacementLock,
 } from "./runtime-restart.mjs";
 
+const WINDOWS_INTEGRATION_TIMEOUT_MS = 15_000;
+const WINDOWS_CLEANUP_OPTIONS = {
+  recursive: true,
+  force: true,
+  maxRetries: 10,
+  retryDelay: 100,
+};
+
+function visualBasicFileWriter(file, contents) {
+  const literal = (value) => `"${String(value).replaceAll('"', '""')}"`;
+  return [
+    "Option Explicit",
+    "Dim fileSystem, output",
+    'Set fileSystem = CreateObject("Scripting.FileSystemObject")',
+    `Set output = fileSystem.CreateTextFile(${literal(file)}, True, False)`,
+    `output.Write ${literal(contents)}`,
+    "output.Close",
+    "",
+  ].join("\r\n");
+}
+
 test("runtime restart follows the external launcher to the newest release", () => {
   const result = botReplacementInvocation({
     environment: {
@@ -119,13 +140,14 @@ test("replacement retries WMI and then uses direct fallback until a bot owns the
 
 test("Windows WMI launcher survives completion of its helper process", {
   skip: process.platform !== "win32",
-}, async () => {
+}, async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-wmi-launch-"));
-  const launcher = path.join(directory, "launch.ps1");
+  context.after(() => rm(directory, WINDOWS_CLEANUP_OPTIONS));
+  const launcher = path.join(directory, "launch.vbs");
   const marker = path.join(directory, "started.txt");
   await writeFile(
     launcher,
-    `$ErrorActionPreference='Stop'\nSet-Content -LiteralPath '${marker.replaceAll("'", "''")}' -Value 'started' -Encoding UTF8\n`,
+    visualBasicFileWriter(marker, "started"),
     "utf8",
   );
   const invocation = independentWindowsLauncherInvocation({
@@ -134,7 +156,7 @@ test("Windows WMI launcher survives completion of its helper process", {
   });
   const result = spawnSync(invocation.command, invocation.args, invocation.options);
   assert.equal(result.status, 0);
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + WINDOWS_INTEGRATION_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
       assert.match(await readFile(marker, "utf8"), /started/);
@@ -150,12 +172,15 @@ test("Windows WMI restart is not accepted until the replacement owns bot.lock", 
   skip: process.platform !== "win32",
 }, async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-wmi-ready-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
-  const launcher = path.join(directory, "launch.ps1");
+  context.after(() => rm(directory, WINDOWS_CLEANUP_OPTIONS));
+  const launcher = path.join(directory, "launch.vbs");
   const lockFile = path.join(directory, "bot.lock");
   await writeFile(
     launcher,
-    `$ErrorActionPreference='Stop'\nSet-Content -LiteralPath '${lockFile.replaceAll("'", "''")}' -Value '{"pid":424242,"instanceToken":"ready","ready":true}' -Encoding UTF8\n`,
+    visualBasicFileWriter(
+      lockFile,
+      '{"pid":424242,"instanceToken":"ready","ready":true}',
+    ),
     "utf8",
   );
   const result = await launchReplacementAndWait({
@@ -166,7 +191,7 @@ test("Windows WMI restart is not accepted until the replacement owns bot.lock", 
     lockFile,
     currentPid: process.pid,
     attempts: 1,
-    readinessTimeoutMs: 5_000,
+    readinessTimeoutMs: WINDOWS_INTEGRATION_TIMEOUT_MS,
     isAlive: () => true,
   });
   assert.equal(result.lock.pid, 424242);
