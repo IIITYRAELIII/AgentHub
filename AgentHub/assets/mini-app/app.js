@@ -12,9 +12,10 @@ const telegramInitData = String(telegram?.initData ?? "");
 const telegramMode = Boolean(telegramInitData);
 const themes = {
   orbit: "#080b11",
-  nebula: "#10091a",
-  pulsar: "#041217",
-  gothic: "#090909",
+  nebula: "#0f0819",
+  pulsar: "#03151a",
+  gothic: "#060708",
+  blackhole: "#000000",
 };
 
 function savedTheme() {

@@ -1,13 +1,39 @@
-/* Agent Hub Mini App — визуальный слой журнала работ.
-   Оформление лежит поверх work-log.css: разметка и семантика не меняются,
-   поэтому та же проекция WORK_LOG.md остаётся читаемой в VS Code. */
+/* Agent Hub — визуальный слой журнала работ.
+   Лежит поверх work-log.css: разметка и семантика не меняются, поэтому один и
+   тот же файл оформляет Mini App в Telegram и панель расширения VS Code.
+
+   Тема задаётся атрибутом html[data-theme]; без него действует «Орбита».
+   Тема меняет не только палитру, но и геометрию, текстуру и типографику:
+     orbit  — станция: стекло, кольца орбит, мягкие скругления;
+     nebula — туманность: размытые облака, крупные радиусы, свечение вместо рамок;
+     pulsar — HUD: жёсткие углы, уголки-скобки, сканлайны, моноширинные числа;
+     gothic — камень: гравированные засечки, фаски плит, бронза вместо зелёного. */
 
 :root {
   color-scheme: dark;
 
-  --font-sans: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto,
+  /* ---- типографика ---- */
+  --font-body: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto,
     "Helvetica Neue", sans-serif;
+  --font-display: var(--font-body);
+  --font-title: var(--font-display);
+  --font-numeric: var(--font-body);
+  --display-weight: 620;
+  --display-spacing: -0.02em;
+  --display-transform: none;
+  --display-shadow: none;
+  --title-weight: 545;
+  --label-spacing: 0.15em;
+  --label-transform: uppercase;
 
+  /* ---- геометрия ---- */
+  --radius-lg: 16px;
+  --radius-md: 11px;
+  --radius-sm: 8px;
+  --radius-chip: 999px;
+  --rail-width: 2px;
+
+  /* ---- поверхности ---- */
   --bg: #080b11;
   --surface-1: rgba(255, 255, 255, 0.026);
   --surface-2: rgba(255, 255, 255, 0.045);
@@ -17,14 +43,32 @@
   --line: rgba(150, 178, 214, 0.13);
   --line-strong: rgba(150, 178, 214, 0.24);
 
+  --card-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.016));
+  --card-bg-open: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02));
+  --card-texture: none;
+  --card-border: var(--line);
+  --card-border-open: var(--line-strong);
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), 0 18px 40px -26px rgba(0, 0, 0, 0.9);
+
+  --plate-bg: var(--surface-2);
+  --plate-texture: none;
+  --plate-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --turn-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+
+  /* ---- текст ---- */
   --text: #e9eff8;
   --text-soft: #b6c3d5;
   --text-muted: #8797ab;
   --text-faint: #667689;
 
+  /* ---- акцент ---- */
   --accent: #6cb2ff;
   --accent-soft: rgba(108, 178, 255, 0.13);
   --accent-line: rgba(108, 178, 255, 0.4);
+  --accent-glow: 0 0 18px -8px rgba(108, 178, 255, 0.85);
+  --selection: rgba(108, 178, 255, 0.3);
+  --brand-gradient: linear-gradient(150deg, rgba(108, 178, 255, 0.28), rgba(126, 78, 190, 0.22));
+  --brand-shadow: 0 6px 18px -10px rgba(108, 178, 255, 0.7);
 
   --provider-none: #8797ab;
   --provider-codex: #6cb2ff;
@@ -33,95 +77,330 @@
   --ok: #4fd08a;
   --pending: #f0b95b;
 
-  --radius-lg: 16px;
-  --radius-md: 11px;
-  --radius-sm: 8px;
+  /* ---- маркеры категорий расхода ---- */
+  --dot-input: #6cb2ff;
+  --dot-cache: #62d3b4;
+  --dot-output: #f0b95b;
+  --dot-think: #b58cf0;
 
-  --shadow-card: 0 18px 40px -26px rgba(0, 0, 0, 0.9);
-  --shadow-turn: 0 1px 2px rgba(0, 0, 0, 0.35);
+  /* ---- фон ---- */
+  --space-glow-a: rgba(56, 124, 196, 0.24);
+  --space-glow-b: rgba(126, 78, 190, 0.16);
+  --space-base: linear-gradient(180deg, #0d1219 0, var(--bg) 32rem);
+  --space-star: rgba(188, 220, 255, 0.32);
+  --star-opacity: 0.34;
+  --decor-opacity: 1;
 
+  /* ---- раскладка ---- */
   --header-height: 4.15rem;
   --content-width: 92rem;
   --gutter-left: max(0.9rem, env(safe-area-inset-left));
   --gutter-right: max(0.9rem, env(safe-area-inset-right));
-  --space-glow-a: rgba(56, 124, 196, 0.2);
-  --space-glow-b: rgba(126, 78, 190, 0.13);
-  --space-star: rgba(188, 220, 255, 0.32);
 
   /* work-log.css использует эти переменные для раскрытого хода */
   --vscode-focusBorder: var(--accent);
   --vscode-foreground: var(--text);
 }
 
+/* ===================================================== тема «Туманность» === */
+
 html[data-theme="nebula"] {
-  --bg: #10091a;
-  --surface-1: rgba(255, 244, 255, 0.035);
-  --surface-2: rgba(255, 238, 255, 0.065);
-  --surface-3: rgba(255, 225, 255, 0.1);
-  --sunken: rgba(17, 3, 28, 0.38);
-  --line: rgba(218, 174, 255, 0.17);
-  --line-strong: rgba(225, 188, 255, 0.3);
-  --text: #f4ebff;
-  --text-soft: #d4c2e6;
-  --text-muted: #a995bb;
-  --text-faint: #806e91;
-  --accent: #c38cff;
-  --accent-soft: rgba(195, 140, 255, 0.16);
-  --accent-line: rgba(195, 140, 255, 0.48);
-  --provider-codex: #7bc8ff;
-  --provider-claude: #ff9b75;
-  --space-glow-a: rgba(200, 75, 255, 0.24);
-  --space-glow-b: rgba(67, 129, 255, 0.2);
-  --space-star: rgba(235, 205, 255, 0.42);
+  --display-weight: 560;
+  --display-spacing: 0.005em;
+  --title-weight: 520;
+  --label-spacing: 0.2em;
+
+  --radius-lg: 26px;
+  --radius-md: 19px;
+  --radius-sm: 15px;
+  --rail-width: 3px;
+
+  --bg: #0f0819;
+  --surface-1: rgba(255, 240, 255, 0.035);
+  --surface-2: rgba(255, 236, 255, 0.062);
+  --surface-3: rgba(255, 228, 255, 0.1);
+  --sunken: rgba(24, 6, 38, 0.42);
+
+  --line: rgba(214, 168, 255, 0.11);
+  --line-strong: rgba(224, 186, 255, 0.2);
+
+  --card-bg: linear-gradient(158deg, rgba(126, 62, 186, 0.22), rgba(38, 14, 64, 0.5) 58%, rgba(20, 8, 36, 0.55));
+  --card-bg-open: linear-gradient(158deg, rgba(146, 74, 208, 0.28), rgba(44, 16, 74, 0.55) 58%, rgba(24, 9, 42, 0.6));
+  --card-border: rgba(214, 168, 255, 0.1);
+  --card-border-open: rgba(224, 186, 255, 0.2);
+  --card-shadow:
+    inset 0 1px 0 rgba(255, 236, 255, 0.09),
+    0 26px 60px -34px rgba(140, 60, 220, 0.75),
+    0 0 60px -30px rgba(255, 130, 220, 0.4);
+
+  --plate-bg: linear-gradient(150deg, rgba(255, 232, 255, 0.075), rgba(255, 220, 255, 0.03));
+  --plate-shadow: inset 0 1px 0 rgba(255, 236, 255, 0.12), 0 8px 22px -18px rgba(160, 70, 230, 0.9);
+  --turn-shadow: 0 10px 26px -22px rgba(150, 70, 220, 0.9);
+
+  --text: #f6ecff;
+  --text-soft: #d8c6ea;
+  --text-muted: #ac98be;
+  --text-faint: #837093;
+
+  --accent: #d79bff;
+  --accent-soft: rgba(215, 155, 255, 0.16);
+  --accent-line: rgba(215, 155, 255, 0.42);
+  --accent-glow: 0 0 26px -8px rgba(215, 155, 255, 0.95);
+  --selection: rgba(215, 155, 255, 0.32);
+  --brand-gradient: radial-gradient(circle at 32% 26%, rgba(255, 190, 245, 0.45), transparent 58%),
+    linear-gradient(150deg, rgba(196, 106, 255, 0.4), rgba(72, 96, 255, 0.3));
+  --brand-shadow: 0 10px 26px -12px rgba(200, 110, 255, 0.9);
+
+  --provider-codex: #8fb8ff;
+  --provider-claude: #ff9ec4;
+
+  --ok: #7ff0c8;
+  --pending: #ffc98a;
+
+  --dot-input: #8fb8ff;
+  --dot-cache: #7ff0c8;
+  --dot-output: #ffc98a;
+  --dot-think: #e79bff;
+
+  --space-glow-a: rgba(196, 74, 255, 0.3);
+  --space-glow-b: rgba(60, 118, 255, 0.24);
+  --space-base: linear-gradient(180deg, #1b0d2c 0, var(--bg) 38rem);
+  --space-star: rgba(240, 212, 255, 0.5);
+  --star-opacity: 0.5;
 }
+
+/* ======================================================== тема «Пульсар» === */
 
 html[data-theme="pulsar"] {
-  --bg: #041217;
-  --surface-1: rgba(223, 255, 252, 0.03);
-  --surface-2: rgba(215, 255, 252, 0.055);
-  --surface-3: rgba(203, 255, 251, 0.09);
-  --sunken: rgba(0, 15, 20, 0.38);
-  --line: rgba(116, 224, 216, 0.16);
-  --line-strong: rgba(116, 224, 216, 0.28);
-  --text: #e4fbf8;
-  --text-soft: #b6d9d5;
-  --text-muted: #80aaa7;
-  --text-faint: #5d8582;
-  --accent: #55e6d7;
-  --accent-soft: rgba(85, 230, 215, 0.13);
-  --accent-line: rgba(85, 230, 215, 0.44);
-  --provider-codex: #55e6d7;
-  --provider-claude: #ffad72;
-  --space-glow-a: rgba(0, 219, 199, 0.2);
-  --space-glow-b: rgba(27, 103, 255, 0.16);
-  --space-star: rgba(185, 255, 247, 0.4);
+  --font-numeric: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", "Roboto Mono", monospace;
+  --display-weight: 600;
+  --display-spacing: 0.12em;
+  --display-transform: uppercase;
+  --title-weight: 560;
+  --label-spacing: 0.28em;
+
+  --radius-lg: 4px;
+  --radius-md: 3px;
+  --radius-sm: 2px;
+  --radius-chip: 2px;
+  --rail-width: 3px;
+
+  --bg: #03151a;
+  --surface-1: rgba(198, 255, 250, 0.028);
+  --surface-2: rgba(198, 255, 250, 0.055);
+  --surface-3: rgba(198, 255, 250, 0.095);
+  --sunken: rgba(0, 12, 16, 0.5);
+
+  --line: rgba(74, 226, 214, 0.22);
+  --line-strong: rgba(74, 226, 214, 0.42);
+
+  --card-bg: linear-gradient(180deg, rgba(6, 32, 38, 0.86), rgba(3, 19, 24, 0.9));
+  --card-bg-open: linear-gradient(180deg, rgba(8, 42, 49, 0.9), rgba(4, 24, 30, 0.92));
+  --card-texture: repeating-linear-gradient(0deg, rgba(120, 255, 244, 0.035) 0 1px, transparent 1px 3px);
+  --card-border: rgba(74, 226, 214, 0.3);
+  --card-border-open: rgba(74, 226, 214, 0.5);
+  --card-shadow:
+    inset 0 0 0 1px rgba(3, 25, 30, 0.9),
+    inset 0 1px 0 rgba(140, 255, 246, 0.16),
+    0 0 24px -14px rgba(60, 230, 216, 0.8);
+
+  --plate-bg: linear-gradient(180deg, rgba(198, 255, 250, 0.07), rgba(198, 255, 250, 0.02));
+  --plate-texture: repeating-linear-gradient(0deg, rgba(120, 255, 244, 0.03) 0 1px, transparent 1px 3px);
+  --plate-shadow: inset 0 1px 0 rgba(150, 255, 247, 0.14);
+  --turn-shadow: 0 0 14px -10px rgba(60, 230, 216, 0.9);
+
+  --text: #e2fbf8;
+  --text-soft: #a9d8d3;
+  --text-muted: #74a9a5;
+  --text-faint: #57827f;
+
+  --accent: #3ce6d4;
+  --accent-soft: rgba(60, 230, 212, 0.12);
+  --accent-line: rgba(60, 230, 212, 0.55);
+  --accent-glow: 0 0 16px -6px rgba(60, 230, 212, 1);
+  --selection: rgba(60, 230, 212, 0.3);
+  --brand-gradient: linear-gradient(150deg, rgba(60, 230, 212, 0.32), rgba(16, 92, 120, 0.4));
+  --brand-shadow: 0 0 20px -8px rgba(60, 230, 212, 0.95);
+
+  --provider-codex: #3ce6d4;
+  --provider-claude: #ffa96a;
+
+  --ok: #3ce6d4;
+  --pending: #ffc861;
+
+  --dot-input: #3ce6d4;
+  --dot-cache: #59b7ff;
+  --dot-output: #ffc861;
+  --dot-think: #b98cff;
+
+  --space-glow-a: rgba(0, 214, 196, 0.22);
+  --space-glow-b: rgba(20, 96, 190, 0.2);
+  --space-base: linear-gradient(180deg, #05242c 0, var(--bg) 30rem);
+  --space-star: rgba(170, 255, 246, 0.34);
+  --star-opacity: 0.26;
 }
 
+/* ========================================================= тема «Gothic» === */
+
 html[data-theme="gothic"] {
-  --bg: #090909;
-  --surface-1: rgba(226, 222, 209, 0.035);
-  --surface-2: rgba(226, 222, 209, 0.065);
-  --surface-3: rgba(226, 222, 209, 0.1);
-  --sunken: rgba(0, 0, 0, 0.42);
-  --line: rgba(199, 194, 179, 0.18);
-  --line-strong: rgba(211, 205, 187, 0.32);
-  --text: #dedbd1;
-  --text-soft: #bbb7ab;
-  --text-muted: #918d83;
-  --text-faint: #69665f;
-  --accent: #c5b78f;
-  --accent-soft: rgba(197, 183, 143, 0.12);
-  --accent-line: rgba(197, 183, 143, 0.42);
-  --provider-none: #8d8a82;
-  --provider-codex: #d0ccc0;
-  --provider-claude: #b7a47a;
-  --ok: #b9a36e;
-  --pending: #8f8b82;
-  --space-glow-a: rgba(216, 212, 199, 0.14);
-  --space-glow-b: rgba(105, 102, 94, 0.12);
-  --space-star: rgba(220, 216, 204, 0.18);
-  --shadow-card: 0 24px 46px -28px rgba(0, 0, 0, 0.98);
+  /* Резная капитель заставки применяется только к шапке: её глифы рисуются
+     заглавными, а кириллицы в titling-гарнитурах Windows нет, поэтому внутри
+     журнала используется обычная антиква — иначе латинские слова посреди
+     русского заголовка вставали бы в верхний регистр. */
+  --font-body: "Constantia", "Palatino Linotype", "Book Antiqua", Georgia, "Times New Roman", serif;
+  --font-display: "Palatino Linotype", "Book Antiqua", "Constantia", Georgia, serif;
+  --font-title: "Perpetua Titling MT", "Felix Titling", "Engravers MT", "Palatino Linotype",
+    Georgia, serif;
+  --font-numeric: "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --display-weight: 700;
+  --display-spacing: 0.07em;
+  --display-transform: uppercase;
+  --display-shadow: 0 1px 0 #000, 0 -1px 0 rgba(230, 240, 250, 0.16), 0 0 16px rgba(198, 214, 230, 0.16);
+  --title-weight: 600;
+  --label-spacing: 0.22em;
+
+  --radius-lg: 3px;
+  --radius-md: 2px;
+  --radius-sm: 2px;
+  --radius-chip: 2px;
+  --rail-width: 3px;
+
+  --bg: #060708;
+  --surface-1: rgba(214, 226, 238, 0.035);
+  --surface-2: rgba(214, 226, 238, 0.06);
+  --surface-3: rgba(214, 226, 238, 0.1);
+  --sunken: rgba(0, 0, 0, 0.5);
+
+  --line: rgba(186, 199, 212, 0.18);
+  --line-strong: rgba(200, 212, 224, 0.32);
+
+  --card-bg: linear-gradient(180deg, rgba(22, 24, 26, 0.96), rgba(9, 10, 11, 0.97));
+  --card-bg-open: linear-gradient(180deg, rgba(27, 29, 32, 0.97), rgba(11, 12, 13, 0.98));
+  --card-texture:
+    linear-gradient(134deg, rgba(214, 226, 238, 0.03), transparent 30%),
+    repeating-linear-gradient(21deg, rgba(226, 238, 250, 0.012) 0 1px, transparent 1px 9px),
+    repeating-linear-gradient(-64deg, rgba(0, 0, 0, 0.3) 0 1px, transparent 1px 14px);
+  --card-border: rgba(186, 199, 212, 0.2);
+  --card-border-open: rgba(200, 212, 224, 0.32);
+  --card-shadow:
+    inset 0 1px 0 rgba(226, 238, 250, 0.1),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.85),
+    0 24px 46px -28px rgba(0, 0, 0, 0.98);
+
+  --plate-bg: linear-gradient(180deg, rgba(38, 41, 44, 0.95), rgba(16, 17, 18, 0.97));
+  --plate-texture: repeating-linear-gradient(24deg, rgba(226, 238, 250, 0.013) 0 1px, transparent 1px 8px);
+  --plate-shadow:
+    inset 0 1px 0 rgba(226, 238, 250, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.8);
+  --turn-shadow: 0 12px 24px -20px rgba(0, 0, 0, 1);
+
+  --text: #dfe4e9;
+  --text-soft: #b4bbc2;
+  --text-muted: #8d959c;
+  --text-faint: #666d74;
+
+  --accent: #c3cdd7;
+  --accent-soft: rgba(195, 205, 215, 0.12);
+  --accent-line: rgba(195, 205, 215, 0.44);
+  --accent-glow: 0 0 18px -8px rgba(210, 222, 234, 0.75);
+  --selection: rgba(195, 205, 215, 0.26);
+  --brand-gradient:
+    radial-gradient(circle at 38% 26%, rgba(230, 240, 250, 0.22), transparent 40%),
+    linear-gradient(148deg, #34383c, #101113);
+  --brand-shadow:
+    inset 0 1px 0 rgba(230, 240, 250, 0.16),
+    inset 0 -8px 14px rgba(0, 0, 0, 0.42),
+    0 8px 20px -12px rgba(0, 0, 0, 0.95);
+
+  --provider-none: #7f878e;
+  --provider-codex: #d7dfe7;
+  --provider-claude: #9fb2c4;
+
+  /* холодный камень: ни зелёного, ни красного — живое соединение серебрится */
+  --ok: #cfd8e1;
+  --pending: #7e858c;
+
+  --dot-input: #d7dfe7;
+  --dot-cache: #a9b6c2;
+  --dot-output: #c3cdd7;
+  --dot-think: #8b939b;
+
+  --space-glow-a: rgba(214, 226, 238, 0.1);
+  --space-glow-b: rgba(104, 114, 124, 0.12);
+  --space-base: linear-gradient(180deg, #141618 0, #0a0b0c 22rem, var(--bg) 100%);
+  --space-star: rgba(222, 232, 242, 0.14);
+  --star-opacity: 0.5;
 }
+
+/* ====================================================== тема «BlackHole» === */
+
+html[data-theme="blackhole"] {
+  --display-weight: 600;
+  --display-spacing: 0.02em;
+  --label-spacing: 0.2em;
+
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+  --rail-width: 2px;
+
+  --bg: #000000;
+  --surface-1: rgba(232, 238, 252, 0.026);
+  --surface-2: rgba(232, 238, 252, 0.05);
+  --surface-3: rgba(232, 238, 252, 0.085);
+  --sunken: rgba(0, 0, 0, 0.6);
+
+  --line: rgba(226, 232, 244, 0.12);
+  --line-strong: rgba(226, 232, 244, 0.26);
+
+  --card-bg: linear-gradient(180deg, rgba(8, 8, 10, 0.9), rgba(0, 0, 0, 0.94));
+  --card-bg-open: linear-gradient(180deg, rgba(12, 12, 15, 0.92), rgba(0, 0, 0, 0.95));
+  --card-border: rgba(226, 232, 244, 0.14);
+  --card-border-open: rgba(255, 190, 120, 0.34);
+  --card-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 42px -22px rgba(255, 158, 76, 0.55),
+    0 30px 60px -34px rgba(0, 0, 0, 1);
+
+  --plate-bg: linear-gradient(180deg, rgba(232, 238, 252, 0.06), rgba(0, 0, 0, 0.35));
+  --plate-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --turn-shadow: 0 0 26px -18px rgba(255, 168, 84, 0.85);
+
+  --text: #f4f7fd;
+  --text-soft: #c3c9d6;
+  --text-muted: #8d93a1;
+  --text-faint: #646a78;
+
+  --accent: #eef2ff;
+  --accent-soft: rgba(238, 242, 255, 0.1);
+  --accent-line: rgba(238, 242, 255, 0.36);
+  --accent-glow: 0 0 22px -8px rgba(255, 255, 255, 0.85);
+  --selection: rgba(255, 168, 84, 0.32);
+  --brand-gradient:
+    radial-gradient(circle at 50% 50%, #000 0 34%, rgba(255, 178, 96, 0.9) 44%,
+      rgba(255, 120, 30, 0.45) 62%, rgba(0, 0, 0, 0.9) 88%);
+  --brand-shadow: 0 0 26px -8px rgba(255, 158, 76, 0.9);
+
+  --provider-none: #7f8593;
+  --provider-codex: #eef2ff;
+  --provider-claude: #ffa854;
+
+  --ok: #ffffff;
+  --pending: #ffa854;
+
+  --dot-input: #eef2ff;
+  --dot-cache: #9fb6ff;
+  --dot-output: #ffa854;
+  --dot-think: #d0a8ff;
+
+  --space-glow-a: rgba(255, 150, 60, 0.16);
+  --space-glow-b: rgba(70, 96, 210, 0.14);
+  --space-base: radial-gradient(120% 80% at 50% -6%, #0a0910 0, #000 62%);
+  --space-star: rgba(240, 246, 255, 0.55);
+  --star-opacity: 0.6;
+}
+
+/* ================================================================== база === */
 
 *,
 *::before,
@@ -140,9 +419,9 @@ body {
   background:
     radial-gradient(115% 55% at 84% -14%, var(--space-glow-a), transparent 60%),
     radial-gradient(85% 50% at 6% -10%, var(--space-glow-b), transparent 58%),
-    linear-gradient(180deg, #0d1219 0, var(--bg) 32rem);
+    var(--space-base);
   color: var(--text);
-  font-family: var(--font-sans);
+  font-family: var(--font-body);
   font-size: 15px;
   line-height: 1.45;
   margin: 0;
@@ -150,29 +429,7 @@ body {
   padding: 0;
 }
 
-html[data-theme="nebula"] body {
-  background:
-    radial-gradient(90% 65% at 88% -8%, var(--space-glow-a), transparent 62%),
-    radial-gradient(100% 70% at -8% 20%, var(--space-glow-b), transparent 66%),
-    linear-gradient(180deg, #170c24 0, var(--bg) 35rem);
-}
-
-html[data-theme="pulsar"] body {
-  background:
-    radial-gradient(90% 60% at 82% -5%, var(--space-glow-a), transparent 62%),
-    radial-gradient(75% 55% at 8% 8%, var(--space-glow-b), transparent 66%),
-    linear-gradient(180deg, #061c23 0, var(--bg) 34rem);
-}
-
-html[data-theme="gothic"] body {
-  background:
-    radial-gradient(ellipse at 50% -16%, rgba(218, 214, 200, 0.16), transparent 36rem),
-    radial-gradient(ellipse at 10% 34%, rgba(112, 108, 98, 0.1), transparent 30rem),
-    repeating-linear-gradient(107deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 9px),
-    repeating-linear-gradient(17deg, rgba(0, 0, 0, 0.16) 0 2px, transparent 2px 13px),
-    linear-gradient(180deg, #171717 0, #0b0b0b 24rem, var(--bg) 100%);
-}
-
+/* звёздная пыль — общий слой для всех тем */
 body::before {
   background-image:
     radial-gradient(circle, var(--space-star) 0 0.65px, transparent 0.9px),
@@ -182,24 +439,24 @@ body::before {
   content: "";
   inset: 0;
   mask-image: linear-gradient(to bottom, black, transparent 72%);
-  opacity: 0.34;
+  opacity: var(--star-opacity);
   pointer-events: none;
   position: fixed;
   z-index: 0;
 }
 
-html[data-theme="gothic"] body::before {
-  background-image:
-    radial-gradient(ellipse at 50% 4%, transparent 0 7rem, rgba(222, 218, 205, 0.035) 7.2rem 7.35rem, transparent 7.55rem),
-    repeating-radial-gradient(ellipse at 50% 12%, transparent 0 1.8rem, rgba(214, 209, 194, 0.025) 1.9rem 2rem),
-    repeating-linear-gradient(72deg, transparent 0 1.1rem, rgba(219, 215, 201, 0.022) 1.15rem 1.2rem);
-  background-size: 100% 34rem, 100% 39rem, 13rem 13rem;
-  mask-image: linear-gradient(to bottom, black, rgba(0, 0, 0, 0.45) 58%, transparent 92%);
-  opacity: 0.72;
+/* характерный слой темы */
+body::after {
+  content: "";
+  inset: 0;
+  opacity: var(--decor-opacity);
+  pointer-events: none;
+  position: fixed;
+  z-index: 0;
 }
 
 ::selection {
-  background: rgba(108, 178, 255, 0.3);
+  background: var(--selection);
 }
 
 :focus-visible {
@@ -220,7 +477,7 @@ html[data-theme="gothic"] body::before {
 
 *::-webkit-scrollbar-thumb {
   background: var(--line-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-chip);
 }
 
 *::-webkit-scrollbar-track {
@@ -241,17 +498,28 @@ a:hover {
   cursor: default;
 }
 
-/* ------------------------------------------------------------------ шапка */
+/* ================================================================ шапка === */
 
 .app-header {
   backdrop-filter: blur(18px) saturate(150%);
   -webkit-backdrop-filter: blur(18px) saturate(150%);
-  background: linear-gradient(180deg, rgba(9, 13, 19, 0.93), rgba(9, 13, 19, 0.74));
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
   border-bottom: 1px solid var(--line);
   padding: max(0.55rem, env(safe-area-inset-top)) 0 0.55rem;
   position: sticky;
   top: 0;
   z-index: 20;
+}
+
+.app-header::after {
+  background: linear-gradient(90deg, transparent, var(--accent-line), transparent);
+  bottom: -1px;
+  content: "";
+  height: 1px;
+  left: 0;
+  opacity: 0.7;
+  position: absolute;
+  right: 0;
 }
 
 .app-header-inner {
@@ -263,6 +531,7 @@ a:hover {
   max-width: var(--content-width);
   padding-left: var(--gutter-left);
   padding-right: var(--gutter-right);
+  position: relative;
 }
 
 .brand {
@@ -274,10 +543,10 @@ a:hover {
 
 .brand-mark {
   align-items: center;
-  background: linear-gradient(150deg, rgba(108, 178, 255, 0.28), rgba(126, 78, 190, 0.22));
+  background: var(--brand-gradient);
   border: 1px solid var(--accent-line);
-  border-radius: 11px;
-  box-shadow: 0 6px 18px -10px rgba(108, 178, 255, 0.7);
+  border-radius: calc(var(--radius-md) + 0px);
+  box-shadow: var(--brand-shadow);
   color: var(--accent);
   display: flex;
   flex: 0 0 auto;
@@ -299,19 +568,22 @@ a:hover {
   color: var(--text-faint);
   font-size: 0.63rem;
   font-weight: 700;
-  letter-spacing: 0.16em;
+  letter-spacing: var(--label-spacing);
   margin: 0;
   text-transform: uppercase;
 }
 
 h1 {
+  font-family: var(--font-title);
   font-size: 1.22rem;
-  font-weight: 620;
-  letter-spacing: -0.02em;
+  font-weight: var(--display-weight);
+  letter-spacing: var(--display-spacing);
   line-height: 1.15;
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-shadow: var(--display-shadow);
+  text-transform: var(--display-transform);
   white-space: nowrap;
 }
 
@@ -326,7 +598,7 @@ h1 {
   align-items: center;
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-chip);
   color: var(--text-muted);
   display: inline-flex;
   font-size: 0.74rem;
@@ -345,7 +617,7 @@ h1 {
     linear-gradient(135deg, var(--accent) 50%, transparent 50%) calc(100% - 0.52rem) 50% / 0.28rem 0.28rem no-repeat,
     var(--accent-soft);
   border: 1px solid var(--accent-line);
-  border-radius: 999px;
+  border-radius: var(--radius-chip);
   color: var(--text);
   cursor: pointer;
   font: inherit;
@@ -358,52 +630,11 @@ h1 {
   color: var(--text);
 }
 
-html[data-theme="gothic"] .app-header {
-  background:
-    linear-gradient(180deg, rgba(15, 15, 15, 0.97), rgba(10, 10, 10, 0.82)),
-    repeating-linear-gradient(110deg, transparent 0 0.45rem, rgba(255, 255, 255, 0.018) 0.5rem 0.55rem);
-  border-bottom-color: rgba(197, 183, 143, 0.24);
-}
-
-html[data-theme="gothic"] .brand-mark {
-  background:
-    radial-gradient(circle at 40% 28%, rgba(232, 228, 214, 0.2), transparent 36%),
-    linear-gradient(145deg, #34332f, #141414);
-  border-color: rgba(205, 199, 181, 0.42);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    inset 0 -8px 14px rgba(0, 0, 0, 0.36),
-    0 7px 20px -11px rgba(0, 0, 0, 0.95);
-  color: #d3cdbd;
-}
-
-html[data-theme="gothic"] .brand-text h1,
-html[data-theme="gothic"] .journal summary[data-work-log-day] > strong {
-  color: #d7d3c7;
-  font-family: "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
-  font-weight: 600;
-  letter-spacing: 0.045em;
-  text-shadow:
-    0 1px 0 #050505,
-    0 0 12px rgba(218, 212, 195, 0.14);
-}
-
-html[data-theme="gothic"] .brand-text h1 {
-  font-size: 1.34rem;
-  text-transform: uppercase;
-}
-
-html[data-theme="gothic"] .eyebrow {
-  color: #8f897a;
-  font-family: "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
-  letter-spacing: 0.22em;
-}
-
 .connection {
   align-items: center;
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-chip);
   color: var(--text-muted);
   display: inline-flex;
   font-size: 0.74rem;
@@ -415,7 +646,7 @@ html[data-theme="gothic"] .eyebrow {
 .connection-dot {
   background: var(--pending);
   border-radius: 50%;
-  box-shadow: 0 0 0 0.2rem rgba(240, 185, 91, 0.14);
+  box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--pending) 16%, transparent);
   flex: 0 0 auto;
   height: 0.42rem;
   width: 0.42rem;
@@ -424,22 +655,22 @@ html[data-theme="gothic"] .eyebrow {
 .connection[data-connection="online"] .connection-dot {
   animation: pulse 2.4s ease-in-out infinite;
   background: var(--ok);
-  box-shadow: 0 0 0 0.2rem rgba(79, 208, 138, 0.14);
 }
 
 @keyframes pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0.2rem rgba(79, 208, 138, 0.14);
+    box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--ok) 18%, transparent);
   }
 
   50% {
-    box-shadow: 0 0 0 0.32rem rgba(79, 208, 138, 0.04);
+    box-shadow: 0 0 0 0.34rem color-mix(in srgb, var(--ok) 4%, transparent);
   }
 }
 
 .stamp {
   color: var(--text-faint);
+  font-family: var(--font-numeric);
   font-size: 0.74rem;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -453,7 +684,7 @@ button {
   align-items: center;
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-chip);
   color: var(--text-soft);
   cursor: pointer;
   display: inline-flex;
@@ -466,6 +697,7 @@ button {
 .refresh:hover:not(:disabled) {
   background: var(--accent-soft);
   border-color: var(--accent-line);
+  box-shadow: var(--accent-glow);
   color: var(--accent);
 }
 
@@ -489,7 +721,7 @@ button {
   }
 }
 
-/* ------------------------------------------------------------ полотно дня */
+/* ========================================================= полотно дня === */
 
 main {
   margin: 0 auto;
@@ -531,35 +763,25 @@ main {
 
 .journal details[data-work-log-day-section] {
   backdrop-filter: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.016));
-  border: 1px solid var(--line);
+  background-color: transparent;
+  background-image: var(--card-texture), var(--card-bg);
+  border: 1px solid var(--card-border);
   border-radius: var(--radius-lg);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), var(--shadow-card);
+  box-shadow: var(--card-shadow);
   margin: 0 0 0.8rem;
   padding: 0.4rem 0.5rem;
+  position: relative;
 }
 
 .journal details[data-work-log-day-section][open] {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02));
-  border-color: var(--line-strong);
+  background-image: var(--card-texture), var(--card-bg-open);
+  border-color: var(--card-border-open);
   padding-bottom: 0.55rem;
-}
-
-html[data-theme="gothic"] .journal details[data-work-log-day-section] {
-  background:
-    linear-gradient(135deg, rgba(226, 222, 209, 0.06), transparent 34%),
-    repeating-linear-gradient(18deg, rgba(255, 255, 255, 0.012) 0 1px, transparent 1px 8px),
-    linear-gradient(180deg, rgba(35, 35, 33, 0.94), rgba(17, 17, 17, 0.97));
-  border-color: rgba(195, 190, 174, 0.22);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.07),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.7),
-    var(--shadow-card);
 }
 
 .journal summary[data-work-log-day] {
   align-items: center;
-  border-radius: 10px;
+  border-radius: calc(var(--radius-lg) - 6px);
   cursor: pointer;
   display: flex;
   flex-wrap: wrap;
@@ -567,6 +789,7 @@ html[data-theme="gothic"] .journal details[data-work-log-day-section] {
   gap: 0.35rem 0.5rem;
   overflow-x: visible;
   padding: 0.45rem 0.55rem;
+  position: relative;
   transition: background 0.16s ease;
 }
 
@@ -594,21 +817,24 @@ html[data-theme="gothic"] .journal details[data-work-log-day-section] {
 }
 
 .journal summary[data-work-log-day] > strong {
+  font-family: var(--font-display);
   font-size: 1.02rem;
   font-variant-numeric: tabular-nums;
-  font-weight: 640;
-  letter-spacing: -0.01em;
+  font-weight: var(--display-weight);
+  letter-spacing: var(--display-spacing);
   margin-right: 0.2rem;
+  text-shadow: var(--display-shadow);
 }
 
+/* дневной итог прижат к дате, детализация — к правому краю */
 .journal span[data-day-usage-table] {
   align-items: center;
   border: 0;
   border-radius: 0;
   display: flex;
+  flex: 1 1 auto;
   flex-wrap: wrap;
   gap: 0.3rem;
-  flex: 1 1 auto;
   margin-left: 0;
   overflow: visible;
 }
@@ -624,9 +850,11 @@ html[data-theme="gothic"] .journal details[data-work-log-day-section] {
 .journal span[data-day-usage],
 .journal span[data-day-usage-part] {
   align-items: baseline;
-  background: var(--surface-2);
+  background-color: transparent;
+  background-image: var(--plate-texture), var(--plate-bg);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-chip);
+  box-shadow: var(--plate-shadow);
   color: var(--text-muted);
   display: inline-flex;
   font-size: 0.75rem;
@@ -635,14 +863,44 @@ html[data-theme="gothic"] .journal details[data-work-log-day-section] {
   width: auto;
 }
 
+.journal span[data-day-usage-part]::before {
+  align-self: center;
+  background: var(--dot, var(--text-faint));
+  border-radius: 50%;
+  box-shadow: 0 0 8px -1px var(--dot, var(--text-faint));
+  content: "";
+  flex: 0 0 auto;
+  height: 0.36rem;
+  margin-right: 0.05rem;
+  width: 0.36rem;
+}
+
+.journal span[data-day-usage-breakdown] > span[data-day-usage-part]:nth-child(1) {
+  --dot: var(--dot-input);
+}
+
+.journal span[data-day-usage-breakdown] > span[data-day-usage-part]:nth-child(2) {
+  --dot: var(--dot-cache);
+}
+
+.journal span[data-day-usage-breakdown] > span[data-day-usage-part]:nth-child(3) {
+  --dot: var(--dot-output);
+}
+
+.journal span[data-day-usage-breakdown] > span[data-day-usage-part]:nth-child(4) {
+  --dot: var(--dot-think);
+}
+
 .journal span[data-day-usage] {
-  background: var(--accent-soft);
+  background-color: transparent;
+  background-image: linear-gradient(180deg, var(--accent-soft), var(--accent-soft));
   border-color: var(--accent-line);
+  box-shadow: var(--plate-shadow), var(--accent-glow);
   color: var(--text-soft);
   font-weight: 600;
 }
 
-/* ------------------------------------------------------- задача и её ходы */
+/* ==================================================== задача и её ходы === */
 
 .journal div[data-work-log-table] {
   --work-log-task-card-width: 100%;
@@ -658,9 +916,9 @@ html[data-theme="gothic"] .journal details[data-work-log-day-section] {
 .journal div[data-work-log-header] > strong {
   font-size: 0.64rem;
   font-weight: 650;
-  letter-spacing: 0.15em;
+  letter-spacing: var(--label-spacing);
   padding: 0 0.55rem;
-  text-transform: uppercase;
+  text-transform: var(--label-transform);
 }
 
 .journal div[data-work-log-row] {
@@ -691,13 +949,17 @@ html[data-theme="gothic"] .journal details[data-work-log-day-section] {
 }
 
 .journal div[data-work-log-task-cell] > div[data-work-log-task-content] {
-  background:
-    linear-gradient(115deg, color-mix(in srgb, var(--row-accent) 8%, transparent), transparent 42%),
-    var(--surface-2);
+  background-color: transparent;
+  background-image:
+    linear-gradient(115deg, color-mix(in srgb, var(--row-accent) 10%, transparent), transparent 46%),
+    var(--plate-texture),
+    var(--plate-bg);
   border: 1px solid var(--line);
-  border-left: 2px solid var(--row-accent);
+  border-left: var(--rail-width) solid var(--row-accent);
   border-radius: var(--radius-sm);
-  font-weight: 560;
+  box-shadow: var(--plate-shadow), -7px 0 18px -14px var(--row-accent);
+  font-family: var(--font-display);
+  font-weight: var(--title-weight);
   line-height: 1.35;
   overflow: hidden;
   padding: 0.42rem 0.6rem;
@@ -705,41 +967,13 @@ html[data-theme="gothic"] .journal details[data-work-log-day-section] {
 }
 
 .journal div[data-work-log-task-cell] > div[data-work-log-task-content]::after {
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--row-accent) 24%, transparent), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--row-accent) 26%, transparent), transparent);
   content: "";
   height: 1px;
   inset: 0.05rem 12% auto;
   opacity: 0.55;
   pointer-events: none;
   position: absolute;
-}
-
-html[data-theme="gothic"] .journal div[data-work-log-task-cell] > div[data-work-log-task-content] {
-  background:
-    linear-gradient(110deg, color-mix(in srgb, var(--row-accent) 9%, transparent), transparent 44%),
-    repeating-linear-gradient(22deg, rgba(255, 255, 255, 0.014) 0 1px, transparent 1px 7px),
-    linear-gradient(180deg, #292927, #1a1a19);
-  border-color: rgba(196, 190, 172, 0.24);
-  border-left-color: var(--row-accent);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.7);
-  color: #d5d1c5;
-  font-family: "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
-  font-size: 1.01rem;
-  letter-spacing: 0.015em;
-}
-
-html[data-theme="gothic"] .journal details[data-work-log-turn-details] {
-  background:
-    repeating-linear-gradient(105deg, rgba(255, 255, 255, 0.01) 0 1px, transparent 1px 8px),
-    linear-gradient(180deg, rgba(41, 41, 39, 0.82), rgba(24, 24, 23, 0.9));
-  border-color: rgba(190, 184, 168, 0.2);
-}
-
-html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
-  border-color: var(--accent-line);
-  box-shadow: inset 2px 0 0 var(--accent), 0 12px 24px -20px #000;
 }
 
 .journal div[data-work-log-task-content] a,
@@ -751,16 +985,23 @@ html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
   margin-top: 0.32rem;
 }
 
+/* Сводка расхода: фиксированные колонки, поэтому единицы и проценты
+   выстраиваются в общий столбец у всех строк задачи. */
+.journal summary[data-task-usage],
+.journal span[data-task-usage-part] {
+  column-gap: 0.4rem;
+  display: grid;
+  font-family: var(--font-numeric);
+  font-size: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) 8.6ch 6ch;
+  padding: 0.24rem 0.55rem;
+}
+
 .journal summary[data-task-usage] {
   align-items: center;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   color: var(--text-muted);
-  display: grid;
-  font-size: 0.75rem;
-  gap: 0.4rem;
-  grid-template-columns: minmax(0, 1fr) auto 5.2ch;
-  padding: 0.24rem 0.55rem;
   transition: background 0.16s ease, border-color 0.16s ease;
 }
 
@@ -783,15 +1024,10 @@ html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
 
 .journal span[data-task-usage-part] {
   color: var(--text-muted);
-  column-gap: 0.4rem;
-  display: grid;
-  font-size: 0.75rem;
-  grid-template-columns: minmax(0, 1fr) auto 5.2ch;
-  padding: 0.24rem 0.55rem;
 }
 
-.journal summary[data-task-usage] > span[data-usage-percent],
-.journal span[data-task-usage-part] > span[data-usage-percent] {
+.journal summary[data-task-usage] > span,
+.journal span[data-task-usage-part] > span {
   justify-self: end;
   text-align: right;
 }
@@ -832,7 +1068,7 @@ html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
   align-items: center;
   background: transparent;
   border: 1px dashed var(--line-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-chip);
   color: var(--text-muted);
   display: flex;
   font-size: 0.75rem;
@@ -873,21 +1109,23 @@ html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
 /* карточка хода */
 
 .journal details[data-work-log-turn-details] {
-  background: var(--surface-1);
+  background-color: transparent;
+  background-image: var(--plate-texture), linear-gradient(180deg, var(--surface-1), var(--surface-1));
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  transition: background 0.16s ease, border-color 0.16s ease;
+  transition: background-color 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
 }
 
 .journal details[data-work-log-turn-details]:hover {
-  background: var(--surface-2);
+  background-color: var(--surface-2);
   border-color: var(--line-strong);
+  box-shadow: var(--turn-shadow);
 }
 
 .journal details[data-work-log-turn-details][open] {
-  background: var(--surface-2);
+  background-color: var(--surface-2);
   border: 1px solid var(--accent-line);
-  box-shadow: inset 2px 0 0 var(--accent), var(--shadow-turn);
+  box-shadow: inset var(--rail-width) 0 0 var(--accent), var(--turn-shadow);
 }
 
 .journal details[data-work-log-turn-details] > summary {
@@ -904,6 +1142,7 @@ html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
 
 .journal span[data-work-log-turn-meta] {
   color: var(--text-muted);
+  font-family: var(--font-numeric);
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
   gap: 0.45rem;
@@ -917,7 +1156,7 @@ html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
 .journal span[data-work-log-turn-title] {
   border-left: 1px solid var(--line);
   color: var(--text);
-  font-weight: 545;
+  font-weight: var(--title-weight);
   padding: 0.42rem 0.7rem;
 }
 
@@ -1007,7 +1246,7 @@ html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
 .journal div[data-work-log-turn-files] [role="link"] {
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-chip);
   color: var(--text-muted);
   font-size: 0.72rem;
   padding: 0.14rem 0.5rem;
@@ -1030,12 +1269,13 @@ html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
   padding: 0.5rem 0.7rem;
 }
 
-/* ----------------------------------------------------------- расход в ТЭ */
+/* ========================================================= расход в ТЭ === */
 
 .journal span[data-kilo-usage],
 .journal span[data-mega-usage],
 .journal span[data-high-usage] {
-  border-radius: 0.35rem;
+  border-radius: calc(var(--radius-sm) - 3px);
+  font-family: var(--font-numeric);
   font-variant-numeric: tabular-nums;
   font-weight: 620;
   padding: 0.02rem 0.28rem;
@@ -1044,14 +1284,17 @@ html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
 
 .journal span[data-kilo-usage] {
   background: rgba(229, 192, 123, 0.11);
+  box-shadow: inset 0 0 0 1px rgba(229, 192, 123, 0.18);
 }
 
 .journal span[data-mega-usage] {
   background: rgba(255, 157, 0, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 157, 0, 0.2);
 }
 
 .journal span[data-high-usage] {
   background: rgba(241, 76, 76, 0.13);
+  box-shadow: inset 0 0 0 1px rgba(241, 76, 76, 0.24);
 }
 
 .journal span[data-usage-percent] {
@@ -1060,7 +1303,7 @@ html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
   font-variant-numeric: tabular-nums;
 }
 
-/* --------------------------------------------------- нестандартные случаи */
+/* ============================================== нестандартные случаи === */
 
 [data-mini-app-fallback] {
   background: var(--surface-1);
@@ -1081,7 +1324,252 @@ html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
   text-align: center;
 }
 
-/* ------------------------------------------------------------- адаптивность */
+/* ====================================== «Орбита»: кольца и приборный блик === */
+
+html:not([data-theme]) body::after,
+html[data-theme="orbit"] body::after {
+  background-image:
+    repeating-radial-gradient(
+      circle at 50% -32%,
+      transparent 0 15.4rem,
+      rgba(126, 178, 240, 0.085) 15.4rem 15.55rem,
+      transparent 15.55rem 16rem
+    ),
+    radial-gradient(circle at 50% -32%, transparent 0 46rem, rgba(126, 178, 240, 0.07) 46rem 46.14rem, transparent 46.14rem);
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.85), transparent 78%);
+}
+
+html[data-theme="orbit"] .journal details[data-work-log-day-section]::before,
+html:not([data-theme]) .journal details[data-work-log-day-section]::before {
+  background: linear-gradient(90deg, transparent, var(--accent-line), transparent);
+  border-radius: var(--radius-lg);
+  content: "";
+  height: 1px;
+  inset: -1px 18% auto;
+  opacity: 0.5;
+  pointer-events: none;
+  position: absolute;
+}
+
+/* ============================== «Туманность»: облака и мягкие разделители === */
+
+html[data-theme="nebula"] body::after {
+  background-image:
+    radial-gradient(38% 30% at 24% 12%, rgba(255, 120, 220, 0.2), transparent 70%),
+    radial-gradient(46% 34% at 78% 26%, rgba(120, 92, 255, 0.22), transparent 72%),
+    radial-gradient(40% 30% at 52% 78%, rgba(60, 150, 255, 0.14), transparent 74%);
+  filter: blur(14px);
+}
+
+html[data-theme="nebula"] .journal details[data-work-log-day-section] {
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+
+html[data-theme="nebula"] .journal div[data-work-log-body] > div[data-work-log-row] {
+  border-bottom-color: transparent;
+  border-image: linear-gradient(90deg, transparent, var(--line-strong) 22%, var(--line-strong) 78%, transparent) 1;
+}
+
+html[data-theme="nebula"] .journal span[data-work-log-turn-title],
+html[data-theme="nebula"] .journal summary[data-task-usage],
+html[data-theme="nebula"] .journal span[data-task-usage-breakdown] {
+  border-color: transparent;
+}
+
+html[data-theme="nebula"] .journal details[data-work-log-turn-details] {
+  border-color: transparent;
+  box-shadow: var(--turn-shadow);
+}
+
+html[data-theme="nebula"] .journal details[data-work-log-turn-details]:hover {
+  border-color: var(--line-strong);
+}
+
+html[data-theme="nebula"] .journal summary[data-work-log-day] > strong {
+  text-shadow: 0 0 22px rgba(215, 155, 255, 0.55);
+}
+
+/* ================================= «Пульсар»: сканлайны, скобки, импульс === */
+
+html[data-theme="pulsar"] body::after {
+  background-image:
+    repeating-radial-gradient(
+      circle at 50% 0%,
+      transparent 0 6.8rem,
+      rgba(60, 230, 212, 0.06) 6.8rem 6.9rem,
+      transparent 6.9rem 7.4rem
+    ),
+    repeating-linear-gradient(0deg, rgba(60, 230, 212, 0.035) 0 1px, transparent 1px 4px);
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9), transparent 82%);
+}
+
+html[data-theme="pulsar"] .journal details[data-work-log-day-section]::before,
+html[data-theme="pulsar"] .journal details[data-work-log-day-section]::after {
+  border-color: var(--accent);
+  border-style: solid;
+  content: "";
+  height: 0.7rem;
+  pointer-events: none;
+  position: absolute;
+  width: 0.7rem;
+}
+
+html[data-theme="pulsar"] .journal details[data-work-log-day-section]::before {
+  border-width: 1px 0 0 1px;
+  left: -1px;
+  top: -1px;
+}
+
+html[data-theme="pulsar"] .journal details[data-work-log-day-section]::after {
+  border-width: 0 1px 1px 0;
+  bottom: -1px;
+  right: -1px;
+}
+
+html[data-theme="pulsar"] .journal span[data-day-usage],
+html[data-theme="pulsar"] .journal span[data-day-usage-part] {
+  border-left: 2px solid var(--dot, var(--accent));
+}
+
+html[data-theme="pulsar"] .journal span[data-day-usage] {
+  --dot: var(--accent);
+}
+
+html[data-theme="pulsar"] .journal span[data-day-usage-part]::before {
+  border-radius: 0;
+  height: 0.3rem;
+  width: 0.3rem;
+}
+
+html[data-theme="pulsar"] .journal div[data-work-log-header] > strong,
+html[data-theme="pulsar"] .eyebrow {
+  color: var(--accent);
+  opacity: 0.72;
+}
+
+/* ======================================== «Gothic»: камень, свод, фаска === */
+
+html[data-theme="gothic"] body::after {
+  background-image:
+    radial-gradient(ellipse 24rem 18rem at 50% -2%, rgba(214, 226, 238, 0.07), transparent 72%),
+    repeating-linear-gradient(101deg, rgba(226, 238, 250, 0.016) 0 1px, transparent 1px 11px),
+    repeating-linear-gradient(-72deg, rgba(0, 0, 0, 0.24) 0 2px, transparent 2px 17px),
+    radial-gradient(120% 90% at 50% 42%, transparent 42%, rgba(0, 0, 0, 0.58) 100%);
+}
+
+html[data-theme="gothic"] .app-header {
+  background:
+    linear-gradient(180deg, rgba(15, 16, 17, 0.97), rgba(8, 9, 10, 0.84)),
+    repeating-linear-gradient(110deg, transparent 0 0.45rem, rgba(226, 238, 250, 0.016) 0.5rem 0.55rem);
+  border-bottom-color: var(--accent-line);
+}
+
+html[data-theme="gothic"] .app-header::after {
+  background: linear-gradient(90deg, transparent, rgba(205, 216, 226, 0.6), transparent);
+  opacity: 0.5;
+}
+
+html[data-theme="gothic"] .eyebrow {
+  color: #949ba2;
+  font-family: var(--font-title);
+  font-size: 0.66rem;
+}
+
+html[data-theme="gothic"] .journal details[data-work-log-day-section]::before {
+  border: 1px solid rgba(226, 238, 250, 0.07);
+  border-radius: 1px;
+  content: "";
+  inset: 3px;
+  pointer-events: none;
+  position: absolute;
+}
+
+html[data-theme="gothic"] .journal summary[data-work-log-day] > strong {
+  color: #e7ecf1;
+}
+
+html[data-theme="gothic"] .journal span[data-work-log-turn-title],
+html[data-theme="gothic"] .journal div[data-work-log-task-content] a,
+html[data-theme="gothic"] .journal div[data-work-log-task-content] [role="link"] {
+  font-family: var(--font-display);
+  letter-spacing: 0.012em;
+}
+
+html[data-theme="gothic"] .journal div[data-work-log-task-cell] > div[data-work-log-task-content] {
+  font-size: 1.01rem;
+}
+
+html[data-theme="gothic"] .journal details[data-work-log-turn-details] {
+  background-image: var(--plate-texture), linear-gradient(180deg, rgba(40, 43, 46, 0.8), rgba(21, 22, 24, 0.9));
+}
+
+html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
+  box-shadow:
+    inset var(--rail-width) 0 0 var(--accent),
+    inset 0 1px 0 rgba(226, 238, 250, 0.1),
+    var(--turn-shadow);
+}
+
+html[data-theme="gothic"] .journal details[data-work-log-previous-turns] > summary {
+  border-style: solid;
+}
+
+html[data-theme="gothic"] .connection-dot {
+  box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--pending) 22%, transparent);
+}
+
+/* в холодном камне тёплыми остаются только сами цифры расхода, не подложка */
+html[data-theme="gothic"] .journal span[data-kilo-usage],
+html[data-theme="gothic"] .journal span[data-mega-usage],
+html[data-theme="gothic"] .journal span[data-high-usage] {
+  background: rgba(226, 238, 250, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(226, 238, 250, 0.09);
+}
+
+/* ============================ «BlackHole»: аккреционный диск и горизонт === */
+
+html[data-theme="blackhole"] body::after {
+  background-image:
+    radial-gradient(52% 26% at 50% 1%, rgba(255, 176, 96, 0.26), transparent 68%),
+    radial-gradient(circle at 50% 1%, transparent 0 12.6rem, rgba(255, 186, 110, 0.5) 12.75rem 13.05rem, transparent 13.6rem),
+    radial-gradient(circle at 50% 1%, transparent 0 15.6rem, rgba(255, 138, 58, 0.18) 15.75rem 16rem, transparent 16.8rem),
+    radial-gradient(circle at 50% 1%, rgba(0, 0, 0, 0.95) 0 12.2rem, transparent 12.5rem),
+    radial-gradient(70% 40% at 50% 108%, rgba(80, 110, 220, 0.16), transparent 70%);
+  mask-image: linear-gradient(to bottom, black, rgba(0, 0, 0, 0.55) 62%, transparent 96%);
+}
+
+html[data-theme="blackhole"] .app-header {
+  background: rgba(0, 0, 0, 0.86);
+}
+
+html[data-theme="blackhole"] .app-header::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 176, 96, 0.7), transparent);
+}
+
+html[data-theme="blackhole"] .brand-mark {
+  border-color: rgba(255, 186, 110, 0.5);
+  color: #ffce9a;
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-day-section][open] {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 0 54px -20px rgba(255, 158, 76, 0.75),
+    0 30px 60px -34px rgba(0, 0, 0, 1);
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-turn-details][open] {
+  border-color: rgba(255, 186, 110, 0.42);
+  box-shadow: inset var(--rail-width) 0 0 #ffa854, 0 0 30px -18px rgba(255, 168, 84, 0.95);
+}
+
+html[data-theme="blackhole"] .journal span[data-day-usage] {
+  border-color: rgba(255, 186, 110, 0.42);
+  box-shadow: var(--plate-shadow), 0 0 22px -10px rgba(255, 168, 84, 0.9);
+}
+
+/* =========================================================== адаптивность === */
 
 @media (max-width: 1100px) {
   .journal div[data-work-log-header],
