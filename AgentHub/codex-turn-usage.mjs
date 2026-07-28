@@ -1,5 +1,6 @@
 import { createReadStream } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, readdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
@@ -433,6 +434,39 @@ export async function scanCodexTurnPricingMetadata(transcriptPath, turnIds, {
     lines.close();
   }
   return result;
+}
+
+export async function findCodexRolloutPath(threadId, startedAt, {
+  codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex"),
+  readdirImpl = readdir,
+} = {}) {
+  const normalizedThreadId = String(threadId ?? "").trim();
+  const timestamp = Date.parse(String(startedAt ?? ""));
+  if (!normalizedThreadId || !Number.isFinite(timestamp)) return "";
+  const candidates = [];
+  for (const offsetDays of [0, -1, 1]) {
+    const date = new Date(timestamp + offsetDays * 86_400_000);
+    const directory = path.join(
+      codexHome,
+      "sessions",
+      String(date.getUTCFullYear()),
+      String(date.getUTCMonth() + 1).padStart(2, "0"),
+      String(date.getUTCDate()).padStart(2, "0"),
+    );
+    let entries;
+    try {
+      entries = await readdirImpl(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const suffix = `-${normalizedThreadId}.jsonl`.toLowerCase();
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.toLowerCase().endsWith(suffix)) {
+        candidates.push(path.join(directory, entry.name));
+      }
+    }
+  }
+  return candidates.at(-1) ?? "";
 }
 
 async function scanCodexTurnJsonlFromOffset(

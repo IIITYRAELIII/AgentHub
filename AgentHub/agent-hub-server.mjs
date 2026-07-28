@@ -45,6 +45,7 @@ import {
   showLastMessageReplyMarkup,
 } from "./status.mjs";
 import {
+  findCodexRolloutPath,
   readCodexTurnUsage,
   scanCodexTurnPricingMetadata,
 } from "./codex-turn-usage.mjs";
@@ -2103,6 +2104,51 @@ function threadTitle(thread) {
   return title.replace(/\s+/g, " ").slice(0, 60);
 }
 
+async function backfillWorkLogPricingMetadata(codexThreads) {
+  if (workLogPricingBackfillAttempted) return;
+  workLogPricingBackfillAttempted = true;
+  try {
+    const missing = await workLogUsageStore.missingPricingTurns({ provider: "codex" });
+    const missingByThread = new Map();
+    for (const item of missing) {
+      const values = missingByThread.get(item.threadId) ?? [];
+      values.push(item);
+      missingByThread.set(item.threadId, values);
+    }
+    const threadsById = new Map(
+      (codexThreads ?? []).map((thread) => [String(thread.id), thread]),
+    );
+    const resolved = [];
+    for (const [missingThreadId, turns] of missingByThread) {
+      let rolloutPath = String(threadsById.get(missingThreadId)?.path ?? "").trim();
+      if (!rolloutPath) {
+        rolloutPath = await findCodexRolloutPath(missingThreadId, turns[0]?.startedAt);
+      }
+      if (!rolloutPath) continue;
+      const metadata = await scanCodexTurnPricingMetadata(
+        rolloutPath,
+        turns.map((item) => item.turnId),
+      );
+      for (const item of turns) {
+        const pricing = metadata.get(item.turnId);
+        if (pricing?.model) resolved.push({ ...item, ...pricing });
+      }
+    }
+    for (const project of config.projects) {
+      await workLogUsageStore.synchronizePricingMetadataAndProject({
+        items: resolved,
+        projectRoot: project.path,
+        workLogFile: path.join(project.path, "WORK_LOG.md"),
+      });
+    }
+    if (resolved.length) {
+      console.log(`Backfilled credit pricing metadata for ${resolved.length} WORK_LOG turn(s)`);
+    }
+  } catch (error) {
+    console.error("Cannot backfill WORK_LOG credit pricing metadata:", error.message);
+  }
+}
+
 async function buildTaskCatalog() {
   const [codexResult, claudeResult] = await Promise.allSettled([
     listAllCodexThreads(),
@@ -2111,46 +2157,7 @@ async function buildTaskCatalog() {
   const entries = [];
   let pinnedTitlesChanged = false;
   if (codexResult.status === "fulfilled") {
-    if (!workLogPricingBackfillAttempted) {
-      workLogPricingBackfillAttempted = true;
-      try {
-        const missing = await workLogUsageStore.missingPricingTurns({ provider: "codex" });
-        const missingByThread = new Map();
-        for (const item of missing) {
-          const values = missingByThread.get(item.threadId) ?? [];
-          values.push(item);
-          missingByThread.set(item.threadId, values);
-        }
-        const threadsById = new Map(
-          codexResult.value.map((thread) => [String(thread.id), thread]),
-        );
-        const resolved = [];
-        for (const [missingThreadId, turns] of missingByThread) {
-          const rolloutPath = String(threadsById.get(missingThreadId)?.path ?? "").trim();
-          if (!rolloutPath) continue;
-          const metadata = await scanCodexTurnPricingMetadata(
-            rolloutPath,
-            turns.map((item) => item.turnId),
-          );
-          for (const item of turns) {
-            const pricing = metadata.get(item.turnId);
-            if (pricing?.model) resolved.push({ ...item, ...pricing });
-          }
-        }
-        for (const project of config.projects) {
-          await workLogUsageStore.synchronizePricingMetadataAndProject({
-            items: resolved,
-            projectRoot: project.path,
-            workLogFile: path.join(project.path, "WORK_LOG.md"),
-          });
-        }
-        if (resolved.length) {
-          console.log(`Backfilled credit pricing metadata for ${resolved.length} WORK_LOG turn(s)`);
-        }
-      } catch (error) {
-        console.error("Cannot backfill WORK_LOG credit pricing metadata:", error.message);
-      }
-    }
+    await backfillWorkLogPricingMetadata(codexResult.value);
     const titleHistories = await readCodexThreadTitleHistories();
     const batchSize = 16;
     for (let start = 0; start < codexResult.value.length; start += batchSize) {
@@ -6656,6 +6663,11 @@ process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
 await initializeProvider();
+if (codexTransport.running) {
+  await listAllCodexThreads()
+    .then((threads) => backfillWorkLogPricingMetadata(threads))
+    .catch((error) => console.error("Cannot list Codex threads for credit backfill:", error.message));
+}
 await recoverActiveRuns().catch(async (error) => {
   console.error("Cannot recover active tasks:", error.message);
   await sendMessage(`⚠️ Не удалось восстановить активные задачи: ${error.message}`).catch(() => {});

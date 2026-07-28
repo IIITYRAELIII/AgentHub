@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 
 import {
   codexRecentTerminalTurnsFromJsonl,
   codexTurnUsageFromJsonl,
+  findCodexRolloutPath,
   readCodexRolloutTail,
   readCodexTurnUsage,
   scanCodexTerminalEventsFromOffset,
@@ -231,6 +233,37 @@ test("pricing metadata scan resolves each turn model and Fast tier in one pass",
     model: "gpt-5.4",
     serviceTier: "fast",
   });
+});
+
+test("rollout discovery finds threads omitted by the Codex thread list", async () => {
+  const calls = [];
+  const result = await findCodexRolloutPath(
+    "019fa8bb-9466-7612-a8b3-38670f24b6c6",
+    "2026-07-28T12:38:13.614Z",
+    {
+      codexHome: "C:\\Codex",
+      readdirImpl: async (directory) => {
+        calls.push(directory);
+        if (!directory.endsWith(path.join("2026", "07", "28"))) return [];
+        return [{
+          name: "rollout-2026-07-28T17-38-13-019fa8bb-9466-7612-a8b3-38670f24b6c6.jsonl",
+          isFile: () => true,
+        }];
+      },
+    },
+  );
+  assert.equal(
+    result,
+    path.join(
+      "C:\\Codex",
+      "sessions",
+      "2026",
+      "07",
+      "28",
+      "rollout-2026-07-28T17-38-13-019fa8bb-9466-7612-a8b3-38670f24b6c6.jsonl",
+    ),
+  );
+  assert.equal(calls.length, 3);
 });
 
 test("recent terminal scan distinguishes completed and aborted turns", () => {
