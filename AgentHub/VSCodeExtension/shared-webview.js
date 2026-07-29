@@ -17,6 +17,9 @@ const ASSETS = {
   magma: [...ASSET_ROOT, "magma-crust.png"],
   storm: [...ASSET_ROOT, "storm-rain.png"],
   meadow: [...ASSET_ROOT, "meadow-sun.png"],
+  orbit: [...ASSET_ROOT, "orbit-earth.png"],
+  nebula: [...ASSET_ROOT, "nebula-veil.png"],
+  gothic: [...ASSET_ROOT, "gothic-concrete.png"],
 };
 
 function candidates(segments) {
@@ -63,6 +66,9 @@ async function sharedWebviewHtml(webview) {
     ["--magma-image", assets.magma],
     ["--storm-image", assets.storm],
     ["--meadow-image", assets.meadow],
+    ["--orbit-image", assets.orbit],
+    ["--nebula-image", assets.nebula],
+    ["--gothic-image", assets.gothic],
   ].filter(([, uri]) => uri).map(([name, uri]) => (
     `${name}: url("${resource(webview, uri)}");`
   )).join("");
