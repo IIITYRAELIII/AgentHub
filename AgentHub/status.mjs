@@ -43,11 +43,13 @@ function formatResetCreditDeadline(value, nowMs) {
   const expiresAt = new Date(value);
   if (Number.isNaN(expiresAt.getTime())) return "";
   const now = new Date(nowMs);
-  return expiresAt.toLocaleDateString("ru-RU", {
+  const includeYear = expiresAt.getFullYear() !== now.getFullYear();
+  const formatted = expiresAt.toLocaleDateString("ru-RU", {
     day: "numeric",
     month: "short",
-    ...(expiresAt.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
-  }).replace(/\s*г\.$/u, "");
+    ...(includeYear ? { year: "numeric" } : {}),
+  });
+  return includeYear ? formatted.replace(/\s+г\.$/u, "") : formatted;
 }
 
 export function formatCodexRateLimits(result, nowMs = Date.now()) {

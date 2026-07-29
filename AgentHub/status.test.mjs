@@ -41,7 +41,7 @@ test("formatCodexRateLimits shows one weekly line per limit", () => {
 
 test("formatCodexRateLimits shows reset credits and their nearest expiration", () => {
   const nowMs = new Date(2026, 6, 10, 15, 0).getTime();
-  const expiresAt = new Date(2026, 6, 31, 12, 0).getTime() / 1000;
+  const expiresAt = new Date(2026, 7, 12, 12, 0).getTime() / 1000;
   assert.equal(formatCodexRateLimits({
     rateLimitsByLimitId: {
       codex: {
@@ -59,7 +59,7 @@ test("formatCodexRateLimits shows reset credits and their nearest expiration", (
   }, nowMs), [
     "CODEX - 80.0% - 1 ч.",
     "Сбросов 2",
-    "До 31 июл.",
+    "До 12 авг.",
   ].join("\n"));
 });
 
