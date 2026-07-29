@@ -68,6 +68,7 @@ import {
 } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
 import {
+  forwardBundleAttachmentPaths,
   restoreForwardBundle,
   TelegramForwardBundleController,
 } from "./telegram-forward-bundle.mjs";
@@ -1653,6 +1654,9 @@ try {
       maxAgeMs: config.deferredInputTtlHours * 60 * 60 * 1000,
     });
     if (restored) forwardBundles.set(String(restored.chatId), restored);
+    else {
+      await Promise.all(forwardBundleAttachmentPaths(value).map((file) => unlink(file).catch(() => {})));
+    }
   }
   const restoredDeferred = [
     ...[...pendingInputs.values()].map((item) => ({ collection: pendingInputs, item })),
@@ -5533,10 +5537,34 @@ function backgroundJobQueue(kind) {
 
 function persistedBackgroundJobCount(kind) {
   if (kind === "speech") return backgroundJobStore.count("speech");
-  return backgroundJobStore.count("image") + backgroundJobStore.count("voice");
+  return backgroundJobStore.count("image")
+    + backgroundJobStore.count("voice")
+    + backgroundJobStore.count("forward-bundle-image");
 }
 
 async function executeBackgroundJob(item) {
+  if (item.kind === "forward-bundle-image") {
+    const descriptor = forwardBundleController.imageDescriptor(
+      item.payload.bundleId,
+      item.payload.messageId,
+    );
+    if (!descriptor) return;
+    try {
+      const imagePath = await mediaController.captureImage(descriptor);
+      await forwardBundleController.completeImage(
+        item.payload.bundleId,
+        item.payload.messageId,
+        imagePath,
+      );
+    } catch (error) {
+      await forwardBundleController.failImage(
+        item.payload.bundleId,
+        item.payload.messageId,
+        error,
+      );
+    }
+    return;
+  }
   if (item.kind === "image") {
     await mediaController.analyzeImage(item.payload.message, item.payload.target);
     return;
@@ -5604,7 +5632,31 @@ async function enqueueBackgroundJob(kind, payload, targetChatId, { dedupeKey = n
 }
 
 async function restoreBackgroundJobs() {
-  const count = await backgroundJobStore.load();
+  await backgroundJobStore.load();
+  for (const pending of forwardBundleController.pendingImageJobs()) {
+    try {
+      const restored = await enqueueBackgroundJob(
+        "forward-bundle-image",
+        {
+          bundleId: pending.bundleId,
+          chatId: pending.chatId,
+          messageId: pending.messageId,
+        },
+        pending.chatId,
+        { dedupeKey: pending.dedupeKey },
+      );
+      if (!restored) {
+        await forwardBundleController.failImage(
+          pending.bundleId,
+          pending.messageId,
+          "очередь медиа переполнена при восстановлении",
+        );
+      }
+    } catch (error) {
+      await forwardBundleController.failImage(pending.bundleId, pending.messageId, error);
+    }
+  }
+  const count = backgroundJobStore.size;
   if (!count) return;
   let scheduled = 0;
   for (const item of backgroundJobStore.values()) {
@@ -6534,6 +6586,13 @@ const forwardBundleController = new TelegramForwardBundleController({
   }),
   save: saveState,
   startTurn,
+  enqueueImage: (payload, dedupeKey) => enqueueBackgroundJob(
+    "forward-bundle-image",
+    payload,
+    payload.chatId,
+    { dedupeKey },
+  ),
+  removeFile: (file) => unlink(file).catch(() => {}),
 });
 
 const telegramMessageController = new TelegramMessageController({
@@ -6550,6 +6609,7 @@ const telegramMessageController = new TelegramMessageController({
   enqueueMedia: enqueueBackgroundJob,
   commandHandlers: telegramCommandHandlers,
   handleBundleText: (message, text) => forwardBundleController.handleText(message, text),
+  handleBundleMedia: (message, options) => forwardBundleController.handleImage(message, options),
   handleText: (message, text) => startTurn(telegramPrompt(message, text)),
   sendMessage,
 });

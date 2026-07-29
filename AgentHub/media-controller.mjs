@@ -11,6 +11,18 @@ import { PersistentTtsWorkerClient } from "./tts-worker-client.mjs";
 const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
 const MAX_TRANSCRIPTION_OUTPUT_BYTES = 1024 * 1024;
 
+export function telegramImageDescriptor(message) {
+  const photo = message?.photo?.at(-1);
+  const document = message?.document?.mime_type?.startsWith("image/") ? message.document : null;
+  const media = photo ?? document;
+  if (!media?.file_id) return null;
+  return {
+    fileId: media.file_id,
+    fileSize: Number(media.file_size) || 0,
+    fileName: document?.file_name ?? "",
+  };
+}
+
 export function runBoundedProcess({
   spawnProcess,
   command,
@@ -168,6 +180,29 @@ export class MediaController {
     return file;
   }
 
+  async captureImage(descriptor) {
+    if (!descriptor?.fileId) throw new Error("Telegram не передал идентификатор изображения");
+    if ((descriptor.fileSize ?? 0) > MAX_MEDIA_BYTES) {
+      throw new Error("Изображение слишком большое. Максимальный размер — 20 МБ.");
+    }
+    await mkdir(this.imageDir, { recursive: true });
+    const file = await this.telegram("getFile", { file_id: descriptor.fileId });
+    const extension = path.extname(descriptor.fileName || file.file_path || "") || ".jpg";
+    const imagePath = path.join(this.imageDir, `${randomUUID()}${extension}`);
+    try {
+      const response = await fetch(
+        telegramFileApiUrl(this.config.telegramApiBaseUrl, this.token, file.file_path),
+        { signal: AbortSignal.timeout(60_000) },
+      );
+      if (!response.ok) throw new Error(`Telegram file download: HTTP ${response.status}`);
+      await writeFile(imagePath, Buffer.from(await response.arrayBuffer()));
+      return imagePath;
+    } catch (error) {
+      await unlink(imagePath).catch(() => {});
+      throw error;
+    }
+  }
+
   async transcribeVoice(message, target) {
     if (!this.config.voiceEnabled) {
       await this.sendMessage(target.chatId, "Голосовые сообщения отключены в конфигурации.");
@@ -204,28 +239,13 @@ export class MediaController {
   }
 
   async analyzeImage(message, target) {
-    const photo = message.photo?.at(-1);
-    const document = message.document?.mime_type?.startsWith("image/") ? message.document : null;
-    const media = photo ?? document;
-    if (!media?.file_id) return;
-    if ((media.file_size ?? 0) > MAX_MEDIA_BYTES) {
-      await this.sendMessage(target.chatId, "Изображение слишком большое. Максимальный размер — 20 МБ.");
-      return;
-    }
+    const descriptor = telegramImageDescriptor(message);
+    if (!descriptor) return;
 
     await this.sendMessage(target.chatId, "🖼 Изображение получено, начинаю анализ…");
-    await mkdir(this.imageDir, { recursive: true });
     let imagePath;
     try {
-      const file = await this.telegram("getFile", { file_id: media.file_id });
-      const extension = path.extname(document?.file_name ?? file.file_path ?? "") || ".jpg";
-      imagePath = path.join(this.imageDir, `${randomUUID()}${extension}`);
-      const response = await fetch(
-        telegramFileApiUrl(this.config.telegramApiBaseUrl, this.token, file.file_path),
-        { signal: AbortSignal.timeout(60_000) },
-      );
-      if (!response.ok) throw new Error(`Telegram file download: HTTP ${response.status}`);
-      await writeFile(imagePath, Buffer.from(await response.arrayBuffer()));
+      imagePath = await this.captureImage(descriptor);
       const prompt = message.caption?.trim()
         || "Проанализируй это изображение с учётом предыдущих сообщений пользователя.";
       await this.startTurn([

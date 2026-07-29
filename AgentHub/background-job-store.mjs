@@ -9,7 +9,7 @@ import {
 import path from "node:path";
 import { writeTextAtomic } from "./state-store.mjs";
 
-const SUPPORTED_KINDS = new Set(["image", "voice", "speech"]);
+const SUPPORTED_KINDS = new Set(["image", "voice", "speech", "forward-bundle-image"]);
 
 function validJob(item) {
   return item

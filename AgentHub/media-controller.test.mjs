@@ -4,7 +4,11 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { MediaController, runBoundedProcess } from "./media-controller.mjs";
+import {
+  MediaController,
+  runBoundedProcess,
+  telegramImageDescriptor,
+} from "./media-controller.mjs";
 
 function controller(dataDir, overrides = {}) {
   return new MediaController({
@@ -41,6 +45,31 @@ test("speech button policy rejects disabled and short text", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "media-controller-policy-"));
   assert.equal(controller(dataDir).rememberSpeechText("abc"), null);
   assert.equal(controller(dataDir, { ttsEnabled: false }).rememberSpeechText("long enough"), null);
+});
+
+test("Telegram image descriptor selects the largest photo or image document", () => {
+  assert.deepEqual(telegramImageDescriptor({
+    photo: [
+      { file_id: "small", file_size: 10 },
+      { file_id: "large", file_size: 20 },
+    ],
+  }), {
+    fileId: "large",
+    fileSize: 20,
+    fileName: "",
+  });
+  assert.deepEqual(telegramImageDescriptor({
+    document: {
+      file_id: "document",
+      file_size: 30,
+      file_name: "screen.png",
+      mime_type: "image/png",
+    },
+  }), {
+    fileId: "document",
+    fileSize: 30,
+    fileName: "screen.png",
+  });
 });
 
 test("bounded media process stops its whole tree on excess output", async () => {

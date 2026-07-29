@@ -11,6 +11,7 @@ export class TelegramMessageController {
     enqueueMedia,
     commandHandlers,
     handleBundleText = null,
+    handleBundleMedia = null,
     handleText,
     sendMessage,
     logger = console,
@@ -26,6 +27,7 @@ export class TelegramMessageController {
     this.enqueueMedia = enqueueMedia;
     this.commandHandlers = commandHandlers;
     this.handleBundleText = handleBundleText;
+    this.handleBundleMedia = handleBundleMedia;
     this.handleText = handleText;
     this.sendMessage = sendMessage;
     this.logger = logger;
@@ -65,6 +67,9 @@ export class TelegramMessageController {
 
   async handleMedia(message) {
     if (message.photo || message.document?.mime_type?.startsWith("image/")) {
+      if (this.handleBundleMedia
+        && await this.handleBundleMedia(message, { forwardedOnly: true })) return true;
+      if (this.handleBundleMedia && await this.handleBundleMedia(message)) return true;
       const target = this.selectedTurnTarget(message.chat.id);
       await this.bindIncomingMessage(message, message.caption?.trim() || "Изображение без подписи");
       await this.enqueueMedia("image", { message, target }, target.chatId, {

@@ -35,6 +35,8 @@ function fixture() {
   const cards = [];
   const bindings = [];
   const turns = [];
+  const imageJobs = [];
+  const removedFiles = [];
   let messageSequence = 100;
   let saves = 0;
   const controller = new TelegramForwardBundleController({
@@ -54,10 +56,24 @@ function fixture() {
       turns.push(args);
       return { started: true };
     },
+    enqueueImage: async (payload, dedupeKey) => {
+      imageJobs.push({ payload, dedupeKey });
+      return { id: `job-${imageJobs.length}` };
+    },
+    removeFile: async (file) => { removedFiles.push(file); },
     now: () => 2_000_000,
     createId: () => "11111111-1111-4111-8111-111111111111",
   });
-  return { controller, bundles, cards, bindings, turns, saves: () => saves };
+  return {
+    controller,
+    bundles,
+    cards,
+    bindings,
+    turns,
+    imageJobs,
+    removedFiles,
+    saves: () => saves,
+  };
 }
 
 test("forward source preserves visible, hidden, channel and own authors", () => {
@@ -163,4 +179,58 @@ test("formatted prompt keeps interleaved authors", () => {
   });
   assert.match(prompt, /Переслано · Клиент/);
   assert.match(prompt, /Сообщение 2 · Вы/);
+});
+
+test("forwarded Telegram album stays in one bundle and starts one turn with all images", async () => {
+  const state = fixture();
+  const origin = {
+    type: "user",
+    sender_user: { id: 8, first_name: "Клиент" },
+  };
+  for (let index = 1; index <= 3; index += 1) {
+    assert.equal(await state.controller.handleImage({
+      ...forwarded(index, index === 1 ? "Описание проблемы" : null, origin),
+      text: undefined,
+      caption: index === 1 ? "Описание проблемы" : undefined,
+      media_group_id: "album-1",
+      photo: [{ file_id: `photo-${index}`, file_size: 128 }],
+    }), true);
+  }
+  const bundle = state.bundles.get("9");
+  assert.equal(bundle.items.length, 3);
+  assert.equal(state.imageJobs.length, 3);
+  assert.equal(state.turns.length, 0);
+  assert.match(state.cards.at(-1).text, /изображений: 3/);
+  assert.match(state.cards.at(-1).text, /Загружается изображений: 3/);
+
+  for (let index = 1; index <= 3; index += 1) {
+    await state.controller.completeImage(bundle.id, index, `C:\\images\\${index}.jpg`);
+  }
+  const result = await state.controller.submit(bundle.id);
+  assert.equal(result.status, "started");
+  assert.equal(state.turns.length, 1);
+  assert.deepEqual(state.turns[0][1], [
+    "C:\\images\\1.jpg",
+    "C:\\images\\2.jpg",
+    "C:\\images\\3.jpg",
+  ]);
+  const input = state.turns[0][0];
+  assert.equal(input.filter((item) => item.type === "localImage").length, 3);
+  assert.match(input.map((item) => item.text ?? "").join("\n"), /Описание проблемы/);
+});
+
+test("bundle submit waits while album images are still loading", async () => {
+  const state = fixture();
+  await state.controller.handleImage({
+    ...forwarded(1, null, {
+      type: "hidden_user",
+      sender_user_name: "Клиент",
+    }),
+    text: undefined,
+    photo: [{ file_id: "photo-1", file_size: 128 }],
+  });
+  const bundle = state.bundles.get("9");
+  assert.equal((await state.controller.submit(bundle.id)).status, "waiting");
+  assert.equal(state.turns.length, 0);
+  assert.match(state.cards.at(-1).text, /Дождитесь загрузки/);
 });

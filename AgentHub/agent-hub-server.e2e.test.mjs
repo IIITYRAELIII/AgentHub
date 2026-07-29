@@ -288,6 +288,52 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   savedBundleState = await readJson(statePath);
   assert.equal(savedBundleState.forwardBundles[0].items.length, 3);
 
+  const albumOrigin = {
+    type: "hidden_user",
+    sender_user_name: "Клиент со скриншотами",
+    date: Math.floor(Date.now() / 1000) - 2,
+  };
+  for (let index = 1; index <= 3; index += 1) {
+    telegram.pushMessage(null, {
+      caption: index === 1 ? "К сообщению приложены три скриншота" : undefined,
+      media_group_id: "e2e-forwarded-album",
+      photo: [{ file_id: `e2e-forwarded-photo-${index}`, file_size: 128 }],
+      forward_origin: albumOrigin,
+    });
+  }
+  try {
+    savedBundleState = await waitFor(async () => {
+      const state = await readJson(statePath).catch(() => null);
+      const items = state?.forwardBundles?.[0]?.items ?? [];
+      const attachments = items.flatMap((item) => item.attachments ?? []);
+      return items.length === 6
+        && attachments.length === 3
+        && attachments.every((attachment) => attachment.status === "ready")
+        ? state
+        : null;
+    }, "forwarded album captured by bundle", 8_000);
+  } catch (error) {
+    const failedState = await readJson(statePath).catch(() => null);
+    throw new Error(
+      `${error.message}\nforwardBundles=${JSON.stringify(failedState?.forwardBundles)}`
+      + `\nbackgroundJobs=${JSON.stringify(await readdir(path.join(dataDir, "background-jobs")).catch(() => []))}`
+      + `\nrecentCalls=${JSON.stringify(telegram.recentCalls(bundleEditMark, 30))}`
+      + `\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+      { cause: error },
+    );
+  }
+  assert.equal(savedBundleState.activeRuns.length, 0,
+    "forwarded album must not start independent turns");
+  assert.equal(savedBundleState.pendingInputs.length, 0,
+    "forwarded album must not create deferred inputs");
+  await telegram.waitForCall(
+    "editMessageText",
+    (call) => String(call.body.text).includes(
+      "Сообщений: 6 · переслано: 5 · ваших: 1 · изображений: 3",
+    ),
+    { after: bundleEditMark },
+  );
+
   mark = telegram.calls.length;
   const submitBundle = bundleCard.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data.startsWith("forward-bundle:send:"));

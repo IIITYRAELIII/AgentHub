@@ -48,6 +48,45 @@ test("routes image before text and binds it to selected task", async () => {
   assert.deepEqual(events.slice(-2), [["bind", "Смотри"], ["media", "image"]]);
 });
 
+test("forwarded image is collected before the ordinary media queue", async () => {
+  const { controller, events } = fixture({
+    handleBundleMedia: async (_message, options) => {
+      events.push(["bundle-media", options?.forwardedOnly === true]);
+      return options?.forwardedOnly === true;
+    },
+  });
+  await controller.handle({
+    ...baseMessage,
+    message_id: 13,
+    photo: [{ file_id: "x" }],
+    forward_origin: {
+      type: "hidden_user",
+      sender_user_name: "Клиент",
+    },
+  });
+  assert.deepEqual(events.filter(([kind]) => ["bundle-media", "media"].includes(kind)), [
+    ["bundle-media", true],
+  ]);
+});
+
+test("own image joins an already open forwarded bundle", async () => {
+  const { controller, events } = fixture({
+    handleBundleMedia: async (_message, options) => {
+      events.push(["bundle-media", options?.forwardedOnly === true]);
+      return options?.forwardedOnly !== true;
+    },
+  });
+  await controller.handle({
+    ...baseMessage,
+    message_id: 14,
+    photo: [{ file_id: "x" }],
+  });
+  assert.deepEqual(events.filter(([kind]) => ["bundle-media", "media"].includes(kind)), [
+    ["bundle-media", true],
+    ["bundle-media", false],
+  ]);
+});
+
 test("rejects unauthorized senders before changing chat state", async () => {
   const { controller, events } = fixture();
   await controller.handle({ ...baseMessage, from: { id: 8 }, text: "/status" });
