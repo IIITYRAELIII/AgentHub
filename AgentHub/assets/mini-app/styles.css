@@ -954,12 +954,97 @@ h1 {
   }
 }
 
-.stamp {
+/* ==================================================== лимиты в шапке === */
+
+.rate-limits {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.3rem;
+}
+
+/* Подпись нужна только в теле журнала: в шапке чипы говорят сами за себя.
+   `strong` — подпись из блоков, записанных прежней версией Hub: они лежат в
+   журнале до первого перезапуска и иначе тянули бы в шапку слово «Лимиты:». */
+.rate-limits [data-rate-limit-caption],
+.rate-limits strong {
+  display: none;
+}
+
+.rate-limits [data-rate-limit] {
+  align-items: baseline;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  display: inline-flex;
+  gap: 0.32rem;
+  padding: 0.24rem 0.62rem;
+  white-space: nowrap;
+}
+
+.rate-limits [data-rate-limit-name] {
   color: var(--text-faint);
+  font-size: 0.62rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.rate-limits [data-rate-limit-value] {
+  color: var(--text);
   font-family: var(--font-numeric);
   font-size: 0.74rem;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+}
+
+.rate-limits [data-rate-limit-reset] {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.rate-limits [data-rate-limit-plain] {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+/* Блок остаётся в теле журнала там, где шапки нет (панель VS Code до
+   переноса, печать, fallback): красим его по теме, а не нейтральным серым. */
+.journal div[data-work-log-rate-limits] {
+  align-items: center;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.45rem 0.7rem;
+}
+
+.journal div[data-work-log-rate-limits] [data-rate-limit-caption] {
+  color: var(--text-faint);
+  font-size: 0.64rem;
+  letter-spacing: var(--label-spacing);
+  text-transform: uppercase;
+}
+
+.journal div[data-work-log-rate-limits] [data-rate-limit] {
+  align-items: baseline;
+  display: inline-flex;
+  gap: 0.32rem;
+}
+
+.journal div[data-work-log-rate-limits] [data-rate-limit-name] {
+  color: var(--text-soft);
+}
+
+.journal div[data-work-log-rate-limits] [data-rate-limit-value] {
+  color: var(--text);
+  font-family: var(--font-numeric);
+  font-variant-numeric: tabular-nums;
+}
+
+.journal div[data-work-log-rate-limits] [data-rate-limit-reset],
+.journal div[data-work-log-rate-limits] [data-rate-limit-plain] {
+  color: var(--text-muted);
+  font-size: 0.8rem;
 }
 
 button {
@@ -999,6 +1084,12 @@ button {
 .refresh-icon {
   height: 0.85rem;
   width: 0.85rem;
+}
+
+/* время последнего обновления живёт прямо в кнопке */
+.refresh-label {
+  font-family: var(--font-numeric);
+  font-variant-numeric: tabular-nums;
 }
 
 @keyframes spin {
@@ -2507,11 +2598,13 @@ html[data-surface="mobile"] .toolbar {
   width: 100%;
 }
 
-html[data-surface="mobile"] .stamp {
+html[data-surface="mobile"] .rate-limits {
   margin-left: auto;
 }
 
-html[data-surface="mobile"] .refresh-label {
+/* на телефоне из чипа остаётся только имя и процент: срок сброса не влезает */
+html[data-surface="mobile"] .rate-limits [data-rate-limit-reset],
+html[data-surface="mobile"] .rate-limits [data-rate-limit-plain] {
   display: none;
 }
 
@@ -2678,10 +2771,6 @@ html[data-surface="mobile"] .journal div[data-work-log-previous-turn-list] {
 }
 
 @media (max-width: 460px) {
-  html[data-surface="mobile"] .stamp {
-    display: none;
-  }
-
   html[data-surface="mobile"] .theme-picker {
     flex: 1 1 7rem;
   }

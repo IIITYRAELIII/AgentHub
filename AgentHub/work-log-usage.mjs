@@ -969,15 +969,32 @@ export function projectWorkLogUsage(workLogText, turns = {}) {
   return projected;
 }
 
+/* Каждая мера — отдельный чип с разобранными частями: журнал показывает их
+   в шапке, где на подписи и разделители места нет. */
+function rateLimitChip(line) {
+  // срок сброса необязателен: Codex не всегда возвращает окно
+  const parts = /^(.+?)\s+-\s+([\d.,]+\s*%)(?:\s+-\s+(.+))?$/u.exec(line);
+  if (!parts) {
+    return `<span data-rate-limit data-rate-limit-plain>${escapeHtmlText(line)}</span>`;
+  }
+  const reset = parts[3]
+    ? `<span data-rate-limit-reset>${escapeHtmlText(parts[3])}</span>`
+    : "";
+  return `<span data-rate-limit><span data-rate-limit-name>${
+    escapeHtmlText(parts[1])
+  }</span><span data-rate-limit-value>${escapeHtmlText(parts[2])}</span>${reset}</span>`;
+}
+
 export function projectWorkLogRateLimits(workLogText, summary, sampledAt = "") {
   const text = String(workLogText ?? "");
-  const clean = String(summary ?? "").replace(/\s*\r?\n\s*/gu, " · ").trim();
+  const lines = String(summary ?? "").split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  const clean = lines.join(" · ");
   const existing = /\n?<div data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>\n?/iu;
   if (!clean) return text.replace(existing, "\n");
   const timestamp = String(sampledAt ?? "").trim();
   const block = `<div data-work-log-rate-limits${
     timestamp ? ` data-sampled-at="${escapeHtmlAttribute(timestamp)}"` : ""
-  }><strong>Лимиты:</strong> ${escapeHtmlText(clean)}</div>`;
+  }><span data-rate-limit-caption>Лимиты</span>${lines.map(rateLimitChip).join("")}</div>`;
   if (existing.test(text)) return text.replace(existing, `\n${block}\n`);
   const heading = /^# [^\r\n]+(?:\r?\n)?/u.exec(text);
   if (!heading) return `# Глобальный журнал работ\n\n${block}\n\n${text}`;

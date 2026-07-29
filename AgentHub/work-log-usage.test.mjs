@@ -30,8 +30,24 @@ test("rate-limit summary is replaced in place above the journal days", () => {
   );
   const second = projectWorkLogRateLimits(first, "CODEX - 93.0%", "2026-07-29T10:05:00.000Z");
   assert.equal((second.match(/data-work-log-rate-limits/gu) ?? []).length, 1);
-  assert.match(second, /Лимиты:<\/strong> CODEX - 93\.0%/u);
+  assert.match(
+    second,
+    /<span data-rate-limit><span data-rate-limit-name>CODEX<\/span><span data-rate-limit-value>93\.0%<\/span>/u,
+  );
   assert.doesNotMatch(second, /94\.0%/u);
+});
+
+test("each rate-limit measure becomes a chip with its own reset", () => {
+  const projected = projectWorkLogRateLimits(
+    "# Глобальный журнал работ\n\n<details></details>\n",
+    "CODEX - 87.0% - 6 дн. 14 ч.\nSpark - 100.0% - 7 дн.\nДоступно сбросов: 5",
+    "",
+  );
+  assert.equal((projected.match(/data-rate-limit>/gu) ?? []).length, 2);
+  assert.match(projected, /<span data-rate-limit-reset>6 дн\. 14 ч\.<\/span>/u);
+  // строка без процента остаётся цельной, разбирать её нечего
+  assert.match(projected, /<span data-rate-limit data-rate-limit-plain>Доступно сбросов: 5<\/span>/u);
+  assert.match(projected, /<span data-rate-limit-caption>Лимиты<\/span>/u);
 });
 
 test("applyWorkLogUsage replaces only the matching per-turn placeholder", () => {

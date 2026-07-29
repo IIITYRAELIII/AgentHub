@@ -2,6 +2,7 @@ const journal = document.querySelector("[data-journal]");
 const updatedAt = document.querySelector("[data-updated-at]");
 const refreshButton = document.querySelector("[data-refresh]");
 const collapseAllButton = document.querySelector("[data-collapse-all]");
+const rateLimitsSlot = document.querySelector("[data-rate-limits-slot]");
 const themeSelect = document.querySelector("[data-theme-select]");
 const themeColor = document.querySelector("[data-theme-color]");
 let currentVersion = "";
@@ -185,6 +186,26 @@ function restoreOpenState(state) {
   }
 }
 
+/* Лимиты приходят первым блоком журнала, но место им — в шапке: над днями
+   они занимали целую строку ради одной строки цифр. */
+function hoistRateLimits() {
+  if (!rateLimitsSlot) return;
+  const block = journal.querySelector("[data-work-log-rate-limits]");
+  if (!block) {
+    rateLimitsSlot.replaceChildren();
+    rateLimitsSlot.hidden = true;
+    return;
+  }
+  const sampledAt = block.getAttribute("data-sampled-at") ?? "";
+  const sampled = new Date(sampledAt);
+  rateLimitsSlot.title = Number.isNaN(sampled.getTime())
+    ? ""
+    : `Лимиты на ${sampled.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`;
+  rateLimitsSlot.replaceChildren(...block.childNodes);
+  rateLimitsSlot.hidden = false;
+  block.remove();
+}
+
 function disableLocalLinks() {
   for (const link of journal.querySelectorAll("a")) {
     link.removeAttribute("href");
@@ -210,6 +231,7 @@ async function loadJournal({ force = false } = {}) {
       if (force || payload.version !== currentVersion) {
         const state = journalRendered ? captureOpenState() : null;
         journal.innerHTML = payload.html;
+        hoistRateLimits();
         disableLocalLinks();
         syncCollapseTurnButtons();
         prepareMobileControls();
@@ -218,12 +240,16 @@ async function loadJournal({ force = false } = {}) {
         currentVersion = payload.version;
       }
       const date = new Date(payload.updatedAt);
-      updatedAt.textContent = Number.isNaN(date.getTime())
-        ? "Журнал обновлён"
-        : `Обновлено ${date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+      const stamp = Number.isNaN(date.getTime())
+        ? ""
+        : date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      updatedAt.textContent = stamp || "Обновить";
+      refreshButton.title = stamp ? `Журнал обновлён в ${stamp}` : "Обновить журнал";
       journal.setAttribute("aria-busy", "false");
     } catch (error) {
-      updatedAt.textContent = error.message;
+      // в кнопку помещается только пометка, полный текст ошибки уходит в подсказку
+      updatedAt.textContent = "Ошибка";
+      refreshButton.title = error.message;
       journal.setAttribute("aria-busy", "false");
     } finally {
       refreshButton.disabled = false;
