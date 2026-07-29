@@ -96,6 +96,7 @@ function normalizedCompletion(value) {
     startedAt: String(value.startedAt ?? ""),
     completedAt: String(value.completedAt ?? new Date().toISOString()),
     prompt: String(value.prompt ?? "").trim(),
+    finalAnswer: String(value.finalAnswer ?? "").trim(),
     changedFiles: Array.isArray(value.changedFiles)
       ? value.changedFiles.map((file) => String(file).trim()).filter(Boolean)
       : [],
@@ -210,6 +211,7 @@ export class TurnEndNotificationRegistry {
     completion.completedAt = completion.completedAt || incoming.completedAt;
     completion.startedAt = completion.startedAt || incoming.startedAt;
     completion.prompt = incoming.prompt || completion.prompt;
+    completion.finalAnswer = incoming.finalAnswer || completion.finalAnswer;
     if (incoming.changedFiles.length) completion.changedFiles = incoming.changedFiles;
     if (incoming.diff) completion.diff = incoming.diff;
     completion.deliveryGroupId = incoming.deliveryGroupId ?? completion.deliveryGroupId;

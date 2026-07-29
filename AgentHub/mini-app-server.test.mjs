@@ -187,6 +187,8 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(page, /<option value="storm">Гроза<\/option>/u);
     assert.match(page, /data-surface="desktop"/u);
     assert.match(page, /data-theme-select/u);
+    assert.match(page, /data-collapse-all/u);
+    assert.doesNotMatch(page, /data-connection|Автообновление/u);
     assert.match(page, />Орбита</u);
     assert.match(page, />Туманность</u);
     assert.match(page, />Пульсар</u);
@@ -212,6 +214,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(script, /collapse && surface !== "mobile"/u);
     assert.match(script, /journalRendered/u);
     assert.match(script, /details\[data-work-log-day-section\]\[open\]/u);
+    assert.match(script, /collapseAllButton\.addEventListener/u);
     const styles = await (await fetch(`${address.url}styles.css`)).text();
     assert.match(styles, /html\[data-theme="nebula"\]/u);
     assert.match(styles, /html\[data-theme="pulsar"\]/u);
@@ -228,6 +231,10 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /span\[data-day-usage-table\]\[data-mobile-expanded\]/u);
     assert.match(styles, /div\[data-work-log-row\]\[data-mobile-open\]/u);
     assert.match(styles, /button\[data-work-log-collapse-turns\]/u);
+    assert.match(
+      styles,
+      /\.journal div\[data-work-log-turn-files\]\s*\{\s*display: none;/u,
+    );
     assert.match(
       styles,
       /button\[data-work-log-collapse-turns\]\[hidden\][\s\S]*display: none !important/u,

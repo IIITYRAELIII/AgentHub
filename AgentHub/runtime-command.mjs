@@ -13,7 +13,6 @@ const ALLOWED_COMMANDS = new Set([
   "send-images",
   "turn-start",
   "turn-complete",
-  "turn-end-message",
 ]);
 const FORWARDED_ENVIRONMENT = [
   "CODEX_THREAD_ID",

@@ -7,22 +7,15 @@ import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { appendMessageBindings } from "./message-bindings.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { callTelegramJson, telegramBotApiUrl } from "./telegram-api.mjs";
-import {
-  enqueueRuntimeCommandThroughSpool,
-  forwardRuntimeCommand,
-  runtimeCommandUnavailable,
-} from "./runtime-command.mjs";
+import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
 import { isMainModule } from "./main-module.mjs";
 import {
   resolveAllowedNotificationChatId,
   resolveAllowedNotificationPath,
 } from "./notification-security.mjs";
-import { normalizeWorkLogId } from "./work-log-usage.mjs";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 const TELEGRAM_CAPTION_LIMIT = 1024;
-export const TURN_END_TITLE_LIMIT = 100;
-export const TURN_END_BODY_LIMIT = 700;
 const NOTIFICATION_CARD_DIRECTORY = path.join(
   import.meta.dirname,
   "assets",
@@ -71,11 +64,8 @@ export function parseArguments(args) {
   let silent = false;
   let bindCurrent = false;
   let bindActive = false;
-  let afterTurn = false;
   let category = "info";
   let messageFile = null;
-  let workLogId = null;
-  let title = null;
   const textParts = [];
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -88,8 +78,6 @@ export function parseArguments(args) {
       bindCurrent = true;
     } else if (argument === "--bind-active") {
       bindActive = true;
-    } else if (argument === "--after-turn") {
-      afterTurn = true;
     } else if (argument === "--category") {
       if (index + 1 >= args.length) throw new Error("--category requires a value");
       category = resolveNotificationCategory(args[++index]).key;
@@ -101,17 +89,6 @@ export function parseArguments(args) {
     } else if (argument.startsWith("--message-file=")) {
       messageFile = argument.slice("--message-file=".length);
       if (!messageFile) throw new Error("--message-file requires a value");
-    } else if (argument === "--work-log-id") {
-      if (index + 1 >= args.length) throw new Error("--work-log-id requires a value");
-      workLogId = normalizeWorkLogId(args[++index]);
-    } else if (argument.startsWith("--work-log-id=")) {
-      workLogId = normalizeWorkLogId(argument.slice("--work-log-id=".length));
-    } else if (argument === "--title") {
-      if (index + 1 >= args.length) throw new Error("--title requires a value");
-      title = String(args[++index]).trim();
-    } else if (argument.startsWith("--title=")) {
-      title = String(argument.slice("--title=".length)).trim();
-      if (!title) throw new Error("--title requires a value");
     } else if (argument === "--help" || argument === "-h") {
       return {
         help: true,
@@ -119,20 +96,17 @@ export function parseArguments(args) {
         silent,
         bindCurrent,
         bindActive,
-        afterTurn,
         category,
         messageFile,
-        workLogId,
-        title,
         text: "",
       };
+    } else if (argument.startsWith("--")) {
+      throw new Error(`Unknown option: ${argument}`);
     } else {
       textParts.push(argument);
     }
   }
   if (bindCurrent && bindActive) throw new Error("Use either --bind-current or --bind-active, not both");
-  if (afterTurn && !bindCurrent) throw new Error("--after-turn requires --bind-current");
-  if (workLogId && !afterTurn) throw new Error("--work-log-id requires --after-turn");
   const text = textParts.join(" ").trim();
   if (messageFile && text) throw new Error("Use either --message-file or positional message text, not both");
   return {
@@ -141,11 +115,8 @@ export function parseArguments(args) {
     silent,
     bindCurrent,
     bindActive,
-    afterTurn,
     category,
     messageFile,
-    workLogId,
-    title,
     text,
   };
 }
@@ -443,13 +414,10 @@ export function notificationCardOutboxBody({
 export async function main(args = process.argv.slice(2)) {
   const options = parseArguments(args);
   if (options.help) {
-    console.log("Usage: node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--after-turn] [--title <short-title>] [--category <name>] [--message-file <utf8-file> | <message>]");
+    console.log("Usage: node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--category <name>] [--message-file <utf8-file> | <message>]");
     console.log("       <command> | node send-message.mjs [--chat-id <id>] [--silent] [--bind-current | --bind-active] [--category <name>]");
     console.log(`Categories: ${Object.keys(NOTIFICATION_CATEGORIES).join(", ")} (default: info; used with a binding option)`);
     return;
-  }
-  if (options.afterTurn) {
-    throw new Error("--after-turn must be registered through the running Agent Hub Server");
   }
   const config = await loadConfig();
   if (options.messageFile) {
@@ -563,8 +531,7 @@ export async function main(args = process.argv.slice(2)) {
 if (isMainModule(import.meta.url)) {
   const run = async () => {
     const args = process.argv.slice(2);
-    const options = parseArguments(args);
-    const runtimeCommand = options.afterTurn ? "turn-end-message" : "send-message";
+    const runtimeCommand = "send-message";
     if ((process.env.AGENT_HUB_DIRECT ?? process.env.TELEGRAM_INTEGRATION_DIRECT) !== "1") {
       try {
         const result = await forwardRuntimeCommand(runtimeCommand, args);
@@ -572,11 +539,6 @@ if (isMainModule(import.meta.url)) {
         return;
       } catch (error) {
         if (!runtimeCommandUnavailable(error)) throw error;
-        if (options.afterTurn) {
-          const id = await enqueueRuntimeCommandThroughSpool(runtimeCommand, args);
-          console.log(`Queued deferred end-of-turn registration ${id}.`);
-          return;
-        }
       }
     }
     await main(args);

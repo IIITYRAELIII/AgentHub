@@ -1,8 +1,7 @@
 const journal = document.querySelector("[data-journal]");
 const updatedAt = document.querySelector("[data-updated-at]");
-const connection = document.querySelector("[data-connection]");
-const connectionLabel = document.querySelector("[data-connection-label]");
 const refreshButton = document.querySelector("[data-refresh]");
+const collapseAllButton = document.querySelector("[data-collapse-all]");
 const themeSelect = document.querySelector("[data-theme-select]");
 const themeColor = document.querySelector("[data-theme-color]");
 let currentVersion = "";
@@ -63,11 +62,6 @@ themeSelect.addEventListener("change", () => applyTheme(themeSelect.value, { per
 
 function requestHeaders() {
   return telegramMode ? { Authorization: `tma ${telegramInitData}` } : {};
-}
-
-function setConnection(state, label) {
-  connection.dataset.connection = state;
-  connectionLabel.textContent = label;
 }
 
 function selectorValue(value) {
@@ -236,6 +230,16 @@ async function loadJournal({ force = false } = {}) {
 }
 
 refreshButton.addEventListener("click", () => void loadJournal({ force: true }));
+collapseAllButton.addEventListener("click", () => {
+  for (const details of journal.querySelectorAll("details[open]")) details.open = false;
+  for (const item of journal.querySelectorAll("[data-mobile-expanded], [data-mobile-open]")) {
+    item.removeAttribute("data-mobile-expanded");
+    item.removeAttribute("data-mobile-open");
+  }
+  for (const item of journal.querySelectorAll('[aria-expanded="true"]')) {
+    item.setAttribute("aria-expanded", "false");
+  }
+});
 
 function toggleMobileDayUsage(total) {
   const table = total.closest("[data-day-usage-table]");
@@ -306,18 +310,14 @@ journal.addEventListener("keydown", (event) => {
 });
 
 if (telegramMode) {
-  setConnection("online", "Автообновление");
   const polling = setInterval(() => void loadJournal(), 5_000);
   window.addEventListener("pagehide", () => clearInterval(polling), { once: true });
 } else {
   const events = new EventSource("/events");
-  events.addEventListener("open", () => setConnection("online", "Автообновление"));
   events.addEventListener("ready", () => {
-    setConnection("online", "Автообновление");
     void loadJournal();
   });
   events.addEventListener("journal", () => void loadJournal());
-  events.addEventListener("error", () => setConnection("retrying", "Переподключение…"));
 }
 
 void loadJournal({ force: true });

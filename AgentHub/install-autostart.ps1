@@ -17,7 +17,8 @@ $BotEntryPoint = if (Test-Path -LiteralPath $RuntimeLauncher) {
     Join-Path $PSScriptRoot 'start.ps1'
 }
 
-$BotShortcut = $Shell.CreateShortcut((Join-Path $Startup 'Codex Telegram Bot.lnk'))
+$BotShortcutPath = Join-Path $Startup 'Agent Hub.lnk'
+$BotShortcut = $Shell.CreateShortcut($BotShortcutPath)
 if (Test-Path -LiteralPath $RuntimeGuiLauncher) {
     $BotShortcut.TargetPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
     $BotShortcut.Arguments = "//B //Nologo `"$RuntimeGuiLauncher`""
@@ -27,7 +28,7 @@ if (Test-Path -LiteralPath $RuntimeGuiLauncher) {
 }
 $BotShortcut.WorkingDirectory = Split-Path -Parent $BotEntryPoint
 $BotShortcut.WindowStyle = 7
-$BotShortcut.Description = 'Telegram bridge for local Codex'
+$BotShortcut.Description = 'Agent Hub runtime'
 $BotShortcut.Save()
 
 $CodeCandidates = @(
@@ -39,22 +40,22 @@ if (-not $CodeExe) {
     $CodeCommand = Get-Command code.exe -ErrorAction SilentlyContinue
     if ($CodeCommand) { $CodeExe = $CodeCommand.Source }
 }
-if (-not $CodeExe) {
-    throw 'VS Code executable was not found.'
+if ($CodeExe) {
+    $WorkspaceFile = Get-ChildItem -LiteralPath $ProjectRoot -Filter '*.code-workspace' -File |
+        Select-Object -First 1
+    if ($WorkspaceFile) {
+        $CodeShortcutPath = Join-Path $Startup "$($WorkspaceFile.BaseName) - VS Code.lnk"
+        $CodeShortcut = $Shell.CreateShortcut($CodeShortcutPath)
+        $CodeShortcut.TargetPath = $CodeExe
+        $CodeShortcut.Arguments = "`"$($WorkspaceFile.FullName)`""
+        $CodeShortcut.WorkingDirectory = $ProjectRoot
+        $CodeShortcut.WindowStyle = 1
+        $CodeShortcut.Description = "Open $($WorkspaceFile.BaseName) in Visual Studio Code"
+        $CodeShortcut.Save()
+        Write-Output "Created: $CodeShortcutPath"
+    }
+} else {
+    Write-Warning 'VS Code executable was not found; the workspace shortcut was skipped.'
 }
 
-$WorkspaceFile = Join-Path $ProjectRoot 'VSC_Tyrael.code-workspace'
-if (-not (Test-Path -LiteralPath $WorkspaceFile)) {
-    throw "VS Code workspace file was not found: $WorkspaceFile"
-}
-
-$CodeShortcut = $Shell.CreateShortcut((Join-Path $Startup 'VSC_Tyrael - VS Code.lnk'))
-$CodeShortcut.TargetPath = $CodeExe
-$CodeShortcut.Arguments = "`"$WorkspaceFile`""
-$CodeShortcut.WorkingDirectory = $ProjectRoot
-$CodeShortcut.WindowStyle = 1
-$CodeShortcut.Description = 'Open VSC_Tyrael in Visual Studio Code'
-$CodeShortcut.Save()
-
-Write-Output "Created: $(Join-Path $Startup 'Codex Telegram Bot.lnk')"
-Write-Output "Created: $(Join-Path $Startup 'VSC_Tyrael - VS Code.lnk')"
+Write-Output "Created: $BotShortcutPath"

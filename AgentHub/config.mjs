@@ -403,10 +403,22 @@ export async function loadConfig() {
     throw new Error(`Cannot read ${configPath}: ${error.message}`);
   }
 
-  const token = String(process.env.TELEGRAM_BOT_TOKEN ?? raw.telegramBotToken ?? "").trim();
-  if (!/^\d+:[A-Za-z0-9_-]+$/.test(token)) {
+  const profile = String(process.env.AGENT_HUB_PROFILE ?? raw.profile ?? "full")
+    .trim()
+    .toLowerCase();
+  if (!["full", "telegram", "journal"].includes(profile)) {
+    throw new Error('profile must be one of: "full", "telegram", "journal"');
+  }
+  const telegramEnabled = profile !== "journal";
+  const configuredToken = String(
+    process.env.TELEGRAM_BOT_TOKEN ?? raw.telegramBotToken ?? "",
+  ).trim();
+  if (telegramEnabled && !/^\d+:[A-Za-z0-9_-]+$/.test(configuredToken)) {
     throw new Error("telegramBotToken is missing or invalid");
   }
+  // TelegramClient is still constructed in journal mode because the shared
+  // runtime owns both profiles. Network-facing Telegram paths stay disabled.
+  const token = telegramEnabled ? configuredToken : "0:journal-only";
 
   const projectRoot = path.resolve(
     process.env.CODEX_PROJECT_ROOT ?? raw.projectRoot ?? path.join(AGENT_HUB_ROOT, "..", ".."),
@@ -414,10 +426,14 @@ export async function loadConfig() {
   const projects = process.env.CODEX_PROJECT_ROOT
     ? [{ name: path.basename(projectRoot) || projectRoot, path: projectRoot }]
     : loadProjects(raw, projectRoot);
-  const allowedUserIds = requireIntegerArray(raw.allowedUserIds, "allowedUserIds");
-  const allowedChatIds = raw.allowedChatIds == null
-    ? null
-    : requireIntegerArray(raw.allowedChatIds, "allowedChatIds");
+  const allowedUserIds = telegramEnabled
+    ? requireIntegerArray(raw.allowedUserIds, "allowedUserIds")
+    : new Set();
+  const allowedChatIds = telegramEnabled
+    ? raw.allowedChatIds == null
+      ? null
+      : requireIntegerArray(raw.allowedChatIds, "allowedChatIds")
+    : new Set();
   const dataDir = path.resolve(configDirectory, raw.dataDir ?? "data");
   const defaultTtsVenv = process.platform === "win32"
     ? path.join(process.env.LOCALAPPDATA ?? AGENT_HUB_ROOT, "TelegramIntegration", "tts-venv")
@@ -449,15 +465,24 @@ export async function loadConfig() {
     );
   }
 
+  const miniApp = miniAppSettings(raw.miniApp, { configDirectory });
+  if (profile !== "full") {
+    miniApp.enabled = false;
+    miniApp.quickTunnel.enabled = false;
+    miniApp.worker.enabled = false;
+  }
+
   return {
     configPath,
+    profile,
+    telegramEnabled,
     token,
     projectRoot,
     projects,
     showProjectButton: raw.showProjectButton !== false,
     showTaskProject: raw.showTaskProject !== false,
     guardConcurrentRepositoryWrites: repositoryWriteGuardEnabled(raw),
-    miniApp: miniAppSettings(raw.miniApp, { configDirectory }),
+    miniApp,
     provider,
     telegramApiBaseUrl: httpBaseUrl(
       process.env.TELEGRAM_API_BASE_URL ?? raw.telegramApiBaseUrl ?? "https://api.telegram.org",

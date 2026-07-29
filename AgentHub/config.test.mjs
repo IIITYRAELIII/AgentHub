@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,12 +8,67 @@ import {
   canonicalizeProjectRoots,
   findContainingProject,
   httpBaseUrl,
+  loadConfig,
   miniAppSettings,
   pathInsideOrSame,
   repositoryWriteGuardEnabled,
   resolveConfigPath,
   samePath,
 } from "./config.mjs";
+
+test("journal profile needs neither Telegram credentials nor Mini App", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-profile-"));
+  const configFile = path.join(root, "config.json");
+  const previous = process.env.AGENT_HUB_CONFIG;
+  try {
+    await writeFile(configFile, JSON.stringify({
+      profile: "journal",
+      projectRoot: root,
+      miniApp: { enabled: true },
+    }), "utf8");
+    process.env.AGENT_HUB_CONFIG = configFile;
+    const config = await loadConfig();
+    assert.equal(config.profile, "journal");
+    assert.equal(config.telegramEnabled, false);
+    assert.equal(config.allowedUserIds.size, 0);
+    assert.equal(config.allowedChatIds.size, 0);
+    assert.equal(config.miniApp.enabled, false);
+  } finally {
+    if (previous == null) delete process.env.AGENT_HUB_CONFIG;
+    else process.env.AGENT_HUB_CONFIG = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("telegram and full profiles share credentials but only full enables Mini App", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-telegram-profiles-"));
+  const configFile = path.join(root, "config.json");
+  const previous = process.env.AGENT_HUB_CONFIG;
+  try {
+    const base = {
+      telegramBotToken: "123456:profile_test_token",
+      allowedUserIds: [123],
+      projectRoot: root,
+      miniApp: { enabled: true },
+    };
+    process.env.AGENT_HUB_CONFIG = configFile;
+    await writeFile(configFile, JSON.stringify({ ...base, profile: "telegram" }), "utf8");
+    const telegram = await loadConfig();
+    assert.equal(telegram.profile, "telegram");
+    assert.equal(telegram.telegramEnabled, true);
+    assert.equal(telegram.miniApp.enabled, false);
+
+    await writeFile(configFile, JSON.stringify({ ...base, profile: "full" }), "utf8");
+    const full = await loadConfig();
+    assert.equal(full.profile, "full");
+    assert.equal(full.telegramEnabled, true);
+    assert.equal(full.miniApp.enabled, true);
+  } finally {
+    if (previous == null) delete process.env.AGENT_HUB_CONFIG;
+    else process.env.AGENT_HUB_CONFIG = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("concurrent repository write guard is opt-in", () => {
   assert.equal(repositoryWriteGuardEnabled(), false);

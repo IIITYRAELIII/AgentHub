@@ -1,3 +1,12 @@
+div[data-work-log-rate-limits] {
+  background: rgba(127, 127, 127, 0.075);
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  border-radius: 0.45em;
+  box-sizing: border-box;
+  margin: 0.65em 0;
+  padding: 0.45em 0.7em;
+}
+
 details[data-work-log-day-section] {
   background-color: rgba(127, 127, 127, 0.045);
   border: 1px solid rgba(127, 127, 127, 0.25);

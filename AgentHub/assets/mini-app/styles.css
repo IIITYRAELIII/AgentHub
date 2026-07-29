@@ -1488,20 +1488,7 @@ main {
 }
 
 .journal div[data-work-log-turn-files] {
-  display: flex;
-  flex-wrap: wrap;
-  font-size: 0;
-  gap: 0.3rem;
-  margin-top: 0.65rem;
-}
-
-.journal div[data-work-log-turn-files]::before {
-  color: var(--text-faint);
-  content: "Изменённые файлы:";
-  font-size: 0.68rem;
-  font-weight: 620;
-  letter-spacing: 0.02em;
-  width: 100%;
+  display: none;
 }
 
 .journal div[data-work-log-turn-files] a,

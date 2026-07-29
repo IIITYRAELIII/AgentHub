@@ -31,27 +31,10 @@ test("parseArguments reads text and options", () => {
     silent: true,
     bindCurrent: false,
     bindActive: false,
-    afterTurn: false,
     category: "info",
     messageFile: null,
-    workLogId: null,
-    title: null,
     text: "Готово",
   });
-});
-
-test("parseArguments reads a bounded end-of-turn title", () => {
-  const parsed = parseArguments([
-    "--bind-current",
-    "--after-turn",
-    "--title",
-    "Краткий итог",
-    "--category",
-    "done",
-    "Пояснение",
-  ]);
-  assert.equal(parsed.title, "Краткий итог");
-  assert.equal(parsed.text, "Пояснение");
 });
 
 test("parseArguments accepts a UTF-8 message file instead of positional text", () => {
@@ -99,36 +82,7 @@ test("parseArguments reads and validates the notification category", () => {
     "intermediate",
   );
   assert.throws(() => parseArguments(["--category", "unknown", "Текст"]), /Unknown --category value/);
-});
-
-test("parseArguments requires a current binding for deferred end-of-turn delivery", () => {
-  const parsed = parseArguments(["--after-turn", "--bind-current", "--category", "done", "Готово"]);
-  assert.equal(parsed.afterTurn, true);
-  assert.equal(parsed.bindCurrent, true);
-  assert.throws(
-    () => parseArguments(["--after-turn", "Готово"]),
-    /requires --bind-current/,
-  );
-  assert.throws(
-    () => parseArguments(["--after-turn", "--bind-active", "Готово"]),
-    /requires --bind-current/,
-  );
-});
-
-test("parseArguments binds a validated WORK_LOG id only to end-of-turn delivery", () => {
-  const id = "123e4567-e89b-42d3-a456-426614174000";
-  assert.equal(
-    parseArguments(["--after-turn", "--bind-current", "--work-log-id", id, "Готово"]).workLogId,
-    id,
-  );
-  assert.throws(
-    () => parseArguments(["--bind-current", "--work-log-id", id, "Готово"]),
-    /requires --after-turn/,
-  );
-  assert.throws(
-    () => parseArguments(["--after-turn", "--bind-current", "--work-log-id", "wrong", "Готово"]),
-    /UUID/,
-  );
+  assert.throws(() => parseArguments(["--after-turn", "Текст"]), /Unknown option/);
 });
 
 test("thread title index is cached until the append-only file changes", async () => {

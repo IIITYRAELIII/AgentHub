@@ -283,29 +283,7 @@ function turnTitle(record) {
   return `${prefix}${sentence.trim().replace(/[.!?]+$/u, "") || "Ход завершён"}`;
 }
 
-function diffLineKind(line) {
-  if (/^diff --git /u.test(line) || /^(?:---|\+\+\+) /u.test(line)) return "file";
-  if (/^@@/u.test(line)) return "hunk";
-  if (/^\+/u.test(line)) return "added";
-  if (/^-/u.test(line)) return "removed";
-  return "context";
-}
-
-function formatTurnDiff(value) {
-  const diff = String(value ?? "").trimEnd();
-  if (!diff) return "";
-  const lines = diff.split(/\r?\n/u).map((line) => (
-    `<span data-work-log-diff-line="${diffLineKind(line)}">${
-      escapeHtmlText(line) || " "
-    }</span>`
-  )).join("");
-  return "<details data-work-log-turn-diff>"
-    + "<summary>Изменения</summary>"
-    + `<pre><code>${lines}</code></pre>`
-    + "</details>";
-}
-
-function formatTurnEntry(record, legacyFiles = "", taskCredits = 0) {
+function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0) {
   const breakdown = recordCreditBreakdown(record);
   const recordTotal = breakdown.total;
   const credits = record?.usageReported === false && recordTotal <= 0
@@ -319,8 +297,6 @@ function formatTurnEntry(record, legacyFiles = "", taskCredits = 0) {
   const title = escapeHtmlText(turnTitle(record));
   const body = escapeHtmlText(String(record?.body ?? record?.text ?? "").trim());
   const prompt = escapeHtmlText(displayUserPrompt(record?.prompt));
-  const diff = formatTurnDiff(record?.diff);
-  const migratedFiles = String(legacyFiles ?? "").trim();
   const pricing = record?.model
     ? `<div data-work-log-turn-pricing>${
       escapeHtmlText(record.model)
@@ -335,13 +311,7 @@ function formatTurnEntry(record, legacyFiles = "", taskCredits = 0) {
       }</div></div>`,
     prompt ? `<div data-work-log-turn-prompt><strong>Запрос:</strong> ${prompt}</div>` : "",
   ].filter(Boolean).join("");
-  const bodyDetails = [
-    body ? `<div data-work-log-turn-body>${body}</div>` : "",
-    diff,
-    migratedFiles
-      ? `<div data-work-log-turn-files data-work-log-migrated-files>${migratedFiles}</div>`
-      : "",
-  ].filter(Boolean).join("");
+  const bodyDetails = body ? `<div data-work-log-turn-body>${body}</div>` : "";
   return `<div data-work-log-turn-entry data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}">`
     + "<details data-work-log-turn-details>"
     + "<summary>"
@@ -999,6 +969,21 @@ export function projectWorkLogUsage(workLogText, turns = {}) {
   return projected;
 }
 
+export function projectWorkLogRateLimits(workLogText, summary, sampledAt = "") {
+  const text = String(workLogText ?? "");
+  const clean = String(summary ?? "").replace(/\s*\r?\n\s*/gu, " · ").trim();
+  const existing = /\n?<div data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>\n?/iu;
+  if (!clean) return text.replace(existing, "\n");
+  const timestamp = String(sampledAt ?? "").trim();
+  const block = `<div data-work-log-rate-limits${
+    timestamp ? ` data-sampled-at="${escapeHtmlAttribute(timestamp)}"` : ""
+  }><strong>Лимиты:</strong> ${escapeHtmlText(clean)}</div>`;
+  if (existing.test(text)) return text.replace(existing, `\n${block}\n`);
+  const heading = /^# [^\r\n]+(?:\r?\n)?/u.exec(text);
+  if (!heading) return `# Глобальный журнал работ\n\n${block}\n\n${text}`;
+  return `${text.slice(0, heading[0].length)}\n${block}\n${text.slice(heading[0].length)}`;
+}
+
 export function applyWorkLogUsage(workLogText, workLogId, usage) {
   const id = normalizeWorkLogId(workLogId);
   const escapedId = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -1440,6 +1425,25 @@ export class WorkLogUsageStore {
         else throw error;
       }
       const updated = projectWorkLogUsage(current, selectedTurns);
+      if (updated === current) return { projected: false, reason: "unchanged" };
+      await writeTextAtomic(logPath, updated);
+      return { projected: true };
+    });
+    this.#tail = operation;
+    return operation;
+  }
+
+  projectRateLimits(workLogFile, summary, sampledAt = "") {
+    const operation = this.#tail.catch(() => {}).then(async () => {
+      const logPath = path.resolve(workLogFile);
+      let current;
+      try {
+        current = await readFile(logPath, "utf8");
+      } catch (error) {
+        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
+        else throw error;
+      }
+      const updated = projectWorkLogRateLimits(current, summary, sampledAt);
       if (updated === current) return { projected: false, reason: "unchanged" };
       await writeTextAtomic(logPath, updated);
       return { projected: true };

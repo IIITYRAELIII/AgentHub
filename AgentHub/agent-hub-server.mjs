@@ -50,6 +50,7 @@ import {
   scanCodexTurnPricingMetadata,
 } from "./codex-turn-usage.mjs";
 import { CodexTerminalAudit } from "./codex-terminal-audit.mjs";
+import { appendRateLimitRows, codexRateLimitRows } from "./rate-limit-history.mjs";
 import {
   CODEX_AUDIT_SOURCE_KINDS,
   CODEX_TASK_SOURCE_KINDS,
@@ -84,13 +85,9 @@ import {
 import {
   readCodexThreadTitleHistories,
   readCodexThreadTitleHistory,
-  notificationCardOutboxBody,
-  notificationParts,
   parseArguments as parseSendMessageArguments,
   resolveChatId as resolveNotificationChatId,
-  resolveMessageText as resolveNotificationMessageText,
   showMessageReplyMarkup,
-  splitTelegramText,
 } from "./send-message.mjs";
 import { parseArguments as parseSendImagesArguments } from "./send-images.mjs";
 import {
@@ -383,6 +380,7 @@ let deliveryOutboxTimer = null;
 let deliveryOutboxTimerDueAt = 0;
 let selectedTaskWatchTimer = null;
 let selectedTaskWatchInFlight = false;
+let rateLimitPollTimer = null;
 const reconcilingCodexTerminalTurns = new Set();
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
 const COMPLETED_CODEX_TERMINAL_GRACE_MS = 10_000;
@@ -396,6 +394,10 @@ const turnTokenUsage = new Map();
 const codexTurnStarts = new Map();
 const codexAccountingThreadRoots = new Map();
 let codexHookReceipts = { start: null, stop: null };
+
+function defaultNotificationChatId() {
+  return config.telegramEnabled ? resolveNotificationChatId(config, null) : null;
+}
 
 async function rememberAuditedCodexTurnStart(thread, project, turn) {
   const identity = {
@@ -1167,10 +1169,6 @@ function conciseTurnTitle(value, status = "completed") {
   return sentence.trim().replace(/[.!?]+$/u, "") || "Ход завершён";
 }
 
-function structuredTurnText(title, body) {
-  return [String(title ?? "").trim(), String(body ?? "").trim()].filter(Boolean).join("\n\n");
-}
-
 function applyCodexRolloutContext(run, usageResult) {
   if (!run || !usageResult) return;
   if (usageResult.startedAt) run.startedAt = usageResult.startedAt;
@@ -1298,7 +1296,7 @@ async function finalizeCodexRunDelivery(run, {
     turnId: completedTurnId,
     projectRoot: run.projectRoot,
     taskTitle: runTaskTitle(run),
-    chatId: run.chatId ?? chatId ?? resolveNotificationChatId(config, null),
+    chatId: run.chatId ?? chatId ?? defaultNotificationChatId(),
     status,
     usage: tracker.usage,
     usageReported: tracker.reported === true,
@@ -1309,24 +1307,11 @@ async function finalizeCodexRunDelivery(run, {
     serviceTier: tracker.serviceTier ?? run.serviceTier ?? "default",
     startedAt: run.startedAt,
     prompt: run.promptPreview,
+    finalAnswer: String(answer ?? "").trim(),
     changedFiles: changedFilesForRun(run),
     diff: run.latestDiff ?? "",
   });
   codexTurnStarts.delete(startKey);
-  if (completion && run.observer === true && !completion.message) {
-    turnEndNotifications.registerMessage({
-      provider: "codex",
-      threadId: run.threadId,
-      turnId: completedTurnId,
-      projectRoot: run.projectRoot,
-      taskTitle: runTaskTitle(run),
-      chatId: run.chatId ?? chatId ?? resolveNotificationChatId(config, null),
-      category: status === "completed" ? "done" : "warning",
-      silent,
-      title: conciseTurnTitle(answer, status),
-      text: String(answer ?? "").trim().slice(0, 700) || fallbackTurnEndMessage(status),
-    });
-  }
   await saveState();
   const resolvedTracker = completion
     ? {
@@ -1344,7 +1329,6 @@ async function finalizeCodexRunDelivery(run, {
   ].filter(Boolean).join("\n\n");
   const delivery = await routeCodexFinalDelivery({
     completion,
-    deliverRegistered: deliverTurnEndNotification,
     deliverStandard: async () => {
       if (completion) {
         await projectTurnUsageToWorkLog(completion, {
@@ -1381,86 +1365,29 @@ async function deliverTurnEndNotification(completion) {
   if (turnEndNotifications.hasDelivered(key) || deliveringTurnEndKeys.has(key)) return false;
   deliveringTurnEndKeys.add(key);
   try {
-    const message = completion.message;
-    const notificationBody = message?.text || fallbackTurnEndMessage(completion.status);
-    const notificationTitle = message?.title || conciseTurnTitle(notificationBody, completion.status);
-    const notificationText = structuredTurnText(notificationTitle, notificationBody);
+    const notificationBody = completion.finalAnswer
+      || completion.message?.text
+      || fallbackTurnEndMessage(completion.status);
+    const notificationTitle = completion.message?.title
+      || conciseTurnTitle(notificationBody, completion.status);
     const journal = await projectTurnUsageToWorkLog(completion, {
       title: notificationTitle,
       body: notificationBody,
     });
+    if (!completion.aggregateOnly) {
+      rememberLastTaskMessage({
+        provider: completion.provider,
+        projectRoot: completion.projectRoot,
+        threadId: completion.threadId,
+      }, notificationBody);
+      if (completion.turnId) {
+        setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(completion), completion.turnId, 500);
+      }
+    }
     if (journal?.projectionError) {
       console.error(
         `WORK_LOG projection deferred for turn ${completion.turnId}: ${journal.projectionError}`,
       );
-    }
-    const category = message?.category
-      ?? (completion.status === "completed" ? "done" : "warning");
-    const text = [
-      notificationText,
-      formatTurnTokenUsage({
-        usage: completion.usage,
-        reported: completion.usageReported,
-        estimatedCredits: completion.estimatedCredits,
-        model: completion.model,
-        serviceTier: completion.serviceTier,
-      }),
-    ].filter(Boolean).join("\n\n");
-    const targetChatId = message?.chatId ?? completion.chatId;
-    if (completion.deliveryGroupId && Number.isSafeInteger(completion.deliverySequence)) {
-      const binding = {
-        chatId: targetChatId,
-        provider: "codex",
-        threadId: completion.threadId,
-        projectRoot: completion.projectRoot,
-        taskTitle: completion.taskTitle,
-        createdAt: new Date().toISOString(),
-      };
-      const replyMarkup = showMessageReplyMarkup(binding);
-      const notification = notificationParts(completion.taskTitle, text, category);
-      let sequence = completion.deliverySequence;
-      await deliveryOutbox.enqueue({
-        method: "sendPhotoFile",
-        body: notificationCardOutboxBody({
-          chatId: targetChatId,
-          file: notification.cardPath,
-          caption: notification.caption,
-          silent: message?.silent === true,
-          replyMarkup,
-        }),
-        binding,
-        groupId: completion.deliveryGroupId,
-        sequence: sequence++,
-      });
-      for (const part of notification.remaining ? splitTelegramText(notification.remaining) : []) {
-        await deliveryOutbox.enqueue({
-          method: "sendMessage",
-          body: {
-            chat_id: targetChatId,
-            text: part,
-            disable_notification: message?.silent === true,
-          },
-          binding,
-          groupId: completion.deliveryGroupId,
-          sequence: sequence++,
-        });
-      }
-      scheduleDeliveryOutboxFlush(0);
-    } else {
-      const args = [
-        "--bind-current",
-        "--chat-id",
-        String(targetChatId),
-        "--category",
-        category,
-      ];
-      if (message?.silent) args.push("--silent");
-      args.push(text);
-      await spawnRuntimeNotification("send-message.mjs", args, completion.projectRoot, {
-        CODEX_THREAD_ID: completion.threadId,
-        CODEX_PROJECT_ROOT: completion.projectRoot,
-        AI_PROVIDER: "codex",
-      });
     }
     turnEndNotifications.markDelivered(key);
     await saveState();
@@ -1963,6 +1890,11 @@ function respondRpc(id, result) {
 }
 
 async function initializeProvider() {
+  if (config.profile === "journal") {
+    await startCodexAppServer();
+    await initializeCodex({ attachSelectedThread: false });
+    return;
+  }
   if (!isCodex()) {
     await startCodexAppServer();
     await initializeCodex({ attachSelectedThread: false });
@@ -4152,7 +4084,7 @@ async function handleRuntimeCommand(request) {
       turnId: payload.turnId,
       projectRoot: project.path,
       taskTitle,
-      chatId: resolveNotificationChatId(config, null),
+      chatId: defaultNotificationChatId(),
       status: payload.status,
       usage: payload.usage,
       usageReported: payload.usageReported === true,
@@ -4165,10 +4097,12 @@ async function handleRuntimeCommand(request) {
       startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
       completedAt: payload.completedAt,
       prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
+      finalAnswer: payload.finalAnswer ?? "",
       changedFiles,
       diff: turnDiff || run?.latestDiff || "",
     });
     if (!completion && alreadyDelivered) {
+      const finalAnswer = String(payload.finalAnswer ?? "").trim();
       await projectTurnUsageToWorkLog({
         ...deliveredIdentity,
         projectRoot: project.path,
@@ -4187,7 +4121,22 @@ async function handleRuntimeCommand(request) {
         changedFiles,
         diff: turnDiff || run?.latestDiff || "",
         message: null,
+      }, {
+        title: conciseTurnTitle(finalAnswer, payload.status),
+        body: finalAnswer,
       });
+      if (finalAnswer) {
+        rememberLastTaskMessage({
+          provider: "codex",
+          threadId: identity.threadId,
+          projectRoot: project.path,
+        }, finalAnswer);
+        setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey({
+          provider: "codex",
+          threadId: identity.threadId,
+          projectRoot: project.path,
+        }), payload.turnId, 500);
+      }
     }
     codexTurnStarts.delete(turnEndKey(deliveredIdentity));
     await saveState();
@@ -4197,7 +4146,7 @@ async function handleRuntimeCommand(request) {
     return completion ? `Recorded Codex turn completion ${payload.turnId}.` : "Turn was already delivered.";
   }
 
-  const messageCommand = ["send-message", "turn-end-message"].includes(request.command);
+  const messageCommand = request.command === "send-message";
   const script = messageCommand ? "send-message.mjs" : "send-images.mjs";
   const options = messageCommand
     ? parseSendMessageArguments(request.args)
@@ -4216,46 +4165,6 @@ async function handleRuntimeCommand(request) {
       cwd: requestCwd,
     })));
   }
-  if (request.command === "turn-end-message") {
-    if (!options.afterTurn) throw new Error("turn-end-message requires --after-turn");
-    const identity = runtimeCommandIdentity(request.environment);
-    const project = findProject(request.cwd);
-    if (!project) throw new Error("Cannot match the deferred notification to a configured project");
-    const run = taskRuns.forEvent({
-      ...identity,
-      allowThreadFallback: true,
-    });
-    const exactTurn = await exactRuntimeCommandTurn(identity, run);
-    const targetChatId = resolveNotificationChatId(config, options.chatId);
-    const taskTitle = await runtimeCommandTaskTitle({
-      ...identity,
-      run,
-      thread: exactTurn.threadResult?.thread,
-    });
-    await ensureDeferredCodexTurnObserved({
-      identity,
-      project,
-      taskTitle,
-      targetChatId,
-      turnId: exactTurn.turnId,
-      threadResult: exactTurn.threadResult,
-    });
-    const message = turnEndNotifications.registerMessage({
-      ...identity,
-      turnId: exactTurn.turnId,
-      projectRoot: project.path,
-      taskTitle,
-      chatId: targetChatId,
-      category: options.category,
-      silent: options.silent,
-      workLogId: options.workLogId,
-      title: options.title,
-      text: await resolveNotificationMessageText(options, { readStdinImpl: async () => "" }),
-    });
-    await saveState();
-    return `Registered end-of-turn notification ${message.id}.`;
-  }
-
   return spawnRuntimeNotification(script, request.args, requestCwd, request.environment);
 }
 
@@ -5067,6 +4976,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       }),
     ])];
     if (accountingThread.isSubagent) {
+      const finalAnswer = String(usageResult.finalAnswer ?? "").trim();
       const journal = await projectTurnUsageToWorkLog({
         ...identity,
         taskThreadId: accountingThread.threadId,
@@ -5092,6 +5002,9 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         changedFiles,
         diff: turnDiff,
         message: null,
+      }, {
+        title: conciseTurnTitle(finalAnswer, resolvedStatus),
+        body: finalAnswer,
       });
       if (journal?.projectionError) {
         console.error(
@@ -5107,13 +5020,10 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
     if (alreadyDelivered) {
       const registeredMessage = turnEndNotifications.takePendingMessage(identity);
       const journalTurn = await workLogUsageStore.getTurn(identity);
-      const correctText = Boolean(registeredMessage || !journalTurn || journalTurn.provisional);
-      const correctedBody = correctText
-        ? registeredMessage?.text
-          || usageResult.finalAnswer
-          || fallbackTurnEndMessage(resolvedStatus)
-        : "";
-      const correctedTitle = correctText
+      const correctedBody = usageResult.finalAnswer
+        || registeredMessage?.text
+        || (journalTurn?.provisional ? fallbackTurnEndMessage(resolvedStatus) : "");
+      const correctedTitle = correctedBody
         ? registeredMessage?.title || conciseTurnTitle(correctedBody, resolvedStatus)
         : "";
       const journal = await projectTurnUsageToWorkLog({
@@ -5142,8 +5052,18 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
           `WORK_LOG correction deferred for turn ${identity.turnId}: ${journal.projectionError}`,
         );
       }
+      if (correctedBody) {
+        rememberLastTaskMessage({
+          ...identity,
+          projectRoot: project.path,
+        }, correctedBody);
+        setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey({
+          ...identity,
+          projectRoot: project.path,
+        }), identity.turnId, 500);
+      }
       codexTurnStarts.delete(key);
-      if (registeredMessage) await saveState();
+      if (registeredMessage || correctedBody) await saveState();
       console.log(`Reconciled delivered Codex terminal turn ${identity.turnId} (${resolvedStatus})`);
       return true;
     }
@@ -5151,7 +5071,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       ...identity,
       projectRoot: project.path,
       taskTitle: await runtimeCommandTaskTitle({ ...identity, thread }),
-      chatId: resolveNotificationChatId(config, null),
+      chatId: defaultNotificationChatId(),
       status: resolvedStatus,
       provisional,
       usage: usageResult.usage,
@@ -5164,6 +5084,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       startedAt: usageResult.startedAt,
       completedAt: resolvedCompletedAt,
       prompt: usageResult.prompt,
+      finalAnswer: usageResult.finalAnswer,
       changedFiles,
       diff: turnDiff,
     });
@@ -5189,6 +5110,36 @@ async function auditRecentCodexTerminalTurns() {
     if (changed) await saveState();
   } catch (error) {
     console.error("Cannot audit Codex terminal turns:", error.message);
+  }
+}
+
+function scheduleRateLimitPoll(delayMs = 5 * 60_000) {
+  if (rateLimitPollTimer || stopping) return;
+  rateLimitPollTimer = setTimeout(() => {
+    rateLimitPollTimer = null;
+    void pollRateLimits();
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
+async function pollRateLimits() {
+  try {
+    if (!codexTransport.running) return;
+    const observedAt = new Date().toISOString();
+    const result = await sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 });
+    const summary = formatCodexRateLimits(result);
+    await appendRateLimitRows(
+      path.join(config.dataDir, "rate-limits.csv"),
+      codexRateLimitRows(result, observedAt),
+    );
+    await workLogUsageStore.projectRateLimits(
+      path.join(config.projectRoot, "WORK_LOG.md"),
+      summary,
+      observedAt,
+    );
+  } catch (error) {
+    console.error("Cannot poll Codex rate limits:", error.message);
+  } finally {
+    scheduleRateLimitPoll();
   }
 }
 
@@ -6640,6 +6591,10 @@ function stopRuntimeTimers() {
     clearTimeout(selectedTaskWatchTimer);
     selectedTaskWatchTimer = null;
   }
+  if (rateLimitPollTimer) {
+    clearTimeout(rateLimitPollTimer);
+    rateLimitPollTimer = null;
+  }
   deferredInputController.stop();
   for (const run of taskRuns.values()) {
     taskProgress.pause(run);
@@ -6649,9 +6604,12 @@ function stopRuntimeTimers() {
 }
 
 function startRuntimeTimers() {
-  for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
-  scheduleDeliveryOutboxFlush(1_000);
+  if (config.telegramEnabled) {
+    for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
+    scheduleDeliveryOutboxFlush(1_000);
+  }
   scheduleSelectedTaskWatch(500);
+  scheduleRateLimitPoll(1_000);
 }
 
 async function shutdown(signal) {
@@ -6696,15 +6654,17 @@ if (codexTransport.running) {
     .then((threads) => backfillWorkLogPricingMetadata(threads))
     .catch((error) => console.error("Cannot list Codex threads for credit backfill:", error.message));
 }
-await recoverActiveRuns().catch(async (error) => {
-  console.error("Cannot recover active tasks:", error.message);
-  await sendMessage(`⚠️ Не удалось восстановить активные задачи: ${error.message}`).catch(() => {});
-});
-await retryPendingTurnEndNotifications();
-await restoreBackgroundJobs().catch(async (error) => {
-  console.error("Cannot recover background jobs:", error.message);
-  await sendMessage(`⚠️ Не удалось восстановить фоновые медиа-задачи: ${error.message}`).catch(() => {});
-});
+if (config.telegramEnabled) {
+  await recoverActiveRuns().catch(async (error) => {
+    console.error("Cannot recover active tasks:", error.message);
+    await sendMessage(`⚠️ Не удалось восстановить активные задачи: ${error.message}`).catch(() => {});
+  });
+  await retryPendingTurnEndNotifications();
+  await restoreBackgroundJobs().catch(async (error) => {
+    console.error("Cannot recover background jobs:", error.message);
+    await sendMessage(`⚠️ Не удалось восстановить фоновые медиа-задачи: ${error.message}`).catch(() => {});
+  });
+}
 desktopControlServer = new DesktopControlServer({
   runtimeRoot: runtimeCommandRoot,
   handler: handleDesktopControl,
@@ -6723,12 +6683,14 @@ if (miniAppServer) {
   }
 }
 startRuntimeTimers();
-try {
-  await telegram("setMyCommands", {
-    commands: BOT_COMMANDS,
-  });
-} catch (error) {
-  console.error("Cannot register Telegram commands:", error.message);
+if (config.telegramEnabled) {
+  try {
+    await telegram("setMyCommands", {
+      commands: BOT_COMMANDS,
+    });
+  } catch (error) {
+    console.error("Cannot register Telegram commands:", error.message);
+  }
 }
 let restartFinalized = false;
 if (restartRequest) {
@@ -6738,5 +6700,11 @@ if (restartRequest) {
   });
 }
 await instanceGuard.markReady();
-console.log(`Agent Hub ready for ${config.allowedUserIds.size} user(s); provider: ${providerTitle()}; project: ${activeProjectRoot}`);
-await pollTelegram();
+console.log(
+  `Agent Hub ready; profile: ${config.profile}; provider: ${providerTitle()}; project: ${activeProjectRoot}`,
+);
+if (config.telegramEnabled) {
+  await pollTelegram();
+} else {
+  await new Promise(() => {});
+}

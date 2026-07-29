@@ -1,0 +1,85 @@
+{
+  "name": "work-log-view",
+  "displayName": "Tyrael Work Log",
+  "description": "Закреплённая автоматически обновляемая панель WORK_LOG.md.",
+  "version": "0.2.0",
+  "publisher": "tyrael",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onView:tyraelWorkLog.view",
+    "onCommand:tyraelWorkLog.open",
+    "onCommand:tyraelWorkLog.refresh"
+  ],
+  "main": "./extension.js",
+  "scripts": {
+    "test": "node --test render.test.js"
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "tyraelWorkLog",
+          "title": "Журнал работ",
+          "icon": "media/journal.svg"
+        }
+      ]
+    },
+    "views": {
+      "tyraelWorkLog": [
+        {
+          "type": "webview",
+          "id": "tyraelWorkLog.view",
+          "name": "Журнал работ"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "tyraelWorkLog.open",
+        "title": "Открыть журнал",
+        "category": "Журнал работ",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "tyraelWorkLog.refresh",
+        "title": "Обновить журнал",
+        "category": "Журнал работ",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "tyraelWorkLog.open",
+          "when": "view == tyraelWorkLog.view",
+          "group": "navigation@1"
+        },
+        {
+          "command": "tyraelWorkLog.refresh",
+          "when": "view == tyraelWorkLog.view",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Tyrael Work Log",
+      "properties": {
+        "tyraelWorkLog.fileName": {
+          "type": "string",
+          "default": "WORK_LOG.md",
+          "description": "Путь к журналу относительно корня workspace."
+        }
+      }
+    }
+  }
+}
+

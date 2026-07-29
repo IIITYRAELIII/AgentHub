@@ -1,4 +1,5 @@
 {
+  "profile": "full",
   "telegramBotToken": "123456789:replace_with_your_bot_token",
   "allowedUserIds": [
     123456789

@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   applyWorkLogUsage,
   normalizeWorkLogId,
+  projectWorkLogRateLimits,
   projectWorkLogUsage,
   restoreLegacyOutcomes,
   WorkLogUsageStore,
@@ -19,6 +20,18 @@ const GIGA_WORK_ID = "323e4567-e89b-42d3-a456-426614174001";
 test("work-log ids are normalized and validated", () => {
   assert.equal(normalizeWorkLogId(WORK_ID.toUpperCase()), WORK_ID);
   assert.throws(() => normalizeWorkLogId("not-a-guid"), /UUID/);
+});
+
+test("rate-limit summary is replaced in place above the journal days", () => {
+  const first = projectWorkLogRateLimits(
+    "# Глобальный журнал работ\n\n<details></details>\n",
+    "CODEX - 94.0%\nSpark - 100.0%",
+    "2026-07-29T10:00:00.000Z",
+  );
+  const second = projectWorkLogRateLimits(first, "CODEX - 93.0%", "2026-07-29T10:05:00.000Z");
+  assert.equal((second.match(/data-work-log-rate-limits/gu) ?? []).length, 1);
+  assert.match(second, /Лимиты:<\/strong> CODEX - 93\.0%/u);
+  assert.doesNotMatch(second, /94\.0%/u);
 });
 
 test("applyWorkLogUsage replaces only the matching per-turn placeholder", () => {
@@ -107,8 +120,9 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.match(projected, /data-work-log-legacy-outcome>Outcome B<\/div>/);
   assert.match(
     projected,
-    /<div data-work-log-turn-table>[\s\S]*?data-work-log-turn-measure>13:45 — <span data-kilo-usage>0,0 cr<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Второй &amp; ход<\/span>[\s\S]*?data-work-log-turn-files[^>]*>a\.mjs<\/div>[\s\S]*?<details data-work-log-previous-turns>[\s\S]*?data-work-log-turn-measure>12:34 — <span data-kilo-usage>0,0 cr<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Первый &lt;ход&gt; Строка<\/span>/,
+    /<div data-work-log-turn-table>[\s\S]*?data-work-log-turn-measure>13:45 — <span data-kilo-usage>0,0 cr<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Второй &amp; ход<\/span>[\s\S]*?<details data-work-log-previous-turns>[\s\S]*?data-work-log-turn-measure>12:34 — <span data-kilo-usage>0,0 cr<\/span><\/span><span data-work-log-turn-share>\(50%\)<\/span>[\s\S]*?data-work-log-turn-title>Первый &lt;ход&gt; Строка<\/span>/,
   );
+  assert.doesNotMatch(projected, /data-work-log-turn-files|a\.mjs/u);
   assert.match(
     projected,
     /<details data-work-log-previous-turns><summary><span data-work-log-previous-turns-closed>Показать предыдущие ходы \(1\)<\/span><span data-work-log-previous-turns-open>Свернуть<\/span><\/summary>/,
@@ -172,7 +186,7 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.equal(reprojected, projected);
 });
 
-test("projectWorkLogUsage renders the exact turn diff instead of changed-file chips", () => {
+test("projectWorkLogUsage keeps exact diffs out of the compact journal projection", () => {
   const source = [
     "<details open>",
     "<summary><strong>25.07.2026</strong></summary>",
@@ -202,9 +216,8 @@ test("projectWorkLogUsage renders the exact turn diff instead of changed-file ch
       ].join("\n"),
     },
   });
-  assert.match(projected, /<details data-work-log-turn-diff>/u);
-  assert.match(projected, /data-work-log-diff-line="removed">-const value = 1;<\/span>/u);
-  assert.match(projected, /data-work-log-diff-line="added">\+const value = 2;<\/span>/u);
+  assert.doesNotMatch(projected, /data-work-log-turn-diff/u);
+  assert.doesNotMatch(projected, /const value/u);
   assert.doesNotMatch(projected, /data-work-log-turn-files>[\s\S]*src\/a\.mjs/u);
 });
 
@@ -1202,7 +1215,7 @@ test("automatic journal records a stopped turn even when usage is unavailable", 
     assert.match(projected, /12:01 — нет данных/);
     assert.match(projected, /data-work-log-turn-title>Ход остановлен<\/span>/);
     assert.match(projected, /data-work-log-turn-prompt><strong>Запрос:<\/strong> Сделай работу<\/div>/);
-    assert.match(projected, /data-work-log-turn-diff/u);
+    assert.doesNotMatch(projected, /data-work-log-turn-diff/u);
     assert.doesNotMatch(projected, /data-work-log-turn-files>[\s\S]*stopped\.mjs/u);
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.values(ledger.turns)[0].usageReported, false);
