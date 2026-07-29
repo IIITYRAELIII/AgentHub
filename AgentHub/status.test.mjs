@@ -35,7 +35,31 @@ test("formatCodexRateLimits shows one weekly line per limit", () => {
   assert.equal(formatCodexRateLimits(result, nowMs), [
     "CODEX - 94.0% - 6 дн. 7 ч.",
     "Spark - 100.0% - 7 дн.",
-    "Доступно сбросов: 0",
+    "Сбросов 0",
+  ].join("\n"));
+});
+
+test("formatCodexRateLimits shows reset credits and their nearest expiration", () => {
+  const nowMs = new Date(2026, 6, 10, 15, 0).getTime();
+  const expiresAt = new Date(2026, 6, 31, 12, 0).getTime() / 1000;
+  assert.equal(formatCodexRateLimits({
+    rateLimitsByLimitId: {
+      codex: {
+        limitId: "codex",
+        primary: { usedPercent: 20, resetsAt: (nowMs + 3600_000) / 1000 },
+      },
+    },
+    rateLimitResetCredits: {
+      availableCount: 2,
+      credits: [
+        { status: "available", expiresAt: expiresAt + 86400 },
+        { status: "available", expiresAt },
+      ],
+    },
+  }, nowMs), [
+    "CODEX - 80.0% - 1 ч.",
+    "Сбросов 2",
+    "До 31 июл.",
   ].join("\n"));
 });
 

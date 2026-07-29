@@ -49,7 +49,7 @@
       </nav>
 
       <div class="toolbar">
-        <div class="rate-limits" data-rate-limits-slot hidden></div>
+        <div class="rate-limits" data-rate-limits-slot data-limits-trigger hidden></div>
         <button class="refresh collapse-all" type="button" data-collapse-all title="Свернуть всё"
           data-journal-only>
           <span>Свернуть всё</span>
@@ -342,6 +342,56 @@
         <button type="submit" class="chip-button primary" data-text-dialog-ok>Готово</button>
       </div>
     </form>
+  </div>
+
+  <!-- История лимитов: SVG-график использования по выбранному периоду. Данные
+       приходят через AgentHub.setRateLimitHistory(payload); открывается кликом,
+       Enter или Space по сводке лимитов в шапке. -->
+  <div class="limits-scrim" data-limits-scrim hidden></div>
+  <div class="limits-dialog" data-limits-dialog hidden role="dialog" aria-modal="true"
+    aria-labelledby="limits-dialog-title">
+    <header class="limits-head">
+      <div class="limits-head-main">
+        <h2 id="limits-dialog-title">Лимиты</h2>
+        <p class="limits-subtitle" data-limits-subtitle></p>
+      </div>
+      <button type="button" class="icon-button" data-limits-close title="Закрыть" aria-label="Закрыть">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 6l12 12M18 6 6 18"></path>
+        </svg>
+      </button>
+    </header>
+
+    <div class="limits-ranges" role="group" aria-label="Период истории" data-limits-ranges>
+      <button type="button" class="limits-range" data-range="6h" aria-pressed="false">6&nbsp;ч</button>
+      <button type="button" class="limits-range" data-range="24h" aria-pressed="false">24&nbsp;ч</button>
+      <button type="button" class="limits-range" data-range="7d" aria-pressed="false">7&nbsp;д</button>
+      <button type="button" class="limits-range" data-range="30d" aria-pressed="false">30&nbsp;д</button>
+      <button type="button" class="limits-range" data-range="all" aria-pressed="false">Все</button>
+    </div>
+    <p class="limits-hint">Клавиши − и + сужают и расширяют период.</p>
+
+    <div class="limits-body" data-limits-body>
+      <div class="limits-state limits-loading" data-limits-loading hidden aria-live="polite">
+        <span class="limits-spinner" aria-hidden="true"></span>
+        <span>Загрузка истории лимитов…</span>
+      </div>
+      <div class="limits-state limits-error" data-limits-error hidden role="alert">
+        <p data-limits-error-text>Не удалось загрузить историю лимитов.</p>
+        <button type="button" class="chip-button" data-limits-retry>Повторить</button>
+      </div>
+      <div class="limits-state limits-empty" data-limits-empty hidden>
+        <p>За выбранный период нет данных о лимитах.</p>
+      </div>
+
+      <div class="limits-chart-wrap" data-limits-chart-wrap hidden>
+        <figure class="limits-chart" data-limits-chart role="img" aria-label="График использования лимитов"></figure>
+        <div class="limits-tooltip" data-limits-tooltip hidden role="status" aria-live="polite"></div>
+        <ul class="limits-legend" data-limits-legend></ul>
+        <div class="limits-credits" data-limits-credits hidden></div>
+      </div>
+    </div>
   </div>
 
   <div class="connection-banner" data-restart-banner hidden role="status" aria-live="polite"></div>

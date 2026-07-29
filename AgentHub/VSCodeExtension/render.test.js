@@ -251,3 +251,94 @@ test("composer keeps an unconfirmed message and shows Agent Hub restart state", 
   assert.match(html, /data-restart-banner/u);
   assert.match(app, /Agent Hub перезапускается… Сообщение останется в поле ввода\./u);
 });
+
+test("rate-limit summary becomes a keyboard-activatable trigger for the history dialog", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(html, /data-rate-limits-slot data-limits-trigger/u);
+  assert.match(app, /rateLimitsSlot\.setAttribute\("role", "button"\)/u);
+  assert.match(app, /rateLimitsSlot\.setAttribute\("aria-haspopup", "dialog"\)/u);
+  assert.match(app, /if \(limitsIsTrigger\(\)\) openLimitsDialog\(\);/u);
+  assert.match(
+    app,
+    /event\.key === "Enter" \|\| event\.key === " " \|\| event\.key === "Spacebar"/u,
+  );
+  // и хоистинг лимитов из журнала включает/выключает триггер
+  assert.match(app, /setLimitsTriggerEnabled\(true\)/u);
+  assert.match(app, /setLimitsTriggerEnabled\(false\)/u);
+});
+
+test("history dialog offers the full 6h→all range sequence and reset credits", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(html, /<div class="limits-dialog" data-limits-dialog hidden role="dialog" aria-modal="true"/u);
+  for (const range of ["6h", "24h", "7d", "30d", "all"]) {
+    assert.match(html, new RegExp(`data-range="${range}"`, "u"));
+  }
+  assert.match(app, /const RANGE_SEQUENCE = \["6h", "24h", "7d", "30d", "all"\];/u);
+  assert.match(html, /data-limits-credits/u);
+  assert.match(app, /resetCredits/u);
+  assert.match(app, /availableCount/u);
+  assert.match(app, /nearestExpiresAt/u);
+  assert.match(
+    styles,
+    /\.rate-limits \[data-rate-limit-group\],[\s\S]*?flex-direction: column;/u,
+  );
+  assert.match(
+    styles,
+    /\.rate-limits \[data-rate-limit-credit\][\s\S]*?flex-direction: column;/u,
+  );
+});
+
+test("history dialog requests periods via limits:open and renders via setRateLimitHistory", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(app, /setRateLimitHistory\(payload\) \{\s*applyRateLimitHistory\(payload\);/u);
+  assert.match(app, /emit\("limits:open", \{ range: limitsState\.range \}\)/u);
+  assert.match(client, /agentHub\.on\("limits:open", \(\{ range \}\) =>/u);
+  assert.match(client, /control\("rate-limit-history", \{\s*range,\s*maxPointsPerSeries: 600,/u);
+  assert.match(client, /agentHub\.setRateLimitHistory\(\{/u);
+  // клавиши − и + шагают по последовательности периодов
+  assert.match(app, /event\.key === "-" \|\| event\.key === "_"[\s\S]*stepLimitsRange\(-1\)/u);
+  assert.match(app, /event\.key === "\+" \|\| event\.key === "="[\s\S]*stepLimitsRange\(1\)/u);
+  assert.match(app, /function stepLimitsRange\(direction\)/u);
+});
+
+test("history dialog handles loading, empty and error states", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  for (const slot of ["data-limits-loading", "data-limits-empty", "data-limits-error", "data-limits-retry"]) {
+    assert.match(html, new RegExp(slot, "u"));
+  }
+  assert.match(app, /status !== "loading"/u);
+  assert.match(app, /status !== "empty"/u);
+  assert.match(app, /status !== "error"/u);
+  assert.match(app, /function statusFromPayload\(payload\)/u);
+});
+
+test("history chart is drawn with inline SVG and no external dependencies", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(html, /data-limits-chart role="img"/u);
+  assert.match(app, /document\.createElementNS\(SVG_NS, tag\)/u);
+  assert.match(app, /function buildLimitsChart\(payload\)/u);
+  // никакого canvas, изображений или удалённых источников в графике
+  assert.doesNotMatch(app, /createElement\(["']canvas/u);
+  assert.doesNotMatch(app, /getContext\(/u);
+  assert.doesNotMatch(app, /new Image\(/u);
+  // единственный http(s) в модуле — пространство имён SVG, а не CDN
+  assert.doesNotMatch(app, /cdn|unpkg|jsdelivr|googleapis|chart\.js|d3js/u);
+});
+
+test("history dialog is themed with shared variables and adapts to mobile", () => {
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(styles, /\.limits-dialog\s*\{[^}]*background:\s*var\(--card-bg-open\);/su);
+  assert.match(styles, /\.limits-range\[aria-pressed="true"\]\s*\{[^}]*color:\s*var\(--accent\);/su);
+  assert.match(styles, /\.limits-legend-swatch\s*\{[^}]*background:\s*var\(--series-color/su);
+  assert.match(styles, /\.limits-spinner\s*\{[^}]*animation:\s*spin/su);
+  assert.match(
+    styles,
+    /html\[data-surface="mobile"\] \.limits-dialog\s*\{[^}]*width:\s*100vw;/su,
+  );
+});

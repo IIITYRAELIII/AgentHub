@@ -45,9 +45,24 @@ test("each rate-limit measure becomes a chip with its own reset", () => {
   );
   assert.equal((projected.match(/data-rate-limit>/gu) ?? []).length, 2);
   assert.match(projected, /<span data-rate-limit-reset>6 дн\. 14 ч\.<\/span>/u);
-  // строка без процента остаётся цельной, разбирать её нечего
-  assert.match(projected, /<span data-rate-limit data-rate-limit-plain>Доступно сбросов: 5<\/span>/u);
+  assert.match(projected, /<span data-rate-limit-group>/u);
+  assert.match(
+    projected,
+    /<span data-rate-limit-credit><span data-rate-limit-credit-count>Сбросов 5<\/span><\/span>/u,
+  );
   assert.match(projected, /<span data-rate-limit-caption>Лимиты<\/span>/u);
+});
+
+test("reset credits use a compact two-line cloud", () => {
+  const projected = projectWorkLogRateLimits(
+    "# Глобальный журнал работ\n\n<details></details>\n",
+    "CODEX - 87.0% - 6 дн.\nСбросов 2\nДо 31 июл.",
+    "",
+  );
+  assert.match(
+    projected,
+    /data-rate-limit-credit-count>Сбросов 2<\/span><span data-rate-limit-credit-deadline>До 31 июл\.<\/span>/u,
+  );
 });
 
 test("applyWorkLogUsage replaces only the matching per-turn placeholder", () => {

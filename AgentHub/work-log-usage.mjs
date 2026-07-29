@@ -987,8 +987,7 @@ export function projectWorkLogUsage(workLogText, turns = {}) {
   return projected;
 }
 
-/* Каждая мера — отдельный чип с разобранными частями: журнал показывает их
-   в шапке, где на подписи и разделители места нет. */
+/* Строка одной меры внутри общего облака лимитов. */
 function rateLimitChip(line) {
   // срок сброса необязателен: Codex не всегда возвращает окно
   const parts = /^(.+?)\s+-\s+([\d.,]+\s*%)(?:\s+-\s+(.+))?$/u.exec(line);
@@ -1003,6 +1002,36 @@ function rateLimitChip(line) {
   }</span><span data-rate-limit-value>${escapeHtmlText(parts[2])}</span>${reset}</span>`;
 }
 
+function rateLimitClouds(lines) {
+  const limitLines = [];
+  let resetCount = "";
+  let resetDeadline = "";
+  for (const line of lines) {
+    const count = /^(?:Доступно\s+)?сбросов\s*:?\s*(.+)$/iu.exec(line);
+    if (count) {
+      resetCount = `Сбросов ${count[1].trim()}`;
+      continue;
+    }
+    const deadline = /^До\s+(.+)$/iu.exec(line);
+    if (deadline) {
+      resetDeadline = `До ${deadline[1].trim()}`;
+      continue;
+    }
+    limitLines.push(line);
+  }
+  const limits = limitLines.length
+    ? `<span data-rate-limit-group>${limitLines.map(rateLimitChip).join("")}</span>`
+    : "";
+  const reset = resetCount || resetDeadline
+    ? `<span data-rate-limit-credit>${
+      resetCount ? `<span data-rate-limit-credit-count>${escapeHtmlText(resetCount)}</span>` : ""
+    }${
+      resetDeadline ? `<span data-rate-limit-credit-deadline>${escapeHtmlText(resetDeadline)}</span>` : ""
+    }</span>`
+    : "";
+  return `${limits}${reset}`;
+}
+
 export function projectWorkLogRateLimits(workLogText, summary, sampledAt = "") {
   const text = String(workLogText ?? "");
   const lines = String(summary ?? "").split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
@@ -1012,7 +1041,7 @@ export function projectWorkLogRateLimits(workLogText, summary, sampledAt = "") {
   const timestamp = String(sampledAt ?? "").trim();
   const block = `<div data-work-log-rate-limits${
     timestamp ? ` data-sampled-at="${escapeHtmlAttribute(timestamp)}"` : ""
-  }><span data-rate-limit-caption>Лимиты</span>${lines.map(rateLimitChip).join("")}</div>`;
+  }><span data-rate-limit-caption>Лимиты</span>${rateLimitClouds(lines)}</div>`;
   if (existing.test(text)) return text.replace(existing, `\n${block}\n`);
   const heading = /^# [^\r\n]+(?:\r?\n)?/u.exec(text);
   if (!heading) return `# Глобальный журнал работ\n\n${block}\n\n${text}`;

@@ -64,6 +64,20 @@ const dialogInput = document.querySelector("[data-text-dialog-input]");
 const toast = document.querySelector("[data-toast]");
 const connectionBanner = document.querySelector("[data-restart-banner]");
 
+const limitsDialog = document.querySelector("[data-limits-dialog]");
+const limitsScrim = document.querySelector("[data-limits-scrim]");
+const limitsRanges = document.querySelector("[data-limits-ranges]");
+const limitsSubtitle = document.querySelector("[data-limits-subtitle]");
+const limitsLoading = document.querySelector("[data-limits-loading]");
+const limitsError = document.querySelector("[data-limits-error]");
+const limitsErrorText = document.querySelector("[data-limits-error-text]");
+const limitsEmpty = document.querySelector("[data-limits-empty]");
+const limitsChartWrap = document.querySelector("[data-limits-chart-wrap]");
+const limitsChart = document.querySelector("[data-limits-chart]");
+const limitsTooltip = document.querySelector("[data-limits-tooltip]");
+const limitsLegend = document.querySelector("[data-limits-legend]");
+const limitsCredits = document.querySelector("[data-limits-credits]");
+
 /* --------------------------------------------------------- Telegram / темы */
 
 const telegram = window.Telegram?.WebApp;
@@ -1186,10 +1200,497 @@ const AgentHub = {
     state.status = status ?? null;
     renderStatus();
   },
+  /** История лимитов для диалога графика. payload:
+   *  { range, from, to, series: [{ id, name, window, points:
+   *  [{ at, usedPercent, remainingPercent }] }], resetCredits:
+   *  { availableCount, nearestExpiresAt } }. null/`{ error }` — ошибка. */
+  setRateLimitHistory(payload) {
+    applyRateLimitHistory(payload);
+  },
   toast: showToast,
 };
 
 window.AgentHub = AgentHub;
+
+/* ============================================= история лимитов (диалог) */
+/* Диалог открывается по сводке лимитов в шапке (клик / Enter / Space) и
+ * показывает SVG-график использования по выбранному периоду. Данные о
+ * периодах запрашиваются событием `limits:open`, а приходят обратно через
+ * `AgentHub.setRateLimitHistory(payload)`. Ничего внешнего: график рисуется
+ * встроенным SVG на переменных темы, без canvas, шрифтов и CDN. */
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const RANGE_SEQUENCE = ["6h", "24h", "7d", "30d", "all"];
+const RANGE_LABELS = { "6h": "6 ч", "24h": "24 ч", "7d": "7 д", "30d": "30 д", all: "Всё время" };
+/* Палитра серий на переменных темы: провайдеры — своими цветами, остальные
+ * по кругу из акцентов, чтобы линии различались в любой теме. */
+const SERIES_PALETTE = [
+  "var(--dot-think)",
+  "var(--dot-cache)",
+  "var(--dot-output)",
+  "var(--accent)",
+  "var(--ok)",
+  "var(--pending)",
+];
+
+const limitsState = {
+  open: false,
+  range: "24h",
+  status: "idle", // idle | loading | ready | empty | error
+  payload: null,
+  error: "",
+  lastFocus: null,
+};
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeRange(range) {
+  return RANGE_SEQUENCE.includes(range) ? range : "24h";
+}
+
+function svgEl(tag, attrs = {}, children = []) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value == null || value === false) continue;
+    node.setAttribute(key, value === true ? "" : String(value));
+  }
+  for (const child of [].concat(children)) {
+    if (child == null) continue;
+    node.append(child.nodeType ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+
+function seriesColor(series, index) {
+  const key = `${series?.id ?? ""} ${series?.name ?? ""}`.toLowerCase();
+  if (key.includes("codex")) return "var(--provider-codex)";
+  if (key.includes("claude")) return "var(--provider-claude)";
+  return SERIES_PALETTE[index % SERIES_PALETTE.length];
+}
+
+function formatLimitsDateTime(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/* Подпись оси X: внутри суток — время, на длинных диапазонах — дата. */
+function formatAxisTime(ms, spanMs) {
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return "";
+  if (spanMs <= 36 * 60 * 60 * 1000) {
+    return date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  }
+  return date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
+}
+
+/* Делает сводку лимитов в шапке кнопкой-триггером диалога (или снимает роль,
+ * когда данных нет). Разметка сводки приходит из журнала, поэтому роль и
+ * доступность навешиваются здесь, а не в index.html. */
+function setLimitsTriggerEnabled(on) {
+  if (!rateLimitsSlot) return;
+  if (on) {
+    rateLimitsSlot.setAttribute("role", "button");
+    rateLimitsSlot.setAttribute("tabindex", "0");
+    rateLimitsSlot.setAttribute("aria-haspopup", "dialog");
+    rateLimitsSlot.setAttribute("aria-expanded", String(limitsState.open));
+    rateLimitsSlot.setAttribute("aria-label", "Открыть историю лимитов");
+    rateLimitsSlot.classList.add("is-interactive");
+  } else {
+    rateLimitsSlot.removeAttribute("role");
+    rateLimitsSlot.removeAttribute("tabindex");
+    rateLimitsSlot.removeAttribute("aria-haspopup");
+    rateLimitsSlot.removeAttribute("aria-expanded");
+    rateLimitsSlot.removeAttribute("aria-label");
+    rateLimitsSlot.classList.remove("is-interactive");
+  }
+}
+
+function limitsIsTrigger() {
+  return rateLimitsSlot?.getAttribute("role") === "button";
+}
+
+function statusFromPayload(payload) {
+  if (!payload || payload.error) return payload?.error ? "error" : "empty";
+  const hasPoints = Array.isArray(payload.series)
+    && payload.series.some((series) => Array.isArray(series.points) && series.points.length > 0);
+  return hasPoints ? "ready" : "empty";
+}
+
+/* Приём данных из backend. Хранит payload и, если диалог открыт, обновляет
+ * график сразу. */
+function applyRateLimitHistory(payload) {
+  const data = payload && typeof payload === "object" ? payload : null;
+  limitsState.payload = data;
+  limitsState.error = data?.error ? String(data.error) : "";
+  if (data?.range) limitsState.range = normalizeRange(data.range);
+  limitsState.status = statusFromPayload(data);
+  if (limitsState.open) {
+    renderLimitsRanges();
+    renderLimits();
+  }
+}
+
+/* Запрос данных за период: показываем загрузку (если нет свежих данных за этот
+ * период) и просим backend прислать историю. */
+function requestLimits(range, { force = false } = {}) {
+  limitsState.range = normalizeRange(range);
+  const cached = limitsState.payload
+    && !limitsState.payload.error
+    && normalizeRange(limitsState.payload.range) === limitsState.range;
+  limitsState.status = cached && !force ? statusFromPayload(limitsState.payload) : "loading";
+  limitsState.error = "";
+  renderLimitsRanges();
+  renderLimits();
+  emit("limits:open", { range: limitsState.range });
+}
+
+function openLimitsDialog(range = limitsState.range) {
+  if (limitsState.open) return;
+  limitsState.open = true;
+  limitsState.lastFocus = document.activeElement;
+  limitsScrim.hidden = false;
+  limitsDialog.hidden = false;
+  rateLimitsSlot?.setAttribute("aria-expanded", "true");
+  requestLimits(range);
+  requestAnimationFrame(() => {
+    const active = limitsDialog.querySelector(`[data-range="${limitsState.range}"]`)
+      ?? limitsDialog.querySelector("[data-limits-close]");
+    active?.focus();
+  });
+}
+
+function closeLimitsDialog() {
+  if (!limitsState.open) return;
+  limitsState.open = false;
+  limitsDialog.hidden = true;
+  limitsScrim.hidden = true;
+  rateLimitsSlot?.setAttribute("aria-expanded", "false");
+  hideLimitsTooltip();
+  const focus = limitsState.lastFocus;
+  limitsState.lastFocus = null;
+  if (focus && typeof focus.focus === "function" && document.contains(focus)) focus.focus();
+}
+
+/* Шаг по последовательности периодов: −1 сужает (к 6 ч), +1 расширяет (к «всё»). */
+function stepLimitsRange(direction) {
+  const index = RANGE_SEQUENCE.indexOf(limitsState.range);
+  const next = clampNumber((index < 0 ? 1 : index) + direction, 0, RANGE_SEQUENCE.length - 1);
+  const range = RANGE_SEQUENCE[next];
+  if (range !== limitsState.range) requestLimits(range);
+}
+
+function renderLimitsRanges() {
+  if (!limitsRanges) return;
+  for (const button of limitsRanges.querySelectorAll("[data-range]")) {
+    const active = button.dataset.range === limitsState.range;
+    button.setAttribute("aria-pressed", String(active));
+    if (active) button.setAttribute("data-active", "");
+    else button.removeAttribute("data-active");
+  }
+}
+
+function renderLimitsSubtitle() {
+  if (!limitsSubtitle) return;
+  const label = RANGE_LABELS[limitsState.range] ?? "";
+  const payload = limitsState.payload;
+  let period = "";
+  if (payload && !payload.error) {
+    const from = payload.from ? formatLimitsDateTime(payload.from) : "";
+    const to = payload.to ? formatLimitsDateTime(payload.to) : "";
+    if (from && to) period = `${from} — ${to}`;
+    else if (to) period = `по ${to}`;
+  }
+  limitsSubtitle.textContent = period ? `${label} · ${period}` : label;
+}
+
+function renderLimits() {
+  const status = limitsState.status;
+  if (limitsLoading) limitsLoading.hidden = status !== "loading";
+  if (limitsError) limitsError.hidden = status !== "error";
+  if (limitsEmpty) limitsEmpty.hidden = status !== "empty";
+  if (limitsChartWrap) limitsChartWrap.hidden = status !== "ready";
+  hideLimitsTooltip();
+  if (status === "error" && limitsErrorText) {
+    limitsErrorText.textContent = limitsState.error || "Не удалось загрузить историю лимитов.";
+  }
+  if (status === "ready") {
+    const series = buildLimitsChart(limitsState.payload);
+    renderLimitsLegend(series);
+    renderLimitsCredits(limitsState.payload);
+  }
+  renderLimitsSubtitle();
+}
+
+/* Собирает SVG-график и возвращает нормализованные серии (с цветом и текущим
+ * значением) для легенды. */
+function buildLimitsChart(payload) {
+  const rawSeries = Array.isArray(payload?.series) ? payload.series : [];
+  const series = rawSeries
+    .filter((item) => Array.isArray(item.points) && item.points.length > 0)
+    .map((item, index) => ({ ...item, color: seriesColor(item, index) }));
+
+  const times = [];
+  for (const item of series) {
+    for (const point of item.points) {
+      const at = Date.parse(point.at);
+      if (Number.isFinite(at)) times.push(at);
+    }
+  }
+  let tMin = payload?.from ? Date.parse(payload.from) : Number.NaN;
+  let tMax = payload?.to ? Date.parse(payload.to) : Number.NaN;
+  if (!Number.isFinite(tMin)) tMin = times.length ? Math.min(...times) : 0;
+  if (!Number.isFinite(tMax)) tMax = times.length ? Math.max(...times) : tMin + 1;
+  if (tMax <= tMin) tMax = tMin + 1;
+
+  const W = 640;
+  const H = 260;
+  const padL = 40;
+  const padR = 14;
+  const padT = 14;
+  const padB = 30;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const xOf = (t) => padL + ((t - tMin) / (tMax - tMin)) * plotW;
+  const yOf = (v) => padT + (1 - clampNumber(Number(v) || 0, 0, 100) / 100) * plotH;
+
+  const svg = svgEl("svg", {
+    viewBox: `0 0 ${W} ${H}`,
+    class: "limits-chart-svg",
+    preserveAspectRatio: "none",
+    "aria-hidden": "true",
+  });
+
+  for (const value of [0, 25, 50, 75, 100]) {
+    const y = yOf(value);
+    svg.append(svgEl("line", { x1: padL, y1: y, x2: W - padR, y2: y, class: "limits-grid-line" }));
+    svg.append(svgEl("text", {
+      x: padL - 6,
+      y: y + 3,
+      class: "limits-axis-label limits-axis-y",
+      "text-anchor": "end",
+    }, [`${value}`]));
+  }
+
+  const span = tMax - tMin;
+  for (const frac of [0, 0.5, 1]) {
+    const t = tMin + span * frac;
+    svg.append(svgEl("text", {
+      x: xOf(t),
+      y: H - 8,
+      class: "limits-axis-label limits-axis-x",
+      "text-anchor": frac === 0 ? "start" : frac === 1 ? "end" : "middle",
+    }, [formatAxisTime(t, span)]));
+  }
+
+  for (const item of series) {
+    const points = item.points
+      .map((point) => ({
+        x: xOf(Date.parse(point.at)),
+        y: yOf(point.usedPercent),
+        raw: point,
+      }))
+      .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+    if (!points.length) continue;
+
+    const d = points
+      .map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
+      .join(" ");
+    svg.append(svgEl("path", {
+      d,
+      class: "limits-series-line",
+      fill: "none",
+      stroke: item.color,
+    }));
+
+    points.forEach((point, index) => {
+      const isLast = index === points.length - 1;
+      const circle = svgEl("circle", {
+        cx: point.x,
+        cy: point.y,
+        r: isLast ? 4 : 2.4,
+        class: isLast ? "limits-point limits-point-current" : "limits-point",
+        fill: item.color,
+      });
+      const info = {
+        name: item.name || item.id || "",
+        window: item.window || "",
+        at: point.raw.at,
+        used: point.raw.usedPercent,
+        remaining: point.raw.remainingPercent,
+      };
+      const fx = point.x / W;
+      const fy = point.y / H;
+      circle.addEventListener("pointerenter", () => showLimitsTooltip(info, fx, fy));
+      circle.addEventListener("pointerleave", hideLimitsTooltip);
+      if (isLast) {
+        circle.setAttribute("tabindex", "0");
+        circle.setAttribute("role", "img");
+        circle.setAttribute("aria-label", limitsTooltipText(info));
+        circle.addEventListener("focus", () => showLimitsTooltip(info, fx, fy));
+        circle.addEventListener("blur", hideLimitsTooltip);
+      }
+      svg.append(circle);
+    });
+  }
+
+  const summary = series.length
+    ? series
+      .map((item) => {
+        const last = item.points[item.points.length - 1];
+        const used = last ? Math.round(Number(last.usedPercent) || 0) : 0;
+        return `${item.name || item.id}: ${used}%`;
+      })
+      .join("; ")
+    : "нет данных";
+  limitsChart.setAttribute("aria-label", `Использование лимитов по времени. ${summary}.`);
+  limitsChart.replaceChildren(svg);
+  return series;
+}
+
+function renderLimitsLegend(series) {
+  if (!limitsLegend) return;
+  limitsLegend.replaceChildren(...series.map((item) => {
+    const last = item.points[item.points.length - 1];
+    const used = last ? Math.round(Number(last.usedPercent) || 0) : null;
+    const swatch = el("span", { class: "limits-legend-swatch", "aria-hidden": "true" });
+    swatch.style.setProperty("--series-color", item.color);
+    return el("li", { class: "limits-legend-item" }, [
+      swatch,
+      el("span", { class: "limits-legend-name", text: item.name || item.id || "" }),
+      item.window ? el("span", { class: "limits-legend-window", text: item.window }) : null,
+      used != null ? el("span", { class: "limits-legend-value", text: `${used}%` }) : null,
+    ]);
+  }));
+}
+
+function renderLimitsCredits(payload) {
+  if (!limitsCredits) return;
+  const credits = payload?.resetCredits;
+  const hasCount = credits && credits.availableCount != null;
+  const nearest = credits?.nearestExpiresAt ? formatLimitsDateTime(credits.nearestExpiresAt) : "";
+  if (!hasCount && !nearest) {
+    limitsCredits.hidden = true;
+    limitsCredits.replaceChildren();
+    return;
+  }
+  const parts = [];
+  if (hasCount) {
+    parts.push(el("span", { class: "limits-credit" }, [
+      el("span", { class: "limits-credit-label", text: "Кредиты сброса" }),
+      el("strong", { class: "limits-credit-value", text: String(credits.availableCount) }),
+    ]));
+  }
+  if (nearest) {
+    parts.push(el("span", { class: "limits-credit" }, [
+      el("span", { class: "limits-credit-label", text: "Ближайшее сгорание" }),
+      el("strong", { class: "limits-credit-value", text: nearest }),
+    ]));
+  }
+  limitsCredits.hidden = false;
+  limitsCredits.replaceChildren(...parts);
+}
+
+function limitsTooltipText(info) {
+  const time = formatLimitsDateTime(info.at);
+  const used = Math.round(Number(info.used) || 0);
+  const remaining = info.remaining == null
+    ? Math.max(0, 100 - used)
+    : Math.round(Number(info.remaining) || 0);
+  const name = info.window ? `${info.name} · ${info.window}` : info.name;
+  return `${name}. ${time}: занято ${used}%, свободно ${remaining}%`;
+}
+
+function showLimitsTooltip(info, fx, fy) {
+  if (!limitsTooltip) return;
+  const used = Math.round(Number(info.used) || 0);
+  const remaining = info.remaining == null
+    ? Math.max(0, 100 - used)
+    : Math.round(Number(info.remaining) || 0);
+  limitsTooltip.replaceChildren(
+    el("span", { class: "limits-tooltip-title", text: info.window ? `${info.name} · ${info.window}` : info.name }),
+    el("span", { class: "limits-tooltip-time", text: formatLimitsDateTime(info.at) }),
+    el("span", { class: "limits-tooltip-row", text: `Занято ${used}% · свободно ${remaining}%` }),
+  );
+  limitsTooltip.style.left = `${clampNumber(fx * 100, 0, 100)}%`;
+  limitsTooltip.style.top = `${clampNumber(fy * 100, 0, 100)}%`;
+  limitsTooltip.dataset.side = fx > 0.6 ? "left" : "right";
+  limitsTooltip.hidden = false;
+}
+
+function hideLimitsTooltip() {
+  if (!limitsTooltip) return;
+  limitsTooltip.hidden = true;
+}
+
+/* Фокус остаётся внутри диалога, пока он открыт (простая ловушка по Tab). */
+function trapLimitsFocus(event) {
+  if (event.key !== "Tab") return;
+  const focusable = [...limitsDialog.querySelectorAll(
+    'button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+  )].filter((node) => !node.hidden && node.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+if (rateLimitsSlot) {
+  rateLimitsSlot.addEventListener("click", () => {
+    if (limitsIsTrigger()) openLimitsDialog();
+  });
+  rateLimitsSlot.addEventListener("keydown", (event) => {
+    if (!limitsIsTrigger()) return;
+    if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
+      event.preventDefault();
+      openLimitsDialog();
+    }
+  });
+}
+
+limitsRanges?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-range]");
+  if (!button) return;
+  requestLimits(button.dataset.range);
+});
+
+limitsScrim?.addEventListener("click", closeLimitsDialog);
+document.querySelector("[data-limits-close]")?.addEventListener("click", closeLimitsDialog);
+document.querySelector("[data-limits-retry]")?.addEventListener("click", () => {
+  requestLimits(limitsState.range, { force: true });
+});
+
+document.addEventListener("keydown", (event) => {
+  if (!limitsState.open) return;
+  if (event.key === "Escape") {
+    closeLimitsDialog();
+    return;
+  }
+  if (event.key === "-" || event.key === "_") {
+    event.preventDefault();
+    stepLimitsRange(-1);
+    return;
+  }
+  if (event.key === "+" || event.key === "=") {
+    event.preventDefault();
+    stepLimitsRange(1);
+    return;
+  }
+  trapLimitsFocus(event);
+});
 
 /* ================================================================ ЖУРНАЛ */
 /* Ниже — прежняя логика журнала: рендер, ленивая подгрузка старых дней и
@@ -1354,6 +1855,7 @@ function hoistRateLimits() {
   if (!block) {
     rateLimitsSlot.replaceChildren();
     rateLimitsSlot.hidden = true;
+    setLimitsTriggerEnabled(false);
     return;
   }
   const sampledAt = block.getAttribute("data-sampled-at") ?? "";
@@ -1363,6 +1865,7 @@ function hoistRateLimits() {
     : `Лимиты на ${sampled.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`;
   rateLimitsSlot.replaceChildren(...block.childNodes);
   rateLimitsSlot.hidden = false;
+  setLimitsTriggerEnabled(true);
   block.remove();
 }
 

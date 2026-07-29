@@ -1,4 +1,5 @@
 import { parseClaudeLimits } from "./claude.mjs";
+import { rateLimitResetCreditSummary } from "./rate-limit-history.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 
 function escapeTelegramHtml(value) {
@@ -37,6 +38,18 @@ function codexLimitName(bucket) {
   return name;
 }
 
+function formatResetCreditDeadline(value, nowMs) {
+  if (!value) return "";
+  const expiresAt = new Date(value);
+  if (Number.isNaN(expiresAt.getTime())) return "";
+  const now = new Date(nowMs);
+  return expiresAt.toLocaleDateString("ru-RU", {
+    day: "numeric",
+    month: "short",
+    ...(expiresAt.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  }).replace(/\s*г\.$/u, "");
+}
+
 export function formatCodexRateLimits(result, nowMs = Date.now()) {
   const buckets = result.rateLimitsByLimitId
     ? Object.values(result.rateLimitsByLimitId)
@@ -53,8 +66,12 @@ export function formatCodexRateLimits(result, nowMs = Date.now()) {
     else lines.push(codexLimitName(bucket));
     if (bucket.rateLimitReachedType) lines.push(`Ограничение достигнуто: ${bucket.rateLimitReachedType}`);
   }
-  const resetCredits = result.rateLimitResetCredits?.availableCount;
-  if (resetCredits != null) lines.push(`Доступно сбросов: ${resetCredits}`);
+  const resetCredits = rateLimitResetCreditSummary(result, nowMs);
+  if (resetCredits.availableCount != null) {
+    lines.push(`Сбросов ${resetCredits.availableCount}`);
+    const deadline = formatResetCreditDeadline(resetCredits.nearestExpiresAt, nowMs);
+    if (deadline) lines.push(`До ${deadline}`);
+  }
   return lines.join("\n");
 }
 

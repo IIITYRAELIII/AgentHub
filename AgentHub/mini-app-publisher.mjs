@@ -27,6 +27,7 @@ const IMAGE_CONTENT_TYPES = new Map([
 const CONTROL_ACTIONS = new Set([
   "snapshot",
   "task-history",
+  "rate-limit-history",
   "open-task",
   "open-turn",
   "select-task",

@@ -428,6 +428,20 @@ agentHub.on("status:open", () => runAction(async () => {
   }));
   agentHub.setStatus({ rows });
 }));
+agentHub.on("limits:open", ({ range }) => runAction(async () => {
+  try {
+    agentHub.setRateLimitHistory(await control("rate-limit-history", {
+      range,
+      maxPointsPerSeries: 600,
+    }));
+  } catch (error) {
+    agentHub.setRateLimitHistory({
+      range,
+      error: String(error?.message ?? error ?? "Не удалось загрузить историю лимитов"),
+    });
+    throw error;
+  }
+}));
 agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
   const names = {
     agent: "provider",

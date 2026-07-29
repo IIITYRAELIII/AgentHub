@@ -54,6 +54,7 @@ import {
   appendRateLimitRows,
   appendRawRateLimitSnapshot,
   codexRateLimitRows,
+  readRateLimitHistory,
 } from "./rate-limit-history.mjs";
 import {
   CODEX_AUDIT_SOURCE_KINDS,
@@ -2837,6 +2838,16 @@ async function desktopNewTask(params) {
   return desktopSnapshot({ refresh: true });
 }
 
+async function desktopRateLimitHistory(params) {
+  return readRateLimitHistory(
+    path.join(config.dataDir, "rate-limits-raw.jsonl"),
+    {
+      range: params.range,
+      maxPointsPerSeries: params.maxPointsPerSeries,
+    },
+  );
+}
+
 function serializeDesktopMutation(operation) {
   const next = desktopMutationQueue.catch(() => {}).then(operation);
   desktopMutationQueue = next.catch(() => {});
@@ -2853,6 +2864,7 @@ async function handleDesktopControl({ action, params, context = null }) {
     : params;
   if (action === "snapshot") return desktopSnapshot(effectiveParams);
   if (action === "task-history") return desktopTaskHistory(effectiveParams);
+  if (action === "rate-limit-history") return desktopRateLimitHistory(effectiveParams);
   if (action === "open-task") return serializeDesktopMutation(() => desktopOpenTask(effectiveParams));
   if (action === "open-turn") return serializeDesktopMutation(() => desktopOpenTurn(effectiveParams));
   if (action === "select-task") return serializeDesktopMutation(() => desktopSelectTask(effectiveParams));

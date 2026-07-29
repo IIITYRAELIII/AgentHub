@@ -990,6 +990,19 @@ html[data-connection="offline"] .connection-banner {
   gap: 0.3rem;
 }
 
+.rate-limits [data-rate-limit-group],
+.rate-limits [data-rate-limit-credit] {
+  align-items: stretch;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.16rem;
+  padding: 0.3rem 0.62rem;
+  white-space: nowrap;
+}
+
 /* Подпись нужна только в теле журнала: в шапке чипы говорят сами за себя.
    `strong` — подпись из блоков, записанных прежней версией Hub: они лежат в
    журнале до первого перезапуска и иначе тянули бы в шапку слово «Лимиты:». */
@@ -1000,12 +1013,10 @@ html[data-connection="offline"] .connection-banner {
 
 .rate-limits [data-rate-limit] {
   align-items: baseline;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-chip);
-  display: inline-flex;
+  display: grid;
   gap: 0.32rem;
-  padding: 0.24rem 0.62rem;
+  grid-template-columns: minmax(3.6rem, auto) auto auto;
+  padding: 0;
   white-space: nowrap;
 }
 
@@ -1031,6 +1042,35 @@ html[data-connection="offline"] .connection-banner {
 .rate-limits [data-rate-limit-plain] {
   color: var(--text-muted);
   font-size: 0.68rem;
+}
+
+.rate-limits [data-rate-limit-credit-count] {
+  color: var(--text);
+  font-family: var(--font-numeric);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.rate-limits [data-rate-limit-credit-deadline] {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+/* Сводка становится кнопкой-триггером диалога истории лимитов. */
+.rate-limits.is-interactive {
+  border-radius: var(--radius-chip);
+  cursor: pointer;
+  padding: 0.1rem 0.2rem;
+  transition: background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.rate-limits.is-interactive:hover {
+  background: var(--accent-soft);
+}
+
+.rate-limits.is-interactive:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
 }
 
 /* На среднем десктопном окне все элементы шапки уже не помещаются в одну
@@ -4353,6 +4393,301 @@ html[data-view="journal"] [data-journal-only] {
   gap: 0.5rem;
   justify-content: flex-end;
   margin-top: 0.85rem;
+}
+
+/* ================================================ диалог истории лимитов === */
+
+.limits-scrim {
+  background: rgba(0, 0, 0, 0.5);
+  inset: 0;
+  opacity: 0;
+  position: fixed;
+  transition: opacity 0.2s ease;
+  z-index: 68;
+}
+
+.limits-scrim:not([hidden]) {
+  opacity: 1;
+}
+
+.limits-dialog {
+  background: var(--card-bg-open);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--card-shadow);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  left: 50%;
+  max-height: min(86vh, 40rem);
+  max-width: 94vw;
+  overflow-y: auto;
+  padding: 1.1rem 1.2rem max(1.2rem, env(safe-area-inset-bottom));
+  position: fixed;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 42rem;
+  z-index: 70;
+}
+
+.limits-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.limits-head-main {
+  min-width: 0;
+}
+
+.limits-head h2 {
+  color: var(--text);
+  font-family: var(--font-title);
+  font-size: 1.05rem;
+  font-weight: var(--display-weight);
+  margin: 0;
+  text-transform: var(--display-transform);
+}
+
+.limits-subtitle {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  margin: 0.2rem 0 0;
+}
+
+.limits-ranges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.limits-range {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  color: var(--text-soft);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.76rem;
+  padding: 0.3rem 0.7rem;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+  white-space: nowrap;
+}
+
+.limits-range:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.limits-range[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.limits-range:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+
+.limits-hint {
+  color: var(--text-faint);
+  font-size: 0.68rem;
+  margin: 0;
+}
+
+.limits-body {
+  min-height: 15rem;
+  position: relative;
+}
+
+.limits-state {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  justify-content: center;
+  min-height: 15rem;
+  text-align: center;
+}
+
+.limits-error p,
+.limits-empty p {
+  margin: 0;
+}
+
+.limits-spinner {
+  animation: spin 0.9s linear infinite;
+  border: 2px solid var(--line-strong);
+  border-radius: 50%;
+  border-top-color: var(--accent);
+  height: 1.4rem;
+  width: 1.4rem;
+}
+
+.limits-chart-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  position: relative;
+}
+
+.limits-chart {
+  margin: 0;
+  position: relative;
+  width: 100%;
+}
+
+.limits-chart-svg {
+  display: block;
+  height: 16rem;
+  overflow: visible;
+  width: 100%;
+}
+
+.limits-grid-line {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.limits-axis-label {
+  fill: var(--text-faint);
+  font-family: var(--font-numeric);
+  font-size: 10px;
+}
+
+.limits-series-line {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.limits-point {
+  opacity: 0.85;
+}
+
+.limits-point-current {
+  stroke: var(--bg);
+  stroke-width: 1.5;
+}
+
+.limits-point:focus-visible {
+  outline: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.limits-tooltip {
+  background: var(--card-bg-open);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--card-shadow);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.72rem;
+  max-width: 14rem;
+  padding: 0.4rem 0.55rem;
+  pointer-events: none;
+  position: absolute;
+  transform: translate(0.6rem, -50%);
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.limits-tooltip[data-side="left"] {
+  transform: translate(calc(-100% - 0.6rem), -50%);
+}
+
+.limits-tooltip-title {
+  font-weight: 600;
+}
+
+.limits-tooltip-time {
+  color: var(--text-muted);
+}
+
+.limits-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.limits-legend-item {
+  align-items: center;
+  color: var(--text-soft);
+  display: inline-flex;
+  font-size: 0.74rem;
+  gap: 0.35rem;
+}
+
+.limits-legend-swatch {
+  background: var(--series-color, var(--accent));
+  border-radius: 2px;
+  height: 0.65rem;
+  width: 0.65rem;
+}
+
+.limits-legend-window {
+  color: var(--text-faint);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+}
+
+.limits-legend-value {
+  color: var(--text);
+  font-family: var(--font-numeric);
+  font-variant-numeric: tabular-nums;
+}
+
+.limits-credits {
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.4rem;
+  padding-top: 0.6rem;
+}
+
+.limits-credit {
+  align-items: baseline;
+  display: inline-flex;
+  gap: 0.4rem;
+}
+
+.limits-credit-label {
+  color: var(--text-faint);
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.limits-credit-value {
+  color: var(--text);
+  font-family: var(--font-numeric);
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-surface="mobile"] .limits-dialog {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  bottom: 0;
+  left: 0;
+  max-height: 90vh;
+  max-width: 100vw;
+  top: auto;
+  transform: none;
+  width: 100vw;
+}
+
+html[data-surface="mobile"] .limits-chart-svg {
+  height: 13rem;
 }
 
 /* ========================================================== тост === */
