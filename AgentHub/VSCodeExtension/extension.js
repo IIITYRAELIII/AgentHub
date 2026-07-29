@@ -79,11 +79,6 @@ class WorkLogViewProvider {
     view.webview.html = sidebarHtml(view.webview);
     view.webview.onDidReceiveMessage((message) => {
       if (message?.type === "open") void this.openPanel();
-      if (message?.type === "refresh") this.scheduleRefresh(0, true);
-      if (message?.type === "theme") void this.setTheme(message.theme, "sidebar");
-      if (message?.type === "ready") {
-        void view.webview.postMessage({ type: "theme", theme: this.theme });
-      }
     }, null, this.context.subscriptions);
     view.onDidChangeVisibility(() => {
       if (view.visible) void this.openPanel();

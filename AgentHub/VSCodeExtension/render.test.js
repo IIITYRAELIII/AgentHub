@@ -48,13 +48,11 @@ test("panel starts in the theme the extension restored", () => {
   );
 });
 
-test("sidebar shares the same theme list and asks the extension for the current one", () => {
+test("sidebar contains only the Agent Hub heading and open action", () => {
   const html = sidebarHtml({});
-  for (const theme of THEMES) {
-    assert.match(html, new RegExp(`<option value="${theme}">`));
-  }
-  assert.match(html, /vscode\.postMessage\(\{ type: 'theme', theme: select\.value \}\)/);
-  assert.match(html, /vscode\.postMessage\(\{ type: 'ready' \}\)/);
+  assert.match(html, /<h2>Agent Hub<\/h2>/);
+  assert.match(html, /<button id="open" class="primary" type="button">Открыть<\/button>/);
+  assert.doesNotMatch(html, /Журнал работ|Открыть журнал|Обновить|data-theme-select|class="hint"/);
 });
 
 test("panel heading uses the journal path as its title", () => {

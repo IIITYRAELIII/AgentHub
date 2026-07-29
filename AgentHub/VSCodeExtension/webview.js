@@ -501,7 +501,7 @@ function sidebarHtml(webview) {
       font-size: 0.98rem;
       font-weight: 620;
       letter-spacing: var(--title-spacing);
-      margin: 0;
+      margin: 0 0 0.65rem;
       text-transform: var(--title-transform);
     }
 
@@ -603,66 +603,16 @@ function sidebarHtml(webview) {
 </head>
 <body>
   <div class="card">
-    <div class="card-head">
-      <span class="mark">${MARK_SVG}</span>
-      <div>
-        <p class="eyebrow">Agent Hub</p>
-        <h2>Журнал работ</h2>
-      </div>
-    </div>
-    <p class="hint">Открывается закреплённой вкладкой и обновляется автоматически.</p>
-    <label class="theme-row">
-      <span>Тема</span>
-      <select data-theme-select aria-label="Тема оформления">
-        <option value="orbit">Орбита</option>
-        <option value="nebula">Туманность</option>
-        <option value="pulsar">Пульсар</option>
-        <option value="gothic">Gothic</option>
-        <option value="blackhole">BlackHole</option>
-        <option value="taiga">Тайга</option>
-        <option value="magma">Магма</option>
-        <option value="storm">Гроза</option>
-      </select>
-    </label>
+    <h2>Agent Hub</h2>
     <div class="actions">
-      <button id="open" class="primary" type="button">Открыть журнал</button>
-      <button id="refresh" class="ghost" type="button" title="Перечитать журнал">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
-          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M20.2 12a8.2 8.2 0 1 1-2.6-6"></path>
-          <path d="M20.4 4.6v5.6h-5.6"></path>
-        </svg>
-        <span>Обновить</span>
-      </button>
+      <button id="open" class="primary" type="button">Открыть</button>
     </div>
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    const themes = new Set(['orbit', 'nebula', 'pulsar', 'gothic', 'blackhole', 'taiga', 'magma', 'storm']);
-    const select = document.querySelector('[data-theme-select]');
-
-    function applyTheme(value) {
-      const theme = themes.has(value) ? value : 'orbit';
-      document.documentElement.dataset.theme = theme;
-      select.value = theme;
-    }
-
     document.getElementById('open').addEventListener('click', () => {
       vscode.postMessage({ type: 'open' });
     });
-    document.getElementById('refresh').addEventListener('click', () => {
-      vscode.postMessage({ type: 'refresh' });
-    });
-    select.addEventListener('change', () => {
-      applyTheme(select.value);
-      vscode.postMessage({ type: 'theme', theme: select.value });
-    });
-    window.addEventListener('message', (event) => {
-      if (event.data?.type === 'theme') applyTheme(event.data.theme);
-    });
-
-    applyTheme('orbit');
-    vscode.postMessage({ type: 'ready' });
   </script>
 </body>
 </html>`;
