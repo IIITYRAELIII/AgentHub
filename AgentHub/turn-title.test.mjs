@@ -14,6 +14,19 @@ test("turn title skips generic acknowledgements", () => {
   );
 });
 
+test("turn title uses an explicitly separated first line", () => {
+  assert.equal(
+    conciseTurnTitle("Короткий итог\n\nПодробное описание выполненной работы."),
+    "Короткий итог",
+  );
+});
+
+test("explicit turn title is capped at 70 characters", () => {
+  const title = conciseTurnTitle(`${"Длинный заголовок ".repeat(8)}\n\nОсновной текст.`);
+  assert.ok(title.length <= 70);
+  assert.match(title, /…$/u);
+});
+
 test("turn title removes Markdown furniture and ignores fenced code", () => {
   assert.equal(
     conciseTurnTitle([

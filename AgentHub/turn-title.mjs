@@ -2,6 +2,7 @@ import { TURN_END_TITLE_LIMIT } from "./turn-end-notifications.mjs";
 
 const GENERIC_RESULT = /^(?:да|нет|готово|сделано|исправлено|выполнено|проверено|принято|понял|результат|итог|итоги|обновлено)[.!?:—\s-]*$/iu;
 const GENERIC_PREFIX = /^(?:готово|сделано|исправлено|выполнено|проверено|результат|итог|итоги|обновлено)[.!?:—\s-]+/iu;
+const STRUCTURED_TITLE_LIMIT = 70;
 
 function plainLine(value) {
   return String(value ?? "")
@@ -38,7 +39,19 @@ function truncateTitle(value, limit = TURN_END_TITLE_LIMIT) {
   return `${shortened.trimEnd()}…`;
 }
 
+function structuredTitle(value) {
+  const lines = String(value ?? "").replace(/\r\n?/gu, "\n").split("\n");
+  const first = lines.findIndex((line) => line.trim());
+  if (first < 0 || first + 1 >= lines.length || lines[first + 1].trim()) return "";
+  const title = plainLine(lines[first]);
+  if (!title || GENERIC_RESULT.test(title)) return "";
+  return truncateTitle(title, STRUCTURED_TITLE_LIMIT);
+}
+
 export function conciseTurnTitle(value, status = "completed") {
+  const explicit = structuredTitle(value);
+  if (explicit) return explicit;
+
   const lines = String(value ?? "").replace(/\r\n?/gu, "\n").split("\n");
   let fenced = false;
   const candidates = [];
