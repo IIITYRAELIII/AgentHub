@@ -3534,6 +3534,39 @@ html[data-view="journal"] [data-journal-only] {
   max-width: min(46rem, 88%);
 }
 
+/* Журнальные плашки намеренно оставлены прозрачными — фон темы должен
+   просвечивать. Пузырям чата так нельзя: на светлых кадрах («Луг», «Магма»)
+   текст сквозь `--card-bg` не читается, поэтому под ними своя плотная
+   подложка в тон темы. */
+html:is([data-theme="pulsar"], [data-theme="blackhole"], [data-theme="taiga"],
+  [data-theme="magma"], [data-theme="storm"], [data-theme="meadow"]) .msg {
+  backdrop-filter: blur(9px) saturate(115%);
+  -webkit-backdrop-filter: blur(9px) saturate(115%);
+  background-color: color-mix(in srgb, var(--bg) 84%, transparent);
+  background-image: none;
+}
+
+/* акцентная подсветка своего сообщения ложится поверх той же подложки:
+   один `--accent-soft` даёт всего 14 % плотности */
+html:is([data-theme="pulsar"], [data-theme="blackhole"], [data-theme="taiga"],
+  [data-theme="magma"], [data-theme="storm"], [data-theme="meadow"]) .msg-user {
+  background-color: color-mix(in srgb, var(--bg) 78%, transparent);
+  background-image: linear-gradient(var(--accent-soft), var(--accent-soft));
+}
+
+/* Системная строка живёт без плашки, но на светлом кадре теряется совсем,
+   поэтому получает узкую подложку по размеру текста. */
+html:is([data-theme="pulsar"], [data-theme="blackhole"], [data-theme="taiga"],
+  [data-theme="magma"], [data-theme="storm"], [data-theme="meadow"]) .msg-system {
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  background-color: color-mix(in srgb, var(--bg) 66%, transparent);
+  background-image: none;
+  border-radius: var(--radius-chip);
+  max-width: fit-content;
+  padding: 0.22rem 0.75rem;
+}
+
 .msg-head {
   align-items: baseline;
   color: var(--text-muted);
