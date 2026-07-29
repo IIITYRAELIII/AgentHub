@@ -119,7 +119,12 @@ export function miniAppMenuButtonRequests({
 export function extractWorkLogHtml(markdown) {
   const source = String(markdown ?? "");
   const firstDay = source.search(/<details\b[^>]*data-work-log-day-section/iu);
-  if (firstDay >= 0) return source.slice(firstDay).trim();
+  if (firstDay >= 0) {
+    const rateLimits = source.match(
+      /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
+    )?.[0] ?? "";
+    return [rateLimits, source.slice(firstDay).trim()].filter(Boolean).join("\n");
+  }
   const text = source
     .replace(/^\uFEFF/u, "")
     .replace(/^#\s+.*(?:\r?\n|$)/u, "")

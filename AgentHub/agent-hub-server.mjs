@@ -170,10 +170,10 @@ import {
 import { restorePreviousBotAfterFailedReplacement } from "./restart-recovery.mjs";
 import { RuntimeCommandServer } from "./runtime-command.mjs";
 import {
-  TURN_END_TITLE_LIMIT,
   TurnEndNotificationRegistry,
   turnEndKey,
 } from "./turn-end-notifications.mjs";
+import { conciseTurnTitle } from "./turn-title.mjs";
 import { DesktopControlServer } from "./desktop-control.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import { MediaController } from "./media-controller.mjs";
@@ -1158,15 +1158,6 @@ function fallbackTurnEndMessage(status) {
   if (status === "cancelled") return "Ход отменён.";
   if (status === "failed") return "Ход завершился с ошибкой.";
   return `Ход завершён со статусом ${status}.`;
-}
-
-function conciseTurnTitle(value, status = "completed") {
-  const text = String(value ?? "").trim().replace(/\s+/g, " ");
-  if (!text) return status === "completed" ? "Ход завершён" : "Ход остановлен";
-  const sentence = text.match(
-    new RegExp(`^.{1,${TURN_END_TITLE_LIMIT}}?(?=[.!?](?:\\s|$)|$)`, "u"),
-  )?.[0] ?? text.slice(0, TURN_END_TITLE_LIMIT);
-  return sentence.trim().replace(/[.!?]+$/u, "") || "Ход завершён";
 }
 
 function applyCodexRolloutContext(run, usageResult) {
