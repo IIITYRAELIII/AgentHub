@@ -204,7 +204,7 @@ export async function windowsRolloutIdleState(rolloutPath, {
   platform = process.platform,
   readActivity = readCodexRolloutActivity,
   processProbe = readWindowsRolloutProcesses,
-  agentHubPid = process.pid,
+  agentHubPid = 0,
 } = {}) {
   const activity = await readActivity(rolloutPath);
   if (activity.running || activity.activeTurnIds?.length) {

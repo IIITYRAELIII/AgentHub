@@ -8,6 +8,7 @@ import {
   analyzeCodexRolloutContext,
   CodexRolloutContextSanitizer,
   sanitizeCodexRolloutContext,
+  windowsRolloutIdleState,
 } from "./codex-rollout-context.mjs";
 
 function image(index) {
@@ -163,6 +164,23 @@ test("rollout context sanitation refuses a rollout held by a live client", async
   assert.equal(result.applied, false);
   assert.equal(result.reason, "rollout-open");
   assert.equal(await readFile(rollout, "utf8"), before);
+});
+
+test("rollout idle check includes Agent Hub's own App Server process", async () => {
+  let observedAgentHubPid = null;
+  const result = await windowsRolloutIdleState("rollout.jsonl", {
+    platform: "win32",
+    readActivity: async () => ({ running: false, activeTurnIds: [] }),
+    processProbe: async (_rolloutPath, options) => {
+      observedAgentHubPid = options.agentHubPid;
+      return { rootProcessIds: [42] };
+    },
+  });
+
+  assert.equal(observedAgentHubPid, 0);
+  assert.equal(result.idle, false);
+  assert.equal(result.reason, "rollout-open");
+  assert.deepEqual(result.processIds, [42]);
 });
 
 test("automatic sanitizer processes only eligible rollout files", async () => {
