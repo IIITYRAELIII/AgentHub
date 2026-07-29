@@ -385,6 +385,42 @@ test("rollout discovery finds threads omitted by the Codex thread list", async (
   assert.equal(calls.length, 3);
 });
 
+test("rollout discovery indexes long-lived threads outside the turn date", async () => {
+  const threadId = "019f2373-d20b-7880-b672-aad3040ccc52";
+  const fileName = `rollout-2026-07-02T20-30-20-${threadId}.jsonl`;
+  const directories = new Map([
+    [path.join("C:\\Codex", "sessions"), [{
+      name: "2026",
+      isDirectory: () => true,
+      isFile: () => false,
+    }]],
+    [path.join("C:\\Codex", "sessions", "2026"), [{
+      name: "07",
+      isDirectory: () => true,
+      isFile: () => false,
+    }]],
+    [path.join("C:\\Codex", "sessions", "2026", "07"), [{
+      name: "02",
+      isDirectory: () => true,
+      isFile: () => false,
+    }]],
+    [path.join("C:\\Codex", "sessions", "2026", "07", "02"), [{
+      name: fileName,
+      isDirectory: () => false,
+      isFile: () => true,
+    }]],
+    [path.join("C:\\Codex", "archived_sessions"), []],
+  ]);
+  const result = await findCodexRolloutPath(threadId, "2026-07-10T12:00:00.000Z", {
+    codexHome: "C:\\Codex",
+    readdirImpl: async (directory) => directories.get(directory) ?? [],
+  });
+  assert.equal(
+    result,
+    path.join("C:\\Codex", "sessions", "2026", "07", "02", fileName),
+  );
+});
+
 test("recent terminal scan distinguishes completed and aborted turns", () => {
   const values = codexRecentTerminalTurnsFromJsonl([
     line({ timestamp: "2026-07-26T19:04:03.527Z", type: "event_msg", payload: {

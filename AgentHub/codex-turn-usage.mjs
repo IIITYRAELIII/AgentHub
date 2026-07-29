@@ -9,6 +9,8 @@ import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "./codex-usage-estimate.mjs";
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "./token-usage.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 
+const rolloutPathIndexPromises = new Map();
+
 function parsedEntries(text) {
   return String(text ?? "")
     .split(/\r?\n/)
@@ -642,37 +644,76 @@ export async function scanCodexTurnPricingMetadata(transcriptPath, turnIds, {
   return result;
 }
 
+async function buildCodexRolloutPathIndex(codexHome, readdirImpl) {
+  const paths = new Map();
+  const visit = async (directory) => {
+    let entries;
+    try {
+      entries = await readdirImpl(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const candidate = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(candidate);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const match = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/iu
+        .exec(entry.name);
+      if (match) paths.set(match[1].toLowerCase(), candidate);
+    }
+  };
+  await visit(path.join(codexHome, "sessions"));
+  await visit(path.join(codexHome, "archived_sessions"));
+  return paths;
+}
+
+async function codexRolloutPathIndex(codexHome, readdirImpl) {
+  if (readdirImpl !== readdir) return buildCodexRolloutPathIndex(codexHome, readdirImpl);
+  const key = path.resolve(codexHome).toLowerCase();
+  if (!rolloutPathIndexPromises.has(key)) {
+    rolloutPathIndexPromises.set(key, buildCodexRolloutPathIndex(codexHome, readdirImpl));
+  }
+  return rolloutPathIndexPromises.get(key);
+}
+
 export async function findCodexRolloutPath(threadId, startedAt, {
   codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex"),
   readdirImpl = readdir,
 } = {}) {
   const normalizedThreadId = String(threadId ?? "").trim();
   const timestamp = Date.parse(String(startedAt ?? ""));
-  if (!normalizedThreadId || !Number.isFinite(timestamp)) return "";
+  if (!normalizedThreadId) return "";
   const candidates = [];
-  for (const offsetDays of [0, -1, 1]) {
-    const date = new Date(timestamp + offsetDays * 86_400_000);
-    const directory = path.join(
-      codexHome,
-      "sessions",
-      String(date.getUTCFullYear()),
-      String(date.getUTCMonth() + 1).padStart(2, "0"),
-      String(date.getUTCDate()).padStart(2, "0"),
-    );
-    let entries;
-    try {
-      entries = await readdirImpl(directory, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    const suffix = `-${normalizedThreadId}.jsonl`.toLowerCase();
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.toLowerCase().endsWith(suffix)) {
-        candidates.push(path.join(directory, entry.name));
+  if (Number.isFinite(timestamp)) {
+    for (const offsetDays of [0, -1, 1]) {
+      const date = new Date(timestamp + offsetDays * 86_400_000);
+      const directory = path.join(
+        codexHome,
+        "sessions",
+        String(date.getUTCFullYear()),
+        String(date.getUTCMonth() + 1).padStart(2, "0"),
+        String(date.getUTCDate()).padStart(2, "0"),
+      );
+      let entries;
+      try {
+        entries = await readdirImpl(directory, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      const suffix = `-${normalizedThreadId}.jsonl`.toLowerCase();
+      for (const entry of entries) {
+        if (entry.isFile() && entry.name.toLowerCase().endsWith(suffix)) {
+          candidates.push(path.join(directory, entry.name));
+        }
       }
     }
   }
-  return candidates.at(-1) ?? "";
+  if (candidates.length) return candidates.at(-1);
+  const index = await codexRolloutPathIndex(codexHome, readdirImpl);
+  return index.get(normalizedThreadId.toLowerCase()) ?? "";
 }
 
 async function scanCodexTurnJsonlFromOffset(
