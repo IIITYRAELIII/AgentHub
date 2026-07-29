@@ -9,6 +9,7 @@ import {
   findCodexRolloutPath,
   readCodexRolloutTail,
   readCodexTurnUsage,
+  scanCodexHistoricalRollout,
   scanCodexTerminalEventsFromOffset,
   scanCodexTurnJsonl,
   scanCodexTurnJsonlIncrementally,
@@ -87,6 +88,97 @@ test("Codex rollout usage sums every model response and sees the final token eve
     reasoningOutputTokens: 5,
     totalTokens: 165,
   });
+});
+
+test("historical rollout scan extracts all turns in one streaming pass", async () => {
+  const first = "019f1ec8-8de7-7aa3-92b6-045036561c8e";
+  const second = "019f1ec9-8de7-7aa3-92b6-045036561c8e";
+  const text = [
+    line({ type: "session_meta", payload: {
+      id: "019f1ec7-8de7-7aa3-92b6-045036561c8e",
+      cwd: "D:\\workspace",
+      parent_thread_id: "019f1ec6-8de7-7aa3-92b6-045036561c8e",
+    } }),
+    line({ timestamp: "2026-07-01T10:00:00Z", type: "event_msg", payload: {
+      type: "task_started", turn_id: first,
+    } }),
+    line({ type: "turn_context", payload: {
+      turn_id: first, model: "gpt-5.6-sol", service_tier: "fast",
+    } }),
+    line(response(first, "message", {
+      role: "user",
+      content: [{ type: "input_text", text: "Первый запрос" }],
+    })),
+    line(response(first)),
+    line(token(100, 80, 10, 4)),
+    line(response(first, "message", {
+      role: "assistant",
+      phase: "final_answer",
+      content: [{ type: "output_text", text: "Первый ответ" }],
+    })),
+    line({ timestamp: "2026-07-01T10:01:00Z", type: "event_msg", payload: {
+      type: "task_complete", turn_id: first,
+    } }),
+    line({ timestamp: "2026-07-01T11:00:00Z", type: "event_msg", payload: {
+      type: "task_started", turn_id: second,
+    } }),
+    line(response(second, "message", {
+      role: "user",
+      content: [{ type: "input_text", text: "Второй запрос" }],
+    })),
+    line(response(second)),
+    line(token(50, 40, 5, 1)),
+    line({ timestamp: "2026-07-01T11:01:00Z", type: "event_msg", payload: {
+      type: "turn_aborted", turn_id: second,
+    } }),
+  ].join("\n");
+
+  const result = await scanCodexHistoricalRollout("fixture.jsonl", {
+    createReadStreamImpl: () => Readable.from([text]),
+  });
+  assert.equal(result.session.threadId, "019f1ec7-8de7-7aa3-92b6-045036561c8e");
+  assert.equal(result.session.parentThreadId, "019f1ec6-8de7-7aa3-92b6-045036561c8e");
+  assert.equal(result.turns.length, 2);
+  assert.deepEqual(result.turns.map((turn) => ({
+    turnId: turn.turnId,
+    prompt: turn.prompt,
+    finalAnswer: turn.finalAnswer,
+    status: turn.status,
+    usage: turn.usage,
+    model: turn.model,
+    serviceTier: turn.serviceTier,
+  })), [
+    {
+      turnId: first,
+      prompt: "Первый запрос",
+      finalAnswer: "Первый ответ",
+      status: "completed",
+      usage: {
+        inputTokens: 100,
+        cachedInputTokens: 80,
+        outputTokens: 10,
+        reasoningOutputTokens: 4,
+        totalTokens: 110,
+      },
+      model: "gpt-5.6-sol",
+      serviceTier: "fast",
+    },
+    {
+      turnId: second,
+      prompt: "Второй запрос",
+      finalAnswer: "",
+      status: "aborted",
+      usage: {
+        inputTokens: 50,
+        cachedInputTokens: 40,
+        outputTokens: 5,
+        reasoningOutputTokens: 1,
+        totalTokens: 55,
+      },
+      model: "",
+      serviceTier: "default",
+    },
+  ]);
 });
 
 test("streaming rollout scan extracts the exact prompt, terminal status and changed files", async () => {

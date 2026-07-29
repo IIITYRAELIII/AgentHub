@@ -396,6 +396,207 @@ export async function scanCodexTurnJsonl(transcriptPath, turnId, {
   return accumulator.result();
 }
 
+function createHistoricalTurn(turnId) {
+  return {
+    turnId,
+    usage: emptyTokenUsage(),
+    reported: false,
+    started: false,
+    terminal: false,
+    finalAnswer: "",
+    startedAt: "",
+    completedAt: "",
+    lastActivityAt: "",
+    prompt: "",
+    changedFiles: new Set(),
+    patches: [],
+    imageGenerationCalls: new Set(),
+    estimatedCredits: 0,
+    estimateKind: "",
+    model: "",
+    serviceTier: "default",
+    status: "",
+  };
+}
+
+/**
+ * Streams one rollout once and returns every native turn recorded in it.
+ * The caller still decides whether a turn is inherited parent history in a
+ * subagent rollout because that needs the session/thread relationship.
+ */
+export async function scanCodexHistoricalRollout(transcriptPath, {
+  createReadStreamImpl = createReadStream,
+} = {}) {
+  const turns = new Map();
+  const activeTurnIds = new Set();
+  const imageGenerationCalls = new Map();
+  let latestResponseTurnId = "";
+  let latestModel = "";
+  let latestServiceTier = "default";
+  let workspaceRoot = "";
+  let session = null;
+
+  const ensureTurn = (turnId) => {
+    const normalized = String(turnId ?? "").trim();
+    if (!normalized) return null;
+    if (!turns.has(normalized)) turns.set(normalized, createHistoricalTurn(normalized));
+    return turns.get(normalized);
+  };
+  const touch = (turn, timestamp) => {
+    if (!turn) return;
+    const value = String(timestamp ?? "").trim();
+    if (value) turn.lastActivityAt = value;
+  };
+
+  const accept = (entry) => {
+    const timestamp = String(entry?.timestamp ?? "").trim();
+    if (entry?.type === "session_meta") {
+      workspaceRoot ||= String(entry.payload?.cwd ?? "").trim();
+      session ||= {
+        threadId: String(entry.payload?.id ?? entry.payload?.session_id ?? "").trim(),
+        parentThreadId: String(entry.payload?.parent_thread_id ?? "").trim(),
+        workspaceRoot,
+        createdAt: String(entry.payload?.timestamp ?? timestamp).trim(),
+        source: entry.payload?.source ?? "",
+      };
+    }
+    if (entry?.type === "event_msg" && entry.payload?.type === "thread_settings_applied") {
+      latestModel = String(entry.payload?.thread_settings?.model ?? latestModel).trim();
+      latestServiceTier = String(
+        entry.payload?.thread_settings?.service_tier ?? latestServiceTier,
+      ).trim() || "default";
+    }
+
+    const lifecycle = entry?.type === "event_msg" ? String(entry.payload?.type ?? "") : "";
+    const lifecycleTurnId = lifecycle ? String(entry.payload?.turn_id ?? "").trim() : "";
+    if (lifecycle === "task_started" && lifecycleTurnId) {
+      const turn = ensureTurn(lifecycleTurnId);
+      activeTurnIds.add(lifecycleTurnId);
+      turn.started = true;
+      turn.startedAt ||= timestamp;
+      touch(turn, timestamp);
+    } else if (lifecycleTerminalStatus(lifecycle) && lifecycleTurnId) {
+      const turn = ensureTurn(lifecycleTurnId);
+      activeTurnIds.delete(lifecycleTurnId);
+      turn.terminal = true;
+      turn.completedAt = timestamp || turn.completedAt;
+      turn.status = lifecycleTerminalStatus(lifecycle);
+      touch(turn, timestamp);
+    }
+    if (lifecycle === "patch_apply_end" && lifecycleTurnId) {
+      const turn = ensureTurn(lifecycleTurnId);
+      for (const file of Object.keys(entry.payload?.changes ?? {})) {
+        if (String(file).trim()) turn.changedFiles.add(String(file).trim());
+      }
+      touch(turn, timestamp);
+    }
+
+    const exactTurnId = entryTurnId(entry);
+    const exactTurn = ensureTurn(exactTurnId);
+    if (exactTurnId && ["response_item", "turn_context"].includes(String(entry?.type ?? ""))) {
+      latestResponseTurnId = exactTurnId;
+      exactTurn.started = true;
+      touch(exactTurn, timestamp);
+    }
+    if (entry?.type === "turn_context" && exactTurn) {
+      exactTurn.model = String(entry.payload?.model ?? latestModel).trim();
+      exactTurn.serviceTier = String(
+        entry.payload?.service_tier ?? latestServiceTier,
+      ).trim() || "default";
+    }
+    if (entry?.type === "response_item"
+      && entry.payload?.type === "function_call"
+      && entry.payload?.name === "imagegen"
+      && entry.payload?.call_id
+      && exactTurnId) {
+      imageGenerationCalls.set(String(entry.payload.call_id), exactTurnId);
+    }
+    if (entry?.type === "event_msg"
+      && entry.payload?.type === "image_generation_end"
+      && entry.payload?.status === "completed") {
+      const callId = String(entry.payload?.call_id ?? "").trim();
+      const attributedTurnId = imageGenerationCalls.get(callId)
+        || latestResponseTurnId
+        || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+      const turn = ensureTurn(attributedTurnId);
+      if (turn && callId) turn.imageGenerationCalls.add(callId);
+      touch(turn, timestamp);
+    }
+    if (entry?.type === "response_item"
+      && exactTurn
+      && entry.payload?.type === "message"
+      && entry.payload?.role === "user") {
+      const candidate = displayUserPrompt(messageText(entry.payload));
+      if (candidate) exactTurn.prompt = candidate;
+    }
+    if (entry?.type === "response_item"
+      && exactTurn
+      && entry.payload?.type === "custom_tool_call"
+      && entry.payload?.name === "apply_patch") {
+      for (const file of patchInputFiles(entry.payload.input, workspaceRoot)) {
+        exactTurn.changedFiles.add(file);
+      }
+      const patch = normalizedApplyPatch(entry.payload.input);
+      if (patch) exactTurn.patches.push(patch);
+    }
+    if (exactTurn && isFinalAssistantItem(entry, exactTurnId)) {
+      exactTurn.finalAnswer = messageText(entry.payload) || exactTurn.finalAnswer;
+    }
+
+    if (entry?.type !== "event_msg" || entry.payload?.type !== "token_count") return;
+    const attributedTurnId = latestResponseTurnId
+      || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+    const attributedTurn = ensureTurn(attributedTurnId);
+    if (attributedTurn) {
+      attributedTurn.usage = addTokenUsage(
+        attributedTurn.usage,
+        normalizedRolloutUsage(entry.payload?.info?.last_token_usage),
+      );
+      attributedTurn.reported = true;
+      touch(attributedTurn, timestamp);
+    }
+    latestResponseTurnId = "";
+  };
+
+  const input = createReadStreamImpl(transcriptPath, { encoding: "utf8" });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (!line) continue;
+      try {
+        accept(JSON.parse(line));
+      } catch {
+        // One malformed JSONL record must not hide the rest of the history.
+      }
+    }
+  } finally {
+    lines.close();
+  }
+
+  return {
+    session: session ?? {
+      threadId: "",
+      parentThreadId: "",
+      workspaceRoot,
+      createdAt: "",
+      source: "",
+    },
+    turns: [...turns.values()].map((turn) => {
+      const imageGenerationCount = turn.imageGenerationCalls.size;
+      return {
+        ...turn,
+        changedFiles: [...turn.changedFiles],
+        diff: turn.patches.join("\n\n"),
+        imageGenerationCount,
+        estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
+        estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",
+        model: turn.model || latestModel,
+        serviceTier: turn.serviceTier || latestServiceTier,
+      };
+    }),
+  };
+}
+
 export async function scanCodexTurnPricingMetadata(transcriptPath, turnIds, {
   createReadStreamImpl = createReadStream,
 } = {}) {
