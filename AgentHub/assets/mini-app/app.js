@@ -8,7 +8,10 @@ const themeSelect = document.querySelector("[data-theme-select]");
 const themeColor = document.querySelector("[data-theme-color]");
 let currentVersion = "";
 let loading = null;
+const loadingDays = new Map();
+const loadingTurns = new Map();
 let journalRendered = false;
+let desiredOpenState = null;
 const telegram = window.Telegram?.WebApp;
 const telegramInitData = String(telegram?.initData ?? "");
 const telegramMode = Boolean(telegramInitData);
@@ -127,23 +130,23 @@ function setMobileTaskOpen(row, open) {
   if (previous) previous.open = open;
 }
 
-function syncCollapseTurnButtons() {
+function syncCollapseTurnButtons(root = journal) {
   const hidden = surface === "mobile";
-  for (const button of journal.querySelectorAll("[data-work-log-collapse-turns]")) {
+  for (const button of root.querySelectorAll("[data-work-log-collapse-turns]")) {
     button.hidden = hidden;
   }
 }
 
-function prepareMobileControls() {
+function prepareMobileControls(root = journal) {
   if (surface !== "mobile") return;
-  const openDays = [...journal.querySelectorAll("details[data-work-log-day-section][open]")];
+  const openDays = [...root.querySelectorAll("details[data-work-log-day-section][open]")];
   for (const details of openDays.slice(1)) details.open = false;
-  for (const total of journal.querySelectorAll("[data-day-usage]")) {
+  for (const total of root.querySelectorAll("[data-day-usage]")) {
     total.setAttribute("role", "button");
     total.setAttribute("tabindex", "0");
     total.setAttribute("aria-expanded", "false");
   }
-  for (const title of journal.querySelectorAll("[data-work-log-task-content]")) {
+  for (const title of root.querySelectorAll("[data-work-log-task-content]")) {
     title.setAttribute("role", "button");
     title.setAttribute("tabindex", "0");
     title.setAttribute("aria-expanded", "false");
@@ -164,6 +167,7 @@ telegram?.onEvent?.("viewportChanged", syncSurface);
 telegram?.onEvent?.("fullscreenChanged", syncSurface);
 
 function restoreOpenState(state) {
+  desiredOpenState = state;
   for (const details of journal.querySelectorAll("details[data-work-log-day-section]")) {
     details.open = false;
   }
@@ -207,6 +211,7 @@ function restoreOpenState(state) {
     );
     if (row) setMobileTaskOpen(row, true);
   }
+  void hydrateOpenLazyNodes();
 }
 
 /* Лимиты приходят первым блоком журнала, но место им — в шапке: над днями
@@ -229,12 +234,96 @@ function hoistRateLimits() {
   block.remove();
 }
 
-function disableLocalLinks() {
-  for (const link of journal.querySelectorAll("a")) {
+function disableLocalLinks(root = journal) {
+  for (const link of root.querySelectorAll("a")) {
     link.removeAttribute("href");
     link.setAttribute("role", "link");
     link.setAttribute("aria-disabled", "true");
   }
+}
+
+async function fetchJournalFragment(pathname, params) {
+  const query = new URLSearchParams({ ...params, version: currentVersion });
+  const response = await fetch(`${pathname}?${query}`, {
+    cache: "no-store",
+    headers: requestHeaders(),
+  });
+  const payload = await response.json();
+  if (response.status === 409 || payload.version && payload.version !== currentVersion) {
+    void loadJournal({ force: true });
+    throw new Error("Журнал обновился.");
+  }
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload;
+}
+
+async function loadLazyDay(details) {
+  const date = details?.dataset.lazyDay;
+  if (!date || !details.isConnected) return;
+  if (loadingDays.has(date)) return loadingDays.get(date);
+  desiredOpenState = captureOpenState();
+  details.setAttribute("aria-busy", "true");
+  const promise = (async () => {
+    const payload = await fetchJournalFragment("/api/journal/day", { date });
+    if (!details.isConnected) return;
+    const template = document.createElement("template");
+    template.innerHTML = payload.html.trim();
+    const replacement = template.content.firstElementChild;
+    if (!replacement?.matches("details[data-work-log-day-section]")) {
+      throw new Error("Некорректный фрагмент дня.");
+    }
+    replacement.open = true;
+    details.replaceWith(replacement);
+    disableLocalLinks(replacement);
+    syncCollapseTurnButtons(replacement);
+    prepareMobileControls(journal);
+    if (desiredOpenState) restoreOpenState(desiredOpenState);
+  })().catch((error) => {
+    if (details.isConnected) {
+      details.removeAttribute("aria-busy");
+      details.title = error.message;
+    }
+  }).finally(() => loadingDays.delete(date));
+  loadingDays.set(date, promise);
+  return promise;
+}
+
+async function loadLazyTurn(details) {
+  const turnId = details?.dataset.lazyTurnId;
+  if (!turnId || !details.isConnected) return;
+  if (loadingTurns.has(turnId)) return loadingTurns.get(turnId);
+  desiredOpenState = captureOpenState();
+  details.setAttribute("aria-busy", "true");
+  const promise = (async () => {
+    const payload = await fetchJournalFragment("/api/journal/turn", { id: turnId });
+    if (!details.isConnected) return;
+    const slot = details.querySelector("[data-lazy-turn-content]");
+    if (!slot) throw new Error("Место для деталей хода не найдено.");
+    const template = document.createElement("template");
+    template.innerHTML = payload.html.trim();
+    slot.replaceWith(template.content);
+    details.removeAttribute("data-lazy-turn-id");
+    details.removeAttribute("aria-busy");
+    disableLocalLinks(details);
+  })().catch((error) => {
+    if (details.isConnected) {
+      details.removeAttribute("aria-busy");
+      details.title = error.message;
+    }
+  }).finally(() => loadingTurns.delete(turnId));
+  loadingTurns.set(turnId, promise);
+  return promise;
+}
+
+async function hydrateOpenLazyNodes() {
+  const days = [...journal.querySelectorAll(
+    "details[data-work-log-day-section][data-lazy-day][open]",
+  )];
+  await Promise.all(days.map(loadLazyDay));
+  const turns = [...journal.querySelectorAll(
+    "details[data-work-log-turn-details][data-lazy-turn-id][open]",
+  )];
+  await Promise.all(turns.map(loadLazyTurn));
 }
 
 async function loadJournal({ force = false } = {}) {
@@ -349,6 +438,12 @@ journal.addEventListener("toggle", (event) => {
     for (const details of journal.querySelectorAll("details[data-work-log-day-section][open]")) {
       if (details !== opened) details.open = false;
     }
+  }
+  if (opened.matches?.("details[data-work-log-day-section][data-lazy-day][open]")) {
+    void loadLazyDay(opened);
+  }
+  if (opened.matches?.("details[data-work-log-turn-details][data-lazy-turn-id][open]")) {
+    void loadLazyTurn(opened);
   }
   setTimeout(persistOpenState, 0);
 }, true);

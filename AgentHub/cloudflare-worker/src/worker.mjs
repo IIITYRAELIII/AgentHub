@@ -150,11 +150,55 @@ function json(payload, status = 200) {
 }
 
 export class JournalStore extends DurableObject {
+  #cachedPayload = null;
+
+  async #payload() {
+    const manifest = await this.ctx.storage.get("journal-manifest");
+    const expectedVersion = String(manifest?.version ?? "");
+    if (this.#cachedPayload && (
+      !expectedVersion || this.#cachedPayload.version === expectedVersion
+    )) {
+      return this.#cachedPayload;
+    }
+    if (manifest) {
+      const chunkKeys = Array.from(
+        { length: manifest.count },
+        (_, chunkIndex) => `chunk:${manifest.syncId}:${chunkIndex}`,
+      );
+      const chunks = await this.ctx.storage.get(chunkKeys);
+      if (chunks.size !== manifest.count) throw new Error("Снимок журнала повреждён.");
+      const ordered = chunkKeys.map((key) => new Uint8Array(chunks.get(key)));
+      const length = ordered.reduce((total, chunk) => total + chunk.byteLength, 0);
+      const compressed = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of ordered) {
+        compressed.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      const body = new Blob([compressed])
+        .stream()
+        .pipeThrough(new DecompressionStream(manifest.encoding));
+      this.#cachedPayload = await new Response(body).json();
+      return this.#cachedPayload;
+    }
+    this.#cachedPayload = await this.ctx.storage.get("journal");
+    if (!this.#cachedPayload) throw new Error("Журнал ещё не опубликован.");
+    return this.#cachedPayload;
+  }
+
   async fetch(request) {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/sync") {
       const payload = await request.json();
+      const previous = await this.ctx.storage.get("journal-manifest");
       await this.ctx.storage.put("journal", payload);
+      await this.ctx.storage.delete("journal-manifest");
+      if (previous?.syncId) {
+        await this.ctx.storage.delete(
+          Array.from({ length: previous.count }, (_, index) => `chunk:${previous.syncId}:${index}`),
+        );
+      }
+      this.#cachedPayload = payload;
       return json({ ok: true });
     }
     if (request.method === "POST" && url.pathname === "/sync-chunk") {
@@ -192,6 +236,7 @@ export class JournalStore extends DurableObject {
         updatedAt,
       });
       await this.ctx.storage.delete(["journal", metadataKey]);
+      this.#cachedPayload = null;
       if (previous?.syncId && previous.syncId !== syncId) {
         await this.ctx.storage.delete(
           Array.from({ length: previous.count }, (_, chunkIndex) => `chunk:${previous.syncId}:${chunkIndex}`),
@@ -199,52 +244,40 @@ export class JournalStore extends DurableObject {
       }
       return json({ ok: true, complete: true });
     }
-    if (request.method === "GET" && url.pathname === "/journal") {
-      const knownVersion = String(request.headers.get("If-None-Match") ?? "");
-      const manifest = await this.ctx.storage.get("journal-manifest");
-      if (manifest) {
-        const etag = `"${manifest.version}"`;
-        if (knownVersion === etag) {
-          return new Response(null, {
-            status: 304,
-            headers: {
-              ETag: etag,
-              "X-Agent-Hub-Journal-Version": manifest.version,
-            },
-          });
-        }
-        const chunkKeys = Array.from(
-          { length: manifest.count },
-          (_, chunkIndex) => `chunk:${manifest.syncId}:${chunkIndex}`,
-        );
-        const chunks = await this.ctx.storage.get(chunkKeys);
-        if (chunks.size !== manifest.count) return json({ error: "Снимок журнала повреждён." }, 503);
-        const ordered = chunkKeys.map((key) => new Uint8Array(chunks.get(key)));
-        const length = ordered.reduce((total, chunk) => total + chunk.byteLength, 0);
-        const compressed = new Uint8Array(length);
-        let offset = 0;
-        for (const chunk of ordered) {
-          compressed.set(chunk, offset);
-          offset += chunk.byteLength;
-        }
-        const body = new Blob([compressed])
-          .stream()
-          .pipeThrough(new DecompressionStream(manifest.encoding));
-        return new Response(body, {
-          headers: {
-            "Cache-Control": "no-store",
-            "Content-Type": "application/json; charset=utf-8",
-            ETag: etag,
-            "X-Agent-Hub-Journal-Version": manifest.version,
-            "X-Content-Type-Options": "nosniff",
-          },
-        });
+    if (request.method === "GET" && [
+      "/journal",
+      "/journal/day",
+      "/journal/turn",
+    ].includes(url.pathname)) {
+      let payload;
+      try {
+        payload = await this.#payload();
+      } catch (error) {
+        return json({ error: error.message }, 503);
       }
-      const payload = await this.ctx.storage.get("journal");
-      if (!payload) return json({ error: "Журнал ещё не опубликован." }, 503);
+      if (url.pathname === "/journal/day" || url.pathname === "/journal/turn") {
+        const requestedVersion = String(url.searchParams.get("version") ?? "");
+        if (requestedVersion && requestedVersion !== payload.version) {
+          return json({ error: "Журнал обновился.", version: payload.version }, 409);
+        }
+        const key = url.pathname.endsWith("/day")
+          ? String(url.searchParams.get("date") ?? "")
+          : String(url.searchParams.get("id") ?? "");
+        const html = url.pathname.endsWith("/day")
+          ? payload.days?.[key]
+          : payload.turns?.[key];
+        return typeof html === "string"
+          ? json({ html, version: payload.version })
+          : json({ error: "Фрагмент журнала не найден." }, 404);
+      }
+      const knownVersion = String(request.headers.get("If-None-Match") ?? "");
       const etag = `"${payload.version}"`;
       if (knownVersion === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
-      const response = json(payload);
+      const response = json({
+        html: payload.html,
+        updatedAt: payload.updatedAt,
+        version: payload.version,
+      });
       response.headers.set("ETag", etag);
       return response;
     }
@@ -309,7 +342,11 @@ export default {
         return json({ error: error.message }, 401);
       }
     }
-    if (url.pathname === "/api/journal") {
+    if ([
+      "/api/journal",
+      "/api/journal/day",
+      "/api/journal/turn",
+    ].includes(url.pathname)) {
       if (request.method !== "GET" && request.method !== "HEAD") {
         return json({ error: "Method Not Allowed" }, 405);
       }
@@ -323,7 +360,8 @@ export default {
       } catch (error) {
         return json({ error: error.message }, 401);
       }
-      const response = await store.fetch(new Request("https://journal.internal/journal", {
+      const internalPath = url.pathname.replace(/^\/api/u, "");
+      const response = await store.fetch(new Request(`https://journal.internal${internalPath}${url.search}`, {
         headers: {
           "If-None-Match": String(request.headers.get("If-None-Match") ?? ""),
         },

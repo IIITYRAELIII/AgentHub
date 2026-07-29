@@ -5,7 +5,7 @@ import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import path from "node:path";
 
-import { extractWorkLogHtml } from "./mini-app-server.mjs";
+import { buildLazyJournalPayload } from "./mini-app-journal-data.mjs";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const SYNC_CHUNK_BYTES = 1024 * 1024;
@@ -64,7 +64,7 @@ export async function journalSyncPayload(workLogFile) {
     stat(workLogFile),
   ]);
   return {
-    html: extractWorkLogHtml(markdown),
+    ...buildLazyJournalPayload(markdown),
     updatedAt: info.mtime.toISOString(),
     version: `${Math.trunc(info.mtimeMs)}-${info.size}`,
   };

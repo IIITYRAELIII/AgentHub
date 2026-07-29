@@ -235,6 +235,10 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(script, /localStorage\.setItem\(OPEN_STATE_KEY/u);
     assert.match(script, /localStorage\.getItem\(OPEN_STATE_KEY\)/u);
     assert.match(script, /persistOpenState\(\)/u);
+    assert.match(script, /\/api\/journal\/day/u);
+    assert.match(script, /\/api\/journal\/turn/u);
+    assert.match(script, /data-lazy-day/u);
+    assert.match(script, /data-lazy-turn-id/u);
     const styles = await (await fetch(`${address.url}styles.css`)).text();
     assert.match(styles, /html\[data-theme="nebula"\]/u);
     assert.match(styles, /html\[data-theme="pulsar"\]/u);
@@ -294,6 +298,57 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(stream, /event: journal/u);
   } finally {
     abort.abort();
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Mini App serves old days and turn bodies through lazy endpoints", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mini-app-lazy-"));
+  const workLogFile = path.join(directory, "WORK_LOG.md");
+  const days = Array.from({ length: 6 }, (_, index) => {
+    const day = String(6 - index).padStart(2, "0");
+    const turnId = `turn-${day}`;
+    return [
+      "<details data-work-log-day-section>",
+      `<summary data-work-log-day><strong>${day}.07.2026</strong></summary>`,
+      `<div data-work-log-turn-entry data-work-log-turn-id="${turnId}">`,
+      "<details data-work-log-turn-details>",
+      `<summary>Ход ${turnId}</summary>`,
+      `<div data-work-log-turn-expanded><div>Запрос ${turnId}</div><div>Ответ ${turnId}</div></div>`,
+      "</details></div></details>",
+    ].join("");
+  });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    workLogFile,
+  });
+  try {
+    await writeFile(workLogFile, `# Журнал\n${days.join("\n")}\n`, "utf8");
+    const address = await server.start();
+    const index = await (await fetch(`${address.url}api/journal`)).json();
+    assert.match(index.html, /data-lazy-day="01\.07\.2026"/u);
+    assert.doesNotMatch(index.html, /Ответ turn-01/u);
+
+    const dayResponse = await fetch(
+      `${address.url}api/journal/day?date=01.07.2026&version=${encodeURIComponent(index.version)}`,
+    );
+    assert.equal(dayResponse.status, 200);
+    const day = await dayResponse.json();
+    assert.match(day.html, /Ход turn-01/u);
+    assert.doesNotMatch(day.html, /Ответ turn-01/u);
+
+    const turnResponse = await fetch(
+      `${address.url}api/journal/turn?id=turn-01&version=${encodeURIComponent(index.version)}`,
+    );
+    assert.equal(turnResponse.status, 200);
+    assert.match((await turnResponse.json()).html, /Ответ turn-01/u);
+
+    assert.equal((await fetch(
+      `${address.url}api/journal/day?date=01.07.2026&version=old`,
+    )).status, 409);
+  } finally {
     await server.close();
     await rm(directory, { recursive: true, force: true });
   }

@@ -846,7 +846,7 @@ function replaceProjectedCells(row, usageContent, records) {
 function projectDaySection(section, date, turns, recordsById, open) {
   const canonicalSection = ensureCanonicalRows(section, date, turns);
   const rows = workLogTaskRows(canonicalSection)
-    .map((match) => {
+    .map((match, sourceIndex) => {
       const ids = [...new Set(usageIds(match.text))];
       const identity = rowIdentity(match.text);
       const legacyRecords = ids.map((id) => recordsById.get(id)).filter(Boolean);
@@ -872,10 +872,15 @@ function projectDaySection(section, date, turns, recordsById, open) {
       ) ?? cells[1];
       return {
         match,
+        sourceIndex,
         ids,
         recorded,
         creditBreakdown,
         credits: creditBreakdown.total,
+        latestCompletedAt: recorded.reduce(
+          (latest, record) => Math.max(latest, Date.parse(record.completedAt) || 0),
+          0,
+        ),
         identity,
         hasLegacyOutcome: Boolean(legacyOutcome(turnCell?.text)),
       };
@@ -889,26 +894,31 @@ function projectDaySection(section, date, turns, recordsById, open) {
   );
   const dayCredits = dayBreakdown.total;
 
-  const renderedRows = rows.map((row) => {
-    const visible = row.credits > 0
-      ? formatTaskUsageDetails(row.creditBreakdown, dayCredits)
-      : "";
-    const markers = row.ids.map((id) => (
-      `<span data-usage-id="${id}" hidden>${recordsById.has(id) ? "" : id}</span>`
-    )).join("\n");
-    const turnsContent = [...row.recorded]
-      .sort(
-        (left, right) => (Date.parse(right.completedAt) || 0) - (Date.parse(left.completedAt) || 0),
+  const renderedRows = [...rows]
+    .sort((left, right) => (
+      right.latestCompletedAt - left.latestCompletedAt
+      || left.sourceIndex - right.sourceIndex
+    ))
+    .map((row) => {
+      const visible = row.credits > 0
+        ? formatTaskUsageDetails(row.creditBreakdown, dayCredits)
+        : "";
+      const markers = row.ids.map((id) => (
+        `<span data-usage-id="${id}" hidden>${recordsById.has(id) ? "" : id}</span>`
+      )).join("\n");
+      const turnsContent = [...row.recorded]
+        .sort(
+          (left, right) => (Date.parse(right.completedAt) || 0) - (Date.parse(left.completedAt) || 0),
+        );
+      const collapseTurns = turnsContent.length > 1
+        ? '<button type="button" data-work-log-collapse-turns>Свернуть ходы</button>'
+        : "";
+      return replaceProjectedCells(
+        row.match.text,
+        `${visible}${markers}${collapseTurns}`,
+        turnsContent,
       );
-    const collapseTurns = turnsContent.length > 1
-      ? '<button type="button" data-work-log-collapse-turns>Свернуть ходы</button>'
-      : "";
-    return replaceProjectedCells(
-      row.match.text,
-      `${visible}${markers}${collapseTurns}`,
-      turnsContent,
-    );
-  });
+    });
   const summary = dayCredits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
       + `<span data-day-usage><span data-usage-label>Итого</span> ${

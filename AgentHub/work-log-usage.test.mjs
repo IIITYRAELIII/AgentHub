@@ -202,6 +202,58 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.equal(reprojected, projected);
 });
 
+test("tasks inside a day are sorted by their latest turn descending", () => {
+  const source = [
+    "<details><summary><strong>25.07.2026</strong></summary>",
+    "<div data-work-log-table><div data-work-log-body>",
+    '<div data-work-log-row data-work-log-provider="codex" data-work-log-thread-id="old">',
+    "<div data-work-log-task-cell><div data-work-log-task-content>Old task</div></div>",
+    '<div data-work-log-turn-list></div></div>',
+    '<div data-work-log-row data-work-log-provider="codex" data-work-log-thread-id="fresh">',
+    "<div data-work-log-task-cell><div data-work-log-task-content>Fresh task</div></div>",
+    '<div data-work-log-turn-list></div></div>',
+    "</div></div></details>",
+  ].join("");
+  const projected = projectWorkLogUsage(source, {
+    old: {
+      provider: "codex",
+      threadId: "old",
+      turnId: "turn-old",
+      taskTitle: "Old task",
+      completedAt: "2026-07-25T10:00:00.000Z",
+      usage: { inputTokens: 1 },
+    },
+    fresh: {
+      provider: "codex",
+      threadId: "fresh",
+      turnId: "turn-fresh",
+      taskTitle: "Fresh task",
+      completedAt: "2026-07-25T12:00:00.000Z",
+      usage: { inputTokens: 1 },
+    },
+  });
+
+  assert.ok(projected.indexOf("Fresh task") < projected.indexOf("Old task"));
+  assert.equal(projectWorkLogUsage(projected, {
+    old: {
+      provider: "codex",
+      threadId: "old",
+      turnId: "turn-old",
+      taskTitle: "Old task",
+      completedAt: "2026-07-25T10:00:00.000Z",
+      usage: { inputTokens: 1 },
+    },
+    fresh: {
+      provider: "codex",
+      threadId: "fresh",
+      turnId: "turn-fresh",
+      taskTitle: "Fresh task",
+      completedAt: "2026-07-25T12:00:00.000Z",
+      usage: { inputTokens: 1 },
+    },
+  }), projected);
+});
+
 test("projectWorkLogUsage keeps exact diffs out of the compact journal projection", () => {
   const source = [
     "<details open>",

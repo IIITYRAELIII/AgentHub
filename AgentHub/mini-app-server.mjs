@@ -4,6 +4,13 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import path from "node:path";
 
+import {
+  buildLazyJournalPayload,
+  publicJournalPayload,
+} from "./mini-app-journal-data.mjs";
+
+export { extractWorkLogHtml } from "./mini-app-journal-data.mjs";
+
 const CONTENT_TYPES = new Map([
   ["/", "text/html; charset=utf-8"],
   ["/app.js", "text/javascript; charset=utf-8"],
@@ -41,13 +48,6 @@ const IMMUTABLE_FILES = new Set([
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const CHANGE_DEBOUNCE_MS = 75;
 const TELEGRAM_AUTH_MAX_AGE_SECONDS = 86_400;
-
-function escapeHtmlText(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
 
 export function validateTelegramInitData(initData, {
   botToken,
@@ -116,24 +116,6 @@ export function miniAppMenuButtonRequests({
   ];
 }
 
-export function extractWorkLogHtml(markdown) {
-  const source = String(markdown ?? "");
-  const firstDay = source.search(/<details\b[^>]*data-work-log-day-section/iu);
-  if (firstDay >= 0) {
-    const rateLimits = source.match(
-      /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
-    )?.[0] ?? "";
-    return [rateLimits, source.slice(firstDay).trim()].filter(Boolean).join("\n");
-  }
-  const text = source
-    .replace(/^\uFEFF/u, "")
-    .replace(/^#\s+.*(?:\r?\n|$)/u, "")
-    .trim();
-  return text
-    ? `<pre data-mini-app-fallback>${escapeHtmlText(text)}</pre>`
-    : '<p data-mini-app-empty>Журнал пока пуст.</p>';
-}
-
 function responseHeaders(contentType, { immutable = false } = {}) {
   return {
     "Cache-Control": immutable ? "public, max-age=31536000, immutable" : "no-store",
@@ -182,6 +164,7 @@ export class MiniAppServer {
   #changeTimer = null;
   #heartbeatTimer = null;
   #host;
+  #journalCache = null;
   #port;
   #requireTelegramAuth;
   #server = null;
@@ -212,12 +195,14 @@ export class MiniAppServer {
   async #journal() {
     const info = await stat(this.#workLogFile);
     const version = `${Math.trunc(info.mtimeMs)}-${info.size}`;
+    if (this.#journalCache?.version === version) return this.#journalCache;
     const markdown = await readFile(this.#workLogFile, "utf8");
-    return {
-      html: extractWorkLogHtml(markdown),
+    this.#journalCache = {
+      ...buildLazyJournalPayload(markdown),
       updatedAt: info.mtime.toISOString(),
       version,
     };
+    return this.#journalCache;
   }
 
   async #staticBody(pathname) {
@@ -302,7 +287,32 @@ export class MiniAppServer {
           response.end();
           return;
         }
-        json(response, 200, journal, method, { headers: { ETag: etag } });
+        json(response, 200, publicJournalPayload(journal), method, { headers: { ETag: etag } });
+      } catch (error) {
+        json(response, 503, { error: `Журнал недоступен: ${error.message}` }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/journal/day" || url.pathname === "/api/journal/turn") {
+      if (!this.#authorize(request, response)) return;
+      try {
+        const journal = await this.#journal();
+        const requestedVersion = String(url.searchParams.get("version") ?? "");
+        if (requestedVersion && requestedVersion !== journal.version) {
+          json(response, 409, { error: "Журнал обновился.", version: journal.version }, method);
+          return;
+        }
+        const key = url.pathname.endsWith("/day")
+          ? String(url.searchParams.get("date") ?? "")
+          : String(url.searchParams.get("id") ?? "");
+        const html = url.pathname.endsWith("/day")
+          ? journal.days[key]
+          : journal.turns[key];
+        if (typeof html !== "string") {
+          json(response, 404, { error: "Фрагмент журнала не найден." }, method);
+          return;
+        }
+        json(response, 200, { html, version: journal.version }, method);
       } catch (error) {
         json(response, 503, { error: `Журнал недоступен: ${error.message}` }, method);
       }
