@@ -1304,8 +1304,10 @@ main {
 
 /* Переключатель, а не третья карточка: во всю ширину колонки он вставал
    вровень с названием задачи и её расходом, и рамка — единственная во всём
-   журнале взятая из --line-strong — читалась ярче самих данных. */
-.journal button[data-work-log-collapse-turns] {
+   журнале взятая из --line-strong — читалась ярче самих данных.
+   Селектор повторяет форму базового правила из work-log.css: там задан
+   `width: 100%` с той же специфичностью, и без `div[…] >` он побеждал. */
+.journal div[data-work-log-usage] > button[data-work-log-collapse-turns] {
   background: transparent;
   border: 1px dashed var(--line);
   border-radius: var(--radius-chip);
@@ -1322,7 +1324,7 @@ main {
   width: fit-content;
 }
 
-.journal button[data-work-log-collapse-turns]:hover {
+.journal div[data-work-log-usage] > button[data-work-log-collapse-turns]:hover {
   background: var(--surface-2);
   border-color: var(--accent-line);
   color: var(--accent);
@@ -1459,6 +1461,16 @@ main {
 .journal div[data-work-log-turn-context] {
   flex: 0 0 auto;
   min-width: 7rem;
+}
+
+/* Модель идёт без подписи, поэтому её ставим в один ряд с длительностью и
+   гасим до служебного тона: это справка, а не показатель хода. */
+.journal div[data-work-log-turn-pricing] {
+  align-self: center;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  letter-spacing: 0.01em;
 }
 
 .journal div[data-work-log-turn-prompt] {

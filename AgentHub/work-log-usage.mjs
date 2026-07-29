@@ -326,7 +326,7 @@ function formatTurnEntry(record, legacyFiles = "", taskCredits = 0) {
       formatDuration(record?.startedAt, record?.completedAt)
     }</div>`,
     record?.model
-      ? `<div data-work-log-turn-pricing><strong>Модель:</strong> ${
+      ? `<div data-work-log-turn-pricing>${
         escapeHtmlText(record.model)
       }${record.serviceTier === "fast" ? " · Fast ×" + (
         String(record.model).startsWith("gpt-5.4") ? "2" : "2,5"

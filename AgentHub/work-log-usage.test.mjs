@@ -764,7 +764,7 @@ test("usage store backfills exact model and Fast tier before recalculating credi
     });
     const projected = await readFile(workLogFile, "utf8");
     assert.match(projected, /Итого<\/span> <span data-kilo-usage>125 cr<\/span>/);
-    assert.match(projected, /<strong>Модель:<\/strong> gpt-5\.4 · Fast ×2/);
+    assert.match(projected, /<div data-work-log-turn-pricing>gpt-5\.4 · Fast ×2<\/div>/);
     assert.deepEqual(await store.missingPricingTurns(), []);
   } finally {
     await rm(root, { recursive: true, force: true });
