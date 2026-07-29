@@ -68,3 +68,38 @@ test("reply binding switches context before dispatch", async () => {
   assert.equal(events.some(([kind]) => kind === "switch"), true);
   assert.equal(events.some(([kind]) => kind === "status"), true);
 });
+
+test("bundle handler intercepts collected text before ordinary binding and turn start", async () => {
+  const { controller, events } = fixture({
+    handleBundleText: async (_message, text, options) => {
+      events.push(["bundle", text, options?.forwardedOnly === true]);
+      return options?.forwardedOnly !== true;
+    },
+  });
+  await controller.handle({ ...baseMessage, message_id: 11, text: "Пересланная реплика" });
+  assert.deepEqual(events.filter(([kind]) => ["bundle", "bind", "text"].includes(kind)), [
+    ["bundle", "Пересланная реплика", true],
+    ["bundle", "Пересланная реплика", false],
+  ]);
+});
+
+test("forwarded command-looking text is offered to the bundle before command parsing", async () => {
+  const { controller, events } = fixture({
+    handleBundleText: async (_message, text, options) => {
+      events.push(["bundle", text, options?.forwardedOnly === true]);
+      return options?.forwardedOnly === true;
+    },
+  });
+  await controller.handle({
+    ...baseMessage,
+    message_id: 12,
+    text: "/status",
+    forward_origin: {
+      type: "hidden_user",
+      sender_user_name: "Клиент",
+    },
+  });
+  assert.deepEqual(events.filter(([kind]) => ["bundle", "status"].includes(kind)), [
+    ["bundle", "/status", true],
+  ]);
+});

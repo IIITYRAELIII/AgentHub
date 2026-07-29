@@ -1,6 +1,7 @@
 import { resolveContextualCallback } from "./callback-context.mjs";
 import { parseApprovalCallback } from "./codex-approvals.mjs";
 import { parsePendingInputCallback } from "./deferred-input.mjs";
+import { parseForwardBundleCallback } from "./telegram-forward-bundle.mjs";
 import { parseTaskCatalogCallback } from "./task-catalog.mjs";
 import { parseTaskViewCallbackData } from "./task-view-callback.mjs";
 
@@ -16,6 +17,8 @@ export function routeTelegramCallback(rawData, contextToken) {
   const data = contextual.action;
   const pending = parsePendingInputCallback(data);
   if (pending) return { kind: "pending-input", data, ...pending };
+  const forwardBundle = parseForwardBundleCallback(data);
+  if (forwardBundle) return { kind: "forward-bundle", data, ...forwardBundle };
   const speech = match(/^speech:([0-9a-f]+)$/, data, ["id"]);
   if (speech) return { kind: "speech", data, ...speech };
   const taskView = parseTaskViewCallbackData(data);

@@ -248,6 +248,60 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   await telegram.waitForText("Название закреплено: «E2E основная»", { after: mark });
   assert.equal((await readJson(statePath)).activeThreadTitle, "E2E основная");
 
+  // Forwarded conversations stay in one durable draft until the user submits
+  // the complete batch, including their own comments.
+  mark = telegram.calls.length;
+  telegram.pushMessage("Первая реплика клиента", {
+    forward_origin: {
+      type: "user",
+      sender_user: { id: 701, is_bot: false, first_name: "Иван", last_name: "Клиент" },
+      date: Math.floor(Date.now() / 1000) - 10,
+    },
+  });
+  const bundleCard = await telegram.waitForText("Собираю пачку для «E2E основная»", { after: mark });
+  let savedBundleState = await readJson(statePath);
+  assert.equal(savedBundleState.forwardBundles.length, 1);
+  assert.equal(savedBundleState.activeRuns.length, 0,
+    "a forwarded message must not start a turn before explicit bundle submission");
+  const savedBundleId = savedBundleState.forwardBundles[0].id;
+  await stopBot();
+  await startBot();
+  savedBundleState = await waitFor(async () => {
+    const state = await readJson(statePath).catch(() => null);
+    return state?.forwardBundles?.[0]?.id === savedBundleId ? state : null;
+  }, "forward bundle restore after restart");
+
+  const bundleEditMark = telegram.calls.length;
+  telegram.pushMessage("Вторая реплика клиента", {
+    forward_origin: {
+      type: "hidden_user",
+      sender_user_name: "Мария",
+      date: Math.floor(Date.now() / 1000) - 5,
+    },
+  });
+  telegram.pushMessage("Мой комментарий к переписке");
+  await telegram.waitForCall(
+    "editMessageText",
+    (call) => String(call.body.text).includes("Сообщений: 3 · переслано: 2 · ваших: 1"),
+    { after: bundleEditMark },
+  );
+  savedBundleState = await readJson(statePath);
+  assert.equal(savedBundleState.forwardBundles[0].items.length, 3);
+
+  mark = telegram.calls.length;
+  const submitBundle = bundleCard.body.reply_markup.inline_keyboard.flat()
+    .find((button) => button.callback_data.startsWith("forward-bundle:send:"));
+  telegram.pushCallback(submitBundle.callback_data, bundleCard.result);
+  const bundleFinal = await telegram.waitForText("Готово: Ниже пакет сообщений", {
+    after: mark,
+    timeoutMs: 8_000,
+  });
+  assert.match(bundleFinal.body.text, /Переслано · Иван Клиент/);
+  assert.match(bundleFinal.body.text, /Переслано · Мария/);
+  assert.match(bundleFinal.body.text, /Сообщение 3 · Вы/);
+  await waitFor(async () => (await readJson(statePath)).forwardBundles.length === 0,
+    "submitted forward bundle cleanup");
+
   // A slow media download must not block the Telegram update loop, and the
   // resulting turn must remain bound to the task selected when media arrived.
   telegram.fileDownloadDelayMs = 1_200;

@@ -46,3 +46,16 @@ test("routes an identity-bound task diff callback", () => {
     count: null,
   });
 });
+
+test("routes forward bundle controls without binding them to mutable task context", () => {
+  const route = routeTelegramCallback(
+    "forward-bundle:send:11111111-1111-4111-8111-111111111111",
+    "abc",
+  );
+  assert.deepEqual(route, {
+    kind: "forward-bundle",
+    data: "forward-bundle:send:11111111-1111-4111-8111-111111111111",
+    action: "send",
+    id: "11111111-1111-4111-8111-111111111111",
+  });
+});

@@ -68,6 +68,10 @@ import {
 } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
 import {
+  restoreForwardBundle,
+  TelegramForwardBundleController,
+} from "./telegram-forward-bundle.mjs";
+import {
   captureTaskGitBaseline,
   cleanupTaskGitIndexes,
   resolveTaskGitRepoRoots,
@@ -503,6 +507,7 @@ const interactiveJobs = new BackgroundJobQueue({
 const dismissedExternalTasks = new TaskDismissalRegistry();
 const cancelledManagedClaudeTasks = new Map();
 const pendingInputs = new Map();
+const forwardBundles = new Map();
 const gitRepoRoots = new Map();
 const queuedInputs = new Map();
 const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
@@ -835,14 +840,14 @@ function sameTaskBinding(binding, task, targetChatId = null) {
     && (targetChatId == null || binding.chatId === targetChatId);
 }
 
-async function bindIncomingTaskMessage(message, text) {
-  const task = selectedTask();
+async function bindIncomingTaskMessage(message, text, target = null) {
+  const task = target ?? selectedTask();
   if (!task.threadId || !Number.isSafeInteger(message?.message_id)) return;
   const binding = {
     ...task,
     chatId: message.chat.id,
     messageId: message.message_id,
-    taskTitle: activeThreadTitle,
+    taskTitle: task.taskTitle ?? activeThreadTitle,
     createdAt: new Date((Number(message.date) || Math.floor(Date.now() / 1000)) * 1000).toISOString(),
     kind: "incoming-user",
     role: "user",
@@ -1642,6 +1647,12 @@ try {
   }
   for (const item of Array.isArray(saved.queuedInputs) ? saved.queuedInputs : []) {
     if (item?.id && item?.threadId && item?.provider) queuedInputs.set(item.id, item);
+  }
+  for (const value of Array.isArray(saved.forwardBundles) ? saved.forwardBundles : []) {
+    const restored = restoreForwardBundle(value, {
+      maxAgeMs: config.deferredInputTtlHours * 60 * 60 * 1000,
+    });
+    if (restored) forwardBundles.set(String(restored.chatId), restored);
   }
   const restoredDeferred = [
     ...[...pendingInputs.values()].map((item) => ({ collection: pendingInputs, item })),
@@ -5784,6 +5795,38 @@ async function selectCatalogTask(callback, entry) {
 }
 
 async function dispatchTelegramCallback(callback, route) {
+  if (route.kind === "forward-bundle") {
+    if (!forwardBundleController.bundleById(route.id)) {
+      await telegram("answerCallbackQuery", {
+        callback_query_id: callback.id,
+        text: "Эта пачка уже обработана",
+        show_alert: true,
+      });
+      return;
+    }
+    await telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: route.action === "send"
+        ? "Отправляю пачку…"
+        : route.action === "undo" ? "Убираю последнее сообщение…" : "Отменяю сбор…",
+    });
+    try {
+      const result = route.action === "send"
+        ? await forwardBundleController.submit(route.id)
+        : route.action === "undo"
+          ? await forwardBundleController.undo(route.id)
+          : await forwardBundleController.cancel(route.id);
+      if (result.status === "missing") return;
+    } catch (error) {
+      console.error(`Cannot process forward bundle ${route.id}:`, error.message);
+      await sendMessageTo(
+        callback.message.chat.id,
+        `Не удалось обработать пачку сообщений: ${error.message}`,
+      );
+    }
+    return;
+  }
+
   if (route.kind === "pending-input") {
     const { action, id } = route;
     const item = pendingInputs.get(id);
@@ -6476,6 +6519,23 @@ const telegramCommandHandlers = Object.fromEntries([
   "rename", "archive", "current", "thread", "diff", "cancel",
 ].map((command) => [command, ({ message, text }) => handleTelegramCommand(message, text)]));
 
+const forwardBundleController = new TelegramForwardBundleController({
+  bundles: forwardBundles,
+  selectedTarget: selectedTurnTarget,
+  bindIncomingMessage: bindIncomingTaskMessage,
+  sendCard: (targetChatId, text, replyMarkup) => (
+    sendMessageTo(targetChatId, text, { reply_markup: replyMarkup })
+  ),
+  editCard: (targetChatId, messageId, text, replyMarkup) => telegram("editMessageText", {
+    chat_id: targetChatId,
+    message_id: messageId,
+    text,
+    reply_markup: replyMarkup,
+  }),
+  save: saveState,
+  startTurn,
+});
+
 const telegramMessageController = new TelegramMessageController({
   config,
   menuCommands: MENU_COMMANDS,
@@ -6489,6 +6549,7 @@ const telegramMessageController = new TelegramMessageController({
   bindIncomingMessage: bindIncomingTaskMessage,
   enqueueMedia: enqueueBackgroundJob,
   commandHandlers: telegramCommandHandlers,
+  handleBundleText: (message, text) => forwardBundleController.handleText(message, text),
   handleText: (message, text) => startTurn(telegramPrompt(message, text)),
   sendMessage,
 });
@@ -6571,6 +6632,10 @@ function saveState() {
     cancelledManagedClaudeTasks: [...cancelledManagedClaudeTasks.entries()],
     pendingInputs: [...pendingInputs.values()],
     queuedInputs: [...queuedInputs.values()],
+    forwardBundles: [...forwardBundles.values()].map((bundle) => ({
+      ...bundle,
+      submitting: false,
+    })),
     lastTaskMessages: [...lastTaskMessages.entries()].slice(-500),
     lastSeenTaskTurnIds: [...lastSeenTaskTurnIds.entries()].slice(-500),
     threadTokenTotals: [...threadTokenTotals.entries()].slice(-500),

@@ -10,6 +10,7 @@ export class TelegramMessageController {
     bindIncomingMessage,
     enqueueMedia,
     commandHandlers,
+    handleBundleText = null,
     handleText,
     sendMessage,
     logger = console,
@@ -24,6 +25,7 @@ export class TelegramMessageController {
     this.bindIncomingMessage = bindIncomingMessage;
     this.enqueueMedia = enqueueMedia;
     this.commandHandlers = commandHandlers;
+    this.handleBundleText = handleBundleText;
     this.handleText = handleText;
     this.sendMessage = sendMessage;
     this.logger = logger;
@@ -98,8 +100,10 @@ export class TelegramMessageController {
     const rawText = message.text?.trim();
     const text = this.menuCommands.get(rawText) ?? rawText;
     if (!text) return;
+    if (this.handleBundleText && await this.handleBundleText(message, text, { forwardedOnly: true })) return;
     const parsed = this.parseCommand(text);
     if (!parsed) {
+      if (this.handleBundleText && await this.handleBundleText(message, text)) return;
       await this.bindIncomingMessage(message, text);
       await this.handleText(message, text);
       return;
