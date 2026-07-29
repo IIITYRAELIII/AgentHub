@@ -1,7 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { mkdtemp, readFile, rm, writeFile } = require("node:fs/promises");
+const { mkdir, mkdtemp, readFile, rm, writeFile } = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
@@ -31,7 +31,10 @@ test("VS Code bridge serves the same lazy journal contract", async () => {
       day("02.07.2026", "turn-5"),
       day("01.07.2026", "turn-6"),
     ].join("\n"), "utf8");
-    const bridge = new AgentHubBridge({ journalFile });
+    const bridge = new AgentHubBridge({
+      journalFile,
+      moduleRoot: path.resolve(__dirname, ".."),
+    });
     const initial = await bridge.http({ path: "/api/journal" });
     assert.equal(initial.status, 200);
     const payload = JSON.parse(initial.body);
@@ -53,7 +56,10 @@ test("VS Code bridge stages pasted images in the allowed runtime directory", asy
   const previousRoot = process.env.AGENT_HUB_RUNTIME_ROOT;
   try {
     process.env.AGENT_HUB_RUNTIME_ROOT = root;
-    const bridge = new AgentHubBridge({ journalFile: path.join(root, "WORK_LOG.md") });
+    const bridge = new AgentHubBridge({
+      journalFile: path.join(root, "WORK_LOG.md"),
+      runtimeRoot: root,
+    });
     const body = Buffer.from("test-image");
     const target = await bridge.control("upload-attachment", {
       type: "image/png",
@@ -64,6 +70,32 @@ test("VS Code bridge stages pasted images in the allowed runtime directory", asy
   } finally {
     if (previousRoot == null) delete process.env.AGENT_HUB_RUNTIME_ROOT;
     else process.env.AGENT_HUB_RUNTIME_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("installed VS Code bridge resolves backend modules from the active runtime", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-"));
+  try {
+    const release = "test-release";
+    const releaseRoot = path.join(root, "releases", release);
+    await mkdir(releaseRoot, { recursive: true });
+    await writeFile(path.join(root, "current.json"), JSON.stringify({ current: release }), "utf8");
+    await writeFile(path.join(releaseRoot, "desktop-control.mjs"), [
+      "export async function callDesktopControl(action, params) {",
+      "  return { action, params, installedLayout: true };",
+      "}",
+    ].join("\n"), "utf8");
+    const bridge = new AgentHubBridge({
+      journalFile: path.join(root, "WORK_LOG.md"),
+      runtimeRoot: root,
+    });
+    assert.deepEqual(await bridge.control("snapshot", { sample: 1 }), {
+      action: "snapshot",
+      params: { sample: 1 },
+      installedLayout: true,
+    });
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

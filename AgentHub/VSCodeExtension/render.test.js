@@ -109,3 +109,11 @@ test("extension maps every shared bitmap theme asset to a webview URI", () => {
   assert.match(extension, /--magma-image: url/);
   assert.match(extension, /--storm-image: url/);
 });
+
+test("dialog workspace stays above the fixed theme background", () => {
+  const styles = fs.readFileSync(
+    require.resolve("../assets/mini-app/styles.css"),
+    "utf8",
+  );
+  assert.match(styles, /\.workspace\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/su);
+});

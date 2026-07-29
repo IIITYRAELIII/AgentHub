@@ -2,6 +2,7 @@
 
 const { randomUUID } = require("node:crypto");
 const { mkdir, readFile, stat, writeFile } = require("node:fs/promises");
+const { homedir } = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
@@ -26,34 +27,58 @@ function jsonResponse(value, status = 200, headers = {}) {
   };
 }
 
+function defaultRuntimeRoot() {
+  const configured = process.env.AGENT_HUB_RUNTIME_ROOT
+    ?? process.env.TELEGRAM_INTEGRATION_RUNTIME_ROOT;
+  if (configured) return path.resolve(configured);
+  if (process.platform === "win32") {
+    return path.join(process.env.LOCALAPPDATA ?? path.join(homedir(), "AppData", "Local"),
+      "Tyrael", "TelegramIntegration");
+  }
+  return path.join(process.env.XDG_STATE_HOME ?? path.join(homedir(), ".local", "state"),
+    "tyrael", "telegram-integration");
+}
+
 class AgentHubBridge {
-  constructor({ journalFile }) {
+  constructor({ journalFile, moduleRoot = null, runtimeRoot = null }) {
     this.journalFile = journalFile;
+    this.moduleRoot = moduleRoot ? path.resolve(moduleRoot) : null;
+    this.runtimeRoot = runtimeRoot ? path.resolve(runtimeRoot) : defaultRuntimeRoot();
     this.journalCache = null;
     this.desktopModule = null;
     this.journalModule = null;
-    this.runtimeModule = null;
+    this.resolvedModuleRoot = null;
+  }
+
+  async backendRoot() {
+    if (this.moduleRoot) return this.moduleRoot;
+    if (this.resolvedModuleRoot) return this.resolvedModuleRoot;
+    const manifest = JSON.parse(await readFile(path.join(this.runtimeRoot, "current.json"), "utf8"));
+    const release = String(manifest.current ?? "");
+    if (!/^[A-Za-z0-9._-]+$/u.test(release)) {
+      throw new Error("Активный runtime Agent Hub не определён");
+    }
+    const root = path.join(this.runtimeRoot, "releases", release);
+    const info = await stat(root);
+    if (!info.isDirectory()) throw new Error("Активный runtime Agent Hub недоступен");
+    this.resolvedModuleRoot = root;
+    return root;
   }
 
   async desktop() {
+    const root = await this.backendRoot();
     this.desktopModule ??= import(pathToFileURL(
-      path.join(__dirname, "..", "desktop-control.mjs"),
+      path.join(root, "desktop-control.mjs"),
     ).href);
     return this.desktopModule;
   }
 
   async journalTools() {
+    const root = await this.backendRoot();
     this.journalModule ??= import(pathToFileURL(
-      path.join(__dirname, "..", "mini-app-journal-data.mjs"),
+      path.join(root, "mini-app-journal-data.mjs"),
     ).href);
     return this.journalModule;
-  }
-
-  async runtimeTools() {
-    this.runtimeModule ??= import(pathToFileURL(
-      path.join(__dirname, "..", "runtime-layout.mjs"),
-    ).href);
-    return this.runtimeModule;
   }
 
   async control(action, params = {}) {
@@ -71,11 +96,7 @@ class AgentHubBridge {
     if (!body.length || body.length > MAX_IMAGE_BYTES) {
       throw new Error("Изображение отсутствует или превышает 20 МБ");
     }
-    const { defaultRuntimeRoot } = await this.runtimeTools();
-    const runtimeRoot = process.env.AGENT_HUB_RUNTIME_ROOT
-      ?? process.env.TELEGRAM_INTEGRATION_RUNTIME_ROOT
-      ?? defaultRuntimeRoot();
-    const directory = path.join(runtimeRoot, "DesktopApp", "attachments");
+    const directory = path.join(this.runtimeRoot, "DesktopApp", "attachments");
     await mkdir(directory, { recursive: true });
     const target = path.join(directory, `${randomUUID()}${extension}`);
     await writeFile(target, body, { flag: "wx", mode: 0o600 });
