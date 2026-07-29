@@ -62,7 +62,7 @@ function panelCss() {
     }
 
     #work-log-content > h1 > [data-work-log-panel-title] {
-      flex: 1 1 12rem;
+      flex: 0 1 auto;
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -194,7 +194,7 @@ function webviewHtml(webview, theme = "orbit") {
       } else {
         rateLimits.hidden = true;
       }
-      heading.append(picker, collapseAll, rateLimits);
+      heading.append(rateLimits, collapseAll, picker);
       applyTheme(document.documentElement.dataset.theme, false);
     }
 

@@ -198,6 +198,11 @@ def main() -> int:
         help="do not install the local VS Code journal extension",
     )
     parser.add_argument(
+        "--extension-only",
+        action="store_true",
+        help="install only the local VS Code journal extension and leave runtime configuration unchanged",
+    )
+    parser.add_argument(
         "--skip-autostart",
         action="store_true",
         help="do not add Agent Hub to the current user's startup",
@@ -211,6 +216,9 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    if args.extension_only:
+        install_vscode_extension()
+        return 0
     target_root = runtime_root()
     target_root.mkdir(parents=True, exist_ok=True)
 

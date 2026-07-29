@@ -2,7 +2,7 @@
   "name": "work-log-view",
   "displayName": "Agent HUB Work log",
   "description": "Командная автоматически обновляемая панель WORK_LOG.md от Agent Hub.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "publisher": "tyrael",
   "icon": "media/agent-hub-work-log.png",
   "license": "MIT",

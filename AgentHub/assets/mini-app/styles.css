@@ -876,8 +876,9 @@ h1 {
 .toolbar {
   align-items: center;
   display: flex;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   gap: 0.55rem;
+  min-width: 0;
 }
 
 .theme-picker {
@@ -889,6 +890,7 @@ h1 {
   display: inline-flex;
   font-size: 0.74rem;
   gap: 0.35rem;
+  margin-left: auto;
   padding: 0.2rem 0.38rem 0.2rem 0.6rem;
 }
 
@@ -2599,7 +2601,7 @@ html[data-surface="mobile"] .toolbar {
 }
 
 html[data-surface="mobile"] .rate-limits {
-  margin-left: auto;
+  margin-left: 0;
 }
 
 /* на телефоне из чипа остаётся только имя и процент: срок сброса не влезает */

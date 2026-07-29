@@ -79,7 +79,7 @@ test("panel moves generated rate-limit chips into its sticky heading", () => {
   assert.match(html, /rateLimits\.className = 'rate-limits'/);
   assert.match(html, /rateLimits\.replaceChildren\(\.\.\.sourceLimits\.childNodes\)/);
   assert.match(html, /sourceLimits\.remove\(\)/);
-  assert.match(html, /heading\.append\(picker, collapseAll, rateLimits\)/);
+  assert.match(html, /heading\.append\(rateLimits, collapseAll, picker\)/);
 });
 
 test("panel handles the duplicate collapse-turns button", () => {

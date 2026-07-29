@@ -28,6 +28,18 @@
         </div>
       </div>
       <div class="toolbar">
+        <div class="rate-limits" data-rate-limits-slot hidden></div>
+        <button class="refresh collapse-all" type="button" data-collapse-all title="Свернуть всё">
+          <span>Свернуть всё</span>
+        </button>
+        <button class="refresh" type="button" data-refresh title="Обновить журнал">
+          <svg class="refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20.2 12a8.2 8.2 0 1 1-2.6-6"></path>
+            <path d="M20.4 4.6v5.6h-5.6"></path>
+          </svg>
+          <span class="refresh-label" data-updated-at>Обновить</span>
+        </button>
         <label class="theme-picker">
           <span class="theme-picker-label">Тема</span>
           <select data-theme-select aria-label="Тема оформления">
@@ -42,18 +54,6 @@
             <option value="meadow">Луг</option>
           </select>
         </label>
-        <button class="refresh collapse-all" type="button" data-collapse-all title="Свернуть всё">
-          <span>Свернуть всё</span>
-        </button>
-        <div class="rate-limits" data-rate-limits-slot hidden></div>
-        <button class="refresh" type="button" data-refresh title="Обновить журнал">
-          <svg class="refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M20.2 12a8.2 8.2 0 1 1-2.6-6"></path>
-            <path d="M20.4 4.6v5.6h-5.6"></path>
-          </svg>
-          <span class="refresh-label" data-updated-at>Обновить</span>
-        </button>
       </div>
     </div>
   </header>
