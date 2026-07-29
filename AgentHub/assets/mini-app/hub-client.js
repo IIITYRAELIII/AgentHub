@@ -153,7 +153,8 @@ function applySnapshot(snapshot) {
     agentHub.setLive(selectedTaskId, selected.run ? {
       author: selected.provider === "claude" ? "Claude" : "Codex",
       stage: selected.run.stage,
-      text: selected.run.response || selected.run.progress || "",
+      reasoning: selected.run.progress || "",
+      text: selected.run.response || "",
     } : null);
     agentHub.setRunning(selectedTaskId, Boolean(selected.run || selected.running));
     agentHub.setApprovals(selectedTaskId, (snapshot.pendingApprovals ?? []).map((approval) => ({
@@ -165,7 +166,9 @@ function applySnapshot(snapshot) {
         { id: "decline", label: "Отклонить", kind: "danger" },
       ],
     })));
-    agentHub.setQueue(selectedTaskId, snapshot.deferredInputs ?? []);
+    agentHub.setQueue(selectedTaskId, (snapshot.deferredInputs ?? []).filter((item) =>
+      (!item.provider || item.provider === selected.provider)
+      && (!item.threadId || item.threadId === selected.threadId)));
   }
   const settings = snapshot.settings ?? {};
   agentHub.setOptions({
@@ -305,17 +308,44 @@ agentHub.on("task:select", ({ id }) => runAction(async () => {
   location.hash = `#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`;
 }));
 
-agentHub.on("message:send", (request) => runAction(async () => {
-  const paths = [];
-  for (const attachment of request.attachments ?? []) paths.push(await uploadAttachment(attachment));
-  const params = {
-    text: annotatedText(request.text, request.annotations),
-  };
-  if (paths.length) params.attachments = paths;
-  const result = await control("send-message", params);
-  applySnapshot(result?.snapshot);
-  agentHub.toast(result?.message ?? (result?.accepted ? "Сообщение принято" : "Сообщение сохранено"));
-}));
+agentHub.on("message:send", (request) => {
+  const optimisticId = `local:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
+  const visibleText = String(request.text ?? "").trim()
+    || ((request.annotations ?? []).length
+      ? `Аннотации к ответу: ${(request.annotations ?? []).length}`
+      : "Изображение");
+  agentHub.appendMessage(request.taskId, {
+    id: optimisticId,
+    role: "user",
+    author: "Вы",
+    text: visibleText,
+    time: new Date().toISOString(),
+    attachments: request.attachments ?? [],
+    delivery: "Отправляется…",
+  });
+  return runAction(async () => {
+    try {
+      const paths = [];
+      for (const attachment of request.attachments ?? []) paths.push(await uploadAttachment(attachment));
+      const params = {
+        text: annotatedText(request.text, request.annotations),
+      };
+      if (paths.length) params.attachments = paths;
+      const result = await control("send-message", params);
+      applySnapshot(result?.snapshot);
+      agentHub.patchMessage(request.taskId, optimisticId, {
+        delivery: result?.accepted ? "" : "Отложено",
+      });
+      agentHub.toast(result?.message ?? (result?.accepted ? "Сообщение принято" : "Сообщение сохранено"));
+    } catch (error) {
+      agentHub.patchMessage(request.taskId, optimisticId, {
+        delivery: "Не отправлено",
+        failed: true,
+      });
+      throw error;
+    }
+  });
+});
 
 agentHub.on("task:new", ({ title }) => runAction(async () => {
   const provider = lastSnapshot?.settings?.provider ?? "codex";
@@ -367,9 +397,16 @@ agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
 agentHub.on("approval:respond", ({ id, decision }) => runAction(
   () => control("resolve-approval", { key: id, decision }),
 ));
-agentHub.on("queue:remove", ({ id }) => runAction(
-  () => control("deferred-input", { id, action: "cancel" }),
-));
+agentHub.on("queue:remove", ({ id }) => runAction(async () => {
+  const result = await control("deferred-input", { id, action: "cancel" });
+  applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Отложенное сообщение удалено");
+}));
+agentHub.on("queue:accept", ({ id }) => runAction(async () => {
+  const result = await control("deferred-input", { id, action: "queue" });
+  applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Сообщение будет отправлено после текущего хода");
+}));
 agentHub.on("tts:play", () => runAction(() => control("speak-last-answer")));
 agentHub.on("hub:restart", () => runAction(() => control("restart-server")));
 
@@ -436,8 +473,20 @@ async function refresh() {
   if (refreshing) return;
   refreshing = true;
   try {
+    const previousSelected = (lastSnapshot?.tasks ?? []).find((task) => task.selected);
     const snapshot = await control("snapshot");
     applySnapshot(snapshot);
+    const currentSelected = (snapshot.tasks ?? []).find((task) => task.selected);
+    const sameSelection = previousSelected && currentSelected
+      && previousSelected.provider === currentSelected.provider
+      && previousSelected.threadId === currentSelected.threadId;
+    if (sameSelection && previousSelected.running && !currentSelected.running) {
+      applyOpened(await control("open-task", {
+        provider: currentSelected.provider,
+        threadId: currentSelected.threadId,
+        limit: 20,
+      }));
+    }
     if (!selectedTaskId && snapshot.selected?.threadId) {
       selectedTaskId = taskId(snapshot.selected.provider, snapshot.selected.threadId);
     }

@@ -464,6 +464,12 @@ function renderMessage(message) {
           text: new Date(message.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
         })
       : null,
+    message.delivery
+      ? el("span", {
+          class: `msg-delivery${message.failed ? " is-failed" : ""}`,
+          text: message.delivery,
+        })
+      : null,
   ]);
 
   const body = el("div", { class: "msg-body" });
@@ -502,6 +508,9 @@ function renderLive() {
   chatLive.hidden = false;
   chatLive.querySelector("[data-live-author]").textContent = live.author || "Агент";
   chatLive.querySelector("[data-live-stage]").textContent = live.stage || "";
+  const reasoning = chatLive.querySelector("[data-live-reasoning]");
+  reasoning.textContent = live.reasoning || "";
+  reasoning.hidden = !live.reasoning;
   chatLive.querySelector("[data-live-body]").textContent = live.text || "";
   scrollChatToBottom();
 }
@@ -545,14 +554,26 @@ function renderQueue() {
   queueBox.replaceChildren();
   queueBox.hidden = queued.length === 0;
   if (queued.length === 0) return;
-  queueBox.append(el("div", { class: "queue-head", text: `В очереди: ${queued.length}` }));
+  queueBox.append(el("div", { class: "queue-head", text: `Отложено: ${queued.length}` }));
   for (const entry of queued) {
+    const actions = [];
+    if (entry.state === "pending") {
+      actions.push(el("button", {
+        type: "button",
+        class: "queue-accept",
+        "data-action": "queue-accept",
+        "data-queue-id": entry.id,
+        title: "Отправить после завершения текущего хода",
+        text: "После хода",
+      }));
+    }
+    actions.push(el("button", {
+      type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
+      title: "Убрать отложенное сообщение", "aria-label": "Убрать отложенное сообщение", text: "×",
+    }));
     queueBox.append(el("div", { class: "queue-item", "data-queue-id": entry.id }, [
-      el("span", { class: "queue-text", text: entry.text || entry.summary || "Сообщение" }),
-      el("button", {
-        type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
-        title: "Убрать из очереди", "aria-label": "Убрать из очереди", text: "×",
-      }),
+      el("span", { class: "queue-text", text: entry.text || entry.preview || entry.summary || "Сообщение" }),
+      el("span", { class: "queue-actions" }, actions),
     ]));
   }
 }
@@ -577,10 +598,9 @@ composerInput.addEventListener("input", () => {
 });
 
 composerInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-    event.preventDefault();
-    submitComposer();
-  }
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  submitComposer();
 });
 
 composer.addEventListener("submit", (event) => {
@@ -952,6 +972,9 @@ async function handleAction(action, trigger) {
     case "queue-remove":
       emit("queue:remove", { taskId, id: trigger.dataset.queueId });
       break;
+    case "queue-accept":
+      emit("queue:accept", { taskId, id: trigger.dataset.queueId });
+      break;
     case "tts":
       emit("tts:play", { taskId, messageId: trigger.dataset.messageId });
       break;
@@ -1035,9 +1058,16 @@ const AgentHub = {
     const list = state.messages.get(taskId) ?? [];
     list.push(message);
     state.messages.set(taskId, list);
+    if (taskId === state.selectedId) renderMessages({ forceBottom: true });
+  },
+  patchMessage(taskId, messageId, patch) {
+    const list = state.messages.get(taskId) ?? [];
+    const message = list.find((item) => item.id === messageId);
+    if (!message) return;
+    Object.assign(message, patch);
     if (taskId === state.selectedId) renderMessages();
   },
-  /** Живой ход: { author, stage, text } или null, чтобы скрыть. */
+  /** Живой ход: { author, stage, reasoning, text } или null, чтобы скрыть. */
   setLive(taskId, live) {
     state.live.set(taskId, live ?? null);
     if (taskId === state.selectedId) renderLive();

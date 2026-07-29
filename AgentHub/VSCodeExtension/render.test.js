@@ -157,3 +157,30 @@ test("chat opens at the end without rebuilding history on every snapshot", () =>
   assert.match(app, /window\.requestAnimationFrame\(apply\)/u);
   assert.match(app, /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ forceBottom: true \}\)/u);
 });
+
+test("chat sends with Enter and keeps Shift+Enter for a new line", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  assert.match(app, /event\.key !== "Enter" \|\| event\.shiftKey \|\| event\.isComposing/u);
+  assert.match(app, /event\.preventDefault\(\);\s*submitComposer\(\);/u);
+  assert.match(html, /Enter — отправить · Shift\+Enter — новая строка/u);
+  assert.doesNotMatch(html, /Ctrl\+Enter/u);
+});
+
+test("chat shows sent messages immediately and renders reasoning separately", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /agentHub\.appendMessage\(request\.taskId/u);
+  assert.match(client, /delivery: "Отправляется…"/u);
+  assert.match(client, /reasoning: selected\.run\.progress \|\| ""/u);
+  assert.match(app, /data-live-reasoning/u);
+  assert.match(app, /patchMessage\(taskId, messageId, patch\)/u);
+});
+
+test("deferred messages show their preview and can be queued after the active turn", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(app, /entry\.text \|\| entry\.preview \|\| entry\.summary/u);
+  assert.match(app, /text: "После хода"/u);
+  assert.match(client, /control\("deferred-input", \{ id, action: "queue" \}\)/u);
+});

@@ -2383,6 +2383,8 @@ async function desktopSnapshot({ refresh = false } = {}) {
       ...[...pendingInputs.values()].map((item) => ({
         id: item.id,
         state: "pending",
+        provider: item.provider,
+        threadId: item.threadId,
         taskTitle: item.taskTitle,
         preview: inputPreview(item.input).slice(0, 1_000),
         allowForce: item.allowForce === true,
@@ -2391,6 +2393,8 @@ async function desktopSnapshot({ refresh = false } = {}) {
       ...[...queuedInputs.values()].map((item) => ({
         id: item.id,
         state: "queued",
+        provider: item.provider,
+        threadId: item.threadId,
         taskTitle: item.taskTitle,
         preview: inputPreview(item.input).slice(0, 1_000),
         allowForce: false,
@@ -6853,8 +6857,8 @@ function stopRuntimeTimers() {
 
 function startRuntimeTimers() {
   scheduleCodexRolloutContextSanitizer();
+  for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
   if (config.telegramEnabled) {
-    for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
     scheduleDeliveryOutboxFlush(1_000);
   }
   scheduleSelectedTaskWatch(500);

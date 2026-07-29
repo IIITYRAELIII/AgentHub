@@ -3518,6 +3518,16 @@ html[data-view="journal"] [data-journal-only] {
   font-size: 0.72rem;
 }
 
+.msg-delivery {
+  color: var(--text-faint);
+  font-size: 0.68rem;
+  margin-left: auto;
+}
+
+.msg-delivery.is-failed {
+  color: #ff9d9d;
+}
+
 .msg-time {
   color: var(--text-faint);
   font-family: var(--font-numeric);
@@ -3530,6 +3540,16 @@ html[data-view="journal"] [data-journal-only] {
   font-size: 0.88rem;
   line-height: 1.5;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.msg-reasoning {
+  border-left: 2px solid var(--accent-line);
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  margin-bottom: 0.55rem;
+  padding-left: 0.65rem;
   white-space: pre-wrap;
 }
 
@@ -3638,6 +3658,28 @@ html[data-view="journal"] [data-journal-only] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.queue-actions {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.25rem;
+}
+
+.queue-accept {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-chip);
+  color: var(--text-soft);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.7rem;
+  padding: 0.2rem 0.55rem;
+}
+
+.queue-accept:hover {
+  color: var(--text);
 }
 
 .queue-remove,

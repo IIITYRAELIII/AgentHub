@@ -125,6 +125,8 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   assert.equal(duplicate.reason, "task-running");
   assert.equal(duplicate.deferred, true);
   assert.equal(duplicate.snapshot.deferredInputs.length, 1);
+  assert.equal(duplicate.snapshot.deferredInputs[0].provider, "codex");
+  assert.equal(duplicate.snapshot.deferredInputs[0].threadId, firstThreadId);
   const cancelledDeferred = await callDesktopControl("deferred-input", {
     id: duplicate.id,
     action: "cancel",

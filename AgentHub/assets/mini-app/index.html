@@ -191,6 +191,7 @@
               <span class="msg-author" data-live-author>Агент</span>
               <span class="msg-stage" data-live-stage></span>
             </div>
+            <div class="msg-reasoning" data-live-reasoning hidden></div>
             <div class="msg-body" data-live-body></div>
           </article>
         </div>
@@ -222,10 +223,10 @@
             </button>
             <label class="composer-input" data-composer-grow>
               <textarea data-composer-input rows="1"
-                placeholder="Сообщение агенту…  Ctrl+Enter — отправить"
+                placeholder="Сообщение агенту…  Enter — отправить · Shift+Enter — новая строка"
                 aria-label="Сообщение агенту"></textarea>
             </label>
-            <button type="submit" class="composer-send" data-composer-send title="Отправить (Ctrl+Enter)"
+            <button type="submit" class="composer-send" data-composer-send title="Отправить (Enter)"
               disabled>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
