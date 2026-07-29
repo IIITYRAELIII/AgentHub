@@ -1287,6 +1287,12 @@ function prepareMobileControls(scope = journal) {
     total.setAttribute("aria-expanded", "false");
   }
   for (const title of scope.querySelectorAll("[data-work-log-task-content]")) {
+    if (title.querySelector("[data-open-task]")) {
+      title.removeAttribute("role");
+      title.removeAttribute("tabindex");
+      title.removeAttribute("aria-expanded");
+      continue;
+    }
     title.setAttribute("role", "button");
     title.setAttribute("tabindex", "0");
     title.setAttribute("aria-expanded", "false");
@@ -1558,6 +1564,7 @@ journal.addEventListener("click", (event) => {
     event.stopPropagation();
     return;
   }
+  if (event.target.closest("[data-open-task]")) return;
   if (event.target.closest("[data-task-usage-details]")) return;
   const cell = event.target.closest("[data-work-log-task-cell]");
   if (!cell) return;

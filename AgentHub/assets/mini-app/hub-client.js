@@ -530,7 +530,13 @@ async function refresh() {
     const sameSelection = previousSelected && currentSelected
       && previousSelected.provider === currentSelected.provider
       && previousSelected.threadId === currentSelected.threadId;
-    if (sameSelection && previousSelected.running && !currentSelected.running) {
+    if (!pendingSelectionId && previousSelected && currentSelected && !sameSelection) {
+      applyOpened(await control("open-task", {
+        provider: currentSelected.provider,
+        threadId: currentSelected.threadId,
+        limit: 20,
+      }));
+    } else if (sameSelection && previousSelected.running && !currentSelected.running) {
       applyOpened(await control("open-task", {
         provider: currentSelected.provider,
         threadId: currentSelected.threadId,

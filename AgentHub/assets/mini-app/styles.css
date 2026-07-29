@@ -1033,6 +1033,22 @@ html[data-connection="offline"] .connection-banner {
   font-size: 0.68rem;
 }
 
+/* На среднем десктопном окне все элементы шапки уже не помещаются в одну
+   строку, хотя рабочая область чата и двухколоночный журнал ещё удобны.
+   Переносим только toolbar, не включая мобильную навигацию и раскладку. */
+@media (min-width: 860px) and (max-width: 1119px) {
+  .app-header-inner {
+    flex-wrap: wrap;
+    gap: 0.45rem 0.75rem;
+    padding-bottom: 0.45rem;
+    padding-top: 0.45rem;
+  }
+
+  html[data-view="journal"] .toolbar {
+    flex: 1 0 100%;
+  }
+}
+
 /* Блок остаётся в теле журнала там, где шапки нет (панель VS Code до
    переноса, печать, fallback): красим его по теме, а не нейтральным серым. */
 .journal div[data-work-log-rate-limits] {
@@ -4239,7 +4255,13 @@ html[data-surface="mobile"] .connection-label {
 }
 
 html[data-surface="mobile"] .workspace {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+html[data-surface="mobile"] .task-rail,
+html[data-surface="mobile"] .chat {
+  min-width: 0;
+  width: 100%;
 }
 
 html[data-surface="mobile"] .chat-back {

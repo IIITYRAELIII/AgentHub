@@ -156,6 +156,43 @@ test("journal width stays fixed while days and turns are expanded", () => {
   );
 });
 
+test("compact desktop header wraps before it can create horizontal overflow", () => {
+  const styles = fs.readFileSync(
+    require.resolve("../assets/mini-app/styles.css"),
+    "utf8",
+  );
+  assert.match(styles, /@media \(min-width: 860px\) and \(max-width: 1119px\)/u);
+  assert.match(styles, /\.app-header-inner\s*\{[^}]*flex-wrap:\s*wrap;/su);
+  assert.match(
+    styles,
+    /html\[data-view="journal"\] \.toolbar\s*\{[^}]*flex:\s*1 0 100%;/su,
+  );
+});
+
+test("mobile task list cannot widen the viewport", () => {
+  const styles = fs.readFileSync(
+    require.resolve("../assets/mini-app/styles.css"),
+    "utf8",
+  );
+  assert.match(
+    styles,
+    /html\[data-surface="mobile"\] \.workspace\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/su,
+  );
+  assert.match(
+    styles,
+    /html\[data-surface="mobile"\] \.task-rail,[\s\S]*?html\[data-surface="mobile"\] \.chat\s*\{[^}]*min-width:\s*0;[^}]*width:\s*100%;/u,
+  );
+});
+
+test("mobile journal task links do not become nested expansion buttons", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(
+    app,
+    /if \(title\.querySelector\("\[data-open-task\]"\)\) \{[\s\S]*title\.removeAttribute\("role"\)/u,
+  );
+  assert.match(app, /if \(event\.target\.closest\("\[data-open-task\]"\)\) return;/u);
+});
+
 test("chat distinguishes loading history from an empty task", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   assert.match(app, /state\.messages\.has\(state\.selectedId\)/u);
@@ -164,10 +201,15 @@ test("chat distinguishes loading history from an empty task", () => {
 
 test("chat opens at the end without rebuilding history on every snapshot", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   assert.match(app, /if \(taskChanged\) \{\s*activeChatId = task\.id;\s*renderMessages\(\{ forceBottom: true \}\);/su);
   assert.match(app, /const stickToBottom = forceBottom \|\| chatIsNearBottom\(\);/u);
   assert.match(app, /window\.requestAnimationFrame\(apply\)/u);
   assert.match(app, /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ forceBottom: true \}\)/u);
+  assert.match(
+    client,
+    /!pendingSelectionId && previousSelected && currentSelected && !sameSelection[\s\S]*control\("open-task"/u,
+  );
 });
 
 test("chat sends with Enter and keeps Shift+Enter for a new line", () => {
