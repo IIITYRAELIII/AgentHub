@@ -62,6 +62,7 @@ const dialogForm = document.querySelector("[data-text-dialog-form]");
 const dialogTitle = document.querySelector("[data-text-dialog-title]");
 const dialogInput = document.querySelector("[data-text-dialog-input]");
 const toast = document.querySelector("[data-toast]");
+const connectionBanner = document.querySelector("[data-restart-banner]");
 
 /* --------------------------------------------------------- Telegram / темы */
 
@@ -215,6 +216,7 @@ const state = {
  * переживают переключение задач, как в Desktop App. Их долговременное
  * хранение — забота backend. */
 const drafts = new Map();
+let pendingComposerRequest = null;
 
 function currentTask() {
   return state.tasks.find((task) => task.id === state.selectedId) ?? null;
@@ -588,7 +590,7 @@ function updateSendState() {
   const draftFilled = composerInput.value.trim().length > 0
     || currentAttachments().length > 0
     || currentAnnotations().length > 0;
-  composerSend.disabled = !draftFilled || !state.selectedId;
+  composerSend.disabled = !draftFilled || !state.selectedId || Boolean(pendingComposerRequest);
 }
 
 composerInput.addEventListener("input", () => {
@@ -609,16 +611,51 @@ composer.addEventListener("submit", (event) => {
 });
 
 function submitComposer() {
-  if (!state.selectedId) return;
-  const text = composerInput.value.trim();
-  const attachments = currentAttachments();
-  const annotations = currentAnnotations();
+  if (!state.selectedId || pendingComposerRequest) return;
+  const rawText = composerInput.value;
+  const text = rawText.trim();
+  const attachments = currentAttachments().slice();
+  const annotations = currentAnnotations().slice();
   if (!text && attachments.length === 0 && annotations.length === 0) return;
-  emit("message:send", { taskId: state.selectedId, text, annotations, attachments });
-  composerInput.value = "";
-  setAttachments([]);
-  setAnnotations([]);
-  autosizeComposer();
+  const requestId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  pendingComposerRequest = {
+    requestId,
+    taskId: state.selectedId,
+    rawText,
+    attachments,
+    annotations,
+  };
+  emit("message:send", {
+    requestId,
+    taskId: state.selectedId,
+    text,
+    annotations,
+    attachments,
+  });
+  updateSendState();
+  saveDraft();
+}
+
+function sameItems(current, original) {
+  return current.length === original.length
+    && current.every((item, index) => item === original[index]);
+}
+
+function completeComposerSend(requestId, accepted) {
+  const pending = pendingComposerRequest;
+  if (!pending || pending.requestId !== requestId) return;
+  pendingComposerRequest = null;
+  if (accepted) {
+    const draft = drafts.get(pending.taskId);
+    const unchanged = draft
+      && draft.text === pending.rawText
+      && sameItems(draft.attachments ?? [], pending.attachments)
+      && sameItems(draft.annotations ?? [], pending.annotations);
+    if (unchanged) {
+      drafts.set(pending.taskId, { text: "", attachments: [], annotations: [] });
+      if (state.selectedId === pending.taskId) restoreDraft();
+    }
+  }
   updateSendState();
   saveDraft();
 }
@@ -1012,13 +1049,18 @@ const AgentHub = {
   off(type, handler) {
     listeners.get(type)?.delete(handler);
   },
-  /** Состояние соединения: "online" | "connecting" | "offline". Отдельного
-   *  индикатора в шапке нет (сознательно, как в текущем журнале); значение
-   *  доступно backend и отражается на <html> для возможного оформления. */
+  /** Состояние соединения: "online" | "connecting" | "restarting" | "offline". */
   setConnection(status) {
-    const value = ["online", "connecting", "offline"].includes(status) ? status : "offline";
+    const value = ["online", "connecting", "restarting", "offline"].includes(status) ? status : "offline";
     state.connection = value;
     root.dataset.connection = value;
+    const messages = {
+      connecting: "Подключение к Agent Hub…",
+      restarting: "Agent Hub перезапускается… Сообщение останется в поле ввода.",
+      offline: "Нет связи с Agent Hub. Неотправленное сообщение сохранено в поле ввода.",
+    };
+    connectionBanner.textContent = messages[value] ?? "";
+    connectionBanner.hidden = value === "online";
   },
   /** Полный список задач. Каждая задача: { id, title, provider, agentLabel,
    *  modelLabel, reasoningLabel, modeLabel, project, status, statusLabel,
@@ -1066,6 +1108,9 @@ const AgentHub = {
     if (!message) return;
     Object.assign(message, patch);
     if (taskId === state.selectedId) renderMessages();
+  },
+  completeSend(requestId, { accepted = false } = {}) {
+    completeComposerSend(requestId, accepted);
   },
   /** Живой ход: { author, stage, reasoning, text } или null, чтобы скрыть. */
   setLive(taskId, live) {

@@ -949,6 +949,28 @@ h1 {
   background: var(--ok);
 }
 
+.connection-banner {
+  backdrop-filter: blur(14px);
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  border: 1px solid var(--pending);
+  border-radius: var(--radius-chip);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 0.78rem;
+  left: 50%;
+  max-width: min(42rem, calc(100vw - 2rem));
+  padding: 0.45rem 0.85rem;
+  position: fixed;
+  text-align: center;
+  top: 4.35rem;
+  transform: translateX(-50%);
+  z-index: 120;
+}
+
+html[data-connection="offline"] .connection-banner {
+  border-color: #b95f65;
+}
+
 @keyframes pulse {
   0%,
   100% {

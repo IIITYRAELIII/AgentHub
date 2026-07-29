@@ -192,7 +192,7 @@ function applySnapshot(snapshot) {
     project: (settings.projects ?? []).find((project) => project.selected)?.path ?? "",
     autoApprove: settings.approvalMode === "auto",
   });
-  agentHub.setConnection("online");
+  agentHub.setConnection(snapshot.restartPending ? "restarting" : "online");
 }
 
 function historyMessages(history, focusedTurn = null) {
@@ -294,7 +294,7 @@ async function runAction(operation) {
   try {
     return await operation();
   } catch (error) {
-    agentHub.setConnection("offline");
+    agentHub.setConnection(lastSnapshot?.restartPending ? "restarting" : "offline");
     agentHub.toast(String(error?.message ?? error));
     return null;
   }
@@ -309,7 +309,7 @@ agentHub.on("task:select", ({ id }) => runAction(async () => {
 }));
 
 agentHub.on("message:send", (request) => {
-  const optimisticId = `local:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
+  const optimisticId = `local:${request.requestId}`;
   const visibleText = String(request.text ?? "").trim()
     || ((request.annotations ?? []).length
       ? `Аннотации к ответу: ${(request.annotations ?? []).length}`
@@ -333,13 +333,18 @@ agentHub.on("message:send", (request) => {
       if (paths.length) params.attachments = paths;
       const result = await control("send-message", params);
       applySnapshot(result?.snapshot);
+      agentHub.completeSend(request.requestId, {
+        accepted: Boolean(result?.accepted || result?.deferred),
+      });
       agentHub.patchMessage(request.taskId, optimisticId, {
-        delivery: result?.accepted ? "" : "Отложено",
+        delivery: result?.accepted ? "" : result?.deferred ? "Отложено" : "Не принято",
+        failed: !result?.accepted && !result?.deferred,
       });
       agentHub.toast(result?.message ?? (result?.accepted ? "Сообщение принято" : "Сообщение сохранено"));
     } catch (error) {
+      agentHub.completeSend(request.requestId, { accepted: false });
       agentHub.patchMessage(request.taskId, optimisticId, {
-        delivery: "Не отправлено",
+        delivery: "Приём не подтверждён",
         failed: true,
       });
       throw error;
@@ -490,9 +495,9 @@ async function refresh() {
     if (!selectedTaskId && snapshot.selected?.threadId) {
       selectedTaskId = taskId(snapshot.selected.provider, snapshot.selected.threadId);
     }
-    agentHub.setConnection("online");
+    agentHub.setConnection(snapshot.restartPending ? "restarting" : "online");
   } catch {
-    agentHub.setConnection("offline");
+    agentHub.setConnection(lastSnapshot?.restartPending ? "restarting" : "offline");
   } finally {
     refreshing = false;
     const active = Boolean(lastSnapshot?.tasks?.some((task) => task.running));

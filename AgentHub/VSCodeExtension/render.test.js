@@ -184,3 +184,16 @@ test("deferred messages show their preview and can be queued after the active tu
   assert.match(app, /text: "После хода"/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "queue" \}\)/u);
 });
+
+test("composer keeps an unconfirmed message and shows Agent Hub restart state", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const submit = app.match(/function submitComposer\(\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
+  assert.doesNotMatch(submit, /composerInput\.value = ""/u);
+  assert.match(app, /function completeComposerSend\(requestId, accepted\)/u);
+  assert.match(client, /agentHub\.completeSend\(request\.requestId/u);
+  assert.match(client, /snapshot\.restartPending \? "restarting" : "online"/u);
+  assert.match(html, /data-restart-banner/u);
+  assert.match(app, /Agent Hub перезапускается… Сообщение останется в поле ввода\./u);
+});
