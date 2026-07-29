@@ -1851,17 +1851,31 @@ main {
 
 /* ====================================== «Орбита»: кольца и приборный блик === */
 
+html:not([data-theme]),
+html[data-theme="orbit"] {
+  --orbit-image: url("/orbit-earth.png");
+}
+
+/* Кольца трасс остаются поверх снимка: это язык темы, и с дугой атмосферы
+   они читаются как орбиты, а не как посторонняя сетка. */
 html:not([data-theme]) body::after,
 html[data-theme="orbit"] body::after {
+  background-color: #06090f;
   background-image:
     repeating-radial-gradient(
       circle at 50% -32%,
       transparent 0 15.4rem,
-      rgba(126, 178, 240, 0.085) 15.4rem 15.55rem,
+      rgba(126, 178, 240, 0.055) 15.4rem 15.55rem,
       transparent 15.55rem 16rem
     ),
-    radial-gradient(circle at 50% -32%, transparent 0 46rem, rgba(126, 178, 240, 0.07) 46rem 46.14rem, transparent 46.14rem);
-  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.85), transparent 78%);
+    radial-gradient(circle at 50% -32%, transparent 0 46rem, rgba(126, 178, 240, 0.05) 46rem 46.14rem, transparent 46.14rem),
+    var(--orbit-image);
+  background-position: center, center, 62% 42%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
 }
 
 html[data-theme="orbit"] .journal details[data-work-log-day-section]::before,
@@ -1878,12 +1892,23 @@ html:not([data-theme]) .journal details[data-work-log-day-section]::before {
 
 /* ============================== «Туманность»: облака и мягкие разделители === */
 
+html[data-theme="nebula"] {
+  --nebula-image: url("/nebula-veil.png");
+}
+
+/* Снимок заменил нарисованные пятна: рукава газа и звёздная россыпь дают ту
+   же глубину без blur, который раньше съедал детали. */
 html[data-theme="nebula"] body::after {
+  background-color: #0b0616;
   background-image:
-    radial-gradient(38% 30% at 24% 12%, rgba(255, 120, 220, 0.2), transparent 70%),
-    radial-gradient(46% 34% at 78% 26%, rgba(120, 92, 255, 0.22), transparent 72%),
-    radial-gradient(40% 30% at 52% 78%, rgba(60, 150, 255, 0.14), transparent 74%);
-  filter: blur(14px);
+    radial-gradient(46% 34% at 78% 26%, rgba(120, 92, 255, 0.12), transparent 72%),
+    var(--nebula-image);
+  background-position: center, 60% 46%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
 }
 
 html[data-theme="nebula"] .journal details[data-work-log-day-section] {
@@ -1936,10 +1961,6 @@ html[data-theme="pulsar"] body::after {
   inset: 0;
   mask-image: none;
   opacity: 1;
-}
-
-html[data-theme="pulsar"] body::before {
-  content: none;
 }
 
 /* стеклянные панели, иначе джеты гаснут под сплошной заливкой */
@@ -2036,21 +2057,25 @@ html[data-theme="pulsar"] .eyebrow {
 /* ======================================== «Gothic»: камень, свод, фаска === */
 
 /* полотно: крупные разводы бетона, зерно и виньетка */
+html[data-theme="gothic"] {
+  --gothic-image: url("/gothic-concrete.png");
+}
+
+/* Снимок бетона вместо нарисованных разводов; из прежнего слоя оставлено
+   только зерно — оно связывает фото с текстурой плашек. */
 html[data-theme="gothic"] body::after {
+  background-color: #070809;
   background-image:
-    radial-gradient(38% 30% at 14% 12%, rgba(226, 232, 240, 0.05), transparent 72%),
-    radial-gradient(32% 26% at 78% 6%, rgba(0, 0, 0, 0.4), transparent 74%),
-    radial-gradient(44% 34% at 88% 52%, rgba(226, 232, 240, 0.035), transparent 72%),
-    radial-gradient(40% 32% at 26% 62%, rgba(0, 0, 0, 0.36), transparent 76%),
-    radial-gradient(34% 28% at 58% 88%, rgba(226, 232, 240, 0.03), transparent 74%),
-    radial-gradient(circle, rgba(232, 238, 244, 0.03) 0 0.5px, transparent 0.9px),
-    radial-gradient(circle, rgba(0, 0, 0, 0.24) 0 0.5px, transparent 0.9px),
-    radial-gradient(circle, rgba(232, 238, 244, 0.02) 0 0.5px, transparent 0.9px),
-    radial-gradient(125% 95% at 50% 42%, transparent 38%, rgba(0, 0, 0, 0.6) 100%);
-  background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 3px 5px, 8px 2px, 0 0;
-  background-size:
-    100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%,
-    7px 7px, 11px 11px, 17px 17px, 100% 100%;
+    radial-gradient(circle, rgba(232, 238, 244, 0.022) 0 0.5px, transparent 0.9px),
+    radial-gradient(circle, rgba(0, 0, 0, 0.18) 0 0.5px, transparent 0.9px),
+    radial-gradient(125% 95% at 50% 42%, transparent 44%, rgba(0, 0, 0, 0.5) 100%),
+    var(--gothic-image);
+  background-position: 0 0, 3px 5px, center, 64% 50%;
+  background-repeat: repeat, repeat, no-repeat, no-repeat;
+  background-size: 7px 7px, 11px 11px, cover, cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
 }
 
 html[data-theme="gothic"] .app-header {
@@ -2163,10 +2188,6 @@ html[data-theme="blackhole"] body::after {
 }
 
 /* звёздная пыль поверх готового рендера была бы лишней */
-html[data-theme="blackhole"] body::before {
-  content: none;
-}
-
 /* сквозь панели видно диск: тёмное стекло вместо глухой заливки */
 html[data-theme="blackhole"] .app-header {
   background: rgba(0, 0, 0, 0.62);
@@ -2246,10 +2267,6 @@ html[data-theme="taiga"] body::after {
   opacity: 1;
 }
 
-html[data-theme="taiga"] body::before {
-  content: none;
-}
-
 /* Стекло держим тонким, иначе лес под панелями пропадает. Размытие тоже
    умеренное: сильный blur не столько затемняет, сколько стирает силуэты
    деревьев — ровно то, ради чего фотография и взята. */
@@ -2313,10 +2330,6 @@ html[data-theme="magma"] body::after {
   inset: 0;
   mask-image: none;
   opacity: 1;
-}
-
-html[data-theme="magma"] body::before {
-  content: none;
 }
 
 html[data-theme="magma"] .app-header {
@@ -2406,19 +2419,13 @@ html[data-theme="storm"] body::after {
 html[data-theme="storm"] body::before {
   animation: storm-strike 17s ease-out infinite;
   background-image:
-    radial-gradient(118% 66% at 74% 6%, rgba(214, 230, 255, 0.55), rgba(150, 185, 255, 0.14) 44%, transparent 72%);
+    radial-gradient(96% 60% at 70% 24%, rgba(220, 234, 255, 0.85), rgba(150, 185, 255, 0.26) 40%, transparent 74%);
   background-position: center;
   background-size: cover;
   content: "";
   mask-image: none;
   mix-blend-mode: screen;
   opacity: 0;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  html[data-theme="storm"] body::before {
-    animation: none;
-  }
 }
 
 html[data-theme="storm"] .app-header {
@@ -2497,26 +2504,20 @@ html[data-theme="meadow"] body::after {
 /* Солнце дышит: тёплое пятно медленно набирает и отпускает силу, как свет
    сквозь качающуюся листву. Анимируется только прозрачность слоя. */
 @keyframes meadow-breathe {
-  0%, 100% { opacity: 0.24; }
-  50% { opacity: 0.5; }
+  0%, 100% { opacity: 0.18; }
+  50% { opacity: 0.72; }
 }
 
 html[data-theme="meadow"] body::before {
   animation: meadow-breathe 26s ease-in-out infinite;
   background-image:
-    radial-gradient(72% 58% at 78% 22%, rgba(240, 232, 150, 0.34), rgba(180, 210, 110, 0.1) 46%, transparent 74%);
+    radial-gradient(76% 62% at 74% 34%, rgba(244, 236, 158, 0.5), rgba(180, 210, 110, 0.14) 46%, transparent 76%);
   background-position: center;
   background-size: cover;
   content: "";
   mask-image: none;
   mix-blend-mode: screen;
   opacity: 0.3;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  html[data-theme="meadow"] body::before {
-    animation: none;
-  }
 }
 
 html[data-theme="meadow"] .app-header {
@@ -2567,6 +2568,148 @@ html[data-theme="meadow"] .journal details[data-work-log-turn-details][open] {
 
   html[data-theme="meadow"] .journal details[data-work-log-turn-details] {
     background-color: rgba(7, 14, 8, 0.58);
+  }
+}
+
+/* ============================ живые слои: у каждой темы своё движение === */
+
+/* Анимируется только прозрачность одного закреплённого слоя — это composite
+   без перерисовки, поэтому эффекты не стоят ничего даже на телефоне. Слой
+   лежит над снимком темы (`body::after`, z-index 0) и под интерфейсом.
+   Все эффекты выключаются одним правилом ниже, по prefers-reduced-motion. */
+
+/* «Орбита»: виток — дуга атмосферы медленно набирает и отдаёт свет */
+@keyframes orbit-terminator {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 0.62; }
+}
+
+html:not([data-theme]) body::before,
+html[data-theme="orbit"] body::before {
+  animation: orbit-terminator 32s ease-in-out infinite;
+  background-image:
+    radial-gradient(90% 52% at 66% 78%, rgba(150, 205, 255, 0.34), rgba(90, 150, 235, 0.1) 44%, transparent 74%);
+  background-size: cover;
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.3;
+}
+
+/* «Туманность»: газ дышит — самый медленный эффект во всём наборе */
+@keyframes nebula-drift {
+  0%, 100% { opacity: 0.24; }
+  50% { opacity: 0.7; }
+}
+
+html[data-theme="nebula"] body::before {
+  animation: nebula-drift 38s ease-in-out infinite;
+  background-image:
+    radial-gradient(70% 56% at 72% 38%, rgba(198, 150, 255, 0.32), rgba(120, 92, 255, 0.12) 48%, transparent 76%);
+  background-size: cover;
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.3;
+}
+
+/* «Gothic»: свет ползёт по стене — сдвиг, а не мигание: камень не мерцает */
+@keyframes gothic-sweep {
+  0%, 100% { background-position: 58% 50%; opacity: 0.3; }
+  50% { background-position: 74% 50%; opacity: 0.5; }
+}
+
+html[data-theme="gothic"] body::before {
+  animation: gothic-sweep 44s ease-in-out infinite;
+  background-image:
+    radial-gradient(46% 76% at 50% 50%, rgba(226, 236, 248, 0.16), transparent 72%);
+  background-repeat: no-repeat;
+  background-size: 150% 150%;
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.34;
+}
+
+/* «Пульсар»: собственно пульс — единственный быстрый ритм в наборе */
+@keyframes pulsar-beat {
+  0%, 100% { opacity: 0.16; }
+  6% { opacity: 0.78; }
+  18% { opacity: 0.2; }
+  24% { opacity: 0.44; }
+  40% { opacity: 0.16; }
+}
+
+html[data-theme="pulsar"] body::before {
+  animation: pulsar-beat 3.4s linear infinite;
+  background-image:
+    radial-gradient(52% 46% at 50% 46%, rgba(120, 255, 240, 0.34), rgba(60, 230, 212, 0.1) 46%, transparent 72%);
+  background-size: cover;
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.2;
+}
+
+/* «Чёрная дыра»: диск неровно светит — заметная, но неритмичная дрожь */
+@keyframes blackhole-flicker {
+  0%, 100% { opacity: 0.26; }
+  22% { opacity: 0.54; }
+  38% { opacity: 0.32; }
+  61% { opacity: 0.66; }
+  79% { opacity: 0.36; }
+}
+
+html[data-theme="blackhole"] body::before {
+  animation: blackhole-flicker 9.5s ease-in-out infinite;
+  background-image:
+    radial-gradient(44% 40% at 50% 48%, rgba(150, 205, 255, 0.3), rgba(70, 140, 255, 0.1) 52%, transparent 74%);
+  background-size: cover;
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.3;
+}
+
+/* «Тайга»: туман между стволами — плавный сдвиг вбок, как тянет ветром */
+@keyframes taiga-mist {
+  0%, 100% { background-position: 34% 62%; opacity: 0.26; }
+  50% { background-position: 52% 58%; opacity: 0.46; }
+}
+
+html[data-theme="taiga"] body::before {
+  animation: taiga-mist 40s ease-in-out infinite;
+  background-image:
+    radial-gradient(58% 40% at 50% 50%, rgba(190, 226, 220, 0.16), transparent 74%);
+  background-repeat: no-repeat;
+  background-size: 150% 150%;
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.3;
+}
+
+/* «Магма»: жар в трещинах — дышит медленнее пульсара, но живо */
+@keyframes magma-glow {
+  0%, 100% { opacity: 0.22; }
+  44% { opacity: 0.72; }
+  70% { opacity: 0.4; }
+}
+
+html[data-theme="magma"] body::before {
+  animation: magma-glow 7.5s ease-in-out infinite;
+  background-image:
+    radial-gradient(78% 58% at 66% 74%, rgba(255, 150, 70, 0.36), rgba(255, 96, 30, 0.12) 46%, transparent 76%);
+  background-size: cover;
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before {
+    animation: none !important;
   }
 }
 
@@ -3553,9 +3696,9 @@ html[data-view="journal"] [data-journal-only] {
 /* Журнальные плашки намеренно оставлены прозрачными — фон темы должен
    просвечивать. Пузырям чата так нельзя: на светлых кадрах («Луг», «Магма»)
    текст сквозь `--card-bg` не читается, поэтому под ними своя плотная
-   подложка в тон темы. */
-html:is([data-theme="pulsar"], [data-theme="blackhole"], [data-theme="taiga"],
-  [data-theme="magma"], [data-theme="storm"], [data-theme="meadow"]) .msg {
+   подложка в тон темы. Растровый фон теперь у всех тем, поэтому правило
+   общее. */
+.msg {
   backdrop-filter: blur(9px) saturate(115%);
   -webkit-backdrop-filter: blur(9px) saturate(115%);
   background-color: color-mix(in srgb, var(--bg) 84%, transparent);
@@ -3564,16 +3707,14 @@ html:is([data-theme="pulsar"], [data-theme="blackhole"], [data-theme="taiga"],
 
 /* акцентная подсветка своего сообщения ложится поверх той же подложки:
    один `--accent-soft` даёт всего 14 % плотности */
-html:is([data-theme="pulsar"], [data-theme="blackhole"], [data-theme="taiga"],
-  [data-theme="magma"], [data-theme="storm"], [data-theme="meadow"]) .msg-user {
+.msg-user {
   background-color: color-mix(in srgb, var(--bg) 78%, transparent);
   background-image: linear-gradient(var(--accent-soft), var(--accent-soft));
 }
 
 /* Системная строка живёт без плашки, но на светлом кадре теряется совсем,
    поэтому получает узкую подложку по размеру текста. */
-html:is([data-theme="pulsar"], [data-theme="blackhole"], [data-theme="taiga"],
-  [data-theme="magma"], [data-theme="storm"], [data-theme="meadow"]) .msg-system {
+.msg-system {
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   background-color: color-mix(in srgb, var(--bg) 66%, transparent);
