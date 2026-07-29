@@ -1,11 +1,15 @@
 import { watch } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
+import { gzip } from "node:zlib";
+import { promisify } from "node:util";
 import path from "node:path";
 
 import { extractWorkLogHtml } from "./mini-app-server.mjs";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+const SYNC_CHUNK_BYTES = 1024 * 1024;
+const gzipAsync = promisify(gzip);
 
 export function signMiniAppSync(body, secret, timestamp = Math.trunc(Date.now() / 1_000)) {
   const bodyHash = createHash("sha256").update(body).digest("hex");
@@ -13,6 +17,45 @@ export function signMiniAppSync(body, secret, timestamp = Math.trunc(Date.now() 
     .update(`${timestamp}\n${bodyHash}`)
     .digest("hex");
   return { timestamp, signature };
+}
+
+export function signMiniAppSyncChunk({
+  body,
+  secret,
+  syncId,
+  index,
+  count,
+  encoding,
+  version,
+  updatedAt,
+  timestamp = Math.trunc(Date.now() / 1_000),
+}) {
+  const bodyHash = createHash("sha256").update(body).digest("hex");
+  const signature = createHmac("sha256", secret)
+    .update([
+      timestamp,
+      syncId,
+      index,
+      count,
+      encoding,
+      version,
+      updatedAt,
+      bodyHash,
+    ].join("\n"))
+    .digest("hex");
+  return { timestamp, signature };
+}
+
+export async function compressedJournalChunks(payload, {
+  chunkBytes = SYNC_CHUNK_BYTES,
+  syncId = randomUUID(),
+} = {}) {
+  const compressed = await gzipAsync(Buffer.from(JSON.stringify(payload), "utf8"), { level: 9 });
+  const chunks = [];
+  for (let offset = 0; offset < compressed.length; offset += chunkBytes) {
+    chunks.push(compressed.subarray(offset, Math.min(offset + chunkBytes, compressed.length)));
+  }
+  return { syncId, chunks };
 }
 
 export async function journalSyncPayload(workLogFile) {
@@ -92,20 +135,40 @@ export class MiniAppPublisher {
     }
     this.#syncing = (async () => {
       const payload = await journalSyncPayload(this.#workLogFile);
-      const body = JSON.stringify(payload);
-      const { timestamp, signature } = signMiniAppSync(body, await this.#secret());
-      const response = await this.#fetch(`${this.#publicUrl}/api/sync`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          "X-Agent-Hub-Timestamp": String(timestamp),
-          "X-Agent-Hub-Signature": signature,
-        },
-        body,
-        signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-      });
-      if (!response.ok) {
-        throw new Error(`Mini App Worker sync failed with HTTP ${response.status}`);
+      const secret = await this.#secret();
+      const { syncId, chunks } = await compressedJournalChunks(payload);
+      for (const [index, body] of chunks.entries()) {
+        const count = chunks.length;
+        const encoding = "gzip";
+        const { timestamp, signature } = signMiniAppSyncChunk({
+          body,
+          secret,
+          syncId,
+          index,
+          count,
+          encoding,
+          version: payload.version,
+          updatedAt: payload.updatedAt,
+        });
+        const response = await this.#fetch(`${this.#publicUrl}/api/sync/chunk`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-Agent-Hub-Timestamp": String(timestamp),
+            "X-Agent-Hub-Signature": signature,
+            "X-Agent-Hub-Sync-Id": syncId,
+            "X-Agent-Hub-Chunk-Index": String(index),
+            "X-Agent-Hub-Chunk-Count": String(count),
+            "X-Agent-Hub-Encoding": encoding,
+            "X-Agent-Hub-Journal-Version": payload.version,
+            "X-Agent-Hub-Journal-Updated-At": payload.updatedAt,
+          },
+          body,
+          signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+        });
+        if (!response.ok) {
+          throw new Error(`Mini App Worker sync failed at chunk ${index + 1}/${count} with HTTP ${response.status}`);
+        }
       }
       if (!this.#published) {
         await this.#onPublished?.(this.#publicUrl);

@@ -4,6 +4,8 @@ const encoder = new TextEncoder();
 const MAX_SYNC_AGE_SECONDS = 300;
 const MAX_TELEGRAM_AUTH_AGE_SECONDS = 86_400;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_CHUNK_COUNT = 256;
+const SYNC_ID_PATTERN = /^[a-z0-9_-]{8,100}$/iu;
 
 function hex(bytes) {
   return [...new Uint8Array(bytes)].map((value) => value.toString(16).padStart(2, "0")).join("");
@@ -100,6 +102,42 @@ export async function validateSyncRequest(request, secret, { now = Date.now() } 
   return payload;
 }
 
+export async function validateSyncChunkRequest(request, secret, { now = Date.now() } = {}) {
+  const timestamp = Number(request.headers.get("X-Agent-Hub-Timestamp"));
+  const receivedSignature = String(request.headers.get("X-Agent-Hub-Signature") ?? "").toLowerCase();
+  const syncId = String(request.headers.get("X-Agent-Hub-Sync-Id") ?? "");
+  const index = Number(request.headers.get("X-Agent-Hub-Chunk-Index"));
+  const count = Number(request.headers.get("X-Agent-Hub-Chunk-Count"));
+  const encoding = String(request.headers.get("X-Agent-Hub-Encoding") ?? "");
+  const version = String(request.headers.get("X-Agent-Hub-Journal-Version") ?? "");
+  const updatedAt = String(request.headers.get("X-Agent-Hub-Journal-Updated-At") ?? "");
+  if (!Number.isSafeInteger(timestamp) || Math.abs(Math.trunc(now / 1_000) - timestamp) > MAX_SYNC_AGE_SECONDS) {
+    throw new Error("expired sync request");
+  }
+  if (!/^[a-f0-9]{64}$/u.test(receivedSignature)) throw new Error("invalid sync signature");
+  if (!SYNC_ID_PATTERN.test(syncId)) throw new Error("invalid sync id");
+  if (!Number.isSafeInteger(index) || !Number.isSafeInteger(count) || index < 0 || count < 1 || count > MAX_CHUNK_COUNT || index >= count) {
+    throw new Error("invalid sync chunk");
+  }
+  if (encoding !== "gzip" || !version || !updatedAt) throw new Error("invalid sync metadata");
+  const body = await request.arrayBuffer();
+  if (body.byteLength < 1 || body.byteLength > MAX_BODY_BYTES) throw new Error("sync payload is too large");
+  const signatureValue = [
+    timestamp,
+    syncId,
+    index,
+    count,
+    encoding,
+    version,
+    updatedAt,
+    await sha256(body),
+  ].join("\n");
+  if (!await verifyHmac(secret, signatureValue, receivedSignature)) {
+    throw new Error("invalid sync signature");
+  }
+  return { body, syncId, index, count, encoding, version, updatedAt };
+}
+
 function json(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
     status,
@@ -119,7 +157,77 @@ export class JournalStore extends DurableObject {
       await this.ctx.storage.put("journal", payload);
       return json({ ok: true });
     }
+    if (request.method === "POST" && url.pathname === "/sync-chunk") {
+      const syncId = String(request.headers.get("X-Agent-Hub-Sync-Id") ?? "");
+      const index = Number(request.headers.get("X-Agent-Hub-Chunk-Index"));
+      const count = Number(request.headers.get("X-Agent-Hub-Chunk-Count"));
+      const encoding = String(request.headers.get("X-Agent-Hub-Encoding") ?? "");
+      const version = String(request.headers.get("X-Agent-Hub-Journal-Version") ?? "");
+      const updatedAt = String(request.headers.get("X-Agent-Hub-Journal-Updated-At") ?? "");
+      const metadataKey = `staging:${syncId}`;
+      const chunkKey = `chunk:${syncId}:${index}`;
+      const existing = await this.ctx.storage.get(metadataKey);
+      if (existing && (
+        existing.count !== count
+        || existing.encoding !== encoding
+        || existing.version !== version
+        || existing.updatedAt !== updatedAt
+      )) {
+        return json({ error: "sync metadata conflict" }, 409);
+      }
+      await this.ctx.storage.put({
+        [metadataKey]: { syncId, count, encoding, version, updatedAt },
+        [chunkKey]: await request.arrayBuffer(),
+      });
+      const chunkKeys = Array.from({ length: count }, (_, chunkIndex) => `chunk:${syncId}:${chunkIndex}`);
+      const chunks = await this.ctx.storage.get(chunkKeys);
+      if (chunks.size !== count) return json({ ok: true, complete: false }, 202);
+
+      const previous = await this.ctx.storage.get("journal-manifest");
+      await this.ctx.storage.put("journal-manifest", {
+        syncId,
+        count,
+        encoding,
+        version,
+        updatedAt,
+      });
+      await this.ctx.storage.delete(["journal", metadataKey]);
+      if (previous?.syncId && previous.syncId !== syncId) {
+        await this.ctx.storage.delete(
+          Array.from({ length: previous.count }, (_, chunkIndex) => `chunk:${previous.syncId}:${chunkIndex}`),
+        );
+      }
+      return json({ ok: true, complete: true });
+    }
     if (request.method === "GET" && url.pathname === "/journal") {
+      const manifest = await this.ctx.storage.get("journal-manifest");
+      if (manifest) {
+        const chunkKeys = Array.from(
+          { length: manifest.count },
+          (_, chunkIndex) => `chunk:${manifest.syncId}:${chunkIndex}`,
+        );
+        const chunks = await this.ctx.storage.get(chunkKeys);
+        if (chunks.size !== manifest.count) return json({ error: "Снимок журнала повреждён." }, 503);
+        const ordered = chunkKeys.map((key) => new Uint8Array(chunks.get(key)));
+        const length = ordered.reduce((total, chunk) => total + chunk.byteLength, 0);
+        const compressed = new Uint8Array(length);
+        let offset = 0;
+        for (const chunk of ordered) {
+          compressed.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        const body = new Blob([compressed])
+          .stream()
+          .pipeThrough(new DecompressionStream(manifest.encoding));
+        return new Response(body, {
+          headers: {
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json; charset=utf-8",
+            "X-Agent-Hub-Journal-Version": manifest.version,
+            "X-Content-Type-Options": "nosniff",
+          },
+        });
+      }
       const payload = await this.ctx.storage.get("journal");
       return payload ? json(payload) : json({ error: "Журнал ещё не опубликован." }, 503);
     }
@@ -158,6 +266,27 @@ export default {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
+        }));
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+    }
+    if (url.pathname === "/api/sync/chunk") {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      try {
+        const chunk = await validateSyncChunkRequest(request, env.SYNC_SECRET);
+        return store.fetch(new Request("https://journal.internal/sync-chunk", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-Agent-Hub-Sync-Id": chunk.syncId,
+            "X-Agent-Hub-Chunk-Index": String(chunk.index),
+            "X-Agent-Hub-Chunk-Count": String(chunk.count),
+            "X-Agent-Hub-Encoding": chunk.encoding,
+            "X-Agent-Hub-Journal-Version": chunk.version,
+            "X-Agent-Hub-Journal-Updated-At": chunk.updatedAt,
+          },
+          body: chunk.body,
         }));
       } catch (error) {
         return json({ error: error.message }, 401);
