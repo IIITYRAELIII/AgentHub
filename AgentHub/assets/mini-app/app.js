@@ -30,6 +30,7 @@ const themes = {
   taiga: "#070c12",
   magma: "#0a0605",
   storm: "#070b12",
+  meadow: "#070d08",
 };
 
 function savedTheme() {

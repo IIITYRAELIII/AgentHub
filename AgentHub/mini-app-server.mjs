@@ -13,6 +13,7 @@ const CONTENT_TYPES = new Map([
   ["/pulsar-beams.png", "image/png"],
   ["/magma-crust.png", "image/png"],
   ["/rainforest-night.png", "image/png"],
+  ["/meadow-sun.png", "image/png"],
   ["/storm-rain.png", "image/png"],
 ]);
 const STATIC_FILES = new Map([
@@ -23,6 +24,7 @@ const STATIC_FILES = new Map([
   ["/pulsar-beams.png", "pulsar-beams.png"],
   ["/magma-crust.png", "magma-crust.png"],
   ["/rainforest-night.png", "rainforest-night.png"],
+  ["/meadow-sun.png", "meadow-sun.png"],
   ["/storm-rain.png", "storm-rain.png"],
 ]);
 /* Разметка и стили обязаны быть свежими, поэтому у них no-store. Фон темы —
@@ -31,6 +33,7 @@ const STATIC_FILES = new Map([
 const IMMUTABLE_FILES = new Set([
   "/blackhole-blue.png",
   "/magma-crust.png",
+  "/meadow-sun.png",
   "/pulsar-beams.png",
   "/rainforest-night.png",
   "/storm-rain.png",

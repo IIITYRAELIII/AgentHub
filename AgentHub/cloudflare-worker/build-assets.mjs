@@ -13,6 +13,7 @@ for (const file of [
   "styles.css",
   "blackhole-blue.png",
   "magma-crust.png",
+  "meadow-sun.png",
   "pulsar-beams.png",
   "rainforest-night.png",
   "storm-rain.png",
