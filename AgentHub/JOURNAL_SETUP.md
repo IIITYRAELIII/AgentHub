@@ -7,7 +7,7 @@
 
 - поддерживаемый Agent Hub runtime в профиле `journal`;
 - пользовательские Codex hooks для точного начала и завершения хода;
-- расширение `Tyrael Work Log` в профиль текущего пользователя VS Code;
+- расширение `Agent HUB Work log` в профиль текущего пользователя VS Code;
 - личный `WORK_LOG.md` в корне выбранного workspace;
 - личный ledger и таблица остатков лимитов под
   `%LOCALAPPDATA%\Tyrael\TelegramIntegration\data`.
@@ -32,7 +32,7 @@ python Utilities/AgentHub/install.py --profile journal
 1. откройте в Codex `/hooks`, просмотрите и один раз доверьте
    `UserPromptSubmit` и `Stop`;
 2. выполните в VS Code `Developer: Reload Window`;
-3. нажмите значок `Журнал работ` в Activity Bar;
+3. нажмите значок `Agent HUB Work log` в Activity Bar;
 4. проверьте `npm --prefix Utilities/AgentHub run hook:status`.
 
 Если журнал истории нужно перестроить повторно:
