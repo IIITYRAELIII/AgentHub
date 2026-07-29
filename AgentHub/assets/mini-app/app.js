@@ -417,12 +417,15 @@ function buildSubtitleChips(task) {
 }
 
 function renderMessages() {
+  const historyLoaded = state.messages.has(state.selectedId);
   const messages = state.messages.get(state.selectedId) ?? [];
   chatLog.replaceChildren();
   if (messages.length === 0) {
     chatLog.append(el("p", {
       class: "chat-log-empty",
-      text: "История пуста. Отправьте первое сообщение агенту.",
+      text: historyLoaded
+        ? "История пуста. Отправьте первое сообщение агенту."
+        : "Загрузка истории…",
     }));
     return;
   }

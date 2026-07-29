@@ -134,3 +134,18 @@ test("turn header keeps its open button in the third column", () => {
     /\.journal details\[data-work-log-turn-details\] > summary\s*\{[^}]*grid-template-columns:\s*11\.5rem minmax\(0, 1fr\) 2\.25rem;/su,
   );
 });
+
+test("task rail width does not collide with decorative rail thickness", () => {
+  const styles = fs.readFileSync(
+    require.resolve("../assets/mini-app/styles.css"),
+    "utf8",
+  );
+  assert.match(styles, /--task-rail-width:\s*clamp\(272px, 24vw, 336px\)/u);
+  assert.match(styles, /grid-template-columns:\s*var\(--task-rail-width\) minmax\(0, 1fr\)/u);
+});
+
+test("chat distinguishes loading history from an empty task", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(app, /state\.messages\.has\(state\.selectedId\)/u);
+  assert.match(app, /Загрузка истории…/u);
+});

@@ -2835,7 +2835,7 @@ html[data-surface="mobile"] .journal div[data-work-log-previous-turn-list] {
 
 :root {
   --mobile-nav-h: 3.4rem;
-  --rail-width: clamp(272px, 24vw, 336px);
+  --task-rail-width: clamp(272px, 24vw, 336px);
 }
 
 body {
@@ -2872,7 +2872,7 @@ html[data-view="chat"] body {
 .workspace {
   display: grid;
   flex: 1 1 auto;
-  grid-template-columns: var(--rail-width) minmax(0, 1fr);
+  grid-template-columns: var(--task-rail-width) minmax(0, 1fr);
   margin: 0 auto;
   max-width: var(--content-width);
   min-height: 0;
