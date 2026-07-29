@@ -151,6 +151,15 @@ function el(tag, props = {}, children = []) {
   return node;
 }
 
+function sameData(left, right) {
+  if (left === right) return true;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
 /* Компактное «сколько прошло» для последней активности задачи. */
 function formatRelativeTime(input) {
   const date = input instanceof Date ? input : new Date(input);
@@ -323,6 +332,13 @@ function renderTaskItem(task) {
   const agentLabel = task.agentLabel || providerLabels[provider] || "Агент";
   const meta = el("div", { class: "task-meta" }, [
     el("span", { class: "task-agent", text: agentLabel }),
+    task.runtimeLabel
+      ? el("span", {
+        class: "task-runtime",
+        text: task.runtimeLabel,
+        title: task.runtimeTitle || task.runtimeLabel,
+      })
+      : null,
     task.statusLabel
       ? el("span", { class: "task-status", "data-status": task.status || "", text: task.statusLabel })
       : null,
@@ -413,6 +429,7 @@ function buildSubtitleChips(task) {
     task.modelLabel || null,
     task.reasoningLabel || null,
     task.modeLabel || null,
+    task.runtimeLabel || null,
     task.project || null,
   ].filter(Boolean);
   return parts.map((part, index) =>
@@ -1052,6 +1069,7 @@ const AgentHub = {
   /** Состояние соединения: "online" | "connecting" | "restarting" | "offline". */
   setConnection(status) {
     const value = ["online", "connecting", "restarting", "offline"].includes(status) ? status : "offline";
+    if (state.connection === value) return;
     state.connection = value;
     root.dataset.connection = value;
     const messages = {
@@ -1063,27 +1081,38 @@ const AgentHub = {
     connectionBanner.hidden = value === "online";
   },
   /** Полный список задач. Каждая задача: { id, title, provider, agentLabel,
-   *  modelLabel, reasoningLabel, modeLabel, project, status, statusLabel,
+   *  modelLabel, reasoningLabel, modeLabel, runtimeLabel, project, status, statusLabel,
    *  lastActivity, unread, running, selected }. */
   setTasks(tasks) {
-    saveDraft();
-    state.tasks = Array.isArray(tasks) ? tasks.slice() : [];
-    const selected = state.tasks.find((task) => task.selected);
-    if (selected) state.selectedId = selected.id;
-    else if (!state.tasks.some((task) => task.id === state.selectedId)) state.selectedId = null;
+    const nextTasks = Array.isArray(tasks) ? tasks.slice() : [];
+    const selected = nextTasks.find((task) => task.selected);
+    const nextSelectedId = selected?.id
+      ?? (nextTasks.some((task) => task.id === state.selectedId) ? state.selectedId : null);
+    const previousSelectedTask = state.tasks.find((task) => task.id === state.selectedId) ?? null;
+    const nextSelectedTask = nextTasks.find((task) => task.id === nextSelectedId) ?? null;
+    const selectionChanged = nextSelectedId !== state.selectedId;
+    const tasksChanged = !sameData(state.tasks, nextTasks);
+    const selectedTaskChanged = !sameData(previousSelectedTask, nextSelectedTask);
+    if (!tasksChanged && !selectionChanged) return;
+    if (selectionChanged && state.selectedId) saveDraft();
+    state.tasks = nextTasks;
+    state.selectedId = nextSelectedId;
     renderTasks();
-    renderChat();
+    if (selectionChanged || selectedTaskChanged) renderChat();
   },
   /** Точечное обновление задачи (статус, время, непрочитанное). */
   patchTask(id, patch) {
     const task = state.tasks.find((item) => item.id === id);
     if (!task) return;
+    const changed = Object.entries(patch ?? {}).some(([key, value]) => !Object.is(task[key], value));
+    if (!changed) return;
     Object.assign(task, patch);
     renderTasks();
     if (id === state.selectedId) renderChat();
   },
   /** Выбор задачи со стороны backend (например, смена из Telegram). */
   selectTask(id) {
+    if (state.selectedId === id) return;
     saveDraft();
     state.selectedId = id;
     for (const task of state.tasks) task.selected = task.id === id;
@@ -1114,7 +1143,9 @@ const AgentHub = {
   },
   /** Живой ход: { author, stage, reasoning, text } или null, чтобы скрыть. */
   setLive(taskId, live) {
-    state.live.set(taskId, live ?? null);
+    const next = live ?? null;
+    if (sameData(state.live.get(taskId) ?? null, next)) return;
+    state.live.set(taskId, next);
     if (taskId === state.selectedId) renderLive();
   },
   /** running=true подсвечивает индикатор и показывает «Стоп». */
@@ -1122,23 +1153,31 @@ const AgentHub = {
     this.patchTask(taskId, { running: Boolean(running) });
   },
   setApprovals(taskId, approvals) {
-    state.approvals.set(taskId, Array.isArray(approvals) ? approvals : []);
+    const next = Array.isArray(approvals) ? approvals : [];
+    if (sameData(state.approvals.get(taskId) ?? [], next)) return;
+    state.approvals.set(taskId, next);
     if (taskId === state.selectedId) renderApprovals();
   },
   setQueue(taskId, queued) {
-    state.queue.set(taskId, Array.isArray(queued) ? queued : []);
+    const next = Array.isArray(queued) ? queued : [];
+    if (sameData(state.queue.get(taskId) ?? [], next)) return;
+    state.queue.set(taskId, next);
     if (taskId === state.selectedId) renderQueue();
   },
   /** Списки вариантов для селекторов: { agent, model, reasoning, mode,
    *  project }. Значение — строка или { value, label }. */
   setOptions(options) {
-    state.options = { ...state.options, ...options };
+    const next = { ...state.options, ...options };
+    if (sameData(state.options, next)) return;
+    state.options = next;
     renderOptions();
   },
   /** Текущий выбор: { agent, model, reasoning, mode, project, autoApprove,
    *  tts }. */
   setSelection(selection) {
-    state.selection = { ...state.selection, ...selection };
+    const next = { ...state.selection, ...selection };
+    if (sameData(state.selection, next)) return;
+    state.selection = next;
     renderOptions();
     if (state.selectedId) renderChat();
   },

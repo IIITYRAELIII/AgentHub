@@ -14,6 +14,17 @@ let lastSnapshot = null;
 let selectedTaskId = "";
 let refreshTimer = null;
 let refreshing = false;
+let pendingSelectionId = "";
+let selectionSequence = 0;
+let selectionTail = Promise.resolve();
+
+const runtimeShortLabels = Object.freeze({
+  telegram: "HUB",
+  vscode: "VSC",
+  desktop: "APP",
+  cli: "CLI",
+  external: "EXT",
+});
 
 function taskId(provider, threadId) {
   return `${String(provider)}:${String(threadId)}`;
@@ -115,27 +126,32 @@ async function control(action, params = {}) {
     : payload.result;
 }
 
-function modelTask(task, snapshot, seen) {
+function modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId) {
   const id = taskId(task.provider, task.threadId);
   const answerAt = Date.parse(task.lastAnswerAt ?? "") || 0;
   const seenAt = Date.parse(seen[id] ?? "") || 0;
   const running = Boolean(task.running);
   const unknown = task.activityUnknown === true;
+  const serverSelected = id === serverSelectedId;
+  const executionOwner = task.run?.executionOwner ?? task.executionOwner ?? "";
+  const runtimeTitle = task.run?.runtime ?? task.runtime ?? "";
   return {
     id,
     title: task.title || "Без названия",
     provider: task.provider,
     agentLabel: task.provider === "claude" ? "Claude" : "Codex",
-    modelLabel: task.selected ? snapshot.selected?.model : "",
-    reasoningLabel: task.selected ? snapshot.selected?.reasoning : "",
-    modeLabel: task.selected ? snapshot.selected?.mode : "",
+    modelLabel: serverSelected ? snapshot.selected?.model : task.run?.model ?? "",
+    reasoningLabel: serverSelected ? snapshot.selected?.reasoning : task.run?.reasoning ?? "",
+    modeLabel: serverSelected ? snapshot.selected?.mode : "",
+    runtimeLabel: runtimeShortLabels[executionOwner] ?? (runtimeTitle ? "EXT" : ""),
+    runtimeTitle,
     project: task.projectName || "",
     status: running ? "running" : unknown ? "unknown" : answerAt > seenAt ? "ready" : "idle",
     statusLabel: running ? "Выполняется" : unknown ? "Статус неизвестен" : answerAt > seenAt ? "Ответ готов" : "",
     lastActivity: task.updatedAtMs ? new Date(task.updatedAtMs).toISOString() : task.lastAnswerAt,
     unread: !running && answerAt > seenAt,
     running,
-    selected: task.selected === true,
+    selected: id === effectiveSelectedId,
   };
 }
 
@@ -143,12 +159,21 @@ function applySnapshot(snapshot) {
   if (!snapshot) return;
   lastSnapshot = snapshot;
   const seen = seenAnswers();
+  const serverSelected = (snapshot.tasks ?? []).find((task) => task.selected);
+  const serverSelectedId = serverSelected
+    ? taskId(serverSelected.provider, serverSelected.threadId)
+    : "";
+  const pendingExists = pendingSelectionId
+    && (snapshot.tasks ?? []).some((task) => taskId(task.provider, task.threadId) === pendingSelectionId);
+  const effectiveSelectedId = pendingExists ? pendingSelectionId : serverSelectedId;
   const tasks = (snapshot.tasks ?? [])
-    .map((task) => modelTask(task, snapshot, seen))
+    .map((task) => modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId))
     .sort((left, right) => Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0));
   agentHub.setTasks(tasks);
-  const selected = (snapshot.tasks ?? []).find((task) => task.selected);
-  selectedTaskId = selected ? taskId(selected.provider, selected.threadId) : "";
+  const selected = (snapshot.tasks ?? []).find(
+    (task) => taskId(task.provider, task.threadId) === effectiveSelectedId,
+  );
+  selectedTaskId = effectiveSelectedId;
   if (selected) {
     agentHub.setLive(selectedTaskId, selected.run ? {
       author: selected.provider === "claude" ? "Claude" : "Codex",
@@ -157,7 +182,8 @@ function applySnapshot(snapshot) {
       text: selected.run.response || "",
     } : null);
     agentHub.setRunning(selectedTaskId, Boolean(selected.run || selected.running));
-    agentHub.setApprovals(selectedTaskId, (snapshot.pendingApprovals ?? []).map((approval) => ({
+    agentHub.setApprovals(selectedTaskId, effectiveSelectedId === serverSelectedId
+      ? (snapshot.pendingApprovals ?? []).map((approval) => ({
       id: approval.key ?? approval.id,
       kind: approval.kind ?? "Подтверждение",
       text: approval.text ?? approval.preview ?? approval.reason ?? "",
@@ -165,7 +191,8 @@ function applySnapshot(snapshot) {
         { id: "accept", label: "Разрешить", kind: "primary" },
         { id: "decline", label: "Отклонить", kind: "danger" },
       ],
-    })));
+      }))
+      : []);
     agentHub.setQueue(selectedTaskId, (snapshot.deferredInputs ?? []).filter((item) =>
       (!item.provider || item.provider === selected.provider)
       && (!item.threadId || item.threadId === selected.threadId)));
@@ -300,13 +327,31 @@ async function runAction(operation) {
   }
 }
 
-agentHub.on("task:select", ({ id }) => runAction(async () => {
+function replaceRoute(hash) {
+  history.replaceState(history.state, "", hash);
+}
+
+agentHub.on("task:select", ({ id }) => {
   const identity = taskIdentity(id);
-  if (!identity) return;
-  const result = await control("open-task", { ...identity, limit: 20 });
-  applyOpened(result);
-  location.hash = `#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`;
-}));
+  if (!identity) return null;
+  const sequence = ++selectionSequence;
+  pendingSelectionId = id;
+  selectedTaskId = id;
+  selectionTail = selectionTail.catch(() => null).then(async () => {
+    if (sequence !== selectionSequence) return null;
+    const result = await runAction(() => control("open-task", { ...identity, limit: 20 }));
+    if (sequence !== selectionSequence) return null;
+    if (!result) {
+      pendingSelectionId = "";
+      return null;
+    }
+    applyOpened(result);
+    pendingSelectionId = "";
+    replaceRoute(`#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`);
+    return result;
+  });
+  return selectionTail;
+});
 
 agentHub.on("message:send", (request) => {
   const optimisticId = `local:${request.requestId}`;
@@ -427,7 +472,7 @@ document.addEventListener("click", (event) => {
     void runAction(async () => {
       applyOpened(await control("open-task", { provider, threadId, limit: 20 }));
       document.querySelector("[data-view-button='chat']")?.click();
-      location.hash = `#/chat/${encodeURIComponent(provider)}/${encodeURIComponent(threadId)}`;
+      replaceRoute(`#/chat/${encodeURIComponent(provider)}/${encodeURIComponent(threadId)}`);
     });
     return;
   }
@@ -447,9 +492,9 @@ document.addEventListener("click", (event) => {
   void runAction(async () => {
     applyOpened(await control("open-turn", params));
     document.querySelector("[data-view-button='chat']")?.click();
-    location.hash = "#/chat/"
+    replaceRoute("#/chat/"
       + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
-      + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`;
+      + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
   });
 });
 

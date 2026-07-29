@@ -216,6 +216,16 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     );
     assert.match(script, /window\.innerWidth < compactSurfaceWidth/u);
     assert.doesNotMatch(script, /if \(!telegramMode\) return "desktop"/u);
+    assert.match(script, /class: "task-runtime"/u);
+    assert.match(script, /if \(sameData\(state\.live\.get\(taskId\)/u);
+
+    const hubClient = await (await fetch(`${address.url}hub-client.js`)).text();
+    assert.match(hubClient, /telegram: "HUB"/u);
+    assert.match(hubClient, /desktop: "APP"/u);
+    assert.match(hubClient, /cli: "CLI"/u);
+    assert.match(hubClient, /pendingSelectionId/u);
+    assert.match(hubClient, /history\.replaceState/u);
+    assert.doesNotMatch(hubClient, /location\.hash\s*=/u);
     assert.match(script, /document\.documentElement\.dataset\.surface = surface/u);
     assert.match(script, /telegram\?\.expand\(\)/u);
     assert.doesNotMatch(script, /requestFullscreen/u);

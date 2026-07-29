@@ -3247,6 +3247,18 @@ html[data-view="journal"] [data-journal-only] {
   white-space: nowrap;
 }
 
+.task-runtime {
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  border-radius: var(--radius-chip);
+  color: var(--accent-soft);
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
+  padding: 0.05rem 0.3rem;
+}
+
 .task-status {
   border-radius: var(--radius-chip);
   color: var(--text-muted);
