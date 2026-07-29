@@ -73,6 +73,15 @@ test("panel keeps explicit collapse state and exposes collapse-all in the header
   assert.match(html, /collapseAllDetails\(\)/);
 });
 
+test("panel moves generated rate-limit chips into its sticky heading", () => {
+  const html = webviewHtml({});
+  assert.match(html, /content\.querySelector\('\[data-work-log-rate-limits\]'\)/);
+  assert.match(html, /rateLimits\.className = 'rate-limits'/);
+  assert.match(html, /rateLimits\.replaceChildren\(\.\.\.sourceLimits\.childNodes\)/);
+  assert.match(html, /sourceLimits\.remove\(\)/);
+  assert.match(html, /heading\.append\(picker, collapseAll, rateLimits\)/);
+});
+
 test("panel handles the duplicate collapse-turns button", () => {
   const html = webviewHtml({});
   assert.match(html, /closest\('\[data-work-log-collapse-turns\]'\)/);

@@ -62,6 +62,7 @@ function panelCss() {
     }
 
     #work-log-content > h1 > [data-work-log-panel-title] {
+      flex: 1 1 12rem;
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -82,6 +83,10 @@ function panelCss() {
 
     #work-log-content > h1 > [data-collapse-all] {
       flex: 0 0 auto;
+    }
+
+    #work-log-content > h1 > .rate-limits {
+      flex: 0 1 auto;
     }
 
     #work-log-content > h1::before {
@@ -173,7 +178,23 @@ function webviewHtml(webview, theme = "orbit") {
       collapseAll.setAttribute('data-collapse-all', '');
       collapseAll.title = 'Свернуть всё';
       collapseAll.textContent = 'Свернуть всё';
-      heading.append(picker, collapseAll);
+      const sourceLimits = content.querySelector('[data-work-log-rate-limits]');
+      const rateLimits = document.createElement('div');
+      rateLimits.className = 'rate-limits';
+      if (sourceLimits) {
+        const sampledAt = new Date(sourceLimits.getAttribute('data-sampled-at') || '');
+        rateLimits.title = Number.isNaN(sampledAt.getTime())
+          ? ''
+          : 'Лимиты на ' + sampledAt.toLocaleTimeString('ru-RU', {
+              hour: '2-digit',
+              minute: '2-digit',
+            });
+        rateLimits.replaceChildren(...sourceLimits.childNodes);
+        sourceLimits.remove();
+      } else {
+        rateLimits.hidden = true;
+      }
+      heading.append(picker, collapseAll, rateLimits);
       applyTheme(document.documentElement.dataset.theme, false);
     }
 
