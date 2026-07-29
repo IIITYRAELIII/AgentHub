@@ -1,6 +1,6 @@
 import { watch } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import path from "node:path";
 
@@ -14,6 +14,7 @@ export { extractWorkLogHtml } from "./mini-app-journal-data.mjs";
 const CONTENT_TYPES = new Map([
   ["/", "text/html; charset=utf-8"],
   ["/app.js", "text/javascript; charset=utf-8"],
+  ["/hub-client.js", "text/javascript; charset=utf-8"],
   ["/styles.css", "text/css; charset=utf-8"],
   ["/work-log.css", "text/css; charset=utf-8"],
   ["/blackhole-blue.png", "image/png"],
@@ -26,6 +27,7 @@ const CONTENT_TYPES = new Map([
 const STATIC_FILES = new Map([
   ["/", "index.html"],
   ["/app.js", "app.js"],
+  ["/hub-client.js", "hub-client.js"],
   ["/styles.css", "styles.css"],
   ["/blackhole-blue.png", "blackhole-blue.png"],
   ["/pulsar-beams.png", "pulsar-beams.png"],
@@ -45,6 +47,43 @@ const IMMUTABLE_FILES = new Set([
   "/rainforest-night.png",
   "/storm-rain.png",
 ]);
+const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const IMAGE_CONTENT_TYPES = new Map([
+  ["image/png", ".png"],
+  ["image/jpeg", ".jpg"],
+  ["image/webp", ".webp"],
+  ["image/gif", ".gif"],
+  ["image/bmp", ".bmp"],
+]);
+
+async function readJsonBody(request, maxBytes = MAX_CONTROL_REQUEST_BYTES) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > maxBytes) throw new Error("Запрос слишком большой");
+    chunks.push(chunk);
+  }
+  if (!chunks.length) return {};
+  const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Ожидался JSON-объект");
+  }
+  return value;
+}
+
+async function readBinaryBody(request, maxBytes = MAX_ATTACHMENT_BYTES) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > maxBytes) throw new Error("Изображение превышает 20 МБ");
+    chunks.push(chunk);
+  }
+  if (!size) throw new Error("Пустое изображение");
+  return Buffer.concat(chunks);
+}
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const CHANGE_DEBOUNCE_MS = 75;
 const TELEGRAM_AUTH_MAX_AGE_SECONDS = 86_400;
@@ -159,8 +198,10 @@ function json(response, statusCode, value, method = "GET", options = {}) {
 export class MiniAppServer {
   #allowedUserIds;
   #assetsDirectory;
+  #attachmentDirectory;
   #botToken;
   #clients = new Set();
+  #controlHandler;
   #changeTimer = null;
   #heartbeatTimer = null;
   #host;
@@ -179,7 +220,9 @@ export class MiniAppServer {
     botToken = "",
     allowedUserIds = new Set(),
     requireTelegramAuth = false,
+    controlHandler = null,
     assetsDirectory = path.join(import.meta.dirname, "assets", "mini-app"),
+    attachmentDirectory = null,
     workLogCssFile = path.join(import.meta.dirname, "work-log.css"),
   } = {}) {
     this.#host = String(host);
@@ -188,7 +231,9 @@ export class MiniAppServer {
     this.#botToken = String(botToken);
     this.#allowedUserIds = new Set(allowedUserIds);
     this.#requireTelegramAuth = requireTelegramAuth === true;
+    this.#controlHandler = typeof controlHandler === "function" ? controlHandler : null;
     this.#assetsDirectory = path.resolve(assetsDirectory);
+    this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
     this.#workLogCssFile = path.resolve(workLogCssFile);
   }
 
@@ -261,6 +306,71 @@ export class MiniAppServer {
 
   async #handle(request, response) {
     const method = String(request.method ?? "GET").toUpperCase();
+    const url = new URL(request.url ?? "/", `http://${this.#host}`);
+    if (url.pathname === "/api/control") {
+      if (method !== "POST") {
+        response.writeHead(405, {
+          Allow: "POST",
+          ...responseHeaders("text/plain; charset=utf-8"),
+        });
+        response.end("Method Not Allowed\n");
+        return;
+      }
+      if (!this.#authorize(request, response)) return;
+      if (!this.#controlHandler) {
+        json(response, 503, { error: "Управление Agent Hub недоступно." }, method);
+        return;
+      }
+      try {
+        const body = await readJsonBody(request);
+        const action = String(body.action ?? "").trim();
+        if (!/^[a-z][a-z0-9-]{0,63}$/.test(action)) {
+          throw new Error("Некорректная команда");
+        }
+        const params = body.params == null ? {} : body.params;
+        if (!params || typeof params !== "object" || Array.isArray(params)) {
+          throw new Error("Некорректные параметры команды");
+        }
+        json(response, 200, {
+          ok: true,
+          result: await this.#controlHandler({ action, params }),
+        }, method);
+      } catch (error) {
+        json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/attachment") {
+      if (method !== "POST") {
+        response.writeHead(405, {
+          Allow: "POST",
+          ...responseHeaders("text/plain; charset=utf-8"),
+        });
+        response.end("Method Not Allowed\n");
+        return;
+      }
+      if (!this.#authorize(request, response)) return;
+      if (!this.#attachmentDirectory) {
+        json(response, 503, { error: "Загрузка изображений недоступна." }, method);
+        return;
+      }
+      try {
+        const contentType = String(request.headers["content-type"] ?? "")
+          .split(";", 1)[0]
+          .trim()
+          .toLowerCase();
+        const extension = IMAGE_CONTENT_TYPES.get(contentType);
+        if (!extension) throw new Error("Неподдерживаемый формат изображения");
+        const body = await readBinaryBody(request);
+        await mkdir(this.#attachmentDirectory, { recursive: true });
+        const target = path.join(this.#attachmentDirectory, `${randomUUID()}${extension}`);
+        await writeFile(target, body, { flag: "wx", mode: 0o600 });
+        json(response, 201, { ok: true, path: target }, method);
+      } catch (error) {
+        json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
     if (!["GET", "HEAD"].includes(method)) {
       response.writeHead(405, {
         Allow: "GET, HEAD",
@@ -269,7 +379,6 @@ export class MiniAppServer {
       response.end("Method Not Allowed\n");
       return;
     }
-    const url = new URL(request.url ?? "/", `http://${this.#host}`);
     if (url.pathname === "/health") {
       json(response, 200, { ok: true }, method);
       return;

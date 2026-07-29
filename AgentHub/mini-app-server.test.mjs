@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -156,7 +156,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
       },
     })).status, 200);
 
-    for (const pathname of ["", "app.js", "styles.css", "work-log.css"]) {
+    for (const pathname of ["", "app.js", "hub-client.js", "styles.css", "work-log.css"]) {
       const response = await fetch(`${address.url}${pathname}`);
       assert.equal(response.status, 200, pathname || "/");
       assert.ok((await response.text()).length > 20);
@@ -298,6 +298,83 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(stream, /event: journal/u);
   } finally {
     abort.abort();
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Mini App forwards authenticated control commands to Agent Hub", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mini-app-control-"));
+  const workLogFile = path.join(directory, "WORK_LOG.md");
+  const attachmentDirectory = path.join(directory, "attachments");
+  const calls = [];
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    workLogFile,
+    botToken: BOT_TOKEN,
+    allowedUserIds: new Set([42]),
+    attachmentDirectory,
+    controlHandler: async (request) => {
+      calls.push(request);
+      return { generatedAt: "now" };
+    },
+  });
+  try {
+    await writeFile(workLogFile, "# Журнал\n", "utf8");
+    const address = await server.start();
+    const local = await fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "snapshot", params: { refresh: true } }),
+    });
+    assert.equal(local.status, 200);
+    assert.deepEqual(await local.json(), {
+      ok: true,
+      result: { generatedAt: "now" },
+    });
+    assert.deepEqual(calls, [{
+      action: "snapshot",
+      params: { refresh: true },
+    }]);
+
+    const externalHeaders = {
+      "CF-Connecting-IP": "203.0.113.10",
+      "Content-Type": "application/json",
+    };
+    assert.equal((await fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: externalHeaders,
+      body: JSON.stringify({ action: "snapshot", params: {} }),
+    })).status, 401);
+    assert.equal((await fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: {
+        ...externalHeaders,
+        Authorization: `tma ${signedInitData()}`,
+      },
+      body: JSON.stringify({ action: "snapshot", params: {} }),
+    })).status, 200);
+    assert.equal((await fetch(`${address.url}api/control`, {
+      method: "GET",
+    })).status, 405);
+
+    const imageBody = Buffer.from("fake-png");
+    const upload = await fetch(`${address.url}api/attachment`, {
+      method: "POST",
+      headers: { "Content-Type": "image/png" },
+      body: imageBody,
+    });
+    assert.equal(upload.status, 201);
+    const uploaded = await upload.json();
+    assert.equal(path.dirname(uploaded.path), attachmentDirectory);
+    assert.deepEqual(await readFile(uploaded.path), imageBody);
+    assert.equal((await fetch(`${address.url}api/attachment`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: "not an image",
+    })).status, 400);
+  } finally {
     await server.close();
     await rm(directory, { recursive: true, force: true });
   }

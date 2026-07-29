@@ -205,6 +205,11 @@ import { MiniAppPublisher } from "./mini-app-publisher.mjs";
 import { QuickTunnelController } from "./quick-tunnel.mjs";
 
 const config = await loadConfig();
+const runtimeCommandRoot = process.env.AGENT_HUB_RUNTIME_ROOT
+  ?? process.env.TELEGRAM_INTEGRATION_RUNTIME_ROOT
+  ?? ((process.env.AGENT_HUB_CONFIG ?? process.env.TELEGRAM_CODEX_CONFIG)
+    ? path.dirname(config.configPath)
+    : defaultRuntimeRoot());
 const codexRolloutContextSanitizer = new CodexRolloutContextSanitizer({
   ...config.codexRolloutContext,
 });
@@ -218,6 +223,8 @@ const miniAppServer = config.miniApp.enabled
     workLogFile: path.join(config.projectRoot, "WORK_LOG.md"),
     botToken: config.token,
     allowedUserIds: config.allowedUserIds,
+    controlHandler: handleDesktopControl,
+    attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
   })
   : null;
 const publicMiniAppServer = config.miniApp.enabled && config.miniApp.quickTunnel.enabled
@@ -228,6 +235,8 @@ const publicMiniAppServer = config.miniApp.enabled && config.miniApp.quickTunnel
     botToken: config.token,
     allowedUserIds: config.allowedUserIds,
     requireTelegramAuth: true,
+    controlHandler: handleDesktopControl,
+    attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
   })
   : null;
 const defaultDataDirectory = path.join(AGENT_HUB_ROOT, "data");
@@ -360,11 +369,6 @@ const instanceGuard = new SingleInstanceGuard({ dataDir: config.dataDir, lockFil
 await instanceGuard.acquire();
 const turnEndNotifications = new TurnEndNotificationRegistry();
 const deliveringTurnEndKeys = new Set();
-const runtimeCommandRoot = process.env.AGENT_HUB_RUNTIME_ROOT
-  ?? process.env.TELEGRAM_INTEGRATION_RUNTIME_ROOT
-  ?? ((process.env.AGENT_HUB_CONFIG ?? process.env.TELEGRAM_CODEX_CONFIG)
-    ? path.dirname(config.configPath)
-    : defaultRuntimeRoot());
 const runtimeCommandServer = new RuntimeCommandServer({
   runtimeRoot: runtimeCommandRoot,
   handler: handleRuntimeCommand,
@@ -570,6 +574,8 @@ async function startMiniApp() {
     miniAppPublisher ??= new MiniAppPublisher({
       workLogFile: path.join(config.projectRoot, "WORK_LOG.md"),
       ...config.miniApp.worker,
+      controlHandler: handleDesktopControl,
+      attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
       onPublished: async (url) => {
         await Promise.all(miniAppMenuButtonRequests({
           url,
@@ -2429,6 +2435,7 @@ async function desktopTaskHistory(params) {
     ? Math.max(0, Math.min(requestedEnd, total))
     : total;
   const limit = Math.max(1, Math.min(Number(params.limit) || 10, 20));
+  const maxAnswerChars = Math.max(1_000, Math.min(Number(params.maxAnswerChars) || 200_000, 200_000));
   const start = Math.max(0, end - limit);
   return {
     provider,
@@ -2441,7 +2448,7 @@ async function desktopTaskHistory(params) {
     items: history.slice(start, end).map((item) => ({
       id: String(item.id ?? ""),
       prompt: String(item.prompt ?? "").slice(0, 100_000),
-      answer: String(item.answer ?? "").slice(0, 200_000),
+      answer: String(item.answer ?? "").slice(0, maxAnswerChars),
       status: String(item.status ?? ""),
       active: item.active === true,
       completed: item.completed === true,
@@ -2465,6 +2472,75 @@ async function desktopSelectTask(params) {
     taskTitle: entry.title,
   });
   return desktopSnapshot();
+}
+
+async function desktopOpenTask(params) {
+  const snapshot = await desktopSelectTask(params);
+  return {
+    snapshot,
+    history: await desktopTaskHistory({
+      provider: params.provider,
+      threadId: params.threadId,
+      limit: params.limit,
+      maxAnswerChars: params.maxAnswerChars,
+    }),
+  };
+}
+
+async function desktopOpenTurn(params) {
+  const provider = String(params.provider ?? "").trim();
+  const taskThread = String(params.taskThreadId ?? "").trim();
+  const turnThread = String(params.turnThreadId ?? taskThread).trim();
+  const selectedTurnId = String(params.turnId ?? "").trim();
+  if (!["codex", "claude"].includes(provider) || !taskThread || !turnThread || !selectedTurnId) {
+    throw new Error("Укажите корректный ход");
+  }
+  const catalog = await refreshTaskCatalog();
+  const entry = catalog.find((item) => item.provider === provider && item.threadId === taskThread);
+  if (!entry) throw new Error("Задача не найдена в локальном каталоге");
+  const record = await workLogUsageStore.getTurn({
+    provider,
+    threadId: turnThread,
+    turnId: selectedTurnId,
+  });
+  if (!record) throw new Error("Ход не найден в журнале");
+  const recordedTaskThread = String(record.taskThreadId ?? record.threadId ?? "").trim();
+  if (
+    recordedTaskThread !== taskThread
+    || (record.projectRoot && !samePath(record.projectRoot, entry.projectRoot))
+  ) {
+    throw new Error("Ход не относится к выбранной задаче");
+  }
+  await activateMessageBinding({
+    provider: entry.provider,
+    projectRoot: entry.projectRoot,
+    threadId: entry.threadId,
+    taskTitle: entry.title,
+  });
+  return {
+    snapshot: await desktopSnapshot(),
+    history: await desktopTaskHistory({
+      provider,
+      threadId: taskThread,
+      limit: params.limit,
+      maxAnswerChars: params.maxAnswerChars,
+    }),
+    focusedTurn: {
+      provider,
+      taskThreadId: taskThread,
+      turnThreadId: turnThread,
+      turnId: selectedTurnId,
+      title: String(record.title ?? ""),
+      prompt: String(record.prompt ?? ""),
+      answer: String(record.body ?? record.text ?? "").slice(
+        0,
+        Math.max(1_000, Math.min(Number(params.maxAnswerChars) || 200_000, 200_000)),
+      ),
+      status: String(record.status ?? ""),
+      startedAt: record.startedAt ?? null,
+      completedAt: record.completedAt ?? null,
+    },
+  };
 }
 
 async function desktopSendMessage(params) {
@@ -2763,19 +2839,28 @@ function serializeDesktopMutation(operation) {
   return next;
 }
 
-async function handleDesktopControl({ action, params }) {
-  if (action === "snapshot") return desktopSnapshot(params);
-  if (action === "task-history") return desktopTaskHistory(params);
-  if (action === "select-task") return serializeDesktopMutation(() => desktopSelectTask(params));
-  if (action === "send-message") return serializeDesktopMutation(() => desktopSendMessage(params));
-  if (action === "new-task") return serializeDesktopMutation(() => desktopNewTask(params));
-  if (action === "update-setting") return serializeDesktopMutation(() => desktopUpdateSetting(params));
-  if (action === "rename-task") return serializeDesktopMutation(() => desktopRenameTask(params));
+async function handleDesktopControl({ action, params, context = null }) {
+  const effectiveParams = context?.source === "telegram-mini-app"
+    ? {
+      ...params,
+      limit: Math.min(Number(params.limit) || 10, 10),
+      maxAnswerChars: 75_000,
+    }
+    : params;
+  if (action === "snapshot") return desktopSnapshot(effectiveParams);
+  if (action === "task-history") return desktopTaskHistory(effectiveParams);
+  if (action === "open-task") return serializeDesktopMutation(() => desktopOpenTask(effectiveParams));
+  if (action === "open-turn") return serializeDesktopMutation(() => desktopOpenTurn(effectiveParams));
+  if (action === "select-task") return serializeDesktopMutation(() => desktopSelectTask(effectiveParams));
+  if (action === "send-message") return serializeDesktopMutation(() => desktopSendMessage(effectiveParams));
+  if (action === "new-task") return serializeDesktopMutation(() => desktopNewTask(effectiveParams));
+  if (action === "update-setting") return serializeDesktopMutation(() => desktopUpdateSetting(effectiveParams));
+  if (action === "rename-task") return serializeDesktopMutation(() => desktopRenameTask(effectiveParams));
   if (action === "archive-task") return serializeDesktopMutation(() => desktopArchiveTask());
   if (action === "task-diff") return desktopTaskDiff();
   if (action === "cancel-run") return serializeDesktopMutation(() => desktopCancelRun());
-  if (action === "resolve-approval") return serializeDesktopMutation(() => desktopResolveApproval(params));
-  if (action === "deferred-input") return serializeDesktopMutation(() => desktopDeferredInput(params));
+  if (action === "resolve-approval") return serializeDesktopMutation(() => desktopResolveApproval(effectiveParams));
+  if (action === "deferred-input") return serializeDesktopMutation(() => desktopDeferredInput(effectiveParams));
   if (action === "status-details") return desktopStatusDetails();
   if (action === "speak-last-answer") return desktopSpeakLastAnswer();
   if (action === "restart-server") return serializeDesktopMutation(() => desktopRestartServer());

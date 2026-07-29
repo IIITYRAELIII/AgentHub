@@ -70,11 +70,21 @@ function lazyDayShell({ date, summary }) {
     + "</details>";
 }
 
-function turnIdBefore(source, detailsStart) {
-  const prefix = source.slice(Math.max(0, detailsStart - 400), detailsStart);
-  return [...prefix.matchAll(
-    /<div\b[^>]*data-work-log-turn-entry\b[^>]*data-work-log-turn-id="([^"]+)"[^>]*>/giu,
-  )].at(-1)?.[1] ?? "";
+function turnReferenceBefore(source, detailsStart) {
+  const prefix = source.slice(Math.max(0, detailsStart - 1_200), detailsStart);
+  const opening = [...prefix.matchAll(
+    /<div\b[^>]*data-work-log-turn-entry\b[^>]*>/giu,
+  )].at(-1)?.[0] ?? "";
+  const attribute = (name) => opening.match(
+    new RegExp(`\\b${name}="([^"]+)"`, "iu"),
+  )?.[1] ?? "";
+  const turnId = attribute("data-work-log-turn-id");
+  if (!turnId) return "";
+  const provider = attribute("data-work-log-turn-provider");
+  const threadId = attribute("data-work-log-turn-thread-id");
+  return provider && threadId
+    ? Buffer.from(JSON.stringify([provider, threadId, turnId]), "utf8").toString("base64url")
+    : turnId;
 }
 
 function shallowDaySection(section) {
@@ -91,12 +101,12 @@ function shallowDaySection(section) {
     const expandedEnd = expandedStart >= 0
       ? balancedElementEnd(details, "div", expandedStart)
       : -1;
-    const turnId = turnIdBefore(source, match.index);
-    if (!summary || !turnId || expandedEnd < 0) continue;
-    turns[turnId] = details.slice(expandedStart, expandedEnd);
+    const turnRef = turnReferenceBefore(source, match.index);
+    if (!summary || !turnRef || expandedEnd < 0) continue;
+    turns[turnRef] = details.slice(expandedStart, expandedEnd);
     const detailsOpening = match[0].replace(
       /data-work-log-turn-details/iu,
-      `data-work-log-turn-details data-lazy-turn-id="${turnId}"`,
+      `data-work-log-turn-details data-lazy-turn-id="${turnRef}"`,
     );
     ranges.push({
       start: match.index,

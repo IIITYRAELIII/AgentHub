@@ -6,6 +6,45 @@ const MAX_TELEGRAM_AUTH_AGE_SECONDS = 86_400;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_CHUNK_COUNT = 256;
 const SYNC_ID_PATTERN = /^[a-z0-9_-]{8,100}$/iu;
+const MAX_CONTROL_REQUEST_BYTES = 64 * 1024;
+const MAX_CONTROL_RESULT_BYTES = 1024 * 1024;
+const MAX_CONTROL_ERROR_CHARS = 4_096;
+const MAX_CONTROL_COMMANDS = 500;
+const CONTROL_EXPIRY_MS = 30 * 60 * 1_000;
+const CONTROL_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const ATTACHMENT_CHUNK_BYTES = 1024 * 1024;
+const MAX_ATTACHMENTS_PER_COMMAND = 8;
+const MAX_ATTACHMENTS_PER_USER = 32;
+const MAX_ATTACHMENT_BYTES_PER_USER = 100 * 1024 * 1024;
+const ATTACHMENT_EXPIRY_MS = 30 * 60 * 1_000;
+const IMAGE_CONTENT_TYPES = new Map([
+  ["image/png", ".png"],
+  ["image/jpeg", ".jpg"],
+  ["image/webp", ".webp"],
+  ["image/gif", ".gif"],
+  ["image/bmp", ".bmp"],
+]);
+const CONTROL_ACTIONS = new Set([
+  "snapshot",
+  "task-history",
+  "open-task",
+  "open-turn",
+  "select-task",
+  "send-message",
+  "new-task",
+  "update-setting",
+  "rename-task",
+  "archive-task",
+  "task-diff",
+  "cancel-run",
+  "resolve-approval",
+  "deferred-input",
+  "status-details",
+  "speak-last-answer",
+  "restart-server",
+]);
 
 function hex(bytes) {
   return [...new Uint8Array(bytes)].map((value) => value.toString(16).padStart(2, "0")).join("");
@@ -43,6 +82,164 @@ async function verifyHmac(key, value, signature) {
     ["verify"],
   );
   return crypto.subtle.verify("HMAC", cryptoKey, bytesFromHex(signature), encoder.encode(value));
+}
+
+function isPlainObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.prototype.toString.call(value) === "[object Object]";
+}
+
+async function readBoundedBody(request, maxBytes, label) {
+  const contentLength = Number(request.headers.get("Content-Length"));
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    throw new Error(`${label} is too large`);
+  }
+  const body = await request.text();
+  if (encoder.encode(body).byteLength > maxBytes) throw new Error(`${label} is too large`);
+  return body;
+}
+
+async function readBoundedBinary(request, maxBytes, label) {
+  const contentLength = Number(request.headers.get("Content-Length"));
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    throw new Error(`${label} is too large`);
+  }
+  const body = await request.arrayBuffer();
+  if (body.byteLength > maxBytes) throw new Error(`${label} is too large`);
+  return body;
+}
+
+function parseJson(body, label) {
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error(`invalid ${label}`);
+  }
+}
+
+function hasAttachments(value, seen = new Set()) {
+  if (value === null || typeof value !== "object") return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.some((item) => hasAttachments(item, seen));
+  for (const [key, item] of Object.entries(value)) {
+    if (["attachment", "attachments", "image", "images", "files"].includes(key.toLowerCase())) {
+      if (item != null && (!Array.isArray(item) || item.length > 0)) return true;
+    }
+    if (hasAttachments(item, seen)) return true;
+  }
+  return false;
+}
+
+function attachmentIdFromReference(value) {
+  const reference = String(value ?? "").trim().toLowerCase();
+  if (!reference.startsWith(REMOTE_ATTACHMENT_PREFIX)) return null;
+  const id = reference.slice(REMOTE_ATTACHMENT_PREFIX.length);
+  return CONTROL_ID_PATTERN.test(id) ? id : null;
+}
+
+function attachmentIdsFromParams(action, params) {
+  if (!Object.hasOwn(params, "attachments") || params.attachments == null) return [];
+  if (
+    action !== "send-message"
+    || !Array.isArray(params.attachments)
+    || params.attachments.length < 1
+    || params.attachments.length > MAX_ATTACHMENTS_PER_COMMAND
+  ) {
+    throw new Error("invalid remote attachments");
+  }
+  const ids = params.attachments.map(attachmentIdFromReference);
+  if (ids.some((id) => !id) || new Set(ids).size !== ids.length) {
+    throw new Error("invalid remote attachments");
+  }
+  return ids;
+}
+
+function imageMatchesContentType(bytes, contentType) {
+  const value = new Uint8Array(bytes);
+  if (contentType === "image/png") {
+    return value.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((item, index) => value[index] === item);
+  }
+  if (contentType === "image/jpeg") return value.length >= 3 && value[0] === 0xff && value[1] === 0xd8 && value[2] === 0xff;
+  if (contentType === "image/gif") {
+    const signature = new TextDecoder().decode(value.slice(0, 6));
+    return signature === "GIF87a" || signature === "GIF89a";
+  }
+  if (contentType === "image/webp") {
+    return value.length >= 12
+      && new TextDecoder().decode(value.slice(0, 4)) === "RIFF"
+      && new TextDecoder().decode(value.slice(8, 12)) === "WEBP";
+  }
+  if (contentType === "image/bmp") return value.length >= 2 && value[0] === 0x42 && value[1] === 0x4d;
+  return false;
+}
+
+async function deterministicAttachmentId(userId, bodyHash) {
+  const value = await sha256(`${userId}\n${bodyHash}`);
+  const chars = value.slice(0, 32).split("");
+  chars[12] = "5";
+  chars[16] = ["8", "9", "a", "b"][Number.parseInt(chars[16], 16) % 4];
+  return [
+    chars.slice(0, 8).join(""),
+    chars.slice(8, 12).join(""),
+    chars.slice(12, 16).join(""),
+    chars.slice(16, 20).join(""),
+    chars.slice(20, 32).join(""),
+  ].join("-");
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${stableStringify(value[key])}`
+    )).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function validateControlCommand(payload) {
+  if (!isPlainObject(payload)) throw new Error("invalid control command");
+  const id = String(payload.id ?? payload.commandId ?? "").trim().toLowerCase();
+  const action = String(payload.action ?? "").trim();
+  const params = payload.params ?? {};
+  if (!CONTROL_ID_PATTERN.test(id)) throw new Error("invalid control command id");
+  if (!CONTROL_ACTIONS.has(action)) throw new Error("control action is not allowed");
+  if (!isPlainObject(params)) throw new Error("invalid control command params");
+  const attachmentIds = attachmentIdsFromParams(action, params);
+  const remainingParams = { ...params };
+  delete remainingParams.attachments;
+  if (hasAttachments(remainingParams)) {
+    throw new Error("attachments are not supported by the remote control relay");
+  }
+  return {
+    id,
+    action,
+    params: attachmentIds.length
+      ? { ...params, attachments: attachmentIds.map((attachmentId) => `${REMOTE_ATTACHMENT_PREFIX}${attachmentId}`) }
+      : params,
+  };
+}
+
+export async function validateControlServiceRequest(request, secret, { now = Date.now() } = {}) {
+  const timestamp = Number(request.headers.get("X-Agent-Hub-Timestamp"));
+  const receivedSignature = String(request.headers.get("X-Agent-Hub-Signature") ?? "").toLowerCase();
+  if (!Number.isSafeInteger(timestamp) || Math.abs(Math.trunc(now / 1_000) - timestamp) > MAX_SYNC_AGE_SECONDS) {
+    throw new Error("expired control request");
+  }
+  if (!/^[a-f0-9]{64}$/u.test(receivedSignature)) throw new Error("invalid control signature");
+  const body = await readBoundedBody(request, MAX_CONTROL_RESULT_BYTES, "control payload");
+  const url = new URL(request.url);
+  const signatureValue = [
+    timestamp,
+    request.method.toUpperCase(),
+    url.pathname,
+    await sha256(body),
+  ].join("\n");
+  if (!await verifyHmac(secret, signatureValue, receivedSignature)) {
+    throw new Error("invalid control signature");
+  }
+  return body;
 }
 
 function allowedUserIds(value) {
@@ -152,6 +349,56 @@ function json(payload, status = 200) {
 export class JournalStore extends DurableObject {
   #cachedPayload = null;
 
+  async #controlCommands(storage = this.ctx.storage) {
+    return [...(await storage.list({ prefix: "control:command:" })).values()];
+  }
+
+  async #cleanupControlCommands(now = Date.now(), storage = this.ctx.storage) {
+    const commands = await this.#controlCommands(storage);
+    const expiredKeys = commands
+      .filter((command) => Number(command?.expiresAt ?? 0) <= now)
+      .map((command) => `control:command:${command.id}`);
+    if (expiredKeys.length) await storage.delete(expiredKeys);
+    return commands.filter((command) => Number(command?.expiresAt ?? 0) > now);
+  }
+
+  async #attachmentManifests(storage = this.ctx.storage) {
+    return [...(await storage.list({ prefix: "control:attachment:" })).values()];
+  }
+
+  async #deleteAttachment(manifest, storage = this.ctx.storage) {
+    await storage.delete([
+      `control:attachment:${manifest.id}`,
+      ...Array.from(
+        { length: Number(manifest.chunkCount) || 0 },
+        (_, index) => `control:attachment-chunk:${manifest.id}:${index}`,
+      ),
+    ]);
+  }
+
+  async #cleanupAttachments(now = Date.now(), storage = this.ctx.storage) {
+    const manifests = await this.#attachmentManifests(storage);
+    const active = [];
+    for (const manifest of manifests) {
+      if (Number(manifest?.expiresAt ?? 0) <= now) await this.#deleteAttachment(manifest, storage);
+      else active.push(manifest);
+    }
+    return active;
+  }
+
+  #controlStatus(command) {
+    const payload = {
+      id: command.id,
+      status: command.status,
+      createdAt: command.createdAt,
+      updatedAt: command.updatedAt,
+      expiresAt: command.expiresAt,
+    };
+    if (command.status === "completed") payload.result = command.result;
+    if (command.status === "failed") payload.error = command.error;
+    return payload;
+  }
+
   async #payload() {
     const manifest = await this.ctx.storage.get("journal-manifest");
     const expectedVersion = String(manifest?.version ?? "");
@@ -188,6 +435,251 @@ export class JournalStore extends DurableObject {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/attachment/upload") {
+      const userId = String(request.headers.get("X-Agent-Hub-User-Id") ?? "");
+      const id = String(request.headers.get("X-Agent-Hub-Attachment-Id") ?? "").toLowerCase();
+      const contentType = String(request.headers.get("Content-Type") ?? "").toLowerCase();
+      const bodyHash = String(request.headers.get("X-Agent-Hub-Attachment-Hash") ?? "").toLowerCase();
+      const body = await request.arrayBuffer();
+      if (
+        !userId
+        || !CONTROL_ID_PATTERN.test(id)
+        || !IMAGE_CONTENT_TYPES.has(contentType)
+        || !/^[a-f0-9]{64}$/u.test(bodyHash)
+        || body.byteLength < 1
+        || body.byteLength > MAX_ATTACHMENT_BYTES
+        || !imageMatchesContentType(body, contentType)
+        || await sha256(body) !== bodyHash
+      ) {
+        return json({ error: "invalid remote attachment" }, 400);
+      }
+      const now = Date.now();
+      return this.ctx.storage.transaction(async (storage) => {
+        const manifests = await this.#cleanupAttachments(now, storage);
+        const key = `control:attachment:${id}`;
+        const existing = await storage.get(key);
+        if (existing) {
+          if (existing.userId !== userId || existing.bodyHash !== bodyHash || existing.contentType !== contentType) {
+            return json({ error: "remote attachment id conflict" }, 409);
+          }
+          return json({
+            ok: true,
+            path: `${REMOTE_ATTACHMENT_PREFIX}${id}`,
+            id,
+            expiresAt: existing.expiresAt,
+          });
+        }
+        const userAttachments = manifests.filter((manifest) => manifest.userId === userId);
+        const userBytes = userAttachments.reduce((total, manifest) => total + Number(manifest.size ?? 0), 0);
+        if (
+          userAttachments.length >= MAX_ATTACHMENTS_PER_USER
+          || userBytes + body.byteLength > MAX_ATTACHMENT_BYTES_PER_USER
+        ) {
+          return json({ error: "remote attachment quota exceeded" }, 429);
+        }
+        const chunks = [];
+        for (let offset = 0; offset < body.byteLength; offset += ATTACHMENT_CHUNK_BYTES) {
+          chunks.push(body.slice(offset, Math.min(offset + ATTACHMENT_CHUNK_BYTES, body.byteLength)));
+        }
+        const manifest = {
+          id,
+          userId,
+          contentType,
+          extension: IMAGE_CONTENT_TYPES.get(contentType),
+          bodyHash,
+          size: body.byteLength,
+          chunkCount: chunks.length,
+          commandIds: [],
+          createdAt: now,
+          expiresAt: now + ATTACHMENT_EXPIRY_MS,
+        };
+        await storage.put({
+          [key]: manifest,
+          ...Object.fromEntries(chunks.map((chunk, index) => [
+            `control:attachment-chunk:${id}:${index}`,
+            chunk,
+          ])),
+        });
+        return json({
+          ok: true,
+          path: `${REMOTE_ATTACHMENT_PREFIX}${id}`,
+          id,
+          expiresAt: manifest.expiresAt,
+        }, 201);
+      });
+    }
+    if (request.method === "POST" && url.pathname === "/attachment/pull") {
+      const payload = await request.json();
+      const id = String(payload?.id ?? "").toLowerCase();
+      const userId = String(payload?.userId ?? "");
+      const commandId = String(payload?.commandId ?? "").toLowerCase();
+      if (!CONTROL_ID_PATTERN.test(id) || !userId || !CONTROL_ID_PATTERN.test(commandId)) {
+        return json({ error: "invalid remote attachment request" }, 400);
+      }
+      await this.#cleanupAttachments();
+      const manifest = await this.ctx.storage.get(`control:attachment:${id}`);
+      if (
+        !manifest
+        || manifest.userId !== userId
+        || !Array.isArray(manifest.commandIds)
+        || !manifest.commandIds.includes(commandId)
+      ) {
+        return json({ error: "remote attachment not found" }, 404);
+      }
+      const chunkKeys = Array.from(
+        { length: manifest.chunkCount },
+        (_, index) => `control:attachment-chunk:${id}:${index}`,
+      );
+      const chunks = await this.ctx.storage.get(chunkKeys);
+      if (chunks.size !== manifest.chunkCount) return json({ error: "remote attachment is incomplete" }, 503);
+      const body = new Uint8Array(manifest.size);
+      let offset = 0;
+      for (const key of chunkKeys) {
+        const chunk = new Uint8Array(chunks.get(key));
+        body.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return new Response(body, {
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": manifest.contentType,
+          "Content-Length": String(body.byteLength),
+          "X-Agent-Hub-Attachment-Hash": manifest.bodyHash,
+          "X-Agent-Hub-Attachment-Id": manifest.id,
+        },
+      });
+    }
+    if (request.method === "POST" && url.pathname === "/control/enqueue") {
+      const payload = await request.json();
+      const userId = String(payload?.userId ?? "");
+      let command;
+      try {
+        command = validateControlCommand(payload);
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+      if (!userId) return json({ error: "invalid control user" }, 400);
+      const now = Date.now();
+      const key = `control:command:${command.id}`;
+      const requestHash = await sha256(`${command.action}\n${stableStringify(command.params)}`);
+      return this.ctx.storage.transaction(async (storage) => {
+        const commands = await this.#cleanupControlCommands(now, storage);
+        await this.#cleanupAttachments(now, storage);
+        const existing = await storage.get(key);
+        if (existing) {
+          if (existing.userId !== userId || existing.requestHash !== requestHash) {
+            return json({ error: "control command id conflict" }, 409);
+          }
+          return json(this.#controlStatus(existing), 200);
+        }
+        if (commands.length >= MAX_CONTROL_COMMANDS) {
+          return json({ error: "control queue is full" }, 429);
+        }
+        const attachmentIds = attachmentIdsFromParams(command.action, command.params);
+        const attachmentManifests = [];
+        for (const attachmentId of attachmentIds) {
+          const manifest = await storage.get(`control:attachment:${attachmentId}`);
+          if (!manifest || manifest.userId !== userId) {
+            return json({ error: "remote attachment not found" }, 404);
+          }
+          attachmentManifests.push(manifest);
+        }
+        const record = {
+          ...command,
+          attachmentIds,
+          userId,
+          requestHash,
+          status: "pending",
+          createdAt: now,
+          updatedAt: now,
+          expiresAt: now + CONTROL_EXPIRY_MS,
+        };
+        await storage.put({
+          [key]: record,
+          ...Object.fromEntries(attachmentManifests.map((manifest) => {
+            manifest.commandIds = [...new Set([...(manifest.commandIds ?? []), command.id])];
+            manifest.expiresAt = Math.max(manifest.expiresAt, record.expiresAt);
+            return [`control:attachment:${manifest.id}`, manifest];
+          })),
+        });
+        return json(this.#controlStatus(record), 202);
+      });
+    }
+    if (request.method === "GET" && url.pathname === "/control/status") {
+      const id = String(url.searchParams.get("id") ?? "").toLowerCase();
+      const userId = String(url.searchParams.get("userId") ?? "");
+      if (!CONTROL_ID_PATTERN.test(id) || !userId) return json({ error: "invalid control query" }, 400);
+      await this.#cleanupControlCommands();
+      const command = await this.ctx.storage.get(`control:command:${id}`);
+      if (!command || command.userId !== userId) return json({ error: "control command not found" }, 404);
+      return json(this.#controlStatus(command));
+    }
+    if (request.method === "POST" && url.pathname === "/control/pull") {
+      const payload = await request.json();
+      const limit = Math.min(20, Math.max(1, Number(payload?.limit) || 10));
+      const now = Date.now();
+      return this.ctx.storage.transaction(async (storage) => {
+        const commands = (await this.#cleanupControlCommands(now, storage))
+          .filter((command) => command.status === "pending")
+          .sort((left, right) => left.createdAt - right.createdAt)
+          .slice(0, limit);
+        if (commands.length) {
+          await storage.put(Object.fromEntries(commands.map((command) => {
+            command.status = "running";
+            command.updatedAt = now;
+            return [`control:command:${command.id}`, command];
+          })));
+        }
+        return json({
+          commands: commands.map((command) => ({
+            id: command.id,
+            userId: command.userId,
+            action: command.action,
+            params: command.params,
+            createdAt: command.createdAt,
+            expiresAt: command.expiresAt,
+          })),
+        });
+      });
+    }
+    if (request.method === "POST" && url.pathname === "/control/result") {
+      const payload = await request.json();
+      const id = String(payload?.id ?? "").toLowerCase();
+      const userId = String(payload?.userId ?? "");
+      if (!CONTROL_ID_PATTERN.test(id) || !userId || typeof payload?.ok !== "boolean") {
+        return json({ error: "invalid control result" }, 400);
+      }
+      const key = `control:command:${id}`;
+      return this.ctx.storage.transaction(async (storage) => {
+        const command = await storage.get(key);
+        if (!command || command.userId !== userId) return json({ error: "control command not found" }, 404);
+        if (command.status === "completed" || command.status === "failed") {
+          return json(this.#controlStatus(command));
+        }
+        if (command.status !== "running") return json({ error: "control command is not running" }, 409);
+        const now = Date.now();
+        command.status = payload.ok ? "completed" : "failed";
+        command.updatedAt = now;
+        command.expiresAt = now + CONTROL_EXPIRY_MS;
+        if (payload.ok) {
+          command.result = payload.result ?? null;
+          delete command.error;
+        } else {
+          command.error = String(payload.error ?? "Agent Hub control action failed").slice(0, MAX_CONTROL_ERROR_CHARS);
+          delete command.result;
+        }
+        await storage.put(key, command);
+        for (const attachmentId of command.attachmentIds ?? []) {
+          const attachmentKey = `control:attachment:${attachmentId}`;
+          const manifest = await storage.get(attachmentKey);
+          if (!manifest) continue;
+          manifest.commandIds = (manifest.commandIds ?? []).filter((commandId) => commandId !== command.id);
+          if (manifest.commandIds.length) await storage.put(attachmentKey, manifest);
+          else await this.#deleteAttachment(manifest, storage);
+        }
+        return json(this.#controlStatus(command));
+      });
+    }
     if (request.method === "POST" && url.pathname === "/sync") {
       const payload = await request.json();
       const previous = await this.ctx.storage.get("journal-manifest");
@@ -303,6 +795,15 @@ function secureStaticResponse(response) {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
+async function telegramUser(request, env) {
+  const authorization = String(request.headers.get("Authorization") ?? "");
+  if (!authorization.startsWith("tma ")) throw new Error("Откройте Agent Hub из Telegram.");
+  return validateTelegramInitData(authorization.slice(4), {
+    botToken: env.TELEGRAM_BOT_TOKEN,
+    allowedIds: allowedUserIds(env.ALLOWED_USER_IDS),
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -342,6 +843,176 @@ export default {
         return json({ error: error.message }, 401);
       }
     }
+    if (url.pathname === "/api/attachment") {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      let user;
+      try {
+        user = await telegramUser(request, env);
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+      try {
+        const contentType = String(request.headers.get("Content-Type") ?? "")
+          .split(";", 1)[0]
+          .trim()
+          .toLowerCase();
+        if (!IMAGE_CONTENT_TYPES.has(contentType)) throw new Error("unsupported image content type");
+        const body = await readBoundedBinary(request, MAX_ATTACHMENT_BYTES, "remote attachment");
+        if (body.byteLength < 1 || !imageMatchesContentType(body, contentType)) {
+          throw new Error("image content does not match its type");
+        }
+        const bodyHash = await sha256(body);
+        const requestedId = String(request.headers.get("X-Agent-Hub-Attachment-Id") ?? "").toLowerCase();
+        const id = requestedId || await deterministicAttachmentId(String(user.id), bodyHash);
+        if (!CONTROL_ID_PATTERN.test(id)) throw new Error("invalid remote attachment id");
+        return store.fetch(new Request("https://journal.internal/attachment/upload", {
+          method: "POST",
+          headers: {
+            "Content-Type": contentType,
+            "X-Agent-Hub-User-Id": String(user.id),
+            "X-Agent-Hub-Attachment-Id": id,
+            "X-Agent-Hub-Attachment-Hash": bodyHash,
+          },
+          body,
+        }));
+      } catch (error) {
+        const status = /too large/iu.test(error.message) ? 413 : 400;
+        return json({ error: error.message }, status);
+      }
+    }
+    if (url.pathname === "/api/control" || url.pathname === "/api/control/enqueue") {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      let user;
+      try {
+        user = await telegramUser(request, env);
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+      try {
+        const body = await readBoundedBody(request, MAX_CONTROL_REQUEST_BYTES, "control command");
+        const command = validateControlCommand(parseJson(body, "control command"));
+        const response = await store.fetch(new Request("https://journal.internal/control/enqueue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...command, userId: String(user.id) }),
+        }));
+        if (!response.ok) return response;
+        return json({ ok: true, pending: true, id: command.id }, response.status);
+      } catch (error) {
+        const status = /too large/iu.test(error.message) ? 413 : 400;
+        return json({ error: error.message }, status);
+      }
+    }
+    if (url.pathname === "/api/control/result" && request.method === "GET") {
+      let user;
+      try {
+        user = await telegramUser(request, env);
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+      const id = String(url.searchParams.get("id") ?? "").toLowerCase();
+      if (!CONTROL_ID_PATTERN.test(id)) return json({ error: "invalid control command id" }, 400);
+      const response = await store.fetch(new Request(
+        `https://journal.internal/control/status?id=${encodeURIComponent(id)}&userId=${encodeURIComponent(user.id)}`,
+      ));
+      if (!response.ok) return response;
+      const payload = await response.json();
+      if (payload.status === "pending" || payload.status === "running") {
+        return json({ ok: true, pending: true, id, status: payload.status }, 202);
+      }
+      if (payload.status === "completed") {
+        return json({ ok: true, pending: false, id, result: payload.result ?? null });
+      }
+      return json({
+        ok: false,
+        pending: false,
+        id,
+        error: String(payload.error ?? "Agent Hub control action failed"),
+      });
+    }
+    if (url.pathname === "/api/control/pull") {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      let body;
+      try {
+        body = await validateControlServiceRequest(request, env.SYNC_SECRET);
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+      try {
+        const payload = parseJson(body, "control pull");
+        const limit = Number(payload?.limit ?? 10);
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("invalid control pull limit");
+        return store.fetch(new Request("https://journal.internal/control/pull", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ limit }),
+        }));
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
+    if (url.pathname === "/api/control/result" && request.method === "POST") {
+      let body;
+      try {
+        body = await validateControlServiceRequest(request, env.SYNC_SECRET);
+      } catch (error) {
+        const status = /too large/iu.test(error.message) ? 413 : 401;
+        return json({ error: error.message }, status);
+      }
+      try {
+        const payload = parseJson(body, "control result");
+        const id = String(payload?.id ?? "").toLowerCase();
+        const userId = String(payload?.userId ?? "");
+        if (
+          !CONTROL_ID_PATTERN.test(id)
+          || !userId
+          || typeof payload?.ok !== "boolean"
+          || (payload.ok && encoder.encode(JSON.stringify(payload.result ?? null)).byteLength > MAX_CONTROL_RESULT_BYTES)
+        ) {
+          throw new Error("invalid control result");
+        }
+        return store.fetch(new Request("https://journal.internal/control/result", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id,
+            userId,
+            ok: payload.ok,
+            ...(payload.ok
+              ? { result: payload.result ?? null }
+              : { error: String(payload.error ?? "").slice(0, MAX_CONTROL_ERROR_CHARS) }),
+          }),
+        }));
+      } catch (error) {
+        const status = /too large/iu.test(error.message) ? 413 : 400;
+        return json({ error: error.message }, status);
+      }
+    }
+    if (url.pathname === "/api/control/attachment/pull") {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      let body;
+      try {
+        body = await validateControlServiceRequest(request, env.SYNC_SECRET);
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+      try {
+        const payload = parseJson(body, "remote attachment request");
+        const id = String(payload?.id ?? "").toLowerCase();
+        const userId = String(payload?.userId ?? "");
+        const commandId = String(payload?.commandId ?? "").toLowerCase();
+        if (!CONTROL_ID_PATTERN.test(id) || !userId || !CONTROL_ID_PATTERN.test(commandId)) {
+          throw new Error("invalid remote attachment request");
+        }
+        return store.fetch(new Request("https://journal.internal/attachment/pull", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, userId, commandId }),
+        }));
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
     if ([
       "/api/journal",
       "/api/journal/day",
@@ -350,13 +1021,8 @@ export default {
       if (request.method !== "GET" && request.method !== "HEAD") {
         return json({ error: "Method Not Allowed" }, 405);
       }
-      const authorization = String(request.headers.get("Authorization") ?? "");
       try {
-        if (!authorization.startsWith("tma ")) throw new Error("Откройте журнал из Telegram.");
-        await validateTelegramInitData(authorization.slice(4), {
-          botToken: env.TELEGRAM_BOT_TOKEN,
-          allowedIds: allowedUserIds(env.ALLOWED_USER_IDS),
-        });
+        await telegramUser(request, env);
       } catch (error) {
         return json({ error: error.message }, 401);
       }

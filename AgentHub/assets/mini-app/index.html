@@ -1,15 +1,16 @@
 <!doctype html>
-<html lang="ru" data-theme="orbit" data-surface="desktop">
+<html lang="ru" data-theme="orbit" data-surface="desktop" data-view="chat" data-pane="tasks">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#080b11" data-theme-color>
-  <title>Agent Hub — журнал работ</title>
+  <title>Agent Hub</title>
   <link rel="stylesheet" href="/work-log.css">
   <link rel="stylesheet" href="/styles.css">
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <script src="/app.js" defer></script>
+  <script src="/hub-client.js" defer></script>
 </head>
 <body>
   <header class="app-header">
@@ -24,15 +25,37 @@
         </span>
         <div class="brand-text">
           <p class="eyebrow">Agent Hub</p>
-          <h1>Журнал работ</h1>
+          <h1 data-view-title>Диалоги</h1>
         </div>
       </div>
+
+      <nav class="view-switch" data-view-switch aria-label="Разделы">
+        <button type="button" class="view-tab" data-view-button="chat" aria-pressed="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 5.5h16v10H8.5L4 19z"></path>
+          </svg>
+          <span>Диалоги</span>
+        </button>
+        <button type="button" class="view-tab" data-view-button="journal" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 3.5h9l4 4V20a.5.5 0 0 1-.5.5h-12A.5.5 0 0 1 6 20z"></path>
+            <path d="M14.5 3.7V8h4.3"></path>
+            <path d="M9 12.5h7M9 15.5h7"></path>
+          </svg>
+          <span>Журнал</span>
+        </button>
+      </nav>
+
       <div class="toolbar">
         <div class="rate-limits" data-rate-limits-slot hidden></div>
-        <button class="refresh collapse-all" type="button" data-collapse-all title="Свернуть всё">
+        <button class="refresh collapse-all" type="button" data-collapse-all title="Свернуть всё"
+          data-journal-only>
           <span>Свернуть всё</span>
         </button>
-        <button class="refresh" type="button" data-refresh title="Обновить журнал">
+        <button class="refresh" type="button" data-refresh title="Обновить журнал"
+          data-journal-only>
           <svg class="refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M20.2 12a8.2 8.2 0 1 1-2.6-6"></path>
@@ -57,8 +80,269 @@
       </div>
     </div>
   </header>
-  <main>
+
+  <!-- ============================== Рабочая область: список задач + чат === -->
+  <div class="workspace" data-workspace>
+    <!-- Левая колонка задач. Элементы задач вставляет renderTasks() из app.js;
+         демонстрационные данные не заводятся — до подключения backend пусто. -->
+    <aside class="task-rail" data-task-rail aria-label="Задачи">
+      <div class="task-rail-head">
+        <div class="task-rail-title">
+          <span>Задачи</span>
+          <span class="task-count" data-task-count hidden></span>
+        </div>
+        <button type="button" class="icon-button task-new" data-action="task-new" title="Новая задача">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="task-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="6.5"></circle>
+          <path d="m20 20-3.6-3.6"></path>
+        </svg>
+        <input type="search" data-task-filter placeholder="Поиск задачи" aria-label="Поиск задачи"
+          autocomplete="off">
+      </div>
+      <ul class="task-list" data-task-list></ul>
+      <p class="rail-empty" data-task-empty>Пока нет задач. Создайте новую задачу кнопкой «+».</p>
+    </aside>
+
+    <!-- Чат выбранной задачи. -->
+    <section class="chat" data-chat aria-label="Диалог задачи">
+      <div class="chat-empty" data-chat-empty>
+        <span class="chat-empty-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 5.5h16v10H8.5L4 19z"></path>
+          </svg>
+        </span>
+        <p>Выберите задачу слева или создайте новую, чтобы начать диалог.</p>
+      </div>
+
+      <div class="chat-pane" data-chat-pane hidden>
+        <header class="chat-head">
+          <button type="button" class="icon-button chat-back" data-action="pane-tasks" title="К списку задач">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M15 6l-6 6 6 6"></path>
+            </svg>
+          </button>
+          <div class="chat-head-main">
+            <div class="chat-title-row">
+              <span class="provider-dot" data-chat-provider-dot aria-hidden="true"></span>
+              <span class="chat-title" data-chat-title>Задача</span>
+              <span class="chat-live-badge" data-chat-running hidden>
+                <span class="live-dot" aria-hidden="true"></span>идёт
+              </span>
+            </div>
+            <div class="chat-subtitle" data-chat-subtitle></div>
+          </div>
+          <div class="chat-actions">
+            <button type="button" class="chip-button danger" data-action="task-stop" data-chat-stop hidden
+              title="Остановить ход">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                <rect x="7" y="7" width="10" height="10" rx="1.5"></rect>
+              </svg>
+              <span>Стоп</span>
+            </button>
+            <button type="button" class="chip-button" data-action="task-diff" title="Изменения задачи">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M8 4v10M8 18v2M8 14a3 3 0 0 0 3 3h3"></path>
+                <circle cx="8" cy="4" r="1.6"></circle>
+                <circle cx="16" cy="17" r="1.6"></circle>
+                <circle cx="8" cy="18" r="1.6" opacity="0"></circle>
+              </svg>
+              <span>Diff</span>
+            </button>
+            <button type="button" class="icon-button" data-action="task-settings" data-panel-open="settings"
+              title="Настройки хода">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="3.2"></circle>
+                <path d="M12 3v2.2M12 18.8V21M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M3 12h2.2M18.8 12H21M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"></path>
+              </svg>
+            </button>
+            <details class="overflow" data-overflow>
+              <summary class="icon-button" title="Ещё" aria-label="Ещё действия">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <circle cx="5" cy="12" r="1.7"></circle>
+                  <circle cx="12" cy="12" r="1.7"></circle>
+                  <circle cx="19" cy="12" r="1.7"></circle>
+                </svg>
+              </summary>
+              <div class="overflow-menu" role="menu">
+                <button type="button" role="menuitem" data-action="task-rename">Переименовать…</button>
+                <button type="button" role="menuitem" data-action="task-status">Статус и лимиты</button>
+                <button type="button" role="menuitem" data-action="task-archive" class="danger">В архив</button>
+              </div>
+            </details>
+          </div>
+        </header>
+
+        <div class="chat-scroll" data-chat-scroll>
+          <div class="chat-log" data-chat-log></div>
+          <article class="msg msg-live" data-chat-live hidden>
+            <div class="msg-head">
+              <span class="msg-author" data-live-author>Агент</span>
+              <span class="msg-stage" data-live-stage></span>
+            </div>
+            <div class="msg-body" data-live-body></div>
+          </article>
+        </div>
+
+        <!-- Запросы подтверждений (команды, файлы, разрешения). -->
+        <div class="approvals" data-approvals hidden aria-label="Запросы подтверждения"></div>
+
+        <!-- Сохранённые и поставленные в очередь сообщения. -->
+        <div class="queue" data-queue hidden aria-label="Очередь сообщений"></div>
+
+        <form class="composer" data-composer>
+          <div class="annotations" data-annotations hidden aria-label="Аннотации к выделенному тексту"></div>
+          <div class="attachments" data-attachments hidden aria-label="Вложения"></div>
+          <div class="composer-main">
+            <button type="button" class="icon-button composer-attach" data-action="attach"
+              title="Прикрепить изображение">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 11.5 12.4 19a4.5 4.5 0 0 1-6.4-6.4l7.6-7.6a3 3 0 0 1 4.3 4.3l-7.6 7.6a1.5 1.5 0 0 1-2.2-2.2l6.9-6.9"></path>
+              </svg>
+            </button>
+            <button type="button" class="icon-button composer-annotate" data-action="annotate"
+              title="Комментировать выделенный фрагмент ответа" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 5.5v8a1.5 1.5 0 0 1-1.5 1.5H9l-4 3.5V7A1.5 1.5 0 0 1 6.5 5.5z"></path>
+                <path d="M8.5 10h7M8.5 12.6h4.5"></path>
+              </svg>
+            </button>
+            <label class="composer-input" data-composer-grow>
+              <textarea data-composer-input rows="1"
+                placeholder="Сообщение агенту…  Ctrl+Enter — отправить"
+                aria-label="Сообщение агенту"></textarea>
+            </label>
+            <button type="submit" class="composer-send" data-composer-send title="Отправить (Ctrl+Enter)"
+              disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4.5 12h13M11 5.5 17.5 12 11 18.5"></path>
+              </svg>
+            </button>
+          </div>
+          <input type="file" accept="image/*" multiple data-file-input hidden aria-hidden="true">
+        </form>
+      </div>
+    </section>
+  </div>
+
+  <!-- ================================================= Отдельное представление: журнал === -->
+  <main class="journal-view" data-journal-view>
     <section class="journal" data-journal aria-live="polite" aria-busy="true"></section>
   </main>
+
+  <!-- Мобильная нижняя навигация: задачи · чат · журнал без горизонтальной прокрутки. -->
+  <nav class="mobile-nav" data-mobile-nav aria-label="Навигация">
+    <button type="button" class="mobile-tab" data-mobile-button="tasks" aria-pressed="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M5 6.5h14M5 12h14M5 17.5h9"></path>
+      </svg>
+      <span>Задачи</span>
+    </button>
+    <button type="button" class="mobile-tab" data-mobile-button="chat" aria-pressed="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 5.5h16v10H8.5L4 19z"></path>
+      </svg>
+      <span>Чат</span>
+    </button>
+    <button type="button" class="mobile-tab" data-mobile-button="journal" aria-pressed="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6 3.5h9l4 4V20a.5.5 0 0 1-.5.5h-12A.5.5 0 0 1 6 20z"></path>
+        <path d="M9 12.5h7M9 15.5h7"></path>
+      </svg>
+      <span>Журнал</span>
+    </button>
+  </nav>
+
+  <!-- ===================================================== Панель настроек хода === -->
+  <div class="panel-scrim" data-panel-scrim hidden></div>
+  <aside class="settings-panel" data-settings-panel hidden aria-label="Настройки" role="dialog"
+    aria-modal="true">
+    <header class="settings-head">
+      <h2>Настройки</h2>
+      <button type="button" class="icon-button" data-panel-close title="Закрыть">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 6l12 12M18 6 6 18"></path>
+        </svg>
+      </button>
+    </header>
+    <div class="settings-body">
+      <div class="setting-group" data-setting="agent">
+        <span class="setting-label">Агент</span>
+        <div class="setting-options" data-options="agent"></div>
+      </div>
+      <div class="setting-group" data-setting="model">
+        <span class="setting-label">Модель</span>
+        <div class="setting-options" data-options="model"></div>
+      </div>
+      <div class="setting-group" data-setting="reasoning">
+        <span class="setting-label">Reasoning</span>
+        <div class="setting-options" data-options="reasoning"></div>
+      </div>
+      <div class="setting-group" data-setting="mode">
+        <span class="setting-label">Режим</span>
+        <div class="setting-options" data-options="mode"></div>
+      </div>
+      <div class="setting-group" data-setting="project">
+        <span class="setting-label">Проект</span>
+        <div class="setting-options setting-options-column" data-options="project"></div>
+      </div>
+      <div class="setting-toggles">
+        <label class="setting-switch">
+          <input type="checkbox" data-toggle="autoApprove">
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="switch-text">Автоподтверждение</span>
+        </label>
+        <label class="setting-switch">
+          <input type="checkbox" data-toggle="tts">
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="switch-text">Озвучивать ответы</span>
+        </label>
+      </div>
+      <div class="setting-status" data-status-slot hidden></div>
+      <div class="setting-danger">
+        <button type="button" class="chip-button" data-action="hub-restart">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20.2 12a8.2 8.2 0 1 1-2.6-6"></path>
+            <path d="M20.4 4.6v5.6h-5.6"></path>
+          </svg>
+          <span>Перезапустить Agent Hub</span>
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Диалог переименования/новой задачи без window.prompt (CSP-safe). -->
+  <div class="dialog-scrim" data-dialog-scrim hidden></div>
+  <div class="text-dialog" data-text-dialog hidden role="dialog" aria-modal="true" aria-label="Ввод">
+    <form data-text-dialog-form>
+      <label class="text-dialog-label" data-text-dialog-title>Название задачи</label>
+      <input type="text" data-text-dialog-input autocomplete="off">
+      <div class="text-dialog-actions">
+        <button type="button" class="chip-button" data-text-dialog-cancel>Отмена</button>
+        <button type="submit" class="chip-button primary" data-text-dialog-ok>Готово</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="toast" data-toast hidden role="status" aria-live="polite"></div>
 </body>
 </html>

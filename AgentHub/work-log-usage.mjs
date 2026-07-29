@@ -314,7 +314,12 @@ function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0) {
     prompt ? `<div data-work-log-turn-prompt><strong>Запрос:</strong> ${prompt}</div>` : "",
   ].filter(Boolean).join("");
   const bodyDetails = body ? `<div data-work-log-turn-body>${body}</div>` : "";
-  return `<div data-work-log-turn-entry data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}">`
+  const provider = escapeHtmlAttribute(record?.provider);
+  const turnThread = escapeHtmlAttribute(record?.threadId);
+  const rootThread = escapeHtmlAttribute(taskThreadId(record));
+  return `<div data-work-log-turn-entry data-work-log-turn-provider="${provider}" `
+    + `data-work-log-turn-thread-id="${turnThread}" data-work-log-task-thread-id="${rootThread}" `
+    + `data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}">`
     + "<details data-work-log-turn-details>"
     + "<summary>"
     + '<span data-work-log-turn-meta>'
@@ -322,6 +327,7 @@ function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0) {
     + (share ? `<span data-work-log-turn-share>(${share})</span>` : "")
     + "</span>"
     + `<span data-work-log-turn-title>${title}</span>`
+    + '<button type="button" data-open-turn aria-label="Открыть ход" title="Открыть ход">↗</button>'
     + "</summary>"
     + '<div data-work-log-turn-expanded>'
     + `<div data-work-log-turn-meta-details>${metaDetails}</div>`
@@ -523,9 +529,9 @@ function taskCell({ provider = "codex", threadId, taskTitle }) {
   const label = `${normalizedProvider === "claude" ? "Claude" : "Codex"} - ${
     escapeHtmlText(String(taskTitle ?? "").trim() || "Без названия")
   }`;
-  return normalizedProvider === "codex"
-    ? `<a href="vscode://openai.chatgpt/local/${escapedThreadId}">${label}</a>`
-    : label;
+  return `<button type="button" data-open-task data-provider="${
+    escapeHtmlAttribute(normalizedProvider)
+  }" data-thread-id="${escapedThreadId}">${label}</button>`;
 }
 
 function taskRow({ provider = "codex", threadId, taskTitle, workLogId = null }) {

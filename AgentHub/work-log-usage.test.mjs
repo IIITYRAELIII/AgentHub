@@ -382,7 +382,15 @@ test("projectWorkLogUsage canonicalizes a unique legacy row and refreshes its ta
     projected,
     /<div data-work-log-row data-work-log-provider="codex" data-work-log-thread-id="thread-legacy">/,
   );
-  assert.match(projected, />Codex - Название из Agent Hub<\/a>/);
+  assert.match(
+    projected,
+    /<button type="button" data-open-task data-provider="codex" data-thread-id="thread-legacy">Codex - Название из Agent Hub<\/button>/,
+  );
+  assert.match(
+    projected,
+    /data-work-log-turn-provider="codex" data-work-log-turn-thread-id="thread-legacy" data-work-log-task-thread-id="thread-legacy" data-work-log-turn-id="turn-legacy"/,
+  );
+  assert.match(projected, /<button type="button" data-open-turn[^>]*>↗<\/button>/);
   assert.doesNotMatch(projected, />Codex - Старое имя<\/a>/);
 });
 
@@ -611,6 +619,10 @@ test("subagent usage is summed into its root task and shown as child turns", () 
   assert.match(projected, /Основной результат/);
   assert.match(projected, /Субагент · Скрытый результат субагента/);
   assert.match(projected, /Субагент · Прерванный скрытый результат субагента/);
+  assert.match(
+    projected,
+    /data-work-log-turn-thread-id="child" data-work-log-task-thread-id="root" data-work-log-turn-id="child-turn"/,
+  );
   assert.doesNotMatch(projected, /data-work-log-thread-id="child"/);
 });
 
@@ -1064,7 +1076,10 @@ test("task title synchronization updates existing ledger turns and the projected
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.values(ledger.turns)[0].taskTitle, "Agent HUB");
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, />Codex - Agent HUB<\/a>/);
+    assert.match(
+      projected,
+      /<button type="button" data-open-task data-provider="codex" data-thread-id="thread-title">Codex - Agent HUB<\/button>/,
+    );
     assert.doesNotMatch(projected, />Codex - Integration<\/a>/);
   } finally {
     await rm(root, { recursive: true, force: true });

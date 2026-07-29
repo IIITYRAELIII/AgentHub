@@ -2,7 +2,9 @@
 
 const vscode = require("vscode");
 
+const { AgentHubBridge } = require("./agent-hub-bridge.js");
 const { renderWorkLog } = require("./render.js");
+const { sharedWebviewHtml } = require("./shared-webview.js");
 const { baseCss, panelCss, sidebarHtml, webviewHtml } = require("./webview.js");
 
 const VIEW_ID = "tyraelWorkLog.view";
@@ -53,6 +55,9 @@ class WorkLogViewProvider {
     this.panel = null;
     this.timer = null;
     this.lastPayload = "";
+    this.bridge = null;
+    this.bridgeJournal = "";
+    this.sharedPanel = false;
     this.theme = THEMES.has(context.globalState.get(THEME_KEY))
       ? context.globalState.get(THEME_KEY)
       : "orbit";
@@ -107,16 +112,80 @@ class WorkLogViewProvider {
       },
     );
     this.panel = panel;
-    panel.webview.html = webviewHtml(panel.webview, this.theme);
+    panel.title = "Agent Hub";
+    try {
+      panel.webview.html = (await sharedWebviewHtml(panel.webview)).html;
+      this.sharedPanel = true;
+    } catch (error) {
+      panel.webview.html = webviewHtml(panel.webview, this.theme);
+      this.sharedPanel = false;
+      void vscode.window.showErrorMessage(`Agent Hub: ${error.message}`);
+    }
     panel.webview.onDidReceiveMessage((message) => {
+      if (message?.type === "agenthub:control") void this.handleControlMessage(message);
+      if (message?.type === "agenthub:http") void this.handleHttpMessage(message);
       if (message?.type === "open-link") void this.openLink(message.href);
       if (message?.type === "theme") void this.setTheme(message.theme, "panel");
     }, null, this.context.subscriptions);
     panel.onDidDispose(() => {
       if (this.panel === panel) this.panel = null;
+      this.sharedPanel = false;
       this.lastPayload = "";
     }, null, this.context.subscriptions);
     this.scheduleRefresh(0, true);
+  }
+
+  async currentBridge() {
+    const journalUri = await firstExisting(this.configuredJournalUris());
+    if (!journalUri) throw new Error("Откройте workspace с WORK_LOG.md");
+    const key = journalUri.fsPath;
+    if (!this.bridge || this.bridgeJournal !== key) {
+      this.bridge = new AgentHubBridge({ journalFile: key });
+      this.bridgeJournal = key;
+    }
+    return this.bridge;
+  }
+
+  async handleControlMessage(message) {
+    const id = String(message?.id ?? "");
+    try {
+      const bridge = await this.currentBridge();
+      const result = await bridge.control(String(message.action ?? ""), message.params ?? {});
+      await this.panel?.webview.postMessage({
+        type: "agenthub:control-result",
+        id,
+        ok: true,
+        result,
+      });
+    } catch (error) {
+      await this.panel?.webview.postMessage({
+        type: "agenthub:control-result",
+        id,
+        ok: false,
+        error: String(error?.message ?? error),
+      });
+    }
+  }
+
+  async handleHttpMessage(message) {
+    const id = String(message?.id ?? "");
+    try {
+      const bridge = await this.currentBridge();
+      const result = await bridge.http(message);
+      await this.panel?.webview.postMessage({
+        type: "agenthub:http-result",
+        id,
+        ...result,
+      });
+    } catch (error) {
+      await this.panel?.webview.postMessage({
+        type: "agenthub:http-result",
+        id,
+        status: 503,
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        body: `${JSON.stringify({ error: String(error?.message ?? error) })}\n`,
+      });
+    }
   }
 
   workspaceFolders() {
@@ -189,6 +258,10 @@ class WorkLogViewProvider {
 
   async refresh(force = false) {
     if (!this.panel) return;
+    if (this.sharedPanel) {
+      await this.panel.webview.postMessage({ type: "agenthub:journal-changed", force });
+      return;
+    }
     try {
       const journalUri = await firstExisting(this.configuredJournalUris());
       if (!journalUri) {

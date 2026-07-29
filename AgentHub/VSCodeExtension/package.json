@@ -1,8 +1,8 @@
 {
   "name": "work-log-view",
-  "displayName": "Agent HUB Work log",
-  "description": "Командная автоматически обновляемая панель WORK_LOG.md от Agent Hub.",
-  "version": "0.3.3",
+  "displayName": "Agent Hub",
+  "description": "Agent Hub: задачи, чаты и автоматически обновляемый журнал работ.",
+  "version": "0.4.0",
   "publisher": "tyrael",
   "icon": "media/agent-hub-work-log.png",
   "license": "MIT",
@@ -22,14 +22,14 @@
   ],
   "main": "./extension.js",
   "scripts": {
-    "test": "node --test render.test.js"
+    "test": "node --test render.test.js agent-hub-bridge.test.js"
   },
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
           "id": "tyraelWorkLog",
-          "title": "Agent HUB Work log",
+          "title": "Agent Hub",
           "icon": "media/journal.svg"
         }
       ]
@@ -39,21 +39,21 @@
         {
           "type": "webview",
           "id": "tyraelWorkLog.view",
-          "name": "Agent HUB Work log"
+          "name": "Agent Hub"
         }
       ]
     },
     "commands": [
       {
         "command": "tyraelWorkLog.open",
-        "title": "Открыть журнал",
-        "category": "Agent HUB Work log",
+        "title": "Открыть Agent Hub",
+        "category": "Agent Hub",
         "icon": "$(open-preview)"
       },
       {
         "command": "tyraelWorkLog.refresh",
-        "title": "Обновить журнал",
-        "category": "Agent HUB Work log",
+        "title": "Обновить Agent Hub",
+        "category": "Agent Hub",
         "icon": "$(refresh)"
       }
     ],
@@ -72,7 +72,7 @@
       ]
     },
     "configuration": {
-      "title": "Agent HUB Work log",
+      "title": "Agent Hub",
       "properties": {
         "tyraelWorkLog.fileName": {
           "type": "string",

@@ -21,11 +21,17 @@ test("Mini App keeps the fresh rate-limit summary above projected days", () => {
   assert.doesNotMatch(html, /Глобальный журнал работ/u);
 });
 
-function journalDay(date, turnId) {
+function journalDay(date, turnId, {
+  provider = "",
+  threadId = "",
+} = {}) {
+  const identity = provider && threadId
+    ? ` data-work-log-turn-provider="${provider}" data-work-log-turn-thread-id="${threadId}"`
+    : "";
   return [
     "<details data-work-log-day-section>",
     `<summary data-work-log-day><strong>${date}</strong><span>Итого 1 kcr</span></summary>`,
-    `<div data-work-log-row><div data-work-log-turn-entry data-work-log-turn-id="${turnId}">`,
+    `<div data-work-log-row><div data-work-log-turn-entry${identity} data-work-log-turn-id="${turnId}">`,
     "<details data-work-log-turn-details>",
     `<summary><span data-work-log-turn-title>Ход ${turnId}</span></summary>`,
     `<div data-work-log-turn-expanded><div data-work-log-turn-prompt>Запрос ${turnId}</div>`,
@@ -57,4 +63,23 @@ test("Mini App initially includes five recent days and lazily splits older detai
   assert.match(payload.days["01.07.2026"], /data-lazy-turn-id="turn-6"/u);
   assert.match(payload.turns["turn-6"], /Запрос turn-6/u);
   assert.match(payload.turns["turn-6"], /Ответ turn-6/u);
+});
+
+test("Mini App lazy turn references stay unique across tasks and providers", () => {
+  const payload = buildLazyJournalPayload([
+    "# Глобальный журнал работ",
+    journalDay("06.07.2026", "same-turn", { provider: "codex", threadId: "thread-a" }),
+    journalDay("05.07.2026", "turn-2"),
+    journalDay("04.07.2026", "turn-3"),
+    journalDay("03.07.2026", "turn-4"),
+    journalDay("02.07.2026", "turn-5"),
+    journalDay("01.07.2026", "same-turn", { provider: "claude", threadId: "thread-b" }),
+    journalDay("30.06.2026", "same-turn", { provider: "codex", threadId: "thread-c" }),
+  ].join("\n"));
+
+  const references = Object.keys(payload.turns);
+  assert.equal(references.length, 2);
+  assert.notEqual(references[0], references[1]);
+  assert.match(payload.turns[references[0]], /Ответ same-turn/u);
+  assert.match(payload.turns[references[1]], /Ответ same-turn/u);
 });

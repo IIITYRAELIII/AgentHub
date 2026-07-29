@@ -249,7 +249,7 @@ div[data-work-log-previous-turn-list] > div[data-work-log-turn-entry]
 details[data-work-log-turn-details] > summary {
   cursor: pointer;
   display: grid;
-  grid-template-columns: 12em minmax(0, 1fr);
+  grid-template-columns: 12em minmax(0, 1fr) auto;
   list-style: none;
   overflow-wrap: anywhere;
 }
@@ -303,6 +303,30 @@ span[data-work-log-turn-meta] {
 span[data-work-log-turn-share] {
   margin-left: auto;
   text-align: right;
+}
+
+details[data-work-log-turn-details] > summary > button[data-open-turn] {
+  align-self: stretch;
+  background: transparent;
+  border: 0;
+  border-left: 1px solid rgba(127, 127, 127, 0.45);
+  box-sizing: border-box;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  font: inherit;
+  line-height: 1;
+  padding: 0.3em 0.5em;
+}
+
+details[data-work-log-turn-details] > summary > button[data-open-turn]:hover {
+  background: rgba(127, 127, 127, 0.12);
+}
+
+details[data-work-log-turn-details] > summary > button[data-open-turn]:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, #007acc);
+  outline-offset: -2px;
 }
 
 div[data-work-log-turn-expanded] {
@@ -419,6 +443,31 @@ div[data-work-log-task-cell] > div[data-work-log-task-content] {
   overflow-wrap: anywhere;
   padding: 0.3em 0.45em;
   width: var(--work-log-task-card-width);
+}
+
+div[data-work-log-task-content] > button[data-open-task] {
+  background: transparent;
+  border: 0;
+  border-radius: 0.2em;
+  box-sizing: border-box;
+  color: inherit;
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  margin: 0;
+  overflow-wrap: anywhere;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
+div[data-work-log-task-content] > button[data-open-task]:hover {
+  text-decoration: underline;
+}
+
+div[data-work-log-task-content] > button[data-open-task]:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, #007acc);
+  outline-offset: 1px;
 }
 
 div[data-work-log-task-cell] > div[data-work-log-usage] {
