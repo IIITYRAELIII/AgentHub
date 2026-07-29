@@ -149,3 +149,11 @@ test("chat distinguishes loading history from an empty task", () => {
   assert.match(app, /state\.messages\.has\(state\.selectedId\)/u);
   assert.match(app, /Загрузка истории…/u);
 });
+
+test("chat opens at the end without rebuilding history on every snapshot", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(app, /if \(taskChanged\) \{\s*activeChatId = task\.id;\s*renderMessages\(\{ forceBottom: true \}\);/su);
+  assert.match(app, /const stickToBottom = forceBottom \|\| chatIsNearBottom\(\);/u);
+  assert.match(app, /window\.requestAnimationFrame\(apply\)/u);
+  assert.match(app, /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ forceBottom: true \}\)/u);
+});

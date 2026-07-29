@@ -384,6 +384,7 @@ function renderChat() {
     activeChatId = null;
     return;
   }
+  const taskChanged = activeChatId !== task.id;
 
   chatTitle.textContent = task.title || "Без названия";
   chatProviderDot.dataset.provider = String(task.provider ?? "none");
@@ -392,16 +393,16 @@ function renderChat() {
   chatRunning.hidden = !task.running;
   chatStop.hidden = !task.running;
 
-  renderMessages();
+  if (taskChanged) {
+    activeChatId = task.id;
+    renderMessages({ forceBottom: true });
+  }
   renderLive();
   renderApprovals();
   renderQueue();
   // Композер восстанавливаем только при реальной смене задачи, чтобы фоновые
   // обновления статуса не сбрасывали курсор и набранный текст.
-  if (activeChatId !== task.id) {
-    activeChatId = task.id;
-    restoreDraft();
-  }
+  if (taskChanged) restoreDraft();
 }
 
 function buildSubtitleChips(task) {
@@ -416,7 +417,18 @@ function buildSubtitleChips(task) {
     el("span", { class: "chat-chip", "data-order": index, text: part }));
 }
 
-function renderMessages() {
+function chatIsNearBottom() {
+  return chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 120;
+}
+
+function pinChatToBottom() {
+  const apply = () => { chatScroll.scrollTop = chatScroll.scrollHeight; };
+  apply();
+  window.requestAnimationFrame(apply);
+}
+
+function renderMessages({ forceBottom = false } = {}) {
+  const stickToBottom = forceBottom || chatIsNearBottom();
   const historyLoaded = state.messages.has(state.selectedId);
   const messages = state.messages.get(state.selectedId) ?? [];
   chatLog.replaceChildren();
@@ -427,10 +439,11 @@ function renderMessages() {
         ? "История пуста. Отправьте первое сообщение агенту."
         : "Загрузка истории…",
     }));
+    if (stickToBottom) pinChatToBottom();
     return;
   }
   for (const message of messages) chatLog.append(renderMessage(message));
-  scrollChatToBottom();
+  if (stickToBottom) pinChatToBottom();
 }
 
 function renderMessage(message) {
@@ -1016,7 +1029,7 @@ const AgentHub = {
    *  attachments }. role: "user" | "agent" | "system". */
   setMessages(taskId, messages) {
     state.messages.set(taskId, Array.isArray(messages) ? messages.slice() : []);
-    if (taskId === state.selectedId) renderMessages();
+    if (taskId === state.selectedId) renderMessages({ forceBottom: true });
   },
   appendMessage(taskId, message) {
     const list = state.messages.get(taskId) ?? [];
