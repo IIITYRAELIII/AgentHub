@@ -2904,8 +2904,10 @@ html[data-view="chat"] body {
 }
 
 .journal-view {
+  box-sizing: border-box;
   display: none;
   flex: 1 1 auto;
+  width: 90%;
 }
 
 html[data-view="journal"] .workspace {
@@ -4270,6 +4272,7 @@ html[data-surface="mobile"][data-view="chat"] body {
 
 html[data-surface="mobile"][data-view="journal"] .journal-view {
   padding-bottom: calc(var(--mobile-nav-h) + env(safe-area-inset-bottom) + 1rem);
+  width: 100%;
 }
 
 html[data-surface="mobile"] .settings-panel {

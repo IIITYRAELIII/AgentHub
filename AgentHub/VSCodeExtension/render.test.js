@@ -144,6 +144,18 @@ test("task rail width does not collide with decorative rail thickness", () => {
   assert.match(styles, /grid-template-columns:\s*var\(--task-rail-width\) minmax\(0, 1fr\)/u);
 });
 
+test("journal width stays fixed while days and turns are expanded", () => {
+  const styles = fs.readFileSync(
+    require.resolve("../assets/mini-app/styles.css"),
+    "utf8",
+  );
+  assert.match(styles, /\.journal-view\s*\{[^}]*box-sizing:\s*border-box;[^}]*width:\s*90%;/su);
+  assert.match(
+    styles,
+    /html\[data-surface="mobile"\]\[data-view="journal"\] \.journal-view\s*\{[^}]*width:\s*100%;/su,
+  );
+});
+
 test("chat distinguishes loading history from an empty task", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   assert.match(app, /state\.messages\.has\(state\.selectedId\)/u);
