@@ -80,6 +80,10 @@ function panelCss() {
       text-transform: none;
     }
 
+    #work-log-content > h1 > [data-collapse-all] {
+      flex: 0 0 auto;
+    }
+
     #work-log-content > h1::before {
       background: var(--brand-gradient);
       border: 1px solid var(--accent-line);
@@ -123,7 +127,10 @@ function webviewHtml(webview, theme = "orbit") {
     const content = document.getElementById('work-log-content');
     const style = document.getElementById('work-log-style');
     const themes = new Set(['orbit', 'nebula', 'pulsar', 'gothic', 'blackhole', 'taiga', 'magma', 'storm']);
+    const persistedState = vscode.getState() || {};
     let journalRendered = false;
+    let hasPersistedOpenState =
+      persistedState.journalStateVersion === 1 && Array.isArray(persistedState.openDetails);
 
     function applyTheme(value, persist = true) {
       const theme = themes.has(value) ? value : 'orbit';
@@ -160,7 +167,13 @@ function webviewHtml(webview, theme = "orbit") {
       picker.querySelector('select').addEventListener('change', (event) => {
         applyTheme(event.target.value);
       });
-      heading.append(picker);
+      const collapseAll = document.createElement('button');
+      collapseAll.className = 'refresh collapse-all';
+      collapseAll.type = 'button';
+      collapseAll.setAttribute('data-collapse-all', '');
+      collapseAll.title = 'Свернуть всё';
+      collapseAll.textContent = 'Свернуть всё';
+      heading.append(picker, collapseAll);
       applyTheme(document.documentElement.dataset.theme, false);
     }
 
@@ -189,23 +202,51 @@ function webviewHtml(webview, theme = "orbit") {
       });
     }
 
+    function persistOpenDetails() {
+      const state = vscode.getState() || {};
+      vscode.setState({
+        ...state,
+        journalStateVersion: 1,
+        openDetails: [...snapshotOpenDetails()],
+      });
+      hasPersistedOpenState = true;
+    }
+
+    function collapseAllDetails() {
+      for (const element of content.querySelectorAll('details[open]')) {
+        element.open = false;
+      }
+      persistOpenDetails();
+    }
+
     window.addEventListener('message', (event) => {
       if (event.data?.type === 'theme') {
         applyTheme(event.data.theme, false);
         return;
       }
       if (event.data?.type !== 'render') return;
-      const open = journalRendered ? snapshotOpenDetails() : null;
+      const savedState = vscode.getState() || {};
+      const open = journalRendered
+        ? snapshotOpenDetails()
+        : hasPersistedOpenState
+          ? new Set(savedState.openDetails)
+          : null;
       const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
       content.innerHTML = event.data.html;
       style.textContent = ${JSON.stringify(baseCss())} + '\\n' + event.data.css;
       installHeaderControls(event.data.title);
       if (open) restoreOpenDetails(open);
       journalRendered = true;
+      persistOpenDetails();
       window.scrollTo(0, scrollTop);
     });
 
     document.addEventListener('click', (event) => {
+      if (event.target.closest('[data-collapse-all]')) {
+        event.preventDefault();
+        collapseAllDetails();
+        return;
+      }
       const collapse = event.target.closest('[data-work-log-collapse-turns]');
       if (collapse) {
         event.preventDefault();
@@ -213,6 +254,7 @@ function webviewHtml(webview, theme = "orbit") {
         const row = collapse.closest('[data-work-log-row]');
         const previous = row?.querySelector('details[data-work-log-previous-turns]');
         if (previous) previous.open = false;
+        persistOpenDetails();
         return;
       }
       const link = event.target.closest('a[href]');
@@ -220,6 +262,10 @@ function webviewHtml(webview, theme = "orbit") {
       event.preventDefault();
       vscode.postMessage({ type: 'open-link', href: link.getAttribute('href') });
     });
+
+    document.addEventListener('toggle', () => {
+      if (journalRendered) setTimeout(persistOpenDetails, 0);
+    }, true);
 
     applyTheme(document.documentElement.dataset.theme || vscode.getState()?.theme || 'orbit', false);
   </script>

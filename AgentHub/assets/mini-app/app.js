@@ -2,6 +2,7 @@ const journal = document.querySelector("[data-journal]");
 const updatedAt = document.querySelector("[data-updated-at]");
 const refreshButton = document.querySelector("[data-refresh]");
 const collapseAllButton = document.querySelector("[data-collapse-all]");
+const OPEN_STATE_KEY = "agent-hub:journal-open-state:v1";
 const rateLimitsSlot = document.querySelector("[data-rate-limits-slot]");
 const themeSelect = document.querySelector("[data-theme-select]");
 const themeColor = document.querySelector("[data-theme-color]");
@@ -95,6 +96,28 @@ function captureOpenState() {
       }))
       .filter((item) => item.provider && item.threadId),
   };
+}
+
+function storedOpenState() {
+  try {
+    const state = JSON.parse(localStorage.getItem(OPEN_STATE_KEY) || "null");
+    return state && state.version === 1 ? state.value : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistOpenState() {
+  if (!journalRendered) return;
+  try {
+    localStorage.setItem(OPEN_STATE_KEY, JSON.stringify({
+      version: 1,
+      value: captureOpenState(),
+    }));
+  } catch {
+    // Приватный режим Telegram может запрещать localStorage; состояние DOM
+    // всё равно сохраняется между обычными автообновлениями.
+  }
 }
 
 function setMobileTaskOpen(row, open) {
@@ -229,7 +252,7 @@ async function loadJournal({ force = false } = {}) {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
       if (force || payload.version !== currentVersion) {
-        const state = journalRendered ? captureOpenState() : null;
+        const state = journalRendered ? captureOpenState() : storedOpenState();
         journal.innerHTML = payload.html;
         hoistRateLimits();
         disableLocalLinks();
@@ -237,6 +260,7 @@ async function loadJournal({ force = false } = {}) {
         prepareMobileControls();
         if (state) restoreOpenState(state);
         journalRendered = true;
+        persistOpenState();
         currentVersion = payload.version;
       }
       const date = new Date(payload.updatedAt);
@@ -269,6 +293,7 @@ collapseAllButton.addEventListener("click", () => {
   for (const item of journal.querySelectorAll('[aria-expanded="true"]')) {
     item.setAttribute("aria-expanded", "false");
   }
+  persistOpenState();
 });
 
 function toggleMobileDayUsage(total) {
@@ -277,12 +302,14 @@ function toggleMobileDayUsage(total) {
   const open = !table.hasAttribute("data-mobile-expanded");
   table.toggleAttribute("data-mobile-expanded", open);
   total.setAttribute("aria-expanded", String(open));
+  persistOpenState();
 }
 
 function toggleMobileTask(cell) {
   const row = cell.closest("[data-work-log-row]");
   if (!row) return;
   setMobileTaskOpen(row, !row.hasAttribute("data-mobile-open"));
+  persistOpenState();
 }
 
 journal.addEventListener("click", (event) => {
@@ -293,6 +320,7 @@ journal.addEventListener("click", (event) => {
     const row = collapse.closest("[data-work-log-row]");
     const previous = row?.querySelector("details[data-work-log-previous-turns]");
     if (previous) previous.open = false;
+    persistOpenState();
     return;
   }
   if (surface !== "mobile") return;
@@ -316,12 +344,13 @@ journal.addEventListener("click", (event) => {
 });
 
 journal.addEventListener("toggle", (event) => {
-  if (surface !== "mobile") return;
   const opened = event.target;
-  if (!opened.matches?.("details[data-work-log-day-section][open]")) return;
-  for (const details of journal.querySelectorAll("details[data-work-log-day-section][open]")) {
-    if (details !== opened) details.open = false;
+  if (surface === "mobile" && opened.matches?.("details[data-work-log-day-section][open]")) {
+    for (const details of journal.querySelectorAll("details[data-work-log-day-section][open]")) {
+      if (details !== opened) details.open = false;
+    }
   }
+  setTimeout(persistOpenState, 0);
 }, true);
 
 journal.addEventListener("keydown", (event) => {

@@ -229,6 +229,10 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(script, /journalRendered/u);
     assert.match(script, /details\[data-work-log-day-section\]\[open\]/u);
     assert.match(script, /collapseAllButton\.addEventListener/u);
+    assert.match(script, /agent-hub:journal-open-state:v1/u);
+    assert.match(script, /localStorage\.setItem\(OPEN_STATE_KEY/u);
+    assert.match(script, /localStorage\.getItem\(OPEN_STATE_KEY\)/u);
+    assert.match(script, /persistOpenState\(\)/u);
     const styles = await (await fetch(`${address.url}styles.css`)).text();
     assert.match(styles, /html\[data-theme="nebula"\]/u);
     assert.match(styles, /html\[data-theme="pulsar"\]/u);

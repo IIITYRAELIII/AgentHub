@@ -59,8 +59,18 @@ test("sidebar shares the same theme list and asks the extension for the current 
 
 test("panel heading uses the journal path as its title", () => {
   assert.match(webviewHtml({}), /installHeaderControls\(event\.data\.title\)/);
-  assert.match(webviewHtml({}), /journalRendered \? snapshotOpenDetails\(\) : null/);
+  assert.match(webviewHtml({}), /\? snapshotOpenDetails\(\)/);
   assert.match(webviewHtml({}), /if \(open\) restoreOpenDetails\(open\)/);
+});
+
+test("panel keeps explicit collapse state and exposes collapse-all in the header", () => {
+  const html = webviewHtml({});
+  assert.match(html, /collapseAll\.setAttribute\('data-collapse-all', ''\)/);
+  assert.match(html, /collapseAll\.textContent = 'Свернуть всё'/);
+  assert.match(html, /journalStateVersion: 1/);
+  assert.match(html, /openDetails: \[\.\.\.snapshotOpenDetails\(\)\]/);
+  assert.match(html, /hasPersistedOpenState/);
+  assert.match(html, /collapseAllDetails\(\)/);
 });
 
 test("panel handles the duplicate collapse-turns button", () => {
