@@ -799,6 +799,11 @@ test("usage store backfills exact model and Fast tier before recalculating credi
       projected,
       /<div data-work-log-turn-facts><div data-work-log-turn-pricing>gpt-5\.4 · Fast ×2<\/div><div data-work-log-turn-context><strong>Длит\.:<\/strong>/,
     );
+    const persisted = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.equal(
+      persisted.turns[`codex\u0000thread-pricing\u0000${turnId}`].pricingMetadataResolved,
+      true,
+    );
     assert.deepEqual(await store.missingPricingTurns(), []);
   } finally {
     await rm(root, { recursive: true, force: true });

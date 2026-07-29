@@ -1351,7 +1351,11 @@ export class WorkLogUsageStore {
         const record = this.#ledger.turns[workLogTurnKey({ provider, threadId, turnId })];
         if (!record || !sameProjectRoot(record.projectRoot, projectRoot)) continue;
         const serviceTier = normalizeServiceTier(item?.serviceTier);
-        if (record.model === model && record.serviceTier === serviceTier) continue;
+        if (
+          record.model === model
+          && record.serviceTier === serviceTier
+          && record.pricingMetadataResolved
+        ) continue;
         record.model = model;
         record.serviceTier = serviceTier;
         record.pricingMetadataResolved = true;
