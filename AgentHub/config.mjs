@@ -64,7 +64,7 @@ function codexRolloutContextSettings(value) {
     throw new Error("codexRolloutContext must be an object");
   }
   return {
-    enabled: raw.enabled !== false,
+    enabled: raw.enabled === true,
     keepRecentImages: nonNegativeInteger(
       raw.keepRecentImages,
       4,

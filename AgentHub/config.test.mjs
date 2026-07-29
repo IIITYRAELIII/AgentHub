@@ -34,12 +34,36 @@ test("journal profile needs neither Telegram credentials nor Mini App", async ()
     assert.equal(config.allowedChatIds.size, 0);
     assert.equal(config.miniApp.enabled, false);
     assert.deepEqual(config.codexRolloutContext, {
-      enabled: true,
+      enabled: false,
       keepRecentImages: 4,
       minReclaimBytes: 1024 * 1024,
       scanIntervalSeconds: 15 * 60,
       maxFilesPerPass: 8,
     });
+  } finally {
+    if (previous == null) delete process.env.AGENT_HUB_CONFIG;
+    else process.env.AGENT_HUB_CONFIG = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rollout image cleanup requires explicit opt-in and keeps configured interval", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-cleanup-"));
+  const configFile = path.join(root, "config.json");
+  const previous = process.env.AGENT_HUB_CONFIG;
+  try {
+    await writeFile(configFile, JSON.stringify({
+      profile: "journal",
+      projectRoot: root,
+      codexRolloutContext: {
+        enabled: true,
+        scanIntervalSeconds: 1200,
+      },
+    }), "utf8");
+    process.env.AGENT_HUB_CONFIG = configFile;
+    const config = await loadConfig();
+    assert.equal(config.codexRolloutContext.enabled, true);
+    assert.equal(config.codexRolloutContext.scanIntervalSeconds, 1200);
   } finally {
     if (previous == null) delete process.env.AGENT_HUB_CONFIG;
     else process.env.AGENT_HUB_CONFIG = previous;

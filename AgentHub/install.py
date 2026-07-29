@@ -65,6 +65,16 @@ def read_existing_config(config_file: Path) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def apply_rollout_image_cleanup_choice(config: dict, choice: str | None) -> dict:
+    if choice is None:
+        return config
+    current = config.get("codexRolloutContext")
+    settings = dict(current) if isinstance(current, dict) else {}
+    settings["enabled"] = choice == "enabled"
+    settings.setdefault("scanIntervalSeconds", 15 * 60)
+    return {**config, "codexRolloutContext": settings}
+
+
 def install_vscode_extension() -> Path | None:
     source = ROOT / "VSCodeExtension"
     if not source.is_dir():
@@ -192,6 +202,14 @@ def main() -> int:
         action="store_true",
         help="do not add Agent Hub to the current user's startup",
     )
+    parser.add_argument(
+        "--rollout-image-cleanup",
+        choices=("enabled", "disabled"),
+        help=(
+            "record the explicit local choice for periodic duplicate-image "
+            "cleanup in idle Codex rollout snapshots"
+        ),
+    )
     args = parser.parse_args()
     target_root = runtime_root()
     target_root.mkdir(parents=True, exist_ok=True)
@@ -262,6 +280,7 @@ def main() -> int:
         "ttsCacheDir": "data/models/silero",
         "dataDir": "data",
     }
+    config = apply_rollout_image_cleanup_choice(config, args.rollout_image_cleanup)
     config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"Created {config_file}")
     old_state = ROOT / ".telegram-codex-state.json"

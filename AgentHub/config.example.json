@@ -40,7 +40,7 @@
   "codexReasoningEffort": "high",
   "codexCollaborationMode": "default",
   "codexRolloutContext": {
-    "enabled": true,
+    "enabled": false,
     "keepRecentImages": 4,
     "minReclaimBytes": 1048576,
     "scanIntervalSeconds": 900,
