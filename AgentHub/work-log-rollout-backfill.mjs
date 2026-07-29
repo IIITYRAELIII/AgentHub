@@ -119,7 +119,7 @@ export async function buildWorkLogRolloutBackfill({
   }
   const titles = await readThreadTitles(sessionIndexFile);
 
-  let currentLedger = { version: 6, turns: {} };
+  let currentLedger = { version: 7, turns: {} };
   try {
     currentLedger = JSON.parse(await readFile(ledgerFile, "utf8"));
   } catch (error) {
@@ -169,6 +169,7 @@ export async function buildWorkLogRolloutBackfill({
         estimateKind: String(turn.estimateKind ?? ""),
         model: String(turn.model ?? "").trim().toLowerCase(),
         serviceTier: String(turn.serviceTier ?? "default").trim().toLowerCase() || "default",
+        pricingMetadataResolved: true,
         provider: "codex",
         threadId,
         taskThreadId,
@@ -203,7 +204,7 @@ export async function buildWorkLogRolloutBackfill({
     if (!record.usageReported && !record.estimatedCredits) recordsWithoutUsage += 1;
   }
   return {
-    ledger: { version: 6, turns },
+    ledger: { version: 7, turns },
     workLog: projectWorkLogUsage("# Глобальный журнал работ\n", turns),
     report: {
       cutoff: through,

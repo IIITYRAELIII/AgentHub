@@ -755,6 +755,8 @@ test("usage store backfills exact model and Fast tier before recalculating credi
           projectRoot: root,
            usageReported: true,
            usage: { inputTokens: 1_000_000 },
+           model: "gpt-5.6-sol",
+           serviceTier: "default",
            startedAt: "2026-07-25T00:00:00.000Z",
            completedAt: "2026-07-25T00:00:00.000Z",
           title: "Тариф восстановлен",
@@ -1077,7 +1079,7 @@ test("legacy synthetic interruptions are provisional and retract from the projec
 
     assert.equal(result.retracted, true);
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
-    assert.equal(ledger.version, 6);
+    assert.equal(ledger.version, 7);
     assert.deepEqual(ledger.turns, {});
     assert.doesNotMatch(await readFile(workLogFile, "utf8"), /Живая задача/);
   } finally {
@@ -1106,7 +1108,7 @@ test("usage store recovers a damaged primary ledger from its backup", async () =
     await recovered.project(workLogFile, { projectRoot: root });
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.keys(ledger.turns).length, 1);
-    assert.equal(ledger.version, 6);
+    assert.equal(ledger.version, 7);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

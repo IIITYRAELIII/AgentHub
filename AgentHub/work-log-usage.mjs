@@ -125,6 +125,8 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         estimateKind: String(record?.estimateKind ?? estimate?.estimateKind ?? "").trim(),
         model: String(record?.model ?? "").trim().toLowerCase(),
         serviceTier: normalizeServiceTier(record?.serviceTier ?? record?.service_tier),
+        pricingMetadataResolved: sourceVersion >= 7
+          && record?.pricingMetadataResolved === true,
         provider,
         threadId,
         taskThreadId,
@@ -157,7 +159,7 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       });
     }
   }
-  return { ledger: { version: 6, turns }, invalidRecords };
+  return { ledger: { version: 7, turns }, invalidRecords };
 }
 
 export function formatWorkLogUsage(breakdown) {
@@ -1056,6 +1058,7 @@ function incomingLedgerRecord({
     estimateKind: String(estimateKind ?? "").trim(),
     model: String(model ?? "").trim().toLowerCase(),
     serviceTier: serviceTier == null ? "" : normalizeServiceTier(serviceTier),
+    pricingMetadataResolved: Boolean(String(model ?? "").trim() && serviceTier != null),
     provider: String(provider).trim().toLowerCase(),
     threadId: String(threadId).trim(),
     taskThreadId: String(taskThreadId ?? threadId).trim(),
@@ -1114,6 +1117,7 @@ function mergeLedgerRecord(existing, incoming) {
       existing[field] = incoming[field];
     }
   }
+  if (incoming.pricingMetadataResolved) existing.pricingMetadataResolved = true;
   if (incoming.aggregateOnly) existing.aggregateOnly = true;
   existing.provisional = incoming.provisional === true;
   if (incoming.status && (incoming.status !== "unknown" || !existing.status || existing.status === "unknown")) {
@@ -1249,7 +1253,7 @@ export class WorkLogUsageStore {
       return Object.values(this.#ledger.turns)
         .filter((record) => (
           record.provider === normalizedProvider
-          && !record.model
+          && (!record.model || !record.pricingMetadataResolved)
         ))
         .map((record) => ({
           provider: record.provider,
@@ -1350,6 +1354,7 @@ export class WorkLogUsageStore {
         if (record.model === model && record.serviceTier === serviceTier) continue;
         record.model = model;
         record.serviceTier = serviceTier;
+        record.pricingMetadataResolved = true;
         updated += 1;
       }
       if (!updated) return { updated: 0, projected: false, reason: "unchanged" };

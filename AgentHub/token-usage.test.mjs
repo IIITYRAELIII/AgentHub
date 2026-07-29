@@ -10,6 +10,7 @@ import {
   formatTaskTokenUsage,
   formatTurnTokenUsage,
   modelCreditRates,
+  normalizeServiceTier,
   normalizeTokenUsage,
   tokenUsageDelta,
   turnCreditBreakdown,
@@ -42,6 +43,8 @@ test("official model rates and Fast multipliers are explicit", () => {
   assert.deepEqual(modelCreditRates("gpt-5.5-codex"), modelCreditRates(SOL));
   assert.deepEqual(modelCreditRates("gpt-5.4-codex"), modelCreditRates("gpt-5.6-terra"));
   assert.equal(fastModeCreditMultiplier(SOL, "fast"), 2.5);
+  assert.equal(normalizeServiceTier("priority"), "fast");
+  assert.equal(fastModeCreditMultiplier(SOL, "priority"), 2.5);
   assert.equal(fastModeCreditMultiplier("gpt-5.5", "fast"), 2.5);
   assert.equal(fastModeCreditMultiplier("gpt-5.4", "fast"), 2);
   assert.equal(fastModeCreditMultiplier(SOL, "default"), 1);

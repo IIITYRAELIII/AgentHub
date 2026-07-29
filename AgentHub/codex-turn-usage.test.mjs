@@ -329,7 +329,7 @@ test("pricing metadata scan resolves each turn model and Fast tier in one pass",
     } }),
     line({ type: "event_msg", payload: {
       type: "thread_settings_applied",
-      thread_settings: { model: "gpt-5.4", service_tier: "fast" },
+      thread_settings: { model: "gpt-5.4", service_tier: "priority" },
     } }),
     line({ type: "turn_context", payload: {
       turn_id: "turn-terra-fast",
@@ -350,7 +350,7 @@ test("pricing metadata scan resolves each turn model and Fast tier in one pass",
   });
   assert.deepEqual(metadata.get("turn-terra-fast"), {
     model: "gpt-5.4",
-    serviceTier: "fast",
+    serviceTier: "priority",
   });
 });
 

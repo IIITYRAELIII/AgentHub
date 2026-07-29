@@ -29,7 +29,7 @@ function normalizedModel(value) {
 
 export function normalizeServiceTier(value) {
   const tier = String(value ?? "").trim().toLowerCase();
-  return tier === "fast" ? "fast" : "default";
+  return ["fast", "priority"].includes(tier) ? "fast" : "default";
 }
 
 export function modelCreditRates(model) {
