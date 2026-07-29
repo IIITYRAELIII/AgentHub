@@ -84,7 +84,7 @@ async function sharedWebviewHtml(webview) {
     .replace(/<script src="https:\/\/telegram\.org\/[^>]+><\/script>\s*/iu, "")
     .replace(
       '<script src="/app.js" defer></script>',
-      `<style nonce="${nonce}">:root{${assetOverrides}}</style>`
+      `<style nonce="${nonce}">html[data-theme]{${assetOverrides}}</style>`
         + `<script src="${resource(webview, assets.bootstrap)}" defer></script>`
         + `<script src="${resource(webview, assets.app)}" defer></script>`
         + `<script src="${resource(webview, assets.client)}" defer></script>`,

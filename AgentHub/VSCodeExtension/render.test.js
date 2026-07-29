@@ -108,10 +108,29 @@ test("extension maps every shared bitmap theme asset to a webview URI", () => {
   assert.match(extension, /--storm-image: url/);
 });
 
-test("dialog workspace stays above the fixed theme background", () => {
+test("theme layers keep the background, effects and content in order", () => {
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),
     "utf8",
   );
-  assert.match(styles, /\.workspace\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/su);
+  assert.match(styles, /body::after\s*\{[^}]*z-index:\s*0;/su);
+  assert.match(styles, /body::before\s*\{[^}]*pointer-events:\s*none;[^}]*z-index:\s*1;/su);
+  assert.match(styles, /main\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;/su);
+  assert.match(styles, /\.workspace\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;/su);
+});
+
+test("VS Code theme assets override browser paths with equal specificity", () => {
+  const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
+  assert.match(shared, /<style nonce="\$\{nonce\}">html\[data-theme\]\{\$\{assetOverrides\}\}<\/style>/u);
+});
+
+test("turn header keeps its open button in the third column", () => {
+  const styles = fs.readFileSync(
+    require.resolve("../assets/mini-app/styles.css"),
+    "utf8",
+  );
+  assert.match(
+    styles,
+    /\.journal details\[data-work-log-turn-details\] > summary\s*\{[^}]*grid-template-columns:\s*11\.5rem minmax\(0, 1fr\) 2\.25rem;/su,
+  );
 });

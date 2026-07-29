@@ -732,7 +732,7 @@ body::before {
   opacity: var(--star-opacity);
   pointer-events: none;
   position: fixed;
-  z-index: 0;
+  z-index: 1;
 }
 
 /* характерный слой темы */
@@ -1111,7 +1111,7 @@ main {
   max-width: var(--content-width);
   padding: 1.1rem var(--gutter-right) max(2.5rem, env(safe-area-inset-bottom)) var(--gutter-left);
   position: relative;
-  z-index: 1;
+  z-index: 2;
 }
 
 .journal {
@@ -1547,7 +1547,7 @@ main {
 
 .journal details[data-work-log-turn-details] > summary {
   align-items: center;
-  grid-template-columns: 11.5rem minmax(0, 1fr);
+  grid-template-columns: 11.5rem minmax(0, 1fr) 2.25rem;
 }
 
 /* только снятие оформления work-log.css — без свойств, которые ниже
@@ -2878,7 +2878,7 @@ html[data-view="chat"] body {
   min-height: 0;
   position: relative;
   width: 100%;
-  z-index: 1;
+  z-index: 2;
 }
 
 .journal-view {
