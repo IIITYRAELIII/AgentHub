@@ -321,17 +321,18 @@ function formatTurnEntry(record, legacyFiles = "", taskCredits = 0) {
   const prompt = escapeHtmlText(displayUserPrompt(record?.prompt));
   const diff = formatTurnDiff(record?.diff);
   const migratedFiles = String(legacyFiles ?? "").trim();
+  const pricing = record?.model
+    ? `<div data-work-log-turn-pricing>${
+      escapeHtmlText(record.model)
+    }${record.serviceTier === "fast" ? " · Fast ×" + (
+      String(record.model).startsWith("gpt-5.4") ? "2" : "2,5"
+    ) : ""}</div>`
+    : "";
   const metaDetails = [
-    `<div data-work-log-turn-context><strong>Длит.:</strong> ${
-      formatDuration(record?.startedAt, record?.completedAt)
-    }</div>`,
-    record?.model
-      ? `<div data-work-log-turn-pricing>${
-        escapeHtmlText(record.model)
-      }${record.serviceTier === "fast" ? " · Fast ×" + (
-        String(record.model).startsWith("gpt-5.4") ? "2" : "2,5"
-      ) : ""}</div>`
-      : "",
+    `<div data-work-log-turn-facts>${pricing}`
+      + `<div data-work-log-turn-context><strong>Длит.:</strong> ${
+        formatDuration(record?.startedAt, record?.completedAt)
+      }</div></div>`,
     prompt ? `<div data-work-log-turn-prompt><strong>Запрос:</strong> ${prompt}</div>` : "",
   ].filter(Boolean).join("");
   const bodyDetails = [

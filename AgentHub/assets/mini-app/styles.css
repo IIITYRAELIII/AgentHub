@@ -1458,17 +1458,17 @@ main {
   margin-bottom: 0.05rem;
 }
 
-.journal div[data-work-log-turn-context] {
+.journal div[data-work-log-turn-facts] {
+  display: flex;
   flex: 0 0 auto;
+  flex-direction: column;
+  gap: 0.12rem;
   min-width: 7rem;
 }
 
-/* Модель идёт без подписи, поэтому её ставим в один ряд с длительностью и
-   гасим до служебного тона: это справка, а не показатель хода. */
+/* Модель идёт без подписи над длительностью и остаётся служебной справкой. */
 .journal div[data-work-log-turn-pricing] {
-  align-self: center;
   color: var(--text-muted);
-  flex: 0 0 auto;
   font-size: 0.75rem;
   letter-spacing: 0.01em;
 }

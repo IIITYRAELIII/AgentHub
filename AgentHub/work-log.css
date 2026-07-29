@@ -311,6 +311,13 @@ div[data-work-log-turn-prompt] {
   font-size: 0.9em;
 }
 
+div[data-work-log-turn-facts] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+  min-width: 0;
+}
+
 div[data-work-log-turn-prompt] {
   margin-top: 0.35em;
   opacity: 0.85;
