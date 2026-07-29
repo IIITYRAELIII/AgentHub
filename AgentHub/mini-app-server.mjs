@@ -155,17 +155,22 @@ function responseHeaders(contentType, { immutable = false } = {}) {
 }
 
 function send(response, statusCode, contentType, body, method = "GET", options = {}) {
-  response.writeHead(statusCode, responseHeaders(contentType, options));
+  const { headers = {}, ...headerOptions } = options;
+  response.writeHead(statusCode, {
+    ...responseHeaders(contentType, headerOptions),
+    ...headers,
+  });
   response.end(method === "HEAD" ? "" : body);
 }
 
-function json(response, statusCode, value, method = "GET") {
+function json(response, statusCode, value, method = "GET", options = {}) {
   send(
     response,
     statusCode,
     "application/json; charset=utf-8",
     `${JSON.stringify(value)}\n`,
     method,
+    options,
   );
 }
 
@@ -205,14 +210,13 @@ export class MiniAppServer {
   }
 
   async #journal() {
-    const [markdown, info] = await Promise.all([
-      readFile(this.#workLogFile, "utf8"),
-      stat(this.#workLogFile),
-    ]);
+    const info = await stat(this.#workLogFile);
+    const version = `${Math.trunc(info.mtimeMs)}-${info.size}`;
+    const markdown = await readFile(this.#workLogFile, "utf8");
     return {
       html: extractWorkLogHtml(markdown),
       updatedAt: info.mtime.toISOString(),
-      version: `${Math.trunc(info.mtimeMs)}-${info.size}`,
+      version,
     };
   }
 
@@ -288,7 +292,17 @@ export class MiniAppServer {
     if (url.pathname === "/api/journal") {
       if (!this.#authorize(request, response)) return;
       try {
-        json(response, 200, await this.#journal(), method);
+        const journal = await this.#journal();
+        const etag = `"${journal.version}"`;
+        if (String(request.headers["if-none-match"] ?? "") === etag) {
+          response.writeHead(304, {
+            ...responseHeaders("application/json; charset=utf-8"),
+            ETag: etag,
+          });
+          response.end();
+          return;
+        }
+        json(response, 200, journal, method, { headers: { ETag: etag } });
       } catch (error) {
         json(response, 503, { error: `Журнал недоступен: ${error.message}` }, method);
       }

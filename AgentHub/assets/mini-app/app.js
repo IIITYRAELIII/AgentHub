@@ -198,10 +198,13 @@ async function loadJournal({ force = false } = {}) {
   loading = (async () => {
     refreshButton.disabled = true;
     try {
+      const headers = requestHeaders();
+      if (!force && currentVersion) headers["If-None-Match"] = `"${currentVersion}"`;
       const response = await fetch(`/api/journal?now=${Date.now()}`, {
         cache: "no-store",
-        headers: requestHeaders(),
+        headers,
       });
+      if (response.status === 304) return;
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
       if (force || payload.version !== currentVersion) {

@@ -200,8 +200,19 @@ export class JournalStore extends DurableObject {
       return json({ ok: true, complete: true });
     }
     if (request.method === "GET" && url.pathname === "/journal") {
+      const knownVersion = String(request.headers.get("If-None-Match") ?? "");
       const manifest = await this.ctx.storage.get("journal-manifest");
       if (manifest) {
+        const etag = `"${manifest.version}"`;
+        if (knownVersion === etag) {
+          return new Response(null, {
+            status: 304,
+            headers: {
+              ETag: etag,
+              "X-Agent-Hub-Journal-Version": manifest.version,
+            },
+          });
+        }
         const chunkKeys = Array.from(
           { length: manifest.count },
           (_, chunkIndex) => `chunk:${manifest.syncId}:${chunkIndex}`,
@@ -223,13 +234,19 @@ export class JournalStore extends DurableObject {
           headers: {
             "Cache-Control": "no-store",
             "Content-Type": "application/json; charset=utf-8",
+            ETag: etag,
             "X-Agent-Hub-Journal-Version": manifest.version,
             "X-Content-Type-Options": "nosniff",
           },
         });
       }
       const payload = await this.ctx.storage.get("journal");
-      return payload ? json(payload) : json({ error: "Журнал ещё не опубликован." }, 503);
+      if (!payload) return json({ error: "Журнал ещё не опубликован." }, 503);
+      const etag = `"${payload.version}"`;
+      if (knownVersion === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
+      const response = json(payload);
+      response.headers.set("ETag", etag);
+      return response;
     }
     return json({ error: "Not Found" }, 404);
   }
@@ -306,7 +323,11 @@ export default {
       } catch (error) {
         return json({ error: error.message }, 401);
       }
-      const response = await store.fetch("https://journal.internal/journal");
+      const response = await store.fetch(new Request("https://journal.internal/journal", {
+        headers: {
+          "If-None-Match": String(request.headers.get("If-None-Match") ?? ""),
+        },
+      }));
       return request.method === "HEAD"
         ? new Response(null, { status: response.status, headers: response.headers })
         : response;

@@ -138,6 +138,12 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.equal(payload.html, DAY_HTML);
     assert.match(payload.updatedAt, /^\d{4}-\d{2}-\d{2}T/u);
     assert.match(payload.version, /^\d+-\d+$/u);
+    assert.equal(journal.headers.get("etag"), `"${payload.version}"`);
+    const unchanged = await fetch(`${address.url}api/journal`, {
+      headers: { "If-None-Match": `"${payload.version}"` },
+    });
+    assert.equal(unchanged.status, 304);
+    assert.equal(await unchanged.text(), "");
 
     const externalHeaders = { "CF-Connecting-IP": "203.0.113.10" };
     assert.equal((await fetch(`${address.url}api/journal`, {
@@ -211,6 +217,8 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(script, /document\.documentElement\.dataset\.surface = surface/u);
     assert.match(script, /telegram\?\.expand\(\)/u);
     assert.doesNotMatch(script, /requestFullscreen/u);
+    assert.match(script, /headers\["If-None-Match"\]/u);
+    assert.match(script, /response\.status === 304/u);
     assert.match(script, /closest\("\[data-work-log-collapse-turns\]"\)/u);
     assert.match(script, /row\?\.querySelector\("details\[data-work-log-previous-turns\]"\)/u);
     assert.match(script, /window\.addEventListener\("resize", syncSurface\)/u);
