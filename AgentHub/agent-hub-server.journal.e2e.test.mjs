@@ -27,6 +27,7 @@ test("journal profile starts without Telegram and keeps Mini App disabled", { ti
     dataDir,
     codexExecutable: process.execPath,
     codexExecutableArgs: [FAKE_CODEX_FILE, "--state", codexStatePath],
+    codexRolloutContext: { enabled: false },
     miniApp: { enabled: true, host: "127.0.0.1", port: 65533 },
   }, null, 2)}\n`, "utf8");
 

@@ -39,6 +39,13 @@
   "codexModel": "gpt-5.6-sol",
   "codexReasoningEffort": "high",
   "codexCollaborationMode": "default",
+  "codexRolloutContext": {
+    "enabled": true,
+    "keepRecentImages": 4,
+    "minReclaimBytes": 1048576,
+    "scanIntervalSeconds": 900,
+    "maxFilesPerPass": 8
+  },
   "codexModels": [
     {
       "value": "gpt-5.5",

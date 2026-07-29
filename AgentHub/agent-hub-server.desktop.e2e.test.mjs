@@ -40,6 +40,7 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     dataDir,
     codexExecutable: process.execPath,
     codexExecutableArgs: [FAKE_CODEX_FILE, "--state", codexStatePath],
+    codexRolloutContext: { enabled: false },
     codexModel: "gpt-5.6-sol",
     codexReasoningEffort: "high",
     showProjectButton: false,

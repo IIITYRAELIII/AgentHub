@@ -42,12 +42,50 @@ function positiveInteger(value, fallback, name) {
   return number;
 }
 
+function nonNegativeInteger(value, fallback, name) {
+  const number = Number(value ?? fallback);
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return number;
+}
+
 function stringArray(value, name) {
   if (value == null) return [];
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     throw new Error(`${name} must be an array of strings`);
   }
   return value.map((item) => item.trim()).filter(Boolean);
+}
+
+function codexRolloutContextSettings(value) {
+  const raw = value ?? {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("codexRolloutContext must be an object");
+  }
+  return {
+    enabled: raw.enabled !== false,
+    keepRecentImages: nonNegativeInteger(
+      raw.keepRecentImages,
+      4,
+      "codexRolloutContext.keepRecentImages",
+    ),
+    minReclaimBytes: nonNegativeInteger(
+      raw.minReclaimBytes,
+      1024 * 1024,
+      "codexRolloutContext.minReclaimBytes",
+    ),
+    scanIntervalSeconds: positiveInteger(
+      raw.scanIntervalSeconds,
+      15 * 60,
+      "codexRolloutContext.scanIntervalSeconds",
+    ),
+    maxFilesPerPass: positiveInteger(
+      raw.maxFilesPerPass,
+      8,
+      "codexRolloutContext.maxFilesPerPass",
+    ),
+  };
 }
 
 export function miniAppSettings(value, { configDirectory = process.cwd() } = {}) {
@@ -499,6 +537,7 @@ export async function loadConfig() {
     codexReasoningEffort,
     codexCollaborationMode,
     codexModels: loadCodexModels(raw),
+    codexRolloutContext: codexRolloutContextSettings(raw.codexRolloutContext),
     claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
     claudeExecutableArgs: stringArray(raw.claudeExecutableArgs, "claudeExecutableArgs"),
     claudeModel: String(process.env.CLAUDE_MODEL ?? raw.claudeModel ?? "").trim(),

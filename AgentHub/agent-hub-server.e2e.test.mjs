@@ -116,6 +116,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     dataDir,
     codexExecutable: process.execPath,
     codexExecutableArgs: [FAKE_CODEX_FILE, "--state", codexStatePath],
+    codexRolloutContext: { enabled: false },
     codexModel: "gpt-5.6-sol",
     codexReasoningEffort: "high",
     codexModels: [

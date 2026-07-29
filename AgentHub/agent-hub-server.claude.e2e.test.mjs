@@ -160,6 +160,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
     dataDir,
     codexExecutable: process.execPath,
     codexExecutableArgs: [FAKE_CODEX_FILE, "--state", codexStatePath],
+    codexRolloutContext: { enabled: false },
     claudeExecutable: process.execPath,
     claudeExecutableArgs: [FAKE_CLAUDE_FILE],
     showProjectButton: false,

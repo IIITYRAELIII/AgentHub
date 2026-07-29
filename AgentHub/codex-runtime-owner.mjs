@@ -65,7 +65,7 @@ function powershellExecutable(environment = process.env) {
   return path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 }
 
-function readWindowsRolloutProcesses(rolloutPath, {
+export function readWindowsRolloutProcesses(rolloutPath, {
   agentHubPid = null,
   spawnImpl = spawn,
   environment = process.env,

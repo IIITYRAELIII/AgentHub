@@ -162,6 +162,7 @@ import {
   taskExecutionRuntimeLabel,
 } from "./task-catalog.mjs";
 import { resolveCodexObservedExecutionOwner } from "./codex-runtime-owner.mjs";
+import { CodexRolloutContextSanitizer } from "./codex-rollout-context.mjs";
 import {
   botReplacementInvocation,
   directWindowsLauncherInvocation,
@@ -195,6 +196,9 @@ import { MiniAppPublisher } from "./mini-app-publisher.mjs";
 import { QuickTunnelController } from "./quick-tunnel.mjs";
 
 const config = await loadConfig();
+const codexRolloutContextSanitizer = new CodexRolloutContextSanitizer({
+  ...config.codexRolloutContext,
+});
 const workLogUsageStore = new WorkLogUsageStore({
   ledgerFile: path.join(config.dataDir, "work-log-usage.json"),
   defaultProjectRoot: config.projectRoot,
@@ -381,6 +385,7 @@ let deliveryOutboxTimerDueAt = 0;
 let selectedTaskWatchTimer = null;
 let selectedTaskWatchInFlight = false;
 let rateLimitPollTimer = null;
+let codexRolloutContextTimer = null;
 const reconcilingCodexTerminalTurns = new Set();
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
 const COMPLETED_CODEX_TERMINAL_GRACE_MS = 10_000;
@@ -5104,6 +5109,35 @@ async function auditRecentCodexTerminalTurns() {
   }
 }
 
+function scheduleCodexRolloutContextSanitizer(
+  delayMs = config.codexRolloutContext.scanIntervalSeconds * 1000,
+) {
+  if (!config.codexRolloutContext.enabled || codexRolloutContextTimer || stopping) return;
+  codexRolloutContextTimer = setTimeout(() => {
+    codexRolloutContextTimer = null;
+    void runCodexRolloutContextSanitizer();
+  }, Math.max(0, Number(delayMs) || 0));
+  codexRolloutContextTimer.unref?.();
+}
+
+async function runCodexRolloutContextSanitizer({ reschedule = true } = {}) {
+  if (!config.codexRolloutContext.enabled || stopping) return null;
+  try {
+    const result = await codexRolloutContextSanitizer.runOnce();
+    if (result.skipped) {
+      console.log(
+        `Codex rollout context sanitation deferred for ${result.skipped} open or changing file(s).`,
+      );
+    }
+    return result;
+  } catch (error) {
+    console.warn(`Cannot maintain Codex rollout context: ${error.message}`);
+    return null;
+  } finally {
+    if (reschedule) scheduleCodexRolloutContextSanitizer();
+  }
+}
+
 function scheduleRateLimitPoll(delayMs = 5 * 60_000) {
   if (rateLimitPollTimer || stopping) return;
   rateLimitPollTimer = setTimeout(() => {
@@ -6573,6 +6607,10 @@ function delay(ms) {
 
 function stopRuntimeTimers() {
   stopTyping();
+  if (codexRolloutContextTimer) {
+    clearTimeout(codexRolloutContextTimer);
+    codexRolloutContextTimer = null;
+  }
   if (deliveryOutboxTimer) {
     clearTimeout(deliveryOutboxTimer);
     deliveryOutboxTimer = null;
@@ -6595,6 +6633,7 @@ function stopRuntimeTimers() {
 }
 
 function startRuntimeTimers() {
+  scheduleCodexRolloutContextSanitizer();
   if (config.telegramEnabled) {
     for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
     scheduleDeliveryOutboxFlush(1_000);
@@ -6639,6 +6678,7 @@ process.on("unhandledRejection", (error) => {
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
+await runCodexRolloutContextSanitizer({ reschedule: false });
 await initializeProvider();
 if (codexTransport.running) {
   await listAllCodexThreads()

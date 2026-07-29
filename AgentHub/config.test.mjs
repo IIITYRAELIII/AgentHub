@@ -33,6 +33,13 @@ test("journal profile needs neither Telegram credentials nor Mini App", async ()
     assert.equal(config.allowedUserIds.size, 0);
     assert.equal(config.allowedChatIds.size, 0);
     assert.equal(config.miniApp.enabled, false);
+    assert.deepEqual(config.codexRolloutContext, {
+      enabled: true,
+      keepRecentImages: 4,
+      minReclaimBytes: 1024 * 1024,
+      scanIntervalSeconds: 15 * 60,
+      maxFilesPerPass: 8,
+    });
   } finally {
     if (previous == null) delete process.env.AGENT_HUB_CONFIG;
     else process.env.AGENT_HUB_CONFIG = previous;
