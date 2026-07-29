@@ -627,6 +627,17 @@ export async function scanCodexTurnPricingMetadata(transcriptPath, turnIds, {
         ).trim() || "default";
         continue;
       }
+      if (entry?.type === "event_msg" && entry.payload?.type === "task_started") {
+        const turnId = String(entry.payload?.turn_id ?? "").trim();
+        if (requested.has(turnId) && latestModel) {
+          result.set(turnId, {
+            model: latestModel,
+            serviceTier: latestServiceTier,
+          });
+        }
+        if (result.size === requested.size) break;
+        continue;
+      }
       if (entry?.type !== "turn_context") continue;
       const turnId = entryTurnId(entry);
       if (!requested.has(turnId)) continue;

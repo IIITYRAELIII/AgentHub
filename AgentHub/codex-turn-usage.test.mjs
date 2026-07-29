@@ -331,6 +331,10 @@ test("pricing metadata scan resolves each turn model and Fast tier in one pass",
       type: "thread_settings_applied",
       thread_settings: { model: "gpt-5.4", service_tier: "priority" },
     } }),
+    line({ type: "event_msg", payload: {
+      type: "task_started",
+      turn_id: "turn-aborted-before-context",
+    } }),
     line({ type: "turn_context", payload: {
       turn_id: "turn-terra-fast",
       model: "gpt-5.4",
@@ -339,7 +343,7 @@ test("pricing metadata scan resolves each turn model and Fast tier in one pass",
 
   const metadata = await scanCodexTurnPricingMetadata(
     "rollout.jsonl",
-    ["turn-sol", "turn-terra-fast"],
+    ["turn-sol", "turn-terra-fast", "turn-aborted-before-context"],
     {
       createReadStreamImpl: () => Readable.from(text.split("\n").map((value) => `${value}\n`)),
     },
@@ -349,6 +353,10 @@ test("pricing metadata scan resolves each turn model and Fast tier in one pass",
     serviceTier: "default",
   });
   assert.deepEqual(metadata.get("turn-terra-fast"), {
+    model: "gpt-5.4",
+    serviceTier: "priority",
+  });
+  assert.deepEqual(metadata.get("turn-aborted-before-context"), {
     model: "gpt-5.4",
     serviceTier: "priority",
   });
