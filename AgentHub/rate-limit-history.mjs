@@ -61,3 +61,19 @@ export async function appendRateLimitRows(filePath, rows) {
   await appendFile(resolved, `${lines.join("\n")}\n`, "utf8");
   return rows.length;
 }
+
+export async function appendRawRateLimitSnapshot(
+  filePath,
+  response,
+  observedAt = new Date().toISOString(),
+) {
+  const resolved = path.resolve(filePath);
+  await mkdir(path.dirname(resolved), { recursive: true });
+  const record = {
+    observedAt,
+    provider: "codex",
+    response,
+  };
+  await appendFile(resolved, `${JSON.stringify(record)}\n`, "utf8");
+  return record;
+}

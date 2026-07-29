@@ -50,7 +50,11 @@ import {
   scanCodexTurnPricingMetadata,
 } from "./codex-turn-usage.mjs";
 import { CodexTerminalAudit } from "./codex-terminal-audit.mjs";
-import { appendRateLimitRows, codexRateLimitRows } from "./rate-limit-history.mjs";
+import {
+  appendRateLimitRows,
+  appendRawRateLimitSnapshot,
+  codexRateLimitRows,
+} from "./rate-limit-history.mjs";
 import {
   CODEX_AUDIT_SOURCE_KINDS,
   CODEX_TASK_SOURCE_KINDS,
@@ -5167,6 +5171,11 @@ async function pollRateLimits() {
     const observedAt = new Date().toISOString();
     const result = await sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 });
     const summary = formatCodexRateLimits(result);
+    await appendRawRateLimitSnapshot(
+      path.join(config.dataDir, "rate-limits-raw.jsonl"),
+      result,
+      observedAt,
+    );
     await appendRateLimitRows(
       path.join(config.dataDir, "rate-limits.csv"),
       codexRateLimitRows(result, observedAt),

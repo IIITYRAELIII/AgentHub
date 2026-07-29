@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { appendRateLimitRows, codexRateLimitRows } from "./rate-limit-history.mjs";
+import {
+  appendRateLimitRows,
+  appendRawRateLimitSnapshot,
+  codexRateLimitRows,
+} from "./rate-limit-history.mjs";
 
 test("Codex limit snapshots become primary and secondary history rows", () => {
   const rows = codexRateLimitRows({
@@ -65,4 +69,31 @@ test("limit history writes one CSV header and appends later samples", async () =
   assert.equal(text.match(/^observedAt,/gmu)?.length, 1);
   assert.equal(text.match(/2026-07-29T00:00:00\.000Z/gmu)?.length, 2);
   assert.match(text, /"Codex, Team"/u);
+});
+
+test("raw limit history preserves the complete response as JSONL", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limits-raw-"));
+  const target = path.join(directory, "rate-limits-raw.jsonl");
+  const response = {
+    rateLimitsByLimitId: {
+      codex: {
+        limitId: "codex",
+        primary: { usedPercent: 25, resetsAt: 123, futureField: "preserved" },
+      },
+    },
+    rateLimitResetCredits: { availableCount: 7 },
+    unknownTopLevelField: { nested: true },
+  };
+
+  await appendRawRateLimitSnapshot(target, response, "2026-07-29T00:00:00.000Z");
+  await appendRawRateLimitSnapshot(target, response, "2026-07-29T00:05:00.000Z");
+
+  const lines = (await readFile(target, "utf8")).trim().split("\n").map(JSON.parse);
+  assert.equal(lines.length, 2);
+  assert.deepEqual(lines[0], {
+    observedAt: "2026-07-29T00:00:00.000Z",
+    provider: "codex",
+    response,
+  });
+  assert.equal(lines[1].observedAt, "2026-07-29T00:05:00.000Z");
 });
