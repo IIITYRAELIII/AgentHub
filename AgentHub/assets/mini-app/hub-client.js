@@ -19,11 +19,14 @@ let selectionSequence = 0;
 let selectionTail = Promise.resolve();
 const historyByTask = new Map();
 const outgoingByTask = new Map();
+const liveProbeByTask = new Map();
+let deferredClientUserMessageIds = new Set();
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const {
-  liveMessageMatch,
+  activeStageLabel,
   reconcile: reconcileMessageLifecycle,
   rememberBounded: rememberBoundedMessage,
+  visibleConversationMessages,
 } = window.AgentHubMessageLifecycle;
 
 const runtimeShortLabels = Object.freeze({
@@ -97,7 +100,10 @@ function reconciledMessages(taskIdValue) {
     if (!matchedIds.has(message.clientUserMessageId)) result.push(message);
   }
   for (const clientUserMessageId of matchedIds) pending.delete(clientUserMessageId);
-  return result;
+  return visibleConversationMessages(result, {
+    deferredClientUserMessageIds,
+    liveProbe: liveProbeByTask.get(taskIdValue) ?? null,
+  });
 }
 
 function renderTaskMessages(taskIdValue) {
@@ -106,36 +112,37 @@ function renderTaskMessages(taskIdValue) {
 
 function updateLiveMessage(taskIdValue, selected) {
   const run = selected?.run;
-  if (!run) return null;
+  if (!run) {
+    const removed = liveProbeByTask.delete(taskIdValue);
+    if (removed) renderTaskMessages(taskIdValue);
+    return null;
+  }
   const response = String(run.response ?? "");
-  if (!response || !run.turnId) return {
-    author: selected.provider === "claude" ? "Claude" : "Codex",
-    stage: run.stage,
-    reasoning: run.progress || "",
-    text: response,
-    activities: run.activities ?? [],
-    threadId: selected.threadId,
-    turnId: run.turnId ?? null,
-    itemId: run.responseItemId ?? null,
-  };
-  const probe = {
-    provider: selected.provider,
-    threadId: selected.threadId,
-    turnId: run.turnId,
-    itemId: run.responseItemId,
-    role: "agent",
-  };
-  const messages = historyByTask.get(taskIdValue) ?? [];
-  const match = liveMessageMatch(messages, probe);
-  if (match) {
-    match.text = response;
-    renderTaskMessages(taskIdValue);
+  if (run.turnId) {
+    const nextProbe = {
+      provider: selected.provider,
+      threadId: selected.threadId,
+      turnId: run.turnId,
+      itemId: run.responseItemId,
+      role: "agent",
+    };
+    const previousProbe = liveProbeByTask.get(taskIdValue);
+    const probeChanged = !previousProbe
+      || previousProbe.provider !== nextProbe.provider
+      || previousProbe.threadId !== nextProbe.threadId
+      || previousProbe.turnId !== nextProbe.turnId
+      || previousProbe.itemId !== nextProbe.itemId;
+    liveProbeByTask.set(taskIdValue, nextProbe);
+    if (probeChanged) renderTaskMessages(taskIdValue);
+  } else {
+    const removed = liveProbeByTask.delete(taskIdValue);
+    if (removed) renderTaskMessages(taskIdValue);
   }
   return {
     author: selected.provider === "claude" ? "Claude" : "Codex",
-    stage: run.stage,
+    stage: activeStageLabel(run.stage),
     reasoning: run.progress || "",
-    text: match ? "" : response,
+    text: response,
     activities: run.activities ?? [],
     threadId: selected.threadId,
     turnId: run.turnId,
@@ -265,6 +272,11 @@ function modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId) 
 function applySnapshot(snapshot) {
   if (!snapshot) return;
   lastSnapshot = snapshot;
+  deferredClientUserMessageIds = new Set(
+    (snapshot.deferredInputs ?? [])
+      .map((item) => String(item.clientUserMessageId ?? "").trim())
+      .filter(Boolean),
+  );
   const seen = seenAnswers();
   const serverSelected = (snapshot.tasks ?? []).find((task) => task.selected);
   const serverSelectedId = serverSelected
@@ -661,7 +673,14 @@ agentHub.on("approval:respond", ({ id, decision }) => runAction(
   () => control("resolve-approval", { key: id, decision }),
 ));
 agentHub.on("queue:remove", ({ id }) => runAction(async () => {
+  const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id);
   const result = await control("deferred-input", { id, action: "cancel" });
+  const clientUserMessageId = String(deferred?.clientUserMessageId ?? "");
+  if (clientUserMessageId) {
+    const deferredTaskId = taskId(deferred.provider, deferred.threadId);
+    outgoingMessages(deferredTaskId).delete(clientUserMessageId);
+    renderTaskMessages(deferredTaskId);
+  }
   applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Отложенное сообщение удалено");
 }));

@@ -320,17 +320,19 @@ test("chat shows sent messages immediately and reconciles them by exact identity
   assert.match(client, /for \(const clientUserMessageId of matchedIds\) pending\.delete\(clientUserMessageId\)/u);
 });
 
-test("chat removes an exact server-backed current-turn response from live text", () => {
+test("chat keeps an active response only in the live card after task switching", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const lifecycle = fs.readFileSync(require.resolve("../assets/mini-app/message-lifecycle.js"), "utf8");
   assert.match(
-    client,
-    /const exact = messageIdentityKey\(probe\);[\s\S]*const turnRole = messageIdentityKey\(probe, \{ withoutItem: true \}\);[\s\S]*const matches = messages\.filter/u,
+    lifecycle,
+    /function visibleConversationMessages\(messages,[\s\S]*const live = liveMessageMatch\(visible, liveProbe\);[\s\S]*visible\.filter\(\(message\) => message !== live\)/u,
   );
-  assert.match(client, /\(exact && messageIdentityKey\(message\) === exact\)/u);
-  assert.match(client, /text: matches\.length === 1 \? "" : response/u);
+  assert.match(client, /liveProbeByTask\.set\(taskIdValue, nextProbe\)/u);
+  assert.match(client, /liveProbe: liveProbeByTask\.get\(taskIdValue\) \?\? null/u);
+  assert.match(client, /text: response/u);
   assert.match(app, /function liveTextAfterMessages\(live\) \{\s*return normalizedMessageText\(live\?\.text\);\s*\}/u);
-  assert.match(app, /if \(!live \|\| \(!visibleText && !normalizedMessageText\(live\.reasoning\)\)\)/u);
+  assert.match(app, /!normalizedMessageText\(live\.stage\)/u);
   assert.match(
     app,
     /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ forceBottom: true \}\);\s*renderLive\(\);/u,
@@ -351,9 +353,15 @@ test("live reasoning renders Markdown separately from the response", () => {
 test("deferred messages show their preview and can be queued after the active turn", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const lifecycle = fs.readFileSync(require.resolve("../assets/mini-app/message-lifecycle.js"), "utf8");
   assert.match(app, /entry\.text \|\| entry\.preview \|\| entry\.summary/u);
   assert.match(app, /text: "После хода"/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "queue" \}\)/u);
+  assert.match(client, /deferredClientUserMessageIds = new Set\(/u);
+  assert.match(
+    lifecycle,
+    /message\?\.role === "user"[\s\S]*deferredIds\.has\(String\(message\?\.clientUserMessageId/u,
+  );
 });
 
 test("composer clears optimistically and restores an unconfirmed message", () => {

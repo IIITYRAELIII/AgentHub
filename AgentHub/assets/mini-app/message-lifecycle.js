@@ -81,12 +81,38 @@ function liveMessageMatch(messages, probe) {
   return turnMatches.length === 1 ? turnMatches[0] : null;
 }
 
+function visibleConversationMessages(messages, {
+  deferredClientUserMessageIds = [],
+  liveProbe = null,
+} = {}) {
+  const deferredIds = new Set(
+    Array.from(deferredClientUserMessageIds ?? [], (value) => String(value ?? "").trim())
+      .filter(Boolean),
+  );
+  const visible = (Array.isArray(messages) ? messages : []).filter((message) => !(
+    message?.role === "user"
+    && deferredIds.has(String(message?.clientUserMessageId ?? "").trim())
+  ));
+  if (!liveProbe) return visible;
+  const live = liveMessageMatch(visible, liveProbe);
+  return live ? visible.filter((message) => message !== live) : visible;
+}
+
+function activeStageLabel(stage) {
+  const value = String(stage ?? "").trim();
+  if (!value) return "Ход выполняется";
+  if (/^ход выполняется(?:\s|[·:—-]|$)/iu.test(value)) return value;
+  return `Ход выполняется · ${value}`;
+}
+
 globalThis.AgentHubMessageLifecycle = Object.freeze({
+  activeStageLabel,
   identityKey,
   clientIdentityKey,
   liveMessageMatch,
   reconcile,
   rememberBounded,
+  visibleConversationMessages,
 });
 
 })();

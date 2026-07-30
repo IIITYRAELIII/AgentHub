@@ -125,3 +125,72 @@ test("live message never falls back across turns or ambiguous agent messages", (
   ];
   assert.equal(lifecycle.liveMessageMatch(ambiguous, live), null);
 });
+
+test("deferred outgoing messages stay only in the deferred queue", () => {
+  const deferred = message("client-deferred", "Будет отправлено после хода");
+  const visible = lifecycle.visibleConversationMessages([deferred], {
+    deferredClientUserMessageIds: ["client-deferred"],
+  });
+  assert.deepEqual(visible, []);
+});
+
+test("active agent response is rendered only by the live card after task switching", () => {
+  const user = message("client-live", "Текущий вопрос");
+  const agent = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "agent-live",
+    role: "agent",
+    text: "Ответ формируется",
+  };
+  const visible = lifecycle.visibleConversationMessages([user, agent], {
+    liveProbe: {
+      ...agent,
+      text: undefined,
+    },
+  });
+  assert.deepEqual(visible, [user]);
+});
+
+test("active stage always identifies the whole turn as running", () => {
+  assert.equal(lifecycle.activeStageLabel(""), "Ход выполняется");
+  assert.equal(
+    lifecycle.activeStageLabel("✓ Анализ завершён."),
+    "Ход выполняется · ✓ Анализ завершён.",
+  );
+  assert.equal(
+    lifecycle.activeStageLabel("Ход выполняется · проверка"),
+    "Ход выполняется · проверка",
+  );
+});
+
+test("returning to a busy task keeps live and deferred states separate", () => {
+  const activeUser = {
+    ...message("active-client", "Первый вопрос"),
+    turnId: "active-turn",
+    itemId: "active-user",
+  };
+  const activeAgent = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "active-turn",
+    itemId: "active-agent",
+    role: "agent",
+    text: "Работа продолжается",
+  };
+  const deferredUser = {
+    ...message("deferred-client", "Следующий вопрос"),
+    turnId: "",
+    itemId: "",
+    deliveryState: "queued",
+  };
+  const visible = lifecycle.visibleConversationMessages(
+    [activeUser, activeAgent, deferredUser],
+    {
+      deferredClientUserMessageIds: ["deferred-client"],
+      liveProbe: { ...activeAgent, text: undefined },
+    },
+  );
+  assert.deepEqual(visible, [activeUser]);
+});

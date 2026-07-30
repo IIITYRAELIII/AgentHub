@@ -906,7 +906,11 @@ function liveTextAfterMessages(live) {
 function renderLive() {
   const live = state.live.get(state.selectedId);
   const visibleText = liveTextAfterMessages(live);
-  if (!live || (!visibleText && !normalizedMessageText(live.reasoning))) {
+  if (!live || (
+    !visibleText
+    && !normalizedMessageText(live.reasoning)
+    && !normalizedMessageText(live.stage)
+  )) {
     chatLive.hidden = true;
     return;
   }
