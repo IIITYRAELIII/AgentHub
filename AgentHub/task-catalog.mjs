@@ -802,7 +802,7 @@ export function mergeTaskCatalog(entries, runs = []) {
       updatedAtMs: Date.parse(run.startedAt ?? "") || Date.now(),
       running: true,
       executionOwner: run.observer
-        ? TASK_EXECUTION_OWNERS.EXTERNAL
+        ? run.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
         : TASK_EXECUTION_OWNERS.HUB,
       turnId: run.turnId ?? null,
       lastActivityAtMs: Date.parse(run.lastMeaningfulProgressAt ?? run.startedAt ?? "") || Date.now(),

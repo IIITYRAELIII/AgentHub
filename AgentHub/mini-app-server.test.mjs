@@ -307,6 +307,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(script, /data-phosphor-icon="speaker-high"/u);
 
     const hubClient = await (await fetch(`${address.url}hub-client.js`)).text();
+    assert.match(hubClient, /hub: "HUB"/u);
     assert.match(hubClient, /telegram: "HUB"/u);
     assert.match(hubClient, /desktop: "APP"/u);
     assert.match(hubClient, /cli: "CLI"/u);

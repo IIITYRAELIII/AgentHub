@@ -751,6 +751,20 @@ test("observer ownership overrides historical catalog ownership", () => {
   assert.equal(entry.executionOwner, TASK_EXECUTION_OWNERS.VSCODE);
 });
 
+test("run-only observer keeps its detected execution owner", () => {
+  const [entry] = mergeTaskCatalog([], [{
+    id: "observer-only",
+    provider: "codex",
+    threadId: "codex-observed-only",
+    projectRoot: project.path,
+    projectName: project.name,
+    taskTitle: "Наблюдаемая без каталога",
+    observer: true,
+    executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
+  }]);
+  assert.equal(entry.executionOwner, TASK_EXECUTION_OWNERS.VSCODE);
+});
+
 test("task catalog callbacks identify provider and task", () => {
   const entry = { provider: "claude", threadId: "a2ea7518-5826-4480-aaff-bb80915953d8" };
   const callback = taskCatalogCallback(entry);

@@ -34,6 +34,7 @@ const {
 } = window.AgentHubMessageLifecycle;
 
 const runtimeShortLabels = Object.freeze({
+  hub: "HUB",
   telegram: "HUB",
   vscode: "VSC",
   desktop: "APP",
