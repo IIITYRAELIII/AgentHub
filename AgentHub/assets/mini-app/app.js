@@ -3219,6 +3219,40 @@ function creditsFromEntries(entries) {
   return { total, known };
 }
 
+function replaceCollapsedTurnList(list, entries) {
+  if (!list) return;
+  const table = document.createElement("div");
+  table.dataset.workLogTurnTable = "";
+  const [latest, ...previousEntries] = entries;
+  if (latest) table.append(latest);
+  if (previousEntries.length) {
+    const previous = document.createElement("details");
+    previous.dataset.workLogPreviousTurns = "";
+    const summary = document.createElement("summary");
+    summary.append(
+      el("span", {
+        "data-work-log-previous-turns-closed": "",
+        text: `Показать предыдущие ходы (${previousEntries.length})`,
+      }),
+      el("span", {
+        "data-work-log-previous-turns-open": "",
+        text: "Свернуть",
+      }),
+    );
+    const previousList = document.createElement("div");
+    previousList.dataset.workLogPreviousTurnList = "";
+    previousList.append(...previousEntries);
+    previous.append(summary, previousList);
+    table.append(previous);
+  } else if (latest) {
+    table.append(el("div", {
+      "data-work-log-no-previous-turns": "",
+      text: "Предыдущих ходов нет.",
+    }));
+  }
+  list.replaceChildren(table);
+}
+
 function groupClaudeRowsInDay(day) {
   if (!groupClaudeTasks) return;
   const rows = [...day.querySelectorAll(
@@ -3236,6 +3270,10 @@ function groupClaudeRowsInDay(day) {
       entries.push(entry.cloneNode(true));
     }
   }
+  entries.sort((left, right) => (
+    (Date.parse(right.dataset.workLogTurnCompletedAt ?? "") || 0)
+      - (Date.parse(left.dataset.workLogTurnCompletedAt ?? "") || 0)
+  ));
   primary.dataset.workLogThreadId = "work";
   const title = primary.querySelector("[data-work-log-task-content]");
   if (title) {
@@ -3245,7 +3283,7 @@ function groupClaudeRowsInDay(day) {
     title.replaceChildren(label);
   }
   const list = primary.querySelector("[data-work-log-turn-list]");
-  if (list) list.replaceChildren(...entries);
+  replaceCollapsedTurnList(list, entries);
   const usage = primary.querySelector("[data-work-log-usage]");
   if (usage) {
     const totals = creditsFromEntries(entries);
@@ -3260,7 +3298,11 @@ function groupClaudeRowsInDay(day) {
         usageBadge(formatUsageValue(totals.total), totals.total),
       );
       details.append(summary);
-      usage.replaceChildren(details);
+      const collapse = document.createElement("button");
+      collapse.type = "button";
+      collapse.dataset.workLogCollapseTurns = "";
+      collapse.textContent = "Свернуть ходы";
+      usage.replaceChildren(details, collapse);
     } else {
       usage.replaceChildren();
     }

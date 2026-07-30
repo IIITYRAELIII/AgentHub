@@ -94,6 +94,15 @@ test("panel handles the duplicate collapse-turns button", () => {
   assert.match(html, /previous\.open = false/);
 });
 
+test("grouped Claude work keeps the latest turn visible and collapses previous turns", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(app, /function replaceCollapsedTurnList\(list, entries\)/u);
+  assert.match(app, /data-work-log-previous-turns-closed/u);
+  assert.match(app, /Показать предыдущие ходы/u);
+  assert.match(app, /replaceCollapsedTurnList\(list, entries\)/u);
+  assert.doesNotMatch(app, /if \(list\) list\.replaceChildren\(\.\.\.entries\)/u);
+});
+
 /* фон BlackHole приходит из workspace через webview, поэтому его источник
    должен попадать в img-src — но ничего удалённого туда попасть не должно */
 test("panel allows the webview's own resources and data URIs, but no remote source", () => {
