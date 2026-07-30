@@ -85,8 +85,8 @@
 
 | № | Приоритет | Статус | Проверка | Критерий приёмки |
 |---:|:---:|:---:|---|---|
-| 52 | P0 | 🟡 | Не позволять sandbox подменять активный runtime | Root, указатель, launchers и releases получают owner-only ACL; launcher проверяет manifest, размер и SHA-256 каждого файла. Осталось применить новый runtime и повторить live-проверку ACL. |
-| 53 | P0 | 🟡 | Устранить доступ к резервным копиям Telegram-токена | Найденная резервная копия уже защищена ACL. После переключения runtime требуется удалить её и перевыпустить токен через BotFather, поскольку сам факт прежнего локального доступа нельзя отменить. |
+| 52 | P0 | ✅ | Не позволять sandbox подменять активный runtime | Live root, `current.json`, launchers и releases имеют owner/System/Administrators-only ACL; запущенный release прошёл manifest, размер и SHA-256-проверку настоящим Windows launcher. |
+| 53 | P0 | 🟡 | Устранить доступ к резервным копиям Telegram-токена | Резервная копия вместе со старым runtime удалена; других копий не найдено. Осталось перевыпустить токен через BotFather, поскольку сам факт прежнего локального доступа нельзя отменить. |
 | 54 | P1 | ✅ | Авторизовать локальный Web API и закрыть browser-CSRF | Loopback API требует защищённую HttpOnly/SameSite-сессию, выдаваемую только по локальному secret; mutating POST принимает только JSON. Негативный тест отклоняет запрос без сессии и CSRF-shaped запрос. |
 | 55 | P1 | ✅ | Не применять действие клиента к глобально выбранной чужой задаче | Send, rename, archive, cancel, diff, TTS и compaction требуют точные `provider + threadId`; E2E меняет глобальный выбор и проверяет действие над другой адресованной карточкой. |
 | 56 | P1 | ✅ | Не оставлять HUB остановленным из-за ошибки закрытия одного компонента | Flush/close/shutdown выполняются через именованный `allSettled`; отказ одного компонента журналируется и не прерывает остальные операции. |
@@ -97,7 +97,7 @@
 | 61 | P1 | ✅ | Закрепить Wrangler | Wrangler зафиксирован точной версией и lockfile; deploy использует только локально установленный `npx --no-install`. |
 | 62 | P1 | ✅ | Не допустить случайного коммита runtime secrets/data | `.gitignore` закрывает AgentHub config, data, `.env`, secrets, runtime, Desktop attachments и build artifacts. |
 | 63 | P2 | ✅ | Не переписывать большой ledger и backup на каждое событие | Ledger больше 1 МиБ использует append-only delta изменённых записей и периодические checkpoint; малые файлы сохраняют прежний простой формат. |
-| 64 | P1 | 🟡 | Убрать исторические runtime-пути и имена | Код и документация переведены на `%LOCALAPPDATA%\AgentHub`, `agent-hub-*` pipes/logs и `AGENT_HUB_*`. Остался live cutover и удаление старых каталогов. |
+| 64 | P1 | ✅ | Убрать исторические runtime-пути и имена | Live runtime работает из `%LOCALAPPDATA%\AgentHub`; старые `%LOCALAPPDATA%\Tyrael\TelegramIntegration`, `%LOCALAPPDATA%\TelegramIntegration` и ярлык `Codex Telegram Bot` удалены. Код, документация, pipes, логи и переменные используют Agent Hub. |
 | 65 | P2 | ✅ | Убрать зависшие visual-QA серверы | Два orphaned Claude preview server на 8799 остановлены; к production Agent Hub они не относились. |
 | 66 | P2 | ⬜ | Подтвердить реальные Codex hook receipts | Hooks нужны для точного старта/остановки хода, но HUB имеет менее точный fallback по rollout. После live cutover требуется reload Codex и проверка обеих квитанций. |
 | 67 | P2 | ⬜ | Добавить настоящий browser UI и WPF UI E2E | Текущие process E2E и Desktop RPC/C# smoke проверяют backend и протокол, но не клики/отрисовку реального браузера и окна WPF. |
@@ -118,4 +118,9 @@
 
 ## Итог
 
-Повторный глобальный аудит закрыт: пункты 34–50 имеют регрессионные проверки или отдельный live-smoke, полный `test:all` проходит. После публикации release выполняются повторный `doctor`, проверка ACL, живого lock/ready и восстановления observer.
+Повторный глобальный аудит и live cutover закрыты: исправленные пункты имеют
+регрессионные проверки либо отдельный live-smoke; `test:all`, `doctor`, ACL,
+lock/ready, локальный Web API, Desktop RPC и TTS проверены на опубликованном
+release. Открыты только перевыпуск Telegram-токена (53), реальные browser/WPF
+UI E2E (67), подтверждение hook receipts после reload Codex (66) и отдельный
+проект end-to-end encryption облачного журнала (68).
