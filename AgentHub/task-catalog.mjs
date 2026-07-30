@@ -676,6 +676,7 @@ export function codexCatalogEntry(thread, project, {
   rolloutRunning = false,
   executionOwner = null,
   lastActivityAtMs = null,
+  startedAtMs = null,
 } = {}) {
   const title = String(thread?.name ?? thread?.preview ?? "Без названия")
     .replace(/\s+/g, " ")
@@ -691,6 +692,11 @@ export function codexCatalogEntry(thread, project, {
     running: codexThreadRunning(thread, { rolloutRunning }),
     executionOwner,
     lastActivityAtMs,
+    startedAt: startedAtMs !== null
+      && startedAtMs !== ""
+      && Number.isFinite(Number(startedAtMs))
+      ? new Date(Number(startedAtMs)).toISOString()
+      : null,
   };
 }
 
@@ -739,6 +745,9 @@ export function claudeCatalogEntry(snapshot, project, nowMs = Date.now()) {
     activityUnknown: activityState === "unknown",
     executionOwner: running ? TASK_EXECUTION_OWNERS.EXTERNAL : null,
     lastActivityAtMs: modifiedAtMs || null,
+    startedAt: running && Number.isFinite(Date.parse(String(snapshot?.startedAt ?? "")))
+      ? new Date(snapshot.startedAt).toISOString()
+      : null,
   };
 }
 
@@ -776,6 +785,7 @@ export function mergeTaskCatalog(entries, runs = []) {
         ? run.executionOwner ?? existing.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
         : TASK_EXECUTION_OWNERS.HUB;
       existing.turnId = run.turnId ?? existing.turnId ?? null;
+      existing.startedAt = run.startedAt ?? existing.startedAt ?? null;
       existing.lastActivityAtMs = Date.parse(run.lastMeaningfulProgressAt ?? run.startedAt ?? "")
         || existing.lastActivityAtMs
         || Date.now();

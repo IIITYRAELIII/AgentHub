@@ -176,6 +176,7 @@ export function parseClaudeTranscript(text) {
     completed,
     active: promptIndex >= 0 && !completed,
     stage,
+    startedAt: promptEntry?.timestamp ?? null,
     updatedAt: turnEntries.map((entry) => entry?.timestamp).filter(Boolean).at(-1) ?? null,
     sessionId: entries.map((entry) => entry?.sessionId).filter(Boolean).at(-1) ?? null,
     cwd: entries.map((entry) => entry?.cwd).filter(Boolean).at(-1) ?? null,

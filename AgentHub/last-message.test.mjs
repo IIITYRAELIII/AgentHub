@@ -90,6 +90,7 @@ test("parseClaudeTranscript returns the current partial answer", () => {
     completed: false,
     active: true,
     stage: "Claude использует инструмент Read…",
+    startedAt: null,
     updatedAt: null,
     sessionId: null,
     cwd: null,

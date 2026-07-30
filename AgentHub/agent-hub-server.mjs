@@ -2377,10 +2377,16 @@ async function buildTaskCatalog() {
             rolloutPath: thread.path,
             agentHubPid: codexTransport.pid,
           });
+        const activeStartedAtValues = activity.activeTurnIds
+          .map((turnId) => Number(activity.startedAtMsByTurnId?.[turnId]))
+          .filter(Number.isFinite);
         const entry = codexCatalogEntry(thread, project, {
           rolloutRunning,
           executionOwner: rolloutRunning ? executionOwner : null,
           lastActivityAtMs: activity.lastActivityAtMs,
+          startedAtMs: activeStartedAtValues.length
+            ? Math.min(...activeStartedAtValues)
+            : null,
         });
         const titleHistory = titleHistories.get(thread.id)
           ?? { currentTitle: "", recoverableTitle: "" };

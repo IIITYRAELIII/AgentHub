@@ -93,6 +93,7 @@ test("codexCatalogEntry preserves persistent task metadata and active status", (
     running: true,
     executionOwner: null,
     lastActivityAtMs: null,
+    startedAt: null,
   });
 });
 
@@ -644,6 +645,7 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
     title: "Вторая задача",
     cwd: "C:\\Projects\\Main\\Utilities\\AgentHub",
     modifiedAtMs: now - 60_000,
+    startedAt: new Date(now - 120_000).toISOString(),
     active: true,
   }, project, now);
   const stale = claudeCatalogEntry({
@@ -652,6 +654,7 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
     active: true,
   }, project, now);
   assert.equal(fresh.running, true);
+  assert.equal(fresh.startedAt, new Date(now - 120_000).toISOString());
   assert.equal(fresh.sessionCwd, path.resolve("C:\\Projects\\Main\\Utilities\\AgentHub"));
   assert.equal(stale.running, false);
 });
