@@ -453,6 +453,27 @@ function formatRelativeTime(input) {
   return date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
 }
 
+/* Живое время выполнения: секунды видны сразу, длинные ходы не распухают. */
+function formatRunningDuration(input, now = Date.now()) {
+  const startedAt = input instanceof Date ? input.getTime() : Date.parse(String(input ?? ""));
+  if (!Number.isFinite(startedAt)) return "";
+  const seconds = Math.max(0, Math.floor((now - startedAt) / 1_000));
+  if (seconds < 60) return `${seconds}с`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}м ${String(seconds % 60).padStart(2, "0")}с`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}ч ${String(minutes % 60).padStart(2, "0")}м`;
+  const days = Math.floor(hours / 24);
+  return `${days}д ${String(hours % 24).padStart(2, "0")}ч`;
+}
+
+function refreshTaskDurations() {
+  const now = Date.now();
+  for (const node of taskList.querySelectorAll(".task-time[data-task-started-at]")) {
+    node.textContent = formatRunningDuration(node.dataset.taskStartedAt, now);
+  }
+}
+
 let toastTimer = 0;
 function showToast(message) {
   if (!message) return;
@@ -647,8 +668,13 @@ function renderTaskItem(task) {
 
   const time = el("span", {
     class: "task-time",
-    text: formatRelativeTime(task.lastActivity),
-    title: task.lastActivity ? new Date(task.lastActivity).toLocaleString("ru-RU") : "",
+    text: task.running && task.startedAt
+      ? formatRunningDuration(task.startedAt)
+      : formatRelativeTime(task.lastActivity),
+    title: task.running && task.startedAt
+      ? `Выполняется с ${new Date(task.startedAt).toLocaleString("ru-RU")}`
+      : task.lastActivity ? new Date(task.lastActivity).toLocaleString("ru-RU") : "",
+    "data-task-started-at": task.running && task.startedAt ? task.startedAt : null,
   });
 
   const titleRow = el("div", { class: "task-title-row" }, [
@@ -3880,6 +3906,8 @@ if (vscodeMode) {
 /* ------------------------------------------------------------- инициализация */
 
 AgentHub.setConnection(telegramMode ? "online" : "connecting");
+const taskDurationTimer = window.setInterval(refreshTaskDurations, 1_000);
+window.addEventListener("pagehide", () => clearInterval(taskDurationTimer), { once: true });
 void loadRateLimits();
 renderTasks();
 renderChat();

@@ -319,6 +319,7 @@ test("Codex rollout activity keeps another concurrent turn active after one is a
     activeTurnIds: ["original"],
     activeVscodeTurnIds: [],
     activityAtMsByTurnId: {},
+    startedAtMsByTurnId: {},
     model: null,
     reasoningEffort: null,
     latestTurnId: "parallel",
@@ -362,6 +363,9 @@ test("Codex rollout activity ignores stale unmatched starts but keeps a fresh li
     activeVscodeTurnIds: [],
     activityAtMsByTurnId: {
       live: Date.parse("2026-07-17T19:29:30Z"),
+    },
+    startedAtMsByTurnId: {
+      live: Date.parse("2026-07-17T19:29:00Z"),
     },
     model: null,
     reasoningEffort: null,
@@ -426,6 +430,10 @@ test("an exact Codex observer completes its requested turn instead of following 
     finalMessages: {
       "old-turn": "old turn finished",
     },
+    startedAtMsByTurnId: {
+      "old-turn": Date.parse("2026-07-17T18:00:00Z"),
+      "new-turn": Date.parse("2026-07-17T19:00:00Z"),
+    },
   };
   assert.deepEqual(codexRolloutTurnState(activity, "old-turn", {
     exact: true,
@@ -437,6 +445,7 @@ test("an exact Codex observer completes its requested turn instead of following 
     latestAnswer: "",
     finalAnswer: "old turn finished",
     userMessages: [],
+    startedAt: "2026-07-17T18:00:00.000Z",
   });
   assert.equal(codexRolloutTurnState(activity, "old-turn", {
     threadActive: true,

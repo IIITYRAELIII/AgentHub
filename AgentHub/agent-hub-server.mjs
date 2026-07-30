@@ -5086,6 +5086,15 @@ function recoveredCodexAnswer(turn) {
   return codexTurnAnswer(turn);
 }
 
+function codexTurnStartedAt(turn) {
+  const value = turn?.startedAt ?? turn?.createdAt ?? null;
+  const numeric = Number(value);
+  const timestamp = Number.isFinite(numeric) && value !== null && value !== ""
+    ? (numeric < 1_000_000_000_000 ? numeric * 1_000 : numeric)
+    : Date.parse(String(value ?? ""));
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
 function codexTurnSnapshot(turn, threadStatus = null) {
   const items = Array.isArray(turn?.items) ? turn.items : [];
   const lastItem = items.at(-1);
@@ -5104,6 +5113,7 @@ function codexTurnSnapshot(turn, threadStatus = null) {
     prompt,
     clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,
     userMessages,
+    startedAt: codexTurnStartedAt(turn),
     completed: turn?.status !== "inProgress",
     active: turn?.status === "inProgress",
     status: turn?.status === "completed" ? "completed" : String(turn?.status ?? "stopped"),
@@ -5191,6 +5201,14 @@ function updateObservedRun(run, snapshot) {
     run.reasoning = CODEX_REASONING_LABELS[snapshot.reasoningEffort]
       ?? snapshot.reasoningEffort;
   }
+  const snapshotStartedAt = Date.parse(String(snapshot?.startedAt ?? ""));
+  const runStartedAt = Date.parse(String(run.startedAt ?? ""));
+  if (
+    Number.isFinite(snapshotStartedAt)
+    && (!Number.isFinite(runStartedAt) || snapshotStartedAt < runStartedAt)
+  ) {
+    run.startedAt = new Date(snapshotStartedAt).toISOString();
+  }
   const activityAtMs = Number(snapshot?.activityAtMs ?? snapshot?.modifiedAtMs);
   if (Number.isFinite(activityAtMs)) noteRunActivity(run, activityAtMs);
   if (responseChanged || run.progressReasoning !== previousReasoning || run.progressStage !== previousStage) {
@@ -5220,6 +5238,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
       latestAnswer,
       finalAnswer,
       userMessages,
+      startedAt,
     } = codexRolloutTurnState(activity, run.turnId, {
       exact: exactTurnObserver,
       threadActive,
@@ -5231,6 +5250,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
       prompt: userMessages[0]?.text ?? "",
       clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,
       userMessages,
+      startedAt,
       completed,
       active,
       status: completed ? "completed" : active ? "inProgress" : "stopped",
@@ -5267,6 +5287,9 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
       || activity.lastActivityAtMs,
     model: activity.model,
     reasoningEffort: activity.reasoningEffort,
+    startedAt: Number.isFinite(Number(activity.startedAtMsByTurnId?.[turn.id]))
+      ? new Date(Number(activity.startedAtMsByTurnId[turn.id])).toISOString()
+      : codexTurnStartedAt(turn),
     executionOwner: run?.observer === true
       ? await resolveCodexObservedExecutionOwner(activity, {
         turnId: turn.id,

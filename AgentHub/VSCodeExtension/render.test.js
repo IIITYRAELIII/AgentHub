@@ -226,6 +226,18 @@ test("one settings panel owns interface and task controls", () => {
   );
 });
 
+test("task list keeps active duration live and metadata badges readable", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(client, /startedAt:\s*running\s*\?\s*task\.run\?\.startedAt/u);
+  assert.match(app, /function formatRunningDuration\(/u);
+  assert.match(app, /data-task-started-at/u);
+  assert.match(app, /setInterval\(refreshTaskDurations,\s*1_000\)/u);
+  assert.match(styles, /\.task-agent\s*\{[^}]*flex:\s*0 0 auto;/su);
+  assert.match(styles, /\.task-runtime\s*\{[^}]*background:\s*var\(--accent-soft\);[^}]*color:\s*var\(--accent\);/su);
+});
+
 test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");

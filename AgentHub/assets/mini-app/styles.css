@@ -4581,17 +4581,33 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
 }
 
 .task-agent {
-  color: var(--text-soft);
-  font-size: 0.72rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  --task-provider: var(--text-soft);
+  background: color-mix(in srgb, var(--task-provider) 13%, var(--surface-2));
+  border: 1px solid color-mix(in srgb, var(--task-provider) 44%, transparent);
+  border-radius: var(--radius-chip);
+  color: color-mix(in srgb, var(--task-provider) 78%, var(--text));
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.035em;
+  line-height: 1.25;
+  padding: 0.05rem 0.3rem;
   white-space: nowrap;
 }
 
+.task-item[data-provider="codex"] .task-agent {
+  --task-provider: var(--provider-codex);
+}
+
+.task-item[data-provider="claude"] .task-agent {
+  --task-provider: var(--provider-claude);
+}
+
 .task-runtime {
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
   border-radius: var(--radius-chip);
-  color: var(--accent-soft);
+  color: var(--accent);
   flex: 0 0 auto;
   font-size: 0.62rem;
   font-weight: 700;
@@ -4605,6 +4621,7 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   color: var(--text-muted);
   font-size: 0.68rem;
   overflow: hidden;
+  min-width: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

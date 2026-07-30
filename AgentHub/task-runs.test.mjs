@@ -21,12 +21,18 @@ test("task run factories initialize managed and observed lifecycle state", () =>
   assert.equal(managed.progressStage, "Задача принята.");
   const observed = createObservedTaskRun(
     { provider: "codex", threadId: "thread-1", turnId: "turn-1" },
-    { answer: "часть", stage: "Работаю", reasoning: "анализ" },
+    {
+      answer: "часть",
+      stage: "Работаю",
+      reasoning: "анализ",
+      startedAt: "2026-07-30T10:15:00.000Z",
+    },
   );
   assert.equal(observed.observer, true);
   assert.equal(observed.responseText, "часть");
   assert.equal(observed.observedInitialResponseText, "часть");
   assert.equal(observed.progressStage, "Работаю");
+  assert.equal(observed.startedAt, "2026-07-30T10:15:00.000Z");
 });
 
 test("selected external task is observed automatically only while its turn is active", () => {

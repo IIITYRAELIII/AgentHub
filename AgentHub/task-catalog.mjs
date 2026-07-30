@@ -285,6 +285,15 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
     }
   }
   const timestamp = Date.parse(entry?.timestamp);
+  if (
+    entry?.type === "event_msg"
+    && entry.payload?.type === "task_started"
+    && turnId
+    && turnId !== LEGACY_TURN_ID
+    && Number.isFinite(timestamp)
+  ) {
+    metadata.startedAtMsByTurnId.set(turnId, timestamp);
+  }
   if (turnId && Number.isFinite(timestamp)) lastSeenAtByTurnId.set(turnId, timestamp);
   applyCodexLifecycleEntry(activeTurnIds, entry);
 }
@@ -292,7 +301,12 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
 function codexActivity(
   activeTurnIds,
   lastSeenAtByTurnId = new Map(),
-  { nowMs = null, freshnessMs = null, vscodeTurnIds = new Set() } = {},
+  {
+    nowMs = null,
+    freshnessMs = null,
+    vscodeTurnIds = new Set(),
+    startedAtMsByTurnId = new Map(),
+  } = {},
 ) {
   const useFreshness = Number.isFinite(nowMs) && Number.isFinite(freshnessMs);
   const activeIds = [...activeTurnIds].filter((turnId) => {
@@ -310,6 +324,9 @@ function codexActivity(
     activityAtMsByTurnId: Object.fromEntries(activeIds
       .filter((turnId) => turnId !== LEGACY_TURN_ID && Number.isFinite(lastSeenAtByTurnId.get(turnId)))
       .map((turnId) => [turnId, lastSeenAtByTurnId.get(turnId)])),
+    startedAtMsByTurnId: Object.fromEntries(activeIds
+      .filter((turnId) => turnId !== LEGACY_TURN_ID && Number.isFinite(startedAtMsByTurnId.get(turnId)))
+      .map((turnId) => [turnId, startedAtMsByTurnId.get(turnId)])),
   };
 }
 
@@ -326,6 +343,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     userMessages: new Map(),
     pendingUserMessages: [],
     unscopedLatestMessage: "",
+    startedAtMsByTurnId: new Map(),
   };
   for (const line of String(text).split(/\r?\n/)) {
     if (!line) continue;
@@ -339,6 +357,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     ...codexActivity(activeTurnIds, lastSeenAtByTurnId, {
       ...options,
       vscodeTurnIds: metadata.vscodeTurnIds,
+      startedAtMsByTurnId: metadata.startedAtMsByTurnId,
     }),
     model: metadata.model || null,
     reasoningEffort: metadata.reasoningEffort || null,
@@ -370,6 +389,7 @@ export async function readCodexRolloutActivity(
       activeTurnIds: [],
       activeVscodeTurnIds: [],
       activityAtMsByTurnId: {},
+      startedAtMsByTurnId: {},
       lastActivityAtMs: null,
       model: null,
       reasoningEffort: null,
@@ -390,6 +410,7 @@ export async function readCodexRolloutActivity(
         activeTurnIds: [],
         activeVscodeTurnIds: [],
         activityAtMsByTurnId: {},
+        startedAtMsByTurnId: {},
         lastActivityAtMs: null,
         model: null,
         reasoningEffort: null,
@@ -409,6 +430,7 @@ export async function readCodexRolloutActivity(
       activeTurnIds: [],
       activeVscodeTurnIds: [],
       activityAtMsByTurnId: {},
+      startedAtMsByTurnId: {},
       lastActivityAtMs: info.mtimeMs,
       model: cached?.model || null,
       reasoningEffort: cached?.reasoningEffort || null,
@@ -429,6 +451,7 @@ export async function readCodexRolloutActivity(
           nowMs,
           freshnessMs,
           vscodeTurnIds: new Set(cached.vscodeTurnIds ?? []),
+          startedAtMsByTurnId: new Map(cached.startedAtMsByTurnId ?? []),
         },
       ),
       lastActivityAtMs: info.mtimeMs,
@@ -461,6 +484,7 @@ export async function readCodexRolloutActivity(
       ? (cached.pendingUserMessages ?? []).map((message) => ({ ...message }))
       : [],
     unscopedLatestMessage: appendOnly ? String(cached.unscopedLatestMessage ?? "") : "",
+    startedAtMsByTurnId: new Map(appendOnly ? cached.startedAtMsByTurnId ?? [] : []),
   };
   const start = appendOnly
     ? cached.size
@@ -516,12 +540,14 @@ export async function readCodexRolloutActivity(
     nowMs,
     freshnessMs,
     vscodeTurnIds: metadata.vscodeTurnIds,
+    startedAtMsByTurnId: metadata.startedAtMsByTurnId,
   });
   codexActivityCache.set(normalized, {
     size: info.size,
     mtimeMs: info.mtimeMs,
     activeTurnIds: [...activeTurnIds],
     lastSeenAtByTurnId: [...lastSeenAtByTurnId],
+    startedAtMsByTurnId: [...metadata.startedAtMsByTurnId],
     trailingText,
     latestTurnId: metadata.latestTurnId,
     vscodeTurnIds: [...metadata.vscodeTurnIds],
@@ -616,6 +642,7 @@ export function codexRolloutTurnState(
   const userMessages = turnId && Array.isArray(activity.userMessages?.[turnId])
     ? activity.userMessages[turnId].map((message) => ({ ...message }))
     : [];
+  const startedAtMs = Number(activity.startedAtMsByTurnId?.[turnId]);
   return {
     turnId,
     active,
@@ -623,6 +650,7 @@ export function codexRolloutTurnState(
     latestAnswer,
     finalAnswer,
     userMessages,
+    startedAt: Number.isFinite(startedAtMs) ? new Date(startedAtMs).toISOString() : null,
   };
 }
 

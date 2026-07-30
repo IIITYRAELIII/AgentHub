@@ -304,6 +304,7 @@ function modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId) 
     lastActivity: task.orderingActivityAtMs
       ? new Date(task.orderingActivityAtMs).toISOString()
       : task.lastAnswerAt,
+    startedAt: running ? task.run?.startedAt ?? task.startedAt ?? null : null,
     unread: !running && answerAt > seenAt,
     running,
     selected: id === effectiveSelectedId,

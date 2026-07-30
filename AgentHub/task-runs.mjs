@@ -46,7 +46,7 @@ export function createManagedTaskRun(value) {
 }
 
 export function createObservedTaskRun(value, snapshot = {}) {
-  return {
+  const run = {
     id: crypto.randomUUID(),
     turnId: value.turnId ?? null,
     sessionId: value.provider === "claude" ? value.threadId : null,
@@ -62,6 +62,11 @@ export function createObservedTaskRun(value, snapshot = {}) {
     observerTimer: null,
     observer: true,
   };
+  const snapshotStartedAt = Date.parse(String(snapshot.startedAt ?? ""));
+  if (Number.isFinite(snapshotStartedAt)) {
+    run.startedAt = new Date(snapshotStartedAt).toISOString();
+  }
+  return run;
 }
 
 export class TaskRunRegistry {
