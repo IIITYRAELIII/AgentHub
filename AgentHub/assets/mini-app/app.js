@@ -247,6 +247,8 @@ const state = {
   options: { agent: [], model: [], reasoning: [], mode: [], project: [] },
   selection: {},
   status: null,
+  connection: "",
+  connectionBlockingCount: 0,
 };
 
 /* Черновики живут только в памяти вкладки: текст, аннотации и вложения
@@ -1132,14 +1134,21 @@ const AgentHub = {
   off(type, handler) {
     listeners.get(type)?.delete(handler);
   },
-  /** Состояние соединения: "online" | "connecting" | "restarting" | "offline". */
-  setConnection(status) {
-    const value = ["online", "connecting", "restarting", "offline"].includes(status) ? status : "offline";
-    if (state.connection === value) return;
+  /** Состояние соединения и отложенного перезапуска Agent Hub. */
+  setConnection(status, details = {}) {
+    const value = ["online", "connecting", "restart-waiting", "restarting", "offline"].includes(status)
+      ? status
+      : "offline";
+    const blockingCount = Math.max(0, Number(details.blockingCount) || 0);
+    if (state.connection === value && state.connectionBlockingCount === blockingCount) return;
     state.connection = value;
+    state.connectionBlockingCount = blockingCount;
     root.dataset.connection = value;
     const messages = {
       connecting: "Подключение к Agent Hub…",
+      "restart-waiting": blockingCount
+        ? `Agent Hub перезапустится после завершения активных задач (осталось: ${blockingCount}). Текст в поле ввода сохранён.`
+        : "Agent Hub перезапустится после завершения активных задач. Текст в поле ввода сохранён.",
       restarting: "Agent Hub перезапускается… Непринятый текст будет восстановлен.",
       offline: "Нет связи с Agent Hub. Неотправленное сообщение сохранено в поле ввода.",
     };

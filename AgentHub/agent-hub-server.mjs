@@ -2403,6 +2403,10 @@ async function desktopSnapshot({ refresh = false } = {}) {
       })),
     ],
     restartPending: Boolean(restartRequest),
+    restartWaiting: restartRequest?.waitingForRuns === true,
+    restartBlockingCount: restartRequest
+      ? restartBlockingRuns().length + backgroundMediaJobs.size + backgroundSpeechJobs.size
+      : 0,
     activeCount: tasks.filter((item) => item.running).length,
     tasks,
   };

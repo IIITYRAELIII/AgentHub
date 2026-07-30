@@ -219,7 +219,15 @@ function applySnapshot(snapshot) {
     project: (settings.projects ?? []).find((project) => project.selected)?.path ?? "",
     autoApprove: settings.approvalMode === "auto",
   });
-  agentHub.setConnection(snapshot.restartPending ? "restarting" : "online");
+  applySnapshotConnection(snapshot);
+}
+
+function applySnapshotConnection(snapshot, idleStatus = "online") {
+  const waiting = snapshot?.restartPending && snapshot?.restartWaiting;
+  agentHub.setConnection(
+    waiting ? "restart-waiting" : snapshot?.restartPending ? "restarting" : idleStatus,
+    { blockingCount: Number(snapshot?.restartBlockingCount) || 0 },
+  );
 }
 
 function historyMessages(history, focusedTurn = null) {
@@ -321,7 +329,7 @@ async function runAction(operation) {
   try {
     return await operation();
   } catch (error) {
-    agentHub.setConnection(lastSnapshot?.restartPending ? "restarting" : "offline");
+    applySnapshotConnection(lastSnapshot, "offline");
     agentHub.toast(String(error?.message ?? error));
     return null;
   }
@@ -560,9 +568,9 @@ async function refresh() {
     if (!selectedTaskId && snapshot.selected?.threadId) {
       selectedTaskId = taskId(snapshot.selected.provider, snapshot.selected.threadId);
     }
-    agentHub.setConnection(snapshot.restartPending ? "restarting" : "online");
+    applySnapshotConnection(snapshot);
   } catch {
-    agentHub.setConnection(lastSnapshot?.restartPending ? "restarting" : "offline");
+    applySnapshotConnection(lastSnapshot, "offline");
   } finally {
     refreshing = false;
     const active = Boolean(lastSnapshot?.tasks?.some((task) => task.running));
