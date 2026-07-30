@@ -290,6 +290,7 @@ test("composer clears optimistically and restores an unconfirmed message", () =>
   assert.match(app, /function completeComposerSend\(requestId, accepted\)/u);
   assert.match(app, /if \(!accepted\)[\s\S]*text: pending\.rawText/u);
   assert.match(client, /agentHub\.completeSend\(request\.requestId/u);
+  assert.match(client, /snapshot\?\.restartWaiting == null && blockingCount > 0/u);
   assert.match(client, /waiting \? "restart-waiting" : snapshot\?\.restartPending \? "restarting" : idleStatus/u);
   assert.match(html, /data-restart-banner/u);
   assert.match(app, /Agent Hub перезапустится после завершения активных задач \(осталось: \$\{blockingCount\}\)/u);

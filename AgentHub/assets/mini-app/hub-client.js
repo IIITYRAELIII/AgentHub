@@ -223,10 +223,18 @@ function applySnapshot(snapshot) {
 }
 
 function applySnapshotConnection(snapshot, idleStatus = "online") {
-  const waiting = snapshot?.restartPending && snapshot?.restartWaiting;
+  const hasDetailedCount = snapshot?.restartBlockingCount != null;
+  const blockingCount = Math.max(
+    0,
+    Number(hasDetailedCount ? snapshot.restartBlockingCount : snapshot?.activeCount) || 0,
+  );
+  const waiting = snapshot?.restartPending && (
+    snapshot?.restartWaiting === true
+    || (snapshot?.restartWaiting == null && blockingCount > 0)
+  );
   agentHub.setConnection(
     waiting ? "restart-waiting" : snapshot?.restartPending ? "restarting" : idleStatus,
-    { blockingCount: Number(snapshot?.restartBlockingCount) || 0 },
+    { blockingCount },
   );
 }
 
