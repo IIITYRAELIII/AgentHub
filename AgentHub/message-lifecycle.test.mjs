@@ -84,3 +84,44 @@ test("message lifecycle bounds optimistic state for a long-lived tab", () => {
   assert.equal(messages.has("client-0"), false);
   assert.equal(messages.has("client-104"), true);
 });
+
+test("live message falls back to the exact active turn while history catches up", () => {
+  const visibleHistory = [{
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "temporary-history-item",
+    role: "agent",
+    text: "Старый промежуточный текст",
+  }];
+  const live = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "official-response-item",
+    role: "agent",
+  };
+  assert.equal(lifecycle.liveMessageMatch(visibleHistory, live), visibleHistory[0]);
+});
+
+test("live message never falls back across turns or ambiguous agent messages", () => {
+  const live = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "official-response-item",
+    role: "agent",
+  };
+  const otherTurn = [{
+    ...live,
+    turnId: "turn-2",
+    itemId: "history-item",
+  }];
+  assert.equal(lifecycle.liveMessageMatch(otherTurn, live), null);
+
+  const ambiguous = [
+    { ...live, itemId: "history-item-1" },
+    { ...live, itemId: "history-item-2" },
+  ];
+  assert.equal(lifecycle.liveMessageMatch(ambiguous, live), null);
+});

@@ -65,9 +65,26 @@ function rememberBounded(messages, message, limit = 100) {
   return messages;
 }
 
+function liveMessageMatch(messages, probe) {
+  const values = Array.isArray(messages) ? messages : [];
+  const exact = identityKey(probe);
+  if (exact) {
+    const exactMatches = values.filter((message) => identityKey(message) === exact);
+    if (exactMatches.length === 1) return exactMatches[0];
+    if (exactMatches.length > 1) return null;
+  }
+  const turnRole = identityKey(probe, { withoutItem: true });
+  if (!turnRole) return null;
+  const turnMatches = values.filter(
+    (message) => identityKey(message, { withoutItem: true }) === turnRole,
+  );
+  return turnMatches.length === 1 ? turnMatches[0] : null;
+}
+
 globalThis.AgentHubMessageLifecycle = Object.freeze({
   identityKey,
   clientIdentityKey,
+  liveMessageMatch,
   reconcile,
   rememberBounded,
 });

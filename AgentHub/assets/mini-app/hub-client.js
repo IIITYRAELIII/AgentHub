@@ -21,7 +21,7 @@ const historyByTask = new Map();
 const outgoingByTask = new Map();
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const {
-  identityKey: messageIdentityKey,
+  liveMessageMatch,
   reconcile: reconcileMessageLifecycle,
   rememberBounded: rememberBoundedMessage,
 } = window.AgentHubMessageLifecycle;
@@ -125,22 +125,17 @@ function updateLiveMessage(taskIdValue, selected) {
     itemId: run.responseItemId,
     role: "agent",
   };
-  const exact = messageIdentityKey(probe);
-  const turnRole = messageIdentityKey(probe, { withoutItem: true });
   const messages = historyByTask.get(taskIdValue) ?? [];
-  const matches = messages.filter((message) => (
-    (exact && messageIdentityKey(message) === exact)
-    || (!run.responseItemId && messageIdentityKey(message, { withoutItem: true }) === turnRole)
-  ));
-  if (matches.length === 1) {
-    matches[0].text = response;
+  const match = liveMessageMatch(messages, probe);
+  if (match) {
+    match.text = response;
     renderTaskMessages(taskIdValue);
   }
   return {
     author: selected.provider === "claude" ? "Claude" : "Codex",
     stage: run.stage,
     reasoning: run.progress || "",
-    text: matches.length === 1 ? "" : response,
+    text: match ? "" : response,
     activities: run.activities ?? [],
     threadId: selected.threadId,
     turnId: run.turnId,
