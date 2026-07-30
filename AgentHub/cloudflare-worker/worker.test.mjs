@@ -18,6 +18,7 @@ async function loadWorker() {
 
 class MemoryStorage {
   values = new Map();
+  alarmAt = null;
 
   async get(key) {
     if (Array.isArray(key)) {
@@ -46,6 +47,18 @@ class MemoryStorage {
 
   async transaction(callback) {
     return callback(this);
+  }
+
+  async getAlarm() {
+    return this.alarmAt;
+  }
+
+  async setAlarm(timestamp) {
+    this.alarmAt = Number(timestamp);
+  }
+
+  async deleteAlarm() {
+    this.alarmAt = null;
   }
 }
 
@@ -78,6 +91,29 @@ function signedServiceRequest(url, payload, secret) {
       "Content-Type": "application/json",
       "X-Agent-Hub-Timestamp": String(timestamp),
       "X-Agent-Hub-Signature": signature,
+    },
+    body,
+  });
+}
+
+function syncChunkRequest({
+  syncId,
+  index,
+  count,
+  version = "version-1",
+  updatedAt = "2026-07-30T08:00:00.000Z",
+  body = new Uint8Array([index + 1]),
+}) {
+  return new Request("https://journal.internal/sync-chunk", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "X-Agent-Hub-Sync-Id": syncId,
+      "X-Agent-Hub-Chunk-Index": String(index),
+      "X-Agent-Hub-Chunk-Count": String(count),
+      "X-Agent-Hub-Encoding": "gzip",
+      "X-Agent-Hub-Journal-Version": version,
+      "X-Agent-Hub-Journal-Updated-At": updatedAt,
     },
     body,
   });
@@ -178,6 +214,100 @@ test("Worker relay authenticates, isolates, executes once, and returns results",
   ), env);
   assert.equal(response.status, 404);
   assert.equal(await storage.get(`control:command:${id}`), undefined);
+});
+
+test("Worker relay retries an abandoned running command with the same id", async () => {
+  const workerModule = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new workerModule.JournalStore({ storage }, {});
+  const id = "018f6c86-3f34-7a31-8f27-16f5b96cce51";
+  const command = {
+    id,
+    userId: "42",
+    action: "status-details",
+    params: {},
+  };
+
+  let response = await store.fetch(new Request("https://journal.internal/control/enqueue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(command),
+  }));
+  assert.equal(response.status, 202);
+
+  const pull = () => store.fetch(new Request("https://journal.internal/control/pull", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ limit: 10 }),
+  }));
+  response = await pull();
+  assert.equal((await response.json()).commands[0].id, id);
+  assert.equal((await storage.get(`control:command:${id}`)).deliveryAttempt, 1);
+
+  response = await pull();
+  assert.deepEqual((await response.json()).commands, []);
+
+  const abandoned = await storage.get(`control:command:${id}`);
+  abandoned.leaseExpiresAt = Date.now() - 1;
+  await storage.put(`control:command:${id}`, abandoned);
+  response = await pull();
+  assert.equal((await response.json()).commands[0].id, id);
+  assert.equal((await storage.get(`control:command:${id}`)).deliveryAttempt, 2);
+});
+
+test("Worker alarm removes expired staging chunks without touching the published journal", async () => {
+  const workerModule = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new workerModule.JournalStore({ storage }, {});
+  const before = Date.now();
+
+  let response = await store.fetch(syncChunkRequest({
+    syncId: "orphan-sync",
+    index: 0,
+    count: 2,
+  }));
+  assert.equal(response.status, 202);
+  const staged = await storage.get("staging:orphan-sync");
+  assert.ok(staged.createdAt >= before);
+  assert.ok(staged.expiresAt > staged.createdAt);
+  assert.equal(storage.alarmAt, staged.expiresAt);
+
+  await storage.put({
+    "journal-manifest": {
+      syncId: "published-sync",
+      count: 1,
+      encoding: "gzip",
+      version: "published",
+      updatedAt: "2026-07-30T07:00:00.000Z",
+    },
+    "chunk:published-sync:0": new Uint8Array([9]),
+    "staging:published-sync": {
+      syncId: "published-sync",
+      count: 1,
+      createdAt: before - 60_000,
+      expiresAt: before - 1,
+    },
+    "staging:fresh-sync": {
+      syncId: "fresh-sync",
+      count: 2,
+      createdAt: before,
+      expiresAt: before + 120_000,
+    },
+    "chunk:fresh-sync:0": new Uint8Array([7]),
+  });
+  staged.expiresAt = before - 1;
+  await storage.put("staging:orphan-sync", staged);
+
+  await store.alarm();
+
+  assert.equal(await storage.get("staging:orphan-sync"), undefined);
+  assert.equal(await storage.get("chunk:orphan-sync:0"), undefined);
+  assert.equal(await storage.get("staging:published-sync"), undefined);
+  assert.deepEqual(await storage.get("chunk:published-sync:0"), new Uint8Array([9]));
+  assert.equal((await storage.get("journal-manifest")).syncId, "published-sync");
+  assert.ok(await storage.get("staging:fresh-sync"));
+  assert.deepEqual(await storage.get("chunk:fresh-sync:0"), new Uint8Array([7]));
+  assert.equal(storage.alarmAt, before + 120_000);
 });
 
 test("Worker relay rejects unsupported actions, attachments, and unsigned service calls", async () => {

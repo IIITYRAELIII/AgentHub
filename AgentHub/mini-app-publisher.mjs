@@ -116,14 +116,15 @@ export function signMiniAppControlRequest({
 
 export async function compressedJournalChunks(payload, {
   chunkBytes = SYNC_CHUNK_BYTES,
-  syncId = randomUUID(),
+  syncId = null,
 } = {}) {
   const compressed = await gzipAsync(Buffer.from(JSON.stringify(payload), "utf8"), { level: 9 });
+  const resolvedSyncId = syncId ?? `sync-${createHash("sha256").update(compressed).digest("hex")}`;
   const chunks = [];
   for (let offset = 0; offset < compressed.length; offset += chunkBytes) {
     chunks.push(compressed.subarray(offset, Math.min(offset + chunkBytes, compressed.length)));
   }
-  return { syncId, chunks };
+  return { syncId: resolvedSyncId, chunks };
 }
 
 export async function journalSyncPayload(workLogFile) {

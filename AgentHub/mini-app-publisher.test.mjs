@@ -80,6 +80,22 @@ test("Mini App publisher splits a large compressed journal without losing data",
   );
 });
 
+test("Mini App publisher reuses the sync id for an identical journal retry", async () => {
+  const payload = {
+    html: "<p>Один и тот же снимок</p>",
+    updatedAt: "2026-07-30T08:00:00.000Z",
+    version: "same-version",
+  };
+  const first = await compressedJournalChunks(payload, { chunkBytes: 16 });
+  const retry = await compressedJournalChunks(payload, { chunkBytes: 16 });
+  const changed = await compressedJournalChunks({ ...payload, html: "<p>Другой снимок</p>" }, { chunkBytes: 16 });
+
+  assert.match(first.syncId, /^sync-[a-f0-9]{64}$/u);
+  assert.equal(retry.syncId, first.syncId);
+  assert.deepEqual(retry.chunks, first.chunks);
+  assert.notEqual(changed.syncId, first.syncId);
+});
+
 test("Mini App publisher polls signed controls and posts their result", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-publisher-"));
   const secretFile = path.join(root, "sync.secret");

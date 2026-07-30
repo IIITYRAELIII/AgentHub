@@ -1,4 +1,4 @@
-import { copyFile, mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -26,3 +26,22 @@ for (const file of [
   await copyFile(path.join(source, file), path.join(output, file));
 }
 await copyFile(path.join(root, "work-log.css"), path.join(output, "work-log.css"));
+await copyFile(
+  path.join(import.meta.dirname, "remote-command-idempotency.js"),
+  path.join(output, "remote-command-idempotency.js"),
+);
+
+const indexFile = path.join(output, "index.html");
+const index = await readFile(indexFile, "utf8");
+const hubClientScript = '  <script src="/hub-client.js" defer></script>';
+if (!index.includes(hubClientScript)) {
+  throw new Error("Agent Hub Worker build could not find the hub-client script anchor");
+}
+await writeFile(
+  indexFile,
+  index.replace(
+    hubClientScript,
+    `  <script src="/remote-command-idempotency.js" defer></script>\n${hubClientScript}`,
+  ),
+  "utf8",
+);

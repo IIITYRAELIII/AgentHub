@@ -11,7 +11,10 @@ const MAX_CONTROL_RESULT_BYTES = 1024 * 1024;
 const MAX_CONTROL_ERROR_CHARS = 4_096;
 const MAX_CONTROL_COMMANDS = 500;
 const CONTROL_EXPIRY_MS = 30 * 60 * 1_000;
+const CONTROL_LEASE_MS = 30 * 1_000;
 const CONTROL_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const SYNC_STAGING_EXPIRY_MS = 30 * 60 * 1_000;
+const STORAGE_DELETE_BATCH_SIZE = 128;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const ATTACHMENT_CHUNK_BYTES = 1024 * 1024;
@@ -349,6 +352,13 @@ function json(payload, status = 200) {
   });
 }
 
+async function deleteStorageKeys(storage, keys) {
+  const uniqueKeys = [...new Set(keys.filter(Boolean))];
+  for (let offset = 0; offset < uniqueKeys.length; offset += STORAGE_DELETE_BATCH_SIZE) {
+    await storage.delete(uniqueKeys.slice(offset, offset + STORAGE_DELETE_BATCH_SIZE));
+  }
+}
+
 export class JournalStore extends DurableObject {
   #cachedPayload = null;
 
@@ -387,6 +397,45 @@ export class JournalStore extends DurableObject {
       else active.push(manifest);
     }
     return active;
+  }
+
+  async #cleanupSyncStaging(now = Date.now(), storage = this.ctx.storage) {
+    const [current, staged] = await Promise.all([
+      storage.get("journal-manifest"),
+      storage.list({ prefix: "staging:" }),
+    ]);
+    let nextExpiry = Number.POSITIVE_INFINITY;
+    for (const [metadataKey, metadata] of staged) {
+      const syncId = String(metadata?.syncId ?? metadataKey.slice("staging:".length));
+      if (syncId && syncId === String(current?.syncId ?? "")) {
+        await storage.delete(metadataKey);
+        continue;
+      }
+      const expiresAt = Number(metadata?.expiresAt ?? 0);
+      if (Number.isFinite(expiresAt) && expiresAt > now) {
+        nextExpiry = Math.min(nextExpiry, expiresAt);
+        continue;
+      }
+      const chunks = syncId
+        ? await storage.list({ prefix: `chunk:${syncId}:` })
+        : new Map();
+      await deleteStorageKeys(storage, [metadataKey, ...chunks.keys()]);
+    }
+    return nextExpiry;
+  }
+
+  async #scheduleSyncCleanupAlarm(expiresAt) {
+    if (!Number.isFinite(expiresAt)) return;
+    const currentAlarm = await this.ctx.storage.getAlarm();
+    if (currentAlarm === null || expiresAt < currentAlarm) {
+      await this.ctx.storage.setAlarm(expiresAt);
+    }
+  }
+
+  async alarm() {
+    const nextExpiry = await this.#cleanupSyncStaging();
+    if (Number.isFinite(nextExpiry)) await this.ctx.storage.setAlarm(nextExpiry);
+    else await this.ctx.storage.deleteAlarm();
   }
 
   #controlStatus(command) {
@@ -623,13 +672,18 @@ export class JournalStore extends DurableObject {
       const now = Date.now();
       return this.ctx.storage.transaction(async (storage) => {
         const commands = (await this.#cleanupControlCommands(now, storage))
-          .filter((command) => command.status === "pending")
+          .filter((command) => (
+            command.status === "pending"
+            || (command.status === "running" && Number(command.leaseExpiresAt ?? 0) <= now)
+          ))
           .sort((left, right) => left.createdAt - right.createdAt)
           .slice(0, limit);
         if (commands.length) {
           await storage.put(Object.fromEntries(commands.map((command) => {
             command.status = "running";
             command.updatedAt = now;
+            command.leaseExpiresAt = now + CONTROL_LEASE_MS;
+            command.deliveryAttempt = Math.max(0, Number(command.deliveryAttempt) || 0) + 1;
             return [`control:command:${command.id}`, command];
           })));
         }
@@ -664,6 +718,7 @@ export class JournalStore extends DurableObject {
         command.status = payload.ok ? "completed" : "failed";
         command.updatedAt = now;
         command.expiresAt = now + CONTROL_EXPIRY_MS;
+        delete command.leaseExpiresAt;
         if (payload.ok) {
           command.result = payload.result ?? null;
           delete command.error;
@@ -697,6 +752,9 @@ export class JournalStore extends DurableObject {
       return json({ ok: true });
     }
     if (request.method === "POST" && url.pathname === "/sync-chunk") {
+      const now = Date.now();
+      const nextExpiry = await this.#cleanupSyncStaging(now);
+      await this.#scheduleSyncCleanupAlarm(nextExpiry);
       const syncId = String(request.headers.get("X-Agent-Hub-Sync-Id") ?? "");
       const index = Number(request.headers.get("X-Agent-Hub-Chunk-Index"));
       const count = Number(request.headers.get("X-Agent-Hub-Chunk-Count"));
@@ -714,10 +772,21 @@ export class JournalStore extends DurableObject {
       )) {
         return json({ error: "sync metadata conflict" }, 409);
       }
+      const createdAt = Number(existing?.createdAt ?? now);
+      const expiresAt = now + SYNC_STAGING_EXPIRY_MS;
       await this.ctx.storage.put({
-        [metadataKey]: { syncId, count, encoding, version, updatedAt },
+        [metadataKey]: {
+          syncId,
+          count,
+          encoding,
+          version,
+          updatedAt,
+          createdAt: Number.isFinite(createdAt) ? createdAt : now,
+          expiresAt,
+        },
         [chunkKey]: await request.arrayBuffer(),
       });
+      await this.#scheduleSyncCleanupAlarm(expiresAt);
       const chunkKeys = Array.from({ length: count }, (_, chunkIndex) => `chunk:${syncId}:${chunkIndex}`);
       const chunks = await this.ctx.storage.get(chunkKeys);
       if (chunks.size !== count) return json({ ok: true, complete: false }, 202);
