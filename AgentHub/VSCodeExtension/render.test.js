@@ -238,18 +238,39 @@ test("chat shows sent messages immediately and renders reasoning separately", ()
   assert.match(app, /patchMessage\(taskId, messageId, patch\)/u);
 });
 
-test("chat does not render the last agent response again as live text", () => {
+test("chat removes already rendered current-turn responses from live text", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   assert.match(
     app,
-    /function liveTextDuplicatesLastMessage\(live\)[\s\S]*lastMessage\?\.role === "agent"[\s\S]*normalizedMessageText\(lastMessage\.text\) === liveText/u,
+    /function liveTextAfterMessages\(live\)[\s\S]*lastUserIndex[\s\S]*messages\.slice\(lastUserIndex \+ 1\)[\s\S]*message\?\.role !== "agent"[\s\S]*remainder\.startsWith\(shown\)/u,
   );
-  assert.match(app, /if \(!live \|\| \(duplicateText && !normalizedMessageText\(live\.reasoning\)\)\)/u);
-  assert.match(app, /body\.textContent = duplicateText \? "" : live\.text \|\| ""/u);
+  assert.match(app, /if \(!live \|\| \(!visibleText && !normalizedMessageText\(live\.reasoning\)\)\)/u);
+  assert.match(app, /body\.textContent = visibleText/u);
   assert.match(
     app,
     /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ forceBottom: true \}\);\s*renderLive\(\);/u,
   );
+  const helperSource = app.slice(
+    app.indexOf("function normalizedMessageText"),
+    app.indexOf("function renderLive"),
+  );
+  const state = {
+    selectedId: "task",
+    messages: new Map([["task", [
+      { role: "user", text: "Запрос" },
+      { role: "agent", text: "Проверяю." },
+      { role: "agent", text: "Исправляю." },
+    ]]]),
+  };
+  const liveTextAfterMessages = Function(
+    "state",
+    `"use strict"; ${helperSource}; return liveTextAfterMessages;`,
+  )(state);
+  assert.equal(
+    liveTextAfterMessages({ text: "Проверяю.\n\nИсправляю.\n\nГотово." }),
+    "Готово.",
+  );
+  assert.equal(liveTextAfterMessages({ text: "Проверяю." }), "");
 });
 
 test("deferred messages show their preview and can be queued after the active turn", () => {

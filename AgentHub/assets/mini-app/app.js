@@ -551,19 +551,36 @@ function normalizedMessageText(value) {
   return String(value ?? "").replace(/\r\n?/g, "\n").trim();
 }
 
-function liveTextDuplicatesLastMessage(live) {
-  const liveText = normalizedMessageText(live?.text);
-  if (!liveText) return false;
+function liveTextAfterMessages(live) {
+  let remainder = normalizedMessageText(live?.text);
+  if (!remainder) return "";
   const messages = state.messages.get(state.selectedId) ?? [];
-  const lastMessage = messages.at(-1);
-  return lastMessage?.role === "agent"
-    && normalizedMessageText(lastMessage.text) === liveText;
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  for (const message of messages.slice(lastUserIndex + 1)) {
+    if (message?.role !== "agent") continue;
+    const shown = normalizedMessageText(message.text);
+    if (!shown) continue;
+    if (remainder === shown) {
+      remainder = "";
+      continue;
+    }
+    if (remainder.startsWith(shown) && /^\s/u.test(remainder.slice(shown.length))) {
+      remainder = remainder.slice(shown.length).trimStart();
+    }
+  }
+  return remainder;
 }
 
 function renderLive() {
   const live = state.live.get(state.selectedId);
-  const duplicateText = liveTextDuplicatesLastMessage(live);
-  if (!live || (duplicateText && !normalizedMessageText(live.reasoning))) {
+  const visibleText = liveTextAfterMessages(live);
+  if (!live || (!visibleText && !normalizedMessageText(live.reasoning))) {
     chatLive.hidden = true;
     return;
   }
@@ -574,8 +591,8 @@ function renderLive() {
   reasoning.textContent = live.reasoning || "";
   reasoning.hidden = !live.reasoning;
   const body = chatLive.querySelector("[data-live-body]");
-  body.textContent = duplicateText ? "" : live.text || "";
-  body.hidden = duplicateText || !live.text;
+  body.textContent = visibleText;
+  body.hidden = !visibleText;
   scrollChatToBottom();
 }
 
