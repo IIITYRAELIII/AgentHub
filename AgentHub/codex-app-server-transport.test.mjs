@@ -60,6 +60,27 @@ test("CodexAppServerTransport routes RPC responses and notifications", async () 
   assert.deepEqual(messages, [{ method: "turn/started", params: { turnId: "t1" } }]);
 });
 
+test("CodexAppServerTransport preserves structured RPC errors", async () => {
+  const { child, transport } = await startedTransport();
+  const written = nextWrittenJson(child.stdin);
+  const response = transport.request("turn/steer", {});
+  const request = await written;
+  child.stdout.write(`${JSON.stringify({
+    id: request.id,
+    error: {
+      code: -32602,
+      message: "active turn not steerable",
+      data: { kind: "activeTurnNotSteerable" },
+    },
+  })}\n`);
+  await assert.rejects(response, (error) => {
+    assert.equal(error.code, -32602);
+    assert.deepEqual(error.data, { kind: "activeTurnNotSteerable" });
+    assert.equal(error.rpcError.message, "active turn not steerable");
+    return true;
+  });
+});
+
 test("CodexAppServerTransport times out requests and rejects them on exit", async () => {
   const { child, exits, transport } = await startedTransport({ rpcTimeoutMs: 10 });
   await assert.rejects(transport.request("slow"), /timed out after 10 ms/);

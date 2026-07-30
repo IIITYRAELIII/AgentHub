@@ -772,6 +772,116 @@ function taskThreadId(record) {
   return String(record?.taskThreadId ?? record?.threadId ?? "").trim();
 }
 
+function normalizedSearchTerm(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .toLocaleLowerCase("ru-RU")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function searchDateValues(record) {
+  const values = [];
+  for (const source of [record?.startedAt, record?.completedAt]) {
+    const text = String(source ?? "").trim();
+    if (!text) continue;
+    values.push(text);
+    const date = new Date(text);
+    if (Number.isFinite(date.getTime())) {
+      values.push(
+        date.toLocaleDateString("ru-RU"),
+        date.toLocaleString("ru-RU"),
+      );
+    }
+  }
+  return values.join(" ");
+}
+
+function compactSearchSnippet(value, terms, limit = 180) {
+  const text = String(value ?? "").replace(/\s+/gu, " ").trim();
+  if (!text || text.length <= limit) return text;
+  const normalized = normalizedSearchTerm(text);
+  const first = terms
+    .map((term) => normalized.indexOf(term))
+    .filter((index) => index >= 0)
+    .sort((left, right) => left - right)[0] ?? 0;
+  const start = Math.max(0, Math.min(first - Math.floor(limit / 3), text.length - limit));
+  const end = Math.min(text.length, start + limit);
+  return `${start > 0 ? "…" : ""}${text.slice(start, end).trim()}${end < text.length ? "…" : ""}`;
+}
+
+export function searchWorkLogRecords(turns = {}, query, {
+  limit = 60,
+  perTask = 3,
+  projectRoots = [],
+} = {}) {
+  const normalizedQuery = normalizedSearchTerm(query).slice(0, 200);
+  const terms = normalizedQuery.split(" ").filter(Boolean);
+  if (!terms.length) return [];
+  const roots = projectRoots
+    .map((root) => normalizeProjectRoot(root))
+    .filter(Boolean);
+  const groups = new Map();
+  for (const record of Object.values(turns ?? {})) {
+    if (!record || typeof record !== "object") continue;
+    if (roots.length && !roots.some((root) => sameProjectRoot(root, record.projectRoot))) continue;
+    const fields = [
+      ["Задача", record.taskTitle],
+      ["Ход", record.title],
+      ["Запрос", record.prompt],
+      ["Ответ", record.body ?? record.text],
+      ["Файлы", Array.isArray(record.changedFiles) ? record.changedFiles.join(" · ") : ""],
+      ["Дата", searchDateValues(record)],
+    ].map(([label, value]) => ({
+      label,
+      value: String(value ?? ""),
+      normalized: normalizedSearchTerm(value),
+    }));
+    const haystack = fields.map((field) => field.normalized).join("\n");
+    if (!terms.every((term) => haystack.includes(term))) continue;
+    const matched = fields.find((field) => terms.some((term) => field.normalized.includes(term)))
+      ?? fields[0];
+    const rootThreadId = taskThreadId(record);
+    if (!rootThreadId) continue;
+    const key = `${record.provider}\0${rootThreadId}\0${normalizeProjectRoot(record.projectRoot)}`;
+    const completedAtMs = Date.parse(record.completedAt ?? record.startedAt ?? "") || 0;
+    const group = groups.get(key) ?? {
+      provider: String(record.provider ?? "codex"),
+      threadId: rootThreadId,
+      projectRoot: normalizeProjectRoot(record.projectRoot),
+      taskTitle: String(record.taskTitle ?? "").trim(),
+      latestAt: "",
+      latestAtMs: 0,
+      matches: [],
+    };
+    if (completedAtMs >= group.latestAtMs) {
+      group.latestAtMs = completedAtMs;
+      group.latestAt = String(record.completedAt ?? record.startedAt ?? "");
+      if (record.taskTitle) group.taskTitle = String(record.taskTitle).trim();
+    }
+    group.matches.push({
+      turnId: String(record.turnId ?? ""),
+      turnThreadId: String(record.threadId ?? rootThreadId),
+      field: matched.label,
+      snippet: compactSearchSnippet(matched.value, terms),
+      completedAt: String(record.completedAt ?? ""),
+    });
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      matches: group.matches
+        .sort((left, right) => (
+          (Date.parse(right.completedAt) || 0) - (Date.parse(left.completedAt) || 0)
+        ))
+        .slice(0, Math.max(1, Math.min(Number(perTask) || 3, 10))),
+    }))
+    .sort((left, right) => right.latestAtMs - left.latestAtMs)
+    .slice(0, Math.max(1, Math.min(Number(limit) || 60, 200)))
+    .map(({ latestAtMs: _latestAtMs, ...group }) => group);
+}
+
 function ensureCanonicalRows(section, date, turns) {
   let updated = String(section);
   const groups = new Map();
@@ -1306,6 +1416,15 @@ export class WorkLogUsageStore {
       await this.#load();
       const record = this.#ledger.turns[workLogTurnKey({ provider, threadId, turnId })];
       return record ? structuredClone(record) : null;
+    });
+    this.#tail = operation;
+    return operation;
+  }
+
+  searchTurns(query, options = {}) {
+    const operation = this.#tail.catch(() => {}).then(async () => {
+      await this.#load();
+      return structuredClone(searchWorkLogRecords(this.#ledger.turns, query, options));
     });
     this.#tail = operation;
     return operation;

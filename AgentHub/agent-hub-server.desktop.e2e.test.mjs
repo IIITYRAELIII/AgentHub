@@ -117,9 +117,58 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     return snapshot.activeCount === 0 ? snapshot : null;
   }, "desktop approval completion", 5_000);
+  const beforeCompaction = await callDesktopControl("snapshot", {}, { runtimeRoot });
+  const contextBefore = beforeCompaction.tasks.find((item) => item.threadId === firstThreadId)?.context;
+  assert.equal(contextBefore.usedTokens, 130);
+  assert.equal(contextBefore.modelContextWindow, 200_000);
+  const compacted = await callDesktopControl("compact-context", {}, { runtimeRoot });
+  assert.equal(compacted.accepted, true);
+  await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    const context = snapshot.tasks.find((item) => item.threadId === firstThreadId)?.context;
+    return context?.usedTokens === 0 ? snapshot : null;
+  }, "desktop context compaction", 5_000);
 
-  const firstStart = await callDesktopControl("send-message", { text: "[slow] desktop A" }, { runtimeRoot });
+  const firstMessageId = "desktop-message-first";
+  const steerMessageId = "desktop-message-steer";
+  const firstStart = await callDesktopControl("send-message", {
+    text: "[slow] desktop A",
+    provider: "codex",
+    threadId: firstThreadId,
+    clientUserMessageId: firstMessageId,
+  }, { runtimeRoot });
   assert.equal(firstStart.accepted, true);
+  assert.equal(firstStart.threadId, firstThreadId);
+  assert.equal(firstStart.clientUserMessageId, firstMessageId);
+  const retriedStart = await callDesktopControl("send-message", {
+    text: "[slow] desktop A",
+    provider: "codex",
+    threadId: firstThreadId,
+    clientUserMessageId: firstMessageId,
+  }, { runtimeRoot });
+  assert.equal(retriedStart.accepted, true);
+  assert.equal(retriedStart.turnId, firstStart.turnId);
+  assert.equal(retriedStart.snapshot.selected.threadId, firstThreadId);
+  await assert.rejects(
+    callDesktopControl("send-message", {
+      text: "Это уже другое сообщение",
+      provider: "codex",
+      threadId: firstThreadId,
+      clientUserMessageId: firstMessageId,
+    }, { runtimeRoot }),
+    /идентификатор сообщения уже использован/i,
+  );
+  const steered = await callDesktopControl("send-message", {
+    text: "Сначала проверь точные идентификаторы",
+    provider: "codex",
+    threadId: firstThreadId,
+    clientUserMessageId: steerMessageId,
+    followUpMode: "steer",
+  }, { runtimeRoot });
+  assert.equal(steered.accepted, true);
+  assert.equal(steered.steered, true);
+  assert.equal(steered.turnId, firstStart.turnId);
+  assert.equal(steered.clientUserMessageId, steerMessageId);
   const duplicate = await callDesktopControl("send-message", { text: "parallel duplicate" }, { runtimeRoot });
   assert.equal(duplicate.accepted, false);
   assert.equal(duplicate.reason, "task-running");
@@ -162,6 +211,14 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   const slowExchange = history.items.find((item) => item.prompt === "[slow] desktop A");
   assert.ok(slowExchange);
   assert.match(slowExchange.answer, /Готово: \[slow\] desktop A/);
+  const userMessages = slowExchange.messages.filter((item) => item.role === "user");
+  assert.deepEqual(userMessages.map((item) => item.clientUserMessageId), [
+    firstMessageId,
+    steerMessageId,
+  ]);
+  assert.ok(userMessages.every((item) => (
+    item.itemId && item.itemId !== item.clientUserMessageId
+  )));
 
   const attachmentRoot = path.join(runtimeRoot, "DesktopApp", "attachments");
   const imagePath = path.join(attachmentRoot, "desktop.png");

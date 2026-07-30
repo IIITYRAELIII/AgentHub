@@ -39,16 +39,22 @@ const chatTitle = document.querySelector("[data-chat-title]");
 const chatSubtitle = document.querySelector("[data-chat-subtitle]");
 const chatProviderDot = document.querySelector("[data-chat-provider-dot]");
 const chatRunning = document.querySelector("[data-chat-running]");
-const chatStop = document.querySelector("[data-chat-stop]");
+const chatStops = [...document.querySelectorAll("[data-chat-stop]")];
 
 const composer = document.querySelector("[data-composer]");
 const composerGrow = document.querySelector("[data-composer-grow]");
 const composerInput = document.querySelector("[data-composer-input]");
 const composerSend = document.querySelector("[data-composer-send]");
+const followUpModeButton = document.querySelector("[data-follow-up-mode]");
 const annotationsBox = document.querySelector("[data-annotations]");
 const attachmentsBox = document.querySelector("[data-attachments]");
 const annotateButton = document.querySelector("[data-action='annotate']");
 const fileInput = document.querySelector("[data-file-input]");
+const slashMenu = document.querySelector("[data-slash-menu]");
+const slashButton = document.querySelector("[data-action='slash-menu']");
+const contextUsageButton = document.querySelector("[data-context-usage]");
+const contextRing = document.querySelector("[data-context-ring]");
+const contextLabel = document.querySelector("[data-context-label]");
 
 const approvalsBox = document.querySelector("[data-approvals]");
 const queueBox = document.querySelector("[data-queue]");
@@ -281,8 +287,12 @@ const state = {
   options: { agent: [], model: [], reasoning: [], mode: [], project: [] },
   selection: {},
   status: null,
+  followUpMode: "queue",
   connection: "",
   connectionBlockingCount: 0,
+  searchQuery: "",
+  searchResults: new Map(),
+  searchLoading: false,
 };
 
 /* Черновики живут только в памяти вкладки: текст, аннотации и вложения
@@ -290,6 +300,7 @@ const state = {
  * хранение — забота backend. */
 const drafts = new Map();
 let pendingComposerRequest = null;
+const retryComposerRequests = new Map();
 
 function currentTask() {
   return state.tasks.find((task) => task.id === state.selectedId) ?? null;
@@ -358,8 +369,9 @@ function renderTasks() {
   const filter = (taskFilter.value ?? "").trim().toLowerCase();
   const visible = state.tasks.filter((task) => {
     if (!filter) return true;
-    return `${task.title ?? ""} ${task.project ?? ""} ${task.agentLabel ?? ""}`
+    const local = `${task.title ?? ""} ${task.project ?? ""} ${task.agentLabel ?? ""}`
       .toLowerCase().includes(filter);
+    return local || state.searchResults.has(task.id);
   });
   taskList.replaceChildren();
   for (const task of visible) taskList.append(renderTaskItem(task));
@@ -425,12 +437,41 @@ function renderTaskItem(task) {
     task.unread ? el("span", { class: "task-unread", title: "Есть непрочитанный ответ" }) : null,
   ]);
 
-  const body = el("div", { class: "task-body" }, [titleRow, footer]);
+  const searchResult = state.searchResults.get(task.id);
+  const searchMatches = searchResult?.matches ?? [];
+  const body = el("div", { class: "task-body" }, [
+    titleRow,
+    footer,
+    searchMatches.length
+      ? el("div", { class: "task-search-hits" }, searchMatches.map((match) => el("button", {
+        type: "button",
+        class: "task-search-hit",
+        "data-search-turn": match.turnId,
+        "data-search-turn-thread": match.turnThreadId ?? task.threadId,
+        "data-search-provider": searchResult.provider ?? task.provider,
+        "data-search-task-thread": searchResult.threadId ?? task.threadId,
+        text: `${match.field}: ${match.snippet}`,
+        title: `Открыть ход: ${match.field}: ${match.snippet}`,
+      })))
+      : null,
+  ]);
   item.append(dot, body);
   return item;
 }
 
 taskList.addEventListener("click", (event) => {
+  const searchTurn = event.target.closest("[data-search-turn]");
+  if (searchTurn) {
+    event.preventDefault();
+    event.stopPropagation();
+    emit("turn:open", {
+      provider: searchTurn.dataset.searchProvider,
+      taskThreadId: searchTurn.dataset.searchTaskThread,
+      turnThreadId: searchTurn.dataset.searchTurnThread,
+      turnId: searchTurn.dataset.searchTurn,
+    });
+    return;
+  }
   const item = event.target.closest("[data-task-id]");
   if (item) selectTaskFromUi(item.dataset.taskId);
 });
@@ -441,7 +482,24 @@ taskList.addEventListener("keydown", (event) => {
   event.preventDefault();
   selectTaskFromUi(item.dataset.taskId);
 });
-taskFilter.addEventListener("input", renderTasks);
+let taskSearchTimer = null;
+taskFilter.addEventListener("input", () => {
+  const query = String(taskFilter.value ?? "").trim();
+  state.searchQuery = query;
+  if (query.length < 2) {
+    state.searchResults.clear();
+    state.searchLoading = false;
+    clearTimeout(taskSearchTimer);
+    renderTasks();
+    return;
+  }
+  renderTasks();
+  clearTimeout(taskSearchTimer);
+  taskSearchTimer = window.setTimeout(() => {
+    state.searchLoading = true;
+    emit("search:query", { query });
+  }, 250);
+});
 
 function selectTaskFromUi(id) {
   if (!id) return;
@@ -474,7 +532,9 @@ function renderChat() {
   chatProviderDot.setAttribute("data-provider", String(task.provider ?? "none"));
   chatSubtitle.replaceChildren(...buildSubtitleChips(task));
   chatRunning.hidden = !task.running;
-  chatStop.hidden = !task.running;
+  for (const stop of chatStops) stop.hidden = !task.running;
+  renderContextUsage(task);
+  renderFollowUpMode(task);
 
   if (taskChanged) {
     activeChatId = task.id;
@@ -486,6 +546,24 @@ function renderChat() {
   // Композер восстанавливаем только при реальной смене задачи, чтобы фоновые
   // обновления статуса не сбрасывали курсор и набранный текст.
   if (taskChanged) restoreDraft();
+}
+
+function renderContextUsage(task) {
+  if (!contextUsageButton) return;
+  const context = task?.context;
+  const available = task?.provider === "codex" && Number(context?.modelContextWindow) > 0;
+  contextUsageButton.hidden = !available;
+  if (!available) return;
+  const percent = Math.max(0, Math.min(100, Number(context.percent) || 0));
+  const used = Math.max(0, Number(context.usedTokens) || 0);
+  const total = Math.max(0, Number(context.modelContextWindow) || 0);
+  contextLabel.textContent = `${Math.round(percent)}%`;
+  contextRing.style.setProperty("--context-percent", `${percent}%`);
+  contextUsageButton.title = context.compacting
+    ? "Контекст сворачивается…"
+    : `Контекст: ${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")}. Нажмите, чтобы свернуть.`;
+  contextUsageButton.disabled = Boolean(task.running || context.compacting);
+  contextUsageButton.dataset.compacting = context.compacting ? "" : null;
 }
 
 function buildSubtitleChips(task) {
@@ -500,6 +578,22 @@ function buildSubtitleChips(task) {
   return parts.map((part, index) =>
     el("span", { class: "chat-chip", "data-order": index, text: part }));
 }
+
+function renderFollowUpMode(task = currentTask()) {
+  if (!followUpModeButton) return;
+  const available = Boolean(task?.running && task?.provider === "codex");
+  followUpModeButton.hidden = !available;
+  followUpModeButton.textContent = state.followUpMode === "steer"
+    ? "Изменить ход"
+    : "В очередь";
+  followUpModeButton.dataset.mode = state.followUpMode;
+  followUpModeButton.setAttribute("aria-pressed", String(state.followUpMode === "steer"));
+}
+
+followUpModeButton?.addEventListener("click", () => {
+  state.followUpMode = state.followUpMode === "queue" ? "steer" : "queue";
+  renderFollowUpMode();
+});
 
 function chatIsNearBottom() {
   return chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 120;
@@ -530,12 +624,147 @@ function renderMessages({ forceBottom = false } = {}) {
   if (stickToBottom) pinChatToBottom();
 }
 
+function safeMarkdownUrl(raw) {
+  try {
+    const url = new URL(String(raw ?? "").trim(), window.location.href);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function appendInlineMarkdown(target, source) {
+  const text = String(source ?? "");
+  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\([^) \n]+\))/gu;
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    target.append(document.createTextNode(text.slice(cursor, match.index)));
+    const token = match[0];
+    if (token.startsWith("`")) {
+      target.append(el("code", { text: token.slice(1, -1) }));
+    } else if (token.startsWith("**")) {
+      const strong = el("strong");
+      appendInlineMarkdown(strong, token.slice(2, -2));
+      target.append(strong);
+    } else if (token.startsWith("*")) {
+      const emphasis = el("em");
+      appendInlineMarkdown(emphasis, token.slice(1, -1));
+      target.append(emphasis);
+    } else {
+      const parts = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/u);
+      const href = safeMarkdownUrl(parts?.[2]);
+      if (href) {
+        target.append(el("a", {
+          href,
+          target: "_blank",
+          rel: "noopener noreferrer",
+          text: parts[1],
+        }));
+      } else {
+        target.append(document.createTextNode(token));
+      }
+    }
+    cursor = match.index + token.length;
+  }
+  target.append(document.createTextNode(text.slice(cursor)));
+}
+
+function renderMarkdown(target, source) {
+  target.replaceChildren();
+  const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+    const fence = line.match(/^\s*```([\w+-]*)\s*$/u);
+    if (fence) {
+      const code = [];
+      index += 1;
+      while (index < lines.length && !/^\s*```\s*$/u.test(lines[index])) code.push(lines[index++]);
+      if (index < lines.length) index += 1;
+      target.append(el("pre", {}, [
+        el("code", { class: fence[1] ? `language-${fence[1]}` : "", text: code.join("\n") }),
+      ]));
+      continue;
+    }
+    const heading = line.match(/^\s*(#{1,6})\s+(.+)$/u);
+    if (heading) {
+      const node = document.createElement(`h${heading[1].length}`);
+      appendInlineMarkdown(node, heading[2]);
+      target.append(node);
+      index += 1;
+      continue;
+    }
+    const list = line.match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
+    if (list) {
+      const ordered = Boolean(list[2]);
+      const node = document.createElement(ordered ? "ol" : "ul");
+      while (index < lines.length) {
+        const item = lines[index].match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
+        if (!item || Boolean(item[2]) !== ordered) break;
+        const entry = el("li");
+        appendInlineMarkdown(entry, item[3]);
+        node.append(entry);
+        index += 1;
+      }
+      target.append(node);
+      continue;
+    }
+    if (/^\s*>\s?/u.test(line)) {
+      const quote = el("blockquote");
+      while (index < lines.length && /^\s*>\s?/u.test(lines[index])) {
+        if (quote.childNodes.length) quote.append(document.createElement("br"));
+        appendInlineMarkdown(quote, lines[index].replace(/^\s*>\s?/u, ""));
+        index += 1;
+      }
+      target.append(quote);
+      continue;
+    }
+    const paragraph = [];
+    while (index < lines.length
+      && lines[index].trim()
+      && !/^\s*(?:```|#{1,6}\s|[-+*]\s+|\d+\.\s+|>\s?)/u.test(lines[index])) {
+      paragraph.push(lines[index++]);
+    }
+    const node = el("p");
+    paragraph.forEach((part, lineIndex) => {
+      if (lineIndex) node.append(document.createElement("br"));
+      appendInlineMarkdown(node, part);
+    });
+    target.append(node);
+  }
+}
+
+function activityFeedNode(activities) {
+  const values = Array.isArray(activities) ? activities : [];
+  if (!values.length) return null;
+  return el("details", { class: "activity-feed" }, [
+    el("summary", { text: `Действия хода (${values.length})` }),
+    el("div", { class: "activity-list" }, values.map((activity) => el("div", {
+      class: "activity-item",
+      "data-type": activity.type ?? "stage",
+      "data-status": activity.status ?? "",
+    }, [
+      el("span", { class: "activity-marker", "aria-hidden": "true" }),
+      el("span", { class: "activity-time", text: activity.time
+        ? new Date(activity.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        : "" }),
+      el("span", { class: "activity-label", text: activity.label ?? "Действие" }),
+      activity.detail ? el("span", { class: "activity-detail", text: activity.detail }) : null,
+    ]))),
+  ]);
+}
+
 function renderMessage(message) {
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
   const article = el("article", {
     class: `msg msg-${role}`,
     "data-role": role,
     "data-message-id": message.id ?? "",
+    "data-delivery-state": message.deliveryState ?? "",
   });
 
   const author = message.author
@@ -557,11 +786,12 @@ function renderMessage(message) {
   ]);
 
   const body = el("div", { class: "msg-body" });
-  // Текст сообщений — только textContent: данные приходят от агента и могут
-  // содержать любые символы, поэтому HTML не интерпретируется.
-  body.textContent = message.text ?? "";
+  // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
+  renderMarkdown(body, message.text ?? "");
 
   article.append(head, body);
+  const activity = activityFeedNode(message.activities);
+  if (activity) article.append(activity);
 
   if (Array.isArray(message.attachments) && message.attachments.length > 0) {
     article.append(renderAttachmentStrip(message.attachments, { readOnly: true }));
@@ -588,29 +818,7 @@ function normalizedMessageText(value) {
 }
 
 function liveTextAfterMessages(live) {
-  let remainder = normalizedMessageText(live?.text);
-  if (!remainder) return "";
-  const messages = state.messages.get(state.selectedId) ?? [];
-  let lastUserIndex = -1;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.role === "user") {
-      lastUserIndex = index;
-      break;
-    }
-  }
-  for (const message of messages.slice(lastUserIndex + 1)) {
-    if (message?.role !== "agent") continue;
-    const shown = normalizedMessageText(message.text);
-    if (!shown) continue;
-    if (remainder === shown) {
-      remainder = "";
-      continue;
-    }
-    if (remainder.startsWith(shown) && /^\s/u.test(remainder.slice(shown.length))) {
-      remainder = remainder.slice(shown.length).trimStart();
-    }
-  }
-  return remainder;
+  return normalizedMessageText(live?.text);
 }
 
 function renderLive() {
@@ -624,11 +832,30 @@ function renderLive() {
   chatLive.querySelector("[data-live-author]").textContent = live.author || "Агент";
   chatLive.querySelector("[data-live-stage]").textContent = live.stage || "";
   const reasoning = chatLive.querySelector("[data-live-reasoning]");
-  reasoning.textContent = live.reasoning || "";
+  renderMarkdown(reasoning, live.reasoning || "");
   reasoning.hidden = !live.reasoning;
   const body = chatLive.querySelector("[data-live-body]");
-  body.textContent = visibleText;
+  renderMarkdown(body, visibleText);
   body.hidden = !visibleText;
+  const activityFeed = chatLive.querySelector("[data-activity-feed]");
+  const activities = Array.isArray(live.activities) ? live.activities : [];
+  activityFeed.hidden = activities.length === 0;
+  if (activities.length) {
+    chatLive.querySelector("[data-activity-summary]").textContent = `Действия хода (${activities.length})`;
+    const list = chatLive.querySelector("[data-activity-list]");
+    list.replaceChildren(...activities.map((activity) => el("div", {
+      class: "activity-item",
+      "data-type": activity.type ?? "stage",
+      "data-status": activity.status ?? "",
+    }, [
+      el("span", { class: "activity-marker", "aria-hidden": "true" }),
+      el("span", { class: "activity-time", text: activity.time
+        ? new Date(activity.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        : "" }),
+      el("span", { class: "activity-label", text: activity.label ?? "Действие" }),
+      activity.detail ? el("span", { class: "activity-detail", text: activity.detail }) : null,
+    ])));
+  }
   scrollChatToBottom();
 }
 
@@ -697,6 +924,73 @@ function renderQueue() {
 
 /* ============================================================== композер */
 
+const slashCommands = [
+  { command: "/new", label: "Новая задача", action: "task-new" },
+  { command: "/tasks", label: "Открыть список задач", run: () => setPane("tasks") },
+  { command: "/search", label: "Поиск по истории", run: () => {
+    setPane("tasks");
+    taskFilter.focus();
+  } },
+  { command: "/model", label: "Выбрать модель", run: openPanel },
+  { command: "/reasoning", label: "Настроить reasoning", run: openPanel },
+  { command: "/mode", label: "Выбрать режим", run: openPanel },
+  { command: "/projects", label: "Выбрать проект", run: openPanel },
+  { command: "/rename", label: "Переименовать задачу", action: "task-rename" },
+  { command: "/status", label: "Статус и лимиты", action: "task-status" },
+  { command: "/diff", label: "Изменения задачи", action: "task-diff" },
+  { command: "/cancel", label: "Остановить ход", action: "task-stop" },
+  { command: "/compact", label: "Свернуть контекст", action: "context-compact" },
+  { command: "/archive", label: "Архивировать задачу", action: "task-archive" },
+];
+let slashSelection = 0;
+
+function visibleSlashCommands() {
+  const query = composerInput.value.trim().toLowerCase();
+  return slashCommands.filter((entry) => entry.command.startsWith(query === "/" ? "/" : query));
+}
+
+function closeSlashMenu() {
+  slashMenu.hidden = true;
+  slashButton?.setAttribute("aria-expanded", "false");
+}
+
+function renderSlashMenu({ force = false } = {}) {
+  const value = composerInput.value.trim();
+  if (!force && !/^\/\S*$/u.test(value)) {
+    closeSlashMenu();
+    return;
+  }
+  const commands = visibleSlashCommands();
+  if (!commands.length) {
+    closeSlashMenu();
+    return;
+  }
+  slashSelection = Math.max(0, Math.min(slashSelection, commands.length - 1));
+  slashMenu.replaceChildren(...commands.map((entry, index) => el("button", {
+    type: "button",
+    class: "slash-command",
+    role: "option",
+    "data-slash-command": entry.command,
+    "aria-selected": String(index === slashSelection),
+  }, [
+    el("strong", { text: entry.command }),
+    el("span", { text: entry.label }),
+  ])));
+  slashMenu.hidden = false;
+  slashButton?.setAttribute("aria-expanded", "true");
+}
+
+function runSlashCommand(command) {
+  const entry = slashCommands.find((candidate) => candidate.command === command);
+  if (!entry) return;
+  composerInput.value = "";
+  autosizeComposer();
+  updateSendState();
+  closeSlashMenu();
+  if (entry.run) entry.run();
+  else if (entry.action) handleAction(entry.action, slashButton);
+}
+
 function autosizeComposer() {
   composerGrow.dataset.clone = `${composerInput.value} `;
 }
@@ -712,12 +1006,38 @@ composerInput.addEventListener("input", () => {
   autosizeComposer();
   updateSendState();
   saveDraft();
+  slashSelection = 0;
+  renderSlashMenu();
 });
 
 composerInput.addEventListener("keydown", (event) => {
+  if (!slashMenu.hidden) {
+    const commands = visibleSlashCommands();
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      slashSelection = (slashSelection + (event.key === "ArrowDown" ? 1 : -1) + commands.length) % commands.length;
+      renderSlashMenu({ force: true });
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSlashMenu();
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      runSlashCommand(commands[slashSelection]?.command);
+      return;
+    }
+  }
   if (event.key !== "Enter" || event.shiftKey || event.isComposing || phoneComposerMode()) return;
   event.preventDefault();
   submitComposer();
+});
+
+slashMenu.addEventListener("click", (event) => {
+  const command = event.target.closest("[data-slash-command]")?.dataset.slashCommand;
+  if (command) runSlashCommand(command);
 });
 
 composer.addEventListener("submit", (event) => {
@@ -732,9 +1052,20 @@ function submitComposer() {
   const attachments = currentAttachments().slice();
   const annotations = currentAnnotations().slice();
   if (!text && attachments.length === 0 && annotations.length === 0) return;
-  const requestId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  const fingerprint = JSON.stringify({
+    taskId: state.selectedId,
+    rawText,
+    attachments,
+    annotations,
+  });
+  const retry = retryComposerRequests.get(state.selectedId);
+  const requestId = retry?.fingerprint === fingerprint
+    ? retry.requestId
+    : globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  if (retry && retry.fingerprint !== fingerprint) retryComposerRequests.delete(state.selectedId);
   pendingComposerRequest = {
     requestId,
+    fingerprint,
     taskId: state.selectedId,
     rawText,
     attachments,
@@ -751,6 +1082,7 @@ function submitComposer() {
     text,
     annotations,
     attachments,
+    followUpMode: currentTask()?.running ? state.followUpMode : null,
   });
   updateSendState();
   saveDraft();
@@ -760,7 +1092,13 @@ function completeComposerSend(requestId, accepted) {
   const pending = pendingComposerRequest;
   if (!pending || pending.requestId !== requestId) return;
   pendingComposerRequest = null;
-  if (!accepted) {
+  if (accepted) {
+    retryComposerRequests.delete(pending.taskId);
+  } else {
+    retryComposerRequests.set(pending.taskId, {
+      requestId: pending.requestId,
+      fingerprint: pending.fingerprint,
+    });
     const draft = drafts.get(pending.taskId);
     const untouched = draft
       && !draft.text
@@ -1138,6 +1476,18 @@ async function handleAction(action, trigger) {
       emit("hub:restart", {});
       showToast("Перезапуск Agent Hub запрошен.");
       break;
+    case "slash-menu":
+      if (slashMenu.hidden) {
+        if (!composerInput.value.trim()) composerInput.value = "/";
+        composerInput.focus();
+        renderSlashMenu({ force: true });
+      } else {
+        closeSlashMenu();
+      }
+      break;
+    case "context-compact":
+      if (taskId) emit("context:compact", { taskId });
+      break;
     case "pane-tasks":
       setPane("tasks");
       break;
@@ -1265,6 +1615,13 @@ const AgentHub = {
     if (sameData(state.live.get(taskId) ?? null, next)) return;
     state.live.set(taskId, next);
     if (taskId === state.selectedId) renderLive();
+  },
+  setSearchResults(query, results) {
+    if (String(query ?? "").trim() !== state.searchQuery) return;
+    state.searchResults = new Map((Array.isArray(results) ? results : [])
+      .map((result) => [result.id, result]));
+    state.searchLoading = false;
+    renderTasks();
   },
   /** running=true подсвечивает индикатор и показывает «Стоп». */
   setRunning(taskId, running) {

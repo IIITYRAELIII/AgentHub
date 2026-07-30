@@ -161,7 +161,14 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
       },
     })).status, 200);
 
-    for (const pathname of ["", "app.js", "hub-client.js", "styles.css", "work-log.css"]) {
+    for (const pathname of [
+      "",
+      "app.js",
+      "message-lifecycle.js",
+      "hub-client.js",
+      "styles.css",
+      "work-log.css",
+    ]) {
       const response = await fetch(`${address.url}${pathname}`);
       assert.equal(response.status, 200, pathname || "/");
       assert.ok((await response.text()).length > 20);

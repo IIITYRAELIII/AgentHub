@@ -119,6 +119,65 @@ test("theme layers keep the background, effects and content in order", () => {
   assert.match(styles, /\.workspace\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;/su);
 });
 
+test("theme motion is visible, distinct and keeps reduced-motion support", () => {
+  const styles = fs.readFileSync(
+    require.resolve("../assets/mini-app/styles.css"),
+    "utf8",
+  );
+  for (const [theme, animation] of [
+    ["orbit", "orbit-terminator"],
+    ["nebula", "nebula-drift"],
+    ["pulsar", "pulsar-beat"],
+    ["gothic", "gothic-fire"],
+    ["blackhole", "blackhole-flicker"],
+    ["taiga", "taiga-weather"],
+    ["magma", "magma-glow"],
+    ["storm", "storm-strike"],
+    ["meadow", "meadow-breathe"],
+  ]) {
+    assert.match(
+      styles,
+      new RegExp(`html\\[data-theme="${theme}"\\] body::before\\s*\\{[^}]*animation:\\s*${animation}`, "su"),
+      `${theme} must keep its own motion`,
+    );
+  }
+  assert.match(styles, /@keyframes taiga-weather\s*\{[\s\S]*background-position:/u);
+  assert.match(
+    styles,
+    /html\[data-theme="taiga"\] body::before\s*\{[^}]*animation:\s*taiga-weather 12s steps\(60, end\) infinite;[\s\S]*?background-size:\s*14px 96px,\s*23px 142px,\s*132% 76%,\s*112% 58%;/u,
+  );
+  assert.match(styles, /@keyframes magma-glow\s*\{[\s\S]*filter:\s*saturate\(1\.18\) brightness\(1\.14\);/u);
+  assert.match(
+    styles,
+    /html\[data-theme="magma"\] body::before\s*\{[^}]*animation:\s*magma-glow 6\.8s steps\(34, end\) infinite;/su,
+  );
+  assert.match(styles, /@keyframes gothic-fire\s*\{[\s\S]*filter:\s*brightness\(1\.15\);/u);
+  assert.match(
+    styles,
+    /html\[data-theme="gothic"\] body::before\s*\{[^}]*animation:\s*gothic-fire 8\.6s steps\(43, end\) infinite;/su,
+  );
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*animation:\s*none !important;/u);
+});
+
+test("Gothic theme uses medieval stone, old gold and a torch-lit scene", () => {
+  const styles = fs.readFileSync(
+    require.resolve("../assets/mini-app/styles.css"),
+    "utf8",
+  );
+  assert.match(
+    styles,
+    /html\[data-theme="gothic"\]\s*\{[\s\S]*--accent:\s*#d4aa58;[\s\S]*--space-star:\s*transparent;/u,
+  );
+  assert.match(
+    styles,
+    /html\[data-theme="gothic"\] body::after\s*\{[\s\S]*var\(--gothic-image\);[\s\S]*background-size:\s*cover;/u,
+  );
+  assert.match(
+    styles,
+    /html\[data-theme="gothic"\] body::before\s*\{[\s\S]*rgba\(238,\s*164,\s*58,\s*0\.38\)/u,
+  );
+});
+
 test("VS Code theme assets override browser paths with equal specificity", () => {
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
   assert.match(shared, /<style nonce="\$\{nonce\}">html\[data-theme\]\{\$\{assetOverrides\}\}<\/style>/u);
@@ -228,49 +287,46 @@ test("chat sends with Enter on desktop and keeps Enter as a newline on phones", 
   assert.doesNotMatch(html, /Ctrl\+Enter/u);
 });
 
-test("chat shows sent messages immediately and renders reasoning separately", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+test("chat shows sent messages immediately and reconciles them by exact identity", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  assert.match(client, /agentHub\.appendMessage\(request\.taskId/u);
+  assert.match(
+    client,
+    /rememberOutgoing\(request\.taskId, optimistic\);\s*renderTaskMessages\(request\.taskId\);/u,
+  );
+  assert.match(client, /\.\.\.deliveryPatch\("preparing"\)/u);
   assert.match(client, /delivery: "Отправляется…"/u);
-  assert.match(client, /reasoning: selected\.run\.progress \|\| ""/u);
-  assert.match(app, /data-live-reasoning/u);
-  assert.match(app, /patchMessage\(taskId, messageId, patch\)/u);
+  assert.match(client, /clientUserMessageId: request\.requestId/u);
+  assert.match(client, /reconcileMessageLifecycle\(serverMessages, outgoing\)/u);
+  assert.match(client, /if \(!matchedIds\.has\(message\.clientUserMessageId\)\) result\.push\(message\)/u);
+  assert.match(client, /for \(const clientUserMessageId of matchedIds\) pending\.delete\(clientUserMessageId\)/u);
 });
 
-test("chat removes already rendered current-turn responses from live text", () => {
+test("chat removes an exact server-backed current-turn response from live text", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   assert.match(
-    app,
-    /function liveTextAfterMessages\(live\)[\s\S]*lastUserIndex[\s\S]*messages\.slice\(lastUserIndex \+ 1\)[\s\S]*message\?\.role !== "agent"[\s\S]*remainder\.startsWith\(shown\)/u,
+    client,
+    /const exact = messageIdentityKey\(probe\);[\s\S]*const turnRole = messageIdentityKey\(probe, \{ withoutItem: true \}\);[\s\S]*const matches = messages\.filter/u,
   );
+  assert.match(client, /\(exact && messageIdentityKey\(message\) === exact\)/u);
+  assert.match(client, /text: matches\.length === 1 \? "" : response/u);
+  assert.match(app, /function liveTextAfterMessages\(live\) \{\s*return normalizedMessageText\(live\?\.text\);\s*\}/u);
   assert.match(app, /if \(!live \|\| \(!visibleText && !normalizedMessageText\(live\.reasoning\)\)\)/u);
-  assert.match(app, /body\.textContent = visibleText/u);
   assert.match(
     app,
     /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ forceBottom: true \}\);\s*renderLive\(\);/u,
   );
-  const helperSource = app.slice(
-    app.indexOf("function normalizedMessageText"),
-    app.indexOf("function renderLive"),
-  );
-  const state = {
-    selectedId: "task",
-    messages: new Map([["task", [
-      { role: "user", text: "Запрос" },
-      { role: "agent", text: "Проверяю." },
-      { role: "agent", text: "Исправляю." },
-    ]]]),
-  };
-  const liveTextAfterMessages = Function(
-    "state",
-    `"use strict"; ${helperSource}; return liveTextAfterMessages;`,
-  )(state);
-  assert.equal(
-    liveTextAfterMessages({ text: "Проверяю.\n\nИсправляю.\n\nГотово." }),
-    "Готово.",
-  );
-  assert.equal(liveTextAfterMessages({ text: "Проверяю." }), "");
+});
+
+test("live reasoning renders Markdown separately from the response", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  assert.match(html, /data-live-reasoning/u);
+  assert.match(html, /data-live-body/u);
+  assert.match(app, /const reasoning = chatLive\.querySelector\("\[data-live-reasoning\]"\);/u);
+  assert.match(app, /renderMarkdown\(reasoning, live\.reasoning \|\| ""\);/u);
+  assert.match(app, /const body = chatLive\.querySelector\("\[data-live-body\]"\);/u);
+  assert.match(app, /renderMarkdown\(body, visibleText\);/u);
 });
 
 test("deferred messages show their preview and can be queued after the active turn", () => {
@@ -288,7 +344,10 @@ test("composer clears optimistically and restores an unconfirmed message", () =>
   const submit = app.match(/function submitComposer\(\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
   assert.match(submit, /composerInput\.value = ""[\s\S]*emit\("message:send"/u);
   assert.match(app, /function completeComposerSend\(requestId, accepted\)/u);
-  assert.match(app, /if \(!accepted\)[\s\S]*text: pending\.rawText/u);
+  assert.match(app, /if \(accepted\)[\s\S]*else \{[\s\S]*text: pending\.rawText/u);
+  assert.match(app, /const retryComposerRequests = new Map\(\)/u);
+  assert.match(app, /const requestId = retry\?\.fingerprint === fingerprint[\s\S]*retry\.requestId/u);
+  assert.match(app, /retryComposerRequests\.set\(pending\.taskId,[\s\S]*requestId: pending\.requestId/u);
   assert.match(client, /agentHub\.completeSend\(request\.requestId/u);
   assert.match(client, /snapshot\?\.restartWaiting == null && blockingCount > 0/u);
   assert.match(client, /waiting \? "restart-waiting" : snapshot\?\.restartPending \? "restarting" : idleStatus/u);

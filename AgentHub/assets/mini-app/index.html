@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/styles.css">
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <script src="/app.js" defer></script>
+  <script src="/message-lifecycle.js" defer></script>
   <script src="/hub-client.js" defer></script>
 </head>
 <body>
@@ -150,7 +151,7 @@
             <div class="chat-subtitle" data-chat-subtitle></div>
           </div>
           <div class="chat-actions">
-            <button type="button" class="chip-button danger" data-action="task-stop" data-chat-stop hidden
+            <button type="button" class="chip-button danger chat-stop-header" data-action="task-stop" data-chat-stop hidden
               title="Остановить ход">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
                 <rect x="7" y="7" width="10" height="10" rx="1.5"></rect>
@@ -201,6 +202,10 @@
             </div>
             <div class="msg-reasoning" data-live-reasoning hidden></div>
             <div class="msg-body" data-live-body></div>
+            <details class="activity-feed" data-activity-feed hidden>
+              <summary data-activity-summary>Действия хода</summary>
+              <div class="activity-list" data-activity-list></div>
+            </details>
           </article>
         </div>
 
@@ -214,6 +219,9 @@
           <div class="annotations" data-annotations hidden aria-label="Аннотации к выделенному тексту"></div>
           <div class="attachments" data-attachments hidden aria-label="Вложения"></div>
           <div class="composer-main">
+            <button type="button" class="icon-button composer-slash" data-action="slash-menu"
+              title="Команды" aria-label="Команды" aria-expanded="false">/</button>
+            <div class="slash-menu" data-slash-menu hidden role="listbox" aria-label="Команды"></div>
             <button type="button" class="icon-button composer-attach" data-action="attach"
               title="Прикрепить изображение">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -234,6 +242,19 @@
                 placeholder="Сообщение агенту…"
                 aria-label="Сообщение агенту"></textarea>
             </label>
+            <button type="button" class="chip-button" data-follow-up-mode hidden
+              title="Что сделать с сообщением, пока текущий ход выполняется">
+              В очередь
+            </button>
+            <button type="button" class="context-usage" data-action="context-compact"
+              data-context-usage hidden title="Заполнение контекста">
+              <span class="context-ring" data-context-ring aria-hidden="true"></span>
+              <span data-context-label>0%</span>
+            </button>
+            <button type="button" class="chip-button danger chat-stop-bottom" data-action="task-stop"
+              data-chat-stop hidden title="Остановить ход">
+              <span class="stop-square" aria-hidden="true"></span><span>Стоп</span>
+            </button>
             <button type="submit" class="composer-send" data-composer-send title="Отправить"
               disabled>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"

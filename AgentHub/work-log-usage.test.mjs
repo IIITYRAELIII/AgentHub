@@ -10,6 +10,7 @@ import {
   projectWorkLogRateLimits,
   projectWorkLogUsage,
   restoreLegacyOutcomes,
+  searchWorkLogRecords,
   WorkLogUsageStore,
 } from "./work-log-usage.mjs";
 
@@ -1412,4 +1413,41 @@ test("legacy outcome restoration matches rows by date and task title", () => {
   const restored = restoreLegacyOutcomes(current, previous);
   assert.match(restored, /data-work-log-restored-outcome>Старый итог<\/div>/);
   assert.match(projectWorkLogUsage(restored), /data-work-log-legacy-outcome>Старый итог<\/div>/);
+});
+
+test("full-text work-log search covers prompts, answers, files and local dates", () => {
+  const turns = {
+    first: {
+      provider: "codex",
+      projectRoot: "C:\\Projects\\Main",
+      threadId: "thread-a",
+      taskThreadId: "thread-a",
+      turnId: "turn-1",
+      taskTitle: "Журнал работ",
+      title: "Исправлена доставка",
+      prompt: "Почему сообщение дублируется?",
+      body: "Дедупликация теперь использует точный itemId.",
+      changedFiles: ["assets/mini-app/hub-client.js"],
+      completedAt: "2026-07-30T03:15:00.000Z",
+    },
+    second: {
+      provider: "codex",
+      projectRoot: "C:\\Projects\\Other",
+      threadId: "thread-b",
+      turnId: "turn-2",
+      taskTitle: "Чужой проект",
+      body: "Дедупликация",
+      completedAt: "2026-07-30T04:00:00.000Z",
+    },
+  };
+  const byAnswer = searchWorkLogRecords(turns, "точный itemId", {
+    projectRoots: ["C:\\Projects\\Main"],
+  });
+  assert.equal(byAnswer.length, 1);
+  assert.equal(byAnswer[0].threadId, "thread-a");
+  assert.equal(byAnswer[0].matches[0].field, "Ответ");
+  assert.match(byAnswer[0].matches[0].snippet, /itemId/u);
+
+  assert.equal(searchWorkLogRecords(turns, "hub-client.js")[0].matches[0].field, "Файлы");
+  assert.equal(searchWorkLogRecords(turns, "30.07.2026")[0].matches[0].field, "Дата");
 });

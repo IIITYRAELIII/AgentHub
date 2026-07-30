@@ -145,6 +145,11 @@ import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { installRotatingConsole } from "./rotating-log.mjs";
 import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
 import { LocalTaskSyncStore } from "./task-sync-store.mjs";
+import {
+  messageReceiptKey,
+  messageRequestFingerprint,
+  MessageReceiptRegistry,
+} from "./message-receipts.mjs";
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
 import { SingleInstanceGuard } from "./instance-lock.mjs";
 import { BackgroundJobQueue } from "./background-job-queue.mjs";
@@ -413,6 +418,8 @@ const TASK_CATALOG_CACHE_MS = 1_500;
 const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
+const threadContextUsage = new Map();
+const compactingThreads = new Set();
 const codexTurnStarts = new Map();
 const codexAccountingThreadRoots = new Map();
 let codexHookReceipts = { start: null, stop: null };
@@ -523,6 +530,8 @@ const pendingInputs = new Map();
 const forwardBundles = new Map();
 const gitRepoRoots = new Map();
 const queuedInputs = new Map();
+const desktopMessageReceipts = new MessageReceiptRegistry();
+const desktopMessageReceiptInflight = new Map();
 const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
 await taskDiffs.load();
 const lastTaskMessages = new Map();
@@ -1157,10 +1166,55 @@ function savedLastTaskMessageRecord(task) {
   return lastTaskMessages.get(taskRunKey(task)) ?? null;
 }
 
+function threadContextKey(thread, turn) {
+  return `${String(thread ?? "").trim()}\0${String(turn ?? "").trim()}`;
+}
+
+function rememberThreadContextUsage(params) {
+  const contextWindow = Math.max(0, Number(params?.tokenUsage?.modelContextWindow) || 0);
+  const usedTokens = Math.max(0, Number(params?.tokenUsage?.last?.totalTokens) || 0);
+  const contextThreadId = String(params?.threadId ?? "").trim();
+  const contextTurnId = String(params?.turnId ?? "").trim();
+  if (!contextThreadId || !contextTurnId || !contextWindow) return;
+  setBoundedMapValue(threadContextUsage, threadContextKey(contextThreadId, contextTurnId), {
+    threadId: contextThreadId,
+    turnId: contextTurnId,
+    modelContextWindow: contextWindow,
+    usedTokens,
+    updatedAt: new Date().toISOString(),
+  }, 500);
+}
+
+function latestThreadContextUsage(contextThreadId, contextTurnId = "") {
+  const exact = contextTurnId
+    ? threadContextUsage.get(threadContextKey(contextThreadId, contextTurnId))
+    : null;
+  if (exact) return exact;
+  return [...threadContextUsage.values()]
+    .filter((entry) => entry.threadId === contextThreadId)
+    .sort((left, right) => (
+      (Date.parse(right.updatedAt) || 0) - (Date.parse(left.updatedAt) || 0)
+    ))[0] ?? null;
+}
+
+function resetThreadContextUsage(contextThreadId, contextTurnId = "") {
+  const current = latestThreadContextUsage(contextThreadId, contextTurnId);
+  if (!current) return;
+  const turn = String(contextTurnId || current.turnId);
+  setBoundedMapValue(threadContextUsage, threadContextKey(contextThreadId, turn), {
+    ...current,
+    threadId: contextThreadId,
+    turnId: turn,
+    usedTokens: 0,
+    updatedAt: new Date().toISOString(),
+  }, 500);
+}
+
 function trackTurnTokenUsage(params) {
   const current = normalizeTokenUsage(params.tokenUsage?.total);
   const previous = threadTokenTotals.get(params.threadId);
   setBoundedMapValue(threadTokenTotals, params.threadId, current, 500);
+  rememberThreadContextUsage(params);
 
   const tracker = turnTokenUsage.get(params.turnId);
   if (!tracker) return;
@@ -1622,6 +1676,21 @@ try {
       });
     }
   }
+  if (Array.isArray(saved.threadContextUsage)) {
+    for (const entry of saved.threadContextUsage.slice(-500)) {
+      if (!Array.isArray(entry) || typeof entry[0] !== "string" || !entry[1]) continue;
+      const modelContextWindow = Math.max(0, Number(entry[1].modelContextWindow) || 0);
+      const usedTokens = Math.max(0, Number(entry[1].usedTokens) || 0);
+      if (!modelContextWindow) continue;
+      threadContextUsage.set(entry[0], {
+        threadId: String(entry[1].threadId ?? ""),
+        turnId: String(entry[1].turnId ?? ""),
+        modelContextWindow,
+        usedTokens,
+        updatedAt: String(entry[1].updatedAt ?? ""),
+      });
+    }
+  }
   if (Array.isArray(saved.codexTurnStarts)) {
     for (const entry of saved.codexTurnStarts.slice(-500)) {
       if (!Array.isArray(entry) || typeof entry[0] !== "string" || !entry[1]) continue;
@@ -1663,6 +1732,7 @@ try {
   for (const item of Array.isArray(saved.queuedInputs) ? saved.queuedInputs : []) {
     if (item?.id && item?.threadId && item?.provider) queuedInputs.set(item.id, item);
   }
+  desktopMessageReceipts.restore(saved.desktopMessageReceipts);
   for (const value of Array.isArray(saved.forwardBundles) ? saved.forwardBundles : []) {
     const restored = restoreForwardBundle(value, {
       maxAgeMs: config.deferredInputTtlHours * 60 * 60 * 1000,
@@ -2275,6 +2345,115 @@ async function sendThreadPicker({ editMessage = null, page = 0 } = {}) {
   }
 }
 
+function appendRunActivity(run, activity = {}) {
+  if (!run) return;
+  if (!Array.isArray(run.activities)) run.activities = [];
+  const id = String(activity.id ?? "").trim()
+    || `${activity.type ?? "stage"}:${Date.now()}:${run.activities.length}`;
+  const normalized = {
+    id,
+    type: String(activity.type ?? "stage"),
+    label: String(activity.label ?? "Действие"),
+    detail: String(activity.detail ?? ""),
+    status: String(activity.status ?? "running"),
+    time: activity.time ?? new Date().toISOString(),
+  };
+  const existing = run.activities.findIndex((entry) => entry.id === id);
+  if (existing >= 0) run.activities[existing] = { ...run.activities[existing], ...normalized };
+  else run.activities.push(normalized);
+  run.activities = run.activities.slice(-100);
+}
+
+function codexItemFailed(item) {
+  const status = String(item?.status ?? "").toLowerCase();
+  return ["failed", "error", "declined", "rejected"].includes(status)
+    || (Number.isInteger(item?.exitCode) && item.exitCode !== 0)
+    || Boolean(item?.error);
+}
+
+function codexItemActivity(item, completed) {
+  if (!item || typeof item !== "object") return null;
+  const itemId = String(item.id ?? item.itemId ?? "").trim();
+  const base = {
+    id: `item:${itemId || `${item.type ?? "stage"}:${String(item.command ?? item.tool ?? "").slice(0, 80)}`}`,
+    status: completed ? "completed" : "running",
+  };
+  if (item.type === "commandExecution") {
+    const failed = completed && codexItemFailed(item);
+    return {
+      ...base,
+      type: "command",
+      label: failed ? "Команда завершилась с ошибкой" : completed ? "Команда выполнена" : "Выполняется команда",
+      detail: String(item.command ?? "").replace(/\s+/g, " ").slice(0, 500),
+      status: failed ? "failed" : base.status,
+    };
+  }
+  if (item.type === "fileChange") {
+    const failed = completed && codexItemFailed(item);
+    const paths = (item.changes ?? item.files ?? [])
+      .map((change) => String(change?.path ?? change ?? "").trim())
+      .filter(Boolean);
+    return {
+      ...base,
+      type: "file",
+      label: failed ? "Изменение файлов не выполнено" : completed ? "Файлы изменены" : "Изменяются файлы",
+      detail: paths.join(", ").slice(0, 500),
+      status: failed ? "failed" : base.status,
+    };
+  }
+  if (item.type === "mcpToolCall" || item.type === "dynamicToolCall") {
+    const tool = item.type === "mcpToolCall"
+      ? `${item.server ?? "MCP"}/${item.tool ?? ""}`
+      : String(item.tool ?? "Инструмент");
+    return {
+      ...base,
+      type: "tool",
+      label: completed ? "Инструмент завершён" : "Используется инструмент",
+      detail: tool,
+      status: item.error ? "failed" : base.status,
+    };
+  }
+  if (item.type === "webSearch") {
+    return {
+      ...base,
+      type: "tool",
+      label: completed ? "Поиск завершён" : "Поиск в интернете",
+      detail: String(item.query ?? "").slice(0, 500),
+    };
+  }
+  if (item.type === "contextCompaction") {
+    return {
+      ...base,
+      type: "compaction",
+      label: completed ? "Контекст свёрнут" : "Сворачивается контекст",
+    };
+  }
+  if (/agent|collab|subagent/iu.test(String(item.type ?? ""))) {
+    return {
+      ...base,
+      type: "subagent",
+      label: completed ? "Субагент завершён" : "Работает субагент",
+      detail: String(item.name ?? item.task ?? "").slice(0, 500),
+    };
+  }
+  return null;
+}
+
+function desktopContextSnapshot(thread, turn = "") {
+  const usage = latestThreadContextUsage(thread, turn);
+  if (!usage) return null;
+  const windowTokens = Math.max(0, Number(usage.modelContextWindow) || 0);
+  const usedTokens = Math.max(0, Number(usage.usedTokens) || 0);
+  return {
+    usedTokens,
+    modelContextWindow: windowTokens,
+    percent: windowTokens ? Math.min(100, (usedTokens / windowTokens) * 100) : 0,
+    turnId: usage.turnId,
+    updatedAt: usage.updatedAt,
+    compacting: compactingThreads.has(String(thread ?? "")),
+  };
+}
+
 function desktopRunSnapshot(run) {
   if (!run) return null;
   return {
@@ -2293,8 +2472,12 @@ function desktopRunSnapshot(run) {
     prompt: String(run.promptPreview ?? ""),
     progress: String(run.progressReasoning ?? ""),
     response: String(run.responseText ?? ""),
+    clientUserMessageId: run.clientUserMessageId ?? null,
+    responseItemId: run.responseItemId ?? null,
     startedAt: run.startedAt ?? null,
     lastActivityAt: run.lastMeaningfulProgressAt ?? run.progressHeartbeatAt ?? run.startedAt ?? null,
+    activities: Array.isArray(run.activities) ? run.activities.slice(-100) : [],
+    context: desktopContextSnapshot(run.threadId, run.turnId),
   };
 }
 
@@ -2324,6 +2507,7 @@ function desktopTaskSnapshot(entry) {
     ),
     lastAnswer: lastMessage?.text ?? "",
     lastAnswerAt: lastMessage?.updatedAt ?? null,
+    context: desktopContextSnapshot(entry.threadId, run?.turnId),
     run: desktopRunSnapshot(run),
   };
 }
@@ -2390,6 +2574,7 @@ async function desktopSnapshot({ refresh = false } = {}) {
         provider: item.provider,
         threadId: item.threadId,
         taskTitle: item.taskTitle,
+        clientUserMessageId: item.clientUserMessageId ?? null,
         preview: inputPreview(item.input).slice(0, 1_000),
         allowForce: item.allowForce === true,
         conflictKind: item.conflictKind ?? null,
@@ -2400,6 +2585,7 @@ async function desktopSnapshot({ refresh = false } = {}) {
         provider: item.provider,
         threadId: item.threadId,
         taskTitle: item.taskTitle,
+        clientUserMessageId: item.clientUserMessageId ?? null,
         preview: inputPreview(item.input).slice(0, 1_000),
         allowForce: false,
         conflictKind: item.conflictKind ?? null,
@@ -2439,6 +2625,9 @@ async function desktopTaskHistory(params) {
       turnId: running.turnId ?? running.id,
       prompt: running.promptPreview,
       answer: running.responseText,
+      clientUserMessageId: running.clientUserMessageId,
+      responseItemId: running.responseItemId,
+      activities: running.activities,
     });
   }
   const total = history.length;
@@ -2464,6 +2653,21 @@ async function desktopTaskHistory(params) {
       status: String(item.status ?? ""),
       active: item.active === true,
       completed: item.completed === true,
+      activities: Array.isArray(item.activities) ? item.activities.slice(-100) : [],
+      messages: (Array.isArray(item.messages) ? item.messages : []).flatMap((message) => {
+        const role = String(message?.role ?? "");
+        const text = String(message?.text ?? "");
+        if (!["user", "agent"].includes(role) || !text) return [];
+        return [{
+          itemId: String(message.itemId ?? ""),
+          ...(message.clientUserMessageId
+            ? { clientUserMessageId: String(message.clientUserMessageId) }
+            : {}),
+          role,
+          text: text.slice(0, role === "agent" ? maxAnswerChars : 100_000),
+          ...(message.phase ? { phase: String(message.phase) } : {}),
+        }];
+      }),
     })),
   };
 }
@@ -2555,24 +2759,209 @@ async function desktopOpenTurn(params) {
   };
 }
 
+async function desktopMessageTarget(params) {
+  const requestedProvider = String(params.provider ?? "").trim();
+  const requestedThreadId = String(params.threadId ?? "").trim();
+  if (!requestedProvider && !requestedThreadId) return selectedTurnTarget(chatId);
+  if (!["codex", "claude"].includes(requestedProvider) || !requestedThreadId) {
+    throw new Error("Сообщение не содержит точный адрес задачи");
+  }
+  const catalog = await refreshTaskCatalog();
+  const entry = catalog.find((item) => (
+    item.provider === requestedProvider && item.threadId === requestedThreadId
+  ));
+  if (!entry) throw new Error("Задача сообщения больше не существует в локальном каталоге");
+  return {
+    provider: entry.provider,
+    projectRoot: entry.projectRoot,
+    threadId: entry.threadId,
+    taskTitle: entry.title,
+    chatId,
+  };
+}
+
+function activeTurnNotSteerable(error) {
+  const details = `${String(error?.message ?? "")} ${JSON.stringify(error?.data ?? {})}`.toLowerCase();
+  return details.includes("activeturnnotsteerable")
+    || details.includes("active turn not steerable")
+    || details.includes("no active turn")
+    || details.includes("expectedturnid");
+}
+
+async function exactDesktopCodexTurnId(target, existingRun) {
+  const registered = String(existingRun?.turnId ?? "").trim();
+  if (registered) return registered;
+  const result = await readCodexThread(target.threadId, { fresh: true });
+  const active = (Array.isArray(result.thread?.turns) ? result.thread.turns : [])
+    .filter((turn) => ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? "")))
+    .map((turn) => String(turn.id ?? "").trim())
+    .filter(Boolean);
+  if (active.length === 1) return active[0];
+  if (active.length > 1) throw new Error("В задаче выполняется несколько ходов; выбрать ход для изменения нельзя");
+  return null;
+}
+
+async function deferDesktopQueue(input, attachments, {
+  target,
+  executionOwner,
+  clientUserMessageId,
+  reason = "task-running",
+}) {
+  const deferred = await deferConflictingInput(input, attachments, {
+    executionOwner,
+    target,
+    conflictKind: reason,
+    clientUserMessageId,
+    destination: "queued",
+    notify: false,
+  });
+  scheduleQueuedInput(deferred.item, 500);
+  return {
+    accepted: false,
+    deferred: true,
+    queued: true,
+    id: deferred.id,
+    clientUserMessageId,
+    reason,
+    message: reason === "steer-unavailable"
+      ? "Текущий ход уже нельзя изменить; сообщение сохранено в очереди."
+      : "Сообщение поставлено в очередь и будет отправлено после текущего хода.",
+    snapshot: await desktopSnapshot(),
+  };
+}
+
 async function desktopSendMessage(params) {
   const text = String(params.text ?? "").trim();
   const attachments = await desktopAttachmentPaths(params.attachments);
   if (!text && !attachments.length) throw new Error("Введите сообщение или добавьте изображение");
   if (text.length > 100_000) throw new Error("Сообщение слишком длинное");
+  const clientUserMessageId = String(
+    params.clientUserMessageId ?? params.requestId ?? randomUUID(),
+  ).trim().slice(0, 200);
+  if (!clientUserMessageId) throw new Error("Сообщение не содержит идентификатор доставки");
+  const followUpMode = String(params.followUpMode ?? "").trim().toLowerCase();
+  if (followUpMode && !["queue", "steer"].includes(followUpMode)) {
+    throw new Error("Неизвестный режим следующего сообщения");
+  }
   const input = attachments.length
     ? [
       { type: "text", text: text || "Проанализируй приложенное изображение." },
       ...attachments.map((file) => ({ type: "localImage", path: file })),
     ]
     : text;
-  const target = selectedTurnTarget(chatId);
+  const target = await desktopMessageTarget(params);
   if (!target.threadId) throw new Error("Сначала выберите или создайте задачу");
+  const receiptIdentity = {
+    provider: target.provider,
+    threadId: target.threadId,
+    clientUserMessageId,
+  };
+  const fingerprint = await messageRequestFingerprint({ text, attachments, followUpMode });
+  const previous = desktopMessageReceipts.find(receiptIdentity, fingerprint);
+  if (previous) return { ...previous, snapshot: await desktopSnapshot() };
+
+  const receiptKey = messageReceiptKey(receiptIdentity);
+  const inflight = desktopMessageReceiptInflight.get(receiptKey);
+  if (inflight) {
+    if (inflight.fingerprint !== fingerprint) {
+      const error = new Error("Идентификатор сообщения уже используется для другого содержимого");
+      error.code = "MESSAGE_RECEIPT_FINGERPRINT_MISMATCH";
+      throw error;
+    }
+    const result = await inflight.promise;
+    return { ...result, snapshot: await desktopSnapshot() };
+  }
+
+  const promise = (async () => {
+    const result = await desktopSendMessageOnce({
+      input,
+      attachments,
+      target,
+      clientUserMessageId,
+      followUpMode,
+    });
+    const { snapshot: _snapshot, ...storedResult } = result;
+    desktopMessageReceipts.remember(receiptIdentity, fingerprint, storedResult);
+    await saveState();
+    return storedResult;
+  })();
+  desktopMessageReceiptInflight.set(receiptKey, { fingerprint, promise });
+  try {
+    const result = await promise;
+    return { ...result, snapshot: await desktopSnapshot() };
+  } finally {
+    desktopMessageReceiptInflight.delete(receiptKey);
+  }
+}
+
+async function desktopSendMessageOnce({
+  input,
+  attachments,
+  target,
+  clientUserMessageId,
+  followUpMode,
+}) {
   const existingRun = taskRuns.forTask(target);
   const externalActivity = existingRun
     ? { state: "active", executionOwner: existingRun.executionOwner }
     : await taskExternalActivity(target);
   if (existingRun || externalActivity.state !== "inactive") {
+    if (followUpMode === "steer") {
+      if (target.provider !== "codex") {
+        throw new Error("Изменение текущего хода доступно только для Codex");
+      }
+      const exactTurnId = await exactDesktopCodexTurnId(target, existingRun);
+      if (!exactTurnId) {
+        return deferDesktopQueue(input, attachments, {
+          target,
+          executionOwner: externalActivity.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL,
+          clientUserMessageId,
+          reason: "steer-unavailable",
+        });
+      }
+      try {
+        const result = await sendRpc("turn/steer", {
+          threadId: target.threadId,
+          expectedTurnId: exactTurnId,
+          input: typeof input === "string" ? [{ type: "text", text: input }] : input,
+          clientUserMessageId,
+        });
+        if (existingRun) {
+          setProgressStage(existingRun, "Уточнение принято.");
+          noteRunActivity(existingRun);
+          scheduleProgressUpdate(existingRun, 0);
+        }
+        return {
+          accepted: true,
+          steered: true,
+          runId: existingRun?.id ?? null,
+          threadId: target.threadId,
+          turnId: String(result?.turnId ?? exactTurnId),
+          clientUserMessageId,
+          message: "Сообщение добавлено в текущий ход.",
+          snapshot: await desktopSnapshot(),
+        };
+      } catch (error) {
+        if (!activeTurnNotSteerable(error)) throw error;
+        return deferDesktopQueue(input, attachments, {
+          target,
+          executionOwner: existingRun?.executionOwner
+            ?? externalActivity.executionOwner
+            ?? TASK_EXECUTION_OWNERS.EXTERNAL,
+          clientUserMessageId,
+          reason: "steer-unavailable",
+        });
+      }
+    }
+    if (followUpMode === "queue") {
+      return deferDesktopQueue(input, attachments, {
+        target,
+        executionOwner: existingRun?.executionOwner
+          ?? externalActivity.executionOwner
+          ?? TASK_EXECUTION_OWNERS.EXTERNAL,
+        clientUserMessageId,
+      });
+    }
     const deferred = await deferConflictingInput(input, attachments, {
       executionOwner: existingRun?.executionOwner
         ?? externalActivity.executionOwner
@@ -2582,11 +2971,13 @@ async function desktopSendMessage(params) {
       conflictKind: externalActivity.state === "unknown" && !existingRun
         ? "activity-unknown"
         : "task-running",
+      clientUserMessageId,
     });
     return {
       accepted: false,
       deferred: true,
       id: deferred.id,
+      clientUserMessageId,
       reason: externalActivity.state === "unknown" ? "activity-unknown" : "task-running",
       message: externalActivity.state === "unknown"
         ? "Сообщение сохранено: нельзя надёжно определить, завершён ли предыдущий ход."
@@ -2602,19 +2993,28 @@ async function desktopSendMessage(params) {
       allowForce: true,
       conflictKind: "repository",
       conflictTask: repositoryConflict,
+      clientUserMessageId,
     });
     return {
       accepted: false,
       deferred: true,
       id: deferred.id,
+      clientUserMessageId,
       reason: "repository-conflict",
       message: `Сообщение сохранено: задача «${repositoryConflict.taskTitle ?? "Без названия"}» уже изменяет тот же Git-репозиторий.`,
       snapshot: await desktopSnapshot(),
     };
   }
-  const run = await beginRun(input, target);
+  const run = await beginRun(input, { ...target, clientUserMessageId });
   await launchTurn(run, input, attachments);
-  return { accepted: true, runId: run.id, snapshot: await desktopSnapshot() };
+  return {
+    accepted: true,
+    runId: run.id,
+    threadId: run.threadId,
+    turnId: run.turnId,
+    clientUserMessageId,
+    snapshot: await desktopSnapshot(),
+  };
 }
 
 async function desktopAttachmentPaths(values) {
@@ -2755,6 +3155,7 @@ async function desktopDeferredInput(params) {
         modelId: item.modelId,
         reasoningId: item.reasoningId,
         collaborationMode: item.collaborationMode,
+        clientUserMessageId: item.clientUserMessageId,
       },
       allowRepositoryConflict: item.conflictKind === "repository",
       allowUnknownExternalActivity: item.conflictKind === "activity-unknown",
@@ -2855,6 +3256,55 @@ async function desktopRateLimitHistory(params) {
   );
 }
 
+async function desktopSearch(params) {
+  const query = String(params.query ?? "").trim().slice(0, 200);
+  if (query.length < 2) return { query, results: [] };
+  const catalog = await refreshTaskCatalog();
+  const results = await workLogUsageStore.searchTurns(query, {
+    limit: Math.min(Math.max(Number(params.limit) || 100, 1), 200),
+    perTask: 3,
+    projectRoots: PROJECTS.map((project) => project.path),
+  });
+  return {
+    query,
+    results: results.map((result) => {
+      const entry = catalog.find((candidate) => (
+        candidate.provider === result.provider
+        && candidate.threadId === result.threadId
+        && (!result.projectRoot || samePath(candidate.projectRoot, result.projectRoot))
+      ));
+      return {
+        id: entry ? `${entry.provider}:${entry.threadId}` : `${result.provider}:${result.threadId}`,
+        provider: result.provider,
+        threadId: result.threadId,
+        projectRoot: result.projectRoot,
+        title: entry?.title ?? result.taskTitle,
+        latestAt: result.latestAt,
+        matches: result.matches,
+      };
+    }),
+  };
+}
+
+async function desktopCompactContext() {
+  const target = selectedTask();
+  if (target.provider !== "codex") throw new Error("Свёртка контекста доступна только для Codex");
+  const run = taskRuns.forTask(target);
+  if (run) throw new Error("Сначала завершите или остановите текущий ход");
+  if (compactingThreads.has(target.threadId)) {
+    return { accepted: false, message: "Свёртка контекста уже выполняется" };
+  }
+  compactingThreads.add(target.threadId);
+  try {
+    await sendRpc("thread/compact/start", { threadId: target.threadId });
+    setTimeout(() => compactingThreads.delete(target.threadId), 2 * 60 * 1_000).unref();
+    return { accepted: true, message: "Свёртка контекста запущена" };
+  } catch (error) {
+    compactingThreads.delete(target.threadId);
+    throw error;
+  }
+}
+
 function serializeDesktopMutation(operation) {
   const next = desktopMutationQueue.catch(() => {}).then(operation);
   desktopMutationQueue = next.catch(() => {});
@@ -2872,6 +3322,7 @@ async function handleDesktopControl({ action, params, context = null }) {
   if (action === "snapshot") return desktopSnapshot(effectiveParams);
   if (action === "task-history") return desktopTaskHistory(effectiveParams);
   if (action === "rate-limit-history") return desktopRateLimitHistory(effectiveParams);
+  if (action === "search") return desktopSearch(effectiveParams);
   if (action === "open-task") return serializeDesktopMutation(() => desktopOpenTask(effectiveParams));
   if (action === "open-turn") return serializeDesktopMutation(() => desktopOpenTurn(effectiveParams));
   if (action === "select-task") return serializeDesktopMutation(() => desktopSelectTask(effectiveParams));
@@ -2887,6 +3338,7 @@ async function handleDesktopControl({ action, params, context = null }) {
   if (action === "status-details") return desktopStatusDetails();
   if (action === "speak-last-answer") return desktopSpeakLastAnswer();
   if (action === "restart-server") return serializeDesktopMutation(() => desktopRestartServer());
+  if (action === "compact-context") return serializeDesktopMutation(() => desktopCompactContext());
   throw new Error(`Неизвестная desktop-команда: ${action}`);
 }
 
@@ -3391,6 +3843,7 @@ async function beginRun(input, target = null) {
     threadId: targetThreadId,
     taskTitle: targetTaskTitle,
     promptPreview: inputPreview(input),
+    clientUserMessageId: String(target?.clientUserMessageId ?? "").trim() || null,
     model: provider === "codex" ? codexModelLabel(modelId) : CLAUDE_MODEL_LABELS[modelId],
     modelId,
     reasoning: CODEX_REASONING_LABELS[reasoningId],
@@ -3637,6 +4090,9 @@ async function deferConflictingInput(input, temporaryFiles, {
   allowForce = false,
   conflictKind = "task-running",
   conflictTask = null,
+  clientUserMessageId = null,
+  destination = "pending",
+  notify = true,
 } = {}) {
   if (pendingInputs.size + queuedInputs.size >= MAX_DEFERRED_INPUTS) {
     await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
@@ -3657,26 +4113,29 @@ async function deferConflictingInput(input, temporaryFiles, {
     forceSpeechButton,
     allowForce,
     conflictKind,
+    clientUserMessageId: String(clientUserMessageId ?? "").trim() || null,
     createdAt: new Date().toISOString(),
   };
-  pendingInputs.set(item.id, item);
+  (destination === "queued" ? queuedInputs : pendingInputs).set(item.id, item);
   await saveState();
-  const preview = inputPreview(input);
-  const runtime = target.provider === "codex"
-    ? taskExecutionRuntimeLabel(executionOwner)
-    : executionOwner === TASK_EXECUTION_OWNERS.TELEGRAM ? "Telegram CLI" : "Внешний Claude CLI";
-  const conflictText = conflictKind === "repository"
-    ? `Задача «${conflictTask?.taskTitle ?? "Без названия"}» уже работает с тем же Git-репозиторием через ${runtime}. Параллельная запись может смешать изменения.`
-    : conflictKind === "activity-unknown"
-      ? "Claude оставил незавершённый транскрипт, но давно не записывал новые события. Нельзя надёжно определить, продолжает ли работать внешний процесс."
-      : `Выбранная задача уже выполняется через ${runtime}.`;
-  const message = await sendMessageTo(target.chatId,
-    `${conflictText} Новое сообщение сохранено и не потеряно.`
-      + `${preview ? `\n\n${preview.slice(0, 700)}` : ""}\n\nЧто сделать?`,
-    { reply_markup: pendingInputKeyboard(item.id, { allowForce }) });
-  item.messageId = message?.message_id ?? null;
-  await saveState();
-  return { deferred: true, id: item.id };
+  if (notify) {
+    const preview = inputPreview(input);
+    const runtime = target.provider === "codex"
+      ? taskExecutionRuntimeLabel(executionOwner)
+      : executionOwner === TASK_EXECUTION_OWNERS.TELEGRAM ? "Telegram CLI" : "Внешний Claude CLI";
+    const conflictText = conflictKind === "repository"
+      ? `Задача «${conflictTask?.taskTitle ?? "Без названия"}» уже работает с тем же Git-репозиторием через ${runtime}. Параллельная запись может смешать изменения.`
+      : conflictKind === "activity-unknown"
+        ? "Claude оставил незавершённый транскрипт, но давно не записывал новые события. Нельзя надёжно определить, продолжает ли работать внешний процесс."
+        : `Выбранная задача уже выполняется через ${runtime}.`;
+    const message = await sendMessageTo(target.chatId,
+      `${conflictText} Новое сообщение сохранено и не потеряно.`
+        + `${preview ? `\n\n${preview.slice(0, 700)}` : ""}\n\nЧто сделать?`,
+      { reply_markup: pendingInputKeyboard(item.id, { allowForce }) });
+    item.messageId = message?.message_id ?? null;
+    await saveState();
+  }
+  return { deferred: true, id: item.id, item };
 }
 
 async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
@@ -3691,6 +4150,7 @@ async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton =
       startTurn: () => sendRpc("turn/start", {
         threadId: run.threadId,
         input: items,
+        clientUserMessageId: run.clientUserMessageId ?? undefined,
         model: run.modelId,
         effort: run.reasoningId,
         collaborationMode: buildCodexCollaborationMode({
@@ -3840,6 +4300,7 @@ const deferredInputController = new DeferredInputController({
       modelId: item.modelId,
       reasoningId: item.reasoningId,
       collaborationMode: item.collaborationMode,
+      clientUserMessageId: item.clientUserMessageId,
     };
     const run = await beginRun(item.input, target);
     await launchTurn(run, item.input, item.temporaryFiles ?? [], {
@@ -4419,7 +4880,15 @@ function handleClaudeStreamEvent(run, parsed) {
   }
   const streamEvent = parsed.event?.type === "stream_event" ? parsed.event.event : null;
   if (streamEvent?.type === "content_block_start" && streamEvent.content_block?.type === "tool_use") {
-    setProgressStage(run, `Claude использует инструмент ${streamEvent.content_block.name ?? ""}…`);
+    const toolName = String(streamEvent.content_block.name ?? "");
+    setProgressStage(run, `Claude использует инструмент ${toolName}…`);
+    appendRunActivity(run, {
+      id: `claude-tool:${streamEvent.content_block.id ?? toolName}`,
+      type: "tool",
+      label: "Используется инструмент",
+      detail: toolName,
+      status: "running",
+    });
   }
 }
 
@@ -4546,9 +5015,17 @@ async function handleCodexMessage(message) {
     run.latestDiff = params.diff ?? run.latestDiff;
     taskDiffs.remember(taskRunKey(run), run.latestDiff);
     if (isSelectedRun(run)) latestDiff = run.latestDiff;
+    appendRunActivity(run, {
+      id: `diff:${eventTurnId ?? run.turnId ?? run.id}`,
+      type: "file",
+      label: "Diff обновлён",
+      detail: String(params.diff ?? "").split(/\r?\n/u).filter(Boolean).slice(0, 3).join(" · ").slice(0, 500),
+      status: "completed",
+    });
   }
   if (method === "item/agentMessage/delta" && run) {
     const delta = params.delta ?? "";
+    if (params.itemId) run.responseItemId = String(params.itemId);
     run.responseText += delta;
     if (delta) noteRunActivity(run);
     scheduleProgressUpdate(run);
@@ -4556,14 +5033,55 @@ async function handleCodexMessage(message) {
   if ((method === "item/reasoning/summaryTextDelta" || method === "item/plan/delta") && run) {
     appendProgressReasoning(run, params.delta);
   }
-  if (method === "item/started" && run) setProgressStage(run, describeCodexItem(params.item, false));
-  if (method === "item/completed" && run) setProgressStage(run, describeCodexItem(params.item, true));
+  if (method === "item/started" && run) {
+    setProgressStage(run, describeCodexItem(params.item, false));
+    const activity = codexItemActivity(params.item, false);
+    if (activity) appendRunActivity(run, activity);
+  }
+  if (method === "item/completed" && run) {
+    setProgressStage(run, describeCodexItem(params.item, true));
+    const activity = codexItemActivity(params.item, true);
+    if (activity) appendRunActivity(run, activity);
+    if (params.item?.type === "contextCompaction") compactingThreads.delete(run.threadId);
+    if (params.item?.type === "contextCompaction") resetThreadContextUsage(run.threadId, eventTurnId ?? run.turnId);
+  }
+  if (method === "thread/compacted") {
+    const compactedThreadId = String(params.threadId ?? run?.threadId ?? "").trim();
+    if (compactedThreadId) compactingThreads.delete(compactedThreadId);
+    if (compactedThreadId) resetThreadContextUsage(compactedThreadId, eventTurnId ?? "");
+    if (run) appendRunActivity(run, {
+      id: `compaction:${eventTurnId ?? run.turnId ?? run.id}`,
+      type: "compaction",
+      label: "Контекст свёрнут",
+      status: "completed",
+    });
+  }
 
   if (method === "item/commandExecution/requestApproval") {
+    appendRunActivity(run, {
+      id: `approval:${id}`,
+      type: "approval",
+      label: "Ожидается разрешение на команду",
+      detail: String(params.command ?? "").replace(/\s+/g, " ").slice(0, 500),
+      status: "waiting",
+    });
     await requestApproval(id, "command", params, formatCommandApproval(params, run), run);
   } else if (method === "item/fileChange/requestApproval") {
+    appendRunActivity(run, {
+      id: `approval:${id}`,
+      type: "approval",
+      label: "Ожидается разрешение на изменение файлов",
+      status: "waiting",
+    });
     await requestApproval(id, "file", params, formatFileApproval(params), run);
   } else if (method === "item/permissions/requestApproval") {
+    appendRunActivity(run, {
+      id: `approval:${id}`,
+      type: "approval",
+      label: "Ожидается разрешение",
+      detail: String(params.reason ?? "").slice(0, 500),
+      status: "waiting",
+    });
     await requestApproval(id, "permissions", params, formatPermissionsApproval(params), run);
   } else if (method === "mcpServer/elicitation/request") {
     await requestMcpElicitation(id, params, run);
@@ -6061,6 +6579,7 @@ async function dispatchTelegramCallback(callback, route) {
             modelId: item.modelId,
             reasoningId: item.reasoningId,
             collaborationMode: item.collaborationMode,
+            clientUserMessageId: item.clientUserMessageId,
           },
           allowRepositoryConflict: item.conflictKind === "repository",
           allowUnknownExternalActivity: item.conflictKind === "activity-unknown",
@@ -6807,6 +7326,7 @@ function saveState() {
     cancelledManagedClaudeTasks: [...cancelledManagedClaudeTasks.entries()],
     pendingInputs: [...pendingInputs.values()],
     queuedInputs: [...queuedInputs.values()],
+    desktopMessageReceipts: desktopMessageReceipts.snapshot(),
     forwardBundles: [...forwardBundles.values()].map((bundle) => ({
       ...bundle,
       submitting: false,
@@ -6815,6 +7335,7 @@ function saveState() {
     lastSeenTaskTurnIds: [...lastSeenTaskTurnIds.entries()].slice(-500),
     threadTokenTotals: [...threadTokenTotals.entries()].slice(-500),
     turnTokenUsage: [...turnTokenUsage.entries()].slice(-200),
+    threadContextUsage: [...threadContextUsage.entries()].slice(-500),
     codexTurnStarts: [...codexTurnStarts.entries()].slice(-500),
     codexHookReceipts,
     codexTerminalAudit: codexTerminalAudit.snapshot(),

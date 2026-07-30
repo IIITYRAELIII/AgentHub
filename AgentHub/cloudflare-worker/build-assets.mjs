@@ -10,6 +10,7 @@ await mkdir(output, { recursive: true });
 for (const file of [
   "index.html",
   "app.js",
+  "message-lifecycle.js",
   "hub-client.js",
   "styles.css",
   "blackhole-blue.png",

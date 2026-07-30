@@ -8,6 +8,87 @@ function textContent(content) {
     .trim();
 }
 
+function messageItemId(turnId, role, item, index) {
+  const exact = String(item?.id ?? "").trim();
+  return exact || `${String(turnId ?? "turn")}:${role}:${index}`;
+}
+
+function itemFailed(item) {
+  const status = String(item?.status ?? "").toLowerCase();
+  return ["failed", "error", "declined", "rejected"].includes(status)
+    || (Number.isInteger(item?.exitCode) && item.exitCode !== 0)
+    || Boolean(item?.error);
+}
+
+function activityFromCodexItem(item, index) {
+  const id = `item:${String(item?.id ?? index)}`;
+  if (item?.type === "commandExecution") return {
+    id, type: "command", label: itemFailed(item) ? "Команда завершилась с ошибкой" : "Команда выполнена",
+    detail: String(item.command ?? "").replace(/\s+/gu, " ").slice(0, 500),
+    status: itemFailed(item) ? "failed" : "completed",
+  };
+  if (item?.type === "fileChange") {
+    const detail = (item.changes ?? item.files ?? [])
+      .map((change) => String(change?.path ?? change ?? "").trim()).filter(Boolean).join(", ").slice(0, 500);
+    return {
+      id, type: "file",
+      label: itemFailed(item) ? "Изменение файлов не выполнено" : "Файлы изменены",
+      detail,
+      status: itemFailed(item) ? "failed" : "completed",
+    };
+  }
+  if (item?.type === "mcpToolCall" || item?.type === "dynamicToolCall") {
+    const detail = item.type === "mcpToolCall"
+      ? `${item.server ?? "MCP"}/${item.tool ?? ""}`
+      : String(item.tool ?? "");
+    return { id, type: "tool", label: "Инструмент завершён", detail, status: item.error ? "failed" : "completed" };
+  }
+  if (item?.type === "webSearch") return {
+    id, type: "tool", label: "Поиск завершён", detail: String(item.query ?? "").slice(0, 500), status: "completed",
+  };
+  if (item?.type === "contextCompaction") return {
+    id, type: "compaction", label: "Контекст свёрнут", detail: "", status: "completed",
+  };
+  if (item?.type === "userMessage" || item?.type === "agentMessage") return null;
+  if (/agent|collab|subagent/iu.test(String(item?.type ?? ""))) return {
+    id, type: "subagent", label: "Субагент завершён",
+    detail: String(item.name ?? item.task ?? "").slice(0, 500), status: "completed",
+  };
+  return null;
+}
+
+export function codexTurnActivities(turn) {
+  return (Array.isArray(turn?.items) ? turn.items : [])
+    .map(activityFromCodexItem)
+    .filter(Boolean);
+}
+
+function codexTurnMessages(turn) {
+  const turnId = String(turn?.id ?? "").trim();
+  return (Array.isArray(turn?.items) ? turn.items : []).flatMap((item, index) => {
+    if (item?.type === "userMessage") {
+      const text = displayUserPrompt(textContent(item.content));
+      return text ? [{
+        itemId: messageItemId(turnId, "user", item, index),
+        ...(String(item.clientId ?? "").trim()
+          ? { clientUserMessageId: String(item.clientId).trim() }
+          : {}),
+        role: "user",
+        text,
+      }] : [];
+    }
+    if (item?.type === "agentMessage" && String(item.text ?? "").trim()) {
+      return [{
+        itemId: messageItemId(turnId, "agent", item, index),
+        role: "agent",
+        text: String(item.text).trim(),
+        phase: String(item.phase ?? ""),
+      }];
+    }
+    return [];
+  });
+}
+
 function responseAnnotationPrompt(value) {
   const text = String(value ?? "");
   const block = text.match(/<response-annotations>\s*([\s\S]*?)\s*<\/response-annotations>/i);
@@ -81,13 +162,12 @@ export function codexTurnHasExplicitFinalAnswer(turn) {
 
 export function codexThreadHistory(turns) {
   return (Array.isArray(turns) ? turns : []).flatMap((turn) => {
-    const items = Array.isArray(turn?.items) ? turn.items : [];
-    const user = items.find((item) => item?.type === "userMessage");
-    const prompt = displayUserPrompt(textContent(user?.content));
+    const messages = codexTurnMessages(turn);
+    const prompt = messages.find((item) => item.role === "user")?.text ?? "";
     if (!prompt) return [];
-    const visibleAnswer = items
-      .filter((item) => item?.type === "agentMessage" && String(item.text ?? "").trim())
-      .map((item) => String(item.text).trim())
+    const visibleAnswer = messages
+      .filter((item) => item.role === "agent")
+      .map((item) => item.text)
       .join("\n\n")
       .trim();
     const answer = turn?.status === "completed"
@@ -100,6 +180,8 @@ export function codexThreadHistory(turns) {
       status: String(turn?.status ?? ""),
       active: turn?.status === "inProgress",
       completed: turn?.status === "completed",
+      messages,
+      activities: codexTurnActivities(turn),
     }];
   });
 }
@@ -146,6 +228,16 @@ export function claudeTranscriptHistory(text) {
       || turnEntries.some((entry) => (
         entry?.type === "assistant" && entry.message?.stop_reason === "end_turn"
       ));
+    const activities = turnEntries.flatMap((entry, index) => {
+      const blocks = Array.isArray(entry?.message?.content) ? entry.message.content : [];
+      return blocks.flatMap((block, blockIndex) => block?.type === "tool_use" ? [{
+        id: `claude-tool:${String(block.id ?? `${index}:${blockIndex}`)}`,
+        type: "tool",
+        label: "Инструмент завершён",
+        detail: String(block.name ?? "").slice(0, 500),
+        status: "completed",
+      }] : []);
+    });
     return {
       id: String(entries[entryIndex]?.uuid ?? entryIndex),
       prompt: claudeUserPrompt(entries[entryIndex]),
@@ -153,6 +245,23 @@ export function claudeTranscriptHistory(text) {
       status: completed ? "completed" : "inProgress",
       active: !completed,
       completed,
+      activities,
+      messages: [
+        {
+          itemId: String(entries[entryIndex]?.uuid ?? `${entryIndex}:user`),
+          role: "user",
+          text: claudeUserPrompt(entries[entryIndex]),
+        },
+        ...turnEntries.flatMap((entry, index) => {
+          if (entry?.type !== "assistant" || entry.message?.role !== "assistant") return [];
+          const assistantText = textContent(entry.message?.content);
+          return assistantText ? [{
+            itemId: String(entry.uuid ?? `${entryIndex}:agent:${index}`),
+            role: "agent",
+            text: assistantText,
+          }] : [];
+        }),
+      ],
     };
   });
 }
@@ -184,6 +293,14 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       id: turnId || "active-turn",
       prompt: String(activeTurn.prompt ?? "").trim() || "Текущее сообщение",
       answer: "",
+      messages: [{
+        itemId: `${turnId || "active-turn"}:user:0`,
+        ...(String(activeTurn.clientUserMessageId ?? "").trim()
+          ? { clientUserMessageId: String(activeTurn.clientUserMessageId).trim() }
+          : {}),
+        role: "user",
+        text: String(activeTurn.prompt ?? "").trim() || "Текущее сообщение",
+      }],
     };
     values.push(current);
   }
@@ -191,7 +308,19 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
   current.active = true;
   current.completed = false;
   current.status = "inProgress";
+  if (Array.isArray(activeTurn.activities)) current.activities = activeTurn.activities.slice();
   const answer = String(activeTurn.answer ?? "").trim();
-  if (answer) current.answer = answer;
+  if (answer) {
+    current.answer = answer;
+    const messages = Array.isArray(current.messages) ? current.messages : [];
+    const itemId = String(activeTurn.responseItemId ?? "").trim()
+      || `${turnId || current.id || "active-turn"}:agent:live`;
+    const existing = messages.find((item) => (
+      item.role === "agent" && String(item.itemId ?? "") === itemId
+    ));
+    if (existing) existing.text = answer;
+    else messages.push({ itemId, role: "agent", text: answer });
+    current.messages = messages;
+  }
   return values;
 }

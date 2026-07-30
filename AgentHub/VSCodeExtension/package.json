@@ -2,7 +2,7 @@
   "name": "work-log-view",
   "displayName": "Agent Hub",
   "description": "Agent Hub: задачи, чаты и автоматически обновляемый журнал работ.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "tyrael",
   "icon": "media/agent-hub-work-log.png",
   "license": "MIT",
@@ -83,5 +83,3 @@
     }
   }
 }
-
-

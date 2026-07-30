@@ -30,6 +30,7 @@ const CONTROL_ACTIONS = new Set([
   "snapshot",
   "task-history",
   "rate-limit-history",
+  "search",
   "open-task",
   "open-turn",
   "select-task",
@@ -45,6 +46,7 @@ const CONTROL_ACTIONS = new Set([
   "status-details",
   "speak-last-answer",
   "restart-server",
+  "compact-context",
 ]);
 
 function hex(bytes) {

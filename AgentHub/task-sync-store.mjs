@@ -21,6 +21,19 @@ function cleanHistory(history, limit) {
       status: cleanText(item?.status, 40),
       active: item?.active === true,
       completed: item?.completed === true,
+      messages: (Array.isArray(item?.messages) ? item.messages : [])
+        .slice(-100)
+        .flatMap((message) => {
+          const role = cleanText(message?.role, 20);
+          const text = cleanText(message?.text, role === "agent" ? 40_000 : 12_000);
+          if (!["user", "agent"].includes(role) || !text) return [];
+          return [{
+            itemId: cleanText(message?.itemId, 200),
+            role,
+            text,
+            ...(message?.phase ? { phase: cleanText(message.phase, 40) } : {}),
+          }];
+        }),
     }));
 }
 

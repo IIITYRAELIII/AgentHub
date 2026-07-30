@@ -964,6 +964,14 @@ namespace AgentHubDesktop
             {
                 if (match.Index > index) AppendInlineTokens(paragraph, text.Substring(index, match.Index - index));
                 var target = match.Groups[2].Value.Trim();
+                Uri safeTarget;
+                if (!Uri.TryCreate(target, UriKind.Absolute, out safeTarget)
+                    || (safeTarget.Scheme != Uri.UriSchemeHttp && safeTarget.Scheme != Uri.UriSchemeHttps))
+                {
+                    paragraph.Inlines.Add(new Run(match.Value));
+                    index = match.Index + match.Length;
+                    continue;
+                }
                 var link = new Hyperlink(new Run(match.Groups[1].Value))
                 {
                     Foreground = Theme.Solid(Theme.Codex),
@@ -972,7 +980,7 @@ namespace AgentHubDesktop
                 };
                 link.Click += delegate
                 {
-                    try { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true }); }
+                    try { Process.Start(new ProcessStartInfo(safeTarget.AbsoluteUri) { UseShellExecute = true }); }
                     catch (Exception error) { footer.Text = "Не удалось открыть ссылку: " + error.Message; }
                 };
                 paragraph.Inlines.Add(link);

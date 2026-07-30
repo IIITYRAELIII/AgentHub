@@ -7,6 +7,7 @@ const statePath = stateArgument >= 0 ? process.argv[stateArgument + 1] : "";
 const initialState = {
   nextThread: 1,
   nextTurn: 1,
+  nextMessage: 1,
   threads: [],
   crashedOnce: false,
   requestCounts: {},
@@ -15,6 +16,7 @@ let state = statePath && existsSync(statePath)
   ? JSON.parse(readFileSync(statePath, "utf8"))
   : structuredClone(initialState);
 state.requestCounts ??= {};
+state.nextMessage ??= 1;
 const pendingApprovals = new Map();
 const timers = new Set();
 
@@ -99,12 +101,14 @@ function finishTurn(thread, turn, { status = "completed", answer = null } = {}) 
       },
     })}\n`, "utf8");
   }
-  turn.items.push({ type: "agentMessage", text, phase: "final_answer" });
+  const itemId = `${turn.id}:agent:final`;
+  turn.items.push({ id: itemId, type: "agentMessage", text, phase: "final_answer" });
   thread.updatedAt = Math.floor(Date.now() / 1000);
   save();
   notify("item/agentMessage/delta", {
     threadId: thread.id,
     turnId: turn.id,
+    itemId,
     delta: text,
   });
   notify("thread/tokenUsage/updated", {
@@ -113,6 +117,7 @@ function finishTurn(thread, turn, { status = "completed", answer = null } = {}) 
     tokenUsage: {
       total: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningOutputTokens: 10, totalTokens: 130 },
       last: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningOutputTokens: 10, totalTokens: 130 },
+      modelContextWindow: 200_000,
     },
   });
   notify("turn/diff/updated", { threadId: thread.id, turnId: turn.id, diff: `diff --fake ${turn.id}` });
@@ -148,7 +153,12 @@ function startTurn(params) {
     id: uuid("turn", state.nextTurn++),
     status: "inProgress",
     prompt,
-    items: [{ type: "userMessage", content: [{ type: "text", text: prompt }] }],
+    items: [{
+      id: `${uuid("message", state.nextMessage++)}:user`,
+      clientId: String(params.clientUserMessageId ?? ""),
+      type: "userMessage",
+      content: [{ type: "text", text: prompt }],
+    }],
   };
   thread.turns.push(turn);
   thread.preview = prompt || thread.preview;
@@ -414,6 +424,15 @@ function handleRequest(message) {
     reply(id, { thread: publicThread(thread) });
     return;
   }
+  if (method === "thread/compact/start") {
+    const thread = threadById(params.threadId);
+    reply(id, {});
+    schedule(() => notify("thread/compacted", {
+      threadId: thread?.id ?? params.threadId,
+      turnId: thread?.turns?.at(-1)?.id ?? null,
+    }), 20);
+    return;
+  }
   if (method === "turn/start") {
     try {
       const thread = threadById(params.threadId);
@@ -430,6 +449,33 @@ function handleRequest(message) {
     } catch (error) {
       send({ id, error: { message: error.message } });
     }
+    return;
+  }
+  if (method === "turn/steer") {
+    const thread = threadById(params.threadId);
+    const turn = thread?.turns.find((item) => item.id === params.expectedTurnId);
+    if (!turn || turn.status !== "inProgress") {
+      send({
+        id,
+        error: {
+          code: -32602,
+          message: "active turn not steerable",
+          data: { kind: "activeTurnNotSteerable" },
+        },
+      });
+      return;
+    }
+    const prompt = promptText(params.input);
+    turn.items.push({
+      id: `${uuid("message", state.nextMessage++)}:user`,
+      clientId: String(params.clientUserMessageId ?? ""),
+      type: "userMessage",
+      content: [{ type: "text", text: prompt }],
+    });
+    turn.steeredPrompts ??= [];
+    turn.steeredPrompts.push(prompt);
+    save();
+    reply(id, { turnId: turn.id });
     return;
   }
   if (method === "turn/interrupt") {

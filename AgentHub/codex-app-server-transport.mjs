@@ -176,8 +176,13 @@ export class CodexAppServerTransport {
       if (!pending) return;
       this.pending.delete(message.id);
       clearTimeout(pending.timer);
-      if (message.error) pending.reject(new Error(message.error.message ?? JSON.stringify(message.error)));
-      else pending.resolve(message.result);
+      if (message.error) {
+        const error = new Error(message.error.message ?? JSON.stringify(message.error));
+        if (message.error.code !== undefined) error.code = message.error.code;
+        if (message.error.data !== undefined) error.data = message.error.data;
+        error.rpcError = message.error;
+        pending.reject(error);
+      } else pending.resolve(message.result);
       return;
     }
     Promise.resolve()

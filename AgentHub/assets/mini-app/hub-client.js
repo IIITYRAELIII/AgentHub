@@ -17,6 +17,14 @@ let refreshing = false;
 let pendingSelectionId = "";
 let selectionSequence = 0;
 let selectionTail = Promise.resolve();
+const historyByTask = new Map();
+const outgoingByTask = new Map();
+const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
+const {
+  identityKey: messageIdentityKey,
+  reconcile: reconcileMessageLifecycle,
+  rememberBounded: rememberBoundedMessage,
+} = window.AgentHubMessageLifecycle;
 
 const runtimeShortLabels = Object.freeze({
   telegram: "HUB",
@@ -36,6 +44,107 @@ function taskIdentity(id) {
   return {
     provider: id.slice(0, separator),
     threadId: id.slice(separator + 1),
+  };
+}
+
+function outgoingMessages(taskIdValue) {
+  if (!outgoingByTask.has(taskIdValue)) outgoingByTask.set(taskIdValue, new Map());
+  return outgoingByTask.get(taskIdValue);
+}
+
+function rememberOutgoing(taskIdValue, message) {
+  rememberBoundedMessage(
+    outgoingMessages(taskIdValue),
+    message,
+    MAX_OUTGOING_MESSAGES_PER_TASK,
+  );
+}
+
+function deliveryPatch(stateName) {
+  const states = {
+    preparing: { deliveryState: "preparing", delivery: "Подготовка…", failed: false },
+    sending: { deliveryState: "sending", delivery: "Отправляется…", failed: false },
+    accepted: { deliveryState: "accepted", delivery: "Принято", failed: false },
+    queued: { deliveryState: "queued", delivery: "В очереди", failed: false },
+    delivered: { deliveryState: "delivered", delivery: "", failed: false },
+    unconfirmed: { deliveryState: "unconfirmed", delivery: "Приём не подтверждён", failed: true },
+    rejected: { deliveryState: "rejected", delivery: "Не принято", failed: true },
+  };
+  return states[stateName] ?? states.unconfirmed;
+}
+
+function patchOutgoing(taskIdValue, clientUserMessageId, patch) {
+  const message = outgoingMessages(taskIdValue).get(clientUserMessageId);
+  if (!message) return;
+  Object.assign(message, patch);
+  renderTaskMessages(taskIdValue);
+}
+
+function reconciledMessages(taskIdValue) {
+  const serverMessages = historyByTask.get(taskIdValue) ?? [];
+  const pending = outgoingMessages(taskIdValue);
+  const outgoing = [...pending.values()];
+  const { matches, matchedIds } = reconcileMessageLifecycle(serverMessages, outgoing);
+  const result = matches.map(({ message, local }) => {
+    if (!local) return message;
+    return {
+      ...message,
+      attachments: local.attachments?.length ? local.attachments : message.attachments,
+      ...deliveryPatch("delivered"),
+    };
+  });
+  for (const message of outgoing) {
+    if (!matchedIds.has(message.clientUserMessageId)) result.push(message);
+  }
+  for (const clientUserMessageId of matchedIds) pending.delete(clientUserMessageId);
+  return result;
+}
+
+function renderTaskMessages(taskIdValue) {
+  agentHub.setMessages(taskIdValue, reconciledMessages(taskIdValue));
+}
+
+function updateLiveMessage(taskIdValue, selected) {
+  const run = selected?.run;
+  if (!run) return null;
+  const response = String(run.response ?? "");
+  if (!response || !run.turnId) return {
+    author: selected.provider === "claude" ? "Claude" : "Codex",
+    stage: run.stage,
+    reasoning: run.progress || "",
+    text: response,
+    activities: run.activities ?? [],
+    threadId: selected.threadId,
+    turnId: run.turnId ?? null,
+    itemId: run.responseItemId ?? null,
+  };
+  const probe = {
+    provider: selected.provider,
+    threadId: selected.threadId,
+    turnId: run.turnId,
+    itemId: run.responseItemId,
+    role: "agent",
+  };
+  const exact = messageIdentityKey(probe);
+  const turnRole = messageIdentityKey(probe, { withoutItem: true });
+  const messages = historyByTask.get(taskIdValue) ?? [];
+  const matches = messages.filter((message) => (
+    (exact && messageIdentityKey(message) === exact)
+    || (!run.responseItemId && messageIdentityKey(message, { withoutItem: true }) === turnRole)
+  ));
+  if (matches.length === 1) {
+    matches[0].text = response;
+    renderTaskMessages(taskIdValue);
+  }
+  return {
+    author: selected.provider === "claude" ? "Claude" : "Codex",
+    stage: run.stage,
+    reasoning: run.progress || "",
+    text: matches.length === 1 ? "" : response,
+    activities: run.activities ?? [],
+    threadId: selected.threadId,
+    turnId: run.turnId,
+    itemId: run.responseItemId ?? null,
   };
 }
 
@@ -152,6 +261,7 @@ function modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId) 
     unread: !running && answerAt > seenAt,
     running,
     selected: id === effectiveSelectedId,
+    context: task.run?.context ?? task.context ?? null,
   };
 }
 
@@ -170,17 +280,32 @@ function applySnapshot(snapshot) {
     .map((task) => modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId))
     .sort((left, right) => Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0));
   agentHub.setTasks(tasks);
+  for (const task of snapshot.tasks ?? []) {
+    const clientUserMessageId = String(task.run?.clientUserMessageId ?? "");
+    if (!clientUserMessageId) continue;
+    patchOutgoing(taskId(task.provider, task.threadId), clientUserMessageId, {
+      provider: task.provider,
+      threadId: task.threadId,
+      turnId: String(task.run?.turnId ?? ""),
+      ...deliveryPatch("accepted"),
+    });
+  }
   const selected = (snapshot.tasks ?? []).find(
     (task) => taskId(task.provider, task.threadId) === effectiveSelectedId,
   );
   selectedTaskId = effectiveSelectedId;
   if (selected) {
-    agentHub.setLive(selectedTaskId, selected.run ? {
-      author: selected.provider === "claude" ? "Claude" : "Codex",
-      stage: selected.run.stage,
-      reasoning: selected.run.progress || "",
-      text: selected.run.response || "",
-    } : null);
+    for (const deferred of snapshot.deferredInputs ?? []) {
+      const clientUserMessageId = String(deferred.clientUserMessageId ?? "");
+      if (!clientUserMessageId) continue;
+      const deferredTaskId = taskId(deferred.provider, deferred.threadId);
+      patchOutgoing(
+        deferredTaskId,
+        clientUserMessageId,
+        deliveryPatch(deferred.state === "queued" ? "queued" : "accepted"),
+      );
+    }
+    agentHub.setLive(selectedTaskId, updateLiveMessage(selectedTaskId, selected));
     agentHub.setRunning(selectedTaskId, Boolean(selected.run || selected.running));
     agentHub.setApprovals(selectedTaskId, effectiveSelectedId === serverSelectedId
       ? (snapshot.pendingApprovals ?? []).map((approval) => ({
@@ -241,22 +366,51 @@ function applySnapshotConnection(snapshot, idleStatus = "online") {
 function historyMessages(history, focusedTurn = null) {
   const messages = [];
   for (const item of history?.items ?? []) {
-    if (item.prompt) messages.push({
-      id: `${item.id}:prompt`,
-      role: "user",
-      author: "Вы",
-      text: item.prompt,
-    });
-    if (item.answer) messages.push({
-      id: `${item.id}:answer`,
-      role: "agent",
-      author: history.provider === "claude" ? "Claude" : "Codex",
-      text: item.answer,
+    const itemMessages = Array.isArray(item.messages) ? item.messages : [];
+    const userMessages = itemMessages.filter((message) => message.role === "user");
+    const agentMessages = itemMessages.filter((message) => message.role === "agent");
+    const visibleAgent = item.completed
+      ? agentMessages.findLast((message) => ["final", "final_answer", "finalAnswer"].includes(message.phase))
+        ?? agentMessages.at(-1)
+      : agentMessages.at(-1);
+    const visible = [
+      ...(userMessages.length ? userMessages : item.prompt ? [{
+        itemId: `${item.id}:prompt`,
+        role: "user",
+        text: item.prompt,
+      }] : []),
+      ...(visibleAgent ? [visibleAgent] : item.answer ? [{
+        itemId: `${item.id}:answer`,
+        role: "agent",
+        text: item.answer,
+      }] : []),
+    ];
+    for (const message of visible) messages.push({
+      id: `${history.provider}:${history.threadId}:${item.id}:${message.itemId}:${message.role}`,
+      provider: history.provider,
+      threadId: history.threadId,
+      turnId: item.id,
+      itemId: String(message.itemId ?? ""),
+      clientUserMessageId: String(message.clientUserMessageId ?? ""),
+      role: message.role,
+      author: message.role === "user"
+        ? "Вы"
+        : history.provider === "claude" ? "Claude" : "Codex",
+      text: message.text,
+      activities: message.role === "agent" && item.completed ? (item.activities ?? []) : [],
     });
   }
-  if (focusedTurn && !messages.some((message) => message.id.startsWith(`${focusedTurn.turnId}:`))) {
+  if (focusedTurn && !messages.some((message) => (
+    message.provider === focusedTurn.provider
+    && message.threadId === (focusedTurn.turnThreadId ?? focusedTurn.taskThreadId)
+    && message.turnId === focusedTurn.turnId
+  ))) {
     if (focusedTurn.prompt) messages.push({
       id: `${focusedTurn.turnId}:prompt`,
+      provider: focusedTurn.provider,
+      threadId: focusedTurn.turnThreadId ?? focusedTurn.taskThreadId,
+      turnId: focusedTurn.turnId,
+      itemId: `${focusedTurn.turnId}:focused:user`,
       role: "user",
       author: "Вы",
       text: focusedTurn.prompt,
@@ -264,6 +418,10 @@ function historyMessages(history, focusedTurn = null) {
     });
     messages.push({
       id: `${focusedTurn.turnId}:answer`,
+      provider: focusedTurn.provider,
+      threadId: focusedTurn.turnThreadId ?? focusedTurn.taskThreadId,
+      turnId: focusedTurn.turnId,
+      itemId: `${focusedTurn.turnId}:focused:agent`,
       role: "agent",
       author: focusedTurn.provider === "claude" ? "Claude" : "Codex",
       text: focusedTurn.answer || focusedTurn.title || "Ход завершён",
@@ -274,13 +432,17 @@ function historyMessages(history, focusedTurn = null) {
 }
 
 function applyOpened(result) {
-  applySnapshot(result?.snapshot);
   const history = result?.history;
-  if (!history) return;
+  if (!history) {
+    applySnapshot(result?.snapshot);
+    return;
+  }
   const id = taskId(history.provider, history.threadId);
+  historyByTask.set(id, historyMessages(history, result.focusedTurn));
+  applySnapshot(result?.snapshot);
   selectedTaskId = id;
   agentHub.selectTask(id);
-  agentHub.setMessages(id, historyMessages(history, result.focusedTurn));
+  renderTaskMessages(id);
   const task = result.snapshot?.tasks?.find(
     (item) => item.provider === history.provider && item.threadId === history.threadId,
   );
@@ -371,25 +533,45 @@ agentHub.on("task:select", ({ id }) => {
 
 agentHub.on("message:send", (request) => {
   const optimisticId = `local:${request.requestId}`;
+  const identity = taskIdentity(request.taskId);
+  const previousAttempt = outgoingMessages(request.taskId).get(request.requestId);
   const visibleText = String(request.text ?? "").trim()
     || ((request.annotations ?? []).length
       ? `Аннотации к ответу: ${(request.annotations ?? []).length}`
       : "Изображение");
-  agentHub.appendMessage(request.taskId, {
+  const optimistic = {
     id: optimisticId,
+    provider: identity?.provider ?? "",
+    threadId: identity?.threadId ?? "",
+    turnId: "",
+    itemId: request.requestId,
+    clientUserMessageId: request.requestId,
     role: "user",
     author: "Вы",
     text: visibleText,
     time: new Date().toISOString(),
     attachments: request.attachments ?? [],
-    delivery: "Отправляется…",
-  });
+    uploadedPaths: previousAttempt?.uploadedPaths ?? [],
+    ...deliveryPatch("preparing"),
+  };
+  rememberOutgoing(request.taskId, optimistic);
+  renderTaskMessages(request.taskId);
   return runAction(async () => {
     try {
-      const paths = [];
-      for (const attachment of request.attachments ?? []) paths.push(await uploadAttachment(attachment));
+      const paths = optimistic.uploadedPaths.length === (request.attachments ?? []).length
+        ? optimistic.uploadedPaths.slice()
+        : [];
+      if (!paths.length) {
+        for (const attachment of request.attachments ?? []) paths.push(await uploadAttachment(attachment));
+        patchOutgoing(request.taskId, request.requestId, { uploadedPaths: paths.slice() });
+      }
+      patchOutgoing(request.taskId, request.requestId, deliveryPatch("sending"));
       const params = {
         text: annotatedText(request.text, request.annotations),
+        provider: identity?.provider,
+        threadId: identity?.threadId,
+        clientUserMessageId: request.requestId,
+        followUpMode: request.followUpMode,
       };
       if (paths.length) params.attachments = paths;
       const result = await control("send-message", params);
@@ -397,17 +579,21 @@ agentHub.on("message:send", (request) => {
       agentHub.completeSend(request.requestId, {
         accepted: Boolean(result?.accepted || result?.deferred),
       });
-      agentHub.patchMessage(request.taskId, optimisticId, {
-        delivery: result?.accepted ? "" : result?.deferred ? "Отложено" : "Не принято",
-        failed: !result?.accepted && !result?.deferred,
+      patchOutgoing(request.taskId, request.requestId, {
+        provider: identity?.provider ?? "",
+        threadId: result?.threadId ?? identity?.threadId ?? "",
+        turnId: result?.turnId ?? "",
+        itemId: result?.itemId ?? request.requestId,
+        ...(result?.accepted
+          ? deliveryPatch("accepted")
+          : result?.deferred
+            ? deliveryPatch(result?.queued ? "queued" : "accepted")
+            : deliveryPatch("rejected")),
       });
       agentHub.toast(result?.message ?? (result?.accepted ? "Сообщение принято" : "Сообщение сохранено"));
     } catch (error) {
       agentHub.completeSend(request.requestId, { accepted: false });
-      agentHub.patchMessage(request.taskId, optimisticId, {
-        delivery: "Приём не подтверждён",
-        failed: true,
-      });
+      patchOutgoing(request.taskId, request.requestId, deliveryPatch("unconfirmed"));
       throw error;
     }
   });
@@ -489,6 +675,28 @@ agentHub.on("queue:accept", ({ id }) => runAction(async () => {
 }));
 agentHub.on("tts:play", () => runAction(() => control("speak-last-answer")));
 agentHub.on("hub:restart", () => runAction(() => control("restart-server")));
+let searchSequence = 0;
+agentHub.on("search:query", ({ query }) => {
+  const sequence = ++searchSequence;
+  void runAction(async () => {
+    const result = await control("search", { query, limit: 100 });
+    if (sequence === searchSequence) {
+      agentHub.setSearchResults(result?.query ?? query, result?.results ?? []);
+    }
+  });
+});
+agentHub.on("context:compact", () => runAction(async () => {
+  const result = await control("compact-context");
+  agentHub.toast(result?.message ?? "Свёртка контекста запущена");
+  applySnapshot(await control("snapshot"));
+}));
+agentHub.on("turn:open", (params) => runAction(async () => {
+  applyOpened(await control("open-turn", { ...params, limit: 20 }));
+  document.querySelector("[data-view-button='chat']")?.click();
+  replaceRoute("#/chat/"
+    + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
+    + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
+}));
 
 document.addEventListener("click", (event) => {
   const openTask = event.target.closest("[data-open-task]");

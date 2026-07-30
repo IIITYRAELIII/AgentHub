@@ -7,6 +7,7 @@ const ASSET_ROOT = ["Utilities", "AgentHub", "assets", "mini-app"];
 const ASSETS = {
   index: [...ASSET_ROOT, "index.html"],
   app: [...ASSET_ROOT, "app.js"],
+  lifecycle: [...ASSET_ROOT, "message-lifecycle.js"],
   client: [...ASSET_ROOT, "hub-client.js"],
   styles: [...ASSET_ROOT, "styles.css"],
   workLogStyles: ["Utilities", "AgentHub", "work-log.css"],
@@ -45,7 +46,7 @@ async function resolveSharedAssets() {
     Object.entries(ASSETS).map(async ([name, segments]) => [name, await firstExisting(segments)]),
   );
   const assets = Object.fromEntries(entries);
-  for (const required of ["index", "app", "client", "styles", "workLogStyles", "bootstrap"]) {
+  for (const required of ["index", "app", "lifecycle", "client", "styles", "workLogStyles", "bootstrap"]) {
     if (!assets[required]) throw new Error(`Не найден ресурс Agent Hub: ${required}`);
   }
   return assets;
@@ -93,8 +94,10 @@ async function sharedWebviewHtml(webview) {
       `<style nonce="${nonce}">html[data-theme]{${assetOverrides}}</style>`
         + `<script src="${resource(webview, assets.bootstrap)}" defer></script>`
         + `<script src="${resource(webview, assets.app)}" defer></script>`
+        + `<script src="${resource(webview, assets.lifecycle)}" defer></script>`
         + `<script src="${resource(webview, assets.client)}" defer></script>`,
     )
+    .replace('<script src="/message-lifecycle.js" defer></script>', "")
     .replace('<script src="/hub-client.js" defer></script>', "");
   return { html, roots: Object.values(assets).filter(Boolean) };
 }

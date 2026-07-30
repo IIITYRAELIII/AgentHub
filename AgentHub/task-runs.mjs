@@ -20,6 +20,7 @@ function progressState({ stage, reasoning = "", displayRequested }) {
     progressMessageIds: [],
     progressStage: stage,
     progressReasoning: reasoning,
+    activities: [],
     lastMeaningfulProgressAt: now,
     lastProgressText: "",
     progressStartTimer: null,

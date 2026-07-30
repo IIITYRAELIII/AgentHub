@@ -5,10 +5,27 @@ import {
   codexTurnHasExplicitFinalAnswer,
   claudeTranscriptHistory,
   codexThreadHistory,
+  codexTurnActivities,
   displayUserPrompt,
   mergeActiveTaskHistory,
   visibleTaskHistory,
 } from "./task-history.mjs";
+
+test("Codex history preserves a safe activity feed", () => {
+  const activities = codexTurnActivities({
+    items: [
+      { id: "cmd", type: "commandExecution", command: "npm test" },
+      { id: "file", type: "fileChange", changes: [{ path: "app.js" }] },
+      { id: "bad-cmd", type: "commandExecution", command: "npm run broken", status: "failed", exitCode: 1 },
+      { id: "bad-file", type: "fileChange", status: "failed", changes: [{ path: "bad.js" }] },
+      { id: "compact", type: "contextCompaction" },
+    ],
+  });
+  assert.deepEqual(activities.map((item) => item.type), ["command", "file", "command", "file", "compaction"]);
+  assert.equal(activities[0].detail, "npm test");
+  assert.equal(activities[2].status, "failed");
+  assert.equal(activities[3].status, "failed");
+});
 
 test("completed Codex history shows only the final answer", () => {
   const [exchange] = codexThreadHistory([{
@@ -86,7 +103,33 @@ test("codexThreadHistory returns user and assistant pairs", () => {
     status: "completed",
     active: false,
     completed: true,
+    messages: [
+      { itemId: "turn-1:user:0", role: "user", text: "Проверь" },
+      { itemId: "turn-1:agent:1", role: "agent", text: "Проверил", phase: "" },
+    ],
+    activities: [],
   }]);
+});
+
+test("codexThreadHistory preserves item ids and the official user-message client ids", () => {
+  const [exchange] = codexThreadHistory([{
+    id: "turn-1",
+    status: "inProgress",
+    items: [
+      { id: "item-start", clientId: "client-start", type: "userMessage", content: [{ type: "text", text: "Начни" }] },
+      { id: "item-steer", clientId: "client-steer", type: "userMessage", content: [{ type: "text", text: "Уточни" }] },
+      { id: "agent-live", type: "agentMessage", phase: "commentary", text: "Уточняю" },
+    ],
+  }]);
+  assert.deepEqual(exchange.messages.map(({ itemId, clientUserMessageId, role }) => ({
+    itemId,
+    clientUserMessageId,
+    role,
+  })), [
+    { itemId: "item-start", clientUserMessageId: "client-start", role: "user" },
+    { itemId: "item-steer", clientUserMessageId: "client-steer", role: "user" },
+    { itemId: "agent-live", clientUserMessageId: undefined, role: "agent" },
+  ]);
 });
 
 test("claudeTranscriptHistory separates consecutive user turns", () => {
@@ -144,6 +187,10 @@ test("an active snapshot missing from thread history replaces the stale complete
     status: "inProgress",
     active: true,
     completed: false,
+    messages: [
+      { itemId: "live-turn:user:0", role: "user", text: "Текущее сообщение" },
+      { itemId: "live-turn:agent:live", role: "agent", text: "Текущий частичный ответ" },
+    ],
   }]);
 });
 

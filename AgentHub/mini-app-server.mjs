@@ -15,6 +15,7 @@ export { extractWorkLogHtml } from "./mini-app-journal-data.mjs";
 const CONTENT_TYPES = new Map([
   ["/", "text/html; charset=utf-8"],
   ["/app.js", "text/javascript; charset=utf-8"],
+  ["/message-lifecycle.js", "text/javascript; charset=utf-8"],
   ["/hub-client.js", "text/javascript; charset=utf-8"],
   ["/styles.css", "text/css; charset=utf-8"],
   ["/work-log.css", "text/css; charset=utf-8"],
@@ -31,6 +32,7 @@ const CONTENT_TYPES = new Map([
 const STATIC_FILES = new Map([
   ["/", "index.html"],
   ["/app.js", "app.js"],
+  ["/message-lifecycle.js", "message-lifecycle.js"],
   ["/hub-client.js", "hub-client.js"],
   ["/styles.css", "styles.css"],
   ["/blackhole-blue.png", "blackhole-blue.png"],
