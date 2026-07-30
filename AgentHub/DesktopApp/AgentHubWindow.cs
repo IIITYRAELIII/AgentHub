@@ -747,7 +747,10 @@ namespace AgentHubDesktop
                 var prompt = AgentHubClient.Text(exchange, "prompt");
                 var answer = AgentHubClient.Text(exchange, "answer");
                 if (!String.IsNullOrWhiteSpace(prompt)) conversation.Children.Add(UserMessage(prompt));
-                if (!String.IsNullOrWhiteSpace(answer)) conversation.Children.Add(AssistantMessage(answer, item.Provider, false));
+                if (!String.IsNullOrWhiteSpace(answer) && !HistoryAnswerIsCoveredByLiveRun(exchange, run, item.Running))
+                {
+                    conversation.Children.Add(AssistantMessage(answer, item.Provider, false));
+                }
             }
             if (item.Running)
             {
@@ -765,6 +768,20 @@ namespace AgentHubDesktop
             {
                 Dispatcher.BeginInvoke(new Action(delegate { conversationScroll.ScrollToEnd(); }), DispatcherPriority.Background);
             }
+        }
+
+        private static bool HistoryAnswerIsCoveredByLiveRun(
+            Dictionary<string, object> exchange,
+            Dictionary<string, object> run,
+            bool running)
+        {
+            if (!running) return false;
+            if (AgentHubClient.Bool(exchange, "active")) return true;
+            var exchangeTurnId = AgentHubClient.Text(exchange, "id");
+            var runTurnId = AgentHubClient.Text(run, "turnId");
+            return !String.IsNullOrWhiteSpace(exchangeTurnId)
+                && !String.IsNullOrWhiteSpace(runTurnId)
+                && String.Equals(exchangeTurnId, runTurnId, StringComparison.Ordinal);
         }
 
         private UIElement UserMessage(string text)
