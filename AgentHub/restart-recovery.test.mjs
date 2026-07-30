@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { restorePreviousBotAfterFailedReplacement } from "./restart-recovery.mjs";
+import {
+  finalizeSuccessfulReplacement,
+  restorePreviousBotAfterFailedReplacement,
+} from "./restart-recovery.mjs";
 
 test("failed replacement restores the previous bot before marking it ready", async () => {
   const events = [];
@@ -38,4 +41,32 @@ test("failed restoration never starts timers or marks a broken bot ready", async
     markReady: async () => events.push("ready"),
   }), /pipe busy/);
   assert.deepEqual(events, ["lock"]);
+});
+
+test("successful replacement clears restart state after editing the original message", async () => {
+  const events = [];
+  assert.equal(await finalizeSuccessfulReplacement({
+    updateMessage: async () => events.push("edit"),
+    sendFallback: async () => events.push("fallback"),
+    clearRestartRequest: () => events.push("clear"),
+    saveState: async () => events.push("state"),
+  }), true);
+  assert.deepEqual(events, ["edit", "clear", "state"]);
+});
+
+test("successful replacement clears restart state even when both Telegram deliveries fail", async () => {
+  const events = [];
+  assert.equal(await finalizeSuccessfulReplacement({
+    updateMessage: async () => { throw new Error("cannot edit"); },
+    sendFallback: async () => { throw new Error("cannot send"); },
+    clearRestartRequest: () => events.push("clear"),
+    saveState: async () => events.push("state"),
+    logError: (message, error) => events.push(`${message}: ${error.message}`),
+  }), true);
+  assert.deepEqual(events, [
+    "Cannot update restart message: cannot edit",
+    "Cannot send restart fallback: cannot send",
+    "clear",
+    "state",
+  ]);
 });

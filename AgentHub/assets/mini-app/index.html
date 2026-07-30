@@ -63,6 +63,13 @@
           </svg>
           <span class="refresh-label" data-updated-at>Обновить</span>
         </button>
+        <label class="group-picker" data-journal-only>
+          <span class="group-picker-label">Группировка</span>
+          <select data-group-select aria-label="Группировка журнала">
+            <option value="date">По датам</option>
+            <option value="task">По задачам</option>
+          </select>
+        </label>
         <label class="theme-picker">
           <span class="theme-picker-label">Тема</span>
           <select data-theme-select aria-label="Тема оформления">
@@ -75,6 +82,7 @@
             <option value="magma">Магма</option>
             <option value="storm">Гроза</option>
             <option value="meadow">Луг</option>
+            <option value="graphite">Графит</option>
           </select>
         </label>
       </div>

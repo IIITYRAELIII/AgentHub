@@ -22,6 +22,7 @@ const refreshButton = document.querySelector("[data-refresh]");
 const collapseAllButton = document.querySelector("[data-collapse-all]");
 const rateLimitsSlot = document.querySelector("[data-rate-limits-slot]");
 const themeSelect = document.querySelector("[data-theme-select]");
+const groupSelect = document.querySelector("[data-group-select]");
 const themeColor = document.querySelector("[data-theme-color]");
 
 const taskList = document.querySelector("[data-task-list]");
@@ -80,6 +81,9 @@ const limitsCredits = document.querySelector("[data-limits-credits]");
 
 /* --------------------------------------------------------- Telegram / темы */
 
+let journalHtml = "";
+let grouping = "date";
+const groupingStates = { date: null, task: null };
 const telegram = window.Telegram?.WebApp;
 const telegramInitData = String(telegram?.initData ?? "");
 const telegramMode = Boolean(telegramInitData);
@@ -120,7 +124,9 @@ const themes = {
   magma: "#0a0605",
   storm: "#070b12",
   meadow: "#070d08",
+  graphite: "#17181a",
 };
+const groupings = new Set(["date", "task"]);
 
 function savedTheme() {
   try {
@@ -145,12 +151,40 @@ function applyTheme(theme, { persist = false } = {}) {
   }
 }
 
+function savedGrouping() {
+  try {
+    const value = localStorage.getItem("agent-hub-grouping");
+    return groupings.has(value) ? value : "date";
+  } catch {
+    return "date";
+  }
+}
+
+function selectGrouping(value, { persist = false } = {}) {
+  grouping = groupings.has(value) ? value : "date";
+  document.documentElement.dataset.grouping = grouping;
+  groupSelect.value = grouping;
+  if (persist) {
+    try {
+      localStorage.setItem("agent-hub-grouping", grouping);
+    } catch {
+      // Группировка останется активной до закрытия WebView.
+    }
+  }
+}
+
 telegram?.ready();
 telegram?.expand();
 applyTheme(savedTheme());
+selectGrouping(savedGrouping());
 themeSelect.addEventListener("change", () => {
   applyTheme(themeSelect.value, { persist: true });
   window.__agentHubVscode?.postMessage({ type: "theme", theme: themeSelect.value });
+});
+groupSelect.addEventListener("change", () => {
+  if (journalRendered) groupingStates[grouping] = captureOpenState();
+  selectGrouping(groupSelect.value, { persist: true });
+  if (journalHtml) renderJournal();
 });
 
 /* --------------------------------------------------------- маленькие утилиты */
@@ -1888,6 +1922,12 @@ function captureOpenState() {
         threadId: item.dataset.workLogThreadId,
       }))
       .filter((item) => item.provider && item.threadId),
+    taskGroups: [...journal.querySelectorAll("details[data-work-log-task-group][open]")]
+      .map((item) => ({
+        provider: item.dataset.workLogProvider,
+        threadId: item.dataset.workLogThreadId,
+      }))
+      .filter((item) => item.provider && item.threadId),
   };
 }
 
@@ -1995,6 +2035,13 @@ function restoreOpenState(openState) {
     if (row) setMobileTaskOpen(row, true);
   }
   void hydrateOpenLazyNodes();
+  for (const task of openState.taskGroups ?? []) {
+    journal.querySelector(
+      `details[data-work-log-task-group]`
+      + `[data-work-log-provider="${selectorValue(task.provider)}"]`
+      + `[data-work-log-thread-id="${selectorValue(task.threadId)}"]`,
+    )?.setAttribute("open", "");
+  }
 }
 
 /* Лимиты приходят первым блоком журнала, но место им — в шапке. */
@@ -2139,6 +2186,200 @@ async function hydrateOpenLazyNodes() {
   await Promise.all(turns.map(loadLazyTurn));
 }
 
+function formatTaskDuration(value) {
+  const totalSeconds = Math.max(0, Math.round(Number(value) || 0));
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor(totalSeconds % 86_400 / 3_600);
+  const minutes = Math.floor(totalSeconds % 3_600 / 60);
+  const seconds = totalSeconds % 60;
+  return [
+    days ? `${days} д` : "",
+    hours ? `${hours} ч` : "",
+    minutes ? `${minutes} мин` : "",
+    seconds || (!days && !hours && !minutes) ? `${seconds} с` : "",
+  ].filter(Boolean).join(" ");
+}
+
+function formatTaskCredits(value) {
+  const credits = Number(value) || 0;
+  const scales = [
+    [1e9, "Gcr"],
+    [1e6, "Mcr"],
+    [1e3, "kcr"],
+  ];
+  const scale = scales.find(([divisor]) => Math.abs(credits) >= divisor);
+  if (scale) {
+    return `${(credits / scale[0]).toLocaleString("ru-RU", {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    })} ${scale[1]}`;
+  }
+  return `${credits.toLocaleString("ru-RU", {
+    minimumFractionDigits: Number.isInteger(credits) ? 0 : 1,
+    maximumFractionDigits: 1,
+  })} cr`;
+}
+
+function groupedTurn(entry, date) {
+  const copy = entry.cloneNode(true);
+  copy.dataset.workLogSourceDate = date;
+  copy.querySelector("[data-work-log-turn-share]")?.remove();
+  const measure = copy.querySelector("[data-work-log-turn-measure]");
+  if (measure) {
+    const day = document.createElement("span");
+    day.dataset.workLogTurnDay = "";
+    day.textContent = `${date} · `;
+    measure.prepend(day);
+  }
+  return copy;
+}
+
+function taskGroupsFrom(source) {
+  const groups = new Map();
+  let order = 0;
+  for (const day of source.querySelectorAll("details[data-work-log-day-section]")) {
+    const date = day.querySelector("summary[data-work-log-day] strong")?.textContent.trim();
+    if (!date) continue;
+    for (const row of day.querySelectorAll("[data-work-log-row]")) {
+      const provider = String(row.dataset.workLogProvider ?? "").trim();
+      const threadId = String(row.dataset.workLogThreadId ?? "").trim();
+      if (!provider || !threadId) continue;
+      const key = `${provider}\u001f${threadId}`;
+      let group = groups.get(key);
+      if (!group) {
+        group = {
+          provider,
+          threadId,
+          title: row.querySelector("[data-work-log-task-content]")?.cloneNode(true),
+          turns: [],
+          legacy: [],
+          seenTurns: new Set(),
+          durationSeconds: 0,
+          knownDurations: 0,
+          unknownDurations: 0,
+          credits: 0,
+          knownCredits: 0,
+          unknownCredits: 0,
+          latestAt: 0,
+          order: order++,
+        };
+        groups.set(key, group);
+      }
+      for (const entry of row.querySelectorAll("[data-work-log-turn-entry]")) {
+        const turnId = String(entry.dataset.workLogTurnId ?? "").trim();
+        if (turnId && group.seenTurns.has(turnId)) continue;
+        if (turnId) group.seenTurns.add(turnId);
+        const elapsed = Number(entry.dataset.workLogTurnDurationSeconds);
+        if (Number.isFinite(elapsed) && elapsed >= 0) {
+          group.durationSeconds += elapsed;
+          group.knownDurations += 1;
+        } else {
+          group.unknownDurations += 1;
+        }
+        const creditValue = entry.dataset.workLogTurnCredits;
+        const credits = creditValue === undefined ? Number.NaN : Number(creditValue);
+        if (Number.isFinite(credits) && credits >= 0) {
+          group.credits += credits;
+          group.knownCredits += 1;
+        } else {
+          group.unknownCredits += 1;
+        }
+        const completedAt = Date.parse(entry.dataset.workLogTurnCompletedAt ?? "");
+        if (Number.isFinite(completedAt)) group.latestAt = Math.max(group.latestAt, completedAt);
+        group.turns.push(groupedTurn(entry, date));
+      }
+      for (const outcome of row.querySelectorAll("[data-work-log-legacy-outcome]")) {
+        const wrapper = document.createElement("div");
+        wrapper.dataset.workLogGroupedLegacy = "";
+        const label = document.createElement("span");
+        label.dataset.workLogTurnDay = "";
+        label.textContent = date;
+        wrapper.append(label, outcome.cloneNode(true));
+        group.legacy.push(wrapper);
+      }
+    }
+  }
+  return [...groups.values()]
+    .sort((left, right) => right.latestAt - left.latestAt || left.order - right.order);
+}
+
+function taskGroupingContent(source) {
+  const groups = taskGroupsFrom(source);
+  if (!groups.length) return source.cloneNode(true);
+  const fragment = document.createDocumentFragment();
+  const overview = document.createElement("div");
+  overview.dataset.workLogTaskOverview = "";
+  overview.textContent = `Задач: ${groups.length}. Ходы собраны за все даты журнала.`;
+  fragment.append(overview);
+  const list = document.createElement("div");
+  list.dataset.workLogTaskGroups = "";
+  for (const group of groups) {
+    const details = document.createElement("details");
+    details.dataset.workLogTaskGroup = "";
+    details.dataset.workLogProvider = group.provider;
+    details.dataset.workLogThreadId = group.threadId;
+    const summary = document.createElement("summary");
+    summary.dataset.workLogTaskGroupSummary = "";
+    const title = document.createElement("div");
+    title.dataset.workLogTaskGroupTitle = "";
+    if (group.title) title.append(group.title);
+    else title.textContent = `${group.provider} · ${group.threadId}`;
+    const metrics = document.createElement("div");
+    metrics.dataset.workLogTaskMetrics = "";
+    const turns = document.createElement("span");
+    turns.dataset.workLogTaskTurnCount = String(group.turns.length);
+    turns.textContent = `Ходов: ${group.turns.length}`;
+    const credits = document.createElement("span");
+    credits.dataset.workLogTaskCredits = String(group.credits);
+    credits.textContent = group.knownCredits
+      ? `Всего кредитов: ${formatTaskCredits(group.credits)}`
+      : "Всего кредитов: нет данных";
+    const duration = document.createElement("span");
+    duration.dataset.workLogTaskDuration = String(group.durationSeconds);
+    duration.textContent = group.knownDurations
+      ? `Общая длительность: ${formatTaskDuration(group.durationSeconds)}`
+      : "Общая длительность: неизвестна";
+    metrics.append(turns, credits, duration);
+    if (group.unknownCredits) {
+      const unknown = document.createElement("span");
+      unknown.dataset.workLogTaskUnknownCredits = String(group.unknownCredits);
+      unknown.textContent = `Без данных по кредитам: ${group.unknownCredits}`;
+      metrics.append(unknown);
+    }
+    if (group.unknownDurations) {
+      const unknown = document.createElement("span");
+      unknown.dataset.workLogTaskUnknownDurations = String(group.unknownDurations);
+      unknown.textContent = `Без времени: ${group.unknownDurations}`;
+      metrics.append(unknown);
+    }
+    summary.append(title, metrics);
+    const body = document.createElement("div");
+    body.dataset.workLogTaskGroupTurns = "";
+    body.append(...group.turns, ...group.legacy);
+    details.append(summary, body);
+    list.append(details);
+  }
+  fragment.append(list);
+  return fragment;
+}
+
+function renderJournal() {
+  const template = document.createElement("template");
+  template.innerHTML = journalHtml;
+  journal.replaceChildren(template.content.cloneNode(true));
+  hoistRateLimits();
+  if (grouping === "task") {
+    const content = taskGroupingContent(journal);
+    journal.replaceChildren(content);
+  }
+  disableLocalLinks();
+  syncCollapseTurnButtons();
+  prepareMobileControls();
+  const state = groupingStates[grouping];
+  if (state) restoreOpenState(state);
+  journalRendered = true;
+}
+
 async function loadJournal({ force = false } = {}) {
   if (loading) return loading;
   loading = (async () => {
@@ -2155,13 +2396,9 @@ async function loadJournal({ force = false } = {}) {
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
       if (force || payload.version !== currentVersion) {
         const openState = journalRendered ? captureOpenState() : storedOpenState();
-        journal.innerHTML = payload.html;
-        hoistRateLimits();
-        disableLocalLinks();
-        syncCollapseTurnButtons();
-        prepareMobileControls();
-        if (openState) restoreOpenState(openState);
-        journalRendered = true;
+        if (openState) groupingStates[grouping] = openState;
+        journalHtml = payload.html;
+        renderJournal();
         persistOpenState();
         currentVersion = payload.version;
       }

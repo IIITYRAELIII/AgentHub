@@ -223,13 +223,25 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.ok(page.indexOf("data-rate-limits-slot") < page.indexOf("data-collapse-all"));
     assert.ok(page.indexOf("data-collapse-all") < page.indexOf("data-theme-select"));
     assert.doesNotMatch(page, /data-connection|Автообновление/u);
+    assert.match(page, /<option value="graphite">Графит<\/option>/u);
+    assert.match(page, /data-group-select/u);
+    assert.match(page, /<option value="date">По датам<\/option>/u);
+    assert.match(page, /<option value="task">По задачам<\/option>/u);
     assert.match(page, />Орбита</u);
     assert.match(page, />Туманность</u);
     assert.match(page, />Пульсар</u);
     assert.match(page, />Gothic</u);
     const script = await (await fetch(`${address.url}app.js`)).text();
     assert.match(script, /agent-hub-theme/u);
+    assert.match(script, /graphite: "#17181a"/u);
+    assert.match(script, /agent-hub-grouping/u);
     assert.match(script, /document\.documentElement\.dataset\.theme/u);
+    assert.match(script, /document\.documentElement\.dataset\.grouping/u);
+    assert.match(script, /function taskGroupingContent/u);
+    assert.match(script, /workLogTurnDurationSeconds/u);
+    assert.match(script, /Общая длительность:/u);
+    assert.match(script, /workLogTurnCredits/u);
+    assert.match(script, /Всего кредитов:/u);
     assert.match(
       script,
       /telegramMode && mobileTelegramPlatforms\.has\(telegramPlatform\)/u,
@@ -285,7 +297,25 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /url\("\/gothic-concrete\.png"\)/u);
     assert.match(styles, /url\("\/nebula-veil\.png"\)/u);
     assert.match(styles, /url\("\/orbit-earth\.png"\)/u);
+    assert.match(styles, /html\[data-theme="graphite"\]/u);
+    assert.match(styles, /background-size: 56px 56px/u);
+    assert.match(
+      styles,
+      /html\[data-theme="graphite"\][\s\S]*?span\[data-kilo-usage\][\s\S]*?background: transparent;[\s\S]*?color: oklch\(0\.88 0\.003 260\) !important;/u,
+    );
+    assert.match(
+      styles,
+      /html\[data-theme="graphite"\] \.journal summary\[data-task-usage\] \{[\s\S]*?background: transparent;[\s\S]*?border-color: transparent;[\s\S]*?border-radius: 0;[\s\S]*?color: var\(--text-faint\);/u,
+    );
+    assert.match(
+      styles,
+      /summary\[data-task-usage\] > \[data-usage-label\] \{[\s\S]*?font-size: 0\.64rem;[\s\S]*?letter-spacing: var\(--label-spacing\);[\s\S]*?text-transform: var\(--label-transform\);/u,
+    );
     assert.match(styles, /url\("\/rainforest-night\.png"\)/u);
+    assert.match(styles, /details\[data-work-log-task-group\]/u);
+    assert.match(styles, /\[data-work-log-task-duration\]/u);
+    assert.match(styles, /\[data-work-log-task-credits\]/u);
+    assert.match(styles, /html\[data-grouping="task"\]/u);
     assert.match(styles, /html\[data-surface="mobile"\] \.journal div\[data-work-log-row\]/u);
     assert.match(styles, /span\[data-day-usage-table\]\[data-mobile-expanded\]/u);
     assert.match(styles, /div\[data-work-log-row\]\[data-mobile-open\]/u);

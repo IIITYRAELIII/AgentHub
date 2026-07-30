@@ -24,3 +24,25 @@ export async function restorePreviousBotAfterFailedReplacement({
   startTimers();
   await markReady();
 }
+
+export async function finalizeSuccessfulReplacement({
+  updateMessage,
+  sendFallback,
+  clearRestartRequest,
+  saveState,
+  logError = () => {},
+}) {
+  try {
+    await updateMessage();
+  } catch (updateError) {
+    logError("Cannot update restart message", updateError);
+    try {
+      await sendFallback();
+    } catch (fallbackError) {
+      logError("Cannot send restart fallback", fallbackError);
+    }
+  }
+  clearRestartRequest();
+  await saveState();
+  return true;
+}

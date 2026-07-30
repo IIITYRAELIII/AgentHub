@@ -178,7 +178,10 @@ import {
   directWindowsLauncherInvocation,
   launchReplacementAndWait,
 } from "./runtime-restart.mjs";
-import { restorePreviousBotAfterFailedReplacement } from "./restart-recovery.mjs";
+import {
+  finalizeSuccessfulReplacement,
+  restorePreviousBotAfterFailedReplacement,
+} from "./restart-recovery.mjs";
 import { RuntimeCommandServer } from "./runtime-command.mjs";
 import {
   TurnEndNotificationRegistry,
@@ -5797,18 +5800,16 @@ async function finalizeRestartMessage() {
     task: activeThreadTitle || (threadId ? `${providerTitle()} · ${threadId.slice(0, 8)}` : "Не выбрана"),
     runningTasks: taskRuns.size,
   });
-  try {
-    await updateRestartMessage(text, { parse_mode: "HTML" });
-  } catch (error) {
-    console.error("Cannot update restart message:", error.message);
-    await sendMessageTo(request.chatId, text, {
+  return finalizeSuccessfulReplacement({
+    updateMessage: () => updateRestartMessage(text, { parse_mode: "HTML" }),
+    sendFallback: () => sendMessageTo(request.chatId, text, {
       parse_mode: "HTML",
       reply_markup: BOT_MENU,
-    });
-  }
-  restartRequest = null;
-  await saveState();
-  return true;
+    }),
+    clearRestartRequest: () => { restartRequest = null; },
+    saveState,
+    logError: (message, error) => console.error(`${message}:`, error.message),
+  });
 }
 
 async function performRestart() {

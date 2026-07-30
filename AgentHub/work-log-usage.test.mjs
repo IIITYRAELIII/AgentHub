@@ -178,6 +178,10 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
     /Второй &amp; ход[\s\S]*?<details data-work-log-previous-turns>[\s\S]*?data-work-log-previous-turn-list>[\s\S]*?Первый &lt;ход&gt; Строка[\s\S]*?<\/div><\/details>/,
   );
   assert.match(projected, /<strong>Длит\.:<\/strong> 3 мин 30 с/);
+  assert.ok(projected.includes('data-work-log-turn-duration-seconds="210"'));
+  assert.ok(projected.includes(`data-work-log-turn-completed-at="${firstCompletedAt}"`));
+  assert.equal((projected.match(/data-work-log-turn-duration-seconds=/g) ?? []).length, 1);
+  assert.equal((projected.match(/data-work-log-turn-credits=/g) ?? []).length, 3);
   assert.match(projected, /<strong>Запрос:<\/strong> Короткий вопрос/);
   assert.doesNotMatch(projected, /Response annotations|response-annotations|Старый ответ/);
   assert.doesNotMatch(projected, /data-work-log-legacy-files/);

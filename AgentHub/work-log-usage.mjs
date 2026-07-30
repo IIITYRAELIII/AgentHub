@@ -241,13 +241,18 @@ function formatCompletedAt(value) {
   return `${twoDigits(completedAt.getHours())}:${twoDigits(completedAt.getMinutes())}`;
 }
 
-function formatDuration(startedValue, completedValue) {
+function durationSeconds(startedValue, completedValue) {
   const startedAt = new Date(String(startedValue ?? ""));
   const completedAt = new Date(String(completedValue ?? ""));
   if (!Number.isFinite(startedAt.getTime()) || !Number.isFinite(completedAt.getTime())) {
-    return "неизвестно";
+    return null;
   }
-  const totalSeconds = Math.max(0, Math.round((completedAt.getTime() - startedAt.getTime()) / 1000));
+  return Math.max(0, Math.round((completedAt.getTime() - startedAt.getTime()) / 1000));
+}
+
+function formatDuration(startedValue, completedValue) {
+  const totalSeconds = durationSeconds(startedValue, completedValue);
+  if (totalSeconds === null) return "неизвестно";
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor(totalSeconds % 3600 / 60);
   const seconds = totalSeconds % 60;
@@ -288,6 +293,11 @@ function turnTitle(record) {
 function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0) {
   const breakdown = recordCreditBreakdown(record);
   const recordTotal = breakdown.total;
+  const elapsedSeconds = durationSeconds(record?.startedAt, record?.completedAt);
+  const creditsKnown = !(
+    (record?.usageReported === false && recordTotal <= 0)
+    || (!breakdown.priced && recordTotal <= 0)
+  );
   const credits = record?.usageReported === false && recordTotal <= 0
     ? "нет данных"
     : !breakdown.priced && recordTotal <= 0
@@ -317,9 +327,19 @@ function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0) {
   const provider = escapeHtmlAttribute(record?.provider);
   const turnThread = escapeHtmlAttribute(record?.threadId);
   const rootThread = escapeHtmlAttribute(taskThreadId(record));
+  const timingAttributes = elapsedSeconds === null
+    ? ""
+    : ` data-work-log-turn-duration-seconds="${elapsedSeconds}"`;
+  const completedAtAttribute = record?.completedAt
+    ? ` data-work-log-turn-completed-at="${escapeHtmlAttribute(record.completedAt)}"`
+    : "";
+  const creditsAttribute = creditsKnown
+    ? ` data-work-log-turn-credits="${escapeHtmlAttribute(String(recordTotal))}"`
+    : "";
   return `<div data-work-log-turn-entry data-work-log-turn-provider="${provider}" `
     + `data-work-log-turn-thread-id="${turnThread}" data-work-log-task-thread-id="${rootThread}" `
-    + `data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}">`
+    + `data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}"`
+    + `${timingAttributes}${completedAtAttribute}${creditsAttribute}>`
     + "<details data-work-log-turn-details>"
     + "<summary>"
     + '<span data-work-log-turn-meta>'
