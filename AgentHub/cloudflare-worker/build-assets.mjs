@@ -10,6 +10,7 @@ await mkdir(output, { recursive: true });
 for (const file of [
   "index.html",
   "app.js",
+  "metropolis-glass.js",
   "message-lifecycle.js",
   "hub-client.js",
   "styles.css",
@@ -19,6 +20,7 @@ for (const file of [
   "orbit-earth.png",
   "magma-crust.png",
   "meadow-sun.png",
+  "metropolis-night.png",
   "pulsar-beams.png",
   "rainforest-night.png",
   "storm-rain.png",

@@ -296,6 +296,12 @@ function turnTitle(record) {
   return `${prefix}${sentence.trim().replace(/[.!?]+$/u, "") || "Ход завершён"}`;
 }
 
+function changedDiffLineCount(value) {
+  return String(value ?? "").split(/\r?\n/u).filter(
+    (line) => (/^[+-]/u.test(line) && !/^(?:\+\+\+|---)/u.test(line)),
+  ).length;
+}
+
 function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0) {
   const breakdown = recordCreditBreakdown(record);
   const recordTotal = breakdown.total;
@@ -342,9 +348,18 @@ function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0) {
   const creditsAttribute = creditsKnown
     ? ` data-work-log-turn-credits="${escapeHtmlAttribute(String(recordTotal))}"`
     : "";
+  const profileAttributes = [
+    `data-work-log-turn-file-count="${escapeHtmlAttribute(String(
+      Array.isArray(record?.changedFiles) ? record.changedFiles.length : 0
+    ))}"`,
+    `data-work-log-turn-change-lines="${escapeHtmlAttribute(String(
+      changedDiffLineCount(record?.diff)
+    ))}"`,
+    `data-work-log-turn-subagent="${record?.aggregateOnly === true ? "1" : "0"}"`,
+  ].join(" ");
   return `<div data-work-log-turn-entry data-work-log-turn-provider="${provider}" `
     + `data-work-log-turn-thread-id="${turnThread}" data-work-log-task-thread-id="${rootThread}" `
-    + `data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}"`
+    + `data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}" ${profileAttributes}`
     + `${timingAttributes}${completedAtAttribute}${creditsAttribute}>`
     + "<details data-work-log-turn-details>"
     + "<summary>"
@@ -1517,6 +1532,7 @@ export class WorkLogUsageStore {
   synchronizeUsageEstimatesAndProject({
     items = [],
     projectRoot = this.#defaultProjectRoot,
+    projectionProjectRoots,
     workLogFile,
   }) {
     const operation = this.#tail.catch(() => {}).then(async () => {
@@ -1546,11 +1562,7 @@ export class WorkLogUsageStore {
         if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
         else throw error;
       }
-      const selectedTurns = Object.fromEntries(
-        Object.entries(this.#ledger.turns).filter(([, record]) => (
-          sameProjectRoot(record.projectRoot, projectRoot)
-        )),
-      );
+      const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
       const projected = projectWorkLogUsage(current, selectedTurns);
       if (projected !== current) await writeTextAtomic(logPath, projected);
       return { updated, projected: projected !== current };
@@ -1562,6 +1574,7 @@ export class WorkLogUsageStore {
   synchronizePricingMetadataAndProject({
     items = [],
     projectRoot = this.#defaultProjectRoot,
+    projectionProjectRoots,
     workLogFile,
   }) {
     const operation = this.#tail.catch(() => {}).then(async () => {
@@ -1596,11 +1609,7 @@ export class WorkLogUsageStore {
         if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
         else throw error;
       }
-      const selectedTurns = Object.fromEntries(
-        Object.entries(this.#ledger.turns).filter(([, record]) => (
-          sameProjectRoot(record.projectRoot, projectRoot)
-        )),
-      );
+      const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
       const projected = projectWorkLogUsage(current, selectedTurns);
       if (projected !== current) await writeTextAtomic(logPath, projected);
       return { updated, projected: projected !== current };
@@ -1612,6 +1621,7 @@ export class WorkLogUsageStore {
   synchronizeTaskTitlesAndProject({
     titles = [],
     projectRoot = this.#defaultProjectRoot,
+    projectionProjectRoots,
     workLogFile,
   }) {
     const operation = this.#tail.catch(() => {}).then(async () => {
@@ -1646,11 +1656,7 @@ export class WorkLogUsageStore {
         if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
         else throw error;
       }
-      const selectedTurns = Object.fromEntries(
-        Object.entries(this.#ledger.turns).filter(([, record]) => (
-          sameProjectRoot(record.projectRoot, projectRoot)
-        )),
-      );
+      const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
       const projected = projectWorkLogUsage(current, selectedTurns);
       if (projected !== current) await writeTextAtomic(logPath, projected);
       return { updated, projected: projected !== current };
@@ -1659,15 +1665,27 @@ export class WorkLogUsageStore {
     return operation;
   }
 
-  project(workLogFile, { projectRoot = this.#defaultProjectRoot } = {}) {
+  #turnsForProjection(projectRoot, projectionProjectRoots) {
+    const roots = (
+      Array.isArray(projectionProjectRoots) && projectionProjectRoots.length
+        ? projectionProjectRoots
+        : [projectRoot]
+    ).map((root) => normalizeProjectRoot(root));
+    return Object.fromEntries(
+      Object.entries(this.#ledger.turns).filter(([, record]) => (
+        roots.some((root) => sameProjectRoot(record.projectRoot, root))
+      )),
+    );
+  }
+
+  project(workLogFile, {
+    projectRoot = this.#defaultProjectRoot,
+    projectionProjectRoots,
+  } = {}) {
     const operation = this.#tail.catch(() => {}).then(async () => {
       await this.#load();
       const logPath = path.resolve(workLogFile);
-      const selectedTurns = Object.fromEntries(
-        Object.entries(this.#ledger.turns).filter(([, record]) => (
-          sameProjectRoot(record.projectRoot, projectRoot)
-        )),
-      );
+      const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
       let current;
       try {
         current = await readFile(logPath, "utf8");
@@ -1730,6 +1748,7 @@ export class WorkLogUsageStore {
     status,
     text,
     workLogFile,
+    projectionProjectRoots,
   }) {
     const operation = this.#tail.catch(() => {}).then(async () => {
       await this.#load();
@@ -1781,11 +1800,7 @@ export class WorkLogUsageStore {
         if (occurrences !== 1) {
           throw new Error(`WORK_LOG must contain exactly one usage placeholder for ${id}; found ${occurrences}`);
         }
-        const selectedTurns = Object.fromEntries(
-          Object.entries(this.#ledger.turns).filter(([, record]) => (
-            sameProjectRoot(record.projectRoot, projectRoot)
-          )),
-        );
+        const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
         const updated = projectWorkLogUsage(current, selectedTurns);
         await writeTextAtomic(logPath, updated);
         return { recorded: !existing, usage: recordedUsage, workLogId: id, projected: true };
@@ -1829,6 +1844,7 @@ export class WorkLogUsageStore {
     status,
     text,
     workLogFile,
+    projectionProjectRoots,
   }) {
     const operation = this.#tail.catch(() => {}).then(async () => {
       await this.#load();
@@ -1866,11 +1882,7 @@ export class WorkLogUsageStore {
       try {
         let current;
         current = await readFile(logPath, "utf8");
-        const selectedTurns = Object.fromEntries(
-          Object.entries(this.#ledger.turns).filter(([, record]) => (
-            sameProjectRoot(record.projectRoot, projectRoot)
-          )),
-        );
+        const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
         const updated = projectWorkLogUsage(current, selectedTurns);
         await writeTextAtomic(logPath, updated);
         return {
@@ -1883,11 +1895,7 @@ export class WorkLogUsageStore {
       } catch (error) {
         if (error?.code === "ENOENT") {
           try {
-            const selectedTurns = Object.fromEntries(
-              Object.entries(this.#ledger.turns).filter(([, record]) => (
-                sameProjectRoot(record.projectRoot, projectRoot)
-              )),
-            );
+            const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
             const created = projectWorkLogUsage("# Глобальный журнал работ\n", selectedTurns);
             await writeTextAtomic(logPath, created);
             return {
@@ -1922,6 +1930,7 @@ export class WorkLogUsageStore {
     turnId,
     projectRoot = this.#defaultProjectRoot,
     workLogFile,
+    projectionProjectRoots,
   }) {
     const operation = this.#tail.catch(() => {}).then(async () => {
       await this.#load();
@@ -1933,11 +1942,7 @@ export class WorkLogUsageStore {
       const logPath = path.resolve(workLogFile);
       try {
         const current = await readFile(logPath, "utf8");
-        const selectedTurns = Object.fromEntries(
-          Object.entries(this.#ledger.turns).filter(([, record]) => (
-            sameProjectRoot(record.projectRoot, projectRoot)
-          )),
-        );
+        const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
         const updated = projectWorkLogUsage(current, selectedTurns);
         await writeTextAtomic(logPath, updated);
         return { retracted: true, projected: true };

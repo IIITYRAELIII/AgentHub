@@ -1061,15 +1061,15 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushMessage("/new");
   await telegram.waitForText("Создан новый контекст Codex", { after: mark });
   mark = telegram.calls.length;
-  telegram.pushMessage("[multi-project] изоляция журнала");
-  await telegram.waitForText("Готово: [multi-project] изоляция журнала", {
+  telegram.pushMessage("[multi-project] общий журнал");
+  await telegram.waitForText("Готово: [multi-project] общий журнал", {
     after: mark,
     timeoutMs: 12_000,
   });
   await waitFor(async () => (
-    (await readFile(secondWorkLogPath, "utf8")).includes("[multi-project] изоляция журнала")
-  ), "second project journal projection");
-  assert.doesNotMatch(await readFile(workLogPath, "utf8"), /\[multi-project\] изоляция журнала/);
+    (await readFile(workLogPath, "utf8")).includes("[multi-project] общий журнал")
+  ), "global multi-project journal projection");
+  assert.doesNotMatch(await readFile(secondWorkLogPath, "utf8"), /\[multi-project\] общий журнал/);
   mark = telegram.calls.length;
   telegram.pushMessage("/projects");
   const returnProjectPicker = await telegram.waitForText("Выберите проект:", { after: mark });

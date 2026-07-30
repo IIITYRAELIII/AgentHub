@@ -7,7 +7,10 @@ const test = require("node:test");
 const { renderWorkLog, sanitizeWorkLogHtml } = require("./render.js");
 const { sidebarHtml, webviewHtml } = require("./webview.js");
 
-const THEMES = ["orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "magma", "storm"];
+const THEMES = [
+  "orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "metropolis",
+  "magma", "storm",
+];
 
 test("renderWorkLog turns the document title into a heading and preserves journal HTML", () => {
   assert.equal(
@@ -41,6 +44,10 @@ test("panel starts in the theme the extension restored", () => {
   assert.match(
     webviewHtml({}, "blackhole"),
     /<html lang="ru" data-theme="blackhole" data-surface="desktop">/,
+  );
+  assert.match(
+    webviewHtml({}, "metropolis"),
+    /<html lang="ru" data-theme="metropolis" data-surface="desktop">/,
   );
   assert.match(
     webviewHtml({}, "нет такой"),
@@ -104,6 +111,8 @@ test("extension maps every shared bitmap theme asset to a webview URI", () => {
   assert.match(extension, /--pulsar-image: url/);
   assert.match(extension, /--bh-image: url/);
   assert.match(extension, /--forest-image: url/);
+  assert.match(extension, /--metropolis-image: url/);
+  assert.match(extension, /html\[data-theme="metropolis"\]/);
   assert.match(extension, /--magma-image: url/);
   assert.match(extension, /--storm-image: url/);
 });
@@ -115,6 +124,7 @@ test("theme layers keep the background, effects and content in order", () => {
   );
   assert.match(styles, /body::after\s*\{[^}]*z-index:\s*0;/su);
   assert.match(styles, /body::before\s*\{[^}]*pointer-events:\s*none;[^}]*z-index:\s*1;/su);
+  assert.match(styles, /\.theme-atmosphere\s*\{[^}]*pointer-events:\s*none;[^}]*z-index:\s*1;/su);
   assert.match(styles, /main\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;/su);
   assert.match(styles, /\.workspace\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;/su);
 });
@@ -197,6 +207,30 @@ test("view panel owns theme, grouping and persisted token detail controls", () =
   assert.match(app, /if \(!settingsPanel\.hidden\) closePanel\(\)/u);
   assert.match(app, /if \(!viewPanel\.hidden\) closeViewPanel\(\)/u);
   assert.match(app, /if \(event\.key === "Escape" && !viewPanel\.hidden\) closeViewPanel\(\)/u);
+});
+
+test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const glass = fs.readFileSync(require.resolve("../assets/mini-app/metropolis-glass.js"), "utf8");
+  assert.match(html, /<option value="metropolis">Мегаполис<\/option>/u);
+  assert.match(html, /<canvas data-metropolis-glass><\/canvas>/u);
+  assert.match(html, /<script src="\/metropolis-glass\.js" defer><\/script>/u);
+  assert.match(styles, /html\[data-theme="metropolis"\] body::after\s*\{[\s\S]*var\(--metropolis-image\)/u);
+  assert.match(styles, /backdrop-filter:\s*blur\(6px\) saturate\(68%\) brightness\(0\.82\)/u);
+  assert.match(glass, /vec4 rainLayer\(/u);
+  assert.match(glass, /float drop = smoothstep\(0\.03,\s*0\.02/u);
+  assert.match(glass, /float clearTrail = smoothstep\(-0\.05,\s*0\.05/u);
+  assert.match(glass, /uViewport\.x \/ max\(uViewport\.y,\s*1\.0\)/u);
+  assert.match(glass, /vec2 refraction = drop \* dropPosition/u);
+  assert.match(glass, /vec2 refractedUv = imageUv \+ drops\.xy \* 1\.65/u);
+  assert.match(glass, /uniform sampler2D uFogImage/u);
+  assert.match(glass, /vec4 fogged = texture2D\(uFogImage,\s*imageUv\)/u);
+  assert.match(glass, /function createFogTexture\(image\)/u);
+  assert.match(glass, /fogContext\.filter = "blur\(4px\) saturate\(82%\) brightness\(88%\)"/u);
+  assert.doesNotMatch(glass, /for \(int index = 0; index < 32/u);
+  assert.doesNotMatch(glass, /condensation|glassHighlight/u);
+  assert.match(glass, /prefers-reduced-motion: reduce/u);
 });
 
 test("Gothic theme uses medieval stone, old gold and a torch-lit scene", () => {

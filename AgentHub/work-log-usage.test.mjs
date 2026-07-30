@@ -183,6 +183,9 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.ok(projected.includes(`data-work-log-turn-completed-at="${firstCompletedAt}"`));
   assert.equal((projected.match(/data-work-log-turn-duration-seconds=/g) ?? []).length, 1);
   assert.equal((projected.match(/data-work-log-turn-credits=/g) ?? []).length, 3);
+  assert.equal((projected.match(/data-work-log-turn-file-count=/g) ?? []).length, 3);
+  assert.equal((projected.match(/data-work-log-turn-change-lines=/g) ?? []).length, 3);
+  assert.equal((projected.match(/data-work-log-turn-subagent=/g) ?? []).length, 3);
   assert.match(projected, /<strong>Запрос:<\/strong> Короткий вопрос/);
   assert.doesNotMatch(projected, /Response annotations|response-annotations|Старый ответ/);
   assert.doesNotMatch(projected, /data-work-log-legacy-files/);
@@ -307,6 +310,8 @@ test("projectWorkLogUsage keeps exact diffs out of the compact journal projectio
   assert.doesNotMatch(projected, /data-work-log-turn-diff/u);
   assert.doesNotMatch(projected, /const value/u);
   assert.doesNotMatch(projected, /data-work-log-turn-files>[\s\S]*src\/a\.mjs/u);
+  assert.match(projected, /data-work-log-turn-file-count="1"/u);
+  assert.match(projected, /data-work-log-turn-change-lines="2"/u);
 });
 
 test("projectWorkLogUsage does not present changed-file paths as a missing diff", () => {
@@ -639,6 +644,7 @@ test("subagent usage is summed into its root task and shown as child turns", () 
   assert.match(projected, /data-work-log-thread-id="root"/);
   assert.match(projected, /<span data-usage-label>Итого<\/span> <span data-kilo-usage>21,9 cr<\/span>/);
   assert.equal((projected.match(/data-work-log-turn-id=/g) ?? []).length, 3);
+  assert.equal((projected.match(/data-work-log-turn-subagent="1"/g) ?? []).length, 2);
   assert.match(projected, /Основной результат/);
   assert.match(projected, /Субагент · Скрытый результат субагента/);
   assert.match(projected, /Субагент · Прерванный скрытый результат субагента/);
@@ -1248,6 +1254,49 @@ test("one ledger projects only turns belonging to the requested project", async 
     assert.doesNotMatch(first, /Второй проект/);
     assert.match(second, /Второй проект/);
     assert.doesNotMatch(second, /Первый проект/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("one ledger can project all configured projects into one global journal", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-global-projects-"));
+  try {
+    const firstRoot = path.join(root, "first");
+    const secondRoot = path.join(root, "second");
+    const globalLog = path.join(root, "WORK_LOG.md");
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const projectionProjectRoots = [firstRoot, secondRoot];
+    const store = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    await store.recordAutomaticAndProject({
+      threadId: "thread-first",
+      turnId: "turn-first",
+      projectRoot: firstRoot,
+      usageReported: true,
+      usage: { inputTokens: 100 },
+      completedAt: "2026-07-27T00:00:00.000Z",
+      taskTitle: "Первая задача",
+      text: "Первый проект",
+      workLogFile: globalLog,
+      projectionProjectRoots,
+    });
+    await store.recordAutomaticAndProject({
+      threadId: "thread-second",
+      turnId: "turn-second",
+      projectRoot: secondRoot,
+      usageReported: true,
+      usage: { inputTokens: 200 },
+      completedAt: "2026-07-27T00:01:00.000Z",
+      taskTitle: "Вторая задача",
+      text: "Второй проект",
+      workLogFile: globalLog,
+      projectionProjectRoots,
+    });
+
+    const global = await readFile(globalLog, "utf8");
+    assert.match(global, /Первый проект/);
+    assert.match(global, /Второй проект/);
+    assert.equal((global.match(/data-work-log-turn-entry/gu) ?? []).length, 2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

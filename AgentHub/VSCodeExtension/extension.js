@@ -14,6 +14,7 @@ const PULSAR_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "pulsa
 const BLACKHOLE_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "blackhole-blue.png"];
 const TAIGA_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "rainforest-night.png"];
 const MAGMA_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "magma-crust.png"];
+const METROPOLIS_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "metropolis-night.png"];
 const STORM_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "storm-rain.png"];
 const MEADOW_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "meadow-sun.png"];
 const ORBIT_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "orbit-earth.png"];
@@ -21,7 +22,8 @@ const NEBULA_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "nebul
 const GOTHIC_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "gothic-concrete.png"];
 const THEME_KEY = "agentHub.theme";
 const THEMES = new Set([
-  "orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "magma", "storm", "meadow",
+  "orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "metropolis",
+  "magma", "storm", "meadow",
 ]);
 
 /* Заголовок панели — путь журнала в привычной для Windows форме: `.\WORK_LOG`. */
@@ -208,12 +210,13 @@ class WorkLogViewProvider {
   /* Mini App берёт растровые фоны по HTTP, у панели сервера нет — подменяем
      адреса на webview-URI тех же файлов из workspace. */
   async themeAssetCss() {
-    const [pulsarImage, blackHoleImage, taigaImage, magmaImage, stormImage,
+    const [pulsarImage, blackHoleImage, taigaImage, magmaImage, metropolisImage, stormImage,
       meadowImage, orbitImage, nebulaImage, gothicImage] = await Promise.all([
       firstExisting(this.cssUris(PULSAR_IMAGE_PATH)),
       firstExisting(this.cssUris(BLACKHOLE_IMAGE_PATH)),
       firstExisting(this.cssUris(TAIGA_IMAGE_PATH)),
       firstExisting(this.cssUris(MAGMA_IMAGE_PATH)),
+      firstExisting(this.cssUris(METROPOLIS_IMAGE_PATH)),
       firstExisting(this.cssUris(STORM_IMAGE_PATH)),
       firstExisting(this.cssUris(MEADOW_IMAGE_PATH)),
       firstExisting(this.cssUris(ORBIT_IMAGE_PATH)),
@@ -234,6 +237,9 @@ class WorkLogViewProvider {
     }
     if (magmaImage) {
       rules.push(`html[data-theme="magma"] { --magma-image: url("${webview.asWebviewUri(magmaImage)}"); }`);
+    }
+    if (metropolisImage) {
+      rules.push(`html[data-theme="metropolis"] { --metropolis-image: url("${webview.asWebviewUri(metropolisImage)}"); }`);
     }
     if (stormImage) {
       rules.push(`html[data-theme="storm"] { --storm-image: url("${webview.asWebviewUri(stormImage)}"); }`);

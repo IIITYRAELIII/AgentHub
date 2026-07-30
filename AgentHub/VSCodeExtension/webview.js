@@ -111,7 +111,7 @@ function panelCss() {
 
 function webviewHtml(webview, theme = "orbit") {
   const nonce = crypto.randomBytes(16).toString("hex");
-  const initialTheme = ["orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "magma", "storm"].includes(theme)
+  const initialTheme = ["orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "metropolis", "magma", "storm"].includes(theme)
     ? theme
     : "orbit";
   // фон темы BlackHole — файл workspace, его адрес выдаёт сам webview
@@ -131,7 +131,7 @@ function webviewHtml(webview, theme = "orbit") {
     const vscode = acquireVsCodeApi();
     const content = document.getElementById('work-log-content');
     const style = document.getElementById('work-log-style');
-    const themes = new Set(['orbit', 'nebula', 'pulsar', 'gothic', 'blackhole', 'taiga', 'magma', 'storm']);
+    const themes = new Set(['orbit', 'nebula', 'pulsar', 'gothic', 'blackhole', 'taiga', 'metropolis', 'magma', 'storm']);
     const persistedState = vscode.getState() || {};
     let journalRendered = false;
     let hasPersistedOpenState =
@@ -166,6 +166,7 @@ function webviewHtml(webview, theme = "orbit") {
           '<option value="gothic">Gothic</option>' +
           '<option value="blackhole">BlackHole</option>' +
           '<option value="taiga">Rain</option>' +
+          '<option value="metropolis">Мегаполис</option>' +
           '<option value="magma">Магма</option>' +
           '<option value="storm">Гроза</option>' +
         '</select>';
@@ -408,6 +409,22 @@ function sidebarHtml(webview) {
       --radius-mark: 12px;
       --radius-button: 999px;
       --title-spacing: -0.005em;
+    }
+
+    html[data-theme="metropolis"] {
+      --line: rgba(145, 190, 216, 0.14);
+      --line-strong: rgba(145, 190, 216, 0.29);
+      --text: #e5eef3;
+      --text-muted: #8297a3;
+      --accent: #68c3e7;
+      --accent-line: rgba(104, 195, 231, 0.43);
+      --card-glow: rgba(104, 195, 231, 0.16);
+      --card-bg: linear-gradient(180deg, rgba(7, 16, 24, 0.96), rgba(3, 9, 15, 0.98));
+      --mark-bg: linear-gradient(145deg, rgba(104, 195, 231, 0.24), rgba(3, 9, 15, 0.94));
+      --radius-card: 15px;
+      --radius-mark: 10px;
+      --radius-button: 999px;
+      --title-spacing: -0.012em;
     }
 
     html[data-theme="magma"] {

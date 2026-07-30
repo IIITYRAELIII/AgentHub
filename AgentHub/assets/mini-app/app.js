@@ -146,17 +146,22 @@ const themes = {
   gothic: "#060708",
   blackhole: "#000000",
   taiga: "#070c12",
+  metropolis: "#050b12",
   magma: "#0a0605",
   storm: "#070b12",
   meadow: "#070d08",
   graphite: "#17181a",
+};
+const themeAliases = {
+  "taiga-drops": "metropolis",
 };
 const groupings = new Set(["date", "task"]);
 
 function savedTheme() {
   try {
     const value = localStorage.getItem("agent-hub-theme");
-    return Object.hasOwn(themes, value) ? value : "orbit";
+    const selected = themeAliases[value] ?? value;
+    return Object.hasOwn(themes, selected) ? selected : "orbit";
   } catch {
     return "orbit";
   }
@@ -234,7 +239,8 @@ function syncParticleLayer(theme) {
 }
 
 function applyTheme(theme, { persist = false } = {}) {
-  const selected = Object.hasOwn(themes, theme) ? theme : "orbit";
+  const candidate = themeAliases[theme] ?? theme;
+  const selected = Object.hasOwn(themes, candidate) ? candidate : "orbit";
   document.documentElement.dataset.theme = selected;
   themeSelect.value = selected;
   themeColor.content = themes[selected];
@@ -2767,6 +2773,245 @@ function groupedTurn(entry, date) {
   return copy;
 }
 
+const taskProfileAxes = [
+  {
+    key: "turnCount",
+    label: "Ходы",
+    format: (value) => `${Math.round(value)} шт.`,
+  },
+  {
+    key: "credits",
+    label: "Кредиты",
+    format: formatTaskCredits,
+  },
+  {
+    key: "durationSeconds",
+    label: "Время",
+    format: formatTaskDuration,
+  },
+  {
+    key: "fileTouches",
+    label: "Файлы",
+    format: (value) => `${Math.round(value)} кас.`,
+  },
+  {
+    key: "changedLines",
+    label: "Diff",
+    format: (value) => `${Math.round(value)} строк`,
+  },
+  {
+    key: "subagentShare",
+    label: "Субагенты",
+    format: (value) => `${Math.round(value)}% ходов`,
+    linear: true,
+  },
+];
+
+function median(values) {
+  const sorted = values.filter(Number.isFinite).sort((left, right) => left - right);
+  if (!sorted.length) return null;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function profileScale(values) {
+  const sorted = values.filter(Number.isFinite).sort((left, right) => left - right);
+  if (!sorted.length) return 1;
+  return Math.max(1, sorted[Math.max(0, Math.ceil(sorted.length * 0.9) - 1)]);
+}
+
+function profileScore(value, scale, linear = false) {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  const ratio = linear
+    ? value / scale
+    : Math.log1p(value) / Math.log1p(scale);
+  return Math.max(0, Math.min(100, ratio * 100));
+}
+
+function svgElement(tag, attributes = {}) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [name, value] of Object.entries(attributes)) {
+    node.setAttribute(name, String(value));
+  }
+  return node;
+}
+
+function radarPoint(index, value, radius = 78) {
+  const angle = -Math.PI / 2 + index * Math.PI * 2 / taskProfileAxes.length;
+  const distance = radius * value / 100;
+  return {
+    x: 180 + Math.cos(angle) * distance,
+    y: 126 + Math.sin(angle) * distance,
+  };
+}
+
+function radarPolygon(values, radius = 78) {
+  return values.map((value, index) => {
+    const point = radarPoint(index, value, radius);
+    return `${point.x.toFixed(1)},${point.y.toFixed(1)}`;
+  }).join(" ");
+}
+
+function formatProfileAxisValue(axis, value) {
+  return Number.isFinite(value) ? axis.format(value) : "нет данных";
+}
+
+function taskProfile(group, cohort) {
+  const scales = Object.fromEntries(taskProfileAxes.map((axis) => [
+    axis.key,
+    profileScale(cohort.map((item) => item[axis.key])),
+  ]));
+  const baselines = Object.fromEntries(taskProfileAxes.map((axis) => [
+    axis.key,
+    median(cohort.map((item) => item[axis.key])),
+  ]));
+  const currentScores = taskProfileAxes.map((axis) => (
+    profileScore(group[axis.key], scales[axis.key], axis.linear)
+  ));
+  const baselineScores = taskProfileAxes.map((axis) => (
+    profileScore(baselines[axis.key], scales[axis.key], axis.linear)
+  ));
+
+  const section = document.createElement("section");
+  section.dataset.workLogTaskProfile = "";
+  const copy = document.createElement("div");
+  copy.dataset.workLogTaskProfileCopy = "";
+  const heading = document.createElement("div");
+  heading.dataset.workLogTaskProfileHeading = "";
+  const title = document.createElement("strong");
+  title.textContent = "Профиль задачи";
+  const caption = document.createElement("span");
+  caption.textContent = "Относительно видимых задач журнала. Больше — не лучше, а больше по масштабу.";
+  heading.append(title, caption);
+  const values = document.createElement("div");
+  values.dataset.workLogTaskProfileValues = "";
+  for (const axis of taskProfileAxes) {
+    const item = document.createElement("div");
+    item.dataset.workLogTaskProfileValue = axis.key;
+    const label = document.createElement("span");
+    label.textContent = axis.label;
+    const value = document.createElement("strong");
+    value.textContent = Number.isFinite(group[axis.key])
+      ? axis.format(group[axis.key])
+      : "нет данных";
+    if (!Number.isFinite(group[axis.key])) item.dataset.missing = "";
+    item.append(label, value);
+    values.append(item);
+  }
+  copy.append(heading, values);
+
+  const figure = document.createElement("figure");
+  figure.dataset.workLogTaskRadar = "";
+  const tooltip = document.createElement("div");
+  tooltip.dataset.radarTooltip = "";
+  tooltip.hidden = true;
+  tooltip.setAttribute("role", "tooltip");
+  const showTooltip = (axis, index, point) => {
+    const currentValue = formatProfileAxisValue(axis, group[axis.key]);
+    const baselineValue = formatProfileAxisValue(axis, baselines[axis.key]);
+    tooltip.replaceChildren(
+      el("strong", { text: axis.label }),
+      el("span", { text: `Эта задача: ${currentValue}` }),
+      el("span", { text: `Медиана: ${baselineValue}` }),
+    );
+    tooltip.style.setProperty("--radar-tooltip-x", `${point.x / 360 * 100}%`);
+    tooltip.style.setProperty("--radar-tooltip-y", `${point.y / 260 * 100}%`);
+    tooltip.dataset.axis = String(index);
+    tooltip.hidden = false;
+  };
+  const hideTooltip = () => {
+    tooltip.hidden = true;
+    delete tooltip.dataset.axis;
+  };
+  const bindTooltip = (node, axis, index, point) => {
+    node.addEventListener("pointerenter", () => showTooltip(axis, index, point));
+    node.addEventListener("pointerleave", hideTooltip);
+    node.addEventListener("focus", () => showTooltip(axis, index, point));
+    node.addEventListener("blur", hideTooltip);
+  };
+  const svg = svgElement("svg", {
+    viewBox: "0 0 360 260",
+    role: "img",
+    "aria-label": taskProfileAxes.map((axis) => (
+      `${axis.label}: ${Number.isFinite(group[axis.key]) ? axis.format(group[axis.key]) : "нет данных"}`
+    )).join("; "),
+  });
+  for (const level of [25, 50, 75, 100]) {
+    const ring = svgElement("polygon", {
+      points: radarPolygon(taskProfileAxes.map(() => level)),
+      "data-radar-ring": level,
+    });
+    svg.append(ring);
+  }
+  for (let index = 0; index < taskProfileAxes.length; index += 1) {
+    const end = radarPoint(index, 100);
+    svg.append(svgElement("line", {
+      x1: 180,
+      y1: 126,
+      x2: end.x,
+      y2: end.y,
+      "data-radar-spoke": "",
+    }));
+  }
+  svg.append(
+    svgElement("polygon", {
+      points: radarPolygon(baselineScores),
+      "data-radar-baseline": "",
+    }),
+    svgElement("polygon", {
+      points: radarPolygon(currentScores),
+      "data-radar-current": "",
+    }),
+  );
+  currentScores.forEach((score, index) => {
+    const point = radarPoint(index, score);
+    const axis = taskProfileAxes[index];
+    const dot = svgElement("circle", {
+      cx: point.x,
+      cy: point.y,
+      r: 3.3,
+      "data-radar-point": "",
+    });
+    if (!Number.isFinite(group[axis.key])) dot.dataset.missing = "";
+    const hit = svgElement("circle", {
+      cx: point.x,
+      cy: point.y,
+      r: 13,
+      tabindex: 0,
+      focusable: true,
+      "aria-label": `${axis.label}. Эта задача: ${
+        formatProfileAxisValue(axis, group[axis.key])
+      }. Медиана: ${formatProfileAxisValue(axis, baselines[axis.key])}.`,
+      "data-radar-hit": axis.key,
+    });
+    bindTooltip(hit, axis, index, point);
+    svg.append(dot, hit);
+  });
+  taskProfileAxes.forEach((axis, index) => {
+    const point = radarPoint(index, 138, 78);
+    const label = svgElement("text", {
+      x: point.x,
+      y: point.y,
+      "text-anchor": Math.abs(point.x - 180) < 8 ? "middle" : point.x < 180 ? "end" : "start",
+      "dominant-baseline": "middle",
+      "data-radar-label": axis.key,
+    });
+    label.textContent = axis.label;
+    bindTooltip(label, axis, index, radarPoint(index, currentScores[index]));
+    svg.append(label);
+  });
+  const legend = document.createElement("figcaption");
+  legend.innerHTML = [
+    '<span data-radar-legend="current">Эта задача</span>',
+    '<span data-radar-legend="baseline">Медиана</span>',
+  ].join("");
+  figure.append(svg, tooltip, legend);
+  section.append(copy, figure);
+  return section;
+}
+
 function taskGroupsFrom(source) {
   const groups = new Map();
   let order = 0;
@@ -2794,6 +3039,12 @@ function taskGroupsFrom(source) {
           knownCredits: 0,
           unknownCredits: 0,
           latestAt: 0,
+          fileTouches: 0,
+          knownFileTouches: 0,
+          changedLines: 0,
+          knownChangedLines: 0,
+          subagentTurns: 0,
+          knownSubagentTurns: 0,
           order: order++,
         };
         groups.set(key, group);
@@ -2819,6 +3070,21 @@ function taskGroupsFrom(source) {
         }
         const completedAt = Date.parse(entry.dataset.workLogTurnCompletedAt ?? "");
         if (Number.isFinite(completedAt)) group.latestAt = Math.max(group.latestAt, completedAt);
+        const fileCount = entry.dataset.workLogTurnFileCount;
+        if (fileCount !== undefined && Number.isFinite(Number(fileCount))) {
+          group.fileTouches += Math.max(0, Number(fileCount));
+          group.knownFileTouches += 1;
+        }
+        const changedLines = entry.dataset.workLogTurnChangeLines;
+        if (changedLines !== undefined && Number.isFinite(Number(changedLines))) {
+          group.changedLines += Math.max(0, Number(changedLines));
+          group.knownChangedLines += 1;
+        }
+        const subagent = entry.dataset.workLogTurnSubagent;
+        if (subagent !== undefined) {
+          group.subagentTurns += subagent === "1" ? 1 : 0;
+          group.knownSubagentTurns += 1;
+        }
         group.turns.push(groupedTurn(entry, date));
       }
       for (const outcome of row.querySelectorAll("[data-work-log-legacy-outcome]")) {
@@ -2833,6 +3099,17 @@ function taskGroupsFrom(source) {
     }
   }
   return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      turnCount: group.turns.length,
+      credits: group.knownCredits ? group.credits : null,
+      durationSeconds: group.knownDurations ? group.durationSeconds : null,
+      fileTouches: group.knownFileTouches ? group.fileTouches : null,
+      changedLines: group.knownChangedLines ? group.changedLines : null,
+      subagentShare: group.knownSubagentTurns
+        ? group.subagentTurns / group.knownSubagentTurns * 100
+        : null,
+    }))
     .sort((left, right) => right.latestAt - left.latestAt || left.order - right.order);
 }
 
@@ -2899,7 +3176,7 @@ function taskGroupingContent(source) {
     const body = document.createElement("div");
     body.dataset.workLogTaskGroupTurns = "";
     body.append(...group.turns, ...group.legacy);
-    details.append(summary, body);
+    details.append(summary, taskProfile(group, groups), body);
     list.append(details);
   }
   fragment.append(list);
