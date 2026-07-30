@@ -130,7 +130,6 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
     ["pulsar", "pulsar-beat"],
     ["gothic", "gothic-dust"],
     ["blackhole", "blackhole-flicker"],
-    ["taiga", "taiga-rain"],
     ["magma", "magma-glow"],
     ["storm", "storm-strike"],
     ["meadow", "meadow-breathe"],
@@ -141,20 +140,21 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
       `${theme} must keep its own motion`,
     );
   }
-  /* Дождь «Тайги» — три плана капель, каждая рисуется вытянутым эллипсом в
-     широкой плитке: полоса на всю ширину плитки давала сплошные линии. Слой
-     едет через translate3d, поэтому движение идёт композитингом. */
-  assert.match(styles, /@keyframes taiga-rain\s*\{[\s\S]*translate3d\(0, -96px, 0\)/u);
-  assert.match(
-    styles,
-    /html\[data-theme="taiga"\] body::before\s*\{[^}]*background-size:\s*43px 96px,\s*37px 48px,\s*31px 48px,\s*23px 32px,\s*19px 24px,\s*13px 16px;/u,
-  );
-  /* Шаги планов взаимно непростые: при равном шаге капли выстраивались в
-     видимую решётку. Все высоты делят 96px — величину сдвига за цикл. */
-  const rainTiles = /html\[data-theme="taiga"\] body::before\s*\{[^}]*background-size:\s*([^;]+);/u.exec(styles)?.[1] ?? "";
-  const rainHeights = [...rainTiles.matchAll(/\d+px (\d+)px/gu)].map((match) => Number(match[1]));
-  assert.equal(rainHeights.length, 6, "дождь идёт шестью планами");
-  for (const height of rainHeights) assert.equal(96 % height, 0, `${height}px должен делить сдвиг 96px`);
+  /* Дождь «Тайги» больше не плитка: три попытки сделать его через
+     background-repeat читались как текстура — палки, жалюзи, затем ровные
+     дорожки. Капли создаёт app.js, у каждой своя длина, толщина, яркость и
+     скорость, поэтому регулярности нет. Слой обязан лежать над фоном темы
+     (z-index 0) и под рабочей областью (z-index 2). */
+  assert.match(styles, /@keyframes rain-fall\s*\{[\s\S]*translate3d\(0, 128vh, 0\)/u);
+  assert.match(styles, /\.rain\s*\{[^}]*z-index:\s*1;/u);
+  assert.match(styles, /\.rain > span\s*\{[^}]*animation:\s*rain-fall var\(--dur\) linear infinite;/u);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*\.rain\s*\{[^}]*display:\s*none;/u);
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(client, /function buildRainLayer\(\)/u);
+  assert.match(client, /prefers-reduced-motion: reduce/u);
+  for (const property of ["--x", "--len", "--thickness", "--alpha", "--dur", "--delay"]) {
+    assert.ok(client.includes(`"${property}"`), `капля задаёт ${property}`);
+  }
   assert.match(styles, /@keyframes magma-glow\s*\{[\s\S]*filter:\s*saturate\(1\.18\) brightness\(1\.14\);/u);
   /* Gothic остаётся тёплым: фон темы — склеп с горящим факелом. Пыль
      поднимается снизу вверх четырьмя планами с разной скоростью и гасится к
@@ -174,8 +174,8 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   );
   /* Пошаговые анимации давали видимую дёрганость, поэтому в живых слоях их
      быть не должно: единственный резкий ритм — «Пульсар», и он linear. */
-  const motionBlocks = styles.match(/animation:\s*(?:taiga-rain|gothic-dust|magma-glow|orbit-terminator|nebula-drift|meadow-breathe|storm-strike|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
-  assert.equal(motionBlocks.length, 9, "все девять тем сохраняют своё движение");
+  const motionBlocks = styles.match(/animation:\s*(?:gothic-dust|magma-glow|orbit-terminator|nebula-drift|meadow-breathe|storm-strike|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
+  assert.equal(motionBlocks.length, 8, "живой слой остаётся у восьми тем, «Тайга» перешла на капли");
   for (const block of motionBlocks) {
     assert.doesNotMatch(block, /steps\(/u, `движение должно быть плавным: ${block}`);
   }

@@ -143,11 +143,63 @@ function savedTheme() {
   }
 }
 
+/* Дождь «Тайги».
+ *
+ * Плиткой это сделать нельзя: `background-repeat` повторяет один и тот же
+ * рисунок, и глаз читает его как мелкую текстуру, а не как дождь — сколько
+ * планов ни добавляй, регулярность остаётся. Поэтому каждая капля здесь
+ * отдельный элемент со своей позицией, длиной, прозрачностью и скоростью:
+ * непредсказуемость берётся из настоящего случайного распределения.
+ *
+ * Цена — десятки анимированных узлов, поэтому анимируется только transform
+ * (композитинг, без перерисовки), на узком экране капель вдвое меньше, а при
+ * prefers-reduced-motion слой не создаётся вообще. */
+const RAIN_THEME = "taiga";
+let rainLayer = null;
+
+function rainDropCount() {
+  return surface === "mobile" ? 130 : 280;
+}
+
+function buildRainLayer() {
+  const layer = document.createElement("div");
+  layer.className = "rain";
+  layer.setAttribute("aria-hidden", "true");
+  const count = rainDropCount();
+  for (let index = 0; index < count; index += 1) {
+    const drop = document.createElement("span");
+    const near = Math.random();
+    // ближние капли длиннее, ярче и падают быстрее — этим читается глубина
+    drop.style.setProperty("--x", `${Math.random() * 104 - 2}%`);
+    drop.style.setProperty("--len", `${(8 + near * 14).toFixed(1)}px`);
+    drop.style.setProperty("--thickness", `${(0.8 + near * 0.8).toFixed(2)}px`);
+    drop.style.setProperty("--alpha", (0.2 + near * 0.3).toFixed(2));
+    drop.style.setProperty("--dur", `${(1.45 - near * 0.7).toFixed(2)}s`);
+    drop.style.setProperty("--delay", `-${(Math.random() * 2).toFixed(2)}s`);
+    layer.append(drop);
+  }
+  return layer;
+}
+
+function syncRainLayer(theme) {
+  const wanted = theme === RAIN_THEME
+    && globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches !== true;
+  if (!wanted) {
+    rainLayer?.remove();
+    rainLayer = null;
+    return;
+  }
+  if (rainLayer?.isConnected) return;
+  rainLayer = buildRainLayer();
+  document.body.append(rainLayer);
+}
+
 function applyTheme(theme, { persist = false } = {}) {
   const selected = Object.hasOwn(themes, theme) ? theme : "orbit";
   document.documentElement.dataset.theme = selected;
   themeSelect.value = selected;
   themeColor.content = themes[selected];
+  syncRainLayer(selected);
   if (persist) {
     try {
       localStorage.setItem("agent-hub-theme", selected);
@@ -353,6 +405,10 @@ function syncSurface() {
     document.documentElement.dataset.surface = surface;
     syncComposerInputMode();
     syncCollapseTurnButtons();
+    // капель на телефоне вдвое меньше, поэтому слой пересобирается
+    rainLayer?.remove();
+    rainLayer = null;
+    syncRainLayer(document.documentElement.dataset.theme);
     if (journalRendered) prepareMobileControls();
   }
 }

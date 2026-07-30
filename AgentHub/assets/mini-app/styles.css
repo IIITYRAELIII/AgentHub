@@ -3193,42 +3193,69 @@ html[data-theme="blackhole"] body::before {
   opacity: 0.3;
 }
 
-/* «Тайга»: дождь в шесть планов.
-   История двух неудач записана здесь, чтобы её не повторяли. Полоса на всю
-   ширину плитки склеивает соседние плитки в непрерывные линии — сначала это
-   были длинные палки, потом горизонтальные жалюзи. Разреженные капли решают
-   склейку, но если у планов совпадает шаг, глаз читает регулярную решётку, а
-   капля радиусом 9px по вертикали занимает 18px и выглядит ниткой.
-   Поэтому здесь: радиусы по вертикали 2.5–7px (капля 5–14px), ширины плиток
-   взаимно непростые (17/23/31/43), а высоты все делят 96px — на эту величину
-   слой и смещается за цикл, так что стык не виден, а рисунок при разных
-   ширинах не выстраивается в столбцы. Спад цвета плавный, поэтому капля
-   мягкая, а не контурная. Движение — translate3d, композитинг без
-   перерисовки. */
-@keyframes taiga-rain {
-  from { transform: rotate(15deg) translate3d(0, -96px, 0); }
-  to { transform: rotate(15deg) translate3d(0, 0, 0); }
+/* «Тайга»: дождь из отдельных капель.
+   Три попытки сделать дождь плиткой провалились по одной причине: любой
+   `background-repeat` повторяет один рисунок, и глаз читает регулярность как
+   мелкую текстуру. Сначала это были длинные палки, потом горизонтальные
+   жалюзи, затем ровные вертикальные дорожки. Капли создаёт app.js — каждая со
+   своей позицией, длиной, толщиной, прозрачностью и скоростью, поэтому узора
+   нет вообще. Слой наклонён целиком, а анимируется только transform. */
+.rain {
+  /* `contain: strict` включает `contain: size` и обнуляет слой вместе с
+     каплями — здесь достаточно ограничить только отрисовку. */
+  contain: paint;
+  inset: -14% -18%;
+  /* светлые капли на тёмном лесу иначе почти не читаются */
+  mix-blend-mode: screen;
+  overflow: hidden;
+  pointer-events: none;
+  position: fixed;
+  transform: rotate(13deg);
+  /* Фон темы рисует body::after с z-index 0, а рабочая область идёт на 2:
+     на нулевом слое дождь оказывался под фоном и не был виден вовсе. */
+  z-index: 1;
 }
 
+.rain > span {
+  animation: rain-fall var(--dur) linear infinite;
+  animation-delay: var(--delay);
+  background: linear-gradient(180deg,
+    rgba(226, 244, 246, 0) 0,
+    rgba(226, 244, 246, var(--alpha)) 42%,
+    rgba(226, 244, 246, calc(var(--alpha) * 0.5)) 100%);
+  border-radius: 999px;
+  height: var(--len);
+  left: var(--x);
+  position: absolute;
+  top: 0;
+  width: var(--thickness);
+}
+
+@keyframes rain-fall {
+  from { transform: translate3d(0, -18vh, 0); }
+  to { transform: translate3d(0, 128vh, 0); }
+}
+
+/* Слой темы остаётся только для дымки над кронами: сам дождь теперь отдельными
+   каплями, поэтому здесь нет ни плиток, ни движения. */
 html[data-theme="taiga"] body::before {
-  animation: taiga-rain 0.85s linear infinite;
+  animation: none;
   background-image:
-    radial-gradient(1.3px 7px at 50% 50%, rgba(222, 242, 244, 0.5) 0 22%, rgba(222, 242, 244, 0.12) 62%, transparent 100%),
-    radial-gradient(1.1px 6px at 50% 50%, rgba(210, 234, 238, 0.42) 0 22%, rgba(210, 234, 238, 0.1) 62%, transparent 100%),
-    radial-gradient(1px 5px at 50% 50%, rgba(198, 224, 228, 0.34) 0 24%, rgba(198, 224, 228, 0.08) 64%, transparent 100%),
-    radial-gradient(0.8px 4px at 50% 50%, rgba(176, 202, 208, 0.28) 0 26%, transparent 100%),
-    radial-gradient(0.7px 3px at 50% 50%, rgba(168, 194, 200, 0.22) 0 28%, transparent 100%),
-    radial-gradient(0.6px 2.5px at 50% 50%, rgba(160, 186, 192, 0.16) 0 30%, transparent 100%);
-  background-position: 0 0, 21px 29px, 11px 17px, 5px 31px, 27px 11px, 19px 7px;
-  background-repeat: repeat;
-  background-size: 43px 96px, 37px 48px, 31px 48px, 23px 32px, 19px 24px, 13px 16px;
+    radial-gradient(64% 38% at 62% 24%, rgba(206, 232, 226, 0.16), transparent 74%);
+  background-repeat: no-repeat;
+  background-size: cover;
   content: "";
-  /* запас под наклон и сдвиг: без него по краям появлялись пустые клинья */
-  inset: -22%;
+  inset: 0;
   mask-image: none;
   mix-blend-mode: screen;
-  opacity: 0.62;
-  transform: rotate(15deg);
+  opacity: 0.5;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rain {
+    display: none;
+  }
 }
 
 /* «Магма»: жар идёт снизу и медленно смещается вдоль трещин. */
