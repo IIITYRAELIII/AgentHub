@@ -21,11 +21,13 @@ let selectionTail = Promise.resolve();
 const historyByTask = new Map();
 const outgoingByTask = new Map();
 const liveProbeByTask = new Map();
+const liveUserMessagesByTask = new Map();
 const requestedContextCompactions = new Set();
 let deferredClientUserMessageIds = new Set();
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const {
   activeStageLabel,
+  mergeLiveUserMessages,
   reconcile: reconcileMessageLifecycle,
   rememberBounded: rememberBoundedMessage,
   visibleConversationMessages,
@@ -85,8 +87,25 @@ function patchOutgoing(taskIdValue, clientUserMessageId, patch) {
   renderTaskMessages(taskIdValue);
 }
 
+function liveUserMessagesSignature(run) {
+  const messages = Array.isArray(run?.userMessages) ? run.userMessages : [];
+  return JSON.stringify([
+    String(run?.turnId ?? ""),
+    String(run?.clientUserMessageId ?? ""),
+    String(run?.prompt ?? "").length,
+    ...messages.map((message) => [
+      String(message?.itemId ?? ""),
+      String(message?.clientUserMessageId ?? ""),
+      String(message?.text ?? "").length,
+    ]),
+  ]);
+}
+
 function reconciledMessages(taskIdValue) {
-  const serverMessages = historyByTask.get(taskIdValue) ?? [];
+  const serverMessages = mergeLiveUserMessages(
+    historyByTask.get(taskIdValue) ?? [],
+    liveUserMessagesByTask.get(taskIdValue) ?? {},
+  );
   const pending = outgoingMessages(taskIdValue);
   const outgoing = [...pending.values()];
   const { matches, matchedIds } = reconcileMessageLifecycle(serverMessages, outgoing);
@@ -122,9 +141,22 @@ function updateLiveMessage(taskIdValue, selected) {
   const run = selected?.run;
   if (!run) {
     const removed = liveProbeByTask.delete(taskIdValue);
-    if (removed) renderTaskMessages(taskIdValue);
+    const userRemoved = liveUserMessagesByTask.delete(taskIdValue);
+    if (removed || userRemoved) renderTaskMessages(taskIdValue);
     return null;
   }
+  const nextLiveUsers = {
+    provider: selected.provider,
+    threadId: selected.threadId,
+    turnId: String(run.turnId ?? ""),
+    userMessages: run.userMessages ?? [],
+    prompt: run.prompt ?? "",
+    clientUserMessageId: run.clientUserMessageId ?? "",
+    signature: liveUserMessagesSignature(run),
+  };
+  const previousLiveUsers = liveUserMessagesByTask.get(taskIdValue);
+  const liveUsersChanged = previousLiveUsers?.signature !== nextLiveUsers.signature;
+  liveUserMessagesByTask.set(taskIdValue, nextLiveUsers);
   const response = String(run.response ?? "");
   if (run.turnId) {
     const nextProbe = {
@@ -141,10 +173,10 @@ function updateLiveMessage(taskIdValue, selected) {
       || previousProbe.turnId !== nextProbe.turnId
       || previousProbe.itemId !== nextProbe.itemId;
     liveProbeByTask.set(taskIdValue, nextProbe);
-    if (probeChanged) renderTaskMessages(taskIdValue);
+    if (probeChanged || liveUsersChanged) renderTaskMessages(taskIdValue);
   } else {
     const removed = liveProbeByTask.delete(taskIdValue);
-    if (removed) renderTaskMessages(taskIdValue);
+    if (removed || liveUsersChanged) renderTaskMessages(taskIdValue);
   }
   return {
     author: selected.provider === "claude" ? "Claude" : "Codex",
@@ -282,6 +314,7 @@ function modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId) 
 function applySnapshot(snapshot) {
   if (!snapshot) return;
   lastSnapshot = snapshot;
+  agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
   for (const task of snapshot.tasks ?? []) {
     const compaction = task.context?.compaction;
     const compactionId = String(compaction?.id ?? "");

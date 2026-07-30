@@ -9,6 +9,7 @@ export function createDesktopSnapshotFactory({
   deferred,
   approvals,
   restart,
+  exchangeRates,
   warn,
 }) {
   function desktopContextSnapshot(thread, turn = "") {
@@ -43,6 +44,16 @@ export function createDesktopSnapshotFactory({
       reasoning: run.reasoning ?? null,
       stage: String(run.progressStage ?? "Выполняется…"),
       prompt: String(run.promptPreview ?? ""),
+      userMessages: (Array.isArray(run.userMessages) ? run.userMessages : []).flatMap((message) => {
+        const text = String(message?.text ?? "").trim();
+        if (!text) return [];
+        return [{
+          itemId: String(message.itemId ?? ""),
+          clientUserMessageId: String(message.clientUserMessageId ?? ""),
+          role: "user",
+          text: text.slice(0, 100_000),
+        }];
+      }),
       progress: String(run.progressReasoning ?? ""),
       response: String(run.responseText ?? ""),
       clientUserMessageId: run.clientUserMessageId ?? null,
@@ -194,6 +205,7 @@ export function createDesktopSnapshotFactory({
       restartBlockingCount: restart.request()
         ? restart.blockingRuns().length + restart.mediaJobCount() + restart.speechJobCount()
         : 0,
+      exchangeRates: exchangeRates?.snapshot?.() ?? null,
       activeCount: taskSnapshots.filter((item) => item.running).length,
       tasks: taskSnapshots,
     };

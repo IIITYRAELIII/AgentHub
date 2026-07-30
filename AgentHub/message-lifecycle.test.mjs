@@ -153,6 +153,54 @@ test("active agent response is rendered only by the live card after task switchi
   assert.deepEqual(visible, [user]);
 });
 
+test("an external live turn contributes its missing VSC user messages", () => {
+  const previous = [{
+    ...message("previous-client", "Предыдущий вопрос"),
+    turnId: "previous-turn",
+  }];
+  const merged = lifecycle.mergeLiveUserMessages(previous, {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "active-turn",
+    userMessages: [
+      {
+        itemId: "live-user-1",
+        clientUserMessageId: "live-client-1",
+        text: "Текущий вопрос из VSC",
+      },
+      {
+        itemId: "live-user-2",
+        clientUserMessageId: "live-client-2",
+        text: "Уточнение в том же ходе",
+      },
+    ],
+  });
+  assert.deepEqual(
+    merged.map((item) => item.text),
+    ["Предыдущий вопрос", "Текущий вопрос из VSC", "Уточнение в том же ходе"],
+  );
+});
+
+test("live VSC user messages do not duplicate official task history", () => {
+  const official = [{
+    ...message("server-item", "Текущий вопрос из VSC"),
+    turnId: "active-turn",
+    clientUserMessageId: "live-client",
+  }];
+  const merged = lifecycle.mergeLiveUserMessages(official, {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "active-turn",
+    userMessages: [{
+      itemId: "rollout-item",
+      clientUserMessageId: "live-client",
+      text: "Текущий вопрос из VSC",
+    }],
+  });
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].itemId, "server-item");
+});
+
 test("active stage always identifies the whole turn as running", () => {
   assert.equal(lifecycle.activeStageLabel(""), "Ход выполняется");
   assert.equal(

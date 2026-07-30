@@ -527,10 +527,13 @@
         <span class="setting-label">Единица расхода</span>
         <div class="setting-options compact-options" role="group" aria-label="Единица расхода">
           <button type="button" class="option-chip" data-usage-unit="$">$</button>
+          <button type="button" class="option-chip" data-usage-unit="rub">₽</button>
           <button type="button" class="option-chip" data-usage-unit="cr">cr</button>
           <button type="button" class="option-chip" data-usage-unit="pte">ПТЭ</button>
         </div>
-        <p class="setting-hint">ПТЭ — приведённые токен-эквиваленты с учётом модели и Fast.</p>
+        <p class="setting-hint" data-exchange-rate-hint>
+          ₽ — официальный курс ЦБ РФ; ПТЭ — приведённые токен-эквиваленты с учётом модели и Fast.
+        </p>
       </div>
       <div class="setting-group">
         <span class="setting-label">Журнал</span>

@@ -220,6 +220,7 @@ import { settleNamedOperations } from "./lifecycle-coordinator.mjs";
 import { createDesktopSnapshotFactory } from "./desktop-snapshot.mjs";
 import { createDesktopTaskHistoryFactory } from "./desktop-task-history.mjs";
 import { createDesktopControlRouter } from "./desktop-control-router.mjs";
+import { UsdRubRateStore } from "./exchange-rate.mjs";
 
 const config = await loadConfig();
 const globalWorkLogFile = path.join(config.projectRoot, "WORK_LOG.md");
@@ -317,6 +318,7 @@ const INSTANCE_LOCK_FILE = path.join(config.dataDir, "bot.lock");
 const PINNED_TASK_TITLES_FILE = path.join(config.dataDir, "pinned-task-titles.json");
 const TASK_SYNC_FILE = path.join(config.dataDir, "task-sync.json");
 const TASK_DIFFS_FILE = path.join(config.dataDir, "task-diffs.json");
+const EXCHANGE_RATES_FILE = path.join(config.dataDir, "exchange-rates.json");
 const STATUS_LIMITS_CACHE_MS = 60_000;
 const TELEGRAM_LIMIT = 3900;
 const THREAD_LIST_LIMIT = 10;
@@ -386,6 +388,15 @@ const MENU_COMMANDS = new Map([
 
 const token = config.token;
 await mkdir(path.dirname(STATE_FILE), { recursive: true });
+const usdRubRateStore = new UsdRubRateStore({ cacheFile: EXCHANGE_RATES_FILE });
+await usdRubRateStore.load().catch((error) => {
+  console.warn(`Cannot load cached exchange rate: ${error.message}`);
+});
+void usdRubRateStore.refresh().then((rate) => {
+  console.log(`USD/RUB rate refreshed from CBR: ${rate.usdRub}`);
+}).catch((error) => {
+  console.warn(`Cannot refresh USD/RUB rate from CBR; cached value remains active: ${error.message}`);
+});
 
 const instanceGuard = new SingleInstanceGuard({ dataDir: config.dataDir, lockFile: INSTANCE_LOCK_FILE });
 await instanceGuard.acquire();
@@ -2660,6 +2671,7 @@ const {
     mediaJobCount: () => backgroundMediaJobs.size,
     speechJobCount: () => backgroundSpeechJobs.size,
   },
+  exchangeRates: usdRubRateStore,
   warn: (...args) => console.warn(...args),
 });
 
@@ -5080,12 +5092,18 @@ function codexTurnSnapshot(turn, threadStatus = null) {
   const answer = recoveredCodexAnswer(turn);
   const hasExplicitFinalAnswer = codexTurnHasExplicitFinalAnswer(turn);
   const waitingOnApproval = codexThreadWaitingOnApproval(threadStatus);
-  const prompt = codexThreadHistory([turn]).at(-1)?.prompt ?? "";
+  const exchange = codexThreadHistory([turn]).at(-1);
+  const userMessages = (exchange?.messages ?? [])
+    .filter((message) => message.role === "user")
+    .map((message) => ({ ...message }));
+  const prompt = exchange?.prompt ?? "";
   return {
     answer,
     finalAnswer: codexFinalTurnAnswer(turn),
     reasoning: "",
     prompt,
+    clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,
+    userMessages,
     completed: turn?.status !== "inProgress",
     active: turn?.status === "inProgress",
     status: turn?.status === "completed" ? "completed" : String(turn?.status ?? "stopped"),
@@ -5112,7 +5130,13 @@ async function observedRun(binding, targetChatId, snapshot, turnId = null) {
     threadId: binding.threadId,
     turnId,
     taskTitle: binding.taskTitle,
-    promptPreview: "",
+    promptPreview: snapshot.prompt ?? snapshot.userMessages?.[0]?.text ?? "",
+    clientUserMessageId: snapshot.clientUserMessageId
+      ?? snapshot.userMessages?.[0]?.clientUserMessageId
+      ?? null,
+    userMessages: Array.isArray(snapshot.userMessages)
+      ? snapshot.userMessages.map((message) => ({ ...message }))
+      : [],
     model: binding.provider === "codex" && snapshot.model
       ? codexModelLabel(snapshot.model)
       : null,
@@ -5149,6 +5173,14 @@ function updateObservedRun(run, snapshot) {
     taskRuns.reindex(run);
   }
   if (!run.promptPreview && snapshot?.prompt) run.promptPreview = String(snapshot.prompt).slice(0, 4_000);
+  if (Array.isArray(snapshot?.userMessages)) {
+    run.userMessages = snapshot.userMessages.map((message) => ({ ...message }));
+    const first = run.userMessages[0];
+    if (!run.promptPreview && first?.text) run.promptPreview = String(first.text).slice(0, 4_000);
+    if (!run.clientUserMessageId && first?.clientUserMessageId) {
+      run.clientUserMessageId = String(first.clientUserMessageId);
+    }
+  }
   run.progressReasoning = String(snapshot?.reasoning ?? run.progressReasoning);
   run.progressStage = String(snapshot?.stage ?? run.progressStage);
   run.activeTurnCount = Math.max(1, Number(snapshot?.activeTurnCount) || 1);
@@ -5187,6 +5219,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
       completed,
       latestAnswer,
       finalAnswer,
+      userMessages,
     } = codexRolloutTurnState(activity, run.turnId, {
       exact: exactTurnObserver,
       threadActive,
@@ -5195,6 +5228,9 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
       answer: active ? latestAnswer : finalAnswer,
       finalAnswer,
       reasoning: "",
+      prompt: userMessages[0]?.text ?? "",
+      clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,
+      userMessages,
       completed,
       active,
       status: completed ? "completed" : active ? "inProgress" : "stopped",

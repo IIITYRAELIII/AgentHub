@@ -22,6 +22,12 @@ function fixture(overrides = {}) {
     reasoning: "high",
     progressStage: "Проверяю",
     promptPreview: "Вопрос",
+    userMessages: [{
+      itemId: "user-1",
+      clientUserMessageId: "client-1",
+      role: "user",
+      text: "Вопрос",
+    }],
     progressReasoning: "Ход работы",
     responseText: "Ответ",
     clientUserMessageId: "client-1",
@@ -138,6 +144,13 @@ function fixture(overrides = {}) {
       mediaJobCount: () => 2,
       speechJobCount: () => 3,
     },
+    exchangeRates: {
+      snapshot: () => ({
+        usdRub: 78.4049,
+        effectiveDate: "2026-07-30",
+        source: "cbr",
+      }),
+    },
     warn: () => {},
   });
   return { ...factory, state, selected, run, entry };
@@ -174,6 +187,12 @@ test("desktopRunSnapshot preserves run fields and nested context", () => {
     reasoning: "high",
     stage: "Проверяю",
     prompt: "Вопрос",
+    userMessages: [{
+      itemId: "user-1",
+      clientUserMessageId: "client-1",
+      role: "user",
+      text: "Вопрос",
+    }],
     progress: "Ход работы",
     response: "Ответ",
     clientUserMessageId: "client-1",
@@ -309,6 +328,11 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
   assert.equal(snapshot.restartPending, true);
   assert.equal(snapshot.restartWaiting, true);
   assert.equal(snapshot.restartBlockingCount, 6);
+  assert.deepEqual(snapshot.exchangeRates, {
+    usdRub: 78.4049,
+    effectiveDate: "2026-07-30",
+    source: "cbr",
+  });
   assert.equal(snapshot.activeCount, 1);
   assert.equal(snapshot.tasks.length, 1);
 });

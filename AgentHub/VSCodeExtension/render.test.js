@@ -207,13 +207,19 @@ test("one settings panel owns interface and task controls", () => {
   assert.match(html, /data-claude-group-toggle/u);
   assert.match(html, /<option value="week">По неделям<\/option>/u);
   assert.match(html, /<option value="month">По месяцам<\/option>/u);
+  assert.match(html, /data-usage-unit="rub">₽<\/button>/u);
   assert.match(html, /data-usage-unit="pte"/u);
+  assert.match(html, /data-exchange-rate-hint/u);
   assert.match(app, /agent-hub-token-breakdown/u);
   assert.match(app, /agent-hub-group-claude/u);
   assert.match(app, /agent-hub-usage-unit/u);
-  assert.match(app, /const dollars = value \/ 25;/u);
+  assert.match(app, /const CREDITS_PER_USD = 25;/u);
+  assert.match(app, /const PTE_PER_CREDIT = 8_000;/u);
+  assert.match(app, /const dollars = value \/ CREDITS_PER_USD;/u);
   assert.match(app, /spacedNumber\(dollars, dollars < 1 \? 2 : 1\)/u);
-  assert.match(app, /formatScaledUsage\(value \* 8_000, "ПТЭ"\)/u);
+  assert.match(app, /const rubles = \(value \/ CREDITS_PER_USD\) \* usdRubRate;/u);
+  assert.match(app, /spacedNumber\(rubles, rubles < 1 \? 2 : 1\)/u);
+  assert.match(app, /formatScaledUsage\(value \* PTE_PER_CREDIT, "ПТЭ"\)/u);
   assert.ok(
     app.indexOf("const RANGE_LABELS") < app.indexOf("selectUsageUnit(savedUsageUnit())"),
     "подписи диапазонов должны быть инициализированы до первого рендера единиц расхода",

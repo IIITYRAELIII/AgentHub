@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import { open, stat } from "node:fs/promises";
+import { displayUserPrompt } from "./task-history.mjs";
 
 export const CLAUDE_ACTIVE_FRESHNESS_MS = 30 * 60 * 1000;
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
@@ -145,6 +146,62 @@ function rememberCodexTurnMessage(metadata, turnId, message) {
   }
 }
 
+function rememberCodexUserMessage(metadata, turnId, {
+  clientUserMessageId = "",
+  text = "",
+} = {}) {
+  const value = displayUserPrompt(text);
+  if (!turnId || !value) return;
+  const clientId = String(clientUserMessageId ?? "").trim();
+  const messages = metadata.userMessages.get(turnId) ?? [];
+  if (clientId && messages.some((item) => item.clientUserMessageId === clientId)) return;
+  messages.push({
+    itemId: clientId || `${turnId}:rollout-user:${messages.length}`,
+    ...(clientId ? { clientUserMessageId: clientId } : {}),
+    role: "user",
+    text: value.slice(0, 100_000),
+  });
+  metadata.userMessages.set(turnId, messages.slice(-20));
+  while (metadata.userMessages.size > 8) {
+    metadata.userMessages.delete(metadata.userMessages.keys().next().value);
+  }
+}
+
+function rememberPendingCodexUserMessage(metadata, entry, provisionalTurnId = "") {
+  const text = String(entry?.payload?.message ?? "");
+  const value = displayUserPrompt(text);
+  if (!value) return;
+  const clientUserMessageId = String(entry?.payload?.client_id ?? "").trim();
+  metadata.pendingUserMessages.push({
+    clientUserMessageId,
+    text,
+    provisionalTurnId,
+  });
+  metadata.pendingUserMessages = metadata.pendingUserMessages.slice(-20);
+}
+
+function assignPendingCodexUserMessages(metadata, turnId) {
+  if (!turnId || !metadata.pendingUserMessages.length) return;
+  for (const message of metadata.pendingUserMessages) {
+    const previousTurnId = String(message.provisionalTurnId ?? "");
+    if (previousTurnId && previousTurnId !== turnId) {
+      const previousMessages = (metadata.userMessages.get(previousTurnId) ?? [])
+        .filter((item) => (
+          !message.clientUserMessageId
+          || item.clientUserMessageId !== message.clientUserMessageId
+        ));
+      if (previousMessages.length) metadata.userMessages.set(previousTurnId, previousMessages);
+      else metadata.userMessages.delete(previousTurnId);
+      if (!previousMessages.some((item) => item.clientUserMessageId)) {
+        metadata.vscodeTurnIds.delete(previousTurnId);
+      }
+    }
+    rememberCodexUserMessage(metadata, turnId, message);
+    if (message.clientUserMessageId) metadata.vscodeTurnIds.add(turnId);
+  }
+  metadata.pendingUserMessages = [];
+}
+
 function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
   if (entry?.type === "event_msg" && entry.payload?.type === "thread_settings_applied") {
     metadata.model = String(entry.payload?.thread_settings?.model ?? "").trim();
@@ -155,6 +212,23 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
   const lifecycle = entry?.type === "event_msg"
     && ["task_started", "task_complete", "turn_aborted"].includes(entry.payload?.type);
   const turnId = codexEntryTurnId(entry) || (lifecycle ? LEGACY_TURN_ID : "");
+  const isUserMessage = entry?.type === "event_msg" && entry.payload?.type === "user_message";
+  if (
+    metadata.pendingUserMessages.length
+    && isUserMessage
+    && activeTurnIds.size === 1
+    && metadata.pendingUserMessages.every((message) => message.provisionalTurnId)
+  ) {
+    // A second VSC submission cannot retroactively turn an earlier steer into
+    // the prompt of a future concurrent turn. Finalize the earlier provisional
+    // assignment and keep only the newest submission eligible for reassignment.
+    assignPendingCodexUserMessages(metadata, [...activeTurnIds][0]);
+  }
+  if (metadata.pendingUserMessages.length && !isUserMessage) {
+    const pendingTurnId = turnId
+      || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+    if (pendingTurnId) assignPendingCodexUserMessages(metadata, pendingTurnId);
+  }
   if ((entry?.type === "turn_context" || entry?.type === "response_item" || lifecycle) && turnId) {
     metadata.latestTurnId = turnId;
   }
@@ -183,14 +257,31 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
       }
     }
   }
-  if (entry?.type === "event_msg" && entry.payload?.type === "user_message") {
-    const messageTurnId = turnId
-      || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "")
-      || (activeTurnIds.has(metadata.latestTurnId) ? metadata.latestTurnId : "");
+  if (isUserMessage) {
+    const messageTurnId = turnId;
     if (messageTurnId) {
       const clientId = String(entry.payload?.client_id ?? "").trim();
+      rememberCodexUserMessage(metadata, messageTurnId, {
+        clientUserMessageId: clientId,
+        text: entry.payload?.message,
+      });
       if (clientId) metadata.vscodeTurnIds.add(messageTurnId);
       else metadata.vscodeTurnIds.delete(messageTurnId);
+    } else {
+      // Codex writes the initial VSC user_message immediately before
+      // task_started and does not include turn_id in that event. Keep it
+      // pending until the next event identifies whether this is a new
+      // concurrent turn or steering for the sole active turn.
+      const provisionalTurnId = activeTurnIds.size === 1 ? [...activeTurnIds][0] : "";
+      if (provisionalTurnId) {
+        const clientId = String(entry.payload?.client_id ?? "").trim();
+        rememberCodexUserMessage(metadata, provisionalTurnId, {
+          clientUserMessageId: clientId,
+          text: entry.payload?.message,
+        });
+        if (clientId) metadata.vscodeTurnIds.add(provisionalTurnId);
+      }
+      rememberPendingCodexUserMessage(metadata, entry, provisionalTurnId);
     }
   }
   const timestamp = Date.parse(entry?.timestamp);
@@ -232,6 +323,8 @@ export function parseCodexRolloutActivity(text, options = {}) {
     reasoningEffort: "",
     latestMessages: new Map(),
     finalMessages: new Map(),
+    userMessages: new Map(),
+    pendingUserMessages: [],
     unscopedLatestMessage: "",
   };
   for (const line of String(text).split(/\r?\n/)) {
@@ -252,6 +345,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     latestTurnId: metadata.latestTurnId || null,
     latestMessages: Object.fromEntries(metadata.latestMessages),
     finalMessages: Object.fromEntries(metadata.finalMessages),
+    userMessages: Object.fromEntries(metadata.userMessages),
     unscopedLatestMessage: metadata.unscopedLatestMessage || null,
   };
 }
@@ -280,9 +374,10 @@ export async function readCodexRolloutActivity(
       model: null,
       reasoningEffort: null,
       latestTurnId: null,
-    latestMessages: {},
-    finalMessages: {},
-    unscopedLatestMessage: null,
+      latestMessages: {},
+      finalMessages: {},
+      userMessages: {},
+      unscopedLatestMessage: null,
     };
   }
   let info;
@@ -301,6 +396,7 @@ export async function readCodexRolloutActivity(
         latestTurnId: null,
         latestMessages: {},
         finalMessages: {},
+        userMessages: {},
         unscopedLatestMessage: null,
       };
     }
@@ -319,6 +415,7 @@ export async function readCodexRolloutActivity(
       latestTurnId: cached?.latestTurnId || null,
       latestMessages: Object.fromEntries(cached?.latestMessages ?? []),
       finalMessages: Object.fromEntries(cached?.finalMessages ?? []),
+      userMessages: Object.fromEntries(cached?.userMessages ?? []),
       unscopedLatestMessage: cached?.unscopedLatestMessage || null,
     };
   }
@@ -340,6 +437,7 @@ export async function readCodexRolloutActivity(
       latestTurnId: cached.latestTurnId || null,
       latestMessages: Object.fromEntries(cached.latestMessages ?? []),
       finalMessages: Object.fromEntries(cached.finalMessages ?? []),
+      userMessages: Object.fromEntries(cached.userMessages ?? []),
       unscopedLatestMessage: cached.unscopedLatestMessage || null,
     };
   }
@@ -358,6 +456,10 @@ export async function readCodexRolloutActivity(
     reasoningEffort: appendOnly ? String(cached.reasoningEffort ?? "") : "",
     latestMessages: new Map(appendOnly ? cached.latestMessages ?? [] : []),
     finalMessages: new Map(appendOnly ? cached.finalMessages ?? [] : []),
+    userMessages: new Map(appendOnly ? cached.userMessages ?? [] : []),
+    pendingUserMessages: appendOnly
+      ? (cached.pendingUserMessages ?? []).map((message) => ({ ...message }))
+      : [],
     unscopedLatestMessage: appendOnly ? String(cached.unscopedLatestMessage ?? "") : "",
   };
   const start = appendOnly
@@ -427,6 +529,8 @@ export async function readCodexRolloutActivity(
     reasoningEffort: metadata.reasoningEffort,
     latestMessages: [...metadata.latestMessages],
     finalMessages: [...metadata.finalMessages],
+    userMessages: [...metadata.userMessages],
+    pendingUserMessages: metadata.pendingUserMessages.map((message) => ({ ...message })),
     unscopedLatestMessage: metadata.unscopedLatestMessage,
     discardUntilNewline,
     suffix: await rolloutSuffix(normalized, info.size),
@@ -440,6 +544,7 @@ export async function readCodexRolloutActivity(
     latestTurnId: metadata.latestTurnId || null,
     latestMessages: Object.fromEntries(metadata.latestMessages),
     finalMessages: Object.fromEntries(metadata.finalMessages),
+    userMessages: Object.fromEntries(metadata.userMessages),
     unscopedLatestMessage: metadata.unscopedLatestMessage || null,
   };
 }
@@ -508,12 +613,16 @@ export function codexRolloutTurnState(
   const finalAnswer = turnId
     ? String(activity.finalMessages?.[turnId] ?? "").trim()
     : "";
+  const userMessages = turnId && Array.isArray(activity.userMessages?.[turnId])
+    ? activity.userMessages[turnId].map((message) => ({ ...message }))
+    : [];
   return {
     turnId,
     active,
     completed: !active,
     latestAnswer,
     finalAnswer,
+    userMessages,
   };
 }
 

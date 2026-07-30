@@ -65,6 +65,7 @@ const settingsPanel = document.querySelector("[data-settings-panel]");
 const breakdownToggle = document.querySelector("[data-token-breakdown-toggle]");
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
 const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
+const exchangeRateHint = document.querySelector("[data-exchange-rate-hint]");
 const panelScrim = document.querySelector("[data-panel-scrim]");
 const statusSlot = document.querySelector("[data-status-slot]");
 
@@ -104,6 +105,9 @@ const usageNote = document.querySelector("[data-usage-note]");
 let journalHtml = "";
 let grouping = "date";
 let usageUnit = "cr";
+let usdRubRate = null;
+let usdRubEffectiveDate = "";
+let exchangeRatesInitialized = false;
 let groupClaudeTasks = false;
 const groupingStates = { date: null, week: null, month: null, task: null };
 const telegram = window.Telegram?.WebApp;
@@ -169,7 +173,9 @@ const themeAliases = {
   "taiga-drops": "metropolis",
 };
 const groupings = new Set(["date", "week", "month", "task"]);
-const usageUnits = new Set(["$", "cr", "pte"]);
+const usageUnits = new Set(["$", "rub", "cr", "pte"]);
+const CREDITS_PER_USD = 25;
+const PTE_PER_CREDIT = 8_000;
 const usageState = {
   range: "24h",
   status: "idle",
@@ -1900,6 +1906,32 @@ const AgentHub = {
   setUsageHistory(payload) {
     applyUsageHistory(payload);
   },
+  /** Официальные валютные курсы, полученные Agent Hub при запуске. */
+  setExchangeRates(payload) {
+    const rate = Number(payload?.usdRub);
+    const nextRate = Number.isFinite(rate) && rate > 0 ? rate : null;
+    const nextEffectiveDate = String(payload?.effectiveDate ?? "");
+    if (
+      exchangeRatesInitialized
+      && nextRate === usdRubRate
+      && nextEffectiveDate === usdRubEffectiveDate
+    ) return;
+    exchangeRatesInitialized = true;
+    usdRubRate = nextRate;
+    usdRubEffectiveDate = nextEffectiveDate;
+    if (exchangeRateHint) {
+      const date = usdRubEffectiveDate
+        ? new Date(`${usdRubEffectiveDate}T00:00:00`).toLocaleDateString("ru-RU")
+        : "";
+      exchangeRateHint.textContent = usdRubRate
+        ? `₽ — курс ЦБ РФ ${spacedNumber(usdRubRate, 4)} за $1${date ? ` на ${date}` : ""}; `
+          + "ПТЭ — приведённые токен-эквиваленты с учётом модели и Fast."
+        : "Курс ₽ пока недоступен; ПТЭ — приведённые токен-эквиваленты с учётом модели и Fast.";
+    }
+    refreshUsageUnits();
+    renderUsageHistory();
+    if (journalHtml) renderJournal();
+  },
   toast: showToast,
 };
 
@@ -2456,10 +2488,15 @@ function formatScaledUsage(value, suffix) {
 function formatUsageValue(credits, unit = usageUnit) {
   const value = Math.max(0, Number(credits) || 0);
   if (unit === "$") {
-    const dollars = value / 25;
+    const dollars = value / CREDITS_PER_USD;
     return `$${spacedNumber(dollars, dollars < 1 ? 2 : 1)}`;
   }
-  if (unit === "pte") return formatScaledUsage(value * 8_000, "ПТЭ");
+  if (unit === "rub") {
+    if (!usdRubRate) return "₽—";
+    const rubles = (value / CREDITS_PER_USD) * usdRubRate;
+    return `₽${spacedNumber(rubles, rubles < 1 ? 2 : 1)}`;
+  }
+  if (unit === "pte") return formatScaledUsage(value * PTE_PER_CREDIT, "ПТЭ");
   return formatScaledUsage(value, "cr");
 }
 

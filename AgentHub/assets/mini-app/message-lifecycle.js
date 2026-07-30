@@ -98,6 +98,56 @@ function visibleConversationMessages(messages, {
   return live ? visible.filter((message) => message !== live) : visible;
 }
 
+function mergeLiveUserMessages(messages, {
+  provider,
+  threadId,
+  turnId,
+  userMessages = [],
+  prompt = "",
+  clientUserMessageId = "",
+} = {}) {
+  const values = Array.isArray(messages) ? messages.slice() : [];
+  const live = Array.isArray(userMessages) && userMessages.length
+    ? userMessages
+    : String(prompt ?? "").trim()
+      ? [{
+          itemId: `${String(turnId ?? "active-turn")}:live:user`,
+          clientUserMessageId,
+          text: prompt,
+        }]
+      : [];
+  for (const [index, message] of live.entries()) {
+    const text = String(message?.text ?? "").trim();
+    if (!provider || !threadId || !turnId || !text) continue;
+    const candidate = {
+      id: `${provider}:${threadId}:${turnId}:${message.itemId || `live-user-${index}`}:user`,
+      provider,
+      threadId,
+      turnId,
+      itemId: String(message.itemId ?? `live-user-${index}`),
+      clientUserMessageId: String(message.clientUserMessageId ?? ""),
+      role: "user",
+      author: "Вы",
+      text,
+    };
+    const clientKey = clientIdentityKey(candidate);
+    const itemKey = identityKey(candidate);
+    const duplicate = values.some((existing) => (
+      (clientKey && clientIdentityKey(existing) === clientKey)
+      || (itemKey && identityKey(existing) === itemKey)
+      || (
+        !clientKey
+        && existing?.role === "user"
+        && String(existing?.provider ?? "") === provider
+        && String(existing?.threadId ?? "") === threadId
+        && String(existing?.turnId ?? "") === turnId
+      )
+    ));
+    if (!duplicate) values.push(candidate);
+  }
+  return values;
+}
+
 function activeStageLabel(stage) {
   const value = String(stage ?? "").trim();
   if (!value) return "Ход выполняется";
@@ -110,6 +160,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   identityKey,
   clientIdentityKey,
   liveMessageMatch,
+  mergeLiveUserMessages,
   reconcile,
   rememberBounded,
   visibleConversationMessages,

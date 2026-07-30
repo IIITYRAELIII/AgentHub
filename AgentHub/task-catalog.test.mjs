@@ -193,16 +193,101 @@ test("Codex rollout activity identifies the current VSC turn by client id", () =
     }),
     JSON.stringify({
       type: "event_msg",
-      payload: { type: "task_started", turn_id: "one" },
+      payload: { type: "user_message", client_id: "vscode-client", message: "Продолжай" },
     }),
     JSON.stringify({
       type: "event_msg",
-      payload: { type: "user_message", client_id: "vscode-client", message: "Продолжай" },
+      payload: { type: "task_started", turn_id: "one" },
     }),
   ].join("\n"));
   assert.equal(result.model, "gpt-5.6-sol");
   assert.equal(result.reasoningEffort, "medium");
   assert.deepEqual(result.activeTurnIds, ["one"]);
+  assert.deepEqual(result.activeVscodeTurnIds, ["one"]);
+  assert.deepEqual(result.userMessages.one, [{
+    itemId: "vscode-client",
+    clientUserMessageId: "vscode-client",
+    role: "user",
+    text: "Продолжай",
+  }]);
+});
+
+test("an unscoped user message is assigned to a new concurrent VSC turn", () => {
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "old" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "user_message", client_id: "new-client", message: "Новый ход" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "new" },
+    }),
+  ].join("\n"));
+  assert.deepEqual(result.activeTurnIds, ["old", "new"]);
+  assert.equal(result.userMessages.old, undefined);
+  assert.deepEqual(result.userMessages.new?.map((message) => message.text), ["Новый ход"]);
+  assert.deepEqual(result.activeVscodeTurnIds, ["new"]);
+});
+
+test("a previous steer is not moved into a later concurrent VSC turn", () => {
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "old" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "user_message", client_id: "steer", message: "Уточнение старого" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "user_message", client_id: "new", message: "Новый ход" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "new" },
+    }),
+  ].join("\n"));
+  assert.deepEqual(result.userMessages.old?.map((message) => message.text), ["Уточнение старого"]);
+  assert.deepEqual(result.userMessages.new?.map((message) => message.text), ["Новый ход"]);
+  assert.deepEqual(result.activeVscodeTurnIds, ["old", "new"]);
+});
+
+test("a trailing VSC user message is exposed before another rollout event arrives", () => {
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "one" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "user_message", client_id: "client-one", message: "Вопрос" },
+    }),
+  ].join("\n"));
+  assert.deepEqual(result.userMessages.one?.map((message) => message.text), ["Вопрос"]);
+  assert.deepEqual(result.activeVscodeTurnIds, ["one"]);
+});
+
+test("an unscoped steering message stays with the sole active VSC turn", () => {
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "one" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "user_message", client_id: "steer-client", message: "Уточнение" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "agent_message", message: "Принято" },
+    }),
+  ].join("\n"));
+  assert.deepEqual(result.userMessages.one?.map((message) => message.text), ["Уточнение"]);
   assert.deepEqual(result.activeVscodeTurnIds, ["one"]);
 });
 
@@ -239,6 +324,7 @@ test("Codex rollout activity keeps another concurrent turn active after one is a
     latestTurnId: "parallel",
     latestMessages: {},
     finalMessages: {},
+    userMessages: {},
     unscopedLatestMessage: null,
   });
   assert.equal(parseCodexRolloutRunning(`${text}\n${line("task_complete", "original")}`), false);
@@ -282,6 +368,7 @@ test("Codex rollout activity ignores stale unmatched starts but keeps a fresh li
     latestTurnId: "live",
     latestMessages: {},
     finalMessages: {},
+    userMessages: {},
     unscopedLatestMessage: null,
   });
 });
@@ -349,6 +436,7 @@ test("an exact Codex observer completes its requested turn instead of following 
     completed: true,
     latestAnswer: "",
     finalAnswer: "old turn finished",
+    userMessages: [],
   });
   assert.equal(codexRolloutTurnState(activity, "old-turn", {
     threadActive: true,
