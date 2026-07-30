@@ -94,8 +94,14 @@ function visibleConversationMessages(messages, {
     && deferredIds.has(String(message?.clientUserMessageId ?? "").trim())
   ));
   if (!liveProbe) return visible;
-  const live = liveMessageMatch(visible, liveProbe);
-  return live ? visible.filter((message) => message !== live) : visible;
+  const liveTurnRole = identityKey(liveProbe, { withoutItem: true });
+  if (!liveTurnRole) return visible;
+  // A VSC turn can emit several commentary items before the accumulated live
+  // response gets its stable item id. While that turn is active, the live card
+  // is the single renderer for every agent fragment from the exact same turn.
+  return visible.filter(
+    (message) => identityKey(message, { withoutItem: true }) !== liveTurnRole,
+  );
 }
 
 function mergeLiveUserMessages(messages, {

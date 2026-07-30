@@ -153,6 +153,44 @@ test("active agent response is rendered only by the live card after task switchi
   assert.deepEqual(visible, [user]);
 });
 
+test("all commentary fragments from the active VSC turn stay in the live card", () => {
+  const previousAgent = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-previous",
+    itemId: "previous-answer",
+    role: "agent",
+    text: "Предыдущий завершённый ответ",
+  };
+  const activeCommentary = [
+    {
+      ...previousAgent,
+      turnId: "turn-active",
+      itemId: "commentary-1",
+      text: "Первый промежуточный фрагмент",
+    },
+    {
+      ...previousAgent,
+      turnId: "turn-active",
+      itemId: "commentary-2",
+      text: "Второй промежуточный фрагмент",
+    },
+  ];
+  const visible = lifecycle.visibleConversationMessages(
+    [previousAgent, ...activeCommentary],
+    {
+      liveProbe: {
+        provider: "codex",
+        threadId: "thread-1",
+        turnId: "turn-active",
+        itemId: "",
+        role: "agent",
+      },
+    },
+  );
+  assert.deepEqual(visible, [previousAgent]);
+});
+
 test("an external live turn contributes its missing VSC user messages", () => {
   const previous = [{
     ...message("previous-client", "Предыдущий вопрос"),

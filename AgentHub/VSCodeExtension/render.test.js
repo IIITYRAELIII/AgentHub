@@ -410,7 +410,7 @@ test("chat keeps an active response only in the live card after task switching",
   const lifecycle = fs.readFileSync(require.resolve("../assets/mini-app/message-lifecycle.js"), "utf8");
   assert.match(
     lifecycle,
-    /function visibleConversationMessages\(messages,[\s\S]*const live = liveMessageMatch\(visible, liveProbe\);[\s\S]*visible\.filter\(\(message\) => message !== live\)/u,
+    /function visibleConversationMessages\(messages,[\s\S]*const liveTurnRole = identityKey\(liveProbe, \{ withoutItem: true \}\);[\s\S]*identityKey\(message, \{ withoutItem: true \}\) !== liveTurnRole/u,
   );
   assert.match(client, /liveProbeByTask\.set\(taskIdValue, nextProbe\)/u);
   assert.match(client, /liveProbe: liveProbeByTask\.get\(taskIdValue\) \?\? null/u);
