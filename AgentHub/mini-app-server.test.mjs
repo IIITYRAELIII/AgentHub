@@ -165,6 +165,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
       "",
       "app.js",
       "metropolis-glass.js",
+      "storm-glass.js",
       "message-lifecycle.js",
       "hub-client.js",
       "styles.css",
@@ -221,6 +222,11 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.equal(metropolis.headers.get("content-type"), "image/png");
     assert.match(metropolis.headers.get("cache-control"), /immutable/u);
     assert.ok((await metropolis.arrayBuffer()).byteLength > 100_000);
+    const stormGlass = await fetch(`${address.url}storm-sea.png`);
+    assert.equal(stormGlass.status, 200);
+    assert.equal(stormGlass.headers.get("content-type"), "image/png");
+    assert.match(stormGlass.headers.get("cache-control"), /immutable/u);
+    assert.ok((await stormGlass.arrayBuffer()).byteLength > 100_000);
     assert.ok((await blackHole.arrayBuffer()).byteLength > 100_000);
     assert.ok((await taiga.arrayBuffer()).byteLength > 100_000);
     assert.ok((await pulsar.arrayBuffer()).byteLength > 100_000);
@@ -236,6 +242,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(page, /data-metropolis-glass/u);
     assert.match(page, /<option value="magma">Магма<\/option>/u);
     assert.match(page, /<option value="storm">Гроза<\/option>/u);
+    assert.match(page, /<option value="stormglass">Storm<\/option>/u);
     assert.match(page, /<option value="meadow">Луг<\/option>/u);
     assert.match(page, /data-surface="desktop"/u);
     assert.match(page, /data-theme-select/u);
@@ -346,6 +353,8 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /html\[data-theme="taiga"\]/u);
     assert.match(styles, /html\[data-theme="metropolis"\] body::after/u);
     assert.match(styles, /url\("\/metropolis-night\.png"\)/u);
+    assert.match(styles, /url\("\/storm-sea\.png"\)/u);
+    assert.match(styles, /html\[data-theme="stormglass"\]/u);
     const glass = await (await fetch(`${address.url}metropolis-glass.js`)).text();
     assert.match(glass, /vec4 rainLayer/u);
     assert.match(glass, /uniform sampler2D uFogImage/u);

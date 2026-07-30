@@ -554,6 +554,136 @@ html[data-theme="metropolis"] {
   --metropolis-image: url("/metropolis-night.png");
 }
 
+/* ========================================================== тема «Storm» === */
+
+/* Ночной шторм за иллюминатором. Палитра холоднее «Мегаполиса» и почти без
+   тёплых нот: единственный тёплый источник в кадре — маяк, и его роль отдана
+   свету, а не интерфейсу. */
+html[data-theme="stormglass"] {
+  --display-weight: 620;
+  --display-spacing: -0.01em;
+  --title-weight: 550;
+  --label-spacing: 0.16em;
+
+  /* обводки помягче «Мегаполиса»: за стеклом нет прямых линий города */
+  --radius-lg: 14px;
+  --radius-md: 11px;
+  --radius-sm: 8px;
+  --radius-chip: 999px;
+  --rail-width: 2px;
+
+  --bg: #05090f;
+  --surface-1: rgba(186, 214, 232, 0.03);
+  --surface-2: rgba(186, 214, 232, 0.055);
+  --surface-3: rgba(186, 214, 232, 0.092);
+  --sunken: rgba(1, 5, 9, 0.55);
+
+  --line: rgba(140, 180, 208, 0.14);
+  --line-strong: rgba(140, 180, 208, 0.28);
+
+  --card-bg: linear-gradient(180deg, rgba(8, 17, 26, 0.5), rgba(3, 8, 13, 0.62));
+  --card-bg-open: linear-gradient(180deg, rgba(10, 21, 32, 0.56), rgba(3, 8, 13, 0.68));
+  --card-texture: none;
+  --card-border: rgba(140, 180, 208, 0.17);
+  --card-border-open: rgba(142, 199, 226, 0.4);
+  --card-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 26px 58px -36px rgba(0, 0, 0, 0.96);
+
+  --plate-bg: linear-gradient(180deg, rgba(196, 222, 238, 0.07), rgba(2, 7, 12, 0.3));
+  --plate-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --turn-shadow: 0 0 30px -21px rgba(142, 199, 226, 0.9);
+
+  --text: #e4edf4;
+  --text-soft: #b6c7d3;
+  --text-muted: #8296a4;
+  --text-faint: #61717e;
+
+  /* холодный свет маяка */
+  --accent: #8ec7e2;
+  --accent-soft: rgba(142, 199, 226, 0.14);
+  --accent-line: rgba(142, 199, 226, 0.42);
+  --accent-glow: 0 0 24px -9px rgba(142, 199, 226, 0.95);
+  --selection: rgba(142, 199, 226, 0.3);
+  --brand-gradient: linear-gradient(150deg, rgba(142, 199, 226, 0.3), rgba(30, 58, 82, 0.32));
+  --brand-shadow: 0 0 24px -10px rgba(142, 199, 226, 0.9);
+
+  --provider-none: #78909c;
+  --provider-codex: #7fc9e6;
+  --provider-claude: #e0a06d;
+  --ok: #74cfae;
+  --pending: #ddac68;
+
+  --dot-input: #7fc9e6;
+  --dot-cache: #74cfae;
+  --dot-output: #e0a06d;
+  --dot-think: #a3a6d8;
+
+  --space-glow-a: rgba(80, 140, 180, 0.1);
+  --space-glow-b: rgba(30, 60, 90, 0.12);
+  --space-base: #05090f;
+  --space-star: transparent;
+  --star-opacity: 0;
+  --stormglass-image: url("/storm-sea.png");
+}
+
+/* Фон отдаёт снимок как есть: запотевание и капли рисует canvas поверх, а не
+   CSS, иначе протёртые дорожки не смогли бы открывать резкую картинку. */
+html[data-theme="stormglass"] body::after {
+  background-color: #05090f;
+  background-image:
+    linear-gradient(90deg, rgba(3, 7, 12, 0.42), rgba(3, 7, 12, 0) 42%),
+    var(--stormglass-image);
+  background-position: center, 62% 50%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+html[data-theme="stormglass"] body::before {
+  content: none;
+}
+
+html[data-theme="stormglass"] .theme-atmosphere {
+  display: block;
+}
+
+html[data-theme="stormglass"] .theme-atmosphere[data-ready="true"] canvas[data-storm-glass] {
+  opacity: 1;
+}
+
+/* Оба стекла живут в одном слое атмосферы, поэтому чужой холст скрывается. */
+html[data-theme="stormglass"] .theme-atmosphere [data-metropolis-glass],
+html[data-theme="metropolis"] .theme-atmosphere [data-storm-glass] {
+  display: none;
+}
+
+html[data-theme="stormglass"] .app-header {
+  backdrop-filter: blur(12px) saturate(112%);
+  -webkit-backdrop-filter: blur(12px) saturate(112%);
+  background: rgba(3, 7, 12, 0.62);
+}
+
+html[data-theme="stormglass"] .app-header::after {
+  background: linear-gradient(90deg, transparent, rgba(142, 199, 226, 0.55), transparent);
+}
+
+html[data-theme="stormglass"] .journal details[data-work-log-day-section] {
+  backdrop-filter: blur(5px) saturate(110%);
+  -webkit-backdrop-filter: blur(5px) saturate(110%);
+  background-color: rgba(3, 7, 12, 0.46);
+  background-image: none;
+}
+
+html[data-theme="stormglass"] .journal details[data-work-log-turn-details] {
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  background-color: rgba(5, 11, 18, 0.4);
+  background-image: none;
+}
+
 /* ========================================================= тема «Магма» === */
 
 html[data-theme="magma"] {

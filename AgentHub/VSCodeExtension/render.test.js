@@ -107,6 +107,8 @@ test("panel allows the webview's own resources and data URIs, but no remote sour
 
 test("extension maps every shared bitmap theme asset to a webview URI", () => {
   const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
+  const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
+  assert.match(extension, /const THEMES = new Set\(\[[\s\S]*"stormglass"/u);
   assert.match(extension, /PULSAR_IMAGE_PATH/);
   assert.match(extension, /--pulsar-image: url/);
   assert.match(extension, /--bh-image: url/);
@@ -115,6 +117,11 @@ test("extension maps every shared bitmap theme asset to a webview URI", () => {
   assert.match(extension, /html\[data-theme="metropolis"\]/);
   assert.match(extension, /--magma-image: url/);
   assert.match(extension, /--storm-image: url/);
+  assert.match(shared, /\["--stormglass-image", assets\.stormglass\]/u);
+  assert.match(
+    shared,
+    /<script src="\$\{resource\(webview, assets\.stormGlass\)\}" defer><\/script>/u,
+  );
 });
 
 test("theme layers keep the background, effects and content in order", () => {

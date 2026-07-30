@@ -8,6 +8,7 @@ const ASSETS = {
   index: [...ASSET_ROOT, "index.html"],
   app: [...ASSET_ROOT, "app.js"],
   metropolisGlass: [...ASSET_ROOT, "metropolis-glass.js"],
+  stormGlass: [...ASSET_ROOT, "storm-glass.js"],
   lifecycle: [...ASSET_ROOT, "message-lifecycle.js"],
   client: [...ASSET_ROOT, "hub-client.js"],
   styles: [...ASSET_ROOT, "styles.css"],
@@ -18,6 +19,7 @@ const ASSETS = {
   taiga: [...ASSET_ROOT, "rainforest-night.png"],
   magma: [...ASSET_ROOT, "magma-crust.png"],
   metropolis: [...ASSET_ROOT, "metropolis-night.png"],
+  stormglass: [...ASSET_ROOT, "storm-sea.png"],
   storm: [...ASSET_ROOT, "storm-rain.png"],
   meadow: [...ASSET_ROOT, "meadow-sun.png"],
   orbit: [...ASSET_ROOT, "orbit-earth.png"],
@@ -49,7 +51,7 @@ async function resolveSharedAssets() {
   );
   const assets = Object.fromEntries(entries);
   for (const required of [
-    "index", "app", "metropolisGlass", "lifecycle", "client", "styles",
+    "index", "app", "metropolisGlass", "stormGlass", "lifecycle", "client", "styles",
     "workLogStyles", "bootstrap",
   ]) {
     if (!assets[required]) throw new Error(`Не найден ресурс Agent Hub: ${required}`);
@@ -71,6 +73,7 @@ async function sharedWebviewHtml(webview) {
     ["--forest-image", assets.taiga],
     ["--magma-image", assets.magma],
     ["--metropolis-image", assets.metropolis],
+    ["--stormglass-image", assets.stormglass],
     ["--storm-image", assets.storm],
     ["--meadow-image", assets.meadow],
     ["--orbit-image", assets.orbit],
@@ -101,10 +104,12 @@ async function sharedWebviewHtml(webview) {
         + `<script src="${resource(webview, assets.bootstrap)}" defer></script>`
         + `<script src="${resource(webview, assets.app)}" defer></script>`
         + `<script src="${resource(webview, assets.metropolisGlass)}" defer></script>`
+        + `<script src="${resource(webview, assets.stormGlass)}" defer></script>`
         + `<script src="${resource(webview, assets.lifecycle)}" defer></script>`
         + `<script src="${resource(webview, assets.client)}" defer></script>`,
     )
     .replace('<script src="/metropolis-glass.js" defer></script>', "")
+    .replace('<script src="/storm-glass.js" defer></script>', "")
     .replace('<script src="/message-lifecycle.js" defer></script>', "")
     .replace('<script src="/hub-client.js" defer></script>', "");
   return { html, roots: Object.values(assets).filter(Boolean) };
