@@ -281,6 +281,8 @@ test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", (
 test("Storm glass uses dense fast rain and irregular branched lightning", () => {
   const glass = fs.readFileSync(require.resolve("../assets/mini-app/storm-glass.js"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(glass, /getPropertyValue\("--stormglass-image"\)/u);
+  assert.doesNotMatch(glass, /const IMAGE = "\/storm-sea\.png"/u);
   assert.match(glass, /\(width \* height\) \/ 5_200/u);
   assert.match(glass, /Math\.max\(120,\s*Math\.min\(360,\s*target\)\)/u);
   assert.match(glass, /heavy \? random\(280,\s*560\) : random\(120,\s*310\)/u);

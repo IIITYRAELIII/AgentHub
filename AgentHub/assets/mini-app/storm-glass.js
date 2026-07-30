@@ -21,7 +21,6 @@
   if (!atmosphere || !canvas) return;
 
   const THEME = "stormglass";
-  const IMAGE = "/storm-sea.png";
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   const context = canvas.getContext("2d");
   if (!context) return;
@@ -38,6 +37,11 @@
   const drops = [];
   let nextLightningAt = 0;
   let lightning = null;
+
+  function cssUrl(value) {
+    const match = String(value ?? "").trim().match(/^url\((['"]?)(.*)\1\)$/u);
+    return match?.[2] ?? "";
+  }
 
   function random(min, max) {
     return min + Math.random() * (max - min);
@@ -338,7 +342,13 @@
     imageReady = true;
     sync();
   });
-  image.src = IMAGE;
+  image.addEventListener("error", () => {
+    atmosphere.dataset.ready = "false";
+    console.warn("Agent Hub: Storm texture is unavailable");
+  }, { once: true });
+  image.src = cssUrl(
+    window.getComputedStyle(root).getPropertyValue("--stormglass-image"),
+  );
 
   window.addEventListener("resize", () => {
     if (root.dataset.theme !== THEME) return;
