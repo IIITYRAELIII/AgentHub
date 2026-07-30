@@ -51,8 +51,10 @@ namespace AgentHubDesktop
 
         private bool refreshing;
         private bool switching;
+        private bool historyLoading;
         private bool restoringDraft;
         private int desktopApiVersion;
+        private long selectionEpoch;
         private string selectedKey;
         private string historyKey;
         private int? historyBefore;
@@ -478,11 +480,13 @@ namespace AgentHubDesktop
 
         private async Task RefreshAsync(bool force)
         {
-            if (refreshing) return;
+            if (refreshing || switching) return;
+            var requestEpoch = selectionEpoch;
             refreshing = true;
             try
             {
                 var snapshot = await client.CallAsync("snapshot", new Dictionary<string, object> { { "refresh", force } });
+                if (switching || requestEpoch != selectionEpoch) return;
                 ApplySnapshot(snapshot);
                 connection.Text = "●  Agent Hub Server";
                 connection.Foreground = Theme.Solid(Theme.Good);
@@ -539,6 +543,7 @@ namespace AgentHubDesktop
                 if (next != selectedKey)
                 {
                     SaveDraft();
+                    selectionEpoch += 1;
                     selectedKey = next;
                     historyKey = null;
                     historyBefore = null;
@@ -649,6 +654,8 @@ namespace AgentHubDesktop
             if (switching || key == selectedKey) return;
             TaskItem item;
             if (!tasks.TryGetValue(key, out item)) return;
+            var requestEpoch = selectionEpoch + 1;
+            selectionEpoch = requestEpoch;
             switching = true;
             SaveDraft();
             try
@@ -659,6 +666,7 @@ namespace AgentHubDesktop
                     { "provider", item.Provider },
                     { "threadId", item.ThreadId }
                 });
+                if (requestEpoch != selectionEpoch) return;
                 ApplySnapshot(snapshot);
                 footer.Text = "Задача выбрана";
             }
@@ -669,7 +677,11 @@ namespace AgentHubDesktop
         private async Task LoadHistoryAsync(bool older)
         {
             TaskItem item;
-            if (String.IsNullOrWhiteSpace(selectedKey) || !tasks.TryGetValue(selectedKey, out item)) return;
+            if (historyLoading || String.IsNullOrWhiteSpace(selectedKey) || !tasks.TryGetValue(selectedKey, out item)) return;
+            var requestKey = selectedKey;
+            var requestEpoch = selectionEpoch;
+            var requestBefore = historyBefore;
+            historyLoading = true;
             olderButton.IsEnabled = false;
             try
             {
@@ -679,8 +691,10 @@ namespace AgentHubDesktop
                     { "threadId", item.ThreadId },
                     { "limit", 10 }
                 };
-                if (older && historyBefore.HasValue) parameters["before"] = historyBefore.Value;
+                if (older && requestBefore.HasValue) parameters["before"] = requestBefore.Value;
                 var page = await client.CallAsync("task-history", parameters);
+                if (requestEpoch != selectionEpoch || requestKey != selectedKey) return;
+                if (older && requestBefore != historyBefore) return;
                 var loaded = new List<Dictionary<string, object>>();
                 foreach (var raw in AgentHubClient.Array(page, "items"))
                 {
@@ -692,7 +706,7 @@ namespace AgentHubDesktop
                 {
                     history.Clear();
                     history.AddRange(loaded);
-                    historyKey = selectedKey;
+                    historyKey = requestKey;
                 }
                 object before;
                 historyBefore = page.TryGetValue("nextBefore", out before) && before != null
@@ -702,7 +716,11 @@ namespace AgentHubDesktop
                 RenderConversation(item);
             }
             catch (Exception error) { footer.Text = "История: " + error.Message; }
-            finally { olderButton.IsEnabled = true; }
+            finally
+            {
+                historyLoading = false;
+                olderButton.IsEnabled = true;
+            }
         }
 
         private async void BeginLoadHistory() { await LoadHistoryAsync(false); }
@@ -1545,7 +1563,7 @@ namespace AgentHubDesktop
                 RenderAttachments();
                 SaveDraft();
                 historyKey = null;
-                footer.Text = "Сообщение принято";
+                footer.Text = AgentHubClient.Text(result, "message", "Ход запущен");
                 await RefreshAsync(false);
             }
             catch (Exception error) { footer.Text = error.Message; }
