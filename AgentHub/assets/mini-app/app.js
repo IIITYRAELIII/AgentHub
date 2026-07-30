@@ -104,9 +104,12 @@ function phoneComposerMode() {
 
 function syncComposerInputMode() {
   const phone = phoneComposerMode();
+  /* В поле телефона помещается около двадцати символов, поэтому подсказка про
+     Enter уходит в подпись: иначе placeholder переносился и обрезался. */
   composerInput.placeholder = phone
-    ? "Сообщение агенту… Enter — новая строка"
+    ? "Сообщение агенту…"
     : "Сообщение агенту…  Enter — отправить · Shift+Enter — новая строка";
+  composerInput.title = phone ? "Enter — новая строка" : "";
   composerSend.title = phone ? "Отправить" : "Отправить (Enter)";
 }
 
@@ -1596,7 +1599,7 @@ function buildLimitsChart(payload) {
       })
       .join("; ")
     : "нет данных";
-  limitsChart.setAttribute("aria-label", `Использование лимитов по времени. ${summary}.`);
+  limitsChart.setAttribute("aria-label", `Израсходовано лимитов по времени. ${summary}.`);
   limitsChart.replaceChildren(svg);
   return series;
 }
@@ -1612,7 +1615,7 @@ function renderLimitsLegend(series) {
       swatch,
       el("span", { class: "limits-legend-name", text: item.name || item.id || "" }),
       item.window ? el("span", { class: "limits-legend-window", text: item.window }) : null,
-      used != null ? el("span", { class: "limits-legend-value", text: `${used}%` }) : null,
+      used != null ? el("span", { class: "limits-legend-value", text: `Расход ${used}%` }) : null,
     ]);
   }));
 }
@@ -1651,7 +1654,7 @@ function limitsTooltipText(info) {
     ? Math.max(0, 100 - used)
     : Math.round(Number(info.remaining) || 0);
   const name = info.window ? `${info.name} · ${info.window}` : info.name;
-  return `${name}. ${time}: занято ${used}%, свободно ${remaining}%`;
+  return `${name}. ${time}: израсходовано ${used}%, осталось ${remaining}%`;
 }
 
 function showLimitsTooltip(info, fx, fy) {
@@ -1663,7 +1666,7 @@ function showLimitsTooltip(info, fx, fy) {
   limitsTooltip.replaceChildren(
     el("span", { class: "limits-tooltip-title", text: info.window ? `${info.name} · ${info.window}` : info.name }),
     el("span", { class: "limits-tooltip-time", text: formatLimitsDateTime(info.at) }),
-    el("span", { class: "limits-tooltip-row", text: `Занято ${used}% · свободно ${remaining}%` }),
+    el("span", { class: "limits-tooltip-row", text: `Расход ${used}% · остаток ${remaining}%` }),
   );
   limitsTooltip.style.left = `${clampNumber(fx * 100, 0, 100)}%`;
   limitsTooltip.style.top = `${clampNumber(fy * 100, 0, 100)}%`;
@@ -2034,11 +2037,20 @@ async function loadJournal({ force = false } = {}) {
         currentVersion = payload.version;
       }
       const date = new Date(payload.updatedAt);
+      /* На телефоне секунды съедают place в шапке, где рядом стоят лимиты и
+         выбор темы; точное время остаётся в подсказке кнопки. */
       const stamp = Number.isNaN(date.getTime())
+        ? ""
+        : date.toLocaleTimeString("ru-RU", {
+            hour: "2-digit",
+            minute: "2-digit",
+            ...(surface === "mobile" ? {} : { second: "2-digit" }),
+          });
+      const exact = Number.isNaN(date.getTime())
         ? ""
         : date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
       updatedAt.textContent = stamp || "Обновить";
-      refreshButton.title = stamp ? `Журнал обновлён в ${stamp}` : "Обновить журнал";
+      refreshButton.title = exact ? `Журнал обновлён в ${exact}` : "Обновить журнал";
       journal.setAttribute("aria-busy", "false");
     } catch (error) {
       updatedAt.textContent = "Ошибка";

@@ -221,7 +221,10 @@ export async function readRateLimitHistory(
       ))
       .map((item) => ({
         ...item,
-        points: downsample(item.points, maximum),
+        points: downsample(
+          item.points.sort((left, right) => Date.parse(left.at) - Date.parse(right.at)),
+          maximum,
+        ),
       })),
     resetCredits,
   };
