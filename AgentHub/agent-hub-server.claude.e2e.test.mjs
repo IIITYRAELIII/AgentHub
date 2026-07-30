@@ -38,6 +38,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   const configPath = path.join(temporaryRoot, "config.json");
   const codexStatePath = path.join(temporaryRoot, "fake-codex-state.json");
   const statePath = path.join(dataDir, "state.json");
+  const workLogLedgerPath = path.join(dataDir, "work-log-usage.json");
   const lockPath = path.join(dataDir, "bot.lock");
   await Promise.all([
     mkdir(dataDir, { recursive: true }),
@@ -431,6 +432,16 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   await telegram.waitForText(`Claude готово: ${secondPrompt}`, { after: mark, timeoutMs: 25_000 });
   await waitFor(async () => (await activeRuns()).length === 0,
     "reattached Claude turn delivered its final answer", 20_000);
+  const journalTurn = await waitFor(async () => {
+    const ledger = await readJson(workLogLedgerPath).catch(() => null);
+    return Object.values(ledger?.turns ?? {}).find((turn) => (
+      turn.provider === "claude"
+      && String(turn.body ?? "").includes(secondPrompt)
+    )) ?? null;
+  }, "Claude WORK_LOG entry", 15_000);
+  assert.equal(journalTurn.threadId, secondThreadId);
+  assert.equal(journalTurn.estimatedCredits, 0.1);
+  assert.equal(journalTurn.estimateKind, "claude-cli-total-cost-usd");
 
   // Брошенный незавершённый транскрипт имеет неопределённую живость: он не
   // считается активным, но новый ход требует явного подтверждения пользователя.

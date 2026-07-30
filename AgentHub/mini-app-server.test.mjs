@@ -164,6 +164,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     for (const pathname of [
       "",
       "app.js",
+      "metropolis-glass.js",
       "message-lifecycle.js",
       "hub-client.js",
       "styles.css",
@@ -215,6 +216,11 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.equal(taiga.status, 200);
     assert.equal(taiga.headers.get("content-type"), "image/png");
     assert.match(taiga.headers.get("cache-control"), /immutable/u);
+    const metropolis = await fetch(`${address.url}metropolis-night.png`);
+    assert.equal(metropolis.status, 200);
+    assert.equal(metropolis.headers.get("content-type"), "image/png");
+    assert.match(metropolis.headers.get("cache-control"), /immutable/u);
+    assert.ok((await metropolis.arrayBuffer()).byteLength > 100_000);
     assert.ok((await blackHole.arrayBuffer()).byteLength > 100_000);
     assert.ok((await taiga.arrayBuffer()).byteLength > 100_000);
     assert.ok((await pulsar.arrayBuffer()).byteLength > 100_000);
@@ -223,6 +229,8 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(page, /<option value="taiga">Rain<\/option>/u);
     assert.match(page, /data-panel-open="view"/u);
     assert.match(page, /data-token-breakdown-toggle/u);
+    assert.match(page, /<option value="metropolis">Мегаполис<\/option>/u);
+    assert.match(page, /data-metropolis-glass/u);
     assert.match(page, /<option value="magma">Магма<\/option>/u);
     assert.match(page, /<option value="storm">Гроза<\/option>/u);
     assert.match(page, /<option value="meadow">Луг<\/option>/u);
@@ -264,6 +272,8 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     }
     const script = await (await fetch(`${address.url}app.js`)).text();
     assert.match(script, /agent-hub-theme/u);
+    assert.match(script, /metropolis: "#050b12"/u);
+    assert.match(script, /"taiga-drops": "metropolis"/u);
     assert.match(script, /graphite: "#17181a"/u);
     assert.match(script, /agent-hub-grouping/u);
     assert.match(script, /document\.documentElement\.dataset\.theme/u);
@@ -275,6 +285,12 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(script, /creditsLabel\.textContent = "Итого"/u);
     assert.match(script, /agent-hub-token-breakdown/u);
     assert.match(script, /function applyBreakdown/u);
+    assert.match(script, /function taskProfile/u);
+    assert.match(script, /\.workLogTaskProfile/u);
+    assert.match(script, /Профиль задачи/u);
+    assert.match(script, /\.dataset\.radarTooltip/u);
+    assert.match(script, /data-radar-hit/u);
+    assert.match(script, /pointerenter/u);
     assert.match(
       script,
       /telegramMode && mobileTelegramPlatforms\.has\(telegramPlatform\)/u,
@@ -321,6 +337,12 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /html\[data-theme="gothic"\]/u);
     assert.match(styles, /url\("\/blackhole-blue\.png"\)/u);
     assert.match(styles, /html\[data-theme="taiga"\]/u);
+    assert.match(styles, /html\[data-theme="metropolis"\] body::after/u);
+    assert.match(styles, /url\("\/metropolis-night\.png"\)/u);
+    const glass = await (await fetch(`${address.url}metropolis-glass.js`)).text();
+    assert.match(glass, /vec4 rainLayer/u);
+    assert.match(glass, /uniform sampler2D uFogImage/u);
+    assert.match(glass, /function createFogTexture/u);
     assert.match(styles, /url\("\/pulsar-beams\.png"\)/u);
     assert.match(styles, /url\("\/magma-crust\.png"\)/u);
     assert.match(styles, /html\[data-theme="magma"\]/u);
@@ -368,6 +390,9 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /details\[data-work-log-task-group\]/u);
     assert.match(styles, /\[data-work-log-task-duration\]/u);
     assert.match(styles, /\[data-work-log-task-credits\]/u);
+    assert.match(styles, /\[data-work-log-task-profile\]/u);
+    assert.match(styles, /\[data-radar-current\]/u);
+    assert.match(styles, /\[data-radar-tooltip\]/u);
     assert.match(styles, /html\[data-grouping="task"\]/u);
     assert.match(styles, /html\[data-surface="mobile"\] \.journal div\[data-work-log-row\]/u);
     assert.match(styles, /span\[data-day-usage-table\]\[data-mobile-expanded\]/u);

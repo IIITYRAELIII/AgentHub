@@ -20,6 +20,11 @@ import {
   resolveClaudeSessionCwd,
 } from "./claude.mjs";
 import {
+  claudeResultEstimatedCredits,
+  claudeResultTokenUsage,
+  scanClaudeHistoricalTranscriptFile,
+} from "./claude-work-log.mjs";
+import {
   cleanupOrphanedClaudeRunOutputs,
   processIsAlive,
   stopProcessTree,
@@ -216,6 +221,8 @@ import { MiniAppPublisher } from "./mini-app-publisher.mjs";
 import { QuickTunnelController } from "./quick-tunnel.mjs";
 
 const config = await loadConfig();
+const globalWorkLogFile = path.join(config.projectRoot, "WORK_LOG.md");
+const globalWorkLogProjectRoots = config.projects.map((project) => project.path);
 const runtimeCommandRoot = process.env.AGENT_HUB_RUNTIME_ROOT
   ?? process.env.TELEGRAM_INTEGRATION_RUNTIME_ROOT
   ?? ((process.env.AGENT_HUB_CONFIG ?? process.env.TELEGRAM_CODEX_CONFIG)
@@ -231,7 +238,7 @@ const workLogUsageStore = new WorkLogUsageStore({
 const miniAppServer = config.miniApp.enabled
   ? new MiniAppServer({
     ...config.miniApp,
-    workLogFile: path.join(config.projectRoot, "WORK_LOG.md"),
+    workLogFile: globalWorkLogFile,
     botToken: config.token,
     allowedUserIds: config.allowedUserIds,
     controlHandler: handleDesktopControl,
@@ -242,7 +249,7 @@ const publicMiniAppServer = config.miniApp.enabled && config.miniApp.quickTunnel
   ? new MiniAppServer({
     host: config.miniApp.host,
     port: config.miniApp.quickTunnel.publicPort,
-    workLogFile: path.join(config.projectRoot, "WORK_LOG.md"),
+    workLogFile: globalWorkLogFile,
     botToken: config.token,
     allowedUserIds: config.allowedUserIds,
     requireTelegramAuth: true,
@@ -493,7 +500,8 @@ const codexTerminalAudit = new CodexTerminalAudit({
     const result = await workLogUsageStore.retractProvisionalAndProject({
       ...identity,
       projectRoot: project.path,
-      workLogFile: path.join(project.path, "WORK_LOG.md"),
+      workLogFile: globalWorkLogFile,
+      projectionProjectRoots: globalWorkLogProjectRoots,
     });
     if (!result.retracted) return;
     turnEndNotifications.retract(identity);
@@ -547,6 +555,7 @@ let taskCatalog = [];
 let taskCatalogRefreshedAt = 0;
 let taskCatalogRefreshInFlight = null;
 let workLogPricingBackfillAttempted = false;
+const claudeTranscriptAuditState = new Map();
 const taskSyncStore = new LocalTaskSyncStore({
   filePath: TASK_SYNC_FILE,
   canonicalizeProjectRoot: (projectRoot) => findProject(projectRoot)?.path ?? projectRoot,
@@ -588,7 +597,7 @@ async function startMiniApp() {
   const address = await miniAppServer.start();
   if (config.miniApp.worker.enabled) {
     miniAppPublisher ??= new MiniAppPublisher({
-      workLogFile: path.join(config.projectRoot, "WORK_LOG.md"),
+      workLogFile: globalWorkLogFile,
       ...config.miniApp.worker,
       controlHandler: handleDesktopControl,
       attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
@@ -1325,7 +1334,8 @@ async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } =
     completedAt: completion.completedAt,
     status: completion.status,
     projectRoot: project.path,
-    workLogFile: path.join(project.path, "WORK_LOG.md"),
+    workLogFile: globalWorkLogFile,
+    projectionProjectRoots: globalWorkLogProjectRoots,
   };
   if (!workLogId) {
     return workLogUsageStore.recordAutomaticAndProject({
@@ -1335,6 +1345,60 @@ async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } =
   return workLogUsageStore.recordAndProject({
     ...fields,
     workLogId,
+  });
+}
+
+async function projectClaudeRunToWorkLog(run, {
+  answer,
+  status = "completed",
+  result = null,
+  snapshot = null,
+} = {}) {
+  if (!run?.threadId) return null;
+  await refreshTaskDiff(run);
+  let transcriptTurn = null;
+  let transcriptPath = String(snapshot?.transcriptPath ?? "").trim();
+  if (!transcriptPath) {
+    const current = await readClaudeSessionSnapshot(run.threadId).catch(() => null);
+    transcriptPath = String(current?.transcriptPath ?? "").trim();
+  }
+  if (transcriptPath) {
+    const scan = await scanClaudeHistoricalTranscriptFile(transcriptPath).catch((error) => {
+      console.error(`Cannot read Claude transcript for WORK_LOG ${run.threadId}:`, error.message);
+      return null;
+    });
+    transcriptTurn = scan?.turns?.at(-1) ?? null;
+  }
+  const resultUsage = claudeResultTokenUsage(result);
+  const usage = transcriptTurn?.usageReported ? transcriptTurn.usage : resultUsage.usage;
+  const usageReported = transcriptTurn?.usageReported === true || resultUsage.reported === true;
+  const modelUsage = result?.modelUsage ?? result?.model_usage;
+  const resultModels = modelUsage && typeof modelUsage === "object" && !Array.isArray(modelUsage)
+    ? Object.keys(modelUsage).map((value) => String(value).trim().toLowerCase()).filter(Boolean)
+    : [];
+  const completedAt = transcriptTurn?.completedAt || new Date().toISOString();
+  return projectTurnUsageToWorkLog({
+    provider: "claude",
+    threadId: run.threadId,
+    turnId: transcriptTurn?.turnId || run.turnId || randomUUID(),
+    projectRoot: run.projectRoot,
+    taskTitle: runTaskTitle(run),
+    status,
+    usage,
+    usageReported,
+    estimatedCredits: claudeResultEstimatedCredits(result),
+    estimateKind: result ? "claude-cli-total-cost-usd" : "",
+    model: transcriptTurn?.model || resultModels.join(",") || run.modelId || "",
+    serviceTier: transcriptTurn?.serviceTier || "default",
+    startedAt: transcriptTurn?.startedAt || run.startedAt,
+    completedAt,
+    prompt: transcriptTurn?.prompt || run.promptPreview,
+    changedFiles: changedFilesForRun(run),
+    diff: run.latestDiff ?? "",
+    message: null,
+  }, {
+    title: conciseTurnTitle(answer, status),
+    body: answer,
   });
 }
 
@@ -1861,13 +1925,12 @@ const restoredTurnMessages = [
 await workLogUsageStore.mergeTurnTexts(restoredTurnMessages).catch((error) => {
   console.error("Cannot restore WORK_LOG turn texts:", error.message);
 });
-for (const project of config.projects) {
-  await workLogUsageStore.project(path.join(project.path, "WORK_LOG.md"), {
-    projectRoot: project.path,
-  }).catch((error) => {
-    console.error(`Cannot refresh WORK_LOG usage for ${project.path}:`, error.message);
-  });
-}
+await workLogUsageStore.project(globalWorkLogFile, {
+  projectRoot: config.projectRoot,
+  projectionProjectRoots: globalWorkLogProjectRoots,
+}).catch((error) => {
+  console.error(`Cannot refresh global WORK_LOG usage:`, error.message);
+});
 
 try {
   if (stateLoadFailed) {
@@ -2181,7 +2244,8 @@ async function backfillWorkLogPricingMetadata(codexThreads) {
       await workLogUsageStore.synchronizePricingMetadataAndProject({
         items: resolved,
         projectRoot: project.path,
-        workLogFile: path.join(project.path, "WORK_LOG.md"),
+        workLogFile: globalWorkLogFile,
+        projectionProjectRoots: globalWorkLogProjectRoots,
       });
     }
     const missingImageEstimates = await workLogUsageStore
@@ -2206,7 +2270,8 @@ async function backfillWorkLogPricingMetadata(codexThreads) {
       await workLogUsageStore.synchronizeUsageEstimatesAndProject({
         items: imageEstimates,
         projectRoot: project.path,
-        workLogFile: path.join(project.path, "WORK_LOG.md"),
+        workLogFile: globalWorkLogFile,
+        projectionProjectRoots: globalWorkLogProjectRoots,
       });
     }
     if (resolved.length) {
@@ -2218,6 +2283,53 @@ async function backfillWorkLogPricingMetadata(codexThreads) {
   } catch (error) {
     console.error("Cannot backfill WORK_LOG credit pricing metadata:", error.message);
   }
+}
+
+async function auditClaudeTranscriptSnapshots(snapshots) {
+  let recorded = 0;
+  for (const snapshot of snapshots ?? []) {
+    const transcriptPath = String(snapshot?.transcriptPath ?? "").trim();
+    const sessionId = String(snapshot?.sessionId ?? "").trim();
+    const project = snapshot?.cwd ? findProject(snapshot.cwd) : null;
+    if (!transcriptPath || !sessionId || !project) continue;
+    const auditVersion = Number(snapshot.modifiedAtMs) || 0;
+    if (claudeTranscriptAuditState.get(transcriptPath) === auditVersion) continue;
+    const scan = await scanClaudeHistoricalTranscriptFile(transcriptPath);
+    const turn = scan.turns.at(-1);
+    if (turn) {
+      const identity = {
+        provider: "claude",
+        threadId: sessionId,
+        turnId: turn.turnId,
+      };
+      const existing = await workLogUsageStore.getTurn(identity);
+      if (!existing || (!existing.body && turn.body) || (!existing.usageReported && turn.usageReported)) {
+        const taskTitle = String(snapshot.title ?? turn.taskTitle ?? "").trim();
+        await projectTurnUsageToWorkLog({
+          ...turn,
+          ...identity,
+          projectRoot: project.path,
+          taskTitle,
+          taskThreadId: sessionId,
+          parentThreadId: "",
+          aggregateOnly: false,
+          provisional: false,
+          changedFiles: [],
+          diff: "",
+          message: null,
+        }, {
+          title: turn.body ? conciseTurnTitle(turn.body, turn.status) : turn.title,
+          body: turn.body,
+        });
+        recorded += 1;
+      }
+    }
+    claudeTranscriptAuditState.set(transcriptPath, auditVersion);
+    while (claudeTranscriptAuditState.size > 2_000) {
+      claudeTranscriptAuditState.delete(claudeTranscriptAuditState.keys().next().value);
+    }
+  }
+  if (recorded) console.log(`Recorded ${recorded} external Claude turn(s) in WORK_LOG`);
 }
 
 async function buildTaskCatalog() {
@@ -2278,6 +2390,9 @@ async function buildTaskCatalog() {
     entries.push(...taskSyncStore.catalog({ provider: "codex" }));
   }
   if (claudeResult.status === "fulfilled") {
+    await auditClaudeTranscriptSnapshots(claudeResult.value).catch((error) => {
+      console.error("Cannot audit Claude WORK_LOG transcripts:", error.message);
+    });
     for (const snapshot of claudeResult.value) {
       const project = snapshot.cwd ? findProject(snapshot.cwd) : null;
       if (project && snapshot.sessionId) {
@@ -2311,7 +2426,8 @@ async function buildTaskCatalog() {
           taskTitle: entry.title,
         })),
       projectRoot: project.path,
-      workLogFile: path.join(project.path, "WORK_LOG.md"),
+      workLogFile: globalWorkLogFile,
+      projectionProjectRoots: globalWorkLogProjectRoots,
     });
   }
   let titleChanged = false;
@@ -4993,6 +5109,13 @@ async function finishClaudeRun(run, {
     }
     await finishProgress(run, failed ? `Claude остановлен: ${answer}` : "Задача завершена.");
     const response = failed ? `Ошибка Claude Code: ${answer}` : answer;
+    await projectClaudeRunToWorkLog(run, {
+      answer: response,
+      status: failed ? "failed" : "completed",
+      result,
+    }).catch((error) => {
+      console.error(`Cannot update WORK_LOG for Claude turn ${run.turnId}:`, error.message);
+    });
     await finalizeRunDelivery(run, {
       answer: response,
       message: `${response}\n\n${formatClaudeUsage(result)}`,
@@ -5003,6 +5126,12 @@ async function finishClaudeRun(run, {
   } catch (error) {
     await finishProgress(run, `Claude остановлен: ${error.message}`);
     const answer = `Ошибка Claude Code: ${error.message}`;
+    await projectClaudeRunToWorkLog(run, {
+      answer,
+      status: "failed",
+    }).catch((journalError) => {
+      console.error(`Cannot update WORK_LOG for failed Claude turn ${run.turnId}:`, journalError.message);
+    });
     await finalizeRunDelivery(run, {
       answer,
       description: "ошибка Claude",
@@ -5472,6 +5601,13 @@ async function finishObservedRun(run, snapshot) {
       description: "финальный ответ наблюдаемого хода",
     });
   } else {
+    await projectClaudeRunToWorkLog(run, {
+      answer,
+      status: snapshot?.status ?? "completed",
+      snapshot,
+    }).catch((error) => {
+      console.error(`Cannot update WORK_LOG for observed Claude turn ${run.turnId}:`, error.message);
+    });
     await finalizeRunDelivery(run, {
       answer,
       deliver,
@@ -5862,7 +5998,7 @@ async function pollRateLimits() {
       codexRateLimitRows(result, observedAt),
     );
     await workLogUsageStore.projectRateLimits(
-      path.join(config.projectRoot, "WORK_LOG.md"),
+      globalWorkLogFile,
       summary,
       observedAt,
     );
