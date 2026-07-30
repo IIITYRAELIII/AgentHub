@@ -164,6 +164,7 @@ emit({
     cache_read_input_tokens: 20,
     output_tokens: 15,
   },
+  total_cost_usd: 0.004,
 });
 
 process.exit(shouldFail ? 1 : 0);

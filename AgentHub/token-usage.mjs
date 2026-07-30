@@ -17,11 +17,7 @@ const MODEL_CREDIT_RATES = new Map([
 ]);
 
 const CREDIT_FIELDS = ["input", "cache", "output", "reasoning", "estimate", "total"];
-
-function tokenCount(value) {
-  const number = Number(value ?? 0);
-  return Number.isFinite(number) && number > 0 ? Math.trunc(number) : 0;
-}
+export const CREDITS_PER_USD = 25;
 
 function normalizedModel(value) {
   return String(value ?? "").trim().toLowerCase();
@@ -95,6 +91,12 @@ export function formatCredits(value) {
     minimumFractionDigits: Number.isInteger(normalized) ? 0 : 1,
     maximumFractionDigits: 1,
   })} cr`;
+}
+
+export function creditsFromUsd(value) {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const usd = Number(value);
+  return Number.isFinite(usd) && usd >= 0 ? usd * CREDITS_PER_USD : null;
 }
 
 export function emptyCreditBreakdown() {
@@ -198,27 +200,6 @@ export function formatTaskTokenUsage(usage, options = {}) {
 
 export function formatTaskCreditBreakdown(breakdown) {
   return formatCreditBreakdown(addCreditBreakdown(emptyCreditBreakdown(), breakdown));
-}
-
-// Claude does not expose OpenAI Codex credit rates. Keep its existing
-// token-equivalent formatter separate until Claude accounting is integrated.
-export function formatLegacyTokenEquivalents(usage) {
-  const input = tokenCount(usage?.inputTokens);
-  const cache = tokenCount(usage?.cachedInputTokens);
-  const outputWithReasoning = tokenCount(usage?.outputTokens);
-  const reasoning = Math.min(outputWithReasoning, tokenCount(usage?.reasoningOutputTokens));
-  const output = outputWithReasoning - reasoning;
-  const values = [input, cache / 10, output * 6, reasoning * 6];
-  const total = values.reduce((sum, value) => sum + value, 0);
-  const percentages = percentagesAddingUpToHundred(values);
-  const format = (value) => `${Math.round(value / 1_000).toLocaleString("ru-RU")} кТЭ`;
-  return [
-    `📊 За задачу: ${format(total)}`,
-    `Вход: ${format(values[0])} (${percentages[0].toLocaleString("ru-RU")}%)`,
-    `Кэш: ${format(values[1])} (${percentages[1].toLocaleString("ru-RU")}%)`,
-    `Выход: ${format(values[2])} (${percentages[2].toLocaleString("ru-RU")}%)`,
-    `Думы: ${format(values[3])} (${percentages[3].toLocaleString("ru-RU")}%)`,
-  ].join("\n");
 }
 
 export function emptyTokenUsage() {
