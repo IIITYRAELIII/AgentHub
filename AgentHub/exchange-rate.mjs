@@ -19,9 +19,8 @@ function isoRateDate(value) {
 
 export function parseCbrDailyRatesXml(value) {
   const text = String(value ?? "");
-  const block = text.match(
-    /<Valute\b[^>]*>[\s\S]*?<CharCode>\s*USD\s*<\/CharCode>[\s\S]*?<\/Valute>/iu,
-  )?.[0];
+  const block = (text.match(/<Valute\b[^>]*>[\s\S]*?<\/Valute>/giu) ?? [])
+    .find((candidate) => /<CharCode>\s*USD\s*<\/CharCode>/iu.test(candidate));
   if (!block) throw new Error("CBR response does not contain the USD rate");
   const nominal = Number(block.match(/<Nominal>\s*([^<]+)\s*<\/Nominal>/iu)?.[1]);
   const quoted = Number(

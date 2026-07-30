@@ -14,6 +14,10 @@ import {
 
 const xml = `<?xml version="1.0" encoding="windows-1251"?>
 <ValCurs Date="30.07.2026" name="Foreign Currency Market">
+  <Valute ID="R01010">
+    <NumCode>036</NumCode><CharCode>AUD</CharCode><Nominal>1</Nominal>
+    <Name>Australian Dollar</Name><Value>55,5088</Value><VunitRate>55,5088</VunitRate>
+  </Valute>
   <Valute ID="R01235">
     <NumCode>840</NumCode><CharCode>USD</CharCode><Nominal>1</Nominal>
     <Name>US Dollar</Name><Value>78,4049</Value><VunitRate>78,4049</VunitRate>
