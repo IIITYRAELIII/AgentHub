@@ -56,13 +56,14 @@ export function buildClaudeArgs({
     "--verbose",
     "--include-partial-messages",
   ];
+  const directories = [...new Set(
+    additionalDirectories.filter(Boolean).map((item) => path.resolve(item)),
+  )];
+  if (directories.length) args.push("--add-dir", ...directories);
   if (autoApprove) args.push("--permission-mode", "bypassPermissions");
   else args.push("--permission-mode", permissionMode);
   if (model) args.push("--model", model);
   if (sessionId) args.push("--resume", sessionId);
-  for (const directory of new Set(additionalDirectories.filter(Boolean).map((item) => path.resolve(item)))) {
-    args.push("--add-dir", directory);
-  }
   args.push(prompt);
   return args;
 }

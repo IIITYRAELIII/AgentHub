@@ -15,6 +15,7 @@ import {
   waitFor,
 } from "./e2e/telegram-harness.mjs";
 import { processIsAlive } from "./claude-run-io.mjs";
+import { callDesktopControl } from "./desktop-control.mjs";
 
 const AGENT_HUB_ROOT = path.resolve(import.meta.dirname);
 const BOT_FILE = path.join(AGENT_HUB_ROOT, "agent-hub-server.mjs");
@@ -232,6 +233,36 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
     "utf8",
   );
   assert.match(nestedTranscript, /Продолжить вложенную задачу/);
+
+  // Возобновление Claude с изображением обязано передать prompt отдельно от
+  // многозначного --add-dir. Иначе реальный CLI поглощает prompt как ещё один
+  // каталог и отвечает ошибкой про отсутствующий deferred tool marker.
+  const attachmentDirectory = path.join(temporaryRoot, "DesktopApp", "attachments");
+  const imagePath = path.join(attachmentDirectory, "resume-image.png");
+  await mkdir(attachmentDirectory, { recursive: true });
+  await writeFile(imagePath, Buffer.from("fake-claude-image"));
+  const imagePrompt = "Проверь изображение в продолженной задаче Claude";
+  const imageStart = await callDesktopControl("send-message", {
+    text: imagePrompt,
+    provider: "claude",
+    threadId: nestedSessionId,
+    attachments: [imagePath],
+    clientUserMessageId: "claude-resume-image",
+  }, { runtimeRoot: temporaryRoot });
+  assert.equal(imageStart.accepted, true);
+  await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot: temporaryRoot });
+    return snapshot.activeCount === 0 ? snapshot : null;
+  }, "resumed Claude image completion", 15_000);
+  const imageHistory = await callDesktopControl("task-history", {
+    provider: "claude",
+    threadId: nestedSessionId,
+    limit: 10,
+  }, { runtimeRoot: temporaryRoot });
+  const imageExchange = imageHistory.items.find((item) => item.prompt.includes(imagePrompt));
+  assert.ok(imageExchange, "resumed Claude image prompt must reach the session transcript");
+  assert.match(imageExchange.answer, /Claude готово:/);
+  assert.doesNotMatch(imageExchange.answer, /deferred tool marker/i);
 
   // Первая задача Claude виснет до снятия удержания и остаётся управляемой ботом.
   mark = telegram.calls.length;

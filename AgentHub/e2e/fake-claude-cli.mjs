@@ -21,7 +21,21 @@ import process from "node:process";
 const args = process.argv.slice(2);
 const resumeIndex = args.indexOf("--resume");
 const sessionId = resumeIndex >= 0 ? args[resumeIndex + 1] : randomUUID();
-const prompt = args.at(-1) ?? "";
+const promptIndex = args.length - 1;
+let addDirectoryConsumesPrompt = false;
+let readingAdditionalDirectories = false;
+for (let index = 0; index <= promptIndex; index += 1) {
+  const value = String(args[index] ?? "");
+  if (value === "--add-dir") {
+    readingAdditionalDirectories = true;
+    continue;
+  }
+  if (readingAdditionalDirectories && value.startsWith("-")) {
+    readingAdditionalDirectories = false;
+  }
+  if (index === promptIndex) addDirectoryConsumesPrompt = readingAdditionalDirectories;
+}
+const prompt = addDirectoryConsumesPrompt ? "" : args.at(-1) ?? "";
 const holdDirectory = process.env.FAKE_CLAUDE_HOLD_DIR ?? "";
 const transcriptRoot = process.env.FAKE_CLAUDE_TRANSCRIPT_ROOT ?? "";
 const holdMatch = /\[hold:([^\]]+)\]/.exec(prompt);
@@ -33,6 +47,20 @@ if (prompt === "/usage") {
   sleep(Number(process.env.FAKE_CLAUDE_USAGE_DELAY_MS ?? 0));
   process.stdout.write("Current session\n5h 80% · resets in 2h\n");
   process.exit(0);
+}
+
+if (!prompt && resumeIndex >= 0) {
+  const message = "No deferred tool marker found in the resumed session. Provide a prompt to continue the conversation.";
+  process.stderr.write(message);
+  emit({
+    type: "result",
+    subtype: "error_during_execution",
+    session_id: sessionId,
+    result: message,
+    is_error: true,
+    usage: {},
+  });
+  process.exit(1);
 }
 
 if (childMatch && holdDirectory) {

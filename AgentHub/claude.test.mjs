@@ -28,6 +28,29 @@ test("buildClaudeArgs creates a resumable safe invocation", () => {
   ]);
 });
 
+test("Claude image directories cannot consume a resumed prompt", () => {
+  const imageDirectory = path.resolve("C:/runtime/DesktopApp/attachments");
+  const args = buildClaudeArgs({
+    prompt: "Проверь приложенное изображение",
+    sessionId: "session-image",
+    model: "opus",
+    permissionMode: "acceptEdits",
+    additionalDirectories: [imageDirectory, imageDirectory],
+  });
+  assert.deepEqual(args, [
+    "--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+    "--add-dir", imageDirectory,
+    "--permission-mode", "acceptEdits",
+    "--model", "opus",
+    "--resume", "session-image",
+    "Проверь приложенное изображение",
+  ]);
+  assert.ok(
+    args.indexOf("--permission-mode") > args.indexOf("--add-dir"),
+    "a scalar option must terminate Claude's variadic --add-dir before the prompt",
+  );
+});
+
 test("auto approval maps only to bypassPermissions", () => {
   const args = buildClaudeArgs({ prompt: "run", autoApprove: true });
   assert.deepEqual(args.slice(0, 7), [
