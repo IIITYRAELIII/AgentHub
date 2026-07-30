@@ -86,6 +86,7 @@ export function createDesktopSnapshotFactory({
       runtime: run?.appServer ?? (entry.executionOwner
         ? tasks.executionRuntimeLabel(entry.executionOwner)
         : null),
+      startedAt: run?.startedAt ?? entry.startedAt ?? null,
       updatedAtMs: Math.max(
         Number(entry.lastActivityAtMs) || 0,
         Number(entry.updatedAtMs) || 0,

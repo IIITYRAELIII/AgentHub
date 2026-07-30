@@ -42,6 +42,7 @@ function fixture(overrides = {}) {
     running: true,
     activityUnknown: false,
     executionOwner: "vscode",
+    startedAt: "2026-07-30T09:55:00.000Z",
     lastActivityAtMs: 100,
     updatedAtMs: 200,
   };
@@ -227,6 +228,7 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
     "activityUnknown",
     "executionOwner",
     "runtime",
+    "startedAt",
     "updatedAtMs",
     "orderingActivityAtMs",
     "lastAnswer",
@@ -239,10 +241,16 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
   assert.equal(snapshot.running, true);
   assert.equal(snapshot.executionOwner, "hub");
   assert.equal(snapshot.runtime, "Agent Hub Server");
+  assert.equal(snapshot.startedAt, "2026-07-30T10:00:00.000Z");
   assert.equal(snapshot.updatedAtMs, Date.parse("2026-07-30T10:01:00.000Z"));
   assert.equal(snapshot.orderingActivityAtMs, 300);
   assert.equal(snapshot.lastAnswer, "Последний ответ");
   assert.equal(snapshot.run.id, "run-1");
+});
+
+test("desktopTaskSnapshot exposes catalog start time without an observer run", () => {
+  const { desktopTaskSnapshot, entry } = fixture({ run: null });
+  assert.equal(desktopTaskSnapshot(entry).startedAt, "2026-07-30T09:55:00.000Z");
 });
 
 test("desktopSnapshot preserves top-level settings, queues and restart state", async () => {
