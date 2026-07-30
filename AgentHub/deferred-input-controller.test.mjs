@@ -67,3 +67,58 @@ test("DeferredInputController returns a failed launch to pending without losing 
   assert.deepEqual(state.notifications, ["one"]);
   assert.match(state.updates[0][1], /сохранено/);
 });
+
+test("DeferredInputController preserves FIFO order inside one task", async () => {
+  const started = [];
+  const state = fixture({ start: async (item) => started.push(item.id) });
+  const task = { provider: "codex", projectRoot: "D:\\Work", threadId: "thread" };
+  state.queuedInputs.set("old", {
+    ...task,
+    id: "old",
+    taskTitle: "Task",
+    createdAt: "2026-07-30T08:00:00.000Z",
+  });
+  state.queuedInputs.set("new", {
+    ...task,
+    id: "new",
+    taskTitle: "Task",
+    createdAt: "2026-07-30T08:01:00.000Z",
+  });
+
+  await state.controller.process("new");
+  assert.deepEqual(started, []);
+  assert.equal(state.queuedInputs.has("new"), true);
+
+  await state.controller.process("old");
+  assert.deepEqual(started, ["old"]);
+  assert.equal(state.queuedInputs.has("old"), false);
+
+  await state.controller.process("new");
+  assert.deepEqual(started, ["old", "new"]);
+});
+
+test("DeferredInputController does not serialize unrelated tasks", async () => {
+  const started = [];
+  const state = fixture({ start: async (item) => started.push(item.id) });
+  state.queuedInputs.set("a", {
+    id: "a",
+    provider: "codex",
+    projectRoot: "D:\\Work",
+    threadId: "thread-a",
+    taskTitle: "A",
+  });
+  state.queuedInputs.set("b", {
+    id: "b",
+    provider: "codex",
+    projectRoot: "D:\\Work",
+    threadId: "thread-b",
+    taskTitle: "B",
+  });
+
+  await Promise.all([
+    state.controller.process("b"),
+    state.controller.process("a"),
+  ]);
+
+  assert.deepEqual(started.sort(), ["a", "b"]);
+});
