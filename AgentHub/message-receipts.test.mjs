@@ -51,3 +51,26 @@ test("message receipt identity includes provider and thread", () => {
     messageReceiptKey({ ...identity, threadId: "thread-2" }),
   );
 });
+
+test("message receipt result can follow a deferred message into an active run", async () => {
+  const fingerprint = await messageRequestFingerprint({ text: "После хода" });
+  const registry = new MessageReceiptRegistry();
+  registry.remember(identity, fingerprint, {
+    accepted: false,
+    deferred: true,
+    queued: true,
+    id: "queued-1",
+  });
+
+  assert.equal(registry.updateResult(identity, {
+    accepted: true,
+    runId: "run-1",
+    turnId: "turn-1",
+  }), true);
+  assert.deepEqual(registry.find(identity, fingerprint), {
+    accepted: true,
+    runId: "run-1",
+    turnId: "turn-1",
+  });
+  assert.equal(registry.updateResult({ ...identity, clientUserMessageId: "missing" }, {}), false);
+});

@@ -166,6 +166,7 @@ const themes = {
   blackhole: "#000000",
   taiga: "#070c12",
   metropolis: "#050b12",
+  stormglass: "#05090f",
   magma: "#0a0605",
   storm: "#070b12",
   meadow: "#070d08",
@@ -1156,11 +1157,25 @@ function renderApprovals() {
 }
 
 function renderQueue() {
-  const queued = state.queue.get(state.selectedId) ?? [];
+  const queued = (state.queue.get(state.selectedId) ?? [])
+    .filter((entry) => entry.state !== "dispatching")
+    .slice()
+    .sort((left, right) => {
+      const leftAt = Date.parse(left.createdAt || 0);
+      const rightAt = Date.parse(right.createdAt || 0);
+      return (Number.isFinite(leftAt) ? leftAt : Number.POSITIVE_INFINITY)
+        - (Number.isFinite(rightAt) ? rightAt : Number.POSITIVE_INFINITY);
+    });
   queueBox.replaceChildren();
   queueBox.hidden = queued.length === 0;
   if (queued.length === 0) return;
-  queueBox.append(el("div", { class: "queue-head", text: `Отложено: ${queued.length}` }));
+  const pendingCount = queued.filter((entry) => entry.state === "pending").length;
+  const queuedCount = queued.length - pendingCount;
+  const counts = [
+    pendingCount ? `Требуют решения: ${pendingCount}` : "",
+    queuedCount ? `В очереди: ${queuedCount}` : "",
+  ].filter(Boolean).join(" · ");
+  queueBox.append(el("div", { class: "queue-head", text: counts }));
   for (const entry of queued) {
     const actions = [];
     if (entry.state === "pending") {

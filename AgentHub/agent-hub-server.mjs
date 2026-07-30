@@ -210,7 +210,10 @@ import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "./cod
 import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
 import { TaskProgressController } from "./task-progress-controller.mjs";
 import { TaskObserverController } from "./task-observer-controller.mjs";
-import { DeferredInputController } from "./deferred-input-controller.mjs";
+import {
+  DeferredInputController,
+  isRetryableDeferredLaunchError,
+} from "./deferred-input-controller.mjs";
 import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "./task-recovery.mjs";
 import { WorkLogUsageStore } from "./work-log-usage.mjs";
 import { miniAppMenuButtonRequests, MiniAppServer } from "./mini-app-server.mjs";
@@ -1823,13 +1826,22 @@ try {
       guardConcurrentRepositoryWrites: config.guardConcurrentRepositoryWrites,
     });
     if (!restored) continue;
-    (restored.destination === "queued" ? queuedInputs : pendingInputs)
+    const destination = restored.destination === "pending"
+      && restored.item.lastError
+      && isRetryableDeferredLaunchError(new Error(restored.item.lastError))
+      ? "queued"
+      : restored.destination;
+    (destination === "queued" ? queuedInputs : pendingInputs)
       .set(restored.item.id, restored.item);
   }
   for (const item of Array.isArray(saved.queuedInputs) ? saved.queuedInputs : []) {
     if (item?.id && item?.threadId && item?.provider) queuedInputs.set(item.id, item);
   }
   desktopMessageReceipts.restore(saved.desktopMessageReceipts);
+  for (const item of pendingInputs.values()) updateDeferredDesktopReceipt(item, "pending");
+  for (const item of queuedInputs.values()) {
+    updateDeferredDesktopReceipt(item, item.dispatchingAt ? "dispatching" : "queued");
+  }
   for (const value of Array.isArray(saved.forwardBundles) ? saved.forwardBundles : []) {
     const restored = restoreForwardBundle(value, {
       maxAgeMs: config.deferredInputTtlHours * 60 * 60 * 1000,
@@ -2962,15 +2974,18 @@ async function desktopDeferredInput(params) {
   if (action === "cancel") {
     pendingInputs.delete(id);
     queuedInputs.delete(id);
+    updateDeferredDesktopReceipt(item, "cancelled");
     await cleanupDeferredFiles(item);
     await saveState();
     await updateDeferredMessage(item, "❌ Сохранённое сообщение отменено.");
+    deferredInputController.scheduleNextForTask(item);
     return { accepted: true, message: "Сохранённое сообщение отменено" };
   }
   if (!pendingInputs.has(id)) throw new Error("Сообщение уже находится в очереди");
   if (action === "queue") {
     pendingInputs.delete(id);
     queuedInputs.set(id, item);
+    updateDeferredDesktopReceipt(item, "queued");
     await saveState();
     await updateDeferredMessage(item, `⏳ Сообщение поставлено в очередь задачи «${item.taskTitle}».`);
     scheduleQueuedInput(item, 500);
@@ -3000,8 +3015,10 @@ async function desktopDeferredInput(params) {
     });
     if (outcome?.deferred) throw new Error("Условие безопасного запуска всё ещё не выполнено");
     pendingInputs.delete(id);
+    updateDeferredDesktopReceipt(item, "started", taskRuns.forTask(binding));
     await saveState();
     await updateDeferredMessage(item, `⚠️ Сообщение отправлено в задачу «${item.taskTitle}».`);
+    deferredInputController.scheduleNextForTask(item);
     return { accepted: true, message: "Сообщение принудительно запущено" };
   }
   if (action === "new") {
@@ -3012,8 +3029,10 @@ async function desktopDeferredInput(params) {
     });
     if (outcome?.deferred) throw new Error("Новая задача неожиданно оказалась занята");
     pendingInputs.delete(id);
+    updateDeferredDesktopReceipt(item, "started", taskRuns.forTask(selectedTask()));
     await saveState();
     await updateDeferredMessage(item, `🆕 Сообщение отправлено в новую задачу «${activeThreadTitle}».`);
+    deferredInputController.scheduleNextForTask(item);
     return { accepted: true, message: "Сообщение отправлено в новую задачу", snapshot: await desktopSnapshot() };
   }
   throw new Error("Неизвестное действие с сохранённым сообщением");
@@ -3181,6 +3200,15 @@ const desktopMessageController = createDesktopMessageController({
   taskExternalActivity,
   readCodexThread,
   deferConflictingInput,
+  hasDeferredBacklog: (target) => {
+    const provider = String(target?.provider ?? "").toLowerCase();
+    const projectRoot = String(target?.projectRoot ?? "").toLowerCase();
+    const threadId = String(target?.threadId ?? "").toLowerCase();
+    return [...pendingInputs.values(), ...queuedInputs.values()].some((item) =>
+      String(item?.provider ?? "").toLowerCase() === provider
+      && String(item?.projectRoot ?? "").toLowerCase() === projectRoot
+      && String(item?.threadId ?? "").toLowerCase() === threadId);
+  },
   scheduleQueuedInput,
   sendRpc,
   setProgressStage,
@@ -4172,9 +4200,67 @@ async function updateDeferredMessage(item, text, replyMarkup = { inline_keyboard
   }).catch(() => {});
 }
 
+function updateDeferredDesktopReceipt(item, state, started = null) {
+  const identity = {
+    provider: item?.provider,
+    threadId: item?.threadId,
+    clientUserMessageId: item?.clientUserMessageId,
+  };
+  if (!identity.clientUserMessageId) return false;
+  const base = {
+    id: item.id,
+    clientUserMessageId: item.clientUserMessageId,
+  };
+  if (state === "started") {
+    return desktopMessageReceipts.updateResult(identity, {
+      accepted: true,
+      runId: started?.id ?? null,
+      threadId: started?.threadId ?? item.threadId,
+      turnId: started?.turnId ?? null,
+      clientUserMessageId: item.clientUserMessageId,
+    });
+  }
+  if (state === "cancelled") {
+    return desktopMessageReceipts.updateResult(identity, {
+      ...base,
+      accepted: false,
+      deferred: false,
+      cancelled: true,
+      message: "Сохранённое сообщение отменено.",
+    });
+  }
+  const queued = ["queued", "dispatching", "retrying"].includes(state);
+  return desktopMessageReceipts.updateResult(identity, {
+    ...base,
+    accepted: false,
+    deferred: true,
+    queued,
+    dispatching: state === "dispatching",
+    reason: state === "pending" ? "launch-failed" : item.conflictKind ?? "task-running",
+    message: state === "dispatching"
+      ? "Сообщение отправляется в задачу."
+      : state === "retrying"
+        ? "Запуск временно недоступен; сообщение остаётся первым в очереди."
+        : state === "pending"
+          ? "Не удалось запустить сообщение; требуется выбрать дальнейшее действие."
+          : "Сообщение поставлено в очередь и будет отправлено после текущего хода.",
+  });
+}
+
 const deferredInputController = new DeferredInputController({
   pendingInputs,
   queuedInputs,
+  findStarted: async (item) => {
+    const run = taskRuns.forTask({
+      provider: item.provider,
+      projectRoot: item.projectRoot,
+      threadId: item.threadId,
+    });
+    return run?.clientUserMessageId
+      && run.clientUserMessageId === item.clientUserMessageId
+      ? run
+      : null;
+  },
   isBlocked: async (item) => {
   const target = {
     provider: item.provider,
@@ -4209,7 +4295,9 @@ const deferredInputController = new DeferredInputController({
     await launchTurn(run, item.input, item.temporaryFiles ?? [], {
       forceSpeechButton: item.forceSpeechButton === true,
     });
+    return run;
   },
+  onStateChange: updateDeferredDesktopReceipt,
   persist: () => saveState(),
   updateMessage: updateDeferredMessage,
   pendingKeyboard: (item) => pendingInputKeyboard(item.id, { allowForce: item.allowForce === true }),
@@ -6539,9 +6627,11 @@ async function dispatchTelegramCallback(callback, route) {
     try {
       if (action === "cancel") {
         pendingInputs.delete(id);
+        updateDeferredDesktopReceipt(item, "cancelled");
         await cleanupDeferredFiles(item);
         await saveState();
         await updateDeferredMessage(item, "❌ Сохранённое сообщение отменено.");
+        deferredInputController.scheduleNextForTask(item);
         return;
       }
       if (action === "show") {
@@ -6558,6 +6648,7 @@ async function dispatchTelegramCallback(callback, route) {
       if (action === "queue") {
         pendingInputs.delete(id);
         queuedInputs.set(id, item);
+        updateDeferredDesktopReceipt(item, "queued");
         await saveState();
         await updateDeferredMessage(
           item,
@@ -6585,8 +6676,10 @@ async function dispatchTelegramCallback(callback, route) {
         });
         if (outcome?.deferred) throw new Error("условие безопасного запуска всё ещё не выполнено");
         pendingInputs.delete(id);
+        updateDeferredDesktopReceipt(item, "started", taskRuns.forTask(binding));
         await saveState();
         await updateDeferredMessage(item, `⚠️ Сообщение отправлено в задачу «${item.taskTitle}» после явного подтверждения.`);
+        deferredInputController.scheduleNextForTask(item);
         return;
       }
 
@@ -6598,8 +6691,10 @@ async function dispatchTelegramCallback(callback, route) {
       });
       if (outcome?.deferred) throw new Error("новая задача неожиданно оказалась занята");
       pendingInputs.delete(id);
+      updateDeferredDesktopReceipt(item, "started", taskRuns.forTask(selectedTask()));
       await saveState();
       await updateDeferredMessage(item, `🆕 Сообщение отправлено в новую задачу «${newTaskTitle}».`);
+      deferredInputController.scheduleNextForTask(item);
       await sendTaskSwitchNotification({ targetChatId: item.chatId });
     } catch (error) {
       console.error(`Cannot process pending input ${id}:`, error.message);

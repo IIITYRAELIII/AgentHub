@@ -97,6 +97,32 @@ test("desktop message controller queues a follow-up for an active task", async (
   assert.deepEqual(scheduled, [{ item: { id: "queued-1" }, delayMs: 500 }]);
 });
 
+test("desktop message controller cannot jump ahead of an older deferred input", async () => {
+  let deferredOptions = null;
+  let beginCount = 0;
+  const messages = controller({
+    hasDeferredBacklog: () => true,
+    deferConflictingInput: async (_input, _attachments, options) => {
+      deferredOptions = options;
+      return { id: "queued-behind-old", item: { id: "queued-behind-old" } };
+    },
+    beginRun: async () => {
+      beginCount += 1;
+      return { id: "should-not-start" };
+    },
+  });
+
+  const result = await messages.sendMessage({
+    text: "более новое сообщение",
+    clientUserMessageId: "message-behind-old",
+  });
+
+  assert.equal(result.queued, true);
+  assert.equal(result.reason, "queue-backlog");
+  assert.equal(deferredOptions.destination, "queued");
+  assert.equal(beginCount, 0);
+});
+
 test("desktop message controller steers the exact active Codex turn", async () => {
   const run = { id: "run-active", turnId: "turn-active", executionOwner: "vscode" };
   const stages = [];

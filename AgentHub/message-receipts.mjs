@@ -84,6 +84,15 @@ export class MessageReceiptRegistry {
     }
   }
 
+  updateResult(identity, result) {
+    const key = messageReceiptKey(identity);
+    if (!key) return false;
+    const receipt = this.receipts.get(key);
+    if (!receipt) return false;
+    receipt.result = structuredClone(result);
+    return true;
+  }
+
   snapshot() {
     return [...this.receipts.values()].map((value) => structuredClone(value));
   }

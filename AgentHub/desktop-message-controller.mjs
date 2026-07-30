@@ -23,6 +23,7 @@ export function createDesktopMessageController({
   taskExternalActivity,
   readCodexThread,
   deferConflictingInput,
+  hasDeferredBacklog = () => false,
   scheduleQueuedInput,
   sendRpc,
   setProgressStage,
@@ -168,6 +169,16 @@ export function createDesktopMessageController({
           : "Сообщение сохранено: выберите новую задачу, очередь или отмену справа.",
         snapshot: await snapshot(),
       };
+    }
+    // A newly submitted message must not jump ahead of durable inputs that
+    // were accepted earlier while the task was busy.
+    if (hasDeferredBacklog(target)) {
+      return deferQueue(input, attachments, {
+        target,
+        executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
+        clientUserMessageId,
+        reason: "queue-backlog",
+      });
     }
     const repositoryConflict = await activeRepositoryConflict(target);
     if (repositoryConflict) {

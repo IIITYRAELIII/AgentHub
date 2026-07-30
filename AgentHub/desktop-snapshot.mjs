@@ -188,10 +188,11 @@ export function createDesktopSnapshotFactory({
           preview: deferred.inputPreview(item.input).slice(0, 1_000),
           allowForce: item.allowForce === true,
           conflictKind: item.conflictKind ?? null,
+          createdAt: item.createdAt ?? null,
         })),
         ...deferred.queuedValues().map((item) => ({
           id: item.id,
-          state: "queued",
+          state: item.dispatchingAt ? "dispatching" : "queued",
           provider: item.provider,
           threadId: item.threadId,
           taskTitle: item.taskTitle,
@@ -199,8 +200,14 @@ export function createDesktopSnapshotFactory({
           preview: deferred.inputPreview(item.input).slice(0, 1_000),
           allowForce: false,
           conflictKind: item.conflictKind ?? null,
+          createdAt: item.createdAt ?? null,
         })),
-      ],
+      ].sort((left, right) => {
+        const leftAt = Date.parse(String(left.createdAt ?? ""));
+        const rightAt = Date.parse(String(right.createdAt ?? ""));
+        return (Number.isFinite(leftAt) ? leftAt : Number.POSITIVE_INFINITY)
+          - (Number.isFinite(rightAt) ? rightAt : Number.POSITIVE_INFINITY);
+      }),
       restartPending: Boolean(restart.request()),
       restartWaiting: restart.request()?.waitingForRuns === true,
       restartBlockingCount: restart.request()

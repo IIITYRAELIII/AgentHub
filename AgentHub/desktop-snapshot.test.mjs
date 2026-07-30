@@ -263,14 +263,27 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     input: "Ожидает",
     allowForce: true,
     conflictKind: "active-run",
+    createdAt: "2026-07-30T08:00:00.000Z",
   }];
-  const queued = [{
-    id: "queued-1",
-    provider: "codex",
-    threadId: "thread-1",
-    taskTitle: "Задача",
-    input: "В очереди",
-  }];
+  const queued = [
+    {
+      id: "queued-1",
+      provider: "codex",
+      threadId: "thread-1",
+      taskTitle: "Задача",
+      input: "В очереди",
+      createdAt: "2026-07-30T08:01:00.000Z",
+    },
+    {
+      id: "dispatching-1",
+      provider: "codex",
+      threadId: "thread-1",
+      taskTitle: "Задача",
+      input: "Уже отправляется",
+      createdAt: "2026-07-30T08:02:00.000Z",
+      dispatchingAt: "2026-07-30T08:03:00.000Z",
+    },
+  ];
   const { desktopSnapshot, state } = fixture({
     pending,
     queued,
@@ -320,6 +333,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       preview: "Ожидает",
       allowForce: true,
       conflictKind: "active-run",
+      createdAt: "2026-07-30T08:00:00.000Z",
     },
     {
       id: "queued-1",
@@ -331,6 +345,19 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       preview: "В очереди",
       allowForce: false,
       conflictKind: null,
+      createdAt: "2026-07-30T08:01:00.000Z",
+    },
+    {
+      id: "dispatching-1",
+      state: "dispatching",
+      provider: "codex",
+      threadId: "thread-1",
+      taskTitle: "Задача",
+      clientUserMessageId: null,
+      preview: "Уже отправляется",
+      allowForce: false,
+      conflictKind: null,
+      createdAt: "2026-07-30T08:02:00.000Z",
     },
   ]);
   assert.equal(snapshot.restartPending, true);

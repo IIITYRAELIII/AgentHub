@@ -76,6 +76,7 @@ function deliveryPatch(stateName) {
     preparing: { deliveryState: "preparing", delivery: "Подготовка…", failed: false },
     sending: { deliveryState: "sending", delivery: "Отправляется…", failed: false },
     accepted: { deliveryState: "accepted", delivery: "Принято", failed: false },
+    deferred: { deliveryState: "deferred", delivery: "Отложено", failed: false },
     queued: { deliveryState: "queued", delivery: "В очереди", failed: false },
     delivered: { deliveryState: "delivered", delivery: "", failed: false },
     unconfirmed: { deliveryState: "unconfirmed", delivery: "Приём не подтверждён", failed: true },
@@ -334,6 +335,7 @@ function applySnapshot(snapshot) {
   }
   deferredClientUserMessageIds = new Set(
     (snapshot.deferredInputs ?? [])
+      .filter((item) => item.state !== "dispatching")
       .map((item) => String(item.clientUserMessageId ?? "").trim())
       .filter(Boolean),
   );
@@ -349,6 +351,21 @@ function applySnapshot(snapshot) {
     .map((task) => modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId))
     .sort((left, right) => Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0));
   agentHub.setTasks(tasks);
+  for (const deferred of snapshot.deferredInputs ?? []) {
+    const clientUserMessageId = String(deferred.clientUserMessageId ?? "");
+    if (!clientUserMessageId) continue;
+    patchOutgoing(
+      taskId(deferred.provider, deferred.threadId),
+      clientUserMessageId,
+      deliveryPatch(
+        deferred.state === "dispatching"
+          ? "sending"
+          : deferred.state === "queued"
+            ? "queued"
+            : "deferred",
+      ),
+    );
+  }
   for (const task of snapshot.tasks ?? []) {
     const clientUserMessageId = String(task.run?.clientUserMessageId ?? "");
     if (!clientUserMessageId) continue;
@@ -364,16 +381,6 @@ function applySnapshot(snapshot) {
   );
   selectedTaskId = effectiveSelectedId;
   if (selected) {
-    for (const deferred of snapshot.deferredInputs ?? []) {
-      const clientUserMessageId = String(deferred.clientUserMessageId ?? "");
-      if (!clientUserMessageId) continue;
-      const deferredTaskId = taskId(deferred.provider, deferred.threadId);
-      patchOutgoing(
-        deferredTaskId,
-        clientUserMessageId,
-        deliveryPatch(deferred.state === "queued" ? "queued" : "accepted"),
-      );
-    }
     agentHub.setLive(selectedTaskId, updateLiveMessage(selectedTaskId, selected));
     agentHub.setRunning(selectedTaskId, Boolean(selected.run || selected.running));
     agentHub.setApprovals(selectedTaskId, effectiveSelectedId === serverSelectedId
@@ -388,6 +395,8 @@ function applySnapshot(snapshot) {
       }))
       : []);
     agentHub.setQueue(selectedTaskId, (snapshot.deferredInputs ?? []).filter((item) =>
+      item.state !== "dispatching"
+      &&
       (!item.provider || item.provider === selected.provider)
       && (!item.threadId || item.threadId === selected.threadId)));
   }

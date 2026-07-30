@@ -418,6 +418,16 @@ test("chat shows sent messages immediately and reconciles them by exact identity
   assert.match(client, /for \(const clientUserMessageId of matchedIds\) pending\.delete\(clientUserMessageId\)/u);
 });
 
+test("dispatching deferred messages leave the queue and reappear in the active conversation", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(app, /\.filter\(\(entry\) => entry\.state !== "dispatching"\)/u);
+  assert.match(app, /Date\.parse\(left\.createdAt \|\| 0\)/u);
+  assert.match(client, /\.filter\(\(item\) => item\.state !== "dispatching"\)/u);
+  assert.match(client, /deferred\.state === "dispatching"\s*\?\s*"sending"/u);
+  assert.match(client, /item\.state !== "dispatching"/u);
+});
+
 test("chat keeps an active response only in the live card after task switching", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
