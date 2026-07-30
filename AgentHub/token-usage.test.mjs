@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   addCreditBreakdown,
   addTokenUsage,
+  creditsFromUsd,
   emptyCreditBreakdown,
   emptyTokenUsage,
   fastModeCreditMultiplier,
@@ -86,6 +87,10 @@ test("credits use SI scales with one decimal", () => {
   assert.equal(formatCredits(1_000), "1,0 kcr");
   assert.equal(formatCredits(1_756_500), "1,8 Mcr");
   assert.equal(formatCredits(1_000_000_000), "1,0 Gcr");
+  assert.equal(creditsFromUsd(4.5783), 114.4575);
+  assert.equal(creditsFromUsd("0.04"), 1);
+  assert.equal(creditsFromUsd(null), null);
+  assert.equal(creditsFromUsd(-1), null);
 });
 
 test("Fast mode multiplies all priced token categories", () => {

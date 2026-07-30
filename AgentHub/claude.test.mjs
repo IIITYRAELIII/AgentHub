@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildClaudeArgs,
   buildClaudePrompt,
+  claudeEstimatedCostUsd,
   claudeFailureMessage,
   formatClaudeUsage,
   parseClaudeLimits,
@@ -83,7 +84,7 @@ test("buildClaudePrompt includes local image paths", () => {
   assert.match(prompt, /image\.png/);
 });
 
-test("parseClaudeResult and formatClaudeUsage handle CLI JSON", () => {
+test("parseClaudeResult and formatClaudeUsage convert the whole Claude run to shared credits", () => {
   const result = parseClaudeResult(JSON.stringify({
     type: "result",
     result: "done",
@@ -95,16 +96,32 @@ test("parseClaudeResult and formatClaudeUsage handle CLI JSON", () => {
       output_tokens: 3059,
       reasoning_output_tokens: 974,
     },
-    total_cost_usd: 0.01,
+    total_cost_usd: 4.5783,
   }));
   assert.equal(result.result, "done");
+  assert.equal(claudeEstimatedCostUsd(result), 4.5783);
   const formatted = formatClaudeUsage(result);
-  assert.match(formatted, /За задачу: 108 кТЭ/);
-  assert.doesNotMatch(formatted, /743.169/);
-  assert.match(formatted, /Вход: 18 кТЭ/);
-  assert.match(formatted, /Кэш: 72 кТЭ/);
-  assert.match(formatted, /Выход: 13 кТЭ/);
-  assert.match(formatted, /Думы: 6 кТЭ/);
+  assert.equal(formatted, "📊 За задачу: 114,5 cr");
+  assert.doesNotMatch(formatted, /кТЭ/);
+});
+
+test("Claude credits fall back to the complete per-model estimate and never guess from tokens", () => {
+  const result = {
+    usage: {
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+    },
+    modelUsage: {
+      "claude-sonnet-5": { costUSD: 1.25 },
+      "claude-haiku-4-5": { costUSD: 0.75 },
+    },
+  };
+  assert.equal(claudeEstimatedCostUsd(result), 2);
+  assert.equal(formatClaudeUsage(result), "📊 За задачу: 50 cr");
+  assert.equal(
+    formatClaudeUsage({ usage: result.usage }),
+    "📊 Кредиты за задачу: нет данных.",
+  );
 });
 
 test("parseClaudeLimits reads session, weekly, and model limits", () => {

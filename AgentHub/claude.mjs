@@ -1,5 +1,5 @@
 import path from "node:path";
-import { formatLegacyTokenEquivalents } from "./token-usage.mjs";
+import { creditsFromUsd, formatCredits } from "./token-usage.mjs";
 
 export const CLAUDE_PERMISSION_MODES = new Set([
   "default",
@@ -183,23 +183,32 @@ export function parseClaudeResult(stdout) {
   return result;
 }
 
-export function formatClaudeUsage(result, estimatedReasoning = 0) {
-  const usage = result?.usage ?? {};
-  const uncachedInput = Number(usage.input_tokens ?? 0);
-  const cacheCreation = Number(usage.cache_creation_input_tokens ?? 0);
-  const cached = Number(usage.cache_read_input_tokens ?? 0);
-  const output = Number(usage.output_tokens ?? 0);
-  // Claude не отдаёт thinking-токены отдельным полем usage (они внутри output_tokens),
-  // поэтому при отсутствии точного значения используем оценку из потока (estimated_tokens).
-  const reportedReasoning = Number(
-    usage.reasoning_output_tokens ?? usage.thinking_tokens ?? usage.reasoning_tokens ?? 0,
-  );
-  const reasoning = reportedReasoning > 0 ? reportedReasoning : Math.max(0, Number(estimatedReasoning) || 0);
-  return formatLegacyTokenEquivalents({
-    totalTokens: uncachedInput + cacheCreation + cached + output,
-    inputTokens: uncachedInput,
-    cachedInputTokens: cacheCreation + cached,
-    outputTokens: output,
-    reasoningOutputTokens: reasoning,
-  });
+function nonNegativeCost(value) {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const cost = Number(value);
+  return Number.isFinite(cost) && cost >= 0 ? cost : null;
+}
+
+export function claudeEstimatedCostUsd(result) {
+  const total = nonNegativeCost(result?.total_cost_usd ?? result?.totalCostUsd);
+  if (total !== null) return total;
+
+  const modelUsage = result?.modelUsage ?? result?.model_usage;
+  if (!modelUsage || typeof modelUsage !== "object" || Array.isArray(modelUsage)) return null;
+  let found = false;
+  let sum = 0;
+  for (const usage of Object.values(modelUsage)) {
+    const cost = nonNegativeCost(usage?.costUSD ?? usage?.cost_usd);
+    if (cost === null) continue;
+    found = true;
+    sum += cost;
+  }
+  return found ? sum : null;
+}
+
+export function formatClaudeUsage(result) {
+  const credits = creditsFromUsd(claudeEstimatedCostUsd(result));
+  return credits === null
+    ? "📊 Кредиты за задачу: нет данных."
+    : `📊 За задачу: ${formatCredits(credits)}`;
 }

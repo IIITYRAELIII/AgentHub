@@ -4969,7 +4969,7 @@ async function finishClaudeRun(run, {
     const response = failed ? `Ошибка Claude Code: ${answer}` : answer;
     await finalizeRunDelivery(run, {
       answer: response,
-      message: `${response}\n\n${formatClaudeUsage(result, run.claudeThinkingPeak ?? 0)}`,
+      message: `${response}\n\n${formatClaudeUsage(result)}`,
       speechText: answer,
       forceSpeechButton,
       description: "финальный ответ Claude",
