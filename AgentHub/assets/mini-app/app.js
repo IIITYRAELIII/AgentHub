@@ -2089,6 +2089,28 @@ function formatAxisTime(ms, spanMs) {
   return date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
 }
 
+/* Линия сохраняет все замеры, но маркеры прореживаются по экранному расстоянию.
+ * Иначе пяти минутные точки на диапазонах 24 ч и больше сливаются в толстую
+ * зубчатую полосу. Последний замер всегда остаётся видимым и доступным с клавиатуры. */
+function limitsMarkerPoints(points, minimumSpacing = 11) {
+  if (points.length <= 1) return points;
+  const markers = [points[0]];
+  for (const point of points.slice(1, -1)) {
+    const previous = markers.at(-1);
+    if (Math.hypot(point.x - previous.x, point.y - previous.y) >= minimumSpacing) {
+      markers.push(point);
+    }
+  }
+  const current = points.at(-1);
+  const previous = markers.at(-1);
+  if (Math.hypot(current.x - previous.x, current.y - previous.y) < minimumSpacing * 0.7) {
+    markers[markers.length - 1] = current;
+  } else {
+    markers.push(current);
+  }
+  return markers;
+}
+
 /* Делает сводку лимитов в шапке кнопкой-триггером диалога (или снимает роль,
  * когда данных нет). Разметка сводки приходит из журнала, поэтому роль и
  * доступность навешиваются здесь, а не в index.html. */
@@ -2293,12 +2315,13 @@ function buildLimitsChart(payload) {
       stroke: item.color,
     }));
 
-    points.forEach((point, index) => {
-      const isLast = index === points.length - 1;
+    const markerPoints = limitsMarkerPoints(points);
+    markerPoints.forEach((point) => {
+      const isLast = point === points.at(-1);
       const circle = svgEl("circle", {
         cx: point.x,
         cy: point.y,
-        r: isLast ? 4 : 2.4,
+        r: isLast ? 4 : 2.8,
         class: isLast ? "limits-point limits-point-current" : "limits-point",
         fill: item.color,
       });

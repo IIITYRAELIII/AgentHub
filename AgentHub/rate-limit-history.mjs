@@ -92,6 +92,40 @@ export function codexRateLimitRows(result, observedAt = new Date().toISOString()
   return rows;
 }
 
+function claudeLimitId(limit) {
+  const model = String(limit?.model ?? "").trim();
+  if (model) {
+    const slug = model.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/gu, "");
+    return `claude:model:${slug || "unknown"}`;
+  }
+  return String(limit?.kind ?? "").toLowerCase() === "session"
+    ? "claude:session"
+    : "claude:week";
+}
+
+function claudeWindowName(limit) {
+  if (limit?.model) return String(limit.model);
+  return String(limit?.kind ?? "").toLowerCase() === "session" ? "session" : "week";
+}
+
+export function claudeRateLimitRows(limits, observedAt = new Date().toISOString()) {
+  return (Array.isArray(limits) ? limits : []).flatMap((limit) => {
+    const usedPercent = Number(limit?.usedPercent);
+    if (!Number.isFinite(usedPercent)) return [];
+    return [{
+      observedAt,
+      provider: "claude",
+      limitId: claudeLimitId(limit),
+      limitName: "CLAUDE",
+      window: claudeWindowName(limit),
+      usedPercent,
+      remainingPercent: Math.max(0, 100 - usedPercent),
+      resetsAt: limit?.resetsText ?? "",
+      reachedType: "",
+    }];
+  });
+}
+
 export async function appendRateLimitRows(filePath, rows) {
   if (!rows.length) return 0;
   const resolved = path.resolve(filePath);
@@ -125,12 +159,13 @@ export async function appendRawRateLimitSnapshot(
   filePath,
   response,
   observedAt = new Date().toISOString(),
+  provider = "codex",
 ) {
   const resolved = path.resolve(filePath);
   await mkdir(path.dirname(resolved), { recursive: true });
   const record = {
     observedAt,
-    provider: "codex",
+    provider: String(provider || "codex").toLowerCase(),
     response,
   };
   await appendFile(resolved, `${JSON.stringify(record)}\n`, "utf8");
@@ -151,7 +186,7 @@ export async function readRateLimitHistory(
   const maximum = Math.max(50, Math.min(1_200, Number(maxPointsPerSeries) || 600));
   const series = new Map();
   let resetCredits = { availableCount: null, nearestExpiresAt: null };
-  let latestObservedAt = "";
+  let latestCodexObservedAt = "";
 
   let input;
   try {
@@ -184,11 +219,35 @@ export async function readRateLimitHistory(
     }
     const observedMs = Date.parse(record?.observedAt ?? "");
     if (!Number.isFinite(observedMs)) continue;
-    if (!latestObservedAt || observedMs >= Date.parse(latestObservedAt)) {
-      latestObservedAt = new Date(observedMs).toISOString();
+    const provider = String(record?.provider ?? "codex").toLowerCase();
+    if (provider === "codex"
+      && (!latestCodexObservedAt || observedMs >= Date.parse(latestCodexObservedAt))) {
+      latestCodexObservedAt = new Date(observedMs).toISOString();
       resetCredits = rateLimitResetCreditSummary(record?.response, nowMs);
     }
     if ((fromMs != null && observedMs < fromMs) || observedMs > nowMs) continue;
+    if (provider === "claude") {
+      const limits = Array.isArray(record?.response?.limits) ? record.response.limits : [];
+      for (const limit of limits) {
+        const usedPercent = Number(limit?.usedPercent);
+        if (!Number.isFinite(usedPercent)) continue;
+        const id = claudeLimitId(limit);
+        if (!series.has(id)) {
+          series.set(id, {
+            id,
+            name: "CLAUDE",
+            window: claudeWindowName(limit),
+            points: [],
+          });
+        }
+        series.get(id).points.push({
+          at: new Date(observedMs).toISOString(),
+          usedPercent,
+          remainingPercent: Math.max(0, 100 - usedPercent),
+        });
+      }
+      continue;
+    }
     for (const bucket of limitBuckets(record?.response)) {
       for (const [windowName, window] of [["primary", bucket?.primary], ["secondary", bucket?.secondary]]) {
         const usedPercent = Number(window?.usedPercent);

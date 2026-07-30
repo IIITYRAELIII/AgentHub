@@ -17,6 +17,7 @@ import {
   claudeFailureMessage,
   claudeThinkingTokens,
   formatClaudeUsage,
+  parseClaudeLimits,
   resolveClaudeSessionCwd,
 } from "./claude.mjs";
 import {
@@ -58,6 +59,7 @@ import { CodexTerminalAudit } from "./codex-terminal-audit.mjs";
 import {
   appendRateLimitRows,
   appendRawRateLimitSnapshot,
+  claudeRateLimitRows,
   codexRateLimitRows,
   readRateLimitHistory,
 } from "./rate-limit-history.mjs";
@@ -248,6 +250,7 @@ const miniAppServer = config.miniApp.enabled
     localAccessSecret: localWebSecret,
     controlHandler: handleDesktopControl,
     attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
+    journalDatabaseFile: path.join(config.dataDir, "journal.sqlite"),
   })
   : null;
 const publicMiniAppServer = config.miniApp.enabled && config.miniApp.quickTunnel.enabled
@@ -260,6 +263,7 @@ const publicMiniAppServer = config.miniApp.enabled && config.miniApp.quickTunnel
     requireTelegramAuth: true,
     controlHandler: handleDesktopControl,
     attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
+    journalDatabaseFile: path.join(config.dataDir, "journal.sqlite"),
   })
   : null;
 const defaultDataDirectory = path.join(AGENT_HUB_ROOT, "data");
@@ -5764,27 +5768,44 @@ function scheduleRateLimitPoll(delayMs = 5 * 60_000) {
 }
 
 async function pollRateLimits() {
-  try {
-    if (!codexTransport.running) return;
-    const observedAt = new Date().toISOString();
-    const result = await sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 });
-    const summary = formatCodexRateLimits(result);
+  const observedAt = new Date().toISOString();
+  const jobs = [];
+  if (codexTransport.running) {
+    jobs.push((async () => {
+      const result = await sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 });
+      const summary = formatCodexRateLimits(result);
+      await appendRawRateLimitSnapshot(
+        path.join(config.dataDir, "rate-limits-raw.jsonl"),
+        result,
+        observedAt,
+      );
+      await appendRateLimitRows(
+        path.join(config.dataDir, "rate-limits.csv"),
+        codexRateLimitRows(result, observedAt),
+      );
+      await workLogUsageStore.projectRateLimits(globalWorkLogFile, summary, observedAt);
+    })().catch((error) => {
+      console.error("Cannot poll Codex rate limits:", error.message);
+    }));
+  }
+  jobs.push((async () => {
+    const limits = parseClaudeLimits(await readClaudeRateLimits());
+    if (!limits.length) throw new Error("Claude did not return recognizable limit data");
     await appendRawRateLimitSnapshot(
       path.join(config.dataDir, "rate-limits-raw.jsonl"),
-      result,
+      { limits },
       observedAt,
+      "claude",
     );
     await appendRateLimitRows(
       path.join(config.dataDir, "rate-limits.csv"),
-      codexRateLimitRows(result, observedAt),
+      claudeRateLimitRows(limits, observedAt),
     );
-    await workLogUsageStore.projectRateLimits(
-      globalWorkLogFile,
-      summary,
-      observedAt,
-    );
-  } catch (error) {
-    console.error("Cannot poll Codex rate limits:", error.message);
+  })().catch((error) => {
+    console.error("Cannot poll Claude rate limits:", error.message);
+  }));
+  try {
+    await Promise.all(jobs);
   } finally {
     scheduleRateLimitPoll();
   }
@@ -6087,7 +6108,7 @@ async function readClaudeRateLimits() {
   const result = await spawnCapture(invocation.command, [
     ...invocation.prefixArgs,
     "--print", "--output-format", "text", "--permission-mode", "dontAsk", "/usage",
-  ], { timeoutMs: 5_000, maxOutputBytes: 64 * 1024 });
+  ], { timeoutMs: 15_000, maxOutputBytes: 64 * 1024 });
   if (result.error) throw result.error;
   if (result.code !== 0) throw new Error(result.stderr.trim() || `Claude Code завершился с кодом ${result.code}`);
   return result.stdout;

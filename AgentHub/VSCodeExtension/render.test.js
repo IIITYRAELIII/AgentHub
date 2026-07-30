@@ -556,6 +556,8 @@ test("history chart is drawn with inline SVG and no external dependencies", () =
   assert.doesNotMatch(app, /getContext\(/u);
   assert.doesNotMatch(app, /new Image\(/u);
   assert.match(app, /y: yOf\(point\.usedPercent\)/u);
+  assert.match(app, /function limitsMarkerPoints\(points, minimumSpacing = 11\)/u);
+  assert.match(app, /const markerPoints = limitsMarkerPoints\(points\)/u);
   assert.match(app, /Расход \$\{used\}%/u);
   // единственный http(s) в модуле — пространство имён SVG, а не CDN
   assert.doesNotMatch(app, /cdn|unpkg|jsdelivr|googleapis|chart\.js|d3js/u);

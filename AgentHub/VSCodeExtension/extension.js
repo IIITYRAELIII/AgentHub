@@ -143,6 +143,7 @@ class WorkLogViewProvider {
     if (!journalUri) throw new Error("Откройте workspace с WORK_LOG.md");
     const key = journalUri.fsPath;
     if (!this.bridge || this.bridgeJournal !== key) {
+      this.bridge?.close();
       this.bridge = new AgentHubBridge({ journalFile: key });
       this.bridgeJournal = key;
     }
@@ -326,6 +327,7 @@ class WorkLogViewProvider {
 
   dispose() {
     if (this.timer) clearTimeout(this.timer);
+    this.bridge?.close();
   }
 }
 

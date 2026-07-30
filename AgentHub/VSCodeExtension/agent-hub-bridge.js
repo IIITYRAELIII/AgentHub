@@ -45,7 +45,8 @@ class AgentHubBridge {
     this.runtimeRoot = runtimeRoot ? path.resolve(runtimeRoot) : defaultRuntimeRoot();
     this.journalCache = null;
     this.desktopModule = null;
-    this.journalModule = null;
+    this.journalDatabase = null;
+    this.journalDatabaseModule = null;
     this.resolvedModuleRoot = null;
   }
 
@@ -72,12 +73,16 @@ class AgentHubBridge {
     return this.desktopModule;
   }
 
-  async journalTools() {
+  async journalStore() {
     const root = await this.backendRoot();
-    this.journalModule ??= import(pathToFileURL(
-      path.join(root, "mini-app-journal-data.mjs"),
+    this.journalDatabaseModule ??= import(pathToFileURL(
+      path.join(root, "journal-database.mjs"),
     ).href);
-    return this.journalModule;
+    const { JournalDatabase } = await this.journalDatabaseModule;
+    this.journalDatabase ??= new JournalDatabase(
+      path.join(this.runtimeRoot, "data", "journal.sqlite"),
+    );
+    return this.journalDatabase;
   }
 
   async control(action, params = {}) {
@@ -106,15 +111,7 @@ class AgentHubBridge {
     const info = await stat(this.journalFile);
     const version = `${Math.trunc(info.mtimeMs)}-${info.size}`;
     if (this.journalCache?.version === version) return this.journalCache;
-    const [{ buildLazyJournalPayload }, markdown] = await Promise.all([
-      this.journalTools(),
-      readFile(this.journalFile, "utf8"),
-    ]);
-    this.journalCache = {
-      ...buildLazyJournalPayload(markdown),
-      version,
-      updatedAt: info.mtime.toISOString(),
-    };
+    this.journalCache = await (await this.journalStore()).ensureFromFile(this.journalFile);
     return this.journalCache;
   }
 
@@ -155,9 +152,10 @@ class AgentHubBridge {
         const key = url.pathname.endsWith("/day")
           ? String(url.searchParams.get("date") ?? "")
           : String(url.searchParams.get("id") ?? "");
-        const html = url.pathname.endsWith("/day")
-          ? journal.days[key]
-          : journal.turns[key];
+        const html = await (await this.journalStore()).fragment(
+          url.pathname.endsWith("/day") ? "day" : "turn",
+          key,
+        );
         return typeof html === "string"
           ? jsonResponse({ html, version: journal.version })
           : jsonResponse({ error: "Фрагмент журнала не найден." }, 404);
@@ -166,6 +164,11 @@ class AgentHubBridge {
     } catch (error) {
       return jsonResponse({ error: `Журнал недоступен: ${error.message}` }, 503);
     }
+  }
+
+  close() {
+    this.journalDatabase?.close();
+    this.journalDatabase = null;
   }
 }
 

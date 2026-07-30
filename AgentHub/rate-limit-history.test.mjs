@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   appendRateLimitRows,
   appendRawRateLimitSnapshot,
+  claudeRateLimitRows,
   codexRateLimitRows,
   rateLimitResetCreditSummary,
   readRateLimitHistory,
@@ -48,6 +49,43 @@ test("Codex limit snapshots become primary and secondary history rows", () => {
       reachedType: "",
     },
   ]);
+});
+
+test("Claude limit snapshots become session, weekly, and model history rows", () => {
+  const limits = [
+    { kind: "session", model: null, usedPercent: 12, resetsText: "Jul 30, 8:00pm" },
+    { kind: "week (all models)", model: null, usedPercent: 34, resetsText: "Aug 3, 1:00am" },
+    { kind: "week (Fable)", model: "Fable", usedPercent: 5, resetsText: null },
+  ];
+  assert.deepEqual(
+    claudeRateLimitRows(limits, "2026-07-30T12:00:00.000Z")
+      .map(({ provider, limitId, limitName, window, usedPercent }) => ({
+        provider, limitId, limitName, window, usedPercent,
+      })),
+    [
+      {
+        provider: "claude",
+        limitId: "claude:session",
+        limitName: "CLAUDE",
+        window: "session",
+        usedPercent: 12,
+      },
+      {
+        provider: "claude",
+        limitId: "claude:week",
+        limitName: "CLAUDE",
+        window: "week",
+        usedPercent: 34,
+      },
+      {
+        provider: "claude",
+        limitId: "claude:model:fable",
+        limitName: "CLAUDE",
+        window: "Fable",
+        usedPercent: 5,
+      },
+    ],
+  );
 });
 
 test("limit history writes one CSV header and appends later samples", async () => {
@@ -158,6 +196,37 @@ test("rate limit history filters ranges and returns chart-safe series", async ()
     availableCount: 1,
     nearestExpiresAt: "2026-07-31T00:00:00.000Z",
   });
+});
+
+test("rate limit history combines Codex and Claude series without losing Codex credits", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-provider-limits-"));
+  const target = path.join(directory, "rate-limits-raw.jsonl");
+  const nowMs = Date.parse("2026-07-30T12:00:00.000Z");
+  await appendRawRateLimitSnapshot(target, {
+    rateLimitsByLimitId: {
+      codex: { limitId: "codex", primary: { usedPercent: 48 } },
+    },
+    rateLimitResetCredits: { availableCount: 1 },
+  }, "2026-07-30T11:50:00.000Z");
+  await appendRawRateLimitSnapshot(target, {
+    limits: [
+      { kind: "session", model: null, usedPercent: 17 },
+      { kind: "week (all models)", model: null, usedPercent: 31 },
+    ],
+  }, "2026-07-30T11:55:00.000Z", "claude");
+
+  const history = await readRateLimitHistory(target, { range: "24h", nowMs });
+  assert.deepEqual(
+    history.series.map(({ id, name, window, points }) => ({
+      id, name, window, usedPercent: points.at(-1).usedPercent,
+    })),
+    [
+      { id: "codex:primary", name: "CODEX", window: "primary", usedPercent: 48 },
+      { id: "claude:session", name: "CLAUDE", window: "session", usedPercent: 17 },
+      { id: "claude:week", name: "CLAUDE", window: "week", usedPercent: 31 },
+    ],
+  );
+  assert.equal(history.resetCredits.availableCount, 1);
 });
 
 test("missing rate limit history returns an empty payload", async () => {

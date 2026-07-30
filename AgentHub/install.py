@@ -15,6 +15,23 @@ ROOT = Path(__file__).resolve().parent
 PROFILES = ("full", "telegram", "journal")
 
 
+def require_embedded_sqlite() -> None:
+    try:
+        probe = subprocess.run(
+            ["node", "-e", "require('node:sqlite')"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError("Node.js не найден; установите Node.js 22.5+ (рекомендуется 24+)") from error
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "Текущий Node.js не содержит node:sqlite; установите Node.js 22.5+ "
+            "(рекомендуется 24+)"
+        )
+
+
 def runtime_root() -> Path:
     if sys.platform == "win32":
         return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "AgentHub"
@@ -213,6 +230,7 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    require_embedded_sqlite()
     if args.extension_only:
         install_vscode_extension()
         return 0

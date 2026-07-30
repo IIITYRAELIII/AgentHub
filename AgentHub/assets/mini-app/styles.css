@@ -6063,7 +6063,9 @@ html[data-token-breakdown="off"] .journal span[data-day-usage-breakdown] {
 }
 
 .limits-point {
-  opacity: 0.85;
+  opacity: 0.92;
+  stroke: var(--bg);
+  stroke-width: 1;
 }
 
 .limits-point-current {

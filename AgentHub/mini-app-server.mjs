@@ -1,14 +1,15 @@
-import { watch } from "node:fs";
+import { unwatchFile, watchFile } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
+import os from "node:os";
 import path from "node:path";
 
 import {
-  buildLazyJournalPayload,
   extractRateLimitsHtml,
   publicJournalPayload,
 } from "./mini-app-journal-data.mjs";
+import { JournalDatabase } from "./journal-database.mjs";
 
 export { extractWorkLogHtml } from "./mini-app-journal-data.mjs";
 
@@ -49,6 +50,11 @@ const STATIC_FILES = new Map([
   ["/meadow-sun.png", "meadow-sun.png"],
   ["/storm-rain.png", "storm-rain.png"],
 ]);
+
+function defaultJournalDatabaseFile(workLogFile) {
+  const identity = createHash("sha256").update(path.resolve(workLogFile)).digest("hex").slice(0, 24);
+  return path.join(os.tmpdir(), "agent-hub-journal", `${identity}.sqlite`);
+}
 /* Разметка и стили обязаны быть свежими, поэтому у них no-store. Фон темы —
    неизменяемый файл в несколько мегабайт: без долгого кэша он выкачивался бы
    заново при каждом открытии, что заметно через Telegram-туннель. */
@@ -261,6 +267,7 @@ export class MiniAppServer {
   #heartbeatTimer = null;
   #host;
   #journalCache = null;
+  #journalDatabase;
   #localAccessSecret;
   #port;
   #requireTelegramAuth;
@@ -281,6 +288,7 @@ export class MiniAppServer {
     assetsDirectory = path.join(import.meta.dirname, "assets", "mini-app"),
     attachmentDirectory = null,
     workLogCssFile = path.join(import.meta.dirname, "work-log.css"),
+    journalDatabaseFile = defaultJournalDatabaseFile(workLogFile),
   } = {}) {
     this.#host = String(host);
     this.#port = Number(port);
@@ -293,18 +301,14 @@ export class MiniAppServer {
     this.#assetsDirectory = path.resolve(assetsDirectory);
     this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
     this.#workLogCssFile = path.resolve(workLogCssFile);
+    this.#journalDatabase = new JournalDatabase(journalDatabaseFile);
   }
 
   async #journal() {
     const info = await stat(this.#workLogFile);
     const version = `${Math.trunc(info.mtimeMs)}-${info.size}`;
     if (this.#journalCache?.version === version) return this.#journalCache;
-    const markdown = await readFile(this.#workLogFile, "utf8");
-    this.#journalCache = {
-      ...buildLazyJournalPayload(markdown),
-      updatedAt: info.mtime.toISOString(),
-      version,
-    };
+    this.#journalCache = await this.#journalDatabase.ensureFromFile(this.#workLogFile);
     return this.#journalCache;
   }
 
@@ -523,9 +527,10 @@ export class MiniAppServer {
         const key = url.pathname.endsWith("/day")
           ? String(url.searchParams.get("date") ?? "")
           : String(url.searchParams.get("id") ?? "");
-        const html = url.pathname.endsWith("/day")
-          ? journal.days[key]
-          : journal.turns[key];
+        const html = await this.#journalDatabase.fragment(
+          url.pathname.endsWith("/day") ? "day" : "turn",
+          key,
+        );
         if (typeof html !== "string") {
           json(response, 404, { error: "Фрагмент журнала не найден." }, method);
           return;
@@ -589,13 +594,16 @@ export class MiniAppServer {
       });
     });
     this.#server = server;
-    this.#watcher = watch(
-      path.dirname(this.#workLogFile),
-      { persistent: false },
-      (_eventType, fileName) => {
-        if (!fileName || String(fileName) === path.basename(this.#workLogFile)) this.#scheduleChange();
+    watchFile(
+      this.#workLogFile,
+      { persistent: false, interval: 250 },
+      (current, previous) => {
+        if (current.mtimeMs !== previous.mtimeMs || current.size !== previous.size) {
+          this.#scheduleChange();
+        }
       },
     );
+    this.#watcher = { close: () => unwatchFile(this.#workLogFile) };
     this.#heartbeatTimer = setInterval(() => {
       for (const response of this.#clients) response.write(": heartbeat\n\n");
     }, HEARTBEAT_INTERVAL_MS);
@@ -625,7 +633,7 @@ export class MiniAppServer {
     this.#watcher = null;
     for (const response of this.#clients) response.end();
     this.#clients.clear();
-    if (!server?.listening) return;
-    await new Promise((resolve) => server.close(resolve));
+    if (server?.listening) await new Promise((resolve) => server.close(resolve));
+    this.#journalDatabase.close();
   }
 }

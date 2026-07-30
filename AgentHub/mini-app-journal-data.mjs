@@ -115,11 +115,15 @@ function shallowDaySection(section) {
     });
     opening.lastIndex = end;
   }
-  let html = source;
-  for (const range of ranges.reverse()) {
-    html = `${html.slice(0, range.start)}${range.replacement}${html.slice(range.end)}`;
+  if (!ranges.length) return { html: source, turns };
+  const chunks = [];
+  let offset = 0;
+  for (const range of ranges) {
+    chunks.push(source.slice(offset, range.start), range.replacement);
+    offset = range.end;
   }
-  return { html, turns };
+  chunks.push(source.slice(offset));
+  return { html: chunks.join(""), turns };
 }
 
 /* Сводка лимитов лежит первым блоком журнала, но журнал грузится лениво и
