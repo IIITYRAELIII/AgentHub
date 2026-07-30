@@ -2145,6 +2145,23 @@ main {
   padding: 0.55rem;
 }
 
+.journal [data-work-log-task-show-more] {
+  align-self: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  color: var(--text-soft);
+  cursor: pointer;
+  font: 600 0.74rem/1 var(--font-display);
+  margin: 0.2rem 0;
+  padding: 0.55rem 1rem;
+}
+
+.journal [data-work-log-task-show-more]:hover {
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+
 .journal [data-work-log-turn-day] {
   color: var(--row-accent, var(--accent));
   font-weight: 620;
@@ -3008,6 +3025,18 @@ html[data-theme="metropolis"] .journal details[data-work-log-turn-details] {
   -webkit-backdrop-filter: blur(4px);
   background-color: rgba(4, 12, 19, 0.38);
   background-image: none;
+}
+
+/* Hundreds of independently blurred turn cards exhaust Electron's compositor
+   in task grouping and leave painted frames with missing text. Task groups
+   already sit on a glass panel, so use one denser fill instead of a backdrop
+   layer per row. */
+html[data-theme="metropolis"][data-grouping="task"]
+  .journal
+  details[data-work-log-turn-details] {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background-color: rgba(4, 12, 19, 0.58);
 }
 
 /* До готовности шейдера показывается дешёвый CSS-fallback: матовый

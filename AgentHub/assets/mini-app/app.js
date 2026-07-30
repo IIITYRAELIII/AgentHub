@@ -110,6 +110,8 @@ let usdRubEffectiveDate = "";
 let exchangeRatesInitialized = false;
 let groupClaudeTasks = false;
 const groupingStates = { date: null, week: null, month: null, task: null };
+const TASK_GROUP_TURN_PAGE_SIZE = 30;
+const taskGroupTurns = new WeakMap();
 const telegram = window.Telegram?.WebApp;
 const telegramInitData = String(telegram?.initData ?? "");
 const telegramMode = Boolean(telegramInitData);
@@ -3621,6 +3623,31 @@ function taskGroupsFrom(source) {
     .sort((left, right) => right.latestAt - left.latestAt || left.order - right.order);
 }
 
+function appendTaskGroupTurnPage(details, { nextPage = false } = {}) {
+  const turns = taskGroupTurns.get(details);
+  const body = details?.querySelector(":scope > [data-work-log-task-group-turns]");
+  if (!turns || !body) return;
+  const rendered = Math.max(0, Number(body.dataset.workLogTaskRendered) || 0);
+  if (rendered > 0 && !nextPage) return;
+  body.querySelector("[data-work-log-task-show-more]")?.remove();
+  const next = Math.min(turns.length, rendered + TASK_GROUP_TURN_PAGE_SIZE);
+  body.append(...turns.slice(rendered, next));
+  body.dataset.workLogTaskRendered = String(next);
+  refreshUsageUnits(body);
+  disableLocalLinks(body);
+  if (next >= turns.length) return;
+  const more = document.createElement("button");
+  more.type = "button";
+  more.dataset.workLogTaskShowMore = "";
+  more.textContent = `Показать ещё (${turns.length - next})`;
+  more.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    appendTaskGroupTurnPage(details, { nextPage: true });
+  });
+  body.append(more);
+}
+
 function taskGroupingContent(source, { overview: overviewText = "" } = {}) {
   const groups = taskGroupsFrom(source);
   if (!groups.length) return source.cloneNode(true);
@@ -3685,8 +3712,8 @@ function taskGroupingContent(source, { overview: overviewText = "" } = {}) {
     summary.append(title, metrics);
     const body = document.createElement("div");
     body.dataset.workLogTaskGroupTurns = "";
-    body.append(...group.turns, ...group.legacy);
     details.append(summary, taskProfile(group, groups), body);
+    taskGroupTurns.set(details, [...group.turns, ...group.legacy]);
     list.append(details);
   }
   fragment.append(list);
@@ -3719,6 +3746,11 @@ function applyJournalGrouping() {
   prepareMobileControls();
   const saved = groupingStates[grouping];
   if (saved) restoreOpenState(saved);
+  if (grouping === "task") {
+    for (const details of journal.querySelectorAll(
+      "details[data-work-log-task-group][open]",
+    )) appendTaskGroupTurnPage(details);
+  }
   journalRendered = true;
   journal.setAttribute("aria-busy", "false");
 }
@@ -3876,6 +3908,9 @@ journal.addEventListener("toggle", (event) => {
   }
   if (opened.matches?.("details[data-work-log-turn-details][data-lazy-turn-id][open]")) {
     void loadLazyTurn(opened);
+  }
+  if (opened.matches?.("details[data-work-log-task-group][open]")) {
+    appendTaskGroupTurnPage(opened);
   }
   setTimeout(persistOpenState, 0);
 }, true);

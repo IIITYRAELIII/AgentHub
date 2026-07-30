@@ -318,6 +318,20 @@ test("journal width stays fixed while days and turns are expanded", () => {
   );
 });
 
+test("task-grouped journal pages large histories without per-row Metropolis blur", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(app, /const TASK_GROUP_TURN_PAGE_SIZE = 30/u);
+  assert.match(app, /const taskGroupTurns = new WeakMap\(\)/u);
+  assert.match(app, /function appendTaskGroupTurnPage\(details, \{ nextPage = false \} = \{\}\)/u);
+  assert.match(app, /Показать ещё \(\$\{turns\.length - next\}\)/u);
+  assert.match(app, /details\[data-work-log-task-group\]\[open\][\s\S]*appendTaskGroupTurnPage/u);
+  assert.match(
+    styles,
+    /html\[data-theme="metropolis"\]\[data-grouping="task"\][\s\S]*details\[data-work-log-turn-details\][\s\S]*backdrop-filter:\s*none/u,
+  );
+});
+
 test("compact desktop header wraps before it can create horizontal overflow", () => {
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),
