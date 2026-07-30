@@ -43,7 +43,7 @@ test("Agent Hub is excluded and ambiguous external clients stay EXT", () => {
   ])), TASK_EXECUTION_OWNERS.EXTERNAL);
 });
 
-test("per-turn VSC evidence wins without a process probe", async () => {
+test("per-turn VSC evidence is preserved when a process probe is unavailable", async () => {
   let calls = 0;
   const owner = await resolveCodexObservedExecutionOwner({
     running: true,
@@ -51,11 +51,28 @@ test("per-turn VSC evidence wins without a process probe", async () => {
   }, {
     turnId: "turn-vsc",
     rolloutPath: "C:\\rollout.jsonl",
-    platform: "win32",
+    platform: "linux",
     probe: async () => { calls += 1; return {}; },
   });
   assert.equal(owner, TASK_EXECUTION_OWNERS.VSCODE);
   assert.equal(calls, 0);
+});
+
+test("Desktop process evidence overrides a generic VSC client marker", async () => {
+  const owner = await resolveCodexObservedExecutionOwner({
+    running: true,
+    activeVscodeTurnIds: ["turn-from-desktop"],
+  }, {
+    turnId: "turn-from-desktop",
+    rolloutPath: "C:\\desktop-with-client-id.jsonl",
+    platform: "win32",
+    nowMs: 1,
+    probe: async () => snapshot([30], [
+      { processId: 30, parentProcessId: 11, name: "codex.exe", commandLine: "codex.exe app-server" },
+      { processId: 11, parentProcessId: 1, name: "ChatGPT.exe", commandLine: "ChatGPT.exe" },
+    ]),
+  });
+  assert.equal(owner, TASK_EXECUTION_OWNERS.DESKTOP);
 });
 
 test("a current process signal can identify Desktop or CLI without originator", async () => {

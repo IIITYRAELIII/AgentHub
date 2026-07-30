@@ -212,11 +212,17 @@ test("chat opens at the end without rebuilding history on every snapshot", () =>
   );
 });
 
-test("chat sends with Enter and keeps Shift+Enter for a new line", () => {
+test("chat sends with Enter on desktop and keeps Enter as a newline on phones", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  assert.match(app, /event\.key !== "Enter" \|\| event\.shiftKey \|\| event\.isComposing/u);
+  assert.match(
+    app,
+    /event\.key !== "Enter" \|\| event\.shiftKey \|\| event\.isComposing \|\| phoneComposerMode\(\)/u,
+  );
   assert.match(app, /event\.preventDefault\(\);\s*submitComposer\(\);/u);
+  assert.match(app, /mobileTelegramPlatforms\.has\(telegramPlatform\)/u);
+  assert.match(app, /matchMedia\?\.\("\(pointer: coarse\)"\)/u);
+  assert.match(app, /Enter — новая строка/u);
   assert.match(html, /Enter — отправить · Shift\+Enter — новая строка/u);
   assert.doesNotMatch(html, /Ctrl\+Enter/u);
 });
@@ -253,17 +259,18 @@ test("deferred messages show their preview and can be queued after the active tu
   assert.match(client, /control\("deferred-input", \{ id, action: "queue" \}\)/u);
 });
 
-test("composer keeps an unconfirmed message and shows Agent Hub restart state", () => {
+test("composer clears optimistically and restores an unconfirmed message", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const submit = app.match(/function submitComposer\(\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
-  assert.doesNotMatch(submit, /composerInput\.value = ""/u);
+  assert.match(submit, /composerInput\.value = ""[\s\S]*emit\("message:send"/u);
   assert.match(app, /function completeComposerSend\(requestId, accepted\)/u);
+  assert.match(app, /if \(!accepted\)[\s\S]*text: pending\.rawText/u);
   assert.match(client, /agentHub\.completeSend\(request\.requestId/u);
   assert.match(client, /snapshot\.restartPending \? "restarting" : "online"/u);
   assert.match(html, /data-restart-banner/u);
-  assert.match(app, /Agent Hub перезапускается… Сообщение останется в поле ввода\./u);
+  assert.match(app, /Agent Hub перезапускается… Непринятый текст будет восстановлен\./u);
 });
 
 test("rate-limit summary becomes a keyboard-activatable trigger for the history dialog", () => {

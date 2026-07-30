@@ -96,6 +96,22 @@ function resolveSurface() {
 let surface = resolveSurface();
 document.documentElement.dataset.surface = surface;
 
+function phoneComposerMode() {
+  if (telegramMode && mobileTelegramPlatforms.has(telegramPlatform)) return true;
+  return surface === "mobile"
+    && globalThis.matchMedia?.("(pointer: coarse)")?.matches === true;
+}
+
+function syncComposerInputMode() {
+  const phone = phoneComposerMode();
+  composerInput.placeholder = phone
+    ? "Сообщение агенту… Enter — новая строка"
+    : "Сообщение агенту…  Enter — отправить · Shift+Enter — новая строка";
+  composerSend.title = phone ? "Отправить" : "Отправить (Enter)";
+}
+
+syncComposerInputMode();
+
 const themes = {
   orbit: "#080b11",
   nebula: "#0f0819",
@@ -290,6 +306,7 @@ function syncSurface() {
   if (nextSurface !== surface) {
     surface = nextSurface;
     document.documentElement.dataset.surface = surface;
+    syncComposerInputMode();
     syncCollapseTurnButtons();
     if (journalRendered) prepareMobileControls();
   }
@@ -647,7 +664,7 @@ composerInput.addEventListener("input", () => {
 });
 
 composerInput.addEventListener("keydown", (event) => {
-  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing || phoneComposerMode()) return;
   event.preventDefault();
   submitComposer();
 });
@@ -672,6 +689,11 @@ function submitComposer() {
     attachments,
     annotations,
   };
+  drafts.set(state.selectedId, { text: "", attachments: [], annotations: [] });
+  composerInput.value = "";
+  setAttachments([]);
+  setAnnotations([]);
+  autosizeComposer();
   emit("message:send", {
     requestId,
     taskId: state.selectedId,
@@ -683,23 +705,22 @@ function submitComposer() {
   saveDraft();
 }
 
-function sameItems(current, original) {
-  return current.length === original.length
-    && current.every((item, index) => item === original[index]);
-}
-
 function completeComposerSend(requestId, accepted) {
   const pending = pendingComposerRequest;
   if (!pending || pending.requestId !== requestId) return;
   pendingComposerRequest = null;
-  if (accepted) {
+  if (!accepted) {
     const draft = drafts.get(pending.taskId);
-    const unchanged = draft
-      && draft.text === pending.rawText
-      && sameItems(draft.attachments ?? [], pending.attachments)
-      && sameItems(draft.annotations ?? [], pending.annotations);
-    if (unchanged) {
-      drafts.set(pending.taskId, { text: "", attachments: [], annotations: [] });
+    const untouched = draft
+      && !draft.text
+      && (draft.attachments ?? []).length === 0
+      && (draft.annotations ?? []).length === 0;
+    if (untouched) {
+      drafts.set(pending.taskId, {
+        text: pending.rawText,
+        attachments: pending.attachments,
+        annotations: pending.annotations,
+      });
       if (state.selectedId === pending.taskId) restoreDraft();
     }
   }
@@ -1104,7 +1125,7 @@ const AgentHub = {
     root.dataset.connection = value;
     const messages = {
       connecting: "Подключение к Agent Hub…",
-      restarting: "Agent Hub перезапускается… Сообщение останется в поле ввода.",
+      restarting: "Agent Hub перезапускается… Непринятый текст будет восстановлен.",
       offline: "Нет связи с Agent Hub. Неотправленное сообщение сохранено в поле ввода.",
     };
     connectionBanner.textContent = messages[value] ?? "";

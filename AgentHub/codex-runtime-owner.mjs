@@ -123,13 +123,18 @@ export async function resolveCodexObservedExecutionOwner(activity = {}, {
   probe = readWindowsRolloutProcesses,
 } = {}) {
   const direct = codexObservedExecutionOwner(activity, turnId);
-  if (direct === TASK_EXECUTION_OWNERS.VSCODE || !activity.running) return direct;
-  if (platform !== "win32" || !rolloutPath) return TASK_EXECUTION_OWNERS.EXTERNAL;
+  if (!activity.running) return direct;
+  if (platform !== "win32" || !rolloutPath) return direct;
 
   const cacheKey = `${path.resolve(rolloutPath)}\0${Number(agentHubPid) || 0}`;
   const cached = ownerProbeCache.get(cacheKey);
-  if (cached && nowMs - cached.checkedAtMs < OWNER_PROBE_CACHE_MS) return cached.owner;
-  if (ownerProbeInFlight.has(cacheKey)) return ownerProbeInFlight.get(cacheKey);
+  if (cached && nowMs - cached.checkedAtMs < OWNER_PROBE_CACHE_MS) {
+    return cached.owner === TASK_EXECUTION_OWNERS.EXTERNAL ? direct : cached.owner;
+  }
+  if (ownerProbeInFlight.has(cacheKey)) {
+    const owner = await ownerProbeInFlight.get(cacheKey);
+    return owner === TASK_EXECUTION_OWNERS.EXTERNAL ? direct : owner;
+  }
   const pending = (async () => {
     let owner = TASK_EXECUTION_OWNERS.EXTERNAL;
     try {
@@ -144,7 +149,8 @@ export async function resolveCodexObservedExecutionOwner(activity = {}, {
   })();
   ownerProbeInFlight.set(cacheKey, pending);
   try {
-    return await pending;
+    const owner = await pending;
+    return owner === TASK_EXECUTION_OWNERS.EXTERNAL ? direct : owner;
   } finally {
     ownerProbeInFlight.delete(cacheKey);
   }
