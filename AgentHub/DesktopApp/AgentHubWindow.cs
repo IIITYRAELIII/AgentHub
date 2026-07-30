@@ -59,6 +59,8 @@ namespace AgentHubDesktop
         private string historyKey;
         private int? historyBefore;
         private string lastRenderSignature;
+        private string currentClientUserMessageId;
+        private string currentClientUserMessageFingerprint;
 
         public AgentHubWindow()
         {
@@ -1563,28 +1565,48 @@ namespace AgentHubDesktop
                 return;
             }
             if (annotations.Count > 0) text = AnnotatedPrompt(text);
+            var sendingAttachments = attachments.ToArray();
+            var sendingFingerprint = DesktopMessageIdentity.PayloadFingerprint(text, sendingAttachments);
+            var sendingMessageId = DesktopMessageIdentity.Ensure(
+                ref currentClientUserMessageId,
+                ref currentClientUserMessageFingerprint,
+                sendingFingerprint);
+            SaveDraft();
             sendButton.IsEnabled = false;
             try
             {
                 footer.Text = "Отправляю…";
-                var parameters = new Dictionary<string, object> { { "text", text } };
-                if (attachments.Count > 0) parameters["attachments"] = attachments.ToArray();
-                var result = await client.CallAsync("send-message", parameters);
-                if (!AgentHubClient.Bool(result, "accepted"))
+                var parameters = new Dictionary<string, object>
+                {
+                    { "text", text },
+                    { "clientUserMessageId", sendingMessageId }
+                };
+                if (sendingAttachments.Length > 0) parameters["attachments"] = sendingAttachments;
+                var result = await client.CallAsync("send-message", parameters, true);
+                var accepted = AgentHubClient.Bool(result, "accepted");
+                var deferred = AgentHubClient.Bool(result, "deferred");
+                if (!accepted && !deferred)
                 {
                     footer.Text = AgentHubClient.Text(result, "message", "Сообщение сохранено");
                     var deferredSnapshot = AgentHubClient.Object(result, "snapshot");
                     if (deferredSnapshot.Count > 0) ApplySnapshot(deferredSnapshot);
                     return;
                 }
-                composer.Clear();
-                annotations.Clear();
-                attachments.Clear();
-                RenderAnnotations();
-                RenderAttachments();
-                SaveDraft();
+                var snapshot = AgentHubClient.Object(result, "snapshot");
+                if (snapshot.Count > 0) ApplySnapshot(snapshot);
+                if (String.Equals(currentClientUserMessageId, sendingMessageId, StringComparison.Ordinal)
+                    && String.Equals(
+                        currentClientUserMessageFingerprint,
+                        sendingFingerprint,
+                        StringComparison.Ordinal))
+                {
+                    ClearAcknowledgedDraft();
+                }
                 historyKey = null;
-                footer.Text = AgentHubClient.Text(result, "message", "Ход запущен");
+                footer.Text = AgentHubClient.Text(
+                    result,
+                    "message",
+                    accepted ? "Ход запущен" : "Сообщение сохранено");
                 await RefreshAsync(false);
             }
             catch (Exception error) { footer.Text = error.Message; }
@@ -1592,6 +1614,23 @@ namespace AgentHubDesktop
         }
 
         private async void BeginSend() { await SendAsync(); }
+
+        private void ClearAcknowledgedDraft()
+        {
+            restoringDraft = true;
+            try
+            {
+                composer.Clear();
+                annotations.Clear();
+                attachments.Clear();
+                currentClientUserMessageId = null;
+                currentClientUserMessageFingerprint = null;
+                RenderAnnotations();
+                RenderAttachments();
+            }
+            finally { restoringDraft = false; }
+            SaveDraft();
+        }
 
         private string AnnotatedPrompt(string request)
         {
@@ -1612,6 +1651,8 @@ namespace AgentHubDesktop
         private void ScheduleDraftSave()
         {
             if (restoringDraft) return;
+            currentClientUserMessageId = null;
+            currentClientUserMessageFingerprint = null;
             draftTimer.Stop();
             draftTimer.Start();
         }
@@ -1645,7 +1686,9 @@ namespace AgentHubDesktop
                 {
                     return new AnnotationDraft { Text = item.Text, Annotation = item.Annotation };
                 }).ToList(),
-                Attachments = attachments.Where(File.Exists).ToList()
+                Attachments = attachments.Where(File.Exists).ToList(),
+                ClientUserMessageId = currentClientUserMessageId ?? "",
+                ClientUserMessageFingerprint = currentClientUserMessageFingerprint ?? ""
             };
             if (draft.Text.Length == 0 && draft.Annotations.Count == 0 && draft.Attachments.Count == 0) drafts.Remove(selectedKey);
             else drafts[selectedKey] = draft;
@@ -1676,6 +1719,8 @@ namespace AgentHubDesktop
                 composer.Text = draft.Text ?? "";
                 annotations.AddRange(draft.Annotations ?? new List<AnnotationDraft>());
                 attachments.AddRange((draft.Attachments ?? new List<string>()).Where(File.Exists));
+                currentClientUserMessageId = draft.ClientUserMessageId;
+                currentClientUserMessageFingerprint = draft.ClientUserMessageFingerprint;
                 composer.CaretIndex = composer.Text.Length;
                 RenderAnnotations();
                 RenderAttachments();

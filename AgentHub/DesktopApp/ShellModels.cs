@@ -17,12 +17,16 @@ namespace AgentHubDesktop
         public string Text { get; set; }
         public List<AnnotationDraft> Annotations { get; set; }
         public List<string> Attachments { get; set; }
+        public string ClientUserMessageId { get; set; }
+        public string ClientUserMessageFingerprint { get; set; }
 
         public DesktopDraft()
         {
             Text = "";
             Annotations = new List<AnnotationDraft>();
             Attachments = new List<string>();
+            ClientUserMessageId = "";
+            ClientUserMessageFingerprint = "";
         }
     }
 

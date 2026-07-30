@@ -1,30 +1,112 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import path from "node:path";
 
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import { protectRuntimeConfig } from "./runtime-security.mjs";
 
+const PROTOCOL_VERSION = 2;
 const MAX_REQUEST_BYTES = 512 * 1024;
+const MAX_WIRE_REQUEST_BYTES = 768 * 1024;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
-
-function controlId(runtimeRoot) {
-  return createHash("sha256")
-    .update(path.resolve(runtimeRoot).toLowerCase())
-    .digest("hex")
-    .slice(0, 24);
-}
-
-export function desktopControlEndpoint(runtimeRoot = defaultRuntimeRoot()) {
-  const id = controlId(runtimeRoot);
-  return process.platform === "win32"
-    ? `\\\\.\\pipe\\tyrael-integration-desktop-${id}`
-    : path.join(runtimeRoot, `desktop-${id}.sock`);
-}
+const HANDSHAKE_TIMEOUT_MS = 10_000;
+const ENDPOINT_ID_PATTERN = /^[a-f0-9]{64}$/;
+const NONCE_PATTERN = /^[a-f0-9]{64}$/;
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 export function desktopControlSecretFile(runtimeRoot = defaultRuntimeRoot()) {
   return path.join(runtimeRoot, "desktop-control.secret");
+}
+
+export function desktopControlEndpointFile(runtimeRoot = defaultRuntimeRoot()) {
+  return path.join(runtimeRoot, "desktop-control.endpoint.json");
+}
+
+function endpointPipeName(endpointId) {
+  return `agent-hub-desktop-${endpointId}`;
+}
+
+function createEndpointDescriptor() {
+  const endpointId = randomBytes(32).toString("hex");
+  return {
+    protocol: PROTOCOL_VERSION,
+    endpointId,
+    pipeName: endpointPipeName(endpointId),
+  };
+}
+
+export function validateDesktopControlEndpoint(value) {
+  if (!value || typeof value !== "object") {
+    throw new Error("Invalid Desktop control endpoint");
+  }
+  const protocol = Number(value.protocol);
+  const endpointId = String(value.endpointId ?? "").trim().toLowerCase();
+  const pipeName = String(value.pipeName ?? "").trim();
+  if (protocol !== PROTOCOL_VERSION) {
+    throw new Error(`Unsupported Desktop control protocol: ${protocol || "unknown"}`);
+  }
+  if (!ENDPOINT_ID_PATTERN.test(endpointId) || pipeName !== endpointPipeName(endpointId)) {
+    throw new Error("Invalid Desktop control endpoint");
+  }
+  return { protocol, endpointId, pipeName };
+}
+
+export function desktopControlEndpoint(runtimeRoot, descriptor) {
+  const endpoint = validateDesktopControlEndpoint(descriptor);
+  return process.platform === "win32"
+    ? `\\\\.\\pipe\\${endpoint.pipeName}`
+    : path.join(runtimeRoot, `${endpoint.pipeName}.sock`);
+}
+
+export async function readDesktopControlEndpoint(runtimeRoot = defaultRuntimeRoot()) {
+  const raw = await readFile(desktopControlEndpointFile(runtimeRoot), "utf8");
+  return validateDesktopControlEndpoint(JSON.parse(raw));
+}
+
+async function publishEndpoint(runtimeRoot, descriptor, protectFile) {
+  const file = desktopControlEndpointFile(runtimeRoot);
+  const temporary = `${file}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+  await mkdir(path.dirname(file), { recursive: true });
+  try {
+    await writeFile(temporary, `${JSON.stringify(descriptor)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    await chmod(temporary, 0o600).catch(() => {});
+    await protectFile(temporary);
+    await rename(temporary, file);
+    await protectFile(file);
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
+  }
+}
+
+async function removePublishedEndpoint(runtimeRoot, descriptor) {
+  const file = desktopControlEndpointFile(runtimeRoot);
+  try {
+    const current = await readDesktopControlEndpoint(runtimeRoot);
+    if (current.endpointId === descriptor?.endpointId) {
+      await rm(file, { force: true });
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      // A malformed or concurrently replaced descriptor must not be deleted.
+    }
+  }
 }
 
 async function readOrCreateSecret(runtimeRoot, protectSecret = protectRuntimeConfig) {
@@ -49,15 +131,49 @@ async function readOrCreateSecret(runtimeRoot, protectSecret = protectRuntimeCon
   return (await readFile(file, "utf8")).trim();
 }
 
-function sameSecret(left, right) {
+function sameValue(left, right) {
   const a = Buffer.from(String(left ?? ""), "utf8");
   const b = Buffer.from(String(right ?? ""), "utf8");
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export function validateDesktopControlRequest(value, secret) {
-  if (!value || typeof value !== "object" || !sameSecret(value.secret, secret)) {
-    throw new Error("Desktop control authentication failed");
+function hmac(secret, value) {
+  return createHmac("sha256", Buffer.from(secret, "utf8"))
+    .update(value, "utf8")
+    .digest("hex");
+}
+
+function payloadDigest(payload) {
+  return createHash("sha256").update(payload).digest("hex");
+}
+
+function serverProofValue({ endpointId, clientNonce, challenge }) {
+  return [
+    "agent-hub-desktop/server/v2",
+    endpointId,
+    clientNonce,
+    challenge,
+  ].join("\n");
+}
+
+function clientProofValue({
+  endpointId,
+  clientNonce,
+  challenge,
+  digest,
+}) {
+  return [
+    "agent-hub-desktop/client/v2",
+    endpointId,
+    clientNonce,
+    challenge,
+    digest,
+  ].join("\n");
+}
+
+export function validateDesktopControlRequest(value) {
+  if (!value || typeof value !== "object") {
+    throw new Error("Invalid Desktop control request");
   }
   const action = String(value.action ?? "").trim();
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(action)) throw new Error("Invalid desktop control action");
@@ -68,11 +184,31 @@ export function validateDesktopControlRequest(value, secret) {
   return { action, params };
 }
 
+function parseProtocolLine(line) {
+  let value;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    throw new Error("Invalid Desktop control protocol message");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid Desktop control protocol message");
+  }
+  return value;
+}
+
+function protocolError(socket, error) {
+  if (socket.destroyed) return;
+  const message = String(error?.message ?? error ?? "Desktop control protocol failed");
+  socket.end(`${JSON.stringify({ ok: false, error: message })}\n`);
+}
+
 export class DesktopControlServer {
   #runtimeRoot;
   #handler;
   #server = null;
   #secret = null;
+  #descriptor = null;
   #protectSecret;
 
   constructor({ runtimeRoot = defaultRuntimeRoot(), handler, protectSecret = protectRuntimeConfig }) {
@@ -84,24 +220,83 @@ export class DesktopControlServer {
   async start() {
     if (this.#server) return;
     this.#secret = await readOrCreateSecret(this.#runtimeRoot, this.#protectSecret);
+    const descriptor = createEndpointDescriptor();
     const server = createServer({ allowHalfOpen: true }, (socket) => {
       let body = "";
-      let handled = false;
+      let state = "hello";
+      let processing = false;
+      let clientNonce = "";
+      let challenge = "";
       socket.setEncoding("utf8");
-      socket.on("data", (chunk) => {
-        if (handled) return;
-        body += chunk;
-        if (Buffer.byteLength(body, "utf8") > MAX_REQUEST_BYTES) {
-          handled = true;
-          socket.end(`${JSON.stringify({ ok: false, error: "Desktop control request is too large" })}\n`);
-          return;
-        }
+      socket.setTimeout(HANDSHAKE_TIMEOUT_MS, () => {
+        protocolError(socket, new Error("Desktop control handshake timed out"));
+      });
+
+      const processNextLine = () => {
+        if (processing || socket.destroyed) return;
         const newline = body.indexOf("\n");
         if (newline < 0) return;
-        handled = true;
+        const line = body.slice(0, newline);
+        body = body.slice(newline + 1);
+        processing = true;
         void (async () => {
           try {
-            const request = validateDesktopControlRequest(JSON.parse(body.slice(0, newline)), this.#secret);
+            const message = parseProtocolLine(line);
+            if (state === "hello") {
+              if (message.type !== "hello" || Number(message.protocol) !== PROTOCOL_VERSION) {
+                throw new Error("Desktop control handshake required");
+              }
+              clientNonce = String(message.clientNonce ?? "").trim().toLowerCase();
+              if (!NONCE_PATTERN.test(clientNonce)) throw new Error("Invalid Desktop client nonce");
+              challenge = randomBytes(32).toString("hex");
+              const serverProof = hmac(this.#secret, serverProofValue({
+                endpointId: descriptor.endpointId,
+                clientNonce,
+                challenge,
+              }));
+              state = "request";
+              socket.write(`${JSON.stringify({
+                type: "challenge",
+                protocol: PROTOCOL_VERSION,
+                endpointId: descriptor.endpointId,
+                challenge,
+                serverProof,
+              })}\n`);
+              return;
+            }
+            if (state !== "request" || message.type !== "request") {
+              throw new Error("Invalid Desktop control protocol state");
+            }
+            state = "handled";
+            const requestClientNonce = String(message.clientNonce ?? "").trim().toLowerCase();
+            const requestChallenge = String(message.challenge ?? "").trim().toLowerCase();
+            const encodedPayload = String(message.payload ?? "");
+            const proof = String(message.proof ?? "").trim().toLowerCase();
+            if (!sameValue(requestClientNonce, clientNonce)
+              || !sameValue(requestChallenge, challenge)
+              || !NONCE_PATTERN.test(requestClientNonce)
+              || !NONCE_PATTERN.test(requestChallenge)) {
+              throw new Error("Desktop control challenge mismatch");
+            }
+            if (!encodedPayload || !BASE64_PATTERN.test(encodedPayload)) {
+              throw new Error("Invalid Desktop control payload");
+            }
+            const payload = Buffer.from(encodedPayload, "base64");
+            if (payload.length === 0 || payload.length > MAX_REQUEST_BYTES) {
+              throw new Error("Desktop control request is too large");
+            }
+            const digest = payloadDigest(payload);
+            const expectedProof = hmac(this.#secret, clientProofValue({
+              endpointId: descriptor.endpointId,
+              clientNonce,
+              challenge,
+              digest,
+            }));
+            if (!sameValue(proof, expectedProof)) {
+              throw new Error("Desktop control client authentication failed");
+            }
+            const request = validateDesktopControlRequest(parseProtocolLine(payload.toString("utf8")));
+            socket.setTimeout(0);
             const result = await this.#handler(request);
             const response = `${JSON.stringify({ ok: true, result: result ?? null })}\n`;
             if (Buffer.byteLength(response, "utf8") > MAX_RESPONSE_BYTES) {
@@ -109,40 +304,82 @@ export class DesktopControlServer {
             }
             socket.end(response);
           } catch (error) {
-            socket.end(`${JSON.stringify({ ok: false, error: String(error?.message ?? error) })}\n`);
+            state = "handled";
+            protocolError(socket, error);
+          } finally {
+            processing = false;
+            if (state !== "handled") processNextLine();
           }
         })();
+      };
+
+      socket.on("data", (chunk) => {
+        if (state === "handled") return;
+        body += chunk;
+        if (Buffer.byteLength(body, "utf8") > MAX_WIRE_REQUEST_BYTES) {
+          state = "handled";
+          protocolError(socket, new Error("Desktop control request is too large"));
+          return;
+        }
+        processNextLine();
       });
       socket.on("error", () => {});
     });
-    await new Promise((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(desktopControlEndpoint(this.#runtimeRoot), () => {
-        server.off("error", reject);
-        resolve();
+    const endpoint = desktopControlEndpoint(this.#runtimeRoot, descriptor);
+    try {
+      await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen({
+          path: endpoint,
+          exclusive: true,
+          readableAll: false,
+          writableAll: false,
+        }, () => {
+          server.off("error", reject);
+          resolve();
+        });
       });
-    });
+      await publishEndpoint(this.#runtimeRoot, descriptor, this.#protectSecret);
+    } catch (error) {
+      if (server.listening) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+      throw error;
+    }
+    this.#descriptor = descriptor;
     this.#server = server;
   }
 
   async close() {
     const server = this.#server;
+    const descriptor = this.#descriptor;
     this.#server = null;
-    if (!server?.listening) return;
-    await new Promise((resolve) => server.close(resolve));
+    this.#descriptor = null;
+    if (server?.listening) {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    await removePublishedEndpoint(this.#runtimeRoot, descriptor);
   }
 }
 
-export async function callDesktopControl(action, params = {}, {
-  runtimeRoot = defaultRuntimeRoot(),
-  timeoutMs = 10_000,
-} = {}) {
-  const secret = (await readFile(desktopControlSecretFile(runtimeRoot), "utf8")).trim();
-  const payload = `${JSON.stringify({ secret, action, params })}\n`;
+async function callDesktopControlOnce(action, params, {
+  runtimeRoot,
+  timeoutMs,
+}) {
+  const [secret, descriptor] = await Promise.all([
+    readFile(desktopControlSecretFile(runtimeRoot), "utf8").then((value) => value.trim()),
+    readDesktopControlEndpoint(runtimeRoot),
+  ]);
+  const requestPayload = Buffer.from(JSON.stringify(validateDesktopControlRequest({ action, params })), "utf8");
+  if (requestPayload.length > MAX_REQUEST_BYTES) {
+    throw new Error("Desktop control request is too large");
+  }
+  const clientNonce = randomBytes(32).toString("hex");
   return new Promise((resolve, reject) => {
-    const socket = createConnection(desktopControlEndpoint(runtimeRoot));
+    const socket = createConnection(desktopControlEndpoint(runtimeRoot, descriptor));
     let response = "";
     let settled = false;
+    let state = "challenge";
     const finish = (operation, value) => {
       if (settled) return;
       settled = true;
@@ -153,23 +390,80 @@ export async function callDesktopControl(action, params = {}, {
     const timer = setTimeout(() => finish(reject, new Error("Desktop control request timed out")), timeoutMs);
     timer.unref?.();
     socket.setEncoding("utf8");
-    socket.on("connect", () => socket.write(payload));
+    socket.on("connect", () => {
+      socket.write(`${JSON.stringify({
+        type: "hello",
+        protocol: PROTOCOL_VERSION,
+        clientNonce,
+      })}\n`);
+    });
     socket.on("data", (chunk) => {
+      if (settled) return;
       response += chunk;
       if (Buffer.byteLength(response, "utf8") > MAX_RESPONSE_BYTES) {
         finish(reject, new Error("Desktop control response is too large"));
+        return;
+      }
+      const newline = response.indexOf("\n");
+      if (newline < 0) return;
+      const line = response.slice(0, newline);
+      response = response.slice(newline + 1);
+      try {
+        const value = parseProtocolLine(line);
+        if (state === "challenge") {
+          if (value.type !== "challenge"
+            || Number(value.protocol) !== PROTOCOL_VERSION
+            || String(value.endpointId ?? "") !== descriptor.endpointId) {
+            throw new Error("Desktop control server authentication failed");
+          }
+          const challenge = String(value.challenge ?? "").trim().toLowerCase();
+          const proof = String(value.serverProof ?? "").trim().toLowerCase();
+          if (!NONCE_PATTERN.test(challenge)) {
+            throw new Error("Desktop control server authentication failed");
+          }
+          const expected = hmac(secret, serverProofValue({
+            endpointId: descriptor.endpointId,
+            clientNonce,
+            challenge,
+          }));
+          if (!sameValue(proof, expected)) {
+            throw new Error("Desktop control server authentication failed");
+          }
+          const digest = payloadDigest(requestPayload);
+          state = "response";
+          socket.write(`${JSON.stringify({
+            type: "request",
+            clientNonce,
+            challenge,
+            payload: requestPayload.toString("base64"),
+            proof: hmac(secret, clientProofValue({
+              endpointId: descriptor.endpointId,
+              clientNonce,
+              challenge,
+              digest,
+            })),
+          })}\n`);
+          return;
+        }
+        if (state !== "response") {
+          throw new Error("Invalid Desktop control response state");
+        }
+        if (!value.ok) finish(reject, new Error(value.error || "Desktop control request failed"));
+        else finish(resolve, value.result);
+      } catch (error) {
+        finish(reject, error);
       }
     });
     socket.on("error", (error) => finish(reject, error));
     socket.on("close", () => {
-      if (settled) return;
-      try {
-        const value = JSON.parse(response);
-        if (!value.ok) finish(reject, new Error(value.error || "Desktop control request failed"));
-        else finish(resolve, value.result);
-      } catch (error) {
-        finish(reject, new Error(`Invalid desktop control response: ${error.message}`));
-      }
+      if (!settled) finish(reject, new Error("Desktop control connection closed without a response"));
     });
   });
+}
+
+export async function callDesktopControl(action, params = {}, {
+  runtimeRoot = defaultRuntimeRoot(),
+  timeoutMs = 10_000,
+} = {}) {
+  return callDesktopControlOnce(action, params, { runtimeRoot, timeoutMs });
 }
