@@ -231,6 +231,20 @@ test("chat shows sent messages immediately and renders reasoning separately", ()
   assert.match(app, /patchMessage\(taskId, messageId, patch\)/u);
 });
 
+test("chat does not render the last agent response again as live text", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(
+    app,
+    /function liveTextDuplicatesLastMessage\(live\)[\s\S]*lastMessage\?\.role === "agent"[\s\S]*normalizedMessageText\(lastMessage\.text\) === liveText/u,
+  );
+  assert.match(app, /if \(!live \|\| \(duplicateText && !normalizedMessageText\(live\.reasoning\)\)\)/u);
+  assert.match(app, /body\.textContent = duplicateText \? "" : live\.text \|\| ""/u);
+  assert.match(
+    app,
+    /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ forceBottom: true \}\);\s*renderLive\(\);/u,
+  );
+});
+
 test("deferred messages show their preview and can be queued after the active turn", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");

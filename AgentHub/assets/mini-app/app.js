@@ -532,9 +532,23 @@ function renderMessage(message) {
   return article;
 }
 
+function normalizedMessageText(value) {
+  return String(value ?? "").replace(/\r\n?/g, "\n").trim();
+}
+
+function liveTextDuplicatesLastMessage(live) {
+  const liveText = normalizedMessageText(live?.text);
+  if (!liveText) return false;
+  const messages = state.messages.get(state.selectedId) ?? [];
+  const lastMessage = messages.at(-1);
+  return lastMessage?.role === "agent"
+    && normalizedMessageText(lastMessage.text) === liveText;
+}
+
 function renderLive() {
   const live = state.live.get(state.selectedId);
-  if (!live) {
+  const duplicateText = liveTextDuplicatesLastMessage(live);
+  if (!live || (duplicateText && !normalizedMessageText(live.reasoning))) {
     chatLive.hidden = true;
     return;
   }
@@ -544,7 +558,9 @@ function renderLive() {
   const reasoning = chatLive.querySelector("[data-live-reasoning]");
   reasoning.textContent = live.reasoning || "";
   reasoning.hidden = !live.reasoning;
-  chatLive.querySelector("[data-live-body]").textContent = live.text || "";
+  const body = chatLive.querySelector("[data-live-body]");
+  body.textContent = duplicateText ? "" : live.text || "";
+  body.hidden = duplicateText || !live.text;
   scrollChatToBottom();
 }
 
@@ -1137,20 +1153,29 @@ const AgentHub = {
    *  attachments }. role: "user" | "agent" | "system". */
   setMessages(taskId, messages) {
     state.messages.set(taskId, Array.isArray(messages) ? messages.slice() : []);
-    if (taskId === state.selectedId) renderMessages({ forceBottom: true });
+    if (taskId === state.selectedId) {
+      renderMessages({ forceBottom: true });
+      renderLive();
+    }
   },
   appendMessage(taskId, message) {
     const list = state.messages.get(taskId) ?? [];
     list.push(message);
     state.messages.set(taskId, list);
-    if (taskId === state.selectedId) renderMessages({ forceBottom: true });
+    if (taskId === state.selectedId) {
+      renderMessages({ forceBottom: true });
+      renderLive();
+    }
   },
   patchMessage(taskId, messageId, patch) {
     const list = state.messages.get(taskId) ?? [];
     const message = list.find((item) => item.id === messageId);
     if (!message) return;
     Object.assign(message, patch);
-    if (taskId === state.selectedId) renderMessages();
+    if (taskId === state.selectedId) {
+      renderMessages();
+      renderLive();
+    }
   },
   completeSend(requestId, { accepted = false } = {}) {
     completeComposerSend(requestId, accepted);
