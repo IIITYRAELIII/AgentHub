@@ -1194,6 +1194,9 @@ function renderQueue() {
     }));
     queueBox.append(el("div", { class: "queue-item", "data-queue-id": entry.id }, [
       el("span", { class: "queue-text", text: entry.text || entry.preview || entry.summary || "Сообщение" }),
+      Array.isArray(entry.attachments) && entry.attachments.length
+        ? renderAttachmentStrip(entry.attachments, { readOnly: true })
+        : null,
       el("span", { class: "queue-actions" }, actions),
     ]));
   }
@@ -1418,9 +1421,16 @@ function renderAttachments() {
 function renderAttachmentStrip(items, { readOnly }) {
   const strip = el("div", { class: "attachment-strip" });
   items.forEach((item, index) => {
-    const thumb = el("div", { class: "attachment", title: item.name || "" }, [
+    const thumb = el(readOnly ? "button" : "div", {
+      class: `attachment${readOnly ? " attachment-open" : ""}`,
+      title: readOnly ? "Открыть изображение" : item.name || "",
+      ...(readOnly ? { type: "button", "aria-label": `Открыть ${item.name || "изображение"}` } : {}),
+    }, [
       el("img", { src: item.dataUrl || item.url || "", alt: item.name || "вложение", loading: "lazy" }),
     ]);
+    if (readOnly) {
+      thumb.addEventListener("click", () => emit("attachment:open", { attachment: item }));
+    }
     if (!readOnly) {
       thumb.append(el("button", {
         type: "button", class: "attachment-remove", "data-attachment-index": index,

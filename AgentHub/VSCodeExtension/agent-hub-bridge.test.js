@@ -67,6 +67,8 @@ test("VS Code bridge stages pasted images in the allowed runtime directory", asy
     });
     assert.equal(path.dirname(target), path.join(root, "DesktopApp", "attachments"));
     assert.deepEqual(await readFile(target), body);
+    assert.equal(await bridge.attachmentPath(path.basename(target)), target);
+    await assert.rejects(bridge.attachmentPath("../outside.png"), /идентификатор/u);
   } finally {
     if (previousRoot == null) delete process.env.AGENT_HUB_RUNTIME_ROOT;
     else process.env.AGENT_HUB_RUNTIME_ROOT = previousRoot;

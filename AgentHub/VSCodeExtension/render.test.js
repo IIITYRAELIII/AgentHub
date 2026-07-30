@@ -435,6 +435,18 @@ test("dispatching deferred messages leave the queue and reappear in the active c
   assert.match(client, /item\.state !== "dispatching"/u);
 });
 
+test("message attachments keep timestamps, thumbnails and an explicit open action", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
+  assert.match(client, /time:\s*message\.time \?\?/u);
+  assert.match(client, /attachments:\s*attachmentViews\(message\.attachments\)/u);
+  assert.match(client, /agentHub\.on\("attachment:open"/u);
+  assert.match(app, /emit\("attachment:open",\s*\{\s*attachment:\s*item\s*\}\)/u);
+  assert.match(extension, /decorateAttachmentUrls/u);
+  assert.match(extension, /action === "open-attachment"/u);
+});
+
 test("chat keeps an active response only in the live card after task switching", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");

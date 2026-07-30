@@ -91,6 +91,23 @@ class AgentHubBridge {
     return callDesktopControl(action, params);
   }
 
+  attachmentDirectory() {
+    return path.join(this.runtimeRoot, "DesktopApp", "attachments");
+  }
+
+  async attachmentPath(id) {
+    const name = String(id ?? "").trim().toLowerCase();
+    if (!/^[a-z0-9-]{1,160}\.(?:png|jpe?g|webp|gif|bmp)$/u.test(name)) {
+      throw new Error("Некорректный идентификатор вложения");
+    }
+    const target = path.join(this.attachmentDirectory(), name);
+    const info = await stat(target);
+    if (!info.isFile() || info.size < 1 || info.size > MAX_IMAGE_BYTES) {
+      throw new Error("Вложение отсутствует или повреждено");
+    }
+    return target;
+  }
+
   async uploadAttachment(params) {
     const match = String(params.dataUrl ?? "").match(/^data:([^;,]+);base64,(.+)$/u);
     if (!match) throw new Error("Изображение имеет неподдерживаемый формат");
@@ -100,7 +117,7 @@ class AgentHubBridge {
     if (!body.length || body.length > MAX_IMAGE_BYTES) {
       throw new Error("Изображение отсутствует или превышает 20 МБ");
     }
-    const directory = path.join(this.runtimeRoot, "DesktopApp", "attachments");
+    const directory = this.attachmentDirectory();
     await mkdir(directory, { recursive: true });
     const target = path.join(directory, `${randomUUID()}${extension}`);
     await writeFile(target, body, { flag: "wx", mode: 0o600 });
@@ -172,4 +189,4 @@ class AgentHubBridge {
   }
 }
 
-module.exports = { AgentHubBridge };
+module.exports = { AgentHubBridge, defaultRuntimeRoot };

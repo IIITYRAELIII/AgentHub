@@ -5351,10 +5351,22 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
 }
 
 .attachment {
+  background: transparent;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   overflow: hidden;
+  padding: 0;
   position: relative;
+}
+
+.attachment-open {
+  cursor: zoom-in;
+}
+
+.attachment-open:hover,
+.attachment-open:focus-visible {
+  border-color: var(--accent-line);
+  box-shadow: var(--accent-glow);
 }
 
 .attachment img {

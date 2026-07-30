@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { createDesktopMessageController } from "./desktop-message-controller.mjs";
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
+
+const EXISTING_IMAGE = fileURLToPath(
+  new URL("./assets/mini-app/blackhole-blue.png", import.meta.url),
+);
 
 function controller(overrides = {}) {
   const target = {
@@ -166,4 +171,62 @@ test("desktop message controller preserves an uncertain external activity for ex
   assert.equal(result.reason, "activity-unknown");
   assert.equal(deferredOptions.allowForce, true);
   assert.equal(deferredOptions.conflictKind, "activity-unknown");
+});
+
+test("desktop message controller keeps image originals as message data", async () => {
+  const file = EXISTING_IMAGE;
+  let launched = null;
+  const messages = controller({
+    attachmentPaths: async () => [file],
+    describeAttachments: () => [{
+      id: "message-1.png",
+      name: "message-1.png",
+      type: "image/png",
+    }],
+    launchTurn: async (run, input, cleanupFiles) => {
+      launched = { run, input, cleanupFiles };
+    },
+  });
+
+  const result = await messages.sendMessage({
+    text: "проверь скрин",
+    attachments: [file],
+    clientUserMessageId: "message-with-image",
+  });
+
+  assert.equal(result.accepted, true);
+  assert.deepEqual(result.attachments, [{
+    id: "message-1.png",
+    name: "message-1.png",
+    type: "image/png",
+  }]);
+  assert.deepEqual(launched.cleanupFiles, []);
+  assert.deepEqual(launched.run.messageAttachments, result.attachments);
+  assert.deepEqual(launched.input, [
+    { type: "text", text: "проверь скрин" },
+    { type: "localImage", path: file },
+  ]);
+});
+
+test("deferred Desktop images remain persistent and visible in the queue", async () => {
+  const file = EXISTING_IMAGE;
+  let deferredOptions = null;
+  const messages = controller({
+    attachmentPaths: async () => [file],
+    taskRuns: { forTask: () => ({ id: "run-active", executionOwner: "vscode" }) },
+    deferConflictingInput: async (_input, _attachments, options) => {
+      deferredOptions = options;
+      return { id: "queued-image", item: { id: "queued-image" } };
+    },
+  });
+
+  const result = await messages.sendMessage({
+    text: "после хода",
+    attachments: [file],
+    clientUserMessageId: "queued-with-image",
+    followUpMode: "queue",
+  });
+
+  assert.equal(result.queued, true);
+  assert.equal(deferredOptions.persistentFiles, true);
 });

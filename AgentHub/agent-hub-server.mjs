@@ -2683,6 +2683,10 @@ const {
     pendingValues: () => [...pendingInputs.values()],
     queuedValues: () => [...queuedInputs.values()],
     inputPreview,
+    describeAttachments: desktopAttachmentDescriptors,
+  },
+  receipts: {
+    forMessage: (identity) => desktopMessageReceipts.get(identity),
   },
   approvals: {
     snapshot: () => approvalController.snapshot(),
@@ -2714,6 +2718,10 @@ const desktopTaskHistory = createDesktopTaskHistoryFactory({
   },
   historyMerger: {
     mergeActive: mergeActiveTaskHistory,
+  },
+  receipts: {
+    forMessage: (identity) => desktopMessageReceipts.get(identity),
+    forTurn: (identity) => desktopMessageReceipts.findByTurn(identity),
   },
   responseBudget: {
     fit: fitTaskHistoryPayload,
@@ -2843,6 +2851,26 @@ async function desktopAttachmentPaths(values) {
     result.push(file);
   }
   return result;
+}
+
+const DESKTOP_ATTACHMENT_TYPES = new Map([
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".webp", "image/webp"],
+  [".gif", "image/gif"],
+  [".bmp", "image/bmp"],
+]);
+
+function desktopAttachmentDescriptors(files) {
+  return (Array.isArray(files) ? files : []).map((file) => {
+    const name = path.basename(path.resolve(String(file ?? "")));
+    return {
+      id: name,
+      name,
+      type: DESKTOP_ATTACHMENT_TYPES.get(path.extname(name).toLowerCase()) ?? "application/octet-stream",
+    };
+  });
 }
 
 async function desktopUpdateSetting(params) {
@@ -3000,7 +3028,10 @@ async function desktopDeferredInput(params) {
   if (action === "force") {
     if (item.allowForce !== true) throw new Error("Принудительный запуск для этого сообщения не разрешён");
     await activateMessageBinding(binding);
-    const outcome = await startTurn(item.input, item.temporaryFiles ?? [], {
+    const outcome = await startTurn(
+      item.input,
+      item.temporaryFiles ?? [],
+      {
       forceSpeechButton: item.forceSpeechButton === true,
       target: {
         ...binding,
@@ -3012,10 +3043,16 @@ async function desktopDeferredInput(params) {
       },
       allowRepositoryConflict: item.conflictKind === "repository",
       allowUnknownExternalActivity: item.conflictKind === "activity-unknown",
-    });
+      persistentFiles: item.persistentFiles === true,
+      },
+    );
     if (outcome?.deferred) throw new Error("Условие безопасного запуска всё ещё не выполнено");
+    const startedRun = taskRuns.forTask(binding);
+    if (startedRun && item.persistentFiles) {
+      startedRun.messageAttachments = desktopAttachmentDescriptors(item.temporaryFiles);
+    }
     pendingInputs.delete(id);
-    updateDeferredDesktopReceipt(item, "started", taskRuns.forTask(binding));
+    updateDeferredDesktopReceipt(item, "started", startedRun);
     await saveState();
     await updateDeferredMessage(item, `⚠️ Сообщение отправлено в задачу «${item.taskTitle}».`);
     deferredInputController.scheduleNextForTask(item);
@@ -3026,10 +3063,15 @@ async function desktopDeferredInput(params) {
     await createThread();
     const outcome = await startTurn(item.input, item.temporaryFiles ?? [], {
       forceSpeechButton: item.forceSpeechButton === true,
+      persistentFiles: item.persistentFiles === true,
     });
     if (outcome?.deferred) throw new Error("Новая задача неожиданно оказалась занята");
+    const startedRun = taskRuns.forTask(selectedTask());
+    if (startedRun && item.persistentFiles) {
+      startedRun.messageAttachments = desktopAttachmentDescriptors(item.temporaryFiles);
+    }
     pendingInputs.delete(id);
-    updateDeferredDesktopReceipt(item, "started", taskRuns.forTask(selectedTask()));
+    updateDeferredDesktopReceipt(item, "started", startedRun);
     await saveState();
     await updateDeferredMessage(item, `🆕 Сообщение отправлено в новую задачу «${activeThreadTitle}».`);
     deferredInputController.scheduleNextForTask(item);
@@ -3192,6 +3234,7 @@ async function desktopCompactContext(params) {
 
 const desktopMessageController = createDesktopMessageController({
   attachmentPaths: desktopAttachmentPaths,
+  describeAttachments: desktopAttachmentDescriptors,
   resolveTarget: desktopMessageTarget,
   receipts: desktopMessageReceipts,
   persistReceipts: saveState,
@@ -4022,6 +4065,7 @@ async function deferConflictingInput(input, temporaryFiles, {
   clientUserMessageId = null,
   destination = "pending",
   notify = true,
+  persistentFiles = false,
 } = {}) {
   if (pendingInputs.size + queuedInputs.size >= MAX_DEFERRED_INPUTS) {
     await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
@@ -4039,6 +4083,7 @@ async function deferConflictingInput(input, temporaryFiles, {
     collaborationMode: target.collaborationMode,
     input,
     temporaryFiles,
+    persistentFiles: persistentFiles === true,
     forceSpeechButton,
     allowForce,
     conflictKind,
@@ -4127,6 +4172,7 @@ async function startTurn(input, temporaryFiles = [], {
   target = null,
   allowRepositoryConflict = false,
   allowUnknownExternalActivity = false,
+  persistentFiles = false,
 } = {}) {
   target ??= {
     ...selectedTask(),
@@ -4158,6 +4204,7 @@ async function startTurn(input, temporaryFiles = [], {
       conflictKind: externalActivity.state === "unknown" && !existingRun
         ? "activity-unknown"
         : "task-running",
+      persistentFiles,
     });
   }
   if (repositoryConflict) {
@@ -4168,6 +4215,7 @@ async function startTurn(input, temporaryFiles = [], {
       allowForce: true,
       conflictKind: "repository",
       conflictTask: repositoryConflict,
+      persistentFiles,
     });
   }
   let run;
@@ -4180,9 +4228,13 @@ async function startTurn(input, temporaryFiles = [], {
       forceSpeechButton,
       executionOwner: concurrentRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
       target,
+      persistentFiles,
     });
   }
-  await launchTurn(run, input, temporaryFiles, { forceSpeechButton });
+  run.messageAttachments = persistentFiles
+    ? desktopAttachmentDescriptors(temporaryFiles)
+    : [];
+  await launchTurn(run, input, persistentFiles ? [] : temporaryFiles, { forceSpeechButton });
   return { started: true, runId: run.id };
 }
 
@@ -4214,6 +4266,9 @@ function updateDeferredDesktopReceipt(item, state, started = null) {
   if (state === "started") {
     return desktopMessageReceipts.updateResult(identity, {
       accepted: true,
+      deferred: false,
+      queued: false,
+      cancelled: false,
       runId: started?.id ?? null,
       threadId: started?.threadId ?? item.threadId,
       turnId: started?.turnId ?? null,
@@ -4292,7 +4347,10 @@ const deferredInputController = new DeferredInputController({
       clientUserMessageId: item.clientUserMessageId,
     };
     const run = await beginRun(item.input, target);
-    await launchTurn(run, item.input, item.temporaryFiles ?? [], {
+    run.messageAttachments = item.persistentFiles
+      ? desktopAttachmentDescriptors(item.temporaryFiles)
+      : [];
+    await launchTurn(run, item.input, item.persistentFiles ? [] : item.temporaryFiles ?? [], {
       forceSpeechButton: item.forceSpeechButton === true,
     });
     return run;
@@ -6661,7 +6719,10 @@ async function dispatchTelegramCallback(callback, route) {
       if (action === "force") {
         if (item.allowForce !== true) throw new Error("принудительный запуск для этого сообщения не разрешён");
         await activateMessageBinding(binding);
-        const outcome = await startTurn(item.input, item.temporaryFiles ?? [], {
+        const outcome = await startTurn(
+          item.input,
+          item.temporaryFiles ?? [],
+          {
           forceSpeechButton: item.forceSpeechButton === true,
           target: {
             ...binding,
@@ -6673,10 +6734,16 @@ async function dispatchTelegramCallback(callback, route) {
           },
           allowRepositoryConflict: item.conflictKind === "repository",
           allowUnknownExternalActivity: item.conflictKind === "activity-unknown",
-        });
+          persistentFiles: item.persistentFiles === true,
+          },
+        );
         if (outcome?.deferred) throw new Error("условие безопасного запуска всё ещё не выполнено");
+        const startedRun = taskRuns.forTask(binding);
+        if (startedRun && item.persistentFiles) {
+          startedRun.messageAttachments = desktopAttachmentDescriptors(item.temporaryFiles);
+        }
         pendingInputs.delete(id);
-        updateDeferredDesktopReceipt(item, "started", taskRuns.forTask(binding));
+        updateDeferredDesktopReceipt(item, "started", startedRun);
         await saveState();
         await updateDeferredMessage(item, `⚠️ Сообщение отправлено в задачу «${item.taskTitle}» после явного подтверждения.`);
         deferredInputController.scheduleNextForTask(item);
@@ -6688,10 +6755,15 @@ async function dispatchTelegramCallback(callback, route) {
       const newTaskTitle = activeThreadTitle;
       const outcome = await startTurn(item.input, item.temporaryFiles ?? [], {
         forceSpeechButton: item.forceSpeechButton === true,
+        persistentFiles: item.persistentFiles === true,
       });
       if (outcome?.deferred) throw new Error("новая задача неожиданно оказалась занята");
+      const startedRun = taskRuns.forTask(selectedTask());
+      if (startedRun && item.persistentFiles) {
+        startedRun.messageAttachments = desktopAttachmentDescriptors(item.temporaryFiles);
+      }
       pendingInputs.delete(id);
-      updateDeferredDesktopReceipt(item, "started", taskRuns.forTask(selectedTask()));
+      updateDeferredDesktopReceipt(item, "started", startedRun);
       await saveState();
       await updateDeferredMessage(item, `🆕 Сообщение отправлено в новую задачу «${newTaskTitle}».`);
       deferredInputController.scheduleNextForTask(item);

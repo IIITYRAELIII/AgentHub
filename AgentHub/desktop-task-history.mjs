@@ -4,6 +4,7 @@ export function createDesktopTaskHistoryFactory({
   historyReader,
   runs,
   historyMerger,
+  receipts = {},
   responseBudget,
 }) {
   return async function desktopTaskHistory(params) {
@@ -37,6 +38,8 @@ export function createDesktopTaskHistoryFactory({
         clientUserMessageId: running.clientUserMessageId,
         responseItemId: running.responseItemId,
         activities: running.activities,
+        startedAt: running.startedAt,
+        attachments: running.messageAttachments ?? [],
       });
     }
 
@@ -66,11 +69,27 @@ export function createDesktopTaskHistoryFactory({
         status: String(item.status ?? ""),
         active: item.active === true,
         completed: item.completed === true,
+        startedAt: item.startedAt ?? null,
+        completedAt: item.completedAt ?? null,
         activities: Array.isArray(item.activities) ? item.activities.slice(-100) : [],
         messages: (Array.isArray(item.messages) ? item.messages : []).flatMap((message) => {
           const role = String(message?.role ?? "");
           const text = String(message?.text ?? "");
           if (!["user", "agent"].includes(role) || !text) return [];
+          const receipt = role === "user"
+            ? (message.clientUserMessageId
+              ? receipts.forMessage?.({
+                provider,
+                threadId: selectedThreadId,
+                clientUserMessageId: message.clientUserMessageId,
+              })
+              : null)
+              ?? receipts.forTurn?.({
+                provider,
+                threadId: selectedThreadId,
+                turnId: item.id,
+              })
+            : null;
           return [{
             itemId: String(message.itemId ?? ""),
             ...(message.clientUserMessageId
@@ -79,6 +98,14 @@ export function createDesktopTaskHistoryFactory({
             role,
             text: text.slice(0, role === "agent" ? maxAnswerChars : 100_000),
             ...(message.phase ? { phase: String(message.phase) } : {}),
+            time: message.time
+              ?? receipt?.createdAt
+              ?? (role === "user" ? item.startedAt : item.completedAt)
+              ?? null,
+            attachments: role === "user"
+              ? (message.attachments ?? receipt?.result?.attachments ?? item.attachments ?? [])
+                .map((attachment) => ({ ...attachment }))
+              : [],
           }];
         }),
       })),

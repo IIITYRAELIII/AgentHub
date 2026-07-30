@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -88,6 +88,36 @@ test("extractWorkLogHtml escapes an unprojected journal", () => {
     extractWorkLogHtml("# Глобальный журнал работ\n\n<unsafe>"),
     "<pre data-mini-app-fallback>&lt;unsafe&gt;</pre>",
   );
+});
+
+test("Mini App serves only safe persistent message attachment names", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-attachment-"));
+  const attachments = path.join(directory, "attachments");
+  const workLogFile = path.join(directory, "WORK_LOG.md");
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    workLogFile,
+    attachmentDirectory: attachments,
+  });
+  try {
+    await mkdir(attachments, { recursive: true });
+    await writeFile(workLogFile, "# Журнал\n", "utf8");
+    const body = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    await writeFile(path.join(attachments, "message-1.png"), body);
+    const address = await server.start();
+    const image = await fetch(`${address.url}api/message-attachment/message-1.png`);
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get("content-type"), "image/png");
+    assert.deepEqual(Buffer.from(await image.arrayBuffer()), body);
+    assert.equal(
+      (await fetch(`${address.url}api/message-attachment/..%2Fsecret.png`)).status,
+      404,
+    );
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("Telegram Mini App initData is signed, fresh and allowlisted", () => {

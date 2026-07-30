@@ -85,6 +85,18 @@ function deliveryPatch(stateName) {
   return states[stateName] ?? states.unconfirmed;
 }
 
+function attachmentView(attachment) {
+  const value = { ...attachment };
+  if (!value.dataUrl && !value.url && value.id) {
+    value.url = `/api/message-attachment/${encodeURIComponent(String(value.id))}`;
+  }
+  return value;
+}
+
+function attachmentViews(values) {
+  return (Array.isArray(values) ? values : []).map(attachmentView);
+}
+
 function patchOutgoing(taskIdValue, clientUserMessageId, patch) {
   const message = outgoingMessages(taskIdValue).get(clientUserMessageId);
   if (!message) return;
@@ -98,6 +110,8 @@ function liveUserMessagesSignature(run) {
     String(run?.turnId ?? ""),
     String(run?.clientUserMessageId ?? ""),
     String(run?.prompt ?? "").length,
+    String(run?.startedAt ?? ""),
+    JSON.stringify(run?.attachments ?? []),
     ...messages.map((message) => [
       String(message?.itemId ?? ""),
       String(message?.clientUserMessageId ?? ""),
@@ -157,6 +171,8 @@ function updateLiveMessage(taskIdValue, selected) {
     userMessages: run.userMessages ?? [],
     prompt: run.prompt ?? "",
     clientUserMessageId: run.clientUserMessageId ?? "",
+    time: run.startedAt ?? null,
+    attachments: attachmentViews(run.attachments),
     signature: liveUserMessagesSignature(run),
   };
   const previousLiveUsers = liveUserMessagesByTask.get(taskIdValue);
@@ -357,13 +373,17 @@ function applySnapshot(snapshot) {
     patchOutgoing(
       taskId(deferred.provider, deferred.threadId),
       clientUserMessageId,
-      deliveryPatch(
-        deferred.state === "dispatching"
-          ? "sending"
-          : deferred.state === "queued"
-            ? "queued"
-            : "deferred",
-      ),
+      {
+        ...deliveryPatch(
+          deferred.state === "dispatching"
+            ? "sending"
+            : deferred.state === "queued"
+              ? "queued"
+              : "deferred",
+        ),
+        time: deferred.createdAt ?? null,
+        attachments: attachmentViews(deferred.attachments),
+      },
     );
   }
   for (const task of snapshot.tasks ?? []) {
@@ -373,6 +393,8 @@ function applySnapshot(snapshot) {
       provider: task.provider,
       threadId: task.threadId,
       turnId: String(task.run?.turnId ?? ""),
+      time: task.run?.startedAt ?? null,
+      attachments: attachmentViews(task.run?.attachments),
       ...deliveryPatch("accepted"),
     });
   }
@@ -398,7 +420,8 @@ function applySnapshot(snapshot) {
       item.state !== "dispatching"
       &&
       (!item.provider || item.provider === selected.provider)
-      && (!item.threadId || item.threadId === selected.threadId)));
+      && (!item.threadId || item.threadId === selected.threadId))
+      .map((item) => ({ ...item, attachments: attachmentViews(item.attachments) })));
   }
   const settings = snapshot.settings ?? {};
   agentHub.setOptions({
@@ -476,6 +499,8 @@ function historyMessages(history, focusedTurn = null) {
         : history.provider === "claude" ? "Claude" : "Codex",
       text: message.text,
       activities: message.role === "agent" && item.completed ? (item.activities ?? []) : [],
+      time: message.time ?? (message.role === "user" ? item.startedAt : item.completedAt) ?? null,
+      attachments: attachmentViews(message.attachments),
     });
   }
   if (focusedTurn && !messages.some((message) => (
@@ -784,6 +809,16 @@ agentHub.on("queue:accept", ({ id }) => runAction(async () => {
   agentHub.toast(result?.message ?? "Сообщение будет отправлено после текущего хода");
 }));
 agentHub.on("tts:play", () => runAction(() => control("speak-last-answer", exactSelectedTaskParams())));
+agentHub.on("attachment:open", ({ attachment }) => runAction(async () => {
+  const id = String(attachment?.id ?? "").trim();
+  if (vscode && id) {
+    await bridgeCall("open-attachment", { id });
+    return;
+  }
+  const url = String(attachment?.url ?? attachment?.dataUrl ?? "").trim();
+  if (!url) throw new Error("Файл вложения недоступен");
+  window.open(url, "_blank", "noopener,noreferrer");
+}));
 agentHub.on("hub:restart", () => runAction(() => control("restart-server")));
 let searchSequence = 0;
 agentHub.on("search:query", ({ query }) => {

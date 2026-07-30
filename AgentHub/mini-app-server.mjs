@@ -84,6 +84,9 @@ const IMAGE_CONTENT_TYPES = new Map([
   ["image/gif", ".gif"],
   ["image/bmp", ".bmp"],
 ]);
+const IMAGE_EXTENSION_TYPES = new Map(
+  [...IMAGE_CONTENT_TYPES].map(([type, extension]) => [extension, type]),
+);
 
 async function readJsonBody(request, maxBytes = MAX_CONTROL_REQUEST_BYTES) {
   const chunks = [];
@@ -476,6 +479,41 @@ export class MiniAppServer {
         json(response, 201, { ok: true, path: target }, method);
       } catch (error) {
         json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
+    if (url.pathname.startsWith("/api/message-attachment/")) {
+      if (!["GET", "HEAD"].includes(method)) {
+        response.writeHead(405, {
+          Allow: "GET, HEAD",
+          ...responseHeaders("text/plain; charset=utf-8"),
+        });
+        response.end("Method Not Allowed\n");
+        return;
+      }
+      if (!this.#authorize(request, response)) return;
+      if (!this.#attachmentDirectory) {
+        json(response, 503, { error: "Хранилище вложений недоступно." }, method);
+        return;
+      }
+      try {
+        const name = decodeURIComponent(url.pathname.slice("/api/message-attachment/".length))
+          .trim()
+          .toLowerCase();
+        if (!/^[a-z0-9-]{1,160}\.(?:png|jpe?g|webp|gif|bmp)$/u.test(name)) {
+          throw new Error("Некорректный идентификатор вложения");
+        }
+        const target = path.join(this.#attachmentDirectory, name);
+        const info = await stat(target);
+        if (!info.isFile() || info.size < 1 || info.size > MAX_ATTACHMENT_BYTES) {
+          throw new Error("Вложение отсутствует или повреждено");
+        }
+        const type = IMAGE_EXTENSION_TYPES.get(path.extname(name)) ?? "application/octet-stream";
+        send(response, 200, type, await readFile(target), method, {
+          headers: { "Cache-Control": "private, max-age=300" },
+        });
+      } catch {
+        json(response, 404, { error: "Вложение не найдено." }, method);
       }
       return;
     }

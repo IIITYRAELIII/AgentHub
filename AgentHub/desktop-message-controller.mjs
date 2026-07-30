@@ -15,6 +15,7 @@ function activeTurnNotSteerable(error) {
 
 export function createDesktopMessageController({
   attachmentPaths,
+  describeAttachments = (files) => files.map((file) => ({ id: String(file) })),
   resolveTarget,
   receipts,
   persistReceipts,
@@ -63,6 +64,7 @@ export function createDesktopMessageController({
       clientUserMessageId,
       destination: "queued",
       notify: false,
+      persistentFiles: attachments.length > 0,
     });
     scheduleQueuedInput(deferred.item, 500);
     return {
@@ -157,6 +159,7 @@ export function createDesktopMessageController({
           ? "activity-unknown"
           : "task-running",
         clientUserMessageId,
+        persistentFiles: attachments.length > 0,
       });
       return {
         accepted: false,
@@ -189,6 +192,7 @@ export function createDesktopMessageController({
         conflictKind: "repository",
         conflictTask: repositoryConflict,
         clientUserMessageId,
+        persistentFiles: attachments.length > 0,
       });
       return {
         accepted: false,
@@ -201,7 +205,10 @@ export function createDesktopMessageController({
       };
     }
     const run = await beginRun(input, { ...target, clientUserMessageId });
-    await launchTurn(run, input, attachments);
+    run.messageAttachments = describeAttachments(attachments);
+    // Desktop attachments are durable message data. The agent receives the
+    // same files, but turn cleanup must not remove the history originals.
+    await launchTurn(run, input, []);
     return {
       accepted: true,
       runId: run.id,
@@ -263,6 +270,7 @@ export function createDesktopMessageController({
         followUpMode,
       });
       const { snapshot: _snapshot, ...storedResult } = result;
+      if (attachments.length) storedResult.attachments = describeAttachments(attachments);
       receipts.remember(receiptIdentity, fingerprint, storedResult);
       await persistReceipts();
       return storedResult;

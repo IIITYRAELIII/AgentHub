@@ -111,6 +111,8 @@ function mergeLiveUserMessages(messages, {
   userMessages = [],
   prompt = "",
   clientUserMessageId = "",
+  time = null,
+  attachments = [],
 } = {}) {
   const values = Array.isArray(messages) ? messages.slice() : [];
   const live = Array.isArray(userMessages) && userMessages.length
@@ -135,6 +137,12 @@ function mergeLiveUserMessages(messages, {
       role: "user",
       author: "Вы",
       text,
+      time: message.time ?? time ?? null,
+      attachments: Array.isArray(message.attachments) && message.attachments.length
+        ? message.attachments.map((attachment) => ({ ...attachment }))
+        : index === 0
+          ? attachments.map((attachment) => ({ ...attachment }))
+          : [],
     };
     const clientKey = clientIdentityKey(candidate);
     const itemKey = identityKey(candidate);

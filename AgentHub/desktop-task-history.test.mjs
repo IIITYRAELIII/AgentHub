@@ -21,6 +21,8 @@ function fixture(overrides = {}) {
     status: index === 3 ? "running" : "completed",
     active: index === 3,
     completed: index < 3,
+    startedAt: `2026-07-30T10:0${index}:00.000Z`,
+    completedAt: `2026-07-30T10:0${index}:30.000Z`,
     activities: Array.from({ length: 105 }, (__, activity) => activity),
     messages: [
       {
@@ -52,6 +54,8 @@ function fixture(overrides = {}) {
       clientUserMessageId: "client-live",
       responseItemId: "response-live",
       activities: [{ type: "reasoning" }],
+      startedAt: "2026-07-30T11:00:00.000Z",
+      messageAttachments: [{ id: "live.png", name: "live.png", type: "image/png" }],
     },
     ...overrides,
   };
@@ -78,6 +82,16 @@ function fixture(overrides = {}) {
         calls.merged = active;
         history.push({ id: active.turnId, ...active });
       },
+    },
+    receipts: {
+      forMessage: (message) => ({
+        ...message,
+        createdAt: "2026-07-30T09:59:00.000Z",
+        result: {
+          attachments: [{ id: `${message.clientUserMessageId}.png`, type: "image/png" }],
+        },
+      }),
+      forTurn: () => null,
     },
     responseBudget: {
       fit: (payload, options) => {
@@ -108,12 +122,19 @@ test("desktop task history resolves selection and merges the active run", async 
     clientUserMessageId: "client-live",
     responseItemId: "response-live",
     activities: [{ type: "reasoning" }],
+    startedAt: "2026-07-30T11:00:00.000Z",
+    attachments: [{ id: "live.png", name: "live.png", type: "image/png" }],
   });
   assert.equal(result.total, 5);
   assert.equal(result.start, 3);
   assert.equal(result.end, 5);
   assert.equal(result.nextBefore, 3);
   assert.deepEqual(result.items.map((item) => item.id), ["turn-4", "turn-live"]);
+  assert.equal(result.items[0].messages[0].time, "2026-07-30T09:59:00.000Z");
+  assert.deepEqual(result.items[0].messages[0].attachments, [{
+    id: "client-4.png",
+    type: "image/png",
+  }]);
   assert.deepEqual(calls.fit, { maxBytes: 3_500_000 });
 });
 

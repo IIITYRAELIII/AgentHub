@@ -7,6 +7,7 @@ export function createDesktopSnapshotFactory({
   selection,
   settings,
   deferred,
+  receipts = {},
   approvals,
   restart,
   exchangeRates,
@@ -44,14 +45,33 @@ export function createDesktopSnapshotFactory({
       reasoning: run.reasoning ?? null,
       stage: String(run.progressStage ?? "Выполняется…"),
       prompt: String(run.promptPreview ?? ""),
+      attachments: Array.isArray(run.messageAttachments)
+        ? run.messageAttachments.map((attachment) => ({ ...attachment }))
+        : [],
       userMessages: (Array.isArray(run.userMessages) ? run.userMessages : []).flatMap((message) => {
         const text = String(message?.text ?? "").trim();
         if (!text) return [];
+        const clientUserMessageId = String(message.clientUserMessageId ?? "");
+        const receipt = clientUserMessageId
+          ? receipts.forMessage?.({
+            provider: run.provider,
+            threadId: run.threadId,
+            clientUserMessageId,
+          })
+          : null;
         return [{
           itemId: String(message.itemId ?? ""),
-          clientUserMessageId: String(message.clientUserMessageId ?? ""),
+          clientUserMessageId,
           role: "user",
           text: text.slice(0, 100_000),
+          time: message.time ?? receipt?.createdAt ?? run.startedAt ?? null,
+          attachments: (
+            receipt?.result?.attachments
+            ?? (clientUserMessageId === String(run.clientUserMessageId ?? "")
+              ? run.messageAttachments
+              : [])
+            ?? []
+          ).map((attachment) => ({ ...attachment })),
         }];
       }),
       progress: String(run.progressReasoning ?? ""),
@@ -189,6 +209,9 @@ export function createDesktopSnapshotFactory({
           allowForce: item.allowForce === true,
           conflictKind: item.conflictKind ?? null,
           createdAt: item.createdAt ?? null,
+          attachments: item.persistentFiles
+            ? (deferred.describeAttachments?.(item.temporaryFiles) ?? [])
+            : [],
         })),
         ...deferred.queuedValues().map((item) => ({
           id: item.id,
@@ -201,6 +224,9 @@ export function createDesktopSnapshotFactory({
           allowForce: false,
           conflictKind: item.conflictKind ?? null,
           createdAt: item.createdAt ?? null,
+          attachments: item.persistentFiles
+            ? (deferred.describeAttachments?.(item.temporaryFiles) ?? [])
+            : [],
         })),
       ].sort((left, right) => {
         const leftAt = Date.parse(String(left.createdAt ?? ""));

@@ -70,6 +70,32 @@ export class MessageReceiptRegistry {
     return structuredClone(receipt.result);
   }
 
+  get(identity) {
+    const key = messageReceiptKey(identity);
+    if (!key) return null;
+    const receipt = this.receipts.get(key);
+    return receipt ? structuredClone(receipt) : null;
+  }
+
+  findByTurn({ provider, threadId, turnId } = {}) {
+    const normalizedProvider = String(provider ?? "").trim();
+    const normalizedThreadId = String(threadId ?? "").trim();
+    const normalizedTurnId = String(turnId ?? "").trim();
+    if (!normalizedProvider || !normalizedThreadId || !normalizedTurnId) return null;
+    const values = [...this.receipts.values()];
+    for (let index = values.length - 1; index >= 0; index -= 1) {
+      const receipt = values[index];
+      if (
+        receipt.provider === normalizedProvider
+        && receipt.threadId === normalizedThreadId
+        && String(receipt.result?.turnId ?? "").trim() === normalizedTurnId
+      ) {
+        return structuredClone(receipt);
+      }
+    }
+    return null;
+  }
+
   remember(identity, fingerprint, result) {
     const key = messageReceiptKey(identity);
     if (!key) throw new Error("Нельзя сохранить квитанцию без точной identity сообщения");
@@ -89,7 +115,10 @@ export class MessageReceiptRegistry {
     if (!key) return false;
     const receipt = this.receipts.get(key);
     if (!receipt) return false;
-    receipt.result = structuredClone(result);
+    receipt.result = {
+      ...receipt.result,
+      ...structuredClone(result),
+    };
     return true;
   }
 

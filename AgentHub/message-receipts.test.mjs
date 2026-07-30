@@ -60,10 +60,13 @@ test("message receipt result can follow a deferred message into an active run", 
     deferred: true,
     queued: true,
     id: "queued-1",
+    attachments: [{ id: "image.png", name: "image.png", type: "image/png" }],
   });
 
   assert.equal(registry.updateResult(identity, {
     accepted: true,
+    deferred: false,
+    queued: false,
     runId: "run-1",
     turnId: "turn-1",
   }), true);
@@ -71,6 +74,16 @@ test("message receipt result can follow a deferred message into an active run", 
     accepted: true,
     runId: "run-1",
     turnId: "turn-1",
+    deferred: false,
+    queued: false,
+    id: "queued-1",
+    attachments: [{ id: "image.png", name: "image.png", type: "image/png" }],
   });
+  assert.equal(registry.get(identity)?.clientUserMessageId, "client-1");
+  assert.equal(registry.findByTurn({
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+  })?.clientUserMessageId, "client-1");
   assert.equal(registry.updateResult({ ...identity, clientUserMessageId: "missing" }, {}), false);
 });

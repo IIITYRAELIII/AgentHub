@@ -13,6 +13,15 @@ function messageItemId(turnId, role, item, index) {
   return exact || `${String(turnId ?? "turn")}:${role}:${index}`;
 }
 
+function normalizedTimestamp(value) {
+  if (value == null || value === "") return null;
+  const numeric = Number(value);
+  const timestamp = Number.isFinite(numeric)
+    ? (numeric < 1_000_000_000_000 ? numeric * 1_000 : numeric)
+    : Date.parse(String(value));
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
 function itemFailed(item) {
   const status = String(item?.status ?? "").toLowerCase();
   return ["failed", "error", "declined", "rejected"].includes(status)
@@ -75,6 +84,9 @@ function codexTurnMessages(turn) {
           : {}),
         role: "user",
         text,
+        ...(normalizedTimestamp(item.createdAt ?? turn?.startedAt ?? turn?.createdAt)
+          ? { time: normalizedTimestamp(item.createdAt ?? turn?.startedAt ?? turn?.createdAt) }
+          : {}),
       }] : [];
     }
     if (item?.type === "agentMessage" && String(item.text ?? "").trim()) {
@@ -83,6 +95,9 @@ function codexTurnMessages(turn) {
         role: "agent",
         text: String(item.text).trim(),
         phase: String(item.phase ?? ""),
+        ...(normalizedTimestamp(item.createdAt ?? turn?.completedAt ?? turn?.updatedAt)
+          ? { time: normalizedTimestamp(item.createdAt ?? turn?.completedAt ?? turn?.updatedAt) }
+          : {}),
       }];
     }
     return [];
@@ -180,6 +195,12 @@ export function codexThreadHistory(turns) {
       status: String(turn?.status ?? ""),
       active: turn?.status === "inProgress",
       completed: turn?.status === "completed",
+      ...(normalizedTimestamp(turn?.startedAt ?? turn?.createdAt)
+        ? { startedAt: normalizedTimestamp(turn?.startedAt ?? turn?.createdAt) }
+        : {}),
+      ...(normalizedTimestamp(turn?.completedAt ?? turn?.updatedAt)
+        ? { completedAt: normalizedTimestamp(turn?.completedAt ?? turn?.updatedAt) }
+        : {}),
       messages,
       activities: codexTurnActivities(turn),
     }];
@@ -245,12 +266,25 @@ export function claudeTranscriptHistory(text) {
       status: completed ? "completed" : "inProgress",
       active: !completed,
       completed,
+      ...(normalizedTimestamp(entries[entryIndex]?.timestamp)
+        ? { startedAt: normalizedTimestamp(entries[entryIndex]?.timestamp) }
+        : {}),
+      ...(normalizedTimestamp(turnEntries.map((entry) => entry?.timestamp).filter(Boolean).at(-1))
+        ? {
+          completedAt: normalizedTimestamp(
+            turnEntries.map((entry) => entry?.timestamp).filter(Boolean).at(-1),
+          ),
+        }
+        : {}),
       activities,
       messages: [
         {
           itemId: String(entries[entryIndex]?.uuid ?? `${entryIndex}:user`),
           role: "user",
           text: claudeUserPrompt(entries[entryIndex]),
+          ...(normalizedTimestamp(entries[entryIndex]?.timestamp)
+            ? { time: normalizedTimestamp(entries[entryIndex]?.timestamp) }
+            : {}),
         },
         ...turnEntries.flatMap((entry, index) => {
           if (entry?.type !== "assistant" || entry.message?.role !== "assistant") return [];
@@ -259,6 +293,9 @@ export function claudeTranscriptHistory(text) {
             itemId: String(entry.uuid ?? `${entryIndex}:agent:${index}`),
             role: "agent",
             text: assistantText,
+            ...(normalizedTimestamp(entry.timestamp)
+              ? { time: normalizedTimestamp(entry.timestamp) }
+              : {}),
           }] : [];
         }),
       ],
@@ -300,7 +337,19 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
           : {}),
         role: "user",
         text: String(activeTurn.prompt ?? "").trim() || "Текущее сообщение",
+        ...(normalizedTimestamp(activeTurn.startedAt)
+          ? { time: normalizedTimestamp(activeTurn.startedAt) }
+          : {}),
+        ...(Array.isArray(activeTurn.attachments) && activeTurn.attachments.length
+          ? { attachments: activeTurn.attachments.map((attachment) => ({ ...attachment })) }
+          : {}),
       }],
+      ...(normalizedTimestamp(activeTurn.startedAt)
+        ? { startedAt: normalizedTimestamp(activeTurn.startedAt) }
+        : {}),
+      ...(Array.isArray(activeTurn.attachments) && activeTurn.attachments.length
+        ? { attachments: activeTurn.attachments.map((attachment) => ({ ...attachment })) }
+        : {}),
     };
     values.push(current);
   }
@@ -308,6 +357,24 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
   current.active = true;
   current.completed = false;
   current.status = "inProgress";
+  if (!current.startedAt && normalizedTimestamp(activeTurn.startedAt)) {
+    current.startedAt = normalizedTimestamp(activeTurn.startedAt);
+  }
+  if (Array.isArray(activeTurn.attachments) && activeTurn.attachments.length) {
+    current.attachments = activeTurn.attachments.map((attachment) => ({ ...attachment }));
+    const messages = Array.isArray(current.messages) ? current.messages : [];
+    const user = messages.find((message) => (
+      message.role === "user"
+      && (
+        !activeTurn.clientUserMessageId
+        || String(message.clientUserMessageId ?? "") === String(activeTurn.clientUserMessageId)
+      )
+    ));
+    if (user) {
+      user.time ??= normalizedTimestamp(activeTurn.startedAt);
+      user.attachments = current.attachments.map((attachment) => ({ ...attachment }));
+    }
+  }
   if (Array.isArray(activeTurn.activities)) current.activities = activeTurn.activities.slice();
   const answer = String(activeTurn.answer ?? "").trim();
   if (answer) {

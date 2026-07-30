@@ -188,11 +188,14 @@ test("desktopRunSnapshot preserves run fields and nested context", () => {
     reasoning: "high",
     stage: "Проверяю",
     prompt: "Вопрос",
+    attachments: [],
     userMessages: [{
       itemId: "user-1",
       clientUserMessageId: "client-1",
       role: "user",
       text: "Вопрос",
+      time: "2026-07-30T10:00:00.000Z",
+      attachments: [],
     }],
     progress: "Ход работы",
     response: "Ответ",
@@ -334,6 +337,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       allowForce: true,
       conflictKind: "active-run",
       createdAt: "2026-07-30T08:00:00.000Z",
+      attachments: [],
     },
     {
       id: "queued-1",
@@ -346,6 +350,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       allowForce: false,
       conflictKind: null,
       createdAt: "2026-07-30T08:01:00.000Z",
+      attachments: [],
     },
     {
       id: "dispatching-1",
@@ -358,6 +363,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       allowForce: false,
       conflictKind: null,
       createdAt: "2026-07-30T08:02:00.000Z",
+      attachments: [],
     },
   ]);
   assert.equal(snapshot.restartPending, true);

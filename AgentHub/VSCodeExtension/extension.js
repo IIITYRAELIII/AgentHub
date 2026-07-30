@@ -1,8 +1,9 @@
 "use strict";
 
 const vscode = require("vscode");
+const path = require("node:path");
 
-const { AgentHubBridge } = require("./agent-hub-bridge.js");
+const { AgentHubBridge, defaultRuntimeRoot } = require("./agent-hub-bridge.js");
 const { renderWorkLog } = require("./render.js");
 const { sharedWebviewHtml } = require("./shared-webview.js");
 const { baseCss, panelCss, sidebarHtml, webviewHtml } = require("./webview.js");
@@ -110,7 +111,10 @@ class WorkLogViewProvider {
       {
         enableScripts: true,
         // растровые фоны тем лежат в workspace — иначе webview их не отдаст
-        localResourceRoots: this.workspaceFolders().map((folder) => folder.uri),
+        localResourceRoots: [
+          ...this.workspaceFolders().map((folder) => folder.uri),
+          vscode.Uri.file(path.join(defaultRuntimeRoot(), "DesktopApp", "attachments")),
+        ],
         retainContextWhenHidden: true,
       },
     );
@@ -154,7 +158,20 @@ class WorkLogViewProvider {
     const id = String(message?.id ?? "");
     try {
       const bridge = await this.currentBridge();
-      const result = await bridge.control(String(message.action ?? ""), message.params ?? {});
+      const action = String(message.action ?? "");
+      if (action === "open-attachment") {
+        const target = await bridge.attachmentPath(message.params?.id);
+        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(target));
+        await this.panel?.webview.postMessage({
+          type: "agenthub:control-result",
+          id,
+          ok: true,
+          result: { opened: true },
+        });
+        return;
+      }
+      const result = await bridge.control(action, message.params ?? {});
+      await this.decorateAttachmentUrls(result, bridge);
       await this.panel?.webview.postMessage({
         type: "agenthub:control-result",
         id,
@@ -168,6 +185,29 @@ class WorkLogViewProvider {
         ok: false,
         error: String(error?.message ?? error),
       });
+    }
+  }
+
+  async decorateAttachmentUrls(value, bridge) {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) await this.decorateAttachmentUrls(item, bridge);
+      return;
+    }
+    if (Array.isArray(value.attachments)) {
+      value.attachments = await Promise.all(value.attachments.map(async (attachment) => {
+        const item = { ...attachment };
+        try {
+          const target = await bridge.attachmentPath(item.id);
+          item.url = this.panel?.webview.asWebviewUri(vscode.Uri.file(target)).toString() ?? "";
+        } catch {
+          item.missing = true;
+        }
+        return item;
+      }));
+    }
+    for (const [key, nested] of Object.entries(value)) {
+      if (key !== "attachments") await this.decorateAttachmentUrls(nested, bridge);
     }
   }
 
