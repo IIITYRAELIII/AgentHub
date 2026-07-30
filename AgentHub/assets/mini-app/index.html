@@ -75,28 +75,24 @@
           </svg>
           <span class="refresh-label" data-updated-at>Обновить</span>
         </button>
-        <label class="group-picker" data-journal-only>
-          <span class="group-picker-label">Группировка</span>
-          <select data-group-select aria-label="Группировка журнала">
-            <option value="date">По датам</option>
-            <option value="task">По задачам</option>
-          </select>
-        </label>
-        <label class="theme-picker">
-          <span class="theme-picker-label">Тема</span>
-          <select data-theme-select aria-label="Тема оформления">
-            <option value="orbit">Орбита</option>
-            <option value="nebula">Туманность</option>
-            <option value="pulsar">Пульсар</option>
-            <option value="gothic">Gothic</option>
-            <option value="blackhole">BlackHole</option>
-            <option value="taiga">Тайга</option>
-            <option value="magma">Магма</option>
-            <option value="storm">Гроза</option>
-            <option value="meadow">Луг</option>
-            <option value="graphite">Графит</option>
-          </select>
-        </label>
+        <button class="refresh view-settings" type="button" data-panel-open="view"
+          title="Вид: тема, группировка, детализация">
+          <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256" aria-hidden="true">
+            <line x1="40" y1="128" x2="216" y2="128" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            <line x1="40" y1="64" x2="216" y2="64" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            <line x1="40" y1="192" x2="216" y2="192" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            <circle cx="88" cy="64" r="16" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+            <circle cx="168" cy="128" r="16" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+            <circle cx="112" cy="192" r="16" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+          </svg>
+          <span class="view-settings-label">Вид</span>
+        </button>
       </div>
     </div>
   </header>
@@ -380,6 +376,56 @@
   </nav>
 
   <!-- ===================================================== Панель настроек хода === -->
+  <!-- ================================= Вид: тема, группировка, детализация === -->
+  <div class="panel-scrim" data-view-scrim hidden></div>
+  <aside class="settings-panel view-panel" data-view-panel hidden aria-label="Вид"
+    role="dialog" aria-modal="true">
+    <header class="settings-head">
+      <h2>Вид</h2>
+      <button type="button" class="icon-button" data-view-panel-close title="Закрыть">
+        <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+          <line x1="200" y1="56" x2="56" y2="200" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          <line x1="200" y1="200" x2="56" y2="56" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        </svg>
+      </button>
+    </header>
+    <div class="settings-body">
+      <label class="setting-group setting-field">
+        <span class="setting-label">Тема</span>
+        <select data-theme-select aria-label="Тема оформления">
+          <option value="orbit">Орбита</option>
+          <option value="nebula">Туманность</option>
+          <option value="pulsar">Пульсар</option>
+          <option value="gothic">Gothic</option>
+          <option value="blackhole">BlackHole</option>
+          <option value="taiga">Rain</option>
+          <option value="magma">Магма</option>
+          <option value="storm">Гроза</option>
+          <option value="meadow">Луг</option>
+          <option value="graphite">Графит</option>
+        </select>
+      </label>
+      <label class="setting-group setting-field" data-journal-only>
+        <span class="setting-label">Группировка</span>
+        <select data-group-select aria-label="Группировка журнала">
+          <option value="date">По датам</option>
+          <option value="task">По задачам</option>
+        </select>
+      </label>
+      <div class="setting-group" data-journal-only>
+        <span class="setting-label">Детализация</span>
+        <label class="setting-switch">
+          <input type="checkbox" data-token-breakdown-toggle>
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="switch-text">Токены в шапке дня</span>
+        </label>
+        <p class="setting-hint">Вход, кэш, выход, думы и ImageGen.</p>
+      </div>
+    </div>
+  </aside>
+
   <div class="panel-scrim" data-panel-scrim hidden></div>
   <aside class="settings-panel" data-settings-panel hidden aria-label="Настройки" role="dialog"
     aria-modal="true">

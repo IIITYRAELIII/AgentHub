@@ -144,7 +144,10 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
      дорожки. Капли создаёт app.js, у каждой своя длина, толщина, яркость и
      скорость, поэтому регулярности нет. Слой обязан лежать над фоном темы
      (z-index 0) и под рабочей областью (z-index 2). */
-  assert.match(styles, /@keyframes rain-fall\s*\{[\s\S]*translate3d\(0, 128vh, 0\)/u);
+  assert.match(
+    styles,
+    /@keyframes rain-fall\s*\{[\s\S]*translate3d\(-1vw, -18vh, 0\)[\s\S]*translate3d\(3vw, 128vh, 0\)/u,
+  );
   assert.match(styles, /\.rain\s*\{[^}]*z-index:\s*1;/u);
   assert.match(styles, /\.rain > span\s*\{[^}]*animation:\s*rain-fall var\(--dur\) linear infinite;/u);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*\.rain\s*\{[^}]*display:\s*none;/u);
@@ -171,11 +174,29 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   /* Пошаговые анимации давали видимую дёрганость, поэтому в живых слоях их
      быть не должно: единственный резкий ритм — «Пульсар», и он linear. */
   const motionBlocks = styles.match(/animation:\s*(?:gothic-fire|magma-glow|orbit-terminator|nebula-drift|meadow-breathe|storm-strike|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
-  assert.equal(motionBlocks.length, 8, "живой слой остаётся у восьми тем; «Тайга» и «Gothic» рисуют частицы");
+  assert.equal(motionBlocks.length, 8, "живой слой остаётся у восьми тем; «Rain» и «Gothic» рисуют частицы");
   for (const block of motionBlocks) {
     assert.doesNotMatch(block, /steps\(/u, `движение должно быть плавным: ${block}`);
   }
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*animation:\s*none !important;/u);
+});
+
+test("Rain keeps its stored key and is named consistently", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const webview = fs.readFileSync(require.resolve("./webview.js"), "utf8");
+  assert.match(html, /<option value="taiga">Rain<\/option>/u);
+  assert.match(webview, /<option value="taiga">Rain<\/option>/u);
+});
+
+test("view panel owns theme, grouping and persisted token detail controls", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(html, /data-panel-open="view"/u);
+  assert.match(html, /data-token-breakdown-toggle/u);
+  assert.match(app, /agent-hub-token-breakdown/u);
+  assert.match(app, /if \(!settingsPanel\.hidden\) closePanel\(\)/u);
+  assert.match(app, /if \(!viewPanel\.hidden\) closeViewPanel\(\)/u);
+  assert.match(app, /if \(event\.key === "Escape" && !viewPanel\.hidden\) closeViewPanel\(\)/u);
 });
 
 test("Gothic theme uses medieval stone, old gold and a torch-lit scene", () => {

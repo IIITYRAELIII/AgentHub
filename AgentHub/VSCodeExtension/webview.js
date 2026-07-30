@@ -165,7 +165,7 @@ function webviewHtml(webview, theme = "orbit") {
           '<option value="pulsar">Пульсар</option>' +
           '<option value="gothic">Gothic</option>' +
           '<option value="blackhole">BlackHole</option>' +
-          '<option value="taiga">Тайга</option>' +
+          '<option value="taiga">Rain</option>' +
           '<option value="magma">Магма</option>' +
           '<option value="storm">Гроза</option>' +
         '</select>';

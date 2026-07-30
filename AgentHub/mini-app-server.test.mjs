@@ -220,7 +220,9 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.ok((await pulsar.arrayBuffer()).byteLength > 100_000);
     const page = await (await fetch(address.url)).text();
     assert.match(page, /data-theme="orbit"/u);
-    assert.match(page, /<option value="taiga">Тайга<\/option>/u);
+    assert.match(page, /<option value="taiga">Rain<\/option>/u);
+    assert.match(page, /data-panel-open="view"/u);
+    assert.match(page, /data-token-breakdown-toggle/u);
     assert.match(page, /<option value="magma">Магма<\/option>/u);
     assert.match(page, /<option value="storm">Гроза<\/option>/u);
     assert.match(page, /<option value="meadow">Луг<\/option>/u);
@@ -268,9 +270,11 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(script, /document\.documentElement\.dataset\.grouping/u);
     assert.match(script, /function taskGroupingContent/u);
     assert.match(script, /workLogTurnDurationSeconds/u);
-    assert.match(script, /Общая длительность:/u);
+    assert.match(script, /durationLabel\.textContent = "Длит\."/u);
     assert.match(script, /workLogTurnCredits/u);
-    assert.match(script, /Всего кредитов:/u);
+    assert.match(script, /creditsLabel\.textContent = "Итого"/u);
+    assert.match(script, /agent-hub-token-breakdown/u);
+    assert.match(script, /function applyBreakdown/u);
     assert.match(
       script,
       /telegramMode && mobileTelegramPlatforms\.has\(telegramPlatform\)/u,

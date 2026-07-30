@@ -347,7 +347,16 @@ function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0) {
     + (share ? `<span data-work-log-turn-share>(${share})</span>` : "")
     + "</span>"
     + `<span data-work-log-turn-title>${title}</span>`
-    + '<button type="button" data-open-turn aria-label="Открыть ход" title="Открыть ход">↗</button>'
+    + '<button type="button" data-open-turn aria-label="Открыть ход" title="Открыть ход">'
+    // Phosphor arrow-square-out — тот же набор, что у остальных иконок оболочки
+    + '<svg data-phosphor-icon="arrow-square-out" viewBox="0 0 256 256" aria-hidden="true">'
+    + '<polyline points="216 100 216 40 156 40" fill="none" stroke="currentColor"'
+    + ' stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>'
+    + '<line x1="144" y1="112" x2="216" y2="40" fill="none" stroke="currentColor"'
+    + ' stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>'
+    + '<path d="M184,144v64a8,8,0,0,1-8,8H48a8,8,0,0,1-8-8V80a8,8,0,0,1,8-8h64" fill="none"'
+    + ' stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>'
+    + '</svg></button>'
     + "</summary>"
     + '<div data-work-log-turn-expanded>'
     + `<div data-work-log-turn-meta-details>${metaDetails}</div>`

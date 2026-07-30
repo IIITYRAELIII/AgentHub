@@ -410,7 +410,10 @@ test("projectWorkLogUsage canonicalizes a unique legacy row and refreshes its ta
     projected,
     /data-work-log-turn-provider="codex" data-work-log-turn-thread-id="thread-legacy" data-work-log-task-thread-id="thread-legacy" data-work-log-turn-id="turn-legacy"/,
   );
-  assert.match(projected, /<button type="button" data-open-turn[^>]*>↗<\/button>/);
+  assert.match(
+    projected,
+    /<button type="button" data-open-turn[^>]*><svg data-phosphor-icon="arrow-square-out"/,
+  );
   assert.doesNotMatch(projected, />Codex - Старое имя<\/a>/);
 });
 

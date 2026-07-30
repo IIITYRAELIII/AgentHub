@@ -60,6 +60,9 @@ const approvalsBox = document.querySelector("[data-approvals]");
 const queueBox = document.querySelector("[data-queue]");
 
 const settingsPanel = document.querySelector("[data-settings-panel]");
+const viewPanel = document.querySelector("[data-view-panel]");
+const viewScrim = document.querySelector("[data-view-scrim]");
+const breakdownToggle = document.querySelector("[data-token-breakdown-toggle]");
 const panelScrim = document.querySelector("[data-panel-scrim]");
 const statusSlot = document.querySelector("[data-status-slot]");
 
@@ -229,6 +232,30 @@ function applyTheme(theme, { persist = false } = {}) {
   }
 }
 
+/* Разбивка по видам токенов занимала всю правую половину шапки дня и почти
+   всегда была не нужна, поэтому по умолчанию она скрыта, а включается
+   переключателем в панели «Вид». */
+function savedBreakdown() {
+  try {
+    return localStorage.getItem("agent-hub-token-breakdown") === "on" ? "on" : "off";
+  } catch {
+    return "off";
+  }
+}
+
+function applyBreakdown(value, { persist = false } = {}) {
+  const state = value === "on" ? "on" : "off";
+  root.dataset.tokenBreakdown = state;
+  if (breakdownToggle) breakdownToggle.checked = state === "on";
+  if (persist) {
+    try {
+      localStorage.setItem("agent-hub-token-breakdown", state);
+    } catch {
+      // Настройка останется активной до закрытия WebView.
+    }
+  }
+}
+
 function savedGrouping() {
   try {
     const value = localStorage.getItem("agent-hub-grouping");
@@ -254,6 +281,10 @@ function selectGrouping(value, { persist = false } = {}) {
 telegram?.ready();
 telegram?.expand();
 applyTheme(savedTheme());
+applyBreakdown(savedBreakdown());
+breakdownToggle?.addEventListener("change", () => {
+  applyBreakdown(breakdownToggle.checked ? "on" : "off", { persist: true });
+});
 selectGrouping(savedGrouping());
 themeSelect.addEventListener("change", () => {
   applyTheme(themeSelect.value, { persist: true });
@@ -1383,6 +1414,7 @@ function restoreDraft() {
 /* ============================================= панель настроек и селекторы */
 
 function openPanel() {
+  if (!viewPanel.hidden) closeViewPanel();
   settingsPanel.hidden = false;
   panelScrim.hidden = false;
   requestAnimationFrame(() => {
@@ -1399,6 +1431,33 @@ function closePanel() {
     panelScrim.hidden = true;
   }, 220);
 }
+
+function openViewPanel() {
+  if (!settingsPanel.hidden) closePanel();
+  viewPanel.hidden = false;
+  viewScrim.hidden = false;
+  requestAnimationFrame(() => {
+    viewPanel.classList.add("open");
+    viewScrim.classList.add("open");
+  });
+}
+
+function closeViewPanel() {
+  viewPanel.classList.remove("open");
+  viewScrim.classList.remove("open");
+  window.setTimeout(() => {
+    viewPanel.hidden = true;
+    viewScrim.hidden = true;
+  }, 200);
+}
+
+for (const opener of document.querySelectorAll("[data-panel-open='view']")) {
+  opener.addEventListener("click", openViewPanel);
+}
+for (const closer of document.querySelectorAll("[data-view-panel-close]")) {
+  closer.addEventListener("click", closeViewPanel);
+}
+viewScrim.addEventListener("click", closeViewPanel);
 
 for (const opener of document.querySelectorAll("[data-panel-open='settings']")) {
   opener.addEventListener("click", openPanel);
@@ -1504,6 +1563,7 @@ dialogScrim.addEventListener("click", () => closeDialog(null));
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !dialog.hidden) closeDialog(null);
   if (event.key === "Escape" && !settingsPanel.hidden) closePanel();
+  if (event.key === "Escape" && !viewPanel.hidden) closeViewPanel();
 });
 
 /* ================================================= общие действия (intents) */
@@ -2643,6 +2703,18 @@ function formatTaskDuration(value) {
   ].filter(Boolean).join(" ");
 }
 
+/* Тот же цветовой код, что в журнале по датам: cr — «kilo», kcr — «mega»,
+   всё крупнее — «high». Разметка совпадает, поэтому бейдж выглядит одинаково
+   в обоих режимах. */
+function usageBadge(text) {
+  const unit = /\b(Gcr|Mcr|kcr|cr)$/u.exec(String(text))?.[1] ?? "cr";
+  const level = unit === "cr" ? "kilo" : unit === "kcr" ? "mega" : "high";
+  const badge = document.createElement("span");
+  badge.setAttribute(`data-${level}-usage`, "");
+  badge.textContent = text;
+  return badge;
+}
+
 function formatTaskCredits(value) {
   const credits = Number(value) || 0;
   const scales = [
@@ -2772,16 +2844,26 @@ function taskGroupingContent(source) {
     const turns = document.createElement("span");
     turns.dataset.workLogTaskTurnCount = String(group.turns.length);
     turns.textContent = `Ходов: ${group.turns.length}`;
+    /* Подписи и окраска — как в режиме по датам: там «Итого» и значение в
+       цветном бейдже по порядку величины, а здесь стояли длинные подписи и
+       ровный текст, из-за чего два режима выглядели разными продуктами. */
     const credits = document.createElement("span");
     credits.dataset.workLogTaskCredits = String(group.credits);
-    credits.textContent = group.knownCredits
-      ? `Всего кредитов: ${formatTaskCredits(group.credits)}`
-      : "Всего кредитов: нет данных";
+    const creditsLabel = document.createElement("span");
+    creditsLabel.dataset.usageLabel = "";
+    creditsLabel.textContent = "Итого";
+    credits.append(creditsLabel, " ");
+    if (group.knownCredits) credits.append(usageBadge(formatTaskCredits(group.credits)));
+    else credits.append("нет данных");
     const duration = document.createElement("span");
     duration.dataset.workLogTaskDuration = String(group.durationSeconds);
-    duration.textContent = group.knownDurations
-      ? `Общая длительность: ${formatTaskDuration(group.durationSeconds)}`
-      : "Общая длительность: неизвестна";
+    const durationLabel = document.createElement("span");
+    durationLabel.dataset.usageLabel = "";
+    durationLabel.textContent = "Длит.";
+    duration.append(
+      durationLabel,
+      ` ${group.knownDurations ? formatTaskDuration(group.durationSeconds) : "неизвестна"}`,
+    );
     metrics.append(turns, credits, duration);
     if (group.unknownCredits) {
       const unknown = document.createElement("span");
