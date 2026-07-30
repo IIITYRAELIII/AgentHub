@@ -3094,63 +3094,30 @@ html[data-theme="nebula"] body::before {
   opacity: 0.3;
 }
 
-/* «Gothic»: пыль в свете факела поднимается снизу вверх.
-   Ориентир — та же взвесь, что видно в кадрах игры: разнокалиберные мягкие
-   светящиеся пятна, а не резкие точки, и у каждого размера своя скорость.
-   Поэтому три плана двигаются на разную величину за один цикл: крупная пыль
-   на 14rem, средняя на 10rem, мелкая на 7rem — каждая ровно на высоту своей
-   плитки, чтобы повтор не был виден. Сам блик факела с места не сходит и
-   только неровно мерцает: огонь не должен «дышать» метрономом. Спад цвета
-   плавный — от этого частица выглядит светящейся, а не нарисованной. */
-@keyframes gothic-dust {
-  0% {
-    background-position: 88% 52%, 3rem 0, 0 0, 2rem 0, 1rem 0;
-    filter: brightness(0.94);
-    opacity: 0.34;
-  }
-  17% {
-    background-position: 87% 51%, 3rem -2.2rem, 0 -1.5rem, 2rem -1.2rem, 1rem -0.8rem;
-    filter: brightness(1.14);
-    opacity: 0.58;
-  }
-  38% {
-    background-position: 89% 53%, 3rem -4.9rem, 0 -3.4rem, 2rem -2.7rem, 1rem -1.7rem;
-    filter: brightness(0.98);
-    opacity: 0.4;
-  }
-  59% {
-    background-position: 88% 51%, 3rem -7.7rem, 0 -5.3rem, 2rem -4.1rem, 1rem -2.7rem;
-    filter: brightness(1.22);
-    opacity: 0.64;
-  }
-  81% {
-    background-position: 87% 52%, 3rem -10.6rem, 0 -7.3rem, 2rem -5.7rem, 1rem -3.7rem;
-    filter: brightness(1.04);
-    opacity: 0.46;
-  }
-  100% {
-    background-position: 88% 52%, 3rem -13rem, 0 -9rem, 2rem -7rem, 1rem -4.6rem;
-    filter: brightness(0.94);
-    opacity: 0.34;
-  }
+/* «Gothic»: неровное мерцание факела.
+   Сама пыль теперь рисуется отдельными элементами (.motes), поэтому здесь
+   остаётся только блик: он не сходит с места и лишь меняет силу — ключи
+   расставлены с разным шагом, чтобы огонь не «дышал» метрономом. */
+@keyframes gothic-fire {
+  0%, 100% { filter: brightness(0.94); opacity: 0.32; }
+  13% { filter: brightness(1.14); opacity: 0.56; }
+  27% { filter: brightness(0.98); opacity: 0.38; }
+  44% { filter: brightness(1.22); opacity: 0.64; }
+  61% { filter: brightness(1); opacity: 0.42; }
+  82% { filter: brightness(1.08); opacity: 0.5; }
 }
 
 html[data-theme="gothic"] body::before {
-  animation: gothic-dust 11s ease-in-out infinite;
+  animation: gothic-fire 7s ease-in-out infinite;
   background-image:
-    radial-gradient(46% 78% at 88% 52%, rgba(238, 164, 58, 0.38), rgba(164, 80, 20, 0.12) 46%, transparent 74%),
-    radial-gradient(9px 9px at 50% 50%, rgba(255, 240, 208, 0.3) 0 10%, rgba(255, 202, 120, 0.1) 44%, transparent 100%),
-    radial-gradient(5px 5px at 50% 50%, rgba(255, 238, 202, 0.66) 0 14%, rgba(255, 206, 128, 0.2) 46%, transparent 100%),
-    radial-gradient(3px 3px at 50% 50%, rgba(255, 230, 186, 0.54) 0 16%, rgba(255, 196, 116, 0.16) 52%, transparent 100%),
-    radial-gradient(1.7px 1.7px at 50% 50%, rgba(255, 218, 164, 0.42) 0 20%, transparent 100%);
-  background-repeat: no-repeat, repeat, repeat, repeat, repeat;
-  background-size: cover, 11rem 13rem, 7rem 9rem, 5rem 7rem, 3.2rem 4.6rem;
+    radial-gradient(46% 78% at 88% 52%, rgba(238, 164, 58, 0.38), rgba(164, 80, 20, 0.12) 46%, transparent 74%);
+  background-position: 88% 52%;
+  background-repeat: no-repeat;
+  background-size: cover;
   content: "";
-  /* Слева в кадре лунный проём: тёплая пыль там выглядела чужой, поэтому
-     эффект гасится к левому краю. */
-  mask-image: linear-gradient(90deg, transparent 0 26%, rgba(0, 0, 0, 0.45) 50%, #000 78%);
+  mask-image: none;
   mix-blend-mode: screen;
-  opacity: 0.62;
+  opacity: 0.42;
 }
 
 /* «Пульсар»: собственно пульс — единственный быстрый ритм в наборе */
@@ -3210,8 +3177,10 @@ html[data-theme="blackhole"] body::before {
   overflow: hidden;
   pointer-events: none;
   position: fixed;
-  transform: rotate(13deg);
-  /* Фон темы рисует body::after с z-index 0, а рабочая область идёт на 2:
+  transform: rotate(4deg);
+  /* Наклон выставлен по дождю на самой фотографии: он там почти отвесный,
+     около четырёх градусов, и при 13° капли шли заметно круче фона.
+     Фон темы рисует body::after с z-index 0, а рабочая область идёт на 2:
      на нулевом слое дождь оказывался под фоном и не был виден вовсе. */
   z-index: 1;
 }
@@ -3252,7 +3221,52 @@ html[data-theme="taiga"] body::before {
   transform: none;
 }
 
+/* «Gothic»: пыль в свете факела.
+   Та же причина, что и у дождя: плитка читалась как узор. Каждая пылинка —
+   отдельный элемент, поднимается снизу вверх со своей скоростью и слегка
+   виляет вбок, появляясь и растворяясь на краях пути. */
+.motes {
+  contain: paint;
+  inset: 0;
+  /* тёплая пыль осветляет камень, а не закрашивает его */
+  mix-blend-mode: screen;
+  overflow: hidden;
+  pointer-events: none;
+  position: fixed;
+  /* слева в кадре лунный проём: тёплые частицы там были бы чужими */
+  -webkit-mask-image: linear-gradient(90deg, transparent 0 26%, rgba(0, 0, 0, 0.45) 50%, #000 78%);
+  mask-image: linear-gradient(90deg, transparent 0 26%, rgba(0, 0, 0, 0.45) 50%, #000 78%);
+  z-index: 1;
+}
+
+.motes > span {
+  animation: mote-rise var(--dur) linear infinite;
+  animation-delay: var(--delay);
+  background: radial-gradient(circle,
+    rgba(255, 238, 202, var(--alpha)) 0 26%,
+    rgba(255, 198, 118, calc(var(--alpha) * 0.32)) 58%,
+    transparent 100%);
+  border-radius: 50%;
+  bottom: -4%;
+  height: var(--size);
+  left: var(--x);
+  opacity: 0;
+  position: absolute;
+  width: var(--size);
+}
+
+@keyframes mote-rise {
+  0% { opacity: 0; transform: translate3d(0, 0, 0); }
+  9% { opacity: 1; }
+  27% { transform: translate3d(var(--drift), -27vh, 0); }
+  52% { transform: translate3d(0, -52vh, 0); }
+  76% { transform: translate3d(calc(var(--drift) * -1), -76vh, 0); }
+  90% { opacity: 1; }
+  100% { opacity: 0; transform: translate3d(0, -106vh, 0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .motes,
   .rain {
     display: none;
   }

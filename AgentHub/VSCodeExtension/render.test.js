@@ -128,7 +128,6 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
     ["orbit", "orbit-terminator"],
     ["nebula", "nebula-drift"],
     ["pulsar", "pulsar-beat"],
-    ["gothic", "gothic-dust"],
     ["blackhole", "blackhole-flicker"],
     ["magma", "magma-glow"],
     ["storm", "storm-strike"],
@@ -150,32 +149,29 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   assert.match(styles, /\.rain > span\s*\{[^}]*animation:\s*rain-fall var\(--dur\) linear infinite;/u);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*\.rain\s*\{[^}]*display:\s*none;/u);
   const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  assert.match(client, /function buildRainLayer\(\)/u);
+  assert.match(client, /function buildRainDrop\(\)/u);
   assert.match(client, /prefers-reduced-motion: reduce/u);
   for (const property of ["--x", "--len", "--thickness", "--alpha", "--dur", "--delay"]) {
     assert.ok(client.includes(`"${property}"`), `капля задаёт ${property}`);
   }
   assert.match(styles, /@keyframes magma-glow\s*\{[\s\S]*filter:\s*saturate\(1\.18\) brightness\(1\.14\);/u);
-  /* Gothic остаётся тёплым: фон темы — склеп с горящим факелом. Пыль
-     поднимается снизу вверх четырьмя планами с разной скоростью и гасится к
-     левому краю, где в кадре лунный проём. */
-  assert.match(styles, /@keyframes gothic-dust\s*\{[\s\S]*filter:\s*brightness\(1\.22\);/u);
+  /* Gothic остаётся тёплым: фон темы — склеп с горящим факелом. Пыль ушла из
+     плитки в отдельные элементы, на фоновом слое остался только блик. */
+  assert.match(styles, /@keyframes gothic-fire\s*\{[\s\S]*filter:\s*brightness\(1\.22\);/u);
+  assert.match(styles, /@keyframes mote-rise\s*\{[\s\S]*translate3d\(0, -106vh, 0\)/u);
+  assert.match(styles, /\.motes\s*\{[^}]*z-index:\s*1;/u);
+  assert.match(styles, /\.motes > span\s*\{[^}]*animation:\s*mote-rise var\(--dur\) linear infinite;/u);
+  assert.match(client, /function buildMote\(\)/u);
+  assert.match(client, /PARTICLE_THEMES = \{ taiga: "rain", gothic: "motes" \}/u);
+  /* Гасить к лунному проёму теперь должен слой пыли, а не блик факела. */
   assert.match(
     styles,
-    /@keyframes gothic-dust\s*\{[\s\S]*100%\s*\{[^}]*background-position:\s*88% 52%,\s*3rem -13rem,\s*0 -9rem,\s*2rem -7rem,\s*1rem -4\.6rem;/u,
-  );
-  assert.match(
-    styles,
-    /html\[data-theme="gothic"\] body::before\s*\{[^}]*background-size:\s*cover,\s*11rem 13rem,\s*7rem 9rem,\s*5rem 7rem,\s*3\.2rem 4\.6rem;/u,
-  );
-  assert.match(
-    styles,
-    /html\[data-theme="gothic"\] body::before\s*\{[^}]*mask-image:\s*linear-gradient\(90deg,\s*transparent/su,
+    /\.motes\s*\{[^}]*mask-image:\s*linear-gradient\(90deg,\s*transparent/su,
   );
   /* Пошаговые анимации давали видимую дёрганость, поэтому в живых слоях их
      быть не должно: единственный резкий ритм — «Пульсар», и он linear. */
-  const motionBlocks = styles.match(/animation:\s*(?:gothic-dust|magma-glow|orbit-terminator|nebula-drift|meadow-breathe|storm-strike|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
-  assert.equal(motionBlocks.length, 8, "живой слой остаётся у восьми тем, «Тайга» перешла на капли");
+  const motionBlocks = styles.match(/animation:\s*(?:gothic-fire|magma-glow|orbit-terminator|nebula-drift|meadow-breathe|storm-strike|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
+  assert.equal(motionBlocks.length, 8, "живой слой остаётся у восьми тем; «Тайга» и «Gothic» рисуют частицы");
   for (const block of motionBlocks) {
     assert.doesNotMatch(block, /steps\(/u, `движение должно быть плавным: ${block}`);
   }

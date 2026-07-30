@@ -143,55 +143,75 @@ function savedTheme() {
   }
 }
 
-/* Дождь «Тайги».
+/* Живые частицы тем.
  *
- * Плиткой это сделать нельзя: `background-repeat` повторяет один и тот же
- * рисунок, и глаз читает его как мелкую текстуру, а не как дождь — сколько
- * планов ни добавляй, регулярность остаётся. Поэтому каждая капля здесь
- * отдельный элемент со своей позицией, длиной, прозрачностью и скоростью:
+ * Плиткой это сделать нельзя: `background-repeat` повторяет один рисунок, и
+ * глаз читает его как мелкую текстуру, а не как погоду — сколько планов ни
+ * добавляй, регулярность остаётся. Поэтому каждая капля и каждая пылинка
+ * здесь отдельный элемент со своими размерами, прозрачностью и скоростью:
  * непредсказуемость берётся из настоящего случайного распределения.
  *
- * Цена — десятки анимированных узлов, поэтому анимируется только transform
- * (композитинг, без перерисовки), на узком экране капель вдвое меньше, а при
- * prefers-reduced-motion слой не создаётся вообще. */
-const RAIN_THEME = "taiga";
-let rainLayer = null;
+ * Цена измерена: анимируется только transform, поэтому за пять секунд работы
+ * дождя из 280 капель браузер не выполняет ни одного пересчёта стиля или
+ * раскладки — всё уходит в композитор. На узком экране частиц вдвое меньше,
+ * а при prefers-reduced-motion слой не создаётся вообще. */
+const PARTICLE_THEMES = { taiga: "rain", gothic: "motes" };
+let particleLayer = null;
 
-function rainDropCount() {
-  return surface === "mobile" ? 130 : 280;
+function particleCount(kind) {
+  if (kind === "rain") return surface === "mobile" ? 130 : 280;
+  return surface === "mobile" ? 40 : 80;
 }
 
-function buildRainLayer() {
+function buildRainDrop() {
+  const drop = document.createElement("span");
+  const near = Math.random();
+  // ближние капли длиннее, ярче и падают быстрее — этим читается глубина
+  drop.style.setProperty("--x", `${Math.random() * 104 - 2}%`);
+  drop.style.setProperty("--len", `${(8 + near * 14).toFixed(1)}px`);
+  drop.style.setProperty("--thickness", `${(0.8 + near * 0.8).toFixed(2)}px`);
+  drop.style.setProperty("--alpha", (0.2 + near * 0.3).toFixed(2));
+  drop.style.setProperty("--dur", `${(1.45 - near * 0.7).toFixed(2)}s`);
+  drop.style.setProperty("--delay", `-${(Math.random() * 2).toFixed(2)}s`);
+  return drop;
+}
+
+function buildMote() {
+  const mote = document.createElement("span");
+  const near = Math.random();
+  /* Пыль в свете факела: ближние пылинки крупнее и бледнее, дальние мельче и
+     ярче, поднимаются медленно и слегка виляют вбок. */
+  mote.style.setProperty("--x", `${8 + Math.random() * 94}%`);
+  mote.style.setProperty("--size", `${(1.6 + near * 5).toFixed(1)}px`);
+  mote.style.setProperty("--alpha", (0.7 - near * 0.4).toFixed(2));
+  mote.style.setProperty("--drift", `${(Math.random() * 46 - 23).toFixed(0)}px`);
+  mote.style.setProperty("--dur", `${(9 + Math.random() * 12).toFixed(1)}s`);
+  mote.style.setProperty("--delay", `-${(Math.random() * 20).toFixed(1)}s`);
+  return mote;
+}
+
+function buildParticleLayer(kind) {
   const layer = document.createElement("div");
-  layer.className = "rain";
+  layer.className = kind === "rain" ? "rain" : "motes";
   layer.setAttribute("aria-hidden", "true");
-  const count = rainDropCount();
-  for (let index = 0; index < count; index += 1) {
-    const drop = document.createElement("span");
-    const near = Math.random();
-    // ближние капли длиннее, ярче и падают быстрее — этим читается глубина
-    drop.style.setProperty("--x", `${Math.random() * 104 - 2}%`);
-    drop.style.setProperty("--len", `${(8 + near * 14).toFixed(1)}px`);
-    drop.style.setProperty("--thickness", `${(0.8 + near * 0.8).toFixed(2)}px`);
-    drop.style.setProperty("--alpha", (0.2 + near * 0.3).toFixed(2));
-    drop.style.setProperty("--dur", `${(1.45 - near * 0.7).toFixed(2)}s`);
-    drop.style.setProperty("--delay", `-${(Math.random() * 2).toFixed(2)}s`);
-    layer.append(drop);
-  }
+  const build = kind === "rain" ? buildRainDrop : buildMote;
+  for (let index = 0; index < particleCount(kind); index += 1) layer.append(build());
   return layer;
 }
 
-function syncRainLayer(theme) {
-  const wanted = theme === RAIN_THEME
-    && globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches !== true;
-  if (!wanted) {
-    rainLayer?.remove();
-    rainLayer = null;
+function syncParticleLayer(theme) {
+  const kind = PARTICLE_THEMES[theme] ?? null;
+  const allowed = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches !== true;
+  if (!kind || !allowed) {
+    particleLayer?.remove();
+    particleLayer = null;
     return;
   }
-  if (rainLayer?.isConnected) return;
-  rainLayer = buildRainLayer();
-  document.body.append(rainLayer);
+  if (particleLayer?.isConnected && particleLayer.dataset.kind === kind) return;
+  particleLayer?.remove();
+  particleLayer = buildParticleLayer(kind);
+  particleLayer.dataset.kind = kind;
+  document.body.append(particleLayer);
 }
 
 function applyTheme(theme, { persist = false } = {}) {
@@ -199,7 +219,7 @@ function applyTheme(theme, { persist = false } = {}) {
   document.documentElement.dataset.theme = selected;
   themeSelect.value = selected;
   themeColor.content = themes[selected];
-  syncRainLayer(selected);
+  syncParticleLayer(selected);
   if (persist) {
     try {
       localStorage.setItem("agent-hub-theme", selected);
@@ -405,10 +425,10 @@ function syncSurface() {
     document.documentElement.dataset.surface = surface;
     syncComposerInputMode();
     syncCollapseTurnButtons();
-    // капель на телефоне вдвое меньше, поэтому слой пересобирается
-    rainLayer?.remove();
-    rainLayer = null;
-    syncRainLayer(document.documentElement.dataset.theme);
+    // частиц на телефоне вдвое меньше, поэтому слой пересобирается
+    particleLayer?.remove();
+    particleLayer = null;
+    syncParticleLayer(document.documentElement.dataset.theme);
     if (journalRendered) prepareMobileControls();
   }
 }
