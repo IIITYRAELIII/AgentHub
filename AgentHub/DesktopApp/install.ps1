@@ -6,6 +6,18 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $built = & (Join-Path $root "build.ps1") | Select-Object -Last 1
 $installRoot = Join-Path $env:LOCALAPPDATA "AgentHub\DesktopApp"
+function Get-AgentHubSha256 {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+    $stream = [IO.File]::OpenRead($LiteralPath)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $hasher.Dispose()
+        $stream.Dispose()
+    }
+}
 New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
 $target = Join-Path $installRoot "AgentHub.exe"
 $staged = Join-Path $installRoot "AgentHub.new.exe"
@@ -31,8 +43,8 @@ if (Test-Path -LiteralPath $target) {
 }
 Move-Item -LiteralPath $staged -Destination $target -Force
 
-$builtHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $built).Hash
-$installedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash
+$builtHash = Get-AgentHubSha256 -LiteralPath $built
+$installedHash = Get-AgentHubSha256 -LiteralPath $target
 if ($builtHash -ne $installedHash) {
     throw "Installed AgentHub.exe does not match the built executable."
 }

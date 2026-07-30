@@ -312,3 +312,25 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
   assert.equal(snapshot.activeCount, 1);
   assert.equal(snapshot.tasks.length, 1);
 });
+
+test("stale desktop snapshot returns cached tasks while catalog refreshes", async () => {
+  let finishRefresh;
+  const refreshWait = new Promise((resolve) => {
+    finishRefresh = resolve;
+  });
+  const { desktopSnapshot, state } = fixture({
+    refreshedAt: 0,
+  });
+  state.refreshCalls = [];
+  const originalPush = state.refreshCalls.push.bind(state.refreshCalls);
+  state.refreshCalls.push = (...items) => {
+    originalPush(...items);
+    return refreshWait;
+  };
+
+  const snapshot = await desktopSnapshot();
+  assert.equal(snapshot.tasks.length, 1);
+  assert.equal(state.refreshCalls.length, 1);
+  assert.deepEqual(state.refreshCalls[0], { force: true });
+  finishRefresh();
+});

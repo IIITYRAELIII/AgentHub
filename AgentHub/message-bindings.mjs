@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, stat, unlink } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
+import { processIsAlive } from "./claude-run-io.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 
 const MAX_BINDINGS = 500;
@@ -9,6 +10,8 @@ const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const COMPACT_AFTER_EVENTS = 500;
 const LOCK_STALE_MS = 60_000;
 const LOCK_WAIT_MS = 5_000;
+const LOCK_OWNER_FILE = "owner.json";
+const scheduledCompactions = new Set();
 
 export function bindingsPath(dataDir) {
   return path.join(dataDir, "telegram-thread-bindings.json");
@@ -20,6 +23,20 @@ export function bindingsEventsPath(dataDir) {
 
 function bindingsLockPath(dataDir) {
   return path.join(dataDir, "telegram-thread-bindings.lock");
+}
+
+async function readBindingsLockOwner(lockPath) {
+  try {
+    const owner = JSON.parse(await readFile(path.join(lockPath, LOCK_OWNER_FILE), "utf8"));
+    return owner
+      && Number.isSafeInteger(owner.pid)
+      && typeof owner.token === "string"
+      && owner.token
+      ? owner
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function validBinding(binding) {
@@ -100,9 +117,25 @@ async function acquireBindingsLock(dataDir) {
   const lockPath = bindingsLockPath(dataDir);
   const deadline = Date.now() + LOCK_WAIT_MS;
   while (true) {
+    const token = randomUUID();
     try {
       await mkdir(lockPath);
-      return async () => rm(lockPath, { recursive: true, force: true });
+      try {
+        await writeTextAtomic(path.join(lockPath, LOCK_OWNER_FILE), `${JSON.stringify({
+          pid: process.pid,
+          token,
+          createdAt: new Date().toISOString(),
+        })}\n`);
+      } catch (error) {
+        await rm(lockPath, { recursive: true, force: true }).catch(() => {});
+        throw error;
+      }
+      return async () => {
+        const owner = await readBindingsLockOwner(lockPath);
+        if (owner?.token === token) {
+          await rm(lockPath, { recursive: true, force: true });
+        }
+      };
     } catch (error) {
       // Windows may report EPERM/EACCES, rather than EEXIST, when concurrent
       // mkdir calls race on the same directory. Treat those as contention only
@@ -114,7 +147,10 @@ async function acquireBindingsLock(dataDir) {
         await delay(10);
         continue;
       }
-      if (lockStat && Date.now() - lockStat.mtimeMs > LOCK_STALE_MS) {
+      const owner = await readBindingsLockOwner(lockPath);
+      const ownerIsDead = owner && !processIsAlive(owner.pid);
+      const ownerIsMissingAndStale = !owner && Date.now() - lockStat.mtimeMs > LOCK_STALE_MS;
+      if (ownerIsDead || ownerIsMissingAndStale) {
         await rm(lockPath, { recursive: true, force: true });
         continue;
       }
@@ -181,6 +217,20 @@ export async function compactMessageBindings(dataDir, {
   );
 }
 
+async function scheduleMessageBindingsCompaction(dataDir) {
+  const names = await bindingEventNames(dataDir);
+  const key = path.resolve(dataDir).toLowerCase();
+  if (names.length < COMPACT_AFTER_EVENTS || scheduledCompactions.has(key)) return;
+  scheduledCompactions.add(key);
+  setTimeout(() => {
+    void compactMessageBindings(dataDir)
+      .catch((error) => {
+        console.error("Cannot compact Telegram bindings:", error.message);
+      })
+      .finally(() => scheduledCompactions.delete(key));
+  }, 0).unref?.();
+}
+
 export async function readMessageBindings(dataDir) {
   const [legacy, events] = await Promise.all([
     readLegacyBindings(dataDir),
@@ -200,26 +250,20 @@ export async function readMessageBindings(dataDir) {
 export async function appendMessageBindings(dataDir, additions) {
   const bindings = recentBindings(Array.isArray(additions) ? additions : []);
   if (!bindings.length) return;
-  await withBindingsLock(dataDir, async () => {
-    await appendBindingEvent(dataDir, { type: "append", bindings });
-    const names = await bindingEventNames(dataDir);
-    if (names.length >= COMPACT_AFTER_EVENTS) await compactMessageBindingsUnlocked(dataDir, names);
-  });
+  await appendBindingEvent(dataDir, { type: "append", bindings });
+  await scheduleMessageBindingsCompaction(dataDir);
 }
 
 export async function removeMessageBindings(dataDir, predicate) {
-  return withBindingsLock(dataDir, async () => {
-    const current = await readMessageBindings(dataDir);
-    const removed = current.filter(predicate);
-    if (!removed.length) return 0;
-    await appendBindingEvent(dataDir, {
-      type: "remove",
-      keys: removed.map(bindingKey),
-    });
-    const names = await bindingEventNames(dataDir);
-    if (names.length >= COMPACT_AFTER_EVENTS) await compactMessageBindingsUnlocked(dataDir, names);
-    return removed.length;
+  const current = await readMessageBindings(dataDir);
+  const removed = current.filter(predicate);
+  if (!removed.length) return 0;
+  await appendBindingEvent(dataDir, {
+    type: "remove",
+    keys: removed.map(bindingKey),
   });
+  await scheduleMessageBindingsCompaction(dataDir);
+  return removed.length;
 }
 
 export async function findMessageBinding(dataDir, chatId, messageId) {

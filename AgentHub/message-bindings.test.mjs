@@ -136,3 +136,52 @@ test("compaction preserves current bindings and safely removes processed events"
   ]);
   assert.ok(await findMessageBinding(directory, 42, 99));
 });
+
+test("a lock left by a dead process is recovered without waiting for the stale timeout", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-bindings-dead-lock-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const lockDirectory = path.join(directory, "telegram-thread-bindings.lock");
+  await mkdir(lockDirectory, { recursive: true });
+  await writeFile(path.join(lockDirectory, "owner.json"), JSON.stringify({
+    pid: 2_147_483_647,
+    token: "abandoned",
+    createdAt: new Date().toISOString(),
+  }), "utf8");
+
+  await appendMessageBindings(directory, [{
+    chatId: 42,
+    messageId: 100,
+    provider: "codex",
+    threadId: "thread-after-crash",
+    projectRoot: "C:\\Project",
+  }]);
+
+  const startedAt = Date.now();
+  await compactMessageBindings(directory);
+  assert.ok(Date.now() - startedAt < 1_000);
+  assert.equal((await findMessageBinding(directory, 42, 100))?.threadId, "thread-after-crash");
+});
+
+test("a live compaction lock cannot block an append-only binding event", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-bindings-live-lock-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const lockDirectory = path.join(directory, "telegram-thread-bindings.lock");
+  await mkdir(lockDirectory, { recursive: true });
+  await writeFile(path.join(lockDirectory, "owner.json"), JSON.stringify({
+    pid: process.pid,
+    token: "live-compactor",
+    createdAt: new Date().toISOString(),
+  }), "utf8");
+
+  const startedAt = Date.now();
+  await appendMessageBindings(directory, [{
+    chatId: 42,
+    messageId: 101,
+    provider: "claude",
+    threadId: "thread-during-compaction",
+    projectRoot: "C:\\Project",
+  }]);
+
+  assert.ok(Date.now() - startedAt < 1_000);
+  assert.equal((await findMessageBinding(directory, 42, 101))?.threadId, "thread-during-compaction");
+});

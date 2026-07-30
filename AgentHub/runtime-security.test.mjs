@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import {
   protectRuntimeConfig,
@@ -52,4 +54,10 @@ test("runtime control directories deny inherited sandbox modification", async ()
     runCommand: async (...call) => calls.push(call),
   });
   assert.equal(calls[0][0], "icacls.exe");
+});
+
+test("Windows runtime launcher verifies hashes without PowerShell modules", async () => {
+  const launcher = await readFile(path.join(import.meta.dirname, "runtime-launch.ps1"), "utf8");
+  assert.match(launcher, /Security\.Cryptography\.SHA256/);
+  assert.doesNotMatch(launcher, /Get-FileHash/);
 });

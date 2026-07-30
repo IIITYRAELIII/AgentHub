@@ -90,9 +90,13 @@ export function createDesktopSnapshotFactory({
 
   async function desktopSnapshot({ refresh = false } = {}) {
     const catalogStale = clock.nowMs() - catalog.refreshedAt() >= 5_000;
-    if (refresh || !catalog.entries().length || catalogStale) {
+    if (refresh || !catalog.entries().length) {
       await catalog.refresh({ force: Boolean(refresh || catalogStale) }).catch((error) => {
         warn("Cannot refresh desktop task catalog:", error.message);
+      });
+    } else if (catalogStale) {
+      void catalog.refresh({ force: true }).catch((error) => {
+        warn("Cannot refresh desktop task catalog in background:", error.message);
       });
     }
     let entries = catalog.entries();

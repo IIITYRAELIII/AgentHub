@@ -11,6 +11,18 @@ $Manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | Convert
 if ($Manifest.releaseId -ne $Pointer.current) {
     throw "Agent Hub runtime manifest does not match current.json"
 }
+function Get-AgentHubSha256 {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+    $Stream = [IO.File]::OpenRead($LiteralPath)
+    $Hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($Hasher.ComputeHash($Stream))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $Hasher.Dispose()
+        $Stream.Dispose()
+    }
+}
 $ReleasePrefix = $ReleaseRoot.TrimEnd('\') + '\'
 foreach ($Entry in $Manifest.files) {
     $Relative = [string]$Entry.path
@@ -28,7 +40,7 @@ foreach ($Entry in $Manifest.files) {
     if ($Info.Length -ne [int64]$Entry.bytes) {
         throw "Agent Hub runtime file size mismatch: $Relative"
     }
-    $Hash = (Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash.ToLowerInvariant()
+    $Hash = Get-AgentHubSha256 -LiteralPath $Target
     if ($Hash -ne ([string]$Entry.sha256).ToLowerInvariant()) {
         throw "Agent Hub runtime file hash mismatch: $Relative"
     }

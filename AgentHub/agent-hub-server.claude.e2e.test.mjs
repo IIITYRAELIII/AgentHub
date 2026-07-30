@@ -488,10 +488,29 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   mark = telegram.calls.length;
   const stalePrompt = "сообщение в брошенную сессию";
   telegram.pushMessage(stalePrompt);
-  const uncertain = await telegram.waitForText("Нельзя надёжно определить", {
-    after: mark,
-    timeoutMs: 15_000,
-  });
+  let uncertain;
+  try {
+    uncertain = await telegram.waitForText("Нельзя надёжно определить", {
+      after: mark,
+      timeoutMs: 15_000,
+    });
+  } catch (error) {
+    throw new Error(
+      `${error.message}\nstate:\n${JSON.stringify(await readJson(statePath).catch(() => null), null, 2)}`
+      + `\nfailedUpdates:\n${JSON.stringify(
+        await readdir(path.join(dataDir, "failed-updates")).catch(() => []),
+        null,
+        2,
+      )}`
+      + `\nAPI calls:\n${JSON.stringify(
+        telegram.callsAfter(mark).filter((call) => call.method !== "getUpdates").slice(-20),
+        null,
+        2,
+      )}`
+      + `\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+      { cause: error },
+    );
+  }
   const forceButton = uncertain.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data.startsWith("pending:force:"));
   assert.ok(forceButton, "unknown Claude activity must require an explicit force action");
