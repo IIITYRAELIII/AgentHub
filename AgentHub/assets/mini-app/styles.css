@@ -5369,6 +5369,23 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   box-shadow: var(--accent-glow);
 }
 
+.attachment-missing {
+  align-items: center;
+  color: var(--text-faint);
+  cursor: default;
+  display: flex;
+  height: 3.4rem;
+  justify-content: center;
+  width: 5.8rem;
+}
+
+.attachment-missing-label {
+  font-size: 0.68rem;
+  line-height: 1.15;
+  padding: 0.3rem;
+  text-align: center;
+}
+
 .attachment img {
   display: block;
   height: 3.4rem;

@@ -24,14 +24,28 @@ export function parsePendingInputCallback(value) {
   };
 }
 
-export function restoreDeferredInput(item, { guardConcurrentRepositoryWrites = false } = {}) {
+export function restoreDeferredInput(item, {
+  guardConcurrentRepositoryWrites = false,
+  persistentFile = () => false,
+} = {}) {
   if (!item?.id || !item?.threadId || !item?.provider) return null;
-  if (item.conflictKind !== "repository") return { destination: "pending", item };
-  if (guardConcurrentRepositoryWrites) return { destination: "pending", item };
+  const temporaryFiles = Array.isArray(item.temporaryFiles) ? item.temporaryFiles : [];
+  const restoredItem = item.persistentFiles === true
+    || !item.clientUserMessageId
+    || temporaryFiles.length === 0
+    || !temporaryFiles.every((file) => persistentFile(file))
+    ? item
+    : { ...item, persistentFiles: true };
+  if (restoredItem.conflictKind !== "repository") {
+    return { destination: "pending", item: restoredItem };
+  }
+  if (guardConcurrentRepositoryWrites) {
+    return { destination: "pending", item: restoredItem };
+  }
   return {
     destination: "queued",
     item: {
-      ...item,
+      ...restoredItem,
       allowForce: false,
       conflictKind: null,
     },

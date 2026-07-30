@@ -445,6 +445,8 @@ test("message attachments keep timestamps, thumbnails and an explicit open actio
   assert.match(app, /emit\("attachment:open",\s*\{\s*attachment:\s*item\s*\}\)/u);
   assert.match(extension, /decorateAttachmentUrls/u);
   assert.match(extension, /action === "open-attachment"/u);
+  assert.match(app, /Файл изображения недоступен/u);
+  assert.match(app, /disabled:\s*missing/u);
 });
 
 test("chat keeps an active response only in the live card after task switching", () => {

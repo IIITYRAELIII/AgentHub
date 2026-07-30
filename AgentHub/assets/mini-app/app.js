@@ -1421,14 +1421,24 @@ function renderAttachments() {
 function renderAttachmentStrip(items, { readOnly }) {
   const strip = el("div", { class: "attachment-strip" });
   items.forEach((item, index) => {
+    const source = item.dataUrl || item.url || "";
+    const missing = readOnly && (item.missing || !source);
     const thumb = el(readOnly ? "button" : "div", {
-      class: `attachment${readOnly ? " attachment-open" : ""}`,
-      title: readOnly ? "Открыть изображение" : item.name || "",
-      ...(readOnly ? { type: "button", "aria-label": `Открыть ${item.name || "изображение"}` } : {}),
-    }, [
-      el("img", { src: item.dataUrl || item.url || "", alt: item.name || "вложение", loading: "lazy" }),
-    ]);
-    if (readOnly) {
+      class: `attachment${readOnly && !missing ? " attachment-open" : ""}${missing ? " attachment-missing" : ""}`,
+      title: readOnly
+        ? (missing ? "Файл изображения недоступен" : "Открыть изображение")
+        : item.name || "",
+      ...(readOnly ? {
+        type: "button",
+        disabled: missing,
+        "aria-label": missing
+          ? `${item.name || "Изображение"} недоступно`
+          : `Открыть ${item.name || "изображение"}`,
+      } : {}),
+    }, missing
+      ? [el("span", { class: "attachment-missing-label", text: "Файл недоступен" })]
+      : [el("img", { src: source, alt: item.name || "вложение", loading: "lazy" })]);
+    if (readOnly && !missing) {
       thumb.addEventListener("click", () => emit("attachment:open", { attachment: item }));
     }
     if (!readOnly) {

@@ -65,3 +65,34 @@ test("repository conflicts remain pending when the optional guard is enabled", (
     { destination: "pending", item },
   );
 });
+
+test("legacy Desktop attachments become persistent while other temporary files stay temporary", () => {
+  const desktopItem = {
+    id: "019f7152-726b-7b62-a595-62a3fccef0bf",
+    provider: "codex",
+    threadId: "thread-1",
+    clientUserMessageId: "desktop-message-1",
+    temporaryFiles: ["desktop/attachments/image.png"],
+  };
+  assert.deepEqual(
+    restoreDeferredInput(desktopItem, {
+      persistentFile: (file) => String(file).startsWith("desktop/attachments/"),
+    }),
+    {
+      destination: "pending",
+      item: { ...desktopItem, persistentFiles: true },
+    },
+  );
+
+  const telegramItem = {
+    ...desktopItem,
+    clientUserMessageId: null,
+    temporaryFiles: ["telegram/temp/image.png"],
+  };
+  assert.deepEqual(
+    restoreDeferredInput(telegramItem, {
+      persistentFile: (file) => String(file).startsWith("desktop/attachments/"),
+    }),
+    { destination: "pending", item: telegramItem },
+  );
+});

@@ -1824,6 +1824,7 @@ try {
   for (const item of Array.isArray(saved.pendingInputs) ? saved.pendingInputs : []) {
     const restored = restoreDeferredInput(item, {
       guardConcurrentRepositoryWrites: config.guardConcurrentRepositoryWrites,
+      persistentFile: isLegacyDesktopAttachmentFile,
     });
     if (!restored) continue;
     const destination = restored.destination === "pending"
@@ -1835,7 +1836,11 @@ try {
       .set(restored.item.id, restored.item);
   }
   for (const item of Array.isArray(saved.queuedInputs) ? saved.queuedInputs : []) {
-    if (item?.id && item?.threadId && item?.provider) queuedInputs.set(item.id, item);
+    const restored = restoreDeferredInput(item, {
+      guardConcurrentRepositoryWrites: config.guardConcurrentRepositoryWrites,
+      persistentFile: isLegacyDesktopAttachmentFile,
+    });
+    if (restored) queuedInputs.set(restored.item.id, restored.item);
   }
   desktopMessageReceipts.restore(saved.desktopMessageReceipts);
   for (const item of pendingInputs.values()) updateDeferredDesktopReceipt(item, "pending");
@@ -2861,6 +2866,13 @@ const DESKTOP_ATTACHMENT_TYPES = new Map([
   [".gif", "image/gif"],
   [".bmp", "image/bmp"],
 ]);
+
+function isLegacyDesktopAttachmentFile(value) {
+  const file = path.resolve(String(value ?? ""));
+  const allowedRoot = path.join(runtimeCommandRoot, "DesktopApp", "attachments");
+  return pathInsideOrSame(file, allowedRoot)
+    && /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(file);
+}
 
 function desktopAttachmentDescriptors(files) {
   return (Array.isArray(files) ? files : []).map((file) => {
@@ -4273,6 +4285,9 @@ function updateDeferredDesktopReceipt(item, state, started = null) {
       threadId: started?.threadId ?? item.threadId,
       turnId: started?.turnId ?? null,
       clientUserMessageId: item.clientUserMessageId,
+      attachments: item.persistentFiles
+        ? desktopAttachmentDescriptors(item.temporaryFiles)
+        : [],
     });
   }
   if (state === "cancelled") {
