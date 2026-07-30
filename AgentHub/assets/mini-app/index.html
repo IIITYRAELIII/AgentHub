@@ -506,97 +506,109 @@
       </button>
     </header>
     <div class="settings-body">
-      <div class="settings-section-title">Лимиты</div>
-      <div class="current-limits-row current-limits-settings" data-current-limits="settings">
-        <span class="current-limits-empty">Загрузка…</span>
-      </div>
-      <div class="settings-section-title">Интерфейс</div>
-      <label class="setting-group setting-field">
-        <span class="setting-label">Тема</span>
-        <select data-theme-select aria-label="Тема оформления">
-          <option value="orbit">Орбита</option>
-          <option value="nebula">Туманность</option>
-          <option value="pulsar">Пульсар</option>
-          <option value="gothic">Gothic</option>
-          <option value="blackhole">BlackHole</option>
-          <option value="taiga">Rain</option>
-          <option value="metropolis">Мегаполис</option>
-          <option value="stormglass">Storm</option>
-          <option value="magma">Магма</option>
-          <option value="storm">Гроза</option>
-          <option value="meadow">Луг</option>
-          <option value="graphite">Графит</option>
-        </select>
-      </label>
-      <label class="setting-group setting-field">
-        <span class="setting-label">Группировка</span>
-        <select data-group-select aria-label="Группировка журнала">
-          <option value="date">По дням</option>
-          <option value="week">По неделям</option>
-          <option value="month">По месяцам</option>
-          <option value="task">По задачам</option>
-        </select>
-      </label>
-      <div class="setting-group">
-        <span class="setting-label">Единица расхода</span>
-        <div class="setting-options compact-options" role="group" aria-label="Единица расхода">
-          <button type="button" class="option-chip" data-usage-unit="$">$</button>
-          <button type="button" class="option-chip" data-usage-unit="rub">₽</button>
-          <button type="button" class="option-chip" data-usage-unit="cr">cr</button>
-          <button type="button" class="option-chip" data-usage-unit="pte">ПТЭ</button>
+      <section class="settings-section">
+        <h3 class="settings-section-title">Лимиты</h3>
+        <div class="settings-card">
+          <div class="current-limits-row current-limits-settings" data-current-limits="settings">
+            <span class="current-limits-empty">Загрузка…</span>
+          </div>
         </div>
-        <p class="setting-hint" data-exchange-rate-hint>
-          ₽ — официальный курс ЦБ РФ; ПТЭ — приведённые токен-эквиваленты с учётом модели и Fast.
-        </p>
-      </div>
-      <div class="setting-group">
-        <span class="setting-label">Журнал</span>
-        <label class="setting-switch">
-          <input type="checkbox" data-claude-group-toggle>
-          <span class="switch-track" aria-hidden="true"></span>
-          <span class="switch-text">Группировать задачи Claude в Work</span>
-        </label>
-        <span class="setting-label">Детализация</span>
-        <label class="setting-switch">
-          <input type="checkbox" data-token-breakdown-toggle>
-          <span class="switch-track" aria-hidden="true"></span>
-          <span class="switch-text">Токены в шапке дня</span>
-        </label>
-        <p class="setting-hint">Вход, кэш, выход, думы и ImageGen.</p>
-      </div>
-      <div class="settings-section-title">Текущая задача</div>
-      <div class="setting-group" data-setting="agent">
-        <span class="setting-label">Агент</span>
-        <div class="setting-options" data-options="agent"></div>
-      </div>
-      <div class="setting-group" data-setting="model">
-        <span class="setting-label">Модель</span>
-        <div class="setting-options" data-options="model"></div>
-      </div>
-      <div class="setting-group" data-setting="reasoning">
-        <span class="setting-label">Reasoning</span>
-        <div class="setting-options" data-options="reasoning"></div>
-      </div>
-      <div class="setting-group" data-setting="mode">
-        <span class="setting-label">Режим</span>
-        <div class="setting-options" data-options="mode"></div>
-      </div>
-      <div class="setting-group" data-setting="project">
-        <span class="setting-label">Проект</span>
-        <div class="setting-options setting-options-column" data-options="project"></div>
-      </div>
-      <div class="setting-toggles">
-        <label class="setting-switch">
-          <input type="checkbox" data-toggle="autoApprove">
-          <span class="switch-track" aria-hidden="true"></span>
-          <span class="switch-text">Автоподтверждение</span>
-        </label>
-        <label class="setting-switch">
-          <input type="checkbox" data-toggle="tts">
-          <span class="switch-track" aria-hidden="true"></span>
-          <span class="switch-text">Озвучивать ответы</span>
-        </label>
-      </div>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title">Интерфейс</h3>
+        <div class="settings-card">
+          <label class="setting-row setting-field">
+            <span class="setting-name">Тема</span>
+            <select data-theme-select aria-label="Тема оформления">
+              <option value="orbit">Орбита</option>
+              <option value="nebula">Туманность</option>
+              <option value="pulsar">Пульсар</option>
+              <option value="gothic">Gothic</option>
+              <option value="blackhole">BlackHole</option>
+              <option value="taiga">Rain</option>
+              <option value="metropolis">Мегаполис</option>
+              <option value="stormglass">Storm</option>
+              <option value="magma">Магма</option>
+              <option value="storm">Гроза</option>
+              <option value="meadow">Луг</option>
+              <option value="graphite">Графит</option>
+            </select>
+          </label>
+          <label class="setting-row setting-field">
+            <span class="setting-name">Группировка</span>
+            <select data-group-select aria-label="Группировка журнала">
+              <option value="date">По дням</option>
+              <option value="week">По неделям</option>
+              <option value="month">По месяцам</option>
+              <option value="task">По задачам</option>
+            </select>
+          </label>
+          <div class="setting-stack">
+            <span class="setting-name">Единица расхода</span>
+            <div class="setting-options compact-options" role="group" aria-label="Единица расхода">
+              <button type="button" class="option-chip" data-usage-unit="$">$</button>
+              <button type="button" class="option-chip" data-usage-unit="rub">₽</button>
+              <button type="button" class="option-chip" data-usage-unit="cr">cr</button>
+              <button type="button" class="option-chip" data-usage-unit="pte">ПТЭ</button>
+            </div>
+            <p class="setting-hint" data-exchange-rate-hint>
+              ₽ — официальный курс ЦБ РФ; ПТЭ — приведённые токен-эквиваленты с учётом модели и Fast.
+            </p>
+          </div>
+        </div>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title">Журнал</h3>
+        <div class="settings-card">
+          <label class="setting-switch">
+            <input type="checkbox" data-claude-group-toggle>
+            <span class="switch-text">Группировать задачи Claude в Work</span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <label class="setting-switch">
+            <input type="checkbox" data-token-breakdown-toggle>
+            <span class="switch-text">Токены в шапке дня
+              <span class="switch-note">Вход, кэш, выход, думы и ImageGen.</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+        </div>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title">Текущая задача</h3>
+        <div class="settings-card">
+          <div class="setting-stack" data-setting="agent">
+            <span class="setting-name">Агент</span>
+            <div class="setting-options" data-options="agent"></div>
+          </div>
+          <div class="setting-stack" data-setting="model">
+            <span class="setting-name">Модель</span>
+            <div class="setting-options" data-options="model"></div>
+          </div>
+          <div class="setting-stack" data-setting="reasoning">
+            <span class="setting-name">Reasoning</span>
+            <div class="setting-options" data-options="reasoning"></div>
+          </div>
+          <div class="setting-stack" data-setting="mode">
+            <span class="setting-name">Режим</span>
+            <div class="setting-options" data-options="mode"></div>
+          </div>
+          <div class="setting-stack" data-setting="project">
+            <span class="setting-name">Проект</span>
+            <div class="setting-options setting-options-column" data-options="project"></div>
+          </div>
+          <label class="setting-switch">
+            <input type="checkbox" data-toggle="autoApprove">
+            <span class="switch-text">Автоподтверждение</span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <label class="setting-switch">
+            <input type="checkbox" data-toggle="tts">
+            <span class="switch-text">Озвучивать ответы</span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+        </div>
+      </section>
       <div class="setting-status" data-status-slot hidden></div>
       <div class="setting-danger">
         <button type="button" class="chip-button" data-action="hub-restart">

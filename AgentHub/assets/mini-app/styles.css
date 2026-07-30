@@ -5888,9 +5888,53 @@ html[data-surface="mobile"] .chat-stop-bottom {
 .settings-body {
   display: flex;
   flex-direction: column;
-  gap: 1.05rem;
+  gap: 1.25rem;
   overflow-y: auto;
   padding: 1rem 1.1rem max(1.2rem, env(safe-area-inset-bottom));
+}
+
+/* Раздел = заголовок + карточка. Настройки внутри карточки разделены
+   волосяными линиями, поэтому подписи не приходится кричать капсом. */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.settings-card {
+  background: color-mix(in srgb, var(--surface-2) 62%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  padding: 0 0.8rem;
+}
+
+.settings-card > * {
+  padding: 0.6rem 0;
+}
+
+.settings-card > * + * {
+  border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+/* Короткая настройка одной строкой: подпись слева, контрол справа. */
+.setting-row {
+  align-items: center;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+}
+
+.setting-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.setting-name {
+  color: var(--text-soft);
+  font-size: 0.83rem;
 }
 
 .setting-field select {
@@ -5907,6 +5951,11 @@ html[data-surface="mobile"] .chat-stop-bottom {
   font-size: 0.82rem;
   padding: 0.42rem 1.6rem 0.42rem 0.6rem;
   width: 100%;
+}
+
+.setting-row > select {
+  justify-self: end;
+  max-width: 11rem;
 }
 
 .setting-field select option {
@@ -5942,14 +5991,16 @@ html[data-token-breakdown="off"] .journal span[data-day-usage-breakdown] {
   text-transform: uppercase;
 }
 
+/* Ровная сетка вместо рваного переноса: колонки одинаковой ширины, длинное
+   название модели переносится внутри чипа, а не обрезается. */
 .setting-options {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   gap: 0.4rem;
+  grid-template-columns: repeat(auto-fill, minmax(7.2rem, 1fr));
 }
 
 .setting-options-column {
-  flex-direction: column;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .setting-empty {
@@ -5963,9 +6014,11 @@ html[data-token-breakdown="off"] .journal span[data-day-usage-breakdown] {
   color: var(--text-soft);
   cursor: pointer;
   font: inherit;
-  font-size: 0.8rem;
-  padding: 0.34rem 0.7rem;
-  text-align: left;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  min-width: 0;
+  padding: 0.36rem 0.6rem;
+  text-align: center;
   transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
 }
 
@@ -5980,17 +6033,13 @@ html[data-token-breakdown="off"] .journal span[data-day-usage-breakdown] {
   color: var(--accent);
 }
 
-.setting-toggles {
-  display: flex;
-  flex-direction: column;
-  gap: 0.7rem;
-}
-
+/* Переключатель: подпись слева, тумблер прижат к правому краю карточки. */
 .setting-switch {
   align-items: center;
   cursor: pointer;
   display: flex;
-  gap: 0.6rem;
+  gap: 0.75rem;
+  justify-content: space-between;
 }
 
 .setting-switch input {
@@ -6022,24 +6071,34 @@ html[data-token-breakdown="off"] .journal span[data-day-usage-breakdown] {
   width: 0.9rem;
 }
 
-.setting-switch input:checked + .switch-track {
+/* Тумблер идёт в разметке после подписи, поэтому связь общая, а не соседняя. */
+.setting-switch input:checked ~ .switch-track {
   background: var(--accent-soft);
   border-color: var(--accent-line);
 }
 
-.setting-switch input:checked + .switch-track::after {
+.setting-switch input:checked ~ .switch-track::after {
   background: var(--accent);
   transform: translateX(1.05rem);
 }
 
-.setting-switch input:focus-visible + .switch-track {
+.setting-switch input:focus-visible ~ .switch-track {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
 .switch-text {
   color: var(--text-soft);
-  font-size: 0.85rem;
+  font-size: 0.83rem;
+  min-width: 0;
+}
+
+.switch-note {
+  color: var(--text-muted);
+  display: block;
+  font-size: 0.72rem;
+  line-height: 1.3;
+  margin-top: 0.18rem;
 }
 
 .setting-status {
@@ -6786,8 +6845,37 @@ html[data-view="statistics"] .statistics-view {
   font-size: 0.68rem;
 }
 
+/* В узкой панели лимиты не помещаются в строку: горизонтальная прокрутка
+   превращалась в полосу с кнопками, поэтому здесь они идут списком. */
 .current-limits-settings {
-  margin-top: -0.35rem;
+  display: grid;
+  gap: 0.05rem;
+  grid-template-columns: minmax(0, 1fr);
+  overflow: visible;
+}
+
+.current-limits-settings .current-limit {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  column-gap: 0.7rem;
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  min-height: 0;
+  padding: 0.3rem 0;
+  white-space: normal;
+}
+
+.current-limits-settings .current-limit + .current-limit {
+  border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.current-limits-settings .current-limit-value {
+  justify-self: end;
+}
+
+.current-limits-settings .current-limit-reset {
+  grid-column: 1 / -1;
 }
 
 .statistics-card {
@@ -6854,23 +6942,17 @@ html[data-view="statistics"] .statistics-view {
 }
 
 .settings-section-title {
-  border-bottom: 1px solid var(--line);
-  color: var(--text-muted);
-  font-size: 0.68rem;
+  color: var(--text-faint);
+  font-family: var(--font-title);
+  font-size: 0.63rem;
   font-weight: 700;
-  letter-spacing: 0.16em;
-  margin: 0.2rem 0 0.1rem;
-  padding-bottom: 0.55rem;
+  letter-spacing: 0.18em;
+  margin: 0 0 0 0.15rem;
   text-transform: uppercase;
 }
 
-.settings-section-title:not(:first-child) {
-  margin-top: 0.65rem;
-}
-
 .compact-options {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .compact-options > button {
