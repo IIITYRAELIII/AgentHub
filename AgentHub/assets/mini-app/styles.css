@@ -4816,6 +4816,25 @@ html[data-surface="mobile"] .chat {
   width: 100%;
 }
 
+/* Слово «Задачи» дублирует подписанную вкладку нижней навигации, поэтому в
+   шапке колонки остаются только счётчик и кнопка создания. */
+html[data-surface="mobile"] .task-rail-head {
+  padding: 0.45rem var(--gutter-left) 0.35rem;
+}
+
+html[data-surface="mobile"] .task-rail-title > span:first-child {
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+html[data-surface="mobile"] .task-search {
+  margin-bottom: 0.4rem;
+}
+
 /* Строка задачи занимала около 85 px, и на экран влезало восемь задач из
    семидесяти. Плотность выше, но зона нажатия остаётся крупнее 44 px. */
 html[data-surface="mobile"] .task-item {
