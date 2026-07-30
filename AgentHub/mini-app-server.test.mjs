@@ -238,6 +238,28 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(page, />Туманность</u);
     assert.match(page, />Пульсар</u);
     assert.match(page, />Gothic</u);
+    assert.match(page, /<svg data-app-mark/u);
+    for (const icon of [
+      "chats-circle",
+      "notebook",
+      "arrow-clockwise",
+      "plus",
+      "magnifying-glass",
+      "chat-centered-text",
+      "caret-left",
+      "stop",
+      "git-diff",
+      "sliders-horizontal",
+      "dots-three",
+      "paperclip",
+      "chat-text",
+      "paper-plane-right",
+      "list-checks",
+      "x",
+      "arrows-clockwise",
+    ]) {
+      assert.match(page, new RegExp(`data-phosphor-icon="${icon}"`, "u"), icon);
+    }
     const script = await (await fetch(`${address.url}app.js`)).text();
     assert.match(script, /agent-hub-theme/u);
     assert.match(script, /graphite: "#17181a"/u);
@@ -257,6 +279,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.doesNotMatch(script, /if \(!telegramMode\) return "desktop"/u);
     assert.match(script, /class: "task-runtime"/u);
     assert.match(script, /if \(sameData\(state\.live\.get\(taskId\)/u);
+    assert.match(script, /data-phosphor-icon="speaker-high"/u);
 
     const hubClient = await (await fetch(`${address.url}hub-client.js`)).text();
     assert.match(hubClient, /telegram: "HUB"/u);
@@ -306,6 +329,25 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /url\("\/orbit-earth\.png"\)/u);
     assert.match(styles, /html\[data-theme="graphite"\]/u);
     assert.match(styles, /background-size: 56px 56px/u);
+    assert.match(styles, /--ph-mask-caret-right:/u);
+    assert.match(styles, /--ph-mask-caret-double-up:/u);
+    assert.match(
+      styles,
+      /\.chat-actions > \.chip-button \{[\s\S]*?height: 2\.1rem;[\s\S]*?padding-block: 0;/u,
+    );
+    assert.match(
+      styles,
+      /\.composer-main > \.chip-button \{[\s\S]*?height: 2\.4rem;[\s\S]*?padding-block: 0;/u,
+    );
+    assert.doesNotMatch(styles, /content:\s*"[▶▼▸▾⌃]"/u);
+    assert.doesNotMatch(
+      styles,
+      /html\[data-theme="graphite"\] \.brand-mark svg\s*\{[^}]*display:\s*none/u,
+    );
+    assert.doesNotMatch(
+      styles,
+      /html\[data-theme="graphite"\] \.brand-mark::after\s*\{/u,
+    );
     assert.match(
       styles,
       /html\[data-theme="graphite"\][\s\S]*?span\[data-kilo-usage\][\s\S]*?background: transparent;[\s\S]*?color: oklch\(0\.88 0\.003 260\) !important;/u,

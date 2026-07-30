@@ -444,6 +444,14 @@ Telegram сразу показывает `typing`, а содержательна
 
 Текущий план выделения компонентов из исторически выросшего `agent-hub-server.mjs`, границы этапов и критерий завершения описаны в [AGENT_HUB_MODULES.md](AGENT_HUB_MODULES.md). Стабилизационные исправления и архитектурная декомпозиция учитываются раздельно в [STABILIZATION_CHECKLIST.md](STABILIZATION_CHECKLIST.md).
 
+## Иконки интерфейса
+
+Mini App использует локально встроенную геометрию Phosphor Icons Regular 2.1.1
+без CDN и runtime-зависимости. Фирменный знак Agent Hub остаётся отдельным
+оригинальным SVG и показывается во всех темах, включая Graphite. Лицензия и
+атрибуция стороннего набора приведены в
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ## Совместимость после переименования
 
 Исходники и пользовательские названия используют `Agent Hub`, `Agent Hub Server`, `Agent Hub Desktop`, каталог `AgentHub` и точку входа `agent-hub-server.mjs`. Сокращённый владелец хода в карточках — `HUB`.

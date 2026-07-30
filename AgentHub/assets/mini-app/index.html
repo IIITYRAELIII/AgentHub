@@ -18,7 +18,7 @@
     <div class="app-header-inner">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+          <svg data-app-mark viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
             stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 2.7 20 7.2v9.6L12 21.3 4 16.8V7.2z"></path>
             <path d="M7.6 12.1h2.2l1.3-2.9 1.9 5.4 1.2-2.5h1.9"></path>
@@ -32,18 +32,26 @@
 
       <nav class="view-switch" data-view-switch aria-label="Разделы">
         <button type="button" class="view-tab" data-view-button="chat" aria-pressed="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M4 5.5h16v10H8.5L4 19z"></path>
+          <svg data-phosphor-icon="chats-circle" viewBox="0 0 256 256" aria-hidden="true">
+            <path d="M32.5,138A72,72,0,1,1,62,167.5l-27.76,8.16a8,8,0,0,1-9.93-9.93Z"
+              fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+              stroke-width="16"></path>
+            <path d="M163.94,80.11A72,72,0,0,1,223.5,186l8.16,27.76a8,8,0,0,1-9.93,9.93L194,215.5A72.05,72.05,0,0,1,92.06,175.89"
+              fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+              stroke-width="16"></path>
           </svg>
           <span>Диалоги</span>
         </button>
         <button type="button" class="view-tab" data-view-button="journal" aria-pressed="false">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M6 3.5h9l4 4V20a.5.5 0 0 1-.5.5h-12A.5.5 0 0 1 6 20z"></path>
-            <path d="M14.5 3.7V8h4.3"></path>
-            <path d="M9 12.5h7M9 15.5h7"></path>
+          <svg data-phosphor-icon="notebook" viewBox="0 0 256 256" aria-hidden="true">
+            <line x1="112" y1="112" x2="176" y2="112" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            <line x1="112" y1="144" x2="176" y2="144" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            <rect x="40" y="40" width="176" height="176" rx="8" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
+            <line x1="80" y1="40" x2="80" y2="216" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
           </svg>
           <span>Журнал</span>
         </button>
@@ -57,10 +65,13 @@
         </button>
         <button class="refresh" type="button" data-refresh title="Обновить журнал"
           data-journal-only>
-          <svg class="refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M20.2 12a8.2 8.2 0 1 1-2.6-6"></path>
-            <path d="M20.4 4.6v5.6h-5.6"></path>
+          <svg class="refresh-icon" data-phosphor-icon="arrow-clockwise" viewBox="0 0 256 256"
+            aria-hidden="true">
+            <polyline points="184 104 232 104 232 56" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+            <path d="M188.4,192a88,88,0,1,1,1.83-126.23L232,104" fill="none"
+              stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+              stroke-width="16"></path>
           </svg>
           <span class="refresh-label" data-updated-at>Обновить</span>
         </button>
@@ -101,17 +112,21 @@
           <span class="task-count" data-task-count hidden></span>
         </div>
         <button type="button" class="icon-button task-new" data-action="task-new" title="Новая задача">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 5v14M5 12h14"></path>
+          <svg data-phosphor-icon="plus" viewBox="0 0 256 256" aria-hidden="true">
+            <line x1="40" y1="128" x2="216" y2="128" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            <line x1="128" y1="40" x2="128" y2="216" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
           </svg>
         </button>
       </div>
       <div class="task-search">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="11" cy="11" r="6.5"></circle>
-          <path d="m20 20-3.6-3.6"></path>
+        <svg data-phosphor-icon="magnifying-glass" viewBox="0 0 256 256" aria-hidden="true">
+          <circle cx="112" cy="112" r="80" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+          <line x1="168.57" y1="168.57" x2="224" y2="224" fill="none"
+            stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+            stroke-width="16"></line>
         </svg>
         <input type="search" data-task-filter placeholder="Поиск задачи" aria-label="Поиск задачи"
           autocomplete="off">
@@ -124,9 +139,14 @@
     <section class="chat" data-chat aria-label="Диалог задачи">
       <div class="chat-empty" data-chat-empty>
         <span class="chat-empty-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 5.5h16v10H8.5L4 19z"></path>
+          <svg data-phosphor-icon="chat-centered-text" viewBox="0 0 256 256">
+            <line x1="96" y1="104" x2="160" y2="104" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            <line x1="96" y1="136" x2="160" y2="136" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            <path d="M105.07,192l16,28a8,8,0,0,0,13.9,0l16-28H216a8,8,0,0,0,8-8V56a8,8,0,0,0-8-8H40a8,8,0,0,0-8,8V184a8,8,0,0,0,8,8Z"
+              fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+              stroke-width="16"></path>
           </svg>
         </span>
         <p>Выберите задачу слева или создайте новую, чтобы начать диалог.</p>
@@ -135,9 +155,9 @@
       <div class="chat-pane" data-chat-pane hidden>
         <header class="chat-head">
           <button type="button" class="icon-button chat-back" data-action="pane-tasks" title="К списку задач">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
-              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M15 6l-6 6 6 6"></path>
+            <svg data-phosphor-icon="caret-left" viewBox="0 0 256 256" aria-hidden="true">
+              <polyline points="160 208 80 128 160 48" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
             </svg>
           </button>
           <div class="chat-head-main">
@@ -153,35 +173,56 @@
           <div class="chat-actions">
             <button type="button" class="chip-button danger chat-stop-header" data-action="task-stop" data-chat-stop hidden
               title="Остановить ход">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-                <rect x="7" y="7" width="10" height="10" rx="1.5"></rect>
+              <svg data-phosphor-icon="stop" viewBox="0 0 256 256" aria-hidden="true">
+                <rect x="48" y="48" width="160" height="160" rx="8" fill="none"
+                  stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                  stroke-width="16"></rect>
               </svg>
               <span>Стоп</span>
             </button>
             <button type="button" class="chip-button" data-action="task-diff" title="Изменения задачи">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M8 4v10M8 18v2M8 14a3 3 0 0 0 3 3h3"></path>
-                <circle cx="8" cy="4" r="1.6"></circle>
-                <circle cx="16" cy="17" r="1.6"></circle>
-                <circle cx="8" cy="18" r="1.6" opacity="0"></circle>
+              <svg data-phosphor-icon="git-diff" viewBox="0 0 256 256" aria-hidden="true">
+                <path d="M200,168V110.63a16,16,0,0,0-4.69-11.32L144,48" fill="none"
+                  stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                  stroke-width="16"></path>
+                <polyline points="144 96 144 48 192 48" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+                <path d="M56,88v57.37a16,16,0,0,0,4.69,11.32L112,208" fill="none"
+                  stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                  stroke-width="16"></path>
+                <polyline points="112 160 112 208 64 208" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+                <circle cx="56" cy="64" r="24" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+                <circle cx="200" cy="192" r="24" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
               </svg>
               <span>Diff</span>
             </button>
             <button type="button" class="icon-button" data-action="task-settings" data-panel-open="settings"
               title="Настройки хода">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="3.2"></circle>
-                <path d="M12 3v2.2M12 18.8V21M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M3 12h2.2M18.8 12H21M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"></path>
+              <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256"
+                aria-hidden="true">
+                <circle cx="104" cy="80" r="24" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+                <circle cx="168" cy="176" r="24" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+                <line x1="128" y1="80" x2="216" y2="80" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+                <line x1="40" y1="80" x2="80" y2="80" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+                <line x1="192" y1="176" x2="216" y2="176" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+                <line x1="40" y1="176" x2="144" y2="176" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
               </svg>
             </button>
             <details class="overflow" data-overflow>
               <summary class="icon-button" title="Ещё" aria-label="Ещё действия">
-                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                  <circle cx="5" cy="12" r="1.7"></circle>
-                  <circle cx="12" cy="12" r="1.7"></circle>
-                  <circle cx="19" cy="12" r="1.7"></circle>
+                <svg data-phosphor-icon="dots-three" viewBox="0 0 256 256" aria-hidden="true">
+                  <circle cx="128" cy="128" r="12" fill="currentColor"></circle>
+                  <circle cx="196" cy="128" r="12" fill="currentColor"></circle>
+                  <circle cx="60" cy="128" r="12" fill="currentColor"></circle>
                 </svg>
               </summary>
               <div class="overflow-menu" role="menu">
@@ -224,17 +265,24 @@
             <div class="slash-menu" data-slash-menu hidden role="listbox" aria-label="Команды"></div>
             <button type="button" class="icon-button composer-attach" data-action="attach"
               title="Прикрепить изображение">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M20 11.5 12.4 19a4.5 4.5 0 0 1-6.4-6.4l7.6-7.6a3 3 0 0 1 4.3 4.3l-7.6 7.6a1.5 1.5 0 0 1-2.2-2.2l6.9-6.9"></path>
+              <svg data-phosphor-icon="paperclip" viewBox="0 0 256 256" aria-hidden="true">
+                <path d="M160,80,76.69,164.69a16,16,0,0,0,22.63,22.62L198.63,86.63a32,32,0,0,0-45.26-45.26L54.06,142.06a48,48,0,0,0,67.88,67.88L204,128"
+                  fill="none" stroke="currentColor" stroke-linecap="round"
+                  stroke-linejoin="round" stroke-width="16"></path>
               </svg>
             </button>
             <button type="button" class="icon-button composer-annotate" data-action="annotate"
               title="Комментировать выделенный фрагмент ответа" disabled>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M20 5.5v8a1.5 1.5 0 0 1-1.5 1.5H9l-4 3.5V7A1.5 1.5 0 0 1 6.5 5.5z"></path>
-                <path d="M8.5 10h7M8.5 12.6h4.5"></path>
+              <svg data-phosphor-icon="chat-text" viewBox="0 0 256 256" aria-hidden="true">
+                <path d="M45.15,230.11A8,8,0,0,1,32,224V64a8,8,0,0,1,8-8H216a8,8,0,0,1,8,8V192a8,8,0,0,1-8,8H80Z"
+                  fill="none" stroke="currentColor" stroke-linecap="round"
+                  stroke-linejoin="round" stroke-width="16"></path>
+                <line x1="96" y1="112" x2="160" y2="112" fill="none"
+                  stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                  stroke-width="16"></line>
+                <line x1="96" y1="144" x2="160" y2="144" fill="none"
+                  stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                  stroke-width="16"></line>
               </svg>
             </button>
             <label class="composer-input" data-composer-grow>
@@ -253,13 +301,23 @@
             </button>
             <button type="button" class="chip-button danger chat-stop-bottom" data-action="task-stop"
               data-chat-stop hidden title="Остановить ход">
-              <span class="stop-square" aria-hidden="true"></span><span>Стоп</span>
+              <svg data-phosphor-icon="stop" viewBox="0 0 256 256" aria-hidden="true">
+                <rect x="48" y="48" width="160" height="160" rx="8" fill="none"
+                  stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                  stroke-width="16"></rect>
+              </svg>
+              <span>Стоп</span>
             </button>
             <button type="submit" class="composer-send" data-composer-send title="Отправить"
               disabled>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M4.5 12h13M11 5.5 17.5 12 11 18.5"></path>
+              <svg data-phosphor-icon="paper-plane-right" viewBox="0 0 256 256"
+                aria-hidden="true">
+                <line x1="144" y1="128" x2="80" y2="128" fill="none"
+                  stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                  stroke-width="16"></line>
+                <path d="M48.49,221.28A8,8,0,0,0,59.93,231l168-96.09a8,8,0,0,0,0-14l-168-95.85a8,8,0,0,0-11.44,9.67L80,128Z"
+                  fill="none" stroke="currentColor" stroke-linecap="round"
+                  stroke-linejoin="round" stroke-width="16"></path>
               </svg>
             </button>
           </div>
@@ -277,24 +335,45 @@
   <!-- Мобильная нижняя навигация: задачи · чат · журнал без горизонтальной прокрутки. -->
   <nav class="mobile-nav" data-mobile-nav aria-label="Навигация">
     <button type="button" class="mobile-tab" data-mobile-button="tasks" aria-pressed="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M5 6.5h14M5 12h14M5 17.5h9"></path>
+      <svg data-phosphor-icon="list-checks" viewBox="0 0 256 256" aria-hidden="true">
+        <line x1="128" y1="128" x2="216" y2="128" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        <line x1="128" y1="64" x2="216" y2="64" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        <line x1="128" y1="192" x2="216" y2="192" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        <polyline points="40 64 56 80 88 48" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+        <polyline points="40 128 56 144 88 112" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+        <polyline points="40 192 56 208 88 176" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
       </svg>
       <span>Задачи</span>
     </button>
     <button type="button" class="mobile-tab" data-mobile-button="chat" aria-pressed="false">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M4 5.5h16v10H8.5L4 19z"></path>
+      <svg data-phosphor-icon="chat-centered-text" viewBox="0 0 256 256" aria-hidden="true">
+        <line x1="96" y1="104" x2="160" y2="104" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        <line x1="96" y1="136" x2="160" y2="136" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        <path d="M105.07,192l16,28a8,8,0,0,0,13.9,0l16-28H216a8,8,0,0,0,8-8V56a8,8,0,0,0-8-8H40a8,8,0,0,0-8,8V184a8,8,0,0,0,8,8Z"
+          fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+          stroke-width="16"></path>
       </svg>
       <span>Чат</span>
     </button>
     <button type="button" class="mobile-tab" data-mobile-button="journal" aria-pressed="false">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M6 3.5h9l4 4V20a.5.5 0 0 1-.5.5h-12A.5.5 0 0 1 6 20z"></path>
-        <path d="M9 12.5h7M9 15.5h7"></path>
+      <svg data-phosphor-icon="notebook" viewBox="0 0 256 256" aria-hidden="true">
+        <line x1="112" y1="112" x2="176" y2="112" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        <line x1="112" y1="144" x2="176" y2="144" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        <rect x="40" y="40" width="176" height="176" rx="8" fill="none"
+          stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+          stroke-width="16"></rect>
+        <line x1="80" y1="40" x2="80" y2="216" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
       </svg>
       <span>Журнал</span>
     </button>
@@ -307,9 +386,11 @@
     <header class="settings-head">
       <h2>Настройки</h2>
       <button type="button" class="icon-button" data-panel-close title="Закрыть">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
-          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M6 6l12 12M18 6 6 18"></path>
+        <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+          <line x1="200" y1="56" x2="56" y2="200" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          <line x1="200" y1="200" x2="56" y2="56" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
         </svg>
       </button>
     </header>
@@ -349,10 +430,18 @@
       <div class="setting-status" data-status-slot hidden></div>
       <div class="setting-danger">
         <button type="button" class="chip-button" data-action="hub-restart">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M20.2 12a8.2 8.2 0 1 1-2.6-6"></path>
-            <path d="M20.4 4.6v5.6h-5.6"></path>
+          <svg data-phosphor-icon="arrows-clockwise" viewBox="0 0 256 256"
+            aria-hidden="true">
+            <polyline points="168 96 216 96 216 48" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+            <path d="M216,96,187.72,67.72A88,88,0,0,0,64,67" fill="none"
+              stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+              stroke-width="16"></path>
+            <polyline points="88 160 40 160 40 208" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+            <path d="M40,160l28.28,28.28A88,88,0,0,0,192,189" fill="none"
+              stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+              stroke-width="16"></path>
           </svg>
           <span>Перезапустить Agent Hub</span>
         </button>
@@ -385,9 +474,11 @@
         <p class="limits-subtitle" data-limits-subtitle></p>
       </div>
       <button type="button" class="icon-button" data-limits-close title="Закрыть" aria-label="Закрыть">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
-          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M6 6l12 12M18 6 6 18"></path>
+        <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+          <line x1="200" y1="56" x2="56" y2="200" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          <line x1="200" y1="200" x2="56" y2="56" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
         </svg>
       </button>
     </header>

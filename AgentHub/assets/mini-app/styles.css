@@ -75,6 +75,12 @@
   --provider-codex: #6cb2ff;
   --provider-claude: #e08a63;
 
+  /* Геометрия Phosphor Icons Regular 2.1.1 для CSS-маркеров раскрытия. */
+  --ph-mask-caret-right:
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cpolyline points='96 48 176 128 96 208' fill='none' stroke='white' stroke-linecap='round' stroke-linejoin='round' stroke-width='16'/%3E%3C/svg%3E");
+  --ph-mask-caret-double-up:
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cpolyline points='48 200 128 120 208 200' fill='none' stroke='white' stroke-linecap='round' stroke-linejoin='round' stroke-width='16'/%3E%3Cpolyline points='48 120 128 40 208 120' fill='none' stroke='white' stroke-linecap='round' stroke-linejoin='round' stroke-width='16'/%3E%3C/svg%3E");
+
   --ok: #4fd08a;
   --pending: #f0b95b;
 
@@ -1337,20 +1343,20 @@ main {
 
 .journal summary[data-work-log-day]::before,
 .journal details[open] > summary[data-work-log-day]::before {
-  border: 0.3rem solid transparent;
-  border-left-color: var(--text-muted);
-  border-right-width: 0;
+  background: var(--text-muted);
   content: "";
   flex: 0 0 auto;
-  height: 0;
+  height: 0.72rem;
   margin-right: 0.15rem;
-  transform-origin: 35% 50%;
+  -webkit-mask: var(--ph-mask-caret-right) center / contain no-repeat;
+  mask: var(--ph-mask-caret-right) center / contain no-repeat;
+  transform-origin: center;
   transition: transform 0.18s ease;
-  width: 0;
+  width: 0.72rem;
 }
 
 .journal details[open] > summary[data-work-log-day]::before {
-  border-left-color: var(--accent);
+  background: var(--accent);
   transform: rotate(90deg);
 }
 
@@ -1732,15 +1738,21 @@ main {
 }
 
 .journal summary[data-work-log-task-group-summary]::before {
+  background: currentColor;
   color: var(--row-accent);
-  content: "▶";
-  font-size: 0.68rem;
+  content: "";
   grid-column: 1;
+  height: 0.7rem;
+  -webkit-mask: var(--ph-mask-caret-right) center / contain no-repeat;
+  mask: var(--ph-mask-caret-right) center / contain no-repeat;
+  transform-origin: center;
+  transition: transform 0.18s ease;
+  width: 0.7rem;
 }
 
 .journal details[data-work-log-task-group][open]
   > summary[data-work-log-task-group-summary]::before {
-  content: "▼";
+  transform: rotate(90deg);
 }
 
 .journal details[data-work-log-task-group][open]
@@ -1994,11 +2006,18 @@ html[data-grouping="task"]
 }
 
 .journal details[data-work-log-turn-diff] > summary::before {
-  content: "▸";
+  background: currentColor;
+  content: "";
+  height: 0.65rem;
+  -webkit-mask: var(--ph-mask-caret-right) center / contain no-repeat;
+  mask: var(--ph-mask-caret-right) center / contain no-repeat;
+  transform-origin: center;
+  transition: transform 0.18s ease;
+  width: 0.65rem;
 }
 
 .journal details[data-work-log-turn-diff][open] > summary::before {
-  content: "▾";
+  transform: rotate(90deg);
 }
 
 .journal details[data-work-log-turn-diff] pre {
@@ -2772,20 +2791,9 @@ html[data-theme="graphite"] .app-header::after {
 html[data-theme="graphite"] .brand-mark {
   border-color: oklch(0.32 0.005 260);
   box-shadow: none;
+  color: oklch(0.78 0.01 260);
   height: 2.5rem;
   width: 2.5rem;
-}
-
-html[data-theme="graphite"] .brand-mark svg {
-  display: none;
-}
-
-html[data-theme="graphite"] .brand-mark::after {
-  background: oklch(0.7 0.01 260);
-  border-radius: 4px;
-  content: "";
-  height: 1rem;
-  width: 1rem;
 }
 
 html[data-theme="graphite"] .theme-picker,
@@ -3351,9 +3359,13 @@ html[data-surface="mobile"] .collapse-all > span {
 }
 
 html[data-surface="mobile"] .collapse-all::before {
-  content: "⌃";
+  background: currentColor;
+  content: "";
   display: block;
-  transform: translateY(0.1em);
+  height: 0.9rem;
+  -webkit-mask: var(--ph-mask-caret-double-up) center / contain no-repeat;
+  mask: var(--ph-mask-caret-double-up) center / contain no-repeat;
+  width: 0.9rem;
 }
 
 /* flex-basis: 0 обязателен: с `auto` панель считалась по max-content и целиком
@@ -4202,6 +4214,12 @@ html[data-view="journal"] [data-journal-only] {
   gap: 0.4rem;
 }
 
+.chat-actions > .chip-button {
+  height: 2.1rem;
+  justify-content: center;
+  padding-block: 0;
+}
+
 /* всплывающее меню «ещё» */
 .overflow {
   position: relative;
@@ -4635,6 +4653,12 @@ html[data-view="journal"] [data-journal-only] {
   gap: 0.4rem;
 }
 
+.composer-main > .chip-button {
+  height: 2.4rem;
+  justify-content: center;
+  padding-block: 0;
+}
+
 .composer-input {
   background: var(--surface-2);
   border: 1px solid var(--line);
@@ -4995,13 +5019,6 @@ html[data-view="journal"] [data-journal-only] {
 
 .chat-stop-header {
   display: none;
-}
-
-.stop-square {
-  border: 1.5px solid currentColor;
-  border-radius: 1px;
-  height: 0.58rem;
-  width: 0.58rem;
 }
 
 html[data-surface="mobile"] .chat-stop-header {
