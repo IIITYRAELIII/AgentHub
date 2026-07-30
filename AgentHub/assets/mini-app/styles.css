@@ -3094,36 +3094,63 @@ html[data-theme="nebula"] body::before {
   opacity: 0.3;
 }
 
-/* «Gothic»: пламя факела и угли над ним.
-   Тёплый эффект здесь не случаен: фон темы — склеп с горящим факелом справа,
-   поэтому холодный блик из прежней версии был бы чужим. Мерцание нарочно
-   неровное: ключи стоят с разным шагом, чтобы огонь не «дышал» метрономом.
-   Угли за цикл поднимаются ровно на высоту своей плитки, поэтому повтор
-   незаметен. Пошаговая анимация убрана — из-за неё пламя дёргалось. */
-@keyframes gothic-fire {
-  0% { background-position: 88% 52%, 0 0, 2rem 0; filter: brightness(0.92); opacity: 0.3; }
-  13% { background-position: 86% 50%, 0 -1.1rem, 2rem -1.4rem; filter: brightness(1.12); opacity: 0.54; }
-  27% { background-position: 89% 53%, 0 -2.3rem, 2rem -3rem; filter: brightness(0.96); opacity: 0.36; }
-  44% { background-position: 87% 51%, 0 -3.7rem, 2rem -4.8rem; filter: brightness(1.2); opacity: 0.62; }
-  61% { background-position: 90% 52%, 0 -5.2rem, 2rem -6.7rem; filter: brightness(0.98); opacity: 0.4; }
-  82% { background-position: 87% 51%, 0 -7rem, 2rem -9.1rem; filter: brightness(1.08); opacity: 0.5; }
-  100% { background-position: 88% 52%, 0 -8.5rem, 2rem -11rem; filter: brightness(0.92); opacity: 0.3; }
+/* «Gothic»: пыль в свете факела поднимается снизу вверх.
+   Ориентир — та же взвесь, что видно в кадрах игры: разнокалиберные мягкие
+   светящиеся пятна, а не резкие точки, и у каждого размера своя скорость.
+   Поэтому три плана двигаются на разную величину за один цикл: крупная пыль
+   на 14rem, средняя на 10rem, мелкая на 7rem — каждая ровно на высоту своей
+   плитки, чтобы повтор не был виден. Сам блик факела с места не сходит и
+   только неровно мерцает: огонь не должен «дышать» метрономом. Спад цвета
+   плавный — от этого частица выглядит светящейся, а не нарисованной. */
+@keyframes gothic-dust {
+  0% {
+    background-position: 88% 52%, 3rem 0, 0 0, 2rem 0, 1rem 0;
+    filter: brightness(0.94);
+    opacity: 0.34;
+  }
+  17% {
+    background-position: 87% 51%, 3rem -2.2rem, 0 -1.5rem, 2rem -1.2rem, 1rem -0.8rem;
+    filter: brightness(1.14);
+    opacity: 0.58;
+  }
+  38% {
+    background-position: 89% 53%, 3rem -4.9rem, 0 -3.4rem, 2rem -2.7rem, 1rem -1.7rem;
+    filter: brightness(0.98);
+    opacity: 0.4;
+  }
+  59% {
+    background-position: 88% 51%, 3rem -7.7rem, 0 -5.3rem, 2rem -4.1rem, 1rem -2.7rem;
+    filter: brightness(1.22);
+    opacity: 0.64;
+  }
+  81% {
+    background-position: 87% 52%, 3rem -10.6rem, 0 -7.3rem, 2rem -5.7rem, 1rem -3.7rem;
+    filter: brightness(1.04);
+    opacity: 0.46;
+  }
+  100% {
+    background-position: 88% 52%, 3rem -13rem, 0 -9rem, 2rem -7rem, 1rem -4.6rem;
+    filter: brightness(0.94);
+    opacity: 0.34;
+  }
 }
 
 html[data-theme="gothic"] body::before {
-  animation: gothic-fire 7s ease-in-out infinite;
+  animation: gothic-dust 11s ease-in-out infinite;
   background-image:
     radial-gradient(46% 78% at 88% 52%, rgba(238, 164, 58, 0.38), rgba(164, 80, 20, 0.12) 46%, transparent 74%),
-    radial-gradient(circle, rgba(255, 182, 69, 0.72) 0 0.8px, transparent 1.5px),
-    radial-gradient(circle, rgba(255, 125, 35, 0.5) 0 0.7px, transparent 1.4px);
-  background-repeat: no-repeat, repeat, repeat;
-  background-size: cover, 5.6rem 8.5rem, 8.2rem 11rem;
+    radial-gradient(9px 9px at 50% 50%, rgba(255, 240, 208, 0.3) 0 10%, rgba(255, 202, 120, 0.1) 44%, transparent 100%),
+    radial-gradient(5px 5px at 50% 50%, rgba(255, 238, 202, 0.66) 0 14%, rgba(255, 206, 128, 0.2) 46%, transparent 100%),
+    radial-gradient(3px 3px at 50% 50%, rgba(255, 230, 186, 0.54) 0 16%, rgba(255, 196, 116, 0.16) 52%, transparent 100%),
+    radial-gradient(1.7px 1.7px at 50% 50%, rgba(255, 218, 164, 0.42) 0 20%, transparent 100%);
+  background-repeat: no-repeat, repeat, repeat, repeat, repeat;
+  background-size: cover, 11rem 13rem, 7rem 9rem, 5rem 7rem, 3.2rem 4.6rem;
   content: "";
-  /* Слева в кадре лунный проём: тёплые угли там выглядели чужими, поэтому
+  /* Слева в кадре лунный проём: тёплая пыль там выглядела чужой, поэтому
      эффект гасится к левому краю. */
-  mask-image: linear-gradient(90deg, transparent 0 30%, rgba(0, 0, 0, 0.5) 54%, #000 80%);
+  mask-image: linear-gradient(90deg, transparent 0 26%, rgba(0, 0, 0, 0.45) 50%, #000 78%);
   mix-blend-mode: screen;
-  opacity: 0.42;
+  opacity: 0.62;
 }
 
 /* «Пульсар»: собственно пульс — единственный быстрый ритм в наборе */
@@ -3166,36 +3193,42 @@ html[data-theme="blackhole"] body::before {
   opacity: 0.3;
 }
 
-/* «Тайга»: дождь в три плана.
-   Полосу в плитке использовать нельзя: цвет занимает всю её ширину, соседние
-   плитки встают вплотную, и штрихи сливаются в непрерывные линии — сначала
-   получались длинные палки, потом горизонтальные жалюзи. Поэтому каждая капля
-   рисуется вытянутым эллипсом в центре широкой плитки: между каплями остаётся
-   пустое место, как в настоящем дожде. Три плана отличаются шагом плитки,
-   толщиной и яркостью, этим создаётся глубина. Слой едет через translate3d —
-   композитинг без перерисовки, поэтому движение плавное и дешёвое; сдвиг за
-   цикл равен 76px и кратен высоте каждой плитки, так что стык не виден. */
+/* «Тайга»: дождь в шесть планов.
+   История двух неудач записана здесь, чтобы её не повторяли. Полоса на всю
+   ширину плитки склеивает соседние плитки в непрерывные линии — сначала это
+   были длинные палки, потом горизонтальные жалюзи. Разреженные капли решают
+   склейку, но если у планов совпадает шаг, глаз читает регулярную решётку, а
+   капля радиусом 9px по вертикали занимает 18px и выглядит ниткой.
+   Поэтому здесь: радиусы по вертикали 2.5–7px (капля 5–14px), ширины плиток
+   взаимно непростые (17/23/31/43), а высоты все делят 96px — на эту величину
+   слой и смещается за цикл, так что стык не виден, а рисунок при разных
+   ширинах не выстраивается в столбцы. Спад цвета плавный, поэтому капля
+   мягкая, а не контурная. Движение — translate3d, композитинг без
+   перерисовки. */
 @keyframes taiga-rain {
-  from { transform: rotate(11deg) translate3d(0, -76px, 0); }
-  to { transform: rotate(11deg) translate3d(0, 0, 0); }
+  from { transform: rotate(15deg) translate3d(0, -96px, 0); }
+  to { transform: rotate(15deg) translate3d(0, 0, 0); }
 }
 
 html[data-theme="taiga"] body::before {
-  animation: taiga-rain 0.8s linear infinite;
+  animation: taiga-rain 0.85s linear infinite;
   background-image:
-    radial-gradient(0.9px 5.5px at 50% 45%, rgba(219, 240, 242, 0.62), transparent 100%),
-    radial-gradient(0.8px 7px at 50% 60%, rgba(188, 216, 220, 0.4), transparent 100%),
-    radial-gradient(1.2px 9px at 50% 70%, rgba(158, 188, 194, 0.24), transparent 100%);
-  background-position: 0 0, 9px 6px, 4px 15px;
+    radial-gradient(1.3px 7px at 50% 50%, rgba(222, 242, 244, 0.5) 0 22%, rgba(222, 242, 244, 0.12) 62%, transparent 100%),
+    radial-gradient(1.1px 6px at 50% 50%, rgba(210, 234, 238, 0.42) 0 22%, rgba(210, 234, 238, 0.1) 62%, transparent 100%),
+    radial-gradient(1px 5px at 50% 50%, rgba(198, 224, 228, 0.34) 0 24%, rgba(198, 224, 228, 0.08) 64%, transparent 100%),
+    radial-gradient(0.8px 4px at 50% 50%, rgba(176, 202, 208, 0.28) 0 26%, transparent 100%),
+    radial-gradient(0.7px 3px at 50% 50%, rgba(168, 194, 200, 0.22) 0 28%, transparent 100%),
+    radial-gradient(0.6px 2.5px at 50% 50%, rgba(160, 186, 192, 0.16) 0 30%, transparent 100%);
+  background-position: 0 0, 21px 29px, 11px 17px, 5px 31px, 27px 11px, 19px 7px;
   background-repeat: repeat;
-  background-size: 13px 19px, 19px 38px, 27px 76px;
+  background-size: 43px 96px, 37px 48px, 31px 48px, 23px 32px, 19px 24px, 13px 16px;
   content: "";
   /* запас под наклон и сдвиг: без него по краям появлялись пустые клинья */
-  inset: -20%;
+  inset: -22%;
   mask-image: none;
   mix-blend-mode: screen;
-  opacity: 0.5;
-  transform: rotate(11deg);
+  opacity: 0.62;
+  transform: rotate(15deg);
 }
 
 /* «Магма»: жар идёт снизу и медленно смещается вдоль трещин. */
