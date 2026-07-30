@@ -103,6 +103,9 @@
 | 67 | P2 | ⬜ | Добавить настоящий browser UI и WPF UI E2E | Текущие process E2E и Desktop RPC/C# smoke проверяют backend и протокол, но не клики/отрисовку реального браузера и окна WPF. |
 | 68 | P2 | ⏸ | Исключить plaintext журнала из Cloudflare Durable Object | Сейчас full-профиль хранит prompts/answers у Cloudflare в открытом серверу виде, хотя пользовательский доступ защищён Telegram/HMAC. Полная приватность требует отдельного end-to-end encrypted sync. |
 | 69 | P2 | ✅ | Исключить ошибочное reattach Claude при переиспользовании PID | HUB сохраняет fingerprint процесса (PID, время старта, executable и command line) и повторно сверяет его перед reattach/cancel. При недоступной проверке процесс считается чужим и не завершается. |
+| 70 | P1 | ✅ | Не зависеть от отсутствующего `Get-FileHash` в Windows PowerShell | Runtime launcher и Desktop installer считают SHA-256 через .NET `SHA256`, поэтому проверка manifest работает даже в урезанном PowerShell. |
+| 71 | P1 | ✅ | Не блокировать Desktop snapshot полным холодным сканированием задач | Явное обновление и пустой каталог ждут refresh; устаревший непустой каталог возвращается сразу и обновляется в фоне. |
+| 72 | P1 | ✅ | Не блокировать Telegram после рестарта старой bindings-блокировкой | Обычные append-only события не ждут lock компактации; lock содержит PID и уникальный token, мёртвый владелец снимается немедленно, а живой чужой lock не удаляется. |
 
 ## Архитектурное решение
 

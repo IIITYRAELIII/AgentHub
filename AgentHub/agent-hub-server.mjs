@@ -147,11 +147,8 @@ import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { installRotatingConsole } from "./rotating-log.mjs";
 import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
 import { LocalTaskSyncStore } from "./task-sync-store.mjs";
-import {
-  messageReceiptKey,
-  messageRequestFingerprint,
-  MessageReceiptRegistry,
-} from "./message-receipts.mjs";
+import { MessageReceiptRegistry } from "./message-receipts.mjs";
+import { createDesktopMessageController } from "./desktop-message-controller.mjs";
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
 import { SingleInstanceGuard } from "./instance-lock.mjs";
 import { BackgroundJobQueue } from "./background-job-queue.mjs";
@@ -548,7 +545,6 @@ const forwardBundles = new Map();
 const gitRepoRoots = new Map();
 const queuedInputs = new Map();
 const desktopMessageReceipts = new MessageReceiptRegistry();
-const desktopMessageReceiptInflight = new Map();
 const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
 await taskDiffs.load();
 const lastTaskMessages = new Map();
@@ -2794,243 +2790,6 @@ async function desktopMessageTarget(params) {
   };
 }
 
-function activeTurnNotSteerable(error) {
-  const details = `${String(error?.message ?? "")} ${JSON.stringify(error?.data ?? {})}`.toLowerCase();
-  return details.includes("activeturnnotsteerable")
-    || details.includes("active turn not steerable")
-    || details.includes("no active turn")
-    || details.includes("expectedturnid");
-}
-
-async function exactDesktopCodexTurnId(target, existingRun) {
-  const registered = String(existingRun?.turnId ?? "").trim();
-  if (registered) return registered;
-  const result = await readCodexThread(target.threadId, { fresh: true });
-  const active = (Array.isArray(result.thread?.turns) ? result.thread.turns : [])
-    .filter((turn) => ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? "")))
-    .map((turn) => String(turn.id ?? "").trim())
-    .filter(Boolean);
-  if (active.length === 1) return active[0];
-  if (active.length > 1) throw new Error("В задаче выполняется несколько ходов; выбрать ход для изменения нельзя");
-  return null;
-}
-
-async function deferDesktopQueue(input, attachments, {
-  target,
-  executionOwner,
-  clientUserMessageId,
-  reason = "task-running",
-}) {
-  const deferred = await deferConflictingInput(input, attachments, {
-    executionOwner,
-    target,
-    conflictKind: reason,
-    clientUserMessageId,
-    destination: "queued",
-    notify: false,
-  });
-  scheduleQueuedInput(deferred.item, 500);
-  return {
-    accepted: false,
-    deferred: true,
-    queued: true,
-    id: deferred.id,
-    clientUserMessageId,
-    reason,
-    message: reason === "steer-unavailable"
-      ? "Текущий ход уже нельзя изменить; сообщение сохранено в очереди."
-      : "Сообщение поставлено в очередь и будет отправлено после текущего хода.",
-    snapshot: await desktopSnapshot(),
-  };
-}
-
-async function desktopSendMessage(params) {
-  const text = String(params.text ?? "").trim();
-  const attachments = await desktopAttachmentPaths(params.attachments);
-  if (!text && !attachments.length) throw new Error("Введите сообщение или добавьте изображение");
-  if (text.length > 100_000) throw new Error("Сообщение слишком длинное");
-  const clientUserMessageId = String(
-    params.clientUserMessageId ?? params.requestId ?? randomUUID(),
-  ).trim().slice(0, 200);
-  if (!clientUserMessageId) throw new Error("Сообщение не содержит идентификатор доставки");
-  const followUpMode = String(params.followUpMode ?? "").trim().toLowerCase();
-  if (followUpMode && !["queue", "steer"].includes(followUpMode)) {
-    throw new Error("Неизвестный режим следующего сообщения");
-  }
-  const input = attachments.length
-    ? [
-      { type: "text", text: text || "Проанализируй приложенное изображение." },
-      ...attachments.map((file) => ({ type: "localImage", path: file })),
-    ]
-    : text;
-  const target = await desktopMessageTarget(params);
-  if (!target.threadId) throw new Error("Сначала выберите или создайте задачу");
-  const receiptIdentity = {
-    provider: target.provider,
-    threadId: target.threadId,
-    clientUserMessageId,
-  };
-  const fingerprint = await messageRequestFingerprint({ text, attachments, followUpMode });
-  const previous = desktopMessageReceipts.find(receiptIdentity, fingerprint);
-  if (previous) return { ...previous, snapshot: await desktopSnapshot() };
-
-  const receiptKey = messageReceiptKey(receiptIdentity);
-  const inflight = desktopMessageReceiptInflight.get(receiptKey);
-  if (inflight) {
-    if (inflight.fingerprint !== fingerprint) {
-      const error = new Error("Идентификатор сообщения уже используется для другого содержимого");
-      error.code = "MESSAGE_RECEIPT_FINGERPRINT_MISMATCH";
-      throw error;
-    }
-    const result = await inflight.promise;
-    return { ...result, snapshot: await desktopSnapshot() };
-  }
-
-  const promise = (async () => {
-    const result = await desktopSendMessageOnce({
-      input,
-      attachments,
-      target,
-      clientUserMessageId,
-      followUpMode,
-    });
-    const { snapshot: _snapshot, ...storedResult } = result;
-    desktopMessageReceipts.remember(receiptIdentity, fingerprint, storedResult);
-    await saveState();
-    return storedResult;
-  })();
-  desktopMessageReceiptInflight.set(receiptKey, { fingerprint, promise });
-  try {
-    const result = await promise;
-    return { ...result, snapshot: await desktopSnapshot() };
-  } finally {
-    desktopMessageReceiptInflight.delete(receiptKey);
-  }
-}
-
-async function desktopSendMessageOnce({
-  input,
-  attachments,
-  target,
-  clientUserMessageId,
-  followUpMode,
-}) {
-  const existingRun = taskRuns.forTask(target);
-  const externalActivity = existingRun
-    ? { state: "active", executionOwner: existingRun.executionOwner }
-    : await taskExternalActivity(target);
-  if (existingRun || externalActivity.state !== "inactive") {
-    if (followUpMode === "steer") {
-      if (target.provider !== "codex") {
-        throw new Error("Изменение текущего хода доступно только для Codex");
-      }
-      const exactTurnId = await exactDesktopCodexTurnId(target, existingRun);
-      if (!exactTurnId) {
-        return deferDesktopQueue(input, attachments, {
-          target,
-          executionOwner: externalActivity.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL,
-          clientUserMessageId,
-          reason: "steer-unavailable",
-        });
-      }
-      try {
-        const result = await sendRpc("turn/steer", {
-          threadId: target.threadId,
-          expectedTurnId: exactTurnId,
-          input: typeof input === "string" ? [{ type: "text", text: input }] : input,
-          clientUserMessageId,
-        });
-        if (existingRun) {
-          setProgressStage(existingRun, "Уточнение принято.");
-          noteRunActivity(existingRun);
-          scheduleProgressUpdate(existingRun, 0);
-        }
-        return {
-          accepted: true,
-          steered: true,
-          runId: existingRun?.id ?? null,
-          threadId: target.threadId,
-          turnId: String(result?.turnId ?? exactTurnId),
-          clientUserMessageId,
-          message: "Сообщение добавлено в текущий ход.",
-          snapshot: await desktopSnapshot(),
-        };
-      } catch (error) {
-        if (!activeTurnNotSteerable(error)) throw error;
-        return deferDesktopQueue(input, attachments, {
-          target,
-          executionOwner: existingRun?.executionOwner
-            ?? externalActivity.executionOwner
-            ?? TASK_EXECUTION_OWNERS.EXTERNAL,
-          clientUserMessageId,
-          reason: "steer-unavailable",
-        });
-      }
-    }
-    if (followUpMode === "queue") {
-      return deferDesktopQueue(input, attachments, {
-        target,
-        executionOwner: existingRun?.executionOwner
-          ?? externalActivity.executionOwner
-          ?? TASK_EXECUTION_OWNERS.EXTERNAL,
-        clientUserMessageId,
-      });
-    }
-    const deferred = await deferConflictingInput(input, attachments, {
-      executionOwner: existingRun?.executionOwner
-        ?? externalActivity.executionOwner
-        ?? TASK_EXECUTION_OWNERS.EXTERNAL,
-      target,
-      allowForce: externalActivity.state === "unknown" && !existingRun,
-      conflictKind: externalActivity.state === "unknown" && !existingRun
-        ? "activity-unknown"
-        : "task-running",
-      clientUserMessageId,
-    });
-    return {
-      accepted: false,
-      deferred: true,
-      id: deferred.id,
-      clientUserMessageId,
-      reason: externalActivity.state === "unknown" ? "activity-unknown" : "task-running",
-      message: externalActivity.state === "unknown"
-        ? "Сообщение сохранено: нельзя надёжно определить, завершён ли предыдущий ход."
-        : "Сообщение сохранено: выберите новую задачу, очередь или отмену справа.",
-      snapshot: await desktopSnapshot(),
-    };
-  }
-  const repositoryConflict = await activeRepositoryConflict(target);
-  if (repositoryConflict) {
-    const deferred = await deferConflictingInput(input, attachments, {
-      executionOwner: repositoryConflict.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL,
-      target,
-      allowForce: true,
-      conflictKind: "repository",
-      conflictTask: repositoryConflict,
-      clientUserMessageId,
-    });
-    return {
-      accepted: false,
-      deferred: true,
-      id: deferred.id,
-      clientUserMessageId,
-      reason: "repository-conflict",
-      message: `Сообщение сохранено: задача «${repositoryConflict.taskTitle ?? "Без названия"}» уже изменяет тот же Git-репозиторий.`,
-      snapshot: await desktopSnapshot(),
-    };
-  }
-  const run = await beginRun(input, { ...target, clientUserMessageId });
-  await launchTurn(run, input, attachments);
-  return {
-    accepted: true,
-    runId: run.id,
-    threadId: run.threadId,
-    turnId: run.turnId,
-    clientUserMessageId,
-    snapshot: await desktopSnapshot(),
-  };
-}
-
 async function desktopAttachmentPaths(values) {
   if (values == null) return [];
   if (!Array.isArray(values) || values.length > 8) throw new Error("Можно приложить не более восьми изображений");
@@ -3380,6 +3139,26 @@ async function desktopCompactContext(params) {
   }
 }
 
+const desktopMessageController = createDesktopMessageController({
+  attachmentPaths: desktopAttachmentPaths,
+  resolveTarget: desktopMessageTarget,
+  receipts: desktopMessageReceipts,
+  persistReceipts: saveState,
+  snapshot: desktopSnapshot,
+  taskRuns,
+  taskExternalActivity,
+  readCodexThread,
+  deferConflictingInput,
+  scheduleQueuedInput,
+  sendRpc,
+  setProgressStage,
+  noteRunActivity,
+  scheduleProgressUpdate,
+  activeRepositoryConflict,
+  beginRun,
+  launchTurn,
+});
+
 const { handleDesktopControl: dispatchDesktopControl } = createDesktopControlRouter({
   handlers: {
     snapshot: desktopSnapshot,
@@ -3389,7 +3168,7 @@ const { handleDesktopControl: dispatchDesktopControl } = createDesktopControlRou
     "open-task": desktopOpenTask,
     "open-turn": desktopOpenTurn,
     "select-task": desktopSelectTask,
-    "send-message": desktopSendMessage,
+    "send-message": desktopMessageController.sendMessage,
     "new-task": desktopNewTask,
     "update-setting": desktopUpdateSetting,
     "rename-task": desktopRenameTask,
