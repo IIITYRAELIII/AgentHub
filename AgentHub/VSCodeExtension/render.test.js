@@ -339,6 +339,13 @@ test("chat keeps an active response only in the live card after task switching",
   );
 });
 
+test("manual context compaction reports completion and stays on the fast refresh loop", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /requestedContextCompactions/u);
+  assert.match(client, /Свёртка контекста завершена/u);
+  assert.match(client, /task\.running \|\| task\.context\?\.compacting/u);
+});
+
 test("live reasoning renders Markdown separately from the response", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");

@@ -123,11 +123,18 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   assert.equal(contextBefore.modelContextWindow, 200_000);
   const compacted = await callDesktopControl("compact-context", {}, { runtimeRoot });
   assert.equal(compacted.accepted, true);
-  await waitFor(async () => {
+  assert.match(compacted.compactionId, /^[0-9a-f-]{36}$/u);
+  const compactedSnapshot = await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     const context = snapshot.tasks.find((item) => item.threadId === firstThreadId)?.context;
-    return context?.usedTokens === 0 ? snapshot : null;
+    return context?.usedTokens === 0 && context?.compaction?.status === "completed"
+      ? snapshot
+      : null;
   }, "desktop context compaction", 5_000);
+  assert.equal(
+    compactedSnapshot.tasks.find((item) => item.threadId === firstThreadId)?.context?.compaction?.id,
+    compacted.compactionId,
+  );
 
   const firstMessageId = "desktop-message-first";
   const steerMessageId = "desktop-message-steer";
@@ -202,6 +209,11 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     return snapshot.activeCount === 0 ? snapshot : null;
   }, "parallel desktop turns completion", 10_000);
   assert.ok(completed.tasks.every((item) => !item.running));
+  assert.equal(
+    completed.tasks.find((item) => item.threadId === firstThreadId)?.context?.usedTokens,
+    130,
+    "newer real usage must replace the synthetic zero left by context compaction",
+  );
   const history = await callDesktopControl("task-history", {
     provider: "codex",
     threadId: firstThreadId,

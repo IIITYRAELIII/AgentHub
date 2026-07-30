@@ -20,6 +20,7 @@ let selectionTail = Promise.resolve();
 const historyByTask = new Map();
 const outgoingByTask = new Map();
 const liveProbeByTask = new Map();
+const requestedContextCompactions = new Set();
 let deferredClientUserMessageIds = new Set();
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const {
@@ -272,6 +273,18 @@ function modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId) 
 function applySnapshot(snapshot) {
   if (!snapshot) return;
   lastSnapshot = snapshot;
+  for (const task of snapshot.tasks ?? []) {
+    const compaction = task.context?.compaction;
+    const compactionId = String(compaction?.id ?? "");
+    if (!compactionId || !requestedContextCompactions.has(compactionId)) continue;
+    if (compaction.status === "completed") {
+      requestedContextCompactions.delete(compactionId);
+      agentHub.toast("Свёртка контекста завершена");
+    } else if (compaction.status === "timeout") {
+      requestedContextCompactions.delete(compactionId);
+      agentHub.toast("Не удалось подтвердить завершение свёртки контекста");
+    }
+  }
   deferredClientUserMessageIds = new Set(
     (snapshot.deferredInputs ?? [])
       .map((item) => String(item.clientUserMessageId ?? "").trim())
@@ -703,6 +716,9 @@ agentHub.on("search:query", ({ query }) => {
 });
 agentHub.on("context:compact", () => runAction(async () => {
   const result = await control("compact-context");
+  if (result?.accepted && result.compactionId) {
+    requestedContextCompactions.add(String(result.compactionId));
+  }
   agentHub.toast(result?.message ?? "Свёртка контекста запущена");
   applySnapshot(await control("snapshot"));
 }));
@@ -805,7 +821,9 @@ async function refresh() {
     applySnapshotConnection(lastSnapshot, "offline");
   } finally {
     refreshing = false;
-    const active = Boolean(lastSnapshot?.tasks?.some((task) => task.running));
+    const active = Boolean(lastSnapshot?.tasks?.some(
+      (task) => task.running || task.context?.compacting,
+    ));
     refreshTimer = window.setTimeout(refresh, active ? 1_200 : 5_000);
   }
 }

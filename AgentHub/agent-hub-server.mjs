@@ -422,6 +422,7 @@ const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
 const threadContextUsage = new Map();
 const compactingThreads = new Set();
+const threadCompactions = new Map();
 const codexTurnStarts = new Map();
 const codexAccountingThreadRoots = new Map();
 let codexHookReceipts = { start: null, stop: null };
@@ -1201,12 +1202,15 @@ function latestThreadContextUsage(contextThreadId, contextTurnId = "") {
   const exact = contextTurnId
     ? threadContextUsage.get(threadContextKey(contextThreadId, contextTurnId))
     : null;
-  if (exact) return exact;
-  return [...threadContextUsage.values()]
+  const latest = [...threadContextUsage.values()]
     .filter((entry) => entry.threadId === contextThreadId)
     .sort((left, right) => (
       (Date.parse(right.updatedAt) || 0) - (Date.parse(left.updatedAt) || 0)
     ))[0] ?? null;
+  if (!exact || !latest) return exact ?? latest;
+  return (Date.parse(exact.updatedAt) || 0) >= (Date.parse(latest.updatedAt) || 0)
+    ? exact
+    : latest;
 }
 
 function resetThreadContextUsage(contextThreadId, contextTurnId = "") {
@@ -2471,6 +2475,7 @@ function desktopContextSnapshot(thread, turn = "") {
     turnId: usage.turnId,
     updatedAt: usage.updatedAt,
     compacting: compactingThreads.has(String(thread ?? "")),
+    compaction: threadCompactions.get(String(thread ?? "")) ?? null,
   };
 }
 
@@ -3315,13 +3320,34 @@ async function desktopCompactContext() {
   if (compactingThreads.has(target.threadId)) {
     return { accepted: false, message: "Свёртка контекста уже выполняется" };
   }
+  const compaction = {
+    id: randomUUID(),
+    status: "running",
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+  };
   compactingThreads.add(target.threadId);
+  setBoundedMapValue(threadCompactions, target.threadId, compaction, 100);
   try {
     await sendRpc("thread/compact/start", { threadId: target.threadId });
-    setTimeout(() => compactingThreads.delete(target.threadId), 2 * 60 * 1_000).unref();
-    return { accepted: true, message: "Свёртка контекста запущена" };
+    setTimeout(() => {
+      if (threadCompactions.get(target.threadId)?.id !== compaction.id) return;
+      if (threadCompactions.get(target.threadId)?.status !== "running") return;
+      compactingThreads.delete(target.threadId);
+      threadCompactions.set(target.threadId, {
+        ...compaction,
+        status: "timeout",
+        completedAt: new Date().toISOString(),
+      });
+    }, 2 * 60 * 1_000).unref();
+    return {
+      accepted: true,
+      compactionId: compaction.id,
+      message: "Свёртка контекста запущена",
+    };
   } catch (error) {
     compactingThreads.delete(target.threadId);
+    threadCompactions.delete(target.threadId);
     throw error;
   }
 }
@@ -5069,6 +5095,14 @@ async function handleCodexMessage(message) {
   if (method === "thread/compacted") {
     const compactedThreadId = String(params.threadId ?? run?.threadId ?? "").trim();
     if (compactedThreadId) compactingThreads.delete(compactedThreadId);
+    const compaction = threadCompactions.get(compactedThreadId);
+    if (compaction?.status === "running") {
+      threadCompactions.set(compactedThreadId, {
+        ...compaction,
+        status: "completed",
+        completedAt: new Date().toISOString(),
+      });
+    }
     if (compactedThreadId) resetThreadContextUsage(compactedThreadId, eventTurnId ?? "");
     if (run) appendRunActivity(run, {
       id: `compaction:${eventTurnId ?? run.turnId ?? run.id}`,
