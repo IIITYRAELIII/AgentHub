@@ -1931,6 +1931,14 @@ main {
   padding: 0.8rem 1rem;
 }
 
+/* Author rules below assign display:grid/flex to task-group children. Without
+   this explicit closed state they override the browser's native details
+   hiding rule and reserve the 17rem profile height behind a collapsed
+   summary. Keep the entire task body out of layout until the card is open. */
+.journal details[data-work-log-task-group]:not([open]) > :not(summary) {
+  display: none !important;
+}
+
 .journal [data-work-log-task-profile-copy] {
   display: grid;
   gap: 0.85rem;

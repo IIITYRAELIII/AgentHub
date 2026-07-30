@@ -548,6 +548,7 @@ test("history dialog handles loading, empty and error states", () => {
 test("history chart is drawn with inline SVG and no external dependencies", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
   assert.match(html, /data-limits-chart role="img"/u);
   assert.match(app, /document\.createElementNS\(SVG_NS, tag\)/u);
   assert.match(app, /function buildLimitsChart\(payload\)/u);
@@ -558,6 +559,10 @@ test("history chart is drawn with inline SVG and no external dependencies", () =
   assert.match(app, /y: yOf\(point\.usedPercent\)/u);
   assert.match(app, /function limitsMarkerPoints\(points, minimumSpacing = 11\)/u);
   assert.match(app, /const markerPoints = limitsMarkerPoints\(points\)/u);
+  assert.match(
+    styles,
+    /details\[data-work-log-task-group\]:not\(\[open\]\)\s*>\s*:not\(summary\)\s*\{\s*display:\s*none\s*!important;/u,
+  );
   assert.match(app, /Расход \$\{used\}%/u);
   // единственный http(s) в модуле — пространство имён SVG, а не CDN
   assert.doesNotMatch(app, /cdn|unpkg|jsdelivr|googleapis|chart\.js|d3js/u);
