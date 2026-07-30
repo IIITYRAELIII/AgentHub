@@ -7,6 +7,19 @@ $agentHubRoot = Split-Path -Parent $PSScriptRoot
 $desktopRoot = Join-Path $agentHubRoot "DesktopApp"
 $executable = Join-Path $desktopRoot "dist\AgentHub.exe"
 
+function Get-AgentHubSha256 {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+    $stream = [IO.File]::OpenRead($LiteralPath)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $hasher.Dispose()
+        $stream.Dispose()
+    }
+}
+
 if (-not $IsWindows -and $PSVersionTable.PSEdition -eq "Core") {
     throw "Agent Hub Desktop smoke requires Windows."
 }
@@ -58,5 +71,5 @@ foreach ($requiredType in $requiredTypes) {
     }
 }
 
-$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $executable).Hash.ToLowerInvariant()
+$hash = Get-AgentHubSha256 -LiteralPath $executable
 Write-Output "Agent Hub Desktop smoke passed: $($file.Length) bytes, sha256=$hash"

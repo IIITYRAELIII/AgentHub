@@ -103,3 +103,12 @@ test("CI runs all Agent Hub, extension and Desktop checks without deployment", (
   assert.doesNotMatch(workflow, /worker:deploy|publish:all|runtime:deploy|wrangler deploy/u);
   assert.doesNotMatch(workflow, /\bsecrets\.[A-Za-z0-9_]+/u);
 });
+
+test("Desktop smoke hashes the executable without optional PowerShell cmdlets", () => {
+  const smoke = fs.readFileSync(
+    path.resolve(ROOT, "ci", "desktop-smoke.ps1"),
+    "utf8",
+  );
+  assert.match(smoke, /Security\.Cryptography\.SHA256/u);
+  assert.doesNotMatch(smoke, /Get-FileHash/u);
+});
