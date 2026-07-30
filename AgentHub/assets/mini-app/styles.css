@@ -3059,7 +3059,7 @@ html[data-theme="meadow"] .journal details[data-work-log-turn-details][open] {
 
 html:not([data-theme]) body::before,
 html[data-theme="orbit"] body::before {
-  animation: orbit-terminator 20s ease-in-out infinite;
+  animation: orbit-terminator 26s ease-in-out infinite;
   background-image:
     radial-gradient(90% 52% at 66% 78%, rgba(150, 205, 255, 0.34), rgba(90, 150, 235, 0.1) 44%, transparent 74%);
   background-size: cover;
@@ -3076,7 +3076,7 @@ html[data-theme="orbit"] body::before {
 }
 
 html[data-theme="nebula"] body::before {
-  animation: nebula-drift 24s ease-in-out infinite;
+  animation: nebula-drift 30s ease-in-out infinite;
   background-image:
     radial-gradient(70% 56% at 72% 38%, rgba(198, 150, 255, 0.32), rgba(120, 92, 255, 0.12) 48%, transparent 76%);
   background-size: cover;
@@ -3086,34 +3086,24 @@ html[data-theme="nebula"] body::before {
   opacity: 0.3;
 }
 
-/* «Gothic»: отблеск факела и несколько поднимающихся углей. */
+/* «Gothic»: пламя факела и угли над ним.
+   Тёплый эффект здесь не случаен: фон темы — склеп с горящим факелом справа,
+   поэтому холодный блик из прежней версии был бы чужим. Мерцание нарочно
+   неровное: ключи стоят с разным шагом, чтобы огонь не «дышал» метрономом.
+   Угли за цикл поднимаются ровно на высоту своей плитки, поэтому повтор
+   незаметен. Пошаговая анимация убрана — из-за неё пламя дёргалось. */
 @keyframes gothic-fire {
-  0%, 100% {
-    background-position: 88% 52%, 0 9rem, 2rem 13rem;
-    filter: brightness(0.88);
-    opacity: 0.26;
-  }
-  18% {
-    background-position: 86% 49%, 0 6rem, 2rem 9rem;
-    filter: brightness(1.08);
-    opacity: 0.56;
-  }
-  42% {
-    background-position: 90% 53%, 0 1rem, 2rem 4rem;
-    filter: brightness(0.94);
-    opacity: 0.36;
-  }
-  68% {
-    background-position: 87% 50%, 0 -5rem, 2rem -3rem;
-    filter: brightness(1.15);
-    opacity: 0.62;
-  }
+  0% { background-position: 88% 52%, 0 0, 2rem 0; filter: brightness(0.92); opacity: 0.3; }
+  13% { background-position: 86% 50%, 0 -1.1rem, 2rem -1.4rem; filter: brightness(1.12); opacity: 0.54; }
+  27% { background-position: 89% 53%, 0 -2.3rem, 2rem -3rem; filter: brightness(0.96); opacity: 0.36; }
+  44% { background-position: 87% 51%, 0 -3.7rem, 2rem -4.8rem; filter: brightness(1.2); opacity: 0.62; }
+  61% { background-position: 90% 52%, 0 -5.2rem, 2rem -6.7rem; filter: brightness(0.98); opacity: 0.4; }
+  82% { background-position: 87% 51%, 0 -7rem, 2rem -9.1rem; filter: brightness(1.08); opacity: 0.5; }
+  100% { background-position: 88% 52%, 0 -8.5rem, 2rem -11rem; filter: brightness(0.92); opacity: 0.3; }
 }
 
 html[data-theme="gothic"] body::before {
-  /* Полноэкранные градиенты требуют repaint; ограничиваем эффект примерно
-     пятью визуальными кадрами в секунду, чтобы не греть мобильный WebView. */
-  animation: gothic-fire 8.6s steps(43, end) infinite;
+  animation: gothic-fire 7s ease-in-out infinite;
   background-image:
     radial-gradient(46% 78% at 88% 52%, rgba(238, 164, 58, 0.38), rgba(164, 80, 20, 0.12) 46%, transparent 74%),
     radial-gradient(circle, rgba(255, 182, 69, 0.72) 0 0.8px, transparent 1.5px),
@@ -3121,7 +3111,9 @@ html[data-theme="gothic"] body::before {
   background-repeat: no-repeat, repeat, repeat;
   background-size: cover, 5.6rem 8.5rem, 8.2rem 11rem;
   content: "";
-  mask-image: none;
+  /* Слева в кадре лунный проём: тёплые угли там выглядели чужими, поэтому
+     эффект гасится к левому краю. */
+  mask-image: linear-gradient(90deg, transparent 0 30%, rgba(0, 0, 0, 0.5) 54%, #000 80%);
   mix-blend-mode: screen;
   opacity: 0.42;
 }
@@ -3166,35 +3158,36 @@ html[data-theme="blackhole"] body::before {
   opacity: 0.3;
 }
 
-/* «Тайга»: два плана дождя и туман движутся с разной фазой. */
-@keyframes taiga-weather {
-  0% {
-    background-position: 0 -32vh, 2rem -58vh, -28vw 66%, 68vw 36%;
-    opacity: 0.3;
-  }
-  50% {
-    background-position: -3rem 34vh, -1rem 18vh, 8vw 62%, 42vw 39%;
-    opacity: 0.5;
-  }
-  100% {
-    background-position: -6rem 118vh, -4rem 108vh, 46vw 58%, 14vw 42%;
-    opacity: 0.34;
-  }
+/* «Тайга»: дождь в три плана.
+   Полосу в плитке использовать нельзя: цвет занимает всю её ширину, соседние
+   плитки встают вплотную, и штрихи сливаются в непрерывные линии — сначала
+   получались длинные палки, потом горизонтальные жалюзи. Поэтому каждая капля
+   рисуется вытянутым эллипсом в центре широкой плитки: между каплями остаётся
+   пустое место, как в настоящем дожде. Три плана отличаются шагом плитки,
+   толщиной и яркостью, этим создаётся глубина. Слой едет через translate3d —
+   композитинг без перерисовки, поэтому движение плавное и дешёвое; сдвиг за
+   цикл равен 76px и кратен высоте каждой плитки, так что стык не виден. */
+@keyframes taiga-rain {
+  from { transform: rotate(11deg) translate3d(0, -76px, 0); }
+  to { transform: rotate(11deg) translate3d(0, 0, 0); }
 }
 
 html[data-theme="taiga"] body::before {
-  animation: taiga-weather 12s steps(60, end) infinite;
+  animation: taiga-rain 0.8s linear infinite;
   background-image:
-    linear-gradient(104deg, transparent 0 45%, rgba(205, 231, 236, 0.48) 47% 49%, transparent 51% 100%),
-    linear-gradient(104deg, transparent 0 46%, rgba(158, 199, 207, 0.28) 48% 49%, transparent 51% 100%),
-    radial-gradient(68% 38% at 50% 50%, rgba(205, 231, 225, 0.24), rgba(145, 188, 183, 0.08) 48%, transparent 76%),
-    radial-gradient(56% 34% at 50% 50%, rgba(194, 221, 218, 0.18), transparent 74%);
-  background-repeat: repeat, repeat, no-repeat, no-repeat;
-  background-size: 14px 96px, 23px 142px, 132% 76%, 112% 58%;
+    radial-gradient(0.9px 5.5px at 50% 45%, rgba(219, 240, 242, 0.62), transparent 100%),
+    radial-gradient(0.8px 7px at 50% 60%, rgba(188, 216, 220, 0.4), transparent 100%),
+    radial-gradient(1.2px 9px at 50% 70%, rgba(158, 188, 194, 0.24), transparent 100%);
+  background-position: 0 0, 9px 6px, 4px 15px;
+  background-repeat: repeat;
+  background-size: 13px 19px, 19px 38px, 27px 76px;
   content: "";
+  /* запас под наклон и сдвиг: без него по краям появлялись пустые клинья */
+  inset: -20%;
   mask-image: none;
   mix-blend-mode: screen;
-  opacity: 0.4;
+  opacity: 0.5;
+  transform: rotate(11deg);
 }
 
 /* «Магма»: жар идёт снизу и медленно смещается вдоль трещин. */
@@ -3220,7 +3213,7 @@ html[data-theme="taiga"] body::before {
 }
 
 html[data-theme="magma"] body::before {
-  animation: magma-glow 6.8s steps(34, end) infinite;
+  animation: magma-glow 7.2s ease-in-out infinite;
   background-image:
     radial-gradient(74% 54% at 66% 78%, rgba(255, 178, 77, 0.48), rgba(255, 84, 24, 0.15) 48%, transparent 76%),
     radial-gradient(42% 34% at 28% 84%, rgba(255, 117, 34, 0.34), transparent 74%);

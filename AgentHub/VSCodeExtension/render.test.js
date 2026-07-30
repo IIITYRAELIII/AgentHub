@@ -130,7 +130,7 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
     ["pulsar", "pulsar-beat"],
     ["gothic", "gothic-fire"],
     ["blackhole", "blackhole-flicker"],
-    ["taiga", "taiga-weather"],
+    ["taiga", "taiga-rain"],
     ["magma", "magma-glow"],
     ["storm", "storm-strike"],
     ["meadow", "meadow-breathe"],
@@ -141,21 +141,34 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
       `${theme} must keep its own motion`,
     );
   }
-  assert.match(styles, /@keyframes taiga-weather\s*\{[\s\S]*background-position:/u);
+  /* Дождь «Тайги» — три плана капель, каждая рисуется вытянутым эллипсом в
+     широкой плитке: полоса на всю ширину плитки давала сплошные линии. Слой
+     едет через translate3d, поэтому движение идёт композитингом. */
+  assert.match(styles, /@keyframes taiga-rain\s*\{[\s\S]*translate3d\(0, -76px, 0\)/u);
   assert.match(
     styles,
-    /html\[data-theme="taiga"\] body::before\s*\{[^}]*animation:\s*taiga-weather 12s steps\(60, end\) infinite;[\s\S]*?background-size:\s*14px 96px,\s*23px 142px,\s*132% 76%,\s*112% 58%;/u,
+    /html\[data-theme="taiga"\] body::before\s*\{[^}]*background-size:\s*13px 19px,\s*19px 38px,\s*27px 76px;/u,
+  );
+  assert.equal(
+    (styles.match(/radial-gradient\(\d[\d.]*px \d[\d.]*px at 50%/gu) ?? []).length,
+    3,
+    "каждый план дождя рисуется отдельной вытянутой каплей",
   );
   assert.match(styles, /@keyframes magma-glow\s*\{[\s\S]*filter:\s*saturate\(1\.18\) brightness\(1\.14\);/u);
+  /* Gothic остаётся тёплым: фон темы — склеп с горящим факелом. Угли гасятся
+     к левому краю, где в кадре лунный проём. */
+  assert.match(styles, /@keyframes gothic-fire\s*\{[\s\S]*filter:\s*brightness\(1\.2\);/u);
   assert.match(
     styles,
-    /html\[data-theme="magma"\] body::before\s*\{[^}]*animation:\s*magma-glow 6\.8s steps\(34, end\) infinite;/su,
+    /html\[data-theme="gothic"\] body::before\s*\{[^}]*mask-image:\s*linear-gradient\(90deg,\s*transparent/su,
   );
-  assert.match(styles, /@keyframes gothic-fire\s*\{[\s\S]*filter:\s*brightness\(1\.15\);/u);
-  assert.match(
-    styles,
-    /html\[data-theme="gothic"\] body::before\s*\{[^}]*animation:\s*gothic-fire 8\.6s steps\(43, end\) infinite;/su,
-  );
+  /* Пошаговые анимации давали видимую дёрганость, поэтому в живых слоях их
+     быть не должно: единственный резкий ритм — «Пульсар», и он linear. */
+  const motionBlocks = styles.match(/animation:\s*(?:taiga-rain|gothic-fire|magma-glow|orbit-terminator|nebula-drift|meadow-breathe|storm-strike|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
+  assert.equal(motionBlocks.length, 9, "все девять тем сохраняют своё движение");
+  for (const block of motionBlocks) {
+    assert.doesNotMatch(block, /steps\(/u, `движение должно быть плавным: ${block}`);
+  }
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*animation:\s*none !important;/u);
 });
 
