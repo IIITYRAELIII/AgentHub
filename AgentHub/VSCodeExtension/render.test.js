@@ -278,6 +278,26 @@ test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", (
   assert.match(glass, /prefers-reduced-motion: reduce/u);
 });
 
+test("Storm glass uses dense fast rain and irregular branched lightning", () => {
+  const glass = fs.readFileSync(require.resolve("../assets/mini-app/storm-glass.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(glass, /\(width \* height\) \/ 5_200/u);
+  assert.match(glass, /Math\.max\(120,\s*Math\.min\(360,\s*target\)\)/u);
+  assert.match(glass, /heavy \? random\(280,\s*560\) : random\(120,\s*310\)/u);
+  assert.match(glass, /drop\.maxSpeed \* 5\.6 \* delta/u);
+  assert.match(glass, /function createLightning\(now\)/u);
+  assert.match(glass, /function drawLightning\(now\)/u);
+  assert.match(glass, /nextLightningAt = now \+ random\(3_000,\s*8_000\)/u);
+  assert.match(glass, /traceLightning\(lightning\.branch\)/u);
+  assert.match(glass, /atmosphere\.dataset\.stormStrike = String\(striking\)/u);
+  assert.match(glass, /context\.lineWidth = 8/u);
+  assert.match(glass, /context\.lineWidth = 2\.2/u);
+  assert.match(styles, /@keyframes stormglass-bolt/u);
+  assert.match(styles, /data-storm-strike="true"\]::after/u);
+  assert.match(styles, /clip-path:\s*polygon\(/u);
+  assert.match(glass, /prefers-reduced-motion: reduce/u);
+});
+
 test("Gothic theme uses medieval stone, old gold and a torch-lit scene", () => {
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),

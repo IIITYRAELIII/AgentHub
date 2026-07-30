@@ -36,6 +36,8 @@
   let height = 0;
   let scale = 1;
   const drops = [];
+  let nextLightningAt = 0;
+  let lightning = null;
 
   function random(min, max) {
     return min + Math.random() * (max - min);
@@ -44,19 +46,23 @@
   /* Капля живёт циклами «висит — срывается — замедляется». Каждая величина
      своя, поэтому одинаковых траекторий не возникает. */
   function spawnDrop(initial = false) {
-    const size = random(1.8, 5.4);
+    const heavy = Math.random() < 0.3;
+    const size = heavy ? random(6.2, 12.8) : random(2.8, 7.2);
     return {
       x: random(-0.02, 1.02) * width,
       y: initial ? random(-0.1, 1) * height : random(-0.18, -0.02) * height,
       size,
       speed: 0,
-      // крупные капли тяжелее: срываются быстрее и едут дальше
-      maxSpeed: size * random(7, 16),
-      rest: random(0.1, 2.6),
+      // Штормовые потёки не висят по несколько секунд: тяжёлые сразу срываются,
+      // мелкие задерживаются ненадолго и быстро уступают место новым.
+      maxSpeed: heavy ? random(280, 560) : random(120, 310),
+      rest: heavy ? random(0, 0.18) : random(0, 0.75),
       wobble: random(0, Math.PI * 2),
-      wobbleSpeed: random(0.6, 2.1),
-      drift: random(-0.35, 0.35),
-      trail: random(0.55, 1),
+      wobbleSpeed: random(1.1, 3.6),
+      drift: random(-5, 7),
+      wind: random(0.055, 0.14),
+      trail: heavy ? random(0.9, 1.45) : random(0.6, 1.05),
+      heavy,
       life: 0,
     };
   }
@@ -75,8 +81,8 @@
     fogContext.setTransform(ratio, 0, 0, ratio, 0, 0);
     paintFog();
 
-    const target = Math.round((width * height) / 15000);
-    const wanted = Math.max(18, Math.min(reducedMotion.matches ? 0 : 90, target));
+    const target = Math.round((width * height) / 5_200);
+    const wanted = reducedMotion.matches ? 0 : Math.max(120, Math.min(360, target));
     while (drops.length > wanted) drops.pop();
     while (drops.length < wanted) drops.push(spawnDrop(true));
     if (imageReady) context.drawImage(fog, 0, 0, width, height);
@@ -122,6 +128,99 @@
     target.fill();
   }
 
+  function createLightning(now) {
+    const startX = random(width * 0.18, width * 0.86);
+    atmosphere.style.setProperty("--storm-bolt-x", `${(startX / Math.max(width, 1)) * 100}%`);
+    atmosphere.style.setProperty("--storm-bolt-tilt", `${random(-8, 8)}deg`);
+    const endY = random(height * 0.42, height * 0.82);
+    const segments = Math.max(8, Math.round(endY / 42));
+    const points = [{ x: startX, y: -12 }];
+    let x = startX;
+    for (let index = 1; index <= segments; index += 1) {
+      const y = (endY * index) / segments;
+      x += random(-34, 34) + Math.sin(index * 1.7) * 9;
+      points.push({ x, y });
+    }
+    const branchIndex = Math.max(2, Math.min(points.length - 3, Math.round(random(2, points.length - 3))));
+    const branchStart = points[branchIndex];
+    const branch = [{ ...branchStart }];
+    let branchX = branchStart.x;
+    const branchSegments = Math.max(3, Math.round(random(3, 6)));
+    for (let index = 1; index <= branchSegments; index += 1) {
+      branchX += random(-42, 16);
+      branch.push({
+        x: branchX,
+        y: branchStart.y + index * random(22, 38),
+      });
+    }
+    return {
+      startedAt: now,
+      duration: random(430, 620),
+      points,
+      branch,
+    };
+  }
+
+  function lightningIntensity(now) {
+    if (!nextLightningAt) nextLightningAt = now + random(900, 2_400);
+    if (!lightning && now >= nextLightningAt) lightning = createLightning(now);
+    if (!lightning) return 0;
+    const elapsed = now - lightning.startedAt;
+    if (elapsed >= lightning.duration) {
+      lightning = null;
+      nextLightningAt = now + random(3_000, 8_000);
+      return 0;
+    }
+    // Короткий первый удар и более слабый повтор читаются естественнее
+    // равномерного CSS-мигания.
+    const first = Math.max(0, 1 - Math.abs(elapsed - 54) / 54);
+    const second = Math.max(0, 1 - Math.abs(elapsed - 188) / 78) * 0.68;
+    const afterglow = Math.max(0, 1 - elapsed / lightning.duration) * 0.12;
+    return Math.min(1, first + second + afterglow);
+  }
+
+  function traceLightning(points) {
+    context.beginPath();
+    context.moveTo(points[0].x, points[0].y);
+    for (let index = 1; index < points.length; index += 1) {
+      context.lineTo(points[index].x, points[index].y);
+    }
+    context.stroke();
+  }
+
+  function drawLightning(now) {
+    const intensity = lightningIntensity(now);
+    const striking = Boolean(intensity && lightning);
+    if (atmosphere.dataset.stormStrike !== String(striking)) {
+      atmosphere.dataset.stormStrike = String(striking);
+    }
+    if (!striking) return;
+    context.save();
+    context.globalCompositeOperation = "screen";
+    context.fillStyle = `rgba(185, 218, 255, ${0.22 * intensity})`;
+    context.fillRect(0, 0, width, height);
+
+    const boltLife = Math.max(
+      intensity,
+      0.5 * Math.max(0, 1 - (now - lightning.startedAt) / lightning.duration),
+    );
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.shadowColor = `rgba(164, 215, 255, ${0.98 * boltLife})`;
+    context.shadowBlur = 32;
+    context.strokeStyle = `rgba(190, 225, 255, ${0.9 * boltLife})`;
+    context.lineWidth = 8;
+    traceLightning(lightning.points);
+    traceLightning(lightning.branch);
+
+    context.shadowBlur = 10;
+    context.strokeStyle = `rgba(252, 254, 255, ${Math.min(1, 1.18 * boltLife)})`;
+    context.lineWidth = 2.2;
+    traceLightning(lightning.points);
+    traceLightning(lightning.branch);
+    context.restore();
+  }
+
   function step(now) {
     frame = window.requestAnimationFrame(step);
     if (!imageReady) return;
@@ -151,9 +250,12 @@
       }
 
       const previousY = drop.y;
-      drop.speed = Math.min(drop.maxSpeed, drop.speed + drop.maxSpeed * 2.4 * delta);
+      drop.speed = Math.min(drop.maxSpeed, drop.speed + drop.maxSpeed * 5.6 * delta);
       drop.y += drop.speed * delta;
-      drop.x += Math.sin(drop.life * drop.wobbleSpeed + drop.wobble) * drop.drift;
+      drop.x += (
+        drop.wind * drop.speed
+        + Math.sin(drop.life * drop.wobbleSpeed + drop.wobble) * drop.drift
+      ) * delta;
 
       /* След уже головы и сходит на нет: сплошная полоса во всю толщину
          капли читалась как прочерченная палка, а не как влажная дорожка. */
@@ -165,11 +267,13 @@
       drawDropHead(context, drop);
 
       // случайная остановка: капля цепляется за неровность и снова копит массу
-      if (Math.random() < 1.1 * delta) {
+      if (!drop.heavy && Math.random() < 0.24 * delta) {
         drop.speed = 0;
-        drop.rest = random(0.15, 1.4);
+        drop.rest = random(0.08, 0.48);
       }
-      if (drop.y - drop.size * 2 > height) Object.assign(drop, spawnDrop());
+      if (drop.y - drop.size * 2 > height || drop.x - drop.size > width) {
+        Object.assign(drop, spawnDrop());
+      }
     }
 
     // блики по голове: капля работает как линза и ловит свет маяка
@@ -191,6 +295,7 @@
       context.ellipse(drop.x, drop.y, drop.size * 0.85, drop.size * 1.1, 0, 0, Math.PI * 2);
       context.fill();
     }
+    drawLightning(now);
   }
 
   function start() {
@@ -203,6 +308,9 @@
     if (!frame) return;
     window.cancelAnimationFrame(frame);
     frame = 0;
+    lightning = null;
+    nextLightningAt = 0;
+    atmosphere.dataset.stormStrike = "false";
   }
 
   function sync() {
