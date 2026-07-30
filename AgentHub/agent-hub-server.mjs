@@ -173,8 +173,10 @@ import {
   runningTaskReplyMarkup,
   selectCodexTurn,
   selectExactActiveCodexTurnId,
+  statusTaskEntries,
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
+  taskOrderingActivityAtMs,
 } from "./task-catalog.mjs";
 import { resolveCodexObservedExecutionOwner } from "./codex-runtime-owner.mjs";
 import { CodexRolloutContextSanitizer } from "./codex-rollout-context.mjs";
@@ -1164,6 +1166,16 @@ function savedLastTaskMessage(task) {
 
 function savedLastTaskMessageRecord(task) {
   return lastTaskMessages.get(taskRunKey(task)) ?? null;
+}
+
+function deferredTaskMessageAtMs(task) {
+  const key = taskRunKey(task);
+  let latest = 0;
+  for (const item of [...pendingInputs.values(), ...queuedInputs.values()]) {
+    if (taskRunKey(item) !== key) continue;
+    latest = Math.max(latest, Date.parse(String(item.createdAt ?? "")) || 0);
+  }
+  return latest;
 }
 
 function threadContextKey(thread, turn) {
@@ -2276,6 +2288,14 @@ async function buildTaskCatalog() {
     ...run,
     projectName: runProject(run).name,
   })));
+  for (const entry of taskCatalog) {
+    entry.orderingActivityAtMs = taskOrderingActivityAtMs(entry, {
+      run: taskRuns.forTask(entry),
+      lastMessage: savedLastTaskMessageRecord(entry),
+      userMessageAtMs: deferredTaskMessageAtMs(entry),
+    });
+  }
+  taskCatalog = statusTaskEntries(taskCatalog, taskCatalog.length);
   if (pinnedTitlesChanged) await savePinnedTaskTitles();
   for (const project of config.projects) {
     await workLogUsageStore.synchronizeTaskTitlesAndProject({
@@ -2505,6 +2525,7 @@ function desktopTaskSnapshot(entry) {
       Number(entry.updatedAtMs) || 0,
       Date.parse(run?.lastMeaningfulProgressAt ?? run?.startedAt ?? "") || 0,
     ),
+    orderingActivityAtMs: taskOrderingActivityAtMs(entry, { run, lastMessage }),
     lastAnswer: lastMessage?.text ?? "",
     lastAnswerAt: lastMessage?.updatedAt ?? null,
     context: desktopContextSnapshot(entry.threadId, run?.turnId),

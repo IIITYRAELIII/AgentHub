@@ -530,6 +530,9 @@ namespace AgentHubDesktop
                     Running = AgentHubClient.Bool(value, "running"),
                     Runtime = AgentHubClient.Text(value, "runtime"),
                     LastAnswer = AgentHubClient.Text(value, "lastAnswer"),
+                    OrderingActivityAtMs = value.ContainsKey("orderingActivityAtMs")
+                        ? Convert.ToInt64(value["orderingActivityAtMs"])
+                        : 0L,
                     Run = AgentHubClient.Object(value, "run")
                 };
                 var key = Key(item.Provider, item.ThreadId);
@@ -574,7 +577,8 @@ namespace AgentHubDesktop
                         || pair.Value.Provider.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
                 })
                 .OrderByDescending(delegate(KeyValuePair<string, TaskItem> pair) { return pair.Value.Running; })
-                .ThenByDescending(delegate(KeyValuePair<string, TaskItem> pair) { return pair.Value.Selected; })
+                .ThenByDescending(delegate(KeyValuePair<string, TaskItem> pair) { return pair.Value.OrderingActivityAtMs; })
+                .ThenBy(delegate(KeyValuePair<string, TaskItem> pair) { return pair.Value.Title; })
                 .ToList();
 
             AddTaskSection("АКТИВНЫЕ", visible.Where(delegate(KeyValuePair<string, TaskItem> pair) { return pair.Value.Running; }).ToList());

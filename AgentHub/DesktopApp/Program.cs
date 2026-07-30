@@ -119,6 +119,7 @@ namespace AgentHubDesktop
         public bool Running;
         public string Runtime;
         public string LastAnswer;
+        public long OrderingActivityAtMs;
         public Dictionary<string, object> Run;
     }
 }

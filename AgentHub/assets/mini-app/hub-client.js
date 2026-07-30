@@ -252,7 +252,9 @@ function modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId) 
     project: task.projectName || "",
     status: running ? "running" : unknown ? "unknown" : answerAt > seenAt ? "ready" : "idle",
     statusLabel: running ? "Выполняется" : unknown ? "Статус неизвестен" : answerAt > seenAt ? "Ответ готов" : "",
-    lastActivity: task.updatedAtMs ? new Date(task.updatedAtMs).toISOString() : task.lastAnswerAt,
+    lastActivity: task.orderingActivityAtMs
+      ? new Date(task.orderingActivityAtMs).toISOString()
+      : task.lastAnswerAt,
     unread: !running && answerAt > seenAt,
     running,
     selected: id === effectiveSelectedId,

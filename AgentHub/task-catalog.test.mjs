@@ -26,9 +26,11 @@ import {
   runningTaskReplyMarkup,
   selectCodexTurn,
   selectExactActiveCodexTurnId,
+  statusTaskEntries,
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
   taskExecutionRuntimeShortLabel,
+  taskOrderingActivityAtMs,
   taskCatalogCallback,
 } from "./task-catalog.mjs";
 
@@ -105,6 +107,54 @@ test("Codex runtime labels distinguish supported app servers", () => {
   assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.DESKTOP), "APP");
   assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.CLI), "CLI");
   assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.EXTERNAL), "EXT");
+});
+
+test("task ordering changes only on a user turn start or a final answer", () => {
+  const entry = {
+    updatedAtMs: 9_000,
+    lastActivityAtMs: 10_000,
+  };
+  const run = {
+    startedAt: "1970-01-01T00:00:02.000Z",
+    lastMeaningfulProgressAt: "1970-01-01T00:00:08.000Z",
+    progressHeartbeatAt: "1970-01-01T00:00:09.000Z",
+  };
+
+  assert.equal(taskOrderingActivityAtMs(entry, { run }), 2_000);
+  assert.equal(taskOrderingActivityAtMs(entry, {
+    run,
+    lastMessage: { updatedAt: "1970-01-01T00:00:07.000Z" },
+  }), 7_000);
+  assert.equal(taskOrderingActivityAtMs(entry, {
+    run,
+    userMessageAtMs: 11_000,
+  }), 11_000);
+  assert.equal(taskOrderingActivityAtMs(entry), 9_000);
+});
+
+test("parallel active tasks keep their rows while progress timestamps change", () => {
+  const first = {
+    title: "Первая",
+    running: true,
+    updatedAtMs: 20_000,
+    lastActivityAtMs: 20_000,
+    orderingActivityAtMs: 2_000,
+  };
+  const second = {
+    title: "Вторая",
+    running: true,
+    updatedAtMs: 30_000,
+    lastActivityAtMs: 30_000,
+    orderingActivityAtMs: 1_000,
+  };
+
+  assert.deepEqual(statusTaskEntries([second, first], 2), [first, second]);
+  second.updatedAtMs = 40_000;
+  second.lastActivityAtMs = 40_000;
+  assert.deepEqual(statusTaskEntries([second, first], 2), [first, second]);
+
+  second.orderingActivityAtMs = 50_000;
+  assert.deepEqual(statusTaskEntries([first, second], 2), [second, first]);
 });
 
 test("observed ownership follows the active turn instead of historical session metadata", () => {
@@ -622,6 +672,7 @@ test("runningTaskReplyMarkup shows active tasks first and fills four rows with r
     running: true,
     executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
     lastActivityAtMs: 300,
+    orderingActivityAtMs: 300,
   }, {
     provider: "claude",
     threadId: "a2ea7518-5826-4480-aaff-bb80915953d8",
@@ -630,6 +681,7 @@ test("runningTaskReplyMarkup shows active tasks first and fills four rows with r
     title: "Завершённая",
     running: false,
     updatedAtMs: 500,
+    orderingActivityAtMs: 500,
   }, {
     provider: "codex",
     threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf014",
@@ -639,6 +691,7 @@ test("runningTaskReplyMarkup shows active tasks first and fills four rows with r
     running: true,
     executionOwner: TASK_EXECUTION_OWNERS.TELEGRAM,
     lastActivityAtMs: 200,
+    orderingActivityAtMs: 200,
   }, {
     provider: "codex",
     threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf015",
@@ -647,6 +700,7 @@ test("runningTaskReplyMarkup shows active tasks first and fills four rows with r
     title: "Недавняя",
     running: false,
     lastActivityAtMs: 400,
+    orderingActivityAtMs: 400,
   }, {
     provider: "codex",
     threadId: "019f70ed-d8e8-7b21-bcd1-b6f57bcdf016",

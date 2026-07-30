@@ -598,6 +598,23 @@ export function claudeCatalogEntry(snapshot, project, nowMs = Date.now()) {
   };
 }
 
+export function taskOrderingActivityAtMs(entry, {
+  run = null,
+  lastMessage = null,
+  userMessageAtMs = 0,
+} = {}) {
+  const meaningfulEvents = [
+    Number(entry?.orderingActivityAtMs),
+    Number(userMessageAtMs),
+    Date.parse(String(run?.startedAt ?? "")),
+    Date.parse(String(lastMessage?.updatedAt ?? "")),
+  ].filter((value) => Number.isFinite(value) && value > 0);
+  if (meaningfulEvents.length) return Math.max(...meaningfulEvents);
+
+  const fallback = Number(entry?.updatedAtMs);
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
+}
+
 export function mergeTaskCatalog(entries, runs = []) {
   const byTask = new Map();
   for (const entry of entries) {
@@ -656,10 +673,7 @@ export function taskCatalogCallback(entry) {
 }
 
 function taskActivityAtMs(entry) {
-  return Math.max(
-    Number(entry?.lastActivityAtMs) || 0,
-    Number(entry?.updatedAtMs) || 0,
-  );
+  return taskOrderingActivityAtMs(entry);
 }
 
 export function statusTaskEntries(entries, limit = 4) {
