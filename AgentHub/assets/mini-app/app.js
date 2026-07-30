@@ -22,7 +22,6 @@ const statisticsView = document.querySelector("[data-statistics-view]");
 const updatedAt = document.querySelector("[data-updated-at]");
 const refreshButton = document.querySelector("[data-refresh]");
 const collapseAllButton = document.querySelector("[data-collapse-all]");
-const rateLimitsSlot = document.querySelector("[data-rate-limits-slot]");
 const themeSelect = document.querySelector("[data-theme-select]");
 const groupSelect = document.querySelector("[data-group-select]");
 const themeColor = document.querySelector("[data-theme-color]");
@@ -88,6 +87,7 @@ const limitsChart = document.querySelector("[data-limits-chart]");
 const limitsTooltip = document.querySelector("[data-limits-tooltip]");
 const limitsLegend = document.querySelector("[data-limits-legend]");
 const limitsCredits = document.querySelector("[data-limits-credits]");
+const currentLimitsSlots = [...document.querySelectorAll("[data-current-limits]")];
 const usageRanges = document.querySelector("[data-usage-ranges]");
 const usageSubtitle = document.querySelector("[data-usage-subtitle]");
 const usageTotal = document.querySelector("[data-usage-total]");
@@ -1561,6 +1561,7 @@ function restoreDraft() {
 function openPanel() {
   settingsPanel.hidden = false;
   panelScrim.hidden = false;
+  if (limitsState.status === "idle") requestLimits("24h");
   requestAnimationFrame(() => {
     settingsPanel.classList.add("open");
     panelScrim.classList.add("open");
@@ -2113,28 +2114,6 @@ function limitsMarkerPoints(points, minimumSpacing = 11) {
   return markers;
 }
 
-/* Делает сводку лимитов в шапке кнопкой-триггером диалога (или снимает роль,
- * когда данных нет). Разметка сводки приходит из журнала, поэтому роль и
- * доступность навешиваются здесь, а не в index.html. */
-function setLimitsTriggerEnabled(on) {
-  if (!rateLimitsSlot) return;
-  if (on) {
-    rateLimitsSlot.setAttribute("role", "button");
-    rateLimitsSlot.setAttribute("tabindex", "0");
-    rateLimitsSlot.setAttribute("aria-label", "Открыть статистику лимитов");
-    rateLimitsSlot.classList.add("is-interactive");
-  } else {
-    rateLimitsSlot.removeAttribute("role");
-    rateLimitsSlot.removeAttribute("tabindex");
-    rateLimitsSlot.removeAttribute("aria-label");
-    rateLimitsSlot.classList.remove("is-interactive");
-  }
-}
-
-function limitsIsTrigger() {
-  return rateLimitsSlot?.getAttribute("role") === "button";
-}
-
 function statusFromPayload(payload) {
   if (!payload || payload.error) return payload?.error ? "error" : "empty";
   const hasPoints = Array.isArray(payload.series)
@@ -2150,9 +2129,119 @@ function applyRateLimitHistory(payload) {
   limitsState.error = data?.error ? String(data.error) : "";
   if (data?.range) limitsState.range = normalizeRange(data.range);
   limitsState.status = statusFromPayload(data);
+  renderCurrentLimits();
   if (root.dataset.view === "statistics") {
     renderLimitsRanges();
     renderLimits();
+  }
+}
+
+function parseClaudeResetAt(value, nowMs = Date.now()) {
+  const match = String(value ?? "").match(
+    /^([A-Z][a-z]{2}) (\d{1,2}), (\d{1,2}):(\d{2})(am|pm)/u,
+  );
+  if (!match) return null;
+  const month = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ].indexOf(match[1]);
+  if (month < 0) return null;
+  let hour = Number(match[3]) % 12;
+  if (match[5] === "pm") hour += 12;
+  const now = new Date(nowMs);
+  let reset = new Date(now.getFullYear(), month, Number(match[2]), hour, Number(match[4]));
+  if (reset.getTime() < nowMs - 24 * 60 * 60_000) {
+    reset = new Date(now.getFullYear() + 1, month, Number(match[2]), hour, Number(match[4]));
+  }
+  return reset.getTime();
+}
+
+function formatResetCountdown(point) {
+  const isoReset = Date.parse(point?.resetsAt ?? "");
+  const resetMs = Number.isFinite(isoReset)
+    ? isoReset
+    : parseClaudeResetAt(point?.resetsText);
+  if (!Number.isFinite(resetMs)) return "";
+  const minutes = Math.max(0, Math.ceil((resetMs - Date.now()) / 60_000));
+  if (minutes <= 0) return "сейчас";
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const remainder = minutes % 60;
+  const parts = [];
+  if (days) parts.push(`${days} д.`);
+  if (hours) parts.push(`${hours} ч.`);
+  if (!days && remainder) parts.push(`${remainder} мин.`);
+  return parts.join(" ") || "< 1 мин.";
+}
+
+function currentLimitSeries(payload) {
+  const available = (Array.isArray(payload?.series) ? payload.series : [])
+    .filter((series) => Array.isArray(series.points) && series.points.length)
+    .map((series) => ({ ...series, point: series.points.at(-1) }));
+  const pickCodex = (name) => {
+    const matches = available.filter((series) => String(series.name).toLowerCase() === name);
+    return matches.find((series) => series.window === "secondary")
+      ?? matches.find((series) => series.window === "primary")
+      ?? matches.at(-1);
+  };
+  const claudeWeek = available.find((series) => series.id === "claude:week");
+  return [
+    pickCodex("codex"),
+    pickCodex("spark"),
+    ...available
+      .filter((series) => String(series.name).toLowerCase() === "claude")
+      .sort((left, right) => {
+        const order = (series) => (
+          series.window === "week" ? 0 : series.window === "session" ? 1 : 2
+        );
+        return order(left) - order(right)
+          || String(left.window).localeCompare(String(right.window), "ru");
+      }),
+  ].filter(Boolean).map((series) => {
+    const id = String(series.id ?? "");
+    const label = id.startsWith("claude:model:")
+      ? String(series.window || "Claude")
+      : id === "claude:session"
+        ? "Claude session"
+        : id === "claude:week"
+          ? "Claude"
+          : String(series.name || series.id || "");
+    const point = id.startsWith("claude:model:") && !series.point?.resetsText
+      ? { ...series.point, resetsText: claudeWeek?.point?.resetsText ?? "" }
+      : series.point;
+    return { ...series, label, point };
+  });
+}
+
+function renderCurrentLimits() {
+  if (!currentLimitsSlots.length) return;
+  const series = currentLimitSeries(limitsState.payload);
+  for (const slot of currentLimitsSlots) {
+    if (limitsState.status === "loading" || limitsState.status === "idle") {
+      slot.replaceChildren(el("span", { class: "current-limits-empty", text: "Загрузка…" }));
+      continue;
+    }
+    if (!series.length) {
+      slot.replaceChildren(el("span", {
+        class: "current-limits-empty",
+        text: limitsState.status === "error" ? "Лимиты недоступны" : "Нет данных",
+      }));
+      continue;
+    }
+    slot.replaceChildren(...series.map((item) => {
+      const remaining = Number(item.point?.remainingPercent);
+      const countdown = formatResetCountdown(item.point);
+      return el("span", { class: "current-limit" }, [
+        el("span", { class: "current-limit-name", text: item.label }),
+        el("strong", {
+          class: "current-limit-value",
+          text: Number.isFinite(remaining) ? `${remaining.toFixed(1)}%` : "—",
+        }),
+        countdown
+          ? el("span", { class: "current-limit-reset", text: countdown })
+          : null,
+      ]);
+    }));
   }
 }
 
@@ -2168,15 +2257,6 @@ function requestLimits(range, { force = false } = {}) {
   renderLimitsRanges();
   renderLimits();
   emit("limits:open", { range: limitsState.range });
-}
-
-function openLimitsStatistics(range = limitsState.range) {
-  setView("statistics");
-  requestLimits(range);
-  requestAnimationFrame(() => {
-    const active = limitsRanges?.querySelector(`[data-range="${limitsState.range}"]`);
-    active?.focus();
-  });
 }
 
 /* Шаг по последовательности периодов: −1 сужает (к 6 ч), +1 расширяет (к «всё»). */
@@ -2458,19 +2538,6 @@ function showLimitsTooltip(info, fx, fy) {
 function hideLimitsTooltip() {
   if (!limitsTooltip) return;
   limitsTooltip.hidden = true;
-}
-
-if (rateLimitsSlot) {
-  rateLimitsSlot.addEventListener("click", () => {
-    if (limitsIsTrigger()) openLimitsStatistics();
-  });
-  rateLimitsSlot.addEventListener("keydown", (event) => {
-    if (!limitsIsTrigger()) return;
-    if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
-      event.preventDefault();
-      openLimitsStatistics();
-    }
-  });
 }
 
 limitsRanges?.addEventListener("click", (event) => {
@@ -2910,55 +2977,8 @@ function restoreOpenState(openState) {
   }
 }
 
-/* Лимиты приходят первым блоком журнала, но место им — в шапке. */
-function fillRateLimitsSlot(block, sampledAt) {
-  if (!rateLimitsSlot) return;
-  if (!block) {
-    rateLimitsSlot.replaceChildren();
-    rateLimitsSlot.hidden = true;
-    setLimitsTriggerEnabled(false);
-    return;
-  }
-  const sampled = new Date(sampledAt || "");
-  rateLimitsSlot.title = Number.isNaN(sampled.getTime())
-    ? ""
-    : `Лимиты на ${sampled.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`;
-  rateLimitsSlot.replaceChildren(...block.childNodes);
-  rateLimitsSlot.hidden = false;
-  setLimitsTriggerEnabled(true);
-}
-
-function hoistRateLimits() {
-  if (!rateLimitsSlot) return;
-  const block = journal.querySelector("[data-work-log-rate-limits]");
-  if (!block) return;
-  fillRateLimitsSlot(block, block.getAttribute("data-sampled-at") ?? "");
-  block.remove();
-}
-
-/* Сводка лимитов живёт в шапке всех разделов, а журнал грузится только после
-   первого открытия своей вкладки. Поэтому она берётся отдельным лёгким
-   запросом: иначе в «Диалогах» шапка оставалась пустой. */
-async function loadRateLimits() {
-  if (!rateLimitsSlot) return;
-  try {
-    await localSessionReady;
-    const response = await fetch(`/api/rate-limits?now=${Date.now()}`, {
-      cache: "no-store",
-      headers: requestHeaders(),
-    });
-    if (!response.ok) return;
-    const payload = await response.json();
-    if (!payload.html) {
-      fillRateLimitsSlot(null);
-      return;
-    }
-    const holder = document.createElement("div");
-    holder.innerHTML = payload.html;
-    fillRateLimitsSlot(holder.firstElementChild, payload.sampledAt);
-  } catch {
-    // Сводка не критична: шапка просто останется без неё до следующей попытки.
-  }
+function removeJournalRateLimits() {
+  journal.querySelector("[data-work-log-rate-limits]")?.remove();
 }
 
 function disableLocalLinks(scope = journal) {
@@ -3760,7 +3780,7 @@ function renderJournal() {
   const template = document.createElement("template");
   template.innerHTML = journalHtml;
   journal.replaceChildren(template.content.cloneNode(true));
-  hoistRateLimits();
+  removeJournalRateLimits();
   if (grouping === "date") {
     applyJournalGrouping();
     return;
@@ -3935,7 +3955,6 @@ journal.addEventListener("keydown", (event) => {
 if (telegramMode) {
   const polling = setInterval(() => {
     if (journalRequested) void loadJournal();
-    else void loadRateLimits();
   }, 5_000);
   window.addEventListener("pagehide", () => clearInterval(polling), { once: true });
 } else if (!vscodeMode) {
@@ -3943,11 +3962,9 @@ if (telegramMode) {
   events.addEventListener("ready", () => {
     AgentHub.setConnection("online");
     if (journalRequested) void loadJournal();
-    else void loadRateLimits();
   });
   events.addEventListener("journal", () => {
     if (journalRequested) void loadJournal();
-    else void loadRateLimits();
   });
   events.addEventListener("error", () => AgentHub.setConnection("connecting"));
 }
@@ -3955,7 +3972,6 @@ if (vscodeMode) {
   window.addEventListener("message", (event) => {
     if (event.data?.type === "agenthub:journal-changed") {
       if (journalRequested) void loadJournal({ force: event.data.force === true });
-      else void loadRateLimits();
     }
     if (event.data?.type === "theme") applyTheme(event.data.theme);
   });
@@ -3966,7 +3982,6 @@ if (vscodeMode) {
 AgentHub.setConnection(telegramMode ? "online" : "connecting");
 const taskDurationTimer = window.setInterval(refreshTaskDurations, 1_000);
 window.addEventListener("pagehide", () => clearInterval(taskDurationTimer), { once: true });
-void loadRateLimits();
 renderTasks();
 renderChat();
 renderOptions();

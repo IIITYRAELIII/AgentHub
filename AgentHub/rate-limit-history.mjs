@@ -244,6 +244,7 @@ export async function readRateLimitHistory(
           at: new Date(observedMs).toISOString(),
           usedPercent,
           remainingPercent: Math.max(0, 100 - usedPercent),
+          resetsText: String(limit?.resetsText ?? ""),
         });
       }
       continue;
@@ -265,6 +266,7 @@ export async function readRateLimitHistory(
           at: new Date(observedMs).toISOString(),
           usedPercent,
           remainingPercent: Math.max(0, 100 - usedPercent),
+          resetsAt: isoFromEpochSeconds(window?.resetsAt),
         });
       }
     }

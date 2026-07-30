@@ -14,6 +14,9 @@ let bridgeSequence = 0;
 let lastSnapshot = null;
 let selectedTaskId = "";
 let refreshTimer = null;
+let rateLimitRefreshTimer = null;
+let rateLimitRefreshRange = "24h";
+let rateLimitRefreshInFlight = false;
 let refreshing = false;
 let pendingSelectionId = "";
 let selectionSequence = 0;
@@ -697,20 +700,31 @@ agentHub.on("status:open", () => runAction(async () => {
   }));
   agentHub.setStatus({ rows });
 }));
-agentHub.on("limits:open", ({ range }) => runAction(async () => {
+async function refreshRateLimitHistory(range = rateLimitRefreshRange, { reportError = false } = {}) {
+  const requestedRange = String(range || "24h");
+  rateLimitRefreshRange = requestedRange;
+  if (rateLimitRefreshInFlight) return;
+  rateLimitRefreshInFlight = true;
   try {
     agentHub.setRateLimitHistory(await control("rate-limit-history", {
-      range,
+      range: requestedRange,
       maxPointsPerSeries: 600,
     }));
   } catch (error) {
     agentHub.setRateLimitHistory({
-      range,
+      range: requestedRange,
       error: String(error?.message ?? error ?? "Не удалось загрузить историю лимитов"),
     });
-    throw error;
+    if (reportError) throw error;
+  } finally {
+    rateLimitRefreshInFlight = false;
+    if (rateLimitRefreshRange !== requestedRange) void refreshRateLimitHistory();
   }
-}));
+}
+
+agentHub.on("limits:open", ({ range }) => runAction(
+  () => refreshRateLimitHistory(range, { reportError: true }),
+));
 agentHub.on("usage:open", ({ range }) => runAction(async () => {
   try {
     agentHub.setUsageHistory(await control("usage-history", {
@@ -895,8 +909,15 @@ void runAction(async () => {
     applyOpened(await control("open-task", { ...identity, limit: 20 }));
   }
 });
+void refreshRateLimitHistory();
+rateLimitRefreshTimer = window.setInterval(() => {
+  void refreshRateLimitHistory();
+}, 5 * 60_000);
 
 window.addEventListener("hashchange", () => void runAction(openRoute));
-window.addEventListener("beforeunload", () => window.clearTimeout(refreshTimer));
+window.addEventListener("beforeunload", () => {
+  window.clearTimeout(refreshTimer);
+  window.clearInterval(rateLimitRefreshTimer);
+});
 
 })();

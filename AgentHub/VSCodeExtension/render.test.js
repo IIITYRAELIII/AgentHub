@@ -493,20 +493,18 @@ test("composer clears optimistically and restores an unconfirmed message", () =>
   );
 });
 
-test("rate-limit summary becomes a keyboard-activatable trigger for statistics", () => {
+test("current limits live in settings and statistics instead of the compact header", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  assert.match(html, /data-rate-limits-slot data-limits-trigger/u);
-  assert.match(app, /rateLimitsSlot\.setAttribute\("role", "button"\)/u);
-  assert.match(app, /rateLimitsSlot\.setAttribute\("aria-label", "Открыть статистику лимитов"\)/u);
-  assert.match(app, /if \(limitsIsTrigger\(\)\) openLimitsStatistics\(\);/u);
-  assert.match(
-    app,
-    /event\.key === "Enter" \|\| event\.key === " " \|\| event\.key === "Spacebar"/u,
-  );
-  // и хоистинг лимитов из журнала включает/выключает триггер
-  assert.match(app, /setLimitsTriggerEnabled\(true\)/u);
-  assert.match(app, /setLimitsTriggerEnabled\(false\)/u);
+  assert.doesNotMatch(html, /data-rate-limits-slot/u);
+  assert.equal(html.match(/data-current-limits=/gu)?.length, 2);
+  assert.match(html, /data-current-limits="statistics"/u);
+  assert.match(html, /data-current-limits="settings"/u);
+  assert.match(app, /function currentLimitSeries\(payload\)/u);
+  assert.match(app, /pickCodex\("codex"\)/u);
+  assert.match(app, /pickCodex\("spark"\)/u);
+  assert.match(app, /id === "claude:week"/u);
+  assert.match(app, /journal\.querySelector\("\[data-work-log-rate-limits\]"\)\?\.remove\(\)/u);
 });
 
 test("statistics page offers local usage and full limit history", () => {
@@ -528,14 +526,8 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(app, /emit\("usage:open", \{ range: usageState\.range \}\)/u);
   assert.match(app, /function formatUsageValue\(credits, unit = usageUnit\)/u);
   assert.match(client, /control\("usage-history", \{\s*range,\s*maxPoints: 600,/u);
-  assert.match(
-    styles,
-    /\.rate-limits \[data-rate-limit-group\],[\s\S]*?flex-direction: column;/u,
-  );
-  assert.match(
-    styles,
-    /\.rate-limits \[data-rate-limit-credit\][\s\S]*?flex-direction: column;/u,
-  );
+  assert.match(styles, /\.current-limits-row\s*\{[^}]*flex-wrap:\s*nowrap;/su);
+  assert.match(styles, /\.current-limits-row\s*\{[^}]*overflow-x:\s*auto;/su);
 });
 
 test("history dialog requests periods via limits:open and renders via setRateLimitHistory", () => {
@@ -544,8 +536,9 @@ test("history dialog requests periods via limits:open and renders via setRateLim
   assert.match(app, /setRateLimitHistory\(payload\) \{\s*applyRateLimitHistory\(payload\);/u);
   assert.match(app, /emit\("limits:open", \{ range: limitsState\.range \}\)/u);
   assert.match(client, /agentHub\.on\("limits:open", \(\{ range \}\) =>/u);
-  assert.match(client, /control\("rate-limit-history", \{\s*range,\s*maxPointsPerSeries: 600,/u);
+  assert.match(client, /control\("rate-limit-history", \{\s*range: requestedRange,\s*maxPointsPerSeries: 600,/u);
   assert.match(client, /agentHub\.setRateLimitHistory\(\{/u);
+  assert.match(client, /window\.setInterval\(\(\) => \{[\s\S]*refreshRateLimitHistory\(\);[\s\S]*5 \* 60_000/u);
   // клавиши − и + шагают по последовательности периодов
   assert.match(app, /event\.key === "-" \|\| event\.key === "_"[\s\S]*stepLimitsRange\(-1\)/u);
   assert.match(app, /event\.key === "\+" \|\| event\.key === "="[\s\S]*stepLimitsRange\(1\)/u);

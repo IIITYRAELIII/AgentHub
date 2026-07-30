@@ -13,6 +13,15 @@ import {
   readRateLimitHistory,
 } from "./rate-limit-history.mjs";
 
+test("Agent Hub persists Codex and Claude limit snapshots every five minutes", async () => {
+  const source = await readFile(new URL("./agent-hub-server.mjs", import.meta.url), "utf8");
+  assert.match(source, /function scheduleRateLimitPoll\(delayMs = 5 \* 60_000\)/u);
+  assert.match(source, /codexRateLimitRows\(result, observedAt\)/u);
+  assert.match(source, /parseClaudeLimits\(await readClaudeRateLimits\(\)\)/u);
+  assert.match(source, /claudeRateLimitRows\(limits, observedAt\)/u);
+  assert.match(source, /scheduleRateLimitPoll\(1_000\)/u);
+});
+
 test("Codex limit snapshots become primary and secondary history rows", () => {
   const rows = codexRateLimitRows({
     rateLimitsByLimitId: {
@@ -204,14 +213,17 @@ test("rate limit history combines Codex and Claude series without losing Codex c
   const nowMs = Date.parse("2026-07-30T12:00:00.000Z");
   await appendRawRateLimitSnapshot(target, {
     rateLimitsByLimitId: {
-      codex: { limitId: "codex", primary: { usedPercent: 48 } },
+      codex: {
+        limitId: "codex",
+        primary: { usedPercent: 48, resetsAt: Date.parse("2026-07-31T12:00:00.000Z") / 1000 },
+      },
     },
     rateLimitResetCredits: { availableCount: 1 },
   }, "2026-07-30T11:50:00.000Z");
   await appendRawRateLimitSnapshot(target, {
     limits: [
-      { kind: "session", model: null, usedPercent: 17 },
-      { kind: "week (all models)", model: null, usedPercent: 31 },
+      { kind: "session", model: null, usedPercent: 17, resetsText: "Jul 30, 8:00pm" },
+      { kind: "week (all models)", model: null, usedPercent: 31, resetsText: "Aug 3, 1:00am" },
     ],
   }, "2026-07-30T11:55:00.000Z", "claude");
 
@@ -225,6 +237,14 @@ test("rate limit history combines Codex and Claude series without losing Codex c
       { id: "claude:session", name: "CLAUDE", window: "session", usedPercent: 17 },
       { id: "claude:week", name: "CLAUDE", window: "week", usedPercent: 31 },
     ],
+  );
+  assert.equal(
+    history.series.find((item) => item.id === "codex:primary").points.at(-1).resetsAt,
+    "2026-07-31T12:00:00.000Z",
+  );
+  assert.equal(
+    history.series.find((item) => item.id === "claude:week").points.at(-1).resetsText,
+    "Aug 3, 1:00am",
   );
   assert.equal(history.resetCredits.availableCount, 1);
 });

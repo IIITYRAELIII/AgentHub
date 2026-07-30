@@ -73,7 +73,6 @@
       </nav>
 
       <div class="toolbar">
-        <div class="rate-limits" data-rate-limits-slot data-limits-trigger hidden></div>
         <button class="refresh collapse-all" type="button" data-collapse-all title="Свернуть всё"
           data-journal-only>
           <span>Свернуть всё</span>
@@ -346,6 +345,14 @@
   <!-- =============================================== Статистика расхода === -->
   <main class="statistics-view" data-statistics-view>
     <div class="statistics-content">
+      <section class="current-limits-card" aria-labelledby="current-limits-title">
+        <header class="current-limits-head">
+          <h2 id="current-limits-title">Текущие лимиты</h2>
+        </header>
+        <div class="current-limits-row" data-current-limits="statistics">
+          <span class="current-limits-empty">Загрузка…</span>
+        </div>
+      </section>
       <section class="statistics-card" aria-labelledby="usage-chart-title">
         <header class="statistics-card-head">
           <div>
@@ -497,6 +504,10 @@
       </button>
     </header>
     <div class="settings-body">
+      <div class="settings-section-title">Лимиты</div>
+      <div class="current-limits-row current-limits-settings" data-current-limits="settings">
+        <span class="current-limits-empty">Загрузка…</span>
+      </div>
       <div class="settings-section-title">Интерфейс</div>
       <label class="setting-group setting-field">
         <span class="setting-label">Тема</span>

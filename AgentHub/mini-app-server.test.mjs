@@ -240,7 +240,8 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(page, /data-surface="desktop"/u);
     assert.match(page, /data-theme-select/u);
     assert.match(page, /data-collapse-all/u);
-    assert.ok(page.indexOf("data-rate-limits-slot") < page.indexOf("data-collapse-all"));
+    assert.doesNotMatch(page, /data-rate-limits-slot/u);
+    assert.equal(page.match(/data-current-limits=/gu)?.length, 2);
     assert.ok(page.indexOf("data-collapse-all") < page.indexOf("data-theme-select"));
     assert.doesNotMatch(page, /data-connection|Автообновление/u);
     assert.match(page, /<option value="graphite">Графит<\/option>/u);

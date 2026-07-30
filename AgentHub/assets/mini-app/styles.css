@@ -6520,6 +6520,78 @@ html[data-view="statistics"] .statistics-view {
   padding: 1.25rem clamp(1rem, 3vw, 2.5rem) 3rem;
 }
 
+.current-limits-card {
+  background: var(--card-bg-open), color-mix(in srgb, var(--bg) 94%, transparent);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--card-shadow);
+  min-width: 0;
+  padding: 0.8rem 0.95rem;
+}
+
+.current-limits-head {
+  margin-bottom: 0.55rem;
+}
+
+.current-limits-head h2 {
+  color: var(--text);
+  font-family: var(--font-title);
+  font-size: 0.82rem;
+  letter-spacing: 0.1em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.current-limits-row {
+  align-items: stretch;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.45rem;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  padding-bottom: 0.08rem;
+  scrollbar-width: thin;
+}
+
+.current-limit {
+  align-items: baseline;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.35rem;
+  min-height: 1.9rem;
+  padding: 0.36rem 0.62rem;
+  white-space: nowrap;
+}
+
+.current-limit-name {
+  color: var(--text-faint);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.current-limit-value {
+  color: var(--text);
+  font-family: var(--font-numeric);
+  font-size: 0.77rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.current-limit-reset,
+.current-limits-empty {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.current-limits-settings {
+  margin-top: -0.35rem;
+}
+
 .statistics-card {
   background: var(--card-bg-open), color-mix(in srgb, var(--bg) 94%, transparent);
   border: 1px solid var(--line-strong);
@@ -6654,6 +6726,19 @@ html[data-surface="mobile"][data-view="statistics"] .statistics-view {
 html[data-surface="mobile"] .statistics-content {
   gap: 0.8rem;
   padding: 0.75rem 0.65rem 1rem;
+}
+
+html[data-surface="mobile"] .current-limits-card {
+  border-radius: var(--radius-md);
+  padding: 0.75rem 0.8rem;
+}
+
+html[data-surface="mobile"] .current-limits-row {
+  scrollbar-width: none;
+}
+
+html[data-surface="mobile"] .current-limits-row::-webkit-scrollbar {
+  display: none;
 }
 
 html[data-surface="mobile"] .statistics-card {
