@@ -737,6 +737,24 @@ export class JournalStore extends DurableObject {
       }
       return json({ ok: true, complete: true });
     }
+    if (request.method === "GET" && url.pathname === "/rate-limits") {
+      let payload;
+      try {
+        payload = await this.#payload();
+      } catch (error) {
+        return json({ error: error.message }, 503);
+      }
+      /* Сводка лимитов — первый блок снимка. Шапка Mini App показывает её во
+         всех разделах, а журнал грузится лениво, поэтому блок отдаётся
+         отдельно, без мегабайтного payload. */
+      const block = String(payload.html ?? "").match(
+        /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
+      )?.[0] ?? "";
+      return json({
+        html: block,
+        sampledAt: block.match(/data-sampled-at="([^"]*)"/iu)?.[1] ?? "",
+      });
+    }
     if (request.method === "GET" && [
       "/journal",
       "/journal/day",
@@ -1018,6 +1036,7 @@ export default {
       "/api/journal",
       "/api/journal/day",
       "/api/journal/turn",
+      "/api/rate-limits",
     ].includes(url.pathname)) {
       if (request.method !== "GET" && request.method !== "HEAD") {
         return json({ error: "Method Not Allowed" }, 405);

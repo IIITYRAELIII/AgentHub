@@ -12,6 +12,11 @@ import {
   validateTelegramInitData,
 } from "./mini-app-server.mjs";
 
+const LIMITS_HTML = '<div data-work-log-rate-limits data-sampled-at="2026-07-30T02:55:14.512Z">'
+  + '<span data-rate-limit-caption>Лимиты</span>'
+  + '<span data-rate-limit><span data-rate-limit-name>CODEX</span>'
+  + '<span data-rate-limit-value>75.0%</span></span></div>';
+
 const DAY_HTML = [
   '<details data-work-log-day-section open>',
   '<summary data-work-log-day><strong>27.07.2026</strong></summary>',
@@ -478,6 +483,55 @@ test("Mini App can require Telegram authorization on a dedicated public listener
     assert.equal((await fetch(`${address.url}api/journal`, {
       headers: { Authorization: `tma ${signedInitData()}` },
     })).status, 200);
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("rate-limit summary is served apart from the lazy journal", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limits-mini-app-"));
+  const workLogFile = path.join(directory, "WORK_LOG.md");
+  const server = new MiniAppServer({ host: "127.0.0.1", port: 0, workLogFile });
+  try {
+    await writeFile(
+      workLogFile,
+      `# Глобальный журнал работ
+
+${LIMITS_HTML}
+${DAY_HTML}
+`,
+      "utf8",
+    );
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/rate-limits`);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.match(payload.html, /data-work-log-rate-limits/u);
+    assert.match(payload.html, /CODEX/u);
+    assert.equal(payload.sampledAt, "2026-07-30T02:55:14.512Z");
+    // шапке нужен только блок: полный журнал весит на три порядка больше
+    assert.ok(payload.html.length < 1_000);
+    assert.doesNotMatch(payload.html, /data-work-log-day-section/u);
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("rate-limit endpoint answers with an empty summary when the journal has none", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-no-limits-mini-app-"));
+  const workLogFile = path.join(directory, "WORK_LOG.md");
+  const server = new MiniAppServer({ host: "127.0.0.1", port: 0, workLogFile });
+  try {
+    await writeFile(workLogFile, `# Глобальный журнал работ
+
+${DAY_HTML}
+`, "utf8");
+    const address = await server.start();
+    const payload = await (await fetch(`${address.url}api/rate-limits`)).json();
+    assert.equal(payload.html, "");
+    assert.equal(payload.sampledAt, "");
   } finally {
     await server.close();
     await rm(directory, { recursive: true, force: true });

@@ -24,7 +24,10 @@ window.fetch = function agentHubFetch(input, init = {}) {
     typeof input === "string" || input instanceof URL ? input : input.url,
     window.location.href,
   );
-  if (!url.pathname.startsWith("/api/journal")) return nativeFetch(input, init);
+  // журнал и сводка лимитов идут через расширение: в webview нет HTTP-сервера
+  if (!url.pathname.startsWith("/api/journal") && url.pathname !== "/api/rate-limits") {
+    return nativeFetch(input, init);
+  }
   const id = `http-${Date.now()}-${++sequence}`;
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => {

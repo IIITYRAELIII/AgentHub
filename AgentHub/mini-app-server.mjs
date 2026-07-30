@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   buildLazyJournalPayload,
+  extractRateLimitsHtml,
   publicJournalPayload,
 } from "./mini-app-journal-data.mjs";
 
@@ -390,6 +391,16 @@ export class MiniAppServer {
     }
     if (url.pathname === "/health") {
       json(response, 200, { ok: true }, method);
+      return;
+    }
+    if (url.pathname === "/api/rate-limits") {
+      if (!this.#authorize(request, response)) return;
+      try {
+        const markdown = await readFile(this.#workLogFile, "utf8");
+        json(response, 200, extractRateLimitsHtml(markdown), method);
+      } catch (error) {
+        json(response, 503, { error: `Лимиты недоступны: ${error.message}` }, method);
+      }
       return;
     }
     if (url.pathname === "/api/journal") {

@@ -126,6 +126,17 @@ class AgentHubBridge {
     const url = new URL(requestPath, "https://agent-hub.local");
     try {
       const journal = await this.journal();
+      /* Сводка лимитов нужна шапке во всех разделах, а журнал панель отдаёт
+         целиком, поэтому блок вырезается из готового снимка. */
+      if (url.pathname === "/api/rate-limits") {
+        const block = String(journal.html ?? "").match(
+          /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
+        )?.[0] ?? "";
+        return jsonResponse({
+          html: block,
+          sampledAt: block.match(/data-sampled-at="([^"]*)"/iu)?.[1] ?? "",
+        });
+      }
       if (url.pathname === "/api/journal") {
         const etag = `"${journal.version}"`;
         if (String(headers["if-none-match"] ?? "") === etag) {

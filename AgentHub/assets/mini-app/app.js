@@ -1910,24 +1910,53 @@ function restoreOpenState(openState) {
 }
 
 /* Лимиты приходят первым блоком журнала, но место им — в шапке. */
-function hoistRateLimits() {
+function fillRateLimitsSlot(block, sampledAt) {
   if (!rateLimitsSlot) return;
-  const block = journal.querySelector("[data-work-log-rate-limits]");
   if (!block) {
     rateLimitsSlot.replaceChildren();
     rateLimitsSlot.hidden = true;
     setLimitsTriggerEnabled(false);
     return;
   }
-  const sampledAt = block.getAttribute("data-sampled-at") ?? "";
-  const sampled = new Date(sampledAt);
+  const sampled = new Date(sampledAt || "");
   rateLimitsSlot.title = Number.isNaN(sampled.getTime())
     ? ""
     : `Лимиты на ${sampled.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`;
   rateLimitsSlot.replaceChildren(...block.childNodes);
   rateLimitsSlot.hidden = false;
   setLimitsTriggerEnabled(true);
+}
+
+function hoistRateLimits() {
+  if (!rateLimitsSlot) return;
+  const block = journal.querySelector("[data-work-log-rate-limits]");
+  if (!block) return;
+  fillRateLimitsSlot(block, block.getAttribute("data-sampled-at") ?? "");
   block.remove();
+}
+
+/* Сводка лимитов живёт в шапке всех разделов, а журнал грузится только после
+   первого открытия своей вкладки. Поэтому она берётся отдельным лёгким
+   запросом: иначе в «Диалогах» шапка оставалась пустой. */
+async function loadRateLimits() {
+  if (!rateLimitsSlot) return;
+  try {
+    const response = await fetch(`/api/rate-limits?now=${Date.now()}`, {
+      cache: "no-store",
+      headers: requestHeaders(),
+    });
+    if (!response.ok) return;
+    const payload = await response.json();
+    if (!payload.html) {
+      fillRateLimitsSlot(null);
+      return;
+    }
+    const holder = document.createElement("div");
+    holder.innerHTML = payload.html;
+    fillRateLimitsSlot(holder.firstElementChild, payload.sampledAt);
+  } catch {
+    // Сводка не критична: шапка просто останется без неё до следующей попытки.
+  }
 }
 
 function disableLocalLinks(scope = journal) {
@@ -2181,6 +2210,7 @@ journal.addEventListener("keydown", (event) => {
 if (telegramMode) {
   const polling = setInterval(() => {
     if (journalRequested) void loadJournal();
+    else void loadRateLimits();
   }, 5_000);
   window.addEventListener("pagehide", () => clearInterval(polling), { once: true });
 } else if (!vscodeMode) {
@@ -2188,16 +2218,19 @@ if (telegramMode) {
   events.addEventListener("ready", () => {
     AgentHub.setConnection("online");
     if (journalRequested) void loadJournal();
+    else void loadRateLimits();
   });
   events.addEventListener("journal", () => {
     if (journalRequested) void loadJournal();
+    else void loadRateLimits();
   });
   events.addEventListener("error", () => AgentHub.setConnection("connecting"));
 }
 if (vscodeMode) {
   window.addEventListener("message", (event) => {
-    if (event.data?.type === "agenthub:journal-changed" && journalRequested) {
-      void loadJournal({ force: event.data.force === true });
+    if (event.data?.type === "agenthub:journal-changed") {
+      if (journalRequested) void loadJournal({ force: event.data.force === true });
+      else void loadRateLimits();
     }
     if (event.data?.type === "theme") applyTheme(event.data.theme);
   });
@@ -2206,6 +2239,7 @@ if (vscodeMode) {
 /* ------------------------------------------------------------- инициализация */
 
 AgentHub.setConnection(telegramMode ? "online" : "connecting");
+void loadRateLimits();
 renderTasks();
 renderChat();
 renderOptions();

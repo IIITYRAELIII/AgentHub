@@ -99,3 +99,31 @@ test("installed VS Code bridge resolves backend modules from the active runtime"
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("VS Code bridge answers the rate-limit summary without the journal", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-limits-"));
+  try {
+    const journalFile = path.join(root, "WORK_LOG.md");
+    await writeFile(journalFile, [
+      "# Журнал",
+      '<div data-work-log-rate-limits data-sampled-at="2026-07-30T02:55:14.512Z">'
+        + "<span data-rate-limit-caption>Лимиты</span>"
+        + "<span data-rate-limit><span data-rate-limit-name>CODEX</span>"
+        + "<span data-rate-limit-value>75.0%</span></span></div>",
+      day("06.07.2026", "turn-1"),
+    ].join("\n"), "utf8");
+    const bridge = new AgentHubBridge({
+      journalFile,
+      moduleRoot: path.resolve(__dirname, ".."),
+    });
+    const response = await bridge.http({ path: "/api/rate-limits" });
+    assert.equal(response.status, 200);
+    const payload = JSON.parse(response.body);
+    assert.match(payload.html, /CODEX/u);
+    assert.equal(payload.sampledAt, "2026-07-30T02:55:14.512Z");
+    // шапке отдаётся только сводка, дни в ответ не попадают
+    assert.doesNotMatch(payload.html, /data-work-log-day-section/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

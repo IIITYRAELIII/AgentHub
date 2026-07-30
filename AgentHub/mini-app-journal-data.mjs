@@ -122,6 +122,17 @@ function shallowDaySection(section) {
   return { html, turns };
 }
 
+/* Сводка лимитов лежит первым блоком журнала, но журнал грузится лениво и
+   первая порция весит около мегабайта. Шапке нужен только этот блок, поэтому
+   он достаётся отдельно и почти бесплатно. */
+export function extractRateLimitsHtml(markdown) {
+  const block = String(markdown ?? "").match(
+    /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
+  )?.[0] ?? "";
+  const sampledAt = block.match(/data-sampled-at="([^"]*)"/iu)?.[1] ?? "";
+  return { html: block, sampledAt };
+}
+
 export function buildLazyJournalPayload(markdown, {
   eagerDayCount = DEFAULT_EAGER_DAY_COUNT,
 } = {}) {
