@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -32,7 +32,7 @@ test("notification files stay inside real configured project roots", async () =>
   await writeFile(outside, "secret", "utf8");
   assert.equal(
     await resolveAllowedNotificationPath("message.txt", { roots: [project], cwd: project }),
-    path.join(project, "message.txt"),
+    await realpath(path.join(project, "message.txt")),
   );
   await assert.rejects(
     resolveAllowedNotificationPath(outside, { roots: [project], cwd: project }),

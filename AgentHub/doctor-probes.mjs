@@ -109,9 +109,11 @@ export async function probeCodexAppServer({
     const exited = child.exitCode != null
       ? Promise.resolve()
       : new Promise((resolve) => {
-        child.once("exit", resolve);
         const timer = setTimeout(resolve, 2_000);
-        timer.unref?.();
+        child.once("exit", () => {
+          clearTimeout(timer);
+          resolve();
+        });
       });
     if (child.pid) await stopTree(child.pid).catch(() => child.kill());
     else child.kill();

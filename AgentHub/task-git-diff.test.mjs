@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -52,7 +52,7 @@ test("task Git diff uses the real repository and excludes pre-existing dirt", as
     await writeFile(path.join(repo, "tracked.txt"), "base\npre-existing\n", "utf8");
     await writeFile(path.join(repo, "old-untracked.txt"), "untouched\n", "utf8");
     const baseline = await captureTaskGitBaseline(project, dataDir, "test");
-    assert.equal(baseline.repoRoot, path.resolve(repo));
+    assert.equal(baseline.repoRoot, await realpath(repo));
 
     await writeFile(path.join(repo, "tracked.txt"), "base\npre-existing\ntask change\n", "utf8");
     await writeFile(path.join(repo, "staged.txt"), "staged by task\n", "utf8");
@@ -105,17 +105,19 @@ test("task Git baseline captures and prefixes every repository in a workspace", 
 test("staged-only task changes remain visible when the worktree matches its baseline", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "telegram-task-diff-staged-"));
   const dataDir = path.join(root, "runtime");
+  const repo = path.join(root, "repo");
   try {
-    await git(root, "init");
-    await git(root, "config", "user.email", "test@example.invalid");
-    await git(root, "config", "user.name", "Test");
-    await writeFile(path.join(root, "file.txt"), "base\n", "utf8");
-    await git(root, "add", ".");
-    await git(root, "commit", "-m", "base");
-    const baseline = await captureTaskGitBaseline(root, dataDir, "staged");
-    await writeFile(path.join(root, "file.txt"), "staged\n", "utf8");
-    await git(root, "add", "file.txt");
-    await writeFile(path.join(root, "file.txt"), "base\n", "utf8");
+    await mkdir(repo, { recursive: true });
+    await git(repo, "init");
+    await git(repo, "config", "user.email", "test@example.invalid");
+    await git(repo, "config", "user.name", "Test");
+    await writeFile(path.join(repo, "file.txt"), "base\n", "utf8");
+    await git(repo, "add", ".");
+    await git(repo, "commit", "-m", "base");
+    const baseline = await captureTaskGitBaseline(repo, dataDir, "staged");
+    await writeFile(path.join(repo, "file.txt"), "staged\n", "utf8");
+    await git(repo, "add", "file.txt");
+    await writeFile(path.join(repo, "file.txt"), "base\n", "utf8");
     const diff = await taskGitDiff(baseline, dataDir, "staged");
     assert.match(diff, /-base/);
     assert.match(diff, /\+staged/);
@@ -141,15 +143,17 @@ test("orphaned temporary indexes are cleaned after an interrupted snapshot", asy
 test("truncated task diff includes a changed-file fallback", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "telegram-task-diff-limit-"));
   const dataDir = path.join(root, "runtime");
+  const repo = path.join(root, "repo");
   try {
-    await git(root, "init");
-    await git(root, "config", "user.email", "test@example.invalid");
-    await git(root, "config", "user.name", "Test");
-    await writeFile(path.join(root, "large.txt"), "base\n", "utf8");
-    await git(root, "add", ".");
-    await git(root, "commit", "-m", "base");
-    const baseline = await captureTaskGitBaseline(root, dataDir, "limit");
-    await writeFile(path.join(root, "large.txt"), "x".repeat(10_000), "utf8");
+    await mkdir(repo, { recursive: true });
+    await git(repo, "init");
+    await git(repo, "config", "user.email", "test@example.invalid");
+    await git(repo, "config", "user.name", "Test");
+    await writeFile(path.join(repo, "large.txt"), "base\n", "utf8");
+    await git(repo, "add", ".");
+    await git(repo, "commit", "-m", "base");
+    const baseline = await captureTaskGitBaseline(repo, dataDir, "limit");
+    await writeFile(path.join(repo, "large.txt"), "x".repeat(10_000), "utf8");
     const diff = await taskGitDiff(baseline, dataDir, "limit", { maxOutputBytes: 512 });
     assert.match(diff, /diff усечён/);
     assert.match(diff, /Изменённые файлы:\nM\s+large\.txt/);
