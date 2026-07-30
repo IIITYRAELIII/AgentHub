@@ -1294,6 +1294,42 @@ const SERIES_PALETTE = [
   "var(--pending)",
 ];
 
+/* Стабильный versioned-ключ для скрытых серий графика. Меняется только при
+ * несовместимом изменении формата, чтобы восстановление пережило перезапуск. */
+const LIMITS_HIDDEN_KEY = "agent-hub-limits-hidden-v1";
+
+/* Читаем набор скрытых серий из localStorage. Неизвестные (новые) серии в набор
+ * не попадают, поэтому по умолчанию видимы. */
+function loadHiddenSeries() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(LIMITS_HIDDEN_KEY) || "null");
+    if (stored && stored.version === 1 && Array.isArray(stored.ids)) {
+      return new Set(stored.ids.map(String));
+    }
+  } catch {
+    // Приватный режим Telegram может запрещать localStorage — считаем все серии видимыми.
+  }
+  return new Set();
+}
+
+function persistHiddenSeries() {
+  try {
+    localStorage.setItem(LIMITS_HIDDEN_KEY, JSON.stringify({
+      version: 1,
+      ids: [...limitsState.hidden],
+    }));
+  } catch {
+    // Скрытие останется применённым в текущей сессии, даже если запись недоступна.
+  }
+}
+
+/* Стабильный идентификатор серии: приоритет за series.id, имя — запасной вариант,
+ * чтобы переключение работало и для серий без явного id. */
+function seriesId(series) {
+  const id = series?.id ?? series?.name;
+  return id == null ? "" : String(id);
+}
+
 const limitsState = {
   open: false,
   range: "24h",
@@ -1301,7 +1337,21 @@ const limitsState = {
   payload: null,
   error: "",
   lastFocus: null,
+  hidden: loadHiddenSeries(),
 };
+
+/* Переключает видимость серии по её id. Работает только по кэшу: без запроса к
+ * backend и без смены выбранного диапазона. Фокус возвращается на ту же кнопку
+ * легенды после перерисовки. */
+function toggleSeriesVisibility(id) {
+  if (!id) return;
+  if (limitsState.hidden.has(id)) limitsState.hidden.delete(id);
+  else limitsState.hidden.add(id);
+  persistHiddenSeries();
+  renderLimits();
+  const buttons = limitsLegend ? [...limitsLegend.querySelectorAll("[data-series-id]")] : [];
+  buttons.find((button) => button.dataset.seriesId === id)?.focus();
+}
 
 function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -1494,9 +1544,16 @@ function renderLimits() {
  * значением) для легенды. */
 function buildLimitsChart(payload) {
   const rawSeries = Array.isArray(payload?.series) ? payload.series : [];
-  const series = rawSeries
+  /* Полный список доступных серий — с стабильным цветом (по индексу в полном
+   * списке, поэтому скрытие серии не перекрашивает остальные). */
+  const allSeries = rawSeries
     .filter((item) => Array.isArray(item.points) && item.points.length > 0)
-    .map((item, index) => ({ ...item, color: seriesColor(item, index) }));
+    .map((item, index) => {
+      const id = seriesId(item);
+      return { ...item, id, color: seriesColor(item, index), hidden: limitsState.hidden.has(id) };
+    });
+  /* График, шкалы и tooltip строятся только по видимым сериям. */
+  const series = allSeries.filter((item) => !item.hidden);
 
   const times = [];
   for (const item of series) {
@@ -1602,6 +1659,16 @@ function buildLimitsChart(payload) {
     });
   }
 
+  /* Все серии скрыты — оставляем оси и спокойную подсказку вместо ошибки. */
+  if (!series.length) {
+    svg.append(svgEl("text", {
+      x: padL + plotW / 2,
+      y: padT + plotH / 2,
+      class: "limits-empty-plot",
+      "text-anchor": "middle",
+    }, ["Все серии скрыты"]));
+  }
+
   const summary = series.length
     ? series
       .map((item) => {
@@ -1610,25 +1677,37 @@ function buildLimitsChart(payload) {
         return `${item.name || item.id}: ${used}%`;
       })
       .join("; ")
-    : "нет данных";
+    : "все серии скрыты";
   limitsChart.setAttribute("aria-label", `Израсходовано лимитов по времени. ${summary}.`);
   limitsChart.replaceChildren(svg);
-  return series;
+  return allSeries;
 }
 
+/* Легенда показывает все доступные серии, включая скрытые. Каждая запись —
+ * настоящая кнопка-переключатель (aria-pressed = «серия видима»), скрытая серия
+ * приглушена и перечёркнута через класс is-hidden. */
 function renderLimitsLegend(series) {
   if (!limitsLegend) return;
   limitsLegend.replaceChildren(...series.map((item) => {
     const last = item.points[item.points.length - 1];
     const used = last ? Math.round(Number(last.usedPercent) || 0) : null;
+    const name = item.name || item.id || "";
     const swatch = el("span", { class: "limits-legend-swatch", "aria-hidden": "true" });
     swatch.style.setProperty("--series-color", item.color);
-    return el("li", { class: "limits-legend-item" }, [
+    const toggle = el("button", {
+      type: "button",
+      class: `limits-legend-toggle${item.hidden ? " is-hidden" : ""}`,
+      "aria-pressed": String(!item.hidden),
+      "aria-label": `${item.hidden ? "Показать" : "Скрыть"} серию ${name}`,
+      "data-series-id": item.id,
+    }, [
       swatch,
-      el("span", { class: "limits-legend-name", text: item.name || item.id || "" }),
+      el("span", { class: "limits-legend-name", text: name }),
       item.window ? el("span", { class: "limits-legend-window", text: item.window }) : null,
       used != null ? el("span", { class: "limits-legend-value", text: `Расход ${used}%` }) : null,
     ]);
+    toggle.addEventListener("click", () => toggleSeriesVisibility(item.id));
+    return el("li", { class: "limits-legend-item" }, [toggle]);
   }));
 }
 

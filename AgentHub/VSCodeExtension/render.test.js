@@ -378,7 +378,8 @@ test("history chart is drawn with inline SVG and no external dependencies", () =
 
 test("history dialog is themed with shared variables and adapts to mobile", () => {
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
-  assert.match(styles, /\.limits-dialog\s*\{[^}]*background:\s*var\(--card-bg-open\);/su);
+  // Диалог почти непрозрачен: градиент темы лежит поверх сплошной подложки --bg.
+  assert.match(styles, /\.limits-dialog\s*\{[^}]*background:\s*var\(--card-bg-open\),\s*var\(--bg\);/su);
   assert.match(styles, /\.limits-range\[aria-pressed="true"\]\s*\{[^}]*color:\s*var\(--accent\);/su);
   assert.match(styles, /\.limits-legend-swatch\s*\{[^}]*background:\s*var\(--series-color/su);
   assert.match(styles, /\.limits-spinner\s*\{[^}]*animation:\s*spin/su);
@@ -386,4 +387,51 @@ test("history dialog is themed with shared variables and adapts to mobile", () =
     styles,
     /html\[data-surface="mobile"\] \.limits-dialog\s*\{[^}]*width:\s*100vw;/su,
   );
+});
+
+test("history scrim is strong enough to keep the chart readable over chat text", () => {
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const scrim = styles.match(/\.limits-scrim\s*\{[^}]*background:\s*rgba\(0,\s*0,\s*0,\s*(?<alpha>[0-9.]+)\)/su);
+  assert.ok(scrim, "у .limits-scrim задан чёрный фон с прозрачностью");
+  const alpha = Number(scrim.groups.alpha);
+  // заметно плотнее прежних 0.5, но фон приложения не исчезает полностью
+  assert.ok(alpha >= 0.6 && alpha < 1, `scrim alpha ${alpha} в диапазоне [0.6, 1)`);
+});
+
+test("legend series are real toggle buttons with accessible pressed state", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  // настоящая button с aria-pressed/aria-label и стабильным id серии
+  assert.match(app, /el\("button",\s*\{\s*type:\s*"button",\s*class:\s*`limits-legend-toggle/u);
+  assert.match(app, /"aria-pressed":\s*String\(!item\.hidden\)/u);
+  assert.match(app, /"aria-label":\s*`\$\{item\.hidden \? "Показать" : "Скрыть"\} серию \$\{name\}`/u);
+  assert.match(app, /"data-series-id":\s*item\.id/u);
+  assert.match(app, /toggle\.addEventListener\("click", \(\) => toggleSeriesVisibility\(item\.id\)\)/u);
+  // скрытая серия визуально приглушена и перечёркнута
+  assert.match(styles, /\.limits-legend-toggle\.is-hidden \.limits-legend-name\s*\{[^}]*text-decoration:\s*line-through;/su);
+});
+
+test("hidden series persist under a versioned key and never re-query the backend", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(app, /const LIMITS_HIDDEN_KEY = "agent-hub-limits-hidden-v1";/u);
+  assert.match(app, /function loadHiddenSeries\(\)/u);
+  assert.match(app, /stored\.version === 1 && Array\.isArray\(stored\.ids\)/u);
+  assert.match(app, /hidden:\s*loadHiddenSeries\(\)/u);
+  // переключение работает по кэшу: renderLimits без emit/requestLimits
+  const toggle = app.match(/function toggleSeriesVisibility\(id\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
+  assert.match(toggle, /persistHiddenSeries\(\);\s*renderLimits\(\);/u);
+  assert.doesNotMatch(toggle, /requestLimits|emit\(|limitsState\.range/u);
+  // новые неизвестные серии по умолчанию видимы (в набор попадают только сохранённые id)
+  assert.match(app, /hidden:\s*limitsState\.hidden\.has\(id\)/u);
+});
+
+test("chart, tooltip and aria-summary use only the visible series", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  // цвет по индексу в полном списке — скрытие не перекрашивает остальные
+  assert.match(app, /const allSeries = rawSeries[\s\S]*color:\s*seriesColor\(item, index\),\s*hidden:/u);
+  assert.match(app, /const series = allSeries\.filter\(\(item\) => !item\.hidden\)/u);
+  // легенда получает полный список, график — только видимые
+  assert.match(app, /return allSeries;/u);
+  // скрытие всех серий не ошибка: остаются оси и спокойная подсказка
+  assert.match(app, /if \(!series\.length\) \{[\s\S]*class:\s*"limits-empty-plot"[\s\S]*"Все серии скрыты"/u);
 });
