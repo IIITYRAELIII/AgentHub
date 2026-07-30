@@ -103,14 +103,9 @@ function phoneComposerMode() {
 }
 
 function syncComposerInputMode() {
-  const phone = phoneComposerMode();
-  /* В поле телефона помещается около двадцати символов, поэтому подсказка про
-     Enter уходит в подпись: иначе placeholder переносился и обрезался. */
-  composerInput.placeholder = phone
-    ? "Сообщение агенту…"
-    : "Сообщение агенту…  Enter — отправить · Shift+Enter — новая строка";
-  composerInput.title = phone ? "Enter — новая строка" : "";
-  composerSend.title = phone ? "Отправить" : "Отправить (Enter)";
+  composerInput.placeholder = "Сообщение агенту…";
+  composerInput.removeAttribute("title");
+  composerSend.title = "Отправить";
 }
 
 syncComposerInputMode();

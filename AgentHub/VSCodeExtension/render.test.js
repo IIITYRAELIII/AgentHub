@@ -222,8 +222,9 @@ test("chat sends with Enter on desktop and keeps Enter as a newline on phones", 
   assert.match(app, /event\.preventDefault\(\);\s*submitComposer\(\);/u);
   assert.match(app, /mobileTelegramPlatforms\.has\(telegramPlatform\)/u);
   assert.match(app, /matchMedia\?\.\("\(pointer: coarse\)"\)/u);
-  assert.match(app, /Enter — новая строка/u);
-  assert.match(html, /Enter — отправить · Shift\+Enter — новая строка/u);
+  assert.match(html, /placeholder="Сообщение агенту…"/u);
+  assert.doesNotMatch(html, /Enter —|Shift\+Enter|Отправить \(Enter\)/u);
+  assert.doesNotMatch(app, /Enter —|Shift\+Enter|Отправить \(Enter\)/u);
   assert.doesNotMatch(html, /Ctrl\+Enter/u);
 });
 
