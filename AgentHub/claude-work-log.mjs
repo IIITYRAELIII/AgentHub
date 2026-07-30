@@ -104,6 +104,106 @@ function nonNegative(value) {
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
+const TOKENS_PER_MTOK = 1_000_000;
+const SONNET_5_INTRODUCTORY_PRICE_END = Date.parse("2026-09-01T00:00:00.000Z");
+
+function claudeModelTokenRates(model, timestamp, speed = "standard") {
+  const normalizedModel = String(model ?? "").trim().toLowerCase();
+  const normalizedSpeed = String(speed ?? "standard").trim().toLowerCase();
+  if (!normalizedModel || normalizedModel === "<synthetic>") return null;
+
+  if (normalizedSpeed === "fast") {
+    if (/claude-opus-(?:5|4-8)(?:-|$)/u.test(normalizedModel)) {
+      return { input: 10, output: 50 };
+    }
+    if (/claude-opus-4-7(?:-|$)/u.test(normalizedModel)) {
+      return { input: 30, output: 150 };
+    }
+  }
+  if (/claude-(?:fable|mythos)-5(?:-|$)/u.test(normalizedModel)) {
+    return { input: 10, output: 50 };
+  }
+  if (/claude-opus-(?:5|4-(?:8|7|6|5))(?:-|$)/u.test(normalizedModel)) {
+    return { input: 5, output: 25 };
+  }
+  if (/claude-(?:opus-4(?:-1)?|3-opus)(?:-|$)/u.test(normalizedModel)) {
+    return { input: 15, output: 75 };
+  }
+  if (/claude-sonnet-5(?:-|$)/u.test(normalizedModel)) {
+    const observedAt = Date.parse(String(timestamp ?? ""));
+    return Number.isFinite(observedAt) && observedAt < SONNET_5_INTRODUCTORY_PRICE_END
+      ? { input: 2, output: 10 }
+      : { input: 3, output: 15 };
+  }
+  if (/claude-(?:sonnet-4(?:-[65])?|3-(?:7|5)-sonnet)(?:-|$)/u.test(normalizedModel)) {
+    return { input: 3, output: 15 };
+  }
+  if (/claude-(?:haiku-4-5|3-5-haiku)(?:-|$)/u.test(normalizedModel)) {
+    return /haiku-4-5/u.test(normalizedModel)
+      ? { input: 1, output: 5 }
+      : { input: 0.8, output: 4 };
+  }
+  if (/claude-3-haiku(?:-|$)/u.test(normalizedModel)) {
+    return { input: 0.25, output: 1.25 };
+  }
+  return null;
+}
+
+function claudeAssistantTokenCostUsd(entry) {
+  const usage = entry?.message?.usage;
+  if (!usage) return { costUsd: 0, priced: true };
+  const tokenCounts = [
+    usage.input_tokens,
+    usage.cache_creation_input_tokens,
+    usage.cache_read_input_tokens,
+    usage.output_tokens,
+  ].map(nonNegative);
+  const totalTokens = tokenCounts.reduce((sum, value) => sum + value, 0);
+  if (!totalTokens) return { costUsd: 0, priced: true };
+
+  const rates = claudeModelTokenRates(
+    entry?.message?.model,
+    entry?.timestamp,
+    usage.speed,
+  );
+  if (!rates) return { costUsd: 0, priced: false };
+
+  const cacheCreation = usage.cache_creation ?? {};
+  const oneHourCacheWrite = nonNegative(cacheCreation.ephemeral_1h_input_tokens);
+  const reportedFiveMinuteCacheWrite = nonNegative(
+    cacheCreation.ephemeral_5m_input_tokens,
+  );
+  const totalCacheWrite = nonNegative(usage.cache_creation_input_tokens);
+  const fiveMinuteCacheWrite = reportedFiveMinuteCacheWrite
+    + Math.max(0, totalCacheWrite - oneHourCacheWrite - reportedFiveMinuteCacheWrite);
+  const cacheRead = nonNegative(usage.cache_read_input_tokens);
+  const input = nonNegative(usage.input_tokens);
+  const output = nonNegative(usage.output_tokens);
+  const geoMultiplier = String(usage.inference_geo ?? "").trim().toLowerCase() === "us"
+    ? 1.1
+    : 1;
+  const costUsd = (
+    input * rates.input
+    + fiveMinuteCacheWrite * rates.input * 1.25
+    + oneHourCacheWrite * rates.input * 2
+    + cacheRead * rates.input * 0.1
+    + output * rates.output
+  ) / TOKENS_PER_MTOK * geoMultiplier;
+  return { costUsd, priced: true };
+}
+
+export function claudeTranscriptEstimatedCredits(assistantEntries) {
+  let costUsd = 0;
+  let foundUsage = false;
+  for (const entry of uniqueAssistantEntries(assistantEntries)) {
+    const priced = claudeAssistantTokenCostUsd(entry);
+    if (!priced.priced) return 0;
+    if (entry?.message?.usage) foundUsage = true;
+    costUsd += priced.costUsd;
+  }
+  return foundUsage ? creditsFromUsd(costUsd) ?? 0 : 0;
+}
+
 export function claudeTranscriptTokenUsage(assistantEntries) {
   const usage = {
     inputTokens: 0,
@@ -203,6 +303,7 @@ export function scanClaudeHistoricalTranscript(text, { transcriptPath = "" } = {
     const terminal = completed || promptNumber + 1 < promptIndexes.length;
     if (!terminal) continue;
     const { usage, reported } = claudeTranscriptTokenUsage(assistantEntries);
+    const estimatedCredits = claudeTranscriptEstimatedCredits(assistantEntries);
     const models = [...new Set(assistantEntries
       .map((entry) => String(entry.message?.model ?? "").trim().toLowerCase())
       .filter(Boolean))];
@@ -222,8 +323,8 @@ export function scanClaudeHistoricalTranscript(text, { transcriptPath = "" } = {
       prompt,
       usage,
       usageReported: reported,
-      estimatedCredits: 0,
-      estimateKind: "",
+      estimatedCredits,
+      estimateKind: estimatedCredits > 0 ? "claude-api-token-pricing" : "",
       model: models.length === 1 ? models[0] : models.join(","),
       serviceTier: String(
         finalEntry?.message?.usage?.service_tier ?? "default",
@@ -323,12 +424,23 @@ export async function buildClaudeWorkLogBackfill({
       const key = workLogTurnKey(record);
       if (turns[key]) {
         report.existingTurns += 1;
+        let updated = false;
         if (/^Ход (?:завершён|отменён)$/u.test(String(turns[key].title ?? ""))
           && record.title
           && record.title !== turns[key].title) {
           turns[key] = { ...turns[key], title: record.title };
-          report.updatedTurns += 1;
+          updated = true;
         }
+        if (record.estimatedCredits > 0
+          && Number(turns[key].estimatedCredits ?? 0) <= 0) {
+          turns[key] = {
+            ...turns[key],
+            estimatedCredits: record.estimatedCredits,
+            estimateKind: record.estimateKind,
+          };
+          updated = true;
+        }
+        if (updated) report.updatedTurns += 1;
         continue;
       }
       turns[key] = record;

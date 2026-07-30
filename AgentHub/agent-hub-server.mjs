@@ -2305,7 +2305,10 @@ async function auditClaudeTranscriptSnapshots(snapshots) {
         turnId: turn.turnId,
       };
       const existing = await workLogUsageStore.getTurn(identity);
-      if (!existing || (!existing.body && turn.body) || (!existing.usageReported && turn.usageReported)) {
+      if (!existing
+        || (!existing.body && turn.body)
+        || (!existing.usageReported && turn.usageReported)
+        || (Number(existing.estimatedCredits ?? 0) <= 0 && turn.estimatedCredits > 0)) {
         const taskTitle = String(snapshot.title ?? turn.taskTitle ?? "").trim();
         await projectTurnUsageToWorkLog({
           ...turn,
