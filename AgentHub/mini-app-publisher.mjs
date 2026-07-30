@@ -28,6 +28,7 @@ const CONTROL_ACTIONS = new Set([
   "snapshot",
   "task-history",
   "rate-limit-history",
+  "usage-history",
   "open-task",
   "open-turn",
   "select-task",

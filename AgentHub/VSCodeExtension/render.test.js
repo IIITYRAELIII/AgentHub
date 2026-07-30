@@ -198,15 +198,26 @@ test("Rain keeps its stored key and is named consistently", () => {
   assert.match(webview, /<option value="taiga">Rain<\/option>/u);
 });
 
-test("view panel owns theme, grouping and persisted token detail controls", () => {
+test("one settings panel owns interface and task controls", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  assert.match(html, /data-panel-open="view"/u);
+  assert.doesNotMatch(html, /data-panel-open="view"/u);
+  assert.ok((html.match(/data-panel-open="settings"/gu) ?? []).length >= 2);
   assert.match(html, /data-token-breakdown-toggle/u);
+  assert.match(html, /data-claude-group-toggle/u);
+  assert.match(html, /<option value="week">По неделям<\/option>/u);
+  assert.match(html, /<option value="month">По месяцам<\/option>/u);
+  assert.match(html, /data-usage-unit="pte"/u);
   assert.match(app, /agent-hub-token-breakdown/u);
-  assert.match(app, /if \(!settingsPanel\.hidden\) closePanel\(\)/u);
-  assert.match(app, /if \(!viewPanel\.hidden\) closeViewPanel\(\)/u);
-  assert.match(app, /if \(event\.key === "Escape" && !viewPanel\.hidden\) closeViewPanel\(\)/u);
+  assert.match(app, /agent-hub-group-claude/u);
+  assert.match(app, /agent-hub-usage-unit/u);
+  assert.match(app, /const dollars = value \/ 25;/u);
+  assert.match(app, /spacedNumber\(dollars, dollars < 1 \? 2 : 1\)/u);
+  assert.match(app, /formatScaledUsage\(value \* 8_000, "ПТЭ"\)/u);
+  assert.ok(
+    app.indexOf("const RANGE_LABELS") < app.indexOf("selectUsageUnit(savedUsageUnit())"),
+    "подписи диапазонов должны быть инициализированы до первого рендера единиц расхода",
+  );
 });
 
 test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", () => {
@@ -445,13 +456,13 @@ test("composer clears optimistically and restores an unconfirmed message", () =>
   assert.match(app, /Agent Hub перезапускается… Непринятый текст будет восстановлен\./u);
 });
 
-test("rate-limit summary becomes a keyboard-activatable trigger for the history dialog", () => {
+test("rate-limit summary becomes a keyboard-activatable trigger for statistics", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   assert.match(html, /data-rate-limits-slot data-limits-trigger/u);
   assert.match(app, /rateLimitsSlot\.setAttribute\("role", "button"\)/u);
-  assert.match(app, /rateLimitsSlot\.setAttribute\("aria-haspopup", "dialog"\)/u);
-  assert.match(app, /if \(limitsIsTrigger\(\)\) openLimitsDialog\(\);/u);
+  assert.match(app, /rateLimitsSlot\.setAttribute\("aria-label", "Открыть статистику лимитов"\)/u);
+  assert.match(app, /if \(limitsIsTrigger\(\)\) openLimitsStatistics\(\);/u);
   assert.match(
     app,
     /event\.key === "Enter" \|\| event\.key === " " \|\| event\.key === "Spacebar"/u,
@@ -461,11 +472,14 @@ test("rate-limit summary becomes a keyboard-activatable trigger for the history 
   assert.match(app, /setLimitsTriggerEnabled\(false\)/u);
 });
 
-test("history dialog offers the full 6h→all range sequence and reset credits", () => {
+test("statistics page offers local usage and full limit history", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
-  assert.match(html, /<div class="limits-dialog" data-limits-dialog hidden role="dialog" aria-modal="true"/u);
+  assert.match(html, /data-view-button="statistics"/u);
+  assert.match(html, /data-usage-chart/u);
+  assert.match(html, /data-limits-chart/u);
   for (const range of ["6h", "24h", "7d", "30d", "all"]) {
     assert.match(html, new RegExp(`data-range="${range}"`, "u"));
   }
@@ -474,6 +488,9 @@ test("history dialog offers the full 6h→all range sequence and reset credits",
   assert.match(app, /resetCredits/u);
   assert.match(app, /availableCount/u);
   assert.match(app, /nearestExpiresAt/u);
+  assert.match(app, /emit\("usage:open", \{ range: usageState\.range \}\)/u);
+  assert.match(app, /function formatUsageValue\(credits, unit = usageUnit\)/u);
+  assert.match(client, /control\("usage-history", \{\s*range,\s*maxPoints: 600,/u);
   assert.match(
     styles,
     /\.rate-limits \[data-rate-limit-group\],[\s\S]*?flex-direction: column;/u,

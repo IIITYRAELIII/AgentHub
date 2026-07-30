@@ -676,6 +676,19 @@ agentHub.on("limits:open", ({ range }) => runAction(async () => {
     throw error;
   }
 }));
+agentHub.on("usage:open", ({ range }) => runAction(async () => {
+  try {
+    agentHub.setUsageHistory(await control("usage-history", {
+      range,
+      maxPoints: 600,
+    }));
+  } catch (error) {
+    agentHub.setUsageHistory({
+      range,
+      error: error?.message || "Не удалось загрузить локальный расход.",
+    });
+  }
+}));
 agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
   const names = {
     agent: "provider",

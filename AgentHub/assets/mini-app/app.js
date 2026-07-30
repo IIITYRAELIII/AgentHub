@@ -2,7 +2,8 @@
  *
  * Оболочка объединяет три представления над одними данными и темами:
  *   • «Диалоги» — слева компактный список задач, справа чат выбранной задачи;
- *   • «Журнал» — прежнее представление WORK_LOG.md с ленивой подгрузкой.
+ *   • «Журнал» — прежнее представление WORK_LOG.md с ленивой подгрузкой;
+ *   • «Статистика» — локальный расход журнала и история лимитов API.
  *
  * Frontend не хранит собственных задач и сообщений: до подключения backend
  * списки пусты и показывают понятные пустые состояния. Данные приходят через
@@ -17,6 +18,7 @@
 const root = document.documentElement;
 const journal = document.querySelector("[data-journal]");
 const journalView = document.querySelector("[data-journal-view]");
+const statisticsView = document.querySelector("[data-statistics-view]");
 const updatedAt = document.querySelector("[data-updated-at]");
 const refreshButton = document.querySelector("[data-refresh]");
 const collapseAllButton = document.querySelector("[data-collapse-all]");
@@ -60,9 +62,9 @@ const approvalsBox = document.querySelector("[data-approvals]");
 const queueBox = document.querySelector("[data-queue]");
 
 const settingsPanel = document.querySelector("[data-settings-panel]");
-const viewPanel = document.querySelector("[data-view-panel]");
-const viewScrim = document.querySelector("[data-view-scrim]");
 const breakdownToggle = document.querySelector("[data-token-breakdown-toggle]");
+const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
+const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
 const panelScrim = document.querySelector("[data-panel-scrim]");
 const statusSlot = document.querySelector("[data-status-slot]");
 
@@ -74,8 +76,6 @@ const dialogInput = document.querySelector("[data-text-dialog-input]");
 const toast = document.querySelector("[data-toast]");
 const connectionBanner = document.querySelector("[data-restart-banner]");
 
-const limitsDialog = document.querySelector("[data-limits-dialog]");
-const limitsScrim = document.querySelector("[data-limits-scrim]");
 const limitsRanges = document.querySelector("[data-limits-ranges]");
 const limitsSubtitle = document.querySelector("[data-limits-subtitle]");
 const limitsLoading = document.querySelector("[data-limits-loading]");
@@ -87,12 +87,25 @@ const limitsChart = document.querySelector("[data-limits-chart]");
 const limitsTooltip = document.querySelector("[data-limits-tooltip]");
 const limitsLegend = document.querySelector("[data-limits-legend]");
 const limitsCredits = document.querySelector("[data-limits-credits]");
+const usageRanges = document.querySelector("[data-usage-ranges]");
+const usageSubtitle = document.querySelector("[data-usage-subtitle]");
+const usageTotal = document.querySelector("[data-usage-total]");
+const usageLoading = document.querySelector("[data-usage-loading]");
+const usageError = document.querySelector("[data-usage-error]");
+const usageErrorText = document.querySelector("[data-usage-error-text]");
+const usageEmpty = document.querySelector("[data-usage-empty]");
+const usageChartWrap = document.querySelector("[data-usage-chart-wrap]");
+const usageChart = document.querySelector("[data-usage-chart]");
+const usageTooltip = document.querySelector("[data-usage-tooltip]");
+const usageNote = document.querySelector("[data-usage-note]");
 
 /* --------------------------------------------------------- Telegram / темы */
 
 let journalHtml = "";
 let grouping = "date";
-const groupingStates = { date: null, task: null };
+let usageUnit = "cr";
+let groupClaudeTasks = false;
+const groupingStates = { date: null, week: null, month: null, task: null };
 const telegram = window.Telegram?.WebApp;
 const telegramInitData = String(telegram?.initData ?? "");
 const telegramMode = Boolean(telegramInitData);
@@ -155,7 +168,15 @@ const themes = {
 const themeAliases = {
   "taiga-drops": "metropolis",
 };
-const groupings = new Set(["date", "task"]);
+const groupings = new Set(["date", "week", "month", "task"]);
+const usageUnits = new Set(["$", "cr", "pte"]);
+const usageState = {
+  range: "24h",
+  status: "idle",
+  payload: null,
+  error: "",
+};
+const RANGE_LABELS = { "6h": "6 ч", "24h": "24 ч", "7d": "7 д", "30d": "30 д", all: "Всё время" };
 
 function savedTheme() {
   try {
@@ -300,13 +321,71 @@ function selectGrouping(value, { persist = false } = {}) {
   }
 }
 
+function savedUsageUnit() {
+  try {
+    const value = localStorage.getItem("agent-hub-usage-unit");
+    return usageUnits.has(value) ? value : "cr";
+  } catch {
+    return "cr";
+  }
+}
+
+function selectUsageUnit(value, { persist = false } = {}) {
+  usageUnit = usageUnits.has(value) ? value : "cr";
+  root.dataset.usageUnit = usageUnit;
+  for (const button of usageUnitButtons) {
+    const active = button.dataset.usageUnit === usageUnit;
+    button.setAttribute("aria-pressed", String(active));
+    button.toggleAttribute("data-active", active);
+  }
+  if (persist) {
+    try {
+      localStorage.setItem("agent-hub-usage-unit", usageUnit);
+    } catch {
+      // Выбор останется активным до закрытия WebView.
+    }
+  }
+  refreshUsageUnits();
+  renderUsageHistory();
+  if (journalHtml) renderJournal();
+}
+
+function savedClaudeGrouping() {
+  try {
+    return localStorage.getItem("agent-hub-group-claude") === "on";
+  } catch {
+    return false;
+  }
+}
+
+function selectClaudeGrouping(value, { persist = false } = {}) {
+  groupClaudeTasks = value === true;
+  if (claudeGroupToggle) claudeGroupToggle.checked = groupClaudeTasks;
+  if (persist) {
+    try {
+      localStorage.setItem("agent-hub-group-claude", groupClaudeTasks ? "on" : "off");
+    } catch {
+      // Выбор останется активным до закрытия WebView.
+    }
+  }
+}
+
 telegram?.ready();
 telegram?.expand();
 applyTheme(savedTheme());
 applyBreakdown(savedBreakdown());
+selectUsageUnit(savedUsageUnit());
+selectClaudeGrouping(savedClaudeGrouping());
 breakdownToggle?.addEventListener("change", () => {
   applyBreakdown(breakdownToggle.checked ? "on" : "off", { persist: true });
 });
+claudeGroupToggle?.addEventListener("change", () => {
+  selectClaudeGrouping(claudeGroupToggle.checked, { persist: true });
+  if (journalHtml) renderJournal();
+});
+for (const button of usageUnitButtons) {
+  button.addEventListener("click", () => selectUsageUnit(button.dataset.usageUnit, { persist: true }));
+}
 selectGrouping(savedGrouping());
 themeSelect.addEventListener("change", () => {
   applyTheme(themeSelect.value, { persist: true });
@@ -434,15 +513,25 @@ function currentTask() {
 /* =========================================================== роутер видов */
 
 function setView(view) {
-  const next = view === "journal" ? "journal" : "chat";
+  const next = ["journal", "statistics"].includes(view) ? view : "chat";
   root.dataset.view = next;
   for (const button of document.querySelectorAll("[data-view-button]")) {
     button.setAttribute("aria-pressed", String(button.dataset.viewButton === next));
   }
   const title = document.querySelector("[data-view-title]");
-  if (title) title.textContent = next === "journal" ? "Журнал" : "Диалоги";
+  if (title) {
+    title.textContent = next === "journal"
+      ? "Журнал"
+      : next === "statistics"
+        ? "Статистика"
+        : "Диалоги";
+  }
   syncMobileNav();
   if (next === "journal") ensureJournalLoaded();
+  if (next === "statistics") {
+    requestUsageHistory(usageState.range);
+    requestLimits(limitsState.range);
+  }
 }
 
 function setPane(pane) {
@@ -451,8 +540,8 @@ function setPane(pane) {
 }
 
 function syncMobileNav() {
-  const active = root.dataset.view === "journal"
-    ? "journal"
+  const active = ["journal", "statistics"].includes(root.dataset.view)
+    ? root.dataset.view
     : (root.dataset.pane === "chat" ? "chat" : "tasks");
   for (const button of document.querySelectorAll("[data-mobile-button]")) {
     button.setAttribute("aria-pressed", String(button.dataset.mobileButton === active));
@@ -465,7 +554,7 @@ for (const button of document.querySelectorAll("[data-view-button]")) {
 for (const button of document.querySelectorAll("[data-mobile-button]")) {
   button.addEventListener("click", () => {
     const target = button.dataset.mobileButton;
-    if (target === "journal") { setView("journal"); return; }
+    if (["journal", "statistics"].includes(target)) { setView(target); return; }
     setView("chat");
     setPane(target === "chat" ? "chat" : "tasks");
   });
@@ -1436,7 +1525,6 @@ function restoreDraft() {
 /* ============================================= панель настроек и селекторы */
 
 function openPanel() {
-  if (!viewPanel.hidden) closeViewPanel();
   settingsPanel.hidden = false;
   panelScrim.hidden = false;
   requestAnimationFrame(() => {
@@ -1453,33 +1541,6 @@ function closePanel() {
     panelScrim.hidden = true;
   }, 220);
 }
-
-function openViewPanel() {
-  if (!settingsPanel.hidden) closePanel();
-  viewPanel.hidden = false;
-  viewScrim.hidden = false;
-  requestAnimationFrame(() => {
-    viewPanel.classList.add("open");
-    viewScrim.classList.add("open");
-  });
-}
-
-function closeViewPanel() {
-  viewPanel.classList.remove("open");
-  viewScrim.classList.remove("open");
-  window.setTimeout(() => {
-    viewPanel.hidden = true;
-    viewScrim.hidden = true;
-  }, 200);
-}
-
-for (const opener of document.querySelectorAll("[data-panel-open='view']")) {
-  opener.addEventListener("click", openViewPanel);
-}
-for (const closer of document.querySelectorAll("[data-view-panel-close]")) {
-  closer.addEventListener("click", closeViewPanel);
-}
-viewScrim.addEventListener("click", closeViewPanel);
 
 for (const opener of document.querySelectorAll("[data-panel-open='settings']")) {
   opener.addEventListener("click", openPanel);
@@ -1585,7 +1646,6 @@ dialogScrim.addEventListener("click", () => closeDialog(null));
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !dialog.hidden) closeDialog(null);
   if (event.key === "Escape" && !settingsPanel.hidden) closePanel();
-  if (event.key === "Escape" && !viewPanel.hidden) closeViewPanel();
 });
 
 /* ================================================= общие действия (intents) */
@@ -1836,21 +1896,24 @@ const AgentHub = {
   setRateLimitHistory(payload) {
     applyRateLimitHistory(payload);
   },
+  /** Локальный расход завершённых ходов из ledger Agent Hub. */
+  setUsageHistory(payload) {
+    applyUsageHistory(payload);
+  },
   toast: showToast,
 };
 
 window.AgentHub = AgentHub;
 
-/* ============================================= история лимитов (диалог) */
-/* Диалог открывается по сводке лимитов в шапке (клик / Enter / Space) и
- * показывает SVG-график использования по выбранному периоду. Данные о
+/* ============================================= статистика и история лимитов */
+/* Страница открывается отдельной вкладкой или по сводке лимитов в шапке и
+ * показывает локальный расход вместе с SVG-графиком лимитов. Данные о
  * периодах запрашиваются событием `limits:open`, а приходят обратно через
  * `AgentHub.setRateLimitHistory(payload)`. Ничего внешнего: график рисуется
  * встроенным SVG на переменных темы, без canvas, шрифтов и CDN. */
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const RANGE_SEQUENCE = ["6h", "24h", "7d", "30d", "all"];
-const RANGE_LABELS = { "6h": "6 ч", "24h": "24 ч", "7d": "7 д", "30d": "30 д", all: "Всё время" };
 /* Палитра серий на переменных темы: провайдеры — своими цветами, остальные
  * по кругу из акцентов, чтобы линии различались в любой теме. */
 const SERIES_PALETTE = [
@@ -1899,12 +1962,10 @@ function seriesId(series) {
 }
 
 const limitsState = {
-  open: false,
   range: "24h",
   status: "idle", // idle | loading | ready | empty | error
   payload: null,
   error: "",
-  lastFocus: null,
   hidden: loadHiddenSeries(),
 };
 
@@ -1978,15 +2039,11 @@ function setLimitsTriggerEnabled(on) {
   if (on) {
     rateLimitsSlot.setAttribute("role", "button");
     rateLimitsSlot.setAttribute("tabindex", "0");
-    rateLimitsSlot.setAttribute("aria-haspopup", "dialog");
-    rateLimitsSlot.setAttribute("aria-expanded", String(limitsState.open));
-    rateLimitsSlot.setAttribute("aria-label", "Открыть историю лимитов");
+    rateLimitsSlot.setAttribute("aria-label", "Открыть статистику лимитов");
     rateLimitsSlot.classList.add("is-interactive");
   } else {
     rateLimitsSlot.removeAttribute("role");
     rateLimitsSlot.removeAttribute("tabindex");
-    rateLimitsSlot.removeAttribute("aria-haspopup");
-    rateLimitsSlot.removeAttribute("aria-expanded");
     rateLimitsSlot.removeAttribute("aria-label");
     rateLimitsSlot.classList.remove("is-interactive");
   }
@@ -2011,7 +2068,7 @@ function applyRateLimitHistory(payload) {
   limitsState.error = data?.error ? String(data.error) : "";
   if (data?.range) limitsState.range = normalizeRange(data.range);
   limitsState.status = statusFromPayload(data);
-  if (limitsState.open) {
+  if (root.dataset.view === "statistics") {
     renderLimitsRanges();
     renderLimits();
   }
@@ -2031,31 +2088,13 @@ function requestLimits(range, { force = false } = {}) {
   emit("limits:open", { range: limitsState.range });
 }
 
-function openLimitsDialog(range = limitsState.range) {
-  if (limitsState.open) return;
-  limitsState.open = true;
-  limitsState.lastFocus = document.activeElement;
-  limitsScrim.hidden = false;
-  limitsDialog.hidden = false;
-  rateLimitsSlot?.setAttribute("aria-expanded", "true");
+function openLimitsStatistics(range = limitsState.range) {
+  setView("statistics");
   requestLimits(range);
   requestAnimationFrame(() => {
-    const active = limitsDialog.querySelector(`[data-range="${limitsState.range}"]`)
-      ?? limitsDialog.querySelector("[data-limits-close]");
+    const active = limitsRanges?.querySelector(`[data-range="${limitsState.range}"]`);
     active?.focus();
   });
-}
-
-function closeLimitsDialog() {
-  if (!limitsState.open) return;
-  limitsState.open = false;
-  limitsDialog.hidden = true;
-  limitsScrim.hidden = true;
-  rateLimitsSlot?.setAttribute("aria-expanded", "false");
-  hideLimitsTooltip();
-  const focus = limitsState.lastFocus;
-  limitsState.lastFocus = null;
-  if (focus && typeof focus.focus === "function" && document.contains(focus)) focus.focus();
 }
 
 /* Шаг по последовательности периодов: −1 сужает (к 6 ч), +1 расширяет (к «всё»). */
@@ -2338,33 +2377,15 @@ function hideLimitsTooltip() {
   limitsTooltip.hidden = true;
 }
 
-/* Фокус остаётся внутри диалога, пока он открыт (простая ловушка по Tab). */
-function trapLimitsFocus(event) {
-  if (event.key !== "Tab") return;
-  const focusable = [...limitsDialog.querySelectorAll(
-    'button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
-  )].filter((node) => !node.hidden && node.offsetParent !== null);
-  if (!focusable.length) return;
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
-  }
-}
-
 if (rateLimitsSlot) {
   rateLimitsSlot.addEventListener("click", () => {
-    if (limitsIsTrigger()) openLimitsDialog();
+    if (limitsIsTrigger()) openLimitsStatistics();
   });
   rateLimitsSlot.addEventListener("keydown", (event) => {
     if (!limitsIsTrigger()) return;
     if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
       event.preventDefault();
-      openLimitsDialog();
+      openLimitsStatistics();
     }
   });
 }
@@ -2375,18 +2396,12 @@ limitsRanges?.addEventListener("click", (event) => {
   requestLimits(button.dataset.range);
 });
 
-limitsScrim?.addEventListener("click", closeLimitsDialog);
-document.querySelector("[data-limits-close]")?.addEventListener("click", closeLimitsDialog);
 document.querySelector("[data-limits-retry]")?.addEventListener("click", () => {
   requestLimits(limitsState.range, { force: true });
 });
 
 document.addEventListener("keydown", (event) => {
-  if (!limitsState.open) return;
-  if (event.key === "Escape") {
-    closeLimitsDialog();
-    return;
-  }
+  if (root.dataset.view !== "statistics") return;
   if (event.key === "-" || event.key === "_") {
     event.preventDefault();
     stepLimitsRange(-1);
@@ -2397,7 +2412,245 @@ document.addEventListener("keydown", (event) => {
     stepLimitsRange(1);
     return;
   }
-  trapLimitsFocus(event);
+});
+
+/* ------------------------------------------------ локальный расход / единицы */
+
+function parseCreditsText(text) {
+  const match = String(text ?? "").trim().match(
+    /^([\d\s\u00a0]+(?:[,.]\d+)?)\s*(Gcr|Mcr|kcr|cr)$/u,
+  );
+  if (!match) return Number.NaN;
+  const value = Number(match[1].replace(/[\s\u00a0]/gu, "").replace(",", "."));
+  const multiplier = { cr: 1, kcr: 1e3, Mcr: 1e6, Gcr: 1e9 }[match[2]];
+  return Number.isFinite(value) ? value * multiplier : Number.NaN;
+}
+
+function spacedNumber(value, fractionDigits) {
+  const fixed = Math.max(0, Number(value) || 0).toFixed(fractionDigits);
+  const [integer, fraction] = fixed.split(".");
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/gu, " ");
+  return fractionDigits ? `${grouped}.${fraction}` : grouped;
+}
+
+function formatScaledUsage(value, suffix) {
+  const amount = Math.max(0, Number(value) || 0);
+  const scales = [
+    [1e9, `G${suffix}`],
+    [1e6, `M${suffix}`],
+    [1e3, `k${suffix}`],
+  ];
+  const scale = scales.find(([divisor]) => amount >= divisor);
+  if (scale) {
+    return `${(amount / scale[0]).toLocaleString("ru-RU", {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    })} ${scale[1]}`;
+  }
+  return `${amount.toLocaleString("ru-RU", {
+    minimumFractionDigits: Number.isInteger(amount) ? 0 : 1,
+    maximumFractionDigits: 1,
+  })} ${suffix}`;
+}
+
+function formatUsageValue(credits, unit = usageUnit) {
+  const value = Math.max(0, Number(credits) || 0);
+  if (unit === "$") {
+    const dollars = value / 25;
+    return `$${spacedNumber(dollars, dollars < 1 ? 2 : 1)}`;
+  }
+  if (unit === "pte") return formatScaledUsage(value * 8_000, "ПТЭ");
+  return formatScaledUsage(value, "cr");
+}
+
+function refreshUsageUnits(scope = document) {
+  for (const node of scope.querySelectorAll(
+    "[data-kilo-usage], [data-mega-usage], [data-high-usage]",
+  )) {
+    if (!node.dataset.usageCredits) {
+      const credits = parseCreditsText(node.textContent);
+      if (Number.isFinite(credits)) node.dataset.usageCredits = String(credits);
+    }
+    const credits = Number(node.dataset.usageCredits);
+    if (Number.isFinite(credits)) node.textContent = formatUsageValue(credits);
+  }
+}
+
+function statusFromUsagePayload(payload) {
+  if (!payload || payload.error) return payload?.error ? "error" : "empty";
+  return Array.isArray(payload.points) && payload.points.length ? "ready" : "empty";
+}
+
+function applyUsageHistory(payload) {
+  const data = payload && typeof payload === "object" ? payload : null;
+  usageState.payload = data;
+  usageState.error = data?.error ? String(data.error) : "";
+  if (data?.range) usageState.range = normalizeRange(data.range);
+  usageState.status = statusFromUsagePayload(data);
+  renderUsageRanges();
+  renderUsageHistory();
+}
+
+function requestUsageHistory(range, { force = false } = {}) {
+  usageState.range = normalizeRange(range);
+  const cached = usageState.payload
+    && !usageState.payload.error
+    && normalizeRange(usageState.payload.range) === usageState.range;
+  usageState.status = cached && !force ? statusFromUsagePayload(usageState.payload) : "loading";
+  usageState.error = "";
+  renderUsageRanges();
+  renderUsageHistory();
+  emit("usage:open", { range: usageState.range });
+}
+
+function renderUsageRanges() {
+  for (const button of usageRanges?.querySelectorAll("[data-range]") ?? []) {
+    const active = button.dataset.range === usageState.range;
+    button.setAttribute("aria-pressed", String(active));
+    button.toggleAttribute("data-active", active);
+  }
+}
+
+function formatUsagePeriod(payload) {
+  const from = payload?.from ? formatLimitsDateTime(payload.from) : "";
+  const to = payload?.to ? formatLimitsDateTime(payload.to) : "";
+  return from && to ? `${from} — ${to}` : RANGE_LABELS[usageState.range] ?? "";
+}
+
+function showUsageTooltip(point, fx, fy) {
+  if (!usageTooltip) return;
+  usageTooltip.replaceChildren(
+    el("span", { class: "limits-tooltip-time", text: formatLimitsDateTime(point.at) }),
+    el("span", { class: "limits-tooltip-row", text: formatUsageValue(point.credits) }),
+  );
+  usageTooltip.style.left = `${clampNumber(fx * 100, 0, 100)}%`;
+  usageTooltip.style.top = `${clampNumber(fy * 100, 0, 100)}%`;
+  usageTooltip.dataset.side = fx > 0.6 ? "left" : "right";
+  usageTooltip.hidden = false;
+}
+
+function hideUsageTooltip() {
+  if (usageTooltip) usageTooltip.hidden = true;
+}
+
+function buildUsageChart(payload) {
+  const points = (Array.isArray(payload?.points) ? payload.points : [])
+    .map((point) => ({
+      at: point.at,
+      time: Date.parse(point.at),
+      credits: Math.max(0, Number(point.credits) || 0),
+    }))
+    .filter((point) => Number.isFinite(point.time));
+  const W = 640;
+  const H = 260;
+  const padL = 62;
+  const padR = 14;
+  const padT = 14;
+  const padB = 30;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const max = Math.max(1, ...points.map((point) => point.credits));
+  const svg = svgEl("svg", {
+    viewBox: `0 0 ${W} ${H}`,
+    class: "limits-chart-svg usage-chart-svg",
+    preserveAspectRatio: "none",
+    "aria-hidden": "true",
+  });
+  for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+    const value = max * fraction;
+    const y = padT + (1 - fraction) * plotH;
+    svg.append(svgEl("line", {
+      x1: padL,
+      y1: y,
+      x2: W - padR,
+      y2: y,
+      class: "limits-grid-line",
+    }));
+    svg.append(svgEl("text", {
+      x: padL - 6,
+      y: y + 3,
+      class: "limits-axis-label limits-axis-y",
+      "text-anchor": "end",
+    }, [formatUsageValue(value)]));
+  }
+  const barStep = plotW / Math.max(1, points.length);
+  const barWidth = Math.max(2, Math.min(28, barStep * 0.68));
+  points.forEach((point, index) => {
+    const height = point.credits / max * plotH;
+    const x = padL + index * barStep + (barStep - barWidth) / 2;
+    const y = padT + plotH - height;
+    const bar = svgEl("rect", {
+      x: x.toFixed(1),
+      y: y.toFixed(1),
+      width: barWidth.toFixed(1),
+      height: Math.max(1, height).toFixed(1),
+      rx: Math.min(4, barWidth / 3).toFixed(1),
+      class: "usage-bar",
+      tabindex: 0,
+      role: "img",
+      "aria-label": `${formatLimitsDateTime(point.at)}: ${formatUsageValue(point.credits)}`,
+    });
+    const fx = (x + barWidth / 2) / W;
+    const fy = y / H;
+    bar.addEventListener("pointerenter", () => showUsageTooltip(point, fx, fy));
+    bar.addEventListener("pointerleave", hideUsageTooltip);
+    bar.addEventListener("focus", () => showUsageTooltip(point, fx, fy));
+    bar.addEventListener("blur", hideUsageTooltip);
+    svg.append(bar);
+  });
+  if (points.length) {
+    const first = points[0].time;
+    const last = points.at(-1).time;
+    const span = Math.max(1, last - first);
+    for (const [time, anchor] of [[first, "start"], [last, "end"]]) {
+      svg.append(svgEl("text", {
+        x: anchor === "start" ? padL : W - padR,
+        y: H - 8,
+        class: "limits-axis-label limits-axis-x",
+        "text-anchor": anchor,
+      }, [formatAxisTime(time, span)]));
+    }
+  }
+  usageChart.setAttribute(
+    "aria-label",
+    `Локальный расход: ${formatUsageValue(payload.totalCredits)} за ${formatUsagePeriod(payload)}.`,
+  );
+  usageChart.replaceChildren(svg);
+}
+
+function renderUsageHistory() {
+  if (!usageLoading) return;
+  const status = usageState.status;
+  usageLoading.hidden = status !== "loading";
+  usageError.hidden = status !== "error";
+  usageEmpty.hidden = status !== "empty";
+  usageChartWrap.hidden = status !== "ready";
+  hideUsageTooltip();
+  if (status === "error") {
+    usageErrorText.textContent = usageState.error || "Не удалось загрузить локальный расход.";
+  }
+  const payload = usageState.payload;
+  usageSubtitle.textContent = payload && !payload.error
+    ? formatUsagePeriod(payload)
+    : RANGE_LABELS[usageState.range] ?? "";
+  usageTotal.textContent = payload && !payload.error
+    ? formatUsageValue(payload.totalCredits)
+    : "";
+  if (status === "ready") {
+    buildUsageChart(payload);
+    const unpriced = Math.max(0, Number(payload.unpricedCount) || 0);
+    usageNote.textContent = unpriced
+      ? `Без тарифа и вне суммы: ${unpriced}.`
+      : "Все показанные ходы тарифицированы.";
+  }
+}
+
+usageRanges?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-range]");
+  if (button) requestUsageHistory(button.dataset.range);
+});
+document.querySelector("[data-usage-retry]")?.addEventListener("click", () => {
+  requestUsageHistory(usageState.range, { force: true });
 });
 
 /* ================================================================ ЖУРНАЛ */
@@ -2661,6 +2914,9 @@ async function loadLazyDay(details) {
     }
     replacement.open = true;
     details.replaceWith(replacement);
+    decorateDayHeadings(replacement);
+    groupClaudeRowsInDay(replacement);
+    refreshUsageUnits(replacement);
     disableLocalLinks(replacement);
     syncCollapseTurnButtons(replacement);
     prepareMobileControls(journal);
@@ -2730,11 +2986,12 @@ function formatTaskDuration(value) {
 /* Тот же цветовой код, что в журнале по датам: cr — «kilo», kcr — «mega»,
    всё крупнее — «high». Разметка совпадает, поэтому бейдж выглядит одинаково
    в обоих режимах. */
-function usageBadge(text) {
+function usageBadge(text, credits = Number.NaN) {
   const unit = /\b(Gcr|Mcr|kcr|cr)$/u.exec(String(text))?.[1] ?? "cr";
   const level = unit === "cr" ? "kilo" : unit === "kcr" ? "mega" : "high";
   const badge = document.createElement("span");
   badge.setAttribute(`data-${level}-usage`, "");
+  if (Number.isFinite(Number(credits))) badge.dataset.usageCredits = String(Number(credits));
   badge.textContent = text;
   return badge;
 }
@@ -2773,6 +3030,166 @@ function groupedTurn(entry, date) {
   return copy;
 }
 
+function plainDateText(value) {
+  return String(value ?? "").trim().match(/^\d{2}\.\d{2}\.\d{4}/u)?.[0] ?? "";
+}
+
+function parseJournalDate(value) {
+  const date = plainDateText(value);
+  if (!date) return null;
+  const [day, month, year] = date.split(".").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatJournalDate(date) {
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "UTC",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(date);
+}
+
+function decorateDayHeadings(scope = journal) {
+  const weekdays = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+  for (const heading of scope.querySelectorAll(
+    "summary[data-work-log-day] > strong",
+  )) {
+    const date = parseJournalDate(heading.textContent);
+    if (!date) continue;
+    const plain = formatJournalDate(date);
+    heading.dataset.workLogDate = plain;
+    heading.textContent = `${plain} ${weekdays[date.getUTCDay()]}`;
+  }
+}
+
+function creditsFromEntries(entries) {
+  let total = 0;
+  let known = 0;
+  for (const entry of entries) {
+    const value = Number(entry.dataset.workLogTurnCredits);
+    if (!Number.isFinite(value) || value < 0) continue;
+    total += value;
+    known += 1;
+  }
+  return { total, known };
+}
+
+function groupClaudeRowsInDay(day) {
+  if (!groupClaudeTasks) return;
+  const rows = [...day.querySelectorAll(
+    ":scope [data-work-log-row][data-work-log-provider='claude']",
+  )];
+  if (!rows.length) return;
+  const primary = rows[0];
+  const entries = [];
+  const seen = new Set();
+  for (const row of rows) {
+    for (const entry of row.querySelectorAll("[data-work-log-turn-entry]")) {
+      const id = entry.dataset.workLogTurnId || `${entries.length}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      entries.push(entry.cloneNode(true));
+    }
+  }
+  primary.dataset.workLogThreadId = "work";
+  const title = primary.querySelector("[data-work-log-task-content]");
+  if (title) {
+    const label = document.createElement("span");
+    label.dataset.workLogClaudeWork = "";
+    label.textContent = "Claude - Work";
+    title.replaceChildren(label);
+  }
+  const list = primary.querySelector("[data-work-log-turn-list]");
+  if (list) list.replaceChildren(...entries);
+  const usage = primary.querySelector("[data-work-log-usage]");
+  if (usage) {
+    const totals = creditsFromEntries(entries);
+    if (totals.known) {
+      const details = document.createElement("details");
+      details.dataset.taskUsageDetails = "";
+      const summary = document.createElement("summary");
+      summary.dataset.taskUsage = "";
+      summary.append(
+        el("span", { "data-usage-label": "", text: "Итого" }),
+        " ",
+        usageBadge(formatUsageValue(totals.total), totals.total),
+      );
+      details.append(summary);
+      usage.replaceChildren(details);
+    } else {
+      usage.replaceChildren();
+    }
+  }
+  for (const row of rows.slice(1)) row.remove();
+}
+
+function periodIdentity(value, mode) {
+  const date = parseJournalDate(value);
+  if (!date) return null;
+  if (mode === "month") {
+    const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+    return {
+      key: `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, "0")}`,
+      sort: start.getTime(),
+      label: new Intl.DateTimeFormat("ru-RU", {
+        timeZone: "UTC",
+        month: "long",
+        year: "numeric",
+      }).format(start),
+    };
+  }
+  const mondayOffset = (date.getUTCDay() + 6) % 7;
+  const start = new Date(date);
+  start.setUTCDate(start.getUTCDate() - mondayOffset);
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 6);
+  return {
+    key: start.toISOString().slice(0, 10),
+    sort: start.getTime(),
+    label: `${formatJournalDate(start)} — ${formatJournalDate(end)}`,
+  };
+}
+
+function periodGroupingContent(source, mode) {
+  const periods = new Map();
+  for (const day of source.querySelectorAll("details[data-work-log-day-section]")) {
+    const date = day.querySelector("summary[data-work-log-day] strong")?.dataset.workLogDate
+      ?? plainDateText(day.querySelector("summary[data-work-log-day] strong")?.textContent);
+    const period = periodIdentity(date, mode);
+    if (!period) continue;
+    if (!periods.has(period.key)) periods.set(period.key, { ...period, days: [] });
+    periods.get(period.key).days.push(day.cloneNode(true));
+  }
+  const fragment = document.createDocumentFragment();
+  const ordered = [...periods.values()].sort((left, right) => right.sort - left.sort);
+  ordered.forEach((period, index) => {
+    const section = document.createElement("details");
+    section.dataset.workLogPeriodSection = mode;
+    section.open = index === 0;
+    const summary = document.createElement("summary");
+    summary.dataset.workLogPeriod = "";
+    summary.append(el("strong", { text: period.label }));
+    const sourceDays = document.createElement("div");
+    sourceDays.append(...period.days);
+    const groups = taskGroupsFrom(sourceDays);
+    const total = groups.reduce((sum, group) => sum + (Number(group.credits) || 0), 0);
+    if (groups.some((group) => Number.isFinite(group.credits))) {
+      summary.append(el("span", { class: "period-usage" }, [
+        el("span", { "data-usage-label": "", text: "Итого" }),
+        " ",
+        usageBadge(formatUsageValue(total), total),
+      ]));
+    }
+    section.append(summary, taskGroupingContent(sourceDays, {
+      overview: `Задач: ${groups.length}.`,
+    }));
+    fragment.append(section);
+  });
+  return fragment;
+}
+
 const taskProfileAxes = [
   {
     key: "turnCount",
@@ -2781,8 +3198,8 @@ const taskProfileAxes = [
   },
   {
     key: "credits",
-    label: "Кредиты",
-    format: formatTaskCredits,
+    label: "Расход",
+    format: (value) => formatUsageValue(value),
   },
   {
     key: "durationSeconds",
@@ -3016,11 +3433,14 @@ function taskGroupsFrom(source) {
   const groups = new Map();
   let order = 0;
   for (const day of source.querySelectorAll("details[data-work-log-day-section]")) {
-    const date = day.querySelector("summary[data-work-log-day] strong")?.textContent.trim();
+    const date = day.querySelector("summary[data-work-log-day] strong")?.dataset.workLogDate
+      ?? plainDateText(day.querySelector("summary[data-work-log-day] strong")?.textContent);
     if (!date) continue;
     for (const row of day.querySelectorAll("[data-work-log-row]")) {
       const provider = String(row.dataset.workLogProvider ?? "").trim();
-      const threadId = String(row.dataset.workLogThreadId ?? "").trim();
+      const sourceThreadId = String(row.dataset.workLogThreadId ?? "").trim();
+      const groupedClaude = groupClaudeTasks && provider === "claude";
+      const threadId = groupedClaude ? "work" : sourceThreadId;
       if (!provider || !threadId) continue;
       const key = `${provider}\u001f${threadId}`;
       let group = groups.get(key);
@@ -3028,7 +3448,9 @@ function taskGroupsFrom(source) {
         group = {
           provider,
           threadId,
-          title: row.querySelector("[data-work-log-task-content]")?.cloneNode(true),
+          title: groupedClaude
+            ? el("span", { "data-work-log-claude-work": "", text: "Claude - Work" })
+            : row.querySelector("[data-work-log-task-content]")?.cloneNode(true),
           turns: [],
           legacy: [],
           seenTurns: new Set(),
@@ -3113,13 +3535,13 @@ function taskGroupsFrom(source) {
     .sort((left, right) => right.latestAt - left.latestAt || left.order - right.order);
 }
 
-function taskGroupingContent(source) {
+function taskGroupingContent(source, { overview: overviewText = "" } = {}) {
   const groups = taskGroupsFrom(source);
   if (!groups.length) return source.cloneNode(true);
   const fragment = document.createDocumentFragment();
   const overview = document.createElement("div");
   overview.dataset.workLogTaskOverview = "";
-  overview.textContent = `Задач: ${groups.length}. Ходы собраны за все даты журнала.`;
+  overview.textContent = overviewText || `Задач: ${groups.length}. Ходы собраны за все даты журнала.`;
   fragment.append(overview);
   const list = document.createElement("div");
   list.dataset.workLogTaskGroups = "";
@@ -3148,7 +3570,9 @@ function taskGroupingContent(source) {
     creditsLabel.dataset.usageLabel = "";
     creditsLabel.textContent = "Итого";
     credits.append(creditsLabel, " ");
-    if (group.knownCredits) credits.append(usageBadge(formatTaskCredits(group.credits)));
+    if (group.knownCredits) {
+      credits.append(usageBadge(formatUsageValue(group.credits), group.credits));
+    }
     else credits.append("нет данных");
     const duration = document.createElement("span");
     duration.dataset.workLogTaskDuration = String(group.durationSeconds);
@@ -3183,21 +3607,55 @@ function taskGroupingContent(source) {
   return fragment;
 }
 
+let journalRenderSequence = 0;
+
+async function hydrateAllLazyDays() {
+  const days = [...journal.querySelectorAll(
+    "details[data-work-log-day-section][data-lazy-day]",
+  )];
+  await Promise.all(days.map(loadLazyDay));
+}
+
+function applyJournalGrouping() {
+  decorateDayHeadings(journal);
+  if (grouping === "date") {
+    for (const day of journal.querySelectorAll("details[data-work-log-day-section]")) {
+      groupClaudeRowsInDay(day);
+    }
+  } else if (grouping === "task") {
+    journal.replaceChildren(taskGroupingContent(journal));
+  } else {
+    journal.replaceChildren(periodGroupingContent(journal, grouping));
+  }
+  refreshUsageUnits(journal);
+  disableLocalLinks();
+  syncCollapseTurnButtons();
+  prepareMobileControls();
+  const saved = groupingStates[grouping];
+  if (saved) restoreOpenState(saved);
+  journalRendered = true;
+  journal.setAttribute("aria-busy", "false");
+}
+
 function renderJournal() {
+  const sequence = ++journalRenderSequence;
   const template = document.createElement("template");
   template.innerHTML = journalHtml;
   journal.replaceChildren(template.content.cloneNode(true));
   hoistRateLimits();
-  if (grouping === "task") {
-    const content = taskGroupingContent(journal);
-    journal.replaceChildren(content);
+  if (grouping === "date") {
+    applyJournalGrouping();
+    return;
   }
-  disableLocalLinks();
-  syncCollapseTurnButtons();
-  prepareMobileControls();
-  const state = groupingStates[grouping];
-  if (state) restoreOpenState(state);
-  journalRendered = true;
+  journal.setAttribute("aria-busy", "true");
+  void hydrateAllLazyDays().then(() => {
+    if (sequence !== journalRenderSequence) return;
+    applyJournalGrouping();
+  }).catch((error) => {
+    if (sequence !== journalRenderSequence) return;
+    journal.setAttribute("aria-busy", "false");
+    showToast(`Не удалось собрать журнал: ${error.message}`);
+  });
 }
 
 async function loadJournal({ force = false } = {}) {

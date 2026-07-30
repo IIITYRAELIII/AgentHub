@@ -5641,12 +5641,6 @@ html[data-surface="mobile"] .chat-stop-bottom {
   padding: 1rem 1.1rem max(1.2rem, env(safe-area-inset-bottom));
 }
 
-/* «Вид» — та же выплывающая панель, что и настройки хода, но уже: в ней
-   только выбор темы, группировка и переключатель детализации. */
-.view-panel {
-  width: min(21rem, 92vw);
-}
-
 .setting-field select {
   appearance: none;
   background:
@@ -5681,7 +5675,7 @@ html[data-surface="mobile"] .chat-stop-bottom {
   width: 0.95rem;
 }
 
-/* Разбивка по видам токенов включается в панели «Вид». */
+/* Разбивка по видам токенов включается в общей панели настроек. */
 html[data-token-breakdown="off"] .journal span[data-day-usage-breakdown] {
   display: none;
 }
@@ -6442,6 +6436,183 @@ html[data-surface="mobile"][data-view="chat"] body {
 html[data-surface="mobile"][data-view="journal"] .journal-view {
   padding-bottom: calc(var(--mobile-nav-h) + env(safe-area-inset-bottom) + 1rem);
   width: 100%;
+}
+
+/* ========================================================= Статистика === */
+
+.statistics-view {
+  box-sizing: border-box;
+  display: none;
+  flex: 1 1 auto;
+  width: 100%;
+}
+
+html[data-view="statistics"] .workspace,
+html[data-view="statistics"] .journal-view {
+  display: none;
+}
+
+html[data-view="statistics"] .statistics-view {
+  display: block;
+}
+
+.statistics-content {
+  display: grid;
+  gap: 1.15rem;
+  margin: 0 auto;
+  max-width: 74rem;
+  padding: 1.25rem clamp(1rem, 3vw, 2.5rem) 3rem;
+}
+
+.statistics-card {
+  background: var(--card-bg-open), color-mix(in srgb, var(--bg) 94%, transparent);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--card-shadow);
+  min-width: 0;
+  padding: clamp(1rem, 2.4vw, 1.5rem);
+}
+
+.statistics-card-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.statistics-card-head h2 {
+  color: var(--text);
+  font-size: clamp(1.05rem, 2vw, 1.3rem);
+  margin: 0;
+}
+
+.statistics-card-head p,
+.statistics-note {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  margin: 0.32rem 0 0;
+}
+
+.statistics-total {
+  color: var(--accent);
+  font-family: var(--font-numeric);
+  font-size: clamp(1.05rem, 2.3vw, 1.45rem);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.statistics-card .limits-ranges {
+  margin-bottom: 1rem;
+}
+
+.statistics-card .limits-chart-wrap {
+  position: relative;
+}
+
+.usage-bar {
+  fill: var(--accent);
+  opacity: 0.82;
+  outline: none;
+  transition: opacity 120ms ease, filter 120ms ease;
+}
+
+.usage-bar:hover,
+.usage-bar:focus {
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 75%, transparent));
+  opacity: 1;
+}
+
+.usage-chart-svg .limits-axis-y {
+  font-size: 8px;
+}
+
+.settings-section-title {
+  border-bottom: 1px solid var(--line);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  margin: 0.2rem 0 0.1rem;
+  padding-bottom: 0.55rem;
+  text-transform: uppercase;
+}
+
+.settings-section-title:not(:first-child) {
+  margin-top: 0.65rem;
+}
+
+.compact-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.compact-options > button {
+  justify-content: center;
+}
+
+details[data-work-log-period-section] {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--card-shadow);
+  margin-bottom: 1rem;
+  overflow: hidden;
+}
+
+details[data-work-log-period-section] > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  list-style: none;
+  padding: 1rem 1.15rem;
+}
+
+details[data-work-log-period-section] > summary::-webkit-details-marker {
+  display: none;
+}
+
+details[data-work-log-period-section] > [data-work-log-task-overview],
+details[data-work-log-period-section] > [data-work-log-task-groups] {
+  margin-left: 1rem;
+  margin-right: 1rem;
+}
+
+.period-usage {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.25rem;
+}
+
+[data-work-log-claude-work] {
+  color: var(--provider-claude);
+  font-weight: 650;
+}
+
+html[data-surface="mobile"][data-view="statistics"] .statistics-view {
+  padding-bottom: calc(var(--mobile-nav-h) + env(safe-area-inset-bottom) + 1rem);
+}
+
+html[data-surface="mobile"] .statistics-content {
+  gap: 0.8rem;
+  padding: 0.75rem 0.65rem 1rem;
+}
+
+html[data-surface="mobile"] .statistics-card {
+  border-radius: var(--radius-md);
+  padding: 0.85rem;
+}
+
+html[data-surface="mobile"] .statistics-card-head {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+html[data-surface="mobile"] .statistics-total {
+  white-space: normal;
 }
 
 html[data-surface="mobile"] .settings-panel {

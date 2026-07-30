@@ -1331,6 +1331,83 @@ function mergeLedgerRecord(existing, incoming) {
   return existing;
 }
 
+const USAGE_HISTORY_RANGES = Object.freeze({
+  "6h": { spanMs: 6 * 60 * 60 * 1_000, bucketMs: 15 * 60 * 1_000 },
+  "24h": { spanMs: 24 * 60 * 60 * 1_000, bucketMs: 60 * 60 * 1_000 },
+  "7d": { spanMs: 7 * 24 * 60 * 60 * 1_000, bucketMs: 6 * 60 * 60 * 1_000 },
+  "30d": { spanMs: 30 * 24 * 60 * 60 * 1_000, bucketMs: 24 * 60 * 60 * 1_000 },
+});
+
+function allHistoryBucketMs(spanMs, maxPoints) {
+  const day = 24 * 60 * 60 * 1_000;
+  const candidates = [60 * 60 * 1_000, day, 7 * day, 30 * day, 90 * day, 365 * day];
+  return candidates.find((bucket) => Math.ceil(spanMs / bucket) <= maxPoints)
+    ?? Math.ceil(spanMs / maxPoints / day) * day;
+}
+
+export function buildWorkLogUsageHistory(turns = {}, {
+  range = "24h",
+  now = Date.now(),
+  maxPoints = 600,
+} = {}) {
+  const normalizedRange = range === "all" || Object.hasOwn(USAGE_HISTORY_RANGES, range)
+    ? range
+    : "24h";
+  const toMs = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const records = Object.values(turns ?? {}).map((record) => {
+    const completedMs = Date.parse(record?.completedAt ?? "");
+    const breakdown = recordCreditBreakdown(record);
+    const priced = !(
+      (record?.usageReported === false && breakdown.total <= 0)
+      || (!breakdown.priced && breakdown.total <= 0)
+    );
+    return {
+      completedMs,
+      credits: Math.max(0, Number(breakdown.total) || 0),
+      priced,
+    };
+  }).filter((record) => Number.isFinite(record.completedMs) && record.completedMs <= toMs);
+  const earliest = records.length
+    ? Math.min(...records.map((record) => record.completedMs))
+    : toMs;
+  const configured = USAGE_HISTORY_RANGES[normalizedRange];
+  const rawFromMs = configured ? toMs - configured.spanMs : earliest;
+  const pointLimit = Math.min(Math.max(Number(maxPoints) || 600, 10), 2_000);
+  const spanMs = Math.max(1, toMs - rawFromMs);
+  const bucketMs = configured?.bucketMs ?? allHistoryBucketMs(spanMs, pointLimit);
+  const fromMs = Math.floor(rawFromMs / bucketMs) * bucketMs;
+  const buckets = new Map();
+  let totalCredits = 0;
+  let unpricedCount = 0;
+  for (const record of records) {
+    if (record.completedMs < rawFromMs) continue;
+    if (!record.priced) {
+      unpricedCount += 1;
+      continue;
+    }
+    totalCredits += record.credits;
+    if (record.credits <= 0) continue;
+    const bucket = Math.floor(record.completedMs / bucketMs) * bucketMs;
+    buckets.set(bucket, (buckets.get(bucket) ?? 0) + record.credits);
+  }
+  const points = [...buckets.entries()]
+    .sort(([left], [right]) => left - right)
+    .slice(-pointLimit)
+    .map(([at, credits]) => ({
+      at: new Date(at).toISOString(),
+      credits,
+    }));
+  return {
+    range: normalizedRange,
+    from: new Date(fromMs).toISOString(),
+    to: new Date(toMs).toISOString(),
+    bucketMs,
+    totalCredits,
+    unpricedCount,
+    points,
+  };
+}
+
 export class WorkLogUsageStore {
   #ledgerFile;
   #backupFile;
@@ -1481,6 +1558,15 @@ export class WorkLogUsageStore {
     const operation = this.#tail.catch(() => {}).then(async () => {
       await this.#load();
       return structuredClone(searchWorkLogRecords(this.#ledger.turns, query, options));
+    });
+    this.#tail = operation;
+    return operation;
+  }
+
+  usageHistory(options = {}) {
+    const operation = this.#tail.catch(() => {}).then(async () => {
+      await this.#load();
+      return structuredClone(buildWorkLogUsageHistory(this.#ledger.turns, options));
     });
     this.#tail = operation;
     return operation;

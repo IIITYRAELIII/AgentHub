@@ -3069,6 +3069,13 @@ async function desktopRateLimitHistory(params) {
   );
 }
 
+async function desktopUsageHistory(params) {
+  return workLogUsageStore.usageHistory({
+    range: params.range,
+    maxPoints: params.maxPoints,
+  });
+}
+
 async function desktopSearch(params) {
   const query = String(params.query ?? "").trim().slice(0, 200);
   if (query.length < 2) return { query, results: [] };
@@ -3164,6 +3171,7 @@ const { handleDesktopControl: dispatchDesktopControl } = createDesktopControlRou
     snapshot: desktopSnapshot,
     "task-history": desktopTaskHistory,
     "rate-limit-history": desktopRateLimitHistory,
+    "usage-history": desktopUsageHistory,
     search: desktopSearch,
     "open-task": desktopOpenTask,
     "open-turn": desktopOpenTurn,

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   applyWorkLogUsage,
+  buildWorkLogUsageHistory,
   normalizeWorkLogId,
   projectWorkLogRateLimits,
   projectWorkLogUsage,
@@ -21,6 +22,36 @@ const GIGA_WORK_ID = "323e4567-e89b-42d3-a456-426614174001";
 test("work-log ids are normalized and validated", () => {
   assert.equal(normalizeWorkLogId(WORK_ID.toUpperCase()), WORK_ID);
   assert.throws(() => normalizeWorkLogId("not-a-guid"), /UUID/);
+});
+
+test("local usage history buckets priced ledger turns and reports unpriced ones", () => {
+  const now = Date.parse("2026-07-30T12:00:00.000Z");
+  const history = buildWorkLogUsageHistory({
+    first: {
+      completedAt: "2026-07-30T10:10:00.000Z",
+      estimatedCredits: 3.25,
+      estimateKind: "model",
+    },
+    second: {
+      completedAt: "2026-07-30T10:20:00.000Z",
+      estimatedCredits: 1.75,
+      estimateKind: "model",
+    },
+    unpriced: {
+      completedAt: "2026-07-30T11:00:00.000Z",
+      usageReported: false,
+    },
+    old: {
+      completedAt: "2026-07-28T11:00:00.000Z",
+      estimatedCredits: 99,
+      estimateKind: "model",
+    },
+  }, { range: "6h", now });
+  assert.equal(history.range, "6h");
+  assert.equal(history.totalCredits, 5);
+  assert.equal(history.unpricedCount, 1);
+  assert.equal(history.points.length, 2);
+  assert.equal(history.points.reduce((sum, point) => sum + point.credits, 0), 5);
 });
 
 test("rate-limit summary is replaced in place above the journal days", () => {

@@ -227,7 +227,10 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     const page = await (await fetch(address.url)).text();
     assert.match(page, /data-theme="orbit"/u);
     assert.match(page, /<option value="taiga">Rain<\/option>/u);
-    assert.match(page, /data-panel-open="view"/u);
+    assert.match(page, /data-panel-open="settings"/u);
+    assert.match(page, /data-view-button="statistics"/u);
+    assert.match(page, /data-usage-unit="pte"/u);
+    assert.match(page, /data-claude-group-toggle/u);
     assert.match(page, /data-token-breakdown-toggle/u);
     assert.match(page, /<option value="metropolis">Мегаполис<\/option>/u);
     assert.match(page, /data-metropolis-glass/u);
@@ -242,7 +245,9 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.doesNotMatch(page, /data-connection|Автообновление/u);
     assert.match(page, /<option value="graphite">Графит<\/option>/u);
     assert.match(page, /data-group-select/u);
-    assert.match(page, /<option value="date">По датам<\/option>/u);
+    assert.match(page, /<option value="date">По дням<\/option>/u);
+    assert.match(page, /<option value="week">По неделям<\/option>/u);
+    assert.match(page, /<option value="month">По месяцам<\/option>/u);
     assert.match(page, /<option value="task">По задачам<\/option>/u);
     assert.match(page, />Орбита</u);
     assert.match(page, />Туманность</u);
