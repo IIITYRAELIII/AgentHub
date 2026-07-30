@@ -102,7 +102,11 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   }, { runtimeRoot });
   assert.equal(automatic.settings.approvalMode, "auto");
   await callDesktopControl("update-setting", { name: "approvalMode", value: "manual" }, { runtimeRoot });
-  const approvalStart = await callDesktopControl("send-message", { text: "[approval] desktop" }, { runtimeRoot });
+  const approvalStart = await callDesktopControl("send-message", {
+    text: "[approval] desktop",
+    provider: "codex",
+    threadId: firstThreadId,
+  }, { runtimeRoot });
   assert.equal(approvalStart.accepted, true);
   const approvalSnapshot = await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
@@ -121,7 +125,10 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   const contextBefore = beforeCompaction.tasks.find((item) => item.threadId === firstThreadId)?.context;
   assert.equal(contextBefore.usedTokens, 130);
   assert.equal(contextBefore.modelContextWindow, 200_000);
-  const compacted = await callDesktopControl("compact-context", {}, { runtimeRoot });
+  const compacted = await callDesktopControl("compact-context", {
+    provider: "codex",
+    threadId: firstThreadId,
+  }, { runtimeRoot });
   assert.equal(compacted.accepted, true);
   assert.match(compacted.compactionId, /^[0-9a-f-]{36}$/u);
   const compactedSnapshot = await waitFor(async () => {
@@ -176,7 +183,11 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   assert.equal(steered.steered, true);
   assert.equal(steered.turnId, firstStart.turnId);
   assert.equal(steered.clientUserMessageId, steerMessageId);
-  const duplicate = await callDesktopControl("send-message", { text: "parallel duplicate" }, { runtimeRoot });
+  const duplicate = await callDesktopControl("send-message", {
+    text: "parallel duplicate",
+    provider: "codex",
+    threadId: firstThreadId,
+  }, { runtimeRoot });
   assert.equal(duplicate.accepted, false);
   assert.equal(duplicate.reason, "task-running");
   assert.equal(duplicate.deferred, true);
@@ -192,7 +203,12 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
 
   const secondTask = await callDesktopControl("new-task", { provider: "codex" }, { runtimeRoot });
   assert.notEqual(secondTask.selected.threadId, firstThreadId);
-  const secondStart = await callDesktopControl("send-message", { text: "[slow] desktop B" }, { runtimeRoot });
+  const secondThreadId = secondTask.selected.threadId;
+  const secondStart = await callDesktopControl("send-message", {
+    text: "[slow] desktop B",
+    provider: "codex",
+    threadId: secondThreadId,
+  }, { runtimeRoot });
   assert.equal(secondStart.accepted, true);
   const parallel = await callDesktopControl("snapshot", {}, { runtimeRoot });
   assert.equal(parallel.activeCount, 2);
@@ -203,6 +219,16 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     threadId: firstThreadId,
   }, { runtimeRoot });
   assert.equal(selectedFirst.selected.threadId, firstThreadId);
+  const renamedSecond = await callDesktopControl("rename-task", {
+    provider: "codex",
+    threadId: secondThreadId,
+    title: "Desktop second exact",
+  }, { runtimeRoot });
+  assert.equal(renamedSecond.selected.threadId, firstThreadId);
+  assert.equal(
+    renamedSecond.tasks.find((item) => item.threadId === secondThreadId)?.title,
+    "Desktop second exact",
+  );
 
   const completed = await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
@@ -240,12 +266,16 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     callDesktopControl("send-message", {
       text: "outside image",
       attachments: [configPath],
+      provider: "codex",
+      threadId: firstThreadId,
     }, { runtimeRoot }),
     /вне каталога Desktop-приложения/,
   );
   const imageStart = await callDesktopControl("send-message", {
     text: "desktop image",
     attachments: [imagePath],
+    provider: "codex",
+    threadId: firstThreadId,
   }, { runtimeRoot });
   assert.equal(imageStart.accepted, true);
   await waitFor(async () => {
@@ -253,19 +283,36 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     return snapshot.activeCount === 0 ? snapshot : null;
   }, "desktop image turn completion", 10_000);
 
-  const renamed = await callDesktopControl("rename-task", { title: "Desktop renamed" }, { runtimeRoot });
+  const renamed = await callDesktopControl("rename-task", {
+    title: "Desktop renamed",
+    provider: "codex",
+    threadId: firstThreadId,
+  }, { runtimeRoot });
   assert.equal(renamed.selected.title, "Desktop renamed");
-  const diff = await callDesktopControl("task-diff", {}, { runtimeRoot });
+  const diff = await callDesktopControl("task-diff", {
+    provider: "codex",
+    threadId: firstThreadId,
+  }, { runtimeRoot });
   assert.equal(typeof diff.text, "string");
-  const cancelStart = await callDesktopControl("send-message", { text: "[hold] desktop cancel" }, { runtimeRoot });
+  const cancelStart = await callDesktopControl("send-message", {
+    text: "[hold] desktop cancel",
+    provider: "codex",
+    threadId: firstThreadId,
+  }, { runtimeRoot });
   assert.equal(cancelStart.accepted, true);
-  const cancelResult = await callDesktopControl("cancel-run", {}, { runtimeRoot });
+  const cancelResult = await callDesktopControl("cancel-run", {
+    provider: "codex",
+    threadId: firstThreadId,
+  }, { runtimeRoot });
   assert.equal(cancelResult.accepted, true);
   await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     return snapshot.activeCount === 0 ? snapshot : null;
   }, "desktop cancellation", 5_000);
-  const archived = await callDesktopControl("archive-task", {}, { runtimeRoot });
+  const archived = await callDesktopControl("archive-task", {
+    provider: "codex",
+    threadId: firstThreadId,
+  }, { runtimeRoot });
   assert.notEqual(archived.selected.threadId, firstThreadId);
   assert.doesNotMatch(stderr, /Unhandled asynchronous error|Cannot start desktop control/i);
 });

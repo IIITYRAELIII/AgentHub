@@ -4,7 +4,9 @@ import { parseClaudeResult, parseClaudeStreamEvent } from "./claude.mjs";
 import {
   ClaudeOutputReader,
   openClaudeRunOutput,
+  processFingerprintMatches,
   processIsAlive,
+  readProcessFingerprint,
   removeClaudeRunOutput,
   spawnClaudeWorker,
   stopProcessTree,
@@ -22,6 +24,9 @@ export class ClaudeRunController {
     onActive = () => {},
     onReconnect = () => {},
     onReadError = (run, error) => console.error(`Cannot read Claude output for task ${run.threadId}:`, error.message),
+    processAlive = processIsAlive,
+    processFingerprintLookup = readProcessFingerprint,
+    stopProcess = stopProcessTree,
   }) {
     this.dataDir = dataDir;
     this.pollIntervalMs = pollIntervalMs;
@@ -33,6 +38,9 @@ export class ClaudeRunController {
     this.onActive = onActive;
     this.onReconnect = onReconnect;
     this.onReadError = onReadError;
+    this.processAlive = processAlive;
+    this.processFingerprintLookup = processFingerprintLookup;
+    this.stopProcess = stopProcess;
   }
 
   async start(run, { command, args, cwd, env }) {
@@ -81,6 +89,7 @@ export class ClaudeRunController {
     }
     run.process = worker;
     run.pid = worker.pid ?? null;
+    run.claudeProcessFingerprint = await this.#lookupFingerprint(run.pid);
     await this.onPersist(run);
     callbacksEnabled = true;
     if (spawnError) {
@@ -132,7 +141,7 @@ export class ClaudeRunController {
     }
     if (run.claudeSettled || !this.isCurrentRun(run)) return;
     const processGone = run.claudeExited === true
-      || (run.pid ? !processIsAlive(run.pid) : !run.process);
+      || (run.pid ? !this.processAlive(run.pid) : !run.process);
     if (run.claudeResult || processGone) {
       await this.complete(run);
       return;
@@ -161,16 +170,17 @@ export class ClaudeRunController {
   async stop(run) {
     if (!run) return false;
     const pid = Number(run.pid ?? run.process?.pid);
-    if (!processIsAlive(pid)) {
+    if (!this.processAlive(pid)) {
       run.claudeExited = true;
       void this.drain(run);
       return true;
     }
-    return stopProcessTree(pid);
+    if (!await this.#ownsProcess(run, pid)) return false;
+    return this.stopProcess(pid);
   }
 
   async attachAfterRestart(run) {
-    const alive = processIsAlive(run.pid);
+    const alive = this.processAlive(run.pid) && await this.#ownsProcess(run, run.pid);
     Object.assign(run, {
       process: null,
       claudeReader: null,
@@ -188,6 +198,19 @@ export class ClaudeRunController {
     await this.onPersist(run);
     await this.drain(run);
     return alive;
+  }
+
+  async #lookupFingerprint(pid) {
+    try {
+      return await this.processFingerprintLookup(pid);
+    } catch {
+      return null;
+    }
+  }
+
+  async #ownsProcess(run, pid) {
+    const current = await this.#lookupFingerprint(pid);
+    return processFingerprintMatches(run?.claudeProcessFingerprint, current);
   }
 
   pause(run) {

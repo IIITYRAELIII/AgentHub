@@ -532,7 +532,7 @@ if (isMainModule(import.meta.url)) {
   const run = async () => {
     const args = process.argv.slice(2);
     const runtimeCommand = "send-message";
-    if ((process.env.AGENT_HUB_DIRECT ?? process.env.TELEGRAM_INTEGRATION_DIRECT) !== "1") {
+    if (process.env.AGENT_HUB_DIRECT !== "1") {
       try {
         const result = await forwardRuntimeCommand(runtimeCommand, args);
         if (result) console.log(result);

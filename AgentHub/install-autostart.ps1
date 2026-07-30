@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$RuntimeRoot = Join-Path $env:LOCALAPPDATA 'Tyrael\TelegramIntegration'
+$RuntimeRoot = Join-Path $env:LOCALAPPDATA 'AgentHub'
 $RuntimeConfig = Join-Path $RuntimeRoot 'config.json'
 if (Test-Path -LiteralPath $RuntimeConfig) {
     $ProjectRoot = (Get-Content -LiteralPath $RuntimeConfig -Raw -Encoding UTF8 | ConvertFrom-Json).projectRoot

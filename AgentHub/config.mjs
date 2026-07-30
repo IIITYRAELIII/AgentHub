@@ -14,7 +14,7 @@ export async function resolveConfigPath({
   agentHubRoot = AGENT_HUB_ROOT,
   accessImpl = access,
 } = {}) {
-  const explicitConfig = environment.AGENT_HUB_CONFIG ?? environment.TELEGRAM_CODEX_CONFIG;
+  const explicitConfig = environment.AGENT_HUB_CONFIG;
   if (explicitConfig) return path.resolve(explicitConfig);
   const layout = runtimeLayout(defaultRuntimeRoot({ environment }));
   const external = layout.configFile;
@@ -473,9 +473,7 @@ export async function loadConfig() {
       : requireIntegerArray(raw.allowedChatIds, "allowedChatIds")
     : new Set();
   const dataDir = path.resolve(configDirectory, raw.dataDir ?? "data");
-  const defaultTtsVenv = process.platform === "win32"
-    ? path.join(process.env.LOCALAPPDATA ?? AGENT_HUB_ROOT, "TelegramIntegration", "tts-venv")
-    : path.join(AGENT_HUB_ROOT, ".venv-tts");
+  const defaultTtsVenv = path.join(defaultRuntimeRoot(), "tts-venv");
   const provider = String(process.env.AI_PROVIDER ?? raw.provider ?? "codex").trim().toLowerCase();
   if (provider !== "codex" && provider !== "claude") {
     throw new Error('provider must be either "codex" or "claude"');
@@ -576,8 +574,8 @@ export async function loadConfig() {
     progressStartDelayMs: positiveInteger(raw.progressStartDelayMs, 500, "progressStartDelayMs"),
     pythonExe: path.resolve(
       process.env.WHISPER_PYTHON ?? raw.pythonExe ?? path.join(
-        AGENT_HUB_ROOT,
-        ".venv-telegram",
+        defaultRuntimeRoot(),
+        "voice-venv",
         process.platform === "win32" ? path.join("Scripts", "python.exe") : path.join("bin", "python"),
       ),
     ),

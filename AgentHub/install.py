@@ -17,8 +17,8 @@ PROFILES = ("full", "telegram", "journal")
 
 def runtime_root() -> Path:
     if sys.platform == "win32":
-        return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Tyrael" / "TelegramIntegration"
-    return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "tyrael" / "telegram-integration"
+        return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "AgentHub"
+    return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "agent-hub"
 
 
 def install_voice(target_root: Path) -> None:
@@ -87,10 +87,7 @@ def install_vscode_extension() -> Path | None:
     if target.parent != extensions_root or not target.name.startswith(f"{package['publisher']}.{package['name']}-"):
         raise RuntimeError(f"Refusing to replace unexpected extension path: {target}")
     extensions_root.mkdir(parents=True, exist_ok=True)
-    removable_prefixes = (
-        f"{package['publisher']}.{package['name']}-",
-        "tyrael-local.work-log-view-",
-    )
+    removable_prefixes = (f"{package['publisher']}.{package['name']}-",)
     for candidate in extensions_root.iterdir():
         resolved = candidate.resolve()
         if resolved.parent != extensions_root:
@@ -291,12 +288,6 @@ def main() -> int:
     config = apply_rollout_image_cleanup_choice(config, args.rollout_image_cleanup)
     config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"Created {config_file}")
-    old_state = ROOT / ".telegram-codex-state.json"
-    new_state = ROOT / "data" / "state.json"
-    if old_state.exists() and not new_state.exists():
-        new_state.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(old_state, new_state)
-        print(f"Migrated state to {new_state}")
     if args.install_voice:
         install_voice(target_root)
     subprocess.run(["node", str(ROOT / "runtime-manager.mjs"), "deploy"], check=True)

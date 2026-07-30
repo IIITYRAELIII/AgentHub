@@ -1,0 +1,156 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createDesktopTaskHistoryFactory } from "./desktop-task-history.mjs";
+
+function fixture(overrides = {}) {
+  const calls = {
+    binding: null,
+    merged: null,
+    fit: null,
+  };
+  const entries = [{
+    provider: "codex",
+    projectRoot: "D:/work",
+    threadId: "thread-1",
+    title: "Задача",
+  }];
+  const sourceHistory = Array.from({ length: 4 }, (_, index) => ({
+    id: `turn-${index + 1}`,
+    prompt: `Вопрос ${index + 1}`,
+    answer: `Ответ ${index + 1}`,
+    status: index === 3 ? "running" : "completed",
+    active: index === 3,
+    completed: index < 3,
+    activities: Array.from({ length: 105 }, (__, activity) => activity),
+    messages: [
+      {
+        itemId: `user-${index + 1}`,
+        clientUserMessageId: `client-${index + 1}`,
+        role: "user",
+        text: `Сообщение ${index + 1}`,
+      },
+      {
+        itemId: `agent-${index + 1}`,
+        role: "agent",
+        phase: "final",
+        text: `Ответ агента ${index + 1}`,
+      },
+      { role: "tool", text: "Скрыто" },
+    ],
+  }));
+  const state = {
+    activeProvider: "codex",
+    threadId: "thread-1",
+    chatId: 42,
+    entries,
+    history: sourceHistory,
+    run: {
+      id: "run-1",
+      turnId: "turn-live",
+      promptPreview: "Текущий вопрос",
+      responseText: "Текущий ответ",
+      clientUserMessageId: "client-live",
+      responseItemId: "response-live",
+      activities: [{ type: "reasoning" }],
+    },
+    ...overrides,
+  };
+  const desktopTaskHistory = createDesktopTaskHistoryFactory({
+    selection: {
+      activeProvider: () => state.activeProvider,
+      threadId: () => state.threadId,
+      chatId: () => state.chatId,
+    },
+    catalog: {
+      refresh: async () => state.entries,
+    },
+    historyReader: {
+      read: async (binding) => {
+        calls.binding = binding;
+        return { history: structuredClone(state.history) };
+      },
+    },
+    runs: {
+      forTask: () => state.run,
+    },
+    historyMerger: {
+      mergeActive: (history, active) => {
+        calls.merged = active;
+        history.push({ id: active.turnId, ...active });
+      },
+    },
+    responseBudget: {
+      fit: (payload, options) => {
+        calls.fit = options;
+        return payload;
+      },
+    },
+  });
+  return { desktopTaskHistory, state, calls };
+}
+
+test("desktop task history resolves selection and merges the active run", async () => {
+  const { desktopTaskHistory, calls } = fixture();
+  const result = await desktopTaskHistory({ limit: 2 });
+
+  assert.deepEqual(calls.binding, {
+    provider: "codex",
+    projectRoot: "D:/work",
+    threadId: "thread-1",
+    taskTitle: "Задача",
+    chatId: 42,
+  });
+  assert.deepEqual(calls.merged, {
+    active: true,
+    turnId: "turn-live",
+    prompt: "Текущий вопрос",
+    answer: "Текущий ответ",
+    clientUserMessageId: "client-live",
+    responseItemId: "response-live",
+    activities: [{ type: "reasoning" }],
+  });
+  assert.equal(result.total, 5);
+  assert.equal(result.start, 3);
+  assert.equal(result.end, 5);
+  assert.equal(result.nextBefore, 3);
+  assert.deepEqual(result.items.map((item) => item.id), ["turn-4", "turn-live"]);
+  assert.deepEqual(calls.fit, { maxBytes: 3_500_000 });
+});
+
+test("desktop task history preserves pagination, field limits and response budget", async () => {
+  const longAnswer = "я".repeat(2_000);
+  const { desktopTaskHistory, state, calls } = fixture({ run: null });
+  state.history[1].answer = longAnswer;
+  state.history[1].messages[1].text = longAnswer;
+
+  const result = await desktopTaskHistory({
+    provider: "codex",
+    threadId: "thread-1",
+    before: 3,
+    limit: 2,
+    maxAnswerChars: 1_000,
+    maxResponseBytes: 1,
+  });
+
+  assert.equal(result.start, 1);
+  assert.equal(result.end, 3);
+  assert.equal(result.nextBefore, 1);
+  assert.equal(result.items[0].answer.length, 1_000);
+  assert.equal(result.items[0].messages[1].text.length, 1_000);
+  assert.equal(result.items[0].activities.length, 100);
+  assert.equal(result.items[0].messages.some((message) => message.role === "tool"), false);
+  assert.deepEqual(calls.fit, { maxBytes: 64 * 1_024 });
+});
+
+test("desktop task history rejects invalid and missing tasks", async () => {
+  const { desktopTaskHistory, state } = fixture();
+  await assert.rejects(
+    desktopTaskHistory({ provider: "other", threadId: "thread-1" }),
+    /Укажите корректную задачу/,
+  );
+  state.entries = [];
+  await assert.rejects(
+    desktopTaskHistory({ provider: "codex", threadId: "missing" }),
+    /Задача не найдена/,
+  );
+});

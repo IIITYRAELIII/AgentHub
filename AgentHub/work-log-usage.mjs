@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -9,6 +9,12 @@ import {
 import { isInheritedSubagentTurn } from "./codex-subagent-accounting.mjs";
 import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
+import {
+  appendLedgerEvents,
+  applyLedgerDelta,
+  ledgerRecordChanges,
+  ledgerRecordSnapshot,
+} from "./incremental-ledger.mjs";
 import {
   addCreditBreakdown,
   emptyCreditBreakdown,
@@ -1313,11 +1319,16 @@ function mergeLedgerRecord(existing, incoming) {
 export class WorkLogUsageStore {
   #ledgerFile;
   #backupFile;
+  #deltaFile;
   #quarantineFile;
   #defaultProjectRoot;
   #randomUUID;
   #loaded = false;
   #ledger = normalizedLedger().ledger;
+  #incremental = false;
+  #recordSnapshot = new Map();
+  #incrementalThresholdBytes = 1024 * 1024;
+  #checkpointDeltaBytes = 8 * 1024 * 1024;
   #tail = Promise.resolve();
 
   constructor({
@@ -1327,6 +1338,7 @@ export class WorkLogUsageStore {
   } = {}) {
     this.#ledgerFile = path.resolve(ledgerFile);
     this.#backupFile = `${this.#ledgerFile}.bak`;
+    this.#deltaFile = `${this.#ledgerFile}.delta.jsonl`;
     this.#quarantineFile = `${this.#ledgerFile}.invalid-records.json`;
     this.#defaultProjectRoot = normalizeProjectRoot(defaultProjectRoot);
     this.#randomUUID = randomUUID;
@@ -1337,11 +1349,18 @@ export class WorkLogUsageStore {
     const loaded = await readJsonWithBackup(this.#ledgerFile, {
       backupFile: this.#backupFile,
     });
-    const persisted = loaded.value ?? {};
+    const delta = await applyLedgerDelta(loaded.value ?? {}, this.#deltaFile);
+    const persisted = delta.value;
     const normalized = normalizedLedger(persisted, {
       defaultProjectRoot: this.#defaultProjectRoot,
     });
     this.#ledger = normalized.ledger;
+    const sourceInfo = await stat(this.#ledgerFile).catch(() => null);
+    this.#incremental = Number(sourceInfo?.size ?? 0) >= this.#incrementalThresholdBytes;
+    this.#recordSnapshot = ledgerRecordSnapshot(this.#ledger.turns);
+    if (delta.invalid) {
+      console.error(`Ignored ${delta.invalid} invalid incremental work-log ledger event(s).`);
+    }
     if (normalized.invalidRecords.length) {
       await mkdir(path.dirname(this.#quarantineFile), { recursive: true });
       await writeTextAtomic(
@@ -1376,14 +1395,27 @@ export class WorkLogUsageStore {
             !== this.#ledger.turns[key]?.serviceTier
         ),
       );
-    if (loaded.recovered || migrated || normalized.invalidRecords.length) await this.#save();
+    if (loaded.recovered || migrated || normalized.invalidRecords.length) {
+      await this.#save({ forceCheckpoint: true });
+    }
   }
 
-  async #save() {
+  async #save({ forceCheckpoint = false } = {}) {
     await mkdir(path.dirname(this.#ledgerFile), { recursive: true });
+    if (this.#incremental && !forceCheckpoint) {
+      const changes = ledgerRecordChanges(this.#ledger.turns, this.#recordSnapshot);
+      if (!changes.events.length) return;
+      await appendLedgerEvents(this.#deltaFile, changes.events);
+      this.#recordSnapshot = changes.snapshot;
+      const deltaInfo = await stat(this.#deltaFile).catch(() => null);
+      if (Number(deltaInfo?.size ?? 0) < this.#checkpointDeltaBytes) return;
+    }
     const content = `${JSON.stringify(this.#ledger, null, 2)}\n`;
     await writeTextAtomic(this.#ledgerFile, content);
     await writeTextAtomic(this.#backupFile, content);
+    await rm(this.#deltaFile, { force: true });
+    this.#recordSnapshot = ledgerRecordSnapshot(this.#ledger.turns);
+    this.#incremental = Buffer.byteLength(content, "utf8") >= this.#incrementalThresholdBytes;
   }
 
   mergeTurnTexts(messages = []) {

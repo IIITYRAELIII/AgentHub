@@ -319,14 +319,14 @@ test("Telegram API URL allows plaintext HTTP only on loopback", () => {
   assert.throws(() => httpBaseUrl("http://telegram.example", "api"), /must use HTTPS/);
 });
 
-test("resolveConfigPath uses an activated external runtime but keeps the legacy fallback", async () => {
+test("resolveConfigPath uses an activated external runtime and workspace fallback", async () => {
   const environment = { LOCALAPPDATA: "C:\\RuntimeBase" };
   const external = await resolveConfigPath({
     environment,
     agentHubRoot: "C:\\Workspace\\AgentHub",
     accessImpl: async () => {},
   });
-  assert.equal(external, path.resolve("C:\\RuntimeBase", "Tyrael", "TelegramIntegration", "config.json"));
+  assert.equal(external, path.resolve("C:\\RuntimeBase", "AgentHub", "config.json"));
 
   const legacy = await resolveConfigPath({
     environment,
@@ -343,15 +343,5 @@ test("resolveConfigPath honors the Agent Hub config before runtime discovery", a
       accessImpl: async () => { throw new Error("must not be called"); },
     }),
     path.resolve("C:\\Explicit\\config.json"),
-  );
-});
-
-test("resolveConfigPath keeps the legacy config environment alias", async () => {
-  assert.equal(
-    await resolveConfigPath({
-      environment: { TELEGRAM_CODEX_CONFIG: "C:\\Legacy\\config.json" },
-      accessImpl: async () => { throw new Error("must not be called"); },
-    }),
-    path.resolve("C:\\Legacy\\config.json"),
   );
 });

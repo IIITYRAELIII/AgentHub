@@ -65,7 +65,7 @@ namespace AgentHubDesktop
         public AgentHubWindow()
         {
             var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            desktopRoot = Path.Combine(local, "Tyrael", "TelegramIntegration", "DesktopApp");
+            desktopRoot = Path.Combine(local, "AgentHub", "DesktopApp");
             draftFile = Path.Combine(desktopRoot, "drafts-v2.json");
             attachmentRoot = Path.Combine(desktopRoot, "attachments");
 
@@ -163,8 +163,8 @@ namespace AgentHubDesktop
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 10, 0)
             });
-            brand.Children.Add(Theme.Label("TYRAEL", 12, Theme.Solid(Theme.Text), FontWeights.Bold));
-            brand.Children.Add(Theme.Label("  INTEGRATION", 12, Theme.Solid(Theme.Muted), FontWeights.SemiBold));
+            brand.Children.Add(Theme.Label("AGENT", 12, Theme.Solid(Theme.Text), FontWeights.Bold));
+            brand.Children.Add(Theme.Label("  HUB", 12, Theme.Solid(Theme.Muted), FontWeights.SemiBold));
             brand.VerticalAlignment = VerticalAlignment.Center;
             bar.Children.Add(brand);
 
@@ -1576,11 +1576,9 @@ namespace AgentHubDesktop
             try
             {
                 footer.Text = "Отправляю…";
-                var parameters = new Dictionary<string, object>
-                {
-                    { "text", text },
-                    { "clientUserMessageId", sendingMessageId }
-                };
+                var parameters = SelectedTaskParameters();
+                parameters["text"] = text;
+                parameters["clientUserMessageId"] = sendingMessageId;
                 if (sendingAttachments.Length > 0) parameters["attachments"] = sendingAttachments;
                 var result = await client.CallAsync("send-message", parameters, true);
                 var accepted = AgentHubClient.Bool(result, "accepted");
@@ -1611,6 +1609,20 @@ namespace AgentHubDesktop
             }
             catch (Exception error) { footer.Text = error.Message; }
             finally { sendButton.IsEnabled = true; }
+        }
+
+        private Dictionary<string, object> SelectedTaskParameters()
+        {
+            TaskItem item;
+            if (String.IsNullOrWhiteSpace(selectedKey) || !tasks.TryGetValue(selectedKey, out item))
+            {
+                throw new InvalidOperationException("Сначала выберите задачу");
+            }
+            return new Dictionary<string, object>
+            {
+                { "provider", item.Provider },
+                { "threadId", item.ThreadId }
+            };
         }
 
         private async void BeginSend() { await SendAsync(); }
@@ -1758,7 +1770,7 @@ namespace AgentHubDesktop
         {
             try
             {
-                var result = await client.CallAsync("task-diff", new Dictionary<string, object>());
+                var result = await client.CallAsync("task-diff", SelectedTaskParameters());
                 var text = AgentHubClient.Text(result, "text", "В выбранной задаче изменений файлов нет.");
                 ShowTextDialog("Изменения задачи", String.IsNullOrWhiteSpace(text) ? "В выбранной задаче изменений файлов нет." : text);
             }
@@ -1769,7 +1781,7 @@ namespace AgentHubDesktop
         {
             try
             {
-                var result = await client.CallAsync("cancel-run", new Dictionary<string, object>());
+                var result = await client.CallAsync("cancel-run", SelectedTaskParameters());
                 footer.Text = AgentHubClient.Text(result, "message", "Остановка запрошена");
             }
             catch (Exception error) { footer.Text = error.Message; }
@@ -1783,7 +1795,9 @@ namespace AgentHubDesktop
             if (title == null) return;
             try
             {
-                var snapshot = await client.CallAsync("rename-task", new Dictionary<string, object> { { "title", title } });
+                var parameters = SelectedTaskParameters();
+                parameters["title"] = title;
+                var snapshot = await client.CallAsync("rename-task", parameters);
                 ApplySnapshot(snapshot);
                 footer.Text = "Название закреплено";
             }
@@ -1798,7 +1812,7 @@ namespace AgentHubDesktop
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
             try
             {
-                var snapshot = await client.CallAsync("archive-task", new Dictionary<string, object>());
+                var snapshot = await client.CallAsync("archive-task", SelectedTaskParameters());
                 ApplySnapshot(snapshot);
                 footer.Text = "Задача архивирована";
             }
@@ -1828,7 +1842,7 @@ namespace AgentHubDesktop
         {
             try
             {
-                var result = await client.CallAsync("speak-last-answer", new Dictionary<string, object>());
+                var result = await client.CallAsync("speak-last-answer", SelectedTaskParameters());
                 footer.Text = AgentHubClient.Text(result, "message", "Озвучивание запущено");
             }
             catch (Exception error) { footer.Text = error.Message; }
@@ -1892,8 +1906,7 @@ namespace AgentHubDesktop
         private static string ShortRuntime(string value)
         {
             if (value.StartsWith("VSCode", StringComparison.OrdinalIgnoreCase)) return "VSC";
-            if (value.StartsWith("Agent Hub", StringComparison.OrdinalIgnoreCase)
-                || value.StartsWith("Integration", StringComparison.OrdinalIgnoreCase)) return "HUB";
+            if (value.StartsWith("Agent Hub", StringComparison.OrdinalIgnoreCase)) return "HUB";
             if (value.StartsWith("Codex Desktop", StringComparison.OrdinalIgnoreCase)) return "APP";
             return value;
         }

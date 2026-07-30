@@ -1080,7 +1080,7 @@ test("task title synchronization updates existing ledger turns and the projected
       threadId: "thread-title",
       turnId: "turn-title",
       projectRoot: root,
-      taskTitle: "Integration",
+      taskTitle: "Agent Hub",
       usageReported: true,
       usage: { inputTokens: 100 },
       completedAt: "2026-07-27T00:00:00.000Z",
@@ -1103,7 +1103,7 @@ test("task title synchronization updates existing ledger turns and the projected
       projected,
       /<button type="button" data-open-task data-provider="codex" data-thread-id="thread-title">Codex - Agent HUB<\/button>/,
     );
-    assert.doesNotMatch(projected, />Codex - Integration<\/a>/);
+    assert.doesNotMatch(projected, />Codex - Agent Hub<\/a>/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

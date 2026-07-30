@@ -130,10 +130,7 @@ import {
   listClaudeSessionSnapshots,
   readClaudeSessionSnapshot,
 } from "./last-message.mjs";
-import {
-  codexThreadHistory,
-  mergeActiveTaskHistory,
-} from "./task-history.mjs";
+import { codexThreadHistory, mergeActiveTaskHistory } from "./task-history.mjs";
 import { startCodexTurnWithRecovery } from "./codex-recovery.mjs";
 import {
   codexThreadWaitingOnApproval,
@@ -176,6 +173,7 @@ import {
   statusTaskEntries,
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
+  normalizeTaskExecutionOwner,
   taskOrderingActivityAtMs,
 } from "./task-catalog.mjs";
 import { resolveCodexObservedExecutionOwner } from "./codex-runtime-owner.mjs";
@@ -214,13 +212,21 @@ import { WorkLogUsageStore } from "./work-log-usage.mjs";
 import { miniAppMenuButtonRequests, MiniAppServer } from "./mini-app-server.mjs";
 import { MiniAppPublisher } from "./mini-app-publisher.mjs";
 import { QuickTunnelController } from "./quick-tunnel.mjs";
+import { ensureLocalWebSecret } from "./local-web-auth.mjs";
+import { fitTaskHistoryPayload } from "./response-budget.mjs";
+import { settleNamedOperations } from "./lifecycle-coordinator.mjs";
+import { createDesktopSnapshotFactory } from "./desktop-snapshot.mjs";
+import { createDesktopTaskHistoryFactory } from "./desktop-task-history.mjs";
+import { createDesktopControlRouter } from "./desktop-control-router.mjs";
 
 const config = await loadConfig();
 const runtimeCommandRoot = process.env.AGENT_HUB_RUNTIME_ROOT
-  ?? process.env.TELEGRAM_INTEGRATION_RUNTIME_ROOT
-  ?? ((process.env.AGENT_HUB_CONFIG ?? process.env.TELEGRAM_CODEX_CONFIG)
+  ?? (process.env.AGENT_HUB_CONFIG
     ? path.dirname(config.configPath)
     : defaultRuntimeRoot());
+const localWebSecret = config.miniApp.enabled
+  ? await ensureLocalWebSecret(path.join(runtimeCommandRoot, "local-web.secret"))
+  : "";
 const codexRolloutContextSanitizer = new CodexRolloutContextSanitizer({
   ...config.codexRolloutContext,
 });
@@ -234,6 +240,7 @@ const miniAppServer = config.miniApp.enabled
     workLogFile: path.join(config.projectRoot, "WORK_LOG.md"),
     botToken: config.token,
     allowedUserIds: config.allowedUserIds,
+    localAccessSecret: localWebSecret,
     controlHandler: handleDesktopControl,
     attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
   })
@@ -255,8 +262,8 @@ const logDirectory = samePath(config.dataDir, defaultDataDirectory)
   ? AGENT_HUB_ROOT
   : config.dataDir;
 installRotatingConsole({
-  stdoutFile: path.join(logDirectory, "telegram-codex.log"),
-  stderrFile: path.join(logDirectory, "telegram-codex-error.log"),
+  stdoutFile: path.join(logDirectory, "agent-hub.log"),
+  stderrFile: path.join(logDirectory, "agent-hub-error.log"),
   maxBytes: config.logMaxBytes,
   maxFiles: config.logMaxFiles,
   mirror: process.stdout.isTTY || process.stderr.isTTY,
@@ -386,7 +393,6 @@ const runtimeCommandServer = new RuntimeCommandServer({
 });
 await runtimeCommandServer.start();
 let desktopControlServer = null;
-let desktopMutationQueue = Promise.resolve();
 
 let updateOffset = 0;
 let chatId = null;
@@ -1800,11 +1806,11 @@ try {
     if (!savedRun || typeof savedRun !== "object"
       || !["running", "finishing"].includes(savedRun.status)) continue;
     const observer = savedRun.observer === true;
-    const executionOwner = savedRun.executionOwner
+    const executionOwner = normalizeTaskExecutionOwner(savedRun.executionOwner)
       ?? (savedRun.provider === "codex"
         ? observer
           ? TASK_EXECUTION_OWNERS.VSCODE
-          : TASK_EXECUTION_OWNERS.TELEGRAM
+          : TASK_EXECUTION_OWNERS.HUB
         : null);
     taskRuns.add({
       ...savedRun,
@@ -2244,7 +2250,7 @@ async function buildTaskCatalog() {
           threadId: thread.id,
         });
         const executionOwner = existingRun?.observer === false
-          ? TASK_EXECUTION_OWNERS.TELEGRAM
+          ? TASK_EXECUTION_OWNERS.HUB
           : await resolveCodexObservedExecutionOwner(activity, {
             rolloutPath: thread.path,
             agentHubPid: codexTransport.pid,
@@ -2463,240 +2469,107 @@ function codexItemActivity(item, completed) {
   return null;
 }
 
-function desktopContextSnapshot(thread, turn = "") {
-  const usage = latestThreadContextUsage(thread, turn);
-  if (!usage) return null;
-  const windowTokens = Math.max(0, Number(usage.modelContextWindow) || 0);
-  const usedTokens = Math.max(0, Number(usage.usedTokens) || 0);
-  return {
-    usedTokens,
-    modelContextWindow: windowTokens,
-    percent: windowTokens ? Math.min(100, (usedTokens / windowTokens) * 100) : 0,
-    turnId: usage.turnId,
-    updatedAt: usage.updatedAt,
-    compacting: compactingThreads.has(String(thread ?? "")),
-    compaction: threadCompactions.get(String(thread ?? "")) ?? null,
-  };
-}
+const {
+  desktopContextSnapshot,
+  desktopRunSnapshot,
+  desktopTaskSnapshot,
+  desktopSnapshot,
+} = createDesktopSnapshotFactory({
+  clock: {
+    nowMs: () => Date.now(),
+    nowIso: () => new Date().toISOString(),
+  },
+  context: {
+    latestUsage: latestThreadContextUsage,
+    isCompacting: (contextThreadId) => compactingThreads.has(contextThreadId),
+    compactionFor: (contextThreadId) => threadCompactions.get(contextThreadId),
+  },
+  runs: {
+    forTask: (task) => taskRuns.forTask(task),
+    titleFor: runTaskTitle,
+  },
+  tasks: {
+    savedLastMessage: savedLastTaskMessageRecord,
+    projectNameFor: (projectRoot) => findProject(projectRoot)?.name ?? path.basename(projectRoot),
+    entryIsSelected: catalogEntryIsSelected,
+    executionRuntimeLabel: taskExecutionRuntimeLabel,
+    orderingActivityAtMs: taskOrderingActivityAtMs,
+    samePath,
+  },
+  catalog: {
+    entries: () => taskCatalog,
+    refreshedAt: () => taskCatalogRefreshedAt,
+    refresh: refreshTaskCatalog,
+    merge: mergeTaskCatalog,
+  },
+  selection: {
+    selectedTask,
+    hasThread: () => Boolean(threadId),
+    selectedTurnTarget,
+    activeProject,
+    activeThreadTitle: () => activeThreadTitle,
+  },
+  settings: {
+    current: () => ({
+      activeProvider,
+      activeProjectRoot,
+      codexModel,
+      claudeModel,
+      codexReasoningEffort,
+      claudeReasoningEffort,
+      codexCollaborationMode,
+      claudeCollaborationMode,
+      autoApprove,
+      codexModels: CODEX_MODELS,
+      codexModelLabel,
+      claudeModels: CLAUDE_MODELS,
+      claudeModelLabels: CLAUDE_MODEL_LABELS,
+      reasoningEfforts: CODEX_REASONING_EFFORTS,
+      reasoningLabels: CODEX_REASONING_LABELS,
+      collaborationModes: CODEX_COLLABORATION_MODES,
+      collaborationModeLabels: CODEX_COLLABORATION_MODE_LABELS,
+      projects: PROJECTS,
+    }),
+  },
+  deferred: {
+    pendingValues: () => [...pendingInputs.values()],
+    queuedValues: () => [...queuedInputs.values()],
+    inputPreview,
+  },
+  approvals: {
+    snapshot: () => approvalController.snapshot(),
+  },
+  restart: {
+    request: () => restartRequest,
+    blockingRuns: restartBlockingRuns,
+    mediaJobCount: () => backgroundMediaJobs.size,
+    speechJobCount: () => backgroundSpeechJobs.size,
+  },
+  warn: (...args) => console.warn(...args),
+});
 
-function desktopRunSnapshot(run) {
-  if (!run) return null;
-  return {
-    id: run.id,
-    turnId: run.turnId ?? null,
-    provider: run.provider,
-    threadId: run.threadId,
-    taskTitle: runTaskTitle(run),
-    status: run.status,
-    observer: run.observer === true,
-    executionOwner: run.executionOwner ?? null,
-    runtime: run.appServer ?? null,
-    model: run.model ?? null,
-    reasoning: run.reasoning ?? null,
-    stage: String(run.progressStage ?? "Выполняется…"),
-    prompt: String(run.promptPreview ?? ""),
-    progress: String(run.progressReasoning ?? ""),
-    response: String(run.responseText ?? ""),
-    clientUserMessageId: run.clientUserMessageId ?? null,
-    responseItemId: run.responseItemId ?? null,
-    startedAt: run.startedAt ?? null,
-    lastActivityAt: run.lastMeaningfulProgressAt ?? run.progressHeartbeatAt ?? run.startedAt ?? null,
-    activities: Array.isArray(run.activities) ? run.activities.slice(-100) : [],
-    context: desktopContextSnapshot(run.threadId, run.turnId),
-  };
-}
-
-function desktopTaskSnapshot(entry) {
-  const task = {
-    provider: entry.provider,
-    projectRoot: entry.projectRoot,
-    threadId: entry.threadId,
-  };
-  const run = taskRuns.forTask(task);
-  const lastMessage = savedLastTaskMessageRecord(task);
-  return {
-    provider: entry.provider,
-    projectRoot: entry.projectRoot,
-    projectName: entry.projectName ?? findProject(entry.projectRoot)?.name ?? path.basename(entry.projectRoot),
-    threadId: entry.threadId,
-    title: entry.title,
-    selected: catalogEntryIsSelected(entry, selectedTask()),
-    running: Boolean(run || entry.running),
-    activityUnknown: entry.activityUnknown === true,
-    executionOwner: run?.executionOwner ?? entry.executionOwner ?? null,
-    runtime: run?.appServer ?? (entry.executionOwner ? taskExecutionRuntimeLabel(entry.executionOwner) : null),
-    updatedAtMs: Math.max(
-      Number(entry.lastActivityAtMs) || 0,
-      Number(entry.updatedAtMs) || 0,
-      Date.parse(run?.lastMeaningfulProgressAt ?? run?.startedAt ?? "") || 0,
-    ),
-    orderingActivityAtMs: taskOrderingActivityAtMs(entry, { run, lastMessage }),
-    lastAnswer: lastMessage?.text ?? "",
-    lastAnswerAt: lastMessage?.updatedAt ?? null,
-    context: desktopContextSnapshot(entry.threadId, run?.turnId),
-    run: desktopRunSnapshot(run),
-  };
-}
-
-async function desktopSnapshot({ refresh = false } = {}) {
-  const catalogStale = Date.now() - taskCatalogRefreshedAt >= 5_000;
-  if (refresh || !taskCatalog.length || catalogStale) {
-    await refreshTaskCatalog({ force: Boolean(refresh || catalogStale) }).catch((error) => {
-      console.warn("Cannot refresh desktop task catalog:", error.message);
-    });
-  }
-  let catalog = taskCatalog;
-  if (!catalog.some((entry) => catalogEntryIsSelected(entry, selectedTask())) && threadId) {
-    catalog = mergeTaskCatalog(catalog, [{
-      ...selectedTurnTarget(),
-      projectName: activeProject().name,
-      startedAt: new Date().toISOString(),
-    }]);
-  }
-  const tasks = catalog.map(desktopTaskSnapshot);
-  return {
-    apiVersion: 2,
-    generatedAt: new Date().toISOString(),
-    selected: {
-      ...selectedTask(),
-      title: activeThreadTitle,
-      projectName: activeProject().name,
-      model: activeProvider === "codex" ? codexModelLabel(codexModel) : CLAUDE_MODEL_LABELS[claudeModel],
-      reasoning: CODEX_REASONING_LABELS[
-        activeProvider === "codex" ? codexReasoningEffort : claudeReasoningEffort
-      ],
-      mode: CODEX_COLLABORATION_MODE_LABELS[
-        activeProvider === "codex" ? codexCollaborationMode : claudeCollaborationMode
-      ],
-    },
-    settings: {
-      provider: activeProvider,
-      model: activeProvider === "codex" ? codexModel : claudeModel,
-      reasoning: activeProvider === "codex" ? codexReasoningEffort : claudeReasoningEffort,
-      mode: activeProvider === "codex" ? codexCollaborationMode : claudeCollaborationMode,
-      approvalMode: autoApprove ? "auto" : "manual",
-      models: activeProvider === "codex"
-        ? CODEX_MODELS.map((model) => ({ value: model.value, label: model.label }))
-        : CLAUDE_MODELS.map((value) => ({ value, label: CLAUDE_MODEL_LABELS[value] })),
-      reasoningOptions: CODEX_REASONING_EFFORTS.map((value) => ({
-        value,
-        label: CODEX_REASONING_LABELS[value],
-      })),
-      modeOptions: CODEX_COLLABORATION_MODES.map((value) => ({
-        value,
-        label: CODEX_COLLABORATION_MODE_LABELS[value],
-      })),
-      projects: PROJECTS.map((project) => ({
-        name: project.name,
-        path: project.path,
-        selected: samePath(project.path, activeProjectRoot),
-      })),
-    },
-    pendingApprovals: approvalController.snapshot(),
-    deferredInputs: [
-      ...[...pendingInputs.values()].map((item) => ({
-        id: item.id,
-        state: "pending",
-        provider: item.provider,
-        threadId: item.threadId,
-        taskTitle: item.taskTitle,
-        clientUserMessageId: item.clientUserMessageId ?? null,
-        preview: inputPreview(item.input).slice(0, 1_000),
-        allowForce: item.allowForce === true,
-        conflictKind: item.conflictKind ?? null,
-      })),
-      ...[...queuedInputs.values()].map((item) => ({
-        id: item.id,
-        state: "queued",
-        provider: item.provider,
-        threadId: item.threadId,
-        taskTitle: item.taskTitle,
-        clientUserMessageId: item.clientUserMessageId ?? null,
-        preview: inputPreview(item.input).slice(0, 1_000),
-        allowForce: false,
-        conflictKind: item.conflictKind ?? null,
-      })),
-    ],
-    restartPending: Boolean(restartRequest),
-    restartWaiting: restartRequest?.waitingForRuns === true,
-    restartBlockingCount: restartRequest
-      ? restartBlockingRuns().length + backgroundMediaJobs.size + backgroundSpeechJobs.size
-      : 0,
-    activeCount: tasks.filter((item) => item.running).length,
-    tasks,
-  };
-}
-
-async function desktopTaskHistory(params) {
-  const provider = String(params.provider ?? activeProvider).trim();
-  const selectedThreadId = String(params.threadId ?? threadId ?? "").trim();
-  if (!['codex', 'claude'].includes(provider) || !selectedThreadId) {
-    throw new Error("Укажите корректную задачу");
-  }
-  const catalog = await refreshTaskCatalog();
-  const entry = catalog.find((item) => item.provider === provider && item.threadId === selectedThreadId);
-  if (!entry) throw new Error("Задача не найдена в локальном каталоге");
-  const binding = {
-    provider: entry.provider,
-    projectRoot: entry.projectRoot,
-    threadId: entry.threadId,
-    taskTitle: entry.title,
-    chatId,
-  };
-  const { history } = await taskViewController.readHistory(binding);
-  const running = taskRuns.forTask(binding);
-  if (running) {
-    mergeActiveTaskHistory(history, {
-      active: true,
-      turnId: running.turnId ?? running.id,
-      prompt: running.promptPreview,
-      answer: running.responseText,
-      clientUserMessageId: running.clientUserMessageId,
-      responseItemId: running.responseItemId,
-      activities: running.activities,
-    });
-  }
-  const total = history.length;
-  const requestedEnd = Number(params.before);
-  const end = Number.isSafeInteger(requestedEnd)
-    ? Math.max(0, Math.min(requestedEnd, total))
-    : total;
-  const limit = Math.max(1, Math.min(Number(params.limit) || 10, 20));
-  const maxAnswerChars = Math.max(1_000, Math.min(Number(params.maxAnswerChars) || 200_000, 200_000));
-  const start = Math.max(0, end - limit);
-  return {
-    provider,
-    threadId: selectedThreadId,
-    title: entry.title,
-    total,
-    start,
-    end,
-    nextBefore: start > 0 ? start : null,
-    items: history.slice(start, end).map((item) => ({
-      id: String(item.id ?? ""),
-      prompt: String(item.prompt ?? "").slice(0, 100_000),
-      answer: String(item.answer ?? "").slice(0, maxAnswerChars),
-      status: String(item.status ?? ""),
-      active: item.active === true,
-      completed: item.completed === true,
-      activities: Array.isArray(item.activities) ? item.activities.slice(-100) : [],
-      messages: (Array.isArray(item.messages) ? item.messages : []).flatMap((message) => {
-        const role = String(message?.role ?? "");
-        const text = String(message?.text ?? "");
-        if (!["user", "agent"].includes(role) || !text) return [];
-        return [{
-          itemId: String(message.itemId ?? ""),
-          ...(message.clientUserMessageId
-            ? { clientUserMessageId: String(message.clientUserMessageId) }
-            : {}),
-          role,
-          text: text.slice(0, role === "agent" ? maxAnswerChars : 100_000),
-          ...(message.phase ? { phase: String(message.phase) } : {}),
-        }];
-      }),
-    })),
-  };
-}
+const desktopTaskHistory = createDesktopTaskHistoryFactory({
+  selection: {
+    activeProvider: () => activeProvider,
+    threadId: () => threadId,
+    chatId: () => chatId,
+  },
+  catalog: {
+    refresh: refreshTaskCatalog,
+  },
+  historyReader: {
+    read: (binding) => taskViewController.readHistory(binding),
+  },
+  runs: {
+    forTask: (binding) => taskRuns.forTask(binding),
+  },
+  historyMerger: {
+    mergeActive: mergeActiveTaskHistory,
+  },
+  responseBudget: {
+    fit: fitTaskHistoryPayload,
+  },
+});
 
 async function desktopSelectTask(params) {
   const provider = String(params.provider ?? "").trim();
@@ -2788,9 +2661,8 @@ async function desktopOpenTurn(params) {
 async function desktopMessageTarget(params) {
   const requestedProvider = String(params.provider ?? "").trim();
   const requestedThreadId = String(params.threadId ?? "").trim();
-  if (!requestedProvider && !requestedThreadId) return selectedTurnTarget(chatId);
   if (!["codex", "claude"].includes(requestedProvider) || !requestedThreadId) {
-    throw new Error("Сообщение не содержит точный адрес задачи");
+    throw new Error("Команда не содержит точный адрес задачи");
   }
   const catalog = await refreshTaskCatalog();
   const entry = catalog.find((item) => (
@@ -3102,27 +2974,67 @@ async function desktopUpdateSetting(params) {
 }
 
 async function desktopRenameTask(params) {
-  await renameCurrentTask(String(params.title ?? ""));
+  const target = await desktopMessageTarget(params);
+  const pinnedTitle = pinTaskTitle(target.provider, target.threadId, String(params.title ?? ""));
+  if (!pinnedTitle) throw new Error("Укажите непустое название");
+  if (target.provider === "codex") {
+    await sendRpc("thread/name/set", { threadId: target.threadId, name: pinnedTitle });
+    invalidateTaskCatalog();
+  }
+  const run = taskRuns.forTask(target);
+  if (run) updateTaskRunTitle(run, pinnedTitle);
+  const entry = taskCatalog.find((item) => catalogEntryIsSelected(item, target));
+  if (entry) entry.title = pinnedTitle;
+  if (catalogEntryIsSelected(target, selectedTask())) activeThreadTitle = pinnedTitle;
+  await savePinnedTaskTitles();
+  await saveState();
   return desktopSnapshot({ refresh: true });
 }
 
-async function desktopArchiveTask() {
-  const result = await archiveCurrentThread();
-  if (!result.archived) throw new Error(result.reason === "active-turn"
-    ? "Сначала остановите активный ход"
-    : result.reason === "unsupported" ? "Claude не поддерживает архивирование" : "Задача не выбрана");
+async function desktopArchiveTask(params) {
+  const target = await desktopMessageTarget(params);
+  if (target.provider !== "codex") throw new Error("Claude не поддерживает архивирование");
+  if (taskRuns.forTask(target)) throw new Error("Сначала остановите активный ход");
+  const archivedResult = await sendRpc("thread/read", {
+    threadId: target.threadId,
+    includeTurns: false,
+  });
+  await sendRpc("thread/archive", { threadId: target.threadId });
+  invalidateTaskCatalog();
+  delete codexTaskSettings[target.threadId];
+  const isCurrent = catalogEntryIsSelected(target, selectedTask());
+  if (isCurrent) {
+    threadId = null;
+    threadIdsByProvider.codex = null;
+    latestDiff = "";
+    const [nextThread] = (await listThreads()).filter((item) => item.id !== target.threadId);
+    if (nextThread) {
+      threadId = nextThread.id;
+      threadIdsByProvider.codex = threadId;
+      restoreCodexTaskSettings(threadId);
+      activeThreadTitle = threadTitle(nextThread);
+      latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
+    }
+  }
+  await saveState();
+  const result = {
+    archived: true,
+    archivedThread: archivedResult.thread ?? { id: target.threadId },
+  };
+  if (!result.archived) throw new Error("Задача не выбрана");
   return desktopSnapshot({ refresh: true });
 }
 
-async function desktopTaskDiff() {
-  const target = selectedTask();
+async function desktopTaskDiff(params) {
+  const target = await desktopMessageTarget(params);
   const run = taskRuns.forTask(target);
   const text = run ? await refreshTaskDiff(run) : taskDiffs.get(taskRunKey(target)) ?? "";
   return { text, empty: !text };
 }
 
-async function desktopCancelRun() {
-  const run = selectedRun();
+async function desktopCancelRun(params) {
+  const target = await desktopMessageTarget(params);
+  const run = taskRuns.forTask(target);
   if (!run) return { accepted: false, message: "В выбранной задаче сейчас ничего не выполняется" };
   if (run.provider === "codex") {
     await sendRpc("turn/interrupt", { threadId: run.threadId, turnId: run.turnId });
@@ -3228,8 +3140,8 @@ async function desktopStatusDetails() {
   };
 }
 
-async function desktopSpeakLastAnswer() {
-  const target = selectedTask();
+async function desktopSpeakLastAnswer(params) {
+  const target = await desktopMessageTarget(params);
   const message = savedLastTaskMessageRecord(target);
   const text = String(message?.text ?? "").trim();
   if (!text) throw new Error("У задачи ещё нет завершённого ответа");
@@ -3312,8 +3224,8 @@ async function desktopSearch(params) {
   };
 }
 
-async function desktopCompactContext() {
-  const target = selectedTask();
+async function desktopCompactContext(params) {
+  const target = await desktopMessageTarget(params);
   if (target.provider !== "codex") throw new Error("Свёртка контекста доступна только для Codex");
   const run = taskRuns.forTask(target);
   if (run) throw new Error("Сначала завершите или остановите текущий ход");
@@ -3352,41 +3264,55 @@ async function desktopCompactContext() {
   }
 }
 
-function serializeDesktopMutation(operation) {
-  const next = desktopMutationQueue.catch(() => {}).then(operation);
-  desktopMutationQueue = next.catch(() => {});
-  return next;
-}
+const { handleDesktopControl: dispatchDesktopControl } = createDesktopControlRouter({
+  handlers: {
+    snapshot: desktopSnapshot,
+    "task-history": desktopTaskHistory,
+    "rate-limit-history": desktopRateLimitHistory,
+    search: desktopSearch,
+    "open-task": desktopOpenTask,
+    "open-turn": desktopOpenTurn,
+    "select-task": desktopSelectTask,
+    "send-message": desktopSendMessage,
+    "new-task": desktopNewTask,
+    "update-setting": desktopUpdateSetting,
+    "rename-task": desktopRenameTask,
+    "archive-task": desktopArchiveTask,
+    "task-diff": desktopTaskDiff,
+    "cancel-run": desktopCancelRun,
+    "resolve-approval": desktopResolveApproval,
+    "deferred-input": desktopDeferredInput,
+    "status-details": desktopStatusDetails,
+    "speak-last-answer": desktopSpeakLastAnswer,
+    "restart-server": desktopRestartServer,
+    "compact-context": desktopCompactContext,
+  },
+  mutationActions: [
+    "open-task",
+    "open-turn",
+    "select-task",
+    "send-message",
+    "new-task",
+    "update-setting",
+    "rename-task",
+    "archive-task",
+    "cancel-run",
+    "resolve-approval",
+    "deferred-input",
+    "restart-server",
+    "compact-context",
+  ],
+  miniAppLimits: {
+    source: "telegram-mini-app",
+    limit: 10,
+    maxAnswerChars: 75_000,
+    maxResponseBytes: 850_000,
+  },
+  desktopMaxResponseBytes: 3_500_000,
+});
 
-async function handleDesktopControl({ action, params, context = null }) {
-  const effectiveParams = context?.source === "telegram-mini-app"
-    ? {
-      ...params,
-      limit: Math.min(Number(params.limit) || 10, 10),
-      maxAnswerChars: 75_000,
-    }
-    : params;
-  if (action === "snapshot") return desktopSnapshot(effectiveParams);
-  if (action === "task-history") return desktopTaskHistory(effectiveParams);
-  if (action === "rate-limit-history") return desktopRateLimitHistory(effectiveParams);
-  if (action === "search") return desktopSearch(effectiveParams);
-  if (action === "open-task") return serializeDesktopMutation(() => desktopOpenTask(effectiveParams));
-  if (action === "open-turn") return serializeDesktopMutation(() => desktopOpenTurn(effectiveParams));
-  if (action === "select-task") return serializeDesktopMutation(() => desktopSelectTask(effectiveParams));
-  if (action === "send-message") return serializeDesktopMutation(() => desktopSendMessage(effectiveParams));
-  if (action === "new-task") return serializeDesktopMutation(() => desktopNewTask(effectiveParams));
-  if (action === "update-setting") return serializeDesktopMutation(() => desktopUpdateSetting(effectiveParams));
-  if (action === "rename-task") return serializeDesktopMutation(() => desktopRenameTask(effectiveParams));
-  if (action === "archive-task") return serializeDesktopMutation(() => desktopArchiveTask());
-  if (action === "task-diff") return desktopTaskDiff();
-  if (action === "cancel-run") return serializeDesktopMutation(() => desktopCancelRun());
-  if (action === "resolve-approval") return serializeDesktopMutation(() => desktopResolveApproval(effectiveParams));
-  if (action === "deferred-input") return serializeDesktopMutation(() => desktopDeferredInput(effectiveParams));
-  if (action === "status-details") return desktopStatusDetails();
-  if (action === "speak-last-answer") return desktopSpeakLastAnswer();
-  if (action === "restart-server") return serializeDesktopMutation(() => desktopRestartServer());
-  if (action === "compact-context") return serializeDesktopMutation(() => desktopCompactContext());
-  throw new Error(`Неизвестная desktop-команда: ${action}`);
+async function handleDesktopControl(request) {
+  return dispatchDesktopControl(request);
 }
 
 async function sendProjectPicker() {
@@ -3895,10 +3821,8 @@ async function beginRun(input, target = null) {
     modelId,
     reasoning: CODEX_REASONING_LABELS[reasoningId],
     reasoningId,
-    executionOwner: TASK_EXECUTION_OWNERS.TELEGRAM,
-    appServer: provider === "codex"
-      ? taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.TELEGRAM)
-      : "Telegram CLI",
+    executionOwner: TASK_EXECUTION_OWNERS.HUB,
+    appServer: taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.HUB),
     collaborationMode: target?.collaborationMode
       ?? (provider === "codex" ? codexCollaborationMode : claudeCollaborationMode),
   });
@@ -3978,9 +3902,11 @@ function runProgressHeading(run, done = false) {
     runtime: run?.appServer ?? (
       run?.provider === "codex"
         ? taskExecutionRuntimeLabel(run?.executionOwner ?? (
-          run?.observer ? TASK_EXECUTION_OWNERS.VSCODE : TASK_EXECUTION_OWNERS.TELEGRAM
+          run?.observer ? TASK_EXECUTION_OWNERS.VSCODE : TASK_EXECUTION_OWNERS.HUB
         ))
-        : run?.observer ? "Внешний Claude CLI" : "Telegram CLI"
+        : run?.observer
+          ? "Внешний Claude CLI"
+          : taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.HUB)
     ),
     task: runTaskTitle(run),
     project: config.showProjectButton ? runProject(run).name : null,
@@ -4169,7 +4095,9 @@ async function deferConflictingInput(input, temporaryFiles, {
     const preview = inputPreview(input);
     const runtime = target.provider === "codex"
       ? taskExecutionRuntimeLabel(executionOwner)
-      : executionOwner === TASK_EXECUTION_OWNERS.TELEGRAM ? "Telegram CLI" : "Внешний Claude CLI";
+      : executionOwner === TASK_EXECUTION_OWNERS.HUB
+        ? taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.HUB)
+        : "Внешний Claude CLI";
     const conflictText = conflictKind === "repository"
       ? `Задача «${conflictTask?.taskTitle ?? "Без названия"}» уже работает с тем же Git-репозиторием через ${runtime}. Параллельная запись может смешать изменения.`
       : conflictKind === "activity-unknown"
@@ -4294,7 +4222,7 @@ async function startTurn(input, temporaryFiles = [], {
     if (error.message !== "this task is already running" || !concurrentRun) throw error;
     return deferConflictingInput(input, temporaryFiles, {
       forceSpeechButton,
-      executionOwner: concurrentRun.executionOwner ?? TASK_EXECUTION_OWNERS.TELEGRAM,
+      executionOwner: concurrentRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
       target,
     });
   }
@@ -4448,9 +4376,7 @@ async function spawnRuntimeNotification(script, args, requestCwd, callerEnvironm
       env: {
         ...cleanRuntimeCallerEnvironment(process.env, callerEnvironment),
         AGENT_HUB_CONFIG: config.configPath,
-        TELEGRAM_CODEX_CONFIG: config.configPath,
         AGENT_HUB_DIRECT: "1",
-        TELEGRAM_INTEGRATION_DIRECT: "1",
       },
       timeoutMs: 180_000,
       maxOutputBytes: 256 * 1024,
@@ -5369,7 +5295,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
           rolloutPath: result.thread?.path,
           agentHubPid: codexTransport.pid,
         })
-        : TASK_EXECUTION_OWNERS.TELEGRAM,
+        : TASK_EXECUTION_OWNERS.HUB,
     };
   }
   const turn = selectCodexTurn(turns, {
@@ -5392,7 +5318,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
         rolloutPath: result.thread?.path,
         agentHubPid: codexTransport.pid,
       })
-      : TASK_EXECUTION_OWNERS.TELEGRAM,
+      : TASK_EXECUTION_OWNERS.HUB,
   };
   if (!snapshot.active && activity.activeTurnIds.includes(turn.id)) {
     return {
@@ -5422,7 +5348,7 @@ async function finishObservedRun(run, snapshot) {
   );
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
   if (run.provider === "codex") {
-    if (run.executionOwner !== TASK_EXECUTION_OWNERS.TELEGRAM) {
+    if (run.executionOwner !== TASK_EXECUTION_OWNERS.HUB) {
       const hooked = await waitForTurnEndCompletion({
         provider: "codex",
         threadId: run.threadId,
@@ -5555,7 +5481,7 @@ const taskObserver = new TaskObserverController({
   onActive: async (run, snapshot) => {
     run.executionOwner = run.observer === true
       ? snapshot.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
-      : TASK_EXECUTION_OWNERS.TELEGRAM;
+      : TASK_EXECUTION_OWNERS.HUB;
     if (run.provider === "codex") {
       run.appServer = taskExecutionRuntimeLabel(run.executionOwner);
       run.activeTurnCount = Math.max(1, Number(snapshot.activeTurnCount) || 1);
@@ -6395,32 +6321,38 @@ async function performRestart() {
   restartRequest.waitingForRuns = false;
   await updateRestartMessage("🔄 Перезапускаю Agent Hub…").catch(() => {});
   await saveState();
-  await Promise.allSettled([
-    stateWriteQueue,
-    bindingWriteQueue,
-    mediaController.waitForWrites(),
-    taskSyncStore.save(),
-    deliveryOutbox.waitForWrites(),
-    backgroundJobStore.waitForWrites(),
-    failedUpdateStore.waitForWrites(),
-  ]);
+  await settleNamedOperations([
+    { name: "state writes", run: () => stateWriteQueue },
+    { name: "message binding writes", run: () => bindingWriteQueue },
+    { name: "media writes", run: () => mediaController.waitForWrites() },
+    { name: "task sync", run: () => taskSyncStore.save() },
+    { name: "delivery outbox", run: () => deliveryOutbox.waitForWrites() },
+    { name: "background jobs", run: () => backgroundJobStore.waitForWrites() },
+    { name: "failed updates", run: () => failedUpdateStore.waitForWrites() },
+  ], {
+    logError: (name, error) => console.error(`Restart flush failed (${name}):`, error.message),
+  });
   stopping = true;
   stopRuntimeTimers();
-  await stopCodexAppServerTree();
   mediaController.stop();
-  await miniAppPublisher?.close();
-  await quickTunnelController?.close();
-  await publicMiniAppServer?.close();
-  await miniAppServer?.close();
-  await desktopControlServer?.close();
-  await runtimeCommandServer.close();
-  await instanceGuard.release();
+  await settleNamedOperations([
+    { name: "Codex App Server", run: stopCodexAppServerTree },
+    { name: "Mini App publisher", run: () => miniAppPublisher?.close() },
+    { name: "quick tunnel", run: () => quickTunnelController?.close() },
+    { name: "public Mini App", run: () => publicMiniAppServer?.close() },
+    { name: "local Mini App", run: () => miniAppServer?.close() },
+    { name: "Desktop control", run: () => desktopControlServer?.close() },
+    { name: "runtime command", run: () => runtimeCommandServer.close() },
+    { name: "instance lock", run: () => instanceGuard.release() },
+  ], {
+    logError: (name, error) => console.error(`Restart close failed (${name}):`, error.message),
+  });
   const invocation = botReplacementInvocation({
     botFile: path.join(import.meta.dirname, "agent-hub-server.mjs"),
     agentHubRoot: AGENT_HUB_ROOT,
   });
   const launcher = String(
-    process.env.AGENT_HUB_LAUNCHER ?? process.env.TELEGRAM_INTEGRATION_LAUNCHER ?? "",
+    process.env.AGENT_HUB_LAUNCHER ?? "",
   ).trim();
   const fallbackInvocation = process.platform === "win32" && launcher
     ? directWindowsLauncherInvocation({ launcher })
@@ -7463,28 +7395,30 @@ async function shutdown(signal) {
   stopping = true;
   console.log(`Stopping on ${signal}...`);
   stopRuntimeTimers();
-  await stopCodexAppServerTree();
   // Ходы Claude оставляем работать: следующий запуск бота подключится к ним заново.
   for (const run of taskRuns.values()) {
     if (run.provider === "codex") run.process?.kill();
   }
   mediaController.stop();
-  await miniAppPublisher?.close();
-  await quickTunnelController?.close();
-  await publicMiniAppServer?.close();
-  await miniAppServer?.close();
-  await desktopControlServer?.close();
-  await runtimeCommandServer.close();
-  await Promise.allSettled([
-    stateWriteQueue,
-    mediaController.waitForWrites(),
-    bindingWriteQueue,
-    taskSyncStore.save(),
-    deliveryOutbox.waitForWrites(),
-    backgroundJobStore.waitForWrites(),
-    failedUpdateStore.waitForWrites(),
-  ]);
-  await instanceGuard.release();
+  await settleNamedOperations([
+    { name: "Codex App Server", run: stopCodexAppServerTree },
+    { name: "Mini App publisher", run: () => miniAppPublisher?.close() },
+    { name: "quick tunnel", run: () => quickTunnelController?.close() },
+    { name: "public Mini App", run: () => publicMiniAppServer?.close() },
+    { name: "local Mini App", run: () => miniAppServer?.close() },
+    { name: "Desktop control", run: () => desktopControlServer?.close() },
+    { name: "runtime command", run: () => runtimeCommandServer.close() },
+    { name: "state writes", run: () => stateWriteQueue },
+    { name: "media writes", run: () => mediaController.waitForWrites() },
+    { name: "message binding writes", run: () => bindingWriteQueue },
+    { name: "task sync", run: () => taskSyncStore.save() },
+    { name: "delivery outbox", run: () => deliveryOutbox.waitForWrites() },
+    { name: "background jobs", run: () => backgroundJobStore.waitForWrites() },
+    { name: "failed updates", run: () => failedUpdateStore.waitForWrites() },
+    { name: "instance lock", run: () => instanceGuard.release() },
+  ], {
+    logError: (name, error) => console.error(`Shutdown failed (${name}):`, error.message),
+  });
 }
 
 process.on("unhandledRejection", (error) => {
@@ -7515,8 +7449,7 @@ if (config.telegramEnabled) {
 desktopControlServer = new DesktopControlServer({
   runtimeRoot: runtimeCommandRoot,
   handler: handleDesktopControl,
-  protectSecret: (process.env.AGENT_HUB_DISABLE_SECRET_ACL
-    ?? process.env.TELEGRAM_INTEGRATION_DISABLE_SECRET_ACL) === "1"
+  protectSecret: process.env.AGENT_HUB_DISABLE_SECRET_ACL === "1"
     ? async () => {}
     : undefined,
 });

@@ -32,7 +32,7 @@ function runtimeCommandId(runtimeRoot) {
 export function runtimeCommandEndpoint(runtimeRoot = defaultRuntimeRoot()) {
   const id = runtimeCommandId(runtimeRoot);
   return process.platform === "win32"
-    ? `\\\\.\\pipe\\telegram-integration-command-${id}`
+    ? `\\\\.\\pipe\\agent-hub-command-${id}`
     : path.join(runtimeRoot, `command-${id}.sock`);
 }
 
@@ -40,7 +40,7 @@ export function runtimeCommandSpoolDirectory(
   runtimeRoot = defaultRuntimeRoot(),
   temporaryRoot = os.tmpdir(),
 ) {
-  return path.join(temporaryRoot, `telegram-integration-command-${runtimeCommandId(runtimeRoot)}`);
+  return path.join(temporaryRoot, `agent-hub-command-${runtimeCommandId(runtimeRoot)}`);
 }
 
 export function runtimeCommandEnvironment(environment = process.env) {

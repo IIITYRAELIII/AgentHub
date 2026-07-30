@@ -1,6 +1,6 @@
 import { watch } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import path from "node:path";
 
@@ -99,6 +99,44 @@ async function readBinaryBody(request, maxBytes = MAX_ATTACHMENT_BYTES) {
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const CHANGE_DEBOUNCE_MS = 75;
 const TELEGRAM_AUTH_MAX_AGE_SECONDS = 86_400;
+const LOCAL_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+const LOCAL_SESSION_COOKIE = "agent_hub_local";
+
+function safeEqualText(left, right) {
+  const leftBytes = Buffer.from(String(left ?? ""), "utf8");
+  const rightBytes = Buffer.from(String(right ?? ""), "utf8");
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+function cookieValue(request, name) {
+  for (const part of String(request.headers.cookie ?? "").split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 1) continue;
+    if (part.slice(0, separator).trim() === name) return part.slice(separator + 1).trim();
+  }
+  return "";
+}
+
+function localSessionValue(secret, now = Date.now()) {
+  const issuedAt = Math.floor(now / 1_000);
+  const nonce = randomBytes(18).toString("base64url");
+  const payload = `${issuedAt}.${nonce}`;
+  const signature = createHmac("sha256", secret).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function validLocalSession(value, secret, now = Date.now()) {
+  const match = /^(\d{10,12})\.([A-Za-z0-9_-]{24})\.([A-Za-z0-9_-]{43})$/u.exec(String(value ?? ""));
+  if (!match) return false;
+  const issuedAt = Number(match[1]);
+  const ageSeconds = Math.floor(now / 1_000) - issuedAt;
+  if (!Number.isSafeInteger(issuedAt) || ageSeconds < -30 || ageSeconds > LOCAL_SESSION_MAX_AGE_SECONDS) {
+    return false;
+  }
+  const payload = `${match[1]}.${match[2]}`;
+  const expected = createHmac("sha256", secret).update(payload).digest("base64url");
+  return safeEqualText(match[3], expected);
+}
 
 export function validateTelegramInitData(initData, {
   botToken,
@@ -218,6 +256,7 @@ export class MiniAppServer {
   #heartbeatTimer = null;
   #host;
   #journalCache = null;
+  #localAccessSecret;
   #port;
   #requireTelegramAuth;
   #server = null;
@@ -232,6 +271,7 @@ export class MiniAppServer {
     botToken = "",
     allowedUserIds = new Set(),
     requireTelegramAuth = false,
+    localAccessSecret = "",
     controlHandler = null,
     assetsDirectory = path.join(import.meta.dirname, "assets", "mini-app"),
     attachmentDirectory = null,
@@ -243,6 +283,7 @@ export class MiniAppServer {
     this.#botToken = String(botToken);
     this.#allowedUserIds = new Set(allowedUserIds);
     this.#requireTelegramAuth = requireTelegramAuth === true;
+    this.#localAccessSecret = String(localAccessSecret);
     this.#controlHandler = typeof controlHandler === "function" ? controlHandler : null;
     this.#assetsDirectory = path.resolve(assetsDirectory);
     this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
@@ -284,7 +325,16 @@ export class MiniAppServer {
   }
 
   #authorize(request, response) {
-    if (!this.#requestNeedsTelegramAuth(request)) return true;
+    if (!this.#requestNeedsTelegramAuth(request)) {
+      if (!this.#localAccessSecret) return true;
+      if (
+        validLocalSession(cookieValue(request, LOCAL_SESSION_COOKIE), this.#localAccessSecret)
+      ) {
+        return true;
+      }
+      json(response, 401, { error: "Откройте локальный Agent Hub через защищённый ярлык." });
+      return false;
+    }
     const authorization = String(request.headers.authorization ?? "");
     if (!authorization.startsWith("tma ")) {
       json(response, 401, { error: "Откройте журнал из Telegram." });
@@ -319,6 +369,31 @@ export class MiniAppServer {
   async #handle(request, response) {
     const method = String(request.method ?? "GET").toUpperCase();
     const url = new URL(request.url ?? "/", `http://${this.#host}`);
+    if (url.pathname === "/api/local-session") {
+      if (
+        method !== "POST"
+        || this.#requireTelegramAuth
+        || !loopbackHost(request.headers.host)
+        || String(request.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase()
+          !== "application/json"
+      ) {
+        json(response, 404, { error: "Not Found" }, method);
+        return;
+      }
+      const authorization = String(request.headers.authorization ?? "");
+      const supplied = authorization.startsWith("local ") ? authorization.slice(6).trim() : "";
+      if (!this.#localAccessSecret || !safeEqualText(supplied, this.#localAccessSecret)) {
+        json(response, 403, { error: "Локальная авторизация недействительна." }, method);
+        return;
+      }
+      json(response, 200, { ok: true }, method, {
+        headers: {
+          "Set-Cookie": `${LOCAL_SESSION_COOKIE}=${localSessionValue(this.#localAccessSecret)};`
+            + ` Max-Age=${LOCAL_SESSION_MAX_AGE_SECONDS}; Path=/; HttpOnly; SameSite=Strict`,
+        },
+      });
+      return;
+    }
     if (url.pathname === "/api/control") {
       if (method !== "POST") {
         response.writeHead(405, {
@@ -329,6 +404,13 @@ export class MiniAppServer {
         return;
       }
       if (!this.#authorize(request, response)) return;
+      if (
+        String(request.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase()
+        !== "application/json"
+      ) {
+        json(response, 415, { error: "Ожидался application/json." }, method);
+        return;
+      }
       if (!this.#controlHandler) {
         json(response, 503, { error: "Управление Agent Hub недоступно." }, method);
         return;

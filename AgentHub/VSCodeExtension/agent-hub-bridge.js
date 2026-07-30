@@ -28,15 +28,14 @@ function jsonResponse(value, status = 200, headers = {}) {
 }
 
 function defaultRuntimeRoot() {
-  const configured = process.env.AGENT_HUB_RUNTIME_ROOT
-    ?? process.env.TELEGRAM_INTEGRATION_RUNTIME_ROOT;
+  const configured = process.env.AGENT_HUB_RUNTIME_ROOT;
   if (configured) return path.resolve(configured);
   if (process.platform === "win32") {
     return path.join(process.env.LOCALAPPDATA ?? path.join(homedir(), "AppData", "Local"),
-      "Tyrael", "TelegramIntegration");
+      "AgentHub");
   }
   return path.join(process.env.XDG_STATE_HOME ?? path.join(homedir(), ".local", "state"),
-    "tyrael", "telegram-integration");
+    "agent-hub");
 }
 
 class AgentHubBridge {

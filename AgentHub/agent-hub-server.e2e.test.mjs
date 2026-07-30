@@ -144,7 +144,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   await startBot();
   const initialState = await waitFor(() => readJson(statePath).catch(() => null), "initial bot state");
   await waitFor(
-    () => readFile(path.join(dataDir, "telegram-codex.log"), "utf8").catch(() => null),
+    () => readFile(path.join(dataDir, "agent-hub.log"), "utf8").catch(() => null),
     "isolated E2E log",
   );
   const firstThreadId = initialState.threadIds.codex;
@@ -644,13 +644,13 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   );
   await new Promise((resolve) => setTimeout(resolve, 1_800));
   const heldRun = (await readJson(statePath)).activeRuns[0];
-  assert.equal(heldRun.observer, false, "Telegram run must persist as managed");
-  assert.equal(heldRun.executionOwner, "telegram", "Telegram run owner must survive progress polling");
+  assert.equal(heldRun.observer, false, "Agent Hub run must persist as managed");
+  assert.equal(heldRun.executionOwner, "hub", "Agent Hub run owner must survive progress polling");
   assert.equal(heldRun.appServer, "Agent Hub Server");
   assert.equal(
     Number((await readJson(codexStatePath)).requestCounts?.["thread/read"] ?? 0),
     readsBeforeManagedFallback,
-    "a managed Telegram turn must use streamed events instead of polling every 1.5 seconds",
+    "a managed Agent Hub turn must use streamed events instead of polling every 1.5 seconds",
   );
 
   mark = telegram.calls.length;
@@ -700,7 +700,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     return runs.length === 2 ? runs : null;
   }, "two active tasks restored after process restart");
   assert.equal(restoredParallelRuns.every((run) => run.observer === false), true);
-  assert.equal(restoredParallelRuns.every((run) => run.executionOwner === "telegram"), true);
+  assert.equal(restoredParallelRuns.every((run) => run.executionOwner === "hub"), true);
   assert.equal((await readJson(statePath)).threadIds.codex, parallelThreadId,
     "a transient resume error must not replace the selected active task with a new thread");
   const terminalAuditAfterRestart = await waitFor(async () => {

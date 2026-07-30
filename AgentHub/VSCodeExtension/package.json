@@ -1,9 +1,9 @@
 {
-  "name": "work-log-view",
+  "name": "agent-hub",
   "displayName": "Agent Hub",
   "description": "Agent Hub: задачи, чаты и автоматически обновляемый журнал работ.",
   "version": "0.4.2",
-  "publisher": "tyrael",
+  "publisher": "agent-hub",
   "icon": "media/agent-hub-work-log.png",
   "license": "MIT",
   "engines": {
@@ -16,9 +16,9 @@
     "ui"
   ],
   "activationEvents": [
-    "onView:tyraelWorkLog.view",
-    "onCommand:tyraelWorkLog.open",
-    "onCommand:tyraelWorkLog.refresh"
+    "onView:agentHub.view",
+    "onCommand:agentHub.open",
+    "onCommand:agentHub.refresh"
   ],
   "main": "./extension.js",
   "scripts": {
@@ -28,30 +28,30 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "tyraelWorkLog",
+          "id": "agentHub",
           "title": "Agent Hub",
           "icon": "media/journal.svg"
         }
       ]
     },
     "views": {
-      "tyraelWorkLog": [
+      "agentHub": [
         {
           "type": "webview",
-          "id": "tyraelWorkLog.view",
+          "id": "agentHub.view",
           "name": "Agent Hub"
         }
       ]
     },
     "commands": [
       {
-        "command": "tyraelWorkLog.open",
+        "command": "agentHub.open",
         "title": "Открыть Agent Hub",
         "category": "Agent Hub",
         "icon": "$(open-preview)"
       },
       {
-        "command": "tyraelWorkLog.refresh",
+        "command": "agentHub.refresh",
         "title": "Обновить Agent Hub",
         "category": "Agent Hub",
         "icon": "$(refresh)"
@@ -60,13 +60,13 @@
     "menus": {
       "view/title": [
         {
-          "command": "tyraelWorkLog.open",
-          "when": "view == tyraelWorkLog.view",
+          "command": "agentHub.open",
+          "when": "view == agentHub.view",
           "group": "navigation@1"
         },
         {
-          "command": "tyraelWorkLog.refresh",
-          "when": "view == tyraelWorkLog.view",
+          "command": "agentHub.refresh",
+          "when": "view == agentHub.view",
           "group": "navigation@2"
         }
       ]
@@ -74,7 +74,7 @@
     "configuration": {
       "title": "Agent Hub",
       "properties": {
-        "tyraelWorkLog.fileName": {
+        "agentHub.fileName": {
           "type": "string",
           "default": "WORK_LOG.md",
           "description": "Путь к журналу относительно корня workspace."

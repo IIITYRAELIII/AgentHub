@@ -17,7 +17,7 @@ import process from "node:process";
 import { isMainModule } from "./main-module.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "./runtime-layout.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
-import { protectRuntimeConfig } from "./runtime-security.mjs";
+import { protectRuntimeConfig, protectRuntimeDirectory } from "./runtime-security.mjs";
 
 const SOURCE_ROOT = path.resolve(import.meta.dirname);
 const TOP_LEVEL_FILES = new Set([
@@ -116,6 +116,10 @@ export async function deployRuntime({
   const layout = runtimeLayout(runtimeRoot);
   const releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId);
   const staging = `${releaseRoot}.staging-${randomUUID()}`;
+  await mkdir(layout.root, { recursive: true });
+  await protectRuntimeDirectory(layout.root);
+  await mkdir(layout.releasesDir, { recursive: true });
+  await protectRuntimeDirectory(layout.releasesDir);
   await mkdir(staging, { recursive: true });
   try {
     const names = await releaseFileNames(sourceRoot);
@@ -133,8 +137,11 @@ export async function deployRuntime({
       files: await releaseManifest(staging, names),
     };
     await writeFile(path.join(staging, "runtime-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-    await mkdir(layout.releasesDir, { recursive: true });
     await rename(staging, releaseRoot);
+    // Staging is created below the already protected releases directory, so
+    // every copied file inherits the owner-only ACL. Running icacls /T with
+    // directory inheritance flags would strip effective ACEs from files.
+    await protectRuntimeDirectory(releaseRoot);
 
     const previousPointer = JSON.parse(await readFile(layout.currentFile, "utf8").catch(() => "{}"));
     const pointer = {
@@ -143,11 +150,13 @@ export async function deployRuntime({
       updatedAt: new Date().toISOString(),
     };
     await atomicJson(layout.currentFile, pointer);
+    await protectRuntimeConfig(layout.currentFile);
     await cp(
       path.join(sourceRoot, "codex-stop-hook-launcher.mjs"),
       layout.codexHookLauncherFile,
       { force: true },
     );
+    await protectRuntimeConfig(layout.codexHookLauncherFile);
     if (process.platform === "win32") {
       await cp(path.join(sourceRoot, "runtime-launch.vbs"), layout.launcherFile, { force: true });
       // Keep the source filename as a compatibility alias. One-off deployment
@@ -155,6 +164,11 @@ export async function deployRuntime({
       // installed entry point is launch.vbs.
       await cp(path.join(sourceRoot, "runtime-launch.vbs"), layout.legacyWindowsLauncherFile, { force: true });
       await cp(path.join(sourceRoot, "runtime-launch.ps1"), layout.powershellLauncherFile, { force: true });
+      await Promise.all([
+        protectRuntimeConfig(layout.launcherFile),
+        protectRuntimeConfig(layout.legacyWindowsLauncherFile),
+        protectRuntimeConfig(layout.powershellLauncherFile),
+      ]);
     } else {
       await cp(path.join(sourceRoot, "runtime-launch.sh"), layout.launcherFile, { force: true });
       await chmod(layout.launcherFile, 0o700);
@@ -165,6 +179,11 @@ export async function deployRuntime({
       new Set([pointer.current, pointer.previous].filter(Boolean)),
       { removeRelease, onWarning: onPruneWarning },
     );
+    for (const entry of await readdir(layout.root, { withFileTypes: true })) {
+      if (entry.isFile() && /^config(?:\\..+)?\\.json$/iu.test(entry.name)) {
+        await protectRuntimeConfig(path.join(layout.root, entry.name));
+      }
+    }
     return { layout, releaseId, releaseRoot };
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
@@ -187,7 +206,7 @@ export async function prepareRuntimeConfig({
   raw.dataDir = "data";
   const sourceWhisperPython = path.join(
     sourceRoot,
-    ".venv-telegram",
+    ".venv-voice",
     process.platform === "win32" ? path.join("Scripts", "python.exe") : path.join("bin", "python"),
   );
   if (!raw.pythonExe && await exists(sourceWhisperPython)) {
@@ -230,28 +249,14 @@ async function replaceDirectory(source, target) {
 }
 
 async function retireLegacyArtifacts(sourceRoot, layout) {
-  for (const name of ["telegram-codex.log", "telegram-codex-error.log"]) {
-    const source = path.join(sourceRoot, name);
-    if (await exists(source)) {
-      await cp(source, path.join(layout.dataDir, `legacy-${name}`), { force: false, errorOnExist: true })
-        .catch((error) => {
-          if (error?.code !== "EEXIST") throw error;
-        });
-      await rm(source, { force: true });
-    }
-  }
   for (const name of [
     "config.json",
     "TGBotToken.txt",
-    ".telegram-codex-state.json",
-    ".telegram-codex-state.pre-rename.json",
   ]) {
     await rm(path.join(sourceRoot, name), { force: true });
   }
   for (const name of [
     "data",
-    ".telegram-audio",
-    ".venv-telegram",
     ".whisper-models",
     ".silero-models",
   ]) {
@@ -271,7 +276,7 @@ export async function activateRuntime({
   await prepareRuntimeConfig({ sourceRoot, runtimeRoot });
   if (replaceData) await replaceDirectory(path.join(sourceRoot, "data"), layout.dataDir);
   else await copyIfPresent(path.join(sourceRoot, "data"), layout.dataDir);
-  await copyIfPresent(path.join(sourceRoot, ".venv-telegram"), path.join(layout.root, "voice-venv"));
+  await copyIfPresent(path.join(sourceRoot, ".venv-voice"), path.join(layout.root, "voice-venv"));
   await copyIfPresent(path.join(sourceRoot, ".whisper-models"), path.join(layout.dataDir, "models", "whisper"));
   await copyIfPresent(path.join(sourceRoot, ".silero-models"), path.join(layout.dataDir, "models", "silero"));
   await atomicJson(layout.activationFile, {

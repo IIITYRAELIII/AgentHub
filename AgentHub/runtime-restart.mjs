@@ -188,9 +188,7 @@ export function botReplacementInvocation({
   botFile,
   agentHubRoot,
 } = {}) {
-  const launcher = String(
-    environment.AGENT_HUB_LAUNCHER ?? environment.TELEGRAM_INTEGRATION_LAUNCHER ?? "",
-  ).trim();
+  const launcher = String(environment.AGENT_HUB_LAUNCHER ?? "").trim();
   if (platform === "win32" && launcher) {
     return independentWindowsLauncherInvocation({ environment, launcher });
   }

@@ -80,7 +80,7 @@ namespace AgentHubDesktop
             if (String.IsNullOrWhiteSpace(runtimeRoot))
             {
                 var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-                runtimeRoot = Path.Combine(local, "Tyrael", "TelegramIntegration");
+                runtimeRoot = Path.Combine(local, "AgentHub");
             }
             runtimeRoot = Path.GetFullPath(runtimeRoot);
             secretFile = Path.Combine(runtimeRoot, "desktop-control.secret");

@@ -496,6 +496,67 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
   }
 });
 
+test("local Mini App requires a protected session and rejects CSRF-shaped control requests", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-local-auth-"));
+  const workLogFile = path.join(directory, "WORK_LOG.md");
+  const localAccessSecret = "a".repeat(43);
+  let calls = 0;
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    workLogFile,
+    localAccessSecret,
+    controlHandler: async () => {
+      calls += 1;
+      return { ok: true };
+    },
+  });
+  try {
+    await writeFile(workLogFile, "# Журнал\n", "utf8");
+    const address = await server.start();
+    const request = { action: "snapshot", params: {} };
+    assert.equal((await fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify(request),
+    })).status, 401);
+    assert.equal(calls, 0);
+
+    const session = await fetch(`${address.url}api/local-session`, {
+      method: "POST",
+      headers: {
+        Authorization: `local ${localAccessSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+    assert.equal(session.status, 200);
+    const cookie = String(session.headers.get("set-cookie") ?? "").split(";", 1)[0];
+    assert.match(cookie, /^agent_hub_local=/u);
+
+    assert.equal((await fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: {
+        Cookie: cookie,
+        "Content-Type": "text/plain",
+      },
+      body: JSON.stringify(request),
+    })).status, 415);
+    assert.equal((await fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: {
+        Cookie: cookie,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(request),
+    })).status, 200);
+    assert.equal(calls, 1);
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Mini App serves old days and turn bodies through lazy endpoints", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mini-app-lazy-"));
   const workLogFile = path.join(directory, "WORK_LOG.md");

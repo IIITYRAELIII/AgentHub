@@ -4,6 +4,7 @@
 
 const agentHub = window.AgentHub;
 const telegramInitData = String(window.Telegram?.WebApp?.initData ?? "");
+const localSessionReady = window.AgentHubLocalSessionReady ?? Promise.resolve();
 const vscode = window.__agentHubVscode ?? (typeof window.acquireVsCodeApi === "function"
   ? window.acquireVsCodeApi()
   : null);
@@ -107,6 +108,12 @@ function reconciledMessages(taskIdValue) {
   });
 }
 
+function exactSelectedTaskParams() {
+  const identity = taskIdentity(selectedTaskId);
+  if (!identity) throw new Error("Сначала выберите задачу");
+  return identity;
+}
+
 function renderTaskMessages(taskIdValue) {
   agentHub.setMessages(taskIdValue, reconciledMessages(taskIdValue));
 }
@@ -199,6 +206,7 @@ window.addEventListener("message", (event) => {
 });
 
 async function waitRemoteResult(commandId) {
+  await localSessionReady;
   const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
     const response = await fetch(`/api/control/result?id=${encodeURIComponent(commandId)}`, {
@@ -221,6 +229,7 @@ async function waitRemoteResult(commandId) {
 async function control(action, params = {}) {
   const bridged = bridgeCall(action, params);
   if (bridged) return bridged;
+  await localSessionReady;
   const response = await fetch("/api/control", {
     method: "POST",
     headers: {
@@ -501,6 +510,7 @@ async function uploadAttachment(attachment) {
       dataUrl: attachment.dataUrl,
     });
   }
+  await localSessionReady;
   const image = dataUrlBody(attachment.dataUrl);
   const response = await fetch("/api/attachment", {
     method: "POST",
@@ -626,22 +636,22 @@ agentHub.on("task:new", ({ title }) => runAction(async () => {
   let snapshot = await control("new-task", { provider });
   applySnapshot(snapshot);
   if (title) {
-    snapshot = await control("rename-task", { title });
+    snapshot = await control("rename-task", { ...exactSelectedTaskParams(), title });
     applySnapshot(snapshot);
   }
 }));
 
 agentHub.on("task:rename", ({ title }) => runAction(async () => applySnapshot(
-  await control("rename-task", { title }),
+  await control("rename-task", { ...exactSelectedTaskParams(), title }),
 )));
 agentHub.on("task:archive", () => runAction(async () => applySnapshot(
-  await control("archive-task"),
+  await control("archive-task", exactSelectedTaskParams()),
 )));
 agentHub.on("task:stop", () => runAction(async () => agentHub.toast(
-  (await control("cancel-run"))?.message ?? "Остановка запрошена",
+  (await control("cancel-run", exactSelectedTaskParams()))?.message ?? "Остановка запрошена",
 )));
 agentHub.on("task:diff", () => runAction(async () => {
-  const diff = await control("task-diff");
+  const diff = await control("task-diff", exactSelectedTaskParams());
   agentHub.setStatus({ rows: [{ name: "Diff", value: diff?.text || "Изменений нет" }] });
 }));
 agentHub.on("status:open", () => runAction(async () => {
@@ -702,7 +712,7 @@ agentHub.on("queue:accept", ({ id }) => runAction(async () => {
   applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Сообщение будет отправлено после текущего хода");
 }));
-agentHub.on("tts:play", () => runAction(() => control("speak-last-answer")));
+agentHub.on("tts:play", () => runAction(() => control("speak-last-answer", exactSelectedTaskParams())));
 agentHub.on("hub:restart", () => runAction(() => control("restart-server")));
 let searchSequence = 0;
 agentHub.on("search:query", ({ query }) => {
@@ -715,7 +725,7 @@ agentHub.on("search:query", ({ query }) => {
   });
 });
 agentHub.on("context:compact", () => runAction(async () => {
-  const result = await control("compact-context");
+  const result = await control("compact-context", exactSelectedTaskParams());
   if (result?.accepted && result.compactionId) {
     requestedContextCompactions.add(String(result.compactionId));
   }

@@ -12,7 +12,7 @@
 - необязательная очистка дубликатов старых изображений из snapshot'ов
   штатного Codex-сжатия без изменения его порога;
 - личный ledger и таблица остатков лимитов под
-  `%LOCALAPPDATA%\Tyrael\TelegramIntegration\data`.
+  `%LOCALAPPDATA%\AgentHub\data`.
 
 Исходные rollout читаются из `%USERPROFILE%\.codex`. Журнал одного участника не
 содержит данные другого и не отправляется в общий репозиторий.
@@ -90,7 +90,7 @@ Telegram-, Worker- и tunnel-настройки при переключении 
 - читать `Utilities/AgentHub/README.md` перед изменением или диагностикой;
 - не редактировать `WORK_LOG.md`: его проецирует Agent Hub;
 - проверять профиль в
-  `%LOCALAPPDATA%\Tyrael\TelegramIntegration\config.json`;
+  `%LOCALAPPDATA%\AgentHub\config.json`;
 - различать общие исходники в Git и личные данные внешнего runtime;
 - при проблеме проверить `runtime:status`, `hook:status`, логи runtime и только
   затем объяснять причину;

@@ -278,7 +278,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   }, "first Claude run with a session id", 15_000);
   assert.equal(firstRun.provider, "claude");
   assert.equal(firstRun.observer, false);
-  assert.equal(firstRun.executionOwner, "telegram");
+  assert.equal(firstRun.executionOwner, "hub");
   assert.ok(String(firstRun.claudeOutputPath ?? "").endsWith(".jsonl"),
     "a managed Claude turn must stream through its own output file");
   assert.ok(Number.isSafeInteger(firstRun.pid), "the Claude process id must be persisted");
@@ -294,7 +294,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   const secondPrompt = "[hold:beta] вторая задача Claude";
   telegram.pushMessage(secondPrompt);
   const deferred = await telegram.waitForText(secondPrompt, { after: mark });
-  assert.match(deferred.body.text, /уже выполняется через Telegram CLI/);
+  assert.match(deferred.body.text, /уже выполняется через Agent Hub Server/);
   const newTaskButton = deferred.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data.startsWith("pending:new:"));
   assert.ok(newTaskButton, "a busy Claude task must offer a parallel new task");
@@ -470,6 +470,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
 
   mark = telegram.calls.length;
   telegram.pushCallback(staleButton.callback_data, stalePicker.result);
+  await telegram.waitForText("Текущая задача", { after: mark, timeoutMs: 15_000 });
   await waitFor(async () => (await readJson(statePath)).threadIds.claude === staleSessionId,
     "switch to the abandoned Claude session", 15_000);
 

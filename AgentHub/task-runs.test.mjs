@@ -133,6 +133,12 @@ test("serialization excludes process and timer handles", () => {
     progressUpdateInFlight: true,
     progressUpdatePending: true,
     observerTimer: { timer: true },
+    claudeProcessFingerprint: {
+      pid: 42,
+      creationTime: "2026-07-30T10:00:00.000Z",
+      executablePath: "C:\\Claude\\claude.exe",
+      commandLine: "claude --resume session-1",
+    },
   });
   const serialized = serializableTaskRun(source);
 
@@ -143,6 +149,7 @@ test("serialization excludes process and timer handles", () => {
   assert.equal(serialized.progressUpdateInFlight, undefined);
   assert.equal(serialized.progressUpdatePending, undefined);
   assert.equal(serialized.observerTimer, undefined);
+  assert.deepEqual(serialized.claudeProcessFingerprint, source.claudeProcessFingerprint);
   assert.equal(serialized.id, source.id);
 });
 

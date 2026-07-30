@@ -7,7 +7,7 @@ import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "./ru
 test("defaultRuntimeRoot keeps Windows runtime outside the workspace", () => {
   assert.equal(
     defaultRuntimeRoot({ environment: { LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" }, platform: "win32" }),
-    path.resolve("C:\\Users\\me\\AppData\\Local", "Tyrael", "TelegramIntegration"),
+    path.resolve("C:\\Users\\me\\AppData\\Local", "AgentHub"),
   );
 });
 

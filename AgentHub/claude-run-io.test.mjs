@@ -11,7 +11,9 @@ import {
   claudeRunOutputPath,
   cleanupOrphanedClaudeRunOutputs,
   openClaudeRunOutput,
+  processFingerprintMatches,
   processIsAlive,
+  readProcessFingerprint,
   removeClaudeRunOutput,
   spawnClaudeWorker,
   stopProcessTree,
@@ -197,4 +199,56 @@ test("processIsAlive recognizes the current process and rejects invalid ids", ()
     error.code = "EPERM";
     throw error;
   }), true);
+});
+
+test("process fingerprint requires creation time and compares available identity fields", () => {
+  const saved = {
+    pid: 123,
+    creationTime: "2026-07-30T10:00:00.000Z",
+    executablePath: "C:\\Tools\\Claude.exe",
+    commandLine: "claude --resume session-1",
+  };
+  assert.equal(processFingerprintMatches(saved, {
+    ...saved,
+    executablePath: "c:\\tools\\claude.exe",
+  }, { platform: "win32" }), true);
+  assert.equal(processFingerprintMatches(saved, {
+    ...saved,
+    creationTime: "2026-07-30T10:01:00.000Z",
+  }, { platform: "win32" }), false);
+  assert.equal(processFingerprintMatches(saved, {
+    ...saved,
+    commandLine: "claude --resume another-session",
+  }, { platform: "win32" }), false);
+  assert.equal(processFingerprintMatches(saved, {
+    pid: saved.pid,
+    creationTime: saved.creationTime,
+  }, { platform: "win32" }), false);
+});
+
+test("Windows fingerprint lookup parses creation time, executable and command line", async () => {
+  const calls = [];
+  const fingerprint = await readProcessFingerprint(777, {
+    platform: "win32",
+    captureCommandImpl: async (command, args) => {
+      calls.push({ command, args });
+      return JSON.stringify({
+        pid: 777,
+        creationTime: "2026-07-30T10:00:00.0000000Z",
+        executablePath: "C:\\Program Files\\Claude\\claude.exe",
+        commandLine: "\"C:\\Program Files\\Claude\\claude.exe\" --resume session-1",
+      });
+    },
+  });
+  assert.equal(calls[0].command, "powershell.exe");
+  assert.deepEqual(fingerprint, {
+    pid: 777,
+    creationTime: "2026-07-30T10:00:00.0000000Z",
+    executablePath: "C:\\Program Files\\Claude\\claude.exe",
+    commandLine: "\"C:\\Program Files\\Claude\\claude.exe\" --resume session-1",
+  });
+});
+
+test("unsupported process fingerprint lookup fails safe", async () => {
+  assert.equal(await readProcessFingerprint(777, { platform: "unsupported-os" }), null);
 });

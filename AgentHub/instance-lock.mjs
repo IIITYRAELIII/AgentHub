@@ -7,8 +7,8 @@ import { processIsAlive } from "./claude-run-io.mjs";
 function pipeName(dataDir) {
   const id = createHash("sha256").update(path.resolve(dataDir).toLowerCase()).digest("hex").slice(0, 24);
   return process.platform === "win32"
-    ? `\\\\.\\pipe\\telegram-integration-${id}`
-    : `\0telegram-integration-${id}`;
+    ? `\\\\.\\pipe\\agent-hub-${id}`
+    : `\0agent-hub-${id}`;
 }
 
 function listen(server, endpoint) {

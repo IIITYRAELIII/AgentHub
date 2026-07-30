@@ -1,4 +1,4 @@
-import { mkdir, open, readdir, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, readlink, readdir, unlink } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -160,6 +160,157 @@ export function processIsAlive(pid, killImpl = process.kill) {
     // EPERM означает чужой, но живой процесс.
     return error?.code === "EPERM";
   }
+}
+
+function normalizedFingerprintText(value, { lowerCase = false } = {}) {
+  const normalized = String(value ?? "").replace(/\0/g, " ").replace(/\s+/g, " ").trim();
+  return lowerCase ? normalized.toLowerCase() : normalized;
+}
+
+export function processFingerprintMatches(expected, actual, { platform = process.platform } = {}) {
+  if (!expected || !actual) return false;
+  const expectedPid = Number(expected.pid);
+  const actualPid = Number(actual.pid);
+  if (!Number.isInteger(expectedPid) || expectedPid <= 0 || expectedPid !== actualPid) return false;
+  const expectedCreation = normalizedFingerprintText(expected.creationTime);
+  const actualCreation = normalizedFingerprintText(actual.creationTime);
+  if (!expectedCreation || !actualCreation || expectedCreation !== actualCreation) return false;
+  const lowerCasePaths = platform === "win32";
+  for (const field of ["executablePath", "commandLine"]) {
+    const expectedValue = normalizedFingerprintText(expected[field], {
+      lowerCase: field === "executablePath" && lowerCasePaths,
+    });
+    if (!expectedValue) continue;
+    const actualValue = normalizedFingerprintText(actual[field], {
+      lowerCase: field === "executablePath" && lowerCasePaths,
+    });
+    if (!actualValue || actualValue !== expectedValue) return false;
+  }
+  return true;
+}
+
+function captureCommand(command, args, {
+  spawnImpl = spawn,
+  timeoutMs = 3_000,
+} = {}) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawnImpl(command, args, {
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch {
+      resolve(null);
+      return;
+    }
+    let settled = false;
+    let output = "";
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      child.kill?.();
+      finish(null);
+    }, timeoutMs);
+    timer.unref?.();
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      output += chunk;
+      if (output.length > 1_000_000) {
+        child.kill?.();
+        finish(null);
+      }
+    });
+    child.once("error", () => finish(null));
+    child.once("exit", (code) => finish(code === 0 ? output : null));
+  });
+}
+
+async function readWindowsProcessFingerprint(pid, options) {
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)",
+    `$p=Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"`,
+    "if ($null -eq $p) { exit 3 }",
+    "[pscustomobject]@{pid=[int]$p.ProcessId;creationTime=$p.CreationDate.ToUniversalTime().ToString('O');executablePath=[string]$p.ExecutablePath;commandLine=[string]$p.CommandLine}|ConvertTo-Json -Compress",
+  ].join(";");
+  const output = await (options.captureCommandImpl ?? captureCommand)(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    options,
+  );
+  if (!output) return null;
+  try {
+    const value = JSON.parse(output);
+    return {
+      pid: Number(value.pid),
+      creationTime: normalizedFingerprintText(value.creationTime),
+      executablePath: normalizedFingerprintText(value.executablePath),
+      commandLine: normalizedFingerprintText(value.commandLine),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function readLinuxProcessFingerprint(pid, {
+  readFileImpl = readFile,
+  readlinkImpl = readlink,
+} = {}) {
+  try {
+    const statText = await readFileImpl(`/proc/${pid}/stat`, "utf8");
+    const closingParenthesis = statText.lastIndexOf(")");
+    if (closingParenthesis < 0) return null;
+    const fieldsAfterName = statText.slice(closingParenthesis + 1).trim().split(/\s+/);
+    const startTicks = normalizedFingerprintText(fieldsAfterName[19]);
+    if (!startTicks) return null;
+    const [bootId, executablePath, commandLine] = await Promise.all([
+      readFileImpl("/proc/sys/kernel/random/boot_id", "utf8").catch(() => ""),
+      readlinkImpl(`/proc/${pid}/exe`).catch(() => ""),
+      readFileImpl(`/proc/${pid}/cmdline`, "utf8").catch(() => ""),
+    ]);
+    return {
+      pid,
+      creationTime: `linux:${normalizedFingerprintText(bootId)}:${startTicks}`,
+      executablePath: normalizedFingerprintText(executablePath),
+      commandLine: normalizedFingerprintText(commandLine),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function readDarwinProcessFingerprint(pid, options) {
+  const run = options.captureCommandImpl ?? captureCommand;
+  const [creationTime, executablePath, commandLine] = await Promise.all([
+    run("ps", ["-p", String(pid), "-o", "lstart="], options),
+    run("ps", ["-p", String(pid), "-o", "comm="], options),
+    run("ps", ["-p", String(pid), "-o", "command="], options),
+  ]);
+  const normalizedCreation = normalizedFingerprintText(creationTime);
+  if (!normalizedCreation) return null;
+  return {
+    pid,
+    creationTime: normalizedCreation,
+    executablePath: normalizedFingerprintText(executablePath),
+    commandLine: normalizedFingerprintText(commandLine),
+  };
+}
+
+export async function readProcessFingerprint(pid, {
+  platform = process.platform,
+  ...options
+} = {}) {
+  const value = Number(pid);
+  if (!Number.isInteger(value) || value <= 0) return null;
+  if (platform === "win32") return readWindowsProcessFingerprint(value, options);
+  if (platform === "linux") return readLinuxProcessFingerprint(value, options);
+  if (platform === "darwin") return readDarwinProcessFingerprint(value, options);
+  return null;
 }
 
 export async function stopProcessTree(pid, {

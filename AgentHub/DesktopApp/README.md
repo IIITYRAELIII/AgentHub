@@ -15,7 +15,7 @@
 
 Визуальная система сочетает cyan/mint Codex и amber/coral Claude на нейтральном тёмном фоне. Цвет провайдера используется как акцент состояния, а не как заливка всей карточки.
 
-История и изображения читаются с локального компьютера. В Desktop API разрешены только изображения, предварительно скопированные клиентом в `%LOCALAPPDATA%\Tyrael\TelegramIntegration\DesktopApp\attachments`; путь, тип, количество и размер проверяются Agent Hub Server.
+История и изображения читаются с локального компьютера. В Desktop API разрешены только изображения, предварительно скопированные клиентом в `%LOCALAPPDATA%\AgentHub\DesktopApp\attachments`; путь, тип, количество и размер проверяются Agent Hub Server.
 
 Черновики хранятся в `DesktopApp\drafts-v2.json`, не передаются на сервер до отправки и мигрируют из прежнего `drafts.json`. После успешного запуска хода временные изображения удаляет Agent Hub Server.
 
@@ -40,4 +40,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\DesktopApp\install.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\DesktopApp\build.ps1
 ```
 
-EXE `AgentHub.exe` устанавливается в совместимый runtime-каталог `%LOCALAPPDATA%\Tyrael\TelegramIntegration\DesktopApp`, ярлык `Agent Hub` создаётся на рабочем столе. `DesktopApp\dist` в Git не входит.
+EXE `AgentHub.exe` устанавливается в runtime-каталог `%LOCALAPPDATA%\AgentHub\DesktopApp`, ярлык `Agent Hub` создаётся на рабочем столе. `DesktopApp\dist` в Git не входит.

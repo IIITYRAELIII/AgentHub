@@ -7,7 +7,7 @@ const { renderWorkLog } = require("./render.js");
 const { sharedWebviewHtml } = require("./shared-webview.js");
 const { baseCss, panelCss, sidebarHtml, webviewHtml } = require("./webview.js");
 
-const VIEW_ID = "tyraelWorkLog.view";
+const VIEW_ID = "agentHub.view";
 const CSS_PATH = ["Utilities", "AgentHub", "work-log.css"];
 const MINI_APP_CSS_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "styles.css"];
 const PULSAR_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "pulsar-beams.png"];
@@ -19,7 +19,7 @@ const MEADOW_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "meado
 const ORBIT_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "orbit-earth.png"];
 const NEBULA_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "nebula-veil.png"];
 const GOTHIC_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "gothic-concrete.png"];
-const THEME_KEY = "tyraelWorkLog.theme";
+const THEME_KEY = "agentHub.theme";
 const THEMES = new Set([
   "orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "magma", "storm", "meadow",
 ]);
@@ -102,7 +102,7 @@ class WorkLogViewProvider {
       return;
     }
     const panel = vscode.window.createWebviewPanel(
-      "tyraelWorkLog.editor",
+      "agentHub.editor",
       ".\\WORK_LOG",
       vscode.ViewColumn.Active,
       {
@@ -195,7 +195,7 @@ class WorkLogViewProvider {
 
   configuredJournalUris() {
     const fileName = vscode.workspace
-      .getConfiguration("tyraelWorkLog")
+      .getConfiguration("agentHub")
       .get("fileName", "WORK_LOG.md");
     const segments = relativeSegments(fileName);
     return this.workspaceFolders().map((folder) => vscode.Uri.joinPath(folder.uri, ...segments));
@@ -330,14 +330,14 @@ function activate(context) {
     vscode.window.registerWebviewViewProvider(VIEW_ID, provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
-    vscode.commands.registerCommand("tyraelWorkLog.open", () => provider.openPanel()),
-    vscode.commands.registerCommand("tyraelWorkLog.refresh", () => provider.scheduleRefresh(0, true)),
+    vscode.commands.registerCommand("agentHub.open", () => provider.openPanel()),
+    vscode.commands.registerCommand("agentHub.refresh", () => provider.scheduleRefresh(0, true)),
   );
 
   const refresh = () => provider.scheduleRefresh();
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     const journal = vscode.workspace
-      .getConfiguration("tyraelWorkLog")
+      .getConfiguration("agentHub")
       .get("fileName", "WORK_LOG.md");
     for (const pattern of [journal, CSS_PATH.join("/"), MINI_APP_CSS_PATH.join("/")]) {
       const watcher = vscode.workspace.createFileSystemWatcher(
@@ -354,7 +354,7 @@ function activate(context) {
       if (document.uri.path.endsWith("/WORK_LOG.md")) refresh();
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration("tyraelWorkLog.fileName")) provider.scheduleRefresh(0, true);
+      if (event.affectsConfiguration("agentHub.fileName")) provider.scheduleRefresh(0, true);
     }),
   );
 }

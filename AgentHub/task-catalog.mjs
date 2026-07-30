@@ -23,15 +23,20 @@ async function rolloutSuffix(filePath, size, maximumBytes = 256) {
 }
 
 export const TASK_EXECUTION_OWNERS = Object.freeze({
-  TELEGRAM: "telegram",
+  HUB: "hub",
   VSCODE: "vscode",
   DESKTOP: "desktop",
   CLI: "cli",
   EXTERNAL: "external",
 });
 
+export function normalizeTaskExecutionOwner(owner) {
+  return owner === "telegram" ? TASK_EXECUTION_OWNERS.HUB : owner;
+}
+
 export function taskExecutionRuntimeLabel(owner) {
-  if (owner === TASK_EXECUTION_OWNERS.TELEGRAM) return "Agent Hub Server";
+  owner = normalizeTaskExecutionOwner(owner);
+  if (owner === TASK_EXECUTION_OWNERS.HUB) return "Agent Hub Server";
   if (owner === TASK_EXECUTION_OWNERS.VSCODE) return "VSCode App Server";
   if (owner === TASK_EXECUTION_OWNERS.DESKTOP) return "Codex Desktop App";
   if (owner === TASK_EXECUTION_OWNERS.CLI) return "Codex CLI";
@@ -39,7 +44,8 @@ export function taskExecutionRuntimeLabel(owner) {
 }
 
 export function taskExecutionRuntimeShortLabel(owner) {
-  if (owner === TASK_EXECUTION_OWNERS.TELEGRAM) return "HUB";
+  owner = normalizeTaskExecutionOwner(owner);
+  if (owner === TASK_EXECUTION_OWNERS.HUB) return "HUB";
   if (owner === TASK_EXECUTION_OWNERS.VSCODE) return "VSC";
   if (owner === TASK_EXECUTION_OWNERS.DESKTOP) return "APP";
   if (owner === TASK_EXECUTION_OWNERS.CLI) return "CLI";
@@ -47,7 +53,8 @@ export function taskExecutionRuntimeShortLabel(owner) {
 }
 
 export function taskExecutionRunningEmoji(owner, fallback = "🧵") {
-  return owner === TASK_EXECUTION_OWNERS.TELEGRAM ? "⚡" : fallback;
+  owner = normalizeTaskExecutionOwner(owner);
+  return owner === TASK_EXECUTION_OWNERS.HUB ? "⚡" : fallback;
 }
 
 function normalizedPath(value) {
@@ -630,7 +637,7 @@ export function mergeTaskCatalog(entries, runs = []) {
       existing.running = true;
       existing.executionOwner = run.observer
         ? run.executionOwner ?? existing.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
-        : TASK_EXECUTION_OWNERS.TELEGRAM;
+        : TASK_EXECUTION_OWNERS.HUB;
       existing.turnId = run.turnId ?? existing.turnId ?? null;
       existing.lastActivityAtMs = Date.parse(run.lastMeaningfulProgressAt ?? run.startedAt ?? "")
         || existing.lastActivityAtMs
@@ -649,7 +656,7 @@ export function mergeTaskCatalog(entries, runs = []) {
       running: true,
       executionOwner: run.observer
         ? TASK_EXECUTION_OWNERS.EXTERNAL
-        : TASK_EXECUTION_OWNERS.TELEGRAM,
+        : TASK_EXECUTION_OWNERS.HUB,
       turnId: run.turnId ?? null,
       lastActivityAtMs: Date.parse(run.lastMeaningfulProgressAt ?? run.startedAt ?? "") || Date.now(),
     });
@@ -695,7 +702,7 @@ export function runningTaskReplyMarkup(entries, selected = null, { showProject =
         const runningEmoji = taskExecutionRunningEmoji(entry.executionOwner);
         const runtimeEmoji = isSelected
           && entry.running
-          && entry.executionOwner === TASK_EXECUTION_OWNERS.TELEGRAM
+          && entry.executionOwner === TASK_EXECUTION_OWNERS.HUB
           ? `${runningEmoji} `
           : "";
         return [{

@@ -96,6 +96,22 @@ const groupingStates = { date: null, task: null };
 const telegram = window.Telegram?.WebApp;
 const telegramInitData = String(telegram?.initData ?? "");
 const telegramMode = Boolean(telegramInitData);
+const localAccessMatch = /^#access=([A-Za-z0-9_-]{43,128})$/u.exec(window.location.hash);
+const localSessionReady = !telegramMode && localAccessMatch
+  ? fetch("/api/local-session", {
+      method: "POST",
+      headers: {
+        Authorization: `local ${localAccessMatch[1]}`,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+      cache: "no-store",
+    }).then(async (response) => {
+      if (!response.ok) throw new Error("Не удалось открыть защищённую локальную сессию Agent Hub.");
+      history.replaceState(null, "", `${location.pathname}${location.search}`);
+    })
+  : Promise.resolve();
+window.AgentHubLocalSessionReady = localSessionReady;
 const vscodeMode = Boolean(window.__agentHubVscode);
 const telegramPlatform = String(telegram?.platform ?? "").toLowerCase();
 const mobileTelegramPlatforms = new Set(["android", "ios"]);
@@ -2579,6 +2595,7 @@ function hoistRateLimits() {
 async function loadRateLimits() {
   if (!rateLimitsSlot) return;
   try {
+    await localSessionReady;
     const response = await fetch(`/api/rate-limits?now=${Date.now()}`, {
       cache: "no-store",
       headers: requestHeaders(),
@@ -2606,6 +2623,7 @@ function disableLocalLinks(scope = journal) {
 }
 
 async function fetchJournalFragment(pathname, params) {
+  await localSessionReady;
   const query = new URLSearchParams({ ...params, version: currentVersion });
   const response = await fetch(`${pathname}?${query}`, {
     cache: "no-store",
@@ -2910,6 +2928,7 @@ async function loadJournal({ force = false } = {}) {
   loading = (async () => {
     refreshButton.disabled = true;
     try {
+      await localSessionReady;
       const headers = requestHeaders();
       if (!force && currentVersion) headers["If-None-Match"] = `"${currentVersion}"`;
       const response = await fetch(`/api/journal?now=${Date.now()}`, {

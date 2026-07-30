@@ -27,6 +27,12 @@ test("ClaudeRunController owns detached output, stream parsing and completion", 
       isCurrentRun: (candidate) => candidate === run,
       onStreamEvent: (_run, parsed) => events.push(parsed),
       onComplete: (_run, result) => resolveCompletion(result),
+      processFingerprintLookup: async (pid) => ({
+        pid,
+        creationTime: "2026-07-30T10:00:00.000Z",
+        executablePath: process.execPath,
+        commandLine: "node worker",
+      }),
     });
     const payload = JSON.stringify({
       type: "result",
@@ -44,6 +50,7 @@ test("ClaudeRunController owns detached output, stream parsing and completion", 
     assert.equal(completion.result.result, "готово");
     assert.equal(events.at(-1).result.result, "готово");
     assert.equal(run.claudeSettled, true);
+    assert.equal(run.claudeProcessFingerprint.creationTime, "2026-07-30T10:00:00.000Z");
   });
 });
 
@@ -63,6 +70,12 @@ test("ClaudeRunController reattaches from a saved offset and finalizes a result"
       turnId: "turn-two",
       threadId: "session-two",
       pid: process.pid,
+      claudeProcessFingerprint: {
+        pid: process.pid,
+        creationTime: "2026-07-30T10:00:00.000Z",
+        executablePath: process.execPath,
+        commandLine: "node agent-hub",
+      },
       claudeOutputPath: outputPath,
       claudeErrorPath: errorPath,
     };
@@ -70,11 +83,103 @@ test("ClaudeRunController reattaches from a saved offset and finalizes a result"
       dataDir: directory,
       isCurrentRun: (candidate) => candidate === run,
       onComplete: (_run, value) => { completion = value; },
+      processFingerprintLookup: async () => ({ ...run.claudeProcessFingerprint }),
     });
     const alive = await controller.attachAfterRestart(run);
     assert.equal(alive, true);
     assert.equal(completion.result.result, "после рестарта");
     assert.equal(run.claudeSettled, true);
+  });
+});
+
+test("ClaudeRunController rejects a reused PID on reattach and cancel", async () => {
+  await withTempDir(async (directory) => {
+    const run = {
+      turnId: "turn-reused",
+      threadId: "session-reused",
+      pid: 4321,
+      claudeProcessFingerprint: {
+        pid: 4321,
+        creationTime: "2026-07-30T10:00:00.000Z",
+        executablePath: "C:\\Claude\\claude.exe",
+        commandLine: "claude --resume session-reused",
+      },
+    };
+    let stopCalls = 0;
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      processAlive: () => true,
+      processFingerprintLookup: async () => ({
+        ...run.claudeProcessFingerprint,
+        creationTime: "2026-07-30T10:05:00.000Z",
+      }),
+      stopProcess: async () => {
+        stopCalls += 1;
+        return true;
+      },
+    });
+
+    assert.equal(await controller.attachAfterRestart(run), false);
+    assert.equal(await controller.stop(run), false);
+    assert.equal(stopCalls, 0);
+  });
+});
+
+test("ClaudeRunController fails safe when process fingerprint is unavailable", async () => {
+  await withTempDir(async (directory) => {
+    const run = {
+      turnId: "turn-unsupported",
+      threadId: "session-unsupported",
+      pid: 4322,
+      claudeProcessFingerprint: {
+        pid: 4322,
+        creationTime: "known-start",
+      },
+    };
+    let stopCalls = 0;
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      processAlive: () => true,
+      processFingerprintLookup: async () => null,
+      stopProcess: async () => {
+        stopCalls += 1;
+        return true;
+      },
+    });
+
+    assert.equal(await controller.attachAfterRestart(run), false);
+    assert.equal(await controller.stop(run), false);
+    assert.equal(stopCalls, 0);
+  });
+});
+
+test("ClaudeRunController cancels only a process with the saved fingerprint", async () => {
+  await withTempDir(async (directory) => {
+    const fingerprint = {
+      pid: 4323,
+      creationTime: "2026-07-30T10:00:00.000Z",
+      executablePath: "C:\\Claude\\claude.exe",
+      commandLine: "claude --resume session-owned",
+    };
+    const run = {
+      turnId: "turn-owned",
+      threadId: "session-owned",
+      pid: fingerprint.pid,
+      claudeProcessFingerprint: fingerprint,
+    };
+    const stopped = [];
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      processAlive: () => true,
+      processFingerprintLookup: async () => ({ ...fingerprint }),
+      stopProcess: async (pid) => {
+        stopped.push(pid);
+        return true;
+      },
+    });
+
+    assert.equal(await controller.stop(run), true);
+    assert.deepEqual(stopped, [4323]);
   });
 });
 

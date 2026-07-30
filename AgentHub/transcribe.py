@@ -12,9 +12,9 @@ def main() -> int:
         print("Usage: transcribe.py <audio-file>|--download", file=sys.stderr)
         return 2
 
-    integration_root = Path(__file__).resolve().parent
+    agent_hub_root = Path(__file__).resolve().parent
     model_name = os.environ.get("WHISPER_MODEL", "small")
-    model_dir = Path(os.environ.get("WHISPER_MODEL_DIR", integration_root / ".whisper-models"))
+    model_dir = Path(os.environ.get("WHISPER_MODEL_DIR", agent_hub_root / ".whisper-models"))
     model_dir.mkdir(parents=True, exist_ok=True)
 
     model = WhisperModel(

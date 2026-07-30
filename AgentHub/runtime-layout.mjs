@@ -9,14 +9,12 @@ export function defaultRuntimeRoot({
   if (platform === "win32") {
     return path.resolve(
       environment.LOCALAPPDATA ?? path.join(home, "AppData", "Local"),
-      "Tyrael",
-      "TelegramIntegration",
+      "AgentHub",
     );
   }
   return path.resolve(
     environment.XDG_STATE_HOME ?? path.join(home, ".local", "state"),
-    "tyrael",
-    "telegram-integration",
+    "agent-hub",
   );
 }
 

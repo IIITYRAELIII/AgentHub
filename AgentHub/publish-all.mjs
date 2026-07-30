@@ -6,6 +6,7 @@ import { callDesktopControl } from "./desktop-control.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const python = process.platform === "win32" ? "python.exe" : "python3";
+const powershell = process.platform === "win32" ? "powershell.exe" : "pwsh";
 
 function npmStep(label, args) {
   const npmCli = String(process.env.npm_execpath ?? "").trim();
@@ -28,9 +29,19 @@ export function publicationSteps({
 } = {}) {
   return [
     ...(!skipTests ? [
-      npmStep("Проверка синтаксиса", ["run", "check"]),
-      npmStep("Тесты Agent Hub", ["test"]),
-      npmStep("Тесты расширения", ["test", "--prefix", "VSCodeExtension"]),
+      npmStep("Полные тесты Agent Hub", ["run", "test:all"]),
+      npmStep("Тесты расширения VS Code", ["test", "--prefix", "VSCodeExtension"]),
+      {
+        label: "Сборка и smoke-проверка Agent Hub Desktop",
+        command: powershell,
+        args: [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          path.join("ci", "desktop-smoke.ps1"),
+        ],
+      },
     ] : []),
     ...(!skipWorker ? [
       npmStep("Публикация Mini App Worker", ["run", "worker:deploy"]),

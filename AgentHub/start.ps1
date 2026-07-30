@@ -1,10 +1,10 @@
 $ErrorActionPreference = 'Stop'
-$IntegrationRoot = $PSScriptRoot
-$RuntimeLauncher = Join-Path $env:LOCALAPPDATA 'Tyrael\TelegramIntegration\launch.ps1'
-$RuntimeActive = Join-Path $env:LOCALAPPDATA 'Tyrael\TelegramIntegration\active.json'
+$AgentHubRoot = $PSScriptRoot
+$RuntimeLauncher = Join-Path $env:LOCALAPPDATA 'AgentHub\launch.ps1'
+$RuntimeActive = Join-Path $env:LOCALAPPDATA 'AgentHub\active.json'
 if ((Test-Path -LiteralPath $RuntimeLauncher) -and (Test-Path -LiteralPath $RuntimeActive)) {
     & $RuntimeLauncher
     exit $LASTEXITCODE
 }
-Set-Location $IntegrationRoot
+Set-Location $AgentHubRoot
 node (Join-Path $PSScriptRoot 'agent-hub-server.mjs')

@@ -47,7 +47,7 @@ test("pinned task titles are stable per provider and thread", () => {
 
 test("a title discovered from Codex replaces a stale pinned title", () => {
   const titles = {};
-  pinTaskTitle(titles, "codex", "thread-a", "Integration");
+  pinTaskTitle(titles, "codex", "thread-a", "Agent Hub");
 
   assert.deepEqual(
     reconcilePinnedTaskTitle(titles, "codex", "thread-a", "Agent HUB"),
@@ -62,7 +62,7 @@ test("a title discovered from Codex replaces a stale pinned title", () => {
 
 test("the latest Codex index title wins over stale App Server metadata", () => {
   assert.equal(
-    preferredCodexTaskTitle("Integration", {
+    preferredCodexTaskTitle("Agent Hub", {
       currentTitle: "Agent HUB",
       recoverableTitle: "",
     }),
@@ -98,12 +98,12 @@ test("codexCatalogEntry preserves persistent task metadata and active status", (
 
 test("Codex runtime labels distinguish supported app servers", () => {
   assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.VSCODE), "VSCode App Server");
-  assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.TELEGRAM), "Agent Hub Server");
+  assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.HUB), "Agent Hub Server");
   assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.DESKTOP), "Codex Desktop App");
   assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.CLI), "Codex CLI");
   assert.equal(taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.EXTERNAL), "External Codex");
   assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.VSCODE), "VSC");
-  assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.TELEGRAM), "HUB");
+  assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.HUB), "HUB");
   assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.DESKTOP), "APP");
   assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.CLI), "CLI");
   assert.equal(taskExecutionRuntimeShortLabel(TASK_EXECUTION_OWNERS.EXTERNAL), "EXT");
@@ -379,7 +379,7 @@ test("deferred notifications select one exact active VS Code turn", () => {
 });
 
 test("readCodexRolloutRunning reads a fresh local rollout", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-codex-rollout-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-"));
   const rollout = path.join(root, "rollout.jsonl");
   await writeFile(rollout, [
     JSON.stringify({ type: "event_msg", payload: { type: "task_complete" } }),
@@ -391,7 +391,7 @@ test("readCodexRolloutRunning reads a fresh local rollout", async () => {
 });
 
 test("readCodexRolloutActivity follows append-only lifecycle updates", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-codex-rollout-append-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-append-"));
   const rollout = path.join(root, "rollout.jsonl");
   const line = (type, turnId) => JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -415,7 +415,7 @@ test("readCodexRolloutActivity follows append-only lifecycle updates", async () 
 });
 
 test("readCodexRolloutActivity preserves a JSONL line split across reads", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-codex-rollout-partial-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-partial-"));
   const rollout = path.join(root, "rollout.jsonl");
   const line = (type) => JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -440,7 +440,7 @@ test("readCodexRolloutActivity preserves a JSONL line split across reads", async
 });
 
 test("rollout activity exposes current and final messages without thread/read", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-codex-rollout-message-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-message-"));
   const rollout = path.join(root, "rollout.jsonl");
   const entry = (type, payload) => JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -504,7 +504,7 @@ test("a bounded cold tail keeps an unscoped current message when task_started is
 });
 
 test("cold rollout reads only a bounded tail and skips an oversized line", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-codex-rollout-tail-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-tail-"));
   const rollout = path.join(root, "rollout.jsonl");
   const line = (type, turnId, extra = {}) => JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -520,7 +520,7 @@ test("cold rollout reads only a bounded tail and skips an oversized line", async
 });
 
 test("rollout cache detects a truncated file that regrew before the next poll", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-codex-rollout-replaced-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-replaced-"));
   const rollout = path.join(root, "rollout.jsonl");
   const line = (type, turnId, extra = {}) => JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -639,7 +639,7 @@ test("observer ownership overrides historical catalog ownership", () => {
     title: "Наблюдаемая",
     updatedAtMs: 1,
     running: true,
-    executionOwner: TASK_EXECUTION_OWNERS.TELEGRAM,
+    executionOwner: TASK_EXECUTION_OWNERS.HUB,
   }], [{
     id: "observer",
     provider: "codex",
@@ -689,7 +689,7 @@ test("runningTaskReplyMarkup shows active tasks first and fills four rows with r
     projectName: "VSC_Tyrael",
     title: "Вторая активная",
     running: true,
-    executionOwner: TASK_EXECUTION_OWNERS.TELEGRAM,
+    executionOwner: TASK_EXECUTION_OWNERS.HUB,
     lastActivityAtMs: 200,
     orderingActivityAtMs: 200,
   }, {
@@ -739,7 +739,7 @@ test("running task buttons include project only when requested", () => {
     projectName: "VSC_Tyrael",
     title: "Фаровон",
     running: true,
-    executionOwner: TASK_EXECUTION_OWNERS.TELEGRAM,
+    executionOwner: TASK_EXECUTION_OWNERS.HUB,
   }];
   assert.equal(
     runningTaskReplyMarkup(entries, null).inline_keyboard[0][0].text,

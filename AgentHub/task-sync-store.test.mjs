@@ -144,12 +144,12 @@ test("managed Telegram snapshot records Agent Hub ownership", async () => {
     activityAtMs: 5_000,
     stage: "Ответ формируется",
   }, {
-    executionOwner: TASK_EXECUTION_OWNERS.TELEGRAM,
+    executionOwner: TASK_EXECUTION_OWNERS.HUB,
     nowMs: 5_000,
   });
   const [entry] = store.catalog({ nowMs: 5_500 });
   assert.equal(entry.running, true);
-  assert.equal(entry.executionOwner, TASK_EXECUTION_OWNERS.TELEGRAM);
+  assert.equal(entry.executionOwner, TASK_EXECUTION_OWNERS.HUB);
   assert.equal(entry.turnId, "turn-telegram");
 });
 
@@ -181,18 +181,18 @@ test("unchanged polling snapshots do not dirty the persistent store", async () =
     answer: "Без изменений",
   };
   assert.equal(store.recordSnapshot(task, snapshot, {
-    executionOwner: TASK_EXECUTION_OWNERS.TELEGRAM,
+    executionOwner: TASK_EXECUTION_OWNERS.HUB,
     nowMs: 5_000,
   }), true);
   await store.save();
   assert.equal(store.recordSnapshot(task, snapshot, {
-    executionOwner: TASK_EXECUTION_OWNERS.TELEGRAM,
+    executionOwner: TASK_EXECUTION_OWNERS.HUB,
     nowMs: 50_000,
   }), false);
   assert.equal(store.recordCatalog([{
     ...task,
     running: true,
-    executionOwner: TASK_EXECUTION_OWNERS.TELEGRAM,
+    executionOwner: TASK_EXECUTION_OWNERS.HUB,
     turnId: "turn-telegram",
     updatedAtMs: 0,
     lastActivityAtMs: 5_000,

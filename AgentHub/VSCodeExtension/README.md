@@ -1,9 +1,8 @@
 # Agent Hub
 
 Командное VS Code-расширение Agent Hub для задач, чата и журнала работ.
-Пользовательское имя расширения — «Agent Hub»; технический id (`tyrael.work-log-view`)
-и внутренние идентификаторы представлений (`tyraelWorkLog.*`) сохранены для
-совместимости с уже установленными копиями.
+Технический id расширения — `agent-hub.agent-hub`, внутренние идентификаторы
+представлений и команд используют префикс `agentHub.*`.
 
 - добавляет кнопку `Agent Hub` в Activity Bar;
 - открывает общий интерфейс Agent Hub: задачи слева, чат справа и журнал отдельной вкладкой;
@@ -33,7 +32,7 @@
 Общая оболочка берётся из `assets/mini-app`, а `shared-webview.js`,
 `vscode-bootstrap.js` и `agent-hub-bridge.js` подключают её к VS Code без
 передачи секрета в webview. Сборка: `npx @vscode/vsce package`, установка:
-`code --install-extension work-log-view-<версия>.vsix --force` и перезагрузка окна.
+`code --install-extension agent-hub-<версия>.vsix --force` и перезагрузка окна.
 
 Исходники входят в общий `Utilities/AgentHub`. Для установки без сборки VSIX
 выполните из корня workspace:
