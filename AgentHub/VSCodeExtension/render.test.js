@@ -470,8 +470,13 @@ test("composer clears optimistically and restores an unconfirmed message", () =>
   assert.match(client, /snapshot\?\.restartWaiting == null && blockingCount > 0/u);
   assert.match(client, /waiting \? "restart-waiting" : snapshot\?\.restartPending \? "restarting" : idleStatus/u);
   assert.match(html, /data-restart-banner/u);
-  assert.match(app, /Agent Hub перезапустится после завершения активных задач \(осталось: \$\{blockingCount\}\)/u);
-  assert.match(app, /Agent Hub перезапускается… Непринятый текст будет восстановлен\./u);
+  assert.match(app, /Agent Hub ожидает завершения активных задач: \$\{blockingCount\}\./u);
+  assert.match(app, /restarting: "Agent Hub перезапускается…"/u);
+  assert.match(app, /offline: "Нет связи с Agent Hub\."/u);
+  assert.doesNotMatch(
+    app,
+    /Текст в поле ввода сохранён|Непринятый текст будет восстановлен|Неотправленное сообщение сохранено/u,
+  );
 });
 
 test("rate-limit summary becomes a keyboard-activatable trigger for statistics", () => {

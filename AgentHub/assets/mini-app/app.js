@@ -1791,10 +1791,10 @@ const AgentHub = {
     const messages = {
       connecting: "Подключение к Agent Hub…",
       "restart-waiting": blockingCount
-        ? `Agent Hub перезапустится после завершения активных задач (осталось: ${blockingCount}). Текст в поле ввода сохранён.`
-        : "Agent Hub перезапустится после завершения активных задач. Текст в поле ввода сохранён.",
-      restarting: "Agent Hub перезапускается… Непринятый текст будет восстановлен.",
-      offline: "Нет связи с Agent Hub. Неотправленное сообщение сохранено в поле ввода.",
+        ? `Agent Hub ожидает завершения активных задач: ${blockingCount}.`
+        : "Agent Hub ожидает завершения активных задач.",
+      restarting: "Agent Hub перезапускается…",
+      offline: "Нет связи с Agent Hub.",
     };
     connectionBanner.textContent = messages[value] ?? "";
     connectionBanner.hidden = value === "online";
