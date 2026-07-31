@@ -7139,6 +7139,15 @@ html[data-view="statistics"] .statistics-view {
   opacity: 1;
 }
 
+.usage-chart {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.usage-axis-day {
+  font-size: 9px;
+}
+
 .usage-chart-svg .limits-axis-y {
   font-size: 8px;
 }

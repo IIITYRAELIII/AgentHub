@@ -189,8 +189,19 @@ const groupings = new Set(["date", "week", "month", "task"]);
 const usageUnits = new Set(["$", "rub", "cr", "pte"]);
 const CREDITS_PER_USD = 25;
 const PTE_PER_CREDIT = 8_000;
+const USAGE_RANGE_KEY = "agent-hub:usage-range:v1";
+const RANGE_SEQUENCE = ["6h", "24h", "7d", "30d", "all"];
+
+function savedUsageRange() {
+  try {
+    return normalizeRange(localStorage.getItem(USAGE_RANGE_KEY));
+  } catch {
+    return "24h";
+  }
+}
+
 const usageState = {
-  range: "24h",
+  range: savedUsageRange(),
   status: "idle",
   payload: null,
   error: "",
@@ -2346,7 +2357,6 @@ window.AgentHub = AgentHub;
  * встроенным SVG на переменных темы, без canvas, шрифтов и CDN. */
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const RANGE_SEQUENCE = ["6h", "24h", "7d", "30d", "all"];
 /* Палитра серий на переменных темы: провайдеры — своими цветами, остальные
  * по кругу из акцентов, чтобы линии различались в любой теме. */
 const SERIES_PALETTE = [
@@ -3020,6 +3030,11 @@ function applyUsageHistory(payload) {
 
 function requestUsageHistory(range, { force = false } = {}) {
   usageState.range = normalizeRange(range);
+  try {
+    localStorage.setItem(USAGE_RANGE_KEY, usageState.range);
+  } catch {
+    // Выбор останется активным до закрытия WebView.
+  }
   const cached = usageState.payload
     && !usageState.payload.error
     && normalizeRange(usageState.payload.range) === usageState.range;
@@ -3044,10 +3059,18 @@ function formatUsagePeriod(payload) {
   return from && to ? `${from} — ${to}` : RANGE_LABELS[usageState.range] ?? "";
 }
 
-function showUsageTooltip(point, fx, fy) {
+function formatUsagePointDate(point, daily = false) {
+  const date = new Date(point?.at);
+  if (Number.isNaN(date.getTime())) return "";
+  return daily
+    ? date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" })
+    : formatLimitsDateTime(date);
+}
+
+function showUsageTooltip(point, fx, fy, daily = false) {
   if (!usageTooltip) return;
   usageTooltip.replaceChildren(
-    el("span", { class: "limits-tooltip-time", text: formatLimitsDateTime(point.at) }),
+    el("span", { class: "limits-tooltip-time", text: formatUsagePointDate(point, daily) }),
     el("span", { class: "limits-tooltip-row", text: formatUsageValue(point.credits) }),
   );
   usageTooltip.style.left = `${clampNumber(fx * 100, 0, 100)}%`;
@@ -3068,12 +3091,13 @@ function buildUsageChart(payload) {
       credits: Math.max(0, Number(point.credits) || 0),
     }))
     .filter((point) => Number.isFinite(point.time));
-  const W = 640;
+  const daily = payload?.bucket === "day";
+  const W = daily ? Math.max(640, points.length * 44 + 76) : 640;
   const H = 260;
   const padL = 62;
   const padR = 14;
   const padT = 14;
-  const padB = 30;
+  const padB = daily ? 38 : 30;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const max = Math.max(1, ...points.map((point) => point.credits));
@@ -3119,13 +3143,21 @@ function buildUsageChart(payload) {
     });
     const fx = (x + barWidth / 2) / W;
     const fy = y / H;
-    bar.addEventListener("pointerenter", () => showUsageTooltip(point, fx, fy));
+    bar.addEventListener("pointerenter", () => showUsageTooltip(point, fx, fy, daily));
     bar.addEventListener("pointerleave", hideUsageTooltip);
-    bar.addEventListener("focus", () => showUsageTooltip(point, fx, fy));
+    bar.addEventListener("focus", () => showUsageTooltip(point, fx, fy, daily));
     bar.addEventListener("blur", hideUsageTooltip);
     svg.append(bar);
+    if (daily) {
+      svg.append(svgEl("text", {
+        x: (x + barWidth / 2).toFixed(1),
+        y: H - 10,
+        class: "limits-axis-label limits-axis-x usage-axis-day",
+        "text-anchor": "middle",
+      }, [new Date(point.at).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })]));
+    }
   });
-  if (points.length) {
+  if (points.length && !daily) {
     const first = points[0].time;
     const last = points.at(-1).time;
     const span = Math.max(1, last - first);
@@ -3142,6 +3174,7 @@ function buildUsageChart(payload) {
     "aria-label",
     `Локальный расход: ${formatUsageValue(payload.totalCredits)} за ${formatUsagePeriod(payload)}.`,
   );
+  svg.style.width = daily ? `${W}px` : "100%";
   usageChart.replaceChildren(svg);
 }
 

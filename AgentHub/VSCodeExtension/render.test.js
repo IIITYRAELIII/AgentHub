@@ -704,6 +704,16 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(styles, /\.current-limits-row\s*\{[^}]*overflow-x:\s*auto;/su);
 });
 
+test("local usage chart keeps its range and labels every calendar day", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(app, /agent-hub:usage-range:v1/u);
+  assert.match(app, /localStorage\.setItem\(USAGE_RANGE_KEY, usageState\.range\)/u);
+  assert.match(app, /payload\?\.bucket === "day"/u);
+  assert.match(app, /usage-axis-day/u);
+  assert.match(styles, /\.usage-chart\s*\{[^}]*overflow-x:\s*auto;/su);
+});
+
 test("history dialog requests periods via limits:open and renders via setRateLimitHistory", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");

@@ -1345,9 +1345,31 @@ function mergeLedgerRecord(existing, incoming) {
 const USAGE_HISTORY_RANGES = Object.freeze({
   "6h": { spanMs: 6 * 60 * 60 * 1_000, bucketMs: 15 * 60 * 1_000 },
   "24h": { spanMs: 24 * 60 * 60 * 1_000, bucketMs: 60 * 60 * 1_000 },
-  "7d": { spanMs: 7 * 24 * 60 * 60 * 1_000, bucketMs: 6 * 60 * 60 * 1_000 },
-  "30d": { spanMs: 30 * 24 * 60 * 60 * 1_000, bucketMs: 24 * 60 * 60 * 1_000 },
+  "7d": { calendarDays: 7, bucketMs: 24 * 60 * 60 * 1_000 },
+  "30d": { calendarDays: 30, bucketMs: 24 * 60 * 60 * 1_000 },
 });
+
+function localDayStart(value, dayOffset = 0) {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  if (dayOffset) date.setDate(date.getDate() + dayOffset);
+  return date.getTime();
+}
+
+function calendarDayPoints(fromMs, toMs, buckets) {
+  if (!buckets.size) return [];
+  const points = [];
+  for (let cursor = fromMs; cursor <= toMs;) {
+    points.push({
+      at: new Date(cursor).toISOString(),
+      credits: buckets.get(cursor) ?? 0,
+    });
+    const next = new Date(cursor);
+    next.setDate(next.getDate() + 1);
+    cursor = next.getTime();
+  }
+  return points;
+}
 
 function allHistoryBucketMs(spanMs, maxPoints) {
   const day = 24 * 60 * 60 * 1_000;
@@ -1387,11 +1409,18 @@ export function buildWorkLogUsageHistory(turns = {}, {
     ? Math.min(...records.map((record) => record.completedMs))
     : toMs;
   const configured = USAGE_HISTORY_RANGES[normalizedRange];
-  const rawFromMs = configured ? toMs - configured.spanMs : earliest;
+  const calendarDays = Number(configured?.calendarDays) || 0;
+  const rawFromMs = calendarDays
+    ? localDayStart(toMs, 1 - calendarDays)
+    : configured
+      ? toMs - configured.spanMs
+      : earliest;
   const pointLimit = Math.min(Math.max(Number(maxPoints) || 600, 10), 2_000);
   const spanMs = Math.max(1, toMs - rawFromMs);
   const bucketMs = configured?.bucketMs ?? allHistoryBucketMs(spanMs, pointLimit);
-  const fromMs = Math.floor(rawFromMs / bucketMs) * bucketMs;
+  const fromMs = calendarDays
+    ? rawFromMs
+    : Math.floor(rawFromMs / bucketMs) * bucketMs;
   const buckets = new Map();
   let totalCredits = 0;
   let unpricedCount = 0;
@@ -1403,21 +1432,26 @@ export function buildWorkLogUsageHistory(turns = {}, {
     }
     totalCredits += record.credits;
     if (record.credits <= 0) continue;
-    const bucket = Math.floor(record.completedMs / bucketMs) * bucketMs;
+    const bucket = calendarDays
+      ? localDayStart(record.completedMs)
+      : Math.floor(record.completedMs / bucketMs) * bucketMs;
     buckets.set(bucket, (buckets.get(bucket) ?? 0) + record.credits);
   }
-  const points = [...buckets.entries()]
-    .sort(([left], [right]) => left - right)
-    .slice(-pointLimit)
-    .map(([at, credits]) => ({
-      at: new Date(at).toISOString(),
-      credits,
-    }));
+  const points = calendarDays
+    ? calendarDayPoints(fromMs, toMs, buckets)
+    : [...buckets.entries()]
+      .sort(([left], [right]) => left - right)
+      .slice(-pointLimit)
+      .map(([at, credits]) => ({
+        at: new Date(at).toISOString(),
+        credits,
+      }));
   return {
     range: normalizedRange,
     from: new Date(fromMs).toISOString(),
     to: new Date(toMs).toISOString(),
     bucketMs,
+    bucket: calendarDays ? "day" : "fixed",
     totalCredits,
     unpricedCount,
     points,

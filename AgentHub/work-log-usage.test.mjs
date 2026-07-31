@@ -80,6 +80,25 @@ test("local usage history can exclude Claude from global totals", () => {
   assert.equal(filtered.points.reduce((sum, point) => sum + point.credits, 0), 5);
 });
 
+test("seven-day usage matches journal calendar days and includes empty days", () => {
+  const now = new Date(2026, 6, 30, 18, 0, 0, 0).getTime();
+  const completedAt = (daysAgo, hour) => {
+    const date = new Date(now);
+    date.setDate(date.getDate() - daysAgo);
+    date.setHours(hour, 0, 0, 0);
+    return date.toISOString();
+  };
+  const history = buildWorkLogUsageHistory({
+    first: { completedAt: completedAt(6, 10), estimatedCredits: 3, estimateKind: "model" },
+    second: { completedAt: completedAt(0, 9), estimatedCredits: 4, estimateKind: "model" },
+    third: { completedAt: completedAt(0, 17), estimatedCredits: 5, estimateKind: "model" },
+  }, { range: "7d", now });
+  assert.equal(history.bucket, "day");
+  assert.equal(history.points.length, 7);
+  assert.deepEqual(history.points.map((point) => point.credits), [3, 0, 0, 0, 0, 0, 9]);
+  assert.ok(history.points.every((point) => new Date(point.at).getHours() === 0));
+});
+
 test("rate-limit summary is replaced in place above the journal days", () => {
   const first = projectWorkLogRateLimits(
     "# Глобальный журнал работ\n\n<details></details>\n",
