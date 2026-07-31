@@ -118,3 +118,19 @@ test("desktop control router rejects unknown actions", async () => {
     /Неизвестная desktop-команда: missing/,
   );
 });
+
+test("desktop control router passes authenticated client context to handlers", async () => {
+  let receivedContext = null;
+  const router = createDesktopControlRouter({
+    handlers: {
+      devices: async (_params, context) => {
+        receivedContext = context;
+        return { ok: true };
+      },
+    },
+    mutationActions: [],
+  });
+  const context = { source: "telegram-mini-app", userId: "42" };
+  assert.deepEqual(await router.handleDesktopControl({ action: "devices", params: {}, context }), { ok: true });
+  assert.equal(receivedContext, context);
+});

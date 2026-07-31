@@ -1,0 +1,37 @@
+plugins {
+    id "com.android.application"
+}
+
+def hubUrl = providers.gradleProperty("agentHubUrl").orElse("").get()
+def escapedHubUrl = hubUrl.replace("\\", "\\\\").replace('"', '\\"')
+
+android {
+    namespace "app.agenthub.mobile"
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "app.agenthub.mobile"
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName "0.1.0"
+        buildConfigField "String", "AGENT_HUB_URL", "\"${escapedHubUrl}\""
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

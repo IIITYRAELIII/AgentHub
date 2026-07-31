@@ -230,6 +230,8 @@ test("one settings panel owns interface and task controls", () => {
   assert.match(app, /agent-hub-group-claude/u);
   assert.match(app, /agent-hub-usage-unit/u);
   assert.match(html, /data-toggle="includeClaudeUsage"/u);
+  assert.match(html, /data-trusted-device-list/u);
+  assert.match(app, /setTrustedDevices/u);
   assert.match(app, /const CREDITS_PER_USD = 25;/u);
   assert.match(app, /const PTE_PER_CREDIT = 8_000;/u);
   assert.match(app, /const dollars = value \/ CREDITS_PER_USD;/u);

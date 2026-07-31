@@ -18,6 +18,7 @@
     "runtime:rollback": "node runtime-manager.mjs rollback",
     "worker:build": "node cloudflare-worker/build-assets.mjs",
     "worker:deploy": "npm run worker:build && npx --no-install wrangler deploy --config cloudflare-worker/wrangler.jsonc",
+    "android:build": "powershell -NoProfile -ExecutionPolicy Bypass -File AndroidApp/build.ps1",
     "publish:all": "node publish-all.mjs",
     "hook:install": "node codex-hook-config.mjs install",
     "hook:status": "node codex-hook-config.mjs status",

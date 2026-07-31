@@ -70,6 +70,9 @@ const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
 const exchangeRateHint = document.querySelector("[data-exchange-rate-hint]");
 const panelScrim = document.querySelector("[data-panel-scrim]");
 const statusSlot = document.querySelector("[data-status-slot]");
+const trustedDeviceList = document.querySelector("[data-trusted-device-list]");
+const trustedDevicePairing = document.querySelector("[data-trusted-device-pairing]");
+const trustedDeviceCreate = document.querySelector("[data-device-create]");
 
 const dialog = document.querySelector("[data-text-dialog]");
 const dialogScrim = document.querySelector("[data-dialog-scrim]");
@@ -1747,10 +1750,84 @@ function openPanel() {
   settingsPanel.hidden = false;
   panelScrim.hidden = false;
   if (limitsState.status === "idle") requestLimits("24h");
+  emit("devices:refresh");
   requestAnimationFrame(() => {
     settingsPanel.classList.add("open");
     panelScrim.classList.add("open");
   });
+}
+
+trustedDeviceCreate?.addEventListener("click", () => emit("devices:create"));
+trustedDeviceList?.addEventListener("click", (event) => {
+  const revoke = event.target.closest("[data-device-revoke]");
+  if (revoke) emit("devices:revoke", { deviceId: revoke.dataset.deviceRevoke });
+});
+trustedDevicePairing?.addEventListener("click", (event) => {
+  const copy = event.target.closest("[data-device-code-copy]");
+  if (!copy) return;
+  const code = String(copy.dataset.deviceCodeCopy ?? "");
+  void navigator.clipboard?.writeText(code).then(
+    () => showToast("Код скопирован"),
+    () => showToast("Не удалось скопировать код"),
+  );
+});
+
+function renderTrustedDevices(payload = {}) {
+  if (!trustedDeviceList || !trustedDevicePairing) return;
+  const devices = Array.isArray(payload.devices) ? payload.devices : [];
+  trustedDevicePairing.hidden = !payload.pairing?.code;
+  trustedDevicePairing.replaceChildren();
+  if (payload.pairing?.code) {
+    const expiresAt = Number(payload.pairing.expiresAt) || 0;
+    trustedDevicePairing.append(
+      el("div", { class: "trusted-device-pairing" }, [
+        el("span", { class: "setting-name", text: "Код сопряжения" }),
+        el("button", {
+          type: "button",
+          class: "trusted-device-code",
+          "data-device-code-copy": payload.pairing.code,
+          text: payload.pairing.code,
+          title: "Скопировать код",
+        }),
+        el("span", {
+          class: "setting-hint",
+          text: expiresAt ? `Действует до ${new Date(expiresAt).toLocaleTimeString("ru-RU")}` : "",
+        }),
+      ]),
+    );
+  }
+  if (payload.loading) {
+    trustedDeviceList.replaceChildren(el("span", { class: "setting-empty", text: "Загрузка…" }));
+    return;
+  }
+  if (payload.error) {
+    trustedDeviceList.replaceChildren(el("span", { class: "setting-error", text: payload.error }));
+    return;
+  }
+  if (!devices.length) {
+    trustedDeviceList.replaceChildren(el("span", { class: "setting-empty", text: "Устройств пока нет" }));
+    return;
+  }
+  trustedDeviceList.replaceChildren(...devices.map((device) => {
+    const revoked = Boolean(device.revokedAt);
+    const lastSeen = Number(device.lastSeenAt) || Number(device.createdAt) || 0;
+    return el("div", { class: "trusted-device-row", "data-revoked": revoked ? "" : null }, [
+      el("span", { class: "trusted-device-info" }, [
+        el("strong", { text: device.name || "Android" }),
+        el("small", {
+          text: revoked
+            ? "Доступ отозван"
+            : `Последний доступ: ${lastSeen ? new Date(lastSeen).toLocaleString("ru-RU") : "—"}`,
+        }),
+      ]),
+      revoked ? null : el("button", {
+        type: "button",
+        class: "chip-button compact danger",
+        "data-device-revoke": device.id,
+        text: "Отозвать",
+      }),
+    ].filter(Boolean));
+  }));
 }
 
 function closePanel() {
@@ -2162,6 +2239,9 @@ const AgentHub = {
     refreshUsageUnits();
     renderUsageHistory();
     if (journalHtml) renderJournal();
+  },
+  setTrustedDevices(payload) {
+    renderTrustedDevices(payload);
   },
   toast: showToast,
 };

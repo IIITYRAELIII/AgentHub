@@ -42,6 +42,7 @@ export function publicationSteps({
           path.join("ci", "desktop-smoke.ps1"),
         ],
       },
+      npmStep("Сборка Agent Hub Mobile", ["run", "android:build"]),
     ] : []),
     ...(!skipWorker ? [
       npmStep("Публикация Mini App Worker", ["run", "worker:deploy"]),

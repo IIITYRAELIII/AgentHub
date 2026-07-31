@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -94,6 +94,10 @@ function signedServiceRequest(url, payload, secret) {
     },
     body,
   });
+}
+
+function base64Url(value) {
+  return Buffer.from(value).toString("base64url");
 }
 
 function syncChunkRequest({
@@ -214,6 +218,116 @@ test("Worker relay authenticates, isolates, executes once, and returns results",
   ), env);
   assert.equal(response.status, 404);
   assert.equal(await storage.get(`control:command:${id}`), undefined);
+});
+
+test("Android device pairing creates a revocable signed session", async () => {
+  const workerModule = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new workerModule.JournalStore({ storage }, {});
+  const syncSecret = "d".repeat(64);
+  const env = {
+    TELEGRAM_BOT_TOKEN: "123456:test-token",
+    ALLOWED_USER_IDS: "42",
+    SYNC_SECRET: syncSecret,
+    JOURNAL: { getByName: () => store },
+    ASSETS: { fetch: async () => new Response("asset") },
+  };
+
+  let response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/device/pairing", { userId: "42" }, syncSecret),
+    env,
+  );
+  assert.equal(response.status, 200);
+  const pairing = await response.json();
+  assert.match(pairing.code, /^[A-Z2-7]{5}(?:-[A-Z2-7]{5}){3}$/u);
+
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  response = await workerModule.default.fetch(new Request("https://hub.test/api/device/pair", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      code: pairing.code,
+      name: "Pixel test",
+      platform: "Android test",
+      publicKey: base64Url(publicKey.export({ type: "spki", format: "der" })),
+    }),
+  }), env);
+  assert.equal(response.status, 201);
+  const paired = await response.json();
+  assert.equal(paired.device.name, "Pixel test");
+
+  response = await workerModule.default.fetch(new Request("https://hub.test/api/device/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deviceId: paired.device.id }),
+  }), env);
+  assert.equal(response.status, 200);
+  const challenge = await response.json();
+  const message = [
+    "agent-hub-device-session-v1",
+    paired.device.id,
+    challenge.challengeId,
+    challenge.challenge,
+  ].join("\n");
+  const signature = sign("sha256", Buffer.from(message), {
+    key: privateKey,
+    dsaEncoding: "ieee-p1363",
+  });
+  response = await workerModule.default.fetch(new Request("https://hub.test/api/device/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      deviceId: paired.device.id,
+      challengeId: challenge.challengeId,
+      signature: base64Url(signature),
+    }),
+  }), env);
+  assert.equal(response.status, 200);
+  const session = await response.json();
+  assert.match(session.token, /^[A-Za-z0-9_-]{43}$/u);
+
+  const commandId = "018f6c86-3f34-7a31-8f27-16f5b96cce11";
+  response = await workerModule.default.fetch(new Request("https://hub.test/api/control", {
+    method: "POST",
+    headers: {
+      Authorization: `device ${session.token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ commandId, action: "snapshot", params: {} }),
+  }), env);
+  assert.equal(response.status, 202);
+  assert.equal((await storage.get(`control:command:${commandId}`)).userId, "42");
+
+  response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/device/list", { userId: "42" }, syncSecret),
+    env,
+  );
+  assert.deepEqual((await response.json()).devices.map(({ id, name }) => ({ id, name })), [{
+    id: paired.device.id,
+    name: "Pixel test",
+  }]);
+
+  response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/device/revoke", {
+      userId: "42",
+      deviceId: paired.device.id,
+    }, syncSecret),
+    env,
+  );
+  assert.equal(response.status, 200);
+  response = await workerModule.default.fetch(new Request("https://hub.test/api/control", {
+    method: "POST",
+    headers: {
+      Authorization: `device ${session.token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      commandId: "018f6c86-3f34-7a31-8f27-16f5b96cce12",
+      action: "snapshot",
+      params: {},
+    }),
+  }), env);
+  assert.equal(response.status, 401);
 });
 
 test("Worker relay retries an abandoned running command with the same id", async () => {

@@ -3304,6 +3304,35 @@ const desktopMessageController = createDesktopMessageController({
   launchTurn,
 });
 
+function trustedDeviceUserId(context) {
+  const requested = String(context?.userId ?? "").trim();
+  const allowed = config.allowedUserIds.map(String);
+  const userId = requested || allowed[0] || "";
+  if (!userId || !allowed.includes(userId)) throw new Error("Пользователь устройства не разрешён");
+  return userId;
+}
+
+function requireMiniAppPublisher() {
+  if (!miniAppPublisher || !config.miniApp.worker.enabled) {
+    throw new Error("Доверенные устройства доступны только при включённом Mini App Worker");
+  }
+  return miniAppPublisher;
+}
+
+async function desktopTrustedDevices(_params, context) {
+  return requireMiniAppPublisher().trustedDevices(trustedDeviceUserId(context));
+}
+
+async function desktopCreateDevicePairing(_params, context) {
+  return requireMiniAppPublisher().createDevicePairing(trustedDeviceUserId(context));
+}
+
+async function desktopRevokeDevice(params, context) {
+  const deviceId = String(params?.deviceId ?? "").trim().toLowerCase();
+  if (!/^[0-9a-f-]{36}$/u.test(deviceId)) throw new Error("Некорректный идентификатор устройства");
+  return requireMiniAppPublisher().revokeDevice(trustedDeviceUserId(context), deviceId);
+}
+
 const { handleDesktopControl: dispatchDesktopControl } = createDesktopControlRouter({
   handlers: {
     snapshot: desktopSnapshot,
@@ -3327,6 +3356,9 @@ const { handleDesktopControl: dispatchDesktopControl } = createDesktopControlRou
     "speak-last-answer": desktopSpeakLastAnswer,
     "restart-server": desktopRestartServer,
     "compact-context": desktopCompactContext,
+    "trusted-devices": desktopTrustedDevices,
+    "create-device-pairing": desktopCreateDevicePairing,
+    "revoke-device": desktopRevokeDevice,
   },
   mutationActions: [
     "open-task",
@@ -3342,6 +3374,8 @@ const { handleDesktopControl: dispatchDesktopControl } = createDesktopControlRou
     "deferred-input",
     "restart-server",
     "compact-context",
+    "create-device-pairing",
+    "revoke-device",
   ],
   miniAppLimits: {
     source: "telegram-mini-app",

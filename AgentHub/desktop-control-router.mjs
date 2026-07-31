@@ -47,9 +47,9 @@ export function createDesktopControlRouter({
     }
     const resolvedParams = effectiveParams(params, context);
     if (mutations.has(action)) {
-      return serializeDesktopMutation(() => handler(resolvedParams));
+      return serializeDesktopMutation(() => handler(resolvedParams, context));
     }
-    return handler(resolvedParams);
+    return handler(resolvedParams, context);
   }
 
   return {

@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -34,6 +34,23 @@ await copyFile(
   path.join(import.meta.dirname, "remote-command-idempotency.js"),
   path.join(output, "remote-command-idempotency.js"),
 );
+
+const androidApk = path.join(
+  root,
+  "AndroidApp",
+  "app",
+  "build",
+  "outputs",
+  "apk",
+  "debug",
+  "app-debug.apk",
+);
+try {
+  await access(androidApk);
+  await copyFile(androidApk, path.join(output, "AgentHub-Mobile.apk"));
+} catch {
+  // A Worker-only build remains valid before the optional Android client is built.
+}
 
 const indexFile = path.join(output, "index.html");
 const index = await readFile(indexFile, "utf8");

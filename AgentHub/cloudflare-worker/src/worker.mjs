@@ -22,6 +22,14 @@ const MAX_ATTACHMENTS_PER_COMMAND = 8;
 const MAX_ATTACHMENTS_PER_USER = 32;
 const MAX_ATTACHMENT_BYTES_PER_USER = 100 * 1024 * 1024;
 const ATTACHMENT_EXPIRY_MS = 30 * 60 * 1_000;
+const DEVICE_PAIRING_EXPIRY_MS = 10 * 60 * 1_000;
+const DEVICE_CHALLENGE_EXPIRY_MS = 2 * 60 * 1_000;
+const DEVICE_SESSION_EXPIRY_MS = 12 * 60 * 60 * 1_000;
+const DEVICE_NAME_MAX_CHARS = 80;
+const DEVICE_ID_PATTERN = CONTROL_ID_PATTERN;
+const DEVICE_CODE_PATTERN = /^[A-Z2-7]{20}$/u;
+const DEVICE_PUBLIC_KEY_PATTERN = /^[A-Za-z0-9_-]{80,256}$/u;
+const DEVICE_SIGNATURE_PATTERN = /^[A-Za-z0-9_-]{86}$/u;
 const IMAGE_CONTENT_TYPES = new Map([
   ["image/png", ".png"],
   ["image/jpeg", ".jpg"],
@@ -51,6 +59,9 @@ const CONTROL_ACTIONS = new Set([
   "speak-last-answer",
   "restart-server",
   "compact-context",
+  "trusted-devices",
+  "create-device-pairing",
+  "revoke-device",
 ]);
 
 function hex(bytes) {
@@ -353,6 +364,58 @@ function json(payload, status = 200) {
   });
 }
 
+function base64Url(bytes) {
+  let binary = "";
+  for (const value of new Uint8Array(bytes)) binary += String.fromCharCode(value);
+  return btoa(binary).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/gu, "");
+}
+
+function bytesFromBase64Url(value) {
+  const normalized = String(value ?? "").replace(/-/gu, "+").replace(/_/gu, "/");
+  const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="));
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function randomBytes(size) {
+  const bytes = new Uint8Array(size);
+  crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+function randomPairingCode() {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  return [...randomBytes(20)].map((value) => alphabet[value & 31]).join("");
+}
+
+function normalizedDeviceCode(value) {
+  return String(value ?? "").toUpperCase().replace(/[^A-Z2-7]/gu, "");
+}
+
+function normalizedDeviceName(value) {
+  const name = String(value ?? "").trim().replace(/\s+/gu, " ");
+  if (!name || name.length > DEVICE_NAME_MAX_CHARS) throw new Error("invalid device name");
+  return name;
+}
+
+function deviceSessionMessage({ deviceId, challengeId, challenge }) {
+  return ["agent-hub-device-session-v1", deviceId, challengeId, challenge].join("\n");
+}
+
+async function importDevicePublicKey(value) {
+  if (!DEVICE_PUBLIC_KEY_PATTERN.test(value)) throw new Error("invalid device public key");
+  try {
+    return await crypto.subtle.importKey(
+      "spki",
+      bytesFromBase64Url(value),
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"],
+    );
+  } catch {
+    throw new Error("invalid device public key");
+  }
+}
+
 async function deleteStorageKeys(storage, keys) {
   const uniqueKeys = [...new Set(keys.filter(Boolean))];
   for (let offset = 0; offset < uniqueKeys.length; offset += STORAGE_DELETE_BATCH_SIZE) {
@@ -362,6 +425,182 @@ async function deleteStorageKeys(storage, keys) {
 
 export class JournalStore extends DurableObject {
   #cachedPayload = null;
+
+  #publicDevice(record) {
+    return {
+      id: record.id,
+      name: record.name,
+      platform: record.platform,
+      createdAt: record.createdAt,
+      lastSeenAt: record.lastSeenAt ?? null,
+      revokedAt: record.revokedAt ?? null,
+    };
+  }
+
+  async #cleanupDeviceAuth(now = Date.now(), storage = this.ctx.storage) {
+    const prefixes = ["device:pairing:", "device:challenge:", "device:session:"];
+    for (const prefix of prefixes) {
+      const values = await storage.list({ prefix });
+      const expired = [...values]
+        .filter(([, value]) => Number(value?.expiresAt ?? 0) <= now)
+        .map(([key]) => key);
+      if (expired.length) await deleteStorageKeys(storage, expired);
+    }
+  }
+
+  async #createDevicePairing(payload) {
+    const userId = String(payload?.userId ?? "").trim();
+    if (!userId) throw new Error("invalid device user");
+    const now = Date.now();
+    await this.#cleanupDeviceAuth(now);
+    const code = randomPairingCode();
+    const codeHash = await sha256(code);
+    const expiresAt = now + DEVICE_PAIRING_EXPIRY_MS;
+    await this.ctx.storage.put(`device:pairing:${codeHash}`, { userId, createdAt: now, expiresAt });
+    return {
+      code: code.match(/.{1,5}/gu).join("-"),
+      expiresAt,
+    };
+  }
+
+  async #pairDevice(payload) {
+    const code = normalizedDeviceCode(payload?.code);
+    if (!DEVICE_CODE_PATTERN.test(code)) throw new Error("invalid pairing code");
+    const name = normalizedDeviceName(payload?.name);
+    const platform = String(payload?.platform ?? "Android").trim().slice(0, 40) || "Android";
+    const publicKey = String(payload?.publicKey ?? "").trim();
+    await importDevicePublicKey(publicKey);
+    const codeHash = await sha256(code);
+    const now = Date.now();
+    const pairingKey = `device:pairing:${codeHash}`;
+    const pairing = await this.ctx.storage.get(pairingKey);
+    if (!pairing || Number(pairing.expiresAt ?? 0) <= now) {
+      if (pairing) await this.ctx.storage.delete(pairingKey);
+      throw new Error("pairing code is invalid or expired");
+    }
+    const id = crypto.randomUUID().toLowerCase();
+    const record = {
+      id,
+      userId: String(pairing.userId),
+      name,
+      platform,
+      publicKey,
+      createdAt: now,
+      lastSeenAt: null,
+      revokedAt: null,
+    };
+    await this.ctx.storage.put(`device:record:${id}`, record);
+    await this.ctx.storage.delete(pairingKey);
+    return { device: this.#publicDevice(record) };
+  }
+
+  async #createDeviceChallenge(payload) {
+    const deviceId = String(payload?.deviceId ?? "").trim().toLowerCase();
+    if (!DEVICE_ID_PATTERN.test(deviceId)) throw new Error("invalid device id");
+    const record = await this.ctx.storage.get(`device:record:${deviceId}`);
+    if (!record || record.revokedAt) throw new Error("device is not trusted");
+    const now = Date.now();
+    await this.#cleanupDeviceAuth(now);
+    const challengeId = crypto.randomUUID().toLowerCase();
+    const challenge = base64Url(randomBytes(32));
+    const expiresAt = now + DEVICE_CHALLENGE_EXPIRY_MS;
+    await this.ctx.storage.put(`device:challenge:${challengeId}`, { deviceId, challenge, expiresAt });
+    return { challengeId, challenge, expiresAt };
+  }
+
+  async #createDeviceSession(payload) {
+    const deviceId = String(payload?.deviceId ?? "").trim().toLowerCase();
+    const challengeId = String(payload?.challengeId ?? "").trim().toLowerCase();
+    const signature = String(payload?.signature ?? "").trim();
+    if (!DEVICE_ID_PATTERN.test(deviceId) || !CONTROL_ID_PATTERN.test(challengeId)) {
+      throw new Error("invalid device challenge");
+    }
+    if (!DEVICE_SIGNATURE_PATTERN.test(signature)) throw new Error("invalid device signature");
+    const now = Date.now();
+    const challengeKey = `device:challenge:${challengeId}`;
+    const [record, challenge] = await Promise.all([
+      this.ctx.storage.get(`device:record:${deviceId}`),
+      this.ctx.storage.get(challengeKey),
+    ]);
+    if (!record || record.revokedAt) throw new Error("device is not trusted");
+    if (!challenge || challenge.deviceId !== deviceId || Number(challenge.expiresAt ?? 0) <= now) {
+      if (challenge) await this.ctx.storage.delete(challengeKey);
+      throw new Error("device challenge is invalid or expired");
+    }
+    const key = await importDevicePublicKey(record.publicKey);
+    const valid = await crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      key,
+      bytesFromBase64Url(signature),
+      encoder.encode(deviceSessionMessage({ deviceId, challengeId, challenge: challenge.challenge })),
+    );
+    await this.ctx.storage.delete(challengeKey);
+    if (!valid) throw new Error("invalid device signature");
+    const token = base64Url(randomBytes(32));
+    const tokenHash = await sha256(token);
+    const expiresAt = now + DEVICE_SESSION_EXPIRY_MS;
+    record.lastSeenAt = now;
+    await this.ctx.storage.put({
+      [`device:record:${deviceId}`]: record,
+      [`device:session:${tokenHash}`]: {
+        deviceId,
+        userId: String(record.userId),
+        createdAt: now,
+        expiresAt,
+      },
+    });
+    return { token, expiresAt, device: this.#publicDevice(record) };
+  }
+
+  async #resolveDeviceSession(payload) {
+    const token = String(payload?.token ?? "").trim();
+    if (!/^[A-Za-z0-9_-]{43}$/u.test(token)) throw new Error("invalid device session");
+    const tokenHash = await sha256(token);
+    const sessionKey = `device:session:${tokenHash}`;
+    const session = await this.ctx.storage.get(sessionKey);
+    const now = Date.now();
+    if (!session || Number(session.expiresAt ?? 0) <= now) {
+      if (session) await this.ctx.storage.delete(sessionKey);
+      throw new Error("device session is invalid or expired");
+    }
+    const record = await this.ctx.storage.get(`device:record:${session.deviceId}`);
+    if (!record || record.revokedAt) {
+      await this.ctx.storage.delete(sessionKey);
+      throw new Error("device is not trusted");
+    }
+    if (!record.lastSeenAt || now - record.lastSeenAt >= 5 * 60 * 1_000) {
+      record.lastSeenAt = now;
+      await this.ctx.storage.put(`device:record:${record.id}`, record);
+    }
+    return { id: String(session.userId), deviceId: record.id, deviceName: record.name };
+  }
+
+  async #listDevices(payload) {
+    const userId = String(payload?.userId ?? "").trim();
+    if (!userId) throw new Error("invalid device user");
+    const records = [...(await this.ctx.storage.list({ prefix: "device:record:" })).values()]
+      .filter((record) => String(record?.userId ?? "") === userId)
+      .sort((left, right) => Number(right.lastSeenAt ?? right.createdAt ?? 0) - Number(left.lastSeenAt ?? left.createdAt ?? 0));
+    return { devices: records.map((record) => this.#publicDevice(record)) };
+  }
+
+  async #revokeDevice(payload) {
+    const userId = String(payload?.userId ?? "").trim();
+    const deviceId = String(payload?.deviceId ?? "").trim().toLowerCase();
+    if (!userId || !DEVICE_ID_PATTERN.test(deviceId)) throw new Error("invalid device revoke request");
+    const recordKey = `device:record:${deviceId}`;
+    const record = await this.ctx.storage.get(recordKey);
+    if (!record || String(record.userId) !== userId) throw new Error("device not found");
+    const now = Date.now();
+    record.revokedAt = now;
+    const sessions = await this.ctx.storage.list({ prefix: "device:session:" });
+    const sessionKeys = [...sessions]
+      .filter(([, session]) => session?.deviceId === deviceId)
+      .map(([key]) => key);
+    await this.ctx.storage.put(recordKey, record);
+    if (sessionKeys.length) await deleteStorageKeys(this.ctx.storage, sessionKeys);
+    return { device: this.#publicDevice(record) };
+  }
 
   async #controlCommands(storage = this.ctx.storage) {
     return [...(await storage.list({ prefix: "control:command:" })).values()];
@@ -488,6 +727,55 @@ export class JournalStore extends DurableObject {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/device/pairing/create") {
+      try {
+        return json(await this.#createDevicePairing(await request.json()));
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/device/pair") {
+      try {
+        return json(await this.#pairDevice(await request.json()), 201);
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/device/challenge") {
+      try {
+        return json(await this.#createDeviceChallenge(await request.json()));
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/device/session") {
+      try {
+        return json(await this.#createDeviceSession(await request.json()));
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/device/session/resolve") {
+      try {
+        return json(await this.#resolveDeviceSession(await request.json()));
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/device/list") {
+      try {
+        return json(await this.#listDevices(await request.json()));
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/device/revoke") {
+      try {
+        return json(await this.#revokeDevice(await request.json()));
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
     if (request.method === "POST" && url.pathname === "/attachment/upload") {
       const userId = String(request.headers.get("X-Agent-Hub-User-Id") ?? "");
       const id = String(request.headers.get("X-Agent-Hub-Attachment-Id") ?? "").toLowerCase();
@@ -895,6 +1183,21 @@ async function telegramUser(request, env) {
   });
 }
 
+async function clientUser(request, env, store) {
+  const authorization = String(request.headers.get("Authorization") ?? "");
+  if (authorization.startsWith("tma ")) return telegramUser(request, env);
+  if (!authorization.startsWith("device ")) throw new Error("Откройте Agent Hub из Telegram или приложения.");
+  const token = authorization.slice(7).trim();
+  const response = await store.fetch(new Request("https://journal.internal/device/session/resolve", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  }));
+  const payload = await response.json();
+  if (!response.ok) throw new Error(String(payload?.error ?? "device session is invalid"));
+  return payload;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -934,11 +1237,50 @@ export default {
         return json({ error: error.message }, 401);
       }
     }
+    if (["/api/device/pairing", "/api/device/list", "/api/device/revoke"].includes(url.pathname)) {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      let body;
+      try {
+        body = await validateControlServiceRequest(request, env.SYNC_SECRET);
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+      try {
+        const payload = parseJson(body, "device service request");
+        const userId = String(payload?.userId ?? "").trim();
+        if (!allowedUserIds(env.ALLOWED_USER_IDS).has(userId)) throw new Error("user is not allowed");
+        const internalPath = url.pathname === "/api/device/pairing"
+          ? "/device/pairing/create"
+          : url.pathname.replace(/^\/api/u, "");
+        return store.fetch(new Request(`https://journal.internal${internalPath}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }));
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
+    if (["/api/device/pair", "/api/device/challenge", "/api/device/session"].includes(url.pathname)) {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      try {
+        const body = await readBoundedBody(request, 16 * 1024, "device request");
+        const payload = parseJson(body, "device request");
+        const response = await store.fetch(new Request(`https://journal.internal${url.pathname.replace(/^\/api/u, "")}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }));
+        return response;
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
     if (url.pathname === "/api/attachment") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
       let user;
       try {
-        user = await telegramUser(request, env);
+        user = await clientUser(request, env, store);
       } catch (error) {
         return json({ error: error.message }, 401);
       }
@@ -975,7 +1317,7 @@ export default {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
       let user;
       try {
-        user = await telegramUser(request, env);
+        user = await clientUser(request, env, store);
       } catch (error) {
         return json({ error: error.message }, 401);
       }
@@ -997,7 +1339,7 @@ export default {
     if (url.pathname === "/api/control/result" && request.method === "GET") {
       let user;
       try {
-        user = await telegramUser(request, env);
+        user = await clientUser(request, env, store);
       } catch (error) {
         return json({ error: error.message }, 401);
       }
@@ -1114,7 +1456,7 @@ export default {
         return json({ error: "Method Not Allowed" }, 405);
       }
       try {
-        await telegramUser(request, env);
+        await clientUser(request, env, store);
       } catch (error) {
         return json({ error: error.message }, 401);
       }

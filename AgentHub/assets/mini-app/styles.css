@@ -6163,6 +6163,80 @@ html[data-token-breakdown="off"] .journal span[data-day-usage-breakdown] {
   text-align: right;
 }
 
+.trusted-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.trusted-device-row {
+  align-items: center;
+  display: flex;
+  gap: 0.7rem;
+  justify-content: space-between;
+}
+
+.trusted-device-row[data-revoked] {
+  opacity: 0.55;
+}
+
+.trusted-device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.trusted-device-info strong {
+  color: var(--text);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.trusted-device-info small,
+.setting-error {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.setting-error {
+  color: var(--danger, #ff8b8b);
+}
+
+.trusted-device-pairing {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.trusted-device-code {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-md);
+  color: var(--accent);
+  cursor: pointer;
+  font-family: var(--font-numeric);
+  font-size: 0.9rem;
+  letter-spacing: 0.08em;
+  padding: 0.55rem;
+  text-align: center;
+}
+
+.trusted-device-add {
+  align-self: flex-start;
+}
+
+.chip-button.compact {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  padding: 0.3rem 0.55rem;
+}
+
+.chip-button.danger {
+  border-color: color-mix(in srgb, #ff8b8b 45%, var(--line));
+  color: #ffb0b0;
+}
+
 .setting-danger {
   border-top: 1px solid var(--line);
   padding-top: 0.9rem;

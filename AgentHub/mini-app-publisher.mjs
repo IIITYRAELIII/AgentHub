@@ -45,6 +45,9 @@ const CONTROL_ACTIONS = new Set([
   "speak-last-answer",
   "restart-server",
   "compact-context",
+  "trusted-devices",
+  "create-device-pairing",
+  "revoke-device",
 ]);
 const gzipAsync = promisify(gzip);
 
@@ -238,6 +241,24 @@ export class MiniAppPublisher {
 
   async #signedControlRequest(pathname, payload, secret) {
     return (await this.#signedControlFetch(pathname, payload, secret)).json();
+  }
+
+  async createDevicePairing(userId) {
+    const secret = await this.#secret();
+    return this.#signedControlRequest("/api/device/pairing", { userId: String(userId) }, secret);
+  }
+
+  async trustedDevices(userId) {
+    const secret = await this.#secret();
+    return this.#signedControlRequest("/api/device/list", { userId: String(userId) }, secret);
+  }
+
+  async revokeDevice(userId, deviceId) {
+    const secret = await this.#secret();
+    return this.#signedControlRequest("/api/device/revoke", {
+      userId: String(userId),
+      deviceId: String(deviceId),
+    }, secret);
   }
 
   async #flushControlResults(secret) {

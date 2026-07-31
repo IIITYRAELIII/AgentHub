@@ -269,6 +269,8 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(page, /data-toggle="includeClaudeUsage"/u);
     assert.match(page, /data-claude-group-toggle/u);
     assert.match(page, /data-token-breakdown-toggle/u);
+    assert.match(page, /data-trusted-device-list/u);
+    assert.match(page, /data-device-create/u);
     assert.match(page, /<option value="metropolis">Мегаполис<\/option>/u);
     assert.match(page, /data-metropolis-glass/u);
     assert.match(page, /<option value="magma">Магма<\/option>/u);

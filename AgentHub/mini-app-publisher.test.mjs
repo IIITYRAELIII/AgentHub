@@ -96,6 +96,51 @@ test("Mini App publisher reuses the sync id for an identical journal retry", asy
   assert.notEqual(changed.syncId, first.syncId);
 });
 
+test("Mini App publisher manages trusted devices through signed service requests", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-device-publisher-"));
+  const secretFile = path.join(root, "sync.secret");
+  const secret = "v".repeat(64);
+  await writeFile(secretFile, secret);
+  const requests = [];
+  const publisher = new MiniAppPublisher({
+    workLogFile: path.join(root, "WORK_LOG.md"),
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      if (url.endsWith("/pairing")) return Response.json({ code: "AAAAA-BBBBB-CCCCC-DDDDD", expiresAt: 1 });
+      if (url.endsWith("/list")) return Response.json({ devices: [{ id: "device" }] });
+      return Response.json({ device: { id: "device", revokedAt: 1 } });
+    },
+  });
+  try {
+    assert.equal((await publisher.createDevicePairing("42")).code, "AAAAA-BBBBB-CCCCC-DDDDD");
+    assert.equal((await publisher.trustedDevices("42")).devices.length, 1);
+    assert.equal((await publisher.revokeDevice("42", "device")).device.revokedAt, 1);
+    assert.deepEqual(requests.map((request) => new URL(request.url).pathname), [
+      "/api/device/pairing",
+      "/api/device/list",
+      "/api/device/revoke",
+    ]);
+    for (const request of requests) {
+      const pathname = new URL(request.url).pathname;
+      const timestamp = Number(request.options.headers["X-Agent-Hub-Timestamp"]);
+      assert.equal(
+        request.options.headers["X-Agent-Hub-Signature"],
+        signMiniAppControlRequest({
+          body: request.options.body,
+          secret,
+          pathname,
+          timestamp,
+        }).signature,
+      );
+    }
+  } finally {
+    await publisher.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Mini App publisher polls signed controls and posts their result", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-publisher-"));
   const secretFile = path.join(root, "sync.secret");

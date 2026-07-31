@@ -228,7 +228,14 @@ function updateLiveMessage(taskIdValue, selected) {
 }
 
 function authorizationHeaders() {
-  return telegramInitData ? { Authorization: `tma ${telegramInitData}` } : {};
+  if (telegramInitData) return { Authorization: `tma ${telegramInitData}` };
+  try {
+    const deviceToken = String(window.AgentHubAndroid?.getAccessToken?.() ?? "").trim();
+    if (deviceToken) return { Authorization: `device ${deviceToken}` };
+  } catch {
+    // The native bridge is optional; local web and VS Code use their existing transport.
+  }
+  return {};
 }
 
 function seenAnswers() {
@@ -699,6 +706,23 @@ agentHub.on("task:select", ({ id }) => {
   });
   return selectionTail;
 });
+
+agentHub.on("devices:refresh", () => void runAction(async () => {
+  agentHub.setTrustedDevices({ loading: true });
+  const result = await control("trusted-devices", {});
+  agentHub.setTrustedDevices(result);
+}));
+
+agentHub.on("devices:create", () => void runAction(async () => {
+  const pairing = await control("create-device-pairing", {});
+  const result = await control("trusted-devices", {});
+  agentHub.setTrustedDevices({ ...result, pairing });
+}));
+
+agentHub.on("devices:revoke", ({ deviceId }) => void runAction(async () => {
+  await control("revoke-device", { deviceId });
+  agentHub.setTrustedDevices(await control("trusted-devices", {}));
+}));
 
 agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
   const identity = taskIdentity(id);

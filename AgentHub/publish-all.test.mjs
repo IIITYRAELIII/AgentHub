@@ -14,6 +14,7 @@ test("publication validates every client before the first deployment", () => {
     "Полные тесты Agent Hub",
     "Тесты расширения VS Code",
     "Сборка и smoke-проверка Agent Hub Desktop",
+    "Сборка Agent Hub Mobile",
     "Публикация Mini App Worker",
     "Сборка runtime-релиза",
     "Активация runtime-релиза",
@@ -23,10 +24,11 @@ test("publication validates every client before the first deployment", () => {
   assert.deepEqual(steps[0].args.slice(-2), ["run", "test:all"]);
   assert.deepEqual(steps[1].args.slice(-3), ["test", "--prefix", "VSCodeExtension"]);
   assert.match(steps[2].args.at(-1), /ci[\\/]desktop-smoke\.ps1$/u);
+  assert.deepEqual(steps[3].args.slice(-2), ["run", "android:build"]);
   assert.equal(
     steps.findIndex((step) => step.label.includes("Публикация")),
-    3,
-    "deployment must start only after all three validation surfaces pass",
+    4,
+    "deployment must start only after all four validation surfaces pass",
   );
 });
 
@@ -61,6 +63,7 @@ test("every validation failure stops publication before deployment", async () =>
     "Полные тесты Agent Hub",
     "Тесты расширения VS Code",
     "Сборка и smoke-проверка Agent Hub Desktop",
+    "Сборка Agent Hub Mobile",
   ];
 
   for (const failedLabel of validations) {
@@ -90,7 +93,7 @@ test("every validation failure stops publication before deployment", async () =>
   }
 });
 
-test("CI runs all Agent Hub, extension and Desktop checks without deployment", () => {
+test("CI runs all Agent Hub client checks without deployment", () => {
   const workflow = fs.readFileSync(
     path.resolve(ROOT, "..", ".github", "workflows", "agent-hub-ci.yml"),
     "utf8",
@@ -100,6 +103,7 @@ test("CI runs all Agent Hub, extension and Desktop checks without deployment", (
   assert.match(workflow, /npm run test:all/u);
   assert.match(workflow, /npm test --prefix VSCodeExtension/u);
   assert.match(workflow, /ci[\\/]desktop-smoke\.ps1/u);
+  assert.match(workflow, /AndroidApp[\\/]build\.ps1/u);
   assert.doesNotMatch(workflow, /worker:deploy|publish:all|runtime:deploy|wrangler deploy/u);
   assert.doesNotMatch(workflow, /\bsecrets\.[A-Za-z0-9_]+/u);
 });
