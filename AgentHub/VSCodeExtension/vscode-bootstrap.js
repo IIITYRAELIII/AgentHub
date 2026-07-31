@@ -8,11 +8,43 @@ let sequence = 0;
 
 window.addEventListener("message", (event) => {
   const message = event.data;
-  if (message?.type !== "agenthub:http-result") return;
+  if (!["agenthub:http-start", "agenthub:http-chunk", "agenthub:http-result"].includes(message?.type)) {
+    return;
+  }
   const request = pending.get(String(message.id ?? ""));
   if (!request) return;
+  if (message.type === "agenthub:http-start") {
+    request.transfer = {
+      status: Number(message.status) || 500,
+      headers: message.headers ?? { "Content-Type": "application/json; charset=utf-8" },
+      chunkCount: Number(message.chunkCount) || 0,
+      chunks: [],
+      received: 0,
+    };
+    return;
+  }
+  if (message.type === "agenthub:http-chunk") {
+    if (!request.transfer) return;
+    const index = Number(message.index);
+    if (!Number.isInteger(index) || index < 0 || index >= request.transfer.chunkCount) return;
+    if (typeof request.transfer.chunks[index] !== "string") request.transfer.received += 1;
+    request.transfer.chunks[index] = String(message.body ?? "");
+    return;
+  }
   pending.delete(String(message.id));
   window.clearTimeout(request.timer);
+  if (message.chunked === true) {
+    const transfer = request.transfer;
+    if (!transfer || transfer.received !== transfer.chunkCount) {
+      request.reject(new Error("Журнал в VS Code получен не полностью"));
+      return;
+    }
+    request.resolve(new Response(transfer.chunks.join(""), {
+      status: transfer.status,
+      headers: transfer.headers,
+    }));
+    return;
+  }
   request.resolve(new Response(String(message.body ?? ""), {
     status: Number(message.status) || 500,
     headers: message.headers ?? { "Content-Type": "application/json; charset=utf-8" },
@@ -33,7 +65,7 @@ window.fetch = function agentHubFetch(input, init = {}) {
     const timer = window.setTimeout(() => {
       pending.delete(id);
       reject(new Error("Журнал в VS Code не ответил вовремя"));
-    }, 15_000);
+    }, 30_000);
     pending.set(id, { resolve, reject, timer });
     vscode.postMessage({
       type: "agenthub:http",

@@ -3,7 +3,11 @@
 const vscode = require("vscode");
 const path = require("node:path");
 
-const { AgentHubBridge, defaultRuntimeRoot } = require("./agent-hub-bridge.js");
+const {
+  AgentHubBridge,
+  defaultRuntimeRoot,
+  webviewHttpMessages,
+} = require("./agent-hub-bridge.js");
 const { renderWorkLog } = require("./render.js");
 const { sharedWebviewHtml } = require("./shared-webview.js");
 const { baseCss, panelCss, sidebarHtml, webviewHtml } = require("./webview.js");
@@ -216,11 +220,9 @@ class WorkLogViewProvider {
     try {
       const bridge = await this.currentBridge();
       const result = await bridge.http(message);
-      await this.panel?.webview.postMessage({
-        type: "agenthub:http-result",
-        id,
-        ...result,
-      });
+      for (const part of webviewHttpMessages(id, result)) {
+        await this.panel?.webview.postMessage(part);
+      }
     } catch (error) {
       await this.panel?.webview.postMessage({
         type: "agenthub:http-result",

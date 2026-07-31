@@ -7,6 +7,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const WEBVIEW_HTTP_CHUNK_CHARS = 192 * 1024;
 const IMAGE_EXTENSIONS = new Map([
   ["image/png", ".png"],
   ["image/jpeg", ".jpg"],
@@ -25,6 +26,36 @@ function jsonResponse(value, status = 200, headers = {}) {
     },
     body: `${JSON.stringify(value)}\n`,
   };
+}
+
+/* VS Code пересылает данные между extension host и webview через IPC. Большой
+   журнал нельзя класть в одно сообщение: после разрастания истории такой пакет
+   перестаёт доходить до webview. Протокол ниже режет только тело ответа, а
+   метаданные передаёт один раз в начале потока. */
+function webviewHttpMessages(id, response, maxChunkChars = WEBVIEW_HTTP_CHUNK_CHARS) {
+  const body = String(response?.body ?? "");
+  const common = {
+    id: String(id ?? ""),
+    status: Number(response?.status) || 500,
+    headers: response?.headers ?? { "Content-Type": "application/json; charset=utf-8" },
+  };
+  if (body.length <= maxChunkChars) {
+    return [{ type: "agenthub:http-result", ...common, body }];
+  }
+  const chunks = [];
+  for (let offset = 0; offset < body.length; offset += maxChunkChars) {
+    chunks.push(body.slice(offset, offset + maxChunkChars));
+  }
+  return [
+    { type: "agenthub:http-start", ...common, chunkCount: chunks.length },
+    ...chunks.map((chunk, index) => ({
+      type: "agenthub:http-chunk",
+      id: common.id,
+      index,
+      body: chunk,
+    })),
+    { type: "agenthub:http-result", id: common.id, chunked: true },
+  ];
 }
 
 function defaultRuntimeRoot() {
@@ -189,4 +220,4 @@ class AgentHubBridge {
   }
 }
 
-module.exports = { AgentHubBridge, defaultRuntimeRoot };
+module.exports = { AgentHubBridge, defaultRuntimeRoot, webviewHttpMessages };

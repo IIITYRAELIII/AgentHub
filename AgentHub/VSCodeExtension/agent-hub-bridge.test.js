@@ -6,7 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { AgentHubBridge } = require("./agent-hub-bridge.js");
+const { AgentHubBridge, webviewHttpMessages } = require("./agent-hub-bridge.js");
 
 function day(date, turnId) {
   return "<details data-work-log-day-section>"
@@ -128,4 +128,21 @@ test("VS Code bridge answers the rate-limit summary without the journal", async 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("VS Code bridge chunks a large journal response for webview IPC", () => {
+  const body = JSON.stringify({ html: "Ж".repeat(1_500_000) });
+  const messages = webviewHttpMessages("request-1", {
+    status: 200,
+    headers: { ETag: '"large"' },
+    body,
+  });
+  assert.equal(messages[0].type, "agenthub:http-start");
+  assert.equal(messages.at(-1).type, "agenthub:http-result");
+  assert.equal(messages.at(-1).chunked, true);
+  assert.ok(messages.length > 3);
+  const chunks = messages.filter((message) => message.type === "agenthub:http-chunk");
+  assert.equal(chunks.length, messages[0].chunkCount);
+  assert.equal(chunks.map((message) => message.body).join(""), body);
+  assert.ok(chunks.every((message) => message.body.length <= 192 * 1024));
 });
