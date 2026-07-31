@@ -3212,6 +3212,10 @@ async function desktopCompactContext(params) {
   if (compactingThreads.has(target.threadId)) {
     return { accepted: false, message: "Свёртка контекста уже выполняется" };
   }
+  if (!codexTransport.running) {
+    await startCodexAppServer();
+    await initializeCodex({ attachSelectedThread: false });
+  }
   const compaction = {
     id: randomUUID(),
     status: "running",

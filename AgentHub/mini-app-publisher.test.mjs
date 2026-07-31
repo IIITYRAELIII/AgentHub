@@ -158,6 +158,45 @@ test("Mini App publisher polls signed controls and posts their result", async ()
   }
 });
 
+test("Mini App publisher relays context compaction allowed by the Worker", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-compact-"));
+  const secretFile = path.join(root, "sync.secret");
+  const id = "018f6c86-3f34-7a31-8f27-16f5b96cce12";
+  await writeFile(secretFile, "f".repeat(64));
+  const handled = [];
+  const publisher = new MiniAppPublisher({
+    workLogFile: path.join(root, "WORK_LOG.md"),
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    fetchImpl: async (url) => {
+      if (url.endsWith("/api/control/pull")) {
+        return Response.json({
+          commands: [{
+            id,
+            userId: "42",
+            action: "compact-context",
+            params: { provider: "codex", threadId: "thread-1" },
+          }],
+        });
+      }
+      return Response.json({ ok: true });
+    },
+    controlHandler: async (request) => {
+      handled.push(request);
+      return { accepted: true };
+    },
+  });
+  try {
+    assert.equal(await publisher.pollControl(), 1);
+    assert.equal(handled.length, 1);
+    assert.equal(handled[0].action, "compact-context");
+    assert.deepEqual(handled[0].params, { provider: "codex", threadId: "thread-1" });
+  } finally {
+    await publisher.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Mini App publisher rejects remote attachments without invoking the handler", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-attachment-"));
   const secretFile = path.join(root, "sync.secret");

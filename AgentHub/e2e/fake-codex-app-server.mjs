@@ -4,6 +4,9 @@ import { createInterface } from "node:readline";
 
 const stateArgument = process.argv.indexOf("--state");
 const statePath = stateArgument >= 0 ? process.argv[stateArgument + 1] : "";
+const pidFileArgument = process.argv.indexOf("--pid-file");
+const pidFilePath = pidFileArgument >= 0 ? process.argv[pidFileArgument + 1] : "";
+if (pidFilePath) writeFileSync(pidFilePath, `${process.pid}\n`, "utf8");
 const initialState = {
   nextThread: 1,
   nextTurn: 1,

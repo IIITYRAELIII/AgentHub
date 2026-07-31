@@ -44,6 +44,7 @@ const CONTROL_ACTIONS = new Set([
   "status-details",
   "speak-last-answer",
   "restart-server",
+  "compact-context",
 ]);
 const gzipAsync = promisify(gzip);
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -25,6 +25,7 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   const projectRoot = path.join(runtimeRoot, "project");
   const configPath = path.join(runtimeRoot, "config.json");
   const codexStatePath = path.join(runtimeRoot, "fake-codex-state.json");
+  const codexPidPath = path.join(runtimeRoot, "fake-codex.pid");
   await Promise.all([mkdir(dataDir, { recursive: true }), mkdir(projectRoot, { recursive: true })]);
   const telegram = new FakeTelegramApi();
   await telegram.start();
@@ -39,7 +40,11 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     projects: [{ name: "Desktop E2E", path: projectRoot }],
     dataDir,
     codexExecutable: process.execPath,
-    codexExecutableArgs: [FAKE_CODEX_FILE, "--state", codexStatePath],
+    codexExecutableArgs: [
+      FAKE_CODEX_FILE,
+      "--state", codexStatePath,
+      "--pid-file", codexPidPath,
+    ],
     codexRolloutContext: { enabled: false },
     codexModel: "gpt-5.6-sol",
     codexReasoningEffort: "high",
@@ -142,6 +147,33 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     compactedSnapshot.tasks.find((item) => item.threadId === firstThreadId)?.context?.compaction?.id,
     compacted.compactionId,
   );
+  const firstCodexPid = Number((await readFile(codexPidPath, "utf8")).trim());
+  await stopPid(firstCodexPid);
+  const compactedAfterDisconnect = await waitFor(async () => {
+    try {
+      const result = await callDesktopControl("compact-context", {
+        provider: "codex",
+        threadId: firstThreadId,
+      }, { runtimeRoot });
+      return result.accepted ? result : null;
+    } catch {
+      return null;
+    }
+  }, "desktop context compaction reconnect", 5_000);
+  assert.match(compactedAfterDisconnect.compactionId, /^[0-9a-f-]{36}$/u);
+  const replacementCodexPid = await waitFor(async () => {
+    const value = Number((await readFile(codexPidPath, "utf8").catch(() => "")).trim());
+    return value && value !== firstCodexPid ? value : null;
+  }, "replacement Codex App Server", 5_000);
+  assert.notEqual(replacementCodexPid, firstCodexPid);
+  await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    const context = snapshot.tasks.find((item) => item.threadId === firstThreadId)?.context;
+    return context?.compaction?.id === compactedAfterDisconnect.compactionId
+      && context.compaction.status === "completed"
+      ? snapshot
+      : null;
+  }, "desktop context compaction after reconnect", 5_000);
 
   const firstMessageId = "desktop-message-first";
   const steerMessageId = "desktop-message-steer";
