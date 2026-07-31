@@ -22,6 +22,7 @@ let pendingSelectionId = "";
 let selectionSequence = 0;
 let selectionTail = Promise.resolve();
 const historyByTask = new Map();
+const historyPageByTask = new Map();
 const outgoingByTask = new Map();
 const liveProbeByTask = new Map();
 const liveUserMessagesByTask = new Map();
@@ -153,8 +154,18 @@ function exactSelectedTaskParams() {
   return identity;
 }
 
-function renderTaskMessages(taskIdValue) {
-  agentHub.setMessages(taskIdValue, reconciledMessages(taskIdValue));
+function renderTaskMessages(taskIdValue, { preserveScroll = false } = {}) {
+  const messages = reconciledMessages(taskIdValue);
+  if (preserveScroll) agentHub.setMessagesPreservingScroll(taskIdValue, messages);
+  else agentHub.setMessages(taskIdValue, messages);
+}
+
+function syncHistoryPagination(taskIdValue) {
+  const page = historyPageByTask.get(taskIdValue);
+  agentHub.setHistoryPagination(taskIdValue, {
+    hasOlder: page?.nextBefore != null,
+    loading: page?.loading === true,
+  });
 }
 
 function updateLiveMessage(taskIdValue, selected) {
@@ -535,6 +546,26 @@ function historyMessages(history, focusedTurn = null) {
   return messages;
 }
 
+function mergeNewestHistory(previous, newest) {
+  const newestById = new Map(newest.map((message) => [message.id, message]));
+  const previousIds = new Set(previous.map((message) => message.id));
+  return [
+    ...previous.map((message) => newestById.get(message.id) ?? message),
+    ...newest.filter((message) => !previousIds.has(message.id)),
+  ];
+}
+
+function prependOlderHistory(previous, older) {
+  const seen = new Set(previous.map((message) => message.id));
+  const uniqueOlder = [];
+  for (const message of older) {
+    if (seen.has(message.id)) continue;
+    seen.add(message.id);
+    uniqueOlder.push(message);
+  }
+  return [...uniqueOlder, ...previous];
+}
+
 function applyOpened(result) {
   const history = result?.history;
   if (!history) {
@@ -542,10 +573,28 @@ function applyOpened(result) {
     return;
   }
   const id = taskId(history.provider, history.threadId);
-  historyByTask.set(id, historyMessages(history, result.focusedTurn));
+  const newest = historyMessages(history, result.focusedTurn);
+  const previousPage = historyPageByTask.get(id);
+  const preserveOlder = !result.focusedTurn
+    && previousPage
+    && Number(previousPage.start) < Number(history.start);
+  historyByTask.set(
+    id,
+    preserveOlder
+      ? mergeNewestHistory(historyByTask.get(id) ?? [], newest)
+      : newest,
+  );
+  historyPageByTask.set(id, {
+    start: preserveOlder ? previousPage.start : history.start,
+    end: history.end,
+    total: history.total,
+    nextBefore: preserveOlder ? previousPage.nextBefore : history.nextBefore,
+    loading: false,
+  });
   applySnapshot(result?.snapshot);
   selectedTaskId = id;
   agentHub.selectTask(id);
+  syncHistoryPagination(id);
   renderTaskMessages(id);
   const task = result.snapshot?.tasks?.find(
     (item) => item.provider === history.provider && item.threadId === history.threadId,
@@ -635,6 +684,37 @@ agentHub.on("task:select", ({ id }) => {
   });
   return selectionTail;
 });
+
+agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
+  const identity = taskIdentity(id);
+  const page = historyPageByTask.get(id);
+  if (!identity || !page || page.nextBefore == null || page.loading) return;
+  page.loading = true;
+  syncHistoryPagination(id);
+  try {
+    const history = await control("task-history", {
+      ...identity,
+      before: page.nextBefore,
+      limit: 20,
+    });
+    historyByTask.set(
+      id,
+      prependOlderHistory(historyByTask.get(id) ?? [], historyMessages(history)),
+    );
+    Object.assign(page, {
+      start: history.start,
+      total: history.total,
+      nextBefore: history.nextBefore,
+      loading: false,
+    });
+    syncHistoryPagination(id);
+    renderTaskMessages(id, { preserveScroll: true });
+  } catch (error) {
+    page.loading = false;
+    syncHistoryPagination(id);
+    throw error;
+  }
+}));
 
 agentHub.on("message:send", (request) => {
   const optimisticId = `local:${request.requestId}`;

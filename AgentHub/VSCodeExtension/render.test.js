@@ -512,6 +512,22 @@ test("Telegram mobile chat disables the host vertical collapse gesture", () => {
   assert.match(app, /telegram\?\.expand\(\);\s*telegram\?\.disableVerticalSwipes\?\.\(\);/u);
 });
 
+test("chat loads older pages from a button and a cancellable mobile pull gesture", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(html, /data-history-loader[\s\S]*data-history-load/u);
+  assert.match(app, /const HISTORY_PULL_THRESHOLD = 84;/u);
+  assert.match(app, /touchmove[\s\S]*historyPull\.armed = damped >= HISTORY_PULL_THRESHOLD/u);
+  assert.match(app, /touchend[\s\S]*if \(shouldLoad\) requestOlderHistory\(\)/u);
+  assert.match(app, /emit\("history:load-older", \{ taskId: state\.selectedId \}\)/u);
+  assert.match(app, /function captureChatAnchor\(\)[\s\S]*function restoreChatAnchor\(anchor\)/u);
+  assert.match(client, /control\("task-history", \{[\s\S]*before: page\.nextBefore,[\s\S]*limit: 20/u);
+  assert.match(client, /prependOlderHistory[\s\S]*preserveScroll: true/u);
+  assert.match(styles, /html\[data-surface="mobile"\] \.chat-history-loader\[data-pulling\]/u);
+});
+
 test("chat keeps an active response only in the live card after task switching", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");

@@ -34,6 +34,9 @@ const taskFilter = document.querySelector("[data-task-filter]");
 const chatPane = document.querySelector("[data-chat-pane]");
 const chatEmpty = document.querySelector("[data-chat-empty]");
 const chatScroll = document.querySelector("[data-chat-scroll]");
+const historyLoader = document.querySelector("[data-history-loader]");
+const historyLoadButton = document.querySelector("[data-history-load]");
+const historyLoadLabel = document.querySelector("[data-history-load-label]");
 const chatLog = document.querySelector("[data-chat-log]");
 const chatLive = document.querySelector("[data-chat-live]");
 const chatTitle = document.querySelector("[data-chat-title]");
@@ -516,6 +519,7 @@ const state = {
   tasks: [],
   selectedId: null,
   messages: new Map(),   // taskId -> message[]
+  historyPagination: new Map(), // taskId -> { hasOlder, loading }
   live: new Map(),       // taskId -> live | null
   approvals: new Map(),  // taskId -> approval[]
   queue: new Map(),      // taskId -> queued[]
@@ -892,10 +896,51 @@ function pinChatToBottom() {
   window.requestAnimationFrame(apply);
 }
 
-function renderMessages({ forceBottom = false } = {}) {
+function captureChatAnchor() {
+  const scrollTop = chatScroll.getBoundingClientRect().top;
+  const message = [...chatLog.querySelectorAll("[data-message-id]")].find(
+    (node) => node.getBoundingClientRect().bottom >= scrollTop,
+  );
+  if (!message) return null;
+  return {
+    id: message.dataset.messageId,
+    offset: message.getBoundingClientRect().top - scrollTop,
+  };
+}
+
+function restoreChatAnchor(anchor) {
+  if (!anchor) return;
+  const message = [...chatLog.querySelectorAll("[data-message-id]")]
+    .find((node) => node.dataset.messageId === anchor.id);
+  if (!message) return;
+  const apply = () => {
+    const scrollTop = chatScroll.getBoundingClientRect().top;
+    chatScroll.scrollTop += message.getBoundingClientRect().top - scrollTop - anchor.offset;
+  };
+  apply();
+  window.requestAnimationFrame(apply);
+}
+
+function currentHistoryPagination() {
+  return state.historyPagination.get(state.selectedId) ?? { hasOlder: false, loading: false };
+}
+
+function renderHistoryLoader() {
+  const pagination = currentHistoryPagination();
+  historyLoader.hidden = !pagination.hasOlder && !pagination.loading;
+  historyLoader.toggleAttribute("data-loading", pagination.loading);
+  historyLoadButton.disabled = pagination.loading;
+  if (!historyLoader.hasAttribute("data-pulling")) {
+    historyLoadLabel.textContent = pagination.loading ? "Загрузка…" : "Загрузить ещё";
+  }
+}
+
+function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
+  const anchor = preserveTop ? captureChatAnchor() : null;
   const stickToBottom = forceBottom || chatIsNearBottom();
   const historyLoaded = state.messages.has(state.selectedId);
   const messages = state.messages.get(state.selectedId) ?? [];
+  renderHistoryLoader();
   chatLog.replaceChildren();
   if (messages.length === 0) {
     chatLog.append(el("p", {
@@ -904,12 +949,83 @@ function renderMessages({ forceBottom = false } = {}) {
         ? "История пуста. Отправьте первое сообщение агенту."
         : "Загрузка истории…",
     }));
-    if (stickToBottom) pinChatToBottom();
+    if (anchor) restoreChatAnchor(anchor);
+    else if (stickToBottom) pinChatToBottom();
     return;
   }
   for (const message of messages) chatLog.append(renderMessage(message));
-  if (stickToBottom) pinChatToBottom();
+  if (anchor) restoreChatAnchor(anchor);
+  else if (stickToBottom) pinChatToBottom();
 }
+
+const HISTORY_PULL_THRESHOLD = 84;
+const HISTORY_PULL_MAX = 132;
+let historyPull = null;
+
+function resetHistoryPull() {
+  historyPull = null;
+  historyLoader.removeAttribute("data-pulling");
+  historyLoader.removeAttribute("data-armed");
+  historyLoader.style.removeProperty("--history-pull-height");
+  historyLoader.style.removeProperty("--history-pull-progress");
+  renderHistoryLoader();
+}
+
+function requestOlderHistory() {
+  const pagination = currentHistoryPagination();
+  if (!state.selectedId || !pagination.hasOlder || pagination.loading) return;
+  emit("history:load-older", { taskId: state.selectedId });
+}
+
+historyLoadButton.addEventListener("click", requestOlderHistory);
+
+chatScroll.addEventListener("touchstart", (event) => {
+  const pagination = currentHistoryPagination();
+  if (
+    !phoneComposerMode()
+    || event.touches.length !== 1
+    || chatScroll.scrollTop > 1
+    || !pagination.hasOlder
+    || pagination.loading
+  ) return;
+  historyPull = {
+    startY: event.touches[0].clientY,
+    distance: 0,
+    armed: false,
+  };
+}, { passive: true });
+
+chatScroll.addEventListener("touchmove", (event) => {
+  if (!historyPull || event.touches.length !== 1) return;
+  const distance = Math.max(0, event.touches[0].clientY - historyPull.startY);
+  if (distance <= 0) {
+    resetHistoryPull();
+    return;
+  }
+  event.preventDefault();
+  const damped = Math.min(HISTORY_PULL_MAX, distance * 0.58);
+  historyPull.distance = damped;
+  historyPull.armed = damped >= HISTORY_PULL_THRESHOLD;
+  historyLoader.hidden = false;
+  historyLoader.toggleAttribute("data-pulling", true);
+  historyLoader.toggleAttribute("data-armed", historyPull.armed);
+  historyLoader.style.setProperty("--history-pull-height", `${damped}px`);
+  historyLoader.style.setProperty(
+    "--history-pull-progress",
+    `${Math.min(100, damped / HISTORY_PULL_THRESHOLD * 100)}%`,
+  );
+  historyLoadLabel.textContent = historyPull.armed
+    ? "Отпустите — загрузить ещё"
+    : "Потяните ещё";
+}, { passive: false });
+
+chatScroll.addEventListener("touchend", () => {
+  const shouldLoad = historyPull?.armed === true;
+  resetHistoryPull();
+  if (shouldLoad) requestOlderHistory();
+});
+
+chatScroll.addEventListener("touchcancel", resetHistoryPull);
 
 function safeMarkdownUrl(raw) {
   try {
@@ -1918,6 +2034,20 @@ const AgentHub = {
       renderMessages({ forceBottom: true });
       renderLive();
     }
+  },
+  setMessagesPreservingScroll(taskId, messages) {
+    state.messages.set(taskId, Array.isArray(messages) ? messages.slice() : []);
+    if (taskId === state.selectedId) {
+      renderMessages({ preserveTop: true });
+      renderLive();
+    }
+  },
+  setHistoryPagination(taskId, pagination) {
+    state.historyPagination.set(taskId, {
+      hasOlder: pagination?.hasOlder === true,
+      loading: pagination?.loading === true,
+    });
+    if (taskId === state.selectedId) renderHistoryLoader();
   },
   appendMessage(taskId, message) {
     const list = state.messages.get(taskId) ?? [];
