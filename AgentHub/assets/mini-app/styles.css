@@ -651,12 +651,19 @@ html[data-theme="stormglass"] .theme-atmosphere {
   display: block;
 }
 
-html[data-theme="stormglass"] .theme-atmosphere[data-ready="true"] canvas[data-storm-glass] {
+/* Стекло «Storm» рисует тот же шейдер, что и «Мегаполис», поэтому виден его
+   холст. Собственный холст темы держит только разряды и лежит поверх. */
+html[data-theme="stormglass"] .theme-atmosphere[data-ready="true"] canvas {
   opacity: 1;
 }
 
-/* Оба стекла живут в одном слое атмосферы, поэтому чужой холст скрывается. */
-html[data-theme="stormglass"] .theme-atmosphere [data-metropolis-glass],
+html[data-theme="stormglass"] .theme-atmosphere [data-storm-glass] {
+  left: 0;
+  position: absolute;
+  top: 0;
+  z-index: 1;
+}
+
 html[data-theme="metropolis"] .theme-atmosphere [data-storm-glass] {
   display: none;
 }

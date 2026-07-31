@@ -296,48 +296,42 @@ test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", (
   assert.match(glass, /uniform sampler2D uFogImage/u);
   assert.match(glass, /vec4 fogged = texture2D\(uFogImage,\s*imageUv\)/u);
   assert.match(glass, /function createFogTexture\(image\)/u);
-  assert.match(glass, /fogContext\.filter = "blur\(4px\) saturate\(82%\) brightness\(88%\)"/u);
+  assert.match(glass, /filter: "blur\(4px\) saturate\(82%\) brightness\(88%\)"/u);
   assert.doesNotMatch(glass, /for \(int index = 0; index < 32/u);
   assert.doesNotMatch(glass, /condensation|glassHighlight/u);
   assert.match(glass, /prefers-reduced-motion: reduce/u);
 });
 
-test("Storm glass uses dense fast rain and irregular branched lightning", () => {
-  const glass = fs.readFileSync(require.resolve("../assets/mini-app/storm-glass.js"), "utf8");
+test("Storm reuses the Metropolis glass shader and adds only lightning", () => {
+  const shader = fs.readFileSync(require.resolve("../assets/mini-app/metropolis-glass.js"), "utf8");
+  const storm = fs.readFileSync(require.resolve("../assets/mini-app/storm-glass.js"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
-  assert.match(glass, /getPropertyValue\("--stormglass-image"\)/u);
-  assert.doesNotMatch(glass, /const IMAGE = "\/storm-sea\.png"/u);
-  // плотность и вес капель, на телефоне заметно ниже
-  assert.match(glass, /mobile \? 12_000 : 6_400/u);
-  assert.match(glass, /Math\.min\(mobile \? 50 : 190,\s*target\)/u);
-  assert.match(glass, /const heavy = Math\.random\(\) < 0\.32/u);
-  assert.match(glass, /heavy \? random\(9,\s*18\) : random\(3,\s*7\.5\)/u);
-  assert.match(glass, /drop\.maxSpeed \* 5\.6 \* delta/u);
-  // объём капли — предрассчитанный спрайт, иначе стёртая голова читается кляксой
-  assert.match(glass, /function lens\(size\)/u);
-  assert.match(glass, /lenses\.set\(key,\s*sprite\)/u);
-  assert.match(glass, /function addBead\(drop\)/u);
-  /* Состояние дорожки живёт в объектах, а кадр собирается заново. Копить
-     мокрое прямо в пикселях нельзя: в почти прозрачных дорожках расходились
-     восьмибитные каналы и по стеклу шли цветные разводы. */
-  assert.match(glass, /function trackTrail\(drop, now\)/u);
-  assert.match(glass, /function drawTrail\(drop, now\)/u);
-  assert.match(glass, /const TRAIL_ALPHA = \[/u);
-  assert.match(glass, /context\.globalCompositeOperation = "copy"/u);
-  assert.doesNotMatch(glass, /glassContext|sharpContext/u);
-  assert.match(glass, /function createLightning\(now\)/u);
-  assert.match(glass, /function drawLightning\(now\)/u);
-  assert.match(glass, /nextLightningAt = now \+ random\(3_000,\s*8_000\)/u);
-  // канал сужается и гаснет книзу, вспышка освещает всю сцену
-  assert.match(glass, /pass\.base \* \(1 - \(index \/ last\) \* 0\.45\)/u);
-  assert.match(glass, /context\.createLinearGradient\(0,\s*0,\s*0,\s*height\)/u);
-  /* Разряд рисуется в буфер один раз за удар: покадровое размытие вешало
-     кадр на телефоне, а CSS-дубль давал плоскую фигуру поверх стекла. */
-  assert.match(glass, /context\.drawImage\(lightning\.bolt,\s*0,\s*0,\s*width,\s*height\)/u);
-  assert.doesNotMatch(glass, /context\.filter/u);
-  assert.doesNotMatch(glass, /stormStrike/u);
+  /* Собственное стекло на 2D давало бусины на нитках, поэтому «Storm» идёт
+     через тот же шейдер, что и «Мегаполис»: снимок, кадрирование, размер
+     капель и запотевание задаются темой. */
+  assert.match(shader, /stormglass:\s*\{[\s\S]*?image: "--stormglass-image"/u);
+  assert.match(shader, /uniform float uDropScale/u);
+  assert.match(shader, /uniform float uGain/u);
+  assert.match(shader, /uv0 \* 3\.0 \* uDropScale \* gridAspect/u);
+  // сетка в пикселях: в долях экрана ячейка растягивалась и капля становилась сосулькой
+  assert.match(shader, /uv0 \* \(uViewport \/ uCellPx\)/u);
+  assert.match(shader, /cell: \[230, 170\]/u);
+  assert.match(shader, /clear\.rgb = clamp\(clear\.rgb \* uGain, 0\.0, 1\.0\)/u);
+  assert.match(shader, /const fog = \(THEMES\[activeTheme\] \?\? THEMES\.metropolis\)\.fog/u);
+  // смена темы внутри набора переливает текстуры, иначе остаётся чужой снимок
+  assert.match(shader, /if \(ready && theme !== activeTheme\) reset\(\)/u);
+  assert.match(styles, /html\[data-theme="stormglass"\] \.theme-atmosphere\[data-ready="true"\] canvas/u);
+
+  // холст темы держит только разряды и лежит поверх стекла
+  assert.match(storm, /function createLightning\(now\)/u);
+  assert.match(storm, /context\.drawImage\(lightning\.bolt,\s*0,\s*0,\s*width,\s*height\)/u);
+  assert.match(storm, /nextLightningAt = now \+ random\(3_000,\s*8_000\)/u);
+  assert.match(storm, /pass\.base \* \(1 - \(index \/ last\) \* 0\.45\)/u);
+  assert.match(storm, /context\.createLinearGradient\(0,\s*0,\s*0,\s*height\)/u);
+  assert.doesNotMatch(storm, /spawnDrop|dropPath|trackTrail|function lens\(/u);
+  assert.doesNotMatch(storm, /context\.filter/u);
   assert.doesNotMatch(styles, /stormglass-bolt|data-storm-strike/u);
-  assert.match(glass, /prefers-reduced-motion: reduce/u);
+  assert.match(storm, /prefers-reduced-motion: reduce/u);
 });
 
 test("Gothic theme uses medieval stone, old gold and a torch-lit scene", () => {

@@ -6,6 +6,39 @@
   const canvas = atmosphere?.querySelector("[data-metropolis-glass]");
   if (!atmosphere || !canvas) return;
 
+  /* Один и тот же шейдер обслуживает «Мегаполис» и «Storm»: у тем разный
+     снимок и точка кадрирования, а стекло, преломление и дорожки общие. */
+  const THEMES = {
+    metropolis: {
+      image: "--metropolis-image",
+      focus: [0.58, 0.67],
+      drops: 1,
+      gain: 1,
+      cell: [0, 0],
+      fog: {
+        base: "#102633",
+        filter: "blur(4px) saturate(82%) brightness(88%)",
+        film: "rgba(132, 155, 163, 0.075)",
+      },
+    },
+    /* Ночное море темнее города, и линзы на нём не читались: у «Storm» капли
+       крупнее, резкая картинка внутри них осветлена, а запотевание держится
+       светлее — иначе стекло выглядит просто тёмным пятном. */
+    stormglass: {
+      image: "--stormglass-image",
+      focus: [0.66, 0.7],
+      drops: 1,
+      gain: 1.9,
+      // размер ячейки в физических пикселях: десктоп и телефон
+      cell: [230, 170],
+      fog: {
+        base: "#0e1a24",
+        filter: "blur(5px) saturate(74%) brightness(88%)",
+        film: "rgba(150, 176, 194, 0.09)",
+      },
+    },
+  };
+  let activeTheme = "";
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   const vertexSource = `
     attribute vec2 aPosition;
@@ -26,6 +59,11 @@
     uniform vec2 uImageSize;
     uniform float uTime;
     uniform float uFocusX;
+    // «Storm» берёт ту же механику, но с более крупными каплями и осветлённой
+    // резкой картинкой: ночное море темнее города, и линзы иначе не читаются.
+    uniform float uDropScale;
+    uniform float uGain;
+    uniform float uCellPx;
 
     const float TAU = 6.28318530718;
 
@@ -45,7 +83,12 @@
 
     vec4 rainLayer(vec2 uv0, float time) {
       vec2 gridAspect = vec2(2.0, 1.0);
-      vec2 gridUv = uv0 * 3.0 * gridAspect;
+      /* Сетка в долях экрана растягивает ячейку на узкой панели, и капля
+         превращается в сосульку. Если тема задала размер ячейки в пикселях,
+         сетка считается от него и капля везде одинаковая. */
+      vec2 gridUv = uCellPx > 0.5
+        ? uv0 * (uViewport / uCellPx)
+        : uv0 * 3.0 * uDropScale * gridAspect;
       gridUv.y += time * 0.25;
 
       vec2 cellUv = fract(gridUv) - 0.5;
@@ -64,10 +107,10 @@
 
       // The original pen assumes a wide 2:1 canvas. AgentHub can be a narrow
       // VS Code panel, so convert the cell distance to physical screen space.
-      float screenCorrection = max(
-        (uViewport.x / max(uViewport.y, 1.0)) / gridAspect.x,
-        0.16
-      );
+      // A pixel grid is already square, so it needs no correction.
+      float screenCorrection = uCellPx > 0.5
+        ? 1.0
+        : max((uViewport.x / max(uViewport.y, 1.0)) / gridAspect.x, 0.16);
       vec2 screenScale = vec2(screenCorrection, 1.0);
       vec2 dropPosition = (cellUv - vec2(x, y)) * screenScale;
       float drop = smoothstep(0.03, 0.02, length(dropPosition));
@@ -106,6 +149,7 @@
 
       vec4 fogged = texture2D(uFogImage, imageUv);
       vec4 clear = texture2D(uImage, refractedUv);
+      clear.rgb = clamp(clear.rgb * uGain, 0.0, 1.0);
       gl_FragColor = vec4(mix(fogged.rgb, clear.rgb, clearGlass), 1.0);
     }
   `;
@@ -151,11 +195,15 @@
     throw new Error(message);
   }
 
+  function pixelRatio() {
+    return Math.min(window.devicePixelRatio || 1, 1.5);
+  }
+
   function resize() {
     if (!context) return;
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
-    const width = Math.max(1, Math.round(window.innerWidth * pixelRatio));
-    const height = Math.max(1, Math.round(window.innerHeight * pixelRatio));
+    const ratio = pixelRatio();
+    const width = Math.max(1, Math.round(window.innerWidth * ratio));
+    const height = Math.max(1, Math.round(window.innerHeight * ratio));
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
       canvas.height = height;
@@ -165,15 +213,23 @@
 
   function draw(now = window.performance.now()) {
     frame = 0;
-    if (!ready || root.dataset.theme !== "metropolis" || document.hidden) return;
+    if (!ready || !THEMES[root.dataset.theme] || document.hidden) return;
     resize();
     context.useProgram(program);
     context.uniform2f(locations.viewport, canvas.width, canvas.height);
     context.uniform2f(locations.imageSize, imageSize[0], imageSize[1]);
     context.uniform1f(locations.time, reducedMotion.matches ? 0 : (now - startedAt) / 1000);
+    const theme = THEMES[activeTheme] ?? THEMES.metropolis;
+    const focus = theme.focus;
+    context.uniform1f(locations.dropScale, theme.drops);
+    context.uniform1f(locations.gain, theme.gain);
+    context.uniform1f(
+      locations.cellPx,
+      (window.innerWidth < 860 ? theme.cell[1] : theme.cell[0]) * pixelRatio(),
+    );
     context.uniform1f(
       locations.focusX,
-      window.innerWidth < window.innerHeight ? 0.67 : 0.58,
+      window.innerWidth < window.innerHeight ? focus[1] : focus[0],
     );
     context.drawArrays(context.TRIANGLE_STRIP, 0, 4);
     atmosphere.dataset.ready = "true";
@@ -181,7 +237,7 @@
   }
 
   function schedule() {
-    if (root.dataset.theme !== "metropolis" || !ready || frame) return;
+    if (!THEMES[root.dataset.theme] || !ready || frame) return;
     frame = window.requestAnimationFrame(draw);
   }
 
@@ -214,9 +270,10 @@
     if (!fogContext) return image;
 
     const margin = Math.max(4, Math.round(Math.min(fogCanvas.width, fogCanvas.height) * 0.045));
-    fogContext.fillStyle = "#102633";
+    const fog = (THEMES[activeTheme] ?? THEMES.metropolis).fog;
+    fogContext.fillStyle = fog.base;
     fogContext.fillRect(0, 0, fogCanvas.width, fogCanvas.height);
-    fogContext.filter = "blur(4px) saturate(82%) brightness(88%)";
+    fogContext.filter = fog.filter;
     fogContext.drawImage(
       image,
       -margin,
@@ -225,7 +282,7 @@
       fogCanvas.height + margin * 2,
     );
     fogContext.filter = "none";
-    fogContext.fillStyle = "rgba(132, 155, 163, 0.075)";
+    fogContext.fillStyle = fog.film;
     fogContext.fillRect(0, 0, fogCanvas.width, fogCanvas.height);
     return fogCanvas;
   }
@@ -242,7 +299,7 @@
   }
 
   function initialize() {
-    if (initializing || ready || root.dataset.theme !== "metropolis") return;
+    if (initializing || ready || !THEMES[root.dataset.theme]) return;
     initializing = true;
     try {
       context = canvas.getContext("webgl", {
@@ -264,6 +321,9 @@
         imageSize: context.getUniformLocation(program, "uImageSize"),
         time: context.getUniformLocation(program, "uTime"),
         focusX: context.getUniformLocation(program, "uFocusX"),
+        dropScale: context.getUniformLocation(program, "uDropScale"),
+        gain: context.getUniformLocation(program, "uGain"),
+        cellPx: context.getUniformLocation(program, "uCellPx"),
       };
       const buffer = context.createBuffer();
       context.bindBuffer(context.ARRAY_BUFFER, buffer);
@@ -275,10 +335,11 @@
       context.enableVertexAttribArray(position);
       context.vertexAttribPointer(position, 2, context.FLOAT, false, 0, 0);
 
+      activeTheme = root.dataset.theme;
       const source = cssUrl(
-        window.getComputedStyle(root).getPropertyValue("--metropolis-image"),
+        window.getComputedStyle(root).getPropertyValue(THEMES[activeTheme].image),
       );
-      if (!source) throw new Error("Metropolis texture is unavailable");
+      if (!source) throw new Error(`${activeTheme} texture is unavailable`);
       const image = new Image();
       image.decoding = "async";
       image.addEventListener("load", () => upload(image), { once: true });
@@ -294,14 +355,30 @@
     }
   }
 
-  function syncTheme() {
-    if (root.dataset.theme === "metropolis") {
-      initialize();
-      schedule();
-      return;
-    }
+  /* Смена темы внутри набора меняет снимок, поэтому текстуры переливаются
+     заново, а не остаются от прошлой темы. */
+  function reset() {
     if (frame) window.cancelAnimationFrame(frame);
     frame = 0;
+    ready = false;
+    if (context) {
+      if (texture) context.deleteTexture(texture);
+      if (fogTexture) context.deleteTexture(fogTexture);
+    }
+    texture = null;
+    fogTexture = null;
+  }
+
+  function syncTheme() {
+    const theme = root.dataset.theme;
+    if (!THEMES[theme]) {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = 0;
+      return;
+    }
+    if (ready && theme !== activeTheme) reset();
+    initialize();
+    schedule();
   }
 
   const themeObserver = new MutationObserver(syncTheme);
