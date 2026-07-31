@@ -31,9 +31,13 @@ let deferredClientUserMessageIds = new Set();
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const {
   activeStageLabel,
+  hubErrorMessage,
+  isConnectionFailure,
+  markConnectionFailure,
   mergeLiveUserMessages,
   reconcile: reconcileMessageLifecycle,
   rememberBounded: rememberBoundedMessage,
+  reusableAttachmentPaths,
   visibleConversationMessages,
 } = window.AgentHubMessageLifecycle;
 
@@ -252,11 +256,19 @@ function bridgeCall(action, params = {}) {
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => {
       pendingBridgeCalls.delete(id);
-      reject(new Error("Agent Hub в VS Code не ответил вовремя"));
+      reject(markConnectionFailure(new Error("Agent Hub в VS Code не ответил вовремя")));
     }, 30_000);
     pendingBridgeCalls.set(id, { resolve, reject, timer });
     vscode.postMessage({ type: "agenthub:control", id, action, params });
   });
+}
+
+async function hubFetch(input, init) {
+  try {
+    return await fetch(input, init);
+  } catch (error) {
+    throw markConnectionFailure(error);
+  }
 }
 
 window.addEventListener("message", (event) => {
@@ -274,7 +286,7 @@ async function waitRemoteResult(commandId) {
   await localSessionReady;
   const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
-    const response = await fetch(`/api/control/result?id=${encodeURIComponent(commandId)}`, {
+    const response = await hubFetch(`/api/control/result?id=${encodeURIComponent(commandId)}`, {
       headers: authorizationHeaders(),
       cache: "no-store",
     });
@@ -288,14 +300,16 @@ async function waitRemoteResult(commandId) {
     }
     return payload.result;
   }
-  throw new Error("Локальный Agent Hub не ответил. Команда сохранена в Mini App.");
+  throw markConnectionFailure(
+    new Error("Локальный Agent Hub не ответил. Команда сохранена в Mini App."),
+  );
 }
 
 async function control(action, params = {}) {
   const bridged = bridgeCall(action, params);
   if (bridged) return bridged;
   await localSessionReady;
-  const response = await fetch("/api/control", {
+  const response = await hubFetch("/api/control", {
     method: "POST",
     headers: {
       ...authorizationHeaders(),
@@ -634,7 +648,7 @@ async function uploadAttachment(attachment) {
   }
   await localSessionReady;
   const image = dataUrlBody(attachment.dataUrl);
-  const response = await fetch("/api/attachment", {
+  const response = await hubFetch("/api/attachment", {
     method: "POST",
     headers: {
       ...authorizationHeaders(),
@@ -653,8 +667,8 @@ async function runAction(operation) {
   try {
     return await operation();
   } catch (error) {
-    applySnapshotConnection(lastSnapshot, "offline");
-    agentHub.toast(String(error?.message ?? error));
+    if (isConnectionFailure(error)) applySnapshotConnection(lastSnapshot, "offline");
+    agentHub.toast(hubErrorMessage(error));
     return null;
   }
 }
@@ -743,9 +757,13 @@ agentHub.on("message:send", (request) => {
   renderTaskMessages(request.taskId);
   return runAction(async () => {
     try {
-      const paths = optimistic.uploadedPaths.length === (request.attachments ?? []).length
-        ? optimistic.uploadedPaths.slice()
-        : [];
+      // Worker attachments are deleted after their command finishes. A retry
+      // must upload the image again instead of reusing an expired reference.
+      const paths = reusableAttachmentPaths(
+        optimistic.uploadedPaths,
+        (request.attachments ?? []).length,
+        { remote: !vscode },
+      );
       if (!paths.length) {
         for (const attachment of request.attachments ?? []) paths.push(await uploadAttachment(attachment));
         patchOutgoing(request.taskId, request.requestId, { uploadedPaths: paths.slice() });
@@ -778,7 +796,11 @@ agentHub.on("message:send", (request) => {
       agentHub.toast(result?.message ?? (result?.accepted ? "Сообщение принято" : "Сообщение сохранено"));
     } catch (error) {
       agentHub.completeSend(request.requestId, { accepted: false });
-      patchOutgoing(request.taskId, request.requestId, deliveryPatch("unconfirmed"));
+      patchOutgoing(
+        request.taskId,
+        request.requestId,
+        deliveryPatch(isConnectionFailure(error) ? "unconfirmed" : "rejected"),
+      );
       throw error;
     }
   });

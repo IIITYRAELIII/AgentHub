@@ -169,14 +169,52 @@ function activeStageLabel(stage) {
   return `Ход выполняется · ${value}`;
 }
 
+function reusableAttachmentPaths(previousPaths, attachmentCount, { remote = false } = {}) {
+  if (remote) return [];
+  const paths = Array.isArray(previousPaths) ? previousPaths : [];
+  return paths.length === Math.max(0, Number(attachmentCount) || 0)
+    ? paths.slice()
+    : [];
+}
+
+function markConnectionFailure(error) {
+  const failure = error && typeof error === "object" && typeof error.message === "string"
+    ? error
+    : new Error(String(error ?? "Ошибка соединения"));
+  Object.defineProperty(failure, "agentHubConnectionFailure", {
+    configurable: true,
+    enumerable: false,
+    value: true,
+  });
+  return failure;
+}
+
+function isConnectionFailure(error) {
+  return error?.agentHubConnectionFailure === true;
+}
+
+function hubErrorMessage(error) {
+  const message = String(error?.message ?? error ?? "Неизвестная ошибка").trim();
+  const translations = new Map([
+    ["remote attachment not found", "Вложение недоступно. Повторите отправку."],
+    ["remote attachment is incomplete", "Вложение загрузилось не полностью. Повторите отправку."],
+    ["remote attachment quota exceeded", "Хранилище вложений временно заполнено. Повторите позже."],
+  ]);
+  return translations.get(message.toLowerCase()) ?? message;
+}
+
 globalThis.AgentHubMessageLifecycle = Object.freeze({
   activeStageLabel,
+  hubErrorMessage,
   identityKey,
+  isConnectionFailure,
   clientIdentityKey,
   liveMessageMatch,
+  markConnectionFailure,
   mergeLiveUserMessages,
   reconcile,
   rememberBounded,
+  reusableAttachmentPaths,
   visibleConversationMessages,
 });
 

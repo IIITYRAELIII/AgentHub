@@ -251,6 +251,35 @@ test("active stage always identifies the whole turn as running", () => {
   );
 });
 
+test("remote attachment retries upload again while local VSC paths remain reusable", () => {
+  const previous = ["remote-attachment:old"];
+  assert.deepEqual(
+    [...lifecycle.reusableAttachmentPaths(previous, 1, { remote: true })],
+    [],
+  );
+  assert.deepEqual(
+    [...lifecycle.reusableAttachmentPaths(["C:\\AgentHub\\image.png"], 1)],
+    ["C:\\AgentHub\\image.png"],
+  );
+  assert.deepEqual([...lifecycle.reusableAttachmentPaths(previous, 2)], []);
+});
+
+test("only tagged transport failures change the Hub connection state", () => {
+  const applicationError = new Error("remote attachment not found");
+  assert.equal(lifecycle.isConnectionFailure(applicationError), false);
+  const transportError = lifecycle.markConnectionFailure(new Error("fetch failed"));
+  assert.equal(lifecycle.isConnectionFailure(transportError), true);
+  assert.equal(transportError.message, "fetch failed");
+});
+
+test("remote attachment failures are shown in Russian", () => {
+  assert.equal(
+    lifecycle.hubErrorMessage(new Error("remote attachment not found")),
+    "Вложение недоступно. Повторите отправку.",
+  );
+  assert.equal(lifecycle.hubErrorMessage(new Error("Другая ошибка")), "Другая ошибка");
+});
+
 test("returning to a busy task keeps live and deferred states separate", () => {
   const activeUser = {
     ...message("active-client", "Первый вопрос"),

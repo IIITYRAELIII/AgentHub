@@ -480,4 +480,41 @@ test("Worker relay stores user-bound image uploads and serves them only to their
     env,
   );
   assert.equal(response.status, 404);
+
+  // A completed attempt removes its attachment. Re-uploading the same image
+  // recreates the deterministic reference for a new command.
+  response = await upload();
+  assert.equal(response.status, 201);
+  const retriedUpload = await response.json();
+  assert.equal(retriedUpload.path, uploaded.path);
+
+  const retryCommandId = "018f6c86-3f34-7a31-8f27-16f5b96cce31";
+  response = await workerModule.default.fetch(new Request("https://hub.test/api/control", {
+    method: "POST",
+    headers: { Authorization: authorization, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: retryCommandId,
+      action: "send-message",
+      params: { text: "Повтор", attachments: [retriedUpload.path] },
+    }),
+  }), env);
+  assert.equal(response.status, 202);
+
+  response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/control/pull", { limit: 10 }, syncSecret),
+    env,
+  );
+  const retriedCommand = (await response.json()).commands[0];
+  assert.equal(retriedCommand.id, retryCommandId);
+
+  response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/control/attachment/pull", {
+      id: retriedUpload.id,
+      userId: "42",
+      commandId: retryCommandId,
+    }, syncSecret),
+    env,
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
 });

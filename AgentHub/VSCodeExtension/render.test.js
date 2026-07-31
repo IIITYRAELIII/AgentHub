@@ -600,6 +600,9 @@ test("composer clears optimistically and restores an unconfirmed message", () =>
   assert.match(app, /const requestId = retry\?\.fingerprint === fingerprint[\s\S]*retry\.requestId/u);
   assert.match(app, /retryComposerRequests\.set\(pending\.taskId,[\s\S]*requestId: pending\.requestId/u);
   assert.match(client, /agentHub\.completeSend\(request\.requestId/u);
+  assert.match(client, /reusableAttachmentPaths\([\s\S]*\{ remote: !vscode \}/u);
+  assert.match(client, /if \(isConnectionFailure\(error\)\) applySnapshotConnection/u);
+  assert.match(client, /deliveryPatch\(isConnectionFailure\(error\) \? "unconfirmed" : "rejected"\)/u);
   assert.match(client, /snapshot\?\.restartWaiting == null && blockingCount > 0/u);
   assert.match(client, /waiting \? "restart-waiting" : snapshot\?\.restartPending \? "restarting" : idleStatus/u);
   assert.match(html, /data-restart-banner/u);
