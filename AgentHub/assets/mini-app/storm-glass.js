@@ -31,13 +31,6 @@
 
   const fog = document.createElement("canvas");
   const fogContext = fog.getContext("2d");
-  /* Резкая копия нужна линзе: внутри капли изображение перевёрнуто, а взять
-     его из-под canvas нельзя. */
-  const sharp = document.createElement("canvas");
-  const sharpContext = sharp.getContext("2d");
-  /* Накопительный слой запотевания: в нём живут только дорожки и бисер. */
-  const glass = document.createElement("canvas");
-  const glassContext = glass.getContext("2d");
   const image = new Image();
   let imageReady = false;
   let frame = 0;
@@ -46,6 +39,10 @@
   let height = 0;
   let scale = 1;
   let mobile = false;
+  let trailLife = 7;
+  const TRAIL_ALPHA = [0.5, 0.32, 0.16];
+  // геометрия кадра фотографии: нужна и запотеванию, и линзе
+  const scene = { x: 0, y: 0, width: 0, height: 0 };
   const drops = [];
   /* Бисер, оставленный прошедшей каплей: без него дорожка читается голой
      полосой, а на настоящем стекле за каплей всегда тянется мелочь. */
@@ -85,6 +82,7 @@
       heavy,
       travel: 0,
       beadGap: random(26, 90),
+      path: [],
       life: 0,
     };
   }
@@ -97,28 +95,25 @@
     width = Math.max(1, Math.round(window.innerWidth));
     height = Math.max(1, Math.round(window.innerHeight));
     scale = ratio;
-    for (const layer of [canvas, fog, sharp, glass]) {
+    for (const layer of [canvas, fog]) {
       layer.width = Math.round(width * ratio);
       layer.height = Math.round(height * ratio);
     }
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     fogContext.setTransform(ratio, 0, 0, ratio, 0, 0);
-    sharpContext.setTransform(ratio, 0, 0, ratio, 0, 0);
-    glassContext.setTransform(ratio, 0, 0, ratio, 0, 0);
+    trailLife = mobile ? 3.5 : 7;
     paintScene();
 
     const target = Math.round((width * height) / (mobile ? 12_000 : 6_400));
     const wanted = reducedMotion.matches
       ? 0
-      : Math.max(mobile ? 30 : 80, Math.min(mobile ? 60 : 190, target));
+      : Math.max(mobile ? 30 : 80, Math.min(mobile ? 50 : 190, target));
     while (drops.length > wanted) drops.pop();
     while (drops.length < wanted) drops.push(spawnDrop(true));
     beads.length = 0;
     lenses.clear();
     lightning = null;
     if (imageReady) {
-      glassContext.globalCompositeOperation = "copy";
-      glassContext.drawImage(fog, 0, 0, width, height);
       context.globalCompositeOperation = "copy";
       context.drawImage(fog, 0, 0, width, height);
     }
@@ -136,9 +131,10 @@
     const offsetX = (width - drawWidth) * 0.62;
     const offsetY = (height - drawHeight) * 0.5;
 
-    sharpContext.setTransform(scale, 0, 0, scale, 0, 0);
-    sharpContext.clearRect(0, 0, width, height);
-    sharpContext.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
+    scene.x = offsetX;
+    scene.y = offsetY;
+    scene.width = drawWidth;
+    scene.height = drawHeight;
 
     fogContext.setTransform(scale, 0, 0, scale, 0, 0);
     fogContext.clearRect(0, 0, width, height);
@@ -235,8 +231,53 @@
     context.scale(-1.6, -1.6);
     context.translate(-drop.x, -drop.y);
     context.globalAlpha = 0.85;
-    context.drawImage(sharp, 0, 0, width, height);
+    context.drawImage(image, scene.x, scene.y, scene.width, scene.height);
     context.restore();
+  }
+
+  /* Дорожка хранится точками с временем, а не выжигается в пикселях. Слой с
+     накоплением давал цветной мусор: полупрозрачные наложения в 8 битах
+     теряют точность, и в почти прозрачных дорожках вылезал шум. */
+  function trackTrail(drop, now) {
+    const path = drop.path;
+    const last = path[path.length - 1];
+    if (!last || Math.hypot(drop.x - last.x, drop.y - last.y) > (mobile ? 26 : 12)) {
+      path.push({ x: drop.x, y: drop.y, at: now });
+    }
+    while (path.length && now - path[0].at > trailLife) path.shift();
+  }
+
+  /* Дорожка стирает запотевание тем слабее, чем старше её участок. Возрастные
+     ступени вместо посегментной альфы: иначе на кадр приходятся десятки тысяч
+     обводок. */
+  function drawTrail(drop, now) {
+    const path = drop.path;
+    if (path.length < 2) return;
+    context.lineWidth = Math.max(0.6, drop.size * 0.5 * drop.trail);
+    let start = 0;
+    let band = trailBand(now - path[0].at);
+    for (let index = 1; index <= path.length; index += 1) {
+      const next = index < path.length ? trailBand(now - path[index].at) : -1;
+      if (next === band && index < path.length) continue;
+      context.globalAlpha = TRAIL_ALPHA[band];
+      context.beginPath();
+      context.moveTo(path[start].x, path[start].y);
+      for (let step = start + 1; step <= index && step < path.length; step += 1) {
+        context.lineTo(path[step].x, path[step].y);
+      }
+      if (index === path.length) {
+        context.lineTo(drop.x, drop.y);
+      }
+      context.stroke();
+      start = index - 1;
+      band = next;
+    }
+    context.globalAlpha = 1;
+  }
+
+  function trailBand(age) {
+    if (age < trailLife * 0.35) return 0;
+    return age < trailLife * 0.7 ? 1 : 2;
   }
 
   function addBead(drop) {
@@ -359,19 +400,7 @@
     const delta = Math.min(0.05, lastTime ? (now - lastTime) / 1000 : 0.016);
     lastTime = now;
 
-    /* Запотевание живёт в отдельном слое, а капли рисуются поверх заново
-       каждый кадр. Раньше всё шло в один холст, и при медленном зарастании
-       отпечатки головы копились в широкую полосу — капля выглядела
-       пробиркой. Теперь копятся только дорожки, как на настоящем окне. */
-    glassContext.globalCompositeOperation = "source-over";
-    glassContext.globalAlpha = Math.min(0.14, 0.055 * delta * 60);
-    glassContext.drawImage(fog, 0, 0, width, height);
-    glassContext.globalAlpha = 1;
-
-    glassContext.globalCompositeOperation = "destination-out";
-    glassContext.fillStyle = "#000";
-    glassContext.strokeStyle = "#000";
-    glassContext.lineCap = "round";
+    const seconds = now / 1000;
 
     for (const drop of drops) {
       drop.life += delta;
@@ -382,7 +411,6 @@
         continue;
       }
 
-      const previousX = drop.x;
       const previousY = drop.y;
       drop.speed = Math.min(drop.maxSpeed, drop.speed + drop.maxSpeed * 5.6 * delta);
       drop.y += drop.speed * delta;
@@ -390,16 +418,8 @@
         drop.wind * drop.speed
         + Math.sin(drop.life * drop.wobbleSpeed + drop.wobble) * drop.drift
       ) * delta;
+      trackTrail(drop, seconds);
 
-      // влажная дорожка: уже головы и стирает плёнку не насквозь
-      // лёгкий разброс по ширине и плотности: ровная линия читается прочерченной
-      glassContext.globalAlpha = random(0.3, 0.5);
-      glassContext.lineWidth = Math.max(0.6, drop.size * 0.5 * drop.trail * random(0.85, 1.15));
-      glassContext.beginPath();
-      glassContext.moveTo(previousX, previousY);
-      glassContext.lineTo(drop.x, drop.y);
-      glassContext.stroke();
-      glassContext.globalAlpha = 1;
       /* Бисер отмеряется пройденным путём, а не временем: по времени он
          ложился сплошной цепочкой и превращал дорожку в застёжку. */
       drop.travel += Math.abs(drop.y - previousY);
@@ -415,32 +435,37 @@
         drop.rest = random(0.08, 0.48);
       }
       if (drop.y - drop.size * 2 > height || drop.x - drop.size > width) {
-        Object.assign(drop, spawnDrop());
+        const born = spawnDrop();
+        born.path = [];
+        Object.assign(drop, born);
       }
     }
 
-    // бисер перерисовывается каждый кадр: иначе зарастание съело бы его
     for (let index = beads.length - 1; index >= 0; index -= 1) {
-      const bead = beads[index];
-      bead.life -= delta;
-      if (bead.life <= 0) {
-        beads.splice(index, 1);
-        continue;
-      }
-      glassContext.globalAlpha = Math.min(1, bead.life);
-      glassContext.beginPath();
-      glassContext.ellipse(bead.x, bead.y, bead.size, bead.size * 1.15, 0, 0, Math.PI * 2);
-      glassContext.fill();
+      if ((beads[index].life -= delta) <= 0) beads.splice(index, 1);
     }
-    glassContext.globalAlpha = 1;
 
+    /* Кадр собирается заново: запотевание кладётся целиком, а всё мокрое
+       вырезается из него по состоянию, которое живёт в объектах. Накопление
+       прямо в пикселях давало цветной мусор — в почти прозрачных дорожках
+       вылезала ошибка округления восьмибитных каналов. */
     context.globalCompositeOperation = "copy";
     context.globalAlpha = 1;
-    context.drawImage(glass, 0, 0, width, height);
+    context.drawImage(fog, 0, 0, width, height);
 
-    // голова капли стирает запотевание только в текущем кадре
     context.globalCompositeOperation = "destination-out";
     context.fillStyle = "#000";
+    context.strokeStyle = "#000";
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    for (const drop of drops) drawTrail(drop, seconds);
+    for (const bead of beads) {
+      context.globalAlpha = Math.min(0.85, bead.life * 0.35);
+      context.beginPath();
+      context.ellipse(bead.x, bead.y, bead.size, bead.size * 1.15, 0, 0, Math.PI * 2);
+      context.fill();
+    }
+    context.globalAlpha = 1;
     for (const drop of drops) {
       dropPath(context, drop, 1 + Math.min(0.55, drop.speed / 900));
       context.fill();

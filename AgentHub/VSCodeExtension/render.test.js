@@ -307,7 +307,7 @@ test("Storm glass uses dense fast rain and irregular branched lightning", () => 
   assert.doesNotMatch(glass, /const IMAGE = "\/storm-sea\.png"/u);
   // плотность и вес капель, на телефоне заметно ниже
   assert.match(glass, /mobile \? 12_000 : 6_400/u);
-  assert.match(glass, /Math\.min\(mobile \? 60 : 190,\s*target\)/u);
+  assert.match(glass, /Math\.min\(mobile \? 50 : 190,\s*target\)/u);
   assert.match(glass, /const heavy = Math\.random\(\) < 0\.32/u);
   assert.match(glass, /heavy \? random\(9,\s*18\) : random\(3,\s*7\.5\)/u);
   assert.match(glass, /drop\.maxSpeed \* 5\.6 \* delta/u);
@@ -315,11 +315,14 @@ test("Storm glass uses dense fast rain and irregular branched lightning", () => 
   assert.match(glass, /function lens\(size\)/u);
   assert.match(glass, /lenses\.set\(key,\s*sprite\)/u);
   assert.match(glass, /function addBead\(drop\)/u);
-  /* Запотевание копится в отдельном слое: в общем холсте отпечатки головы
-     складывались в широкую полосу и капля выглядела пробиркой. */
-  assert.match(glass, /const glass = document\.createElement\("canvas"\)/u);
-  assert.match(glass, /glassContext\.globalCompositeOperation = "destination-out"/u);
+  /* Состояние дорожки живёт в объектах, а кадр собирается заново. Копить
+     мокрое прямо в пикселях нельзя: в почти прозрачных дорожках расходились
+     восьмибитные каналы и по стеклу шли цветные разводы. */
+  assert.match(glass, /function trackTrail\(drop, now\)/u);
+  assert.match(glass, /function drawTrail\(drop, now\)/u);
+  assert.match(glass, /const TRAIL_ALPHA = \[/u);
   assert.match(glass, /context\.globalCompositeOperation = "copy"/u);
+  assert.doesNotMatch(glass, /glassContext|sharpContext/u);
   assert.match(glass, /function createLightning\(now\)/u);
   assert.match(glass, /function drawLightning\(now\)/u);
   assert.match(glass, /nextLightningAt = now \+ random\(3_000,\s*8_000\)/u);
