@@ -13,6 +13,27 @@ function messageItemId(turnId, role, item, index) {
   return exact || `${String(turnId ?? "turn")}:${role}:${index}`;
 }
 
+function desktopPromptEnvelope(value) {
+  const source = String(value ?? "").trim();
+  const heading = /^# Files mentioned by the user:\s*$/im;
+  const headingMatch = heading.exec(source);
+  if (!headingMatch || headingMatch.index !== 0) return null;
+
+  const request = /^## My request for Codex:\s*$/im;
+  const requestMatch = request.exec(source);
+  if (!requestMatch || requestMatch.index <= headingMatch.index) return null;
+
+  const filesBlock = source.slice(headingMatch[0].length, requestMatch.index);
+  const attachmentPaths = [...filesBlock.matchAll(/^##\s+[^:\r\n]+:\s*(.+?)\s*$/gmu)]
+    .map((match) => String(match[1] ?? "").trim())
+    .filter(Boolean);
+  const text = source
+    .slice(requestMatch.index + requestMatch[0].length)
+    .replace(/<image\s+name=\[[^\]]+\]\s+path="[^"]+"\s*>/giu, "")
+    .trim();
+  return { text, attachmentPaths };
+}
+
 function normalizedTimestamp(value) {
   if (value == null || value === "") return null;
   const numeric = Number(value);
@@ -76,7 +97,9 @@ function codexTurnMessages(turn) {
   const turnId = String(turn?.id ?? "").trim();
   return (Array.isArray(turn?.items) ? turn.items : []).flatMap((item, index) => {
     if (item?.type === "userMessage") {
-      const text = displayUserPrompt(textContent(item.content));
+      const rawText = textContent(item.content);
+      const envelope = desktopPromptEnvelope(rawText);
+      const text = displayUserPrompt(rawText);
       return text ? [{
         itemId: messageItemId(turnId, "user", item, index),
         ...(String(item.clientId ?? "").trim()
@@ -84,6 +107,9 @@ function codexTurnMessages(turn) {
           : {}),
         role: "user",
         text,
+        ...(envelope?.attachmentPaths.length
+          ? { attachmentPaths: envelope.attachmentPaths }
+          : {}),
         ...(normalizedTimestamp(item.createdAt ?? turn?.startedAt ?? turn?.createdAt)
           ? { time: normalizedTimestamp(item.createdAt ?? turn?.startedAt ?? turn?.createdAt) }
           : {}),
@@ -146,6 +172,8 @@ function responseAnnotationPrompt(value) {
 
 export function displayUserPrompt(value) {
   let text = String(value ?? "").trim();
+  const envelope = desktopPromptEnvelope(text);
+  if (envelope) text = envelope.text;
   const telegramReplyMarker = "\nТекст пользователя:\n";
   const telegramReplyAt = text.lastIndexOf(telegramReplyMarker);
   if (telegramReplyAt >= 0) text = text.slice(telegramReplyAt + telegramReplyMarker.length).trim();

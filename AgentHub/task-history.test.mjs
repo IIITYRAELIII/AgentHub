@@ -214,6 +214,37 @@ test("an active snapshot updates the matching turn without duplicating it", () =
   assert.equal(history[0].answer, "Ответ формируется");
 });
 
+test("displayUserPrompt unwraps Codex Desktop file metadata", () => {
+  assert.equal(displayUserPrompt([
+    "# Files mentioned by the user:",
+    "",
+    "## codex-clipboard-3bc5bb2d-38a9-4b34-9886-73b0b204c8d2.png: C:/Temp/codex-clipboard-3bc5bb2d-38a9-4b34-9886-73b0b204c8d2.png",
+    "",
+    "## My request for Codex:",
+    "Почему остановился?",
+  ].join("\n")), "Почему остановился?");
+});
+
+test("Codex Desktop screenshots are retained as private attachment references", () => {
+  const [exchange] = codexThreadHistory([{
+    id: "turn-with-image",
+    status: "inProgress",
+    items: [{
+      type: "userMessage",
+      content: [{ type: "text", text: [
+        "# Files mentioned by the user:",
+        "## codex-clipboard-3bc5bb2d-38a9-4b34-9886-73b0b204c8d2.png: C:/Temp/codex-clipboard-3bc5bb2d-38a9-4b34-9886-73b0b204c8d2.png",
+        "## My request for Codex:",
+        "Проверь скрин",
+      ].join("\n") }],
+    }],
+  }]);
+  assert.equal(exchange.prompt, "Проверь скрин");
+  assert.deepEqual(exchange.messages[0].attachmentPaths, [
+    "C:/Temp/codex-clipboard-3bc5bb2d-38a9-4b34-9886-73b0b204c8d2.png",
+  ]);
+});
+
 test("one active Claude transcript turn adopts the managed run id", () => {
   const history = [{
     id: "claude-user-message-id",

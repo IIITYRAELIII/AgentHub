@@ -5,6 +5,7 @@ export function createDesktopTaskHistoryFactory({
   runs,
   historyMerger,
   receipts = {},
+  attachmentImporter = async () => [],
   responseBudget,
 }) {
   return async function desktopTaskHistory(params) {
@@ -54,6 +55,20 @@ export function createDesktopTaskHistoryFactory({
       Math.min(Number(params.maxAnswerChars) || 200_000, 200_000),
     );
     const start = Math.max(0, end - limit);
+    const page = history.slice(start, end);
+    await Promise.all(page.flatMap((item) => (
+      (Array.isArray(item.messages) ? item.messages : [])
+        .filter((message) => message?.role === "user" && Array.isArray(message.attachmentPaths))
+        .map(async (message) => {
+          const imported = await attachmentImporter(message.attachmentPaths);
+          if (imported.length) {
+            message.attachments = [
+              ...(Array.isArray(message.attachments) ? message.attachments : []),
+              ...imported,
+            ];
+          }
+        })
+    )));
     const payload = {
       provider,
       threadId: selectedThreadId,
@@ -62,7 +77,7 @@ export function createDesktopTaskHistoryFactory({
       start,
       end,
       nextBefore: start > 0 ? start : null,
-      items: history.slice(start, end).map((item) => ({
+      items: page.map((item) => ({
         id: String(item.id ?? ""),
         prompt: String(item.prompt ?? "").slice(0, 100_000),
         answer: String(item.answer ?? "").slice(0, maxAnswerChars),

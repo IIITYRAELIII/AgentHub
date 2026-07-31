@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, stat, unlink } from "node:fs/promises";
+import { copyFile, mkdir, readFile, stat, unlink } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import {
@@ -2751,6 +2752,7 @@ const desktopTaskHistory = createDesktopTaskHistoryFactory({
     forMessage: (identity) => desktopMessageReceipts.get(identity),
     forTurn: (identity) => desktopMessageReceipts.findByTurn(identity),
   },
+  attachmentImporter: importCodexDesktopAttachments,
   responseBudget: {
     fit: fitTaskHistoryPayload,
   },
@@ -3304,6 +3306,36 @@ const desktopMessageController = createDesktopMessageController({
 
 function trustedDeviceUserId(context) {
   return resolveTrustedDeviceUserId(config.allowedUserIds, context);
+}
+
+async function importCodexDesktopAttachments(values) {
+  const temporaryRoot = path.resolve(os.tmpdir());
+  const attachmentRoot = path.join(runtimeCommandRoot, "DesktopApp", "attachments");
+  const imported = [];
+  await mkdir(attachmentRoot, { recursive: true });
+  for (const value of Array.isArray(values) ? values.slice(0, 8) : []) {
+    const source = path.resolve(String(value ?? ""));
+    const name = path.basename(source);
+    if (!pathInsideOrSame(source, temporaryRoot)) continue;
+    if (!/^codex-clipboard-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpe?g|webp|gif|bmp)$/iu.test(name)) continue;
+    let sourceInfo;
+    try {
+      sourceInfo = await stat(source);
+    } catch {
+      continue;
+    }
+    if (!sourceInfo.isFile() || sourceInfo.size <= 0 || sourceInfo.size > 20 * 1024 * 1024) continue;
+    const target = path.join(attachmentRoot, name);
+    let targetInfo = null;
+    try {
+      targetInfo = await stat(target);
+    } catch {
+      // The first history read imports the Desktop screenshot.
+    }
+    if (!targetInfo?.isFile() || targetInfo.size !== sourceInfo.size) await copyFile(source, target);
+    imported.push(...desktopAttachmentDescriptors([target]));
+  }
+  return imported;
 }
 
 async function desktopAttachmentPathById(value) {

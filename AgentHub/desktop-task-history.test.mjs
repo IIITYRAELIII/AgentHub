@@ -7,6 +7,7 @@ function fixture(overrides = {}) {
     binding: null,
     merged: null,
     fit: null,
+    attachments: [],
   };
   const entries = [{
     provider: "codex",
@@ -99,6 +100,10 @@ function fixture(overrides = {}) {
         return payload;
       },
     },
+    attachmentImporter: async (paths) => {
+      calls.attachments.push(paths);
+      return paths.map((value) => ({ id: value.split("/").at(-1), type: "image/png" }));
+    },
   });
   return { desktopTaskHistory, state, calls };
 }
@@ -136,6 +141,19 @@ test("desktop task history resolves selection and merges the active run", async 
     type: "image/png",
   }]);
   assert.deepEqual(calls.fit, { maxBytes: 3_500_000 });
+});
+
+test("desktop task history imports private screenshot references for the visible page", async () => {
+  const { desktopTaskHistory, state, calls } = fixture({ run: null });
+  state.history[3].messages[0].attachmentPaths = ["C:/Temp/codex-clipboard-test.png"];
+
+  const result = await desktopTaskHistory({ limit: 1 });
+
+  assert.deepEqual(calls.attachments, [["C:/Temp/codex-clipboard-test.png"]]);
+  assert.deepEqual(result.items[0].messages[0].attachments, [{
+    id: "codex-clipboard-test.png",
+    type: "image/png",
+  }]);
 });
 
 test("desktop task history preserves pagination, field limits and response budget", async () => {
