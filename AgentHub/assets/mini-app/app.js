@@ -542,7 +542,42 @@ function currentTask() {
 
 /* =========================================================== роутер видов */
 
-function setView(view) {
+const NAVIGATION_TAB_KEY = "agent-hub-navigation-tab-v1";
+const navigationTabs = new Set(["tasks", "chat", "journal", "statistics"]);
+
+function currentNavigationTab() {
+  return ["journal", "statistics"].includes(root.dataset.view)
+    ? root.dataset.view
+    : (root.dataset.pane === "chat" ? "chat" : "tasks");
+}
+
+function storedNavigationTab() {
+  try {
+    const stored = localStorage.getItem(NAVIGATION_TAB_KEY);
+    return navigationTabs.has(stored) ? stored : "tasks";
+  } catch {
+    // Приватный WebView может запрещать localStorage.
+    return "tasks";
+  }
+}
+
+function persistNavigationTab() {
+  try {
+    localStorage.setItem(NAVIGATION_TAB_KEY, currentNavigationTab());
+  } catch {
+    // Состояние текущей вкладки остаётся в DOM до закрытия страницы.
+  }
+}
+
+function activateView(view) {
+  if (view === "journal") ensureJournalLoaded();
+  if (view === "statistics") {
+    requestUsageHistory(usageState.range);
+    requestLimits(limitsState.range);
+  }
+}
+
+function setView(view, { persist = true, activate = true } = {}) {
   const next = ["journal", "statistics"].includes(view) ? view : "chat";
   root.dataset.view = next;
   for (const button of document.querySelectorAll("[data-view-button]")) {
@@ -557,16 +592,14 @@ function setView(view) {
         : "Диалоги";
   }
   syncMobileNav();
-  if (next === "journal") ensureJournalLoaded();
-  if (next === "statistics") {
-    requestUsageHistory(usageState.range);
-    requestLimits(limitsState.range);
-  }
+  if (activate) activateView(next);
+  if (persist) persistNavigationTab();
 }
 
-function setPane(pane) {
+function setPane(pane, { persist = true } = {}) {
   root.dataset.pane = pane === "chat" ? "chat" : "tasks";
   syncMobileNav();
+  if (persist) persistNavigationTab();
 }
 
 function syncMobileNav() {
@@ -4062,6 +4095,14 @@ window.addEventListener("pagehide", () => clearInterval(taskDurationTimer), { on
 renderTasks();
 renderChat();
 renderOptions();
-setView("chat");
-setPane("tasks");
+const initialNavigationTab = storedNavigationTab();
+if (["journal", "statistics"].includes(initialNavigationTab)) {
+  setView(initialNavigationTab, { persist: false, activate: false });
+} else {
+  setView("chat", { persist: false, activate: false });
+  setPane(initialNavigationTab, { persist: false });
+}
+window.addEventListener("DOMContentLoaded", () => activateView(currentNavigationTab()), {
+  once: true,
+});
 autosizeComposer();

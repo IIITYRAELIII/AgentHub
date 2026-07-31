@@ -242,6 +242,27 @@ test("one settings panel owns interface and task controls", () => {
   );
 });
 
+test("the active Agent Hub tab survives a page reload", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(app, /const NAVIGATION_TAB_KEY = "agent-hub-navigation-tab-v1";/u);
+  assert.match(app, /localStorage\.getItem\(NAVIGATION_TAB_KEY\)/u);
+  assert.match(app, /localStorage\.setItem\(NAVIGATION_TAB_KEY, currentNavigationTab\(\)\)/u);
+  assert.match(app, /const initialNavigationTab = storedNavigationTab\(\);/u);
+  assert.match(
+    app,
+    /setView\(initialNavigationTab, \{ persist: false, activate: false \}\)/u,
+  );
+  assert.match(app, /setPane\(initialNavigationTab, \{ persist: false \}\)/u);
+  assert.match(
+    app,
+    /window\.addEventListener\("DOMContentLoaded", \(\) => activateView\(currentNavigationTab\(\)\)/u,
+  );
+  assert.doesNotMatch(
+    app,
+    /renderOptions\(\);\s*setView\("chat"\);\s*setPane\("tasks"\);/u,
+  );
+});
+
 test("task list keeps active duration live and metadata badges readable", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
