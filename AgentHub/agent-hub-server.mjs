@@ -3994,8 +3994,8 @@ function applyManagedClaudeCancellation(snapshot) {
   };
 }
 
-async function readClaudeTaskSnapshot(sessionId) {
-  const rawSnapshot = await readClaudeSessionSnapshot(sessionId);
+async function readClaudeTaskSnapshot(sessionId, { includeHistory = false } = {}) {
+  const rawSnapshot = await readClaudeSessionSnapshot(sessionId, { includeHistory });
   const snapshot = applyManagedClaudeCancellation(rawSnapshot);
   if (!snapshot) return null;
   const activityState = claudeSnapshotActivityState(snapshot);

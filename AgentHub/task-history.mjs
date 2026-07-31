@@ -324,6 +324,17 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
   let current = turnId
     ? values.findLast((item) => String(item?.id ?? "") === turnId)
     : values.findLast((item) => item?.active === true);
+  if (!current && turnId) {
+    const activeItems = values.filter((item) => item?.active === true);
+    if (activeItems.length === 1) {
+      current = activeItems[0];
+      // Managed Claude runs use an internal run UUID until the transcript emits
+      // its own user-message UUID. While the turn is active, normalize the
+      // visible history to the run UUID so the live and history layers share
+      // one exact identity instead of rendering the same prompt twice.
+      current.id = turnId;
+    }
+  }
 
   if (!current) {
     current = {

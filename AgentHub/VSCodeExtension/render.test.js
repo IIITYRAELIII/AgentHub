@@ -507,6 +507,11 @@ test("message attachments keep timestamps, thumbnails and an explicit open actio
   assert.match(app, /disabled:\s*missing/u);
 });
 
+test("Telegram mobile chat disables the host vertical collapse gesture", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(app, /telegram\?\.expand\(\);\s*telegram\?\.disableVerticalSwipes\?\.\(\);/u);
+});
+
 test("chat keeps an active response only in the live card after task switching", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");

@@ -143,6 +143,44 @@ test("readClaudeSessionSnapshot finds a nested session transcript", async () => 
   assert.equal(path.basename(result.transcriptPath), "session-1.jsonl");
 });
 
+test("readClaudeSessionSnapshot streams history beyond the bounded live tail", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-claude-large-history-"));
+  const project = path.join(root, "project");
+  await mkdir(project);
+  const transcriptPath = path.join(project, "large-session.jsonl");
+  await writeFile(transcriptPath, [
+    line({
+      type: "user",
+      uuid: "user-turn-1",
+      timestamp: "2026-07-31T08:00:00.000Z",
+      message: { role: "user", content: "Покажи старый запрос" },
+    }),
+    line({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", content: "x".repeat(4 * 1024 * 1024 + 1024) }],
+      },
+    }),
+    line({
+      type: "assistant",
+      uuid: "assistant-turn-1",
+      timestamp: "2026-07-31T08:01:00.000Z",
+      message: {
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Старый ответ доступен" }],
+      },
+    }),
+  ].join("\n"), "utf8");
+
+  const result = await readClaudeSessionSnapshot("large-session", { projectsRoot: root });
+
+  assert.equal(result.history.length, 1);
+  assert.equal(result.history[0].prompt, "Покажи старый запрос");
+  assert.equal(result.history[0].answer, "Старый ответ доступен");
+});
+
 test("listClaudeSessionSnapshots discovers independent sessions but skips subagents", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "telegram-claude-catalog-"));
   const project = path.join(root, "project");

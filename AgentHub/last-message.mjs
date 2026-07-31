@@ -1,6 +1,8 @@
+import { createReadStream } from "node:fs";
 import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import readline from "node:readline";
 import {
   claudeTranscriptHistory,
   codexFinalTurnAnswer,
@@ -246,6 +248,70 @@ async function readCatalogSample(filePath, size) {
   return `${head}\n${tail}`;
 }
 
+function compactClaudeHistoryEntry(entry) {
+  if (isUserPrompt(entry)) {
+    return {
+      type: "user",
+      uuid: entry.uuid,
+      timestamp: entry.timestamp,
+      message: {
+        role: "user",
+        content: contentBlocks(entry.message)
+          .filter((block) => block?.type === "text" && String(block.text ?? "").trim())
+          .map((block) => ({ type: "text", text: String(block.text) })),
+      },
+    };
+  }
+  if (entry?.type === "assistant" && entry.message?.role === "assistant") {
+    const content = contentBlocks(entry.message).flatMap((block) => {
+      if (block?.type === "text" && String(block.text ?? "").trim()) {
+        return [{ type: "text", text: String(block.text) }];
+      }
+      if (block?.type === "tool_use") {
+        return [{
+          type: "tool_use",
+          id: String(block.id ?? ""),
+          name: String(block.name ?? ""),
+        }];
+      }
+      return [];
+    });
+    if (!content.length && entry.message.stop_reason !== "end_turn") return null;
+    return {
+      type: "assistant",
+      uuid: entry.uuid,
+      timestamp: entry.timestamp,
+      message: {
+        role: "assistant",
+        stop_reason: entry.message.stop_reason ?? null,
+        content,
+      },
+    };
+  }
+  if (entry?.type === "last-prompt") {
+    return { type: "last-prompt", timestamp: entry.timestamp };
+  }
+  return null;
+}
+
+async function readClaudeTranscriptHistory(filePath) {
+  const lines = readline.createInterface({
+    input: createReadStream(filePath, { encoding: "utf8" }),
+    crlfDelay: Number.POSITIVE_INFINITY,
+  });
+  const compact = [];
+  for await (const line of lines) {
+    if (!line) continue;
+    try {
+      const entry = compactClaudeHistoryEntry(JSON.parse(line));
+      if (entry) compact.push(JSON.stringify(entry));
+    } catch {
+      // A concurrently appended final partial line is retried on the next read.
+    }
+  }
+  return claudeTranscriptHistory(compact.join("\n"));
+}
+
 async function findTranscriptFiles(directory, results = []) {
   let entries;
   try {
@@ -268,7 +334,10 @@ async function findTranscriptFiles(directory, results = []) {
 
 export async function readClaudeSessionSnapshot(
   sessionId,
-  { projectsRoot = path.join(os.homedir(), ".claude", "projects") } = {},
+  {
+    projectsRoot = path.join(os.homedir(), ".claude", "projects"),
+    includeHistory = true,
+  } = {},
 ) {
   const normalized = String(sessionId ?? "").trim();
   if (!normalized) return null;
@@ -279,18 +348,22 @@ export async function readClaudeSessionSnapshot(
     throw error;
   });
   if (!info) return null;
-  const cached = cachedTranscriptSnapshot("session", transcriptPath, info);
+  const cacheMode = includeHistory ? "session-history" : "session";
+  const cached = cachedTranscriptSnapshot(cacheMode, transcriptPath, info);
   if (cached) return { ...cached };
-  const transcript = await readTail(transcriptPath);
+  const [transcript, history] = await Promise.all([
+    readTail(transcriptPath),
+    includeHistory ? readClaudeTranscriptHistory(transcriptPath) : null,
+  ]);
   // Время последней записи нужно вызывающему коду, чтобы отличить действительно
   // выполняющийся ход от давно брошенного незавершённого транскрипта.
   const snapshot = {
     ...parseClaudeTranscript(transcript),
-    history: claudeTranscriptHistory(transcript),
+    ...(includeHistory ? { history } : {}),
     transcriptPath,
     modifiedAtMs: info.mtimeMs,
   };
-  rememberTranscriptSnapshot("session", transcriptPath, info, snapshot);
+  rememberTranscriptSnapshot(cacheMode, transcriptPath, info, snapshot);
   return { ...snapshot };
 }
 

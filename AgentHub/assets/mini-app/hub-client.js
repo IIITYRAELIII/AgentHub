@@ -88,7 +88,8 @@ function deliveryPatch(stateName) {
 function attachmentView(attachment) {
   const value = { ...attachment };
   if (!value.dataUrl && !value.url && value.id) {
-    value.url = `/api/message-attachment/${encodeURIComponent(String(value.id))}`;
+    if (telegramInitData && !vscode) value.missing = true;
+    else value.url = `/api/message-attachment/${encodeURIComponent(String(value.id))}`;
   }
   return value;
 }

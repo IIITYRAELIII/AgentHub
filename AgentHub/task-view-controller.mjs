@@ -45,7 +45,7 @@ export class TaskViewController {
         await d.taskSyncStore.save();
         return { history, snapshot };
       }
-      const snapshot = await d.readClaudeSnapshot(binding.threadId);
+      const snapshot = await d.readClaudeSnapshot(binding.threadId, { includeHistory: true });
       const history = snapshot?.history ?? [];
       d.taskSyncStore.recordHistory(task, history, completedOnly ? null : snapshot);
       await d.taskSyncStore.save();

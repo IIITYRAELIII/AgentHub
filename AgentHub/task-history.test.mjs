@@ -213,3 +213,30 @@ test("an active snapshot updates the matching turn without duplicating it", () =
   assert.equal(history.length, 1);
   assert.equal(history[0].answer, "Ответ формируется");
 });
+
+test("one active Claude transcript turn adopts the managed run id", () => {
+  const history = [{
+    id: "claude-user-message-id",
+    prompt: "Один запрос",
+    answer: "Начало ответа",
+    status: "inProgress",
+    active: true,
+    completed: false,
+    messages: [{
+      itemId: "claude-user-message-id",
+      role: "user",
+      text: "Один запрос",
+    }],
+  }];
+
+  mergeActiveTaskHistory(history, {
+    active: true,
+    turnId: "managed-run-id",
+    prompt: "Один запрос",
+    answer: "Продолжение ответа",
+  });
+
+  assert.equal(history.length, 1);
+  assert.equal(history[0].id, "managed-run-id");
+  assert.equal(history[0].answer, "Продолжение ответа");
+});

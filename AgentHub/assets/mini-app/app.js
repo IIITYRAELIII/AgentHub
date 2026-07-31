@@ -381,6 +381,7 @@ function selectClaudeGrouping(value, { persist = false } = {}) {
 
 telegram?.ready();
 telegram?.expand();
+telegram?.disableVerticalSwipes?.();
 applyTheme(savedTheme());
 applyBreakdown(savedBreakdown());
 selectUsageUnit(savedUsageUnit());
