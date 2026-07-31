@@ -227,6 +227,10 @@ import { createDesktopSnapshotFactory } from "./desktop-snapshot.mjs";
 import { createDesktopTaskHistoryFactory } from "./desktop-task-history.mjs";
 import { createDesktopControlRouter } from "./desktop-control-router.mjs";
 import { UsdRubRateStore } from "./exchange-rate.mjs";
+import {
+  ContextCompactionTracker,
+  isContextCompactionItem,
+} from "./context-compaction-tracker.mjs";
 
 const config = await loadConfig();
 const globalWorkLogFile = path.join(config.projectRoot, "WORK_LOG.md");
@@ -451,8 +455,7 @@ const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
 const threadContextUsage = new Map();
-const compactingThreads = new Set();
-const threadCompactions = new Map();
+const contextCompactions = new ContextCompactionTracker();
 const codexTurnStarts = new Map();
 const codexAccountingThreadRoots = new Map();
 let codexHookReceipts = { start: null, stop: null };
@@ -1242,19 +1245,6 @@ function latestThreadContextUsage(contextThreadId, contextTurnId = "") {
   return (Date.parse(exact.updatedAt) || 0) >= (Date.parse(latest.updatedAt) || 0)
     ? exact
     : latest;
-}
-
-function resetThreadContextUsage(contextThreadId, contextTurnId = "") {
-  const current = latestThreadContextUsage(contextThreadId, contextTurnId);
-  if (!current) return;
-  const turn = String(contextTurnId || current.turnId);
-  setBoundedMapValue(threadContextUsage, threadContextKey(contextThreadId, turn), {
-    ...current,
-    threadId: contextThreadId,
-    turnId: turn,
-    usedTokens: 0,
-    updatedAt: new Date().toISOString(),
-  }, 500);
 }
 
 function trackTurnTokenUsage(params) {
@@ -2641,8 +2631,8 @@ const {
   },
   context: {
     latestUsage: latestThreadContextUsage,
-    isCompacting: (contextThreadId) => compactingThreads.has(contextThreadId),
-    compactionFor: (contextThreadId) => threadCompactions.get(contextThreadId),
+    isCompacting: (contextThreadId) => contextCompactions.isRunning(contextThreadId),
+    compactionFor: (contextThreadId) => contextCompactions.get(contextThreadId),
   },
   runs: {
     forTask: (task) => taskRuns.forTask(task),
@@ -3227,21 +3217,14 @@ async function desktopCompactContext(params) {
   if (target.provider !== "codex") throw new Error("Свёртка контекста доступна только для Codex");
   const run = taskRuns.forTask(target);
   if (run) throw new Error("Сначала завершите или остановите текущий ход");
-  if (compactingThreads.has(target.threadId)) {
+  if (contextCompactions.isRunning(target.threadId)) {
     return { accepted: false, message: "Свёртка контекста уже выполняется" };
   }
   if (!codexTransport.running) {
     await startCodexAppServer();
     await initializeCodex({ attachSelectedThread: false });
   }
-  const compaction = {
-    id: randomUUID(),
-    status: "running",
-    startedAt: new Date().toISOString(),
-    completedAt: null,
-  };
-  compactingThreads.add(target.threadId);
-  setBoundedMapValue(threadCompactions, target.threadId, compaction, 100);
+  const compaction = contextCompactions.begin(target.threadId, { origin: "manual" });
   try {
     // A thread discovered from rollout history is not necessarily loaded in
     // this particular App Server process. Compacting an unloaded thread makes
@@ -3253,24 +3236,13 @@ async function desktopCompactContext(params) {
       sandbox: "workspace-write",
     });
     await sendRpc("thread/compact/start", { threadId: target.threadId });
-    setTimeout(() => {
-      if (threadCompactions.get(target.threadId)?.id !== compaction.id) return;
-      if (threadCompactions.get(target.threadId)?.status !== "running") return;
-      compactingThreads.delete(target.threadId);
-      threadCompactions.set(target.threadId, {
-        ...compaction,
-        status: "timeout",
-        completedAt: new Date().toISOString(),
-      });
-    }, 2 * 60 * 1_000).unref();
     return {
       accepted: true,
       compactionId: compaction.id,
       message: "Свёртка контекста запущена",
     };
   } catch (error) {
-    compactingThreads.delete(target.threadId);
-    threadCompactions.delete(target.threadId);
+    contextCompactions.fail(target.threadId, compaction.id);
     throw error;
   }
 }
@@ -5272,31 +5244,40 @@ async function handleCodexMessage(message) {
   if ((method === "item/reasoning/summaryTextDelta" || method === "item/plan/delta") && run) {
     appendProgressReasoning(run, params.delta);
   }
-  if (method === "item/started" && run) {
-    setProgressStage(run, describeCodexItem(params.item, false));
-    const activity = codexItemActivity(params.item, false);
-    if (activity) appendRunActivity(run, activity);
+  if (method === "item/started") {
+    if (isContextCompactionItem(params.item)) {
+      contextCompactions.begin(params.threadId, {
+        origin: "automatic",
+        turnId: eventTurnId,
+        itemId: params.item?.id,
+        startedAt: params.startedAtMs,
+      });
+    }
+    if (run) {
+      setProgressStage(run, describeCodexItem(params.item, false));
+      const activity = codexItemActivity(params.item, false);
+      if (activity) appendRunActivity(run, activity);
+    }
   }
-  if (method === "item/completed" && run) {
-    setProgressStage(run, describeCodexItem(params.item, true));
-    const activity = codexItemActivity(params.item, true);
-    if (activity) appendRunActivity(run, activity);
-    if (params.item?.type === "contextCompaction") compactingThreads.delete(run.threadId);
-    if (params.item?.type === "contextCompaction") resetThreadContextUsage(run.threadId, eventTurnId ?? run.turnId);
+  if (method === "item/completed") {
+    if (isContextCompactionItem(params.item)) {
+      contextCompactions.complete(params.threadId, {
+        turnId: eventTurnId,
+        itemId: params.item?.id,
+        completedAt: params.completedAtMs,
+      });
+    }
+    if (run) {
+      setProgressStage(run, describeCodexItem(params.item, true));
+      const activity = codexItemActivity(params.item, true);
+      if (activity) appendRunActivity(run, activity);
+    }
   }
   if (method === "thread/compacted") {
     const compactedThreadId = String(params.threadId ?? run?.threadId ?? "").trim();
-    if (compactedThreadId) compactingThreads.delete(compactedThreadId);
-    const compaction = threadCompactions.get(compactedThreadId);
-    if (compaction?.status === "running") {
-      threadCompactions.set(compactedThreadId, {
-        ...compaction,
-        status: "completed",
-        completedAt: new Date().toISOString(),
-      });
-    }
-    if (compactedThreadId) resetThreadContextUsage(compactedThreadId, eventTurnId ?? "");
-    if (run) appendRunActivity(run, {
+    const modernItemAlreadyHandled = contextCompactions.get(compactedThreadId)?.status === "completed";
+    contextCompactions.complete(compactedThreadId, { turnId: eventTurnId });
+    if (run && !modernItemAlreadyHandled) appendRunActivity(run, {
       id: `compaction:${eventTurnId ?? run.turnId ?? run.id}`,
       type: "compaction",
       label: "Контекст свёрнут",
@@ -7714,6 +7695,7 @@ function delay(ms) {
 
 function stopRuntimeTimers() {
   stopTyping();
+  contextCompactions.dispose();
   if (codexRolloutContextTimer) {
     clearTimeout(codexRolloutContextTimer);
     codexRolloutContextTimer = null;

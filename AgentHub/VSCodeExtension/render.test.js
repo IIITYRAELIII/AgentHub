@@ -609,9 +609,16 @@ test("unfinished commentary never becomes a normal historical answer card", () =
 
 test("manual context compaction reports completion and stays on the fast refresh loop", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
   assert.match(client, /requestedContextCompactions/u);
   assert.match(client, /Свёртка контекста завершена/u);
+  assert.match(client, /Началась автосвёртка контекста/u);
+  assert.match(client, /compactionContextLabel\(context\)/u);
   assert.match(client, /task\.running \|\| task\.context\?\.compacting/u);
+  assert.match(app, /context\.compacting \? "↻" : context\.usagePending \? "…"/u);
+  assert.match(app, /toggleAttribute\("data-compacting"/u);
+  assert.match(styles, /context-compaction-spin/u);
 });
 
 test("live reasoning renders Markdown separately from the response", () => {

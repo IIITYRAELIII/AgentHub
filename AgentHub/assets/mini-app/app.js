@@ -855,13 +855,15 @@ function renderContextUsage(task) {
   const percent = Math.max(0, Math.min(100, Number(context.percent) || 0));
   const used = Math.max(0, Number(context.usedTokens) || 0);
   const total = Math.max(0, Number(context.modelContextWindow) || 0);
-  contextLabel.textContent = `${Math.round(percent)}%`;
+  contextLabel.textContent = context.compacting ? "↻" : context.usagePending ? "…" : `${Math.round(percent)}%`;
   contextRing.style.setProperty("--context-percent", `${percent}%`);
   contextUsageButton.title = context.compacting
     ? "Контекст сворачивается…"
+    : context.usagePending
+      ? "Контекст свёрнут. Ожидается обновлённый объём…"
     : `Контекст: ${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")}. Нажмите, чтобы свернуть.`;
-  contextUsageButton.disabled = Boolean(task.running || context.compacting);
-  contextUsageButton.dataset.compacting = context.compacting ? "" : null;
+  contextUsageButton.disabled = Boolean(task.running || context.compacting || context.usagePending);
+  contextUsageButton.toggleAttribute("data-compacting", Boolean(context.compacting));
 }
 
 function buildSubtitleChips(task) {

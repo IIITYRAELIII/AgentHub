@@ -108,7 +108,7 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   assert.equal(automatic.settings.approvalMode, "auto");
   await callDesktopControl("update-setting", { name: "approvalMode", value: "manual" }, { runtimeRoot });
   const approvalStart = await callDesktopControl("send-message", {
-    text: "[approval] desktop",
+    text: "[approval][auto-compact] desktop",
     provider: "codex",
     threadId: firstThreadId,
   }, { runtimeRoot });
@@ -118,6 +118,23 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     return snapshot.pendingApprovals.length ? snapshot : null;
   }, "desktop approval request", 5_000);
   assert.match(approvalSnapshot.pendingApprovals[0].text, /E2E approval|command/i);
+  const autoCompacting = await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    const context = snapshot.tasks.find((item) => item.threadId === firstThreadId)?.context;
+    return context?.compacting && context?.compaction?.origin === "automatic" ? snapshot : null;
+  }, "automatic context compaction start", 5_000);
+  assert.equal(
+    autoCompacting.tasks.find((item) => item.threadId === firstThreadId)?.context?.compaction?.status,
+    "running",
+  );
+  await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    const context = snapshot.tasks.find((item) => item.threadId === firstThreadId)?.context;
+    return context?.compaction?.origin === "automatic" && context.compaction.status === "completed"
+      && context.usedTokens === 92_592
+      ? snapshot
+      : null;
+  }, "automatic context compaction completion", 5_000);
   await callDesktopControl("resolve-approval", {
     key: approvalSnapshot.pendingApprovals[0].key,
     decision: "once",
@@ -139,7 +156,7 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   const compactedSnapshot = await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     const context = snapshot.tasks.find((item) => item.threadId === firstThreadId)?.context;
-    return context?.usedTokens === 0 && context?.compaction?.status === "completed"
+    return context?.usedTokens === 92_592 && context?.compaction?.status === "completed"
       ? snapshot
       : null;
   }, "desktop context compaction", 5_000);
@@ -270,7 +287,7 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   assert.equal(
     completed.tasks.find((item) => item.threadId === firstThreadId)?.context?.usedTokens,
     130,
-    "newer real usage must replace the synthetic zero left by context compaction",
+    "newer real usage must replace the post-compaction context usage",
   );
   const history = await callDesktopControl("task-history", {
     provider: "codex",

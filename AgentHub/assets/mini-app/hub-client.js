@@ -27,6 +27,7 @@ const outgoingByTask = new Map();
 const liveProbeByTask = new Map();
 const liveUserMessagesByTask = new Map();
 const requestedContextCompactions = new Set();
+const observedContextCompactions = new Map();
 let deferredClientUserMessageIds = new Set();
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const {
@@ -362,22 +363,54 @@ function modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId) 
   };
 }
 
+function compactionContextLabel(context) {
+  if (context?.usagePending) return "объём обновляется";
+  return `контекст ${Math.round(Math.max(0, Math.min(100, Number(context?.percent) || 0)))}%`;
+}
+
+function observeContextCompactions(tasks) {
+  for (const task of tasks ?? []) {
+    const context = task.context;
+    const compaction = context?.compaction;
+    const compactionId = String(compaction?.id ?? "");
+    if (!compactionId) continue;
+    const previousStatus = observedContextCompactions.get(compactionId);
+    const status = String(compaction.status ?? "");
+    const requested = requestedContextCompactions.has(compactionId);
+    const eventAtMs = Date.parse(String(compaction.completedAt ?? compaction.startedAt ?? "")) || 0;
+    const recent = eventAtMs > 0 && Date.now() - eventAtMs < 90_000;
+    if (status === "running"
+      && previousStatus !== "running"
+      && compaction.origin === "automatic"
+      && recent) {
+      agentHub.toast("Началась автосвёртка контекста");
+    } else if (status === "completed" && previousStatus !== "completed") {
+      if (requested || (compaction.origin === "automatic" && recent)) {
+        const completionLabel = compaction.origin === "automatic"
+          ? "Автосвёртка контекста завершена"
+          : "Свёртка контекста завершена";
+        agentHub.toast(`${completionLabel} · ${compactionContextLabel(context)}`);
+      }
+      requestedContextCompactions.delete(compactionId);
+    } else if (status === "timeout" && previousStatus !== "timeout") {
+      if (requested || (compaction.origin === "automatic" && recent)) {
+        agentHub.toast("Не удалось подтвердить завершение свёртки контекста");
+      }
+      requestedContextCompactions.delete(compactionId);
+    }
+    observedContextCompactions.delete(compactionId);
+    observedContextCompactions.set(compactionId, status);
+    while (observedContextCompactions.size > 100) {
+      observedContextCompactions.delete(observedContextCompactions.keys().next().value);
+    }
+  }
+}
+
 function applySnapshot(snapshot) {
   if (!snapshot) return;
   lastSnapshot = snapshot;
   agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
-  for (const task of snapshot.tasks ?? []) {
-    const compaction = task.context?.compaction;
-    const compactionId = String(compaction?.id ?? "");
-    if (!compactionId || !requestedContextCompactions.has(compactionId)) continue;
-    if (compaction.status === "completed") {
-      requestedContextCompactions.delete(compactionId);
-      agentHub.toast("Свёртка контекста завершена");
-    } else if (compaction.status === "timeout") {
-      requestedContextCompactions.delete(compactionId);
-      agentHub.toast("Не удалось подтвердить завершение свёртки контекста");
-    }
-  }
+  observeContextCompactions(snapshot.tasks);
   deferredClientUserMessageIds = new Set(
     (snapshot.deferredInputs ?? [])
       .filter((item) => item.state !== "dispatching")

@@ -56,6 +56,7 @@ function fixture(overrides = {}) {
       turnId: "turn-1",
       updatedAt: "2026-07-30T10:01:00.000Z",
     },
+    compaction: { id: "compact-1", status: "running" },
     run,
     lastMessage: {
       text: "Последний ответ",
@@ -73,9 +74,9 @@ function fixture(overrides = {}) {
     },
     context: {
       latestUsage: () => state.usage,
-      isCompacting: (threadId) => threadId === "thread-1",
+      isCompacting: (threadId) => threadId === "thread-1" && state.compaction?.status === "running",
       compactionFor: (threadId) => (
-        threadId === "thread-1" ? { id: "compact-1", status: "running" } : undefined
+        threadId === "thread-1" ? state.compaction : undefined
       ),
     },
     runs: {
@@ -167,9 +168,34 @@ test("desktopContextSnapshot preserves the context JSON contract", () => {
     updatedAt: "2026-07-30T10:01:00.000Z",
     compacting: true,
     compaction: { id: "compact-1", status: "running" },
+    usagePending: false,
   });
   state.usage = null;
+  assert.deepEqual(desktopContextSnapshot("thread-1"), {
+    usedTokens: 0,
+    modelContextWindow: 0,
+    percent: 0,
+    turnId: null,
+    updatedAt: null,
+    compacting: true,
+    compaction: { id: "compact-1", status: "running" },
+    usagePending: false,
+  });
+  state.compaction = null;
   assert.equal(desktopContextSnapshot("thread-1"), null);
+});
+
+test("desktopContextSnapshot marks a completed compaction until fresh usage arrives", () => {
+  const { desktopContextSnapshot, state } = fixture();
+  state.compaction = {
+    id: "compact-2",
+    status: "completed",
+    startedAt: "2026-07-30T10:01:30.000Z",
+    completedAt: "2026-07-30T10:01:31.000Z",
+  };
+  assert.equal(desktopContextSnapshot("thread-1").usagePending, true);
+  state.usage.updatedAt = "2026-07-30T10:01:32.000Z";
+  assert.equal(desktopContextSnapshot("thread-1").usagePending, false);
 });
 
 test("desktopRunSnapshot preserves run fields and nested context", () => {
@@ -212,6 +238,7 @@ test("desktopRunSnapshot preserves run fields and nested context", () => {
       updatedAt: "2026-07-30T10:01:00.000Z",
       compacting: true,
       compaction: { id: "compact-1", status: "running" },
+      usagePending: false,
     },
   });
   assert.equal(desktopRunSnapshot(null), null);

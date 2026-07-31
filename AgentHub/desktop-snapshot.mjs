@@ -15,17 +15,23 @@ export function createDesktopSnapshotFactory({
 }) {
   function desktopContextSnapshot(thread, turn = "") {
     const usage = context.latestUsage(thread, turn);
-    if (!usage) return null;
-    const windowTokens = Math.max(0, Number(usage.modelContextWindow) || 0);
-    const usedTokens = Math.max(0, Number(usage.usedTokens) || 0);
+    const compaction = context.compactionFor(String(thread ?? "")) ?? null;
+    if (!usage && !compaction) return null;
+    const windowTokens = Math.max(0, Number(usage?.modelContextWindow) || 0);
+    const usedTokens = Math.max(0, Number(usage?.usedTokens) || 0);
+    const compactionStartedAtMs = Date.parse(String(compaction?.startedAt ?? "")) || 0;
+    const usageUpdatedAtMs = Date.parse(String(usage?.updatedAt ?? "")) || 0;
     return {
       usedTokens,
       modelContextWindow: windowTokens,
       percent: windowTokens ? Math.min(100, (usedTokens / windowTokens) * 100) : 0,
-      turnId: usage.turnId,
-      updatedAt: usage.updatedAt,
+      turnId: usage?.turnId ?? compaction?.turnId ?? null,
+      updatedAt: usage?.updatedAt ?? null,
       compacting: context.isCompacting(String(thread ?? "")),
-      compaction: context.compactionFor(String(thread ?? "")) ?? null,
+      compaction,
+      usagePending: compaction?.status === "completed"
+        && compactionStartedAtMs > 0
+        && usageUpdatedAtMs < compactionStartedAtMs,
     };
   }
 

@@ -5912,6 +5912,21 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   position: absolute;
 }
 
+@keyframes context-compaction-spin {
+  to { transform: rotate(1turn); }
+}
+
+.context-usage[data-compacting] .context-ring {
+  animation: context-compaction-spin 0.9s linear infinite;
+  background: conic-gradient(transparent 0 24%, var(--accent) 24% 58%, transparent 58% 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-usage[data-compacting] .context-ring {
+    animation: none;
+  }
+}
+
 .chat-stop-bottom {
   display: inline-flex;
 }

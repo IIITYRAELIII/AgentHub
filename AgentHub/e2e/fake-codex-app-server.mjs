@@ -175,6 +175,31 @@ function startTurn(params) {
     delta: `Проверяю сценарий: ${prompt}`,
   }), 25);
 
+  if (prompt.includes("[auto-compact]")) {
+    const compactionItem = { id: `${turn.id}:context-compaction`, type: "contextCompaction" };
+    schedule(() => notify("item/started", {
+      threadId: thread.id,
+      turnId: turn.id,
+      item: compactionItem,
+      startedAtMs: Date.now(),
+    }), 35);
+    schedule(() => notify("thread/tokenUsage/updated", {
+      threadId: thread.id,
+      turnId: turn.id,
+      tokenUsage: {
+        total: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningOutputTokens: 10, totalTokens: 130 },
+        last: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 92_592 },
+        modelContextWindow: 200_000,
+      },
+    }), 220);
+    schedule(() => notify("item/completed", {
+      threadId: thread.id,
+      turnId: turn.id,
+      item: compactionItem,
+      completedAtMs: Date.now(),
+    }), 260);
+  }
+
   if (prompt.includes("[hold]")) return turn;
   if (prompt.startsWith("[orphan-approval]")) return turn;
   if (prompt.includes("[approval]")) {
@@ -436,10 +461,29 @@ function handleRequest(message) {
       return send({ id, error: { message: `thread not found: ${params.threadId}` } });
     }
     reply(id, {});
-    schedule(() => notify("thread/compacted", {
-      threadId: thread?.id ?? params.threadId,
-      turnId: thread?.turns?.at(-1)?.id ?? null,
+    const turnId = thread?.turns?.at(-1)?.id ?? null;
+    const item = { id: `${turnId ?? thread.id}:manual-context-compaction`, type: "contextCompaction" };
+    schedule(() => notify("item/started", {
+      threadId: thread.id,
+      turnId,
+      item,
+      startedAtMs: Date.now(),
+    }), 10);
+    schedule(() => notify("thread/tokenUsage/updated", {
+      threadId: thread.id,
+      turnId,
+      tokenUsage: {
+        total: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningOutputTokens: 10, totalTokens: 130 },
+        last: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 92_592 },
+        modelContextWindow: 200_000,
+      },
     }), 20);
+    schedule(() => notify("item/completed", {
+      threadId: thread.id,
+      turnId,
+      item,
+      completedAtMs: Date.now(),
+    }), 30);
     return;
   }
   if (method === "turn/start") {
