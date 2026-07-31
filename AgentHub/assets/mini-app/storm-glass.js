@@ -3,17 +3,20 @@
 /* Запотевшее стекло темы «Storm».
  *
  * Отличия от стекла «Мегаполиса» — по замечаниям с обсуждения:
- *   • капли не круглые: голова вытянута и сужается кверху, за ней остаётся
- *     влажная дорожка переменной ширины;
+ *   • капли не круглые: голова вытянута, сужается кверху и растягивается тем
+ *     сильнее, чем быстрее падает, за ней остаётся влажная дорожка;
  *   • движение несинхронное: капля висит, копит массу и срывается в свой
  *     момент, а не едет вместе со всеми по общей сетке;
- *   • стекло не «отмывается» насовсем: протёртое медленно затягивается
- *     обратно, поэтому дорожки живут своей жизнью и исчезают.
+ *   • стекло не «отмывается» насовсем: протёртое затягивается обратно,
+ *     поэтому дорожки живут секунду и исчезают.
  *
  * Физика запотевания честная: слой рисует размытую копию того же фонового
  * снимка, а капли стирают её (destination-out), открывая резкий фон под
  * canvas. Размытая копия готовится один раз на изменение размера, поэтому
- * покадрово выполняются только дешёвые операции. */
+ * покадрово выполняются только дешёвые операции.
+ *
+ * Гроза живёт на этом же холсте: разряд подсвечивает всю сцену и виден сквозь
+ * мутное стекло, поэтому канал размыт и сужается книзу. */
 (() => {
   const root = document.documentElement;
   const atmosphere = document.querySelector(".theme-atmosphere");
@@ -35,6 +38,11 @@
   let height = 0;
   let scale = 1;
   const drops = [];
+  /* Бисер, оставленный прошедшей каплей: без него дорожка читается голой
+     полосой, а на настоящем стекле за каплей всегда тянется мелочь. */
+  const beads = [];
+  const BEAD_LIMIT = 320;
+  const lenses = new Map();
   let nextLightningAt = 0;
   let lightning = null;
 
@@ -48,24 +56,23 @@
   }
 
   /* Капля живёт циклами «висит — срывается — замедляется». Каждая величина
-     своя, поэтому одинаковых траекторий не возникает. */
+     своя, поэтому одинаковых траекторий не возникает. Тяжёлых меньше, но
+     именно они делают шторм штормом. */
   function spawnDrop(initial = false) {
     const heavy = Math.random() < 0.3;
-    const size = heavy ? random(6.2, 12.8) : random(2.8, 7.2);
+    const size = heavy ? random(8, 16.5) : random(3, 7);
     return {
       x: random(-0.02, 1.02) * width,
-      y: initial ? random(-0.1, 1) * height : random(-0.18, -0.02) * height,
+      y: initial ? random(-0.1, 1) * height : random(-0.2, -0.02) * height,
       size,
       speed: 0,
-      // Штормовые потёки не висят по несколько секунд: тяжёлые сразу срываются,
-      // мелкие задерживаются ненадолго и быстро уступают место новым.
-      maxSpeed: heavy ? random(280, 560) : random(120, 310),
-      rest: heavy ? random(0, 0.18) : random(0, 0.75),
+      maxSpeed: heavy ? random(300, 620) : random(130, 320),
+      rest: heavy ? random(0, 0.2) : random(0, 0.9),
       wobble: random(0, Math.PI * 2),
       wobbleSpeed: random(1.1, 3.6),
-      drift: random(-5, 7),
-      wind: random(0.055, 0.14),
-      trail: heavy ? random(0.9, 1.45) : random(0.6, 1.05),
+      drift: random(-4, 5),
+      wind: random(0.04, 0.09),
+      trail: heavy ? random(0.85, 1.25) : random(0.55, 0.95),
       heavy,
       life: 0,
     };
@@ -89,6 +96,8 @@
     const wanted = reducedMotion.matches ? 0 : Math.max(120, Math.min(360, target));
     while (drops.length > wanted) drops.pop();
     while (drops.length < wanted) drops.push(spawnDrop(true));
+    beads.length = 0;
+    lenses.clear();
     if (imageReady) context.drawImage(fog, 0, 0, width, height);
   }
 
@@ -111,117 +120,164 @@
     fogContext.fillRect(0, 0, width, height);
   }
 
-  function drawDropHead(target, drop) {
+  function drawDropHead(target, drop, stretch = 1) {
     const rx = drop.size * 0.72;
-    const ry = drop.size;
+    const ry = drop.size * stretch;
     target.beginPath();
-    // голова — вытянутый эллипс, сверху сходится в носик: круглая капля
-    // выглядела как пузырь, а не как вода на стекле
-    target.moveTo(drop.x, drop.y - ry * 1.9);
+    /* Голова — вытянутый эллипс, сверху сходится в носик. Носик короткий:
+       длинный превращал каплю в стрелку из чистого стекла над головой. */
+    target.moveTo(drop.x, drop.y - ry * 1.15);
     target.bezierCurveTo(
-      drop.x + rx * 0.9, drop.y - ry * 0.7,
+      drop.x + rx * 0.9, drop.y - ry * 0.6,
       drop.x + rx, drop.y + ry * 0.35,
       drop.x, drop.y + ry,
     );
     target.bezierCurveTo(
       drop.x - rx, drop.y + ry * 0.35,
-      drop.x - rx * 0.9, drop.y - ry * 0.7,
-      drop.x, drop.y - ry * 1.9,
+      drop.x - rx * 0.9, drop.y - ry * 0.6,
+      drop.x, drop.y - ry * 1.15,
     );
     target.closePath();
     target.fill();
   }
 
+  /* Объём капли — готовый спрайт: создавать градиент на каждую каплю в кадре
+     дорого, а размеров всего десятка полтора. */
+  function lens(size) {
+    const key = Math.max(2, Math.round(size));
+    const cached = lenses.get(key);
+    if (cached) return cached;
+    const box = Math.ceil(key * 4);
+    const sprite = document.createElement("canvas");
+    sprite.width = box;
+    sprite.height = box;
+    const paint = sprite.getContext("2d");
+    const middle = box / 2;
+    // тёмная кромка снизу-справа: без неё стёртая голова читается кляксой
+    const rim = paint.createRadialGradient(
+      middle + key * 0.35, middle + key * 0.45, key * 0.15,
+      middle, middle, key * 1.5,
+    );
+    rim.addColorStop(0, "rgba(8, 16, 26, 0)");
+    rim.addColorStop(0.72, "rgba(8, 16, 26, 0.28)");
+    rim.addColorStop(1, "rgba(8, 16, 26, 0)");
+    paint.fillStyle = rim;
+    paint.beginPath();
+    paint.ellipse(middle, middle, key * 1.05, key * 1.35, 0, 0, Math.PI * 2);
+    paint.fill();
+    // блик: капля работает как линза и собирает свет маяка
+    const glare = paint.createRadialGradient(
+      middle - key * 0.34, middle - key * 0.42, key * 0.08,
+      middle, middle, key * 1.25,
+    );
+    glare.addColorStop(0, "rgba(233, 246, 255, 0.7)");
+    glare.addColorStop(0.4, "rgba(196, 222, 240, 0.18)");
+    glare.addColorStop(1, "rgba(196, 222, 240, 0)");
+    paint.fillStyle = glare;
+    paint.beginPath();
+    paint.ellipse(middle, middle, key * 0.92, key * 1.2, 0, 0, Math.PI * 2);
+    paint.fill();
+    lenses.set(key, sprite);
+    return sprite;
+  }
+
+  function addBead(drop) {
+    if (beads.length >= BEAD_LIMIT) beads.shift();
+    beads.push({
+      x: drop.x + random(-drop.size, drop.size) * 0.5,
+      y: drop.y - random(0, drop.size * 2),
+      size: Math.max(0.5, drop.size * random(0.12, 0.34)),
+      life: random(0.6, 2.2),
+    });
+  }
+
   function createLightning(now) {
-    const startX = random(width * 0.18, width * 0.86);
-    atmosphere.style.setProperty("--storm-bolt-x", `${(startX / Math.max(width, 1)) * 100}%`);
-    atmosphere.style.setProperty("--storm-bolt-tilt", `${random(-8, 8)}deg`);
-    const endY = random(height * 0.42, height * 0.82);
-    const segments = Math.max(8, Math.round(endY / 42));
-    const points = [{ x: startX, y: -12 }];
+    const startX = random(width * 0.12, width * 0.9);
+    const endY = random(height * 0.5, height * 0.95);
+    const segments = Math.max(12, Math.round(endY / 26));
+    const points = [{ x: startX, y: -14 }];
     let x = startX;
     for (let index = 1; index <= segments; index += 1) {
-      const y = (endY * index) / segments;
-      x += random(-34, 34) + Math.sin(index * 1.7) * 9;
-      points.push({ x, y });
+      // мелкий неровный шаг: крупные колена читались нарисованной стрелкой
+      x += random(-13, 13) + Math.sin(index * 1.7) * 4;
+      points.push({ x, y: (endY * index) / segments });
     }
-    const branchIndex = Math.max(2, Math.min(points.length - 3, Math.round(random(2, points.length - 3))));
-    const branchStart = points[branchIndex];
-    const branch = [{ ...branchStart }];
-    let branchX = branchStart.x;
-    const branchSegments = Math.max(3, Math.round(random(3, 6)));
-    for (let index = 1; index <= branchSegments; index += 1) {
-      branchX += random(-42, 16);
-      branch.push({
-        x: branchX,
-        y: branchStart.y + index * random(22, 38),
-      });
+    const branches = [];
+    for (let count = 0; count < 2; count += 1) {
+      const from = points[Math.round(random(3, points.length - 4))];
+      const away = Math.random() < 0.5 ? -1 : 1;
+      const branch = [{ ...from }];
+      let branchX = from.x;
+      for (let index = 1; index <= Math.round(random(3, 6)); index += 1) {
+        branchX += away * random(6, 26) + random(-6, 6);
+        branch.push({ x: branchX, y: from.y + index * random(16, 30) });
+      }
+      branches.push(branch);
     }
-    return {
-      startedAt: now,
-      duration: random(430, 620),
-      points,
-      branch,
-    };
+    return { startedAt: now, duration: random(420, 640), points, branches };
   }
 
   function lightningIntensity(now) {
-    if (!nextLightningAt) nextLightningAt = now + random(900, 2_400);
+    if (!nextLightningAt) nextLightningAt = now + random(1_200, 3_000);
     if (!lightning && now >= nextLightningAt) lightning = createLightning(now);
     if (!lightning) return 0;
     const elapsed = now - lightning.startedAt;
     if (elapsed >= lightning.duration) {
       lightning = null;
-      nextLightningAt = now + random(3_000, 8_000);
+      nextLightningAt = now + random(2_600, 7_000);
       return 0;
     }
     // Короткий первый удар и более слабый повтор читаются естественнее
-    // равномерного CSS-мигания.
-    const first = Math.max(0, 1 - Math.abs(elapsed - 54) / 54);
-    const second = Math.max(0, 1 - Math.abs(elapsed - 188) / 78) * 0.68;
-    const afterglow = Math.max(0, 1 - elapsed / lightning.duration) * 0.12;
+    // равномерного мигания.
+    const first = Math.max(0, 1 - Math.abs(elapsed - 46) / 46);
+    const second = Math.max(0, 1 - Math.abs(elapsed - 170) / 74) * 0.62;
+    const afterglow = Math.max(0, 1 - elapsed / lightning.duration) * 0.14;
     return Math.min(1, first + second + afterglow);
   }
 
-  function traceLightning(points) {
-    context.beginPath();
-    context.moveTo(points[0].x, points[0].y);
-    for (let index = 1; index < points.length; index += 1) {
+  /* Канал сужается и гаснет книзу: постоянная толщина превращала разряд в
+     арматуру, а слишком резкое сужение обрывало его на середине. */
+  function traceLightning(points, base, alpha, color) {
+    const last = points.length - 1;
+    for (let index = 1; index <= last; index += 1) {
+      const fade = 1 - (index / last) * 0.4;
+      context.strokeStyle = `rgba(${color}, ${alpha * fade})`;
+      context.lineWidth = Math.max(0.9, base * (1 - (index / last) * 0.45));
+      context.beginPath();
+      context.moveTo(points[index - 1].x, points[index - 1].y);
       context.lineTo(points[index].x, points[index].y);
+      context.stroke();
     }
-    context.stroke();
   }
 
   function drawLightning(now) {
     const intensity = lightningIntensity(now);
-    const striking = Boolean(intensity && lightning);
-    if (atmosphere.dataset.stormStrike !== String(striking)) {
-      atmosphere.dataset.stormStrike = String(striking);
-    }
-    if (!striking) return;
+    if (!intensity || !lightning) return;
     context.save();
     context.globalCompositeOperation = "screen";
-    context.fillStyle = `rgba(185, 218, 255, ${0.22 * intensity})`;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+
+    // вспышка освещает всю сцену, и сильнее там, где тучи
+    const sky = context.createLinearGradient(0, 0, 0, height);
+    sky.addColorStop(0, `rgba(188, 218, 252, ${0.5 * intensity})`);
+    sky.addColorStop(0.55, `rgba(150, 190, 235, ${0.26 * intensity})`);
+    sky.addColorStop(1, `rgba(120, 160, 205, ${0.1 * intensity})`);
+    context.fillStyle = sky;
     context.fillRect(0, 0, width, height);
 
-    const boltLife = Math.max(
+    const life = Math.max(
       intensity,
       0.5 * Math.max(0, 1 - (now - lightning.startedAt) / lightning.duration),
     );
-    context.lineCap = "round";
-    context.lineJoin = "round";
-    context.shadowColor = `rgba(164, 215, 255, ${0.98 * boltLife})`;
-    context.shadowBlur = 32;
-    context.strokeStyle = `rgba(190, 225, 255, ${0.9 * boltLife})`;
-    context.lineWidth = 8;
-    traceLightning(lightning.points);
-    traceLightning(lightning.branch);
-
-    context.shadowBlur = 10;
-    context.strokeStyle = `rgba(252, 254, 255, ${Math.min(1, 1.18 * boltLife)})`;
-    context.lineWidth = 2.2;
-    traceLightning(lightning.points);
-    traceLightning(lightning.branch);
+    const paths = [lightning.points, ...lightning.branches];
+    // ореол размыт: разряд виден сквозь мутное стекло, а не наклеен поверх
+    context.filter = "blur(7px)";
+    for (const path of paths) traceLightning(path, 20, 0.5 * life, "128, 184, 245");
+    context.filter = "blur(1.6px)";
+    for (const path of paths) traceLightning(path, 6, 0.85 * life, "198, 228, 255");
+    context.filter = "none";
+    for (const path of paths) traceLightning(path, 2.2, Math.min(1, 1.15 * life), "252, 254, 255");
     context.restore();
   }
 
@@ -231,10 +287,10 @@
     const delta = Math.min(0.05, lastTime ? (now - lastTime) / 1000 : 0.016);
     lastTime = now;
 
-    // стекло затягивается обратно: без этого дорожки накапливались бы, и через
-    // минуту от запотевания не осталось бы следа
+    // стекло затягивается обратно: без этого дорожки вытягивались во весь
+    // экран и превращались в прочерченные линии
     context.globalCompositeOperation = "source-over";
-    context.globalAlpha = Math.min(0.5, 0.2 * delta * 60);
+    context.globalAlpha = Math.min(0.62, 0.34 * delta * 60);
     context.drawImage(fog, 0, 0, width, height);
     context.globalAlpha = 1;
 
@@ -253,6 +309,7 @@
         continue;
       }
 
+      const previousX = drop.x;
       const previousY = drop.y;
       drop.speed = Math.min(drop.maxSpeed, drop.speed + drop.maxSpeed * 5.6 * delta);
       drop.y += drop.speed * delta;
@@ -261,14 +318,17 @@
         + Math.sin(drop.life * drop.wobbleSpeed + drop.wobble) * drop.drift
       ) * delta;
 
-      /* След уже головы и сходит на нет: сплошная полоса во всю толщину
-         капли читалась как прочерченная палка, а не как влажная дорожка. */
-      context.lineWidth = Math.max(0.6, drop.size * 0.42 * drop.trail);
+      /* След уже головы и стирает запотевание не насквозь: сплошная полоса во
+         всю толщину капли читалась прочерченной палкой, а не влажным следом. */
+      context.globalAlpha = 0.5;
+      context.lineWidth = Math.max(0.6, drop.size * 0.34 * drop.trail);
       context.beginPath();
-      context.moveTo(drop.x, previousY);
+      context.moveTo(previousX, previousY);
       context.lineTo(drop.x, drop.y);
       context.stroke();
-      drawDropHead(context, drop);
+      context.globalAlpha = 1;
+      drawDropHead(context, drop, 1 + Math.min(0.55, drop.speed / 900));
+      if (drop.speed > 70 && Math.random() < 5 * delta) addBead(drop);
 
       // случайная остановка: капля цепляется за неровность и снова копит массу
       if (!drop.heavy && Math.random() < 0.24 * delta) {
@@ -280,24 +340,26 @@
       }
     }
 
-    // блики по голове: капля работает как линза и ловит свет маяка
+    for (let index = beads.length - 1; index >= 0; index -= 1) {
+      const bead = beads[index];
+      bead.life -= delta;
+      if (bead.life <= 0) {
+        beads.splice(index, 1);
+        continue;
+      }
+      context.globalAlpha = Math.min(1, bead.life);
+      context.beginPath();
+      context.ellipse(bead.x, bead.y, bead.size, bead.size * 1.15, 0, 0, Math.PI * 2);
+      context.fill();
+    }
+    context.globalAlpha = 1;
+
+    // объём: тёмная кромка снизу и блик сверху, иначе стёртая голова — клякса
     context.globalCompositeOperation = "source-over";
     for (const drop of drops) {
-      const gradient = context.createRadialGradient(
-        drop.x - drop.size * 0.3,
-        drop.y - drop.size * 0.35,
-        drop.size * 0.1,
-        drop.x,
-        drop.y,
-        drop.size * 1.15,
-      );
-      gradient.addColorStop(0, "rgba(226, 242, 252, 0.5)");
-      gradient.addColorStop(0.45, "rgba(190, 216, 234, 0.14)");
-      gradient.addColorStop(1, "rgba(190, 216, 234, 0)");
-      context.fillStyle = gradient;
-      context.beginPath();
-      context.ellipse(drop.x, drop.y, drop.size * 0.85, drop.size * 1.1, 0, 0, Math.PI * 2);
-      context.fill();
+      const sprite = lens(drop.size);
+      const box = sprite.width;
+      context.drawImage(sprite, drop.x - box / 2, drop.y - box / 2, box, box);
     }
     drawLightning(now);
   }
@@ -314,7 +376,6 @@
     frame = 0;
     lightning = null;
     nextLightningAt = 0;
-    atmosphere.dataset.stormStrike = "false";
   }
 
   function sync() {

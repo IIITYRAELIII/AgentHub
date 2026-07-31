@@ -306,18 +306,24 @@ test("Storm glass uses dense fast rain and irregular branched lightning", () => 
   assert.doesNotMatch(glass, /const IMAGE = "\/storm-sea\.png"/u);
   assert.match(glass, /\(width \* height\) \/ 5_200/u);
   assert.match(glass, /Math\.max\(120,\s*Math\.min\(360,\s*target\)\)/u);
-  assert.match(glass, /heavy \? random\(280,\s*560\) : random\(120,\s*310\)/u);
+  assert.match(glass, /const heavy = Math\.random\(\) < 0\.3/u);
+  assert.match(glass, /heavy \? random\(8,\s*16\.5\) : random\(3,\s*7\)/u);
   assert.match(glass, /drop\.maxSpeed \* 5\.6 \* delta/u);
+  // объём капли — предрассчитанный спрайт, иначе стёртая голова читается кляксой
+  assert.match(glass, /function lens\(size\)/u);
+  assert.match(glass, /lenses\.set\(key,\s*sprite\)/u);
+  assert.match(glass, /function addBead\(drop\)/u);
   assert.match(glass, /function createLightning\(now\)/u);
   assert.match(glass, /function drawLightning\(now\)/u);
-  assert.match(glass, /nextLightningAt = now \+ random\(3_000,\s*8_000\)/u);
-  assert.match(glass, /traceLightning\(lightning\.branch\)/u);
-  assert.match(glass, /atmosphere\.dataset\.stormStrike = String\(striking\)/u);
-  assert.match(glass, /context\.lineWidth = 8/u);
-  assert.match(glass, /context\.lineWidth = 2\.2/u);
-  assert.match(styles, /@keyframes stormglass-bolt/u);
-  assert.match(styles, /data-storm-strike="true"\]::after/u);
-  assert.match(styles, /clip-path:\s*polygon\(/u);
+  assert.match(glass, /nextLightningAt = now \+ random\(2_600,\s*7_000\)/u);
+  assert.match(glass, /lightning\.branches/u);
+  // канал сужается и гаснет книзу, вспышка освещает всю сцену
+  assert.match(glass, /base \* \(1 - \(index \/ last\) \* 0\.45\)/u);
+  assert.match(glass, /context\.createLinearGradient\(0,\s*0,\s*0,\s*height\)/u);
+  assert.match(glass, /context\.filter = "blur\(7px\)"/u);
+  // разряд рисуется только на холсте: CSS-дубль давал плоскую фигуру поверх стекла
+  assert.doesNotMatch(glass, /stormStrike/u);
+  assert.doesNotMatch(styles, /stormglass-bolt|data-storm-strike/u);
   assert.match(glass, /prefers-reduced-motion: reduce/u);
 });
 
