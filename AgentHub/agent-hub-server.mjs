@@ -151,6 +151,7 @@ import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
 import { LocalTaskSyncStore } from "./task-sync-store.mjs";
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
 import { createDesktopMessageController } from "./desktop-message-controller.mjs";
+import { resolveTrustedDeviceUserId } from "./trusted-device-access.mjs";
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
 import { SingleInstanceGuard } from "./instance-lock.mjs";
 import { BackgroundJobQueue } from "./background-job-queue.mjs";
@@ -3305,11 +3306,7 @@ const desktopMessageController = createDesktopMessageController({
 });
 
 function trustedDeviceUserId(context) {
-  const requested = String(context?.userId ?? "").trim();
-  const allowed = config.allowedUserIds.map(String);
-  const userId = requested || allowed[0] || "";
-  if (!userId || !allowed.includes(userId)) throw new Error("Пользователь устройства не разрешён");
-  return userId;
+  return resolveTrustedDeviceUserId(config.allowedUserIds, context);
 }
 
 function requireMiniAppPublisher() {
