@@ -3229,7 +3229,14 @@ let journalRequested = false;
 let desiredOpenState = null;
 
 function requestHeaders() {
-  return telegramMode ? { Authorization: `tma ${telegramInitData}` } : {};
+  if (telegramMode) return { Authorization: `tma ${telegramInitData}` };
+  try {
+    const deviceToken = String(window.AgentHubAndroid?.getAccessToken?.() ?? "").trim();
+    if (deviceToken) return { Authorization: `device ${deviceToken}` };
+  } catch {
+    // The Android bridge is optional for local web and VS Code.
+  }
+  return {};
 }
 
 function selectorValue(value) {

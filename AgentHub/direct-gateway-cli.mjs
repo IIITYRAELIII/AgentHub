@@ -45,53 +45,59 @@ async function install() {
   const runtimeRoot = path.resolve(argument("--runtime-root") || defaultRuntimeRoot());
   const gatewayDirectory = path.join(runtimeRoot, "gateway");
   const executable = path.join(gatewayDirectory, "caddy.exe");
-  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-caddy-"));
-  try {
-    const archive = path.join(temporaryDirectory, "caddy.zip");
-    await run("powershell.exe", [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      `Invoke-WebRequest -UseBasicParsing -Uri ${powershellLiteral(CADDY_ARCHIVE_URL)}`
-        + ` -OutFile ${powershellLiteral(archive)}`,
-    ]);
-    const bytes = await readFile(archive);
-    const digest = createHash("sha256").update(bytes).digest("hex");
-    if (digest !== CADDY_ARCHIVE_SHA256) {
-      throw new Error(`Caddy archive hash mismatch: ${digest}`);
+  const existing = await readJsonWithBackup(path.join(runtimeRoot, "gateway.json"));
+  const binaryReady = existing.value?.caddyVersion === CADDY_VERSION
+    && existing.value?.caddySha256 === CADDY_ARCHIVE_SHA256
+    && await access(executable).then(() => true, () => false);
+  if (!binaryReady) {
+    const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-caddy-"));
+    try {
+      const archive = path.join(temporaryDirectory, "caddy.zip");
+      await run("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `Invoke-WebRequest -UseBasicParsing -Uri ${powershellLiteral(CADDY_ARCHIVE_URL)}`
+          + ` -OutFile ${powershellLiteral(archive)}`,
+      ]);
+      const bytes = await readFile(archive);
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      if (digest !== CADDY_ARCHIVE_SHA256) {
+        throw new Error(`Caddy archive hash mismatch: ${digest}`);
+      }
+      await run("tar.exe", ["-xf", archive, "-C", temporaryDirectory]);
+      await access(path.join(temporaryDirectory, "caddy.exe"));
+      await mkdir(gatewayDirectory, { recursive: true });
+      await copyFile(path.join(temporaryDirectory, "caddy.exe"), executable);
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
     }
-    await run("tar.exe", ["-xf", archive, "-C", temporaryDirectory]);
-    await access(path.join(temporaryDirectory, "caddy.exe"));
-    await mkdir(gatewayDirectory, { recursive: true });
-    await copyFile(path.join(temporaryDirectory, "caddy.exe"), executable);
-    await writeTextAtomic(path.join(runtimeRoot, "gateway.json"), `${JSON.stringify({
-      enabled: true,
-      publicUrl,
-      executable: "gateway/caddy.exe",
-      caddyVersion: CADDY_VERSION,
-      caddySha256: CADDY_ARCHIVE_SHA256,
-    }, null, 2)}\n`);
-    const configFile = path.join(runtimeRoot, "config.json");
-    const runtimeConfig = await readJsonWithBackup(configFile);
-    if (runtimeConfig.value) {
-      await writeTextAtomic(`${configFile}.before-direct-gateway`, `${JSON.stringify(runtimeConfig.value, null, 2)}\n`);
-      runtimeConfig.value.miniApp ??= {};
-      runtimeConfig.value.miniApp.worker ??= {};
-      runtimeConfig.value.miniApp.quickTunnel ??= {};
-      runtimeConfig.value.miniApp.worker.enabled = false;
-      runtimeConfig.value.miniApp.quickTunnel.enabled = false;
-      await writeTextAtomic(configFile, `${JSON.stringify(runtimeConfig.value, null, 2)}\n`);
-    }
-    console.log(`Direct gateway installed for ${publicUrl}`);
-    console.log(`Caddy: ${executable}`);
-  } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
   }
+  await writeTextAtomic(path.join(runtimeRoot, "gateway.json"), `${JSON.stringify({
+    enabled: true,
+    publicUrl,
+    executable: "gateway/caddy.exe",
+    caddyVersion: CADDY_VERSION,
+    caddySha256: CADDY_ARCHIVE_SHA256,
+  }, null, 2)}\n`);
+  const configFile = path.join(runtimeRoot, "config.json");
+  const runtimeConfig = await readJsonWithBackup(configFile);
+  if (runtimeConfig.value && process.argv.includes("--disable-worker")) {
+    await writeTextAtomic(`${configFile}.before-direct-gateway`, `${JSON.stringify(runtimeConfig.value, null, 2)}\n`);
+    runtimeConfig.value.miniApp ??= {};
+    runtimeConfig.value.miniApp.worker ??= {};
+    runtimeConfig.value.miniApp.quickTunnel ??= {};
+    runtimeConfig.value.miniApp.worker.enabled = false;
+    runtimeConfig.value.miniApp.quickTunnel.enabled = false;
+    await writeTextAtomic(configFile, `${JSON.stringify(runtimeConfig.value, null, 2)}\n`);
+  }
+  console.log(`Direct gateway installed for ${publicUrl}`);
+  console.log(`Caddy: ${executable}`);
 }
 
 const command = String(process.argv[2] ?? "").trim().toLowerCase();
 if (command !== "install") {
-  console.error("Usage: node direct-gateway-cli.mjs install --url https://host.example [--runtime-root PATH]");
+  console.error("Usage: node direct-gateway-cli.mjs install --url https://host.example [--runtime-root PATH] [--disable-worker]");
   process.exitCode = 2;
 } else {
   await install();
