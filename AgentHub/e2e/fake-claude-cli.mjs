@@ -20,7 +20,12 @@ import process from "node:process";
 
 const args = process.argv.slice(2);
 const resumeIndex = args.indexOf("--resume");
-const sessionId = resumeIndex >= 0 ? args[resumeIndex + 1] : randomUUID();
+const explicitSessionIndex = args.indexOf("--session-id");
+const sessionId = resumeIndex >= 0
+  ? args[resumeIndex + 1]
+  : explicitSessionIndex >= 0
+    ? args[explicitSessionIndex + 1]
+    : randomUUID();
 const promptIndex = args.length - 1;
 let addDirectoryConsumesPrompt = false;
 let readingAdditionalDirectories = false;
@@ -121,6 +126,19 @@ function sleep(ms) {
 
 if (resumeIndex >= 0 && transcriptRoot) {
   const existingTranscript = findSessionTranscript(transcriptRoot, `${sessionId}.jsonl`);
+  if (!existingTranscript) {
+    const message = `No conversation found with session ID ${sessionId}`;
+    process.stderr.write(message);
+    emit({
+      type: "result",
+      subtype: "error_during_execution",
+      session_id: sessionId,
+      result: "",
+      is_error: true,
+      usage: {},
+    });
+    process.exit(1);
+  }
   if (existingTranscript) {
     const firstEntry = readFileSync(existingTranscript, "utf8")
       .split(/\r?\n/)

@@ -543,5 +543,30 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
     );
   }
 
+  // Если локальный transcript удалён, task-sync всё равно сохраняет карточку.
+  // Следующий ход должен пересоздать тот же UUID через --session-id, а не
+  // бесконечно повторять заведомо неработающий --resume.
+  await rm(staleTranscript, { force: true });
+  mark = telegram.calls.length;
+  const recoveredPrompt = "восстановить исчезнувшую сессию Claude";
+  telegram.pushMessage(recoveredPrompt);
+  await telegram.waitForText(`Claude готово: ${recoveredPrompt}`, {
+    after: mark,
+    timeoutMs: 25_000,
+  });
+  await waitFor(async () => (await activeRuns()).length === 0,
+    "missing Claude session recovery", 15_000);
+  assert.equal(await readFile(staleTranscript, "utf8").then(() => true, () => false), true,
+    "the missing transcript must be recreated under the original task UUID");
+  const recoveredHistory = await callDesktopControl("task-history", {
+    provider: "claude",
+    threadId: staleSessionId,
+    limit: 20,
+  }, { runtimeRoot: temporaryRoot });
+  const recoveredExchange = recoveredHistory.items.find((item) => item.prompt.includes(recoveredPrompt));
+  assert.ok(recoveredExchange, "the recovered user message must remain in task history");
+  assert.match(recoveredExchange.answer, /Claude готово:/);
+  assert.doesNotMatch(stderr, /No conversation found with session ID/);
+
   assert.equal(stderr.includes("Unhandled asynchronous error"), false, stderr);
 });

@@ -6,6 +6,23 @@ import {
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { updateTaskRunTitle } from "./task-runs.mjs";
 
+function mergeDurableHistory(cachedHistory, sourceHistory) {
+  const merged = (Array.isArray(cachedHistory) ? cachedHistory : [])
+    .map((item) => structuredClone(item));
+  const positions = new Map(merged.map((item, index) => [String(item?.id ?? ""), index]));
+  for (const item of Array.isArray(sourceHistory) ? sourceHistory : []) {
+    const id = String(item?.id ?? "");
+    const index = id ? positions.get(id) : undefined;
+    if (index === undefined) {
+      if (id) positions.set(id, merged.length);
+      merged.push(structuredClone(item));
+    } else {
+      merged[index] = structuredClone(item);
+    }
+  }
+  return merged;
+}
+
 export class TaskViewController {
   constructor(deps) {
     this.deps = deps;
@@ -46,8 +63,54 @@ export class TaskViewController {
         return { history, snapshot };
       }
       const snapshot = await d.readClaudeSnapshot(binding.threadId, { includeHistory: true });
-      const history = snapshot?.history ?? [];
-      d.taskSyncStore.recordHistory(task, history, completedOnly ? null : snapshot);
+      const cached = d.taskSyncStore.history(task);
+      const history = mergeDurableHistory(cached, snapshot?.history ?? []);
+      const running = completedOnly ? null : d.taskRuns.forTask(task);
+      if (running) {
+        mergeActiveTaskHistory(history, {
+          active: true,
+          turnId: running.turnId ?? running.id,
+          prompt: running.promptPreview,
+          answer: running.responseText,
+          clientUserMessageId: running.clientUserMessageId,
+          responseItemId: running.responseItemId,
+          activities: running.activities,
+          startedAt: running.startedAt,
+          attachments: running.messageAttachments ?? [],
+        });
+      } else if (!snapshot) {
+        for (const item of history) {
+          if (item?.active !== true) continue;
+          item.active = false;
+          item.completed = true;
+          item.status = "stopped";
+        }
+        const latest = history.at(-1);
+        const savedAnswer = String(d.savedLastTaskMessage?.(task) ?? "").trim();
+        if (latest && !String(latest.answer ?? "").trim() && savedAnswer) {
+          latest.answer = savedAnswer;
+          latest.status = "failed";
+          latest.active = false;
+          latest.completed = true;
+          const messages = Array.isArray(latest.messages) ? latest.messages : [];
+          messages.push({
+            itemId: `${latest.id || "cached"}:agent:fallback`,
+            role: "agent",
+            text: savedAnswer,
+          });
+          latest.messages = messages;
+        }
+      }
+      const persistenceSnapshot = completedOnly
+        ? null
+        : snapshot ?? (running ? {
+          active: true,
+          turnId: running.turnId ?? null,
+          activityAtMs: Date.now(),
+          stage: running.progressStage ?? "",
+          answer: running.responseText ?? "",
+        } : null);
+      d.taskSyncStore.recordHistory(task, history, persistenceSnapshot);
       await d.taskSyncStore.save();
       return { history, snapshot: completedOnly ? null : snapshot };
     } catch (error) {

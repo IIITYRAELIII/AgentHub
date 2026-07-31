@@ -21,6 +21,27 @@ function cleanHistory(history, limit) {
       status: cleanText(item?.status, 40),
       active: item?.active === true,
       completed: item?.completed === true,
+      ...(item?.startedAt ? { startedAt: cleanText(item.startedAt, 80) } : {}),
+      ...(item?.completedAt ? { completedAt: cleanText(item.completedAt, 80) } : {}),
+      attachments: (Array.isArray(item?.attachments) ? item.attachments : [])
+        .slice(-8)
+        .map((attachment) => ({
+          id: cleanText(attachment?.id, 300),
+          name: cleanText(attachment?.name, 300),
+          type: cleanText(attachment?.type, 100),
+        }))
+        .filter((attachment) => attachment.id),
+      activities: (Array.isArray(item?.activities) ? item.activities : [])
+        .slice(-100)
+        .map((activity) => ({
+          id: cleanText(activity?.id, 200),
+          type: cleanText(activity?.type, 40),
+          label: cleanText(activity?.label, 500),
+          detail: cleanText(activity?.detail, 1_000),
+          status: cleanText(activity?.status, 40),
+          ...(activity?.time ? { time: cleanText(activity.time, 80) } : {}),
+        }))
+        .filter((activity) => activity.id || activity.label),
       messages: (Array.isArray(item?.messages) ? item.messages : [])
         .slice(-100)
         .flatMap((message) => {
@@ -29,9 +50,21 @@ function cleanHistory(history, limit) {
           if (!["user", "agent"].includes(role) || !text) return [];
           return [{
             itemId: cleanText(message?.itemId, 200),
+            ...(message?.clientUserMessageId
+              ? { clientUserMessageId: cleanText(message.clientUserMessageId, 200) }
+              : {}),
             role,
             text,
             ...(message?.phase ? { phase: cleanText(message.phase, 40) } : {}),
+            ...(message?.time ? { time: cleanText(message.time, 80) } : {}),
+            attachments: (Array.isArray(message?.attachments) ? message.attachments : [])
+              .slice(-8)
+              .map((attachment) => ({
+                id: cleanText(attachment?.id, 300),
+                name: cleanText(attachment?.name, 300),
+                type: cleanText(attachment?.type, 100),
+              }))
+              .filter((attachment) => attachment.id),
           }];
         }),
     }));

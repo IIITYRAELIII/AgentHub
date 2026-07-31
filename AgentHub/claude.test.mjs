@@ -28,6 +28,21 @@ test("buildClaudeArgs creates a resumable safe invocation", () => {
   ]);
 });
 
+test("buildClaudeArgs recreates a missing local session under the same UUID", () => {
+  const args = buildClaudeArgs({
+    prompt: "continue safely",
+    sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    resumeSession: false,
+    model: "opus",
+  });
+  assert.deepEqual(args.slice(-5), [
+    "--model", "opus",
+    "--session-id", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    "continue safely",
+  ]);
+  assert.equal(args.includes("--resume"), false);
+});
+
 test("Claude image directories cannot consume a resumed prompt", () => {
   const imageDirectory = path.resolve("C:/runtime/DesktopApp/attachments");
   const args = buildClaudeArgs({

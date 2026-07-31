@@ -22,6 +22,7 @@ state.requestCounts ??= {};
 state.nextMessage ??= 1;
 const pendingApprovals = new Map();
 const timers = new Set();
+const loadedThreadIds = new Set();
 
 function save() {
   if (statePath) writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
@@ -340,6 +341,7 @@ function handleRequest(message) {
       archived: false,
     };
     state.threads.push(thread);
+    loadedThreadIds.add(thread.id);
     save();
     reply(id, { thread: publicThread(thread) });
     return;
@@ -355,6 +357,7 @@ function handleRequest(message) {
         error: { message: "Custom tool call output is missing for call id: fake-resume-race" },
       });
     }
+    loadedThreadIds.add(thread.id);
     reply(id, {
       thread: publicThread(thread),
       model: thread.model,
@@ -429,6 +432,9 @@ function handleRequest(message) {
   }
   if (method === "thread/compact/start") {
     const thread = threadById(params.threadId);
+    if (!thread || !loadedThreadIds.has(params.threadId)) {
+      return send({ id, error: { message: `thread not found: ${params.threadId}` } });
+    }
     reply(id, {});
     schedule(() => notify("thread/compacted", {
       threadId: thread?.id ?? params.threadId,

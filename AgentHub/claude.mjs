@@ -41,6 +41,7 @@ export function buildClaudePrompt(input) {
 export function buildClaudeArgs({
   prompt,
   sessionId,
+  resumeSession = true,
   model,
   permissionMode = "acceptEdits",
   autoApprove = false,
@@ -63,7 +64,9 @@ export function buildClaudeArgs({
   if (autoApprove) args.push("--permission-mode", "bypassPermissions");
   else args.push("--permission-mode", permissionMode);
   if (model) args.push("--model", model);
-  if (sessionId) args.push("--resume", sessionId);
+  if (sessionId) {
+    args.push(resumeSession ? "--resume" : "--session-id", sessionId);
+  }
   args.push(prompt);
   return args;
 }

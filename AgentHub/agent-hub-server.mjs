@@ -3241,6 +3241,15 @@ async function desktopCompactContext(params) {
   compactingThreads.add(target.threadId);
   setBoundedMapValue(threadCompactions, target.threadId, compaction, 100);
   try {
+    // A thread discovered from rollout history is not necessarily loaded in
+    // this particular App Server process. Compacting an unloaded thread makes
+    // the real server answer `Thread not found`, even though it is present in
+    // the shared local catalog.
+    await sendRpc("thread/resume", {
+      threadId: target.threadId,
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    });
     await sendRpc("thread/compact/start", { threadId: target.threadId });
     setTimeout(() => {
       if (threadCompactions.get(target.threadId)?.id !== compaction.id) return;
@@ -4858,6 +4867,67 @@ const claudeRunController = new ClaudeRunController({
     : "Дочитываю прерванный ход Claude…"),
 });
 
+async function persistClaudeRunHistory(run, {
+  answer = "",
+  status = "inProgress",
+  active = true,
+} = {}) {
+  if (!run?.threadId || !run?.turnId) return;
+  try {
+    const history = taskSyncStore.history(run);
+    mergeActiveTaskHistory(history, {
+      active: true,
+      turnId: run.turnId,
+      prompt: run.promptPreview,
+      answer: run.responseText,
+      clientUserMessageId: run.clientUserMessageId,
+      responseItemId: run.responseItemId,
+      activities: run.activities,
+      startedAt: run.startedAt,
+      attachments: run.messageAttachments ?? [],
+    });
+    const current = history.findLast((item) => String(item?.id ?? "") === String(run.turnId));
+    if (current) {
+      current.active = active;
+      current.completed = !active;
+      current.status = status;
+      current.answer = String(answer || run.responseText || "").trim();
+      current.activities = Array.isArray(run.activities) ? run.activities.map((item) => ({ ...item })) : [];
+      if (!active) current.completedAt = new Date().toISOString();
+      if (current.answer) {
+        const messages = Array.isArray(current.messages) ? current.messages : [];
+        const itemId = String(run.responseItemId ?? "").trim() || `${run.turnId}:agent:final`;
+        const existing = messages.find((message) => (
+          message.role === "agent" && String(message.itemId ?? "") === itemId
+        ));
+        if (existing) {
+          existing.text = current.answer;
+          existing.time = current.completedAt ?? existing.time;
+        } else {
+          messages.push({
+            itemId,
+            role: "agent",
+            text: current.answer,
+            ...(current.completedAt ? { time: current.completedAt } : {}),
+          });
+        }
+        current.messages = messages;
+      }
+    }
+    taskSyncStore.recordHistory(run, history, {
+      active,
+      turnId: active ? run.turnId : null,
+      activityAtMs: Date.now(),
+      stage: run.progressStage,
+      answer: String(answer || run.responseText || "").trim(),
+      executionOwner: active ? TASK_EXECUTION_OWNERS.HUB : null,
+    });
+    await taskSyncStore.save();
+  } catch (error) {
+    console.error(`Cannot persist Claude task history ${run.threadId}:`, error.message);
+  }
+}
+
 async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton = false } = {}) {
   const turnId = randomUUID();
   const prompt = buildClaudePrompt(input);
@@ -4865,16 +4935,6 @@ async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton =
   const additionalDirectories = contentItems
     .filter((item) => item?.type === "localImage" && item.path)
     .map((item) => path.dirname(item.path));
-  const planMode = run.collaborationMode === "plan";
-  const args = buildClaudeArgs({
-    prompt,
-    sessionId: run.threadId,
-    model: run.modelId,
-    permissionMode: run.collaborationMode === "plan" ? "plan" : config.claudePermissionMode,
-    autoApprove: planMode ? false : autoApprove,
-    additionalDirectories,
-  });
-
   run.turnId = turnId;
   taskRuns.reindex(run, { turnId: null });
   if (temporaryFiles.length) turnTemporaryFiles.set(turnId, temporaryFiles);
@@ -4892,6 +4952,20 @@ async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton =
     snapshot?.cwd ?? run.sessionCwd,
   );
   run.sessionCwd = sessionCwd;
+  const planMode = run.collaborationMode === "plan";
+  const args = buildClaudeArgs({
+    prompt,
+    sessionId: run.threadId,
+    // Claude stores resumable sessions locally. If the catalog still has a
+    // task but its transcript disappeared, recreate that exact UUID instead
+    // of retrying --resume forever or replacing the task identity.
+    resumeSession: Boolean(snapshot?.sessionId),
+    model: run.modelId,
+    permissionMode: run.collaborationMode === "plan" ? "plan" : config.claudePermissionMode,
+    autoApprove: planMode ? false : autoApprove,
+    additionalDirectories,
+  });
+  await persistClaudeRunHistory(run);
   const invocation = resolveClaudeInvocation();
   await claudeRunController.start(run, {
     command: invocation.command,
@@ -5029,6 +5103,11 @@ async function finishClaudeRun(run, {
     }
     await finishProgress(run, failed ? `Claude остановлен: ${answer}` : "Задача завершена.");
     const response = failed ? `Ошибка Claude Code: ${answer}` : answer;
+    await persistClaudeRunHistory(run, {
+      answer: response,
+      status: failed ? "failed" : "completed",
+      active: false,
+    });
     await projectClaudeRunToWorkLog(run, {
       answer: response,
       status: failed ? "failed" : "completed",
@@ -5046,6 +5125,11 @@ async function finishClaudeRun(run, {
   } catch (error) {
     await finishProgress(run, `Claude остановлен: ${error.message}`);
     const answer = `Ошибка Claude Code: ${error.message}`;
+    await persistClaudeRunHistory(run, {
+      answer,
+      status: "failed",
+      active: false,
+    });
     await projectClaudeRunToWorkLog(run, {
       answer,
       status: "failed",

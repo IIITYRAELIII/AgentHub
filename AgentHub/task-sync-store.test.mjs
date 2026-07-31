@@ -62,6 +62,43 @@ test("local task sync persists catalog, runtime owner, status and history", asyn
   assert.equal(restored.snapshot(task).stage, "Изменяются файлы");
 });
 
+test("local task sync preserves durable message metadata and attachments", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath });
+  store.recordHistory(task, [{
+    id: "turn-with-image",
+    prompt: "Посмотри скриншот",
+    answer: "Вижу",
+    status: "completed",
+    completed: true,
+    startedAt: "2026-07-31T12:00:00.000Z",
+    completedAt: "2026-07-31T12:01:00.000Z",
+    attachments: [{ id: "screen.png", name: "screen.png", type: "image/png" }],
+    activities: [{ id: "tool-1", type: "tool", label: "Проверка", status: "completed" }],
+    messages: [{
+      itemId: "user-1",
+      clientUserMessageId: "client-1",
+      role: "user",
+      text: "Посмотри скриншот",
+      time: "2026-07-31T12:00:00.000Z",
+      attachments: [{ id: "screen.png", name: "screen.png", type: "image/png" }],
+    }],
+  }]);
+  await store.save();
+
+  const restored = new LocalTaskSyncStore({ filePath });
+  await restored.load();
+  const [entry] = restored.history(task);
+  assert.equal(entry.startedAt, "2026-07-31T12:00:00.000Z");
+  assert.equal(entry.completedAt, "2026-07-31T12:01:00.000Z");
+  assert.equal(entry.messages[0].clientUserMessageId, "client-1");
+  assert.equal(entry.messages[0].time, "2026-07-31T12:00:00.000Z");
+  assert.deepEqual(entry.messages[0].attachments, [
+    { id: "screen.png", name: "screen.png", type: "image/png" },
+  ]);
+  assert.equal(entry.activities[0].label, "Проверка");
+});
+
 test("local task sync canonicalizes persisted project roots on load", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "task-sync-root-"));
   try {

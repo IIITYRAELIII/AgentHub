@@ -508,6 +508,18 @@ test("message attachments keep timestamps, thumbnails and an explicit open actio
   assert.match(app, /disabled:\s*missing/u);
 });
 
+test("composer send and desktop settings stay pinned to the right edge", () => {
+  const styles = fs.readFileSync(
+    require.resolve("../assets/mini-app/styles.css"),
+    "utf8",
+  );
+  assert.match(styles, /\.toolbar \.view-settings\s*\{[^}]*margin-left:\s*auto;/su);
+  assert.match(
+    styles,
+    /html\[data-surface="mobile"\] \.composer-send\s*\{[^}]*grid-column:\s*-2 \/ -1;[^}]*justify-self:\s*end;/su,
+  );
+});
+
 test("Telegram mobile chat disables the host vertical collapse gesture", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   assert.match(app, /telegram\?\.expand\(\);\s*telegram\?\.disableVerticalSwipes\?\.\(\);/u);

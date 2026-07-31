@@ -1185,6 +1185,10 @@ h1 {
   min-width: 0;
 }
 
+.toolbar .view-settings {
+  margin-left: auto;
+}
+
 .theme-picker,
 .group-picker {
   align-items: center;
@@ -6722,6 +6726,11 @@ html[data-surface="mobile"] [data-follow-up-mode],
 html[data-surface="mobile"] .context-usage,
 html[data-surface="mobile"] .composer-send {
   grid-row: 2;
+}
+
+html[data-surface="mobile"] .composer-send {
+  grid-column: -2 / -1;
+  justify-self: end;
 }
 
 html[data-surface="mobile"] .context-usage {

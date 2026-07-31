@@ -30,3 +30,39 @@ test("legacy task view uses its stored message binding", async () => {
   const view = controller({ findMessageBinding: async () => stored });
   assert.equal(await view.resolveBinding(null, 9, 12), stored);
 });
+
+test("missing Claude transcript keeps the managed exchange in durable history", async () => {
+  const cached = [{
+    id: "turn-1",
+    prompt: "Сообщение пользователя",
+    answer: "",
+    status: "inProgress",
+    active: true,
+    completed: false,
+    messages: [{ itemId: "user-1", role: "user", text: "Сообщение пользователя" }],
+  }];
+  let recorded = null;
+  const task = {
+    provider: "claude",
+    threadId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    projectRoot: "C:/repo",
+    title: "Claude task",
+  };
+  const view = controller({
+    readClaudeSnapshot: async () => null,
+    savedLastTaskMessage: () => "Ошибка Claude Code: сессия отсутствует",
+    taskRuns: { forTask: () => null },
+    taskSyncStore: {
+      history: () => structuredClone(cached),
+      recordHistory: (_task, history) => { recorded = structuredClone(history); },
+      save: async () => {},
+    },
+  });
+  const result = await view.readHistory({ ...task, chatId: 1 });
+  assert.equal(result.history[0].prompt, "Сообщение пользователя");
+  assert.equal(result.history[0].active, false);
+  assert.equal(result.history[0].completed, true);
+  assert.equal(recorded[0].status, "failed");
+  assert.equal(recorded[0].answer, "Ошибка Claude Code: сессия отсутствует");
+  assert.equal(recorded[0].messages.at(-1).role, "agent");
+});
