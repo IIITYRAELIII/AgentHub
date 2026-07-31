@@ -531,6 +531,15 @@ test("chat keeps an active response only in the live card after task switching",
   );
 });
 
+test("unfinished commentary never becomes a normal historical answer card", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(
+    client,
+    /const visibleAgent = item\.completed[\s\S]*\?\s*agentMessages\.findLast[\s\S]*:\s*null;/u,
+  );
+  assert.match(client, /item\.completed && item\.answer/u);
+});
+
 test("manual context compaction reports completion and stays on the fast refresh loop", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   assert.match(client, /requestedContextCompactions/u);

@@ -474,14 +474,14 @@ function historyMessages(history, focusedTurn = null) {
     const visibleAgent = item.completed
       ? agentMessages.findLast((message) => ["final", "final_answer", "finalAnswer"].includes(message.phase))
         ?? agentMessages.at(-1)
-      : agentMessages.at(-1);
+      : null;
     const visible = [
       ...(userMessages.length ? userMessages : item.prompt ? [{
         itemId: `${item.id}:prompt`,
         role: "user",
         text: item.prompt,
       }] : []),
-      ...(visibleAgent ? [visibleAgent] : item.answer ? [{
+      ...(visibleAgent ? [visibleAgent] : item.completed && item.answer ? [{
         itemId: `${item.id}:answer`,
         role: "agent",
         text: item.answer,
