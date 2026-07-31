@@ -280,6 +280,15 @@ test("remote attachment failures are shown in Russian", () => {
   assert.equal(lifecycle.hubErrorMessage(new Error("Другая ошибка")), "Другая ошибка");
 });
 
+test("named-pipe transport errors are recognized and hidden from the interface", () => {
+  const error = new Error(
+    "connect ENOENT \\\\.\\pipe\\agent-hub-desktop-" + "a".repeat(64),
+  );
+  assert.equal(lifecycle.looksLikeConnectionFailure(error), true);
+  assert.equal(lifecycle.hubErrorMessage(error), "Нет связи с Agent Hub.");
+  assert.doesNotMatch(lifecycle.hubErrorMessage(error), /pipe|ENOENT/iu);
+});
+
 test("returning to a busy task keeps live and deferred states separate", () => {
   const activeUser = {
     ...message("active-client", "Первый вопрос"),

@@ -34,6 +34,7 @@ const {
   activeStageLabel,
   hubErrorMessage,
   isConnectionFailure,
+  looksLikeConnectionFailure,
   markConnectionFailure,
   mergeLiveUserMessages,
   reconcile: reconcileMessageLifecycle,
@@ -283,7 +284,10 @@ window.addEventListener("message", (event) => {
   pendingBridgeCalls.delete(String(message.id));
   window.clearTimeout(pending.timer);
   if (message.ok) pending.resolve(message.result);
-  else pending.reject(new Error(String(message.error ?? "Команда Agent Hub завершилась с ошибкой")));
+  else {
+    const error = new Error(String(message.error ?? "Команда Agent Hub завершилась с ошибкой"));
+    pending.reject(looksLikeConnectionFailure(error) ? markConnectionFailure(error) : error);
+  }
 });
 
 async function waitRemoteResult(commandId) {

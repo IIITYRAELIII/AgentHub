@@ -23,6 +23,13 @@ const MAX_REQUEST_BYTES = 512 * 1024;
 const MAX_WIRE_REQUEST_BYTES = 768 * 1024;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
+const CLIENT_RECONNECT_DELAYS_MS = Object.freeze([80, 220, 500]);
+const TRANSIENT_CONNECT_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENOENT",
+  "EPIPE",
+]);
 const ENDPOINT_ID_PATTERN = /^[a-f0-9]{64}$/;
 const NONCE_PATTERN = /^[a-f0-9]{64}$/;
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
@@ -454,16 +461,50 @@ async function callDesktopControlOnce(action, params, {
         finish(reject, error);
       }
     });
-    socket.on("error", (error) => finish(reject, error));
+    socket.on("error", (error) => {
+      if (error && typeof error === "object") {
+        Object.defineProperty(error, "desktopControlRequestMayHaveReachedServer", {
+          configurable: true,
+          enumerable: false,
+          value: state === "response",
+        });
+      }
+      finish(reject, error);
+    });
     socket.on("close", () => {
-      if (!settled) finish(reject, new Error("Desktop control connection closed without a response"));
+      if (settled) return;
+      const error = new Error("Desktop control connection closed without a response");
+      error.code = "ECONNRESET";
+      Object.defineProperty(error, "desktopControlRequestMayHaveReachedServer", {
+        configurable: true,
+        enumerable: false,
+        value: state === "response",
+      });
+      finish(reject, error);
     });
   });
+}
+
+function canReconnectDesktopControl(error) {
+  if (error?.desktopControlRequestMayHaveReachedServer === true) return false;
+  return TRANSIENT_CONNECT_CODES.has(String(error?.code ?? "").toUpperCase());
+}
+
+function reconnectDelay(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 export async function callDesktopControl(action, params = {}, {
   runtimeRoot = defaultRuntimeRoot(),
   timeoutMs = 10_000,
 } = {}) {
-  return callDesktopControlOnce(action, params, { runtimeRoot, timeoutMs });
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await callDesktopControlOnce(action, params, { runtimeRoot, timeoutMs });
+    } catch (error) {
+      const delayMs = CLIENT_RECONNECT_DELAYS_MS[attempt];
+      if (delayMs == null || !canReconnectDesktopControl(error)) throw error;
+      await reconnectDelay(delayMs);
+    }
+  }
 }

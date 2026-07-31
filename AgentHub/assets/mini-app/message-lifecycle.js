@@ -193,8 +193,18 @@ function isConnectionFailure(error) {
   return error?.agentHubConnectionFailure === true;
 }
 
+function looksLikeConnectionFailure(error) {
+  const code = String(error?.code ?? "").trim().toUpperCase();
+  const message = String(error?.message ?? error ?? "").trim();
+  return ["ECONNREFUSED", "ECONNRESET", "ENOENT", "EPIPE"].includes(code)
+    || /\b(?:ECONNREFUSED|ECONNRESET|ENOENT|EPIPE)\b[\s\S]*agent-hub-desktop-/iu.test(message)
+    || /Agent Hub (?:в VS Code )?не ответил вовремя/iu.test(message)
+    || /Desktop control connection closed without a response/iu.test(message);
+}
+
 function hubErrorMessage(error) {
   const message = String(error?.message ?? error ?? "Неизвестная ошибка").trim();
+  if (looksLikeConnectionFailure(error)) return "Нет связи с Agent Hub.";
   const translations = new Map([
     ["remote attachment not found", "Вложение недоступно. Повторите отправку."],
     ["remote attachment is incomplete", "Вложение загрузилось не полностью. Повторите отправку."],
@@ -208,6 +218,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   hubErrorMessage,
   identityKey,
   isConnectionFailure,
+  looksLikeConnectionFailure,
   clientIdentityKey,
   liveMessageMatch,
   markConnectionFailure,

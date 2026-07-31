@@ -65,8 +65,18 @@ function runDesktop(argumentsList) {
 }
 
 try {
-  await server.start();
+  const staleEndpointId = "d".repeat(64);
+  await writeFile(desktopControlSecretFile(runtimeRoot), `${randomBytes(32).toString("hex")}\n`, "utf8");
+  await writeFile(desktopControlEndpointFile(runtimeRoot), `${JSON.stringify({
+    protocol: 2,
+    endpointId: staleEndpointId,
+    pipeName: `agent-hub-desktop-${staleEndpointId}`,
+  })}\n`, "utf8");
+  const delayedStart = new Promise((resolve, reject) => {
+    setTimeout(() => server.start().then(resolve, reject), 120);
+  });
   const exitCode = await runDesktop(["--rpc-smoke", runtimeRoot]);
+  await delayedStart;
   assert.equal(exitCode, 0);
   assert.equal(sendAttempts, 2);
   assert.equal(messageIds.length, 2);

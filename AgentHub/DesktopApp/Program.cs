@@ -102,7 +102,8 @@ namespace AgentHubDesktop
                     "Безопасный повтор send-message требует clientUserMessageId.");
             }
             DesktopTransportException firstFailure = null;
-            for (var attempt = 0; attempt < (retryTransportFailure ? 2 : 1); attempt++)
+            const int maximumAttempts = 3;
+            for (var attempt = 0; attempt < maximumAttempts; attempt++)
             {
                 DesktopTransportException retryFailure = null;
                 try
@@ -111,11 +112,15 @@ namespace AgentHubDesktop
                 }
                 catch (DesktopTransportException error)
                 {
-                    if (!retryTransportFailure || !error.Retryable) throw;
-                    if (attempt > 0)
+                    var safeToRetry = error.Retryable
+                        && (!error.RequestMayHaveReachedServer || retryTransportFailure);
+                    if (!safeToRetry) throw;
+                    if (attempt + 1 >= maximumAttempts)
                     {
                         throw new DesktopTransportException(
-                            "Agent Hub Server не подтвердил приём сообщения после безопасного повтора.",
+                            error.RequestMayHaveReachedServer
+                                ? "Agent Hub Server не подтвердил приём сообщения после безопасного повтора."
+                                : "Нет связи с Agent Hub Server после повторного подключения.",
                             false,
                             error.RequestMayHaveReachedServer
                                 || (firstFailure != null && firstFailure.RequestMayHaveReachedServer),
@@ -123,9 +128,9 @@ namespace AgentHubDesktop
                     }
                     firstFailure = retryFailure = error;
                 }
-                if (retryFailure != null) await Task.Delay(180);
+                if (retryFailure != null) await Task.Delay(attempt == 0 ? 180 : 420);
             }
-            throw new InvalidOperationException("Безопасный повтор Desktop-запроса не завершился.");
+            throw new InvalidOperationException("Повтор Desktop-запроса не завершился.");
         }
 
         private async Task<Dictionary<string, object>> CallOnceAsync(

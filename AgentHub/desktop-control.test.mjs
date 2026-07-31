@@ -90,6 +90,37 @@ test("desktop control exchanges authenticated RPC and rotates endpoint after res
   }
 });
 
+test("desktop client reconnects when the endpoint rotates before connect", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-reconnect-"));
+  const staleEndpointId = "e".repeat(64);
+  const server = new DesktopControlServer({
+    runtimeRoot,
+    protectSecret: async () => {},
+    handler: async ({ action }) => ({ action, reconnected: true }),
+  });
+  let delayedStart;
+  try {
+    await writeFile(desktopControlSecretFile(runtimeRoot), `${randomBytes(32).toString("hex")}\n`, "utf8");
+    await writeFile(desktopControlEndpointFile(runtimeRoot), `${JSON.stringify({
+      protocol: 2,
+      endpointId: staleEndpointId,
+      pipeName: `agent-hub-desktop-${staleEndpointId}`,
+    })}\n`, "utf8");
+    delayedStart = new Promise((resolve, reject) => {
+      setTimeout(() => server.start().then(resolve, reject), 120);
+    });
+    assert.deepEqual(
+      await callDesktopControl("snapshot", {}, { runtimeRoot, timeoutMs: 1_000 }),
+      { action: "snapshot", reconnected: true },
+    );
+    await delayedStart;
+  } finally {
+    await delayedStart?.catch(() => {});
+    await server.close();
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
 test("desktop client rejects a squatting server before disclosing a client proof", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-squatter-"));
   const endpointId = randomBytes(32).toString("hex");
