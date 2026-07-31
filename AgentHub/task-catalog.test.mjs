@@ -659,6 +659,19 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
   assert.equal(stale.running, false);
 });
 
+test("claudeCatalogEntry resumes from the original session root, not the latest nested cwd", () => {
+  const entry = claudeCatalogEntry({
+    sessionId: "claude-moved",
+    title: "Переименованная задача",
+    sessionRoot: "C:\\Projects\\Main",
+    cwd: "C:\\Projects\\Main\\Utilities\\AgentHub",
+    modifiedAtMs: 1,
+    active: false,
+  }, project, 2);
+
+  assert.equal(entry.sessionCwd, path.resolve("C:\\Projects\\Main"));
+});
+
 test("claudeSnapshotIsActive ignores an abandoned incomplete transcript", () => {
   const now = 2_000_000;
   assert.equal(claudeSnapshotIsActive({ active: true, modifiedAtMs: now - 60_000 }, { nowMs: now }), true);

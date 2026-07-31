@@ -94,6 +94,7 @@ test("parseClaudeTranscript returns the current partial answer", () => {
     updatedAt: null,
     sessionId: null,
     cwd: null,
+    sessionRoot: null,
     title: "Сделай задачу",
     catalogTitle: "Сделай задачу",
     isSidechain: false,
@@ -287,6 +288,28 @@ test("parseClaudeTranscript uses the freshest ai-title when several are present"
   ].join("\n"));
 
   assert.equal(result.catalogTitle, "Актуальное название задачи");
+});
+
+test("parseClaudeTranscript prefers a user custom-title and preserves the session root", () => {
+  const result = parseClaudeTranscript([
+    line({
+      type: "user",
+      cwd: "C:\\Projects\\Main",
+      message: { role: "user", content: "Начальная задача" },
+    }),
+    line({ type: "ai-title", aiTitle: "Автоматическое имя", cwd: "C:\\Projects\\Main" }),
+    line({
+      type: "custom-title",
+      customTitle: "Ручное имя",
+      cwd: "C:\\Projects\\Main\\Utilities\\AgentHub",
+    }),
+    line({ type: "ai-title", aiTitle: "Автоматическое имя", cwd: "C:\\Projects\\Main\\Utilities" }),
+  ].join("\n"));
+
+  assert.equal(result.catalogTitle, "Ручное имя");
+  assert.equal(result.title, "Ручное имя");
+  assert.equal(result.sessionRoot, "C:\\Projects\\Main");
+  assert.equal(result.cwd, "C:\\Projects\\Main\\Utilities");
 });
 
 test("Claude catalog keeps a real task even when its latest prompt is a command", () => {

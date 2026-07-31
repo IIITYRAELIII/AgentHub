@@ -2841,6 +2841,7 @@ async function desktopMessageTarget(params) {
   return {
     provider: entry.provider,
     projectRoot: entry.projectRoot,
+    sessionCwd: entry.sessionCwd ?? null,
     threadId: entry.threadId,
     taskTitle: entry.title,
     chatId,
@@ -4949,7 +4950,7 @@ async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton =
   }
   const sessionCwd = resolveClaudeSessionCwd(
     run.projectRoot,
-    snapshot?.cwd ?? run.sessionCwd,
+    run.sessionCwd ?? snapshot?.sessionRoot ?? run.projectRoot,
   );
   run.sessionCwd = sessionCwd;
   const planMode = run.collaborationMode === "plan";

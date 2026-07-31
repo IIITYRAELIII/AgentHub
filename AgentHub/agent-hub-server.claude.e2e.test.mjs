@@ -48,6 +48,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   ]);
   const nestedSessionId = "11111111-2222-4333-8444-555555555555";
   const nestedSessionCwd = path.join(projectRoot, "Utilities", "AgentHub");
+  const nestedLatestCwd = path.join(nestedSessionCwd, "scratch");
   const nestedTranscriptDirectory = path.join(
     transcriptRoot,
     encodedProjectDirectory(nestedSessionCwd),
@@ -55,6 +56,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   await Promise.all([
     mkdir(nestedSessionCwd, { recursive: true }),
     mkdir(nestedTranscriptDirectory, { recursive: true }),
+    mkdir(nestedLatestCwd, { recursive: true }),
   ]);
   const nestedTranscriptEntry = (value) => JSON.stringify({
     sessionId: nestedSessionId,
@@ -77,6 +79,14 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
       },
     }),
     nestedTranscriptEntry({ type: "last-prompt" }),
+    nestedTranscriptEntry({
+      type: "custom-title",
+      customTitle: "Переименованная задача Claude",
+      cwd: nestedLatestCwd,
+    }),
+    // Claude продолжает добавлять ai-title после пользовательского /rename;
+    // явное имя всё равно должно оставаться главным.
+    nestedTranscriptEntry({ type: "ai-title", aiTitle: "Вложенная задача Claude", cwd: nestedLatestCwd }),
   ].join("\n") + "\n", "utf8");
   const telegram = new FakeTelegramApi();
   await telegram.start();
@@ -212,6 +222,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   const nestedTaskButton = nestedPicker.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data === `task:l:${nestedSessionId}`);
   assert.ok(nestedTaskButton, "nested Claude session must be present in the task catalog");
+  assert.match(nestedTaskButton.text, /Переименованная задача Claude/);
   telegram.pushCallback(nestedTaskButton.callback_data, nestedPicker.result);
   await waitFor(async () => (await readJson(statePath)).threadIds.claude === nestedSessionId,
     "select nested Claude session");

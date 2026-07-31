@@ -99,17 +99,21 @@ function catalogPromptTitle(entries) {
   return null;
 }
 
-// Claude Code сам генерирует короткое название задачи и пишет его записями
-// {"type":"ai-title","aiTitle":"…"} — это то, что видно в списке /resume. Оно куда
-// осмысленнее последнего сообщения; берём самое свежее (последнее по транскрипту).
-function claudeAiTitle(entries) {
+function latestClaudeTitle(entries, type, field) {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
-    if (entry?.type !== "ai-title") continue;
-    const value = String(entry.aiTitle ?? "").replace(/\s+/g, " ").trim();
+    if (entry?.type !== type) continue;
+    const value = String(entry?.[field] ?? "").replace(/\s+/g, " ").trim();
     if (value) return value.slice(0, 80);
   }
   return null;
+}
+
+// /rename в Claude Code пишет custom-title. Это явное пользовательское имя,
+// поэтому оно важнее автоматически повторяемого ai-title.
+function claudeTranscriptTitle(entries) {
+  return latestClaudeTitle(entries, "custom-title", "customTitle")
+    || latestClaudeTitle(entries, "ai-title", "aiTitle");
 }
 
 export function codexTurnAnswer(turn) {
@@ -164,7 +168,8 @@ export function parseClaudeTranscript(text) {
     || assistantEntries.some((entry) => entry.message?.stop_reason === "end_turn");
   const answer = answerParts.join("\n\n").trim();
   const reasoning = thinkingParts.at(-1)?.slice(-1500) ?? "";
-  const aiTitle = claudeAiTitle(entries);
+  const transcriptTitle = claudeTranscriptTitle(entries);
+  const cwdValues = entries.map((entry) => entry?.cwd).filter(Boolean);
   const stage = completed
     ? "Задача завершена."
     : lastTool
@@ -181,9 +186,10 @@ export function parseClaudeTranscript(text) {
     startedAt: promptEntry?.timestamp ?? null,
     updatedAt: turnEntries.map((entry) => entry?.timestamp).filter(Boolean).at(-1) ?? null,
     sessionId: entries.map((entry) => entry?.sessionId).filter(Boolean).at(-1) ?? null,
-    cwd: entries.map((entry) => entry?.cwd).filter(Boolean).at(-1) ?? null,
-    title: aiTitle || promptText(promptEntry).replace(/\s+/g, " ").slice(0, 80) || null,
-    catalogTitle: aiTitle || catalogPromptTitle(entries),
+    cwd: cwdValues.at(-1) ?? null,
+    sessionRoot: cwdValues.at(0) ?? null,
+    title: transcriptTitle || promptText(promptEntry).replace(/\s+/g, " ").slice(0, 80) || null,
+    catalogTitle: transcriptTitle || catalogPromptTitle(entries),
     isSidechain: entries.some((entry) => entry?.isSidechain === true),
   };
 }
