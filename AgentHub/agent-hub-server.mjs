@@ -426,6 +426,7 @@ let activeThreadTitle = "";
 let latestDiff = "";
 let stopping = false;
 let autoApprove = config.autoApproveOnStart;
+let includeClaudeUsage = true;
 let codexRestarting = false;
 let restartRequest = null;
 let processingUpdateId = null;
@@ -1747,6 +1748,9 @@ try {
   if (CODEX_COLLABORATION_MODES.includes(saved.claudeCollaborationMode)) {
     claudeCollaborationMode = saved.claudeCollaborationMode;
   }
+  if (typeof saved.includeClaudeUsage === "boolean") {
+    includeClaudeUsage = saved.includeClaudeUsage;
+  }
   if (Number.isSafeInteger(saved.chatId)) chatId = saved.chatId;
   if (Number.isSafeInteger(saved.updateOffset) && saved.updateOffset >= 0) updateOffset = saved.updateOffset;
   if (Array.isArray(saved.lastTaskMessages)) {
@@ -1949,6 +1953,8 @@ try {
     console.error("Cannot read state:", error.message);
   }
 }
+
+workLogUsageStore.setIncludeClaudeUsage(includeClaudeUsage);
 
 const restoredTurnMessages = [
   ...(Array.isArray(restoredTurnEndSnapshot.pending) ? restoredTurnEndSnapshot.pending : []),
@@ -2673,6 +2679,7 @@ const {
       codexCollaborationMode,
       claudeCollaborationMode,
       autoApprove,
+      includeClaudeUsage,
       codexModels: CODEX_MODELS,
       codexModelLabel,
       claudeModels: CLAUDE_MODELS,
@@ -2915,6 +2922,15 @@ async function desktopUpdateSetting(params) {
   } else if (name === "approvalMode") {
     if (value !== "auto" && value !== "manual") throw new Error("Неизвестный режим подтверждений");
     autoApprove = value === "auto";
+  } else if (name === "includeClaudeUsage") {
+    if (value !== "true" && value !== "false") throw new Error("Неизвестный режим учёта Claude");
+    includeClaudeUsage = value === "true";
+    workLogUsageStore.setIncludeClaudeUsage(includeClaudeUsage);
+    await workLogUsageStore.project(globalWorkLogFile, {
+      projectRoot: config.projectRoot,
+      projectionProjectRoots: globalWorkLogProjectRoots,
+    });
+    await saveState();
   } else if (name === "project") {
     const index = PROJECTS.findIndex((project) => samePath(project.path, value));
     if (index < 0) throw new Error("Проект не найден");
@@ -3634,6 +3650,7 @@ function currentStatusSnapshot(targetChatId = chatId) {
     claudeModel,
     claudeReasoningEffort,
     claudeCollaborationMode,
+    includeClaudeUsage,
   };
 }
 
@@ -7505,6 +7522,7 @@ function saveState() {
     codexCollaborationMode,
     claudeReasoningEffort,
     claudeCollaborationMode,
+    includeClaudeUsage,
     updateOffset,
     activeRuns: taskRuns.values().map(serializableTaskRun),
     dismissedExternalTasks: dismissedExternalTasks.values(),

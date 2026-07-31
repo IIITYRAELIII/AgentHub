@@ -213,8 +213,12 @@ function markUsageLabel(text) {
 
 function formatTaskUsageDetails(creditBreakdown, dayCredits) {
   const [total, ...breakdown] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
+  const totalHtml = highlightUsageUnits(alignUsagePercent(markUsageLabel(total))).replace(
+    /(<span\b[^>]*data-(?:kilo|mega|high)-usage)/u,
+    `$1 data-usage-credits="${escapeHtmlAttribute(String(creditBreakdown.total))}"`,
+  );
   return "<details data-task-usage-details>"
-    + `<summary data-task-usage>${highlightUsageUnits(alignUsagePercent(markUsageLabel(total)))}</summary>`
+    + `<summary data-task-usage>${totalHtml}</summary>`
     + `<span data-task-usage-breakdown>${breakdown
       .map((part) => `<span data-task-usage-part>${highlightUsageUnits(alignUsagePercent(part))}</span>`)
       .join("")}</span></details>\n`;
@@ -1009,7 +1013,7 @@ function replaceProjectedCells(row, usageContent, records) {
     + `<div data-work-log-turn-list>${turnList}</div>\n</div>`;
 }
 
-function projectDaySection(section, date, turns, recordsById, open) {
+function projectDaySection(section, date, turns, recordsById, open, includeClaudeUsage) {
   const canonicalSection = ensureCanonicalRows(section, date, turns);
   const rows = workLogTaskRows(canonicalSection)
     .map((match, sourceIndex) => {
@@ -1028,7 +1032,10 @@ function projectDaySection(section, date, turns, recordsById, open) {
         seen.add(key);
         return true;
       });
-      const creditBreakdown = recorded.reduce(
+      const usageRecords = includeClaudeUsage
+        ? recorded
+        : recorded.filter((record) => record.provider !== "claude");
+      const creditBreakdown = usageRecords.reduce(
         (total, record) => addCreditBreakdown(total, recordCreditBreakdown(record)),
         emptyCreditBreakdown(),
       );
@@ -1088,7 +1095,10 @@ function projectDaySection(section, date, turns, recordsById, open) {
   const summary = dayCredits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
       + `<span data-day-usage><span data-usage-label>Итого</span> ${
-        highlightUsageUnits(formatCredits(dayCredits))
+        highlightUsageUnits(formatCredits(dayCredits)).replace(
+          /^(<span\b)/u,
+          `$1 data-usage-credits="${escapeHtmlAttribute(String(dayCredits))}"`,
+        )
       }</span>`
       + `${formatDayUsageBreakdown(dayBreakdown)}</span></summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
@@ -1102,7 +1112,7 @@ function projectDaySection(section, date, turns, recordsById, open) {
   ].join("\n");
 }
 
-export function projectWorkLogUsage(workLogText, turns = {}) {
+export function projectWorkLogUsage(workLogText, turns = {}, { includeClaudeUsage = true } = {}) {
   let text = String(workLogText ?? "");
   const normalizedTurns = normalizedLedger({ turns }).ledger.turns;
   const records = ledgerByWorkLogId(normalizedTurns);
@@ -1141,6 +1151,7 @@ export function projectWorkLogUsage(workLogText, turns = {}) {
       normalizedTurns,
       records,
       dayStarts[index][1] === defaultOpenDate,
+      includeClaudeUsage,
     );
     projected = `${projected.slice(0, start)}${replacement}${projected.slice(end)}`;
   }
@@ -1349,24 +1360,29 @@ export function buildWorkLogUsageHistory(turns = {}, {
   range = "24h",
   now = Date.now(),
   maxPoints = 600,
+  includeClaudeUsage = true,
 } = {}) {
   const normalizedRange = range === "all" || Object.hasOwn(USAGE_HISTORY_RANGES, range)
     ? range
     : "24h";
   const toMs = Number.isFinite(Number(now)) ? Number(now) : Date.now();
-  const records = Object.values(turns ?? {}).map((record) => {
-    const completedMs = Date.parse(record?.completedAt ?? "");
-    const breakdown = recordCreditBreakdown(record);
-    const priced = !(
-      (record?.usageReported === false && breakdown.total <= 0)
-      || (!breakdown.priced && breakdown.total <= 0)
-    );
-    return {
-      completedMs,
-      credits: Math.max(0, Number(breakdown.total) || 0),
-      priced,
-    };
-  }).filter((record) => Number.isFinite(record.completedMs) && record.completedMs <= toMs);
+  const records = Object.values(turns ?? {})
+    .filter((record) => (
+      includeClaudeUsage || String(record?.provider ?? "").toLowerCase() !== "claude"
+    ))
+    .map((record) => {
+      const completedMs = Date.parse(record?.completedAt ?? "");
+      const breakdown = recordCreditBreakdown(record);
+      const priced = !(
+        (record?.usageReported === false && breakdown.total <= 0)
+        || (!breakdown.priced && breakdown.total <= 0)
+      );
+      return {
+        completedMs,
+        credits: Math.max(0, Number(breakdown.total) || 0),
+        priced,
+      };
+    }).filter((record) => Number.isFinite(record.completedMs) && record.completedMs <= toMs);
   const earliest = records.length
     ? Math.min(...records.map((record) => record.completedMs))
     : toMs;
@@ -1422,11 +1438,13 @@ export class WorkLogUsageStore {
   #incrementalThresholdBytes = 1024 * 1024;
   #checkpointDeltaBytes = 8 * 1024 * 1024;
   #tail = Promise.resolve();
+  #includeClaudeUsage = true;
 
   constructor({
     ledgerFile,
     defaultProjectRoot = "",
     randomUUID = crypto.randomUUID,
+    includeClaudeUsage = true,
   } = {}) {
     this.#ledgerFile = path.resolve(ledgerFile);
     this.#backupFile = `${this.#ledgerFile}.bak`;
@@ -1434,6 +1452,11 @@ export class WorkLogUsageStore {
     this.#quarantineFile = `${this.#ledgerFile}.invalid-records.json`;
     this.#defaultProjectRoot = normalizeProjectRoot(defaultProjectRoot);
     this.#randomUUID = randomUUID;
+    this.#includeClaudeUsage = includeClaudeUsage !== false;
+  }
+
+  setIncludeClaudeUsage(value) {
+    this.#includeClaudeUsage = value !== false;
   }
 
   async #load() {
@@ -1566,7 +1589,10 @@ export class WorkLogUsageStore {
   usageHistory(options = {}) {
     const operation = this.#tail.catch(() => {}).then(async () => {
       await this.#load();
-      return structuredClone(buildWorkLogUsageHistory(this.#ledger.turns, options));
+      return structuredClone(buildWorkLogUsageHistory(this.#ledger.turns, {
+        includeClaudeUsage: this.#includeClaudeUsage,
+        ...options,
+      }));
     });
     this.#tail = operation;
     return operation;
@@ -1649,7 +1675,7 @@ export class WorkLogUsageStore {
         else throw error;
       }
       const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      const projected = projectWorkLogUsage(current, selectedTurns);
+      const projected = this.#projectUsage(current, selectedTurns);
       if (projected !== current) await writeTextAtomic(logPath, projected);
       return { updated, projected: projected !== current };
     });
@@ -1696,7 +1722,7 @@ export class WorkLogUsageStore {
         else throw error;
       }
       const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      const projected = projectWorkLogUsage(current, selectedTurns);
+      const projected = this.#projectUsage(current, selectedTurns);
       if (projected !== current) await writeTextAtomic(logPath, projected);
       return { updated, projected: projected !== current };
     });
@@ -1743,7 +1769,7 @@ export class WorkLogUsageStore {
         else throw error;
       }
       const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      const projected = projectWorkLogUsage(current, selectedTurns);
+      const projected = this.#projectUsage(current, selectedTurns);
       if (projected !== current) await writeTextAtomic(logPath, projected);
       return { updated, projected: projected !== current };
     });
@@ -1764,6 +1790,12 @@ export class WorkLogUsageStore {
     );
   }
 
+  #projectUsage(text, turns) {
+    return projectWorkLogUsage(text, turns, {
+      includeClaudeUsage: this.#includeClaudeUsage,
+    });
+  }
+
   project(workLogFile, {
     projectRoot = this.#defaultProjectRoot,
     projectionProjectRoots,
@@ -1779,7 +1811,7 @@ export class WorkLogUsageStore {
         if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
         else throw error;
       }
-      const updated = projectWorkLogUsage(current, selectedTurns);
+      const updated = this.#projectUsage(current, selectedTurns);
       if (updated === current) return { projected: false, reason: "unchanged" };
       await writeTextAtomic(logPath, updated);
       return { projected: true };
@@ -1887,7 +1919,7 @@ export class WorkLogUsageStore {
           throw new Error(`WORK_LOG must contain exactly one usage placeholder for ${id}; found ${occurrences}`);
         }
         const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-        const updated = projectWorkLogUsage(current, selectedTurns);
+        const updated = this.#projectUsage(current, selectedTurns);
         await writeTextAtomic(logPath, updated);
         return { recorded: !existing, usage: recordedUsage, workLogId: id, projected: true };
       } catch (error) {
@@ -1969,7 +2001,7 @@ export class WorkLogUsageStore {
         let current;
         current = await readFile(logPath, "utf8");
         const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-        const updated = projectWorkLogUsage(current, selectedTurns);
+        const updated = this.#projectUsage(current, selectedTurns);
         await writeTextAtomic(logPath, updated);
         return {
           recorded: !existing,
@@ -1982,7 +2014,7 @@ export class WorkLogUsageStore {
         if (error?.code === "ENOENT") {
           try {
             const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-            const created = projectWorkLogUsage("# Глобальный журнал работ\n", selectedTurns);
+            const created = this.#projectUsage("# Глобальный журнал работ\n", selectedTurns);
             await writeTextAtomic(logPath, created);
             return {
               recorded: !existing,
@@ -2029,7 +2061,7 @@ export class WorkLogUsageStore {
       try {
         const current = await readFile(logPath, "utf8");
         const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-        const updated = projectWorkLogUsage(current, selectedTurns);
+        const updated = this.#projectUsage(current, selectedTurns);
         await writeTextAtomic(logPath, updated);
         return { retracted: true, projected: true };
       } catch (error) {

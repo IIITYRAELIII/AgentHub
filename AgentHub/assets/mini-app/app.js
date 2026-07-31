@@ -2110,13 +2110,16 @@ const AgentHub = {
     renderOptions();
   },
   /** Текущий выбор: { agent, model, reasoning, mode, project, autoApprove,
-   *  tts }. */
+   *  includeClaudeUsage, tts }. */
   setSelection(selection) {
+    const claudeUsageChanged = Object.hasOwn(selection ?? {}, "includeClaudeUsage")
+      && state.selection.includeClaudeUsage !== selection.includeClaudeUsage;
     const next = { ...state.selection, ...selection };
     if (sameData(state.selection, next)) return;
     state.selection = next;
     renderOptions();
     if (state.selectedId) renderChat();
+    if (claudeUsageChanged && journalHtml) renderJournal();
   },
   /** Сводка статуса/лимитов для панели: { rows: [{ name, value }] }. */
   setStatus(status) {
@@ -3451,7 +3454,13 @@ function groupClaudeRowsInDay(day) {
   const usage = primary.querySelector("[data-work-log-usage]");
   if (usage) {
     const totals = creditsFromEntries(entries);
-    if (totals.known) {
+    if (state.selection.includeClaudeUsage === false) {
+      const collapse = document.createElement("button");
+      collapse.type = "button";
+      collapse.dataset.workLogCollapseTurns = "";
+      collapse.textContent = "Свернуть ходы";
+      usage.replaceChildren(collapse);
+    } else if (totals.known) {
       const details = document.createElement("details");
       details.dataset.taskUsageDetails = "";
       const summary = document.createElement("summary");

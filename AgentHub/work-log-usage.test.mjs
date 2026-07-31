@@ -54,6 +54,32 @@ test("local usage history buckets priced ledger turns and reports unpriced ones"
   assert.equal(history.points.reduce((sum, point) => sum + point.credits, 0), 5);
 });
 
+test("local usage history can exclude Claude from global totals", () => {
+  const now = Date.parse("2026-07-30T12:00:00.000Z");
+  const turns = {
+    codex: {
+      provider: "codex",
+      completedAt: "2026-07-30T10:10:00.000Z",
+      estimatedCredits: 5,
+      estimateKind: "model",
+    },
+    claude: {
+      provider: "claude",
+      completedAt: "2026-07-30T10:20:00.000Z",
+      estimatedCredits: 7,
+      estimateKind: "model",
+    },
+  };
+  assert.equal(buildWorkLogUsageHistory(turns, { range: "6h", now }).totalCredits, 12);
+  const filtered = buildWorkLogUsageHistory(turns, {
+    range: "6h",
+    now,
+    includeClaudeUsage: false,
+  });
+  assert.equal(filtered.totalCredits, 5);
+  assert.equal(filtered.points.reduce((sum, point) => sum + point.credits, 0), 5);
+});
+
 test("rate-limit summary is replaced in place above the journal days", () => {
   const first = projectWorkLogRateLimits(
     "# Глобальный журнал работ\n\n<details></details>\n",
@@ -222,7 +248,7 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.doesNotMatch(projected, /data-work-log-legacy-files/);
   assert.match(
     projected,
-    /data-day-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span>/,
+    /data-day-usage><span data-usage-label>Итого<\/span> <span data-usage-credits="[^"]+" data-kilo-usage>0,0 cr<\/span>/,
   );
   assert.doesNotMatch(projected, /За день:/);
   assert.match(
@@ -235,11 +261,11 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
     /<br>/,
   );
   assert.equal((projected.match(/data-day-usage-part/g) ?? []).length, 4);
-  assert.match(projected, /Task A[\s\S]*?<span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span> <span data-usage-percent>\(50%\)<\/span>/);
-  assert.match(projected, /Task C[\s\S]*?<span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span> <span data-usage-percent>\(50%\)<\/span>/);
+  assert.match(projected, /Task A[\s\S]*?<span data-usage-label>Итого<\/span> <span data-kilo-usage data-usage-credits="[^"]+">0,0 cr<\/span> <span data-usage-percent>\(50%\)<\/span>/);
+  assert.match(projected, /Task C[\s\S]*?<span data-usage-label>Итого<\/span> <span data-kilo-usage data-usage-credits="[^"]+">0,0 cr<\/span> <span data-usage-percent>\(50%\)<\/span>/);
   assert.match(
     projected,
-    /<details data-task-usage-details><summary data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span> <span data-usage-percent>\(50%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
+    /<details data-task-usage-details><summary data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage data-usage-credits="[^"]+">0,0 cr<\/span> <span data-usage-percent>\(50%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
   );
   assert.doesNotMatch(projected, /<details data-task-usage-details open>/);
   assert.match(
@@ -254,6 +280,35 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   const reprojected = projectWorkLogUsage(projected, turns);
   assert.equal((reprojected.match(/data-work-log-day-section/g) ?? []).length, 1);
   assert.equal(reprojected, projected);
+});
+
+test("projectWorkLogUsage keeps Claude turns visible but excludes their spend when disabled", () => {
+  const completedAt = new Date(2026, 6, 25, 12, 0).toISOString();
+  const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
+    codex: {
+      provider: "codex",
+      threadId: "codex-thread",
+      turnId: "codex-turn",
+      taskTitle: "Codex task",
+      completedAt,
+      estimatedCredits: 5,
+      estimateKind: "model",
+    },
+    claude: {
+      provider: "claude",
+      threadId: "claude-thread",
+      turnId: "claude-turn",
+      taskTitle: "Claude task",
+      completedAt,
+      estimatedCredits: 7,
+      estimateKind: "model",
+    },
+  }, { includeClaudeUsage: false });
+
+  assert.match(projected, /data-day-usage><span data-usage-label>Итого<\/span> <span data-usage-credits="5" data-kilo-usage>5 cr<\/span>/u);
+  assert.match(projected, /data-work-log-provider="claude"[\s\S]*?Claude task/u);
+  assert.equal((projected.match(/data-task-usage>/gu) ?? []).length, 1);
+  assert.equal((projected.match(/data-work-log-turn-credits=/gu) ?? []).length, 2);
 });
 
 test("tasks inside a day are sorted by their latest turn descending", () => {
@@ -673,7 +728,7 @@ test("subagent usage is summed into its root task and shown as child turns", () 
   });
 
   assert.match(projected, /data-work-log-thread-id="root"/);
-  assert.match(projected, /<span data-usage-label>Итого<\/span> <span data-kilo-usage>21,9 cr<\/span>/);
+  assert.match(projected, /<span data-usage-label>Итого<\/span> <span [^>]*data-kilo-usage[^>]*>21,9 cr<\/span>/);
   assert.equal((projected.match(/data-work-log-turn-id=/g) ?? []).length, 3);
   assert.equal((projected.match(/data-work-log-turn-subagent="1"/g) ?? []).length, 2);
   assert.match(projected, /Основной результат/);
@@ -729,7 +784,7 @@ test("usage store quarantines inherited parent turns copied into a subagent roll
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /<span data-usage-label>Итого<\/span> <span data-kilo-usage>6,3 cr<\/span>/);
+    assert.match(projected, /<span data-usage-label>Итого<\/span> <span [^>]*data-kilo-usage[^>]*>6,3 cr<\/span>/);
     assert.match(projected, /Субагент · Real child turn/);
     assert.doesNotMatch(projected, /Copied parent turn/);
     const persisted = JSON.parse(await readFile(ledgerFile, "utf8"));
@@ -783,12 +838,12 @@ test("usage store projects each turn into its own placeholder and deduplicates r
     const projected = await readFile(workLogFile, "utf8");
     assert.match(
       projected,
-      /data-day-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span>/,
+      /data-day-usage><span data-usage-label>Итого<\/span> <span [^>]*data-kilo-usage[^>]*>0,0 cr<\/span>/,
     );
     assert.equal((projected.match(/data-day-usage-breakdown/g) ?? []).length, 1);
     assert.match(
       projected,
-      /<details data-task-usage-details><summary data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span> <span data-usage-percent>\(100%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
+      /<details data-task-usage-details><summary data-task-usage><span data-usage-label>Итого<\/span> <span [^>]*data-kilo-usage[^>]*>0,0 cr<\/span> <span data-usage-percent>\(100%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
     );
     assert.match(projected, new RegExp(`data-usage-id="${WORK_ID}" hidden>`));
     assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));
@@ -850,7 +905,7 @@ test("a fresh usage store reprojects an existing work log with its persisted led
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>219,6 cr<\/span> <span data-usage-percent>\(100%\)<\/span>/);
+    assert.match(projected, /data-task-usage><span data-usage-label>Итого<\/span> <span [^>]*data-kilo-usage[^>]*>219,6 cr<\/span> <span data-usage-percent>\(100%\)<\/span>/);
     assert.match(projected, /data-work-log-turn-body>Сохранённый результат<\/div>/);
     assert.match(projected, /<strong>Запрос:<\/strong> Сохранённый вопрос/);
     assert.doesNotMatch(projected, /response-annotations|Старый ответ/);
@@ -918,7 +973,7 @@ test("usage store backfills exact model and Fast tier before recalculating credi
       projected: true,
     });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /Итого<\/span> <span data-kilo-usage>125 cr<\/span>/);
+    assert.match(projected, /Итого<\/span> <span [^>]*data-kilo-usage[^>]*>125 cr<\/span>/);
     assert.match(
       projected,
       /<div data-work-log-turn-facts><div data-work-log-turn-pricing>gpt-5\.4 · Fast ×2<\/div><div data-work-log-turn-context><strong>Длит\.:<\/strong>/,
@@ -1368,7 +1423,7 @@ test("automatic usage creates an explicit fallback row for an ambiguous thread",
     assert.match(projected, /data-work-log-thread-id="thread-1"/);
     assert.match(projected, /Codex - Без названия/);
     assert.doesNotMatch(projected, /data-usage-id=/);
-    assert.match(projected, /data-task-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage>0,0 cr<\/span> <span data-usage-percent>\(100%\)<\/span>/);
+    assert.match(projected, /data-task-usage><span data-usage-label>Итого<\/span> <span [^>]*data-kilo-usage[^>]*>0,0 cr<\/span> <span data-usage-percent>\(100%\)<\/span>/);
     assert.match(projected, /13:45 — <span data-kilo-usage>0,0 cr<\/span>/);
     assert.match(projected, /Автоматически учтённый ход/);
   } finally {
@@ -1442,7 +1497,7 @@ test("automatic journal marks only the image-generated turn while task and day t
       workLogFile,
     });
     const projected = await readFile(workLogFile, "utf8");
-    assert.match(projected, /Итого<\/span> <span data-kilo-usage>102,5 cr<\/span>/);
+    assert.match(projected, /Итого<\/span> <span [^>]*data-kilo-usage[^>]*>102,5 cr<\/span>/);
     assert.match(projected, /ImageGen: <span data-kilo-usage>90 cr<\/span> <span data-usage-percent>\(87,8%\)<\/span>/);
     assert.match(projected, /12:03 — <span data-kilo-usage>102,5 cr<\/span>/);
     assert.doesNotMatch(projected, /≈/u);

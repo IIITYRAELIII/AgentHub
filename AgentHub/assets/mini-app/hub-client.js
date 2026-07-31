@@ -470,6 +470,7 @@ function applySnapshot(snapshot) {
     mode: settings.mode,
     project: (settings.projects ?? []).find((project) => project.selected)?.path ?? "",
     autoApprove: settings.approvalMode === "auto",
+    includeClaudeUsage: settings.includeClaudeUsage !== false,
   });
   applySnapshotConnection(snapshot);
 }
@@ -883,6 +884,7 @@ agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
     mode: "mode",
     project: "project",
     autoApprove: "approvalMode",
+    includeClaudeUsage: "includeClaudeUsage",
   };
   const name = names[key];
   if (!name) return;
@@ -890,6 +892,10 @@ agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
     name,
     value: key === "autoApprove" ? (value ? "auto" : "manual") : value,
   }));
+  if (key === "includeClaudeUsage") {
+    requestUsageHistory(usageState.range, { force: true });
+    void loadJournal({ force: true });
+  }
 }));
 agentHub.on("approval:respond", ({ id, decision }) => runAction(
   () => control("resolve-approval", { key: id, decision }),

@@ -313,6 +313,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     reasoning: "high",
     mode: "default",
     approvalMode: "auto",
+    includeClaudeUsage: true,
     models: [{ value: "gpt-test", label: "GPT Test" }],
     reasoningOptions: [
       { value: "medium", label: "Medium" },
