@@ -3,20 +3,21 @@
 /* Запотевшее стекло темы «Storm».
  *
  * Отличия от стекла «Мегаполиса» — по замечаниям с обсуждения:
- *   • капли не круглые: голова вытянута, сужается кверху и растягивается тем
- *     сильнее, чем быстрее падает, за ней остаётся влажная дорожка;
+ *   • капли не круглые: голова вытянута и сужается кверху, за ней остаётся
+ *     влажная дорожка;
  *   • движение несинхронное: капля висит, копит массу и срывается в свой
  *     момент, а не едет вместе со всеми по общей сетке;
- *   • стекло не «отмывается» насовсем: протёртое затягивается обратно,
- *     поэтому дорожки живут секунду и исчезают.
+ *   • стекло не «отмывается» насовсем: протёртое зарастает, но медленно,
+ *     поэтому дорожки живут долго и исчезают по одной.
  *
- * Физика запотевания честная: слой рисует размытую копию того же фонового
- * снимка, а капли стирают её (destination-out), открывая резкий фон под
- * canvas. Размытая копия готовится один раз на изменение размера, поэтому
- * покадрово выполняются только дешёвые операции.
+ * Физика честная: слой рисует размытую копию снимка (запотевание), капли
+ * стирают её (destination-out) и открывают резкую картинку, а крупная капля
+ * дополнительно работает линзой — показывает окрестность перевёрнутой.
+ * Обе копии снимка готовятся один раз на изменение размера.
  *
- * Гроза живёт на этом же холсте: разряд подсвечивает всю сцену и виден сквозь
- * мутное стекло, поэтому канал размыт и сужается книзу. */
+ * В горячем пути нет ни одного canvas-фильтра: размытие дорого на мобильных
+ * GPU и вешало кадр при каждом разряде. Молния целиком рисуется в буфер один
+ * раз за удар, а покадрово только накладывается. */
 (() => {
   const root = document.documentElement;
   const atmosphere = document.querySelector(".theme-atmosphere");
@@ -30,6 +31,13 @@
 
   const fog = document.createElement("canvas");
   const fogContext = fog.getContext("2d");
+  /* Резкая копия нужна линзе: внутри капли изображение перевёрнуто, а взять
+     его из-под canvas нельзя. */
+  const sharp = document.createElement("canvas");
+  const sharpContext = sharp.getContext("2d");
+  /* Накопительный слой запотевания: в нём живут только дорожки и бисер. */
+  const glass = document.createElement("canvas");
+  const glassContext = glass.getContext("2d");
   const image = new Image();
   let imageReady = false;
   let frame = 0;
@@ -37,11 +45,12 @@
   let width = 0;
   let height = 0;
   let scale = 1;
+  let mobile = false;
   const drops = [];
   /* Бисер, оставленный прошедшей каплей: без него дорожка читается голой
      полосой, а на настоящем стекле за каплей всегда тянется мелочь. */
   const beads = [];
-  const BEAD_LIMIT = 320;
+  const beadLimit = () => (mobile ? 80 : 200);
   const lenses = new Map();
   let nextLightningAt = 0;
   let lightning = null;
@@ -59,51 +68,66 @@
      своя, поэтому одинаковых траекторий не возникает. Тяжёлых меньше, но
      именно они делают шторм штормом. */
   function spawnDrop(initial = false) {
-    const heavy = Math.random() < 0.3;
-    const size = heavy ? random(8, 16.5) : random(3, 7);
+    const heavy = Math.random() < 0.32;
+    const size = heavy ? random(9, 18) : random(3, 7.5);
     return {
       x: random(-0.02, 1.02) * width,
       y: initial ? random(-0.1, 1) * height : random(-0.2, -0.02) * height,
       size,
       speed: 0,
-      maxSpeed: heavy ? random(300, 620) : random(130, 320),
-      rest: heavy ? random(0, 0.2) : random(0, 0.9),
+      maxSpeed: heavy ? random(190, 420) : random(85, 220),
+      rest: heavy ? random(0, 0.4) : random(0, 1.4),
       wobble: random(0, Math.PI * 2),
       wobbleSpeed: random(1.1, 3.6),
       drift: random(-4, 5),
       wind: random(0.04, 0.09),
       trail: heavy ? random(0.85, 1.25) : random(0.55, 0.95),
       heavy,
+      travel: 0,
+      beadGap: random(26, 90),
       life: 0,
     };
   }
 
   function resize() {
-    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    mobile = root.dataset.surface === "mobile" || window.innerWidth < 860;
+    // на телефоне холст размером с экран в три пикселя на точку — самый
+    // дорогой кадр во всей теме, поэтому плотность ограничена жёстко
+    const ratio = Math.min(window.devicePixelRatio || 1, mobile ? 1.25 : 1.5);
     width = Math.max(1, Math.round(window.innerWidth));
     height = Math.max(1, Math.round(window.innerHeight));
     scale = ratio;
-    canvas.width = Math.round(width * ratio);
-    canvas.height = Math.round(height * ratio);
+    for (const layer of [canvas, fog, sharp, glass]) {
+      layer.width = Math.round(width * ratio);
+      layer.height = Math.round(height * ratio);
+    }
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
-
-    fog.width = canvas.width;
-    fog.height = canvas.height;
     fogContext.setTransform(ratio, 0, 0, ratio, 0, 0);
-    paintFog();
+    sharpContext.setTransform(ratio, 0, 0, ratio, 0, 0);
+    glassContext.setTransform(ratio, 0, 0, ratio, 0, 0);
+    paintScene();
 
-    const target = Math.round((width * height) / 5_200);
-    const wanted = reducedMotion.matches ? 0 : Math.max(120, Math.min(360, target));
+    const target = Math.round((width * height) / (mobile ? 12_000 : 6_400));
+    const wanted = reducedMotion.matches
+      ? 0
+      : Math.max(mobile ? 30 : 80, Math.min(mobile ? 60 : 190, target));
     while (drops.length > wanted) drops.pop();
     while (drops.length < wanted) drops.push(spawnDrop(true));
     beads.length = 0;
     lenses.clear();
-    if (imageReady) context.drawImage(fog, 0, 0, width, height);
+    lightning = null;
+    if (imageReady) {
+      glassContext.globalCompositeOperation = "copy";
+      glassContext.drawImage(fog, 0, 0, width, height);
+      context.globalCompositeOperation = "copy";
+      context.drawImage(fog, 0, 0, width, height);
+    }
   }
 
-  /* Размытая копия фона плюс холодная молочная плёнка: вместе это и есть
-     «запотевание». Готовится один раз на размер окна. */
-  function paintFog() {
+  /* Размытая копия фона плюс холодная плёнка — это и есть запотевание. Оно
+     плотное намеренно: сквозь стекло должно быть видно шторм, а не читаемую
+     фотографию, иначе интерфейс тонет в деталях. */
+  function paintScene() {
     if (!imageReady || !width || !height) return;
     const cover = Math.max(width / image.width, height / image.height);
     const drawWidth = image.width * cover;
@@ -111,21 +135,26 @@
     // кадр смещён к правому краю: там маяк, и его свет собирают капли
     const offsetX = (width - drawWidth) * 0.62;
     const offsetY = (height - drawHeight) * 0.5;
+
+    sharpContext.setTransform(scale, 0, 0, scale, 0, 0);
+    sharpContext.clearRect(0, 0, width, height);
+    sharpContext.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
+
     fogContext.setTransform(scale, 0, 0, scale, 0, 0);
     fogContext.clearRect(0, 0, width, height);
-    fogContext.filter = "blur(6px) saturate(0.9) brightness(0.96)";
+    fogContext.filter = "blur(13px) saturate(0.8) brightness(0.86)";
     fogContext.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
     fogContext.filter = "none";
-    fogContext.fillStyle = "rgba(206, 224, 238, 0.1)";
+    fogContext.fillStyle = "rgba(198, 218, 238, 0.2)";
     fogContext.fillRect(0, 0, width, height);
   }
 
-  function drawDropHead(target, drop, stretch = 1) {
+  function dropPath(target, drop, stretch = 1) {
     const rx = drop.size * 0.72;
     const ry = drop.size * stretch;
     target.beginPath();
     /* Голова — вытянутый эллипс, сверху сходится в носик. Носик короткий:
-       длинный превращал каплю в стрелку из чистого стекла над головой. */
+       длинный превращал каплю в стеклянную стрелку. */
     target.moveTo(drop.x, drop.y - ry * 1.15);
     target.bezierCurveTo(
       drop.x + rx * 0.9, drop.y - ry * 0.6,
@@ -138,11 +167,11 @@
       drop.x, drop.y - ry * 1.15,
     );
     target.closePath();
-    target.fill();
   }
 
-  /* Объём капли — готовый спрайт: создавать градиент на каждую каплю в кадре
-     дорого, а размеров всего десятка полтора. */
+  /* Объём капли — готовый спрайт: создавать градиенты на каждую каплю в кадре
+     дорого, а размеров всего десятка полтора. Кромка по краю и есть то, что
+     превращает пятно в каплю. */
   function lens(size) {
     const key = Math.max(2, Math.round(size));
     const cached = lenses.get(key);
@@ -153,48 +182,88 @@
     sprite.height = box;
     const paint = sprite.getContext("2d");
     const middle = box / 2;
-    // тёмная кромка снизу-справа: без неё стёртая голова читается кляксой
-    const rim = paint.createRadialGradient(
-      middle + key * 0.35, middle + key * 0.45, key * 0.15,
-      middle, middle, key * 1.5,
+    const rx = key * 0.86;
+    const ry = key * 1.08;
+
+    // тень под каплей: она лежит на стекле и отбрасывает мягкое пятно
+    const shade = paint.createRadialGradient(
+      middle, middle + key * 0.35, key * 0.2,
+      middle, middle + key * 0.35, key * 1.6,
     );
-    rim.addColorStop(0, "rgba(8, 16, 26, 0)");
-    rim.addColorStop(0.72, "rgba(8, 16, 26, 0.28)");
-    rim.addColorStop(1, "rgba(8, 16, 26, 0)");
-    paint.fillStyle = rim;
+    shade.addColorStop(0, "rgba(6, 12, 20, 0.34)");
+    shade.addColorStop(1, "rgba(6, 12, 20, 0)");
+    paint.fillStyle = shade;
+    paint.fillRect(0, 0, box, box);
+
+    // светлая кромка по контуру — главный признак выпуклой капли
+    paint.lineWidth = Math.max(0.7, key * 0.16);
+    paint.strokeStyle = "rgba(226, 243, 255, 0.5)";
     paint.beginPath();
-    paint.ellipse(middle, middle, key * 1.05, key * 1.35, 0, 0, Math.PI * 2);
-    paint.fill();
-    // блик: капля работает как линза и собирает свет маяка
+    paint.ellipse(middle, middle, rx, ry, 0, 0, Math.PI * 2);
+    paint.stroke();
+    paint.lineWidth = Math.max(0.5, key * 0.1);
+    paint.strokeStyle = "rgba(10, 20, 32, 0.4)";
+    paint.beginPath();
+    paint.ellipse(middle, middle + key * 0.12, rx * 0.99, ry * 0.99, 0, 0.45, Math.PI - 0.45);
+    paint.stroke();
+
+    // компактный блик: капля собирает свет маяка в точку, а не светится вся
     const glare = paint.createRadialGradient(
-      middle - key * 0.34, middle - key * 0.42, key * 0.08,
-      middle, middle, key * 1.25,
+      middle - key * 0.36, middle - key * 0.46, 0,
+      middle - key * 0.36, middle - key * 0.46, key * 0.62,
     );
-    glare.addColorStop(0, "rgba(233, 246, 255, 0.7)");
-    glare.addColorStop(0.4, "rgba(196, 222, 240, 0.18)");
-    glare.addColorStop(1, "rgba(196, 222, 240, 0)");
+    glare.addColorStop(0, "rgba(244, 251, 255, 0.95)");
+    glare.addColorStop(0.45, "rgba(210, 234, 250, 0.28)");
+    glare.addColorStop(1, "rgba(210, 234, 250, 0)");
     paint.fillStyle = glare;
     paint.beginPath();
-    paint.ellipse(middle, middle, key * 0.92, key * 1.2, 0, 0, Math.PI * 2);
+    paint.ellipse(middle - key * 0.3, middle - key * 0.38, rx * 0.62, ry * 0.5, 0, 0, Math.PI * 2);
     paint.fill();
+
     lenses.set(key, sprite);
     return sprite;
   }
 
+  /* Настоящая линза: внутри капли окрестность перевёрнута и увеличена.
+     Дорогая операция (clip + перерисовка кадра), поэтому только для крупных
+     капель и только на десктопе. */
+  function refract(drop, stretch) {
+    context.save();
+    dropPath(context, drop, stretch);
+    context.clip();
+    context.translate(drop.x, drop.y);
+    context.scale(-1.6, -1.6);
+    context.translate(-drop.x, -drop.y);
+    context.globalAlpha = 0.85;
+    context.drawImage(sharp, 0, 0, width, height);
+    context.restore();
+  }
+
   function addBead(drop) {
-    if (beads.length >= BEAD_LIMIT) beads.shift();
+    if (beads.length >= beadLimit()) beads.shift();
     beads.push({
-      x: drop.x + random(-drop.size, drop.size) * 0.5,
-      y: drop.y - random(0, drop.size * 2),
-      size: Math.max(0.5, drop.size * random(0.12, 0.34)),
-      life: random(0.6, 2.2),
+      x: drop.x + random(-0.9, 0.9) * drop.size,
+      y: drop.y - random(0.4, 3.2) * drop.size,
+      size: Math.max(0.7, drop.size * random(0.12, 0.3)),
+      life: random(5, 14),
     });
   }
 
+  /* Разряд рисуется один раз в буфер половинного разрешения: при наложении он
+     растягивается и получает мягкость даром, без покадрового размытия. */
   function createLightning(now) {
+    const bolt = document.createElement("canvas");
+    const ratio = mobile ? 0.4 : 0.5;
+    bolt.width = Math.max(1, Math.round(width * ratio));
+    bolt.height = Math.max(1, Math.round(height * ratio));
+    const paint = bolt.getContext("2d");
+    paint.setTransform(ratio, 0, 0, ratio, 0, 0);
+    paint.lineCap = "round";
+    paint.lineJoin = "round";
+
     const startX = random(width * 0.12, width * 0.9);
     const endY = random(height * 0.5, height * 0.95);
-    const segments = Math.max(12, Math.round(endY / 26));
+    const segments = Math.max(10, Math.round(endY / (mobile ? 42 : 26)));
     const points = [{ x: startX, y: -14 }];
     let x = startX;
     for (let index = 1; index <= segments; index += 1) {
@@ -202,7 +271,7 @@
       x += random(-13, 13) + Math.sin(index * 1.7) * 4;
       points.push({ x, y: (endY * index) / segments });
     }
-    const branches = [];
+    const paths = [points];
     for (let count = 0; count < 2; count += 1) {
       const from = points[Math.round(random(3, points.length - 4))];
       const away = Math.random() < 0.5 ? -1 : 1;
@@ -212,9 +281,38 @@
         branchX += away * random(6, 26) + random(-6, 6);
         branch.push({ x: branchX, y: from.y + index * random(16, 30) });
       }
-      branches.push(branch);
+      paths.push(branch);
     }
-    return { startedAt: now, duration: random(420, 640), points, branches };
+
+    /* Свечение набирается проходами разной ширины: канал сужается и гаснет
+       книзу, иначе разряд читается арматурой одинаковой толщины. */
+    const passes = mobile
+      ? [
+        { base: 18, alpha: 0.16, color: "120, 180, 240" },
+        { base: 6, alpha: 0.45, color: "206, 232, 255" },
+        { base: 2, alpha: 0.95, color: "253, 254, 255" },
+      ]
+      : [
+        { base: 26, alpha: 0.1, color: "108, 168, 236" },
+        { base: 13, alpha: 0.2, color: "150, 198, 246" },
+        { base: 5.5, alpha: 0.5, color: "206, 232, 255" },
+        { base: 2, alpha: 0.95, color: "253, 254, 255" },
+      ];
+    for (const pass of passes) {
+      for (const path of paths) {
+        const last = path.length - 1;
+        for (let index = 1; index <= last; index += 1) {
+          const fade = 1 - (index / last) * 0.4;
+          paint.strokeStyle = `rgba(${pass.color}, ${pass.alpha * fade})`;
+          paint.lineWidth = Math.max(0.9, pass.base * (1 - (index / last) * 0.45));
+          paint.beginPath();
+          paint.moveTo(path[index - 1].x, path[index - 1].y);
+          paint.lineTo(path[index].x, path[index].y);
+          paint.stroke();
+        }
+      }
+    }
+    return { startedAt: now, duration: random(420, 640), bolt };
   }
 
   function lightningIntensity(now) {
@@ -224,7 +322,7 @@
     const elapsed = now - lightning.startedAt;
     if (elapsed >= lightning.duration) {
       lightning = null;
-      nextLightningAt = now + random(2_600, 7_000);
+      nextLightningAt = now + random(3_000, 8_000);
       return 0;
     }
     // Короткий первый удар и более слабый повтор читаются естественнее
@@ -235,49 +333,23 @@
     return Math.min(1, first + second + afterglow);
   }
 
-  /* Канал сужается и гаснет книзу: постоянная толщина превращала разряд в
-     арматуру, а слишком резкое сужение обрывало его на середине. */
-  function traceLightning(points, base, alpha, color) {
-    const last = points.length - 1;
-    for (let index = 1; index <= last; index += 1) {
-      const fade = 1 - (index / last) * 0.4;
-      context.strokeStyle = `rgba(${color}, ${alpha * fade})`;
-      context.lineWidth = Math.max(0.9, base * (1 - (index / last) * 0.45));
-      context.beginPath();
-      context.moveTo(points[index - 1].x, points[index - 1].y);
-      context.lineTo(points[index].x, points[index].y);
-      context.stroke();
-    }
-  }
-
   function drawLightning(now) {
     const intensity = lightningIntensity(now);
     if (!intensity || !lightning) return;
     context.save();
     context.globalCompositeOperation = "screen";
-    context.lineCap = "round";
-    context.lineJoin = "round";
-
     // вспышка освещает всю сцену, и сильнее там, где тучи
     const sky = context.createLinearGradient(0, 0, 0, height);
-    sky.addColorStop(0, `rgba(188, 218, 252, ${0.5 * intensity})`);
-    sky.addColorStop(0.55, `rgba(150, 190, 235, ${0.26 * intensity})`);
-    sky.addColorStop(1, `rgba(120, 160, 205, ${0.1 * intensity})`);
+    sky.addColorStop(0, `rgba(188, 218, 252, ${0.46 * intensity})`);
+    sky.addColorStop(0.55, `rgba(150, 190, 235, ${0.24 * intensity})`);
+    sky.addColorStop(1, `rgba(120, 160, 205, ${0.09 * intensity})`);
     context.fillStyle = sky;
     context.fillRect(0, 0, width, height);
-
-    const life = Math.max(
+    context.globalAlpha = Math.max(
       intensity,
       0.5 * Math.max(0, 1 - (now - lightning.startedAt) / lightning.duration),
     );
-    const paths = [lightning.points, ...lightning.branches];
-    // ореол размыт: разряд виден сквозь мутное стекло, а не наклеен поверх
-    context.filter = "blur(7px)";
-    for (const path of paths) traceLightning(path, 20, 0.5 * life, "128, 184, 245");
-    context.filter = "blur(1.6px)";
-    for (const path of paths) traceLightning(path, 6, 0.85 * life, "198, 228, 255");
-    context.filter = "none";
-    for (const path of paths) traceLightning(path, 2.2, Math.min(1, 1.15 * life), "252, 254, 255");
+    context.drawImage(lightning.bolt, 0, 0, width, height);
     context.restore();
   }
 
@@ -287,17 +359,19 @@
     const delta = Math.min(0.05, lastTime ? (now - lastTime) / 1000 : 0.016);
     lastTime = now;
 
-    // стекло затягивается обратно: без этого дорожки вытягивались во весь
-    // экран и превращались в прочерченные линии
-    context.globalCompositeOperation = "source-over";
-    context.globalAlpha = Math.min(0.62, 0.34 * delta * 60);
-    context.drawImage(fog, 0, 0, width, height);
-    context.globalAlpha = 1;
+    /* Запотевание живёт в отдельном слое, а капли рисуются поверх заново
+       каждый кадр. Раньше всё шло в один холст, и при медленном зарастании
+       отпечатки головы копились в широкую полосу — капля выглядела
+       пробиркой. Теперь копятся только дорожки, как на настоящем окне. */
+    glassContext.globalCompositeOperation = "source-over";
+    glassContext.globalAlpha = Math.min(0.14, 0.055 * delta * 60);
+    glassContext.drawImage(fog, 0, 0, width, height);
+    glassContext.globalAlpha = 1;
 
-    context.globalCompositeOperation = "destination-out";
-    context.fillStyle = "#000";
-    context.strokeStyle = "#000";
-    context.lineCap = "round";
+    glassContext.globalCompositeOperation = "destination-out";
+    glassContext.fillStyle = "#000";
+    glassContext.strokeStyle = "#000";
+    glassContext.lineCap = "round";
 
     for (const drop of drops) {
       drop.life += delta;
@@ -305,7 +379,6 @@
         drop.rest -= delta;
         // висящая капля чуть подрагивает — этого хватает, чтобы поток не читался ровным
         drop.x += Math.sin(drop.life * drop.wobbleSpeed + drop.wobble) * 0.12;
-        drawDropHead(context, drop);
         continue;
       }
 
@@ -318,17 +391,23 @@
         + Math.sin(drop.life * drop.wobbleSpeed + drop.wobble) * drop.drift
       ) * delta;
 
-      /* След уже головы и стирает запотевание не насквозь: сплошная полоса во
-         всю толщину капли читалась прочерченной палкой, а не влажным следом. */
-      context.globalAlpha = 0.5;
-      context.lineWidth = Math.max(0.6, drop.size * 0.34 * drop.trail);
-      context.beginPath();
-      context.moveTo(previousX, previousY);
-      context.lineTo(drop.x, drop.y);
-      context.stroke();
-      context.globalAlpha = 1;
-      drawDropHead(context, drop, 1 + Math.min(0.55, drop.speed / 900));
-      if (drop.speed > 70 && Math.random() < 5 * delta) addBead(drop);
+      // влажная дорожка: уже головы и стирает плёнку не насквозь
+      // лёгкий разброс по ширине и плотности: ровная линия читается прочерченной
+      glassContext.globalAlpha = random(0.3, 0.5);
+      glassContext.lineWidth = Math.max(0.6, drop.size * 0.5 * drop.trail * random(0.85, 1.15));
+      glassContext.beginPath();
+      glassContext.moveTo(previousX, previousY);
+      glassContext.lineTo(drop.x, drop.y);
+      glassContext.stroke();
+      glassContext.globalAlpha = 1;
+      /* Бисер отмеряется пройденным путём, а не временем: по времени он
+         ложился сплошной цепочкой и превращал дорожку в застёжку. */
+      drop.travel += Math.abs(drop.y - previousY);
+      if (drop.travel > drop.beadGap) {
+        drop.travel = 0;
+        drop.beadGap = random(26, 90);
+        addBead(drop);
+      }
 
       // случайная остановка: капля цепляется за неровность и снова копит массу
       if (!drop.heavy && Math.random() < 0.24 * delta) {
@@ -340,6 +419,7 @@
       }
     }
 
+    // бисер перерисовывается каждый кадр: иначе зарастание съело бы его
     for (let index = beads.length - 1; index >= 0; index -= 1) {
       const bead = beads[index];
       bead.life -= delta;
@@ -347,19 +427,40 @@
         beads.splice(index, 1);
         continue;
       }
-      context.globalAlpha = Math.min(1, bead.life);
-      context.beginPath();
-      context.ellipse(bead.x, bead.y, bead.size, bead.size * 1.15, 0, 0, Math.PI * 2);
+      glassContext.globalAlpha = Math.min(1, bead.life);
+      glassContext.beginPath();
+      glassContext.ellipse(bead.x, bead.y, bead.size, bead.size * 1.15, 0, 0, Math.PI * 2);
+      glassContext.fill();
+    }
+    glassContext.globalAlpha = 1;
+
+    context.globalCompositeOperation = "copy";
+    context.globalAlpha = 1;
+    context.drawImage(glass, 0, 0, width, height);
+
+    // голова капли стирает запотевание только в текущем кадре
+    context.globalCompositeOperation = "destination-out";
+    context.fillStyle = "#000";
+    for (const drop of drops) {
+      dropPath(context, drop, 1 + Math.min(0.55, drop.speed / 900));
       context.fill();
     }
-    context.globalAlpha = 1;
 
-    // объём: тёмная кромка снизу и блик сверху, иначе стёртая голова — клякса
     context.globalCompositeOperation = "source-over";
     for (const drop of drops) {
+      if (!mobile && drop.heavy) refract(drop, 1 + Math.min(0.55, drop.speed / 900));
       const sprite = lens(drop.size);
       const box = sprite.width;
       context.drawImage(sprite, drop.x - box / 2, drop.y - box / 2, box, box);
+    }
+    // на телефоне бисер остаётся только следом в запотевании: две сотни
+    // спрайтов на кадр там дороже, чем весь остальной шторм
+    if (!mobile) {
+      for (const bead of beads) {
+        const sprite = lens(bead.size);
+        const box = sprite.width;
+        context.drawImage(sprite, bead.x - box / 2, bead.y - box / 2, box, box);
+      }
     }
     drawLightning(now);
   }

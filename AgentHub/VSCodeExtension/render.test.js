@@ -305,24 +305,31 @@ test("Storm glass uses dense fast rain and irregular branched lightning", () => 
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
   assert.match(glass, /getPropertyValue\("--stormglass-image"\)/u);
   assert.doesNotMatch(glass, /const IMAGE = "\/storm-sea\.png"/u);
-  assert.match(glass, /\(width \* height\) \/ 5_200/u);
-  assert.match(glass, /Math\.max\(120,\s*Math\.min\(360,\s*target\)\)/u);
-  assert.match(glass, /const heavy = Math\.random\(\) < 0\.3/u);
-  assert.match(glass, /heavy \? random\(8,\s*16\.5\) : random\(3,\s*7\)/u);
+  // плотность и вес капель, на телефоне заметно ниже
+  assert.match(glass, /mobile \? 12_000 : 6_400/u);
+  assert.match(glass, /Math\.min\(mobile \? 60 : 190,\s*target\)/u);
+  assert.match(glass, /const heavy = Math\.random\(\) < 0\.32/u);
+  assert.match(glass, /heavy \? random\(9,\s*18\) : random\(3,\s*7\.5\)/u);
   assert.match(glass, /drop\.maxSpeed \* 5\.6 \* delta/u);
   // объём капли — предрассчитанный спрайт, иначе стёртая голова читается кляксой
   assert.match(glass, /function lens\(size\)/u);
   assert.match(glass, /lenses\.set\(key,\s*sprite\)/u);
   assert.match(glass, /function addBead\(drop\)/u);
+  /* Запотевание копится в отдельном слое: в общем холсте отпечатки головы
+     складывались в широкую полосу и капля выглядела пробиркой. */
+  assert.match(glass, /const glass = document\.createElement\("canvas"\)/u);
+  assert.match(glass, /glassContext\.globalCompositeOperation = "destination-out"/u);
+  assert.match(glass, /context\.globalCompositeOperation = "copy"/u);
   assert.match(glass, /function createLightning\(now\)/u);
   assert.match(glass, /function drawLightning\(now\)/u);
-  assert.match(glass, /nextLightningAt = now \+ random\(2_600,\s*7_000\)/u);
-  assert.match(glass, /lightning\.branches/u);
+  assert.match(glass, /nextLightningAt = now \+ random\(3_000,\s*8_000\)/u);
   // канал сужается и гаснет книзу, вспышка освещает всю сцену
-  assert.match(glass, /base \* \(1 - \(index \/ last\) \* 0\.45\)/u);
+  assert.match(glass, /pass\.base \* \(1 - \(index \/ last\) \* 0\.45\)/u);
   assert.match(glass, /context\.createLinearGradient\(0,\s*0,\s*0,\s*height\)/u);
-  assert.match(glass, /context\.filter = "blur\(7px\)"/u);
-  // разряд рисуется только на холсте: CSS-дубль давал плоскую фигуру поверх стекла
+  /* Разряд рисуется в буфер один раз за удар: покадровое размытие вешало
+     кадр на телефоне, а CSS-дубль давал плоскую фигуру поверх стекла. */
+  assert.match(glass, /context\.drawImage\(lightning\.bolt,\s*0,\s*0,\s*width,\s*height\)/u);
+  assert.doesNotMatch(glass, /context\.filter/u);
   assert.doesNotMatch(glass, /stormStrike/u);
   assert.doesNotMatch(styles, /stormglass-bolt|data-storm-strike/u);
   assert.match(glass, /prefers-reduced-motion: reduce/u);
