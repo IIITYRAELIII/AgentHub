@@ -312,14 +312,19 @@ test("Storm keeps the photo backdrop and adds only lightning", () => {
   assert.match(styles, /html\[data-theme="stormglass"\] \.theme-atmosphere \[data-metropolis-glass\]/u);
   assert.match(styles, /html\[data-theme="stormglass"\] body::after\s*\{[\s\S]*?var\(--stormglass-image\)/u);
 
-  // холст темы держит только разряды
-  assert.match(storm, /function createLightning\(now\)/u);
-  assert.match(storm, /context\.drawImage\(lightning\.bolt,\s*0,\s*0,\s*width,\s*height\)/u);
+  /* Оживает сама сцена: вода дышит по маске горизонта, небо медленно плывёт,
+     а разряд подсвечивает кадр вторым снимком той же сцены. */
+  assert.match(styles, /--stormglass-flash: url\("\/storm-flash\.png"\)/u);
+  assert.match(storm, /uniform sampler2D uFlash/u);
+  assert.match(storm, /uniform float uHorizon/u);
+  assert.match(storm, /const HORIZON = 0\.6/u);
+  assert.match(storm, /mix\(calm, lit, clamp\(uStrike, 0\.0, 1\.0\)\)/u);
+  assert.match(storm, /float water = pow\(depth, 1\.35\)/u);
+  // канал молнии готовится в буфер один раз за удар и уходит текстурой
+  assert.match(storm, /function drawBolt\(\)/u);
+  assert.match(storm, /uniform sampler2D uBolt/u);
   assert.match(storm, /nextLightningAt = now \+ random\(3_000,\s*8_000\)/u);
-  assert.match(storm, /pass\.base \* \(1 - \(index \/ last\) \* 0\.45\)/u);
-  assert.match(storm, /context\.createLinearGradient\(0,\s*0,\s*0,\s*height\)/u);
   assert.doesNotMatch(storm, /spawnDrop|dropPath|trackTrail|function lens\(/u);
-  assert.doesNotMatch(storm, /context\.filter/u);
   assert.doesNotMatch(styles, /stormglass-bolt|data-storm-strike/u);
   assert.match(storm, /prefers-reduced-motion: reduce/u);
 });

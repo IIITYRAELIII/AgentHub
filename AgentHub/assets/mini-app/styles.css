@@ -625,6 +625,7 @@ html[data-theme="stormglass"] {
   --space-star: transparent;
   --star-opacity: 0;
   --stormglass-image: url("/storm-sea.png");
+  --stormglass-flash: url("/storm-flash.png");
 }
 
 /* Фон отдаёт снимок как есть, а поверх идёт только гроза: стекло с каплями
@@ -651,9 +652,9 @@ html[data-theme="stormglass"] .theme-atmosphere {
   display: block;
 }
 
-/* У «Storm» нет стекла: холст темы держит только грозу, а чужое стекло
-   скрыто. */
-html[data-theme="stormglass"] .theme-atmosphere canvas[data-storm-glass] {
+/* У «Storm» нет стекла: холст темы оживляет саму сцену — волны, дрейф неба и
+   разряды. Пока шейдер не готов, виден CSS-фон под ним. */
+html[data-theme="stormglass"] .theme-atmosphere[data-ready="true"] canvas[data-storm-glass] {
   opacity: 1;
 }
 
