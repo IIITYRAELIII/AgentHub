@@ -152,6 +152,7 @@ import { LocalTaskSyncStore } from "./task-sync-store.mjs";
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
 import { createDesktopMessageController } from "./desktop-message-controller.mjs";
 import { resolveTrustedDeviceUserId } from "./trusted-device-access.mjs";
+import { TrustedDeviceStore } from "./trusted-device-store.mjs";
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
 import { SingleInstanceGuard } from "./instance-lock.mjs";
 import { BackgroundJobQueue } from "./background-job-queue.mjs";
@@ -219,6 +220,7 @@ import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "./task-recover
 import { WorkLogUsageStore } from "./work-log-usage.mjs";
 import { miniAppMenuButtonRequests, MiniAppServer } from "./mini-app-server.mjs";
 import { MiniAppPublisher } from "./mini-app-publisher.mjs";
+import { DirectGatewayController, loadDirectGatewaySettings } from "./direct-gateway.mjs";
 import { QuickTunnelController } from "./quick-tunnel.mjs";
 import { ensureLocalWebSecret } from "./local-web-auth.mjs";
 import { fitTaskHistoryPayload } from "./response-budget.mjs";
@@ -242,6 +244,10 @@ const runtimeCommandRoot = process.env.AGENT_HUB_RUNTIME_ROOT
 const localWebSecret = config.miniApp.enabled
   ? await ensureLocalWebSecret(path.join(runtimeCommandRoot, "local-web.secret"))
   : "";
+const trustedDeviceStore = new TrustedDeviceStore({
+  filePath: path.join(config.dataDir, "trusted-devices.json"),
+});
+await trustedDeviceStore.load();
 const codexRolloutContextSanitizer = new CodexRolloutContextSanitizer({
   ...config.codexRolloutContext,
 });
@@ -256,6 +262,7 @@ const miniAppServer = config.miniApp.enabled
     botToken: config.token,
     allowedUserIds: config.allowedUserIds,
     localAccessSecret: localWebSecret,
+    deviceStore: trustedDeviceStore,
     controlHandler: handleDesktopControl,
     attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
     journalDatabaseFile: path.join(config.dataDir, "journal.sqlite"),
@@ -269,6 +276,7 @@ const publicMiniAppServer = config.miniApp.enabled && config.miniApp.quickTunnel
     botToken: config.token,
     allowedUserIds: config.allowedUserIds,
     requireTelegramAuth: true,
+    deviceStore: trustedDeviceStore,
     controlHandler: handleDesktopControl,
     attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
     journalDatabaseFile: path.join(config.dataDir, "journal.sqlite"),
@@ -616,10 +624,25 @@ const telegram = (method, body) => {
 };
 let quickTunnelController = null;
 let miniAppPublisher = null;
+let directGatewayController = null;
 
 async function startMiniApp() {
   if (!miniAppServer) return null;
   const address = await miniAppServer.start();
+  const directGateway = await loadDirectGatewaySettings(
+    path.join(runtimeCommandRoot, "gateway.json"),
+    { localUrl: address.url },
+  );
+  if (directGateway.enabled) {
+    directGatewayController ??= new DirectGatewayController(directGateway);
+    const publicUrl = await directGatewayController.start();
+    await Promise.all(miniAppMenuButtonRequests({
+      url: publicUrl,
+      text: config.miniApp.worker.menuText,
+      chatIds: config.allowedUserIds,
+    }).map((body) => telegram("setChatMenuButton", body)));
+    console.log(`Direct Agent Hub gateway ready at ${publicUrl}`);
+  }
   if (config.miniApp.worker.enabled) {
     miniAppPublisher ??= new MiniAppPublisher({
       workLogFile: globalWorkLogFile,
@@ -639,7 +662,9 @@ async function startMiniApp() {
       console.warn(`Cannot publish Mini App journal yet: ${error.message}`);
     });
   }
-  if (!config.miniApp.quickTunnel.enabled) return address;
+  if (!config.miniApp.quickTunnel.enabled) {
+    return directGateway.enabled ? { ...address, publicUrl: directGateway.publicUrl } : address;
+  }
   const publicAddress = await publicMiniAppServer.start();
   quickTunnelController ??= new QuickTunnelController({
     executable: config.miniApp.quickTunnel.executable,
@@ -3300,23 +3325,23 @@ function requireMiniAppPublisher() {
 }
 
 async function desktopTrustedDevices(_params, context) {
-  return requireMiniAppPublisher().trustedDevices(trustedDeviceUserId(context));
+  return trustedDeviceStore.list(trustedDeviceUserId(context));
 }
 
 async function desktopCreateDevicePairing(_params, context) {
-  return requireMiniAppPublisher().createDevicePairing(trustedDeviceUserId(context));
+  return trustedDeviceStore.createPairing(trustedDeviceUserId(context));
 }
 
 async function desktopRevokeDevice(params, context) {
   const deviceId = String(params?.deviceId ?? "").trim().toLowerCase();
   if (!/^[0-9a-f-]{36}$/u.test(deviceId)) throw new Error("Некорректный идентификатор устройства");
-  return requireMiniAppPublisher().revokeDevice(trustedDeviceUserId(context), deviceId);
+  return trustedDeviceStore.revoke(trustedDeviceUserId(context), deviceId);
 }
 
 async function desktopOpenAttachment(params, context) {
   const id = String(params?.id ?? "").trim().toLowerCase();
   const target = await desktopAttachmentPathById(id);
-  if (context?.source === "telegram-mini-app") {
+  if (context?.source === "telegram-mini-app" && config.miniApp.worker.enabled) {
     const userId = trustedDeviceUserId(context);
     return requireMiniAppPublisher().publishAttachmentView(userId, target);
   }
@@ -6656,6 +6681,7 @@ async function performRestart() {
   await settleNamedOperations([
     { name: "Codex App Server", run: stopCodexAppServerTree },
     { name: "Mini App publisher", run: () => miniAppPublisher?.close() },
+    { name: "direct gateway", run: () => directGatewayController?.close() },
     { name: "quick tunnel", run: () => quickTunnelController?.close() },
     { name: "public Mini App", run: () => publicMiniAppServer?.close() },
     { name: "local Mini App", run: () => miniAppServer?.close() },
@@ -7744,6 +7770,7 @@ async function shutdown(signal) {
   await settleNamedOperations([
     { name: "Codex App Server", run: stopCodexAppServerTree },
     { name: "Mini App publisher", run: () => miniAppPublisher?.close() },
+    { name: "direct gateway", run: () => directGatewayController?.close() },
     { name: "quick tunnel", run: () => quickTunnelController?.close() },
     { name: "public Mini App", run: () => publicMiniAppServer?.close() },
     { name: "local Mini App", run: () => miniAppServer?.close() },

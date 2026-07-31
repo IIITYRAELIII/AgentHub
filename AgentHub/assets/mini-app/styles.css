@@ -627,8 +627,8 @@ html[data-theme="stormglass"] {
   --stormglass-image: url("/storm-sea.png");
 }
 
-/* Фон отдаёт снимок как есть: запотевание и капли рисует canvas поверх, а не
-   CSS, иначе протёртые дорожки не смогли бы открывать резкую картинку. */
+/* Фон отдаёт снимок как есть, а поверх идёт только гроза: стекло с каплями
+   на ночном море читалось мутью и перекрывало сам шторм. */
 html[data-theme="stormglass"] body::after {
   background-color: #05090f;
   background-image:
@@ -651,19 +651,13 @@ html[data-theme="stormglass"] .theme-atmosphere {
   display: block;
 }
 
-/* Стекло «Storm» рисует тот же шейдер, что и «Мегаполис», поэтому виден его
-   холст. Собственный холст темы держит только разряды и лежит поверх. */
-html[data-theme="stormglass"] .theme-atmosphere[data-ready="true"] canvas {
+/* У «Storm» нет стекла: холст темы держит только грозу, а чужое стекло
+   скрыто. */
+html[data-theme="stormglass"] .theme-atmosphere canvas[data-storm-glass] {
   opacity: 1;
 }
 
-html[data-theme="stormglass"] .theme-atmosphere [data-storm-glass] {
-  left: 0;
-  position: absolute;
-  top: 0;
-  z-index: 1;
-}
-
+html[data-theme="stormglass"] .theme-atmosphere [data-metropolis-glass],
 html[data-theme="metropolis"] .theme-atmosphere [data-storm-glass] {
   display: none;
 }

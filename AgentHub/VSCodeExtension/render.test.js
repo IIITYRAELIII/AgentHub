@@ -302,27 +302,17 @@ test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", (
   assert.match(glass, /prefers-reduced-motion: reduce/u);
 });
 
-test("Storm reuses the Metropolis glass shader and adds only lightning", () => {
+test("Storm keeps the photo backdrop and adds only lightning", () => {
   const shader = fs.readFileSync(require.resolve("../assets/mini-app/metropolis-glass.js"), "utf8");
   const storm = fs.readFileSync(require.resolve("../assets/mini-app/storm-glass.js"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
-  /* Собственное стекло на 2D давало бусины на нитках, поэтому «Storm» идёт
-     через тот же шейдер, что и «Мегаполис»: снимок, кадрирование, размер
-     капель и запотевание задаются темой. */
-  assert.match(shader, /stormglass:\s*\{[\s\S]*?image: "--stormglass-image"/u);
-  assert.match(shader, /uniform float uDropScale/u);
-  assert.match(shader, /uniform float uGain/u);
-  assert.match(shader, /uv0 \* 3\.0 \* uDropScale \* gridAspect/u);
-  // сетка в пикселях: в долях экрана ячейка растягивалась и капля становилась сосулькой
-  assert.match(shader, /uv0 \* \(uViewport \/ uCellPx\)/u);
-  assert.match(shader, /cell: \[230, 170\]/u);
-  assert.match(shader, /clear\.rgb = clamp\(clear\.rgb \* uGain, 0\.0, 1\.0\)/u);
-  assert.match(shader, /const fog = \(THEMES\[activeTheme\] \?\? THEMES\.metropolis\)\.fog/u);
-  // смена темы внутри набора переливает текстуры, иначе остаётся чужой снимок
-  assert.match(shader, /if \(ready && theme !== activeTheme\) reset\(\)/u);
-  assert.match(styles, /html\[data-theme="stormglass"\] \.theme-atmosphere\[data-ready="true"\] canvas/u);
+  /* Стекло с каплями уместно там, где за ним огни: на ночном море оно
+     читалось мутью, поэтому «Storm» обходится фоном и грозой. */
+  assert.doesNotMatch(shader, /stormglass/u);
+  assert.match(styles, /html\[data-theme="stormglass"\] \.theme-atmosphere \[data-metropolis-glass\]/u);
+  assert.match(styles, /html\[data-theme="stormglass"\] body::after\s*\{[\s\S]*?var\(--stormglass-image\)/u);
 
-  // холст темы держит только разряды и лежит поверх стекла
+  // холст темы держит только разряды
   assert.match(storm, /function createLightning\(now\)/u);
   assert.match(storm, /context\.drawImage\(lightning\.bolt,\s*0,\s*0,\s*width,\s*height\)/u);
   assert.match(storm, /nextLightningAt = now \+ random\(3_000,\s*8_000\)/u);

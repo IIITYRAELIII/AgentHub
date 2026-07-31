@@ -271,6 +271,7 @@ export class MiniAppServer {
   #botToken;
   #clients = new Set();
   #controlHandler;
+  #deviceStore;
   #changeTimer = null;
   #heartbeatTimer = null;
   #host;
@@ -293,6 +294,7 @@ export class MiniAppServer {
     requireTelegramAuth = false,
     localAccessSecret = "",
     controlHandler = null,
+    deviceStore = null,
     assetsDirectory = path.join(import.meta.dirname, "assets", "mini-app"),
     attachmentDirectory = null,
     workLogCssFile = path.join(import.meta.dirname, "work-log.css"),
@@ -306,6 +308,7 @@ export class MiniAppServer {
     this.#requireTelegramAuth = requireTelegramAuth === true;
     this.#localAccessSecret = String(localAccessSecret);
     this.#controlHandler = typeof controlHandler === "function" ? controlHandler : null;
+    this.#deviceStore = deviceStore;
     this.#assetsDirectory = path.resolve(assetsDirectory);
     this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
     this.#workLogCssFile = path.resolve(workLogCssFile);
@@ -341,7 +344,7 @@ export class MiniAppServer {
     );
   }
 
-  #authorize(request, response) {
+  async #authorize(request, response) {
     if (!this.#requestNeedsTelegramAuth(request)) {
       if (!this.#localAccessSecret) return true;
       if (
@@ -353,8 +356,18 @@ export class MiniAppServer {
       return false;
     }
     const authorization = String(request.headers.authorization ?? "");
+    if (authorization.startsWith("device ") && this.#deviceStore) {
+      try {
+        const identity = await this.#deviceStore.resolveSession(authorization.slice(7));
+        if (!this.#allowedUserIds.has(String(identity.id))) throw new Error("device user is not allowed");
+        return true;
+      } catch {
+        json(response, 403, { error: "Авторизация устройства недействительна." });
+        return false;
+      }
+    }
     if (!authorization.startsWith("tma ")) {
-      json(response, 401, { error: "Откройте журнал из Telegram." });
+      json(response, 401, { error: "Откройте Agent Hub из Telegram или доверенного приложения." });
       return false;
     }
     try {
@@ -411,6 +424,39 @@ export class MiniAppServer {
       });
       return;
     }
+    if (["/api/device/pair", "/api/device/challenge", "/api/device/session"].includes(url.pathname)) {
+      if (method !== "POST") {
+        response.writeHead(405, {
+          Allow: "POST",
+          ...responseHeaders("text/plain; charset=utf-8"),
+        });
+        response.end("Method Not Allowed\n");
+        return;
+      }
+      if (!this.#deviceStore) {
+        json(response, 503, { error: "Авторизация доверенных устройств недоступна." }, method);
+        return;
+      }
+      if (
+        String(request.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase()
+        !== "application/json"
+      ) {
+        json(response, 415, { error: "Ожидался application/json." }, method);
+        return;
+      }
+      try {
+        const body = await readJsonBody(request);
+        const result = url.pathname.endsWith("/pair")
+          ? await this.#deviceStore.pair(body)
+          : url.pathname.endsWith("/challenge")
+            ? await this.#deviceStore.createChallenge(body)
+            : await this.#deviceStore.createSession(body);
+        json(response, url.pathname.endsWith("/pair") ? 201 : 200, result, method);
+      } catch (error) {
+        json(response, 400, { error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
     if (url.pathname === "/api/control") {
       if (method !== "POST") {
         response.writeHead(405, {
@@ -420,7 +466,7 @@ export class MiniAppServer {
         response.end("Method Not Allowed\n");
         return;
       }
-      if (!this.#authorize(request, response)) return;
+      if (!await this.#authorize(request, response)) return;
       if (
         String(request.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase()
         !== "application/json"
@@ -460,7 +506,7 @@ export class MiniAppServer {
         response.end("Method Not Allowed\n");
         return;
       }
-      if (!this.#authorize(request, response)) return;
+      if (!await this.#authorize(request, response)) return;
       if (!this.#attachmentDirectory) {
         json(response, 503, { error: "Загрузка изображений недоступна." }, method);
         return;
@@ -491,7 +537,7 @@ export class MiniAppServer {
         response.end("Method Not Allowed\n");
         return;
       }
-      if (!this.#authorize(request, response)) return;
+      if (!await this.#authorize(request, response)) return;
       if (!this.#attachmentDirectory) {
         json(response, 503, { error: "Хранилище вложений недоступно." }, method);
         return;
@@ -530,7 +576,7 @@ export class MiniAppServer {
       return;
     }
     if (url.pathname === "/api/rate-limits") {
-      if (!this.#authorize(request, response)) return;
+      if (!await this.#authorize(request, response)) return;
       try {
         const markdown = await readFile(this.#workLogFile, "utf8");
         json(response, 200, extractRateLimitsHtml(markdown), method);
@@ -540,7 +586,7 @@ export class MiniAppServer {
       return;
     }
     if (url.pathname === "/api/journal") {
-      if (!this.#authorize(request, response)) return;
+      if (!await this.#authorize(request, response)) return;
       try {
         const journal = await this.#journal();
         const etag = `"${journal.version}"`;
@@ -559,7 +605,7 @@ export class MiniAppServer {
       return;
     }
     if (url.pathname === "/api/journal/day" || url.pathname === "/api/journal/turn") {
-      if (!this.#authorize(request, response)) return;
+      if (!await this.#authorize(request, response)) return;
       try {
         const journal = await this.#journal();
         const requestedVersion = String(url.searchParams.get("version") ?? "");
@@ -585,7 +631,7 @@ export class MiniAppServer {
       return;
     }
     if (url.pathname === "/events") {
-      if (!this.#authorize(request, response)) return;
+      if (!await this.#authorize(request, response)) return;
       if (method === "HEAD") {
         send(response, 200, "text/event-stream; charset=utf-8", "", method);
         return;
