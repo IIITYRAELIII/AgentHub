@@ -92,10 +92,6 @@ function deliveryPatch(stateName) {
 
 function attachmentView(attachment) {
   const value = { ...attachment };
-  if (!value.dataUrl && !value.url && value.id) {
-    if (telegramInitData && !vscode) value.missing = true;
-    else value.url = `/api/message-attachment/${encodeURIComponent(String(value.id))}`;
-  }
   return value;
 }
 
@@ -948,9 +944,37 @@ agentHub.on("attachment:open", ({ attachment }) => runAction(async () => {
     await bridgeCall("open-attachment", { id });
     return;
   }
-  const url = String(attachment?.url ?? attachment?.dataUrl ?? "").trim();
-  if (!url) throw new Error("Файл вложения недоступен");
-  window.open(url, "_blank", "noopener,noreferrer");
+  const directDataUrl = String(attachment?.dataUrl ?? "").trim();
+  if (directDataUrl) {
+    agentHub.openAttachmentViewer({ dataUrl: directDataUrl, name: attachment?.name });
+    return;
+  }
+  agentHub.openAttachmentViewer({ name: attachment?.name });
+  try {
+    const access = id
+      ? await control("open-attachment", { id })
+      : { url: String(attachment?.url ?? "").trim() };
+    const url = String(access?.url ?? attachment?.url ?? "").trim()
+      || `/api/attachment/view?id=${encodeURIComponent(String(access?.id ?? ""))}`;
+    if (!url || /id=$/u.test(url)) throw new Error("Файл вложения недоступен");
+    await localSessionReady;
+    const response = await hubFetch(url, {
+      headers: authorizationHeaders(),
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`Файл вложения недоступен: HTTP ${response.status}`);
+    const blob = await response.blob();
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error("Не удалось прочитать файл вложения"));
+      reader.readAsDataURL(blob);
+    });
+    agentHub.showAttachmentViewer({ dataUrl, name: access?.name ?? attachment?.name });
+  } catch (error) {
+    agentHub.closeAttachmentViewer();
+    throw error;
+  }
 }));
 agentHub.on("hub:restart", () => runAction(() => control("restart-server")));
 let searchSequence = 0;

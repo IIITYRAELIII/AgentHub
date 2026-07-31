@@ -308,7 +308,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
       "sliders-horizontal",
       "dots-three",
       "paperclip",
-      "chat-text",
+      "quotes",
       "paper-plane-right",
       "list-checks",
       "x",

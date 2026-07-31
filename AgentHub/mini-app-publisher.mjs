@@ -45,6 +45,7 @@ const CONTROL_ACTIONS = new Set([
   "speak-last-answer",
   "restart-server",
   "compact-context",
+  "open-attachment",
   "trusted-devices",
   "create-device-pairing",
   "revoke-device",
@@ -259,6 +260,52 @@ export class MiniAppPublisher {
       userId: String(userId),
       deviceId: String(deviceId),
     }, secret);
+  }
+
+  async publishAttachmentView(userId, file) {
+    if (!this.#attachmentDirectory) throw new Error("Remote attachment storage is not configured");
+    const target = path.resolve(String(file ?? ""));
+    const relative = path.relative(this.#attachmentDirectory, target);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("Attachment is outside the configured storage");
+    }
+    const contentType = [...IMAGE_CONTENT_TYPES.entries()]
+      .find(([, extension]) => extension === path.extname(target).toLowerCase())?.[0]
+      ?? (path.extname(target).toLowerCase() === ".jpeg" ? "image/jpeg" : "");
+    if (!contentType) throw new Error("Unsupported attachment format");
+    const body = await readFile(target);
+    if (body.length < 1 || body.length > MAX_ATTACHMENT_BYTES || !imageMatchesContentType(body, contentType)) {
+      throw new Error("Attachment is missing, damaged or too large");
+    }
+    const pathname = "/api/control/attachment/view/push";
+    const id = randomUUID().toLowerCase();
+    const secret = await this.#secret();
+    const bodyHash = createHash("sha256").update(body).digest("hex");
+    const { timestamp, signature } = signMiniAppControlRequest({ body, secret, pathname });
+    const response = await this.#fetch(`${this.#publicUrl}${pathname}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": contentType,
+        "Content-Length": String(body.length),
+        "X-Agent-Hub-Timestamp": String(timestamp),
+        "X-Agent-Hub-Signature": signature,
+        "X-Agent-Hub-User-Id": String(userId),
+        "X-Agent-Hub-Attachment-Id": id,
+        "X-Agent-Hub-Attachment-Hash": bodyHash,
+      },
+      body,
+      signal: AbortSignal.timeout(ATTACHMENT_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      throw new Error(`Mini App Worker attachment view failed with HTTP ${response.status}`);
+    }
+    const result = await response.json();
+    return {
+      id,
+      name: path.basename(target),
+      type: contentType,
+      expiresAt: result.expiresAt,
+    };
   }
 
   async #flushControlResults(secret) {

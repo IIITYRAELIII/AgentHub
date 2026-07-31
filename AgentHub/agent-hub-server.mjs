@@ -3309,6 +3309,17 @@ function trustedDeviceUserId(context) {
   return resolveTrustedDeviceUserId(config.allowedUserIds, context);
 }
 
+async function desktopAttachmentPathById(value) {
+  const id = String(value ?? "").trim().toLowerCase();
+  if (!/^[a-z0-9-]{1,160}\.(?:png|jpe?g|webp|gif|bmp)$/u.test(id)) {
+    throw new Error("Некорректный идентификатор вложения");
+  }
+  const allowedRoot = path.join(runtimeCommandRoot, "DesktopApp", "attachments");
+  const target = path.join(allowedRoot, id);
+  const [resolved] = await desktopAttachmentPaths([target]);
+  return resolved;
+}
+
 function requireMiniAppPublisher() {
   if (!miniAppPublisher || !config.miniApp.worker.enabled) {
     throw new Error("Доверенные устройства доступны только при включённом Mini App Worker");
@@ -3328,6 +3339,21 @@ async function desktopRevokeDevice(params, context) {
   const deviceId = String(params?.deviceId ?? "").trim().toLowerCase();
   if (!/^[0-9a-f-]{36}$/u.test(deviceId)) throw new Error("Некорректный идентификатор устройства");
   return requireMiniAppPublisher().revokeDevice(trustedDeviceUserId(context), deviceId);
+}
+
+async function desktopOpenAttachment(params, context) {
+  const id = String(params?.id ?? "").trim().toLowerCase();
+  const target = await desktopAttachmentPathById(id);
+  if (context?.source === "telegram-mini-app") {
+    const userId = trustedDeviceUserId(context);
+    return requireMiniAppPublisher().publishAttachmentView(userId, target);
+  }
+  return {
+    id,
+    name: path.basename(target),
+    type: DESKTOP_ATTACHMENT_TYPES.get(path.extname(target).toLowerCase()) ?? "application/octet-stream",
+    url: `/api/message-attachment/${encodeURIComponent(id)}`,
+  };
 }
 
 const { handleDesktopControl: dispatchDesktopControl } = createDesktopControlRouter({
@@ -3353,6 +3379,7 @@ const { handleDesktopControl: dispatchDesktopControl } = createDesktopControlRou
     "speak-last-answer": desktopSpeakLastAnswer,
     "restart-server": desktopRestartServer,
     "compact-context": desktopCompactContext,
+    "open-attachment": desktopOpenAttachment,
     "trusted-devices": desktopTrustedDevices,
     "create-device-pairing": desktopCreateDevicePairing,
     "revoke-device": desktopRevokeDevice,

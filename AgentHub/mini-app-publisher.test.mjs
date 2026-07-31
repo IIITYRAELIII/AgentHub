@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -135,6 +135,54 @@ test("Mini App publisher manages trusted devices through signed service requests
         }).signature,
       );
     }
+  } finally {
+    await publisher.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Mini App publisher exposes a local image through a signed temporary view", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-view-publisher-"));
+  const attachmentDirectory = path.join(root, "attachments");
+  const secretFile = path.join(root, "sync.secret");
+  const imageFile = path.join(attachmentDirectory, "message.png");
+  const secret = "w".repeat(64);
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  await mkdir(attachmentDirectory, { recursive: true });
+  await writeFile(secretFile, secret);
+  await writeFile(imageFile, png);
+  let request;
+  const publisher = new MiniAppPublisher({
+    workLogFile: path.join(root, "WORK_LOG.md"),
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    attachmentDirectory,
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return Response.json({ ok: true, expiresAt: 123 }, { status: 201 });
+    },
+  });
+  try {
+    const result = await publisher.publishAttachmentView("42", imageFile);
+    assert.equal(result.name, "message.png");
+    assert.equal(result.type, "image/png");
+    assert.equal(result.expiresAt, 123);
+    assert.equal(new URL(request.url).pathname, "/api/control/attachment/view/push");
+    assert.deepEqual(Buffer.from(request.options.body), png);
+    assert.equal(request.options.headers["X-Agent-Hub-User-Id"], "42");
+    assert.equal(request.options.headers["X-Agent-Hub-Attachment-Hash"], createHash("sha256").update(png).digest("hex"));
+    assert.equal(
+      request.options.headers["X-Agent-Hub-Signature"],
+      signMiniAppControlRequest({
+        body: png,
+        secret,
+        pathname: "/api/control/attachment/view/push",
+        timestamp: Number(request.options.headers["X-Agent-Hub-Timestamp"]),
+      }).signature,
+    );
   } finally {
     await publisher.close();
     await rm(root, { recursive: true, force: true });

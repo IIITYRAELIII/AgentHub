@@ -518,6 +518,32 @@ test("message attachments keep timestamps, thumbnails and an explicit open actio
   assert.match(extension, /action === "open-attachment"/u);
   assert.match(app, /Файл изображения недоступен/u);
   assert.match(app, /disabled:\s*missing/u);
+  assert.match(app, /\(!source && !item\.id\)/u);
+  assert.match(client, /control\("open-attachment", \{ id \}\)/u);
+  assert.match(client, /agentHub\.openAttachmentViewer/u);
+  assert.doesNotMatch(client, /window\.open\(url, "_blank"/u);
+});
+
+test("mobile navigation backs out from image to chat and from chat to tasks", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const android = fs.readFileSync(
+    require.resolve("../AndroidApp/app/src/main/java/app/agenthub/mobile/MainActivity.java"),
+    "utf8",
+  );
+  assert.match(html, /data-attachment-viewer[\s\S]*data-attachment-viewer-close/u);
+  assert.match(app, /function navigateBack\(\)[\s\S]*closeAttachmentViewer\(\)[\s\S]*setPane\("tasks"\)/u);
+  assert.match(app, /dx < 72[\s\S]*attachmentViewerOpen[\s\S]*setPane\("tasks"\)/u);
+  assert.match(android, /window\.AgentHub\.navigateBack/u);
+});
+
+test("annotation button clearly quotes selected agent text", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(html, /data-action="annotate"[\s\S]*Цитировать выделенный текст ответа/u);
+  assert.match(html, /data-phosphor-icon="quotes"/u);
+  assert.match(app, /showToast\("Выделите фрагмент ответа агента\."\)/u);
+  assert.match(html, /data-action="annotate"[\s\S]*aria-disabled="true"/u);
 });
 
 test("composer send and desktop settings stay pinned to the right edge", () => {

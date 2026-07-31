@@ -81,6 +81,10 @@ const dialogTitle = document.querySelector("[data-text-dialog-title]");
 const dialogInput = document.querySelector("[data-text-dialog-input]");
 const toast = document.querySelector("[data-toast]");
 const connectionBanner = document.querySelector("[data-restart-banner]");
+const attachmentViewer = document.querySelector("[data-attachment-viewer]");
+const attachmentViewerImage = document.querySelector("[data-attachment-viewer-image]");
+const attachmentViewerLoading = document.querySelector("[data-attachment-viewer-loading]");
+const attachmentViewerClose = document.querySelector("[data-attachment-viewer-close]");
 
 const limitsRanges = document.querySelector("[data-limits-ranges]");
 const limitsSubtitle = document.querySelector("[data-limits-subtitle]");
@@ -899,6 +903,84 @@ function pinChatToBottom() {
   window.requestAnimationFrame(apply);
 }
 
+let attachmentViewerOpen = false;
+
+function openAttachmentViewer({ dataUrl = "", name = "Изображение" } = {}) {
+  attachmentViewerOpen = true;
+  attachmentViewer.hidden = false;
+  attachmentViewerImage.hidden = !dataUrl;
+  attachmentViewerLoading.hidden = Boolean(dataUrl);
+  attachmentViewerImage.alt = name;
+  attachmentViewerImage.src = dataUrl;
+  root.dataset.overlay = "attachment";
+}
+
+function showAttachmentViewer({ dataUrl, name = "Изображение" } = {}) {
+  if (!attachmentViewerOpen) openAttachmentViewer();
+  attachmentViewerImage.alt = name;
+  attachmentViewerImage.src = String(dataUrl ?? "");
+  attachmentViewerImage.hidden = !dataUrl;
+  attachmentViewerLoading.hidden = Boolean(dataUrl);
+}
+
+function closeAttachmentViewer() {
+  if (!attachmentViewerOpen) return false;
+  attachmentViewerOpen = false;
+  attachmentViewer.hidden = true;
+  attachmentViewerImage.removeAttribute("src");
+  attachmentViewerImage.hidden = true;
+  attachmentViewerLoading.hidden = false;
+  delete root.dataset.overlay;
+  return true;
+}
+
+function navigateBack() {
+  if (closeAttachmentViewer()) return true;
+  if (settingsPanel?.classList.contains("open")) {
+    closePanel();
+    return true;
+  }
+  if (root.dataset.view === "chat" && root.dataset.pane === "chat") {
+    setPane("tasks");
+    return true;
+  }
+  return false;
+}
+
+attachmentViewerClose.addEventListener("click", closeAttachmentViewer);
+attachmentViewer.addEventListener("click", (event) => {
+  if (event.target === attachmentViewer) closeAttachmentViewer();
+});
+
+let swipeStart = null;
+
+function swipeIgnoredTarget(target) {
+  return Boolean(target?.closest?.("input, textarea, select, button, a, [contenteditable='true']"));
+}
+
+document.addEventListener("touchstart", (event) => {
+  if (event.touches.length !== 1 || swipeIgnoredTarget(event.target)) return;
+  const touch = event.touches[0];
+  swipeStart = { x: touch.clientX, y: touch.clientY, target: event.target };
+}, { passive: true });
+
+document.addEventListener("touchend", (event) => {
+  if (!swipeStart || event.changedTouches.length !== 1) {
+    swipeStart = null;
+    return;
+  }
+  const touch = event.changedTouches[0];
+  const dx = touch.clientX - swipeStart.x;
+  const dy = touch.clientY - swipeStart.y;
+  swipeStart = null;
+  if (dx < 72 || Math.abs(dx) < Math.abs(dy) * 1.4) return;
+  if (attachmentViewerOpen) {
+    closeAttachmentViewer();
+    return;
+  }
+  if (root.dataset.view === "chat" && root.dataset.pane === "chat") setPane("tasks");
+}, { passive: true });
+
 function captureChatAnchor() {
   const scrollTop = chatScroll.getBoundingClientRect().top;
   const message = [...chatLog.querySelectorAll("[data-message-id]")].find(
@@ -1575,7 +1657,7 @@ function renderAttachmentStrip(items, { readOnly }) {
   const strip = el("div", { class: "attachment-strip" });
   items.forEach((item, index) => {
     const source = item.dataUrl || item.url || "";
-    const missing = readOnly && (item.missing || !source);
+    const missing = readOnly && (item.missing || (!source && !item.id));
     const thumb = el(readOnly ? "button" : "div", {
       class: `attachment${readOnly && !missing ? " attachment-open" : ""}${missing ? " attachment-missing" : ""}`,
       title: readOnly
@@ -1590,7 +1672,9 @@ function renderAttachmentStrip(items, { readOnly }) {
       } : {}),
     }, missing
       ? [el("span", { class: "attachment-missing-label", text: "Файл недоступен" })]
-      : [el("img", { src: source, alt: item.name || "вложение", loading: "lazy" })]);
+      : source
+        ? [el("img", { src: source, alt: item.name || "вложение", loading: "lazy" })]
+        : [el("span", { class: "attachment-load-label", text: "Открыть" })]);
     if (readOnly && !missing) {
       thumb.addEventListener("click", () => emit("attachment:open", { attachment: item }));
     }
@@ -1705,7 +1789,7 @@ function selectedAgentText() {
 }
 
 document.addEventListener("selectionchange", () => {
-  annotateButton.disabled = selectedAgentText().length === 0;
+  annotateButton.setAttribute("aria-disabled", String(selectedAgentText().length === 0));
 });
 
 annotateButton.addEventListener("click", () => {
@@ -1717,7 +1801,7 @@ annotateButton.addEventListener("click", () => {
   const trimmed = quote.length > 400 ? `${quote.slice(0, 400)}…` : quote;
   setAnnotations([...annotations, { quote: trimmed }]);
   window.getSelection()?.removeAllRanges();
-  annotateButton.disabled = true;
+  annotateButton.setAttribute("aria-disabled", "true");
   composerInput.focus();
   saveDraft();
 });
@@ -2243,6 +2327,10 @@ const AgentHub = {
   setTrustedDevices(payload) {
     renderTrustedDevices(payload);
   },
+  openAttachmentViewer,
+  showAttachmentViewer,
+  closeAttachmentViewer,
+  navigateBack,
   toast: showToast,
 };
 

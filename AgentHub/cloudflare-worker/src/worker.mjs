@@ -59,6 +59,7 @@ const CONTROL_ACTIONS = new Set([
   "speak-last-answer",
   "restart-server",
   "compact-context",
+  "open-attachment",
   "trusted-devices",
   "create-device-pairing",
   "revoke-device",
@@ -362,6 +363,30 @@ function json(payload, status = 200) {
       "X-Content-Type-Options": "nosniff",
     },
   });
+}
+
+export async function validateControlBinaryServiceRequest(request, secret, {
+  now = Date.now(),
+  maxBytes = MAX_ATTACHMENT_BYTES,
+} = {}) {
+  const timestamp = Number(request.headers.get("X-Agent-Hub-Timestamp"));
+  const receivedSignature = String(request.headers.get("X-Agent-Hub-Signature") ?? "").toLowerCase();
+  if (!Number.isSafeInteger(timestamp) || Math.abs(Math.trunc(now / 1_000) - timestamp) > MAX_SYNC_AGE_SECONDS) {
+    throw new Error("expired control request");
+  }
+  if (!/^[a-f0-9]{64}$/u.test(receivedSignature)) throw new Error("invalid control signature");
+  const body = await readBoundedBinary(request, maxBytes, "control attachment");
+  const url = new URL(request.url);
+  const signatureValue = [
+    timestamp,
+    request.method.toUpperCase(),
+    url.pathname,
+    await sha256(body),
+  ].join("\n");
+  if (!await verifyHmac(secret, signatureValue, receivedSignature)) {
+    throw new Error("invalid control signature");
+  }
+  return body;
 }
 
 function base64Url(bytes) {
@@ -847,6 +872,110 @@ export class JournalStore extends DurableObject {
           id,
           expiresAt: manifest.expiresAt,
         }, 201);
+      });
+    }
+    if (request.method === "POST" && url.pathname === "/attachment/view-upload") {
+      const userId = String(request.headers.get("X-Agent-Hub-User-Id") ?? "");
+      const id = String(request.headers.get("X-Agent-Hub-Attachment-Id") ?? "").toLowerCase();
+      const contentType = String(request.headers.get("Content-Type") ?? "").toLowerCase();
+      const bodyHash = String(request.headers.get("X-Agent-Hub-Attachment-Hash") ?? "").toLowerCase();
+      const body = await request.arrayBuffer();
+      if (
+        !userId
+        || !CONTROL_ID_PATTERN.test(id)
+        || !IMAGE_CONTENT_TYPES.has(contentType)
+        || !/^[a-f0-9]{64}$/u.test(bodyHash)
+        || body.byteLength < 1
+        || body.byteLength > MAX_ATTACHMENT_BYTES
+        || !imageMatchesContentType(body, contentType)
+        || await sha256(body) !== bodyHash
+      ) {
+        return json({ error: "invalid attachment view" }, 400);
+      }
+      const now = Date.now();
+      return this.ctx.storage.transaction(async (storage) => {
+        const manifests = await this.#cleanupAttachments(now, storage);
+        const key = `control:attachment:${id}`;
+        const existing = await storage.get(key);
+        if (existing) {
+          if (
+            existing.userId !== userId
+            || existing.bodyHash !== bodyHash
+            || existing.contentType !== contentType
+            || existing.viewOnly !== true
+          ) {
+            return json({ error: "attachment view id conflict" }, 409);
+          }
+          return json({ ok: true, id, expiresAt: existing.expiresAt });
+        }
+        const userAttachments = manifests.filter((manifest) => manifest.userId === userId);
+        const userBytes = userAttachments.reduce((total, manifest) => total + Number(manifest.size ?? 0), 0);
+        if (
+          userAttachments.length >= MAX_ATTACHMENTS_PER_USER
+          || userBytes + body.byteLength > MAX_ATTACHMENT_BYTES_PER_USER
+        ) {
+          return json({ error: "attachment view quota exceeded" }, 429);
+        }
+        const chunks = [];
+        for (let offset = 0; offset < body.byteLength; offset += ATTACHMENT_CHUNK_BYTES) {
+          chunks.push(body.slice(offset, Math.min(offset + ATTACHMENT_CHUNK_BYTES, body.byteLength)));
+        }
+        const manifest = {
+          id,
+          userId,
+          contentType,
+          extension: IMAGE_CONTENT_TYPES.get(contentType),
+          bodyHash,
+          size: body.byteLength,
+          chunkCount: chunks.length,
+          commandIds: [],
+          viewOnly: true,
+          createdAt: now,
+          expiresAt: now + ATTACHMENT_EXPIRY_MS,
+        };
+        await storage.put({
+          [key]: manifest,
+          ...Object.fromEntries(chunks.map((chunk, index) => [
+            `control:attachment-chunk:${id}:${index}`,
+            chunk,
+          ])),
+        });
+        return json({ ok: true, id, expiresAt: manifest.expiresAt }, 201);
+      });
+    }
+    if (request.method === "POST" && url.pathname === "/attachment/view") {
+      const payload = await request.json();
+      const id = String(payload?.id ?? "").toLowerCase();
+      const userId = String(payload?.userId ?? "");
+      if (!CONTROL_ID_PATTERN.test(id) || !userId) {
+        return json({ error: "invalid attachment view request" }, 400);
+      }
+      await this.#cleanupAttachments();
+      const manifest = await this.ctx.storage.get(`control:attachment:${id}`);
+      if (!manifest || manifest.userId !== userId || manifest.viewOnly !== true) {
+        return json({ error: "attachment view not found" }, 404);
+      }
+      const chunkKeys = Array.from(
+        { length: manifest.chunkCount },
+        (_, index) => `control:attachment-chunk:${id}:${index}`,
+      );
+      const chunks = await this.ctx.storage.get(chunkKeys);
+      if (chunks.size !== manifest.chunkCount) return json({ error: "attachment view is incomplete" }, 503);
+      const body = new Uint8Array(manifest.size);
+      let offset = 0;
+      for (const key of chunkKeys) {
+        const chunk = new Uint8Array(chunks.get(key));
+        body.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      if (await sha256(body) !== manifest.bodyHash) return json({ error: "attachment view is damaged" }, 503);
+      return new Response(body, {
+        headers: {
+          "Cache-Control": "private, no-store",
+          "Content-Type": manifest.contentType,
+          "Content-Length": String(body.byteLength),
+          "X-Content-Type-Options": "nosniff",
+        },
       });
     }
     if (request.method === "POST" && url.pathname === "/attachment/pull") {
@@ -1420,6 +1549,58 @@ export default {
         const status = /too large/iu.test(error.message) ? 413 : 400;
         return json({ error: error.message }, status);
       }
+    }
+    if (url.pathname === "/api/control/attachment/view/push") {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      try {
+        const body = await validateControlBinaryServiceRequest(request, env.SYNC_SECRET);
+        const userId = String(request.headers.get("X-Agent-Hub-User-Id") ?? "");
+        const id = String(request.headers.get("X-Agent-Hub-Attachment-Id") ?? "").toLowerCase();
+        const contentType = String(request.headers.get("Content-Type") ?? "").toLowerCase();
+        const bodyHash = String(request.headers.get("X-Agent-Hub-Attachment-Hash") ?? "").toLowerCase();
+        if (
+          !userId
+          || !CONTROL_ID_PATTERN.test(id)
+          || !IMAGE_CONTENT_TYPES.has(contentType)
+          || !/^[a-f0-9]{64}$/u.test(bodyHash)
+          || await sha256(body) !== bodyHash
+          || !imageMatchesContentType(body, contentType)
+        ) {
+          throw new Error("invalid attachment view metadata");
+        }
+        return store.fetch(new Request("https://journal.internal/attachment/view-upload", {
+          method: "POST",
+          headers: {
+            "Content-Type": contentType,
+            "X-Agent-Hub-User-Id": userId,
+            "X-Agent-Hub-Attachment-Id": id,
+            "X-Agent-Hub-Attachment-Hash": bodyHash,
+          },
+          body,
+        }));
+      } catch (error) {
+        const status = /too large/iu.test(error.message) ? 413 : 401;
+        return json({ error: error.message }, status);
+      }
+    }
+    if (url.pathname === "/api/attachment/view") {
+      if (!['GET', 'HEAD'].includes(request.method)) return json({ error: "Method Not Allowed" }, 405);
+      let user;
+      try {
+        user = await clientUser(request, env, store);
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+      const id = String(url.searchParams.get("id") ?? "").toLowerCase();
+      if (!CONTROL_ID_PATTERN.test(id)) return json({ error: "invalid attachment view id" }, 400);
+      const response = await store.fetch(new Request("https://journal.internal/attachment/view", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, userId: String(user.id) }),
+      }));
+      return request.method === "HEAD"
+        ? new Response(null, { status: response.status, headers: response.headers })
+        : response;
     }
     if (url.pathname === "/api/control/attachment/pull") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);

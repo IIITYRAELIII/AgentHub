@@ -81,6 +81,20 @@ public final class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (webView != null) {
+            webView.evaluateJavascript(
+                "Boolean(window.AgentHub && window.AgentHub.navigateBack && window.AgentHub.navigateBack())",
+                handled -> {
+                    if ("true".equalsIgnoreCase(String.valueOf(handled))) return;
+                    runOnUiThread(this::finishBackNavigation);
+                }
+            );
+            return;
+        }
+        finishBackNavigation();
+    }
+
+    private void finishBackNavigation() {
         if (webView != null && webView.canGoBack()) {
             webView.goBack();
             return;

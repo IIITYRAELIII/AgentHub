@@ -96,6 +96,24 @@ function signedServiceRequest(url, payload, secret) {
   });
 }
 
+function signedBinaryServiceRequest(url, body, secret, headers = {}) {
+  const timestamp = Math.trunc(Date.now() / 1_000);
+  const pathname = new URL(url).pathname;
+  const bodyHash = createHash("sha256").update(body).digest("hex");
+  const signature = createHmac("sha256", secret)
+    .update([timestamp, "POST", pathname, bodyHash].join("\n"))
+    .digest("hex");
+  return new Request(url, {
+    method: "POST",
+    headers: {
+      ...headers,
+      "X-Agent-Hub-Timestamp": String(timestamp),
+      "X-Agent-Hub-Signature": signature,
+    },
+    body,
+  });
+}
+
 function base64Url(value) {
   return Buffer.from(value).toString("base64url");
 }
@@ -631,4 +649,57 @@ test("Worker relay stores user-bound image uploads and serves them only to their
   );
   assert.equal(response.status, 200);
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+});
+
+test("Worker serves temporary historical attachment views only to their owner", async () => {
+  const workerModule = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new workerModule.JournalStore({ storage }, {});
+  const botToken = "123456:test-token";
+  const syncSecret = "h".repeat(64);
+  const env = {
+    TELEGRAM_BOT_TOKEN: botToken,
+    ALLOWED_USER_IDS: "42,84",
+    SYNC_SECRET: syncSecret,
+    JOURNAL: { getByName: () => store },
+    ASSETS: { fetch: async () => new Response("asset") },
+  };
+  const id = "018f6c86-3f34-7a31-8f27-16f5b96cce41";
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const bodyHash = createHash("sha256").update(png).digest("hex");
+  let response = await workerModule.default.fetch(signedBinaryServiceRequest(
+    "https://hub.test/api/control/attachment/view/push",
+    png,
+    syncSecret,
+    {
+      "Content-Type": "image/png",
+      "X-Agent-Hub-User-Id": "42",
+      "X-Agent-Hub-Attachment-Id": id,
+      "X-Agent-Hub-Attachment-Hash": bodyHash,
+    },
+  ), env);
+  assert.equal(response.status, 201);
+
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}` } },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Content-Type"), "image/png");
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+
+  response = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/attachment/view?id=${id}`,
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 84)}` } },
+  ), env);
+  assert.equal(response.status, 404);
+
+  response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/control/attachment/view/push",
+    { method: "POST", headers: { "Content-Type": "image/png" }, body: png },
+  ), env);
+  assert.equal(response.status, 401);
 });

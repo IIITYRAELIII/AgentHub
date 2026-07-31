@@ -289,17 +289,15 @@
               </svg>
             </button>
             <button type="button" class="icon-button composer-annotate" data-action="annotate"
-              title="Комментировать выделенный фрагмент ответа" disabled>
-              <svg data-phosphor-icon="chat-text" viewBox="0 0 256 256" aria-hidden="true">
-                <path d="M45.15,230.11A8,8,0,0,1,32,224V64a8,8,0,0,1,8-8H216a8,8,0,0,1,8,8V192a8,8,0,0,1-8,8H80Z"
+              title="Цитировать выделенный текст ответа" aria-label="Цитировать выделенный текст ответа"
+              aria-disabled="true">
+              <svg data-phosphor-icon="quotes" viewBox="0 0 256 256" aria-hidden="true">
+                <path d="M104 64H64a16 16 0 0 0-16 16v48a16 16 0 0 0 16 16h40v8a40 40 0 0 1-40 40"
                   fill="none" stroke="currentColor" stroke-linecap="round"
                   stroke-linejoin="round" stroke-width="16"></path>
-                <line x1="96" y1="112" x2="160" y2="112" fill="none"
-                  stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
-                  stroke-width="16"></line>
-                <line x1="96" y1="144" x2="160" y2="144" fill="none"
-                  stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
-                  stroke-width="16"></line>
+                <path d="M208 64h-40a16 16 0 0 0-16 16v48a16 16 0 0 0 16 16h40v8a40 40 0 0 1-40 40"
+                  fill="none" stroke="currentColor" stroke-linecap="round"
+                  stroke-linejoin="round" stroke-width="16"></path>
               </svg>
             </button>
             <label class="composer-input" data-composer-grow>
@@ -666,6 +664,21 @@
         <button type="submit" class="chip-button primary" data-text-dialog-ok>Готово</button>
       </div>
     </form>
+  </div>
+
+  <div class="attachment-viewer" data-attachment-viewer hidden role="dialog" aria-modal="true"
+    aria-label="Просмотр изображения">
+    <button type="button" class="attachment-viewer-close" data-attachment-viewer-close
+      aria-label="Вернуться в чат" title="Вернуться в чат">
+      <svg data-phosphor-icon="caret-left" viewBox="0 0 256 256" aria-hidden="true">
+        <polyline points="160 208 80 128 160 48" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+      </svg>
+    </button>
+    <div class="attachment-viewer-stage">
+      <div class="attachment-viewer-loading" data-attachment-viewer-loading>Загрузка…</div>
+      <img data-attachment-viewer-image alt="" hidden>
+    </div>
   </div>
 
   <div class="connection-banner" data-restart-banner hidden role="status" aria-live="polite"></div>
