@@ -21,6 +21,7 @@ for (const file of [
   "orbit-earth.png",
   "magma-crust.png",
   "meadow-sun.png",
+  "lake-summer.jpg",
   "metropolis-night.png",
   "storm-sea.png",
   "storm-flash.png",

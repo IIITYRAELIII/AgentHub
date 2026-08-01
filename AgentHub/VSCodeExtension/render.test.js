@@ -156,6 +156,7 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
     ["blackhole", "blackhole-flicker"],
     ["magma", "magma-glow"],
     ["meadow", "meadow-breathe"],
+    ["lake", "lake-shimmer"],
   ]) {
     assert.match(
       styles,
@@ -204,8 +205,8 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   );
   /* Пошаговые анимации давали видимую дёрганость, поэтому в живых слоях их
      быть не должно: единственный резкий ритм — «Пульсар», и он linear. */
-  const motionBlocks = styles.match(/animation:\s*(?:gothic-fire|magma-glow|orbit-terminator|nebula-drift|meadow-breathe|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
-  assert.equal(motionBlocks.length, 7, "живой слой остаётся у семи тем; «Rain», «Storm» и «Gothic» рисуют частицы");
+  const motionBlocks = styles.match(/animation:\s*(?:gothic-fire|magma-glow|orbit-terminator|nebula-drift|meadow-breathe|lake-shimmer|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
+  assert.equal(motionBlocks.length, 8, "живой слой остаётся у восьми тем; «Rain», «Storm» и «Gothic» рисуют частицы");
   for (const block of motionBlocks) {
     assert.doesNotMatch(block, /steps\(/u, `движение должно быть плавным: ${block}`);
   }

@@ -181,6 +181,7 @@ const themes = {
   stormglass: "#05090f",
   magma: "#0a0605",
   meadow: "#070d08",
+  lake: "#080d0b",
   graphite: "#17181a",
 };
 const themeAliases = {

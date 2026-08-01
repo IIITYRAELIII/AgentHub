@@ -27,7 +27,7 @@ const GOTHIC_IMAGE_PATH = ["Utilities", "AgentHub", "assets", "mini-app", "gothi
 const THEME_KEY = "agentHub.theme";
 const THEMES = new Set([
   "orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "metropolis", "stormglass",
-  "magma", "meadow",
+  "magma", "meadow", "lake",
 ]);
 
 /* Заголовок панели — путь журнала в привычной для Windows форме: `.\WORK_LOG`. */

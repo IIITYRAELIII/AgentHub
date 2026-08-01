@@ -239,6 +239,13 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.equal(meadow.headers.get("content-type"), "image/png");
     assert.match(meadow.headers.get("cache-control"), /immutable/u);
     assert.ok((await meadow.arrayBuffer()).byteLength > 100_000);
+    /* Фон «Озера» — единственный JPEG среди фонов: фотографический кадр в PNG
+       весил бы впятеро больше при том же виде. */
+    const lake = await fetch(`${address.url}lake-summer.jpg`);
+    assert.equal(lake.status, 200);
+    assert.equal(lake.headers.get("content-type"), "image/jpeg");
+    assert.match(lake.headers.get("cache-control"), /immutable/u);
+    assert.ok((await lake.arrayBuffer()).byteLength > 100_000);
     const storm = await fetch(`${address.url}storm-sea.png`);
     assert.equal(storm.status, 200);
     assert.equal(storm.headers.get("content-type"), "image/png");
@@ -286,6 +293,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(page, /<option value="magma">Магма<\/option>/u);
     assert.match(page, /<option value="stormglass">Storm<\/option>/u);
     assert.match(page, /<option value="meadow">Луг<\/option>/u);
+    assert.match(page, /<option value="lake">Озеро<\/option>/u);
     assert.match(page, /data-surface="desktop"/u);
     assert.match(page, /data-theme-select/u);
     assert.match(page, /data-collapse-all/u);
@@ -411,6 +419,8 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /html\[data-theme="magma"\]/u);
     assert.match(styles, /url\("\/meadow-sun\.png"\)/u);
     assert.match(styles, /html\[data-theme="meadow"\]/u);
+    assert.match(styles, /url\("\/lake-summer\.jpg"\)/u);
+    assert.match(styles, /html\[data-theme="lake"\]/u);
     assert.match(styles, /url\("\/gothic-concrete\.png"\)/u);
     assert.match(styles, /url\("\/nebula-veil\.png"\)/u);
     assert.match(styles, /url\("\/orbit-earth\.png"\)/u);

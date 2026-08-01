@@ -33,6 +33,9 @@ const CONTENT_TYPES = new Map([
   ["/storm-flash.png", "image/png"],
   ["/rainforest-night.png", "image/png"],
   ["/meadow-sun.png", "image/png"],
+  /* фотографический кадр «Озера» в PNG весил бы впятеро больше при том же
+     виде, поэтому единственный фон темы хранится в JPEG */
+  ["/lake-summer.jpg", "image/jpeg"],
 ]);
 const STATIC_FILES = new Map([
   ["/", "index.html"],
@@ -53,6 +56,7 @@ const STATIC_FILES = new Map([
   ["/storm-flash.png", "storm-flash.png"],
   ["/rainforest-night.png", "rainforest-night.png"],
   ["/meadow-sun.png", "meadow-sun.png"],
+  ["/lake-summer.jpg", "lake-summer.jpg"],
 ]);
 
 function defaultJournalDatabaseFile(workLogFile) {
@@ -74,6 +78,7 @@ const IMMUTABLE_FILES = new Set([
   "/storm-flash.png",
   "/pulsar-beams.png",
   "/rainforest-night.png",
+  "/lake-summer.jpg",
 ]);
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
