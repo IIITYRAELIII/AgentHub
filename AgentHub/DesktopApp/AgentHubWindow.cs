@@ -1064,6 +1064,21 @@ namespace AgentHubDesktop
             {
                 if (match.Index > index) AppendInlineTokens(paragraph, text.Substring(index, match.Index - index));
                 var target = match.Groups[2].Value.Trim();
+                string localFile;
+                int localLine;
+                if (TryResolveWorkspaceFileLink(target, out localFile, out localLine))
+                {
+                    var localLink = new Hyperlink(new Run(match.Groups[1].Value))
+                    {
+                        Foreground = Theme.Solid(Theme.Codex),
+                        TextDecorations = null,
+                        ToolTip = localFile + (localLine > 0 ? ":" + localLine : "")
+                    };
+                    localLink.Click += delegate { OpenWorkspaceFile(localFile, localLine); };
+                    paragraph.Inlines.Add(localLink);
+                    index = match.Index + match.Length;
+                    continue;
+                }
                 Uri safeTarget;
                 if (!Uri.TryCreate(target, UriKind.Absolute, out safeTarget)
                     || (safeTarget.Scheme != Uri.UriSchemeHttp && safeTarget.Scheme != Uri.UriSchemeHttps))
@@ -1088,6 +1103,51 @@ namespace AgentHubDesktop
             }
             if (index < (text ?? "").Length) AppendInlineTokens(paragraph, text.Substring(index));
             if ((text ?? "").Length == 0) paragraph.Inlines.Add(new Run(" "));
+        }
+
+        private bool TryResolveWorkspaceFileLink(string target, out string file, out int line)
+        {
+            file = null;
+            line = 0;
+            var match = Regex.Match(target ?? "", @"^(?<file>[A-Za-z]:[\\/].*?)(?::(?<line>[1-9][0-9]*))?$", RegexOptions.CultureInvariant);
+            TaskItem selected;
+            if (!match.Success || !tasks.TryGetValue(selectedKey ?? "", out selected)
+                || String.IsNullOrWhiteSpace(selected.ProjectRoot)) return false;
+            try
+            {
+                var candidate = Path.GetFullPath(match.Groups["file"].Value);
+                var root = Path.GetFullPath(selected.ProjectRoot)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                    + Path.DirectorySeparatorChar;
+                if (!candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(candidate)) return false;
+                int.TryParse(match.Groups["line"].Value, out line);
+                file = candidate;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void OpenWorkspaceFile(string file, int line)
+        {
+            var target = file + (line > 0 ? ":" + line : "");
+            try
+            {
+                Process.Start(new ProcessStartInfo("code", "--goto \"" + target + "\"") { UseShellExecute = true });
+            }
+            catch
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + file + "\"") { UseShellExecute = true });
+                }
+                catch (Exception error)
+                {
+                    footer.Text = "Не удалось открыть файл: " + error.Message;
+                }
+            }
         }
 
         private void AppendInlineTokens(Paragraph paragraph, string text)
