@@ -885,9 +885,12 @@ agentHub.on("task:archive", () => runAction(async () => applySnapshot(
 agentHub.on("task:stop", () => runAction(async () => agentHub.toast(
   (await control("cancel-run", exactSelectedTaskParams()))?.message ?? "Остановка запрошена",
 )));
-agentHub.on("task:diff", () => runAction(async () => {
-  const diff = await control("task-diff", exactSelectedTaskParams());
-  agentHub.setStatus({ rows: [{ name: "Diff", value: diff?.text || "Изменений нет" }] });
+agentHub.on("task:diff", ({ id }) => runAction(async () => {
+  const targetId = id || selectedTaskId;
+  const identity = taskIdentity(targetId);
+  if (!identity) throw new Error("Сначала выберите задачу");
+  const diff = await control("task-diff", identity);
+  agentHub.setTaskDiff(targetId, diff?.text || "В выбранной задаче изменений файлов нет.");
 }));
 agentHub.on("status:open", () => runAction(async () => {
   const status = await control("status-details");

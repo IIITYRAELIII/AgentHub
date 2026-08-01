@@ -191,6 +191,16 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
       },
     })).status, 200);
 
+    const shellSource = await (await fetch(address.url)).text();
+    assert.doesNotMatch(shellSource, />Текущая задача</u);
+    assert.match(shellSource, /data-status-slot/u);
+    const appSource = await (await fetch(`${address.url}app.js`)).text();
+    assert.match(appSource, /setTaskDiff\(taskId, text\)/u);
+    assert.match(appSource, /class: "task-diff"/u);
+    const clientSource = await (await fetch(`${address.url}hub-client.js`)).text();
+    assert.match(clientSource, /agentHub\.setTaskDiff\(targetId/u);
+    assert.doesNotMatch(clientSource, /setStatus\(\{ rows: \[\{ name: "Diff"/u);
+
     for (const pathname of [
       "",
       "app.js",

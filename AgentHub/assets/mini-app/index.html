@@ -212,7 +212,7 @@
               <span>Diff</span>
             </button>
             <button type="button" class="icon-button" data-action="task-settings" data-panel-open="settings"
-              title="Настройки хода">
+              title="Настройки интерфейса">
               <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256"
                 aria-hidden="true">
                 <circle cx="104" cy="80" r="24" fill="none" stroke="currentColor"
@@ -501,8 +501,7 @@
     </button>
   </nav>
 
-  <!-- Единая панель интерфейса и выбранной задачи. Кнопка в чате остаётся
-       вторым входом в ту же панель, а не отдельным набором настроек. -->
+  <!-- Единая панель общих настроек интерфейса, журнала, устройств и сервера. -->
   <div class="panel-scrim" data-panel-scrim hidden></div>
   <aside class="settings-panel" data-settings-panel hidden aria-label="Настройки" role="dialog"
     aria-modal="true">
@@ -603,41 +602,6 @@
           <button type="button" class="chip-button trusted-device-add" data-device-create>
             Добавить устройство
           </button>
-        </div>
-      </section>
-      <section class="settings-section">
-        <h3 class="settings-section-title">Текущая задача</h3>
-        <div class="settings-card">
-          <div class="setting-stack" data-setting="agent">
-            <span class="setting-name">Агент</span>
-            <div class="setting-options" data-options="agent"></div>
-          </div>
-          <div class="setting-stack" data-setting="model">
-            <span class="setting-name">Модель</span>
-            <div class="setting-options" data-options="model"></div>
-          </div>
-          <div class="setting-stack" data-setting="reasoning">
-            <span class="setting-name">Reasoning</span>
-            <div class="setting-options" data-options="reasoning"></div>
-          </div>
-          <div class="setting-stack" data-setting="mode">
-            <span class="setting-name">Режим</span>
-            <div class="setting-options" data-options="mode"></div>
-          </div>
-          <div class="setting-stack" data-setting="project">
-            <span class="setting-name">Проект</span>
-            <div class="setting-options setting-options-column" data-options="project"></div>
-          </div>
-          <label class="setting-switch">
-            <input type="checkbox" data-toggle="autoApprove">
-            <span class="switch-text">Автоподтверждение</span>
-            <span class="switch-track" aria-hidden="true"></span>
-          </label>
-          <label class="setting-switch">
-            <input type="checkbox" data-toggle="tts">
-            <span class="switch-text">Озвучивать ответы</span>
-            <span class="switch-track" aria-hidden="true"></span>
-          </label>
         </div>
       </section>
       <div class="setting-status" data-status-slot hidden></div>

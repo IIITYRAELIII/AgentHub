@@ -5356,6 +5356,96 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   color: var(--accent);
 }
 
+/* Diff относится к последнему ответу, но получает всю ширину ленты и
+   собственную прокрутку: исходный git-формат нельзя переносить как обычный текст. */
+.message-with-diff {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.message-with-diff > .msg {
+  align-self: flex-start;
+}
+
+.task-diff {
+  backdrop-filter: blur(9px) saturate(115%);
+  -webkit-backdrop-filter: blur(9px) saturate(115%);
+  background: color-mix(in srgb, var(--bg) 90%, transparent);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  width: 100%;
+}
+
+.task-diff > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 0.75rem;
+  list-style: none;
+  min-height: 2.7rem;
+  padding: 0.65rem 0.85rem;
+  user-select: none;
+}
+
+.task-diff > summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-diff > summary::before {
+  color: var(--accent);
+  content: "›";
+  flex: 0 0 auto;
+  font: 700 1.2rem/1 var(--font-numeric);
+  transform: rotate(0deg);
+  transition: transform 0.14s ease;
+}
+
+.task-diff[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.task-diff-title {
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.task-diff-summary {
+  color: var(--text-faint);
+  font-family: var(--font-numeric);
+  font-size: 0.7rem;
+  margin-left: auto;
+}
+
+.task-diff-page {
+  background: color-mix(in srgb, var(--sunken) 94%, transparent);
+  border-top: 1px solid var(--line);
+  max-height: min(62vh, 44rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+}
+
+.task-diff-page:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: -2px;
+}
+
+.task-diff-code {
+  color: var(--text-soft);
+  font: 0.76rem/1.55 var(--font-numeric);
+  margin: 0;
+  min-width: max-content;
+  padding: 0.9rem 1rem 1rem;
+  tab-size: 2;
+  text-align: left;
+  white-space: pre;
+}
+
 /* ---- подтверждения и очередь ---- */
 
 .approvals,

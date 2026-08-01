@@ -550,6 +550,7 @@ const state = {
   tasks: [],
   selectedId: null,
   messages: new Map(),   // taskId -> message[]
+  taskDiffs: new Map(),  // taskId -> { text, open }
   historyPagination: new Map(), // taskId -> { hasOlder, loading }
   live: new Map(),       // taskId -> live | null
   approvals: new Map(),  // taskId -> approval[]
@@ -1064,9 +1065,56 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
     else if (stickToBottom) pinChatToBottom();
     return;
   }
-  for (const message of messages) chatLog.append(renderMessage(message));
+  let lastAgentIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (!["user", "system"].includes(messages[index]?.role)) {
+      lastAgentIndex = index;
+      break;
+    }
+  }
+  const taskDiff = state.taskDiffs.get(state.selectedId);
+  messages.forEach((message, index) => {
+    const rendered = renderMessage(message);
+    if (index !== lastAgentIndex || !taskDiff) {
+      chatLog.append(rendered);
+      return;
+    }
+    chatLog.append(el("div", { class: "message-with-diff" }, [
+      rendered,
+      renderTaskDiff(state.selectedId, taskDiff),
+    ]));
+  });
   if (anchor) restoreChatAnchor(anchor);
   else if (stickToBottom) pinChatToBottom();
+}
+
+function taskDiffSummary(text) {
+  const lines = String(text ?? "").split(/\r?\n/u);
+  const files = lines.filter((line) => line.startsWith("diff --git ")).length;
+  const additions = lines.filter((line) => /^\+(?!\+\+)/u.test(line)).length;
+  const deletions = lines.filter((line) => /^-(?!--)/u.test(line)).length;
+  if (files > 0) return `${files} файл${files === 1 ? "" : files < 5 ? "а" : "ов"} · +${additions} −${deletions}`;
+  return `${lines.filter(Boolean).length} строк`;
+}
+
+function renderTaskDiff(taskId, diff) {
+  const text = String(diff?.text ?? "").trim() || "В выбранной задаче изменений файлов нет.";
+  const details = el("details", { class: "task-diff", "data-task-diff": taskId });
+  details.open = diff?.open !== false;
+  details.append(
+    el("summary", {}, [
+      el("span", { class: "task-diff-title", text: "Изменения задачи" }),
+      el("span", { class: "task-diff-summary", text: taskDiffSummary(text) }),
+    ]),
+    el("div", { class: "task-diff-page", tabIndex: 0 }, [
+      el("pre", { class: "task-diff-code", text }),
+    ]),
+  );
+  details.addEventListener("toggle", () => {
+    const current = state.taskDiffs.get(taskId);
+    if (current) current.open = details.open;
+  });
+  return details;
 }
 
 const HISTORY_PULL_THRESHOLD = 84;
@@ -1894,14 +1942,25 @@ function selectedAgentText() {
   return host ? text : "";
 }
 
+function meaningfulAnnotationSelection(value) {
+  const text = String(value ?? "").replace(/\s+/gu, " ").trim();
+  if (!text) return false;
+  const words = text.match(/[\p{L}\p{N}_]+/gu) ?? [];
+  return words.length > 1 || text.length >= 12 || /[^\p{L}\p{N}_\s-]/u.test(text);
+}
+
 document.addEventListener("selectionchange", () => {
-  annotateButton.setAttribute("aria-disabled", String(selectedAgentText().length === 0));
+  annotateButton.setAttribute("aria-disabled", String(!meaningfulAnnotationSelection(selectedAgentText())));
 });
 
 annotateButton.addEventListener("click", () => {
   const quote = selectedAgentText();
   if (!quote) {
     showToast("Выделите фрагмент ответа агента.");
+    return;
+  }
+  if (!meaningfulAnnotationSelection(quote)) {
+    showToast("Выделите фразу, а не одно короткое слово.");
     return;
   }
   const trimmed = quote.length > 400 ? `${quote.slice(0, 400)}…` : quote;
@@ -2301,6 +2360,15 @@ const AgentHub = {
       renderMessages({ forceBottom: true });
       renderLive();
     }
+  },
+  /** Раскрываемый diff выбранной задачи под её последним ответом. */
+  setTaskDiff(taskId, text) {
+    if (!taskId) return;
+    state.taskDiffs.set(taskId, {
+      text: String(text ?? ""),
+      open: true,
+    });
+    if (taskId === state.selectedId) renderMessages({ forceBottom: true });
   },
   setMessagesPreservingScroll(taskId, messages) {
     state.messages.set(taskId, Array.isArray(messages) ? messages.slice() : []);
