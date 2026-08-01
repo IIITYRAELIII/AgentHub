@@ -117,6 +117,9 @@ export function directGatewayCaddyfile({ domain, localUrl, routes = [] }) {
   ))];
   return `{
   admin off
+  servers {
+    protocols h1 h2
+  }
 }
 
 ${sites.join("\n\n")}

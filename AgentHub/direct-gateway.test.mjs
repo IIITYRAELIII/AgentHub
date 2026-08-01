@@ -63,6 +63,7 @@ test("direct gateway routes additional private-network Hub instances by hostname
     upstreamUrl: "http://192.168.3.23:8787",
   }]);
   const caddyfile = directGatewayCaddyfile(settings);
+  assert.match(caddyfile, /protocols h1 h2/u);
   assert.match(caddyfile, /home\.example\.test[\s\S]*reverse_proxy 127\.0\.0\.1:8787/u);
   assert.match(caddyfile, /katya\.example\.test[\s\S]*reverse_proxy 192\.168\.3\.23:8787/u);
 });
