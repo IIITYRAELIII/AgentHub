@@ -2764,7 +2764,8 @@ const desktopTaskHistory = createDesktopTaskHistoryFactory({
     refresh: refreshTaskCatalog,
   },
   historyReader: {
-    read: (binding) => taskViewController.readHistory(binding),
+    read: (binding) => taskViewController.readHistory(binding, { cachedOnly: true }),
+    refresh: (binding) => taskViewController.readHistory(binding),
   },
   runs: {
     forTask: (binding) => taskRuns.forTask(binding),
@@ -2780,6 +2781,7 @@ const desktopTaskHistory = createDesktopTaskHistoryFactory({
   responseBudget: {
     fit: fitTaskHistoryPayload,
   },
+  warn: (...args) => console.warn(...args),
 });
 
 async function desktopSelectTask(params) {

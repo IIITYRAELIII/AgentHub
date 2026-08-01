@@ -8,6 +8,7 @@ function fixture(overrides = {}) {
     merged: null,
     fit: null,
     attachments: [],
+    refreshes: 0,
   };
   const entries = [{
     provider: "codex",
@@ -58,6 +59,7 @@ function fixture(overrides = {}) {
       startedAt: "2026-07-30T11:00:00.000Z",
       messageAttachments: [{ id: "live.png", name: "live.png", type: "image/png" }],
     },
+    refresh: async () => {},
     ...overrides,
   };
   const desktopTaskHistory = createDesktopTaskHistoryFactory({
@@ -73,6 +75,10 @@ function fixture(overrides = {}) {
       read: async (binding) => {
         calls.binding = binding;
         return { history: structuredClone(state.history) };
+      },
+      refresh: async (binding) => {
+        calls.refreshes += 1;
+        return state.refresh(binding);
       },
     },
     runs: {
@@ -144,6 +150,21 @@ test("desktop task history resolves selection and merges the active run", async 
     type: "image/png",
   }]);
   assert.deepEqual(calls.fit, { maxBytes: 3_500_000 });
+});
+
+test("desktop task history refreshes the durable cache in background", async () => {
+  let releaseRefresh;
+  const backgroundRefresh = new Promise((resolve) => { releaseRefresh = resolve; });
+  const { desktopTaskHistory, calls } = fixture({
+    run: null,
+    refresh: async () => backgroundRefresh,
+  });
+
+  const result = await desktopTaskHistory({ limit: 1 });
+  await Promise.resolve();
+  assert.equal(result.items[0].id, "turn-4");
+  assert.equal(calls.refreshes, 1);
+  releaseRefresh();
 });
 
 test("desktop task history imports private screenshot references for the visible page", async () => {

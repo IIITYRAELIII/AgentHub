@@ -31,6 +31,36 @@ test("legacy task view uses its stored message binding", async () => {
   assert.equal(await view.resolveBinding(null, 9, 12), stored);
 });
 
+test("cached task history does not wait for the provider", async () => {
+  const cached = [{
+    id: "turn-cached",
+    prompt: "Сохранённый запрос",
+    answer: "Сохранённый ответ",
+    completed: true,
+  }];
+  let providerReads = 0;
+  const view = controller({
+    ensureCodex: async () => { providerReads += 1; },
+    readCodexThread: async () => { providerReads += 1; return { thread: { turns: [] } }; },
+    taskSyncStore: {
+      history: () => structuredClone(cached),
+      snapshot: () => ({ active: false }),
+    },
+  });
+
+  const result = await view.readHistory({
+    provider: "codex",
+    threadId: "thread-cached",
+    projectRoot: "C:/repo",
+    title: "Cached task",
+    chatId: 1,
+  }, { cachedOnly: true });
+
+  assert.deepEqual(result.history, cached);
+  assert.deepEqual(result.snapshot, { active: false });
+  assert.equal(providerReads, 0);
+});
+
 test("missing Claude transcript keeps the managed exchange in durable history", async () => {
   const cached = [{
     id: "turn-1",

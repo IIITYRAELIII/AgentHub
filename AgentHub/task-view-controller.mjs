@@ -162,9 +162,16 @@ export class TaskViewController {
         === String(identity?.threadId ?? "").toLowerCase();
   }
 
-  async readHistory(binding, { completedOnly = false } = {}) {
+  async readHistory(binding, { completedOnly = false, cachedOnly = false } = {}) {
     const d = this.deps;
     const task = this.task(binding, binding.chatId);
+    if (cachedOnly) {
+      return {
+        history: d.taskSyncStore.history(task)
+          .filter((item) => !completedOnly || item.completed),
+        snapshot: completedOnly ? null : d.taskSyncStore.snapshot(task),
+      };
+    }
     try {
       if (binding.provider === "codex") {
         await d.ensureCodex();

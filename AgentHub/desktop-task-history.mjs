@@ -7,7 +7,26 @@ export function createDesktopTaskHistoryFactory({
   receipts = {},
   attachmentImporter = async () => [],
   responseBudget,
+  warn = () => {},
 }) {
+  const refreshes = new Map();
+  const refreshedAt = new Map();
+  const refreshIntervalMs = 15_000;
+
+  function scheduleRefresh(binding) {
+    if (typeof historyReader.refresh !== "function") return;
+    const key = `${binding.provider}:${binding.threadId}`;
+    if (refreshes.has(key) || Date.now() - (refreshedAt.get(key) ?? 0) < refreshIntervalMs) return;
+    refreshedAt.set(key, Date.now());
+    const operation = Promise.resolve()
+      .then(() => historyReader.refresh(binding))
+      .catch((error) => warn(
+        `Cannot refresh ${binding.provider} history ${binding.threadId}: ${error?.message ?? error}`,
+      ))
+      .finally(() => refreshes.delete(key));
+    refreshes.set(key, operation);
+  }
+
   return async function desktopTaskHistory(params) {
     const provider = String(params.provider ?? selection.activeProvider()).trim();
     const selectedThreadId = String(params.threadId ?? selection.threadId() ?? "").trim();
@@ -29,6 +48,7 @@ export function createDesktopTaskHistoryFactory({
       chatId: selection.chatId(),
     };
     const { history } = await historyReader.read(binding);
+    scheduleRefresh(binding);
     const running = runs.forTask(binding);
     if (running) {
       historyMerger.mergeActive(history, {
