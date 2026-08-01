@@ -618,13 +618,18 @@ test("historical rollout backfill also restores ordinary Codex threads", async (
       activeTurns: [],
       nextOffset: 100,
     }),
-    reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
+    reconcile: async (_thread, _project, terminal) => recovered.push(terminal),
   });
   audit.restore({ version: 5, completedThrough: "2026-08-01T13:30:00.000Z" });
 
   await audit.run();
 
-  assert.deepEqual(recovered, ["ordinary-turn"]);
+  assert.deepEqual(recovered, [{
+    turnId: "ordinary-turn",
+    status: "completed",
+    completedAt: "2026-07-01T00:10:00.000Z",
+    historical: true,
+  }]);
   assert.equal(audit.snapshot().historicalSubagentBackfill.totalFiles, 1);
 });
 
@@ -672,6 +677,7 @@ test("historical subagent backfill records a stale unterminated turn as aborted"
     status: "aborted",
     completedAt: "2026-07-01T00:10:00.000Z",
     authoritative: true,
+    historical: true,
   }]);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
   assert.equal(audit.snapshot().historicalSubagentBackfill.processedTurns, 1);

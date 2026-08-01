@@ -6055,13 +6055,13 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         latestDiff: turnDiff,
       }),
     ])];
-    if (accountingThread.isSubagent) {
+    if (accountingThread.isSubagent || terminal?.historical === true) {
       const finalAnswer = String(usageResult.finalAnswer ?? "").trim();
       const journal = await projectTurnUsageToWorkLog({
         ...identity,
         taskThreadId: accountingThread.threadId,
         parentThreadId: accountingThread.parentThreadId,
-        aggregateOnly: true,
+        aggregateOnly: accountingThread.isSubagent,
         projectRoot: project.path,
         taskTitle: await runtimeCommandTaskTitle({
           provider: "codex",
@@ -6091,12 +6091,12 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       });
       if (journal?.projectionError) {
         console.error(
-          `WORK_LOG subagent projection deferred for turn ${identity.turnId}: ${journal.projectionError}`,
+          `WORK_LOG historical projection deferred for turn ${identity.turnId}: ${journal.projectionError}`,
         );
       }
       codexTurnStarts.delete(key);
       console.log(
-        `Accounted Codex subagent turn ${identity.turnId} to thread ${accountingThread.threadId}`,
+        `Accounted historical Codex turn ${identity.turnId} to thread ${accountingThread.threadId}`,
       );
       return true;
     }

@@ -476,7 +476,10 @@ export class CodexTerminalAudit {
     });
     let allHandled = true;
     for (const terminal of result.terminals ?? []) {
-      if (await this.reconcile(item.thread, project, terminal) === false) {
+      if (await this.reconcile(item.thread, project, {
+        ...terminal,
+        historical: true,
+      }) === false) {
         allHandled = false;
       }
     }
@@ -509,6 +512,7 @@ export class CodexTerminalAudit {
               || this.now(),
             ).toISOString(),
             authoritative: true,
+            historical: true,
           });
           if (handled === false) activeHandled = false;
         }
