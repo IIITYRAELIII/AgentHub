@@ -94,6 +94,60 @@ test("deployRuntime keeps a locked old release without failing the published poi
   assert.match(await readFile(path.join(runtimeRoot, "releases", "release-1", "agent-hub-server.mjs"), "utf8"), /ready/);
 });
 
+test("deployRuntime does not publish a pointer before the stable launchers are ready", async () => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
+  const beforePointer = await readFile(path.join(runtimeRoot, "current.json"), "utf8");
+  const beforeHook = await readFile(path.join(runtimeRoot, "codex-stop-hook-launcher.mjs"), "utf8");
+
+  await assert.rejects(
+    deployRuntime({
+      sourceRoot,
+      runtimeRoot,
+      releaseId: "release-2",
+      beforeStableLauncherCommit: async () => { throw new Error("injected stable launcher failure"); },
+    }),
+    /injected stable launcher failure/,
+  );
+
+  assert.equal(await readFile(path.join(runtimeRoot, "current.json"), "utf8"), beforePointer);
+  assert.equal(await readFile(path.join(runtimeRoot, "codex-stop-hook-launcher.mjs"), "utf8"), beforeHook);
+});
+
+test("deployRuntime rolls stable launchers back when publishing current.json fails", async () => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
+  const beforePointer = await readFile(path.join(runtimeRoot, "current.json"), "utf8");
+  const beforeHook = await readFile(path.join(runtimeRoot, "codex-stop-hook-launcher.mjs"), "utf8");
+  await writeFile(path.join(sourceRoot, "codex-stop-hook-launcher.mjs"), "export const changed = true;\n", "utf8");
+
+  await assert.rejects(
+    deployRuntime({
+      sourceRoot,
+      runtimeRoot,
+      releaseId: "release-2",
+      writePointer: async () => { throw new Error("injected pointer commit failure"); },
+    }),
+    /injected pointer commit failure/,
+  );
+  assert.equal(await readFile(path.join(runtimeRoot, "current.json"), "utf8"), beforePointer);
+  assert.equal(await readFile(path.join(runtimeRoot, "codex-stop-hook-launcher.mjs"), "utf8"), beforeHook);
+});
+
+test("activation preserves source data when an incomplete runtime target already exists", async () => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
+  await mkdir(path.join(runtimeRoot, "data"), { recursive: true });
+  await writeFile(path.join(runtimeRoot, "data", "partial.json"), "{}\n", "utf8");
+
+  await assert.rejects(
+    activateRuntime({ sourceRoot, runtimeRoot }),
+    /data migration is incomplete/,
+  );
+  assert.equal(JSON.parse(await readFile(path.join(sourceRoot, "data", "state.json"), "utf8")).offset, 1);
+  assert.equal(JSON.parse(await readFile(path.join(runtimeRoot, "data", "partial.json"), "utf8")).constructor, Object);
+});
+
 test("runtime config and data are external, activation is explicit and rollback is atomic", async () => {
   const { sourceRoot, runtimeRoot } = await fixture();
   await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });

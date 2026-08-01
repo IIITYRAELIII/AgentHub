@@ -106,12 +106,79 @@ async function pruneRuntimeReleases(layout, keep, {
   }
 }
 
+function stableRuntimeFiles(layout, releaseRoot) {
+  const files = [{
+    source: path.join(releaseRoot, "codex-stop-hook-launcher.mjs"),
+    target: layout.codexHookLauncherFile,
+    executable: process.platform !== "win32",
+  }];
+  if (process.platform === "win32") {
+    files.push(
+      { source: path.join(releaseRoot, "runtime-launch.vbs"), target: layout.launcherFile },
+      { source: path.join(releaseRoot, "runtime-launch.vbs"), target: layout.legacyWindowsLauncherFile },
+      { source: path.join(releaseRoot, "runtime-launch.ps1"), target: layout.powershellLauncherFile },
+    );
+  } else {
+    files.push({
+      source: path.join(releaseRoot, "runtime-launch.sh"),
+      target: layout.launcherFile,
+      executable: true,
+    });
+  }
+  return files;
+}
+
+async function installStableRuntimeFiles(layout, releaseRoot, { beforeCommit } = {}) {
+  const staging = path.join(layout.root, `.stable-runtime-${randomUUID()}`);
+  const files = stableRuntimeFiles(layout, releaseRoot);
+  await mkdir(staging, { recursive: true });
+  let settled = false;
+  const rollback = async () => {
+    await Promise.all(files.map(async (file) => {
+      if (file.existed) await cp(file.backup, file.target, { force: true }).catch(() => {});
+      else await rm(file.target, { force: true }).catch(() => {});
+    }));
+  };
+  const cleanup = async () => {
+    if (settled) return;
+    settled = true;
+    await rm(staging, { recursive: true, force: true });
+  };
+  try {
+    for (const [index, file] of files.entries()) {
+      file.staged = path.join(staging, `new-${index}`);
+      file.backup = path.join(staging, `old-${index}`);
+      file.existed = await exists(file.target);
+      await cp(file.source, file.staged, { force: false, errorOnExist: true });
+      if (file.existed) await cp(file.target, file.backup, { force: false, errorOnExist: true });
+    }
+    await beforeCommit?.();
+    try {
+      for (const file of files) {
+        await cp(file.staged, file.target, { force: true });
+        if (file.executable) await chmod(file.target, 0o700);
+        else await protectRuntimeConfig(file.target);
+      }
+    } catch (error) {
+      await rollback();
+      throw error;
+    }
+    return { rollback, cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
 export async function deployRuntime({
   sourceRoot = SOURCE_ROOT,
   runtimeRoot = defaultRuntimeRoot(),
   releaseId = newReleaseId(),
   removeRelease,
   onPruneWarning,
+  beforeStableLauncherCommit,
+  writePointer = atomicJson,
+  protectPointer = protectRuntimeConfig,
 } = {}) {
   const layout = runtimeLayout(runtimeRoot);
   const releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId);
@@ -143,36 +210,30 @@ export async function deployRuntime({
     // directory inheritance flags would strip effective ACEs from files.
     await protectRuntimeDirectory(releaseRoot);
 
-    const previousPointer = JSON.parse(await readFile(layout.currentFile, "utf8").catch(() => "{}"));
+    // The stable launchers select current.json.  They must therefore be fully
+    // staged and installed before publishing a pointer to this release.
+    const priorPointerText = await readFile(layout.currentFile, "utf8").catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    const previousPointer = JSON.parse(priorPointerText ?? "{}");
+    const stableFiles = await installStableRuntimeFiles(layout, releaseRoot, {
+      beforeCommit: beforeStableLauncherCommit,
+    });
     const pointer = {
       current: releaseId,
       previous: previousPointer.current ?? previousPointer.previous ?? null,
       updatedAt: new Date().toISOString(),
     };
-    await atomicJson(layout.currentFile, pointer);
-    await protectRuntimeConfig(layout.currentFile);
-    await cp(
-      path.join(sourceRoot, "codex-stop-hook-launcher.mjs"),
-      layout.codexHookLauncherFile,
-      { force: true },
-    );
-    await protectRuntimeConfig(layout.codexHookLauncherFile);
-    if (process.platform === "win32") {
-      await cp(path.join(sourceRoot, "runtime-launch.vbs"), layout.launcherFile, { force: true });
-      // Keep the source filename as a compatibility alias. One-off deployment
-      // helpers historically referred to runtime-launch.vbs while the stable
-      // installed entry point is launch.vbs.
-      await cp(path.join(sourceRoot, "runtime-launch.vbs"), layout.legacyWindowsLauncherFile, { force: true });
-      await cp(path.join(sourceRoot, "runtime-launch.ps1"), layout.powershellLauncherFile, { force: true });
-      await Promise.all([
-        protectRuntimeConfig(layout.launcherFile),
-        protectRuntimeConfig(layout.legacyWindowsLauncherFile),
-        protectRuntimeConfig(layout.powershellLauncherFile),
-      ]);
-    } else {
-      await cp(path.join(sourceRoot, "runtime-launch.sh"), layout.launcherFile, { force: true });
-      await chmod(layout.launcherFile, 0o700);
-      await chmod(layout.codexHookLauncherFile, 0o700);
+    try {
+      await writePointer(layout.currentFile, pointer);
+      await protectPointer(layout.currentFile);
+      await stableFiles.cleanup();
+    } catch (error) {
+      await stableFiles.rollback();
+      if (priorPointerText === null) await rm(layout.currentFile, { force: true }).catch(() => {});
+      else await writeTextAtomic(layout.currentFile, priorPointerText).catch(() => {});
+      throw error;
     }
     await pruneRuntimeReleases(
       layout,
@@ -230,6 +291,28 @@ async function copyIfPresent(source, target) {
   return true;
 }
 
+async function directoryContains(source, target) {
+  const sourceInfo = await stat(source);
+  const targetInfo = await stat(target).catch(() => null);
+  if (!targetInfo || sourceInfo.isDirectory() !== targetInfo.isDirectory()) return false;
+  if (!sourceInfo.isDirectory()) return (await readFile(source)).equals(await readFile(target));
+  for (const entry of await readdir(source)) {
+    if (!await directoryContains(path.join(source, entry), path.join(target, entry))) return false;
+  }
+  return true;
+}
+
+async function migrateDirectory(source, target, { replace = false } = {}) {
+  if (!await exists(source)) return true;
+  if (replace) {
+    await replaceDirectory(source, target);
+    return true;
+  }
+  if (!await exists(target)) return copyIfPresent(source, target);
+  if (await directoryContains(source, target)) return true;
+  throw new Error("Runtime data migration is incomplete; source data was preserved");
+}
+
 async function replaceDirectory(source, target) {
   const staging = `${target}.staging-${randomUUID()}`;
   const backup = `${target}.previous-${randomUUID()}`;
@@ -274,11 +357,10 @@ export async function activateRuntime({
   const layout = runtimeLayout(runtimeRoot);
   const pointer = JSON.parse(await readFile(layout.currentFile, "utf8"));
   await prepareRuntimeConfig({ sourceRoot, runtimeRoot });
-  if (replaceData) await replaceDirectory(path.join(sourceRoot, "data"), layout.dataDir);
-  else await copyIfPresent(path.join(sourceRoot, "data"), layout.dataDir);
-  await copyIfPresent(path.join(sourceRoot, ".venv-voice"), path.join(layout.root, "voice-venv"));
-  await copyIfPresent(path.join(sourceRoot, ".whisper-models"), path.join(layout.dataDir, "models", "whisper"));
-  await copyIfPresent(path.join(sourceRoot, ".silero-models"), path.join(layout.dataDir, "models", "silero"));
+  await migrateDirectory(path.join(sourceRoot, "data"), layout.dataDir, { replace: replaceData });
+  await migrateDirectory(path.join(sourceRoot, ".venv-voice"), path.join(layout.root, "voice-venv"));
+  await migrateDirectory(path.join(sourceRoot, ".whisper-models"), path.join(layout.dataDir, "models", "whisper"));
+  await migrateDirectory(path.join(sourceRoot, ".silero-models"), path.join(layout.dataDir, "models", "silero"));
   await atomicJson(layout.activationFile, {
     release: pointer.current,
     activatedAt: new Date().toISOString(),

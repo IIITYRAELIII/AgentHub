@@ -19,6 +19,19 @@ test("writeTextAtomic replaces the file and removes its temporary file", async (
   }
 });
 
+test("writeTextAtomic uses distinct default temporary files for concurrent writers", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-state-concurrent-"));
+  const filePath = path.join(directory, "state.json");
+  try {
+    await Promise.all(Array.from({ length: 10 }, (_, index) => (
+      writeTextAtomic(filePath, `value-${index}`)
+    )));
+    assert.match(await readFile(filePath, "utf8"), /^value-\d+$/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("writeTextAtomic retries transient Windows sharing violations", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-state-retry-"));
   const filePath = path.join(directory, "state.json");
@@ -40,6 +53,21 @@ test("writeTextAtomic retries transient Windows sharing violations", async () =>
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("writeTextAtomic syncs content before rename and the parent after rename", async () => {
+  const events = [];
+  await writeTextAtomic("C:\\state\\state.json", "new", {
+    temporaryFile: "C:\\state\\state.tmp",
+    writeAndSyncImpl: async (target, content) => events.push(["write-sync", target, content]),
+    renameImpl: async (source, target) => events.push(["rename", source, target]),
+    syncParentDirectoryImpl: async (target) => events.push(["directory-sync", target]),
+  });
+  assert.deepEqual(events, [
+    ["write-sync", "C:\\state\\state.tmp", "new"],
+    ["rename", "C:\\state\\state.tmp", "C:\\state\\state.json"],
+    ["directory-sync", "C:\\state\\state.json"],
+  ]);
 });
 
 test("readJsonWithBackup recovers a corrupt primary state", async () => {

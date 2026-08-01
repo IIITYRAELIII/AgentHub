@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+import { watch } from "node:fs";
 import { mkdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -43,12 +45,46 @@ function publicIndex(row) {
   };
 }
 
+function sourceIdentity(info) {
+  return [
+    info.dev,
+    info.ino,
+    info.size,
+    info.mtimeMs,
+    info.ctimeMs,
+    info.birthtimeMs,
+  ].map((value) => String(value ?? "")).join(":");
+}
+
+function sha256Version(markdown) {
+  return `sha256:${crypto.createHash("sha256").update(markdown, "utf8").digest("hex")}`;
+}
+
+function samePath(left, right) {
+  const normalize = (value) => process.platform === "win32" ? value.toLowerCase() : value;
+  return normalize(path.resolve(left)) === normalize(path.resolve(right));
+}
+
 export class JournalDatabase {
   #database = null;
   #file;
+  #readSource;
+  #statSource;
+  #watchSource;
+  #hashSource;
+  #source = null;
 
-  constructor(file) {
+  constructor(file, {
+    readSource = readFile,
+    statSource = stat,
+    watchSource = watch,
+    hashSource = sha256Version,
+  } = {}) {
     this.#file = path.resolve(file);
+    this.#readSource = readSource;
+    this.#statSource = statSource;
+    this.#watchSource = watchSource;
+    this.#hashSource = hashSource;
   }
 
   async #open() {
@@ -79,25 +115,86 @@ export class JournalDatabase {
     return database;
   }
 
-  async ensureFromFile(workLogFile) {
-    const target = path.resolve(workLogFile);
-    const info = await stat(target);
-    const version = `${Math.trunc(info.mtimeMs)}-${info.size}`;
+  #sourceState(target) {
+    if (this.#source?.target === target) return this.#source;
+    this.#source?.watcher?.close?.();
+    const source = {
+      target,
+      generation: 0,
+      identity: null,
+      index: null,
+      pending: null,
+      watcher: null,
+    };
+    const directory = path.dirname(target);
+    const basename = path.basename(target);
+    try {
+      source.watcher = this.#watchSource(directory, (_eventType, filename) => {
+        if (filename === null || filename === undefined
+          || samePath(path.join(directory, String(filename)), path.join(directory, basename))) {
+          source.generation += 1;
+        }
+      });
+      source.watcher.unref?.();
+      source.watcher.on?.("error", () => {
+        source.generation += 1;
+        source.watcher?.close?.();
+        source.watcher = null;
+      });
+    } catch {
+      // Stat identity remains the correctness fallback when the platform does
+      // not provide a usable directory watcher.
+    }
+    this.#source = source;
+    return source;
+  }
+
+  async #ensureFromFile(target, source) {
+    const initialInfo = await this.#statSource(target);
+    const initialIdentity = sourceIdentity(initialInfo);
+    const initialGeneration = source.generation;
+    if (source.index
+      && source.identity === initialIdentity
+      && source.index.generation === initialGeneration) {
+      return source.index.value;
+    }
+
+    let markdown;
+    let stableInfo;
+    let stableIdentity;
+    let stableGeneration;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const beforeInfo = attempt === 0 ? initialInfo : await this.#statSource(target);
+      const beforeIdentity = sourceIdentity(beforeInfo);
+      const beforeGeneration = source.generation;
+      markdown = await this.#readSource(target, "utf8");
+      const afterInfo = await this.#statSource(target);
+      const afterIdentity = sourceIdentity(afterInfo);
+      const afterGeneration = source.generation;
+      if (beforeIdentity === afterIdentity && beforeGeneration === afterGeneration) {
+        stableInfo = afterInfo;
+        stableIdentity = afterIdentity;
+        stableGeneration = afterGeneration;
+        break;
+      }
+    }
+    if (!stableInfo) throw new Error("WORK_LOG changed repeatedly while rebuilding its journal index");
+
+    const version = this.#hashSource(markdown);
     const database = await this.#open();
     const current = database.prepare(
       "SELECT schema_version, source_version, updated_at, html FROM journal_meta WHERE id = 1",
     ).get();
     if (Number(current?.schema_version ?? SCHEMA_VERSION) === SCHEMA_VERSION
       && String(current?.source_version ?? "") === version) {
-      return publicIndex(current);
+      const value = publicIndex(current);
+      source.identity = stableIdentity;
+      source.index = { generation: stableGeneration, value };
+      return value;
     }
 
-    const markdown = await readFile(target, "utf8");
-    const verifiedInfo = await stat(target);
-    const verifiedVersion = `${Math.trunc(verifiedInfo.mtimeMs)}-${verifiedInfo.size}`;
-    if (verifiedVersion !== version) return this.ensureFromFile(target);
     const payload = buildLazyJournalPayload(markdown);
-    const updatedAt = info.mtime.toISOString();
+    const updatedAt = stableInfo.mtime.toISOString();
     database.exec("BEGIN IMMEDIATE");
     try {
       const latest = database.prepare(
@@ -106,7 +203,10 @@ export class JournalDatabase {
       if (Number(latest?.schema_version ?? 0) === SCHEMA_VERSION
         && String(latest?.source_version ?? "") === version) {
         database.exec("COMMIT");
-        return publicIndex(latest);
+        const value = publicIndex(latest);
+        source.identity = stableIdentity;
+        source.index = { generation: stableGeneration, value };
+        return value;
       }
       database.exec("DELETE FROM journal_days; DELETE FROM journal_turns;");
       const insertDay = database.prepare(
@@ -131,7 +231,22 @@ export class JournalDatabase {
       database.exec("ROLLBACK");
       throw error;
     }
-    return { html: payload.html, updatedAt, version };
+    const value = { html: payload.html, updatedAt, version };
+    source.identity = stableIdentity;
+    source.index = { generation: stableGeneration, value };
+    return value;
+  }
+
+  async ensureFromFile(workLogFile) {
+    const target = path.resolve(workLogFile);
+    const source = this.#sourceState(target);
+    if (source.pending) return source.pending;
+    source.pending = this.#ensureFromFile(target, source);
+    try {
+      return await source.pending;
+    } finally {
+      source.pending = null;
+    }
   }
 
   async fragment(kind, key) {
@@ -143,6 +258,8 @@ export class JournalDatabase {
   }
 
   close() {
+    this.#source?.watcher?.close?.();
+    this.#source = null;
     this.#database?.close();
     this.#database = null;
   }

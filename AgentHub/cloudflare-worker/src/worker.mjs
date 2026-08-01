@@ -108,24 +108,46 @@ function isPlainObject(value) {
   return Object.prototype.toString.call(value) === "[object Object]";
 }
 
-async function readBoundedBody(request, maxBytes, label) {
+async function readBoundedBytes(request, maxBytes, label) {
   const contentLength = Number(request.headers.get("Content-Length"));
   if (Number.isFinite(contentLength) && contentLength > maxBytes) {
     throw new Error(`${label} is too large`);
   }
-  const body = await request.text();
-  if (encoder.encode(body).byteLength > maxBytes) throw new Error(`${label} is too large`);
+  if (!request.body) return new Uint8Array();
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      size += chunk.byteLength;
+      if (size > maxBytes) {
+        await reader.cancel(`${label} is too large`).catch(() => {});
+        throw new Error(`${label} is too large`);
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
   return body;
 }
 
-async function readBoundedBinary(request, maxBytes, label) {
-  const contentLength = Number(request.headers.get("Content-Length"));
-  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-    throw new Error(`${label} is too large`);
-  }
-  const body = await request.arrayBuffer();
-  if (body.byteLength > maxBytes) throw new Error(`${label} is too large`);
-  return body;
+export async function readBoundedBody(request, maxBytes, label) {
+  return new TextDecoder().decode(await readBoundedBytes(request, maxBytes, label));
+}
+
+export async function readBoundedBinary(request, maxBytes, label) {
+  const body = await readBoundedBytes(request, maxBytes, label);
+  return body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
 }
 
 function parseJson(body, label) {
@@ -302,8 +324,7 @@ export async function validateSyncRequest(request, secret, { now = Date.now() } 
     throw new Error("expired sync request");
   }
   if (!/^[a-f0-9]{64}$/u.test(receivedSignature)) throw new Error("invalid sync signature");
-  const body = await request.text();
-  if (encoder.encode(body).byteLength > MAX_BODY_BYTES) throw new Error("sync payload is too large");
+  const body = await readBoundedBody(request, MAX_BODY_BYTES, "sync payload");
   if (!await verifyHmac(secret, `${timestamp}\n${await sha256(body)}`, receivedSignature)) {
     throw new Error("invalid sync signature");
   }
@@ -336,7 +357,7 @@ export async function validateSyncChunkRequest(request, secret, { now = Date.now
     throw new Error("invalid sync chunk");
   }
   if (encoding !== "gzip" || !version || !updatedAt) throw new Error("invalid sync metadata");
-  const body = await request.arrayBuffer();
+  const body = await readBoundedBinary(request, MAX_BODY_BYTES, "sync payload");
   if (body.byteLength < 1 || body.byteLength > MAX_BODY_BYTES) throw new Error("sync payload is too large");
   const signatureValue = [
     timestamp,

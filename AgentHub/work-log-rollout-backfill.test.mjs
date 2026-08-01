@@ -8,6 +8,7 @@ import {
   applyWorkLogRolloutBackfill,
   buildWorkLogRolloutBackfill,
 } from "./work-log-rollout-backfill.mjs";
+import { WorkLogUsageStore } from "./work-log-usage.mjs";
 
 const ROOT_THREAD = "019f1ec8-8de7-7aa3-92b6-045036561c8e";
 const CHILD_THREAD = "019f1ec9-8de7-7aa3-92b6-045036561c8e";
@@ -161,6 +162,61 @@ test("rollout backfill replaces old ledger history, preserves newer records and 
       migration.ledger,
     );
     assert.equal(await readFile(workLogFile, "utf8"), migration.workLog);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rollout backfill merges a live ledger turn committed after its stale plan", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-backfill-live-race-"));
+  try {
+    const ledgerFile = path.join(root, "data", "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    await mkdir(path.dirname(ledgerFile), { recursive: true });
+    await writeFile(ledgerFile, `${JSON.stringify({ version: 8, turns: {} })}\n`, "utf8");
+    await writeFile(workLogFile, "# Глобальный журнал работ\n", "utf8");
+    const staleMigration = {
+      ledger: {
+        version: 8,
+        turns: {
+          historical: {
+            provider: "codex",
+            threadId: "historical-thread",
+            taskThreadId: "historical-thread",
+            turnId: "historical-turn",
+            projectRoot: root,
+            taskTitle: "История",
+            title: "Ход завершён",
+            completedAt: "2026-07-25T10:00:00.000Z",
+            usage: usage(10),
+          },
+        },
+      },
+      workLog: "# Глобальный журнал работ\n",
+      report: { cutoff: "2026-07-26", replacedCodexKeys: [] },
+    };
+    const live = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    await live.recordAutomaticAndProject({
+      threadId: "live-thread",
+      turnId: "live-turn",
+      projectRoot: root,
+      usageReported: true,
+      usage: usage(20),
+      completedAt: "2026-07-27T10:00:00.000Z",
+      text: "Новый ход",
+      workLogFile,
+    });
+
+    await applyWorkLogRolloutBackfill({
+      migration: staleMigration,
+      ledgerFile,
+      workLogFile,
+      backupRoot: path.join(root, "backups"),
+    });
+
+    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.ok(ledger.turns.historical);
+    assert.ok(ledger.turns["codex\u0000live-thread\u0000live-turn"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

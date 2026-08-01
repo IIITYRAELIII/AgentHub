@@ -32,7 +32,7 @@ function validDelivery(item) {
 
 export class PersistentDeliveryOutbox {
   #items = new Map();
-  #writeQueue = Promise.resolve();
+  #operationQueue = Promise.resolve();
   #flushing = false;
 
   constructor({
@@ -42,6 +42,7 @@ export class PersistentDeliveryOutbox {
     onPermanentFailure = async () => {},
     now = () => Date.now(),
     maxItems = 1_000,
+    retryDelay = deliveryRetryDelay,
   }) {
     this.directoryPath = directoryPath;
     this.deliver = deliver;
@@ -49,9 +50,16 @@ export class PersistentDeliveryOutbox {
     this.onPermanentFailure = onPermanentFailure;
     this.now = now;
     this.maxItems = maxItems;
+    this.retryDelay = retryDelay;
   }
 
-  async load() {
+  #serialize(operation) {
+    const result = this.#operationQueue.catch(() => {}).then(operation);
+    this.#operationQueue = result.catch(() => {});
+    return result;
+  }
+
+  async #load() {
     await mkdir(this.directoryPath, { recursive: true });
     const allNames = await readdir(this.directoryPath);
     const quarantined = allNames
@@ -84,6 +92,10 @@ export class PersistentDeliveryOutbox {
     return this.size;
   }
 
+  load() {
+    return this.#serialize(() => this.#load());
+  }
+
   async enqueue({
     method,
     body,
@@ -92,32 +104,34 @@ export class PersistentDeliveryOutbox {
     sequence = 0,
     supersedeKey = null,
   }) {
-    await this.load();
-    if (supersedeKey) await this.#discardLoaded((item) => item.supersedeKey === supersedeKey);
-    if (this.#items.size >= this.maxItems) {
-      throw new Error(`delivery outbox limit reached (${this.maxItems})`);
-    }
-    const timestamp = this.now();
-    const item = {
-      id: randomUUID(),
-      method,
-      body,
-      binding,
-      groupId,
-      sequence,
-      supersedeKey,
-      createdAt: new Date(timestamp).toISOString(),
-      attempts: 0,
-      nextAttemptAt: timestamp,
-      lastError: "",
-    };
-    const filePath = path.join(
-      this.directoryPath,
-      `${String(timestamp).padStart(13, "0")}-${process.hrtime.bigint().toString().padStart(20, "0")}-${item.id}.json`,
-    );
-    await this.#persist(filePath, item);
-    this.#items.set(filePath, item);
-    return item;
+    return this.#serialize(async () => {
+      await this.#load();
+      if (supersedeKey) await this.#discardLoaded((item) => item.supersedeKey === supersedeKey);
+      if (this.#items.size >= this.maxItems) {
+        throw new Error(`delivery outbox limit reached (${this.maxItems})`);
+      }
+      const timestamp = this.now();
+      const item = {
+        id: randomUUID(),
+        method,
+        body,
+        binding,
+        groupId,
+        sequence,
+        supersedeKey,
+        createdAt: new Date(timestamp).toISOString(),
+        attempts: 0,
+        nextAttemptAt: timestamp,
+        lastError: "",
+      };
+      const filePath = path.join(
+        this.directoryPath,
+        `${String(timestamp).padStart(13, "0")}-${process.hrtime.bigint().toString().padStart(20, "0")}-${item.id}.json`,
+      );
+      await this.#persist(filePath, item);
+      this.#items.set(filePath, item);
+      return item;
+    });
   }
 
   async flush({ limit = 20 } = {}) {
@@ -125,7 +139,7 @@ export class PersistentDeliveryOutbox {
     this.#flushing = true;
     let delivered = 0;
     try {
-      await this.load();
+      await this.#serialize(() => this.#load());
       const ordered = [...this.#items.entries()].sort(([leftPath], [rightPath]) => leftPath.localeCompare(rightPath));
       const grouped = new Map();
       for (const entry of ordered) {
@@ -149,6 +163,9 @@ export class PersistentDeliveryOutbox {
       const blockedGroups = new Set();
       for (const [filePath, item] of entries) {
         if (delivered >= limit) break;
+        // A concurrent enqueue may have superseded or discarded this snapshot entry
+        // while an earlier network delivery was pending.
+        if (this.#items.get(filePath) !== item) continue;
         if (item.groupId && blockedGroups.has(item.groupId)) continue;
         if (item.nextAttemptAt > this.now()) {
           if (item.groupId) blockedGroups.add(item.groupId);
@@ -166,7 +183,7 @@ export class PersistentDeliveryOutbox {
           }
           item.attempts += 1;
           item.lastError = String(error.message ?? error);
-          item.nextAttemptAt = this.now() + deliveryRetryDelay(
+          item.nextAttemptAt = this.now() + this.retryDelay(
             item.attempts,
             Number(error.retryAfterMs ?? 0),
           );
@@ -187,10 +204,7 @@ export class PersistentDeliveryOutbox {
 
   #persist(filePath, item) {
     const content = `${JSON.stringify(item, null, 2)}\n`;
-    this.#writeQueue = this.#writeQueue
-      .catch(() => {})
-      .then(() => writeTextAtomic(filePath, content));
-    return this.#writeQueue;
+    return writeTextAtomic(filePath, content);
   }
 
   async #discardLoaded(predicate) {
@@ -205,12 +219,14 @@ export class PersistentDeliveryOutbox {
   }
 
   async discard({ supersedeKey }) {
-    await this.load();
-    return this.#discardLoaded((item) => item.supersedeKey === supersedeKey);
+    return this.#serialize(async () => {
+      await this.#load();
+      return this.#discardLoaded((item) => item.supersedeKey === supersedeKey);
+    });
   }
 
   waitForWrites() {
-    return this.#writeQueue;
+    return this.#operationQueue;
   }
 
   get size() {

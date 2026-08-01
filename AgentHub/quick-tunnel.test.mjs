@@ -72,6 +72,42 @@ test("QuickTunnelController reports an early cloudflared exit", async () => {
   await assert.rejects(controller.start(), /exited before startup/u);
 });
 
+test("QuickTunnelController terminates a tunnel when startup times out", async () => {
+  const child = fakeChild();
+  let kills = 0;
+  child.kill = () => {
+    kills += 1;
+    child.exitCode = 0;
+    child.emit("exit", 0, null);
+    return true;
+  };
+  const controller = new QuickTunnelController({
+    localUrl: "http://127.0.0.1:8787",
+    timeoutMs: 10,
+    spawnImpl: () => child,
+  });
+
+  await assert.rejects(controller.start(), /did not publish/u);
+  assert.equal(kills, 1);
+  assert.equal(child.exitCode, 0);
+});
+
+test("QuickTunnelController terminates a published tunnel when URL registration fails", async () => {
+  const child = fakeChild();
+  const controller = new QuickTunnelController({
+    localUrl: "http://127.0.0.1:8787",
+    spawnImpl: () => {
+      queueMicrotask(() => child.stderr.write("https://agent-hub-pilot.trycloudflare.com\n"));
+      return child;
+    },
+    fetchImpl: async () => ({ ok: true, status: 200 }),
+    onUrl: async () => { throw new Error("cannot register menu button"); },
+  });
+
+  await assert.rejects(controller.start(), /cannot register/u);
+  assert.equal(child.exitCode, 0);
+});
+
 test("QuickTunnelController starts a named Cloudflare Tunnel from a token file", async () => {
   const child = fakeChild();
   const calls = [];

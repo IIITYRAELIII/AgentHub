@@ -1,4 +1,26 @@
-import { readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { open, readFile, rename, unlink } from "node:fs/promises";
+import path from "node:path";
+
+async function writeAndSync(filePath, content) {
+  const handle = await open(filePath, "w", 0o600);
+  try {
+    await handle.writeFile(String(content), "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function syncParentDirectory(filePath) {
+  if (process.platform === "win32") return;
+  const handle = await open(path.dirname(filePath), "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
 
 export async function readJsonWithBackup(filePath, { backupFile = `${filePath}.bak` } = {}) {
   let primaryError = null;
@@ -18,15 +40,18 @@ export async function readJsonWithBackup(filePath, { backupFile = `${filePath}.b
 }
 
 export async function writeTextAtomic(filePath, content, {
-  temporaryFile = `${filePath}.${process.pid}.tmp`,
+  temporaryFile = `${filePath}.${process.pid}.${randomUUID()}.tmp`,
   renameImpl = rename,
+  writeAndSyncImpl = writeAndSync,
+  syncParentDirectoryImpl = syncParentDirectory,
   retryDelaysMs = [10, 25, 50, 100, 200, 400],
 } = {}) {
-  await writeFile(temporaryFile, String(content), "utf8");
+  await writeAndSyncImpl(temporaryFile, String(content));
   try {
     for (let attempt = 0; ; attempt += 1) {
       try {
         await renameImpl(temporaryFile, filePath);
+        await syncParentDirectoryImpl(filePath);
         break;
       } catch (error) {
         const retryable = ["EPERM", "EACCES", "EBUSY"].includes(error?.code);

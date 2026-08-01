@@ -59,13 +59,7 @@ import {
   scanCodexTurnPricingMetadata,
 } from "./codex-turn-usage.mjs";
 import { CodexTerminalAudit } from "./codex-terminal-audit.mjs";
-import {
-  appendRateLimitRows,
-  appendRawRateLimitSnapshot,
-  claudeRateLimitRows,
-  codexRateLimitRows,
-  readRateLimitHistory,
-} from "./rate-limit-history.mjs";
+import { RateLimitHistoryStore } from "./rate-limit-history.mjs";
 import {
   CODEX_AUDIT_SOURCE_KINDS,
   CODEX_TASK_SOURCE_KINDS,
@@ -201,6 +195,7 @@ import {
   restorePreviousBotAfterFailedReplacement,
 } from "./restart-recovery.mjs";
 import { RuntimeCommandServer } from "./runtime-command.mjs";
+import { authorizeCodexLifecycle } from "./runtime-lifecycle-authorizer.mjs";
 import {
   TurnEndNotificationRegistry,
   turnEndKey,
@@ -431,7 +426,14 @@ const turnEndNotifications = new TurnEndNotificationRegistry();
 const deliveringTurnEndKeys = new Set();
 const runtimeCommandServer = new RuntimeCommandServer({
   runtimeRoot: runtimeCommandRoot,
+  authorize: authorizeRuntimeCommand,
+  reconcile: reconcileRuntimeCommand,
   handler: handleRuntimeCommand,
+});
+const rateLimitHistoryStore = new RateLimitHistoryStore({
+  databaseFile: path.join(config.dataDir, "journal.sqlite"),
+  rawFile: path.join(config.dataDir, "rate-limits-raw.jsonl"),
+  csvFile: path.join(config.dataDir, "rate-limits.csv"),
 });
 await runtimeCommandServer.start();
 let desktopControlServer = null;
@@ -659,6 +661,9 @@ async function startMiniApp() {
       workLogFile: globalWorkLogFile,
       ...config.miniApp.worker,
       controlHandler: handleDesktopControl,
+      controlReceiptFile: path.join(config.dataDir, "mini-app-control-receipts.json"),
+      controlReconciler: reconcileRemoteDesktopControl,
+      onControlResultDelivered: async ({ id }) => forgetDesktopControl(id),
       attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
       onPublished: async (url) => {
         await Promise.all(miniAppMenuButtonRequests({
@@ -3261,13 +3266,10 @@ async function desktopNewTask(params) {
 }
 
 async function desktopRateLimitHistory(params) {
-  return readRateLimitHistory(
-    path.join(config.dataDir, "rate-limits-raw.jsonl"),
-    {
-      range: params.range,
-      maxPointsPerSeries: params.maxPointsPerSeries,
-    },
-  );
+  return rateLimitHistoryStore.read({
+    range: params.range,
+    maxPointsPerSeries: params.maxPointsPerSeries,
+  });
 }
 
 async function desktopUsageHistory(params) {
@@ -3475,7 +3477,10 @@ async function desktopOpenAttachment(params, context) {
   };
 }
 
-const { handleDesktopControl: dispatchDesktopControl } = createDesktopControlRouter({
+const {
+  handleDesktopControl: dispatchDesktopControl,
+  forgetDesktopControl,
+} = createDesktopControlRouter({
   handlers: {
     snapshot: desktopSnapshot,
     "task-history": desktopTaskHistory,
@@ -3527,10 +3532,37 @@ const { handleDesktopControl: dispatchDesktopControl } = createDesktopControlRou
     maxResponseBytes: 850_000,
   },
   desktopMaxResponseBytes: 3_500_000,
+  receiptFile: path.join(config.dataDir, "desktop-control-receipts.json"),
+  reconcileMutation: reconcileDesktopMutation,
 });
 
 async function handleDesktopControl(request) {
   return dispatchDesktopControl(request);
+}
+
+async function reconcileRemoteDesktopControl({ action, params, context }) {
+  try {
+    // The Desktop router owns its own pre-effect receipt. Re-entering it with
+    // the same command id returns a completed cached result or invokes its
+    // action-specific reconciliation; it never repeats an uncertain effect.
+    return {
+      resolved: true,
+      result: await dispatchDesktopControl({ action, params, context }),
+    };
+  } catch (error) {
+    return { resolved: false, error: error.message };
+  }
+}
+
+async function reconcileDesktopMutation({ action }) {
+  // Most Desktop mutations ultimately call external providers or mutate a
+  // live App Server. They have no queryable transaction identifier. Repeating
+  // an effect after a crash would be worse than reporting its unknown outcome.
+  return {
+    resolved: false,
+    terminal: true,
+    error: `Outcome of interrupted ${action} command is unknown; it was not repeated`,
+  };
 }
 
 async function sendProjectPicker() {
@@ -4842,6 +4874,35 @@ async function ensureDeferredCodexTurnObserved({
   }
   scheduleObservedRun(observed);
   return observed;
+}
+
+async function authorizeRuntimeCommand(request) {
+  return authorizeCodexLifecycle(request, {
+    identify: runtimeCommandIdentity,
+    ensureTransport: async () => {
+      if (!codexTransport.running) {
+        await startCodexAppServer();
+        await initializeCodex({ attachSelectedThread: false });
+      }
+    },
+    readThread: readCodexThread,
+    readActivity: readCodexRolloutActivity,
+    readUsage: readCodexTurnUsage,
+    findProject,
+  });
+}
+
+async function reconcileRuntimeCommand(request) {
+  if (request.command === "turn-start" || request.command === "turn-complete") {
+    // Rollout polling remains authoritative for lifecycle records.  Do not
+    // replay an interrupted notification whose state may already be recorded.
+    return { resolved: true, result: `Codex ${request.command} will be recovered from its rollout.` };
+  }
+  return {
+    resolved: false,
+    terminal: true,
+    error: `Outcome of interrupted ${request.command} notification is unknown; it was not repeated`,
+  };
 }
 
 async function handleRuntimeCommand(request) {
@@ -6303,15 +6364,7 @@ async function pollRateLimits() {
     jobs.push((async () => {
       const result = await sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 });
       const summary = formatCodexRateLimits(result);
-      await appendRawRateLimitSnapshot(
-        path.join(config.dataDir, "rate-limits-raw.jsonl"),
-        result,
-        observedAt,
-      );
-      await appendRateLimitRows(
-        path.join(config.dataDir, "rate-limits.csv"),
-        codexRateLimitRows(result, observedAt),
-      );
+      await rateLimitHistoryStore.record(result, observedAt);
       await workLogUsageStore.projectRateLimits(globalWorkLogFile, summary, observedAt);
     })().catch((error) => {
       console.error("Cannot poll Codex rate limits:", error.message);
@@ -6320,16 +6373,7 @@ async function pollRateLimits() {
   jobs.push((async () => {
     const limits = parseClaudeLimits(await readClaudeRateLimits());
     if (!limits.length) throw new Error("Claude did not return recognizable limit data");
-    await appendRawRateLimitSnapshot(
-      path.join(config.dataDir, "rate-limits-raw.jsonl"),
-      { limits },
-      observedAt,
-      "claude",
-    );
-    await appendRateLimitRows(
-      path.join(config.dataDir, "rate-limits.csv"),
-      claudeRateLimitRows(limits, observedAt),
-    );
+    await rateLimitHistoryStore.record({ limits }, observedAt, "claude");
   })().catch((error) => {
     console.error("Cannot poll Claude rate limits:", error.message);
   }));
@@ -7992,6 +8036,7 @@ async function shutdown(signal) {
     { name: "local Mini App", run: () => miniAppServer?.close() },
     { name: "Desktop control", run: () => desktopControlServer?.close() },
     { name: "runtime command", run: () => runtimeCommandServer.close() },
+    { name: "rate limit history", run: () => rateLimitHistoryStore.close() },
     { name: "state writes", run: () => stateWriteQueue },
     { name: "media writes", run: () => mediaController.waitForWrites() },
     { name: "message binding writes", run: () => bindingWriteQueue },

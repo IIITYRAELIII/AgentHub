@@ -215,3 +215,97 @@ test("a permanently rejected delivery is retained for diagnosis", async () => {
   assert.equal(names.some((name) => name.includes(".json.failed-3000")), true);
   assert.match(await readFile(path.join(root, names[0]), "utf8"), /final answer/);
 });
+
+test("delivery outbox serializes concurrent supersede and capacity checks", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-race-"));
+  try {
+    const outbox = new PersistentDeliveryOutbox({
+      directoryPath: root,
+      maxItems: 1,
+      deliver: async () => ({}),
+    });
+    const results = await Promise.allSettled([
+      outbox.enqueue({ method: "sendMessage", body: { text: "first" }, supersedeKey: "progress:race" }),
+      outbox.enqueue({ method: "sendMessage", body: { text: "second" }, supersedeKey: "progress:race" }),
+    ]);
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 2);
+    assert.equal(outbox.size, 1);
+    const [entry] = await readdir(root);
+    assert.equal(JSON.parse(await readFile(path.join(root, entry), "utf8")).body.text, "second");
+
+    const limited = new PersistentDeliveryOutbox({
+      directoryPath: path.join(root, "limited"),
+      maxItems: 1,
+      deliver: async () => ({}),
+    });
+    const limitedResults = await Promise.allSettled([
+      limited.enqueue({ method: "sendMessage", body: { text: "one" } }),
+      limited.enqueue({ method: "sendMessage", body: { text: "two" } }),
+    ]);
+    assert.equal(limitedResults.filter((result) => result.status === "fulfilled").length, 1);
+    assert.equal(limitedResults.filter((result) => result.status === "rejected").length, 1);
+    assert.equal(limited.size, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("delivery outbox accepts a new item while a network delivery is pending", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-flush-network-"));
+  let release;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  try {
+    const outbox = new PersistentDeliveryOutbox({
+      directoryPath: root,
+      deliver: async () => blocked,
+    });
+    await outbox.enqueue({ method: "sendMessage", body: { text: "first" } });
+    const flushing = outbox.flush();
+    await new Promise((resolve) => setImmediate(resolve));
+    const enqueued = await Promise.race([
+      outbox.enqueue({ method: "sendMessage", body: { text: "second" } }).then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 50)),
+    ]);
+    assert.equal(enqueued, true);
+    release({});
+    await flushing;
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("delivery outbox skips an entry superseded during an earlier network delivery", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-supersede-flush-"));
+  let release;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const delivered = [];
+  try {
+    const outbox = new PersistentDeliveryOutbox({
+      directoryPath: root,
+      deliver: async (_method, body) => {
+        delivered.push(body.text);
+        if (body.text === "first") await blocked;
+        return {};
+      },
+    });
+    await outbox.enqueue({ method: "sendMessage", body: { text: "first" } });
+    await outbox.enqueue({
+      method: "sendMessage",
+      body: { text: "old progress" },
+      supersedeKey: "progress:task",
+    });
+    const flushing = outbox.flush();
+    await new Promise((resolve) => setImmediate(resolve));
+    await outbox.enqueue({
+      method: "sendMessage",
+      body: { text: "new progress" },
+      supersedeKey: "progress:task",
+    });
+    release();
+    await flushing;
+    assert.deepEqual(delivered, ["first"]);
+    assert.equal(outbox.size, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

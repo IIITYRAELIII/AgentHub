@@ -339,58 +339,62 @@ export class CodexTerminalAudit {
     let madeProgress = false;
     const nowMs = this.now();
     for (const [threadId, pending] of [...this.pendingTurns]) {
-      const project = this.resolveProject(pending.thread);
-      if (!project) continue;
-      const position = this.positions.get(threadId);
-      const info = await this.statFile(pending.thread.path);
-      if (position?.path === pending.thread.path && position.offset < info.size) {
-        const handled = await this.#auditThread(pending.thread, project, lowerBoundMs);
-        madeProgress = madeProgress || handled;
-        if (!handled || !this.pendingTurns.has(threadId)) continue;
-      }
+      try {
+        const project = this.resolveProject(pending.thread);
+        if (!project) continue;
+        const position = this.positions.get(threadId);
+        const info = await this.statFile(pending.thread.path);
+        if (position?.path === pending.thread.path && position.offset < info.size) {
+          const handled = await this.#auditThread(pending.thread, project, lowerBoundMs);
+          madeProgress = madeProgress || handled;
+          if (!handled || !this.pendingTurns.has(threadId)) continue;
+        }
 
-      const current = this.pendingTurns.get(threadId);
-      if (!current || nowMs < current.nextStatusCheckMs) continue;
-      if (typeof this.readThread !== "function") {
-        current.nextStatusCheckMs = nowMs + this.statusPollMs;
-        continue;
-      }
-      const response = await this.readThread(threadId);
-      const fullThread = response?.thread ?? response;
-      if (!fullThread?.id) {
-        current.nextStatusCheckMs = nowMs + this.statusPollMs;
-        continue;
-      }
-      current.thread = threadReference(fullThread);
-      const turns = new Map((fullThread.turns ?? []).map((turn) => [String(turn?.id ?? ""), turn]));
-      for (const turn of [...current.turns.values()]) {
-        if (typeof this.isTurnActive === "function"
-          && await this.isTurnActive(current.thread, turn.turnId)) {
-          if (typeof this.onTurnActive === "function") {
-            await this.onTurnActive(current.thread, project, turn.turnId);
-          }
+        const current = this.pendingTurns.get(threadId);
+        if (!current || nowMs < current.nextStatusCheckMs) continue;
+        if (typeof this.readThread !== "function") {
+          current.nextStatusCheckMs = nowMs + this.statusPollMs;
           continue;
         }
-        const exactTurn = turns.get(turn.turnId);
-        const status = terminalTurnStatus(exactTurn?.status);
-        if (!status) continue;
-        const handled = await this.reconcile(fullThread, project, {
-          turnId: turn.turnId,
-          status,
-          completedAt: new Date(
-            timestampMs(turn.lastActivityAt)
-            || timestampMs(fullThread.updatedAt)
-            || info.mtimeMs
-            || nowMs,
-          ).toISOString(),
-          authoritative: true,
-        });
-        if (handled === false) continue;
-        this.#removePendingTurn(threadId, turn.turnId);
-        madeProgress = true;
+        const response = await this.readThread(threadId);
+        const fullThread = response?.thread ?? response;
+        if (!fullThread?.id) {
+          current.nextStatusCheckMs = nowMs + this.statusPollMs;
+          continue;
+        }
+        current.thread = threadReference(fullThread);
+        const turns = new Map((fullThread.turns ?? []).map((turn) => [String(turn?.id ?? ""), turn]));
+        for (const turn of [...current.turns.values()]) {
+          if (typeof this.isTurnActive === "function"
+            && await this.isTurnActive(current.thread, turn.turnId)) {
+            if (typeof this.onTurnActive === "function") {
+              await this.onTurnActive(current.thread, project, turn.turnId);
+            }
+            continue;
+          }
+          const exactTurn = turns.get(turn.turnId);
+          const status = terminalTurnStatus(exactTurn?.status);
+          if (!status) continue;
+          const handled = await this.reconcile(fullThread, project, {
+            turnId: turn.turnId,
+            status,
+            completedAt: new Date(
+              timestampMs(turn.lastActivityAt)
+              || timestampMs(fullThread.updatedAt)
+              || info.mtimeMs
+              || nowMs,
+            ).toISOString(),
+            authoritative: true,
+          });
+          if (handled === false) continue;
+          this.#removePendingTurn(threadId, turn.turnId);
+          madeProgress = true;
+        }
+        const remaining = this.pendingTurns.get(threadId);
+        if (remaining) remaining.nextStatusCheckMs = nowMs + this.statusPollMs;
+      } catch {
+        // Retain this pending turn unchanged; another rollout must still be auditable.
       }
-      const remaining = this.pendingTurns.get(threadId);
-      if (remaining) remaining.nextStatusCheckMs = nowMs + this.statusPollMs;
     }
     return madeProgress;
   }
@@ -564,52 +568,58 @@ export class CodexTerminalAudit {
         const threads = page?.data ?? [];
 
         for (const thread of threads) {
-          const project = this.resolveProject(thread);
-          if (!project || !thread?.path) continue;
-          const threadId = String(thread.id ?? "").trim();
-          if (!threadId) continue;
-          const transcriptPath = String(thread.path);
-          const info = await this.statFile(transcriptPath);
-          const prior = this.positions.get(threadId);
-          const canResume = prior?.path === transcriptPath && prior.offset <= info.size;
-          const hasUnreadBytes = canResume && prior.offset < info.size;
-          const isSubagent = Boolean(String(thread.parentThreadId ?? "").trim());
-          const activityMs = Number(info.mtimeMs) || timestampMs(thread.updatedAt);
-          const backfillMissingSubagent = this.subagentBackfillPending
-            && isSubagent
-            && !canResume
-            && activityMs >= subagentBackfillLowerBoundMs;
-          const olderThanBoundary = activityMs > 0 && activityMs < lowerBoundMs;
+          try {
+            const project = this.resolveProject(thread);
+            if (!project || !thread?.path) continue;
+            const threadId = String(thread.id ?? "").trim();
+            if (!threadId) continue;
+            const transcriptPath = String(thread.path);
+            const info = await this.statFile(transcriptPath);
+            const prior = this.positions.get(threadId);
+            const canResume = prior?.path === transcriptPath && prior.offset <= info.size;
+            const hasUnreadBytes = canResume && prior.offset < info.size;
+            const isSubagent = Boolean(String(thread.parentThreadId ?? "").trim());
+            const activityMs = Number(info.mtimeMs) || timestampMs(thread.updatedAt);
+            const backfillMissingSubagent = this.subagentBackfillPending
+              && isSubagent
+              && !canResume
+              && activityMs >= subagentBackfillLowerBoundMs;
+            const olderThanBoundary = activityMs > 0 && activityMs < lowerBoundMs;
 
-          if (this.subagentBackfillPending
-            && isSubagent
-            && !canResume
-            && !backfillMissingSubagent) {
-            this.#setPosition(threadId, {
-              path: transcriptPath,
-              offset: info.size,
-            });
-            madeProgress = true;
-            continue;
-          }
+            if (this.subagentBackfillPending
+              && isSubagent
+              && !canResume
+              && !backfillMissingSubagent) {
+              this.#setPosition(threadId, {
+                path: transcriptPath,
+                offset: info.size,
+              });
+              madeProgress = true;
+              continue;
+            }
 
-          if (bootstrapping && olderThanBoundary && !backfillMissingSubagent) {
-            this.#setPosition(threadId, {
-              path: transcriptPath,
-              offset: info.size,
-            });
-            madeProgress = true;
-            continue;
+            if (bootstrapping && olderThanBoundary && !backfillMissingSubagent) {
+              this.#setPosition(threadId, {
+                path: transcriptPath,
+                offset: info.size,
+              });
+              madeProgress = true;
+              continue;
+            }
+            if (olderThanBoundary && !hasUnreadBytes && !backfillMissingSubagent) continue;
+            const handled = await this.#auditThread(
+              thread,
+              project,
+              backfillMissingSubagent ? 0 : lowerBoundMs,
+              info,
+            );
+            madeProgress = madeProgress || handled;
+            allHandled = allHandled && handled;
+          } catch {
+            // Keep the prior cursor for this rollout and retry it on a later pass.
+            // A damaged or disappeared file must not block other independent threads.
+            allHandled = false;
           }
-          if (olderThanBoundary && !hasUnreadBytes && !backfillMissingSubagent) continue;
-          const handled = await this.#auditThread(
-            thread,
-            project,
-            backfillMissingSubagent ? 0 : lowerBoundMs,
-            info,
-          );
-          madeProgress = madeProgress || handled;
-          allHandled = allHandled && handled;
         }
 
         cursor = page?.nextCursor ?? null;

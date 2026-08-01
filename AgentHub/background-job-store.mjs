@@ -24,7 +24,7 @@ function validJob(item) {
 export class PersistentBackgroundJobStore {
   #items = new Map();
   #files = new Map();
-  #writeQueue = Promise.resolve();
+  #operationQueue = Promise.resolve();
 
   constructor({ directoryPath, maxItems = 30, now = () => Date.now() }) {
     if (!directoryPath) throw new TypeError("directoryPath is required");
@@ -36,8 +36,13 @@ export class PersistentBackgroundJobStore {
     this.now = now;
   }
 
-  async load() {
-    await this.#writeQueue;
+  #serialize(operation) {
+    const result = this.#operationQueue.catch(() => {}).then(operation);
+    this.#operationQueue = result.catch(() => {});
+    return result;
+  }
+
+  async #load() {
     await mkdir(this.directoryPath, { recursive: true });
     const names = (await readdir(this.directoryPath))
       .filter((name) => name.endsWith(".json"))
@@ -60,51 +65,54 @@ export class PersistentBackgroundJobStore {
     return this.size;
   }
 
+  load() {
+    return this.#serialize(() => this.#load());
+  }
+
   async enqueue({ kind, payload, dedupeKey = null }) {
     if (!SUPPORTED_KINDS.has(kind)) throw new TypeError(`unsupported background job kind: ${kind}`);
     if (!payload || typeof payload !== "object") throw new TypeError("payload must be an object");
     if (dedupeKey !== null && (typeof dedupeKey !== "string" || !dedupeKey.trim())) {
       throw new TypeError("dedupeKey must be a non-empty string or null");
     }
-    await this.load();
-    if (dedupeKey) {
-      const existing = this.values().find((item) => item.dedupeKey === dedupeKey);
-      if (existing) return existing;
-    }
-    if (this.size >= this.maxItems) {
-      const error = new Error(`background job store is full (${this.maxItems})`);
-      error.code = "QUEUE_FULL";
-      error.limit = this.maxItems;
-      throw error;
-    }
-    const timestamp = this.now();
-    const item = {
-      id: randomUUID(),
-      kind,
-      payload,
-      dedupeKey,
-      createdAt: new Date(timestamp).toISOString(),
-    };
-    const filePath = path.join(
-      this.directoryPath,
-      `${String(timestamp).padStart(13, "0")}-${process.hrtime.bigint().toString().padStart(20, "0")}-${item.id}.json`,
-    );
-    const content = `${JSON.stringify(item, null, 2)}\n`;
-    this.#writeQueue = this.#writeQueue
-      .catch(() => {})
-      .then(() => writeTextAtomic(filePath, content));
-    await this.#writeQueue;
-    this.#items.set(item.id, item);
-    this.#files.set(item.id, filePath);
-    return item;
+    return this.#serialize(async () => {
+      await this.#load();
+      if (dedupeKey) {
+        const existing = this.values().find((item) => item.dedupeKey === dedupeKey);
+        if (existing) return existing;
+      }
+      if (this.size >= this.maxItems) {
+        const error = new Error(`background job store is full (${this.maxItems})`);
+        error.code = "QUEUE_FULL";
+        error.limit = this.maxItems;
+        throw error;
+      }
+      const timestamp = this.now();
+      const item = {
+        id: randomUUID(),
+        kind,
+        payload,
+        dedupeKey,
+        createdAt: new Date(timestamp).toISOString(),
+      };
+      const filePath = path.join(
+        this.directoryPath,
+        `${String(timestamp).padStart(13, "0")}-${process.hrtime.bigint().toString().padStart(20, "0")}-${item.id}.json`,
+      );
+      await writeTextAtomic(filePath, `${JSON.stringify(item, null, 2)}\n`);
+      this.#items.set(item.id, item);
+      this.#files.set(item.id, filePath);
+      return item;
+    });
   }
 
   async remove(id) {
-    await this.#writeQueue;
-    const filePath = this.#files.get(id);
-    this.#items.delete(id);
-    this.#files.delete(id);
-    if (filePath) await unlink(filePath).catch(() => {});
+    return this.#serialize(async () => {
+      const filePath = this.#files.get(id);
+      this.#items.delete(id);
+      this.#files.delete(id);
+      if (filePath) await unlink(filePath).catch(() => {});
+    });
   }
 
   values() {
@@ -123,7 +131,7 @@ export class PersistentBackgroundJobStore {
   }
 
   waitForWrites() {
-    return this.#writeQueue;
+    return this.#operationQueue;
   }
 
   get size() {

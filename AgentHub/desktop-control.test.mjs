@@ -301,3 +301,31 @@ test("desktop client fails with a bounded timeout when the server stalls", async
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
+
+test("desktop server shutdown destroys a partial half-closed client", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-partial-"));
+  const server = new DesktopControlServer({
+    runtimeRoot,
+    handler: async () => ({}),
+    protectSecret: async () => {},
+  });
+  let socket;
+  try {
+    await server.start();
+    const descriptor = await readDesktopControlEndpoint(runtimeRoot);
+    socket = createConnection(desktopControlEndpoint(runtimeRoot, descriptor));
+    await new Promise((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write("{");
+    const startedAt = Date.now();
+    await server.close();
+    assert.ok(Date.now() - startedAt < 1_000);
+    assert.equal(socket.destroyed, true);
+  } finally {
+    socket?.destroy();
+    await server.close();
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});

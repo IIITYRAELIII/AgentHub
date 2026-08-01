@@ -6,6 +6,12 @@ import { promisify } from "node:util";
 import path from "node:path";
 
 import { buildLazyJournalPayload } from "./mini-app-journal-data.mjs";
+import {
+  DurableCommandReceipts,
+  DurableCommandRetryableError,
+  commandFingerprint,
+} from "./durable-command-receipts.mjs";
+import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const ATTACHMENT_TIMEOUT_MS = 60_000;
@@ -164,7 +170,12 @@ export class MiniAppPublisher {
   #debounceTimer = null;
   #syncing = null;
   #controlPolling = null;
-  #pendingControlResults = new Map();
+  #controlReceipts;
+  #controlResultOutbox;
+  #lastControlDeliveryError = null;
+  #controlReconciler;
+  #afterControlEffect;
+  #onControlResultDelivered;
   #pending = false;
   #published = false;
   #closed = false;
@@ -181,6 +192,11 @@ export class MiniAppPublisher {
     controlPollSeconds = DEFAULT_CONTROL_POLL_MS / 1_000,
     controlBatchSize = 10,
     attachmentDirectory = null,
+    controlReceiptFile = null,
+    controlResultOutboxDirectory = null,
+    controlReconciler = null,
+    afterControlEffect = null,
+    onControlResultDelivered = null,
   }) {
     this.#workLogFile = path.resolve(workLogFile);
     this.#publicUrl = String(publicUrl).replace(/\/+$/u, "");
@@ -193,6 +209,40 @@ export class MiniAppPublisher {
     this.#controlPollMs = Math.max(500, Number(controlPollSeconds) * 1_000 || DEFAULT_CONTROL_POLL_MS);
     this.#controlBatchSize = Math.min(20, Math.max(1, Math.trunc(Number(controlBatchSize) || 10)));
     this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
+    const resolvedControlReceiptFile = controlReceiptFile
+      ?? path.join(path.dirname(this.#workLogFile), ".mini-app-control-receipts.json");
+    this.#controlReceipts = new DurableCommandReceipts({ file: resolvedControlReceiptFile });
+    this.#controlResultOutbox = new PersistentDeliveryOutbox({
+      directoryPath: controlResultOutboxDirectory
+        ?? path.join(path.dirname(resolvedControlReceiptFile), ".mini-app-control-result-outbox"),
+      // Keep the delivery item until both journals are retired. A crash after
+      // the Worker accepts the result therefore replays an idempotent result
+      // post instead of permanently stranding a completed receipt.
+      deliver: async (_method, payload) => {
+        try {
+          const secret = await this.#secret();
+          const result = await this.#signedControlRequest("/api/control/result", payload, secret);
+          await this.#onControlResultDelivered?.(payload);
+          await this.#controlReceipts.forget(payload.id);
+          return result;
+        } catch (error) {
+          const retryableError = error instanceof Error ? error : new Error(String(error));
+          this.#lastControlDeliveryError = retryableError;
+          retryableError.retryable = true;
+          throw retryableError;
+        }
+      },
+      maxItems: 500,
+      // `pollControl` already supplies the bounded retry cadence. Retrying on
+      // its next pass preserves prompt control-result delivery without a
+      // second, unrelated backoff schedule.
+      retryDelay: () => 0,
+    });
+    this.#controlReconciler = typeof controlReconciler === "function" ? controlReconciler : null;
+    this.#afterControlEffect = typeof afterControlEffect === "function" ? afterControlEffect : null;
+    this.#onControlResultDelivered = typeof onControlResultDelivered === "function"
+      ? onControlResultDelivered
+      : null;
   }
 
   async #secret() {
@@ -308,11 +358,21 @@ export class MiniAppPublisher {
     };
   }
 
-  async #flushControlResults(secret) {
-    for (const [id, payload] of this.#pendingControlResults) {
-      await this.#signedControlRequest("/api/control/result", payload, secret);
-      this.#pendingControlResults.delete(id);
-    }
+  async #flushControlResults() {
+    this.#lastControlDeliveryError = null;
+    await this.#controlResultOutbox.flush({ limit: this.#controlBatchSize });
+    if (this.#lastControlDeliveryError) throw this.#lastControlDeliveryError;
+  }
+
+  async #queueControlResult(payload) {
+    await this.#controlResultOutbox.enqueue({
+      method: "control-result",
+      body: payload,
+      // A command has exactly one terminal outcome. This also makes an
+      // in-process retry replace its old delivery record rather than grow the
+      // outbox.
+      supersedeKey: `control-result:${payload.id}`,
+    });
   }
 
   #validateRemoteCommand(command) {
@@ -421,7 +481,7 @@ export class MiniAppPublisher {
     if (this.#controlPolling) return this.#controlPolling;
     this.#controlPolling = (async () => {
       const secret = await this.#secret();
-      await this.#flushControlResults(secret);
+      await this.#flushControlResults();
       const response = await this.#signedControlRequest("/api/control/pull", {
         limit: this.#controlBatchSize,
       }, secret);
@@ -433,31 +493,45 @@ export class MiniAppPublisher {
         try {
           command = this.#validateRemoteCommand(rawCommand);
           command = await this.#prepareRemoteCommand(command, secret);
-          let result = await this.#controlHandler({
-            action: command.action,
-            params: command.params,
-            context: {
-              source: "telegram-mini-app",
+          const context = {
+            source: "telegram-mini-app",
+            userId: command.userId,
+            commandId: command.id,
+          };
+          let result = await this.#controlReceipts.execute({
+            id: command.id,
+            fingerprint: commandFingerprint({
+              action: command.action,
+              params: command.params,
               userId: command.userId,
-              commandId: command.id,
+            }),
+            action: command.action,
+            effect: async () => {
+              const result = await this.#controlHandler({ action: command.action, params: command.params, context });
+              await this.#afterControlEffect?.(result, command);
+              return result;
             },
+            reconcile: this.#controlReconciler
+              ? (receipt) => this.#controlReconciler({ action: command.action, params: command.params, context, receipt })
+              : null,
           });
           let serialized = JSON.stringify(result ?? null);
           if (Buffer.byteLength(serialized, "utf8") > MAX_CONTROL_RESULT_BYTES) {
             throw new Error("Agent Hub control result is too large");
           }
           result = JSON.parse(serialized);
-          this.#pendingControlResults.set(command.id, {
+          await this.#queueControlResult({
             id: command.id,
             userId: command.userId,
             ok: true,
             result,
           });
         } catch (error) {
+          if (error instanceof DurableCommandRetryableError) throw error;
           const id = String(command?.id ?? rawCommand?.id ?? "");
           const userId = String(command?.userId ?? rawCommand?.userId ?? "");
           if (!id || !userId) continue;
-          this.#pendingControlResults.set(id, {
+          await this.#queueControlResult({
             id,
             userId,
             ok: false,
@@ -465,7 +539,7 @@ export class MiniAppPublisher {
           });
         }
         try {
-          await this.#flushControlResults(secret);
+          await this.#flushControlResults();
         } catch (error) {
           deliveryError ??= error;
         }

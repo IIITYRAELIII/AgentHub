@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,6 +10,7 @@ import {
   appendRawRateLimitSnapshot,
   claudeRateLimitRows,
   codexRateLimitRows,
+  RateLimitHistoryStore,
   rateLimitResetCreditSummary,
   readRateLimitHistory,
 } from "./rate-limit-history.mjs";
@@ -16,10 +18,259 @@ import {
 test("Agent Hub persists Codex and Claude limit snapshots every five minutes", async () => {
   const source = await readFile(new URL("./agent-hub-server.mjs", import.meta.url), "utf8");
   assert.match(source, /function scheduleRateLimitPoll\(delayMs = 5 \* 60_000\)/u);
-  assert.match(source, /codexRateLimitRows\(result, observedAt\)/u);
+  assert.match(source, /new RateLimitHistoryStore\(/u);
+  assert.match(source, /rateLimitHistoryStore\.record\(result, observedAt\)/u);
   assert.match(source, /parseClaudeLimits\(await readClaudeRateLimits\(\)\)/u);
-  assert.match(source, /claudeRateLimitRows\(limits, observedAt\)/u);
+  assert.match(source, /rateLimitHistoryStore\.record\(\{ limits \}, observedAt, "claude"\)/u);
+  assert.match(source, /return rateLimitHistoryStore\.read\(/u);
   assert.match(source, /scheduleRateLimitPoll\(1_000\)/u);
+});
+
+test("all-time SQLite history samples before JSON parsing and preserves first and last", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limits-sampled-read-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const rawFile = path.join(directory, "rate-limits-raw.jsonl");
+  const csvFile = path.join(directory, "rate-limits.csv");
+  const startedAt = Date.parse("2026-01-01T00:00:00.000Z");
+  const store = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+  try {
+    for (let index = 0; index < 180; index += 1) {
+      await store.record({
+        rateLimitsByLimitId: {
+          codex: { limitId: "codex", primary: { usedPercent: index } },
+        },
+        rateLimitResetCredits: {
+          credits: [{
+            status: "available",
+            expiresAt: (startedAt + (index + 1) * 3_600_000) / 1_000,
+          }],
+        },
+      }, new Date(startedAt + index * 60_000).toISOString());
+    }
+
+    const originalParse = JSON.parse;
+    let parsedSnapshots = 0;
+    JSON.parse = (...args) => {
+      parsedSnapshots += 1;
+      return originalParse(...args);
+    };
+    let history;
+    try {
+      history = await store.read({
+        range: "all",
+        nowMs: startedAt + 180 * 60_000,
+        maxPointsPerSeries: 50,
+      });
+    } finally {
+      JSON.parse = originalParse;
+    }
+
+    const primary = history.series.find((series) => series.id === "codex:primary");
+    assert.equal(primary.points.length, 50);
+    assert.equal(primary.points[0].usedPercent, 0);
+    assert.equal(primary.points.at(-1).usedPercent, 179);
+    assert.ok(parsedSnapshots <= 51, `parsed ${parsedSnapshots} snapshots for a 50-point query`);
+    assert.deepEqual(history.resetCredits, {
+      availableCount: 1,
+      nearestExpiresAt: new Date(startedAt + 180 * 3_600_000).toISOString(),
+    });
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("SQLite rate-limit store keeps full snapshots and serves a bounded recent range", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limits-store-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const rawFile = path.join(directory, "rate-limits-raw.jsonl");
+  const csvFile = path.join(directory, "rate-limits.csv");
+  const nowMs = Date.parse("2026-08-02T12:00:00.000Z");
+  const store = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+  try {
+    for (let hour = 72; hour >= 0; hour -= 1) {
+      await store.record({
+        rateLimitsByLimitId: {
+          codex: { limitId: "codex", primary: { usedPercent: hour }, },
+        },
+        futureResponseField: { hour },
+      }, new Date(nowMs - hour * 3_600_000).toISOString());
+    }
+    const history = await store.read({ range: "6h", nowMs, maxPointsPerSeries: 100 });
+    assert.deepEqual(
+      history.series[0].points.map((point) => point.usedPercent),
+      [6, 5, 4, 3, 2, 1, 0],
+    );
+    await store.rebuildCompatibilityExports();
+    const raw = (await readFile(rawFile, "utf8")).trim().split("\n").map(JSON.parse);
+    assert.equal(raw.length, 73);
+    assert.deepEqual(raw.at(-1).response.futureResponseField, { hour: 0 });
+    // Once the raw export has been migrated, a recent request reads indexed
+    // SQLite rows rather than parsing the complete append-only JSONL prefix.
+    await writeFile(rawFile, "not valid JSON\n".repeat(10_000), "utf8");
+    const indexed = await store.read({ range: "6h", nowMs, maxPointsPerSeries: 100 });
+    assert.equal(indexed.series[0].points.length, 7);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy raw history migrates same-time snapshots without dropping full responses", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limits-migrate-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const rawFile = path.join(directory, "rate-limits-raw.jsonl");
+  const csvFile = path.join(directory, "rate-limits.csv");
+  const observedAt = "2026-08-02T12:00:00.000Z";
+  await writeFile(rawFile, [
+    { observedAt, provider: "codex", response: { rateLimits: { limitId: "codex", primary: { usedPercent: 10 } }, extra: "first" } },
+    { observedAt, provider: "codex", response: { rateLimits: { limitId: "spark", primary: { usedPercent: 20 } }, extra: "second" } },
+  ].map(JSON.stringify).join("\n") + "\n", "utf8");
+  const store = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+  try {
+    const history = await store.read({ range: "all", nowMs: Date.parse("2026-08-03T00:00:00.000Z") });
+    assert.equal(history.series.length, 2);
+    const restored = (await readFile(rawFile, "utf8")).trim().split("\n").map(JSON.parse);
+    assert.deepEqual(restored.map((record) => record.response.extra).sort(), ["first", "second"]);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("restart repairs CSV after a crash between raw and CSV exports", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limits-recover-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const rawFile = path.join(directory, "rate-limits-raw.jsonl");
+  const csvFile = path.join(directory, "rate-limits.csv");
+  let exports = 0;
+  const interrupted = new RateLimitHistoryStore({
+    databaseFile,
+    rawFile,
+    csvFile,
+    afterRawExport: async () => {
+      exports += 1;
+      if (exports === 2) throw new Error("simulated crash after raw export");
+    },
+  });
+  try {
+    await interrupted.record(
+      { rateLimits: { limitId: "codex", primary: { usedPercent: 25 } } },
+      "2026-08-02T12:00:00.000Z",
+    );
+    await assert.rejects(
+      interrupted.rebuildCompatibilityExports(),
+      /simulated crash/u,
+    );
+  } finally {
+    await interrupted.close();
+  }
+  const recovered = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+  try {
+    const history = await recovered.read({ range: "all", nowMs: Date.parse("2026-08-03T00:00:00.000Z") });
+    assert.equal(history.series[0].points[0].usedPercent, 25);
+    assert.match(await readFile(csvFile, "utf8"), /2026-08-02T12:00:00\.000Z/u);
+    assert.equal((await readFile(rawFile, "utf8")).trim().split("\n").length, 1);
+  } finally {
+    await recovered.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("runtime records avoid full compatibility exports until explicitly requested", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limits-runtime-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const rawFile = path.join(directory, "rate-limits-raw.jsonl");
+  const csvFile = path.join(directory, "rate-limits.csv");
+  const store = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+  try {
+    await store.record(
+      { rateLimits: { limitId: "codex", primary: { usedPercent: 12 } } },
+      "2026-08-02T12:00:00.000Z",
+    );
+    assert.equal(await readFile(rawFile, "utf8"), "");
+    assert.doesNotMatch(await readFile(csvFile, "utf8"), /2026-08-02T12:00:00\.000Z/u);
+    await store.rebuildCompatibilityExports();
+    assert.match(await readFile(rawFile, "utf8"), /2026-08-02T12:00:00\.000Z/u);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("closing a rate-limit store waits for an accepted write", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limits-close-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const rawFile = path.join(directory, "rate-limits-raw.jsonl");
+  const csvFile = path.join(directory, "rate-limits.csv");
+  const store = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+  const pending = store.record(
+    { rateLimits: { limitId: "codex", primary: { usedPercent: 51 } } },
+    "2026-08-02T12:00:00.000Z",
+  );
+  await Promise.all([pending, store.close()]);
+  const reopened = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+  try {
+    const history = await reopened.read({ range: "all", nowMs: Date.parse("2026-08-03T00:00:00.000Z") });
+    assert.equal(history.series[0].points[0].usedPercent, 51);
+  } finally {
+    await reopened.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("SQLite busy during migration is retried instead of dropping the poll", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limits-busy-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const rawFile = path.join(directory, "rate-limits-raw.jsonl");
+  const csvFile = path.join(directory, "rate-limits.csv");
+  const originalExec = DatabaseSync.prototype.exec;
+  let failOnce = true;
+  DatabaseSync.prototype.exec = function patchedExec(sql) {
+    if (failOnce && sql === "BEGIN IMMEDIATE") {
+      failOnce = false;
+      throw new Error("SQLITE_BUSY: simulated competing writer");
+    }
+    return originalExec.call(this, sql);
+  };
+  const store = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+  try {
+    const result = await store.record(
+      { rateLimits: { limitId: "codex", primary: { usedPercent: 9 } } },
+      "2026-08-02T12:00:00.000Z",
+    );
+    assert.equal(result.recorded, true);
+    assert.equal(failOnce, false);
+  } finally {
+    DatabaseSync.prototype.exec = originalExec;
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("separate stores converge raw and CSV after concurrent poll and backfill writes", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limits-concurrent-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const rawFile = path.join(directory, "rate-limits-raw.jsonl");
+  const csvFile = path.join(directory, "rate-limits.csv");
+  const poll = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+  const backfill = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+  try {
+    await Promise.all([
+      poll.record({ rateLimits: { limitId: "codex", primary: { usedPercent: 33 } } }, "2026-08-02T12:00:00.000Z"),
+      backfill.record({ rateLimits: { limitId: "spark", primary: { usedPercent: 7 } } }, "2026-08-02T12:05:00.000Z"),
+    ]);
+    await poll.rebuildCompatibilityExports();
+    const raw = (await readFile(rawFile, "utf8")).trim().split("\n").map(JSON.parse);
+    const csv = await readFile(csvFile, "utf8");
+    assert.equal(raw.length, 2);
+    assert.match(csv, /,codex,/u);
+    assert.match(csv, /,spark,/u);
+  } finally {
+    await poll.close();
+    await backfill.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("Codex limit snapshots become primary and secondary history rows", () => {

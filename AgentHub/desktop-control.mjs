@@ -217,6 +217,7 @@ export class DesktopControlServer {
   #secret = null;
   #descriptor = null;
   #protectSecret;
+  #sockets = new Set();
 
   constructor({ runtimeRoot = defaultRuntimeRoot(), handler, protectSecret = protectRuntimeConfig }) {
     this.#runtimeRoot = runtimeRoot;
@@ -228,12 +229,13 @@ export class DesktopControlServer {
     if (this.#server) return;
     this.#secret = await readOrCreateSecret(this.#runtimeRoot, this.#protectSecret);
     const descriptor = createEndpointDescriptor();
-    const server = createServer({ allowHalfOpen: true }, (socket) => {
+    const server = createServer({ allowHalfOpen: false }, (socket) => {
       let body = "";
       let state = "hello";
       let processing = false;
       let clientNonce = "";
       let challenge = "";
+      this.#sockets.add(socket);
       socket.setEncoding("utf8");
       socket.setTimeout(HANDSHAKE_TIMEOUT_MS, () => {
         protocolError(socket, new Error("Desktop control handshake timed out"));
@@ -331,6 +333,7 @@ export class DesktopControlServer {
         processNextLine();
       });
       socket.on("error", () => {});
+      socket.once("close", () => this.#sockets.delete(socket));
     });
     const endpoint = desktopControlEndpoint(this.#runtimeRoot, descriptor);
     try {
@@ -362,6 +365,8 @@ export class DesktopControlServer {
     const descriptor = this.#descriptor;
     this.#server = null;
     this.#descriptor = null;
+    for (const socket of this.#sockets) socket.destroy();
+    this.#sockets.clear();
     if (server?.listening) {
       await new Promise((resolve) => server.close(resolve));
     }

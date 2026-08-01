@@ -4,6 +4,7 @@ import path from "node:path";
 import { isInheritedSubagentTurn } from "./codex-subagent-accounting.mjs";
 import { scanCodexHistoricalRollout } from "./codex-turn-usage.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
+import { withInterprocessLocks } from "./interprocess-lock.mjs";
 import { projectWorkLogUsage, workLogTurnKey } from "./work-log-usage.mjs";
 
 const LOCAL_TIME_ZONE = "Asia/Yekaterinburg";
@@ -127,6 +128,7 @@ export async function buildWorkLogRolloutBackfill({
   }
 
   const preserved = {};
+  const replacedCodexKeys = [];
   let removedRecords = 0;
   let preservedNonCodexRecords = 0;
   for (const [key, record] of Object.entries(currentLedger?.turns ?? {})) {
@@ -137,7 +139,10 @@ export async function buildWorkLogRolloutBackfill({
     }
     const date = localIsoDate(record?.completedAt || record?.startedAt, timeZone);
     if (date && date > through) preserved[key] = record;
-    else removedRecords += 1;
+    else {
+      removedRecords += 1;
+      replacedCodexKeys.push(key);
+    }
   }
 
   const imported = {};
@@ -222,6 +227,7 @@ export async function buildWorkLogRolloutBackfill({
       preservedRecords: Object.keys(preserved).length,
       preservedNonCodexRecords,
       removedRecords,
+      replacedCodexKeys,
       importedRecords: Object.keys(imported).length,
       inheritedTurns,
       laterTurns,
@@ -241,22 +247,32 @@ export async function applyWorkLogRolloutBackfill({
   backupRoot = path.join(path.dirname(ledgerFile), "migrations"),
   now = new Date(),
 } = {}) {
-  const backupDirectory = path.join(backupRoot, migrationTimestamp(now));
-  await mkdir(backupDirectory, { recursive: true });
-  try {
-    await copyFile(ledgerFile, path.join(backupDirectory, path.basename(ledgerFile)));
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-  try {
-    await copyFile(workLogFile, path.join(backupDirectory, path.basename(workLogFile)));
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
+  return withInterprocessLocks([ledgerFile, workLogFile], async () => {
+    const backupDirectory = path.join(backupRoot, migrationTimestamp(now));
+    await mkdir(backupDirectory, { recursive: true });
+    let currentLedger = { version: 8, turns: {} };
+    try {
+      currentLedger = JSON.parse(await readFile(ledgerFile, "utf8"));
+      await copyFile(ledgerFile, path.join(backupDirectory, path.basename(ledgerFile)));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    try {
+      await copyFile(workLogFile, path.join(backupDirectory, path.basename(workLogFile)));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
 
-  const ledgerText = `${JSON.stringify(migration.ledger, null, 2)}\n`;
-  await writeTextAtomic(ledgerFile, ledgerText);
-  await writeTextAtomic(`${ledgerFile}.bak`, ledgerText);
-  await writeTextAtomic(workLogFile, migration.workLog);
-  return { backupDirectory };
+    const replacedCodexKeys = new Set(migration?.report?.replacedCodexKeys ?? []);
+    const turns = { ...migration.ledger.turns };
+    for (const [key, record] of Object.entries(currentLedger?.turns ?? {})) {
+      if (!Object.hasOwn(turns, key) && !replacedCodexKeys.has(key)) turns[key] = record;
+    }
+    const mergedLedger = { version: 8, turns };
+    const ledgerText = `${JSON.stringify(mergedLedger, null, 2)}\n`;
+    await writeTextAtomic(ledgerFile, ledgerText);
+    await writeTextAtomic(`${ledgerFile}.bak`, ledgerText);
+    await writeTextAtomic(workLogFile, projectWorkLogUsage("# Глобальный журнал работ\n", turns));
+    return { backupDirectory };
+  });
 }

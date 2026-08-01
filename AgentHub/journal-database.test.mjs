@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -84,6 +84,95 @@ test("corrupt SQLite journal index is preserved and rebuilt from WORK_LOG", asyn
     assert.ok((await readdir(path.dirname(databaseFile)))
       .some((name) => name.startsWith("journal.sqlite.corrupt-")));
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("same-size WORK_LOG replacement is detected even with the same timestamp", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-same-version-"));
+  const workLogFile = path.join(root, "WORK_LOG.md");
+  const replacementFile = path.join(root, "WORK_LOG.replacement.md");
+  const database = new JournalDatabase(path.join(root, "data", "journal.sqlite"), {
+    // Model a missed fs.watch notification. The stat identity must still
+    // notice that atomic rename installed a different file.
+    watchSource: () => ({ close() {}, on() { return this; }, unref() {} }),
+  });
+  const fixedTime = new Date("2026-08-01T12:00:00.000Z");
+  try {
+    await writeFile(workLogFile, "# Журнал\nAAAA\n", "utf8");
+    await utimes(workLogFile, fixedTime, fixedTime);
+    const first = await database.ensureFromFile(workLogFile);
+    await writeFile(replacementFile, "# Журнал\nBBBB\n", "utf8");
+    await utimes(replacementFile, fixedTime, fixedTime);
+    await rename(replacementFile, workLogFile);
+    const second = await database.ensureFromFile(workLogFile);
+    assert.notEqual(second.version, first.version);
+    assert.match(second.html, /BBBB/u);
+  } finally {
+    database.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unchanged ensures avoid full reads while watcher generation detects metadata-identical replacement", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-generation-"));
+  const workLogFile = path.join(root, "WORK_LOG.md");
+  const replacementFile = path.join(root, "WORK_LOG.replacement.md");
+  const fixedTime = new Date("2026-08-01T12:00:00.000Z");
+  let notifyChange = () => {};
+  let readCalls = 0;
+  let hashCalls = 0;
+  const database = new JournalDatabase(path.join(root, "data", "journal.sqlite"), {
+    readSource: async (...args) => {
+      readCalls += 1;
+      return readFile(...args);
+    },
+    hashSource: (markdown) => {
+      hashCalls += 1;
+      return `test-version:${markdown}`;
+    },
+    // Normalize every stat field used by the fast path. The replacement can
+    // therefore be observed only through this monotonic watcher generation.
+    statSource: async (file) => {
+      const info = await stat(file);
+      return {
+        dev: 1,
+        ino: 1,
+        size: info.size,
+        mtimeMs: fixedTime.getTime(),
+        ctimeMs: 1,
+        birthtimeMs: 1,
+        mtime: fixedTime,
+      };
+    },
+    watchSource: (_directory, callback) => {
+      notifyChange = callback;
+      return { close() {}, on() { return this; }, unref() {} };
+    },
+  });
+  try {
+    await writeFile(workLogFile, "# Журнал\nAAAA\n", "utf8");
+    await utimes(workLogFile, fixedTime, fixedTime);
+    const first = await database.ensureFromFile(workLogFile);
+    assert.equal(readCalls, 1);
+    assert.equal(hashCalls, 1);
+
+    assert.equal((await database.ensureFromFile(workLogFile)).version, first.version);
+    assert.equal((await database.ensureFromFile(workLogFile)).version, first.version);
+    assert.equal(readCalls, 1);
+    assert.equal(hashCalls, 1);
+
+    await writeFile(replacementFile, "# Журнал\nBBBB\n", "utf8");
+    await utimes(replacementFile, fixedTime, fixedTime);
+    await rename(replacementFile, workLogFile);
+    notifyChange("rename", path.basename(workLogFile));
+    const second = await database.ensureFromFile(workLogFile);
+    assert.notEqual(second.version, first.version);
+    assert.match(second.html, /BBBB/u);
+    assert.equal(readCalls, 2);
+    assert.equal(hashCalls, 2);
+  } finally {
+    database.close();
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -1,9 +1,7 @@
 import { createReadStream } from "node:fs";
-import { appendFile, mkdir, readdir, stat } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
-
-import { codexRateLimitRows } from "./rate-limit-history.mjs";
 
 const DEFAULT_BUCKET_MINUTES = 5;
 
@@ -180,43 +178,18 @@ export async function buildRateLimitRolloutBackfill({
 
 export async function applyRateLimitRolloutBackfill({
   migration,
-  rawHistoryFile,
-  csvHistoryFile,
+  store = null,
 } = {}) {
   const records = Array.isArray(migration?.records) ? migration.records : [];
   if (!records.length) return { rawRecords: 0, csvRows: 0 };
-  const rawPath = path.resolve(rawHistoryFile);
-  const csvPath = path.resolve(csvHistoryFile);
-  await mkdir(path.dirname(rawPath), { recursive: true });
-  await appendFile(rawPath, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, "utf8");
-
-  const columns = [
-    "observedAt",
-    "provider",
-    "limitId",
-    "limitName",
-    "window",
-    "usedPercent",
-    "remainingPercent",
-    "resetsAt",
-    "reachedType",
-  ];
-  const csvCell = (value) => {
-    const text = String(value ?? "");
-    return /[",\r\n]/u.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-  };
-  const rows = records.flatMap((record) => codexRateLimitRows(record.response, record.observedAt));
-  await mkdir(path.dirname(csvPath), { recursive: true });
-  let hasCsv = true;
-  try {
-    hasCsv = (await stat(csvPath)).size > 0;
-  } catch (error) {
-    if (error?.code === "ENOENT") hasCsv = false;
-    else throw error;
+  if (!store) throw new Error("Rate-limit rollout backfill requires a canonical history store");
+  let rawRecords = 0;
+  let csvRows = 0;
+  for (const record of records) {
+    const result = await store.record(record.response, record.observedAt, record.provider);
+    if (!result.recorded) continue;
+    rawRecords += 1;
+    csvRows += result.rows;
   }
-  const lines = [];
-  if (!hasCsv) lines.push(columns.join(","));
-  lines.push(...rows.map((row) => columns.map((column) => csvCell(row[column])).join(",")));
-  if (lines.length) await appendFile(csvPath, `${lines.join("\n")}\n`, "utf8");
-  return { rawRecords: records.length, csvRows: rows.length };
+  return { rawRecords, csvRows };
 }

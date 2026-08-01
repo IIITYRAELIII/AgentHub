@@ -6,6 +6,7 @@ import {
   applyRateLimitRolloutBackfill,
   buildRateLimitRolloutBackfill,
 } from "./rate-limit-rollout-backfill.mjs";
+import { RateLimitHistoryStore } from "./rate-limit-history.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 
 function option(name, fallback = "") {
@@ -17,6 +18,7 @@ const codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex");
 const runtime = runtimeLayout(defaultRuntimeRoot());
 const rawHistoryFile = option("--raw-history", path.join(runtime.dataDir, "rate-limits-raw.jsonl"));
 const csvHistoryFile = option("--csv-history", path.join(runtime.dataDir, "rate-limits.csv"));
+const databaseFile = option("--database", path.join(runtime.dataDir, "journal.sqlite"));
 const rolloutRoots = [
   option("--sessions", path.join(codexHome, "sessions")),
   option("--archived-sessions", path.join(codexHome, "archived_sessions")),
@@ -29,11 +31,19 @@ const migration = await buildRateLimitRolloutBackfill({
 console.log(JSON.stringify(migration.report, null, 2));
 
 if (process.argv.includes("--apply")) {
-  const result = await applyRateLimitRolloutBackfill({
-    migration,
-    rawHistoryFile,
-    csvHistoryFile,
-  });
+  const store = new RateLimitHistoryStore({ databaseFile, rawFile: rawHistoryFile, csvFile: csvHistoryFile });
+  let result;
+  try {
+    result = await applyRateLimitRolloutBackfill({
+      migration,
+      rawHistoryFile,
+      csvHistoryFile,
+      store,
+    });
+    await store.rebuildCompatibilityExports();
+  } finally {
+    await store.close();
+  }
   console.log(`Raw history: ${rawHistoryFile} (+${result.rawRecords})`);
   console.log(`CSV history: ${csvHistoryFile} (+${result.csvRows})`);
 } else {

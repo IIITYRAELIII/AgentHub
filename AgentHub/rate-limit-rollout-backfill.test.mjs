@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { readRateLimitHistory } from "./rate-limit-history.mjs";
+import { RateLimitHistoryStore, readRateLimitHistory } from "./rate-limit-history.mjs";
 import {
   applyRateLimitRolloutBackfill,
   buildRateLimitRolloutBackfill,
@@ -42,6 +42,13 @@ test("rollout rate-limit events become raw-history records", () => {
   assert.equal(record.response.rateLimitsByLimitId.codex.primary.windowDurationMins, 10080);
 });
 
+test("rollout backfill refuses the unsafe direct raw/CSV append path", async () => {
+  await assert.rejects(
+    applyRateLimitRolloutBackfill({ migration: { records: [{ observedAt: "2026-08-02T00:00:00.000Z" }] } }),
+    /canonical history store/u,
+  );
+});
+
 test("rollout backfill samples five-minute intervals, deduplicates and sorts history", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limit-backfill-"));
   try {
@@ -49,6 +56,7 @@ test("rollout backfill samples five-minute intervals, deduplicates and sorts his
     const archived = path.join(root, "archived");
     const rawHistoryFile = path.join(root, "data", "rate-limits-raw.jsonl");
     const csvHistoryFile = path.join(root, "data", "rate-limits.csv");
+    const databaseFile = path.join(root, "data", "journal.sqlite");
     await mkdir(sessions, { recursive: true });
     await mkdir(archived, { recursive: true });
     await mkdir(path.dirname(rawHistoryFile), { recursive: true });
@@ -83,11 +91,10 @@ test("rollout backfill samples five-minute intervals, deduplicates and sorts his
     assert.equal(migration.report.importedSnapshots, 2);
     assert.deepEqual(migration.report.limitIds, ["codex", "codex_bengalfox"]);
 
-    const applied = await applyRateLimitRolloutBackfill({
-      migration,
-      rawHistoryFile,
-      csvHistoryFile,
-    });
+    const store = new RateLimitHistoryStore({ databaseFile, rawFile: rawHistoryFile, csvFile: csvHistoryFile });
+    const applied = await applyRateLimitRolloutBackfill({ migration, rawHistoryFile, csvHistoryFile, store });
+    await store.rebuildCompatibilityExports();
+    await store.close();
     assert.deepEqual(applied, { rawRecords: 2, csvRows: 2 });
     const history = await readRateLimitHistory(rawHistoryFile, {
       range: "all",

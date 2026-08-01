@@ -6,6 +6,11 @@ import path from "node:path";
 
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
+import {
+  DurableCommandReceipts,
+  DurableCommandRetryableError,
+  commandFingerprint,
+} from "./durable-command-receipts.mjs";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const ALLOWED_COMMANDS = new Set([
@@ -24,6 +29,7 @@ const FORWARDED_ENVIRONMENT = [
 ];
 const SPOOL_POLL_MS = 100;
 const SPOOL_RETENTION_MS = 24 * 60 * 60 * 1000;
+const REQUEST_TIMEOUT_MS = 15_000;
 
 function runtimeCommandId(runtimeRoot) {
   return createHash("sha256").update(path.resolve(runtimeRoot).toLowerCase()).digest("hex").slice(0, 24);
@@ -70,23 +76,61 @@ export function validateRuntimeCommand(value) {
 export class RuntimeCommandServer {
   #endpoint;
   #handler;
+  #authorize;
   #server = null;
   #spoolDirectory;
   #spoolTimer = null;
   #spoolDrain = null;
+  #sockets = new Set();
+  #spoolReceipts;
+  #reconcile;
 
-  constructor({ runtimeRoot = defaultRuntimeRoot(), handler, temporaryRoot = os.tmpdir() }) {
+  constructor({
+    runtimeRoot = defaultRuntimeRoot(),
+    handler,
+    authorize = async (request) => request,
+    reconcile = null,
+    temporaryRoot = os.tmpdir(),
+  }) {
     this.#endpoint = runtimeCommandEndpoint(runtimeRoot);
     this.#spoolDirectory = runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot);
     this.#handler = handler;
+    this.#authorize = authorize;
+    this.#reconcile = typeof reconcile === "function" ? reconcile : null;
+    this.#spoolReceipts = new DurableCommandReceipts({
+      file: path.join(this.#spoolDirectory, "receipts.json"),
+    });
+  }
+
+  async #handle(request) {
+    const authorized = await this.#authorize(request);
+    return this.#handler(authorized ?? request);
+  }
+
+  async #handleSpool(request) {
+    return this.#spoolReceipts.execute({
+      id: request.id,
+      fingerprint: commandFingerprint({
+        command: request.command,
+        args: request.args,
+        cwd: request.cwd,
+        environment: request.environment,
+      }),
+      action: request.command,
+      effect: () => this.#handle(request),
+      reconcile: this.#reconcile ? (receipt) => this.#reconcile(request, receipt) : null,
+    });
   }
 
   async start() {
     if (this.#server) return;
-    const server = createServer({ allowHalfOpen: true }, (socket) => {
+    const server = createServer({ allowHalfOpen: false }, (socket) => {
       let body = "";
       let handled = false;
+      this.#sockets.add(socket);
       socket.setEncoding("utf8");
+      socket.setTimeout(REQUEST_TIMEOUT_MS, () => socket.destroy());
+      socket.once("close", () => this.#sockets.delete(socket));
       socket.on("data", (chunk) => {
         if (handled) return;
         body += chunk;
@@ -98,7 +142,7 @@ export class RuntimeCommandServer {
           void (async () => {
             try {
               const request = validateRuntimeCommand(JSON.parse(requestBody));
-              const result = await this.#handler(request);
+              const result = await this.#handle(request);
               socket.end(`${JSON.stringify({ ok: true, result: String(result ?? "") })}\n`);
             } catch (error) {
               socket.end(`${JSON.stringify({ ok: false, error: error.message })}\n`);
@@ -136,13 +180,29 @@ export class RuntimeCommandServer {
 
   async #drainSpool() {
     const allNames = await readdir(this.#spoolDirectory);
+    const acknowledgedIds = new Set(allNames
+      .filter((item) => item.endsWith(".ack"))
+      .map((name) => name.slice(0, -".ack".length))
+      .filter(Boolean));
+    for (const id of acknowledgedIds) {
+      await this.#spoolReceipts.forget(id).catch(() => {});
+      await Promise.all([
+        unlink(path.join(this.#spoolDirectory, `${id}.ack`)).catch(() => {}),
+        unlink(path.join(this.#spoolDirectory, `${id}.request.json`)).catch(() => {}),
+        unlink(path.join(this.#spoolDirectory, `${id}.response.json`)).catch(() => {}),
+      ]);
+    }
     for (const name of allNames.filter((item) => item.endsWith(".response.json"))) {
       const filePath = path.join(this.#spoolDirectory, name);
       const info = await stat(filePath).catch(() => null);
-      if (info && Date.now() - info.mtimeMs >= SPOOL_RETENTION_MS) await unlink(filePath).catch(() => {});
+      if (info && Date.now() - info.mtimeMs >= SPOOL_RETENTION_MS) {
+        await unlink(filePath).catch(() => {});
+        await this.#spoolReceipts.forget(name.slice(0, -".response.json".length)).catch(() => {});
+      }
     }
     const names = allNames
-      .filter((name) => name.endsWith(".request.json"))
+      .filter((name) => name.endsWith(".request.json")
+        && !acknowledgedIds.has(name.slice(0, -".request.json".length)))
       .sort();
     for (const name of names) {
       const requestPath = path.join(this.#spoolDirectory, name);
@@ -151,9 +211,10 @@ export class RuntimeCommandServer {
       try {
         if ((await stat(requestPath)).size > MAX_REQUEST_BYTES) throw new Error("Runtime command is too large");
         const request = validateRuntimeCommand(JSON.parse(await readFile(requestPath, "utf8")));
-        const result = await this.#handler(request);
+        const result = await this.#handleSpool(request);
         response = { ok: true, result: String(result ?? "") };
       } catch (error) {
+        if (error instanceof DurableCommandRetryableError) continue;
         response = { ok: false, error: String(error?.message ?? error) };
       }
       await writeTextAtomic(responsePath, `${JSON.stringify(response)}\n`);
@@ -166,7 +227,8 @@ export class RuntimeCommandServer {
     this.#server = null;
     if (this.#spoolTimer) clearTimeout(this.#spoolTimer);
     this.#spoolTimer = null;
-    await this.#spoolDrain;
+    for (const socket of this.#sockets) socket.destroy();
+    this.#sockets.clear();
     if (!server?.listening) return;
     await new Promise((resolve) => server.close(resolve));
   }
@@ -192,12 +254,15 @@ export async function forwardRuntimeCommandThroughSpool(command, args, {
   await mkdir(spoolDirectory, { recursive: true });
   const requestPath = path.join(spoolDirectory, `${request.id}.request.json`);
   const responsePath = path.join(spoolDirectory, `${request.id}.response.json`);
+  const acknowledgementPath = path.join(spoolDirectory, `${request.id}.ack`);
   await writeTextAtomic(requestPath, `${JSON.stringify(request)}\n`);
   const deadline = Date.now() + timeoutMs;
+  let acknowledged = false;
   try {
     while (Date.now() < deadline) {
       try {
         const response = JSON.parse(await readFile(responsePath, "utf8"));
+        acknowledged = true;
         if (!response.ok) throw new Error(response.error || "Runtime command failed");
         return response.result;
       } catch (error) {
@@ -207,6 +272,7 @@ export async function forwardRuntimeCommandThroughSpool(command, args, {
     }
     throw new Error("Agent Hub runtime command spool timed out");
   } finally {
+    if (acknowledged) await writeTextAtomic(acknowledgementPath, "\n").catch(() => {});
     await Promise.all([unlink(requestPath).catch(() => {}), unlink(responsePath).catch(() => {})]);
   }
 }

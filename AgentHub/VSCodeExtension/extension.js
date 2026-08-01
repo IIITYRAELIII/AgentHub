@@ -10,7 +10,7 @@ const {
 } = require("./agent-hub-bridge.js");
 const { renderWorkLog } = require("./render.js");
 const { sharedWebviewHtml } = require("./shared-webview.js");
-const { baseCss, panelCss, sidebarHtml, webviewHtml } = require("./webview.js");
+const { baseCss, panelCss, sidebarHtml } = require("./webview.js");
 
 const VIEW_ID = "agentHub.view";
 const CSS_PATH = ["Utilities", "AgentHub", "work-log.css"];
@@ -113,9 +113,8 @@ class WorkLogViewProvider {
       vscode.ViewColumn.Active,
       {
         enableScripts: true,
-        // растровые фоны тем лежат в workspace — иначе webview их не отдаст
         localResourceRoots: [
-          ...this.workspaceFolders().map((folder) => folder.uri),
+          this.context.extensionUri,
           vscode.Uri.file(path.join(defaultRuntimeRoot(), "DesktopApp", "attachments")),
         ],
         retainContextWhenHidden: true,
@@ -124,11 +123,15 @@ class WorkLogViewProvider {
     this.panel = panel;
     panel.title = "Agent Hub";
     try {
-      panel.webview.html = (await sharedWebviewHtml(panel.webview)).html;
+      panel.webview.html = (await sharedWebviewHtml(panel.webview, this.context.extensionUri)).html;
       this.sharedPanel = true;
     } catch (error) {
-      panel.webview.html = webviewHtml(panel.webview, this.theme);
-      this.sharedPanel = false;
+      panel.webview.html = `<!doctype html><html lang="ru"><head>
+        <meta charset="utf-8">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+        <style>body{padding:24px;color:#ddd;background:#10161b;font:14px system-ui}</style>
+        </head><body>Ресурсы Agent Hub повреждены. Переустановите расширение.</body></html>`;
+      this.sharedPanel = "unavailable";
       void vscode.window.showErrorMessage(`Agent Hub: ${error.message}`);
     }
     panel.webview.onDidReceiveMessage((message) => {
@@ -309,6 +312,7 @@ class WorkLogViewProvider {
   async refresh(force = false) {
     if (!this.panel) return;
     if (this.sharedPanel) {
+      if (this.sharedPanel === "unavailable") return;
       await this.panel.webview.postMessage({ type: "agenthub:journal-changed", force });
       return;
     }

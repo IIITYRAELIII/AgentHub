@@ -16,6 +16,37 @@ async function loadWorker() {
   return import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}#${Date.now()}-${Math.random()}`);
 }
 
+function unboundedBodyRequest({ chunkSize = 1_024, chunkCount = 10 } = {}) {
+  let produced = 0;
+  let cancelled = false;
+  const body = new ReadableStream({
+    pull(controller) {
+      if (produced >= chunkCount) {
+        controller.close();
+        return;
+      }
+      produced += 1;
+      controller.enqueue(new Uint8Array(chunkSize));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  return {
+    request: { headers: new Headers(), body },
+    state: () => ({ produced, cancelled }),
+  };
+}
+
+test("bounded readers cancel an oversized streamed body without Content-Length", async () => {
+  const worker = await loadWorker();
+  const { request, state } = unboundedBodyRequest();
+
+  await assert.rejects(worker.readBoundedBinary(request, 2 * 1_024, "test payload"), /test payload is too large/);
+
+  assert.deepEqual(state(), { produced: 3, cancelled: true });
+});
+
 class MemoryStorage {
   values = new Map();
   alarmAt = null;

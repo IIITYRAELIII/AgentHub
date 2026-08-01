@@ -3,16 +3,68 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 import venv
 import shutil
+from uuid import uuid4
 from datetime import date
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
 PROFILES = ("full", "telegram", "journal")
+SWAP_TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
+
+
+def _owned_extension_swap_artifacts(target: Path, kind: str) -> list[Path]:
+    prefix = f".{target.name}.{kind}-"
+    artifacts: list[Path] = []
+    parent = target.parent.resolve()
+    if not target.parent.is_dir():
+        return artifacts
+    for candidate in target.parent.iterdir():
+        if not candidate.name.startswith(prefix):
+            continue
+        token = candidate.name[len(prefix):]
+        if not SWAP_TOKEN_PATTERN.fullmatch(token):
+            continue
+        if candidate.is_symlink() or not candidate.is_dir() or candidate.resolve().parent != parent:
+            raise RuntimeError(f"Refusing unsafe extension swap artifact: {candidate}")
+        artifacts.append(candidate)
+    return sorted(artifacts)
+
+
+def _extension_package_matches(candidate: Path, package: dict) -> bool:
+    try:
+        return json.loads((candidate / "package.json").read_text(encoding="utf-8")) == package
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
+def recover_interrupted_extension_swap(target: Path, package: dict) -> bool:
+    staging = _owned_extension_swap_artifacts(target, "staging")
+    rollbacks = _owned_extension_swap_artifacts(target, "rollback")
+    if not staging and not rollbacks:
+        return False
+    if target.exists():
+        if target.is_symlink() or not _extension_package_matches(target, package):
+            raise RuntimeError(f"Refusing to clean swap artifacts for invalid extension target: {target}")
+    else:
+        if len(rollbacks) > 1:
+            raise RuntimeError(f"Cannot recover {target}: multiple rollback artifacts exist")
+        if rollbacks:
+            rollback = rollbacks.pop()
+            if not _extension_package_matches(rollback, package):
+                raise RuntimeError(f"Cannot recover invalid extension rollback: {rollback}")
+            os.replace(rollback, target)
+    for rollback in rollbacks:
+        shutil.rmtree(rollback)
+    for staged in staging:
+        shutil.rmtree(staged)
+    return True
 
 
 def require_embedded_sqlite() -> None:
@@ -36,6 +88,62 @@ def runtime_root() -> Path:
     if sys.platform == "win32":
         return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "AgentHub"
     return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "agent-hub"
+
+
+def secure_runtime_root(target_root: Path) -> None:
+    """Create the private runtime location before any secret is written there."""
+    target_root.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        owner = subprocess.run(
+            ["whoami"], check=True, capture_output=True, text=True, encoding="utf-8"
+        ).stdout.strip()
+        if not owner:
+            raise RuntimeError("Cannot resolve the current Windows account for Agent Hub ACLs.")
+        result = subprocess.run(
+            [
+                "icacls",
+                str(target_root),
+                "/inheritance:r",
+                "/grant:r",
+                f"{owner}:(OI)(CI)F",
+                "/grant:r",
+                "*S-1-5-18:(OI)(CI)F",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Cannot restrict Agent Hub runtime directory: {result.stderr.strip()}")
+        return
+    try:
+        os.chmod(target_root, 0o700)
+    except OSError as error:
+        raise RuntimeError(f"Cannot restrict Agent Hub runtime directory: {target_root}") from error
+
+
+def atomic_private_json(config_file: Path, value: dict) -> None:
+    """Replace config only after a complete, owner-readable temporary file exists."""
+    temporary: Path | None = None
+    try:
+        descriptor, raw_temporary = tempfile.mkstemp(
+            prefix=f".{config_file.name}.", suffix=".tmp", dir=config_file.parent
+        )
+        temporary = Path(raw_temporary)
+        os.chmod(temporary, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, config_file)
+        temporary = None
+        if os.name != "nt":
+            os.chmod(config_file, 0o600)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def install_voice(target_root: Path) -> None:
@@ -77,9 +185,13 @@ def read_existing_config(config_file: Path) -> dict:
         return {}
     try:
         value = json.loads(config_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return value if isinstance(value, dict) else {}
+    except OSError as error:
+        raise RuntimeError(f"Cannot read existing Agent Hub config: {config_file}") from error
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"Existing Agent Hub config is malformed: {config_file}") from error
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Existing Agent Hub config must be a JSON object: {config_file}")
+    return value
 
 
 def apply_rollout_image_cleanup_choice(config: dict, choice: str | None) -> dict:
@@ -108,18 +220,40 @@ def install_vscode_extension() -> Path | None:
     if target.parent != extensions_root or not target.name.startswith(f"{package['publisher']}.{package['name']}-"):
         raise RuntimeError(f"Refusing to replace unexpected extension path: {target}")
     extensions_root.mkdir(parents=True, exist_ok=True)
+    recover_interrupted_extension_swap(target, package)
+    staging = extensions_root / f".{target.name}.staging-{uuid4().hex}"
+    rollback = extensions_root / f".{target.name}.rollback-{uuid4().hex}"
     removable_prefixes = (f"{package['publisher']}.{package['name']}-",)
+    try:
+        shutil.copytree(
+            source,
+            staging,
+            ignore=shutil.ignore_patterns("*.vsix", "node_modules", "__pycache__"),
+        )
+        staged_package = json.loads((staging / "package.json").read_text(encoding="utf-8"))
+        if staged_package != package:
+            raise RuntimeError("Staged VS Code extension package does not match source package.")
+        if target.exists():
+            os.replace(target, rollback)
+        try:
+            os.replace(staging, target)
+        except Exception:
+            if rollback.exists():
+                os.replace(rollback, target)
+            raise
+        shutil.rmtree(rollback, ignore_errors=True)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+    # Only retire older copies after the replacement is usable.  A cleanup
+    # failure leaves a working extension rather than removing all versions.
     for candidate in extensions_root.iterdir():
         resolved = candidate.resolve()
-        if resolved.parent != extensions_root:
+        if candidate == target or resolved.parent != extensions_root:
             continue
         if candidate.is_dir() and candidate.name.startswith(removable_prefixes):
-            shutil.rmtree(resolved)
-    shutil.copytree(
-        source,
-        target,
-        ignore=shutil.ignore_patterns("*.vsix", "node_modules", "__pycache__"),
-    )
+            shutil.rmtree(resolved, ignore_errors=True)
     print(f"Installed VS Code extension: {target}")
     return target
 
@@ -244,7 +378,7 @@ def main() -> int:
         install_vscode_extension()
         return 0
     target_root = runtime_root()
-    target_root.mkdir(parents=True, exist_ok=True)
+    secure_runtime_root(target_root)
 
     config_file = target_root / "config.json"
     fresh_install = not config_file.exists()
@@ -313,7 +447,7 @@ def main() -> int:
         "dataDir": "data",
     }
     config = apply_rollout_image_cleanup_choice(config, args.rollout_image_cleanup)
-    config_file.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_private_json(config_file, config)
     print(f"Created {config_file}")
     if args.install_voice:
         install_voice(target_root)

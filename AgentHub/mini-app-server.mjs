@@ -124,6 +124,7 @@ const HEARTBEAT_INTERVAL_MS = 20_000;
 const CHANGE_DEBOUNCE_MS = 75;
 const PUBLIC_AUTH_WINDOW_MS = 60_000;
 const PUBLIC_AUTH_ATTEMPT_LIMIT = 30;
+const PUBLIC_AUTH_BUCKET_CAPACITY = 2_000;
 const TELEGRAM_AUTH_MAX_AGE_SECONDS = 86_400;
 const LOCAL_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const LOCAL_SESSION_COOKIE = "agent_hub_local";
@@ -271,6 +272,61 @@ function json(response, statusCode, value, method = "GET", options = {}) {
   );
 }
 
+/**
+ * Fixed-capacity, expiry-aware LRU limiter for public device-authentication
+ * endpoints. A Map's insertion order is the LRU order, so every operation is
+ * O(1): expired entries are removed only when they are touched and capacity is
+ * enforced by evicting one oldest entry. This deliberately avoids sweeping all
+ * distinct client IPs for every unauthenticated request.
+ */
+export class PublicAuthAttemptLimiter {
+  #buckets = new Map();
+  #capacity;
+  #limit;
+  #windowMs;
+
+  constructor({
+    capacity = PUBLIC_AUTH_BUCKET_CAPACITY,
+    limit = PUBLIC_AUTH_ATTEMPT_LIMIT,
+    windowMs = PUBLIC_AUTH_WINDOW_MS,
+  } = {}) {
+    this.#capacity = Math.max(1, Math.floor(Number(capacity) || PUBLIC_AUTH_BUCKET_CAPACITY));
+    this.#limit = Math.max(1, Math.floor(Number(limit) || PUBLIC_AUTH_ATTEMPT_LIMIT));
+    this.#windowMs = Math.max(1, Math.floor(Number(windowMs) || PUBLIC_AUTH_WINDOW_MS));
+  }
+
+  get size() {
+    return this.#buckets.size;
+  }
+
+  consume(key, now = Date.now()) {
+    const normalizedKey = String(key ?? "unknown").slice(0, 128);
+    const observedAt = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    let bucket = this.#buckets.get(normalizedKey);
+    if (bucket && observedAt - bucket.startedAt >= this.#windowMs) {
+      this.#buckets.delete(normalizedKey);
+      bucket = null;
+    }
+    if (!bucket) {
+      if (this.#buckets.size >= this.#capacity) {
+        const oldest = this.#buckets.keys().next().value;
+        if (oldest != null) this.#buckets.delete(oldest);
+      }
+      bucket = { startedAt: observedAt, count: 0 };
+    } else {
+      // A successful lookup also counts as use for the LRU policy.
+      this.#buckets.delete(normalizedKey);
+    }
+    bucket.count += 1;
+    this.#buckets.set(normalizedKey, bucket);
+    const allowed = bucket.count <= this.#limit;
+    return {
+      allowed,
+      retryAfter: allowed ? 0 : Math.max(1, Math.ceil((bucket.startedAt + this.#windowMs - observedAt) / 1_000)),
+    };
+  }
+}
+
 export class MiniAppServer {
   #allowedUserIds;
   #assetsDirectory;
@@ -286,7 +342,7 @@ export class MiniAppServer {
   #journalDatabase;
   #localAccessSecret;
   #port;
-  #publicAuthAttempts = new Map();
+  #publicAuthAttempts = new PublicAuthAttemptLimiter();
   #requireTelegramAuth;
   #server = null;
   #watcher = null;
@@ -324,9 +380,6 @@ export class MiniAppServer {
   }
 
   async #journal() {
-    const info = await stat(this.#workLogFile);
-    const version = `${Math.trunc(info.mtimeMs)}-${info.size}`;
-    if (this.#journalCache?.version === version) return this.#journalCache;
     this.#journalCache = await this.#journalDatabase.ensureFromFile(this.#workLogFile);
     return this.#journalCache;
   }
@@ -413,21 +466,10 @@ export class MiniAppServer {
     const key = String(
       request.headers["cf-connecting-ip"] ?? forwarded ?? request.socket.remoteAddress ?? "unknown",
     ).slice(0, 128);
-    const previous = this.#publicAuthAttempts.get(key);
-    const bucket = !previous || now - previous.startedAt >= PUBLIC_AUTH_WINDOW_MS
-      ? { startedAt: now, count: 0 }
-      : previous;
-    bucket.count += 1;
-    this.#publicAuthAttempts.set(key, bucket);
-    if (this.#publicAuthAttempts.size > 2_000) {
-      for (const [candidate, value] of this.#publicAuthAttempts) {
-        if (now - value.startedAt >= PUBLIC_AUTH_WINDOW_MS) this.#publicAuthAttempts.delete(candidate);
-      }
-    }
-    if (bucket.count <= PUBLIC_AUTH_ATTEMPT_LIMIT) return true;
-    const retryAfter = Math.max(1, Math.ceil((bucket.startedAt + PUBLIC_AUTH_WINDOW_MS - now) / 1_000));
+    const attempt = this.#publicAuthAttempts.consume(key, now);
+    if (attempt.allowed) return true;
     json(response, 429, { error: "Слишком много запросов авторизации." }, request.method, {
-      headers: { "Retry-After": String(retryAfter) },
+      headers: { "Retry-After": String(attempt.retryAfter) },
     });
     return false;
   }

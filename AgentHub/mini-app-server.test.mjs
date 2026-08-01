@@ -9,6 +9,7 @@ import {
   extractWorkLogHtml,
   miniAppMenuButtonRequests,
   MiniAppServer,
+  PublicAuthAttemptLimiter,
   validateTelegramInitData,
 } from "./mini-app-server.mjs";
 
@@ -172,7 +173,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     const payload = await journal.json();
     assert.equal(payload.html, DAY_HTML);
     assert.match(payload.updatedAt, /^\d{4}-\d{2}-\d{2}T/u);
-    assert.match(payload.version, /^\d+-\d+$/u);
+    assert.match(payload.version, /^sha256:[0-9a-f]{64}$/u);
     assert.equal(journal.headers.get("etag"), `"${payload.version}"`);
     const unchanged = await fetch(`${address.url}api/journal`, {
       headers: { "If-None-Match": `"${payload.version}"` },
@@ -668,6 +669,31 @@ test("public device authentication endpoints are rate limited per client", async
     await server.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("public authentication limiter stays bounded under many distinct client IPs", () => {
+  const limiter = new PublicAuthAttemptLimiter({ capacity: 3, limit: 2, windowMs: 60_000 });
+  const startedAt = Date.parse("2026-08-02T12:00:00.000Z");
+  assert.equal(limiter.consume("203.0.113.1", startedAt).allowed, true);
+  assert.equal(limiter.consume("203.0.113.1", startedAt + 1).allowed, true);
+  assert.equal(limiter.consume("203.0.113.1", startedAt + 2).allowed, false);
+
+  for (let index = 2; index <= 40; index += 1) {
+    assert.equal(limiter.consume(`203.0.113.${index}`, startedAt + index).allowed, true);
+    assert.ok(limiter.size <= 3);
+  }
+
+  // The original IP was evicted by the fixed-capacity LRU, while each retained
+  // client still has its own independent counter.
+  assert.equal(limiter.consume("203.0.113.40", startedAt + 100).allowed, true);
+  assert.equal(limiter.consume("203.0.113.40", startedAt + 101).allowed, false);
+  assert.equal(limiter.consume("203.0.113.1", startedAt + 102).allowed, true);
+  assert.equal(limiter.size, 3);
+
+  // Expiry is handled on the touched bucket without scanning the rest of the
+  // Map, and starts a new rate-limit window for that address.
+  assert.equal(limiter.consume("203.0.113.40", startedAt + 60_100).allowed, true);
+  assert.ok(limiter.size <= 3);
 });
 
 test("local Mini App requires a protected session and rejects CSRF-shaped control requests", async () => {

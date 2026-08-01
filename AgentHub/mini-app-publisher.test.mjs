@@ -12,6 +12,7 @@ import {
   signMiniAppControlRequest,
   signMiniAppSyncChunk,
 } from "./mini-app-publisher.mjs";
+import { createDesktopControlRouter } from "./desktop-control-router.mjs";
 
 test("Mini App publisher signs and sends the current journal", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-publisher-"));
@@ -444,6 +445,178 @@ test("Mini App publisher executes every claimed command when result delivery is 
     assert.deepEqual(delivered.map((item) => item.id), commands.map((command) => command.id));
   } finally {
     await publisher.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Mini App publisher reconciles a redelivered command after a crash without repeating its effect", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-crash-"));
+  const secretFile = path.join(root, "sync.secret");
+  const receiptFile = path.join(root, "control-receipts.json");
+  const id = "018f6c86-3f34-7a31-8f27-16f5b96cce61";
+  const command = { id, userId: "42", action: "new-task", params: { provider: "codex" } };
+  await writeFile(secretFile, "e".repeat(64));
+  let sideEffects = 0;
+  let effectStarted;
+  const started = new Promise((resolve) => { effectStarted = resolve; });
+  const fetchImpl = async (url, options) => {
+    if (url.endsWith("/api/control/pull")) return Response.json({ commands: [command] });
+    return Response.json({ received: JSON.parse(options.body) });
+  };
+  const first = new MiniAppPublisher({
+    workLogFile: path.join(root, "WORK_LOG.md"),
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    controlReceiptFile: receiptFile,
+    fetchImpl,
+    controlHandler: async () => {
+      sideEffects += 1;
+      effectStarted();
+      await new Promise(() => {});
+    },
+  });
+  void first.pollControl();
+  await started;
+  // The hanging handler models a process that crashed. Make the owner in the
+  // on-disk receipt correspond to that dead process before reopening it here.
+  const receipts = JSON.parse(await readFile(receiptFile, "utf8"));
+  receipts.records[0].effectOwner.pid = 999_999;
+  await writeFile(receiptFile, `${JSON.stringify(receipts)}\n`);
+  const delivered = [];
+  const restarted = new MiniAppPublisher({
+    workLogFile: path.join(root, "WORK_LOG.md"),
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    controlReceiptFile: receiptFile,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/api/control/pull")) return Response.json({ commands: [command] });
+      delivered.push(JSON.parse(options.body));
+      return Response.json({ ok: true });
+    },
+    controlHandler: async () => {
+      sideEffects += 1;
+      return { duplicated: true };
+    },
+    controlReconciler: async () => ({ resolved: true, result: { taskId: "existing-task" } }),
+  });
+  try {
+    assert.equal(await restarted.pollControl(), 1);
+    assert.equal(sideEffects, 1);
+    assert.deepEqual(delivered, [{ id, userId: "42", ok: true, result: { taskId: "existing-task" } }]);
+  } finally {
+    await restarted.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Mini App publisher retains a delivered-result outbox across a crash before receipt cleanup", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-result-outbox-crash-"));
+  const secretFile = path.join(root, "sync.secret");
+  const receiptFile = path.join(root, "control-receipts.json");
+  const id = "018f6c86-3f34-7a31-8f27-16f5b96cce63";
+  const command = { id, userId: "42", action: "new-task", params: { provider: "codex" } };
+  await writeFile(secretFile, "g".repeat(64));
+  let effects = 0;
+  const first = new MiniAppPublisher({
+    workLogFile: path.join(root, "WORK_LOG.md"),
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    controlReceiptFile: receiptFile,
+    fetchImpl: async (url) => url.endsWith("/api/control/pull")
+      ? Response.json({ commands: [command] })
+      : Response.json({ ok: true }),
+    controlHandler: async () => ({ taskId: `task-${++effects}` }),
+    // This is the state left by a process crash after the Worker accepted its
+    // result but before the two local receipt journals were retired.
+    onControlResultDelivered: async () => {
+      throw new Error("simulated crash before receipt cleanup");
+    },
+  });
+  await assert.rejects(() => first.pollControl(), /simulated crash before receipt cleanup/u);
+  const delivered = [];
+  const restarted = new MiniAppPublisher({
+    workLogFile: path.join(root, "WORK_LOG.md"),
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    controlReceiptFile: receiptFile,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/api/control/pull")) return Response.json({ commands: [] });
+      delivered.push(JSON.parse(options.body));
+      return Response.json({ ok: true });
+    },
+    controlHandler: async () => ({ taskId: `duplicate-${++effects}` }),
+  });
+  try {
+    assert.equal(await restarted.pollControl(), 0);
+    assert.equal(effects, 1);
+    assert.deepEqual(delivered, [{ id, userId: "42", ok: true, result: { taskId: "task-1" } }]);
+  } finally {
+    await first.close();
+    await restarted.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Worker to publisher to desktop route redelivers a cached mutation result after a crash", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-route-crash-"));
+  const secretFile = path.join(root, "sync.secret");
+  const publisherReceipts = path.join(root, "publisher-receipts.json");
+  const desktopReceipts = path.join(root, "desktop-receipts.json");
+  const id = "018f6c86-3f34-7a31-8f27-16f5b96cce62";
+  const command = { id, userId: "42", action: "new-task", params: { provider: "codex" } };
+  await writeFile(secretFile, "f".repeat(64));
+  let effects = 0;
+  const firstRouter = createDesktopControlRouter({
+    handlers: { "new-task": async () => ({ taskId: `task-${++effects}` }) },
+    mutationActions: ["new-task"],
+    receiptFile: desktopReceipts,
+    reconcileMutation: async () => ({ resolved: false, error: "unexpected" }),
+  });
+  let effectFinished;
+  const finished = new Promise((resolve) => { effectFinished = resolve; });
+  const first = new MiniAppPublisher({
+    workLogFile: path.join(root, "WORK_LOG.md"), publicUrl: "https://hub.example.test", syncSecretFile: secretFile,
+    controlReceiptFile: publisherReceipts,
+    fetchImpl: async (url) => url.endsWith("/api/control/pull")
+      ? Response.json({ commands: [command] }) : Response.json({ ok: true }),
+    controlHandler: firstRouter.handleDesktopControl,
+    afterControlEffect: async () => {
+      effectFinished();
+      await new Promise(() => {});
+    },
+  });
+  void first.pollControl();
+  await finished;
+  const publisherJournal = JSON.parse(await readFile(publisherReceipts, "utf8"));
+  publisherJournal.records[0].effectOwner.pid = 999_999;
+  await writeFile(publisherReceipts, `${JSON.stringify(publisherJournal)}\n`);
+  const restartedRouter = createDesktopControlRouter({
+    handlers: { "new-task": async () => ({ taskId: `duplicate-${++effects}` }) },
+    mutationActions: ["new-task"],
+    receiptFile: desktopReceipts,
+    reconcileMutation: async () => ({ resolved: false, error: "unexpected" }),
+  });
+  const delivered = [];
+  const restarted = new MiniAppPublisher({
+    workLogFile: path.join(root, "WORK_LOG.md"), publicUrl: "https://hub.example.test", syncSecretFile: secretFile,
+    controlReceiptFile: publisherReceipts,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/api/control/pull")) return Response.json({ commands: [command] });
+      delivered.push(JSON.parse(options.body));
+      return Response.json({ ok: true });
+    },
+    controlHandler: restartedRouter.handleDesktopControl,
+    controlReconciler: async ({ action, params, context }) => ({
+      resolved: true,
+      result: await restartedRouter.handleDesktopControl({ action, params, context }),
+    }),
+  });
+  try {
+    await restarted.pollControl();
+    assert.equal(effects, 1);
+    assert.deepEqual(delivered, [{ id, userId: "42", ok: true, result: { taskId: "task-1" } }]);
+  } finally {
+    await restarted.close();
     await rm(root, { recursive: true, force: true });
   }
 });

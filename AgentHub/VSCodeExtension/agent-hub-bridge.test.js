@@ -20,6 +20,7 @@ function day(date, turnId) {
 
 test("VS Code bridge serves the same lazy journal contract", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-bridge-"));
+  let bridge;
   try {
     const journalFile = path.join(root, "WORK_LOG.md");
     await writeFile(journalFile, [
@@ -31,9 +32,10 @@ test("VS Code bridge serves the same lazy journal contract", async () => {
       day("02.07.2026", "turn-5"),
       day("01.07.2026", "turn-6"),
     ].join("\n"), "utf8");
-    const bridge = new AgentHubBridge({
+    bridge = new AgentHubBridge({
       journalFile,
       moduleRoot: path.resolve(__dirname, ".."),
+      runtimeRoot: root,
     });
     const initial = await bridge.http({ path: "/api/journal" });
     assert.equal(initial.status, 200);
@@ -47,6 +49,7 @@ test("VS Code bridge serves the same lazy journal contract", async () => {
     assert.equal(older.status, 200);
     assert.match(JSON.parse(older.body).html, /Ход turn-6/u);
   } finally {
+    bridge?.close();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -104,6 +107,7 @@ test("installed VS Code bridge resolves backend modules from the active runtime"
 
 test("VS Code bridge answers the rate-limit summary without the journal", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-limits-"));
+  let bridge;
   try {
     const journalFile = path.join(root, "WORK_LOG.md");
     await writeFile(journalFile, [
@@ -114,9 +118,10 @@ test("VS Code bridge answers the rate-limit summary without the journal", async 
         + "<span data-rate-limit-value>75.0%</span></span></div>",
       day("06.07.2026", "turn-1"),
     ].join("\n"), "utf8");
-    const bridge = new AgentHubBridge({
+    bridge = new AgentHubBridge({
       journalFile,
       moduleRoot: path.resolve(__dirname, ".."),
+      runtimeRoot: root,
     });
     const response = await bridge.http({ path: "/api/rate-limits" });
     assert.equal(response.status, 200);
@@ -126,6 +131,7 @@ test("VS Code bridge answers the rate-limit summary without the journal", async 
     // шапке отдаётся только сводка, дни в ответ не попадают
     assert.doesNotMatch(payload.html, /data-work-log-day-section/u);
   } finally {
+    bridge?.close();
     await rm(root, { recursive: true, force: true });
   }
 });

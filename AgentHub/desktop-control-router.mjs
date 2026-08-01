@@ -1,3 +1,5 @@
+import { DurableCommandReceipts, commandFingerprint } from "./durable-command-receipts.mjs";
+
 const DEFAULT_MINI_APP_LIMITS = Object.freeze({
   source: "telegram-mini-app",
   limit: 10,
@@ -12,9 +14,12 @@ export function createDesktopControlRouter({
   mutationActions,
   miniAppLimits = DEFAULT_MINI_APP_LIMITS,
   desktopMaxResponseBytes = DEFAULT_DESKTOP_MAX_RESPONSE_BYTES,
+  receiptFile = null,
+  reconcileMutation = null,
 }) {
   const mutations = new Set(mutationActions);
   let mutationQueue = Promise.resolve();
+  const receipts = receiptFile ? new DurableCommandReceipts({ file: receiptFile }) : null;
 
   function serializeDesktopMutation(operation) {
     const next = mutationQueue.catch(() => {}).then(operation);
@@ -46,8 +51,27 @@ export function createDesktopControlRouter({
       throw new Error(`Неизвестная desktop-команда: ${action}`);
     }
     const resolvedParams = effectiveParams(params, context);
+    if (action === "send-message" && context?.commandId && !resolvedParams.clientUserMessageId) {
+      resolvedParams.clientUserMessageId = String(context.commandId);
+    }
     if (mutations.has(action)) {
-      return serializeDesktopMutation(() => handler(resolvedParams, context));
+      const execute = () => serializeDesktopMutation(() => handler(resolvedParams, context));
+      const commandId = String(context?.commandId ?? "").trim();
+      if (!receipts || !commandId) return execute();
+      return receipts.execute({
+        id: commandId,
+        fingerprint: commandFingerprint({
+          action,
+          params: resolvedParams,
+          source: context?.source ?? "",
+          userId: context?.userId ?? "",
+        }),
+        action,
+        effect: execute,
+        reconcile: typeof reconcileMutation === "function"
+          ? (receipt) => reconcileMutation({ action, params: resolvedParams, context, receipt })
+          : null,
+      });
     }
     return handler(resolvedParams, context);
   }
@@ -55,5 +79,6 @@ export function createDesktopControlRouter({
   return {
     handleDesktopControl,
     serializeDesktopMutation,
+    forgetDesktopControl: (commandId) => receipts?.forget(commandId) ?? Promise.resolve(false),
   };
 }

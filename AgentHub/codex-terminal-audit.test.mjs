@@ -720,3 +720,48 @@ test("historical subagent backfill records a stale unterminated turn as aborted"
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
   assert.equal(audit.snapshot().historicalSubagentBackfill.processedTurns, 1);
 });
+
+test("terminal audit isolates a missing pending rollout from unrelated completed turns", async () => {
+  const recovered = [];
+  const audit = new CodexTerminalAudit({
+    now: () => Date.parse("2026-08-02T10:00:00.000Z"),
+    listPage: async () => ({
+      data: [
+        thread("valid", "2026-08-02T09:56:00.000Z", "valid.jsonl"),
+      ],
+      nextCursor: null,
+    }),
+    resolveProject: () => project,
+    statFile: async (file) => {
+      if (file === "missing.jsonl") {
+        const error = new Error("missing rollout");
+        error.code = "ENOENT";
+        throw error;
+      }
+      return { size: 100, mtimeMs: Date.parse("2026-08-02T09:56:00.000Z") };
+    },
+    scanFile: async () => ({
+      terminals: [{
+        turnId: "valid-turn",
+        status: "completed",
+        completedAt: "2026-08-02T09:56:00.000Z",
+      }],
+      activeTurns: [],
+      nextOffset: 100,
+    }),
+    reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
+  });
+  audit.restore({
+    version: 7,
+    completedThrough: "2026-08-02T09:50:00.000Z",
+    pendingTurns: [["missing", {
+      thread: thread("missing", "2026-08-02T09:55:00.000Z", "missing.jsonl"),
+      turns: [{ turnId: "missing-turn", startedAt: "2026-08-02T09:55:00.000Z" }],
+    }]],
+  });
+
+  await audit.run();
+  assert.deepEqual(recovered, ["valid-turn"]);
+  assert.deepEqual(audit.snapshot().positions, [["valid", { path: "valid.jsonl", offset: 100 }]]);
+  assert.equal(audit.snapshot().pendingTurns[0][0], "missing");
+});

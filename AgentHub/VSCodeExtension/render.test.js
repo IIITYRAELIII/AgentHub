@@ -2,6 +2,8 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 
 const { renderWorkLog, sanitizeWorkLogHtml } = require("./render.js");
@@ -11,6 +13,135 @@ const THEMES = [
   "orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "metropolis",
   "magma",
 ];
+
+function loadSharedWebview(vscode) {
+  const Module = require("node:module");
+  const modulePath = require.resolve("./shared-webview.js");
+  const originalLoad = Module._load;
+  delete require.cache[modulePath];
+  Module._load = function patchedLoad(request, parent, isMain) {
+    if (request === "vscode" && parent?.filename === modulePath) return vscode;
+    return originalLoad.call(this, request, parent, isMain);
+  };
+  try {
+    return require(modulePath);
+  } finally {
+    Module._load = originalLoad;
+  }
+}
+
+function vscodeUri(fsPath) {
+  return { fsPath };
+}
+
+function webviewVscode(workspaceFolders) {
+  return {
+    FileType: { File: 1 },
+    Uri: {
+      joinPath(uri, ...segments) {
+        return vscodeUri(path.join(uri.fsPath, ...segments));
+      },
+    },
+    workspace: {
+      workspaceFolders: workspaceFolders.map((fsPath) => ({ uri: vscodeUri(fsPath) })),
+      fs: {
+        async stat(uri) {
+          return { type: fs.statSync(uri.fsPath).isFile() ? 1 : 2 };
+        },
+        async readFile(uri) {
+          return fs.readFileSync(uri.fsPath);
+        },
+      },
+    },
+  };
+}
+
+test("shared webview never loads assets shadowed by a workspace folder", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-webview-assets-"));
+  const shadowRoot = path.join(root, "shadow");
+  const extensionRoot = path.join(root, "extension");
+  const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "mini-app");
+  const extensionAssets = path.join(extensionRoot, "media", "mini-app");
+  const required = [
+    "app.js", "metropolis-glass.js", "storm-glass.js", "message-lifecycle.js", "hub-client.js",
+    "styles.css",
+  ];
+  try {
+    fs.mkdirSync(shadowAssets, { recursive: true });
+    fs.mkdirSync(extensionAssets, { recursive: true });
+    fs.writeFileSync(path.join(shadowAssets, "index.html"), '<meta charset="utf-8">shadow<script src="/app.js" defer></script>');
+    fs.writeFileSync(path.join(extensionAssets, "index.html"), '<meta charset="utf-8">trusted<script src="/app.js" defer></script>');
+    for (const file of required) {
+      fs.writeFileSync(path.join(shadowAssets, file), "");
+      fs.writeFileSync(path.join(extensionAssets, file), "");
+    }
+    fs.writeFileSync(path.join(shadowRoot, "Utilities", "AgentHub", "work-log.css"), "");
+    fs.mkdirSync(path.join(shadowRoot, "Utilities", "AgentHub", "VSCodeExtension"), { recursive: true });
+    fs.writeFileSync(path.join(shadowRoot, "Utilities", "AgentHub", "VSCodeExtension", "vscode-bootstrap.js"), "");
+    fs.mkdirSync(path.join(extensionRoot, "media"), { recursive: true });
+    fs.writeFileSync(path.join(extensionRoot, "media", "work-log.css"), "");
+    fs.writeFileSync(path.join(extensionRoot, "vscode-bootstrap.js"), "");
+    const { sharedWebviewHtml } = loadSharedWebview(webviewVscode([shadowRoot]));
+    const webview = {
+      cspSource: "vscode-webview://test",
+      asWebviewUri: (uri) => `vscode-webview-resource:${uri.fsPath}`,
+    };
+    const result = await sharedWebviewHtml(webview, vscodeUri(extensionRoot));
+    assert.match(result.html, /trusted/u);
+    assert.doesNotMatch(result.html, /shadow/u);
+    assert.ok(result.roots.every((uri) => uri.fsPath.startsWith(extensionRoot)));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("extension bundles every shared webview asset", () => {
+  const extensionRoot = path.dirname(require.resolve("./package.json"));
+  const bundled = [
+    ["../assets/mini-app/index.html", "media/mini-app/index.html"],
+    ["../assets/mini-app/app.js", "media/mini-app/app.js"],
+    ["../assets/mini-app/metropolis-glass.js", "media/mini-app/metropolis-glass.js"],
+    ["../assets/mini-app/storm-glass.js", "media/mini-app/storm-glass.js"],
+    ["../assets/mini-app/message-lifecycle.js", "media/mini-app/message-lifecycle.js"],
+    ["../assets/mini-app/hub-client.js", "media/mini-app/hub-client.js"],
+    ["../assets/mini-app/styles.css", "media/mini-app/styles.css"],
+    ["../work-log.css", "media/work-log.css"],
+    ["../assets/mini-app/pulsar-beams.png", "media/mini-app/pulsar-beams.png"],
+    ["../assets/mini-app/blackhole-blue.png", "media/mini-app/blackhole-blue.png"],
+    ["../assets/mini-app/rainforest-night.png", "media/mini-app/rainforest-night.png"],
+    ["../assets/mini-app/magma-crust.png", "media/mini-app/magma-crust.png"],
+    ["../assets/mini-app/metropolis-night.png", "media/mini-app/metropolis-night.png"],
+    ["../assets/mini-app/storm-sea.png", "media/mini-app/storm-sea.png"],
+    ["../assets/mini-app/storm-flash.png", "media/mini-app/storm-flash.png"],
+    ["../assets/mini-app/meadow-sun.png", "media/mini-app/meadow-sun.png"],
+    ["../assets/mini-app/lake-summer.jpg", "media/mini-app/lake-summer.jpg"],
+    ["../assets/mini-app/orbit-earth.png", "media/mini-app/orbit-earth.png"],
+    ["../assets/mini-app/nebula-veil.png", "media/mini-app/nebula-veil.png"],
+    ["../assets/mini-app/gothic-concrete.png", "media/mini-app/gothic-concrete.png"],
+  ];
+  for (const [sourcePath, bundledPath] of bundled) {
+    const source = fs.readFileSync(path.join(extensionRoot, sourcePath));
+    const bundledAsset = fs.readFileSync(path.join(extensionRoot, bundledPath));
+    assert.deepEqual(bundledAsset, source, bundledPath);
+  }
+  assert.ok(fs.statSync(path.join(extensionRoot, "vscode-bootstrap.js")).isFile());
+});
+
+test("missing bundled resources fail closed without workspace-derived fallback", () => {
+  const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
+  assert.match(extension, /this\.sharedPanel = "unavailable"/u);
+  assert.match(extension, /Ресурсы Agent Hub повреждены/u);
+  assert.doesNotMatch(extension, /catch \(error\) \{\s*panel\.webview\.html = webviewHtml/u);
+});
+
+test("webview resource roots exclude every workspace folder", () => {
+  const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
+  assert.match(
+    extension,
+    /localResourceRoots:\s*\[\s*this\.context\.extensionUri,\s*vscode\.Uri\.file\(/u,
+  );
+  assert.doesNotMatch(extension, /localResourceRoots:\s*\[[^\]]*workspaceFolders\(/u);
+});
 
 test("renderWorkLog turns the document title into a heading and preserves journal HTML", () => {
   assert.equal(

@@ -121,6 +121,46 @@ export class QuickTunnelController {
     return ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", this.#localUrl];
   }
 
+  async #terminateChild(child) {
+    if (this.#child === child) {
+      this.#child = null;
+      this.#url = null;
+    }
+    if (!child || child.exitCode != null) return;
+    let exited = false;
+    const exitPromise = new Promise((resolve) => {
+      child.once("exit", () => {
+        exited = true;
+        resolve();
+      });
+    });
+    try {
+      child.kill();
+    } catch {
+      // The hard-kill fallback below still handles a child that resisted a graceful signal.
+    }
+    await Promise.race([
+      exitPromise,
+      new Promise((resolve) => {
+        const timer = setTimeout(resolve, 1_000);
+        timer.unref?.();
+      }),
+    ]);
+    if (exited || child.exitCode != null) return;
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // A process that already disappeared has no further cleanup to perform.
+    }
+    await Promise.race([
+      exitPromise,
+      new Promise((resolve) => {
+        const timer = setTimeout(resolve, 1_000);
+        timer.unref?.();
+      }),
+    ]);
+  }
+
   async start() {
     if (this.#url && this.#child) return this.#url;
     if (this.#startPromise) return this.#startPromise;
@@ -137,10 +177,14 @@ export class QuickTunnelController {
       let output = "";
       let settled = false;
       let publishing = false;
-      const timeout = setTimeout(() => {
+      const fail = (error) => {
         if (settled) return;
         settled = true;
-        reject(new Error("Quick Tunnel did not publish an HTTPS URL in time"));
+        clearTimeout(timeout);
+        this.#terminateChild(child).finally(() => reject(error));
+      };
+      const timeout = setTimeout(() => {
+        fail(new Error("Quick Tunnel did not publish an HTTPS URL in time"));
       }, this.#timeoutMs);
       timeout.unref?.();
       const consume = (chunk) => {
@@ -158,10 +202,7 @@ export class QuickTunnelController {
               settled = true;
               this.#url = this.#publicUrl;
               resolve(this.#publicUrl);
-            }, (error) => {
-              settled = true;
-              reject(error);
-            });
+            }, fail);
           return;
         }
         const url = findQuickTunnelUrl(output);
@@ -170,14 +211,11 @@ export class QuickTunnelController {
         clearTimeout(timeout);
         this.#waitUntilReachable(url)
           .then(() => this.#onUrl?.(url))
-          .then(() => {
-            settled = true;
-            this.#url = url;
-            resolve(url);
-          }, (error) => {
-            settled = true;
-            reject(error);
-          });
+            .then(() => {
+              settled = true;
+              this.#url = url;
+              resolve(url);
+            }, fail);
       };
       child.stdout?.on("data", consume);
       child.stderr?.on("data", consume);
@@ -193,23 +231,14 @@ export class QuickTunnelController {
                 settled = true;
                 this.#url = url;
                 resolve(url);
-              }, (error) => {
-                settled = true;
-                reject(error);
-              });
+              }, fail);
           }
         }, (error) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeout);
-          reject(error);
+          fail(error);
         });
       }
       child.once("error", (error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        reject(error);
+        fail(error);
       });
       child.once("exit", (code, signal) => {
         this.#child = null;
@@ -227,17 +256,6 @@ export class QuickTunnelController {
 
   async close() {
     const child = this.#child;
-    this.#child = null;
-    this.#url = null;
-    if (!child || child.exitCode != null) return;
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, 3_000);
-      timer.unref?.();
-      child.once("exit", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-      child.kill();
-    });
+    await this.#terminateChild(child);
   }
 }

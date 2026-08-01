@@ -1,6 +1,46 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { createDesktopControlRouter } from "./desktop-control-router.mjs";
+
+test("desktop mutation reconciles a redelivery after a crash without repeating its effect", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-receipt-"));
+  const receiptFile = path.join(root, "receipts.json");
+  let effects = 0;
+  let effectStarted;
+  const started = new Promise((resolve) => { effectStarted = resolve; });
+  const request = {
+    action: "mutate",
+    params: { value: "one" },
+    context: { source: "telegram-mini-app", userId: "42", commandId: "command-1" },
+  };
+  const first = createDesktopControlRouter({
+    handlers: {
+      mutate: async () => {
+        effects += 1;
+        effectStarted();
+        await new Promise(() => {});
+      },
+    },
+    mutationActions: ["mutate"],
+    receiptFile,
+  });
+  void first.handleDesktopControl(request);
+  await started;
+  const receipts = JSON.parse(await readFile(receiptFile, "utf8"));
+  receipts.records[0].effectOwner.pid = 999_999;
+  await writeFile(receiptFile, `${JSON.stringify(receipts)}\n`);
+  const restarted = createDesktopControlRouter({
+    handlers: { mutate: async () => { effects += 1; } },
+    mutationActions: ["mutate"],
+    receiptFile,
+    reconcileMutation: async () => ({ resolved: true, result: { accepted: true } }),
+  });
+  assert.deepEqual(await restarted.handleDesktopControl(request), { accepted: true });
+  assert.equal(effects, 1);
+});
 
 test("desktop control router applies transport-specific response limits", async () => {
   const received = [];

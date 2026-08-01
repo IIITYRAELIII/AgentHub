@@ -133,6 +133,43 @@ test("all-time history falls back to calendar days on long spans", () => {
   assert.ok(history.points.every((point) => new Date(point.at).getHours() === 0));
 });
 
+test("all-time history respects maxPoints while preserving all credits", () => {
+  const now = new Date(2026, 6, 30, 18, 0, 0, 0).getTime();
+  const turns = {};
+  for (let index = 0; index < 3_000; index += 1) {
+    const at = new Date(now);
+    at.setDate(at.getDate() - index);
+    turns[`turn-${index}`] = {
+      completedAt: at.toISOString(),
+      estimatedCredits: 1,
+      estimateKind: "model",
+    };
+  }
+  const history = buildWorkLogUsageHistory(turns, { range: "all", now, maxPoints: 10 });
+  assert.ok(history.points.length <= 10);
+  assert.equal(history.points.reduce((sum, point) => sum + point.credits, 0), 3_000);
+  assert.equal(history.totalCredits, 3_000);
+});
+
+test("Fast label uses the same model multiplier as credit calculation", () => {
+  const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
+    mini: {
+      provider: "codex",
+      threadId: "thread-mini",
+      turnId: "turn-mini",
+      taskTitle: "Mini",
+      title: "Проверка",
+      usageReported: true,
+      usage: { inputTokens: 1_000 },
+      model: "gpt-5.4-mini",
+      serviceTier: "fast",
+      completedAt: "2026-07-30T12:00:00.000Z",
+    },
+  });
+  assert.match(projected, /gpt-5\.4-mini · Fast ×1/u);
+  assert.doesNotMatch(projected, /gpt-5\.4-mini · Fast ×2/u);
+});
+
 test("rate-limit summary is replaced in place above the journal days", () => {
   const first = projectWorkLogRateLimits(
     "# Глобальный журнал работ\n\n<details></details>\n",
@@ -1269,6 +1306,44 @@ test("automatic batch records many historical turns and projects once", async ()
   }
 });
 
+test("usage projection retries after a concurrent manual WORK_LOG edit", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-manual-edit-race-"));
+  try {
+    const ledgerFile = path.join(root, "data", "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    await mkdir(path.dirname(ledgerFile), { recursive: true });
+    await writeFile(workLogFile, "# Глобальный журнал работ\n", "utf8");
+    let edited = false;
+    const store = new WorkLogUsageStore({
+      ledgerFile,
+      defaultProjectRoot: root,
+      beforeProjectionWrite: async ({ current }) => {
+        if (edited) return;
+        edited = true;
+        await writeFile(workLogFile, `${current}\nРучная заметка\n`, "utf8");
+      },
+    });
+
+    await store.recordAutomaticAndProject({
+      threadId: "thread-manual",
+      turnId: "turn-manual",
+      projectRoot: root,
+      usageReported: true,
+      usage: { inputTokens: 100 },
+      completedAt: "2026-07-27T00:00:00.000Z",
+      text: "Автоматический ход",
+      workLogFile,
+    });
+
+    const projected = await readFile(workLogFile, "utf8");
+    assert.equal(edited, true);
+    assert.match(projected, /Ручная заметка/u);
+    assert.match(projected, /Автоматический ход/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("automatic ledger survives a projection failure and reprojects later", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-durable-"));
   try {
@@ -1433,6 +1508,37 @@ test("usage store recovers a damaged primary ledger from its backup", async () =
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.keys(ledger.turns).length, 1);
     assert.equal(ledger.version, 8);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent read-only recovery instances serialize their repair checkpoint", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-read-recovery-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    const seed = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    await seed.recordAutomaticAndProject({
+      threadId: "thread-recovery",
+      turnId: "turn-recovery",
+      projectRoot: root,
+      usageReported: true,
+      usage: { inputTokens: 100 },
+      completedAt: "2026-07-27T00:00:00.000Z",
+      text: "Восстановлено чтением",
+      workLogFile,
+    });
+    await writeFile(ledgerFile, "{damaged", "utf8");
+    const first = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    const second = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    const [turn, history] = await Promise.all([
+      first.getTurn({ provider: "codex", threadId: "thread-recovery", turnId: "turn-recovery" }),
+      second.usageHistory(),
+    ]);
+    assert.equal(turn.turnId, "turn-recovery");
+    assert.equal(typeof history.totalCredits, "number");
+    assert.equal(JSON.parse(await readFile(ledgerFile, "utf8")).version, 8);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
