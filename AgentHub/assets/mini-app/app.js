@@ -1183,6 +1183,79 @@ function appendInlineMarkdown(target, source) {
   target.append(document.createTextNode(text.slice(cursor)));
 }
 
+function markdownTableCells(line) {
+  const source = String(line ?? "").trim();
+  if (!source.includes("|")) return null;
+  const cells = [];
+  let cell = "";
+  let code = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === "\\" && source[index + 1] === "|") {
+      cell += "|";
+      index += 1;
+      continue;
+    }
+    if (character === "`") code = !code;
+    if (character === "|" && !code) {
+      cells.push(cell.trim());
+      cell = "";
+    } else {
+      cell += character;
+    }
+  }
+  cells.push(cell.trim());
+  if (source.startsWith("|")) cells.shift();
+  if (source.endsWith("|")) cells.pop();
+  return cells.length >= 2 ? cells : null;
+}
+
+function markdownTableAt(lines, index) {
+  const headers = markdownTableCells(lines[index]);
+  const delimiters = markdownTableCells(lines[index + 1]);
+  if (!headers || !delimiters || headers.length !== delimiters.length) return null;
+  if (!delimiters.every((cell) => /^:?-{3,}:?$/u.test(cell.replace(/\s/gu, "")))) return null;
+  const alignments = delimiters.map((cell) => {
+    const value = cell.replace(/\s/gu, "");
+    if (value.startsWith(":") && value.endsWith(":")) return "center";
+    if (value.endsWith(":")) return "right";
+    return "left";
+  });
+  const rows = [];
+  let nextIndex = index + 2;
+  while (nextIndex < lines.length && lines[nextIndex].trim()) {
+    const row = markdownTableCells(lines[nextIndex]);
+    if (!row) break;
+    rows.push(headers.map((_, cellIndex) => row[cellIndex] ?? ""));
+    nextIndex += 1;
+  }
+  return { headers, alignments, rows, nextIndex };
+}
+
+function renderMarkdownTable(table) {
+  const head = el("tr");
+  table.headers.forEach((value, index) => {
+    const cell = el("th", { scope: "col" });
+    cell.style.textAlign = table.alignments[index];
+    appendInlineMarkdown(cell, value);
+    head.append(cell);
+  });
+  const body = el("tbody");
+  table.rows.forEach((values) => {
+    const row = el("tr");
+    values.forEach((value, index) => {
+      const cell = el("td");
+      cell.style.textAlign = table.alignments[index];
+      appendInlineMarkdown(cell, value);
+      row.append(cell);
+    });
+    body.append(row);
+  });
+  return el("div", { class: "markdown-table-scroll", tabindex: "0" }, [
+    el("table", { class: "markdown-table" }, [el("thead", {}, [head]), body]),
+  ]);
+}
+
 function renderMarkdown(target, source) {
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
@@ -1210,6 +1283,12 @@ function renderMarkdown(target, source) {
       appendInlineMarkdown(node, heading[2]);
       target.append(node);
       index += 1;
+      continue;
+    }
+    const table = markdownTableAt(lines, index);
+    if (table) {
+      target.append(renderMarkdownTable(table));
+      index = table.nextIndex;
       continue;
     }
     const list = line.match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
@@ -1240,7 +1319,8 @@ function renderMarkdown(target, source) {
     const paragraph = [];
     while (index < lines.length
       && lines[index].trim()
-      && !/^\s*(?:```|#{1,6}\s|[-+*]\s+|\d+\.\s+|>\s?)/u.test(lines[index])) {
+      && !/^\s*(?:```|#{1,6}\s|[-+*]\s+|\d+\.\s+|>\s?)/u.test(lines[index])
+      && !markdownTableAt(lines, index)) {
       paragraph.push(lines[index++]);
     }
     const node = el("p");

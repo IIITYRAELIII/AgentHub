@@ -5770,6 +5770,59 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   padding-left: 0.75em;
 }
 
+.msg-body .markdown-table-scroll,
+.msg-reasoning .markdown-table-scroll {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  margin: 0.6em 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
+.msg-body .markdown-table,
+.msg-reasoning .markdown-table {
+  border-collapse: collapse;
+  font-size: 0.9em;
+  min-width: 100%;
+  width: max-content;
+}
+
+.msg-body .markdown-table th,
+.msg-body .markdown-table td,
+.msg-reasoning .markdown-table th,
+.msg-reasoning .markdown-table td {
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  padding: 0.42em 0.65em;
+  white-space: normal;
+}
+
+.msg-body .markdown-table th:last-child,
+.msg-body .markdown-table td:last-child,
+.msg-reasoning .markdown-table th:last-child,
+.msg-reasoning .markdown-table td:last-child {
+  border-right: 0;
+}
+
+.msg-body .markdown-table tbody tr:last-child td,
+.msg-reasoning .markdown-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.msg-body .markdown-table th,
+.msg-reasoning .markdown-table th {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-1));
+  color: var(--text);
+  font-weight: 650;
+}
+
+.msg-body .markdown-table tbody tr:nth-child(even),
+.msg-reasoning .markdown-table tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--surface-2) 58%, transparent);
+}
+
 .activity-feed {
   border-top: 1px solid var(--line);
   margin-top: 0.7rem;

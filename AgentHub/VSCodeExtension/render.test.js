@@ -629,6 +629,17 @@ test("live reasoning renders Markdown separately from the response", () => {
   assert.match(app, /renderMarkdown\(body, visibleText\);/u);
 });
 
+test("shared chat Markdown renders GFM tables responsively", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(app, /function markdownTableCells\(line\)/u);
+  assert.match(app, /\^:\?-\{3,\}:\?\$/u);
+  assert.match(app, /renderMarkdownTable\(table\)/u);
+  assert.match(app, /el\("table", \{ class: "markdown-table" \}/u);
+  assert.match(styles, /\.markdown-table-scroll[\s\S]*overflow-x: auto;/u);
+  assert.match(styles, /\.markdown-table[\s\S]*border-collapse: collapse;/u);
+});
+
 test("deferred messages show their preview and can be queued after the active turn", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
