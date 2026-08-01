@@ -2764,7 +2764,10 @@ const desktopTaskHistory = createDesktopTaskHistoryFactory({
     refresh: refreshTaskCatalog,
   },
   historyReader: {
-    read: (binding) => taskViewController.readHistory(binding, { cachedOnly: true }),
+    read: async (binding) => {
+      const cached = await taskViewController.readHistory(binding, { cachedOnly: true });
+      return cached.history.length ? cached : taskViewController.readHistory(binding);
+    },
     refresh: (binding) => taskViewController.readHistory(binding),
   },
   runs: {
