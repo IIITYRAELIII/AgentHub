@@ -1444,6 +1444,9 @@ async function projectClaudeRunToWorkLog(run, {
     prompt: transcriptTurn?.prompt || run.promptPreview,
     changedFiles: changedFilesForRun(run),
     diff: run.latestDiff ?? "",
+    skillsUsed: transcriptTurn?.skillsUsed ?? [],
+    mcpCalls: transcriptTurn?.mcpCalls ?? [],
+    toolMetricsKnown: transcriptTurn?.toolMetricsKnown === true,
     message: null,
   }, {
     title: conciseTurnTitle(answer, status),

@@ -100,7 +100,130 @@ test("Claude transcript scanner returns stable completed turns and deduplicates 
     completedAt: "2026-07-29T10:00:02.000Z",
     status: "completed",
     cwd: "D:\\projects\\Utilities",
+    skillsUsed: [],
+    mcpCalls: [],
+    toolMetricsKnown: true,
   });
+});
+
+test("Claude transcript scanner records skills and completed MCP calls", () => {
+  const text = [
+    line({
+      type: "user",
+      uuid: "prompt-tools",
+      timestamp: "2026-07-29T10:00:00.000Z",
+      cwd: "D:\\projects\\Utilities",
+      sessionId: "session-tools",
+      message: { role: "user", content: "Используй инструменты" },
+    }),
+    line({
+      type: "assistant",
+      timestamp: "2026-07-29T10:00:01.000Z",
+      message: {
+        id: "message-skill",
+        role: "assistant",
+        model: "claude-opus-4-8",
+        stop_reason: "tool_use",
+        content: [{
+          type: "tool_use",
+          id: "skill-1",
+          name: "Skill",
+          input: { skill: "openai-docs", args: "private request" },
+        }],
+      },
+    }),
+    line({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "skill-1", content: "loaded" }],
+      },
+    }),
+    line({
+      type: "assistant",
+      timestamp: "2026-07-29T10:00:02.000Z",
+      message: {
+        id: "message-mcp-ok",
+        role: "assistant",
+        model: "claude-opus-4-8",
+        stop_reason: "tool_use",
+        content: [{
+          type: "tool_use",
+          id: "mcp-1",
+          name: "mcp__1c-access__onec_infobases",
+          input: { secret: "not persisted" },
+        }],
+      },
+    }),
+    line({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "mcp-1", content: "private result" }],
+      },
+    }),
+    line({
+      type: "assistant",
+      timestamp: "2026-07-29T10:00:03.000Z",
+      message: {
+        id: "message-mcp-failed",
+        role: "assistant",
+        model: "claude-opus-4-8",
+        stop_reason: "tool_use",
+        content: [{
+          type: "tool_use",
+          id: "mcp-2",
+          name: "mcp__docs__search_api",
+          input: { query: "private query" },
+        }, {
+          type: "tool_use",
+          id: "mcp-unfinished",
+          name: "mcp__docs__unfinished",
+          input: {},
+        }],
+      },
+    }),
+    line({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: "mcp-2",
+          is_error: true,
+          content: "private failure",
+        }],
+      },
+    }),
+    line({
+      type: "assistant",
+      timestamp: "2026-07-29T10:00:04.000Z",
+      message: {
+        id: "message-final",
+        role: "assistant",
+        model: "claude-opus-4-8",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Готово" }],
+      },
+    }),
+  ].join("\n");
+
+  const result = scanClaudeHistoricalTranscript(text, { transcriptPath: "session-tools.jsonl" });
+  assert.equal(result.turns.length, 1);
+  assert.deepEqual(result.turns[0].skillsUsed, ["openai-docs"]);
+  assert.deepEqual(result.turns[0].mcpCalls, [{
+    id: "mcp-1",
+    server: "1c-access",
+    tool: "onec_infobases",
+    status: "completed",
+  }, {
+    id: "mcp-2",
+    server: "docs",
+    tool: "search_api",
+    status: "failed",
+  }]);
+  assert.equal(result.turns[0].toolMetricsKnown, true);
+  assert.doesNotMatch(JSON.stringify(result.turns[0].mcpCalls), /private|secret|query/u);
 });
 
 test("Claude transcript accounting prices cache categories, model changes and dated rates", () => {
@@ -209,6 +332,17 @@ test("Claude backfill is additive, idempotent and keeps recoverable backups", as
       },
     },
   })}\n`, "utf8");
+  await writeFile(`${ledgerFile}.delta.jsonl`, `${JSON.stringify({
+    op: "upsert",
+    key: "codex\u0000delta-thread\u0000delta-turn",
+    record: {
+      provider: "codex",
+      threadId: "delta-thread",
+      turnId: "delta-turn",
+      projectRoot,
+      completedAt: "2026-07-28T11:00:00.000Z",
+    },
+  })}\n`, "utf8");
   await writeFile(workLogFile, "# Глобальный журнал работ\n", "utf8");
   await writeFile(path.join(transcriptRoot, "session-1.jsonl"), [
     line({
@@ -240,7 +374,7 @@ test("Claude backfill is additive, idempotent and keeps recoverable backups", as
   };
   const first = await buildClaudeWorkLogBackfill(options);
   assert.equal(first.report.importedTurns, 1);
-  assert.equal(Object.keys(first.ledger.turns).length, 2);
+  assert.equal(Object.keys(first.ledger.turns).length, 3);
   const imported = first.ledger.turns["claude\u0000session-1\u0000prompt-1"];
   assert.equal(imported.estimatedCredits, 0.002625);
   assert.equal(imported.estimateKind, "claude-api-token-pricing");
@@ -257,7 +391,7 @@ test("Claude backfill is additive, idempotent and keeps recoverable backups", as
   assert.equal(second.report.importedTurns, 0);
   assert.equal(second.report.existingTurns, 1);
   assert.equal(second.report.updatedTurns, 0);
-  assert.equal(Object.keys(second.ledger.turns).length, 2);
+  assert.equal(Object.keys(second.ledger.turns).length, 3);
 });
 
 test("Claude backfill adds token pricing to existing unpriced turns", async () => {
@@ -294,6 +428,29 @@ test("Claude backfill adds token pricing to existing unpriced turns", async () =
     }),
     line({
       type: "assistant",
+      timestamp: "2026-07-30T10:00:30.000Z",
+      message: {
+        id: "tools-1",
+        role: "assistant",
+        model: "claude-opus-5",
+        stop_reason: "tool_use",
+        content: [{
+          type: "tool_use",
+          id: "skill-1",
+          name: "Skill",
+          input: { skill: "openai-docs" },
+        }],
+      },
+    }),
+    line({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "skill-1", content: "loaded" }],
+      },
+    }),
+    line({
+      type: "assistant",
       timestamp: "2026-07-30T10:01:00.000Z",
       message: {
         id: "answer-1",
@@ -314,6 +471,10 @@ test("Claude backfill adds token pricing to existing unpriced turns", async () =
   assert.equal(result.report.importedTurns, 0);
   assert.equal(result.report.existingTurns, 1);
   assert.equal(result.report.updatedTurns, 1);
+  assert.equal(result.ledger.version, 8);
   assert.equal(result.ledger.turns[key].estimatedCredits, 750);
   assert.equal(result.ledger.turns[key].estimateKind, "claude-api-token-pricing");
+  assert.deepEqual(result.ledger.turns[key].skillsUsed, ["openai-docs"]);
+  assert.deepEqual(result.ledger.turns[key].mcpCalls, []);
+  assert.equal(result.ledger.turns[key].toolMetricsKnown, true);
 });

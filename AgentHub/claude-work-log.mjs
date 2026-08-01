@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { findContainingProject } from "./config.mjs";
+import { applyLedgerDelta } from "./incremental-ledger.mjs";
 import { creditsFromUsd } from "./token-usage.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
@@ -97,6 +98,46 @@ function uniqueAssistantEntries(entries) {
     unique.set(key, entry);
   }
   return [...unique.values()];
+}
+
+function claudeToolMetrics(entries) {
+  const toolResults = new Map();
+  for (const entry of entries) {
+    for (const block of contentBlocks(entry?.message)) {
+      if (block?.type !== "tool_result") continue;
+      const toolUseId = String(block.tool_use_id ?? "").trim();
+      if (toolUseId) toolResults.set(toolUseId, block.is_error === true ? "failed" : "completed");
+    }
+  }
+
+  const skillsUsed = new Set();
+  const mcpCalls = new Map();
+  for (const entry of entries) {
+    if (entry?.type !== "assistant" || entry.message?.role !== "assistant") continue;
+    for (const block of contentBlocks(entry?.message)) {
+      if (block?.type !== "tool_use") continue;
+      const name = String(block.name ?? "").trim();
+      if (name === "Skill") {
+        const skill = String(block.input?.skill ?? "").trim();
+        if (skill) skillsUsed.add(skill);
+        continue;
+      }
+      const match = /^mcp__(.+?)__(.+)$/u.exec(name);
+      const id = String(block.id ?? "").trim();
+      if (!match || !id || !toolResults.has(id)) continue;
+      mcpCalls.set(id, {
+        id,
+        server: match[1],
+        tool: match[2],
+        status: toolResults.get(id),
+      });
+    }
+  }
+  return {
+    skillsUsed: [...skillsUsed],
+    mcpCalls: [...mcpCalls.values()],
+    toolMetricsKnown: true,
+  };
 }
 
 function nonNegative(value) {
@@ -290,7 +331,8 @@ export function scanClaudeHistoricalTranscript(text, { transcriptPath = "" } = {
     const promptEntry = entries[start];
     const prompt = promptText(promptEntry);
     if (isUtilityPrompt(prompt)) continue;
-    const assistantEntries = uniqueAssistantEntries(entries.slice(start + 1, end));
+    const turnEntries = entries.slice(start + 1, end);
+    const assistantEntries = uniqueAssistantEntries(turnEntries);
     if (!assistantEntries.length) continue;
     const completedEntries = assistantEntries.filter((entry) => (
       entry.message?.stop_reason === "end_turn"
@@ -304,6 +346,7 @@ export function scanClaudeHistoricalTranscript(text, { transcriptPath = "" } = {
     if (!terminal) continue;
     const { usage, reported } = claudeTranscriptTokenUsage(assistantEntries);
     const estimatedCredits = claudeTranscriptEstimatedCredits(assistantEntries);
+    const toolMetrics = claudeToolMetrics(turnEntries);
     const models = [...new Set(assistantEntries
       .map((entry) => String(entry.message?.model ?? "").trim().toLowerCase())
       .filter(Boolean))];
@@ -333,6 +376,7 @@ export function scanClaudeHistoricalTranscript(text, { transcriptPath = "" } = {
       completedAt,
       status: completed ? "completed" : "aborted",
       cwd,
+      ...toolMetrics,
     });
   }
 
@@ -374,12 +418,16 @@ export async function buildClaudeWorkLogBackfill({
   ledgerFile,
   projects,
 } = {}) {
-  const currentLedger = await readFile(ledgerFile, "utf8")
+  let currentLedger = await readFile(ledgerFile, "utf8")
     .then(JSON.parse)
     .catch((error) => {
-      if (error?.code === "ENOENT") return { version: 7, turns: {} };
+      if (error?.code === "ENOENT") return { version: 8, turns: {} };
       throw error;
     });
+  currentLedger = (await applyLedgerDelta(
+    currentLedger,
+    `${ledgerFile}.delta.jsonl`,
+  )).value;
   const turns = { ...(currentLedger?.turns ?? {}) };
   const files = await transcriptFiles(path.resolve(transcriptRoot));
   files.sort((left, right) => left.localeCompare(right));
@@ -440,6 +488,19 @@ export async function buildClaudeWorkLogBackfill({
           };
           updated = true;
         }
+        if (record.toolMetricsKnown === true && (
+          turns[key].toolMetricsKnown !== true
+          || JSON.stringify(turns[key].skillsUsed ?? []) !== JSON.stringify(record.skillsUsed)
+          || JSON.stringify(turns[key].mcpCalls ?? []) !== JSON.stringify(record.mcpCalls)
+        )) {
+          turns[key] = {
+            ...turns[key],
+            skillsUsed: record.skillsUsed,
+            mcpCalls: record.mcpCalls,
+            toolMetricsKnown: true,
+          };
+          updated = true;
+        }
         if (updated) report.updatedTurns += 1;
         continue;
       }
@@ -448,7 +509,7 @@ export async function buildClaudeWorkLogBackfill({
       if (!record.estimatedCredits) report.recordsWithoutCost += 1;
     }
   }
-  return { ledger: { version: 7, turns }, report };
+  return { ledger: { version: 8, turns }, report };
 }
 
 function migrationTimestamp(now = new Date()) {
@@ -464,7 +525,7 @@ export async function applyClaudeWorkLogBackfill({
 } = {}) {
   const backupDirectory = path.join(backupRoot, `claude-${migrationTimestamp(now)}`);
   await mkdir(backupDirectory, { recursive: true });
-  for (const file of [ledgerFile, workLogFile]) {
+  for (const file of [ledgerFile, `${ledgerFile}.delta.jsonl`, workLogFile]) {
     try {
       await copyFile(file, path.join(backupDirectory, path.basename(file)));
     } catch (error) {
@@ -474,6 +535,7 @@ export async function applyClaudeWorkLogBackfill({
   const ledgerText = `${JSON.stringify(migration.ledger, null, 2)}\n`;
   await writeTextAtomic(ledgerFile, ledgerText);
   await writeTextAtomic(`${ledgerFile}.bak`, ledgerText);
+  await rm(`${ledgerFile}.delta.jsonl`, { force: true });
   await writeTextAtomic(
     workLogFile,
     projectWorkLogUsage("# Глобальный журнал работ\n", migration.ledger.turns),
