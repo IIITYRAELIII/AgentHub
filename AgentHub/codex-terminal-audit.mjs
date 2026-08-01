@@ -10,8 +10,8 @@ const DEFAULT_STATUS_POLL_MS = 30_000;
 const DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS = 24 * 60 * 60_000;
 const DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES = 32 * 1024 * 1024;
 const DEFAULT_HISTORICAL_ACTIVE_STALE_MS = 30 * 60_000;
-const SNAPSHOT_VERSION = 6;
-const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, SNAPSHOT_VERSION]);
+const SNAPSHOT_VERSION = 7;
+const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, SNAPSHOT_VERSION]);
 
 function timestampMs(value) {
   const numeric = Number(value);
@@ -49,6 +49,14 @@ function threadReference(thread) {
     updatedAt: thread?.updatedAt ?? "",
     name: String(thread?.name ?? "").trim(),
   };
+}
+
+function historicalRolloutKey(thread) {
+  const reference = threadReference(thread);
+  // One Codex thread can have several physical rollout files (for example,
+  // after a resumed session).  The historical queue must visit every file;
+  // deduplicating only by thread ID silently loses older portions of history.
+  return `${reference.id}\u0000${reference.path.toLowerCase()}`;
 }
 
 function restoredPendingThread(value) {
@@ -403,7 +411,7 @@ export class CodexTerminalAudit {
         const thread = threadReference(value);
         if (!thread.id || !thread.path) continue;
         if (!this.resolveProject(thread)) continue;
-        candidates.set(thread.id, thread);
+        candidates.set(historicalRolloutKey(thread), thread);
       }
       cursor = page?.nextCursor ?? null;
     } while (cursor);
@@ -413,7 +421,7 @@ export class CodexTerminalAudit {
         const thread = threadReference(value);
         if (!thread.id || !thread.path) continue;
         if (!this.resolveProject(thread)) continue;
-        candidates.set(thread.id, thread);
+        candidates.set(historicalRolloutKey(thread), thread);
       }
     }
 

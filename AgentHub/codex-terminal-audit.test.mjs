@@ -94,7 +94,7 @@ test("terminal audit resumes byte positions after a long server outage", async (
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 6,
+    version: 7,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "rollout.jsonl", offset: 100 }]],
   });
@@ -149,7 +149,7 @@ test("terminal audit follows every thread-list page newer than its cursor", asyn
     reconcile: async (_thread, _project, terminal) => reconciled.push(terminal.turnId),
   });
   audit.restore({
-    version: 6,
+    version: 7,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [],
   });
@@ -188,7 +188,7 @@ test("terminal audit does not advance its cursor past a deferred terminal", asyn
     reconcile: async () => false,
   });
   audit.restore({
-    version: 6,
+    version: 7,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "thread-1.jsonl", offset: 10 }]],
   });
@@ -238,7 +238,7 @@ test("terminal audit advances through an active rollout and reads its later term
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 6,
+    version: 7,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-active", { path: "active.jsonl", offset: 50 }]],
   });
@@ -386,7 +386,7 @@ test("terminal audit bounds persisted per-thread positions", () => {
     maxPositions: 100,
   });
   audit.restore({
-    version: 6,
+    version: 7,
     positions: Array.from({ length: 120 }, (_, index) => [
       `thread-${index}`,
       { path: `thread-${index}.jsonl`, offset: index },
@@ -428,7 +428,7 @@ test("terminal audit uses rollout mtime when thread updatedAt stays at creation 
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 6,
+    version: 7,
     completedThrough: "2026-08-01T13:33:00.000Z",
     positions: [],
   });
@@ -480,7 +480,7 @@ test("terminal audit migrates v4 state and backfills missing subagent rollouts o
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 6,
+    version: 7,
     subagentBackfillPending: true,
     completedThrough: "2026-08-01T13:30:00.000Z",
     positions: [["old-parent", { path: "parent.jsonl", offset: 500 }]],
@@ -592,6 +592,44 @@ test("historical subagent backfill merges filesystem-only archived rollouts", as
   assert.deepEqual(scans, ["archived-child.jsonl"]);
   assert.equal(audit.snapshot().historicalSubagentBackfill.totalFiles, 1);
   assert.equal(audit.snapshot().historicalSubagentBackfill.completedFiles, 1);
+});
+
+test("historical rollout backfill visits every file for one resumed thread", async () => {
+  const first = thread(
+    "resumed-thread",
+    "2026-07-01T00:00:00.000Z",
+    "resumed-thread-first.jsonl",
+  );
+  const second = thread(
+    "resumed-thread",
+    "2026-07-02T00:00:00.000Z",
+    "resumed-thread-second.jsonl",
+  );
+  const scans = [];
+  const audit = new CodexTerminalAudit({
+    listPage: async () => ({ data: [], nextCursor: null }),
+    discoverHistoricalThreads: async () => [first, second],
+    resolveProject: () => project,
+    statFile: async () => ({
+      size: 100,
+      mtimeMs: Date.parse("2026-07-02T00:10:00.000Z"),
+    }),
+    scanFile: async (file) => {
+      scans.push(file);
+      return { terminals: [], activeTurns: [], nextOffset: 100 };
+    },
+    reconcile: async () => true,
+  });
+  audit.restore({ version: 6, completedThrough: "2026-08-01T13:30:00.000Z" });
+
+  await audit.run();
+  await audit.run();
+
+  assert.deepEqual(scans, ["resumed-thread-first.jsonl", "resumed-thread-second.jsonl"]);
+  const completed = audit.snapshot().historicalSubagentBackfill;
+  assert.equal(completed.totalFiles, 2);
+  assert.equal(completed.completedFiles, 2);
+  assert.equal(completed.pending, false);
 });
 
 test("historical rollout backfill also restores ordinary Codex threads", async () => {
