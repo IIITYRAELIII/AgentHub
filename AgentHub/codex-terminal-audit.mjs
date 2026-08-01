@@ -7,7 +7,9 @@ const DEFAULT_BOOTSTRAP_WINDOW_MS = 30 * 60_000;
 const DEFAULT_BOUNDARY_OVERLAP_MS = 2_000;
 const DEFAULT_STATUS_IDLE_MS = 5_000;
 const DEFAULT_STATUS_POLL_MS = 30_000;
-const SNAPSHOT_VERSION = 4;
+const DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS = 24 * 60 * 60_000;
+const SNAPSHOT_VERSION = 5;
+const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, SNAPSHOT_VERSION]);
 
 function timestampMs(value) {
   const numeric = Number(value);
@@ -86,6 +88,7 @@ export class CodexTerminalAudit {
     boundaryOverlapMs = DEFAULT_BOUNDARY_OVERLAP_MS,
     statusIdleMs = DEFAULT_STATUS_IDLE_MS,
     statusPollMs = DEFAULT_STATUS_POLL_MS,
+    subagentBackfillWindowMs = DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS,
     maxPositions = 5_000,
   }) {
     this.listPage = listPage;
@@ -103,19 +106,27 @@ export class CodexTerminalAudit {
     this.boundaryOverlapMs = boundaryOverlapMs;
     this.statusIdleMs = statusIdleMs;
     this.statusPollMs = statusPollMs;
+    this.subagentBackfillWindowMs = Math.max(
+      this.bootstrapWindowMs,
+      Number(subagentBackfillWindowMs) || DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS,
+    );
     this.maxPositions = Math.max(100, Number(maxPositions) || 5_000);
     this.completedThroughMs = 0;
     this.positions = new Map();
     this.pendingTurns = new Map();
+    this.subagentBackfillPending = false;
     this.running = false;
   }
 
   restore(snapshot) {
-    const currentSnapshot = Number(snapshot?.version) === SNAPSHOT_VERSION;
-    this.completedThroughMs = currentSnapshot ? timestampMs(snapshot?.completedThrough) : 0;
+    const snapshotVersion = Number(snapshot?.version);
+    const compatibleSnapshot = COMPATIBLE_SNAPSHOT_VERSIONS.has(snapshotVersion);
+    this.completedThroughMs = compatibleSnapshot ? timestampMs(snapshot?.completedThrough) : 0;
     this.positions.clear();
     this.pendingTurns.clear();
-    if (currentSnapshot) {
+    this.subagentBackfillPending = snapshotVersion === 4
+      || (snapshotVersion === SNAPSHOT_VERSION && snapshot?.subagentBackfillPending === true);
+    if (compatibleSnapshot) {
       for (const entry of Array.isArray(snapshot?.positions) ? snapshot.positions : []) {
         if (!Array.isArray(entry) || typeof entry[0] !== "string") continue;
         const position = restoredPosition(entry[1]);
@@ -132,6 +143,7 @@ export class CodexTerminalAudit {
   snapshot() {
     return {
       version: SNAPSHOT_VERSION,
+      subagentBackfillPending: this.subagentBackfillPending,
       completedThrough: this.completedThroughMs
         ? new Date(this.completedThroughMs).toISOString()
         : "",
@@ -206,12 +218,12 @@ export class CodexTerminalAudit {
     if (pending.turns.size) this.pendingTurns.set(threadId, pending);
   }
 
-  async #auditThread(thread, project, lowerBoundMs) {
+  async #auditThread(thread, project, lowerBoundMs, fileInfo = null) {
     const threadId = String(thread?.id ?? "").trim();
     const transcriptPath = String(thread?.path ?? "").trim();
     if (!threadId || !transcriptPath) return true;
 
-    const info = await this.statFile(transcriptPath);
+    const info = fileInfo ?? await this.statFile(transcriptPath);
     const prior = this.positions.get(threadId);
     const canResume = prior?.path === transcriptPath && prior.offset <= info.size;
     const startOffset = canResume ? prior.offset : 0;
@@ -322,6 +334,10 @@ export class CodexTerminalAudit {
     const lowerBoundMs = bootstrapping
       ? startedAtMs - this.bootstrapWindowMs
       : this.completedThroughMs - this.boundaryOverlapMs;
+    const subagentBackfillLowerBoundMs = Math.max(
+      0,
+      (this.completedThroughMs || startedAtMs) - this.subagentBackfillWindowMs,
+    );
     let cursor = null;
     const seenCursors = new Set();
     let madeProgress = false;
@@ -336,35 +352,61 @@ export class CodexTerminalAudit {
         if (cursor) seenCursors.add(cursor);
         const page = await this.listPage(cursor, this.pageSize);
         const threads = page?.data ?? [];
-        let reachedOlderThread = false;
 
         for (const thread of threads) {
           const project = this.resolveProject(thread);
           if (!project || !thread?.path) continue;
-          const updatedAtMs = timestampMs(thread.updatedAt);
-          const olderThanBoundary = updatedAtMs > 0 && updatedAtMs < lowerBoundMs;
-          if (olderThanBoundary) reachedOlderThread = true;
+          const threadId = String(thread.id ?? "").trim();
+          if (!threadId) continue;
+          const transcriptPath = String(thread.path);
+          const info = await this.statFile(transcriptPath);
+          const prior = this.positions.get(threadId);
+          const canResume = prior?.path === transcriptPath && prior.offset <= info.size;
+          const hasUnreadBytes = canResume && prior.offset < info.size;
+          const isSubagent = Boolean(String(thread.parentThreadId ?? "").trim());
+          const activityMs = Number(info.mtimeMs) || timestampMs(thread.updatedAt);
+          const backfillMissingSubagent = this.subagentBackfillPending
+            && isSubagent
+            && !canResume
+            && activityMs >= subagentBackfillLowerBoundMs;
+          const olderThanBoundary = activityMs > 0 && activityMs < lowerBoundMs;
 
-          if (bootstrapping && olderThanBoundary) {
-            const info = await this.statFile(thread.path);
-            this.#setPosition(String(thread.id), {
-              path: String(thread.path),
+          if (this.subagentBackfillPending
+            && isSubagent
+            && !canResume
+            && !backfillMissingSubagent) {
+            this.#setPosition(threadId, {
+              path: transcriptPath,
               offset: info.size,
             });
             madeProgress = true;
             continue;
           }
-          if (olderThanBoundary) continue;
-          const handled = await this.#auditThread(thread, project, lowerBoundMs);
+
+          if (bootstrapping && olderThanBoundary && !backfillMissingSubagent) {
+            this.#setPosition(threadId, {
+              path: transcriptPath,
+              offset: info.size,
+            });
+            madeProgress = true;
+            continue;
+          }
+          if (olderThanBoundary && !hasUnreadBytes && !backfillMissingSubagent) continue;
+          const handled = await this.#auditThread(
+            thread,
+            project,
+            backfillMissingSubagent ? 0 : lowerBoundMs,
+            info,
+          );
           madeProgress = madeProgress || handled;
           allHandled = allHandled && handled;
         }
 
         cursor = page?.nextCursor ?? null;
-        if (!bootstrapping && reachedOlderThread) break;
       } while (cursor);
 
       if (allHandled) {
+        this.subagentBackfillPending = false;
         this.completedThroughMs = startedAtMs;
         madeProgress = true;
       }

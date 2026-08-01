@@ -15,6 +15,13 @@ function thread(id, updatedAt, path = `${id}.jsonl`) {
   };
 }
 
+function subagentThread(id, updatedAt, path = `${id}.jsonl`) {
+  return {
+    ...thread(id, updatedAt, path),
+    parentThreadId: "parent-thread",
+  };
+}
+
 test("terminal audit bootstraps recent turns and seeds older rollout positions", async () => {
   const nowMs = Date.parse("2026-07-27T04:00:00.000Z");
   const pages = [
@@ -87,7 +94,7 @@ test("terminal audit resumes byte positions after a long server outage", async (
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 4,
+    version: 5,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "rollout.jsonl", offset: 100 }]],
   });
@@ -142,7 +149,7 @@ test("terminal audit follows every thread-list page newer than its cursor", asyn
     reconcile: async (_thread, _project, terminal) => reconciled.push(terminal.turnId),
   });
   audit.restore({
-    version: 4,
+    version: 5,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [],
   });
@@ -181,7 +188,7 @@ test("terminal audit does not advance its cursor past a deferred terminal", asyn
     reconcile: async () => false,
   });
   audit.restore({
-    version: 4,
+    version: 5,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "thread-1.jsonl", offset: 10 }]],
   });
@@ -231,7 +238,7 @@ test("terminal audit advances through an active rollout and reads its later term
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 4,
+    version: 5,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-active", { path: "active.jsonl", offset: 50 }]],
   });
@@ -356,7 +363,7 @@ test("terminal audit does not trust interrupted status while the exact rollout t
   assert.equal(recovered[0].status, "aborted");
 });
 
-test("terminal audit performs one compatible bootstrap after the pending-turn upgrade", () => {
+test("terminal audit performs one compatible bootstrap for unknown snapshots", () => {
   const audit = new CodexTerminalAudit({
     listPage: async () => ({ data: [], nextCursor: null }),
     resolveProject: () => project,
@@ -379,7 +386,7 @@ test("terminal audit bounds persisted per-thread positions", () => {
     maxPositions: 100,
   });
   audit.restore({
-    version: 4,
+    version: 5,
     positions: Array.from({ length: 120 }, (_, index) => [
       `thread-${index}`,
       { path: `thread-${index}.jsonl`, offset: index },
@@ -387,4 +394,140 @@ test("terminal audit bounds persisted per-thread positions", () => {
   });
   assert.equal(audit.snapshot().positions.length, 100);
   assert.equal(audit.snapshot().positions[0][0], "thread-20");
+});
+
+test("terminal audit uses rollout mtime when thread updatedAt stays at creation time", async () => {
+  const scans = [];
+  const recovered = [];
+  const audit = new CodexTerminalAudit({
+    now: () => Date.parse("2026-08-01T13:34:00.000Z"),
+    listPage: async () => ({
+      data: [subagentThread(
+        "child-thread",
+        "2026-08-01T12:55:37.000Z",
+        "child.jsonl",
+      )],
+      nextCursor: null,
+    }),
+    resolveProject: () => project,
+    statFile: async () => ({
+      size: 200,
+      mtimeMs: Date.parse("2026-08-01T13:33:30.000Z"),
+    }),
+    scanFile: async (_path, { startOffset }) => {
+      scans.push(startOffset);
+      return {
+        terminals: [{
+          turnId: "child-turn",
+          status: "completed",
+          completedAt: "2026-08-01T13:33:00.000Z",
+        }],
+        nextOffset: 200,
+      };
+    },
+    reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
+  });
+  audit.restore({
+    version: 5,
+    completedThrough: "2026-08-01T13:33:00.000Z",
+    positions: [],
+  });
+
+  await audit.run();
+
+  assert.deepEqual(scans, [0]);
+  assert.deepEqual(recovered, ["child-turn"]);
+});
+
+test("terminal audit migrates v4 state and backfills missing subagent rollouts once", async () => {
+  const scans = [];
+  const recovered = [];
+  const pages = new Map([
+    [null, {
+      data: [thread("old-parent", "2026-07-01T00:00:00.000Z", "parent.jsonl")],
+      nextCursor: "children",
+    }],
+    ["children", {
+      data: [subagentThread(
+        "missed-child",
+        "2026-07-01T00:00:00.000Z",
+        "child.jsonl",
+      )],
+      nextCursor: null,
+    }],
+  ]);
+  const audit = new CodexTerminalAudit({
+    now: () => Date.parse("2026-08-01T14:00:00.000Z"),
+    listPage: async (cursor) => pages.get(cursor),
+    resolveProject: () => project,
+    statFile: async (path) => ({
+      size: path === "parent.jsonl" ? 500 : 200,
+      mtimeMs: path === "parent.jsonl"
+        ? Date.parse("2026-07-01T00:00:00.000Z")
+        : Date.parse("2026-08-01T13:20:00.000Z"),
+    }),
+    scanFile: async (path, { startOffset }) => {
+      scans.push([path, startOffset]);
+      return {
+        terminals: path === "child.jsonl" ? [{
+          turnId: "missed-child-turn",
+          status: "completed",
+          completedAt: "2026-08-01T13:20:00.000Z",
+        }] : [],
+        nextOffset: path === "parent.jsonl" ? 500 : 200,
+      };
+    },
+    reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
+  });
+  audit.restore({
+    version: 4,
+    completedThrough: "2026-08-01T13:30:00.000Z",
+    positions: [["old-parent", { path: "parent.jsonl", offset: 500 }]],
+  });
+
+  assert.equal(audit.snapshot().subagentBackfillPending, true);
+  await audit.run();
+
+  assert.deepEqual(scans, [["child.jsonl", 0]]);
+  assert.deepEqual(recovered, ["missed-child-turn"]);
+  assert.equal(audit.snapshot().subagentBackfillPending, false);
+
+  await audit.run();
+  assert.deepEqual(scans, [["child.jsonl", 0]]);
+});
+
+test("terminal audit seeds historical missing subagents without rescanning them", async () => {
+  const scans = [];
+  const audit = new CodexTerminalAudit({
+    now: () => Date.parse("2026-08-01T14:00:00.000Z"),
+    listPage: async () => ({
+      data: [subagentThread(
+        "historical-child",
+        "2026-07-01T00:00:00.000Z",
+        "historical-child.jsonl",
+      )],
+      nextCursor: null,
+    }),
+    resolveProject: () => project,
+    statFile: async () => ({
+      size: 500_000_000,
+      mtimeMs: Date.parse("2026-07-01T00:10:00.000Z"),
+    }),
+    scanFile: async (...args) => scans.push(args),
+    reconcile: async () => true,
+  });
+  audit.restore({
+    version: 4,
+    completedThrough: "2026-08-01T13:30:00.000Z",
+    positions: [],
+  });
+
+  await audit.run();
+
+  assert.deepEqual(scans, []);
+  assert.deepEqual(audit.snapshot().positions, [[
+    "historical-child",
+    { path: "historical-child.jsonl", offset: 500_000_000 },
+  ]]);
+  assert.equal(audit.snapshot().subagentBackfillPending, false);
 });
