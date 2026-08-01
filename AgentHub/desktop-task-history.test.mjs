@@ -59,9 +59,11 @@ function fixture(overrides = {}) {
       startedAt: "2026-07-30T11:00:00.000Z",
       messageAttachments: [{ id: "live.png", name: "live.png", type: "image/png" }],
     },
-    refresh: async () => {},
     ...overrides,
   };
+  if (!state.refresh) {
+    state.refresh = async () => ({ history: structuredClone(state.history) });
+  }
   const desktopTaskHistory = createDesktopTaskHistoryFactory({
     selection: {
       activeProvider: () => state.activeProvider,
@@ -152,19 +154,15 @@ test("desktop task history resolves selection and merges the active run", async 
   assert.deepEqual(calls.fit, { maxBytes: 3_500_000 });
 });
 
-test("desktop task history refreshes the durable cache in background", async () => {
-  let releaseRefresh;
-  const backgroundRefresh = new Promise((resolve) => { releaseRefresh = resolve; });
+test("desktop task history hydrates its first response from the provider", async () => {
   const { desktopTaskHistory, calls } = fixture({
     run: null,
-    refresh: async () => backgroundRefresh,
+    refresh: async () => ({ history: [] }),
   });
 
   const result = await desktopTaskHistory({ limit: 1 });
-  await Promise.resolve();
-  assert.equal(result.items[0].id, "turn-4");
+  assert.equal(result.total, 0);
   assert.equal(calls.refreshes, 1);
-  releaseRefresh();
 });
 
 test("desktop task history imports private screenshot references for the visible page", async () => {
@@ -182,6 +180,28 @@ test("desktop task history imports private screenshot references for the visible
   }]]);
   assert.deepEqual(result.items[0].messages[0].attachments, [{
     id: "codex-clipboard-test.png",
+    type: "image/png",
+  }]);
+});
+
+test("desktop task history restores screenshot sources lost from the durable cache", async () => {
+  const { desktopTaskHistory, state, calls } = fixture({ run: null });
+  const providerHistory = structuredClone(state.history);
+  providerHistory[3].messages[0].attachmentSources = [{
+    type: "data",
+    value: "data:image/png;base64,aGVsbG8=",
+  }];
+  state.history[3].messages[0].attachments = [];
+  state.refresh = async () => ({ history: providerHistory });
+
+  const result = await desktopTaskHistory({ limit: 1 });
+
+  assert.deepEqual(calls.attachments, [[{
+    type: "data",
+    value: "data:image/png;base64,aGVsbG8=",
+  }]]);
+  assert.deepEqual(result.items[0].messages[0].attachments, [{
+    id: "png;base64,aGVsbG8=",
     type: "image/png",
   }]);
 });

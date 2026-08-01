@@ -11,7 +11,26 @@ export function createDesktopTaskHistoryFactory({
 }) {
   const refreshes = new Map();
   const refreshedAt = new Map();
+  const hydratedHistories = new Map();
   const refreshIntervalMs = 15_000;
+
+  async function hydrateHistory(history) {
+    const result = structuredClone(Array.isArray(history) ? history : []);
+    await Promise.all(result.flatMap((item) => (
+      (Array.isArray(item.messages) ? item.messages : [])
+        .filter((message) => (
+          message?.role === "user"
+          && Array.isArray(message.attachmentSources)
+          && message.attachmentSources.length
+          && !(Array.isArray(message.attachments) && message.attachments.length)
+        ))
+        .map(async (message) => {
+          const imported = await attachmentImporter(message.attachmentSources);
+          if (imported.length) message.attachments = imported;
+        })
+    )));
+    return result;
+  }
 
   function scheduleRefresh(binding) {
     if (typeof historyReader.refresh !== "function") return;
@@ -19,7 +38,12 @@ export function createDesktopTaskHistoryFactory({
     if (refreshes.has(key) || Date.now() - (refreshedAt.get(key) ?? 0) < refreshIntervalMs) return;
     refreshedAt.set(key, Date.now());
     const operation = Promise.resolve()
-      .then(() => historyReader.refresh(binding))
+      .then(async () => {
+        const refreshed = await historyReader.refresh(binding);
+        if (Array.isArray(refreshed?.history)) {
+          hydratedHistories.set(key, await hydrateHistory(refreshed.history));
+        }
+      })
       .catch((error) => warn(
         `Cannot refresh ${binding.provider} history ${binding.threadId}: ${error?.message ?? error}`,
       ))
@@ -47,8 +71,24 @@ export function createDesktopTaskHistoryFactory({
       taskTitle: entry.title,
       chatId: selection.chatId(),
     };
-    const { history } = await historyReader.read(binding);
-    scheduleRefresh(binding);
+    const key = `${binding.provider}:${binding.threadId}`;
+    const cached = await historyReader.read(binding);
+    let history = hydratedHistories.get(key);
+    if (history) {
+      history = structuredClone(history);
+      scheduleRefresh(binding);
+    } else {
+      // The durable history intentionally contains attachment descriptors, not
+      // private image data URLs. Hydrate once from the provider before the
+      // first Desktop response so a restart can restore old screenshots too.
+      const refreshed = typeof historyReader.refresh === "function"
+        ? await historyReader.refresh(binding)
+        : null;
+      history = await hydrateHistory(
+        Array.isArray(refreshed?.history) ? refreshed.history : cached.history,
+      );
+      hydratedHistories.set(key, structuredClone(history));
+    }
     const running = runs.forTask(binding);
     if (running) {
       historyMerger.mergeActive(history, {
@@ -76,19 +116,6 @@ export function createDesktopTaskHistoryFactory({
     );
     const start = Math.max(0, end - limit);
     const page = history.slice(start, end);
-    await Promise.all(page.flatMap((item) => (
-      (Array.isArray(item.messages) ? item.messages : [])
-        .filter((message) => message?.role === "user" && Array.isArray(message.attachmentSources))
-        .map(async (message) => {
-          const imported = await attachmentImporter(message.attachmentSources);
-          if (imported.length) {
-            message.attachments = [
-              ...(Array.isArray(message.attachments) ? message.attachments : []),
-              ...imported,
-            ];
-          }
-        })
-    )));
     const payload = {
       provider,
       threadId: selectedThreadId,
