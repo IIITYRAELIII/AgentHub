@@ -170,9 +170,10 @@ AH-007 существенно уменьшен, 10 обнаруженных пр
 
 ## Итог
 
-Повторный глобальный аудит и live cutover закрыты: исправленные пункты имеют
-регрессионные проверки либо отдельный live-smoke; `test:all`, `doctor`, ACL,
-lock/ready, локальный Web API, Desktop RPC и TTS проверены на опубликованном
-release. Открыты только реальные browser/WPF UI E2E (67), подтверждение hook
-receipts после reload Codex (66) и отдельный
-проект end-to-end encryption облачного журнала (68).
+Повторный глобальный аудит и публикация закрыты: исправленные пункты имеют
+регрессионные проверки; `test:all`, VS Code, Desktop smoke, Android build,
+Worker deploy, `doctor`, ACL и внешний HTTPS прошли. Новый runtime release
+активирован в `current.json`, а его безопасный перезапуск ожидает завершения
+активных задач. Открыты только реальные browser/WPF UI E2E (67), подтверждение
+hook receipts после reload Codex (66), граница ручного редактирования AH-007 и
+отдельный проект end-to-end encryption облачного журнала (68).
