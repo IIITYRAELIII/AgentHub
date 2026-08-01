@@ -743,6 +743,7 @@ export function claudeCatalogEntry(snapshot, project, nowMs = Date.now()) {
       : null,
     title: String(snapshot.catalogTitle ?? snapshot.title ?? `Claude · ${String(snapshot.sessionId).slice(0, 8)}`),
     updatedAtMs: modifiedAtMs,
+    orderingActivityAtMs: modifiedAtMs || null,
     running,
     activityUnknown: activityState === "unknown",
     executionOwner: running ? TASK_EXECUTION_OWNERS.EXTERNAL : null,

@@ -654,6 +654,8 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
     active: true,
   }, project, now);
   assert.equal(fresh.running, true);
+  assert.equal(fresh.orderingActivityAtMs, now - 60_000);
+  assert.equal(taskOrderingActivityAtMs(fresh), now - 60_000);
   assert.equal(fresh.startedAt, new Date(now - 120_000).toISOString());
   assert.equal(fresh.sessionCwd, path.resolve("C:\\Projects\\Main\\Utilities\\AgentHub"));
   assert.equal(stale.running, false);
