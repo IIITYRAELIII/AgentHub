@@ -661,6 +661,28 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
   assert.equal(stale.running, false);
 });
 
+test("an image-only response item remains a visible rollout user message", () => {
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "image-turn" },
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: "\n" },
+          { type: "input_image", image_url: "data:image/png;base64,AA==" },
+        ],
+        internal_chat_message_metadata_passthrough: { turn_id: "image-turn" },
+      },
+    }),
+  ].join("\n"));
+  assert.deepEqual(result.userMessages["image-turn"]?.map((message) => message.text), ["Изображение"]);
+});
+
 test("claudeCatalogEntry resumes from the original session root, not the latest nested cwd", () => {
   const entry = claudeCatalogEntry({
     sessionId: "claude-moved",

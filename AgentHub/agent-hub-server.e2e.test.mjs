@@ -926,7 +926,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     "external task progress shown on demand");
   mark = telegram.calls.length;
   telegram.pushMessage("/cancel");
-  await telegram.waitForText("Codex не подтвердил остановку: no active turn to interrupt", { after: mark });
+  await telegram.waitForText("Ход выполняется в другом окне Codex", { after: mark });
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 1,
     "failed external interrupt keeps observation and task lock");
 

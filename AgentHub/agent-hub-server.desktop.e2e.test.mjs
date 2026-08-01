@@ -153,6 +153,13 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   }, { runtimeRoot });
   assert.equal(compacted.accepted, true);
   assert.match(compacted.compactionId, /^[0-9a-f-]{36}$/u);
+  await assert.rejects(
+    callDesktopControl("update-setting", {
+      name: "model",
+      value: "gpt-5.6-terra",
+    }, { runtimeRoot }),
+    /завершения свёртки контекста/iu,
+  );
   const compactedSnapshot = await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     const context = snapshot.tasks.find((item) => item.threadId === firstThreadId)?.context;

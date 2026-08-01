@@ -7,6 +7,7 @@ import {
   codexThreadHistory,
   codexTurnActivities,
   displayUserPrompt,
+  responseAnnotationDetails,
   mergeActiveTaskHistory,
   visibleTaskHistory,
 } from "./task-history.mjs";
@@ -86,6 +87,38 @@ test("displayUserPrompt extracts comments and requests from response annotations
   assert.equal(displayUserPrompt(wrapper([
     { text: "Выбранный фрагмент" },
   ])), "Выделено: Выбранный фрагмент");
+  assert.deepEqual(responseAnnotationDetails(wrapper([
+    { text: "Первый фрагмент", annotation: "Первый комментарий" },
+    { text: "", annotation: "" },
+    { text: "Второй фрагмент", annotation: "" },
+  ], "Общий вопрос")), {
+    items: [
+      { text: "Первый фрагмент", annotation: "Первый комментарий" },
+      { text: "Второй фрагмент", annotation: "" },
+    ],
+    request: "Общий вопрос",
+    displayText: "Первый комментарий\n\nОбщий вопрос",
+  });
+});
+
+test("codex history preserves response annotations as structured prompt data", () => {
+  const prompt = [
+    "# Response annotations:",
+    "<response-annotations>",
+    JSON.stringify([{ text: "Цитата", annotation: "Комментарий" }]),
+    "</response-annotations>",
+    "",
+    "## My request for Codex:",
+    "Общий вопрос",
+  ].join("\n");
+  const [exchange] = codexThreadHistory([{
+    id: "turn-annotated",
+    status: "inProgress",
+    items: [{ type: "userMessage", content: [{ type: "text", text: prompt }] }],
+  }]);
+  assert.deepEqual(exchange.promptAnnotations, [{ text: "Цитата", annotation: "Комментарий" }]);
+  assert.equal(exchange.promptRequest, "Общий вопрос");
+  assert.deepEqual(exchange.messages[0].responseAnnotations, [{ text: "Цитата", annotation: "Комментарий" }]);
 });
 
 test("codexThreadHistory returns user and assistant pairs", () => {
@@ -259,6 +292,26 @@ test("Codex inline screenshots are retained as private data references", () => {
     }],
   }]);
   assert.equal(exchange.prompt, "Проверь второй скрин");
+  assert.deepEqual(exchange.messages[0].attachmentSources, [{
+    type: "data",
+    value: "data:image/png;base64,AA==",
+  }]);
+});
+
+test("Codex image-only messages remain visible in task history", () => {
+  const [exchange] = codexThreadHistory([{
+    id: "turn-with-image-only",
+    status: "completed",
+    items: [
+      {
+        type: "userMessage",
+        content: [{ type: "image", url: "data:image/png;base64,AA==" }],
+      },
+      { type: "agentMessage", text: "Изображение проверено", phase: "final_answer" },
+    ],
+  }]);
+  assert.equal(exchange.prompt, "Изображение");
+  assert.equal(exchange.answer, "Изображение проверено");
   assert.deepEqual(exchange.messages[0].attachmentSources, [{
     type: "data",
     value: "data:image/png;base64,AA==",

@@ -327,5 +327,6 @@ namespace AgentHubDesktop
         public string LastAnswer;
         public long OrderingActivityAtMs;
         public Dictionary<string, object> Run;
+        public Dictionary<string, object> Context;
     }
 }

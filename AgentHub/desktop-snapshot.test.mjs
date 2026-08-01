@@ -143,6 +143,7 @@ function fixture(overrides = {}) {
     restart: {
       request: () => state.restartRequest,
       blockingRuns: () => [{ id: "blocking-1" }],
+      compactionCount: () => 1,
       mediaJobCount: () => 2,
       speechJobCount: () => 3,
     },
@@ -396,7 +397,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
   ]);
   assert.equal(snapshot.restartPending, true);
   assert.equal(snapshot.restartWaiting, true);
-  assert.equal(snapshot.restartBlockingCount, 6);
+  assert.equal(snapshot.restartBlockingCount, 7);
   assert.deepEqual(snapshot.exchangeRates, {
     usdRub: 78.4049,
     effectiveDate: "2026-07-30",

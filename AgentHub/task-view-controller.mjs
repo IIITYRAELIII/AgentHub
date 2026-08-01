@@ -3,6 +3,7 @@ import {
   mergeActiveTaskHistory,
   visibleTaskHistory,
 } from "./task-history.mjs";
+import { readCodexRolloutActivity } from "./task-catalog.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { updateTaskRunTitle } from "./task-runs.mjs";
 
@@ -21,6 +22,95 @@ function mergeDurableHistory(cachedHistory, sourceHistory) {
     }
   }
   return merged;
+}
+
+const CODEX_TURN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+export function codexRolloutHistory(activity = {}) {
+  const userMessages = activity?.userMessages ?? {};
+  const latestMessages = activity?.latestMessages ?? {};
+  const finalMessages = activity?.finalMessages ?? {};
+  const activeTurnIds = new Set(activity?.activeTurnIds ?? []);
+  const ids = [...new Set([
+    ...Object.keys(userMessages),
+    ...Object.keys(latestMessages),
+    ...Object.keys(finalMessages),
+  ])];
+  return ids.flatMap((id) => {
+    const users = (Array.isArray(userMessages[id]) ? userMessages[id] : [])
+      .filter((message) => String(message?.text ?? "").trim())
+      .map((message, index) => ({
+        itemId: String(message.itemId ?? `${id}:rollout-user:${index}`),
+        ...(String(message.clientUserMessageId ?? "").trim()
+          ? { clientUserMessageId: String(message.clientUserMessageId).trim() }
+          : {}),
+        role: "user",
+        text: String(message.text).trim(),
+      }));
+    const finalAnswer = String(finalMessages[id] ?? "").trim();
+    const latestAnswer = String(latestMessages[id] ?? "").trim();
+    const answer = finalAnswer || latestAnswer;
+    if (!users.length && !answer) return [];
+    const active = activeTurnIds.has(id);
+    const completed = Boolean(finalAnswer);
+    const prompt = users[0]?.text ?? "Сообщение с вложением";
+    const messages = users.length
+      ? [...users]
+      : [{ itemId: `${id}:rollout-user:placeholder`, role: "user", text: prompt }];
+    if (answer) {
+      messages.push({
+        itemId: `${id}:rollout-agent:${completed ? "final" : "latest"}`,
+        role: "agent",
+        text: answer,
+        ...(completed ? { phase: "final_answer" } : {}),
+      });
+    }
+    return [{
+      id,
+      prompt,
+      answer,
+      status: completed ? "completed" : active ? "inProgress" : "stopped",
+      active,
+      completed,
+      messages,
+      activities: [],
+    }];
+  });
+}
+
+function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory) {
+  const merged = mergeDurableHistory(cachedHistory, sourceHistory);
+  const positions = new Map(merged.map((item, index) => [String(item?.id ?? ""), index]));
+  for (const item of Array.isArray(rolloutHistory) ? rolloutHistory : []) {
+    const id = String(item?.id ?? "");
+    const index = id ? positions.get(id) : undefined;
+    if (index === undefined) {
+      if (id) positions.set(id, merged.length);
+      merged.push(structuredClone(item));
+      continue;
+    }
+    const current = merged[index];
+    if (item.completed && !current?.completed) {
+      merged[index] = {
+        ...current,
+        answer: item.answer || current.answer,
+        status: "completed",
+        active: false,
+        completed: true,
+        messages: item.messages,
+      };
+    }
+  }
+  return merged
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => {
+      const leftId = String(left.item?.id ?? "");
+      const rightId = String(right.item?.id ?? "");
+      return CODEX_TURN_ID.test(leftId) && CODEX_TURN_ID.test(rightId)
+        ? leftId.localeCompare(rightId)
+        : left.index - right.index;
+    })
+    .map(({ item }) => item);
 }
 
 export class TaskViewController {
@@ -51,7 +141,17 @@ export class TaskViewController {
       if (binding.provider === "codex") {
         await d.ensureCodex();
         const result = await d.readCodexThread(binding.threadId, { fresh: true });
-        const history = codexThreadHistory(result.thread?.turns);
+        const cached = d.taskSyncStore.history(task);
+        const rolloutActivity = result.thread?.path
+          ? await (d.readCodexRolloutActivity ?? readCodexRolloutActivity)(result.thread.path, {
+            freshnessMs: Number.POSITIVE_INFINITY,
+          })
+          : null;
+        const history = mergeCodexHistory(
+          cached,
+          codexThreadHistory(result.thread?.turns),
+          codexRolloutHistory(rolloutActivity),
+        );
         const snapshot = completedOnly ? null : await d.readCodexSnapshot({
           ...task,
           turnId: null,

@@ -244,7 +244,10 @@ export function createDesktopSnapshotFactory({
       restartPending: Boolean(restart.request()),
       restartWaiting: restart.request()?.waitingForRuns === true,
       restartBlockingCount: restart.request()
-        ? restart.blockingRuns().length + restart.mediaJobCount() + restart.speechJobCount()
+        ? restart.blockingRuns().length
+          + (restart.compactionCount?.() ?? 0)
+          + restart.mediaJobCount()
+          + restart.speechJobCount()
         : 0,
       exchangeRates: exchangeRates?.snapshot?.() ?? null,
       activeCount: taskSnapshots.filter((item) => item.running).length,

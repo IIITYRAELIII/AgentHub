@@ -483,7 +483,7 @@ function handleRequest(message) {
       turnId,
       item,
       completedAtMs: Date.now(),
-    }), 30);
+    }), 150);
     return;
   }
   if (method === "turn/start") {

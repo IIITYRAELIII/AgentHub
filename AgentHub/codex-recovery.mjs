@@ -9,6 +9,22 @@ export function needsThreadResume(error) {
   return THREAD_NOT_LOADED.test(String(error?.message ?? error ?? ""));
 }
 
+export function activeTurnMissing(error) {
+  return /no active turn|active turn not found|turn not found/i.test(
+    String(error?.message ?? error ?? ""),
+  );
+}
+
+export async function interruptCodexTurnWithRecovery({ threadId, turnId, interrupt, resume }) {
+  try {
+    return await interrupt({ threadId, turnId });
+  } catch (error) {
+    if (!needsThreadResume(error)) throw error;
+    await resume({ threadId });
+    return interrupt({ threadId, turnId });
+  }
+}
+
 export async function startCodexTurnWithRecovery({
   threadId,
   startTurn,

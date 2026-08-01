@@ -115,7 +115,8 @@ function codexTurnMessages(turn) {
       const rawText = textContent(item.content);
       const envelope = desktopPromptEnvelope(rawText);
       const attachmentSources = codexAttachmentSources(item.content, envelope);
-      const text = displayUserPrompt(rawText);
+      const responseAnnotations = responseAnnotationDetails(rawText);
+      const text = displayUserPrompt(rawText) || (attachmentSources.length ? "Изображение" : "");
       return text ? [{
         itemId: messageItemId(turnId, "user", item, index),
         ...(String(item.clientId ?? "").trim()
@@ -123,6 +124,12 @@ function codexTurnMessages(turn) {
           : {}),
         role: "user",
         text,
+        ...(responseAnnotations?.items.length
+          ? {
+            responseAnnotations: responseAnnotations.items.map((annotation) => ({ ...annotation })),
+            responseAnnotationRequest: responseAnnotations.request,
+          }
+          : {}),
         ...(attachmentSources.length
           ? { attachmentSources }
           : {}),
@@ -146,7 +153,7 @@ function codexTurnMessages(turn) {
   });
 }
 
-function responseAnnotationPrompt(value) {
+export function responseAnnotationDetails(value) {
   const text = String(value ?? "");
   const block = text.match(/<response-annotations>\s*([\s\S]*?)\s*<\/response-annotations>/i);
   if (!block) return null;
@@ -159,16 +166,20 @@ function responseAnnotationPrompt(value) {
     // A malformed annotation container falls back to the explicit request text.
   }
 
-  const comments = annotations.flatMap((item, index) => {
+  const items = annotations.flatMap((item) => {
+    const selectedText = String(item?.text ?? "").trim();
     const annotation = String(item?.annotation ?? "").trim();
-    return annotation ? [{ index: index + 1, annotation }] : [];
+    return selectedText || annotation ? [{ text: selectedText, annotation }] : [];
   });
+  const comments = items.flatMap((item, index) => (
+    item.annotation ? [{ index: index + 1, annotation: item.annotation }] : []
+  ));
   const requestTail = text.slice((block.index ?? 0) + block[0].length);
   const request = requestTail
     .replace(/^\s*##\s*My request for Codex:\s*/i, "")
     .trim();
-  const selections = annotations
-    .map((item) => String(item?.text ?? "").trim())
+  const selections = items
+    .map((item) => item.text)
     .filter(Boolean);
   const annotationText = comments.length === 1
     ? comments[0].annotation
@@ -180,10 +191,15 @@ function responseAnnotationPrompt(value) {
       ? `Выделено: ${selections[0]}`
       : selections.map((selection, index) => `Выделено ${index + 1}: ${selection}`).join("\n")
     : "";
-  return [annotationText, selectedText, request]
+  const displayText = [annotationText, selectedText, request]
     .filter(Boolean)
     .join("\n\n")
     .trim() || "Аннотация к предыдущему ответу";
+  return { items, request, displayText };
+}
+
+function responseAnnotationPrompt(value) {
+  return responseAnnotationDetails(value)?.displayText ?? null;
 }
 
 export function displayUserPrompt(value) {
@@ -222,7 +238,8 @@ export function codexTurnHasExplicitFinalAnswer(turn) {
 export function codexThreadHistory(turns) {
   return (Array.isArray(turns) ? turns : []).flatMap((turn) => {
     const messages = codexTurnMessages(turn);
-    const prompt = messages.find((item) => item.role === "user")?.text ?? "";
+    const userMessage = messages.find((item) => item.role === "user");
+    const prompt = userMessage?.text ?? "";
     if (!prompt) return [];
     const visibleAnswer = messages
       .filter((item) => item.role === "agent")
@@ -239,6 +256,12 @@ export function codexThreadHistory(turns) {
       status: String(turn?.status ?? ""),
       active: turn?.status === "inProgress",
       completed: turn?.status === "completed",
+      ...(userMessage?.responseAnnotations?.length
+        ? {
+          promptAnnotations: userMessage.responseAnnotations.map((annotation) => ({ ...annotation })),
+          promptRequest: userMessage.responseAnnotationRequest ?? "",
+        }
+        : {}),
       ...(normalizedTimestamp(turn?.startedAt ?? turn?.createdAt)
         ? { startedAt: normalizedTimestamp(turn?.startedAt ?? turn?.createdAt) }
         : {}),
@@ -365,6 +388,9 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
   if (activeTurn?.active !== true) return values;
 
   const turnId = String(activeTurn.turnId ?? activeTurn.id ?? "").trim();
+  const rawPrompt = String(activeTurn.prompt ?? "").trim();
+  const responseAnnotations = responseAnnotationDetails(rawPrompt);
+  const visiblePrompt = displayUserPrompt(rawPrompt) || "Текущее сообщение";
   let current = turnId
     ? values.findLast((item) => String(item?.id ?? "") === turnId)
     : values.findLast((item) => item?.active === true);
@@ -383,15 +409,27 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
   if (!current) {
     current = {
       id: turnId || "active-turn",
-      prompt: String(activeTurn.prompt ?? "").trim() || "Текущее сообщение",
+      prompt: visiblePrompt,
       answer: "",
+      ...(responseAnnotations?.items.length
+        ? {
+          promptAnnotations: responseAnnotations.items.map((annotation) => ({ ...annotation })),
+          promptRequest: responseAnnotations.request,
+        }
+        : {}),
       messages: [{
         itemId: `${turnId || "active-turn"}:user:0`,
         ...(String(activeTurn.clientUserMessageId ?? "").trim()
           ? { clientUserMessageId: String(activeTurn.clientUserMessageId).trim() }
           : {}),
         role: "user",
-        text: String(activeTurn.prompt ?? "").trim() || "Текущее сообщение",
+        text: visiblePrompt,
+        ...(responseAnnotations?.items.length
+          ? {
+            responseAnnotations: responseAnnotations.items.map((annotation) => ({ ...annotation })),
+            responseAnnotationRequest: responseAnnotations.request,
+          }
+          : {}),
         ...(normalizedTimestamp(activeTurn.startedAt)
           ? { time: normalizedTimestamp(activeTurn.startedAt) }
           : {}),

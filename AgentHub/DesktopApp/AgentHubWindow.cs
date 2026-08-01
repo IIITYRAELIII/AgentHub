@@ -535,7 +535,8 @@ namespace AgentHubDesktop
                     OrderingActivityAtMs = value.ContainsKey("orderingActivityAtMs")
                         ? Convert.ToInt64(value["orderingActivityAtMs"])
                         : 0L,
-                    Run = AgentHubClient.Object(value, "run")
+                    Run = AgentHubClient.Object(value, "run"),
+                    Context = AgentHubClient.Object(value, "context")
                 };
                 var key = Key(item.Provider, item.ThreadId);
                 tasks[key] = item;
@@ -752,7 +753,7 @@ namespace AgentHubDesktop
             {
                 var prompt = AgentHubClient.Text(exchange, "prompt");
                 var answer = AgentHubClient.Text(exchange, "answer");
-                if (!String.IsNullOrWhiteSpace(prompt)) conversation.Children.Add(UserMessage(prompt));
+                if (!String.IsNullOrWhiteSpace(prompt)) conversation.Children.Add(UserMessage(exchange));
                 if (!String.IsNullOrWhiteSpace(answer) && !HistoryAnswerIsCoveredByLiveRun(exchange, run, item.Running))
                 {
                     conversation.Children.Add(AssistantMessage(answer, item.Provider, false));
@@ -790,9 +791,50 @@ namespace AgentHubDesktop
                 && String.Equals(exchangeTurnId, runTurnId, StringComparison.Ordinal);
         }
 
-        private UIElement UserMessage(string text)
+        private UIElement UserMessage(Dictionary<string, object> exchange)
         {
-            var content = Theme.Label(text, 13.5, Theme.Solid(Theme.Text), FontWeights.Normal);
+            var text = AgentHubClient.Text(exchange, "prompt");
+            var content = new StackPanel();
+            var annotationIndex = 0;
+            foreach (var raw in AgentHubClient.Array(exchange, "promptAnnotations"))
+            {
+                var annotation = raw as Dictionary<string, object>;
+                if (annotation == null) continue;
+                var selectedText = AgentHubClient.Text(annotation, "text").Trim();
+                var comment = AgentHubClient.Text(annotation, "annotation").Trim();
+                if (selectedText.Length == 0 && comment.Length == 0) continue;
+                annotationIndex += 1;
+                var quoteContent = new StackPanel();
+                var heading = Theme.Label("ЦИТАТА " + annotationIndex, 9.5, Theme.Solid(Theme.CodexMint), FontWeights.Bold);
+                heading.Margin = new Thickness(0, 0, 0, 5);
+                quoteContent.Children.Add(heading);
+                if (selectedText.Length > 0)
+                {
+                    quoteContent.Children.Add(Theme.Label(selectedText, 12.5, Theme.Solid(Theme.Text), FontWeights.Normal));
+                }
+                if (comment.Length > 0)
+                {
+                    var commentText = Theme.Label(comment, 12.5, Theme.Solid(Theme.Text), FontWeights.SemiBold);
+                    commentText.Margin = new Thickness(0, selectedText.Length > 0 ? 7 : 0, 0, 0);
+                    quoteContent.Children.Add(commentText);
+                }
+                content.Children.Add(new Border
+                {
+                    Background = Theme.Solid("#102638"),
+                    BorderBrush = Theme.Solid(Theme.Codex),
+                    BorderThickness = new Thickness(3, 0, 0, 0),
+                    Padding = new Thickness(11, 8, 10, 8),
+                    Margin = new Thickness(0, 0, 0, 8),
+                    Child = quoteContent
+                });
+            }
+            var request = annotationIndex > 0 ? AgentHubClient.Text(exchange, "promptRequest").Trim() : text;
+            if (!String.IsNullOrWhiteSpace(request))
+            {
+                var requestText = Theme.Label(request, 13.5, Theme.Solid(Theme.Text), FontWeights.Normal);
+                requestText.Margin = new Thickness(0, annotationIndex > 0 ? 2 : 0, 0, 0);
+                content.Children.Add(requestText);
+            }
             var border = new Border
             {
                 Background = Theme.Solid("#173145"),
@@ -886,7 +928,7 @@ namespace AgentHubDesktop
             return grid;
         }
 
-        private RichTextBox SelectableMessage(string text, string provider)
+        private FrameworkElement SelectableMessage(string text, string provider)
         {
             var document = BuildDocument(text);
             var box = new RichTextBox(document)
@@ -903,9 +945,7 @@ namespace AgentHubDesktop
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
                 Tag = provider
             };
-            var menu = new ContextMenu { Background = Theme.Solid(Theme.PanelRaised), Foreground = Theme.Solid(Theme.Text) };
-            var annotate = new MenuItem { Header = "Комментировать выделение", Foreground = Theme.Solid(Theme.Text) };
-            annotate.Click += delegate
+            Action addSelection = delegate
             {
                 var selected = box.Selection == null ? "" : box.Selection.Text.Trim();
                 if (selected.Length == 0)
@@ -914,7 +954,11 @@ namespace AgentHubDesktop
                     return;
                 }
                 AddAnnotation(selected);
+                box.Selection.Select(box.CaretPosition, box.CaretPosition);
             };
+            var menu = new ContextMenu { Background = Theme.Solid(Theme.PanelRaised), Foreground = Theme.Solid(Theme.Text) };
+            var annotate = new MenuItem { Header = "Добавить цитату", Foreground = Theme.Solid(Theme.Text) };
+            annotate.Click += delegate { addSelection(); };
             var copy = new MenuItem { Header = "Копировать", Foreground = Theme.Solid(Theme.Text) };
             copy.Click += delegate
             {
@@ -924,7 +968,22 @@ namespace AgentHubDesktop
             menu.Items.Add(annotate);
             menu.Items.Add(copy);
             box.ContextMenu = menu;
-            return box;
+            var quoteButton = Theme.Button("Цитировать выделение", "\uE8B0", false);
+            quoteButton.HorizontalAlignment = HorizontalAlignment.Left;
+            quoteButton.Margin = new Thickness(0, 7, 0, 0);
+            quoteButton.Padding = new Thickness(9, 5, 9, 5);
+            quoteButton.Visibility = Visibility.Collapsed;
+            quoteButton.Click += delegate { addSelection(); };
+            box.SelectionChanged += delegate
+            {
+                quoteButton.Visibility = box.Selection != null && !String.IsNullOrWhiteSpace(box.Selection.Text)
+                    ? Visibility.Visible
+                    : Visibility.Collapsed;
+            };
+            var shell = new StackPanel();
+            shell.Children.Add(box);
+            shell.Children.Add(quoteButton);
+            return shell;
         }
 
         private FlowDocument BuildDocument(string text)
@@ -1072,6 +1131,7 @@ namespace AgentHubDesktop
             inspector.Children.Clear();
             inspector.Children.Add(InspectorHero(item));
             var settings = AgentHubClient.Object(snapshot, "settings");
+            var contextCompacting = AgentHubClient.Bool(item.Context, "compacting");
             inspector.Children.Add(InspectorSection("ИСПОЛНИТЕЛЬ",
                 SettingChoice("Агент", "provider", AgentHubClient.Text(settings, "provider"), new[]
                 {
@@ -1082,8 +1142,8 @@ namespace AgentHubDesktop
                 SettingRow("Состояние", item.Running ? "Выполняется" : "Готов", item.Running ? Theme.Solid(Theme.Good) : Theme.Solid(Theme.Muted))));
 
             inspector.Children.Add(InspectorSection("ПАРАМЕТРЫ",
-                SettingChoice("Модель", "model", AgentHubClient.Text(settings, "model"), Choices(settings, "models")),
-                SettingChoice("Мощь дум", "reasoning", AgentHubClient.Text(settings, "reasoning"), Choices(settings, "reasoningOptions")),
+                SettingChoice("Модель", "model", AgentHubClient.Text(settings, "model"), Choices(settings, "models"), !contextCompacting),
+                SettingChoice("Мощь дум", "reasoning", AgentHubClient.Text(settings, "reasoning"), Choices(settings, "reasoningOptions"), !contextCompacting),
                 SettingChoice("Режим", "mode", AgentHubClient.Text(settings, "mode"), Choices(settings, "modeOptions")),
                 SettingChoice("Доступ", "approvalMode", AgentHubClient.Text(settings, "approvalMode"), new[]
                 {
@@ -1296,7 +1356,7 @@ namespace AgentHubDesktop
             return grid;
         }
 
-        private UIElement SettingChoice(string label, string setting, string current, ChoiceItem[] choices)
+        private UIElement SettingChoice(string label, string setting, string current, ChoiceItem[] choices, bool enabled = true)
         {
             var panel = new StackPanel { Margin = new Thickness(2, 5, 2, 7) };
             var title = Theme.Label(label, 10.5, Theme.Solid(Theme.Muted), FontWeights.Normal);
@@ -1321,6 +1381,8 @@ namespace AgentHubDesktop
             Grid.SetColumn(chevron, 1);
             buttonGrid.Children.Add(chevron);
             button.Content = buttonGrid;
+            button.IsEnabled = enabled;
+            if (!enabled) button.ToolTip = "Недоступно во время свёртки контекста";
             button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
             button.HorizontalAlignment = HorizontalAlignment.Stretch;
             button.Click += delegate
@@ -1386,19 +1448,28 @@ namespace AgentHubDesktop
 
         private void AddAnnotation(string selectedText)
         {
+            if (String.IsNullOrWhiteSpace(selectedText)) return;
             var item = new AnnotationDraft { Text = selectedText, Annotation = "" };
             annotations.Add(item);
             RenderAnnotations();
             ScheduleDraftSave();
             composer.Focus();
-            footer.Text = "Фрагмент добавлен к следующему сообщению";
+            footer.Text = "Цитата добавлена · всего " + annotations.Count;
         }
 
         private void RenderAnnotations()
         {
             annotationPanel.Children.Clear();
+            if (annotations.Count > 0)
+            {
+                var heading = Theme.Label("ЦИТАТЫ К СООБЩЕНИЮ · " + annotations.Count, 10, Theme.Solid(Theme.CodexMint), FontWeights.Bold);
+                heading.Margin = new Thickness(2, 0, 0, 6);
+                annotationPanel.Children.Add(heading);
+            }
+            var annotationIndex = 0;
             foreach (var item in annotations.ToArray())
             {
+                annotationIndex += 1;
                 var shell = new Border
                 {
                     Background = Theme.Solid("#192331"),
@@ -1411,11 +1482,14 @@ namespace AgentHubDesktop
                 var grid = new Grid();
                 grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-                grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-                var quote = Theme.Label("“" + TrimPreview(item.Text, 180) + "”", 11, Theme.Solid(Theme.Muted), FontWeights.Normal);
-                quote.Margin = new Thickness(0, 0, 8, 4);
-                grid.Children.Add(quote);
+                var annotationBody = new StackPanel();
+                var number = Theme.Label("ЦИТАТА " + annotationIndex, 9.5, Theme.Solid(Theme.CodexMint), FontWeights.Bold);
+                number.Margin = new Thickness(0, 0, 0, 4);
+                annotationBody.Children.Add(number);
+                var quote = Theme.Label("“" + TrimPreview(item.Text, 360) + "”", 11.5, Theme.Solid(Theme.Muted), FontWeights.Normal);
+                quote.Margin = new Thickness(0, 0, 8, 6);
+                annotationBody.Children.Add(quote);
+                annotationBody.Children.Add(Theme.Label("Комментарий (необязательно)", 9.5, Theme.Solid(Theme.Dim), FontWeights.Normal));
                 var remove = IconButton("\uE711", "Удалить аннотацию");
                 remove.Width = 28;
                 remove.Height = 26;
@@ -1431,12 +1505,12 @@ namespace AgentHubDesktop
                     CaretBrush = Theme.Solid(Theme.Codex),
                     BorderThickness = new Thickness(0),
                     FontSize = 12,
-                    Padding = new Thickness(0, 2, 0, 2)
+                    Padding = new Thickness(0, 3, 0, 2),
+                    MinHeight = 27
                 };
                 comment.TextChanged += delegate { item.Annotation = comment.Text; ScheduleDraftSave(); };
-                Grid.SetRow(comment, 1);
-                Grid.SetColumnSpan(comment, 2);
-                grid.Children.Add(comment);
+                annotationBody.Children.Add(comment);
+                grid.Children.Add(annotationBody);
                 shell.Child = grid;
                 annotationPanel.Children.Add(shell);
             }
@@ -1558,7 +1632,7 @@ namespace AgentHubDesktop
         private async Task SendAsync()
         {
             var text = (composer.Text ?? "").Trim();
-            if (text.Length == 0 && attachments.Count == 0) return;
+            if (text.Length == 0 && attachments.Count == 0 && annotations.Count == 0) return;
             if (attachments.Count > 0 && desktopApiVersion < 2)
             {
                 footer.Text = "Agent Hub Server устарел: изображения сохранены, дождитесь его обновления.";
@@ -1654,7 +1728,7 @@ namespace AgentHubDesktop
                     { "annotation", item.Annotation ?? "" }
                 };
             }).ToArray();
-            return "# Response annotations:\nEach item contains text selected from an earlier Codex response and may include a user comment. Use every selection as context and address every comment in your response.\n<response-annotations>\n"
+            return "# Response annotations:\nEach item contains text selected from an earlier Codex response and may include a user comment. Treat items as Annotation 1, Annotation 2, and so on in array order. Use every selection as context and address every comment. When addressing multiple comments, label each answer with its annotation number (for example, `Annotation 1`) so the user can match it to the numbered annotation.\n<response-annotations>\n"
                 + json.Serialize(payload)
                 + "\n</response-annotations>\n\n## My request for Codex:\n"
                 + request;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TaskViewController } from "./task-view-controller.mjs";
+import { codexRolloutHistory, TaskViewController } from "./task-view-controller.mjs";
 
 function controller(overrides = {}) {
   return new TaskViewController({
@@ -65,4 +65,58 @@ test("missing Claude transcript keeps the managed exchange in durable history", 
   assert.equal(recorded[0].status, "failed");
   assert.equal(recorded[0].answer, "Ошибка Claude Code: сессия отсутствует");
   assert.equal(recorded[0].messages.at(-1).role, "agent");
+});
+
+test("rollout history restores a completed turn missing from Codex App Server", async () => {
+  const oldTurnId = "019fbe53-7a2b-7d12-92bc-88b062536f7f";
+  const missingTurnId = "019fbe58-a7d6-7e93-9f8e-1ff6ec61e0bc";
+  let recorded = null;
+  const task = {
+    provider: "codex",
+    threadId: "019f75bd-3fd4-7e32-9dc9-0177a261a117",
+    projectRoot: "C:/repo",
+    title: "Agent HUB - Sol",
+  };
+  const view = controller({
+    ensureCodex: async () => {},
+    readCodexThread: async () => ({ thread: {
+      path: "C:/rollout.jsonl",
+      turns: [{
+        id: oldTurnId,
+        status: "completed",
+        items: [
+          { type: "userMessage", content: [{ type: "text", text: "Старый запрос" }] },
+          { type: "agentMessage", text: "Старый ответ", phase: "final_answer" },
+        ],
+      }],
+    } }),
+    readCodexRolloutActivity: async () => ({
+      activeTurnIds: [],
+      userMessages: {
+        [missingTurnId]: [{ itemId: "image", role: "user", text: "Изображение" }],
+      },
+      latestMessages: { [missingTurnId]: "Новый ответ" },
+      finalMessages: { [missingTurnId]: "Новый ответ" },
+    }),
+    readCodexSnapshot: async () => ({ active: false }),
+    taskSyncStore: {
+      history: () => [],
+      recordHistory: (_task, history) => { recorded = structuredClone(history); },
+      save: async () => {},
+    },
+  });
+  const result = await view.readHistory({ ...task, chatId: 1 });
+  assert.deepEqual(result.history.map((item) => item.id), [oldTurnId, missingTurnId]);
+  assert.equal(result.history.at(-1).answer, "Новый ответ");
+  assert.equal(result.history.at(-1).completed, true);
+  assert.equal(recorded.at(-1).id, missingTurnId);
+});
+
+test("rollout history represents a final image-only turn", () => {
+  const [exchange] = codexRolloutHistory({
+    finalMessages: { "turn-1": "Ответ на скриншот" },
+  });
+  assert.equal(exchange.prompt, "Сообщение с вложением");
+  assert.equal(exchange.answer, "Ответ на скриншот");
+  assert.equal(exchange.completed, true);
 });

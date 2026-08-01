@@ -165,6 +165,23 @@ test("desktop task history imports private screenshot references for the visible
   }]);
 });
 
+test("desktop task history exposes structured response annotations", async () => {
+  const { desktopTaskHistory, state } = fixture({ run: null });
+  state.history[3].promptAnnotations = [{ text: "Цитата", annotation: "Комментарий" }];
+  state.history[3].promptRequest = "Общий вопрос";
+  state.history[3].messages[0].responseAnnotations = state.history[3].promptAnnotations;
+  state.history[3].messages[0].responseAnnotationRequest = state.history[3].promptRequest;
+
+  const result = await desktopTaskHistory({ limit: 1 });
+
+  assert.deepEqual(result.items[0].promptAnnotations, [{ text: "Цитата", annotation: "Комментарий" }]);
+  assert.equal(result.items[0].promptRequest, "Общий вопрос");
+  assert.deepEqual(result.items[0].messages[0].responseAnnotations, [{
+    text: "Цитата",
+    annotation: "Комментарий",
+  }]);
+});
+
 test("desktop task history preserves pagination, field limits and response budget", async () => {
   const longAnswer = "я".repeat(2_000);
   const { desktopTaskHistory, state, calls } = fixture({ run: null });

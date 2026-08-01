@@ -141,7 +141,11 @@ import {
   readClaudeSessionSnapshot,
 } from "./last-message.mjs";
 import { codexThreadHistory, mergeActiveTaskHistory } from "./task-history.mjs";
-import { startCodexTurnWithRecovery } from "./codex-recovery.mjs";
+import {
+  activeTurnMissing,
+  interruptCodexTurnWithRecovery,
+  startCodexTurnWithRecovery,
+} from "./codex-recovery.mjs";
 import {
   codexThreadWaitingOnApproval,
   formatPermissionsApproval,
@@ -466,7 +470,9 @@ const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
 const threadContextUsage = new Map();
-const contextCompactions = new ContextCompactionTracker();
+const contextCompactions = new ContextCompactionTracker({
+  onSettled: () => scheduleDeferredRestartIfReady(),
+});
 const codexTurnStarts = new Map();
 const codexAccountingThreadRoots = new Map();
 let codexHookReceipts = { start: null, stop: null };
@@ -1706,6 +1712,9 @@ async function resolveResumedCodexThreadTitle(id, thread) {
 
 async function updateActiveCodexThreadSettings() {
   if (!isCodex() || !threadId) return;
+  if (contextCompactions.isRunning(threadId)) {
+    throw new Error("Дождитесь завершения свёртки контекста перед сменой модели или Reasoning");
+  }
   rememberCodexTaskSettings();
   await sendRpc("thread/settings/update", {
     threadId,
@@ -2737,6 +2746,7 @@ const {
   restart: {
     request: () => restartRequest,
     blockingRuns: restartBlockingRuns,
+    compactionCount: () => contextCompactions.runningCount(),
     mediaJobCount: () => backgroundMediaJobs.size,
     speechJobCount: () => backgroundSpeechJobs.size,
   },
@@ -2932,6 +2942,9 @@ async function desktopUpdateSetting(params) {
     await switchProvider(value);
   } else if (name === "model") {
     if (isCodex()) {
+      if (threadId && contextCompactions.isRunning(threadId)) {
+        throw new Error("Дождитесь завершения свёртки контекста перед сменой модели");
+      }
       switchCodexModel(value);
       await updateActiveCodexThreadSettings();
     } else {
@@ -2941,6 +2954,9 @@ async function desktopUpdateSetting(params) {
   } else if (name === "reasoning") {
     if (!CODEX_REASONING_EFFORTS.includes(value)) throw new Error("Неизвестный уровень reasoning");
     if (isCodex()) {
+      if (threadId && contextCompactions.isRunning(threadId)) {
+        throw new Error("Дождитесь завершения свёртки контекста перед сменой Reasoning");
+      }
       codexReasoningEffort = value;
       await updateActiveCodexThreadSettings();
     } else {
@@ -3033,13 +3049,42 @@ async function desktopTaskDiff(params) {
   return { text, empty: !text };
 }
 
+async function interruptCodexRun(run) {
+  return interruptCodexTurnWithRecovery({
+    threadId: run.threadId,
+    turnId: run.turnId,
+    interrupt: (interruptParams) => sendRpc("turn/interrupt", interruptParams),
+    resume: ({ threadId: resumeThreadId }) => sendRpc("thread/resume", {
+      threadId: resumeThreadId,
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    }),
+  });
+}
+
+async function codexInterruptFailureMessage(run, error) {
+  const activity = await taskExternalActivity(run);
+  if (activity.state === "inactive") {
+    return "Ход уже завершён или остановлен; состояние сейчас обновится";
+  }
+  if (run.observer || activeTurnMissing(error)) {
+    return "Ход выполняется в другом окне Codex. Остановите его в том окне; наблюдение Agent Hub сохранено";
+  }
+  return "Codex не подтвердил остановку. Наблюдение и блокировка задачи сохранены";
+}
+
 async function desktopCancelRun(params) {
   const target = await desktopMessageTarget(params);
   const run = taskRuns.forTask(target);
   if (!run) return { accepted: false, message: "В выбранной задаче сейчас ничего не выполняется" };
   if (run.provider === "codex") {
-    await sendRpc("turn/interrupt", { threadId: run.threadId, turnId: run.turnId });
-    return { accepted: true, message: "Остановка Codex запрошена" };
+    try {
+      await interruptCodexRun(run);
+      return { accepted: true, message: "Остановка Codex запрошена" };
+    } catch (error) {
+      console.warn(`Cannot interrupt Codex task ${run.threadId}:`, error.message);
+      return { accepted: false, message: await codexInterruptFailureMessage(run, error) };
+    }
   }
   if (run.process || processIsAlive(run.pid)) {
     if (!await stopClaudeRunProcess(run)) throw new Error("Не удалось остановить дерево процессов Claude");
@@ -3177,7 +3222,10 @@ async function desktopSpeakLastAnswer(params) {
 async function desktopRestartServer() {
   if (restartRequest) return { accepted: false, message: "Перезапуск уже запрошен" };
   const blockingRuns = restartBlockingRuns();
-  const blockingWorkCount = blockingRuns.length + backgroundMediaJobs.size + backgroundSpeechJobs.size;
+  const blockingWorkCount = blockingRuns.length
+    + contextCompactions.runningCount()
+    + backgroundMediaJobs.size
+    + backgroundSpeechJobs.size;
   const message = await sendMessage(blockingWorkCount
     ? `🔄 Agent Hub Server перезапустится после завершения выполняющихся задач: ${blockingWorkCount}.`
     : "🔄 Перезапускаю Agent Hub Server…");
@@ -6624,14 +6672,19 @@ function restartBlockingRuns() {
 
 function restartHasBlockingWork() {
   return restartBlockingRuns().length > 0
+    || contextCompactions.runningCount() > 0
     || backgroundMediaJobs.size > 0
     || backgroundSpeechJobs.size > 0;
 }
 
-function handleBackgroundJobQueueChange({ size }) {
-  if (size === 0 && restartRequest?.waitingForRuns && !restartHasBlockingWork() && !stopping) {
-    setTimeout(() => void performRestart(), 0);
+function scheduleDeferredRestartIfReady() {
+  if (restartRequest?.waitingForRuns && !restartHasBlockingWork() && !stopping) {
+    setTimeout(() => void performRestart(), 0).unref?.();
   }
+}
+
+function handleBackgroundJobQueueChange({ size }) {
+  if (size === 0) scheduleDeferredRestartIfReady();
 }
 
 function backgroundJobQueue(kind) {
@@ -6900,6 +6953,7 @@ async function restartBot() {
   }
   const blockingRuns = restartBlockingRuns();
   const blockingWorkCount = blockingRuns.length
+    + contextCompactions.runningCount()
     + backgroundMediaJobs.size
     + backgroundSpeechJobs.size;
   const message = await sendMessage(blockingWorkCount
@@ -7298,6 +7352,9 @@ async function dispatchTelegramCallback(callback, route) {
   }
   if (route.kind === "codex-model") {
     try {
+      if (threadId && contextCompactions.isRunning(threadId)) {
+        throw new Error("дождитесь завершения свёртки контекста");
+      }
       const switched = switchCodexModel(route.model);
       await updateActiveCodexThreadSettings();
       await telegram("answerCallbackQuery", {
@@ -7325,8 +7382,11 @@ async function dispatchTelegramCallback(callback, route) {
   if (route.kind === "codex-reasoning") {
     const value = route.value;
     const changed = value !== codexReasoningEffort;
-    codexReasoningEffort = value;
     try {
+      if (threadId && contextCompactions.isRunning(threadId)) {
+        throw new Error("дождитесь завершения свёртки контекста");
+      }
+      codexReasoningEffort = value;
       await updateActiveCodexThreadSettings();
     } catch (error) {
       await telegram("answerCallbackQuery", {
@@ -7641,17 +7701,18 @@ async function handleTelegramCommand(message, text) {
       let interruptError = null;
       if (run.provider === "codex") {
         try {
-          await sendRpc("turn/interrupt", { threadId: run.threadId, turnId: run.turnId });
+          await interruptCodexRun(run);
         } catch (error) {
           interruptError = error;
           console.warn(`Cannot interrupt observed Codex task ${run.threadId}:`, error.message);
         }
       }
       if (run.provider === "codex" && interruptError) {
-        setProgressStage(run, `Не удалось остановить внешний ход: ${interruptError.message}`);
+        const failureMessage = await codexInterruptFailureMessage(run, interruptError);
+        setProgressStage(run, failureMessage);
         await sendRunMessage(
           run,
-          `Codex не подтвердил остановку: ${interruptError.message}. Наблюдение и блокировка сохранены; параллельный ход не будет запущен.`,
+          `${failureMessage}. Параллельный ход не будет запущен.`,
         );
         return;
       }
@@ -7667,7 +7728,12 @@ async function handleTelegramCommand(message, text) {
       return;
     }
     if (run.provider === "codex") {
-      await sendRpc("turn/interrupt", { threadId: run.threadId, turnId: run.turnId });
+      try {
+        await interruptCodexRun(run);
+      } catch (error) {
+        await sendRunMessage(run, await codexInterruptFailureMessage(run, error));
+        return;
+      }
     } else if (run.process || processIsAlive(run.pid)) {
       if (!await stopClaudeRunProcess(run)) {
         await sendRunMessage(run, "Не удалось остановить дерево процессов Claude; задача остаётся активной.");

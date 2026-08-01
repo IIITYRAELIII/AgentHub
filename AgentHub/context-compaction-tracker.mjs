@@ -27,6 +27,7 @@ export class ContextCompactionTracker {
     maxEntries = DEFAULT_MAX_ENTRIES,
     setTimer = setTimeout,
     clearTimer = clearTimeout,
+    onSettled = () => {},
   } = {}) {
     this.clock = clock;
     this.idFactory = idFactory;
@@ -34,6 +35,7 @@ export class ContextCompactionTracker {
     this.maxEntries = maxEntries;
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
+    this.onSettled = onSettled;
     this.entries = new Map();
     this.timers = new Map();
   }
@@ -44,6 +46,10 @@ export class ContextCompactionTracker {
 
   isRunning(threadId) {
     return this.get(threadId)?.status === "running";
+  }
+
+  runningCount() {
+    return [...this.entries.values()].filter((entry) => entry.status === "running").length;
   }
 
   begin(threadId, {
@@ -98,6 +104,7 @@ export class ContextCompactionTracker {
     };
     this.cancelTimeout(key);
     this.store(key, record);
+    this.notifySettled(key, record);
     return record;
   }
 
@@ -107,6 +114,7 @@ export class ContextCompactionTracker {
     if (!existing || (expectedId && existing.id !== expectedId)) return false;
     this.cancelTimeout(key);
     this.entries.delete(key);
+    this.notifySettled(key, null);
     return true;
   }
 
@@ -136,6 +144,7 @@ export class ContextCompactionTracker {
         status: "timeout",
         completedAt: new Date(this.clock()).toISOString(),
       });
+      this.notifySettled(key, this.entries.get(key));
     }, this.timeoutMs);
     timer?.unref?.();
     this.timers.set(key, timer);
@@ -145,5 +154,13 @@ export class ContextCompactionTracker {
     const timer = this.timers.get(key);
     if (timer !== undefined) this.clearTimer(timer);
     this.timers.delete(key);
+  }
+
+  notifySettled(threadId, record) {
+    try {
+      this.onSettled({ threadId, record });
+    } catch {
+      // Compaction tracking must not fail because an optional observer did.
+    }
   }
 }

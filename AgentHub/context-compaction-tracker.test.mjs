@@ -36,7 +36,11 @@ test("modern compaction item lifecycle completes a manual request without changi
 });
 
 test("an automatic compaction is visible from start through completion", () => {
-  const tracker = new ContextCompactionTracker({ idFactory: () => "auto-id" });
+  const settled = [];
+  const tracker = new ContextCompactionTracker({
+    idFactory: () => "auto-id",
+    onSettled: (event) => settled.push(event),
+  });
   const started = tracker.begin("thread-2", {
     origin: "automatic",
     turnId: "turn-2",
@@ -44,15 +48,21 @@ test("an automatic compaction is visible from start through completion", () => {
   });
   assert.equal(started.origin, "automatic");
   assert.equal(tracker.isRunning("thread-2"), true);
+  assert.equal(tracker.runningCount(), 1);
   const completed = tracker.complete("thread-2", { turnId: "turn-2", itemId: "item-2" });
   assert.equal(completed.status, "completed");
   assert.equal(completed.origin, "automatic");
+  assert.equal(tracker.runningCount(), 0);
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].threadId, "thread-2");
+  assert.equal(settled[0].record.status, "completed");
   tracker.dispose();
 });
 
 test("a missing completion becomes a bounded timeout instead of staying active forever", () => {
   let callback = null;
   let now = Date.parse("2026-07-31T18:20:00.000Z");
+  const settled = [];
   const tracker = new ContextCompactionTracker({
     clock: () => now,
     idFactory: () => "timeout-id",
@@ -61,12 +71,14 @@ test("a missing completion becomes a bounded timeout instead of staying active f
       return { unref() {} };
     },
     clearTimer: () => {},
+    onSettled: (event) => settled.push(event),
   });
   tracker.begin("thread-3");
   now += 120_000;
   callback();
   assert.equal(tracker.get("thread-3").status, "timeout");
   assert.equal(tracker.isRunning("thread-3"), false);
+  assert.equal(settled[0].record.status, "timeout");
   tracker.dispose();
 });
 

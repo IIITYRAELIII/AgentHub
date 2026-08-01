@@ -239,6 +239,17 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
     // VS Code has concurrent turns in one thread.
     rememberCodexTurnMessage(metadata, turnId, responseItemMessage);
   }
+  const responseItemUserContent = entry?.type === "response_item"
+    && entry.payload?.type === "message"
+    && entry.payload?.role === "user"
+    ? entry.payload?.content ?? []
+    : [];
+  const responseItemHasImage = responseItemUserContent.some((item) => (
+    ["image", "input_image", "localImage"].includes(item?.type)
+  ));
+  if (turnId && responseItemHasImage && !codexResponseItemMessage(entry, "user")) {
+    rememberCodexUserMessage(metadata, turnId, { text: "Изображение" });
+  }
   if (entry?.type === "event_msg" && entry.payload?.type === "agent_message") {
     const messageTurnId = turnId || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     const message = String(entry.payload?.message ?? "").trim();
