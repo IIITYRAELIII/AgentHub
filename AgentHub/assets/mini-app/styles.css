@@ -7233,6 +7233,24 @@ html[data-view="statistics"] .statistics-view {
   font-size: 8px;
 }
 
+/* Внутри суток расход показывается линией с заливкой, а не столбиками. */
+.usage-line {
+  stroke: var(--accent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+
+.usage-area {
+  fill: color-mix(in srgb, var(--accent) 18%, transparent);
+  stroke: none;
+}
+
+.usage-dot {
+  fill: var(--accent);
+  opacity: 0.85;
+}
+
 /* День недели — вспомогательная строка под датой. */
 .usage-axis-weekday {
   fill: var(--text-faint);

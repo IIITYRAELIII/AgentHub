@@ -3260,6 +3260,19 @@ function hideUsageTooltip() {
   if (usageTooltip) usageTooltip.hidden = true;
 }
 
+function usageAxisTicks(fromMs, toMs, plotW) {
+  /* Подписи времени ставятся по круглым отметкам: 15 минут, полчаса, час или
+     несколько часов — что первым перестаёт слипаться на текущей ширине. */
+  const steps = [15, 30, 60, 120, 180, 360, 720].map((minutes) => minutes * 60_000);
+  const span = Math.max(1, toMs - fromMs);
+  const step = steps.find((value) => (value / span) * plotW >= 56) ?? steps.at(-1);
+  const ticks = [];
+  for (let cursor = Math.ceil(fromMs / step) * step; cursor <= toMs; cursor += step) {
+    ticks.push(cursor);
+  }
+  return ticks;
+}
+
 function buildUsageChart(payload) {
   const points = (Array.isArray(payload?.points) ? payload.points : [])
     .map((point) => ({
@@ -3272,16 +3285,14 @@ function buildUsageChart(payload) {
   const rate = usageState.mode === "rate";
   const hours = usageBucketHours(payload);
   const valueOf = (point) => (rate ? point.credits / Math.max(hours, 0.0001) : point.credits);
-  const available = chartWidth(usageChart);
-  const W = daily
-    ? Math.max(available, points.length * 44 + 76)
-    : available;
+  // весь период влезает в карточку: горизонтальная прокрутка графику не нужна
+  const W = chartWidth(usageChart);
   const H = 260;
   const padL = 62;
   const padR = 14;
   const padT = 14;
   // под датой идёт день недели, поэтому нижнее поле выше
-  const padB = daily ? 52 : 30;
+  const padB = daily ? 52 : 34;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const max = Math.max(1, ...points.map(valueOf));
@@ -3308,33 +3319,38 @@ function buildUsageChart(payload) {
       "text-anchor": "end",
     }, [rate ? `${formatUsageValue(value)}/ч` : formatUsageValue(value)]));
   }
-  const barStep = plotW / Math.max(1, points.length);
-  const barWidth = Math.max(2, Math.min(28, barStep * 0.68));
-  points.forEach((point, index) => {
-    const height = valueOf(point) / max * plotH;
-    const x = padL + index * barStep + (barStep - barWidth) / 2;
-    const y = padT + plotH - height;
-    const bar = svgEl("rect", {
-      x: x.toFixed(1),
-      y: y.toFixed(1),
-      width: barWidth.toFixed(1),
-      height: Math.max(1, height).toFixed(1),
-      rx: Math.min(4, barWidth / 3).toFixed(1),
-      class: "usage-bar",
-      tabindex: 0,
-      role: "img",
-      "aria-label": `${formatLimitsDateTime(point.at)}: ${
-        rate ? formatUsageRate(point.credits, hours) : formatUsageValue(point.credits)
-      }`,
-    });
-    const fx = (x + barWidth / 2) / W;
-    const fy = y / H;
-    bar.addEventListener("pointerenter", () => showUsageTooltip(point, fx, fy, daily, hours));
-    bar.addEventListener("pointerleave", hideUsageTooltip);
-    bar.addEventListener("focus", () => showUsageTooltip(point, fx, fy, daily, hours));
-    bar.addEventListener("blur", hideUsageTooltip);
-    svg.append(bar);
-    if (daily) {
+
+  if (daily) {
+    const barStep = plotW / Math.max(1, points.length);
+    const barWidth = Math.max(2, Math.min(28, barStep * 0.72));
+    /* Подписи прореживаются, а столбики сужаются: тридцать дней должны
+       помещаться в карточку целиком, без горизонтальной прокрутки. */
+    const labelStep = Math.max(1, Math.ceil(30 / Math.max(barStep, 1)));
+    points.forEach((point, index) => {
+      const height = valueOf(point) / max * plotH;
+      const x = padL + index * barStep + (barStep - barWidth) / 2;
+      const y = padT + plotH - height;
+      const bar = svgEl("rect", {
+        x: x.toFixed(1),
+        y: y.toFixed(1),
+        width: barWidth.toFixed(1),
+        height: Math.max(1, height).toFixed(1),
+        rx: Math.min(4, barWidth / 3).toFixed(1),
+        class: "usage-bar",
+        tabindex: 0,
+        role: "img",
+        "aria-label": `${formatLimitsDateTime(point.at)}: ${
+          rate ? formatUsageRate(point.credits, hours) : formatUsageValue(point.credits)
+        }`,
+      });
+      const fx = (x + barWidth / 2) / W;
+      const fy = y / H;
+      bar.addEventListener("pointerenter", () => showUsageTooltip(point, fx, fy, daily, hours));
+      bar.addEventListener("pointerleave", hideUsageTooltip);
+      bar.addEventListener("focus", () => showUsageTooltip(point, fx, fy, daily, hours));
+      bar.addEventListener("blur", hideUsageTooltip);
+      svg.append(bar);
+      if (index % labelStep) return;
       const center = (x + barWidth / 2).toFixed(1);
       svg.append(svgEl("text", {
         x: center,
@@ -3348,28 +3364,65 @@ function buildUsageChart(payload) {
         class: "limits-axis-label limits-axis-x usage-axis-weekday",
         "text-anchor": "middle",
       }, [weekdayLabel(point.at)]));
-    }
-  });
-  if (points.length && !daily) {
-    const first = points[0].time;
-    const last = points.at(-1).time;
-    const span = Math.max(1, last - first);
-    for (const [time, anchor] of [[first, "start"], [last, "end"]]) {
+    });
+  } else if (points.length) {
+    /* Внутри суток расход идёт линией, как на графике лимитов: столбики в
+       пятнадцатиминутной сетке сливались в частокол. */
+    const fromMs = Date.parse(payload?.from ?? points[0].at);
+    const toMs = Date.parse(payload?.axisTo ?? payload?.to ?? points.at(-1).at);
+    const span = Math.max(1, toMs - fromMs);
+    const xOf = (time) => padL + ((time - fromMs) / span) * plotW;
+    const yOf = (value) => padT + (1 - value / max) * plotH;
+    const baseline = (padT + plotH).toFixed(1);
+    const line = points
+      .map((point, index) => {
+        const command = index ? "L" : "M";
+        return `${command}${xOf(point.time).toFixed(1)} ${yOf(valueOf(point)).toFixed(1)}`;
+      })
+      .join(" ");
+    const first = xOf(points[0].time).toFixed(1);
+    const last = xOf(points.at(-1).time).toFixed(1);
+    svg.append(svgEl("path", {
+      d: `${line} L${last} ${baseline} L${first} ${baseline} Z`,
+      class: "usage-area",
+    }));
+    svg.append(svgEl("path", { d: line, class: "usage-line", fill: "none" }));
+    for (const tick of usageAxisTicks(fromMs, toMs, plotW)) {
+      const x = xOf(tick);
+      svg.append(svgEl("line", {
+        x1: x,
+        y1: padT,
+        x2: x,
+        y2: padT + plotH,
+        class: "limits-grid-line limits-grid-day",
+      }));
       svg.append(svgEl("text", {
-        x: anchor === "start" ? padL : W - padR,
-        y: H - 8,
+        x,
+        y: H - 10,
         class: "limits-axis-label limits-axis-x",
-        "text-anchor": anchor,
-      }, [formatAxisTime(time, span)]));
+        "text-anchor": "middle",
+      }, [new Date(tick).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })]));
+    }
+    for (const point of points) {
+      if (point.credits <= 0) continue;
+      const cx = xOf(point.time);
+      const cy = yOf(valueOf(point));
+      const dot = svgEl("circle", { cx, cy, r: 2.6, class: "usage-dot" });
+      const fx = cx / W;
+      const fy = cy / H;
+      dot.addEventListener("pointerenter", () => showUsageTooltip(point, fx, fy, daily, hours));
+      dot.addEventListener("pointerleave", hideUsageTooltip);
+      svg.append(dot);
     }
   }
+
   usageChart.setAttribute(
     "aria-label",
     rate
       ? `Скорость расхода за ${formatUsagePeriod(payload)}.`
       : `Локальный расход: ${formatUsageValue(payload.totalCredits)} за ${formatUsagePeriod(payload)}.`,
   );
-  svg.style.width = W > available ? `${W}px` : "100%";
+  svg.style.width = "100%";
   usageChart.replaceChildren(svg);
 }
 

@@ -1342,11 +1342,13 @@ function mergeLedgerRecord(existing, incoming) {
   return existing;
 }
 
+/* Сутки считаются календарными, а не «последними 24 часами»: иначе итог дня
+   обрывался посреди ночи, а на графике день начинался в произвольный час. */
 const USAGE_HISTORY_RANGES = Object.freeze({
   "6h": { spanMs: 6 * 60 * 60 * 1_000, bucketMs: 15 * 60 * 1_000 },
-  "24h": { spanMs: 24 * 60 * 60 * 1_000, bucketMs: 60 * 60 * 1_000 },
-  "7d": { calendarDays: 7, bucketMs: 24 * 60 * 60 * 1_000 },
-  "30d": { calendarDays: 30, bucketMs: 24 * 60 * 60 * 1_000 },
+  "24h": { calendarDays: 1, bucketMs: 30 * 60 * 1_000, wholeDay: true },
+  "7d": { calendarDays: 7, bucketMs: 24 * 60 * 60 * 1_000, dayBuckets: true },
+  "30d": { calendarDays: 30, bucketMs: 24 * 60 * 60 * 1_000, dayBuckets: true },
 });
 
 function localDayStart(value, dayOffset = 0) {
@@ -1418,9 +1420,17 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const pointLimit = Math.min(Math.max(Number(maxPoints) || 600, 10), 2_000);
   const spanMs = Math.max(1, toMs - rawFromMs);
   const bucketMs = configured?.bucketMs ?? allHistoryBucketMs(spanMs, pointLimit);
+  /* «Всё время» на длинной истории тоже считается по календарным суткам:
+     сетка от эпохи давала день, начинающийся в 5 утра по местному времени. */
+  const dayBuckets = Boolean(configured?.dayBuckets)
+    || (!configured && bucketMs >= 24 * 60 * 60 * 1_000);
   const fromMs = calendarDays
     ? rawFromMs
-    : Math.floor(rawFromMs / bucketMs) * bucketMs;
+    : dayBuckets
+      ? localDayStart(rawFromMs)
+      : Math.floor(rawFromMs / bucketMs) * bucketMs;
+  // ось суток доходит до полуночи, даже если день ещё не прожит
+  const axisToMs = configured?.wholeDay ? localDayStart(toMs, 1) : toMs;
   const buckets = new Map();
   let totalCredits = 0;
   let unpricedCount = 0;
@@ -1432,26 +1442,29 @@ export function buildWorkLogUsageHistory(turns = {}, {
     }
     totalCredits += record.credits;
     if (record.credits <= 0) continue;
-    const bucket = calendarDays
+    const bucket = dayBuckets
       ? localDayStart(record.completedMs)
       : Math.floor(record.completedMs / bucketMs) * bucketMs;
     buckets.set(bucket, (buckets.get(bucket) ?? 0) + record.credits);
   }
-  const points = calendarDays
+  /* Внутри суток точки идут сплошной сеткой, включая пустые: линия расхода
+     не должна перепрыгивать через часы, когда ничего не считалось. */
+  const points = dayBuckets
     ? calendarDayPoints(fromMs, toMs, buckets)
-    : [...buckets.entries()]
-      .sort(([left], [right]) => left - right)
-      .slice(-pointLimit)
-      .map(([at, credits]) => ({
-        at: new Date(at).toISOString(),
-        credits,
-      }));
+    : (() => {
+      const filled = [];
+      for (let cursor = fromMs; cursor <= Math.min(toMs, axisToMs); cursor += bucketMs) {
+        filled.push({ at: new Date(cursor).toISOString(), credits: buckets.get(cursor) ?? 0 });
+      }
+      return filled.slice(-pointLimit);
+    })();
   return {
     range: normalizedRange,
     from: new Date(fromMs).toISOString(),
     to: new Date(toMs).toISOString(),
+    axisTo: new Date(axisToMs).toISOString(),
     bucketMs,
-    bucket: calendarDays ? "day" : "fixed",
+    bucket: dayBuckets ? "day" : "fixed",
     totalCredits,
     unpricedCount,
     points,

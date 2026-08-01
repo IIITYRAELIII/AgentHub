@@ -50,7 +50,7 @@ test("local usage history buckets priced ledger turns and reports unpriced ones"
   assert.equal(history.range, "6h");
   assert.equal(history.totalCredits, 5);
   assert.equal(history.unpricedCount, 1);
-  assert.equal(history.points.length, 2);
+  assert.equal(history.points.length, 25);
   assert.equal(history.points.reduce((sum, point) => sum + point.credits, 0), 5);
 });
 
@@ -96,6 +96,40 @@ test("seven-day usage matches journal calendar days and includes empty days", ()
   assert.equal(history.bucket, "day");
   assert.equal(history.points.length, 7);
   assert.deepEqual(history.points.map((point) => point.credits), [3, 0, 0, 0, 0, 0, 9]);
+  assert.ok(history.points.every((point) => new Date(point.at).getHours() === 0));
+});
+
+test("day range covers the whole calendar day and keeps an axis to midnight", () => {
+  const now = new Date(2026, 6, 30, 18, 36, 0, 0).getTime();
+  const history = buildWorkLogUsageHistory({
+    early: {
+      completedAt: new Date(2026, 6, 30, 1, 15, 0, 0).toISOString(),
+      estimatedCredits: 4,
+      estimateKind: "model",
+    },
+  }, { range: "24h", now });
+  assert.equal(new Date(history.from).getHours(), 0);
+  assert.equal(new Date(history.axisTo).getHours(), 0);
+  assert.equal(Date.parse(history.axisTo) - Date.parse(history.from), 24 * 60 * 60 * 1_000);
+  assert.equal(history.totalCredits, 4);
+  assert.equal(history.bucketMs, 30 * 60 * 1_000);
+});
+
+test("all-time history falls back to calendar days on long spans", () => {
+  const now = new Date(2026, 6, 30, 18, 0, 0, 0).getTime();
+  const turns = {};
+  for (let index = 0; index < 60; index += 1) {
+    const at = new Date(now);
+    at.setDate(at.getDate() - index);
+    at.setHours(9, 30, 0, 0);
+    turns["turn" + index] = {
+      completedAt: at.toISOString(),
+      estimatedCredits: 2,
+      estimateKind: "model",
+    };
+  }
+  const history = buildWorkLogUsageHistory(turns, { range: "all", now });
+  assert.equal(history.bucket, "day");
   assert.ok(history.points.every((point) => new Date(point.at).getHours() === 0));
 });
 
