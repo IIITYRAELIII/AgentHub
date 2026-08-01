@@ -1117,6 +1117,8 @@ async function refresh() {
       && previousSelected.threadId === currentSelected.threadId;
     const answerChanged = sameSelection
       && String(previousSelected.lastAnswerAt ?? "") !== String(currentSelected.lastAnswerAt ?? "");
+    const selectedHistoryMissing = sameSelection
+      && !historyPageByTask.has(taskId(currentSelected.provider, currentSelected.threadId));
     const externalLive = sameSelection
       && currentSelected.running
       && !["hub", "telegram"].includes(String(
@@ -1131,7 +1133,8 @@ async function refresh() {
         limit: 20,
       }));
     } else if (sameSelection && (
-      (previousSelected.running && !currentSelected.running)
+      selectedHistoryMissing
+      || (previousSelected.running && !currentSelected.running)
       || answerChanged
       || refreshExternalHistory
     )) {

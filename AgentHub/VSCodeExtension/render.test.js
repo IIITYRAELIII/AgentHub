@@ -688,6 +688,12 @@ test("composer clears optimistically and restores an unconfirmed message", () =>
   );
 });
 
+test("chat retries an initial history load after the connection recovers", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /selectedHistoryMissing/u);
+  assert.match(client, /selectedHistoryMissing[\s\S]*control\("open-task"/u);
+});
+
 test("current limits live in settings and statistics instead of the compact header", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
