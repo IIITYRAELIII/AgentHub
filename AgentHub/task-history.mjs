@@ -2,7 +2,7 @@ function textContent(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
-    .filter((item) => item?.type === "text" && String(item.text ?? "").trim())
+    .filter((item) => ["text", "input_text"].includes(String(item?.type ?? "")) && String(item.text ?? "").trim())
     .map((item) => String(item.text).trim())
     .join("\n")
     .trim();
@@ -42,8 +42,12 @@ function codexAttachmentSources(content, envelope) {
     if (item?.type === "localImage" && String(item.path ?? "").trim()) {
       return [{ type: "path", value: String(item.path).trim() }];
     }
-    if (item?.type === "image" && String(item.url ?? "").startsWith("data:image/")) {
-      return [{ type: "data", value: String(item.url) }];
+    const dataUrl = String(item?.url ?? item?.image_url ?? "");
+    if (
+      ["image", "input_image"].includes(String(item?.type ?? ""))
+      && dataUrl.startsWith("data:image/")
+    ) {
+      return [{ type: "data", value: dataUrl }];
     }
     return [];
   });

@@ -298,6 +298,25 @@ test("Codex inline screenshots are retained as private data references", () => {
   }]);
 });
 
+test("Codex input_image screenshots are retained as private data references", () => {
+  const [exchange] = codexThreadHistory([{
+    id: "turn-with-input-image",
+    status: "inProgress",
+    items: [{
+      type: "userMessage",
+      content: [
+        { type: "input_text", text: "Проверь актуальный скрин" },
+        { type: "input_image", image_url: "data:image/png;base64,AA==" },
+      ],
+    }],
+  }]);
+  assert.equal(exchange.prompt, "Проверь актуальный скрин");
+  assert.deepEqual(exchange.messages[0].attachmentSources, [{
+    type: "data",
+    value: "data:image/png;base64,AA==",
+  }]);
+});
+
 test("Codex image-only messages remain visible in task history", () => {
   const [exchange] = codexThreadHistory([{
     id: "turn-with-image-only",
