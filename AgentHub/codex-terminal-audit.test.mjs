@@ -594,6 +594,40 @@ test("historical subagent backfill merges filesystem-only archived rollouts", as
   assert.equal(audit.snapshot().historicalSubagentBackfill.completedFiles, 1);
 });
 
+test("historical rollout backfill also restores ordinary Codex threads", async () => {
+  const ordinary = thread(
+    "ordinary-thread",
+    "2026-07-01T00:00:00.000Z",
+    "ordinary-thread.jsonl",
+  );
+  const recovered = [];
+  const audit = new CodexTerminalAudit({
+    listPage: async () => ({ data: [], nextCursor: null }),
+    discoverHistoricalThreads: async () => [ordinary],
+    resolveProject: () => project,
+    statFile: async () => ({
+      size: 100,
+      mtimeMs: Date.parse("2026-07-01T00:10:00.000Z"),
+    }),
+    scanFile: async () => ({
+      terminals: [{
+        turnId: "ordinary-turn",
+        status: "completed",
+        completedAt: "2026-07-01T00:10:00.000Z",
+      }],
+      activeTurns: [],
+      nextOffset: 100,
+    }),
+    reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
+  });
+  audit.restore({ version: 5, completedThrough: "2026-08-01T13:30:00.000Z" });
+
+  await audit.run();
+
+  assert.deepEqual(recovered, ["ordinary-turn"]);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.totalFiles, 1);
+});
+
 test("historical subagent backfill records a stale unterminated turn as aborted", async () => {
   const recovered = [];
   const audit = new CodexTerminalAudit({

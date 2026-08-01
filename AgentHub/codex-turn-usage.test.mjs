@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   codexRecentTerminalTurnsFromJsonl,
   codexTurnUsageFromJsonl,
+  discoverCodexRollouts,
   discoverCodexSubagentRollouts,
   findCodexRolloutPath,
   readCodexRolloutSession,
@@ -237,6 +238,26 @@ test("subagent rollout discovery includes active and archived sessions", async (
     }),
   });
   assert.deepEqual(result.map((value) => value.threadId).sort(), ["active", "archived"]);
+});
+
+test("complete rollout discovery also includes ordinary sessions", async () => {
+  const directories = new Map([
+    [path.join("C:\\Codex", "sessions"), [{
+      name: "ordinary.jsonl", isDirectory: () => false, isFile: () => true,
+    }]],
+    [path.join("C:\\Codex", "archived_sessions"), []],
+  ]);
+  const result = await discoverCodexRollouts({
+    codexHome: "C:\\Codex",
+    readdirImpl: async (directory) => directories.get(directory) ?? [],
+    readSession: async (file) => ({
+      threadId: "ordinary",
+      parentThreadId: "",
+      cwd: "D:\\workspace",
+      path: file,
+    }),
+  });
+  assert.deepEqual(result.map((value) => value.threadId), ["ordinary"]);
 });
 
 test("streaming rollout scan extracts the exact prompt, terminal status and changed files", async () => {

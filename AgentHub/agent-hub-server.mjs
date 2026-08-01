@@ -52,7 +52,7 @@ import {
   showLastMessageReplyMarkup,
 } from "./status.mjs";
 import {
-  discoverCodexSubagentRollouts,
+  discoverCodexRollouts,
   findCodexRolloutPath,
   readCodexRolloutSession,
   readCodexTurnUsage,
@@ -547,7 +547,7 @@ const codexTerminalAudit = new CodexTerminalAudit({
   },
   resolveProject: (thread) => findProject(thread.cwd),
   reconcile: reconcileRecentCodexTerminalTurn,
-  discoverHistoricalThreads: () => discoverCodexSubagentRollouts(),
+  discoverHistoricalThreads: () => discoverCodexRollouts(),
 });
 const turnTemporaryFiles = new Map();
 const turnSpeechButtons = new Map();
@@ -2357,7 +2357,7 @@ async function backfillWorkLogPricingMetadata(codexThreads) {
 }
 
 async function auditClaudeTranscriptSnapshots(snapshots) {
-  let recorded = 0;
+  const records = [];
   for (const snapshot of snapshots ?? []) {
     const transcriptPath = String(snapshot?.transcriptPath ?? "").trim();
     const sessionId = String(snapshot?.sessionId ?? "").trim();
@@ -2366,44 +2366,41 @@ async function auditClaudeTranscriptSnapshots(snapshots) {
     const auditVersion = Number(snapshot.modifiedAtMs) || 0;
     if (claudeTranscriptAuditState.get(transcriptPath) === auditVersion) continue;
     const scan = await scanClaudeHistoricalTranscriptFile(transcriptPath);
-    const turn = scan.turns.at(-1);
-    if (turn) {
-      const identity = {
+    const taskTitle = String(snapshot.title ?? scan.session?.title ?? "").trim();
+    for (const turn of scan.turns ?? []) {
+      records.push({
+        ...turn,
         provider: "claude",
         threadId: sessionId,
         turnId: turn.turnId,
-      };
-      const existing = await workLogUsageStore.getTurn(identity);
-      if (!existing
-        || (!existing.body && turn.body)
-        || (!existing.usageReported && turn.usageReported)
-        || (Number(existing.estimatedCredits ?? 0) <= 0 && turn.estimatedCredits > 0)) {
-        const taskTitle = String(snapshot.title ?? turn.taskTitle ?? "").trim();
-        await projectTurnUsageToWorkLog({
-          ...turn,
-          ...identity,
-          projectRoot: project.path,
-          taskTitle,
-          taskThreadId: sessionId,
-          parentThreadId: "",
-          aggregateOnly: false,
-          provisional: false,
-          changedFiles: [],
-          diff: "",
-          message: null,
-        }, {
-          title: turn.body ? conciseTurnTitle(turn.body, turn.status) : turn.title,
-          body: turn.body,
-        });
-        recorded += 1;
-      }
+        projectRoot: project.path,
+        taskTitle,
+        title: turn.body ? conciseTurnTitle(turn.body, turn.status) : turn.title,
+        taskThreadId: sessionId,
+        parentThreadId: "",
+        aggregateOnly: false,
+        provisional: false,
+        changedFiles: [],
+        diff: "",
+      });
     }
     claudeTranscriptAuditState.set(transcriptPath, auditVersion);
     while (claudeTranscriptAuditState.size > 2_000) {
       claudeTranscriptAuditState.delete(claudeTranscriptAuditState.keys().next().value);
     }
   }
-  if (recorded) console.log(`Recorded ${recorded} external Claude turn(s) in WORK_LOG`);
+  if (!records.length) return;
+  const result = await workLogUsageStore.recordAutomaticBatchAndProject({
+    records,
+    projectRoot: config.projectRoot,
+    workLogFile: globalWorkLogFile,
+    projectionProjectRoots: globalWorkLogProjectRoots,
+  });
+  if (result.recorded || result.updated) {
+    console.log(
+      `Audited Claude WORK_LOG turns: ${result.recorded} added, ${result.updated} updated`,
+    );
+  }
 }
 
 async function buildTaskCatalog() {

@@ -94,7 +94,7 @@ function restoredHistoricalSubagentBackfill(value) {
     const thread = threadReference(item?.thread);
     const offset = Number(item?.offset);
     const size = Number(item?.size);
-    if (!thread.id || !thread.path || !thread.parentThreadId) continue;
+    if (!thread.id || !thread.path) continue;
     if (!Number.isSafeInteger(offset) || offset < 0) continue;
     restored.queue.push({
       thread,
@@ -401,7 +401,7 @@ export class CodexTerminalAudit {
       const page = await this.listPage(cursor, this.pageSize);
       for (const value of page?.data ?? []) {
         const thread = threadReference(value);
-        if (!thread.id || !thread.path || !thread.parentThreadId) continue;
+        if (!thread.id || !thread.path) continue;
         if (!this.resolveProject(thread)) continue;
         candidates.set(thread.id, thread);
       }
@@ -411,7 +411,7 @@ export class CodexTerminalAudit {
     if (typeof this.discoverHistoricalThreads === "function") {
       for (const value of await this.discoverHistoricalThreads()) {
         const thread = threadReference(value);
-        if (!thread.id || !thread.path || !thread.parentThreadId) continue;
+        if (!thread.id || !thread.path) continue;
         if (!this.resolveProject(thread)) continue;
         candidates.set(thread.id, thread);
       }

@@ -852,7 +852,7 @@ async function buildCodexRolloutPathIndex(codexHome, readdirImpl) {
   return paths;
 }
 
-export async function discoverCodexSubagentRollouts({
+export async function discoverCodexRollouts({
   codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex"),
   readdirImpl = readdir,
   readSession = readCodexRolloutSession,
@@ -880,9 +880,14 @@ export async function discoverCodexSubagentRollouts({
   const result = [];
   for (const file of files) {
     const session = await readSession(file);
-    if (session?.threadId && session?.parentThreadId) result.push(session);
+    if (session?.threadId) result.push(session);
   }
   return result;
+}
+
+export async function discoverCodexSubagentRollouts(options = {}) {
+  return (await discoverCodexRollouts(options))
+    .filter((session) => session.parentThreadId);
 }
 
 async function codexRolloutPathIndex(codexHome, readdirImpl) {

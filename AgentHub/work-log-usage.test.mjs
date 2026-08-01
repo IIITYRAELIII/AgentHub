@@ -1218,6 +1218,57 @@ test("automatic usage attaches to the only row for the thread and is idempotent"
   }
 });
 
+test("automatic batch records many historical turns and projects once", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-automatic-batch-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    const store = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    const records = ["first", "second"].map((turnId, index) => ({
+      provider: "claude",
+      threadId: "claude-session",
+      turnId,
+      projectRoot: root,
+      taskTitle: "Claude Work",
+      title: `Ход ${index + 1}`,
+      body: `Ответ ${index + 1}`,
+      prompt: `Запрос ${index + 1}`,
+      usageReported: true,
+      usage: { inputTokens: 100 + index },
+      startedAt: `2026-07-27T0${index}:00:00.000Z`,
+      completedAt: `2026-07-27T0${index}:01:00.000Z`,
+      status: "completed",
+    }));
+
+    assert.deepEqual(await store.recordAutomaticBatchAndProject({
+      records,
+      projectRoot: root,
+      workLogFile,
+    }), {
+      recorded: 2,
+      updated: 0,
+      projected: true,
+    });
+    assert.deepEqual(await store.recordAutomaticBatchAndProject({
+      records,
+      projectRoot: root,
+      workLogFile,
+    }), {
+      recorded: 0,
+      updated: 0,
+      projected: false,
+      reason: "unchanged",
+    });
+    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.equal(Object.keys(ledger.turns).length, 2);
+    const projected = await readFile(workLogFile, "utf8");
+    assert.match(projected, /Ответ 1/u);
+    assert.match(projected, /Ответ 2/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("automatic ledger survives a projection failure and reprojects later", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-durable-"));
   try {

@@ -2155,6 +2155,60 @@ export class WorkLogUsageStore {
     return operation;
   }
 
+  recordAutomaticBatchAndProject({
+    records = [],
+    projectRoot = this.#defaultProjectRoot,
+    workLogFile,
+    projectionProjectRoots,
+  } = {}) {
+    const operation = this.#tail.catch(() => {}).then(async () => {
+      await this.#load();
+      let recorded = 0;
+      let updated = 0;
+      for (const value of Array.isArray(records) ? records : []) {
+        const provider = String(value?.provider ?? "codex").trim().toLowerCase();
+        const threadId = String(value?.threadId ?? "").trim();
+        const turnId = String(value?.turnId ?? "").trim();
+        if (!provider || !threadId || !turnId) continue;
+        const key = workLogTurnKey({ provider, threadId, turnId });
+        const existing = this.#ledger.turns[key];
+        const before = existing ? JSON.stringify(existing) : "";
+        const incoming = incomingLedgerRecord({
+          ...value,
+          provider,
+          threadId,
+          turnId,
+          projectRoot: value.projectRoot ?? projectRoot,
+        });
+        this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
+        if (!existing) recorded += 1;
+        else if (JSON.stringify(this.#ledger.turns[key]) !== before) updated += 1;
+      }
+      if (!recorded && !updated) {
+        return { recorded: 0, updated: 0, projected: false, reason: "unchanged" };
+      }
+      await this.#save();
+      const logPath = path.resolve(workLogFile);
+      let current;
+      try {
+        current = await readFile(logPath, "utf8");
+      } catch (error) {
+        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
+        else throw error;
+      }
+      const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
+      const projected = this.#projectUsage(current, selectedTurns);
+      if (projected !== current) await writeTextAtomic(logPath, projected);
+      return {
+        recorded,
+        updated,
+        projected: projected !== current,
+      };
+    });
+    this.#tail = operation;
+    return operation;
+  }
+
   retractProvisionalAndProject({
     provider = "codex",
     threadId,
