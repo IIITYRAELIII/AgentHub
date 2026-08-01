@@ -6,7 +6,9 @@ import test from "node:test";
 import {
   codexRecentTerminalTurnsFromJsonl,
   codexTurnUsageFromJsonl,
+  discoverCodexSubagentRollouts,
   findCodexRolloutPath,
+  readCodexRolloutSession,
   readCodexRolloutTail,
   readCodexTurnUsage,
   scanCodexHistoricalRollout,
@@ -179,6 +181,62 @@ test("historical rollout scan extracts all turns in one streaming pass", async (
       serviceTier: "default",
     },
   ]);
+});
+
+test("rollout session reads nested subagent parent metadata", async () => {
+  const text = line({
+    timestamp: "2026-07-13T14:49:54.071Z",
+    type: "session_meta",
+    payload: {
+      id: "child-thread",
+      cwd: "D:\\workspace",
+      source: {
+        subagent: {
+          thread_spawn: { parent_thread_id: "parent-thread" },
+        },
+      },
+    },
+  });
+  const session = await readCodexRolloutSession("archived.jsonl", {
+    createReadStreamImpl: () => Readable.from([`${text}\n`]),
+  });
+  assert.deepEqual(session, {
+    id: "child-thread",
+    threadId: "child-thread",
+    parentThreadId: "parent-thread",
+    cwd: "D:\\workspace",
+    workspaceRoot: "D:\\workspace",
+    path: "archived.jsonl",
+    createdAt: "2026-07-13T14:49:54.071Z",
+    updatedAt: "2026-07-13T14:49:54.071Z",
+    source: {
+      subagent: {
+        thread_spawn: { parent_thread_id: "parent-thread" },
+      },
+    },
+  });
+});
+
+test("subagent rollout discovery includes active and archived sessions", async () => {
+  const directories = new Map([
+    [path.join("C:\\Codex", "sessions"), [{
+      name: "active.jsonl", isDirectory: () => false, isFile: () => true,
+    }]],
+    [path.join("C:\\Codex", "archived_sessions"), [{
+      name: "archived.jsonl", isDirectory: () => false, isFile: () => true,
+    }]],
+  ]);
+  const result = await discoverCodexSubagentRollouts({
+    codexHome: "C:\\Codex",
+    readdirImpl: async (directory) => directories.get(directory) ?? [],
+    readSession: async (file) => ({
+      threadId: path.basename(file, ".jsonl"),
+      parentThreadId: "parent-thread",
+      cwd: "D:\\workspace",
+      path: file,
+    }),
+  });
+  assert.deepEqual(result.map((value) => value.threadId).sort(), ["active", "archived"]);
 });
 
 test("streaming rollout scan extracts the exact prompt, terminal status and changed files", async () => {
@@ -580,6 +638,91 @@ test("terminal event scanner resumes from the last complete JSONL byte", async (
   assert.deepEqual(secondResult.terminals.map((value) => value.turnId), ["turn-2"]);
   assert.equal(secondResult.nextOffset, Buffer.byteLength(source));
   assert.deepEqual(starts, [0, Buffer.byteLength(first)]);
+});
+
+test("terminal event scanner stops at a complete line after its byte budget", async () => {
+  const entries = ["turn-1", "turn-2", "turn-3"].map((turnId, index) => `${line({
+    timestamp: `2026-07-27T03:0${index}:00.000Z`,
+    type: "event_msg",
+    payload: { type: "task_complete", turn_id: turnId },
+  })}\n`);
+  const source = Buffer.from(entries.join(""));
+  const createReadStreamImpl = (_path, { start }) => {
+    const tail = source.subarray(start);
+    const chunks = [];
+    let offset = 0;
+    for (const entry of entries) {
+      const length = Buffer.byteLength(entry);
+      if (offset + length > start) {
+        const localStart = Math.max(0, start - offset);
+        chunks.push(Buffer.from(entry).subarray(localStart));
+      }
+      offset += length;
+    }
+    return Readable.from(chunks.length ? chunks : [tail]);
+  };
+
+  const first = await scanCodexTerminalEventsFromOffset("rollout.jsonl", {
+    maxBytes: Buffer.byteLength(entries[0]),
+    createReadStreamImpl,
+  });
+  assert.deepEqual(first.terminals.map((value) => value.turnId), ["turn-1"]);
+  assert.equal(first.nextOffset, Buffer.byteLength(entries[0]));
+
+  const second = await scanCodexTerminalEventsFromOffset("rollout.jsonl", {
+    startOffset: first.nextOffset,
+    maxBytes: Buffer.byteLength(entries[1]),
+    createReadStreamImpl,
+  });
+  assert.deepEqual(second.terminals.map((value) => value.turnId), ["turn-2"]);
+  assert.equal(second.nextOffset, Buffer.byteLength(entries[0]) + Buffer.byteLength(entries[1]));
+});
+
+test("resumed subagent scans keep filtering inherited parent turns", async () => {
+  const childThreadId = "019fa366-e7a9-7aa1-b38a-6823c3a67e77";
+  const inheritedTurnId = "019fa362-ffaf-7cd3-9c8f-480d9724657a";
+  const childTurnId = "019fa366-e87d-7933-8ae8-f33a5200b24e";
+  const source = [
+    line({
+      timestamp: "2026-07-27T11:47:38.192Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: inheritedTurnId },
+    }),
+    line({
+      timestamp: "2026-07-27T11:50:38.875Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: childTurnId },
+    }),
+  ].join("\n");
+
+  const result = await scanCodexTerminalEventsFromOffset("forked-rollout.jsonl", {
+    rolloutId: childThreadId,
+    createReadStreamImpl: () => Readable.from([source]),
+  });
+
+  assert.deepEqual(result.terminals.map((value) => value.turnId), [childTurnId]);
+});
+
+test("terminal event scanner carries active turns across bounded chunks", async () => {
+  const first = await scanCodexTerminalEventsFromOffset("rollout.jsonl", {
+    createReadStreamImpl: () => Readable.from([line({
+      timestamp: "2026-07-27T03:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn-across-chunks" },
+    })]),
+  });
+  assert.equal(first.activeTurns.length, 1);
+
+  const second = await scanCodexTerminalEventsFromOffset("rollout.jsonl", {
+    initialActiveTurns: first.activeTurns,
+    createReadStreamImpl: () => Readable.from([line({
+      timestamp: "2026-07-27T03:01:00.000Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: "turn-across-chunks" },
+    })]),
+  });
+  assert.deepEqual(second.activeTurns, []);
+  assert.deepEqual(second.terminals.map((value) => value.turnId), ["turn-across-chunks"]);
 });
 
 test("terminal event scanner preserves turns that started without a lifecycle terminal", async () => {

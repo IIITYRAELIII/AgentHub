@@ -8,8 +8,10 @@ const DEFAULT_BOUNDARY_OVERLAP_MS = 2_000;
 const DEFAULT_STATUS_IDLE_MS = 5_000;
 const DEFAULT_STATUS_POLL_MS = 30_000;
 const DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS = 24 * 60 * 60_000;
-const SNAPSHOT_VERSION = 5;
-const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, SNAPSHOT_VERSION]);
+const DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES = 32 * 1024 * 1024;
+const DEFAULT_HISTORICAL_ACTIVE_STALE_MS = 30 * 60_000;
+const SNAPSHOT_VERSION = 6;
+const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, SNAPSHOT_VERSION]);
 
 function timestampMs(value) {
   const numeric = Number(value);
@@ -71,6 +73,47 @@ function restoredPendingThread(value) {
   };
 }
 
+function emptyHistoricalSubagentBackfill(pending = false) {
+  return {
+    pending,
+    initialized: false,
+    totalFiles: 0,
+    completedFiles: 0,
+    processedTurns: 0,
+    queue: [],
+  };
+}
+
+function restoredHistoricalSubagentBackfill(value) {
+  const restored = emptyHistoricalSubagentBackfill(value?.pending === true);
+  restored.initialized = value?.initialized === true;
+  restored.totalFiles = Math.max(0, Number(value?.totalFiles) || 0);
+  restored.completedFiles = Math.max(0, Number(value?.completedFiles) || 0);
+  restored.processedTurns = Math.max(0, Number(value?.processedTurns) || 0);
+  for (const item of Array.isArray(value?.queue) ? value.queue : []) {
+    const thread = threadReference(item?.thread);
+    const offset = Number(item?.offset);
+    const size = Number(item?.size);
+    if (!thread.id || !thread.path || !thread.parentThreadId) continue;
+    if (!Number.isSafeInteger(offset) || offset < 0) continue;
+    restored.queue.push({
+      thread,
+      offset,
+      size: Number.isSafeInteger(size) && size >= 0 ? size : 0,
+      activeTurns: Array.isArray(item?.activeTurns) ? item.activeTurns.flatMap((turn) => {
+        const turnId = String(turn?.turnId ?? "").trim();
+        return turnId ? [{
+          turnId,
+          startedAt: String(turn?.startedAt ?? ""),
+          lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
+        }] : [];
+      }) : [],
+    });
+  }
+  if (restored.initialized && !restored.queue.length) restored.pending = false;
+  return restored;
+}
+
 export class CodexTerminalAudit {
   constructor({
     listPage,
@@ -80,6 +123,7 @@ export class CodexTerminalAudit {
     onTurnActive,
     resolveProject,
     reconcile,
+    discoverHistoricalThreads = null,
     statFile = stat,
     scanFile = scanCodexTerminalEventsFromOffset,
     now = Date.now,
@@ -89,6 +133,8 @@ export class CodexTerminalAudit {
     statusIdleMs = DEFAULT_STATUS_IDLE_MS,
     statusPollMs = DEFAULT_STATUS_POLL_MS,
     subagentBackfillWindowMs = DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS,
+    historicalSubagentBackfillBytes = DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES,
+    historicalActiveStaleMs = DEFAULT_HISTORICAL_ACTIVE_STALE_MS,
     maxPositions = 5_000,
   }) {
     this.listPage = listPage;
@@ -98,6 +144,7 @@ export class CodexTerminalAudit {
     this.onTurnActive = onTurnActive;
     this.resolveProject = resolveProject;
     this.reconcile = reconcile;
+    this.discoverHistoricalThreads = discoverHistoricalThreads;
     this.statFile = statFile;
     this.scanFile = scanFile;
     this.now = now;
@@ -110,11 +157,21 @@ export class CodexTerminalAudit {
       this.bootstrapWindowMs,
       Number(subagentBackfillWindowMs) || DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS,
     );
+    this.historicalSubagentBackfillBytes = Math.max(
+      64 * 1024,
+      Number(historicalSubagentBackfillBytes)
+        || DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES,
+    );
+    this.historicalActiveStaleMs = Math.max(
+      this.statusIdleMs,
+      Number(historicalActiveStaleMs) || DEFAULT_HISTORICAL_ACTIVE_STALE_MS,
+    );
     this.maxPositions = Math.max(100, Number(maxPositions) || 5_000);
     this.completedThroughMs = 0;
     this.positions = new Map();
     this.pendingTurns = new Map();
     this.subagentBackfillPending = false;
+    this.historicalSubagentBackfill = emptyHistoricalSubagentBackfill();
     this.running = false;
   }
 
@@ -125,7 +182,10 @@ export class CodexTerminalAudit {
     this.positions.clear();
     this.pendingTurns.clear();
     this.subagentBackfillPending = snapshotVersion === 4
-      || (snapshotVersion === SNAPSHOT_VERSION && snapshot?.subagentBackfillPending === true);
+      || (compatibleSnapshot && snapshot?.subagentBackfillPending === true);
+    this.historicalSubagentBackfill = snapshotVersion === SNAPSHOT_VERSION
+      ? restoredHistoricalSubagentBackfill(snapshot?.historicalSubagentBackfill)
+      : emptyHistoricalSubagentBackfill(compatibleSnapshot);
     if (compatibleSnapshot) {
       for (const entry of Array.isArray(snapshot?.positions) ? snapshot.positions : []) {
         if (!Array.isArray(entry) || typeof entry[0] !== "string") continue;
@@ -144,6 +204,7 @@ export class CodexTerminalAudit {
     return {
       version: SNAPSHOT_VERSION,
       subagentBackfillPending: this.subagentBackfillPending,
+      historicalSubagentBackfill: this.historicalSubagentBackfill,
       completedThrough: this.completedThroughMs
         ? new Date(this.completedThroughMs).toISOString()
         : "",
@@ -326,6 +387,142 @@ export class CodexTerminalAudit {
     return madeProgress;
   }
 
+  async #initializeHistoricalSubagentBackfill() {
+    const backfill = this.historicalSubagentBackfill;
+    if (!backfill.pending || backfill.initialized) return false;
+    const candidates = new Map();
+    let cursor = null;
+    const seenCursors = new Set();
+    do {
+      if (cursor && seenCursors.has(cursor)) {
+        throw new Error(`Codex historical backfill repeated cursor ${cursor}`);
+      }
+      if (cursor) seenCursors.add(cursor);
+      const page = await this.listPage(cursor, this.pageSize);
+      for (const value of page?.data ?? []) {
+        const thread = threadReference(value);
+        if (!thread.id || !thread.path || !thread.parentThreadId) continue;
+        if (!this.resolveProject(thread)) continue;
+        candidates.set(thread.id, thread);
+      }
+      cursor = page?.nextCursor ?? null;
+    } while (cursor);
+
+    if (typeof this.discoverHistoricalThreads === "function") {
+      for (const value of await this.discoverHistoricalThreads()) {
+        const thread = threadReference(value);
+        if (!thread.id || !thread.path || !thread.parentThreadId) continue;
+        if (!this.resolveProject(thread)) continue;
+        candidates.set(thread.id, thread);
+      }
+    }
+
+    const queue = [];
+    for (const thread of candidates.values()) {
+      try {
+        const info = await this.statFile(thread.path);
+        queue.push({
+          thread,
+          offset: 0,
+          size: Number(info.size) || 0,
+          activeTurns: [],
+        });
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+    queue.sort((left, right) => left.size - right.size
+      || timestampMs(left.thread.updatedAt) - timestampMs(right.thread.updatedAt));
+    backfill.queue = queue;
+    backfill.totalFiles = queue.length;
+    backfill.completedFiles = 0;
+    backfill.processedTurns = 0;
+    backfill.initialized = true;
+    if (!queue.length) backfill.pending = false;
+    return true;
+  }
+
+  async #runHistoricalSubagentBackfill() {
+    const backfill = this.historicalSubagentBackfill;
+    if (!backfill.pending) return false;
+    let changed = await this.#initializeHistoricalSubagentBackfill();
+    const item = backfill.queue[0];
+    if (!item) {
+      backfill.pending = false;
+      return true;
+    }
+    const project = this.resolveProject(item.thread);
+    if (!project) {
+      backfill.queue.shift();
+      backfill.completedFiles += 1;
+      return true;
+    }
+
+    let info;
+    try {
+      info = await this.statFile(item.thread.path);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      backfill.queue.shift();
+      backfill.completedFiles += 1;
+      return true;
+    }
+    const startOffset = item.offset <= info.size ? item.offset : 0;
+    const result = await this.scanFile(item.thread.path, {
+      startOffset,
+      maxBytes: this.historicalSubagentBackfillBytes,
+      rolloutId: item.thread.id,
+      initialActiveTurns: item.activeTurns,
+    });
+    let allHandled = true;
+    for (const terminal of result.terminals ?? []) {
+      if (await this.reconcile(item.thread, project, terminal) === false) {
+        allHandled = false;
+      }
+    }
+    if (!allHandled) return changed;
+    if (result.nextOffset < startOffset
+      || (result.nextOffset === startOffset && startOffset < info.size)) {
+      throw new Error(`Codex historical backfill made no progress for ${item.thread.id}`);
+    }
+
+    item.offset = result.nextOffset;
+    item.size = Number(info.size) || item.size;
+    item.activeTurns = result.activeTurns ?? [];
+    backfill.processedTurns += (result.terminals ?? []).length;
+    changed = true;
+    if (item.offset >= info.size) {
+      if (item.activeTurns.length) {
+        const stale = this.now() - Number(info.mtimeMs || 0) >= this.historicalActiveStaleMs;
+        if (!stale) {
+          backfill.queue.push(backfill.queue.shift());
+          return true;
+        }
+        let activeHandled = true;
+        for (const turn of item.activeTurns) {
+          const handled = await this.reconcile(item.thread, project, {
+            turnId: turn.turnId,
+            status: "aborted",
+            completedAt: new Date(
+              timestampMs(turn.lastActivityAt)
+              || Number(info.mtimeMs)
+              || this.now(),
+            ).toISOString(),
+            authoritative: true,
+          });
+          if (handled === false) activeHandled = false;
+        }
+        if (!activeHandled) return true;
+        backfill.processedTurns += item.activeTurns.length;
+        item.activeTurns = [];
+      }
+      backfill.queue.shift();
+      backfill.completedFiles += 1;
+      if (!backfill.queue.length) backfill.pending = false;
+    }
+    return changed;
+  }
+
   async run() {
     if (this.running) return false;
     this.running = true;
@@ -344,7 +541,8 @@ export class CodexTerminalAudit {
     let allHandled = true;
 
     try {
-      madeProgress = await this.#pollPendingTurns(lowerBoundMs);
+      madeProgress = await this.#runHistoricalSubagentBackfill();
+      madeProgress = await this.#pollPendingTurns(lowerBoundMs) || madeProgress;
       do {
         if (cursor && seenCursors.has(cursor)) {
           throw new Error(`Codex thread/list repeated cursor ${cursor}`);

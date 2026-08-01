@@ -52,7 +52,9 @@ import {
   showLastMessageReplyMarkup,
 } from "./status.mjs";
 import {
+  discoverCodexSubagentRollouts,
   findCodexRolloutPath,
+  readCodexRolloutSession,
   readCodexTurnUsage,
   scanCodexTurnPricingMetadata,
 } from "./codex-turn-usage.mjs";
@@ -545,6 +547,7 @@ const codexTerminalAudit = new CodexTerminalAudit({
   },
   resolveProject: (thread) => findProject(thread.cwd),
   reconcile: reconcileRecentCodexTerminalTurn,
+  discoverHistoricalThreads: () => discoverCodexSubagentRollouts(),
 });
 const turnTemporaryFiles = new Map();
 const turnSpeechButtons = new Map();
@@ -5981,11 +5984,18 @@ async function codexAccountingThread(thread) {
   if (cached) return cached;
   const resolved = await resolveCodexAccountingThread(thread, {
     readThread: async (parentThreadId) => {
-      const response = await sendRpc("thread/read", {
-        threadId: parentThreadId,
-        includeTurns: false,
-      });
-      return response?.thread;
+      try {
+        const response = await sendRpc("thread/read", {
+          threadId: parentThreadId,
+          includeTurns: false,
+        });
+        if (response?.thread?.id) return response.thread;
+      } catch {
+        // Archived threads may no longer be readable through the App Server.
+      }
+      const transcriptPath = await findCodexRolloutPath(parentThreadId, "");
+      if (!transcriptPath) return null;
+      return readCodexRolloutSession(transcriptPath);
     },
   });
   if (resolved.isSubagent) {

@@ -94,7 +94,7 @@ test("terminal audit resumes byte positions after a long server outage", async (
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 5,
+    version: 6,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "rollout.jsonl", offset: 100 }]],
   });
@@ -149,7 +149,7 @@ test("terminal audit follows every thread-list page newer than its cursor", asyn
     reconcile: async (_thread, _project, terminal) => reconciled.push(terminal.turnId),
   });
   audit.restore({
-    version: 5,
+    version: 6,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [],
   });
@@ -188,7 +188,7 @@ test("terminal audit does not advance its cursor past a deferred terminal", asyn
     reconcile: async () => false,
   });
   audit.restore({
-    version: 5,
+    version: 6,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "thread-1.jsonl", offset: 10 }]],
   });
@@ -238,7 +238,7 @@ test("terminal audit advances through an active rollout and reads its later term
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 5,
+    version: 6,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-active", { path: "active.jsonl", offset: 50 }]],
   });
@@ -386,7 +386,7 @@ test("terminal audit bounds persisted per-thread positions", () => {
     maxPositions: 100,
   });
   audit.restore({
-    version: 5,
+    version: 6,
     positions: Array.from({ length: 120 }, (_, index) => [
       `thread-${index}`,
       { path: `thread-${index}.jsonl`, offset: index },
@@ -428,7 +428,7 @@ test("terminal audit uses rollout mtime when thread updatedAt stays at creation 
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 5,
+    version: 6,
     completedThrough: "2026-08-01T13:33:00.000Z",
     positions: [],
   });
@@ -480,7 +480,8 @@ test("terminal audit migrates v4 state and backfills missing subagent rollouts o
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 4,
+    version: 6,
+    subagentBackfillPending: true,
     completedThrough: "2026-08-01T13:30:00.000Z",
     positions: [["old-parent", { path: "parent.jsonl", offset: 500 }]],
   });
@@ -496,9 +497,12 @@ test("terminal audit migrates v4 state and backfills missing subagent rollouts o
   assert.deepEqual(scans, [["child.jsonl", 0]]);
 });
 
-test("terminal audit seeds historical missing subagents without rescanning them", async () => {
+test("terminal audit migrates v5 state and resumes bounded historical subagent backfill", async () => {
+  const chunkBytes = 64 * 1024;
+  const fileSize = chunkBytes * 3;
   const scans = [];
-  const audit = new CodexTerminalAudit({
+  const recovered = [];
+  const options = {
     now: () => Date.parse("2026-08-01T14:00:00.000Z"),
     listPage: async () => ({
       data: [subagentThread(
@@ -510,24 +514,131 @@ test("terminal audit seeds historical missing subagents without rescanning them"
     }),
     resolveProject: () => project,
     statFile: async () => ({
-      size: 500_000_000,
+      size: fileSize,
       mtimeMs: Date.parse("2026-07-01T00:10:00.000Z"),
     }),
-    scanFile: async (...args) => scans.push(args),
+    scanFile: async (_path, scanOptions) => {
+      scans.push(scanOptions);
+      return {
+        terminals: [{
+          turnId: `turn-${scanOptions.startOffset}`,
+          status: "completed",
+          completedAt: "2026-07-01T00:10:00.000Z",
+        }],
+        activeTurns: [],
+        nextOffset: Math.min(scanOptions.startOffset + chunkBytes, fileSize),
+      };
+    },
+    reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
+    historicalSubagentBackfillBytes: chunkBytes,
+  };
+  const audit = new CodexTerminalAudit(options);
+  audit.restore({
+    version: 5,
+    completedThrough: "2026-08-01T13:30:00.000Z",
+    positions: [[
+      "historical-child",
+      { path: "historical-child.jsonl", offset: fileSize },
+    ]],
+  });
+
+  await audit.run();
+  const afterFirstChunk = audit.snapshot();
+  assert.equal(afterFirstChunk.historicalSubagentBackfill.pending, true);
+  assert.equal(afterFirstChunk.historicalSubagentBackfill.queue[0].offset, chunkBytes);
+
+  const resumed = new CodexTerminalAudit(options);
+  resumed.restore(afterFirstChunk);
+  await resumed.run();
+  await resumed.run();
+
+  assert.deepEqual(scans.map((value) => value.startOffset), [0, chunkBytes, chunkBytes * 2]);
+  assert.ok(scans.every((value) => value.maxBytes === chunkBytes));
+  assert.ok(scans.every((value) => value.rolloutId === "historical-child"));
+  assert.deepEqual(recovered, ["turn-0", `turn-${chunkBytes}`, `turn-${chunkBytes * 2}`]);
+  const completed = resumed.snapshot().historicalSubagentBackfill;
+  assert.equal(completed.pending, false);
+  assert.equal(completed.totalFiles, 1);
+  assert.equal(completed.completedFiles, 1);
+  assert.equal(completed.processedTurns, 3);
+  assert.deepEqual(completed.queue, []);
+});
+
+test("historical subagent backfill merges filesystem-only archived rollouts", async () => {
+  const archived = subagentThread(
+    "archived-child",
+    "2026-07-01T00:00:00.000Z",
+    "archived-child.jsonl",
+  );
+  const scans = [];
+  const audit = new CodexTerminalAudit({
+    listPage: async () => ({ data: [], nextCursor: null }),
+    discoverHistoricalThreads: async () => [archived],
+    resolveProject: () => project,
+    statFile: async () => ({
+      size: 100,
+      mtimeMs: Date.parse("2026-07-01T00:10:00.000Z"),
+    }),
+    scanFile: async (file) => {
+      scans.push(file);
+      return { terminals: [], activeTurns: [], nextOffset: 100 };
+    },
     reconcile: async () => true,
   });
+  audit.restore({ version: 5, completedThrough: "2026-08-01T13:30:00.000Z" });
+
+  await audit.run();
+
+  assert.deepEqual(scans, ["archived-child.jsonl"]);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.totalFiles, 1);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.completedFiles, 1);
+});
+
+test("historical subagent backfill records a stale unterminated turn as aborted", async () => {
+  const recovered = [];
+  const audit = new CodexTerminalAudit({
+    now: () => Date.parse("2026-08-01T14:00:00.000Z"),
+    listPage: async () => ({
+      data: [subagentThread(
+        "interrupted-child",
+        "2026-07-01T00:00:00.000Z",
+        "interrupted-child.jsonl",
+      )],
+      nextCursor: null,
+    }),
+    resolveProject: () => project,
+    statFile: async () => ({
+      size: 100,
+      mtimeMs: Date.parse("2026-07-01T00:10:00.000Z"),
+    }),
+    scanFile: async () => ({
+      terminals: [],
+      activeTurns: [{
+        turnId: "unterminated-turn",
+        startedAt: "2026-07-01T00:05:00.000Z",
+        lastActivityAt: "2026-07-01T00:10:00.000Z",
+      }],
+      nextOffset: 100,
+    }),
+    reconcile: async (_thread, _project, terminal) => recovered.push(terminal),
+  });
   audit.restore({
-    version: 4,
+    version: 5,
     completedThrough: "2026-08-01T13:30:00.000Z",
-    positions: [],
+    positions: [[
+      "interrupted-child",
+      { path: "interrupted-child.jsonl", offset: 100 },
+    ]],
   });
 
   await audit.run();
 
-  assert.deepEqual(scans, []);
-  assert.deepEqual(audit.snapshot().positions, [[
-    "historical-child",
-    { path: "historical-child.jsonl", offset: 500_000_000 },
-  ]]);
-  assert.equal(audit.snapshot().subagentBackfillPending, false);
+  assert.deepEqual(recovered, [{
+    turnId: "unterminated-turn",
+    status: "aborted",
+    completedAt: "2026-07-01T00:10:00.000Z",
+    authoritative: true,
+  }]);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.processedTurns, 1);
 });

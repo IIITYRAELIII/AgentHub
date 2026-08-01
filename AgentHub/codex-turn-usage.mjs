@@ -11,6 +11,57 @@ import { displayUserPrompt } from "./task-history.mjs";
 
 const rolloutPathIndexPromises = new Map();
 
+function nestedParentThreadId(value, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 8) return "";
+  const direct = String(value.parent_thread_id ?? value.parentThreadId ?? "").trim();
+  if (direct) return direct;
+  for (const child of Object.values(value)) {
+    const parentThreadId = nestedParentThreadId(child, depth + 1);
+    if (parentThreadId) return parentThreadId;
+  }
+  return "";
+}
+
+function codexRolloutSession(entry, transcriptPath = "") {
+  if (entry?.type !== "session_meta") return null;
+  const payload = entry.payload ?? {};
+  const threadId = String(payload.id ?? payload.session_id ?? "").trim();
+  if (!threadId) return null;
+  return {
+    id: threadId,
+    threadId,
+    parentThreadId: nestedParentThreadId(payload),
+    cwd: String(payload.cwd ?? "").trim(),
+    workspaceRoot: String(payload.cwd ?? "").trim(),
+    path: String(transcriptPath ?? "").trim(),
+    createdAt: String(payload.timestamp ?? entry.timestamp ?? "").trim(),
+    updatedAt: String(payload.timestamp ?? entry.timestamp ?? "").trim(),
+    source: payload.source ?? "",
+  };
+}
+
+export async function readCodexRolloutSession(transcriptPath, {
+  createReadStreamImpl = createReadStream,
+} = {}) {
+  const input = createReadStreamImpl(transcriptPath, { encoding: "utf8" });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (!line) continue;
+      try {
+        const session = codexRolloutSession(JSON.parse(line), transcriptPath);
+        if (session) return session;
+      } catch {
+        // Keep looking if a damaged preamble record precedes session metadata.
+      }
+    }
+  } finally {
+    lines.close();
+    input.destroy?.();
+  }
+  return null;
+}
+
 function parsedEntries(text) {
   return String(text ?? "")
     .split(/\r?\n/)
@@ -373,15 +424,28 @@ export async function readCodexRecentTerminalTurns(transcriptPath, {
 
 export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
   startOffset = 0,
+  maxBytes = Number.POSITIVE_INFINITY,
+  rolloutId = "",
+  initialActiveTurns = [],
   createReadStreamImpl = createReadStream,
 } = {}) {
   const terminals = new Map();
-  const activeTurns = new Map();
+  const activeTurns = new Map((initialActiveTurns ?? []).flatMap((turn) => {
+    const turnId = String(turn?.turnId ?? "").trim();
+    return turnId ? [[turnId, {
+      turnId,
+      startedAt: String(turn?.startedAt ?? ""),
+      lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
+    }]] : [];
+  }));
   const start = Math.max(0, Number(startOffset) || 0);
   const input = createReadStreamImpl(transcriptPath, { start });
   let pending = Buffer.alloc(0);
   let bytesRead = 0;
-  let rolloutCreatedAt = 0;
+  let rolloutCreatedAt = uuidV7TimestampMs(rolloutId);
+  const byteLimit = Number.isFinite(Number(maxBytes))
+    ? Math.max(1, Number(maxBytes))
+    : Number.POSITIVE_INFINITY;
 
   function acceptEntry(entry) {
     if (!rolloutCreatedAt && entry?.type === "session_meta") {
@@ -434,6 +498,8 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
         // Ignore one malformed complete line without losing later terminal events.
       }
     }
+    const completeBytesRead = bytesRead - pending.length;
+    if (completeBytesRead >= byteLimit) break;
   }
 
   if (pending.length) {
@@ -536,13 +602,14 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     const timestamp = String(entry?.timestamp ?? "").trim();
     if (entry?.type === "session_meta") {
       workspaceRoot ||= String(entry.payload?.cwd ?? "").trim();
-      session ||= {
-        threadId: String(entry.payload?.id ?? entry.payload?.session_id ?? "").trim(),
-        parentThreadId: String(entry.payload?.parent_thread_id ?? "").trim(),
+      const rolloutSession = codexRolloutSession(entry, transcriptPath);
+      session ||= rolloutSession ? {
+        threadId: rolloutSession.threadId,
+        parentThreadId: rolloutSession.parentThreadId,
         workspaceRoot,
-        createdAt: String(entry.payload?.timestamp ?? timestamp).trim(),
-        source: entry.payload?.source ?? "",
-      };
+        createdAt: rolloutSession.createdAt || timestamp,
+        source: rolloutSession.source,
+      } : null;
     }
     if (entry?.type === "response_item"
       && entry.payload?.type === "message"
@@ -783,6 +850,39 @@ async function buildCodexRolloutPathIndex(codexHome, readdirImpl) {
   await visit(path.join(codexHome, "sessions"));
   await visit(path.join(codexHome, "archived_sessions"));
   return paths;
+}
+
+export async function discoverCodexSubagentRollouts({
+  codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex"),
+  readdirImpl = readdir,
+  readSession = readCodexRolloutSession,
+} = {}) {
+  const files = [];
+  const visit = async (directory) => {
+    let entries;
+    try {
+      entries = await readdirImpl(directory, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const candidate = path.join(directory, entry.name);
+      if (entry.isDirectory()) await visit(candidate);
+      else if (entry.isFile() && entry.name.toLowerCase().endsWith(".jsonl")) {
+        files.push(candidate);
+      }
+    }
+  };
+  await visit(path.join(codexHome, "sessions"));
+  await visit(path.join(codexHome, "archived_sessions"));
+
+  const result = [];
+  for (const file of files) {
+    const session = await readSession(file);
+    if (session?.threadId && session?.parentThreadId) result.push(session);
+  }
+  return result;
 }
 
 async function codexRolloutPathIndex(codexHome, readdirImpl) {
