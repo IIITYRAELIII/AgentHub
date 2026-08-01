@@ -6966,12 +6966,13 @@ html[data-view="statistics"] .statistics-view {
   display: block;
 }
 
+/* Статистика занимает всю ширину: графики читаются тем лучше, чем шире
+   полотно, а колонка по центру оставляла половину экрана пустой. */
 .statistics-content {
   display: grid;
   gap: 1.15rem;
-  margin: 0 auto;
-  max-width: 74rem;
-  padding: 1.25rem clamp(1rem, 3vw, 2.5rem) 3rem;
+  padding: 1.25rem clamp(1rem, 2vw, 1.75rem) 3rem;
+  width: 100%;
 }
 
 .current-limits-card {
@@ -7008,6 +7009,15 @@ html[data-view="statistics"] .statistics-view {
   scrollbar-width: thin;
 }
 
+/* В карточке статистики лимиты делят ширину поровну и переносятся, а не
+   уезжают в горизонтальную прокрутку. */
+.current-limits-card .current-limits-row {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  overflow: visible;
+}
+
 .current-limit {
   align-items: baseline;
   background: var(--surface-2);
@@ -7019,6 +7029,29 @@ html[data-view="statistics"] .statistics-view {
   min-height: 1.9rem;
   padding: 0.36rem 0.62rem;
   white-space: nowrap;
+}
+
+.current-limits-card .current-limit {
+  align-items: baseline;
+  display: grid;
+  gap: 0.1rem 0.45rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  white-space: normal;
+}
+
+.current-limits-card .current-limit-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.current-limits-card .current-limit-value {
+  justify-self: end;
+}
+
+.current-limits-card .current-limit-reset {
+  grid-column: 1 / -1;
 }
 
 .current-limit-name {
@@ -7147,6 +7180,21 @@ html[data-view="statistics"] .statistics-view {
   font-size: 8px;
 }
 
+/* День недели — вспомогательная строка под датой. */
+.usage-axis-weekday {
+  fill: var(--text-faint);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+}
+
+.limits-grid-day {
+  opacity: 0.3;
+}
+
+.usage-modes {
+  margin-bottom: 0.35rem;
+}
+
 .settings-section-title {
   color: var(--text-faint);
   font-family: var(--font-title);
@@ -7217,6 +7265,19 @@ html[data-surface="mobile"] .statistics-content {
 html[data-surface="mobile"] .current-limits-card {
   border-radius: var(--radius-md);
   padding: 0.75rem 0.8rem;
+}
+
+/* На телефоне лимиты не влезают в строку, поэтому идут сеткой два на два. */
+html[data-surface="mobile"] .current-limits-card .current-limits-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+html[data-surface="mobile"] .current-limits-card .current-limit {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+html[data-surface="mobile"] .current-limits-card .current-limit-value {
+  justify-self: start;
 }
 
 html[data-surface="mobile"] .current-limits-row {

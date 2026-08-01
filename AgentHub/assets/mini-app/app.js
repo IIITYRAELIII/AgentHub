@@ -100,6 +100,8 @@ const limitsCredits = document.querySelector("[data-limits-credits]");
 const currentLimitsSlots = [...document.querySelectorAll("[data-current-limits]")];
 const usageRanges = document.querySelector("[data-usage-ranges]");
 const usageSubtitle = document.querySelector("[data-usage-subtitle]");
+const usageTitle = document.querySelector("[data-usage-title]");
+const usageModes = document.querySelector("[data-usage-modes]");
 const usageTotal = document.querySelector("[data-usage-total]");
 const usageLoading = document.querySelector("[data-usage-loading]");
 const usageError = document.querySelector("[data-usage-error]");
@@ -200,8 +202,19 @@ function savedUsageRange() {
   }
 }
 
+const USAGE_MODE_KEY = "agent-hub:usage-mode:v1";
+
+function savedUsageMode() {
+  try {
+    return localStorage.getItem(USAGE_MODE_KEY) === "rate" ? "rate" : "total";
+  } catch {
+    return "total";
+  }
+}
+
 const usageState = {
   range: savedUsageRange(),
+  mode: savedUsageMode(),
   status: "idle",
   payload: null,
   error: "",
@@ -2519,21 +2532,25 @@ function applyRateLimitHistory(payload) {
 }
 
 function parseClaudeResetAt(value, nowMs = Date.now()) {
+  /* Claude печатает срок текстом и минуты опускает, когда их нет:
+     «Aug 7, 2am». Из-за обязательных минут недельное окно оставалось без
+     срока вообще. */
   const match = String(value ?? "").match(
-    /^([A-Z][a-z]{2}) (\d{1,2}), (\d{1,2}):(\d{2})(am|pm)/u,
+    /^([A-Za-z]{3}) (\d{1,2}), (\d{1,2})(?::(\d{2}))?\s*(am|pm)/iu,
   );
   if (!match) return null;
   const month = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-  ].indexOf(match[1]);
+  ].indexOf(match[1].slice(0, 1).toUpperCase() + match[1].slice(1).toLowerCase());
   if (month < 0) return null;
   let hour = Number(match[3]) % 12;
-  if (match[5] === "pm") hour += 12;
+  if (String(match[5]).toLowerCase() === "pm") hour += 12;
+  const minutes = Number(match[4] ?? 0);
   const now = new Date(nowMs);
-  let reset = new Date(now.getFullYear(), month, Number(match[2]), hour, Number(match[4]));
+  let reset = new Date(now.getFullYear(), month, Number(match[2]), hour, minutes);
   if (reset.getTime() < nowMs - 24 * 60 * 60_000) {
-    reset = new Date(now.getFullYear() + 1, month, Number(match[2]), hour, Number(match[4]));
+    reset = new Date(now.getFullYear() + 1, month, Number(match[2]), hour, minutes);
   }
   return reset.getTime();
 }
@@ -2719,12 +2736,13 @@ function buildLimitsChart(payload) {
   if (!Number.isFinite(tMax)) tMax = times.length ? Math.max(...times) : tMin + 1;
   if (tMax <= tMin) tMax = tMin + 1;
 
-  const W = 640;
+  const W = chartWidth(limitsChart);
   const H = 260;
   const padL = 40;
   const padR = 14;
   const padT = 14;
-  const padB = 30;
+  // под датой идёт день недели, поэтому нижнее поле выше
+  const padB = 44;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const xOf = (t) => padL + ((t - tMin) / (tMax - tMin)) * plotW;
@@ -2749,14 +2767,47 @@ function buildLimitsChart(payload) {
   }
 
   const span = tMax - tMin;
-  for (const frac of [0, 0.5, 1]) {
-    const t = tMin + span * frac;
-    svg.append(svgEl("text", {
-      x: xOf(t),
-      y: H - 8,
-      class: "limits-axis-label limits-axis-x",
-      "text-anchor": frac === 0 ? "start" : frac === 1 ? "end" : "middle",
-    }, [formatAxisTime(t, span)]));
+  /* Пока подписей было три, по графику нельзя было сказать, на какой день
+     пришёлся скачок. Теперь ось размечена по календарным дням: дата и две
+     буквы дня недели, с прореживанием, чтобы подписи не слипались. */
+  const dayMs = 24 * 60 * 60_000;
+  if (span > dayMs * 1.5) {
+    const first = new Date(tMin);
+    first.setHours(0, 0, 0, 0);
+    const days = [];
+    for (let t = first.getTime(); t <= tMax; t += dayMs) {
+      if (t >= tMin) days.push(t);
+    }
+    const step = Math.max(1, Math.ceil(days.length / Math.floor(plotW / 46)));
+    days.forEach((t, index) => {
+      if (index % step) return;
+      const x = xOf(t);
+      svg.append(svgEl("line", {
+        x1: x, y1: padT, x2: x, y2: padT + plotH, class: "limits-grid-line limits-grid-day",
+      }));
+      svg.append(svgEl("text", {
+        x,
+        y: H - 20,
+        class: "limits-axis-label limits-axis-x",
+        "text-anchor": "middle",
+      }, [new Date(t).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })]));
+      svg.append(svgEl("text", {
+        x,
+        y: H - 7,
+        class: "limits-axis-label limits-axis-x usage-axis-weekday",
+        "text-anchor": "middle",
+      }, [weekdayLabel(t)]));
+    });
+  } else {
+    for (const frac of [0, 0.25, 0.5, 0.75, 1]) {
+      const t = tMin + span * frac;
+      svg.append(svgEl("text", {
+        x: xOf(t),
+        y: H - 8,
+        class: "limits-axis-label limits-axis-x",
+        "text-anchor": frac === 0 ? "start" : frac === 1 ? "end" : "middle",
+      }, [formatAxisTime(t, span)]));
+    }
   }
 
   for (const item of series) {
@@ -3067,11 +3118,57 @@ function formatUsagePointDate(point, daily = false) {
     : formatLimitsDateTime(date);
 }
 
-function showUsageTooltip(point, fx, fy, daily = false) {
+/* Две буквы дня недели под датой: по числу месяца трудно понять, будни это
+   или выходные, а на расходе разница видна сразу. */
+function weekdayLabel(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("ru-RU", { weekday: "short" }).slice(0, 2).toLowerCase();
+}
+
+/* Скорость — тот же расход, приведённый к часу: столбики разных периодов
+   становятся сравнимыми между собой. */
+function usageBucketHours(payload) {
+  const points = Array.isArray(payload?.points) ? payload.points : [];
+  if (payload?.bucket === "day") return 24;
+  if (points.length > 1) {
+    const first = Date.parse(points[0].at);
+    const second = Date.parse(points[1].at);
+    const hours = Math.abs(second - first) / 3_600_000;
+    if (Number.isFinite(hours) && hours > 0) return hours;
+  }
+  return 1;
+}
+
+/* Полотно считается по фактической ширине карточки: при фиксированных 640
+   единицах viewBox растягивался вместе с подписями, и текст плыл. */
+function chartWidth(target, minimum = 520) {
+  const width = Math.round(target?.clientWidth || 0);
+  return Math.max(minimum, Math.min(2400, width || minimum));
+}
+
+function usagePeriodHours(payload) {
+  const from = Date.parse(payload?.from ?? "");
+  const to = Date.parse(payload?.to ?? "");
+  const hours = (to - from) / 3_600_000;
+  return Number.isFinite(hours) && hours > 0 ? hours : 1;
+}
+
+function formatUsageRate(credits, hours) {
+  const perHour = hours > 0 ? credits / hours : 0;
+  return `${formatUsageValue(perHour)}/ч`;
+}
+
+function showUsageTooltip(point, fx, fy, daily = false, hours = 0) {
   if (!usageTooltip) return;
   usageTooltip.replaceChildren(
     el("span", { class: "limits-tooltip-time", text: formatUsagePointDate(point, daily) }),
-    el("span", { class: "limits-tooltip-row", text: formatUsageValue(point.credits) }),
+    el("span", {
+      class: "limits-tooltip-row",
+      text: usageState.mode === "rate"
+        ? formatUsageRate(point.credits, hours)
+        : formatUsageValue(point.credits),
+    }),
   );
   usageTooltip.style.left = `${clampNumber(fx * 100, 0, 100)}%`;
   usageTooltip.style.top = `${clampNumber(fy * 100, 0, 100)}%`;
@@ -3092,15 +3189,22 @@ function buildUsageChart(payload) {
     }))
     .filter((point) => Number.isFinite(point.time));
   const daily = payload?.bucket === "day";
-  const W = daily ? Math.max(640, points.length * 44 + 76) : 640;
+  const rate = usageState.mode === "rate";
+  const hours = usageBucketHours(payload);
+  const valueOf = (point) => (rate ? point.credits / Math.max(hours, 0.0001) : point.credits);
+  const available = chartWidth(usageChart);
+  const W = daily
+    ? Math.max(available, points.length * 44 + 76)
+    : available;
   const H = 260;
   const padL = 62;
   const padR = 14;
   const padT = 14;
-  const padB = daily ? 38 : 30;
+  // под датой идёт день недели, поэтому нижнее поле выше
+  const padB = daily ? 52 : 30;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
-  const max = Math.max(1, ...points.map((point) => point.credits));
+  const max = Math.max(1, ...points.map(valueOf));
   const svg = svgEl("svg", {
     viewBox: `0 0 ${W} ${H}`,
     class: "limits-chart-svg usage-chart-svg",
@@ -3122,12 +3226,12 @@ function buildUsageChart(payload) {
       y: y + 3,
       class: "limits-axis-label limits-axis-y",
       "text-anchor": "end",
-    }, [formatUsageValue(value)]));
+    }, [rate ? `${formatUsageValue(value)}/ч` : formatUsageValue(value)]));
   }
   const barStep = plotW / Math.max(1, points.length);
   const barWidth = Math.max(2, Math.min(28, barStep * 0.68));
   points.forEach((point, index) => {
-    const height = point.credits / max * plotH;
+    const height = valueOf(point) / max * plotH;
     const x = padL + index * barStep + (barStep - barWidth) / 2;
     const y = padT + plotH - height;
     const bar = svgEl("rect", {
@@ -3139,22 +3243,31 @@ function buildUsageChart(payload) {
       class: "usage-bar",
       tabindex: 0,
       role: "img",
-      "aria-label": `${formatLimitsDateTime(point.at)}: ${formatUsageValue(point.credits)}`,
+      "aria-label": `${formatLimitsDateTime(point.at)}: ${
+        rate ? formatUsageRate(point.credits, hours) : formatUsageValue(point.credits)
+      }`,
     });
     const fx = (x + barWidth / 2) / W;
     const fy = y / H;
-    bar.addEventListener("pointerenter", () => showUsageTooltip(point, fx, fy, daily));
+    bar.addEventListener("pointerenter", () => showUsageTooltip(point, fx, fy, daily, hours));
     bar.addEventListener("pointerleave", hideUsageTooltip);
-    bar.addEventListener("focus", () => showUsageTooltip(point, fx, fy, daily));
+    bar.addEventListener("focus", () => showUsageTooltip(point, fx, fy, daily, hours));
     bar.addEventListener("blur", hideUsageTooltip);
     svg.append(bar);
     if (daily) {
+      const center = (x + barWidth / 2).toFixed(1);
       svg.append(svgEl("text", {
-        x: (x + barWidth / 2).toFixed(1),
-        y: H - 10,
+        x: center,
+        y: H - 22,
         class: "limits-axis-label limits-axis-x usage-axis-day",
         "text-anchor": "middle",
       }, [new Date(point.at).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })]));
+      svg.append(svgEl("text", {
+        x: center,
+        y: H - 8,
+        class: "limits-axis-label limits-axis-x usage-axis-weekday",
+        "text-anchor": "middle",
+      }, [weekdayLabel(point.at)]));
     }
   });
   if (points.length && !daily) {
@@ -3172,9 +3285,11 @@ function buildUsageChart(payload) {
   }
   usageChart.setAttribute(
     "aria-label",
-    `Локальный расход: ${formatUsageValue(payload.totalCredits)} за ${formatUsagePeriod(payload)}.`,
+    rate
+      ? `Скорость расхода за ${formatUsagePeriod(payload)}.`
+      : `Локальный расход: ${formatUsageValue(payload.totalCredits)} за ${formatUsagePeriod(payload)}.`,
   );
-  svg.style.width = daily ? `${W}px` : "100%";
+  svg.style.width = W > available ? `${W}px` : "100%";
   usageChart.replaceChildren(svg);
 }
 
@@ -3190,11 +3305,22 @@ function renderUsageHistory() {
     usageErrorText.textContent = usageState.error || "Не удалось загрузить локальный расход.";
   }
   const payload = usageState.payload;
+  const rate = usageState.mode === "rate";
+  if (usageTitle) usageTitle.textContent = rate ? "Скорость расхода" : "Локальный расход";
+  for (const button of usageModes?.querySelectorAll("[data-usage-mode]") ?? []) {
+    const active = button.dataset.usageMode === usageState.mode;
+    button.setAttribute("aria-pressed", String(active));
+    button.toggleAttribute("data-active", active);
+  }
   usageSubtitle.textContent = payload && !payload.error
     ? formatUsagePeriod(payload)
     : RANGE_LABELS[usageState.range] ?? "";
+  /* В режиме скорости итог за период бессмыслен: показывается средний расход
+     в час, то есть та же величина, что и на столбиках. */
   usageTotal.textContent = payload && !payload.error
-    ? formatUsageValue(payload.totalCredits)
+    ? (rate
+      ? formatUsageRate(Number(payload.totalCredits) || 0, usagePeriodHours(payload))
+      : formatUsageValue(payload.totalCredits))
     : "";
   if (status === "ready") {
     buildUsageChart(payload);
@@ -3208,6 +3334,19 @@ function renderUsageHistory() {
 usageRanges?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-range]");
   if (button) requestUsageHistory(button.dataset.range);
+});
+/* Расход и скорость считаются из одних данных, поэтому переключение режима
+   ничего не запрашивает — просто перерисовывает карточку. */
+usageModes?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-usage-mode]");
+  if (!button) return;
+  usageState.mode = button.dataset.usageMode === "rate" ? "rate" : "total";
+  try {
+    localStorage.setItem(USAGE_MODE_KEY, usageState.mode);
+  } catch {
+    // Выбор останется активным до закрытия WebView.
+  }
+  renderUsageHistory();
 });
 document.querySelector("[data-usage-retry]")?.addEventListener("click", () => {
   requestUsageHistory(usageState.range, { force: true });
