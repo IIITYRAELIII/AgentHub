@@ -2,12 +2,14 @@ package app.agenthub.mobile;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.view.Gravity;
@@ -25,10 +27,13 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -36,6 +41,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import java.security.Signature;
 import java.security.cert.Certificate;
 import java.security.spec.ECGenParameterSpec;
@@ -51,9 +57,14 @@ public final class MainActivity extends Activity {
     private static final String PREF_DEVICE_ID = "device-id";
     private static final String KEY_ALIAS = "agent-hub-device-v1";
     private static final int MAX_RESPONSE_BYTES = 1024 * 1024;
+    private static final long MAX_UPDATE_BYTES = 100L * 1024L * 1024L;
+    private static final int REQUEST_UNKNOWN_SOURCES = 1201;
+    private static final String APK_TYPE = "application/vnd.android.package-archive";
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private volatile String accessToken = "";
+    private volatile boolean updateCheckStarted = false;
+    private Uri pendingUpdateUri;
     private WebView webView;
 
     @Override
@@ -77,6 +88,19 @@ public final class MainActivity extends Activity {
         }
         worker.shutdownNow();
         super.onDestroy();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_UNKNOWN_SOURCES || pendingUpdateUri == null) return;
+        Uri update = pendingUpdateUri;
+        pendingUpdateUri = null;
+        if (android.os.Build.VERSION.SDK_INT < 26 || getPackageManager().canRequestPackageInstalls()) {
+            launchPackageInstaller(update);
+        } else {
+            Toast.makeText(this, "Установка обновления не разрешена.", Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override
@@ -188,7 +212,10 @@ public final class MainActivity extends Activity {
                     .put("challengeId", challengeId)
                     .put("signature", sign(message)));
                 accessToken = session.getString("token");
-                runOnUiThread(() -> showHub(serverUrl));
+                runOnUiThread(() -> {
+                    showHub(serverUrl);
+                    checkForUpdate(serverUrl);
+                });
             } catch (Exception error) {
                 accessToken = "";
                 runOnUiThread(() -> showPairing(serverUrl, readableError(error)));
@@ -259,6 +286,178 @@ public final class MainActivity extends Activity {
 
     private int effectivePort(Uri uri) {
         return uri.getPort() == -1 ? 443 : uri.getPort();
+    }
+
+    private void checkForUpdate(String serverUrl) {
+        if (updateCheckStarted) return;
+        updateCheckStarted = true;
+        worker.execute(() -> {
+            try {
+                JSONObject manifest = getJson(serverUrl + "/api/mobile/update");
+                int versionCode = manifest.getInt("versionCode");
+                if (versionCode <= BuildConfig.VERSION_CODE) return;
+                String versionName = manifest.getString("versionName").trim();
+                String expectedHash = manifest.getString("sha256").trim().toLowerCase();
+                long expectedBytes = manifest.getLong("bytes");
+                String downloadPath = manifest.getString("downloadUrl").trim();
+                if (
+                    versionName.isEmpty()
+                    || !expectedHash.matches("[a-f0-9]{64}")
+                    || expectedBytes < 1 || expectedBytes > MAX_UPDATE_BYTES
+                    || !"/api/mobile/update.apk".equals(downloadPath)
+                ) {
+                    throw new IllegalStateException("Некорректный manifest обновления.");
+                }
+                URL hub = new URL(serverUrl);
+                URL download = new URL(hub, downloadPath);
+                if (!sameOrigin(hub, download)) throw new SSLException("Источник обновления не доверен.");
+                File apk = downloadVerifiedUpdate(download, versionCode, expectedBytes, expectedHash);
+                Uri uri = VerifiedUpdateFileProvider.uriFor(this, apk);
+                if (isFinishing() || isDestroyed()) return;
+                runOnUiThread(() -> showUpdateReady(versionName, uri));
+            } catch (Exception ignored) {
+                // Обновление не должно мешать подключению к уже работающему Hub.
+            }
+        });
+    }
+
+    private File downloadVerifiedUpdate(
+        URL download,
+        int versionCode,
+        long expectedBytes,
+        String expectedHash
+    ) throws Exception {
+        File directory = new File(getCacheDir(), "updates");
+        if (!directory.isDirectory() && !directory.mkdirs()) {
+            throw new IllegalStateException("Не удалось подготовить каталог обновления.");
+        }
+        File temporary = new File(directory, "AgentHub-Mobile-" + versionCode + ".apk.tmp");
+        File target = new File(directory, "AgentHub-Mobile-" + versionCode + ".apk");
+        HttpURLConnection connection = trustedGet(download);
+        try {
+            int status = connection.getResponseCode();
+            if (status < 200 || status >= 300) throw new IllegalStateException("HTTP " + status);
+            long advertisedBytes = connection.getContentLengthLong();
+            if (advertisedBytes != -1 && advertisedBytes != expectedBytes) {
+                throw new IllegalStateException("Размер APK не совпадает с manifest.");
+            }
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            long total = 0;
+            try (
+                InputStream input = connection.getInputStream();
+                FileOutputStream output = new FileOutputStream(temporary, false)
+            ) {
+                byte[] buffer = new byte[32 * 1024];
+                for (int count; (count = input.read(buffer)) != -1;) {
+                    total += count;
+                    if (total > expectedBytes || total > MAX_UPDATE_BYTES) {
+                        throw new IllegalStateException("APK больше заявленного размера.");
+                    }
+                    digest.update(buffer, 0, count);
+                    output.write(buffer, 0, count);
+                }
+                output.getFD().sync();
+            }
+            if (total != expectedBytes || !expectedHash.equals(hex(digest.digest()))) {
+                throw new IllegalStateException("SHA-256 APK не совпадает с manifest.");
+            }
+            if (target.exists() && !target.delete()) {
+                throw new IllegalStateException("Не удалось заменить старое обновление.");
+            }
+            if (!temporary.renameTo(target)) {
+                throw new IllegalStateException("Не удалось сохранить обновление.");
+            }
+            return target;
+        } finally {
+            connection.disconnect();
+            if (temporary.exists() && !temporary.delete()) temporary.deleteOnExit();
+        }
+    }
+
+    private void showUpdateReady(String versionName, Uri update) {
+        new AlertDialog.Builder(this)
+            .setTitle("Обновление Agent Hub")
+            .setMessage("Версия " + versionName + " загружена и проверена.")
+            .setNegativeButton("Позже", null)
+            .setPositiveButton("Установить", (dialog, which) -> installUpdate(update))
+            .show();
+    }
+
+    private void installUpdate(Uri update) {
+        if (android.os.Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+            pendingUpdateUri = update;
+            try {
+                startActivityForResult(
+                    new Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + BuildConfig.APPLICATION_ID)
+                    ),
+                    REQUEST_UNKNOWN_SOURCES
+                );
+            } catch (ActivityNotFoundException error) {
+                pendingUpdateUri = null;
+                Toast.makeText(this, "Откройте разрешение установки приложений вручную.", Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+        launchPackageInstaller(update);
+    }
+
+    private void launchPackageInstaller(Uri update) {
+        Intent install = new Intent(Intent.ACTION_VIEW)
+            .setDataAndType(update, APK_TYPE)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivity(install);
+        } catch (ActivityNotFoundException error) {
+            Toast.makeText(this, "Системный установщик APK недоступен.", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private JSONObject getJson(String endpoint) throws Exception {
+        URL url = new URL(endpoint);
+        HttpURLConnection connection = trustedGet(url);
+        try {
+            int status = connection.getResponseCode();
+            InputStream input = status >= 200 && status < 300
+                ? connection.getInputStream()
+                : connection.getErrorStream();
+            JSONObject result = new JSONObject(new String(readBounded(input), StandardCharsets.UTF_8));
+            if (status < 200 || status >= 300) {
+                throw new IllegalStateException(result.optString("error", "HTTP " + status));
+            }
+            return result;
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private HttpURLConnection trustedGet(URL url) throws Exception {
+        if (!"https".equalsIgnoreCase(url.getProtocol())) throw new SSLException("Разрешён только HTTPS.");
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setInstanceFollowRedirects(false);
+        connection.setRequestMethod("GET");
+        connection.setConnectTimeout(15_000);
+        connection.setReadTimeout(60_000);
+        connection.setRequestProperty("Authorization", "device " + accessToken);
+        connection.setRequestProperty("Accept-Encoding", "identity");
+        return connection;
+    }
+
+    private boolean sameOrigin(URL left, URL right) {
+        return "https".equalsIgnoreCase(right.getProtocol())
+            && left.getHost().equalsIgnoreCase(right.getHost())
+            && effectivePort(left) == effectivePort(right);
+    }
+
+    private int effectivePort(URL url) {
+        return url.getPort() == -1 ? url.getDefaultPort() : url.getPort();
+    }
+
+    private String hex(byte[] value) {
+        StringBuilder result = new StringBuilder(value.length * 2);
+        for (byte item : value) result.append(String.format(java.util.Locale.ROOT, "%02x", item & 0xff));
+        return result.toString();
     }
 
     private void ensureKey() throws Exception {
@@ -344,6 +543,7 @@ public final class MainActivity extends Activity {
         URL url = new URL(endpoint);
         if (!"https".equalsIgnoreCase(url.getProtocol())) throw new SSLException("Разрешён только HTTPS.");
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setInstanceFollowRedirects(false);
         connection.setRequestMethod("POST");
         connection.setConnectTimeout(15_000);
         connection.setReadTimeout(30_000);
@@ -390,8 +590,15 @@ public final class MainActivity extends Activity {
         while (normalized.endsWith("/")) normalized = normalized.substring(0, normalized.length() - 1);
         try {
             URL url = new URL(normalized);
-            if (!"https".equalsIgnoreCase(url.getProtocol()) || url.getHost().isBlank()) return "";
-            return normalized;
+            if (
+                !"https".equalsIgnoreCase(url.getProtocol())
+                || url.getHost().isBlank()
+                || url.getUserInfo() != null
+                || url.getQuery() != null
+                || url.getRef() != null
+                || !(url.getPath().isEmpty() || "/".equals(url.getPath()))
+            ) return "";
+            return url.getProtocol() + "://" + url.getAuthority();
         } catch (Exception ignored) {
             return "";
         }

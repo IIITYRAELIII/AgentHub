@@ -39,6 +39,15 @@ test("publication arguments reject typos and support bounded skips", () => {
     skipRestart: true,
   });
   assert.throws(() => parseArguments(["--skip-everything"]), /Неизвестные аргументы/u);
+  assert.deepEqual(
+    publicationSteps({ skipTests: true, skipWorker: true }).map((step) => step.label),
+    [
+      "Сборка Agent Hub Mobile",
+      "Сборка runtime-релиза",
+      "Активация runtime-релиза",
+      "Установка расширения VS Code",
+    ],
+  );
 });
 
 test("publication requests the server's safe deferred restart last", async () => {
@@ -51,6 +60,7 @@ test("publication requests the server's safe deferred restart last", async () =>
     },
   });
   assert.deepEqual(events, [
+    "Сборка Agent Hub Mobile",
     "Сборка runtime-релиза",
     "Активация runtime-релиза",
     "Установка расширения VS Code",

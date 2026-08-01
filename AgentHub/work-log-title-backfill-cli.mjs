@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { resolveCodexExecutable } from "./codex-invocation.mjs";
+import { JournalDatabase } from "./journal-database.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 import {
@@ -103,6 +104,7 @@ async function generateBatch(options, jobs, depth = 0) {
 const sourceRoot = path.dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = path.resolve(sourceRoot, "..", "..");
 const runtime = runtimeLayout(defaultRuntimeRoot());
+const databaseFile = option("--database", path.join(runtime.dataDir, "journal.sqlite"));
 const ledgerFile = option("--ledger", path.join(runtime.dataDir, "work-log-usage.json"));
 const workLogFile = option("--work-log", path.join(workspaceRoot, "WORK_LOG.md"));
 const cacheFile = option("--cache", path.join(runtime.dataDir, "migrations", "work-log-generated-titles.json"));
@@ -113,7 +115,16 @@ const batchSize = positiveInteger("--batch-size", 80);
 const limit = process.argv.includes("--limit") ? positiveInteger("--limit", 1) : Number.POSITIVE_INFINITY;
 const executable = await resolveCodexExecutable({ requested: option("--codex") });
 
-const ledger = await readJsonOr(ledgerFile, { version: 6, turns: {} });
+const journalDatabase = new JournalDatabase(databaseFile);
+let ledger;
+try {
+  ledger = await journalDatabase.loadLedger();
+} finally {
+  journalDatabase.close();
+}
+if (!Object.keys(ledger.turns ?? {}).length) {
+  ledger = await readJsonOr(ledgerFile, { version: 8, turns: {} });
+}
 let cache = await readJsonOr(cacheFile, { version: 1, titles: {} });
 const allJobs = buildTitleJobs(ledger, { through });
 const jobs = allJobs.slice(0, limit);
@@ -183,14 +194,16 @@ if (process.argv.includes("--apply")) {
     ledger,
     jobs,
     cache,
+    databaseFile,
     ledgerFile,
     workLogFile,
+    projectRoot: workspaceRoot,
+    projectionProjectRoots: [workspaceRoot],
   });
   console.log(`Updated: ${result.updated}`);
   console.log(`Backup: ${result.backupDirectory}`);
-  console.log(`Ledger: ${ledgerFile}`);
-  console.log(`Work log: ${workLogFile}`);
+  console.log(`Database: ${databaseFile}`);
 } else {
   console.log(`Cache: ${cacheFile}`);
-  console.log("Generation complete. Add --apply to update the ledger and WORK_LOG.");
+  console.log("Generation complete. Add --apply to update journal.sqlite.");
 }

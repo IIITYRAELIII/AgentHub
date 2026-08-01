@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { copyFile, mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -7,12 +7,11 @@ import {
   looksLikeImageGenerationPrompt,
 } from "./codex-usage-estimate.mjs";
 import { isInheritedSubagentTurn } from "./codex-subagent-accounting.mjs";
-import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
+import { writeTextAtomic } from "./state-store.mjs";
 import { withInterprocessLocks } from "./interprocess-lock.mjs";
+import { JournalDatabase } from "./journal-database.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import {
-  appendLedgerEvents,
-  applyLedgerDelta,
   ledgerRecordChanges,
   ledgerRecordSnapshot,
 } from "./incremental-ledger.mjs";
@@ -479,6 +478,11 @@ function formatLocalDate(value) {
   ].join(".");
 }
 
+function recordLocalDate(value) {
+  const date = new Date(String(value ?? ""));
+  return Number.isNaN(date.getTime()) ? "" : formatLocalDate(date);
+}
+
 function escapeHtmlAttribute(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -836,13 +840,13 @@ function withRowIdentity(row, { provider, threadId }) {
   );
 }
 
-function automaticRecordsForDay(turns, date) {
+function automaticRecordsForDay(turns, date, claimedWorkLogIds = new Set()) {
   return Object.values(turns)
     .filter((record) => (
-      !record.workLogId
-      && formatLocalDate(record.completedAt) === date
+      recordLocalDate(record.completedAt) === date
       && record.provider
       && record.threadId
+      && (!record.workLogId || !claimedWorkLogIds.has(record.workLogId))
     ));
 }
 
@@ -963,7 +967,8 @@ export function searchWorkLogRecords(turns = {}, query, {
 function ensureCanonicalRows(section, date, turns) {
   let updated = String(section);
   const groups = new Map();
-  for (const record of automaticRecordsForDay(turns, date)) {
+  const claimedWorkLogIds = new Set(usageIds(updated));
+  for (const record of automaticRecordsForDay(turns, date, claimedWorkLogIds)) {
     const key = `${record.provider}\0${taskThreadId(record)}`;
     const values = groups.get(key) ?? [];
     values.push(record);
@@ -1005,7 +1010,9 @@ function ensureCanonicalRows(section, date, turns) {
     values.push(row);
     linkedRows.set(threadId, values);
   }
-  const datedTurns = Object.values(turns).filter((record) => formatLocalDate(record.completedAt) === date);
+  const datedTurns = Object.values(turns).filter(
+    (record) => recordLocalDate(record.completedAt) === date,
+  );
   const identityTargets = [];
   for (const [threadId, matches] of linkedRows) {
     if (matches.length !== 1) continue;
@@ -1059,13 +1066,14 @@ function replaceProjectedCells(row, usageContent, records) {
 
 function projectDaySection(section, date, turns, recordsById, open, includeClaudeUsage) {
   const canonicalSection = ensureCanonicalRows(section, date, turns);
+  const claimedWorkLogIds = new Set(usageIds(canonicalSection));
   const rows = workLogTaskRows(canonicalSection)
     .map((match, sourceIndex) => {
       const ids = [...new Set(usageIds(match.text))];
       const identity = rowIdentity(match.text);
       const legacyRecords = ids.map((id) => recordsById.get(id)).filter(Boolean);
       const automaticRecords = identity
-        ? automaticRecordsForDay(turns, date).filter((record) => (
+        ? automaticRecordsForDay(turns, date, claimedWorkLogIds).filter((record) => (
           record.provider === identity.provider && taskThreadId(record) === identity.threadId
         ))
         : [];
@@ -1162,8 +1170,7 @@ export function projectWorkLogUsage(workLogText, turns = {}, { includeClaudeUsag
   const records = ledgerByWorkLogId(normalizedTurns);
   const existingDates = new Set(daySectionRanges(text).map((range) => range.date));
   const requiredDates = [...new Set(Object.values(normalizedTurns)
-    .filter((record) => !record.workLogId)
-    .map((record) => formatLocalDate(record.completedAt))
+    .map((record) => recordLocalDate(record.completedAt))
     .filter(Boolean))]
     .filter((date) => !existingDates.has(date))
     .sort((left, right) => {
@@ -1560,31 +1567,31 @@ export function buildWorkLogUsageHistory(turns = {}, {
 
 export class WorkLogUsageStore {
   #ledgerFile;
-  #backupFile;
-  #deltaFile;
+  #databaseFile;
+  #database;
   #quarantineFile;
   #defaultProjectRoot;
   #randomUUID;
   #loaded = false;
+  #loadedRevision = -1;
   #ledger = normalizedLedger().ledger;
-  #incremental = false;
   #recordSnapshot = new Map();
-  #incrementalThresholdBytes = 1024 * 1024;
-  #checkpointDeltaBytes = 8 * 1024 * 1024;
   #tail = Promise.resolve();
   #includeClaudeUsage = true;
   #beforeProjectionWrite;
 
   constructor({
     ledgerFile,
+    databaseFile = path.join(path.dirname(path.resolve(ledgerFile)), "journal.sqlite"),
+    journalDatabase = null,
     defaultProjectRoot = "",
     randomUUID = crypto.randomUUID,
     includeClaudeUsage = true,
     beforeProjectionWrite = null,
   } = {}) {
     this.#ledgerFile = path.resolve(ledgerFile);
-    this.#backupFile = `${this.#ledgerFile}.bak`;
-    this.#deltaFile = `${this.#ledgerFile}.delta.jsonl`;
+    this.#databaseFile = path.resolve(databaseFile);
+    this.#database = journalDatabase ?? new JournalDatabase(this.#databaseFile);
     this.#quarantineFile = `${this.#ledgerFile}.invalid-records.json`;
     this.#defaultProjectRoot = normalizeProjectRoot(defaultProjectRoot);
     this.#randomUUID = randomUUID;
@@ -1599,29 +1606,32 @@ export class WorkLogUsageStore {
   }
 
   async #load() {
-    if (this.#loaded) return;
-    const loaded = await readJsonWithBackup(this.#ledgerFile, {
-      backupFile: this.#backupFile,
-    });
-    const delta = await applyLedgerDelta(loaded.value ?? {}, this.#deltaFile);
-    const persisted = delta.value;
+    let imported = null;
+    let persisted = null;
+    try {
+      imported = await this.#database.importLegacyLedger(this.#ledgerFile);
+    } catch (error) {
+      persisted = await this.#database.loadLedger();
+      if (!Object.keys(persisted?.turns ?? {}).length) throw error;
+      console.error(
+        `Ignored unreadable retired work-log ledger ${this.#ledgerFile}; SQLite already contains the journal records: ${String(error?.message ?? error)}`,
+      );
+    }
+    const revision = await this.#database.currentRevision();
+    if (this.#loaded && revision === this.#loadedRevision) return;
+    persisted ??= await this.#database.loadLedger();
     const normalized = normalizedLedger(persisted, {
       defaultProjectRoot: this.#defaultProjectRoot,
     });
     this.#ledger = normalized.ledger;
-    const sourceInfo = await stat(this.#ledgerFile).catch(() => null);
-    this.#incremental = Number(sourceInfo?.size ?? 0) >= this.#incrementalThresholdBytes;
     this.#recordSnapshot = ledgerRecordSnapshot(this.#ledger.turns);
-    if (delta.invalid) {
-      console.error(`Ignored ${delta.invalid} invalid incremental work-log ledger event(s).`);
-    }
     if (normalized.invalidRecords.length) {
       await mkdir(path.dirname(this.#quarantineFile), { recursive: true });
       await writeTextAtomic(
         this.#quarantineFile,
         `${JSON.stringify({
           detectedAt: new Date().toISOString(),
-          source: loaded.source,
+          source: imported?.imported ? this.#ledgerFile : this.#databaseFile,
           records: normalized.invalidRecords,
         }, null, 2)}\n`,
       );
@@ -1630,6 +1640,7 @@ export class WorkLogUsageStore {
       );
     }
     this.#loaded = true;
+    this.#loadedRevision = revision;
     const migrated = Number(persisted?.version ?? 0) !== this.#ledger.version
       || Object.entries(persisted?.turns ?? {}).some(
         ([key, record]) => (
@@ -1649,35 +1660,43 @@ export class WorkLogUsageStore {
             !== this.#ledger.turns[key]?.serviceTier
         ),
       );
-    if (loaded.recovered || migrated || normalized.invalidRecords.length) {
+    if (migrated || normalized.invalidRecords.length) {
       await this.#save({ forceCheckpoint: true });
     }
   }
 
   async #save({ forceCheckpoint = false } = {}) {
-    await mkdir(path.dirname(this.#ledgerFile), { recursive: true });
-    if (this.#incremental && !forceCheckpoint) {
-      const changes = ledgerRecordChanges(this.#ledger.turns, this.#recordSnapshot);
-      if (!changes.events.length) return;
-      await appendLedgerEvents(this.#deltaFile, changes.events);
-      this.#recordSnapshot = changes.snapshot;
-      const deltaInfo = await stat(this.#deltaFile).catch(() => null);
-      if (Number(deltaInfo?.size ?? 0) < this.#checkpointDeltaBytes) return;
+    const changes = ledgerRecordChanges(this.#ledger.turns, this.#recordSnapshot);
+    if (!forceCheckpoint && !changes.events.length) return;
+    if (forceCheckpoint) {
+      const result = await this.#database.replaceLedger(this.#ledger);
+      this.#loadedRevision = result.revision;
+    } else {
+      const upserts = changes.events
+        .filter((event) => event.op === "upsert")
+        .map((event) => event.record);
+      const deletions = changes.events
+        .filter((event) => event.op === "delete")
+        .map((event) => {
+          const [provider, threadId, turnId] = String(event.key).split("\0");
+          return { provider, threadId, turnId };
+        });
+      if (upserts.length) {
+        const result = await this.#database.upsertRecords(upserts);
+        this.#loadedRevision = result.revision;
+      }
+      if (deletions.length) {
+        const result = await this.#database.deleteRecords(deletions);
+        this.#loadedRevision = result.revision;
+      }
     }
-    const content = `${JSON.stringify(this.#ledger, null, 2)}\n`;
-    await writeTextAtomic(this.#ledgerFile, content);
-    await writeTextAtomic(this.#backupFile, content);
-    await rm(this.#deltaFile, { force: true });
-    this.#recordSnapshot = ledgerRecordSnapshot(this.#ledger.turns);
-    this.#incremental = Buffer.byteLength(content, "utf8") >= this.#incrementalThresholdBytes;
+    this.#recordSnapshot = changes.snapshot;
   }
 
-  #enqueueMutation(workLogFile, operation) {
-    const logPath = workLogFile ? path.resolve(workLogFile) : null;
+  #enqueueMutation(_workLogFile, operation) {
     const queued = this.#tail.catch(() => {}).then(() => withInterprocessLocks(
-      [this.#ledgerFile, logPath],
+      [this.#databaseFile],
       async () => {
-        this.#loaded = false;
         await this.#load();
         return operation();
       },
@@ -1688,11 +1707,10 @@ export class WorkLogUsageStore {
 
   #enqueueRead(operation) {
     const queued = this.#tail.catch(() => {}).then(() => withInterprocessLocks(
-      [this.#ledgerFile],
+      [this.#databaseFile],
       async () => {
-        // Loading can repair/migrate the ledger and checkpoint it, so even a
-        // logical read must use the same interprocess lock as mutations.
-        this.#loaded = false;
+        // Legacy import and record normalization can write during the first
+        // logical read, so readers use the same cross-process lock as writers.
         await this.#load();
         return operation();
       },
@@ -1701,56 +1719,31 @@ export class WorkLogUsageStore {
     return queued;
   }
 
-  async #projectFile(logPath, selectedTurns) {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      let current;
-      try {
-        current = await readFile(logPath, "utf8");
-      } catch (error) {
-        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
-        else throw error;
-      }
-      const updated = this.#projectUsage(current, selectedTurns);
-      if (updated === current) return { projected: false };
-      await this.#beforeProjectionWrite?.({ logPath, current, updated, attempt });
-      let latest;
-      try {
-        latest = await readFile(logPath, "utf8");
-      } catch (error) {
-        if (error?.code === "ENOENT") latest = "# Глобальный журнал работ\n";
-        else throw error;
-      }
-      if (latest !== current) continue;
-      await writeTextAtomic(logPath, updated);
-      return { projected: true };
-    }
-    throw new Error(`WORK_LOG changed repeatedly during projection: ${logPath}`);
+  async #projectionSource() {
+    const current = await this.#database.payload();
+    const rateLimits = String(current?.html ?? "").match(
+      /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
+    )?.[0] ?? "";
+    return `# Глобальный журнал работ\n${rateLimits ? `${rateLimits}\n` : ""}`;
   }
 
-  async #updateWorkLogFile(logPath, update) {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      let current;
-      try {
-        current = await readFile(logPath, "utf8");
-      } catch (error) {
-        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
-        else throw error;
-      }
-      const updated = update(current);
-      if (updated === current) return { projected: false };
-      await this.#beforeProjectionWrite?.({ logPath, current, updated, attempt });
-      let latest;
-      try {
-        latest = await readFile(logPath, "utf8");
-      } catch (error) {
-        if (error?.code === "ENOENT") latest = "# Глобальный журнал работ\n";
-        else throw error;
-      }
-      if (latest !== current) continue;
-      await writeTextAtomic(logPath, updated);
-      return { projected: true };
+  async #projectDatabase(selectedTurns) {
+    const current = await this.#database.payload();
+    const source = await this.#projectionSource();
+    const updated = this.#projectUsage(source, selectedTurns);
+    const version = `sha256:${crypto.createHash("sha256").update(updated, "utf8").digest("hex")}`;
+    if (current?.version === version) {
+      return { projected: false, reason: "unchanged" };
     }
-    throw new Error(`WORK_LOG changed repeatedly during projection: ${logPath}`);
+    await this.#beforeProjectionWrite?.({
+      databaseFile: this.#databaseFile,
+      current: current?.html ?? "",
+      updated,
+      attempt: 0,
+    });
+    const result = await this.#database.replaceProjectionFromMarkdown(updated, { version });
+    this.#loadedRevision = result.revision;
+    return { projected: true };
   }
 
   mergeTurnTexts(messages = []) {
@@ -1806,6 +1799,14 @@ export class WorkLogUsageStore {
         ...options,
       }));
     });
+  }
+
+  ledgerSnapshot() {
+    return this.#enqueueRead(async () => structuredClone(this.#ledger));
+  }
+
+  journalSnapshot() {
+    return this.#enqueueRead(async () => structuredClone(await this.#database.snapshot()));
   }
 
   missingPricingTurns({ provider = "codex" } = {}) {
@@ -1869,17 +1870,8 @@ export class WorkLogUsageStore {
       }
       if (!updated) return { updated: 0, projected: false, reason: "unchanged" };
       await this.#save();
-      const logPath = path.resolve(workLogFile);
-      let current;
-      try {
-        current = await readFile(logPath, "utf8");
-      } catch (error) {
-        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
-        else throw error;
-      }
       const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      const projected = this.#projectUsage(current, selectedTurns);
-      const projection = await this.#projectFile(logPath, selectedTurns);
+      const projection = await this.#projectDatabase(selectedTurns);
       return { updated, projected: projection.projected };
     });
     this.#tail = operation;
@@ -1915,17 +1907,8 @@ export class WorkLogUsageStore {
       }
       if (!updated) return { updated: 0, projected: false, reason: "unchanged" };
       await this.#save();
-      const logPath = path.resolve(workLogFile);
-      let current;
-      try {
-        current = await readFile(logPath, "utf8");
-      } catch (error) {
-        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
-        else throw error;
-      }
       const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      const projected = this.#projectUsage(current, selectedTurns);
-      const projection = await this.#projectFile(logPath, selectedTurns);
+      const projection = await this.#projectDatabase(selectedTurns);
       return { updated, projected: projection.projected };
     });
     this.#tail = operation;
@@ -1961,17 +1944,8 @@ export class WorkLogUsageStore {
       }
       if (!updated) return { updated: 0, projected: false, reason: "unchanged" };
       await this.#save();
-      const logPath = path.resolve(workLogFile);
-      let current;
-      try {
-        current = await readFile(logPath, "utf8");
-      } catch (error) {
-        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
-        else throw error;
-      }
       const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      const projected = this.#projectUsage(current, selectedTurns);
-      const projection = await this.#projectFile(logPath, selectedTurns);
+      const projection = await this.#projectDatabase(selectedTurns);
       return { updated, projected: projection.projected };
     });
     this.#tail = operation;
@@ -1984,6 +1958,7 @@ export class WorkLogUsageStore {
         ? projectionProjectRoots
         : [projectRoot]
     ).map((root) => normalizeProjectRoot(root));
+    if (!roots.some(Boolean)) return { ...this.#ledger.turns };
     return Object.fromEntries(
       Object.entries(this.#ledger.turns).filter(([, record]) => (
         roots.some((root) => sameProjectRoot(record.projectRoot, root))
@@ -2002,18 +1977,8 @@ export class WorkLogUsageStore {
     projectionProjectRoots,
   } = {}) {
     const operation = this.#enqueueMutation(workLogFile, async () => {
-      const logPath = path.resolve(workLogFile);
       const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      let current;
-      try {
-        current = await readFile(logPath, "utf8");
-      } catch (error) {
-        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
-        else throw error;
-      }
-      const updated = this.#projectUsage(current, selectedTurns);
-      if (updated === current) return { projected: false, reason: "unchanged" };
-      return this.#projectFile(logPath, selectedTurns);
+      return this.#projectDatabase(selectedTurns);
     });
     this.#tail = operation;
     return operation;
@@ -2021,20 +1986,18 @@ export class WorkLogUsageStore {
 
   projectRateLimits(workLogFile, summary, sampledAt = "") {
     const operation = this.#enqueueMutation(workLogFile, async () => {
-      const logPath = path.resolve(workLogFile);
-      let current;
-      try {
-        current = await readFile(logPath, "utf8");
-      } catch (error) {
-        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
-        else throw error;
-      }
-      const updated = projectWorkLogRateLimits(current, summary, sampledAt);
-      if (updated === current) return { projected: false, reason: "unchanged" };
-      return this.#updateWorkLogFile(
-        logPath,
-        (latest) => projectWorkLogRateLimits(latest, summary, sampledAt),
+      const current = await this.#database.payload();
+      const updated = projectWorkLogRateLimits(
+        String(current?.html ?? "") || "# Глобальный журнал работ\n",
+        summary,
+        sampledAt,
       );
+      if (updated === String(current?.html ?? "")) {
+        return { projected: false, reason: "unchanged" };
+      }
+      const result = await this.#database.replaceProjectionFromMarkdown(updated);
+      this.#loadedRevision = result.revision;
+      return { projected: true };
     });
     this.#tail = operation;
     return operation;
@@ -2117,17 +2080,15 @@ export class WorkLogUsageStore {
       this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
       await this.#save();
       const recordedUsage = this.#ledger.turns[key].usage;
-      const logPath = path.resolve(workLogFile);
       try {
-        const current = await readFile(logPath, "utf8");
-        const occurrences = usageIds(current).filter((workLogId) => workLogId === id).length;
-        if (occurrences !== 1) {
-          throw new Error(`WORK_LOG must contain exactly one usage placeholder for ${id}; found ${occurrences}`);
-        }
         const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-        const updated = this.#projectUsage(current, selectedTurns);
-        await this.#projectFile(logPath, selectedTurns);
-        return { recorded: !existing, usage: recordedUsage, workLogId: id, projected: true };
+        const projection = await this.#projectDatabase(selectedTurns);
+        return {
+          recorded: !existing,
+          usage: recordedUsage,
+          workLogId: id,
+          projected: projection.projected,
+        };
       } catch (error) {
         return {
           recorded: !existing,
@@ -2176,7 +2137,6 @@ export class WorkLogUsageStore {
     return this.#enqueueMutation(workLogFile, async () => {
       const key = workLogTurnKey({ provider, threadId, turnId });
       const existing = this.#ledger.turns[key];
-      const logPath = path.resolve(workLogFile);
       const incoming = incomingLedgerRecord({
         provider,
         threadId,
@@ -2210,13 +2170,13 @@ export class WorkLogUsageStore {
       await this.#save();
       try {
         const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-        await this.#projectFile(logPath, selectedTurns);
+        const projection = await this.#projectDatabase(selectedTurns);
         return {
           recorded: !existing,
           usage: this.#ledger.turns[key].usage,
           workLogId: null,
           target: "thread-day-row",
-          projected: true,
+          projected: projection.projected,
         };
       } catch (error) {
         return {
@@ -2263,17 +2223,8 @@ export class WorkLogUsageStore {
         return { recorded: 0, updated: 0, projected: false, reason: "unchanged" };
       }
       await this.#save();
-      const logPath = path.resolve(workLogFile);
-      let current;
-      try {
-        current = await readFile(logPath, "utf8");
-      } catch (error) {
-        if (error?.code === "ENOENT") current = "# Глобальный журнал работ\n";
-        else throw error;
-      }
       const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      const projected = this.#projectUsage(current, selectedTurns);
-      const projection = await this.#projectFile(logPath, selectedTurns);
+      const projection = await this.#projectDatabase(selectedTurns);
       return {
         recorded,
         updated,
@@ -2298,13 +2249,10 @@ export class WorkLogUsageStore {
       if (!existing?.provisional) return { retracted: false, projected: false };
       delete this.#ledger.turns[key];
       await this.#save();
-      const logPath = path.resolve(workLogFile);
       try {
-        const current = await readFile(logPath, "utf8");
         const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-        const updated = this.#projectUsage(current, selectedTurns);
-        await this.#projectFile(logPath, selectedTurns);
-        return { retracted: true, projected: true };
+        const projection = await this.#projectDatabase(selectedTurns);
+        return { retracted: true, projected: projection.projected };
       } catch (error) {
         return {
           retracted: true,
@@ -2315,5 +2263,83 @@ export class WorkLogUsageStore {
     });
     this.#tail = operation;
     return operation;
+  }
+
+  retireLegacyStorage({
+    workLogFile = null,
+    backupRoot = path.join(path.dirname(this.#ledgerFile), "migrations"),
+    now = new Date(),
+  } = {}) {
+    const operation = this.#tail.catch(() => {}).then(() => withInterprocessLocks(
+      [this.#databaseFile],
+      async () => {
+        const imported = await this.#database.importLegacyLedger(this.#ledgerFile);
+        const verification = await this.#database.verifyLegacyLedger(this.#ledgerFile);
+        if (!verification.verified) {
+          const error = new Error(
+            `Legacy work-log storage does not match SQLite: ${JSON.stringify({
+              reason: verification.reason ?? "mismatch",
+              invalid: verification.invalid ?? 0,
+              missing: verification.missing?.length ?? 0,
+              mismatched: verification.mismatched?.length ?? 0,
+              extra: verification.extra?.length ?? 0,
+            })}`,
+          );
+          error.code = "WORK_LOG_LEGACY_VERIFICATION_FAILED";
+          error.verification = verification;
+          throw error;
+        }
+
+        const sources = [...new Set([
+          this.#ledgerFile,
+          `${this.#ledgerFile}.bak`,
+          `${this.#ledgerFile}.delta.jsonl`,
+          this.#quarantineFile,
+          workLogFile ? path.resolve(workLogFile) : null,
+        ].filter(Boolean))];
+        const existing = [];
+        for (const source of sources) {
+          try {
+            const info = await stat(source);
+            if (info.isFile()) existing.push({ source, size: info.size });
+          } catch (error) {
+            if (error?.code !== "ENOENT") throw error;
+          }
+        }
+
+        const timestamp = now.toISOString().replace(/[:.]/gu, "-");
+        const backupDirectory = path.join(path.resolve(backupRoot), `sqlite-cutover-${timestamp}`);
+        await mkdir(backupDirectory, { recursive: true });
+        const archived = [];
+        const usedNames = new Set();
+        for (const item of existing) {
+          const originalName = path.basename(item.source);
+          let backupName = originalName;
+          for (let suffix = 2; usedNames.has(backupName); suffix += 1) {
+            backupName = `${suffix}-${originalName}`;
+          }
+          usedNames.add(backupName);
+          const backupFile = path.join(backupDirectory, backupName);
+          await copyFile(item.source, backupFile);
+          archived.push({ ...item, backupFile });
+        }
+        for (const item of existing) await rm(item.source, { force: true });
+        return {
+          retired: true,
+          imported,
+          verification,
+          backupDirectory,
+          archived,
+          removed: existing.map((item) => item.source),
+        };
+      },
+    ));
+    this.#tail = operation;
+    return operation;
+  }
+
+  async close() {
+    await this.#tail.catch(() => {});
+    this.#database.close();
   }
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +12,7 @@ import {
   PublicAuthAttemptLimiter,
   validateTelegramInitData,
 } from "./mini-app-server.mjs";
+import { buildLazyJournalPayload } from "./mini-app-journal-data.mjs";
 
 const LIMITS_HTML = '<div data-work-log-rate-limits data-sampled-at="2026-07-30T02:55:14.512Z">'
   + '<span data-rate-limit-caption>Лимиты</span>'
@@ -25,6 +26,39 @@ const DAY_HTML = [
   "</details>",
 ].join("");
 const BOT_TOKEN = "123456789:test-token";
+
+function memoryJournal(html = "") {
+  let revision = 0;
+  let current;
+  const listeners = new Set();
+  const replace = (nextHtml) => {
+    revision += 1;
+    current = {
+      ...buildLazyJournalPayload(nextHtml),
+      updatedAt: new Date(Date.UTC(2026, 6, 27, 12, 0, revision)).toISOString(),
+      version: `sha256:${String(revision).padStart(64, "0")}`,
+      revision,
+    };
+    for (const listener of listeners) listener({ type: "revision", revision });
+  };
+  replace(html);
+  return {
+    payload: async () => ({
+      html: current.html,
+      updatedAt: current.updatedAt,
+      version: current.version,
+      revision: current.revision,
+    }),
+    snapshot: async () => structuredClone(current),
+    fragment: async (kind, key) => current[kind === "day" ? "days" : "turns"]?.[key] ?? null,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    replace,
+    close() {},
+  };
+}
 
 function signedInitData({
   authDate = Math.floor(Date.now() / 1_000),
@@ -94,16 +128,14 @@ test("extractWorkLogHtml escapes an unprojected journal", () => {
 test("Mini App serves only safe persistent message attachment names", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-attachment-"));
   const attachments = path.join(directory, "attachments");
-  const workLogFile = path.join(directory, "WORK_LOG.md");
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
-    workLogFile,
+    journalDatabase: memoryJournal(),
     attachmentDirectory: attachments,
   });
   try {
     await mkdir(attachments, { recursive: true });
-    await writeFile(workLogFile, "# Журнал\n", "utf8");
     const body = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     await writeFile(path.join(attachments, "message-1.png"), body);
     const address = await server.start();
@@ -148,19 +180,18 @@ test("Telegram Mini App initData is signed, fresh and allowlisted", () => {
   }), /expired/u);
 });
 
-test("Mini App serves the journal and announces WORK_LOG changes", async () => {
+test("Mini App serves the SQLite journal and announces revision changes", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mini-app-"));
-  const workLogFile = path.join(directory, "WORK_LOG.md");
+  const journalDatabase = memoryJournal(DAY_HTML);
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
-    workLogFile,
+    journalDatabase,
     botToken: BOT_TOKEN,
     allowedUserIds: new Set([42]),
   });
   const abort = new AbortController();
   try {
-    await writeFile(workLogFile, `# Глобальный журнал работ\n\n${DAY_HTML}\n`, "utf8");
     const address = await server.start();
 
     const health = await fetch(`${address.url}health`);
@@ -499,7 +530,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
       stream += decoder.decode(chunk.value, { stream: true });
     }
 
-    await writeFile(workLogFile, `# Глобальный журнал работ\n\n${DAY_HTML}\n<!-- changed -->\n`, "utf8");
+    journalDatabase.replace(`${DAY_HTML}\n<!-- changed -->`);
     const deadline = Date.now() + 2_000;
     while (!stream.includes("event: journal") && Date.now() < deadline) {
       const chunk = await Promise.race([
@@ -519,13 +550,12 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
 
 test("Mini App forwards authenticated control commands to Agent Hub", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mini-app-control-"));
-  const workLogFile = path.join(directory, "WORK_LOG.md");
   const attachmentDirectory = path.join(directory, "attachments");
   const calls = [];
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
-    workLogFile,
+    journalDatabase: memoryJournal(),
     botToken: BOT_TOKEN,
     allowedUserIds: new Set([42]),
     attachmentDirectory,
@@ -535,7 +565,6 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
     },
   });
   try {
-    await writeFile(workLogFile, "# Журнал\n", "utf8");
     const address = await server.start();
     const local = await fetch(`${address.url}api/control`, {
       method: "POST",
@@ -596,7 +625,6 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
 
 test("trusted Android device session is independent of Telegram user ids", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-device-auth-"));
-  const workLogFile = path.join(directory, "WORK_LOG.md");
   const deviceStore = {
     async resolveSession(token) {
       assert.equal(token, "device-session-token");
@@ -606,13 +634,12 @@ test("trusted Android device session is independent of Telegram user ids", async
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
-    workLogFile,
+    journalDatabase: memoryJournal(),
     allowedUserIds: new Set([42]),
     deviceStore,
     controlHandler: async () => ({ connected: true }),
   });
   try {
-    await writeFile(workLogFile, "# Журнал\n", "utf8");
     const address = await server.start();
     const response = await fetch(`${address.url}api/control`, {
       method: "POST",
@@ -636,11 +663,10 @@ test("trusted Android device session is independent of Telegram user ids", async
 
 test("public device authentication endpoints are rate limited per client", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-device-rate-limit-"));
-  const workLogFile = path.join(directory, "WORK_LOG.md");
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
-    workLogFile,
+    journalDatabase: memoryJournal(),
     requireTelegramAuth: true,
     deviceStore: {
       async pair() { throw new Error("invalid pairing code"); },
@@ -649,7 +675,6 @@ test("public device authentication endpoints are rate limited per client", async
     },
   });
   try {
-    await writeFile(workLogFile, "# Журнал\n", "utf8");
     const address = await server.start();
     const request = () => fetch(`${address.url}api/device/pair`, {
       method: "POST",
@@ -698,13 +723,12 @@ test("public authentication limiter stays bounded under many distinct client IPs
 
 test("local Mini App requires a protected session and rejects CSRF-shaped control requests", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-local-auth-"));
-  const workLogFile = path.join(directory, "WORK_LOG.md");
   const localAccessSecret = "a".repeat(43);
   let calls = 0;
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
-    workLogFile,
+    journalDatabase: memoryJournal(),
     localAccessSecret,
     controlHandler: async () => {
       calls += 1;
@@ -712,7 +736,6 @@ test("local Mini App requires a protected session and rejects CSRF-shaped contro
     },
   });
   try {
-    await writeFile(workLogFile, "# Журнал\n", "utf8");
     const address = await server.start();
     const request = { action: "snapshot", params: {} };
     assert.equal((await fetch(`${address.url}api/control`, {
@@ -759,7 +782,6 @@ test("local Mini App requires a protected session and rejects CSRF-shaped contro
 
 test("Mini App serves old days and turn bodies through lazy endpoints", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mini-app-lazy-"));
-  const workLogFile = path.join(directory, "WORK_LOG.md");
   const days = Array.from({ length: 6 }, (_, index) => {
     const day = String(6 - index).padStart(2, "0");
     const turnId = `turn-${day}`;
@@ -776,10 +798,9 @@ test("Mini App serves old days and turn bodies through lazy endpoints", async ()
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
-    workLogFile,
+    journalDatabase: memoryJournal(days.join("\n")),
   });
   try {
-    await writeFile(workLogFile, `# Журнал\n${days.join("\n")}\n`, "utf8");
     const address = await server.start();
     const index = await (await fetch(`${address.url}api/journal`)).json();
     assert.match(index.html, /data-lazy-day="01\.07\.2026"/u);
@@ -810,17 +831,15 @@ test("Mini App serves old days and turn bodies through lazy endpoints", async ()
 
 test("Mini App can require Telegram authorization on a dedicated public listener", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-public-mini-app-"));
-  const workLogFile = path.join(directory, "WORK_LOG.md");
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
-    workLogFile,
+    journalDatabase: memoryJournal(DAY_HTML),
     botToken: BOT_TOKEN,
     allowedUserIds: new Set([42]),
     requireTelegramAuth: true,
   });
   try {
-    await writeFile(workLogFile, `# Глобальный журнал работ\n\n${DAY_HTML}\n`, "utf8");
     const address = await server.start();
     assert.equal((await fetch(`${address.url}health`)).status, 200);
     assert.equal((await fetch(`${address.url}api/journal`)).status, 401);
@@ -835,18 +854,12 @@ test("Mini App can require Telegram authorization on a dedicated public listener
 
 test("rate-limit summary is served apart from the lazy journal", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limits-mini-app-"));
-  const workLogFile = path.join(directory, "WORK_LOG.md");
-  const server = new MiniAppServer({ host: "127.0.0.1", port: 0, workLogFile });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(`${LIMITS_HTML}\n${DAY_HTML}`),
+  });
   try {
-    await writeFile(
-      workLogFile,
-      `# Глобальный журнал работ
-
-${LIMITS_HTML}
-${DAY_HTML}
-`,
-      "utf8",
-    );
     const address = await server.start();
     const response = await fetch(`${address.url}api/rate-limits`);
     assert.equal(response.status, 200);
@@ -865,17 +878,57 @@ ${DAY_HTML}
 
 test("rate-limit endpoint answers with an empty summary when the journal has none", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-no-limits-mini-app-"));
-  const workLogFile = path.join(directory, "WORK_LOG.md");
-  const server = new MiniAppServer({ host: "127.0.0.1", port: 0, workLogFile });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(DAY_HTML),
+  });
   try {
-    await writeFile(workLogFile, `# Глобальный журнал работ
-
-${DAY_HTML}
-`, "utf8");
     const address = await server.start();
     const payload = await (await fetch(`${address.url}api/rate-limits`)).json();
     assert.equal(payload.html, "");
     assert.equal(payload.sampledAt, "");
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Android update manifest and APK are served from one bounded runtime artifact", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mobile-update-"));
+  const updateDirectory = path.join(directory, "mobile");
+  const apk = Buffer.from("signed-apk-fixture");
+  const sha256 = createHash("sha256").update(apk).digest("hex");
+  await mkdir(updateDirectory, { recursive: true });
+  await writeFile(path.join(updateDirectory, "AgentHub-Mobile.apk"), apk);
+  await writeFile(path.join(updateDirectory, "update.json"), JSON.stringify({
+    versionCode: 2,
+    versionName: "0.2.0",
+    sha256,
+    bytes: apk.length,
+  }));
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(DAY_HTML),
+    mobileUpdateDirectory: updateDirectory,
+  });
+  try {
+    const address = await server.start();
+    const manifestResponse = await fetch(`${address.url}api/mobile/update`);
+    assert.equal(manifestResponse.status, 200);
+    assert.match(manifestResponse.headers.get("cache-control"), /no-store/u);
+    assert.deepEqual(await manifestResponse.json(), {
+      versionCode: 2,
+      versionName: "0.2.0",
+      sha256,
+      bytes: apk.length,
+      downloadUrl: "/api/mobile/update.apk",
+    });
+    const apkResponse = await fetch(`${address.url}api/mobile/update.apk`);
+    assert.equal(apkResponse.status, 200);
+    assert.equal(apkResponse.headers.get("content-type"), "application/vnd.android.package-archive");
+    assert.deepEqual(Buffer.from(await apkResponse.arrayBuffer()), apk);
   } finally {
     await server.close();
     await rm(directory, { recursive: true, force: true });

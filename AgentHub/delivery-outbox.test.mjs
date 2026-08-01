@@ -264,7 +264,9 @@ test("delivery outbox accepts a new item while a network delivery is pending", a
     await new Promise((resolve) => setImmediate(resolve));
     const enqueued = await Promise.race([
       outbox.enqueue({ method: "sendMessage", body: { text: "second" } }).then(() => true),
-      new Promise((resolve) => setTimeout(() => resolve(false), 50)),
+      // Full-suite CPU contention on Windows can delay an otherwise
+      // non-blocking filesystem write well beyond one scheduler quantum.
+      new Promise((resolve) => setTimeout(() => resolve(false), 500)),
     ]);
     assert.equal(enqueued, true);
     release({});

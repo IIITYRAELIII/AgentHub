@@ -237,8 +237,10 @@ import {
 } from "./context-compaction-tracker.mjs";
 
 const config = await loadConfig();
-const globalWorkLogFile = path.join(config.projectRoot, "WORK_LOG.md");
 const globalWorkLogProjectRoots = config.projects.map((project) => project.path);
+const journalDatabaseFile = path.join(config.dataDir, "journal.sqlite");
+const legacyWorkLogLedgerFile = path.join(config.dataDir, "work-log-usage.json");
+const legacyWorkLogFile = path.join(config.projectRoot, "WORK_LOG.md");
 const runtimeCommandRoot = process.env.AGENT_HUB_RUNTIME_ROOT
   ?? (process.env.AGENT_HUB_CONFIG
     ? path.dirname(config.configPath)
@@ -254,34 +256,33 @@ const codexRolloutContextSanitizer = new CodexRolloutContextSanitizer({
   ...config.codexRolloutContext,
 });
 const workLogUsageStore = new WorkLogUsageStore({
-  ledgerFile: path.join(config.dataDir, "work-log-usage.json"),
+  ledgerFile: legacyWorkLogLedgerFile,
+  databaseFile: journalDatabaseFile,
   defaultProjectRoot: config.projectRoot,
 });
 const miniAppServer = config.miniApp.enabled
   ? new MiniAppServer({
     ...config.miniApp,
-    workLogFile: globalWorkLogFile,
     botToken: config.token,
     allowedUserIds: config.allowedUserIds,
     localAccessSecret: localWebSecret,
     deviceStore: trustedDeviceStore,
     controlHandler: handleDesktopControl,
     attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
-    journalDatabaseFile: path.join(config.dataDir, "journal.sqlite"),
+    journalDatabaseFile,
   })
   : null;
 const publicMiniAppServer = config.miniApp.enabled && config.miniApp.quickTunnel.enabled
   ? new MiniAppServer({
     host: config.miniApp.host,
     port: config.miniApp.quickTunnel.publicPort,
-    workLogFile: globalWorkLogFile,
     botToken: config.token,
     allowedUserIds: config.allowedUserIds,
     requireTelegramAuth: true,
     deviceStore: trustedDeviceStore,
     controlHandler: handleDesktopControl,
     attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
-    journalDatabaseFile: path.join(config.dataDir, "journal.sqlite"),
+    journalDatabaseFile,
   })
   : null;
 const defaultDataDirectory = path.join(AGENT_HUB_ROOT, "data");
@@ -435,6 +436,12 @@ const rateLimitHistoryStore = new RateLimitHistoryStore({
   rawFile: path.join(config.dataDir, "rate-limits-raw.jsonl"),
   csvFile: path.join(config.dataDir, "rate-limits.csv"),
 });
+const retiredRateLimitExports = await rateLimitHistoryStore.retireCompatibilityExports();
+if (retiredRateLimitExports.retired) {
+  console.log(
+    `Retired ${retiredRateLimitExports.removed.length} legacy rate-limit export file(s)`,
+  );
+}
 await runtimeCommandServer.start();
 let desktopControlServer = null;
 
@@ -545,7 +552,6 @@ const codexTerminalAudit = new CodexTerminalAudit({
     const result = await workLogUsageStore.retractProvisionalAndProject({
       ...identity,
       projectRoot: project.path,
-      workLogFile: globalWorkLogFile,
       projectionProjectRoots: globalWorkLogProjectRoots,
     });
     if (!result.retracted) return;
@@ -658,7 +664,7 @@ async function startMiniApp() {
   }
   if (config.miniApp.worker.enabled) {
     miniAppPublisher ??= new MiniAppPublisher({
-      workLogFile: globalWorkLogFile,
+      journalDatabaseFile,
       ...config.miniApp.worker,
       controlHandler: handleDesktopControl,
       controlReceiptFile: path.join(config.dataDir, "mini-app-control-receipts.json"),
@@ -1367,7 +1373,7 @@ function changedFilesForRun(run) {
 async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } = {}) {
   const workLogId = completion?.message?.workLogId;
   const project = findProject(completion.projectRoot);
-  if (!project) throw new Error(`Cannot find WORK_LOG project for ${completion.projectRoot}`);
+  if (!project) throw new Error(`Cannot find journal project for ${completion.projectRoot}`);
   const fields = {
     provider: completion.provider,
     threadId: completion.threadId,
@@ -1395,7 +1401,6 @@ async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } =
     completedAt: completion.completedAt,
     status: completion.status,
     projectRoot: project.path,
-    workLogFile: globalWorkLogFile,
     projectionProjectRoots: globalWorkLogProjectRoots,
   };
   if (!workLogId) {
@@ -1425,7 +1430,7 @@ async function projectClaudeRunToWorkLog(run, {
   }
   if (transcriptPath) {
     const scan = await scanClaudeHistoricalTranscriptFile(transcriptPath).catch((error) => {
-      console.error(`Cannot read Claude transcript for WORK_LOG ${run.threadId}:`, error.message);
+      console.error(`Cannot read Claude transcript for journal ${run.threadId}:`, error.message);
       return null;
     });
     transcriptTurn = scan?.turns?.at(-1) ?? null;
@@ -1552,7 +1557,7 @@ async function finalizeCodexRunDelivery(run, {
           title: conciseTurnTitle(answer, status),
           body: answer,
         }).catch((error) => {
-          console.error(`Cannot update WORK_LOG usage for turn ${completedTurnId}:`, error.message);
+          console.error(`Cannot update journal usage for turn ${completedTurnId}:`, error.message);
         });
       }
       const result = await finalizeRunDelivery(run, {
@@ -1603,7 +1608,7 @@ async function deliverTurnEndNotification(completion) {
     }
     if (journal?.projectionError) {
       console.error(
-        `WORK_LOG projection deferred for turn ${completion.turnId}: ${journal.projectionError}`,
+        `Journal projection deferred for turn ${completion.turnId}: ${journal.projectionError}`,
       );
     }
     turnEndNotifications.markDelivered(key);
@@ -2012,14 +2017,29 @@ const restoredTurnMessages = [
     : []),
 ].filter(Boolean);
 await workLogUsageStore.mergeTurnTexts(restoredTurnMessages).catch((error) => {
-  console.error("Cannot restore WORK_LOG turn texts:", error.message);
+  console.error("Cannot restore journal turn texts:", error.message);
 });
-await workLogUsageStore.project(globalWorkLogFile, {
-  projectRoot: config.projectRoot,
-  projectionProjectRoots: globalWorkLogProjectRoots,
-}).catch((error) => {
-  console.error(`Cannot refresh global WORK_LOG usage:`, error.message);
-});
+let journalProjectionReady = false;
+try {
+  await workLogUsageStore.project(null, {
+    projectRoot: config.projectRoot,
+    projectionProjectRoots: globalWorkLogProjectRoots,
+  });
+  journalProjectionReady = true;
+} catch (error) {
+  console.error("Cannot refresh global journal usage:", error.message);
+}
+if (journalProjectionReady && await stat(legacyWorkLogLedgerFile).then(() => true).catch((error) => {
+  if (error?.code === "ENOENT") return false;
+  throw error;
+})) {
+  const retirement = await workLogUsageStore.retireLegacyStorage({
+    workLogFile: legacyWorkLogFile,
+  });
+  console.log(
+    `Retired ${retirement.removed.length} legacy journal file(s) after verified SQLite cutover`,
+  );
+}
 
 try {
   if (stateLoadFailed) {
@@ -2333,7 +2353,6 @@ async function backfillWorkLogPricingMetadata(codexThreads) {
       await workLogUsageStore.synchronizePricingMetadataAndProject({
         items: resolved,
         projectRoot: project.path,
-        workLogFile: globalWorkLogFile,
         projectionProjectRoots: globalWorkLogProjectRoots,
       });
     }
@@ -2359,18 +2378,17 @@ async function backfillWorkLogPricingMetadata(codexThreads) {
       await workLogUsageStore.synchronizeUsageEstimatesAndProject({
         items: imageEstimates,
         projectRoot: project.path,
-        workLogFile: globalWorkLogFile,
         projectionProjectRoots: globalWorkLogProjectRoots,
       });
     }
     if (resolved.length) {
-      console.log(`Backfilled credit pricing metadata for ${resolved.length} WORK_LOG turn(s)`);
+      console.log(`Backfilled credit pricing metadata for ${resolved.length} journal turn(s)`);
     }
     if (imageEstimates.length) {
-      console.log(`Backfilled image generation estimates for ${imageEstimates.length} WORK_LOG turn(s)`);
+      console.log(`Backfilled image generation estimates for ${imageEstimates.length} journal turn(s)`);
     }
   } catch (error) {
-    console.error("Cannot backfill WORK_LOG credit pricing metadata:", error.message);
+    console.error("Cannot backfill journal credit pricing metadata:", error.message);
   }
 }
 
@@ -2411,12 +2429,11 @@ async function auditClaudeTranscriptSnapshots(snapshots) {
   const result = await workLogUsageStore.recordAutomaticBatchAndProject({
     records,
     projectRoot: config.projectRoot,
-    workLogFile: globalWorkLogFile,
     projectionProjectRoots: globalWorkLogProjectRoots,
   });
   if (result.recorded || result.updated) {
     console.log(
-      `Audited Claude WORK_LOG turns: ${result.recorded} added, ${result.updated} updated`,
+      `Audited Claude journal turns: ${result.recorded} added, ${result.updated} updated`,
     );
   }
 }
@@ -2486,7 +2503,7 @@ async function buildTaskCatalog() {
   }
   if (claudeResult.status === "fulfilled") {
     await auditClaudeTranscriptSnapshots(claudeResult.value).catch((error) => {
-      console.error("Cannot audit Claude WORK_LOG transcripts:", error.message);
+      console.error("Cannot audit Claude journal transcripts:", error.message);
     });
     for (const snapshot of claudeResult.value) {
       const project = snapshot.cwd ? findProject(snapshot.cwd) : null;
@@ -2521,7 +2538,7 @@ async function buildTaskCatalog() {
           taskTitle: entry.title,
         })),
       projectRoot: project.path,
-      workLogFile: globalWorkLogFile,
+      journalDatabaseFile,
       projectionProjectRoots: globalWorkLogProjectRoots,
     });
   }
@@ -2986,7 +3003,7 @@ async function desktopUpdateSetting(params) {
     if (value !== "true" && value !== "false") throw new Error("Неизвестный режим учёта Claude");
     includeClaudeUsage = value === "true";
     workLogUsageStore.setIncludeClaudeUsage(includeClaudeUsage);
-    await workLogUsageStore.project(globalWorkLogFile, {
+    await workLogUsageStore.project(null, {
       projectRoot: config.projectRoot,
       projectionProjectRoots: globalWorkLogProjectRoots,
     });
@@ -5394,7 +5411,7 @@ async function finishClaudeRun(run, {
       status: failed ? "failed" : "completed",
       result,
     }).catch((error) => {
-      console.error(`Cannot update WORK_LOG for Claude turn ${run.turnId}:`, error.message);
+      console.error(`Cannot update journal for Claude turn ${run.turnId}:`, error.message);
     });
     await finalizeRunDelivery(run, {
       answer: response,
@@ -5415,7 +5432,7 @@ async function finishClaudeRun(run, {
       answer,
       status: "failed",
     }).catch((journalError) => {
-      console.error(`Cannot update WORK_LOG for failed Claude turn ${run.turnId}:`, journalError.message);
+      console.error(`Cannot update journal for failed Claude turn ${run.turnId}:`, journalError.message);
     });
     await finalizeRunDelivery(run, {
       answer,
@@ -5965,7 +5982,7 @@ async function finishObservedRun(run, snapshot) {
       status: snapshot?.status ?? "completed",
       snapshot,
     }).catch((error) => {
-      console.error(`Cannot update WORK_LOG for observed Claude turn ${run.turnId}:`, error.message);
+      console.error(`Cannot update journal for observed Claude turn ${run.turnId}:`, error.message);
     });
     await finalizeRunDelivery(run, {
       answer,
@@ -6209,7 +6226,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       });
       if (journal?.projectionError) {
         console.error(
-          `WORK_LOG historical projection deferred for turn ${identity.turnId}: ${journal.projectionError}`,
+          `Journal historical projection deferred for turn ${identity.turnId}: ${journal.projectionError}`,
         );
       }
       codexTurnStarts.delete(key);
@@ -6253,7 +6270,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       });
       if (journal?.projectionError) {
         console.error(
-          `WORK_LOG correction deferred for turn ${identity.turnId}: ${journal.projectionError}`,
+          `Journal correction deferred for turn ${identity.turnId}: ${journal.projectionError}`,
         );
       }
       if (correctedBody) {
@@ -6365,7 +6382,7 @@ async function pollRateLimits() {
       const result = await sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 });
       const summary = formatCodexRateLimits(result);
       await rateLimitHistoryStore.record(result, observedAt);
-      await workLogUsageStore.projectRateLimits(globalWorkLogFile, summary, observedAt);
+      await workLogUsageStore.projectRateLimits(null, summary, observedAt);
     })().catch((error) => {
       console.error("Cannot poll Codex rate limits:", error.message);
     }));

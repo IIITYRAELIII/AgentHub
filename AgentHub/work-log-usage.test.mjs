@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm as removeFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 
 import {
   applyWorkLogUsage,
@@ -12,8 +12,34 @@ import {
   projectWorkLogUsage,
   restoreLegacyOutcomes,
   searchWorkLogRecords,
-  WorkLogUsageStore,
+  workLogTurnKey,
+  WorkLogUsageStore as WorkLogUsageStoreClass,
 } from "./work-log-usage.mjs";
+
+const openStores = new Set();
+function WorkLogUsageStore(options) {
+  const store = new WorkLogUsageStoreClass(options);
+  openStores.add(store);
+  return store;
+}
+afterEach(async () => {
+  await Promise.all([...openStores].map((store) => store.close()));
+  openStores.clear();
+});
+
+async function rm(...args) {
+  await Promise.all([...openStores].map((store) => store.close()));
+  openStores.clear();
+  return removeFile(...args);
+}
+
+async function projectedJournal(store) {
+  return String((await store.journalSnapshot())?.html ?? "");
+}
+
+async function persistedLedger(store) {
+  return store.ledgerSnapshot();
+}
 
 const WORK_ID = "123e4567-e89b-42d3-a456-426614174000";
 const SECOND_WORK_ID = "223e4567-e89b-42d3-a456-426614174000";
@@ -906,11 +932,11 @@ test("usage store quarantines inherited parent turns copied into a subagent roll
 
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
-    const projected = await readFile(workLogFile, "utf8");
+    const projected = await projectedJournal(store);
     assert.match(projected, /<span data-usage-label>Итого<\/span> <span [^>]*data-kilo-usage[^>]*>6,3 cr<\/span>/);
     assert.match(projected, /Субагент · Real child turn/);
     assert.doesNotMatch(projected, /Copied parent turn/);
-    const persisted = JSON.parse(await readFile(ledgerFile, "utf8"));
+    const persisted = await persistedLedger(store);
     assert.deepEqual(Object.keys(persisted.turns), [`codex\0${childThreadId}\0${childTurnId}`]);
     const quarantined = JSON.parse(await readFile(`${ledgerFile}.invalid-records.json`, "utf8"));
     assert.equal(quarantined.records.length, 1);
@@ -958,7 +984,7 @@ test("usage store projects each turn into its own placeholder and deduplicates r
       workLogId: SECOND_WORK_ID,
       text: "Второй результат",
     });
-    const projected = await readFile(workLogFile, "utf8");
+    const projected = await projectedJournal(store);
     assert.match(
       projected,
       /data-day-usage><span data-usage-label>Итого<\/span> <span [^>]*data-kilo-usage[^>]*>0,0 cr<\/span>/,
@@ -968,9 +994,8 @@ test("usage store projects each turn into its own placeholder and deduplicates r
       projected,
       /<details data-task-usage-details><summary data-task-usage><span data-usage-label>Итого<\/span> <span [^>]*data-kilo-usage[^>]*>0,0 cr<\/span> <span data-usage-percent>\(100%\)<\/span><\/summary><span data-task-usage-breakdown><span data-task-usage-part>Вход:/,
     );
-    assert.match(projected, new RegExp(`data-usage-id="${WORK_ID}" hidden>`));
-    assert.match(projected, new RegExp(`data-usage-id="${SECOND_WORK_ID}" hidden>`));
-    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.doesNotMatch(projected, /data-usage-id=/u);
+    const ledger = await persistedLedger(store);
     assert.equal(Object.keys(ledger.turns).length, 2);
     assert.deepEqual(
       Object.values(ledger.turns).map((record) => record.body),
@@ -1027,14 +1052,14 @@ test("a fresh usage store reprojects an existing work log with its persisted led
 
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
-    const projected = await readFile(workLogFile, "utf8");
+    const projected = await projectedJournal(store);
     assert.match(projected, /data-task-usage><span data-usage-label>Итого<\/span> <span [^>]*data-kilo-usage[^>]*>219,6 cr<\/span> <span data-usage-percent>\(100%\)<\/span>/);
     assert.match(projected, /data-work-log-turn-body>Сохранённый результат<\/div>/);
     assert.match(projected, /<strong>Запрос:<\/strong> Сохранённый вопрос/);
     assert.doesNotMatch(projected, /response-annotations|Старый ответ/);
     assert.doesNotMatch(projected, /data-mega-usage>[^<]*cr/);
-    const persisted = JSON.parse(await readFile(ledgerFile, "utf8"));
-    assert.equal(persisted.turns.turn.prompt, "Сохранённый вопрос");
+    const persisted = await persistedLedger(store);
+    assert.equal(Object.values(persisted.turns)[0].prompt, "Сохранённый вопрос");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1095,13 +1120,13 @@ test("usage store backfills exact model and Fast tier before recalculating credi
       updated: 1,
       projected: true,
     });
-    const projected = await readFile(workLogFile, "utf8");
+    const projected = await projectedJournal(store);
     assert.match(projected, /Итого<\/span> <span [^>]*data-kilo-usage[^>]*>125 cr<\/span>/);
     assert.match(
       projected,
       /<div data-work-log-turn-facts><div data-work-log-turn-pricing>gpt-5\.4 · Fast ×2<\/div><div data-work-log-turn-context><strong>Длит\.:<\/strong>/,
     );
-    const persisted = JSON.parse(await readFile(ledgerFile, "utf8"));
+    const persisted = await persistedLedger(store);
     assert.equal(
       persisted.turns[`codex\u0000thread-pricing\u0000${turnId}`].pricingMetadataResolved,
       true,
@@ -1168,7 +1193,7 @@ test("usage store backfills a verified image generation estimate and reprojects 
       updated: 1,
       projected: true,
     });
-    const projected = await readFile(workLogFile, "utf8");
+    const projected = await projectedJournal(store);
     assert.match(projected, /ImageGen: <span data-kilo-usage>90 cr<\/span>/);
     assert.deepEqual(await store.missingImageGenerationEstimateTurns(), []);
   } finally {
@@ -1198,8 +1223,8 @@ test("usage store restores exact turn texts from deferred notification state", a
     assert.deepEqual(await store.mergeTurnTexts([
       { workLogId: WORK_ID, text: "Точный текст из Telegram" },
     ]), { updated: 0 });
-    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
-    assert.equal(ledger.turns.turn.body, "Точный текст из Telegram");
+    const ledger = await persistedLedger(store);
+    assert.equal(Object.values(ledger.turns)[0].body, "Точный текст из Telegram");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1244,12 +1269,14 @@ test("automatic usage attaches to the only row for the thread and is idempotent"
       target: "thread-day-row",
       projected: true,
     });
-    assert.equal((await readFile(workLogFile, "utf8")).match(/data-usage-id=/g)?.length ?? 0, 0);
-    assert.match(await readFile(workLogFile, "utf8"), /data-work-log-thread-id="thread-1"/);
-    assert.match(await readFile(workLogFile, "utf8"), /data-work-log-turn-id="turn-aborted"/);
-    assert.match(await readFile(workLogFile, "utf8"), /Остановленный ход/);
+    let projected = await projectedJournal(store);
+    assert.equal(projected.match(/data-usage-id=/g)?.length ?? 0, 0);
+    assert.match(projected, /data-work-log-thread-id="thread-1"/);
+    assert.match(projected, /data-work-log-turn-id="turn-aborted"/);
+    assert.match(projected, /Остановленный ход/);
     assert.equal((await store.recordAutomaticAndProject(input)).recorded, false);
-    assert.equal((await readFile(workLogFile, "utf8")).match(/data-usage-id=/g)?.length ?? 0, 0);
+    projected = await projectedJournal(store);
+    assert.equal(projected.match(/data-usage-id=/g)?.length ?? 0, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1296,9 +1323,9 @@ test("automatic batch records many historical turns and projects once", async ()
       projected: false,
       reason: "unchanged",
     });
-    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    const ledger = await persistedLedger(store);
     assert.equal(Object.keys(ledger.turns).length, 2);
-    const projected = await readFile(workLogFile, "utf8");
+    const projected = await projectedJournal(store);
     assert.match(projected, /Ответ 1/u);
     assert.match(projected, /Ответ 2/u);
   } finally {
@@ -1306,7 +1333,7 @@ test("automatic batch records many historical turns and projects once", async ()
   }
 });
 
-test("usage projection retries after a concurrent manual WORK_LOG edit", async () => {
+test("usage projection ignores the legacy WORK_LOG path and uses SQLite", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-manual-edit-race-"));
   try {
     const ledgerFile = path.join(root, "data", "work-log-usage.json");
@@ -1317,10 +1344,10 @@ test("usage projection retries after a concurrent manual WORK_LOG edit", async (
     const store = new WorkLogUsageStore({
       ledgerFile,
       defaultProjectRoot: root,
-      beforeProjectionWrite: async ({ current }) => {
+      beforeProjectionWrite: async () => {
         if (edited) return;
         edited = true;
-        await writeFile(workLogFile, `${current}\nРучная заметка\n`, "utf8");
+        await writeFile(workLogFile, "Ручная заметка\n", "utf8");
       },
     });
 
@@ -1335,24 +1362,25 @@ test("usage projection retries after a concurrent manual WORK_LOG edit", async (
       workLogFile,
     });
 
-    const projected = await readFile(workLogFile, "utf8");
+    const projected = await projectedJournal(store);
     assert.equal(edited, true);
-    assert.match(projected, /Ручная заметка/u);
+    assert.doesNotMatch(projected, /Ручная заметка/u);
     assert.match(projected, /Автоматический ход/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("automatic ledger survives a projection failure and reprojects later", async () => {
+test("automatic SQLite ledger survives a projection failure", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-durable-"));
   try {
     const ledgerFile = path.join(root, "data", "work-log-usage.json");
-    const blockedWorkLog = path.join(root, "directory-instead-of-file");
-    await mkdir(blockedWorkLog);
     const store = new WorkLogUsageStore({
       ledgerFile,
       defaultProjectRoot: root,
+      beforeProjectionWrite: async () => {
+        throw new Error("projection unavailable");
+      },
     });
     const result = await store.recordAutomaticAndProject({
       threadId: "thread-durable",
@@ -1362,12 +1390,12 @@ test("automatic ledger survives a projection failure and reprojects later", asyn
       usage: { inputTokens: 100 },
       completedAt: "2026-07-27T00:00:00.000Z",
       text: "Сохранено до проекции",
-      workLogFile: blockedWorkLog,
+      workLogFile: path.join(root, "ignored.md"),
     });
     assert.equal(result.recorded, true);
     assert.equal(result.projected, false);
-    assert.match(result.projectionError, /directory|EISDIR/i);
-    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.match(result.projectionError, /projection unavailable/i);
+    const ledger = await persistedLedger(store);
     assert.equal(Object.keys(ledger.turns).length, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1400,9 +1428,9 @@ test("task title synchronization updates existing ledger turns and the projected
 
     assert.equal(result.updated, 1);
     assert.equal(result.projected, true);
-    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    const ledger = await persistedLedger(store);
     assert.equal(Object.values(ledger.turns)[0].taskTitle, "Agent HUB");
-    const projected = await readFile(workLogFile, "utf8");
+    const projected = await projectedJournal(store);
     assert.match(
       projected,
       /<button type="button" data-open-task data-provider="codex" data-thread-id="thread-title">Codex - Agent HUB<\/button>/,
@@ -1431,7 +1459,7 @@ test("a late unknown Stop result cannot overwrite an exact terminal status", asy
     };
     await store.recordAutomaticAndProject({ ...input, status: "aborted" });
     await store.recordAutomaticAndProject({ ...input, status: "unknown" });
-    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    const ledger = await persistedLedger(store);
     assert.equal(Object.values(ledger.turns)[0].status, "aborted");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1477,10 +1505,10 @@ test("legacy synthetic interruptions are provisional and retract from the projec
     });
 
     assert.equal(result.retracted, true);
-    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    const ledger = await persistedLedger(store);
     assert.equal(ledger.version, 8);
     assert.deepEqual(ledger.turns, {});
-    assert.doesNotMatch(await readFile(workLogFile, "utf8"), /Живая задача/);
+    assert.doesNotMatch(await projectedJournal(store), /Живая задача/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1505,9 +1533,71 @@ test("usage store recovers a damaged primary ledger from its backup", async () =
     await writeFile(ledgerFile, "{damaged", "utf8");
     const recovered = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
     await recovered.project(workLogFile, { projectRoot: root });
-    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    const ledger = await persistedLedger(recovered);
     assert.equal(Object.keys(ledger.turns).length, 1);
     assert.equal(ledger.version, 8);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("usage store verifies, archives and removes retired legacy journal files", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-retire-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const workLogFile = path.join(root, "WORK_LOG.md");
+    const backupRoot = path.join(root, "migrations");
+    const record = {
+      provider: "codex",
+      threadId: "thread-retired",
+      taskThreadId: "thread-retired",
+      turnId: "turn-retired",
+      projectRoot: root,
+      completedAt: "2026-08-02T00:00:00.000Z",
+      taskTitle: "SQLite cutover",
+    };
+    const ledger = {
+      version: 8,
+      turns: {
+        [workLogTurnKey(record)]: record,
+      },
+    };
+    const ledgerText = `${JSON.stringify(ledger, null, 2)}\n`;
+    await writeFile(ledgerFile, ledgerText, "utf8");
+    await writeFile(`${ledgerFile}.bak`, ledgerText, "utf8");
+    await writeFile(`${ledgerFile}.delta.jsonl`, "", "utf8");
+    await writeFile(`${ledgerFile}.invalid-records.json`, "{}\n", "utf8");
+    await writeFile(workLogFile, "# Глобальный журнал работ\n", "utf8");
+
+    const store = new WorkLogUsageStore({ ledgerFile });
+    const result = await store.retireLegacyStorage({
+      workLogFile,
+      backupRoot,
+      now: new Date("2026-08-02T12:34:56.789Z"),
+    });
+
+    assert.equal(result.retired, true);
+    assert.equal(result.verification.verified, true);
+    assert.equal(
+      result.backupDirectory,
+      path.join(backupRoot, "sqlite-cutover-2026-08-02T12-34-56-789Z"),
+    );
+    assert.equal(result.archived.length, 5);
+    for (const source of [
+      ledgerFile,
+      `${ledgerFile}.bak`,
+      `${ledgerFile}.delta.jsonl`,
+      `${ledgerFile}.invalid-records.json`,
+      workLogFile,
+    ]) {
+      await assert.rejects(readFile(source, "utf8"), { code: "ENOENT" });
+      const archived = result.archived.find((item) => item.source === source);
+      assert.ok(archived);
+      assert.equal(typeof await readFile(archived.backupFile, "utf8"), "string");
+    }
+    const persisted = await persistedLedger(store);
+    assert.equal(Object.keys(persisted.turns).length, 1);
+    assert.equal(Object.values(persisted.turns)[0].turnId, "turn-retired");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1538,13 +1628,13 @@ test("concurrent read-only recovery instances serialize their repair checkpoint"
     ]);
     assert.equal(turn.turnId, "turn-recovery");
     assert.equal(typeof history.totalCredits, "number");
-    assert.equal(JSON.parse(await readFile(ledgerFile, "utf8")).version, 8);
+    assert.equal((await persistedLedger(first)).version, 8);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("one ledger projects only turns belonging to the requested project", async () => {
+test("SQLite projection can select one requested project", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-projects-"));
   try {
     const firstRoot = path.join(root, "first");
@@ -1577,8 +1667,10 @@ test("one ledger projects only turns belonging to the requested project", async 
       text: "Второй проект",
       workLogFile: secondLog,
     });
-    const first = await readFile(firstLog, "utf8");
-    const second = await readFile(secondLog, "utf8");
+    await store.project(null, { projectRoot: firstRoot });
+    const first = await projectedJournal(store);
+    await store.project(null, { projectRoot: secondRoot });
+    const second = await projectedJournal(store);
     assert.match(first, /Первый проект/);
     assert.doesNotMatch(first, /Второй проект/);
     assert.match(second, /Второй проект/);
@@ -1622,7 +1714,7 @@ test("one ledger can project all configured projects into one global journal", a
       projectionProjectRoots,
     });
 
-    const global = await readFile(globalLog, "utf8");
+    const global = await projectedJournal(store);
     assert.match(global, /Первый проект/);
     assert.match(global, /Второй проект/);
     assert.equal((global.match(/data-work-log-turn-entry/gu) ?? []).length, 2);
@@ -1662,7 +1754,7 @@ test("automatic usage creates an explicit fallback row for an ambiguous thread",
       workLogFile,
     });
     assert.equal(result.target, "thread-day-row");
-    const projected = await readFile(workLogFile, "utf8");
+    const projected = await projectedJournal(store);
     assert.match(projected, /data-work-log-thread-id="thread-1"/);
     assert.match(projected, /Codex - Без названия/);
     assert.doesNotMatch(projected, /data-usage-id=/);
@@ -1701,14 +1793,14 @@ test("automatic journal records a stopped turn even when usage is unavailable", 
       usageReported: false,
       workLogFile,
     });
-    const projected = await readFile(workLogFile, "utf8");
+    const projected = await projectedJournal(store);
     assert.match(projected, /Codex - Остановленная задача/);
     assert.match(projected, /12:01 — нет данных/);
     assert.match(projected, /data-work-log-turn-title>Ход остановлен<\/span>/);
     assert.match(projected, /data-work-log-turn-prompt><strong>Запрос:<\/strong> Сделай работу<\/div>/);
     assert.doesNotMatch(projected, /data-work-log-turn-diff/u);
     assert.doesNotMatch(projected, /data-work-log-turn-files>[\s\S]*stopped\.mjs/u);
-    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    const ledger = await persistedLedger(store);
     assert.equal(Object.values(ledger.turns)[0].usageReported, false);
     assert.match(Object.values(ledger.turns)[0].diff, /stopped = true/u);
   } finally {
@@ -1739,7 +1831,7 @@ test("automatic journal marks only the image-generated turn while task and day t
       estimateKind: "imagegen-default",
       workLogFile,
     });
-    const projected = await readFile(workLogFile, "utf8");
+    const projected = await projectedJournal(store);
     assert.match(projected, /Итого<\/span> <span [^>]*data-kilo-usage[^>]*>102,5 cr<\/span>/);
     assert.match(projected, /ImageGen: <span data-kilo-usage>90 cr<\/span> <span data-usage-percent>\(87,8%\)<\/span>/);
     assert.match(projected, /12:03 — <span data-kilo-usage>102,5 cr<\/span>/);
@@ -1775,7 +1867,7 @@ test("automatic journal creates the missing local-date section", async () => {
       usage: { inputTokens: 1_000 },
       workLogFile,
     });
-    const projected = await readFile(workLogFile, "utf8");
+    const projected = await projectedJournal(store);
     assert.match(projected, /<summary data-work-log-day><strong>25\.07\.2026<\/strong>/);
     assert.match(projected, /data-work-log-thread-id="thread-new-day"/);
     assert.match(projected, /data-work-log-turn-id="turn-new-day"/);

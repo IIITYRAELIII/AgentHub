@@ -150,7 +150,7 @@ test("restart repairs CSV after a crash between raw and CSV exports", async () =
     csvFile,
     afterRawExport: async () => {
       exports += 1;
-      if (exports === 2) throw new Error("simulated crash after raw export");
+      if (exports === 1) throw new Error("simulated crash after raw export");
     },
   });
   try {
@@ -188,10 +188,40 @@ test("runtime records avoid full compatibility exports until explicitly requeste
       { rateLimits: { limitId: "codex", primary: { usedPercent: 12 } } },
       "2026-08-02T12:00:00.000Z",
     );
-    assert.equal(await readFile(rawFile, "utf8"), "");
-    assert.doesNotMatch(await readFile(csvFile, "utf8"), /2026-08-02T12:00:00\.000Z/u);
+    await assert.rejects(readFile(rawFile, "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(csvFile, "utf8"), { code: "ENOENT" });
     await store.rebuildCompatibilityExports();
     assert.match(await readFile(rawFile, "utf8"), /2026-08-02T12:00:00\.000Z/u);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("retired compatibility exports stay absent after later SQLite writes and restart", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limits-retire-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const rawFile = path.join(directory, "rate-limits-raw.jsonl");
+  const csvFile = path.join(directory, "rate-limits.csv");
+  let store = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+  try {
+    await store.record(
+      { rateLimits: { limitId: "codex", primary: { usedPercent: 12 } } },
+      "2026-08-02T12:00:00.000Z",
+    );
+    await store.rebuildCompatibilityExports();
+    const retired = await store.retireCompatibilityExports({ now: new Date("2026-08-02T13:00:00Z") });
+    assert.equal(retired.removed.length, 2);
+    await store.record(
+      { rateLimits: { limitId: "codex", primary: { usedPercent: 13 } } },
+      "2026-08-02T13:00:00.000Z",
+    );
+    await store.close();
+    store = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+    const history = await store.read({ range: "all", nowMs: Date.parse("2026-08-03T00:00:00Z") });
+    assert.equal(history.series[0].points.length, 2);
+    await assert.rejects(readFile(rawFile, "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(csvFile, "utf8"), { code: "ENOENT" });
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

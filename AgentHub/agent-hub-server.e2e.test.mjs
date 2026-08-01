@@ -4,6 +4,7 @@ import { appendFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "no
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { JournalDatabase } from "./journal-database.mjs";
 import {
   CHAT_ID,
   delay,
@@ -49,7 +50,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const statePath = path.join(dataDir, "state.json");
   const workLogPath = path.join(projectRoot, "WORK_LOG.md");
   const secondWorkLogPath = path.join(secondProjectRoot, "WORK_LOG.md");
-  const workLogLedgerPath = path.join(dataDir, "work-log-usage.json");
+  const journalDatabaseFile = path.join(dataDir, "journal.sqlite");
+  const journalDatabase = new JournalDatabase(journalDatabaseFile);
   const lockPath = path.join(dataDir, "bot.lock");
   await Promise.all([
     mkdir(dataDir, { recursive: true }),
@@ -97,8 +99,19 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     bot = null;
   }
 
+  async function findJournalTurn(predicate) {
+    const ledger = await journalDatabase.loadLedger().catch(() => null);
+    return Object.values(ledger?.turns ?? {}).find(predicate) ?? null;
+  }
+
+  async function journalContains(text) {
+    const snapshot = await journalDatabase.snapshot().catch(() => null);
+    return String(snapshot?.html ?? "").includes(text);
+  }
+
   t.after(async () => {
     await stopBot();
+    journalDatabase.close();
     await telegram.stop();
     await delay(200);
     await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -498,13 +511,12 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   );
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0, "normal turn completion");
   const normalJournalTurn = await waitFor(async () => {
-    const ledger = await readJson(workLogLedgerPath).catch(() => null);
-    return Object.values(ledger?.turns ?? {}).find((item) => (
+    return findJournalTurn((item) => (
       String(item.body ?? item.text ?? "").includes("Готово: [slow] обычное завершение")
-    )) ?? null;
+    ));
   }, "normal Codex turn journal projection");
   assert.equal(normalJournalTurn.status, "completed");
-  assert.match(await readFile(workLogPath, "utf8"), /Готово: \[slow\] обычное завершение/);
+  assert.equal(await journalContains("Готово: [slow] обычное завершение"), true);
   assert.equal(
     telegram.callsAfter(normalFinal.index + 1, "sendPhoto").some((call) => (
       call.rawBody.includes("Ход завершён.") && call.rawBody.includes("Кредиты за задачу:")
@@ -743,13 +755,12 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 1,
     "cancelling the selected parallel task only");
   const stoppedJournalTurn = await waitFor(async () => {
-    const ledger = await readJson(workLogLedgerPath).catch(() => null);
-    return Object.values(ledger?.turns ?? {}).find((item) => (
+    return findJournalTurn((item) => (
       String(item.body ?? item.text ?? "").includes("Ход остановлен тестом")
-    )) ?? null;
+    ));
   }, "aborted Codex turn journal projection after restart");
   assert.notEqual(stoppedJournalTurn.status, "completed");
-  assert.match(await readFile(workLogPath, "utf8"), /Ход остановлен тестом/);
+  assert.equal(await journalContains("Ход остановлен тестом"), true);
   assert.equal(
     telegram.callsAfter(restoredFinal.index + 1, "sendPhoto").some((call) => (
       call.rawBody.includes("Кредиты за задачу:")
@@ -952,10 +963,9 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0,
     "external observer completes only after the external turn really stops", 12_000);
   const externalJournalTurn = await waitFor(async () => {
-    const ledger = await readJson(workLogLedgerPath).catch(() => null);
-    return Object.values(ledger?.turns ?? {}).find((item) => (
+    return findJournalTurn((item) => (
       String(item.body ?? item.text ?? "").includes("Внешний ход завершён тестом")
-    )) ?? null;
+    ));
   }, "external Codex turn context in journal");
   assert.equal(externalJournalTurn.prompt, "[external-hold] VSCode task");
 
@@ -1011,8 +1021,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0,
     "offline external terminal reconciled after restart", 12_000);
   const offlineJournalTurn = await waitFor(async () => {
-    const ledger = await readJson(workLogLedgerPath).catch(() => null);
-    return Object.values(ledger?.turns ?? {}).find((turn) => turn.turnId === offlineTurn.id) ?? null;
+    return findJournalTurn((turn) => turn.turnId === offlineTurn.id);
   }, "offline external terminal written to the journal", 12_000);
   assert.equal(offlineJournalTurn.prompt, "[external-unchanged] VSCode task");
   assert.equal(offlineJournalTurn.status, "completed");
@@ -1067,7 +1076,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     timeoutMs: 12_000,
   });
   await waitFor(async () => (
-    (await readFile(workLogPath, "utf8")).includes("[multi-project] общий журнал")
+    journalContains("[multi-project] общий журнал")
   ), "global multi-project journal projection");
   assert.doesNotMatch(await readFile(secondWorkLogPath, "utf8"), /\[multi-project\] общий журнал/);
   mark = telegram.calls.length;

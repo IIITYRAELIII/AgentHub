@@ -301,10 +301,8 @@ def backfill_personal_history(project_root: Path, target_root: Path) -> None:
             str(ROOT / "work-log-backfill.mjs"),
             "--project-root",
             str(project_root),
-            "--ledger",
-            str(target_root / "data" / "work-log-usage.json"),
-            "--work-log",
-            str(project_root / "WORK_LOG.md"),
+            "--database",
+            str(target_root / "data" / "journal.sqlite"),
             "--through",
             date.today().isoformat(),
             "--apply",
@@ -325,7 +323,7 @@ def main() -> int:
     parser.add_argument(
         "--project-root",
         type=Path,
-        help="workspace whose personal WORK_LOG.md is maintained; existing value is preserved when omitted",
+        help="workspace whose personal SQLite journal is maintained; existing value is preserved when omitted",
     )
     parser.add_argument(
         "--provider",

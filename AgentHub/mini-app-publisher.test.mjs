@@ -14,17 +14,40 @@ import {
 } from "./mini-app-publisher.mjs";
 import { createDesktopControlRouter } from "./desktop-control-router.mjs";
 
+function memoryJournal(payload = {
+  html: "<p>Журнал</p>",
+  days: {},
+  turns: {},
+  updatedAt: "2026-07-28T12:00:00.000Z",
+  version: "test-version",
+}) {
+  const listeners = new Set();
+  return {
+    snapshot: async () => structuredClone(payload),
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    close() {},
+  };
+}
+
 test("Mini App publisher signs and sends the current journal", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-publisher-"));
-  const workLogFile = path.join(root, "WORK_LOG.md");
   const secretFile = path.join(root, "sync.secret");
   const secret = "a".repeat(64);
-  await writeFile(workLogFile, "# Глобальный журнал работ\n\n<details open><summary>28.07.2026</summary></details>\n");
   await writeFile(secretFile, secret);
   const requests = [];
   const published = [];
   const publisher = new MiniAppPublisher({
-    workLogFile,
+    journalDatabase: memoryJournal({
+      html: "<details open><summary>28.07.2026</summary></details>",
+      days: {},
+      turns: {},
+      updatedAt: "2026-07-28T12:00:00.000Z",
+      version: "test-version",
+    }),
+    dataDirectory: root,
     publicUrl: "https://hub.example.test/",
     syncSecretFile: secretFile,
     fetchImpl: async (url, options) => {
@@ -104,7 +127,7 @@ test("Mini App publisher manages trusted devices through signed service requests
   await writeFile(secretFile, secret);
   const requests = [];
   const publisher = new MiniAppPublisher({
-    workLogFile: path.join(root, "WORK_LOG.md"),
+    dataDirectory: root,
     publicUrl: "https://hub.example.test",
     syncSecretFile: secretFile,
     fetchImpl: async (url, options) => {
@@ -157,7 +180,7 @@ test("Mini App publisher exposes a local image through a signed temporary view",
   await writeFile(imageFile, png);
   let request;
   const publisher = new MiniAppPublisher({
-    workLogFile: path.join(root, "WORK_LOG.md"),
+    dataDirectory: root,
     publicUrl: "https://hub.example.test",
     syncSecretFile: secretFile,
     attachmentDirectory,
@@ -199,7 +222,7 @@ test("Mini App publisher polls signed controls and posts their result", async ()
   const requests = [];
   const handled = [];
   const publisher = new MiniAppPublisher({
-    workLogFile: path.join(root, "WORK_LOG.md"),
+    dataDirectory: root,
     publicUrl: "https://hub.example.test",
     syncSecretFile: secretFile,
     fetchImpl: async (url, options) => {
@@ -259,7 +282,7 @@ test("Mini App publisher relays context compaction allowed by the Worker", async
   await writeFile(secretFile, "f".repeat(64));
   const handled = [];
   const publisher = new MiniAppPublisher({
-    workLogFile: path.join(root, "WORK_LOG.md"),
+    dataDirectory: root,
     publicUrl: "https://hub.example.test",
     syncSecretFile: secretFile,
     fetchImpl: async (url) => {
@@ -298,7 +321,7 @@ test("Mini App publisher rejects remote attachments without invoking the handler
   let handled = false;
   let postedResult;
   const publisher = new MiniAppPublisher({
-    workLogFile: path.join(root, "WORK_LOG.md"),
+    dataDirectory: root,
     publicUrl: "https://hub.example.test",
     syncSecretFile: secretFile,
     fetchImpl: async (url, options) => {
@@ -346,7 +369,7 @@ test("Mini App publisher materializes a signed remote image inside the allowed a
   const handled = [];
   const requests = [];
   const publisher = new MiniAppPublisher({
-    workLogFile: path.join(root, "WORK_LOG.md"),
+    dataDirectory: root,
     publicUrl: "https://hub.example.test",
     syncSecretFile: secretFile,
     attachmentDirectory,
@@ -420,7 +443,7 @@ test("Mini App publisher executes every claimed command when result delivery is 
   const delivered = [];
   const handled = [];
   const publisher = new MiniAppPublisher({
-    workLogFile: path.join(root, "WORK_LOG.md"),
+    dataDirectory: root,
     publicUrl: "https://hub.example.test",
     syncSecretFile: secretFile,
     fetchImpl: async (url, options) => {
@@ -464,7 +487,7 @@ test("Mini App publisher reconciles a redelivered command after a crash without 
     return Response.json({ received: JSON.parse(options.body) });
   };
   const first = new MiniAppPublisher({
-    workLogFile: path.join(root, "WORK_LOG.md"),
+    dataDirectory: root,
     publicUrl: "https://hub.example.test",
     syncSecretFile: secretFile,
     controlReceiptFile: receiptFile,
@@ -484,7 +507,7 @@ test("Mini App publisher reconciles a redelivered command after a crash without 
   await writeFile(receiptFile, `${JSON.stringify(receipts)}\n`);
   const delivered = [];
   const restarted = new MiniAppPublisher({
-    workLogFile: path.join(root, "WORK_LOG.md"),
+    dataDirectory: root,
     publicUrl: "https://hub.example.test",
     syncSecretFile: secretFile,
     controlReceiptFile: receiptFile,
@@ -518,7 +541,7 @@ test("Mini App publisher retains a delivered-result outbox across a crash before
   await writeFile(secretFile, "g".repeat(64));
   let effects = 0;
   const first = new MiniAppPublisher({
-    workLogFile: path.join(root, "WORK_LOG.md"),
+    dataDirectory: root,
     publicUrl: "https://hub.example.test",
     syncSecretFile: secretFile,
     controlReceiptFile: receiptFile,
@@ -535,7 +558,7 @@ test("Mini App publisher retains a delivered-result outbox across a crash before
   await assert.rejects(() => first.pollControl(), /simulated crash before receipt cleanup/u);
   const delivered = [];
   const restarted = new MiniAppPublisher({
-    workLogFile: path.join(root, "WORK_LOG.md"),
+    dataDirectory: root,
     publicUrl: "https://hub.example.test",
     syncSecretFile: secretFile,
     controlReceiptFile: receiptFile,
@@ -575,7 +598,7 @@ test("Worker to publisher to desktop route redelivers a cached mutation result a
   let effectFinished;
   const finished = new Promise((resolve) => { effectFinished = resolve; });
   const first = new MiniAppPublisher({
-    workLogFile: path.join(root, "WORK_LOG.md"), publicUrl: "https://hub.example.test", syncSecretFile: secretFile,
+    dataDirectory: root, publicUrl: "https://hub.example.test", syncSecretFile: secretFile,
     controlReceiptFile: publisherReceipts,
     fetchImpl: async (url) => url.endsWith("/api/control/pull")
       ? Response.json({ commands: [command] }) : Response.json({ ok: true }),
@@ -598,7 +621,7 @@ test("Worker to publisher to desktop route redelivers a cached mutation result a
   });
   const delivered = [];
   const restarted = new MiniAppPublisher({
-    workLogFile: path.join(root, "WORK_LOG.md"), publicUrl: "https://hub.example.test", syncSecretFile: secretFile,
+    dataDirectory: root, publicUrl: "https://hub.example.test", syncSecretFile: secretFile,
     controlReceiptFile: publisherReceipts,
     fetchImpl: async (url, options) => {
       if (url.endsWith("/api/control/pull")) return Response.json({ commands: [command] });

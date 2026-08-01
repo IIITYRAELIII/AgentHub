@@ -70,16 +70,6 @@
           "group": "navigation@2"
         }
       ]
-    },
-    "configuration": {
-      "title": "Agent Hub",
-      "properties": {
-        "agentHub.fileName": {
-          "type": "string",
-          "default": "WORK_LOG.md",
-          "description": "Путь к журналу относительно корня workspace."
-        }
-      }
     }
   }
 }

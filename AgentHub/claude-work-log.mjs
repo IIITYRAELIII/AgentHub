@@ -1,14 +1,15 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { findContainingProject } from "./config.mjs";
 import { applyLedgerDelta } from "./incremental-ledger.mjs";
+import { JournalDatabase } from "./journal-database.mjs";
 import { creditsFromUsd } from "./token-usage.mjs";
-import { writeTextAtomic } from "./state-store.mjs";
+import { readJsonWithBackup } from "./state-store.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
-import { projectWorkLogUsage, workLogTurnKey } from "./work-log-usage.mjs";
+import { WorkLogUsageStore, workLogTurnKey } from "./work-log-usage.mjs";
 
 function contentBlocks(message) {
   if (Array.isArray(message?.content)) return message.content;
@@ -415,19 +416,26 @@ async function transcriptFiles(root) {
 
 export async function buildClaudeWorkLogBackfill({
   transcriptRoot = path.join(os.homedir(), ".claude", "projects"),
+  databaseFile,
   ledgerFile,
   projects,
 } = {}) {
-  let currentLedger = await readFile(ledgerFile, "utf8")
-    .then(JSON.parse)
-    .catch((error) => {
-      if (error?.code === "ENOENT") return { version: 8, turns: {} };
-      throw error;
-    });
-  currentLedger = (await applyLedgerDelta(
-    currentLedger,
-    `${ledgerFile}.delta.jsonl`,
-  )).value;
+  let currentLedger = { version: 8, turns: {} };
+  if (databaseFile) {
+    const database = new JournalDatabase(databaseFile);
+    try {
+      currentLedger = await database.loadLedger();
+    } finally {
+      database.close();
+    }
+  }
+  if (!Object.keys(currentLedger.turns ?? {}).length && ledgerFile) {
+    const loaded = await readJsonWithBackup(ledgerFile);
+    currentLedger = (await applyLedgerDelta(
+      loaded.value ?? currentLedger,
+      `${ledgerFile}.delta.jsonl`,
+    )).value;
+  }
   const turns = { ...(currentLedger?.turns ?? {}) };
   const files = await transcriptFiles(path.resolve(transcriptRoot));
   files.sort((left, right) => left.localeCompare(right));
@@ -518,27 +526,71 @@ function migrationTimestamp(now = new Date()) {
 
 export async function applyClaudeWorkLogBackfill({
   migration,
+  databaseFile,
   ledgerFile,
   workLogFile,
-  backupRoot = path.join(path.dirname(ledgerFile), "migrations"),
+  projectRoot = "",
+  projectionProjectRoots,
+  backupRoot,
   now = new Date(),
 } = {}) {
-  const backupDirectory = path.join(backupRoot, `claude-${migrationTimestamp(now)}`);
+  if (!databaseFile) throw new Error("SQLite journal database is required");
+  const resolvedBackupRoot = backupRoot || path.join(path.dirname(databaseFile), "migrations");
+  const legacyLedgerFile = ledgerFile || path.join(path.dirname(databaseFile), "work-log-usage.json");
+  const backupDirectory = path.join(resolvedBackupRoot, `claude-${migrationTimestamp(now)}`);
   await mkdir(backupDirectory, { recursive: true });
-  for (const file of [ledgerFile, `${ledgerFile}.delta.jsonl`, workLogFile]) {
+  for (const file of [
+    legacyLedgerFile,
+    `${legacyLedgerFile}.bak`,
+    `${legacyLedgerFile}.delta.jsonl`,
+    workLogFile,
+  ].filter(Boolean)) {
     try {
       await copyFile(file, path.join(backupDirectory, path.basename(file)));
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
   }
-  const ledgerText = `${JSON.stringify(migration.ledger, null, 2)}\n`;
-  await writeTextAtomic(ledgerFile, ledgerText);
-  await writeTextAtomic(`${ledgerFile}.bak`, ledgerText);
-  await rm(`${ledgerFile}.delta.jsonl`, { force: true });
-  await writeTextAtomic(
-    workLogFile,
-    projectWorkLogUsage("# Глобальный журнал работ\n", migration.ledger.turns),
-  );
-  return { backupDirectory };
+  const database = new JournalDatabase(databaseFile);
+  try {
+    await database.importLegacyLedger(legacyLedgerFile);
+    let applied;
+    let mergedLedger;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const revision = await database.currentRevision();
+      const current = await database.loadLedger();
+      mergedLedger = {
+        version: 8,
+        turns: { ...(current.turns ?? {}), ...(migration?.ledger?.turns ?? {}) },
+      };
+      try {
+        applied = await database.replaceLedger(mergedLedger, { expectedRevision: revision });
+        break;
+      } catch (error) {
+        if (!/revision conflict/iu.test(String(error?.message ?? "")) || attempt === 2) throw error;
+      }
+    }
+    const roots = Array.isArray(projectionProjectRoots) && projectionProjectRoots.length
+      ? projectionProjectRoots
+      : [...new Set(Object.values(mergedLedger.turns)
+        .map((record) => String(record?.projectRoot ?? "").trim()).filter(Boolean))];
+    const resolvedProjectRoot = projectRoot || roots[0] || "";
+    const store = new WorkLogUsageStore({
+      ledgerFile: legacyLedgerFile,
+      databaseFile,
+      journalDatabase: database,
+      defaultProjectRoot: resolvedProjectRoot,
+    });
+    try {
+      await store.project(null, {
+        projectRoot: resolvedProjectRoot,
+        projectionProjectRoots: roots,
+      });
+    } finally {
+      await store.close();
+    }
+    return { backupDirectory, databaseFile: path.resolve(databaseFile), ...applied };
+  } finally {
+    database.close();
+  }
 }

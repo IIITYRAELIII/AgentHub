@@ -16,6 +16,7 @@ import {
 } from "./e2e/telegram-harness.mjs";
 import { processIsAlive } from "./claude-run-io.mjs";
 import { callDesktopControl } from "./desktop-control.mjs";
+import { JournalDatabase } from "./journal-database.mjs";
 
 const AGENT_HUB_ROOT = path.resolve(import.meta.dirname);
 const BOT_FILE = path.join(AGENT_HUB_ROOT, "agent-hub-server.mjs");
@@ -38,7 +39,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   const configPath = path.join(temporaryRoot, "config.json");
   const codexStatePath = path.join(temporaryRoot, "fake-codex-state.json");
   const statePath = path.join(dataDir, "state.json");
-  const workLogLedgerPath = path.join(dataDir, "work-log-usage.json");
+  const journalDatabasePath = path.join(dataDir, "journal.sqlite");
   const lockPath = path.join(dataDir, "bot.lock");
   await Promise.all([
     mkdir(dataDir, { recursive: true }),
@@ -444,12 +445,12 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   await waitFor(async () => (await activeRuns()).length === 0,
     "reattached Claude turn delivered its final answer", 20_000);
   const journalTurn = await waitFor(async () => {
-    const ledger = await readJson(workLogLedgerPath).catch(() => null);
+    const ledger = await new JournalDatabase(journalDatabasePath).loadLedger().catch(() => null);
     return Object.values(ledger?.turns ?? {}).find((turn) => (
       turn.provider === "claude"
       && String(turn.body ?? "").includes(secondPrompt)
     )) ?? null;
-  }, "Claude WORK_LOG entry", 15_000);
+  }, "Claude journal entry", 15_000);
   assert.equal(journalTurn.threadId, secondThreadId);
   assert.equal(journalTurn.estimatedCredits, 0.1);
   assert.equal(journalTurn.estimateKind, "claude-cli-total-cost-usd");

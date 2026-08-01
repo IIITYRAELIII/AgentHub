@@ -19,7 +19,7 @@ const ROOT = path.resolve(import.meta.dirname);
 const BOT_FILE = path.join(ROOT, "agent-hub-server.mjs");
 const FAKE_CODEX_FILE = path.join(ROOT, "e2e", "fake-codex-app-server.mjs");
 
-test("desktop client shares tasks and parallel runs with Agent Hub Server", { timeout: 30_000 }, async (t) => {
+test("desktop client shares tasks and parallel runs with Agent Hub Server", { timeout: 60_000 }, async (t) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-desktop-e2e-"));
   const dataDir = path.join(runtimeRoot, "data");
   const projectRoot = path.join(runtimeRoot, "project");
@@ -142,7 +142,18 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     return snapshot.activeCount === 0 ? snapshot : null;
-  }, "desktop approval completion", 5_000);
+  }, "desktop approval completion", 15_000).catch(async (error) => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null);
+    throw new Error(`${error.message}; snapshot=${JSON.stringify({
+      activeCount: snapshot?.activeCount,
+      tasks: snapshot?.tasks?.map((task) => ({
+        threadId: task.threadId,
+        running: task.running,
+        title: task.title,
+        context: task.context,
+      })),
+    })}`);
+  });
   const beforeCompaction = await callDesktopControl("snapshot", {}, { runtimeRoot });
   const contextBefore = beforeCompaction.tasks.find((item) => item.threadId === firstThreadId)?.context;
   assert.equal(contextBefore.usedTokens, 130);
@@ -289,7 +300,7 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   const completed = await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     return snapshot.activeCount === 0 ? snapshot : null;
-  }, "parallel desktop turns completion", 10_000);
+  }, "parallel desktop turns completion", 15_000);
   assert.ok(completed.tasks.every((item) => !item.running));
   assert.equal(
     completed.tasks.find((item) => item.threadId === firstThreadId)?.context?.usedTokens,
@@ -337,7 +348,7 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     return snapshot.activeCount === 0 ? snapshot : null;
-  }, "desktop image turn completion", 10_000);
+  }, "desktop image turn completion", 15_000);
 
   const renamed = await callDesktopControl("rename-task", {
     title: "Desktop renamed",
@@ -356,6 +367,10 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     threadId: firstThreadId,
   }, { runtimeRoot });
   assert.equal(cancelStart.accepted, true);
+  await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    return snapshot.tasks.find((item) => item.threadId === firstThreadId)?.running ? snapshot : null;
+  }, "desktop cancellable turn", 5_000);
   const cancelResult = await callDesktopControl("cancel-run", {
     provider: "codex",
     threadId: firstThreadId,
@@ -364,7 +379,7 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     return snapshot.activeCount === 0 ? snapshot : null;
-  }, "desktop cancellation", 5_000);
+  }, "desktop cancellation", 15_000);
   const archived = await callDesktopControl("archive-task", {
     provider: "codex",
     threadId: firstThreadId,

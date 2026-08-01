@@ -12,6 +12,7 @@ import {
   claudeTranscriptEstimatedCredits,
   scanClaudeHistoricalTranscript,
 } from "./claude-work-log.mjs";
+import { JournalDatabase } from "./journal-database.mjs";
 
 const line = (value) => JSON.stringify(value);
 
@@ -315,6 +316,7 @@ test("Claude backfill is additive, idempotent and keeps recoverable backups", as
   const transcriptRoot = path.join(root, "transcripts", "project");
   const projectRoot = path.join(root, "workspace");
   const dataDir = path.join(root, "data");
+  const databaseFile = path.join(dataDir, "journal.sqlite");
   const ledgerFile = path.join(dataDir, "work-log-usage.json");
   const workLogFile = path.join(root, "WORK_LOG.md");
   await mkdir(transcriptRoot, { recursive: true });
@@ -369,6 +371,7 @@ test("Claude backfill is additive, idempotent and keeps recoverable backups", as
 
   const options = {
     transcriptRoot: path.join(root, "transcripts"),
+    databaseFile,
     ledgerFile,
     projects: [{ name: "Workspace", path: projectRoot }],
   };
@@ -380,12 +383,21 @@ test("Claude backfill is additive, idempotent and keeps recoverable backups", as
   assert.equal(imported.estimateKind, "claude-api-token-pricing");
   const applied = await applyClaudeWorkLogBackfill({
     migration: first,
+    databaseFile,
     ledgerFile,
     workLogFile,
+    projectRoot,
+    projectionProjectRoots: [projectRoot],
     now: new Date("2026-07-30T10:00:00.000Z"),
   });
   assert.match(applied.backupDirectory, /claude-2026-07-30T10-00-00-000Z$/u);
-  assert.match(await readFile(workLogFile, "utf8"), /Claude - Работа с журналом|Claude - Запрос/u);
+  assert.equal(await readFile(workLogFile, "utf8"), "# Глобальный журнал работ\n");
+  const database = new JournalDatabase(databaseFile);
+  const stored = await database.loadLedger();
+  const snapshot = await database.snapshot();
+  database.close();
+  assert.equal(Object.keys(stored.turns).length, 3);
+  assert.match(snapshot.html, /Claude - Работа с журналом|Claude - Запрос/u);
 
   const second = await buildClaudeWorkLogBackfill(options);
   assert.equal(second.report.importedTurns, 0);

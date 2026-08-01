@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -458,7 +458,8 @@ export class RateLimitHistoryStore {
     try {
       await this.#retryBusy(() => configureRateLimitDatabase(database));
       await this.#importLegacy();
-      if (await this.#compatibilityExportRequired()) await this.#rebuildCompatibilityExports();
+      if (await this.#compatibilityExportsExist()
+        && await this.#compatibilityExportRequired()) await this.#rebuildCompatibilityExports();
       return database;
     } catch (error) {
       this.#database = null;
@@ -544,6 +545,17 @@ export class RateLimitHistoryStore {
       const exported = String(get.get("compatibility_export_generation")?.value ?? "");
       return current !== exported;
     });
+  }
+
+  async #compatibilityExportsExist() {
+    for (const file of [this.#rawFile, this.#csvFile]) {
+      try {
+        if ((await stat(file)).isFile()) return true;
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+    return false;
   }
 
   async #rebuildCompatibilityExports() {
@@ -691,6 +703,41 @@ export class RateLimitHistoryStore {
     return this.#enqueue(async () => {
       await this.#open();
       await this.#rebuildCompatibilityExports();
+    });
+  }
+
+  retireCompatibilityExports({
+    backupRoot = path.join(path.dirname(this.#databaseFile), "migrations"),
+    now = new Date(),
+  } = {}) {
+    return this.#enqueue(async () => {
+      await this.#open();
+      const files = [];
+      for (const source of [this.#rawFile, this.#csvFile]) {
+        try {
+          const info = await stat(source);
+          if (info.isFile()) files.push({ source, size: info.size });
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+      }
+      if (!files.length) return { retired: false, removed: [], archived: [] };
+      const timestamp = now.toISOString().replace(/[:.]/gu, "-");
+      const backupDirectory = path.join(path.resolve(backupRoot), `rate-limits-sqlite-${timestamp}`);
+      await mkdir(backupDirectory, { recursive: true });
+      const archived = [];
+      for (const item of files) {
+        const backupFile = path.join(backupDirectory, path.basename(item.source));
+        await copyFile(item.source, backupFile);
+        archived.push({ ...item, backupFile });
+      }
+      for (const item of files) await rm(item.source, { force: true });
+      return {
+        retired: true,
+        backupDirectory,
+        archived,
+        removed: files.map((item) => item.source),
+      };
     });
   }
 

@@ -1,9 +1,9 @@
-import { unwatchFile, watchFile } from "node:fs";
+import { createReadStream } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import os from "node:os";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
 
 import {
   extractRateLimitsHtml,
@@ -59,10 +59,6 @@ const STATIC_FILES = new Map([
   ["/lake-summer.jpg", "lake-summer.jpg"],
 ]);
 
-function defaultJournalDatabaseFile(workLogFile) {
-  const identity = createHash("sha256").update(path.resolve(workLogFile)).digest("hex").slice(0, 24);
-  return path.join(os.tmpdir(), "agent-hub-journal", `${identity}.sqlite`);
-}
 /* Разметка и стили обязаны быть свежими, поэтому у них no-store. Фон темы —
    неизменяемый файл в несколько мегабайт: без долгого кэша он выкачивался бы
    заново при каждом открытии, что заметно через Telegram-туннель. */
@@ -82,6 +78,9 @@ const IMMUTABLE_FILES = new Set([
 ]);
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_MOBILE_UPDATE_BYTES = 100 * 1024 * 1024;
+const MOBILE_UPDATE_FILE = "AgentHub-Mobile.apk";
+const MOBILE_UPDATE_MANIFEST = "update.json";
 const IMAGE_CONTENT_TYPES = new Map([
   ["image/png", ".png"],
   ["image/jpeg", ".jpg"],
@@ -272,6 +271,26 @@ function json(response, statusCode, value, method = "GET", options = {}) {
   );
 }
 
+async function sendBoundedFile(
+  response,
+  target,
+  bytes,
+  contentType,
+  method = "GET",
+  headers = {},
+) {
+  response.writeHead(200, {
+    ...responseHeaders(contentType),
+    "Content-Length": String(bytes),
+    ...headers,
+  });
+  if (method === "HEAD") {
+    response.end();
+    return;
+  }
+  await pipeline(createReadStream(target, { start: 0, end: bytes - 1 }), response);
+}
+
 /**
  * Fixed-capacity, expiry-aware LRU limiter for public device-authentication
  * endpoints. A Map's insertion order is the LRU order, so every operation is
@@ -340,19 +359,19 @@ export class MiniAppServer {
   #host;
   #journalCache = null;
   #journalDatabase;
+  #ownsJournalDatabase;
+  #unsubscribeJournal = null;
   #localAccessSecret;
+  #mobileUpdateDirectory;
   #port;
   #publicAuthAttempts = new PublicAuthAttemptLimiter();
   #requireTelegramAuth;
   #server = null;
-  #watcher = null;
   #workLogCssFile;
-  #workLogFile;
 
   constructor({
     host = "127.0.0.1",
     port = 8787,
-    workLogFile,
     botToken = "",
     allowedUserIds = new Set(),
     requireTelegramAuth = false,
@@ -361,12 +380,13 @@ export class MiniAppServer {
     deviceStore = null,
     assetsDirectory = path.join(import.meta.dirname, "assets", "mini-app"),
     attachmentDirectory = null,
+    mobileUpdateDirectory = path.join(import.meta.dirname, "assets", "mobile"),
     workLogCssFile = path.join(import.meta.dirname, "work-log.css"),
-    journalDatabaseFile = defaultJournalDatabaseFile(workLogFile),
+    journalDatabase = null,
+    journalDatabaseFile = null,
   } = {}) {
     this.#host = String(host);
     this.#port = Number(port);
-    this.#workLogFile = path.resolve(workLogFile);
     this.#botToken = String(botToken);
     this.#allowedUserIds = new Set(allowedUserIds);
     this.#requireTelegramAuth = requireTelegramAuth === true;
@@ -375,13 +395,48 @@ export class MiniAppServer {
     this.#deviceStore = deviceStore;
     this.#assetsDirectory = path.resolve(assetsDirectory);
     this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
+    this.#mobileUpdateDirectory = mobileUpdateDirectory
+      ? path.resolve(mobileUpdateDirectory)
+      : null;
     this.#workLogCssFile = path.resolve(workLogCssFile);
-    this.#journalDatabase = new JournalDatabase(journalDatabaseFile);
+    if (!journalDatabase && !journalDatabaseFile) {
+      throw new Error("Mini App journalDatabase or journalDatabaseFile is required");
+    }
+    this.#journalDatabase = journalDatabase ?? new JournalDatabase(journalDatabaseFile);
+    this.#ownsJournalDatabase = !journalDatabase;
   }
 
   async #journal() {
-    this.#journalCache = await this.#journalDatabase.ensureFromFile(this.#workLogFile);
+    this.#journalCache = await this.#journalDatabase.payload();
+    if (!this.#journalCache) throw new Error("Журнал ещё не создан");
     return this.#journalCache;
+  }
+
+  async #mobileUpdate() {
+    if (!this.#mobileUpdateDirectory) throw new Error("Обновление Android отключено");
+    const manifestFile = path.join(this.#mobileUpdateDirectory, MOBILE_UPDATE_MANIFEST);
+    const apkFile = path.join(this.#mobileUpdateDirectory, MOBILE_UPDATE_FILE);
+    const [manifestInfo, apkInfo] = await Promise.all([stat(manifestFile), stat(apkFile)]);
+    if (!manifestInfo.isFile() || manifestInfo.size < 2 || manifestInfo.size > 16 * 1024) {
+      throw new Error("Manifest обновления повреждён");
+    }
+    if (!apkInfo.isFile() || apkInfo.size < 1 || apkInfo.size > MAX_MOBILE_UPDATE_BYTES) {
+      throw new Error("APK обновления отсутствует или слишком велик");
+    }
+    const manifest = JSON.parse(await readFile(manifestFile, "utf8"));
+    const versionCode = Number(manifest.versionCode);
+    const versionName = String(manifest.versionName ?? "").trim();
+    const sha256 = String(manifest.sha256 ?? "").trim().toLowerCase();
+    const bytes = Number(manifest.bytes);
+    if (
+      !Number.isSafeInteger(versionCode) || versionCode < 1
+      || !/^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/u.test(versionName)
+      || !/^[a-f0-9]{64}$/u.test(sha256)
+      || !Number.isSafeInteger(bytes) || bytes !== apkInfo.size
+    ) {
+      throw new Error("Manifest обновления содержит некорректные данные");
+    }
+    return { versionCode, versionName, sha256, bytes, apkFile };
   }
 
   async #staticBody(pathname) {
@@ -654,11 +709,46 @@ export class MiniAppServer {
       json(response, 200, { ok: true }, method);
       return;
     }
+    if (url.pathname === "/api/mobile/update" || url.pathname === "/api/mobile/update.apk") {
+      if (!await this.#authorize(request, response)) return;
+      try {
+        const update = await this.#mobileUpdate();
+        if (url.pathname.endsWith(".apk")) {
+          await sendBoundedFile(
+            response,
+            update.apkFile,
+            update.bytes,
+            "application/vnd.android.package-archive",
+            method,
+            {
+              "Cache-Control": "private, no-store",
+              "Content-Disposition": `attachment; filename="${MOBILE_UPDATE_FILE}"`,
+              ETag: `"sha256-${update.sha256}"`,
+            },
+          );
+        } else {
+          json(response, 200, {
+            versionCode: update.versionCode,
+            versionName: update.versionName,
+            sha256: update.sha256,
+            bytes: update.bytes,
+            downloadUrl: "/api/mobile/update.apk",
+          }, method, { headers: { "Cache-Control": "private, no-store" } });
+        }
+      } catch (error) {
+        if (response.headersSent) {
+          response.destroy(error);
+          return;
+        }
+        json(response, 503, { error: `Обновление Android недоступно: ${error.message}` }, method);
+      }
+      return;
+    }
     if (url.pathname === "/api/rate-limits") {
       if (!await this.#authorize(request, response)) return;
       try {
-        const markdown = await readFile(this.#workLogFile, "utf8");
-        json(response, 200, extractRateLimitsHtml(markdown), method);
+        const journal = await this.#journal();
+        json(response, 200, extractRateLimitsHtml(journal.html), method);
       } catch (error) {
         json(response, 503, { error: `Лимиты недоступны: ${error.message}` }, method);
       }
@@ -766,16 +856,10 @@ export class MiniAppServer {
       });
     });
     this.#server = server;
-    watchFile(
-      this.#workLogFile,
-      { persistent: false, interval: 250 },
-      (current, previous) => {
-        if (current.mtimeMs !== previous.mtimeMs || current.size !== previous.size) {
-          this.#scheduleChange();
-        }
-      },
-    );
-    this.#watcher = { close: () => unwatchFile(this.#workLogFile) };
+    this.#unsubscribeJournal = this.#journalDatabase.subscribe(() => {
+      this.#journalCache = null;
+      this.#scheduleChange();
+    });
     this.#heartbeatTimer = setInterval(() => {
       for (const response of this.#clients) response.write(": heartbeat\n\n");
     }, HEARTBEAT_INTERVAL_MS);
@@ -801,11 +885,11 @@ export class MiniAppServer {
     this.#changeTimer = null;
     if (this.#heartbeatTimer) clearInterval(this.#heartbeatTimer);
     this.#heartbeatTimer = null;
-    this.#watcher?.close();
-    this.#watcher = null;
+    this.#unsubscribeJournal?.();
+    this.#unsubscribeJournal = null;
     for (const response of this.#clients) response.end();
     this.#clients.clear();
     if (server?.listening) await new Promise((resolve) => server.close(resolve));
-    this.#journalDatabase.close();
+    if (this.#ownsJournalDatabase) this.#journalDatabase.close();
   }
 }

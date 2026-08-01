@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { JournalDatabase } from "./journal-database.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
-import { writeTextAtomic } from "./state-store.mjs";
-import { projectWorkLogUsage } from "./work-log-usage.mjs";
+import { WorkLogUsageStore } from "./work-log-usage.mjs";
 
 export const GENERIC_WORK_LOG_TITLES = new Set(["Ход завершён", "Ход отменён"]);
 export const WORK_LOG_GENERATED_TITLE_LIMIT = 100;
@@ -155,28 +155,70 @@ export async function applyWorkLogTitleBackfill({
   ledger,
   jobs,
   cache,
+  databaseFile,
   ledgerFile,
   workLogFile,
-  backupRoot = path.join(path.dirname(ledgerFile), "migrations"),
+  projectRoot = "",
+  projectionProjectRoots,
+  backupRoot,
   now = new Date(),
 } = {}) {
   const missing = jobs.filter((job) => !cachedTitleForJob(cache, job));
   if (missing.length) throw new Error(`Missing generated titles: ${missing.length}`);
-  const result = applyCachedTitles(ledger, jobs, cache);
-  const backupDirectory = path.join(backupRoot, `titles-${migrationTimestamp(now)}`);
+  if (!databaseFile) throw new Error("SQLite journal database is required");
+  const resolvedBackupRoot = backupRoot || path.join(path.dirname(databaseFile), "migrations");
+  const legacyLedgerFile = ledgerFile || path.join(path.dirname(databaseFile), "work-log-usage.json");
+  const backupDirectory = path.join(resolvedBackupRoot, `titles-${migrationTimestamp(now)}`);
   await mkdir(backupDirectory, { recursive: true });
-  for (const file of [ledgerFile, workLogFile]) {
+  for (const file of [
+    legacyLedgerFile,
+    `${legacyLedgerFile}.bak`,
+    `${legacyLedgerFile}.delta.jsonl`,
+    workLogFile,
+  ].filter(Boolean)) {
     try {
       await copyFile(file, path.join(backupDirectory, path.basename(file)));
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
   }
-  const ledgerText = `${JSON.stringify(result.ledger, null, 2)}\n`;
-  await writeTextAtomic(ledgerFile, ledgerText);
-  await writeTextAtomic(`${ledgerFile}.bak`, ledgerText);
-  await writeTextAtomic(workLogFile, projectWorkLogUsage("# Глобальный журнал работ\n", result.ledger.turns));
-  return { ...result, backupDirectory };
+  const database = new JournalDatabase(databaseFile);
+  try {
+    await database.importLegacyLedger(legacyLedgerFile);
+    let result = applyCachedTitles(ledger, jobs, cache);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const revision = await database.currentRevision();
+      result = applyCachedTitles(await database.loadLedger(), jobs, cache);
+      try {
+        await database.replaceLedger(result.ledger, { expectedRevision: revision });
+        break;
+      } catch (error) {
+        if (!/revision conflict/iu.test(String(error?.message ?? "")) || attempt === 2) throw error;
+      }
+    }
+    const roots = Array.isArray(projectionProjectRoots) && projectionProjectRoots.length
+      ? projectionProjectRoots
+      : [...new Set(Object.values(result.ledger.turns)
+        .map((record) => String(record?.projectRoot ?? "").trim()).filter(Boolean))];
+    const resolvedProjectRoot = projectRoot || roots[0] || "";
+    const store = new WorkLogUsageStore({
+      ledgerFile: legacyLedgerFile,
+      databaseFile,
+      journalDatabase: database,
+      defaultProjectRoot: resolvedProjectRoot,
+    });
+    try {
+      await store.project(null, {
+        projectRoot: resolvedProjectRoot,
+        projectionProjectRoots: roots,
+      });
+    } finally {
+      await store.close();
+    }
+    return { ...result, backupDirectory, databaseFile: path.resolve(databaseFile) };
+  } finally {
+    database.close();
+  }
 }
 
 export async function readJsonOr(filePath, fallback) {

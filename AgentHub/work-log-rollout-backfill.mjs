@@ -3,9 +3,10 @@ import path from "node:path";
 
 import { isInheritedSubagentTurn } from "./codex-subagent-accounting.mjs";
 import { scanCodexHistoricalRollout } from "./codex-turn-usage.mjs";
-import { writeTextAtomic } from "./state-store.mjs";
-import { withInterprocessLocks } from "./interprocess-lock.mjs";
-import { projectWorkLogUsage, workLogTurnKey } from "./work-log-usage.mjs";
+import { applyLedgerDelta } from "./incremental-ledger.mjs";
+import { JournalDatabase } from "./journal-database.mjs";
+import { readJsonWithBackup } from "./state-store.mjs";
+import { WorkLogUsageStore, workLogTurnKey } from "./work-log-usage.mjs";
 
 const LOCAL_TIME_ZONE = "Asia/Yekaterinburg";
 
@@ -93,6 +94,7 @@ export async function buildWorkLogRolloutBackfill({
   rolloutRoots,
   sessionIndexFile,
   ledgerFile,
+  databaseFile,
   projectRoot,
   through,
   timeZone = LOCAL_TIME_ZONE,
@@ -121,27 +123,38 @@ export async function buildWorkLogRolloutBackfill({
   const titles = await readThreadTitles(sessionIndexFile);
 
   let currentLedger = { version: 8, turns: {} };
-  try {
-    currentLedger = JSON.parse(await readFile(ledgerFile, "utf8"));
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
+  if (databaseFile) {
+    const database = new JournalDatabase(databaseFile);
+    try {
+      currentLedger = await database.loadLedger();
+    } finally {
+      database.close();
+    }
+  }
+  if (!Object.keys(currentLedger.turns ?? {}).length && ledgerFile) {
+    const loaded = await readJsonWithBackup(ledgerFile);
+    currentLedger = (await applyLedgerDelta(
+      loaded.value ?? currentLedger,
+      `${ledgerFile}.delta.jsonl`,
+    )).value;
   }
 
   const preserved = {};
   const replacedCodexKeys = [];
   let removedRecords = 0;
   let preservedNonCodexRecords = 0;
-  for (const [key, record] of Object.entries(currentLedger?.turns ?? {})) {
+  for (const record of Object.values(currentLedger?.turns ?? {})) {
+    const canonicalKey = workLogTurnKey(record);
     if (String(record?.provider ?? "").trim().toLowerCase() !== "codex") {
-      preserved[key] = record;
+      preserved[canonicalKey] = record;
       preservedNonCodexRecords += 1;
       continue;
     }
     const date = localIsoDate(record?.completedAt || record?.startedAt, timeZone);
-    if (date && date > through) preserved[key] = record;
+    if (date && date > through) preserved[canonicalKey] = record;
     else {
       removedRecords += 1;
-      replacedCodexKeys.push(key);
+      replacedCodexKeys.push(canonicalKey);
     }
   }
 
@@ -219,7 +232,6 @@ export async function buildWorkLogRolloutBackfill({
   }
   return {
     ledger: { version: 8, turns },
-    workLog: projectWorkLogUsage("# Глобальный журнал работ\n", turns),
     report: {
       cutoff: through,
       rolloutFiles: files.length,
@@ -242,37 +254,67 @@ export async function buildWorkLogRolloutBackfill({
 
 export async function applyWorkLogRolloutBackfill({
   migration,
+  databaseFile,
   ledgerFile,
   workLogFile,
-  backupRoot = path.join(path.dirname(ledgerFile), "migrations"),
+  projectRoot,
+  projectionProjectRoots,
+  backupRoot,
   now = new Date(),
 } = {}) {
-  return withInterprocessLocks([ledgerFile, workLogFile], async () => {
-    const backupDirectory = path.join(backupRoot, migrationTimestamp(now));
-    await mkdir(backupDirectory, { recursive: true });
-    let currentLedger = { version: 8, turns: {} };
+  if (!databaseFile) throw new Error("SQLite journal database is required");
+  const resolvedBackupRoot = backupRoot || path.join(path.dirname(databaseFile), "migrations");
+  const legacyLedgerFile = ledgerFile || path.join(path.dirname(databaseFile), "work-log-usage.json");
+  const backupDirectory = path.join(resolvedBackupRoot, migrationTimestamp(now));
+  await mkdir(backupDirectory, { recursive: true });
+  for (const file of [
+    legacyLedgerFile,
+    `${legacyLedgerFile}.bak`,
+    `${legacyLedgerFile}.delta.jsonl`,
+    workLogFile,
+  ].filter(Boolean)) {
     try {
-      currentLedger = JSON.parse(await readFile(ledgerFile, "utf8"));
-      await copyFile(ledgerFile, path.join(backupDirectory, path.basename(ledgerFile)));
+      await copyFile(file, path.join(backupDirectory, path.basename(file)));
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    try {
-      await copyFile(workLogFile, path.join(backupDirectory, path.basename(workLogFile)));
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
+  }
 
-    const replacedCodexKeys = new Set(migration?.report?.replacedCodexKeys ?? []);
-    const turns = { ...migration.ledger.turns };
-    for (const [key, record] of Object.entries(currentLedger?.turns ?? {})) {
-      if (!Object.hasOwn(turns, key) && !replacedCodexKeys.has(key)) turns[key] = record;
+  const database = new JournalDatabase(databaseFile);
+  try {
+    await database.importLegacyLedger(legacyLedgerFile);
+    let applied;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const revision = await database.currentRevision();
+      const currentLedger = await database.loadLedger();
+      const replacedCodexKeys = new Set(migration?.report?.replacedCodexKeys ?? []);
+      const turns = { ...migration.ledger.turns };
+      for (const [key, record] of Object.entries(currentLedger?.turns ?? {})) {
+        if (!Object.hasOwn(turns, key) && !replacedCodexKeys.has(key)) turns[key] = record;
+      }
+      try {
+        applied = await database.replaceLedger(
+          { version: 8, turns },
+          { expectedRevision: revision },
+        );
+        break;
+      } catch (error) {
+        if (!/revision conflict/iu.test(String(error?.message ?? "")) || attempt === 2) throw error;
+      }
     }
-    const mergedLedger = { version: 8, turns };
-    const ledgerText = `${JSON.stringify(mergedLedger, null, 2)}\n`;
-    await writeTextAtomic(ledgerFile, ledgerText);
-    await writeTextAtomic(`${ledgerFile}.bak`, ledgerText);
-    await writeTextAtomic(workLogFile, projectWorkLogUsage("# Глобальный журнал работ\n", turns));
-    return { backupDirectory };
-  });
+    const store = new WorkLogUsageStore({
+      ledgerFile: legacyLedgerFile,
+      databaseFile,
+      journalDatabase: database,
+      defaultProjectRoot: projectRoot,
+    });
+    try {
+      await store.project(null, { projectRoot, projectionProjectRoots });
+    } finally {
+      await store.close();
+    }
+    return { backupDirectory, databaseFile: path.resolve(databaseFile), ...applied };
+  } finally {
+    database.close();
+  }
 }

@@ -125,7 +125,7 @@ AH-007 существенно уменьшен, 10 обнаруженных пр
 | 77 | AH-004 | P1 | ✅ | Identity доверенного Android-устройства нормализуется на границе; разрешённый и чужой device покрыты тестом. |
 | 78 | AH-005 | P1 | ✅ | Terminal audit изолирует ошибку одного rollout и продолжает независимые thread/cursor. |
 | 79 | AH-006 | P1 | ✅ | Pointer runtime меняется после подготовки launchers; ошибка pointer/ACL восстанавливает launchers и точный прежний `current.json`. |
-| 80 | AH-007 | P1 | 🟡 | Ledger, `WORK_LOG.md`, live Hub и backfill используют общий interprocess lock, fresh reload и CAS/retry проекции. Hub-процессы не теряют записи друг друга; внешнее ручное редактирование `WORK_LOG.md` во время записи Hub не поддерживается, потому что обычный редактор не участвует в блокировке и файловая система не предоставляет compare-and-swap для rename. |
+| 80 | AH-007 | P1 | 🟢 | Канонические записи журнала, live Hub и backfill используют транзакции `journal.sqlite`; HTML-проекция хранится в той же базе и обновляется по revision. Файловый ledger и `WORK_LOG.md` удалены после проверяемой миграции, поэтому гонка с ручным редактированием Markdown устранена архитектурно. |
 | 81 | AH-008 | P1 | ✅ | Dedupe, supersede и capacity очередей проверяются в одной сериализованной критической секции; network delivery её не удерживает. |
 | 82 | AH-022 | P1 | ✅ | Worker → publisher → Desktop использует fingerprinted durable receipts и долговечный result-outbox; аварийная redelivery не повторяет мутацию. |
 | 83 | AH-023 | P1 | ✅ | Повторная activation не удаляет source data до проверенного полного target; неполный target покрыт fault-тестом. |

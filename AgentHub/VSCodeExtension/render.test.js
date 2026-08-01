@@ -245,17 +245,16 @@ test("panel allows the webview's own resources and data URIs, but no remote sour
   assert.doesNotMatch(webviewHtml({}), /img-src[^;]*https?:/);
 });
 
-test("extension maps every shared bitmap theme asset to a webview URI", () => {
+test("extension loads every bitmap theme asset from the bundled shared webview", () => {
   const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
   assert.match(extension, /const THEMES = new Set\(\[[\s\S]*"stormglass"/u);
-  assert.match(extension, /PULSAR_IMAGE_PATH/);
-  assert.match(extension, /--pulsar-image: url/);
-  assert.match(extension, /--bh-image: url/);
-  assert.match(extension, /--forest-image: url/);
-  assert.match(extension, /--metropolis-image: url/);
-  assert.match(extension, /html\[data-theme="metropolis"\]/);
-  assert.match(extension, /--magma-image: url/);
+  assert.doesNotMatch(extension, /PULSAR_IMAGE_PATH|WORK_LOG\.md/u);
+  assert.match(shared, /\["--pulsar-image", assets\.pulsar\]/u);
+  assert.match(shared, /\["--bh-image", assets\.blackhole\]/u);
+  assert.match(shared, /\["--forest-image", assets\.taiga\]/u);
+  assert.match(shared, /\["--metropolis-image", assets\.metropolis\]/u);
+  assert.match(shared, /\["--magma-image", assets\.magma\]/u);
   assert.match(shared, /\["--stormglass-image", assets\.stormglass\]/u);
   assert.match(
     shared,

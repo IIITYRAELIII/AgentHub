@@ -60,6 +60,24 @@ class SafeRestartTests(unittest.TestCase):
         self.assertEqual(True, run.call_args.kwargs["check"])
 
 
+class PersonalHistoryBackfillTests(unittest.TestCase):
+    @mock.patch("AgentHub.install.subprocess.run")
+    def test_backfill_targets_sqlite_without_creating_work_log(self, run: mock.Mock) -> None:
+        project_root = Path("workspace")
+        target_root = Path("runtime")
+
+        install.backfill_personal_history(project_root, target_root)
+
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command[command.index("--database") + 1],
+            str(target_root / "data" / "journal.sqlite"),
+        )
+        self.assertNotIn("--ledger", command)
+        self.assertNotIn("--work-log", command)
+        self.assertEqual(True, run.call_args.kwargs["check"])
+
+
 class SecureInstallationTests(unittest.TestCase):
     def test_malformed_existing_config_fails_without_replacing_it(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

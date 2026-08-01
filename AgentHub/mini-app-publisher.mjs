@@ -1,11 +1,10 @@
-import { watch } from "node:fs";
-import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import path from "node:path";
 
-import { buildLazyJournalPayload } from "./mini-app-journal-data.mjs";
+import { JournalDatabase } from "./journal-database.mjs";
 import {
   DurableCommandReceipts,
   DurableCommandRetryableError,
@@ -139,20 +138,15 @@ export async function compressedJournalChunks(payload, {
   return { syncId: resolvedSyncId, chunks };
 }
 
-export async function journalSyncPayload(workLogFile) {
-  const [markdown, info] = await Promise.all([
-    readFile(workLogFile, "utf8"),
-    stat(workLogFile),
-  ]);
-  return {
-    ...buildLazyJournalPayload(markdown),
-    updatedAt: info.mtime.toISOString(),
-    version: `${Math.trunc(info.mtimeMs)}-${info.size}`,
-  };
+export async function journalSyncPayload(journalDatabase) {
+  const payload = await journalDatabase?.snapshot?.();
+  if (!payload) throw new Error("Agent Hub journal snapshot is unavailable");
+  return payload;
 }
 
 export class MiniAppPublisher {
-  #workLogFile;
+  #journalDatabase;
+  #ownsJournalDatabase;
   #publicUrl;
   #syncSecretFile;
   #retryMs;
@@ -163,7 +157,7 @@ export class MiniAppPublisher {
   #controlPollMs;
   #controlBatchSize;
   #attachmentDirectory;
-  #watcher = null;
+  #unsubscribeJournal = null;
   #refreshTimer = null;
   #controlTimer = null;
   #retryTimer = null;
@@ -181,7 +175,9 @@ export class MiniAppPublisher {
   #closed = false;
 
   constructor({
-    workLogFile,
+    journalDatabase = null,
+    journalDatabaseFile = null,
+    dataDirectory = null,
     publicUrl,
     syncSecretFile,
     retrySeconds = 15,
@@ -198,7 +194,9 @@ export class MiniAppPublisher {
     afterControlEffect = null,
     onControlResultDelivered = null,
   }) {
-    this.#workLogFile = path.resolve(workLogFile);
+    this.#journalDatabase = journalDatabase
+      ?? (journalDatabaseFile ? new JournalDatabase(journalDatabaseFile) : null);
+    this.#ownsJournalDatabase = Boolean(!journalDatabase && journalDatabaseFile);
     this.#publicUrl = String(publicUrl).replace(/\/+$/u, "");
     this.#syncSecretFile = path.resolve(syncSecretFile);
     this.#retryMs = Number(retrySeconds) * 1_000;
@@ -209,8 +207,13 @@ export class MiniAppPublisher {
     this.#controlPollMs = Math.max(500, Number(controlPollSeconds) * 1_000 || DEFAULT_CONTROL_POLL_MS);
     this.#controlBatchSize = Math.min(20, Math.max(1, Math.trunc(Number(controlBatchSize) || 10)));
     this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
+    const storageDirectory = dataDirectory
+      ? path.resolve(dataDirectory)
+      : journalDatabaseFile
+        ? path.dirname(path.resolve(journalDatabaseFile))
+        : path.dirname(this.#syncSecretFile);
     const resolvedControlReceiptFile = controlReceiptFile
-      ?? path.join(path.dirname(this.#workLogFile), ".mini-app-control-receipts.json");
+      ?? path.join(storageDirectory, ".mini-app-control-receipts.json");
     this.#controlReceipts = new DurableCommandReceipts({ file: resolvedControlReceiptFile });
     this.#controlResultOutbox = new PersistentDeliveryOutbox({
       directoryPath: controlResultOutboxDirectory
@@ -562,7 +565,7 @@ export class MiniAppPublisher {
       return this.#syncing;
     }
     this.#syncing = (async () => {
-      const payload = await journalSyncPayload(this.#workLogFile);
+      const payload = await journalSyncPayload(this.#journalDatabase);
       const secret = await this.#secret();
       const { syncId, chunks } = await compressedJournalChunks(payload);
       for (const [index, body] of chunks.entries()) {
@@ -619,13 +622,10 @@ export class MiniAppPublisher {
   }
 
   async start() {
-    this.#watcher = watch(
-      path.dirname(this.#workLogFile),
-      { persistent: false },
-      (_eventType, fileName) => {
-        if (!fileName || String(fileName) === path.basename(this.#workLogFile)) this.#scheduleChange();
-      },
-    );
+    if (!this.#journalDatabase) {
+      throw new Error("Mini App journalDatabase or journalDatabaseFile is required");
+    }
+    this.#unsubscribeJournal = this.#journalDatabase.subscribe(() => this.#scheduleChange());
     this.#refreshTimer = setInterval(() => void this.sync().catch(() => {}), this.#refreshMs);
     this.#refreshTimer.unref?.();
     if (this.#controlHandler) {
@@ -641,12 +641,14 @@ export class MiniAppPublisher {
 
   async close() {
     this.#closed = true;
-    this.#watcher?.close();
+    this.#unsubscribeJournal?.();
+    this.#unsubscribeJournal = null;
     clearTimeout(this.#debounceTimer);
     clearTimeout(this.#retryTimer);
     clearInterval(this.#refreshTimer);
     clearInterval(this.#controlTimer);
     await this.#syncing?.catch(() => {});
     await this.#controlPolling?.catch(() => {});
+    if (this.#ownsJournalDatabase) this.#journalDatabase.close();
   }
 }

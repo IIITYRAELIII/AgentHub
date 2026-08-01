@@ -70,13 +70,13 @@ function defaultRuntimeRoot() {
 }
 
 class AgentHubBridge {
-  constructor({ journalFile, moduleRoot = null, runtimeRoot = null }) {
-    this.journalFile = journalFile;
+  constructor({ moduleRoot = null, runtimeRoot = null, journalDatabase = null } = {}) {
     this.moduleRoot = moduleRoot ? path.resolve(moduleRoot) : null;
     this.runtimeRoot = runtimeRoot ? path.resolve(runtimeRoot) : defaultRuntimeRoot();
     this.journalCache = null;
     this.desktopModule = null;
-    this.journalDatabase = null;
+    this.journalDatabase = journalDatabase;
+    this.ownsJournalDatabase = !journalDatabase;
     this.journalDatabaseModule = null;
     this.resolvedModuleRoot = null;
   }
@@ -105,6 +105,7 @@ class AgentHubBridge {
   }
 
   async journalStore() {
+    if (this.journalDatabase) return this.journalDatabase;
     const root = await this.backendRoot();
     this.journalDatabaseModule ??= import(pathToFileURL(
       path.join(root, "journal-database.mjs"),
@@ -156,11 +157,16 @@ class AgentHubBridge {
   }
 
   async journal() {
-    const info = await stat(this.journalFile);
-    const version = `${Math.trunc(info.mtimeMs)}-${info.size}`;
-    if (this.journalCache?.version === version) return this.journalCache;
-    this.journalCache = await (await this.journalStore()).ensureFromFile(this.journalFile);
+    this.journalCache = await (await this.journalStore()).payload();
+    if (!this.journalCache) throw new Error("Журнал ещё не создан");
     return this.journalCache;
+  }
+
+  async subscribeJournal(listener) {
+    return (await this.journalStore()).subscribe((event) => {
+      this.journalCache = null;
+      listener(event);
+    });
   }
 
   async http({ method = "GET", path: requestPath = "", headers = {} }) {
@@ -215,7 +221,7 @@ class AgentHubBridge {
   }
 
   close() {
-    this.journalDatabase?.close();
+    if (this.ownsJournalDatabase) this.journalDatabase?.close();
     this.journalDatabase = null;
   }
 }

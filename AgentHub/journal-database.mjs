@@ -1,12 +1,15 @@
 import crypto from "node:crypto";
-import { watch } from "node:fs";
 import { mkdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { applyLedgerDelta } from "./incremental-ledger.mjs";
 import { buildLazyJournalPayload } from "./mini-app-journal-data.mjs";
+import { readJsonWithBackup } from "./state-store.mjs";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const LEDGER_VERSION = 8;
+const LEGACY_IMPORT_KEY = "work-log-usage-v1";
 
 function configure(database) {
   database.exec(`
@@ -28,6 +31,41 @@ function configure(database) {
       id TEXT PRIMARY KEY,
       html TEXT NOT NULL
     ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS journal_records (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      project_root TEXT NOT NULL,
+      task_thread_id TEXT NOT NULL,
+      completed_at_ms INTEGER,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (provider, thread_id, turn_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS journal_records_project_idx
+      ON journal_records(project_root, completed_at_ms DESC);
+    CREATE INDEX IF NOT EXISTS journal_records_task_idx
+      ON journal_records(provider, task_thread_id, completed_at_ms DESC);
+    CREATE TABLE IF NOT EXISTS journal_store_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS journal_imports (
+      key TEXT PRIMARY KEY,
+      imported_at TEXT NOT NULL,
+      source TEXT,
+      record_count INTEGER NOT NULL,
+      details_json TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS journal_import_records (
+      import_key TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      record_hash TEXT NOT NULL,
+      PRIMARY KEY (import_key, provider, thread_id, turn_id)
+    ) WITHOUT ROWID;
+    INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('revision', '0');
+    INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('ledger_version', '8');
   `);
 }
 
@@ -36,217 +74,668 @@ function recoverableDatabaseError(error) {
     .test(String(error?.message ?? ""));
 }
 
-function publicIndex(row) {
+function publicIndex(row, revision = 0) {
   if (!row) return null;
   return {
     html: String(row.html ?? ""),
     updatedAt: String(row.updated_at ?? ""),
     version: String(row.source_version ?? ""),
+    revision: Number(revision) || 0,
   };
 }
 
-function sourceIdentity(info) {
-  return [
-    info.dev,
-    info.ino,
-    info.size,
-    info.mtimeMs,
-    info.ctimeMs,
-    info.birthtimeMs,
-  ].map((value) => String(value ?? "")).join(":");
+function sha256Version(value) {
+  return `sha256:${crypto.createHash("sha256").update(String(value), "utf8").digest("hex")}`;
 }
 
-function sha256Version(markdown) {
-  return `sha256:${crypto.createHash("sha256").update(markdown, "utf8").digest("hex")}`;
+function sha256(value) {
+  return crypto.createHash("sha256").update(String(value), "utf8").digest("hex");
 }
 
-function samePath(left, right) {
-  const normalize = (value) => process.platform === "win32" ? value.toLowerCase() : value;
-  return normalize(path.resolve(left)) === normalize(path.resolve(right));
+async function legacyFilesIdentity(target) {
+  const values = [];
+  for (const candidate of [target, `${target}.bak`, `${target}.delta.jsonl`]) {
+    try {
+      const info = await stat(candidate);
+      values.push([
+        path.basename(candidate),
+        info.dev,
+        info.ino,
+        info.size,
+        info.mtimeMs,
+        info.ctimeMs,
+      ].join(":"));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      values.push(`${path.basename(candidate)}:missing`);
+    }
+  }
+  return values.join("|");
+}
+
+function ledgerKey({ provider, threadId, turnId }) {
+  return `${provider}\0${threadId}\0${turnId}`;
+}
+
+function normalizedIdentity(record, key = "", { legacyFallback = false } = {}) {
+  const keyParts = String(key).split("\0");
+  const provider = String(record?.provider ?? (keyParts.length >= 3 ? keyParts[0] : "codex"))
+    .trim().toLowerCase();
+  const turnId = String(
+    record?.turnId ?? (keyParts.length >= 3 ? keyParts[2] : legacyFallback ? key : ""),
+  ).trim();
+  let threadId = String(record?.threadId ?? (keyParts.length >= 3 ? keyParts[1] : "")).trim();
+  if (!threadId && legacyFallback && turnId) {
+    threadId = `legacy:${String(record?.workLogId ?? turnId).trim() || turnId}`;
+  }
+  if (!provider || !threadId || !turnId || provider.includes("\0")
+    || threadId.includes("\0") || turnId.includes("\0")) {
+    return null;
+  }
+  return { provider, threadId, turnId };
+}
+
+function normalizedRecord(record, key = "", options = {}) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+  const identity = normalizedIdentity(record, key, options);
+  if (!identity) return null;
+  return {
+    ...record,
+    ...identity,
+    projectRoot: String(record.projectRoot ?? "").trim(),
+    taskThreadId: String(record.taskThreadId ?? identity.threadId).trim() || identity.threadId,
+  };
+}
+
+function recordRow(record, key = "", options = {}) {
+  const normalized = normalizedRecord(record, key, options);
+  if (!normalized) return null;
+  const completedAtMs = Date.parse(normalized.completedAt || normalized.startedAt || "");
+  return {
+    record: normalized,
+    provider: normalized.provider,
+    threadId: normalized.threadId,
+    turnId: normalized.turnId,
+    projectRoot: normalized.projectRoot,
+    taskThreadId: normalized.taskThreadId,
+    completedAtMs: Number.isFinite(completedAtMs) ? completedAtMs : null,
+    json: JSON.stringify(normalized),
+  };
+}
+
+function revisionOf(database) {
+  return Number(database.prepare(
+    "SELECT value FROM journal_store_meta WHERE key = 'revision'",
+  ).get()?.value ?? 0) || 0;
+}
+
+function advanceRevision(database) {
+  database.prepare(`
+    UPDATE journal_store_meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision'
+  `).run();
+  return revisionOf(database);
+}
+
+function projectionVersion(payload) {
+  return sha256Version(JSON.stringify({
+    html: payload.html,
+    days: payload.days,
+    turns: payload.turns,
+  }));
+}
+
+function writeProjection(database, payload, {
+  updatedAt = new Date().toISOString(),
+  version = "",
+} = {}) {
+  database.exec("DELETE FROM journal_days; DELETE FROM journal_turns;");
+  const insertDay = database.prepare("INSERT INTO journal_days (date, html) VALUES (?, ?)");
+  for (const [date, html] of Object.entries(payload.days ?? {})) insertDay.run(date, html);
+  const insertTurn = database.prepare("INSERT INTO journal_turns (id, html) VALUES (?, ?)");
+  for (const [id, html] of Object.entries(payload.turns ?? {})) insertTurn.run(id, html);
+  const resolvedVersion = String(version || projectionVersion(payload));
+  database.prepare(`
+    INSERT INTO journal_meta (id, schema_version, source_version, updated_at, html)
+    VALUES (1, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      schema_version = excluded.schema_version,
+      source_version = excluded.source_version,
+      updated_at = excluded.updated_at,
+      html = excluded.html
+  `).run(SCHEMA_VERSION, resolvedVersion, String(updatedAt), String(payload.html ?? ""));
+  return resolvedVersion;
+}
+
+function insertRecordStatement(database) {
+  return database.prepare(`
+    INSERT INTO journal_records
+      (provider, thread_id, turn_id, project_root, task_thread_id, completed_at_ms, record_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(provider, thread_id, turn_id) DO UPDATE SET
+      project_root = excluded.project_root,
+      task_thread_id = excluded.task_thread_id,
+      completed_at_ms = excluded.completed_at_ms,
+      record_json = excluded.record_json
+  `);
+}
+
+function insertRow(statement, row) {
+  statement.run(
+    row.provider,
+    row.threadId,
+    row.turnId,
+    row.projectRoot,
+    row.taskThreadId,
+    row.completedAtMs,
+    row.json,
+  );
+}
+
+async function readStableLegacyLedger(target) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const beforeIdentity = await legacyFilesIdentity(target);
+    const loaded = await readJsonWithBackup(target, { backupFile: `${target}.bak` });
+    const delta = await applyLedgerDelta(loaded.value ?? {}, `${target}.delta.jsonl`);
+    const afterIdentity = await legacyFilesIdentity(target);
+    if (beforeIdentity !== afterIdentity) continue;
+    if (!loaded.value && !delta.applied) {
+      return {
+        missing: true,
+        sourceIdentity: afterIdentity,
+        loaded,
+        delta,
+        rows: [],
+        skipped: 0,
+        fingerprint: "",
+      };
+    }
+    const entries = Object.entries(delta.value?.turns ?? {})
+      .map(([key, record]) => [key, recordRow(record, key, { legacyFallback: true })])
+      .filter(([, row]) => Boolean(row))
+      .sort(([left], [right]) => left.localeCompare(right));
+    const rows = entries.map(([, row]) => row);
+    const skipped = Object.keys(delta.value?.turns ?? {}).length - rows.length;
+    const fingerprint = sha256(entries.map(([key, row]) => `${key}\n${row.json}`).join("\n"));
+    return {
+      missing: false,
+      sourceIdentity: afterIdentity,
+      loaded,
+      delta,
+      rows,
+      skipped,
+      fingerprint,
+    };
+  }
+  throw new Error(`Legacy journal changed repeatedly while importing: ${target}`);
 }
 
 export class JournalDatabase {
   #database = null;
   #file;
-  #readSource;
-  #statSource;
-  #watchSource;
-  #hashSource;
-  #source = null;
+  #opening = null;
+  #listeners = new Set();
+  #subscribers = new Set();
+  #subscriptionTimer = null;
+  #observedRevision = null;
+  #pollingRevision = false;
 
-  constructor(file, {
-    readSource = readFile,
-    statSource = stat,
-    watchSource = watch,
-    hashSource = sha256Version,
-  } = {}) {
+  constructor(file) {
     this.#file = path.resolve(file);
-    this.#readSource = readSource;
-    this.#statSource = statSource;
-    this.#watchSource = watchSource;
-    this.#hashSource = hashSource;
   }
 
   async #open() {
     if (this.#database) return this.#database;
-    await mkdir(path.dirname(this.#file), { recursive: true });
-    let database;
-    try {
-      database = new DatabaseSync(this.#file);
-      configure(database);
-    } catch (error) {
-      database?.close();
-      if (!recoverableDatabaseError(error)) throw error;
-      const suffix = `.corrupt-${new Date().toISOString().replaceAll(/[:.]/gu, "-")}`;
-      let preserved = false;
-      for (const candidate of [this.#file, `${this.#file}-wal`, `${this.#file}-shm`]) {
-        try {
-          await rename(candidate, `${candidate}${suffix}`);
-          preserved = true;
-        } catch (renameError) {
-          if (renameError?.code !== "ENOENT") throw renameError;
+    if (this.#opening) return this.#opening;
+    this.#opening = (async () => {
+      await mkdir(path.dirname(this.#file), { recursive: true });
+      let database;
+      try {
+        database = new DatabaseSync(this.#file);
+        configure(database);
+      } catch (error) {
+        database?.close();
+        if (!recoverableDatabaseError(error)) throw error;
+        const suffix = `.corrupt-${new Date().toISOString().replaceAll(/[:.]/gu, "-")}`;
+        let preserved = false;
+        for (const candidate of [this.#file, `${this.#file}-wal`, `${this.#file}-shm`]) {
+          try {
+            await rename(candidate, `${candidate}${suffix}`);
+            preserved = true;
+          } catch (renameError) {
+            if (renameError?.code !== "ENOENT") throw renameError;
+          }
         }
+        if (!preserved) throw error;
+        database = new DatabaseSync(this.#file);
+        configure(database);
       }
-      if (!preserved) throw error;
-      database = new DatabaseSync(this.#file);
-      configure(database);
+      this.#database = database;
+      return database;
+    })();
+    try {
+      return await this.#opening;
+    } finally {
+      this.#opening = null;
     }
-    this.#database = database;
-    return database;
   }
 
-  #sourceState(target) {
-    if (this.#source?.target === target) return this.#source;
-    this.#source?.watcher?.close?.();
-    const source = {
-      target,
-      generation: 0,
-      identity: null,
-      index: null,
-      pending: null,
-      watcher: null,
+  #changed(change) {
+    if (Number.isFinite(Number(change?.revision))) {
+      this.#observedRevision = Number(change.revision);
+    }
+    for (const listener of new Set([...this.#listeners, ...this.#subscribers])) {
+      try {
+        listener(change);
+      } catch {
+        // A consumer notification must not roll back an already committed write.
+      }
+    }
+  }
+
+  onChange(listener) {
+    if (typeof listener !== "function") throw new TypeError("Journal change listener must be a function");
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  async #pollRevision() {
+    if (this.#pollingRevision || !this.#subscribers.size) return;
+    this.#pollingRevision = true;
+    try {
+      const revision = await this.currentRevision();
+      const initial = this.#observedRevision === null;
+      if (initial || revision !== this.#observedRevision) {
+        this.#observedRevision = revision;
+        for (const listener of this.#subscribers) {
+          try {
+            listener({ type: "revision", revision, initial });
+          } catch {
+            // Subscribers are isolated from the polling loop.
+          }
+        }
+      }
+    } finally {
+      this.#pollingRevision = false;
+    }
+  }
+
+  subscribe(listener, { pollMs = 500 } = {}) {
+    if (typeof listener !== "function") throw new TypeError("Journal subscriber must be a function");
+    this.#subscribers.add(listener);
+    if (!this.#subscriptionTimer) {
+      this.#subscriptionTimer = setInterval(
+        () => void this.#pollRevision().catch(() => {}),
+        Math.max(100, Number(pollMs) || 500),
+      );
+      this.#subscriptionTimer.unref?.();
+    }
+    void this.#pollRevision().catch(() => {});
+    return () => {
+      this.#subscribers.delete(listener);
+      if (!this.#subscribers.size) {
+        clearInterval(this.#subscriptionTimer);
+        this.#subscriptionTimer = null;
+        this.#observedRevision = null;
+      }
     };
-    const directory = path.dirname(target);
-    const basename = path.basename(target);
-    try {
-      source.watcher = this.#watchSource(directory, (_eventType, filename) => {
-        if (filename === null || filename === undefined
-          || samePath(path.join(directory, String(filename)), path.join(directory, basename))) {
-          source.generation += 1;
-        }
-      });
-      source.watcher.unref?.();
-      source.watcher.on?.("error", () => {
-        source.generation += 1;
-        source.watcher?.close?.();
-        source.watcher = null;
-      });
-    } catch {
-      // Stat identity remains the correctness fallback when the platform does
-      // not provide a usable directory watcher.
-    }
-    this.#source = source;
-    return source;
   }
 
-  async #ensureFromFile(target, source) {
-    const initialInfo = await this.#statSource(target);
-    const initialIdentity = sourceIdentity(initialInfo);
-    const initialGeneration = source.generation;
-    if (source.index
-      && source.identity === initialIdentity
-      && source.index.generation === initialGeneration) {
-      return source.index.value;
-    }
+  async currentRevision() {
+    return revisionOf(await this.#open());
+  }
 
-    let markdown;
-    let stableInfo;
-    let stableIdentity;
-    let stableGeneration;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const beforeInfo = attempt === 0 ? initialInfo : await this.#statSource(target);
-      const beforeIdentity = sourceIdentity(beforeInfo);
-      const beforeGeneration = source.generation;
-      markdown = await this.#readSource(target, "utf8");
-      const afterInfo = await this.#statSource(target);
-      const afterIdentity = sourceIdentity(afterInfo);
-      const afterGeneration = source.generation;
-      if (beforeIdentity === afterIdentity && beforeGeneration === afterGeneration) {
-        stableInfo = afterInfo;
-        stableIdentity = afterIdentity;
-        stableGeneration = afterGeneration;
-        break;
-      }
-    }
-    if (!stableInfo) throw new Error("WORK_LOG changed repeatedly while rebuilding its journal index");
-
-    const version = this.#hashSource(markdown);
+  async loadLedger() {
     const database = await this.#open();
-    const current = database.prepare(
-      "SELECT schema_version, source_version, updated_at, html FROM journal_meta WHERE id = 1",
-    ).get();
-    if (Number(current?.schema_version ?? SCHEMA_VERSION) === SCHEMA_VERSION
-      && String(current?.source_version ?? "") === version) {
-      const value = publicIndex(current);
-      source.identity = stableIdentity;
-      source.index = { generation: stableGeneration, value };
-      return value;
-    }
-
-    const payload = buildLazyJournalPayload(markdown);
-    const updatedAt = stableInfo.mtime.toISOString();
-    database.exec("BEGIN IMMEDIATE");
-    try {
-      const latest = database.prepare(
-        "SELECT schema_version, source_version, updated_at, html FROM journal_meta WHERE id = 1",
-      ).get();
-      if (Number(latest?.schema_version ?? 0) === SCHEMA_VERSION
-        && String(latest?.source_version ?? "") === version) {
-        database.exec("COMMIT");
-        const value = publicIndex(latest);
-        source.identity = stableIdentity;
-        source.index = { generation: stableGeneration, value };
-        return value;
+    const turns = {};
+    for (const row of database.prepare(`
+      SELECT provider, thread_id, turn_id, record_json
+      FROM journal_records ORDER BY provider, thread_id, turn_id
+    `).all()) {
+      try {
+        const record = normalizedRecord(JSON.parse(row.record_json),
+          ledgerKey({ provider: row.provider, threadId: row.thread_id, turnId: row.turn_id }));
+        if (record) turns[ledgerKey(record)] = record;
+      } catch {
+        // Invalid rows cannot be returned as canonical records. SQLite keeps
+        // the original JSON available for a separate repair/audit.
       }
-      database.exec("DELETE FROM journal_days; DELETE FROM journal_turns;");
-      const insertDay = database.prepare(
-        "INSERT INTO journal_days (date, html) VALUES (?, ?)",
-      );
-      for (const [date, html] of Object.entries(payload.days)) insertDay.run(date, html);
-      const insertTurn = database.prepare(
-        "INSERT INTO journal_turns (id, html) VALUES (?, ?)",
-      );
-      for (const [id, html] of Object.entries(payload.turns)) insertTurn.run(id, html);
+    }
+    const version = Number(database.prepare(
+      "SELECT value FROM journal_store_meta WHERE key = 'ledger_version'",
+    ).get()?.value ?? LEDGER_VERSION) || LEDGER_VERSION;
+    return { version, turns };
+  }
+
+  async replaceLedger(ledger, { expectedRevision = null } = {}) {
+    const database = await this.#open();
+    const rows = Object.entries(ledger?.turns ?? {})
+      .map(([key, record]) => recordRow(record, key))
+      .filter(Boolean);
+    database.exec("BEGIN IMMEDIATE");
+    let revision;
+    try {
+      const current = revisionOf(database);
+      if (expectedRevision !== null && Number(expectedRevision) !== current) {
+        throw new Error(`Journal revision conflict: expected ${expectedRevision}, found ${current}`);
+      }
+      database.exec("DELETE FROM journal_records");
+      const insert = insertRecordStatement(database);
+      for (const row of rows) insertRow(insert, row);
       database.prepare(`
-        INSERT INTO journal_meta (id, schema_version, source_version, updated_at, html)
-        VALUES (1, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          schema_version = excluded.schema_version,
-          source_version = excluded.source_version,
-          updated_at = excluded.updated_at,
-          html = excluded.html
-      `).run(SCHEMA_VERSION, version, updatedAt, payload.html);
+        INSERT INTO journal_store_meta (key, value) VALUES ('ledger_version', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(String(Number(ledger?.version) || LEDGER_VERSION));
+      revision = advanceRevision(database);
       database.exec("COMMIT");
     } catch (error) {
       database.exec("ROLLBACK");
       throw error;
     }
-    const value = { html: payload.html, updatedAt, version };
-    source.identity = stableIdentity;
-    source.index = { generation: stableGeneration, value };
-    return value;
+    const result = { replaced: rows.length, revision };
+    this.#changed({ type: "ledger", ...result });
+    return result;
+  }
+
+  async upsertRecords(records) {
+    const values = Array.isArray(records)
+      ? records.map((record) => ["", record])
+      : Object.entries(records ?? {});
+    const rows = values.map(([key, record]) => recordRow(record, key)).filter(Boolean);
+    if (!rows.length) return { upserted: 0, revision: await this.currentRevision() };
+    const database = await this.#open();
+    database.exec("BEGIN IMMEDIATE");
+    let revision;
+    try {
+      const insert = insertRecordStatement(database);
+      for (const row of rows) insertRow(insert, row);
+      revision = advanceRevision(database);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    const result = { upserted: rows.length, revision };
+    this.#changed({ type: "ledger", ...result });
+    return result;
+  }
+
+  async deleteRecords(identities) {
+    const values = (Array.isArray(identities) ? identities : [identities])
+      .map((value) => normalizedIdentity(value, typeof value === "string" ? value : ""))
+      .filter(Boolean);
+    if (!values.length) return { deleted: 0, revision: await this.currentRevision() };
+    const database = await this.#open();
+    database.exec("BEGIN IMMEDIATE");
+    let deleted = 0;
+    let revision;
+    try {
+      const remove = database.prepare(`
+        DELETE FROM journal_records WHERE provider = ? AND thread_id = ? AND turn_id = ?
+      `);
+      for (const value of values) {
+        deleted += Number(remove.run(value.provider, value.threadId, value.turnId).changes) || 0;
+      }
+      revision = deleted ? advanceRevision(database) : revisionOf(database);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    const result = { deleted, revision };
+    if (deleted) this.#changed({ type: "ledger", ...result });
+    return result;
+  }
+
+  async importLegacyLedger(ledgerFile) {
+    const target = path.resolve(ledgerFile);
+    const database = await this.#open();
+    const sourceIdentity = await legacyFilesIdentity(target);
+    const imported = database.prepare(
+      "SELECT record_count, details_json FROM journal_imports WHERE key = ?",
+    ).get(LEGACY_IMPORT_KEY);
+    let importedDetails = {};
+    try {
+      importedDetails = JSON.parse(imported?.details_json ?? "{}");
+    } catch {
+      importedDetails = {};
+    }
+    if (imported && importedDetails.sourceIdentity === sourceIdentity) {
+      return {
+        imported: false,
+        reason: "unchanged",
+        records: Number(imported.record_count) || 0,
+        invalid: 0,
+        fingerprint: String(importedDetails.fingerprint ?? ""),
+        revision: revisionOf(database),
+      };
+    }
+    const snapshot = await readStableLegacyLedger(target);
+    if (snapshot.missing) {
+      return { imported: false, reason: "missing", records: 0, invalid: snapshot.delta.invalid };
+    }
+    database.exec("BEGIN IMMEDIATE");
+    let revision;
+    let upserted = 0;
+    let deleted = 0;
+    try {
+      const previous = database.prepare(
+        "SELECT record_count, details_json FROM journal_imports WHERE key = ?",
+      ).get(LEGACY_IMPORT_KEY);
+      let previousDetails = {};
+      try {
+        previousDetails = JSON.parse(previous?.details_json ?? "{}");
+      } catch {
+        previousDetails = {};
+      }
+      if (previous && previousDetails.sourceIdentity === snapshot.sourceIdentity) {
+        database.exec("COMMIT");
+        return {
+          imported: false,
+          reason: "unchanged",
+          records: Number(previous.record_count) || 0,
+          invalid: snapshot.delta.invalid + snapshot.skipped,
+          fingerprint: String(previousDetails.fingerprint ?? ""),
+          revision: revisionOf(database),
+        };
+      }
+      const nextKeys = new Set(snapshot.rows.map((row) => ledgerKey(row)));
+      const remove = database.prepare(`
+        DELETE FROM journal_records WHERE provider = ? AND thread_id = ? AND turn_id = ?
+      `);
+      for (const old of database.prepare(`
+        SELECT provider, thread_id, turn_id FROM journal_import_records WHERE import_key = ?
+      `).all(LEGACY_IMPORT_KEY)) {
+        const identity = { provider: old.provider, threadId: old.thread_id, turnId: old.turn_id };
+        if (nextKeys.has(ledgerKey(identity))) continue;
+        deleted += Number(remove.run(identity.provider, identity.threadId, identity.turnId).changes) || 0;
+      }
+      const insert = insertRecordStatement(database);
+      for (const row of snapshot.rows) {
+        upserted += Number(insert.run(
+          row.provider,
+          row.threadId,
+          row.turnId,
+          row.projectRoot,
+          row.taskThreadId,
+          row.completedAtMs,
+          row.json,
+        ).changes) || 0;
+      }
+      database.prepare("DELETE FROM journal_import_records WHERE import_key = ?")
+        .run(LEGACY_IMPORT_KEY);
+      const track = database.prepare(`
+        INSERT INTO journal_import_records
+          (import_key, provider, thread_id, turn_id, record_hash)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      for (const row of snapshot.rows) {
+        track.run(LEGACY_IMPORT_KEY, row.provider, row.threadId, row.turnId, sha256(row.json));
+      }
+      database.prepare(`
+        INSERT INTO journal_store_meta (key, value) VALUES ('ledger_version', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(String(Number(snapshot.delta.value?.version) || LEDGER_VERSION));
+      const importedAt = new Date().toISOString();
+      database.prepare(`
+        INSERT INTO journal_imports
+          (key, imported_at, source, record_count, details_json)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          imported_at = excluded.imported_at,
+          source = excluded.source,
+          record_count = excluded.record_count,
+          details_json = excluded.details_json
+      `).run(LEGACY_IMPORT_KEY, importedAt, snapshot.loaded.source, snapshot.rows.length, JSON.stringify({
+        sourceIdentity: snapshot.sourceIdentity,
+        fingerprint: snapshot.fingerprint,
+        sourceRecords: snapshot.rows.length,
+        upserted,
+        deleted,
+        recovered: snapshot.loaded.recovered,
+        deltaApplied: snapshot.delta.applied,
+        invalid: snapshot.delta.invalid,
+        skipped: snapshot.skipped,
+      }));
+      revision = advanceRevision(database);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    const result = {
+      imported: true,
+      records: snapshot.rows.length,
+      upserted,
+      deleted,
+      invalid: snapshot.delta.invalid + snapshot.skipped,
+      recovered: snapshot.loaded.recovered,
+      deltaApplied: snapshot.delta.applied,
+      fingerprint: snapshot.fingerprint,
+      revision,
+    };
+    this.#changed({ type: "ledger-import", ...result });
+    return result;
+  }
+
+  async verifyLegacyLedger(ledgerFile) {
+    const target = path.resolve(ledgerFile);
+    const snapshot = await readStableLegacyLedger(target);
+    if (snapshot.missing) {
+      return {
+        verified: false,
+        reason: "missing",
+        sourceRecords: 0,
+        databaseRecords: 0,
+        missing: [],
+        mismatched: [],
+        extra: [],
+      };
+    }
+    const database = await this.#open();
+    const expected = new Map(snapshot.rows.map((row) => [ledgerKey(row), row.json]));
+    const actual = new Map(database.prepare(`
+      SELECT provider, thread_id, turn_id, record_json FROM journal_records
+    `).all().map((row) => [ledgerKey({
+      provider: row.provider,
+      threadId: row.thread_id,
+      turnId: row.turn_id,
+    }), row.record_json]));
+    const missing = [];
+    const mismatched = [];
+    const extra = [];
+    for (const [key, json] of expected) {
+      if (!actual.has(key)) missing.push(key);
+      else if (actual.get(key) !== json) mismatched.push(key);
+    }
+    for (const key of actual.keys()) {
+      if (!expected.has(key)) extra.push(key);
+    }
+    const invalid = snapshot.delta.invalid + snapshot.skipped;
+    return {
+      verified: !invalid && !missing.length && !mismatched.length && !extra.length,
+      fingerprint: snapshot.fingerprint,
+      sourceIdentity: snapshot.sourceIdentity,
+      sourceRecords: expected.size,
+      databaseRecords: actual.size,
+      invalid,
+      missing,
+      mismatched,
+      extra,
+    };
+  }
+
+  async replaceProjection(payload, options = {}) {
+    const database = await this.#open();
+    const normalized = {
+      html: String(payload?.html ?? ""),
+      days: payload?.days && typeof payload.days === "object" ? payload.days : {},
+      turns: payload?.turns && typeof payload.turns === "object" ? payload.turns : {},
+    };
+    database.exec("BEGIN IMMEDIATE");
+    let revision;
+    let version;
+    try {
+      version = writeProjection(database, normalized, options);
+      revision = advanceRevision(database);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    const result = { projected: true, version, revision };
+    this.#changed({ type: "projection", ...result });
+    return result;
+  }
+
+  replaceProjectionFromMarkdown(markdown, options = {}) {
+    return this.replaceProjection(buildLazyJournalPayload(markdown), {
+      ...options,
+      version: options.version || sha256Version(markdown),
+    });
+  }
+
+  replaceProjectionFromHtml(html, options = {}) {
+    return this.replaceProjection(buildLazyJournalPayload(html), options);
   }
 
   async ensureFromFile(workLogFile) {
     const target = path.resolve(workLogFile);
-    const source = this.#sourceState(target);
-    if (source.pending) return source.pending;
-    source.pending = this.#ensureFromFile(target, source);
-    try {
-      return await source.pending;
-    } finally {
-      source.pending = null;
-    }
+    const [markdown, info] = await Promise.all([readFile(target, "utf8"), stat(target)]);
+    const version = sha256Version(markdown);
+    const current = await this.payload();
+    if (current?.version === version) return current;
+    await this.replaceProjectionFromMarkdown(markdown, {
+      updatedAt: info.mtime.toISOString(),
+      version,
+    });
+    return this.payload();
+  }
+
+  async payload() {
+    const database = await this.#open();
+    const row = database.prepare(
+      "SELECT source_version, updated_at, html FROM journal_meta WHERE id = 1",
+    ).get();
+    return publicIndex(row, revisionOf(database));
+  }
+
+  async snapshot() {
+    const database = await this.#open();
+    const payload = await this.payload();
+    if (!payload) return null;
+    return {
+      ...payload,
+      days: Object.fromEntries(database.prepare(
+        "SELECT date, html FROM journal_days ORDER BY date",
+      ).all().map((row) => [row.date, row.html])),
+      turns: Object.fromEntries(database.prepare(
+        "SELECT id, html FROM journal_turns ORDER BY id",
+      ).all().map((row) => [row.id, row.html])),
+    };
+  }
+
+  exportPayload() {
+    return this.snapshot();
   }
 
   async fragment(kind, key) {
@@ -258,8 +747,10 @@ export class JournalDatabase {
   }
 
   close() {
-    this.#source?.watcher?.close?.();
-    this.#source = null;
+    clearInterval(this.#subscriptionTimer);
+    this.#subscriptionTimer = null;
+    this.#listeners.clear();
+    this.#subscribers.clear();
     this.#database?.close();
     this.#database = null;
   }

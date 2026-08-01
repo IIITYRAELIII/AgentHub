@@ -8,6 +8,7 @@ import {
   applyWorkLogRolloutBackfill,
   buildWorkLogRolloutBackfill,
 } from "./work-log-rollout-backfill.mjs";
+import { JournalDatabase } from "./journal-database.mjs";
 import { WorkLogUsageStore } from "./work-log-usage.mjs";
 
 const ROOT_THREAD = "019f1ec8-8de7-7aa3-92b6-045036561c8e";
@@ -31,6 +32,7 @@ test("rollout backfill replaces old ledger history, preserves newer records and 
   try {
     const sessions = path.join(root, "sessions");
     const archived = path.join(root, "archived");
+    const databaseFile = path.join(root, "data", "journal.sqlite");
     const ledgerFile = path.join(root, "data", "work-log-usage.json");
     const workLogFile = path.join(root, "WORK_LOG.md");
     const sessionIndexFile = path.join(root, "session_index.jsonl");
@@ -128,6 +130,7 @@ test("rollout backfill replaces old ledger history, preserves newer records and 
     const migration = await buildWorkLogRolloutBackfill({
       rolloutRoots: [sessions, archived],
       sessionIndexFile,
+      databaseFile,
       ledgerFile,
       projectRoot: root,
       through: "2026-07-26",
@@ -139,17 +142,13 @@ test("rollout backfill replaces old ledger history, preserves newer records and 
     assert.equal(migration.report.removedRecords, 1);
     assert.equal(migration.report.preservedRecords, 2);
     assert.equal(migration.report.preservedNonCodexRecords, 1);
-    assert.doesNotMatch(migration.workLog, /Старый длинный итог|Старый текст/u);
-    assert.match(migration.workLog, /Историческая задача/u);
-    assert.match(migration.workLog, /Ход завершён/u);
-    assert.match(migration.workLog, /Ход отменён/u);
-    assert.match(migration.workLog, /Новая задача/u);
-    assert.match(migration.workLog, /Claude задача/u);
-
     const applied = await applyWorkLogRolloutBackfill({
       migration,
+      databaseFile,
       ledgerFile,
       workLogFile,
+      projectRoot: root,
+      projectionProjectRoots: [root],
       backupRoot: path.join(root, "backups"),
       now: new Date("2026-07-29T12:00:00Z"),
     });
@@ -157,24 +156,31 @@ test("rollout backfill replaces old ledger history, preserves newer records and 
       await readFile(path.join(applied.backupDirectory, "WORK_LOG.md"), "utf8"),
       "# Глобальный журнал работ\n\nСтарый длинный итог\n",
     );
-    assert.deepEqual(
-      JSON.parse(await readFile(ledgerFile, "utf8")),
-      migration.ledger,
+    const database = new JournalDatabase(databaseFile);
+    const storedLedger = await database.loadLedger();
+    const snapshot = await database.snapshot();
+    database.close();
+    assert.deepEqual(storedLedger, migration.ledger);
+    assert.doesNotMatch(snapshot.html, /Старый длинный итог|Старый текст/u);
+    assert.match(snapshot.html, /Историческая задача/u);
+    assert.match(snapshot.html, /Новая задача/u);
+    assert.match(snapshot.html, /Claude задача/u);
+    assert.equal(
+      await readFile(workLogFile, "utf8"),
+      "# Глобальный журнал работ\n\nСтарый длинный итог\n",
     );
-    assert.equal(await readFile(workLogFile, "utf8"), migration.workLog);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
 test("rollout backfill merges a live ledger turn committed after its stale plan", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-backfill-live-race-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-backfill-live-race-"));
   try {
+    const databaseFile = path.join(root, "data", "journal.sqlite");
     const ledgerFile = path.join(root, "data", "work-log-usage.json");
     const workLogFile = path.join(root, "WORK_LOG.md");
     await mkdir(path.dirname(ledgerFile), { recursive: true });
-    await writeFile(ledgerFile, `${JSON.stringify({ version: 8, turns: {} })}\n`, "utf8");
-    await writeFile(workLogFile, "# Глобальный журнал работ\n", "utf8");
     const staleMigration = {
       ledger: {
         version: 8,
@@ -192,10 +198,13 @@ test("rollout backfill merges a live ledger turn committed after its stale plan"
           },
         },
       },
-      workLog: "# Глобальный журнал работ\n",
       report: { cutoff: "2026-07-26", replacedCodexKeys: [] },
     };
-    const live = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    const live = new WorkLogUsageStore({
+      ledgerFile,
+      databaseFile,
+      defaultProjectRoot: root,
+    });
     await live.recordAutomaticAndProject({
       threadId: "live-thread",
       turnId: "live-turn",
@@ -204,19 +213,27 @@ test("rollout backfill merges a live ledger turn committed after its stale plan"
       usage: usage(20),
       completedAt: "2026-07-27T10:00:00.000Z",
       text: "Новый ход",
-      workLogFile,
+      workLogFile: null,
     });
+    await live.close();
 
     await applyWorkLogRolloutBackfill({
       migration: staleMigration,
+      databaseFile,
       ledgerFile,
       workLogFile,
+      projectRoot: root,
+      projectionProjectRoots: [root],
       backupRoot: path.join(root, "backups"),
     });
 
-    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
-    assert.ok(ledger.turns.historical);
+    const database = new JournalDatabase(databaseFile);
+    const ledger = await database.loadLedger();
+    database.close();
+    assert.ok(ledger.turns["codex\u0000historical-thread\u0000historical-turn"]);
     assert.ok(ledger.turns["codex\u0000live-thread\u0000live-turn"]);
+    await assert.rejects(readFile(ledgerFile, "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(workLogFile, "utf8"), { code: "ENOENT" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
