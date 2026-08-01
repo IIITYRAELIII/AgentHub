@@ -180,7 +180,6 @@ const themes = {
   metropolis: "#050b12",
   stormglass: "#05090f",
   magma: "#0a0605",
-  storm: "#070b12",
   meadow: "#070d08",
   graphite: "#17181a",
 };
@@ -243,17 +242,30 @@ function savedTheme() {
  * дождя из 280 капель браузер не выполняет ни одного пересчёта стиля или
  * раскладки — всё уходит в композитор. На узком экране частиц вдвое меньше,
  * а при prefers-reduced-motion слой не создаётся вообще. */
-const PARTICLE_THEMES = { taiga: "rain", gothic: "motes" };
+const PARTICLE_THEMES = { taiga: "rain", stormglass: "downpour", gothic: "motes" };
 let particleLayer = null;
 
 function particleCount(kind) {
+  // ливень «Storm» заметно плотнее дождя «Тайги»
+  if (kind === "downpour") return surface === "mobile" ? 220 : 460;
   if (kind === "rain") return surface === "mobile" ? 130 : 280;
   return surface === "mobile" ? 40 : 80;
 }
 
-function buildRainDrop() {
+function buildRainDrop(heavy = false) {
   const drop = document.createElement("span");
   const near = Math.random();
+  if (heavy) {
+    /* Ливень: струи длиннее и плотнее, падают вдвое быстрее и почти не
+       различаются по глубине — стена воды, а не отдельные капли. */
+    drop.style.setProperty("--x", `${Math.random() * 108 - 4}%`);
+    drop.style.setProperty("--len", `${(34 + near * 58).toFixed(1)}px`);
+    drop.style.setProperty("--thickness", `${(1.1 + near * 1.2).toFixed(2)}px`);
+    drop.style.setProperty("--alpha", (0.3 + near * 0.34).toFixed(2));
+    drop.style.setProperty("--dur", `${(0.62 - near * 0.3).toFixed(2)}s`);
+    drop.style.setProperty("--delay", `-${(Math.random() * 2).toFixed(2)}s`);
+    return drop;
+  }
   // ближние капли длиннее, ярче и падают быстрее — этим читается глубина
   drop.style.setProperty("--x", `${Math.random() * 104 - 2}%`);
   drop.style.setProperty("--len", `${(8 + near * 14).toFixed(1)}px`);
@@ -280,9 +292,11 @@ function buildMote() {
 
 function buildParticleLayer(kind) {
   const layer = document.createElement("div");
-  layer.className = kind === "rain" ? "rain" : "motes";
+  layer.className = kind === "motes" ? "motes" : `rain${kind === "downpour" ? " downpour" : ""}`;
   layer.setAttribute("aria-hidden", "true");
-  const build = kind === "rain" ? buildRainDrop : buildMote;
+  const build = kind === "motes"
+    ? buildMote
+    : () => buildRainDrop(kind === "downpour");
   for (let index = 0; index < particleCount(kind); index += 1) layer.append(build());
   return layer;
 }

@@ -759,75 +759,6 @@ html[data-theme="magma"] {
   --star-opacity: 0;
 }
 
-html[data-theme="storm"] {
-  --display-weight: 620;
-  --display-spacing: -0.008em;
-  --title-weight: 540;
-  --label-spacing: 0.16em;
-
-  /* мокрый графит: скругления заметнее «Магмы», но далеко от «Тайги» */
-  --radius-lg: 12px;
-  --radius-md: 9px;
-  --radius-sm: 6px;
-  --radius-chip: 999px;
-  --rail-width: 2px;
-
-  --bg: #070b12;
-  --surface-1: rgba(198, 218, 245, 0.03);
-  --surface-2: rgba(198, 218, 245, 0.055);
-  --surface-3: rgba(198, 218, 245, 0.095);
-  --sunken: rgba(4, 7, 12, 0.5);
-
-  --line: rgba(160, 190, 230, 0.14);
-  --line-strong: rgba(170, 200, 240, 0.29);
-
-  --card-bg: linear-gradient(180deg, rgba(15, 22, 34, 0.5), rgba(6, 10, 17, 0.58));
-  --card-bg-open: linear-gradient(180deg, rgba(15, 22, 34, 0.56), rgba(6, 10, 17, 0.64));
-  --card-texture: none;
-  --card-border: rgba(160, 190, 230, 0.17);
-  --card-border-open: rgba(157, 180, 255, 0.42);
-  --card-shadow:
-    inset 0 1px 0 rgba(198, 218, 245, 0.055),
-    0 24px 56px -34px rgba(0, 0, 0, 0.95);
-
-  --plate-bg: linear-gradient(180deg, rgba(198, 218, 245, 0.075), rgba(6, 10, 17, 0.3));
-  --plate-shadow: inset 0 1px 0 rgba(198, 218, 245, 0.07);
-  --turn-shadow: 0 0 28px -20px rgba(157, 180, 255, 0.8);
-
-  --text: #e8eefa;
-  --text-soft: #c0cbdd;
-  --text-muted: #8e9bb0;
-  --text-faint: #6b788c;
-
-  /* разряд отдаёт в лиловое: так акцент не сливается с синевой «Орбиты» */
-  --accent: #9db4ff;
-  --accent-soft: rgba(157, 180, 255, 0.13);
-  --accent-line: rgba(157, 180, 255, 0.42);
-  --accent-glow: 0 0 22px -10px rgba(157, 180, 255, 0.9);
-  --selection: rgba(157, 180, 255, 0.3);
-  --brand-gradient: linear-gradient(150deg, rgba(157, 180, 255, 0.3), rgba(30, 45, 80, 0.32));
-  --brand-shadow: 0 0 24px -10px rgba(157, 180, 255, 0.85);
-
-  /* Claude держим тёплым: на сплошном холодном фоне это единственный
-     надёжный признак провайдера */
-  --provider-none: #77839a;
-  --provider-codex: #7fb8e6;
-  --provider-claude: #e0956f;
-  --ok: #86cfae;
-  --pending: #d2b070;
-
-  --dot-input: #7fb8e6;
-  --dot-cache: #9db4ff;
-  --dot-output: #e0956f;
-  --dot-think: #b39ada;
-
-  --space-glow-a: rgba(157, 180, 255, 0.1);
-  --space-glow-b: rgba(40, 60, 100, 0.12);
-  --space-base: #070b12;
-  --space-star: transparent;
-  --star-opacity: 0;
-}
-
 html[data-theme="meadow"] {
   --display-weight: 620;
   --display-spacing: -0.006em;
@@ -3394,87 +3325,11 @@ html[data-theme="magma"] .journal details[data-work-log-turn-details][open] {
   }
 }
 
-/* ==================================== «Гроза»: ливень и дальний разряд === */
-
-html[data-theme="storm"] {
-  --storm-image: url("/storm-rain.png");
-}
-
 /* Разряд — единственное светлое место кадра, поэтому справа ничего не гасим:
    затемняется только низ, где под журналом остаётся пустая полоса. Кадр
    смещён вправо, иначе при узком окне cover срезает молнию. */
-html[data-theme="storm"] body::after {
-  background-color: #070b12;
-  background-image:
-    linear-gradient(180deg, rgba(5, 8, 14, 0) 70%, rgba(5, 8, 14, 0.42)),
-    var(--storm-image);
-  background-position: center, 76% 40%;
-  background-repeat: no-repeat;
-  background-size: cover;
-  inset: 0;
-  mask-image: none;
-  opacity: 1;
-}
-
 /* Настоящая молния бьёт двойным ударом, поэтому вспышка короткая, парная и
    редкая: раз в 17 секунд, иначе журнал невозможно читать. */
-@keyframes storm-strike {
-  0%, 88% { opacity: 0; }
-  88.6% { opacity: 0.62; }
-  89.6% { opacity: 0.06; }
-  90.4% { opacity: 0.4; }
-  93% { opacity: 0; }
-  100% { opacity: 0; }
-}
-
-html[data-theme="storm"] body::before {
-  animation: storm-strike 17s ease-out infinite;
-  background-image:
-    radial-gradient(96% 60% at 70% 24%, rgba(220, 234, 255, 0.85), rgba(150, 185, 255, 0.26) 40%, transparent 74%);
-  background-position: center;
-  background-size: cover;
-  content: "";
-  mask-image: none;
-  mix-blend-mode: screen;
-  opacity: 0;
-}
-
-html[data-theme="storm"] .app-header {
-  backdrop-filter: blur(12px) saturate(112%);
-  -webkit-backdrop-filter: blur(12px) saturate(112%);
-  background: rgba(5, 8, 14, 0.62);
-}
-
-html[data-theme="storm"] .app-header::after {
-  background: linear-gradient(90deg, transparent, rgba(157, 180, 255, 0.55), transparent);
-}
-
-html[data-theme="storm"] .journal details[data-work-log-day-section] {
-  backdrop-filter: blur(5px) saturate(112%);
-  -webkit-backdrop-filter: blur(5px) saturate(112%);
-  background-color: rgba(5, 8, 14, 0.42);
-  background-image: none;
-}
-
-html[data-theme="storm"] .journal details[data-work-log-day-section][open] {
-  background-color: rgba(5, 8, 14, 0.47);
-}
-
-html[data-theme="storm"] .journal details[data-work-log-turn-details] {
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
-  background-color: rgba(8, 13, 21, 0.34);
-  background-image: none;
-}
-
-html[data-theme="storm"] .journal details[data-work-log-turn-details]:hover {
-  background-color: rgba(14, 21, 33, 0.52);
-}
-
-html[data-theme="storm"] .journal details[data-work-log-turn-details][open] {
-  background-color: rgba(8, 13, 21, 0.58);
-}
-
 /* =========================== «Графит»: спокойная рабочая сетка и панели === */
 
 html[data-theme="graphite"] body {
@@ -3663,17 +3518,6 @@ html[data-theme="graphite"] .journal span[data-high-usage] {
 
 /* на узком экране кадр сдвигается к разряду, поэтому стекло плотнее */
 @media (max-width: 720px) {
-  html[data-theme="storm"] body::after {
-    background-position: center, 82% 44%;
-  }
-
-  html[data-theme="storm"] .journal details[data-work-log-day-section] {
-    background-color: rgba(5, 8, 14, 0.6);
-  }
-
-  html[data-theme="storm"] .journal details[data-work-log-turn-details] {
-    background-color: rgba(8, 13, 21, 0.52);
-  }
 }
 
 /* ======================================= «Луг»: солнце сквозь листву === */
@@ -3916,6 +3760,22 @@ html[data-theme="blackhole"] body::before {
   position: absolute;
   top: 0;
   width: var(--thickness);
+}
+
+/* Ливень темы «Storm»: круче наклон, больше запас по краям и своя
+   траектория — струи должны пересекать кадр насквозь. */
+.rain.downpour {
+  inset: -20% -26%;
+  opacity: 0.9;
+}
+
+.rain.downpour > span {
+  animation-name: downpour-fall;
+}
+
+@keyframes downpour-fall {
+  from { transform: translate3d(-3vw, -24vh, 0) rotate(-7deg); }
+  to { transform: translate3d(9vw, 132vh, 0) rotate(-7deg); }
 }
 
 @keyframes rain-fall {

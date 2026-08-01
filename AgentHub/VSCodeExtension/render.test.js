@@ -9,7 +9,7 @@ const { sidebarHtml, webviewHtml } = require("./webview.js");
 
 const THEMES = [
   "orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "metropolis",
-  "magma", "storm",
+  "magma",
 ];
 
 test("renderWorkLog turns the document title into a heading and preserves journal HTML", () => {
@@ -125,7 +125,6 @@ test("extension maps every shared bitmap theme asset to a webview URI", () => {
   assert.match(extension, /--metropolis-image: url/);
   assert.match(extension, /html\[data-theme="metropolis"\]/);
   assert.match(extension, /--magma-image: url/);
-  assert.match(extension, /--storm-image: url/);
   assert.match(shared, /\["--stormglass-image", assets\.stormglass\]/u);
   assert.match(
     shared,
@@ -156,7 +155,6 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
     ["pulsar", "pulsar-beat"],
     ["blackhole", "blackhole-flicker"],
     ["magma", "magma-glow"],
-    ["storm", "storm-strike"],
     ["meadow", "meadow-breathe"],
   ]) {
     assert.match(
@@ -178,7 +176,11 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   assert.match(styles, /\.rain > span\s*\{[^}]*animation:\s*rain-fall var\(--dur\) linear infinite;/u);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*\.rain\s*\{[^}]*display:\s*none;/u);
   const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  assert.match(client, /function buildRainDrop\(\)/u);
+  assert.match(client, /function buildRainDrop\(heavy = false\)/u);
+  /* «Storm» берёт тот же слой капель, но плотнее и быстрее: ливень, а не
+     дождь тайги. */
+  assert.match(client, /stormglass: "downpour"/u);
+  assert.match(styles, /@keyframes downpour-fall/u);
   assert.match(client, /prefers-reduced-motion: reduce/u);
   for (const property of ["--x", "--len", "--thickness", "--alpha", "--dur", "--delay"]) {
     assert.ok(client.includes(`"${property}"`), `капля задаёт ${property}`);
@@ -191,7 +193,10 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   assert.match(styles, /\.motes\s*\{[^}]*z-index:\s*1;/u);
   assert.match(styles, /\.motes > span\s*\{[^}]*animation:\s*mote-rise var\(--dur\) linear infinite;/u);
   assert.match(client, /function buildMote\(\)/u);
-  assert.match(client, /PARTICLE_THEMES = \{ taiga: "rain", gothic: "motes" \}/u);
+  assert.match(
+    client,
+    /PARTICLE_THEMES = \{ taiga: "rain", stormglass: "downpour", gothic: "motes" \}/u,
+  );
   /* Гасить к лунному проёму теперь должен слой пыли, а не блик факела. */
   assert.match(
     styles,
@@ -199,8 +204,8 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   );
   /* Пошаговые анимации давали видимую дёрганость, поэтому в живых слоях их
      быть не должно: единственный резкий ритм — «Пульсар», и он linear. */
-  const motionBlocks = styles.match(/animation:\s*(?:gothic-fire|magma-glow|orbit-terminator|nebula-drift|meadow-breathe|storm-strike|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
-  assert.equal(motionBlocks.length, 8, "живой слой остаётся у восьми тем; «Rain» и «Gothic» рисуют частицы");
+  const motionBlocks = styles.match(/animation:\s*(?:gothic-fire|magma-glow|orbit-terminator|nebula-drift|meadow-breathe|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
+  assert.equal(motionBlocks.length, 7, "живой слой остаётся у семи тем; «Rain», «Storm» и «Gothic» рисуют частицы");
   for (const block of motionBlocks) {
     assert.doesNotMatch(block, /steps\(/u, `движение должно быть плавным: ${block}`);
   }
@@ -323,7 +328,9 @@ test("Storm keeps the photo backdrop and adds only lightning", () => {
   // канал молнии готовится в буфер один раз за удар и уходит текстурой
   assert.match(storm, /function drawBolt\(\)/u);
   assert.match(storm, /uniform sampler2D uBolt/u);
-  assert.match(storm, /nextLightningAt = now \+ random\(3_000,\s*8_000\)/u);
+  assert.match(storm, /nextLightningAt = now \+ random\(9_000,\s*24_000\)/u);
+  // канал гаснет вместе со вспышкой, иначе висит на экране до следующего удара
+  assert.match(storm, /bolt\.rgb \* bolt\.a \* clamp\(uStrike/u);
   assert.doesNotMatch(storm, /spawnDrop|dropPath|trackTrail|function lens\(/u);
   assert.doesNotMatch(styles, /stormglass-bolt|data-storm-strike/u);
   assert.match(storm, /prefers-reduced-motion: reduce/u);

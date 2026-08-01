@@ -84,8 +84,10 @@
       float crest = 0.5 + 0.5 * sin(vUv.x * 9.0 - t * 1.15 + surge);
       color += foam * water * (crest * 0.12 + uStrike * 0.3);
 
+      /* Канал гаснет вместе со вспышкой. Без множителя буфер прошлого удара
+         оставался на экране до следующего. */
       vec4 bolt = texture2D(uBolt, vUv);
-      color += bolt.rgb * bolt.a;
+      color += bolt.rgb * bolt.a * clamp(uStrike * 1.6, 0.0, 1.0);
       gl_FragColor = vec4(color, 1.0);
     }
   `;
@@ -201,7 +203,8 @@
     paint.lineJoin = "round";
 
     const startX = random(width * 0.12, width * 0.9);
-    const endY = random(height * 0.3, height * 0.58);
+    // разряд доходит до воды: горизонт лежит на 0.6 высоты кадра
+    const endY = random(height * 0.58, height * 0.66);
     const segments = Math.max(10, Math.round(endY / (mobile ? 42 : 26)));
     const points = [{ x: startX, y: -14 }];
     let x = startX;
@@ -253,7 +256,7 @@
   }
 
   function strikeAt(now) {
-    if (!nextLightningAt) nextLightningAt = now + random(1_200, 3_000);
+    if (!nextLightningAt) nextLightningAt = now + random(4_000, 9_000);
     if (!lightning && now >= nextLightningAt) {
       lightning = { startedAt: now, duration: random(420, 640) };
       drawBolt();
@@ -262,7 +265,8 @@
     const elapsed = now - lightning.startedAt;
     if (elapsed >= lightning.duration) {
       lightning = null;
-      nextLightningAt = now + random(3_000, 8_000);
+      // гроза бьёт редко: частые разряды превращали сцену в мигалку
+      nextLightningAt = now + random(9_000, 24_000);
       return 0;
     }
     // короткий первый удар и более слабый повтор вместо равномерного мигания

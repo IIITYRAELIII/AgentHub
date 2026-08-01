@@ -239,7 +239,7 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.equal(meadow.headers.get("content-type"), "image/png");
     assert.match(meadow.headers.get("cache-control"), /immutable/u);
     assert.ok((await meadow.arrayBuffer()).byteLength > 100_000);
-    const storm = await fetch(`${address.url}storm-rain.png`);
+    const storm = await fetch(`${address.url}storm-sea.png`);
     assert.equal(storm.status, 200);
     assert.equal(storm.headers.get("content-type"), "image/png");
     assert.match(storm.headers.get("cache-control"), /immutable/u);
@@ -284,7 +284,6 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(page, /<option value="metropolis">Мегаполис<\/option>/u);
     assert.match(page, /data-metropolis-glass/u);
     assert.match(page, /<option value="magma">Магма<\/option>/u);
-    assert.match(page, /<option value="storm">Гроза<\/option>/u);
     assert.match(page, /<option value="stormglass">Storm<\/option>/u);
     assert.match(page, /<option value="meadow">Луг<\/option>/u);
     assert.match(page, /data-surface="desktop"/u);
@@ -410,15 +409,12 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /url\("\/pulsar-beams\.png"\)/u);
     assert.match(styles, /url\("\/magma-crust\.png"\)/u);
     assert.match(styles, /html\[data-theme="magma"\]/u);
-    assert.match(styles, /url\("\/storm-rain\.png"\)/u);
-    assert.match(styles, /html\[data-theme="storm"\]/u);
     assert.match(styles, /url\("\/meadow-sun\.png"\)/u);
     assert.match(styles, /html\[data-theme="meadow"\]/u);
     assert.match(styles, /url\("\/gothic-concrete\.png"\)/u);
     assert.match(styles, /url\("\/nebula-veil\.png"\)/u);
     assert.match(styles, /url\("\/orbit-earth\.png"\)/u);
     assert.match(styles, /html\[data-theme="graphite"\]/u);
-    assert.match(styles, /background-size: 56px 56px/u);
     assert.match(styles, /--ph-mask-caret-right:/u);
     assert.match(styles, /--ph-mask-caret-double-up:/u);
     assert.match(
