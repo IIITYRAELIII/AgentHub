@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { copyFile, mkdir, readFile, stat, unlink } from "node:fs/promises";
+import { copyFile, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -3313,8 +3313,30 @@ async function importCodexDesktopAttachments(values) {
   const attachmentRoot = path.join(runtimeCommandRoot, "DesktopApp", "attachments");
   const imported = [];
   await mkdir(attachmentRoot, { recursive: true });
-  for (const value of Array.isArray(values) ? values.slice(0, 8) : []) {
-    const source = path.resolve(String(value ?? ""));
+  for (const item of Array.isArray(values) ? values.slice(0, 8) : []) {
+    if (item?.type === "data") {
+      const match = /^data:(image\/(?:png|jpeg|webp|gif|bmp));base64,([a-z0-9+/]+={0,2})$/iu
+        .exec(String(item.value ?? ""));
+      if (!match) continue;
+      const bytes = Buffer.from(match[2], "base64");
+      if (bytes.length <= 0 || bytes.length > 20 * 1024 * 1024) continue;
+      const extension = match[1].toLowerCase() === "image/jpeg"
+        ? ".jpg"
+        : `.${match[1].slice("image/".length).toLowerCase()}`;
+      const name = `codex-inline-${createHash("sha256").update(bytes).digest("hex")}${extension}`;
+      const target = path.join(attachmentRoot, name);
+      try {
+        await stat(target);
+      } catch {
+        await writeFile(target, bytes, { flag: "wx" }).catch((error) => {
+          if (error?.code !== "EEXIST") throw error;
+        });
+      }
+      imported.push(...desktopAttachmentDescriptors([target]));
+      continue;
+    }
+    if (item?.type !== "path") continue;
+    const source = path.resolve(String(item.value ?? ""));
     const name = path.basename(source);
     if (!pathInsideOrSame(source, temporaryRoot)) continue;
     if (!/^codex-clipboard-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpe?g|webp|gif|bmp)$/iu.test(name)) continue;

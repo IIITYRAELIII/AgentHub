@@ -240,9 +240,29 @@ test("Codex Desktop screenshots are retained as private attachment references", 
     }],
   }]);
   assert.equal(exchange.prompt, "Проверь скрин");
-  assert.deepEqual(exchange.messages[0].attachmentPaths, [
-    "C:/Temp/codex-clipboard-3bc5bb2d-38a9-4b34-9886-73b0b204c8d2.png",
-  ]);
+  assert.deepEqual(exchange.messages[0].attachmentSources, [{
+    type: "path",
+    value: "C:/Temp/codex-clipboard-3bc5bb2d-38a9-4b34-9886-73b0b204c8d2.png",
+  }]);
+});
+
+test("Codex inline screenshots are retained as private data references", () => {
+  const [exchange] = codexThreadHistory([{
+    id: "turn-with-inline-image",
+    status: "inProgress",
+    items: [{
+      type: "userMessage",
+      content: [
+        { type: "text", text: "Проверь второй скрин" },
+        { type: "image", url: "data:image/png;base64,AA==" },
+      ],
+    }],
+  }]);
+  assert.equal(exchange.prompt, "Проверь второй скрин");
+  assert.deepEqual(exchange.messages[0].attachmentSources, [{
+    type: "data",
+    value: "data:image/png;base64,AA==",
+  }]);
 });
 
 test("one active Claude transcript turn adopts the managed run id", () => {

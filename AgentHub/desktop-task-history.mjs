@@ -58,9 +58,9 @@ export function createDesktopTaskHistoryFactory({
     const page = history.slice(start, end);
     await Promise.all(page.flatMap((item) => (
       (Array.isArray(item.messages) ? item.messages : [])
-        .filter((message) => message?.role === "user" && Array.isArray(message.attachmentPaths))
+        .filter((message) => message?.role === "user" && Array.isArray(message.attachmentSources))
         .map(async (message) => {
-          const imported = await attachmentImporter(message.attachmentPaths);
+          const imported = await attachmentImporter(message.attachmentSources);
           if (imported.length) {
             message.attachments = [
               ...(Array.isArray(message.attachments) ? message.attachments : []),

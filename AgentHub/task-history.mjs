@@ -34,6 +34,21 @@ function desktopPromptEnvelope(value) {
   return { text, attachmentPaths };
 }
 
+function codexAttachmentSources(content, envelope) {
+  if (envelope?.attachmentPaths.length) {
+    return envelope.attachmentPaths.map((value) => ({ type: "path", value }));
+  }
+  return (Array.isArray(content) ? content : []).flatMap((item) => {
+    if (item?.type === "localImage" && String(item.path ?? "").trim()) {
+      return [{ type: "path", value: String(item.path).trim() }];
+    }
+    if (item?.type === "image" && String(item.url ?? "").startsWith("data:image/")) {
+      return [{ type: "data", value: String(item.url) }];
+    }
+    return [];
+  });
+}
+
 function normalizedTimestamp(value) {
   if (value == null || value === "") return null;
   const numeric = Number(value);
@@ -99,6 +114,7 @@ function codexTurnMessages(turn) {
     if (item?.type === "userMessage") {
       const rawText = textContent(item.content);
       const envelope = desktopPromptEnvelope(rawText);
+      const attachmentSources = codexAttachmentSources(item.content, envelope);
       const text = displayUserPrompt(rawText);
       return text ? [{
         itemId: messageItemId(turnId, "user", item, index),
@@ -107,8 +123,8 @@ function codexTurnMessages(turn) {
           : {}),
         role: "user",
         text,
-        ...(envelope?.attachmentPaths.length
-          ? { attachmentPaths: envelope.attachmentPaths }
+        ...(attachmentSources.length
+          ? { attachmentSources }
           : {}),
         ...(normalizedTimestamp(item.createdAt ?? turn?.startedAt ?? turn?.createdAt)
           ? { time: normalizedTimestamp(item.createdAt ?? turn?.startedAt ?? turn?.createdAt) }

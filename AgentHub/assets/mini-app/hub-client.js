@@ -21,6 +21,8 @@ let refreshing = false;
 let pendingSelectionId = "";
 let selectionSequence = 0;
 let selectionTail = Promise.resolve();
+let selectedHistoryRefreshAt = 0;
+const EXTERNAL_HISTORY_REFRESH_MS = 2_500;
 const historyByTask = new Map();
 const historyPageByTask = new Map();
 const outgoingByTask = new Map();
@@ -621,7 +623,7 @@ function prependOlderHistory(previous, older) {
   return [...uniqueOlder, ...previous];
 }
 
-function applyOpened(result) {
+function applyOpened(result, { preserveScroll = false } = {}) {
   const history = result?.history;
   if (!history) {
     applySnapshot(result?.snapshot);
@@ -650,7 +652,7 @@ function applyOpened(result) {
   selectedTaskId = id;
   agentHub.selectTask(id);
   syncHistoryPagination(id);
-  renderTaskMessages(id);
+  renderTaskMessages(id, { preserveScroll });
   const task = result.snapshot?.tasks?.find(
     (item) => item.provider === history.provider && item.threadId === history.threadId,
   );
@@ -1110,18 +1112,32 @@ async function refresh() {
     const sameSelection = previousSelected && currentSelected
       && previousSelected.provider === currentSelected.provider
       && previousSelected.threadId === currentSelected.threadId;
+    const answerChanged = sameSelection
+      && String(previousSelected.lastAnswerAt ?? "") !== String(currentSelected.lastAnswerAt ?? "");
+    const externalLive = sameSelection
+      && currentSelected.running
+      && !["hub", "telegram"].includes(String(
+        currentSelected.run?.executionOwner ?? currentSelected.executionOwner ?? "",
+      ));
+    const refreshExternalHistory = externalLive
+      && Date.now() - selectedHistoryRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
     if (!pendingSelectionId && previousSelected && currentSelected && !sameSelection) {
       applyOpened(await control("open-task", {
         provider: currentSelected.provider,
         threadId: currentSelected.threadId,
         limit: 20,
       }));
-    } else if (sameSelection && previousSelected.running && !currentSelected.running) {
+    } else if (sameSelection && (
+      (previousSelected.running && !currentSelected.running)
+      || answerChanged
+      || refreshExternalHistory
+    )) {
+      selectedHistoryRefreshAt = Date.now();
       applyOpened(await control("open-task", {
         provider: currentSelected.provider,
         threadId: currentSelected.threadId,
         limit: 20,
-      }));
+      }), { preserveScroll: true });
     }
     if (!selectedTaskId && snapshot.selected?.threadId) {
       selectedTaskId = taskId(snapshot.selected.provider, snapshot.selected.threadId);

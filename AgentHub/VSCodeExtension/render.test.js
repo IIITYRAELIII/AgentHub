@@ -455,6 +455,14 @@ test("chat opens at the end without rebuilding history on every snapshot", () =>
   );
 });
 
+test("chat refreshes selected external runs without moving the reader", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /const EXTERNAL_HISTORY_REFRESH_MS = 2_500/u);
+  assert.match(client, /const externalLive = sameSelection[\s\S]*currentSelected\.running[\s\S]*executionOwner/u);
+  assert.match(client, /refreshExternalHistory[\s\S]*control\("open-task"[\s\S]*preserveScroll: true/u);
+  assert.match(client, /const answerChanged = sameSelection/u);
+});
+
 test("chat sends with Enter on desktop and keeps Enter as a newline on phones", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
