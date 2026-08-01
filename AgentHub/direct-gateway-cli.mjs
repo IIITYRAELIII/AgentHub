@@ -76,6 +76,7 @@ async function install() {
   await writeTextAtomic(path.join(runtimeRoot, "gateway.json"), `${JSON.stringify({
     enabled: true,
     publicUrl,
+    routes: Array.isArray(existing.value?.routes) ? existing.value.routes : [],
     executable: "gateway/caddy.exe",
     caddyVersion: CADDY_VERSION,
     caddySha256: CADDY_ARCHIVE_SHA256,

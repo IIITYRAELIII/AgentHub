@@ -36,3 +36,55 @@ test("missing direct gateway settings disable the route", async () => {
     localUrl: "http://127.0.0.1:8787",
   }), { enabled: false });
 });
+
+test("direct gateway routes additional private-network Hub instances by hostname", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-gateway-routes-"));
+  const executable = path.join(directory, "gateway", "caddy.exe");
+  await mkdir(path.dirname(executable), { recursive: true });
+  await writeFile(executable, "test", { flag: "wx" });
+  await chmod(executable, 0o700).catch(() => {});
+  const filePath = path.join(directory, "gateway.json");
+  await writeFile(filePath, JSON.stringify({
+    enabled: true,
+    publicUrl: "https://home.example.test",
+    executable: "gateway/caddy.exe",
+    routes: [{
+      publicUrl: "https://katya.example.test",
+      upstreamUrl: "http://192.168.3.23:8787",
+    }],
+  }));
+
+  const settings = await loadDirectGatewaySettings(filePath, {
+    localUrl: "http://127.0.0.1:8787",
+  });
+  assert.deepEqual(settings.routes, [{
+    publicUrl: "https://katya.example.test",
+    domain: "katya.example.test",
+    upstreamUrl: "http://192.168.3.23:8787",
+  }]);
+  const caddyfile = directGatewayCaddyfile(settings);
+  assert.match(caddyfile, /home\.example\.test[\s\S]*reverse_proxy 127\.0\.0\.1:8787/u);
+  assert.match(caddyfile, /katya\.example\.test[\s\S]*reverse_proxy 192\.168\.3\.23:8787/u);
+});
+
+test("direct gateway rejects duplicate domains and public additional upstreams", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-gateway-invalid-route-"));
+  const executable = path.join(directory, "gateway", "caddy.exe");
+  await mkdir(path.dirname(executable), { recursive: true });
+  await writeFile(executable, "test", { flag: "wx" });
+  await chmod(executable, 0o700).catch(() => {});
+  const filePath = path.join(directory, "gateway.json");
+  const load = () => loadDirectGatewaySettings(filePath, { localUrl: "http://127.0.0.1:8787" });
+
+  await writeFile(filePath, JSON.stringify({
+    publicUrl: "https://home.example.test",
+    routes: [{ publicUrl: "https://katya.example.test", upstreamUrl: "http://203.0.113.10:8787" }],
+  }));
+  await assert.rejects(load, /private HTTP\(S\) origin/u);
+
+  await writeFile(filePath, JSON.stringify({
+    publicUrl: "https://home.example.test",
+    routes: [{ publicUrl: "https://home.example.test", upstreamUrl: "http://192.168.3.23:8787" }],
+  }));
+  await assert.rejects(load, /Duplicate direct gateway domain/u);
+});
