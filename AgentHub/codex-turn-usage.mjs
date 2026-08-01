@@ -88,6 +88,62 @@ function normalizedApplyPatch(value) {
   return text;
 }
 
+function availableSkillNames(value) {
+  const text = String(value ?? "");
+  const heading = /^### Available skills\s*$/mu.exec(text);
+  if (!heading) return [];
+  const section = text.slice(heading.index + heading[0].length).split(/^###?\s/mu, 1)[0];
+  return [...section.matchAll(/^- ([A-Za-z][A-Za-z0-9_.:-]*):\s+\S/gmu)]
+    .map((match) => match[1]);
+}
+
+function explicitSkillNames(value, knownSkills) {
+  const names = new Set();
+  for (const match of String(value ?? "").matchAll(/(?:^|[\s([{])\$([A-Za-z][A-Za-z0-9_.:-]*)/gu)) {
+    if (knownSkills.has(match[1])) names.add(match[1]);
+  }
+  return [...names];
+}
+
+function skillReads(entry, knownSkills) {
+  const sources = [];
+  if (entry?.type === "response_item"
+    && ["custom_tool_call", "function_call"].includes(entry.payload?.type)) {
+    sources.push(entry.payload?.input, entry.payload?.arguments);
+  }
+  if (entry?.type === "event_msg" && entry.payload?.type === "mcp_tool_call_end") {
+    sources.push(entry.payload?.invocation?.arguments);
+  }
+  const names = new Set();
+  for (const source of sources) {
+    const text = (typeof source === "string" ? source : JSON.stringify(source ?? ""))
+      .replaceAll("\\", "/")
+      .replace(/\/{2,}/gu, "/");
+    for (const match of text.matchAll(/(?:^|\/)([^/"']+)\/SKILL\.md\b/giu)) {
+      const directoryName = match[1];
+      const resolved = [...knownSkills].find((name) => (
+        name === directoryName || name.endsWith(`:${directoryName}`)
+      ));
+      if (resolved) names.add(resolved);
+    }
+  }
+  return [...names];
+}
+
+function completedMcpCall(entry) {
+  if (entry?.type !== "event_msg" || entry.payload?.type !== "mcp_tool_call_end") return null;
+  const callId = String(entry.payload?.call_id ?? "").trim();
+  if (!callId) return null;
+  const invocation = entry.payload?.invocation ?? {};
+  const result = entry.payload?.result;
+  return {
+    id: callId,
+    server: String(invocation.server ?? "").trim(),
+    tool: String(invocation.tool ?? "").trim(),
+    status: result?.Err != null || result?.isError === true ? "failed" : "completed",
+  };
+}
+
 function createTurnAccumulator(turnId) {
   const requestedTurnId = String(turnId ?? "").trim();
   if (!requestedTurnId) throw new Error("Codex turn id is required");
@@ -112,6 +168,9 @@ function createTurnAccumulator(turnId) {
   let serviceTier = "default";
   let index = -1;
   const changedFiles = new Set();
+  const knownSkills = new Set();
+  const skillsUsed = new Set();
+  const mcpCalls = new Map();
   const patches = [];
   const imageGenerationCalls = new Map();
   const completedImageGenerationCalls = new Set();
@@ -120,6 +179,11 @@ function createTurnAccumulator(turnId) {
     index += 1;
     if (entry?.type === "session_meta") {
       workspaceRoot ||= String(entry.payload?.cwd ?? "").trim();
+    }
+    if (entry?.type === "response_item"
+      && entry.payload?.type === "message"
+      && ["developer", "system"].includes(entry.payload?.role)) {
+      for (const name of availableSkillNames(messageText(entry.payload))) knownSkills.add(name);
     }
     if (entry?.type === "event_msg" && entry.payload?.type === "thread_settings_applied") {
       latestModel = String(entry.payload?.thread_settings?.model ?? latestModel).trim();
@@ -176,12 +240,24 @@ function createTurnAccumulator(turnId) {
         completedImageGenerationCalls.add(callId);
       }
     }
+    if (exactTurnId === requestedTurnId) {
+      for (const name of skillReads(entry, knownSkills)) skillsUsed.add(name);
+    }
+    const mcpCall = completedMcpCall(entry);
+    if (mcpCall) {
+      const attributedTurnId = String(entry.payload?.turn_id ?? "").trim()
+        || latestResponseTurnId
+        || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+      if (attributedTurnId === requestedTurnId) mcpCalls.set(mcpCall.id, mcpCall);
+    }
     if (entry?.type === "response_item"
       && exactTurnId === requestedTurnId
       && entry.payload?.type === "message"
       && entry.payload?.role === "user") {
-      const candidate = displayUserPrompt(messageText(entry.payload));
+      const rawPrompt = messageText(entry.payload);
+      const candidate = displayUserPrompt(rawPrompt);
       if (candidate) prompt = candidate;
+      for (const name of explicitSkillNames(rawPrompt, knownSkills)) skillsUsed.add(name);
     }
     if (entry?.type === "response_item"
       && exactTurnId === requestedTurnId
@@ -223,6 +299,9 @@ function createTurnAccumulator(turnId) {
       prompt,
       changedFiles: [...changedFiles],
       diff: patches.join("\n\n"),
+      skillsUsed: [...skillsUsed],
+      mcpCalls: [...mcpCalls.values()],
+      toolMetricsKnown: true,
       imageGenerationCount,
       estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
       estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",
@@ -412,6 +491,8 @@ function createHistoricalTurn(turnId) {
     prompt: "",
     changedFiles: new Set(),
     patches: [],
+    skillsUsed: new Set(),
+    mcpCalls: new Map(),
     imageGenerationCalls: new Set(),
     estimatedCredits: 0,
     estimateKind: "",
@@ -432,6 +513,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
   const turns = new Map();
   const activeTurnIds = new Set();
   const imageGenerationCalls = new Map();
+  const knownSkills = new Set();
   let latestResponseTurnId = "";
   let latestModel = "";
   let latestServiceTier = "default";
@@ -461,6 +543,11 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
         createdAt: String(entry.payload?.timestamp ?? timestamp).trim(),
         source: entry.payload?.source ?? "",
       };
+    }
+    if (entry?.type === "response_item"
+      && entry.payload?.type === "message"
+      && ["developer", "system"].includes(entry.payload?.role)) {
+      for (const name of availableSkillNames(messageText(entry.payload))) knownSkills.add(name);
     }
     if (entry?.type === "event_msg" && entry.payload?.type === "thread_settings_applied") {
       latestModel = String(entry.payload?.thread_settings?.model ?? latestModel).trim();
@@ -524,12 +611,26 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       if (turn && callId) turn.imageGenerationCalls.add(callId);
       touch(turn, timestamp);
     }
+    if (exactTurn) {
+      for (const name of skillReads(entry, knownSkills)) exactTurn.skillsUsed.add(name);
+    }
+    const mcpCall = completedMcpCall(entry);
+    if (mcpCall) {
+      const attributedTurnId = String(entry.payload?.turn_id ?? "").trim()
+        || latestResponseTurnId
+        || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+      const turn = ensureTurn(attributedTurnId);
+      if (turn) turn.mcpCalls.set(mcpCall.id, mcpCall);
+      touch(turn, timestamp);
+    }
     if (entry?.type === "response_item"
       && exactTurn
       && entry.payload?.type === "message"
       && entry.payload?.role === "user") {
-      const candidate = displayUserPrompt(messageText(entry.payload));
+      const rawPrompt = messageText(entry.payload);
+      const candidate = displayUserPrompt(rawPrompt);
       if (candidate) exactTurn.prompt = candidate;
+      for (const name of explicitSkillNames(rawPrompt, knownSkills)) exactTurn.skillsUsed.add(name);
     }
     if (entry?.type === "response_item"
       && exactTurn
@@ -589,6 +690,9 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
         ...turn,
         changedFiles: [...turn.changedFiles],
         diff: turn.patches.join("\n\n"),
+        skillsUsed: [...turn.skillsUsed],
+        mcpCalls: [...turn.mcpCalls.values()],
+        toolMetricsKnown: true,
         imageGenerationCount,
         estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
         estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",

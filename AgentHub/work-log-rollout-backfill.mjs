@@ -119,7 +119,7 @@ export async function buildWorkLogRolloutBackfill({
   }
   const titles = await readThreadTitles(sessionIndexFile);
 
-  let currentLedger = { version: 7, turns: {} };
+  let currentLedger = { version: 8, turns: {} };
   try {
     currentLedger = JSON.parse(await readFile(ledgerFile, "utf8"));
   } catch (error) {
@@ -128,7 +128,13 @@ export async function buildWorkLogRolloutBackfill({
 
   const preserved = {};
   let removedRecords = 0;
+  let preservedNonCodexRecords = 0;
   for (const [key, record] of Object.entries(currentLedger?.turns ?? {})) {
+    if (String(record?.provider ?? "").trim().toLowerCase() !== "codex") {
+      preserved[key] = record;
+      preservedNonCodexRecords += 1;
+      continue;
+    }
     const date = localIsoDate(record?.completedAt || record?.startedAt, timeZone);
     if (date && date > through) preserved[key] = record;
     else removedRecords += 1;
@@ -183,6 +189,9 @@ export async function buildWorkLogRolloutBackfill({
         prompt: String(turn.prompt ?? "").trim(),
         changedFiles: turn.changedFiles ?? [],
         diff: String(turn.diff ?? ""),
+        skillsUsed: turn.skillsUsed ?? [],
+        mcpCalls: turn.mcpCalls ?? [],
+        toolMetricsKnown: turn.toolMetricsKnown === true,
         startedAt: turn.startedAt || completedAt,
         completedAt,
         status,
@@ -204,13 +213,14 @@ export async function buildWorkLogRolloutBackfill({
     if (!record.usageReported && !record.estimatedCredits) recordsWithoutUsage += 1;
   }
   return {
-    ledger: { version: 7, turns },
+    ledger: { version: 8, turns },
     workLog: projectWorkLogUsage("# Глобальный журнал работ\n", turns),
     report: {
       cutoff: through,
       rolloutFiles: files.length,
       sessions: sessions.size,
       preservedRecords: Object.keys(preserved).length,
+      preservedNonCodexRecords,
       removedRecords,
       importedRecords: Object.keys(imported).length,
       inheritedTurns,

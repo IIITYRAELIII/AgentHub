@@ -453,6 +453,39 @@ test("projectWorkLogUsage keeps exact diffs out of the compact journal projectio
   assert.match(projected, /data-work-log-turn-change-lines="2"/u);
 });
 
+test("projectWorkLogUsage exposes compact skill and MCP profile metrics", () => {
+  const source = [
+    "<details open>",
+    "<summary><strong>25.07.2026</strong></summary>",
+    "<table><tbody><tr>",
+    "<td>Task</td><td></td>",
+    `<td data-work-log-usage><span data-usage-id="${WORK_ID}">${WORK_ID}</span></td>`,
+    "</tr></tbody></table>",
+    "</details>",
+  ].join("");
+  const projected = projectWorkLogUsage(source, {
+    tools: {
+      workLogId: WORK_ID,
+      provider: "codex",
+      threadId: "thread-tools",
+      turnId: "turn-tools",
+      taskThreadId: "thread-tools",
+      taskTitle: "Task",
+      completedAt: new Date(2026, 6, 25, 13, 45).toISOString(),
+      skillsUsed: ["openai-docs", "plugin:review"],
+      mcpCalls: [
+        { id: "one", server: "docs", tool: "search", status: "completed" },
+        { id: "two", server: "github", tool: "read", status: "failed" },
+      ],
+      toolMetricsKnown: true,
+    },
+  });
+  assert.match(projected, /data-work-log-turn-skills="\[&quot;openai-docs&quot;,&quot;plugin:review&quot;\]"/u);
+  assert.match(projected, /data-work-log-turn-mcp-calls="2"/u);
+  assert.match(projected, /data-work-log-turn-mcp-tools="\[&quot;docs\/search&quot;,&quot;github\/read&quot;\]"/u);
+  assert.match(projected, /data-work-log-turn-mcp-failures="1"/u);
+});
+
 test("projectWorkLogUsage does not present changed-file paths as a missing diff", () => {
   const source = [
     "<details open>",
@@ -1319,7 +1352,7 @@ test("legacy synthetic interruptions are provisional and retract from the projec
 
     assert.equal(result.retracted, true);
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
-    assert.equal(ledger.version, 7);
+    assert.equal(ledger.version, 8);
     assert.deepEqual(ledger.turns, {});
     assert.doesNotMatch(await readFile(workLogFile, "utf8"), /Живая задача/);
   } finally {
@@ -1348,7 +1381,7 @@ test("usage store recovers a damaged primary ledger from its backup", async () =
     await recovered.project(workLogFile, { projectRoot: root });
     const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
     assert.equal(Object.keys(ledger.turns).length, 1);
-    assert.equal(ledger.version, 7);
+    assert.equal(ledger.version, 8);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -290,6 +290,99 @@ test("rollout scan counts completed imagegen calls for the exact turn", () => {
   assert.equal(result.estimateKind, "imagegen-default");
 });
 
+test("rollout scan records explicit skills and completed MCP calls without payload data", () => {
+  const text = [
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
+    line(response("turn-1", "message", {
+      role: "developer",
+      content: [{
+        type: "input_text",
+        text: "### Available skills\n- openai-docs: Read docs\n- plugin:review: Review code\n",
+      }],
+    })),
+    line(response("turn-1", "message", {
+      role: "user",
+      content: [{
+        type: "input_text",
+        text: "$openai-docs и $plugin:review проверь API; цена $100 не является навыком",
+      }],
+    })),
+    line(response("turn-1")),
+    line(response("turn-1", "custom_tool_call", {
+      name: "shell_command",
+      input: JSON.stringify({
+        command: "Get-Content C:\\Users\\me\\.agents\\skills\\openai-docs\\SKILL.md",
+      }),
+    })),
+    line({
+      type: "event_msg",
+      payload: {
+        type: "mcp_tool_call_end",
+        call_id: "call-mcp-1",
+        invocation: {
+          server: "openaiDeveloperDocs",
+          tool: "search_openai_docs",
+          arguments: { query: "secret request details" },
+        },
+        result: { Ok: { content: [{ type: "text", text: "large private result" }] } },
+      },
+    }),
+    line({
+      type: "event_msg",
+      payload: {
+        type: "mcp_tool_call_end",
+        call_id: "call-mcp-2",
+        invocation: { server: "github", tool: "get_pull_request", arguments: { number: 42 } },
+        result: { Err: "failed details" },
+      },
+    }),
+    line({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-1" } }),
+  ].join("\n");
+
+  const result = codexTurnUsageFromJsonl(text, "turn-1");
+  assert.deepEqual(result.skillsUsed, ["openai-docs", "plugin:review"]);
+  assert.deepEqual(result.mcpCalls, [
+    {
+      id: "call-mcp-1",
+      server: "openaiDeveloperDocs",
+      tool: "search_openai_docs",
+      status: "completed",
+    },
+    {
+      id: "call-mcp-2",
+      server: "github",
+      tool: "get_pull_request",
+      status: "failed",
+    },
+  ]);
+  assert.equal(result.toolMetricsKnown, true);
+  assert.doesNotMatch(JSON.stringify(result.mcpCalls), /secret|private|number/u);
+});
+
+test("rollout scan recognizes a skill read through a JSON-escaped Windows path", () => {
+  const text = [
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
+    line(response("turn-1", "message", {
+      role: "developer",
+      content: [{
+        type: "input_text",
+        text: "### Available skills\n- visualize: Build visualizations\n",
+      }],
+    })),
+    line(response("turn-1", "custom_tool_call", {
+      name: "exec",
+      input: JSON.stringify({
+        command: String.raw`Get-Content C:\Users\me\.codex\skills\visualize\SKILL.md`,
+      }),
+    })),
+    line({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-1" } }),
+  ].join("\n");
+
+  const result = codexTurnUsageFromJsonl(text, "turn-1");
+  assert.deepEqual(result.skillsUsed, ["visualize"]);
+  assert.deepEqual(result.mcpCalls, []);
+});
+
 test("rollout scan counts imagegen completed inside an exec orchestration call", () => {
   const text = [
     line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),

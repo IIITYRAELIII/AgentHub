@@ -334,6 +334,11 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(script, /function taskProfile/u);
     assert.match(script, /\.workLogTaskProfile/u);
     assert.match(script, /Профиль задачи/u);
+    assert.match(script, /label: "Навыки"/u);
+    assert.match(script, /label: "MCP"/u);
+    assert.match(script, /workLogTurnMcpCalls/u);
+    assert.match(script, /function taskProfileAccordion/u);
+    assert.match(script, /workLogTaskProfileDetailContent/u);
     assert.match(script, /\.dataset\.radarTooltip/u);
     assert.match(script, /data-radar-hit/u);
     assert.match(script, /pointerenter/u);
@@ -440,6 +445,8 @@ test("Mini App serves the journal and announces WORK_LOG changes", async () => {
     assert.match(styles, /\[data-work-log-task-duration\]/u);
     assert.match(styles, /\[data-work-log-task-credits\]/u);
     assert.match(styles, /\[data-work-log-task-profile\]/u);
+    assert.match(styles, /\[data-work-log-task-profile-detail\]/u);
+    assert.match(styles, /\[data-work-log-task-profile-detail-items\]/u);
     assert.match(styles, /\[data-radar-current\]/u);
     assert.match(styles, /\[data-radar-tooltip\]/u);
     assert.match(styles, /html\[data-grouping="task"\]/u);

@@ -63,6 +63,17 @@ test("rollout backfill replaces old ledger history, preserves newer records and 
           completedAt: "2026-07-27T10:00:00Z",
           usage: usage(1),
         },
+        claude: {
+          provider: "claude",
+          threadId: "claude-thread",
+          taskThreadId: "claude-thread",
+          turnId: "claude-turn",
+          projectRoot: root,
+          taskTitle: "Claude задача",
+          title: "Claude ход",
+          completedAt: "2026-07-25T11:00:00Z",
+          usage: usage(2),
+        },
       },
     }, null, 2)}\n`, "utf8");
     await writeFile(workLogFile, "# Глобальный журнал работ\n\nСтарый длинный итог\n", "utf8");
@@ -125,12 +136,14 @@ test("rollout backfill replaces old ledger history, preserves newer records and 
     assert.equal(migration.report.importedRecords, 2);
     assert.equal(migration.report.inheritedTurns, 1);
     assert.equal(migration.report.removedRecords, 1);
-    assert.equal(migration.report.preservedRecords, 1);
+    assert.equal(migration.report.preservedRecords, 2);
+    assert.equal(migration.report.preservedNonCodexRecords, 1);
     assert.doesNotMatch(migration.workLog, /Старый длинный итог|Старый текст/u);
     assert.match(migration.workLog, /Историческая задача/u);
     assert.match(migration.workLog, /Ход завершён/u);
     assert.match(migration.workLog, /Ход отменён/u);
     assert.match(migration.workLog, /Новая задача/u);
+    assert.match(migration.workLog, /Claude задача/u);
 
     const applied = await applyWorkLogRolloutBackfill({
       migration,

@@ -64,6 +64,29 @@ function normalizeEstimatedCredits(value) {
   return Number.isFinite(credits) && credits > 0 ? credits : 0;
 }
 
+function normalizedSkillsUsed(value) {
+  return [...new Set(
+    (Array.isArray(value) ? value : [])
+      .map((name) => String(name ?? "").trim())
+      .filter(Boolean),
+  )];
+}
+
+function normalizedMcpCalls(value) {
+  const calls = new Map();
+  for (const call of Array.isArray(value) ? value : []) {
+    const id = String(call?.id ?? "").trim();
+    if (!id) continue;
+    calls.set(id, {
+      id,
+      server: String(call?.server ?? "").trim(),
+      tool: String(call?.tool ?? "").trim(),
+      status: String(call?.status ?? "completed").trim() || "completed",
+    });
+  }
+  return [...calls.values()];
+}
+
 function recordCreditBreakdown(record) {
   return turnCreditBreakdown(
     record?.usageReported === false ? null : record?.usage,
@@ -153,6 +176,9 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
           ? record.changedFiles.map((file) => String(file).trim()).filter(Boolean)
           : [],
         diff: String(record?.diff ?? ""),
+        skillsUsed: normalizedSkillsUsed(record?.skillsUsed),
+        mcpCalls: normalizedMcpCalls(record?.mcpCalls),
+        toolMetricsKnown: sourceVersion >= 8 && record?.toolMetricsKnown === true,
         startedAt: String(record?.startedAt ?? ""),
         completedAt: String(record?.completedAt ?? ""),
         status,
@@ -165,7 +191,7 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       });
     }
   }
-  return { ledger: { version: 7, turns }, invalidRecords };
+  return { ledger: { version: 8, turns }, invalidRecords };
 }
 
 export function formatWorkLogUsage(breakdown) {
@@ -361,9 +387,26 @@ function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0) {
     ))}"`,
     `data-work-log-turn-subagent="${record?.aggregateOnly === true ? "1" : "0"}"`,
   ].join(" ");
+  const toolProfileAttributes = record?.toolMetricsKnown === true
+    ? " "
+      + `data-work-log-turn-skills="${escapeHtmlAttribute(JSON.stringify(
+        normalizedSkillsUsed(record?.skillsUsed)
+      ))}" `
+      + `data-work-log-turn-mcp-calls="${escapeHtmlAttribute(String(
+        normalizedMcpCalls(record?.mcpCalls).length
+      ))}" `
+      + `data-work-log-turn-mcp-tools="${escapeHtmlAttribute(JSON.stringify(
+        [...new Set(normalizedMcpCalls(record?.mcpCalls).map((call) => (
+          [call.server, call.tool].filter(Boolean).join("/")
+        )).filter(Boolean))]
+      ))}" `
+      + `data-work-log-turn-mcp-failures="${escapeHtmlAttribute(String(
+        normalizedMcpCalls(record?.mcpCalls).filter((call) => call.status === "failed").length
+      ))}"`
+    : "";
   return `<div data-work-log-turn-entry data-work-log-turn-provider="${provider}" `
     + `data-work-log-turn-thread-id="${turnThread}" data-work-log-task-thread-id="${rootThread}" `
-    + `data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}" ${profileAttributes}`
+    + `data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}" ${profileAttributes}${toolProfileAttributes}`
     + `${timingAttributes}${completedAtAttribute}${creditsAttribute}>`
     + "<details data-work-log-turn-details>"
     + "<summary>"
@@ -1114,7 +1157,7 @@ function projectDaySection(section, date, turns, recordsById, open, includeClaud
 
 export function projectWorkLogUsage(workLogText, turns = {}, { includeClaudeUsage = true } = {}) {
   let text = String(workLogText ?? "");
-  const normalizedTurns = normalizedLedger({ turns }).ledger.turns;
+  const normalizedTurns = normalizedLedger({ version: 8, turns }).ledger.turns;
   const records = ledgerByWorkLogId(normalizedTurns);
   const existingDates = new Set(daySectionRanges(text).map((range) => range.date));
   const requiredDates = [...new Set(Object.values(normalizedTurns)
@@ -1261,6 +1304,9 @@ function incomingLedgerRecord({
   prompt,
   changedFiles,
   diff,
+  skillsUsed,
+  mcpCalls,
+  toolMetricsKnown,
   startedAt,
   completedAt,
   status,
@@ -1290,6 +1336,9 @@ function incomingLedgerRecord({
       ? changedFiles.map((file) => String(file).trim()).filter(Boolean)
       : [],
     diff: String(diff ?? ""),
+    skillsUsed: normalizedSkillsUsed(skillsUsed),
+    mcpCalls: normalizedMcpCalls(mcpCalls),
+    toolMetricsKnown: toolMetricsKnown === true,
     startedAt: String(startedAt ?? ""),
     completedAt: String(completedAt ?? new Date().toISOString()),
     status: String(status ?? "completed").trim() || "completed",
@@ -1320,6 +1369,8 @@ function mergeLedgerRecord(existing, incoming) {
     "prompt",
     "changedFiles",
     "diff",
+    "skillsUsed",
+    "mcpCalls",
     "startedAt",
     "completedAt",
     "model",
@@ -1327,6 +1378,8 @@ function mergeLedgerRecord(existing, incoming) {
   ]) {
     if (field === "changedFiles") {
       if (incoming.changedFiles.length) existing.changedFiles = incoming.changedFiles;
+    } else if (field === "skillsUsed" || field === "mcpCalls") {
+      if (incoming.toolMetricsKnown) existing[field] = incoming[field];
     } else if (field === "diff") {
       if (incoming.diff) existing.diff = incoming.diff;
     } else if (incoming[field]) {
@@ -1335,6 +1388,7 @@ function mergeLedgerRecord(existing, incoming) {
   }
   if (incoming.pricingMetadataResolved) existing.pricingMetadataResolved = true;
   if (incoming.aggregateOnly) existing.aggregateOnly = true;
+  if (incoming.toolMetricsKnown) existing.toolMetricsKnown = true;
   existing.provisional = incoming.provisional === true;
   if (incoming.status && (incoming.status !== "unknown" || !existing.status || existing.status === "unknown")) {
     existing.status = incoming.status;
@@ -1908,6 +1962,9 @@ export class WorkLogUsageStore {
     prompt,
     changedFiles,
     diff,
+    skillsUsed,
+    mcpCalls,
+    toolMetricsKnown,
     startedAt,
     completedAt,
     status,
@@ -1951,6 +2008,9 @@ export class WorkLogUsageStore {
         prompt,
         changedFiles,
         diff,
+        skillsUsed,
+        mcpCalls,
+        toolMetricsKnown,
         startedAt,
         completedAt,
         status,
@@ -2004,6 +2064,9 @@ export class WorkLogUsageStore {
     prompt,
     changedFiles,
     diff,
+    skillsUsed,
+    mcpCalls,
+    toolMetricsKnown,
     startedAt,
     completedAt,
     status,
@@ -2038,6 +2101,9 @@ export class WorkLogUsageStore {
         prompt,
         changedFiles,
         diff,
+        skillsUsed,
+        mcpCalls,
+        toolMetricsKnown,
         startedAt,
         completedAt,
         status,

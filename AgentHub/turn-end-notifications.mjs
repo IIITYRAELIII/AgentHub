@@ -73,6 +73,21 @@ function normalizedCompletion(value) {
         ?? estimate?.estimatedCredits,
     ) || 0,
   );
+  const skillsUsed = [...new Set(
+    (Array.isArray(value.skillsUsed) ? value.skillsUsed : [])
+      .map((name) => String(name ?? "").trim())
+      .filter(Boolean),
+  )];
+  const mcpCalls = (Array.isArray(value.mcpCalls) ? value.mcpCalls : []).flatMap((call) => {
+    const id = String(call?.id ?? "").trim();
+    if (!id) return [];
+    return [{
+      id,
+      server: String(call?.server ?? "").trim(),
+      tool: String(call?.tool ?? "").trim(),
+      status: String(call?.status ?? "completed").trim() || "completed",
+    }];
+  });
   return {
     ...base,
     turnId,
@@ -101,6 +116,9 @@ function normalizedCompletion(value) {
       ? value.changedFiles.map((file) => String(file).trim()).filter(Boolean)
       : [],
     diff: String(value.diff ?? ""),
+    skillsUsed,
+    mcpCalls,
+    toolMetricsKnown: value.toolMetricsKnown === true,
     message: value.message ? normalizedMessage(value.message) : null,
   };
 }
@@ -214,6 +232,11 @@ export class TurnEndNotificationRegistry {
     completion.finalAnswer = incoming.finalAnswer || completion.finalAnswer;
     if (incoming.changedFiles.length) completion.changedFiles = incoming.changedFiles;
     if (incoming.diff) completion.diff = incoming.diff;
+    if (incoming.toolMetricsKnown) {
+      completion.skillsUsed = incoming.skillsUsed;
+      completion.mcpCalls = incoming.mcpCalls;
+      completion.toolMetricsKnown = true;
+    }
     completion.deliveryGroupId = incoming.deliveryGroupId ?? completion.deliveryGroupId;
     completion.deliverySequence = incoming.deliverySequence ?? completion.deliverySequence;
     if (incoming.usageReported || !completion.usageReported) {

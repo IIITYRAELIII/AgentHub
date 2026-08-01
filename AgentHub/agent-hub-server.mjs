@@ -1308,6 +1308,11 @@ function applyCodexRolloutContext(run, usageResult) {
   if (usageResult.model) run.modelId = usageResult.model;
   if (usageResult.serviceTier) run.serviceTier = usageResult.serviceTier;
   if (usageResult.prompt) run.promptPreview = String(usageResult.prompt).slice(0, 100_000);
+  if (usageResult.toolMetricsKnown === true) {
+    run.skillsUsed = [...new Set(usageResult.skillsUsed ?? [])];
+    run.mcpCalls = Array.isArray(usageResult.mcpCalls) ? usageResult.mcpCalls : [];
+    run.toolMetricsKnown = true;
+  }
   const changedFiles = [];
   for (const file of Array.isArray(usageResult.changedFiles) ? usageResult.changedFiles : []) {
     const absolute = path.isAbsolute(file) ? path.resolve(file) : path.resolve(run.projectRoot, file);
@@ -1368,6 +1373,9 @@ async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } =
     prompt: completion.prompt,
     changedFiles: completion.changedFiles,
     diff: completion.diff,
+    skillsUsed: completion.skillsUsed,
+    mcpCalls: completion.mcpCalls,
+    toolMetricsKnown: completion.toolMetricsKnown,
     startedAt: completion.startedAt,
     completedAt: completion.completedAt,
     status: completion.status,
@@ -1498,6 +1506,9 @@ async function finalizeCodexRunDelivery(run, {
     finalAnswer: String(answer ?? "").trim(),
     changedFiles: changedFilesForRun(run),
     diff: run.latestDiff ?? "",
+    skillsUsed: tracker.toolMetricsKnown === true ? tracker.skillsUsed ?? [] : run.skillsUsed ?? [],
+    mcpCalls: tracker.toolMetricsKnown === true ? tracker.mcpCalls ?? [] : run.mcpCalls ?? [],
+    toolMetricsKnown: tracker.toolMetricsKnown === true || run.toolMetricsKnown === true,
   });
   codexTurnStarts.delete(startKey);
   await saveState();
@@ -3935,6 +3946,39 @@ function inputPreview(input) {
   return String(text ?? "").trim().slice(0, 500);
 }
 
+function explicitSkillCandidatesFromInput(input) {
+  const text = typeof input === "string"
+    ? input
+    : (Array.isArray(input) ? input : [])
+      .filter((item) => item?.type === "text")
+      .map((item) => String(item.text ?? ""))
+      .join("\n");
+  return [...new Set(
+    [...text.matchAll(/(?:^|[\s([{])\$([A-Za-z][A-Za-z0-9_.:-]*)/gu)]
+      .map((match) => match[1]),
+  )];
+}
+
+async function resolvedExplicitSkillNames(input, cwd) {
+  const candidates = explicitSkillCandidatesFromInput(input);
+  if (!candidates.length) return [];
+  try {
+    const result = await sendRpc("skills/list", { cwds: [cwd] });
+    const available = new Set(
+      (result?.data ?? [])
+        .filter((entry) => samePath(entry?.cwd, cwd))
+        .flatMap((entry) => entry?.skills ?? [])
+        .filter((skill) => skill?.enabled !== false)
+        .map((skill) => String(skill?.name ?? "").trim())
+        .filter(Boolean),
+    );
+    return candidates.filter((name) => available.has(name));
+  } catch (error) {
+    console.warn(`Cannot resolve explicit skills for ${cwd}: ${error.message}`);
+    return [];
+  }
+}
+
 async function beginRun(input, target = null) {
   const provider = target?.provider ?? activeProvider;
   const projectRoot = target?.projectRoot ?? activeProjectRoot;
@@ -4272,6 +4316,9 @@ async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton =
     return;
   }
   const items = typeof input === "string" ? [{ type: "text", text: input }] : input;
+  run.skillsUsed = await resolvedExplicitSkillNames(input, run.projectRoot);
+  run.mcpCalls = [];
+  run.toolMetricsKnown = true;
   try {
     const result = await startCodexTurnWithRecovery({
       threadId: run.threadId,
@@ -4886,6 +4933,9 @@ async function handleRuntimeCommand(request) {
       finalAnswer: payload.finalAnswer ?? "",
       changedFiles,
       diff: turnDiff || run?.latestDiff || "",
+      skillsUsed: payload.skillsUsed ?? run?.skillsUsed ?? [],
+      mcpCalls: payload.mcpCalls ?? run?.mcpCalls ?? [],
+      toolMetricsKnown: payload.toolMetricsKnown === true || run?.toolMetricsKnown === true,
     });
     if (!completion && alreadyDelivered) {
       const finalAnswer = String(payload.finalAnswer ?? "").trim();
@@ -4906,6 +4956,9 @@ async function handleRuntimeCommand(request) {
         prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
         changedFiles,
         diff: turnDiff || run?.latestDiff || "",
+        skillsUsed: payload.skillsUsed ?? run?.skillsUsed ?? [],
+        mcpCalls: payload.mcpCalls ?? run?.mcpCalls ?? [],
+        toolMetricsKnown: payload.toolMetricsKnown === true || run?.toolMetricsKnown === true,
         message: null,
       }, {
         title: conciseTurnTitle(finalAnswer, payload.status),
@@ -5350,6 +5403,18 @@ async function handleCodexMessage(message) {
       setProgressStage(run, describeCodexItem(params.item, true));
       const activity = codexItemActivity(params.item, true);
       if (activity) appendRunActivity(run, activity);
+      if (params.item?.type === "mcpToolCall") {
+        const call = {
+          id: String(params.item.id ?? "").trim(),
+          server: String(params.item.server ?? "").trim(),
+          tool: String(params.item.tool ?? "").trim(),
+          status: params.item.error ? "failed" : "completed",
+        };
+        const calls = new Map((run.mcpCalls ?? []).map((item) => [item.id, item]));
+        if (call.id) calls.set(call.id, call);
+        run.mcpCalls = [...calls.values()];
+        run.toolMetricsKnown = true;
+      }
     }
   }
   if (method === "thread/compacted") {
@@ -5735,6 +5800,9 @@ async function finishObservedRun(run, snapshot) {
           estimateKind: hooked.estimateKind,
           model: hooked.model,
           serviceTier: hooked.serviceTier,
+          skillsUsed: hooked.skillsUsed,
+          mcpCalls: hooked.mcpCalls,
+          toolMetricsKnown: hooked.toolMetricsKnown,
         };
       } else if (!tracker?.reported) {
         try {
@@ -5754,6 +5822,9 @@ async function finishObservedRun(run, snapshot) {
             estimateKind: usageResult.estimateKind,
             model: usageResult.model,
             serviceTier: usageResult.serviceTier,
+            skillsUsed: usageResult.skillsUsed,
+            mcpCalls: usageResult.mcpCalls,
+            toolMetricsKnown: usageResult.toolMetricsKnown,
           };
           applyCodexRolloutContext(run, usageResult);
         } catch (error) {
@@ -6003,6 +6074,9 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         prompt: usageResult.prompt,
         changedFiles,
         diff: turnDiff,
+        skillsUsed: usageResult.skillsUsed,
+        mcpCalls: usageResult.mcpCalls,
+        toolMetricsKnown: usageResult.toolMetricsKnown,
         message: null,
       }, {
         title: conciseTurnTitle(finalAnswer, resolvedStatus),
@@ -6044,6 +6118,9 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         prompt: usageResult.prompt,
         changedFiles,
         diff: turnDiff,
+        skillsUsed: usageResult.skillsUsed,
+        mcpCalls: usageResult.mcpCalls,
+        toolMetricsKnown: usageResult.toolMetricsKnown,
         message: null,
       }, {
         title: correctedTitle,
@@ -6089,6 +6166,9 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
       finalAnswer: usageResult.finalAnswer,
       changedFiles,
       diff: turnDiff,
+      skillsUsed: usageResult.skillsUsed,
+      mcpCalls: usageResult.mcpCalls,
+      toolMetricsKnown: usageResult.toolMetricsKnown,
     });
     codexTurnStarts.delete(key);
     await saveState();

@@ -4062,6 +4062,25 @@ const taskProfileAxes = [
     format: (value) => `${Math.round(value)}% ходов`,
     linear: true,
   },
+  {
+    key: "skillCount",
+    label: "Навыки",
+    format: (value) => `${Math.round(value)} уник.`,
+    expandable: true,
+    detailItems: (group) => group.skillNames ?? [],
+    emptyDetails: "Навыки не использовались",
+  },
+  {
+    key: "mcpCallCount",
+    label: "MCP",
+    format: (value) => `${Math.round(value)} выз.`,
+    expandable: true,
+    detailItems: (group) => group.mcpTools ?? [],
+    emptyDetails: "MCP-вызовов не было",
+    detailNote: (group) => group.mcpFailures
+      ? `Завершились с ошибкой: ${group.mcpFailures}`
+      : "",
+  },
 ];
 
 function median(values) {
@@ -4115,6 +4134,45 @@ function formatProfileAxisValue(axis, value) {
   return Number.isFinite(value) ? axis.format(value) : "нет данных";
 }
 
+function taskProfileAccordion(axis, group) {
+  const details = document.createElement("details");
+  details.dataset.workLogTaskProfileDetail = axis.key;
+  if (!Number.isFinite(group[axis.key])) details.dataset.missing = "";
+
+  const summary = document.createElement("summary");
+  summary.dataset.workLogTaskProfileDetailSummary = "";
+  summary.append(
+    el("span", { text: axis.label }),
+    el("strong", { text: formatProfileAxisValue(axis, group[axis.key]) }),
+  );
+
+  const content = document.createElement("div");
+  content.dataset.workLogTaskProfileDetailContent = "";
+  const items = Number.isFinite(group[axis.key]) ? axis.detailItems?.(group) ?? [] : [];
+  if (items.length) {
+    const list = document.createElement("div");
+    list.dataset.workLogTaskProfileDetailItems = "";
+    for (const item of items) {
+      list.append(el("span", { text: item }));
+    }
+    content.append(list);
+  } else {
+    content.append(el("span", {
+      "data-work-log-task-profile-detail-empty": "",
+      text: Number.isFinite(group[axis.key])
+        ? axis.emptyDetails
+        : "Для старых ходов подробные данные недоступны",
+    }));
+  }
+  const note = Number.isFinite(group[axis.key]) ? axis.detailNote?.(group) : "";
+  if (note) content.append(el("span", {
+    "data-work-log-task-profile-detail-note": "",
+    text: note,
+  }));
+  details.append(summary, content);
+  return details;
+}
+
 function taskProfile(group, cohort) {
   const scales = Object.fromEntries(taskProfileAxes.map((axis) => [
     axis.key,
@@ -4145,6 +4203,10 @@ function taskProfile(group, cohort) {
   const values = document.createElement("div");
   values.dataset.workLogTaskProfileValues = "";
   for (const axis of taskProfileAxes) {
+    if (axis.expandable) {
+      values.append(taskProfileAccordion(axis, group));
+      continue;
+    }
     const item = document.createElement("div");
     item.dataset.workLogTaskProfileValue = axis.key;
     const label = document.createElement("span");
@@ -4307,6 +4369,11 @@ function taskGroupsFrom(source) {
           knownChangedLines: 0,
           subagentTurns: 0,
           knownSubagentTurns: 0,
+          skillNames: new Set(),
+          mcpCallCount: 0,
+          mcpTools: new Set(),
+          mcpFailures: 0,
+          knownToolMetricTurns: 0,
           order: order++,
         };
         groups.set(key, group);
@@ -4347,6 +4414,26 @@ function taskGroupsFrom(source) {
           group.subagentTurns += subagent === "1" ? 1 : 0;
           group.knownSubagentTurns += 1;
         }
+        const skillNames = entry.dataset.workLogTurnSkills;
+        const mcpCalls = entry.dataset.workLogTurnMcpCalls;
+        if (skillNames !== undefined && mcpCalls !== undefined) {
+          try {
+            for (const name of JSON.parse(skillNames)) {
+              if (String(name).trim()) group.skillNames.add(String(name).trim());
+            }
+            for (const tool of JSON.parse(entry.dataset.workLogTurnMcpTools ?? "[]")) {
+              if (String(tool).trim()) group.mcpTools.add(String(tool).trim());
+            }
+          } catch {
+            // Повреждённые дополнительные метрики не должны скрывать журнал.
+          }
+          group.mcpCallCount += Math.max(0, Number(mcpCalls) || 0);
+          group.mcpFailures += Math.max(
+            0,
+            Number(entry.dataset.workLogTurnMcpFailures) || 0,
+          );
+          group.knownToolMetricTurns += 1;
+        }
         group.turns.push(groupedTurn(entry, date));
       }
       for (const outcome of row.querySelectorAll("[data-work-log-legacy-outcome]")) {
@@ -4371,6 +4458,10 @@ function taskGroupsFrom(source) {
       subagentShare: group.knownSubagentTurns
         ? group.subagentTurns / group.knownSubagentTurns * 100
         : null,
+      skillNames: [...group.skillNames].sort((left, right) => left.localeCompare(right)),
+      skillCount: group.knownToolMetricTurns ? group.skillNames.size : null,
+      mcpCallCount: group.knownToolMetricTurns ? group.mcpCallCount : null,
+      mcpTools: [...group.mcpTools].sort((left, right) => left.localeCompare(right)),
     }))
     .sort((left, right) => right.latestAt - left.latestAt || left.order - right.order);
 }

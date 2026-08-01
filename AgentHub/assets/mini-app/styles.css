@@ -2135,6 +2135,102 @@ main {
   font-weight: 500;
 }
 
+.journal [data-work-log-task-profile-detail] {
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.journal [data-work-log-task-profile-detail] > summary {
+  align-items: center;
+  cursor: pointer;
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  list-style: none;
+  padding: 0.5rem 0.6rem;
+}
+
+.journal [data-work-log-task-profile-detail] > summary::-webkit-details-marker {
+  display: none;
+}
+
+.journal [data-work-log-task-profile-detail] > summary::after {
+  border-bottom: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  color: var(--text-faint);
+  content: "";
+  grid-column: 3;
+  grid-row: 1;
+  height: 0.38rem;
+  margin-left: 0.12rem;
+  transform: rotate(45deg) translateY(-0.08rem);
+  transition: transform 0.15s ease;
+  width: 0.38rem;
+}
+
+.journal [data-work-log-task-profile-detail][open] > summary::after {
+  transform: rotate(225deg) translate(-0.08rem, -0.08rem);
+}
+
+.journal [data-work-log-task-profile-detail] > summary > span {
+  color: var(--text-faint);
+  font-size: 0.64rem;
+  letter-spacing: var(--label-spacing);
+  text-transform: var(--label-transform);
+}
+
+.journal [data-work-log-task-profile-detail] > summary > strong {
+  color: var(--text-soft);
+  font-family: var(--font-numeric);
+  font-size: 0.78rem;
+}
+
+.journal [data-work-log-task-profile-detail][data-missing] > summary > strong {
+  color: var(--pending);
+  font-weight: 500;
+}
+
+.journal [data-work-log-task-profile-detail-content] {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.55rem 0.6rem 0.65rem;
+}
+
+.journal [data-work-log-task-profile-detail-items] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.journal [data-work-log-task-profile-detail-items] > span {
+  background: color-mix(in srgb, var(--row-accent) 10%, var(--surface-1));
+  border: 1px solid color-mix(in srgb, var(--row-accent) 28%, var(--line));
+  border-radius: var(--radius-chip);
+  color: var(--text-soft);
+  font-family: var(--font-numeric);
+  font-size: 0.68rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 0.26rem 0.45rem;
+}
+
+.journal [data-work-log-task-profile-detail-empty],
+.journal [data-work-log-task-profile-detail-note] {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.journal [data-work-log-task-profile-detail-note] {
+  color: var(--pending);
+}
+
 .journal figure[data-work-log-task-radar] {
   margin: 0;
   min-width: 0;
