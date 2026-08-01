@@ -120,3 +120,28 @@ test("rollout history represents a final image-only turn", () => {
   assert.equal(exchange.answer, "Ответ на скриншот");
   assert.equal(exchange.completed, true);
 });
+
+test("rollout fallback keeps response annotations structured", () => {
+  const prompt = [
+    "# Response annotations:",
+    "<response-annotations>",
+    JSON.stringify([
+      { text: "Первая цитата", annotation: "Первый комментарий" },
+      { text: "Вторая цитата", annotation: "Второй комментарий" },
+    ]),
+    "</response-annotations>",
+    "",
+    "## My request for Codex:",
+    "Общий вопрос",
+  ].join("\n");
+  const [exchange] = codexRolloutHistory({
+    userMessages: { "turn-1": [{ text: prompt }] },
+    finalMessages: { "turn-1": "Ответ" },
+  });
+  assert.equal(exchange.promptRequest, "Общий вопрос");
+  assert.deepEqual(exchange.promptAnnotations, [
+    { text: "Первая цитата", annotation: "Первый комментарий" },
+    { text: "Вторая цитата", annotation: "Второй комментарий" },
+  ]);
+  assert.doesNotMatch(exchange.prompt, /response-annotations|My request for Codex/iu);
+});

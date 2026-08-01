@@ -1,6 +1,8 @@
 import {
   codexThreadHistory,
+  displayUserPrompt,
   mergeActiveTaskHistory,
+  responseAnnotationDetails,
   visibleTaskHistory,
 } from "./task-history.mjs";
 import { readCodexRolloutActivity } from "./task-catalog.mjs";
@@ -39,14 +41,25 @@ export function codexRolloutHistory(activity = {}) {
   return ids.flatMap((id) => {
     const users = (Array.isArray(userMessages[id]) ? userMessages[id] : [])
       .filter((message) => String(message?.text ?? "").trim())
-      .map((message, index) => ({
-        itemId: String(message.itemId ?? `${id}:rollout-user:${index}`),
-        ...(String(message.clientUserMessageId ?? "").trim()
-          ? { clientUserMessageId: String(message.clientUserMessageId).trim() }
-          : {}),
-        role: "user",
-        text: String(message.text).trim(),
-      }));
+      .map((message, index) => {
+        const rawText = String(message.text).trim();
+        const responseAnnotations = responseAnnotationDetails(rawText);
+        return {
+          itemId: String(message.itemId ?? `${id}:rollout-user:${index}`),
+          ...(String(message.clientUserMessageId ?? "").trim()
+            ? { clientUserMessageId: String(message.clientUserMessageId).trim() }
+            : {}),
+          role: "user",
+          text: displayUserPrompt(rawText),
+          ...(responseAnnotations?.items.length
+            ? {
+              responseAnnotations: responseAnnotations.items.map((annotation) => ({ ...annotation })),
+              responseAnnotationRequest: responseAnnotations.request,
+            }
+            : {}),
+        };
+      })
+      .filter((message) => message.text);
     const finalAnswer = String(finalMessages[id] ?? "").trim();
     const latestAnswer = String(latestMessages[id] ?? "").trim();
     const answer = finalAnswer || latestAnswer;
@@ -55,7 +68,7 @@ export function codexRolloutHistory(activity = {}) {
     const completed = Boolean(finalAnswer);
     const prompt = users[0]?.text ?? "Сообщение с вложением";
     const messages = users.length
-      ? [...users]
+    ? [...users]
       : [{ itemId: `${id}:rollout-user:placeholder`, role: "user", text: prompt }];
     if (answer) {
       messages.push({
@@ -65,6 +78,8 @@ export function codexRolloutHistory(activity = {}) {
         ...(completed ? { phase: "final_answer" } : {}),
       });
     }
+    const firstUser = users[0];
+    const responseAnnotations = firstUser?.responseAnnotations ?? [];
     return [{
       id,
       prompt,
@@ -72,6 +87,12 @@ export function codexRolloutHistory(activity = {}) {
       status: completed ? "completed" : active ? "inProgress" : "stopped",
       active,
       completed,
+      ...(responseAnnotations.length
+        ? {
+          promptAnnotations: responseAnnotations.map((annotation) => ({ ...annotation })),
+          promptRequest: firstUser.responseAnnotationRequest ?? "",
+        }
+        : {}),
       messages,
       activities: [],
     }];
@@ -93,11 +114,18 @@ function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory) {
     if (item.completed && !current?.completed) {
       merged[index] = {
         ...current,
+        prompt: item.prompt || current.prompt,
         answer: item.answer || current.answer,
         status: "completed",
         active: false,
         completed: true,
         messages: item.messages,
+        ...(item.promptAnnotations?.length
+          ? {
+            promptAnnotations: item.promptAnnotations.map((annotation) => ({ ...annotation })),
+            promptRequest: item.promptRequest ?? "",
+          }
+          : {}),
       };
     }
   }
