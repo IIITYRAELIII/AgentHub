@@ -92,6 +92,10 @@ def apply_rollout_image_cleanup_choice(config: dict, choice: str | None) -> dict
     return {**config, "codexRolloutContext": settings}
 
 
+def request_safe_restart() -> None:
+    subprocess.run(["node", str(ROOT / "request-safe-restart.mjs")], check=True)
+
+
 def install_vscode_extension() -> Path | None:
     source = ROOT / "VSCodeExtension"
     if not source.is_dir():
@@ -229,6 +233,11 @@ def main() -> int:
             "cleanup in idle Codex rollout snapshots"
         ),
     )
+    parser.add_argument(
+        "--skip-restart",
+        action="store_true",
+        help="activate the new release without requesting a safe restart of a running Agent Hub",
+    )
     args = parser.parse_args()
     require_embedded_sqlite()
     if args.extension_only:
@@ -320,8 +329,10 @@ def main() -> int:
     if fresh_install:
         start_runtime(target_root)
         print("Agent Hub runtime started.")
+    elif not args.skip_restart:
+        request_safe_restart()
     else:
-        print("Configuration updated. Restart the existing Agent Hub runtime to apply the profile.")
+        print("Configuration updated. Restart was skipped; the active runtime still uses the previous release.")
     legacy_config = ROOT / "config.json"
     if legacy_config.exists():
         legacy_config.unlink()

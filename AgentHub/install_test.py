@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
-from AgentHub.install import apply_rollout_image_cleanup_choice
+from AgentHub.install import apply_rollout_image_cleanup_choice, request_safe_restart
 
 
 class RolloutImageCleanupChoiceTests(unittest.TestCase):
@@ -42,6 +43,17 @@ class RolloutImageCleanupChoiceTests(unittest.TestCase):
                 "keepRecentImages": 6,
             },
         )
+
+
+class SafeRestartTests(unittest.TestCase):
+    @mock.patch("AgentHub.install.subprocess.run")
+    def test_restart_uses_the_authenticated_runtime_control_client(self, run: mock.Mock) -> None:
+        request_safe_restart()
+
+        command = run.call_args.args[0]
+        self.assertEqual("node", command[0])
+        self.assertTrue(command[1].endswith("request-safe-restart.mjs"))
+        self.assertEqual(True, run.call_args.kwargs["check"])
 
 
 if __name__ == "__main__":

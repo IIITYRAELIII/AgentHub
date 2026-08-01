@@ -41,7 +41,7 @@ python Utilities/AgentHub/install.py --profile telegram
 python Utilities/AgentHub/install.py --profile full
 ```
 
-Установщик создаёт изолированный runtime в `%LOCALAPPDATA%\AgentHub` (в Linux — `$XDG_STATE_HOME/agent-hub`). Там хранятся личная конфигурация, ledger, история лимитов и версионные копии исполняемого сервера; в Git остаются только общие исходники и тесты. Повторный запуск с другим `--profile` сохраняет Telegram- и Mini App-настройки, поэтому к ним можно вернуться. После смены профиля перезапустите существующий Agent Hub. Для голосовых сообщений используйте:
+Установщик создаёт изолированный runtime в `%LOCALAPPDATA%\AgentHub` (в Linux — `$XDG_STATE_HOME/agent-hub`). Там хранятся личная конфигурация, ledger, история лимитов и версионные копии исполняемого сервера; в Git остаются только общие исходники и тесты. Повторный запуск сохраняет Telegram- и Mini App-настройки и после обновления запрашивает штатный безопасный перезапуск существующего Agent Hub. Активная работа при необходимости откладывает переключение до безопасного момента. Для развёртывания release без запроса перезапуска используйте `--skip-restart`. Для голосовых сообщений используйте:
 
 ```powershell
 python Utilities/AgentHub/install.py --install-voice
