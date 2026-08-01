@@ -33,7 +33,6 @@ const CONTENT_TYPES = new Map([
   ["/storm-flash.png", "image/png"],
   ["/rainforest-night.png", "image/png"],
   ["/meadow-sun.png", "image/png"],
-  ["/storm-rain.png", "image/png"],
 ]);
 const STATIC_FILES = new Map([
   ["/", "index.html"],
@@ -54,7 +53,6 @@ const STATIC_FILES = new Map([
   ["/storm-flash.png", "storm-flash.png"],
   ["/rainforest-night.png", "rainforest-night.png"],
   ["/meadow-sun.png", "meadow-sun.png"],
-  ["/storm-rain.png", "storm-rain.png"],
 ]);
 
 function defaultJournalDatabaseFile(workLogFile) {
@@ -76,7 +74,6 @@ const IMMUTABLE_FILES = new Set([
   "/storm-flash.png",
   "/pulsar-beams.png",
   "/rainforest-night.png",
-  "/storm-rain.png",
 ]);
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -361,8 +358,7 @@ export class MiniAppServer {
     const authorization = String(request.headers.authorization ?? "");
     if (authorization.startsWith("device ") && this.#deviceStore) {
       try {
-        const identity = await this.#deviceStore.resolveSession(authorization.slice(7));
-        if (!this.#allowedUserIds.has(String(identity.id))) throw new Error("device user is not allowed");
+        await this.#deviceStore.resolveSession(authorization.slice(7));
         return true;
       } catch {
         json(response, 403, { error: "Авторизация устройства недействительна." });

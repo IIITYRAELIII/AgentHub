@@ -587,6 +587,46 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
   }
 });
 
+test("trusted Android device session is independent of Telegram user ids", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-device-auth-"));
+  const workLogFile = path.join(directory, "WORK_LOG.md");
+  const deviceStore = {
+    async resolveSession(token) {
+      assert.equal(token, "device-session-token");
+      return { id: "local-owner", deviceId: "device-id" };
+    },
+  };
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    workLogFile,
+    allowedUserIds: new Set([42]),
+    deviceStore,
+    controlHandler: async () => ({ connected: true }),
+  });
+  try {
+    await writeFile(workLogFile, "# Журнал\n", "utf8");
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: {
+        Authorization: "device device-session-token",
+        "CF-Connecting-IP": "203.0.113.10",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action: "snapshot", params: {} }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      result: { connected: true },
+    });
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("local Mini App requires a protected session and rejects CSRF-shaped control requests", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-local-auth-"));
   const workLogFile = path.join(directory, "WORK_LOG.md");
