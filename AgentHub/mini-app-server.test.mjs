@@ -623,6 +623,43 @@ test("trusted Android device session is independent of Telegram user ids", async
   }
 });
 
+test("public device authentication endpoints are rate limited per client", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-device-rate-limit-"));
+  const workLogFile = path.join(directory, "WORK_LOG.md");
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    workLogFile,
+    requireTelegramAuth: true,
+    deviceStore: {
+      async pair() { throw new Error("invalid pairing code"); },
+      async createChallenge() { throw new Error("invalid device id"); },
+      async createSession() { throw new Error("invalid device challenge"); },
+    },
+  });
+  try {
+    await writeFile(workLogFile, "# Журнал\n", "utf8");
+    const address = await server.start();
+    const request = () => fetch(`${address.url}api/device/pair`, {
+      method: "POST",
+      headers: {
+        "CF-Connecting-IP": "203.0.113.44",
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+    for (let index = 0; index < 30; index += 1) {
+      assert.equal((await request()).status, 400);
+    }
+    const limited = await request();
+    assert.equal(limited.status, 429);
+    assert.match(String(limited.headers.get("retry-after")), /^\d+$/u);
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("local Mini App requires a protected session and rejects CSRF-shaped control requests", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-local-auth-"));
   const workLogFile = path.join(directory, "WORK_LOG.md");

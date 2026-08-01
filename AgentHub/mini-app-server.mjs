@@ -117,6 +117,8 @@ async function readBinaryBody(request, maxBytes = MAX_ATTACHMENT_BYTES) {
 }
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const CHANGE_DEBOUNCE_MS = 75;
+const PUBLIC_AUTH_WINDOW_MS = 60_000;
+const PUBLIC_AUTH_ATTEMPT_LIMIT = 30;
 const TELEGRAM_AUTH_MAX_AGE_SECONDS = 86_400;
 const LOCAL_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const LOCAL_SESSION_COOKIE = "agent_hub_local";
@@ -279,6 +281,7 @@ export class MiniAppServer {
   #journalDatabase;
   #localAccessSecret;
   #port;
+  #publicAuthAttempts = new Map();
   #requireTelegramAuth;
   #server = null;
   #watcher = null;
@@ -395,6 +398,35 @@ export class MiniAppServer {
     this.#changeTimer.unref?.();
   }
 
+  #consumePublicAuthAttempt(request, response) {
+    if (!this.#requestNeedsTelegramAuth(request)) return true;
+    const now = Date.now();
+    const forwarded = String(request.headers["x-forwarded-for"] ?? "")
+      .split(",")
+      .at(-1)
+      ?.trim();
+    const key = String(
+      request.headers["cf-connecting-ip"] ?? forwarded ?? request.socket.remoteAddress ?? "unknown",
+    ).slice(0, 128);
+    const previous = this.#publicAuthAttempts.get(key);
+    const bucket = !previous || now - previous.startedAt >= PUBLIC_AUTH_WINDOW_MS
+      ? { startedAt: now, count: 0 }
+      : previous;
+    bucket.count += 1;
+    this.#publicAuthAttempts.set(key, bucket);
+    if (this.#publicAuthAttempts.size > 2_000) {
+      for (const [candidate, value] of this.#publicAuthAttempts) {
+        if (now - value.startedAt >= PUBLIC_AUTH_WINDOW_MS) this.#publicAuthAttempts.delete(candidate);
+      }
+    }
+    if (bucket.count <= PUBLIC_AUTH_ATTEMPT_LIMIT) return true;
+    const retryAfter = Math.max(1, Math.ceil((bucket.startedAt + PUBLIC_AUTH_WINDOW_MS - now) / 1_000));
+    json(response, 429, { error: "Слишком много запросов авторизации." }, request.method, {
+      headers: { "Retry-After": String(retryAfter) },
+    });
+    return false;
+  }
+
   async #handle(request, response) {
     const method = String(request.method ?? "GET").toUpperCase();
     const url = new URL(request.url ?? "/", `http://${this.#host}`);
@@ -436,6 +468,7 @@ export class MiniAppServer {
         json(response, 503, { error: "Авторизация доверенных устройств недоступна." }, method);
         return;
       }
+      if (!this.#consumePublicAuthAttempt(request, response)) return;
       if (
         String(request.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase()
         !== "application/json"
@@ -674,6 +707,10 @@ export class MiniAppServer {
         }
       });
     });
+    server.headersTimeout = 15_000;
+    server.requestTimeout = 30_000;
+    server.keepAliveTimeout = 5_000;
+    server.maxRequestsPerSocket = 100;
     await new Promise((resolve, reject) => {
       server.once("error", reject);
       server.listen(this.#port, this.#host, () => {

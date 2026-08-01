@@ -24,6 +24,9 @@ test("direct gateway settings keep the Hub backend on loopback", async () => {
   assert.equal(settings.domain, "hub.example.test");
   assert.equal(settings.localUrl, "http://127.0.0.1:8787");
   assert.match(directGatewayCaddyfile(settings), /reverse_proxy 127\.0\.0\.1:8787/u);
+  assert.match(directGatewayCaddyfile(settings), /header_up X-Forwarded-For \{remote_host\}/u);
+  assert.match(directGatewayCaddyfile(settings), /header_up -CF-Connecting-IP/u);
+  assert.match(directGatewayCaddyfile(settings), /X-Frame-Options "DENY"/u);
   await assert.rejects(
     () => loadDirectGatewaySettings(filePath, { localUrl: "http://192.0.2.10:8787" }),
     /loopback/u,

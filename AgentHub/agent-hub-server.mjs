@@ -601,6 +601,7 @@ let workLogPricingBackfillAttempted = false;
 const claudeTranscriptAuditState = new Map();
 const taskSyncStore = new LocalTaskSyncStore({
   filePath: TASK_SYNC_FILE,
+  databaseFile: path.join(config.dataDir, "journal.sqlite"),
   canonicalizeProjectRoot: (projectRoot) => findProject(projectRoot)?.path ?? projectRoot,
   canonicalizeValue: (value) => canonicalizeProjectRoots(value, PROJECTS),
 });
@@ -8002,6 +8003,7 @@ async function shutdown(signal) {
   ], {
     logError: (name, error) => console.error(`Shutdown failed (${name}):`, error.message),
   });
+  taskSyncStore.close();
 }
 
 process.on("unhandledRejection", (error) => {

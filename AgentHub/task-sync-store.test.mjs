@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -65,6 +65,7 @@ test("local task sync persists catalog, runtime owner, status and history", asyn
 test("local task sync preserves durable message metadata and attachments", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
   store.recordHistory(task, [{
     id: "turn-with-image",
     prompt: "Посмотри скриншот",
@@ -101,6 +102,7 @@ test("local task sync preserves durable message metadata and attachments", async
 
 test("local task sync canonicalizes persisted project roots on load", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "task-sync-root-"));
+  let store;
   try {
     const filePath = path.join(directory, "task-sync.json");
     await writeFile(filePath, JSON.stringify({
@@ -111,21 +113,23 @@ test("local task sync canonicalizes persisted project roots on load", async () =
         projectRoot: "C:\\OldWorkspace",
       }],
     }), "utf8");
-    const store = new LocalTaskSyncStore({
+    store = new LocalTaskSyncStore({
       filePath,
       canonicalizeProjectRoot: () => "D:\\Workspace",
     });
     await store.load();
     await store.save();
     assert.equal(store.catalog()[0].projectRoot, "D:\\Workspace");
-    assert.match(await readFile(filePath, "utf8"), /D:\\\\Workspace/);
+    await assert.rejects(access(filePath), { code: "ENOENT" });
   } finally {
+    store?.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
 
 test("local task sync canonicalizes project references inside saved history", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "task-sync-history-root-"));
+  let store;
   try {
     const filePath = path.join(directory, "task-sync.json");
     await writeFile(filePath, JSON.stringify({
@@ -138,7 +142,7 @@ test("local task sync canonicalizes project references inside saved history", as
         history: [{ answer: "[file](C:\\OldWorkspace\\file.txt)" }],
       }],
     }), "utf8");
-    const store = new LocalTaskSyncStore({
+    store = new LocalTaskSyncStore({
       filePath,
       canonicalizeProjectRoot: (value) => (
         value === "C:\\OldWorkspace" ? "D:\\Workspace" : value
@@ -149,11 +153,14 @@ test("local task sync canonicalizes project references inside saved history", as
     });
     await store.load();
     await store.save();
-    const saved = JSON.parse(await readFile(filePath, "utf8"));
-    assert.equal(saved.tasks[0].projectRoot, "D:\\Workspace");
-    assert.equal(saved.tasks[0].answer, "See D:\\Workspace\\README.md");
-    assert.equal(saved.tasks[0].history[0].answer, "[file](D:\\Workspace\\file.txt)");
+    assert.equal(store.catalog()[0].projectRoot, "D:\\Workspace");
+    assert.equal(store.snapshot({ provider: "codex", threadId: "thread-1" }).answer,
+      "See D:\\Workspace\\README.md");
+    assert.equal(store.history({ provider: "codex", threadId: "thread-1" })[0].answer,
+      "[file](D:\\Workspace\\file.txt)");
+    await assert.rejects(access(filePath), { code: "ENOENT" });
   } finally {
+    store?.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -161,6 +168,7 @@ test("local task sync canonicalizes project references inside saved history", as
 test("cached running status expires instead of creating a phantom task", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
   store.recordCatalog([{
     ...task,
     running: true,
@@ -175,6 +183,7 @@ test("cached running status expires instead of creating a phantom task", async (
 test("managed Telegram snapshot records Agent Hub ownership", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
   store.recordSnapshot(task, {
     active: true,
     turnId: "turn-telegram",
@@ -193,6 +202,7 @@ test("managed Telegram snapshot records Agent Hub ownership", async () => {
 test("Claude session cwd survives the local task catalog cache", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
   const claudeTask = {
     ...task,
     provider: "claude",
@@ -210,6 +220,7 @@ test("Claude session cwd survives the local task catalog cache", async () => {
 test("unchanged polling snapshots do not dirty the persistent store", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
   const snapshot = {
     active: true,
     turnId: "turn-telegram",
@@ -239,6 +250,7 @@ test("unchanged polling snapshots do not dirty the persistent store", async () =
 test("completed-only history refresh preserves a live cached status", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
   store.recordSnapshot(task, {
     active: true,
     turnId: "live",
@@ -264,6 +276,7 @@ test("completed-only history refresh preserves a live cached status", async () =
 test("task sync evicts oldest completed cache entries but never active ones", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath, taskLimit: 3 });
+  await store.load();
   store.recordCatalog(Array.from({ length: 4 }, (_, index) => ({
     ...task,
     threadId: `completed-${index}`,

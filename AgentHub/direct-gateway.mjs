@@ -101,10 +101,13 @@ function caddySite(domain, upstreamUrl) {
   const backend = new URL(upstreamUrl);
   return `${domain} {
   encode zstd gzip
-  reverse_proxy ${backend.host}
+  reverse_proxy ${backend.host} {
+    header_up X-Forwarded-For {remote_host}
+    header_up -CF-Connecting-IP
+  }
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains"
-    X-Frame-Options "SAMEORIGIN"
+    X-Frame-Options "DENY"
     Referrer-Policy "strict-origin-when-cross-origin"
     -Server
   }
