@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseArguments, publicationSteps, publishAll } from "./publish-all.mjs";
+import { classifyPublicationChanges, parseChangedArguments, publishChanged } from "./publish-changed.mjs";
 import { detectGitCommonDirectory, resolveWrangler } from "./wrangler-runner.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -63,6 +64,7 @@ test("publication requests the server's safe deferred restart last", async () =>
       events.push(action);
       return { message: "scheduled" };
     },
+    record: async () => events.push("record-publication"),
   });
   assert.deepEqual(events, [
     "Проверка changelog",
@@ -71,7 +73,63 @@ test("publication requests the server's safe deferred restart last", async () =>
     "Активация runtime-релиза",
     "Установка расширения VS Code",
     "restart-server",
+    "record-publication",
   ]);
+});
+
+test("selective publication maps shared UI to runtime and Worker only", async () => {
+  assert.deepEqual(
+    classifyPublicationChanges([
+      "CHANGELOG.md",
+      "AgentHub/assets/mini-app/app.js",
+      "AgentHub/message-lifecycle.test.mjs",
+    ]),
+    {
+      runtime: true,
+      worker: true,
+      android: false,
+      desktop: false,
+      vscode: false,
+      fullTests: false,
+      unknown: [],
+    },
+  );
+  assert.deepEqual(parseChangedArguments(["--from", "abc", "--skip-restart"]), {
+    from: "abc",
+    skipRestart: true,
+  });
+});
+
+test("selective publication records the exact published revision", async () => {
+  const labels = [];
+  let written = null;
+  const result = await publishChanged(["--from", "base", "--skip-restart"], {
+    run: async (step) => labels.push(step.label),
+    restart: async () => assert.fail("restart must be skipped"),
+    readState: async () => null,
+    writeState: async (value) => { written = value; },
+    revision: async () => "head",
+    diff: async () => ["AgentHub/assets/mini-app/app.js"],
+  });
+  assert.equal(result.revision, "head");
+  assert.equal(written.revision, "head");
+  assert.deepEqual(labels, [
+    "Проверка changelog",
+    "Проверка синтаксиса Agent Hub",
+    "Тесты жизненного цикла сообщений",
+    "Тесты расширения VS Code",
+    "Публикация Mini App Worker",
+    "Сборка runtime-релиза",
+    "Активация runtime-релиза",
+  ]);
+});
+
+test("Worker packages only a verified published Android artifact", () => {
+  const build = fs.readFileSync(path.join(ROOT, "cloudflare-worker", "build-assets.mjs"), "utf8");
+  assert.match(build, /assets["'], ["']mobile/u);
+  assert.match(build, /update\.json/u);
+  assert.match(build, /createHash\("sha256"\)/u);
+  assert.doesNotMatch(build, /app["'],\s*"build"/u);
 });
 
 test("every validation failure stops publication before deployment", async () => {

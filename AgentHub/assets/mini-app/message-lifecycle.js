@@ -22,6 +22,21 @@ function clientIdentityKey(message) {
   return `${provider}\0${threadId}\0${clientUserMessageId}\0${role}`;
 }
 
+function turnRootUserKey(message) {
+  const provider = String(message?.provider ?? "");
+  const threadId = String(message?.threadId ?? "");
+  const turnId = String(message?.turnId ?? "");
+  if (!provider || !threadId || !turnId || message?.role !== "user") return "";
+  return `${provider}\0${threadId}\0${turnId}\0root-user`;
+}
+
+function isTurnRootUser(messages, index) {
+  const message = messages[index];
+  const key = turnRootUserKey(message);
+  if (!key) return false;
+  return !messages.slice(0, index).some((candidate) => turnRootUserKey(candidate) === key);
+}
+
 function focusedTurnTaskThreadId(focusedTurn) {
   return String(focusedTurn?.taskThreadId ?? focusedTurn?.turnThreadId ?? "");
 }
@@ -114,6 +129,7 @@ function reconcile(serverMessages, outgoingMessages) {
   const clientOutgoing = new Map();
   const exactOutgoing = new Map();
   const turnRoleOutgoing = new Map();
+  const rootOutgoing = new Map();
   for (const message of outgoing) {
     const client = clientIdentityKey(message);
     if (client) clientOutgoing.set(client, message);
@@ -125,9 +141,19 @@ function reconcile(serverMessages, outgoingMessages) {
       values.push(message);
       turnRoleOutgoing.set(turnRole, values);
     }
+    // Codex sometimes omits client_id while it is materializing the first
+    // user item of a newly started turn. The turn root is still a stable
+    // identity: provider + thread + turn + its first user position. Steer
+    // messages deliberately never take this fallback because their position
+    // in a turn is not known to the optimistic client.
+    if (message?.turnUserSlot === "root") {
+      const root = turnRootUserKey(message);
+      if (root) rootOutgoing.set(root, message);
+    }
   }
   const matchedIds = new Set();
-  const matches = (Array.isArray(serverMessages) ? serverMessages : []).map((message) => {
+  const server = Array.isArray(serverMessages) ? serverMessages : [];
+  const matches = server.map((message, index) => {
     const serverClientIdentity = clientIdentityKey(message);
     const serverItemIdentity = identityKey(message);
     const client = clientOutgoing.get(serverClientIdentity);
@@ -135,9 +161,12 @@ function reconcile(serverMessages, outgoingMessages) {
     const fallbackValues = serverClientIdentity || serverItemIdentity
       ? []
       : turnRoleOutgoing.get(identityKey(message, { withoutItem: true })) ?? [];
+    const root = !serverClientIdentity && isTurnRootUser(server, index)
+      ? rootOutgoing.get(turnRootUserKey(message))
+      : null;
     // A turn can contain several steering messages. A turn+role fallback is safe
     // only when it identifies one local message; text is never an identity.
-    const local = client ?? exact ?? (fallbackValues.length === 1 ? fallbackValues[0] : null);
+    const local = client ?? exact ?? root ?? (fallbackValues.length === 1 ? fallbackValues[0] : null);
     if (!local) return { message, local: null };
     matchedIds.add(local.clientUserMessageId);
     return { message, local };

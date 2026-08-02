@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { access, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -52,20 +53,21 @@ await copyFile(
   path.join(output, "remote-command-idempotency.js"),
 );
 
-const androidApk = path.join(
-  root,
-  "AndroidApp",
-  "app",
-  "build",
-  "outputs",
-  "apk",
-  "debug",
-  "app-debug.apk",
-);
+const mobileAssets = path.join(root, "assets", "mobile");
+const androidApk = path.join(mobileAssets, "AgentHub-Mobile.apk");
+const androidManifest = path.join(mobileAssets, "update.json");
 try {
-  await access(androidApk);
+  await Promise.all([access(androidApk), access(androidManifest)]);
+  const manifest = JSON.parse(await readFile(androidManifest, "utf8"));
+  const apk = await readFile(androidApk);
+  const hash = createHash("sha256").update(apk).digest("hex");
+  if (Number(manifest.bytes) !== apk.length || String(manifest.sha256) !== hash) {
+    throw new Error("Published Android APK does not match assets/mobile/update.json");
+  }
   await copyFile(androidApk, path.join(output, "AgentHub-Mobile.apk"));
-} catch {
+  await copyFile(androidManifest, path.join(output, "update.json"));
+} catch (error) {
+  if (error?.code && error.code !== "ENOENT") throw error;
   // A Worker-only build remains valid before the optional Android client is built.
 }
 

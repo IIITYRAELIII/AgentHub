@@ -22,6 +22,7 @@
     "android:build": "powershell -NoProfile -ExecutionPolicy Bypass -File AndroidApp/build.ps1",
     "gateway:install": "node direct-gateway-cli.mjs install",
     "publish:all": "node publish-all.mjs",
+    "publish:changed": "node publish-changed.mjs",
     "hook:install": "node codex-hook-config.mjs install",
     "hook:status": "node codex-hook-config.mjs status",
     "hook:uninstall": "node codex-hook-config.mjs uninstall",

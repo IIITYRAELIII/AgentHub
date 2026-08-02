@@ -120,6 +120,31 @@ test("message lifecycle bounds optimistic state for a long-lived tab", () => {
   assert.equal(messages.has("client-104"), true);
 });
 
+test("new-turn root reconciles when Codex history temporarily omits client id", () => {
+  const local = {
+    ...message("client-root", "Новый вопрос"),
+    itemId: "local-client-root",
+    turnUserSlot: "root",
+  };
+  const server = [
+    {
+      ...local,
+      itemId: "codex-user-item",
+      clientUserMessageId: "",
+    },
+    {
+      ...local,
+      itemId: "codex-steer-item",
+      clientUserMessageId: "",
+      text: "Уточнение в том же ходе",
+    },
+  ];
+  const result = lifecycle.reconcile(server, [local]);
+  assert.equal(result.matches[0].local, local);
+  assert.equal(result.matches[1].local, null);
+  assert.deepEqual([...result.matchedIds], ["client-root"]);
+});
+
 test("live message falls back to the exact active turn while history catches up", () => {
   const visibleHistory = [{
     provider: "codex",

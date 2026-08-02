@@ -649,11 +649,26 @@ test("chat keeps each client's local task selection and opens at the end", () =>
   assert.match(app, /if \(taskChanged\) \{\s*activeChatId = task\.id;\s*renderMessages\(\{ forceBottom: true \}\);/su);
   assert.match(app, /const stickToBottom = forceBottom \|\| chatIsNearBottom\(\);/u);
   assert.match(app, /window\.requestAnimationFrame\(apply\)/u);
-  assert.match(app, /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ forceBottom: true \}\)/u);
+  assert.match(app, /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ preserveTop: true \}\)/u);
   assert.match(client, /const selectedTaskKey = "agent-hub:selected-task:v1"/u);
   assert.match(client, /localStorage\.setItem\(selectedTaskKey, selectedTaskId\)/u);
   assert.match(client, /const localExists = selectedTaskId && availableTaskIds\.has\(selectedTaskId\)/u);
   assert.doesNotMatch(client, /previousSelected && currentSelected && !sameSelection[\s\S]*control\("open-task"/u);
+});
+
+test("history refresh keeps a reader anchored and keeps the final answer at the bottom", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const render = app.match(/function renderMessages\(\{ forceBottom = false, preserveTop = false \} = \{\}\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
+  assert.match(
+    render,
+    /const stickToBottom = forceBottom \|\| chatIsNearBottom\(\);\s*\/\/[^\n]*\n[\s\S]*?const anchor = preserveTop && !stickToBottom \? captureChatAnchor\(\) : null;/u,
+  );
+  assert.match(render, /if \(anchor\) restoreChatAnchor\(anchor\);\s*else if \(stickToBottom\) pinChatToBottom\(\);/u);
+  const live = app.match(/function renderLive\(\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
+  assert.match(live, /const stickToBottom = chatIsNearBottom\(\);/u);
+  assert.match(live, /chatLive\.hidden = true;\s*if \(stickToBottom\) pinChatToBottom\(\);/u);
+  assert.match(live, /if \(stickToBottom\) pinChatToBottom\(\);/u);
+  assert.match(app, /window\.requestAnimationFrame\(\(\) => \{\s*apply\(\);\s*window\.requestAnimationFrame\(apply\);/u);
 });
 
 test("chat refreshes selected external runs without moving the reader", () => {
@@ -837,7 +852,7 @@ test("chat keeps an active response only in the live card after task switching",
   assert.match(app, /!normalizedMessageText\(live\.stage\)/u);
   assert.match(
     app,
-    /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ forceBottom: true \}\);\s*renderLive\(\);/u,
+    /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ preserveTop: true \}\);\s*renderLive\(\);/u,
   );
 });
 

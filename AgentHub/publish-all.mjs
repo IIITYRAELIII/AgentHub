@@ -3,12 +3,14 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { callDesktopControl } from "./desktop-control.mjs";
+import { currentRevision, writePublicationState } from "./publication-state.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const REPOSITORY_ROOT = path.resolve(ROOT, "..");
 const python = process.platform === "win32" ? "python.exe" : "python3";
 const powershell = process.platform === "win32" ? "powershell.exe" : "pwsh";
 
-function npmStep(label, args) {
+export function npmStep(label, args) {
   const npmCli = String(process.env.npm_execpath ?? "").trim();
   if (npmCli) {
     return { label, command: process.execPath, args: [npmCli, ...args] };
@@ -67,7 +69,8 @@ export function publicationSteps({
   ];
 }
 
-function runStep({ label, command, args }) {
+export function runStep({ label, command, args }) {
+  const startedAt = Date.now();
   console.log(`\n==> ${label}`);
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -79,7 +82,10 @@ function runStep({ label, command, args }) {
     });
     child.once("error", reject);
     child.once("exit", (code, signal) => {
-      if (code === 0) resolve();
+      if (code === 0) {
+        console.log(`<== ${label}: ${((Date.now() - startedAt) / 1_000).toFixed(1)} с`);
+        resolve();
+      }
       else reject(new Error(`${label}: процесс завершён с ${signal ?? `кодом ${code}`}`));
     });
   });
@@ -99,6 +105,11 @@ export function parseArguments(args) {
 export async function publishAll(args = process.argv.slice(2), {
   run = runStep,
   restart = callDesktopControl,
+  record = async () => writePublicationState({
+    revision: await currentRevision({ cwd: REPOSITORY_ROOT }),
+    publishedAt: new Date().toISOString(),
+    mode: "full",
+  }),
 } = {}) {
   const options = parseArguments(args);
   for (const step of publicationSteps(options)) await run(step);
@@ -107,6 +118,7 @@ export async function publishAll(args = process.argv.slice(2), {
     const result = await restart("restart-server");
     console.log(result?.message ?? "Перезапуск запрошен");
   }
+  await record();
   console.log("\nПубликация завершена. Интерфейс VS Code подхватит runtime после переоткрытия панели или команды «Обновить Agent Hub»; Reload Window нужен только при изменении моста расширения.");
 }
 

@@ -1114,7 +1114,12 @@ function chatIsNearBottom() {
 function pinChatToBottom() {
   const apply = () => { chatScroll.scrollTop = chatScroll.scrollHeight; };
   apply();
-  window.requestAnimationFrame(apply);
+  // Финальная карточка нередко приходит одновременно с удалением live-блока.
+  // Два кадра дают браузеру завершить оба reflow, прежде чем фиксировать низ.
+  window.requestAnimationFrame(() => {
+    apply();
+    window.requestAnimationFrame(apply);
+  });
 }
 
 let attachmentViewerOpen = false;
@@ -1255,8 +1260,11 @@ function renderHistoryLoader() {
 }
 
 function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
-  const anchor = preserveTop ? captureChatAnchor() : null;
   const stickToBottom = forceBottom || chatIsNearBottom();
+  // Обновление истории после финального ответа использует preserveTop. У низа
+  // якорь первого видимого сообщения оставлял зазор после новой карточки.
+  // Якорь нужен только читателю, который уже ушёл выше по истории.
+  const anchor = preserveTop && !stickToBottom ? captureChatAnchor() : null;
   const historyLoaded = state.messages.has(state.selectedId);
   const messages = state.messages.get(state.selectedId) ?? [];
   renderHistoryLoader();
@@ -1720,6 +1728,9 @@ function liveTextAfterMessages(live) {
 }
 
 function renderLive() {
+  // Решение о прилипающей прокрутке принимаем до изменения высоты live-блока.
+  // Иначе большой очередной фрагмент уже отодвинет низ дальше порога.
+  const stickToBottom = chatIsNearBottom();
   const live = state.live.get(state.selectedId);
   const visibleText = liveTextAfterMessages(live);
   if (!live || (
@@ -1728,6 +1739,7 @@ function renderLive() {
     && !normalizedMessageText(live.stage)
   )) {
     chatLive.hidden = true;
+    if (stickToBottom) pinChatToBottom();
     return;
   }
   chatLive.hidden = false;
@@ -1758,7 +1770,7 @@ function renderLive() {
       activity.detail ? el("span", { class: "activity-detail", text: activity.detail }) : null,
     ])));
   }
-  scrollChatToBottom();
+  if (stickToBottom) pinChatToBottom();
 }
 
 function scrollChatToBottom() {
@@ -2771,7 +2783,7 @@ const AgentHub = {
   setMessages(taskId, messages) {
     state.messages.set(taskId, Array.isArray(messages) ? messages.slice() : []);
     if (taskId === state.selectedId) {
-      renderMessages({ forceBottom: true });
+      renderMessages({ preserveTop: true });
       renderLive();
     }
   },
@@ -2782,7 +2794,7 @@ const AgentHub = {
       text: String(text ?? ""),
       open: true,
     });
-    if (taskId === state.selectedId) renderMessages({ forceBottom: true });
+    if (taskId === state.selectedId) renderMessages({ preserveTop: true });
   },
   setMessagesPreservingScroll(taskId, messages) {
     state.messages.set(taskId, Array.isArray(messages) ? messages.slice() : []);
@@ -2803,7 +2815,7 @@ const AgentHub = {
     list.push(message);
     state.messages.set(taskId, list);
     if (taskId === state.selectedId) {
-      renderMessages({ forceBottom: true });
+      renderMessages({ preserveTop: true });
       renderLive();
     }
   },
@@ -2813,7 +2825,7 @@ const AgentHub = {
     if (!message) return;
     Object.assign(message, patch);
     if (taskId === state.selectedId) {
-      renderMessages();
+      renderMessages({ preserveTop: true });
       renderLive();
     }
   },

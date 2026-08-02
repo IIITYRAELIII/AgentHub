@@ -501,6 +501,10 @@ function applySnapshot(snapshot) {
       turnId: String(task.run?.turnId ?? ""),
       time: task.run?.startedAt ?? null,
       attachments: attachmentViews(task.run?.attachments),
+      // The run-level receipt is assigned only when Agent Hub starts a new
+      // turn. It identifies the first user item even while Codex history has
+      // not yet echoed client_id back to us.
+      turnUserSlot: "root",
       ...deliveryPatch("accepted"),
     });
   }
@@ -917,6 +921,7 @@ agentHub.on("message:send", (request) => {
         threadId: result?.threadId ?? identity?.threadId ?? "",
         turnId: result?.turnId ?? "",
         itemId: result?.itemId ?? request.requestId,
+        ...(result?.accepted && !result?.steered ? { turnUserSlot: "root" } : {}),
         ...(result?.accepted
           ? deliveryPatch("accepted")
           : result?.deferred
