@@ -51,6 +51,7 @@ export async function protectRuntimeConfig(filePath, {
   environment = process.env,
   runCommand = run,
 } = {}) {
+  if (environment.AGENT_HUB_DISABLE_SECRET_ACL === "1") return;
   if (platform === "win32") {
     await runCommand("icacls.exe", runtimeSecretAclArguments(filePath, environment));
     return;
@@ -63,6 +64,7 @@ export async function protectRuntimeDirectory(directoryPath, {
   environment = process.env,
   runCommand = run,
 } = {}) {
+  if (environment.AGENT_HUB_DISABLE_SECRET_ACL === "1") return;
   if (platform === "win32") {
     await runCommand(
       "icacls.exe",

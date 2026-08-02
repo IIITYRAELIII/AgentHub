@@ -278,7 +278,16 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     "a forwarded message must not start a turn before explicit bundle submission");
   const savedBundleId = savedBundleState.forwardBundles[0].id;
   await stopBot();
+  const restartPollingMark = telegram.calls.length;
   await startBot();
+  try {
+    await telegram.waitForCall("getUpdates", () => true, { after: restartPollingMark });
+  } catch (error) {
+    throw new Error(
+      `${error.message}\nRestart exit: ${bot?.exitCode ?? "running"}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+      { cause: error },
+    );
+  }
   savedBundleState = await waitFor(async () => {
     const state = await readJson(statePath).catch(() => null);
     return state?.forwardBundles?.[0]?.id === savedBundleId ? state : null;

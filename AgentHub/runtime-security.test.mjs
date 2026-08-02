@@ -40,6 +40,21 @@ test("runtime config ACL keeps only its owner and system administrators", async 
   assert.equal(calls[0][0], "icacls.exe");
 });
 
+test("test runtime can explicitly keep its temporary ACL unchanged", async () => {
+  const calls = [];
+  await protectRuntimeConfig("C:\\runtime\\config.json", {
+    platform: "win32",
+    environment: { AGENT_HUB_DISABLE_SECRET_ACL: "1" },
+    runCommand: async (...call) => calls.push(call),
+  });
+  await protectRuntimeDirectory("C:\\runtime\\releases", {
+    platform: "win32",
+    environment: { AGENT_HUB_DISABLE_SECRET_ACL: "1" },
+    runCommand: async (...call) => calls.push(call),
+  });
+  assert.deepEqual(calls, []);
+});
+
 test("runtime control directories deny inherited sandbox modification", async () => {
   const args = runtimeDirectoryAclArguments("C:\\runtime\\releases", {
     USERDOMAIN: "DESKTOP",
