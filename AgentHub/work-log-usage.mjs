@@ -436,6 +436,23 @@ function formatTurnEntry(
     + (share ? `<span data-work-log-turn-share>(${share})</span>` : "")
     + "</span>"
     + `<span data-work-log-turn-title>${title}</span>`
+    /* Переключатель субагентов живёт в самой строке хода: отдельная широкая
+       кнопка под ней разрывала список и занимала целую строку. */
+    + (children
+      ? '<button type="button" data-toggle-subagents aria-pressed="false"'
+        + ` aria-label="Субагенты (${descendantCount})" title="Субагенты (${descendantCount})">`
+        + '<svg data-phosphor-icon="tree-structure" viewBox="0 0 256 256" aria-hidden="true">'
+        + '<rect x="32" y="40" width="56" height="48" rx="8" fill="none" stroke="currentColor"'
+        + ' stroke-linecap="round" stroke-linejoin="round" stroke-width="18"></rect>'
+        + '<rect x="168" y="24" width="56" height="48" rx="8" fill="none" stroke="currentColor"'
+        + ' stroke-linecap="round" stroke-linejoin="round" stroke-width="18"></rect>'
+        + '<rect x="168" y="168" width="56" height="48" rx="8" fill="none" stroke="currentColor"'
+        + ' stroke-linecap="round" stroke-linejoin="round" stroke-width="18"></rect>'
+        + '<path d="M88 64h32a16 16 0 0 1 16 16v96a16 16 0 0 0 16 16h16M136 96V64a16 16 0 0 1 16-16h16"'
+        + ' fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"'
+        + ' stroke-width="18"></path>'
+        + `</svg><span data-subagent-count>${descendantCount}</span></button>`
+      : "")
     + '<button type="button" data-open-turn aria-label="Открыть ход" title="Открыть ход">'
     // Phosphor arrow-square-out — тот же набор, что у остальных иконок оболочки
     + '<svg data-phosphor-icon="arrow-square-out" viewBox="0 0 256 256" aria-hidden="true">'

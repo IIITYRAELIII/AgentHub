@@ -1153,6 +1153,20 @@ document.addEventListener("click", (event) => {
     });
     return;
   }
+  /* Кнопка субагентов стоит в той же строке, что «Открыть ход», поэтому её клик
+     не должен ни раскрывать сам ход, ни открывать диалог. */
+  const toggleSubagents = event.target.closest("[data-toggle-subagents]");
+  if (toggleSubagents) {
+    event.preventDefault();
+    event.stopPropagation();
+    const entry = toggleSubagents.closest("[data-work-log-turn-entry]");
+    const children = entry?.querySelector("details[data-work-log-turn-children-details]");
+    if (children) {
+      children.open = !children.open;
+      toggleSubagents.setAttribute("aria-pressed", String(children.open));
+    }
+    return;
+  }
   const openTurn = event.target.closest("[data-open-turn]");
   if (!openTurn) return;
   event.preventDefault();

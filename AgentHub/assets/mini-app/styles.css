@@ -2551,6 +2551,47 @@ html[data-grouping="task"]
   color: var(--accent);
 }
 
+/* Субагенты раскрываются кнопкой в строке хода, поэтому собственная строка
+   «Показать субагентов» больше не нужна — она остаётся только для чтения с
+   экрана. */
+.journal details[data-work-log-turn-details] > summary > button[data-toggle-subagents] {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-left: 1px solid var(--line);
+  color: var(--text-faint);
+  cursor: pointer;
+  display: inline-flex;
+  gap: 0.22rem;
+  font-family: var(--font-numeric);
+  font-size: 0.68rem;
+  justify-content: center;
+  padding: 0.3rem 0.42rem;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.journal details[data-work-log-turn-details] > summary > button[data-toggle-subagents] svg {
+  height: 0.95rem;
+  width: 0.95rem;
+}
+
+.journal details[data-work-log-turn-details] > summary > button[data-toggle-subagents]:hover,
+.journal details[data-work-log-turn-details] > summary > button[data-toggle-subagents][aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.journal details[data-work-log-turn-children-details] > summary {
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
 .journal span[data-work-log-turn-meta] {
   color: var(--text-muted);
   font-family: var(--font-numeric);
@@ -2601,13 +2642,17 @@ html[data-grouping="task"]
   padding: 0.6rem 0.75rem 0.7rem;
 }
 
+/* «Свой расход» стоит в том же столбце фактов, что модель и длительность,
+   поэтому и выглядит так же: мелкая подпись над значением. */
 .journal div[data-work-log-turn-context],
+.journal div[data-work-log-turn-own-usage],
 .journal div[data-work-log-turn-prompt] {
   color: var(--text-soft);
   font-size: 0.8rem;
 }
 
 .journal div[data-work-log-turn-context] > strong,
+.journal div[data-work-log-turn-own-usage] > strong,
 .journal div[data-work-log-turn-prompt] > strong {
   color: var(--text-faint);
   display: block;

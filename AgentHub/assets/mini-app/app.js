@@ -1013,13 +1013,6 @@ function renderTaskItem(task) {
   const agentLabel = task.agentLabel || providerLabels[provider] || "Агент";
   const meta = el("div", { class: "task-meta" }, [
     el("span", { class: "task-agent", text: agentLabel }),
-    task.runtimeLabel
-      ? el("span", {
-        class: "task-runtime",
-        text: task.runtimeLabel,
-        title: task.runtimeTitle || task.runtimeLabel,
-      })
-      : null,
     task.modelLabel
       ? el("span", {
         class: "task-agent task-model",
@@ -1029,6 +1022,13 @@ function renderTaskItem(task) {
       : null,
     task.statusLabel
       ? el("span", { class: "task-status", "data-status": task.status || "", text: task.statusLabel })
+      : null,
+    task.runtimeLabel
+      ? el("span", {
+        class: "task-runtime",
+        text: task.runtimeLabel,
+        title: task.runtimeTitle || task.runtimeLabel,
+      })
       : null,
   ]);
 
