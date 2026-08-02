@@ -3485,7 +3485,10 @@ const desktopMessageController = createDesktopMessageController({
 });
 
 function trustedDeviceUserId(context) {
-  return resolveTrustedDeviceUserId(config.allowedUserIds, context);
+  const localAndroidUserId = config.components.androidApp && !config.components.telegram
+    ? "local"
+    : "";
+  return resolveTrustedDeviceUserId(config.allowedUserIds, context, localAndroidUserId);
 }
 
 async function importCodexDesktopAttachments(values) {

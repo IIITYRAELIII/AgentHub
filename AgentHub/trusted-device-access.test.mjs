@@ -12,3 +12,15 @@ test("trusted device user resolution accepts the configured Set", () => {
     /не разрешён/u,
   );
 });
+
+test("Android-only Hub uses an isolated local device owner", () => {
+  assert.equal(resolveTrustedDeviceUserId(new Set(), null, "local"), "local");
+  assert.equal(
+    resolveTrustedDeviceUserId(new Set(), { userId: "local" }, "local"),
+    "local",
+  );
+  assert.throws(
+    () => resolveTrustedDeviceUserId(new Set(), { userId: "99" }, "local"),
+    /не разрешён/u,
+  );
+});
