@@ -349,8 +349,13 @@ function handleRequest(message) {
   const { id, method, params = {} } = message;
   state.requestCounts[method] = Number(state.requestCounts[method] ?? 0) + 1;
   if (method === "initialize") {
-    reply(id, { userAgent: "fake-codex-e2e" });
-    resumeInterruptedTurns();
+    const completeInitialize = () => {
+      reply(id, { userAgent: "fake-codex-e2e" });
+      resumeInterruptedTurns();
+    };
+    const delayMs = Math.max(0, Number(state.initializeDelayMs) || 0);
+    if (delayMs) schedule(completeInitialize, delayMs);
+    else completeInitialize();
     return;
   }
   if (method === "thread/start") {

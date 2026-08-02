@@ -2251,7 +2251,11 @@ async function initializeProvider() {
     return;
   }
   await startCodexAppServer();
-  await initializeCodex();
+  // A selected task is only UI state at this point.  Loading it here can make
+  // startup wait for the complete (and sometimes very large) thread before
+  // the local Desktop control pipe exists.  The task is resumed lazily by the
+  // operation that needs it (turn start, explicit task selection, etc.).
+  await initializeCodex({ attachSelectedThread: false });
 }
 
 async function initializeCodex({ attachSelectedThread = true } = {}) {
@@ -8298,6 +8302,17 @@ process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
 await runCodexRolloutContextSanitizer({ reschedule: false });
+// The control endpoint is intentionally available before provider recovery.
+// Desktop clients can then show the cached task list and retry state while a
+// slow or temporarily unhealthy Codex App Server is being initialized.
+desktopControlServer = new DesktopControlServer({
+  runtimeRoot: runtimeCommandRoot,
+  handler: handleDesktopControl,
+  protectSecret: process.env.AGENT_HUB_DISABLE_SECRET_ACL === "1"
+    ? async () => {}
+    : undefined,
+});
+await desktopControlServer.start();
 await initializeProvider();
 if (codexTransport.running) {
   await listAllCodexThreads()
@@ -8315,14 +8330,6 @@ if (config.telegramEnabled) {
     await sendMessage(`⚠️ Не удалось восстановить фоновые медиа-задачи: ${error.message}`).catch(() => {});
   });
 }
-desktopControlServer = new DesktopControlServer({
-  runtimeRoot: runtimeCommandRoot,
-  handler: handleDesktopControl,
-  protectSecret: process.env.AGENT_HUB_DISABLE_SECRET_ACL === "1"
-    ? async () => {}
-    : undefined,
-});
-await desktopControlServer.start();
 if (miniAppServer) {
   try {
     const address = await startMiniApp();

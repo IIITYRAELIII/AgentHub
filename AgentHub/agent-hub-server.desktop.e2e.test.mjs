@@ -26,6 +26,7 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   const configPath = path.join(runtimeRoot, "config.json");
   const codexStatePath = path.join(runtimeRoot, "fake-codex-state.json");
   const codexPidPath = path.join(runtimeRoot, "fake-codex.pid");
+  const savedThreadId = "10000000-0000-4000-8000-000000000001";
   await Promise.all([mkdir(dataDir, { recursive: true }), mkdir(projectRoot, { recursive: true })]);
   const telegram = new FakeTelegramApi();
   await telegram.start();
@@ -54,7 +55,35 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     ttsEnabled: false,
     progressStartDelayMs: 50,
   }, null, 2)}\n`, "utf8");
+  await writeFile(codexStatePath, `${JSON.stringify({
+    nextThread: 2,
+    nextTurn: 1,
+    nextMessage: 1,
+    // The delayed initialize models a recovering App Server.  The Desktop
+    // pipe must be available before that recovery finishes.
+    initializeDelayMs: 1_500,
+    threads: [{
+      id: savedThreadId,
+      cwd: projectRoot,
+      name: "Saved large task",
+      preview: "",
+      updatedAt: Math.floor(Date.now() / 1000),
+      turns: [],
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      archived: false,
+    }],
+    crashedOnce: false,
+    requestCounts: {},
+  }, null, 2)}\n`, "utf8");
+  await writeFile(path.join(dataDir, "state.json"), `${JSON.stringify({
+    activeProvider: "codex",
+    activeProjectRoot: projectRoot,
+    threadIds: { codex: savedThreadId, claude: null },
+    activeThreadTitle: "Saved large task",
+  }, null, 2)}\n`, "utf8");
 
+  const startupStartedAt = Date.now();
   const bot = spawn(process.execPath, [BOT_FILE], {
     cwd: ROOT,
     env: {
@@ -85,8 +114,13 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     "desktop control startup",
   );
   assert.equal(initial.apiVersion, 2);
+  assert.ok(Date.now() - startupStartedAt < 1_400, "Desktop control waited for Codex initialization");
   assert.equal(initial.tasks.length, 1);
   const firstThreadId = initial.selected.threadId;
+  assert.equal(firstThreadId, savedThreadId);
+  const initialCodexState = await readFile(codexStatePath, "utf8").then(JSON.parse);
+  assert.equal(initialCodexState.requestCounts["thread/resume"] ?? 0, 0,
+    "startup must not resume the selected saved thread");
   assert.equal(initial.settings.provider, "codex");
   assert.equal(initial.settings.reasoning, "high");
   assert.equal(initial.settings.mode, "default");
