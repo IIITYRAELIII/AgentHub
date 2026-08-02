@@ -101,7 +101,8 @@ html[data-background-override="true"][data-background="gothic-harbor"] { --hub-b
 html[data-background-override="true"][data-background="gothic-chapel"] { --hub-background-color: #080706; --hub-background-image: linear-gradient(90deg, rgba(5, 4, 3, .42), rgba(5, 4, 3, .08) 36%, rgba(5, 4, 3, 0) 60%), var(--gothic-chapel-image, url("/gothic-chapel.jpg")); --hub-background-position: center, 60% 50%; }
 html[data-background-override="true"][data-background="gothic-keep"] { --hub-background-color: #070709; --hub-background-image: linear-gradient(90deg, rgba(5, 5, 7, .46), rgba(5, 5, 7, .1) 38%, rgba(5, 5, 7, 0) 62%), var(--gothic-keep-image, url("/gothic-keep.jpg")); --hub-background-position: center, 58% 54%; }
 html[data-background-override="true"][data-background="gothic-minental-castle"] { --hub-background-color: #05090d; --hub-background-image: linear-gradient(90deg, rgba(3, 6, 10, .42), rgba(3, 6, 10, .08) 40%, rgba(3, 6, 10, 0) 64%), var(--gothic-minental-castle-image, url("/gothic-minental-castle.jpg")); --hub-background-position: center, 58% 50%; }
-html[data-background-override="true"][data-background="gothic-finkregh"] { --hub-background-color: #03080c; --hub-background-image: linear-gradient(90deg, rgba(2, 6, 10, .24), rgba(2, 6, 10, .05) 34%, rgba(2, 6, 10, 0) 60%), var(--gothic-finkregh-image, url("/gothic-finkregh.jpg")); --hub-background-position: center, 50% 50%; }
+html[data-background-override="true"][data-background="gothic-minental-fortress"] { --hub-background-color: #05090d; --hub-background-image: linear-gradient(90deg, rgba(3, 6, 10, .38), rgba(3, 6, 10, .07) 40%, rgba(3, 6, 10, 0) 64%), var(--gothic-minental-fortress-image, url("/gothic-minental-fortress.jpg")); --hub-background-position: center, 50% 50%; }
+html[data-background-override="true"][data-background="gothic-finkregh"] { --hub-background-color: #03080c; --hub-background-image: linear-gradient(90deg, rgba(2, 6, 10, .18), rgba(2, 6, 10, .04) 34%, rgba(2, 6, 10, 0) 60%), var(--gothic-finkregh-image, url("/gothic-finkregh.jpg")); --hub-background-position: center, 50% 50%; }
 
 /* Эффект сцены. Общий слой над фоном для чужих сцен выключен, поэтому каждая
    готическая сцена включает его обратно и держит свой источник света:
@@ -162,13 +163,22 @@ html[data-background-override="true"][data-background="gothic-keep"] body::befor
   opacity: 0.5 !important;
 }
 
-/* Замок Миненталя: туман лежит в разрушенном внешнем кольце, огни держат ворота. */
+/* Монастырь: туман лежит в разрушенном внешнем кольце, огни держат ворота. */
 html[data-background-override="true"][data-background="gothic-minental-castle"] body::before {
   animation: gothic-scene-fog 32s ease-in-out infinite !important;
   background-image:
     radial-gradient(68% 34% at 34% 72%, rgba(142, 168, 198, 0.2), transparent 78%),
     radial-gradient(18% 14% at 78% 46%, rgba(255, 168, 82, 0.18), transparent 74%) !important;
   opacity: 0.48 !important;
+}
+
+/* Замок Миненталя: лунный туман отделяет широкую крепость от тёмной долины. */
+html[data-background-override="true"][data-background="gothic-minental-fortress"] body::before {
+  animation: gothic-scene-fog 34s ease-in-out infinite !important;
+  background-image:
+    radial-gradient(62% 34% at 28% 68%, rgba(124, 151, 184, 0.18), transparent 80%),
+    radial-gradient(22% 16% at 70% 43%, rgba(255, 164, 74, 0.14), transparent 76%) !important;
+  opacity: 0.44 !important;
 }
 
 /* Финкрегх: холодная дымка ползёт по льду, глубина пещеры медленно светлеет. */
@@ -208,7 +218,8 @@ html[data-background-override="true"][data-background="graphite"] { --hub-backgr
   html[data-background-override="true"][data-background="gothic-chapel"] { --hub-background-position: center, 74% 50%; }
   html[data-background-override="true"][data-background="gothic-keep"] { --hub-background-position: center, 76% 46%; }
   html[data-background-override="true"][data-background="gothic-minental-castle"] { --hub-background-position: center, 76% 50%; }
-  html[data-background-override="true"][data-background="gothic-finkregh"] { --hub-background-position: center, 22% 50%; }
+  html[data-background-override="true"][data-background="gothic-minental-fortress"] { --hub-background-position: center, 76% 50%; }
+  html[data-background-override="true"][data-background="gothic-finkregh"] { --hub-background-position: center, 78% 50%; }
   html[data-background-override="true"][data-background="lake"] { --hub-background-position: center, 72% 72%; }
   /* на телефоне от кадра остаётся вертикальная полоса, гасить край слева
      нечего: обе рисованные сцены притемняются сверху и снизу */

@@ -37,6 +37,7 @@ for (const file of [
   "gothic-chapel.jpg",
   "gothic-keep.jpg",
   "gothic-minental-castle.jpg",
+  "gothic-minental-fortress.jpg",
   "gothic-finkregh.jpg",
   "lake-summer.jpg",
   "lake-watercolor.jpg",

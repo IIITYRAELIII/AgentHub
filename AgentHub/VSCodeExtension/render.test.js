@@ -487,7 +487,7 @@ test("Gothic theme uses medieval stone, moonlit steel and a torch-lit scene", ()
   );
 });
 
-test("«Gothic» offers eight night scenes, each with its own light", () => {
+test("«Gothic» offers nine night scenes, each with its own light", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const backgrounds = fs.readFileSync(
     require.resolve("../assets/mini-app/backgrounds.css"),
@@ -495,7 +495,7 @@ test("«Gothic» offers eight night scenes, each with its own light", () => {
   );
   assert.match(
     client,
-    /gothic: \[\s*"gothic", "gothic-crypt", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep",\s*"gothic-minental-castle", "gothic-finkregh",/u,
+    /gothic: \[\s*"gothic", "gothic-crypt", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep",\s*"gothic-minental-castle", "gothic-minental-fortress", "gothic-finkregh",/u,
   );
   for (const [background, image] of [
     ["gothic-tower", "gothic-tower\\.jpg"],
@@ -503,6 +503,7 @@ test("«Gothic» offers eight night scenes, each with its own light", () => {
     ["gothic-chapel", "gothic-chapel\\.jpg"],
     ["gothic-keep", "gothic-keep\\.jpg"],
     ["gothic-minental-castle", "gothic-minental-castle\\.jpg"],
+    ["gothic-minental-fortress", "gothic-minental-fortress\\.jpg"],
     ["gothic-finkregh", "gothic-finkregh\\.jpg"],
   ]) {
     assert.match(
@@ -526,6 +527,7 @@ test("«Gothic» offers eight night scenes, each with its own light", () => {
 test("large Gothic scenes are decoded before replacing the visible background", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   assert.match(client, /"gothic-minental-castle": \{[\s\S]*fallback: "\/gothic-minental-castle\.jpg"/u);
+  assert.match(client, /"gothic-minental-fortress": \{[\s\S]*fallback: "\/gothic-minental-fortress\.jpg"/u);
   assert.match(client, /"gothic-finkregh": \{[\s\S]*fallback: "\/gothic-finkregh\.jpg"/u);
   assert.match(client, /image\.decode\(\)\.then\(\(\) => finish\(true\)/u);
   assert.match(client, /if \(requestId !== backgroundRequestId\) return;/u);

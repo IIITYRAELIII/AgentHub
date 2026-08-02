@@ -209,7 +209,8 @@ const backgroundNames = {
   pulsar: "Пульсар", "pulsar-beam": "Луч",
   gothic: "Склеп", "gothic-crypt": "Крипта", "gothic-tower": "Башня",
   "gothic-harbor": "Гавань", "gothic-chapel": "Часовня", "gothic-keep": "Крепость",
-  "gothic-minental-castle": "Замок Миненталя", "gothic-finkregh": "Финкрегх",
+  "gothic-minental-castle": "Монастырь", "gothic-minental-fortress": "Замок Миненталя",
+  "gothic-finkregh": "Финкрегх",
   blackhole: "BlackHole", "blackhole-disk": "Диск",
   taiga: "Rain", "taiga-rainfall": "Ливень",
   metropolis: "Мегаполис", "metropolis-towers": "Башни",
@@ -225,7 +226,7 @@ const themeBackgrounds = Object.freeze({
   pulsar: ["pulsar", "pulsar-beam"],
   gothic: [
     "gothic", "gothic-crypt", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep",
-    "gothic-minental-castle", "gothic-finkregh",
+    "gothic-minental-castle", "gothic-minental-fortress", "gothic-finkregh",
   ],
   blackhole: ["blackhole", "blackhole-disk"],
   taiga: ["taiga", "taiga-rainfall"],
@@ -240,6 +241,10 @@ const deferredBackgroundAssets = Object.freeze({
   "gothic-minental-castle": {
     customProperty: "--gothic-minental-castle-image",
     fallback: "/gothic-minental-castle.jpg",
+  },
+  "gothic-minental-fortress": {
+    customProperty: "--gothic-minental-fortress-image",
+    fallback: "/gothic-minental-fortress.jpg",
   },
   "gothic-finkregh": {
     customProperty: "--gothic-finkregh-image",
