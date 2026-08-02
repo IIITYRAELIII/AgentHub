@@ -146,6 +146,8 @@ class SecureInstallationTests(unittest.TestCase):
             target = home / ".vscode" / "extensions" / "test.agent-hub-1.0.0"
             target.mkdir(parents=True)
             (target / "old.txt").write_text("working", encoding="utf-8")
+            legacy = target.parent / "tyrael.work-log-view-0.4.1"
+            legacy.mkdir()
 
             with (
                 mock.patch.object(install, "ROOT", root),
@@ -156,6 +158,32 @@ class SecureInstallationTests(unittest.TestCase):
                     install.install_vscode_extension()
 
             self.assertEqual("working", (target / "old.txt").read_text(encoding="utf-8"))
+            self.assertTrue(legacy.exists())
+
+    def test_extension_install_removes_legacy_work_log_view_only_after_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "agent-hub"
+            source = root / "VSCodeExtension"
+            source.mkdir(parents=True)
+            package = {"publisher": "test", "name": "agent-hub", "version": "1.0.0"}
+            (source / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            home = Path(temp) / "home"
+            extensions = home / ".vscode" / "extensions"
+            legacy = extensions / "tyrael.work-log-view-0.4.1"
+            unrelated = extensions / "example.unrelated-2.0.0"
+            legacy.mkdir(parents=True)
+            unrelated.mkdir()
+
+            with (
+                mock.patch.object(install, "ROOT", root),
+                mock.patch("AgentHub.install.Path.home", return_value=home),
+            ):
+                target = install.install_vscode_extension()
+
+            self.assertIsNotNone(target)
+            self.assertTrue(target.is_dir())
+            self.assertFalse(legacy.exists())
+            self.assertTrue(unrelated.exists())
 
     def test_extension_install_recovers_crash_after_target_was_moved_to_rollback(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
