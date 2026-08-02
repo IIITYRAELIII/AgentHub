@@ -74,7 +74,7 @@ function focusedSteps(plan) {
   if (plan.unknown.length) return publicationSteps();
   const full = publicationSteps({ skipWorker: !plan.worker });
   const byLabel = new Map(full.map((step) => [step.label, step]));
-  const steps = [byLabel.get("Проверка changelog")];
+  const steps = [];
   if (plan.fullTests) {
     steps.push(byLabel.get("Полные тесты Agent Hub"));
   } else {
