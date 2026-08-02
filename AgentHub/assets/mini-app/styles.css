@@ -841,47 +841,48 @@ html[data-theme="lake"] {
   --rail-width: 2px;
 
   --bg: #080d0b;
-  --surface-1: rgba(240, 226, 200, 0.034);
-  --surface-2: rgba(240, 226, 200, 0.062);
-  --surface-3: rgba(240, 226, 200, 0.105);
+  --surface-1: rgba(222, 240, 222, 0.034);
+  --surface-2: rgba(222, 240, 222, 0.062);
+  --surface-3: rgba(222, 240, 222, 0.105);
   --sunken: rgba(4, 8, 7, 0.52);
 
-  --line: rgba(226, 196, 150, 0.15);
-  --line-strong: rgba(232, 204, 160, 0.3);
+  --line: rgba(164, 214, 172, 0.15);
+  --line-strong: rgba(176, 222, 184, 0.3);
 
   /* вода на кадре светлая, поэтому карточки плотнее, чем у «Луга» */
-  --card-bg: linear-gradient(180deg, rgba(13, 22, 19, 0.66), rgba(5, 10, 9, 0.74));
-  --card-bg-open: linear-gradient(180deg, rgba(13, 22, 19, 0.72), rgba(5, 10, 9, 0.8));
+  --card-bg: linear-gradient(180deg, rgba(12, 22, 18, 0.66), rgba(5, 10, 9, 0.74));
+  --card-bg-open: linear-gradient(180deg, rgba(12, 22, 18, 0.72), rgba(5, 10, 9, 0.8));
   --card-texture: none;
-  --card-border: rgba(226, 196, 150, 0.18);
-  --card-border-open: rgba(232, 178, 106, 0.42);
+  --card-border: rgba(164, 214, 172, 0.18);
+  --card-border-open: rgba(121, 201, 138, 0.42);
   --card-shadow:
-    inset 0 1px 0 rgba(240, 226, 200, 0.06),
+    inset 0 1px 0 rgba(222, 240, 222, 0.06),
     0 24px 56px -34px rgba(0, 0, 0, 0.95);
 
-  --plate-bg: linear-gradient(180deg, rgba(240, 226, 200, 0.08), rgba(5, 10, 9, 0.32));
-  --plate-shadow: inset 0 1px 0 rgba(240, 226, 200, 0.075);
-  --turn-shadow: 0 0 28px -20px rgba(232, 178, 106, 0.8);
+  --plate-bg: linear-gradient(180deg, rgba(222, 240, 222, 0.08), rgba(5, 10, 9, 0.32));
+  --plate-shadow: inset 0 1px 0 rgba(222, 240, 222, 0.075);
+  --turn-shadow: 0 0 28px -20px rgba(121, 201, 138, 0.8);
 
-  --text: #f3ece0;
-  --text-soft: #d5cab8;
-  --text-muted: #a2998a;
-  --text-faint: #7a7366;
+  --text: #eef4ea;
+  --text-soft: #c9d4c4;
+  --text-muted: #98a595;
+  --text-faint: #737f70;
 
-  /* закат на воде: тёплый янтарь вместо лайма «Луга» */
-  --accent: #e8b26a;
-  --accent-soft: rgba(232, 178, 106, 0.14);
-  --accent-line: rgba(232, 178, 106, 0.44);
-  --accent-glow: 0 0 22px -10px rgba(232, 178, 106, 0.9);
-  --selection: rgba(232, 178, 106, 0.3);
-  --brand-gradient: linear-gradient(150deg, rgba(232, 178, 106, 0.32), rgba(46, 78, 60, 0.34));
-  --brand-shadow: 0 0 24px -10px rgba(232, 178, 106, 0.85);
+  /* трава у воды: зелень мягче и холоднее лайма «Луга» */
+  --accent: #79c98a;
+  --accent-soft: rgba(121, 201, 138, 0.14);
+  --accent-line: rgba(121, 201, 138, 0.44);
+  --accent-glow: 0 0 22px -10px rgba(121, 201, 138, 0.9);
+  --selection: rgba(121, 201, 138, 0.3);
+  --brand-gradient: linear-gradient(150deg, rgba(121, 201, 138, 0.32), rgba(32, 66, 52, 0.34));
+  --brand-shadow: 0 0 24px -10px rgba(121, 201, 138, 0.85);
 
-  /* Codex уводим в холодную воду, чтобы два провайдера не слились в янтаре */
-  --provider-none: #94897a;
+  /* провайдеры разводим по воде и закату: в зелени они иначе сливаются с
+     акцентом темы */
+  --provider-none: #8a9488;
   --provider-codex: #8fc6cf;
   --provider-claude: #f0a86e;
-  --ok: #a8cf92;
+  --ok: #79c98a;
   --pending: #dfc078;
 
   --dot-input: #8fc6cf;
@@ -889,7 +890,7 @@ html[data-theme="lake"] {
   --dot-output: #f0a86e;
   --dot-think: #bda9d6;
 
-  --space-glow-a: rgba(232, 178, 106, 0.1);
+  --space-glow-a: rgba(121, 201, 138, 0.1);
   --space-glow-b: rgba(40, 80, 60, 0.12);
   --space-base: #080d0b;
   --space-star: transparent;
@@ -3705,9 +3706,10 @@ html[data-theme="lake"] body::after {
   opacity: 1;
 }
 
-/* Закат догорает: тёплый свет над дальним берегом медленно набирает силу и
-   отпускает, дорожка на воде дышит вместе с ним. Двигается только слой
-   подсветки, сам кадр остаётся неподвижным. */
+/* Вечер догорает: свет над дальним берегом медленно набирает силу и отпускает,
+   отражение в воде дышит вместе с ним. Подсветка держится в зелени кадра, иначе
+   тема снова читается закатно-оранжевой. Двигается только слой подсветки, сам
+   кадр остаётся неподвижным. */
 @keyframes lake-shimmer {
   0%, 100% { opacity: 0.2; transform: translate3d(-1%, 0.5%, 0) scale(1.01); }
   50% { opacity: 0.62; transform: translate3d(2%, -0.5%, 0) scale(1.05); }
@@ -3716,8 +3718,8 @@ html[data-theme="lake"] body::after {
 html[data-theme="lake"] body::before {
   animation: lake-shimmer 26s ease-in-out infinite;
   background-image:
-    radial-gradient(58% 30% at 44% 40%, rgba(248, 216, 154, 0.4), rgba(214, 158, 92, 0.1) 54%, transparent 78%),
-    radial-gradient(46% 16% at 40% 58%, rgba(250, 226, 176, 0.22), transparent 72%);
+    radial-gradient(58% 30% at 48% 38%, rgba(232, 240, 196, 0.36), rgba(150, 200, 140, 0.1) 54%, transparent 78%),
+    radial-gradient(46% 16% at 44% 56%, rgba(226, 240, 202, 0.2), transparent 72%);
   background-position: center;
   background-size: cover;
   content: "";
@@ -3733,7 +3735,7 @@ html[data-theme="lake"] .app-header {
 }
 
 html[data-theme="lake"] .app-header::after {
-  background: linear-gradient(90deg, transparent, rgba(232, 178, 106, 0.55), transparent);
+  background: linear-gradient(90deg, transparent, rgba(121, 201, 138, 0.55), transparent);
 }
 
 html[data-theme="lake"] .journal details[data-work-log-day-section] {
@@ -6666,6 +6668,41 @@ html[data-token-breakdown="off"] .journal span[data-day-usage-breakdown] {
   opacity: 0.55;
 }
 
+.trusted-device-archive {
+  border-top: 1px solid var(--line);
+  margin-top: 0.2rem;
+  padding-top: 0.5rem;
+}
+
+.trusted-device-archive > summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.74rem;
+  list-style: none;
+  user-select: none;
+}
+
+.trusted-device-archive > summary::-webkit-details-marker {
+  display: none;
+}
+
+.trusted-device-archive > summary::before {
+  content: "▸ ";
+  color: var(--text-faint);
+}
+
+.trusted-device-archive[open] > summary::before {
+  content: "▾ ";
+}
+
+.trusted-device-archive > summary:hover {
+  color: var(--text-soft);
+}
+
+.trusted-device-archive > .trusted-device-list {
+  padding: 0.5rem 0 0.15rem;
+}
+
 .trusted-device-info {
   display: flex;
   flex-direction: column;
@@ -7444,12 +7481,14 @@ html[data-view="server"] .server-view {
   display: block;
 }
 
+/* Страница сервера, как статистика, занимает всю ширину: колонка по центру
+   оставляла половину экрана пустой, а плитки внутри карточек всё равно
+   раскладываются сами. */
 .server-content {
   display: grid;
   gap: 1.15rem;
-  margin: 0 auto;
-  max-width: 68rem;
   padding: 1.25rem clamp(1rem, 2vw, 1.75rem) 3rem;
+  width: 100%;
 }
 
 .server-health-card,
@@ -7517,11 +7556,21 @@ html[data-view="server"] .server-view {
   box-shadow: 0 0 0 0.28rem color-mix(in srgb, #72d8a4 17%, transparent);
 }
 
+/* Пара «название — значение» лежит в своей плитке: в двух колонках список
+   растягивался на всю ширину и значение уезжало от подписи через полэкрана. */
 .server-facts {
   display: grid;
-  gap: 0.5rem 1rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
   margin: 1.2rem 0 0;
+}
+
+.server-fact {
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  min-width: 0;
+  padding: 0.65rem 0.72rem;
 }
 
 .server-facts dt {
@@ -7536,7 +7585,8 @@ html[data-view="server"] .server-view {
   color: var(--text);
   font-family: var(--font-numeric);
   font-size: 0.86rem;
-  margin: 0.16rem 0 0;
+  margin: 0.26rem 0 0;
+  overflow-wrap: anywhere;
 }
 
 .server-controls {
@@ -7610,6 +7660,16 @@ html[data-view="server"] .server-view {
   gap: 0.65rem;
 }
 
+/* На странице сервера устройства держат тот же ритм плиток, что компоненты и
+   конфигурация; в узкой панели настроек список остаётся простым. */
+.server-card .trusted-device-list > .trusted-device-row,
+.server-card .trusted-device-archive .trusted-device-row {
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 0.6rem 0.72rem;
+}
+
 html[data-surface="mobile"][data-view="server"] .server-view {
   padding-bottom: calc(var(--mobile-nav-h) + env(safe-area-inset-bottom) + 1rem);
 }
@@ -7626,6 +7686,7 @@ html[data-surface="mobile"] .server-card {
 
 html[data-surface="mobile"] .server-facts {
   gap: 0.55rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 html[data-surface="mobile"] .server-component-grid,

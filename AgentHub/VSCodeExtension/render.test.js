@@ -479,6 +479,35 @@ test("Gothic theme uses medieval stone, old gold and a torch-lit scene", () => {
   );
 });
 
+test("«Озеро» keeps one palette and three interchangeable scenes", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const backgrounds = fs.readFileSync(
+    require.resolve("../assets/mini-app/backgrounds.css"),
+    "utf8",
+  );
+  for (const [background, image] of [
+    ["lake", "lake-summer.jpg"],
+    ["lake-watercolor", "lake-watercolor.jpg"],
+    ["lake-oil", "lake-oil.jpg"],
+  ]) {
+    assert.match(client, new RegExp(`"?${background}"?:\\s*"Озеро`, "u"), background);
+    assert.match(
+      backgrounds,
+      new RegExp(`\\[data-background="${background}"\\][^\\n]*${image.replace(".", "\\.")}`, "u"),
+      background,
+    );
+  }
+  /* Блок фона специфичнее подмены из панели VS Code, поэтому путь к рисованным
+     кадрам берётся через var с запасным значением, а не объявляется заново. */
+  for (const variable of ["--lake-image", "--lake-watercolor-image", "--lake-oil-image"]) {
+    assert.match(backgrounds, new RegExp(`var\\(${variable},\\s*url\\(`, "u"), variable);
+    assert.doesNotMatch(backgrounds, new RegExp(`${variable}:\\s*url\\(`, "u"), variable);
+  }
+  const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
+  assert.match(shared, /lakeWatercolor: \[\.\.\.ASSET_ROOT, "lake-watercolor\.jpg"\]/u);
+  assert.match(shared, /lakeOil: \[\.\.\.ASSET_ROOT, "lake-oil\.jpg"\]/u);
+});
+
 test("VS Code theme assets override browser paths with equal specificity", () => {
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
   assert.match(shared, /<style nonce="\$\{nonce\}">html\[data-theme\],html\[data-background\]\{\$\{assetOverrides\}\}<\/style>/u);

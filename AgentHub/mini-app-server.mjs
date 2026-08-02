@@ -21,6 +21,9 @@ const CONTENT_TYPES = new Map([
   ["/message-lifecycle.js", "text/javascript; charset=utf-8"],
   ["/hub-client.js", "text/javascript; charset=utf-8"],
   ["/styles.css", "text/css; charset=utf-8"],
+  /* сцены фонов лежат отдельно от палитр тем; без этой записи локальный
+     Mini App отдавал на них 404 и выбор фона не работал */
+  ["/backgrounds.css", "text/css; charset=utf-8"],
   ["/work-log.css", "text/css; charset=utf-8"],
   ["/blackhole-blue.png", "image/png"],
   ["/pulsar-beams.png", "image/png"],
@@ -36,6 +39,8 @@ const CONTENT_TYPES = new Map([
   /* фотографический кадр «Озера» в PNG весил бы впятеро больше при том же
      виде, поэтому единственный фон темы хранится в JPEG */
   ["/lake-summer.jpg", "image/jpeg"],
+  ["/lake-watercolor.jpg", "image/jpeg"],
+  ["/lake-oil.jpg", "image/jpeg"],
 ]);
 const STATIC_FILES = new Map([
   ["/", "index.html"],
@@ -45,6 +50,7 @@ const STATIC_FILES = new Map([
   ["/message-lifecycle.js", "message-lifecycle.js"],
   ["/hub-client.js", "hub-client.js"],
   ["/styles.css", "styles.css"],
+  ["/backgrounds.css", "backgrounds.css"],
   ["/blackhole-blue.png", "blackhole-blue.png"],
   ["/pulsar-beams.png", "pulsar-beams.png"],
   ["/gothic-concrete.png", "gothic-concrete.png"],
@@ -57,6 +63,8 @@ const STATIC_FILES = new Map([
   ["/rainforest-night.png", "rainforest-night.png"],
   ["/meadow-sun.png", "meadow-sun.png"],
   ["/lake-summer.jpg", "lake-summer.jpg"],
+  ["/lake-watercolor.jpg", "lake-watercolor.jpg"],
+  ["/lake-oil.jpg", "lake-oil.jpg"],
 ]);
 
 /* Разметка и стили обязаны быть свежими, поэтому у них no-store. Фон темы —
@@ -75,6 +83,8 @@ const IMMUTABLE_FILES = new Set([
   "/pulsar-beams.png",
   "/rainforest-night.png",
   "/lake-summer.jpg",
+  "/lake-watercolor.jpg",
+  "/lake-oil.jpg",
 ]);
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;

@@ -1,8 +1,9 @@
 /* Фоны независимы от темы: тема задаёт палитру и типографику, а
-   data-background — сцену. Новый фон добавляется в backgroundNames (app.js)
-   и одним блоком ниже. */
+   data-background — сцену. Фон, совпадающий с темой, оставляет исходные
+   эффекты темы; другой — заменяет сцену. Новый фон добавляется в
+   backgroundNames (app.js) и одним блоком ниже. */
 
-html[data-background] body::after {
+html[data-background-override="true"] body::after {
   background-color: var(--hub-background-color) !important;
   background-image: var(--hub-background-image) !important;
   background-position: var(--hub-background-position, center) !important;
@@ -16,26 +17,36 @@ html[data-background] body::after {
 
 /* Атмосферный блик относится к выбранной теме, но с чужой сценой конфликтует.
    Погода Rain/Storm выбирается app.js по data-background. */
-html[data-background] body::before { content: none !important; }
+html[data-background-override="true"] body::before { content: none !important; }
 
-html[data-background="orbit"] { --orbit-image: url("/orbit-earth.png"); --hub-background-color: #06090f; --hub-background-image: repeating-radial-gradient(circle at 50% -32%, transparent 0 15.4rem, rgba(126, 178, 240, .055) 15.4rem 15.55rem, transparent 15.55rem 16rem), radial-gradient(circle at 50% -32%, transparent 0 46rem, rgba(126, 178, 240, .05) 46rem 46.14rem, transparent 46.14rem), var(--orbit-image); --hub-background-position: center, center, 62% 42%; }
-html[data-background="nebula"] { --nebula-image: url("/nebula-veil.png"); --hub-background-color: #0b0616; --hub-background-image: radial-gradient(46% 34% at 78% 26%, rgba(120, 92, 255, .12), transparent 72%), var(--nebula-image); --hub-background-position: center, 60% 46%; }
-html[data-background="pulsar"] { --pulsar-image: url("/pulsar-beams.png"); --hub-background-color: #03151a; --hub-background-image: repeating-linear-gradient(0deg, rgba(60, 230, 212, .03) 0 1px, transparent 1px 4px), linear-gradient(180deg, rgba(2, 12, 16, 0) 44%, rgba(2, 10, 14, .4)), var(--pulsar-image); --hub-background-position: center, center, 50% 46%; --hub-background-repeat: repeat, no-repeat, no-repeat; --hub-background-size: auto, cover, cover; }
-html[data-background="gothic"] { --gothic-image: url("/gothic-concrete.png"); --hub-background-color: #070604; --hub-background-image: linear-gradient(90deg, rgba(4, 4, 3, .18), transparent 34% 70%, rgba(4, 2, 1, .06)), linear-gradient(180deg, rgba(3, 3, 2, .04) 48%, rgba(3, 2, 1, .5)), radial-gradient(120% 94% at 50% 44%, transparent 38%, rgba(0, 0, 0, .42) 100%), var(--gothic-image); --hub-background-position: center, center, center, 50% 50%; }
-html[data-background="blackhole"] { --bh-image: url("/blackhole-blue.png"); --hub-background-color: #000; --hub-background-image: var(--bh-image); --hub-background-position: 50% 42%; }
-html[data-background="taiga"] { --forest-image: url("/rainforest-night.png"); --hub-background-color: #060a0d; --hub-background-image: linear-gradient(90deg, rgba(4, 8, 10, .34), rgba(4, 8, 10, .04) 68%), linear-gradient(180deg, rgba(4, 8, 10, 0) 46%, rgba(3, 6, 8, .34)), var(--forest-image); --hub-background-position: center, center, 68% 36%; }
-html[data-background="metropolis"] { --metropolis-image: url("/metropolis-night.png"); --hub-background-color: #050b12; --hub-background-image: linear-gradient(90deg, rgba(2, 7, 12, .5), rgba(2, 7, 12, .08) 62%), linear-gradient(180deg, rgba(3, 8, 14, .04) 48%, rgba(2, 6, 10, .42)), var(--metropolis-image); --hub-background-position: center, center, 62% 50%; }
-html[data-background="stormglass"] { --stormglass-image: url("/storm-sea.png"); --hub-background-color: #05090f; --hub-background-image: linear-gradient(90deg, rgba(3, 7, 12, .45), rgba(3, 7, 12, .06) 52%), linear-gradient(180deg, rgba(3, 8, 14, .04) 46%, rgba(2, 6, 10, .3)), var(--stormglass-image); --hub-background-position: center, center, 62% 50%; }
-html[data-background="magma"] { --magma-image: url("/magma-crust.png"); --hub-background-color: #0a0605; --hub-background-image: linear-gradient(180deg, rgba(8, 4, 3, 0) 62%, rgba(8, 4, 3, .55)), linear-gradient(90deg, rgba(8, 4, 3, 0) 34%, rgba(8, 4, 3, .46)), var(--magma-image); --hub-background-position: center, center, 58% 50%; }
-html[data-background="meadow"] { --meadow-image: url("/meadow-sun.png"); --hub-background-color: #070d08; --hub-background-image: linear-gradient(90deg, rgba(4, 9, 5, .34), rgba(4, 9, 5, 0) 40%), var(--meadow-image); --hub-background-position: center, 62% 60%; }
-html[data-background="lake"] { --lake-image: url("/lake-summer.jpg"); --hub-background-color: #080d0b; --hub-background-image: linear-gradient(90deg, rgba(3, 8, 7, .82), rgba(3, 8, 7, .5) 26%, rgba(3, 8, 7, 0) 60%), linear-gradient(0deg, rgba(3, 8, 7, .42), rgba(3, 8, 7, 0) 32%), var(--lake-image); --hub-background-position: center, center, 56% 64%; }
-html[data-background="graphite"] { --hub-background-color: #17181a; --hub-background-image: linear-gradient(oklch(.19 .004 260 / .5) 1px, transparent 1px), linear-gradient(90deg, oklch(.19 .004 260 / .5) 1px, transparent 1px); --hub-background-size: 56px 56px; }
+html[data-background-override="true"][data-background="orbit"] { --orbit-image: url("/orbit-earth.png"); --hub-background-color: #06090f; --hub-background-image: repeating-radial-gradient(circle at 50% -32%, transparent 0 15.4rem, rgba(126, 178, 240, .055) 15.4rem 15.55rem, transparent 15.55rem 16rem), radial-gradient(circle at 50% -32%, transparent 0 46rem, rgba(126, 178, 240, .05) 46rem 46.14rem, transparent 46.14rem), var(--orbit-image); --hub-background-position: center, center, 62% 42%; }
+html[data-background-override="true"][data-background="nebula"] { --nebula-image: url("/nebula-veil.png"); --hub-background-color: #0b0616; --hub-background-image: radial-gradient(46% 34% at 78% 26%, rgba(120, 92, 255, .12), transparent 72%), var(--nebula-image); --hub-background-position: center, 60% 46%; }
+html[data-background-override="true"][data-background="pulsar"] { --pulsar-image: url("/pulsar-beams.png"); --hub-background-color: #03151a; --hub-background-image: repeating-linear-gradient(0deg, rgba(60, 230, 212, .03) 0 1px, transparent 1px 4px), linear-gradient(180deg, rgba(2, 12, 16, 0) 44%, rgba(2, 10, 14, .4)), var(--pulsar-image); --hub-background-position: center, center, 50% 46%; --hub-background-repeat: repeat, no-repeat, no-repeat; --hub-background-size: auto, cover, cover; }
+html[data-background-override="true"][data-background="gothic"] { --gothic-image: url("/gothic-concrete.png"); --hub-background-color: #070604; --hub-background-image: linear-gradient(90deg, rgba(4, 4, 3, .18), transparent 34% 70%, rgba(4, 2, 1, .06)), linear-gradient(180deg, rgba(3, 3, 2, .04) 48%, rgba(3, 2, 1, .5)), radial-gradient(120% 94% at 50% 44%, transparent 38%, rgba(0, 0, 0, .42) 100%), var(--gothic-image); --hub-background-position: center, center, center, 50% 50%; }
+html[data-background-override="true"][data-background="blackhole"] { --bh-image: url("/blackhole-blue.png"); --hub-background-color: #000; --hub-background-image: var(--bh-image); --hub-background-position: 50% 42%; }
+html[data-background-override="true"][data-background="taiga"] { --forest-image: url("/rainforest-night.png"); --hub-background-color: #060a0d; --hub-background-image: linear-gradient(90deg, rgba(4, 8, 10, .34), rgba(4, 8, 10, .04) 68%), linear-gradient(180deg, rgba(4, 8, 10, 0) 46%, rgba(3, 6, 8, .34)), var(--forest-image); --hub-background-position: center, center, 68% 36%; }
+html[data-background-override="true"][data-background="metropolis"] { --metropolis-image: url("/metropolis-night.png"); --hub-background-color: #050b12; --hub-background-image: linear-gradient(90deg, rgba(2, 7, 12, .5), rgba(2, 7, 12, .08) 62%), linear-gradient(180deg, rgba(3, 8, 14, .04) 48%, rgba(2, 6, 10, .42)), var(--metropolis-image); --hub-background-position: center, center, 62% 50%; }
+html[data-background-override="true"][data-background="stormglass"] { --stormglass-image: url("/storm-sea.png"); --hub-background-color: #05090f; --hub-background-image: linear-gradient(90deg, rgba(3, 7, 12, .45), rgba(3, 7, 12, .06) 52%), linear-gradient(180deg, rgba(3, 8, 14, .04) 46%, rgba(2, 6, 10, .3)), var(--stormglass-image); --hub-background-position: center, center, 62% 50%; }
+html[data-background-override="true"][data-background="magma"] { --magma-image: url("/magma-crust.png"); --hub-background-color: #0a0605; --hub-background-image: linear-gradient(180deg, rgba(8, 4, 3, 0) 62%, rgba(8, 4, 3, .55)), linear-gradient(90deg, rgba(8, 4, 3, 0) 34%, rgba(8, 4, 3, .46)), var(--magma-image); --hub-background-position: center, center, 58% 50%; }
+html[data-background-override="true"][data-background="meadow"] { --meadow-image: url("/meadow-sun.png"); --hub-background-color: #070d08; --hub-background-image: linear-gradient(90deg, rgba(4, 9, 5, .34), rgba(4, 9, 5, 0) 40%), var(--meadow-image); --hub-background-position: center, 62% 60%; }
+html[data-background-override="true"][data-background="lake"] { --hub-background-color: #080d0b; --hub-background-image: linear-gradient(90deg, rgba(3, 8, 7, .82), rgba(3, 8, 7, .5) 26%, rgba(3, 8, 7, 0) 60%), linear-gradient(0deg, rgba(3, 8, 7, .42), rgba(3, 8, 7, 0) 32%), var(--lake-image, url("/lake-summer.jpg")); --hub-background-position: center, center, 56% 64%; }
+/* Три кадра «Озера» — одна сцена в трёх техниках. Рисованные светлее съёмки,
+   особенно бумага акварели, поэтому левый край гасится плотнее. Путь берётся
+   через var с запасным значением: панель VS Code подменяет саму переменную, а
+   объявление внутри блока фона перебило бы подмену по специфичности. */
+html[data-background-override="true"][data-background="lake-watercolor"] { --hub-background-color: #0a0f0c; --hub-background-image: linear-gradient(90deg, rgba(4, 10, 8, .88), rgba(4, 10, 8, .6) 26%, rgba(4, 10, 8, 0) 62%), linear-gradient(0deg, rgba(4, 10, 8, .4), rgba(4, 10, 8, 0) 30%), var(--lake-watercolor-image, url("/lake-watercolor.jpg")); --hub-background-position: center, center, 56% 52%; }
+html[data-background-override="true"][data-background="lake-oil"] { --hub-background-color: #0a0e09; --hub-background-image: linear-gradient(90deg, rgba(5, 9, 6, .86), rgba(5, 9, 6, .56) 26%, rgba(5, 9, 6, 0) 60%), linear-gradient(0deg, rgba(5, 9, 6, .4), rgba(5, 9, 6, 0) 30%), var(--lake-oil-image, url("/lake-oil.jpg")); --hub-background-position: center, center, 56% 62%; }
+html[data-background-override="true"][data-background="graphite"] { --hub-background-color: #17181a; --hub-background-image: linear-gradient(oklch(.19 .004 260 / .5) 1px, transparent 1px), linear-gradient(90deg, oklch(.19 .004 260 / .5) 1px, transparent 1px); --hub-background-size: 56px 56px; }
 
 @media (max-width: 720px) {
-  html[data-background="pulsar"] { --hub-background-position: center, center, 24% 52%; }
-  html[data-background="taiga"] { --hub-background-position: center, center, 74% 28%; }
-  html[data-background="metropolis"] { --hub-background-position: center, center, 68% 50%; }
-  html[data-background="magma"] { --hub-background-position: center, center, 72% 56%; }
-  html[data-background="meadow"] { --hub-background-position: center, 68% 76%; }
-  html[data-background="lake"] { --hub-background-position: center, 72% 72%; }
+  html[data-background-override="true"][data-background="pulsar"] { --hub-background-position: center, center, 24% 52%; }
+  html[data-background-override="true"][data-background="taiga"] { --hub-background-position: center, center, 74% 28%; }
+  html[data-background-override="true"][data-background="metropolis"] { --hub-background-position: center, center, 68% 50%; }
+  html[data-background-override="true"][data-background="magma"] { --hub-background-position: center, center, 72% 56%; }
+  html[data-background-override="true"][data-background="meadow"] { --hub-background-position: center, 68% 76%; }
+  html[data-background-override="true"][data-background="lake"] { --hub-background-position: center, 72% 72%; }
+  /* на телефоне от кадра остаётся вертикальная полоса, гасить край слева
+     нечего: обе рисованные сцены притемняются сверху и снизу */
+  html[data-background-override="true"][data-background="lake-watercolor"] { --hub-background-image: linear-gradient(180deg, rgba(4, 10, 8, .78), rgba(4, 10, 8, .5) 30%, rgba(4, 10, 8, .54) 68%, rgba(4, 10, 8, .72)), var(--lake-watercolor-image, url("/lake-watercolor.jpg")); --hub-background-position: center, 72% 70%; }
+  html[data-background-override="true"][data-background="lake-oil"] { --hub-background-image: linear-gradient(180deg, rgba(5, 9, 6, .74), rgba(5, 9, 6, .46) 30%, rgba(5, 9, 6, .5) 68%, rgba(5, 9, 6, .7)), var(--lake-oil-image, url("/lake-oil.jpg")); --hub-background-position: center, 72% 68%; }
 }

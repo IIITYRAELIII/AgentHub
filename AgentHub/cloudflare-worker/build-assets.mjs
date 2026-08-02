@@ -23,6 +23,8 @@ for (const file of [
   "magma-crust.png",
   "meadow-sun.png",
   "lake-summer.jpg",
+  "lake-watercolor.jpg",
+  "lake-oil.jpg",
   "metropolis-night.png",
   "storm-sea.png",
   "storm-flash.png",

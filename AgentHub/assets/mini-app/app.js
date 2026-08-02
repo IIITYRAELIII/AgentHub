@@ -199,10 +199,13 @@ const themes = {
   lake: "#080d0b",
   graphite: "#17181a",
 };
+/* Палитра темы и сцена за интерфейсом независимы. Новый фон регистрируется
+   здесь, а его визуальная сцена описывается в backgrounds.css. */
 const backgroundNames = {
   orbit: "Орбита", nebula: "Туманность", pulsar: "Пульсар", gothic: "Gothic",
   blackhole: "BlackHole", taiga: "Rain", metropolis: "Мегаполис", stormglass: "Storm",
-  magma: "Магма", meadow: "Луг", lake: "Озеро", graphite: "Графит",
+  magma: "Магма", meadow: "Луг", lake: "Озеро", "lake-watercolor": "Озеро · акварель",
+  "lake-oil": "Озеро · масло", graphite: "Графит",
 };
 const themeAliases = {
   "taiga-drops": "metropolis",
@@ -248,20 +251,6 @@ function savedTheme() {
     return Object.hasOwn(themes, selected) ? selected : "orbit";
   } catch {
     return "orbit";
-  }
-}
-
-function savedBackground(fallback) {
-  try {
-    const value = localStorage.getItem("agent-hub-background");
-    return Object.hasOwn(backgroundNames, value) ? value : fallback;
-  } catch { return fallback; }
-}
-
-function populateBackgroundOptions() {
-  if (!backgroundSelect || backgroundSelect.options.length) return;
-  for (const [value, label] of Object.entries(backgroundNames)) {
-    backgroundSelect.append(el("option", { value, text: label }));
   }
 }
 
@@ -355,6 +344,11 @@ function applyTheme(theme, { persist = false } = {}) {
   const candidate = themeAliases[theme] ?? theme;
   const selected = Object.hasOwn(themes, candidate) ? candidate : "orbit";
   document.documentElement.dataset.theme = selected;
+  if (document.documentElement.dataset.background) {
+    document.documentElement.dataset.backgroundOverride = String(
+      document.documentElement.dataset.background !== selected,
+    );
+  }
   themeSelect.value = selected;
   themeColor.content = themes[selected];
   if (persist) {
@@ -363,16 +357,6 @@ function applyTheme(theme, { persist = false } = {}) {
     } catch {
       // Тема останется активной до закрытия WebView.
     }
-  }
-}
-
-function applyBackground(background, { persist = false } = {}) {
-  const selected = Object.hasOwn(backgroundNames, background) ? background : "orbit";
-  root.dataset.background = selected;
-  if (backgroundSelect) backgroundSelect.value = selected;
-  syncParticleLayer(selected);
-  if (persist) {
-    try { localStorage.setItem("agent-hub-background", selected); } catch {}
   }
 }
 
@@ -676,6 +660,37 @@ function activateView(view) {
     requestLimits(limitsState.range);
   }
   if (view === "server") emit("devices:refresh");
+}
+
+function savedBackground(fallback) {
+  try {
+    const value = localStorage.getItem("agent-hub-background");
+    return Object.hasOwn(backgroundNames, value) ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function applyBackground(background, { persist = false } = {}) {
+  const selected = Object.hasOwn(backgroundNames, background) ? background : "orbit";
+  root.dataset.background = selected;
+  root.dataset.backgroundOverride = String(selected !== root.dataset.theme);
+  if (backgroundSelect) backgroundSelect.value = selected;
+  syncParticleLayer(selected);
+  if (persist) {
+    try {
+      localStorage.setItem("agent-hub-background", selected);
+    } catch {
+      // Выбор останется активным до закрытия WebView.
+    }
+  }
+}
+
+function populateBackgroundOptions() {
+  if (!backgroundSelect || backgroundSelect.options.length) return;
+  for (const [value, label] of Object.entries(backgroundNames)) {
+    backgroundSelect.append(el("option", { value, text: label }));
+  }
 }
 
 function setView(view, { persist = true, activate = true } = {}) {
@@ -1256,7 +1271,9 @@ chatScroll.addEventListener("touchcancel", resetHistoryPull);
 
 function markdownLink(raw) {
   const value = String(raw ?? "").trim();
-  if (vscodeMode && /^[A-Za-z]:[\\/]/u.test(value)) return { href: "#", localPath: value };
+  if (vscodeMode && /^[A-Za-z]:[\\/]/u.test(value)) {
+    return { href: "#", localPath: value };
+  }
   try {
     const url = new URL(value, window.location.href);
     return ["http:", "https:"].includes(url.protocol) ? { href: url.href } : null;
@@ -1302,13 +1319,6 @@ function appendInlineMarkdown(target, source) {
   }
   target.append(document.createTextNode(text.slice(cursor)));
 }
-
-document.addEventListener("click", (event) => {
-  const link = event.target.closest("a[data-agent-hub-local-link]");
-  if (!link || !vscodeMode) return;
-  event.preventDefault();
-  window.__agentHubVscode.postMessage({ type: "open-link", href: link.dataset.agentHubLocalLink });
-});
 
 function markdownTableCells(line) {
   const source = String(line ?? "").trim();
@@ -1539,6 +1549,13 @@ function renderMessage(message) {
   }
   return article;
 }
+
+document.addEventListener("click", (event) => {
+  const link = event.target.closest("a[data-agent-hub-local-link]");
+  if (!link || !vscodeMode) return;
+  event.preventDefault();
+  window.__agentHubVscode.postMessage({ type: "open-link", href: link.dataset.agentHubLocalLink });
+});
 
 function renderResponseAnnotations(body, message) {
   if (message?.role !== "user" || !Array.isArray(message.responseAnnotations)
@@ -2181,26 +2198,40 @@ function renderTrustedDevices(payload = {}) {
     trustedDeviceList.replaceChildren(el("span", { class: "setting-empty", text: "Устройств пока нет" }));
     return;
   }
-  trustedDeviceList.replaceChildren(...devices.map((device) => {
-    const revoked = Boolean(device.revokedAt);
-    const lastSeen = Number(device.lastSeenAt) || Number(device.createdAt) || 0;
-    return el("div", { class: "trusted-device-row", "data-revoked": revoked ? "" : null }, [
-      el("span", { class: "trusted-device-info" }, [
-        el("strong", { text: device.name || "Android" }),
-        el("small", {
-          text: revoked
-            ? "Доступ отозван"
-            : `Последний доступ: ${lastSeen ? new Date(lastSeen).toLocaleString("ru-RU") : "—"}`,
-        }),
-      ]),
-      revoked ? null : el("button", {
-        type: "button",
-        class: "chip-button compact danger",
-        "data-device-revoke": device.id,
-        text: "Отозвать",
+  const active = devices.filter((device) => !device.revokedAt);
+  const revoked = devices.filter((device) => device.revokedAt);
+  const rows = active.length
+    ? active.map((device) => trustedDeviceRow(device, false))
+    : [el("span", { class: "setting-empty", text: "Активных устройств нет" })];
+  /* Отозванные накапливаются и одинаковы на вид, поэтому лежат свёрнутой
+     группой: активные устройства не должны тонуть в их списке. */
+  if (revoked.length) {
+    rows.push(el("details", { class: "trusted-device-archive" }, [
+      el("summary", { text: `Отозванные · ${revoked.length}` }),
+      el("div", { class: "trusted-device-list" }, revoked.map((device) => trustedDeviceRow(device, true))),
+    ]));
+  }
+  trustedDeviceList.replaceChildren(...rows);
+}
+
+function trustedDeviceRow(device, revoked) {
+  const lastSeen = Number(device.lastSeenAt) || Number(device.createdAt) || 0;
+  return el("div", { class: "trusted-device-row", "data-revoked": revoked ? "" : null }, [
+    el("span", { class: "trusted-device-info" }, [
+      el("strong", { text: device.name || "Android" }),
+      el("small", {
+        text: revoked
+          ? `Доступ отозван${lastSeen ? ` · последний доступ ${new Date(lastSeen).toLocaleString("ru-RU")}` : ""}`
+          : `Последний доступ: ${lastSeen ? new Date(lastSeen).toLocaleString("ru-RU") : "—"}`,
       }),
-    ].filter(Boolean));
-  }));
+    ]),
+    revoked ? null : el("button", {
+      type: "button",
+      class: "chip-button compact danger",
+      "data-device-revoke": device.id,
+      text: "Отозвать",
+    }),
+  ].filter(Boolean));
 }
 
 function closePanel() {
@@ -2308,10 +2339,10 @@ function formatServerStartedAt(value) {
 }
 
 function serverFact(name, value) {
-  return [
+  return el("div", { class: "server-fact" }, [
     el("dt", { text: name }),
     el("dd", { text: value || "—" }),
-  ];
+  ]);
 }
 
 function renderServerStatus(payload = {}) {
@@ -2327,12 +2358,12 @@ function renderServerStatus(payload = {}) {
       ? "Локальный процесс Agent Hub отвечает."
       : "Состояние процесса пока недоступно.";
   serverStateDot?.toggleAttribute("data-online", active);
-  serverFacts.replaceChildren(...[
-    ...serverFact("PID", processInfo.pid ? String(processInfo.pid) : "—"),
-    ...serverFact("Запущен", formatServerStartedAt(processInfo.startedAt)),
-    ...serverFact("Работает", formatRunningDuration(processInfo.startedAt)),
-    ...serverFact("Активные ходы", String(Math.max(0, Number(processInfo.activeCount) || 0))),
-  ]);
+  serverFacts.replaceChildren(
+    serverFact("PID", processInfo.pid ? String(processInfo.pid) : "—"),
+    serverFact("Запущен", formatServerStartedAt(processInfo.startedAt)),
+    serverFact("Работает", formatRunningDuration(processInfo.startedAt)),
+    serverFact("Активные ходы", String(Math.max(0, Number(processInfo.activeCount) || 0))),
+  );
   if (serverAutostart) {
     serverAutostart.checked = autostart.enabled === true;
     serverAutostart.disabled = autostart.supported === false;
