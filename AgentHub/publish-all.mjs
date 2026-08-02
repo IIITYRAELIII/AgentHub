@@ -28,6 +28,16 @@ export function publicationSteps({
   skipWorker = false,
 } = {}) {
   return [
+    {
+      label: "Проверка changelog",
+      command: python,
+      args: [
+        path.join("..", "QUALITY_CHECK", "changelog_gate.py"),
+        "--repository",
+        "..",
+        "--release",
+      ],
+    },
     ...(!skipTests ? [
       npmStep("Полные тесты Agent Hub", ["run", "test:all"]),
       npmStep("Тесты расширения VS Code", ["test", "--prefix", "VSCodeExtension"]),

@@ -13,6 +13,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 test("publication validates every client before the first deployment", () => {
   const steps = publicationSteps();
   assert.deepEqual(steps.map((item) => item.label), [
+    "Проверка changelog",
     "Полные тесты Agent Hub",
     "Тесты расширения VS Code",
     "Сборка и smoke-проверка Agent Hub Desktop",
@@ -23,13 +24,14 @@ test("publication validates every client before the first deployment", () => {
     "Установка расширения VS Code",
   ]);
 
-  assert.deepEqual(steps[0].args.slice(-2), ["run", "test:all"]);
-  assert.deepEqual(steps[1].args.slice(-3), ["test", "--prefix", "VSCodeExtension"]);
-  assert.match(steps[2].args.at(-1), /ci[\\/]desktop-smoke\.ps1$/u);
-  assert.deepEqual(steps[3].args.slice(-2), ["run", "android:build"]);
+  assert.deepEqual(steps[0].args.slice(-2), ["..", "--release"]);
+  assert.deepEqual(steps[1].args.slice(-2), ["run", "test:all"]);
+  assert.deepEqual(steps[2].args.slice(-3), ["test", "--prefix", "VSCodeExtension"]);
+  assert.match(steps[3].args.at(-1), /ci[\\/]desktop-smoke\.ps1$/u);
+  assert.deepEqual(steps[4].args.slice(-2), ["run", "android:build"]);
   assert.equal(
     steps.findIndex((step) => step.label.includes("Публикация")),
-    4,
+    5,
     "deployment must start only after all four validation surfaces pass",
   );
 });
@@ -44,6 +46,7 @@ test("publication arguments reject typos and support bounded skips", () => {
   assert.deepEqual(
     publicationSteps({ skipTests: true, skipWorker: true }).map((step) => step.label),
     [
+      "Проверка changelog",
       "Сборка Agent Hub Mobile",
       "Сборка runtime-релиза",
       "Активация runtime-релиза",
@@ -62,6 +65,7 @@ test("publication requests the server's safe deferred restart last", async () =>
     },
   });
   assert.deepEqual(events, [
+    "Проверка changelog",
     "Сборка Agent Hub Mobile",
     "Сборка runtime-релиза",
     "Активация runtime-релиза",
@@ -72,6 +76,7 @@ test("publication requests the server's safe deferred restart last", async () =>
 
 test("every validation failure stops publication before deployment", async () => {
   const validations = [
+    "Проверка changelog",
     "Полные тесты Agent Hub",
     "Тесты расширения VS Code",
     "Сборка и smoke-проверка Agent Hub Desktop",
