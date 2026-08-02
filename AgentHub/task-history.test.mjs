@@ -286,6 +286,41 @@ test("an active snapshot updates the matching turn without duplicating it", () =
   assert.equal(history[0].answer, "Ответ формируется");
 });
 
+test("active receipt adopts the rollout user and keeps its screenshot", () => {
+  const history = [{
+    id: "live-turn",
+    prompt: "Сообщение со скрином",
+    status: "inProgress",
+    active: true,
+    completed: false,
+    messages: [{
+      itemId: "official-user-item",
+      role: "user",
+      text: "Сообщение со скрином",
+      attachmentSources: [{ type: "path", value: "C:/Temp/screenshot.png" }],
+    }],
+  }];
+
+  mergeActiveTaskHistory(history, {
+    active: true,
+    turnId: "live-turn",
+    prompt: "Сообщение со скрином",
+    clientUserMessageId: "client-message-id",
+    attachments: [{ id: "uploaded-screenshot", type: "image/png" }],
+  });
+
+  const users = history[0].messages.filter((message) => message.role === "user");
+  assert.equal(users.length, 1);
+  assert.equal(users[0].itemId, "official-user-item");
+  assert.equal(users[0].clientUserMessageId, "client-message-id");
+  assert.deepEqual(users[0].attachmentSources, [
+    { type: "path", value: "C:/Temp/screenshot.png" },
+  ]);
+  assert.deepEqual(users[0].attachments, [
+    { id: "uploaded-screenshot", type: "image/png" },
+  ]);
+});
+
 test("displayUserPrompt unwraps Codex Desktop file metadata", () => {
   assert.equal(displayUserPrompt([
     "# Files mentioned by the user:",

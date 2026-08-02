@@ -449,23 +449,32 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
   if (visiblePrompt || attachments.length) {
     if (visiblePrompt) current.prompt = visiblePrompt;
     const messages = Array.isArray(current.messages) ? current.messages : [];
-    let user = messages.find((message) => (
-      message.role === "user"
-      && (
-        !activeTurn.clientUserMessageId
-        || String(message.clientUserMessageId ?? "") === String(activeTurn.clientUserMessageId)
-      )
-    ));
+    const clientUserMessageId = String(activeTurn.clientUserMessageId ?? "").trim();
+    const users = messages.filter((message) => message.role === "user");
+    let user = clientUserMessageId
+      ? users.find((message) => String(message.clientUserMessageId ?? "") === clientUserMessageId)
+      : users[0];
+    if (!user && clientUserMessageId) {
+      const unidentified = users.filter((message) => !String(message.clientUserMessageId ?? "").trim());
+      const promptMatches = visiblePrompt
+        ? unidentified.filter((message) => String(message.text ?? "").trim() === visiblePrompt)
+        : [];
+      if (promptMatches.length === 1) user = promptMatches[0];
+      else if (unidentified.length === 1) user = unidentified[0];
+    }
     if (!user) {
       user = {
         itemId: `${turnId || current.id || "active-turn"}:user:0`,
-        ...(String(activeTurn.clientUserMessageId ?? "").trim()
-          ? { clientUserMessageId: String(activeTurn.clientUserMessageId).trim() }
+        ...(clientUserMessageId
+          ? { clientUserMessageId }
           : {}),
         role: "user",
         text: visiblePrompt,
       };
       messages.unshift(user);
+    }
+    if (clientUserMessageId && !String(user.clientUserMessageId ?? "").trim()) {
+      user.clientUserMessageId = clientUserMessageId;
     }
     if (visiblePrompt) user.text = visiblePrompt;
     user.time ??= normalizedTimestamp(activeTurn.startedAt);
