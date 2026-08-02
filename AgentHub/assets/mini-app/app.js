@@ -2590,8 +2590,44 @@ function renderServerStatus(payload = {}) {
   /* Одно название вроде «Очередь входящих» ничего не объясняет, поэтому у
      плитки есть пояснение под значением и та же строка в подсказке. */
   const entries = Array.isArray(payload.configuration) ? payload.configuration : [];
+  /* Пока правки не сохранены, снапшот не должен затирать введённые значения. */
+  if (serverConfigDrafts.size && serverConfig.childElementCount) return;
   serverConfig.replaceChildren(...(entries.length ? entries.map(renderServerConfigEntry)
     : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]));
+  syncServerConfigActions();
+}
+
+/* Настройки применяются одной кнопкой: у каждой плитки своя кнопка «Сохранить»
+   занимала больше места, чем само поле, и позволяла уехать из карточки с
+   половиной применённых изменений. */
+const serverConfigDrafts = new Map();
+
+function syncServerConfigActions() {
+  const actions = document.querySelector("[data-server-config-actions]");
+  if (!actions) return;
+  const count = serverConfigDrafts.size;
+  actions.hidden = count === 0;
+  const save = actions.querySelector("[data-server-config-save]");
+  if (save) save.textContent = count > 1 ? `Сохранить · ${count}` : "Сохранить";
+}
+
+function noteServerConfigDraft(key, value) {
+  serverConfigDrafts.set(key, value);
+  syncServerConfigActions();
+}
+
+function saveServerConfigDrafts() {
+  if (!serverConfigDrafts.size) return;
+  const changes = Object.fromEntries(serverConfigDrafts);
+  serverConfigDrafts.clear();
+  syncServerConfigActions();
+  emit("server:config-update", { changes });
+}
+
+function discardServerConfigDrafts() {
+  serverConfigDrafts.clear();
+  syncServerConfigActions();
+  emit("devices:refresh");
 }
 
 function renderServerConfigEntry(entry = {}) {
@@ -2602,10 +2638,7 @@ function renderServerConfigEntry(entry = {}) {
   const hint = entry.hint ? el("small", { class: "server-config-hint", text: entry.hint }) : null;
   if (entry.type === "boolean") {
     const input = el("input", { type: "checkbox", checked: entry.value === true });
-    input.addEventListener("change", () => emit("server:config-update", {
-      key: entry.key,
-      value: input.checked,
-    }));
+    input.addEventListener("change", () => noteServerConfigDraft(entry.key, input.checked));
     return el("label", {
       class: "server-config-row server-config-toggle",
       title: entry.hint || entry.name || "",
@@ -2626,23 +2659,25 @@ function renderServerConfigEntry(entry = {}) {
     step: 1,
     "aria-label": entry.name ?? "Параметр конфигурации",
   });
-  const save = el("button", { type: "button", class: "chip-button compact", text: "Сохранить" });
-  const submit = () => emit("server:config-update", { key: entry.key, value: input.value });
-  save.addEventListener("click", submit);
+  input.addEventListener("input", () => noteServerConfigDraft(entry.key, input.value));
   input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") submit();
+    if (event.key === "Enter") saveServerConfigDrafts();
   });
   return el("div", { class: "server-config-row", title: entry.hint || entry.name || "" }, [
     el("span", { text: entry.name ?? "" }),
     el("div", { class: "server-config-number-row" }, [
       input,
       entry.unit ? el("small", { class: "server-config-unit", text: entry.unit }) : null,
-      save,
     ].filter(Boolean)),
     hint,
     pendingNote,
   ].filter(Boolean));
 }
+
+document.querySelector("[data-server-config-save]")
+  ?.addEventListener("click", saveServerConfigDrafts);
+document.querySelector("[data-server-config-discard]")
+  ?.addEventListener("click", discardServerConfigDrafts);
 
 serverAutostart?.addEventListener("change", () => {
   emit("server:autostart", { enabled: serverAutostart.checked });

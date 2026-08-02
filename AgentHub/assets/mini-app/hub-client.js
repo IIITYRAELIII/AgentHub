@@ -1098,8 +1098,11 @@ agentHub.on("server:autostart", ({ enabled }) => runAction(async () => {
   else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Автозапуск Agent Hub обновлён");
 }));
-agentHub.on("server:config-update", ({ key, value }) => runAction(async () => {
-  const result = await control("update-server-configuration", { changes: { [key]: value } });
+agentHub.on("server:config-update", ({ key, value, changes }) => runAction(async () => {
+  /* Страница сохраняет всю карточку разом, поэтому принимаем и набор правок,
+     и одиночную настройку. */
+  const payload = changes && typeof changes === "object" ? changes : { [key]: value };
+  const result = await control("update-server-configuration", { changes: payload });
   if (result?.snapshot) applySnapshot(result.snapshot);
   else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Конфигурация сохранена");

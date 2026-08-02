@@ -7648,6 +7648,32 @@ html[data-view="server"] .server-view {
   grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
 }
 
+/* Поле ввода занимает всю ширину плитки: с отдельной кнопкой «Сохранить» рядом
+   оно сжималось до трёх символов. */
+.server-config-number-row {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem;
+}
+
+.server-config-number {
+  min-width: 0;
+  width: 100%;
+}
+
+.server-config-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.75rem;
+  margin-top: 0.85rem;
+}
+
+.server-config-actions-note {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
 .server-component,
 .server-config-row {
   background: color-mix(in srgb, var(--surface-2) 72%, transparent);
