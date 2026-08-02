@@ -130,7 +130,7 @@ test("task ordering changes only on a user turn start or a final answer", () => 
     run,
     userMessageAtMs: 11_000,
   }), 11_000);
-  assert.equal(taskOrderingActivityAtMs(entry), 9_000);
+  assert.equal(taskOrderingActivityAtMs(entry), 0);
 });
 
 test("parallel active tasks keep their rows while progress timestamps change", () => {
@@ -655,7 +655,7 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
   }, project, now);
   assert.equal(fresh.running, true);
   assert.equal(fresh.orderingActivityAtMs, now - 60_000);
-  assert.equal(taskOrderingActivityAtMs(fresh), now - 60_000);
+  assert.equal(taskOrderingActivityAtMs(fresh), 0);
   assert.equal(fresh.startedAt, new Date(now - 120_000).toISOString());
   assert.equal(fresh.sessionCwd, path.resolve("C:\\Projects\\Main\\Utilities\\AgentHub"));
   assert.equal(stale.running, false);

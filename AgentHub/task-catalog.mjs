@@ -771,15 +771,14 @@ export function taskOrderingActivityAtMs(entry, {
   userMessageAtMs = 0,
 } = {}) {
   const meaningfulEvents = [
-    Number(entry?.orderingActivityAtMs),
     Number(userMessageAtMs),
     Date.parse(String(run?.startedAt ?? "")),
     Date.parse(String(lastMessage?.updatedAt ?? "")),
   ].filter((value) => Number.isFinite(value) && value > 0);
   if (meaningfulEvents.length) return Math.max(...meaningfulEvents);
-
-  const fallback = Number(entry?.updatedAtMs);
-  return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
+  // thread.updatedAt and a transcript file mtime can change merely because
+  // the Hub re-read a task. They are metadata, not user-visible activity.
+  return 0;
 }
 
 export function mergeTaskCatalog(entries, runs = []) {
@@ -824,7 +823,7 @@ export function mergeTaskCatalog(entries, runs = []) {
   }
   return [...byTask.values()].sort((left, right) => (
     Number(right.running) - Number(left.running)
-    || right.updatedAtMs - left.updatedAtMs
+    || Number(right.orderingActivityAtMs ?? 0) - Number(left.orderingActivityAtMs ?? 0)
     || left.title.localeCompare(right.title, "ru")
   ));
 }
@@ -841,7 +840,10 @@ export function taskCatalogCallback(entry) {
 }
 
 function taskActivityAtMs(entry) {
-  return taskOrderingActivityAtMs(entry);
+  const calculated = Number(entry?.orderingActivityAtMs);
+  return Number.isFinite(calculated) && calculated > 0
+    ? calculated
+    : taskOrderingActivityAtMs(entry);
 }
 
 export function statusTaskEntries(entries, limit = 4) {
