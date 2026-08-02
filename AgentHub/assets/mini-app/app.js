@@ -950,6 +950,25 @@ telegram?.onEvent?.("fullscreenChanged", syncSurface);
 
 const providerLabels = { codex: "Codex", claude: "Claude" };
 
+function shortModelLabel(value) {
+  const source = String(value ?? "").trim();
+  if (!source) return "";
+  const normalized = source.toLowerCase();
+  const named = [
+    ["terra", "Terra"],
+    ["luna", "Luna"],
+    ["sol", "Sol"],
+    ["opus", "Opus"],
+    ["sonnet", "Sonnet"],
+    ["haiku", "Haiku"],
+    ["spark", "Spark"],
+  ].find(([needle]) => normalized.includes(needle));
+  if (named) return named[1];
+  const version = normalized.match(/(?:gpt|codex)[- ]?(\d+(?:\.\d+)?)/u)?.[1];
+  if (version) return normalized.includes("mini") ? `${version} Mini` : version;
+  return source.replace(/^claude[- ]*/iu, "").slice(0, 12);
+}
+
 function renderTasks() {
   const filter = (taskFilter.value ?? "").trim().toLowerCase();
   const visible = state.tasks.filter((task) => {
@@ -999,6 +1018,13 @@ function renderTaskItem(task) {
         class: "task-runtime",
         text: task.runtimeLabel,
         title: task.runtimeTitle || task.runtimeLabel,
+      })
+      : null,
+    task.modelLabel
+      ? el("span", {
+        class: "task-agent task-model",
+        text: shortModelLabel(task.modelLabel),
+        title: task.modelLabel,
       })
       : null,
     task.statusLabel

@@ -405,6 +405,10 @@ test("task list keeps active duration live and metadata badges readable", () => 
   assert.match(app, /setInterval\(refreshTaskDurations,\s*1_000\)/u);
   assert.match(styles, /\.task-agent\s*\{[^}]*flex:\s*0 0 auto;/su);
   assert.match(styles, /\.task-runtime\s*\{[^}]*background:\s*var\(--accent-soft\);[^}]*color:\s*var\(--accent\);/su);
+  assert.match(app, /function shortModelLabel\(value\)/u);
+  assert.match(app, /\["terra", "Terra"\][\s\S]*\["sonnet", "Sonnet"\]/u);
+  assert.match(app, /\["spark", "Spark"\]/u);
+  assert.match(app, /class: "task-agent task-model"[\s\S]*text: shortModelLabel\(task\.modelLabel\)/u);
 });
 
 test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", () => {
