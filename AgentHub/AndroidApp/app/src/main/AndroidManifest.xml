@@ -5,6 +5,7 @@
 
     <application
         android:allowBackup="false"
+        android:enableOnBackInvokedCallback="true"
         android:fullBackupContent="false"
         android:icon="@drawable/ic_agent_hub"
         android:label="Agent Hub"

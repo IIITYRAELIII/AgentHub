@@ -49,3 +49,22 @@ test("Android update provider exposes only verified cache files and is not expor
   assert.match(gradle, /gradleProperty\("agentHubVersionCode"\)/u);
   assert.match(gradle, /gradleProperty\("agentHubVersionName"\)/u);
 });
+
+test("Android system Back stays inside Agent Hub while the WebView has an in-app destination", async () => {
+  const [activity, manifest] = await Promise.all([
+    readFile(path.join(
+      ROOT,
+      "AndroidApp", "app", "src", "main", "java", "app", "agenthub", "mobile", "MainActivity.java",
+    ), "utf8"),
+    readFile(path.join(ROOT, "AndroidApp", "app", "src", "main", "AndroidManifest.xml"), "utf8"),
+  ]);
+  assert.match(manifest, /android:enableOnBackInvokedCallback="true"/u);
+  assert.match(activity, /import android\.window\.OnBackInvokedCallback;/u);
+  assert.match(activity, /registerOnBackInvokedCallback\([\s\S]*OnBackInvokedDispatcher\.PRIORITY_DEFAULT/u);
+  assert.match(activity, /unregisterOnBackInvokedCallback\(backCallback\)/u);
+  assert.match(activity, /public void onBackPressed\(\) \{\s*handleBackNavigation\(\);/u);
+  assert.match(activity, /window\.AgentHub\.navigateBack/u);
+  assert.match(activity, /if \("true"\.equalsIgnoreCase\(String\.valueOf\(handled\)\)\) return;/u);
+  assert.match(activity, /private void finishBackNavigation\(\)[\s\S]*if \(webView != null\) return;[\s\S]*finish\(\);/u);
+  assert.doesNotMatch(activity, /webView\.goBack\(\)/u);
+});

@@ -161,6 +161,9 @@ function fixture(overrides = {}) {
         restart,
       }),
     },
+    readState: {
+      hasUnread: (value) => value.accountId === "owner" && value.answerTurnId !== "turn-previous",
+    },
     warn: () => {},
   });
   return { ...factory, state, selected, run, entry };
@@ -191,6 +194,17 @@ test("desktopContextSnapshot preserves the context JSON contract", () => {
   });
   state.compaction = null;
   assert.equal(desktopContextSnapshot("thread-1"), null);
+});
+
+test("desktop task snapshot carries server-side unread state for the account", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture({ run: null });
+  assert.equal(desktopTaskSnapshot(entry, { accountId: "owner" }).unread, false);
+  state.lastMessage = {
+    ...state.lastMessage,
+    turnId: "turn-new",
+  };
+  assert.equal(desktopTaskSnapshot(entry, { accountId: "owner" }).unread, true);
+  assert.equal(desktopTaskSnapshot(entry, { accountId: "other" }).unread, false);
 });
 
 test("desktopContextSnapshot marks a completed compaction until fresh usage arrives", () => {
@@ -272,6 +286,7 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
     "lastAnswer",
     "lastAnswerAt",
     "lastAnswerTurnId",
+    "unread",
     "context",
     "run",
   ]);

@@ -511,11 +511,11 @@ export class MiniAppServer {
 
   async #authorize(request, response) {
     if (!this.#requestNeedsTelegramAuth(request)) {
-      if (!this.#localAccessSecret) return true;
+      if (!this.#localAccessSecret) return { source: "local-mini-app" };
       if (
         validLocalSession(cookieValue(request, LOCAL_SESSION_COOKIE), this.#localAccessSecret)
       ) {
-        return true;
+        return { source: "local-mini-app" };
       }
       json(response, 401, { error: "Откройте локальный Agent Hub через защищённый ярлык." });
       return false;
@@ -523,8 +523,12 @@ export class MiniAppServer {
     const authorization = String(request.headers.authorization ?? "");
     if (authorization.startsWith("device ") && this.#deviceStore) {
       try {
-        await this.#deviceStore.resolveSession(authorization.slice(7));
-        return true;
+        const session = await this.#deviceStore.resolveSession(authorization.slice(7));
+        return {
+          source: "trusted-device",
+          userId: String(session.id),
+          deviceId: String(session.deviceId ?? ""),
+        };
       } catch {
         json(response, 403, { error: "Авторизация устройства недействительна." });
         return false;
@@ -535,11 +539,11 @@ export class MiniAppServer {
       return false;
     }
     try {
-      validateTelegramInitData(authorization.slice(4), {
+      const user = validateTelegramInitData(authorization.slice(4), {
         botToken: this.#botToken,
         allowedUserIds: this.#allowedUserIds,
       });
-      return true;
+      return { source: "telegram-mini-app", userId: String(user.id) };
     } catch {
       json(response, 403, { error: "Telegram-авторизация недействительна." });
       return false;
@@ -649,7 +653,8 @@ export class MiniAppServer {
         response.end("Method Not Allowed\n");
         return;
       }
-      if (!await this.#authorize(request, response)) return;
+      const authorization = await this.#authorize(request, response);
+      if (!authorization) return;
       if (
         String(request.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase()
         !== "application/json"
@@ -673,7 +678,7 @@ export class MiniAppServer {
         }
         json(response, 200, {
           ok: true,
-          result: await this.#controlHandler({ action, params }),
+          result: await this.#controlHandler({ action, params, context: authorization }),
         }, method);
       } catch (error) {
         json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);

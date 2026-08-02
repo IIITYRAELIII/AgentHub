@@ -9,7 +9,6 @@ const vscode = window.__agentHubVscode ?? (typeof window.acquireVsCodeApi === "f
   ? window.acquireVsCodeApi()
   : null);
 const pendingBridgeCalls = new Map();
-const seenAnswerKey = "agent-hub:seen-answers:v1";
 const selectedTaskKey = "agent-hub:selected-task:v1";
 let bridgeSequence = 0;
 let lastSnapshot = null;
@@ -19,12 +18,17 @@ let rateLimitRefreshTimer = null;
 let rateLimitRefreshRange = "24h";
 let rateLimitRefreshInFlight = false;
 let refreshing = false;
+let connectionFailureCount = 0;
+let connectionFailureSince = 0;
+let connectionOfflineTimer = null;
 let pendingSelectionId = "";
 let selectionSequence = 0;
 let selectionTail = Promise.resolve();
 let selectedHistoryRefreshAt = 0;
 const EXTERNAL_HISTORY_REFRESH_MS = 2_500;
 const HISTORY_CATCH_UP_TIMEOUT_MS = 120_000;
+const CONNECTION_OFFLINE_FAILURES = 3;
+const CONNECTION_OFFLINE_GRACE_MS = 6_000;
 const historyByTask = new Map();
 const historyPageByTask = new Map();
 const historyCatchUpDeadlines = new Map();
@@ -265,25 +269,6 @@ function authorizationHeaders() {
   return {};
 }
 
-function seenAnswers() {
-  try {
-    return JSON.parse(localStorage.getItem(seenAnswerKey) || "{}");
-  } catch {
-    return {};
-  }
-}
-
-function markAnswerSeen(task) {
-  if (!task?.lastAnswerAt) return;
-  const seen = seenAnswers();
-  seen[taskId(task.provider, task.threadId)] = task.lastAnswerAt;
-  try {
-    localStorage.setItem(seenAnswerKey, JSON.stringify(seen));
-  } catch {
-    // Приватный WebView может запрещать localStorage.
-  }
-}
-
 function historyNeedsCatchUp(taskIdValue) {
   const deadline = Number(historyCatchUpDeadlines.get(taskIdValue)) || 0;
   if (!deadline) return false;
@@ -295,7 +280,6 @@ function historyNeedsCatchUp(taskIdValue) {
 function updateHistoryCatchUp(taskIdValue, history, task) {
   if (historyContainsLatestAnswer(history, task)) {
     historyCatchUpDeadlines.delete(taskIdValue);
-    markAnswerSeen(task);
     return;
   }
   if (!historyCatchUpDeadlines.has(taskIdValue)) {
@@ -382,12 +366,12 @@ async function control(action, params = {}) {
     : payload.result;
 }
 
-function modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId) {
+function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   const id = taskId(task.provider, task.threadId);
   const answerAt = Date.parse(task.lastAnswerAt ?? "") || 0;
-  const seenAt = Date.parse(seen[id] ?? "") || 0;
   const running = Boolean(task.running);
   const unknown = task.activityUnknown === true;
+  const unread = task.unread === true;
   const serverSelected = id === serverSelectedId;
   const executionOwner = task.run?.executionOwner ?? task.executionOwner ?? "";
   const runtimeTitle = task.run?.runtime ?? task.runtime ?? "";
@@ -402,13 +386,13 @@ function modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId) 
     runtimeLabel: runtimeShortLabels[executionOwner] ?? (runtimeTitle ? "EXT" : ""),
     runtimeTitle,
     project: task.projectName || "",
-    status: running ? "running" : unknown ? "unknown" : answerAt > seenAt ? "ready" : "idle",
-    statusLabel: running ? "Выполняется" : unknown ? "Статус неизвестен" : answerAt > seenAt ? "Ответ готов" : "",
+    status: running ? "running" : unknown ? "unknown" : unread ? "ready" : "idle",
+    statusLabel: running ? "Выполняется" : unknown ? "Статус неизвестен" : unread ? "Ответ готов" : "",
     lastActivity: task.orderingActivityAtMs
       ? new Date(task.orderingActivityAtMs).toISOString()
       : task.lastAnswerAt,
     startedAt: running ? task.run?.startedAt ?? task.startedAt ?? null : null,
-    unread: !running && answerAt > seenAt,
+    unread: !running && unread,
     running,
     selected: id === effectiveSelectedId,
     context: task.run?.context ?? task.context ?? null,
@@ -460,6 +444,7 @@ function observeContextCompactions(tasks) {
 
 function applySnapshot(snapshot) {
   if (!snapshot) return;
+  resetConnectionFailures();
   lastSnapshot = snapshot;
   agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
   agentHub.setServerStatus(snapshot.server ?? null);
@@ -470,7 +455,6 @@ function applySnapshot(snapshot) {
       .map((item) => String(item.clientUserMessageId ?? "").trim())
       .filter(Boolean),
   );
-  const seen = seenAnswers();
   const serverSelected = (snapshot.tasks ?? []).find((task) => task.selected);
   const serverSelectedId = serverSelected
     ? taskId(serverSelected.provider, serverSelected.threadId)
@@ -486,7 +470,7 @@ function applySnapshot(snapshot) {
       ? selectedTaskId
       : serverSelectedId;
   const tasks = (snapshot.tasks ?? [])
-    .map((task) => modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId))
+    .map((task) => modelTask(task, snapshot, effectiveSelectedId, serverSelectedId))
     .sort((left, right) => Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0));
   agentHub.setTasks(tasks);
   for (const deferred of snapshot.deferredInputs ?? []) {
@@ -580,6 +564,36 @@ function applySnapshotConnection(snapshot, idleStatus = "online") {
     waiting ? "restart-waiting" : snapshot?.restartPending ? "restarting" : idleStatus,
     { blockingCount },
   );
+}
+
+function resetConnectionFailures() {
+  connectionFailureCount = 0;
+  connectionFailureSince = 0;
+  if (connectionOfflineTimer != null) window.clearTimeout(connectionOfflineTimer);
+  connectionOfflineTimer = null;
+}
+
+function recordTransientConnectionFailure() {
+  const now = Date.now();
+  if (!connectionFailureSince) connectionFailureSince = now;
+  connectionFailureCount += 1;
+  const markOffline = () => {
+    connectionOfflineTimer = null;
+    if (!connectionFailureSince) return;
+    applySnapshotConnection(lastSnapshot, "offline");
+  };
+  if (connectionFailureCount >= CONNECTION_OFFLINE_FAILURES
+    || now - connectionFailureSince >= CONNECTION_OFFLINE_GRACE_MS) {
+    markOffline();
+    return;
+  }
+  applySnapshotConnection(lastSnapshot, "connecting");
+  if (connectionOfflineTimer == null) {
+    connectionOfflineTimer = window.setTimeout(
+      markOffline,
+      CONNECTION_OFFLINE_GRACE_MS - (now - connectionFailureSince),
+    );
+  }
 }
 
 function historyMessages(history, focusedTurn = null) {
@@ -764,7 +778,7 @@ async function runAction(operation) {
   try {
     return await operation();
   } catch (error) {
-    if (isConnectionFailure(error)) applySnapshotConnection(lastSnapshot, "offline");
+    if (isConnectionFailure(error)) recordTransientConnectionFailure();
     agentHub.toast(hubErrorMessage(error));
     return null;
   }
@@ -1229,7 +1243,7 @@ async function refresh() {
     }
     applySnapshotConnection(snapshot);
   } catch {
-    applySnapshotConnection(lastSnapshot, "offline");
+    recordTransientConnectionFailure();
   } finally {
     refreshing = false;
     const active = Boolean(lastSnapshot?.tasks?.some(
@@ -1256,6 +1270,7 @@ rateLimitRefreshTimer = window.setInterval(() => {
 window.addEventListener("hashchange", () => void runAction(openRoute));
 window.addEventListener("beforeunload", () => {
   window.clearTimeout(refreshTimer);
+  if (connectionOfflineTimer != null) window.clearTimeout(connectionOfflineTimer);
   window.clearInterval(rateLimitRefreshTimer);
 });
 

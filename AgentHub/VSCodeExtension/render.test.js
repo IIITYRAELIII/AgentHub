@@ -731,7 +731,7 @@ test("mobile navigation backs out from image to chat and from chat to tasks", ()
   );
   assert.match(html, /data-attachment-viewer[\s\S]*data-attachment-viewer-close/u);
   assert.match(app, /function navigateBack\(\)[\s\S]*closeAttachmentViewer\(\)[\s\S]*setPane\("tasks"\)/u);
-  assert.match(app, /dx < 72[\s\S]*attachmentViewerOpen[\s\S]*setPane\("tasks"\)/u);
+  assert.match(app, /dx < EDGE_SWIPE_DISTANCE[\s\S]*navigateBack\(\);/u);
   assert.match(android, /window\.AgentHub\.navigateBack/u);
 });
 
@@ -784,6 +784,26 @@ test("composer send and desktop settings stay pinned to the right edge", () => {
 test("Telegram mobile chat disables the host vertical collapse gesture", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   assert.match(app, /telegram\?\.expand\(\);\s*telegram\?\.disableVerticalSwipes\?\.\(\);/u);
+});
+
+test("composer drafts survive mobile navigation, reconnects and WebView recreation", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(app, /const DRAFT_STORAGE_VERSION = "agent-hub:composer-drafts:v1";/u);
+  assert.match(app, /function draftStorageSurface\(\)[\s\S]*window\.AgentHubAndroid[\s\S]*return "android";/u);
+  assert.match(app, /function restorePersistedDrafts\(\)[\s\S]*localStorage\.getItem\(draftStorageKey\(\)\)/u);
+  assert.match(app, /function persistDrafts\(\)[\s\S]*localStorage\.setItem\(draftStorageKey\(\), JSON\.stringify\(persisted\)\)/u);
+  assert.match(app, /function saveDraft\(\)[\s\S]*persistDrafts\(\);/u);
+  assert.match(app, /restorePersistedDrafts\(\);[\s\S]*pagehide[\s\S]*saveDraft\(\);/u);
+  assert.match(app, /visibilitychange[\s\S]*document\.visibilityState === "hidden"[\s\S]*saveDraft\(\)/u);
+});
+
+test("left-edge swipe uses in-app back and prevents browser history navigation", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(app, /const EDGE_SWIPE_ZONE = 32;/u);
+  assert.match(app, /fromLeftEdge: touch\.clientX <= EDGE_SWIPE_ZONE/u);
+  assert.match(app, /touchmove[\s\S]*swipeStart\?\.fromLeftEdge[\s\S]*event\.preventDefault\(\)/u);
+  assert.match(app, /dx < EDGE_SWIPE_DISTANCE[\s\S]*navigateBack\(\);/u);
+  assert.match(app, /function navigateBack\(\) \{\s*saveDraft\(\);[\s\S]*root\.dataset\.view !== "chat"[\s\S]*setPane\("tasks"\)/u);
 });
 
 test("chat loads older pages from a button and a cancellable mobile pull gesture", () => {
@@ -893,7 +913,7 @@ test("composer clears optimistically and restores an unconfirmed message", () =>
   assert.match(app, /retryComposerRequests\.set\(pending\.taskId,[\s\S]*requestId: pending\.requestId/u);
   assert.match(client, /agentHub\.completeSend\(request\.requestId/u);
   assert.match(client, /reusableAttachmentPaths\([\s\S]*\{ remote: !vscode \}/u);
-  assert.match(client, /if \(isConnectionFailure\(error\)\) applySnapshotConnection/u);
+  assert.match(client, /if \(isConnectionFailure\(error\)\) recordTransientConnectionFailure/u);
   assert.match(client, /deliveryPatch\(isConnectionFailure\(error\) \? "unconfirmed" : "rejected"\)/u);
   assert.match(client, /snapshot\?\.restartWaiting == null && blockingCount > 0/u);
   assert.match(client, /waiting \? "restart-waiting" : snapshot\?\.restartPending \? "restarting" : idleStatus/u);
@@ -911,6 +931,16 @@ test("chat retries an initial history load after the connection recovers", () =>
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   assert.match(client, /selectedHistoryMissing/u);
   assert.match(client, /selectedHistoryMissing[\s\S]*control\("open-task"/u);
+});
+
+test("one transient control failure does not mark the whole Hub offline", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /CONNECTION_OFFLINE_FAILURES = 3/u);
+  assert.match(client, /CONNECTION_OFFLINE_GRACE_MS = 6_000/u);
+  assert.match(client, /function recordTransientConnectionFailure\(\)/u);
+  assert.match(client, /if \(connectionFailureCount >= CONNECTION_OFFLINE_FAILURES/u);
+  assert.match(client, /function applySnapshot\(snapshot\)[\s\S]*resetConnectionFailures\(\)/u);
+  assert.doesNotMatch(client, /catch \(error\) \{\s*if \(isConnectionFailure\(error\)\) applySnapshotConnection/u);
 });
 
 test("chat keeps refreshing until the ready answer reaches task history", () => {

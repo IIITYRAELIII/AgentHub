@@ -12,6 +12,7 @@ export function createDesktopSnapshotFactory({
   restart,
   exchangeRates,
   server = {},
+  readState = null,
   warn,
 }) {
   function desktopContextSnapshot(thread, turn = "") {
@@ -92,7 +93,7 @@ export function createDesktopSnapshotFactory({
     };
   }
 
-  function desktopTaskSnapshot(entry) {
+  function desktopTaskSnapshot(entry, { accountId = "" } = {}) {
     const task = {
       provider: entry.provider,
       projectRoot: entry.projectRoot,
@@ -100,6 +101,17 @@ export function createDesktopSnapshotFactory({
     };
     const run = runs.forTask(task);
     const lastMessage = tasks.savedLastMessage(task);
+    const unread = Boolean(
+      accountId
+      && lastMessage?.updatedAt
+      && readState?.hasUnread?.({
+        accountId,
+        provider: entry.provider,
+        threadId: entry.threadId,
+        answerAt: lastMessage.updatedAt,
+        answerTurnId: lastMessage.turnId,
+      }),
+    );
     return {
       provider: entry.provider,
       projectRoot: entry.projectRoot,
@@ -123,12 +135,13 @@ export function createDesktopSnapshotFactory({
       lastAnswer: lastMessage?.text ?? "",
       lastAnswerAt: lastMessage?.updatedAt ?? null,
       lastAnswerTurnId: lastMessage?.turnId ?? null,
+      unread,
       context: desktopContextSnapshot(entry.threadId, run?.turnId),
       run: desktopRunSnapshot(run),
     };
   }
 
-  async function desktopSnapshot({ refresh = false } = {}) {
+  async function desktopSnapshot({ refresh = false, accountId = "" } = {}) {
     const catalogStale = clock.nowMs() - catalog.refreshedAt() >= 5_000;
     if (refresh || !catalog.entries().length || catalogStale) {
       // A Desktop RPC must remain responsive while Codex App Server is slow or
@@ -149,7 +162,7 @@ export function createDesktopSnapshotFactory({
         startedAt: clock.nowIso(),
       }]);
     }
-    const taskSnapshots = entries.map(desktopTaskSnapshot);
+    const taskSnapshots = entries.map((entry) => desktopTaskSnapshot(entry, { accountId }));
     const current = settings.current();
     const activeProvider = current.activeProvider;
     const activeCount = taskSnapshots.filter((item) => item.running).length;

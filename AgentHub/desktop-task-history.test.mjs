@@ -59,6 +59,7 @@ function fixture(overrides = {}) {
       startedAt: "2026-07-30T11:00:00.000Z",
       messageAttachments: [{ id: "live.png", name: "live.png", type: "image/png" }],
     },
+    catalogRefresh: null,
     ...overrides,
   };
   if (!state.refresh) {
@@ -71,7 +72,8 @@ function fixture(overrides = {}) {
       chatId: () => state.chatId,
     },
     catalog: {
-      refresh: async () => state.entries,
+      entries: () => state.entries,
+      refresh: async () => state.catalogRefresh ? state.catalogRefresh() : state.entries,
     },
     historyReader: {
       read: async (binding) => {
@@ -154,15 +156,23 @@ test("desktop task history resolves selection and merges the active run", async 
   assert.deepEqual(calls.fit, { maxBytes: 3_500_000 });
 });
 
-test("desktop task history hydrates its first response from the provider", async () => {
+test("desktop task history returns durable history while provider hydration is still blocked", async () => {
+  let releaseRefresh;
+  const blockedRefresh = new Promise((resolve) => { releaseRefresh = resolve; });
   const { desktopTaskHistory, calls } = fixture({
     run: null,
-    refresh: async () => ({ history: [] }),
+    refresh: async () => blockedRefresh,
+    catalogRefresh: async () => new Promise(() => {}),
   });
 
-  const result = await desktopTaskHistory({ limit: 1 });
-  assert.equal(result.total, 0);
+  const result = await Promise.race([
+    desktopTaskHistory({ limit: 1 }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("durable history did not return promptly")), 100)),
+  ]);
+  assert.equal(result.total, 4);
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.refreshes, 1);
+  releaseRefresh({ history: [] });
 });
 
 test("desktop task history imports private screenshot references for the visible page", async () => {
@@ -194,6 +204,9 @@ test("desktop task history restores screenshot sources lost from the durable cac
   state.history[3].messages[0].attachments = [];
   state.refresh = async () => ({ history: providerHistory });
 
+  const initial = await desktopTaskHistory({ limit: 1 });
+  assert.deepEqual(initial.items[0].messages[0].attachments, []);
+  await new Promise((resolve) => setImmediate(resolve));
   const result = await desktopTaskHistory({ limit: 1 });
 
   assert.deepEqual(calls.attachments, [[{

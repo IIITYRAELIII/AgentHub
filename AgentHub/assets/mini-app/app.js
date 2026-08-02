@@ -645,12 +645,73 @@ const state = {
   searchLoading: false,
 };
 
-/* Черновики живут только в памяти вкладки: текст, аннотации и вложения
- * переживают переключение задач, как в Desktop App. Их долговременное
- * хранение — забота backend. */
+/* Черновики принадлежат конкретному клиенту и задаче. Вложение остаётся в
+ * памяти страницы: data:-URL скриншотов может превысить лимит localStorage.
+ * Набранный текст и аннотации сохраняем синхронно, чтобы жест «назад»,
+ * пересоздание WebView или краткая потеря связи не стирали сообщение. */
 const drafts = new Map();
+const DRAFT_STORAGE_VERSION = "agent-hub:composer-drafts:v1";
+const DRAFT_STORAGE_MAX_TASKS = 100;
+const DRAFT_STORAGE_MAX_TEXT = 100_000;
 let pendingComposerRequest = null;
 const retryComposerRequests = new Map();
+
+function draftStorageSurface() {
+  if (vscodeMode) return "vscode";
+  if (window.AgentHubAndroid) return "android";
+  if (telegramMode) return `telegram:${telegramPlatform || "unknown"}`;
+  return "web";
+}
+
+function draftStorageKey() {
+  return `${DRAFT_STORAGE_VERSION}:${draftStorageSurface()}`;
+}
+
+function normalizedDraftText(value) {
+  return String(value ?? "").slice(0, DRAFT_STORAGE_MAX_TEXT);
+}
+
+function normalizedDraftAnnotations(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 20).map((annotation) => ({
+    quote: String(annotation?.quote ?? "").slice(0, 400),
+  })).filter((annotation) => annotation.quote);
+}
+
+function restorePersistedDrafts() {
+  let persisted;
+  try {
+    persisted = JSON.parse(localStorage.getItem(draftStorageKey()) ?? "[]");
+  } catch {
+    return;
+  }
+  if (!Array.isArray(persisted)) return;
+  for (const entry of persisted.slice(0, DRAFT_STORAGE_MAX_TASKS)) {
+    const taskId = String(entry?.taskId ?? "").trim();
+    if (!taskId) continue;
+    const text = normalizedDraftText(entry.text);
+    const annotations = normalizedDraftAnnotations(entry.annotations);
+    if (!text && annotations.length === 0) continue;
+    drafts.set(taskId, { text, attachments: [], annotations });
+  }
+}
+
+function persistDrafts() {
+  const persisted = [...drafts.entries()]
+    .filter(([taskId, draft]) => String(taskId).trim() && (draft?.text || draft?.annotations?.length))
+    .slice(-DRAFT_STORAGE_MAX_TASKS)
+    .map(([taskId, draft]) => ({
+      taskId,
+      text: normalizedDraftText(draft.text),
+      annotations: normalizedDraftAnnotations(draft.annotations),
+    }));
+  try {
+    if (persisted.length) localStorage.setItem(draftStorageKey(), JSON.stringify(persisted));
+    else localStorage.removeItem(draftStorageKey());
+  } catch {
+    // Privacy-mode WebView or a full storage quota: the in-memory draft still survives navigation.
+  }
+}
 
 function currentTask() {
   return state.tasks.find((task) => task.id === state.selectedId) ?? null;
@@ -1088,9 +1149,15 @@ function closeAttachmentViewer() {
 }
 
 function navigateBack() {
+  saveDraft();
   if (closeAttachmentViewer()) return true;
   if (settingsPanel?.classList.contains("open")) {
     closePanel();
+    return true;
+  }
+  if (root.dataset.view !== "chat") {
+    setView("chat");
+    setPane("tasks");
     return true;
   }
   if (root.dataset.view === "chat" && root.dataset.pane === "chat") {
@@ -1105,6 +1172,8 @@ attachmentViewer.addEventListener("click", (event) => {
   if (event.target === attachmentViewer) closeAttachmentViewer();
 });
 
+const EDGE_SWIPE_ZONE = 32;
+const EDGE_SWIPE_DISTANCE = 52;
 let swipeStart = null;
 
 function swipeIgnoredTarget(target) {
@@ -1114,8 +1183,24 @@ function swipeIgnoredTarget(target) {
 document.addEventListener("touchstart", (event) => {
   if (event.touches.length !== 1 || swipeIgnoredTarget(event.target)) return;
   const touch = event.touches[0];
-  swipeStart = { x: touch.clientX, y: touch.clientY, target: event.target };
+  swipeStart = {
+    x: touch.clientX,
+    y: touch.clientY,
+    fromLeftEdge: touch.clientX <= EDGE_SWIPE_ZONE,
+  };
 }, { passive: true });
+
+/* Android WebView normally routes a left-edge gesture to the system Back
+ * dispatcher. On browsers that expose the gesture to the page, claim it once
+ * it is clearly horizontal, so browser-history navigation cannot discard the
+ * active composer. Native Android Back calls this same navigateBack(). */
+document.addEventListener("touchmove", (event) => {
+  if (!swipeStart?.fromLeftEdge || event.touches.length !== 1) return;
+  const touch = event.touches[0];
+  const dx = touch.clientX - swipeStart.x;
+  const dy = touch.clientY - swipeStart.y;
+  if (dx > 12 && Math.abs(dx) > Math.abs(dy) * 1.4) event.preventDefault();
+}, { passive: false });
 
 document.addEventListener("touchend", (event) => {
   if (!swipeStart || event.changedTouches.length !== 1) {
@@ -1126,12 +1211,8 @@ document.addEventListener("touchend", (event) => {
   const dx = touch.clientX - swipeStart.x;
   const dy = touch.clientY - swipeStart.y;
   swipeStart = null;
-  if (dx < 72 || Math.abs(dx) < Math.abs(dy) * 1.4) return;
-  if (attachmentViewerOpen) {
-    closeAttachmentViewer();
-    return;
-  }
-  if (root.dataset.view === "chat" && root.dataset.pane === "chat") setPane("tasks");
+  if (dx < EDGE_SWIPE_DISTANCE || Math.abs(dx) < Math.abs(dy) * 1.4) return;
+  navigateBack();
 }, { passive: true });
 
 function captureChatAnchor() {
@@ -2149,6 +2230,7 @@ function saveDraft() {
     attachments: attachments.slice(),
     annotations: annotations.slice(),
   });
+  persistDrafts();
 }
 
 function restoreDraft() {
@@ -5208,7 +5290,14 @@ if (vscodeMode) {
 
 AgentHub.setConnection(telegramMode ? "online" : "connecting");
 const taskDurationTimer = window.setInterval(refreshTaskDurations, 1_000);
-window.addEventListener("pagehide", () => clearInterval(taskDurationTimer), { once: true });
+restorePersistedDrafts();
+window.addEventListener("pagehide", () => {
+  saveDraft();
+  clearInterval(taskDurationTimer);
+}, { once: true });
+window.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") saveDraft();
+});
 renderTasks();
 renderChat();
 renderOptions();

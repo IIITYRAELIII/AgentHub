@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Build;
 import android.provider.Settings;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
@@ -22,6 +23,8 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -66,10 +69,17 @@ public final class MainActivity extends Activity {
     private volatile boolean updateCheckStarted = false;
     private Uri pendingUpdateUri;
     private WebView webView;
+    private final OnBackInvokedCallback backCallback = this::handleBackNavigation;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (Build.VERSION.SDK_INT >= 33) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                backCallback
+            );
+        }
         String configuredUrl = getPreferences().getString(PREF_URL, normalizeUrl(BuildConfig.AGENT_HUB_URL));
         String deviceId = getPreferences().getString(PREF_DEVICE_ID, "");
         if (!configuredUrl.isBlank() && !deviceId.isBlank() && keyExists()) {
@@ -82,6 +92,9 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
+        }
         if (webView != null) {
             webView.removeJavascriptInterface("AgentHubAndroid");
             webView.destroy();
@@ -105,6 +118,10 @@ public final class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        handleBackNavigation();
+    }
+
+    private void handleBackNavigation() {
         if (webView != null) {
             webView.evaluateJavascript(
                 "Boolean(window.AgentHub && window.AgentHub.navigateBack && window.AgentHub.navigateBack())",
@@ -119,11 +136,11 @@ public final class MainActivity extends Activity {
     }
 
     private void finishBackNavigation() {
-        if (webView != null && webView.canGoBack()) {
-            webView.goBack();
-            return;
-        }
-        super.onBackPressed();
+        // Agent Hub owns navigation inside its single WebView. At the task
+        // list root a system edge-back is a no-op instead of closing the app
+        // or navigating to an authentication/bootstrap document.
+        if (webView != null) return;
+        finish();
     }
 
     private android.content.SharedPreferences getPreferences() {

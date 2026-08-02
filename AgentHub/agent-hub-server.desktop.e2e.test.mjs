@@ -342,11 +342,14 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     130,
     "newer real usage must replace the post-compaction context usage",
   );
-  const history = await callDesktopControl("task-history", {
-    provider: "codex",
-    threadId: firstThreadId,
-    limit: 10,
-  }, { runtimeRoot });
+  const history = await waitFor(async () => {
+    const result = await callDesktopControl("task-history", {
+      provider: "codex",
+      threadId: firstThreadId,
+      limit: 10,
+    }, { runtimeRoot });
+    return result.total === 2 ? result : null;
+  }, "background task history hydration", 5_000);
   assert.equal(history.total, 2);
   const slowExchange = history.items.find((item) => item.prompt === "[slow] desktop A");
   assert.ok(slowExchange);

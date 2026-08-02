@@ -241,7 +241,7 @@ function startTurn(params) {
   schedule(() => finishTurn(thread, turn, {
     status: failed ? "failed" : "completed",
     answer: failed ? "Имитированная ошибка хода" : null,
-  }), prompt.includes("[slow]") ? 800 : 120);
+  }), prompt.includes("[slow]") ? 3_000 : 120);
   return turn;
 }
 

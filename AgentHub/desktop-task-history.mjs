@@ -13,6 +13,7 @@ export function createDesktopTaskHistoryFactory({
   const refreshedAt = new Map();
   const hydratedHistories = new Map();
   const refreshIntervalMs = 15_000;
+  let catalogRefresh = null;
 
   async function hydrateHistory(history) {
     const result = structuredClone(Array.isArray(history) ? history : []);
@@ -51,6 +52,14 @@ export function createDesktopTaskHistoryFactory({
     refreshes.set(key, operation);
   }
 
+  function scheduleCatalogRefresh() {
+    if (typeof catalog.refresh !== "function" || catalogRefresh) return;
+    catalogRefresh = Promise.resolve()
+      .then(() => catalog.refresh())
+      .catch((error) => warn(`Cannot refresh task catalog: ${error?.message ?? error}`))
+      .finally(() => { catalogRefresh = null; });
+  }
+
   return async function desktopTaskHistory(params) {
     const provider = String(params.provider ?? selection.activeProvider()).trim();
     const selectedThreadId = String(params.threadId ?? selection.threadId() ?? "").trim();
@@ -58,7 +67,13 @@ export function createDesktopTaskHistoryFactory({
       throw new Error("Укажите корректную задачу");
     }
 
-    const entries = await catalog.refresh();
+    // Opening a chat must be a local operation. App Server discovery can take
+    // tens of seconds when a provider is stuck, while SQLite/taskCatalog is
+    // already sufficient to identify the task and render its latest page.
+    const entries = typeof catalog.entries === "function"
+      ? catalog.entries()
+      : await catalog.refresh();
+    scheduleCatalogRefresh();
     const entry = entries.find(
       (item) => item.provider === provider && item.threadId === selectedThreadId,
     );
@@ -78,16 +93,12 @@ export function createDesktopTaskHistoryFactory({
       history = structuredClone(history);
       scheduleRefresh(binding);
     } else {
-      // The durable history intentionally contains attachment descriptors, not
-      // private image data URLs. Hydrate once from the provider before the
-      // first Desktop response so a restart can restore old screenshots too.
-      const refreshed = typeof historyReader.refresh === "function"
-        ? await historyReader.refresh(binding)
-        : null;
-      history = await hydrateHistory(
-        Array.isArray(refreshed?.history) ? refreshed.history : cached.history,
-      );
+      // A first open uses only durable history. Provider/rollout hydration is
+      // intentionally background work, otherwise one stalled App Server read
+      // turns every task click into a Desktop-control timeout.
+      history = await hydrateHistory(cached.history);
       hydratedHistories.set(key, structuredClone(history));
+      scheduleRefresh(binding);
     }
     const running = runs.forTask(binding);
     if (running) {

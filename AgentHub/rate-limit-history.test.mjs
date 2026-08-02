@@ -24,6 +24,8 @@ test("Agent Hub persists Codex and Claude limit snapshots every five minutes", a
   assert.match(source, /rateLimitHistoryStore\.record\(\{ limits \}, observedAt, "claude"\)/u);
   assert.match(source, /return rateLimitHistoryStore\.read\(/u);
   assert.match(source, /scheduleRateLimitPoll\(1_000\)/u);
+  assert.match(source, /"--safe-mode", "--no-session-persistence"/u);
+  assert.match(source, /void stopProcessTree\(worker\.pid\)[\s\S]*?\.finally\(\(\) => finish\(\{ code: null, error: timeoutError \}\)\)/u);
 });
 
 test("all-time SQLite history samples before JSON parsing and preserves first and last", async () => {

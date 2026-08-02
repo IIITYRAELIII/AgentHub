@@ -598,6 +598,7 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
     assert.deepEqual(calls, [{
       action: "snapshot",
       params: { refresh: true },
+      context: { source: "local-mini-app" },
     }]);
 
     const externalHeaders = {
@@ -650,13 +651,17 @@ test("trusted Android device session is independent of Telegram user ids", async
       return { id: "local-owner", deviceId: "device-id" };
     },
   };
+  let receivedContext = null;
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
     journalDatabase: memoryJournal(),
     allowedUserIds: new Set([42]),
     deviceStore,
-    controlHandler: async () => ({ connected: true }),
+    controlHandler: async ({ context }) => {
+      receivedContext = context;
+      return { connected: true };
+    },
   });
   try {
     const address = await server.start();
@@ -673,6 +678,11 @@ test("trusted Android device session is independent of Telegram user ids", async
     assert.deepEqual(await response.json(), {
       ok: true,
       result: { connected: true },
+    });
+    assert.deepEqual(receivedContext, {
+      source: "trusted-device",
+      userId: "local-owner",
+      deviceId: "device-id",
     });
   } finally {
     await server.close();

@@ -151,6 +151,7 @@ import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { installRotatingConsole } from "./rotating-log.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 import { RuntimeStateStore } from "./runtime-state-store.mjs";
+import { TaskReadStateStore, taskHasUnreadAnswer } from "./task-read-state-store.mjs";
 import { LocalTaskSyncStore } from "./task-sync-store.mjs";
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
 import { createDesktopMessageController } from "./desktop-message-controller.mjs";
@@ -439,6 +440,7 @@ const runtimeStateStore = new RuntimeStateStore({
   legacyFile: STATE_FILE,
   legacyBackupFile: STATE_BACKUP_FILE,
 });
+const taskReadStateStore = new TaskReadStateStore({ dataDir: config.dataDir });
 const bindingsMigration = await migrateMessageBindings(config.dataDir);
 if (bindingsMigration.imported || bindingsMigration.archived.length) {
   console.log(
@@ -1986,10 +1988,12 @@ try {
   }
   if (saved.restartRequest && typeof saved.restartRequest === "object"
     && Number.isSafeInteger(saved.restartRequest.chatId)
-    && Number.isSafeInteger(saved.restartRequest.messageId)) {
+    && (saved.restartRequest.messageId == null || Number.isSafeInteger(saved.restartRequest.messageId))) {
     restartRequest = {
       chatId: saved.restartRequest.chatId,
-      messageId: saved.restartRequest.messageId,
+      messageId: Number.isSafeInteger(saved.restartRequest.messageId)
+        ? saved.restartRequest.messageId
+        : null,
       requestedAt: String(saved.restartRequest.requestedAt ?? ""),
       waitingForRuns: saved.restartRequest.waitingForRuns === true,
       minimumUpdateOffset: Number.isSafeInteger(saved.restartRequest.minimumUpdateOffset)
@@ -2844,7 +2848,7 @@ const {
   desktopContextSnapshot,
   desktopRunSnapshot,
   desktopTaskSnapshot,
-  desktopSnapshot,
+  desktopSnapshot: rawDesktopSnapshot,
 } = createDesktopSnapshotFactory({
   clock: {
     nowMs: () => Date.now(),
@@ -2926,8 +2930,27 @@ const {
   server: {
     snapshot: desktopServerSnapshot,
   },
+  readState: {
+    hasUnread: (answer) => taskHasUnreadAnswer(answer, taskReadStateStore.get(answer)),
+  },
   warn: (...args) => console.warn(...args),
 });
+
+function desktopReadAccountId(context = null) {
+  const requested = String(context?.userId ?? "").trim();
+  if (requested) return trustedDeviceUserId(context);
+  if (config.allowedUserIds.size || config.components.androidApp) return trustedDeviceUserId(null);
+  return "local";
+}
+
+function desktopSnapshot(params = {}, context = null) {
+  return rawDesktopSnapshot({
+    ...(params ?? {}),
+    // Read state always belongs to the authenticated/local Hub account. A
+    // remote client cannot select another account through request parameters.
+    accountId: desktopReadAccountId(context),
+  });
+}
 
 const desktopTaskHistory = createDesktopTaskHistoryFactory({
   selection: {
@@ -2936,13 +2959,11 @@ const desktopTaskHistory = createDesktopTaskHistoryFactory({
     chatId: () => chatId,
   },
   catalog: {
+    entries: () => taskCatalog,
     refresh: refreshTaskCatalog,
   },
   historyReader: {
-    read: async (binding) => {
-      const cached = await taskViewController.readHistory(binding, { cachedOnly: true });
-      return cached.history.length ? cached : taskViewController.readHistory(binding);
-    },
+    read: (binding) => taskViewController.readHistory(binding, { cachedOnly: true }),
     refresh: (binding) => taskViewController.readHistory(binding),
   },
   runs: {
@@ -2962,14 +2983,28 @@ const desktopTaskHistory = createDesktopTaskHistoryFactory({
   warn: (...args) => console.warn(...args),
 });
 
-async function desktopSelectTask(params) {
+function markDesktopTaskRead(entry, context = null) {
+  const lastMessage = savedLastTaskMessageRecord(entry);
+  if (!lastMessage?.updatedAt) return null;
+  return taskReadStateStore.markRead({
+    accountId: desktopReadAccountId(context),
+    provider: entry.provider,
+    threadId: entry.threadId,
+    answerAt: lastMessage.updatedAt,
+    answerTurnId: lastMessage.turnId,
+  });
+}
+
+async function desktopSelectTask(params, context = null) {
   const provider = String(params.provider ?? "").trim();
   const selectedThreadId = String(params.threadId ?? "").trim();
   if (!['codex', 'claude'].includes(provider) || !selectedThreadId) {
     throw new Error("Укажите корректную задачу");
   }
-  const catalog = await refreshTaskCatalog();
-  const entry = catalog.find((item) => item.provider === provider && item.threadId === selectedThreadId);
+  const entry = taskCatalog.find((item) => item.provider === provider && item.threadId === selectedThreadId);
+  void refreshTaskCatalog().catch((error) => {
+    console.warn(`Cannot refresh task catalog after Desktop selection: ${error.message}`);
+  });
   if (!entry) throw new Error("Задача не найдена в локальном каталоге");
   await activateMessageBinding({
     provider: entry.provider,
@@ -2977,11 +3012,12 @@ async function desktopSelectTask(params) {
     threadId: entry.threadId,
     taskTitle: entry.title,
   });
-  return desktopSnapshot();
+  markDesktopTaskRead(entry, context);
+  return desktopSnapshot({}, context);
 }
 
-async function desktopOpenTask(params) {
-  const snapshot = await desktopSelectTask(params);
+async function desktopOpenTask(params, context = null) {
+  const snapshot = await desktopSelectTask(params, context);
   return {
     snapshot,
     history: await desktopTaskHistory({
@@ -2993,7 +3029,7 @@ async function desktopOpenTask(params) {
   };
 }
 
-async function desktopOpenTurn(params) {
+async function desktopOpenTurn(params, context = null) {
   const provider = String(params.provider ?? "").trim();
   const taskThread = String(params.taskThreadId ?? "").trim();
   const turnThread = String(params.turnThreadId ?? taskThread).trim();
@@ -3001,8 +3037,10 @@ async function desktopOpenTurn(params) {
   if (!["codex", "claude"].includes(provider) || !taskThread || !turnThread || !selectedTurnId) {
     throw new Error("Укажите корректный ход");
   }
-  const catalog = await refreshTaskCatalog();
-  const entry = catalog.find((item) => item.provider === provider && item.threadId === taskThread);
+  const entry = taskCatalog.find((item) => item.provider === provider && item.threadId === taskThread);
+  void refreshTaskCatalog().catch((error) => {
+    console.warn(`Cannot refresh task catalog after Desktop turn open: ${error.message}`);
+  });
   if (!entry) throw new Error("Задача не найдена в локальном каталоге");
   const record = await workLogUsageStore.getTurn({
     provider,
@@ -3023,8 +3061,9 @@ async function desktopOpenTurn(params) {
     threadId: entry.threadId,
     taskTitle: entry.title,
   });
+  markDesktopTaskRead(entry, context);
   return {
-    snapshot: await desktopSnapshot(),
+    snapshot: await desktopSnapshot({}, context),
     history: await desktopTaskHistory({
       provider,
       threadId: taskThread,
@@ -3406,24 +3445,25 @@ async function desktopRestartServer() {
     + contextCompactions.runningCount()
     + backgroundMediaJobs.size
     + backgroundSpeechJobs.size;
-  const message = await sendMessage(blockingWorkCount
-    ? `🔄 Agent Hub Server перезапустится после завершения выполняющихся задач: ${blockingWorkCount}.`
-    : "🔄 Перезапускаю Agent Hub Server…");
-  if (!message?.message_id) throw new Error("Telegram не вернул ID сообщения перезапуска");
   restartRequest = {
     chatId,
-    messageId: message.message_id,
+    // Desktop control must acknowledge a persisted restart request before a
+    // slow Telegram request or the replacement hand-off can close its pipe.
+    // The replacement will post the final card if this first announcement did
+    // not get a chance to finish.
+    messageId: null,
     requestedAt: new Date().toISOString(),
     waitingForRuns: blockingWorkCount > 0,
     minimumUpdateOffset: updateOffset,
   };
   await saveState();
-  if (!blockingWorkCount) setTimeout(() => void performRestart(), 250).unref();
+  const request = restartRequest;
+  void announceDesktopRestart(request, blockingWorkCount);
+  if (!blockingWorkCount) setTimeout(() => void performRestart(), 0).unref();
   return {
     accepted: true,
     waiting: blockingWorkCount > 0,
     message: blockingWorkCount > 0 ? "Перезапуск ожидает завершения задач" : "Agent Hub Server перезапускается",
-    snapshot: await desktopSnapshot(),
   };
 }
 
@@ -3945,14 +3985,17 @@ async function activateMessageBinding(binding) {
   threadIdsByProvider[activeProvider] = threadId;
   if (isCodex()) {
     restoreCodexTaskSettings(threadId);
-    activeThreadTitle = await storedCodexThreadTitle(threadId, activeThreadTitle);
+    // Desktop already selected this durable catalog entry. Avoid scanning a
+    // potentially huge rollout only to rediscover the title the caller sent.
+    if (!binding.taskTitle?.trim()) {
+      activeThreadTitle = await storedCodexThreadTitle(threadId, activeThreadTitle);
+    }
   }
   latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
   try {
-    if (isCodex() && !codexTransport.running) {
-      await startCodexAppServer();
-      await initializeCodex({ attachSelectedThread: false });
-    }
+    // Selecting/opening a chat changes only local UI state. Starting an
+    // unavailable App Server here makes a harmless task click wait for its
+    // full startup timeout. The first operation that needs Codex starts it.
     await saveState();
     return { changed: true, activeTitle: activeThreadTitle };
   } catch (error) {
@@ -4883,6 +4926,7 @@ function spawnCapture(command, args, options = {}) {
     let stdoutTruncated = false;
     let stderrTruncated = false;
     let settled = false;
+    let timeoutError = null;
     const finish = (result) => {
       if (settled) return;
       settled = true;
@@ -4900,10 +4944,14 @@ function spawnCapture(command, args, options = {}) {
       return Buffer.from(combined, "utf8").subarray(0, maxOutputBytes).toString("utf8");
     };
     const timer = setTimeout(() => {
-      const error = new Error(`process timed out after ${timeoutMs} ms: ${command}`);
-      error.code = "ETIMEDOUT";
-      void stopProcessTree(worker.pid).catch(() => worker.kill());
-      finish({ code: null, error });
+      timeoutError = new Error(`process timed out after ${timeoutMs} ms: ${command}`);
+      timeoutError.code = "ETIMEDOUT";
+      // Claude starts child services before it can print /usage. Do not leave
+      // such a tree alive after the bounded probe: wait for taskkill so the
+      // next five-minute probe cannot accumulate another service tree.
+      void stopProcessTree(worker.pid)
+        .catch(() => worker.kill())
+        .finally(() => finish({ code: null, error: timeoutError }));
     }, timeoutMs);
     worker.stdout?.setEncoding("utf8");
     worker.stderr?.setEncoding("utf8");
@@ -4914,7 +4962,10 @@ function spawnCapture(command, args, options = {}) {
       stderr = append(stderr, chunk, () => { stderrTruncated = true; });
     });
     worker.on("error", (error) => finish({ code: null, error }));
-    worker.on("close", (code) => finish({ code }));
+    worker.on("close", (code) => {
+      if (timeoutError) return;
+      finish({ code });
+    });
   });
 }
 
@@ -6927,6 +6978,10 @@ async function readClaudeRateLimits() {
   const invocation = resolveClaudeInvocation();
   const result = await spawnCapture(invocation.command, [
     ...invocation.prefixArgs,
+    // A rate-limit probe needs neither workspace customizations nor tools.
+    // In particular, safe mode prevents project/user MCP servers from being
+    // spawned merely to render Claude's local /usage output.
+    "--safe-mode", "--no-session-persistence",
     "--print", "--output-format", "text", "--permission-mode", "dontAsk", "/usage",
   ], { timeoutMs: 15_000, maxOutputBytes: 64 * 1024 });
   if (result.error) throw result.error;
@@ -7118,14 +7173,37 @@ async function restoreBackgroundJobs() {
   console.log(`Restored ${scheduled}/${count} persistent background job(s).`);
 }
 
+function restartMessageIsEditable(request = restartRequest) {
+  return Number.isSafeInteger(request?.chatId) && Number.isSafeInteger(request?.messageId);
+}
+
+async function announceDesktopRestart(request, blockingWorkCount) {
+  if (!request || !Number.isSafeInteger(request.chatId)) return false;
+  try {
+    const message = await sendMessageTo(request.chatId, blockingWorkCount
+      ? `🔄 Agent Hub Server перезапустится после завершения выполняющихся задач: ${blockingWorkCount}.`
+      : "🔄 Перезапускаю Agent Hub Server…");
+    if (!Number.isSafeInteger(message?.message_id) || restartRequest !== request || stopping) return false;
+    request.messageId = message.message_id;
+    await saveState();
+    return true;
+  } catch (error) {
+    // A Telegram outage must not turn an already persisted Desktop request into
+    // a failed release. The replacement still records the restart in the UI.
+    console.warn(`Cannot announce Desktop restart: ${error.message}`);
+    return false;
+  }
+}
+
 async function updateRestartMessage(text, extra = {}) {
-  if (!restartRequest) return;
+  if (!restartMessageIsEditable()) return false;
   await telegram("editMessageText", {
     chat_id: restartRequest.chatId,
     message_id: restartRequest.messageId,
     text,
     ...extra,
   });
+  return true;
 }
 
 async function finalizeRestartMessage() {
@@ -7136,6 +7214,18 @@ async function finalizeRestartMessage() {
     task: activeThreadTitle || (threadId ? `${providerTitle()} · ${threadId.slice(0, 8)}` : "Не выбрана"),
     runningTasks: taskRuns.size,
   });
+  if (!restartMessageIsEditable(request)) {
+    try {
+      if (Number.isSafeInteger(request.chatId)) {
+        await sendMessageTo(request.chatId, text, { parse_mode: "HTML", reply_markup: BOT_MENU });
+      }
+    } catch (error) {
+      console.error("Cannot send restart completion message:", error.message);
+    }
+    restartRequest = null;
+    await saveState();
+    return true;
+  }
   return finalizeSuccessfulReplacement({
     updateMessage: () => updateRestartMessage(text, { parse_mode: "HTML" }),
     sendFallback: () => sendMessageTo(request.chatId, text, {
@@ -8295,6 +8385,7 @@ async function shutdown(signal) {
     logError: (name, error) => console.error(`Shutdown failed (${name}):`, error.message),
   });
   taskSyncStore.close();
+  taskReadStateStore.close();
   runtimeStateStore.close();
 }
 
