@@ -4,7 +4,11 @@ import path from "node:path";
 import { AGENT_HUB_ROOT, loadConfig, pathInsideOrSame } from "./config.mjs";
 import { resolveClaudeInvocation } from "./claude-invocation.mjs";
 import { resolveCodexExecutable } from "./codex-invocation.mjs";
-import { probeCodexAppServer, probeTelegramConnectivity } from "./doctor-probes.mjs";
+import {
+  probeCodexAppServer,
+  probeTelegramConnectivity,
+  requiresTelegramChecks,
+} from "./doctor-probes.mjs";
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
 import { codexStopHookStatus } from "./codex-hook-config.mjs";
 
@@ -36,8 +40,12 @@ try {
       () => check(`project ${project.name}`, false, project.path),
     );
   }
-  check("allowed users", config.allowedUserIds.size > 0, String(config.allowedUserIds.size));
-  check("private chat restriction", config.privateChatsOnly);
+  if (requiresTelegramChecks(config)) {
+    check("allowed users", config.allowedUserIds.size > 0, String(config.allowedUserIds.size));
+    check("private chat restriction", config.privateChatsOnly);
+  } else {
+    check("Telegram profile", true, "disabled by journal profile");
+  }
   if (config.voiceEnabled) {
     await access(config.pythonExe).then(
       () => check("Whisper Python", true, config.pythonExe),
@@ -140,7 +148,7 @@ for (const [name, command, args] of [
   check(name, result.status === 0, (result.stdout || result.stderr || result.error?.message || "").trim());
 }
 
-if (config) {
+if (config && requiresTelegramChecks(config)) {
   try {
     const telegramBot = await probeTelegramConnectivity({
       token: config.token,
@@ -154,7 +162,11 @@ if (config) {
   } catch (error) {
     check("Telegram Bot API connectivity", false, error.message);
   }
+} else if (config) {
+  check("Telegram Bot API connectivity", true, "disabled by journal profile");
+}
 
+if (config) {
   try {
     const mcp = await unavailableLocalMcpOverrides();
     const appServer = await probeCodexAppServer({

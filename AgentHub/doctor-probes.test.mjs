@@ -3,9 +3,18 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { probeCodexAppServer, probeTelegramConnectivity } from "./doctor-probes.mjs";
+import {
+  probeCodexAppServer,
+  probeTelegramConnectivity,
+  requiresTelegramChecks,
+} from "./doctor-probes.mjs";
 
 const FAKE_CODEX = path.join(import.meta.dirname, "e2e", "fake-codex-app-server.mjs");
+
+test("doctor skips Telegram checks for the journal profile", () => {
+  assert.equal(requiresTelegramChecks({ telegramEnabled: false }), false);
+  assert.equal(requiresTelegramChecks({ telegramEnabled: true }), true);
+});
 
 test("doctor Telegram probe performs getMe and validates the bot identity", async () => {
   let requestedUrl = "";
