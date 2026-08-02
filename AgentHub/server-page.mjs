@@ -1,15 +1,7 @@
 import { access, unlink } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-
-function booleanLabel(value) {
-  return value ? "Включено" : "Выключено";
-}
-
-function secondsLabel(value) {
-  const seconds = Math.max(0, Number(value) || 0);
-  return `${seconds} с`;
-}
+import { serverConfigurationEntries } from "./server-configuration.mjs";
 
 export function agentHubAutostartShortcut({ environment = process.env } = {}) {
   const appData = String(environment.APPDATA ?? "").trim();
@@ -69,6 +61,7 @@ export function serverPageSnapshot({
   activeCount = 0,
   restart = {},
   autostart = { supported: false, enabled: false },
+  pendingConfiguration = {},
 } = {}) {
   return {
     process: {
@@ -112,15 +105,6 @@ export function serverPageSnapshot({
         note: config?.miniApp?.worker?.enabled === true ? "Защищённый внешний доступ." : "Не используется.",
       },
     ],
-    configuration: [
-      { name: "Автоподтверждение при запуске", value: booleanLabel(config?.autoApproveOnStart) },
-      { name: "Защита параллельной записи", value: booleanLabel(config?.guardConcurrentRepositoryWrites) },
-      { name: "Контекст Codex", value: booleanLabel(config?.codexRolloutContext?.enabled) },
-      { name: "Тайм-аут Codex RPC", value: secondsLabel(config?.codexRpcTimeoutSeconds) },
-      { name: "Очередь входящих", value: `${Math.max(0, Number(config?.deferredInputTtlHours) || 0)} ч` },
-      { name: "Появление прогресса", value: `${Math.max(0, Number(config?.progressStartDelayMs) || 0)} мс` },
-      { name: "Повтор доставки", value: secondsLabel(config?.deliveryRetryIntervalSeconds) },
-      { name: "Журналы", value: `${Math.max(0, Number(config?.logMaxFiles) || 0)} файлов` },
-    ],
+    configuration: serverConfigurationEntries(config, pendingConfiguration),
   };
 }

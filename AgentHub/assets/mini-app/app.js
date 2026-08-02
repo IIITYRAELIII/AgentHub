@@ -2421,12 +2421,52 @@ function renderServerStatus(payload = {}) {
     component.note ? el("small", { text: component.note }) : null,
   ].filter(Boolean))) : [el("span", { class: "setting-empty", text: "Компоненты не определены" })]));
   const entries = Array.isArray(payload.configuration) ? payload.configuration : [];
-  serverConfig.replaceChildren(...(entries.length ? entries.map((entry) => el("div", {
-    class: "server-config-row",
-  }, [
+  serverConfig.replaceChildren(...(entries.length ? entries.map(renderServerConfigEntry)
+    : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]));
+}
+
+function renderServerConfigEntry(entry = {}) {
+  const pendingNote = entry.pending ? el("small", {
+    class: "server-config-pending",
+    text: "Применится после перезапуска",
+  }) : null;
+  if (entry.type === "boolean") {
+    const input = el("input", { type: "checkbox", checked: entry.value === true });
+    input.addEventListener("change", () => emit("server:config-update", {
+      key: entry.key,
+      value: input.checked,
+    }));
+    return el("label", { class: "server-config-row server-config-toggle" }, [
+      el("span", { class: "switch-text", text: entry.name ?? "" }),
+      input,
+      el("span", { class: "switch-track", "aria-hidden": true }),
+      pendingNote,
+    ].filter(Boolean));
+  }
+  const input = el("input", {
+    class: "server-config-number",
+    type: "number",
+    value: entry.value ?? "",
+    min: entry.min,
+    max: entry.max,
+    step: 1,
+    "aria-label": entry.name ?? "Параметр конфигурации",
+  });
+  const save = el("button", { type: "button", class: "chip-button compact", text: "Сохранить" });
+  const submit = () => emit("server:config-update", { key: entry.key, value: input.value });
+  save.addEventListener("click", submit);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") submit();
+  });
+  return el("div", { class: "server-config-row" }, [
     el("span", { text: entry.name ?? "" }),
-    el("strong", { text: entry.value ?? "—" }),
-  ])) : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]));
+    el("div", { class: "server-config-number-row" }, [
+      input,
+      entry.unit ? el("small", { class: "server-config-unit", text: entry.unit }) : null,
+      save,
+    ].filter(Boolean)),
+    pendingNote,
+  ].filter(Boolean));
 }
 
 serverAutostart?.addEventListener("change", () => {

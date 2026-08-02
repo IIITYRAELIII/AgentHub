@@ -1060,6 +1060,16 @@ agentHub.on("server:autostart", ({ enabled }) => runAction(async () => {
   else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Автозапуск Agent Hub обновлён");
 }));
+agentHub.on("server:config-update", ({ key, value }) => runAction(async () => {
+  const result = await control("update-server-configuration", { changes: { [key]: value } });
+  if (result?.snapshot) applySnapshot(result.snapshot);
+  else applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Конфигурация сохранена");
+}).then((result) => {
+  // A rejected toggle must return to its actual persisted state instead of
+  // leaving the switch visually changed after the error toast.
+  if (result == null) agentHub.setServerStatus(lastSnapshot?.server ?? null);
+}));
 let searchSequence = 0;
 agentHub.on("search:query", ({ query }) => {
   const sequence = ++searchSequence;

@@ -239,6 +239,7 @@ import {
   serverPageSnapshot,
   setAgentHubAutostart,
 } from "./server-page.mjs";
+import { updateServerConfiguration } from "./server-configuration.mjs";
 import {
   ContextCompactionTracker,
   isContextCompactionItem,
@@ -476,6 +477,7 @@ let activeThreadTitle = "";
 let latestDiff = "";
 let stopping = false;
 let autoApprove = config.autoApproveOnStart;
+let pendingServerConfiguration = {};
 let includeClaudeUsage = true;
 let codexRestarting = false;
 let restartRequest = null;
@@ -2724,6 +2726,7 @@ async function desktopServerSnapshot({ activeCount = taskRuns.values().length, r
   };
   return serverPageSnapshot({
     config,
+    pendingConfiguration: pendingServerConfiguration,
     processId: process.pid,
     startedAt: serverStartedAt,
     activeCount,
@@ -2760,6 +2763,19 @@ async function desktopSetAutostart(params) {
   return {
     accepted: true,
     message: autostart.enabled ? "Автозапуск Agent Hub включён" : "Автозапуск Agent Hub выключен",
+    snapshot: await desktopSnapshot(),
+  };
+}
+
+async function desktopUpdateServerConfiguration(params) {
+  const changed = await updateServerConfiguration({
+    configPath: config.configPath,
+    changes: params?.changes,
+  });
+  pendingServerConfiguration = { ...pendingServerConfiguration, ...changed };
+  return {
+    accepted: true,
+    message: "Конфигурация сохранена. Перезапустите Hub для применения.",
     snapshot: await desktopSnapshot(),
   };
 }
@@ -3597,6 +3613,7 @@ const {
     "speak-last-answer": desktopSpeakLastAnswer,
     "restart-server": desktopRestartServer,
     "set-autostart": desktopSetAutostart,
+    "update-server-configuration": desktopUpdateServerConfiguration,
     "compact-context": desktopCompactContext,
     "open-attachment": desktopOpenAttachment,
     "trusted-devices": desktopTrustedDevices,
@@ -3617,6 +3634,7 @@ const {
     "deferred-input",
     "restart-server",
     "set-autostart",
+    "update-server-configuration",
     "compact-context",
     "create-device-pairing",
     "revoke-device",

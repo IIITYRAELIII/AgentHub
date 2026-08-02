@@ -7632,6 +7632,53 @@ html[data-view="server"] .server-view {
   padding: 0.65rem 0.72rem;
 }
 
+.server-config-toggle {
+  cursor: pointer;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.server-config-toggle .switch-track {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.server-config-toggle .server-config-pending {
+  grid-column: 1 / -1;
+}
+
+.server-config-number-row {
+  align-items: center;
+  display: flex;
+  gap: 0.42rem;
+}
+
+.server-config-number {
+  background: color-mix(in srgb, var(--surface-3) 82%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  color: var(--text);
+  font-family: var(--font-numeric);
+  font-size: 0.78rem;
+  min-width: 0;
+  padding: 0.3rem 0.42rem;
+  width: 4.9rem;
+}
+
+.server-config-number:focus-visible {
+  border-color: var(--accent-line);
+  outline: 2px solid var(--accent-soft);
+}
+
+.server-config-unit,
+.server-config-pending {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.server-config-pending {
+  color: var(--accent);
+}
+
 .server-component-name,
 .server-config-row span {
   color: var(--text-soft);
@@ -7694,6 +7741,10 @@ html[data-surface="mobile"] .server-facts {
 html[data-surface="mobile"] .server-component-grid,
 html[data-surface="mobile"] .server-config-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+html[data-surface="mobile"] .server-config-grid {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* Статистика занимает всю ширину: графики читаются тем лучше, чем шире
