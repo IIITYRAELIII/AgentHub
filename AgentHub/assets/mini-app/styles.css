@@ -5095,6 +5095,7 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   font-size: 0.62rem;
   font-weight: 700;
   letter-spacing: 0.08em;
+  margin-left: auto;
   line-height: 1.25;
   padding: 0.05rem 0.3rem;
 }
