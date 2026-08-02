@@ -496,10 +496,6 @@ function applySnapshot(snapshot) {
   }
   const settings = snapshot.settings ?? {};
   agentHub.setOptions({
-    agent: [
-      { value: "codex", label: "Codex" },
-      { value: "claude", label: "Claude" },
-    ],
     model: settings.models ?? [],
     reasoning: settings.reasoningOptions ?? [],
     mode: settings.modeOptions ?? [],
@@ -509,7 +505,6 @@ function applySnapshot(snapshot) {
     })),
   });
   agentHub.setSelection({
-    agent: settings.provider,
     model: settings.model,
     reasoning: settings.reasoning,
     mode: settings.mode,
@@ -879,9 +874,11 @@ agentHub.on("message:send", (request) => {
   });
 });
 
-agentHub.on("task:new", ({ title }) => runAction(async () => {
-  const provider = lastSnapshot?.settings?.provider ?? "codex";
-  let snapshot = await control("new-task", { provider });
+agentHub.on("task:new", ({ title, provider }) => runAction(async () => {
+  const selectedProvider = ["codex", "claude"].includes(provider)
+    ? provider
+    : (lastSnapshot?.settings?.provider ?? "codex");
+  let snapshot = await control("new-task", { provider: selectedProvider });
   applySnapshot(snapshot);
   if (title) {
     snapshot = await control("rename-task", { ...exactSelectedTaskParams(), title });
@@ -953,7 +950,6 @@ agentHub.on("usage:open", ({ range }) => runAction(async () => {
 }));
 agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
   const names = {
-    agent: "provider",
     model: "model",
     reasoning: "reasoning",
     mode: "mode",

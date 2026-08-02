@@ -33,6 +33,7 @@ const taskList = document.querySelector("[data-task-list]");
 const taskEmpty = document.querySelector("[data-task-empty]");
 const taskCount = document.querySelector("[data-task-count]");
 const taskFilter = document.querySelector("[data-task-filter]");
+const taskNewPicker = document.querySelector("[data-task-new-picker]");
 
 const chatPane = document.querySelector("[data-chat-pane]");
 const chatEmpty = document.querySelector("[data-chat-empty]");
@@ -47,6 +48,9 @@ const chatSubtitle = document.querySelector("[data-chat-subtitle]");
 const chatProviderDot = document.querySelector("[data-chat-provider-dot]");
 const chatRunning = document.querySelector("[data-chat-running]");
 const chatStops = [...document.querySelectorAll("[data-chat-stop]")];
+const dialogSettings = document.querySelector("[data-dialog-settings]");
+const dialogSettingsToggle = document.querySelector("[data-dialog-settings-toggle]");
+const dialogAgent = document.querySelector("[data-dialog-agent]");
 
 const composer = document.querySelector("[data-composer]");
 const composerGrow = document.querySelector("[data-composer-grow]");
@@ -614,7 +618,7 @@ const state = {
   live: new Map(),       // taskId -> live | null
   approvals: new Map(),  // taskId -> approval[]
   queue: new Map(),      // taskId -> queued[]
-  options: { agent: [], model: [], reasoning: [], mode: [], project: [] },
+  options: { model: [], reasoning: [], mode: [], project: [] },
   selection: {},
   status: null,
   followUpMode: "queue",
@@ -908,6 +912,7 @@ function renderChat() {
   chatPane.hidden = !hasTask;
   if (!hasTask) {
     activeChatId = null;
+    setDialogSettingsOpen(false);
     return;
   }
   const taskChanged = activeChatId !== task.id;
@@ -916,6 +921,7 @@ function renderChat() {
   chatProviderDot.dataset.provider = String(task.provider ?? "none");
   chatProviderDot.setAttribute("data-provider", String(task.provider ?? "none"));
   chatSubtitle.replaceChildren(...buildSubtitleChips(task));
+  renderDialogSettings();
   chatRunning.hidden = !task.running;
   for (const stop of chatStops) stop.hidden = !task.running;
   renderContextUsage(task);
@@ -1703,10 +1709,10 @@ const slashCommands = [
     setPane("tasks");
     taskFilter.focus();
   } },
-  { command: "/model", label: "Выбрать модель", run: openPanel },
-  { command: "/reasoning", label: "Настроить reasoning", run: openPanel },
-  { command: "/mode", label: "Выбрать режим", run: openPanel },
-  { command: "/projects", label: "Выбрать проект", run: openPanel },
+  { command: "/model", label: "Выбрать модель", run: openDialogSettings },
+  { command: "/reasoning", label: "Настроить reasoning", run: openDialogSettings },
+  { command: "/mode", label: "Выбрать режим", run: openDialogSettings },
+  { command: "/projects", label: "Выбрать проект", run: openDialogSettings },
   { command: "/rename", label: "Переименовать задачу", action: "task-rename" },
   { command: "/status", label: "Статус и лимиты", action: "task-status" },
   { command: "/diff", label: "Изменения задачи", action: "task-diff" },
@@ -2098,6 +2104,21 @@ function restoreDraft() {
 
 /* ============================================= панель настроек и селекторы */
 
+function setDialogSettingsOpen(open) {
+  const visible = Boolean(open && currentTask());
+  dialogSettings.hidden = !visible;
+  chatPane.toggleAttribute("data-dialog-settings-open", visible);
+  dialogSettingsToggle.setAttribute("aria-pressed", String(visible));
+}
+
+function openDialogSettings() {
+  setDialogSettingsOpen(true);
+}
+
+function toggleDialogSettings() {
+  setDialogSettingsOpen(dialogSettings.hidden);
+}
+
 function openPanel() {
   settingsPanel.hidden = false;
   panelScrim.hidden = false;
@@ -2200,8 +2221,17 @@ for (const closer of document.querySelectorAll("[data-panel-close]")) {
 panelScrim.addEventListener("click", closePanel);
 
 function renderOptions() {
+  renderDialogSettings();
+  for (const toggle of settingsPanel.querySelectorAll("[data-toggle]")) {
+    toggle.checked = Boolean(state.selection[toggle.dataset.toggle]);
+  }
+}
+
+function renderDialogSettings() {
+  const task = currentTask();
+  dialogAgent.textContent = task?.agentLabel || providerLabels[task?.provider] || "—";
   for (const [group, values] of Object.entries(state.options)) {
-    const container = settingsPanel.querySelector(`[data-options='${group}']`);
+    const container = dialogSettings.querySelector(`[data-dialog-options='${group}']`);
     if (!container) continue;
     container.replaceChildren();
     if (!Array.isArray(values) || values.length === 0) {
@@ -2223,12 +2253,13 @@ function renderOptions() {
       }));
     }
   }
-  for (const toggle of settingsPanel.querySelectorAll("[data-toggle]")) {
-    toggle.checked = Boolean(state.selection[toggle.dataset.toggle]);
+  for (const toggle of dialogSettings.querySelectorAll("[data-dialog-toggle]")) {
+    const key = toggle.dataset.dialogToggle;
+    toggle.checked = Boolean(state.selection[key]);
   }
 }
 
-settingsPanel.addEventListener("click", (event) => {
+dialogSettings.addEventListener("click", (event) => {
   const chip = event.target.closest("[data-select-group]");
   if (!chip) return;
   const group = chip.dataset.selectGroup;
@@ -2236,6 +2267,14 @@ settingsPanel.addEventListener("click", (event) => {
   state.selection[group] = value;
   renderOptions();
   emit("selection:set", { key: group, value });
+});
+
+dialogSettings.addEventListener("change", (event) => {
+  const toggle = event.target.closest("[data-dialog-toggle]");
+  if (!toggle) return;
+  const key = toggle.dataset.dialogToggle;
+  state.selection[key] = toggle.checked;
+  emit("selection:set", { key, value: toggle.checked });
 });
 
 settingsPanel.addEventListener("change", (event) => {
@@ -2367,6 +2406,9 @@ document.addEventListener("keydown", (event) => {
 /* ================================================= общие действия (intents) */
 
 document.addEventListener("click", (event) => {
+  if (taskNewPicker?.open && !taskNewPicker.contains(event.target)) {
+    taskNewPicker.open = false;
+  }
   const trigger = event.target.closest("[data-action]");
   if (!trigger) return;
   const action = trigger.dataset.action;
@@ -2377,10 +2419,17 @@ async function handleAction(action, trigger) {
   const taskId = state.selectedId;
   switch (action) {
     case "task-new": {
+      const provider = ["codex", "claude"].includes(trigger?.dataset?.provider)
+        ? trigger.dataset.provider
+        : (currentTask()?.provider ?? "codex");
+      if (taskNewPicker) taskNewPicker.open = false;
       const title = await askText({ title: "Название новой задачи" });
-      if (title != null) emit("task:new", { title });
+      if (title != null) emit("task:new", { title, provider });
       break;
     }
+    case "task-settings":
+      toggleDialogSettings();
+      break;
     case "task-rename": {
       const task = currentTask();
       const title = await askText({ title: "Новое название задачи", value: task?.title ?? "" });
@@ -2605,16 +2654,16 @@ const AgentHub = {
     state.queue.set(taskId, next);
     if (taskId === state.selectedId) renderQueue();
   },
-  /** Списки вариантов для селекторов: { agent, model, reasoning, mode,
-   *  project }. Значение — строка или { value, label }. */
+  /** Списки вариантов для селекторов: { model, reasoning, mode, project }.
+   *  Значение — строка или { value, label }. */
   setOptions(options) {
     const next = { ...state.options, ...options };
     if (sameData(state.options, next)) return;
     state.options = next;
     renderOptions();
   },
-  /** Текущий выбор: { agent, model, reasoning, mode, project, autoApprove,
-   *  includeClaudeUsage, tts }. */
+  /** Текущий выбор: { model, reasoning, mode, project, autoApprove,
+   *  includeClaudeUsage }. */
   setSelection(selection) {
     const claudeUsageChanged = Object.hasOwn(selection ?? {}, "includeClaudeUsage")
       && state.selection.includeClaudeUsage !== selection.includeClaudeUsage;

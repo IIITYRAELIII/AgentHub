@@ -137,14 +137,26 @@
           <span>Задачи</span>
           <span class="task-count" data-task-count hidden></span>
         </div>
-        <button type="button" class="icon-button task-new" data-action="task-new" title="Новая задача">
-          <svg data-phosphor-icon="plus" viewBox="0 0 256 256" aria-hidden="true">
-            <line x1="40" y1="128" x2="216" y2="128" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-            <line x1="128" y1="40" x2="128" y2="216" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-          </svg>
-        </button>
+        <details class="task-new-picker" data-task-new-picker>
+          <summary class="icon-button task-new" title="Новая задача" aria-label="Новая задача">
+            <svg data-phosphor-icon="plus" viewBox="0 0 256 256" aria-hidden="true">
+              <line x1="40" y1="128" x2="216" y2="128" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+              <line x1="128" y1="40" x2="128" y2="216" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            </svg>
+          </summary>
+          <div class="task-new-menu" role="menu" aria-label="Выбор агента новой задачи">
+            <button type="button" role="menuitem" data-action="task-new" data-provider="codex">
+              <span class="provider-dot" data-provider="codex" aria-hidden="true"></span>
+              <span>Codex</span>
+            </button>
+            <button type="button" role="menuitem" data-action="task-new" data-provider="claude">
+              <span class="provider-dot" data-provider="claude" aria-hidden="true"></span>
+              <span>Claude</span>
+            </button>
+          </div>
+        </details>
       </div>
       <div class="task-search">
         <svg data-phosphor-icon="magnifying-glass" viewBox="0 0 256 256" aria-hidden="true">
@@ -225,8 +237,8 @@
               </svg>
               <span>Diff</span>
             </button>
-            <button type="button" class="icon-button" data-action="task-settings" data-panel-open="settings"
-              title="Настройки интерфейса">
+            <button type="button" class="icon-button" data-action="task-settings"
+              data-dialog-settings-toggle title="Настройки диалога" aria-pressed="false">
               <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256"
                 aria-hidden="true">
                 <circle cx="104" cy="80" r="24" fill="none" stroke="currentColor"
@@ -352,6 +364,44 @@
           </div>
           <input type="file" accept="image/*" multiple data-file-input hidden aria-hidden="true">
         </form>
+
+        <aside class="dialog-settings" data-dialog-settings hidden aria-label="Настройки диалога">
+          <header class="dialog-settings-head">
+            <h2>Настройки диалога</h2>
+          </header>
+          <div class="dialog-settings-body">
+            <section class="settings-section">
+              <h3 class="settings-section-title">Текущая задача</h3>
+              <div class="settings-card">
+                <div class="setting-row dialog-agent-row">
+                  <span class="setting-name">Агент</span>
+                  <strong class="dialog-agent" data-dialog-agent>—</strong>
+                </div>
+                <div class="setting-stack" data-setting="model">
+                  <span class="setting-name">Модель</span>
+                  <div class="setting-options" data-dialog-options="model"></div>
+                </div>
+                <div class="setting-stack" data-setting="reasoning">
+                  <span class="setting-name">Reasoning</span>
+                  <div class="setting-options" data-dialog-options="reasoning"></div>
+                </div>
+                <div class="setting-stack" data-setting="mode">
+                  <span class="setting-name">Режим</span>
+                  <div class="setting-options" data-dialog-options="mode"></div>
+                </div>
+                <div class="setting-stack" data-setting="project">
+                  <span class="setting-name">Проект</span>
+                  <div class="setting-options setting-options-column" data-dialog-options="project"></div>
+                </div>
+                <label class="setting-switch">
+                  <input type="checkbox" data-dialog-toggle="autoApprove">
+                  <span class="switch-text">Автоподтверждение</span>
+                  <span class="switch-track" aria-hidden="true"></span>
+                </label>
+              </div>
+            </section>
+          </div>
+        </aside>
       </div>
     </section>
   </div>

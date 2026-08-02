@@ -332,11 +332,22 @@ test("Rain keeps its stored key and is named consistently", () => {
   assert.match(webview, /<option value="taiga">Rain<\/option>/u);
 });
 
-test("one settings panel owns interface and task controls", () => {
+test("general settings and current-dialog settings stay separate", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   assert.doesNotMatch(html, /data-panel-open="view"/u);
-  assert.ok((html.match(/data-panel-open="settings"/gu) ?? []).length >= 2);
+  assert.equal((html.match(/data-panel-open="settings"/gu) ?? []).length, 1);
+  assert.match(html, /data-dialog-settings-toggle/u);
+  assert.match(html, /data-dialog-settings/u);
+  assert.match(html, /data-dialog-agent/u);
+  assert.doesNotMatch(html, /data-dialog-options="agent"/u);
+  assert.match(html, /data-dialog-options="model"/u);
+  assert.match(html, /data-dialog-options="reasoning"/u);
+  assert.match(html, /data-dialog-options="mode"/u);
+  assert.match(html, /data-dialog-options="project"/u);
+  assert.match(html, /data-action="task-new" data-provider="codex"/u);
+  assert.match(html, /data-action="task-new" data-provider="claude"/u);
+  assert.match(app, /chatPane\.toggleAttribute\("data-dialog-settings-open", visible\)/u);
   assert.match(html, /data-token-breakdown-toggle/u);
   assert.match(html, /data-claude-group-toggle/u);
   assert.match(html, /<option value="week">По неделям<\/option>/u);

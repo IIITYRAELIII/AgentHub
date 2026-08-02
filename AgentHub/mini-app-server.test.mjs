@@ -224,13 +224,21 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     })).status, 200);
 
     const shellSource = await (await fetch(address.url)).text();
-    assert.doesNotMatch(shellSource, />Текущая задача</u);
+    assert.match(shellSource, /data-dialog-settings/u);
+    assert.match(shellSource, /data-dialog-agent/u);
+    assert.doesNotMatch(shellSource, /data-dialog-options="agent"/u);
+    assert.match(shellSource, /data-action="task-new" data-provider="codex"/u);
+    assert.match(shellSource, /data-action="task-new" data-provider="claude"/u);
     assert.match(shellSource, /data-status-slot/u);
     const appSource = await (await fetch(`${address.url}app.js`)).text();
     assert.match(appSource, /setTaskDiff\(taskId, text\)/u);
     assert.match(appSource, /class: "task-diff"/u);
+    assert.match(appSource, /emit\("task:new", \{ title, provider \}\)/u);
+    assert.match(appSource, /data-dialog-settings-open/u);
     const clientSource = await (await fetch(`${address.url}hub-client.js`)).text();
     assert.match(clientSource, /agentHub\.setTaskDiff\(targetId/u);
+    assert.match(clientSource, /control\("new-task", \{ provider: selectedProvider \}\)/u);
+    assert.doesNotMatch(clientSource, /agent: "provider"/u);
     assert.doesNotMatch(clientSource, /setStatus\(\{ rows: \[\{ name: "Diff"/u);
 
     for (const pathname of [
