@@ -808,13 +808,15 @@ function setView(view, { persist = true, activate = true } = {}) {
   }
   const title = document.querySelector("[data-view-title]");
   if (title) {
+    /* Заголовок раздела короче и одинаковой длины на латинице; вкладки
+       переключателя остаются русскими. */
     title.textContent = next === "journal"
-      ? "Журнал"
+      ? "Log"
       : next === "statistics"
-        ? "Статистика"
+        ? "Stats"
         : next === "server"
-          ? "Сервер"
-          : "Диалоги";
+          ? "Server"
+          : "Chat";
   }
   syncMobileNav();
   if (activate) activateView(next);
