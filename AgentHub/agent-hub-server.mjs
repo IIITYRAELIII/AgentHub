@@ -2551,11 +2551,13 @@ async function buildTaskCatalog() {
           threadId: thread.id,
         });
         const activeTurnId = existingRun?.turnId ?? selectExactActiveCodexTurnId(activity);
+        const capturedOwner = capturedCodexExecutionOwner(thread.id, activeTurnId);
         if (rolloutRunning && activity.running && existingRun?.observer !== false) {
           rolloutRunning = await codexObservedRuntimeActive(activity, {
             turnId: activeTurnId,
             rolloutPath: thread.path,
             agentHubPid: codexTransport.pid,
+            capturedOwner,
           });
         }
         const executionOwner = !rolloutRunning
@@ -2566,10 +2568,7 @@ async function buildTaskCatalog() {
               turnId: activeTurnId,
               rolloutPath: thread.path,
               agentHubPid: codexTransport.pid,
-              capturedOwner: capturedCodexExecutionOwner(
-                thread.id,
-                activeTurnId,
-              ),
+              capturedOwner,
             });
         const activeStartedAtValues = activity.activeTurnIds
           .map((turnId) => Number(activity.startedAtMsByTurnId?.[turnId]))
@@ -6079,10 +6078,12 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
         exact: exactTurnObserver,
         threadActive: activity.running,
       });
+      const capturedOwner = capturedCodexExecutionOwner(run.threadId, state.turnId);
       const runtimeActive = !state.active || await codexObservedRuntimeActive(activity, {
         turnId: state.turnId,
         rolloutPath,
         agentHubPid: codexTransport.pid,
+        capturedOwner,
       });
       const interrupted = state.active && !runtimeActive;
       const active = state.active && runtimeActive;
@@ -6090,7 +6091,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
         turnId: state.turnId,
         rolloutPath,
         agentHubPid: codexTransport.pid,
-        capturedOwner: capturedCodexExecutionOwner(run.threadId, state.turnId),
+        capturedOwner,
       });
       return {
         answer: state.active ? state.latestAnswer : state.finalAnswer,

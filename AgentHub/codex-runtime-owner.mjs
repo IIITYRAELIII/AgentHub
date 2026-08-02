@@ -243,12 +243,15 @@ async function observedRuntimeProbe({
 export async function codexObservedRuntimeActive(activity = {}, {
   turnId = null,
   rolloutPath = null,
+  capturedOwner = null,
   agentHubPid = null,
   platform = process.platform,
   nowMs = Date.now(),
   probe = readWindowsRolloutProcesses,
 } = {}) {
   if (!activity.running) return false;
+  if (!Object.values(TASK_EXECUTION_OWNERS).includes(capturedOwner)
+    || capturedOwner === TASK_EXECUTION_OWNERS.EXTERNAL) return true;
   if (platform !== "win32" || !rolloutPath) return true;
   const runtime = await observedRuntimeProbe({
     turnId,

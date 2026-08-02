@@ -86,6 +86,7 @@ test("rollout runtime state distinguishes a dead client from a live holder", asy
     turnId: "dead-turn",
     rolloutPath: "C:\\dead-rollout.jsonl",
     platform: "win32",
+    capturedOwner: TASK_EXECUTION_OWNERS.VSCODE,
     nowMs: 1,
     probe: async () => snapshot([], []),
   }), false);
@@ -93,6 +94,7 @@ test("rollout runtime state distinguishes a dead client from a live holder", asy
     turnId: "live-turn",
     rolloutPath: "C:\\live-rollout.jsonl",
     platform: "win32",
+    capturedOwner: TASK_EXECUTION_OWNERS.VSCODE,
     nowMs: 1,
     probe: async () => snapshot([60], [
       { processId: 60, parentProcessId: 6, name: "codex.exe", commandLine: "codex.exe app-server" },
@@ -106,9 +108,22 @@ test("an unavailable rollout process probe does not falsely stop a turn", async 
     turnId: "unknown-turn",
     rolloutPath: "C:\\unknown-rollout.jsonl",
     platform: "win32",
+    capturedOwner: TASK_EXECUTION_OWNERS.VSCODE,
     nowMs: 1,
     probe: async () => { throw new Error("probe unavailable"); },
   }), true);
+});
+
+test("an unowned rollout is not stopped from a process probe alone", async () => {
+  let probes = 0;
+  assert.equal(await codexObservedRuntimeActive({ running: true }, {
+    turnId: "unowned-turn",
+    rolloutPath: "C:\\unowned-rollout.jsonl",
+    platform: "win32",
+    nowMs: 1,
+    probe: async () => { probes += 1; return snapshot([], []); },
+  }), true);
+  assert.equal(probes, 0);
 });
 
 test("per-turn VSC evidence is preserved when a process probe is unavailable", async () => {
