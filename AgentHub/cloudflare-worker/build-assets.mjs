@@ -15,6 +15,7 @@ for (const file of [
   "message-lifecycle.js",
   "hub-client.js",
   "styles.css",
+  "backgrounds.css",
   "blackhole-blue.png",
   "gothic-concrete.png",
   "nebula-veil.png",
