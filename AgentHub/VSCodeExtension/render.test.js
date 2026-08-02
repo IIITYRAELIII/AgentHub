@@ -724,6 +724,8 @@ test("chat shows sent messages immediately and reconciles them by exact identity
   assert.match(client, /reconcileMessageLifecycle\(serverMessages, outgoing\)/u);
   assert.match(client, /if \(!matchedIds\.has\(message\.clientUserMessageId\)\) result\.push\(message\)/u);
   assert.match(client, /for \(const clientUserMessageId of matchedIds\) pending\.delete\(clientUserMessageId\)/u);
+  assert.match(client, /chronologicalMessages\(visibleConversationMessages/u);
+  assert.match(client, /historicalAgentResponseVisible\(item\)/u);
 });
 
 test("dispatching deferred messages leave the queue and reappear in the active conversation", () => {
@@ -892,13 +894,18 @@ test("chat keeps an active response only in the live card after task switching",
   );
 });
 
-test("unfinished commentary never becomes a normal historical answer card", () => {
+test("active commentary stays live while interrupted commentary remains in history", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const lifecycle = fs.readFileSync(require.resolve("../assets/mini-app/message-lifecycle.js"), "utf8");
   assert.match(
     client,
-    /const visibleAgent = item\.completed[\s\S]*\?\s*agentMessages\.findLast[\s\S]*:\s*null;/u,
+    /const visibleAgent = historicalAgentResponseVisible\(item\)[\s\S]*\?\s*agentMessages\.findLast[\s\S]*:\s*null;/u,
   );
-  assert.match(client, /item\.completed && item\.answer/u);
+  assert.match(client, /historicalAgentResponseVisible\(item\) && item\.answer/u);
+  assert.match(
+    lifecycle,
+    /function historicalAgentResponseVisible\(turn\) \{\s*return turn\?\.completed === true \|\| turn\?\.active !== true;/u,
+  );
 });
 
 test("manual context compaction reports completion and stays on the fast refresh loop", () => {

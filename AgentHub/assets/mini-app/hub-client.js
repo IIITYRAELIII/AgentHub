@@ -41,9 +41,11 @@ let deferredClientUserMessageIds = new Set();
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const {
   activeStageLabel,
+  chronologicalMessages,
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
   historyContainsLatestAnswer,
+  historicalAgentResponseVisible,
   hubErrorMessage,
   isConnectionFailure,
   looksLikeConnectionFailure,
@@ -178,10 +180,10 @@ function reconciledMessages(taskIdValue) {
     if (!matchedIds.has(message.clientUserMessageId)) result.push(message);
   }
   for (const clientUserMessageId of matchedIds) pending.delete(clientUserMessageId);
-  return visibleConversationMessages(result.map(normalizedUserMessage), {
+  return chronologicalMessages(visibleConversationMessages(result.map(normalizedUserMessage), {
     deferredClientUserMessageIds,
     liveProbe: liveProbeByTask.get(taskIdValue) ?? null,
-  });
+  }));
 }
 
 function exactSelectedTaskParams() {
@@ -607,7 +609,7 @@ function historyMessages(history, focusedTurn = null) {
     const itemMessages = Array.isArray(item.messages) ? item.messages : [];
     const userMessages = itemMessages.filter((message) => message.role === "user");
     const agentMessages = itemMessages.filter((message) => message.role === "agent");
-    const visibleAgent = item.completed
+    const visibleAgent = historicalAgentResponseVisible(item)
       ? agentMessages.findLast((message) => ["final", "final_answer", "finalAnswer"].includes(message.phase))
         ?? agentMessages.at(-1)
       : null;
@@ -619,7 +621,7 @@ function historyMessages(history, focusedTurn = null) {
         responseAnnotations: item.promptAnnotations,
         responseAnnotationRequest: item.promptRequest,
       }] : []),
-      ...(visibleAgent ? [visibleAgent] : item.completed && item.answer ? [{
+      ...(visibleAgent ? [visibleAgent] : historicalAgentResponseVisible(item) && item.answer ? [{
         itemId: `${item.id}:answer`,
         role: "agent",
         text: item.answer,

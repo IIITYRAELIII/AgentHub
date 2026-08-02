@@ -120,6 +120,22 @@ test("message lifecycle does not fall back when a different client id is present
   assert.equal(result.matchedIds.size, 0);
 });
 
+test("new-turn root reconciles after App Server replaces its client id", () => {
+  const local = {
+    ...message("client-local", "Исходный вопрос"),
+    itemId: "local-root",
+    turnUserSlot: "root",
+  };
+  const server = {
+    ...local,
+    itemId: "server-root",
+    clientUserMessageId: "server-generated-client",
+  };
+  const result = lifecycle.reconcile([server], [local]);
+  assert.equal(result.matches[0].local, local);
+  assert.deepEqual([...result.matchedIds], ["client-local"]);
+});
+
 test("message lifecycle never merges two steer messages by turn and role fallback", () => {
   const first = { ...message("", "Одинаковый ход 1"), itemId: "" };
   const second = { ...message("", "Одинаковый ход 2"), itemId: "" };
@@ -318,6 +334,52 @@ test("live VSC user messages do not duplicate official task history", () => {
   });
   assert.equal(merged.length, 1);
   assert.equal(merged[0].itemId, "server-item");
+});
+
+test("live root does not duplicate history when App Server changed its client id", () => {
+  const official = [{
+    ...message("server-item", "Текущий вопрос"),
+    turnId: "active-turn",
+    clientUserMessageId: "official-client",
+  }];
+  const merged = lifecycle.mergeLiveUserMessages(official, {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "active-turn",
+    userMessages: [{
+      itemId: "rollout-item",
+      clientUserMessageId: "runtime-client",
+      text: "Текущий вопрос",
+    }],
+  });
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].itemId, "server-item");
+});
+
+test("unmatched optimistic messages keep chronological position", () => {
+  const values = lifecycle.chronologicalMessages([
+    { id: "server-old", time: "2026-08-02T20:49:01.000Z" },
+    { id: "server-new", time: "2026-08-02T20:53:31.000Z" },
+    { id: "optimistic-old", time: "2026-08-02T20:49:01.920Z" },
+  ]);
+  assert.deepEqual(values.map((item) => item.id), [
+    "server-old",
+    "optimistic-old",
+    "server-new",
+  ]);
+});
+
+test("interrupted turns keep their persisted partial response visible", () => {
+  assert.equal(lifecycle.historicalAgentResponseVisible({
+    active: false,
+    completed: false,
+    status: "interrupted",
+  }), true);
+  assert.equal(lifecycle.historicalAgentResponseVisible({
+    active: true,
+    completed: false,
+    status: "inProgress",
+  }), false);
 });
 
 test("focused execution turn does not duplicate its task history prompt", () => {

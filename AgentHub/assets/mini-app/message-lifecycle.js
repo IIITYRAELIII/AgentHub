@@ -171,7 +171,11 @@ function reconcile(serverMessages, outgoingMessages) {
     const fallbackValues = serverClientIdentity || serverItemIdentity
       ? []
       : turnRoleOutgoing.get(identityKey(message, { withoutItem: true })) ?? [];
-    const root = !serverClientIdentity && isTurnRootUser(server, index)
+    // A new-turn optimistic message is bound to the exact turn before Codex
+    // has finished materializing its user item. Some App Server revisions can
+    // replace the supplied client id on that root item. The root position is
+    // still unambiguous; steer messages never receive turnUserSlot="root".
+    const root = isTurnRootUser(server, index)
       ? rootOutgoing.get(turnRootUserKey(message))
       : null;
     // A turn can contain several steering messages. A turn+role fallback is safe
@@ -276,6 +280,12 @@ function mergeLiveUserMessages(messages, {
     };
     const clientKey = clientIdentityKey(candidate);
     const itemKey = identityKey(candidate);
+    const sameTurnUsers = values.filter((existing) => (
+      existing?.role === "user"
+      && String(existing?.provider ?? "") === provider
+      && String(existing?.threadId ?? "") === threadId
+      && String(existing?.turnId ?? "") === turnId
+    ));
     const duplicate = values.some((existing) => (
       (clientKey && clientIdentityKey(existing) === clientKey)
       || (itemKey && identityKey(existing) === itemKey)
@@ -286,10 +296,25 @@ function mergeLiveUserMessages(messages, {
         && String(existing?.threadId ?? "") === threadId
         && String(existing?.turnId ?? "") === turnId
       )
-    ));
+    )) || (index === 0 && sameTurnUsers.length > 0);
     if (!duplicate) values.push(candidate);
   }
   return values;
+}
+
+function chronologicalMessages(messages) {
+  const decorated = (Array.isArray(messages) ? messages : [])
+    .map((message, index) => ({ message, index, time: Date.parse(message?.time ?? "") }));
+  if (decorated.some((item) => !Number.isFinite(item.time))) {
+    return decorated.map(({ message }) => message);
+  }
+  return decorated
+    .sort((left, right) => left.time - right.time || left.index - right.index)
+    .map(({ message }) => message);
+}
+
+function historicalAgentResponseVisible(turn) {
+  return turn?.completed === true || turn?.active !== true;
 }
 
 function activeStageLabel(stage) {
@@ -345,6 +370,7 @@ function hubErrorMessage(error) {
 
 globalThis.AgentHubMessageLifecycle = Object.freeze({
   activeStageLabel,
+  chronologicalMessages,
   embeddedResponseAnnotations,
   hubErrorMessage,
   identityKey,
@@ -354,6 +380,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
   historyContainsLatestAnswer,
+  historicalAgentResponseVisible,
   liveMessageMatch,
   markConnectionFailure,
   mergeLiveUserMessages,
