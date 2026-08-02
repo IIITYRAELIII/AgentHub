@@ -30,6 +30,70 @@ html[data-background-override="true"][data-background="stormglass"] { --stormgla
 html[data-background-override="true"][data-background="magma"] { --magma-image: url("/magma-crust.png"); --hub-background-color: #0a0605; --hub-background-image: linear-gradient(180deg, rgba(8, 4, 3, 0) 62%, rgba(8, 4, 3, .55)), linear-gradient(90deg, rgba(8, 4, 3, 0) 34%, rgba(8, 4, 3, .46)), var(--magma-image); --hub-background-position: center, center, 58% 50%; }
 html[data-background-override="true"][data-background="meadow"] { --meadow-image: url("/meadow-sun.png"); --hub-background-color: #070d08; --hub-background-image: linear-gradient(90deg, rgba(4, 9, 5, .34), rgba(4, 9, 5, 0) 40%), var(--meadow-image); --hub-background-position: center, 62% 60%; }
 html[data-background-override="true"][data-background="lake"] { --hub-background-color: #080d0b; --hub-background-image: linear-gradient(90deg, rgba(3, 8, 7, .82), rgba(3, 8, 7, .5) 26%, rgba(3, 8, 7, 0) 60%), linear-gradient(0deg, rgba(3, 8, 7, .42), rgba(3, 8, 7, 0) 32%), var(--lake-image, url("/lake-summer.jpg")); --hub-background-position: center, center, 56% 64%; }
+/* Вторые сцены остальных тем. Плотность затемнения слева подобрана по замеру
+   яркости левой трети каждого кадра: у «Магмы» она 23 из 255, у «Диска» — 0,5,
+   поэтому одинаковый градиент для всех был бы либо лишним, либо слабым. */
+html[data-background-override="true"][data-background="orbit-limb"] { --hub-background-color: #05070c; --hub-background-image: linear-gradient(90deg, rgba(3, 5, 9, .34), rgba(3, 5, 9, 0) 46%), var(--orbit-limb-image, url("/orbit-limb.jpg")); --hub-background-position: center, 58% 46%; }
+html[data-background-override="true"][data-background="nebula-core"] { --hub-background-color: #0a0614; --hub-background-image: linear-gradient(90deg, rgba(6, 4, 12, .32), rgba(6, 4, 12, 0) 44%), var(--nebula-core-image, url("/nebula-core.jpg")); --hub-background-position: center, 58% 48%; }
+html[data-background-override="true"][data-background="pulsar-beam"] { --hub-background-color: #02121a; --hub-background-image: repeating-linear-gradient(0deg, rgba(60, 230, 212, .03) 0 1px, transparent 1px 4px), linear-gradient(90deg, rgba(1, 8, 12, .3), rgba(1, 8, 12, 0) 42%), var(--pulsar-beam-image, url("/pulsar-beam.jpg")); --hub-background-position: center, center, 56% 48%; --hub-background-repeat: repeat, no-repeat, no-repeat; --hub-background-size: auto, cover, cover; }
+html[data-background-override="true"][data-background="blackhole-disk"] { --hub-background-color: #000; --hub-background-image: var(--blackhole-disk-image, url("/blackhole-disk.jpg")); --hub-background-position: 56% 48%; }
+html[data-background-override="true"][data-background="gothic-crypt"] { --hub-background-color: #070604; --hub-background-image: linear-gradient(90deg, rgba(4, 4, 3, .3), rgba(4, 4, 3, 0) 40%), var(--gothic-crypt-image, url("/gothic-crypt.jpg")); --hub-background-position: center, 58% 50%; }
+html[data-background-override="true"][data-background="taiga-rainfall"] { --hub-background-color: #060a0d; --hub-background-image: linear-gradient(90deg, rgba(4, 8, 10, .48), rgba(4, 8, 10, .08) 42%, rgba(4, 8, 10, 0) 62%), var(--taiga-rainfall-image, url("/taiga-rainfall.jpg")); --hub-background-position: center, 60% 48%; }
+html[data-background-override="true"][data-background="metropolis-towers"] { --hub-background-color: #050b12; --hub-background-image: linear-gradient(90deg, rgba(2, 7, 12, .5), rgba(2, 7, 12, .08) 44%, rgba(2, 7, 12, 0) 64%), var(--metropolis-towers-image, url("/metropolis-towers.jpg")); --hub-background-position: center, 60% 52%; }
+html[data-background-override="true"][data-background="magma-flow"] { --hub-background-color: #0a0605; --hub-background-image: linear-gradient(90deg, rgba(8, 4, 3, .64), rgba(8, 4, 3, .2) 34%, rgba(8, 4, 3, 0) 58%), var(--magma-flow-image, url("/magma-flow.jpg")); --hub-background-position: center, 58% 52%; }
+html[data-background-override="true"][data-background="meadow-goldenhour"] { --hub-background-color: #070d08; --hub-background-image: linear-gradient(90deg, rgba(4, 9, 5, .46), rgba(4, 9, 5, .06) 40%, rgba(4, 9, 5, 0) 60%), var(--meadow-goldenhour-image, url("/meadow-goldenhour.jpg")); --hub-background-position: center, 62% 54%; }
+
+/* Свет сцены дышит на месте: медленнее у космоса, заметнее у огня. */
+@keyframes scene-glow {
+  0%, 100% { opacity: 0.24; transform: scale(1.01); }
+  50% { opacity: 0.6; transform: scale(1.05); }
+}
+
+html[data-background-override="true"][data-background="orbit-limb"] body::before,
+html[data-background-override="true"][data-background="nebula-core"] body::before,
+html[data-background-override="true"][data-background="pulsar-beam"] body::before,
+html[data-background-override="true"][data-background="blackhole-disk"] body::before,
+html[data-background-override="true"][data-background="magma-flow"] body::before,
+html[data-background-override="true"][data-background="meadow-goldenhour"] body::before {
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-size: cover !important;
+  content: "" !important;
+  mask-image: none !important;
+  mix-blend-mode: screen !important;
+  opacity: 0.4 !important;
+}
+
+html[data-background-override="true"][data-background="orbit-limb"] body::before {
+  animation: scene-glow 30s ease-in-out infinite !important;
+  background-image: radial-gradient(52% 26% at 74% 26%, rgba(126, 178, 240, 0.24), transparent 76%) !important;
+}
+
+html[data-background-override="true"][data-background="nebula-core"] body::before {
+  animation: scene-glow 26s ease-in-out infinite !important;
+  background-image: radial-gradient(40% 34% at 58% 42%, rgba(196, 130, 255, 0.26), transparent 74%) !important;
+}
+
+html[data-background-override="true"][data-background="pulsar-beam"] body::before {
+  animation: scene-glow 6s ease-in-out infinite !important;
+  background-image: radial-gradient(24% 26% at 60% 46%, rgba(60, 230, 212, 0.3), transparent 72%) !important;
+}
+
+html[data-background-override="true"][data-background="blackhole-disk"] body::before {
+  animation: scene-glow 34s ease-in-out infinite !important;
+  background-image: radial-gradient(34% 22% at 62% 48%, rgba(158, 203, 255, 0.2), transparent 74%) !important;
+}
+
+html[data-background-override="true"][data-background="magma-flow"] body::before {
+  animation: scene-glow 12s ease-in-out infinite !important;
+  background-image: radial-gradient(56% 40% at 68% 68%, rgba(255, 138, 61, 0.26), transparent 76%) !important;
+}
+
+html[data-background-override="true"][data-background="meadow-goldenhour"] body::before {
+  animation: scene-glow 20s ease-in-out infinite !important;
+  background-image: radial-gradient(46% 38% at 74% 34%, rgba(244, 236, 158, 0.3), transparent 76%) !important;
+}
+
 /* Четыре ночные сцены «Gothic». Кадры уже сняты с тёмной левой третью, поэтому
    гасить её приходится заметно слабее, чем светлое «Озеро». */
 html[data-background-override="true"][data-background="gothic-tower"] { --hub-background-color: #070a0e; --hub-background-image: linear-gradient(90deg, rgba(4, 6, 10, .5), rgba(4, 6, 10, .12) 38%, rgba(4, 6, 10, 0) 62%), var(--gothic-tower-image, url("/gothic-tower.jpg")); --hub-background-position: center, 58% 46%; }
@@ -110,6 +174,15 @@ html[data-background-override="true"][data-background="graphite"] { --hub-backgr
   html[data-background-override="true"][data-background="metropolis"] { --hub-background-position: center, center, 68% 50%; }
   html[data-background-override="true"][data-background="magma"] { --hub-background-position: center, center, 72% 56%; }
   html[data-background-override="true"][data-background="meadow"] { --hub-background-position: center, 68% 76%; }
+  html[data-background-override="true"][data-background="orbit-limb"] { --hub-background-position: center, 70% 40%; }
+  html[data-background-override="true"][data-background="nebula-core"] { --hub-background-position: center, 62% 46%; }
+  html[data-background-override="true"][data-background="pulsar-beam"] { --hub-background-position: center, center, 62% 46%; }
+  html[data-background-override="true"][data-background="blackhole-disk"] { --hub-background-position: 60% 46%; }
+  html[data-background-override="true"][data-background="gothic-crypt"] { --hub-background-position: center, 72% 50%; }
+  html[data-background-override="true"][data-background="taiga-rainfall"] { --hub-background-position: center, 72% 44%; }
+  html[data-background-override="true"][data-background="metropolis-towers"] { --hub-background-position: center, 74% 50%; }
+  html[data-background-override="true"][data-background="magma-flow"] { --hub-background-position: center, 70% 56%; }
+  html[data-background-override="true"][data-background="meadow-goldenhour"] { --hub-background-position: center, 76% 56%; }
   html[data-background-override="true"][data-background="gothic-tower"] { --hub-background-position: center, 74% 42%; }
   html[data-background-override="true"][data-background="gothic-harbor"] { --hub-background-position: center, 78% 52%; }
   html[data-background-override="true"][data-background="gothic-chapel"] { --hub-background-position: center, 74% 50%; }

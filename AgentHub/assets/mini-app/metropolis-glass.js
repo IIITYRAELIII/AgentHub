@@ -23,7 +23,18 @@
       },
     },
   };
+  /* Стекло имеет смысл только над родной сценой темы: за конденсатом должны
+     читаться огни. Другая сцена той же темы показывается без капель — так же,
+     как «Storm» обходится без стекла над морем. */
+  function glassTheme() {
+    const theme = root.dataset.theme;
+    const scene = root.dataset.background;
+    if (scene && scene !== theme) return null;
+    return THEMES[theme] ?? null;
+  }
+
   let activeTheme = "";
+  let activeBackground = "";
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   const vertexSource = `
     attribute vec2 aPosition;
@@ -198,7 +209,7 @@
 
   function draw(now = window.performance.now()) {
     frame = 0;
-    if (!ready || !THEMES[root.dataset.theme] || document.hidden) return;
+    if (!ready || !glassTheme() || document.hidden) return;
     resize();
     context.useProgram(program);
     context.uniform2f(locations.viewport, canvas.width, canvas.height);
@@ -222,7 +233,7 @@
   }
 
   function schedule() {
-    if (!THEMES[root.dataset.theme] || !ready || frame) return;
+    if (!glassTheme() || !ready || frame) return;
     frame = window.requestAnimationFrame(draw);
   }
 
@@ -284,7 +295,7 @@
   }
 
   function initialize() {
-    if (initializing || ready || !THEMES[root.dataset.theme]) return;
+    if (initializing || ready || !glassTheme()) return;
     initializing = true;
     try {
       context = canvas.getContext("webgl", {
@@ -321,6 +332,7 @@
       context.vertexAttribPointer(position, 2, context.FLOAT, false, 0, 0);
 
       activeTheme = root.dataset.theme;
+      activeBackground = root.dataset.background;
       const source = cssUrl(
         window.getComputedStyle(root).getPropertyValue(THEMES[activeTheme].image),
       );
@@ -354,20 +366,30 @@
     fogTexture = null;
   }
 
+  /* Сцену выбирают отдельно от палитры, а под стеклом лежит именно снимок
+     сцены: при смене фона текстуру нужно перелить так же, как при смене темы,
+     иначе за каплями остаётся прежний кадр. */
   function syncTheme() {
     const theme = root.dataset.theme;
-    if (!THEMES[theme]) {
+    if (!glassTheme()) {
       if (frame) window.cancelAnimationFrame(frame);
       frame = 0;
+      /* Холст остаётся с последним кадром, поэтому над чужой сценой его нужно
+         погасить, иначе город продолжает висеть поверх нового фона. */
+      if (ready) reset();
+      atmosphere.dataset.ready = "false";
       return;
     }
-    if (ready && theme !== activeTheme) reset();
+    if (ready && (theme !== activeTheme || root.dataset.background !== activeBackground)) reset();
     initialize();
     schedule();
   }
 
   const themeObserver = new MutationObserver(syncTheme);
-  themeObserver.observe(root, { attributes: true, attributeFilter: ["data-theme"] });
+  themeObserver.observe(root, {
+    attributes: true,
+    attributeFilter: ["data-theme", "data-background"],
+  });
   window.addEventListener("resize", schedule, { passive: true });
   document.addEventListener("visibilitychange", syncTheme);
   reducedMotion.addEventListener?.("change", () => {

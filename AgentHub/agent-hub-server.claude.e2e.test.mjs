@@ -7,7 +7,6 @@ import test from "node:test";
 import {
   delay,
   FakeTelegramApi,
-  readJson,
   readLockPid,
   stopPid,
   USER_ID,
@@ -17,6 +16,7 @@ import {
 import { processIsAlive } from "./claude-run-io.mjs";
 import { callDesktopControl } from "./desktop-control.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
+import { readRuntimeState } from "./runtime-state-store.mjs";
 
 const AGENT_HUB_ROOT = path.resolve(import.meta.dirname);
 const BOT_FILE = path.join(AGENT_HUB_ROOT, "agent-hub-server.mjs");
@@ -38,7 +38,6 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   const holdDirectory = path.join(temporaryRoot, "hold");
   const configPath = path.join(temporaryRoot, "config.json");
   const codexStatePath = path.join(temporaryRoot, "fake-codex-state.json");
-  const statePath = path.join(dataDir, "state.json");
   const journalDatabasePath = path.join(dataDir, "journal.sqlite");
   const lockPath = path.join(dataDir, "bot.lock");
   await Promise.all([
@@ -137,7 +136,11 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   }
 
   async function activeRuns() {
-    return (await readJson(statePath)).activeRuns ?? [];
+    return (await runtimeState()).activeRuns ?? [];
+  }
+
+  async function runtimeState() {
+    return readRuntimeState(dataDir);
   }
 
   async function releaseHold(name) {
@@ -196,7 +199,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   ]);
 
   await startBot();
-  await waitFor(() => readJson(statePath).catch(() => null), "initial bot state");
+  await waitFor(() => runtimeState().catch(() => null), "initial bot state");
   await waitFor(async () => {
     const files = await Promise.all([
       readFile(orphanOutput, "utf8").then(() => true, () => false),
@@ -210,7 +213,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   } catch (error) {
     throw new Error(`${error.message}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
   }
-  assert.equal((await readJson(statePath)).activeProvider, "claude");
+  assert.equal((await runtimeState()).activeProvider, "claude");
 
   // Сессия, созданная из вложенной папки проекта, продолжается из того же cwd.
   // Fake Claude намеренно отклоняет --resume из другого каталога.
@@ -225,7 +228,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   assert.ok(nestedTaskButton, "nested Claude session must be present in the task catalog");
   assert.match(nestedTaskButton.text, /Переименованная задача Claude/);
   telegram.pushCallback(nestedTaskButton.callback_data, nestedPicker.result);
-  await waitFor(async () => (await readJson(statePath)).threadIds.claude === nestedSessionId,
+  await waitFor(async () => (await runtimeState()).threadIds.claude === nestedSessionId,
     "select nested Claude session");
   mark = telegram.calls.length;
   const nestedPrompt = "Продолжить вложенную задачу";
@@ -237,7 +240,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
     });
   } catch (error) {
     throw new Error(
-      `${error.message}\nstate:\n${JSON.stringify(await readJson(statePath).catch(() => null), null, 2)}`
+      `${error.message}\nstate:\n${JSON.stringify(await runtimeState().catch(() => null), null, 2)}`
       + `\nstdout:\n${stdout}\nstderr:\n${stderr}`,
     );
   }
@@ -327,7 +330,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   assert.equal(new Set(parallelRuns.map((run) => run.claudeOutputPath)).size, 2,
     "parallel Claude tasks must not share an output file");
   await rememberClaudePids();
-  const secondThreadId = (await readJson(statePath)).threadIds.claude;
+  const secondThreadId = (await runtimeState()).threadIds.claude;
   assert.equal(secondThreadId, parallelRuns.find((run) => run.promptPreview.includes("beta"))?.threadId);
 
   // Переключение между двумя живыми задачами и «глазки» на первой.
@@ -349,7 +352,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   mark = telegram.calls.length;
   telegram.pushCallback(firstTaskButton.callback_data, picker.result);
   const switched = await telegram.waitForText("Текущая задача", { after: mark, timeoutMs: 15_000 });
-  await waitFor(async () => (await readJson(statePath)).threadIds.claude === firstRun.threadId,
+  await waitFor(async () => (await runtimeState()).threadIds.claude === firstRun.threadId,
     "switch to the first live Claude task");
 
   mark = telegram.calls.length;
@@ -494,7 +497,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   mark = telegram.calls.length;
   telegram.pushCallback(staleButton.callback_data, stalePicker.result);
   await telegram.waitForText("Текущая задача", { after: mark, timeoutMs: 15_000 });
-  await waitFor(async () => (await readJson(statePath)).threadIds.claude === staleSessionId,
+  await waitFor(async () => (await runtimeState()).threadIds.claude === staleSessionId,
     "switch to the abandoned Claude session", 15_000);
 
   mark = telegram.calls.length;
@@ -508,7 +511,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
     });
   } catch (error) {
     throw new Error(
-      `${error.message}\nstate:\n${JSON.stringify(await readJson(statePath).catch(() => null), null, 2)}`
+      `${error.message}\nstate:\n${JSON.stringify(await runtimeState().catch(() => null), null, 2)}`
       + `\nfailedUpdates:\n${JSON.stringify(
         await readdir(path.join(dataDir, "failed-updates")).catch(() => []),
         null,
@@ -540,7 +543,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   try {
     await waitFor(async () => (await activeRuns()).length === 0, "stale session turn completion", 15_000);
   } catch (error) {
-    const state = await readJson(statePath);
+    const state = await runtimeState();
     const transcriptFiles = await readdir(transcriptRoot, { recursive: true });
     throw new Error(
       `${error.message}\nactiveRuns:\n${JSON.stringify(await activeRuns(), null, 2)}`

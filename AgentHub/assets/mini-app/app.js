@@ -203,24 +203,33 @@ const themes = {
    здесь, привязывается к своей теме ниже, а его визуальная сцена описывается
    в backgrounds.css. */
 const backgroundNames = {
-  orbit: "Орбита", nebula: "Туманность", pulsar: "Пульсар", gothic: "Склеп",
-  "gothic-tower": "Башня", "gothic-harbor": "Гавань", "gothic-chapel": "Часовня",
-  "gothic-keep": "Крепость",
-  blackhole: "BlackHole", taiga: "Rain", metropolis: "Мегаполис", stormglass: "Storm",
-  magma: "Магма", meadow: "Луг", lake: "Озеро", "lake-watercolor": "Озеро · акварель",
-  "lake-oil": "Озеро · масло", graphite: "Графит",
+  orbit: "Орбита", "orbit-limb": "Лимб",
+  nebula: "Туманность", "nebula-core": "Ядро",
+  pulsar: "Пульсар", "pulsar-beam": "Луч",
+  gothic: "Склеп", "gothic-crypt": "Крипта", "gothic-tower": "Башня",
+  "gothic-harbor": "Гавань", "gothic-chapel": "Часовня", "gothic-keep": "Крепость",
+  blackhole: "BlackHole", "blackhole-disk": "Диск",
+  taiga: "Rain", "taiga-rainfall": "Ливень",
+  metropolis: "Мегаполис", "metropolis-towers": "Башни",
+  stormglass: "Storm",
+  magma: "Магма", "magma-flow": "Поток",
+  meadow: "Луг", "meadow-goldenhour": "Закат",
+  lake: "Озеро", "lake-watercolor": "Озеро · акварель", "lake-oil": "Озеро · масло",
+  graphite: "Графит",
 };
 const themeBackgrounds = Object.freeze({
-  orbit: ["orbit"],
-  nebula: ["nebula"],
-  pulsar: ["pulsar"],
-  gothic: ["gothic", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep"],
-  blackhole: ["blackhole"],
-  taiga: ["taiga"],
-  metropolis: ["metropolis"],
+  orbit: ["orbit", "orbit-limb"],
+  nebula: ["nebula", "nebula-core"],
+  pulsar: ["pulsar", "pulsar-beam"],
+  gothic: [
+    "gothic", "gothic-crypt", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep",
+  ],
+  blackhole: ["blackhole", "blackhole-disk"],
+  taiga: ["taiga", "taiga-rainfall"],
+  metropolis: ["metropolis", "metropolis-towers"],
   stormglass: ["stormglass"],
-  magma: ["magma"],
-  meadow: ["meadow"],
+  magma: ["magma", "magma-flow"],
+  meadow: ["meadow", "meadow-goldenhour"],
   lake: ["lake", "lake-watercolor", "lake-oil"],
   graphite: ["graphite"],
 });
@@ -287,6 +296,7 @@ function savedTheme() {
    мостовая и блики на камне в кадре без него выглядят необъяснимо. */
 const PARTICLE_BACKGROUNDS = {
   taiga: "rain", stormglass: "downpour", gothic: "motes",
+  "taiga-rainfall": "rain", "gothic-crypt": "motes", "metropolis-towers": "rain",
   "gothic-chapel": "motes", "gothic-harbor": "rain",
 };
 let particleLayer = null;

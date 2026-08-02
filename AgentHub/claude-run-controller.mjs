@@ -89,7 +89,10 @@ export class ClaudeRunController {
     }
     run.process = worker;
     run.pid = worker.pid ?? null;
-    run.claudeProcessFingerprint = await this.#lookupFingerprint(run.pid);
+    // Win32_Process may not expose a just-created child on its first WMI
+    // query. Capture the fingerprint before persisting the run so a later
+    // Hub restart can safely reattach it instead of treating it as unknown.
+    run.claudeProcessFingerprint = await this.#lookupFingerprintWithRetry(run.pid);
     await this.onPersist(run);
     callbacksEnabled = true;
     if (spawnError) {
@@ -175,7 +178,11 @@ export class ClaudeRunController {
       void this.drain(run);
       return true;
     }
-    if (!await this.#ownsProcess(run, pid)) return false;
+    // Before a Hub restart, the ChildProcess handle is stronger evidence than
+    // a transient WMI lookup: it is the exact child this controller spawned.
+    // After a restart no handle exists, so the persisted fingerprint remains
+    // mandatory and a reused PID can never be stopped by mistake.
+    if (!this.#ownsCurrentChild(run, pid) && !await this.#ownsProcess(run, pid)) return false;
     return this.stopProcess(pid);
   }
 
@@ -209,8 +216,28 @@ export class ClaudeRunController {
   }
 
   async #ownsProcess(run, pid) {
-    const current = await this.#lookupFingerprint(pid);
-    return processFingerprintMatches(run?.claudeProcessFingerprint, current);
+    const expected = run?.claudeProcessFingerprint;
+    if (!expected) return false;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const current = await this.#lookupFingerprint(pid);
+      if (current) return processFingerprintMatches(expected, current);
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 75));
+    }
+    return false;
+  }
+
+  async #lookupFingerprintWithRetry(pid) {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const current = await this.#lookupFingerprint(pid);
+      if (current) return current;
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 75));
+    }
+    return null;
+  }
+
+  #ownsCurrentChild(run, pid) {
+    const child = run?.process;
+    return Number(child?.pid) === pid && child?.exitCode == null;
   }
 
   pause(run) {

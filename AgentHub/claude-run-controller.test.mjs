@@ -153,6 +153,58 @@ test("ClaudeRunController fails safe when process fingerprint is unavailable", a
   });
 });
 
+test("ClaudeRunController stops its own live child when WMI fingerprint is temporarily unavailable", async () => {
+  await withTempDir(async (directory) => {
+    const run = {
+      turnId: "turn-current-child",
+      threadId: "session-current-child",
+      pid: 4324,
+      process: { pid: 4324, exitCode: null },
+      claudeProcessFingerprint: null,
+    };
+    const stopped = [];
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      processAlive: () => true,
+      processFingerprintLookup: async () => null,
+      stopProcess: async (pid) => {
+        stopped.push(pid);
+        return true;
+      },
+    });
+    assert.equal(await controller.stop(run), true);
+    assert.deepEqual(stopped, [4324]);
+  });
+});
+
+test("ClaudeRunController retries a transient fingerprint gap when reattaching", async () => {
+  await withTempDir(async (directory) => {
+    const fingerprint = { pid: 4325, creationTime: "known-start" };
+    const outputPath = path.join(directory, "turn.jsonl");
+    await writeFile(outputPath, "", "utf8");
+    const run = {
+      turnId: "turn-retry-fingerprint",
+      threadId: "session-retry-fingerprint",
+      pid: fingerprint.pid,
+      claudeOutputPath: outputPath,
+      claudeProcessFingerprint: fingerprint,
+    };
+    let calls = 0;
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      pollIntervalMs: 60_000,
+      processAlive: () => true,
+      processFingerprintLookup: async () => {
+        calls += 1;
+        return calls === 1 ? null : { ...fingerprint };
+      },
+    });
+    assert.equal(await controller.attachAfterRestart(run), true);
+    assert.equal(calls, 2);
+    controller.pause(run);
+  });
+});
+
 test("ClaudeRunController cancels only a process with the saved fingerprint", async () => {
   await withTempDir(async (directory) => {
     const fingerprint = {

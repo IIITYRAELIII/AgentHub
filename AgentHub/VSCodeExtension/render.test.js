@@ -489,7 +489,7 @@ test("«Gothic» offers four night scenes, each with its own light", () => {
   );
   assert.match(
     client,
-    /gothic: \["gothic", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep"\]/u,
+    /gothic: \[\s*"gothic", "gothic-crypt", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep",/u,
   );
   for (const [background, image] of [
     ["gothic-tower", "gothic-tower\\.jpg"],
@@ -537,7 +537,7 @@ test("«Озеро» keeps one palette and three interchangeable scenes", () => 
     client,
     /lake:\s*\["lake",\s*"lake-watercolor",\s*"lake-oil"\]/u,
   );
-  assert.match(client, /orbit:\s*\["orbit"\]/u);
+  assert.match(client, /orbit:\s*\["orbit",\s*"orbit-limb"\]/u);
   /* Блок фона специфичнее подмены из панели VS Code, поэтому путь к рисованным
      кадрам берётся через var с запасным значением, а не объявляется заново. */
   for (const variable of ["--lake-image", "--lake-watercolor-image", "--lake-oil-image"]) {
