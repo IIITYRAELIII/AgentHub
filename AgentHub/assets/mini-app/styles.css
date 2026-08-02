@@ -7798,12 +7798,12 @@ html[data-view="server"] .server-view {
   width: 1px;
 }
 
-/* Управление живёт в той же карточке, что настройки, поэтому отделяется
-   линией, а не собственным заголовком. */
-.server-card .server-controls {
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 0.85rem;
-  padding-bottom: 0.85rem;
+/* Управление стоит рядом со статусом процесса — автозапуск и перезапуск
+   относятся к самому Hub, а не к его поведению. */
+.server-health-card .server-controls {
+  border-top: 1px solid var(--line);
+  margin-top: 1rem;
+  padding-top: 0.9rem;
 }
 
 .server-card .trusted-devices-card {
