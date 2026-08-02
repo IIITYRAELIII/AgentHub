@@ -1011,6 +1011,14 @@ test("current limits live in settings and statistics instead of the compact head
   assert.match(app, /journal\.querySelector\("\[data-work-log-rate-limits\]"\)\?\.remove\(\)/u);
 });
 
+test("server navigation uses a readable rack icon instead of a CPU", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  assert.match(
+    html,
+    /data-view-button="server"[\s\S]*?data-phosphor-icon="hard-drives"[\s\S]*?<span>Сервер<\/span>/u,
+  );
+});
+
 test("statistics page offers local usage and full limit history", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
