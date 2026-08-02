@@ -77,6 +77,16 @@ export function classifyCodexRolloutProcesses(snapshot, { agentHubPid = null } =
     : TASK_EXECUTION_OWNERS.EXTERNAL;
 }
 
+export function codexRolloutRuntimeState(snapshot, { agentHubPid = null } = {}) {
+  const rootProcessIds = [...new Set((snapshot?.rootProcessIds ?? [])
+    .map(Number)
+    .filter((value) => Number.isInteger(value) && value > 0 && value !== Number(agentHubPid)))];
+  return {
+    hasLiveProcess: rootProcessIds.length > 0,
+    owner: classifyCodexRolloutProcesses(snapshot, { agentHubPid }),
+  };
+}
+
 function powershellExecutable(environment = process.env) {
   const systemRoot = environment.SystemRoot || environment.WINDIR || "C:\\Windows";
   return path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
@@ -191,6 +201,65 @@ export async function detectCodexHookExecutionOwner({
   }
 }
 
+async function observedRuntimeProbe({
+  turnId = null,
+  rolloutPath,
+  agentHubPid = null,
+  nowMs = Date.now(),
+  probe = readWindowsRolloutProcesses,
+} = {}) {
+  const cacheKey = `${path.resolve(rolloutPath)}\0${String(turnId ?? "")}\0${Number(agentHubPid) || 0}`;
+  const cached = ownerProbeCache.get(cacheKey);
+  if (cached && nowMs - cached.checkedAtMs < OWNER_PROBE_CACHE_MS) return cached;
+  if (ownerProbeInFlight.has(cacheKey)) return ownerProbeInFlight.get(cacheKey);
+
+  const pending = (async () => {
+    let result;
+    try {
+      result = {
+        ...codexRolloutRuntimeState(await probe(rolloutPath, { agentHubPid }), { agentHubPid }),
+        known: true,
+      };
+    } catch {
+      result = {
+        owner: TASK_EXECUTION_OWNERS.EXTERNAL,
+        hasLiveProcess: true,
+        known: false,
+      };
+    }
+    const cachedResult = { ...result, checkedAtMs: nowMs };
+    ownerProbeCache.set(cacheKey, cachedResult);
+    if (ownerProbeCache.size > 100) ownerProbeCache.delete(ownerProbeCache.keys().next().value);
+    return cachedResult;
+  })();
+  ownerProbeInFlight.set(cacheKey, pending);
+  try {
+    return await pending;
+  } finally {
+    ownerProbeInFlight.delete(cacheKey);
+  }
+}
+
+export async function codexObservedRuntimeActive(activity = {}, {
+  turnId = null,
+  rolloutPath = null,
+  agentHubPid = null,
+  platform = process.platform,
+  nowMs = Date.now(),
+  probe = readWindowsRolloutProcesses,
+} = {}) {
+  if (!activity.running) return false;
+  if (platform !== "win32" || !rolloutPath) return true;
+  const runtime = await observedRuntimeProbe({
+    turnId,
+    rolloutPath,
+    agentHubPid,
+    nowMs,
+    probe,
+  });
+  return runtime.known ? runtime.hasLiveProcess : true;
+}
+
 export async function resolveCodexObservedExecutionOwner(activity = {}, {
   turnId = null,
   rolloutPath = null,
@@ -205,33 +274,12 @@ export async function resolveCodexObservedExecutionOwner(activity = {}, {
   const direct = codexObservedExecutionOwner(activity, turnId);
   if (!activity.running) return direct;
   if (platform !== "win32" || !rolloutPath) return direct;
-
-  const cacheKey = `${path.resolve(rolloutPath)}\0${String(turnId ?? "")}\0${Number(agentHubPid) || 0}`;
-  const cached = ownerProbeCache.get(cacheKey);
-  if (cached && nowMs - cached.checkedAtMs < OWNER_PROBE_CACHE_MS) {
-    return cached.owner === TASK_EXECUTION_OWNERS.EXTERNAL ? direct : cached.owner;
-  }
-  if (ownerProbeInFlight.has(cacheKey)) {
-    const owner = await ownerProbeInFlight.get(cacheKey);
-    return owner === TASK_EXECUTION_OWNERS.EXTERNAL ? direct : owner;
-  }
-  const pending = (async () => {
-    let owner = TASK_EXECUTION_OWNERS.EXTERNAL;
-    try {
-      const snapshot = await probe(rolloutPath, { agentHubPid });
-      owner = classifyCodexRolloutProcesses(snapshot, { agentHubPid });
-    } catch {
-      owner = TASK_EXECUTION_OWNERS.EXTERNAL;
-    }
-    ownerProbeCache.set(cacheKey, { owner, checkedAtMs: nowMs });
-    if (ownerProbeCache.size > 100) ownerProbeCache.delete(ownerProbeCache.keys().next().value);
-    return owner;
-  })();
-  ownerProbeInFlight.set(cacheKey, pending);
-  try {
-    const owner = await pending;
-    return owner === TASK_EXECUTION_OWNERS.EXTERNAL ? direct : owner;
-  } finally {
-    ownerProbeInFlight.delete(cacheKey);
-  }
+  const runtime = await observedRuntimeProbe({
+    turnId,
+    rolloutPath,
+    agentHubPid,
+    nowMs,
+    probe,
+  });
+  return runtime.owner === TASK_EXECUTION_OWNERS.EXTERNAL ? direct : runtime.owner;
 }

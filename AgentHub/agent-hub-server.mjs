@@ -188,7 +188,10 @@ import {
   normalizeTaskExecutionOwner,
   taskOrderingActivityAtMs,
 } from "./task-catalog.mjs";
-import { resolveCodexObservedExecutionOwner } from "./codex-runtime-owner.mjs";
+import {
+  codexObservedRuntimeActive,
+  resolveCodexObservedExecutionOwner,
+} from "./codex-runtime-owner.mjs";
 import { CodexRolloutContextSanitizer } from "./codex-rollout-context.mjs";
 import {
   botReplacementInvocation,
@@ -2541,23 +2544,33 @@ async function buildTaskCatalog() {
           setBoundedMapValue(codexRolloutPathsByThreadId, String(thread.id), thread.path, 5_000);
         }
         const activity = await readCodexRolloutActivity(thread.path);
-        const rolloutRunning = thread.status?.type === "active" || activity.running;
+        let rolloutRunning = thread.status?.type === "active" || activity.running;
         const existingRun = taskRuns.forTask({
           provider: "codex",
           projectRoot: project.path,
           threadId: thread.id,
         });
-        const executionOwner = existingRun?.observer === false
-          ? TASK_EXECUTION_OWNERS.HUB
-          : await resolveCodexObservedExecutionOwner(activity, {
-            turnId: existingRun?.turnId ?? selectExactActiveCodexTurnId(activity),
+        const activeTurnId = existingRun?.turnId ?? selectExactActiveCodexTurnId(activity);
+        if (rolloutRunning && activity.running && existingRun?.observer !== false) {
+          rolloutRunning = await codexObservedRuntimeActive(activity, {
+            turnId: activeTurnId,
             rolloutPath: thread.path,
             agentHubPid: codexTransport.pid,
-            capturedOwner: capturedCodexExecutionOwner(
-              thread.id,
-              existingRun?.turnId ?? selectExactActiveCodexTurnId(activity),
-            ),
           });
+        }
+        const executionOwner = !rolloutRunning
+          ? null
+          : existingRun?.observer === false
+            ? TASK_EXECUTION_OWNERS.HUB
+            : await resolveCodexObservedExecutionOwner(activity, {
+              turnId: activeTurnId,
+              rolloutPath: thread.path,
+              agentHubPid: codexTransport.pid,
+              capturedOwner: capturedCodexExecutionOwner(
+                thread.id,
+                activeTurnId,
+              ),
+            });
         const activeStartedAtValues = activity.activeTurnIds
           .map((turnId) => Number(activity.startedAtMsByTurnId?.[turnId]))
           .filter(Number.isFinite);
@@ -6066,6 +6079,13 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
         exact: exactTurnObserver,
         threadActive: activity.running,
       });
+      const runtimeActive = !state.active || await codexObservedRuntimeActive(activity, {
+        turnId: state.turnId,
+        rolloutPath,
+        agentHubPid: codexTransport.pid,
+      });
+      const interrupted = state.active && !runtimeActive;
+      const active = state.active && runtimeActive;
       const executionOwner = await resolveCodexObservedExecutionOwner(activity, {
         turnId: state.turnId,
         rolloutPath,
@@ -6080,13 +6100,15 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
         clientUserMessageId: state.userMessages[0]?.clientUserMessageId ?? null,
         userMessages: state.userMessages,
         startedAt: state.startedAt,
-        completed: state.completed,
-        active: state.active,
-        status: state.completed ? "completed" : state.active ? "inProgress" : "stopped",
+        completed: state.completed || interrupted,
+        active,
+        status: interrupted ? "interrupted" : state.completed ? "completed" : active ? "inProgress" : "stopped",
         waitingOnApproval: false,
-        stage: state.active
+        stage: active
           ? "Выполняется следующий этап…"
-          : state.finalAnswer ? "Задача завершена." : "Задача остановлена или неактивна.",
+          : interrupted
+            ? "Задача прервана вместе с клиентом Codex."
+            : state.finalAnswer ? "Задача завершена." : "Задача остановлена или неактивна.",
         turnId: state.turnId,
         activeTurnCount: activity.activeTurnIds.length,
         activityAtMs: Number(activity.activityAtMsByTurnId?.[state.turnId])

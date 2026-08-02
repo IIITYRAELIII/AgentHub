@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   classifyCodexHookProcess,
   classifyCodexRolloutProcesses,
+  codexObservedRuntimeActive,
+  codexRolloutRuntimeState,
   detectCodexHookExecutionOwner,
   resolveCodexObservedExecutionOwner,
 } from "./codex-runtime-owner.mjs";
@@ -73,6 +75,40 @@ test("Agent Hub is excluded and ambiguous external clients stay EXT", () => {
     { processId: 70, parentProcessId: 7, name: "codex.exe", commandLine: "codex.exe app-server" },
     { processId: 7, parentProcessId: 1, name: "ChatGPT.exe", commandLine: "ChatGPT.exe" },
   ])), TASK_EXECUTION_OWNERS.EXTERNAL);
+});
+
+test("rollout runtime state distinguishes a dead client from a live holder", async () => {
+  assert.deepEqual(codexRolloutRuntimeState(snapshot([], []), { agentHubPid: 50 }), {
+    hasLiveProcess: false,
+    owner: TASK_EXECUTION_OWNERS.EXTERNAL,
+  });
+  assert.equal(await codexObservedRuntimeActive({ running: true }, {
+    turnId: "dead-turn",
+    rolloutPath: "C:\\dead-rollout.jsonl",
+    platform: "win32",
+    nowMs: 1,
+    probe: async () => snapshot([], []),
+  }), false);
+  assert.equal(await codexObservedRuntimeActive({ running: true }, {
+    turnId: "live-turn",
+    rolloutPath: "C:\\live-rollout.jsonl",
+    platform: "win32",
+    nowMs: 1,
+    probe: async () => snapshot([60], [
+      { processId: 60, parentProcessId: 6, name: "codex.exe", commandLine: "codex.exe app-server" },
+      { processId: 6, parentProcessId: 1, name: "Code.exe", commandLine: "Code.exe" },
+    ]),
+  }), true);
+});
+
+test("an unavailable rollout process probe does not falsely stop a turn", async () => {
+  assert.equal(await codexObservedRuntimeActive({ running: true }, {
+    turnId: "unknown-turn",
+    rolloutPath: "C:\\unknown-rollout.jsonl",
+    platform: "win32",
+    nowMs: 1,
+    probe: async () => { throw new Error("probe unavailable"); },
+  }), true);
 });
 
 test("per-turn VSC evidence is preserved when a process probe is unavailable", async () => {
