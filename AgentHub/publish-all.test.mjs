@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseArguments, publicationSteps, publishAll } from "./publish-all.mjs";
-import { resolveWrangler } from "./wrangler-runner.mjs";
+import { detectGitCommonDirectory, resolveWrangler } from "./wrangler-runner.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 
@@ -158,6 +158,24 @@ test("clean worktrees reuse the pinned Wrangler from the main worktree", () => {
       .scripts["worker:deploy"];
     assert.match(packageScript, /node wrangler-runner\.mjs deploy/u);
     assert.doesNotMatch(packageScript, /\bnpx\b/u);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test("clean worktrees resolve the common Git directory without invoking Git", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-git-common-"));
+  try {
+    const repositoryRoot = path.join(temporary, "worktree");
+    const agentHubRoot = path.join(repositoryRoot, "AgentHub");
+    const linkedGitDirectory = path.join(temporary, "main", ".git", "worktrees", "release");
+    const commonGitDirectory = path.join(temporary, "main", ".git");
+    fs.mkdirSync(agentHubRoot, { recursive: true });
+    fs.mkdirSync(linkedGitDirectory, { recursive: true });
+    fs.writeFileSync(path.join(repositoryRoot, ".git"), `gitdir: ${linkedGitDirectory}\n`);
+    fs.writeFileSync(path.join(linkedGitDirectory, "commondir"), "../..\n");
+
+    assert.equal(detectGitCommonDirectory(agentHubRoot), commonGitDirectory);
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

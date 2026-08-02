@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,9 +28,28 @@ function dependencyRoots(root, environment, gitCommonDirectory) {
 }
 
 export function detectGitCommonDirectory(root = ROOT) {
+  let repositoryRoot = path.resolve(root);
+  while (true) {
+    const marker = path.join(repositoryRoot, ".git");
+    if (existsSync(marker)) {
+      if (statSync(marker).isDirectory()) return marker;
+      const pointer = String(readFileSync(marker, "utf8")).trim().match(/^gitdir:\s*(.+)$/iu);
+      if (pointer) {
+        const gitDirectory = path.resolve(repositoryRoot, pointer[1]);
+        const commonMarker = path.join(gitDirectory, "commondir");
+        return existsSync(commonMarker)
+          ? path.resolve(gitDirectory, String(readFileSync(commonMarker, "utf8")).trim())
+          : gitDirectory;
+      }
+    }
+    const parent = path.dirname(repositoryRoot);
+    if (parent === repositoryRoot) break;
+    repositoryRoot = parent;
+  }
+
   const result = spawnSync(
     "git",
-    ["-c", `safe.directory=${path.resolve(root)}`, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ["-c", `safe.directory=${repositoryRoot}`, "rev-parse", "--path-format=absolute", "--git-common-dir"],
     {
       cwd: root,
       encoding: "utf8",
