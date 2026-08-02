@@ -536,6 +536,16 @@ function sidebarHtml(webview) {
 
     .theme-row option { background: #101216; color: #e9eff8; }
 
+    .card-head { margin-bottom: 0.55rem; }
+
+    .card-title h2 { margin: 0; }
+
+    .lead {
+      color: var(--text-muted);
+      line-height: 1.4;
+      margin: 0 0 0.7rem;
+    }
+
     .hint {
       color: var(--text-muted);
       line-height: 1.45;
@@ -603,7 +613,20 @@ function sidebarHtml(webview) {
 </head>
 <body>
   <div class="card">
-    <h2>Agent Hub</h2>
+    <div class="card-head">
+      <span class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2.7 20 7.2v9.6L12 21.3 4 16.8V7.2z"></path>
+          <path d="M7.6 12.1h2.2l1.3-2.9 1.9 5.4 1.2-2.5h1.9"></path>
+        </svg>
+      </span>
+      <div class="card-title">
+        <p class="eyebrow">Локальный</p>
+        <h2>Agent Hub</h2>
+      </div>
+    </div>
+    <p class="lead">Задачи, диалоги и статистика в одном окне.</p>
     <div class="actions">
       <button id="open" class="primary" type="button">Открыть</button>
     </div>
