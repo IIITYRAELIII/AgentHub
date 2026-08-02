@@ -61,6 +61,7 @@ function fixture(overrides = {}) {
     lastMessage: {
       text: "Последний ответ",
       updatedAt: "2026-07-30T09:59:00.000Z",
+      turnId: "turn-previous",
     },
     pending: [],
     queued: [],
@@ -270,6 +271,7 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
     "orderingActivityAtMs",
     "lastAnswer",
     "lastAnswerAt",
+    "lastAnswerTurnId",
     "context",
     "run",
   ]);
@@ -282,6 +284,7 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
   assert.equal(snapshot.updatedAtMs, Date.parse("2026-07-30T10:01:00.000Z"));
   assert.equal(snapshot.orderingActivityAtMs, 300);
   assert.equal(snapshot.lastAnswer, "Последний ответ");
+  assert.equal(snapshot.lastAnswerTurnId, "turn-previous");
   assert.equal(snapshot.run.id, "run-1");
 });
 

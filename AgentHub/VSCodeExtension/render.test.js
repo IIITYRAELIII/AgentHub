@@ -843,6 +843,15 @@ test("chat retries an initial history load after the connection recovers", () =>
   assert.match(client, /selectedHistoryMissing[\s\S]*control\("open-task"/u);
 });
 
+test("chat keeps refreshing until the ready answer reaches task history", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /function updateHistoryCatchUp\(taskIdValue, history, task\)/u);
+  assert.match(client, /historyContainsLatestAnswer\(history, task\)/u);
+  assert.match(client, /refreshCaughtUpHistory/u);
+  assert.match(client, /\|\| historyNeedsCatchUp\(selectedTaskId\)/u);
+  assert.doesNotMatch(client, /\n\s*markAnswerSeen\(task\);\n\}/u);
+});
+
 test("current limits live in settings and statistics instead of the compact header", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");

@@ -1256,6 +1256,7 @@ function rememberLastTaskMessage(run, text) {
   setBoundedMapValue(lastTaskMessages, taskRunKey(run), {
     text: value,
     updatedAt: new Date().toISOString(),
+    turnId: String(run.turnId ?? "").trim() || null,
   }, 500);
 }
 
@@ -1618,6 +1619,7 @@ async function deliverTurnEndNotification(completion) {
         provider: completion.provider,
         projectRoot: completion.projectRoot,
         threadId: completion.threadId,
+        turnId: completion.turnId,
       }, notificationBody);
       if (completion.turnId) {
         setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(completion), completion.turnId, 500);
@@ -5181,6 +5183,7 @@ async function handleRuntimeCommand(request) {
           provider: "codex",
           threadId: identity.threadId,
           projectRoot: project.path,
+          turnId: payload.turnId,
         }, finalAnswer);
         setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey({
           provider: "codex",

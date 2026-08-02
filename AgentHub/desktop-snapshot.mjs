@@ -122,6 +122,7 @@ export function createDesktopSnapshotFactory({
       orderingActivityAtMs: tasks.orderingActivityAtMs(entry, { run, lastMessage }),
       lastAnswer: lastMessage?.text ?? "",
       lastAnswerAt: lastMessage?.updatedAt ?? null,
+      lastAnswerTurnId: lastMessage?.turnId ?? null,
       context: desktopContextSnapshot(entry.threadId, run?.turnId),
       run: desktopRunSnapshot(run),
     };

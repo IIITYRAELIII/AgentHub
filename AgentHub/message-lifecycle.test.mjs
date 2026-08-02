@@ -295,6 +295,43 @@ test("focused execution turn does not duplicate its task history prompt", () => 
   assert.equal(lifecycle.focusedTurnAlreadyVisible(history, official, focusedTurn), true);
 });
 
+test("history catch-up waits for the exact completed answer turn", () => {
+  const task = {
+    lastAnswer: "Готовый ответ",
+    lastAnswerAt: "2026-08-02T10:00:01.000Z",
+    lastAnswerTurnId: "turn-2",
+  };
+  const stale = {
+    items: [{
+      id: "turn-2",
+      completed: false,
+      messages: [{ role: "user", text: "Вопрос" }],
+    }],
+  };
+  assert.equal(lifecycle.historyContainsLatestAnswer(stale, task), false);
+  const caughtUp = {
+    items: [{
+      id: "turn-2",
+      completed: true,
+      messages: [
+        { role: "user", text: "Вопрос" },
+        { role: "agent", phase: "final", text: "Готовый ответ" },
+      ],
+    }],
+  };
+  assert.equal(lifecycle.historyContainsLatestAnswer(caughtUp, task), true);
+});
+
+test("legacy answer records without a turn id match their completed text", () => {
+  const task = {
+    lastAnswer: "Старый готовый ответ",
+    lastAnswerAt: "2026-08-02T10:00:01.000Z",
+  };
+  assert.equal(lifecycle.historyContainsLatestAnswer({
+    items: [{ id: "turn-legacy", completed: true, answer: "Старый готовый ответ" }],
+  }, task), true);
+});
+
 test("active stage always identifies the whole turn as running", () => {
   assert.equal(lifecycle.activeStageLabel(""), "Ход выполняется");
   assert.equal(

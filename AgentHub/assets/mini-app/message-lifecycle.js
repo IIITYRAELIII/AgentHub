@@ -42,6 +42,34 @@ function focusedTurnAlreadyVisible(history, messages, focusedTurn) {
   ));
 }
 
+function historyContainsLatestAnswer(history, task) {
+  const expectedTurnId = String(task?.lastAnswerTurnId ?? "").trim();
+  const expectedAnswer = String(task?.lastAnswer ?? "").trim();
+  const hasKnownAnswer = Boolean(String(task?.lastAnswerAt ?? "").trim() || expectedAnswer);
+  if (!hasKnownAnswer) return true;
+  const items = Array.isArray(history?.items) ? history.items : [];
+  const candidates = expectedTurnId
+    ? items.filter((item) => String(item?.id ?? "") === expectedTurnId)
+    : items;
+  return candidates.some((item) => {
+    if (item?.completed !== true) return false;
+    const texts = [
+      String(item?.answer ?? "").trim(),
+      ...(Array.isArray(item?.messages) ? item.messages : [])
+        .filter((message) => message?.role === "agent")
+        .map((message) => String(message?.text ?? "").trim()),
+    ].filter(Boolean);
+    if (expectedTurnId) return texts.length > 0;
+    return expectedAnswer
+      ? texts.some((text) => (
+          text === expectedAnswer
+          || text.startsWith(expectedAnswer)
+          || expectedAnswer.startsWith(text)
+        ))
+      : texts.length > 0;
+  });
+}
+
 function normalizedResponseAnnotations(values) {
   return (Array.isArray(values) ? values : []).flatMap((item) => {
     const text = String(item?.text ?? item?.quote ?? "").trim();
@@ -286,6 +314,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   clientIdentityKey,
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
+  historyContainsLatestAnswer,
   liveMessageMatch,
   markConnectionFailure,
   mergeLiveUserMessages,

@@ -23,8 +23,10 @@ let selectionSequence = 0;
 let selectionTail = Promise.resolve();
 let selectedHistoryRefreshAt = 0;
 const EXTERNAL_HISTORY_REFRESH_MS = 2_500;
+const HISTORY_CATCH_UP_TIMEOUT_MS = 120_000;
 const historyByTask = new Map();
 const historyPageByTask = new Map();
+const historyCatchUpDeadlines = new Map();
 const outgoingByTask = new Map();
 const liveProbeByTask = new Map();
 const liveUserMessagesByTask = new Map();
@@ -36,6 +38,7 @@ const {
   activeStageLabel,
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
+  historyContainsLatestAnswer,
   hubErrorMessage,
   isConnectionFailure,
   looksLikeConnectionFailure,
@@ -258,6 +261,25 @@ function markAnswerSeen(task) {
     localStorage.setItem(seenAnswerKey, JSON.stringify(seen));
   } catch {
     // Приватный WebView может запрещать localStorage.
+  }
+}
+
+function historyNeedsCatchUp(taskIdValue) {
+  const deadline = Number(historyCatchUpDeadlines.get(taskIdValue)) || 0;
+  if (!deadline) return false;
+  if (deadline > Date.now()) return true;
+  historyCatchUpDeadlines.delete(taskIdValue);
+  return false;
+}
+
+function updateHistoryCatchUp(taskIdValue, history, task) {
+  if (historyContainsLatestAnswer(history, task)) {
+    historyCatchUpDeadlines.delete(taskIdValue);
+    markAnswerSeen(task);
+    return;
+  }
+  if (!historyCatchUpDeadlines.has(taskIdValue)) {
+    historyCatchUpDeadlines.set(taskIdValue, Date.now() + HISTORY_CATCH_UP_TIMEOUT_MS);
   }
 }
 
@@ -661,7 +683,7 @@ function applyOpened(result, { preserveScroll = false } = {}) {
   const task = result.snapshot?.tasks?.find(
     (item) => item.provider === history.provider && item.threadId === history.threadId,
   );
-  markAnswerSeen(task);
+  updateHistoryCatchUp(id, history, task);
 }
 
 function annotatedText(text, annotations) {
@@ -1145,6 +1167,9 @@ async function refresh() {
       ));
     const refreshExternalHistory = externalLive
       && Date.now() - selectedHistoryRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
+    const refreshCaughtUpHistory = sameSelection
+      && historyNeedsCatchUp(taskId(currentSelected.provider, currentSelected.threadId))
+      && Date.now() - selectedHistoryRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
     if (!pendingSelectionId && previousSelected && currentSelected && !sameSelection) {
       applyOpened(await control("open-task", {
         provider: currentSelected.provider,
@@ -1156,6 +1181,7 @@ async function refresh() {
       || (previousSelected.running && !currentSelected.running)
       || answerChanged
       || refreshExternalHistory
+      || refreshCaughtUpHistory
     )) {
       selectedHistoryRefreshAt = Date.now();
       applyOpened(await control("open-task", {
@@ -1174,7 +1200,7 @@ async function refresh() {
     refreshing = false;
     const active = Boolean(lastSnapshot?.tasks?.some(
       (task) => task.running || task.context?.compacting,
-    ));
+    )) || historyNeedsCatchUp(selectedTaskId);
     refreshTimer = window.setTimeout(refresh, active ? 1_200 : 5_000);
   }
 }
