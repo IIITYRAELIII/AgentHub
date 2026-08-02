@@ -2513,7 +2513,10 @@ async function buildTaskCatalog() {
     listAllCodexThreads(),
     listClaudeSessionSnapshots(),
   ]);
-  const entries = [];
+  // Keep the durable SQLite read model visible while live provider discovery
+  // is still running or returns only a partially repaired App Server catalog.
+  // Fresher live entries below replace their persisted counterparts by key.
+  const entries = taskSyncStore.catalog();
   let pinnedTitlesChanged = false;
   if (codexResult.status === "fulfilled") {
     await backfillWorkLogPricingMetadata(codexResult.value);
