@@ -441,21 +441,47 @@ export async function loadConfig() {
     throw new Error(`Cannot read ${configPath}: ${error.message}`);
   }
 
-  const profile = String(process.env.AGENT_HUB_PROFILE ?? raw.profile ?? "full")
+  const legacyProfile = String(process.env.AGENT_HUB_PROFILE ?? raw.profile ?? "")
     .trim()
     .toLowerCase();
-  if (!["full", "telegram", "journal"].includes(profile)) {
-    throw new Error('profile must be one of: "full", "telegram", "journal"');
+  if (legacyProfile && !["full", "telegram", "journal"].includes(legacyProfile)) {
+    throw new Error('legacy profile must be one of: "full", "telegram", "journal"');
   }
-  const telegramEnabled = profile !== "journal";
+  let components;
+  if (raw.components == null) {
+    const migratedProfile = legacyProfile || "full";
+    components = {
+      telegram: migratedProfile !== "journal",
+      miniApp: migratedProfile === "full",
+      androidApp: migratedProfile === "full",
+    };
+  } else {
+    if (!raw.components || typeof raw.components !== "object" || Array.isArray(raw.components)) {
+      throw new Error("components must be an object");
+    }
+    for (const name of Object.keys(raw.components)) {
+      if (!["telegram", "miniApp", "androidApp"].includes(name)) {
+        throw new Error(`unknown component: ${name}`);
+      }
+    }
+    components = {
+      telegram: raw.components.telegram === true,
+      miniApp: raw.components.miniApp === true,
+      androidApp: raw.components.androidApp === true,
+    };
+  }
+  if (components.miniApp && !components.telegram) {
+    throw new Error("miniApp component requires telegram component");
+  }
+  const telegramEnabled = components.telegram;
   const configuredToken = String(
     process.env.TELEGRAM_BOT_TOKEN ?? raw.telegramBotToken ?? "",
   ).trim();
   if (telegramEnabled && !/^\d+:[A-Za-z0-9_-]+$/.test(configuredToken)) {
     throw new Error("telegramBotToken is missing or invalid");
   }
-  // TelegramClient is still constructed in journal mode because the shared
-  // runtime owns both profiles. Network-facing Telegram paths stay disabled.
+  // TelegramClient remains constructed because shared controllers depend on
+  // its interface. Network-facing Telegram paths stay disabled with the component.
   const token = telegramEnabled ? configuredToken : "0:journal-only";
 
   const projectRoot = path.resolve(
@@ -502,7 +528,8 @@ export async function loadConfig() {
   }
 
   const miniApp = miniAppSettings(raw.miniApp, { configDirectory });
-  if (profile !== "full") {
+  miniApp.enabled = components.miniApp || components.androidApp;
+  if (!miniApp.enabled) {
     miniApp.enabled = false;
     miniApp.quickTunnel.enabled = false;
     miniApp.worker.enabled = false;
@@ -510,7 +537,7 @@ export async function loadConfig() {
 
   return {
     configPath,
-    profile,
+    components,
     telegramEnabled,
     token,
     projectRoot,

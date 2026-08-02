@@ -15,8 +15,54 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-PROFILES = ("full", "telegram", "journal")
+COMPONENTS = ("telegram", "mini-app", "android-app")
+LEGACY_PROFILE_COMPONENTS = {
+    "full": {"telegram": True, "miniApp": True, "androidApp": True},
+    "telegram": {"telegram": True, "miniApp": False, "androidApp": False},
+    "journal": {"telegram": False, "miniApp": False, "androidApp": False},
+}
 SWAP_TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
+
+
+def resolve_components(
+    existing: dict,
+    *,
+    fresh_install: bool,
+    legacy_profile: str | None = None,
+    enabled: tuple[str, ...] | list[str] = (),
+    disabled: tuple[str, ...] | list[str] = (),
+) -> dict[str, bool]:
+    raw_components = existing.get("components")
+    if isinstance(raw_components, dict):
+        components = {
+            "telegram": raw_components.get("telegram") is True,
+            "miniApp": raw_components.get("miniApp") is True,
+            "androidApp": raw_components.get("androidApp") is True,
+        }
+    else:
+        selected_profile = legacy_profile or str(existing.get("profile", "")).strip().lower()
+        if selected_profile:
+            components = dict(
+                LEGACY_PROFILE_COMPONENTS.get(selected_profile, LEGACY_PROFILE_COMPONENTS["full"])
+            )
+        elif fresh_install:
+            components = {"telegram": False, "miniApp": False, "androidApp": False}
+        else:
+            components = dict(LEGACY_PROFILE_COMPONENTS["full"])
+    component_names = {
+        "telegram": "telegram",
+        "mini-app": "miniApp",
+        "android-app": "androidApp",
+    }
+    for name in enabled:
+        components[component_names[name]] = True
+    for name in disabled:
+        components[component_names[name]] = False
+    if components["miniApp"] and "telegram" in disabled:
+        raise ValueError("mini-app requires telegram; disable mini-app before disabling telegram")
+    if components["miniApp"]:
+        components["telegram"] = True
+    return components
 
 
 def _owned_extension_swap_artifacts(target: Path, kind: str) -> list[Path]:
@@ -315,8 +361,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Configure Agent Hub")
     parser.add_argument(
         "--profile",
-        choices=PROFILES,
-        help="full: Telegram + Mini App; telegram: Telegram without Mini App; journal: local journal only; existing profile is preserved when omitted",
+        choices=tuple(LEGACY_PROFILE_COMPONENTS),
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--enable-component",
+        action="append",
+        choices=COMPONENTS,
+        default=[],
+        help="enable an optional component; repeat for multiple components",
+    )
+    parser.add_argument(
+        "--disable-component",
+        action="append",
+        choices=COMPONENTS,
+        default=[],
+        help="disable an optional component; repeat for multiple components",
     )
     parser.add_argument("--token-file", type=Path)
     parser.add_argument("--user-id", type=int)
@@ -381,9 +441,16 @@ def main() -> int:
     config_file = target_root / "config.json"
     fresh_install = not config_file.exists()
     existing = read_existing_config(config_file)
-    profile = args.profile or str(existing.get("profile", "full")).strip().lower()
-    if profile not in PROFILES:
-        profile = "full"
+    try:
+        components = resolve_components(
+            existing,
+            fresh_install=fresh_install,
+            legacy_profile=args.profile,
+            enabled=args.enable_component,
+            disabled=args.disable_component,
+        )
+    except ValueError as error:
+        parser.error(str(error))
     project_root = (
         args.project_root.resolve()
         if args.project_root
@@ -392,7 +459,7 @@ def main() -> int:
     provider = args.provider or str(existing.get("provider", "codex")).strip().lower()
     if provider not in ("codex", "claude"):
         provider = "codex"
-    telegram_enabled = profile != "journal"
+    telegram_enabled = components["telegram"]
     token = ""
     user_id = None
     if telegram_enabled:
@@ -409,17 +476,19 @@ def main() -> int:
     existing_mini_app = existing.get("miniApp")
     if not isinstance(existing_mini_app, dict):
         existing_mini_app = {
-            "enabled": True,
             "host": "127.0.0.1",
             "port": 8787,
             "quickTunnel": {"enabled": False},
             "worker": {"enabled": False},
         }
+    else:
+        existing_mini_app = dict(existing_mini_app)
+        existing_mini_app.pop("enabled", None)
     remembered_users = existing.get("allowedUserIds", [])
     remembered_chats = existing.get("allowedChatIds", remembered_users)
     config = {
         **existing,
-        "profile": profile,
+        "components": components,
         "telegramBotToken": token or str(existing.get("telegramBotToken", "")).strip(),
         "allowedUserIds": [user_id] if user_id is not None else remembered_users,
         "allowedChatIds": [user_id] if user_id is not None else remembered_chats,
@@ -444,6 +513,7 @@ def main() -> int:
         "ttsCacheDir": "data/models/silero",
         "dataDir": "data",
     }
+    config.pop("profile", None)
     config = apply_rollout_image_cleanup_choice(config, args.rollout_image_cleanup)
     atomic_private_json(config_file, config)
     print(f"Created {config_file}")
@@ -469,7 +539,8 @@ def main() -> int:
     if legacy_config.exists():
         legacy_config.unlink()
         print(f"Removed legacy workspace config: {legacy_config}")
-    print(f"Agent Hub profile: {profile}")
+    enabled_components = [name for name, enabled in components.items() if enabled]
+    print(f"Agent Hub components: {', '.join(enabled_components) if enabled_components else 'core'}")
     print("Reload the VS Code window after first extension installation.")
     print("Run: npm run doctor")
     return 0

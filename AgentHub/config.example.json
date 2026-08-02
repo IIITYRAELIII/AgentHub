@@ -1,5 +1,9 @@
 {
-  "profile": "full",
+  "components": {
+    "telegram": true,
+    "miniApp": true,
+    "androidApp": true
+  },
   "telegramBotToken": "123456789:replace_with_your_bot_token",
   "allowedUserIds": [
     123456789
@@ -13,7 +17,6 @@
   "showTaskProject": true,
   "guardConcurrentRepositoryWrites": false,
   "miniApp": {
-    "enabled": true,
     "host": "127.0.0.1",
     "port": 8787,
     "quickTunnel": {

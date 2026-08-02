@@ -657,6 +657,15 @@ let quickTunnelController = null;
 let miniAppPublisher = null;
 let directGatewayController = null;
 
+async function configureTelegramMiniAppMenu(url, text) {
+  if (!config.components.miniApp) return;
+  await Promise.all(miniAppMenuButtonRequests({
+    url,
+    text,
+    chatIds: config.allowedUserIds,
+  }).map((body) => telegram("setChatMenuButton", body)));
+}
+
 async function startMiniApp() {
   if (!miniAppServer) return null;
   const address = await miniAppServer.start();
@@ -667,11 +676,7 @@ async function startMiniApp() {
   if (directGateway.enabled) {
     directGatewayController ??= new DirectGatewayController(directGateway);
     const publicUrl = await directGatewayController.start();
-    await Promise.all(miniAppMenuButtonRequests({
-      url: publicUrl,
-      text: config.miniApp.worker.menuText,
-      chatIds: config.allowedUserIds,
-    }).map((body) => telegram("setChatMenuButton", body)));
+    await configureTelegramMiniAppMenu(publicUrl, config.miniApp.worker.menuText);
     console.log(`Direct Agent Hub gateway ready at ${publicUrl}`);
   }
   if (config.miniApp.worker.enabled) {
@@ -684,12 +689,8 @@ async function startMiniApp() {
       onControlResultDelivered: async ({ id }) => forgetDesktopControl(id),
       attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
       onPublished: async (url) => {
-        await Promise.all(miniAppMenuButtonRequests({
-          url,
-          text: config.miniApp.worker.menuText,
-          chatIds: config.allowedUserIds,
-        }).map((body) => telegram("setChatMenuButton", body)));
-        console.log(`Telegram Mini App Worker ready at ${url}`);
+        await configureTelegramMiniAppMenu(url, config.miniApp.worker.menuText);
+        console.log(`Agent Hub Worker ready at ${url}`);
       },
     });
     await miniAppPublisher.start().catch((error) => {
@@ -710,15 +711,11 @@ async function startMiniApp() {
     controlPort: config.miniApp.quickTunnel.controlPort,
     localUrl: publicAddress.url,
     onUrl: async (url) => {
-      await Promise.all(miniAppMenuButtonRequests({
-        url,
-        text: config.miniApp.quickTunnel.menuText,
-        chatIds: config.allowedUserIds,
-      }).map((body) => telegram("setChatMenuButton", body)));
+      await configureTelegramMiniAppMenu(url, config.miniApp.quickTunnel.menuText);
     },
   });
   const publicUrl = await quickTunnelController.start();
-  console.log(`Telegram Mini App ready at ${publicUrl}`);
+  console.log(`Public Agent Hub Web App ready at ${publicUrl}`);
   return { ...address, publicUrl };
 }
 const telegramMultipart = (method, body, fileField, filePath) => (
@@ -2186,7 +2183,7 @@ function respondRpc(id, result) {
 }
 
 async function initializeProvider() {
-  if (config.profile === "journal") {
+  if (!config.telegramEnabled) {
     await startCodexAppServer();
     await initializeCodex({ attachSelectedThread: false });
     return;
@@ -8136,7 +8133,7 @@ if (restartRequest) {
 }
 await instanceGuard.markReady();
 console.log(
-  `Agent Hub ready; profile: ${config.profile}; provider: ${providerTitle()}; project: ${activeProjectRoot}`,
+  `Agent Hub ready; components: ${Object.entries(config.components).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "core"}; provider: ${providerTitle()}; project: ${activeProjectRoot}`,
 );
 if (config.telegramEnabled) {
   await pollTelegram();

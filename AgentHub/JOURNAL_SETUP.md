@@ -5,7 +5,7 @@
 
 ## Что устанавливается
 
-- поддерживаемый Agent Hub runtime в профиле `journal`;
+- поддерживаемый базовый runtime Agent Hub без необязательных компонентов;
 - пользовательские Codex hooks для точного начала и завершения хода;
 - расширение `Agent HUB Work log` в профиль текущего пользователя VS Code;
 - необязательная очистка дубликатов старых изображений из snapshot'ов
@@ -49,7 +49,7 @@ python Utilities/AI_INFRA_SETUP/install_workspace_rules.py
 Откройте корень workspace в PowerShell и выполните:
 
 ```powershell
-python Utilities/AgentHub/install.py --profile journal
+python Utilities/AgentHub/install.py
 ```
 
 Командный промпт установки отдельно спрашивает, включать ли очистку, и передаёт
@@ -73,31 +73,35 @@ legacy-файлов.
 Если журнал истории нужно перестроить повторно:
 
 ```powershell
-python Utilities/AgentHub/install.py --profile journal --rebuild-history
+python Utilities/AgentHub/install.py --rebuild-history
 ```
 
-## Переключение профиля
+## Подключение компонентов
 
-Профиль меняется повторным запуском установщика:
+Компоненты независимо включаются и выключаются повторным запуском установщика:
 
 ```powershell
-python Utilities/AgentHub/install.py --profile journal
-python Utilities/AgentHub/install.py --profile telegram
-python Utilities/AgentHub/install.py --profile full
+python Utilities/AgentHub/install.py --enable-component telegram
+python Utilities/AgentHub/install.py --enable-component mini-app
+python Utilities/AgentHub/install.py --enable-component android-app
+python Utilities/AgentHub/install.py --disable-component telegram
+python Utilities/AgentHub/install.py --disable-component mini-app
+python Utilities/AgentHub/install.py --disable-component android-app
 ```
 
-`telegram` требует BotFather token и Telegram user ID, но не запускает Mini App.
-`full` включает Telegram и разрешает настроенную Mini App. Сохранённые
-Telegram-, Worker- и tunnel-настройки при переключении не стираются. После
-смены профиля перезапустите существующий Agent Hub.
+`telegram` требует BotFather token и Telegram user ID. `mini-app` зависит от
+Telegram, а `android-app` использует отдельную авторизацию доверенного
+устройства. Оба мобильных компонента запускают общий внутренний Web App.
+Требования к общему и собственному домену описаны в основном README.
+Сохранённые Telegram-, Worker- и tunnel-настройки при отключении компонента не
+стираются. Установщик сам запрашивает безопасный перезапуск существующего Hub.
 
 ## Что должен делать Codex
 
 - читать `Utilities/AgentHub/README.md` перед изменением или диагностикой;
 - не искать файл журнала в workspace: расширение читает личный SQLite runtime;
-- проверять профиль в
-  `%LOCALAPPDATA%\AgentHub\config.json`;
+- проверять компоненты в `%LOCALAPPDATA%\AgentHub\config.json`;
 - различать общие исходники в Git и личные данные внешнего runtime;
 - при проблеме проверить `runtime:status`, `hook:status`, логи runtime и только
   затем объяснять причину;
-- не просить Telegram token или домен для профиля `journal`.
+- не просить Telegram token или домен, когда мобильные компоненты выключены.

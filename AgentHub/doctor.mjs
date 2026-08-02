@@ -44,7 +44,7 @@ try {
     check("allowed users", config.allowedUserIds.size > 0, String(config.allowedUserIds.size));
     check("private chat restriction", config.privateChatsOnly);
   } else {
-    check("Telegram profile", true, "disabled by journal profile");
+    check("Telegram component", true, "disabled");
   }
   if (config.voiceEnabled) {
     await access(config.pythonExe).then(
@@ -163,7 +163,7 @@ if (config && requiresTelegramChecks(config)) {
     check("Telegram Bot API connectivity", false, error.message);
   }
 } else if (config) {
-  check("Telegram Bot API connectivity", true, "disabled by journal profile");
+  check("Telegram Bot API connectivity", true, "component disabled");
 }
 
 if (config) {

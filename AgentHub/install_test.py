@@ -7,7 +7,41 @@ from pathlib import Path
 from unittest import mock
 
 from AgentHub import install
-from AgentHub.install import apply_rollout_image_cleanup_choice, request_safe_restart
+from AgentHub.install import apply_rollout_image_cleanup_choice, request_safe_restart, resolve_components
+
+
+class ComponentSelectionTests(unittest.TestCase):
+    def test_fresh_install_starts_with_core_only(self) -> None:
+        self.assertEqual(
+            resolve_components({}, fresh_install=True),
+            {"telegram": False, "miniApp": False, "androidApp": False},
+        )
+
+    def test_legacy_full_profile_enables_all_equivalent_components(self) -> None:
+        self.assertEqual(
+            resolve_components({"profile": "full"}, fresh_install=False),
+            {"telegram": True, "miniApp": True, "androidApp": True},
+        )
+
+    def test_mini_app_enables_telegram_dependency(self) -> None:
+        self.assertEqual(
+            resolve_components({}, fresh_install=True, enabled=["mini-app"]),
+            {"telegram": True, "miniApp": True, "androidApp": False},
+        )
+
+    def test_android_app_does_not_require_telegram(self) -> None:
+        self.assertEqual(
+            resolve_components({}, fresh_install=True, enabled=["android-app"]),
+            {"telegram": False, "miniApp": False, "androidApp": True},
+        )
+
+    def test_telegram_cannot_be_disabled_while_mini_app_remains_enabled(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires telegram"):
+            resolve_components(
+                {"components": {"telegram": True, "miniApp": True, "androidApp": False}},
+                fresh_install=False,
+                disabled=["telegram"],
+            )
 
 
 class RolloutImageCleanupChoiceTests(unittest.TestCase):

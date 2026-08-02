@@ -12,7 +12,7 @@ const ROOT = path.resolve(import.meta.dirname);
 const BOT_FILE = path.join(ROOT, "agent-hub-server.mjs");
 const FAKE_CODEX_FILE = path.join(ROOT, "e2e", "fake-codex-app-server.mjs");
 
-test("journal profile starts without Telegram and keeps Mini App disabled", { timeout: 20_000 }, async (t) => {
+test("core-only components start without Telegram and keep Web App disabled", { timeout: 20_000 }, async (t) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-e2e-"));
   const dataDir = path.join(runtimeRoot, "data");
   const projectRoot = path.join(runtimeRoot, "project");
@@ -20,7 +20,7 @@ test("journal profile starts without Telegram and keeps Mini App disabled", { ti
   const codexStatePath = path.join(runtimeRoot, "fake-codex-state.json");
   await Promise.all([mkdir(dataDir, { recursive: true }), mkdir(projectRoot, { recursive: true })]);
   await writeFile(configPath, `${JSON.stringify({
-    profile: "journal",
+    components: { telegram: false, miniApp: false, androidApp: false },
     provider: "codex",
     projectRoot,
     projects: [{ name: "Journal E2E", path: projectRoot }],
@@ -63,7 +63,7 @@ test("journal profile starts without Telegram and keeps Mini App disabled", { ti
     "journal runtime startup",
   );
   assert.equal(snapshot.apiVersion, 2);
-  assert.match(stdout, /Agent Hub ready; profile: journal/u);
+  assert.match(stdout, /Agent Hub ready; components: core/u);
   assert.doesNotMatch(stdout, /Mini App ready/u);
   assert.doesNotMatch(stderr, /telegramBotToken|Telegram API/u);
 });

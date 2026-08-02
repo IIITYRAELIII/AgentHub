@@ -16,19 +16,19 @@ import {
   samePath,
 } from "./config.mjs";
 
-test("journal profile needs neither Telegram credentials nor Mini App", async () => {
+test("core-only components need neither Telegram credentials nor Web App", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-profile-"));
   const configFile = path.join(root, "config.json");
   const previous = process.env.AGENT_HUB_CONFIG;
   try {
     await writeFile(configFile, JSON.stringify({
-      profile: "journal",
+      components: { telegram: false, miniApp: false, androidApp: false },
       projectRoot: root,
       miniApp: { enabled: true },
     }), "utf8");
     process.env.AGENT_HUB_CONFIG = configFile;
     const config = await loadConfig();
-    assert.equal(config.profile, "journal");
+    assert.deepEqual(config.components, { telegram: false, miniApp: false, androidApp: false });
     assert.equal(config.telegramEnabled, false);
     assert.equal(config.allowedUserIds.size, 0);
     assert.equal(config.allowedChatIds.size, 0);
@@ -53,7 +53,7 @@ test("rollout image cleanup requires explicit opt-in and keeps configured interv
   const previous = process.env.AGENT_HUB_CONFIG;
   try {
     await writeFile(configFile, JSON.stringify({
-      profile: "journal",
+      components: { telegram: false, miniApp: false, androidApp: false },
       projectRoot: root,
       codexRolloutContext: {
         enabled: true,
@@ -71,7 +71,7 @@ test("rollout image cleanup requires explicit opt-in and keeps configured interv
   }
 });
 
-test("telegram and full profiles share credentials but only full enables Mini App", async () => {
+test("Telegram and Android App components can be enabled independently", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-telegram-profiles-"));
   const configFile = path.join(root, "config.json");
   const previous = process.env.AGENT_HUB_CONFIG;
@@ -83,17 +83,64 @@ test("telegram and full profiles share credentials but only full enables Mini Ap
       miniApp: { enabled: true },
     };
     process.env.AGENT_HUB_CONFIG = configFile;
-    await writeFile(configFile, JSON.stringify({ ...base, profile: "telegram" }), "utf8");
+    await writeFile(configFile, JSON.stringify({
+      ...base,
+      components: { telegram: true, miniApp: false, androidApp: false },
+    }), "utf8");
     const telegram = await loadConfig();
-    assert.equal(telegram.profile, "telegram");
+    assert.deepEqual(telegram.components, { telegram: true, miniApp: false, androidApp: false });
     assert.equal(telegram.telegramEnabled, true);
     assert.equal(telegram.miniApp.enabled, false);
 
-    await writeFile(configFile, JSON.stringify({ ...base, profile: "full" }), "utf8");
-    const full = await loadConfig();
-    assert.equal(full.profile, "full");
-    assert.equal(full.telegramEnabled, true);
-    assert.equal(full.miniApp.enabled, true);
+    await writeFile(configFile, JSON.stringify({
+      ...base,
+      components: { telegram: false, miniApp: false, androidApp: true },
+    }), "utf8");
+    const web = await loadConfig();
+    assert.deepEqual(web.components, { telegram: false, miniApp: false, androidApp: true });
+    assert.equal(web.telegramEnabled, false);
+    assert.equal(web.miniApp.enabled, true);
+  } finally {
+    if (previous == null) delete process.env.AGENT_HUB_CONFIG;
+    else process.env.AGENT_HUB_CONFIG = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy profiles migrate to equivalent components", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-legacy-profile-"));
+  const configFile = path.join(root, "config.json");
+  const previous = process.env.AGENT_HUB_CONFIG;
+  try {
+    process.env.AGENT_HUB_CONFIG = configFile;
+    await writeFile(configFile, JSON.stringify({
+      profile: "telegram",
+      telegramBotToken: "123456:profile_test_token",
+      allowedUserIds: [123],
+      projectRoot: root,
+      miniApp: { enabled: true },
+    }), "utf8");
+    const config = await loadConfig();
+    assert.deepEqual(config.components, { telegram: true, miniApp: false, androidApp: false });
+    assert.equal(config.miniApp.enabled, false);
+  } finally {
+    if (previous == null) delete process.env.AGENT_HUB_CONFIG;
+    else process.env.AGENT_HUB_CONFIG = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Mini App component requires Telegram", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mini-app-dependency-"));
+  const configFile = path.join(root, "config.json");
+  const previous = process.env.AGENT_HUB_CONFIG;
+  try {
+    process.env.AGENT_HUB_CONFIG = configFile;
+    await writeFile(configFile, JSON.stringify({
+      components: { telegram: false, miniApp: true, androidApp: false },
+      projectRoot: root,
+    }), "utf8");
+    await assert.rejects(loadConfig(), /requires telegram component/u);
   } finally {
     if (previous == null) delete process.env.AGENT_HUB_CONFIG;
     else process.env.AGENT_HUB_CONFIG = previous;

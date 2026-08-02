@@ -11,7 +11,7 @@ import {
 
 const FAKE_CODEX = path.join(import.meta.dirname, "e2e", "fake-codex-app-server.mjs");
 
-test("doctor skips Telegram checks for the journal profile", () => {
+test("doctor skips Telegram checks when the component is disabled", () => {
   assert.equal(requiresTelegramChecks({ telegramEnabled: false }), false);
   assert.equal(requiresTelegramChecks({ telegramEnabled: true }), true);
 });

@@ -41,7 +41,7 @@
 выполните из корня workspace:
 
 ```text
-python Utilities/AgentHub/install.py --profile journal
+python Utilities/AgentHub/install.py
 ```
 
 Установщик копирует расширение в профиль текущего пользователя VS Code.
