@@ -180,3 +180,9 @@ test("clean worktrees resolve the common Git directory without invoking Git", ()
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 });
+
+test("Wrangler dependency discovery never falls back to a Git subprocess", () => {
+  const runner = fs.readFileSync(path.join(ROOT, "wrangler-runner.mjs"), "utf8");
+  assert.doesNotMatch(runner, /spawnSync\(/u);
+  assert.doesNotMatch(runner, /--git-common-dir/u);
+});

@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,17 +47,11 @@ export function detectGitCommonDirectory(root = ROOT) {
     repositoryRoot = parent;
   }
 
-  const result = spawnSync(
-    "git",
-    ["-c", `safe.directory=${repositoryRoot}`, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-    {
-      cwd: root,
-      encoding: "utf8",
-      shell: false,
-      windowsHide: true,
-    },
-  );
-  return result.status === 0 ? String(result.stdout ?? "").trim() : "";
+  /* Не запускаем Git как fallback. В изолированной worktree её служебная
+     папка может принадлежать другому Windows SID, и Git намеренно откажется
+     её читать. Если marker .git недоступен, явный AGENT_HUB_DEPENDENCY_ROOT
+     остаётся безопасным способом указать каталог зависимостей. */
+  return "";
 }
 
 export function resolveWrangler({
