@@ -62,6 +62,18 @@ test("response annotation envelopes become structured user messages", () => {
   assert.doesNotMatch(normalized.text, /response-annotations|My request for Codex/iu);
 });
 
+test("message lifecycle removes a replayed server echo before optimistic reconciliation", () => {
+  const local = message("client-1", "Сообщение отправлено один раз");
+  const server = lifecycle.deduplicateConversationMessages([
+    { ...local, itemId: "server-item-first" },
+    { ...local, itemId: "server-item-replayed" },
+  ]);
+  assert.equal(server.length, 1);
+  const result = lifecycle.reconcile(server, [local]);
+  assert.equal(result.matches.length, 1);
+  assert.deepEqual([...result.matchedIds], ["client-1"]);
+});
+
 test("composer quote annotations retain every selected fragment for the protocol envelope", () => {
   const annotations = lifecycle.normalizedResponseAnnotations([
     { quote: "Первый выделенный фрагмент" },

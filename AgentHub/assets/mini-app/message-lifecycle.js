@@ -22,6 +22,28 @@ function clientIdentityKey(message) {
   return `${provider}\0${threadId}\0${clientUserMessageId}\0${role}`;
 }
 
+// The App Server may replay a materialized user item while reconnecting. A
+// client id is an idempotency key for one user submission, so two history
+// items with that key must render as one message even when server item ids
+// differ. This happens before optimistic reconciliation; otherwise both
+// echoes remain after the local card has been confirmed and removed.
+function deduplicateConversationMessages(messages) {
+  const values = [];
+  const seen = new Set();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const client = clientIdentityKey(message);
+    const item = identityKey(message);
+    const keys = [
+      ...(client ? [`client:${client}`] : []),
+      ...(item ? [`item:${item}`] : []),
+    ];
+    if (keys.some((key) => seen.has(key))) continue;
+    keys.forEach((key) => seen.add(key));
+    values.push(message);
+  }
+  return values;
+}
+
 function turnRootUserKey(message) {
   const provider = String(message?.provider ?? "");
   const threadId = String(message?.threadId ?? "");
@@ -371,6 +393,7 @@ function hubErrorMessage(error) {
 globalThis.AgentHubMessageLifecycle = Object.freeze({
   activeStageLabel,
   chronologicalMessages,
+  deduplicateConversationMessages,
   embeddedResponseAnnotations,
   hubErrorMessage,
   identityKey,

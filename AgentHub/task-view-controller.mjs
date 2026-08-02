@@ -32,6 +32,7 @@ export function codexRolloutHistory(activity = {}) {
   const userMessages = activity?.userMessages ?? {};
   const latestMessages = activity?.latestMessages ?? {};
   const finalMessages = activity?.finalMessages ?? {};
+  const generatedImageSources = activity?.generatedImageSources ?? {};
   const activeTurnIds = new Set(activity?.activeTurnIds ?? []);
   const ids = [...new Set([
     ...Object.keys(userMessages),
@@ -63,7 +64,10 @@ export function codexRolloutHistory(activity = {}) {
     const finalAnswer = String(finalMessages[id] ?? "").trim();
     const latestAnswer = String(latestMessages[id] ?? "").trim();
     const answer = finalAnswer || latestAnswer;
-    if (!users.length && !answer) return [];
+    const generatedImages = Array.isArray(generatedImageSources[id])
+      ? generatedImageSources[id].map((item) => ({ ...item }))
+      : [];
+    if (!users.length && !answer && !generatedImages.length) return [];
     const active = activeTurnIds.has(id);
     const completed = Boolean(finalAnswer);
     const prompt = users[0]?.text ?? "Сообщение с вложением";
@@ -76,6 +80,14 @@ export function codexRolloutHistory(activity = {}) {
         role: "agent",
         text: answer,
         ...(completed ? { phase: "final_answer" } : {}),
+        ...(generatedImages.length ? { attachmentSources: generatedImages } : {}),
+      });
+    } else if (generatedImages.length) {
+      messages.push({
+        itemId: `${id}:rollout-agent:image`,
+        role: "agent",
+        text: "Изображение",
+        attachmentSources: generatedImages,
       });
     }
     const firstUser = users[0];

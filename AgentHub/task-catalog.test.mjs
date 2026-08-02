@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -660,6 +660,64 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
   assert.equal(fresh.startedAt, new Date(now - 120_000).toISOString());
   assert.equal(fresh.sessionCwd, path.resolve("C:\\Projects\\Main\\Utilities\\AgentHub"));
   assert.equal(stale.running, false);
+});
+
+test("Codex rollout activity retains imagegen output paths for the exact turn", () => {
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        output: [{
+          type: "input_text",
+          text: "Generated images are saved to C:\\Users\\test\\.codex\\generated_images\\thread as C:\\Users\\test\\.codex\\generated_images\\thread\\call-image.png by default.",
+        }],
+        internal_chat_message_metadata_passthrough: { turn_id: "turn-image" },
+      },
+    }),
+  ].join("\n"));
+
+  assert.deepEqual(result.generatedImageSources, {
+    "turn-image": [{
+      type: "generated-path",
+      value: "C:\\Users\\test\\.codex\\generated_images\\thread\\call-image.png",
+    }],
+  });
+});
+
+test("rollout reader recovers an oversized image_generation_end without loading its base64", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-image-rollout-"));
+  const rolloutPath = path.join(directory, "rollout.jsonl");
+  try {
+    const turnId = "turn-generated";
+    const savedPath = "C:\\Users\\test\\.codex\\generated_images\\thread\\call-image.png";
+    await writeFile(rolloutPath, [
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: turnId },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "image_generation_end",
+          call_id: "call-image",
+          saved_path: savedPath,
+          result: "a".repeat(16_384),
+        },
+      }),
+    ].join("\n"), "utf8");
+
+    const result = await readCodexRolloutActivity(rolloutPath, {
+      freshnessMs: Number.POSITIVE_INFINITY,
+      maximumLineBytes: 256,
+      tailBytes: 32 * 1024,
+    });
+    assert.deepEqual(result.generatedImageSources, {
+      [turnId]: [{ type: "generated-path", value: savedPath }],
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("mergeTaskCatalog preserves the latest known model for an inactive task", () => {

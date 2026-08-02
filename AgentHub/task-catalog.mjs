@@ -167,6 +167,71 @@ function rememberCodexUserMessage(metadata, turnId, {
   }
 }
 
+function decodedJsonString(value) {
+  try {
+    return JSON.parse(`"${String(value ?? "")}"`);
+  } catch {
+    return "";
+  }
+}
+
+function generatedImagePaths(entry) {
+  const payload = entry?.payload ?? {};
+  if (entry?.type === "event_msg" && payload.type === "image_generation_end") {
+    const value = String(payload.saved_path ?? "").trim();
+    return value ? [value] : [];
+  }
+  if (entry?.type !== "response_item" || ![
+    "function_call_output",
+    "functionCallOutput",
+  ].includes(String(payload.type ?? ""))) return [];
+  const blocks = Array.isArray(payload.output)
+    ? payload.output
+    : Array.isArray(payload.content)
+      ? payload.content
+      : [];
+  const text = blocks
+    .filter((block) => ["input_text", "output_text", "text"].includes(String(block?.type ?? "")))
+    .map((block) => String(block?.text ?? ""))
+    .join("\n");
+  const paths = [];
+  const pattern = /Generated images are saved to[\s\S]*?\sas\s+((?:[A-Za-z]:)?(?:\\|\/)[^"\r\n]+?\.(?:png|jpe?g|webp|gif|bmp))/giu;
+  for (const match of text.matchAll(pattern)) {
+    const value = String(match[1] ?? "").replace(/\\\\/gu, "\\").trim();
+    if (value) paths.push(value);
+  }
+  return [...new Set(paths)];
+}
+
+function rememberCodexGeneratedImagePaths(metadata, turnId, paths) {
+  if (!turnId || !paths.length) return;
+  const current = metadata.generatedImageSources.get(turnId) ?? [];
+  const known = new Set(current.map((item) => item.value));
+  for (const value of paths) {
+    if (!known.has(value)) current.push({ type: "generated-path", value });
+  }
+  metadata.generatedImageSources.set(turnId, current.slice(-8));
+  while (metadata.generatedImageSources.size > 8) {
+    metadata.generatedImageSources.delete(metadata.generatedImageSources.keys().next().value);
+  }
+}
+
+function rememberCodexGeneratedImages(metadata, turnId, entry) {
+  rememberCodexGeneratedImagePaths(metadata, turnId, generatedImagePaths(entry));
+}
+
+function observeOversizedCodexLine(metadata, activeTurnIds, { head = "", tail = "" } = {}) {
+  const sample = `${head}\n${tail}`;
+  if (!/"type"\s*:\s*"image_generation_end"/u.test(sample)) return;
+  const pathMatch = /"saved_path"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample);
+  const savedPath = decodedJsonString(pathMatch?.[1]);
+  if (!savedPath) return;
+  const turnMatch = /"turn_id"\s*:\s*"([^"\\]+)"/u.exec(sample);
+  const turnId = String(turnMatch?.[1] ?? "").trim()
+    || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+  rememberCodexGeneratedImagePaths(metadata, turnId, [savedPath]);
+}
+
 function rememberPendingCodexUserMessage(metadata, entry, provisionalTurnId = "") {
   const text = String(entry?.payload?.message ?? "");
   const value = displayUserPrompt(text);
@@ -239,6 +304,10 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
     // VS Code has concurrent turns in one thread.
     rememberCodexTurnMessage(metadata, turnId, responseItemMessage);
   }
+  const generatedImageTurnId = turnId
+    || (entry?.type === "event_msg" && entry.payload?.type === "image_generation_end"
+      && activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+  if (generatedImageTurnId) rememberCodexGeneratedImages(metadata, generatedImageTurnId, entry);
   const responseItemUserContent = entry?.type === "response_item"
     && entry.payload?.type === "message"
     && entry.payload?.role === "user"
@@ -352,6 +421,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     latestMessages: new Map(),
     finalMessages: new Map(),
     userMessages: new Map(),
+    generatedImageSources: new Map(),
     pendingUserMessages: [],
     unscopedLatestMessage: "",
     startedAtMsByTurnId: new Map(),
@@ -376,6 +446,9 @@ export function parseCodexRolloutActivity(text, options = {}) {
     latestMessages: Object.fromEntries(metadata.latestMessages),
     finalMessages: Object.fromEntries(metadata.finalMessages),
     userMessages: Object.fromEntries(metadata.userMessages),
+    ...(metadata.generatedImageSources.size
+      ? { generatedImageSources: Object.fromEntries(metadata.generatedImageSources) }
+      : {}),
     unscopedLatestMessage: metadata.unscopedLatestMessage || null,
   };
 }
@@ -408,6 +481,7 @@ export async function readCodexRolloutActivity(
       latestMessages: {},
       finalMessages: {},
       userMessages: {},
+      generatedImageSources: {},
       unscopedLatestMessage: null,
     };
   }
@@ -429,6 +503,7 @@ export async function readCodexRolloutActivity(
         latestMessages: {},
         finalMessages: {},
         userMessages: {},
+        generatedImageSources: {},
         unscopedLatestMessage: null,
       };
     }
@@ -449,6 +524,7 @@ export async function readCodexRolloutActivity(
       latestMessages: Object.fromEntries(cached?.latestMessages ?? []),
       finalMessages: Object.fromEntries(cached?.finalMessages ?? []),
       userMessages: Object.fromEntries(cached?.userMessages ?? []),
+      generatedImageSources: Object.fromEntries(cached?.generatedImageSources ?? []),
       unscopedLatestMessage: cached?.unscopedLatestMessage || null,
     };
   }
@@ -472,6 +548,7 @@ export async function readCodexRolloutActivity(
       latestMessages: Object.fromEntries(cached.latestMessages ?? []),
       finalMessages: Object.fromEntries(cached.finalMessages ?? []),
       userMessages: Object.fromEntries(cached.userMessages ?? []),
+      generatedImageSources: Object.fromEntries(cached.generatedImageSources ?? []),
       unscopedLatestMessage: cached.unscopedLatestMessage || null,
     };
   }
@@ -491,6 +568,7 @@ export async function readCodexRolloutActivity(
     latestMessages: new Map(appendOnly ? cached.latestMessages ?? [] : []),
     finalMessages: new Map(appendOnly ? cached.finalMessages ?? [] : []),
     userMessages: new Map(appendOnly ? cached.userMessages ?? [] : []),
+    generatedImageSources: new Map(appendOnly ? cached.generatedImageSources ?? [] : []),
     pendingUserMessages: appendOnly
       ? (cached.pendingUserMessages ?? []).map((message) => ({ ...message }))
       : [],
@@ -506,6 +584,12 @@ export async function readCodexRolloutActivity(
     end: Math.max(0, info.size - 1),
   });
   let text = appendOnly ? String(cached.trailingText ?? "") : "";
+  let oversizedLine = null;
+  const oversizedSampleLimit = 128 * 1024;
+  const appendOversizedTail = (value) => {
+    if (!oversizedLine) return;
+    oversizedLine.tail = `${oversizedLine.tail}${value}`.slice(-oversizedSampleLimit);
+  };
   let discardUntilNewline = appendOnly
     ? cached.discardUntilNewline === true
     : start > 0;
@@ -525,18 +609,33 @@ export async function readCodexRolloutActivity(
         const line = text.slice(0, newline).replace(/\r$/, "");
         text = text.slice(newline + 1);
         if (discardUntilNewline) {
+          appendOversizedTail(line);
+          observeOversizedCodexLine(metadata, activeTurnIds, oversizedLine ?? {});
+          oversizedLine = null;
           discardUntilNewline = false;
           continue;
         }
         observeLine(line);
       }
       if (Buffer.byteLength(text, "utf8") > maximumLineBytes) {
+        if (!oversizedLine) {
+          oversizedLine = {
+            head: text.slice(0, oversizedSampleLimit),
+            tail: "",
+          };
+        }
+        appendOversizedTail(text);
         text = "";
         discardUntilNewline = true;
       }
     }
   } finally {
     input.destroy();
+  }
+  if (discardUntilNewline && oversizedLine?.tail.trimEnd().endsWith("}")) {
+    observeOversizedCodexLine(metadata, activeTurnIds, oversizedLine);
+    oversizedLine = null;
+    discardUntilNewline = false;
   }
   let trailingText = discardUntilNewline ? "" : text;
   if (trailingText) {
@@ -567,6 +666,7 @@ export async function readCodexRolloutActivity(
     latestMessages: [...metadata.latestMessages],
     finalMessages: [...metadata.finalMessages],
     userMessages: [...metadata.userMessages],
+    generatedImageSources: [...metadata.generatedImageSources],
     pendingUserMessages: metadata.pendingUserMessages.map((message) => ({ ...message })),
     unscopedLatestMessage: metadata.unscopedLatestMessage,
     discardUntilNewline,
@@ -582,6 +682,7 @@ export async function readCodexRolloutActivity(
     latestMessages: Object.fromEntries(metadata.latestMessages),
     finalMessages: Object.fromEntries(metadata.finalMessages),
     userMessages: Object.fromEntries(metadata.userMessages),
+    generatedImageSources: Object.fromEntries(metadata.generatedImageSources),
     unscopedLatestMessage: metadata.unscopedLatestMessage || null,
   };
 }

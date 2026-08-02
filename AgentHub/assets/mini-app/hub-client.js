@@ -42,6 +42,7 @@ const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const {
   activeStageLabel,
   chronologicalMessages,
+  deduplicateConversationMessages,
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
   historyContainsLatestAnswer,
@@ -161,10 +162,10 @@ function liveUserMessagesSignature(run) {
 }
 
 function reconciledMessages(taskIdValue) {
-  const serverMessages = mergeLiveUserMessages(
+  const serverMessages = deduplicateConversationMessages(mergeLiveUserMessages(
     historyByTask.get(taskIdValue) ?? [],
     liveUserMessagesByTask.get(taskIdValue) ?? {},
-  );
+  ));
   const pending = outgoingMessages(taskIdValue);
   const outgoing = [...pending.values()];
   const { matches, matchedIds } = reconcileMessageLifecycle(serverMessages, outgoing);

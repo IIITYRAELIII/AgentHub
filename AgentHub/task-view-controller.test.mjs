@@ -186,6 +186,22 @@ test("rollout history represents a final image-only turn", () => {
   assert.equal(exchange.completed, true);
 });
 
+test("rollout history attaches generated images to the final assistant message", () => {
+  const [exchange] = codexRolloutHistory({
+    userMessages: { "turn-image": [{ text: "Нарисуй фон" }] },
+    finalMessages: { "turn-image": "Кадр выше." },
+    generatedImageSources: {
+      "turn-image": [{ type: "generated-path", value: "C:/Users/test/.codex/generated_images/thread/call.png" }],
+    },
+  });
+  const assistant = exchange.messages.find((message) => message.role === "agent");
+  assert.equal(assistant.text, "Кадр выше.");
+  assert.deepEqual(assistant.attachmentSources, [{
+    type: "generated-path",
+    value: "C:/Users/test/.codex/generated_images/thread/call.png",
+  }]);
+});
+
 test("rollout fallback keeps response annotations structured", () => {
   const prompt = [
     "# Response annotations:",

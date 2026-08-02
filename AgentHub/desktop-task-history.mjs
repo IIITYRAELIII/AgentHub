@@ -20,7 +20,7 @@ export function createDesktopTaskHistoryFactory({
     await Promise.all(result.flatMap((item) => (
       (Array.isArray(item.messages) ? item.messages : [])
         .filter((message) => (
-          message?.role === "user"
+          ["user", "agent"].includes(String(message?.role ?? ""))
           && Array.isArray(message.attachmentSources)
           && message.attachmentSources.length
           && !(Array.isArray(message.attachments) && message.attachments.length)
@@ -191,10 +191,9 @@ export function createDesktopTaskHistoryFactory({
               ?? receipt?.createdAt
               ?? (role === "user" ? item.startedAt : item.completedAt)
               ?? null,
-            attachments: role === "user"
-              ? (message.attachments ?? receipt?.result?.attachments ?? item.attachments ?? [])
-                .map((attachment) => ({ ...attachment }))
-              : [],
+            attachments: (message.attachments
+              ?? (role === "user" ? receipt?.result?.attachments ?? item.attachments ?? [] : []))
+              .map((attachment) => ({ ...attachment })),
           }];
         }),
       })),

@@ -194,6 +194,25 @@ test("desktop task history imports private screenshot references for the visible
   }]);
 });
 
+test("desktop task history imports generated images attached to an assistant message", async () => {
+  const { desktopTaskHistory, state, calls } = fixture({ run: null });
+  state.history[3].messages[1].attachmentSources = [{
+    type: "generated-path",
+    value: "C:/Users/test/.codex/generated_images/thread/call.png",
+  }];
+
+  const result = await desktopTaskHistory({ limit: 1 });
+
+  assert.deepEqual(calls.attachments, [[{
+    type: "generated-path",
+    value: "C:/Users/test/.codex/generated_images/thread/call.png",
+  }]]);
+  assert.deepEqual(result.items[0].messages[1].attachments, [{
+    id: "call.png",
+    type: "image/png",
+  }]);
+});
+
 test("desktop task history restores screenshot sources lost from the durable cache", async () => {
   const { desktopTaskHistory, state, calls } = fixture({ run: null });
   const providerHistory = structuredClone(state.history);

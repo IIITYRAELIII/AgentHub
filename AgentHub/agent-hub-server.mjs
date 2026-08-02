@@ -3616,6 +3616,7 @@ function trustedDeviceUserId(context) {
 
 async function importCodexDesktopAttachments(values) {
   const temporaryRoot = path.resolve(os.tmpdir());
+  const generatedImageRoot = path.resolve(os.homedir(), ".codex", "generated_images");
   const attachmentRoot = path.join(runtimeCommandRoot, "DesktopApp", "attachments");
   const imported = [];
   await mkdir(attachmentRoot, { recursive: true });
@@ -3641,11 +3642,17 @@ async function importCodexDesktopAttachments(values) {
       imported.push(...desktopAttachmentDescriptors([target]));
       continue;
     }
-    if (item?.type !== "path") continue;
+    const generated = item?.type === "generated-path";
+    if (!generated && item?.type !== "path") continue;
     const source = path.resolve(String(item.value ?? ""));
-    const name = path.basename(source);
-    if (!pathInsideOrSame(source, temporaryRoot)) continue;
-    if (!/^codex-clipboard-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpe?g|webp|gif|bmp)$/iu.test(name)) continue;
+    const sourceName = path.basename(source);
+    if (generated) {
+      if (!pathInsideOrSame(source, generatedImageRoot)) continue;
+      if (!/^[^\\/:*?"<>|]+\.(?:png|jpe?g|webp|gif|bmp)$/iu.test(sourceName)) continue;
+    } else {
+      if (!pathInsideOrSame(source, temporaryRoot)) continue;
+      if (!/^codex-clipboard-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpe?g|webp|gif|bmp)$/iu.test(sourceName)) continue;
+    }
     let sourceInfo;
     try {
       sourceInfo = await stat(source);
@@ -3653,6 +3660,9 @@ async function importCodexDesktopAttachments(values) {
       continue;
     }
     if (!sourceInfo.isFile() || sourceInfo.size <= 0 || sourceInfo.size > 20 * 1024 * 1024) continue;
+    const name = generated
+      ? `codex-generated-${createHash("sha256").update(source).digest("hex")}${path.extname(sourceName).toLowerCase()}`
+      : sourceName;
     const target = path.join(attachmentRoot, name);
     let targetInfo = null;
     try {
