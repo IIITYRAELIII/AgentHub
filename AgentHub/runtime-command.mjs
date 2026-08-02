@@ -207,6 +207,20 @@ export class RuntimeCommandServer {
     for (const name of names) {
       const requestPath = path.join(this.#spoolDirectory, name);
       const responsePath = requestPath.replace(/\.request\.json$/, ".response.json");
+      const id = name.slice(0, -".request.json".length);
+      // Acknowledge may arrive after readdir() but before this request reaches
+      // the handler. Recheck it at the point of side effect so a client never
+      // receives an acknowledged command a second time after a restart.
+      const acknowledgementPath = path.join(this.#spoolDirectory, `${id}.ack`);
+      if (await stat(acknowledgementPath).then(() => true, () => false)) {
+        await this.#spoolReceipts.forget(id).catch(() => {});
+        await Promise.all([
+          unlink(acknowledgementPath).catch(() => {}),
+          unlink(requestPath).catch(() => {}),
+          unlink(responsePath).catch(() => {}),
+        ]);
+        continue;
+      }
       let response;
       try {
         if ((await stat(requestPath)).size > MAX_REQUEST_BYTES) throw new Error("Runtime command is too large");
