@@ -82,8 +82,14 @@ class AgentHubBridge {
   }
 
   async backendRoot() {
+    return this.runtimeReleaseRoot();
+  }
+
+  /* Runtime переключается атомарной заменой current.json. Мост не должен
+     держать старую версию до Reload Window: следующий запрос берёт текущий
+     release, а привязанные к прежнему release импорт-кэши сбрасываются. */
+  async runtimeReleaseRoot() {
     if (this.moduleRoot) return this.moduleRoot;
-    if (this.resolvedModuleRoot) return this.resolvedModuleRoot;
     const manifest = JSON.parse(await readFile(path.join(this.runtimeRoot, "current.json"), "utf8"));
     const release = String(manifest.current ?? "");
     if (!/^[A-Za-z0-9._-]+$/u.test(release)) {
@@ -92,6 +98,10 @@ class AgentHubBridge {
     const root = path.join(this.runtimeRoot, "releases", release);
     const info = await stat(root);
     if (!info.isDirectory()) throw new Error("Активный runtime Agent Hub недоступен");
+    if (this.resolvedModuleRoot && this.resolvedModuleRoot !== root) {
+      this.desktopModule = null;
+      this.journalDatabaseModule = null;
+    }
     this.resolvedModuleRoot = root;
     return root;
   }

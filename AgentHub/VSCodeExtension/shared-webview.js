@@ -3,8 +3,8 @@
 const { randomBytes } = require("node:crypto");
 const vscode = require("vscode");
 
-const ASSET_ROOT = ["media", "mini-app"];
-const ASSETS = {
+const ASSET_ROOT = ["assets", "mini-app"];
+const RUNTIME_ASSETS = {
   index: [...ASSET_ROOT, "index.html"],
   app: [...ASSET_ROOT, "app.js"],
   metropolisGlass: [...ASSET_ROOT, "metropolis-glass.js"],
@@ -12,8 +12,7 @@ const ASSETS = {
   lifecycle: [...ASSET_ROOT, "message-lifecycle.js"],
   client: [...ASSET_ROOT, "hub-client.js"],
   styles: [...ASSET_ROOT, "styles.css"],
-  workLogStyles: ["media", "work-log.css"],
-  bootstrap: ["vscode-bootstrap.js"],
+  workLogStyles: ["work-log.css"],
   pulsar: [...ASSET_ROOT, "pulsar-beams.png"],
   blackhole: [...ASSET_ROOT, "blackhole-blue.png"],
   taiga: [...ASSET_ROOT, "rainforest-night.png"],
@@ -28,11 +27,12 @@ const ASSETS = {
   gothic: [...ASSET_ROOT, "gothic-concrete.png"],
 };
 
-async function resolveSharedAssets(extensionUri) {
-  if (!extensionUri) throw new Error("Не найден каталог расширения Agent Hub");
+async function resolveSharedAssets({ runtimeUri, extensionUri }) {
+  if (!runtimeUri) throw new Error("Активный runtime Agent Hub не найден");
+  if (!extensionUri) throw new Error("Не найден мост VS Code Agent Hub");
   const entries = await Promise.all(
-    Object.entries(ASSETS).map(async ([name, segments]) => {
-      const asset = vscode.Uri.joinPath(extensionUri, ...segments);
+    Object.entries(RUNTIME_ASSETS).map(async ([name, segments]) => {
+      const asset = vscode.Uri.joinPath(runtimeUri, ...segments);
       try {
         const info = await vscode.workspace.fs.stat(asset);
         return [name, info.type & vscode.FileType.File ? asset : null];
@@ -42,6 +42,13 @@ async function resolveSharedAssets(extensionUri) {
     }),
   );
   const assets = Object.fromEntries(entries);
+  const bootstrap = vscode.Uri.joinPath(extensionUri, "vscode-bootstrap.js");
+  try {
+    const info = await vscode.workspace.fs.stat(bootstrap);
+    assets.bootstrap = info.type & vscode.FileType.File ? bootstrap : null;
+  } catch {
+    assets.bootstrap = null;
+  }
   for (const required of [
     "index", "app", "metropolisGlass", "stormGlass", "lifecycle", "client", "styles",
     "workLogStyles", "bootstrap",
@@ -55,8 +62,8 @@ function resource(webview, uri) {
   return uri ? String(webview.asWebviewUri(uri)) : "";
 }
 
-async function sharedWebviewHtml(webview, extensionUri) {
-  const assets = await resolveSharedAssets(extensionUri);
+async function sharedWebviewHtml(webview, locations) {
+  const assets = await resolveSharedAssets(locations);
   const nonce = randomBytes(16).toString("base64");
   let html = Buffer.from(await vscode.workspace.fs.readFile(assets.index)).toString("utf8");
   const assetOverrides = [

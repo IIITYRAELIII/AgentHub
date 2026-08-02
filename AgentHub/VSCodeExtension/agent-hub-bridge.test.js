@@ -121,6 +121,33 @@ test("installed VS Code bridge resolves backend modules from the active runtime"
   }
 });
 
+test("installed VS Code bridge follows the next runtime release without Reload Window", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-switch-"));
+  async function writeRelease(name) {
+    const releaseRoot = path.join(root, "releases", name);
+    await mkdir(releaseRoot, { recursive: true });
+    await writeFile(path.join(releaseRoot, "desktop-control.mjs"), [
+      "export async function callDesktopControl(action) {",
+      `  return { action, release: ${JSON.stringify(name)} };`,
+      "}",
+    ].join("\n"), "utf8");
+    return releaseRoot;
+  }
+  try {
+    const firstRoot = await writeRelease("first");
+    const secondRoot = await writeRelease("second");
+    await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "first" }), "utf8");
+    const bridge = new AgentHubBridge({ runtimeRoot: root });
+    assert.equal(await bridge.runtimeReleaseRoot(), firstRoot);
+    assert.deepEqual(await bridge.control("snapshot"), { action: "snapshot", release: "first" });
+    await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "second" }), "utf8");
+    assert.equal(await bridge.runtimeReleaseRoot(), secondRoot);
+    assert.deepEqual(await bridge.control("snapshot"), { action: "snapshot", release: "second" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("VS Code bridge answers the rate-limit summary without the journal", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-limits-"));
   let bridge;

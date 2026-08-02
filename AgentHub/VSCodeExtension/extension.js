@@ -1,11 +1,9 @@
 "use strict";
 
 const vscode = require("vscode");
-const path = require("node:path");
 
 const {
   AgentHubBridge,
-  defaultRuntimeRoot,
   webviewHttpMessages,
 } = require("./agent-hub-bridge.js");
 const { sharedWebviewHtml } = require("./shared-webview.js");
@@ -46,6 +44,7 @@ class WorkLogViewProvider {
     this.bridge = null;
     this.unsubscribeJournal = null;
     this.sharedPanel = false;
+    this.panelRuntimeRoot = null;
     this.theme = THEMES.has(context.globalState.get(THEME_KEY))
       ? context.globalState.get(THEME_KEY)
       : "orbit";
@@ -80,6 +79,7 @@ class WorkLogViewProvider {
   async openPanel() {
     if (this.panel) {
       this.panel.reveal(vscode.ViewColumn.Active, false);
+      await this.refreshPanelShellIfReleaseChanged();
       this.scheduleRefresh(0, true);
       return;
     }
@@ -91,7 +91,6 @@ class WorkLogViewProvider {
         enableScripts: true,
         localResourceRoots: [
           this.context.extensionUri,
-          vscode.Uri.file(path.join(defaultRuntimeRoot(), "DesktopApp", "attachments")),
         ],
         retainContextWhenHidden: true,
       },
@@ -99,7 +98,7 @@ class WorkLogViewProvider {
     this.panel = panel;
     panel.title = "Agent Hub";
     try {
-      panel.webview.html = (await sharedWebviewHtml(panel.webview, this.context.extensionUri)).html;
+      await this.renderPanelShell(panel);
       this.sharedPanel = true;
     } catch (error) {
       panel.webview.html = `<!doctype html><html lang="ru"><head>
@@ -119,6 +118,7 @@ class WorkLogViewProvider {
     panel.onDidDispose(() => {
       if (this.panel === panel) this.panel = null;
       this.sharedPanel = false;
+      this.panelRuntimeRoot = null;
     }, null, this.context.subscriptions);
     this.scheduleRefresh(0, true);
   }
@@ -131,6 +131,37 @@ class WorkLogViewProvider {
       );
     }
     return this.bridge;
+  }
+
+  async renderPanelShell(panel = this.panel, runtimeRoot = null) {
+    if (!panel) return;
+    const bridge = await this.currentBridge();
+    const activeRuntimeRoot = runtimeRoot ?? await bridge.runtimeReleaseRoot();
+    const runtimeUri = vscode.Uri.file(activeRuntimeRoot);
+    /* В webview разрешены только неизменяемый активный release и bootstrap
+       самого расширения. Workspace сюда намеренно не попадает. */
+    panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [
+        this.context.extensionUri,
+        runtimeUri,
+        vscode.Uri.file(bridge.attachmentDirectory()),
+      ],
+    };
+    panel.webview.html = (await sharedWebviewHtml(panel.webview, {
+      runtimeUri,
+      extensionUri: this.context.extensionUri,
+    })).html;
+    this.panelRuntimeRoot = activeRuntimeRoot;
+  }
+
+  async refreshPanelShellIfReleaseChanged() {
+    if (!this.panel || this.sharedPanel === "unavailable") return false;
+    const bridge = await this.currentBridge();
+    const runtimeRoot = await bridge.runtimeReleaseRoot();
+    if (runtimeRoot === this.panelRuntimeRoot) return false;
+    await this.renderPanelShell(this.panel, runtimeRoot);
+    return true;
   }
 
   async handleControlMessage(message) {
@@ -224,7 +255,12 @@ class WorkLogViewProvider {
   async refresh(force = false) {
     if (!this.panel) return;
     if (this.sharedPanel === "unavailable") return;
-    await this.currentBridge().catch(() => null);
+    try {
+      await this.currentBridge();
+      if (force) await this.refreshPanelShellIfReleaseChanged();
+    } catch {
+      // Обычное обновление журнала не превращаем в ошибку панели.
+    }
     await this.panel.webview.postMessage({ type: "agenthub:journal-changed", force });
   }
 

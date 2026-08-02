@@ -97,7 +97,7 @@ export async function publishAll(args = process.argv.slice(2), {
     const result = await restart("restart-server");
     console.log(result?.message ?? "Перезапуск запрошен");
   }
-  console.log("\nПубликация завершена. VS Code применит новую версию расширения после Reload Window.");
+  console.log("\nПубликация завершена. Интерфейс VS Code подхватит runtime после переоткрытия панели или команды «Обновить Agent Hub»; Reload Window нужен только при изменении моста расширения.");
 }
 
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
