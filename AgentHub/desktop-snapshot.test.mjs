@@ -207,6 +207,11 @@ test("desktop task snapshot carries server-side unread state for the account", (
   assert.equal(desktopTaskSnapshot(entry, { accountId: "other" }).unread, false);
 });
 
+test("desktop task snapshot exposes a persisted model without a live run", () => {
+  const { desktopTaskSnapshot, entry } = fixture({ run: null });
+  assert.equal(desktopTaskSnapshot({ ...entry, model: "Sol" }).model, "Sol");
+});
+
 test("desktopContextSnapshot marks a completed compaction until fresh usage arrives", () => {
   const { desktopContextSnapshot, state } = fixture();
   state.compaction = {
@@ -275,6 +280,7 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
     "projectName",
     "threadId",
     "title",
+    "model",
     "selected",
     "running",
     "activityUnknown",
@@ -291,6 +297,7 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
     "run",
   ]);
   assert.equal(snapshot.projectName, "Проект");
+  assert.equal(snapshot.model, "gpt-test");
   assert.equal(snapshot.selected, true);
   assert.equal(snapshot.running, true);
   assert.equal(snapshot.executionOwner, "hub");

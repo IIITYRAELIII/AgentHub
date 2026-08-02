@@ -383,7 +383,9 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     title: task.title || "Без названия",
     provider: task.provider,
     agentLabel: task.provider === "claude" ? "Claude" : "Codex",
-    modelLabel: serverSelected ? snapshot.selected?.model : task.run?.model ?? "",
+    modelLabel: serverSelected
+      ? snapshot.selected?.model ?? task.model ?? ""
+      : task.run?.model ?? task.model ?? "",
     reasoningLabel: serverSelected ? snapshot.selected?.reasoning : task.run?.reasoning ?? "",
     modeLabel: serverSelected ? snapshot.selected?.mode : "",
     runtimeLabel: runtimeShortLabels[executionOwner] ?? (runtimeTitle ? "EXT" : ""),

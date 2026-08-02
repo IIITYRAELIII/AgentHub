@@ -118,6 +118,7 @@ export function createDesktopSnapshotFactory({
       projectName: entry.projectName ?? tasks.projectNameFor(entry.projectRoot),
       threadId: entry.threadId,
       title: entry.title,
+      model: run?.model ?? entry.model ?? null,
       selected: tasks.entryIsSelected(entry, selection.selectedTask()),
       running: Boolean(run || entry.running),
       activityUnknown: entry.activityUnknown === true,

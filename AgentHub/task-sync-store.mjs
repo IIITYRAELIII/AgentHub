@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { catalogTaskKey } from "./task-catalog.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 1;
+const TASK_SCHEMA_VERSION = 2;
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
@@ -83,6 +83,7 @@ function persistedTask(value = {}, canonicalizeProjectRoot = (projectRoot) => pr
     projectName: cleanText(value.projectName, 200),
     sessionCwd: cleanText(value.sessionCwd, 2_000) || null,
     title: cleanText(value.title ?? value.taskTitle, 200),
+    model: cleanText(value.model ?? value.modelLabel, 100) || null,
     updatedAtMs: Number(value.updatedAtMs) || 0,
     running: value.running === true,
     executionOwner: cleanText(value.executionOwner, 40) || null,
@@ -135,6 +136,7 @@ function configure(database) {
       project_name TEXT NOT NULL,
       session_cwd TEXT,
       title TEXT NOT NULL,
+      model TEXT,
       updated_at_ms INTEGER NOT NULL,
       running INTEGER NOT NULL CHECK (running IN (0, 1)),
       execution_owner TEXT,
@@ -186,6 +188,12 @@ function configure(database) {
         REFERENCES task_read_model_turns (provider, thread_id, position) ON DELETE CASCADE
     ) WITHOUT ROWID;
   `);
+  const taskColumns = new Set(database.prepare(
+    "PRAGMA table_info(task_read_model_tasks)",
+  ).all().map((column) => String(column.name)));
+  if (!taskColumns.has("model")) {
+    database.exec("ALTER TABLE task_read_model_tasks ADD COLUMN model TEXT");
+  }
   database.prepare(`
     INSERT INTO task_read_model_meta (key, value) VALUES ('schema_version', ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -201,6 +209,7 @@ function taskFromRow(row, history = []) {
     projectName: String(row.project_name ?? ""),
     sessionCwd: row.session_cwd ? String(row.session_cwd) : null,
     title: String(row.title ?? ""),
+    model: row.model ? String(row.model) : null,
     updatedAtMs: Number(row.updated_at_ms) || 0,
     running: Number(row.running) === 1,
     executionOwner: row.execution_owner ? String(row.execution_owner) : null,
@@ -321,18 +330,61 @@ export class LocalTaskSyncStore {
     return taskFromRow(row, withHistory ? this.#readHistory(task) : []);
   }
 
+  #latestJournalModel(task) {
+    const provider = cleanText(task?.provider, 20).toLowerCase();
+    const threadId = cleanText(task?.threadId, 100);
+    if (!provider || !threadId) return null;
+    try {
+      const rows = this.#database.prepare(`
+        SELECT record_json FROM journal_records
+        WHERE provider = ? AND thread_id = ?
+        ORDER BY completed_at_ms DESC
+        LIMIT 100
+      `).all(provider, threadId);
+      for (const row of rows) {
+        if (!row?.record_json) continue;
+        const model = cleanText(JSON.parse(String(row.record_json))?.model, 100);
+        if (model) return model;
+      }
+      return null;
+    } catch {
+      // The task store is also used in isolation in tests and fresh installs,
+      // where the journal projection may not exist yet.
+      return null;
+    }
+  }
+
+  #backfillModelsFromJournal() {
+    const tasks = this.#database.prepare(`
+      SELECT provider, thread_id FROM task_read_model_tasks
+      WHERE model IS NULL OR trim(model) = ''
+    `).all();
+    const update = this.#database.prepare(`
+      UPDATE task_read_model_tasks SET model = ?
+      WHERE provider = ? AND thread_id = ?
+    `);
+    for (const task of tasks) {
+      const model = this.#latestJournalModel({
+        provider: task.provider,
+        threadId: task.thread_id,
+      });
+      if (model) update.run(model, task.provider, task.thread_id);
+    }
+  }
+
   #writeTask(task) {
     this.#database.prepare(`
       INSERT INTO task_read_model_tasks (
         provider, thread_id, project_root, project_name, session_cwd, title,
-        updated_at_ms, running, execution_owner, turn_id, last_activity_at_ms,
-        stage, answer, synced_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        model, updated_at_ms, running, execution_owner, turn_id,
+        last_activity_at_ms, stage, answer, synced_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(provider, thread_id) DO UPDATE SET
         project_root = excluded.project_root,
         project_name = excluded.project_name,
         session_cwd = excluded.session_cwd,
         title = excluded.title,
+        model = COALESCE(excluded.model, task_read_model_tasks.model),
         updated_at_ms = excluded.updated_at_ms,
         running = excluded.running,
         execution_owner = excluded.execution_owner,
@@ -348,6 +400,7 @@ export class LocalTaskSyncStore {
       task.projectName,
       task.sessionCwd,
       task.title,
+      task.model,
       task.updatedAtMs,
       task.running ? 1 : 0,
       task.executionOwner,
@@ -500,6 +553,7 @@ export class LocalTaskSyncStore {
   async load() {
     await this.#open();
     await this.#migrateLegacyFile();
+    this.#transaction(() => this.#backfillModelsFromJournal());
     return this;
   }
 
@@ -526,6 +580,7 @@ export class LocalTaskSyncStore {
         projectName: task.projectName,
         ...(task.sessionCwd ? { sessionCwd: task.sessionCwd } : {}),
         title: task.title,
+        model: task.model,
         updatedAtMs: task.updatedAtMs,
         running,
         executionOwner: running ? task.executionOwner : null,
@@ -543,6 +598,7 @@ export class LocalTaskSyncStore {
         const next = persistedTask({
           ...existing,
           ...entry,
+          model: entry.model ?? existing.model ?? this.#latestJournalModel(entry),
           syncedAtMs: nowMs,
         }, this.#canonicalizeProjectRoot);
         if (!next || !taskMetadataChanged(existing, next)) continue;
@@ -564,6 +620,7 @@ export class LocalTaskSyncStore {
       ...existing,
       ...task,
       title: task.title ?? task.taskTitle ?? existing.title,
+      model: snapshot.model ?? task.model ?? existing.model ?? this.#latestJournalModel(task),
       running: snapshot.active === true,
       executionOwner: executionOwner ?? snapshot.executionOwner ?? existing.executionOwner,
       turnId: snapshot.turnId ?? existing.turnId,
@@ -587,6 +644,7 @@ export class LocalTaskSyncStore {
       ...existing,
       ...task,
       title: task.title ?? task.taskTitle ?? existing.title,
+      model: snapshot?.model ?? task.model ?? existing.model ?? this.#latestJournalModel(task),
       running: snapshot ? snapshot.active === true : existing.running === true,
       executionOwner: snapshot?.executionOwner ?? existing.executionOwner,
       turnId: snapshot?.turnId ?? existing.turnId,

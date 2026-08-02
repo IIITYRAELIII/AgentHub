@@ -686,6 +686,7 @@ export function selectExactActiveCodexTurnId(activity = {}) {
 export function codexCatalogEntry(thread, project, {
   rolloutRunning = false,
   executionOwner = null,
+  model = null,
   lastActivityAtMs = null,
   startedAtMs = null,
 } = {}) {
@@ -699,6 +700,7 @@ export function codexCatalogEntry(thread, project, {
     projectRoot: project.path,
     projectName: project.name,
     title: title || "Без названия",
+    model,
     updatedAtMs: Number(thread.updatedAt ?? 0) * 1000,
     running: codexThreadRunning(thread, { rolloutRunning }),
     executionOwner,
@@ -753,6 +755,7 @@ export function claudeCatalogEntry(snapshot, project, nowMs = Date.now()) {
       ? path.resolve(String(snapshot.sessionRoot || snapshot.cwd))
       : null,
     title: String(snapshot.catalogTitle ?? snapshot.title ?? `Claude · ${String(snapshot.sessionId).slice(0, 8)}`),
+    model: snapshot.model ?? null,
     updatedAtMs: modifiedAtMs,
     orderingActivityAtMs: modifiedAtMs || null,
     running,
@@ -786,7 +789,15 @@ export function mergeTaskCatalog(entries, runs = []) {
   for (const entry of entries) {
     const key = catalogTaskKey(entry);
     const existing = byTask.get(key);
-    if (!existing || entry.updatedAtMs > existing.updatedAtMs) byTask.set(key, entry);
+    if (!existing) {
+      byTask.set(key, { ...entry });
+      continue;
+    }
+    if (entry.updatedAtMs > existing.updatedAtMs) {
+      byTask.set(key, { ...entry, model: entry.model ?? existing.model ?? null });
+    } else if (!existing.model && entry.model) {
+      existing.model = entry.model;
+    }
   }
   for (const run of runs) {
     if (!run?.threadId) continue;
@@ -803,6 +814,7 @@ export function mergeTaskCatalog(entries, runs = []) {
         || existing.lastActivityAtMs
         || Date.now();
       if (!existing.title && run.taskTitle) existing.title = run.taskTitle;
+      if (run.model) existing.model = run.model;
       continue;
     }
     byTask.set(key, {
@@ -812,6 +824,7 @@ export function mergeTaskCatalog(entries, runs = []) {
       projectName: run.projectName || path.basename(run.projectRoot) || "Проект",
       ...(run.sessionCwd ? { sessionCwd: path.resolve(String(run.sessionCwd)) } : {}),
       title: String(run.taskTitle ?? `${run.provider} · ${String(run.threadId).slice(0, 8)}`),
+      model: run.model ?? null,
       updatedAtMs: Date.parse(run.startedAt ?? "") || Date.now(),
       running: true,
       executionOwner: run.observer

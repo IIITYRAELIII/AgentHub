@@ -808,6 +808,7 @@ function syncTaskRun(run, {
   const changed = taskSyncStore.recordSnapshot(run, {
     active,
     turnId: run.turnId,
+    model: run.model,
     activityAtMs,
     stage,
     answer,
@@ -2576,6 +2577,7 @@ async function buildTaskCatalog() {
         const entry = codexCatalogEntry(thread, project, {
           rolloutRunning,
           executionOwner: rolloutRunning ? executionOwner : null,
+          model: activity.model ? codexModelLabel(activity.model) : existingRun?.model ?? null,
           lastActivityAtMs: activity.lastActivityAtMs,
           startedAtMs: activeStartedAtValues.length
             ? Math.min(...activeStartedAtValues)

@@ -428,6 +428,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(hubClient, /cli: "CLI"/u);
     assert.match(hubClient, /pendingSelectionId/u);
     assert.match(hubClient, /history\.replaceState/u);
+    assert.match(hubClient, /task\.run\?\.model \?\? task\.model/u);
     assert.doesNotMatch(hubClient, /location\.hash\s*=/u);
     assert.match(script, /document\.documentElement\.dataset\.surface = surface/u);
     assert.match(script, /telegram\?\.expand\(\)/u);

@@ -89,6 +89,7 @@ test("codexCatalogEntry preserves persistent task metadata and active status", (
     projectRoot: project.path,
     projectName: project.name,
     title: "Первая задача",
+    model: null,
     updatedAtMs: 123000,
     running: true,
     executionOwner: null,
@@ -659,6 +660,27 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
   assert.equal(fresh.startedAt, new Date(now - 120_000).toISOString());
   assert.equal(fresh.sessionCwd, path.resolve("C:\\Projects\\Main\\Utilities\\AgentHub"));
   assert.equal(stale.running, false);
+});
+
+test("mergeTaskCatalog preserves the latest known model for an inactive task", () => {
+  const [entry] = mergeTaskCatalog([{
+    provider: "codex",
+    threadId: "codex-model",
+    projectRoot: project.path,
+    projectName: project.name,
+    title: "Задача",
+    model: "Sol",
+    updatedAtMs: 1,
+  }, {
+    provider: "codex",
+    threadId: "codex-model",
+    projectRoot: project.path,
+    projectName: project.name,
+    title: "Задача",
+    model: null,
+    updatedAtMs: 2,
+  }]);
+  assert.equal(entry.model, "Sol");
 });
 
 test("an image-only response item remains a visible rollout user message", () => {

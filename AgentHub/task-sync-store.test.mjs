@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { TASK_EXECUTION_OWNERS } from "./task-catalog.mjs";
 import { LocalTaskSyncStore } from "./task-sync-store.mjs";
@@ -52,6 +53,7 @@ test("local task sync persists catalog, runtime owner, status and history", asyn
   await restored.load();
   assert.deepEqual(restored.catalog({ nowMs: 2_000 }), [{
     ...task,
+    model: null,
     updatedAtMs: 100,
     running: true,
     executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
@@ -60,6 +62,48 @@ test("local task sync persists catalog, runtime owner, status and history", asyn
   }]);
   assert.equal(restored.history(task)[0].answer, "Выполняю");
   assert.equal(restored.snapshot(task).stage, "Изменяются файлы");
+});
+
+test("local task sync restores the latest model from the journal projection", async () => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  store.recordCatalog([{ ...task, updatedAtMs: 100 }], 100);
+  store.close();
+
+  const database = new DatabaseSync(databaseFile);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS journal_records (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      project_root TEXT NOT NULL,
+      task_thread_id TEXT NOT NULL,
+      completed_at_ms INTEGER NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (provider, thread_id, turn_id)
+    ) WITHOUT ROWID
+  `);
+  database.prepare(`
+    INSERT INTO journal_records
+      (provider, thread_id, turn_id, project_root, task_thread_id, completed_at_ms, record_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    task.provider,
+    task.threadId,
+    "turn-old",
+    task.projectRoot,
+    task.threadId,
+    1_000,
+    JSON.stringify({ model: "gpt-5.6-sol" }),
+  );
+  database.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  assert.equal(store.catalog()[0].model, "gpt-5.6-sol");
+  store.close();
 });
 
 test("local task sync preserves durable message metadata and attachments", async () => {
