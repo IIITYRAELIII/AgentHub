@@ -93,6 +93,16 @@ function normalizedResponseAnnotations(values) {
   });
 }
 
+function responseAnnotationPrompt(request, values) {
+  const payload = normalizedResponseAnnotations(values);
+  if (!payload.length) return String(request ?? "");
+  return "# Response annotations:\n"
+    + "Each item contains text selected from an earlier Codex response and may include a user comment. "
+    + "Use every selection as context and address every comment in your response.\n"
+    + `<response-annotations>\n${JSON.stringify(payload)}\n</response-annotations>\n\n`
+    + `## My request for Codex:\n${String(request ?? "")}`;
+}
+
 function embeddedResponseAnnotations(value) {
   const text = String(value ?? "");
   const block = text.match(/<response-annotations>\s*([\s\S]*?)\s*<\/response-annotations>/iu);
@@ -349,6 +359,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   mergeLiveUserMessages,
   normalizedResponseAnnotations,
   normalizedUserMessage,
+  responseAnnotationPrompt,
   reconcile,
   rememberBounded,
   reusableAttachmentPaths,

@@ -757,6 +757,9 @@ test("annotation button clearly quotes selected agent text", () => {
   assert.match(html, /data-phosphor-icon="quotes"/u);
   assert.match(app, /showToast\("Выделите фрагмент ответа агента\."\)/u);
   assert.match(html, /data-action="annotate"[\s\S]*aria-disabled="true"/u);
+  assert.match(html, /data-annotation-context-menu[\s\S]*Цитировать выделение/u);
+  assert.match(app, /function addAnnotation\(value\)/u);
+  assert.match(app, /document\.addEventListener\("contextmenu"[\s\S]*openAnnotationContextMenu/u);
 });
 
 test("response annotations render as quote cards without the service envelope", () => {
@@ -767,6 +770,7 @@ test("response annotations render as quote cards without the service envelope", 
   assert.match(lifecycle, /function embeddedResponseAnnotations\(value\)/u);
   assert.match(lifecycle, /text: embedded \|\| annotations\.length \? request/u);
   assert.match(client, /responseAnnotations: message\.responseAnnotations/u);
+  assert.match(client, /return responseAnnotationPrompt\(text, annotations\);/u);
   assert.match(app, /function renderResponseAnnotations\(body, message\)/u);
   assert.match(app, /class: "msg-annotation-quote"/u);
   assert.match(app, /class: "msg-annotation-request"/u);

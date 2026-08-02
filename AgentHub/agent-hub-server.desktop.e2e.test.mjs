@@ -19,7 +19,7 @@ const ROOT = path.resolve(import.meta.dirname);
 const BOT_FILE = path.join(ROOT, "agent-hub-server.mjs");
 const FAKE_CODEX_FILE = path.join(ROOT, "e2e", "fake-codex-app-server.mjs");
 
-test("desktop client shares tasks and parallel runs with Agent Hub Server", { timeout: 60_000 }, async (t) => {
+test("desktop client survives App Server exit during delayed startup and shares tasks", { timeout: 60_000 }, async (t) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-desktop-e2e-"));
   const dataDir = path.join(runtimeRoot, "data");
   const projectRoot = path.join(runtimeRoot, "project");
@@ -219,6 +219,11 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   );
   const firstCodexPid = Number((await readFile(codexPidPath, "utf8")).trim());
   await stopPid(firstCodexPid);
+  // The local control socket is intentionally available before `initialize`
+  // completes.  Killing that first process must not reject the Hub's
+  // top-level startup and terminate the Hub itself.
+  await delay(100);
+  assert.equal(bot.exitCode, null, `Hub exited while reconnecting: ${stderr}`);
   const compactedAfterDisconnect = await waitFor(async () => {
     try {
       const result = await callDesktopControl("compact-context", {
@@ -229,7 +234,10 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
     } catch {
       return null;
     }
-  }, "desktop context compaction reconnect", 5_000);
+  }, "desktop context compaction reconnect", 5_000).catch(async (error) => {
+    const state = await readFile(codexStatePath, "utf8").catch(() => "");
+    throw new Error(`${error.message}; codexState=${state}; stderr=${stderr}`);
+  });
   assert.match(compactedAfterDisconnect.compactionId, /^[0-9a-f-]{36}$/u);
   const replacementCodexPid = await waitFor(async () => {
     const value = Number((await readFile(codexPidPath, "utf8").catch(() => "")).trim());

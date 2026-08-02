@@ -60,6 +60,7 @@ const followUpModeButton = document.querySelector("[data-follow-up-mode]");
 const annotationsBox = document.querySelector("[data-annotations]");
 const attachmentsBox = document.querySelector("[data-attachments]");
 const annotateButton = document.querySelector("[data-action='annotate']");
+const annotationContextMenu = document.querySelector("[data-annotation-context-menu]");
 const fileInput = document.querySelector("[data-file-input]");
 const slashMenu = document.querySelector("[data-slash-menu]");
 const slashButton = document.querySelector("[data-action='slash-menu']");
@@ -2160,6 +2161,7 @@ for (const dropTarget of [composer, chatScroll]) {
 /* ---- аннотации к выделенному фрагменту ответа ---- */
 
 let annotations = [];
+let pendingAnnotationQuote = "";
 
 function currentAnnotations() {
   return annotations;
@@ -2204,6 +2206,11 @@ function selectedAgentText() {
   return host ? text : "";
 }
 
+function normalizedAnnotationQuote(value) {
+  const quote = String(value ?? "").trim();
+  return quote.length > 400 ? `${quote.slice(0, 400)}…` : quote;
+}
+
 function meaningfulAnnotationSelection(value) {
   const text = String(value ?? "").replace(/\s+/gu, " ").trim();
   if (!text) return false;
@@ -2215,23 +2222,75 @@ document.addEventListener("selectionchange", () => {
   annotateButton.setAttribute("aria-disabled", String(!meaningfulAnnotationSelection(selectedAgentText())));
 });
 
-annotateButton.addEventListener("click", () => {
-  const quote = selectedAgentText();
+function addAnnotation(value) {
+  const quote = normalizedAnnotationQuote(value);
   if (!quote) {
     showToast("Выделите фрагмент ответа агента.");
-    return;
+    return false;
   }
   if (!meaningfulAnnotationSelection(quote)) {
     showToast("Выделите фразу, а не одно короткое слово.");
-    return;
+    return false;
   }
-  const trimmed = quote.length > 400 ? `${quote.slice(0, 400)}…` : quote;
-  setAnnotations([...annotations, { quote: trimmed }]);
+  if (annotations.some((annotation) => annotation.quote === quote)) {
+    showToast("Этот фрагмент уже добавлен.");
+    return false;
+  }
+  setAnnotations([...annotations, { quote }]);
   window.getSelection()?.removeAllRanges();
   annotateButton.setAttribute("aria-disabled", "true");
   composerInput.focus();
   saveDraft();
+  return true;
+}
+
+function closeAnnotationContextMenu() {
+  pendingAnnotationQuote = "";
+  annotationContextMenu.hidden = true;
+}
+
+function openAnnotationContextMenu(event, quote) {
+  pendingAnnotationQuote = quote;
+  annotationContextMenu.hidden = false;
+  const menuRect = annotationContextMenu.getBoundingClientRect();
+  const maxLeft = Math.max(8, window.innerWidth - menuRect.width - 8);
+  const maxTop = Math.max(8, window.innerHeight - menuRect.height - 8);
+  annotationContextMenu.style.left = `${Math.min(Math.max(8, event.clientX), maxLeft)}px`;
+  annotationContextMenu.style.top = `${Math.min(Math.max(8, event.clientY), maxTop)}px`;
+}
+
+annotateButton.addEventListener("click", () => {
+  addAnnotation(selectedAgentText());
 });
+
+document.addEventListener("contextmenu", (event) => {
+  const quote = selectedAgentText();
+  if (!meaningfulAnnotationSelection(quote)) {
+    closeAnnotationContextMenu();
+    return;
+  }
+  event.preventDefault();
+  openAnnotationContextMenu(event, quote);
+});
+
+annotationContextMenu.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-action='annotate-selection']")) return;
+  const quote = pendingAnnotationQuote;
+  closeAnnotationContextMenu();
+  addAnnotation(quote);
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (!annotationContextMenu.hidden && !annotationContextMenu.contains(event.target)) {
+    closeAnnotationContextMenu();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeAnnotationContextMenu();
+});
+
+window.addEventListener("scroll", closeAnnotationContextMenu, true);
 
 /* ---- черновики ---- */
 

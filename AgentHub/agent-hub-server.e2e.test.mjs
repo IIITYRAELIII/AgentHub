@@ -166,6 +166,11 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   );
   const firstThreadId = initialState.threadIds.codex;
   assert.match(firstThreadId, /^[0-9a-f-]{36}$/i);
+  assert.deepEqual(
+    (await readJson(codexStatePath)).threads.map((thread) => thread.id),
+    [firstThreadId],
+    "a fresh Telegram Hub must persist exactly one Codex target before accepting messages",
+  );
   telegram.pushMessage("/start");
   try {
     const startMessage = await telegram.waitForText("Бот подключён к Claude Code и Codex.");

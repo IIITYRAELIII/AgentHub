@@ -51,6 +51,7 @@ const {
   mergeLiveUserMessages,
   normalizedResponseAnnotations,
   normalizedUserMessage,
+  responseAnnotationPrompt,
   reconcile: reconcileMessageLifecycle,
   rememberBounded: rememberBoundedMessage,
   reusableAttachmentPaths,
@@ -732,16 +733,7 @@ function applyOpened(result, { preserveScroll = false } = {}) {
 }
 
 function annotatedText(text, annotations) {
-  if (!Array.isArray(annotations) || !annotations.length) return text;
-  const payload = annotations.map((item) => ({
-    text: String(item.text ?? ""),
-    annotation: String(item.annotation ?? item.comment ?? ""),
-  }));
-  return "# Response annotations:\n"
-    + "Each item contains text selected from an earlier Codex response and may include a user comment. "
-    + "Use every selection as context and address every comment in your response.\n"
-    + `<response-annotations>\n${JSON.stringify(payload)}\n</response-annotations>\n\n`
-    + `## My request for Codex:\n${text}`;
+  return responseAnnotationPrompt(text, annotations);
 }
 
 function dataUrlBody(dataUrl) {

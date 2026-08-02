@@ -62,6 +62,27 @@ test("response annotation envelopes become structured user messages", () => {
   assert.doesNotMatch(normalized.text, /response-annotations|My request for Codex/iu);
 });
 
+test("composer quote annotations retain every selected fragment for the protocol envelope", () => {
+  const annotations = lifecycle.normalizedResponseAnnotations([
+    { quote: "Первый выделенный фрагмент" },
+    { quote: "Второй выделенный фрагмент", comment: "Сравни их" },
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(annotations)), [
+    { text: "Первый выделенный фрагмент", annotation: "" },
+    { text: "Второй выделенный фрагмент", annotation: "Сравни их" },
+  ]);
+  const prompt = lifecycle.responseAnnotationPrompt("Общий вопрос", [
+    { quote: "Первый выделенный фрагмент" },
+    { quote: "Второй выделенный фрагмент" },
+  ]);
+  const embedded = prompt.match(/<response-annotations>\n(?<json>.+)\n<\/response-annotations>/u);
+  assert.deepEqual(JSON.parse(embedded.groups.json), [
+    { text: "Первый выделенный фрагмент", annotation: "" },
+    { text: "Второй выделенный фрагмент", annotation: "" },
+  ]);
+  assert.match(prompt, /## My request for Codex:\nОбщий вопрос$/u);
+});
+
 test("empty legacy annotation data still hides the service envelope", () => {
   const raw = "# Response annotations:\n<response-annotations>\n"
     + '[{"text":"","annotation":""}]\n</response-annotations>\n\n'

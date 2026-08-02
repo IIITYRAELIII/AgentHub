@@ -2256,11 +2256,13 @@ async function initializeProvider() {
     return;
   }
   await startCodexAppServer();
-  // A selected task is only UI state at this point.  Loading it here can make
-  // startup wait for the complete (and sometimes very large) thread before
-  // the local Desktop control pipe exists.  The task is resumed lazily by the
-  // operation that needs it (turn start, explicit task selection, etc.).
+  // A saved selected task is only UI state at this point. Loading it here can
+  // make startup wait for the complete (and sometimes very large) thread
+  // before the local Desktop control pipe exists, so it is resumed lazily.
+  // A fresh Telegram Hub has no task to resume, however: create one before
+  // accepting updates so a first plain message always has a durable target.
   await initializeCodex({ attachSelectedThread: false });
+  if (!threadId) await createThread();
 }
 
 async function initializeCodex({ attachSelectedThread = true } = {}) {
@@ -8408,7 +8410,13 @@ desktopControlServer = new DesktopControlServer({
 });
 await desktopControlServer.start();
 await runCodexRolloutContextSanitizer({ reschedule: false });
-await initializeProvider();
+// Desktop control is deliberately published before provider recovery.  A
+// process exit while `initialize` is still pending must therefore leave the
+// Hub alive: the transport exit handler schedules recovery and the client can
+// retry through the already available local pipe.
+await initializeProvider().catch((error) => {
+  console.error("Cannot initialize provider during startup:", error.message);
+});
 if (codexTransport.running) {
   await listAllCodexThreads()
     .then((threads) => backfillWorkLogPricingMetadata(threads))

@@ -7632,6 +7632,33 @@ html[data-view="server"] .server-view {
   padding: 0.65rem 0.72rem;
 }
 
+.annotation-context-menu {
+  background: color-mix(in srgb, var(--surface-2) 96%, transparent);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0.75rem 1.8rem rgb(0 0 0 / 0.32);
+  padding: 0.25rem;
+  position: fixed;
+  z-index: 90;
+}
+
+.annotation-context-menu button {
+  background: transparent;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 0.15rem);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+}
+
+.annotation-context-menu button:hover,
+.annotation-context-menu button:focus-visible {
+  background: var(--accent-soft);
+  outline: 0;
+}
+
 .server-config-toggle {
   cursor: pointer;
   grid-template-columns: minmax(0, 1fr) auto;
