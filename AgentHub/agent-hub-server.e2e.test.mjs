@@ -159,7 +159,10 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   telegram.failNext("getUpdates", 500);
   await startBot();
-  const initialState = await waitFor(() => readJson(statePath).catch(() => null), "initial bot state");
+  const initialState = await waitFor(async () => {
+    const state = await readJson(statePath).catch(() => null);
+    return typeof state?.threadIds?.codex === "string" ? state : null;
+  }, "initial Codex task state");
   await waitFor(
     () => readFile(path.join(dataDir, "agent-hub.log"), "utf8").catch(() => null),
     "isolated E2E log",

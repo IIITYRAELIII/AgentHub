@@ -2171,7 +2171,11 @@ async function handleCodexTransportExit({ detail }) {
   for (const run of taskRuns.values().filter((item) => item.provider === "codex")) {
     setProgressStage(run, "Связь с Codex потеряна. Переподключаюсь…");
   }
-  if (!codexRestarting) setTimeout(() => void restartCodexAfterCrash(), 2000);
+  // `exit` is a confirmed transport loss, not a transient RPC failure.  Do
+  // not leave Desktop controls pointing at an already dead App Server for an
+  // arbitrary grace period: the restart routine itself keeps the retry
+  // backoff when spawning the replacement fails.
+  if (!codexRestarting) queueMicrotask(() => void restartCodexAfterCrash());
 }
 
 async function handleCodexTransportTimeout({ method, timeoutMs }) {
