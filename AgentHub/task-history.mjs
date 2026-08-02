@@ -394,7 +394,10 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
   const turnId = String(activeTurn.turnId ?? activeTurn.id ?? "").trim();
   const rawPrompt = String(activeTurn.prompt ?? "").trim();
   const responseAnnotations = responseAnnotationDetails(rawPrompt);
-  const visiblePrompt = displayUserPrompt(rawPrompt) || "Текущее сообщение";
+  const visiblePrompt = displayUserPrompt(rawPrompt);
+  const attachments = Array.isArray(activeTurn.attachments)
+    ? activeTurn.attachments.map((attachment) => ({ ...attachment }))
+    : [];
   let current = turnId
     ? values.findLast((item) => String(item?.id ?? "") === turnId)
     : values.findLast((item) => item?.active === true);
@@ -421,56 +424,60 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
           promptRequest: responseAnnotations.request,
         }
         : {}),
-      messages: [{
-        itemId: `${turnId || "active-turn"}:user:0`,
-        ...(String(activeTurn.clientUserMessageId ?? "").trim()
-          ? { clientUserMessageId: String(activeTurn.clientUserMessageId).trim() }
-          : {}),
-        role: "user",
-        text: visiblePrompt,
-        ...(responseAnnotations?.items.length
-          ? {
-            responseAnnotations: responseAnnotations.items.map((annotation) => ({ ...annotation })),
-            responseAnnotationRequest: responseAnnotations.request,
-          }
-          : {}),
-        ...(normalizedTimestamp(activeTurn.startedAt)
-          ? { time: normalizedTimestamp(activeTurn.startedAt) }
-          : {}),
-        ...(Array.isArray(activeTurn.attachments) && activeTurn.attachments.length
-          ? { attachments: activeTurn.attachments.map((attachment) => ({ ...attachment })) }
-          : {}),
-      }],
+      messages: [],
       ...(normalizedTimestamp(activeTurn.startedAt)
         ? { startedAt: normalizedTimestamp(activeTurn.startedAt) }
         : {}),
-      ...(Array.isArray(activeTurn.attachments) && activeTurn.attachments.length
-        ? { attachments: activeTurn.attachments.map((attachment) => ({ ...attachment })) }
+      ...(attachments.length
+        ? { attachments }
         : {}),
     };
     values.push(current);
   }
 
+  if (!visiblePrompt && current.prompt === "Текущее сообщение") {
+    current.prompt = "";
+    current.messages = (Array.isArray(current.messages) ? current.messages : [])
+      .filter((message) => !(message.role === "user" && message.text === "Текущее сообщение"));
+  }
   current.active = true;
   current.completed = false;
   current.status = "inProgress";
   if (!current.startedAt && normalizedTimestamp(activeTurn.startedAt)) {
     current.startedAt = normalizedTimestamp(activeTurn.startedAt);
   }
-  if (Array.isArray(activeTurn.attachments) && activeTurn.attachments.length) {
-    current.attachments = activeTurn.attachments.map((attachment) => ({ ...attachment }));
+  if (visiblePrompt || attachments.length) {
+    if (visiblePrompt) current.prompt = visiblePrompt;
     const messages = Array.isArray(current.messages) ? current.messages : [];
-    const user = messages.find((message) => (
+    let user = messages.find((message) => (
       message.role === "user"
       && (
         !activeTurn.clientUserMessageId
         || String(message.clientUserMessageId ?? "") === String(activeTurn.clientUserMessageId)
       )
     ));
-    if (user) {
-      user.time ??= normalizedTimestamp(activeTurn.startedAt);
-      user.attachments = current.attachments.map((attachment) => ({ ...attachment }));
+    if (!user) {
+      user = {
+        itemId: `${turnId || current.id || "active-turn"}:user:0`,
+        ...(String(activeTurn.clientUserMessageId ?? "").trim()
+          ? { clientUserMessageId: String(activeTurn.clientUserMessageId).trim() }
+          : {}),
+        role: "user",
+        text: visiblePrompt,
+      };
+      messages.unshift(user);
     }
+    if (visiblePrompt) user.text = visiblePrompt;
+    user.time ??= normalizedTimestamp(activeTurn.startedAt);
+    if (responseAnnotations?.items.length) {
+      user.responseAnnotations = responseAnnotations.items.map((annotation) => ({ ...annotation }));
+      user.responseAnnotationRequest = responseAnnotations.request;
+    }
+    if (attachments.length) {
+      current.attachments = attachments;
+      user.attachments = attachments.map((attachment) => ({ ...attachment }));
+    }
+    current.messages = messages;
   }
   if (Array.isArray(activeTurn.activities)) current.activities = activeTurn.activities.slice();
   const answer = String(activeTurn.answer ?? "").trim();

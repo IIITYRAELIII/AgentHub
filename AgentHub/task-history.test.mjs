@@ -215,16 +215,55 @@ test("an active snapshot missing from thread history replaces the stale complete
 
   assert.deepEqual(visibleTaskHistory(history, 1).items, [{
     id: "live-turn",
-    prompt: "Текущее сообщение",
+    prompt: "",
     answer: "Текущий частичный ответ",
     status: "inProgress",
     active: true,
     completed: false,
     messages: [
-      { itemId: "live-turn:user:0", role: "user", text: "Текущее сообщение" },
       { itemId: "live-turn:agent:live", role: "agent", text: "Текущий частичный ответ" },
     ],
   }]);
+});
+
+test("a late active prompt fills the same turn without a placeholder message", () => {
+  const history = [];
+  mergeActiveTaskHistory(history, {
+    active: true,
+    turnId: "live-turn",
+    answer: "Ответ формируется",
+  });
+  mergeActiveTaskHistory(history, {
+    active: true,
+    turnId: "live-turn",
+    prompt: "Настоящий запрос",
+    answer: "Ответ формируется",
+  });
+
+  assert.equal(history.length, 1);
+  assert.equal(history[0].prompt, "Настоящий запрос");
+  assert.deepEqual(history[0].messages.map(({ role, text }) => ({ role, text })), [
+    { role: "user", text: "Настоящий запрос" },
+    { role: "agent", text: "Ответ формируется" },
+  ]);
+});
+
+test("an active refresh removes a persisted legacy current-message placeholder", () => {
+  const history = [{
+    id: "live-turn",
+    prompt: "Текущее сообщение",
+    active: true,
+    messages: [{
+      itemId: "live-turn:user:0",
+      role: "user",
+      text: "Текущее сообщение",
+    }],
+  }];
+
+  mergeActiveTaskHistory(history, { active: true, turnId: "live-turn" });
+
+  assert.equal(history[0].prompt, "");
+  assert.deepEqual(history[0].messages, []);
 });
 
 test("an active snapshot updates the matching turn without duplicating it", () => {
