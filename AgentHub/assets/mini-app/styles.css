@@ -981,6 +981,10 @@ html {
   background: var(--bg);
   min-height: 100%;
   scroll-padding-top: calc(var(--header-height) + 1rem);
+  /* Место под вертикальную полосу резервируется всегда: без этого страницы без
+     прокрутки шире прокручиваемых, и при переключении разделов вся оболочка
+     дёргается на ширину полосы. */
+  scrollbar-gutter: stable;
   -webkit-text-size-adjust: 100%;
 }
 
