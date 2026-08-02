@@ -200,13 +200,28 @@ const themes = {
   graphite: "#17181a",
 };
 /* Палитра темы и сцена за интерфейсом независимы. Новый фон регистрируется
-   здесь, а его визуальная сцена описывается в backgrounds.css. */
+   здесь, привязывается к своей теме ниже, а его визуальная сцена описывается
+   в backgrounds.css. */
 const backgroundNames = {
   orbit: "Орбита", nebula: "Туманность", pulsar: "Пульсар", gothic: "Gothic",
   blackhole: "BlackHole", taiga: "Rain", metropolis: "Мегаполис", stormglass: "Storm",
   magma: "Магма", meadow: "Луг", lake: "Озеро", "lake-watercolor": "Озеро · акварель",
   "lake-oil": "Озеро · масло", graphite: "Графит",
 };
+const themeBackgrounds = Object.freeze({
+  orbit: ["orbit"],
+  nebula: ["nebula"],
+  pulsar: ["pulsar"],
+  gothic: ["gothic"],
+  blackhole: ["blackhole"],
+  taiga: ["taiga"],
+  metropolis: ["metropolis"],
+  stormglass: ["stormglass"],
+  magma: ["magma"],
+  meadow: ["meadow"],
+  lake: ["lake", "lake-watercolor", "lake-oil"],
+  graphite: ["graphite"],
+});
 const themeAliases = {
   "taiga-drops": "metropolis",
 };
@@ -344,10 +359,11 @@ function applyTheme(theme, { persist = false } = {}) {
   const candidate = themeAliases[theme] ?? theme;
   const selected = Object.hasOwn(themes, candidate) ? candidate : "orbit";
   document.documentElement.dataset.theme = selected;
-  if (document.documentElement.dataset.background) {
-    document.documentElement.dataset.backgroundOverride = String(
-      document.documentElement.dataset.background !== selected,
-    );
+  const previousBackground = document.documentElement.dataset.background;
+  populateBackgroundOptions(selected);
+  if (previousBackground) {
+    const nextBackground = normalizeBackground(selected, previousBackground);
+    applyBackground(nextBackground, { persist: persist && nextBackground !== previousBackground });
   }
   themeSelect.value = selected;
   themeColor.content = themes[selected];
@@ -459,7 +475,6 @@ telegram?.ready();
 telegram?.expand();
 telegram?.disableVerticalSwipes?.();
 applyTheme(savedTheme());
-populateBackgroundOptions();
 applyBackground(savedBackground(root.dataset.theme));
 applyBreakdown(savedBreakdown());
 selectUsageUnit(savedUsageUnit());
@@ -665,14 +680,14 @@ function activateView(view) {
 function savedBackground(fallback) {
   try {
     const value = localStorage.getItem("agent-hub-background");
-    return Object.hasOwn(backgroundNames, value) ? value : fallback;
+    return normalizeBackground(fallback, value);
   } catch {
     return fallback;
   }
 }
 
 function applyBackground(background, { persist = false } = {}) {
-  const selected = Object.hasOwn(backgroundNames, background) ? background : "orbit";
+  const selected = normalizeBackground(root.dataset.theme, background);
   root.dataset.background = selected;
   root.dataset.backgroundOverride = String(selected !== root.dataset.theme);
   if (backgroundSelect) backgroundSelect.value = selected;
@@ -686,9 +701,20 @@ function applyBackground(background, { persist = false } = {}) {
   }
 }
 
-function populateBackgroundOptions() {
-  if (!backgroundSelect || backgroundSelect.options.length) return;
-  for (const [value, label] of Object.entries(backgroundNames)) {
+function backgroundsForTheme(theme) {
+  return themeBackgrounds[theme] ?? ["orbit"];
+}
+
+function normalizeBackground(theme, candidate) {
+  const allowed = backgroundsForTheme(theme);
+  return allowed.includes(candidate) ? candidate : allowed[0];
+}
+
+function populateBackgroundOptions(theme = root.dataset.theme) {
+  if (!backgroundSelect) return;
+  backgroundSelect.replaceChildren();
+  for (const value of backgroundsForTheme(theme)) {
+    const label = backgroundNames[value] ?? value;
     backgroundSelect.append(el("option", { value, text: label }));
   }
 }
