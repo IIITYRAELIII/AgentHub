@@ -284,6 +284,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     for (const name of [
       "lake-summer.jpg", "lake-watercolor.jpg", "lake-oil.jpg",
       "gothic-tower.jpg", "gothic-harbor.jpg", "gothic-chapel.jpg", "gothic-keep.jpg",
+      "gothic-minental-castle.jpg", "gothic-finkregh.jpg",
     ]) {
       const lake = await fetch(`${address.url}${name}`);
       assert.equal(lake.status, 200, name);

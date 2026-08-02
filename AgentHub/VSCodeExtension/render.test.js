@@ -481,7 +481,7 @@ test("Gothic theme uses medieval stone, moonlit steel and a torch-lit scene", ()
   );
 });
 
-test("«Gothic» offers four night scenes, each with its own light", () => {
+test("«Gothic» offers eight night scenes, each with its own light", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const backgrounds = fs.readFileSync(
     require.resolve("../assets/mini-app/backgrounds.css"),
@@ -489,13 +489,15 @@ test("«Gothic» offers four night scenes, each with its own light", () => {
   );
   assert.match(
     client,
-    /gothic: \[\s*"gothic", "gothic-crypt", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep",/u,
+    /gothic: \[\s*"gothic", "gothic-crypt", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep",\s*"gothic-minental-castle", "gothic-finkregh",/u,
   );
   for (const [background, image] of [
     ["gothic-tower", "gothic-tower\\.jpg"],
     ["gothic-harbor", "gothic-harbor\\.jpg"],
     ["gothic-chapel", "gothic-chapel\\.jpg"],
     ["gothic-keep", "gothic-keep\\.jpg"],
+    ["gothic-minental-castle", "gothic-minental-castle\\.jpg"],
+    ["gothic-finkregh", "gothic-finkregh\\.jpg"],
   ]) {
     assert.match(
       backgrounds,

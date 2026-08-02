@@ -209,6 +209,7 @@ const backgroundNames = {
   pulsar: "Пульсар", "pulsar-beam": "Луч",
   gothic: "Склеп", "gothic-crypt": "Крипта", "gothic-tower": "Башня",
   "gothic-harbor": "Гавань", "gothic-chapel": "Часовня", "gothic-keep": "Крепость",
+  "gothic-minental-castle": "Замок Миненталя", "gothic-finkregh": "Финкрегх",
   blackhole: "BlackHole", "blackhole-disk": "Диск",
   taiga: "Rain", "taiga-rainfall": "Ливень",
   metropolis: "Мегаполис", "metropolis-towers": "Башни",
@@ -224,6 +225,7 @@ const themeBackgrounds = Object.freeze({
   pulsar: ["pulsar", "pulsar-beam"],
   gothic: [
     "gothic", "gothic-crypt", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep",
+    "gothic-minental-castle", "gothic-finkregh",
   ],
   blackhole: ["blackhole", "blackhole-disk"],
   taiga: ["taiga", "taiga-rainfall"],
