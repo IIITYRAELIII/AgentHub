@@ -20,7 +20,8 @@ test("server configuration exposes only its editable non-secret fields", () => {
   assert.equal(entries.length, 8);
   assert.equal(JSON.stringify(entries).includes("secret"), false);
   assert.deepEqual(entries.find((entry) => entry.key === "logMaxFiles"), {
-    key: "logMaxFiles", name: "Журналы", type: "integer", value: 7,
+    key: "logMaxFiles", name: "Хранение журналов", type: "integer", value: 7,
+    hint: "Сколько файлов журнала Hub держит, прежде чем удалять самые старые.",
     display: "7 файлов", unit: "файлов", min: 1, max: 100, pending: true,
   });
 });

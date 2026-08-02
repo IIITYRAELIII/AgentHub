@@ -529,11 +529,24 @@
         <dl class="server-facts" data-server-facts></dl>
       </section>
 
-      <section class="server-card" aria-labelledby="server-controls-title">
+
+      <section class="server-card" aria-labelledby="server-components-title">
         <header class="server-card-head compact">
           <div>
-            <h2 id="server-controls-title">Управление</h2>
-            <p>Перезапуск дождётся безопасного момента, если есть активные ходы.</p>
+            <h2 id="server-components-title">Компоненты</h2>
+            <p>Поверхности одного локального Agent Hub.</p>
+          </div>
+        </header>
+        <div class="server-component-grid" data-server-components>
+          <span class="setting-empty">Загрузка…</span>
+        </div>
+      </section>
+
+      <section class="server-card" aria-labelledby="server-config-title">
+        <header class="server-card-head compact">
+          <div>
+            <h2 id="server-config-title">Конфигурация</h2>
+            <p>Поведение локального Hub. Перезапуск дождётся безопасного момента, если есть активные ходы.</p>
           </div>
         </header>
         <div class="server-controls">
@@ -558,27 +571,6 @@
             <span>Перезапустить</span>
           </button>
         </div>
-      </section>
-
-      <section class="server-card" aria-labelledby="server-components-title">
-        <header class="server-card-head compact">
-          <div>
-            <h2 id="server-components-title">Компоненты</h2>
-            <p>Поверхности одного локального Agent Hub.</p>
-          </div>
-        </header>
-        <div class="server-component-grid" data-server-components>
-          <span class="setting-empty">Загрузка…</span>
-        </div>
-      </section>
-
-      <section class="server-card" aria-labelledby="server-config-title">
-        <header class="server-card-head compact">
-          <div>
-            <h2 id="server-config-title">Конфигурация</h2>
-            <p>Без ключей, токенов, путей и идентификаторов.</p>
-          </div>
-        </header>
         <div class="server-config-grid" data-server-config>
           <span class="setting-empty">Загрузка…</span>
         </div>

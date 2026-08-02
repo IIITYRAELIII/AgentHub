@@ -7730,6 +7730,37 @@ html[data-view="server"] .server-view {
   line-height: 1.3;
 }
 
+/* Пояснение объясняет, на что влияет настройка; та же строка лежит в title,
+   поэтому длинный текст доступен и при наведении. */
+.server-config-hint {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  margin-top: 0.12rem;
+}
+
+.server-config-toggle .server-config-hint {
+  grid-column: 1 / -1;
+}
+
+/* Состояние показывает дорожка тумблера; нативный флажок под названием был
+   вторым индикатором того же значения. */
+.server-config-toggle > input[type="checkbox"] {
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  width: 1px;
+}
+
+/* Управление живёт в той же карточке, что настройки, поэтому отделяется
+   линией, а не собственным заголовком. */
+.server-card .server-controls {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 0.85rem;
+  padding-bottom: 0.85rem;
+}
+
 .server-card .trusted-devices-card {
   display: flex;
   flex-direction: column;

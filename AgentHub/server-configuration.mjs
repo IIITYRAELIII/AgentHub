@@ -12,14 +12,14 @@ const INTEGER = "integer";
  * never belong here.
  */
 export const SERVER_CONFIGURATION_FIELDS = Object.freeze([
-  { key: "autoApproveOnStart", name: "Автоподтверждение при запуске", type: BOOLEAN },
-  { key: "guardConcurrentRepositoryWrites", name: "Защита параллельной записи", type: BOOLEAN },
-  { key: "codexRolloutContext.enabled", name: "Контекст Codex", type: BOOLEAN },
-  { key: "codexRpcTimeoutSeconds", name: "Тайм-аут Codex RPC", type: INTEGER, min: 1, max: 3600, unit: "с", environment: "CODEX_RPC_TIMEOUT_SECONDS" },
-  { key: "deferredInputTtlHours", name: "Очередь входящих", type: INTEGER, min: 1, max: 8760, unit: "ч" },
-  { key: "progressStartDelayMs", name: "Появление прогресса", type: INTEGER, min: 1, max: 60000, unit: "мс" },
-  { key: "deliveryRetryIntervalSeconds", name: "Повтор доставки", type: INTEGER, min: 1, max: 3600, unit: "с" },
-  { key: "logMaxFiles", name: "Журналы", type: INTEGER, min: 1, max: 100, unit: "файлов" },
+  { key: "autoApproveOnStart", name: "Автоподтверждение при запуске", hint: "Команды и правки файлов выполняются без запроса. Выключено — Hub спрашивает разрешение на каждое действие агента.", type: BOOLEAN },
+  { key: "guardConcurrentRepositoryWrites", name: "Защита параллельной записи", hint: "Не даёт двум задачам писать в один репозиторий одновременно: вторая ждёт, пока первая закончит ход.", type: BOOLEAN },
+  { key: "codexRolloutContext.enabled", name: "История ходов Codex", hint: "Codex получает историю прошлых ходов задачи. Выключено — каждый ход начинается с чистого контекста.", type: BOOLEAN },
+  { key: "codexRpcTimeoutSeconds", name: "Тайм-аут ответа Codex", hint: "Сколько Hub ждёт ответа Codex на один вызов, прежде чем считать ход зависшим.", type: INTEGER, min: 1, max: 3600, unit: "с", environment: "CODEX_RPC_TIMEOUT_SECONDS" },
+  { key: "deferredInputTtlHours", name: "Хранение очереди входящих", hint: "Сколько ждёт сообщение, отправленное занятому агенту, прежде чем его отбросят.", type: INTEGER, min: 1, max: 8760, unit: "ч" },
+  { key: "progressStartDelayMs", name: "Задержка индикатора работы", hint: "Через сколько после начала хода появляется индикатор. Больше — меньше мельканий на коротких ходах.", type: INTEGER, min: 1, max: 60000, unit: "мс" },
+  { key: "deliveryRetryIntervalSeconds", name: "Интервал повторной доставки", hint: "Пауза перед повтором, если сообщение или уведомление не удалось доставить.", type: INTEGER, min: 1, max: 3600, unit: "с" },
+  { key: "logMaxFiles", name: "Хранение журналов", hint: "Сколько файлов журнала Hub держит, прежде чем удалять самые старые.", type: INTEGER, min: 1, max: 100, unit: "файлов" },
 ]);
 
 const FIELDS_BY_KEY = new Map(SERVER_CONFIGURATION_FIELDS.map((field) => [field.key, field]));
@@ -64,6 +64,7 @@ export function serverConfigurationEntries(config, pending = {}) {
     return {
       key: field.key,
       name: field.name,
+      hint: field.hint ?? "",
       type: field.type,
       value,
       display: displayValue(field, value),

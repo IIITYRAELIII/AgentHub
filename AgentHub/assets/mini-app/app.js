@@ -2583,6 +2583,8 @@ function renderServerStatus(payload = {}) {
     }),
     component.note ? el("small", { text: component.note }) : null,
   ].filter(Boolean))) : [el("span", { class: "setting-empty", text: "Компоненты не определены" })]));
+  /* Одно название вроде «Очередь входящих» ничего не объясняет, поэтому у
+     плитки есть пояснение под значением и та же строка в подсказке. */
   const entries = Array.isArray(payload.configuration) ? payload.configuration : [];
   serverConfig.replaceChildren(...(entries.length ? entries.map(renderServerConfigEntry)
     : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]));
@@ -2593,16 +2595,21 @@ function renderServerConfigEntry(entry = {}) {
     class: "server-config-pending",
     text: "Применится после перезапуска",
   }) : null;
+  const hint = entry.hint ? el("small", { class: "server-config-hint", text: entry.hint }) : null;
   if (entry.type === "boolean") {
     const input = el("input", { type: "checkbox", checked: entry.value === true });
     input.addEventListener("change", () => emit("server:config-update", {
       key: entry.key,
       value: input.checked,
     }));
-    return el("label", { class: "server-config-row server-config-toggle" }, [
+    return el("label", {
+      class: "server-config-row server-config-toggle",
+      title: entry.hint || entry.name || "",
+    }, [
       el("span", { class: "switch-text", text: entry.name ?? "" }),
       input,
       el("span", { class: "switch-track", "aria-hidden": true }),
+      hint,
       pendingNote,
     ].filter(Boolean));
   }
@@ -2621,13 +2628,14 @@ function renderServerConfigEntry(entry = {}) {
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") submit();
   });
-  return el("div", { class: "server-config-row" }, [
+  return el("div", { class: "server-config-row", title: entry.hint || entry.name || "" }, [
     el("span", { text: entry.name ?? "" }),
     el("div", { class: "server-config-number-row" }, [
       input,
       entry.unit ? el("small", { class: "server-config-unit", text: entry.unit }) : null,
       save,
     ].filter(Boolean)),
+    hint,
     pendingNote,
   ].filter(Boolean));
 }
