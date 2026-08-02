@@ -30,6 +30,7 @@ test("desktop client shares tasks and parallel runs with Agent Hub Server", { ti
   const telegram = new FakeTelegramApi();
   await telegram.start();
   await writeFile(configPath, `${JSON.stringify({
+    components: { telegram: true, miniApp: false, androidApp: false },
     telegramBotToken: "123:test-token",
     telegramApiBaseUrl: telegram.baseUrl,
     allowedUserIds: [USER_ID],

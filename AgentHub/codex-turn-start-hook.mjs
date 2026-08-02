@@ -10,6 +10,7 @@ import {
 } from "./runtime-command.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 import { isMainModule } from "./main-module.mjs";
+import { detectCodexHookExecutionOwner } from "./codex-runtime-owner.mjs";
 
 async function readStdin() {
   const chunks = [];
@@ -43,9 +44,11 @@ export async function handleCodexTurnStartHook(value, {
   environment = process.env,
   dataDir = runtimeLayout(defaultRuntimeRoot()).dataDir,
   now = () => new Date(),
+  detectExecutionOwner = detectCodexHookExecutionOwner,
 } = {}) {
   const input = validateTurnStartHookInput(value);
   const startedAt = now().toISOString();
+  const executionOwner = await detectExecutionOwner();
   const basePayload = {
     provider: "codex",
     threadId: input.threadId,
@@ -53,6 +56,7 @@ export async function handleCodexTurnStartHook(value, {
     projectRoot: input.projectRoot,
     prompt: input.prompt || null,
     startedAt,
+    executionOwner,
     source: "codex-user-prompt-submit-hook",
   };
   const register = async (payload) => {

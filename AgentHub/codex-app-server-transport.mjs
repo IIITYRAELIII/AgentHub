@@ -13,6 +13,7 @@ export class CodexAppServerTransport {
     onStderr = (text) => console.error(`[codex] ${text}`),
     onInvalidMessage = (error) => console.error("Invalid app-server message:", error.message),
     onMessageError = (error) => console.error("Codex event handling error:", error.message),
+    onTimeout = null,
     rpcTimeoutMs = DEFAULT_RPC_TIMEOUT_MS,
     threadReadCacheMs = DEFAULT_THREAD_READ_CACHE_MS,
     threadReadCacheLimit = DEFAULT_THREAD_READ_CACHE_LIMIT,
@@ -26,6 +27,7 @@ export class CodexAppServerTransport {
     this.onStderr = onStderr;
     this.onInvalidMessage = onInvalidMessage;
     this.onMessageError = onMessageError;
+    this.onTimeout = onTimeout;
     this.rpcTimeoutMs = rpcTimeoutMs;
     this.threadReadCacheMs = threadReadCacheMs;
     this.threadReadCacheLimit = threadReadCacheLimit;
@@ -36,6 +38,7 @@ export class CodexAppServerTransport {
     this.requestSequence = 1;
     this.pending = new Map();
     this.threadReadCache = new Map();
+    this.initialization = null;
   }
 
   get running() {
@@ -100,7 +103,10 @@ export class CodexAppServerTransport {
     const promise = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (!this.pending.delete(id)) return;
-        reject(new Error(`Codex RPC ${method} timed out after ${timeoutMs} ms`));
+        const error = new Error(`Codex RPC ${method} timed out after ${timeoutMs} ms`);
+        reject(error);
+        Promise.resolve(this.onTimeout?.({ id, method, params, timeoutMs, error }))
+          .catch(this.onMessageError);
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer, method });
     });
@@ -116,6 +122,27 @@ export class CodexAppServerTransport {
 
   notify(method, params = {}) {
     this.#write({ method, params });
+  }
+
+  async initialize(params = {}) {
+    const child = this.child;
+    if (!child) throw new Error("Codex App Server is not running");
+    let newlyInitialized = false;
+    if (this.initialization?.child !== child) {
+      newlyInitialized = true;
+      const entry = {
+        child,
+        promise: this.request("initialize", params),
+      };
+      this.initialization = entry;
+      entry.promise.catch(() => {
+        if (this.initialization === entry) this.initialization = null;
+      });
+    }
+    return {
+      result: await this.initialization.promise,
+      newlyInitialized,
+    };
   }
 
   respond(id, result) {
@@ -200,6 +227,7 @@ export class CodexAppServerTransport {
     }
     this.pending.clear();
     this.threadReadCache.clear();
+    this.initialization = null;
     this.lines?.close?.();
     this.lines = null;
     this.child = null;

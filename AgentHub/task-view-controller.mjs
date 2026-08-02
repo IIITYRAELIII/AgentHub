@@ -174,6 +174,25 @@ export class TaskViewController {
     }
     try {
       if (binding.provider === "codex") {
+        const directRolloutPath = await d.findCodexRolloutPath?.(binding.threadId, "");
+        if (directRolloutPath) {
+          const cached = d.taskSyncStore.history(task);
+          const rolloutActivity = await (d.readCodexRolloutActivity ?? readCodexRolloutActivity)(
+            directRolloutPath,
+            { freshnessMs: Number.POSITIVE_INFINITY },
+          );
+          const history = mergeCodexHistory(cached, [], codexRolloutHistory(rolloutActivity));
+          const snapshot = completedOnly ? null : await d.readCodexSnapshot({
+            ...task,
+            turnId: null,
+            observer: true,
+            rolloutPath: directRolloutPath,
+          }, { threadResult: { thread: { id: binding.threadId, path: directRolloutPath } } });
+          mergeActiveTaskHistory(history, snapshot);
+          d.taskSyncStore.recordHistory(task, history, snapshot);
+          await d.taskSyncStore.save();
+          return { history, snapshot };
+        }
         await d.ensureCodex();
         const result = await d.readCodexThread(binding.threadId, { fresh: true });
         const cached = d.taskSyncStore.history(task);

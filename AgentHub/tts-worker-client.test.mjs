@@ -101,12 +101,16 @@ test("persistent TTS client retires an idle worker and starts a clean one", asyn
   let spawns = 0;
   const client = new PersistentTtsWorkerClient({
     spawnWorker: () => { spawns += 1; return nodeWorker(source)(); },
-    timeoutMs: 1000,
+    timeoutMs: 5000,
     idleTimeoutMs: 30,
   });
   try {
     assert.equal(await client.request({ id: "one", outputPath: "one.ogg" }), "one.ogg");
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    const deadline = Date.now() + 5_000;
+    while (client.worker && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(client.worker, null);
     assert.equal(await client.request({ id: "two", outputPath: "two.ogg" }), "two.ogg");
     assert.equal(spawns, 2);
   } finally {

@@ -480,6 +480,7 @@ let autoApprove = config.autoApproveOnStart;
 let pendingServerConfiguration = {};
 let includeClaudeUsage = true;
 let codexRestarting = false;
+let codexTimeoutRestarting = false;
 let restartRequest = null;
 let processingUpdateId = null;
 let stateWriteQueue = Promise.resolve();
@@ -501,12 +502,38 @@ const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
 const threadContextUsage = new Map();
+const codexRolloutPathsByThreadId = new Map();
 const contextCompactions = new ContextCompactionTracker({
   onSettled: () => scheduleDeferredRestartIfReady(),
 });
 const codexTurnStarts = new Map();
 const codexAccountingThreadRoots = new Map();
 let codexHookReceipts = { start: null, stop: null };
+
+function capturedCodexExecutionOwner(threadId, turnId) {
+  const normalizedTurnId = String(turnId ?? "").trim();
+  if (!normalizedTurnId) return null;
+  const record = codexTurnStarts.get(turnEndKey({
+    provider: "codex",
+    threadId: String(threadId ?? "").trim(),
+    turnId: normalizedTurnId,
+  }));
+  const owner = normalizeTaskExecutionOwner(record?.executionOwner);
+  return Object.values(TASK_EXECUTION_OWNERS).includes(owner)
+      && owner !== TASK_EXECUTION_OWNERS.EXTERNAL
+    ? owner
+    : null;
+}
+
+async function knownCodexRolloutPath(threadId, startedAt = "") {
+  const key = String(threadId ?? "").trim();
+  const known = String(codexRolloutPathsByThreadId.get(key) ?? "").trim();
+  if (known) return known;
+  if (!String(startedAt ?? "").trim()) return "";
+  const discovered = await findCodexRolloutPath(key, startedAt);
+  if (discovered) setBoundedMapValue(codexRolloutPathsByThreadId, key, discovered, 5_000);
+  return discovered;
+}
 
 function defaultNotificationChatId() {
   return config.telegramEnabled ? resolveNotificationChatId(config, null) : null;
@@ -2124,10 +2151,10 @@ async function spawnCodex(args) {
 }
 
 async function handleCodexTransportExit({ detail }) {
+  if (stopping) return;
   console.error(`Codex app-server stopped (${detail}).`);
   const wasActive = isCodex();
   const hadCodexRuns = taskRuns.values().some((run) => run.provider === "codex");
-  if (stopping) return;
   if (!wasActive && !hadCodexRuns) return;
   for (const run of taskRuns.values().filter((item) => item.provider === "codex")) {
     setProgressStage(run, "Связь с Codex потеряна. Переподключаюсь…");
@@ -2135,11 +2162,28 @@ async function handleCodexTransportExit({ detail }) {
   if (!codexRestarting) setTimeout(() => void restartCodexAfterCrash(), 2000);
 }
 
+async function handleCodexTransportTimeout({ method, timeoutMs }) {
+  if (stopping || codexTimeoutRestarting || timeoutMs < CODEX_RPC_TIMEOUT_MS) return;
+  if (!["thread/read", "thread/list"].includes(method)) return;
+  const managedRunActive = taskRuns.values().some((run) => (
+    run.provider === "codex" && run.observer === false && run.status === "running"
+  ));
+  if (managedRunActive) return;
+  codexTimeoutRestarting = true;
+  console.error(`Codex app-server is unresponsive on ${method}; recycling the Hub-owned process.`);
+  try {
+    await stopCodexAppServerTree();
+  } finally {
+    codexTimeoutRestarting = false;
+  }
+}
+
 const codexTransport = new CodexAppServerTransport({
   spawnProcess: spawnCodex,
   stopProcessTree,
   onMessage: handleCodexMessage,
   onExit: handleCodexTransportExit,
+  onTimeout: handleCodexTransportTimeout,
   rpcTimeoutMs: CODEX_RPC_TIMEOUT_MS,
 });
 
@@ -2211,7 +2255,7 @@ async function initializeProvider() {
 }
 
 async function initializeCodex({ attachSelectedThread = true } = {}) {
-  await sendRpc("initialize", {
+  const initialized = await codexTransport.initialize({
     clientInfo: {
       name: "telegram_codex_bridge",
       title: "Telegram Codex Bridge",
@@ -2219,7 +2263,7 @@ async function initializeCodex({ attachSelectedThread = true } = {}) {
     },
     capabilities: { experimentalApi: true },
   });
-  sendNotification("initialized");
+  if (initialized.newlyInitialized) sendNotification("initialized");
   if (attachSelectedThread) await attachCodexThread();
 }
 
@@ -2476,6 +2520,9 @@ async function buildTaskCatalog() {
       const values = await Promise.all(batch.map(async (thread) => {
         const project = findProject(thread.cwd);
         if (!project) return null;
+        if (thread.path) {
+          setBoundedMapValue(codexRolloutPathsByThreadId, String(thread.id), thread.path, 5_000);
+        }
         const activity = await readCodexRolloutActivity(thread.path);
         const rolloutRunning = thread.status?.type === "active" || activity.running;
         const existingRun = taskRuns.forTask({
@@ -2486,8 +2533,13 @@ async function buildTaskCatalog() {
         const executionOwner = existingRun?.observer === false
           ? TASK_EXECUTION_OWNERS.HUB
           : await resolveCodexObservedExecutionOwner(activity, {
+            turnId: existingRun?.turnId ?? selectExactActiveCodexTurnId(activity),
             rolloutPath: thread.path,
             agentHubPid: codexTransport.pid,
+            capturedOwner: capturedCodexExecutionOwner(
+              thread.id,
+              existingRun?.turnId ?? selectExactActiveCodexTurnId(activity),
+            ),
           });
         const activeStartedAtValues = activity.activeTurnIds
           .map((turnId) => Number(activity.startedAtMsByTurnId?.[turnId]))
@@ -4398,20 +4450,29 @@ async function taskExternalActivity(target) {
   if (!target?.threadId) return { state: "inactive", executionOwner: null };
   try {
     if (target.provider === "codex") {
-      if (!codexTransport.running) {
-        await startCodexAppServer();
-        await initializeCodex({ attachSelectedThread: false });
+      let rolloutPath = await knownCodexRolloutPath(target.threadId);
+      let threadStatus = null;
+      if (!rolloutPath) {
+        if (!codexTransport.running) {
+          await startCodexAppServer();
+          await initializeCodex({ attachSelectedThread: false });
+        }
+        const result = await readCodexThread(target.threadId, {
+          fresh: true,
+          includeTurns: false,
+        });
+        rolloutPath = String(result.thread?.path ?? "").trim();
+        threadStatus = result.thread?.status;
       }
-      const result = await readCodexThread(target.threadId, {
-        fresh: true,
-        includeTurns: false,
-      });
-      const activity = await readCodexRolloutActivity(result.thread?.path);
+      const activity = await readCodexRolloutActivity(rolloutPath);
+      const activeTurnId = selectExactActiveCodexTurnId(activity);
       return {
-        state: codexThreadRunning(result.thread, { rolloutRunning: activity.running }) ? "active" : "inactive",
+        state: threadStatus?.type === "active" || activity.running ? "active" : "inactive",
         executionOwner: await resolveCodexObservedExecutionOwner(activity, {
-          rolloutPath: result.thread?.path,
+          turnId: activeTurnId,
+          rolloutPath,
           agentHubPid: codexTransport.pid,
+          capturedOwner: capturedCodexExecutionOwner(target.threadId, activeTurnId),
         }),
       };
     }
@@ -5052,6 +5113,11 @@ async function handleRuntimeCommand(request) {
       projectRoot: project.path,
       startedAt: existing?.startedAt || startedAt,
       prompt: prompt || existing?.prompt || "",
+      executionOwner: Object.values(TASK_EXECUTION_OWNERS).includes(
+        normalizeTaskExecutionOwner(payload.executionOwner),
+      )
+        ? normalizeTaskExecutionOwner(payload.executionOwner)
+        : existing?.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL,
       gitBaseline: payload.gitBaseline && typeof payload.gitBaseline === "object"
         ? payload.gitBaseline
         : existing?.gitBaseline ?? null,
@@ -5077,6 +5143,10 @@ async function handleRuntimeCommand(request) {
       run.startedAt = record.startedAt || run.startedAt;
       run.promptPreview = record.prompt || run.promptPreview;
       run.gitBaseline = record.gitBaseline ?? run.gitBaseline;
+      if (run.observer === true && record.executionOwner !== TASK_EXECUTION_OWNERS.EXTERNAL) {
+        run.executionOwner = record.executionOwner;
+        run.appServer = taskExecutionRuntimeLabel(record.executionOwner);
+      }
       taskRuns.reindex(run);
     }
     await saveState();
@@ -5915,6 +5985,54 @@ function updateObservedRun(run, snapshot) {
 }
 
 async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false } = {}) {
+  if (run.observer === true) {
+    const rolloutPath = String(
+      threadResult?.thread?.path
+      ?? run.rolloutPath
+      ?? await knownCodexRolloutPath(run.threadId, run.startedAt),
+    ).trim();
+    if (rolloutPath) {
+      run.rolloutPath = rolloutPath;
+      const exactTurnObserver = run.exactTurnObserver === true;
+      const activity = await readCodexRolloutActivity(
+        rolloutPath,
+        exactTurnObserver ? { freshnessMs: Number.POSITIVE_INFINITY } : {},
+      );
+      const state = codexRolloutTurnState(activity, run.turnId, {
+        exact: exactTurnObserver,
+        threadActive: activity.running,
+      });
+      const executionOwner = await resolveCodexObservedExecutionOwner(activity, {
+        turnId: state.turnId,
+        rolloutPath,
+        agentHubPid: codexTransport.pid,
+        capturedOwner: capturedCodexExecutionOwner(run.threadId, state.turnId),
+      });
+      return {
+        answer: state.active ? state.latestAnswer : state.finalAnswer,
+        finalAnswer: state.finalAnswer,
+        reasoning: "",
+        prompt: state.userMessages[0]?.text ?? "",
+        clientUserMessageId: state.userMessages[0]?.clientUserMessageId ?? null,
+        userMessages: state.userMessages,
+        startedAt: state.startedAt,
+        completed: state.completed,
+        active: state.active,
+        status: state.completed ? "completed" : state.active ? "inProgress" : "stopped",
+        waitingOnApproval: false,
+        stage: state.active
+          ? "Выполняется следующий этап…"
+          : state.finalAnswer ? "Задача завершена." : "Задача остановлена или неактивна.",
+        turnId: state.turnId,
+        activeTurnCount: activity.activeTurnIds.length,
+        activityAtMs: Number(activity.activityAtMsByTurnId?.[state.turnId])
+          || activity.lastActivityAtMs,
+        model: activity.model,
+        reasoningEffort: activity.reasoningEffort,
+        executionOwner,
+      };
+    }
+  }
   const result = threadResult ?? await readCodexThread(run.threadId, {
     fresh,
     includeTurns: false,
@@ -5965,6 +6083,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
           turnId,
           rolloutPath: result.thread?.path,
           agentHubPid: codexTransport.pid,
+          capturedOwner: capturedCodexExecutionOwner(run.threadId, turnId),
         })
         : TASK_EXECUTION_OWNERS.HUB,
     };
@@ -5991,6 +6110,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
         turnId: turn.id,
         rolloutPath: result.thread?.path,
         agentHubPid: codexTransport.pid,
+        capturedOwner: capturedCodexExecutionOwner(run.threadId, turn.id),
       })
       : TASK_EXECUTION_OWNERS.HUB,
   };
@@ -6578,6 +6698,7 @@ const taskViewController = new TaskViewController({
     await startCodexAppServer();
     await initializeCodex({ attachSelectedThread: false });
   },
+  findCodexRolloutPath: knownCodexRolloutPath,
   readCodexThread,
   readCodexSnapshot: readCodexTaskSnapshot,
   readClaudeSnapshot: readClaudeTaskSnapshot,
@@ -7109,7 +7230,12 @@ async function performRestart() {
   }
   // Процессы Claude намеренно переживают перезапуск: новый бот подхватит их
   // по сохранённому PID и файлу вывода.
-  setTimeout(() => process.exit(0), 500).unref();
+  // All listeners owned by the old process are already closed here. Keep one
+  // referenced handle until the replacement has finished its ready hand-off;
+  // an unref'ed exit timer lets Node end the pending top-level polling await
+  // naturally and can abort the hand-off on Windows.
+  await delay(500);
+  process.exit(0);
 }
 
 async function restartBot() {

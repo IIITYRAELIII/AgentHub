@@ -26,6 +26,7 @@ test("Codex turn-start hook captures a pre-turn Git baseline and exact prompt", 
   const result = await handleCodexTurnStartHook(hookInput, {
     dataDir: path.join(process.cwd(), "data"),
     now: () => new Date("2026-07-27T00:00:00.000Z"),
+    detectExecutionOwner: async () => "desktop",
     captureBaseline: async (...args) => {
       assert.equal(received.length, 1, "the prompt must be registered before Git capture begins");
       captured = args;
@@ -42,6 +43,7 @@ test("Codex turn-start hook captures a pre-turn Git baseline and exact prompt", 
   assert.equal(received[0].command, "turn-start");
   assert.equal(received[0].payload.prompt, "Сделай работу");
   assert.equal(received[0].payload.gitBaseline, null);
+  assert.equal(received[0].payload.executionOwner, "desktop");
   assert.deepEqual(received[1].payload.gitBaseline, baseline);
   assert.equal(received[1].payload.startedAt, "2026-07-27T00:00:00.000Z");
   assert.equal(received[1].options.environment.CODEX_THREAD_ID, "thread-1");

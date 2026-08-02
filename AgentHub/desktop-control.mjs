@@ -95,7 +95,16 @@ async function publishEndpoint(runtimeRoot, descriptor, protectFile) {
     });
     await chmod(temporary, 0o600).catch(() => {});
     await protectFile(temporary);
-    await rename(temporary, file);
+    for (const delayMs of [0, 10, 25, 50, 100, 200, 400]) {
+      if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      try {
+        await rename(temporary, file);
+        break;
+      } catch (error) {
+        const retryable = ["EPERM", "EACCES", "EBUSY"].includes(error?.code);
+        if (!retryable || delayMs === 400) throw error;
+      }
+    }
     await protectFile(file);
   } finally {
     await rm(temporary, { force: true }).catch(() => {});

@@ -152,7 +152,8 @@ test("startup cleanup removes only files not owned by restored Claude runs", asy
 
 test("Windows process-tree stop uses taskkill with descendants and force", async () => {
   const killer = new EventEmitter();
-  killer.unref = () => {};
+  let detached = false;
+  killer.unref = () => { detached = true; };
   let invocation = null;
   const stopped = stopProcessTree(4321, {
     platform: "win32",
@@ -168,6 +169,8 @@ test("Windows process-tree stop uses taskkill with descendants and force", async
     args: ["/PID", "4321", "/T", "/F"],
     options: { windowsHide: true, stdio: "ignore" },
   });
+  assert.equal(detached, false,
+    "the awaited taskkill process must keep Node alive until it reports an exit");
 });
 
 test("Windows process-tree stop falls back to the root when taskkill fails", async () => {

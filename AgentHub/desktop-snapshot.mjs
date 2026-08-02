@@ -130,11 +130,10 @@ export function createDesktopSnapshotFactory({
 
   async function desktopSnapshot({ refresh = false } = {}) {
     const catalogStale = clock.nowMs() - catalog.refreshedAt() >= 5_000;
-    if (refresh || !catalog.entries().length) {
-      await catalog.refresh({ force: Boolean(refresh || catalogStale) }).catch((error) => {
-        warn("Cannot refresh desktop task catalog:", error.message);
-      });
-    } else if (catalogStale) {
+    if (refresh || !catalog.entries().length || catalogStale) {
+      // A Desktop RPC must remain responsive while Codex App Server is slow or
+      // recovering. The catalog owns refresh de-duplication; return its last
+      // known state now and let the following poll receive the refreshed list.
       void catalog.refresh({ force: true }).catch((error) => {
         warn("Cannot refresh desktop task catalog in background:", error.message);
       });

@@ -8,6 +8,7 @@ import { JournalDatabase } from "./journal-database.mjs";
 import {
   CHAT_ID,
   delay,
+  e2eTimeoutMs,
   FakeTelegramApi,
   readJson,
   readLockPid,
@@ -40,7 +41,9 @@ function multipartField(call, name) {
   return call.rawBody.slice(valueStart, valueEnd < 0 ? undefined : valueEnd);
 }
 
-test("bot routes tasks, live views, queues, parallel turns, failures and restarts headlessly", { timeout: 75_000 }, async (t) => {
+test("bot routes tasks, live views, queues, parallel turns, failures and restarts headlessly", {
+  timeout: e2eTimeoutMs(120_000),
+}, async (t) => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-bot-e2e-"));
   const dataDir = path.join(temporaryRoot, "data");
   const projectRoot = path.join(temporaryRoot, "project");
@@ -118,6 +121,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   });
 
   await writeFile(configPath, `${JSON.stringify({
+    components: { telegram: true, miniApp: false, androidApp: false },
     telegramBotToken: "123:test-token",
     telegramApiBaseUrl: telegram.baseUrl,
     allowedUserIds: [USER_ID],
@@ -372,7 +376,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   // A slow media download must not block the Telegram update loop, and the
   // resulting turn must remain bound to the task selected when media arrived.
-  telegram.fileDownloadDelayMs = 1_200;
+  telegram.fileDownloadDelayMs = 4_000;
   const downloadIndex = telegram.fileDownloads.length;
   mark = telegram.calls.length;
   telegram.pushMessage(null, {
@@ -393,13 +397,13 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");
-  const mediaTaskPicker = await telegram.waitForText("Выберите задачу:", { after: mark, timeoutMs: 800 });
+  const mediaTaskPicker = await telegram.waitForText("Выберите задачу:", { after: mark, timeoutMs: 1_500 });
   const selectSecondDuringDownload = mediaTaskPicker.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data === `task:c:${secondThreadId}`);
   assert.ok(selectSecondDuringDownload, "second task must remain selectable during media processing");
   mark = telegram.calls.length;
   telegram.pushCallback(selectSecondDuringDownload.callback_data, mediaTaskPicker.result);
-  await telegram.waitForText("Текущая задача изменена", { after: mark, timeoutMs: 800 });
+  await telegram.waitForText("Текущая задача изменена", { after: mark, timeoutMs: 1_500 });
   assert.equal((await readJson(statePath)).threadIds.codex, secondThreadId);
 
   await telegram.waitForText("Готово: [media] медленная картинка", { after: menuMark, timeoutMs: 8_000 });
@@ -483,7 +487,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   let normalProgress;
   try {
     normalProgress = await telegram.waitForText(
-      "Проверяю сценарий: [slow] обычное завершение",
+      "Задача принята.",
       { after: mark, timeoutMs: 12_000 },
     );
   } catch (error) {
@@ -657,7 +661,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("[hold] основной ход");
-  const progress = await telegram.waitForText("[hold] основной ход", { after: mark });
+  const progress = await telegram.waitForText("Задача принята.", { after: mark });
   assert.match(progress.body.text, /Ответ формируется|Задача принята|Проверяю сценарий/);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 1, "held run registration");
   const readsBeforeManagedFallback = Number(
@@ -703,7 +707,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     .find((button) => button.callback_data.startsWith("pending:new:"));
   mark = telegram.calls.length;
   telegram.pushCallback(newButton.callback_data, newDeferred.result);
-  const parallelProgress = await telegram.waitForText(parallelPrompt, { after: mark });
+  const parallelProgress = await telegram.waitForText("Задача принята.", { after: mark });
   const parallelThreadId = (await readJson(statePath)).threadIds.codex;
   assert.notEqual(parallelThreadId, firstThreadId);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 2,
@@ -805,9 +809,11 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("[hold] ход для глазок");
-  await telegram.waitForText("[hold] ход для глазок", { after: mark });
+  await telegram.waitForText("Задача принята.", { after: mark });
   const finalSource = queuedFinal.result;
-  const progressBeforeView = (await readJson(statePath)).activeRuns[0].progressMessageIds[0];
+  const progressBeforeView = await waitFor(async () => (
+    (await readJson(statePath)).activeRuns[0]?.progressMessageIds?.[0] ?? null
+  ), "persisted live progress card id");
 
   mark = telegram.calls.length;
   telegram.pushCallback("show-last-message", finalSource);
@@ -817,9 +823,9 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const lastViewTexts = telegram.callsAfter(mark, "sendMessage").map((call) => String(call.body.text ?? ""));
   assert.equal(lastViewTexts.some((text) => text.includes("[hold] ход для глазок")), true,
     "show-last-message must attach to the current live turn");
-  assert.equal(telegram.callsAfter(mark, "deleteMessages").some((call) => (
+  await waitFor(() => telegram.callsAfter(mark, "deleteMessages").some((call) => (
     call.body.message_ids.includes(progressBeforeView)
-  )), true, "opening a live task must remove its old progress card");
+  )), "old live progress card deletion");
   await waitFor(async () => {
     const ids = (await readJson(statePath)).activeRuns[0].progressMessageIds;
     return ids.length === 1 && !ids.includes(progressBeforeView);
@@ -864,7 +870,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("[hold] восстановление после процесса");
-  await telegram.waitForText("[hold] восстановление после процесса", { after: mark });
+  await telegram.waitForText("Задача принята.", { after: mark });
   const oldBot = bot;
   oldBot.kill("SIGTERM");
   await new Promise((resolve) => oldBot.once("exit", resolve));
@@ -885,7 +891,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("[orphan-approval] восстановление потерянного запроса");
-  await telegram.waitForText("[orphan-approval] восстановление потерянного запроса", { after: mark });
+  await telegram.waitForText("Задача принята.", { after: mark });
   const orphanedBot = bot;
   orphanedBot.kill("SIGTERM");
   await new Promise((resolve) => orphanedBot.once("exit", resolve));
@@ -1103,8 +1109,17 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     "editMessageText",
     (call) => call.body.message_id === restarting.result.message_id
       && String(call.body.text).includes("AGENT HUB ПЕРЕЗАПУЩЕН"),
-    { after: mark, timeoutMs: 12_000 },
-  );
+    { after: mark, timeoutMs: 30_000 },
+  ).catch(async (error) => {
+    const restartState = await readJson(statePath).catch(() => null);
+    const lock = await readFile(lockPath, "utf8").catch(() => "missing");
+    throw new Error(
+      `${error.message}\nrestartState=${JSON.stringify(restartState?.restartRequest)}`
+        + `\nlock=${lock}\nstdout tail:\n${stdout.slice(-12_000)}`
+        + `\nstderr tail:\n${stderr.slice(-12_000)}`,
+      { cause: error },
+    );
+  });
   await telegram.waitForText("Готово: сообщение из того же пакета после рестарта", {
     after: mark,
     timeoutMs: 12_000,

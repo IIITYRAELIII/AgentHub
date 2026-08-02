@@ -643,17 +643,17 @@ test("chat distinguishes loading history from an empty task", () => {
   assert.match(app, /Загрузка истории…/u);
 });
 
-test("chat opens at the end without rebuilding history on every snapshot", () => {
+test("chat keeps each client's local task selection and opens at the end", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   assert.match(app, /if \(taskChanged\) \{\s*activeChatId = task\.id;\s*renderMessages\(\{ forceBottom: true \}\);/su);
   assert.match(app, /const stickToBottom = forceBottom \|\| chatIsNearBottom\(\);/u);
   assert.match(app, /window\.requestAnimationFrame\(apply\)/u);
   assert.match(app, /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ forceBottom: true \}\)/u);
-  assert.match(
-    client,
-    /!pendingSelectionId && previousSelected && currentSelected && !sameSelection[\s\S]*control\("open-task"/u,
-  );
+  assert.match(client, /const selectedTaskKey = "agent-hub:selected-task:v1"/u);
+  assert.match(client, /localStorage\.setItem\(selectedTaskKey, selectedTaskId\)/u);
+  assert.match(client, /const localExists = selectedTaskId && availableTaskIds\.has\(selectedTaskId\)/u);
+  assert.doesNotMatch(client, /previousSelected && currentSelected && !sameSelection[\s\S]*control\("open-task"/u);
 });
 
 test("chat refreshes selected external runs without moving the reader", () => {

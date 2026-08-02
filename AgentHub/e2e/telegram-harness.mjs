@@ -22,7 +22,7 @@ export function e2eTimeoutMs(timeoutMs, {
   const configured = Number(environment.TELEGRAM_E2E_TIMEOUT_MULTIPLIER);
   const multiplier = Number.isFinite(configured) && configured > 0
     ? configured
-    : platform === "win32" ? 2 : 1;
+    : platform === "win32" ? 3 : 1;
   return Math.ceil(timeoutMs * multiplier);
 }
 

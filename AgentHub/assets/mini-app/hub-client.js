@@ -10,9 +10,10 @@ const vscode = window.__agentHubVscode ?? (typeof window.acquireVsCodeApi === "f
   : null);
 const pendingBridgeCalls = new Map();
 const seenAnswerKey = "agent-hub:seen-answers:v1";
+const selectedTaskKey = "agent-hub:selected-task:v1";
 let bridgeSequence = 0;
 let lastSnapshot = null;
-let selectedTaskId = "";
+let selectedTaskId = readSelectedTaskId();
 let refreshTimer = null;
 let rateLimitRefreshTimer = null;
 let rateLimitRefreshRange = "24h";
@@ -63,6 +64,25 @@ const runtimeShortLabels = Object.freeze({
 
 function taskId(provider, threadId) {
   return `${String(provider)}:${String(threadId)}`;
+}
+
+function readSelectedTaskId() {
+  try {
+    return String(localStorage.getItem(selectedTaskKey) ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function rememberSelectedTaskId(id) {
+  selectedTaskId = String(id ?? "").trim();
+  try {
+    if (selectedTaskId) localStorage.setItem(selectedTaskKey, selectedTaskId);
+    else localStorage.removeItem(selectedTaskKey);
+  } catch {
+    // Приватный WebView может запрещать localStorage.
+  }
+  return selectedTaskId;
 }
 
 function taskIdentity(id) {
@@ -455,9 +475,16 @@ function applySnapshot(snapshot) {
   const serverSelectedId = serverSelected
     ? taskId(serverSelected.provider, serverSelected.threadId)
     : "";
-  const pendingExists = pendingSelectionId
-    && (snapshot.tasks ?? []).some((task) => taskId(task.provider, task.threadId) === pendingSelectionId);
-  const effectiveSelectedId = pendingExists ? pendingSelectionId : serverSelectedId;
+  const availableTaskIds = new Set(
+    (snapshot.tasks ?? []).map((task) => taskId(task.provider, task.threadId)),
+  );
+  const pendingExists = pendingSelectionId && availableTaskIds.has(pendingSelectionId);
+  const localExists = selectedTaskId && availableTaskIds.has(selectedTaskId);
+  const effectiveSelectedId = pendingExists
+    ? pendingSelectionId
+    : localExists
+      ? selectedTaskId
+      : serverSelectedId;
   const tasks = (snapshot.tasks ?? [])
     .map((task) => modelTask(task, snapshot, seen, effectiveSelectedId, serverSelectedId))
     .sort((left, right) => Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0));
@@ -496,7 +523,7 @@ function applySnapshot(snapshot) {
   const selected = (snapshot.tasks ?? []).find(
     (task) => taskId(task.provider, task.threadId) === effectiveSelectedId,
   );
-  selectedTaskId = effectiveSelectedId;
+  rememberSelectedTaskId(effectiveSelectedId);
   if (selected) {
     agentHub.setLive(selectedTaskId, updateLiveMessage(selectedTaskId, selected));
     agentHub.setRunning(selectedTaskId, Boolean(selected.run || selected.running));
@@ -675,8 +702,8 @@ function applyOpened(result, { preserveScroll = false } = {}) {
     nextBefore: preserveOlder ? previousPage.nextBefore : history.nextBefore,
     loading: false,
   });
+  rememberSelectedTaskId(id);
   applySnapshot(result?.snapshot);
-  selectedTaskId = id;
   agentHub.selectTask(id);
   syncHistoryPagination(id);
   renderTaskMessages(id, { preserveScroll });
@@ -752,7 +779,7 @@ agentHub.on("task:select", ({ id }) => {
   if (!identity) return null;
   const sequence = ++selectionSequence;
   pendingSelectionId = id;
-  selectedTaskId = id;
+  rememberSelectedTaskId(id);
   selectionTail = selectionTail.catch(() => null).then(async () => {
     if (sequence !== selectionSequence) return null;
     const result = await runAction(() => control("open-task", { ...identity, limit: 20 }));
@@ -1152,6 +1179,7 @@ async function openRoute() {
       limit: 20,
     }));
   }
+  rememberSelectedTaskId(taskId(parts[1], parts[2]));
   return true;
 }
 
@@ -1159,10 +1187,15 @@ async function refresh() {
   if (refreshing) return;
   refreshing = true;
   try {
-    const previousSelected = (lastSnapshot?.tasks ?? []).find((task) => task.selected);
+    const previousSelectedId = selectedTaskId;
+    const previousSelected = (lastSnapshot?.tasks ?? []).find(
+      (task) => taskId(task.provider, task.threadId) === previousSelectedId,
+    );
     const snapshot = await control("snapshot");
     applySnapshot(snapshot);
-    const currentSelected = (snapshot.tasks ?? []).find((task) => task.selected);
+    const currentSelected = (snapshot.tasks ?? []).find(
+      (task) => taskId(task.provider, task.threadId) === selectedTaskId,
+    );
     const sameSelection = previousSelected && currentSelected
       && previousSelected.provider === currentSelected.provider
       && previousSelected.threadId === currentSelected.threadId;
@@ -1180,13 +1213,7 @@ async function refresh() {
     const refreshCaughtUpHistory = sameSelection
       && historyNeedsCatchUp(taskId(currentSelected.provider, currentSelected.threadId))
       && Date.now() - selectedHistoryRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
-    if (!pendingSelectionId && previousSelected && currentSelected && !sameSelection) {
-      applyOpened(await control("open-task", {
-        provider: currentSelected.provider,
-        threadId: currentSelected.threadId,
-        limit: 20,
-      }));
-    } else if (sameSelection && (
+    if (sameSelection && (
       selectedHistoryMissing
       || (previousSelected.running && !currentSelected.running)
       || answerChanged
@@ -1199,9 +1226,6 @@ async function refresh() {
         threadId: currentSelected.threadId,
         limit: 20,
       }), { preserveScroll: true });
-    }
-    if (!selectedTaskId && snapshot.selected?.threadId) {
-      selectedTaskId = taskId(snapshot.selected.provider, snapshot.selected.threadId);
     }
     applySnapshotConnection(snapshot);
   } catch {

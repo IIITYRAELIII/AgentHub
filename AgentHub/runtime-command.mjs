@@ -161,7 +161,9 @@ export class RuntimeCommandServer {
     });
     this.#server = server;
     await mkdir(this.#spoolDirectory, { recursive: true });
-    this.#scheduleSpoolDrain(0);
+    await this.#retireAcknowledgedSpool(await readdir(this.#spoolDirectory))
+      .catch((error) => console.error("Cannot retire acknowledged runtime commands:", error.message));
+    this.#scheduleSpoolDrain();
   }
 
   #scheduleSpoolDrain(delayMs = SPOOL_POLL_MS) {
@@ -178,8 +180,7 @@ export class RuntimeCommandServer {
     this.#spoolTimer.unref?.();
   }
 
-  async #drainSpool() {
-    const allNames = await readdir(this.#spoolDirectory);
+  async #retireAcknowledgedSpool(allNames) {
     const acknowledgedIds = new Set(allNames
       .filter((item) => item.endsWith(".ack"))
       .map((name) => name.slice(0, -".ack".length))
@@ -192,6 +193,12 @@ export class RuntimeCommandServer {
         unlink(path.join(this.#spoolDirectory, `${id}.response.json`)).catch(() => {}),
       ]);
     }
+    return acknowledgedIds;
+  }
+
+  async #drainSpool() {
+    const allNames = await readdir(this.#spoolDirectory);
+    const acknowledgedIds = await this.#retireAcknowledgedSpool(allNames);
     for (const name of allNames.filter((item) => item.endsWith(".response.json"))) {
       const filePath = path.join(this.#spoolDirectory, name);
       const info = await stat(filePath).catch(() => null);

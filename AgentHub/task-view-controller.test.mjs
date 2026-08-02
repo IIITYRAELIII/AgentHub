@@ -61,6 +61,41 @@ test("cached task history does not wait for the provider", async () => {
   assert.equal(providerReads, 0);
 });
 
+test("Codex history refresh reads the rollout directly without blocking App Server", async () => {
+  let providerReads = 0;
+  let snapshotInput = null;
+  const view = controller({
+    findCodexRolloutPath: async () => "C:/rollout.jsonl",
+    ensureCodex: async () => { providerReads += 1; },
+    readCodexThread: async () => { providerReads += 1; return null; },
+    readCodexRolloutActivity: async () => ({
+      activeTurnIds: ["turn-live"],
+      userMessages: { "turn-live": [{ text: "Новый запрос" }] },
+      latestMessages: { "turn-live": "Промежуточный ответ" },
+      finalMessages: {},
+    }),
+    readCodexSnapshot: async (input) => {
+      snapshotInput = input;
+      return { active: true, turnId: "turn-live" };
+    },
+    taskSyncStore: {
+      history: () => [{ id: "turn-old", prompt: "Старый", completed: true }],
+      recordHistory: () => {},
+      save: async () => {},
+    },
+  });
+  const result = await view.readHistory({
+    provider: "codex",
+    threadId: "thread-shared",
+    projectRoot: "C:/repo",
+    title: "Shared",
+    chatId: 1,
+  });
+  assert.equal(providerReads, 0);
+  assert.equal(snapshotInput.rolloutPath, "C:/rollout.jsonl");
+  assert.deepEqual(result.history.map((item) => item.id), ["turn-old", "turn-live"]);
+});
+
 test("missing Claude transcript keeps the managed exchange in durable history", async () => {
   const cached = [{
     id: "turn-1",

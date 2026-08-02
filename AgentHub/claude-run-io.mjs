@@ -359,6 +359,5 @@ export async function stopProcessTree(pid, {
       if (code === 0 || !processIsAlive(value, killImpl)) finish(true);
       else fallback();
     });
-    killer.unref?.();
   });
 }

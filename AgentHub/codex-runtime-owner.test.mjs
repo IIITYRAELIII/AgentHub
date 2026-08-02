@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  classifyCodexHookProcess,
   classifyCodexRolloutProcesses,
+  detectCodexHookExecutionOwner,
   resolveCodexObservedExecutionOwner,
 } from "./codex-runtime-owner.mjs";
 import { TASK_EXECUTION_OWNERS } from "./task-catalog.mjs";
@@ -24,6 +26,36 @@ test("rollout process ancestry distinguishes VSC, Desktop and CLI", () => {
     { processId: 40, parentProcessId: 12, name: "codex.exe", commandLine: "codex.exe resume thread" },
     { processId: 12, parentProcessId: 1, name: "pwsh.exe", commandLine: "pwsh.exe" },
   ])), TASK_EXECUTION_OWNERS.CLI);
+});
+
+test("hook caller ancestry identifies the client that started this exact turn", async () => {
+  const desktopSnapshot = snapshot([90], [
+    { processId: 90, parentProcessId: 30, name: "node.exe", commandLine: "node codex-stop-hook-launcher.mjs" },
+    { processId: 30, parentProcessId: 11, name: "codex.exe", commandLine: "codex.exe app-server" },
+    { processId: 11, parentProcessId: 1, name: "ChatGPT.exe", commandLine: "ChatGPT.exe" },
+  ]);
+  assert.equal(classifyCodexHookProcess(desktopSnapshot), TASK_EXECUTION_OWNERS.DESKTOP);
+  assert.equal(await detectCodexHookExecutionOwner({
+    platform: "win32",
+    processId: 90,
+    probe: async (processId) => {
+      assert.equal(processId, 90);
+      return desktopSnapshot;
+    },
+  }), TASK_EXECUTION_OWNERS.DESKTOP);
+});
+
+test("captured turn owner wins over ambiguous rollout file holders", async () => {
+  let probes = 0;
+  const owner = await resolveCodexObservedExecutionOwner({ running: true }, {
+    turnId: "turn-app",
+    rolloutPath: "C:\\shared-rollout.jsonl",
+    platform: "win32",
+    capturedOwner: TASK_EXECUTION_OWNERS.DESKTOP,
+    probe: async () => { probes += 1; return {}; },
+  });
+  assert.equal(owner, TASK_EXECUTION_OWNERS.DESKTOP);
+  assert.equal(probes, 0);
 });
 
 test("Agent Hub is excluded and ambiguous external clients stay EXT", () => {

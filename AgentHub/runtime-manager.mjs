@@ -23,6 +23,7 @@ const SOURCE_ROOT = path.resolve(import.meta.dirname);
 const TOP_LEVEL_FILES = new Set([
   "package.json",
   "install-autostart.ps1",
+  "codex-process-ancestry.ps1",
   "codex-rollout-processes.ps1",
   "requirements.txt",
   "requirements-tts.txt",

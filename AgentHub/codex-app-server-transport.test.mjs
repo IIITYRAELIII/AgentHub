@@ -60,6 +60,60 @@ test("CodexAppServerTransport routes RPC responses and notifications", async () 
   assert.deepEqual(messages, [{ method: "turn/started", params: { turnId: "t1" } }]);
 });
 
+test("CodexAppServerTransport initializes each live process once", async () => {
+  const { child, transport } = await startedTransport();
+  const written = nextWrittenJson(child.stdin);
+  const first = transport.initialize({ clientInfo: { name: "hub" } });
+  const concurrent = transport.initialize({ clientInfo: { name: "hub" } });
+  const request = await written;
+  assert.equal(request.method, "initialize");
+  assert.deepEqual(request.params, { clientInfo: { name: "hub" } });
+
+  child.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: "test" } })}\n`);
+  assert.deepEqual(await first, {
+    result: { userAgent: "test" },
+    newlyInitialized: true,
+  });
+  assert.deepEqual(await concurrent, {
+    result: { userAgent: "test" },
+    newlyInitialized: false,
+  });
+  assert.deepEqual(await transport.initialize({ clientInfo: { name: "hub" } }), {
+    result: { userAgent: "test" },
+    newlyInitialized: false,
+  });
+});
+
+test("CodexAppServerTransport allows initialization after a replacement process starts", async () => {
+  const firstChild = fakeChild({ pid: 321 });
+  const replacementChild = fakeChild({ pid: 654 });
+  const children = [firstChild, replacementChild];
+  const transport = new CodexAppServerTransport({
+    spawnProcess: async () => children.shift(),
+    onStderr: () => {},
+  });
+  await transport.start();
+  let written = nextWrittenJson(firstChild.stdin);
+  const first = transport.initialize();
+  let request = await written;
+  firstChild.stdout.write(`${JSON.stringify({ id: request.id, result: { process: 1 } })}\n`);
+  assert.equal((await first).newlyInitialized, true);
+
+  firstChild.emit("exit", 1, null);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(transport.running, false);
+
+  await transport.start();
+  written = nextWrittenJson(replacementChild.stdin);
+  const replacement = transport.initialize();
+  request = await written;
+  replacementChild.stdout.write(`${JSON.stringify({ id: request.id, result: { process: 2 } })}\n`);
+  assert.deepEqual(await replacement, {
+    result: { process: 2 },
+    newlyInitialized: true,
+  });
+});
+
 test("CodexAppServerTransport preserves structured RPC errors", async () => {
   const { child, transport } = await startedTransport();
   const written = nextWrittenJson(child.stdin);
@@ -82,8 +136,16 @@ test("CodexAppServerTransport preserves structured RPC errors", async () => {
 });
 
 test("CodexAppServerTransport times out requests and rejects them on exit", async () => {
-  const { child, exits, transport } = await startedTransport({ rpcTimeoutMs: 10 });
+  const timeouts = [];
+  const { child, exits, transport } = await startedTransport({
+    rpcTimeoutMs: 10,
+    onTimeout: (event) => timeouts.push(event),
+  });
   await assert.rejects(transport.request("slow"), /timed out after 10 ms/);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timeouts.length, 1);
+  assert.equal(timeouts[0].method, "slow");
+  assert.equal(timeouts[0].timeoutMs, 10);
 
   const pending = transport.request("pending", {}, { timeoutMs: 5_000 });
   child.emit("exit", 7, null);

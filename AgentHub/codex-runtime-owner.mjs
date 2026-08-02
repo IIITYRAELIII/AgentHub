@@ -29,6 +29,23 @@ function processAncestry(processId, byId) {
   return result;
 }
 
+export function classifyCodexHookProcess(snapshot) {
+  const rootProcessId = Number(snapshot?.rootProcessIds?.[0]);
+  const byId = new Map((snapshot?.processes ?? []).map((item) => [Number(item.processId), item]));
+  const ancestry = processAncestry(rootProcessId, byId);
+  const names = ancestry.map((item) => normalizedProcessName(item.name));
+  const commandLines = ancestry.map((item) => String(item.commandLine ?? "").toLowerCase());
+  if (names.includes("code")) return TASK_EXECUTION_OWNERS.VSCODE;
+  if (names.some((name) => name === "chatgpt" || name.includes("openai") || name === "codex desktop")) {
+    return TASK_EXECUTION_OWNERS.DESKTOP;
+  }
+  if (commandLines.some((line) => line.includes("agent-hub-server.mjs"))) {
+    return TASK_EXECUTION_OWNERS.HUB;
+  }
+  if (names.includes("codex")) return TASK_EXECUTION_OWNERS.CLI;
+  return TASK_EXECUTION_OWNERS.EXTERNAL;
+}
+
 export function classifyCodexRolloutProcesses(snapshot, { agentHubPid = null } = {}) {
   const roots = [...new Set((snapshot?.rootProcessIds ?? [])
     .map(Number)
@@ -114,19 +131,82 @@ export function readWindowsRolloutProcesses(rolloutPath, {
   });
 }
 
+export function readWindowsProcessAncestry(processId, {
+  spawnImpl = spawn,
+  environment = process.env,
+  timeoutMs = OWNER_PROBE_TIMEOUT_MS,
+} = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawnImpl(powershellExecutable(environment), [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy", "Bypass",
+      "-File", path.join(import.meta.dirname, "codex-process-ancestry.ps1"),
+      "-ProcessId", String(Number(processId) || 0),
+    ], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: environment,
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("Codex hook owner probe timed out"));
+    }, timeoutMs);
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => { stdout += chunk; });
+    child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `Codex hook owner probe exited with ${code}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout.trim() || "{}"));
+      } catch (error) {
+        reject(new Error(`Invalid Codex hook owner probe output: ${error.message}`));
+      }
+    });
+  });
+}
+
+export async function detectCodexHookExecutionOwner({
+  platform = process.platform,
+  processId = process.pid,
+  probe = readWindowsProcessAncestry,
+} = {}) {
+  if (platform !== "win32") return TASK_EXECUTION_OWNERS.EXTERNAL;
+  try {
+    return classifyCodexHookProcess(await probe(processId));
+  } catch {
+    return TASK_EXECUTION_OWNERS.EXTERNAL;
+  }
+}
+
 export async function resolveCodexObservedExecutionOwner(activity = {}, {
   turnId = null,
   rolloutPath = null,
+  capturedOwner = null,
   agentHubPid = null,
   platform = process.platform,
   nowMs = Date.now(),
   probe = readWindowsRolloutProcesses,
 } = {}) {
+  if (Object.values(TASK_EXECUTION_OWNERS).includes(capturedOwner)
+    && capturedOwner !== TASK_EXECUTION_OWNERS.EXTERNAL) return capturedOwner;
   const direct = codexObservedExecutionOwner(activity, turnId);
   if (!activity.running) return direct;
   if (platform !== "win32" || !rolloutPath) return direct;
 
-  const cacheKey = `${path.resolve(rolloutPath)}\0${Number(agentHubPid) || 0}`;
+  const cacheKey = `${path.resolve(rolloutPath)}\0${String(turnId ?? "")}\0${Number(agentHubPid) || 0}`;
   const cached = ownerProbeCache.get(cacheKey);
   if (cached && nowMs - cached.checkedAtMs < OWNER_PROBE_CACHE_MS) {
     return cached.owner === TASK_EXECUTION_OWNERS.EXTERNAL ? direct : cached.owner;

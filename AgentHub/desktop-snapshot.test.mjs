@@ -420,14 +420,12 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
   assert.equal(snapshot.tasks.length, 1);
 });
 
-test("stale desktop snapshot returns cached tasks while catalog refreshes", async () => {
+test("forced desktop snapshot returns cached tasks while catalog refreshes", async () => {
   let finishRefresh;
   const refreshWait = new Promise((resolve) => {
     finishRefresh = resolve;
   });
-  const { desktopSnapshot, state } = fixture({
-    refreshedAt: 0,
-  });
+  const { desktopSnapshot, state } = fixture();
   state.refreshCalls = [];
   const originalPush = state.refreshCalls.push.bind(state.refreshCalls);
   state.refreshCalls.push = (...items) => {
@@ -435,7 +433,10 @@ test("stale desktop snapshot returns cached tasks while catalog refreshes", asyn
     return refreshWait;
   };
 
-  const snapshot = await desktopSnapshot();
+  const snapshot = await Promise.race([
+    desktopSnapshot({ refresh: true }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("snapshot waited for catalog refresh")), 100)),
+  ]);
   assert.equal(snapshot.tasks.length, 1);
   assert.equal(state.refreshCalls.length, 1);
   assert.deepEqual(state.refreshCalls[0], { force: true });

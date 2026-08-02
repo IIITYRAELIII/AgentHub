@@ -170,6 +170,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
     allowedUserIds: [USER_ID],
     allowedChatIds: [CHAT_ID],
     privateChatsOnly: true,
+    components: { telegram: true, miniApp: false, androidApp: false },
     provider: "claude",
     projectRoot,
     projects: [{ name: "E2E", path: projectRoot }],
@@ -369,13 +370,14 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
 
   // Медленный /status выполняется вне последовательного polling и не задерживает
   // следующую критичную команду /cancel.
-  const cancelStartedAt = Date.now();
+  const statusMark = telegram.calls.length;
   telegram.pushMessage("/status");
   await delay(100);
   mark = telegram.calls.length;
   telegram.pushMessage("/cancel");
+  let cancellationCall;
   try {
-    await telegram.waitForText("Запрошена остановка этой задачи", { after: mark });
+    cancellationCall = await telegram.waitForText("Запрошена остановка этой задачи", { after: mark });
   } catch (error) {
     throw new Error(
       `${error.message}\nAPI calls:\n${JSON.stringify(
@@ -386,8 +388,12 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
       + `\nstderr:\n${stderr}`,
     );
   }
-  assert.ok(Date.now() - cancelStartedAt < 2_500,
-    "a slow status probe must not delay cancellation in the Telegram update loop");
+  assert.equal(
+    telegram.calls.slice(statusMark, cancellationCall.index)
+      .some((call) => call.method === "sendPhoto"),
+    false,
+    "a slow status probe must not delay cancellation in the Telegram update loop",
+  );
   const remaining = await waitFor(async () => {
     const runs = await activeRuns();
     return runs.length === 1 ? runs[0] : null;
