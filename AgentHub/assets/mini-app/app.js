@@ -1457,7 +1457,7 @@ function renderMessage(message) {
 
   const body = el("div", { class: "msg-body" });
   // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
-  renderMarkdown(body, message.text ?? "");
+  if (!renderResponseAnnotations(body, message)) renderMarkdown(body, message.text ?? "");
 
   article.append(head, body);
   const activity = activityFeedNode(message.activities);
@@ -1487,6 +1487,36 @@ function renderMessage(message) {
     article.append(actions);
   }
   return article;
+}
+
+function renderResponseAnnotations(body, message) {
+  if (message?.role !== "user" || !Array.isArray(message.responseAnnotations)
+    || message.responseAnnotations.length === 0) return false;
+  const annotations = el("div", { class: "msg-annotations" });
+  message.responseAnnotations.forEach((item, index) => {
+    const text = String(item?.text ?? "").trim();
+    const comment = String(item?.annotation ?? "").trim();
+    if (!text && !comment) return;
+    const content = el("div", { class: "msg-annotation-content" }, [
+      el("div", { class: "msg-annotation-label", text: `Цитата ${index + 1}` }),
+      text ? el("div", { class: "msg-annotation-quote", text }) : null,
+    ]);
+    if (comment) {
+      const commentNode = el("div", { class: "msg-annotation-comment" });
+      renderMarkdown(commentNode, comment);
+      content.append(commentNode);
+    }
+    annotations.append(content);
+  });
+  if (!annotations.childElementCount) return false;
+  body.append(annotations);
+  const request = String(message.responseAnnotationRequest ?? message.text ?? "").trim();
+  if (request) {
+    const requestNode = el("div", { class: "msg-annotation-request" });
+    renderMarkdown(requestNode, request);
+    body.append(requestNode);
+  }
+  return true;
 }
 
 function normalizedMessageText(value) {

@@ -666,14 +666,15 @@ test("response annotations render as quote cards without the service envelope", 
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
-  assert.match(client, /function embeddedResponseAnnotations\(value\)/u);
-  assert.match(client, /text: embedded \|\| annotations\.length \? request/u);
+  const lifecycle = fs.readFileSync(require.resolve("../assets/mini-app/message-lifecycle.js"), "utf8");
+  assert.match(lifecycle, /function embeddedResponseAnnotations\(value\)/u);
+  assert.match(lifecycle, /text: embedded \|\| annotations\.length \? request/u);
   assert.match(client, /responseAnnotations: message\.responseAnnotations/u);
   assert.match(app, /function renderResponseAnnotations\(body, message\)/u);
   assert.match(app, /class: "msg-annotation-quote"/u);
   assert.match(app, /class: "msg-annotation-request"/u);
   assert.match(styles, /\.msg-annotation-content\s*\{[^}]*border-left:\s*3px solid var\(--accent-line\);/su);
-  assert.doesNotMatch(app, /renderMarkdown\(body, message\.text \?\? ""\);\s*\n\s*article\.append/u);
+  assert.match(app, /if \(!renderResponseAnnotations\(body, message\)\) renderMarkdown/u);
 });
 
 test("composer send and desktop settings stay pinned to the right edge", () => {

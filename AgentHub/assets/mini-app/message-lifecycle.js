@@ -22,6 +22,45 @@ function clientIdentityKey(message) {
   return `${provider}\0${threadId}\0${clientUserMessageId}\0${role}`;
 }
 
+function normalizedResponseAnnotations(values) {
+  return (Array.isArray(values) ? values : []).flatMap((item) => {
+    const text = String(item?.text ?? item?.quote ?? "").trim();
+    const annotation = String(item?.annotation ?? item?.comment ?? "").trim();
+    return text || annotation ? [{ text, annotation }] : [];
+  });
+}
+
+function embeddedResponseAnnotations(value) {
+  const text = String(value ?? "");
+  const block = text.match(/<response-annotations>\s*([\s\S]*?)\s*<\/response-annotations>/iu);
+  const requestMarker = /^##\s*My request for Codex:\s*$/imu;
+  if (!block || !requestMarker.test(text)) return null;
+  let parsed = [];
+  try {
+    const valueFromJson = JSON.parse(block[1]);
+    if (Array.isArray(valueFromJson)) parsed = valueFromJson;
+  } catch {
+    // Even a damaged legacy envelope must not expose its service wrapper.
+  }
+  const request = text.split(requestMarker).slice(1).join("\n").trim();
+  return { annotations: normalizedResponseAnnotations(parsed), request };
+}
+
+function normalizedUserMessage(message) {
+  if (message?.role !== "user") return message;
+  const embedded = embeddedResponseAnnotations(message.text);
+  const structured = normalizedResponseAnnotations(message.responseAnnotations);
+  const annotations = structured.length ? structured : embedded?.annotations ?? [];
+  const explicitRequest = String(message.responseAnnotationRequest ?? "").trim();
+  const request = explicitRequest || embedded?.request || "";
+  return {
+    ...message,
+    text: embedded || annotations.length ? request : String(message.text ?? ""),
+    ...(annotations.length ? { responseAnnotations: annotations } : {}),
+    ...(request ? { responseAnnotationRequest: request } : {}),
+  };
+}
+
 function reconcile(serverMessages, outgoingMessages) {
   const outgoing = Array.isArray(outgoingMessages) ? outgoingMessages : [];
   const clientOutgoing = new Map();
@@ -137,6 +176,10 @@ function mergeLiveUserMessages(messages, {
       role: "user",
       author: "Вы",
       text,
+      ...(Array.isArray(message.responseAnnotations) ? {
+        responseAnnotations: message.responseAnnotations.map((item) => ({ ...item })),
+        responseAnnotationRequest: String(message.responseAnnotationRequest ?? ""),
+      } : {}),
       time: message.time ?? time ?? null,
       attachments: Array.isArray(message.attachments) && message.attachments.length
         ? message.attachments.map((attachment) => ({ ...attachment }))
@@ -215,6 +258,7 @@ function hubErrorMessage(error) {
 
 globalThis.AgentHubMessageLifecycle = Object.freeze({
   activeStageLabel,
+  embeddedResponseAnnotations,
   hubErrorMessage,
   identityKey,
   isConnectionFailure,
@@ -223,6 +267,8 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   liveMessageMatch,
   markConnectionFailure,
   mergeLiveUserMessages,
+  normalizedResponseAnnotations,
+  normalizedUserMessage,
   reconcile,
   rememberBounded,
   reusableAttachmentPaths,

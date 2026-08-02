@@ -36,6 +36,41 @@ test("message lifecycle reconciles user messages by the official client id", () 
   assert.equal(result.matches[1].local.clientUserMessageId, "client-2");
 });
 
+test("response annotation envelopes become structured user messages", () => {
+  const raw = [
+    "# Response annotations:",
+    "<response-annotations>",
+    JSON.stringify([
+      { text: "Первая цитата", annotation: "Первый комментарий" },
+      { text: "Вторая цитата", annotation: "" },
+    ]),
+    "</response-annotations>",
+    "",
+    "## My request for Codex:",
+    "Общий вопрос",
+  ].join("\n");
+  const normalized = lifecycle.normalizedUserMessage({ role: "user", text: raw });
+  assert.equal(normalized.text, "Общий вопрос");
+  assert.equal(normalized.responseAnnotationRequest, "Общий вопрос");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(normalized.responseAnnotations)),
+    [
+      { text: "Первая цитата", annotation: "Первый комментарий" },
+      { text: "Вторая цитата", annotation: "" },
+    ],
+  );
+  assert.doesNotMatch(normalized.text, /response-annotations|My request for Codex/iu);
+});
+
+test("empty legacy annotation data still hides the service envelope", () => {
+  const raw = "# Response annotations:\n<response-annotations>\n"
+    + '[{"text":"","annotation":""}]\n</response-annotations>\n\n'
+    + "## My request for Codex:\nОбычный вопрос";
+  const normalized = lifecycle.normalizedUserMessage({ role: "user", text: raw });
+  assert.equal(normalized.text, "Обычный вопрос");
+  assert.deepEqual(JSON.parse(JSON.stringify(normalized.responseAnnotations ?? [])), []);
+});
+
 test("confirmed outgoing messages can be removed without resurrecting after history truncation", () => {
   const outgoing = new Map();
   const local = message("client-1", "Сообщение");

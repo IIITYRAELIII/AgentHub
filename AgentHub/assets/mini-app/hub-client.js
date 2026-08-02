@@ -39,6 +39,8 @@ const {
   looksLikeConnectionFailure,
   markConnectionFailure,
   mergeLiveUserMessages,
+  normalizedResponseAnnotations,
+  normalizedUserMessage,
   reconcile: reconcileMessageLifecycle,
   rememberBounded: rememberBoundedMessage,
   reusableAttachmentPaths,
@@ -146,7 +148,7 @@ function reconciledMessages(taskIdValue) {
     if (!matchedIds.has(message.clientUserMessageId)) result.push(message);
   }
   for (const clientUserMessageId of matchedIds) pending.delete(clientUserMessageId);
-  return visibleConversationMessages(result, {
+  return visibleConversationMessages(result.map(normalizedUserMessage), {
     deferredClientUserMessageIds,
     liveProbe: liveProbeByTask.get(taskIdValue) ?? null,
   });
@@ -549,6 +551,8 @@ function historyMessages(history, focusedTurn = null) {
         itemId: `${item.id}:prompt`,
         role: "user",
         text: item.prompt,
+        responseAnnotations: item.promptAnnotations,
+        responseAnnotationRequest: item.promptRequest,
       }] : []),
       ...(visibleAgent ? [visibleAgent] : item.completed && item.answer ? [{
         itemId: `${item.id}:answer`,
@@ -568,6 +572,10 @@ function historyMessages(history, focusedTurn = null) {
         ? "Вы"
         : history.provider === "claude" ? "Claude" : "Codex",
       text: message.text,
+      ...(message.role === "user" ? {
+        responseAnnotations: message.responseAnnotations,
+        responseAnnotationRequest: message.responseAnnotationRequest,
+      } : {}),
       activities: message.role === "agent" && item.completed ? (item.activities ?? []) : [],
       time: message.time ?? (message.role === "user" ? item.startedAt : item.completedAt) ?? null,
       attachments: attachmentViews(message.attachments),
@@ -587,6 +595,8 @@ function historyMessages(history, focusedTurn = null) {
       role: "user",
       author: "Вы",
       text: focusedTurn.prompt,
+      responseAnnotations: focusedTurn.promptAnnotations,
+      responseAnnotationRequest: focusedTurn.promptRequest,
       time: focusedTurn.startedAt,
     });
     messages.push({
@@ -809,6 +819,8 @@ agentHub.on("message:send", (request) => {
     role: "user",
     author: "Вы",
     text: visibleText,
+    responseAnnotations: normalizedResponseAnnotations(request.annotations),
+    responseAnnotationRequest: String(request.text ?? "").trim(),
     time: new Date().toISOString(),
     attachments: request.attachments ?? [],
     uploadedPaths: previousAttempt?.uploadedPaths ?? [],

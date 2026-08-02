@@ -7234,6 +7234,46 @@ html[data-view="statistics"] .statistics-view {
   display: block;
 }
 
+.msg-annotations {
+  display: grid;
+  gap: 0.55rem;
+  margin-bottom: 0.7rem;
+}
+
+.msg-annotation-content {
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  border-left: 3px solid var(--accent-line);
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.7rem;
+}
+
+.msg-annotation-label {
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.055em;
+  margin-bottom: 0.3rem;
+  text-transform: uppercase;
+}
+
+.msg-annotation-quote {
+  color: var(--text-soft);
+  font-size: 0.82rem;
+  font-style: italic;
+  white-space: pre-wrap;
+}
+
+.msg-annotation-comment {
+  border-top: 1px solid var(--line);
+  color: var(--text);
+  margin-top: 0.45rem;
+  padding-top: 0.45rem;
+}
+
+.msg-annotation-request {
+  color: var(--text);
+}
+
 /* ============================================================ Сервер === */
 
 .server-view {
