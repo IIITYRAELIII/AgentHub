@@ -8301,10 +8301,9 @@ process.on("unhandledRejection", (error) => {
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
-await runCodexRolloutContextSanitizer({ reschedule: false });
 // The control endpoint is intentionally available before provider recovery.
 // Desktop clients can then show the cached task list and retry state while a
-// slow or temporarily unhealthy Codex App Server is being initialized.
+// slow sanitizer or temporarily unhealthy Codex App Server is recovering.
 desktopControlServer = new DesktopControlServer({
   runtimeRoot: runtimeCommandRoot,
   handler: handleDesktopControl,
@@ -8313,6 +8312,7 @@ desktopControlServer = new DesktopControlServer({
     : undefined,
 });
 await desktopControlServer.start();
+await runCodexRolloutContextSanitizer({ reschedule: false });
 await initializeProvider();
 if (codexTransport.running) {
   await listAllCodexThreads()
