@@ -1837,6 +1837,22 @@ main {
   margin: 0;
 }
 
+.journal div[data-work-log-turn-children] {
+  border-left-color: var(--accent-line);
+  gap: 0.35rem;
+  margin-left: 1rem;
+  padding-left: 0.75rem;
+}
+
+.journal div[data-work-log-turn-children] > div[data-work-log-turn-entry]::before {
+  border-top-color: var(--accent-line);
+}
+
+.journal div[data-work-log-turn-entry][data-work-log-turn-depth]:not([data-work-log-turn-depth="0"])
+  > details[data-work-log-turn-details] {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
 /* предыдущие ходы */
 
 .journal details[data-work-log-previous-turns] {
@@ -4417,6 +4433,17 @@ html[data-surface="mobile"] .journal div[data-work-log-no-previous-turns] {
 
 html[data-surface="mobile"] .journal div[data-work-log-previous-turn-list] {
   padding-top: 0;
+}
+
+html[data-surface="mobile"] .journal div[data-work-log-turn-children] {
+  margin-left: 0.45rem;
+  padding-left: 0.45rem;
+}
+
+html[data-surface="mobile"] .journal div[data-work-log-turn-children]
+  > div[data-work-log-turn-entry]::before {
+  left: -0.45rem;
+  width: 0.38rem;
 }
 
 html[data-surface="mobile"] .journal summary[data-work-log-task-group-summary] {

@@ -4387,6 +4387,11 @@ function groupedTurn(entry, date) {
   return copy;
 }
 
+function isRootTurnEntry(entry) {
+  const depth = String(entry?.dataset?.workLogTurnDepth ?? "").trim();
+  return depth === "0" || (!depth && !entry?.closest?.("[data-work-log-turn-children]"));
+}
+
 function plainDateText(value) {
   return String(value ?? "").trim().match(/^\d{2}\.\d{2}\.\d{4}/u)?.[0] ?? "";
 }
@@ -4475,13 +4480,15 @@ function groupClaudeRowsInDay(day) {
   if (!rows.length) return;
   const primary = rows[0];
   const entries = [];
+  const metricEntries = [];
   const seen = new Set();
   for (const row of rows) {
     for (const entry of row.querySelectorAll("[data-work-log-turn-entry]")) {
       const id = entry.dataset.workLogTurnId || `${entries.length}`;
       if (seen.has(id)) continue;
       seen.add(id);
-      entries.push(entry.cloneNode(true));
+      metricEntries.push(entry);
+      if (isRootTurnEntry(entry)) entries.push(entry.cloneNode(true));
     }
   }
   entries.sort((left, right) => (
@@ -4500,7 +4507,7 @@ function groupClaudeRowsInDay(day) {
   replaceCollapsedTurnList(list, entries);
   const usage = primary.querySelector("[data-work-log-usage]");
   if (usage) {
-    const totals = creditsFromEntries(entries);
+    const totals = creditsFromEntries(metricEntries);
     if (state.selection.includeClaudeUsage === false) {
       const collapse = document.createElement("button");
       collapse.type = "button";
@@ -4919,6 +4926,7 @@ function taskGroupsFrom(source) {
             ? el("span", { "data-work-log-claude-work": "", text: "Claude - Work" })
             : row.querySelector("[data-work-log-task-content]")?.cloneNode(true),
           turns: [],
+          turnCount: 0,
           legacy: [],
           seenTurns: new Set(),
           durationSeconds: 0,
@@ -4947,6 +4955,7 @@ function taskGroupsFrom(source) {
         const turnId = String(entry.dataset.workLogTurnId ?? "").trim();
         if (turnId && group.seenTurns.has(turnId)) continue;
         if (turnId) group.seenTurns.add(turnId);
+        group.turnCount += 1;
         const elapsed = Number(entry.dataset.workLogTurnDurationSeconds);
         if (Number.isFinite(elapsed) && elapsed >= 0) {
           group.durationSeconds += elapsed;
@@ -4999,7 +5008,7 @@ function taskGroupsFrom(source) {
           );
           group.knownToolMetricTurns += 1;
         }
-        group.turns.push(groupedTurn(entry, date));
+        if (isRootTurnEntry(entry)) group.turns.push(groupedTurn(entry, date));
       }
       for (const outcome of row.querySelectorAll("[data-work-log-legacy-outcome]")) {
         const wrapper = document.createElement("div");
@@ -5015,7 +5024,7 @@ function taskGroupsFrom(source) {
   return [...groups.values()]
     .map((group) => ({
       ...group,
-      turnCount: group.turns.length,
+      turnCount: group.turnCount,
       credits: group.knownCredits ? group.credits : null,
       durationSeconds: group.knownDurations ? group.durationSeconds : null,
       fileTouches: group.knownFileTouches ? group.fileTouches : null,

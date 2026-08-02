@@ -195,6 +195,25 @@ function completedMcpCall(entry) {
   };
 }
 
+function subagentActivity(entry) {
+  if (entry?.type !== "event_msg" || entry.payload?.type !== "sub_agent_activity") return null;
+  const childThreadId = String(entry.payload?.agent_thread_id ?? "").trim();
+  if (!childThreadId || String(entry.payload?.kind ?? "") !== "started") return null;
+  return {
+    threadId: childThreadId,
+    eventId: String(entry.payload?.event_id ?? "").trim(),
+    agentPath: String(entry.payload?.agent_path ?? "").trim(),
+    occurredAt: Number(entry.payload?.occurred_at_ms) || 0,
+  };
+}
+
+function activityTurnId(entry, activeTurnIds, latestResponseTurnId = "") {
+  const exact = entryTurnId(entry);
+  if (exact) return exact;
+  if (latestResponseTurnId) return latestResponseTurnId;
+  return activeTurnIds.size === 1 ? [...activeTurnIds][0] : "";
+}
+
 function createTurnAccumulator(turnId) {
   const requestedTurnId = String(turnId ?? "").trim();
   if (!requestedTurnId) throw new Error("Codex turn id is required");
@@ -225,6 +244,7 @@ function createTurnAccumulator(turnId) {
   const patches = [];
   const imageGenerationCalls = new Map();
   const completedImageGenerationCalls = new Set();
+  const spawnedSubagents = new Map();
 
   const accept = (entry) => {
     index += 1;
@@ -291,6 +311,10 @@ function createTurnAccumulator(turnId) {
         completedImageGenerationCalls.add(callId);
       }
     }
+    const spawned = subagentActivity(entry);
+    if (spawned && activityTurnId(entry, activeTurnIds, latestResponseTurnId) === requestedTurnId) {
+      spawnedSubagents.set(spawned.threadId, spawned);
+    }
     if (exactTurnId === requestedTurnId) {
       for (const name of skillReads(entry, knownSkills)) skillsUsed.add(name);
     }
@@ -352,6 +376,7 @@ function createTurnAccumulator(turnId) {
       diff: patches.join("\n\n"),
       skillsUsed: [...skillsUsed],
       mcpCalls: [...mcpCalls.values()],
+      spawnedSubagents: [...spawnedSubagents.values()],
       toolMetricsKnown: true,
       imageGenerationCount,
       estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
@@ -559,6 +584,7 @@ function createHistoricalTurn(turnId) {
     patches: [],
     skillsUsed: new Set(),
     mcpCalls: new Map(),
+    spawnedSubagents: new Map(),
     imageGenerationCalls: new Set(),
     estimatedCredits: 0,
     estimateKind: "",
@@ -690,6 +716,13 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       if (turn) turn.mcpCalls.set(mcpCall.id, mcpCall);
       touch(turn, timestamp);
     }
+    const spawned = subagentActivity(entry);
+    if (spawned) {
+      const attributedTurnId = activityTurnId(entry, activeTurnIds, latestResponseTurnId);
+      const turn = ensureTurn(attributedTurnId);
+      if (turn) turn.spawnedSubagents.set(spawned.threadId, spawned);
+      touch(turn, timestamp);
+    }
     if (entry?.type === "response_item"
       && exactTurn
       && entry.payload?.type === "message"
@@ -759,6 +792,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
         diff: turn.patches.join("\n\n"),
         skillsUsed: [...turn.skillsUsed],
         mcpCalls: [...turn.mcpCalls.values()],
+        spawnedSubagents: [...turn.spawnedSubagents.values()],
         toolMetricsKnown: true,
         imageGenerationCount,
         estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
@@ -768,6 +802,43 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       };
     }),
   };
+}
+
+export function codexSubagentSpawnFromJsonl(text, childThreadId) {
+  const childId = String(childThreadId ?? "").trim();
+  if (!childId) return null;
+  const activeTurnIds = new Set();
+  let latestResponseTurnId = "";
+  let matched = null;
+  for (const { value: entry } of parsedEntries(text)) {
+    const lifecycle = entry?.type === "event_msg" ? String(entry.payload?.type ?? "") : "";
+    const lifecycleTurnId = lifecycle ? String(entry.payload?.turn_id ?? "").trim() : "";
+    if (lifecycle === "task_started" && lifecycleTurnId) activeTurnIds.add(lifecycleTurnId);
+    else if (lifecycleTerminalStatus(lifecycle) && lifecycleTurnId) activeTurnIds.delete(lifecycleTurnId);
+    const exactTurnId = entryTurnId(entry);
+    if (exactTurnId && ["response_item", "turn_context"].includes(String(entry?.type ?? ""))) {
+      latestResponseTurnId = exactTurnId;
+    }
+    const spawned = subagentActivity(entry);
+    if (spawned?.threadId === childId) {
+      const parentTurnId = activityTurnId(entry, activeTurnIds, latestResponseTurnId);
+      if (parentTurnId) matched = { ...spawned, parentTurnId };
+    }
+    if (entry?.type === "event_msg" && entry.payload?.type === "token_count") {
+      latestResponseTurnId = "";
+    }
+  }
+  return matched;
+}
+
+export async function readCodexSubagentSpawn(transcriptPath, childThreadId, {
+  readTailImpl = readCodexRolloutTail,
+  maxBytes = DEFAULT_ROLLOUT_TAIL_BYTES,
+} = {}) {
+  return codexSubagentSpawnFromJsonl(
+    await readTailImpl(transcriptPath, { maxBytes }),
+    childThreadId,
+  );
 }
 
 export async function scanCodexTurnPricingMetadata(transcriptPath, turnIds, {

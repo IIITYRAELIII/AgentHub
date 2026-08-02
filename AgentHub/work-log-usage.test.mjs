@@ -648,7 +648,7 @@ test("projectWorkLogUsage canonicalizes a unique legacy row and refreshes its ta
   );
   assert.match(
     projected,
-    /data-work-log-turn-provider="codex" data-work-log-turn-thread-id="thread-legacy" data-work-log-task-thread-id="thread-legacy" data-work-log-turn-id="turn-legacy"/,
+    /data-work-log-turn-provider="codex" data-work-log-turn-thread-id="thread-legacy" data-work-log-task-thread-id="thread-legacy"[^>]*data-work-log-turn-id="turn-legacy"/,
   );
   assert.match(
     projected,
@@ -852,6 +852,7 @@ test("subagent usage is summed into its root task and shown as child turns", () 
       threadId: "child",
       taskThreadId: "root",
       parentThreadId: "root",
+      parentTurnId: "root-turn",
       aggregateOnly: true,
       turnId: "child-turn",
       taskTitle: "Root task",
@@ -865,6 +866,7 @@ test("subagent usage is summed into its root task and shown as child turns", () 
       threadId: "child-2",
       taskThreadId: "root",
       parentThreadId: "root",
+      parentTurnId: "root-turn",
       aggregateOnly: true,
       turnId: "child-turn-2",
       taskTitle: "Root task",
@@ -874,19 +876,39 @@ test("subagent usage is summed into its root task and shown as child turns", () 
       usage: { inputTokens: 25_000 },
       completedAt: "2026-07-27T00:03:00.000Z",
     },
+    "codex\0grandchild\0grandchild-turn": {
+      provider: "codex",
+      threadId: "grandchild",
+      taskThreadId: "root",
+      parentThreadId: "child",
+      parentTurnId: "child-turn",
+      aggregateOnly: true,
+      turnId: "grandchild-turn",
+      taskTitle: "Root task",
+      title: "Вложенный субагент",
+      usageReported: true,
+      usage: { inputTokens: 10_000 },
+      completedAt: "2026-07-27T00:04:00.000Z",
+    },
   });
 
   assert.match(projected, /data-work-log-thread-id="root"/);
-  assert.match(projected, /<span data-usage-label>Итого<\/span> <span [^>]*data-kilo-usage[^>]*>21,9 cr<\/span>/);
-  assert.equal((projected.match(/data-work-log-turn-id=/g) ?? []).length, 3);
-  assert.equal((projected.match(/data-work-log-turn-subagent="1"/g) ?? []).length, 2);
+  assert.match(projected, /<span data-usage-label>Итого<\/span> <span [^>]*data-kilo-usage[^>]*>23,1 cr<\/span>/);
+  assert.equal((projected.match(/data-work-log-turn-id=/g) ?? []).length, 4);
+  assert.equal((projected.match(/data-work-log-turn-subagent="1"/g) ?? []).length, 3);
   assert.match(projected, /Основной результат/);
   assert.match(projected, /Субагент · Скрытый результат субагента/);
   assert.match(projected, /Субагент · Прерванный скрытый результат субагента/);
+  assert.match(projected, /Субагент · Вложенный субагент/);
   assert.match(
     projected,
-    /data-work-log-turn-thread-id="child" data-work-log-task-thread-id="root" data-work-log-turn-id="child-turn"/,
+    /data-work-log-turn-thread-id="child" data-work-log-task-thread-id="root" data-work-log-turn-parent-thread-id="root" data-work-log-turn-parent-turn-id="root-turn" data-work-log-turn-depth="1" data-work-log-turn-id="child-turn"/,
   );
+  assert.match(
+    projected,
+    /data-work-log-turn-id="root-turn"[\s\S]*data-work-log-turn-children>[\s\S]*data-work-log-turn-id="child-turn"[\s\S]*data-work-log-turn-children>[\s\S]*data-work-log-turn-id="grandchild-turn"/,
+  );
+  assert.match(projected, /data-work-log-turn-depth="2" data-work-log-turn-id="grandchild-turn"/);
   assert.doesNotMatch(projected, /data-work-log-thread-id="child"/);
 });
 

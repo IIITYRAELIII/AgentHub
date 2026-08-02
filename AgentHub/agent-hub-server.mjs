@@ -55,7 +55,9 @@ import {
   discoverCodexRollouts,
   findCodexRolloutPath,
   readCodexRolloutSession,
+  readCodexSubagentSpawn,
   readCodexTurnUsage,
+  scanCodexHistoricalRollout,
   scanCodexTurnPricingMetadata,
 } from "./codex-turn-usage.mjs";
 import { CodexTerminalAudit } from "./codex-terminal-audit.mjs";
@@ -1436,6 +1438,7 @@ async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } =
     serviceTier: completion.serviceTier,
     taskThreadId: completion.taskThreadId,
     parentThreadId: completion.parentThreadId,
+    parentTurnId: completion.parentTurnId,
     aggregateOnly: completion.aggregateOnly,
     provisional: completion.provisional,
     taskTitle: completion.taskTitle,
@@ -6418,6 +6421,23 @@ async function codexAccountingThread(thread) {
   return resolved;
 }
 
+async function codexSubagentParentTurnId(thread, accountingThread) {
+  const childThreadId = String(thread?.id ?? "").trim();
+  const parentThreadId = String(accountingThread?.parentThreadId ?? "").trim();
+  if (!childThreadId || !parentThreadId) return "";
+  const transcriptPath = await findCodexRolloutPath(parentThreadId, "");
+  if (!transcriptPath) return "";
+  const recent = await readCodexSubagentSpawn(transcriptPath, childThreadId).catch(() => null);
+  if (recent?.parentTurnId) return recent.parentTurnId;
+  const historical = await scanCodexHistoricalRollout(transcriptPath).catch(() => null);
+  for (const turn of historical?.turns ?? []) {
+    if ((turn.spawnedSubagents ?? []).some((spawned) => spawned.threadId === childThreadId)) {
+      return String(turn.turnId ?? "").trim();
+    }
+  }
+  return "";
+}
+
 async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
   const completedAtMs = Date.parse(String(terminal?.completedAt ?? ""));
   if (terminal?.status === "completed"
@@ -6440,6 +6460,9 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
   reconcilingCodexTerminalTurns.add(key);
   try {
     const accountingThread = await codexAccountingThread(thread);
+    const parentTurnId = accountingThread.isSubagent
+      ? await codexSubagentParentTurnId(thread, accountingThread)
+      : "";
     const usageResult = await readCodexTurnUsage(thread.path, identity.turnId);
     const authoritativeStatus = terminal?.authoritative === true;
     if (!usageResult.terminal && !authoritativeStatus) return false;
@@ -6478,6 +6501,7 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
         ...identity,
         taskThreadId: accountingThread.threadId,
         parentThreadId: accountingThread.parentThreadId,
+        parentTurnId,
         aggregateOnly: accountingThread.isSubagent,
         projectRoot: project.path,
         taskTitle: await runtimeCommandTaskTitle({

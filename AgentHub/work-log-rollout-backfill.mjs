@@ -162,9 +162,27 @@ export async function buildWorkLogRolloutBackfill({
   let inheritedTurns = 0;
   let laterTurns = 0;
   let emptyTurns = 0;
+  const spawnByChildThread = new Map();
+  for (const scan of scans) {
+    const parentThreadId = String(scan.session.threadId ?? "").trim();
+    for (const turn of scan.turns ?? []) {
+      for (const spawned of turn.spawnedSubagents ?? []) {
+        const childThreadId = String(spawned?.threadId ?? "").trim();
+        if (!childThreadId) continue;
+        spawnByChildThread.set(childThreadId, {
+          parentThreadId,
+          parentTurnId: String(turn.turnId ?? "").trim(),
+        });
+      }
+    }
+  }
   for (const scan of scans) {
     const threadId = String(scan.session.threadId).trim();
     const parentThreadId = String(scan.session.parentThreadId ?? "").trim();
+    const spawn = spawnByChildThread.get(threadId);
+    const parentTurnId = spawn?.parentThreadId === parentThreadId
+      ? spawn.parentTurnId
+      : "";
     const aggregateOnly = Boolean(parentThreadId);
     const taskThreadId = rootThreadId(threadId, sessions);
     const taskTitle = titles.get(taskThreadId) || titles.get(threadId) || "Без названия";
@@ -198,6 +216,7 @@ export async function buildWorkLogRolloutBackfill({
         threadId,
         taskThreadId,
         parentThreadId,
+        parentTurnId,
         aggregateOnly,
         provisional: false,
         turnId: turn.turnId,

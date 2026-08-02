@@ -161,6 +161,7 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         threadId,
         taskThreadId,
         parentThreadId: String(record?.parentThreadId ?? "").trim(),
+        parentTurnId: String(record?.parentTurnId ?? "").trim(),
         aggregateOnly: record?.aggregateOnly === true,
         provisional: record?.provisional === true || (
           legacyLedger
@@ -333,7 +334,7 @@ function changedDiffLineCount(value) {
   ).length;
 }
 
-function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0) {
+function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0, depth = 0, children = "") {
   const breakdown = recordCreditBreakdown(record);
   const recordTotal = breakdown.total;
   const elapsedSeconds = durationSeconds(record?.startedAt, record?.completedAt);
@@ -369,6 +370,8 @@ function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0) {
   const provider = escapeHtmlAttribute(record?.provider);
   const turnThread = escapeHtmlAttribute(record?.threadId);
   const rootThread = escapeHtmlAttribute(taskThreadId(record));
+  const parentThread = escapeHtmlAttribute(record?.parentThreadId);
+  const parentTurn = escapeHtmlAttribute(record?.parentTurnId);
   const timingAttributes = elapsedSeconds === null
     ? ""
     : ` data-work-log-turn-duration-seconds="${elapsedSeconds}"`;
@@ -406,6 +409,8 @@ function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0) {
     : "";
   return `<div data-work-log-turn-entry data-work-log-turn-provider="${provider}" `
     + `data-work-log-turn-thread-id="${turnThread}" data-work-log-task-thread-id="${rootThread}" `
+    + `data-work-log-turn-parent-thread-id="${parentThread}" data-work-log-turn-parent-turn-id="${parentTurn}" `
+    + `data-work-log-turn-depth="${escapeHtmlAttribute(String(depth))}" `
     + `data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}" ${profileAttributes}${toolProfileAttributes}`
     + `${timingAttributes}${completedAtAttribute}${creditsAttribute}>`
     + "<details data-work-log-turn-details>"
@@ -429,7 +434,99 @@ function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0) {
     + '<div data-work-log-turn-expanded>'
     + `<div data-work-log-turn-meta-details>${metaDetails}</div>`
     + `<div data-work-log-turn-body-details>${bodyDetails}</div>`
-    + "</div></details></div>";
+    + `</div></details>${children ? `<div data-work-log-turn-children>${children}</div>` : ""}</div>`;
+}
+
+function recordTimestamp(record) {
+  const value = Date.parse(String(record?.completedAt || record?.startedAt || ""));
+  return Number.isFinite(value) ? value : 0;
+}
+
+function turnTree(records) {
+  const nodes = records.map((record, index) => ({
+    record,
+    index,
+    children: [],
+    latestAt: recordTimestamp(record),
+  }));
+  const exact = new Map(nodes.map((node) => [
+    `${String(node.record?.threadId ?? "").trim()}\u0000${String(node.record?.turnId ?? "").trim()}`,
+    node,
+  ]));
+  const byThread = new Map();
+  for (const node of nodes) {
+    const threadId = String(node.record?.threadId ?? "").trim();
+    if (!byThread.has(threadId)) byThread.set(threadId, []);
+    byThread.get(threadId).push(node);
+  }
+  const roots = [];
+  for (const node of nodes) {
+    const parentThreadId = String(node.record?.parentThreadId ?? "").trim();
+    const parentTurnId = String(node.record?.parentTurnId ?? "").trim();
+    let parent = parentThreadId && parentTurnId
+      ? exact.get(`${parentThreadId}\u0000${parentTurnId}`)
+      : null;
+    if (!parent && parentThreadId) {
+      const childStartedAt = Date.parse(String(node.record?.startedAt || node.record?.completedAt || ""));
+      const candidates = (byThread.get(parentThreadId) ?? [])
+        .filter((candidate) => candidate !== node)
+        .map((candidate) => ({
+          candidate,
+          startedAt: Date.parse(String(candidate.record?.startedAt || candidate.record?.completedAt || "")),
+          completedAt: Date.parse(String(candidate.record?.completedAt || candidate.record?.startedAt || "")),
+        }))
+        .filter(({ startedAt }) => !Number.isFinite(childStartedAt)
+          || !Number.isFinite(startedAt)
+          || startedAt <= childStartedAt)
+        .sort((left, right) => (right.startedAt || 0) - (left.startedAt || 0));
+      parent = candidates.find(({ completedAt }) => !Number.isFinite(childStartedAt)
+        || !Number.isFinite(completedAt)
+        || completedAt >= childStartedAt)?.candidate ?? candidates[0]?.candidate ?? null;
+    }
+    if (parent) {
+      node.parent = parent;
+      parent.children.push(node);
+    }
+    else roots.push(node);
+  }
+  const reachable = new Set();
+  const markReachable = (node) => {
+    if (reachable.has(node)) return;
+    reachable.add(node);
+    for (const child of node.children) markReachable(child);
+  };
+  for (const root of roots) markReachable(root);
+  for (const node of nodes) {
+    if (reachable.has(node)) continue;
+    if (node.parent) node.parent.children = node.parent.children.filter((child) => child !== node);
+    node.parent = null;
+    roots.push(node);
+    markReachable(node);
+  }
+  const sortAndMeasure = (node, ancestors = new Set()) => {
+    if (ancestors.has(node)) return node.latestAt;
+    const nextAncestors = new Set(ancestors).add(node);
+    node.children = node.children.filter((child) => !nextAncestors.has(child));
+    for (const child of node.children) {
+      node.latestAt = Math.max(node.latestAt, sortAndMeasure(child, nextAncestors));
+    }
+    node.children.sort((left, right) => right.latestAt - left.latestAt || left.index - right.index);
+    return node.latestAt;
+  };
+  for (const root of roots) sortAndMeasure(root);
+  roots.sort((left, right) => right.latestAt - left.latestAt || left.index - right.index);
+  return roots;
+}
+
+function treeNodeCount(node) {
+  return 1 + node.children.reduce((total, child) => total + treeNodeCount(child), 0);
+}
+
+function formatTurnTreeNode(node, taskCredits, depth = 0) {
+  const children = node.children
+    .map((child) => formatTurnTreeNode(child, taskCredits, depth + 1))
+    .join("\n");
+  return formatTurnEntry(node.record, "", taskCredits, depth, children);
 }
 
 function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
@@ -437,18 +534,17 @@ function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
     (total, record) => total + recordCredits(record),
     0,
   );
-  const firstRegisteredTurn = records.findIndex((record) => record?.workLogId);
-  const legacyFilesTarget = firstRegisteredTurn >= 0 ? firstRegisteredTurn : 0;
-  const turnRows = records.map((record, index) => formatTurnEntry(
-    record,
-    index === legacyFilesTarget ? legacyFiles : "",
-    taskCredits,
-  ));
+  const roots = turnTree(records);
+  const turnRows = roots.map((node) => formatTurnTreeNode(node, taskCredits));
+  const previousTurnCount = roots.slice(1).reduce(
+    (total, node) => total + treeNodeCount(node),
+    0,
+  );
   const previousTurns = turnRows.length > 1
     ? [
       "<details data-work-log-previous-turns>",
       "<summary>",
-      `<span data-work-log-previous-turns-closed>Показать предыдущие ходы (${turnRows.length - 1})</span>`,
+      `<span data-work-log-previous-turns-closed>Показать предыдущие ходы (${previousTurnCount})</span>`,
       '<span data-work-log-previous-turns-open>Свернуть</span>',
       "</summary>",
       `<div data-work-log-previous-turn-list>${turnRows.slice(1).join("\n")}</div>`,
@@ -1304,6 +1400,7 @@ function incomingLedgerRecord({
   taskTitle,
   taskThreadId,
   parentThreadId,
+  parentTurnId,
   aggregateOnly,
   provisional,
   title,
@@ -1333,6 +1430,7 @@ function incomingLedgerRecord({
     threadId: String(threadId).trim(),
     taskThreadId: String(taskThreadId ?? threadId).trim(),
     parentThreadId: String(parentThreadId ?? "").trim(),
+    parentTurnId: String(parentTurnId ?? "").trim(),
     aggregateOnly: aggregateOnly === true,
     provisional: provisional === true,
     turnId: String(turnId).trim(),
@@ -1370,6 +1468,7 @@ function mergeLedgerRecord(existing, incoming) {
     "threadId",
     "taskThreadId",
     "parentThreadId",
+    "parentTurnId",
     "turnId",
     "taskTitle",
     "title",
@@ -2017,6 +2116,7 @@ export class WorkLogUsageStore {
     serviceTier,
     taskThreadId,
     parentThreadId,
+    parentTurnId,
     aggregateOnly,
     provisional,
     taskTitle,
@@ -2061,6 +2161,7 @@ export class WorkLogUsageStore {
         serviceTier,
         taskThreadId,
         parentThreadId,
+        parentTurnId,
         aggregateOnly,
         provisional,
         taskTitle,
@@ -2116,6 +2217,7 @@ export class WorkLogUsageStore {
     serviceTier,
     taskThreadId,
     parentThreadId,
+    parentTurnId,
     aggregateOnly,
     provisional,
     taskTitle,
@@ -2150,6 +2252,7 @@ export class WorkLogUsageStore {
         serviceTier,
         taskThreadId,
         parentThreadId,
+        parentTurnId,
         aggregateOnly,
         provisional,
         taskTitle,

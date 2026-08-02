@@ -5,6 +5,7 @@ import test from "node:test";
 
 import {
   codexRecentTerminalTurnsFromJsonl,
+  codexSubagentSpawnFromJsonl,
   codexTurnUsageFromJsonl,
   discoverCodexRollouts,
   discoverCodexSubagentRollouts,
@@ -238,6 +239,44 @@ test("subagent rollout discovery includes active and archived sessions", async (
     }),
   });
   assert.deepEqual(result.map((value) => value.threadId).sort(), ["active", "archived"]);
+});
+
+test("subagent activity identifies its exact parent turn", async () => {
+  const parentTurnId = "019f1ec8-8de7-7aa3-92b6-045036561c8e";
+  const childThreadId = "019f1ec9-8de7-7aa3-92b6-045036561c8e";
+  const text = [
+    line({ timestamp: "2026-07-01T10:00:00Z", type: "event_msg", payload: {
+      type: "task_started", turn_id: parentTurnId,
+    } }),
+    line({ timestamp: "2026-07-01T10:00:05Z", type: "event_msg", payload: {
+      type: "sub_agent_activity",
+      event_id: "call-child",
+      occurred_at_ms: 1_788_000_005_000,
+      agent_thread_id: childThreadId,
+      agent_path: "/root/child",
+      kind: "started",
+    } }),
+    line({ timestamp: "2026-07-01T10:01:00Z", type: "event_msg", payload: {
+      type: "task_complete", turn_id: parentTurnId,
+    } }),
+  ].join("\n");
+
+  assert.deepEqual(codexSubagentSpawnFromJsonl(text, childThreadId), {
+    threadId: childThreadId,
+    eventId: "call-child",
+    agentPath: "/root/child",
+    occurredAt: 1_788_000_005_000,
+    parentTurnId,
+  });
+  const historical = await scanCodexHistoricalRollout("fixture.jsonl", {
+    createReadStreamImpl: () => Readable.from([text]),
+  });
+  assert.deepEqual(historical.turns[0].spawnedSubagents, [{
+    threadId: childThreadId,
+    eventId: "call-child",
+    agentPath: "/root/child",
+    occurredAt: 1_788_000_005_000,
+  }]);
 });
 
 test("complete rollout discovery also includes ordinary sessions", async () => {

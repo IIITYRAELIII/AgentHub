@@ -762,6 +762,16 @@ test("annotation button clearly quotes selected agent text", () => {
   assert.match(app, /document\.addEventListener\("contextmenu"[\s\S]*openAnnotationContextMenu/u);
 });
 
+test("journal preserves recursive subagent trees in date and task groupings", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const workLogStyles = fs.readFileSync(require.resolve("../work-log.css"), "utf8");
+  assert.match(app, /function isRootTurnEntry\(entry\)/u);
+  assert.match(app, /if \(isRootTurnEntry\(entry\)\) group\.turns\.push/u);
+  assert.match(styles, /\.journal div\[data-work-log-turn-children\]/u);
+  assert.match(workLogStyles, /div\[data-work-log-turn-children\]/u);
+});
+
 test("response annotations render as quote cards without the service envelope", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");

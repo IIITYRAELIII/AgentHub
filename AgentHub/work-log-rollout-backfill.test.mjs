@@ -96,6 +96,7 @@ test("rollout backfill replaces old ledger history, preserves newer records and 
           startedAt: "2026-07-25T09:00:00Z",
           completedAt: "2026-07-25T09:01:00Z",
           changedFiles: [],
+          spawnedSubagents: [{ threadId: CHILD_THREAD }],
         }],
       }],
       ["child.jsonl", {
@@ -142,6 +143,10 @@ test("rollout backfill replaces old ledger history, preserves newer records and 
     assert.equal(migration.report.removedRecords, 1);
     assert.equal(migration.report.preservedRecords, 2);
     assert.equal(migration.report.preservedNonCodexRecords, 1);
+    assert.equal(
+      migration.ledger.turns[`codex\u0000${CHILD_THREAD}\u0000${CHILD_TURN}`].parentTurnId,
+      OLD_TURN,
+    );
     const applied = await applyWorkLogRolloutBackfill({
       migration,
       databaseFile,
