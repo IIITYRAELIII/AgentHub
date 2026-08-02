@@ -281,7 +281,10 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.ok((await meadow.arrayBuffer()).byteLength > 100_000);
     /* Три кадра «Озера» — единственные JPEG среди фонов: фотография и две
        живописи в PNG весили бы впятеро больше при том же виде. */
-    for (const name of ["lake-summer.jpg", "lake-watercolor.jpg", "lake-oil.jpg"]) {
+    for (const name of [
+      "lake-summer.jpg", "lake-watercolor.jpg", "lake-oil.jpg",
+      "gothic-tower.jpg", "gothic-harbor.jpg", "gothic-chapel.jpg", "gothic-keep.jpg",
+    ]) {
       const lake = await fetch(`${address.url}${name}`);
       assert.equal(lake.status, 200, name);
       assert.equal(lake.headers.get("content-type"), "image/jpeg", name);

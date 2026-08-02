@@ -265,9 +265,9 @@ html[data-theme="gothic"] {
   --display-spacing: 0.045em;
   --display-transform: uppercase;
   --display-shadow:
-    0 2px 1px #050302,
-    0 -1px 0 rgba(255, 226, 156, 0.18),
-    0 0 18px rgba(190, 126, 42, 0.18);
+    0 2px 1px #030405,
+    0 -1px 0 rgba(214, 232, 255, 0.18),
+    0 0 18px rgba(108, 148, 200, 0.2);
   --title-weight: 600;
   --label-spacing: 0.18em;
 
@@ -277,74 +277,76 @@ html[data-theme="gothic"] {
   --radius-chip: 2px;
   --rail-width: 3px;
 
-  --bg: #090806;
-  --surface-1: rgba(222, 200, 154, 0.035);
-  --surface-2: rgba(222, 200, 154, 0.065);
-  --surface-3: rgba(222, 200, 154, 0.105);
-  --sunken: rgba(3, 2, 1, 0.58);
+  --bg: #07080b;
+  --surface-1: rgba(186, 204, 228, 0.035);
+  --surface-2: rgba(186, 204, 228, 0.065);
+  --surface-3: rgba(186, 204, 228, 0.105);
+  --sunken: rgba(2, 3, 5, 0.58);
 
-  --line: rgba(189, 159, 101, 0.2);
-  --line-strong: rgba(211, 178, 110, 0.38);
+  --line: rgba(126, 150, 184, 0.2);
+  --line-strong: rgba(146, 172, 208, 0.38);
 
   --card-bg:
-    linear-gradient(176deg, rgba(43, 40, 33, 0.94), rgba(18, 17, 14, 0.96) 56%, rgba(10, 9, 8, 0.98));
+    linear-gradient(176deg, rgba(34, 39, 50, 0.94), rgba(15, 17, 22, 0.96) 56%, rgba(8, 9, 12, 0.98));
   --card-bg-open:
-    linear-gradient(176deg, rgba(51, 46, 36, 0.95), rgba(23, 20, 16, 0.97) 56%, rgba(11, 10, 8, 0.99));
+    linear-gradient(176deg, rgba(41, 47, 60, 0.95), rgba(19, 22, 29, 0.97) 56%, rgba(9, 10, 13, 0.99));
   --card-texture:
-    linear-gradient(92deg, transparent 0 48%, rgba(236, 210, 154, 0.022) 49% 50%, transparent 51%),
-    radial-gradient(44% 54% at 18% 16%, rgba(239, 218, 170, 0.06), transparent 72%),
+    linear-gradient(92deg, transparent 0 48%, rgba(206, 222, 244, 0.022) 49% 50%, transparent 51%),
+    radial-gradient(44% 54% at 18% 16%, rgba(204, 220, 244, 0.055), transparent 72%),
     radial-gradient(36% 46% at 82% 76%, rgba(0, 0, 0, 0.44), transparent 76%);
-  --card-border: rgba(176, 143, 82, 0.28);
-  --card-border-open: rgba(218, 179, 102, 0.52);
+  --card-border: rgba(122, 146, 180, 0.28);
+  --card-border-open: rgba(154, 184, 224, 0.52);
   --card-shadow:
-    inset 0 1px 0 rgba(244, 218, 164, 0.09),
+    inset 0 1px 0 rgba(206, 224, 248, 0.09),
     inset 0 -1px 0 rgba(0, 0, 0, 0.86),
     inset 0 0 28px rgba(0, 0, 0, 0.2),
     0 24px 46px -30px rgba(0, 0, 0, 0.95);
 
-  --plate-bg: linear-gradient(176deg, rgba(50, 45, 35, 0.95), rgba(22, 20, 16, 0.98) 58%, rgba(12, 11, 9, 0.99));
+  --plate-bg: linear-gradient(176deg, rgba(40, 46, 59, 0.95), rgba(18, 21, 27, 0.98) 58%, rgba(10, 11, 15, 0.99));
   --plate-texture:
-    linear-gradient(90deg, rgba(232, 204, 145, 0.025), transparent 18% 82%, rgba(0, 0, 0, 0.18)),
-    radial-gradient(52% 60% at 22% 24%, rgba(231, 207, 158, 0.055), transparent 74%),
+    linear-gradient(90deg, rgba(200, 218, 242, 0.025), transparent 18% 82%, rgba(0, 0, 0, 0.18)),
+    radial-gradient(52% 60% at 22% 24%, rgba(198, 216, 242, 0.05), transparent 74%),
     radial-gradient(46% 54% at 82% 78%, rgba(0, 0, 0, 0.38), transparent 76%);
   --plate-shadow:
-    inset 0 1px 0 rgba(238, 211, 157, 0.1),
+    inset 0 1px 0 rgba(204, 222, 246, 0.1),
     inset 0 -1px 0 rgba(0, 0, 0, 0.82);
   --turn-shadow: 0 12px 26px -18px rgba(0, 0, 0, 1);
 
-  --text: #ede5d2;
-  --text-soft: #c4b89e;
-  --text-muted: #948873;
-  --text-faint: #6f6656;
+  --text: #e6ecf5;
+  --text-soft: #b6c1d1;
+  --text-muted: #8a94a5;
+  --text-faint: #666f7e;
 
-  --accent: #d4aa58;
-  --accent-soft: rgba(212, 170, 88, 0.12);
-  --accent-line: rgba(212, 170, 88, 0.5);
-  --accent-glow: 0 0 20px -8px rgba(230, 164, 55, 0.76);
-  --selection: rgba(212, 170, 88, 0.28);
+  /* Ночь, туман и луна: холодная сталь вместо прежнего золота. Тёплый огонь
+     остаётся только на самих кадрах — факелы, свечи, окна башни. */
+  --accent: #8fa8c8;
+  --accent-soft: rgba(143, 168, 200, 0.12);
+  --accent-line: rgba(143, 168, 200, 0.5);
+  --accent-glow: 0 0 20px -8px rgba(150, 180, 220, 0.76);
+  --selection: rgba(143, 168, 200, 0.28);
   --brand-gradient:
-    radial-gradient(68% 72% at 32% 24%, rgba(250, 216, 145, 0.2), transparent 70%),
-    linear-gradient(176deg, #4b3d27, #15110c 68%, #080705);
+    radial-gradient(68% 72% at 32% 24%, rgba(186, 212, 246, 0.2), transparent 70%),
+    linear-gradient(176deg, #2f3a4b, #111419 68%, #06070a);
   --brand-shadow:
-    inset 0 1px 0 rgba(246, 219, 164, 0.16),
+    inset 0 1px 0 rgba(198, 220, 248, 0.16),
     inset 0 -8px 14px rgba(0, 0, 0, 0.48),
-    0 0 22px -10px rgba(224, 151, 43, 0.9);
+    0 0 22px -10px rgba(126, 166, 214, 0.9);
 
-  --provider-none: #827766;
-  --provider-codex: #d0c5ad;
+  --provider-none: #6d7889;
+  --provider-codex: #b6c6da;
   --provider-claude: #c88956;
 
-  --ok: #b8b07c;
-  --pending: #c78445;
+  --ok: #86b09a;
+  --pending: #c9a061;
 
-  --dot-input: #b8c0c7;
-  --dot-cache: #a69a79;
-  --dot-output: #d4aa58;
-  --dot-think: #8e8296;
+  --dot-input: #9fb6cf;
+  --dot-cache: #8d9aab;
+  --dot-output: #8fa8c8;
+  --dot-think: #9a91b4;
 
-  --space-glow-a: rgba(214, 154, 56, 0.08);
-  --space-glow-b: rgba(84, 104, 119, 0.09);
-  --space-base: linear-gradient(176deg, #16130f 0, #0d0b09 24rem, var(--bg) 100%);
+  --space-glow-a: rgba(126, 166, 214, 0.08);
+  --space-glow-b: rgba(60, 78, 100, 0.09);
+  --space-base: linear-gradient(176deg, #12151c 0, #0a0c10 24rem, var(--bg) 100%);
   --space-star: transparent;
   --star-opacity: 0;
 }
@@ -2946,7 +2948,7 @@ html[data-theme="pulsar"] .eyebrow {
   opacity: 0.72;
 }
 
-/* ======================= «Gothic»: крепость, руны, факелы и старое золото === */
+/* ======================= «Gothic»: крепость, руны, факелы и лунная сталь === */
 
 html[data-theme="gothic"] {
   --gothic-image: url("/gothic-concrete.png");
@@ -2969,20 +2971,20 @@ html[data-theme="gothic"] body::after {
 
 html[data-theme="gothic"] .app-header {
   background:
-    linear-gradient(90deg, rgba(201, 161, 85, 0.06), transparent 28% 70%, rgba(225, 139, 38, 0.07)),
-    linear-gradient(176deg, rgba(32, 28, 21, 0.96), rgba(11, 10, 8, 0.9));
+    linear-gradient(90deg, rgba(120, 152, 196, 0.06), transparent 28% 70%, rgba(150, 180, 220, 0.07)),
+    linear-gradient(176deg, rgba(23, 27, 35, 0.96), rgba(9, 10, 13, 0.9));
   border-bottom-color: var(--accent-line);
-  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.72), 0 10px 30px -24px rgba(222, 146, 39, 0.5);
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.72), 0 10px 30px -24px rgba(110, 150, 200, 0.5);
 }
 
 html[data-theme="gothic"] .app-header::after {
   background:
-    linear-gradient(90deg, transparent, rgba(217, 177, 98, 0.74) 24% 76%, transparent);
+    linear-gradient(90deg, transparent, rgba(150, 178, 214, 0.74) 24% 76%, transparent);
   opacity: 0.62;
 }
 
 html[data-theme="gothic"] .eyebrow {
-  color: #b79a66;
+  color: #8fa3bf;
   font-family: var(--font-title);
   font-size: 0.66rem;
   text-shadow: 0 1px 0 #000;
@@ -2990,11 +2992,11 @@ html[data-theme="gothic"] .eyebrow {
 
 html[data-theme="gothic"] .journal details[data-work-log-day-section]::before {
   background:
-    linear-gradient(135deg, rgba(218, 179, 102, 0.5) 0 1px, transparent 1px) left top / 1rem 1rem no-repeat,
-    linear-gradient(225deg, rgba(218, 179, 102, 0.5) 0 1px, transparent 1px) right top / 1rem 1rem no-repeat,
-    linear-gradient(45deg, rgba(218, 179, 102, 0.34) 0 1px, transparent 1px) left bottom / 1rem 1rem no-repeat,
-    linear-gradient(315deg, rgba(218, 179, 102, 0.34) 0 1px, transparent 1px) right bottom / 1rem 1rem no-repeat;
-  border: 1px solid rgba(211, 178, 110, 0.1);
+    linear-gradient(135deg, rgba(154, 184, 224, 0.5) 0 1px, transparent 1px) left top / 1rem 1rem no-repeat,
+    linear-gradient(225deg, rgba(154, 184, 224, 0.5) 0 1px, transparent 1px) right top / 1rem 1rem no-repeat,
+    linear-gradient(45deg, rgba(154, 184, 224, 0.34) 0 1px, transparent 1px) left bottom / 1rem 1rem no-repeat,
+    linear-gradient(315deg, rgba(154, 184, 224, 0.34) 0 1px, transparent 1px) right bottom / 1rem 1rem no-repeat;
+  border: 1px solid rgba(146, 172, 208, 0.1);
   border-radius: 1px;
   content: "";
   inset: 3px;
@@ -3005,9 +3007,9 @@ html[data-theme="gothic"] .journal details[data-work-log-day-section]::before {
 /* Мелкая каменная пыль не спорит с текстом и скрывает цифровую гладкость. */
 html[data-theme="gothic"] .journal details[data-work-log-day-section]::after {
   background-image:
-    radial-gradient(circle, rgba(239, 214, 164, 0.026) 0 0.5px, transparent 0.9px),
+    radial-gradient(circle, rgba(210, 226, 246, 0.026) 0 0.5px, transparent 0.9px),
     radial-gradient(circle, rgba(0, 0, 0, 0.28) 0 0.5px, transparent 0.9px),
-    radial-gradient(circle, rgba(212, 170, 88, 0.018) 0 0.5px, transparent 0.9px);
+    radial-gradient(circle, rgba(143, 168, 200, 0.018) 0 0.5px, transparent 0.9px);
   background-position: 0 0, 3px 5px, 8px 2px;
   background-size: 7px 7px, 11px 11px, 17px 17px;
   border-radius: inherit;
@@ -3018,8 +3020,8 @@ html[data-theme="gothic"] .journal details[data-work-log-day-section]::after {
 }
 
 html[data-theme="gothic"] .journal summary[data-work-log-day] > strong {
-  color: #eee4cd;
-  text-shadow: 0 1px 0 #000, 0 0 14px rgba(212, 170, 88, 0.16);
+  color: #e8eef7;
+  text-shadow: 0 1px 0 #000, 0 0 14px rgba(143, 168, 200, 0.16);
 }
 
 html[data-theme="gothic"] .journal span[data-work-log-turn-title],
@@ -3037,14 +3039,14 @@ html[data-theme="gothic"] .journal div[data-work-log-task-cell] > div[data-work-
 html[data-theme="gothic"] .journal details[data-work-log-turn-details] {
   background-image:
     var(--plate-texture),
-    linear-gradient(176deg, rgba(45, 40, 31, 0.9), rgba(17, 15, 12, 0.96));
+    linear-gradient(176deg, rgba(35, 40, 51, 0.9), rgba(14, 16, 21, 0.96));
 }
 
 html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
   box-shadow:
     inset var(--rail-width) 0 0 var(--accent),
-    inset 0 1px 0 rgba(239, 211, 156, 0.12),
-    0 0 28px -20px rgba(226, 146, 39, 0.72),
+    inset 0 1px 0 rgba(206, 224, 248, 0.12),
+    0 0 28px -20px rgba(120, 160, 210, 0.72),
     var(--turn-shadow);
 }
 
@@ -3055,20 +3057,20 @@ html[data-theme="gothic"] .journal details[data-work-log-previous-turns] > summa
 html[data-theme="gothic"] .connection-dot {
   box-shadow:
     0 0 0 0.2rem color-mix(in srgb, var(--pending) 22%, transparent),
-    0 0 12px rgba(226, 146, 39, 0.35);
+    0 0 12px rgba(120, 160, 210, 0.35);
 }
 
 html[data-theme="gothic"] .brand-mark {
-  border-color: rgba(218, 179, 102, 0.52);
-  color: #e3bd72;
+  border-color: rgba(154, 184, 224, 0.52);
+  color: #a9c3e0;
 }
 
-/* Старое золото остаётся акцентом; подложка не превращает журнал в янтарный. */
+/* Холодный акцент не превращает журнал в синее полотно: подложка едва видна. */
 html[data-theme="gothic"] .journal span[data-kilo-usage],
 html[data-theme="gothic"] .journal span[data-mega-usage],
 html[data-theme="gothic"] .journal span[data-high-usage] {
-  background: rgba(212, 170, 88, 0.055);
-  box-shadow: inset 0 0 0 1px rgba(212, 170, 88, 0.12);
+  background: rgba(143, 168, 200, 0.055);
+  box-shadow: inset 0 0 0 1px rgba(143, 168, 200, 0.12);
 }
 
 /* ============================ «BlackHole»: аккреционный диск и горизонт === */

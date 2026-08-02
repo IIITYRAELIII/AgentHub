@@ -203,7 +203,9 @@ const themes = {
    здесь, привязывается к своей теме ниже, а его визуальная сцена описывается
    в backgrounds.css. */
 const backgroundNames = {
-  orbit: "Орбита", nebula: "Туманность", pulsar: "Пульсар", gothic: "Gothic",
+  orbit: "Орбита", nebula: "Туманность", pulsar: "Пульсар", gothic: "Склеп",
+  "gothic-tower": "Башня", "gothic-harbor": "Гавань", "gothic-chapel": "Часовня",
+  "gothic-keep": "Крепость",
   blackhole: "BlackHole", taiga: "Rain", metropolis: "Мегаполис", stormglass: "Storm",
   magma: "Магма", meadow: "Луг", lake: "Озеро", "lake-watercolor": "Озеро · акварель",
   "lake-oil": "Озеро · масло", graphite: "Графит",
@@ -212,7 +214,7 @@ const themeBackgrounds = Object.freeze({
   orbit: ["orbit"],
   nebula: ["nebula"],
   pulsar: ["pulsar"],
-  gothic: ["gothic"],
+  gothic: ["gothic", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep"],
   blackhole: ["blackhole"],
   taiga: ["taiga"],
   metropolis: ["metropolis"],
@@ -281,7 +283,12 @@ function savedTheme() {
  * дождя из 280 капель браузер не выполняет ни одного пересчёта стиля или
  * раскладки — всё уходит в композитор. На узком экране частиц вдвое меньше,
  * а при prefers-reduced-motion слой не создаётся вообще. */
-const PARTICLE_BACKGROUNDS = { taiga: "rain", stormglass: "downpour", gothic: "motes" };
+/* Часовня получает ту же пыль, что склеп, а над гаванью идёт дождь: мокрая
+   мостовая и блики на камне в кадре без него выглядят необъяснимо. */
+const PARTICLE_BACKGROUNDS = {
+  taiga: "rain", stormglass: "downpour", gothic: "motes",
+  "gothic-chapel": "motes", "gothic-harbor": "rain",
+};
 let particleLayer = null;
 
 function particleCount(kind) {

@@ -30,6 +30,72 @@ html[data-background-override="true"][data-background="stormglass"] { --stormgla
 html[data-background-override="true"][data-background="magma"] { --magma-image: url("/magma-crust.png"); --hub-background-color: #0a0605; --hub-background-image: linear-gradient(180deg, rgba(8, 4, 3, 0) 62%, rgba(8, 4, 3, .55)), linear-gradient(90deg, rgba(8, 4, 3, 0) 34%, rgba(8, 4, 3, .46)), var(--magma-image); --hub-background-position: center, center, 58% 50%; }
 html[data-background-override="true"][data-background="meadow"] { --meadow-image: url("/meadow-sun.png"); --hub-background-color: #070d08; --hub-background-image: linear-gradient(90deg, rgba(4, 9, 5, .34), rgba(4, 9, 5, 0) 40%), var(--meadow-image); --hub-background-position: center, 62% 60%; }
 html[data-background-override="true"][data-background="lake"] { --hub-background-color: #080d0b; --hub-background-image: linear-gradient(90deg, rgba(3, 8, 7, .82), rgba(3, 8, 7, .5) 26%, rgba(3, 8, 7, 0) 60%), linear-gradient(0deg, rgba(3, 8, 7, .42), rgba(3, 8, 7, 0) 32%), var(--lake-image, url("/lake-summer.jpg")); --hub-background-position: center, center, 56% 64%; }
+/* Четыре ночные сцены «Gothic». Кадры уже сняты с тёмной левой третью, поэтому
+   гасить её приходится заметно слабее, чем светлое «Озеро». */
+html[data-background-override="true"][data-background="gothic-tower"] { --hub-background-color: #070a0e; --hub-background-image: linear-gradient(90deg, rgba(4, 6, 10, .5), rgba(4, 6, 10, .12) 38%, rgba(4, 6, 10, 0) 62%), var(--gothic-tower-image, url("/gothic-tower.jpg")); --hub-background-position: center, 58% 46%; }
+html[data-background-override="true"][data-background="gothic-harbor"] { --hub-background-color: #06080d; --hub-background-image: linear-gradient(90deg, rgba(3, 5, 9, .48), rgba(3, 5, 9, .1) 40%, rgba(3, 5, 9, 0) 64%), var(--gothic-harbor-image, url("/gothic-harbor.jpg")); --hub-background-position: center, 62% 52%; }
+html[data-background-override="true"][data-background="gothic-chapel"] { --hub-background-color: #080706; --hub-background-image: linear-gradient(90deg, rgba(5, 4, 3, .42), rgba(5, 4, 3, .08) 36%, rgba(5, 4, 3, 0) 60%), var(--gothic-chapel-image, url("/gothic-chapel.jpg")); --hub-background-position: center, 60% 50%; }
+html[data-background-override="true"][data-background="gothic-keep"] { --hub-background-color: #070709; --hub-background-image: linear-gradient(90deg, rgba(5, 5, 7, .46), rgba(5, 5, 7, .1) 38%, rgba(5, 5, 7, 0) 62%), var(--gothic-keep-image, url("/gothic-keep.jpg")); --hub-background-position: center, 58% 54%; }
+
+/* Эффект сцены. Общий слой над фоном для чужих сцен выключен, поэтому каждая
+   готическая сцена включает его обратно и держит свой источник света:
+   туман тянет вбок, огонь дышит на месте. */
+@keyframes gothic-scene-fog {
+  0%, 100% { opacity: 0.34; transform: translate3d(-2%, 0.5%, 0) scale(1.02); }
+  50% { opacity: 0.62; transform: translate3d(3%, -0.5%, 0) scale(1.06); }
+}
+
+@keyframes gothic-scene-glow {
+  0%, 100% { opacity: 0.3; }
+  38% { opacity: 0.66; }
+  52% { opacity: 0.44; }
+  70% { opacity: 0.72; }
+}
+
+html[data-background-override="true"][data-background^="gothic-"] body::before {
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-size: cover !important;
+  content: "" !important;
+  mask-image: none !important;
+  mix-blend-mode: screen !important;
+}
+
+/* Башня: туман ползёт вдоль склона, в окнах дышит огонь. */
+html[data-background-override="true"][data-background="gothic-tower"] body::before {
+  animation: gothic-scene-fog 24s ease-in-out infinite !important;
+  background-image:
+    radial-gradient(60% 42% at 34% 62%, rgba(150, 176, 208, 0.2), transparent 74%),
+    radial-gradient(16% 12% at 72% 22%, rgba(255, 176, 88, 0.34), transparent 72%) !important;
+  opacity: 0.5 !important;
+}
+
+/* Гавань: луна над крепостью и дымка над водой. */
+html[data-background-override="true"][data-background="gothic-harbor"] body::before {
+  animation: gothic-scene-fog 30s ease-in-out infinite !important;
+  background-image:
+    radial-gradient(14% 20% at 65% 12%, rgba(198, 222, 255, 0.3), transparent 70%),
+    radial-gradient(54% 30% at 30% 66%, rgba(140, 168, 204, 0.18), transparent 76%) !important;
+  opacity: 0.46 !important;
+}
+
+/* Часовня: свечи у алтаря горят неровно, поэтому свет дышит рывками. */
+html[data-background-override="true"][data-background="gothic-chapel"] body::before {
+  animation: gothic-scene-glow 9s ease-in-out infinite !important;
+  background-image:
+    radial-gradient(30% 34% at 76% 52%, rgba(255, 186, 104, 0.34), rgba(190, 116, 44, 0.12) 52%, transparent 78%) !important;
+  opacity: 0.44 !important;
+}
+
+/* Крепость: низовой туман идёт по долине, костры на стене едва теплятся. */
+html[data-background-override="true"][data-background="gothic-keep"] body::before {
+  animation: gothic-scene-fog 34s ease-in-out infinite !important;
+  background-image:
+    radial-gradient(70% 34% at 40% 74%, rgba(146, 164, 190, 0.22), transparent 78%),
+    radial-gradient(20% 16% at 78% 34%, rgba(255, 166, 84, 0.16), transparent 74%) !important;
+  opacity: 0.5 !important;
+}
+
 /* Три кадра «Озера» — одна сцена в трёх техниках. Рисованные светлее съёмки,
    особенно бумага акварели, поэтому левый край гасится плотнее. Путь берётся
    через var с запасным значением: панель VS Code подменяет саму переменную, а
@@ -44,6 +110,10 @@ html[data-background-override="true"][data-background="graphite"] { --hub-backgr
   html[data-background-override="true"][data-background="metropolis"] { --hub-background-position: center, center, 68% 50%; }
   html[data-background-override="true"][data-background="magma"] { --hub-background-position: center, center, 72% 56%; }
   html[data-background-override="true"][data-background="meadow"] { --hub-background-position: center, 68% 76%; }
+  html[data-background-override="true"][data-background="gothic-tower"] { --hub-background-position: center, 74% 42%; }
+  html[data-background-override="true"][data-background="gothic-harbor"] { --hub-background-position: center, 78% 52%; }
+  html[data-background-override="true"][data-background="gothic-chapel"] { --hub-background-position: center, 74% 50%; }
+  html[data-background-override="true"][data-background="gothic-keep"] { --hub-background-position: center, 76% 46%; }
   html[data-background-override="true"][data-background="lake"] { --hub-background-position: center, 72% 72%; }
   /* на телефоне от кадра остаётся вертикальная полоса, гасить край слева
      нечего: обе рисованные сцены притемняются сверху и снизу */

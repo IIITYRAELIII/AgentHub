@@ -308,7 +308,7 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   assert.match(client, /function buildMote\(\)/u);
   assert.match(
     client,
-    /PARTICLE_BACKGROUNDS = \{ taiga: "rain", stormglass: "downpour", gothic: "motes" \}/u,
+    /PARTICLE_BACKGROUNDS = \{\s*taiga: "rain", stormglass: "downpour", gothic: "motes",/u,
   );
   /* Гасить к лунному проёму теперь должен слой пыли, а не блик факела. */
   assert.match(
@@ -460,14 +460,16 @@ test("Storm keeps the photo backdrop and adds only lightning", () => {
   assert.match(storm, /prefers-reduced-motion: reduce/u);
 });
 
-test("Gothic theme uses medieval stone, old gold and a torch-lit scene", () => {
+test("Gothic theme uses medieval stone, moonlit steel and a torch-lit scene", () => {
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),
     "utf8",
   );
+  /* Палитра ушла из золота в холодную сталь: тёплый свет остался только на
+     самих кадрах — факел склепа, свечи часовни, окна башни. */
   assert.match(
     styles,
-    /html\[data-theme="gothic"\]\s*\{[\s\S]*--accent:\s*#d4aa58;[\s\S]*--space-star:\s*transparent;/u,
+    /html\[data-theme="gothic"\]\s*\{[\s\S]*--accent:\s*#8fa8c8;[\s\S]*--space-star:\s*transparent;/u,
   );
   assert.match(
     styles,
@@ -477,6 +479,40 @@ test("Gothic theme uses medieval stone, old gold and a torch-lit scene", () => {
     styles,
     /html\[data-theme="gothic"\] body::before\s*\{[\s\S]*rgba\(238,\s*164,\s*58,\s*0\.38\)/u,
   );
+});
+
+test("«Gothic» offers four night scenes, each with its own light", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const backgrounds = fs.readFileSync(
+    require.resolve("../assets/mini-app/backgrounds.css"),
+    "utf8",
+  );
+  assert.match(
+    client,
+    /gothic: \["gothic", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep"\]/u,
+  );
+  for (const [background, image] of [
+    ["gothic-tower", "gothic-tower\\.jpg"],
+    ["gothic-harbor", "gothic-harbor\\.jpg"],
+    ["gothic-chapel", "gothic-chapel\\.jpg"],
+    ["gothic-keep", "gothic-keep\\.jpg"],
+  ]) {
+    assert.match(
+      backgrounds,
+      new RegExp(`\\[data-background="${background}"\\][^\\n]*${image}`, "u"),
+      background,
+    );
+    /* Общий слой над чужой сценой выключён, поэтому каждая сцена включает его
+       обратно с собственным источником света. */
+    assert.match(
+      backgrounds,
+      new RegExp(`\\[data-background="${background}"\\] body::before \\{[^}]*animation: gothic-scene-`, "su"),
+      `${background} motion`,
+    );
+  }
+  assert.match(client, /"gothic-harbor": "rain"/u);
+  assert.match(backgrounds, /@keyframes gothic-scene-fog/u);
+  assert.match(backgrounds, /@keyframes gothic-scene-glow/u);
 });
 
 test("«Озеро» keeps one palette and three interchangeable scenes", () => {

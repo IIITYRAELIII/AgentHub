@@ -16,8 +16,9 @@
   if (!atmosphere || !canvas) return;
 
   const THEME = "stormglass";
-  // доля высоты кадра, на которой лежит горизонт: выше него вода не колышется
-  const HORIZON = 0.6;
+  // доля высоты кадра, на которой лежит горизонт: выше него вода не колышется.
+  // Значение измерено по самим снимкам: линия горизонта на них идёт по 63 %.
+  const HORIZON = 0.63;
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
   const vertexSource = `
