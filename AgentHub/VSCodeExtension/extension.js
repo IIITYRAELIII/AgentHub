@@ -1,6 +1,7 @@
 "use strict";
 
 const vscode = require("vscode");
+const path = require("node:path");
 
 const {
   AgentHubBridge,
@@ -271,10 +272,23 @@ class WorkLogViewProvider {
       await vscode.env.openExternal(vscode.Uri.parse(href));
       return;
     }
-    const segments = relativeSegments(decodeURIComponent(href));
-    const target = await firstExisting(
-      this.workspaceFolders().map((folder) => vscode.Uri.joinPath(folder.uri, ...segments)),
-    );
+    const decoded = decodeURIComponent(href);
+    const absolute = /^[A-Za-z]:[\\/]/u.test(decoded);
+    const target = absolute
+      ? await firstExisting(this.workspaceFolders().flatMap((folder) => {
+        const root = path.resolve(folder.uri.fsPath);
+        const candidate = path.resolve(decoded);
+        const relative = path.relative(root, candidate);
+        return relative && !relative.startsWith("..") && !path.isAbsolute(relative)
+          ? [vscode.Uri.file(candidate)]
+          : [];
+      }))
+      : await firstExisting(
+        this.workspaceFolders().map((folder) => vscode.Uri.joinPath(
+          folder.uri,
+          ...relativeSegments(decoded),
+        )),
+      );
     if (target) await vscode.commands.executeCommand("vscode.open", target);
   }
 

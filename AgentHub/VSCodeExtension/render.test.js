@@ -65,7 +65,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const runtimeAssets = path.join(runtimeRoot, "assets", "mini-app");
   const required = [
     "app.js", "metropolis-glass.js", "storm-glass.js", "message-lifecycle.js", "hub-client.js",
-    "styles.css",
+    "styles.css", "backgrounds.css",
   ];
   try {
     fs.mkdirSync(shadowAssets, { recursive: true });
@@ -103,6 +103,7 @@ test("extension reloads its shell from the active runtime on demand", () => {
   const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
   assert.match(shared, /const ASSET_ROOT = \["assets", "mini-app"\]/u);
+  assert.match(shared, /backgrounds: \[\.\.\.ASSET_ROOT, "backgrounds\.css"\]/u);
   assert.match(extension, /refreshPanelShellIfReleaseChanged/u);
   assert.match(extension, /runtimeUri,\s*\n\s*extensionUri: this\.context\.extensionUri/u);
   assert.doesNotMatch(shared, /media", "mini-app/u);
@@ -307,7 +308,7 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   assert.match(client, /function buildMote\(\)/u);
   assert.match(
     client,
-    /PARTICLE_THEMES = \{ taiga: "rain", stormglass: "downpour", gothic: "motes" \}/u,
+    /PARTICLE_BACKGROUNDS = \{ taiga: "rain", stormglass: "downpour", gothic: "motes" \}/u,
   );
   /* Гасить к лунному проёму теперь должен слой пыли, а не блик факела. */
   assert.match(
@@ -469,7 +470,7 @@ test("Gothic theme uses medieval stone, old gold and a torch-lit scene", () => {
 
 test("VS Code theme assets override browser paths with equal specificity", () => {
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
-  assert.match(shared, /<style nonce="\$\{nonce\}">html\[data-theme\]\{\$\{assetOverrides\}\}<\/style>/u);
+  assert.match(shared, /<style nonce="\$\{nonce\}">html\[data-theme\],html\[data-background\]\{\$\{assetOverrides\}\}<\/style>/u);
 });
 
 test("turn header keeps its open button in the third column", () => {

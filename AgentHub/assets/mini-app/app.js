@@ -25,6 +25,7 @@ const updatedAt = document.querySelector("[data-updated-at]");
 const refreshButton = document.querySelector("[data-refresh]");
 const collapseAllButton = document.querySelector("[data-collapse-all]");
 const themeSelect = document.querySelector("[data-theme-select]");
+const backgroundSelect = document.querySelector("[data-background-select]");
 const groupSelect = document.querySelector("[data-group-select]");
 const themeColor = document.querySelector("[data-theme-color]");
 
@@ -194,6 +195,11 @@ const themes = {
   lake: "#080d0b",
   graphite: "#17181a",
 };
+const backgroundNames = {
+  orbit: "Орбита", nebula: "Туманность", pulsar: "Пульсар", gothic: "Gothic",
+  blackhole: "BlackHole", taiga: "Rain", metropolis: "Мегаполис", stormglass: "Storm",
+  magma: "Магма", meadow: "Луг", lake: "Озеро", graphite: "Графит",
+};
 const themeAliases = {
   "taiga-drops": "metropolis",
 };
@@ -241,6 +247,20 @@ function savedTheme() {
   }
 }
 
+function savedBackground(fallback) {
+  try {
+    const value = localStorage.getItem("agent-hub-background");
+    return Object.hasOwn(backgroundNames, value) ? value : fallback;
+  } catch { return fallback; }
+}
+
+function populateBackgroundOptions() {
+  if (!backgroundSelect || backgroundSelect.options.length) return;
+  for (const [value, label] of Object.entries(backgroundNames)) {
+    backgroundSelect.append(el("option", { value, text: label }));
+  }
+}
+
 /* Живые частицы тем.
  *
  * Плиткой это сделать нельзя: `background-repeat` повторяет один рисунок, и
@@ -253,7 +273,7 @@ function savedTheme() {
  * дождя из 280 капель браузер не выполняет ни одного пересчёта стиля или
  * раскладки — всё уходит в композитор. На узком экране частиц вдвое меньше,
  * а при prefers-reduced-motion слой не создаётся вообще. */
-const PARTICLE_THEMES = { taiga: "rain", stormglass: "downpour", gothic: "motes" };
+const PARTICLE_BACKGROUNDS = { taiga: "rain", stormglass: "downpour", gothic: "motes" };
 let particleLayer = null;
 
 function particleCount(kind) {
@@ -312,8 +332,8 @@ function buildParticleLayer(kind) {
   return layer;
 }
 
-function syncParticleLayer(theme) {
-  const kind = PARTICLE_THEMES[theme] ?? null;
+function syncParticleLayer(background) {
+  const kind = PARTICLE_BACKGROUNDS[background] ?? null;
   const allowed = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches !== true;
   if (!kind || !allowed) {
     particleLayer?.remove();
@@ -333,13 +353,22 @@ function applyTheme(theme, { persist = false } = {}) {
   document.documentElement.dataset.theme = selected;
   themeSelect.value = selected;
   themeColor.content = themes[selected];
-  syncParticleLayer(selected);
   if (persist) {
     try {
       localStorage.setItem("agent-hub-theme", selected);
     } catch {
       // Тема останется активной до закрытия WebView.
     }
+  }
+}
+
+function applyBackground(background, { persist = false } = {}) {
+  const selected = Object.hasOwn(backgroundNames, background) ? background : "orbit";
+  root.dataset.background = selected;
+  if (backgroundSelect) backgroundSelect.value = selected;
+  syncParticleLayer(selected);
+  if (persist) {
+    try { localStorage.setItem("agent-hub-background", selected); } catch {}
   }
 }
 
@@ -442,6 +471,8 @@ telegram?.ready();
 telegram?.expand();
 telegram?.disableVerticalSwipes?.();
 applyTheme(savedTheme());
+populateBackgroundOptions();
+applyBackground(savedBackground(root.dataset.theme));
 applyBreakdown(savedBreakdown());
 selectUsageUnit(savedUsageUnit());
 selectClaudeGrouping(savedClaudeGrouping());
@@ -459,6 +490,9 @@ selectGrouping(savedGrouping());
 themeSelect.addEventListener("change", () => {
   applyTheme(themeSelect.value, { persist: true });
   window.__agentHubVscode?.postMessage({ type: "theme", theme: themeSelect.value });
+});
+backgroundSelect?.addEventListener("change", () => {
+  applyBackground(backgroundSelect.value, { persist: true });
 });
 groupSelect.addEventListener("change", () => {
   if (journalRendered) groupingStates[grouping] = captureOpenState();
@@ -698,7 +732,7 @@ function syncSurface() {
     // частиц на телефоне вдвое меньше, поэтому слой пересобирается
     particleLayer?.remove();
     particleLayer = null;
-    syncParticleLayer(document.documentElement.dataset.theme);
+    syncParticleLayer(document.documentElement.dataset.background);
     if (journalRendered) prepareMobileControls();
   }
 }
@@ -1214,18 +1248,20 @@ chatScroll.addEventListener("touchend", () => {
 
 chatScroll.addEventListener("touchcancel", resetHistoryPull);
 
-function safeMarkdownUrl(raw) {
+function markdownLink(raw) {
+  const value = String(raw ?? "").trim();
+  if (vscodeMode && /^[A-Za-z]:[\\/]/u.test(value)) return { href: "#", localPath: value };
   try {
-    const url = new URL(String(raw ?? "").trim(), window.location.href);
-    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+    const url = new URL(value, window.location.href);
+    return ["http:", "https:"].includes(url.protocol) ? { href: url.href } : null;
   } catch {
-    return "";
+    return null;
   }
 }
 
 function appendInlineMarkdown(target, source) {
   const text = String(source ?? "");
-  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\([^) \n]+\))/gu;
+  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\([^)\n]+\))/gu;
   let cursor = 0;
   for (const match of text.matchAll(pattern)) {
     target.append(document.createTextNode(text.slice(cursor, match.index)));
@@ -1242,14 +1278,16 @@ function appendInlineMarkdown(target, source) {
       target.append(emphasis);
     } else {
       const parts = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/u);
-      const href = safeMarkdownUrl(parts?.[2]);
-      if (href) {
-        target.append(el("a", {
-          href,
+      const targetLink = markdownLink(parts?.[2]);
+      if (targetLink) {
+        const link = el("a", {
+          href: targetLink.href,
           target: "_blank",
           rel: "noopener noreferrer",
           text: parts[1],
-        }));
+        });
+        if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
+        target.append(link);
       } else {
         target.append(document.createTextNode(token));
       }
@@ -1258,6 +1296,13 @@ function appendInlineMarkdown(target, source) {
   }
   target.append(document.createTextNode(text.slice(cursor)));
 }
+
+document.addEventListener("click", (event) => {
+  const link = event.target.closest("a[data-agent-hub-local-link]");
+  if (!link || !vscodeMode) return;
+  event.preventDefault();
+  window.__agentHubVscode.postMessage({ type: "open-link", href: link.dataset.agentHubLocalLink });
+});
 
 function markdownTableCells(line) {
   const source = String(line ?? "").trim();

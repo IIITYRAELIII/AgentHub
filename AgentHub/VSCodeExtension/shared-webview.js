@@ -12,6 +12,7 @@ const RUNTIME_ASSETS = {
   lifecycle: [...ASSET_ROOT, "message-lifecycle.js"],
   client: [...ASSET_ROOT, "hub-client.js"],
   styles: [...ASSET_ROOT, "styles.css"],
+  backgrounds: [...ASSET_ROOT, "backgrounds.css"],
   workLogStyles: ["work-log.css"],
   pulsar: [...ASSET_ROOT, "pulsar-beams.png"],
   blackhole: [...ASSET_ROOT, "blackhole-blue.png"],
@@ -50,7 +51,7 @@ async function resolveSharedAssets({ runtimeUri, extensionUri }) {
     assets.bootstrap = null;
   }
   for (const required of [
-    "index", "app", "metropolisGlass", "stormGlass", "lifecycle", "client", "styles",
+    "index", "app", "metropolisGlass", "stormGlass", "lifecycle", "client", "styles", "backgrounds",
     "workLogStyles", "bootstrap",
   ]) {
     if (!assets[required]) throw new Error(`Не найден ресурс Agent Hub: ${required}`);
@@ -97,10 +98,11 @@ async function sharedWebviewHtml(webview, locations) {
     )
     .replace('href="/work-log.css"', `href="${resource(webview, assets.workLogStyles)}"`)
     .replace('href="/styles.css"', `href="${resource(webview, assets.styles)}"`)
+    .replace('href="/backgrounds.css"', `href="${resource(webview, assets.backgrounds)}"`)
     .replace(/<script src="https:\/\/telegram\.org\/[^>]+><\/script>\s*/iu, "")
     .replace(
       '<script src="/app.js" defer></script>',
-      `<style nonce="${nonce}">html[data-theme]{${assetOverrides}}</style>`
+      `<style nonce="${nonce}">html[data-theme],html[data-background]{${assetOverrides}}</style>`
         + `<script src="${resource(webview, assets.bootstrap)}" defer></script>`
         + `<script src="${resource(webview, assets.app)}" defer></script>`
         + `<script src="${resource(webview, assets.metropolisGlass)}" defer></script>`
