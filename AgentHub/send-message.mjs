@@ -9,6 +9,7 @@ import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { callTelegramJson, telegramBotApiUrl } from "./telegram-api.mjs";
 import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
 import { isMainModule } from "./main-module.mjs";
+import { readRuntimeState } from "./runtime-state-store.mjs";
 import {
   resolveAllowedNotificationChatId,
   resolveAllowedNotificationPath,
@@ -434,7 +435,8 @@ export async function main(args = process.argv.slice(2)) {
   const sent = [];
   let parts;
   if (options.bindCurrent || options.bindActive) {
-    const state = JSON.parse(await readFile(config.stateFile, "utf8"));
+    const state = await readRuntimeState(config.dataDir, { legacyFile: config.stateFile });
+    if (!state) throw new Error("Agent Hub runtime state is not available");
     const task = options.bindCurrent
       ? await currentCallerBinding(state)
       : currentThreadBinding(state);

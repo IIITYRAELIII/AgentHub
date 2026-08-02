@@ -30,14 +30,14 @@ test("message bindings persist and resolve by chat and message", async (context)
 test("corrupt binding records are isolated without breaking valid buttons", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-bindings-corrupt-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
-  await appendMessageBindings(directory, [{
+  await writeFile(path.join(directory, "telegram-thread-bindings.json"), JSON.stringify([{
     chatId: 1,
     messageId: 2,
     provider: "codex",
     threadId: "thread-1",
     projectRoot: "C:\\Project",
     taskTitle: "Task",
-  }]);
+  }]), "utf8");
   const events = path.join(directory, "telegram-thread-bindings.d");
   await mkdir(events, { recursive: true });
   await writeFile(path.join(events, "000-corrupt.json"), "{broken", "utf8");
@@ -103,7 +103,7 @@ test("append-only events overlay and can remove legacy JSON bindings", async (co
   assert.equal(await findMessageBinding(directory, 5, 6), null);
 });
 
-test("compaction preserves current bindings and safely removes processed events", async (context) => {
+test("SQLite compaction preserves current bindings and applies canonical project roots", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-bindings-compact-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   await Promise.all(Array.from({ length: 20 }, (_, index) => appendMessageBindings(directory, [{
@@ -115,14 +115,13 @@ test("compaction preserves current bindings and safely removes processed events"
     createdAt: new Date(Date.now() + index).toISOString(),
   }])));
   await removeMessageBindings(directory, (item) => item.messageId === 3);
-  assert.equal(await compactMessageBindings(directory), 21);
-  assert.deepEqual(await readdir(path.join(directory, "telegram-thread-bindings.d")), []);
-  const compacted = JSON.parse(await readFile(
-    path.join(directory, "telegram-thread-bindings.json"),
-    "utf8",
-  ));
+  assert.equal(await compactMessageBindings(directory, {
+    canonicalizeProjectRoot: () => "D:\\Canonical",
+  }), 0);
+  const compacted = await readMessageBindings(directory);
   assert.equal(compacted.length, 19);
   assert.equal(compacted.some((item) => item.messageId === 3), false);
+  assert.equal(compacted.every((item) => item.projectRoot === "D:\\Canonical"), true);
 
   await Promise.all([
     compactMessageBindings(directory),

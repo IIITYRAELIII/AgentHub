@@ -93,6 +93,7 @@ import { pendingInputKeyboard, restoreDeferredInput } from "./deferred-input.mjs
 import {
   appendMessageBindings,
   findMessageBinding,
+  migrateMessageBindings,
   readMessageBindings,
   removeMessageBindings,
 } from "./message-bindings.mjs";
@@ -148,7 +149,8 @@ import { contextualCallback } from "./callback-context.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { installRotatingConsole } from "./rotating-log.mjs";
-import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
+import { writeTextAtomic } from "./state-store.mjs";
+import { RuntimeStateStore } from "./runtime-state-store.mjs";
 import { LocalTaskSyncStore } from "./task-sync-store.mjs";
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
 import { createDesktopMessageController } from "./desktop-message-controller.mjs";
@@ -423,6 +425,17 @@ void usdRubRateStore.refresh().then((rate) => {
 
 const instanceGuard = new SingleInstanceGuard({ dataDir: config.dataDir, lockFile: INSTANCE_LOCK_FILE });
 await instanceGuard.acquire();
+const runtimeStateStore = new RuntimeStateStore({
+  dataDir: config.dataDir,
+  legacyFile: STATE_FILE,
+  legacyBackupFile: STATE_BACKUP_FILE,
+});
+const bindingsMigration = await migrateMessageBindings(config.dataDir);
+if (bindingsMigration.imported || bindingsMigration.archived.length) {
+  console.log(
+    `Telegram bindings migrated to runtime.sqlite: ${bindingsMigration.count}; archived legacy paths: ${bindingsMigration.archived.length}`,
+  );
+}
 const turnEndNotifications = new TurnEndNotificationRegistry();
 const deliveringTurnEndKeys = new Set();
 const runtimeCommandServer = new RuntimeCommandServer({
@@ -460,7 +473,6 @@ let codexRestarting = false;
 let restartRequest = null;
 let processingUpdateId = null;
 let stateWriteQueue = Promise.resolve();
-let lastStateBackupAt = 0;
 let bindingWriteQueue = Promise.resolve();
 let deliveryOutboxTimer = null;
 let deliveryOutboxTimerDueAt = 0;
@@ -1746,9 +1758,10 @@ function taskSwitchSettings() {
 let stateLoadFailed = false;
 let restoredTurnEndSnapshot = {};
 try {
-  const loadedState = await readJsonWithBackup(STATE_FILE, { backupFile: STATE_BACKUP_FILE });
+  const loadedState = await runtimeStateStore.load();
   if (!loadedState.value) throw Object.assign(new Error("state file is missing"), { code: "ENOENT" });
   if (loadedState.recovered) console.warn(`Recovered runtime state from ${loadedState.source}`);
+  if (loadedState.migrated) console.log(`Runtime state migrated to runtime.sqlite from ${loadedState.source}`);
   const saved = canonicalizeProjectRoots(loadedState.value, PROJECTS);
   if (Array.isArray(saved.statusMediaFileIds)) {
     for (const [name, fileId] of saved.statusMediaFileIds.slice(-50)) {
@@ -7935,7 +7948,7 @@ async function flushDeliveryOutbox() {
 function saveState() {
   rememberCodexTaskSettings();
   threadIdsByProvider[activeProvider] = threadId;
-  const content = `${JSON.stringify({
+  const snapshot = {
     chatId,
     activeProjectRoot,
     activeThreadTitle,
@@ -7972,16 +7985,10 @@ function saveState() {
     turnEndNotifications: turnEndNotifications.snapshot(),
     statusMediaFileIds: [...statusMediaFileIds.entries()].slice(-50),
     restartRequest,
-  }, null, 2)}\n`;
+  };
   stateWriteQueue = stateWriteQueue
     .catch(() => {})
-    .then(async () => {
-      await writeTextAtomic(STATE_FILE, content);
-      if (Date.now() - lastStateBackupAt >= 30_000) {
-        await writeTextAtomic(STATE_BACKUP_FILE, content);
-        lastStateBackupAt = Date.now();
-      }
-    });
+    .then(() => runtimeStateStore.save(snapshot));
   return stateWriteQueue;
 }
 
@@ -8066,6 +8073,7 @@ async function shutdown(signal) {
     logError: (name, error) => console.error(`Shutdown failed (${name}):`, error.message),
   });
   taskSyncStore.close();
+  runtimeStateStore.close();
 }
 
 process.on("unhandledRejection", (error) => {

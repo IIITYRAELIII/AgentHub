@@ -5,7 +5,8 @@ import process from "node:process";
 
 import { isMainModule } from "./main-module.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
-import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
+import { writeTextAtomic } from "./state-store.mjs";
+import { readRuntimeState } from "./runtime-state-store.mjs";
 
 const HOOK_FILE_NAME = "codex-stop-hook-launcher.mjs";
 
@@ -116,11 +117,12 @@ export async function codexStopHookStatus({
       Array.isArray(group?.hooks) && group.hooks.some(isOurHandler)
     )),
   ]));
-  const stateFile = path.join(runtimeLayout(runtimeRoot).dataDir, "state.json");
+  const dataDir = runtimeLayout(runtimeRoot).dataDir;
+  const stateFile = path.join(dataDir, "state.json");
   let receipts = { start: null, stop: null };
   let activeTurnStarts = 0;
   try {
-    const state = await readJsonWithBackup(stateFile);
+    const state = { value: await readRuntimeState(dataDir, { legacyFile: stateFile }) };
     receipts = {
       start: state.value?.codexHookReceipts?.start ?? null,
       stop: state.value?.codexHookReceipts?.stop ?? null,

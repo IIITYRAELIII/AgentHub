@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
+import path from "node:path";
 import process from "node:process";
+import { readRuntimeState } from "../runtime-state-store.mjs";
 
 // Общая обвязка E2E: поддельный Telegram Bot API и ожидания. Используется и
 // сценарием Codex, и матрицей параллельных задач Claude.
@@ -44,6 +46,10 @@ export async function waitFor(check, description, timeoutMs = 8_000) {
 }
 
 export async function readJson(filePath) {
+  if (path.basename(filePath).toLowerCase() === "state.json") {
+    const state = await readRuntimeState(path.dirname(filePath), { legacyFile: filePath });
+    if (state) return state;
+  }
   return JSON.parse(await readFile(filePath, "utf8"));
 }
 
