@@ -1,9 +1,10 @@
 /* Agent Hub — общий frontend.
  *
- * Оболочка объединяет три представления над одними данными и темами:
+ * Оболочка объединяет четыре представления над одними данными и темами:
  *   • «Диалоги» — слева компактный список задач, справа чат выбранной задачи;
  *   • «Журнал» — SQLite-представление журнала с ленивой подгрузкой;
  *   • «Статистика» — локальный расход журнала и история лимитов API.
+ *   • «Сервер» — состояние и безопасное управление локальным Agent Hub.
  *
  * Frontend не хранит собственных задач и сообщений: до подключения backend
  * списки пусты и показывают понятные пустые состояния. Данные приходят через
@@ -19,6 +20,7 @@ const root = document.documentElement;
 const journal = document.querySelector("[data-journal]");
 const journalView = document.querySelector("[data-journal-view]");
 const statisticsView = document.querySelector("[data-statistics-view]");
+const serverView = document.querySelector("[data-server-view]");
 const updatedAt = document.querySelector("[data-updated-at]");
 const refreshButton = document.querySelector("[data-refresh]");
 const collapseAllButton = document.querySelector("[data-collapse-all]");
@@ -73,6 +75,14 @@ const statusSlot = document.querySelector("[data-status-slot]");
 const trustedDeviceList = document.querySelector("[data-trusted-device-list]");
 const trustedDevicePairing = document.querySelector("[data-trusted-device-pairing]");
 const trustedDeviceCreate = document.querySelector("[data-device-create]");
+const serverState = document.querySelector("[data-server-state]");
+const serverStateNote = document.querySelector("[data-server-state-note]");
+const serverStateDot = document.querySelector("[data-server-state-dot]");
+const serverFacts = document.querySelector("[data-server-facts]");
+const serverAutostart = document.querySelector("[data-server-autostart]");
+const serverAutostartNote = document.querySelector("[data-server-autostart-note]");
+const serverComponents = document.querySelector("[data-server-components]");
+const serverConfig = document.querySelector("[data-server-config]");
 
 const dialog = document.querySelector("[data-text-dialog]");
 const dialogScrim = document.querySelector("[data-dialog-scrim]");
@@ -595,10 +605,10 @@ function currentTask() {
 /* =========================================================== роутер видов */
 
 const NAVIGATION_TAB_KEY = "agent-hub-navigation-tab-v1";
-const navigationTabs = new Set(["tasks", "chat", "journal", "statistics"]);
+const navigationTabs = new Set(["tasks", "chat", "journal", "statistics", "server"]);
 
 function currentNavigationTab() {
-  return ["journal", "statistics"].includes(root.dataset.view)
+  return ["journal", "statistics", "server"].includes(root.dataset.view)
     ? root.dataset.view
     : (root.dataset.pane === "chat" ? "chat" : "tasks");
 }
@@ -627,10 +637,11 @@ function activateView(view) {
     requestUsageHistory(usageState.range);
     requestLimits(limitsState.range);
   }
+  if (view === "server") emit("devices:refresh");
 }
 
 function setView(view, { persist = true, activate = true } = {}) {
-  const next = ["journal", "statistics"].includes(view) ? view : "chat";
+  const next = ["journal", "statistics", "server"].includes(view) ? view : "chat";
   root.dataset.view = next;
   for (const button of document.querySelectorAll("[data-view-button]")) {
     button.setAttribute("aria-pressed", String(button.dataset.viewButton === next));
@@ -641,7 +652,9 @@ function setView(view, { persist = true, activate = true } = {}) {
       ? "Журнал"
       : next === "statistics"
         ? "Статистика"
-        : "Диалоги";
+        : next === "server"
+          ? "Сервер"
+          : "Диалоги";
   }
   syncMobileNav();
   if (activate) activateView(next);
@@ -655,7 +668,7 @@ function setPane(pane, { persist = true } = {}) {
 }
 
 function syncMobileNav() {
-  const active = ["journal", "statistics"].includes(root.dataset.view)
+  const active = ["journal", "statistics", "server"].includes(root.dataset.view)
     ? root.dataset.view
     : (root.dataset.pane === "chat" ? "chat" : "tasks");
   for (const button of document.querySelectorAll("[data-mobile-button]")) {
@@ -669,7 +682,7 @@ for (const button of document.querySelectorAll("[data-view-button]")) {
 for (const button of document.querySelectorAll("[data-mobile-button]")) {
   button.addEventListener("click", () => {
     const target = button.dataset.mobileButton;
-    if (["journal", "statistics"].includes(target)) { setView(target); return; }
+    if (["journal", "statistics", "server"].includes(target)) { setView(target); return; }
     setView("chat");
     setPane(target === "chat" ? "chat" : "tasks");
   });
@@ -2175,6 +2188,73 @@ function renderStatus() {
   );
 }
 
+function formatServerStartedAt(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("ru-RU");
+}
+
+function serverFact(name, value) {
+  return [
+    el("dt", { text: name }),
+    el("dd", { text: value || "—" }),
+  ];
+}
+
+function renderServerStatus(payload = {}) {
+  if (!serverState || !serverFacts || !serverComponents || !serverConfig) return;
+  const processInfo = payload.process ?? {};
+  const restart = payload.restart ?? {};
+  const autostart = payload.autostart ?? {};
+  const active = processInfo.status === "running";
+  serverState.textContent = active ? "Работает" : "Нет соединения";
+  serverStateNote.textContent = restart.pending
+    ? (restart.waiting ? `Перезапуск ожидает: ${restart.blockingCount || 0}` : "Перезапуск запрошен")
+    : active
+      ? "Локальный процесс Agent Hub отвечает."
+      : "Состояние процесса пока недоступно.";
+  serverStateDot?.toggleAttribute("data-online", active);
+  serverFacts.replaceChildren(...[
+    ...serverFact("PID", processInfo.pid ? String(processInfo.pid) : "—"),
+    ...serverFact("Запущен", formatServerStartedAt(processInfo.startedAt)),
+    ...serverFact("Работает", formatRunningDuration(processInfo.startedAt)),
+    ...serverFact("Активные ходы", String(Math.max(0, Number(processInfo.activeCount) || 0))),
+  ]);
+  if (serverAutostart) {
+    serverAutostart.checked = autostart.enabled === true;
+    serverAutostart.disabled = autostart.supported === false;
+  }
+  if (serverAutostartNote) {
+    serverAutostartNote.textContent = autostart.supported === false
+      ? "Управление автозапуском доступно в Windows."
+      : autostart.enabled
+        ? "Запускается вместе с входом в Windows."
+        : "Не запускается вместе с входом в Windows.";
+  }
+  const components = Array.isArray(payload.components) ? payload.components : [];
+  serverComponents.replaceChildren(...(components.length ? components.map((component) => el("div", {
+    class: "server-component",
+    "data-enabled": component.enabled ? "" : null,
+  }, [
+    el("span", { class: "server-component-name", text: component.name ?? "Компонент" }),
+    el("span", {
+      class: "server-component-status",
+      text: component.enabled ? "Включён" : "Выключен",
+    }),
+    component.note ? el("small", { text: component.note }) : null,
+  ].filter(Boolean))) : [el("span", { class: "setting-empty", text: "Компоненты не определены" })]));
+  const entries = Array.isArray(payload.configuration) ? payload.configuration : [];
+  serverConfig.replaceChildren(...(entries.length ? entries.map((entry) => el("div", {
+    class: "server-config-row",
+  }, [
+    el("span", { text: entry.name ?? "" }),
+    el("strong", { text: entry.value ?? "—" }),
+  ])) : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]));
+}
+
+serverAutostart?.addEventListener("change", () => {
+  emit("server:autostart", { enabled: serverAutostart.checked });
+});
+
 /* ================================================= диалог ввода текста */
 
 let dialogResolve = null;
@@ -2263,7 +2343,6 @@ async function handleAction(action, trigger) {
       break;
     case "hub-restart":
       emit("hub:restart", {});
-      showToast("Перезапуск Agent Hub запрошен.");
       break;
     case "slash-menu":
       if (slashMenu.hidden) {
@@ -2515,6 +2594,10 @@ const AgentHub = {
   },
   setTrustedDevices(payload) {
     renderTrustedDevices(payload);
+  },
+  /** Безопасная сводка и управление локальным Agent Hub Server. */
+  setServerStatus(payload) {
+    renderServerStatus(payload);
   },
   openAttachmentViewer,
   showAttachmentViewer,

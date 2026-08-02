@@ -7234,6 +7234,214 @@ html[data-view="statistics"] .statistics-view {
   display: block;
 }
 
+/* ============================================================ Сервер === */
+
+.server-view {
+  box-sizing: border-box;
+  display: none;
+  flex: 1 1 auto;
+  width: 100%;
+}
+
+html[data-view="server"] .workspace,
+html[data-view="server"] .journal-view,
+html[data-view="server"] .statistics-view {
+  display: none;
+}
+
+html[data-view="server"] .server-view {
+  display: block;
+}
+
+.server-content {
+  display: grid;
+  gap: 1.15rem;
+  margin: 0 auto;
+  max-width: 68rem;
+  padding: 1.25rem clamp(1rem, 2vw, 1.75rem) 3rem;
+}
+
+.server-health-card,
+.server-card {
+  background: var(--card-bg-open), color-mix(in srgb, var(--bg) 94%, transparent);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--card-shadow);
+  min-width: 0;
+  padding: clamp(1rem, 2.4vw, 1.35rem);
+}
+
+.server-health-card {
+  background:
+    radial-gradient(100% 110% at 100% 0%, color-mix(in srgb, var(--accent) 17%, transparent), transparent 64%),
+    var(--card-bg-open);
+}
+
+.server-card-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.server-card-head h2 {
+  color: var(--text);
+  font-family: var(--font-title);
+  font-size: clamp(1.05rem, 2vw, 1.28rem);
+  margin: 0;
+}
+
+.server-card-head p {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  margin: 0.32rem 0 0;
+}
+
+.server-card-head.compact {
+  margin-bottom: 0.95rem;
+}
+
+.server-kicker {
+  color: var(--accent) !important;
+  font-family: var(--font-title);
+  font-size: 0.65rem !important;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  margin: 0 0 0.35rem !important;
+  text-transform: uppercase;
+}
+
+.server-state-dot {
+  background: var(--text-faint);
+  border-radius: 50%;
+  box-shadow: 0 0 0 0.28rem color-mix(in srgb, var(--text-faint) 15%, transparent);
+  flex: 0 0 auto;
+  height: 0.65rem;
+  margin: 0.42rem 0.2rem 0 0;
+  width: 0.65rem;
+}
+
+.server-state-dot[data-online] {
+  background: #72d8a4;
+  box-shadow: 0 0 0 0.28rem color-mix(in srgb, #72d8a4 17%, transparent);
+}
+
+.server-facts {
+  display: grid;
+  gap: 0.5rem 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 1.2rem 0 0;
+}
+
+.server-facts dt {
+  color: var(--text-faint);
+  font-size: 0.67rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.server-facts dd {
+  color: var(--text);
+  font-family: var(--font-numeric);
+  font-size: 0.86rem;
+  margin: 0.16rem 0 0;
+}
+
+.server-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem 1rem;
+  justify-content: space-between;
+}
+
+.server-controls .setting-switch {
+  flex: 1 1 18rem;
+}
+
+.server-controls .chip-button {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.45rem;
+}
+
+.server-controls .chip-button svg {
+  height: 1rem;
+  width: 1rem;
+}
+
+.server-component-grid,
+.server-config-grid {
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+}
+
+.server-component,
+.server-config-row {
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  display: grid;
+  gap: 0.22rem;
+  min-width: 0;
+  padding: 0.65rem 0.72rem;
+}
+
+.server-component-name,
+.server-config-row span {
+  color: var(--text-soft);
+  font-size: 0.82rem;
+}
+
+.server-component-status,
+.server-config-row strong {
+  color: var(--text-faint);
+  font-family: var(--font-numeric);
+  font-size: 0.73rem;
+  font-weight: 600;
+}
+
+.server-component[data-enabled] .server-component-status {
+  color: #72d8a4;
+}
+
+.server-component small {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1.3;
+}
+
+.server-card .trusted-devices-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+html[data-surface="mobile"][data-view="server"] .server-view {
+  padding-bottom: calc(var(--mobile-nav-h) + env(safe-area-inset-bottom) + 1rem);
+}
+
+html[data-surface="mobile"] .server-content {
+  gap: 0.8rem;
+  padding: 0.75rem 0.65rem 1rem;
+}
+
+html[data-surface="mobile"] .server-health-card,
+html[data-surface="mobile"] .server-card {
+  border-radius: var(--radius-md);
+}
+
+html[data-surface="mobile"] .server-facts {
+  gap: 0.55rem;
+}
+
+html[data-surface="mobile"] .server-component-grid,
+html[data-surface="mobile"] .server-config-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 /* Статистика занимает всю ширину: графики читаются тем лучше, чем шире
    полотно, а колонка по центру оставляла половину экрана пустой. */
 .statistics-content {

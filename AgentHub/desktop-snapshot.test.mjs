@@ -154,6 +154,12 @@ function fixture(overrides = {}) {
         source: "cbr",
       }),
     },
+    server: {
+      snapshot: async ({ activeCount, restart }) => ({
+        process: { status: "running", activeCount },
+        restart,
+      }),
+    },
     warn: () => {},
   });
   return { ...factory, state, selected, run, entry };
@@ -404,6 +410,10 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     source: "cbr",
   });
   assert.equal(snapshot.activeCount, 1);
+  assert.deepEqual(snapshot.server, {
+    process: { status: "running", activeCount: 1 },
+    restart: { pending: true, waiting: true, blockingCount: 7 },
+  });
   assert.equal(snapshot.tasks.length, 1);
 });
 

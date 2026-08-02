@@ -416,6 +416,7 @@ function applySnapshot(snapshot) {
   if (!snapshot) return;
   lastSnapshot = snapshot;
   agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
+  agentHub.setServerStatus(snapshot.server ?? null);
   observeContextCompactions(snapshot.tasks);
   deferredClientUserMessageIds = new Set(
     (snapshot.deferredInputs ?? [])
@@ -1018,7 +1019,18 @@ agentHub.on("attachment:open", ({ attachment }) => runAction(async () => {
     throw error;
   }
 }));
-agentHub.on("hub:restart", () => runAction(() => control("restart-server")));
+agentHub.on("hub:restart", () => runAction(async () => {
+  const result = await control("restart-server");
+  if (result?.snapshot) applySnapshot(result.snapshot);
+  else applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Перезапуск Agent Hub запрошен");
+}));
+agentHub.on("server:autostart", ({ enabled }) => runAction(async () => {
+  const result = await control("set-autostart", { enabled: enabled === true });
+  if (result?.snapshot) applySnapshot(result.snapshot);
+  else applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Автозапуск Agent Hub обновлён");
+}));
 let searchSequence = 0;
 agentHub.on("search:query", ({ query }) => {
   const sequence = ++searchSequence;

@@ -234,11 +234,18 @@ import { createDesktopTaskHistoryFactory } from "./desktop-task-history.mjs";
 import { createDesktopControlRouter } from "./desktop-control-router.mjs";
 import { UsdRubRateStore } from "./exchange-rate.mjs";
 import {
+  agentHubAutostartShortcut,
+  readAgentHubAutostart,
+  serverPageSnapshot,
+  setAgentHubAutostart,
+} from "./server-page.mjs";
+import {
   ContextCompactionTracker,
   isContextCompactionItem,
 } from "./context-compaction-tracker.mjs";
 
 const config = await loadConfig();
+const serverStartedAt = new Date().toISOString();
 const globalWorkLogProjectRoots = config.projects.map((project) => project.path);
 const journalDatabaseFile = path.join(config.dataDir, "journal.sqlite");
 const legacyWorkLogLedgerFile = path.join(config.dataDir, "work-log-usage.json");
@@ -247,6 +254,7 @@ const runtimeCommandRoot = process.env.AGENT_HUB_RUNTIME_ROOT
   ?? (process.env.AGENT_HUB_CONFIG
     ? path.dirname(config.configPath)
     : defaultRuntimeRoot());
+const agentHubAutostartShortcutPath = agentHubAutostartShortcut({ environment: process.env });
 const localWebSecret = config.miniApp.enabled
   ? await ensureLocalWebSecret(path.join(runtimeCommandRoot, "local-web.secret"))
   : "";
@@ -2701,6 +2709,59 @@ function codexItemActivity(item, completed) {
   return null;
 }
 
+async function desktopServerSnapshot({ activeCount = taskRuns.values().length, restart = null } = {}) {
+  const restartState = restart ?? {
+    pending: Boolean(restartRequest),
+    waiting: restartRequest?.waitingForRuns === true,
+    blockingCount: restartRequest
+      ? restartBlockingRuns().length
+        + contextCompactions.runningCount()
+        + backgroundMediaJobs.size
+        + backgroundSpeechJobs.size
+      : 0,
+  };
+  return serverPageSnapshot({
+    config,
+    processId: process.pid,
+    startedAt: serverStartedAt,
+    activeCount,
+    restart: restartState,
+    autostart: await readAgentHubAutostart({ shortcutPath: agentHubAutostartShortcutPath }),
+  });
+}
+
+async function installAgentHubAutostart() {
+  const result = await spawnCapture(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy", "Bypass",
+      "-File", path.join(import.meta.dirname, "install-autostart.ps1"),
+    ],
+    {
+      cwd: config.projectRoot,
+      timeoutMs: 30_000,
+      maxOutputBytes: 128 * 1024,
+    },
+  );
+  if (result.code !== 0) {
+    throw new Error(result.stderr.trim() || result.error?.message || "Не удалось включить автозапуск Agent Hub");
+  }
+}
+
+async function desktopSetAutostart(params) {
+  if (typeof params?.enabled !== "boolean") throw new Error("Укажите состояние автозапуска");
+  const autostart = await setAgentHubAutostart(params.enabled, {
+    shortcutPath: agentHubAutostartShortcutPath,
+    installAutostart: installAgentHubAutostart,
+  });
+  return {
+    accepted: true,
+    message: autostart.enabled ? "Автозапуск Agent Hub включён" : "Автозапуск Agent Hub выключен",
+    snapshot: await desktopSnapshot(),
+  };
+}
+
 const {
   desktopContextSnapshot,
   desktopRunSnapshot,
@@ -2784,6 +2845,9 @@ const {
     speechJobCount: () => backgroundSpeechJobs.size,
   },
   exchangeRates: usdRubRateStore,
+  server: {
+    snapshot: desktopServerSnapshot,
+  },
   warn: (...args) => console.warn(...args),
 });
 
@@ -3281,6 +3345,7 @@ async function desktopRestartServer() {
     accepted: true,
     waiting: blockingWorkCount > 0,
     message: blockingWorkCount > 0 ? "Перезапуск ожидает завершения задач" : "Agent Hub Server перезапускается",
+    snapshot: await desktopSnapshot(),
   };
 }
 
@@ -3529,6 +3594,7 @@ const {
     "status-details": desktopStatusDetails,
     "speak-last-answer": desktopSpeakLastAnswer,
     "restart-server": desktopRestartServer,
+    "set-autostart": desktopSetAutostart,
     "compact-context": desktopCompactContext,
     "open-attachment": desktopOpenAttachment,
     "trusted-devices": desktopTrustedDevices,
@@ -3548,6 +3614,7 @@ const {
     "resolve-approval",
     "deferred-input",
     "restart-server",
+    "set-autostart",
     "compact-context",
     "create-device-pairing",
     "revoke-device",

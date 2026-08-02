@@ -72,6 +72,19 @@
           </svg>
           <span>Статистика</span>
         </button>
+        <button type="button" class="view-tab" data-view-button="server" aria-pressed="false">
+          <svg data-phosphor-icon="cpu" viewBox="0 0 256 256" aria-hidden="true">
+            <rect x="64" y="64" width="128" height="128" rx="16" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
+            <rect x="104" y="104" width="48" height="48" rx="6" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
+            <line x1="96" y1="24" x2="96" y2="64" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="16"></line>
+            <line x1="160" y1="24" x2="160" y2="64" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="16"></line>
+            <line x1="96" y1="192" x2="96" y2="232" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="16"></line>
+            <line x1="160" y1="192" x2="160" y2="232" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="16"></line>
+          </svg>
+          <span>Сервер</span>
+        </button>
       </nav>
 
       <div class="toolbar">
@@ -443,6 +456,96 @@
     </div>
   </main>
 
+  <!-- ===================================================== Agent Hub Server === -->
+  <main class="server-view" data-server-view>
+    <div class="server-content">
+      <section class="server-health-card" aria-labelledby="server-health-title">
+        <header class="server-card-head">
+          <div>
+            <p class="server-kicker">Agent Hub Server</p>
+            <h2 id="server-health-title" data-server-state>Подключение…</h2>
+            <p data-server-state-note>Получаем состояние локального процесса.</p>
+          </div>
+          <span class="server-state-dot" data-server-state-dot aria-hidden="true"></span>
+        </header>
+        <dl class="server-facts" data-server-facts></dl>
+      </section>
+
+      <section class="server-card" aria-labelledby="server-controls-title">
+        <header class="server-card-head compact">
+          <div>
+            <h2 id="server-controls-title">Управление</h2>
+            <p>Перезапуск дождётся безопасного момента, если есть активные ходы.</p>
+          </div>
+        </header>
+        <div class="server-controls">
+          <label class="setting-switch">
+            <input type="checkbox" data-server-autostart>
+            <span class="switch-text">Автозапуск Agent Hub
+              <span class="switch-note" data-server-autostart-note>Проверяем…</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <button type="button" class="chip-button" data-action="hub-restart">
+            <svg data-phosphor-icon="arrows-clockwise" viewBox="0 0 256 256" aria-hidden="true">
+              <polyline points="168 96 216 96 216 48" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+              <path d="M216,96,187.72,67.72A88,88,0,0,0,64,67" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
+              <polyline points="88 160 40 160 40 208" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+              <path d="M40,160l28.28,28.28A88,88,0,0,0,192,189" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
+            </svg>
+            <span>Перезапустить</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="server-card" aria-labelledby="server-components-title">
+        <header class="server-card-head compact">
+          <div>
+            <h2 id="server-components-title">Компоненты</h2>
+            <p>Поверхности одного локального Agent Hub.</p>
+          </div>
+        </header>
+        <div class="server-component-grid" data-server-components>
+          <span class="setting-empty">Загрузка…</span>
+        </div>
+      </section>
+
+      <section class="server-card" aria-labelledby="server-config-title">
+        <header class="server-card-head compact">
+          <div>
+            <h2 id="server-config-title">Конфигурация</h2>
+            <p>Без ключей, токенов, путей и идентификаторов.</p>
+          </div>
+        </header>
+        <div class="server-config-grid" data-server-config>
+          <span class="setting-empty">Загрузка…</span>
+        </div>
+      </section>
+
+      <section class="server-card" aria-labelledby="server-devices-title">
+        <header class="server-card-head compact">
+          <div>
+            <h2 id="server-devices-title">Доверенные устройства</h2>
+            <p>Android-клиенты с собственным ключом устройства.</p>
+          </div>
+        </header>
+        <div class="trusted-devices-card">
+          <div data-trusted-device-pairing hidden></div>
+          <div class="trusted-device-list" data-trusted-device-list>
+            <span class="setting-empty">Откройте страницу, чтобы загрузить устройства.</span>
+          </div>
+          <button type="button" class="chip-button trusted-device-add" data-device-create>
+            Добавить устройство
+          </button>
+        </div>
+      </section>
+    </div>
+  </main>
+
   <!-- Мобильная нижняя навигация: задачи · чат · журнал без горизонтальной прокрутки. -->
   <nav class="mobile-nav" data-mobile-nav aria-label="Навигация">
     <button type="button" class="mobile-tab" data-mobile-button="tasks" aria-pressed="true">
@@ -499,9 +602,20 @@
       </svg>
       <span>Статистика</span>
     </button>
+    <button type="button" class="mobile-tab" data-mobile-button="server" aria-pressed="false">
+      <svg data-phosphor-icon="cpu" viewBox="0 0 256 256" aria-hidden="true">
+        <rect x="64" y="64" width="128" height="128" rx="16" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
+        <rect x="104" y="104" width="48" height="48" rx="6" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
+        <line x1="96" y1="24" x2="96" y2="64" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="16"></line>
+        <line x1="160" y1="24" x2="160" y2="64" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="16"></line>
+      </svg>
+      <span>Сервер</span>
+    </button>
   </nav>
 
-  <!-- Единая панель общих настроек интерфейса, журнала, устройств и сервера. -->
+  <!-- Единая панель настроек интерфейса и журнала. -->
   <div class="panel-scrim" data-panel-scrim hidden></div>
   <aside class="settings-panel" data-settings-panel hidden aria-label="Настройки" role="dialog"
     aria-modal="true">
@@ -592,37 +706,7 @@
           </label>
         </div>
       </section>
-      <section class="settings-section">
-        <h3 class="settings-section-title">Доверенные устройства</h3>
-        <div class="settings-card trusted-devices-card">
-          <div data-trusted-device-pairing hidden></div>
-          <div class="trusted-device-list" data-trusted-device-list>
-            <span class="setting-empty">Загрузка…</span>
-          </div>
-          <button type="button" class="chip-button trusted-device-add" data-device-create>
-            Добавить устройство
-          </button>
-        </div>
-      </section>
       <div class="setting-status" data-status-slot hidden></div>
-      <div class="setting-danger">
-        <button type="button" class="chip-button" data-action="hub-restart">
-          <svg data-phosphor-icon="arrows-clockwise" viewBox="0 0 256 256"
-            aria-hidden="true">
-            <polyline points="168 96 216 96 216 48" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-            <path d="M216,96,187.72,67.72A88,88,0,0,0,64,67" fill="none"
-              stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
-              stroke-width="16"></path>
-            <polyline points="88 160 40 160 40 208" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-            <path d="M40,160l28.28,28.28A88,88,0,0,0,192,189" fill="none"
-              stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
-              stroke-width="16"></path>
-          </svg>
-          <span>Перезапустить Agent Hub</span>
-        </button>
-      </div>
     </div>
   </aside>
 

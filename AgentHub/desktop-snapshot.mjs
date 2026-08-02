@@ -11,6 +11,7 @@ export function createDesktopSnapshotFactory({
   approvals,
   restart,
   exchangeRates,
+  server = {},
   warn,
 }) {
   function desktopContextSnapshot(thread, turn = "") {
@@ -151,6 +152,22 @@ export function createDesktopSnapshotFactory({
     const taskSnapshots = entries.map(desktopTaskSnapshot);
     const current = settings.current();
     const activeProvider = current.activeProvider;
+    const activeCount = taskSnapshots.filter((item) => item.running).length;
+    const serverSnapshot = typeof server.snapshot === "function"
+      ? await server.snapshot({
+        activeCount,
+        restart: {
+          pending: Boolean(restart.request()),
+          waiting: restart.request()?.waitingForRuns === true,
+          blockingCount: restart.request()
+            ? restart.blockingRuns().length
+              + (restart.compactionCount?.() ?? 0)
+              + restart.mediaJobCount()
+              + restart.speechJobCount()
+            : 0,
+        },
+      })
+      : null;
     return {
       apiVersion: 2,
       generatedAt: clock.nowIso(),
@@ -250,7 +267,8 @@ export function createDesktopSnapshotFactory({
           + restart.speechJobCount()
         : 0,
       exchangeRates: exchangeRates?.snapshot?.() ?? null,
-      activeCount: taskSnapshots.filter((item) => item.running).length,
+      activeCount,
+      server: serverSnapshot,
       tasks: taskSnapshots,
     };
   }
