@@ -2605,10 +2605,23 @@ const serverConfigDrafts = new Map();
 function syncServerConfigActions() {
   const actions = document.querySelector("[data-server-config-actions]");
   if (!actions) return;
+  /* Панель видна всегда: скрытая кнопка не давала понять, что настройки вообще
+     где-то сохраняются. Без правок она просто неактивна. */
   const count = serverConfigDrafts.size;
-  actions.hidden = count === 0;
+  actions.hidden = false;
   const save = actions.querySelector("[data-server-config-save]");
-  if (save) save.textContent = count > 1 ? `Сохранить · ${count}` : "Сохранить";
+  if (save) {
+    save.textContent = count > 1 ? `Сохранить · ${count}` : "Сохранить";
+    save.disabled = count === 0;
+  }
+  const discard = actions.querySelector("[data-server-config-discard]");
+  if (discard) discard.hidden = count === 0;
+  const note = actions.querySelector(".server-config-actions-note");
+  if (note) {
+    note.textContent = count
+      ? "Изменения применяются только по кнопке."
+      : "Настройки применяются кнопкой «Сохранить».";
+  }
 }
 
 function noteServerConfigDraft(key, value) {
