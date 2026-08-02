@@ -517,6 +517,15 @@ test("«Gothic» offers eight night scenes, each with its own light", () => {
   assert.match(backgrounds, /@keyframes gothic-scene-glow/u);
 });
 
+test("large Gothic scenes are decoded before replacing the visible background", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(client, /"gothic-minental-castle": \{[\s\S]*fallback: "\/gothic-minental-castle\.jpg"/u);
+  assert.match(client, /"gothic-finkregh": \{[\s\S]*fallback: "\/gothic-finkregh\.jpg"/u);
+  assert.match(client, /image\.decode\(\)\.then\(\(\) => finish\(true\)/u);
+  assert.match(client, /if \(requestId !== backgroundRequestId\) return;/u);
+  assert.match(client, /if \(loaded\) \{ commitBackground\(selected, persist\); return; \}/u);
+});
+
 test("«Озеро» keeps one palette and three interchangeable scenes", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const backgrounds = fs.readFileSync(

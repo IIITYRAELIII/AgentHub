@@ -236,6 +236,18 @@ const themeBackgrounds = Object.freeze({
   lake: ["lake", "lake-watercolor", "lake-oil"],
   graphite: ["graphite"],
 });
+const deferredBackgroundAssets = Object.freeze({
+  "gothic-minental-castle": {
+    customProperty: "--gothic-minental-castle-image",
+    fallback: "/gothic-minental-castle.jpg",
+  },
+  "gothic-finkregh": {
+    customProperty: "--gothic-finkregh-image",
+    fallback: "/gothic-finkregh.jpg",
+  },
+});
+const backgroundAssetLoads = new Map();
+let backgroundRequestId = 0;
 const themeAliases = {
   "taiga-drops": "metropolis",
 };
@@ -379,6 +391,11 @@ function applyTheme(theme, { persist = false } = {}) {
   const candidate = themeAliases[theme] ?? theme;
   const selected = Object.hasOwn(themes, candidate) ? candidate : "orbit";
   document.documentElement.dataset.theme = selected;
+  if (selected === "gothic") {
+    for (const background of Object.keys(deferredBackgroundAssets)) {
+      void preloadBackgroundAsset(background);
+    }
+  }
   const previousBackground = document.documentElement.dataset.background;
   populateBackgroundOptions(selected);
   if (previousBackground) {
@@ -767,10 +784,53 @@ function savedBackground(fallback) {
   }
 }
 
-function applyBackground(background, { persist = false } = {}) {
-  const selected = normalizeBackground(root.dataset.theme, background);
+function cssUrl(value) {
+  const match = /^url\((.*)\)$/u.exec(String(value ?? "").trim());
+  if (!match) return "";
+  const candidate = match[1].trim();
+  if (
+    candidate.length >= 2
+    && ((candidate.startsWith('"') && candidate.endsWith('"'))
+      || (candidate.startsWith("'") && candidate.endsWith("'")))
+  ) return candidate.slice(1, -1);
+  return candidate;
+}
+
+function backgroundAssetUrl(background) {
+  const asset = deferredBackgroundAssets[background];
+  if (!asset) return "";
+  const configured = cssUrl(getComputedStyle(root).getPropertyValue(asset.customProperty));
+  return configured || new URL(asset.fallback, document.baseURI).href;
+}
+
+function preloadBackgroundAsset(background) {
+  const url = backgroundAssetUrl(background);
+  if (!url || typeof Image !== "function") return Promise.resolve(true);
+  if (backgroundAssetLoads.has(url)) return backgroundAssetLoads.get(url);
+  const loading = new Promise((resolve) => {
+    const image = document.createElement("img");
+    let settled = false;
+    const finish = (loaded) => {
+      if (settled) return;
+      settled = true;
+      resolve(loaded);
+    };
+    image.onload = () => {
+      if (typeof image.decode !== "function") { finish(true); return; }
+      void image.decode().then(() => finish(true), () => finish(true));
+    };
+    image.onerror = () => finish(false);
+    image.src = url;
+    if (image.complete && image.naturalWidth > 0) image.onload();
+  });
+  backgroundAssetLoads.set(url, loading);
+  return loading;
+}
+
+function commitBackground(selected, persist) {
   root.dataset.background = selected;
   root.dataset.backgroundOverride = String(selected !== root.dataset.theme);
+  delete root.dataset.backgroundLoading;
   if (backgroundSelect) backgroundSelect.value = selected;
   syncParticleLayer(selected);
   if (persist) {
@@ -780,6 +840,23 @@ function applyBackground(background, { persist = false } = {}) {
       // Выбор останется активным до закрытия WebView.
     }
   }
+}
+
+function applyBackground(background, { persist = false } = {}) {
+  const selected = normalizeBackground(root.dataset.theme, background);
+  const requestId = ++backgroundRequestId;
+  if (backgroundSelect) backgroundSelect.value = selected;
+  if (!deferredBackgroundAssets[selected] || typeof Image !== "function") {
+    commitBackground(selected, persist);
+    return;
+  }
+  root.dataset.backgroundLoading = "true";
+  void preloadBackgroundAsset(selected).then((loaded) => {
+    if (requestId !== backgroundRequestId) return;
+    if (loaded) { commitBackground(selected, persist); return; }
+    delete root.dataset.backgroundLoading;
+    if (backgroundSelect) backgroundSelect.value = root.dataset.background;
+  });
 }
 
 function backgroundsForTheme(theme) {
