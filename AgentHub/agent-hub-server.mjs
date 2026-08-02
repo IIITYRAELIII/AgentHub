@@ -664,6 +664,7 @@ const taskSyncStore = new LocalTaskSyncStore({
 });
 await taskSyncStore.load();
 await taskSyncStore.save();
+taskCatalog = taskSyncStore.catalog();
 
 let mediaController;
 const telegramClient = new TelegramClient({
