@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseArguments, publicationSteps, publishAll } from "./publish-all.mjs";
+import { resolveWrangler } from "./wrangler-runner.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 
@@ -125,4 +127,38 @@ test("Desktop smoke hashes the executable without optional PowerShell cmdlets", 
   );
   assert.match(smoke, /Security\.Cryptography\.SHA256/u);
   assert.doesNotMatch(smoke, /Get-FileHash/u);
+});
+
+test("clean worktrees reuse the pinned Wrangler from the main worktree", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-clean-publish-"));
+  try {
+    const cleanRoot = path.join(temporary, "clean", "AgentHub");
+    const repositoryRoot = path.join(temporary, "main");
+    const dependencyRoot = path.join(repositoryRoot, "AgentHub");
+    const installedRoot = path.join(dependencyRoot, "node_modules", "wrangler");
+    const expected = path.join(installedRoot, "bin", "wrangler.js");
+    fs.mkdirSync(path.dirname(expected), { recursive: true });
+    fs.mkdirSync(cleanRoot, { recursive: true });
+    fs.writeFileSync(path.join(cleanRoot, "package.json"), JSON.stringify({
+      devDependencies: { wrangler: "4.115.0" },
+    }));
+    fs.writeFileSync(path.join(installedRoot, "package.json"), JSON.stringify({ version: "4.115.0" }));
+    fs.writeFileSync(expected, "");
+
+    assert.equal(
+      resolveWrangler({
+        root: cleanRoot,
+        environment: {},
+        gitCommonDirectory: path.join(repositoryRoot, ".git"),
+      }),
+      expected,
+    );
+
+    const packageScript = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"))
+      .scripts["worker:deploy"];
+    assert.match(packageScript, /node wrangler-runner\.mjs deploy/u);
+    assert.doesNotMatch(packageScript, /\bnpx\b/u);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
 });
