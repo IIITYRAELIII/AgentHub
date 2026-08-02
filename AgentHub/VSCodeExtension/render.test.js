@@ -410,6 +410,7 @@ test("task list keeps active duration live and metadata badges readable", () => 
   assert.match(app, /\["spark", "Spark"\]/u);
   assert.match(app, /class: "task-agent task-model"[\s\S]*text: shortModelLabel\(task\.modelLabel\)/u);
   assert.match(app, /task\.statusLabel[\s\S]*task\.runtimeLabel/u);
+  assert.match(styles, /\.task-meta\s*\{[^}]*flex:\s*1 1 auto;/su);
   assert.match(styles, /\.task-runtime\s*\{[^}]*margin-left:\s*auto;/su);
 });
 
@@ -573,14 +574,16 @@ test("VS Code theme assets override browser paths with equal specificity", () =>
   assert.match(shared, /<style nonce="\$\{nonce\}">html\[data-theme\],html\[data-background\]\{\$\{assetOverrides\}\}<\/style>/u);
 });
 
-test("turn header keeps its open button in the third column", () => {
+test("turn header keeps its actions in the trailing columns", () => {
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),
     "utf8",
   );
+  /* Действий стало два — значок субагентов и «Открыть ход», — поэтому под них
+     отводятся две автоколонки вместо одной фиксированной. */
   assert.match(
     styles,
-    /\.journal details\[data-work-log-turn-details\] > summary\s*\{[^}]*grid-template-columns:\s*11\.5rem minmax\(0, 1fr\) 2\.25rem;/su,
+    /\.journal details\[data-work-log-turn-details\] > summary\s*\{[^}]*grid-template-columns:\s*11\.5rem minmax\(0, 1fr\) auto auto;/su,
   );
 });
 

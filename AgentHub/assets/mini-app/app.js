@@ -974,6 +974,17 @@ function shortModelLabel(value) {
   return source.replace(/^claude[- ]*/iu, "").slice(0, 12);
 }
 
+/* Ранг модели виден по насыщенности плашки. Цвета берутся из токенов темы,
+   поэтому «Магма» подсветит флагман оранжевым, а «Озеро» — зелёным, и ни одна
+   тема не получает чужой палитры. */
+function modelTier(value) {
+  const normalized = String(value ?? "").toLowerCase();
+  if (!normalized) return null;
+  if (/mini|haiku|spark|nano|flash|lite/u.test(normalized)) return "light";
+  if (/opus|terra|sol|pro\b|ultra|max\b/u.test(normalized)) return "flagship";
+  return "balanced";
+}
+
 function renderTasks() {
   const filter = (taskFilter.value ?? "").trim().toLowerCase();
   const visible = state.tasks.filter((task) => {
@@ -1021,6 +1032,7 @@ function renderTaskItem(task) {
     task.modelLabel
       ? el("span", {
         class: "task-agent task-model",
+        "data-model-tier": modelTier(task.modelLabel),
         text: shortModelLabel(task.modelLabel),
         title: task.modelLabel,
       })
@@ -1193,15 +1205,19 @@ function renderContextUsage(task) {
 
 function buildSubtitleChips(task) {
   const parts = [
-    task.agentLabel || providerLabels[task.provider] || null,
-    task.modelLabel || null,
-    task.reasoningLabel || null,
-    task.modeLabel || null,
-    task.runtimeLabel || null,
-    task.project || null,
-  ].filter(Boolean);
-  return parts.map((part, index) =>
-    el("span", { class: "chat-chip", "data-order": index, text: part }));
+    [task.agentLabel || providerLabels[task.provider] || null, null],
+    [task.modelLabel || null, modelTier(task.modelLabel)],
+    [task.reasoningLabel || null, null],
+    [task.modeLabel || null, null],
+    [task.runtimeLabel || null, null],
+    [task.project || null, null],
+  ].filter(([part]) => part);
+  return parts.map(([part, tier], index) => el("span", {
+    class: "chat-chip",
+    "data-order": index,
+    "data-model-tier": tier,
+    text: part,
+  }));
 }
 
 function renderFollowUpMode(task = currentTask()) {
