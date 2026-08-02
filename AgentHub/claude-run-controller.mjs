@@ -54,6 +54,7 @@ export class ClaudeRunController {
       claudeResult: null,
       claudeExitCode: null,
       claudeExited: false,
+      claudeExitDrainRetried: false,
       claudeSettled: false,
     });
     let worker;
@@ -145,7 +146,19 @@ export class ClaudeRunController {
     if (run.claudeSettled || !this.isCurrentRun(run)) return;
     const processGone = run.claudeExited === true
       || (run.pid ? !this.processAlive(run.pid) : !run.process);
-    if (run.claudeResult || processGone) {
+    if (run.claudeResult) {
+      await this.complete(run);
+      return;
+    }
+    // Windows may report the detached child exit just before its redirected
+    // output becomes visible to the reader. Give the final JSONL write one
+    // bounded extra polling interval before concluding that no result exists.
+    if (processGone && !run.claudeExitDrainRetried) {
+      run.claudeExitDrainRetried = true;
+      this.schedule(run);
+      return;
+    }
+    if (processGone) {
       await this.complete(run);
       return;
     }
