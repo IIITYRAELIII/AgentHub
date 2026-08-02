@@ -183,6 +183,46 @@ div[data-work-log-turn-children] {
   padding-left: 0.75em;
 }
 
+details[data-work-log-turn-children-details] {
+  margin-top: 0.35em;
+}
+
+details[data-work-log-turn-children-details] > summary {
+  border: 1px dashed rgba(127, 127, 127, 0.55);
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  font-size: 0.85em;
+  justify-content: center;
+  list-style: none;
+  margin-inline: auto;
+  padding: 0.3em 0.65em;
+  width: max-content;
+}
+
+details[data-work-log-turn-children-details] > summary::-webkit-details-marker {
+  display: none;
+}
+
+details[data-work-log-turn-children-details] > summary::marker {
+  content: "";
+}
+
+details[data-work-log-turn-children-details] > summary
+  span[data-work-log-turn-children-open] {
+  display: none;
+}
+
+details[data-work-log-turn-children-details][open] > summary
+  span[data-work-log-turn-children-closed] {
+  display: none;
+}
+
+details[data-work-log-turn-children-details][open] > summary
+  span[data-work-log-turn-children-open] {
+  display: inline;
+}
+
 div[data-work-log-turn-children] > div[data-work-log-turn-entry] {
   position: relative;
 }

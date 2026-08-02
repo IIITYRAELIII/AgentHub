@@ -1844,6 +1844,55 @@ main {
   padding-left: 0.75rem;
 }
 
+.journal details[data-work-log-turn-children-details] {
+  margin-top: 0.35rem;
+}
+
+.journal details[data-work-log-turn-children-details] > summary {
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-chip);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.75rem;
+  justify-content: center;
+  list-style: none;
+  margin-inline: auto;
+  padding: 0.3rem 0.75rem;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+  width: max-content;
+}
+
+.journal details[data-work-log-turn-children-details] > summary:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.journal details[data-work-log-turn-children-details] > summary::-webkit-details-marker {
+  display: none;
+}
+
+.journal details[data-work-log-turn-children-details] > summary::marker {
+  content: "";
+}
+
+.journal details[data-work-log-turn-children-details] > summary
+  span[data-work-log-turn-children-open] {
+  display: none;
+}
+
+.journal details[data-work-log-turn-children-details][open] > summary
+  span[data-work-log-turn-children-closed] {
+  display: none;
+}
+
+.journal details[data-work-log-turn-children-details][open] > summary
+  span[data-work-log-turn-children-open] {
+  display: inline;
+}
+
 .journal div[data-work-log-turn-children] > div[data-work-log-turn-entry]::before {
   border-top-color: var(--accent-line);
 }

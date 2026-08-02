@@ -781,6 +781,11 @@ test("journal preserves recursive subagent trees in date and task groupings", ()
   assert.match(app, /if \(isRootTurnEntry\(entry\)\) group\.turns\.push/u);
   assert.match(styles, /\.journal div\[data-work-log-turn-children\]/u);
   assert.match(workLogStyles, /div\[data-work-log-turn-children\]/u);
+  assert.match(app, /subagents: \[\.\.\.journal\.querySelectorAll\("details\[data-work-log-turn-children-details\]\[open\]"\)\]/u);
+  assert.match(app, /openState\.subagents \?\? \[\]/u);
+  assert.match(app, /collapseAllButton\.addEventListener\("click",[\s\S]*querySelectorAll\("details\[open\]"\)/u);
+  assert.match(styles, /details\[data-work-log-turn-children-details\] > summary/u);
+  assert.match(workLogStyles, /details\[data-work-log-turn-children-details\] > summary/u);
 });
 
 test("response annotations render as quote cards without the service envelope", () => {

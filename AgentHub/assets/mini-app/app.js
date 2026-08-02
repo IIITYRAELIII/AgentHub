@@ -4223,6 +4223,9 @@ function captureOpenState() {
     turns: [...journal.querySelectorAll("details[data-work-log-turn-details][open]")]
       .map((item) => item.closest("[data-work-log-turn-id]")?.dataset.workLogTurnId)
       .filter(Boolean),
+    subagents: [...journal.querySelectorAll("details[data-work-log-turn-children-details][open]")]
+      .map((item) => item.closest("[data-work-log-turn-id]")?.dataset.workLogTurnId)
+      .filter(Boolean),
     mobileDays: [...journal.querySelectorAll("[data-day-usage-table][data-mobile-expanded]")]
       .map((item) => item.closest("details[data-work-log-day-section]")
         ?.querySelector("summary[data-work-log-day] strong")?.textContent.trim())
@@ -4326,6 +4329,11 @@ function restoreOpenState(openState) {
   for (const turnId of openState.turns) {
     journal.querySelector(
       `[data-work-log-turn-id="${selectorValue(turnId)}"] details[data-work-log-turn-details]`,
+    )?.setAttribute("open", "");
+  }
+  for (const turnId of openState.subagents ?? []) {
+    journal.querySelector(
+      `[data-work-log-turn-id="${selectorValue(turnId)}"] > details[data-work-log-turn-children-details]`,
     )?.setAttribute("open", "");
   }
   for (const day of openState.mobileDays ?? []) {

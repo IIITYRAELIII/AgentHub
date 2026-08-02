@@ -334,21 +334,33 @@ function changedDiffLineCount(value) {
   ).length;
 }
 
-function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0, depth = 0, children = "") {
+function formatTurnEntry(
+  record,
+  _legacyFiles = "",
+  taskCredits = 0,
+  depth = 0,
+  children = "",
+  treeCredits = null,
+  descendantCount = 0,
+) {
   const breakdown = recordCreditBreakdown(record);
   const recordTotal = breakdown.total;
+  const displayedTotal = Number.isFinite(treeCredits) ? Math.max(0, treeCredits) : recordTotal;
   const elapsedSeconds = durationSeconds(record?.startedAt, record?.completedAt);
   const creditsKnown = !(
     (record?.usageReported === false && recordTotal <= 0)
     || (!breakdown.priced && recordTotal <= 0)
   );
-  const credits = record?.usageReported === false && recordTotal <= 0
+  const ownCredits = record?.usageReported === false && recordTotal <= 0
     ? "нет данных"
     : !breakdown.priced && recordTotal <= 0
       ? "нет тарифа"
       : highlightUsageUnits(formatCredits(recordTotal));
-  const share = taskCredits > 0 && recordTotal > 0
-    ? `${Math.round(recordTotal / taskCredits * 100)}%`
+  const credits = displayedTotal > 0
+    ? highlightUsageUnits(formatCredits(displayedTotal))
+    : ownCredits;
+  const share = taskCredits > 0 && displayedTotal > 0
+    ? `${Math.round(displayedTotal / taskCredits * 100)}%`
     : "";
   const title = escapeHtmlText(turnTitle(record));
   const body = escapeHtmlText(String(record?.body ?? record?.text ?? "").trim());
@@ -363,7 +375,11 @@ function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0, depth = 0, 
     `<div data-work-log-turn-facts>${pricing}`
       + `<div data-work-log-turn-context><strong>Длит.:</strong> ${
         formatDuration(record?.startedAt, record?.completedAt)
-      }</div></div>`,
+      }</div>`
+      + (descendantCount > 0
+        ? `<div data-work-log-turn-own-usage><strong>Свой расход:</strong> ${ownCredits}</div>`
+        : "")
+      + "</div>",
     prompt ? `<div data-work-log-turn-prompt><strong>Запрос:</strong> ${prompt}</div>` : "",
   ].filter(Boolean).join("");
   const bodyDetails = body ? `<div data-work-log-turn-body>${body}</div>` : "";
@@ -434,7 +450,14 @@ function formatTurnEntry(record, _legacyFiles = "", taskCredits = 0, depth = 0, 
     + '<div data-work-log-turn-expanded>'
     + `<div data-work-log-turn-meta-details>${metaDetails}</div>`
     + `<div data-work-log-turn-body-details>${bodyDetails}</div>`
-    + `</div></details>${children ? `<div data-work-log-turn-children>${children}</div>` : ""}</div>`;
+    + "</div></details>"
+    + (children
+      ? "<details data-work-log-turn-children-details><summary>"
+        + `<span data-work-log-turn-children-closed>Показать субагентов (${descendantCount})</span>`
+        + '<span data-work-log-turn-children-open>Свернуть субагентов</span>'
+        + `</summary><div data-work-log-turn-children>${children}</div></details>`
+      : "")
+    + "</div>";
 }
 
 function recordTimestamp(record) {
@@ -522,11 +545,24 @@ function treeNodeCount(node) {
   return 1 + node.children.reduce((total, child) => total + treeNodeCount(child), 0);
 }
 
+function treeNodeCredits(node) {
+  return recordCredits(node.record)
+    + node.children.reduce((total, child) => total + treeNodeCredits(child), 0);
+}
+
 function formatTurnTreeNode(node, taskCredits, depth = 0) {
   const children = node.children
     .map((child) => formatTurnTreeNode(child, taskCredits, depth + 1))
     .join("\n");
-  return formatTurnEntry(node.record, "", taskCredits, depth, children);
+  return formatTurnEntry(
+    node.record,
+    "",
+    taskCredits,
+    depth,
+    children,
+    treeNodeCredits(node),
+    treeNodeCount(node) - 1,
+  );
 }
 
 function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {

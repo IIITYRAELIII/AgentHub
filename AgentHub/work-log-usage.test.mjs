@@ -906,7 +906,18 @@ test("subagent usage is summed into its root task and shown as child turns", () 
   );
   assert.match(
     projected,
-    /data-work-log-turn-id="root-turn"[\s\S]*data-work-log-turn-children>[\s\S]*data-work-log-turn-id="child-turn"[\s\S]*data-work-log-turn-children>[\s\S]*data-work-log-turn-id="grandchild-turn"/,
+    /data-work-log-turn-id="root-turn"[\s\S]*data-work-log-turn-children-details>[\s\S]*data-work-log-turn-id="child-turn"[\s\S]*data-work-log-turn-children-details>[\s\S]*data-work-log-turn-id="grandchild-turn"/,
+  );
+  assert.match(projected, /Показать субагентов \(3\)/);
+  assert.match(projected, /Показать субагентов \(1\)/);
+  assert.doesNotMatch(projected, /data-work-log-turn-children-details open/);
+  assert.match(
+    projected,
+    /root-turn[\s\S]*data-work-log-turn-measure>[^<]+ — <span [^>]*>23,1 cr<\/span>[\s\S]*<strong>Свой расход:<\/strong> <span [^>]*>12,5 cr<\/span>/,
+  );
+  assert.match(
+    projected,
+    /child-turn[\s\S]*data-work-log-turn-measure>[^<]+ — <span [^>]*>7,5 cr<\/span>[\s\S]*<strong>Свой расход:<\/strong> <span [^>]*>6,3 cr<\/span>/,
   );
   assert.match(projected, /data-work-log-turn-depth="2" data-work-log-turn-id="grandchild-turn"/);
   assert.doesNotMatch(projected, /data-work-log-thread-id="child"/);
