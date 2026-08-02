@@ -689,6 +689,16 @@ test("response annotations render as quote cards without the service envelope", 
   assert.match(app, /if \(!renderResponseAnnotations\(body, message\)\) renderMarkdown/u);
 });
 
+test("focused journal turn reuses the task thread without duplicating its prompt", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /!focusedTurnAlreadyVisible\(history, messages, focusedTurn\)/u);
+  assert.match(client, /const focusedThreadId = focusedTurnTaskThreadId\(focusedTurn\)/u);
+  assert.doesNotMatch(
+    client,
+    /message\.threadId === \(focusedTurn\.turnThreadId \?\? focusedTurn\.taskThreadId\)/u,
+  );
+});
+
 test("composer send and desktop settings stay pinned to the right edge", () => {
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),

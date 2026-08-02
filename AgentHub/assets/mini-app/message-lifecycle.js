@@ -22,6 +22,26 @@ function clientIdentityKey(message) {
   return `${provider}\0${threadId}\0${clientUserMessageId}\0${role}`;
 }
 
+function focusedTurnTaskThreadId(focusedTurn) {
+  return String(focusedTurn?.taskThreadId ?? focusedTurn?.turnThreadId ?? "");
+}
+
+function focusedTurnAlreadyVisible(history, messages, focusedTurn) {
+  const provider = String(focusedTurn?.provider ?? "");
+  const taskThreadId = focusedTurnTaskThreadId(focusedTurn);
+  const turnId = String(focusedTurn?.turnId ?? "");
+  if (!provider || !taskThreadId || !turnId) return false;
+  if (
+    String(history?.provider ?? "") !== provider
+    || String(history?.threadId ?? "") !== taskThreadId
+  ) return false;
+  return (Array.isArray(messages) ? messages : []).some((message) => (
+    String(message?.provider ?? "") === provider
+    && String(message?.threadId ?? "") === taskThreadId
+    && String(message?.turnId ?? "") === turnId
+  ));
+}
+
 function normalizedResponseAnnotations(values) {
   return (Array.isArray(values) ? values : []).flatMap((item) => {
     const text = String(item?.text ?? item?.quote ?? "").trim();
@@ -264,6 +284,8 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   isConnectionFailure,
   looksLikeConnectionFailure,
   clientIdentityKey,
+  focusedTurnAlreadyVisible,
+  focusedTurnTaskThreadId,
   liveMessageMatch,
   markConnectionFailure,
   mergeLiveUserMessages,

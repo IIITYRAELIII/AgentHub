@@ -34,6 +34,8 @@ let deferredClientUserMessageIds = new Set();
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const {
   activeStageLabel,
+  focusedTurnAlreadyVisible,
+  focusedTurnTaskThreadId,
   hubErrorMessage,
   isConnectionFailure,
   looksLikeConnectionFailure,
@@ -576,15 +578,12 @@ function historyMessages(history, focusedTurn = null) {
       attachments: attachmentViews(message.attachments),
     });
   }
-  if (focusedTurn && !messages.some((message) => (
-    message.provider === focusedTurn.provider
-    && message.threadId === (focusedTurn.turnThreadId ?? focusedTurn.taskThreadId)
-    && message.turnId === focusedTurn.turnId
-  ))) {
+  if (focusedTurn && !focusedTurnAlreadyVisible(history, messages, focusedTurn)) {
+    const focusedThreadId = focusedTurnTaskThreadId(focusedTurn);
     if (focusedTurn.prompt) messages.push({
       id: `${focusedTurn.turnId}:prompt`,
       provider: focusedTurn.provider,
-      threadId: focusedTurn.turnThreadId ?? focusedTurn.taskThreadId,
+      threadId: focusedThreadId,
       turnId: focusedTurn.turnId,
       itemId: `${focusedTurn.turnId}:focused:user`,
       role: "user",
@@ -597,7 +596,7 @@ function historyMessages(history, focusedTurn = null) {
     messages.push({
       id: `${focusedTurn.turnId}:answer`,
       provider: focusedTurn.provider,
-      threadId: focusedTurn.turnThreadId ?? focusedTurn.taskThreadId,
+      threadId: focusedThreadId,
       turnId: focusedTurn.turnId,
       itemId: `${focusedTurn.turnId}:focused:agent`,
       role: "agent",

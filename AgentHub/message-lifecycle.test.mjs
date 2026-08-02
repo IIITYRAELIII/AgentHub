@@ -274,6 +274,27 @@ test("live VSC user messages do not duplicate official task history", () => {
   assert.equal(merged[0].itemId, "server-item");
 });
 
+test("focused execution turn does not duplicate its task history prompt", () => {
+  const history = { provider: "codex", threadId: "task-thread" };
+  const official = [{
+    provider: "codex",
+    threadId: "task-thread",
+    turnId: "turn-1",
+    itemId: "server-item",
+    role: "user",
+    text: "Исходный вопрос",
+  }];
+  const focusedTurn = {
+    provider: "codex",
+    taskThreadId: "task-thread",
+    turnThreadId: "execution-thread",
+    turnId: "turn-1",
+    prompt: "Исходный вопрос",
+  };
+  assert.equal(lifecycle.focusedTurnTaskThreadId(focusedTurn), "task-thread");
+  assert.equal(lifecycle.focusedTurnAlreadyVisible(history, official, focusedTurn), true);
+});
+
 test("active stage always identifies the whole turn as running", () => {
   assert.equal(lifecycle.activeStageLabel(""), "Ход выполняется");
   assert.equal(
