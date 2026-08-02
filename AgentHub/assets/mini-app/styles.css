@@ -7696,6 +7696,24 @@ html[data-view="server"] .server-view {
   grid-row: 1;
 }
 
+/* Состояние дорожки описано только для `.setting-switch`, поэтому в плитке
+   конфигурации тумблер не двигался: пока рядом жил нативный флажок, это было
+   незаметно. */
+.server-config-toggle input:checked ~ .switch-track {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.server-config-toggle input:checked ~ .switch-track::after {
+  background: var(--accent);
+  transform: translateX(1.05rem);
+}
+
+.server-config-toggle input:focus-visible ~ .switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .server-config-toggle .server-config-pending {
   grid-column: 1 / -1;
 }
