@@ -48,8 +48,8 @@ test("Agent Hub autostart enable installs and disable removes only Hub shortcut"
 test("server page snapshot excludes secrets and absolute filesystem paths", () => {
   const snapshot = serverPageSnapshot({
     config: {
-      components: { telegram: true, webApp: true },
-      miniApp: { worker: { enabled: true } },
+      components: { telegram: true, miniApp: true, androidApp: true },
+      miniApp: { enabled: true, worker: { enabled: true } },
       autoApproveOnStart: true,
       guardConcurrentRepositoryWrites: true,
       codexRolloutContext: { enabled: true },
@@ -75,5 +75,22 @@ test("server page snapshot excludes secrets and absolute filesystem paths", () =
     startedAt: "2026-08-02T00:00:00.000Z",
     activeCount: 2,
   });
-  assert.equal(snapshot.components.filter((component) => component.enabled).length, 4);
+  assert.deepEqual(snapshot.components.map(({ id, name, enabled }) => ({ id, name, enabled })), [
+    { id: "core", name: "Локальный HUB", enabled: true },
+    { id: "web-app", name: "Web App", enabled: true },
+    { id: "telegram", name: "Telegram Bot", enabled: true },
+    { id: "telegram-mini-app", name: "Telegram Mini App", enabled: true },
+    { id: "android-app", name: "Android App", enabled: true },
+  ]);
+  assert.equal(snapshot.components.some((component) => component.id === "worker"), false);
+});
+
+test("server page derives Web App state from its mobile consumers", () => {
+  const disabled = serverPageSnapshot({ config: { components: {}, miniApp: {} } });
+  assert.equal(disabled.components.find((component) => component.id === "web-app")?.enabled, false);
+
+  const androidOnly = serverPageSnapshot({
+    config: { components: { androidApp: true }, miniApp: {} },
+  });
+  assert.equal(androidOnly.components.find((component) => component.id === "web-app")?.enabled, true);
 });

@@ -63,6 +63,10 @@ export function serverPageSnapshot({
   autostart = { supported: false, enabled: false },
   pendingConfiguration = {},
 } = {}) {
+  const webAppEnabled = config?.miniApp?.enabled === true
+    || config?.components?.miniApp === true
+    || config?.components?.androidApp === true;
+
   return {
     process: {
       status: "running",
@@ -84,25 +88,39 @@ export function serverPageSnapshot({
         id: "core",
         name: "Локальный HUB",
         enabled: true,
-        note: "Журнал, очередь, App Server и IPC.",
-      },
-      {
-        id: "telegram",
-        name: "Telegram",
-        enabled: config?.components?.telegram === true,
-        note: config?.components?.telegram === true ? "Бот и Mini App." : "Компонент отключён.",
+        note: "Журнал, очередь, App Server и локальные подключения.",
       },
       {
         id: "web-app",
         name: "Web App",
-        enabled: config?.components?.webApp === true,
-        note: config?.components?.webApp === true ? "Браузер, Android и Desktop WebView." : "Компонент отключён.",
+        enabled: webAppEnabled,
+        note: webAppEnabled
+          ? "Общий интерфейс для браузера и мобильных приложений."
+          : "Не используется: Mini App и Android App выключены.",
       },
       {
-        id: "worker",
-        name: "Публикация Worker",
-        enabled: config?.miniApp?.worker?.enabled === true,
-        note: config?.miniApp?.worker?.enabled === true ? "Защищённый внешний доступ." : "Не используется.",
+        id: "telegram",
+        name: "Telegram Bot",
+        enabled: config?.components?.telegram === true,
+        note: config?.components?.telegram === true
+          ? "Принимает сообщения и управляет задачами."
+          : "Бот отключён.",
+      },
+      {
+        id: "telegram-mini-app",
+        name: "Telegram Mini App",
+        enabled: config?.components?.miniApp === true,
+        note: config?.components?.miniApp === true
+          ? "Интерфейс Agent Hub внутри Telegram."
+          : "Mini App отключено.",
+      },
+      {
+        id: "android-app",
+        name: "Android App",
+        enabled: config?.components?.androidApp === true,
+        note: config?.components?.androidApp === true
+          ? "Отдельное мобильное приложение без Telegram."
+          : "Android-приложение отключено.",
       },
     ],
     configuration: serverConfigurationEntries(config, pendingConfiguration),
