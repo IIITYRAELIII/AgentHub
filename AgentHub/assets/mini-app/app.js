@@ -244,11 +244,11 @@ const deferredBackgroundAssets = Object.freeze({
   },
   "gothic-minental-fortress": {
     customProperty: "--gothic-minental-fortress-image",
-    fallback: "/gothic-minental-fortress.jpg",
+    fallback: "/gothic-minental-fortress.jpg?v=a298113485c7",
   },
   "gothic-finkregh": {
     customProperty: "--gothic-finkregh-image",
-    fallback: "/gothic-finkregh.jpg",
+    fallback: "/gothic-finkregh.jpg?v=3e54b1cb7aed",
   },
 });
 const backgroundAssetLoads = new Map();

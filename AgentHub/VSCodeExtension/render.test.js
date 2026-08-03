@@ -528,8 +528,8 @@ test("«Gothic» offers nine night scenes, each with its own light", () => {
 test("large Gothic scenes are decoded before replacing the visible background", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   assert.match(client, /"gothic-minental-castle": \{[\s\S]*fallback: "\/gothic-minental-castle\.jpg"/u);
-  assert.match(client, /"gothic-minental-fortress": \{[\s\S]*fallback: "\/gothic-minental-fortress\.jpg"/u);
-  assert.match(client, /"gothic-finkregh": \{[\s\S]*fallback: "\/gothic-finkregh\.jpg"/u);
+  assert.match(client, /"gothic-minental-fortress": \{[\s\S]*fallback: "\/gothic-minental-fortress\.jpg\?v=a298113485c7"/u);
+  assert.match(client, /"gothic-finkregh": \{[\s\S]*fallback: "\/gothic-finkregh\.jpg\?v=3e54b1cb7aed"/u);
   assert.match(client, /image\.decode\(\)\.then\(\(\) => finish\(true\)/u);
   assert.match(client, /if \(requestId !== backgroundRequestId\) return;/u);
   assert.match(client, /if \(loaded\) \{ commitBackground\(selected, persist\); return; \}/u);
