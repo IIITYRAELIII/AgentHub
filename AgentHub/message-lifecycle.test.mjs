@@ -381,6 +381,32 @@ test("unmatched optimistic messages keep chronological position", () => {
   ]);
 });
 
+test("one undated message does not leave restored history below a newer reply", () => {
+  const values = lifecycle.chronologicalMessages([
+    { id: "current-user", role: "user", turnId: "current", time: "2026-08-03T16:51:00.000Z" },
+    { id: "current-agent", role: "agent", turnId: "current", time: "2026-08-03T16:57:00.000Z" },
+    { id: "old-user", role: "user", turnId: "old", time: "2026-08-03T16:25:00.000Z" },
+    { id: "old-agent-without-time", role: "agent", turnId: "old", time: null },
+    { id: "older-agent", role: "agent", turnId: "older", time: "2026-08-03T15:58:00.000Z" },
+  ]);
+  assert.deepEqual(values.map((item) => item.id), [
+    "older-agent",
+    "old-user",
+    "old-agent-without-time",
+    "current-user",
+    "current-agent",
+  ]);
+});
+
+test("an undated optimistic message remains after dated history", () => {
+  const values = lifecycle.chronologicalMessages([
+    { id: "pending", role: "user", time: null },
+    { id: "history", role: "agent", time: "2026-08-03T16:57:00.000Z" },
+    { id: "undated-agent", role: "agent", time: null },
+  ]);
+  assert.deepEqual(values.map((item) => item.id), ["history", "pending", "undated-agent"]);
+});
+
 test("interrupted turns keep their persisted partial response visible", () => {
   assert.equal(lifecycle.historicalAgentResponseVisible({
     active: false,

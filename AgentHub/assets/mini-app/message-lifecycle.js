@@ -327,11 +327,29 @@ function mergeLiveUserMessages(messages, {
 function chronologicalMessages(messages) {
   const decorated = (Array.isArray(messages) ? messages : [])
     .map((message, index) => ({ message, index, time: Date.parse(message?.time ?? "") }));
-  if (decorated.some((item) => !Number.isFinite(item.time))) {
-    return decorated.map(({ message }) => message);
+  const turnTimes = new Map();
+  for (const item of decorated) {
+    if (!Number.isFinite(item.time)) continue;
+    const turnId = String(item.message?.turnId ?? "");
+    if (!turnId) continue;
+    const previous = turnTimes.get(turnId);
+    turnTimes.set(turnId, previous == null ? item.time : Math.min(previous, item.time));
+  }
+  for (const item of decorated) {
+    if (Number.isFinite(item.time)) continue;
+    const turnId = String(item.message?.turnId ?? "");
+    item.time = turnTimes.get(turnId) ?? Number.POSITIVE_INFINITY;
   }
   return decorated
-    .sort((left, right) => left.time - right.time || left.index - right.index)
+    .sort((left, right) => {
+      if (left.time !== right.time) return left.time - right.time;
+      const sameTurn = String(left.message?.turnId ?? "")
+        && String(left.message?.turnId ?? "") === String(right.message?.turnId ?? "");
+      if (sameTurn && left.message?.role !== right.message?.role) {
+        return left.message?.role === "user" ? -1 : right.message?.role === "user" ? 1 : 0;
+      }
+      return left.index - right.index;
+    })
     .map(({ message }) => message);
 }
 
