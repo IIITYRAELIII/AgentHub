@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   catalogEntryIsSelected,
+  catalogEntriesWithoutLiveActivity,
   claudeCatalogEntry,
   claudeSnapshotActivityAtMs,
   claudeSnapshotExecutionOwner,
@@ -168,7 +169,7 @@ test("task title signature changes only with journal-relevant task identity or t
   assert.notEqual(taskCatalogTitleSignature([{ ...entries[0], title: "Agent HUB" }]), signature);
 });
 
-test("codexCatalogEntry preserves persistent task metadata and active status", () => {
+test("Codex thread status alone does not claim that a turn is running", () => {
   assert.deepEqual(codexCatalogEntry({
     id: "codex-1",
     name: "  Первая\n задача ",
@@ -182,11 +183,44 @@ test("codexCatalogEntry preserves persistent task metadata and active status", (
     title: "Первая задача",
     model: null,
     updatedAtMs: 123000,
-    running: true,
+    running: false,
     executionOwner: null,
     lastActivityAtMs: null,
     startedAt: null,
   });
+});
+
+test("rollout activity makes a Codex catalog entry running", () => {
+  const entry = codexCatalogEntry({
+    id: "codex-live",
+    name: "Живая задача",
+    updatedAt: 123,
+    status: { type: "active" },
+  }, project, { rolloutRunning: true });
+  assert.equal(entry.running, true);
+});
+
+test("durable catalog activity is unknown until a live provider scan confirms it", () => {
+  assert.deepEqual(catalogEntriesWithoutLiveActivity([{
+    provider: "codex",
+    threadId: "cached-active",
+    projectRoot: project.path,
+    title: "Кэшированная задача",
+    running: true,
+    executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
+    turnId: "cached-turn",
+    startedAt: "2026-08-03T10:00:00.000Z",
+  }]), [{
+    provider: "codex",
+    threadId: "cached-active",
+    projectRoot: project.path,
+    title: "Кэшированная задача",
+    running: false,
+    activityUnknown: true,
+    executionOwner: null,
+    turnId: null,
+    startedAt: null,
+  }]);
 });
 
 test("Codex runtime labels distinguish supported app servers", () => {

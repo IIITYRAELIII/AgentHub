@@ -187,13 +187,13 @@ import { FailedTelegramUpdateStore } from "./failed-update-store.mjs";
 import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "./claude-invocation.mjs";
 import {
   catalogEntryIsSelected,
+  catalogEntriesWithoutLiveActivity,
   catalogTaskKey,
   claudeCatalogEntry,
   claudeSnapshotActivityAtMs,
   claudeSnapshotActivityState,
   codexRolloutTurnState,
   codexCatalogEntry,
-  codexThreadRunning,
   mergeTaskCatalog,
   pinnedTaskTitle as readPinnedTaskTitle,
   pinTaskTitle as writePinnedTaskTitle,
@@ -714,7 +714,11 @@ const taskSyncStore = new LocalTaskSyncStore({
 });
 await taskSyncStore.load();
 await taskSyncStore.save();
-taskCatalog = taskSyncStore.catalog();
+// Runtime activity cannot be restored from a durable catalog row. Managed runs
+// are restored separately, while external activity is revalidated from rollout
+// files. Showing cached `running=true` here creates a full-catalog phantom state
+// while the first provider scan is still in progress or unavailable.
+taskCatalog = catalogEntriesWithoutLiveActivity(taskSyncStore.catalog());
 
 let mediaController;
 const telegramClient = new TelegramClient({
@@ -2601,7 +2605,7 @@ async function buildTaskCatalog() {
   // Keep the durable SQLite read model visible while live provider discovery
   // is still running or returns only a partially repaired App Server catalog.
   // Fresher live entries below replace their persisted counterparts by key.
-  const entries = taskSyncStore.catalog();
+  const entries = catalogEntriesWithoutLiveActivity(taskSyncStore.catalog());
   let pinnedTitlesChanged = false;
   let titleConfirmationsChanged = false;
   if (codexResult.status === "fulfilled") {
@@ -2617,7 +2621,7 @@ async function buildTaskCatalog() {
           setBoundedMapValue(codexRolloutPathsByThreadId, String(thread.id), thread.path, 5_000);
         }
         const activity = await readCodexRolloutActivity(thread.path);
-        let rolloutRunning = thread.status?.type === "active" || activity.running;
+        let rolloutRunning = activity.running;
         const existingRun = taskRuns.forTask({
           provider: "codex",
           projectRoot: project.path,
@@ -2687,7 +2691,6 @@ async function buildTaskCatalog() {
     }
   } else {
     console.error("Cannot discover Codex tasks:", codexResult.reason?.message ?? codexResult.reason);
-    entries.push(...taskSyncStore.catalog({ provider: "codex" }));
   }
   if (claudeResult.status === "fulfilled") {
     await auditClaudeTranscriptSnapshots(claudeResult.value).catch((error) => {
@@ -2701,7 +2704,6 @@ async function buildTaskCatalog() {
     }
   } else {
     console.error("Cannot discover Claude tasks:", claudeResult.reason?.message ?? claudeResult.reason);
-    entries.push(...taskSyncStore.catalog({ provider: "claude" }));
   }
   taskCatalog = mergeTaskCatalog(entries, taskRuns.values().map((run) => ({
     ...run,

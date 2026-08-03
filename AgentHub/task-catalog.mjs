@@ -722,8 +722,18 @@ export async function readCodexRolloutRunning(rolloutPath, options = {}) {
 
 export function codexThreadRunning(thread, { rolloutRunning = false } = {}) {
   return Boolean(rolloutRunning)
-    || thread?.status?.type === "active"
     || (thread?.turns ?? []).some((turn) => turn?.status === "inProgress");
+}
+
+export function catalogEntriesWithoutLiveActivity(entries = []) {
+  return (Array.isArray(entries) ? entries : []).map((entry) => ({
+    ...entry,
+    running: false,
+    activityUnknown: entry?.running === true,
+    executionOwner: null,
+    turnId: null,
+    startedAt: null,
+  }));
 }
 
 export function codexObservedExecutionOwner(activity = {}, turnId = null) {
