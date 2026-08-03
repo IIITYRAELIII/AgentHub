@@ -14,7 +14,7 @@ const VIEW_ID = "agentHub.view";
 const THEME_KEY = "agentHub.theme";
 const THEMES = new Set([
   "orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "metropolis", "stormglass",
-  "magma", "meadow", "lake",
+  "magma", "meadow", "lake", "graphite", "reliquary",
 ]);
 
 function relativeSegments(value) {

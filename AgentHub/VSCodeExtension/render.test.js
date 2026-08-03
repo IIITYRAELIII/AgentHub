@@ -233,6 +233,7 @@ test("extension loads every bitmap theme asset from the bundled shared webview",
   const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
   assert.match(extension, /const THEMES = new Set\(\[[\s\S]*"stormglass"/u);
+  assert.match(extension, /const THEMES = new Set\(\[[\s\S]*"reliquary"/u);
   assert.doesNotMatch(extension, /PULSAR_IMAGE_PATH|WORK_LOG\.md/u);
   assert.match(shared, /\["--pulsar-image", assets\.pulsar\]/u);
   assert.match(shared, /\["--bh-image", assets\.blackhole\]/u);
@@ -240,6 +241,8 @@ test("extension loads every bitmap theme asset from the bundled shared webview",
   assert.match(shared, /\["--metropolis-image", assets\.metropolis\]/u);
   assert.match(shared, /\["--magma-image", assets\.magma\]/u);
   assert.match(shared, /\["--stormglass-image", assets\.stormglass\]/u);
+  assert.match(shared, /reliquary: \[\.\.\.ASSET_ROOT, "ashen-reliquary\.png"\]/u);
+  assert.match(shared, /\["--reliquary-image", assets\.reliquary\]/u);
   assert.match(
     shared,
     /<script src="\$\{resource\(webview, assets\.stormGlass\)\}" defer><\/script>/u,
@@ -620,7 +623,13 @@ test("«Озеро» keeps one palette and three interchangeable scenes", () => 
 
 test("VS Code theme assets override browser paths with equal specificity", () => {
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
+  const backgrounds = fs.readFileSync(
+    require.resolve("../assets/mini-app/backgrounds.css"),
+    "utf8",
+  );
   assert.match(shared, /<style nonce="\$\{nonce\}">html\[data-theme\],html\[data-background\]\{\$\{assetOverrides\}\}<\/style>/u);
+  assert.match(backgrounds, /var\(--reliquary-image,\s*url\("\/ashen-reliquary\.png"\)\)/u);
+  assert.doesNotMatch(backgrounds, /--reliquary-image:\s*url\(/u);
 });
 
 test("turn header keeps its actions in the trailing columns", () => {
