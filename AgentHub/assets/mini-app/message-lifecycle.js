@@ -22,6 +22,14 @@ function clientIdentityKey(message) {
   return `${provider}\0${threadId}\0${clientUserMessageId}\0${role}`;
 }
 
+function agentTurnKey(message) {
+  const provider = String(message?.provider ?? "");
+  const threadId = String(message?.threadId ?? "");
+  const turnId = String(message?.turnId ?? "");
+  if (!provider || !threadId || !turnId || message?.role !== "agent") return "";
+  return `${provider}\0${threadId}\0${turnId}\0agent`;
+}
+
 // The App Server may replay a materialized user item while reconnecting. A
 // client id is an idempotency key for one user submission, so two history
 // items with that key must render as one message even when server item ids
@@ -30,15 +38,23 @@ function clientIdentityKey(message) {
 function deduplicateConversationMessages(messages) {
   const values = [];
   const seen = new Set();
+  const agentTurns = new Map();
   for (const message of Array.isArray(messages) ? messages : []) {
     const client = clientIdentityKey(message);
     const item = identityKey(message);
+    const agentTurn = agentTurnKey(message);
     const keys = [
       ...(client ? [`client:${client}`] : []),
       ...(item ? [`item:${item}`] : []),
     ];
+    if (agentTurn && agentTurns.has(agentTurn)) {
+      values[agentTurns.get(agentTurn)] = message;
+      keys.forEach((key) => seen.add(key));
+      continue;
+    }
     if (keys.some((key) => seen.has(key))) continue;
     keys.forEach((key) => seen.add(key));
+    if (agentTurn) agentTurns.set(agentTurn, values.length);
     values.push(message);
   }
   return values;

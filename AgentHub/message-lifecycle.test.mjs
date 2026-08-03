@@ -74,6 +74,38 @@ test("message lifecycle removes a replayed server echo before optimistic reconci
   assert.deepEqual([...result.matchedIds], ["client-1"]);
 });
 
+test("temporary and durable final ids render as one agent card", () => {
+  const values = lifecycle.deduplicateConversationMessages([
+    {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "turn-1:rollout-agent:final",
+      role: "agent",
+      text: "Временный финал",
+    },
+    {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "msg_official",
+      role: "agent",
+      text: "Сохранённый финал",
+    },
+  ]);
+  assert.equal(values.length, 1);
+  assert.equal(values[0].itemId, "msg_official");
+  assert.equal(values[0].text, "Сохранённый финал");
+});
+
+test("agent finals from different turns remain separate", () => {
+  const values = lifecycle.deduplicateConversationMessages([
+    { provider: "codex", threadId: "thread-1", turnId: "turn-1", itemId: "a", role: "agent" },
+    { provider: "codex", threadId: "thread-1", turnId: "turn-2", itemId: "b", role: "agent" },
+  ]);
+  assert.equal(values.length, 2);
+});
+
 test("composer quote annotations retain every selected fragment for the protocol envelope", () => {
   const annotations = lifecycle.normalizedResponseAnnotations([
     { quote: "Первый выделенный фрагмент" },
