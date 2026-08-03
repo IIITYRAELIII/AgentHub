@@ -49,6 +49,7 @@ for (const file of [
   "storm-flash.png",
   "pulsar-beams.png",
   "rainforest-night.png",
+  "ashen-reliquary.png",
 ]) {
   await copyFile(path.join(source, file), path.join(output, file));
 }

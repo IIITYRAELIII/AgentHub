@@ -198,11 +198,21 @@ html[data-background-override="true"][data-background="lake-watercolor"] { --hub
 html[data-background-override="true"][data-background="lake-oil"] { --hub-background-color: #0a0e09; --hub-background-image: linear-gradient(90deg, rgba(5, 9, 6, .86), rgba(5, 9, 6, .56) 26%, rgba(5, 9, 6, 0) 60%), linear-gradient(0deg, rgba(5, 9, 6, .4), rgba(5, 9, 6, 0) 30%), var(--lake-oil-image, url("/lake-oil.jpg")); --hub-background-position: center, center, 56% 62%; }
 html[data-background-override="true"][data-background="graphite"] { --hub-background-color: #17181a; --hub-background-image: linear-gradient(oklch(.19 .004 260 / .5) 1px, transparent 1px), linear-gradient(90deg, oklch(.19 .004 260 / .5) 1px, transparent 1px); --hub-background-size: 56px 56px; }
 
+/* Единственная сцена «Пепельного реликвария»: собственный ImageGen-фон не
+   предлагается другим темам и сохраняет тёмную область под колонкой задач. */
+html[data-theme="reliquary"][data-background="reliquary"] {
+  --reliquary-image: url("/ashen-reliquary.png");
+  --hub-background-color: #090807;
+  --hub-background-image: var(--reliquary-image);
+  --hub-background-position: 55% 50%;
+}
+
 @media (max-width: 720px) {
   html[data-background-override="true"][data-background="pulsar"] { --hub-background-position: center, center, 24% 52%; }
   html[data-background-override="true"][data-background="taiga"] { --hub-background-position: center, center, 74% 28%; }
   html[data-background-override="true"][data-background="metropolis"] { --hub-background-position: center, center, 68% 50%; }
   html[data-background-override="true"][data-background="magma"] { --hub-background-position: center, center, 72% 56%; }
+  html[data-theme="reliquary"][data-background="reliquary"] { --hub-background-position: 72% 50%; }
   html[data-background-override="true"][data-background="meadow"] { --hub-background-position: center, 68% 76%; }
   html[data-background-override="true"][data-background="orbit-limb"] { --hub-background-position: center, 70% 40%; }
   html[data-background-override="true"][data-background="nebula-core"] { --hub-background-position: center, 62% 46%; }

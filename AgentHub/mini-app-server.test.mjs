@@ -348,6 +348,11 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.equal(stormGlass.headers.get("content-type"), "image/png");
     assert.match(stormGlass.headers.get("cache-control"), /immutable/u);
     assert.ok((await stormGlass.arrayBuffer()).byteLength > 100_000);
+    const reliquary = await fetch(`${address.url}ashen-reliquary.png`);
+    assert.equal(reliquary.status, 200);
+    assert.equal(reliquary.headers.get("content-type"), "image/png");
+    assert.match(reliquary.headers.get("cache-control"), /immutable/u);
+    assert.ok((await reliquary.arrayBuffer()).byteLength > 100_000);
     assert.ok((await blackHole.arrayBuffer()).byteLength > 100_000);
     assert.ok((await taiga.arrayBuffer()).byteLength > 100_000);
     assert.ok((await pulsar.arrayBuffer()).byteLength > 100_000);
@@ -376,6 +381,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.ok(page.indexOf("data-collapse-all") < page.indexOf("data-theme-select"));
     assert.doesNotMatch(page, /data-connection|Автообновление/u);
     assert.match(page, /<option value="graphite">Графит<\/option>/u);
+    assert.match(page, /<option value="reliquary">Пепельный реликварий<\/option>/u);
     assert.match(page, /data-group-select/u);
     assert.match(page, /<option value="date">По дням<\/option>/u);
     assert.match(page, /<option value="week">По неделям<\/option>/u);
@@ -414,6 +420,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(script, /metropolis: "#050b12"/u);
     assert.match(script, /"taiga-drops": "metropolis"/u);
     assert.match(script, /graphite: "#17181a"/u);
+    assert.match(script, /reliquary: "#090807"/u);
+    assert.match(script, /reliquary: \["reliquary"\]/u);
     assert.match(script, /agent-hub-grouping/u);
     assert.match(script, /document\.documentElement\.dataset\.theme/u);
     assert.match(script, /document\.documentElement\.dataset\.grouping/u);
@@ -506,6 +514,9 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(styles, /url\("\/nebula-veil\.png"\)/u);
     assert.match(styles, /url\("\/orbit-earth\.png"\)/u);
     assert.match(styles, /html\[data-theme="graphite"\]/u);
+    assert.match(styles, /html\[data-theme="reliquary"\]/u);
+    assert.match(styles, /url\("\/ashen-reliquary\.png"\)/u);
+    assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?html\[data-theme="reliquary"\] body::before/u);
     assert.match(styles, /--ph-mask-caret-right:/u);
     assert.match(styles, /--ph-mask-caret-double-up:/u);
     assert.match(

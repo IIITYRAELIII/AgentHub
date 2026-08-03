@@ -37,6 +37,7 @@ const CONTENT_TYPES = new Map([
   ["/storm-sea.png", "image/png"],
   ["/storm-flash.png", "image/png"],
   ["/rainforest-night.png", "image/png"],
+  ["/ashen-reliquary.png", "image/png"],
   ["/meadow-sun.png", "image/png"],
   /* фотографические сцены в PNG весили бы впятеро больше при том же виде,
      поэтому кадры «Gothic» и «Озера» хранятся в JPEG */
@@ -81,6 +82,7 @@ const STATIC_FILES = new Map([
   ["/storm-sea.png", "storm-sea.png"],
   ["/storm-flash.png", "storm-flash.png"],
   ["/rainforest-night.png", "rainforest-night.png"],
+  ["/ashen-reliquary.png", "ashen-reliquary.png"],
   ["/meadow-sun.png", "meadow-sun.png"],
   ["/orbit-limb.jpg", "orbit-limb.jpg"],
   ["/nebula-core.jpg", "nebula-core.jpg"],
@@ -118,6 +120,7 @@ const IMMUTABLE_FILES = new Set([
   "/storm-flash.png",
   "/pulsar-beams.png",
   "/rainforest-night.png",
+  "/ashen-reliquary.png",
   "/orbit-limb.jpg",
   "/nebula-core.jpg",
   "/pulsar-beam.jpg",

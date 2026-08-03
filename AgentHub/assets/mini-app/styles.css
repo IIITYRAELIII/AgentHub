@@ -969,6 +969,73 @@ html[data-theme="graphite"] {
   --decor-opacity: 0;
 }
 
+/* ========================================= тема «Пепельный реликварий» === */
+
+html[data-theme="reliquary"] {
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-title: Georgia, "Times New Roman", serif;
+  --font-numeric: "Cascadia Mono", "Segoe UI Mono", Consolas, monospace;
+  --display-weight: 560;
+  --display-spacing: 0.055em;
+  --title-weight: 580;
+  --label-spacing: 0.17em;
+
+  --radius-lg: 5px;
+  --radius-md: 3px;
+  --radius-sm: 2px;
+  --radius-chip: 2px;
+  --rail-width: 3px;
+
+  --bg: #090807;
+  --surface-1: rgba(17, 15, 13, 0.91);
+  --surface-2: rgba(27, 23, 19, 0.88);
+  --surface-3: rgba(47, 39, 31, 0.8);
+  --sunken: rgba(4, 4, 3, 0.72);
+  --line: rgba(155, 120, 69, 0.25);
+  --line-strong: rgba(171, 137, 85, 0.49);
+
+  --card-bg: linear-gradient(180deg, rgba(32, 28, 23, 0.91), rgba(12, 12, 10, 0.9));
+  --card-bg-open: linear-gradient(180deg, rgba(39, 32, 25, 0.94), rgba(15, 13, 11, 0.94));
+  --card-texture: repeating-linear-gradient(104deg, transparent 0 13px, rgba(232, 223, 207, 0.012) 14px 15px);
+  --card-border: rgba(139, 109, 69, 0.34);
+  --card-border-open: rgba(177, 139, 83, 0.6);
+  --card-shadow: inset 0 1px 0 rgba(232, 223, 207, 0.045), inset 0 -1px 0 rgba(0, 0, 0, 0.68), 0 16px 36px -30px #000;
+  --plate-bg: linear-gradient(180deg, rgba(37, 31, 25, 0.82), rgba(14, 13, 11, 0.88));
+  --plate-texture: repeating-linear-gradient(103deg, transparent 0 17px, rgba(232, 223, 207, 0.013) 18px 19px);
+  --plate-shadow: inset 0 1px 0 rgba(232, 223, 207, 0.035);
+  --turn-shadow: 0 12px 28px -24px #000;
+
+  --text: #e8dfcf;
+  --text-soft: #c3b7a3;
+  --text-muted: #948a79;
+  --text-faint: #6f675b;
+  --accent: #c7653e;
+  --accent-soft: rgba(182, 64, 35, 0.14);
+  --accent-line: rgba(199, 101, 62, 0.52);
+  --accent-glow: 0 0 24px -9px rgba(182, 64, 35, 0.82);
+  --selection: rgba(182, 64, 35, 0.32);
+  --brand-gradient: linear-gradient(145deg, rgba(155, 120, 69, 0.2), rgba(30, 24, 19, 0.72));
+  --brand-shadow: inset 0 0 0 1px rgba(232, 223, 207, 0.035), 0 0 22px -12px rgba(199, 101, 62, 0.78);
+
+  --provider-none: #8d877e;
+  --provider-codex: #b7c0bd;
+  --provider-claude: #b69263;
+  --ok: #9aaa70;
+  --pending: #c8a15b;
+  --dot-input: #aaa79b;
+  --dot-cache: #9aaa70;
+  --dot-output: #c7653e;
+  --dot-think: #a88e73;
+
+  --space-glow-a: transparent;
+  --space-glow-b: transparent;
+  --space-base: #090807;
+  --space-star: transparent;
+  --star-opacity: 0;
+  --decor-opacity: 1;
+  --task-rail-width: 22rem;
+}
+
 /* ================================================================== база === */
 
 *,
@@ -8621,5 +8688,333 @@ html[data-browser-auth] {
   .browser-auth-card {
     padding: 26px 20px;
     border-radius: 20px;
+  }
+}
+
+/* ====================================================== Ashen Reliquary === */
+
+html[data-theme="reliquary"] body {
+  background: #090807;
+}
+
+html[data-theme="reliquary"] body::after {
+  background-color: #090807;
+  background-image: var(--reliquary-image, url("/ashen-reliquary.png"));
+  background-position: var(--hub-background-position, 55% 50%);
+  background-repeat: no-repeat;
+  background-size: cover;
+  filter: none;
+  opacity: 1;
+}
+
+html[data-theme="reliquary"] body::before {
+  animation: reliquary-ash-drift 18s linear infinite;
+  background-image:
+    radial-gradient(circle, rgba(199, 101, 62, 0.55) 0 0.7px, transparent 1px),
+    radial-gradient(circle, rgba(232, 223, 207, 0.24) 0 0.55px, transparent 0.9px);
+  background-position: 12% 18%, 73% 42%;
+  background-size: 9rem 13rem, 13rem 17rem;
+  mask-image: linear-gradient(90deg, transparent, #000 34%, #000 88%, transparent);
+  opacity: 0.16;
+  will-change: transform;
+}
+
+@keyframes reliquary-ash-drift {
+  from { transform: translate3d(0, -2.5rem, 0); }
+  to { transform: translate3d(-1rem, 2.5rem, 0); }
+}
+
+html[data-theme="reliquary"] .app-header {
+  backdrop-filter: blur(10px) saturate(90%);
+  -webkit-backdrop-filter: blur(10px) saturate(90%);
+  background:
+    linear-gradient(180deg, rgba(20, 18, 15, 0.98), rgba(8, 8, 7, 0.96)),
+    repeating-linear-gradient(92deg, transparent 0 31px, rgba(232, 223, 207, 0.012) 32px 33px);
+  border-bottom-color: rgba(155, 120, 69, 0.54);
+  box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.5), 0 12px 30px -26px #000;
+}
+
+html[data-theme="reliquary"] .app-header::after {
+  background: linear-gradient(90deg, transparent 3%, rgba(155, 120, 69, 0.68) 18%, rgba(199, 101, 62, 0.75) 50%, rgba(155, 120, 69, 0.68) 82%, transparent 97%);
+  box-shadow: 0 0 14px -4px rgba(182, 64, 35, 0.7);
+  opacity: 0.72;
+}
+
+html[data-theme="reliquary"] .brand-mark,
+html[data-theme="reliquary"] .icon-button,
+html[data-theme="reliquary"] .chip-button,
+html[data-theme="reliquary"] .refresh,
+html[data-theme="reliquary"] .view-switch,
+html[data-theme="reliquary"] .task-search,
+html[data-theme="reliquary"] .composer-main {
+  box-shadow: inset 0 0 0 1px rgba(232, 223, 207, 0.025), inset 0 -1px 0 rgba(0, 0, 0, 0.78);
+}
+
+html[data-theme="reliquary"] .brand-mark {
+  border-color: rgba(155, 120, 69, 0.62);
+  color: #b99865;
+}
+
+html[data-theme="reliquary"] .eyebrow {
+  color: #8b7c66;
+  font-family: var(--font-display);
+  letter-spacing: 0.19em;
+}
+
+html[data-theme="reliquary"] h1 {
+  color: #e6d8c0;
+  text-shadow: 0 1px 0 #000, 0 0 18px rgba(155, 120, 69, 0.16);
+}
+
+html[data-theme="reliquary"] .view-switch {
+  background: rgba(10, 10, 8, 0.78);
+  border-color: rgba(155, 120, 69, 0.34);
+  gap: 0;
+  padding: 0;
+}
+
+html[data-theme="reliquary"] .view-tab {
+  border-left: 1px solid rgba(155, 120, 69, 0.2);
+  min-height: 2.15rem;
+  padding-inline: 1rem;
+}
+
+html[data-theme="reliquary"] .view-tab:first-child {
+  border-left: 0;
+}
+
+html[data-theme="reliquary"] .view-tab[aria-pressed="true"] {
+  background: linear-gradient(180deg, rgba(182, 64, 35, 0.2), rgba(52, 24, 17, 0.34));
+  border-color: rgba(199, 101, 62, 0.58);
+  box-shadow: inset 0 -2px 0 #b64023, 0 0 20px -12px rgba(199, 101, 62, 0.95);
+  color: #e7d5be;
+}
+
+html[data-theme="reliquary"] .workspace {
+  border-left: 1px solid rgba(155, 120, 69, 0.25);
+  border-right: 1px solid rgba(155, 120, 69, 0.25);
+  box-shadow: 0 0 80px rgba(0, 0, 0, 0.34);
+}
+
+html[data-theme="reliquary"] .task-rail {
+  background:
+    linear-gradient(90deg, rgba(8, 8, 7, 0.98), rgba(14, 13, 11, 0.94)),
+    repeating-linear-gradient(102deg, transparent 0 23px, rgba(232, 223, 207, 0.012) 24px 25px);
+  border-right-color: rgba(155, 120, 69, 0.48);
+  box-shadow: inset -3px 0 0 rgba(0, 0, 0, 0.45);
+}
+
+html[data-theme="reliquary"] .task-rail-head {
+  border-bottom: 1px solid rgba(155, 120, 69, 0.2);
+}
+
+html[data-theme="reliquary"] .task-rail-title {
+  color: #d3c3aa;
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  font-weight: 560;
+}
+
+html[data-theme="reliquary"] .task-search {
+  background: rgba(8, 8, 7, 0.76);
+  border-color: rgba(155, 120, 69, 0.38);
+  margin-top: 0.55rem;
+}
+
+html[data-theme="reliquary"] .task-item {
+  background: linear-gradient(180deg, rgba(28, 25, 21, 0.7), rgba(10, 10, 8, 0.82));
+  border-color: rgba(155, 120, 69, 0.18);
+  box-shadow: inset 0 1px 0 rgba(232, 223, 207, 0.025);
+  margin-bottom: 0.42rem;
+}
+
+html[data-theme="reliquary"] .task-item:hover {
+  background: linear-gradient(180deg, rgba(42, 34, 27, 0.78), rgba(13, 12, 10, 0.86));
+  border-color: rgba(155, 120, 69, 0.4);
+}
+
+html[data-theme="reliquary"] .task-item[data-selected] {
+  background: linear-gradient(90deg, rgba(104, 42, 26, 0.32), rgba(21, 18, 15, 0.9) 25%, rgba(11, 10, 9, 0.88));
+  border-color: rgba(199, 101, 62, 0.62);
+  box-shadow: inset 3px 0 0 #b64023, inset 0 0 20px rgba(182, 64, 35, 0.07), 0 0 24px -18px rgba(199, 101, 62, 0.8);
+}
+
+html[data-theme="reliquary"] .task-item[data-selected]::before {
+  background: #d0673f;
+  border-radius: 0;
+  box-shadow: 0 0 11px rgba(199, 101, 62, 0.8);
+  left: -0.5rem;
+  width: 2px;
+}
+
+html[data-theme="reliquary"] .task-agent {
+  background: transparent;
+  border-color: transparent;
+  border-radius: 0;
+  padding-inline: 0;
+}
+
+html[data-theme="reliquary"] .task-item[data-running] .provider-dot,
+html[data-theme="reliquary"] .live-dot {
+  box-shadow: 0 0 0 3px rgba(182, 64, 35, 0.12), 0 0 12px rgba(199, 101, 62, 0.9);
+}
+
+html[data-theme="reliquary"] .chat {
+  background: rgba(7, 7, 6, 0.16);
+}
+
+html[data-theme="reliquary"] .chat-head {
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  background: linear-gradient(180deg, rgba(12, 11, 9, 0.88), rgba(12, 11, 9, 0.58));
+  border-bottom-color: rgba(155, 120, 69, 0.33);
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.44);
+}
+
+html[data-theme="reliquary"] .chat-title {
+  color: #e2d2b7;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  letter-spacing: 0.025em;
+}
+
+html[data-theme="reliquary"] .chat-live-badge {
+  background: transparent;
+  border: 0;
+  color: #d68a68;
+}
+
+html[data-theme="reliquary"] .chat-scroll {
+  background: linear-gradient(90deg, rgba(8, 8, 7, 0.34), transparent 30%, rgba(8, 8, 7, 0.24));
+  scrollbar-color: rgba(155, 120, 69, 0.42) transparent;
+}
+
+html[data-theme="reliquary"] .chat-log {
+  gap: 0.58rem;
+  padding-block: 0.8rem 1rem;
+}
+
+html[data-theme="reliquary"] .msg {
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  background: linear-gradient(180deg, rgba(31, 27, 23, 0.91), rgba(12, 12, 10, 0.91));
+  border-color: rgba(155, 120, 69, 0.31);
+  box-shadow: inset 0 1px 0 rgba(232, 223, 207, 0.035), 0 12px 28px -26px #000;
+}
+
+html[data-theme="reliquary"] .msg-user {
+  background: linear-gradient(90deg, rgba(70, 43, 29, 0.68), rgba(25, 21, 17, 0.91) 24%, rgba(12, 12, 10, 0.91));
+  border-color: rgba(155, 120, 69, 0.5);
+  box-shadow: inset 2px 0 0 rgba(199, 101, 62, 0.7), 0 12px 28px -26px #000;
+}
+
+html[data-theme="reliquary"] .msg-author {
+  color: #deceb4;
+  font-family: var(--font-display);
+  font-size: 0.86rem;
+  letter-spacing: 0.02em;
+}
+
+html[data-theme="reliquary"] .activity-feed {
+  background: rgba(5, 5, 4, 0.72);
+  border-color: rgba(155, 120, 69, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(232, 223, 207, 0.018);
+}
+
+html[data-theme="reliquary"] .composer {
+  background: linear-gradient(180deg, rgba(9, 8, 7, 0.5), rgba(9, 8, 7, 0.96) 32%);
+  border-top-color: rgba(155, 120, 69, 0.48);
+}
+
+html[data-theme="reliquary"] .composer-main {
+  background: rgba(8, 8, 7, 0.92);
+  border: 1px solid rgba(155, 120, 69, 0.56);
+  outline: 1px solid rgba(0, 0, 0, 0.8);
+  outline-offset: 3px;
+  padding: 0.52rem;
+}
+
+html[data-theme="reliquary"] .composer-input {
+  background: rgba(18, 16, 13, 0.82);
+  border-color: rgba(155, 120, 69, 0.4);
+}
+
+html[data-theme="reliquary"] .composer-input:focus-within {
+  border-color: rgba(199, 101, 62, 0.68);
+  box-shadow: 0 0 0 2px rgba(182, 64, 35, 0.1), inset 0 0 14px rgba(0, 0, 0, 0.36);
+}
+
+html[data-theme="reliquary"] .composer-send {
+  background: linear-gradient(145deg, rgba(134, 50, 27, 0.92), rgba(54, 22, 15, 0.96));
+  border-color: rgba(211, 112, 70, 0.76);
+  box-shadow: inset 0 0 0 1px rgba(232, 223, 207, 0.06), 0 0 18px -10px rgba(199, 101, 62, 0.92);
+  color: #f0d9bd;
+}
+
+html[data-theme="reliquary"] .composer-send:hover:not(:disabled) {
+  background: linear-gradient(145deg, rgba(161, 61, 32, 0.96), rgba(70, 27, 18, 0.98));
+  border-color: #d78762;
+}
+
+html[data-theme="reliquary"] .settings-panel,
+html[data-theme="reliquary"] .dialog-settings,
+html[data-theme="reliquary"] .overflow-menu,
+html[data-theme="reliquary"] .task-new-menu {
+  background: linear-gradient(180deg, rgba(29, 24, 19, 0.98), rgba(9, 9, 7, 0.99));
+  border-color: rgba(155, 120, 69, 0.52);
+  box-shadow: inset 0 0 0 1px rgba(232, 223, 207, 0.025), 0 24px 70px rgba(0, 0, 0, 0.64);
+}
+
+@media (max-width: 860px) {
+  html[data-theme="reliquary"] {
+    --task-rail-width: 100%;
+  }
+
+  html[data-theme="reliquary"] body::after {
+    background-position: var(--hub-background-position, 72% 50%);
+  }
+
+  html[data-theme="reliquary"] body::before {
+    opacity: 0.1;
+  }
+
+  html[data-theme="reliquary"] .app-header {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  html[data-theme="reliquary"] .view-tab {
+    min-height: 2.75rem;
+    padding-inline: 0.62rem;
+  }
+
+  html[data-theme="reliquary"] .chat-head,
+  html[data-theme="reliquary"] .msg {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  html[data-theme="reliquary"] .chat-head {
+    background: rgba(10, 9, 8, 0.94);
+  }
+
+  html[data-theme="reliquary"] .msg {
+    background: linear-gradient(180deg, rgba(31, 27, 23, 0.96), rgba(11, 11, 9, 0.96));
+  }
+
+  html[data-theme="reliquary"] .msg-user {
+    background: linear-gradient(90deg, rgba(67, 39, 27, 0.94), rgba(17, 15, 12, 0.97) 32%);
+  }
+
+  html[data-theme="reliquary"] .composer-main {
+    outline-offset: 2px;
+    padding: 0.38rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="reliquary"] body::before {
+    animation: none;
+    transform: none;
   }
 }
