@@ -588,14 +588,9 @@
         <div class="server-config-grid" data-server-config>
           <span class="setting-empty">Загрузка…</span>
         </div>
-        <div class="server-controls">
-          <label class="setting-switch">
-            <input type="checkbox" data-server-autostart>
-            <span class="switch-text">Автозапуск Agent Hub
-              <span class="switch-note" data-server-autostart-note>Проверяем…</span>
-            </span>
-            <span class="switch-track" aria-hidden="true"></span>
-          </label>
+        <div class="server-config-actions" data-server-config-actions>
+          <button type="button" class="chip-button" data-server-config-save disabled>Сохранить</button>
+          <button type="button" class="chip-button ghost" data-server-config-discard hidden>Отменить</button>
           <button type="button" class="chip-button" data-action="hub-restart">
             <svg data-phosphor-icon="arrows-clockwise" viewBox="0 0 256 256" aria-hidden="true">
               <polyline points="168 96 216 96 216 48" fill="none" stroke="currentColor"
@@ -609,10 +604,6 @@
             </svg>
             <span>Перезапустить</span>
           </button>
-        </div>
-        <div class="server-config-actions" data-server-config-actions>
-          <button type="button" class="chip-button" data-server-config-save disabled>Сохранить</button>
-          <button type="button" class="chip-button ghost" data-server-config-discard hidden>Отменить</button>
           <span class="server-config-actions-note">Настройки применяются кнопкой «Сохранить».</span>
         </div>
       </section>

@@ -85,8 +85,6 @@ const serverState = document.querySelector("[data-server-state]");
 const serverStateNote = document.querySelector("[data-server-state-note]");
 const serverStateDot = document.querySelector("[data-server-state-dot]");
 const serverFacts = document.querySelector("[data-server-facts]");
-const serverAutostart = document.querySelector("[data-server-autostart]");
-const serverAutostartNote = document.querySelector("[data-server-autostart-note]");
 const serverComponents = document.querySelector("[data-server-components]");
 const serverConfig = document.querySelector("[data-server-config]");
 
@@ -2755,17 +2753,7 @@ function renderServerStatus(payload = {}) {
     serverFact("Работает", formatRunningDuration(processInfo.startedAt)),
     serverFact("Активные ходы", String(Math.max(0, Number(processInfo.activeCount) || 0))),
   );
-  if (serverAutostart) {
-    serverAutostart.checked = autostart.enabled === true;
-    serverAutostart.disabled = autostart.supported === false;
-  }
-  if (serverAutostartNote) {
-    serverAutostartNote.textContent = autostart.supported === false
-      ? "Управление автозапуском доступно в Windows."
-      : autostart.enabled
-        ? "Запускается вместе с входом в Windows."
-        : "Не запускается вместе с входом в Windows.";
-  }
+  serverAutostartState = autostart;
   const components = Array.isArray(payload.components) ? payload.components : [];
   serverComponents.replaceChildren(...(components.length ? components.map((component) => el("div", {
     class: "server-component",
@@ -2783,9 +2771,40 @@ function renderServerStatus(payload = {}) {
   const entries = Array.isArray(payload.configuration) ? payload.configuration : [];
   /* Пока правки не сохранены, снапшот не должен затирать введённые значения. */
   if (serverConfigDrafts.size && serverConfig.childElementCount) return;
-  serverConfig.replaceChildren(...(entries.length ? entries.map(renderServerConfigEntry)
-    : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]));
+  serverConfig.replaceChildren(...[
+    renderAutostartEntry(autostart),
+    ...(entries.length ? entries.map(renderServerConfigEntry)
+      : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]),
+  ]);
   syncServerConfigActions();
+}
+
+/* Автозапуск — такая же настройка Hub, поэтому лежит первой плиткой сетки. В
+   отличие от остальных он применяется сразу: это состояние службы Windows, а
+   не значение конфигурации, которое ждёт кнопку «Сохранить». */
+let serverAutostartState = {};
+
+function renderAutostartEntry(autostart = {}) {
+  const supported = autostart.supported !== false;
+  const hint = supported
+    ? "Hub стартует вместе с входом в Windows. Применяется сразу."
+    : "Управление автозапуском доступно только в Windows.";
+  const input = el("input", {
+    type: "checkbox",
+    checked: autostart.enabled === true,
+    disabled: !supported,
+    "data-server-autostart": "",
+  });
+  input.addEventListener("change", () => emit("server:autostart", { enabled: input.checked }));
+  return el("label", {
+    class: "server-config-row server-config-toggle",
+    title: hint,
+  }, [
+    el("span", { class: "switch-text", text: "Автозапуск Agent Hub" }),
+    input,
+    el("span", { class: "switch-track", "aria-hidden": true }),
+    el("small", { class: "server-config-hint", text: hint }),
+  ]);
 }
 
 /* Настройки применяются одной кнопкой: у каждой плитки своя кнопка «Сохранить»
@@ -2900,9 +2919,7 @@ document.querySelector("[data-server-config-save]")
 document.querySelector("[data-server-config-discard]")
   ?.addEventListener("click", discardServerConfigDrafts);
 
-serverAutostart?.addEventListener("change", () => {
-  emit("server:autostart", { enabled: serverAutostart.checked });
-});
+
 
 /* ================================================= диалог ввода текста */
 
