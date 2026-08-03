@@ -1,5 +1,57 @@
 import { createHash } from "node:crypto";
 
+function mergeDurableMessages(hydratedMessages, durableMessages) {
+  const values = structuredClone(Array.isArray(hydratedMessages) ? hydratedMessages : []);
+  for (const durable of Array.isArray(durableMessages) ? durableMessages : []) {
+    const itemId = String(durable?.itemId ?? "").trim();
+    const clientId = String(durable?.clientUserMessageId ?? "").trim();
+    const index = values.findIndex((message) => (
+      (itemId && String(message?.itemId ?? "").trim() === itemId)
+      || (clientId && String(message?.clientUserMessageId ?? "").trim() === clientId)
+    ));
+    if (index < 0) {
+      values.push(structuredClone(durable));
+      continue;
+    }
+    const current = values[index];
+    values[index] = {
+      ...current,
+      ...structuredClone(durable),
+      attachments: Array.isArray(durable?.attachments) && durable.attachments.length
+        ? structuredClone(durable.attachments)
+        : current.attachments,
+      attachmentSources: Array.isArray(durable?.attachmentSources) && durable.attachmentSources.length
+        ? structuredClone(durable.attachmentSources)
+        : current.attachmentSources,
+    };
+  }
+  return values;
+}
+
+export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
+  const values = structuredClone(Array.isArray(hydratedHistory) ? hydratedHistory : []);
+  for (const durable of Array.isArray(durableHistory) ? durableHistory : []) {
+    const id = String(durable?.id ?? "").trim();
+    const index = id
+      ? values.findIndex((item) => String(item?.id ?? "").trim() === id)
+      : -1;
+    if (index < 0) {
+      values.push(structuredClone(durable));
+      continue;
+    }
+    const current = values[index];
+    values[index] = {
+      ...current,
+      ...structuredClone(durable),
+      messages: mergeDurableMessages(current.messages, durable?.messages),
+      activities: Array.isArray(durable?.activities) && durable.activities.length
+        ? structuredClone(durable.activities)
+        : current.activities,
+    };
+  }
+  return values;
+}
+
 export function createDesktopTaskHistoryFactory({
   selection,
   catalog,
@@ -93,7 +145,11 @@ export function createDesktopTaskHistoryFactory({
     const cached = await historyReader.read(binding);
     let history = hydratedHistories.get(key);
     if (history) {
-      history = structuredClone(history);
+      history = mergeDurableTaskHistory(
+        structuredClone(history),
+        await hydrateHistory(cached.history),
+      );
+      hydratedHistories.set(key, structuredClone(history));
       scheduleRefresh(binding);
     } else {
       // A first open uses only durable history. Provider/rollout hydration is

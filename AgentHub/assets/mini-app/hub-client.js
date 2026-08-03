@@ -37,6 +37,8 @@ const historyCatchUpDeadlines = new Map();
 const outgoingByTask = new Map();
 const liveProbeByTask = new Map();
 const liveUserMessagesByTask = new Map();
+const liveCardsByTask = new Map();
+const completionOverlaysByTask = new Map();
 const requestedContextCompactions = new Set();
 const observedContextCompactions = new Map();
 let deferredClientUserMessageIds = new Set();
@@ -44,6 +46,8 @@ const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const {
   activeStageLabel,
   chronologicalMessages,
+  completedConversationTurnVisible,
+  confirmedOutgoingMessageIds,
   deduplicateConversationMessages,
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
@@ -59,7 +63,6 @@ const {
   normalizedUserMessage,
   responseAnnotationPrompt,
   reconcile: reconcileMessageLifecycle,
-  reconciledUserMetadataConfirmed,
   rememberBounded: rememberBoundedMessage,
   reusableAttachmentPaths,
   visibleConversationMessages,
@@ -166,19 +169,29 @@ function liveUserMessagesSignature(run) {
 }
 
 function reconciledMessages(taskIdValue) {
+  const durableMessages = deduplicateConversationMessages(historyByTask.get(taskIdValue) ?? []);
+  const overlays = completionOverlaysByTask.get(taskIdValue);
+  if (overlays) {
+    for (const [turnId, overlay] of overlays) {
+      if (completedConversationTurnVisible(durableMessages, {
+        turnId,
+        answer: overlay.answer,
+        requireAgent: Boolean(overlay.answer),
+      })) overlays.delete(turnId);
+    }
+    if (!overlays.size) completionOverlaysByTask.delete(taskIdValue);
+  }
+  const overlayMessages = [...(completionOverlaysByTask.get(taskIdValue)?.values() ?? [])]
+    .flatMap((overlay) => overlay.messages);
   const serverMessages = deduplicateConversationMessages(mergeLiveUserMessages(
-    historyByTask.get(taskIdValue) ?? [],
+    [...durableMessages, ...overlayMessages],
     liveUserMessagesByTask.get(taskIdValue) ?? {},
   ));
   const pending = outgoingMessages(taskIdValue);
   const outgoing = [...pending.values()];
   const { matches, matchedIds } = reconcileMessageLifecycle(serverMessages, outgoing);
-  const confirmedMatchedIds = new Set();
   const result = matches.map(({ message, local }) => {
     if (!local) return message;
-    if (reconciledUserMetadataConfirmed(message, local)) {
-      confirmedMatchedIds.add(local.clientUserMessageId);
-    }
     return {
       ...mergeReconciledUserMessage(message, local),
       attachments: local.attachments?.length ? local.attachments : message.attachments,
@@ -188,11 +201,46 @@ function reconciledMessages(taskIdValue) {
   for (const message of outgoing) {
     if (!matchedIds.has(message.clientUserMessageId)) result.push(message);
   }
+  const confirmedMatchedIds = confirmedOutgoingMessageIds(durableMessages, outgoing);
   for (const clientUserMessageId of confirmedMatchedIds) pending.delete(clientUserMessageId);
   return chronologicalMessages(visibleConversationMessages(result.map(normalizedUserMessage), {
     deferredClientUserMessageIds,
     liveProbe: liveProbeByTask.get(taskIdValue) ?? null,
   }));
+}
+
+function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
+  const previous = liveCardsByTask.get(taskIdValue);
+  const previousTurnId = String(previous?.turnId ?? "").trim();
+  if (!previousTurnId || previousTurnId === String(incomingTurnId ?? "").trim()) return false;
+  const liveUsers = liveUserMessagesByTask.get(taskIdValue) ?? {};
+  const taskAnswerTurnId = String(selected?.lastAnswerTurnId ?? "").trim();
+  const answer = String(
+    taskAnswerTurnId === previousTurnId ? selected?.lastAnswer : previous?.text,
+  ).trim();
+  const messages = mergeLiveUserMessages([], liveUsers);
+  if (answer) {
+    messages.push({
+      id: `${previous.provider}:${previous.threadId}:${previousTurnId}:completion-overlay:agent`,
+      provider: previous.provider,
+      threadId: previous.threadId,
+      turnId: previousTurnId,
+      itemId: previous.itemId || `${previousTurnId}:agent:final`,
+      role: "agent",
+      author: previous.author,
+      phase: "final",
+      text: answer,
+      time: selected?.lastAnswerAt ?? null,
+    });
+  }
+  if (messages.length) {
+    const overlays = completionOverlaysByTask.get(taskIdValue) ?? new Map();
+    overlays.set(previousTurnId, { answer, messages });
+    while (overlays.size > 20) overlays.delete(overlays.keys().next().value);
+    completionOverlaysByTask.set(taskIdValue, overlays);
+  }
+  liveCardsByTask.delete(taskIdValue);
+  return messages.length > 0;
 }
 
 function exactSelectedTaskParams() {
@@ -217,10 +265,11 @@ function syncHistoryPagination(taskIdValue) {
 
 function updateLiveMessage(taskIdValue, selected) {
   const run = selected?.run;
+  const promoted = promoteLiveCompletion(taskIdValue, selected, run?.turnId);
   if (!run) {
     const removed = liveProbeByTask.delete(taskIdValue);
     const userRemoved = liveUserMessagesByTask.delete(taskIdValue);
-    if (removed || userRemoved) renderTaskMessages(taskIdValue);
+    if (promoted || removed || userRemoved) renderTaskMessages(taskIdValue);
     return null;
   }
   const nextLiveUsers = {
@@ -258,7 +307,7 @@ function updateLiveMessage(taskIdValue, selected) {
     const removed = liveProbeByTask.delete(taskIdValue);
     if (removed || liveUsersChanged) renderTaskMessages(taskIdValue);
   }
-  return {
+  const liveCard = {
     author: selected.provider === "claude" ? "Claude" : "Codex",
     stage: activeStageLabel(run.stage),
     reasoning: run.progress || "",
@@ -267,7 +316,10 @@ function updateLiveMessage(taskIdValue, selected) {
     threadId: selected.threadId,
     turnId: run.turnId,
     itemId: run.responseItemId ?? null,
+    provider: selected.provider,
   };
+  liveCardsByTask.set(taskIdValue, liveCard);
+  return liveCard;
 }
 
 function authorizationHeaders() {

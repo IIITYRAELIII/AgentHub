@@ -1628,6 +1628,12 @@ async function finalizeCodexRunDelivery(run, {
     answer,
     formatTurnTokenUsage(resolvedTracker),
   ].filter(Boolean).join("\n\n");
+  await persistManagedRunHistory(run, {
+    answer,
+    status,
+    active: false,
+    turnId: completedTurnId,
+  });
   const delivery = await routeCodexFinalDelivery({
     completion,
     deliverStandard: async () => {
@@ -5463,17 +5469,18 @@ const claudeRunController = new ClaudeRunController({
     : "Дочитываю прерванный ход Claude…"),
 });
 
-async function persistClaudeRunHistory(run, {
+async function persistManagedRunHistory(run, {
   answer = "",
   status = "inProgress",
   active = true,
+  turnId = run?.turnId,
 } = {}) {
-  if (!run?.threadId || !run?.turnId) return;
+  if (!run?.threadId || !turnId) return;
   try {
     const history = taskSyncStore.history(run);
     mergeActiveTaskHistory(history, {
       active: true,
-      turnId: run.turnId,
+      turnId,
       prompt: run.promptPreview,
       answer: run.responseText,
       clientUserMessageId: run.clientUserMessageId,
@@ -5482,7 +5489,7 @@ async function persistClaudeRunHistory(run, {
       startedAt: run.startedAt,
       attachments: run.messageAttachments ?? [],
     });
-    const current = history.findLast((item) => String(item?.id ?? "") === String(run.turnId));
+    const current = history.findLast((item) => String(item?.id ?? "") === String(turnId));
     if (current) {
       current.active = active;
       current.completed = !active;
@@ -5492,7 +5499,7 @@ async function persistClaudeRunHistory(run, {
       if (!active) current.completedAt = new Date().toISOString();
       if (current.answer) {
         const messages = Array.isArray(current.messages) ? current.messages : [];
-        const itemId = String(run.responseItemId ?? "").trim() || `${run.turnId}:agent:final`;
+        const itemId = String(run.responseItemId ?? "").trim() || `${turnId}:agent:final`;
         const existing = messages.find((message) => (
           message.role === "agent" && String(message.itemId ?? "") === itemId
         ));
@@ -5512,7 +5519,7 @@ async function persistClaudeRunHistory(run, {
     }
     taskSyncStore.recordHistory(run, history, {
       active,
-      turnId: active ? run.turnId : null,
+      turnId: active ? turnId : null,
       activityAtMs: Date.now(),
       stage: run.progressStage,
       answer: String(answer || run.responseText || "").trim(),
@@ -5520,8 +5527,12 @@ async function persistClaudeRunHistory(run, {
     });
     await taskSyncStore.save();
   } catch (error) {
-    console.error(`Cannot persist Claude task history ${run.threadId}:`, error.message);
+    console.error(`Cannot persist managed task history ${run.threadId}:`, error.message);
   }
+}
+
+function persistClaudeRunHistory(run, options = {}) {
+  return persistManagedRunHistory(run, options);
 }
 
 async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton = false } = {}) {

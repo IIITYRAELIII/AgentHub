@@ -206,6 +206,44 @@ function reconciledUserMetadataConfirmed(message, local) {
   return JSON.stringify(serverAnnotations) === JSON.stringify(localAnnotations);
 }
 
+function confirmedOutgoingMessageIds(durableMessages, outgoingMessages) {
+  const { matches } = reconcile(durableMessages, outgoingMessages);
+  return new Set(matches.flatMap(({ message, local }) => (
+    local && reconciledUserMetadataConfirmed(message, local)
+      ? [local.clientUserMessageId]
+      : []
+  )));
+}
+
+function completedConversationTurnVisible(messages, {
+  turnId,
+  answer = "",
+  requireAgent = false,
+} = {}) {
+  const exactTurnId = String(turnId ?? "").trim();
+  if (!exactTurnId) return false;
+  const turnMessages = (Array.isArray(messages) ? messages : []).filter((message) => (
+    String(message?.turnId ?? "").trim() === exactTurnId
+  ));
+  const hasUser = turnMessages.some((message) => (
+    message?.role === "user" && String(message?.text ?? "").trim()
+  ));
+  if (!hasUser) return false;
+  const agentTexts = turnMessages
+    .filter((message) => message?.role === "agent")
+    .map((message) => String(message?.text ?? "").trim())
+    .filter(Boolean);
+  const expectedAnswer = String(answer ?? "").trim();
+  if (expectedAnswer) {
+    return agentTexts.some((text) => (
+      text === expectedAnswer
+      || text.startsWith(expectedAnswer)
+      || expectedAnswer.startsWith(text)
+    ));
+  }
+  return requireAgent ? agentTexts.length > 0 : true;
+}
+
 function reconcile(serverMessages, outgoingMessages) {
   const outgoing = Array.isArray(outgoingMessages) ? outgoingMessages : [];
   const clientOutgoing = new Map();
@@ -461,6 +499,8 @@ function hubErrorMessage(error) {
 globalThis.AgentHubMessageLifecycle = Object.freeze({
   activeStageLabel,
   chronologicalMessages,
+  completedConversationTurnVisible,
+  confirmedOutgoingMessageIds,
   deduplicateConversationMessages,
   embeddedResponseAnnotations,
   hubErrorMessage,

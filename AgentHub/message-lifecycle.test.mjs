@@ -122,6 +122,52 @@ test("temporary and durable final ids render as one agent card", () => {
   assert.equal(values[0].text, "Сохранённый финал");
 });
 
+test("a live user echo does not confirm an outgoing message before durable history", () => {
+  const outgoing = message("client-live", "Сообщение ещё сохраняется");
+  const liveEcho = {
+    ...outgoing,
+    itemId: "live-user",
+    turnId: "turn-live",
+  };
+  assert.deepEqual(
+    [...lifecycle.confirmedOutgoingMessageIds([], [outgoing])],
+    [],
+  );
+  assert.deepEqual(
+    [...lifecycle.confirmedOutgoingMessageIds([liveEcho], [outgoing])],
+    ["client-live"],
+  );
+});
+
+test("completed turn becomes durable only with its prompt and exact final", () => {
+  const prompt = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "user-1",
+    role: "user",
+    text: "Вопрос",
+  };
+  const final = {
+    ...prompt,
+    itemId: "agent-1",
+    role: "agent",
+    text: "Готовый ответ",
+  };
+  assert.equal(lifecycle.completedConversationTurnVisible([prompt], {
+    turnId: "turn-1",
+    answer: "Готовый ответ",
+  }), false);
+  assert.equal(lifecycle.completedConversationTurnVisible([final], {
+    turnId: "turn-1",
+    answer: "Готовый ответ",
+  }), false);
+  assert.equal(lifecycle.completedConversationTurnVisible([prompt, final], {
+    turnId: "turn-1",
+    answer: "Готовый ответ",
+  }), true);
+});
+
 test("agent finals from different turns remain separate", () => {
   const values = lifecycle.deduplicateConversationMessages([
     { provider: "codex", threadId: "thread-1", turnId: "turn-1", itemId: "a", role: "agent" },

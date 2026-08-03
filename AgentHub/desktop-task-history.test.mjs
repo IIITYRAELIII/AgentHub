@@ -228,6 +228,33 @@ test("desktop task history returns durable history while provider hydration is s
   releaseRefresh({ history: [] });
 });
 
+test("desktop task history exposes a new durable completion before hydration refresh", async () => {
+  const blockedRefresh = new Promise(() => {});
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    refresh: async () => blockedRefresh,
+  });
+  await desktopTaskHistory({ limit: 1, includeActive: false });
+  state.history.push({
+    id: "turn-new",
+    prompt: "Новый вопрос",
+    answer: "Новый финальный ответ",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [
+      { itemId: "turn-new:user", role: "user", text: "Новый вопрос" },
+      { itemId: "turn-new:agent", role: "agent", phase: "final", text: "Новый финальный ответ" },
+    ],
+  });
+
+  const result = await desktopTaskHistory({ limit: 1, includeActive: false });
+
+  assert.equal(result.items[0].id, "turn-new");
+  assert.equal(result.items[0].messages[0].text, "Новый вопрос");
+  assert.equal(result.items[0].messages[1].text, "Новый финальный ответ");
+});
+
 test("desktop task history imports private screenshot references for the visible page", async () => {
   const { desktopTaskHistory, state, calls } = fixture({ run: null });
   state.history[3].messages[0].attachmentSources = [{
