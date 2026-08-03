@@ -522,6 +522,7 @@ let selectedTaskWatchTimer = null;
 let selectedTaskWatchInFlight = false;
 let rateLimitPollTimer = null;
 let codexRolloutContextTimer = null;
+const codexCompactionCleanupTimers = new Map();
 const reconcilingCodexTerminalTurns = new Set();
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
 const COMPLETED_CODEX_TERMINAL_GRACE_MS = 10_000;
@@ -536,6 +537,10 @@ const turnTokenUsage = new Map();
 const threadContextUsage = new Map();
 const codexRolloutPathsByThreadId = new Map();
 const contextCompactions = new ContextCompactionTracker({
+  cleanupTimeoutMs: Math.max(
+    2 * 60_000,
+    (config.codexRolloutContext.scanIntervalSeconds + 60) * 1_000,
+  ),
   onSettled: () => scheduleDeferredRestartIfReady(),
 });
 const codexTurnStarts = new Map();
@@ -5970,10 +5975,10 @@ async function handleCodexMessage(message) {
   }
   if (method === "item/completed") {
     if (isContextCompactionItem(params.item)) {
-      contextCompactions.complete(params.threadId, {
+      beginCodexCompactionCleanup(params.threadId, {
         turnId: eventTurnId,
         itemId: params.item?.id,
-        completedAt: params.completedAtMs,
+        compactedAt: params.completedAtMs,
       });
     }
     if (run) {
@@ -5996,8 +6001,8 @@ async function handleCodexMessage(message) {
   }
   if (method === "thread/compacted") {
     const compactedThreadId = String(params.threadId ?? run?.threadId ?? "").trim();
-    const modernItemAlreadyHandled = contextCompactions.get(compactedThreadId)?.status === "completed";
-    contextCompactions.complete(compactedThreadId, { turnId: eventTurnId });
+    const modernItemAlreadyHandled = Boolean(contextCompactions.get(compactedThreadId)?.itemId);
+    beginCodexCompactionCleanup(compactedThreadId, { turnId: eventTurnId });
     if (run && !modernItemAlreadyHandled) appendRunActivity(run, {
       id: `compaction:${eventTurnId ?? run.turnId ?? run.id}`,
       type: "compaction",
@@ -6868,6 +6873,74 @@ async function auditRecentCodexTerminalTurns() {
   } catch (error) {
     console.error("Cannot audit Codex terminal turns:", error.message);
   }
+}
+
+const CODEX_COMPACTION_CLEANUP_RETRY_MS = 15_000;
+
+function beginCodexCompactionCleanup(threadId, details = {}) {
+  const key = String(threadId ?? "").trim();
+  if (!key) return;
+  if (!config.components.codexContextCleanup) {
+    contextCompactions.complete(key, {
+      turnId: details.turnId,
+      itemId: details.itemId,
+      completedAt: details.compactedAt,
+    });
+    return;
+  }
+  contextCompactions.beginCleanup(key, details);
+  scheduleCodexCompactionCleanup(key, {
+    turnId: details.turnId,
+    itemId: details.itemId,
+    startedAtMs: Date.now(),
+  });
+}
+
+function scheduleCodexCompactionCleanup(threadId, state, delayMs = 0) {
+  const key = String(threadId ?? "").trim();
+  if (!key || stopping || codexCompactionCleanupTimers.has(key)) return;
+  const timer = setTimeout(() => {
+    codexCompactionCleanupTimers.delete(key);
+    void runCodexCompactionCleanup(key, state);
+  }, Math.max(0, Number(delayMs) || 0));
+  timer.unref?.();
+  codexCompactionCleanupTimers.set(key, timer);
+}
+
+async function runCodexCompactionCleanup(threadId, state) {
+  if (stopping || !config.components.codexContextCleanup) return;
+  let rolloutPath = await knownCodexRolloutPath(threadId);
+  if (!rolloutPath && codexTransport.running) {
+    try {
+      const result = await readCodexThread(threadId, { fresh: true, includeTurns: false });
+      rolloutPath = String(result.thread?.path ?? "").trim();
+      if (rolloutPath) setBoundedMapValue(codexRolloutPathsByThreadId, threadId, rolloutPath, 5_000);
+    } catch (error) {
+      console.warn(`Cannot resolve compacted Codex rollout ${threadId}: ${error.message}`);
+    }
+  }
+  const result = rolloutPath
+    ? await codexRolloutContextSanitizer.runForRollout(rolloutPath)
+    : { applied: false, reason: "rollout-not-found" };
+  if (result.applied || result.reason === "below-threshold") {
+    contextCompactions.complete(threadId, {
+      turnId: state.turnId,
+      itemId: state.itemId,
+    });
+    return;
+  }
+  const retryWindowMs = Math.max(
+    2 * 60_000,
+    config.codexRolloutContext.scanIntervalSeconds * 1_000,
+  );
+  if (Date.now() - state.startedAtMs < retryWindowMs) {
+    scheduleCodexCompactionCleanup(threadId, state, CODEX_COMPACTION_CLEANUP_RETRY_MS);
+    return;
+  }
+  console.warn(
+    `Codex compaction image cleanup timed out for ${threadId}: ${result.reason}. `
+      + "The periodic cleanup pass will retry it later.",
+  );
 }
 
 function scheduleCodexRolloutContextSanitizer(
@@ -8576,6 +8649,8 @@ function stopRuntimeTimers() {
     clearTimeout(codexRolloutContextTimer);
     codexRolloutContextTimer = null;
   }
+  for (const timer of codexCompactionCleanupTimers.values()) clearTimeout(timer);
+  codexCompactionCleanupTimers.clear();
   if (deliveryOutboxTimer) {
     clearTimeout(deliveryOutboxTimer);
     deliveryOutboxTimer = null;

@@ -59,13 +59,13 @@ function stringArray(value, name) {
   return value.map((item) => item.trim()).filter(Boolean);
 }
 
-function codexRolloutContextSettings(value) {
+function codexRolloutContextSettings(value, { enabled = null } = {}) {
   const raw = value ?? {};
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("codexRolloutContext must be an object");
   }
   return {
-    enabled: raw.enabled === true,
+    enabled: enabled == null ? raw.enabled === true : enabled === true,
     keepRecentImages: nonNegativeInteger(
       raw.keepRecentImages,
       4,
@@ -78,7 +78,7 @@ function codexRolloutContextSettings(value) {
     ),
     scanIntervalSeconds: positiveInteger(
       raw.scanIntervalSeconds,
-      15 * 60,
+      30 * 60,
       "codexRolloutContext.scanIntervalSeconds",
     ),
     maxFilesPerPass: positiveInteger(
@@ -455,13 +455,14 @@ export async function loadConfig() {
       telegram: migratedProfile !== "journal",
       miniApp: migratedProfile === "full",
       androidApp: migratedProfile === "full",
+      codexContextCleanup: raw.codexRolloutContext?.enabled === true,
     };
   } else {
     if (!raw.components || typeof raw.components !== "object" || Array.isArray(raw.components)) {
       throw new Error("components must be an object");
     }
     for (const name of Object.keys(raw.components)) {
-      if (!["telegram", "miniApp", "androidApp"].includes(name)) {
+      if (!["telegram", "miniApp", "androidApp", "codexContextCleanup"].includes(name)) {
         throw new Error(`unknown component: ${name}`);
       }
     }
@@ -469,6 +470,9 @@ export async function loadConfig() {
       telegram: raw.components.telegram === true,
       miniApp: raw.components.miniApp === true,
       androidApp: raw.components.androidApp === true,
+      codexContextCleanup: raw.components.codexContextCleanup == null
+        ? raw.codexRolloutContext?.enabled === true
+        : raw.components.codexContextCleanup === true,
     };
   }
   if (components.miniApp && !components.telegram) {
@@ -567,7 +571,9 @@ export async function loadConfig() {
     codexCollaborationMode,
     codexSandboxMode,
     codexModels: loadCodexModels(raw),
-    codexRolloutContext: codexRolloutContextSettings(raw.codexRolloutContext),
+    codexRolloutContext: codexRolloutContextSettings(raw.codexRolloutContext, {
+      enabled: components.codexContextCleanup,
+    }),
     claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
     claudeExecutableArgs: stringArray(raw.claudeExecutableArgs, "claudeExecutableArgs"),
     claudeModel: String(process.env.CLAUDE_MODEL ?? raw.claudeModel ?? "").trim(),

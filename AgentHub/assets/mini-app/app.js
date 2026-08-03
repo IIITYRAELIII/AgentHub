@@ -224,6 +224,7 @@ const themes = {
   meadow: "#070d08",
   lake: "#080d0b",
   graphite: "#17181a",
+  reliquary: "#090807",
 };
 /* Палитра темы и сцена за интерфейсом независимы. Новый фон регистрируется
    здесь, привязывается к своей теме ниже, а его визуальная сцена описывается
@@ -244,6 +245,7 @@ const backgroundNames = {
   meadow: "Луг", "meadow-goldenhour": "Закат",
   lake: "Озеро", "lake-watercolor": "Озеро · акварель", "lake-oil": "Озеро · масло",
   graphite: "Графит",
+  reliquary: "Пепельный архив",
 };
 const themeBackgrounds = Object.freeze({
   orbit: ["orbit", "orbit-limb"],
@@ -261,6 +263,7 @@ const themeBackgrounds = Object.freeze({
   meadow: ["meadow", "meadow-goldenhour"],
   lake: ["lake", "lake-watercolor", "lake-oil"],
   graphite: ["graphite"],
+  reliquary: ["reliquary"],
 });
 const deferredBackgroundAssets = Object.freeze({
   "gothic-minental-castle": {
@@ -1239,10 +1242,13 @@ function renderContextUsage(task) {
   const percent = Math.max(0, Math.min(100, Number(context.percent) || 0));
   const used = Math.max(0, Number(context.usedTokens) || 0);
   const total = Math.max(0, Number(context.modelContextWindow) || 0);
+  const cleaningImages = context.compaction?.stage === "cleaning-images";
   contextLabel.textContent = context.compacting ? "↻" : context.usagePending ? "…" : `${Math.round(percent)}%`;
   contextRing.style.setProperty("--context-percent", `${percent}%`);
   contextUsageButton.title = context.compacting
-    ? "Контекст сворачивается…"
+    ? cleaningImages
+      ? "Свёртка создана. Удаляются дубликаты изображений…"
+      : "Контекст сворачивается…"
     : context.usagePending
       ? "Контекст свёрнут. Ожидается обновлённый объём…"
     : `Контекст: ${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")}. Нажмите, чтобы свернуть.`;

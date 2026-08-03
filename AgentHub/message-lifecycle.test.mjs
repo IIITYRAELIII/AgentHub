@@ -18,6 +18,10 @@ const miniAppSource = await readFile(
   new URL("./assets/mini-app/app.js", import.meta.url),
   "utf8",
 );
+const serverSource = await readFile(
+  new URL("./agent-hub-server.mjs", import.meta.url),
+  "utf8",
+);
 
 function message(itemId, text) {
   return {
@@ -711,5 +715,20 @@ test("context compaction notifications identify the task that compacted", () => 
   assert.match(
     hubClientSource,
     /\$\{completionLabel\} · \$\{compactionTaskTitle\(task\)\} · \$\{compactionContextLabel\(context\)\}/u,
+  );
+});
+
+test("Hub compaction completes only after its targeted image cleanup", () => {
+  assert.match(
+    serverSource,
+    /if \(isContextCompactionItem\(params\.item\)\) \{\s*beginCodexCompactionCleanup/u,
+  );
+  assert.match(
+    serverSource,
+    /if \(result\.applied \|\| result\.reason === "below-threshold"\) \{\s*contextCompactions\.complete/u,
+  );
+  assert.doesNotMatch(
+    serverSource,
+    /if \(isContextCompactionItem\(params\.item\)\) \{\s*contextCompactions\.complete/u,
   );
 });

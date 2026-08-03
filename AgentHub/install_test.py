@@ -14,25 +14,25 @@ class ComponentSelectionTests(unittest.TestCase):
     def test_fresh_install_starts_with_core_only(self) -> None:
         self.assertEqual(
             resolve_components({}, fresh_install=True),
-            {"telegram": False, "miniApp": False, "androidApp": False},
+            {"telegram": False, "miniApp": False, "androidApp": False, "codexContextCleanup": False},
         )
 
     def test_legacy_full_profile_enables_all_equivalent_components(self) -> None:
         self.assertEqual(
             resolve_components({"profile": "full"}, fresh_install=False),
-            {"telegram": True, "miniApp": True, "androidApp": True},
+            {"telegram": True, "miniApp": True, "androidApp": True, "codexContextCleanup": False},
         )
 
     def test_mini_app_enables_telegram_dependency(self) -> None:
         self.assertEqual(
             resolve_components({}, fresh_install=True, enabled=["mini-app"]),
-            {"telegram": True, "miniApp": True, "androidApp": False},
+            {"telegram": True, "miniApp": True, "androidApp": False, "codexContextCleanup": False},
         )
 
     def test_android_app_does_not_require_telegram(self) -> None:
         self.assertEqual(
             resolve_components({}, fresh_install=True, enabled=["android-app"]),
-            {"telegram": False, "miniApp": False, "androidApp": True},
+            {"telegram": False, "miniApp": False, "androidApp": True, "codexContextCleanup": False},
         )
 
     def test_telegram_cannot_be_disabled_while_mini_app_remains_enabled(self) -> None:
@@ -58,8 +58,17 @@ class RolloutImageCleanupChoiceTests(unittest.TestCase):
 
         self.assertEqual(
             result["codexRolloutContext"],
-            {"enabled": True, "scanIntervalSeconds": 900},
+            {"enabled": True, "scanIntervalSeconds": 1800},
         )
+        self.assertTrue(result["components"]["codexContextCleanup"])
+
+    def test_legacy_cleanup_choice_migrates_to_the_component(self) -> None:
+        result = resolve_components(
+            {"profile": "journal", "codexRolloutContext": {"enabled": True}},
+            fresh_install=False,
+        )
+
+        self.assertTrue(result["codexContextCleanup"])
 
     def test_disabled_choice_preserves_existing_tuning(self) -> None:
         result = apply_rollout_image_cleanup_choice(
@@ -81,6 +90,7 @@ class RolloutImageCleanupChoiceTests(unittest.TestCase):
                 "keepRecentImages": 6,
             },
         )
+        self.assertFalse(result["components"]["codexContextCleanup"])
 
 
 class SafeRestartTests(unittest.TestCase):

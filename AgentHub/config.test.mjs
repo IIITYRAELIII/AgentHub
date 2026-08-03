@@ -28,7 +28,9 @@ test("core-only components need neither Telegram credentials nor Web App", async
     }), "utf8");
     process.env.AGENT_HUB_CONFIG = configFile;
     const config = await loadConfig();
-    assert.deepEqual(config.components, { telegram: false, miniApp: false, androidApp: false });
+    assert.deepEqual(config.components, {
+      telegram: false, miniApp: false, androidApp: false, codexContextCleanup: false,
+    });
     assert.equal(config.telegramEnabled, false);
     assert.equal(config.allowedUserIds.size, 0);
     assert.equal(config.allowedChatIds.size, 0);
@@ -37,7 +39,7 @@ test("core-only components need neither Telegram credentials nor Web App", async
       enabled: false,
       keepRecentImages: 4,
       minReclaimBytes: 1024 * 1024,
-      scanIntervalSeconds: 15 * 60,
+      scanIntervalSeconds: 30 * 60,
       maxFilesPerPass: 8,
     });
     assert.equal(config.codexSandboxMode, "workspace-write");
@@ -89,7 +91,34 @@ test("rollout image cleanup requires explicit opt-in and keeps configured interv
     process.env.AGENT_HUB_CONFIG = configFile;
     const config = await loadConfig();
     assert.equal(config.codexRolloutContext.enabled, true);
+    assert.equal(config.components.codexContextCleanup, true);
     assert.equal(config.codexRolloutContext.scanIntervalSeconds, 1200);
+  } finally {
+    if (previous == null) delete process.env.AGENT_HUB_CONFIG;
+    else process.env.AGENT_HUB_CONFIG = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Codex context cleanup is controlled by the dedicated component", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-component-"));
+  const configFile = path.join(root, "config.json");
+  const previous = process.env.AGENT_HUB_CONFIG;
+  try {
+    await writeFile(configFile, JSON.stringify({
+      components: {
+        telegram: false,
+        miniApp: false,
+        androidApp: false,
+        codexContextCleanup: true,
+      },
+      projectRoot: root,
+    }), "utf8");
+    process.env.AGENT_HUB_CONFIG = configFile;
+    const config = await loadConfig();
+    assert.equal(config.components.codexContextCleanup, true);
+    assert.equal(config.codexRolloutContext.enabled, true);
+    assert.equal(config.codexRolloutContext.scanIntervalSeconds, 30 * 60);
   } finally {
     if (previous == null) delete process.env.AGENT_HUB_CONFIG;
     else process.env.AGENT_HUB_CONFIG = previous;
@@ -114,7 +143,9 @@ test("Telegram and Android App components can be enabled independently", async (
       components: { telegram: true, miniApp: false, androidApp: false },
     }), "utf8");
     const telegram = await loadConfig();
-    assert.deepEqual(telegram.components, { telegram: true, miniApp: false, androidApp: false });
+    assert.deepEqual(telegram.components, {
+      telegram: true, miniApp: false, androidApp: false, codexContextCleanup: false,
+    });
     assert.equal(telegram.telegramEnabled, true);
     assert.equal(telegram.miniApp.enabled, false);
 
@@ -123,7 +154,9 @@ test("Telegram and Android App components can be enabled independently", async (
       components: { telegram: false, miniApp: false, androidApp: true },
     }), "utf8");
     const web = await loadConfig();
-    assert.deepEqual(web.components, { telegram: false, miniApp: false, androidApp: true });
+    assert.deepEqual(web.components, {
+      telegram: false, miniApp: false, androidApp: true, codexContextCleanup: false,
+    });
     assert.equal(web.telegramEnabled, false);
     assert.equal(web.miniApp.enabled, true);
   } finally {
@@ -147,7 +180,9 @@ test("legacy profiles migrate to equivalent components", async () => {
       miniApp: { enabled: true },
     }), "utf8");
     const config = await loadConfig();
-    assert.deepEqual(config.components, { telegram: true, miniApp: false, androidApp: false });
+    assert.deepEqual(config.components, {
+      telegram: true, miniApp: false, androidApp: false, codexContextCleanup: false,
+    });
     assert.equal(config.miniApp.enabled, false);
   } finally {
     if (previous == null) delete process.env.AGENT_HUB_CONFIG;

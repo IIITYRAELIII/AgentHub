@@ -1290,6 +1290,11 @@ namespace AgentHubDesktop
                     Choice("auto", "Авто")
                 })));
 
+            if (String.Equals(item.Provider, "codex", StringComparison.OrdinalIgnoreCase))
+            {
+                inspector.Children.Add(ContextInspector(item));
+            }
+
             var projects = Choices(settings, "projects", "path", "name");
             if (projects.Length > 1)
             {
@@ -1339,6 +1344,50 @@ namespace AgentHubDesktop
             utilities.Children.Add(speak);
             utilities.Children.Add(restart);
             inspector.Children.Add(InspectorSection("СЕРВЕР", utilities));
+        }
+
+        private UIElement ContextInspector(TaskItem item)
+        {
+            var context = item.Context ?? new Dictionary<string, object>();
+            var compacting = AgentHubClient.Bool(context, "compacting");
+            var cleaningImages = AgentHubClient.Text(
+                AgentHubClient.Object(context, "compaction"),
+                "stage",
+                "") == "cleaning-images";
+            var usagePending = AgentHubClient.Bool(context, "usagePending");
+            var usedTokens = AgentHubClient.Text(context, "usedTokens", "0");
+            var contextWindow = AgentHubClient.Text(context, "modelContextWindow", "");
+            var percent = AgentHubClient.Text(context, "percent", "");
+            double numericPercent;
+            var hasPercent = Double.TryParse(percent, out numericPercent);
+            var usage = String.IsNullOrWhiteSpace(contextWindow)
+                ? "Данные ещё не получены"
+                : usedTokens + " из " + contextWindow
+                    + (hasPercent ? " (" + Math.Round(numericPercent) + "%)" : "");
+            var state = compacting
+                ? cleaningImages
+                    ? "Свёртка создана. Удаляются дубликаты изображений…"
+                    : "Выполняется свёртка…"
+                : usagePending
+                    ? "Ожидается обновлённый объём…"
+                    : usage;
+            var compact = Theme.Button(
+                compacting ? cleaningImages ? "Очищается…" : "Сворачивается…" : "Свернуть контекст",
+                "\uE72C",
+                false);
+            compact.HorizontalAlignment = HorizontalAlignment.Stretch;
+            compact.IsEnabled = !item.Running && !compacting && !usagePending;
+            compact.ToolTip = item.Running
+                ? "Сначала завершите или остановите текущий ход"
+                : compacting
+                    ? "Свёртка контекста уже выполняется"
+                    : usagePending
+                        ? "Ожидается обновление объёма контекста"
+                        : "Создать компактное резюме контекста Codex";
+            compact.Click += async delegate { await CompactContextAsync(); };
+            return InspectorSection("КОНТЕКСТ",
+                SettingRow("Объём", state, compacting ? Theme.Solid(Theme.CodexMint) : Theme.Solid(Theme.Muted)),
+                compact);
         }
 
         private UIElement ApprovalCard(Dictionary<string, object> approval)
@@ -1996,6 +2045,18 @@ namespace AgentHubDesktop
             {
                 var result = await client.CallAsync("cancel-run", SelectedTaskParameters());
                 footer.Text = AgentHubClient.Text(result, "message", "Остановка запрошена");
+            }
+            catch (Exception error) { footer.Text = error.Message; }
+        }
+
+        private async Task CompactContextAsync()
+        {
+            try
+            {
+                footer.Text = "Сворачиваю контекст…";
+                var result = await client.CallAsync("compact-context", SelectedTaskParameters());
+                footer.Text = AgentHubClient.Text(result, "message", "Свёртка контекста запущена");
+                await RefreshAsync(false);
             }
             catch (Exception error) { footer.Text = error.Message; }
         }

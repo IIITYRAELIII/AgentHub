@@ -2,7 +2,8 @@
   "components": {
     "telegram": true,
     "miniApp": true,
-    "androidApp": true
+    "androidApp": true,
+    "codexContextCleanup": false
   },
   "telegramBotToken": "123456789:replace_with_your_bot_token",
   "allowedUserIds": [
@@ -44,10 +45,9 @@
   "codexSandboxMode": "workspace-write",
   "codexCollaborationMode": "default",
   "codexRolloutContext": {
-    "enabled": false,
     "keepRecentImages": 4,
     "minReclaimBytes": 1048576,
-    "scanIntervalSeconds": 900,
+    "scanIntervalSeconds": 1800,
     "maxFilesPerPass": 8
   },
   "codexModels": [

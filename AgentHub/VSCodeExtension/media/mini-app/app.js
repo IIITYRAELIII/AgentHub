@@ -927,10 +927,13 @@ function renderContextUsage(task) {
   const percent = Math.max(0, Math.min(100, Number(context.percent) || 0));
   const used = Math.max(0, Number(context.usedTokens) || 0);
   const total = Math.max(0, Number(context.modelContextWindow) || 0);
+  const cleaningImages = context.compaction?.stage === "cleaning-images";
   contextLabel.textContent = context.compacting ? "↻" : context.usagePending ? "…" : `${Math.round(percent)}%`;
   contextRing.style.setProperty("--context-percent", `${percent}%`);
   contextUsageButton.title = context.compacting
-    ? "Контекст сворачивается…"
+    ? cleaningImages
+      ? "Свёртка создана. Удаляются дубликаты изображений…"
+      : "Контекст сворачивается…"
     : context.usagePending
       ? "Контекст свёрнут. Ожидается обновлённый объём…"
     : `Контекст: ${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")}. Нажмите, чтобы свернуть.`;

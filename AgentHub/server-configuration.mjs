@@ -15,7 +15,8 @@ const CHOICE = "choice";
 export const SERVER_CONFIGURATION_FIELDS = Object.freeze([
   { key: "autoApproveOnStart", name: "Автоподтверждение при запуске", hint: "Команды и правки файлов выполняются без запроса. Выключено — Hub спрашивает разрешение на каждое действие агента.", type: BOOLEAN },
   { key: "guardConcurrentRepositoryWrites", name: "Защита параллельной записи", hint: "Не даёт двум задачам писать в один репозиторий одновременно: вторая ждёт, пока первая закончит ход.", type: BOOLEAN },
-  { key: "codexRolloutContext.enabled", name: "История ходов Codex", hint: "Codex получает историю прошлых ходов задачи. Выключено — каждый ход начинается с чистого контекста.", type: BOOLEAN },
+  { key: "components.codexContextCleanup", name: "Очистка контекста Codex", hint: "Удаляет только дубликаты старых изображений из snapshots после свёртки и во время фоновых проходов; исходные сообщения не меняются.", type: BOOLEAN },
+  { key: "codexRolloutContext.scanIntervalSeconds", name: "Интервал фоновой очистки", hint: "Как часто компонент повторно проверяет отложенные и остальные rollout-файлы Codex.", type: INTEGER, min: 1, max: 1440, unit: "мин", storageMultiplier: 60 },
   {
     key: "codexSandboxMode",
     name: "Политика доступа Codex",
@@ -69,6 +70,18 @@ function normalizeValue(field, value) {
   return number;
 }
 
+function inputValue(field, storedValue) {
+  if (field.type !== INTEGER || !field.storageMultiplier) return storedValue;
+  const number = Number(storedValue);
+  return Number.isFinite(number) ? number / field.storageMultiplier : storedValue;
+}
+
+function storedValue(field, value) {
+  return field.type === INTEGER && field.storageMultiplier
+    ? value * field.storageMultiplier
+    : value;
+}
+
 function displayValue(field, value) {
   if (field.type === BOOLEAN) return value ? "Включено" : "Выключено";
   if (field.type === CHOICE) return field.choices.find((choice) => choice.value === value)?.label ?? String(value ?? "");
@@ -80,7 +93,7 @@ export function serverConfigurationEntries(config, pending = {}) {
   return SERVER_CONFIGURATION_FIELDS.map((field) => {
     const configured = getAtPath(config, field.key);
     const hasPending = Object.hasOwn(pending, field.key);
-    const value = hasPending ? pending[field.key] : configured;
+    const value = inputValue(field, hasPending ? pending[field.key] : configured);
     const entry = {
       key: field.key,
       name: field.name,
@@ -120,7 +133,7 @@ export async function updateServerConfiguration({
     if (field.environment && String(environment[field.environment] ?? "").trim()) {
       throw new Error(`«${field.name}» задан через ${field.environment}; измените переменную окружения`);
     }
-    normalized[key] = normalizeValue(field, value);
+    normalized[key] = storedValue(field, normalizeValue(field, value));
   }
 
   let raw;

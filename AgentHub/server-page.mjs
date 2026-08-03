@@ -126,6 +126,14 @@ export function serverPageSnapshot({
           ? "Отдельное мобильное приложение без Telegram."
           : "Android-приложение отключено.",
       },
+      {
+        id: "codex-context-cleanup",
+        name: "Очистка контекста Codex",
+        enabled: config?.components?.codexContextCleanup === true,
+        note: config?.components?.codexContextCleanup === true
+          ? "Встроена в свёртку HUB; фоновый проход страхует отложенные rollout-файлы."
+          : "Очистка дубликатов изображений отключена.",
+      },
     ],
     configuration: serverConfigurationEntries(config, pendingConfiguration),
   };

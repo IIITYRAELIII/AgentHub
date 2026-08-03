@@ -15,11 +15,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-COMPONENTS = ("telegram", "mini-app", "android-app")
+COMPONENTS = ("telegram", "mini-app", "android-app", "codex-context-cleanup")
 LEGACY_PROFILE_COMPONENTS = {
-    "full": {"telegram": True, "miniApp": True, "androidApp": True},
-    "telegram": {"telegram": True, "miniApp": False, "androidApp": False},
-    "journal": {"telegram": False, "miniApp": False, "androidApp": False},
+    "full": {"telegram": True, "miniApp": True, "androidApp": True, "codexContextCleanup": False},
+    "telegram": {"telegram": True, "miniApp": False, "androidApp": False, "codexContextCleanup": False},
+    "journal": {"telegram": False, "miniApp": False, "androidApp": False, "codexContextCleanup": False},
 }
 SWAP_TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
 
@@ -34,10 +34,16 @@ def resolve_components(
 ) -> dict[str, bool]:
     raw_components = existing.get("components")
     if isinstance(raw_components, dict):
+        legacy_cleanup = existing.get("codexRolloutContext")
         components = {
             "telegram": raw_components.get("telegram") is True,
             "miniApp": raw_components.get("miniApp") is True,
             "androidApp": raw_components.get("androidApp") is True,
+            "codexContextCleanup": (
+                raw_components.get("codexContextCleanup") is True
+                if "codexContextCleanup" in raw_components
+                else isinstance(legacy_cleanup, dict) and legacy_cleanup.get("enabled") is True
+            ),
         }
     else:
         selected_profile = legacy_profile or str(existing.get("profile", "")).strip().lower()
@@ -46,13 +52,22 @@ def resolve_components(
                 LEGACY_PROFILE_COMPONENTS.get(selected_profile, LEGACY_PROFILE_COMPONENTS["full"])
             )
         elif fresh_install:
-            components = {"telegram": False, "miniApp": False, "androidApp": False}
+            components = {
+                "telegram": False,
+                "miniApp": False,
+                "androidApp": False,
+                "codexContextCleanup": False,
+            }
         else:
             components = dict(LEGACY_PROFILE_COMPONENTS["full"])
+        legacy_cleanup = existing.get("codexRolloutContext")
+        if isinstance(legacy_cleanup, dict) and legacy_cleanup.get("enabled") is True:
+            components["codexContextCleanup"] = True
     component_names = {
         "telegram": "telegram",
         "mini-app": "miniApp",
         "android-app": "androidApp",
+        "codex-context-cleanup": "codexContextCleanup",
     }
     for name in enabled:
         components[component_names[name]] = True
@@ -245,9 +260,12 @@ def apply_rollout_image_cleanup_choice(config: dict, choice: str | None) -> dict
         return config
     current = config.get("codexRolloutContext")
     settings = dict(current) if isinstance(current, dict) else {}
-    settings["enabled"] = choice == "enabled"
-    settings.setdefault("scanIntervalSeconds", 15 * 60)
-    return {**config, "codexRolloutContext": settings}
+    enabled = choice == "enabled"
+    settings["enabled"] = enabled
+    settings.setdefault("scanIntervalSeconds", 30 * 60)
+    components = dict(config.get("components") or {})
+    components["codexContextCleanup"] = enabled
+    return {**config, "components": components, "codexRolloutContext": settings}
 
 
 def request_safe_restart() -> None:

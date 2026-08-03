@@ -24,6 +24,15 @@ test("modern compaction item lifecycle completes a manual request without changi
   assert.equal(observed.origin, "manual");
   assert.equal(observed.itemId, "item-1");
   now += 1_000;
+  const cleaning = tracker.beginCleanup("thread-1", {
+    turnId: "turn-1",
+    itemId: "item-1",
+    compactedAt: now,
+  });
+  assert.equal(cleaning.status, "running");
+  assert.equal(cleaning.stage, "cleaning-images");
+  assert.equal(tracker.isRunning("thread-1"), true);
+  now += 1_000;
   const completed = tracker.complete("thread-1", {
     turnId: "turn-1",
     itemId: "item-1",
@@ -31,6 +40,7 @@ test("modern compaction item lifecycle completes a manual request without changi
   });
   assert.equal(completed.id, "manual-compaction");
   assert.equal(completed.status, "completed");
+  assert.equal(completed.stage, "completed");
   assert.equal(tracker.isRunning("thread-1"), false);
   assert.equal(tracker.isManualTurn("thread-1", "turn-1"), true);
   assert.equal(tracker.isManualTurn("thread-1", "turn-other"), false);

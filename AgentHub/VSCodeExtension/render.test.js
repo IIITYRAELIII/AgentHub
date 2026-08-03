@@ -1033,6 +1033,8 @@ test("manual context compaction reports completion and stays on the fast refresh
   assert.match(client, /compactionContextLabel\(context\)/u);
   assert.match(client, /task\.running \|\| task\.context\?\.compacting/u);
   assert.match(app, /context\.compacting \? "↻" : context\.usagePending \? "…"/u);
+  assert.match(app, /context\.compaction\?\.stage === "cleaning-images"/u);
+  assert.match(app, /Удаляются дубликаты изображений/u);
   assert.match(app, /toggleAttribute\("data-compacting"/u);
   assert.match(styles, /context-compaction-spin/u);
 });

@@ -218,3 +218,37 @@ test("automatic sanitizer processes only eligible rollout files", async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].rolloutPath, "large.jsonl");
 });
+
+test("targeted sanitizer processes only the rollout selected by a completed compaction", async () => {
+  const calls = [];
+  const sanitizer = new CodexRolloutContextSanitizer({
+    minReclaimBytes: 0,
+    analyze: async (rolloutPath) => ({
+      rolloutPath,
+      stable: true,
+      reclaimedBytes: 500,
+      removedImageCount: 2,
+    }),
+    sanitize: async (rolloutPath, options) => {
+      calls.push(rolloutPath);
+      return { ...options.analysis, applied: true };
+    },
+    idleState: async () => ({ idle: true, reason: "test" }),
+    logger: { log() {}, warn() {} },
+  });
+
+  const result = await sanitizer.runForRollout("thread-selected.jsonl");
+
+  assert.equal(result.applied, true);
+  assert.deepEqual(calls, ["thread-selected.jsonl"]);
+});
+
+test("targeted sanitizer defers while a periodic pass owns the cleanup lock", async () => {
+  const sanitizer = new CodexRolloutContextSanitizer({ logger: { log() {}, warn() {} } });
+  sanitizer.running = true;
+
+  const result = await sanitizer.runForRollout("thread-selected.jsonl");
+
+  assert.equal(result.applied, false);
+  assert.equal(result.reason, "sanitizer-busy");
+});

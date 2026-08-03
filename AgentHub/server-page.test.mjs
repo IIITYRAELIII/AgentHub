@@ -48,11 +48,13 @@ test("Agent Hub autostart enable installs and disable removes only Hub shortcut"
 test("server page snapshot excludes secrets and absolute filesystem paths", () => {
   const snapshot = serverPageSnapshot({
     config: {
-      components: { telegram: true, miniApp: true, androidApp: true },
+      components: {
+        telegram: true, miniApp: true, androidApp: true, codexContextCleanup: true,
+      },
       miniApp: { enabled: true, worker: { enabled: true } },
       autoApproveOnStart: true,
       guardConcurrentRepositoryWrites: true,
-      codexRolloutContext: { enabled: true },
+      codexRolloutContext: { enabled: true, scanIntervalSeconds: 1800 },
       codexRpcTimeoutSeconds: 30,
       deferredInputTtlHours: 168,
       progressStartDelayMs: 500,
@@ -85,6 +87,7 @@ test("server page snapshot excludes secrets and absolute filesystem paths", () =
     { id: "telegram", name: "Telegram Bot", enabled: true },
     { id: "telegram-mini-app", name: "Telegram Mini App", enabled: true },
     { id: "android-app", name: "Android App", enabled: true },
+    { id: "codex-context-cleanup", name: "Очистка контекста Codex", enabled: true },
   ]);
   assert.equal(snapshot.components.some((component) => component.id === "worker"), false);
 });

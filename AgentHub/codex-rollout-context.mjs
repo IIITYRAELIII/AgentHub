@@ -343,6 +343,58 @@ export class CodexRolloutContextSanitizer {
     this.running = false;
   }
 
+  async sanitizeOne(rolloutPath, { info = null } = {}) {
+    if (!this.enabled) return { rolloutPath, applied: false, reason: "disabled" };
+    if (info && info.size < this.minReclaimBytes) {
+      return { rolloutPath, applied: false, reason: "below-threshold" };
+    }
+    const idle = await this.idleState(rolloutPath);
+    if (!idle.idle) {
+      return {
+        rolloutPath,
+        applied: false,
+        reason: idle.reason,
+        idle,
+      };
+    }
+    const analysis = await this.analyze(rolloutPath, {
+      keepRecentImages: this.keepRecentImages,
+    });
+    if (analysis.reclaimedBytes < this.minReclaimBytes) {
+      return { ...analysis, applied: false, reason: "below-threshold" };
+    }
+    const result = await this.sanitize(rolloutPath, {
+      keepRecentImages: this.keepRecentImages,
+      minReclaimBytes: this.minReclaimBytes,
+      analysis,
+      idleState: this.idleState,
+    });
+    if (result.applied) {
+      this.logger.log(
+        `Sanitized Codex rollout context ${path.basename(rolloutPath)}: `
+          + `${result.removedImageCount} duplicate image(s), `
+          + `${Math.round(result.reclaimedBytes / 1024)} KiB reclaimed.`,
+      );
+    }
+    return result;
+  }
+
+  async runForRollout(rolloutPath) {
+    if (!this.enabled) return { rolloutPath, applied: false, reason: "disabled" };
+    if (this.running) return { rolloutPath, applied: false, reason: "sanitizer-busy" };
+    this.running = true;
+    try {
+      return await this.sanitizeOne(rolloutPath);
+    } catch (error) {
+      this.logger.warn(
+        `Cannot sanitize Codex rollout context ${path.basename(rolloutPath)}: ${error.message}`,
+      );
+      return { rolloutPath, applied: false, reason: "error", error };
+    } finally {
+      this.running = false;
+    }
+  }
+
   async runOnce() {
     if (!this.enabled || this.running) return { applied: 0, skipped: 0, reclaimedBytes: 0 };
     this.running = true;
@@ -352,37 +404,12 @@ export class CodexRolloutContextSanitizer {
       for (const { rolloutPath, info } of rollouts.slice(0, this.maxFilesPerPass)) {
         if (info.size < this.minReclaimBytes) continue;
         try {
-          const idle = await this.idleState(rolloutPath);
-          if (!idle.idle) {
-            summary.skipped += 1;
-            summary.results.push({
-              rolloutPath,
-              applied: false,
-              reason: idle.reason,
-              idle,
-            });
-            continue;
-          }
-          const analysis = await this.analyze(rolloutPath, {
-            keepRecentImages: this.keepRecentImages,
-          });
-          if (analysis.reclaimedBytes < this.minReclaimBytes) continue;
-          const result = await this.sanitize(rolloutPath, {
-            keepRecentImages: this.keepRecentImages,
-            minReclaimBytes: this.minReclaimBytes,
-            analysis,
-            idleState: this.idleState,
-          });
+          const result = await this.sanitizeOne(rolloutPath, { info });
           summary.results.push(result);
           if (result.applied) {
             summary.applied += 1;
             summary.reclaimedBytes += result.reclaimedBytes;
-            this.logger.log(
-              `Sanitized Codex rollout context ${path.basename(rolloutPath)}: `
-                + `${result.removedImageCount} duplicate image(s), `
-                + `${Math.round(result.reclaimedBytes / 1024)} KiB reclaimed.`,
-            );
-          } else {
+          } else if (result.reason !== "below-threshold") {
             summary.skipped += 1;
           }
         } catch (error) {

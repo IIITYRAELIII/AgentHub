@@ -9,7 +9,8 @@ test("server configuration exposes only its editable non-secret fields", () => {
   const entries = serverConfigurationEntries({
     autoApproveOnStart: true,
     guardConcurrentRepositoryWrites: false,
-    codexRolloutContext: { enabled: true },
+    components: { codexContextCleanup: true },
+    codexRolloutContext: { scanIntervalSeconds: 1800 },
     codexSandboxMode: "workspace-write",
     codexRpcTimeoutSeconds: 30,
     deferredInputTtlHours: 168,
@@ -18,7 +19,7 @@ test("server configuration exposes only its editable non-secret fields", () => {
     logMaxFiles: 5,
     token: "secret",
   }, { logMaxFiles: 7 });
-  assert.equal(entries.length, 9);
+  assert.equal(entries.length, 10);
   assert.equal(JSON.stringify(entries).includes("secret"), false);
   assert.deepEqual(entries.find((entry) => entry.key === "logMaxFiles"), {
     key: "logMaxFiles", name: "Хранение журналов", type: "integer", value: 7,
@@ -31,18 +32,22 @@ test("server configuration exposes only its editable non-secret fields", () => {
     { value: "workspace-write", label: "Только рабочая папка" },
     { value: "danger-full-access", label: "Полный доступ" },
   ]);
+  const cleanupInterval = entries.find((entry) => entry.key === "codexRolloutContext.scanIntervalSeconds");
+  assert.equal(cleanupInterval?.value, 30);
+  assert.equal(cleanupInterval?.display, "30 мин");
 });
 
 test("server configuration persists only validated whitelisted values", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-server-config-"));
   const configPath = path.join(directory, "config.json");
   context.after(() => rm(directory, { recursive: true, force: true }));
-  await writeFile(configPath, JSON.stringify({ telegramBotToken: "secret", codexRolloutContext: { enabled: false }, unrelated: 1 }), "utf8");
+  await writeFile(configPath, JSON.stringify({ telegramBotToken: "secret", components: { codexContextCleanup: false }, codexRolloutContext: {}, unrelated: 1 }), "utf8");
   const result = await updateServerConfiguration({
     configPath,
     changes: {
       autoApproveOnStart: true,
-      "codexRolloutContext.enabled": true,
+      "components.codexContextCleanup": true,
+      "codexRolloutContext.scanIntervalSeconds": 45,
       codexSandboxMode: "danger-full-access",
       logMaxFiles: "8",
     },
@@ -51,14 +56,16 @@ test("server configuration persists only validated whitelisted values", async (c
   });
   assert.deepEqual(result, {
     autoApproveOnStart: true,
-    "codexRolloutContext.enabled": true,
+    "components.codexContextCleanup": true,
+    "codexRolloutContext.scanIntervalSeconds": 2700,
     codexSandboxMode: "danger-full-access",
     logMaxFiles: 8,
   });
   const saved = JSON.parse(await readFile(configPath, "utf8"));
   assert.equal(saved.telegramBotToken, "secret");
   assert.equal(saved.unrelated, 1);
-  assert.deepEqual(saved.codexRolloutContext, { enabled: true });
+  assert.deepEqual(saved.components, { codexContextCleanup: true });
+  assert.deepEqual(saved.codexRolloutContext, { scanIntervalSeconds: 2700 });
   assert.equal(saved.codexSandboxMode, "danger-full-access");
   assert.equal(saved.logMaxFiles, 8);
   await assert.rejects(

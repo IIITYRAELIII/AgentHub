@@ -24,6 +24,7 @@ export class ContextCompactionTracker {
     clock = () => Date.now(),
     idFactory = randomUUID,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    cleanupTimeoutMs = timeoutMs,
     maxEntries = DEFAULT_MAX_ENTRIES,
     setTimer = setTimeout,
     clearTimer = clearTimeout,
@@ -32,6 +33,7 @@ export class ContextCompactionTracker {
     this.clock = clock;
     this.idFactory = idFactory;
     this.timeoutMs = timeoutMs;
+    this.cleanupTimeoutMs = cleanupTimeoutMs;
     this.maxEntries = maxEntries;
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
@@ -79,6 +81,7 @@ export class ContextCompactionTracker {
         id: String(itemId ?? "").trim() || this.idFactory(),
         origin: origin === "manual" ? "manual" : "automatic",
         status: "running",
+        stage: "compacting",
         turnId: String(turnId ?? "").trim() || null,
         itemId: String(itemId ?? "").trim() || null,
         startedAt: normalizedTimestamp(startedAt, now),
@@ -86,6 +89,33 @@ export class ContextCompactionTracker {
       };
     this.store(key, record);
     this.scheduleTimeout(key, record.id);
+    return record;
+  }
+
+  beginCleanup(threadId, {
+    turnId = null,
+    itemId = null,
+    compactedAt = null,
+  } = {}) {
+    const key = normalizedThreadId(threadId);
+    if (!key) return null;
+    const now = new Date(this.clock()).toISOString();
+    const existing = this.entries.get(key) ?? this.begin(key, {
+      origin: "automatic",
+      turnId,
+      itemId,
+    });
+    const record = {
+      ...existing,
+      status: "running",
+      stage: "cleaning-images",
+      turnId: String(turnId ?? existing?.turnId ?? "").trim() || null,
+      itemId: String(itemId ?? existing?.itemId ?? "").trim() || null,
+      compactedAt: normalizedTimestamp(compactedAt, now),
+      completedAt: null,
+    };
+    this.store(key, record);
+    this.scheduleTimeout(key, record.id, this.cleanupTimeoutMs);
     return record;
   }
 
@@ -105,6 +135,7 @@ export class ContextCompactionTracker {
         startedAt: now,
       }),
       status: "completed",
+      stage: "completed",
       turnId: String(turnId ?? existing?.turnId ?? "").trim() || null,
       itemId: String(itemId ?? existing?.itemId ?? "").trim() || null,
       completedAt: normalizedTimestamp(completedAt, now),
@@ -140,7 +171,7 @@ export class ContextCompactionTracker {
     }
   }
 
-  scheduleTimeout(key, expectedId) {
+  scheduleTimeout(key, expectedId, timeoutMs = this.timeoutMs) {
     this.cancelTimeout(key);
     const timer = this.setTimer(() => {
       this.timers.delete(key);
@@ -152,7 +183,7 @@ export class ContextCompactionTracker {
         completedAt: new Date(this.clock()).toISOString(),
       });
       this.notifySettled(key, this.entries.get(key));
-    }, this.timeoutMs);
+    }, timeoutMs);
     timer?.unref?.();
     this.timers.set(key, timer);
   }
