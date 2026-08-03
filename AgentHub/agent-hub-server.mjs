@@ -634,6 +634,7 @@ const codexTerminalAudit = new CodexTerminalAudit({
   reconcile: reconcileRecentCodexTerminalTurn,
   discoverHistoricalThreads: () => discoverCodexRollouts(),
   scanHistoricalFile: scanCodexHistoricalRolloutInWorker,
+  shouldRunHistoricalBackfill: () => taskRuns.size === 0 && !restartRequest,
 });
 const turnTemporaryFiles = new Map();
 const turnSpeechButtons = new Map();

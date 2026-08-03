@@ -77,7 +77,6 @@ export function createDesktopMessageController({
       message: reason === "steer-unavailable"
         ? "Текущий ход уже нельзя изменить; сообщение сохранено в очереди."
         : "Сообщение поставлено в очередь и будет отправлено после текущего хода.",
-      snapshot: await snapshot(),
     };
   }
 
@@ -126,7 +125,6 @@ export function createDesktopMessageController({
             turnId: String(result?.turnId ?? exactTurnId),
             clientUserMessageId,
             message: "Сообщение добавлено в текущий ход.",
-            snapshot: await snapshot(),
           };
         } catch (error) {
           if (!activeTurnNotSteerable(error)) throw error;
@@ -170,7 +168,6 @@ export function createDesktopMessageController({
         message: externalActivity.state === "unknown"
           ? "Сообщение сохранено: нельзя надёжно определить, завершён ли предыдущий ход."
           : "Сообщение сохранено: выберите новую задачу, очередь или отмену справа.",
-        snapshot: await snapshot(),
       };
     }
     // A newly submitted message must not jump ahead of durable inputs that
@@ -201,7 +198,6 @@ export function createDesktopMessageController({
         clientUserMessageId,
         reason: "repository-conflict",
         message: `Сообщение сохранено: задача «${repositoryConflict.taskTitle ?? "Без названия"}» уже изменяет тот же Git-репозиторий.`,
-        snapshot: await snapshot(),
       };
     }
     const run = await beginRun(input, { ...target, clientUserMessageId });
@@ -215,7 +211,6 @@ export function createDesktopMessageController({
       threadId: run.threadId,
       turnId: run.turnId,
       clientUserMessageId,
-      snapshot: await snapshot(),
     };
   }
 
@@ -247,7 +242,7 @@ export function createDesktopMessageController({
     };
     const fingerprint = await messageRequestFingerprint({ text, attachments, followUpMode });
     const previous = receipts.find(receiptIdentity, fingerprint);
-    if (previous) return { ...previous, snapshot: await snapshot() };
+    if (previous) return previous;
 
     const receiptKey = messageReceiptKey(receiptIdentity);
     const inflight = inflightReceipts.get(receiptKey);
@@ -258,7 +253,7 @@ export function createDesktopMessageController({
         throw error;
       }
       const result = await inflight.promise;
-      return { ...result, snapshot: await snapshot() };
+      return result;
     }
 
     const promise = (async () => {
@@ -278,7 +273,7 @@ export function createDesktopMessageController({
     inflightReceipts.set(receiptKey, { fingerprint, promise });
     try {
       const result = await promise;
-      return { ...result, snapshot: await snapshot() };
+      return result;
     } finally {
       inflightReceipts.delete(receiptKey);
     }

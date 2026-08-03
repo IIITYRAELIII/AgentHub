@@ -139,6 +139,7 @@ export class CodexTerminalAudit {
     reconcile,
     discoverHistoricalThreads = null,
     scanHistoricalFile = null,
+    shouldRunHistoricalBackfill = () => true,
     statFile = stat,
     scanFile = scanCodexTerminalEventsFromOffset,
     now = Date.now,
@@ -161,6 +162,7 @@ export class CodexTerminalAudit {
     this.reconcile = reconcile;
     this.discoverHistoricalThreads = discoverHistoricalThreads;
     this.scanHistoricalFile = scanHistoricalFile;
+    this.shouldRunHistoricalBackfill = shouldRunHistoricalBackfill;
     this.statFile = statFile;
     this.scanFile = scanFile;
     this.now = now;
@@ -469,6 +471,9 @@ export class CodexTerminalAudit {
   async #runHistoricalSubagentBackfill() {
     const backfill = this.historicalSubagentBackfill;
     if (!backfill.pending) return false;
+    // Historical migration is maintenance work.  Never let it contend with
+    // interactive turns for the App Server, SQLite writer or event loop.
+    if (!this.shouldRunHistoricalBackfill()) return false;
     let changed = await this.#initializeHistoricalSubagentBackfill();
     const item = backfill.queue[0];
     if (!item) {

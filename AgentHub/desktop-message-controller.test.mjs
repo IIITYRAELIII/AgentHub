@@ -76,6 +76,25 @@ test("desktop message controller deduplicates an in-flight and persisted client 
   assert.equal(persistCount, 1);
 });
 
+test("desktop message acknowledgement does not wait for a full snapshot", async () => {
+  let snapshotCalls = 0;
+  const messages = controller({
+    snapshot: async () => {
+      snapshotCalls += 1;
+      throw new Error("slow snapshot must not delay acknowledgement");
+    },
+  });
+
+  const result = await messages.sendMessage({
+    text: "быстро подтвердить",
+    clientUserMessageId: "message-fast-ack",
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(snapshotCalls, 0);
+  assert.equal("snapshot" in result, false);
+});
+
 test("desktop message controller queues a follow-up for an active task", async () => {
   const scheduled = [];
   let deferredOptions = null;

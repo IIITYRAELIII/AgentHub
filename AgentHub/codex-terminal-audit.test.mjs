@@ -793,6 +793,39 @@ test("historical rollout backfill scans each file once and reuses complete turn 
   assert.equal(audit.snapshot().historicalSubagentBackfill.processedTurns, 1);
 });
 
+test("historical rollout backfill yields while interactive work is active", async () => {
+  const scans = [];
+  let interactive = true;
+  const audit = new CodexTerminalAudit({
+    listPage: async () => ({ data: [], nextCursor: null }),
+    readThread: async () => ({ thread: { turns: [] } }),
+    resolveProject: async () => "C:\\Project",
+    discoverHistoricalThreads: async () => [{
+      id: "historical-thread",
+      cwd: "C:\\Project",
+      path: "historical-thread.jsonl",
+      updatedAt: "2026-07-01T00:00:00.000Z",
+    }],
+    statFile: async () => ({ size: 10, mtimeMs: Date.parse("2026-07-01T00:00:00.000Z") }),
+    scanHistoricalFile: async (thread) => {
+      scans.push(thread.path);
+      return { turns: [] };
+    },
+    shouldRunHistoricalBackfill: () => !interactive,
+    reconcile: async () => true,
+  });
+  audit.restore({ version: 7, completedThrough: "2026-08-03T11:58:00.000Z" });
+
+  await audit.run();
+  assert.deepEqual(scans, []);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.pending, true);
+
+  interactive = false;
+  await audit.run();
+  assert.deepEqual(scans, ["historical-thread.jsonl"]);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
+});
+
 test("historical subagent backfill records a stale unterminated turn as aborted", async () => {
   const recovered = [];
   const audit = new CodexTerminalAudit({
