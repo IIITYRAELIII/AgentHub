@@ -7,6 +7,7 @@ try {
   const rolloutCreatedAt = uuidV7TimestampMs(workerData.rolloutId);
   const result = await scanCodexHistoricalRollout(workerData.transcriptPath);
   const turns = result.turns.flatMap((turn) => {
+    if (turn.compactionOnly === true) return [];
     const createdAt = uuidV7TimestampMs(turn.turnId);
     if (rolloutCreatedAt > 0 && createdAt > 0 && createdAt < rolloutCreatedAt) return [];
     const {

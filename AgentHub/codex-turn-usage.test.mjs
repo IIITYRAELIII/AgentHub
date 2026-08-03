@@ -245,6 +245,39 @@ test("subagent rollout discovery includes active and archived sessions", async (
   assert.deepEqual(result.map((value) => value.threadId).sort(), ["active", "archived"]);
 });
 
+test("historical rollout flags a manual context compaction as non-turn activity", async () => {
+  const turnId = "019fc8f7-7215-7760-97a5-13412d91920a";
+  const text = [
+    line({ timestamp: "2026-08-03T18:51:32.555Z", type: "event_msg", payload: {
+      type: "task_started", turn_id: turnId,
+    } }),
+    // Replacement history belongs to earlier turns; it must not turn this
+    // synthetic compaction lifecycle into a final assistant answer.
+    line({ timestamp: "2026-08-03T18:52:03.284Z", type: "compacted", payload: {
+      replacement_history: [{
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Старый ответ" }],
+        internal_chat_message_metadata_passthrough: { turn_id: "old-turn" },
+      }],
+    } }),
+  ].join("\n");
+
+  const result = await scanCodexHistoricalRollout("fixture.jsonl", {
+    createReadStreamImpl: () => Readable.from([text]),
+  });
+
+  assert.deepEqual(result.turns.map((turn) => ({
+    turnId: turn.turnId,
+    finalAnswer: turn.finalAnswer,
+    compactionOnly: turn.compactionOnly,
+  })), [{
+    turnId,
+    finalAnswer: "",
+    compactionOnly: true,
+  }]);
+});
+
 test("subagent activity identifies its exact parent turn", async () => {
   const parentTurnId = "019f1ec8-8de7-7aa3-92b6-045036561c8e";
   const childThreadId = "019f1ec9-8de7-7aa3-92b6-045036561c8e";

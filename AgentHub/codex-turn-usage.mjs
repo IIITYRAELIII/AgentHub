@@ -596,6 +596,8 @@ function createHistoricalTurn(turnId) {
     model: "",
     serviceTier: "default",
     status: "",
+    contextCompacted: false,
+    hasOwnTurnContent: false,
   };
 }
 
@@ -678,11 +680,25 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       touch(turn, timestamp);
     }
 
+    // A manual `thread/compact/start` creates a synthetic task_started entry
+    // in some App Server versions, followed only by this compaction marker.
+    // It has no user input and is not an agent turn, even though the
+    // replacement history contains messages from earlier real turns.
+    if (entry?.type === "compacted" && activeTurnIds.size === 1) {
+      const turn = ensureTurn([...activeTurnIds][0]);
+      if (turn) {
+        turn.contextCompacted = true;
+        touch(turn, timestamp);
+      }
+      return;
+    }
+
     const exactTurnId = entryTurnId(entry);
     const exactTurn = ensureTurn(exactTurnId);
     if (exactTurnId && ["response_item", "turn_context"].includes(String(entry?.type ?? ""))) {
       latestResponseTurnId = exactTurnId;
       exactTurn.started = true;
+      exactTurn.hasOwnTurnContent = true;
       touch(exactTurn, timestamp);
     }
     if (entry?.type === "turn_context" && exactTurn) {
@@ -791,6 +807,16 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     },
     turns: [...turns.values()].map((turn) => {
       const imageGenerationCount = turn.imageGenerationCalls.size;
+      const compactionOnly = turn.contextCompacted
+        && !turn.terminal
+        && !turn.hasOwnTurnContent
+        && !turn.prompt
+        && !turn.finalAnswer
+        && !turn.changedFiles.size
+        && !turn.patches.length
+        && !turn.mcpCalls.size
+        && !turn.spawnedSubagents.size
+        && !turn.imageGenerationCalls.size;
       return {
         ...turn,
         changedFiles: [...turn.changedFiles],
@@ -804,6 +830,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
         estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",
         model: turn.model || latestModel,
         serviceTier: turn.serviceTier || latestServiceTier,
+        compactionOnly,
       };
     }),
   };

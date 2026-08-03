@@ -34,3 +34,29 @@ test("historical rollout worker scans one file and returns its native terminal t
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("historical rollout worker excludes a manual compaction pseudo-turn", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-history-compact-"));
+  const transcriptPath = path.join(directory, "rollout.jsonl");
+  const rolloutId = "019f1ec7-8de7-7aa3-92b6-045036561c8e";
+  const turnId = "019f1ec8-8de7-7aa3-92b6-045036561c8e";
+  const lines = [
+    { type: "session_meta", payload: { id: rolloutId, cwd: "D:/work" } },
+    { timestamp: "2026-08-03T10:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+    { timestamp: "2026-08-03T10:00:01.000Z", type: "compacted", payload: {
+      replacement_history: [{
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Старый ответ" }],
+        internal_chat_message_metadata_passthrough: { turn_id: "old-turn" },
+      }],
+    } },
+  ];
+  await writeFile(transcriptPath, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, "utf8");
+  try {
+    const result = await scanCodexHistoricalRolloutInWorker({ path: transcriptPath, id: rolloutId });
+    assert.deepEqual(result.turns, []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
