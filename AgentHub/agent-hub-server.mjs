@@ -3395,15 +3395,57 @@ async function interruptCodexRun(run) {
   });
 }
 
-async function codexInterruptFailureMessage(run, error) {
+async function reconcileInactiveCodexRun(run) {
+  if (taskRuns.forTask(run) !== run) return true;
+  if (["finishing", "completed"].includes(run.status)) {
+    await completeRun(run);
+    return true;
+  }
+  try {
+    const snapshot = await readCodexTaskSnapshot(run, { fresh: true });
+    if (taskRuns.forTask(run) !== run) return true;
+    if (snapshot) {
+      const terminalSnapshot = {
+        ...snapshot,
+        active: false,
+        completed: true,
+        status: snapshot.completed ? snapshot.status : "interrupted",
+        stage: snapshot.completed
+          ? snapshot.stage ?? "Задача завершена."
+          : "Задача остановлена или неактивна.",
+      };
+      if (run.observer) await finishObservedRun(run, terminalSnapshot);
+      else await finishManagedCodexSnapshot(run, terminalSnapshot);
+    }
+  } catch (reconcileError) {
+    console.error(`Cannot reconcile inactive Codex task ${run.threadId}:`, reconcileError.message);
+  } finally {
+    if (taskRuns.forTask(run) === run) await completeRun(run);
+  }
+  return taskRuns.forTask(run) !== run;
+}
+
+async function codexInterruptFailureResult(run, error) {
   const activity = await taskExternalActivity(run);
   if (activity.state === "inactive") {
-    return "Ход уже завершён или остановлен; состояние сейчас обновится";
+    const reconciled = await reconcileInactiveCodexRun(run);
+    return {
+      accepted: reconciled,
+      message: reconciled
+        ? "Ход уже завершён или остановлен; состояние синхронизировано"
+        : "Ход уже завершён или остановлен; состояние обновляется",
+    };
   }
   if (run.observer || activeTurnMissing(error)) {
-    return "Ход выполняется в другом окне Codex. Остановите его в том окне; наблюдение Agent Hub сохранено";
+    return {
+      accepted: false,
+      message: "Ход выполняется в другом окне Codex. Остановите его в том окне; наблюдение Agent Hub сохранено",
+    };
   }
-  return "Codex не подтвердил остановку. Наблюдение и блокировка задачи сохранены";
+  return {
+    accepted: false,
+    message: "Codex не подтвердил остановку. Наблюдение и блокировка задачи сохранены",
+  };
 }
 
 async function desktopCancelRun(params) {
@@ -3416,7 +3458,7 @@ async function desktopCancelRun(params) {
       return { accepted: true, message: "Остановка Codex запрошена" };
     } catch (error) {
       console.warn(`Cannot interrupt Codex task ${run.threadId}:`, error.message);
-      return { accepted: false, message: await codexInterruptFailureMessage(run, error) };
+      return codexInterruptFailureResult(run, error);
     }
   }
   if (run.process || processIsAlive(run.pid)) {
@@ -8463,11 +8505,11 @@ async function handleTelegramCommand(message, text) {
         }
       }
       if (run.provider === "codex" && interruptError) {
-        const failureMessage = await codexInterruptFailureMessage(run, interruptError);
-        setProgressStage(run, failureMessage);
+        const failure = await codexInterruptFailureResult(run, interruptError);
+        setProgressStage(run, failure.message);
         await sendRunMessage(
           run,
-          `${failureMessage}. Параллельный ход не будет запущен.`,
+          `${failure.message}. Параллельный ход не будет запущен.`,
         );
         return;
       }
@@ -8486,7 +8528,8 @@ async function handleTelegramCommand(message, text) {
       try {
         await interruptCodexRun(run);
       } catch (error) {
-        await sendRunMessage(run, await codexInterruptFailureMessage(run, error));
+        const failure = await codexInterruptFailureResult(run, error);
+        await sendRunMessage(run, failure.message);
         return;
       }
     } else if (run.process || processIsAlive(run.pid)) {

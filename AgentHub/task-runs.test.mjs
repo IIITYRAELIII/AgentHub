@@ -132,6 +132,21 @@ test("reindex follows a Claude session id assigned after startup", () => {
   assert.equal(registry.forTask(provisional), provisional);
 });
 
+test("removal clears stale indexes after a task binding changed", () => {
+  const existing = run({ id: "run-1", turnId: "turn-1" });
+  const originalBinding = { ...existing };
+  const registry = new TaskRunRegistry([existing]);
+
+  existing.projectRoot = "C:\\Work\\Moved";
+  existing.threadId = "thread-2";
+  existing.turnId = "turn-2";
+  registry.remove(existing);
+
+  assert.equal(registry.size, 0);
+  assert.equal(registry.forTask(originalBinding), null);
+  assert.equal(registry.forEvent({ turnId: "turn-1" }), null);
+});
+
 test("task keys normalize Windows project path casing", () => {
   if (process.platform !== "win32") return;
   assert.equal(

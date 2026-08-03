@@ -107,9 +107,15 @@ export class TaskRunRegistry {
     const run = typeof runOrId === "string" ? this.#byId.get(runOrId) : runOrId;
     if (!run) return null;
     this.#byId.delete(run.id);
-    const key = taskRunKey(run);
-    if (this.#byTask.get(key) === run) this.#byTask.delete(key);
-    if (run.turnId && this.#byTurn.get(run.turnId) === run) this.#byTurn.delete(run.turnId);
+    // A run can acquire its final thread/project binding after registration.
+    // Removal must therefore use object identity as the source of truth instead
+    // of trusting that the current fields still reproduce every indexed key.
+    for (const [key, indexedRun] of this.#byTask) {
+      if (indexedRun === run) this.#byTask.delete(key);
+    }
+    for (const [turnId, indexedRun] of this.#byTurn) {
+      if (indexedRun === run) this.#byTurn.delete(turnId);
+    }
     return run;
   }
 
