@@ -67,6 +67,22 @@ export function catalogTaskKey({ provider, threadId }) {
   return `${String(provider ?? "").toLowerCase()}\0${String(threadId ?? "")}`;
 }
 
+export function taskCatalogTitleSignature(entries = []) {
+  return JSON.stringify(
+    (Array.isArray(entries) ? entries : [])
+      .flatMap((entry) => {
+        const provider = String(entry?.provider ?? "").trim().toLowerCase();
+        const threadId = String(entry?.threadId ?? "").trim();
+        const projectRoot = String(entry?.projectRoot ?? "").trim();
+        const title = String(entry?.title ?? "").replace(/\s+/g, " ").trim();
+        return provider && threadId && projectRoot && title
+          ? [[normalizedPath(projectRoot), provider, threadId, title]]
+          : [];
+      })
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+  );
+}
+
 export function pinnedTaskTitle(titles, provider, threadId) {
   return String(titles?.[catalogTaskKey({ provider, threadId })] ?? "")
     .replace(/\s+/g, " ")

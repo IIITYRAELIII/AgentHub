@@ -31,6 +31,7 @@ import {
   taskExecutionRuntimeLabel,
   taskExecutionRuntimeShortLabel,
   taskOrderingActivityAtMs,
+  taskCatalogTitleSignature,
   taskCatalogCallback,
 } from "./task-catalog.mjs";
 
@@ -75,6 +76,22 @@ test("the latest Codex index title wins over stale App Server metadata", () => {
     }),
     "Agent HUB",
   );
+});
+
+test("task title signature changes only with journal-relevant task identity or title", () => {
+  const entries = [{
+    provider: "codex",
+    threadId: "thread-a",
+    projectRoot: project.path,
+    title: "Agent  Hub",
+    running: false,
+    updatedAtMs: 100,
+  }];
+  const signature = taskCatalogTitleSignature(entries);
+
+  assert.equal(taskCatalogTitleSignature([{ ...entries[0], running: true, updatedAtMs: 200 }]), signature);
+  assert.equal(taskCatalogTitleSignature([{ ...entries[0], title: "Agent Hub" }]), signature);
+  assert.notEqual(taskCatalogTitleSignature([{ ...entries[0], title: "Agent HUB" }]), signature);
 });
 
 test("codexCatalogEntry preserves persistent task metadata and active status", () => {

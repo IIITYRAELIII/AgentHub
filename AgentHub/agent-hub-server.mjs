@@ -187,6 +187,7 @@ import {
   taskExecutionRuntimeLabel,
   normalizeTaskExecutionOwner,
   taskOrderingActivityAtMs,
+  taskCatalogTitleSignature,
 } from "./task-catalog.mjs";
 import {
   codexObservedRuntimeActive,
@@ -505,6 +506,7 @@ const EXTERNAL_TASK_POLL_INTERVAL_MS = 1_500;
 const MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS = 5_000;
 const CLAUDE_OUTPUT_POLL_INTERVAL_MS = 250;
 const TASK_CATALOG_CACHE_MS = 1_500;
+const TASK_TITLE_RECONCILE_INTERVAL_MS = 5 * 60_000;
 const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
 const threadTokenTotals = new Map();
 const turnTokenUsage = new Map();
@@ -661,6 +663,8 @@ const uiContextNonce = randomUUID();
 let taskCatalog = [];
 let taskCatalogRefreshedAt = 0;
 let taskCatalogRefreshInFlight = null;
+let synchronizedTaskTitleSignature = "";
+let taskTitlesSynchronizedAt = 0;
 let workLogPricingBackfillAttempted = false;
 const claudeTranscriptAuditState = new Map();
 const taskSyncStore = new LocalTaskSyncStore({
@@ -2637,19 +2641,26 @@ async function buildTaskCatalog() {
   }
   taskCatalog = statusTaskEntries(taskCatalog, taskCatalog.length);
   if (pinnedTitlesChanged) await savePinnedTaskTitles();
-  for (const project of config.projects) {
-    await workLogUsageStore.synchronizeTaskTitlesAndProject({
-      titles: taskCatalog
-        .filter((entry) => samePath(entry.projectRoot, project.path))
-        .map((entry) => ({
-          provider: entry.provider,
-          threadId: entry.threadId,
-          taskTitle: entry.title,
-        })),
-      projectRoot: project.path,
-      journalDatabaseFile,
-      projectionProjectRoots: globalWorkLogProjectRoots,
-    });
+  const nextTaskTitleSignature = taskCatalogTitleSignature(taskCatalog);
+  const shouldSynchronizeTaskTitles = nextTaskTitleSignature !== synchronizedTaskTitleSignature
+    || Date.now() - taskTitlesSynchronizedAt >= TASK_TITLE_RECONCILE_INTERVAL_MS;
+  if (shouldSynchronizeTaskTitles) {
+    for (const project of config.projects) {
+      await workLogUsageStore.synchronizeTaskTitlesAndProject({
+        titles: taskCatalog
+          .filter((entry) => samePath(entry.projectRoot, project.path))
+          .map((entry) => ({
+            provider: entry.provider,
+            threadId: entry.threadId,
+            taskTitle: entry.title,
+          })),
+        projectRoot: project.path,
+        journalDatabaseFile,
+        projectionProjectRoots: globalWorkLogProjectRoots,
+      });
+    }
+    synchronizedTaskTitleSignature = nextTaskTitleSignature;
+    taskTitlesSynchronizedAt = Date.now();
   }
   let titleChanged = false;
   for (const run of taskRuns.values()) {

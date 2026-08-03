@@ -708,7 +708,7 @@ function prependOlderHistory(previous, older) {
   return [...uniqueOlder, ...previous];
 }
 
-function applyOpened(result, { preserveScroll = false } = {}) {
+function applyOpened(result, { preserveScroll = false, skipSnapshot = false } = {}) {
   const history = result?.history;
   if (!history) {
     applySnapshot(result?.snapshot);
@@ -734,11 +734,11 @@ function applyOpened(result, { preserveScroll = false } = {}) {
     loading: false,
   });
   rememberSelectedTaskId(id);
-  applySnapshot(result?.snapshot);
+  if (!skipSnapshot) applySnapshot(result?.snapshot);
   agentHub.selectTask(id);
   syncHistoryPagination(id);
   renderTaskMessages(id, { preserveScroll });
-  const task = result.snapshot?.tasks?.find(
+  const task = (result.snapshot ?? lastSnapshot)?.tasks?.find(
     (item) => item.provider === history.provider && item.threadId === history.threadId,
   );
   updateHistoryCatchUp(id, history, task);
@@ -1268,11 +1268,15 @@ async function refresh({ reportError = false } = {}) {
       || refreshCaughtUpHistory
     )) {
       selectedHistoryRefreshAt = Date.now();
-      applyOpened(await control("open-task", {
+      const history = await control("task-history", {
         provider: currentSelected.provider,
         threadId: currentSelected.threadId,
         limit: 20,
-      }), { preserveScroll: true });
+      });
+      applyOpened({ snapshot: lastSnapshot, history }, {
+        preserveScroll: true,
+        skipSnapshot: true,
+      });
     }
     applySnapshotConnection(snapshot);
   } catch (error) {

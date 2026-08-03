@@ -705,12 +705,16 @@ test("history refresh keeps a reader anchored and keeps the final answer at the 
   assert.match(app, /window\.requestAnimationFrame\(\(\) => \{\s*apply\(\);\s*window\.requestAnimationFrame\(apply\);/u);
 });
 
-test("chat refreshes selected external runs without moving the reader", () => {
+test("chat refreshes selected external runs without rebuilding a second snapshot", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const refresh = client.match(
+    /async function refresh\([^)]*\) \{(?<body>[\s\S]*?)\r?\n\}\r?\n\r?\nvoid runAction/u,
+  )?.groups?.body ?? "";
   assert.match(client, /const EXTERNAL_HISTORY_REFRESH_MS = 2_500/u);
-  assert.match(client, /const externalLive = sameSelection[\s\S]*currentSelected\.running[\s\S]*executionOwner/u);
-  assert.match(client, /refreshExternalHistory[\s\S]*control\("open-task"[\s\S]*preserveScroll: true/u);
-  assert.match(client, /const answerChanged = sameSelection/u);
+  assert.match(refresh, /const externalLive = sameSelection[\s\S]*currentSelected\.running[\s\S]*executionOwner/u);
+  assert.match(refresh, /refreshExternalHistory[\s\S]*control\("task-history"[\s\S]*skipSnapshot: true/u);
+  assert.doesNotMatch(refresh, /control\("open-task"/u);
+  assert.match(refresh, /const answerChanged = sameSelection/u);
 });
 
 test("chat sends with Enter on desktop and keeps Enter as a newline on phones", () => {
