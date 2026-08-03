@@ -523,6 +523,18 @@ test("«Gothic» offers nine night scenes, each with its own light", () => {
   assert.match(client, /"gothic-harbor": "rain"/u);
   assert.match(backgrounds, /@keyframes gothic-scene-fog/u);
   assert.match(backgrounds, /@keyframes gothic-scene-glow/u);
+  for (const [image, revision] of [
+    ["gothic-crypt.jpg", "913e132043c0"],
+    ["gothic-tower.jpg", "9fe3303fe558"],
+    ["gothic-harbor.jpg", "5695c8f9d3db"],
+    ["gothic-chapel.jpg", "eb55ca4ce5f6"],
+    ["gothic-keep.jpg", "93babdd33bcf"],
+    ["gothic-minental-castle.jpg", "f75d937eca90"],
+    ["gothic-minental-fortress.jpg", "a298113485c7"],
+    ["gothic-finkregh.jpg", "3e54b1cb7aed"],
+  ]) {
+    assert.match(backgrounds, new RegExp(`${image.replace(".", "\\.")}\\?v=${revision}`, "u"), image);
+  }
 });
 
 test("large Gothic scenes are decoded before replacing the visible background", () => {
