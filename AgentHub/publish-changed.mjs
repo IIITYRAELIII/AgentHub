@@ -61,7 +61,7 @@ export function classifyPublicationChanges(files) {
       plan.vscode = true;
       continue;
     }
-    if (relative === "package.json" || relative.endsWith(".mjs") || relative.endsWith(".ps1") || relative.endsWith(".vbs") || relative.endsWith(".py")) {
+    if (relative === "package.json" || relative.endsWith(".mjs") || relative.endsWith(".cjs") || relative.endsWith(".ps1") || relative.endsWith(".vbs") || relative.endsWith(".py")) {
       plan.runtime = true;
       plan.unitTests = true;
       continue;

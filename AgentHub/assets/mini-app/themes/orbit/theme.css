@@ -1,0 +1,95 @@
+/* ====================================== «Орбита»: кольца и приборный блик === */
+
+html:not([data-theme]),
+html[data-theme="orbit"] {
+  --orbit-image: url("./orbit-earth.png");
+}
+
+/* Кольца трасс остаются поверх снимка: это язык темы, и с дугой атмосферы
+   они читаются как орбиты, а не как посторонняя сетка. */
+html:not([data-theme]) body::after,
+html[data-theme="orbit"] body::after {
+  background-color: #06090f;
+  background-image:
+    repeating-radial-gradient(
+      circle at 50% -32%,
+      transparent 0 15.4rem,
+      rgba(126, 178, 240, 0.055) 15.4rem 15.55rem,
+      transparent 15.55rem 16rem
+    ),
+    radial-gradient(circle at 50% -32%, transparent 0 46rem, rgba(126, 178, 240, 0.05) 46rem 46.14rem, transparent 46.14rem),
+    var(--orbit-image);
+  background-position: center, center, 62% 42%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+html[data-theme="orbit"] .journal details[data-work-log-day-section]::before,
+html:not([data-theme]) .journal details[data-work-log-day-section]::before {
+  background: linear-gradient(90deg, transparent, var(--accent-line), transparent);
+  border-radius: var(--radius-lg);
+  content: "";
+  height: 1px;
+  inset: -1px 18% auto;
+  opacity: 0.5;
+  pointer-events: none;
+  position: absolute;
+}
+
+/* ============================ живые слои: у каждой темы своё движение === */
+
+/* Один закреплённый слой лежит над фоном (`body::after`, z-index 0) и под
+   интерфейсом. Раньше почти все темы меняли только слабую прозрачность раз в
+   30–44 секунды: технически анимация шла, визуально она выглядела статичной.
+   Теперь движение имеет различимый пространственный рисунок и более короткий
+   цикл. prefers-reduced-motion по-прежнему выключает его целиком. */
+
+/* «Орбита»: виток — дуга атмосферы медленно набирает и отдаёт свет */
+@keyframes orbit-terminator {
+  0%, 100% { opacity: 0.18; transform: translate3d(-1.5%, 1%, 0) scale(1.02); }
+  50% { opacity: 0.68; transform: translate3d(1.8%, -1%, 0) scale(1.06); }
+}
+
+html:not([data-theme]) body::before,
+html[data-theme="orbit"] body::before {
+  animation: orbit-terminator 26s ease-in-out infinite;
+  background-image:
+    radial-gradient(90% 52% at 66% 78%, rgba(150, 205, 255, 0.34), rgba(90, 150, 235, 0.1) 44%, transparent 74%);
+  background-size: cover;
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.3;
+}
+
+html[data-background-override="true"][data-background="orbit"] { --orbit-image: url("./orbit-earth.png"); --hub-background-color: #06090f; --hub-background-image: repeating-radial-gradient(circle at 50% -32%, transparent 0 15.4rem, rgba(126, 178, 240, .055) 15.4rem 15.55rem, transparent 15.55rem 16rem), radial-gradient(circle at 50% -32%, transparent 0 46rem, rgba(126, 178, 240, .05) 46rem 46.14rem, transparent 46.14rem), var(--orbit-image); --hub-background-position: center, center, 62% 42%; }
+/* Вторые сцены остальных тем. Плотность затемнения слева подобрана по замеру
+   яркости левой трети каждого кадра: у «Магмы» она 23 из 255, у «Диска» — 0,5,
+   поэтому одинаковый градиент для всех был бы либо лишним, либо слабым. */
+html[data-background-override="true"][data-background="orbit-limb"] { --hub-background-color: #05070c; --hub-background-image: linear-gradient(90deg, rgba(3, 5, 9, .34), rgba(3, 5, 9, 0) 46%), var(--orbit-limb-image, url("./orbit-limb.jpg")); --hub-background-position: center, 58% 46%; }
+
+html[data-background-override="true"][data-background="orbit-limb"] body::before,
+html[data-background-override="true"][data-background="nebula-core"] body::before,
+html[data-background-override="true"][data-background="pulsar-beam"] body::before,
+html[data-background-override="true"][data-background="blackhole-disk"] body::before,
+html[data-background-override="true"][data-background="magma-flow"] body::before,
+html[data-background-override="true"][data-background="meadow-goldenhour"] body::before {
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-size: cover !important;
+  content: "" !important;
+  mask-image: none !important;
+  mix-blend-mode: screen !important;
+  opacity: 0.4 !important;
+}
+
+html[data-background-override="true"][data-background="orbit-limb"] body::before {
+  animation: scene-glow 30s ease-in-out infinite !important;
+  background-image: radial-gradient(52% 26% at 74% 26%, rgba(126, 178, 240, 0.24), transparent 76%) !important;
+}
+
+@media (max-width: 720px) {html[data-background-override="true"][data-background="orbit-limb"] { --hub-background-position: center, 70% 40%; }
+}

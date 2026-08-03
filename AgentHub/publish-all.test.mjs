@@ -97,6 +97,19 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
     classifyPublicationChanges(["AgentHub/unclassified-artifact.bin"]).unknown,
     ["AgentHub/unclassified-artifact.bin"],
   );
+  assert.deepEqual(
+    classifyPublicationChanges(["AgentHub/theme-registry.cjs"]),
+    {
+      runtime: true,
+      worker: false,
+      android: false,
+      desktop: false,
+      vscode: false,
+      unitTests: true,
+      fullTests: false,
+      unknown: [],
+    },
+  );
   assert.deepEqual(parseChangedArguments(["--from", "abc", "--skip-restart", "--full-tests"]), {
     from: "abc",
     skipRestart: true,

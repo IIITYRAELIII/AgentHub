@@ -53,8 +53,9 @@ async function releaseFileNames(sourceRoot) {
     .filter((entry) => (
       (entry.isFile() && (
         TOP_LEVEL_FILES.has(entry.name)
-        || (entry.name.endsWith(".mjs")
+        || ((entry.name.endsWith(".mjs") || entry.name.endsWith(".cjs"))
           && !entry.name.endsWith(".test.mjs")
+          && !entry.name.endsWith(".test.cjs")
           && !entry.name.endsWith(".e2e.test.mjs")
           && entry.name !== "syntax-check.mjs")
       ))

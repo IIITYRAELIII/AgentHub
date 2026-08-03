@@ -1,0 +1,262 @@
+/* ======================================================== тема «Графит» === */
+
+html[data-theme="graphite"] {
+  --font-numeric: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas,
+    "SF Mono", "Roboto Mono", monospace;
+  --display-weight: 600;
+  --display-spacing: -0.01em;
+  --title-weight: 600;
+  --label-spacing: 0.14em;
+
+  --radius-lg: 12px;
+  --radius-md: 8px;
+  --radius-sm: 6px;
+  --radius-chip: 7px;
+  --rail-width: 2px;
+
+  --bg: oklch(0.15 0.004 260);
+  --surface-1: oklch(0.185 0.004 260);
+  --surface-2: oklch(0.21 0.004 260);
+  --surface-3: oklch(0.24 0.004 260);
+  --sunken: oklch(0.17 0.004 260);
+
+  --line: oklch(0.27 0.005 260);
+  --line-strong: oklch(0.33 0.005 260);
+
+  --card-bg: linear-gradient(oklch(0.185 0.004 260), oklch(0.185 0.004 260));
+  --card-bg-open: linear-gradient(oklch(0.19 0.004 260), oklch(0.19 0.004 260));
+  --card-texture: none;
+  --card-border: oklch(0.27 0.005 260);
+  --card-border-open: oklch(0.33 0.005 260);
+  --card-shadow: none;
+
+  --plate-bg: linear-gradient(oklch(0.21 0.004 260), oklch(0.21 0.004 260));
+  --plate-texture: none;
+  --plate-shadow: none;
+  --turn-shadow: none;
+
+  --text: oklch(0.92 0.004 260);
+  --text-soft: oklch(0.85 0.003 260);
+  --text-muted: oklch(0.55 0.006 260);
+  --text-faint: oklch(0.45 0.006 260);
+
+  --accent: oklch(0.7 0.01 260);
+  --accent-soft: oklch(0.24 0.004 260);
+  --accent-line: oklch(0.4 0.01 260);
+  --accent-glow: none;
+  --selection: oklch(0.4 0.005 260);
+  --brand-gradient: linear-gradient(oklch(0.24 0.004 260), oklch(0.24 0.004 260));
+  --brand-shadow: none;
+
+  --provider-none: oklch(0.55 0.006 260);
+  --provider-codex: oklch(0.7 0.01 260);
+  --provider-claude: oklch(0.62 0.012 45);
+
+  --ok: oklch(0.72 0.05 150);
+  --pending: oklch(0.72 0.07 60);
+
+  --dot-input: oklch(0.72 0.07 250);
+  --dot-cache: oklch(0.72 0.07 150);
+  --dot-output: oklch(0.72 0.07 60);
+  --dot-think: oklch(0.72 0.07 300);
+
+  --space-glow-a: transparent;
+  --space-glow-b: transparent;
+  --space-base: var(--bg);
+  --space-star: transparent;
+  --star-opacity: 0;
+  --decor-opacity: 0;
+}
+
+/* Разряд — единственное светлое место кадра, поэтому справа ничего не гасим:
+   затемняется только низ, где под журналом остаётся пустая полоса. Кадр
+   смещён вправо, иначе при узком окне cover срезает молнию. */
+/* Настоящая молния бьёт двойным ударом, поэтому вспышка короткая, парная и
+   редкая: раз в 17 секунд, иначе журнал невозможно читать. */
+/* =========================== «Графит»: спокойная рабочая сетка и панели === */
+
+html[data-theme="graphite"] body {
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(oklch(0.19 0.004 260 / 0.5) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(0.19 0.004 260 / 0.5) 1px, transparent 1px);
+  background-size: 56px 56px;
+}
+
+html[data-theme="graphite"] body::before,
+html[data-theme="graphite"] body::after {
+  content: none;
+}
+
+html[data-theme="graphite"] .app-header {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background:
+    linear-gradient(oklch(0.19 0.004 260 / 0.5) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(0.19 0.004 260 / 0.5) 1px, transparent 1px),
+    oklch(0.15 0.004 260 / 0.97);
+  background-size: 56px 56px;
+  border-bottom-color: oklch(0.24 0.004 260);
+}
+
+html[data-theme="graphite"] .app-header::after {
+  content: none;
+}
+
+html[data-theme="graphite"] .brand-mark {
+  border-color: oklch(0.32 0.005 260);
+  box-shadow: none;
+  color: oklch(0.78 0.01 260);
+  height: 2.5rem;
+  width: 2.5rem;
+}
+
+html[data-theme="graphite"] .theme-picker,
+html[data-theme="graphite"] .group-picker,
+html[data-theme="graphite"] .connection {
+  background: transparent;
+  border: 0;
+  padding-left: 0;
+}
+
+html[data-theme="graphite"] .theme-picker select,
+html[data-theme="graphite"] .group-picker select {
+  background:
+    linear-gradient(45deg, transparent 50%, var(--accent) 50%) calc(100% - 0.72rem) 50% / 0.28rem 0.28rem no-repeat,
+    linear-gradient(135deg, var(--accent) 50%, transparent 50%) calc(100% - 0.52rem) 50% / 0.28rem 0.28rem no-repeat,
+    oklch(0.2 0.004 260);
+  border-color: oklch(0.3 0.005 260);
+  border-radius: 8px;
+  padding-block: 0.32rem;
+}
+
+html[data-theme="graphite"] .theme-picker select {
+  border-color: oklch(0.4 0.01 260);
+}
+
+html[data-theme="graphite"] .refresh {
+  background: oklch(0.22 0.004 260);
+  border-color: oklch(0.32 0.005 260);
+  border-radius: 8px;
+  box-shadow: none;
+  padding-block: 0.42rem;
+}
+
+html[data-theme="graphite"] .journal details[data-work-log-day-section] {
+  box-shadow: none;
+}
+
+html[data-theme="graphite"] .journal div[data-work-log-task-cell]
+  > div[data-work-log-task-content] {
+  background: transparent;
+  border: 0;
+  border-left: 2px solid oklch(0.4 0.007 260);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0.18rem 0.65rem;
+}
+
+html[data-theme="graphite"] .journal div[data-work-log-task-cell]
+  > div[data-work-log-task-content]::after {
+  content: none;
+}
+
+html[data-theme="graphite"] .journal span[data-day-usage] {
+  background: oklch(0.3 0.015 260);
+  border-color: oklch(0.55 0.03 260);
+  box-shadow: none;
+}
+
+html[data-theme="graphite"] .journal span[data-day-usage-part] {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  padding-inline: 0.2rem;
+}
+
+html[data-theme="graphite"] .journal span[data-day-usage-part]::before {
+  box-shadow: none;
+}
+
+html[data-theme="graphite"] .journal summary[data-task-usage] {
+  background: transparent;
+  border-color: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--text-faint);
+  padding-inline: 0.65rem;
+}
+
+html[data-theme="graphite"] .journal summary[data-task-usage]:hover,
+html[data-theme="graphite"] .journal details[data-task-usage-details][open]
+  > summary[data-task-usage] {
+  background: transparent;
+  border-color: transparent;
+  border-radius: 0;
+  color: var(--text-muted);
+}
+
+html[data-theme="graphite"] .journal summary[data-task-usage] > [data-usage-label] {
+  font-size: 0.64rem;
+  font-weight: 650;
+  letter-spacing: var(--label-spacing);
+  text-transform: var(--label-transform);
+}
+
+html[data-theme="graphite"] .journal details[data-work-log-task-group] {
+  background-color: oklch(0.185 0.004 260);
+  background-image: none;
+  border: 1px solid oklch(0.27 0.005 260);
+  box-shadow: none;
+}
+
+html[data-theme="graphite"] .journal details[data-work-log-task-group][open]
+  > summary[data-work-log-task-group-summary] {
+  background: oklch(0.2 0.004 260);
+}
+
+html[data-theme="graphite"] .journal [data-work-log-task-overview] {
+  border: 0;
+  margin-bottom: 0.85rem;
+  padding: 0;
+}
+
+html[data-theme="graphite"] .journal [data-work-log-task-duration],
+html[data-theme="graphite"] .journal [data-work-log-task-credits] {
+  background: oklch(0.24 0.004 260);
+  border-color: oklch(0.33 0.005 260);
+  box-shadow: none;
+  font-weight: 500;
+  padding: 0.3rem 0.7rem;
+}
+
+html[data-theme="graphite"] .journal details[data-work-log-turn-details] {
+  background-color: oklch(0.21 0.004 260);
+  background-image: none;
+  border-color: oklch(0.29 0.005 260);
+  box-shadow: none;
+}
+
+html[data-theme="graphite"] .journal details[data-work-log-turn-details]:hover {
+  background-color: oklch(0.22 0.004 260);
+  border-color: oklch(0.33 0.005 260);
+  box-shadow: none;
+}
+
+html[data-theme="graphite"] .journal details[data-work-log-turn-details][open] {
+  background-color: oklch(0.21 0.004 260);
+  border-color: oklch(0.4 0.01 260);
+  box-shadow: none;
+}
+
+html[data-theme="graphite"] .journal span[data-kilo-usage],
+html[data-theme="graphite"] .journal span[data-mega-usage],
+html[data-theme="graphite"] .journal span[data-high-usage] {
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  color: oklch(0.88 0.003 260) !important;
+  padding-inline: 0;
+}
+
+html[data-background-override="true"][data-background="graphite"] { --hub-background-color: #17181a; --hub-background-image: linear-gradient(oklch(.19 .004 260 / .5) 1px, transparent 1px), linear-gradient(90deg, oklch(.19 .004 260 / .5) 1px, transparent 1px); --hub-background-size: 56px 56px; }

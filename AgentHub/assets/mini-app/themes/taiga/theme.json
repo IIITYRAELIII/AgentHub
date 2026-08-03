@@ -1,0 +1,11 @@
+{
+  "id": "taiga",
+  "name": "Rain",
+  "color": "#070c12",
+  "order": 60,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "taiga", "name": "Rain", "asset": "rainforest-night.png", "particles": "rain" },
+    { "id": "taiga-rainfall", "name": "Ливень", "asset": "taiga-rainfall.jpg", "particles": "rain" }
+  ]
+}

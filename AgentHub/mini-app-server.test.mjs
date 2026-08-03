@@ -182,7 +182,7 @@ test("Telegram Mini App initData is signed, fresh and allowlisted", () => {
 
 test("task profile compares tasks only within the same provider", async () => {
   const script = await readFile(
-    new URL("./VSCodeExtension/media/mini-app/app.js", import.meta.url),
+    new URL("./assets/mini-app/app.js", import.meta.url),
     "utf8",
   );
   assert.match(
@@ -266,8 +266,9 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "",
       "browser-device-auth.js",
       "app.js",
-      "metropolis-glass.js",
-      "storm-glass.js",
+      "themes/metropolis/metropolis-glass.js",
+      "themes/stormglass/storm-glass.js",
+      "themes/metropolis/theme.css",
       "message-lifecycle.js",
       "hub-client.js",
       "styles.css",
@@ -277,26 +278,26 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       assert.equal(response.status, 200, pathname || "/");
       assert.ok((await response.text()).length > 20);
     }
-    const blackHole = await fetch(`${address.url}blackhole-blue.png`);
+    const blackHole = await fetch(`${address.url}themes/blackhole/blackhole-blue.png`);
     assert.equal(blackHole.status, 200);
     assert.equal(blackHole.headers.get("content-type"), "image/png");
     assert.match(blackHole.headers.get("cache-control"), /immutable/u);
-    const gothicImage = await fetch(`${address.url}gothic-concrete.png`);
+    const gothicImage = await fetch(`${address.url}themes/gothic/gothic-concrete.png`);
     assert.equal(gothicImage.status, 200);
     assert.equal(gothicImage.headers.get("content-type"), "image/png");
     assert.match(gothicImage.headers.get("cache-control"), /immutable/u);
     assert.ok((await gothicImage.arrayBuffer()).byteLength > 100_000);
-    const nebulaImage = await fetch(`${address.url}nebula-veil.png`);
+    const nebulaImage = await fetch(`${address.url}themes/nebula/nebula-veil.png`);
     assert.equal(nebulaImage.status, 200);
     assert.equal(nebulaImage.headers.get("content-type"), "image/png");
     assert.match(nebulaImage.headers.get("cache-control"), /immutable/u);
     assert.ok((await nebulaImage.arrayBuffer()).byteLength > 100_000);
-    const orbitImage = await fetch(`${address.url}orbit-earth.png`);
+    const orbitImage = await fetch(`${address.url}themes/orbit/orbit-earth.png`);
     assert.equal(orbitImage.status, 200);
     assert.equal(orbitImage.headers.get("content-type"), "image/png");
     assert.match(orbitImage.headers.get("cache-control"), /immutable/u);
     assert.ok((await orbitImage.arrayBuffer()).byteLength > 100_000);
-    const meadow = await fetch(`${address.url}meadow-sun.png`);
+    const meadow = await fetch(`${address.url}themes/meadow/meadow-sun.png`);
     assert.equal(meadow.status, 200);
     assert.equal(meadow.headers.get("content-type"), "image/png");
     assert.match(meadow.headers.get("cache-control"), /immutable/u);
@@ -308,47 +309,47 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "gothic-tower.jpg", "gothic-harbor.jpg", "gothic-chapel.jpg", "gothic-keep.jpg",
       "gothic-minental-castle.jpg", "gothic-minental-fortress.jpg", "gothic-finkregh.jpg",
     ]) {
-      const lake = await fetch(`${address.url}${name}`);
+      const theme = name.startsWith("lake-") ? "lake" : "gothic";
+      const lake = await fetch(`${address.url}themes/${theme}/${name}`);
       assert.equal(lake.status, 200, name);
       assert.equal(lake.headers.get("content-type"), "image/jpeg", name);
       assert.match(lake.headers.get("cache-control"), /immutable/u, name);
       assert.ok((await lake.arrayBuffer()).byteLength > 100_000, name);
     }
-    /* Сцены фонов лежат в отдельном файле рядом с палитрами тем: без него
-       выбор фона молча остаётся без оформления. */
-    const backgrounds = await fetch(`${address.url}backgrounds.css`);
+    /* Сцены и палитра темы приходят из одной автоматически найденной папки. */
+    const backgrounds = await fetch(`${address.url}themes/lake/theme.css`);
     assert.equal(backgrounds.status, 200);
     assert.match(backgrounds.headers.get("content-type"), /text\/css/u);
     assert.match(await backgrounds.text(), /\[data-background="lake-watercolor"\]/u);
-    const storm = await fetch(`${address.url}storm-sea.png`);
+    const storm = await fetch(`${address.url}themes/stormglass/storm-sea.png`);
     assert.equal(storm.status, 200);
     assert.equal(storm.headers.get("content-type"), "image/png");
     assert.match(storm.headers.get("cache-control"), /immutable/u);
     assert.ok((await storm.arrayBuffer()).byteLength > 100_000);
-    const magma = await fetch(`${address.url}magma-crust.png`);
+    const magma = await fetch(`${address.url}themes/magma/magma-crust.png`);
     assert.equal(magma.status, 200);
     assert.equal(magma.headers.get("content-type"), "image/png");
     assert.match(magma.headers.get("cache-control"), /immutable/u);
     assert.ok((await magma.arrayBuffer()).byteLength > 100_000);
-    const pulsar = await fetch(`${address.url}pulsar-beams.png`);
+    const pulsar = await fetch(`${address.url}themes/pulsar/pulsar-beams.png`);
     assert.equal(pulsar.status, 200);
     assert.equal(pulsar.headers.get("content-type"), "image/png");
     assert.match(pulsar.headers.get("cache-control"), /immutable/u);
-    const taiga = await fetch(`${address.url}rainforest-night.png`);
+    const taiga = await fetch(`${address.url}themes/taiga/rainforest-night.png`);
     assert.equal(taiga.status, 200);
     assert.equal(taiga.headers.get("content-type"), "image/png");
     assert.match(taiga.headers.get("cache-control"), /immutable/u);
-    const metropolis = await fetch(`${address.url}metropolis-night.png`);
+    const metropolis = await fetch(`${address.url}themes/metropolis/metropolis-night.png`);
     assert.equal(metropolis.status, 200);
     assert.equal(metropolis.headers.get("content-type"), "image/png");
     assert.match(metropolis.headers.get("cache-control"), /immutable/u);
     assert.ok((await metropolis.arrayBuffer()).byteLength > 100_000);
-    const stormGlass = await fetch(`${address.url}storm-sea.png`);
+    const stormGlass = await fetch(`${address.url}themes/stormglass/storm-sea.png`);
     assert.equal(stormGlass.status, 200);
     assert.equal(stormGlass.headers.get("content-type"), "image/png");
     assert.match(stormGlass.headers.get("cache-control"), /immutable/u);
     assert.ok((await stormGlass.arrayBuffer()).byteLength > 100_000);
-    const reliquary = await fetch(`${address.url}ashen-reliquary.png`);
+    const reliquary = await fetch(`${address.url}themes/reliquary/ashen-reliquary.png`);
     assert.equal(reliquary.status, 200);
     assert.equal(reliquary.headers.get("content-type"), "image/png");
     assert.match(reliquary.headers.get("cache-control"), /immutable/u);
@@ -369,6 +370,9 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(page, /data-device-create/u);
     assert.match(page, /<option value="metropolis">Мегаполис<\/option>/u);
     assert.match(page, /data-metropolis-glass/u);
+    assert.match(page, /\/themes\/metropolis\/theme\.css/u);
+    assert.match(page, /\/themes\/stormglass\/storm-glass\.js/u);
+    assert.match(page, /data-theme-catalog/u);
     assert.match(page, /<option value="magma">Магма<\/option>/u);
     assert.match(page, /<option value="stormglass">Storm<\/option>/u);
     assert.match(page, /<option value="meadow">Луг<\/option>/u);
@@ -417,11 +421,11 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.doesNotMatch(page, /data-action="annotate"/u);
     const script = await (await fetch(`${address.url}app.js`)).text();
     assert.match(script, /agent-hub-theme/u);
-    assert.match(script, /metropolis: "#050b12"/u);
-    assert.match(script, /"taiga-drops": "metropolis"/u);
-    assert.match(script, /graphite: "#17181a"/u);
-    assert.match(script, /reliquary: "#090807"/u);
-    assert.match(script, /reliquary: \["reliquary"\]/u);
+    assert.match(script, /function readThemeCatalog/u);
+    assert.match(script, /themeCatalog\.map\(\(theme\) => \[theme\.id, theme\.color\]\)/u);
+    assert.match(script, /background\.particles/u);
+    assert.match(page, /"id":"metropolis","name":"Мегаполис","color":"#050b12"/u);
+    assert.match(page, /"aliases":\["taiga-drops"\]/u);
     assert.match(script, /agent-hub-grouping/u);
     assert.match(script, /document\.documentElement\.dataset\.theme/u);
     assert.match(script, /document\.documentElement\.dataset\.grouping/u);
@@ -489,7 +493,17 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(script, /\/api\/journal\/turn/u);
     assert.match(script, /data-lazy-day/u);
     assert.match(script, /data-lazy-turn-id/u);
-    const styles = await (await fetch(`${address.url}styles.css`)).text();
+    const themeIds = [
+      "orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "metropolis",
+      "stormglass", "magma", "meadow", "lake", "graphite", "reliquary",
+    ];
+    const styles = [
+      await (await fetch(`${address.url}styles.css`)).text(),
+      ...await Promise.all(themeIds.map(async (theme) => (
+        (await (await fetch(`${address.url}themes/${theme}/theme.css`)).text())
+          .replaceAll('url("./', 'url("/')
+      ))),
+    ].join("\n");
     assert.match(styles, /html\[data-theme="nebula"\]/u);
     assert.match(styles, /html\[data-theme="pulsar"\]/u);
     assert.match(styles, /html\[data-theme="gothic"\]/u);
@@ -499,7 +513,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(styles, /url\("\/metropolis-night\.png"\)/u);
     assert.match(styles, /url\("\/storm-sea\.png"\)/u);
     assert.match(styles, /html\[data-theme="stormglass"\]/u);
-    const glass = await (await fetch(`${address.url}metropolis-glass.js`)).text();
+    const glass = await (await fetch(`${address.url}themes/metropolis/metropolis-glass.js`)).text();
     assert.match(glass, /vec4 rainLayer/u);
     assert.match(glass, /uniform sampler2D uFogImage/u);
     assert.match(glass, /function createFogTexture/u);

@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 
@@ -13,133 +14,29 @@ import { JournalDatabase } from "./journal-database.mjs";
 
 export { extractWorkLogHtml } from "./mini-app-journal-data.mjs";
 
+const require = createRequire(import.meta.url);
+const { loadThemeRegistry, renderThemeHtml } = require("./theme-registry.cjs");
+
 const CONTENT_TYPES = new Map([
   ["/", "text/html; charset=utf-8"],
   ["/browser-device-auth.js", "text/javascript; charset=utf-8"],
   ["/message-disclosure.js", "text/javascript; charset=utf-8"],
   ["/app.js", "text/javascript; charset=utf-8"],
-  ["/metropolis-glass.js", "text/javascript; charset=utf-8"],
-  ["/storm-glass.js", "text/javascript; charset=utf-8"],
   ["/message-lifecycle.js", "text/javascript; charset=utf-8"],
   ["/hub-client.js", "text/javascript; charset=utf-8"],
   ["/styles.css", "text/css; charset=utf-8"],
-  /* сцены фонов лежат отдельно от палитр тем; без этой записи локальный
-     Mini App отдавал на них 404 и выбор фона не работал */
   ["/backgrounds.css", "text/css; charset=utf-8"],
   ["/work-log.css", "text/css; charset=utf-8"],
-  ["/blackhole-blue.png", "image/png"],
-  ["/pulsar-beams.png", "image/png"],
-  ["/gothic-concrete.png", "image/png"],
-  ["/nebula-veil.png", "image/png"],
-  ["/orbit-earth.png", "image/png"],
-  ["/magma-crust.png", "image/png"],
-  ["/metropolis-night.png", "image/png"],
-  ["/storm-sea.png", "image/png"],
-  ["/storm-flash.png", "image/png"],
-  ["/rainforest-night.png", "image/png"],
-  ["/ashen-reliquary.png", "image/png"],
-  ["/meadow-sun.png", "image/png"],
-  /* фотографические сцены в PNG весили бы впятеро больше при том же виде,
-     поэтому кадры «Gothic» и «Озера» хранятся в JPEG */
-  ["/orbit-limb.jpg", "image/jpeg"],
-  ["/nebula-core.jpg", "image/jpeg"],
-  ["/pulsar-beam.jpg", "image/jpeg"],
-  ["/blackhole-disk.jpg", "image/jpeg"],
-  ["/gothic-crypt.jpg", "image/jpeg"],
-  ["/taiga-rainfall.jpg", "image/jpeg"],
-  ["/metropolis-towers.jpg", "image/jpeg"],
-  ["/magma-flow.jpg", "image/jpeg"],
-  ["/meadow-goldenhour.jpg", "image/jpeg"],
-  ["/gothic-tower.jpg", "image/jpeg"],
-  ["/gothic-harbor.jpg", "image/jpeg"],
-  ["/gothic-chapel.jpg", "image/jpeg"],
-  ["/gothic-keep.jpg", "image/jpeg"],
-  ["/gothic-minental-castle.jpg", "image/jpeg"],
-  ["/gothic-minental-fortress.jpg", "image/jpeg"],
-  ["/gothic-finkregh.jpg", "image/jpeg"],
-  ["/lake-summer.jpg", "image/jpeg"],
-  ["/lake-watercolor.jpg", "image/jpeg"],
-  ["/lake-oil.jpg", "image/jpeg"],
 ]);
 const STATIC_FILES = new Map([
   ["/", "index.html"],
   ["/browser-device-auth.js", "browser-device-auth.js"],
   ["/message-disclosure.js", "message-disclosure.js"],
   ["/app.js", "app.js"],
-  ["/metropolis-glass.js", "metropolis-glass.js"],
-  ["/storm-glass.js", "storm-glass.js"],
   ["/message-lifecycle.js", "message-lifecycle.js"],
   ["/hub-client.js", "hub-client.js"],
   ["/styles.css", "styles.css"],
   ["/backgrounds.css", "backgrounds.css"],
-  ["/blackhole-blue.png", "blackhole-blue.png"],
-  ["/pulsar-beams.png", "pulsar-beams.png"],
-  ["/gothic-concrete.png", "gothic-concrete.png"],
-  ["/nebula-veil.png", "nebula-veil.png"],
-  ["/orbit-earth.png", "orbit-earth.png"],
-  ["/magma-crust.png", "magma-crust.png"],
-  ["/metropolis-night.png", "metropolis-night.png"],
-  ["/storm-sea.png", "storm-sea.png"],
-  ["/storm-flash.png", "storm-flash.png"],
-  ["/rainforest-night.png", "rainforest-night.png"],
-  ["/ashen-reliquary.png", "ashen-reliquary.png"],
-  ["/meadow-sun.png", "meadow-sun.png"],
-  ["/orbit-limb.jpg", "orbit-limb.jpg"],
-  ["/nebula-core.jpg", "nebula-core.jpg"],
-  ["/pulsar-beam.jpg", "pulsar-beam.jpg"],
-  ["/blackhole-disk.jpg", "blackhole-disk.jpg"],
-  ["/gothic-crypt.jpg", "gothic-crypt.jpg"],
-  ["/taiga-rainfall.jpg", "taiga-rainfall.jpg"],
-  ["/metropolis-towers.jpg", "metropolis-towers.jpg"],
-  ["/magma-flow.jpg", "magma-flow.jpg"],
-  ["/meadow-goldenhour.jpg", "meadow-goldenhour.jpg"],
-  ["/gothic-tower.jpg", "gothic-tower.jpg"],
-  ["/gothic-harbor.jpg", "gothic-harbor.jpg"],
-  ["/gothic-chapel.jpg", "gothic-chapel.jpg"],
-  ["/gothic-keep.jpg", "gothic-keep.jpg"],
-  ["/gothic-minental-castle.jpg", "gothic-minental-castle.jpg"],
-  ["/gothic-minental-fortress.jpg", "gothic-minental-fortress.jpg"],
-  ["/gothic-finkregh.jpg", "gothic-finkregh.jpg"],
-  ["/lake-summer.jpg", "lake-summer.jpg"],
-  ["/lake-watercolor.jpg", "lake-watercolor.jpg"],
-  ["/lake-oil.jpg", "lake-oil.jpg"],
-]);
-
-/* Разметка и стили обязаны быть свежими, поэтому у них no-store. Фон темы —
-   неизменяемый файл в несколько мегабайт: без долгого кэша он выкачивался бы
-   заново при каждом открытии, что заметно через Telegram-туннель. */
-const IMMUTABLE_FILES = new Set([
-  "/blackhole-blue.png",
-  "/gothic-concrete.png",
-  "/nebula-veil.png",
-  "/orbit-earth.png",
-  "/magma-crust.png",
-  "/meadow-sun.png",
-  "/metropolis-night.png",
-  "/storm-sea.png",
-  "/storm-flash.png",
-  "/pulsar-beams.png",
-  "/rainforest-night.png",
-  "/ashen-reliquary.png",
-  "/orbit-limb.jpg",
-  "/nebula-core.jpg",
-  "/pulsar-beam.jpg",
-  "/blackhole-disk.jpg",
-  "/gothic-crypt.jpg",
-  "/taiga-rainfall.jpg",
-  "/metropolis-towers.jpg",
-  "/magma-flow.jpg",
-  "/meadow-goldenhour.jpg",
-  "/gothic-tower.jpg",
-  "/gothic-harbor.jpg",
-  "/gothic-chapel.jpg",
-  "/gothic-keep.jpg",
-  "/gothic-minental-castle.jpg",
-  "/gothic-minental-fortress.jpg",
-  "/gothic-finkregh.jpg",
-  "/lake-summer.jpg",
-  "/lake-watercolor.jpg",
-  "/lake-oil.jpg",
 ]);
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -432,6 +329,7 @@ export class MiniAppServer {
   #publicAuthAttempts = new PublicAuthAttemptLimiter();
   #requireTelegramAuth;
   #server = null;
+  #themeRegistry;
   #workLogCssFile;
 
   constructor({
@@ -459,6 +357,7 @@ export class MiniAppServer {
     this.#controlHandler = typeof controlHandler === "function" ? controlHandler : null;
     this.#deviceStore = deviceStore;
     this.#assetsDirectory = path.resolve(assetsDirectory);
+    this.#themeRegistry = loadThemeRegistry(this.#assetsDirectory);
     this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
     this.#mobileUpdateDirectory = mobileUpdateDirectory
       ? path.resolve(mobileUpdateDirectory)
@@ -506,11 +405,24 @@ export class MiniAppServer {
 
   async #staticBody(pathname) {
     if (pathname === "/work-log.css") return readFile(this.#workLogCssFile, "utf8");
+    const themeResource = this.#themeRegistry.resources.get(pathname);
+    if (themeResource) {
+      return themeResource.immutable
+        ? readFile(themeResource.file)
+        : readFile(themeResource.file, "utf8");
+    }
     const file = STATIC_FILES.get(pathname);
     if (!file) return null;
     const target = path.join(this.#assetsDirectory, file);
-    // изображение читается буфером: utf8-декодирование испортило бы PNG
-    return IMMUTABLE_FILES.has(pathname) ? readFile(target) : readFile(target, "utf8");
+    const body = await readFile(target, "utf8");
+    return pathname === "/" ? renderThemeHtml(body, this.#themeRegistry) : body;
+  }
+
+  #staticDescriptor(pathname) {
+    const themeResource = this.#themeRegistry.resources.get(pathname);
+    if (themeResource) return themeResource;
+    const contentType = CONTENT_TYPES.get(pathname);
+    return contentType ? { contentType, immutable: false } : null;
   }
 
   #writeEvent(response, event, data) {
@@ -885,7 +797,8 @@ export class MiniAppServer {
       request.on("close", () => this.#clients.delete(response));
       return;
     }
-    if (!CONTENT_TYPES.has(url.pathname)) {
+    const descriptor = this.#staticDescriptor(url.pathname);
+    if (!descriptor) {
       send(response, 404, "text/plain; charset=utf-8", "Not Found\n", method);
       return;
     }
@@ -893,10 +806,10 @@ export class MiniAppServer {
       send(
         response,
         200,
-        CONTENT_TYPES.get(url.pathname),
+        descriptor.contentType,
         await this.#staticBody(url.pathname),
         method,
-        { immutable: IMMUTABLE_FILES.has(url.pathname) },
+        { immutable: descriptor.immutable },
       );
     } catch (error) {
       send(response, 500, "text/plain; charset=utf-8", `Cannot load Mini App: ${error.message}\n`, method);

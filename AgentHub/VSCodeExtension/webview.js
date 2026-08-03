@@ -109,11 +109,22 @@ function panelCss() {
   `;
 }
 
-function webviewHtml(webview, theme = "orbit") {
+function escapeHtml(value) {
+  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function webviewHtml(webview, theme = "orbit", themeCatalog = [{ id: "orbit", name: "Орбита" }]) {
   const nonce = crypto.randomBytes(16).toString("hex");
-  const initialTheme = ["orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "metropolis", "magma"].includes(theme)
+  const catalog = themeCatalog.filter((item) => /^[a-z][a-z0-9-]{0,63}$/u.test(item?.id) && item?.name);
+  const availableThemes = catalog.length ? catalog : [{ id: "orbit", name: "Орбита" }];
+  const themeIds = availableThemes.map((item) => item.id);
+  const initialTheme = themeIds.includes(theme)
     ? theme
     : "orbit";
+  const pickerMarkup = '<span class="theme-picker-label">Тема</span>'
+    + '<select data-theme-select aria-label="Тема оформления">'
+    + availableThemes.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")
+    + "</select>";
   // фон темы BlackHole — файл workspace, его адрес выдаёт сам webview
   const imageSources = [webview?.cspSource, "data:"].filter(Boolean).join(" ");
   return `<!DOCTYPE html>
@@ -131,7 +142,7 @@ function webviewHtml(webview, theme = "orbit") {
     const vscode = acquireVsCodeApi();
     const content = document.getElementById('work-log-content');
     const style = document.getElementById('work-log-style');
-    const themes = new Set(['orbit', 'nebula', 'pulsar', 'gothic', 'blackhole', 'taiga', 'metropolis', 'magma']);
+    const themes = new Set(${JSON.stringify(themeIds)});
     const persistedState = vscode.getState() || {};
     let journalRendered = false;
     let hasPersistedOpenState =
@@ -157,18 +168,7 @@ function webviewHtml(webview, theme = "orbit") {
       heading.replaceChildren(title);
       const picker = document.createElement('label');
       picker.className = 'theme-picker';
-      picker.innerHTML =
-        '<span class="theme-picker-label">Тема</span>' +
-        '<select data-theme-select aria-label="Тема оформления">' +
-          '<option value="orbit">Орбита</option>' +
-          '<option value="nebula">Туманность</option>' +
-          '<option value="pulsar">Пульсар</option>' +
-          '<option value="gothic">Gothic</option>' +
-          '<option value="blackhole">BlackHole</option>' +
-          '<option value="taiga">Rain</option>' +
-          '<option value="metropolis">Мегаполис</option>' +
-          '<option value="magma">Магма</option>' +
-        '</select>';
+      picker.innerHTML = ${JSON.stringify(pickerMarkup)};
       picker.querySelector('select').addEventListener('change', (event) => {
         applyTheme(event.target.value);
       });

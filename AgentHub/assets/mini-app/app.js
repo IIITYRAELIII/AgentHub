@@ -211,79 +211,44 @@ function syncComposerInputMode() {
 
 syncComposerInputMode();
 
-const themes = {
-  orbit: "#080b11",
-  nebula: "#0f0819",
-  pulsar: "#03151a",
-  gothic: "#060708",
-  blackhole: "#000000",
-  taiga: "#070c12",
-  metropolis: "#050b12",
-  stormglass: "#05090f",
-  magma: "#0a0605",
-  meadow: "#070d08",
-  lake: "#080d0b",
-  graphite: "#17181a",
-  reliquary: "#090807",
-};
-/* Палитра темы и сцена за интерфейсом независимы. Новый фон регистрируется
-   здесь, привязывается к своей теме ниже, а его визуальная сцена описывается
-   в backgrounds.css. */
-const backgroundNames = {
-  orbit: "Орбита", "orbit-limb": "Лимб",
-  nebula: "Туманность", "nebula-core": "Ядро",
-  pulsar: "Пульсар", "pulsar-beam": "Луч",
-  gothic: "Склеп", "gothic-crypt": "Крипта", "gothic-tower": "Башня",
-  "gothic-harbor": "Гавань", "gothic-chapel": "Часовня", "gothic-keep": "Крепость",
-  "gothic-minental-castle": "Монастырь", "gothic-minental-fortress": "Замок Миненталя",
-  "gothic-finkregh": "Финкрегх",
-  blackhole: "BlackHole", "blackhole-disk": "Диск",
-  taiga: "Rain", "taiga-rainfall": "Ливень",
-  metropolis: "Мегаполис", "metropolis-towers": "Башни",
-  stormglass: "Storm",
-  magma: "Магма", "magma-flow": "Поток",
-  meadow: "Луг", "meadow-goldenhour": "Закат",
-  lake: "Озеро", "lake-watercolor": "Озеро · акварель", "lake-oil": "Озеро · масло",
-  graphite: "Графит",
-  reliquary: "Пепельный архив",
-};
-const themeBackgrounds = Object.freeze({
-  orbit: ["orbit", "orbit-limb"],
-  nebula: ["nebula", "nebula-core"],
-  pulsar: ["pulsar", "pulsar-beam"],
-  gothic: [
-    "gothic", "gothic-crypt", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep",
-    "gothic-minental-castle", "gothic-minental-fortress", "gothic-finkregh",
-  ],
-  blackhole: ["blackhole", "blackhole-disk"],
-  taiga: ["taiga", "taiga-rainfall"],
-  metropolis: ["metropolis", "metropolis-towers"],
-  stormglass: ["stormglass"],
-  magma: ["magma", "magma-flow"],
-  meadow: ["meadow", "meadow-goldenhour"],
-  lake: ["lake", "lake-watercolor", "lake-oil"],
-  graphite: ["graphite"],
-  reliquary: ["reliquary"],
-});
-const deferredBackgroundAssets = Object.freeze({
-  "gothic-minental-castle": {
-    customProperty: "--gothic-minental-castle-image",
-    fallback: "/gothic-minental-castle.jpg",
-  },
-  "gothic-minental-fortress": {
-    customProperty: "--gothic-minental-fortress-image",
-    fallback: "/gothic-minental-fortress.jpg?v=a298113485c7",
-  },
-  "gothic-finkregh": {
-    customProperty: "--gothic-finkregh-image",
-    fallback: "/gothic-finkregh.jpg?v=3e54b1cb7aed",
-  },
-});
+function readThemeCatalog() {
+  const source = document.querySelector("[data-theme-catalog]")?.textContent ?? "";
+  const catalog = JSON.parse(source);
+  if (!Array.isArray(catalog) || !catalog.some((theme) => theme?.id === "orbit")) {
+    throw new Error("Каталог тем Agent Hub повреждён");
+  }
+  return catalog;
+}
+
+const themeCatalog = readThemeCatalog();
+const themes = Object.freeze(Object.fromEntries(themeCatalog.map((theme) => [theme.id, theme.color])));
+const backgroundNames = Object.freeze(Object.fromEntries(themeCatalog.flatMap((theme) => (
+  theme.backgrounds.map((background) => [background.id, background.name])
+))));
+const themeBackgrounds = Object.freeze(Object.fromEntries(themeCatalog.map((theme) => (
+  [theme.id, theme.backgrounds.map((background) => background.id)]
+))));
+const backgroundAssets = Object.freeze(Object.fromEntries(themeCatalog.flatMap((theme) => (
+  theme.backgrounds.filter((background) => background.assetUrl).map((background) => (
+    [background.id, background.assetUrl]
+  ))
+))));
+const deferredBackgroundAssets = new Set(themeCatalog.flatMap((theme) => (
+  theme.backgrounds.filter((background) => background.preload).map((background) => background.id)
+)));
 const backgroundAssetLoads = new Map();
 let backgroundRequestId = 0;
-const themeAliases = {
-  "taiga-drops": "metropolis",
-};
+const themeAliases = Object.freeze(Object.fromEntries(themeCatalog.flatMap((theme) => (
+  theme.aliases.map((alias) => [alias, theme.id])
+))));
+if (themeSelect) {
+  themeSelect.replaceChildren(...themeCatalog.map((theme) => {
+    const option = document.createElement("option");
+    option.value = theme.id;
+    option.textContent = theme.name;
+    return option;
+  }));
+}
 const groupings = new Set(["date", "week", "month", "task"]);
 const usageUnits = new Set(["$", "rub", "cr", "pte"]);
 const CREDITS_PER_USD = 25;
@@ -342,11 +307,11 @@ function savedTheme() {
  * а при prefers-reduced-motion слой не создаётся вообще. */
 /* Часовня получает ту же пыль, что склеп, а над гаванью идёт дождь: мокрая
    мостовая и блики на камне в кадре без него выглядят необъяснимо. */
-const PARTICLE_BACKGROUNDS = {
-  taiga: "rain", stormglass: "downpour", gothic: "motes",
-  "taiga-rainfall": "rain", "gothic-crypt": "motes", "metropolis-towers": "rain",
-  "gothic-chapel": "motes", "gothic-harbor": "rain",
-};
+const PARTICLE_BACKGROUNDS = Object.freeze(Object.fromEntries(themeCatalog.flatMap((theme) => (
+  theme.backgrounds.filter((background) => background.particles).map((background) => (
+    [background.id, background.particles]
+  ))
+))));
 let particleLayer = null;
 
 function particleCount(kind) {
@@ -824,23 +789,8 @@ function savedBackground(fallback) {
   }
 }
 
-function cssUrl(value) {
-  const match = /^url\((.*)\)$/u.exec(String(value ?? "").trim());
-  if (!match) return "";
-  const candidate = match[1].trim();
-  if (
-    candidate.length >= 2
-    && ((candidate.startsWith('"') && candidate.endsWith('"'))
-      || (candidate.startsWith("'") && candidate.endsWith("'")))
-  ) return candidate.slice(1, -1);
-  return candidate;
-}
-
 function backgroundAssetUrl(background) {
-  const asset = deferredBackgroundAssets[background];
-  if (!asset) return "";
-  const configured = cssUrl(getComputedStyle(root).getPropertyValue(asset.customProperty));
-  return configured || new URL(asset.fallback, document.baseURI).href;
+  return backgroundAssets[background] ?? "";
 }
 
 function preloadBackgroundAsset(background) {
@@ -886,7 +836,7 @@ function applyBackground(background, { persist = false } = {}) {
   const selected = normalizeBackground(root.dataset.theme, background);
   const requestId = ++backgroundRequestId;
   if (backgroundSelect) backgroundSelect.value = selected;
-  if (!deferredBackgroundAssets[selected] || typeof Image !== "function") {
+  if (!deferredBackgroundAssets.has(selected) || typeof Image !== "function") {
     commitBackground(selected, persist);
     return;
   }
@@ -5181,13 +5131,14 @@ function taskProfileAccordion(axis, group) {
 }
 
 function taskProfile(group, cohort) {
+  const comparableCohort = cohort.filter((item) => item.provider === group.provider);
   const scales = Object.fromEntries(taskProfileAxes.map((axis) => [
     axis.key,
-    profileScale(cohort.map((item) => item[axis.key])),
+    profileScale(comparableCohort.map((item) => item[axis.key])),
   ]));
   const baselines = Object.fromEntries(taskProfileAxes.map((axis) => [
     axis.key,
-    median(cohort.map((item) => item[axis.key])),
+    median(comparableCohort.map((item) => item[axis.key])),
   ]));
   const currentScores = taskProfileAxes.map((axis) => (
     profileScore(group[axis.key], scales[axis.key], axis.linear)
@@ -5205,7 +5156,8 @@ function taskProfile(group, cohort) {
   const title = document.createElement("strong");
   title.textContent = "Профиль задачи";
   const caption = document.createElement("span");
-  caption.textContent = "Относительно видимых задач журнала. Больше — не лучше, а больше по масштабу.";
+  const providerLabel = group.provider === "claude" ? "Claude" : "Codex";
+  caption.textContent = `Относительно видимых задач ${providerLabel}. Больше — не лучше, а больше по масштабу.`;
   heading.append(title, caption);
   const values = document.createElement("div");
   values.dataset.workLogTaskProfileValues = "";

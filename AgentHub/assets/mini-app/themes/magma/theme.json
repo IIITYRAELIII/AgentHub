@@ -1,0 +1,11 @@
+{
+  "id": "magma",
+  "name": "Магма",
+  "color": "#0a0605",
+  "order": 90,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "magma", "name": "Магма", "asset": "magma-crust.png" },
+    { "id": "magma-flow", "name": "Поток", "asset": "magma-flow.jpg" }
+  ]
+}

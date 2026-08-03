@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
 import { access, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 
+const require = createRequire(import.meta.url);
+const { loadThemeRegistry, renderThemeHtml } = require("../theme-registry.cjs");
 const root = path.resolve(import.meta.dirname, "..");
 const source = path.join(root, "assets", "mini-app");
 const output = path.join(import.meta.dirname, "public");
+const themeRegistry = loadThemeRegistry(source);
 
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
@@ -13,45 +17,17 @@ for (const file of [
   "browser-device-auth.js",
   "message-disclosure.js",
   "app.js",
-  "metropolis-glass.js",
-  "storm-glass.js",
   "message-lifecycle.js",
   "hub-client.js",
   "styles.css",
   "backgrounds.css",
-  "blackhole-blue.png",
-  "gothic-concrete.png",
-  "nebula-veil.png",
-  "orbit-earth.png",
-  "magma-crust.png",
-  "meadow-sun.png",
-  "orbit-limb.jpg",
-  "nebula-core.jpg",
-  "pulsar-beam.jpg",
-  "blackhole-disk.jpg",
-  "gothic-crypt.jpg",
-  "taiga-rainfall.jpg",
-  "metropolis-towers.jpg",
-  "magma-flow.jpg",
-  "meadow-goldenhour.jpg",
-  "gothic-tower.jpg",
-  "gothic-harbor.jpg",
-  "gothic-chapel.jpg",
-  "gothic-keep.jpg",
-  "gothic-minental-castle.jpg",
-  "gothic-minental-fortress.jpg",
-  "gothic-finkregh.jpg",
-  "lake-summer.jpg",
-  "lake-watercolor.jpg",
-  "lake-oil.jpg",
-  "metropolis-night.png",
-  "storm-sea.png",
-  "storm-flash.png",
-  "pulsar-beams.png",
-  "rainforest-night.png",
-  "ashen-reliquary.png",
 ]) {
   await copyFile(path.join(source, file), path.join(output, file));
+}
+for (const resource of themeRegistry.resources.values()) {
+  const target = path.join(output, ...resource.pathname.slice(1).split("/"));
+  await mkdir(path.dirname(target), { recursive: true });
+  await copyFile(resource.file, target);
 }
 await copyFile(path.join(root, "work-log.css"), path.join(output, "work-log.css"));
 await copyFile(
@@ -88,6 +64,13 @@ index = index.replace(
   `  <script src="/remote-command-idempotency.js" defer></script>\n${hubClientScript}`,
 );
 
+const themeRevisions = new Map(await Promise.all([...themeRegistry.resources].map(async ([pathname, resource]) => (
+  [pathname, createHash("sha256").update(await readFile(resource.file)).digest("hex").slice(0, 12)]
+))));
+index = renderThemeHtml(index, themeRegistry, {
+  revision: (pathname) => themeRevisions.get(pathname) ?? "",
+});
+
 for (const file of [
   "work-log.css",
   "styles.css",
@@ -95,8 +78,6 @@ for (const file of [
   "browser-device-auth.js",
   "message-disclosure.js",
   "app.js",
-  "metropolis-glass.js",
-  "storm-glass.js",
   "message-lifecycle.js",
   "remote-command-idempotency.js",
   "hub-client.js",

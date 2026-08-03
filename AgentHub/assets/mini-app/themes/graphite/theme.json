@@ -1,0 +1,10 @@
+{
+  "id": "graphite",
+  "name": "Графит",
+  "color": "#17181a",
+  "order": 120,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "graphite", "name": "Графит" }
+  ]
+}

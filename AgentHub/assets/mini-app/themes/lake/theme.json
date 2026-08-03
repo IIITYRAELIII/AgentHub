@@ -1,0 +1,12 @@
+{
+  "id": "lake",
+  "name": "Озеро",
+  "color": "#080d0b",
+  "order": 110,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "lake", "name": "Озеро", "asset": "lake-summer.jpg" },
+    { "id": "lake-watercolor", "name": "Озеро · акварель", "asset": "lake-watercolor.jpg" },
+    { "id": "lake-oil", "name": "Озеро · масло", "asset": "lake-oil.jpg" }
+  ]
+}

@@ -1,0 +1,185 @@
+html[data-theme="meadow"] {
+  --display-weight: 620;
+  --display-spacing: -0.006em;
+  --title-weight: 540;
+  --label-spacing: 0.14em;
+
+  /* всё живое округлое: набор мягче «Орбиты», но без вытянутости «Тайги» */
+  --radius-lg: 16px;
+  --radius-md: 14px;
+  --radius-sm: 11px;
+  --radius-chip: 999px;
+  --rail-width: 2px;
+
+  --bg: #070d08;
+  --surface-1: rgba(214, 240, 190, 0.032);
+  --surface-2: rgba(214, 240, 190, 0.058);
+  --surface-3: rgba(214, 240, 190, 0.1);
+  --sunken: rgba(5, 10, 6, 0.5);
+
+  --line: rgba(176, 214, 138, 0.15);
+  --line-strong: rgba(186, 222, 150, 0.29);
+
+  --card-bg: linear-gradient(180deg, rgba(14, 24, 15, 0.56), rgba(6, 12, 7, 0.64));
+  --card-bg-open: linear-gradient(180deg, rgba(14, 24, 15, 0.62), rgba(6, 12, 7, 0.7));
+  --card-texture: none;
+  --card-border: rgba(176, 214, 138, 0.18);
+  --card-border-open: rgba(159, 211, 86, 0.42);
+  --card-shadow:
+    inset 0 1px 0 rgba(214, 240, 190, 0.055),
+    0 24px 56px -34px rgba(0, 0, 0, 0.95);
+
+  --plate-bg: linear-gradient(180deg, rgba(214, 240, 190, 0.075), rgba(6, 12, 7, 0.3));
+  --plate-shadow: inset 0 1px 0 rgba(214, 240, 190, 0.07);
+  --turn-shadow: 0 0 28px -20px rgba(159, 211, 86, 0.8);
+
+  --text: #eef4e6;
+  --text-soft: #c7d3ba;
+  --text-muted: #94a487;
+  --text-faint: #6f7f65;
+
+  /* лайм, а не хвойная зелень «Тайги»: тема про солнце, а не про сумерки */
+  --accent: #9fd356;
+  --accent-soft: rgba(159, 211, 86, 0.14);
+  --accent-line: rgba(159, 211, 86, 0.44);
+  --accent-glow: 0 0 22px -10px rgba(159, 211, 86, 0.9);
+  --selection: rgba(159, 211, 86, 0.3);
+  --brand-gradient: linear-gradient(150deg, rgba(159, 211, 86, 0.32), rgba(30, 70, 35, 0.34));
+  --brand-shadow: 0 0 24px -10px rgba(159, 211, 86, 0.85);
+
+  /* провайдеры уводим из зелени в воду и охру, иначе рельсы теряются на лугу */
+  --provider-none: #869180;
+  --provider-codex: #79c8e4;
+  --provider-claude: #efa06a;
+  --ok: #8fd0a0;
+  --pending: #dcc06a;
+
+  --dot-input: #79c8e4;
+  --dot-cache: #c8d98a;
+  --dot-output: #efa06a;
+  --dot-think: #b8a6e0;
+
+  --space-glow-a: rgba(159, 211, 86, 0.1);
+  --space-glow-b: rgba(40, 90, 45, 0.12);
+  --space-base: #070d08;
+  --space-star: transparent;
+  --star-opacity: 0;
+}
+
+/* ======================================= «Луг»: солнце сквозь листву === */
+
+html[data-theme="meadow"] {
+  --meadow-image: url("./meadow-sun.png");
+}
+
+/* Цветущая часть луга внизу справа, поэтому низ не гасим — иначе от темы
+   остаётся ровное зелёное пятно. Затемняется только левый край: тень под
+   деревьями на фотографии всё-таки светлее, чем нужно колонке задач. */
+html[data-theme="meadow"] body::after {
+  background-color: #070d08;
+  background-image:
+    linear-gradient(90deg, rgba(4, 9, 5, 0.34), rgba(4, 9, 5, 0) 40%),
+    var(--meadow-image);
+  background-position: center, 56% 72%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+/* Солнце дышит: тёплое пятно медленно набирает и отпускает силу, как свет
+   сквозь качающуюся листву. Анимируется только прозрачность слоя. */
+@keyframes meadow-breathe {
+  0%, 100% { opacity: 0.16; transform: translate3d(-1%, 1%, 0) scale(1.02); }
+  50% { opacity: 0.74; transform: translate3d(2%, -1%, 0) scale(1.07); }
+}
+
+html[data-theme="meadow"] body::before {
+  animation: meadow-breathe 18s ease-in-out infinite;
+  background-image:
+    radial-gradient(76% 62% at 74% 34%, rgba(244, 236, 158, 0.5), rgba(180, 210, 110, 0.14) 46%, transparent 76%);
+  background-position: center;
+  background-size: cover;
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.3;
+}
+
+html[data-theme="meadow"] .app-header {
+  backdrop-filter: blur(12px) saturate(118%);
+  -webkit-backdrop-filter: blur(12px) saturate(118%);
+  background: rgba(4, 9, 5, 0.66);
+}
+
+html[data-theme="meadow"] .app-header::after {
+  background: linear-gradient(90deg, transparent, rgba(159, 211, 86, 0.55), transparent);
+}
+
+html[data-theme="meadow"] .journal details[data-work-log-day-section] {
+  backdrop-filter: blur(6px) saturate(118%);
+  -webkit-backdrop-filter: blur(6px) saturate(118%);
+  background-color: rgba(4, 9, 5, 0.45);
+  background-image: none;
+}
+
+html[data-theme="meadow"] .journal details[data-work-log-day-section][open] {
+  background-color: rgba(4, 9, 5, 0.5);
+}
+
+html[data-theme="meadow"] .journal details[data-work-log-turn-details] {
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  background-color: rgba(7, 14, 8, 0.38);
+  background-image: none;
+}
+
+html[data-theme="meadow"] .journal details[data-work-log-turn-details]:hover {
+  background-color: rgba(12, 22, 13, 0.58);
+}
+
+html[data-theme="meadow"] .journal details[data-work-log-turn-details][open] {
+  background-color: rgba(7, 14, 8, 0.56);
+}
+
+/* на узком экране кадр уходит к солнцу, поэтому стекло плотнее */
+@media (max-width: 720px) {html[data-theme="meadow"] body::after {
+    background-position: center, 68% 76%;
+  }
+
+  html[data-theme="meadow"] .journal details[data-work-log-day-section] {
+    background-color: rgba(4, 9, 5, 0.66);
+  }
+
+  html[data-theme="meadow"] .journal details[data-work-log-turn-details] {
+    background-color: rgba(7, 14, 8, 0.58);
+  }
+}
+
+html[data-background-override="true"][data-background="meadow"] { --meadow-image: url("./meadow-sun.png"); --hub-background-color: #070d08; --hub-background-image: linear-gradient(90deg, rgba(4, 9, 5, .34), rgba(4, 9, 5, 0) 40%), var(--meadow-image); --hub-background-position: center, 62% 60%; }
+html[data-background-override="true"][data-background="meadow-goldenhour"] { --hub-background-color: #070d08; --hub-background-image: linear-gradient(90deg, rgba(4, 9, 5, .46), rgba(4, 9, 5, .06) 40%, rgba(4, 9, 5, 0) 60%), var(--meadow-goldenhour-image, url("./meadow-goldenhour.jpg")); --hub-background-position: center, 62% 54%; }
+
+html[data-background-override="true"][data-background="orbit-limb"] body::before,
+html[data-background-override="true"][data-background="nebula-core"] body::before,
+html[data-background-override="true"][data-background="pulsar-beam"] body::before,
+html[data-background-override="true"][data-background="blackhole-disk"] body::before,
+html[data-background-override="true"][data-background="magma-flow"] body::before,
+html[data-background-override="true"][data-background="meadow-goldenhour"] body::before {
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-size: cover !important;
+  content: "" !important;
+  mask-image: none !important;
+  mix-blend-mode: screen !important;
+  opacity: 0.4 !important;
+}
+
+html[data-background-override="true"][data-background="meadow-goldenhour"] body::before {
+  animation: scene-glow 20s ease-in-out infinite !important;
+  background-image: radial-gradient(46% 38% at 74% 34%, rgba(244, 236, 158, 0.3), transparent 76%) !important;
+}
+
+@media (max-width: 720px) {html[data-background-override="true"][data-background="meadow"] { --hub-background-position: center, 68% 76%; }
+  html[data-background-override="true"][data-background="meadow-goldenhour"] { --hub-background-position: center, 76% 56%; }
+}

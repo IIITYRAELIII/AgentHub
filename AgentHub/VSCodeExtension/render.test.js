@@ -9,11 +9,23 @@ const vm = require("node:vm");
 
 const { renderWorkLog, sanitizeWorkLogHtml } = require("./render.js");
 const { sidebarHtml, webviewHtml } = require("./webview.js");
+const { loadThemeRegistry } = require("../theme-registry.cjs");
 
-const THEMES = [
-  "orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "metropolis",
-  "magma",
-];
+const MINI_APP_ROOT = path.resolve(__dirname, "..", "assets", "mini-app");
+const THEME_REGISTRY = loadThemeRegistry(MINI_APP_ROOT);
+const THEMES = THEME_REGISTRY.themes.map((theme) => theme.id);
+const WEBVIEW_THEMES = THEME_REGISTRY.themes.map(({ id, name }) => ({ id, name }));
+
+function themeFile(theme, file = "theme.css") {
+  return fs.readFileSync(path.join(MINI_APP_ROOT, "themes", theme, file), "utf8");
+}
+
+function allStyles() {
+  return [
+    fs.readFileSync(path.join(MINI_APP_ROOT, "styles.css"), "utf8"),
+    ...THEMES.map((theme) => themeFile(theme)),
+  ].join("\n");
+}
 
 function loadSharedWebview(vscode) {
   const Module = require("node:module");
@@ -39,6 +51,9 @@ function webviewVscode(workspaceFolders) {
   return {
     FileType: { File: 1 },
     Uri: {
+      file(fsPath) {
+        return vscodeUri(fsPath);
+      },
       joinPath(uri, ...segments) {
         return vscodeUri(path.join(uri.fsPath, ...segments));
       },
@@ -64,19 +79,24 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const runtimeRoot = path.join(root, "runtime", "releases", "current");
   const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "mini-app");
   const runtimeAssets = path.join(runtimeRoot, "assets", "mini-app");
-  const required = [
-    "message-disclosure.js", "app.js", "metropolis-glass.js", "storm-glass.js", "message-lifecycle.js", "hub-client.js",
-    "styles.css", "backgrounds.css",
-  ];
+  const required = ["message-disclosure.js", "app.js", "message-lifecycle.js", "hub-client.js", "styles.css", "backgrounds.css"];
   try {
     fs.mkdirSync(shadowAssets, { recursive: true });
     fs.mkdirSync(runtimeAssets, { recursive: true });
     fs.writeFileSync(path.join(shadowAssets, "index.html"), '<meta charset="utf-8">shadow<script src="/app.js" defer></script>');
-    fs.writeFileSync(path.join(runtimeAssets, "index.html"), '<meta charset="utf-8">runtime<script src="/app.js" defer></script>');
+    fs.writeFileSync(path.join(runtimeAssets, "index.html"), `<meta charset="utf-8">runtime
+      <link rel="stylesheet" href="/work-log.css"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/backgrounds.css">
+      <!-- agent-hub-theme-styles --><select data-theme-select></select>
+      <!-- agent-hub-theme-markup --><!-- agent-hub-theme-catalog -->
+      <script src="/browser-device-auth.js" defer></script><script src="/message-disclosure.js" defer></script>
+      <script src="/app.js" defer></script><!-- agent-hub-theme-scripts -->
+      <script src="/message-lifecycle.js" defer></script><script src="/hub-client.js" defer></script>`);
     for (const file of required) {
       fs.writeFileSync(path.join(shadowAssets, file), "");
       fs.writeFileSync(path.join(runtimeAssets, file), "");
     }
+    fs.cpSync(path.join(MINI_APP_ROOT, "themes"), path.join(runtimeAssets, "themes"), { recursive: true });
+    fs.copyFileSync(path.resolve(__dirname, "..", "theme-registry.cjs"), path.join(runtimeRoot, "theme-registry.cjs"));
     fs.writeFileSync(path.join(shadowRoot, "Utilities", "AgentHub", "work-log.css"), "");
     fs.writeFileSync(path.join(runtimeRoot, "work-log.css"), "");
     fs.mkdirSync(extensionRoot, { recursive: true });
@@ -142,9 +162,9 @@ test("journal HTML cannot inject scripts or inline handlers", () => {
 });
 
 test("panel exposes all shared journal themes and reports the choice to the extension", () => {
-  const html = webviewHtml({});
+  const html = webviewHtml({}, "orbit", WEBVIEW_THEMES);
   for (const theme of THEMES) {
-    assert.match(html, new RegExp(`<option value="${theme}">`));
+    assert.match(html, new RegExp(`option value=\\\\"${theme}\\\\"`));
   }
   assert.match(html, /vscode\.setState\(\{ \.\.\.\(vscode\.getState\(\) \|\| \{\}\), theme \}\)/);
   assert.match(html, /vscode\.postMessage\(\{ type: 'theme', theme \}\)/);
@@ -153,19 +173,19 @@ test("panel exposes all shared journal themes and reports the choice to the exte
 
 test("panel starts in the theme the extension restored", () => {
   assert.match(
-    webviewHtml({}, "gothic"),
+    webviewHtml({}, "gothic", WEBVIEW_THEMES),
     /<html lang="ru" data-theme="gothic" data-surface="desktop">/,
   );
   assert.match(
-    webviewHtml({}, "blackhole"),
+    webviewHtml({}, "blackhole", WEBVIEW_THEMES),
     /<html lang="ru" data-theme="blackhole" data-surface="desktop">/,
   );
   assert.match(
-    webviewHtml({}, "metropolis"),
+    webviewHtml({}, "metropolis", WEBVIEW_THEMES),
     /<html lang="ru" data-theme="metropolis" data-surface="desktop">/,
   );
   assert.match(
-    webviewHtml({}, "нет такой"),
+    webviewHtml({}, "нет такой", WEBVIEW_THEMES),
     /<html lang="ru" data-theme="orbit" data-surface="desktop">/,
   );
 });
@@ -229,24 +249,17 @@ test("panel allows the webview's own resources and data URIs, but no remote sour
   assert.doesNotMatch(webviewHtml({}), /img-src[^;]*https?:/);
 });
 
-test("extension loads every bitmap theme asset from the bundled shared webview", () => {
+test("extension discovers theme assets from the active runtime catalog", () => {
   const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
-  assert.match(extension, /const THEMES = new Set\(\[[\s\S]*"stormglass"/u);
-  assert.match(extension, /const THEMES = new Set\(\[[\s\S]*"reliquary"/u);
+  assert.doesNotMatch(extension, /const THEMES = new Set/u);
+  assert.match(extension, /this\.themes = new Set\(shell\.themeIds\)/u);
   assert.doesNotMatch(extension, /PULSAR_IMAGE_PATH|WORK_LOG\.md/u);
-  assert.match(shared, /\["--pulsar-image", assets\.pulsar\]/u);
-  assert.match(shared, /\["--bh-image", assets\.blackhole\]/u);
-  assert.match(shared, /\["--forest-image", assets\.taiga\]/u);
-  assert.match(shared, /\["--metropolis-image", assets\.metropolis\]/u);
-  assert.match(shared, /\["--magma-image", assets\.magma\]/u);
-  assert.match(shared, /\["--stormglass-image", assets\.stormglass\]/u);
-  assert.match(shared, /reliquary: \[\.\.\.ASSET_ROOT, "ashen-reliquary\.png"\]/u);
-  assert.match(shared, /\["--reliquary-image", assets\.reliquary\]/u);
-  assert.match(
-    shared,
-    /<script src="\$\{resource\(webview, assets\.stormGlass\)\}" defer><\/script>/u,
-  );
+  assert.match(shared, /require\(path\.join\(runtimeUri\.fsPath, "theme-registry\.cjs"\)\)/u);
+  assert.match(shared, /registryTools\.loadThemeRegistry\(path\.join\(runtimeUri\.fsPath, \.\.\.ASSET_ROOT\)\)/u);
+  assert.match(shared, /renderThemeHtml\(html, themeRegistry/u);
+  assert.match(shared, /themeRegistry\.resources/u);
+  assert.doesNotMatch(shared, /--stormglass-image|stormGlass|ashen-reliquary/u);
 });
 
 test("theme layers keep the background, effects and content in order", () => {
@@ -262,10 +275,7 @@ test("theme layers keep the background, effects and content in order", () => {
 });
 
 test("theme motion is visible, distinct and keeps reduced-motion support", () => {
-  const styles = fs.readFileSync(
-    require.resolve("../assets/mini-app/styles.css"),
-    "utf8",
-  );
+  const styles = allStyles();
   for (const [theme, animation] of [
     ["orbit", "orbit-terminator"],
     ["nebula", "nebula-drift"],
@@ -297,7 +307,8 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   assert.match(client, /function buildRainDrop\(heavy = false\)/u);
   /* «Storm» берёт тот же слой капель, но плотнее и быстрее: ливень, а не
      дождь тайги. */
-  assert.match(client, /stormglass: "downpour"/u);
+  assert.equal(THEME_REGISTRY.themes.find((theme) => theme.id === "stormglass")
+    .backgrounds[0].particles, "downpour");
   assert.match(styles, /@keyframes downpour-fall/u);
   assert.match(client, /prefers-reduced-motion: reduce/u);
   for (const property of ["--x", "--len", "--thickness", "--alpha", "--dur", "--delay"]) {
@@ -311,10 +322,7 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   assert.match(styles, /\.motes\s*\{[^}]*z-index:\s*1;/u);
   assert.match(styles, /\.motes > span\s*\{[^}]*animation:\s*mote-rise var\(--dur\) linear infinite;/u);
   assert.match(client, /function buildMote\(\)/u);
-  assert.match(
-    client,
-    /PARTICLE_BACKGROUNDS = \{\s*taiga: "rain", stormglass: "downpour", gothic: "motes",/u,
-  );
+  assert.match(client, /background\.particles/u);
   /* Гасить к лунному проёму теперь должен слой пыли, а не блик факела. */
   assert.match(
     styles,
@@ -331,10 +339,10 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
 });
 
 test("Rain keeps its stored key and is named consistently", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const manifest = THEME_REGISTRY.themes.find((theme) => theme.id === "taiga");
   const webview = fs.readFileSync(require.resolve("./webview.js"), "utf8");
-  assert.match(html, /<option value="taiga">Rain<\/option>/u);
-  assert.match(webview, /<option value="taiga">Rain<\/option>/u);
+  assert.equal(manifest.name, "Rain");
+  assert.match(webview, /availableThemes\.map\(\(item\) => `<option value="\$\{item\.id\}">\$\{escapeHtml\(item\.name\)\}<\/option>`\)/u);
 });
 
 test("general settings and current-dialog settings stay separate", () => {
@@ -455,12 +463,13 @@ test("shared chat accepts canonical slash-prefixed Windows file links in VS Code
 });
 
 test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
-  const glass = fs.readFileSync(require.resolve("../assets/mini-app/metropolis-glass.js"), "utf8");
-  assert.match(html, /<option value="metropolis">Мегаполис<\/option>/u);
-  assert.match(html, /<canvas data-metropolis-glass><\/canvas>/u);
-  assert.match(html, /<script src="\/metropolis-glass\.js" defer><\/script>/u);
+  const styles = themeFile("metropolis");
+  const glass = themeFile("metropolis", "metropolis-glass.js");
+  const markup = themeFile("metropolis", "theme.html");
+  const manifest = THEME_REGISTRY.themes.find((theme) => theme.id === "metropolis");
+  assert.equal(manifest.name, "Мегаполис");
+  assert.deepEqual(manifest.scripts, ["metropolis-glass.js"]);
+  assert.match(markup, /<canvas data-metropolis-glass><\/canvas>/u);
   assert.match(styles, /html\[data-theme="metropolis"\] body::after\s*\{[\s\S]*var\(--metropolis-image\)/u);
   assert.match(styles, /backdrop-filter:\s*blur\(6px\) saturate\(68%\) brightness\(0\.82\)/u);
   assert.match(glass, /vec4 rainLayer\(/u);
@@ -479,9 +488,9 @@ test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", (
 });
 
 test("Storm keeps the photo backdrop and adds only lightning", () => {
-  const shader = fs.readFileSync(require.resolve("../assets/mini-app/metropolis-glass.js"), "utf8");
-  const storm = fs.readFileSync(require.resolve("../assets/mini-app/storm-glass.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const shader = themeFile("metropolis", "metropolis-glass.js");
+  const storm = themeFile("stormglass", "storm-glass.js");
+  const styles = themeFile("stormglass");
   /* Стекло с каплями уместно там, где за ним огни: на ночном море оно
      читалось мутью, поэтому «Storm» обходится фоном и грозой. */
   assert.doesNotMatch(shader, /stormglass/u);
@@ -490,7 +499,7 @@ test("Storm keeps the photo backdrop and adds only lightning", () => {
 
   /* Оживает сама сцена: вода дышит по маске горизонта, небо медленно плывёт,
      а разряд подсвечивает кадр вторым снимком той же сцены. */
-  assert.match(styles, /--stormglass-flash: url\("\/storm-flash\.png"\)/u);
+  assert.match(styles, /--stormglass-flash: url\("\.\/storm-flash\.png"\)/u);
   assert.match(storm, /uniform sampler2D uFlash/u);
   assert.match(storm, /uniform float uHorizon/u);
   assert.match(storm, /const HORIZON = 0\.6/u);
@@ -508,10 +517,7 @@ test("Storm keeps the photo backdrop and adds only lightning", () => {
 });
 
 test("Gothic theme uses medieval stone, moonlit steel and a torch-lit scene", () => {
-  const styles = fs.readFileSync(
-    require.resolve("../assets/mini-app/styles.css"),
-    "utf8",
-  );
+  const styles = themeFile("gothic");
   /* Палитра ушла из золота в холодную сталь: тёплый свет остался только на
      самих кадрах — факел склепа, свечи часовни, окна башни. */
   assert.match(
@@ -529,15 +535,12 @@ test("Gothic theme uses medieval stone, moonlit steel and a torch-lit scene", ()
 });
 
 test("«Gothic» offers nine night scenes, each with its own light", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const backgrounds = fs.readFileSync(
-    require.resolve("../assets/mini-app/backgrounds.css"),
-    "utf8",
-  );
-  assert.match(
-    client,
-    /gothic: \[\s*"gothic", "gothic-crypt", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep",\s*"gothic-minental-castle", "gothic-minental-fortress", "gothic-finkregh",/u,
-  );
+  const theme = THEME_REGISTRY.themes.find((item) => item.id === "gothic");
+  const backgrounds = themeFile("gothic");
+  assert.deepEqual(theme.backgrounds.map((background) => background.id), [
+    "gothic", "gothic-crypt", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep",
+    "gothic-minental-castle", "gothic-minental-fortress", "gothic-finkregh",
+  ]);
   for (const [background, image] of [
     ["gothic-tower", "gothic-tower\\.jpg"],
     ["gothic-harbor", "gothic-harbor\\.jpg"],
@@ -560,7 +563,7 @@ test("«Gothic» offers nine night scenes, each with its own light", () => {
       `${background} motion`,
     );
   }
-  assert.match(client, /"gothic-harbor": "rain"/u);
+  assert.equal(theme.backgrounds.find((background) => background.id === "gothic-harbor").particles, "rain");
   assert.match(backgrounds, /@keyframes gothic-scene-fog/u);
   assert.match(backgrounds, /@keyframes gothic-scene-glow/u);
   for (const [image, revision] of [
@@ -579,57 +582,48 @@ test("«Gothic» offers nine night scenes, each with its own light", () => {
 
 test("large Gothic scenes are decoded before replacing the visible background", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  assert.match(client, /"gothic-minental-castle": \{[\s\S]*fallback: "\/gothic-minental-castle\.jpg"/u);
-  assert.match(client, /"gothic-minental-fortress": \{[\s\S]*fallback: "\/gothic-minental-fortress\.jpg\?v=a298113485c7"/u);
-  assert.match(client, /"gothic-finkregh": \{[\s\S]*fallback: "\/gothic-finkregh\.jpg\?v=3e54b1cb7aed"/u);
+  const theme = THEME_REGISTRY.themes.find((item) => item.id === "gothic");
+  assert.deepEqual(
+    theme.backgrounds.filter((background) => background.preload).map((background) => background.id),
+    ["gothic-minental-castle", "gothic-minental-fortress", "gothic-finkregh"],
+  );
   assert.match(client, /image\.decode\(\)\.then\(\(\) => finish\(true\)/u);
   assert.match(client, /if \(requestId !== backgroundRequestId\) return;/u);
   assert.match(client, /if \(loaded\) \{ commitBackground\(selected, persist\); return; \}/u);
 });
 
 test("«Озеро» keeps one palette and three interchangeable scenes", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const backgrounds = fs.readFileSync(
-    require.resolve("../assets/mini-app/backgrounds.css"),
-    "utf8",
-  );
+  const theme = THEME_REGISTRY.themes.find((item) => item.id === "lake");
+  const backgrounds = themeFile("lake");
   for (const [background, image] of [
     ["lake", "lake-summer.jpg"],
     ["lake-watercolor", "lake-watercolor.jpg"],
     ["lake-oil", "lake-oil.jpg"],
   ]) {
-    assert.match(client, new RegExp(`"?${background}"?:\\s*"Озеро`, "u"), background);
+    assert.equal(theme.backgrounds.find((item) => item.id === background).asset, image, background);
     assert.match(
       backgrounds,
       new RegExp(`\\[data-background="${background}"\\][^\\n]*${image.replace(".", "\\.")}`, "u"),
       background,
     );
   }
-  assert.match(
-    client,
-    /lake:\s*\["lake",\s*"lake-watercolor",\s*"lake-oil"\]/u,
-  );
-  assert.match(client, /orbit:\s*\["orbit",\s*"orbit-limb"\]/u);
+  assert.deepEqual(theme.backgrounds.map((background) => background.id), ["lake", "lake-watercolor", "lake-oil"]);
   /* Блок фона специфичнее подмены из панели VS Code, поэтому путь к рисованным
      кадрам берётся через var с запасным значением, а не объявляется заново. */
-  for (const variable of ["--lake-image", "--lake-watercolor-image", "--lake-oil-image"]) {
+  assert.match(backgrounds, /--lake-image:\s*url\("\.\/lake-summer\.jpg"\)/u);
+  for (const variable of ["--lake-watercolor-image", "--lake-oil-image"]) {
     assert.match(backgrounds, new RegExp(`var\\(${variable},\\s*url\\(`, "u"), variable);
     assert.doesNotMatch(backgrounds, new RegExp(`${variable}:\\s*url\\(`, "u"), variable);
   }
-  const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
-  assert.match(shared, /lakeWatercolor: \[\.\.\.ASSET_ROOT, "lake-watercolor\.jpg"\]/u);
-  assert.match(shared, /lakeOil: \[\.\.\.ASSET_ROOT, "lake-oil\.jpg"\]/u);
 });
 
-test("VS Code theme assets override browser paths with equal specificity", () => {
+test("VS Code resolves each self-contained theme resource without CSS overrides", () => {
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
-  const backgrounds = fs.readFileSync(
-    require.resolve("../assets/mini-app/backgrounds.css"),
-    "utf8",
-  );
-  assert.match(shared, /<style nonce="\$\{nonce\}">html\[data-theme\],html\[data-background\]\{\$\{assetOverrides\}\}<\/style>/u);
-  assert.match(backgrounds, /var\(--reliquary-image,\s*url\("\/ashen-reliquary\.png"\)\)/u);
-  assert.doesNotMatch(backgrounds, /--reliquary-image:\s*url\(/u);
+  const reliquary = themeFile("reliquary");
+  assert.match(shared, /themeResourceUrls = new Map/u);
+  assert.match(shared, /vscode\.Uri\.file\(item\.file\)/u);
+  assert.doesNotMatch(shared, /assetOverrides/u);
+  assert.match(reliquary, /url\("\.\/ashen-reliquary\.png"\)/u);
 });
 
 test("turn header keeps its actions in the trailing columns", () => {
@@ -668,7 +662,7 @@ test("journal width stays fixed while days and turns are expanded", () => {
 
 test("task-grouped journal pages large histories without per-row Metropolis blur", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const styles = themeFile("metropolis");
   assert.match(app, /const TASK_GROUP_TURN_PAGE_SIZE = 30/u);
   assert.match(app, /const taskGroupTurns = new WeakMap\(\)/u);
   assert.match(app, /function appendTaskGroupTurnPage\(details, \{ nextPage = false \} = \{\}\)/u);

@@ -1,0 +1,10 @@
+{
+  "id": "reliquary",
+  "name": "Пепельный реликварий",
+  "color": "#090807",
+  "order": 130,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "reliquary", "name": "Пепельный архив", "asset": "ashen-reliquary.png" }
+  ]
+}

@@ -1,0 +1,181 @@
+/* =========================================================== тема «Rain» === */
+
+html[data-theme="taiga"] {
+  --display-weight: 600;
+  --display-spacing: -0.005em;
+  --title-weight: 545;
+  --label-spacing: 0.18em;
+
+  --radius-lg: 18px;
+  --radius-md: 12px;
+  --radius-sm: 9px;
+  --radius-chip: 999px;
+  --rail-width: 2px;
+
+  --bg: #060a0d;
+  --surface-1: rgba(200, 226, 220, 0.028);
+  --surface-2: rgba(200, 226, 220, 0.05);
+  --surface-3: rgba(200, 226, 220, 0.088);
+  --sunken: rgba(2, 6, 8, 0.5);
+
+  --line: rgba(152, 194, 186, 0.13);
+  --line-strong: rgba(152, 194, 186, 0.26);
+
+  /* карточки лежат на фотографии, поэтому базовая заливка полупрозрачная */
+  --card-bg: linear-gradient(180deg, rgba(9, 16, 17, 0.44), rgba(4, 8, 10, 0.52));
+  --card-bg-open: linear-gradient(180deg, rgba(9, 16, 17, 0.5), rgba(4, 8, 10, 0.58));
+  --card-texture: none;
+  --card-border: rgba(152, 198, 188, 0.16);
+  --card-border-open: rgba(126, 191, 174, 0.4);
+  --card-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.045),
+    0 24px 56px -34px rgba(0, 0, 0, 0.95);
+
+  --plate-bg: linear-gradient(180deg, rgba(202, 228, 220, 0.07), rgba(4, 9, 10, 0.28));
+  --plate-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055);
+  --turn-shadow: 0 0 28px -20px rgba(126, 191, 174, 0.85);
+
+  --text: #e4eeec;
+  --text-soft: #b4c5c1;
+  --text-muted: #859794;
+  --text-faint: #637270;
+
+  /* мшисто-бирюзовый: голубой уже занят «Орбитой» и «Чёрной дырой» */
+  --accent: #7ebfae;
+  --accent-soft: rgba(126, 191, 174, 0.13);
+  --accent-line: rgba(126, 191, 174, 0.4);
+  --accent-glow: 0 0 22px -10px rgba(126, 191, 174, 0.9);
+  --selection: rgba(126, 191, 174, 0.3);
+  --brand-gradient: linear-gradient(150deg, rgba(150, 185, 205, 0.3), rgba(70, 110, 95, 0.28));
+  --brand-shadow: 0 0 24px -10px rgba(126, 191, 174, 0.85);
+
+  --provider-none: #77878a;
+  --provider-codex: #8fc4e0;
+  --provider-claude: #e0a468;
+  --ok: #8fd0b8;
+  --pending: #d9a866;
+
+  --dot-input: #8fc4e0;
+  --dot-cache: #7ebfae;
+  --dot-output: #d9a866;
+  --dot-think: #9c9cc4;
+
+  --space-glow-a: rgba(109, 155, 183, 0.08);
+  --space-glow-b: rgba(71, 112, 108, 0.08);
+  --space-base: #070c12;
+  --space-star: transparent;
+  --star-opacity: 0;
+}
+
+html[data-theme="taiga"] {
+  --forest-image: url("./rainforest-night.png");
+}
+
+/* Затемнение минимальное и только там, где оно работает на текст: слева, где
+   идёт колонка задач, и к низу, где список длиннее кадра. Сам лес не глушим —
+   контраст добирается подложками карточек. */
+html[data-theme="taiga"] body::after {
+  background-color: #060a0d;
+  background-image:
+    linear-gradient(90deg, rgba(4, 8, 10, 0.34), rgba(4, 8, 10, 0.04) 68%),
+    linear-gradient(180deg, rgba(4, 8, 10, 0) 46%, rgba(3, 6, 8, 0.34)),
+    var(--forest-image);
+  background-position: center, center, 68% 36%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+/* Стекло держим тонким, иначе лес под панелями пропадает. Размытие тоже
+   умеренное: сильный blur не столько затемняет, сколько стирает силуэты
+   деревьев — ровно то, ради чего фотография и взята. */
+html[data-theme="taiga"] .app-header {
+  backdrop-filter: blur(12px) saturate(112%);
+  -webkit-backdrop-filter: blur(12px) saturate(112%);
+  background:
+    radial-gradient(70% 150% at 92% 0, rgba(124, 184, 172, 0.12), transparent 64%),
+    rgba(4, 9, 11, 0.52);
+}
+
+html[data-theme="taiga"] .app-header::after {
+  background: linear-gradient(90deg, transparent, rgba(126, 191, 174, 0.58), transparent);
+}
+
+html[data-theme="taiga"] .journal details[data-work-log-day-section] {
+  backdrop-filter: blur(5px) saturate(114%);
+  -webkit-backdrop-filter: blur(5px) saturate(114%);
+  background-color: rgba(4, 9, 11, 0.4);
+  background-image: none;
+}
+
+html[data-theme="taiga"] .journal details[data-work-log-day-section][open] {
+  background-color: rgba(4, 9, 11, 0.44);
+}
+
+html[data-theme="taiga"] .journal details[data-work-log-turn-details] {
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  background-color: rgba(6, 12, 14, 0.3);
+  background-image: none;
+}
+
+html[data-theme="taiga"] .journal details[data-work-log-turn-details]:hover {
+  background-color: rgba(10, 19, 21, 0.44);
+}
+
+html[data-theme="taiga"] .journal details[data-work-log-turn-details][open] {
+  background-color: rgba(6, 12, 14, 0.5);
+}
+
+/* Слой темы остаётся только для дымки над кронами: сам дождь теперь отдельными
+   каплями, поэтому здесь нет ни плиток, ни движения. */
+html[data-theme="taiga"] body::before {
+  animation: none;
+  background-image:
+    radial-gradient(64% 38% at 62% 24%, rgba(206, 232, 226, 0.16), transparent 74%);
+  background-repeat: no-repeat;
+  background-size: cover;
+  content: "";
+  inset: 0;
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.5;
+  transform: none;
+}
+
+html[data-theme="taiga"][data-surface="mobile"] body::after {
+  background-position: center, center, 74% 28%;
+}
+
+/* На узком экране кадр обрезан до самых светлых участков (луна, тропа),
+   поэтому подложки здесь плотнее десктопных. */
+html[data-theme="taiga"][data-surface="mobile"] .journal details[data-work-log-day-section] {
+  background-color: rgba(4, 9, 11, 0.54);
+}
+
+html[data-theme="taiga"][data-surface="mobile"] .journal details[data-work-log-turn-details] {
+  background-color: rgba(6, 12, 14, 0.44);
+}
+
+/* Узкие панели используют тот же компактный порог, что resolveSurface(). */
+@media (max-width: 720px) {html[data-theme="taiga"] body::after {
+    background-position: center, center, 74% 28%;
+  }
+
+  html[data-theme="taiga"] .journal details[data-work-log-day-section] {
+    background-color: rgba(4, 9, 11, 0.54);
+  }
+
+  html[data-theme="taiga"] .journal details[data-work-log-turn-details] {
+    background-color: rgba(6, 12, 14, 0.44);
+  }
+}
+
+html[data-background-override="true"][data-background="taiga"] { --forest-image: url("./rainforest-night.png"); --hub-background-color: #060a0d; --hub-background-image: linear-gradient(90deg, rgba(4, 8, 10, .34), rgba(4, 8, 10, .04) 68%), linear-gradient(180deg, rgba(4, 8, 10, 0) 46%, rgba(3, 6, 8, .34)), var(--forest-image); --hub-background-position: center, center, 68% 36%; }
+html[data-background-override="true"][data-background="taiga-rainfall"] { --hub-background-color: #060a0d; --hub-background-image: linear-gradient(90deg, rgba(4, 8, 10, .48), rgba(4, 8, 10, .08) 42%, rgba(4, 8, 10, 0) 62%), var(--taiga-rainfall-image, url("./taiga-rainfall.jpg")); --hub-background-position: center, 60% 48%; }
+
+@media (max-width: 720px) {html[data-background-override="true"][data-background="taiga"] { --hub-background-position: center, center, 74% 28%; }
+  html[data-background-override="true"][data-background="taiga-rainfall"] { --hub-background-position: center, 72% 44%; }
+}

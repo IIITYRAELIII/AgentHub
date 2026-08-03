@@ -1,0 +1,184 @@
+html[data-theme="lake"] {
+  --display-weight: 600;
+  --display-spacing: -0.004em;
+  --title-weight: 540;
+  --label-spacing: 0.13em;
+
+  /* вечер у воды: округления даже мягче «Луга», ни одного острого угла */
+  --radius-lg: 18px;
+  --radius-md: 15px;
+  --radius-sm: 12px;
+  --radius-chip: 999px;
+  --rail-width: 2px;
+
+  --bg: #080d0b;
+  --surface-1: rgba(222, 240, 222, 0.034);
+  --surface-2: rgba(222, 240, 222, 0.062);
+  --surface-3: rgba(222, 240, 222, 0.105);
+  --sunken: rgba(4, 8, 7, 0.52);
+
+  --line: rgba(164, 214, 172, 0.15);
+  --line-strong: rgba(176, 222, 184, 0.3);
+
+  /* вода на кадре светлая, поэтому карточки плотнее, чем у «Луга» */
+  --card-bg: linear-gradient(180deg, rgba(12, 22, 18, 0.66), rgba(5, 10, 9, 0.74));
+  --card-bg-open: linear-gradient(180deg, rgba(12, 22, 18, 0.72), rgba(5, 10, 9, 0.8));
+  --card-texture: none;
+  --card-border: rgba(164, 214, 172, 0.18);
+  --card-border-open: rgba(121, 201, 138, 0.42);
+  --card-shadow:
+    inset 0 1px 0 rgba(222, 240, 222, 0.06),
+    0 24px 56px -34px rgba(0, 0, 0, 0.95);
+
+  --plate-bg: linear-gradient(180deg, rgba(222, 240, 222, 0.08), rgba(5, 10, 9, 0.32));
+  --plate-shadow: inset 0 1px 0 rgba(222, 240, 222, 0.075);
+  --turn-shadow: 0 0 28px -20px rgba(121, 201, 138, 0.8);
+
+  --text: #eef4ea;
+  --text-soft: #c9d4c4;
+  --text-muted: #98a595;
+  --text-faint: #737f70;
+
+  /* трава у воды: зелень мягче и холоднее лайма «Луга» */
+  --accent: #79c98a;
+  --accent-soft: rgba(121, 201, 138, 0.14);
+  --accent-line: rgba(121, 201, 138, 0.44);
+  --accent-glow: 0 0 22px -10px rgba(121, 201, 138, 0.9);
+  --selection: rgba(121, 201, 138, 0.3);
+  --brand-gradient: linear-gradient(150deg, rgba(121, 201, 138, 0.32), rgba(32, 66, 52, 0.34));
+  --brand-shadow: 0 0 24px -10px rgba(121, 201, 138, 0.85);
+
+  /* провайдеры разводим по воде и закату: в зелени они иначе сливаются с
+     акцентом темы */
+  --provider-none: #8a9488;
+  --provider-codex: #8fc6cf;
+  --provider-claude: #f0a86e;
+  --ok: #79c98a;
+  --pending: #dfc078;
+
+  --dot-input: #8fc6cf;
+  --dot-cache: #cfc189;
+  --dot-output: #f0a86e;
+  --dot-think: #bda9d6;
+
+  --space-glow-a: rgba(121, 201, 138, 0.1);
+  --space-glow-b: rgba(40, 80, 60, 0.12);
+  --space-base: #080d0b;
+  --space-star: transparent;
+  --star-opacity: 0;
+}
+
+/* ==================================== «Озеро»: летний вечер у воды === */
+
+html[data-theme="lake"] {
+  --lake-image: url("./lake-summer.jpg");
+}
+
+/* Кадр перевёрнут относительно «Луга»: тёмный лес справа, а светлая вода с
+   отражением заката — слева, ровно под колонкой задач. Поэтому левый край
+   гасим заметно плотнее, чем в любой другой теме, и тянем затемнение до
+   середины: без него белый текст ложится на почти белую воду. */
+html[data-theme="lake"] body::after {
+  background-color: #080d0b;
+  background-image:
+    linear-gradient(90deg, rgba(3, 8, 7, 0.82), rgba(3, 8, 7, 0.5) 26%, rgba(3, 8, 7, 0) 60%),
+    linear-gradient(0deg, rgba(3, 8, 7, 0.42), rgba(3, 8, 7, 0) 32%),
+    var(--lake-image);
+  background-position: center, center, 56% 64%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+/* Вечер догорает: свет над дальним берегом медленно набирает силу и отпускает,
+   отражение в воде дышит вместе с ним. Подсветка держится в зелени кадра, иначе
+   тема снова читается закатно-оранжевой. Двигается только слой подсветки, сам
+   кадр остаётся неподвижным. */
+@keyframes lake-shimmer {
+  0%, 100% { opacity: 0.2; transform: translate3d(-1%, 0.5%, 0) scale(1.01); }
+  50% { opacity: 0.62; transform: translate3d(2%, -0.5%, 0) scale(1.05); }
+}
+
+html[data-theme="lake"] body::before {
+  animation: lake-shimmer 26s ease-in-out infinite;
+  background-image:
+    radial-gradient(58% 30% at 48% 38%, rgba(232, 240, 196, 0.36), rgba(150, 200, 140, 0.1) 54%, transparent 78%),
+    radial-gradient(46% 16% at 44% 56%, rgba(226, 240, 202, 0.2), transparent 72%);
+  background-position: center;
+  background-size: cover;
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.3;
+}
+
+html[data-theme="lake"] .app-header {
+  backdrop-filter: blur(12px) saturate(114%);
+  -webkit-backdrop-filter: blur(12px) saturate(114%);
+  background: rgba(4, 9, 8, 0.7);
+}
+
+html[data-theme="lake"] .app-header::after {
+  background: linear-gradient(90deg, transparent, rgba(121, 201, 138, 0.55), transparent);
+}
+
+html[data-theme="lake"] .journal details[data-work-log-day-section] {
+  backdrop-filter: blur(6px) saturate(114%);
+  -webkit-backdrop-filter: blur(6px) saturate(114%);
+  background-color: rgba(4, 9, 8, 0.5);
+  background-image: none;
+}
+
+html[data-theme="lake"] .journal details[data-work-log-day-section][open] {
+  background-color: rgba(4, 9, 8, 0.56);
+}
+
+html[data-theme="lake"] .journal details[data-work-log-turn-details] {
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  background-color: rgba(8, 14, 12, 0.42);
+  background-image: none;
+}
+
+html[data-theme="lake"] .journal details[data-work-log-turn-details]:hover {
+  background-color: rgba(13, 22, 19, 0.6);
+}
+
+html[data-theme="lake"] .journal details[data-work-log-turn-details][open] {
+  background-color: rgba(8, 14, 12, 0.6);
+}
+
+/* На узком экране от кадра остаётся вертикальная полоса: сдвигаем её к
+   собакам, иначе в телефон попадает пустая вода. */
+@media (max-width: 720px) {html[data-theme="lake"] body::after {
+    background-image:
+      linear-gradient(180deg, rgba(3, 8, 7, 0.74), rgba(3, 8, 7, 0.46) 30%, rgba(3, 8, 7, 0.52) 68%, rgba(3, 8, 7, 0.7)),
+      var(--lake-image);
+    background-position: center, 72% 72%;
+  }
+
+  html[data-theme="lake"] .journal details[data-work-log-day-section] {
+    background-color: rgba(4, 9, 8, 0.68);
+  }
+
+  html[data-theme="lake"] .journal details[data-work-log-turn-details] {
+    background-color: rgba(8, 14, 12, 0.6);
+  }
+}
+
+html[data-background-override="true"][data-background="lake"] { --hub-background-color: #080d0b; --hub-background-image: linear-gradient(90deg, rgba(3, 8, 7, .82), rgba(3, 8, 7, .5) 26%, rgba(3, 8, 7, 0) 60%), linear-gradient(0deg, rgba(3, 8, 7, .42), rgba(3, 8, 7, 0) 32%), var(--lake-image, url("./lake-summer.jpg")); --hub-background-position: center, center, 56% 64%; }
+
+/* Три кадра «Озера» — одна сцена в трёх техниках. Рисованные светлее съёмки,
+   особенно бумага акварели, поэтому левый край гасится плотнее. Относительный
+   запасной URL остаётся внутри пакета темы во всех оболочках. */
+html[data-background-override="true"][data-background="lake-watercolor"] { --hub-background-color: #0a0f0c; --hub-background-image: linear-gradient(90deg, rgba(4, 10, 8, .88), rgba(4, 10, 8, .6) 26%, rgba(4, 10, 8, 0) 62%), linear-gradient(0deg, rgba(4, 10, 8, .4), rgba(4, 10, 8, 0) 30%), var(--lake-watercolor-image, url("./lake-watercolor.jpg")); --hub-background-position: center, center, 56% 52%; }
+html[data-background-override="true"][data-background="lake-oil"] { --hub-background-color: #0a0e09; --hub-background-image: linear-gradient(90deg, rgba(5, 9, 6, .86), rgba(5, 9, 6, .56) 26%, rgba(5, 9, 6, 0) 60%), linear-gradient(0deg, rgba(5, 9, 6, .4), rgba(5, 9, 6, 0) 30%), var(--lake-oil-image, url("./lake-oil.jpg")); --hub-background-position: center, center, 56% 62%; }
+
+@media (max-width: 720px) {html[data-background-override="true"][data-background="lake"] { --hub-background-position: center, 72% 72%; }
+  /* на телефоне от кадра остаётся вертикальная полоса, гасить край слева
+     нечего: обе рисованные сцены притемняются сверху и снизу */
+  html[data-background-override="true"][data-background="lake-watercolor"] { --hub-background-image: linear-gradient(180deg, rgba(4, 10, 8, .78), rgba(4, 10, 8, .5) 30%, rgba(4, 10, 8, .54) 68%, rgba(4, 10, 8, .72)), var(--lake-watercolor-image, url("./lake-watercolor.jpg")); --hub-background-position: center, 72% 70%; }
+  html[data-background-override="true"][data-background="lake-oil"] { --hub-background-image: linear-gradient(180deg, rgba(5, 9, 6, .74), rgba(5, 9, 6, .46) 30%, rgba(5, 9, 6, .5) 68%, rgba(5, 9, 6, .7)), var(--lake-oil-image, url("./lake-oil.jpg")); --hub-background-position: center, 72% 68%; }
+}

@@ -5,7 +5,7 @@ import { createDesktopMessageController } from "./desktop-message-controller.mjs
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
 
 const EXISTING_IMAGE = fileURLToPath(
-  new URL("./assets/mini-app/blackhole-blue.png", import.meta.url),
+  new URL("./assets/mini-app/themes/blackhole/blackhole-blue.png", import.meta.url),
 );
 
 function controller(overrides = {}) {

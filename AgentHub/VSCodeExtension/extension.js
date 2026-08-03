@@ -12,10 +12,6 @@ const { sidebarHtml } = require("./webview.js");
 
 const VIEW_ID = "agentHub.view";
 const THEME_KEY = "agentHub.theme";
-const THEMES = new Set([
-  "orbit", "nebula", "pulsar", "gothic", "blackhole", "taiga", "metropolis", "stormglass",
-  "magma", "meadow", "lake", "graphite", "reliquary",
-]);
 
 function relativeSegments(value) {
   return String(value ?? "")
@@ -46,15 +42,14 @@ class WorkLogViewProvider {
     this.unsubscribeJournal = null;
     this.sharedPanel = false;
     this.panelRuntimeRoot = null;
-    this.theme = THEMES.has(context.globalState.get(THEME_KEY))
-      ? context.globalState.get(THEME_KEY)
-      : "orbit";
+    this.themes = new Set(["orbit"]);
+    this.theme = String(context.globalState.get(THEME_KEY) ?? "orbit");
   }
 
   /* Тема принадлежит расширению, поэтому боковая панель и вкладка журнала
      всегда показывают одно оформление — как Mini App в Telegram. */
   async setTheme(value, from) {
-    if (!THEMES.has(value) || value === this.theme) return;
+    if (!this.themes.has(value) || value === this.theme) return;
     this.theme = value;
     await this.context.globalState.update(THEME_KEY, value);
     if (from !== "sidebar") await this.view?.webview.postMessage({ type: "theme", theme: value });
@@ -150,10 +145,13 @@ class WorkLogViewProvider {
         vscode.Uri.file(bridge.attachmentDirectory()),
       ],
     };
-    panel.webview.html = (await sharedWebviewHtml(panel.webview, {
+    const shell = await sharedWebviewHtml(panel.webview, {
       runtimeUri,
       extensionUri: this.context.extensionUri,
-    })).html;
+    });
+    this.themes = new Set(shell.themeIds);
+    if (!this.themes.has(this.theme)) this.theme = "orbit";
+    panel.webview.html = shell.html;
     this.panelRuntimeRoot = activeRuntimeRoot;
   }
 

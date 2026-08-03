@@ -1,0 +1,14 @@
+{
+  "id": "metropolis",
+  "name": "Мегаполис",
+  "color": "#050b12",
+  "order": 70,
+  "aliases": ["taiga-drops"],
+  "styles": "theme.css",
+  "scripts": "metropolis-glass.js",
+  "markup": "theme.html",
+  "backgrounds": [
+    { "id": "metropolis", "name": "Мегаполис", "asset": "metropolis-night.png" },
+    { "id": "metropolis-towers", "name": "Башни", "asset": "metropolis-towers.jpg", "particles": "rain" }
+  ]
+}

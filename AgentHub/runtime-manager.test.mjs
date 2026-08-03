@@ -19,6 +19,7 @@ async function fixture() {
   await mkdir(path.join(sourceRoot, "assets"), { recursive: true });
   await writeFile(path.join(sourceRoot, "agent-hub-server.mjs"), "export const ready = true;\n", "utf8");
   await writeFile(path.join(sourceRoot, "helper.mjs"), "export const value = 1;\n", "utf8");
+  await writeFile(path.join(sourceRoot, "helper.cjs"), "module.exports = { value: 1 };\n", "utf8");
   await writeFile(path.join(sourceRoot, "helper.test.mjs"), "throw new Error('not runtime');\n", "utf8");
   await writeFile(path.join(sourceRoot, "work-log.css"), "[data-work-log-table] { display: grid; }\n", "utf8");
   await writeFile(path.join(sourceRoot, "runtime-launch.ps1"), "node agent-hub-server.mjs\n", "utf8");
@@ -47,6 +48,7 @@ test("deployRuntime publishes an atomic release without tests or local config", 
   const first = await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
   assert.equal(JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8")).current, "release-1");
   assert.match(await readFile(path.join(first.releaseRoot, "agent-hub-server.mjs"), "utf8"), /ready/);
+  assert.match(await readFile(path.join(first.releaseRoot, "helper.cjs"), "utf8"), /module\.exports/u);
   assert.match(await readFile(path.join(first.releaseRoot, "work-log.css"), "utf8"), /display: grid/);
   assert.match(await readFile(path.join(first.releaseRoot, "install-autostart.ps1"), "utf8"), /installed/);
   if (process.platform === "win32") {

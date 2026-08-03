@@ -1,0 +1,159 @@
+/* ===================================================== тема «Туманность» === */
+
+html[data-theme="nebula"] {
+  --display-weight: 560;
+  --display-spacing: 0.005em;
+  --title-weight: 520;
+  --label-spacing: 0.2em;
+
+  --radius-lg: 26px;
+  --radius-md: 19px;
+  --radius-sm: 15px;
+  --rail-width: 3px;
+
+  --bg: #0f0819;
+  --surface-1: rgba(255, 240, 255, 0.035);
+  --surface-2: rgba(255, 236, 255, 0.062);
+  --surface-3: rgba(255, 228, 255, 0.1);
+  --sunken: rgba(24, 6, 38, 0.42);
+
+  --line: rgba(214, 168, 255, 0.11);
+  --line-strong: rgba(224, 186, 255, 0.2);
+
+  --card-bg: linear-gradient(158deg, rgba(126, 62, 186, 0.22), rgba(38, 14, 64, 0.5) 58%, rgba(20, 8, 36, 0.55));
+  --card-bg-open: linear-gradient(158deg, rgba(146, 74, 208, 0.28), rgba(44, 16, 74, 0.55) 58%, rgba(24, 9, 42, 0.6));
+  --card-border: rgba(214, 168, 255, 0.1);
+  --card-border-open: rgba(224, 186, 255, 0.2);
+  --card-shadow:
+    inset 0 1px 0 rgba(255, 236, 255, 0.09),
+    0 26px 60px -34px rgba(140, 60, 220, 0.75),
+    0 0 60px -30px rgba(255, 130, 220, 0.4);
+
+  --plate-bg: linear-gradient(150deg, rgba(255, 232, 255, 0.075), rgba(255, 220, 255, 0.03));
+  --plate-shadow: inset 0 1px 0 rgba(255, 236, 255, 0.12), 0 8px 22px -18px rgba(160, 70, 230, 0.9);
+  --turn-shadow: 0 10px 26px -22px rgba(150, 70, 220, 0.9);
+
+  --text: #f6ecff;
+  --text-soft: #d8c6ea;
+  --text-muted: #ac98be;
+  --text-faint: #837093;
+
+  --accent: #d79bff;
+  --accent-soft: rgba(215, 155, 255, 0.16);
+  --accent-line: rgba(215, 155, 255, 0.42);
+  --accent-glow: 0 0 26px -8px rgba(215, 155, 255, 0.95);
+  --selection: rgba(215, 155, 255, 0.32);
+  --brand-gradient: radial-gradient(circle at 32% 26%, rgba(255, 190, 245, 0.45), transparent 58%),
+    linear-gradient(150deg, rgba(196, 106, 255, 0.4), rgba(72, 96, 255, 0.3));
+  --brand-shadow: 0 10px 26px -12px rgba(200, 110, 255, 0.9);
+
+  --provider-codex: #8fb8ff;
+  --provider-claude: #ff9ec4;
+
+  --ok: #7ff0c8;
+  --pending: #ffc98a;
+
+  --dot-input: #8fb8ff;
+  --dot-cache: #7ff0c8;
+  --dot-output: #ffc98a;
+  --dot-think: #e79bff;
+
+  --space-glow-a: rgba(196, 74, 255, 0.3);
+  --space-glow-b: rgba(60, 118, 255, 0.24);
+  --space-base: linear-gradient(180deg, #1b0d2c 0, var(--bg) 38rem);
+  --space-star: rgba(240, 212, 255, 0.5);
+  --star-opacity: 0.5;
+}
+
+/* ============================== «Туманность»: облака и мягкие разделители === */
+
+html[data-theme="nebula"] {
+  --nebula-image: url("./nebula-veil.png");
+}
+
+/* Снимок заменил нарисованные пятна: рукава газа и звёздная россыпь дают ту
+   же глубину без blur, который раньше съедал детали. */
+html[data-theme="nebula"] body::after {
+  background-color: #0b0616;
+  background-image:
+    radial-gradient(46% 34% at 78% 26%, rgba(120, 92, 255, 0.12), transparent 72%),
+    var(--nebula-image);
+  background-position: center, 60% 46%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+html[data-theme="nebula"] .journal details[data-work-log-day-section] {
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+
+html[data-theme="nebula"] .journal div[data-work-log-body] > div[data-work-log-row] {
+  border-bottom-color: transparent;
+  border-image: linear-gradient(90deg, transparent, var(--line-strong) 22%, var(--line-strong) 78%, transparent) 1;
+}
+
+html[data-theme="nebula"] .journal span[data-work-log-turn-title],
+html[data-theme="nebula"] .journal summary[data-task-usage],
+html[data-theme="nebula"] .journal span[data-task-usage-breakdown] {
+  border-color: transparent;
+}
+
+html[data-theme="nebula"] .journal details[data-work-log-turn-details] {
+  border-color: transparent;
+  box-shadow: var(--turn-shadow);
+}
+
+html[data-theme="nebula"] .journal details[data-work-log-turn-details]:hover {
+  border-color: var(--line-strong);
+}
+
+html[data-theme="nebula"] .journal summary[data-work-log-day] > strong {
+  text-shadow: 0 0 22px rgba(215, 155, 255, 0.55);
+}
+
+/* «Туманность»: газ дышит — самый медленный эффект во всём наборе */
+@keyframes nebula-drift {
+  0%, 100% { background-position: 62% 42%; opacity: 0.22; transform: scale(1.02); }
+  50% { background-position: 78% 34%; opacity: 0.72; transform: scale(1.08); }
+}
+
+html[data-theme="nebula"] body::before {
+  animation: nebula-drift 30s ease-in-out infinite;
+  background-image:
+    radial-gradient(70% 56% at 72% 38%, rgba(198, 150, 255, 0.32), rgba(120, 92, 255, 0.12) 48%, transparent 76%);
+  background-size: cover;
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.3;
+}
+
+html[data-background-override="true"][data-background="nebula"] { --nebula-image: url("./nebula-veil.png"); --hub-background-color: #0b0616; --hub-background-image: radial-gradient(46% 34% at 78% 26%, rgba(120, 92, 255, .12), transparent 72%), var(--nebula-image); --hub-background-position: center, 60% 46%; }
+html[data-background-override="true"][data-background="nebula-core"] { --hub-background-color: #0a0614; --hub-background-image: linear-gradient(90deg, rgba(6, 4, 12, .32), rgba(6, 4, 12, 0) 44%), var(--nebula-core-image, url("./nebula-core.jpg")); --hub-background-position: center, 58% 48%; }
+
+html[data-background-override="true"][data-background="orbit-limb"] body::before,
+html[data-background-override="true"][data-background="nebula-core"] body::before,
+html[data-background-override="true"][data-background="pulsar-beam"] body::before,
+html[data-background-override="true"][data-background="blackhole-disk"] body::before,
+html[data-background-override="true"][data-background="magma-flow"] body::before,
+html[data-background-override="true"][data-background="meadow-goldenhour"] body::before {
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-size: cover !important;
+  content: "" !important;
+  mask-image: none !important;
+  mix-blend-mode: screen !important;
+  opacity: 0.4 !important;
+}
+
+html[data-background-override="true"][data-background="nebula-core"] body::before {
+  animation: scene-glow 26s ease-in-out infinite !important;
+  background-image: radial-gradient(40% 34% at 58% 42%, rgba(196, 130, 255, 0.26), transparent 74%) !important;
+}
+
+@media (max-width: 720px) {html[data-background-override="true"][data-background="nebula-core"] { --hub-background-position: center, 62% 46%; }
+}

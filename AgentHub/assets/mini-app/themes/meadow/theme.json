@@ -1,0 +1,11 @@
+{
+  "id": "meadow",
+  "name": "Луг",
+  "color": "#070d08",
+  "order": 100,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "meadow", "name": "Луг", "asset": "meadow-sun.png" },
+    { "id": "meadow-goldenhour", "name": "Закат", "asset": "meadow-goldenhour.jpg" }
+  ]
+}

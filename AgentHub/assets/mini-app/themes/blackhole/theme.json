@@ -1,0 +1,11 @@
+{
+  "id": "blackhole",
+  "name": "BlackHole",
+  "color": "#000000",
+  "order": 50,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "blackhole", "name": "BlackHole", "asset": "blackhole-blue.png" },
+    { "id": "blackhole-disk", "name": "Диск", "asset": "blackhole-disk.jpg" }
+  ]
+}

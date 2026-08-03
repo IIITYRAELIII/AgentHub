@@ -1,0 +1,193 @@
+/* ====================================================== тема «BlackHole» === */
+
+html[data-theme="blackhole"] {
+  --display-weight: 600;
+  --display-spacing: 0.02em;
+  --label-spacing: 0.2em;
+
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+  --rail-width: 2px;
+
+  --bg: #000000;
+  --surface-1: rgba(232, 238, 252, 0.026);
+  --surface-2: rgba(232, 238, 252, 0.05);
+  --surface-3: rgba(232, 238, 252, 0.085);
+  --sunken: rgba(0, 0, 0, 0.6);
+
+  --line: rgba(226, 232, 244, 0.12);
+  --line-strong: rgba(226, 232, 244, 0.26);
+
+  --card-bg: linear-gradient(180deg, rgba(8, 10, 14, 0.9), rgba(0, 0, 0, 0.94));
+  --card-bg-open: linear-gradient(180deg, rgba(11, 14, 20, 0.92), rgba(0, 0, 0, 0.95));
+  --card-border: rgba(226, 236, 255, 0.14);
+  --card-border-open: rgba(122, 190, 255, 0.36);
+  --card-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 42px -22px rgba(96, 176, 255, 0.6),
+    0 30px 60px -34px rgba(0, 0, 0, 1);
+
+  --plate-bg: linear-gradient(180deg, rgba(226, 238, 255, 0.06), rgba(0, 0, 0, 0.35));
+  --plate-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --turn-shadow: 0 0 26px -18px rgba(110, 186, 255, 0.9);
+
+  --text: #f2f6fd;
+  --text-soft: #c0c9da;
+  --text-muted: #8a93a5;
+  --text-faint: #626b7c;
+
+  --accent: #9ecbff;
+  --accent-soft: rgba(158, 203, 255, 0.12);
+  --accent-line: rgba(158, 203, 255, 0.42);
+  --accent-glow: 0 0 22px -8px rgba(140, 200, 255, 0.95);
+  --selection: rgba(110, 186, 255, 0.32);
+  --brand-gradient:
+    radial-gradient(circle at 50% 50%, #000 0 36%, rgba(150, 205, 255, 0.95) 44%,
+      rgba(70, 140, 255, 0.5) 64%, rgba(0, 0, 0, 0.92) 88%);
+  --brand-shadow: 0 0 26px -8px rgba(110, 186, 255, 0.95);
+
+  --provider-none: #7c8494;
+  --provider-codex: #9ecbff;
+  --provider-claude: #c9a6ff;
+
+  --ok: #a9d6ff;
+  --pending: #7c8494;
+
+  --dot-input: #9ecbff;
+  --dot-cache: #7ee3ff;
+  --dot-output: #eef4ff;
+  --dot-think: #c9a6ff;
+
+  --space-glow-a: rgba(70, 150, 255, 0.1);
+  --space-glow-b: rgba(120, 90, 220, 0.08);
+  --space-base: radial-gradient(120% 80% at 50% -6%, #04060c 0, #000 62%);
+  --space-star: rgba(240, 248, 255, 0.5);
+  --star-opacity: 0.32;
+}
+
+/* ============================ «BlackHole»: аккреционный диск и горизонт === */
+
+/* Фон — готовый рендер, а не рисунок из градиентов: закрученную плазму диска
+   и линзирование CSS воспроизвести не может. Слой закреплён во вьюпорте и
+   лежит под контентом (main имеет z-index: 1). Относительный путь одинаково
+   разрешается браузером, Worker и панелью VS Code. */
+html[data-theme="blackhole"] {
+  --bh-image: url("./blackhole-blue.png");
+}
+
+html[data-theme="blackhole"] body::after {
+  background-color: #000;
+  background-image: var(--bh-image);
+  background-position: 50% 42%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 0.92;
+}
+
+/* звёздная пыль поверх готового рендера была бы лишней */
+/* сквозь панели видно диск: тёмное стекло вместо глухой заливки */
+html[data-theme="blackhole"] .app-header {
+  background: rgba(0, 0, 0, 0.62);
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-day-section] {
+  /* лёгкое размытие: сильное стирало бы фотонное кольцо под панелью */
+  backdrop-filter: blur(6px) saturate(130%);
+  -webkit-backdrop-filter: blur(6px) saturate(130%);
+  background-color: rgba(2, 4, 8, 0.54);
+  background-image: none;
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-day-section][open] {
+  background-color: rgba(2, 4, 8, 0.56);
+  background-image: none;
+}
+
+/* карточки ходов тоже стеклянные, иначе диск гаснет под сплошной заливкой */
+html[data-theme="blackhole"] .journal details[data-work-log-turn-details] {
+  background-color: rgba(6, 10, 16, 0.42);
+  background-image: none;
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-turn-details]:hover {
+  background-color: rgba(10, 16, 24, 0.55);
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-turn-details][open] {
+  background-color: rgba(6, 10, 16, 0.62);
+}
+
+html[data-theme="blackhole"] .app-header::after {
+  background: linear-gradient(90deg, transparent, rgba(150, 205, 255, 0.75), transparent);
+}
+
+html[data-theme="blackhole"] .brand-mark {
+  border-color: rgba(150, 205, 255, 0.5);
+  color: #cfe6ff;
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-day-section][open] {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 0 54px -20px rgba(96, 176, 255, 0.8),
+    0 30px 60px -34px rgba(0, 0, 0, 1);
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-turn-details][open] {
+  border-color: rgba(150, 205, 255, 0.44);
+  box-shadow: inset var(--rail-width) 0 0 #9ecbff, 0 0 30px -18px rgba(120, 190, 255, 1);
+}
+
+html[data-theme="blackhole"] .journal span[data-day-usage] {
+  border-color: rgba(150, 205, 255, 0.44);
+  box-shadow: var(--plate-shadow), 0 0 22px -10px rgba(120, 190, 255, 0.95);
+}
+
+/* «Чёрная дыра»: диск неровно светит — заметная, но неритмичная дрожь */
+@keyframes blackhole-flicker {
+  0%, 100% { opacity: 0.2; transform: scale(1.01); }
+  22% { opacity: 0.62; transform: scale(1.04); }
+  38% { opacity: 0.28; transform: scale(1.025); }
+  61% { opacity: 0.72; transform: scale(1.055); }
+  79% { opacity: 0.34; transform: scale(1.035); }
+}
+
+html[data-theme="blackhole"] body::before {
+  animation: blackhole-flicker 8s ease-in-out infinite;
+  background-image:
+    radial-gradient(44% 40% at 50% 48%, rgba(150, 205, 255, 0.3), rgba(70, 140, 255, 0.1) 52%, transparent 74%);
+  background-size: cover;
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.3;
+}
+
+html[data-background-override="true"][data-background="blackhole"] { --bh-image: url("./blackhole-blue.png"); --hub-background-color: #000; --hub-background-image: var(--bh-image); --hub-background-position: 50% 42%; }
+html[data-background-override="true"][data-background="blackhole-disk"] { --hub-background-color: #000; --hub-background-image: var(--blackhole-disk-image, url("./blackhole-disk.jpg")); --hub-background-position: 56% 48%; }
+
+html[data-background-override="true"][data-background="orbit-limb"] body::before,
+html[data-background-override="true"][data-background="nebula-core"] body::before,
+html[data-background-override="true"][data-background="pulsar-beam"] body::before,
+html[data-background-override="true"][data-background="blackhole-disk"] body::before,
+html[data-background-override="true"][data-background="magma-flow"] body::before,
+html[data-background-override="true"][data-background="meadow-goldenhour"] body::before {
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-size: cover !important;
+  content: "" !important;
+  mask-image: none !important;
+  mix-blend-mode: screen !important;
+  opacity: 0.4 !important;
+}
+
+html[data-background-override="true"][data-background="blackhole-disk"] body::before {
+  animation: scene-glow 34s ease-in-out infinite !important;
+  background-image: radial-gradient(34% 22% at 62% 48%, rgba(158, 203, 255, 0.2), transparent 74%) !important;
+}
+
+@media (max-width: 720px) {html[data-background-override="true"][data-background="blackhole-disk"] { --hub-background-position: 60% 46%; }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "gothic",
+  "name": "Gothic",
+  "color": "#060708",
+  "order": 40,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "gothic", "name": "Склеп", "asset": "gothic-concrete.png", "particles": "motes" },
+    { "id": "gothic-crypt", "name": "Крипта", "asset": "gothic-crypt.jpg", "particles": "motes" },
+    { "id": "gothic-tower", "name": "Башня", "asset": "gothic-tower.jpg" },
+    { "id": "gothic-harbor", "name": "Гавань", "asset": "gothic-harbor.jpg", "particles": "rain" },
+    { "id": "gothic-chapel", "name": "Часовня", "asset": "gothic-chapel.jpg", "particles": "motes" },
+    { "id": "gothic-keep", "name": "Крепость", "asset": "gothic-keep.jpg" },
+    { "id": "gothic-minental-castle", "name": "Монастырь", "asset": "gothic-minental-castle.jpg", "preload": true },
+    { "id": "gothic-minental-fortress", "name": "Замок Миненталя", "asset": "gothic-minental-fortress.jpg", "preload": true },
+    { "id": "gothic-finkregh", "name": "Финкрегх", "asset": "gothic-finkregh.jpg", "preload": true }
+  ]
+}

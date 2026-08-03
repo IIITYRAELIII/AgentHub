@@ -1,0 +1,11 @@
+{
+  "id": "pulsar",
+  "name": "Пульсар",
+  "color": "#03151a",
+  "order": 30,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "pulsar", "name": "Пульсар", "asset": "pulsar-beams.png" },
+    { "id": "pulsar-beam", "name": "Луч", "asset": "pulsar-beam.jpg" }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "nebula",
+  "name": "Туманность",
+  "color": "#0f0819",
+  "order": 20,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "nebula", "name": "Туманность", "asset": "nebula-veil.png" },
+    { "id": "nebula-core", "name": "Ядро", "asset": "nebula-core.jpg" }
+  ]
+}
