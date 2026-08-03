@@ -85,5 +85,6 @@ test("message receipt result can follow a deferred message into an active run", 
     threadId: "thread-1",
     turnId: "turn-1",
   })?.clientUserMessageId, "client-1");
+  assert.equal(registry.findByResultId("queued-1")?.clientUserMessageId, "client-1");
   assert.equal(registry.updateResult({ ...identity, clientUserMessageId: "missing" }, {}), false);
 });

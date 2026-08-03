@@ -57,6 +57,18 @@ export class DeferredInputController {
     this.timers.set(item.id, timer);
   }
 
+  cancelSchedule(id) {
+    const timer = this.timers.get(id);
+    if (timer == null) return false;
+    this.clearTimeoutImpl(timer);
+    this.timers.delete(id);
+    return true;
+  }
+
+  isProcessing(id) {
+    return this.processing.has(id);
+  }
+
   async process(id) {
     const item = this.queuedInputs.get(id);
     if (!item || this.processing.has(id)) return;

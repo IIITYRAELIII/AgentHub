@@ -526,6 +526,23 @@ test("an undated optimistic message remains after dated history", () => {
   assert.deepEqual(values.map((item) => item.id), ["history", "pending", "undated-agent"]);
 });
 
+test("undated historical turns keep their server order between dated turns", () => {
+  const values = lifecycle.chronologicalMessages([
+    { id: "undated-before", role: "agent", turnId: "31", time: null, historyOrder: 31_001 },
+    { id: "dated-user", role: "user", turnId: "32", time: "2026-08-02T19:00:17.902Z", historyOrder: 32_000 },
+    { id: "dated-agent", role: "agent", turnId: "32", time: null, historyOrder: 32_001 },
+    { id: "dated-later", role: "agent", turnId: "34", time: "2026-08-02T19:55:25.340Z", historyOrder: 34_001 },
+    { id: "undated-after", role: "agent", turnId: "35", time: null, historyOrder: 35_001 },
+  ]);
+  assert.deepEqual(values.map((item) => item.id), [
+    "undated-before",
+    "dated-user",
+    "dated-agent",
+    "dated-later",
+    "undated-after",
+  ]);
+});
+
 test("interrupted turns keep their persisted partial response visible", () => {
   assert.equal(lifecycle.historicalAgentResponseVisible({
     active: false,

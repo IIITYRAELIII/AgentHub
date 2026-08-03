@@ -755,7 +755,10 @@ function recordTransientConnectionFailure() {
 
 function historyMessages(history, focusedTurn = null) {
   const messages = [];
-  for (const item of history?.items ?? []) {
+  const historyStart = Number.isSafeInteger(Number(history?.start))
+    ? Number(history.start)
+    : 0;
+  for (const [itemIndex, item] of (history?.items ?? []).entries()) {
     const itemMessages = Array.isArray(item.messages) ? item.messages : [];
     const userMessages = itemMessages.filter((message) => message.role === "user");
     const agentMessages = itemMessages.filter((message) => message.role === "agent");
@@ -777,7 +780,7 @@ function historyMessages(history, focusedTurn = null) {
         text: item.answer,
       }] : []),
     ];
-    for (const message of visible) messages.push({
+    for (const [messageIndex, message] of visible.entries()) messages.push({
       id: `${history.provider}:${history.threadId}:${item.id}:${message.itemId}:${message.role}`,
       provider: history.provider,
       threadId: history.threadId,
@@ -795,6 +798,7 @@ function historyMessages(history, focusedTurn = null) {
       } : {}),
       activities: message.role === "agent" && item.completed ? (item.activities ?? []) : [],
       time: message.time ?? (message.role === "user" ? item.startedAt : item.completedAt) ?? null,
+      historyOrder: (historyStart + itemIndex) * 1_000 + messageIndex,
       attachments: attachmentViews(message.attachments),
     });
   }
@@ -1228,6 +1232,16 @@ agentHub.on("queue:accept", ({ id }) => runAction(async () => {
   const result = await control("deferred-input", { id, action: "queue" });
   applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Сообщение будет отправлено после текущего хода");
+}));
+agentHub.on("queue:steer", ({ id }) => runAction(async () => {
+  const result = await control("deferred-input", { id, action: "steer" });
+  applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Сообщение добавлено в текущий ход");
+}));
+agentHub.on("queue:edit", ({ id, text }) => runAction(async () => {
+  const result = await control("deferred-input", { id, action: "edit", text });
+  applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Сообщение в очереди изменено");
 }));
 agentHub.on("tts:play", () => runAction(() => control("speak-last-answer", exactSelectedTaskParams())));
 agentHub.on("attachment:open", ({ attachment }) => runAction(async () => {

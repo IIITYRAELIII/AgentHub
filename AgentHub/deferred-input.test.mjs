@@ -1,5 +1,41 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+
+import {
+  deferredEditableText,
+  deferredResponseAnnotations,
+  replaceDeferredInputText,
+} from "./deferred-input.mjs";
+
+test("editing a queued message preserves its response annotations and image input", () => {
+  const input = [
+    {
+      type: "text",
+      text: "# Response annotations:\n"
+        + "<response-annotations>\n"
+        + "[{\"text\":\"важный фрагмент\",\"annotation\":\"проверь\"}]\n"
+        + "</response-annotations>\n\n"
+        + "## My request for Codex:\nстарый текст",
+    },
+    { type: "localImage", path: "C:\\runtime\\message.png" },
+  ];
+
+  const edited = replaceDeferredInputText(input, "новый текст");
+  assert.equal(deferredEditableText(edited), "новый текст");
+  assert.deepEqual(deferredResponseAnnotations(edited)?.annotations, [
+    { text: "важный фрагмент", annotation: "проверь" },
+  ]);
+  assert.deepEqual(edited[1], input[1]);
+});
+
+test("editing an image-only queued message can add text", () => {
+  const image = { type: "localImage", path: "C:\\runtime\\message.png" };
+  const edited = replaceDeferredInputText([image], "добавленный текст");
+  assert.deepEqual(edited, [
+    { type: "text", text: "добавленный текст" },
+    image,
+  ]);
+});
 import {
   parsePendingInputCallback,
   pendingInputKeyboard,

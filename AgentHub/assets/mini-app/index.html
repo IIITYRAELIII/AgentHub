@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/backgrounds.css">
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <script src="/browser-device-auth.js" defer></script>
+  <script src="/message-disclosure.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/metropolis-glass.js" defer></script>
   <script src="/storm-glass.js" defer></script>
@@ -366,10 +367,6 @@
                 placeholder="Сообщение агенту…"
                 aria-label="Сообщение агенту"></textarea>
             </label>
-            <button type="button" class="chip-button" data-follow-up-mode hidden
-              title="Что сделать с сообщением, пока текущий ход выполняется">
-              В очередь
-            </button>
             <button type="button" class="context-usage" data-action="context-compact"
               data-context-usage hidden title="Заполнение контекста">
               <span class="context-ring" data-context-ring aria-hidden="true"></span>
@@ -802,6 +799,7 @@
     <form data-text-dialog-form>
       <label class="text-dialog-label" data-text-dialog-title>Название задачи</label>
       <input type="text" data-text-dialog-input autocomplete="off">
+      <textarea data-text-dialog-textarea rows="8" hidden></textarea>
       <div class="text-dialog-actions">
         <button type="button" class="chip-button" data-text-dialog-cancel>Отмена</button>
         <button type="submit" class="chip-button primary" data-text-dialog-ok>Готово</button>

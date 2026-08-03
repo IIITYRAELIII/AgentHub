@@ -5646,6 +5646,28 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   white-space: pre-wrap;
 }
 
+.msg-user .msg-body.is-collapsed {
+  max-height: var(--user-message-collapse-height, 264px);
+  overflow: hidden;
+}
+
+.msg-disclosure {
+  align-self: flex-end;
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  margin: 0.42rem 0 0 auto;
+  padding: 0.18rem 0;
+}
+
+.msg-disclosure:hover,
+.msg-disclosure:focus-visible {
+  text-decoration: underline;
+}
+
 .msg-reasoning {
   border-left: 2px solid var(--accent-line);
   color: var(--text-muted);
@@ -5853,6 +5875,12 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   white-space: nowrap;
 }
 
+.queue-annotations {
+  color: var(--text-faint);
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+}
+
 .queue-actions {
   align-items: center;
   display: inline-flex;
@@ -5860,7 +5888,9 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   gap: 0.25rem;
 }
 
-.queue-accept {
+.queue-accept,
+.queue-steer,
+.queue-edit {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   border: 1px solid var(--accent-line);
   border-radius: var(--radius-chip);
@@ -5871,8 +5901,15 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   padding: 0.2rem 0.55rem;
 }
 
-.queue-accept:hover {
+.queue-accept:hover,
+.queue-steer:hover,
+.queue-edit:hover {
   color: var(--text);
+}
+
+.queue-steer:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
 }
 
 .queue-remove,
@@ -6970,7 +7007,8 @@ html[data-token-breakdown="off"] .journal span[data-day-usage-breakdown] {
   margin-bottom: 0.5rem;
 }
 
-.text-dialog input {
+.text-dialog input,
+.text-dialog textarea {
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -6980,7 +7018,8 @@ html[data-token-breakdown="off"] .journal span[data-day-usage-breakdown] {
   width: 100%;
 }
 
-.text-dialog input:focus {
+.text-dialog input:focus,
+.text-dialog textarea:focus {
   border-color: var(--accent-line);
   outline: none;
 }
@@ -7514,7 +7553,6 @@ html[data-surface="mobile"] .composer-input {
 
 html[data-surface="mobile"] .composer-slash,
 html[data-surface="mobile"] .composer-attach,
-html[data-surface="mobile"] [data-follow-up-mode],
 html[data-surface="mobile"] .context-usage,
 html[data-surface="mobile"] .composer-send {
   grid-row: 2;

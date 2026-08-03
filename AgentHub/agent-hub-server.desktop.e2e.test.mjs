@@ -309,11 +309,22 @@ test("desktop client survives App Server exit during delayed startup and shares 
   assert.equal(deferredSnapshot.deferredInputs.length, 1);
   assert.equal(deferredSnapshot.deferredInputs[0].provider, "codex");
   assert.equal(deferredSnapshot.deferredInputs[0].threadId, firstThreadId);
-  const cancelledDeferred = await callDesktopControl("deferred-input", {
+  const editedDeferred = await callDesktopControl("deferred-input", {
     id: duplicate.id,
-    action: "cancel",
+    action: "edit",
+    text: "parallel duplicate, edited",
   }, { runtimeRoot });
-  assert.equal(cancelledDeferred.accepted, true);
+  assert.equal(editedDeferred.accepted, true);
+  assert.equal((await callDesktopControl("snapshot", {}, { runtimeRoot }))
+    .deferredInputs.find((item) => item.id === duplicate.id)?.text, "parallel duplicate, edited");
+  const [steeredQueued, duplicateSteer] = await Promise.all([
+    callDesktopControl("deferred-input", { id: duplicate.id, action: "steer" }, { runtimeRoot }),
+    callDesktopControl("deferred-input", { id: duplicate.id, action: "steer" }, { runtimeRoot }),
+  ]);
+  assert.equal(steeredQueued.accepted, true);
+  assert.equal(duplicateSteer.accepted, true);
+  assert.equal(steeredQueued.clientUserMessageId, duplicate.clientUserMessageId);
+  assert.equal(duplicateSteer.turnId, firstStart.turnId);
   assert.equal((await callDesktopControl("snapshot", {}, { runtimeRoot })).deferredInputs.length, 0);
 
   const secondTask = await callDesktopControl("new-task", { provider: "codex" }, { runtimeRoot });
@@ -371,6 +382,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
   assert.deepEqual(userMessages.map((item) => item.clientUserMessageId), [
     firstMessageId,
     steerMessageId,
+    duplicate.clientUserMessageId,
   ]);
   assert.ok(userMessages.every((item) => (
     item.itemId && item.itemId !== item.clientUserMessageId

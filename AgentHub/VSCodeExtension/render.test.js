@@ -65,7 +65,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "mini-app");
   const runtimeAssets = path.join(runtimeRoot, "assets", "mini-app");
   const required = [
-    "app.js", "metropolis-glass.js", "storm-glass.js", "message-lifecycle.js", "hub-client.js",
+    "message-disclosure.js", "app.js", "metropolis-glass.js", "storm-glass.js", "message-lifecycle.js", "hub-client.js",
     "styles.css", "backgrounds.css",
   ];
   try {
@@ -806,6 +806,7 @@ test("chat shows sent messages immediately and reconciles them by exact identity
   assert.match(client, /completedConversationTurnVisible\(durableMessages/u);
   assert.match(client, /chronologicalMessages\(visibleConversationMessages/u);
   assert.match(client, /historicalAgentResponseVisible\(item\)/u);
+  assert.match(client, /historyOrder:\s*\(historyStart \+ itemIndex\) \* 1_000 \+ messageIndex/u);
 });
 
 test("chat long-polls commands and skips unchanged history renders", () => {
@@ -1044,13 +1045,21 @@ test("shared chat Markdown renders GFM tables responsively", () => {
   assert.match(styles, /\.markdown-table[\s\S]*border-collapse: collapse;/u);
 });
 
-test("deferred messages show their preview and can be queued after the active turn", () => {
+test("queued messages own steering and editing while the composer always queues", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const lifecycle = fs.readFileSync(require.resolve("../assets/mini-app/message-lifecycle.js"), "utf8");
   assert.match(app, /entry\.text \|\| entry\.preview \|\| entry\.summary/u);
+  assert.match(app, /data-action": "queue-steer"/u);
+  assert.match(app, /data-action": "queue-edit"/u);
+  assert.match(app, /followUpMode: currentTask\(\)\?\.running \? "queue" : null/u);
+  assert.doesNotMatch(app, /followUpModeButton|renderFollowUpMode|Изменить ход/u);
+  assert.doesNotMatch(html, /data-follow-up-mode/u);
   assert.match(app, /text: "После хода"/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "queue" \}\)/u);
+  assert.match(client, /control\("deferred-input", \{ id, action: "steer" \}\)/u);
+  assert.match(client, /control\("deferred-input", \{ id, action: "edit", text \}\)/u);
   assert.match(client, /deferredClientUserMessageIds = new Set\(/u);
   assert.match(
     lifecycle,

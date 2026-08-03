@@ -414,14 +414,51 @@ function mergeLiveUserMessages(messages, {
 
 function chronologicalMessages(messages) {
   const decorated = (Array.isArray(messages) ? messages : [])
-    .map((message, index) => ({ message, index, time: Date.parse(message?.time ?? "") }));
+    .map((message, index) => ({
+      message,
+      index,
+      time: Date.parse(message?.time ?? ""),
+      historyOrder: message?.historyOrder == null
+        ? Number.NaN
+        : Number(message.historyOrder),
+    }));
   const turnTimes = new Map();
+  const historyTurnOrders = new Map();
   for (const item of decorated) {
-    if (!Number.isFinite(item.time)) continue;
     const turnId = String(item.message?.turnId ?? "");
     if (!turnId) continue;
-    const previous = turnTimes.get(turnId);
-    turnTimes.set(turnId, previous == null ? item.time : Math.min(previous, item.time));
+    if (Number.isFinite(item.time)) {
+      const previous = turnTimes.get(turnId);
+      turnTimes.set(turnId, previous == null ? item.time : Math.min(previous, item.time));
+    }
+    if (Number.isFinite(item.historyOrder)) {
+      const previous = historyTurnOrders.get(turnId);
+      historyTurnOrders.set(
+        turnId,
+        previous == null ? item.historyOrder : Math.min(previous, item.historyOrder),
+      );
+    }
+  }
+  const orderedHistoryTurns = [...historyTurnOrders]
+    .map(([turnId, order]) => ({ turnId, order, time: turnTimes.get(turnId) }))
+    .sort((left, right) => left.order - right.order);
+  const anchors = orderedHistoryTurns.filter((turn) => Number.isFinite(turn.time));
+  for (const turn of orderedHistoryTurns) {
+    if (Number.isFinite(turn.time)) continue;
+    const previous = anchors.findLast((anchor) => anchor.order < turn.order);
+    const next = anchors.find((anchor) => anchor.order > turn.order);
+    if (previous && next) {
+      const span = next.order - previous.order;
+      turn.time = previous.time
+        + ((next.time - previous.time) * (turn.order - previous.order)) / span;
+    } else if (previous) {
+      turn.time = previous.time + Math.max(1, turn.order - previous.order);
+    } else if (next) {
+      turn.time = next.time - Math.max(1, next.order - turn.order);
+    } else {
+      turn.time = turn.order;
+    }
+    turnTimes.set(turn.turnId, turn.time);
   }
   for (const item of decorated) {
     if (Number.isFinite(item.time)) continue;

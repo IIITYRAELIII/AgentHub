@@ -1,3 +1,54 @@
+export function deferredInputText(input) {
+  return typeof input === "string"
+    ? input
+    : (Array.isArray(input) ? input : [])
+      .filter((part) => part?.type === "text")
+      .map((part) => String(part.text ?? ""))
+      .join("\n");
+}
+
+export function deferredResponseAnnotations(input) {
+  const text = deferredInputText(input);
+  const block = text.match(/<response-annotations>\s*([\s\S]*?)\s*<\/response-annotations>/iu);
+  const marker = /^##\s*My request for Codex:\s*$/imu;
+  if (!block || !marker.test(text)) return null;
+  try {
+    const annotations = JSON.parse(block[1]);
+    if (!Array.isArray(annotations)) return null;
+    return {
+      annotations,
+      request: text.split(marker).slice(1).join("\n").trim(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function deferredEditableText(input) {
+  return deferredResponseAnnotations(input)?.request ?? deferredInputText(input).trim();
+}
+
+export function replaceDeferredInputText(input, text) {
+  const replacement = String(text ?? "").trim();
+  const replace = (value) => {
+    const source = String(value ?? "");
+    const marker = /^##\s*My request for Codex:\s*$/imu;
+    if (!deferredResponseAnnotations(source) || !marker.test(source)) return replacement;
+    const match = marker.exec(source);
+    return `${source.slice(0, match.index + match[0].length)}\n${replacement}`;
+  };
+  if (typeof input === "string") return replace(input);
+  let replaced = false;
+  const parts = (Array.isArray(input) ? input : []).map((part) => {
+    if (replaced || part?.type !== "text") return part;
+    replaced = true;
+    return { ...part, text: replace(part.text) };
+  });
+  return !replaced && replacement
+    ? [{ type: "text", text: replacement }, ...parts]
+    : parts;
+}
+
 export function pendingInputKeyboard(id, { allowForce = false } = {}) {
   const value = String(id ?? "").trim();
   if (!/^[0-9a-f-]+$/i.test(value)) throw new Error("invalid pending input id");

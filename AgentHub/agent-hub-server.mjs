@@ -98,7 +98,13 @@ import {
 } from "./task-git-diff.mjs";
 import { TaskDiffStore } from "./task-diff-store.mjs";
 import { findRepositoryWriteConflict } from "./repository-conflict.mjs";
-import { pendingInputKeyboard, restoreDeferredInput } from "./deferred-input.mjs";
+import {
+  deferredEditableText,
+  deferredResponseAnnotations,
+  pendingInputKeyboard,
+  replaceDeferredInputText,
+  restoreDeferredInput,
+} from "./deferred-input.mjs";
 import {
   appendMessageBindings,
   findMessageBinding,
@@ -202,6 +208,7 @@ import {
 } from "./task-catalog.mjs";
 import {
   codexObservedRuntimeActive,
+  resolveCodexTaskActivity,
   resolveCodexObservedExecutionOwner,
 } from "./codex-runtime-owner.mjs";
 import { CodexRolloutContextSanitizer } from "./codex-rollout-context.mjs";
@@ -671,6 +678,7 @@ const pendingInputs = new Map();
 const forwardBundles = new Map();
 const gitRepoRoots = new Map();
 const queuedInputs = new Map();
+const deferredInputActions = new Map();
 const desktopMessageReceipts = new MessageReceiptRegistry();
 const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
 await taskDiffs.load();
@@ -1038,7 +1046,7 @@ async function bindIncomingTaskMessage(message, text, target = null) {
     createdAt: new Date((Number(message.date) || Math.floor(Date.now() / 1000)) * 1000).toISOString(),
     kind: "incoming-user",
     role: "user",
-    text: String(text ?? "").trim().slice(0, 12000),
+    text: String(text ?? "").trim(),
   };
   bindingWriteQueue = bindingWriteQueue
     .catch(() => {})
@@ -1408,7 +1416,7 @@ function applyCodexRolloutContext(run, usageResult) {
   if (usageResult.startedAt) run.startedAt = usageResult.startedAt;
   if (usageResult.model) run.modelId = usageResult.model;
   if (usageResult.serviceTier) run.serviceTier = usageResult.serviceTier;
-  if (usageResult.prompt) run.promptPreview = String(usageResult.prompt).slice(0, 100_000);
+  if (usageResult.prompt) run.promptPreview = String(usageResult.prompt);
   if (usageResult.toolMetricsKnown === true) {
     run.skillsUsed = [...new Set(usageResult.skillsUsed ?? [])];
     run.mcpCalls = Array.isArray(usageResult.mcpCalls) ? usageResult.mcpCalls : [];
@@ -2972,6 +2980,8 @@ const {
     pendingValues: () => [...pendingInputs.values()],
     queuedValues: () => [...queuedInputs.values()],
     inputPreview,
+    editableText: deferredEditableText,
+    responseAnnotations: (input) => deferredResponseAnnotations(input)?.annotations ?? [],
     describeAttachments: desktopAttachmentDescriptors,
   },
   receipts: {
@@ -3381,11 +3391,88 @@ async function desktopResolveApproval(params) {
   );
 }
 
+function withDeferredInputAction(id, action, operation) {
+  const key = String(id ?? "");
+  const existing = deferredInputActions.get(key);
+  if (existing) {
+    if (existing.action === action) return existing.promise;
+    return existing.promise
+      .catch(() => {})
+      .then(() => withDeferredInputAction(id, action, operation));
+  }
+  const promise = Promise.resolve().then(operation);
+  const entry = { action, promise };
+  deferredInputActions.set(key, entry);
+  return promise.finally(() => {
+    if (deferredInputActions.get(key) === entry) deferredInputActions.delete(key);
+  });
+}
+
 async function desktopDeferredInput(params) {
   const id = String(params.id ?? "");
   const action = String(params.action ?? "");
+  if (!id) throw new Error("Не указан идентификатор сообщения");
+  return withDeferredInputAction(id, action, async () => {
   const item = pendingInputs.get(id) ?? queuedInputs.get(id);
-  if (!item) throw new Error("Сохранённое сообщение уже обработано");
+  if (!item) {
+    const completed = action === "steer"
+      ? desktopMessageReceipts.findByResultId(id)?.result
+      : null;
+    if (completed?.steered === true) return completed;
+    throw new Error("Сохранённое сообщение уже обработано");
+  }
+  if (action === "edit") {
+    if (item.dispatchingAt || deferredInputController.isProcessing(id)) {
+      throw new Error("Сообщение уже отправляется и больше не может быть изменено");
+    }
+    const text = String(params.text ?? "").trim();
+    const annotations = deferredResponseAnnotations(item.input)?.annotations ?? [];
+    if (!text && !(item.temporaryFiles ?? []).length && !annotations.length) {
+      throw new Error("Введите сообщение или оставьте изображение либо аннотацию");
+    }
+    if (text.length > 100_000) throw new Error("Сообщение слишком длинное");
+    item.input = replaceDeferredInputText(item.input, text);
+    await saveState();
+    return { accepted: true, id, message: "Сообщение в очереди изменено" };
+  }
+  if (action === "steer") {
+    if (item.dispatchingAt || deferredInputController.isProcessing(id)) {
+      throw new Error("Сообщение уже отправляется; изменить текущий ход нельзя");
+    }
+    const destination = queuedInputs.has(id) ? "queued" : "pending";
+    deferredInputController.cancelSchedule(id);
+    pendingInputs.delete(id);
+    queuedInputs.delete(id);
+    item.manualAction = "steer";
+    pendingInputs.set(id, item);
+    await saveState();
+    try {
+      const result = await desktopMessageController.steerActiveInput({
+        input: item.input,
+        target: {
+          provider: item.provider,
+          projectRoot: item.projectRoot,
+          threadId: item.threadId,
+          taskTitle: item.taskTitle,
+        },
+        clientUserMessageId: item.clientUserMessageId,
+      });
+      pendingInputs.delete(id);
+      delete item.manualAction;
+      updateDeferredDesktopReceipt(item, "steered", result);
+      await saveState();
+      await updateDeferredMessage(item, "⚠️ Сообщение добавлено в текущий ход.");
+      deferredInputController.scheduleNextForTask(item);
+      return { accepted: true, ...result };
+    } catch (error) {
+      pendingInputs.delete(id);
+      delete item.manualAction;
+      (destination === "queued" ? queuedInputs : pendingInputs).set(id, item);
+      await saveState();
+      if (destination === "queued") scheduleQueuedInput(item, 500);
+      throw error;
+    }
+  }
   if (action === "cancel") {
     pendingInputs.delete(id);
     queuedInputs.delete(id);
@@ -3465,6 +3552,7 @@ async function desktopDeferredInput(params) {
     return { accepted: true, message: "Сообщение отправлено в новую задачу", snapshot: await desktopSnapshot() };
   }
   throw new Error("Неизвестное действие с сохранённым сообщением");
+  });
 }
 
 async function desktopStatusDetails() {
@@ -4337,7 +4425,7 @@ function inputPreview(input) {
   const text = typeof input === "string"
     ? input
     : input?.filter((item) => item?.type === "text").map((item) => item.text).join("\n");
-  return String(text ?? "").trim().slice(0, 500);
+  return String(text ?? "").trim();
 }
 
 function explicitSkillCandidatesFromInput(input) {
@@ -4615,15 +4703,12 @@ async function taskExternalActivity(target) {
       }
       const activity = await readCodexRolloutActivity(rolloutPath);
       const activeTurnId = selectExactActiveCodexTurnId(activity);
-      return {
-        state: threadStatus?.type === "active" || activity.running ? "active" : "inactive",
-        executionOwner: await resolveCodexObservedExecutionOwner(activity, {
+      return resolveCodexTaskActivity({ threadStatus, activity }, {
           turnId: activeTurnId,
           rolloutPath,
           agentHubPid: codexTransport.pid,
           capturedOwner: capturedCodexExecutionOwner(target.threadId, activeTurnId),
-        }),
-      };
+        });
     }
     const snapshot = await readClaudeTaskSnapshot(target.threadId);
     return {
@@ -4879,6 +4964,23 @@ function updateDeferredDesktopReceipt(item, state, started = null) {
       queued: false,
       cancelled: false,
       runId: started?.id ?? null,
+      threadId: started?.threadId ?? item.threadId,
+      turnId: started?.turnId ?? null,
+      clientUserMessageId: item.clientUserMessageId,
+      attachments: item.persistentFiles
+        ? desktopAttachmentDescriptors(item.temporaryFiles)
+        : [],
+    });
+  }
+  if (state === "steered") {
+    return desktopMessageReceipts.updateResult(identity, {
+      accepted: true,
+      deferred: false,
+      queued: false,
+      cancelled: false,
+      steered: true,
+      id: item.id,
+      runId: started?.runId ?? null,
       threadId: started?.threadId ?? item.threadId,
       turnId: started?.turnId ?? null,
       clientUserMessageId: item.clientUserMessageId,
@@ -5254,7 +5356,7 @@ async function handleRuntimeCommand(request) {
     const turnId = String(payload.turnId ?? "").trim();
     if (!turnId) throw new Error("turn-start payload is missing turnId");
     const startedAt = String(payload.startedAt ?? new Date().toISOString());
-    const prompt = String(payload.prompt ?? "").trim().slice(0, 100_000);
+    const prompt = String(payload.prompt ?? "").trim();
     const key = turnEndKey({ provider: "codex", threadId: identity.threadId, turnId });
     const existing = codexTurnStarts.get(key);
     const record = {
@@ -6105,11 +6207,11 @@ function updateObservedRun(run, snapshot) {
     run.turnId = snapshot.turnId;
     taskRuns.reindex(run);
   }
-  if (!run.promptPreview && snapshot?.prompt) run.promptPreview = String(snapshot.prompt).slice(0, 4_000);
+  if (!run.promptPreview && snapshot?.prompt) run.promptPreview = String(snapshot.prompt);
   if (Array.isArray(snapshot?.userMessages)) {
     run.userMessages = snapshot.userMessages.map((message) => ({ ...message }));
     const first = run.userMessages[0];
-    if (!run.promptPreview && first?.text) run.promptPreview = String(first.text).slice(0, 4_000);
+    if (!run.promptPreview && first?.text) run.promptPreview = String(first.text);
     if (!run.clientUserMessageId && first?.clientUserMessageId) {
       run.clientUserMessageId = String(first.clientUserMessageId);
     }

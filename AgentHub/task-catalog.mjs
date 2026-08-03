@@ -175,7 +175,7 @@ function rememberCodexUserMessage(metadata, turnId, {
     itemId: clientId || `${turnId}:rollout-user:${messages.length}`,
     ...(clientId ? { clientUserMessageId: clientId } : {}),
     role: "user",
-    text: value.slice(0, 100_000),
+    text: value,
   });
   metadata.userMessages.set(turnId, messages.slice(-20));
   while (metadata.userMessages.size > 8) {

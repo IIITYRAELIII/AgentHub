@@ -95,6 +95,19 @@ test("desktop message acknowledgement does not wait for a full snapshot", async 
   assert.equal("snapshot" in result, false);
 });
 
+test("desktop message controller forwards the complete long user message", async () => {
+  const text = "длинное сообщение ".repeat(2_000);
+  let launchedInput;
+  const messages = controller({
+    launchTurn: async (_run, input) => { launchedInput = input; },
+  });
+
+  await messages.sendMessage({ text, clientUserMessageId: "message-long" });
+
+  assert.equal(launchedInput, text.trim());
+  assert.equal(launchedInput.length, text.trim().length);
+});
+
 test("desktop message controller queues a follow-up for an active task", async () => {
   const scheduled = [];
   let deferredOptions = null;
@@ -175,6 +188,37 @@ test("desktop message controller steers the exact active Codex turn", async () =
     clientUserMessageId: "message-steer",
     text: "уточнение",
   }]);
+});
+
+test("a queued image message steers with its stable client id", async () => {
+  const run = { id: "run-active", turnId: "turn-active", executionOwner: "vscode" };
+  const rpc = [];
+  const messages = controller({
+    taskRuns: { forTask: () => run },
+    sendRpc: async (method, params) => {
+      rpc.push({ method, params });
+      return { turnId: "turn-active" };
+    },
+  });
+  const input = [
+    { type: "text", text: "сохранённое сообщение" },
+    { type: "localImage", path: EXISTING_IMAGE },
+  ];
+
+  const result = await messages.steerActiveInput({
+    input,
+    target: {
+      provider: "codex",
+      projectRoot: "C:\\Project",
+      threadId: "thread-1",
+      taskTitle: "Task",
+    },
+    clientUserMessageId: "queued-message-id",
+  });
+
+  assert.equal(result.steered, true);
+  assert.equal(rpc[0].params.clientUserMessageId, "queued-message-id");
+  assert.deepEqual(rpc[0].params.input, input);
 });
 
 test("desktop message controller preserves an uncertain external activity for explicit action", async () => {

@@ -17,6 +17,9 @@
 /* ------------------------------------------------------------- ссылки DOM */
 
 const root = document.documentElement;
+const { USER_MESSAGE_COLLAPSE_HEIGHT_PX, hasCollapsedOverflow } = window.AgentHubMessageDisclosure;
+const expandedUserMessageIds = new Set();
+let messageDisclosureFrame = 0;
 const journal = document.querySelector("[data-journal]");
 const journalView = document.querySelector("[data-journal-view]");
 const statisticsView = document.querySelector("[data-statistics-view]");
@@ -56,7 +59,6 @@ const composer = document.querySelector("[data-composer]");
 const composerGrow = document.querySelector("[data-composer-grow]");
 const composerInput = document.querySelector("[data-composer-input]");
 const composerSend = document.querySelector("[data-composer-send]");
-const followUpModeButton = document.querySelector("[data-follow-up-mode]");
 const annotationsBox = document.querySelector("[data-annotations]");
 const attachmentsBox = document.querySelector("[data-attachments]");
 const annotationContextMenu = document.querySelector("[data-annotation-context-menu]");
@@ -93,6 +95,7 @@ const dialogScrim = document.querySelector("[data-dialog-scrim]");
 const dialogForm = document.querySelector("[data-text-dialog-form]");
 const dialogTitle = document.querySelector("[data-text-dialog-title]");
 const dialogInput = document.querySelector("[data-text-dialog-input]");
+const dialogTextarea = document.querySelector("[data-text-dialog-textarea]");
 const toast = document.querySelector("[data-toast]");
 const connectionBanner = document.querySelector("[data-restart-banner]");
 const attachmentViewer = document.querySelector("[data-attachment-viewer]");
@@ -689,7 +692,6 @@ const state = {
   options: { model: [], reasoning: [], mode: [], project: [] },
   selection: {},
   status: null,
-  followUpMode: "queue",
   connection: "",
   connectionBlockingCount: 0,
   searchQuery: "",
@@ -1215,7 +1217,6 @@ function renderChat() {
   chatRunning.hidden = !task.running;
   for (const stop of chatStops) stop.hidden = !task.running;
   renderContextUsage(task);
-  renderFollowUpMode(task);
 
   if (taskChanged) {
     activeChatId = task.id;
@@ -1265,22 +1266,6 @@ function buildSubtitleChips(task) {
     text: part,
   }));
 }
-
-function renderFollowUpMode(task = currentTask()) {
-  if (!followUpModeButton) return;
-  const available = Boolean(task?.running && task?.provider === "codex");
-  followUpModeButton.hidden = !available;
-  followUpModeButton.textContent = state.followUpMode === "steer"
-    ? "Изменить ход"
-    : "В очередь";
-  followUpModeButton.dataset.mode = state.followUpMode;
-  followUpModeButton.setAttribute("aria-pressed", String(state.followUpMode === "steer"));
-}
-
-followUpModeButton?.addEventListener("click", () => {
-  state.followUpMode = state.followUpMode === "queue" ? "steer" : "queue";
-  renderFollowUpMode();
-});
 
 function chatIsNearBottom() {
   return chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 120;
@@ -1449,6 +1434,57 @@ function renderHistoryLoader() {
   }
 }
 
+function messageDisclosureId(article) {
+  return String(article.dataset.messageId ?? "").trim();
+}
+
+function updateUserMessageDisclosure(article) {
+  const body = article.querySelector(".msg-body[data-user-message-disclosure]");
+  if (!body) return;
+  const id = messageDisclosureId(article);
+  const overflows = hasCollapsedOverflow(body.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX);
+  const existing = article.querySelector("[data-message-disclosure]");
+  if (!overflows) {
+    body.classList.remove("is-collapsed");
+    existing?.remove();
+    if (id) expandedUserMessageIds.delete(id);
+    return;
+  }
+
+  const expanded = id && expandedUserMessageIds.has(id);
+  body.classList.toggle("is-collapsed", !expanded);
+  const button = existing ?? el("button", {
+    type: "button",
+    class: "msg-disclosure",
+    "data-message-disclosure": "",
+  });
+  button.textContent = expanded ? "Свернуть" : "Показать ещё";
+  button.setAttribute("aria-expanded", String(expanded));
+  button.onclick = () => {
+    const nextExpanded = body.classList.contains("is-collapsed");
+    body.classList.toggle("is-collapsed", !nextExpanded);
+    if (id) {
+      if (nextExpanded) expandedUserMessageIds.add(id);
+      else expandedUserMessageIds.delete(id);
+    }
+    button.textContent = nextExpanded ? "Свернуть" : "Показать ещё";
+    button.setAttribute("aria-expanded", String(nextExpanded));
+  };
+  if (!existing) article.append(button);
+}
+
+function scheduleUserMessageDisclosureSync() {
+  if (messageDisclosureFrame) return;
+  messageDisclosureFrame = window.requestAnimationFrame(() => {
+    messageDisclosureFrame = 0;
+    for (const article of chatLog.querySelectorAll(".msg-user[data-message-id]")) {
+      updateUserMessageDisclosure(article);
+    }
+  });
+}
+
+window.addEventListener("resize", scheduleUserMessageDisclosureSync, { passive: true });
+
 function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
   const stickToBottom = forceBottom || chatIsNearBottom();
   // Обновление истории после финального ответа использует preserveTop. У низа
@@ -1489,6 +1525,7 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
       renderTaskDiff(state.selectedId, taskDiff),
     ]));
   });
+  scheduleUserMessageDisclosureSync();
   if (anchor) restoreChatAnchor(anchor);
   else if (stickToBottom) pinChatToBottom();
 }
@@ -1839,7 +1876,10 @@ function renderMessage(message) {
       : null,
   ]);
 
-  const body = el("div", { class: "msg-body" });
+  const body = el("div", {
+    class: "msg-body",
+    ...(role === "user" ? { "data-user-message-disclosure": "" } : {}),
+  });
   // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
   if (!renderResponseAnnotations(body, message)) renderMarkdown(body, message.text ?? "");
 
@@ -2020,6 +2060,26 @@ function renderQueue() {
   queueBox.append(el("div", { class: "queue-head", text: counts }));
   for (const entry of queued) {
     const actions = [];
+    const steerAvailable = Boolean(currentTask()?.running && currentTask()?.provider === "codex");
+    actions.push(el("button", {
+      type: "button",
+      class: "queue-steer",
+      "data-action": "queue-steer",
+      "data-queue-id": entry.id,
+      title: steerAvailable
+        ? "Добавить это сообщение в текущий ход"
+        : "Доступно, пока эта задача выполняет ход Codex",
+      disabled: !steerAvailable,
+      text: "В текущий ход",
+    }));
+    actions.push(el("button", {
+      type: "button",
+      class: "queue-edit",
+      "data-action": "queue-edit",
+      "data-queue-id": entry.id,
+      title: "Изменить текст сообщения, не затрагивая изображения и аннотации",
+      text: "Изменить",
+    }));
     if (entry.state === "pending") {
       actions.push(el("button", {
         type: "button",
@@ -2036,6 +2096,9 @@ function renderQueue() {
     }));
     queueBox.append(el("div", { class: "queue-item", "data-queue-id": entry.id }, [
       el("span", { class: "queue-text", text: entry.text || entry.preview || entry.summary || "Сообщение" }),
+      Array.isArray(entry.annotations) && entry.annotations.length
+        ? el("span", { class: "queue-annotations", text: `Аннотации: ${entry.annotations.length}` })
+        : null,
       Array.isArray(entry.attachments) && entry.attachments.length
         ? renderAttachmentStrip(entry.attachments, { readOnly: true })
         : null,
@@ -2204,7 +2267,7 @@ function submitComposer() {
     text,
     annotations,
     attachments,
-    followUpMode: currentTask()?.running ? state.followUpMode : null,
+    followUpMode: currentTask()?.running ? "queue" : null,
   });
   updateSendState();
   saveDraft();
@@ -2967,15 +3030,19 @@ document.querySelector("[data-server-config-discard]")
 /* ================================================= диалог ввода текста */
 
 let dialogResolve = null;
+let dialogActiveInput = dialogInput;
 
-function askText({ title, value = "" }) {
+function askText({ title, value = "", multiline = false }) {
   return new Promise((resolve) => {
     dialogResolve = resolve;
     dialogTitle.textContent = title;
-    dialogInput.value = value;
+    dialogActiveInput = multiline ? dialogTextarea : dialogInput;
+    dialogInput.hidden = multiline;
+    dialogTextarea.hidden = !multiline;
+    dialogActiveInput.value = value;
     dialog.hidden = false;
     dialogScrim.hidden = false;
-    requestAnimationFrame(() => dialogInput.focus());
+    requestAnimationFrame(() => dialogActiveInput.focus());
   });
 }
 
@@ -2989,7 +3056,7 @@ function closeDialog(result) {
 
 dialogForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  closeDialog(dialogInput.value.trim());
+  closeDialog(dialogActiveInput.value.trim());
 });
 document.querySelector("[data-text-dialog-cancel]").addEventListener("click", () => closeDialog(null));
 dialogScrim.addEventListener("click", () => closeDialog(null));
@@ -3057,6 +3124,20 @@ async function handleAction(action, trigger) {
     case "queue-accept":
       emit("queue:accept", { taskId, id: trigger.dataset.queueId });
       break;
+    case "queue-steer":
+      emit("queue:steer", { taskId, id: trigger.dataset.queueId });
+      break;
+    case "queue-edit": {
+      const entry = (state.queue.get(taskId) ?? []).find((item) => item.id === trigger.dataset.queueId);
+      if (!entry) break;
+      const text = await askText({
+        title: "Изменить сообщение в очереди",
+        value: entry.text ?? entry.preview ?? "",
+        multiline: true,
+      });
+      if (text != null) emit("queue:edit", { taskId, id: entry.id, text });
+      break;
+    }
     case "tts":
       emit("tts:play", { taskId, messageId: trigger.dataset.messageId });
       break;

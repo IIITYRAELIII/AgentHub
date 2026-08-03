@@ -268,6 +268,23 @@ export async function codexObservedRuntimeActive(activity = {}, {
   return runtime.known ? runtime.hasLiveProcess : true;
 }
 
+export async function resolveCodexTaskActivity({
+  threadStatus = null,
+  activity = {},
+} = {}, options = {}) {
+  const threadActive = threadStatus?.type === "active";
+  const rolloutActive = activity.running
+    ? await codexObservedRuntimeActive(activity, options)
+    : false;
+  if (!threadActive && !rolloutActive) {
+    return { state: "inactive", executionOwner: null };
+  }
+  return {
+    state: "active",
+    executionOwner: await resolveCodexObservedExecutionOwner(activity, options),
+  };
+}
+
 export async function resolveCodexObservedExecutionOwner(activity = {}, {
   turnId = null,
   rolloutPath = null,

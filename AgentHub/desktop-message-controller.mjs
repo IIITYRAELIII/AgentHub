@@ -80,6 +80,68 @@ export function createDesktopMessageController({
     };
   }
 
+  async function steerActiveInput({ input, target, clientUserMessageId }) {
+    if (target.provider !== "codex") {
+      throw new Error("Отправка в текущий ход доступна только для Codex");
+    }
+    const existingRun = taskRuns.forTask(target);
+    const externalActivity = existingRun
+      ? { state: "active", executionOwner: existingRun.executionOwner }
+      : await taskExternalActivity(target);
+    if (!existingRun && externalActivity.state === "inactive") {
+      throw new Error("Текущий ход уже завершён; сообщение осталось в очереди");
+    }
+    const exactTurnId = await exactCodexTurnId(target, existingRun);
+    if (!exactTurnId) {
+      throw new Error("Текущий ход уже нельзя изменить; сообщение осталось в очереди");
+    }
+    try {
+      const result = await sendRpc("turn/steer", {
+        threadId: target.threadId,
+        expectedTurnId: exactTurnId,
+        input: typeof input === "string" ? [{ type: "text", text: input }] : input,
+        clientUserMessageId,
+      });
+      if (existingRun) {
+        const userMessages = Array.isArray(existingRun.userMessages)
+          ? existingRun.userMessages
+          : [];
+        if (!userMessages.some((message) => (
+          String(message?.clientUserMessageId ?? "") === clientUserMessageId
+        ))) {
+          userMessages.push({
+            role: "user",
+            clientUserMessageId,
+            text: typeof input === "string"
+              ? input
+              : input.filter((item) => item?.type === "text")
+                .map((item) => String(item.text ?? ""))
+                .filter(Boolean)
+                .join("\n"),
+          });
+          existingRun.userMessages = userMessages;
+        }
+        setProgressStage(existingRun, "Уточнение принято.");
+        noteRunActivity(existingRun);
+        scheduleProgressUpdate(existingRun, 0);
+      }
+      return {
+        accepted: true,
+        steered: true,
+        runId: existingRun?.id ?? null,
+        threadId: target.threadId,
+        turnId: String(result?.turnId ?? exactTurnId),
+        clientUserMessageId,
+        message: "Сообщение добавлено в текущий ход.",
+      };
+    } catch (error) {
+      if (!activeTurnNotSteerable(error)) throw error;
+      throw new Error("Текущий ход уже нельзя изменить; сообщение осталось в очереди", {
+        cause: error,
+      });
+    }
+  }
+
   async function sendMessageOnce({
     input,
     attachments,
@@ -93,59 +155,10 @@ export function createDesktopMessageController({
       : await taskExternalActivity(target);
     if (existingRun || externalActivity.state !== "inactive") {
       if (followUpMode === "steer") {
-        if (target.provider !== "codex") {
-          throw new Error("Изменение текущего хода доступно только для Codex");
-        }
-        const exactTurnId = await exactCodexTurnId(target, existingRun);
-        if (!exactTurnId) {
-          return deferQueue(input, attachments, {
-            target,
-            executionOwner: externalActivity.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL,
-            clientUserMessageId,
-            reason: "steer-unavailable",
-          });
-        }
         try {
-          const result = await sendRpc("turn/steer", {
-            threadId: target.threadId,
-            expectedTurnId: exactTurnId,
-            input: typeof input === "string" ? [{ type: "text", text: input }] : input,
-            clientUserMessageId,
-          });
-          if (existingRun) {
-            const userMessages = Array.isArray(existingRun.userMessages)
-              ? existingRun.userMessages
-              : [];
-            if (!userMessages.some((message) => (
-              String(message?.clientUserMessageId ?? "") === clientUserMessageId
-            ))) {
-              userMessages.push({
-                role: "user",
-                clientUserMessageId,
-                text: typeof input === "string"
-                  ? input
-                  : input.filter((item) => item?.type === "text")
-                    .map((item) => String(item.text ?? ""))
-                    .filter(Boolean)
-                    .join("\n"),
-              });
-              existingRun.userMessages = userMessages;
-            }
-            setProgressStage(existingRun, "Уточнение принято.");
-            noteRunActivity(existingRun);
-            scheduleProgressUpdate(existingRun, 0);
-          }
-          return {
-            accepted: true,
-            steered: true,
-            runId: existingRun?.id ?? null,
-            threadId: target.threadId,
-            turnId: String(result?.turnId ?? exactTurnId),
-            clientUserMessageId,
-            message: "Сообщение добавлено в текущий ход.",
-          };
+          return await steerActiveInput({ input, target, clientUserMessageId });
         } catch (error) {
-          if (!activeTurnNotSteerable(error)) throw error;
+          if (!activeTurnNotSteerable(error) && !/текущий ход уже/i.test(error.message)) throw error;
           return deferQueue(input, attachments, {
             target,
             executionOwner: existingRun?.executionOwner
@@ -299,5 +312,6 @@ export function createDesktopMessageController({
 
   return {
     sendMessage,
+    steerActiveInput,
   };
 }

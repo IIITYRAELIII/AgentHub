@@ -130,6 +130,11 @@ test("displayUserPrompt extracts comments and requests from response annotations
   });
 });
 
+test("displayUserPrompt retains a complete long user message", () => {
+  const prompt = "Полный текст ".repeat(2_000);
+  assert.equal(displayUserPrompt(prompt), prompt.trim());
+});
+
 test("codex history preserves response annotations as structured prompt data", () => {
   const prompt = [
     "# Response annotations:",

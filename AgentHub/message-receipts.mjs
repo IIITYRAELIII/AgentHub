@@ -96,6 +96,19 @@ export class MessageReceiptRegistry {
     return null;
   }
 
+  findByResultId(id) {
+    const expected = String(id ?? "").trim();
+    if (!expected) return null;
+    const values = [...this.receipts.values()];
+    for (let index = values.length - 1; index >= 0; index -= 1) {
+      const receipt = values[index];
+      if (String(receipt.result?.id ?? "").trim() === expected) {
+        return structuredClone(receipt);
+      }
+    }
+    return null;
+  }
+
   remember(identity, fingerprint, result) {
     const key = messageReceiptKey(identity);
     if (!key) throw new Error("Нельзя сохранить квитанцию без точной identity сообщения");

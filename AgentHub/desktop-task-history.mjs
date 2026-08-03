@@ -205,14 +205,14 @@ export function createDesktopTaskHistoryFactory({
       nextBefore: start > 0 ? start : null,
       items: page.map((item) => ({
         id: String(item.id ?? ""),
-        prompt: String(item.prompt ?? "").slice(0, 100_000),
+        prompt: String(item.prompt ?? ""),
         promptAnnotations: (Array.isArray(item.promptAnnotations) ? item.promptAnnotations : [])
           .slice(0, 20)
           .map((annotation) => ({
-            text: String(annotation?.text ?? "").slice(0, 20_000),
-            annotation: String(annotation?.annotation ?? "").slice(0, 20_000),
+            text: String(annotation?.text ?? ""),
+            annotation: String(annotation?.annotation ?? ""),
           })),
-        promptRequest: String(item.promptRequest ?? "").slice(0, 100_000),
+        promptRequest: String(item.promptRequest ?? ""),
         answer: String(item.answer ?? "").slice(0, maxAnswerChars),
         status: String(item.status ?? ""),
         active: item.active === true,
@@ -244,14 +244,14 @@ export function createDesktopTaskHistoryFactory({
               ? { clientUserMessageId: String(message.clientUserMessageId) }
               : {}),
             role,
-            text: text.slice(0, role === "agent" ? maxAnswerChars : 100_000),
+            text: role === "agent" ? text.slice(0, maxAnswerChars) : text,
             ...(role === "user" && Array.isArray(message.responseAnnotations)
               ? {
                 responseAnnotations: message.responseAnnotations.slice(0, 20).map((annotation) => ({
-                  text: String(annotation?.text ?? "").slice(0, 20_000),
-                  annotation: String(annotation?.annotation ?? "").slice(0, 20_000),
+                  text: String(annotation?.text ?? ""),
+                  annotation: String(annotation?.annotation ?? ""),
                 })),
-                responseAnnotationRequest: String(message.responseAnnotationRequest ?? "").slice(0, 100_000),
+                responseAnnotationRequest: String(message.responseAnnotationRequest ?? ""),
               }
               : {}),
             ...(message.phase ? { phase: String(message.phase) } : {}),

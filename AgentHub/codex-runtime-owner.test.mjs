@@ -7,6 +7,7 @@ import {
   codexObservedRuntimeActive,
   codexRolloutRuntimeState,
   detectCodexHookExecutionOwner,
+  resolveCodexTaskActivity,
   resolveCodexObservedExecutionOwner,
 } from "./codex-runtime-owner.mjs";
 import { TASK_EXECUTION_OWNERS } from "./task-catalog.mjs";
@@ -101,6 +102,37 @@ test("rollout runtime state distinguishes a dead client from a live holder", asy
       { processId: 6, parentProcessId: 1, name: "Code.exe", commandLine: "Code.exe" },
     ]),
   }), true);
+});
+
+test("task activity does not preserve a dead Hub turn as external after App Server restart", async () => {
+  const result = await resolveCodexTaskActivity({
+    activity: {
+      running: true,
+      activeTurnIds: ["interrupted-hub-turn"],
+      lastActivityAtMs: 100,
+    },
+  }, {
+    turnId: "interrupted-hub-turn",
+    rolloutPath: "C:\\interrupted-hub-rollout.jsonl",
+    platform: "win32",
+    capturedOwner: TASK_EXECUTION_OWNERS.HUB,
+    nowMs: 1_000,
+    probe: async () => snapshot([], []),
+  });
+  assert.deepEqual(result, { state: "inactive", executionOwner: null });
+});
+
+test("task activity keeps an authoritative active App Server status", async () => {
+  const result = await resolveCodexTaskActivity({
+    threadStatus: { type: "active" },
+    activity: { running: false },
+  }, {
+    platform: "win32",
+  });
+  assert.deepEqual(result, {
+    state: "active",
+    executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
+  });
 });
 
 test("an unavailable rollout process probe does not falsely stop a turn", async () => {
