@@ -121,6 +121,12 @@ test("rollout context sanitation preserves raw history and recent compaction ima
   assert.equal(replacement.filter((content) => (
     content.type === "input_text" && content.text.startsWith("[Older image omitted")
   )).length, 4);
+  const markers = replacement.filter((content) => (
+    content.type === "input_text" && content.text.startsWith("[Older image omitted")
+  ));
+  assert.ok(markers.every((content) => content.text.includes(
+    "do not reload unless the user explicitly requests it or the task cannot be completed without it",
+  )));
 });
 
 test("rollout context sanitation keeps an image without a raw-history duplicate", async (context) => {

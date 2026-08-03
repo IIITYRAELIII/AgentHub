@@ -74,7 +74,7 @@ function sanitizeCompaction(entry, rawImageHashes, {
   for (const reference of removed) {
     reference.container[reference.index] = {
       type: "input_text",
-      text: `${IMAGE_STUB_PREFIX}; original remains in rollout; sha256:${reference.hash.slice(0, 16)}]`,
+      text: `${IMAGE_STUB_PREFIX}; original remains in rollout; do not reload unless the user explicitly requests it or the task cannot be completed without it; sha256:${reference.hash.slice(0, 16)}]`,
     };
   }
   return {
