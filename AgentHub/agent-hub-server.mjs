@@ -99,6 +99,7 @@ import {
 import { TaskDiffStore } from "./task-diff-store.mjs";
 import { findRepositoryWriteConflict } from "./repository-conflict.mjs";
 import {
+  deferredInputMatchesRun,
   deferredEditableText,
   deferredResponseAnnotations,
   pendingInputKeyboard,
@@ -2986,6 +2987,7 @@ const {
   },
   receipts: {
     forMessage: (identity) => desktopMessageReceipts.get(identity),
+    recent: () => desktopMessageReceipts.snapshot(),
   },
   approvals: {
     snapshot: () => approvalController.snapshot(),
@@ -3412,7 +3414,10 @@ async function desktopDeferredInput(params) {
   const id = String(params.id ?? "");
   const action = String(params.action ?? "");
   if (!id) throw new Error("Не указан идентификатор сообщения");
-  return withDeferredInputAction(id, action, async () => {
+  const actionKey = action === "edit"
+    ? `${action}\0${String(params.text ?? "").trim()}`
+    : action;
+  return withDeferredInputAction(id, actionKey, async () => {
   const item = pendingInputs.get(id) ?? queuedInputs.get(id);
   if (!item) {
     const completed = action === "steer"
@@ -3483,8 +3488,11 @@ async function desktopDeferredInput(params) {
     deferredInputController.scheduleNextForTask(item);
     return { accepted: true, message: "Сохранённое сообщение отменено" };
   }
-  if (!pendingInputs.has(id)) throw new Error("Сообщение уже находится в очереди");
   if (action === "queue") {
+    if (queuedInputs.has(id)) {
+      return { accepted: true, id, queued: true, message: "Сообщение уже находится в очереди" };
+    }
+    if (!pendingInputs.has(id)) throw new Error("Сохранённое сообщение уже обработано");
     pendingInputs.delete(id);
     queuedInputs.set(id, item);
     updateDeferredDesktopReceipt(item, "queued");
@@ -3493,6 +3501,7 @@ async function desktopDeferredInput(params) {
     scheduleQueuedInput(item, 500);
     return { accepted: true, message: "Сообщение поставлено в очередь" };
   }
+  if (!pendingInputs.has(id)) throw new Error("Сообщение уже находится в очереди");
   const binding = {
     provider: item.provider,
     projectRoot: item.projectRoot,
@@ -4509,6 +4518,7 @@ async function beginRun(input, target = null) {
   if (isSelectedRun(run)) latestDiff = "";
   run.gitBaseline = await captureTaskGitBaseline(run.projectRoot, config.dataDir, run.id);
   syncTaskRun(run);
+  if (target?.deferredInput) target.deferredInput.dispatchingRunId = run.id;
   await saveState();
   taskProgress.scheduleStart(run, config.progressStartDelayMs);
   return run;
@@ -5025,10 +5035,7 @@ const deferredInputController = new DeferredInputController({
       projectRoot: item.projectRoot,
       threadId: item.threadId,
     });
-    return run?.clientUserMessageId
-      && run.clientUserMessageId === item.clientUserMessageId
-      ? run
-      : null;
+    return deferredInputMatchesRun(item, run) ? run : null;
   },
   isBlocked: async (item) => {
   const target = {
@@ -5059,8 +5066,13 @@ const deferredInputController = new DeferredInputController({
       reasoningId: item.reasoningId,
       collaborationMode: item.collaborationMode,
       clientUserMessageId: item.clientUserMessageId,
+      deferredInput: item,
     };
     const run = await beginRun(item.input, target);
+    // Telegram does not supply the Desktop client id.  Persist the exact
+    // managed run in the same state transaction before turn/start so a
+    // restart during that RPC can adopt it instead of dispatching the same
+    // queued input a second time.
     run.messageAttachments = item.persistentFiles
       ? desktopAttachmentDescriptors(item.temporaryFiles)
       : [];

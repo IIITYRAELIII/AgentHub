@@ -3,9 +3,25 @@ import test from "node:test";
 
 import {
   deferredEditableText,
+  deferredInputMatchesRun,
   deferredResponseAnnotations,
   replaceDeferredInputText,
 } from "./deferred-input.mjs";
+
+test("a dispatching Telegram input reattaches to its exact restored run", () => {
+  const item = {
+    dispatchingRunId: "run-telegram-1",
+    clientUserMessageId: null,
+  };
+  assert.equal(deferredInputMatchesRun(item, {
+    id: "run-telegram-1",
+    clientUserMessageId: null,
+  }), true);
+  assert.equal(deferredInputMatchesRun(item, {
+    id: "unrelated-run",
+    clientUserMessageId: null,
+  }), false);
+});
 
 test("editing a queued message preserves its response annotations and image input", () => {
   const input = [
@@ -100,6 +116,25 @@ test("repository conflicts remain pending when the optional guard is enabled", (
     restoreDeferredInput(item, { guardConcurrentRepositoryWrites: true }),
     { destination: "pending", item },
   );
+});
+
+test("restart turns an interrupted manual steer back into an actionable pending message", () => {
+  const item = {
+    id: "019f7152-726b-7b62-a595-62a3fccef0bf",
+    provider: "codex",
+    threadId: "thread-1",
+    input: "Не потерять сообщение",
+    manualAction: "steer",
+  };
+  assert.deepEqual(restoreDeferredInput(item), {
+    destination: "pending",
+    item: {
+      id: item.id,
+      provider: item.provider,
+      threadId: item.threadId,
+      input: item.input,
+    },
+  });
 });
 
 test("legacy Desktop attachments become persistent while other temporary files stay temporary", () => {

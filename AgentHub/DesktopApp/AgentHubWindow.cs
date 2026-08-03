@@ -30,6 +30,7 @@ namespace AgentHubDesktop
         private readonly List<Dictionary<string, object>> history = new List<Dictionary<string, object>>();
         private readonly List<AnnotationDraft> annotations = new List<AnnotationDraft>();
         private readonly List<string> attachments = new List<string>();
+        private readonly HashSet<string> expandedUserMessageIds = new HashSet<string>();
 
         private readonly StackPanel taskCards = new StackPanel();
         private readonly StackPanel conversation = new StackPanel();
@@ -761,6 +762,8 @@ namespace AgentHubDesktop
         {
             var run = item.Run ?? new Dictionary<string, object>();
             var signature = selectedKey + "|" + history.Count + "|" + historyBefore + "|"
+                + item.Running + "|"
+                + AgentHubClient.Text(run, "turnId") + "|"
                 + AgentHubClient.Text(run, "stage") + "|"
                 + AgentHubClient.Text(run, "progress") + "|"
                 + AgentHubClient.Text(run, "response");
@@ -870,9 +873,60 @@ namespace AgentHubDesktop
                 Margin = new Thickness(100, 5, 0, 10),
                 HorizontalAlignment = HorizontalAlignment.Right,
                 MaxWidth = 760,
-                Child = content
+                Child = CollapsibleUserMessageContent(AgentHubClient.Text(exchange, "id"), content)
             };
             return border;
+        }
+
+        private UIElement CollapsibleUserMessageContent(string messageId, StackPanel content)
+        {
+            var contentShell = new Border
+            {
+                ClipToBounds = true,
+                Child = content
+            };
+            var disclosure = Theme.Button("Показать ещё", "", false);
+            disclosure.HorizontalAlignment = HorizontalAlignment.Left;
+            disclosure.Margin = new Thickness(0, 7, 0, 0);
+            disclosure.Padding = new Thickness(8, 4, 8, 4);
+            disclosure.Visibility = Visibility.Collapsed;
+            var shell = new StackPanel();
+            shell.Children.Add(contentShell);
+            shell.Children.Add(disclosure);
+            var expandedWithoutId = false;
+
+            Action sync = null;
+            sync = delegate
+            {
+                var hasOverflow = DesktopUserMessageDisclosure.HasOverflow(content.DesiredSize.Height);
+                if (!hasOverflow)
+                {
+                    contentShell.MaxHeight = Double.PositiveInfinity;
+                    disclosure.Visibility = Visibility.Collapsed;
+                    if (!String.IsNullOrWhiteSpace(messageId)) expandedUserMessageIds.Remove(messageId);
+                    return;
+                }
+                var expanded = String.IsNullOrWhiteSpace(messageId)
+                    ? expandedWithoutId
+                    : expandedUserMessageIds.Contains(messageId);
+                contentShell.MaxHeight = expanded ? Double.PositiveInfinity : DesktopUserMessageDisclosure.CollapseHeight;
+                disclosure.Content = expanded ? "Свернуть" : "Показать ещё";
+                disclosure.Visibility = Visibility.Visible;
+            };
+            disclosure.Click += delegate
+            {
+                if (String.IsNullOrWhiteSpace(messageId)) expandedWithoutId = !expandedWithoutId;
+                else if (expandedUserMessageIds.Contains(messageId)) expandedUserMessageIds.Remove(messageId);
+                else expandedUserMessageIds.Add(messageId);
+                sync();
+            };
+            Action scheduleSync = delegate
+            {
+                Dispatcher.BeginInvoke(sync, DispatcherPriority.Loaded);
+            };
+            shell.Loaded += delegate { scheduleSync(); };
+            contentShell.SizeChanged += delegate { scheduleSync(); };
+            return shell;
         }
 
         private UIElement AssistantMessage(string text, string provider, bool live)

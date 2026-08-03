@@ -7,6 +7,16 @@ using System.Windows.Media;
 
 namespace AgentHubDesktop
 {
+    internal static class DesktopUserMessageDisclosure
+    {
+        internal const double CollapseHeight = 264;
+
+        internal static bool HasOverflow(double desiredHeight)
+        {
+            return desiredHeight > CollapseHeight;
+        }
+    }
+
     internal static class WorkspaceFileLink
     {
         public static bool TryParse(string target, out string file, out int line)

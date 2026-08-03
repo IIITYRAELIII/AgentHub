@@ -23,4 +23,5 @@ test("shared shell keeps full text and limits only the rendered user-message bod
   assert.match(app, /body\.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX/u);
   assert.match(app, /textContent = expanded \? "Свернуть" : "Показать ещё"/u);
   assert.match(styles, /\.msg-user \.msg-body\.is-collapsed[\s\S]*max-height/u);
+  assert.match(styles, /html\[data-surface="mobile"\] \.msg-disclosure[\s\S]*min-height: 2\.75rem/u);
 });

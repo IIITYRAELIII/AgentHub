@@ -18,6 +18,7 @@ namespace AgentHubDesktop
             ResponseWaitIsBounded();
             WorkspaceFileLinkAcceptsCanonicalTarget();
             WorkspaceFileLinkRejectsWebTarget();
+            UserMessageDisclosureRequiresRealOverflow();
         }
 
         private static void StableMessageIdentitySurvivesRetry()
@@ -118,6 +119,16 @@ namespace AgentHubDesktop
             string file;
             int line;
             Require(!WorkspaceFileLink.TryParse("https://example.test/file:12", out file, out line), "web link was accepted as a file");
+        }
+
+        private static void UserMessageDisclosureRequiresRealOverflow()
+        {
+            Require(
+                !DesktopUserMessageDisclosure.HasOverflow(DesktopUserMessageDisclosure.CollapseHeight),
+                "message disclosure appeared without overflow");
+            Require(
+                DesktopUserMessageDisclosure.HasOverflow(DesktopUserMessageDisclosure.CollapseHeight + 0.1),
+                "message disclosure missed real overflow");
         }
 
         private static void Require(bool value, string message)

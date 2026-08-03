@@ -823,11 +823,11 @@ test("chat long-polls commands and skips unchanged history renders", () => {
 test("dispatching deferred messages leave the queue and reappear in the active conversation", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  assert.match(app, /\.filter\(\(entry\) => entry\.state !== "dispatching"\)/u);
+  assert.match(app, /\.filter\(\(entry\) => entry\.state !== "dispatching" && entry\.state !== "steering"\)/u);
   assert.match(app, /Date\.parse\(left\.createdAt \|\| 0\)/u);
-  assert.match(client, /\.filter\(\(item\) => item\.state !== "dispatching"\)/u);
-  assert.match(client, /deferred\.state === "dispatching"\s*\?\s*"sending"/u);
-  assert.match(client, /item\.state !== "dispatching"/u);
+  assert.match(client, /\.filter\(\(item\) =>\s*item\.state !== "dispatching" && item\.state !== "steering"/u);
+  assert.match(client, /deferred\.state === "dispatching" \|\| deferred\.state === "steering"\s*\?\s*"sending"/u);
+  assert.match(client, /item\.state !== "dispatching" && item\.state !== "steering"/u);
 });
 
 test("message attachments keep timestamps, thumbnails and an explicit open action", () => {
@@ -879,6 +879,20 @@ test("annotation actions preserve native selection and keep per-quote comments",
   assert.match(android, /MENU_ANNOTATE_SELECTION[\s\S]*"Цитировать"/u);
   assert.match(android, /SHOW_AS_ACTION_ALWAYS \| MenuItem\.SHOW_AS_ACTION_WITH_TEXT/u);
   assert.match(android, /ActionMode\.Callback2[\s\S]*onGetContentRect/u);
+});
+
+test("lost command results reconcile by durable message receipt without duplicate draft", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /function applyMessageReceipts\(snapshot\)[\s\S]*agentHub\.completeSend\(clientUserMessageId, \{ accepted \}\)/u);
+  assert.match(client, /const rejected = messageSendDefinitelyRejected\(error\)[\s\S]*deliveryPatch\(rejected \? "rejected" : "unconfirmed"\)/u);
+});
+
+test("queue actions are single-flight and steer uses the dedicated server action", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(app, /case "queue-steer":[\s\S]*emit\("queue:steer"/u);
+  assert.match(client, /queueActionsInFlight\.has\(key\)/u);
+  assert.match(client, /control\("deferred-input", \{ id, action: "steer" \}\)/u);
 });
 
 test("journal preserves recursive subagent trees in date and task groupings", () => {
@@ -1067,7 +1081,7 @@ test("queued messages own steering and editing while the composer always queues"
   );
 });
 
-test("composer clears optimistically and restores an unconfirmed message", () => {
+test("composer restores definite rejection but keeps an ambiguous delivery single", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
@@ -1081,7 +1095,9 @@ test("composer clears optimistically and restores an unconfirmed message", () =>
   assert.match(client, /agentHub\.completeSend\(request\.requestId/u);
   assert.match(client, /reusableAttachmentPaths\([\s\S]*\{ remote: !vscode \}/u);
   assert.match(client, /if \(isConnectionFailure\(error\)\) recordTransientConnectionFailure/u);
-  assert.match(client, /deliveryPatch\(isConnectionFailure\(error\) \? "unconfirmed" : "rejected"\)/u);
+  assert.match(client, /const rejected = messageSendDefinitelyRejected\(error\)/u);
+  assert.match(client, /agentHub\.completeSend\(request\.requestId, \{ accepted: !rejected \}\)/u);
+  assert.match(client, /deliveryPatch\(rejected \? "rejected" : "unconfirmed"\)/u);
   assert.match(client, /snapshot\?\.restartWaiting == null && blockingCount > 0/u);
   assert.match(client, /waiting \? "restart-waiting" : snapshot\?\.restartPending \? "restarting" : idleStatus/u);
   assert.match(html, /data-restart-banner/u);

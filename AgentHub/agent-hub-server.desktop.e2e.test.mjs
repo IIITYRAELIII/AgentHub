@@ -277,6 +277,13 @@ test("desktop client survives App Server exit during delayed startup and shares 
   assert.equal("snapshot" in retriedStart, false);
   const messageSnapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
   assert.equal(messageSnapshot.selected.threadId, firstThreadId);
+  const firstReceipt = messageSnapshot.messageReceipts.find((receipt) => (
+    receipt.clientUserMessageId === firstMessageId
+  ));
+  assert.equal(firstReceipt.accepted, true);
+  assert.equal(firstReceipt.runId, firstStart.runId);
+  assert.equal(firstReceipt.turnId, firstStart.turnId);
+  assert.equal("fingerprint" in firstReceipt, false);
   await assert.rejects(
     callDesktopControl("send-message", {
       text: "Это уже другое сообщение",
@@ -309,14 +316,33 @@ test("desktop client survives App Server exit during delayed startup and shares 
   assert.equal(deferredSnapshot.deferredInputs.length, 1);
   assert.equal(deferredSnapshot.deferredInputs[0].provider, "codex");
   assert.equal(deferredSnapshot.deferredInputs[0].threadId, firstThreadId);
-  const editedDeferred = await callDesktopControl("deferred-input", {
-    id: duplicate.id,
-    action: "edit",
-    text: "parallel duplicate, edited",
-  }, { runtimeRoot });
+  const [firstEdit, editedDeferred] = await Promise.all([
+    callDesktopControl("deferred-input", {
+      id: duplicate.id,
+      action: "edit",
+      text: "parallel duplicate, first edit",
+    }, { runtimeRoot }),
+    callDesktopControl("deferred-input", {
+      id: duplicate.id,
+      action: "edit",
+      text: "parallel duplicate, edited",
+    }, { runtimeRoot }),
+  ]);
+  assert.equal(firstEdit.accepted, true);
   assert.equal(editedDeferred.accepted, true);
   assert.equal((await callDesktopControl("snapshot", {}, { runtimeRoot }))
     .deferredInputs.find((item) => item.id === duplicate.id)?.text, "parallel duplicate, edited");
+  const queuedOnce = await callDesktopControl("deferred-input", {
+    id: duplicate.id,
+    action: "queue",
+  }, { runtimeRoot });
+  const queuedTwice = await callDesktopControl("deferred-input", {
+    id: duplicate.id,
+    action: "queue",
+  }, { runtimeRoot });
+  assert.equal(queuedOnce.accepted, true);
+  assert.equal(queuedTwice.accepted, true);
+  assert.equal(queuedTwice.queued, true);
   const [steeredQueued, duplicateSteer] = await Promise.all([
     callDesktopControl("deferred-input", { id: duplicate.id, action: "steer" }, { runtimeRoot }),
     callDesktopControl("deferred-input", { id: duplicate.id, action: "steer" }, { runtimeRoot }),

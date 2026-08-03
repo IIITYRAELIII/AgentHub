@@ -65,6 +65,7 @@ function fixture(overrides = {}) {
     },
     pending: [],
     queued: [],
+    receipts: [],
     restartRequest: null,
     ...overrides,
   };
@@ -138,6 +139,9 @@ function fixture(overrides = {}) {
       queuedValues: () => state.queued,
       inputPreview: (input) => String(input),
     },
+    receipts: {
+      recent: () => state.receipts,
+    },
     approvals: {
       snapshot: () => [{ id: "approval-1" }],
     },
@@ -210,6 +214,41 @@ test("desktop task snapshot carries server-side unread state for the account", (
 test("desktop task snapshot exposes a persisted model without a live run", () => {
   const { desktopTaskSnapshot, entry } = fixture({ run: null });
   assert.equal(desktopTaskSnapshot({ ...entry, model: "Sol" }).model, "Sol");
+});
+
+test("desktop snapshot exposes bounded delivery receipts for client reconciliation", async () => {
+  const { desktopSnapshot, state } = fixture();
+  state.receipts = [{
+    provider: "codex",
+    threadId: "thread-1",
+    clientUserMessageId: "client-lost-result",
+    createdAt: "2026-07-30T10:01:30.000Z",
+    fingerprint: "private-fingerprint",
+    result: {
+      accepted: true,
+      runId: "run-2",
+      turnId: "turn-2",
+      secretInternalField: "must-not-leak",
+    },
+  }];
+  const snapshot = await desktopSnapshot();
+  assert.deepEqual(snapshot.messageReceipts, [{
+    provider: "codex",
+    threadId: "thread-1",
+    clientUserMessageId: "client-lost-result",
+    createdAt: "2026-07-30T10:01:30.000Z",
+    accepted: true,
+    deferred: false,
+    queued: false,
+    dispatching: false,
+    steered: false,
+    cancelled: false,
+    id: null,
+    runId: "run-2",
+    turnId: "turn-2",
+    message: null,
+    attachments: [],
+  }]);
 });
 
 test("desktopContextSnapshot marks a completed compaction until fresh usage arrives", () => {
@@ -464,6 +503,21 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     restart: { pending: true, waiting: true, blockingCount: 7 },
   });
   assert.equal(snapshot.tasks.length, 1);
+});
+
+test("desktopSnapshot exposes an in-flight steer as sending rather than a new decision", async () => {
+  const { desktopSnapshot } = fixture({
+    pending: [{
+      id: "steering-1",
+      provider: "codex",
+      threadId: "thread-1",
+      taskTitle: "Задача",
+      input: "Уточнение",
+      manualAction: "steer",
+    }],
+  });
+  const snapshot = await desktopSnapshot();
+  assert.equal(snapshot.deferredInputs[0].state, "steering");
 });
 
 test("desktopSnapshot returns a compact marker for an unchanged version", async () => {

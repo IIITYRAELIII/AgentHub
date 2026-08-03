@@ -4199,6 +4199,14 @@ html[data-surface="mobile"] body {
   font-size: 14px;
 }
 
+/* На телефоне «Показать ещё» остаётся полноценной сенсорной целью, даже
+   когда сама подпись короткая. */
+html[data-surface="mobile"] .msg-disclosure {
+  min-height: 2.75rem;
+  padding: 0.35rem 0.2rem;
+  touch-action: manipulation;
+}
+
 html[data-theme="taiga"][data-surface="mobile"] body::after {
   background-position: center, center, 74% 28%;
 }

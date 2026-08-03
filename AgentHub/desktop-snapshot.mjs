@@ -17,6 +17,35 @@ export function createDesktopSnapshotFactory({
   readState = null,
   warn,
 }) {
+  function desktopMessageReceiptSnapshot() {
+    return (receipts.recent?.() ?? []).slice(-100).flatMap((receipt) => {
+      const provider = String(receipt?.provider ?? "").trim();
+      const threadId = String(receipt?.threadId ?? "").trim();
+      const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
+      const result = receipt?.result;
+      if (!provider || !threadId || !clientUserMessageId || !result) return [];
+      return [{
+        provider,
+        threadId,
+        clientUserMessageId,
+        createdAt: receipt.createdAt ?? null,
+        accepted: result.accepted === true,
+        deferred: result.deferred === true,
+        queued: result.queued === true,
+        dispatching: result.dispatching === true,
+        steered: result.steered === true,
+        cancelled: result.cancelled === true,
+        id: result.id ?? null,
+        runId: result.runId ?? null,
+        turnId: result.turnId ?? null,
+        message: result.message ?? null,
+        attachments: Array.isArray(result.attachments)
+          ? result.attachments.map((attachment) => ({ ...attachment }))
+          : [],
+      }];
+    });
+  }
+
   function desktopContextSnapshot(thread, turn = "") {
     const usage = context.latestUsage(thread, turn);
     const compaction = context.compactionFor(String(thread ?? "")) ?? null;
@@ -261,10 +290,11 @@ export function createDesktopSnapshotFactory({
         })),
       },
       pendingApprovals: approvals.snapshot(),
+      messageReceipts: desktopMessageReceiptSnapshot(),
       deferredInputs: [
         ...deferred.pendingValues().map((item) => ({
           id: item.id,
-          state: "pending",
+          state: item.manualAction === "steer" ? "steering" : "pending",
           provider: item.provider,
           threadId: item.threadId,
           taskTitle: item.taskTitle,

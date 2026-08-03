@@ -7,6 +7,15 @@ export function deferredInputText(input) {
       .join("\n");
 }
 
+export function deferredInputMatchesRun(item, run) {
+  if (!item || !run) return false;
+  const dispatchingRunId = String(item.dispatchingRunId ?? "").trim();
+  if (dispatchingRunId && dispatchingRunId === String(run.id ?? "").trim()) return true;
+  const clientUserMessageId = String(item.clientUserMessageId ?? "").trim();
+  return Boolean(clientUserMessageId
+    && clientUserMessageId === String(run.clientUserMessageId ?? "").trim());
+}
+
 export function deferredResponseAnnotations(input) {
   const text = deferredInputText(input);
   const block = text.match(/<response-annotations>\s*([\s\S]*?)\s*<\/response-annotations>/iu);
@@ -81,12 +90,16 @@ export function restoreDeferredInput(item, {
 } = {}) {
   if (!item?.id || !item?.threadId || !item?.provider) return null;
   const temporaryFiles = Array.isArray(item.temporaryFiles) ? item.temporaryFiles : [];
-  const restoredItem = item.persistentFiles === true
+  const candidate = item.persistentFiles === true
     || !item.clientUserMessageId
     || temporaryFiles.length === 0
     || !temporaryFiles.every((file) => persistentFile(file))
     ? item
     : { ...item, persistentFiles: true };
+  // An interrupted manual steer has an unknown external outcome. Keep the
+  // durable input for an explicit retry, but never restore a transient UI
+  // "sending" state after the process that owned it has gone away.
+  const { manualAction: _manualAction, ...restoredItem } = candidate;
   if (restoredItem.conflictKind !== "repository") {
     return { destination: "pending", item: restoredItem };
   }

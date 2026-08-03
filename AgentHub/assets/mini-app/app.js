@@ -2040,7 +2040,7 @@ function renderApprovals() {
 
 function renderQueue() {
   const queued = (state.queue.get(state.selectedId) ?? [])
-    .filter((entry) => entry.state !== "dispatching")
+    .filter((entry) => entry.state !== "dispatching" && entry.state !== "steering")
     .slice()
     .sort((left, right) => {
       const leftAt = Date.parse(left.createdAt || 0);

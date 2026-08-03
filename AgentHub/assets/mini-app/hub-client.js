@@ -43,6 +43,7 @@ const liveProbeByTask = new Map();
 const liveUserMessagesByTask = new Map();
 const liveCardsByTask = new Map();
 const completionOverlaysByTask = new Map();
+const queueActionsInFlight = new Set();
 const requestedContextCompactions = new Set();
 const observedContextCompactions = new Map();
 let deferredClientUserMessageIds = new Set();
@@ -277,6 +278,44 @@ function reconciledMessages(taskIdValue) {
     deferredClientUserMessageIds,
     liveProbe: liveProbeByTask.get(taskIdValue) ?? null,
   }));
+}
+
+function receiptDeliveryPatch(receipt) {
+  if (receipt?.accepted === true || receipt?.steered === true) return deliveryPatch("accepted");
+  if (receipt?.deferred === true) {
+    return deliveryPatch(receipt?.queued === true ? "queued" : "deferred");
+  }
+  if (receipt?.cancelled === true) return deliveryPatch("rejected");
+  return null;
+}
+
+function applyMessageReceipts(snapshot) {
+  for (const receipt of snapshot?.messageReceipts ?? []) {
+    const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
+    const provider = String(receipt?.provider ?? "").trim();
+    const threadId = String(receipt?.threadId ?? "").trim();
+    const patch = receiptDeliveryPatch(receipt);
+    if (!clientUserMessageId || !provider || !threadId || !patch) continue;
+    const accepted = receipt.accepted === true
+      || receipt.deferred === true
+      || receipt.steered === true;
+    agentHub.completeSend(clientUserMessageId, { accepted });
+    patchOutgoing(taskId(provider, threadId), clientUserMessageId, {
+      provider,
+      threadId,
+      turnId: String(receipt.turnId ?? ""),
+      itemId: receipt.id ?? clientUserMessageId,
+      time: receipt.createdAt ?? null,
+      attachments: attachmentViews(receipt.attachments),
+      ...(receipt.accepted && !receipt.steered ? { turnUserSlot: "root" } : {}),
+      ...patch,
+    });
+  }
+}
+
+function messageSendDefinitelyRejected(error) {
+  return /^(?:Введите сообщение|Сообщение слишком длинное|Сначала выберите|Неизвестный режим|Идентификатор сообщения)/iu
+    .test(String(error?.message ?? error ?? "").trim());
 }
 
 function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
@@ -602,6 +641,7 @@ function applySnapshot(snapshot) {
   agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
   agentHub.setServerStatus(snapshot.server ?? null);
   observeContextCompactions(snapshot.tasks);
+  applyMessageReceipts(snapshot);
   deferredClientUserMessageIds = new Set(
     (snapshot.deferredInputs ?? [])
       .filter((item) => item.state !== "dispatching")
@@ -634,7 +674,7 @@ function applySnapshot(snapshot) {
       clientUserMessageId,
       {
         ...deliveryPatch(
-          deferred.state === "dispatching"
+          deferred.state === "dispatching" || deferred.state === "steering"
             ? "sending"
             : deferred.state === "queued"
               ? "queued"
@@ -680,7 +720,7 @@ function applySnapshot(snapshot) {
       }))
       : []);
     agentHub.setQueue(selectedTaskId, (snapshot.deferredInputs ?? []).filter((item) =>
-      item.state !== "dispatching"
+      item.state !== "dispatching" && item.state !== "steering"
       &&
       (!item.provider || item.provider === selected.provider)
       && (!item.threadId || item.threadId === selected.threadId))
@@ -1108,11 +1148,16 @@ agentHub.on("message:send", (request) => {
       });
       agentHub.toast(result?.message ?? (result?.accepted ? "Сообщение принято" : "Сообщение сохранено"));
     } catch (error) {
-      agentHub.completeSend(request.requestId, { accepted: false });
+      // A remote command may finish after its HTTP result is lost. Preserve
+      // the durable optimistic message and let the next snapshot reconcile it
+      // through the exact server receipt instead of restoring a duplicate
+      // draft and labelling an accepted turn as rejected.
+      const rejected = messageSendDefinitelyRejected(error);
+      agentHub.completeSend(request.requestId, { accepted: !rejected });
       patchOutgoing(
         request.taskId,
         request.requestId,
-        deliveryPatch(isConnectionFailure(error) ? "unconfirmed" : "rejected"),
+        deliveryPatch(rejected ? "rejected" : "unconfirmed"),
       );
       throw error;
     }
@@ -1228,16 +1273,32 @@ agentHub.on("queue:remove", ({ id }) => runAction(async () => {
   applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Отложенное сообщение удалено");
 }));
-agentHub.on("queue:accept", ({ id }) => runAction(async () => {
+async function runQueueAction(id, operation) {
+  const key = String(id ?? "").trim();
+  if (!key || queueActionsInFlight.has(key)) return null;
+  queueActionsInFlight.add(key);
+  if (selectedTaskId) {
+    const visible = (lastSnapshot?.deferredInputs ?? []).filter((item) => item.id !== key);
+    agentHub.setQueue(selectedTaskId, visible.filter((item) => (
+      (!item.provider || taskId(item.provider, item.threadId) === selectedTaskId)
+    )));
+  }
+  try {
+    return await operation();
+  } finally {
+    queueActionsInFlight.delete(key);
+    applySnapshot(await control("snapshot"));
+  }
+}
+
+agentHub.on("queue:accept", ({ id }) => runAction(() => runQueueAction(id, async () => {
   const result = await control("deferred-input", { id, action: "queue" });
-  applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Сообщение будет отправлено после текущего хода");
-}));
-agentHub.on("queue:steer", ({ id }) => runAction(async () => {
+})));
+agentHub.on("queue:steer", ({ id }) => runAction(() => runQueueAction(id, async () => {
   const result = await control("deferred-input", { id, action: "steer" });
-  applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Сообщение добавлено в текущий ход");
-}));
+})));
 agentHub.on("queue:edit", ({ id, text }) => runAction(async () => {
   const result = await control("deferred-input", { id, action: "edit", text });
   applySnapshot(await control("snapshot"));
