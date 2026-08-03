@@ -985,22 +985,46 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
   const identity = taskIdentity(id);
   const page = historyPageByTask.get(id);
   if (!identity || !page || page.nextBefore == null || page.loading) return;
+  const requestedBefore = Number(page.nextBefore);
+  if (!Number.isSafeInteger(requestedBefore) || requestedBefore < 1) return;
   page.loading = true;
   syncHistoryPagination(id);
   try {
     const history = await control("task-history", {
       ...identity,
-      before: page.nextBefore,
+      before: requestedBefore,
       limit: 20,
     });
+    // The Worker queue may redeliver an old response after a reconnect.  Do
+    // not silently replace the visible page with its duplicate: it looks like
+    // the button did nothing and can loop forever on the same cursor.
+    const returnedStart = Number(history?.start);
+    const returnedEnd = Number(history?.end);
+    if (
+      history?.provider !== identity.provider
+      || history?.threadId !== identity.threadId
+      || !Number.isSafeInteger(returnedStart)
+      || !Number.isSafeInteger(returnedEnd)
+      || returnedStart < 0
+      || returnedEnd > requestedBefore
+      || returnedStart >= requestedBefore
+    ) {
+      throw new Error("Agent Hub вернул не ту страницу истории. Повторите загрузку.");
+    }
+    // A task switch can finish while the remote command was in flight.  Its
+    // old result must not alter the pagination and scroll of the new task.
+    if (historyPageByTask.get(id) !== page) return;
     historyByTask.set(
       id,
       prependOlderHistory(historyByTask.get(id) ?? [], historyMessages(history)),
     );
+    const nextBefore = Number(history.nextBefore);
     Object.assign(page, {
       start: history.start,
       total: history.total,
-      nextBefore: history.nextBefore,
+      nextBefore: Number.isSafeInteger(nextBefore) && nextBefore >= 0 && nextBefore < requestedBefore
+        ? nextBefore
+        : (returnedStart > 0 ? returnedStart : null),
       loading: false,
     });
     syncHistoryPagination(id);

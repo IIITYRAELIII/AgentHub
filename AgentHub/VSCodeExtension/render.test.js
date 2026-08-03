@@ -969,7 +969,8 @@ test("chat loads older pages from a button and a cancellable mobile pull gesture
   assert.match(app, /touchend[\s\S]*if \(shouldLoad\) requestOlderHistory\(\)/u);
   assert.match(app, /emit\("history:load-older", \{ taskId: state\.selectedId \}\)/u);
   assert.match(app, /function captureChatAnchor\(\)[\s\S]*function restoreChatAnchor\(anchor\)/u);
-  assert.match(client, /control\("task-history", \{[\s\S]*before: page\.nextBefore,[\s\S]*limit: 20/u);
+  assert.match(client, /const requestedBefore = Number\(page\.nextBefore\)[\s\S]*control\("task-history", \{[\s\S]*before: requestedBefore,[\s\S]*limit: 20/u);
+  assert.match(client, /returnedEnd > requestedBefore[\s\S]*returnedStart >= requestedBefore/u);
   assert.match(client, /prependOlderHistory[\s\S]*preserveScroll: true/u);
   assert.match(styles, /html\[data-surface="mobile"\] \.chat-history-loader\[data-pulling\]/u);
 });

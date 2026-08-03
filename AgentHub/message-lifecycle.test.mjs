@@ -14,6 +14,10 @@ const hubClientSource = await readFile(
   new URL("./assets/mini-app/hub-client.js", import.meta.url),
   "utf8",
 );
+const miniAppSource = await readFile(
+  new URL("./assets/mini-app/app.js", import.meta.url),
+  "utf8",
+);
 
 function message(itemId, text) {
   return {
@@ -26,6 +30,15 @@ function message(itemId, text) {
     text,
   };
 }
+
+test("chat history fallback preserves the reader position after prepending a page", () => {
+  assert.match(miniAppSource, /scrollHeight:\s*chatScroll\.scrollHeight/u);
+  assert.match(
+    miniAppSource,
+    /addedHeight\s*=\s*Math\.max\(0, chatScroll\.scrollHeight - anchor\.scrollHeight\)/u,
+  );
+  assert.match(miniAppSource, /chatScroll\.scrollTop\s*=\s*anchor\.scrollTop \+ addedHeight/u);
+});
 
 test("message lifecycle reconciles user messages by the official client id", () => {
   const first = message("client-1", "Первое уточнение");

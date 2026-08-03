@@ -63,7 +63,12 @@ test("desktop control router applies transport-specific response limits", async 
 
   await router.handleDesktopControl({
     action: "snapshot",
-    params: { limit: 50, maxAnswerChars: 999_999, maxResponseBytes: 9_000_000 },
+    params: {
+      limit: 50,
+      before: 17,
+      maxAnswerChars: 999_999,
+      maxResponseBytes: 9_000_000,
+    },
     context: { source: "telegram-mini-app" },
   });
   await router.handleDesktopControl({
@@ -74,6 +79,7 @@ test("desktop control router applies transport-specific response limits", async 
   assert.deepEqual(received, [
     {
       limit: 10,
+      before: 17,
       maxAnswerChars: 75_000,
       maxResponseBytes: 850_000,
       compactSnapshot: true,

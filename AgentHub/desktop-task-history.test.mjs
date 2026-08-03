@@ -360,6 +360,39 @@ test("desktop task history preserves pagination, field limits and response budge
   assert.deepEqual(calls.fit, { maxBytes: 64 * 1_024 });
 });
 
+test("desktop task history returns the preceding page for a supplied cursor", async () => {
+  const { desktopTaskHistory, state } = fixture({ run: null });
+  state.history = Array.from({ length: 27 }, (_, index) => ({
+    id: `turn-${index + 1}`,
+    prompt: `Вопрос ${index + 1}`,
+    answer: `Ответ ${index + 1}`,
+    status: "completed",
+    completed: true,
+    startedAt: `2026-07-30T10:${String(index).padStart(2, "0")}:00.000Z`,
+    completedAt: `2026-07-30T10:${String(index).padStart(2, "0")}:30.000Z`,
+    messages: [
+      { itemId: `user-${index + 1}`, role: "user", text: `Сообщение ${index + 1}` },
+      { itemId: `agent-${index + 1}`, role: "agent", phase: "final", text: `Ответ ${index + 1}` },
+    ],
+  }));
+
+  const newest = await desktopTaskHistory({ limit: 10 });
+  const older = await desktopTaskHistory({ before: newest.nextBefore, limit: 10 });
+
+  assert.deepEqual(newest.items.map((item) => item.id), [
+    "turn-18", "turn-19", "turn-20", "turn-21", "turn-22",
+    "turn-23", "turn-24", "turn-25", "turn-26", "turn-27",
+  ]);
+  assert.equal(newest.nextBefore, 17);
+  assert.deepEqual(older.items.map((item) => item.id), [
+    "turn-8", "turn-9", "turn-10", "turn-11", "turn-12",
+    "turn-13", "turn-14", "turn-15", "turn-16", "turn-17",
+  ]);
+  assert.equal(older.start, 7);
+  assert.equal(older.end, 17);
+  assert.equal(older.nextBefore, 7);
+});
+
 test("desktop task history rejects invalid and missing tasks", async () => {
   const { desktopTaskHistory, state } = fixture();
   await assert.rejects(

@@ -1396,14 +1396,21 @@ document.addEventListener("touchend", (event) => {
 }, { passive: true });
 
 function captureChatAnchor() {
-  const scrollTop = chatScroll.getBoundingClientRect().top;
+  const viewportTop = chatScroll.getBoundingClientRect().top;
   const message = [...chatLog.querySelectorAll("[data-message-id]")].find(
-    (node) => node.getBoundingClientRect().bottom >= scrollTop,
+    (node) => node.getBoundingClientRect().bottom >= viewportTop,
   );
-  if (!message) return null;
   return {
-    id: message.dataset.messageId,
-    offset: message.getBoundingClientRect().top - scrollTop,
+    // Keep an absolute fallback too.  A history page may legitimately contain
+    // only hidden/system items, in which case its former visual anchor is not
+    // rendered after reconciliation.  Replacing the list must not then reset
+    // the reader to the beginning of the chat.
+    scrollTop: chatScroll.scrollTop,
+    scrollHeight: chatScroll.scrollHeight,
+    ...(message ? {
+      id: message.dataset.messageId,
+      offset: message.getBoundingClientRect().top - viewportTop,
+    } : {}),
   };
 }
 
@@ -1411,7 +1418,15 @@ function restoreChatAnchor(anchor) {
   if (!anchor) return;
   const message = [...chatLog.querySelectorAll("[data-message-id]")]
     .find((node) => node.dataset.messageId === anchor.id);
-  if (!message) return;
+  if (!message) {
+    const applyFallback = () => {
+      const addedHeight = Math.max(0, chatScroll.scrollHeight - anchor.scrollHeight);
+      chatScroll.scrollTop = anchor.scrollTop + addedHeight;
+    };
+    applyFallback();
+    window.requestAnimationFrame(applyFallback);
+    return;
+  }
   const apply = () => {
     const scrollTop = chatScroll.getBoundingClientRect().top;
     chatScroll.scrollTop += message.getBoundingClientRect().top - scrollTop - anchor.offset;

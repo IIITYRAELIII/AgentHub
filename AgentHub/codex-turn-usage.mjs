@@ -614,6 +614,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
   const imageGenerationCalls = new Map();
   const knownSkills = new Set();
   let latestResponseTurnId = "";
+  let latestStartedTurnId = "";
   let latestModel = "";
   let latestServiceTier = "default";
   let workspaceRoot = "";
@@ -661,6 +662,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     if (lifecycle === "task_started" && lifecycleTurnId) {
       const turn = ensureTurn(lifecycleTurnId);
       activeTurnIds.add(lifecycleTurnId);
+      latestStartedTurnId = lifecycleTurnId;
       turn.started = true;
       turn.startedAt ||= timestamp;
       touch(turn, timestamp);
@@ -684,8 +686,8 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     // in some App Server versions, followed only by this compaction marker.
     // It has no user input and is not an agent turn, even though the
     // replacement history contains messages from earlier real turns.
-    if (entry?.type === "compacted" && activeTurnIds.size === 1) {
-      const turn = ensureTurn([...activeTurnIds][0]);
+    if (entry?.type === "compacted" && latestStartedTurnId) {
+      const turn = ensureTurn(latestStartedTurnId);
       if (turn) {
         turn.contextCompacted = true;
         touch(turn, timestamp);
@@ -808,7 +810,6 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     turns: [...turns.values()].map((turn) => {
       const imageGenerationCount = turn.imageGenerationCalls.size;
       const compactionOnly = turn.contextCompacted
-        && !turn.terminal
         && !turn.hasOwnTurnContent
         && !turn.prompt
         && !turn.finalAnswer

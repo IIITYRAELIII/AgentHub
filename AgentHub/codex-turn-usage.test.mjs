@@ -261,6 +261,9 @@ test("historical rollout flags a manual context compaction as non-turn activity"
         internal_chat_message_metadata_passthrough: { turn_id: "old-turn" },
       }],
     } }),
+    line({ timestamp: "2026-08-03T18:52:03.340Z", type: "event_msg", payload: {
+      type: "task_complete", turn_id: turnId, last_agent_message: null,
+    } }),
   ].join("\n");
 
   const result = await scanCodexHistoricalRollout("fixture.jsonl", {
