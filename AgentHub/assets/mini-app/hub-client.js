@@ -53,11 +53,13 @@ const {
   isConnectionFailure,
   looksLikeConnectionFailure,
   markConnectionFailure,
+  mergeReconciledUserMessage,
   mergeLiveUserMessages,
   normalizedResponseAnnotations,
   normalizedUserMessage,
   responseAnnotationPrompt,
   reconcile: reconcileMessageLifecycle,
+  reconciledUserMetadataConfirmed,
   rememberBounded: rememberBoundedMessage,
   reusableAttachmentPaths,
   visibleConversationMessages,
@@ -171,10 +173,14 @@ function reconciledMessages(taskIdValue) {
   const pending = outgoingMessages(taskIdValue);
   const outgoing = [...pending.values()];
   const { matches, matchedIds } = reconcileMessageLifecycle(serverMessages, outgoing);
+  const confirmedMatchedIds = new Set();
   const result = matches.map(({ message, local }) => {
     if (!local) return message;
+    if (reconciledUserMetadataConfirmed(message, local)) {
+      confirmedMatchedIds.add(local.clientUserMessageId);
+    }
     return {
-      ...message,
+      ...mergeReconciledUserMessage(message, local),
       attachments: local.attachments?.length ? local.attachments : message.attachments,
       ...deliveryPatch("delivered"),
     };
@@ -182,7 +188,7 @@ function reconciledMessages(taskIdValue) {
   for (const message of outgoing) {
     if (!matchedIds.has(message.clientUserMessageId)) result.push(message);
   }
-  for (const clientUserMessageId of matchedIds) pending.delete(clientUserMessageId);
+  for (const clientUserMessageId of confirmedMatchedIds) pending.delete(clientUserMessageId);
   return chronologicalMessages(visibleConversationMessages(result.map(normalizedUserMessage), {
     deferredClientUserMessageIds,
     liveProbe: liveProbeByTask.get(taskIdValue) ?? null,

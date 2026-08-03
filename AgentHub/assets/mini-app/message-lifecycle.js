@@ -180,6 +180,32 @@ function normalizedUserMessage(message) {
   };
 }
 
+function mergeReconciledUserMessage(message, local) {
+  if (!local || message?.role !== "user") return message;
+  const server = normalizedUserMessage(message);
+  const optimistic = normalizedUserMessage(local);
+  const serverAnnotations = normalizedResponseAnnotations(server.responseAnnotations);
+  const localAnnotations = normalizedResponseAnnotations(optimistic.responseAnnotations);
+  if (serverAnnotations.length || !localAnnotations.length) return message;
+  return {
+    ...message,
+    responseAnnotations: localAnnotations,
+    responseAnnotationRequest: String(
+      optimistic.responseAnnotationRequest ?? optimistic.text ?? "",
+    ).trim(),
+  };
+}
+
+function reconciledUserMetadataConfirmed(message, local) {
+  if (!local || message?.role !== "user") return true;
+  const server = normalizedUserMessage(message);
+  const optimistic = normalizedUserMessage(local);
+  const localAnnotations = normalizedResponseAnnotations(optimistic.responseAnnotations);
+  if (!localAnnotations.length) return true;
+  const serverAnnotations = normalizedResponseAnnotations(server.responseAnnotations);
+  return JSON.stringify(serverAnnotations) === JSON.stringify(localAnnotations);
+}
+
 function reconcile(serverMessages, outgoingMessages) {
   const outgoing = Array.isArray(outgoingMessages) ? outgoingMessages : [];
   const clientOutgoing = new Map();
@@ -451,6 +477,8 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   mergeLiveUserMessages,
   normalizedResponseAnnotations,
   normalizedUserMessage,
+  mergeReconciledUserMessage,
+  reconciledUserMetadataConfirmed,
   responseAnnotationPrompt,
   reconcile,
   rememberBounded,

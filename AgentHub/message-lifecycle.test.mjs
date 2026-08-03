@@ -74,6 +74,30 @@ test("message lifecycle removes a replayed server echo before optimistic reconci
   assert.deepEqual([...result.matchedIds], ["client-1"]);
 });
 
+test("temporary server echo keeps optimistic response annotations until rollout confirms them", () => {
+  const local = {
+    ...message("client-quote", "Это не повторится больше?"),
+    responseAnnotations: [{ text: "миграция полностью завершена.", annotation: "" }],
+    responseAnnotationRequest: "Это не повторится больше?",
+  };
+  const temporary = {
+    ...local,
+    itemId: "temporary-server-item",
+    responseAnnotations: undefined,
+    responseAnnotationRequest: undefined,
+  };
+  const merged = lifecycle.mergeReconciledUserMessage(temporary, local);
+  assert.deepEqual(JSON.parse(JSON.stringify(merged.responseAnnotations)), [{
+    text: "миграция полностью завершена.",
+    annotation: "",
+  }]);
+  assert.equal(lifecycle.reconciledUserMetadataConfirmed(temporary, local), false);
+  assert.equal(lifecycle.reconciledUserMetadataConfirmed({
+    ...temporary,
+    responseAnnotations: local.responseAnnotations,
+  }, local), true);
+});
+
 test("temporary and durable final ids render as one agent card", () => {
   const values = lifecycle.deduplicateConversationMessages([
     {

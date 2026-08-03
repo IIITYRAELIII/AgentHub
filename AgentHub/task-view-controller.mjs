@@ -139,6 +139,35 @@ function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory) {
           }
           : {}),
       };
+      continue;
+    }
+    if (item.promptAnnotations?.length) {
+      const annotations = item.promptAnnotations.map((annotation) => ({ ...annotation }));
+      const request = item.promptRequest ?? item.prompt ?? "";
+      const rolloutUser = item.messages?.find(
+        (message) => message?.role === "user" && message?.responseAnnotations?.length,
+      );
+      const messages = Array.isArray(current?.messages)
+        ? current.messages.map((message) => ({ ...message }))
+        : [];
+      const userIndex = messages.findIndex((message) => message?.role === "user");
+      if (userIndex >= 0) {
+        messages[userIndex] = {
+          ...messages[userIndex],
+          ...(rolloutUser ?? {}),
+          responseAnnotations: annotations,
+          responseAnnotationRequest: request,
+        };
+      } else if (Array.isArray(item.messages)) {
+        messages.push(...item.messages.map((message) => structuredClone(message)));
+      }
+      merged[index] = {
+        ...current,
+        prompt: item.prompt || current.prompt,
+        promptAnnotations: annotations,
+        promptRequest: request,
+        messages,
+      };
     }
   }
   return merged

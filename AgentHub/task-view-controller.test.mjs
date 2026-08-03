@@ -226,3 +226,50 @@ test("rollout fallback keeps response annotations structured", () => {
   ]);
   assert.doesNotMatch(exchange.prompt, /response-annotations|My request for Codex/iu);
 });
+
+test("rollout enriches an already completed cached turn with response annotations", async () => {
+  const turnId = "019fc8c5-ed6c-72d3-9f37-02cb9a797790";
+  const prompt = [
+    "# Response annotations:",
+    "<response-annotations>",
+    JSON.stringify([{ text: "миграция полностью завершена.", annotation: "" }]),
+    "</response-annotations>",
+    "",
+    "## My request for Codex:",
+    "Это не повторится больше?",
+  ].join("\n");
+  const view = controller({
+    findCodexRolloutPath: async () => "C:/rollout.jsonl",
+    readCodexRolloutActivity: async () => ({
+      userMessages: { [turnId]: [{ itemId: "rollout-user", role: "user", text: prompt }] },
+      finalMessages: { [turnId]: "Нет, при обычных запусках не повторится." },
+    }),
+    readCodexSnapshot: async () => ({ active: false }),
+    taskSyncStore: {
+      history: () => [{
+        id: turnId,
+        prompt: "Это не повторится больше?",
+        answer: "Нет, при обычных запусках не повторится.",
+        completed: true,
+        messages: [{ itemId: "temporary-user", role: "user", text: "Это не повторится больше?" }],
+      }],
+      recordHistory: () => {},
+      save: async () => {},
+    },
+  });
+  const result = await view.readHistory({
+    provider: "codex",
+    threadId: "019f75bd-3fd4-7e32-9dc9-0177a261a117",
+    projectRoot: "C:/repo",
+    title: "Agent HUB 1",
+    chatId: 1,
+  });
+  assert.deepEqual(result.history[0].promptAnnotations, [{
+    text: "миграция полностью завершена.",
+    annotation: "",
+  }]);
+  assert.deepEqual(result.history[0].messages[0].responseAnnotations, [{
+    text: "миграция полностью завершена.",
+    annotation: "",
+  }]);
+});

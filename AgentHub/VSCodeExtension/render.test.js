@@ -758,7 +758,8 @@ test("chat shows sent messages immediately and reconciles them by exact identity
   assert.match(client, /clientUserMessageId: request\.requestId/u);
   assert.match(client, /reconcileMessageLifecycle\(serverMessages, outgoing\)/u);
   assert.match(client, /if \(!matchedIds\.has\(message\.clientUserMessageId\)\) result\.push\(message\)/u);
-  assert.match(client, /for \(const clientUserMessageId of matchedIds\) pending\.delete\(clientUserMessageId\)/u);
+  assert.match(client, /reconciledUserMetadataConfirmed\(message, local\)/u);
+  assert.match(client, /for \(const clientUserMessageId of confirmedMatchedIds\) pending\.delete\(clientUserMessageId\)/u);
   assert.match(client, /chronologicalMessages\(visibleConversationMessages/u);
   assert.match(client, /historicalAgentResponseVisible\(item\)/u);
 });
