@@ -32,10 +32,7 @@ export function classifyPublicationChanges(files) {
       || file === "AgentHub/config.example.json"
       || file.endsWith(".md")
       || file.startsWith(".team/")) continue;
-    if (!file.startsWith("AgentHub/")) {
-      plan.unknown.push(file);
-      continue;
-    }
+    if (!file.startsWith("AgentHub/")) continue;
     const relative = file.slice("AgentHub/".length);
     if (/\.test\.(?:mjs|js)$/u.test(relative) || relative.startsWith("e2e/") || relative.startsWith("ci/")) continue;
     if (relative.startsWith("assets/mini-app/") || relative === "work-log.css") {

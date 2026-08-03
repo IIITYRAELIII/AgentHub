@@ -77,6 +77,7 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
   assert.deepEqual(
     classifyPublicationChanges([
       "CHANGELOG.md",
+      "1C_ACCESS/access.json",
       "AgentHub/config.example.json",
       "AgentHub/assets/mini-app/app.js",
       "AgentHub/message-lifecycle.test.mjs",
@@ -91,6 +92,10 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
       fullTests: false,
       unknown: [],
     },
+  );
+  assert.deepEqual(
+    classifyPublicationChanges(["AgentHub/unclassified-artifact.bin"]).unknown,
+    ["AgentHub/unclassified-artifact.bin"],
   );
   assert.deepEqual(parseChangedArguments(["--from", "abc", "--skip-restart", "--full-tests"]), {
     from: "abc",
