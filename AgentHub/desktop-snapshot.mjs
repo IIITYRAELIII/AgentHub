@@ -234,7 +234,6 @@ export function createDesktopSnapshotFactory({
           waiting: restart.request()?.waitingForRuns === true,
           blockingCount: restart.request()
             ? restart.blockingRuns().length
-              + (restart.compactionCount?.() ?? 0)
               + restart.mediaJobCount()
               + restart.speechJobCount()
             : 0,
@@ -339,7 +338,6 @@ export function createDesktopSnapshotFactory({
       restartWaiting: restart.request()?.waitingForRuns === true,
       restartBlockingCount: restart.request()
         ? restart.blockingRuns().length
-          + (restart.compactionCount?.() ?? 0)
           + restart.mediaJobCount()
           + restart.speechJobCount()
         : 0,

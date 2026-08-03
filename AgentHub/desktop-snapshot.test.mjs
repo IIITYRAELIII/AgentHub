@@ -502,7 +502,9 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
   ]);
   assert.equal(snapshot.restartPending, true);
   assert.equal(snapshot.restartWaiting, true);
-  assert.equal(snapshot.restartBlockingCount, 7);
+  // Context-image cleanup is opportunistic and must never deadlock a server
+  // restart: stopping the App Server releases the rollout for the next pass.
+  assert.equal(snapshot.restartBlockingCount, 6);
   assert.deepEqual(snapshot.exchangeRates, {
     usdRub: 78.4049,
     effectiveDate: "2026-07-30",
@@ -511,7 +513,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
   assert.equal(snapshot.activeCount, 1);
   assert.deepEqual(snapshot.server, {
     process: { status: "running", activeCount: 1 },
-    restart: { pending: true, waiting: true, blockingCount: 7 },
+    restart: { pending: true, waiting: true, blockingCount: 6 },
   });
   assert.equal(snapshot.tasks.length, 1);
 });

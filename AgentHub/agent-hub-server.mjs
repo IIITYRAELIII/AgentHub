@@ -2896,7 +2896,6 @@ async function desktopServerSnapshot({
     waiting: restartRequest?.waitingForRuns === true,
     blockingCount: restartRequest
       ? restartBlockingRuns().length
-        + contextCompactions.runningCount()
         + backgroundMediaJobs.size
         + backgroundSpeechJobs.size
       : 0,
@@ -3689,7 +3688,6 @@ async function desktopRestartServer() {
   if (restartRequest) return { accepted: false, message: "Перезапуск уже запрошен" };
   const blockingRuns = restartBlockingRuns();
   const blockingWorkCount = blockingRuns.length
-    + contextCompactions.runningCount()
     + backgroundMediaJobs.size
     + backgroundSpeechJobs.size;
   restartRequest = {
@@ -7499,7 +7497,6 @@ function restartBlockingRuns() {
 
 function restartHasBlockingWork() {
   return restartBlockingRuns().length > 0
-    || contextCompactions.runningCount() > 0
     || backgroundMediaJobs.size > 0
     || backgroundSpeechJobs.size > 0;
 }
@@ -7820,7 +7817,6 @@ async function restartBot() {
   }
   const blockingRuns = restartBlockingRuns();
   const blockingWorkCount = blockingRuns.length
-    + contextCompactions.runningCount()
     + backgroundMediaJobs.size
     + backgroundSpeechJobs.size;
   const message = await sendMessage(blockingWorkCount
