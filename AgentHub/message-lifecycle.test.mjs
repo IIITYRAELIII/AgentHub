@@ -487,6 +487,14 @@ test("history catch-up waits for the exact completed answer turn", () => {
     }],
   };
   assert.equal(lifecycle.historyContainsLatestAnswer(stale, task), false);
+  const answerWithoutUser = {
+    items: [{
+      id: "turn-2",
+      completed: true,
+      messages: [{ role: "agent", phase: "final", text: "Готовый ответ" }],
+    }],
+  };
+  assert.equal(lifecycle.historyContainsLatestAnswer(answerWithoutUser, task), false);
   const caughtUp = {
     items: [{
       id: "turn-2",

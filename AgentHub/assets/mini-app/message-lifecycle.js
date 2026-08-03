@@ -106,6 +106,14 @@ function historyContainsLatestAnswer(history, task) {
     : items;
   return candidates.some((item) => {
     if (item?.completed !== true) return false;
+    const hasUserMessage = Boolean(String(item?.prompt ?? "").trim())
+      || (Array.isArray(item?.messages) ? item.messages : []).some((message) => (
+        message?.role === "user" && String(message?.text ?? "").trim()
+      ));
+    // A temporary completion overlay can expose the final answer before the
+    // durable history contains its user item. With an exact latest turn id,
+    // keep refreshing until the whole exchange is present.
+    if (expectedTurnId && !hasUserMessage) return false;
     const texts = [
       String(item?.answer ?? "").trim(),
       ...(Array.isArray(item?.messages) ? item.messages : [])
