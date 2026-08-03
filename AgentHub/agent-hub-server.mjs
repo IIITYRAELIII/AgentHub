@@ -185,6 +185,7 @@ import { FailedTelegramUpdateStore } from "./failed-update-store.mjs";
 import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "./claude-invocation.mjs";
 import {
   catalogEntryIsSelected,
+  catalogTaskKey,
   claudeCatalogEntry,
   claudeSnapshotActivityAtMs,
   claudeSnapshotActivityState,
@@ -503,6 +504,7 @@ let chatId = null;
 let activeProjectRoot = DEFAULT_PROJECT_ROOT;
 const threadIdsByProvider = { codex: null, claude: null };
 const pinnedTaskTitles = {};
+const pendingTaskTitleConfirmations = {};
 let threadId = null;
 let activeThreadTitle = "";
 let latestDiff = "";
@@ -978,6 +980,19 @@ function pinnedTaskTitle(provider, id) {
 
 function pinTaskTitle(provider, id, title) {
   return writePinnedTaskTitle(pinnedTaskTitles, provider, id, title);
+}
+
+function pendingTaskTitle(provider, id) {
+  return String(pendingTaskTitleConfirmations[catalogTaskKey({ provider, threadId: id })] ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+}
+
+function expectTaskTitleConfirmation(provider, id, title) {
+  const value = String(title ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (id && value) pendingTaskTitleConfirmations[catalogTaskKey({ provider, threadId: id })] = value;
+  return value;
 }
 
 function setBoundedMapValue(map, key, value, limit) {
@@ -1881,6 +1896,12 @@ try {
       if (key.includes("\0") && title) pinnedTaskTitles[key] = title;
     }
   }
+  if (saved.pendingTaskTitleConfirmations && typeof saved.pendingTaskTitleConfirmations === "object") {
+    for (const [key, value] of Object.entries(saved.pendingTaskTitleConfirmations)) {
+      const title = String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+      if (key.includes("\0") && title) pendingTaskTitleConfirmations[key] = title;
+    }
+  }
   if (CLAUDE_MODELS.includes(saved.claudeModel)) claudeModel = saved.claudeModel;
   if (typeof saved.codexModel === "string") codexModel = normalizeCodexModel(saved.codexModel);
   if (CODEX_REASONING_EFFORTS.includes(saved.codexReasoningEffort)) {
@@ -2579,6 +2600,7 @@ async function buildTaskCatalog() {
   // Fresher live entries below replace their persisted counterparts by key.
   const entries = taskSyncStore.catalog();
   let pinnedTitlesChanged = false;
+  let titleConfirmationsChanged = false;
   if (codexResult.status === "fulfilled") {
     await backfillWorkLogPricingMetadata(codexResult.value);
     const titleHistories = await readCodexThreadTitleHistories();
@@ -2633,10 +2655,17 @@ async function buildTaskCatalog() {
         const titleHistory = titleHistories.get(thread.id)
           ?? { currentTitle: "", recoverableTitle: "" };
         const appServerTitle = codexThreadResponseTitle(thread);
+        const confirmationKey = catalogTaskKey(entry);
+        const expectedTitle = pendingTaskTitle(entry.provider, entry.threadId);
+        if (expectedTitle && titleHistory.currentTitle === expectedTitle) {
+          delete pendingTaskTitleConfirmations[confirmationKey];
+          titleConfirmationsChanged = true;
+        }
         const discoveredTitle = preferredCodexTaskTitle(
           appServerTitle,
           titleHistory,
           pinnedTaskTitle(entry.provider, entry.threadId),
+          pendingTaskTitle(entry.provider, entry.threadId),
         );
         if (discoveredTitle && appServerTitle !== discoveredTitle) {
           await sendRpc("thread/name/set", { threadId: entry.threadId, name: discoveredTitle });
@@ -2684,6 +2713,7 @@ async function buildTaskCatalog() {
   }
   taskCatalog = statusTaskEntries(taskCatalog, taskCatalog.length);
   if (pinnedTitlesChanged) await savePinnedTaskTitles();
+  if (titleConfirmationsChanged) await saveState();
   const nextTaskTitleSignature = taskCatalogTitleSignature(taskCatalog);
   const shouldSynchronizeTaskTitles = nextTaskTitleSignature !== synchronizedTaskTitleSignature
     || Date.now() - taskTitlesSynchronizedAt >= TASK_TITLE_RECONCILE_INTERVAL_MS;
@@ -3299,6 +3329,7 @@ async function desktopRenameTask(params) {
   if (!pinnedTitle) throw new Error("Укажите непустое название");
   if (target.provider === "codex") {
     await sendRpc("thread/name/set", { threadId: target.threadId, name: pinnedTitle });
+    expectTaskTitleConfirmation(target.provider, target.threadId, pinnedTitle);
     invalidateTaskCatalog();
   }
   const run = taskRuns.forTask(target);
@@ -4135,6 +4166,7 @@ async function renameCurrentTask(title) {
   if (!pinnedTitle) throw new Error("укажите непустое название после /rename");
   if (isCodex()) {
     await sendRpc("thread/name/set", { threadId, name: pinnedTitle });
+    expectTaskTitleConfirmation(activeProvider, threadId, pinnedTitle);
     invalidateTaskCatalog();
   }
   activeThreadTitle = pinnedTitle;
@@ -8598,6 +8630,7 @@ function saveState() {
     activeProvider,
     threadIds: threadIdsByProvider,
     pinnedTaskTitles,
+    pendingTaskTitleConfirmations,
     claudeModel,
     codexModel,
     codexReasoningEffort,

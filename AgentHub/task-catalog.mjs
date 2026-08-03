@@ -107,9 +107,16 @@ export function reconcilePinnedTaskTitle(titles, provider, threadId, discoveredT
   return { title: discovered, changed: true };
 }
 
-export function preferredCodexTaskTitle(threadTitle, titleHistory = {}, pinnedTitle = "") {
+export function preferredCodexTaskTitle(
+  threadTitle,
+  titleHistory = {},
+  pinnedTitle = "",
+  pendingTitle = "",
+) {
   const liveTitle = String(threadTitle ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
   const pinned = String(pinnedTitle ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+  const pending = String(pendingTitle ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (pending) return pending;
   // A successful Hub rename is written to the App Server before the append-only
   // session index catches up. Keep the confirmed live title during that gap.
   if (pinned && liveTitle === pinned) return pinned;

@@ -226,7 +226,11 @@ function reconciledMessages(taskIdValue) {
 }
 
 function exactSelectedTaskParams() {
-  const identity = taskIdentity(selectedTaskId);
+  return exactTaskParams(selectedTaskId);
+}
+
+function exactTaskParams(id) {
+  const identity = taskIdentity(id);
   if (!identity) throw new Error("Сначала выберите задачу");
   return identity;
 }
@@ -951,8 +955,8 @@ agentHub.on("task:new", ({ title }) => runAction(async () => {
   }
 }));
 
-agentHub.on("task:rename", ({ title }) => runAction(async () => applySnapshot(
-  await control("rename-task", { ...exactSelectedTaskParams(), title }),
+agentHub.on("task:rename", ({ id, title }) => runAction(async () => applySnapshot(
+  await control("rename-task", { ...exactTaskParams(id || selectedTaskId), title }),
 )));
 agentHub.on("task:archive", () => runAction(async () => applySnapshot(
   await control("archive-task", exactSelectedTaskParams()),

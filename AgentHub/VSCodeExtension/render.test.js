@@ -420,6 +420,12 @@ test("task list keeps active duration live and metadata badges readable", () => 
   assert.match(styles, /\.task-runtime\s*\{[^}]*margin-left:\s*auto;/su);
 });
 
+test("task rename targets the card that emitted the action", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /task:rename", \(\{ id, title \}\)/u);
+  assert.match(client, /rename-task", \{ \.\.\.exactTaskParams\(id \|\| selectedTaskId\), title \}/u);
+});
+
 test("clients resynchronize on a new Hub instance and reload only a new release", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
