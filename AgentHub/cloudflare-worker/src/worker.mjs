@@ -1306,8 +1306,17 @@ export class JournalStore extends DurableObject {
   }
 }
 
-function secureStaticResponse(response) {
+function secureStaticResponse(response, request) {
   const headers = new Headers(response.headers);
+  const contentType = String(headers.get("Content-Type") ?? "").toLowerCase();
+  const versioned = new URL(request.url).searchParams.has("v");
+  if (contentType.includes("text/html")) {
+    headers.set("Cache-Control", "no-store");
+  } else if (versioned) {
+    headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  } else {
+    headers.set("Cache-Control", "no-cache");
+  }
   headers.set("Content-Security-Policy", [
     "default-src 'self'",
     "base-uri 'none'",
@@ -1673,6 +1682,6 @@ export default {
         : response;
     }
     if (url.pathname === "/events") return json({ error: "Polling is used in Telegram." }, 404);
-    return secureStaticResponse(await env.ASSETS.fetch(request));
+    return secureStaticResponse(await env.ASSETS.fetch(request), request);
   },
 };

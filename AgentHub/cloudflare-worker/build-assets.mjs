@@ -75,16 +75,36 @@ try {
 }
 
 const indexFile = path.join(output, "index.html");
-const index = await readFile(indexFile, "utf8");
+let index = await readFile(indexFile, "utf8");
 const hubClientScript = '  <script src="/hub-client.js" defer></script>';
 if (!index.includes(hubClientScript)) {
   throw new Error("Agent Hub Worker build could not find the hub-client script anchor");
 }
-await writeFile(
-  indexFile,
-  index.replace(
-    hubClientScript,
-    `  <script src="/remote-command-idempotency.js" defer></script>\n${hubClientScript}`,
-  ),
-  "utf8",
+index = index.replace(
+  hubClientScript,
+  `  <script src="/remote-command-idempotency.js" defer></script>\n${hubClientScript}`,
 );
+
+for (const file of [
+  "work-log.css",
+  "styles.css",
+  "backgrounds.css",
+  "app.js",
+  "metropolis-glass.js",
+  "storm-glass.js",
+  "message-lifecycle.js",
+  "remote-command-idempotency.js",
+  "hub-client.js",
+]) {
+  const reference = `/${file}`;
+  if (!index.includes(`"${reference}"`)) {
+    throw new Error(`Agent Hub Worker build could not find the ${file} asset anchor`);
+  }
+  const revision = createHash("sha256")
+    .update(await readFile(path.join(output, file)))
+    .digest("hex")
+    .slice(0, 12);
+  index = index.replaceAll(`"${reference}"`, `"${reference}?v=${revision}"`);
+}
+
+await writeFile(indexFile, index, "utf8");

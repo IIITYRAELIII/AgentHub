@@ -269,6 +269,34 @@ test("Worker relay authenticates, isolates, executes once, and returns results",
   assert.equal(await storage.get(`control:command:${id}`), undefined);
 });
 
+test("Worker prevents stale Mini App shells and caches versioned assets", async () => {
+  const workerModule = await loadWorker();
+  const env = {
+    JOURNAL: { getByName: () => ({}) },
+    ASSETS: {
+      fetch: async (request) => new Response("asset", {
+        headers: {
+          "Content-Type": new URL(request.url).pathname === "/"
+            ? "text/html; charset=utf-8"
+            : "text/javascript; charset=utf-8",
+        },
+      }),
+    },
+  };
+
+  let response = await workerModule.default.fetch(new Request("https://hub.test/"), env);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+
+  response = await workerModule.default.fetch(
+    new Request("https://hub.test/app.js?v=123456789abc"),
+    env,
+  );
+  assert.equal(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+
+  response = await workerModule.default.fetch(new Request("https://hub.test/app.js"), env);
+  assert.equal(response.headers.get("Cache-Control"), "no-cache");
+});
+
 test("Android device pairing creates a revocable signed session", async () => {
   const workerModule = await loadWorker();
   const storage = new MemoryStorage();

@@ -1216,7 +1216,7 @@ async function openRoute() {
   return true;
 }
 
-async function refresh() {
+async function refresh({ reportError = false } = {}) {
   if (refreshing) return;
   refreshing = true;
   try {
@@ -1261,8 +1261,9 @@ async function refresh() {
       }), { preserveScroll: true });
     }
     applySnapshotConnection(snapshot);
-  } catch {
+  } catch (error) {
     recordTransientConnectionFailure();
+    if (reportError) throw error;
   } finally {
     refreshing = false;
     const active = Boolean(lastSnapshot?.tasks?.some(
@@ -1274,7 +1275,7 @@ async function refresh() {
 
 void runAction(async () => {
   agentHub.setConnection("connecting");
-  await refresh();
+  await refresh({ reportError: true });
   const routed = await openRoute();
   const identity = !routed ? taskIdentity(selectedTaskId) : null;
   if (identity) {
