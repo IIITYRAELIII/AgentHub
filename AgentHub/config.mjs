@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import { CLAUDE_PERMISSION_MODES } from "./claude.mjs";
 import { CODEX_COLLABORATION_MODES, CODEX_REASONING_EFFORTS } from "./codex-settings.mjs";
+import { normalizeCodexSandboxMode } from "./codex-sandbox.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 
 export const AGENT_HUB_ROOT = path.resolve(import.meta.dirname);
@@ -526,6 +527,9 @@ export async function loadConfig() {
       `codexCollaborationMode must be one of: ${CODEX_COLLABORATION_MODES.join(", ")}`,
     );
   }
+  const codexSandboxMode = normalizeCodexSandboxMode(
+    process.env.CODEX_SANDBOX_MODE ?? raw.codexSandboxMode ?? "workspace-write",
+  );
 
   const miniApp = miniAppSettings(raw.miniApp, { configDirectory });
   miniApp.enabled = components.miniApp || components.androidApp;
@@ -561,6 +565,7 @@ export async function loadConfig() {
     codexModel: String(process.env.CODEX_MODEL ?? raw.codexModel ?? "").trim(),
     codexReasoningEffort,
     codexCollaborationMode,
+    codexSandboxMode,
     codexModels: loadCodexModels(raw),
     codexRolloutContext: codexRolloutContextSettings(raw.codexRolloutContext),
     claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),

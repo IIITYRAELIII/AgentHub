@@ -19,6 +19,7 @@ const emptyPlan = () => ({
   android: false,
   desktop: false,
   vscode: false,
+  unitTests: false,
   fullTests: false,
   unknown: [],
 });
@@ -62,7 +63,7 @@ export function classifyPublicationChanges(files) {
     }
     if (relative === "package.json" || relative.endsWith(".mjs") || relative.endsWith(".ps1") || relative.endsWith(".vbs") || relative.endsWith(".py")) {
       plan.runtime = true;
-      plan.fullTests = true;
+      plan.unitTests = true;
       continue;
     }
     plan.unknown.push(file);
@@ -79,7 +80,9 @@ function focusedSteps(plan) {
     steps.push(byLabel.get("Полные тесты Agent Hub"));
   } else {
     steps.push(npmStep("Проверка синтаксиса Agent Hub", ["run", "check"]));
-    if (plan.runtime || plan.worker) {
+    if (plan.unitTests) {
+      steps.push(npmStep("Unit-тесты Agent Hub", ["test"]));
+    } else if (plan.runtime || plan.worker) {
       steps.push({
         label: "Тесты жизненного цикла сообщений",
         command: process.execPath,
@@ -102,12 +105,14 @@ function focusedSteps(plan) {
 export function parseChangedArguments(args) {
   let from = "";
   let skipRestart = false;
+  let fullTests = false;
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--skip-restart") skipRestart = true;
+    else if (args[index] === "--full-tests") fullTests = true;
     else if (args[index] === "--from" && args[index + 1]) from = args[++index];
     else throw new Error(`Неизвестный аргумент: ${args[index]}`);
   }
-  return { from, skipRestart };
+  return { from, skipRestart, fullTests };
 }
 
 export async function publishChanged(args = process.argv.slice(2), {
@@ -124,6 +129,7 @@ export async function publishChanged(args = process.argv.slice(2), {
   if (!from) throw new Error("Нет исходной точки публикации. Сначала выполните npm run publish:all или укажите --from <commit>.");
   const files = await diff(from, { cwd: REPOSITORY_ROOT });
   const plan = classifyPublicationChanges(files);
+  if (options.fullTests) plan.fullTests = true;
   if (plan.unknown.length) console.warn(`Неизвестные пути требуют полной публикации: ${plan.unknown.join(", ")}`);
   for (const step of focusedSteps(plan)) await run(step);
   if (plan.runtime && !options.skipRestart) await restart("restart-server");

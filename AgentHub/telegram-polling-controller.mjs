@@ -1,7 +1,5 @@
 import { shouldLogPollingFailure, telegramPollingRetryDelay } from "./poll-retry.mjs";
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 export class TelegramPollingController {
   constructor({
     telegram,
@@ -19,6 +17,8 @@ export class TelegramPollingController {
     logger = console,
     now = Date.now,
     slowUpdateThresholdMs = 2_000,
+    retryDelay = telegramPollingRetryDelay,
+    delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   }) {
     this.telegram = telegram;
     this.config = config;
@@ -35,6 +35,8 @@ export class TelegramPollingController {
     this.logger = logger;
     this.now = now;
     this.slowUpdateThresholdMs = slowUpdateThresholdMs;
+    this.retryDelay = retryDelay;
+    this.delay = delay;
   }
 
   allowedCallback(callback) {
@@ -111,14 +113,14 @@ export class TelegramPollingController {
         }
       } catch (error) {
         consecutiveFailures += 1;
-        const retryDelayMs = telegramPollingRetryDelay(consecutiveFailures);
+        const retryDelayMs = this.retryDelay(consecutiveFailures);
         if (shouldLogPollingFailure(consecutiveFailures)) {
           this.logger.error(
             `Telegram polling error (${consecutiveFailures}; retry in ${retryDelayMs} ms):`,
             error.message,
           );
         }
-        await delay(retryDelayMs);
+        await this.delay(retryDelayMs);
       }
     }
   }

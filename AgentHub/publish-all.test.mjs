@@ -86,14 +86,53 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
       android: false,
       desktop: false,
       vscode: false,
+      unitTests: false,
       fullTests: false,
       unknown: [],
     },
   );
-  assert.deepEqual(parseChangedArguments(["--from", "abc", "--skip-restart"]), {
+  assert.deepEqual(parseChangedArguments(["--from", "abc", "--skip-restart", "--full-tests"]), {
     from: "abc",
     skipRestart: true,
+    fullTests: true,
   });
+});
+
+test("selective publication runs unit tests for runtime code without the slow process E2E suite", async () => {
+  const labels = [];
+  const result = await publishChanged(["--from", "base", "--skip-restart"], {
+    run: async (step) => labels.push(step.label),
+    restart: async () => assert.fail("restart must be skipped"),
+    readState: async () => null,
+    writeState: async () => {},
+    revision: async () => "head",
+    diff: async () => ["AgentHub/task-catalog.mjs"],
+  });
+
+  assert.equal(result.plan.unitTests, true);
+  assert.equal(result.plan.fullTests, false);
+  assert.deepEqual(labels, [
+    "Проверка синтаксиса Agent Hub",
+    "Unit-тесты Agent Hub",
+    "Тесты расширения VS Code",
+    "Сборка runtime-релиза",
+    "Активация runtime-релиза",
+  ]);
+  assert.ok(!labels.includes("Полные тесты Agent Hub"));
+});
+
+test("selective publication can request the full Agent Hub test suite explicitly", async () => {
+  const labels = [];
+  await publishChanged(["--from", "base", "--skip-restart", "--full-tests"], {
+    run: async (step) => labels.push(step.label),
+    restart: async () => assert.fail("restart must be skipped"),
+    readState: async () => null,
+    writeState: async () => {},
+    revision: async () => "head",
+    diff: async () => ["AgentHub/assets/mini-app/app.js"],
+  });
+  assert.ok(labels.includes("Полные тесты Agent Hub"));
+  assert.ok(!labels.includes("Тесты жизненного цикла сообщений"));
 });
 
 test("selective publication records the exact published revision", async () => {

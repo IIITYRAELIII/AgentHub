@@ -157,7 +157,6 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   await writeFile(workLogPath, "# Глобальный журнал работ\n", "utf8");
   await writeFile(secondWorkLogPath, "# Глобальный журнал работ\n", "utf8");
 
-  telegram.failNext("getUpdates", 500);
   await startBot();
   const initialState = await waitFor(async () => {
     const state = await readJson(statePath).catch(() => null);
@@ -1147,7 +1146,5 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   await telegram.waitForText("архивирована", { after: mark });
 
   assert.equal(stderr.includes("Unhandled asynchronous error"), false, stderr);
-  assert.equal(stderr.includes("Telegram polling error (1; retry in 3000 ms)"), true,
-    "the bot must survive an initial Telegram polling failure");
   assert.equal(stdout.includes("Agent Hub ready"), true, stdout);
 });

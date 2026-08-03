@@ -41,6 +41,10 @@ import {
   resolveCodexThreadSettings,
 } from "./codex-settings.mjs";
 import {
+  codexThreadSandboxSettings,
+  codexTurnSandboxSettings,
+} from "./codex-sandbox.mjs";
+import {
   formatArchiveMessage,
   formatClaudeRateLimits,
   formatCodexRateLimits,
@@ -2299,8 +2303,7 @@ async function attachCodexThread() {
     try {
       const result = await sendRpc("thread/resume", {
         threadId,
-        approvalPolicy: "on-request",
-        sandbox: "workspace-write",
+        ...codexThreadSandboxSettings(config.codexSandboxMode),
       });
       if (!isWorkspaceThread(result.thread ?? {})) {
         throw new Error("saved thread belongs to another project");
@@ -2337,8 +2340,7 @@ async function createThread() {
   }
   const result = await sendRpc("thread/start", {
     cwd: activeProjectRoot,
-    approvalPolicy: "on-request",
-    sandbox: "workspace-write",
+    ...codexThreadSandboxSettings(config.codexSandboxMode),
     serviceName: "telegram_codex_bridge",
   });
   threadId = result.thread.id;
@@ -3309,8 +3311,7 @@ async function interruptCodexRun(run) {
     interrupt: (interruptParams) => sendRpc("turn/interrupt", interruptParams),
     resume: ({ threadId: resumeThreadId }) => sendRpc("thread/resume", {
       threadId: resumeThreadId,
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
+      ...codexThreadSandboxSettings(config.codexSandboxMode),
     }),
   });
 }
@@ -3573,8 +3574,7 @@ async function desktopCompactContext(params) {
     // the shared local catalog.
     await sendRpc("thread/resume", {
       threadId: target.threadId,
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
+      ...codexThreadSandboxSettings(config.codexSandboxMode),
     });
     await sendRpc("thread/compact/start", { threadId: target.threadId });
     return {
@@ -3964,8 +3964,7 @@ async function resumeThread(selectedThreadId, { notify = true } = {}) {
   rememberCodexTaskSettings();
   const result = await sendRpc("thread/resume", {
     threadId: selectedThreadId,
-    approvalPolicy: "on-request",
-    sandbox: "workspace-write",
+    ...codexThreadSandboxSettings(config.codexSandboxMode),
   });
   if (!isWorkspaceThread(result.thread ?? {})) {
     throw new Error("задача относится к другой активной папке");
@@ -4695,17 +4694,11 @@ async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton =
           model: run.modelId,
           reasoningEffort: run.reasoningId,
         }),
-        approvalPolicy: "on-request",
-        sandboxPolicy: {
-          type: "workspaceWrite",
-          writableRoots: [run.projectRoot],
-          networkAccess: false,
-        },
+        ...codexTurnSandboxSettings(config.codexSandboxMode, run.projectRoot),
       }),
       resume: (params) => sendRpc("thread/resume", {
         ...params,
-        approvalPolicy: "on-request",
-        sandbox: "workspace-write",
+        ...codexThreadSandboxSettings(config.codexSandboxMode),
       }),
       rollback: (params) => sendRpc("thread/rollback", params),
     });

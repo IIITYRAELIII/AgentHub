@@ -2795,6 +2795,23 @@ function renderServerConfigEntry(entry = {}) {
       pendingNote,
     ].filter(Boolean));
   }
+  if (entry.type === "choice") {
+    const input = el("select", {
+      class: "server-config-number",
+      "aria-label": entry.name ?? "Параметр конфигурации",
+    }, (Array.isArray(entry.choices) ? entry.choices : []).map((choice) => el("option", {
+      value: choice.value ?? "",
+      text: choice.label ?? choice.value ?? "",
+      selected: choice.value === entry.value,
+    })));
+    input.addEventListener("change", () => noteServerConfigDraft(entry.key, input.value));
+    return el("div", { class: "server-config-row", title: entry.hint || entry.name || "" }, [
+      el("span", { text: entry.name ?? "" }),
+      input,
+      hint,
+      pendingNote,
+    ].filter(Boolean));
+  }
   const input = el("input", {
     class: "server-config-number",
     type: "number",

@@ -5,6 +5,7 @@ import { protectRuntimeConfig } from "./runtime-security.mjs";
 
 const BOOLEAN = "boolean";
 const INTEGER = "integer";
+const CHOICE = "choice";
 
 /**
  * The deliberately small, non-secret subset of runtime configuration that
@@ -15,6 +16,17 @@ export const SERVER_CONFIGURATION_FIELDS = Object.freeze([
   { key: "autoApproveOnStart", name: "Автоподтверждение при запуске", hint: "Команды и правки файлов выполняются без запроса. Выключено — Hub спрашивает разрешение на каждое действие агента.", type: BOOLEAN },
   { key: "guardConcurrentRepositoryWrites", name: "Защита параллельной записи", hint: "Не даёт двум задачам писать в один репозиторий одновременно: вторая ждёт, пока первая закончит ход.", type: BOOLEAN },
   { key: "codexRolloutContext.enabled", name: "История ходов Codex", hint: "Codex получает историю прошлых ходов задачи. Выключено — каждый ход начинается с чистого контекста.", type: BOOLEAN },
+  {
+    key: "codexSandboxMode",
+    name: "Политика доступа Codex",
+    hint: "Только рабочая папка ограничивает запись проектом и отключает сеть. Полный доступ снимает это ограничение; Windows-режим unelevated настраивается отдельно в ~/.codex/config.toml.",
+    type: CHOICE,
+    choices: [
+      { value: "workspace-write", label: "Только рабочая папка" },
+      { value: "danger-full-access", label: "Полный доступ" },
+    ],
+    environment: "CODEX_SANDBOX_MODE",
+  },
   { key: "codexRpcTimeoutSeconds", name: "Тайм-аут ответа Codex", hint: "Сколько Hub ждёт ответа Codex на один вызов, прежде чем считать ход зависшим.", type: INTEGER, min: 1, max: 3600, unit: "с", environment: "CODEX_RPC_TIMEOUT_SECONDS" },
   { key: "deferredInputTtlHours", name: "Хранение очереди входящих", hint: "Сколько ждёт сообщение, отправленное занятому агенту, прежде чем его отбросят.", type: INTEGER, min: 1, max: 8760, unit: "ч" },
   { key: "progressStartDelayMs", name: "Задержка индикатора работы", hint: "Через сколько после начала хода появляется индикатор. Больше — меньше мельканий на коротких ходах.", type: INTEGER, min: 1, max: 60000, unit: "мс" },
@@ -43,6 +55,13 @@ function normalizeValue(field, value) {
     if (typeof value !== "boolean") throw new Error(`«${field.name}»: ожидается переключатель`);
     return value;
   }
+  if (field.type === CHOICE) {
+    const selected = String(value ?? "").trim();
+    if (!field.choices?.some((choice) => choice.value === selected)) {
+      throw new Error(`«${field.name}»: выберите одно из допустимых значений`);
+    }
+    return selected;
+  }
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < field.min || number > field.max) {
     throw new Error(`«${field.name}»: укажите целое число от ${field.min} до ${field.max}`);
@@ -52,6 +71,7 @@ function normalizeValue(field, value) {
 
 function displayValue(field, value) {
   if (field.type === BOOLEAN) return value ? "Включено" : "Выключено";
+  if (field.type === CHOICE) return field.choices.find((choice) => choice.value === value)?.label ?? String(value ?? "");
   return `${value} ${field.unit}`;
 }
 
@@ -61,7 +81,7 @@ export function serverConfigurationEntries(config, pending = {}) {
     const configured = getAtPath(config, field.key);
     const hasPending = Object.hasOwn(pending, field.key);
     const value = hasPending ? pending[field.key] : configured;
-    return {
+    const entry = {
       key: field.key,
       name: field.name,
       hint: field.hint ?? "",
@@ -73,6 +93,8 @@ export function serverConfigurationEntries(config, pending = {}) {
       max: field.max ?? null,
       pending: hasPending,
     };
+    if (field.type === CHOICE) entry.choices = field.choices;
+    return entry;
   });
 }
 

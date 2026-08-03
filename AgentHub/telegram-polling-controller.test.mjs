@@ -141,3 +141,36 @@ test("polling controller records slow handler and state phases", async () => {
   assert.equal(offset, 13);
   assert.match(warnings[0], /handler=80 ms, state=45 ms, transport<=1000 ms/);
 });
+
+test("polling controller retries a transient polling failure before accepting updates", async () => {
+  let attempts = 0;
+  let offset = 0;
+  let stopped = false;
+  const retryDelays = [];
+  const errors = [];
+  const controller = new TelegramPollingController({
+    telegram: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("temporary Telegram failure");
+      stopped = true;
+      return [];
+    },
+    config: { allowedUserIds: new Set([7]), allowedChatIds: null, privateChatsOnly: true },
+    getOffset: () => offset,
+    setOffset: (value) => { offset = value; },
+    setProcessingUpdateId: () => {},
+    handleMessage: async () => {},
+    handleCallback: async () => {},
+    sendMessage: async () => {},
+    saveState: async () => {},
+    afterUpdate: async () => {},
+    stopping: () => stopped,
+    retryDelay: (failures) => failures * 3_000,
+    delay: async (ms) => { retryDelays.push(ms); },
+    logger: { error: (...args) => errors.push(args.join(" ")) },
+  });
+  await controller.run();
+  assert.equal(attempts, 2);
+  assert.deepEqual(retryDelays, [3_000]);
+  assert.match(errors[0], /retry in 3000 ms/);
+});

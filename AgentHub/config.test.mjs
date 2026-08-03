@@ -40,6 +40,32 @@ test("core-only components need neither Telegram credentials nor Web App", async
       scanIntervalSeconds: 15 * 60,
       maxFilesPerPass: 8,
     });
+    assert.equal(config.codexSandboxMode, "workspace-write");
+  } finally {
+    if (previous == null) delete process.env.AGENT_HUB_CONFIG;
+    else process.env.AGENT_HUB_CONFIG = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Codex sandbox mode is configurable but only accepts App Server policies", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-sandbox-"));
+  const configFile = path.join(root, "config.json");
+  const previous = process.env.AGENT_HUB_CONFIG;
+  try {
+    process.env.AGENT_HUB_CONFIG = configFile;
+    await writeFile(configFile, JSON.stringify({
+      components: { telegram: false, miniApp: false, androidApp: false },
+      projectRoot: root,
+      codexSandboxMode: "danger-full-access",
+    }), "utf8");
+    assert.equal((await loadConfig()).codexSandboxMode, "danger-full-access");
+    await writeFile(configFile, JSON.stringify({
+      components: { telegram: false, miniApp: false, androidApp: false },
+      projectRoot: root,
+      codexSandboxMode: "unelevated",
+    }), "utf8");
+    await assert.rejects(loadConfig(), /codexSandboxMode/u);
   } finally {
     if (previous == null) delete process.env.AGENT_HUB_CONFIG;
     else process.env.AGENT_HUB_CONFIG = previous;
