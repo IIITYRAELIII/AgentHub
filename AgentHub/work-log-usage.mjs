@@ -88,6 +88,23 @@ function normalizedMcpCalls(value) {
   return [...calls.values()];
 }
 
+function isLegacyEmptyAutoCompactRecord(record, { provider, turnId, status, usageReported }) {
+  if (provider !== "codex"
+    || !/^auto-compact-/u.test(turnId)
+    || status !== "aborted"
+    || usageReported
+    || normalizeEstimatedCredits(record?.estimatedCredits) > 0) {
+    return false;
+  }
+  const usage = normalizeTokenUsage(record?.usage);
+  return !Object.values(usage).some((value) => value > 0)
+    && !String(record?.prompt ?? "").trim()
+    && !String(record?.body ?? record?.text ?? "").trim()
+    && !(Array.isArray(record?.changedFiles) && record.changedFiles.length)
+    && !(Array.isArray(record?.skillsUsed) && record.skillsUsed.length)
+    && !(Array.isArray(record?.mcpCalls) && record.mcpCalls.length);
+}
+
 function recordCreditBreakdown(record) {
   return turnCreditBreakdown(
     record?.usageReported === false ? null : record?.usage,
@@ -131,6 +148,15 @@ function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       const prompt = displayUserPrompt(record?.prompt);
       const status = String(record?.status ?? "completed").trim() || "completed";
       const usageReported = record?.usageReported !== false;
+      // Early rollout backfills treated Codex's internal auto-compaction
+      // response item as an aborted subagent turn. It has no prompt, answer,
+      // usage or work and should not surface as a journal event.
+      if (isLegacyEmptyAutoCompactRecord(record, {
+        provider,
+        turnId,
+        status,
+        usageReported,
+      })) continue;
       const estimate = provider === "codex"
         ? estimateMissingCodexUsage({
           status,

@@ -4340,13 +4340,14 @@ function taskProfileAccordion(axis, group) {
 }
 
 function taskProfile(group, cohort) {
+  const comparableCohort = cohort.filter((item) => item.provider === group.provider);
   const scales = Object.fromEntries(taskProfileAxes.map((axis) => [
     axis.key,
-    profileScale(cohort.map((item) => item[axis.key])),
+    profileScale(comparableCohort.map((item) => item[axis.key])),
   ]));
   const baselines = Object.fromEntries(taskProfileAxes.map((axis) => [
     axis.key,
-    median(cohort.map((item) => item[axis.key])),
+    median(comparableCohort.map((item) => item[axis.key])),
   ]));
   const currentScores = taskProfileAxes.map((axis) => (
     profileScore(group[axis.key], scales[axis.key], axis.linear)
@@ -4364,7 +4365,8 @@ function taskProfile(group, cohort) {
   const title = document.createElement("strong");
   title.textContent = "Профиль задачи";
   const caption = document.createElement("span");
-  caption.textContent = "Относительно видимых задач журнала. Больше — не лучше, а больше по масштабу.";
+  const providerLabel = group.provider === "claude" ? "Claude" : "Codex";
+  caption.textContent = `Относительно видимых задач ${providerLabel}. Больше — не лучше, а больше по масштабу.`;
   heading.append(title, caption);
   const values = document.createElement("div");
   values.dataset.workLogTaskProfileValues = "";

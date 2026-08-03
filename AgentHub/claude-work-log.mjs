@@ -114,6 +114,17 @@ function claudeToolMetrics(entries) {
   const skillsUsed = new Set();
   const mcpCalls = new Map();
   for (const entry of entries) {
+    if (entry?.type === "user" && entry.message?.role === "user") {
+      for (const block of contentBlocks(entry.message)) {
+        if (block?.type !== "text") continue;
+        const match = String(block.text ?? "").match(
+          /^Base directory for this skill:\s*(.+)$/imu,
+        );
+        const directory = String(match?.[1] ?? "").trim().replace(/^['"]|['"]$/gu, "");
+        const skill = directory.split(/[\\/]/u).filter(Boolean).at(-1) ?? "";
+        if (skill) skillsUsed.add(skill);
+      }
+    }
     if (entry?.type !== "assistant" || entry.message?.role !== "assistant") continue;
     for (const block of contentBlocks(entry?.message)) {
       if (block?.type !== "tool_use") continue;
@@ -347,7 +358,7 @@ export function scanClaudeHistoricalTranscript(text, { transcriptPath = "" } = {
     if (!terminal) continue;
     const { usage, reported } = claudeTranscriptTokenUsage(assistantEntries);
     const estimatedCredits = claudeTranscriptEstimatedCredits(assistantEntries);
-    const toolMetrics = claudeToolMetrics(turnEntries);
+    const toolMetrics = claudeToolMetrics([promptEntry, ...turnEntries]);
     const models = [...new Set(assistantEntries
       .map((entry) => String(entry.message?.model ?? "").trim().toLowerCase())
       .filter(Boolean))];

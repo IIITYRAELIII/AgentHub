@@ -1547,6 +1547,38 @@ test("legacy synthetic interruptions are provisional and retract from the projec
   }
 });
 
+test("legacy empty auto-compaction subagent turns are removed from the ledger", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-auto-compact-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    await writeFile(ledgerFile, `${JSON.stringify({
+      version: 8,
+      turns: {
+        "codex\u0000child-thread\u0000auto-compact-0": {
+          provider: "codex",
+          threadId: "child-thread",
+          taskThreadId: "root-thread",
+          parentThreadId: "root-thread",
+          aggregateOnly: true,
+          turnId: "auto-compact-0",
+          projectRoot: root,
+          title: "Ход отменён",
+          status: "aborted",
+          usageReported: false,
+          usage: {},
+          model: "codex-auto-review",
+          startedAt: "2026-07-14T12:00:00.000Z",
+          completedAt: "2026-07-14T12:00:00.000Z",
+        },
+      },
+    }, null, 2)}\n`, "utf8");
+    const store = new WorkLogUsageStore({ ledgerFile, defaultProjectRoot: root });
+    assert.deepEqual((await persistedLedger(store)).turns, {});
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("usage store recovers a damaged primary ledger from its backup", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-recovery-"));
   try {

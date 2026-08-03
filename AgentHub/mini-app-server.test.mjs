@@ -180,6 +180,18 @@ test("Telegram Mini App initData is signed, fresh and allowlisted", () => {
   }), /expired/u);
 });
 
+test("task profile compares tasks only within the same provider", async () => {
+  const script = await readFile(
+    new URL("./VSCodeExtension/media/mini-app/app.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    script,
+    /const comparableCohort = cohort\.filter\(\(item\) => item\.provider === group\.provider\)/u,
+  );
+  assert.match(script, /Относительно видимых задач \$\{providerLabel\}/u);
+});
+
 test("Mini App serves the SQLite journal and announces revision changes", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mini-app-"));
   const journalDatabase = memoryJournal(DAY_HTML);

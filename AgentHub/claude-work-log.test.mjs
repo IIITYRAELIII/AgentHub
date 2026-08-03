@@ -227,6 +227,42 @@ test("Claude transcript scanner records skills and completed MCP calls", () => {
   assert.doesNotMatch(JSON.stringify(result.turns[0].mcpCalls), /private|secret|query/u);
 });
 
+test("Claude transcript scanner records a slash-expanded skill prompt", () => {
+  const text = [
+    line({
+      type: "user",
+      uuid: "prompt-expanded-skill",
+      timestamp: "2026-08-03T05:00:00.000Z",
+      cwd: "D:\\projects\\Utilities",
+      sessionId: "session-expanded-skill",
+      message: {
+        role: "user",
+        content: [{
+          type: "text",
+          text: "Base directory for this skill: C:\\Users\\Test\\.claude\\skills\\handoff\n\n# Handoff",
+        }],
+      },
+    }),
+    line({
+      type: "assistant",
+      timestamp: "2026-08-03T05:00:01.000Z",
+      message: {
+        id: "message-expanded-skill",
+        role: "assistant",
+        model: "claude-opus-5",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Готово" }],
+        usage: { input_tokens: 10, output_tokens: 2 },
+      },
+    }),
+  ].join("\n");
+
+  const result = scanClaudeHistoricalTranscript(text, {
+    transcriptPath: "session-expanded-skill.jsonl",
+  });
+  assert.deepEqual(result.turns[0].skillsUsed, ["handoff"]);
+});
+
 test("Claude transcript accounting prices cache categories, model changes and dated rates", () => {
   assert.equal(claudeTranscriptEstimatedCredits([{
     type: "assistant",

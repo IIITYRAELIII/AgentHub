@@ -31,6 +31,11 @@ test("official model rates and Fast multipliers are explicit", () => {
     cachedInput: 6.25,
     output: 375,
   });
+  assert.deepEqual(modelCreditRates("codex-auto-review"), {
+    input: 62.5,
+    cachedInput: 6.25,
+    output: 375,
+  });
   assert.deepEqual(modelCreditRates("gpt-5.6-luna"), {
     input: 25,
     cachedInput: 2.5,
@@ -127,6 +132,17 @@ test("Spark is accounted as zero credits and unknown models stay unpriced", () =
     formatTaskTokenUsage(usage, { model: "future-model" }),
     /нет тарифа для future-model/,
   );
+  assert.deepEqual(turnCreditBreakdown(emptyTokenUsage(), {
+    model: "<synthetic>",
+  }), {
+    input: 0,
+    cache: 0,
+    output: 0,
+    reasoning: 0,
+    estimate: 0,
+    total: 0,
+    priced: true,
+  });
 });
 
 test("credit breakdowns and token counters add without losing fields", () => {

@@ -9,6 +9,9 @@ const TOKEN_USAGE_FIELDS = [
 const MODEL_CREDIT_RATES = new Map([
   ["gpt-5.6-sol", { input: 125, cachedInput: 12.5, output: 750 }],
   ["gpt-5.6-terra", { input: 62.5, cachedInput: 6.25, output: 375 }],
+  // Subagent review rollouts report this product alias instead of the
+  // underlying balanced Codex model identifier.
+  ["codex-auto-review", { input: 62.5, cachedInput: 6.25, output: 375 }],
   ["gpt-5.6-luna", { input: 25, cachedInput: 2.5, output: 150 }],
   ["gpt-5.5", { input: 125, cachedInput: 12.5, output: 750 }],
   ["gpt-5.4", { input: 62.5, cachedInput: 6.25, output: 375 }],
@@ -129,11 +132,15 @@ export function turnCreditBreakdown(usage, {
   const rates = modelCreditRates(model);
   const estimate = Math.max(0, Number(estimatedCredits) || 0);
   if (!rates) {
+    const hasTokenUsage = TOKEN_USAGE_FIELDS.some((field) => normalized[field] > 0);
     return {
       ...emptyCreditBreakdown(),
       estimate,
       total: estimate,
-      priced: false,
+      // Claude emits local <synthetic> turns for authentication failures,
+      // limits and no-response continuations. Reported zero tokens mean a
+      // known zero charge even though that synthetic model has no tariff.
+      priced: !hasTokenUsage,
     };
   }
   const multiplier = fastModeCreditMultiplier(model, serviceTier);
