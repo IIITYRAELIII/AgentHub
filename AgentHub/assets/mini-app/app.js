@@ -980,11 +980,17 @@ function shortModelLabel(value) {
 function modelTier(value) {
   const normalized = String(value ?? "").toLowerCase();
   if (!normalized) return null;
-  /* Кодовые имена важнее номера версии: «GPT-5.6-Sol» — флагман по имени.
-     Лёгкие проверяются первыми, иначе версия перетянула бы их в верхний ранг. */
-  if (/luna|haiku|spark|nano|flash|lite|mini|5\.3/u.test(normalized)) return "light";
-  if (/sol|opus|pro\b|ultra|max\b|5\.[5-9]/u.test(normalized)) return "flagship";
-  return "balanced";
+  /* Sol, Terra и Luna — варианты одного поколения, поэтому решает суффикс, а не
+     номер: «GPT-5.6-Terra» обычная, хотя версия старше флагманской 5.5. Номер
+     смотрим только тогда, когда варианта в названии нет. */
+  if (/\bsol\b|opus|pro\b|ultra|max\b/u.test(normalized)) return "flagship";
+  if (/terra|sonnet/u.test(normalized)) return "balanced";
+  if (/luna|haiku|spark|nano|flash|lite|mini/u.test(normalized)) return "light";
+  const version = Number(normalized.match(/(\d+(?:\.\d+)?)/u)?.[1]);
+  if (!Number.isFinite(version)) return "balanced";
+  if (version >= 5.5) return "flagship";
+  if (version >= 5.4) return "balanced";
+  return "light";
 }
 
 function renderTasks() {
