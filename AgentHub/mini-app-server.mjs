@@ -15,6 +15,7 @@ export { extractWorkLogHtml } from "./mini-app-journal-data.mjs";
 
 const CONTENT_TYPES = new Map([
   ["/", "text/html; charset=utf-8"],
+  ["/browser-device-auth.js", "text/javascript; charset=utf-8"],
   ["/app.js", "text/javascript; charset=utf-8"],
   ["/metropolis-glass.js", "text/javascript; charset=utf-8"],
   ["/storm-glass.js", "text/javascript; charset=utf-8"],
@@ -60,6 +61,7 @@ const CONTENT_TYPES = new Map([
 ]);
 const STATIC_FILES = new Map([
   ["/", "index.html"],
+  ["/browser-device-auth.js", "browser-device-auth.js"],
   ["/app.js", "app.js"],
   ["/metropolis-glass.js", "metropolis-glass.js"],
   ["/storm-glass.js", "storm-glass.js"],

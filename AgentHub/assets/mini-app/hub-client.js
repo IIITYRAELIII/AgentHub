@@ -272,6 +272,8 @@ function authorizationHeaders() {
   } catch {
     // The native bridge is optional; local web and VS Code use their existing transport.
   }
+  const browserToken = String(window.AgentHubBrowserDevice?.getAccessToken?.() ?? "").trim();
+  if (browserToken) return { Authorization: `device ${browserToken}` };
   return {};
 }
 
@@ -308,7 +310,12 @@ function bridgeCall(action, params = {}) {
 
 async function hubFetch(input, init) {
   try {
-    return await fetch(input, init);
+    await window.AgentHubBrowserDevice?.ensureSession?.();
+    const browserToken = String(window.AgentHubBrowserDevice?.getAccessToken?.() ?? "").trim();
+    if (!browserToken) return await fetch(input, init);
+    const headers = new Headers(init?.headers);
+    headers.set("Authorization", `device ${browserToken}`);
+    return await fetch(input, { ...init, headers });
   } catch (error) {
     throw markConnectionFailure(error);
   }

@@ -10,6 +10,7 @@ await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 for (const file of [
   "index.html",
+  "browser-device-auth.js",
   "app.js",
   "metropolis-glass.js",
   "storm-glass.js",
@@ -89,6 +90,7 @@ for (const file of [
   "work-log.css",
   "styles.css",
   "backgrounds.css",
+  "browser-device-auth.js",
   "app.js",
   "metropolis-glass.js",
   "storm-glass.js",

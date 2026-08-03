@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/backgrounds.css">
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+  <script src="/browser-device-auth.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/metropolis-glass.js" defer></script>
   <script src="/storm-glass.js" defer></script>
@@ -17,6 +18,37 @@
   <script src="/hub-client.js" defer></script>
 </head>
 <body>
+  <section class="browser-auth" data-browser-auth hidden aria-labelledby="browser-auth-title">
+    <div class="browser-auth-card">
+      <span class="browser-auth-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2.7 20 7.2v9.6L12 21.3 4 16.8V7.2z"></path>
+          <path d="M7.6 12.1h2.2l1.3-2.9 1.9 5.4 1.2-2.5h1.9"></path>
+        </svg>
+      </span>
+      <p class="browser-auth-kicker">Agent Hub</p>
+      <h1 id="browser-auth-title">Доверенный браузер</h1>
+      <p class="browser-auth-copy">Создайте одноразовый код в разделе «Сервер → Доверенные устройства»
+        уже авторизованного Agent Hub и введите его здесь.</p>
+      <form class="browser-auth-form" data-browser-auth-form>
+        <label>
+          <span>Название устройства</span>
+          <input type="text" maxlength="80" autocomplete="off" data-browser-auth-name required>
+        </label>
+        <label>
+          <span>Код сопряжения</span>
+          <input type="text" inputmode="text" maxlength="23" autocomplete="one-time-code"
+            autocapitalize="characters" spellcheck="false" placeholder="AAAAA-BBBBB-CCCCC-DDDDD"
+            data-browser-auth-code required>
+        </label>
+        <button type="submit" class="browser-auth-submit" data-browser-auth-submit>Доверять этому браузеру</button>
+      </form>
+      <p class="browser-auth-status" data-browser-auth-status role="status" aria-live="polite"></p>
+      <p class="browser-auth-note">Ключ останется только в этом профиле браузера. Доступ можно отозвать
+        с другого доверенного устройства.</p>
+    </div>
+  </section>
   <div class="theme-atmosphere" aria-hidden="true">
     <canvas data-metropolis-glass></canvas>
     <canvas data-storm-glass></canvas>
@@ -601,7 +633,7 @@
         <header class="server-card-head compact">
           <div>
             <h2 id="server-devices-title">Доверенные устройства</h2>
-            <p>Android-клиенты с собственным ключом устройства.</p>
+            <p>Android-клиенты и браузеры с собственным ключом устройства.</p>
           </div>
         </header>
         <div class="trusted-devices-card">

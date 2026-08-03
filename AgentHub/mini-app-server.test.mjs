@@ -242,6 +242,15 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(shellSource, /data-action="task-new" data-provider="codex"/u);
     assert.match(shellSource, /data-action="task-new" data-provider="claude"/u);
     assert.match(shellSource, /data-status-slot/u);
+    assert.match(shellSource, /data-browser-auth/u);
+    assert.match(shellSource, /src="\/browser-device-auth\.js"/u);
+    const browserAuthSource = await (await fetch(`${address.url}browser-device-auth.js`)).text();
+    assert.match(browserAuthSource, /indexedDB\.open\(DATABASE_NAME, 1\)/u);
+    assert.match(browserAuthSource, /crypto\.subtle\.generateKey\([\s\S]*false,[\s\S]*\["sign", "verify"\]/u);
+    assert.match(browserAuthSource, /\/api\/device\/pair/u);
+    assert.match(browserAuthSource, /\/api\/device\/challenge/u);
+    assert.match(browserAuthSource, /\/api\/device\/session/u);
+    assert.doesNotMatch(browserAuthSource, /localStorage|sessionStorage/u);
     const appSource = await (await fetch(`${address.url}app.js`)).text();
     assert.match(appSource, /setTaskDiff\(taskId, text\)/u);
     assert.match(appSource, /class: "task-diff"/u);
@@ -255,6 +264,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
 
     for (const pathname of [
       "",
+      "browser-device-auth.js",
       "app.js",
       "metropolis-glass.js",
       "storm-glass.js",

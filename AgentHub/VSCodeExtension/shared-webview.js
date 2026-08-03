@@ -136,6 +136,7 @@ async function sharedWebviewHtml(webview, locations) {
     .replace('href="/styles.css"', `href="${resource(webview, assets.styles)}"`)
     .replace('href="/backgrounds.css"', `href="${resource(webview, assets.backgrounds)}"`)
     .replace(/<script src="https:\/\/telegram\.org\/[^>]+><\/script>\s*/iu, "")
+    .replace('<script src="/browser-device-auth.js" defer></script>', "")
     .replace(
       '<script src="/app.js" defer></script>',
       `<style nonce="${nonce}">html[data-theme],html[data-background]{${assetOverrides}}</style>`

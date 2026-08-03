@@ -145,7 +145,7 @@ const telegram = window.Telegram?.WebApp;
 const telegramInitData = String(telegram?.initData ?? "");
 const telegramMode = Boolean(telegramInitData);
 const localAccessMatch = /^#access=([A-Za-z0-9_-]{43,128})$/u.exec(window.location.hash);
-const localSessionReady = !telegramMode && localAccessMatch
+const protectedLocalSessionReady = !telegramMode && localAccessMatch
   ? fetch("/api/local-session", {
       method: "POST",
       headers: {
@@ -159,6 +159,10 @@ const localSessionReady = !telegramMode && localAccessMatch
       history.replaceState(null, "", `${location.pathname}${location.search}`);
     })
   : Promise.resolve();
+const localSessionReady = Promise.all([
+  protectedLocalSessionReady,
+  window.AgentHubBrowserDeviceReady ?? Promise.resolve(),
+]).then(() => undefined);
 window.AgentHubLocalSessionReady = localSessionReady;
 const vscodeMode = Boolean(window.__agentHubVscode);
 const telegramPlatform = String(telegram?.platform ?? "").toLowerCase();
@@ -4309,7 +4313,14 @@ function requestHeaders() {
   } catch {
     // The Android bridge is optional for local web and VS Code.
   }
+  const browserToken = String(window.AgentHubBrowserDevice?.getAccessToken?.() ?? "").trim();
+  if (browserToken) return { Authorization: `device ${browserToken}` };
   return {};
+}
+
+async function authenticatedRequestHeaders() {
+  await window.AgentHubBrowserDevice?.ensureSession?.();
+  return requestHeaders();
 }
 
 function selectorValue(value) {
@@ -4487,7 +4498,7 @@ async function fetchJournalFragment(pathname, params) {
   const query = new URLSearchParams({ ...params, version: currentVersion });
   const response = await fetch(`${pathname}?${query}`, {
     cache: "no-store",
-    headers: requestHeaders(),
+    headers: await authenticatedRequestHeaders(),
   });
   const payload = await response.json();
   if (response.status === 409 || payload.version && payload.version !== currentVersion) {
@@ -5443,7 +5454,7 @@ async function loadJournal({ force = false } = {}) {
     refreshButton.disabled = true;
     try {
       await localSessionReady;
-      const headers = requestHeaders();
+      const headers = await authenticatedRequestHeaders();
       if (!force && currentVersion) headers["If-None-Match"] = `"${currentVersion}"`;
       const response = await fetch(`/api/journal?now=${Date.now()}`, {
         cache: "no-store",
@@ -5598,7 +5609,7 @@ if (telegramMode) {
     if (journalRequested) void loadJournal();
   }, 5_000);
   window.addEventListener("pagehide", () => clearInterval(polling), { once: true });
-} else if (!vscodeMode) {
+} else if (!vscodeMode && !window.AgentHubAndroid && !window.AgentHubBrowserDevice) {
   const events = new EventSource("/events");
   events.addEventListener("ready", () => {
     AgentHub.setConnection("online");
