@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
+import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
@@ -13,11 +14,16 @@ import android.os.Build;
 import android.provider.Settings;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
+import android.view.ActionMode;
 import android.view.Gravity;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.JavascriptInterface;
 import android.webkit.SslErrorHandler;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -62,6 +68,8 @@ public final class MainActivity extends Activity {
     private static final int MAX_RESPONSE_BYTES = 1024 * 1024;
     private static final long MAX_UPDATE_BYTES = 100L * 1024L * 1024L;
     private static final int REQUEST_UNKNOWN_SOURCES = 1201;
+    private static final int REQUEST_IMAGE_CHOOSER = 1202;
+    private static final int MENU_ANNOTATE_SELECTION = 0x41485542;
     private static final String APK_TYPE = "application/vnd.android.package-archive";
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -69,6 +77,7 @@ public final class MainActivity extends Activity {
     private volatile boolean updateCheckStarted = false;
     private Uri pendingUpdateUri;
     private WebView webView;
+    private ValueCallback<Uri[]> pendingFileChooser;
     private final OnBackInvokedCallback backCallback = this::handleBackNavigation;
 
     @Override
@@ -99,6 +108,10 @@ public final class MainActivity extends Activity {
             webView.removeJavascriptInterface("AgentHubAndroid");
             webView.destroy();
         }
+        if (pendingFileChooser != null) {
+            pendingFileChooser.onReceiveValue(null);
+            pendingFileChooser = null;
+        }
         worker.shutdownNow();
         super.onDestroy();
     }
@@ -106,6 +119,12 @@ public final class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_IMAGE_CHOOSER) {
+            ValueCallback<Uri[]> callback = pendingFileChooser;
+            pendingFileChooser = null;
+            if (callback != null) callback.onReceiveValue(selectedFiles(resultCode, data));
+            return;
+        }
         if (requestCode != REQUEST_UNKNOWN_SOURCES || pendingUpdateUri == null) return;
         Uri update = pendingUpdateUri;
         pendingUpdateUri = null;
@@ -243,15 +262,41 @@ public final class MainActivity extends Activity {
 
     @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
     private void showHub(String serverUrl) {
-        webView = new WebView(this);
+        webView = new AgentHubWebView(this);
         webView.setBackgroundColor(Color.rgb(7, 17, 22));
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
         webView.getSettings().setAllowFileAccess(false);
-        webView.getSettings().setAllowContentAccess(false);
+        // File-system paths stay disabled. Content access is required only for
+        // image URIs explicitly selected through Android's document picker.
+        webView.getSettings().setAllowContentAccess(true);
         webView.getSettings().setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         if (android.os.Build.VERSION.SDK_INT >= 26) webView.getSettings().setSafeBrowsingEnabled(true);
         webView.addJavascriptInterface(new DeviceAuthBridge(), "AgentHubAndroid");
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(
+                WebView view,
+                ValueCallback<Uri[]> callback,
+                FileChooserParams params
+            ) {
+                if (pendingFileChooser != null) pendingFileChooser.onReceiveValue(null);
+                pendingFileChooser = callback;
+                Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType("image/*")
+                    .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                try {
+                    startActivityForResult(picker, REQUEST_IMAGE_CHOOSER);
+                    return true;
+                } catch (ActivityNotFoundException error) {
+                    pendingFileChooser = null;
+                    callback.onReceiveValue(null);
+                    Toast.makeText(MainActivity.this, "Выбор изображений недоступен.", Toast.LENGTH_LONG).show();
+                    return false;
+                }
+            }
+        });
         Uri trustedOrigin = Uri.parse(serverUrl);
         webView.setWebViewClient(new WebViewClient() {
             @Override
@@ -292,6 +337,72 @@ public final class MainActivity extends Activity {
         });
         setContentView(webView);
         webView.loadUrl(serverUrl);
+    }
+
+    private Uri[] selectedFiles(int resultCode, Intent data) {
+        if (resultCode != Activity.RESULT_OK || data == null) return null;
+        ClipData clip = data.getClipData();
+        if (clip != null) {
+            Uri[] values = new Uri[clip.getItemCount()];
+            for (int index = 0; index < clip.getItemCount(); index++) {
+                values[index] = clip.getItemAt(index).getUri();
+            }
+            return values;
+        }
+        Uri single = data.getData();
+        return single == null ? null : new Uri[] {single};
+    }
+
+    private final class AgentHubWebView extends WebView {
+        AgentHubWebView(Context context) {
+            super(context);
+        }
+
+        private ActionMode.Callback withAnnotationAction(ActionMode.Callback original) {
+            return new ActionMode.Callback() {
+                @Override
+                public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                    boolean created = original.onCreateActionMode(mode, menu);
+                    if (created && menu.findItem(MENU_ANNOTATE_SELECTION) == null) {
+                        menu.add(Menu.NONE, MENU_ANNOTATE_SELECTION, Menu.CATEGORY_SECONDARY, "Цитировать");
+                    }
+                    return created;
+                }
+
+                @Override
+                public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                    return original.onPrepareActionMode(mode, menu);
+                }
+
+                @Override
+                public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                    if (item.getItemId() == MENU_ANNOTATE_SELECTION) {
+                        evaluateJavascript(
+                            "Boolean(window.AgentHub && window.AgentHub.addSelectedAnnotation && window.AgentHub.addSelectedAnnotation())",
+                            null
+                        );
+                        mode.finish();
+                        return true;
+                    }
+                    return original.onActionItemClicked(mode, item);
+                }
+
+                @Override
+                public void onDestroyActionMode(ActionMode mode) {
+                    original.onDestroyActionMode(mode);
+                }
+            };
+        }
+
+        @Override
+        public ActionMode startActionMode(ActionMode.Callback callback) {
+            return super.startActionMode(withAnnotationAction(callback));
+        }
+
+        @Override
+        public ActionMode startActionMode(ActionMode.Callback callback, int type) {
+            return super.startActionMode(withAnnotationAction(callback), type);
+        }
     }
 
     private boolean sameOrigin(Uri left, Uri right) {

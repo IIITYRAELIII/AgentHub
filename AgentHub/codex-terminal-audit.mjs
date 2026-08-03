@@ -138,6 +138,7 @@ export class CodexTerminalAudit {
     resolveProject,
     reconcile,
     discoverHistoricalThreads = null,
+    scanHistoricalFile = null,
     statFile = stat,
     scanFile = scanCodexTerminalEventsFromOffset,
     now = Date.now,
@@ -159,6 +160,7 @@ export class CodexTerminalAudit {
     this.resolveProject = resolveProject;
     this.reconcile = reconcile;
     this.discoverHistoricalThreads = discoverHistoricalThreads;
+    this.scanHistoricalFile = scanHistoricalFile;
     this.statFile = statFile;
     this.scanFile = scanFile;
     this.now = now;
@@ -490,6 +492,47 @@ export class CodexTerminalAudit {
       return true;
     }
     const startOffset = item.offset <= info.size ? item.offset : 0;
+    if (typeof this.scanHistoricalFile === "function") {
+      const historical = await this.scanHistoricalFile(item.thread);
+      const turns = Array.isArray(historical?.turns) ? historical.turns : [];
+      let allHandled = true;
+      let processedTurns = 0;
+      for (const turn of turns) {
+        if (turn?.terminal !== true) continue;
+        processedTurns += 1;
+        if (await this.reconcile(item.thread, project, {
+          turnId: turn.turnId,
+          status: turn.status || "completed",
+          completedAt: turn.completedAt || turn.lastActivityAt,
+          historical: true,
+          usageResult: turn,
+        }) === false) allHandled = false;
+      }
+      if (!allHandled) return changed;
+
+      const stale = this.now() - Number(info.mtimeMs || 0) >= this.historicalActiveStaleMs;
+      if (stale) {
+        for (const turn of turns) {
+          if (turn?.terminal === true || !turn?.startedAt) continue;
+          processedTurns += 1;
+          const handled = await this.reconcile(item.thread, project, {
+            turnId: turn.turnId,
+            status: "aborted",
+            completedAt: turn.lastActivityAt || turn.startedAt || new Date(info.mtimeMs).toISOString(),
+            authoritative: true,
+            historical: true,
+            usageResult: turn,
+          });
+          if (handled === false) allHandled = false;
+        }
+      }
+      if (!allHandled) return true;
+      backfill.processedTurns += processedTurns;
+      backfill.queue.shift();
+      backfill.completedFiles += 1;
+      if (!backfill.queue.length) backfill.pending = false;
+      return true;
+    }
     const result = await this.scanFile(item.thread.path, {
       startOffset,
       maxBytes: this.historicalSubagentBackfillBytes,

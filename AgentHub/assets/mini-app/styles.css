@@ -5928,6 +5928,13 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   padding: 0.35rem 0.5rem;
 }
 
+.annotation-content {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
 .annotation-quote {
   color: var(--text-soft);
   font-size: 0.78rem;
@@ -5935,6 +5942,25 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   line-height: 1.4;
   overflow: hidden;
   overflow-wrap: anywhere;
+}
+
+.annotation-comment {
+  background: color-mix(in srgb, var(--bg) 68%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  min-height: 2rem;
+  padding: 0.35rem 0.45rem;
+  resize: vertical;
+  width: 100%;
+}
+
+.annotation-comment:focus {
+  border-color: var(--accent-line);
+  outline: 0;
 }
 
 .attachments {
@@ -6099,19 +6125,9 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   opacity: 0.4;
 }
 
-.composer-attach,
-.composer-annotate {
+.composer-attach {
   height: 2.4rem;
   width: 2.4rem;
-}
-
-.composer-annotate[aria-disabled="true"] {
-  opacity: 0.4;
-}
-
-.composer-annotate[aria-disabled="false"] {
-  border-color: var(--accent-line);
-  color: var(--accent);
 }
 
 .attachment-viewer {
@@ -7498,7 +7514,6 @@ html[data-surface="mobile"] .composer-input {
 
 html[data-surface="mobile"] .composer-slash,
 html[data-surface="mobile"] .composer-attach,
-html[data-surface="mobile"] .composer-annotate,
 html[data-surface="mobile"] [data-follow-up-mode],
 html[data-surface="mobile"] .context-usage,
 html[data-surface="mobile"] .composer-send {

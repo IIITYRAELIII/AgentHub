@@ -65,6 +65,7 @@ import {
   scanCodexTurnPricingMetadata,
 } from "./codex-turn-usage.mjs";
 import { CodexTerminalAudit } from "./codex-terminal-audit.mjs";
+import { scanCodexHistoricalRolloutInWorker } from "./codex-historical-backfill.mjs";
 import { resolveCodexJournalProject } from "./codex-journal-project.mjs";
 import { RateLimitHistoryStore } from "./rate-limit-history.mjs";
 import {
@@ -142,7 +143,11 @@ import {
   listClaudeSessionSnapshots,
   readClaudeSessionSnapshot,
 } from "./last-message.mjs";
-import { codexThreadHistory, mergeActiveTaskHistory } from "./task-history.mjs";
+import {
+  codexThreadHistory,
+  mergeActiveTaskHistory,
+  mergeCompletedTaskHistory,
+} from "./task-history.mjs";
 import {
   activeTurnMissing,
   interruptCodexTurnWithRecovery,
@@ -628,6 +633,7 @@ const codexTerminalAudit = new CodexTerminalAudit({
   }),
   reconcile: reconcileRecentCodexTerminalTurn,
   discoverHistoricalThreads: () => discoverCodexRollouts(),
+  scanHistoricalFile: scanCodexHistoricalRolloutInWorker,
 });
 const turnTemporaryFiles = new Map();
 const turnSpeechButtons = new Map();
@@ -3009,8 +3015,10 @@ const desktopTaskHistory = createDesktopTaskHistoryFactory({
   runs: {
     forTask: (binding) => taskRuns.forTask(binding),
   },
+  latestMessage: savedLastTaskMessageRecord,
   historyMerger: {
     mergeActive: mergeActiveTaskHistory,
+    mergeCompleted: mergeCompletedTaskHistory,
   },
   receipts: {
     forMessage: (identity) => desktopMessageReceipts.get(identity),
@@ -6525,7 +6533,8 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
     const parentTurnId = accountingThread.isSubagent
       ? await codexSubagentParentTurnId(thread, accountingThread)
       : "";
-    const usageResult = await readCodexTurnUsage(thread.path, identity.turnId);
+    const usageResult = terminal?.usageResult
+      ?? await readCodexTurnUsage(thread.path, identity.turnId);
     const authoritativeStatus = terminal?.authoritative === true;
     if (!usageResult.terminal && !authoritativeStatus) return false;
     const resolvedStatus = usageResult.terminal

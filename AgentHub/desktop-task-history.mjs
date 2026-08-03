@@ -6,6 +6,7 @@ export function createDesktopTaskHistoryFactory({
   historyReader,
   runs,
   historyMerger,
+  latestMessage = () => null,
   receipts = {},
   attachmentImporter = async () => [],
   responseBudget,
@@ -115,6 +116,15 @@ export function createDesktopTaskHistoryFactory({
         startedAt: running.startedAt,
         attachments: running.messageAttachments ?? [],
       });
+    } else {
+      const completed = latestMessage(binding);
+      if (completed?.turnId && completed?.text) {
+        historyMerger.mergeCompleted(history, {
+          turnId: completed.turnId,
+          answer: completed.text,
+          completedAt: completed.updatedAt,
+        });
+      }
     }
 
     const total = history.length;

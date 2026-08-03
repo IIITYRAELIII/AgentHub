@@ -741,6 +741,58 @@ test("historical rollout backfill also restores ordinary Codex threads", async (
   assert.equal(audit.snapshot().historicalSubagentBackfill.totalFiles, 1);
 });
 
+test("historical rollout backfill scans each file once and reuses complete turn data", async () => {
+  const ordinary = thread(
+    "ordinary-thread",
+    "2026-07-01T00:00:00.000Z",
+    "large-ordinary-thread.jsonl",
+  );
+  const scans = [];
+  const recovered = [];
+  const usageResult = {
+    turnId: "ordinary-turn",
+    terminal: true,
+    status: "completed",
+    completedAt: "2026-07-01T00:10:00.000Z",
+    reported: true,
+    usage: { inputTokens: 42 },
+  };
+  const audit = new CodexTerminalAudit({
+    listPage: async () => ({ data: [], nextCursor: null }),
+    discoverHistoricalThreads: async () => [ordinary],
+    resolveProject: () => project,
+    statFile: async () => ({
+      size: 600 * 1024 * 1024,
+      mtimeMs: Date.parse("2026-07-01T00:10:00.000Z"),
+    }),
+    scanHistoricalFile: async (value) => {
+      scans.push(value.path);
+      return { turns: [usageResult] };
+    },
+    scanFile: async () => {
+      throw new Error("chunk scanner must not run");
+    },
+    reconcile: async (_thread, _project, terminal) => {
+      recovered.push(terminal);
+      return true;
+    },
+  });
+  audit.restore({ version: 7, completedThrough: "2026-08-01T13:30:00.000Z" });
+
+  await audit.run();
+
+  assert.deepEqual(scans, ["large-ordinary-thread.jsonl"]);
+  assert.deepEqual(recovered, [{
+    turnId: "ordinary-turn",
+    status: "completed",
+    completedAt: "2026-07-01T00:10:00.000Z",
+    historical: true,
+    usageResult,
+  }]);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.completedFiles, 1);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.processedTurns, 1);
+});
+
 test("historical subagent backfill records a stale unterminated turn as aborted", async () => {
   const recovered = [];
   const audit = new CodexTerminalAudit({

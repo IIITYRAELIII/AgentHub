@@ -9,8 +9,37 @@ import {
   displayUserPrompt,
   responseAnnotationDetails,
   mergeActiveTaskHistory,
+  mergeCompletedTaskHistory,
   visibleTaskHistory,
 } from "./task-history.mjs";
+
+test("completed history overlay replaces a stale live answer immediately", () => {
+  const history = [{
+    id: "turn-1",
+    active: true,
+    completed: false,
+    status: "inProgress",
+    answer: "Промежуточный текст",
+    messages: [{
+      itemId: "turn-1:agent:live",
+      role: "agent",
+      text: "Промежуточный текст",
+    }],
+  }];
+
+  mergeCompletedTaskHistory(history, {
+    turnId: "turn-1",
+    answer: "Финальный ответ",
+    completedAt: "2026-08-03T12:00:00.000Z",
+  });
+
+  assert.equal(history[0].active, false);
+  assert.equal(history[0].completed, true);
+  assert.equal(history[0].status, "completed");
+  assert.equal(history[0].answer, "Финальный ответ");
+  assert.equal(history[0].messages[0].text, "Финальный ответ");
+  assert.equal(history[0].messages[0].phase, "final");
+});
 
 test("Codex history preserves a safe activity feed", () => {
   const activities = codexTurnActivities({

@@ -387,6 +387,52 @@ export function visibleTaskHistory(history, count = 1, { completedOnly = false }
   };
 }
 
+export function mergeCompletedTaskHistory(history, completedTurn = {}) {
+  const values = Array.isArray(history) ? history : [];
+  const turnId = String(completedTurn.turnId ?? completedTurn.id ?? "").trim();
+  const answer = String(completedTurn.answer ?? completedTurn.text ?? "").trim();
+  if (!turnId || !answer) return values;
+
+  let current = values.findLast((item) => String(item?.id ?? "") === turnId);
+  if (!current) {
+    const activeItems = values.filter((item) => item?.active === true);
+    if (activeItems.length === 1) {
+      current = activeItems[0];
+      current.id = turnId;
+    }
+  }
+  if (!current) {
+    current = { id: turnId, prompt: "", answer: "", messages: [] };
+    values.push(current);
+  }
+
+  current.active = false;
+  current.completed = true;
+  current.status = "completed";
+  current.answer = answer;
+  const completedAt = normalizedTimestamp(completedTurn.completedAt ?? completedTurn.updatedAt);
+  if (completedAt) current.completedAt = completedAt;
+  const messages = Array.isArray(current.messages) ? current.messages : [];
+  const agents = messages.filter((message) => message.role === "agent");
+  const agent = agents.find((message) => String(message.itemId ?? "") === `${turnId}:agent:final`)
+    ?? agents.at(-1);
+  if (agent) {
+    agent.text = answer;
+    agent.phase = "final";
+    if (completedAt) agent.time = completedAt;
+  } else {
+    messages.push({
+      itemId: `${turnId}:agent:final`,
+      role: "agent",
+      phase: "final",
+      text: answer,
+      ...(completedAt ? { time: completedAt } : {}),
+    });
+  }
+  current.messages = messages;
+  return values;
+}
+
 export function mergeActiveTaskHistory(history, activeTurn = {}) {
   const values = Array.isArray(history) ? history : [];
   if (activeTurn?.active !== true) return values;

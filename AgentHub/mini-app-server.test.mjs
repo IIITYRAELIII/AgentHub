@@ -399,7 +399,6 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "sliders-horizontal",
       "dots-three",
       "paperclip",
-      "quotes",
       "paper-plane-right",
       "list-checks",
       "x",
@@ -408,6 +407,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     ]) {
       assert.match(page, new RegExp(`data-phosphor-icon="${icon}"`, "u"), icon);
     }
+    assert.match(page, /data-action="annotate-selection"/u);
+    assert.doesNotMatch(page, /data-action="annotate"/u);
     const script = await (await fetch(`${address.url}app.js`)).text();
     assert.match(script, /agent-hub-theme/u);
     assert.match(script, /metropolis: "#050b12"/u);

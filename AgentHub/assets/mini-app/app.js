@@ -59,7 +59,6 @@ const composerSend = document.querySelector("[data-composer-send]");
 const followUpModeButton = document.querySelector("[data-follow-up-mode]");
 const annotationsBox = document.querySelector("[data-annotations]");
 const attachmentsBox = document.querySelector("[data-attachments]");
-const annotateButton = document.querySelector("[data-action='annotate']");
 const annotationContextMenu = document.querySelector("[data-annotation-context-menu]");
 const fileInput = document.querySelector("[data-file-input]");
 const slashMenu = document.querySelector("[data-slash-menu]");
@@ -721,6 +720,7 @@ function normalizedDraftAnnotations(value) {
   if (!Array.isArray(value)) return [];
   return value.slice(0, 20).map((annotation) => ({
     quote: String(annotation?.quote ?? "").slice(0, 400),
+    annotation: String(annotation?.annotation ?? annotation?.comment ?? "").slice(0, 20_000),
   })).filter((annotation) => annotation.quote);
 }
 
@@ -2344,7 +2344,17 @@ function renderAnnotations() {
   annotationsBox.hidden = annotations.length === 0;
   annotations.forEach((annotation, index) => {
     annotationsBox.append(el("div", { class: "annotation" }, [
-      el("span", { class: "annotation-quote", text: annotation.quote }),
+      el("div", { class: "annotation-content" }, [
+        el("span", { class: "annotation-quote", text: annotation.quote }),
+        el("textarea", {
+          class: "annotation-comment",
+          "data-annotation-comment-index": index,
+          rows: 1,
+          placeholder: "Комментарий к этой цитате…",
+          "aria-label": `Комментарий к цитате ${index + 1}`,
+          text: annotation.annotation ?? "",
+        }),
+      ]),
       el("button", {
         type: "button", class: "annotation-remove", "data-annotation-index": index,
         title: "Убрать аннотацию", "aria-label": "Убрать аннотацию", text: "×",
@@ -2357,6 +2367,18 @@ annotationsBox.addEventListener("click", (event) => {
   const remove = event.target.closest("[data-annotation-index]");
   if (!remove) return;
   setAnnotations(annotations.filter((_, i) => Number(remove.dataset.annotationIndex) !== i));
+  saveDraft();
+});
+
+annotationsBox.addEventListener("input", (event) => {
+  const input = event.target.closest("[data-annotation-comment-index]");
+  if (!input) return;
+  const index = Number(input.dataset.annotationCommentIndex);
+  if (!Number.isSafeInteger(index) || !annotations[index]) return;
+  annotations[index] = {
+    ...annotations[index],
+    annotation: String(input.value ?? "").slice(0, 20_000),
+  };
   saveDraft();
 });
 
@@ -2384,10 +2406,6 @@ function meaningfulAnnotationSelection(value) {
   return words.length > 1 || text.length >= 12 || /[^\p{L}\p{N}_\s-]/u.test(text);
 }
 
-document.addEventListener("selectionchange", () => {
-  annotateButton.setAttribute("aria-disabled", String(!meaningfulAnnotationSelection(selectedAgentText())));
-});
-
 function addAnnotation(value) {
   const quote = normalizedAnnotationQuote(value);
   if (!quote) {
@@ -2402,10 +2420,9 @@ function addAnnotation(value) {
     showToast("Этот фрагмент уже добавлен.");
     return false;
   }
-  setAnnotations([...annotations, { quote }]);
+  setAnnotations([...annotations, { quote, annotation: "" }]);
   window.getSelection()?.removeAllRanges();
-  annotateButton.setAttribute("aria-disabled", "true");
-  composerInput.focus();
+  annotationsBox.querySelector(`[data-annotation-comment-index="${annotations.length - 1}"]`)?.focus();
   saveDraft();
   return true;
 }
@@ -2425,16 +2442,15 @@ function openAnnotationContextMenu(event, quote) {
   annotationContextMenu.style.top = `${Math.min(Math.max(8, event.clientY), maxTop)}px`;
 }
 
-annotateButton.addEventListener("click", () => {
-  addAnnotation(selectedAgentText());
-});
-
 document.addEventListener("contextmenu", (event) => {
   const quote = selectedAgentText();
   if (!meaningfulAnnotationSelection(quote)) {
     closeAnnotationContextMenu();
     return;
   }
+  // Android WebView adds “Цитировать” to the native selection menu. Keeping
+  // this event untouched on coarse pointers preserves Copy/Share/Search.
+  if (window.matchMedia("(pointer: coarse)").matches) return;
   event.preventDefault();
   openAnnotationContextMenu(event, quote);
 });
@@ -3241,6 +3257,9 @@ const AgentHub = {
   openAttachmentViewer,
   showAttachmentViewer,
   closeAttachmentViewer,
+  addSelectedAnnotation() {
+    return addAnnotation(selectedAgentText());
+  },
   navigateBack,
   toast: showToast,
 };

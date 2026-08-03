@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createDesktopTaskHistoryFactory } from "./desktop-task-history.mjs";
+import { mergeCompletedTaskHistory } from "./task-history.mjs";
 
 function fixture(overrides = {}) {
   const calls = {
@@ -173,6 +174,39 @@ test("desktop task history returns a compact marker for an unchanged completed p
     notModified: true,
     version: first.version,
   });
+});
+
+test("desktop task history overlays a saved final before provider hydration catches up", async () => {
+  const { desktopTaskHistory, state } = fixture({ run: null });
+  const factory = createDesktopTaskHistoryFactory({
+    selection: {
+      activeProvider: () => state.activeProvider,
+      threadId: () => state.threadId,
+      chatId: () => state.chatId,
+    },
+    catalog: { entries: () => state.entries },
+    historyReader: {
+      read: async () => ({ history: structuredClone(state.history) }),
+    },
+    runs: { forTask: () => null },
+    latestMessage: () => ({
+      turnId: "turn-4",
+      text: "Сохранённый финальный ответ",
+      updatedAt: "2026-07-30T10:04:45.000Z",
+    }),
+    historyMerger: {
+      mergeActive() {},
+      mergeCompleted: mergeCompletedTaskHistory,
+    },
+    responseBudget: { fit: (payload) => payload },
+  });
+
+  const result = await factory({ limit: 1, includeActive: false });
+
+  assert.equal(result.items[0].answer, "Сохранённый финальный ответ");
+  assert.equal(result.items[0].messages.at(-1).text, "Сохранённый финальный ответ");
+  assert.equal(result.items[0].completed, true);
+  assert.equal(typeof desktopTaskHistory, "function");
 });
 
 test("desktop task history returns durable history while provider hydration is still blocked", async () => {
