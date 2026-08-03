@@ -12,6 +12,7 @@ const MAX_CONTROL_ERROR_CHARS = 4_096;
 const MAX_CONTROL_COMMANDS = 500;
 const CONTROL_EXPIRY_MS = 30 * 60 * 1_000;
 const CONTROL_LEASE_MS = 30 * 1_000;
+const MAX_CONTROL_WAIT_MS = 25 * 1_000;
 const CONTROL_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const SYNC_STAGING_EXPIRY_MS = 30 * 60 * 1_000;
 const STORAGE_DELETE_BATCH_SIZE = 128;
@@ -471,6 +472,26 @@ async function deleteStorageKeys(storage, keys) {
 
 export class JournalStore extends DurableObject {
   #cachedPayload = null;
+  #controlWaiters = new Set();
+
+  #controlWaiter(waitMs) {
+    let timer = null;
+    let settle = null;
+    const promise = new Promise((resolve) => {
+      settle = () => {
+        if (!this.#controlWaiters.delete(settle)) return;
+        clearTimeout(timer);
+        resolve();
+      };
+      this.#controlWaiters.add(settle);
+      timer = setTimeout(settle, waitMs);
+    });
+    return { promise, cancel: () => settle() };
+  }
+
+  #wakeControlWaiters() {
+    for (const settle of [...this.#controlWaiters]) settle();
+  }
 
   #publicDevice(record) {
     return {
@@ -683,6 +704,36 @@ export class JournalStore extends DurableObject {
       else active.push(manifest);
     }
     return active;
+  }
+
+  async #claimControlCommands(limit) {
+    const now = Date.now();
+    return this.ctx.storage.transaction(async (storage) => {
+      const commands = (await this.#cleanupControlCommands(now, storage))
+        .filter((command) => (
+          command.status === "pending"
+          || (command.status === "running" && Number(command.leaseExpiresAt ?? 0) <= now)
+        ))
+        .sort((left, right) => left.createdAt - right.createdAt)
+        .slice(0, limit);
+      if (commands.length) {
+        await storage.put(Object.fromEntries(commands.map((command) => {
+          command.status = "running";
+          command.updatedAt = now;
+          command.leaseExpiresAt = now + CONTROL_LEASE_MS;
+          command.deliveryAttempt = Math.max(0, Number(command.deliveryAttempt) || 0) + 1;
+          return [`control:command:${command.id}`, command];
+        })));
+      }
+      return commands.map((command) => ({
+        id: command.id,
+        userId: command.userId,
+        action: command.action,
+        params: command.params,
+        createdAt: command.createdAt,
+        expiresAt: command.expiresAt,
+      }));
+    });
   }
 
   async #cleanupSyncStaging(now = Date.now(), storage = this.ctx.storage) {
@@ -1053,7 +1104,7 @@ export class JournalStore extends DurableObject {
       const now = Date.now();
       const key = `control:command:${command.id}`;
       const requestHash = await sha256(`${command.action}\n${stableStringify(command.params)}`);
-      return this.ctx.storage.transaction(async (storage) => {
+      const response = await this.ctx.storage.transaction(async (storage) => {
         const commands = await this.#cleanupControlCommands(now, storage);
         await this.#cleanupAttachments(now, storage);
         const existing = await storage.get(key);
@@ -1095,6 +1146,8 @@ export class JournalStore extends DurableObject {
         });
         return json(this.#controlStatus(record), 202);
       });
+      if (response.status === 202) this.#wakeControlWaiters();
+      return response;
     }
     if (request.method === "GET" && url.pathname === "/control/status") {
       const id = String(url.searchParams.get("id") ?? "").toLowerCase();
@@ -1108,35 +1161,18 @@ export class JournalStore extends DurableObject {
     if (request.method === "POST" && url.pathname === "/control/pull") {
       const payload = await request.json();
       const limit = Math.min(20, Math.max(1, Number(payload?.limit) || 10));
-      const now = Date.now();
-      return this.ctx.storage.transaction(async (storage) => {
-        const commands = (await this.#cleanupControlCommands(now, storage))
-          .filter((command) => (
-            command.status === "pending"
-            || (command.status === "running" && Number(command.leaseExpiresAt ?? 0) <= now)
-          ))
-          .sort((left, right) => left.createdAt - right.createdAt)
-          .slice(0, limit);
-        if (commands.length) {
-          await storage.put(Object.fromEntries(commands.map((command) => {
-            command.status = "running";
-            command.updatedAt = now;
-            command.leaseExpiresAt = now + CONTROL_LEASE_MS;
-            command.deliveryAttempt = Math.max(0, Number(command.deliveryAttempt) || 0) + 1;
-            return [`control:command:${command.id}`, command];
-          })));
+      const waitMs = Math.min(MAX_CONTROL_WAIT_MS, Math.max(0, Number(payload?.waitMs) || 0));
+      const waiter = waitMs > 0 ? this.#controlWaiter(waitMs) : null;
+      try {
+        let commands = await this.#claimControlCommands(limit);
+        if (!commands.length && waiter) {
+          await waiter.promise;
+          commands = await this.#claimControlCommands(limit);
         }
-        return json({
-          commands: commands.map((command) => ({
-            id: command.id,
-            userId: command.userId,
-            action: command.action,
-            params: command.params,
-            createdAt: command.createdAt,
-            expiresAt: command.expiresAt,
-          })),
-        });
-      });
+        return json({ commands, longPoll: waitMs > 0 });
+      } finally {
+        waiter?.cancel();
+      }
     }
     if (request.method === "POST" && url.pathname === "/control/result") {
       const payload = await request.json();
@@ -1533,11 +1569,15 @@ export default {
       try {
         const payload = parseJson(body, "control pull");
         const limit = Number(payload?.limit ?? 10);
+        const waitMs = Number(payload?.waitMs ?? 0);
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("invalid control pull limit");
+        if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > MAX_CONTROL_WAIT_MS) {
+          throw new Error("invalid control pull wait");
+        }
         return store.fetch(new Request("https://journal.internal/control/pull", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ limit }),
+          body: JSON.stringify({ limit, waitMs }),
         }));
       } catch (error) {
         return json({ error: error.message }, 400);

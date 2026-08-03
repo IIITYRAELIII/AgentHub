@@ -269,6 +269,55 @@ test("Worker relay authenticates, isolates, executes once, and returns results",
   assert.equal(await storage.get(`control:command:${id}`), undefined);
 });
 
+test("Worker long poll wakes as soon as any client enqueues a command", async () => {
+  const workerModule = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new workerModule.JournalStore({ storage }, {});
+  const botToken = "123456:test-token";
+  const syncSecret = "l".repeat(64);
+  const env = {
+    TELEGRAM_BOT_TOKEN: botToken,
+    ALLOWED_USER_IDS: "42",
+    SYNC_SECRET: syncSecret,
+    JOURNAL: { getByName: () => store },
+    ASSETS: { fetch: async () => new Response("asset") },
+  };
+  const id = "018f6c86-3f34-7a31-8f27-16f5b96cce71";
+  const startedAt = Date.now();
+  const pendingPull = workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/control/pull", { limit: 10, waitMs: 1_000 }, syncSecret),
+    env,
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const enqueue = await workerModule.default.fetch(new Request("https://hub.test/api/control", {
+    method: "POST",
+    headers: {
+      Authorization: `tma ${telegramInitData(botToken, 42)}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      commandId: id,
+      action: "snapshot",
+      params: {},
+    }),
+  }), env);
+  assert.equal(enqueue.status, 202);
+
+  const response = await pendingPull;
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.longPoll, true);
+  assert.equal(payload.commands[0].id, id);
+  assert.ok(Date.now() - startedAt < 500);
+
+  const invalid = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/control/pull", { limit: 10, waitMs: 25_001 }, syncSecret),
+    env,
+  );
+  assert.equal(invalid.status, 400);
+});
+
 test("Worker prevents stale Mini App shells and caches versioned assets", async () => {
   const workerModule = await loadWorker();
   const env = {

@@ -16,6 +16,9 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const ATTACHMENT_TIMEOUT_MS = 60_000;
 const SYNC_CHUNK_BYTES = 1024 * 1024;
 const DEFAULT_CONTROL_POLL_MS = 2_000;
+const CONTROL_LONG_POLL_MS = 25_000;
+const CONTROL_LONG_POLL_TIMEOUT_MS = 35_000;
+const CONTROL_LOOP_GAP_MS = 25;
 const MAX_CONTROL_RESULT_BYTES = 1024 * 1024;
 const MAX_CONTROL_ERROR_CHARS = 4_096;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -160,6 +163,10 @@ export class MiniAppPublisher {
   #unsubscribeJournal = null;
   #refreshTimer = null;
   #controlTimer = null;
+  #controlDelayResolve = null;
+  #controlLoop = null;
+  #controlAbortController = null;
+  #lastControlLongPoll = false;
   #retryTimer = null;
   #debounceTimer = null;
   #syncing = null;
@@ -270,7 +277,10 @@ export class MiniAppPublisher {
     this.#debounceTimer.unref?.();
   }
 
-  async #signedControlFetch(pathname, payload, secret, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  async #signedControlFetch(pathname, payload, secret, {
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    signal = null,
+  } = {}) {
     const body = JSON.stringify(payload);
     const { timestamp, signature } = signMiniAppControlRequest({
       body,
@@ -285,7 +295,9 @@ export class MiniAppPublisher {
         "X-Agent-Hub-Signature": signature,
       },
       body,
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) {
       throw new Error(`Mini App Worker control request ${pathname} failed with HTTP ${response.status}`);
@@ -293,8 +305,8 @@ export class MiniAppPublisher {
     return response;
   }
 
-  async #signedControlRequest(pathname, payload, secret) {
-    return (await this.#signedControlFetch(pathname, payload, secret)).json();
+  async #signedControlRequest(pathname, payload, secret, options = {}) {
+    return (await this.#signedControlFetch(pathname, payload, secret, options)).json();
   }
 
   async createDevicePairing(userId) {
@@ -482,13 +494,20 @@ export class MiniAppPublisher {
   async pollControl() {
     if (this.#closed || !this.#controlHandler) return 0;
     if (this.#controlPolling) return this.#controlPolling;
+    const abortController = new AbortController();
+    this.#controlAbortController = abortController;
     this.#controlPolling = (async () => {
       const secret = await this.#secret();
       await this.#flushControlResults();
       const response = await this.#signedControlRequest("/api/control/pull", {
         limit: this.#controlBatchSize,
-      }, secret);
+        waitMs: CONTROL_LONG_POLL_MS,
+      }, secret, {
+        timeoutMs: CONTROL_LONG_POLL_TIMEOUT_MS,
+        signal: abortController.signal,
+      });
       if (!Array.isArray(response?.commands)) throw new Error("Mini App Worker returned an invalid control response");
+      this.#lastControlLongPoll = response.longPoll === true;
       let handled = 0;
       let deliveryError = null;
       for (const rawCommand of response.commands) {
@@ -554,7 +573,35 @@ export class MiniAppPublisher {
     try {
       return await this.#controlPolling;
     } finally {
+      if (this.#controlAbortController === abortController) this.#controlAbortController = null;
       this.#controlPolling = null;
+    }
+  }
+
+  async #controlDelay(delayMs) {
+    if (delayMs <= 0 || this.#closed) return;
+    await new Promise((resolve) => {
+      this.#controlDelayResolve = resolve;
+      this.#controlTimer = setTimeout(() => {
+        this.#controlTimer = null;
+        this.#controlDelayResolve = null;
+        resolve();
+      }, delayMs);
+      this.#controlTimer.unref?.();
+    });
+  }
+
+  async #runControlLoop() {
+    while (!this.#closed) {
+      let retryDelay = 0;
+      try {
+        await this.pollControl();
+        retryDelay = this.#lastControlLongPoll ? CONTROL_LOOP_GAP_MS : this.#controlPollMs;
+      } catch {
+        if (this.#closed) break;
+        retryDelay = this.#controlPollMs;
+      }
+      await this.#controlDelay(retryDelay);
     }
   }
 
@@ -629,12 +676,7 @@ export class MiniAppPublisher {
     this.#refreshTimer = setInterval(() => void this.sync().catch(() => {}), this.#refreshMs);
     this.#refreshTimer.unref?.();
     if (this.#controlHandler) {
-      this.#controlTimer = setInterval(
-        () => void this.pollControl().catch(() => {}),
-        this.#controlPollMs,
-      );
-      this.#controlTimer.unref?.();
-      void this.pollControl().catch(() => {});
+      this.#controlLoop = this.#runControlLoop();
     }
     return this.sync();
   }
@@ -646,8 +688,12 @@ export class MiniAppPublisher {
     clearTimeout(this.#debounceTimer);
     clearTimeout(this.#retryTimer);
     clearInterval(this.#refreshTimer);
-    clearInterval(this.#controlTimer);
+    clearTimeout(this.#controlTimer);
+    this.#controlDelayResolve?.();
+    this.#controlDelayResolve = null;
+    this.#controlAbortController?.abort();
     await this.#syncing?.catch(() => {});
+    await this.#controlLoop?.catch(() => {});
     await this.#controlPolling?.catch(() => {});
     if (this.#ownsJournalDatabase) this.#journalDatabase.close();
   }

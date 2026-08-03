@@ -250,6 +250,10 @@ test("Mini App publisher polls signed controls and posts their result", async ()
     assert.equal(handled[0].context.source, "telegram-mini-app");
     assert.equal(handled[0].context.userId, "42");
     assert.equal(requests.length, 2);
+    assert.deepEqual(JSON.parse(requests[0].options.body), {
+      limit: 10,
+      waitMs: 25_000,
+    });
     for (const request of requests) {
       const pathname = new URL(request.url).pathname;
       const timestamp = Number(request.options.headers["X-Agent-Hub-Timestamp"]);
@@ -269,6 +273,44 @@ test("Mini App publisher polls signed controls and posts their result", async ()
       ok: true,
       result: { opened: true },
     });
+  } finally {
+    await publisher.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Mini App publisher keeps one long poll open and aborts it on close", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-long-poll-"));
+  const secretFile = path.join(root, "sync.secret");
+  await writeFile(secretFile, "l".repeat(64));
+  let pullCount = 0;
+  let aborted = false;
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const publisher = new MiniAppPublisher({
+    journalDatabase: memoryJournal(),
+    dataDirectory: root,
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    fetchImpl: async (url, options) => {
+      if (!url.endsWith("/api/control/pull")) return Response.json({ ok: true });
+      pullCount += 1;
+      markStarted();
+      return new Promise((resolve, reject) => {
+        options.signal.addEventListener("abort", () => {
+          aborted = true;
+          reject(options.signal.reason ?? new Error("aborted"));
+        }, { once: true });
+      });
+    },
+    controlHandler: async () => ({ ok: true }),
+  });
+  try {
+    await publisher.start();
+    await started;
+    await publisher.close();
+    assert.equal(pullCount, 1);
+    assert.equal(aborted, true);
   } finally {
     await publisher.close();
     await rm(root, { recursive: true, force: true });
