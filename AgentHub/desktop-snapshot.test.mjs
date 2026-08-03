@@ -442,6 +442,23 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
   assert.equal(snapshot.tasks.length, 1);
 });
 
+test("desktopSnapshot returns a compact marker for an unchanged version", async () => {
+  const { desktopSnapshot } = fixture();
+  const snapshot = await desktopSnapshot();
+  assert.match(snapshot.version, /^[A-Za-z0-9_-]{22}$/u);
+  assert.deepEqual(await desktopSnapshot({ knownVersion: snapshot.version }), {
+    notModified: true,
+    version: snapshot.version,
+  });
+});
+
+test("compact remote snapshot omits answer text when the turn id is sufficient", async () => {
+  const { desktopSnapshot } = fixture();
+  const snapshot = await desktopSnapshot({ compactSnapshot: true });
+  assert.equal(snapshot.tasks[0].lastAnswer, "");
+  assert.equal(snapshot.tasks[0].lastAnswerTurnId, "turn-previous");
+});
+
 test("forced desktop snapshot returns cached tasks while catalog refreshes", async () => {
   let finishRefresh;
   const refreshWait = new Promise((resolve) => {

@@ -76,6 +76,7 @@ test("desktop control router applies transport-specific response limits", async 
       limit: 10,
       maxAnswerChars: 75_000,
       maxResponseBytes: 850_000,
+      compactSnapshot: true,
     },
     { maxResponseBytes: 3_500_000 },
   ]);

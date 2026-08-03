@@ -26,6 +26,8 @@ let selectionSequence = 0;
 let selectionTail = Promise.resolve();
 let selectedHistoryRefreshAt = 0;
 const EXTERNAL_HISTORY_REFRESH_MS = 2_500;
+const REMOTE_RESULT_LONG_POLL_MS = 25_000;
+const REMOTE_RESULT_FALLBACK_POLL_MS = 600;
 const HISTORY_CATCH_UP_TIMEOUT_MS = 120_000;
 const CONNECTION_OFFLINE_FAILURES = 3;
 const CONNECTION_OFFLINE_GRACE_MS = 6_000;
@@ -330,13 +332,18 @@ async function waitRemoteResult(commandId) {
   await localSessionReady;
   const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
-    const response = await hubFetch(`/api/control/result?id=${encodeURIComponent(commandId)}`, {
-      headers: authorizationHeaders(),
-      cache: "no-store",
-    });
+    const response = await hubFetch(
+      `/api/control/result?id=${encodeURIComponent(commandId)}&waitMs=${REMOTE_RESULT_LONG_POLL_MS}`,
+      {
+        headers: authorizationHeaders(),
+        cache: "no-store",
+      },
+    );
     const payload = await response.json().catch(() => ({}));
     if (response.status === 202 || payload.pending) {
-      await new Promise((resolve) => window.setTimeout(resolve, 600));
+      if (payload.longPoll !== true) {
+        await new Promise((resolve) => window.setTimeout(resolve, REMOTE_RESULT_FALLBACK_POLL_MS));
+      }
       continue;
     }
     if (!response.ok || payload.ok === false) {
@@ -1224,8 +1231,15 @@ async function refresh({ reportError = false } = {}) {
     const previousSelected = (lastSnapshot?.tasks ?? []).find(
       (task) => taskId(task.provider, task.threadId) === previousSelectedId,
     );
-    const snapshot = await control("snapshot");
-    applySnapshot(snapshot);
+    const snapshotResult = await control("snapshot", { knownVersion: lastSnapshot?.version ?? "" });
+    const snapshot = snapshotResult?.notModified === true ? lastSnapshot : snapshotResult;
+    if (snapshotResult?.notModified === true) {
+      resetConnectionFailures();
+      applySnapshotConnection(snapshot);
+    } else {
+      applySnapshot(snapshot);
+    }
+    if (!snapshot) return;
     const currentSelected = (snapshot.tasks ?? []).find(
       (task) => taskId(task.provider, task.threadId) === selectedTaskId,
     );

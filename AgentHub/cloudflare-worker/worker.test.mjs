@@ -318,6 +318,65 @@ test("Worker long poll wakes as soon as any client enqueues a command", async ()
   assert.equal(invalid.status, 400);
 });
 
+test("Worker result long poll wakes as soon as Hub completes a command", async () => {
+  const workerModule = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new workerModule.JournalStore({ storage }, {});
+  const botToken = "123456:test-token";
+  const syncSecret = "r".repeat(64);
+  const env = {
+    TELEGRAM_BOT_TOKEN: botToken,
+    ALLOWED_USER_IDS: "42",
+    SYNC_SECRET: syncSecret,
+    JOURNAL: { getByName: () => store },
+    ASSETS: { fetch: async () => new Response("asset") },
+  };
+  const id = "018f6c86-3f34-7a31-8f27-16f5b96cce72";
+  const authorization = `tma ${telegramInitData(botToken, 42)}`;
+  await workerModule.default.fetch(new Request("https://hub.test/api/control", {
+    method: "POST",
+    headers: { Authorization: authorization, "Content-Type": "application/json" },
+    body: JSON.stringify({ commandId: id, action: "snapshot", params: {} }),
+  }), env);
+  await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/control/pull", { limit: 10 }, syncSecret),
+    env,
+  );
+
+  const startedAt = Date.now();
+  const pendingResult = workerModule.default.fetch(new Request(
+    `https://hub.test/api/control/result?id=${id}&waitMs=1000`,
+    { headers: { Authorization: authorization } },
+  ), env);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const delivered = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/control/result", {
+      id,
+      userId: "42",
+      ok: true,
+      result: { ready: true },
+    }, syncSecret),
+    env,
+  );
+  assert.equal(delivered.status, 200);
+
+  const response = await pendingResult;
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    pending: false,
+    id,
+    result: { ready: true },
+  });
+  assert.ok(Date.now() - startedAt < 500);
+
+  const invalid = await workerModule.default.fetch(new Request(
+    `https://hub.test/api/control/result?id=${id}&waitMs=25001`,
+    { headers: { Authorization: authorization } },
+  ), env);
+  assert.equal(invalid.status, 400);
+});
+
 test("Worker prevents stale Mini App shells and caches versioned assets", async () => {
   const workerModule = await loadWorker();
   const env = {

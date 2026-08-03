@@ -34,6 +34,7 @@ export function createDesktopControlRouter({
         limit: Math.min(Number(params.limit) || 10, miniAppLimits.limit),
         maxAnswerChars: miniAppLimits.maxAnswerChars,
         maxResponseBytes: miniAppLimits.maxResponseBytes,
+        compactSnapshot: true,
       };
     }
     return {

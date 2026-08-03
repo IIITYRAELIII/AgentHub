@@ -3032,7 +3032,9 @@ const AgentHub = {
   /** История сообщений задачи. message: { id, role, author, text, time,
    *  attachments }. role: "user" | "agent" | "system". */
   setMessages(taskId, messages) {
-    state.messages.set(taskId, Array.isArray(messages) ? messages.slice() : []);
+    const next = Array.isArray(messages) ? messages.slice() : [];
+    if (sameData(state.messages.get(taskId) ?? [], next)) return;
+    state.messages.set(taskId, next);
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
@@ -3041,24 +3043,31 @@ const AgentHub = {
   /** Раскрываемый diff выбранной задачи под её последним ответом. */
   setTaskDiff(taskId, text) {
     if (!taskId) return;
+    const nextText = String(text ?? "");
+    const previous = state.taskDiffs.get(taskId);
+    if (previous?.text === nextText) return;
     state.taskDiffs.set(taskId, {
-      text: String(text ?? ""),
+      text: nextText,
       open: true,
     });
     if (taskId === state.selectedId) renderMessages({ preserveTop: true });
   },
   setMessagesPreservingScroll(taskId, messages) {
-    state.messages.set(taskId, Array.isArray(messages) ? messages.slice() : []);
+    const next = Array.isArray(messages) ? messages.slice() : [];
+    if (sameData(state.messages.get(taskId) ?? [], next)) return;
+    state.messages.set(taskId, next);
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
     }
   },
   setHistoryPagination(taskId, pagination) {
-    state.historyPagination.set(taskId, {
+    const next = {
       hasOlder: pagination?.hasOlder === true,
       loading: pagination?.loading === true,
-    });
+    };
+    if (sameData(state.historyPagination.get(taskId) ?? {}, next)) return;
+    state.historyPagination.set(taskId, next);
     if (taskId === state.selectedId) renderHistoryLoader();
   },
   appendMessage(taskId, message) {

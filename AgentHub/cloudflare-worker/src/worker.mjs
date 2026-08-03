@@ -472,6 +472,7 @@ async function deleteStorageKeys(storage, keys) {
 
 export class JournalStore extends DurableObject {
   #cachedPayload = null;
+  #controlResultWaiters = new Map();
   #controlWaiters = new Set();
 
   #controlWaiter(waitMs) {
@@ -491,6 +492,34 @@ export class JournalStore extends DurableObject {
 
   #wakeControlWaiters() {
     for (const settle of [...this.#controlWaiters]) settle();
+  }
+
+  #controlResultWaiter(id, waitMs) {
+    let waiters = this.#controlResultWaiters.get(id);
+    if (!waiters) {
+      waiters = new Set();
+      this.#controlResultWaiters.set(id, waiters);
+    }
+    let timer = null;
+    let settled = false;
+    let settle = null;
+    const promise = new Promise((resolve) => {
+      settle = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        waiters.delete(settle);
+        if (!waiters.size) this.#controlResultWaiters.delete(id);
+        resolve();
+      };
+      waiters.add(settle);
+      timer = setTimeout(settle, waitMs);
+    });
+    return { promise, cancel: () => settle() };
+  }
+
+  #wakeControlResultWaiters(id) {
+    for (const settle of [...(this.#controlResultWaiters.get(id) ?? [])]) settle();
   }
 
   #publicDevice(record) {
@@ -1153,10 +1182,22 @@ export class JournalStore extends DurableObject {
       const id = String(url.searchParams.get("id") ?? "").toLowerCase();
       const userId = String(url.searchParams.get("userId") ?? "");
       if (!CONTROL_ID_PATTERN.test(id) || !userId) return json({ error: "invalid control query" }, 400);
-      await this.#cleanupControlCommands();
-      const command = await this.ctx.storage.get(`control:command:${id}`);
-      if (!command || command.userId !== userId) return json({ error: "control command not found" }, 404);
-      return json(this.#controlStatus(command));
+      const waitMs = Math.min(MAX_CONTROL_WAIT_MS, Math.max(0, Number(url.searchParams.get("waitMs")) || 0));
+      const waiter = waitMs > 0 ? this.#controlResultWaiter(id, waitMs) : null;
+      try {
+        await this.#cleanupControlCommands();
+        let command = await this.ctx.storage.get(`control:command:${id}`);
+        if (!command || command.userId !== userId) return json({ error: "control command not found" }, 404);
+        if (["pending", "running"].includes(command.status) && waiter) {
+          await waiter.promise;
+          await this.#cleanupControlCommands();
+          command = await this.ctx.storage.get(`control:command:${id}`);
+          if (!command || command.userId !== userId) return json({ error: "control command not found" }, 404);
+        }
+        return json({ ...this.#controlStatus(command), longPoll: waitMs > 0 });
+      } finally {
+        waiter?.cancel();
+      }
     }
     if (request.method === "POST" && url.pathname === "/control/pull") {
       const payload = await request.json();
@@ -1182,7 +1223,7 @@ export class JournalStore extends DurableObject {
         return json({ error: "invalid control result" }, 400);
       }
       const key = `control:command:${id}`;
-      return this.ctx.storage.transaction(async (storage) => {
+      const response = await this.ctx.storage.transaction(async (storage) => {
         const command = await storage.get(key);
         if (!command || command.userId !== userId) return json({ error: "control command not found" }, 404);
         if (command.status === "completed" || command.status === "failed") {
@@ -1212,6 +1253,8 @@ export class JournalStore extends DurableObject {
         }
         return json(this.#controlStatus(command));
       });
+      if (response.ok) this.#wakeControlResultWaiters(id);
+      return response;
     }
     if (request.method === "POST" && url.pathname === "/sync") {
       const payload = await request.json();
@@ -1540,13 +1583,23 @@ export default {
       }
       const id = String(url.searchParams.get("id") ?? "").toLowerCase();
       if (!CONTROL_ID_PATTERN.test(id)) return json({ error: "invalid control command id" }, 400);
+      const waitMs = Number(url.searchParams.get("waitMs") ?? 0);
+      if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > MAX_CONTROL_WAIT_MS) {
+        return json({ error: "invalid control result wait" }, 400);
+      }
       const response = await store.fetch(new Request(
-        `https://journal.internal/control/status?id=${encodeURIComponent(id)}&userId=${encodeURIComponent(user.id)}`,
+        `https://journal.internal/control/status?id=${encodeURIComponent(id)}&userId=${encodeURIComponent(user.id)}&waitMs=${waitMs}`,
       ));
       if (!response.ok) return response;
       const payload = await response.json();
       if (payload.status === "pending" || payload.status === "running") {
-        return json({ ok: true, pending: true, id, status: payload.status }, 202);
+        return json({
+          ok: true,
+          pending: true,
+          id,
+          status: payload.status,
+          ...(payload.longPoll === true ? { longPoll: true } : {}),
+        }, 202);
       }
       if (payload.status === "completed") {
         return json({ ok: true, pending: false, id, result: payload.result ?? null });

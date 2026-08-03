@@ -745,6 +745,17 @@ test("chat shows sent messages immediately and reconciles them by exact identity
   assert.match(client, /historicalAgentResponseVisible\(item\)/u);
 });
 
+test("chat long-polls commands and skips unchanged history renders", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /control\/result\?id=.*waitMs=.*REMOTE_RESULT_LONG_POLL_MS/su);
+  assert.match(client, /payload\.longPoll !== true[\s\S]*REMOTE_RESULT_FALLBACK_POLL_MS/u);
+  assert.match(client, /control\("snapshot", \{ knownVersion: lastSnapshot\?\.version \?\? "" \}\)/u);
+  assert.match(client, /snapshotResult\?\.notModified === true \? lastSnapshot : snapshotResult/u);
+  assert.match(app, /setMessages\(taskId, messages\) \{[\s\S]*sameData\(state\.messages\.get\(taskId\) \?\? \[\], next\)[\s\S]*return/u);
+  assert.match(app, /setMessagesPreservingScroll\(taskId, messages\) \{[\s\S]*sameData\(state\.messages\.get\(taskId\) \?\? \[\], next\)[\s\S]*return/u);
+});
+
 test("dispatching deferred messages leave the queue and reappear in the active conversation", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");

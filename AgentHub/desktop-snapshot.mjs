@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export function createDesktopSnapshotFactory({
   clock,
   context,
@@ -93,7 +95,7 @@ export function createDesktopSnapshotFactory({
     };
   }
 
-  function desktopTaskSnapshot(entry, { accountId = "" } = {}) {
+  function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false } = {}) {
     const task = {
       provider: entry.provider,
       projectRoot: entry.projectRoot,
@@ -133,7 +135,7 @@ export function createDesktopSnapshotFactory({
         Date.parse(run?.lastMeaningfulProgressAt ?? run?.startedAt ?? "") || 0,
       ),
       orderingActivityAtMs: tasks.orderingActivityAtMs(entry, { run, lastMessage }),
-      lastAnswer: lastMessage?.text ?? "",
+      lastAnswer: compactSnapshot && lastMessage?.turnId ? "" : lastMessage?.text ?? "",
       lastAnswerAt: lastMessage?.updatedAt ?? null,
       lastAnswerTurnId: lastMessage?.turnId ?? null,
       unread,
@@ -142,7 +144,12 @@ export function createDesktopSnapshotFactory({
     };
   }
 
-  async function desktopSnapshot({ refresh = false, accountId = "" } = {}) {
+  async function desktopSnapshot({
+    refresh = false,
+    accountId = "",
+    knownVersion = "",
+    compactSnapshot = false,
+  } = {}) {
     const catalogStale = clock.nowMs() - catalog.refreshedAt() >= 5_000;
     if (refresh || !catalog.entries().length || catalogStale) {
       // A Desktop RPC must remain responsive while Codex App Server is slow or
@@ -163,7 +170,7 @@ export function createDesktopSnapshotFactory({
         startedAt: clock.nowIso(),
       }]);
     }
-    const taskSnapshots = entries.map((entry) => desktopTaskSnapshot(entry, { accountId }));
+    const taskSnapshots = entries.map((entry) => desktopTaskSnapshot(entry, { accountId, compactSnapshot }));
     const current = settings.current();
     const activeProvider = current.activeProvider;
     const activeCount = taskSnapshots.filter((item) => item.running).length;
@@ -182,9 +189,8 @@ export function createDesktopSnapshotFactory({
         },
       })
       : null;
-    return {
+    const snapshot = {
       apiVersion: 2,
-      generatedAt: clock.nowIso(),
       selected: {
         ...selection.selectedTask(),
         title: selection.activeThreadTitle(),
@@ -285,6 +291,12 @@ export function createDesktopSnapshotFactory({
       server: serverSnapshot,
       tasks: taskSnapshots,
     };
+    const version = createHash("sha256")
+      .update(JSON.stringify(snapshot))
+      .digest("base64url")
+      .slice(0, 22);
+    if (knownVersion && knownVersion === version) return { notModified: true, version };
+    return { ...snapshot, generatedAt: clock.nowIso(), version };
   }
 
   return {
