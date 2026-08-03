@@ -8,6 +8,7 @@ import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Build;
@@ -359,19 +360,32 @@ public final class MainActivity extends Activity {
         }
 
         private ActionMode.Callback withAnnotationAction(ActionMode.Callback original) {
-            return new ActionMode.Callback() {
+            return new ActionMode.Callback2() {
+                private void ensureAnnotationAction(Menu menu) {
+                    if (menu.findItem(MENU_ANNOTATE_SELECTION) != null) return;
+                    MenuItem annotation = menu.add(
+                        Menu.NONE,
+                        MENU_ANNOTATE_SELECTION,
+                        Menu.CATEGORY_SECONDARY,
+                        "Цитировать"
+                    );
+                    annotation.setShowAsAction(
+                        MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT
+                    );
+                }
+
                 @Override
                 public boolean onCreateActionMode(ActionMode mode, Menu menu) {
                     boolean created = original.onCreateActionMode(mode, menu);
-                    if (created && menu.findItem(MENU_ANNOTATE_SELECTION) == null) {
-                        menu.add(Menu.NONE, MENU_ANNOTATE_SELECTION, Menu.CATEGORY_SECONDARY, "Цитировать");
-                    }
+                    if (created) ensureAnnotationAction(menu);
                     return created;
                 }
 
                 @Override
                 public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
-                    return original.onPrepareActionMode(mode, menu);
+                    boolean prepared = original.onPrepareActionMode(mode, menu);
+                    ensureAnnotationAction(menu);
+                    return prepared;
                 }
 
                 @Override
@@ -390,6 +404,15 @@ public final class MainActivity extends Activity {
                 @Override
                 public void onDestroyActionMode(ActionMode mode) {
                     original.onDestroyActionMode(mode);
+                }
+
+                @Override
+                public void onGetContentRect(ActionMode mode, View view, Rect outRect) {
+                    if (original instanceof ActionMode.Callback2) {
+                        ((ActionMode.Callback2) original).onGetContentRect(mode, view, outRect);
+                    } else {
+                        outRect.set(0, 0, view.getWidth(), view.getHeight());
+                    }
                 }
             };
         }

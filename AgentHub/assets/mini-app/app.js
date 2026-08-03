@@ -2328,6 +2328,7 @@ for (const dropTarget of [composer, chatScroll]) {
 
 let annotations = [];
 let pendingAnnotationQuote = "";
+let lastAnnotationSelection = "";
 
 function currentAnnotations() {
   return annotations;
@@ -2406,6 +2407,17 @@ function meaningfulAnnotationSelection(value) {
   return words.length > 1 || text.length >= 12 || /[^\p{L}\p{N}_\s-]/u.test(text);
 }
 
+document.addEventListener("selectionchange", () => {
+  const rawSelection = window.getSelection()?.toString().trim() ?? "";
+  const agentSelection = selectedAgentText();
+  if (meaningfulAnnotationSelection(agentSelection)) {
+    lastAnnotationSelection = agentSelection;
+  } else if (rawSelection) {
+    // A new selection outside an agent answer must not reuse an older quote.
+    lastAnnotationSelection = "";
+  }
+});
+
 function addAnnotation(value) {
   const quote = normalizedAnnotationQuote(value);
   if (!quote) {
@@ -2421,6 +2433,7 @@ function addAnnotation(value) {
     return false;
   }
   setAnnotations([...annotations, { quote, annotation: "" }]);
+  lastAnnotationSelection = "";
   window.getSelection()?.removeAllRanges();
   annotationsBox.querySelector(`[data-annotation-comment-index="${annotations.length - 1}"]`)?.focus();
   saveDraft();
@@ -3258,7 +3271,7 @@ const AgentHub = {
   showAttachmentViewer,
   closeAttachmentViewer,
   addSelectedAnnotation() {
-    return addAnnotation(selectedAgentText());
+    return addAnnotation(selectedAgentText() || lastAnnotationSelection);
   },
   navigateBack,
   toast: showToast,

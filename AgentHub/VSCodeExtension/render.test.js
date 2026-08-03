@@ -829,7 +829,10 @@ test("annotation actions preserve native selection and keep per-quote comments",
   assert.match(app, /data-annotation-comment-index/u);
   assert.match(app, /pointer: coarse/u);
   assert.match(app, /document\.addEventListener\("contextmenu"[\s\S]*openAnnotationContextMenu/u);
+  assert.match(app, /lastAnnotationSelection[\s\S]*selectedAgentText\(\) \|\| lastAnnotationSelection/u);
   assert.match(android, /MENU_ANNOTATE_SELECTION[\s\S]*"Цитировать"/u);
+  assert.match(android, /SHOW_AS_ACTION_ALWAYS \| MenuItem\.SHOW_AS_ACTION_WITH_TEXT/u);
+  assert.match(android, /ActionMode\.Callback2[\s\S]*onGetContentRect/u);
 });
 
 test("journal preserves recursive subagent trees in date and task groupings", () => {
