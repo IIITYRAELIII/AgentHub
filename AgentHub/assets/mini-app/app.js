@@ -2734,8 +2734,11 @@ function serverFact(name, value) {
   ]);
 }
 
+let lastServerPayload = null;
+
 function renderServerStatus(payload = {}) {
   if (!serverState || !serverFacts || !serverComponents || !serverConfig) return;
+  lastServerPayload = payload;
   const processInfo = payload.process ?? {};
   const restart = payload.restart ?? {};
   const autostart = payload.autostart ?? {};
@@ -2787,7 +2790,7 @@ let serverAutostartState = {};
 function renderAutostartEntry(autostart = {}) {
   const supported = autostart.supported !== false;
   const hint = supported
-    ? "Hub стартует вместе с входом в Windows. Применяется сразу."
+    ? "Hub стартует вместе с входом в Windows."
     : "Управление автозапуском доступно только в Windows.";
   const input = el("input", {
     type: "checkbox",
@@ -2795,7 +2798,7 @@ function renderAutostartEntry(autostart = {}) {
     disabled: !supported,
     "data-server-autostart": "",
   });
-  input.addEventListener("change", () => emit("server:autostart", { enabled: input.checked }));
+  input.addEventListener("change", () => noteServerConfigDraft(AUTOSTART_KEY, input.checked));
   return el("label", {
     class: "server-config-row server-config-toggle",
     title: hint,
@@ -2811,6 +2814,9 @@ function renderAutostartEntry(autostart = {}) {
    занимала больше места, чем само поле, и позволяла уехать из карточки с
    половиной применённых изменений. */
 const serverConfigDrafts = new Map();
+/* Автозапуск управляется отдельной командой Hub, но в интерфейсе ведёт себя как
+   остальные настройки: правка ждёт кнопку «Сохранить» вместе со всеми. */
+const AUTOSTART_KEY = "agentHub:autostart";
 
 function syncServerConfigActions() {
   const actions = document.querySelector("[data-server-config-actions]");
@@ -2842,15 +2848,20 @@ function noteServerConfigDraft(key, value) {
 function saveServerConfigDrafts() {
   if (!serverConfigDrafts.size) return;
   const changes = Object.fromEntries(serverConfigDrafts);
+  const autostart = changes[AUTOSTART_KEY];
+  delete changes[AUTOSTART_KEY];
   serverConfigDrafts.clear();
   syncServerConfigActions();
-  emit("server:config-update", { changes });
+  if (autostart !== undefined) emit("server:autostart", { enabled: autostart === true });
+  if (Object.keys(changes).length) emit("server:config-update", { changes });
 }
 
 function discardServerConfigDrafts() {
   serverConfigDrafts.clear();
+  /* Возвращаем поля к последнему снимку: иначе отменённые правки остаются
+     набранными в полях и вводят в заблуждение. */
+  if (lastServerPayload) renderServerStatus(lastServerPayload);
   syncServerConfigActions();
-  emit("devices:refresh");
 }
 
 function renderServerConfigEntry(entry = {}) {
