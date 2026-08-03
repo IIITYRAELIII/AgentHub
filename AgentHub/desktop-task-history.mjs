@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export function createDesktopTaskHistoryFactory({
   selection,
   catalog,
@@ -100,7 +102,7 @@ export function createDesktopTaskHistoryFactory({
       hydratedHistories.set(key, structuredClone(history));
       scheduleRefresh(binding);
     }
-    const running = runs.forTask(binding);
+    const running = params.includeActive === false ? null : runs.forTask(binding);
     if (running) {
       historyMerger.mergeActive(history, {
         active: true,
@@ -198,11 +200,19 @@ export function createDesktopTaskHistoryFactory({
         }),
       })),
     };
-    return responseBudget.fit(payload, {
+    const fitted = responseBudget.fit(payload, {
       maxBytes: Math.min(
         Math.max(Number(params.maxResponseBytes) || 3_500_000, 64 * 1_024),
         3_500_000,
       ),
     });
+    const version = createHash("sha256")
+      .update(JSON.stringify(fitted))
+      .digest("base64url")
+      .slice(0, 22);
+    if (params.knownVersion && String(params.knownVersion) === version) {
+      return { provider, threadId: selectedThreadId, notModified: true, version };
+    }
+    return { ...fitted, version };
   };
 }

@@ -154,6 +154,25 @@ test("desktop task history resolves selection and merges the active run", async 
     type: "image/png",
   }]);
   assert.deepEqual(calls.fit, { maxBytes: 3_500_000 });
+  assert.match(result.version, /^[A-Za-z0-9_-]{22}$/u);
+});
+
+test("desktop task history returns a compact marker for an unchanged completed page", async () => {
+  const { desktopTaskHistory, calls } = fixture();
+  const first = await desktopTaskHistory({ limit: 2, includeActive: false });
+  const unchanged = await desktopTaskHistory({
+    limit: 2,
+    includeActive: false,
+    knownVersion: first.version,
+  });
+
+  assert.equal(calls.merged, null);
+  assert.deepEqual(unchanged, {
+    provider: "codex",
+    threadId: "thread-1",
+    notModified: true,
+    version: first.version,
+  });
 });
 
 test("desktop task history returns durable history while provider hydration is still blocked", async () => {

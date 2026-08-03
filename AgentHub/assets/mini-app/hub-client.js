@@ -715,6 +715,11 @@ function applyOpened(result, { preserveScroll = false, skipSnapshot = false } = 
     return;
   }
   const id = taskId(history.provider, history.threadId);
+  if (history.notModified === true) {
+    const page = historyPageByTask.get(id);
+    if (page) page.version = history.version;
+    return;
+  }
   const newest = historyMessages(history, result.focusedTurn);
   const previousPage = historyPageByTask.get(id);
   const preserveOlder = !result.focusedTurn
@@ -732,6 +737,7 @@ function applyOpened(result, { preserveScroll = false, skipSnapshot = false } = 
     total: history.total,
     nextBefore: preserveOlder ? previousPage.nextBefore : history.nextBefore,
     loading: false,
+    version: history.version ?? "",
   });
   rememberSelectedTaskId(id);
   if (!skipSnapshot) applySnapshot(result?.snapshot);
@@ -1272,6 +1278,10 @@ async function refresh({ reportError = false } = {}) {
         provider: currentSelected.provider,
         threadId: currentSelected.threadId,
         limit: 20,
+        includeActive: false,
+        knownVersion: historyPageByTask.get(
+          taskId(currentSelected.provider, currentSelected.threadId),
+        )?.version ?? "",
       });
       applyOpened({ snapshot: lastSnapshot, history }, {
         preserveScroll: true,

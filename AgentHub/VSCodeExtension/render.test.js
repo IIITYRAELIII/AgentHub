@@ -713,6 +713,7 @@ test("chat refreshes selected external runs without rebuilding a second snapshot
   assert.match(client, /const EXTERNAL_HISTORY_REFRESH_MS = 2_500/u);
   assert.match(refresh, /const externalLive = sameSelection[\s\S]*currentSelected\.running[\s\S]*executionOwner/u);
   assert.match(refresh, /refreshExternalHistory[\s\S]*control\("task-history"[\s\S]*skipSnapshot: true/u);
+  assert.match(refresh, /includeActive: false[\s\S]*knownVersion: historyPageByTask/u);
   assert.doesNotMatch(refresh, /control\("open-task"/u);
   assert.match(refresh, /const answerChanged = sameSelection/u);
 });
