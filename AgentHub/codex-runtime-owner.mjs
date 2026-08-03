@@ -290,9 +290,13 @@ export async function resolveCodexObservedExecutionOwner(activity = {}, {
     probe,
   });
   if (runtime.owner !== TASK_EXECUTION_OWNERS.EXTERNAL) return runtime.owner;
-  // The rollout session origin describes where the thread was created, not
-  // which client started a later resumed turn.  A successful process probe
-  // therefore outranks that old session-wide marker even when it finds no
-  // uniquely attributable client.
-  return runtime.known ? TASK_EXECUTION_OWNERS.EXTERNAL : direct;
+  const lastActivityAtMs = Number(activity.lastActivityAtMs);
+  const freshExactClientSignal = direct !== TASK_EXECUTION_OWNERS.EXTERNAL
+    && Number.isFinite(lastActivityAtMs)
+    && nowMs - lastActivityAtMs <= UNOWNED_ACTIVITY_GRACE_MS;
+  // A positive process owner is authoritative. An empty process snapshot can
+  // briefly lag behind a just-started VSC turn, so retain its exact per-turn
+  // client id only for the same grace interval used by the liveness check.
+  // Old session metadata or a stale client id still falls back to EXT.
+  return freshExactClientSignal || !runtime.known ? direct : TASK_EXECUTION_OWNERS.EXTERNAL;
 }

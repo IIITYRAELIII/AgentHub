@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const vm = require("node:vm");
 
 const { renderWorkLog, sanitizeWorkLogHtml } = require("./render.js");
 const { sidebarHtml, webviewHtml } = require("./webview.js");
@@ -105,6 +106,7 @@ test("extension reloads its shell from the active runtime on demand", () => {
   assert.match(shared, /const ASSET_ROOT = \["assets", "mini-app"\]/u);
   assert.match(shared, /backgrounds: \[\.\.\.ASSET_ROOT, "backgrounds\.css"\]/u);
   assert.match(extension, /refreshPanelShellIfReleaseChanged/u);
+  assert.match(extension, /agenthub:runtime-changed/u);
   assert.match(extension, /runtimeUri,\s*\n\s*extensionUri: this\.context\.extensionUri/u);
   assert.doesNotMatch(shared, /media", "mini-app/u);
 });
@@ -414,6 +416,18 @@ test("task list keeps active duration live and metadata badges readable", () => 
   assert.match(styles, /\.task-runtime\s*\{[^}]*margin-left:\s*auto;/su);
 });
 
+test("clients resynchronize on a new Hub instance and reload only a new release", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /snapshot\?\.server\?\.process/u);
+  assert.match(client, /instanceChanged[\s\S]*notifyAndroidAboutRelease/u);
+  assert.match(client, /releaseChanged[\s\S]*runtimeReloadPending = true/u);
+  assert.match(client, /AgentHubAndroid\?\.onHubRestarted/u);
+  assert.match(client, /prepareForRuntimeReload/u);
+  assert.match(client, /window\.location\.reload\(\)/u);
+  assert.match(app, /function prepareForRuntimeReload\(\)[\s\S]*draft\.attachments[\s\S]*persistDrafts\(\)/u);
+});
+
 test("shared VS Code webview removes public browser pairing", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
@@ -673,6 +687,33 @@ test("mobile task list cannot widen the viewport", () => {
     styles,
     /html\[data-surface="mobile"\] \.task-rail,[\s\S]*?html\[data-surface="mobile"\] \.chat\s*\{[^}]*min-width:\s*0;[^}]*width:\s*100%;/u,
   );
+});
+
+test("narrow desktop measures the document viewport before host window width", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const resolver = app.match(
+    /function layoutViewportWidth\(\) \{[\s\S]*?\n\}\n\nfunction resolveSurface\(\) \{[\s\S]*?\n\}/u,
+  )?.[0];
+  assert.ok(resolver, "surface resolver is present");
+  assert.doesNotMatch(resolver, /return window\.innerWidth < compactSurfaceWidth/u);
+
+  const surfaceFor = ({ documentWidth, windowWidth }) => vm.runInNewContext(`
+    const telegramMode = false;
+    const telegramPlatform = "";
+    const mobileTelegramPlatforms = new Set(["android", "ios"]);
+    const compactSurfaceWidth = 860;
+    ${resolver}
+    resolveSurface();
+  `, {
+    document: { documentElement: { clientWidth: documentWidth } },
+    window: { innerWidth: windowWidth },
+  });
+
+  /* Edge Web App can expose the host width through window.innerWidth while
+     the actual webview is much narrower. The compact CSS then keeps the
+     workspace in one column, so it cannot create a horizontal page overflow. */
+  assert.equal(surfaceFor({ documentWidth: 380, windowWidth: 545 }), "mobile");
+  assert.equal(surfaceFor({ documentWidth: 920, windowWidth: 545 }), "desktop");
 });
 
 test("mobile journal task links do not become nested expansion buttons", () => {

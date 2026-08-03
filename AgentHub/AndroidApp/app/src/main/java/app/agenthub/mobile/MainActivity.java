@@ -3,10 +3,12 @@ package app.agenthub.mobile;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.PendingIntent;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageInstaller;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.net.Uri;
@@ -43,6 +45,7 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -68,6 +71,7 @@ public final class MainActivity extends Activity {
     private static final String KEY_ALIAS = "agent-hub-device-v1";
     private static final int MAX_RESPONSE_BYTES = 1024 * 1024;
     private static final long MAX_UPDATE_BYTES = 100L * 1024L * 1024L;
+    private static final long UPDATE_CHECK_INTERVAL_MS = 5L * 60L * 1000L;
     private static final int REQUEST_UNKNOWN_SOURCES = 1201;
     private static final int REQUEST_IMAGE_CHOOSER = 1202;
     private static final int MENU_ANNOTATE_SELECTION = 0x41485542;
@@ -75,8 +79,10 @@ public final class MainActivity extends Activity {
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private volatile String accessToken = "";
-    private volatile boolean updateCheckStarted = false;
-    private Uri pendingUpdateUri;
+    private volatile boolean updateCheckInFlight = false;
+    private volatile long lastUpdateCheckAt = 0L;
+    private volatile String activeServerUrl = "";
+    private File pendingUpdateFile;
     private WebView webView;
     private ValueCallback<Uri[]> pendingFileChooser;
     private final OnBackInvokedCallback backCallback = this::handleBackNavigation;
@@ -126,11 +132,11 @@ public final class MainActivity extends Activity {
             if (callback != null) callback.onReceiveValue(selectedFiles(resultCode, data));
             return;
         }
-        if (requestCode != REQUEST_UNKNOWN_SOURCES || pendingUpdateUri == null) return;
-        Uri update = pendingUpdateUri;
-        pendingUpdateUri = null;
+        if (requestCode != REQUEST_UNKNOWN_SOURCES || pendingUpdateFile == null) return;
+        File update = pendingUpdateFile;
+        pendingUpdateFile = null;
         if (android.os.Build.VERSION.SDK_INT < 26 || getPackageManager().canRequestPackageInstalls()) {
-            launchPackageInstaller(update);
+            installVerifiedUpdate(update);
         } else {
             Toast.makeText(this, "Установка обновления не разрешена.", Toast.LENGTH_LONG).show();
         }
@@ -251,7 +257,7 @@ public final class MainActivity extends Activity {
                 accessToken = session.getString("token");
                 runOnUiThread(() -> {
                     showHub(serverUrl);
-                    checkForUpdate(serverUrl);
+                    checkForUpdate(serverUrl, true);
                 });
             } catch (Exception error) {
                 accessToken = "";
@@ -263,6 +269,7 @@ public final class MainActivity extends Activity {
 
     @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
     private void showHub(String serverUrl) {
+        activeServerUrl = serverUrl;
         webView = new AgentHubWebView(this);
         webView.setBackgroundColor(Color.rgb(7, 17, 22));
         webView.getSettings().setJavaScriptEnabled(true);
@@ -428,6 +435,12 @@ public final class MainActivity extends Activity {
         }
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (!activeServerUrl.isBlank() && !accessToken.isBlank()) checkForUpdate(activeServerUrl, false);
+    }
+
     private boolean sameOrigin(Uri left, Uri right) {
         return "https".equalsIgnoreCase(right.getScheme())
             && left.getHost() != null
@@ -439,9 +452,12 @@ public final class MainActivity extends Activity {
         return uri.getPort() == -1 ? 443 : uri.getPort();
     }
 
-    private void checkForUpdate(String serverUrl) {
-        if (updateCheckStarted) return;
-        updateCheckStarted = true;
+    private synchronized void checkForUpdate(String serverUrl, boolean force) {
+        long now = System.currentTimeMillis();
+        if (updateCheckInFlight || serverUrl.isBlank() || accessToken.isBlank()) return;
+        if (!force && now - lastUpdateCheckAt < UPDATE_CHECK_INTERVAL_MS) return;
+        updateCheckInFlight = true;
+        lastUpdateCheckAt = now;
         worker.execute(() -> {
             try {
                 JSONObject manifest = getJson(serverUrl + "/api/mobile/update");
@@ -463,11 +479,12 @@ public final class MainActivity extends Activity {
                 URL download = new URL(hub, downloadPath);
                 if (!sameOrigin(hub, download)) throw new SSLException("Источник обновления не доверен.");
                 File apk = downloadVerifiedUpdate(download, versionCode, expectedBytes, expectedHash);
-                Uri uri = VerifiedUpdateFileProvider.uriFor(this, apk);
                 if (isFinishing() || isDestroyed()) return;
-                runOnUiThread(() -> showUpdateReady(versionName, uri));
+                runOnUiThread(() -> handleDownloadedUpdate(versionName, apk));
             } catch (Exception ignored) {
                 // Обновление не должно мешать подключению к уже работающему Hub.
+            } finally {
+                updateCheckInFlight = false;
             }
         });
     }
@@ -525,18 +542,27 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void showUpdateReady(String versionName, Uri update) {
+    private void handleDownloadedUpdate(String versionName, File update) {
+        if (Build.VERSION.SDK_INT >= 31 && getPackageManager().canRequestPackageInstalls()) {
+            Toast.makeText(this, "Обновление " + versionName + " загружено", Toast.LENGTH_SHORT).show();
+            installVerifiedUpdate(update);
+            return;
+        }
+        showUpdateReady(versionName, update);
+    }
+
+    private void showUpdateReady(String versionName, File update) {
         new AlertDialog.Builder(this)
             .setTitle("Обновление Agent Hub")
             .setMessage("Версия " + versionName + " загружена и проверена.")
             .setNegativeButton("Позже", null)
-            .setPositiveButton("Установить", (dialog, which) -> installUpdate(update))
+            .setPositiveButton("Установить", (dialog, which) -> requestUpdateInstallation(update))
             .show();
     }
 
-    private void installUpdate(Uri update) {
+    private void requestUpdateInstallation(File update) {
         if (android.os.Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
-            pendingUpdateUri = update;
+            pendingUpdateFile = update;
             try {
                 startActivityForResult(
                     new Intent(
@@ -546,17 +572,68 @@ public final class MainActivity extends Activity {
                     REQUEST_UNKNOWN_SOURCES
                 );
             } catch (ActivityNotFoundException error) {
-                pendingUpdateUri = null;
+                pendingUpdateFile = null;
                 Toast.makeText(this, "Откройте разрешение установки приложений вручную.", Toast.LENGTH_LONG).show();
             }
+            return;
+        }
+        installVerifiedUpdate(update);
+    }
+
+    private void installVerifiedUpdate(File update) {
+        if (Build.VERSION.SDK_INT >= 31) {
+            worker.execute(() -> {
+                try {
+                    installWithPackageInstaller(update);
+                } catch (Exception error) {
+                    runOnUiThread(() -> launchPackageInstaller(update));
+                }
+            });
             return;
         }
         launchPackageInstaller(update);
     }
 
-    private void launchPackageInstaller(Uri update) {
+    private void installWithPackageInstaller(File update) throws Exception {
+        PackageInstaller installer = getPackageManager().getPackageInstaller();
+        PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(
+            PackageInstaller.SessionParams.MODE_FULL_INSTALL
+        );
+        params.setAppPackageName(BuildConfig.APPLICATION_ID);
+        params.setSize(update.length());
+        params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
+        int sessionId = installer.createSession(params);
+        try (PackageInstaller.Session session = installer.openSession(sessionId)) {
+            try (
+                FileInputStream input = new FileInputStream(update);
+                OutputStream output = session.openWrite("base.apk", 0, update.length())
+            ) {
+                byte[] buffer = new byte[32 * 1024];
+                for (int count; (count = input.read(buffer)) != -1;) output.write(buffer, 0, count);
+                session.fsync(output);
+            }
+            Intent status = new Intent(this, UpdateInstallReceiver.class)
+                .setAction(UpdateInstallReceiver.ACTION_INSTALL_STATUS);
+            PendingIntent pending = PendingIntent.getBroadcast(
+                this,
+                sessionId,
+                status,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE
+            );
+            session.commit(pending.getIntentSender());
+        }
+    }
+
+    private void launchPackageInstaller(File update) {
+        Uri uri;
+        try {
+            uri = VerifiedUpdateFileProvider.uriFor(this, update);
+        } catch (Exception error) {
+            Toast.makeText(this, "Файл обновления недоступен.", Toast.LENGTH_LONG).show();
+            return;
+        }
         Intent install = new Intent(Intent.ACTION_VIEW)
-            .setDataAndType(update, APK_TYPE)
+            .setDataAndType(uri, APK_TYPE)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         try {
             startActivity(install);
@@ -799,6 +876,11 @@ public final class MainActivity extends Activity {
         @JavascriptInterface
         public String getDeviceId() {
             return getPreferences().getString(PREF_DEVICE_ID, "");
+        }
+
+        @JavascriptInterface
+        public void onHubRestarted(String releaseId) {
+            runOnUiThread(() -> checkForUpdate(activeServerUrl, true));
         }
     }
 }

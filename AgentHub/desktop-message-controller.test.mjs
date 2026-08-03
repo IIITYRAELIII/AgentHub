@@ -170,6 +170,11 @@ test("desktop message controller steers the exact active Codex turn", async () =
   assert.equal(rpc[0].method, "turn/steer");
   assert.equal(rpc[0].params.expectedTurnId, "turn-active");
   assert.deepEqual(stages, ["Уточнение принято."]);
+  assert.deepEqual(run.userMessages, [{
+    role: "user",
+    clientUserMessageId: "message-steer",
+    text: "уточнение",
+  }]);
 });
 
 test("desktop message controller preserves an uncertain external activity for explicit action", async () => {

@@ -63,6 +63,8 @@ test("server page snapshot excludes secrets and absolute filesystem paths", () =
     },
     processId: 42,
     startedAt: "2026-08-02T00:00:00.000Z",
+    instanceId: "instance-1",
+    releaseId: "release-1",
     activeCount: 2,
     restart: { pending: true, waiting: true, blockingCount: 2 },
     autostart: { supported: true, enabled: true },
@@ -73,6 +75,8 @@ test("server page snapshot excludes secrets and absolute filesystem paths", () =
     status: "running",
     pid: 42,
     startedAt: "2026-08-02T00:00:00.000Z",
+    instanceId: "instance-1",
+    releaseId: "release-1",
     activeCount: 2,
   });
   assert.deepEqual(snapshot.components.map(({ id, name, enabled }) => ({ id, name, enabled })), [

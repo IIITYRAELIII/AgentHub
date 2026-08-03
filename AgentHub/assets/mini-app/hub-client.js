@@ -10,8 +10,12 @@ const vscode = window.__agentHubVscode ?? (typeof window.acquireVsCodeApi === "f
   : null);
 const pendingBridgeCalls = new Map();
 const selectedTaskKey = "agent-hub:selected-task:v1";
+const serverIdentityKey = "agent-hub:server-identity:v1";
 let bridgeSequence = 0;
 let lastSnapshot = null;
+let observedServerIdentity = readStoredServerIdentity();
+let runtimeReloadPending = false;
+let runtimeReloadNoticeShown = false;
 let selectedTaskId = readSelectedTaskId();
 let refreshTimer = null;
 let rateLimitRefreshTimer = null;
@@ -79,6 +83,72 @@ const runtimeShortLabels = Object.freeze({
 
 function taskId(provider, threadId) {
   return `${String(provider)}:${String(threadId)}`;
+}
+
+function readStoredServerIdentity() {
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(serverIdentityKey) || "null");
+    return stored?.instanceId && stored?.releaseId ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function serverIdentity(snapshot) {
+  const process = snapshot?.server?.process;
+  const instanceId = String(process?.instanceId ?? "").trim();
+  const releaseId = String(process?.releaseId ?? "").trim();
+  return instanceId && releaseId ? { instanceId, releaseId } : null;
+}
+
+function rememberServerIdentity(identity) {
+  observedServerIdentity = identity;
+  try {
+    sessionStorage.setItem(serverIdentityKey, JSON.stringify(identity));
+  } catch {
+    // Идентификатор всё равно остаётся в памяти текущего клиента.
+  }
+}
+
+function notifyAndroidAboutRelease(identity) {
+  try {
+    window.AgentHubAndroid?.onHubRestarted?.(identity.releaseId);
+  } catch {
+    // Native bridge существует только в Android App.
+  }
+}
+
+function reloadForPublishedRuntime() {
+  if (!runtimeReloadPending) return false;
+  if (agentHub.prepareForRuntimeReload?.() === false) {
+    if (!runtimeReloadNoticeShown) {
+      agentHub.toast("Обновление интерфейса отложено до отправки или удаления вложений");
+      runtimeReloadNoticeShown = true;
+    }
+    return false;
+  }
+  runtimeReloadPending = false;
+  runtimeReloadNoticeShown = false;
+  if (vscode) vscode.postMessage({ type: "agenthub:runtime-changed" });
+  else window.location.reload();
+  return true;
+}
+
+function observeServerIdentity(snapshot) {
+  const identity = serverIdentity(snapshot);
+  if (!identity) return false;
+  if (!observedServerIdentity) {
+    rememberServerIdentity(identity);
+    return false;
+  }
+  const instanceChanged = identity.instanceId !== observedServerIdentity.instanceId;
+  const releaseChanged = identity.releaseId !== observedServerIdentity.releaseId;
+  if (instanceChanged || releaseChanged) {
+    rememberServerIdentity(identity);
+    if (instanceChanged) notifyAndroidAboutRelease(identity);
+    if (releaseChanged) runtimeReloadPending = true;
+  }
+  return reloadForPublishedRuntime();
 }
 
 function readSelectedTaskId() {
@@ -482,6 +552,10 @@ function compactionContextLabel(context) {
   return `контекст ${Math.round(Math.max(0, Math.min(100, Number(context?.percent) || 0)))}%`;
 }
 
+function compactionTaskTitle(task) {
+  return String(task?.title ?? "").trim() || "Без названия";
+}
+
 function observeContextCompactions(tasks) {
   for (const task of tasks ?? []) {
     const context = task.context;
@@ -497,18 +571,18 @@ function observeContextCompactions(tasks) {
       && previousStatus !== "running"
       && compaction.origin === "automatic"
       && recent) {
-      agentHub.toast("Началась автосвёртка контекста");
+      agentHub.toast(`Началась автосвёртка контекста · ${compactionTaskTitle(task)}`);
     } else if (status === "completed" && previousStatus !== "completed") {
       if (requested || (compaction.origin === "automatic" && recent)) {
         const completionLabel = compaction.origin === "automatic"
           ? "Автосвёртка контекста завершена"
           : "Свёртка контекста завершена";
-        agentHub.toast(`${completionLabel} · ${compactionContextLabel(context)}`);
+        agentHub.toast(`${completionLabel} · ${compactionTaskTitle(task)} · ${compactionContextLabel(context)}`);
       }
       requestedContextCompactions.delete(compactionId);
     } else if (status === "timeout" && previousStatus !== "timeout") {
       if (requested || (compaction.origin === "automatic" && recent)) {
-        agentHub.toast("Не удалось подтвердить завершение свёртки контекста");
+        agentHub.toast(`Не удалось подтвердить завершение свёртки контекста · ${compactionTaskTitle(task)}`);
       }
       requestedContextCompactions.delete(compactionId);
     }
@@ -522,6 +596,7 @@ function observeContextCompactions(tasks) {
 
 function applySnapshot(snapshot) {
   if (!snapshot) return;
+  if (observeServerIdentity(snapshot)) return;
   resetConnectionFailures();
   lastSnapshot = snapshot;
   agentHub.setExchangeRates(snapshot.exchangeRates ?? null);

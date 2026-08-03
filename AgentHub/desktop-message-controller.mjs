@@ -113,6 +113,24 @@ export function createDesktopMessageController({
             clientUserMessageId,
           });
           if (existingRun) {
+            const userMessages = Array.isArray(existingRun.userMessages)
+              ? existingRun.userMessages
+              : [];
+            if (!userMessages.some((message) => (
+              String(message?.clientUserMessageId ?? "") === clientUserMessageId
+            ))) {
+              userMessages.push({
+                role: "user",
+                clientUserMessageId,
+                text: typeof input === "string"
+                  ? input
+                  : input.filter((item) => item?.type === "text")
+                    .map((item) => String(item.text ?? ""))
+                    .filter(Boolean)
+                    .join("\n"),
+              });
+              existingRun.userMessages = userMessages;
+            }
             setProgressStage(existingRun, "Уточнение принято.");
             noteRunActivity(existingRun);
             scheduleProgressUpdate(existingRun, 0);

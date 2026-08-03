@@ -150,6 +150,21 @@ test("a stale session-wide VSC marker is not presented as current client evidenc
   assert.equal(owner, TASK_EXECUTION_OWNERS.EXTERNAL);
 });
 
+test("a fresh exact VSC client id survives a lagging empty process snapshot", async () => {
+  const owner = await resolveCodexObservedExecutionOwner({
+    running: true,
+    activeVscodeTurnIds: ["fresh-vsc-turn"],
+    lastActivityAtMs: 99_500,
+  }, {
+    turnId: "fresh-vsc-turn",
+    rolloutPath: "C:\\fresh-vsc-rollout.jsonl",
+    platform: "win32",
+    nowMs: 100_000,
+    probe: async () => snapshot([], []),
+  });
+  assert.equal(owner, TASK_EXECUTION_OWNERS.VSCODE);
+});
+
 test("per-turn VSC evidence is preserved when a process probe is unavailable", async () => {
   let calls = 0;
   const owner = await resolveCodexObservedExecutionOwner({

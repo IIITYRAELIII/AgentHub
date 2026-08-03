@@ -95,6 +95,23 @@ export function createDesktopSnapshotFactory({
     };
   }
 
+  // `thread/compact/start` may wake a previously resumed Codex thread long
+  // enough for the external-task watcher to manufacture an observer.  That
+  // observer is not a user turn: it carries the same turn id as the manual
+  // context compaction and otherwise becomes a misleading "stopped task"
+  // card in the client.  A real turn cannot coexist with a manual compaction
+  // (the control route rejects it), so keep this lifecycle visible only via
+  // `context.compaction`, never as a run.
+  function isManualCompactionObserver(run, context) {
+    const compaction = context?.compaction;
+    if (
+      run?.observer !== true
+      || compaction?.origin !== "manual"
+      || !String(compaction?.turnId ?? "").trim()
+    ) return false;
+    return String(run.turnId ?? "").trim() === String(compaction.turnId).trim();
+  }
+
   function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false } = {}) {
     const task = {
       provider: entry.provider,
@@ -102,6 +119,9 @@ export function createDesktopSnapshotFactory({
       threadId: entry.threadId,
     };
     const run = runs.forTask(task);
+    const context = desktopContextSnapshot(entry.threadId, run?.turnId);
+    const manualCompactionObserver = isManualCompactionObserver(run, context);
+    const visibleRun = manualCompactionObserver ? null : run;
     const lastMessage = tasks.savedLastMessage(task);
     const unread = Boolean(
       accountId
@@ -120,27 +140,27 @@ export function createDesktopSnapshotFactory({
       projectName: entry.projectName ?? tasks.projectNameFor(entry.projectRoot),
       threadId: entry.threadId,
       title: entry.title,
-      model: run?.model ?? entry.model ?? null,
+      model: visibleRun?.model ?? entry.model ?? null,
       selected: tasks.entryIsSelected(entry, selection.selectedTask()),
-      running: Boolean(run || entry.running),
+      running: manualCompactionObserver ? false : Boolean(visibleRun || entry.running),
       activityUnknown: entry.activityUnknown === true,
-      executionOwner: run?.executionOwner ?? entry.executionOwner ?? null,
-      runtime: run?.appServer ?? (entry.executionOwner
+      executionOwner: visibleRun?.executionOwner ?? entry.executionOwner ?? null,
+      runtime: visibleRun?.appServer ?? (entry.executionOwner
         ? tasks.executionRuntimeLabel(entry.executionOwner)
         : null),
-      startedAt: run?.startedAt ?? entry.startedAt ?? null,
+      startedAt: visibleRun?.startedAt ?? entry.startedAt ?? null,
       updatedAtMs: Math.max(
         Number(entry.lastActivityAtMs) || 0,
         Number(entry.updatedAtMs) || 0,
-        Date.parse(run?.lastMeaningfulProgressAt ?? run?.startedAt ?? "") || 0,
+        Date.parse(visibleRun?.lastMeaningfulProgressAt ?? visibleRun?.startedAt ?? "") || 0,
       ),
-      orderingActivityAtMs: tasks.orderingActivityAtMs(entry, { run, lastMessage }),
+      orderingActivityAtMs: tasks.orderingActivityAtMs(entry, { run: visibleRun, lastMessage }),
       lastAnswer: compactSnapshot && lastMessage?.turnId ? "" : lastMessage?.text ?? "",
       lastAnswerAt: lastMessage?.updatedAt ?? null,
       lastAnswerTurnId: lastMessage?.turnId ?? null,
       unread,
-      context: desktopContextSnapshot(entry.threadId, run?.turnId),
-      run: desktopRunSnapshot(run),
+      context,
+      run: desktopRunSnapshot(visibleRun),
     };
   }
 

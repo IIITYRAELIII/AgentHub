@@ -54,6 +54,8 @@ namespace AgentHubDesktop
         private bool historyLoading;
         private bool restoringDraft;
         private int desktopApiVersion;
+        private string serverInstanceId;
+        private string serverReleaseId;
         private long selectionEpoch;
         private string selectedKey;
         private string historyKey;
@@ -513,6 +515,29 @@ namespace AgentHubDesktop
                 && Int32.TryParse(Convert.ToString(apiVersion), out parsedApiVersion))
             {
                 desktopApiVersion = parsedApiVersion;
+            }
+            var server = AgentHubClient.Object(snapshot, "server");
+            var process = AgentHubClient.Object(server, "process");
+            var nextInstanceId = AgentHubClient.Text(process, "instanceId");
+            var nextReleaseId = AgentHubClient.Text(process, "releaseId");
+            var instanceChanged = !String.IsNullOrWhiteSpace(serverInstanceId)
+                && !String.IsNullOrWhiteSpace(nextInstanceId)
+                && !String.Equals(serverInstanceId, nextInstanceId, StringComparison.Ordinal);
+            var releaseChanged = !String.IsNullOrWhiteSpace(serverReleaseId)
+                && !String.IsNullOrWhiteSpace(nextReleaseId)
+                && !String.Equals(serverReleaseId, nextReleaseId, StringComparison.Ordinal);
+            if (!String.IsNullOrWhiteSpace(nextInstanceId)) serverInstanceId = nextInstanceId;
+            if (!String.IsNullOrWhiteSpace(nextReleaseId)) serverReleaseId = nextReleaseId;
+            if (instanceChanged)
+            {
+                lastRenderSignature = null;
+                if (releaseChanged)
+                {
+                    historyKey = null;
+                    historyBefore = null;
+                    history.Clear();
+                    footer.Text = "Agent Hub обновлён";
+                }
             }
             var previous = selectedKey;
             tasks.Clear();

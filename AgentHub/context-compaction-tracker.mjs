@@ -48,6 +48,13 @@ export class ContextCompactionTracker {
     return this.get(threadId)?.status === "running";
   }
 
+  isManualTurn(threadId, turnId) {
+    const record = this.get(threadId);
+    return record?.origin === "manual"
+      && Boolean(String(turnId ?? "").trim())
+      && String(record.turnId ?? "").trim() === String(turnId).trim();
+  }
+
   runningCount() {
     return [...this.entries.values()].filter((entry) => entry.status === "running").length;
   }

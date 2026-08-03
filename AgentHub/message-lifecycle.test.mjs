@@ -10,6 +10,10 @@ const source = await readFile(
 const context = vm.createContext({});
 vm.runInContext(source, context);
 const lifecycle = context.AgentHubMessageLifecycle;
+const hubClientSource = await readFile(
+  new URL("./assets/mini-app/hub-client.js", import.meta.url),
+  "utf8",
+);
 
 function message(itemId, text) {
   return {
@@ -666,4 +670,16 @@ test("returning to a busy task keeps live and deferred states separate", () => {
     },
   );
   assert.deepEqual(visible, [activeUser]);
+});
+
+test("context compaction notifications identify the task that compacted", () => {
+  assert.match(hubClientSource, /function compactionTaskTitle\(task\)/u);
+  assert.match(
+    hubClientSource,
+    /Началась автосвёртка контекста · \$\{compactionTaskTitle\(task\)\}/u,
+  );
+  assert.match(
+    hubClientSource,
+    /\$\{completionLabel\} · \$\{compactionTaskTitle\(task\)\} · \$\{compactionContextLabel\(context\)\}/u,
+  );
 });

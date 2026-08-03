@@ -113,6 +113,7 @@ class WorkLogViewProvider {
     panel.webview.onDidReceiveMessage((message) => {
       if (message?.type === "agenthub:control") void this.handleControlMessage(message);
       if (message?.type === "agenthub:http") void this.handleHttpMessage(message);
+      if (message?.type === "agenthub:runtime-changed") void this.refreshPanelShellIfReleaseChanged();
       if (message?.type === "open-link") void this.openLink(message.href);
       if (message?.type === "theme") void this.setTheme(message.theme, "panel");
     }, null, this.context.subscriptions);

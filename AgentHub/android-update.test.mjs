@@ -6,10 +6,17 @@ import test from "node:test";
 const ROOT = import.meta.dirname;
 
 test("Android updater accepts only a newer same-origin APK with the published SHA-256", async () => {
-  const activity = await readFile(path.join(
-    ROOT,
-    "AndroidApp", "app", "src", "main", "java", "app", "agenthub", "mobile", "MainActivity.java",
-  ), "utf8");
+  const [activity, receiver, manifest] = await Promise.all([
+    readFile(path.join(
+      ROOT,
+      "AndroidApp", "app", "src", "main", "java", "app", "agenthub", "mobile", "MainActivity.java",
+    ), "utf8"),
+    readFile(path.join(
+      ROOT,
+      "AndroidApp", "app", "src", "main", "java", "app", "agenthub", "mobile", "UpdateInstallReceiver.java",
+    ), "utf8"),
+    readFile(path.join(ROOT, "AndroidApp", "app", "src", "main", "AndroidManifest.xml"), "utf8"),
+  ]);
   assert.match(activity, /versionCode <= BuildConfig\.VERSION_CODE/u);
   assert.match(activity, /"\/api\/mobile\/update\.apk"\.equals\(downloadPath\)/u);
   assert.match(activity, /sameOrigin\(hub, download\)/u);
@@ -19,6 +26,14 @@ test("Android updater accepts only a newer same-origin APK with the published SH
   assert.match(activity, /VerifiedUpdateFileProvider\.uriFor/u);
   assert.match(activity, /Settings\.ACTION_MANAGE_UNKNOWN_APP_SOURCES/u);
   assert.match(activity, /new Intent\(Intent\.ACTION_VIEW\)/u);
+  assert.match(activity, /onHubRestarted\(String releaseId\)[\s\S]*checkForUpdate\(activeServerUrl, true\)/u);
+  assert.match(activity, /UPDATE_CHECK_INTERVAL_MS = 5L \* 60L \* 1000L/u);
+  assert.match(activity, /PackageInstaller\.SessionParams\.USER_ACTION_NOT_REQUIRED/u);
+  assert.match(activity, /session\.commit\(pending\.getIntentSender\(\)\)/u);
+  assert.match(receiver, /PackageInstaller\.STATUS_PENDING_USER_ACTION/u);
+  assert.match(receiver, /context\.startActivity\(confirmation\)/u);
+  assert.match(manifest, /android\.permission\.UPDATE_PACKAGES_WITHOUT_USER_ACTION/u);
+  assert.match(manifest, /android:name="\.UpdateInstallReceiver"[\s\S]*android:exported="false"/u);
 });
 
 test("Android update provider exposes only verified cache files and is not exported", async () => {

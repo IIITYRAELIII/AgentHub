@@ -272,7 +272,11 @@ test("desktop client survives App Server exit during delayed startup and shares 
   }, { runtimeRoot });
   assert.equal(retriedStart.accepted, true);
   assert.equal(retriedStart.turnId, firstStart.turnId);
-  assert.equal(retriedStart.snapshot.selected.threadId, firstThreadId);
+  // A receipt is deliberately a fast acknowledgement and does not persist a
+  // whole snapshot. Verify the durable state through its dedicated endpoint.
+  assert.equal("snapshot" in retriedStart, false);
+  const messageSnapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+  assert.equal(messageSnapshot.selected.threadId, firstThreadId);
   await assert.rejects(
     callDesktopControl("send-message", {
       text: "Это уже другое сообщение",
@@ -301,9 +305,10 @@ test("desktop client survives App Server exit during delayed startup and shares 
   assert.equal(duplicate.accepted, false);
   assert.equal(duplicate.reason, "task-running");
   assert.equal(duplicate.deferred, true);
-  assert.equal(duplicate.snapshot.deferredInputs.length, 1);
-  assert.equal(duplicate.snapshot.deferredInputs[0].provider, "codex");
-  assert.equal(duplicate.snapshot.deferredInputs[0].threadId, firstThreadId);
+  const deferredSnapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+  assert.equal(deferredSnapshot.deferredInputs.length, 1);
+  assert.equal(deferredSnapshot.deferredInputs[0].provider, "codex");
+  assert.equal(deferredSnapshot.deferredInputs[0].threadId, firstThreadId);
   const cancelledDeferred = await callDesktopControl("deferred-input", {
     id: duplicate.id,
     action: "cancel",

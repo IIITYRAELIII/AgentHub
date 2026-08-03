@@ -594,7 +594,26 @@ const state = {
 /* Черновики живут только в памяти вкладки: текст, аннотации и вложения
  * переживают переключение задач, как в Desktop App. Их долговременное
  * хранение — забота backend. */
-const drafts = new Map();
+const RUNTIME_RELOAD_DRAFTS_KEY = "agent-hub:runtime-reload-drafts:v1";
+
+function loadRuntimeReloadDrafts() {
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(RUNTIME_RELOAD_DRAFTS_KEY) || "null");
+    sessionStorage.removeItem(RUNTIME_RELOAD_DRAFTS_KEY);
+    if (!stored || stored.version !== 1 || !stored.drafts || typeof stored.drafts !== "object") {
+      return new Map();
+    }
+    return new Map(Object.entries(stored.drafts).map(([taskId, draft]) => [taskId, {
+      text: String(draft?.text ?? ""),
+      attachments: [],
+      annotations: Array.isArray(draft?.annotations) ? draft.annotations : [],
+    }]));
+  } catch {
+    return new Map();
+  }
+}
+
+const drafts = loadRuntimeReloadDrafts();
 let pendingComposerRequest = null;
 const retryComposerRequests = new Map();
 
@@ -2010,6 +2029,24 @@ function saveDraft() {
   });
 }
 
+function prepareForRuntimeReload() {
+  saveDraft();
+  const entries = [...drafts.entries()];
+  if (entries.some(([, draft]) => (draft.attachments ?? []).length > 0)) return false;
+  const persistent = Object.fromEntries(entries
+    .filter(([, draft]) => String(draft.text ?? "").length > 0 || (draft.annotations ?? []).length > 0)
+    .map(([taskId, draft]) => [taskId, {
+      text: String(draft.text ?? ""),
+      annotations: Array.isArray(draft.annotations) ? draft.annotations : [],
+    }]));
+  try {
+    sessionStorage.setItem(RUNTIME_RELOAD_DRAFTS_KEY, JSON.stringify({ version: 1, drafts: persistent }));
+    return true;
+  } catch {
+    return Object.keys(persistent).length === 0;
+  }
+}
+
 function restoreDraft() {
   const draft = drafts.get(state.selectedId) ?? { text: "", attachments: [], annotations: [] };
   composerInput.value = draft.text ?? "";
@@ -2386,6 +2423,7 @@ const AgentHub = {
   off(type, handler) {
     listeners.get(type)?.delete(handler);
   },
+  prepareForRuntimeReload,
   /** Состояние соединения и отложенного перезапуска Agent Hub. */
   setConnection(status, details = {}) {
     const value = ["online", "connecting", "restart-waiting", "restarting", "offline"].includes(status)

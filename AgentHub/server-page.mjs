@@ -58,6 +58,8 @@ export function serverPageSnapshot({
   config,
   processId = process.pid,
   startedAt,
+  instanceId = "",
+  releaseId = "",
   activeCount = 0,
   restart = {},
   autostart = { supported: false, enabled: false },
@@ -72,6 +74,8 @@ export function serverPageSnapshot({
       status: "running",
       pid: Number(processId) || null,
       startedAt: startedAt ?? null,
+      instanceId: String(instanceId ?? "").trim() || null,
+      releaseId: String(releaseId ?? "").trim() || null,
       activeCount: Math.max(0, Number(activeCount) || 0),
     },
     autostart: {

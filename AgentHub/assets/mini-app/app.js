@@ -166,9 +166,18 @@ const telegramPlatform = String(telegram?.platform ?? "").toLowerCase();
 const mobileTelegramPlatforms = new Set(["android", "ios"]);
 const compactSurfaceWidth = 860;
 
+/* В embedded WebView window.innerWidth иногда описывает host-окно, а не
+ * фактическую ширину раскладки документа. Например, Edge Web App на 390 px
+ * сообщал 545 px, поэтому оставался в двухколоночном профиле и прокручивался
+ * по горизонтали. clientWidth — CSS-ширина именно отрисовываемого документа. */
+function layoutViewportWidth() {
+  const documentWidth = Number(document.documentElement?.clientWidth ?? 0);
+  return documentWidth > 0 ? documentWidth : window.innerWidth;
+}
+
 function resolveSurface() {
   if (telegramMode && mobileTelegramPlatforms.has(telegramPlatform)) return "mobile";
-  return window.innerWidth < compactSurfaceWidth ? "mobile" : "desktop";
+  return layoutViewportWidth() < compactSurfaceWidth ? "mobile" : "desktop";
 }
 
 function syncTelegramFullscreenButton() {
@@ -752,8 +761,10 @@ function persistDrafts() {
   try {
     if (persisted.length) localStorage.setItem(draftStorageKey(), JSON.stringify(persisted));
     else localStorage.removeItem(draftStorageKey());
+    return true;
   } catch {
     // Privacy-mode WebView or a full storage quota: the in-memory draft still survives navigation.
+    return persisted.length === 0;
   }
 }
 
@@ -2497,6 +2508,12 @@ function saveDraft() {
   persistDrafts();
 }
 
+function prepareForRuntimeReload() {
+  saveDraft();
+  if ([...drafts.values()].some((draft) => (draft.attachments ?? []).length > 0)) return false;
+  return persistDrafts();
+}
+
 function restoreDraft() {
   const draft = drafts.get(state.selectedId) ?? { text: "", attachments: [], annotations: [] };
   composerInput.value = draft.text ?? "";
@@ -3073,6 +3090,7 @@ const AgentHub = {
   off(type, handler) {
     listeners.get(type)?.delete(handler);
   },
+  prepareForRuntimeReload,
   /** Состояние соединения и отложенного перезапуска Agent Hub. */
   setConnection(status, details = {}) {
     const value = ["online", "connecting", "restart-waiting", "restarting", "offline"].includes(status)

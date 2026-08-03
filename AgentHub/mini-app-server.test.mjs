@@ -439,7 +439,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       script,
       /telegramMode && mobileTelegramPlatforms\.has\(telegramPlatform\)/u,
     );
-    assert.match(script, /window\.innerWidth < compactSurfaceWidth/u);
+    assert.match(script, /layoutViewportWidth\(\) < compactSurfaceWidth/u);
+    assert.doesNotMatch(script, /return window\.innerWidth < compactSurfaceWidth/u);
     assert.doesNotMatch(script, /if \(!telegramMode\) return "desktop"/u);
     assert.match(script, /class: "task-runtime"/u);
     assert.match(script, /if \(sameData\(state\.live\.get\(taskId\)/u);

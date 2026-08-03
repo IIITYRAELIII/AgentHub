@@ -267,6 +267,8 @@ if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
 const config = await loadConfig();
 const serverStartedAt = new Date().toISOString();
+const serverInstanceId = randomUUID();
+const serverReleaseId = path.basename(import.meta.dirname);
 const globalWorkLogProjectRoots = config.projects.map((project) => project.path);
 const journalDatabaseFile = path.join(config.dataDir, "journal.sqlite");
 const legacyWorkLogLedgerFile = path.join(config.dataDir, "work-log-usage.json");
@@ -1560,6 +1562,7 @@ async function finalizeCodexRunDelivery(run, {
   silent = false,
   description = "финальный ответ Codex",
 } = {}) {
+  if (await discardManualContextCompactionRun(run, completedTurnId)) return null;
   if (!run || !completedTurnId) {
     return finalizeRunDelivery(run, {
       answer,
@@ -2849,6 +2852,8 @@ async function desktopServerSnapshot({ activeCount = taskRuns.values().length, r
     pendingConfiguration: pendingServerConfiguration,
     processId: process.pid,
     startedAt: serverStartedAt,
+    instanceId: serverInstanceId,
+    releaseId: serverReleaseId,
     activeCount,
     restart: restartState,
     autostart: await readAgentHubAutostart({ shortcutPath: agentHubAutostartShortcutPath }),
@@ -4429,6 +4434,19 @@ async function clearRunProgressMessages(run) {
   return taskProgress.clear(run);
 }
 
+async function discardManualContextCompactionRun(run, turnId = run?.turnId) {
+  if (!run || !contextCompactions.isManualTurn(run.threadId, turnId)) return false;
+  const normalizedTurnId = String(turnId ?? "").trim();
+  turnTokenUsage.delete(normalizedTurnId);
+  turnSpeechButtons.delete(normalizedTurnId);
+  const temporaryFiles = turnTemporaryFiles.get(normalizedTurnId) ?? [];
+  turnTemporaryFiles.delete(normalizedTurnId);
+  await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
+  await clearRunProgressMessages(run);
+  await completeRun(run);
+  return true;
+}
+
 async function replaceRunProgressMessage(run) {
   return taskProgress.replace(run);
 }
@@ -5484,6 +5502,7 @@ async function persistManagedRunHistory(run, {
       prompt: run.promptPreview,
       answer: run.responseText,
       clientUserMessageId: run.clientUserMessageId,
+      userMessages: run.userMessages,
       responseItemId: run.responseItemId,
       activities: run.activities,
       startedAt: run.startedAt,
@@ -5912,8 +5931,9 @@ async function handleCodexMessage(message) {
       return;
     }
     if (run.status !== "running") return;
+    const completedTurnId = eventTurnId ?? run.turnId;
+    if (await discardManualContextCompactionRun(run, completedTurnId)) return;
     if (run.observer === true) {
-      const completedTurnId = eventTurnId ?? run.turnId;
       const tracker = consumeTurnTokenTracker(completedTurnId);
       turnSpeechButtons.delete(completedTurnId);
       const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
@@ -5928,7 +5948,6 @@ async function handleCodexMessage(message) {
       return;
     }
     run.status = "finishing";
-    const completedTurnId = eventTurnId ?? run.turnId;
     const tracker = consumeTurnTokenTracker(completedTurnId);
     const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
     turnTemporaryFiles.delete(completedTurnId);
@@ -6277,6 +6296,7 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
 async function finishObservedRun(run, snapshot) {
   if (taskRuns.forTask(run) !== run) return;
   const completedTurnId = snapshot?.turnId ?? run.turnId;
+  if (await discardManualContextCompactionRun(run, completedTurnId)) return;
   let tracker = run.provider === "codex"
     ? snapshot?.tokenTracker ?? consumeTurnTokenTracker(completedTurnId)
     : null;

@@ -315,6 +315,24 @@ test("desktopTaskSnapshot exposes catalog start time without an observer run", (
   assert.equal(desktopTaskSnapshot(entry).startedAt, "2026-07-30T09:55:00.000Z");
 });
 
+test("desktopTaskSnapshot keeps a manual context compaction out of the live turn", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture();
+  state.compaction = {
+    id: "manual-compact-1",
+    origin: "manual",
+    status: "running",
+    turnId: "turn-1",
+    startedAt: "2026-07-30T10:01:30.000Z",
+  };
+
+  const snapshot = desktopTaskSnapshot(entry);
+
+  assert.equal(snapshot.running, false);
+  assert.equal(snapshot.run, null);
+  assert.equal(snapshot.context.compaction.origin, "manual");
+  assert.equal(snapshot.context.compacting, true);
+});
+
 test("desktopSnapshot preserves top-level settings, queues and restart state", async () => {
   const pending = [{
     id: "pending-1",

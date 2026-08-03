@@ -255,6 +255,64 @@ test("an active snapshot missing from thread history replaces the stale complete
   }]);
 });
 
+test("active history keeps every steered user message by exact item and client ids", () => {
+  const history = [];
+  mergeActiveTaskHistory(history, {
+    active: true,
+    turnId: "turn-steered",
+    prompt: "Начальный запрос",
+    clientUserMessageId: "client-root",
+    userMessages: [
+      {
+        itemId: "item-root",
+        clientUserMessageId: "client-root",
+        role: "user",
+        text: "Начальный запрос",
+      },
+      {
+        itemId: "item-steer",
+        clientUserMessageId: "client-steer",
+        role: "user",
+        text: "Уточнение к текущему ходу",
+      },
+    ],
+  });
+
+  mergeActiveTaskHistory(history, {
+    active: true,
+    turnId: "turn-steered",
+    userMessages: [
+      {
+        itemId: "item-root",
+        clientUserMessageId: "client-root",
+        role: "user",
+        text: "Начальный запрос",
+      },
+      {
+        itemId: "item-steer",
+        clientUserMessageId: "client-steer",
+        role: "user",
+        text: "Уточнение к текущему ходу",
+      },
+    ],
+  });
+
+  assert.deepEqual(history[0].messages.filter((message) => message.role === "user"), [
+    {
+      itemId: "item-root",
+      clientUserMessageId: "client-root",
+      role: "user",
+      text: "Начальный запрос",
+    },
+    {
+      itemId: "item-steer",
+      clientUserMessageId: "client-steer",
+      role: "user",
+      text: "Уточнение к текущему ходу",
+    },
+  ]);
+});
+
 test("a late active prompt fills the same turn without a placeholder message", () => {
   const history = [];
   mergeActiveTaskHistory(history, {
