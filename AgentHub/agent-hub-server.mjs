@@ -2633,7 +2633,11 @@ async function buildTaskCatalog() {
         const titleHistory = titleHistories.get(thread.id)
           ?? { currentTitle: "", recoverableTitle: "" };
         const appServerTitle = codexThreadResponseTitle(thread);
-        const discoveredTitle = preferredCodexTaskTitle(appServerTitle, titleHistory);
+        const discoveredTitle = preferredCodexTaskTitle(
+          appServerTitle,
+          titleHistory,
+          pinnedTaskTitle(entry.provider, entry.threadId),
+        );
         if (discoveredTitle && appServerTitle !== discoveredTitle) {
           await sendRpc("thread/name/set", { threadId: entry.threadId, name: discoveredTitle });
         }

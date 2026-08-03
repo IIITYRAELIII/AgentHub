@@ -79,6 +79,16 @@ test("the latest Codex index title wins over stale App Server metadata", () => {
   );
 });
 
+test("a live App Server title confirmed by the Hub pin survives a stale index", () => {
+  assert.equal(
+    preferredCodexTaskTitle("Новое название", {
+      currentTitle: "Старое название",
+      recoverableTitle: "",
+    }, "Новое название"),
+    "Новое название",
+  );
+});
+
 test("task title signature changes only with journal-relevant task identity or title", () => {
   const entries = [{
     provider: "codex",

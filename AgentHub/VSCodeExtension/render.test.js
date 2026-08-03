@@ -411,6 +411,10 @@ test("task list keeps active duration live and metadata badges readable", () => 
   assert.match(app, /\["terra", "Terra"\][\s\S]*\["sonnet", "Sonnet"\]/u);
   assert.match(app, /\["spark", "Spark"\]/u);
   assert.match(app, /class: "task-agent task-model"[\s\S]*text: shortModelLabel\(task\.modelLabel\)/u);
+  assert.match(
+    client,
+    /modelLabel:\s*task\.run\?\.model\s*\?\?\s*task\.model\s*\?\?\s*\(serverSelected\s*\?\s*snapshot\.selected\?\.model\s*:\s*""\)/u,
+  );
   assert.match(app, /task\.statusLabel[\s\S]*task\.runtimeLabel/u);
   assert.match(styles, /\.task-meta\s*\{[^}]*flex:\s*1 1 auto;/su);
   assert.match(styles, /\.task-runtime\s*\{[^}]*margin-left:\s*auto;/su);
