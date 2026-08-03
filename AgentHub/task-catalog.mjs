@@ -859,8 +859,16 @@ export function claudeSnapshotActivityState(
   return claudeSnapshotIsActive(snapshot, { nowMs, freshnessMs }) ? "active" : "unknown";
 }
 
+export function claudeSnapshotExecutionOwner(snapshot) {
+  const entrypoint = String(snapshot?.entrypoint ?? "").trim().toLowerCase();
+  if (entrypoint.includes("vscode")) return TASK_EXECUTION_OWNERS.VSCODE;
+  if (entrypoint === "cli" || entrypoint.endsWith("-cli")) return TASK_EXECUTION_OWNERS.CLI;
+  return TASK_EXECUTION_OWNERS.EXTERNAL;
+}
+
 export function claudeCatalogEntry(snapshot, project, nowMs = Date.now()) {
   const modifiedAtMs = Number(snapshot?.modifiedAtMs ?? 0);
+  const messageActivityAtMs = Date.parse(String(snapshot?.updatedAt ?? "")) || null;
   const activityState = claudeSnapshotActivityState(snapshot, { nowMs });
   const running = activityState === "active";
   return {
@@ -874,11 +882,12 @@ export function claudeCatalogEntry(snapshot, project, nowMs = Date.now()) {
     title: String(snapshot.catalogTitle ?? snapshot.title ?? `Claude · ${String(snapshot.sessionId).slice(0, 8)}`),
     model: snapshot.model ?? null,
     updatedAtMs: modifiedAtMs,
-    orderingActivityAtMs: modifiedAtMs || null,
+    orderingActivityAtMs: messageActivityAtMs || modifiedAtMs || null,
+    messageActivityAtMs,
     running,
     activityUnknown: activityState === "unknown",
-    executionOwner: running ? TASK_EXECUTION_OWNERS.EXTERNAL : null,
-    lastActivityAtMs: modifiedAtMs || null,
+    executionOwner: running ? claudeSnapshotExecutionOwner(snapshot) : null,
+    lastActivityAtMs: messageActivityAtMs || modifiedAtMs || null,
     startedAt: running && Number.isFinite(Date.parse(String(snapshot?.startedAt ?? "")))
       ? new Date(snapshot.startedAt).toISOString()
       : null,
@@ -892,6 +901,7 @@ export function taskOrderingActivityAtMs(entry, {
 } = {}) {
   const meaningfulEvents = [
     Number(userMessageAtMs),
+    Number(entry?.messageActivityAtMs),
     Date.parse(String(run?.startedAt ?? "")),
     Date.parse(String(lastMessage?.updatedAt ?? "")),
   ].filter((value) => Number.isFinite(value) && value > 0);

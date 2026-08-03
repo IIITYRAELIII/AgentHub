@@ -164,8 +164,9 @@ export function parseClaudeTranscript(text) {
       }
     }
   }
-  const completed = turnEntries.some((entry) => entry?.type === "last-prompt")
-    || assistantEntries.some((entry) => entry.message?.stop_reason === "end_turn");
+  // Claude VS Code writes last-prompt immediately after accepting the user
+  // prompt. It marks queue bookkeeping, not the end of the assistant turn.
+  const completed = assistantEntries.some((entry) => entry.message?.stop_reason === "end_turn");
   const answer = answerParts.join("\n\n").trim();
   const reasoning = thinkingParts.at(-1)?.slice(-1500) ?? "";
   const transcriptTitle = claudeTranscriptTitle(entries);
@@ -185,6 +186,7 @@ export function parseClaudeTranscript(text) {
     stage,
     startedAt: promptEntry?.timestamp ?? null,
     updatedAt: turnEntries.map((entry) => entry?.timestamp).filter(Boolean).at(-1) ?? null,
+    entrypoint: entries.map((entry) => entry?.entrypoint).filter(Boolean).at(-1) ?? null,
     sessionId: entries.map((entry) => entry?.sessionId).filter(Boolean).at(-1) ?? null,
     cwd: cwdValues.at(-1) ?? null,
     sessionRoot: cwdValues.at(0) ?? null,

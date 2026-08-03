@@ -7,6 +7,7 @@ import {
   catalogEntryIsSelected,
   claudeCatalogEntry,
   claudeSnapshotActivityAtMs,
+  claudeSnapshotExecutionOwner,
   claudeSnapshotActivityState,
   claudeSnapshotIsActive,
   codexCatalogEntry,
@@ -677,6 +678,21 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
   assert.equal(fresh.startedAt, new Date(now - 120_000).toISOString());
   assert.equal(fresh.sessionCwd, path.resolve("C:\\Projects\\Main\\Utilities\\AgentHub"));
   assert.equal(stale.running, false);
+});
+
+test("Claude VS Code activity keeps its source and transcript message ordering", () => {
+  const updatedAt = "2026-08-03T18:04:52.321Z";
+  const entry = claudeCatalogEntry({
+    sessionId: "claude-vscode-session",
+    modifiedAtMs: Date.parse(updatedAt) + 1_000,
+    updatedAt,
+    active: true,
+    entrypoint: "claude-vscode",
+  }, project, Date.parse(updatedAt) + 2_000);
+  assert.equal(entry.executionOwner, TASK_EXECUTION_OWNERS.VSCODE);
+  assert.equal(claudeSnapshotExecutionOwner({ entrypoint: "claude-vscode" }), "vscode");
+  assert.equal(entry.messageActivityAtMs, Date.parse(updatedAt));
+  assert.equal(taskOrderingActivityAtMs(entry), Date.parse(updatedAt));
 });
 
 test("Codex rollout activity retains imagegen output paths for the exact turn", () => {

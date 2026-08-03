@@ -92,6 +92,7 @@ test("parseClaudeTranscript returns the current partial answer", () => {
     stage: "Claude использует инструмент Read…",
     startedAt: null,
     updatedAt: null,
+    entrypoint: null,
     sessionId: null,
     cwd: null,
     sessionRoot: null,
@@ -99,6 +100,36 @@ test("parseClaudeTranscript returns the current partial answer", () => {
     catalogTitle: "Сделай задачу",
     isSidechain: false,
   });
+});
+
+test("Claude VS Code last-prompt keeps the current turn active and identifies VS Code", () => {
+  const result = parseClaudeTranscript([
+    line({
+      type: "user",
+      timestamp: "2026-08-03T18:04:42.815Z",
+      entrypoint: "claude-vscode",
+      message: { role: "user", content: "Продолжай" },
+    }),
+    line({
+      type: "last-prompt",
+      timestamp: "2026-08-03T18:04:42.900Z",
+      entrypoint: "claude-vscode",
+    }),
+    line({
+      type: "assistant",
+      timestamp: "2026-08-03T18:04:52.321Z",
+      entrypoint: "claude-vscode",
+      message: {
+        role: "assistant",
+        stop_reason: "tool_use",
+        content: [{ type: "tool_use", name: "Bash" }],
+      },
+    }),
+  ].join("\n"));
+  assert.equal(result.active, true);
+  assert.equal(result.completed, false);
+  assert.equal(result.entrypoint, "claude-vscode");
+  assert.equal(result.updatedAt, "2026-08-03T18:04:52.321Z");
 });
 
 test("parseClaudeTranscript uses only the latest user turn and detects completion", () => {
