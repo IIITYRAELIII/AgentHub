@@ -197,6 +197,9 @@ test("rollout session reads nested subagent parent metadata", async () => {
           thread_spawn: { parent_thread_id: "parent-thread" },
         },
       },
+      git: {
+        repository_url: "D:\\workspace\\origin.git",
+      },
     },
   });
   const session = await readCodexRolloutSession("archived.jsonl", {
@@ -209,6 +212,7 @@ test("rollout session reads nested subagent parent metadata", async () => {
     cwd: "D:\\workspace",
     workspaceRoot: "D:\\workspace",
     path: "archived.jsonl",
+    repositoryUrl: "D:\\workspace\\origin.git",
     createdAt: "2026-07-13T14:49:54.071Z",
     updatedAt: "2026-07-13T14:49:54.071Z",
     source: {

@@ -10,8 +10,8 @@ const DEFAULT_STATUS_POLL_MS = 30_000;
 const DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS = 24 * 60 * 60_000;
 const DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES = 32 * 1024 * 1024;
 const DEFAULT_HISTORICAL_ACTIVE_STALE_MS = 30 * 60_000;
-const SNAPSHOT_VERSION = 7;
-const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, SNAPSHOT_VERSION]);
+const SNAPSHOT_VERSION = 8;
+const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, SNAPSHOT_VERSION]);
 
 function timestampMs(value) {
   const numeric = Number(value);
@@ -46,6 +46,12 @@ function threadReference(thread) {
     cwd: String(thread?.cwd ?? "").trim(),
     path: String(thread?.path ?? "").trim(),
     parentThreadId: String(thread?.parentThreadId ?? "").trim(),
+    repositoryUrl: String(
+      thread?.repositoryUrl
+      ?? thread?.gitInfo?.repositoryUrl
+      ?? thread?.git?.repository_url
+      ?? "",
+    ).trim(),
     updatedAt: thread?.updatedAt ?? "",
     name: String(thread?.name ?? "").trim(),
   };
@@ -241,6 +247,10 @@ export class CodexTerminalAudit {
     }
   }
 
+  async #projectFor(thread) {
+    return await this.resolveProject(thread);
+  }
+
   #removePendingTurn(threadId, turnId) {
     const pending = this.pendingTurns.get(threadId);
     if (!pending) return;
@@ -340,7 +350,7 @@ export class CodexTerminalAudit {
     const nowMs = this.now();
     for (const [threadId, pending] of [...this.pendingTurns]) {
       try {
-        const project = this.resolveProject(pending.thread);
+        const project = await this.#projectFor(pending.thread);
         if (!project) continue;
         const position = this.positions.get(threadId);
         const info = await this.statFile(pending.thread.path);
@@ -414,7 +424,7 @@ export class CodexTerminalAudit {
       for (const value of page?.data ?? []) {
         const thread = threadReference(value);
         if (!thread.id || !thread.path) continue;
-        if (!this.resolveProject(thread)) continue;
+        if (!await this.#projectFor(thread)) continue;
         candidates.set(historicalRolloutKey(thread), thread);
       }
       cursor = page?.nextCursor ?? null;
@@ -424,7 +434,7 @@ export class CodexTerminalAudit {
       for (const value of await this.discoverHistoricalThreads()) {
         const thread = threadReference(value);
         if (!thread.id || !thread.path) continue;
-        if (!this.resolveProject(thread)) continue;
+        if (!await this.#projectFor(thread)) continue;
         candidates.set(historicalRolloutKey(thread), thread);
       }
     }
@@ -463,7 +473,7 @@ export class CodexTerminalAudit {
       backfill.pending = false;
       return true;
     }
-    const project = this.resolveProject(item.thread);
+    const project = await this.#projectFor(item.thread);
     if (!project) {
       backfill.queue.shift();
       backfill.completedFiles += 1;
@@ -569,7 +579,7 @@ export class CodexTerminalAudit {
 
         for (const thread of threads) {
           try {
-            const project = this.resolveProject(thread);
+            const project = await this.#projectFor(thread);
             if (!project || !thread?.path) continue;
             const threadId = String(thread.id ?? "").trim();
             if (!threadId) continue;

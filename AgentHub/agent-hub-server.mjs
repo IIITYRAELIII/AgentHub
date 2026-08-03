@@ -65,6 +65,7 @@ import {
   scanCodexTurnPricingMetadata,
 } from "./codex-turn-usage.mjs";
 import { CodexTerminalAudit } from "./codex-terminal-audit.mjs";
+import { resolveCodexJournalProject } from "./codex-journal-project.mjs";
 import { RateLimitHistoryStore } from "./rate-limit-history.mjs";
 import {
   CODEX_AUDIT_SOURCE_KINDS,
@@ -621,7 +622,10 @@ const codexTerminalAudit = new CodexTerminalAudit({
     await saveState();
     console.log(`Retracted premature Codex terminal turn ${identity.turnId}`);
   },
-  resolveProject: (thread) => findProject(thread.cwd),
+  resolveProject: (thread) => resolveCodexJournalProject(thread, {
+    findProject,
+    readSession: readCodexRolloutSession,
+  }),
   reconcile: reconcileRecentCodexTerminalTurn,
   discoverHistoricalThreads: () => discoverCodexRollouts(),
 });

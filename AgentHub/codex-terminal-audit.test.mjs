@@ -94,7 +94,7 @@ test("terminal audit resumes byte positions after a long server outage", async (
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 7,
+    version: 8,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "rollout.jsonl", offset: 100 }]],
   });
@@ -149,7 +149,7 @@ test("terminal audit follows every thread-list page newer than its cursor", asyn
     reconcile: async (_thread, _project, terminal) => reconciled.push(terminal.turnId),
   });
   audit.restore({
-    version: 7,
+    version: 8,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [],
   });
@@ -188,7 +188,7 @@ test("terminal audit does not advance its cursor past a deferred terminal", asyn
     reconcile: async () => false,
   });
   audit.restore({
-    version: 7,
+    version: 8,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "thread-1.jsonl", offset: 10 }]],
   });
@@ -238,7 +238,7 @@ test("terminal audit advances through an active rollout and reads its later term
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 7,
+    version: 8,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-active", { path: "active.jsonl", offset: 50 }]],
   });
@@ -386,7 +386,7 @@ test("terminal audit bounds persisted per-thread positions", () => {
     maxPositions: 100,
   });
   audit.restore({
-    version: 7,
+    version: 8,
     positions: Array.from({ length: 120 }, (_, index) => [
       `thread-${index}`,
       { path: `thread-${index}.jsonl`, offset: index },
@@ -428,7 +428,7 @@ test("terminal audit uses rollout mtime when thread updatedAt stays at creation 
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 7,
+    version: 8,
     completedThrough: "2026-08-01T13:33:00.000Z",
     positions: [],
   });
@@ -437,6 +437,76 @@ test("terminal audit uses rollout mtime when thread updatedAt stays at creation 
 
   assert.deepEqual(scans, [0]);
   assert.deepEqual(recovered, ["child-turn"]);
+});
+
+test("terminal audit migrates v7 and imports an external parent with four subagents", async () => {
+  const externalRootId = "external-parent";
+  const externalThreads = [
+    {
+      ...thread(externalRootId, "2026-08-03T11:42:49.000Z", "parent.jsonl"),
+      cwd: "C:\\Temp\\agent-hub-hook-model-eval",
+      repositoryUrl: "D:\\workspace\\fixture\\origin.git",
+    },
+    ...["sol", "terra", "luna", "spark"].map((model, index) => ({
+      ...subagentThread(
+        `external-${model}`,
+        `2026-08-03T11:43:${String(index + 5).padStart(2, "0")}.000Z`,
+        `${model}.jsonl`,
+      ),
+      cwd: "C:\\Temp\\agent-hub-hook-model-eval",
+      parentThreadId: externalRootId,
+      repositoryUrl: "D:\\workspace\\fixture\\origin.git",
+    })),
+  ];
+  const scans = [];
+  const recovered = [];
+  const audit = new CodexTerminalAudit({
+    now: () => Date.parse("2026-08-03T12:30:00.000Z"),
+    listPage: async () => ({ data: [], nextCursor: null }),
+    discoverHistoricalThreads: async () => externalThreads,
+    resolveProject: async (value) => value.repositoryUrl ? project : null,
+    statFile: async () => ({
+      size: 100,
+      mtimeMs: Date.parse("2026-08-03T11:45:00.000Z"),
+    }),
+    scanFile: async (file) => {
+      scans.push(file);
+      return {
+        terminals: [{
+          turnId: `turn-${file}`,
+          status: "completed",
+          completedAt: "2026-08-03T11:45:00.000Z",
+        }],
+        activeTurns: [],
+        nextOffset: 100,
+      };
+    },
+    reconcile: async (value, resolvedProject, terminal) => recovered.push({
+      threadId: value.id,
+      project: resolvedProject,
+      turnId: terminal.turnId,
+    }),
+  });
+  audit.restore({
+    version: 7,
+    completedThrough: "2026-08-03T11:58:00.000Z",
+  });
+
+  for (let pass = 0; pass < externalThreads.length + 1
+    && audit.snapshot().historicalSubagentBackfill.pending; pass += 1) {
+    await audit.run();
+  }
+
+  assert.deepEqual(new Set(scans), new Set(externalThreads.map((value) => value.path)));
+  assert.deepEqual(
+    new Set(recovered.map((value) => value.threadId)),
+    new Set(externalThreads.map((value) => value.id)),
+  );
+  assert.ok(recovered.every((value) => value.project === project));
+  assert.ok(recovered.every((value) => value.turnId.startsWith("turn-")));
+  assert.equal(audit.snapshot().version, 8);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.completedFiles, 5);
 });
 
 test("terminal audit migrates v4 state and backfills missing subagent rollouts once", async () => {
@@ -480,7 +550,7 @@ test("terminal audit migrates v4 state and backfills missing subagent rollouts o
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 7,
+    version: 8,
     subagentBackfillPending: true,
     completedThrough: "2026-08-01T13:30:00.000Z",
     positions: [["old-parent", { path: "parent.jsonl", offset: 500 }]],
@@ -752,7 +822,7 @@ test("terminal audit isolates a missing pending rollout from unrelated completed
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 7,
+    version: 8,
     completedThrough: "2026-08-02T09:50:00.000Z",
     pendingTurns: [["missing", {
       thread: thread("missing", "2026-08-02T09:55:00.000Z", "missing.jsonl"),

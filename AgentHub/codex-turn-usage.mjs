@@ -34,6 +34,11 @@ function codexRolloutSession(entry, transcriptPath = "") {
     cwd: String(payload.cwd ?? "").trim(),
     workspaceRoot: String(payload.cwd ?? "").trim(),
     path: String(transcriptPath ?? "").trim(),
+    repositoryUrl: String(
+      payload.git?.repository_url
+      ?? payload.git?.repositoryUrl
+      ?? "",
+    ).trim(),
     createdAt: String(payload.timestamp ?? entry.timestamp ?? "").trim(),
     updatedAt: String(payload.timestamp ?? entry.timestamp ?? "").trim(),
     source: payload.source ?? "",

@@ -54,6 +54,36 @@ test("nested Codex subagents account to the root thread", async () => {
   assert.equal(result.depth, 2);
 });
 
+test("four custom model subagents account to one external parent", async () => {
+  const root = {
+    id: "external-root",
+    parentThreadId: null,
+    name: "Four-model hook test",
+  };
+  const children = ["sol", "terra", "luna", "spark"].map((model) => ({
+    id: `external-${model}`,
+    parentThreadId: root.id,
+  }));
+
+  const results = await Promise.all(children.map((child) => resolveCodexAccountingThread(child, {
+    readThread: async (id) => ({ thread: id === root.id ? root : null }),
+  })));
+
+  assert.deepEqual(results.map((value) => ({
+    threadId: value.threadId,
+    taskName: value.thread.name,
+    parentThreadId: value.parentThreadId,
+    isSubagent: value.isSubagent,
+    depth: value.depth,
+  })), children.map(() => ({
+    threadId: root.id,
+    taskName: root.name,
+    parentThreadId: root.id,
+    isSubagent: true,
+    depth: 1,
+  })));
+});
+
 test("Codex subagent parent cycles are rejected", async () => {
   const threads = new Map([
     ["child", { id: "child", parentThreadId: "parent" }],
