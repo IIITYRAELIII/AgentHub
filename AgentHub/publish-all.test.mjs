@@ -77,6 +77,7 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
   assert.deepEqual(
     classifyPublicationChanges([
       "CHANGELOG.md",
+      "AgentHub/config.example.json",
       "AgentHub/assets/mini-app/app.js",
       "AgentHub/message-lifecycle.test.mjs",
     ]),

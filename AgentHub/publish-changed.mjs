@@ -28,7 +28,10 @@ export function classifyPublicationChanges(files) {
   const plan = emptyPlan();
   for (const rawFile of files) {
     const file = rawFile.replaceAll("\\", "/");
-    if (file === "CHANGELOG.md" || file.endsWith(".md") || file.startsWith(".team/")) continue;
+    if (file === "CHANGELOG.md"
+      || file === "AgentHub/config.example.json"
+      || file.endsWith(".md")
+      || file.startsWith(".team/")) continue;
     if (!file.startsWith("AgentHub/")) {
       plan.unknown.push(file);
       continue;
