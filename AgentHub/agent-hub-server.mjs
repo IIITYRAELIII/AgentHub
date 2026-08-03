@@ -161,7 +161,7 @@ import { TaskReadStateStore, taskHasUnreadAnswer } from "./task-read-state-store
 import { LocalTaskSyncStore } from "./task-sync-store.mjs";
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
 import { createDesktopMessageController } from "./desktop-message-controller.mjs";
-import { resolveTrustedDeviceUserId } from "./trusted-device-access.mjs";
+import { createTrustedDeviceManager, resolveTrustedDeviceUserId } from "./trusted-device-access.mjs";
 import { TrustedDeviceStore } from "./trusted-device-store.mjs";
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
 import { SingleInstanceGuard } from "./instance-lock.mjs";
@@ -3706,17 +3706,32 @@ function requireMiniAppPublisher() {
 }
 
 async function desktopTrustedDevices(_params, context) {
-  return trustedDeviceStore.list(trustedDeviceUserId(context));
+  const userId = trustedDeviceUserId(context);
+  return createTrustedDeviceManager({
+    workerEnabled: config.miniApp.worker.enabled,
+    publisher: miniAppPublisher,
+    localStore: trustedDeviceStore,
+  }).list(userId);
 }
 
 async function desktopCreateDevicePairing(_params, context) {
-  return trustedDeviceStore.createPairing(trustedDeviceUserId(context));
+  const userId = trustedDeviceUserId(context);
+  return createTrustedDeviceManager({
+    workerEnabled: config.miniApp.worker.enabled,
+    publisher: miniAppPublisher,
+    localStore: trustedDeviceStore,
+  }).createPairing(userId);
 }
 
 async function desktopRevokeDevice(params, context) {
   const deviceId = String(params?.deviceId ?? "").trim().toLowerCase();
   if (!/^[0-9a-f-]{36}$/u.test(deviceId)) throw new Error("Некорректный идентификатор устройства");
-  return trustedDeviceStore.revoke(trustedDeviceUserId(context), deviceId);
+  const userId = trustedDeviceUserId(context);
+  return createTrustedDeviceManager({
+    workerEnabled: config.miniApp.worker.enabled,
+    publisher: miniAppPublisher,
+    localStore: trustedDeviceStore,
+  }).revoke(userId, deviceId);
 }
 
 async function desktopOpenAttachment(params, context) {
