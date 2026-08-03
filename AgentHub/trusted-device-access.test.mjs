@@ -6,6 +6,8 @@ import { createTrustedDeviceManager, resolveTrustedDeviceUserId } from "./truste
 
 test("public browser pairing clears stale errors and submits a complete pasted code", () => {
   const auth = readFileSync(new URL("./assets/mini-app/browser-device-auth.js", import.meta.url), "utf8");
+  assert.match(auth, /querySelector\("\.browser-auth\[data-browser-auth\]"\)/u);
+  assert.doesNotMatch(auth, /querySelector\("\[data-browser-auth\]"\)/u);
   assert.match(auth, /setStatus\(""\);/u);
   assert.match(auth, /code\.value\.replace\(\/-\/gu, ""\)\.length === PAIRING_CODE_LENGTH/u);
   assert.match(auth, /form\.requestSubmit\(\);/u);

@@ -173,7 +173,7 @@
   }
 
   function elements() {
-    const overlay = document.querySelector("[data-browser-auth]");
+    const overlay = document.querySelector(".browser-auth[data-browser-auth]");
     return {
       overlay,
       form: overlay?.querySelector("[data-browser-auth-form]"),
