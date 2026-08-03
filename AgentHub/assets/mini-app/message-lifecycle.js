@@ -396,7 +396,7 @@ function mergeLiveUserMessages(messages, {
       && String(existing?.threadId ?? "") === threadId
       && String(existing?.turnId ?? "") === turnId
     ));
-    const duplicate = values.some((existing) => (
+    const duplicateIndex = values.findIndex((existing) => (
       (clientKey && clientIdentityKey(existing) === clientKey)
       || (itemKey && identityKey(existing) === itemKey)
       || (
@@ -406,8 +406,26 @@ function mergeLiveUserMessages(messages, {
         && String(existing?.threadId ?? "") === threadId
         && String(existing?.turnId ?? "") === turnId
       )
-    )) || (index === 0 && sameTurnUsers.length > 0);
-    if (!duplicate) values.push(candidate);
+    ));
+    const fallbackDuplicateIndex = duplicateIndex < 0 && index === 0 && sameTurnUsers.length > 0
+      ? values.indexOf(sameTurnUsers[0])
+      : duplicateIndex;
+    if (fallbackDuplicateIndex < 0) {
+      values.push(candidate);
+      continue;
+    }
+    const existing = values[fallbackDuplicateIndex];
+    values[fallbackDuplicateIndex] = {
+      ...existing,
+      ...candidate,
+      id: existing.id ?? candidate.id,
+      itemId: existing.itemId || candidate.itemId,
+      clientUserMessageId: existing.clientUserMessageId || candidate.clientUserMessageId,
+      time: candidate.time ?? existing.time ?? null,
+      attachments: candidate.attachments.length
+        ? candidate.attachments
+        : existing.attachments ?? [],
+    };
   }
   return values;
 }

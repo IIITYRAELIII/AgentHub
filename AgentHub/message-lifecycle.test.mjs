@@ -504,6 +504,39 @@ test("unmatched optimistic messages keep chronological position", () => {
   ]);
 });
 
+test("live user update enriches a durable duplicate with its attachment and time", () => {
+  const merged = lifecycle.mergeLiveUserMessages([{
+    id: "durable-user",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "item-1",
+    clientUserMessageId: "client-1",
+    role: "user",
+    text: "Со скрином",
+    time: null,
+    attachments: [],
+  }], {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    userMessages: [{
+      itemId: "item-1",
+      clientUserMessageId: "client-1",
+      text: "Со скрином",
+      time: "2026-08-03T22:32:00.004Z",
+      attachments: [{ id: "screen.png", name: "screen.png", type: "image/png" }],
+    }],
+  });
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].id, "durable-user");
+  assert.equal(merged[0].time, "2026-08-03T22:32:00.004Z");
+  assert.equal(JSON.stringify(merged[0].attachments), JSON.stringify([
+    { id: "screen.png", name: "screen.png", type: "image/png" },
+  ]));
+});
+
 test("one undated message does not leave restored history below a newer reply", () => {
   const values = lifecycle.chronologicalMessages([
     { id: "current-user", role: "user", turnId: "current", time: "2026-08-03T16:51:00.000Z" },

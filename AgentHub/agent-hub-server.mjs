@@ -58,6 +58,7 @@ import {
 } from "./status.mjs";
 import {
   discoverCodexRollouts,
+  discoverCodexSubagentRollouts,
   findCodexRolloutPath,
   readCodexRolloutSession,
   readCodexSubagentSpawn,
@@ -656,6 +657,7 @@ const codexTerminalAudit = new CodexTerminalAudit({
   }),
   reconcile: reconcileRecentCodexTerminalTurn,
   discoverHistoricalThreads: () => discoverCodexRollouts(),
+  discoverSupplementalThreads: () => discoverCodexSubagentRollouts(),
   scanHistoricalFile: scanCodexHistoricalRolloutInWorker,
   shouldRunHistoricalBackfill: () => taskRuns.size === 0 && !restartRequest,
 });

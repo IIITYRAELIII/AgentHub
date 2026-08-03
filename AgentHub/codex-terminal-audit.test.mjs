@@ -439,6 +439,51 @@ test("terminal audit uses rollout mtime when thread updatedAt stays at creation 
   assert.deepEqual(recovered, ["child-turn"]);
 });
 
+test("terminal audit discovers a new subagent rollout omitted by thread/list", async () => {
+  let nowMs = Date.parse("2026-08-04T03:00:00.000Z");
+  const scans = [];
+  const recovered = [];
+  const audit = new CodexTerminalAudit({
+    now: () => nowMs,
+    listPage: async () => ({ data: [], nextCursor: null }),
+    discoverSupplementalThreads: async () => [subagentThread(
+      "child-thread",
+      "2026-08-04T01:00:00.000Z",
+      "child.jsonl",
+    )],
+    supplementalDiscoveryIntervalMs: 30_000,
+    resolveProject: () => project,
+    statFile: async () => ({ size: 240, mtimeMs: Date.parse("2026-08-04T01:01:00.000Z") }),
+    scanFile: async (path, { startOffset }) => {
+      scans.push([path, startOffset]);
+      return {
+        terminals: [{
+          turnId: "child-turn",
+          status: "completed",
+          completedAt: "2026-08-04T01:01:00.000Z",
+        }],
+        nextOffset: 240,
+      };
+    },
+    reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
+  });
+  audit.restore({
+    version: 9,
+    completedThrough: "2026-08-04T02:59:00.000Z",
+    positions: [],
+    pendingTurns: [],
+    historicalSubagentBackfill: { pending: false, initialized: true, queue: [] },
+  });
+
+  assert.equal(await audit.run(), true);
+  assert.deepEqual(scans, [["child.jsonl", 0]]);
+  assert.deepEqual(recovered, ["child-turn"]);
+
+  nowMs += 5_000;
+  assert.equal(await audit.run(), true);
+  assert.deepEqual(scans, [["child.jsonl", 0]]);
+});
+
 test("terminal audit migrates v7 and imports an external parent with four subagents", async () => {
   const externalRootId = "external-parent";
   const externalThreads = [

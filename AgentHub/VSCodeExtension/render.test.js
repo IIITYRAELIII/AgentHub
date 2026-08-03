@@ -785,6 +785,16 @@ test("chat refreshes selected external runs without rebuilding a second snapshot
   assert.match(refresh, /const answerChanged = sameSelection/u);
 });
 
+test("background history refresh cannot switch the task or reorder a completed turn", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /selectTask = true/u);
+  assert.match(client, /if \(selectTask\) rememberSelectedTaskId\(id\)/u);
+  assert.match(client, /if \(selectTask\) agentHub\.selectTask\(id\)/u);
+  assert.match(client, /preserveScroll: true,\s*skipSnapshot: true,\s*selectTask: false/su);
+  assert.match(client, /new Date\(incomingStartedAtMs - 1\)\.toISOString\(\)/u);
+  assert.match(client, /time: run\.lastActivityAt \?\? run\.startedAt \?\? null/u);
+});
+
 test("chat sends with Enter on desktop and keeps Enter as a newline on phones", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");

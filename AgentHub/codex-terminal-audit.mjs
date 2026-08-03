@@ -10,6 +10,7 @@ const DEFAULT_STATUS_POLL_MS = 30_000;
 const DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS = 24 * 60 * 60_000;
 const DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES = 32 * 1024 * 1024;
 const DEFAULT_HISTORICAL_ACTIVE_STALE_MS = 30 * 60_000;
+const DEFAULT_SUPPLEMENTAL_DISCOVERY_INTERVAL_MS = 30_000;
 const SNAPSHOT_VERSION = 9;
 const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, SNAPSHOT_VERSION]);
 
@@ -140,6 +141,7 @@ export class CodexTerminalAudit {
     resolveProject,
     reconcile,
     discoverHistoricalThreads = null,
+    discoverSupplementalThreads = null,
     scanHistoricalFile = null,
     shouldRunHistoricalBackfill = () => true,
     statFile = stat,
@@ -153,6 +155,7 @@ export class CodexTerminalAudit {
     subagentBackfillWindowMs = DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS,
     historicalSubagentBackfillBytes = DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES,
     historicalActiveStaleMs = DEFAULT_HISTORICAL_ACTIVE_STALE_MS,
+    supplementalDiscoveryIntervalMs = DEFAULT_SUPPLEMENTAL_DISCOVERY_INTERVAL_MS,
     maxPositions = 5_000,
   }) {
     this.listPage = listPage;
@@ -163,6 +166,7 @@ export class CodexTerminalAudit {
     this.resolveProject = resolveProject;
     this.reconcile = reconcile;
     this.discoverHistoricalThreads = discoverHistoricalThreads;
+    this.discoverSupplementalThreads = discoverSupplementalThreads;
     this.scanHistoricalFile = scanHistoricalFile;
     this.shouldRunHistoricalBackfill = shouldRunHistoricalBackfill;
     this.statFile = statFile;
@@ -186,6 +190,10 @@ export class CodexTerminalAudit {
       this.statusIdleMs,
       Number(historicalActiveStaleMs) || DEFAULT_HISTORICAL_ACTIVE_STALE_MS,
     );
+    this.supplementalDiscoveryIntervalMs = Math.max(
+      1_000,
+      Number(supplementalDiscoveryIntervalMs) || DEFAULT_SUPPLEMENTAL_DISCOVERY_INTERVAL_MS,
+    );
     this.maxPositions = Math.max(100, Number(maxPositions) || 5_000);
     this.completedThroughMs = 0;
     this.positions = new Map();
@@ -193,6 +201,7 @@ export class CodexTerminalAudit {
     this.subagentBackfillPending = false;
     this.historicalSubagentBackfill = emptyHistoricalSubagentBackfill();
     this.historicalScanCache = new Map();
+    this.lastSupplementalDiscoveryMs = 0;
     this.running = false;
   }
 
@@ -629,17 +638,36 @@ export class CodexTerminalAudit {
     const seenCursors = new Set();
     let madeProgress = false;
     let allHandled = true;
+    const supplementalThreads = [];
+    const supplementalThreadIds = new Set();
 
     try {
       madeProgress = await this.#runHistoricalSubagentBackfill();
       madeProgress = await this.#pollPendingTurns(lowerBoundMs) || madeProgress;
+      if (typeof this.discoverSupplementalThreads === "function"
+        && startedAtMs - this.lastSupplementalDiscoveryMs >= this.supplementalDiscoveryIntervalMs) {
+        const discovered = await this.discoverSupplementalThreads();
+        this.lastSupplementalDiscoveryMs = startedAtMs;
+        for (const value of discovered ?? []) {
+          const reference = threadReference(value);
+          if (!reference.id || !reference.path || !reference.parentThreadId) continue;
+          supplementalThreads.push(reference);
+          supplementalThreadIds.add(reference.id);
+        }
+      }
+      const visitedThreadIds = new Set();
+      let includeSupplementalThreads = true;
       do {
         if (cursor && seenCursors.has(cursor)) {
           throw new Error(`Codex thread/list repeated cursor ${cursor}`);
         }
         if (cursor) seenCursors.add(cursor);
         const page = await this.listPage(cursor, this.pageSize);
-        const threads = page?.data ?? [];
+        const threads = [
+          ...(page?.data ?? []),
+          ...(includeSupplementalThreads ? supplementalThreads : []),
+        ];
+        includeSupplementalThreads = false;
 
         for (const thread of threads) {
           try {
@@ -647,6 +675,8 @@ export class CodexTerminalAudit {
             if (!project || !thread?.path) continue;
             const threadId = String(thread.id ?? "").trim();
             if (!threadId) continue;
+            if (visitedThreadIds.has(threadId)) continue;
+            visitedThreadIds.add(threadId);
             const transcriptPath = String(thread.path);
             const info = await this.statFile(transcriptPath);
             const prior = this.positions.get(threadId);
@@ -654,10 +684,12 @@ export class CodexTerminalAudit {
             const hasUnreadBytes = canResume && prior.offset < info.size;
             const isSubagent = Boolean(String(thread.parentThreadId ?? "").trim());
             const activityMs = Number(info.mtimeMs) || timestampMs(thread.updatedAt);
-            const backfillMissingSubagent = this.subagentBackfillPending
-              && isSubagent
+            const backfillMissingSubagent = isSubagent
               && !canResume
-              && activityMs >= subagentBackfillLowerBoundMs;
+              && (
+                supplementalThreadIds.has(threadId)
+                || (this.subagentBackfillPending && activityMs >= subagentBackfillLowerBoundMs)
+              );
             const olderThanBoundary = activityMs > 0 && activityMs < lowerBoundMs;
 
             if (this.subagentBackfillPending

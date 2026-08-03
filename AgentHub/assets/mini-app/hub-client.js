@@ -235,6 +235,9 @@ function liveUserMessagesSignature(run) {
       String(message?.itemId ?? ""),
       String(message?.clientUserMessageId ?? ""),
       String(message?.text ?? "").length,
+      String(message?.time ?? ""),
+      JSON.stringify(message?.attachments ?? []),
+      JSON.stringify(message?.responseAnnotations ?? []),
     ]),
   ]);
 }
@@ -327,6 +330,15 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
   const answer = String(
     taskAnswerTurnId === previousTurnId ? selected?.lastAnswer : previous?.text,
   ).trim();
+  const incomingStartedAtMs = Date.parse(selected?.run?.startedAt ?? "");
+  const recordedCompletionTime = taskAnswerTurnId === previousTurnId
+    ? selected?.lastAnswerAt
+    : previous?.time;
+  const recordedCompletionAtMs = Date.parse(recordedCompletionTime ?? "");
+  const completionTime = Number.isFinite(incomingStartedAtMs)
+    && (!Number.isFinite(recordedCompletionAtMs) || recordedCompletionAtMs >= incomingStartedAtMs)
+    ? new Date(incomingStartedAtMs - 1).toISOString()
+    : recordedCompletionTime ?? null;
   const messages = mergeLiveUserMessages([], liveUsers);
   if (answer) {
     messages.push({
@@ -339,7 +351,7 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
       author: previous.author,
       phase: "final",
       text: answer,
-      time: selected?.lastAnswerAt ?? null,
+      time: completionTime,
     });
   }
   if (messages.length) {
@@ -430,6 +442,7 @@ function updateLiveMessage(taskIdValue, selected) {
     turnId: run.turnId,
     itemId: run.responseItemId ?? null,
     provider: selected.provider,
+    time: run.lastActivityAt ?? run.startedAt ?? null,
   };
   liveCardsByTask.set(taskIdValue, liveCard);
   return liveCard;
@@ -894,7 +907,11 @@ function prependOlderHistory(previous, older) {
   return [...uniqueOlder, ...previous];
 }
 
-function applyOpened(result, { preserveScroll = false, skipSnapshot = false } = {}) {
+function applyOpened(result, {
+  preserveScroll = false,
+  skipSnapshot = false,
+  selectTask = true,
+} = {}) {
   const history = result?.history;
   if (!history) {
     applySnapshot(result?.snapshot);
@@ -925,9 +942,9 @@ function applyOpened(result, { preserveScroll = false, skipSnapshot = false } = 
     loading: false,
     version: history.version ?? "",
   });
-  rememberSelectedTaskId(id);
+  if (selectTask) rememberSelectedTaskId(id);
   if (!skipSnapshot) applySnapshot(result?.snapshot);
-  agentHub.selectTask(id);
+  if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   renderTaskMessages(id, { preserveScroll });
   const task = (result.snapshot ?? lastSnapshot)?.tasks?.find(
@@ -1527,6 +1544,7 @@ async function refresh({ reportError = false } = {}) {
       applyOpened({ snapshot: lastSnapshot, history }, {
         preserveScroll: true,
         skipSnapshot: true,
+        selectTask: false,
       });
     }
     applySnapshotConnection(snapshot);
