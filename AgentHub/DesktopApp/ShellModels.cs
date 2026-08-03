@@ -1,11 +1,34 @@
 using System;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 
 namespace AgentHubDesktop
 {
+    internal static class WorkspaceFileLink
+    {
+        public static bool TryParse(string target, out string file, out int line)
+        {
+            file = null;
+            line = 0;
+            var normalized = (target ?? "").Trim();
+            if (Regex.IsMatch(normalized, @"^/[A-Za-z]:[\\/]", RegexOptions.CultureInvariant))
+            {
+                normalized = normalized.Substring(1);
+            }
+            var match = Regex.Match(
+                normalized,
+                @"^(?<file>[A-Za-z]:[\\/].*?)(?::(?<line>[1-9][0-9]*))?$",
+                RegexOptions.CultureInvariant);
+            if (!match.Success) return false;
+            file = match.Groups["file"].Value;
+            Int32.TryParse(match.Groups["line"].Value, out line);
+            return true;
+        }
+    }
+
     internal sealed class AnnotationDraft
     {
         public string Text { get; set; }

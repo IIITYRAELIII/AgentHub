@@ -1565,8 +1565,9 @@ chatScroll.addEventListener("touchcancel", resetHistoryPull);
 
 function markdownLink(raw) {
   const value = String(raw ?? "").trim();
-  if (vscodeMode && /^[A-Za-z]:[\\/]/u.test(value)) {
-    return { href: "#", localPath: value };
+  const localPath = value.replace(/^\/(?=[A-Za-z]:[\\/])/u, "");
+  if (vscodeMode && /^[A-Za-z]:[\\/]/u.test(localPath)) {
+    return { href: "#", localPath };
   }
   try {
     const url = new URL(value, window.location.href);

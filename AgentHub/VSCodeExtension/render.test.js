@@ -414,6 +414,12 @@ test("task list keeps active duration live and metadata badges readable", () => 
   assert.match(styles, /\.task-runtime\s*\{[^}]*margin-left:\s*auto;/su);
 });
 
+test("shared chat accepts canonical slash-prefixed Windows file links in VS Code", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(app, /replace\(\/\^\\\/\(\?=\[A-Za-z\]:\[\\\\\/\]\)\/u, ""\)/u);
+  assert.match(app, /return \{ href: "#", localPath \}/u);
+});
+
 test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");

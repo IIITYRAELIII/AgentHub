@@ -1109,18 +1109,18 @@ namespace AgentHubDesktop
         {
             file = null;
             line = 0;
-            var match = Regex.Match(target ?? "", @"^(?<file>[A-Za-z]:[\\/].*?)(?::(?<line>[1-9][0-9]*))?$", RegexOptions.CultureInvariant);
+            string parsedFile;
             TaskItem selected;
-            if (!match.Success || !tasks.TryGetValue(selectedKey ?? "", out selected)
+            if (!WorkspaceFileLink.TryParse(target, out parsedFile, out line)
+                || !tasks.TryGetValue(selectedKey ?? "", out selected)
                 || String.IsNullOrWhiteSpace(selected.ProjectRoot)) return false;
             try
             {
-                var candidate = Path.GetFullPath(match.Groups["file"].Value);
+                var candidate = Path.GetFullPath(parsedFile);
                 var root = Path.GetFullPath(selected.ProjectRoot)
                     .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
                     + Path.DirectorySeparatorChar;
                 if (!candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(candidate)) return false;
-                int.TryParse(match.Groups["line"].Value, out line);
                 file = candidate;
                 return true;
             }

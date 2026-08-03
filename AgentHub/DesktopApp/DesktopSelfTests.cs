@@ -16,6 +16,8 @@ namespace AgentHubDesktop
             EndpointValidationRejectsPipeInjection();
             ServerProofRejectsImpostor();
             ResponseWaitIsBounded();
+            WorkspaceFileLinkAcceptsCanonicalTarget();
+            WorkspaceFileLinkRejectsWebTarget();
         }
 
         private static void StableMessageIdentitySurvivesRetry()
@@ -98,6 +100,24 @@ namespace AgentHubDesktop
             catch (TimeoutException)
             {
             }
+        }
+
+        private static void WorkspaceFileLinkAcceptsCanonicalTarget()
+        {
+            string file;
+            int line;
+            Require(
+                WorkspaceFileLink.TryParse("/D:/VSC_Tyrael/Utilities/AgentHub/package.json:36", out file, out line),
+                "canonical workspace link was rejected");
+            Require(file == "D:/VSC_Tyrael/Utilities/AgentHub/package.json", "workspace link path was not normalized");
+            Require(line == 36, "workspace link line was lost");
+        }
+
+        private static void WorkspaceFileLinkRejectsWebTarget()
+        {
+            string file;
+            int line;
+            Require(!WorkspaceFileLink.TryParse("https://example.test/file:12", out file, out line), "web link was accepted as a file");
         }
 
         private static void Require(bool value, string message)
