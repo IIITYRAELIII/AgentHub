@@ -219,6 +219,7 @@ export function shouldAutoObserveTask({
   snapshot,
   existingRun = null,
   dismissed = false,
+  lastSeenTurnId = null,
 } = {}) {
   return Boolean(
     task?.provider
@@ -226,6 +227,7 @@ export function shouldAutoObserveTask({
       && task?.threadId
       && taskRunKey(selectedTask) === taskRunKey(task)
       && snapshot?.active
+      && (!snapshot?.turnId || String(snapshot.turnId) !== String(lastSeenTurnId ?? ""))
       && !existingRun
       && !dismissed,
   );

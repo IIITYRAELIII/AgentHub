@@ -504,7 +504,7 @@ test("terminal audit migrates v7 and imports an external parent with four subage
   );
   assert.ok(recovered.every((value) => value.project === project));
   assert.ok(recovered.every((value) => value.turnId.startsWith("turn-")));
-  assert.equal(audit.snapshot().version, 8);
+  assert.equal(audit.snapshot().version, 9);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
   assert.equal(audit.snapshot().historicalSubagentBackfill.completedFiles, 5);
 });
@@ -823,6 +823,56 @@ test("historical rollout backfill yields while interactive work is active", asyn
   interactive = false;
   await audit.run();
   assert.deepEqual(scans, ["historical-thread.jsonl"]);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
+});
+
+test("historical rollout backfill pauses inside a scanned file and resumes at the next turn", async () => {
+  const scans = [];
+  const recovered = [];
+  let interactive = false;
+  const audit = new CodexTerminalAudit({
+    listPage: async () => ({ data: [], nextCursor: null }),
+    discoverHistoricalThreads: async () => [{
+      id: "large-thread",
+      cwd: "C:\\Project",
+      path: "large-thread.jsonl",
+      updatedAt: "2026-07-01T00:00:00.000Z",
+    }],
+    resolveProject: async () => "C:\\Project",
+    statFile: async () => ({ size: 100, mtimeMs: Date.parse("2026-07-01T00:00:00.000Z") }),
+    scanHistoricalFile: async (thread) => {
+      scans.push(thread.path);
+      return {
+        turns: ["first", "second", "third"].map((turnId) => ({
+          turnId,
+          terminal: true,
+          status: "completed",
+          completedAt: "2026-07-01T00:00:00.000Z",
+        })),
+      };
+    },
+    shouldRunHistoricalBackfill: () => !interactive,
+    reconcile: async (_thread, _project, terminal) => {
+      recovered.push(terminal.turnId);
+      if (terminal.turnId === "first") interactive = true;
+      return true;
+    },
+  });
+  audit.restore({
+    version: 8,
+    completedThrough: "2026-08-03T11:58:00.000Z",
+    historicalSubagentBackfill: { pending: true, initialized: false },
+  });
+
+  await audit.run();
+  assert.deepEqual(recovered, ["first"]);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.queue[0].terminalTurnIndex, 1);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.pending, true);
+
+  interactive = false;
+  await audit.run();
+  assert.deepEqual(recovered, ["first", "second", "third"]);
+  assert.deepEqual(scans, ["large-thread.jsonl"]);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
 });
 

@@ -10,8 +10,8 @@ const DEFAULT_STATUS_POLL_MS = 30_000;
 const DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS = 24 * 60 * 60_000;
 const DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES = 32 * 1024 * 1024;
 const DEFAULT_HISTORICAL_ACTIVE_STALE_MS = 30 * 60_000;
-const SNAPSHOT_VERSION = 8;
-const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, SNAPSHOT_VERSION]);
+const SNAPSHOT_VERSION = 9;
+const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, SNAPSHOT_VERSION]);
 
 function timestampMs(value) {
   const numeric = Number(value);
@@ -114,6 +114,8 @@ function restoredHistoricalSubagentBackfill(value) {
       thread,
       offset,
       size: Number.isSafeInteger(size) && size >= 0 ? size : 0,
+      terminalTurnIndex: Math.max(0, Number(item?.terminalTurnIndex) || 0),
+      staleTurnIndex: Math.max(0, Number(item?.staleTurnIndex) || 0),
       activeTurns: Array.isArray(item?.activeTurns) ? item.activeTurns.flatMap((turn) => {
         const turnId = String(turn?.turnId ?? "").trim();
         return turnId ? [{
@@ -190,6 +192,7 @@ export class CodexTerminalAudit {
     this.pendingTurns = new Map();
     this.subagentBackfillPending = false;
     this.historicalSubagentBackfill = emptyHistoricalSubagentBackfill();
+    this.historicalScanCache = new Map();
     this.running = false;
   }
 
@@ -201,9 +204,10 @@ export class CodexTerminalAudit {
     this.pendingTurns.clear();
     this.subagentBackfillPending = snapshotVersion === 4
       || (compatibleSnapshot && snapshot?.subagentBackfillPending === true);
-    this.historicalSubagentBackfill = snapshotVersion === SNAPSHOT_VERSION
+    this.historicalSubagentBackfill = [8, SNAPSHOT_VERSION].includes(snapshotVersion)
       ? restoredHistoricalSubagentBackfill(snapshot?.historicalSubagentBackfill)
       : emptyHistoricalSubagentBackfill(compatibleSnapshot);
+    this.historicalScanCache.clear();
     if (compatibleSnapshot) {
       for (const entry of Array.isArray(snapshot?.positions) ? snapshot.positions : []) {
         if (!Array.isArray(entry) || typeof entry[0] !== "string") continue;
@@ -451,6 +455,8 @@ export class CodexTerminalAudit {
           thread,
           offset: 0,
           size: Number(info.size) || 0,
+          terminalTurnIndex: 0,
+          staleTurnIndex: 0,
           activeTurns: [],
         });
       } catch (error) {
@@ -498,28 +504,36 @@ export class CodexTerminalAudit {
     }
     const startOffset = item.offset <= info.size ? item.offset : 0;
     if (typeof this.scanHistoricalFile === "function") {
-      const historical = await this.scanHistoricalFile(item.thread);
+      const cacheKey = historicalRolloutKey(item.thread);
+      let historical = this.historicalScanCache.get(cacheKey);
+      if (!historical) {
+        historical = await this.scanHistoricalFile(item.thread);
+        this.historicalScanCache.set(cacheKey, historical);
+      }
       const turns = Array.isArray(historical?.turns) ? historical.turns : [];
-      let allHandled = true;
-      let processedTurns = 0;
-      for (const turn of turns) {
-        if (turn?.terminal !== true) continue;
-        processedTurns += 1;
-        if (await this.reconcile(item.thread, project, {
+      const terminalTurns = turns.filter((turn) => turn?.terminal === true);
+      while (item.terminalTurnIndex < terminalTurns.length) {
+        if (!this.shouldRunHistoricalBackfill()) return changed;
+        const turn = terminalTurns[item.terminalTurnIndex];
+        const handled = await this.reconcile(item.thread, project, {
           turnId: turn.turnId,
           status: turn.status || "completed",
           completedAt: turn.completedAt || turn.lastActivityAt,
           historical: true,
           usageResult: turn,
-        }) === false) allHandled = false;
+        });
+        if (handled === false) return changed;
+        item.terminalTurnIndex += 1;
+        backfill.processedTurns += 1;
+        changed = true;
       }
-      if (!allHandled) return changed;
 
       const stale = this.now() - Number(info.mtimeMs || 0) >= this.historicalActiveStaleMs;
       if (stale) {
-        for (const turn of turns) {
-          if (turn?.terminal === true || !turn?.startedAt) continue;
-          processedTurns += 1;
+        const staleTurns = turns.filter((turn) => turn?.terminal !== true && turn?.startedAt);
+        while (item.staleTurnIndex < staleTurns.length) {
+          if (!this.shouldRunHistoricalBackfill()) return changed;
+          const turn = staleTurns[item.staleTurnIndex];
           const handled = await this.reconcile(item.thread, project, {
             turnId: turn.turnId,
             status: "aborted",
@@ -528,11 +542,13 @@ export class CodexTerminalAudit {
             historical: true,
             usageResult: turn,
           });
-          if (handled === false) allHandled = false;
+          if (handled === false) return changed;
+          item.staleTurnIndex += 1;
+          backfill.processedTurns += 1;
+          changed = true;
         }
       }
-      if (!allHandled) return true;
-      backfill.processedTurns += processedTurns;
+      this.historicalScanCache.delete(cacheKey);
       backfill.queue.shift();
       backfill.completedFiles += 1;
       if (!backfill.queue.length) backfill.pending = false;

@@ -114,16 +114,40 @@ test("an unavailable rollout process probe does not falsely stop a turn", async 
   }), true);
 });
 
-test("an unowned rollout is not stopped from a process probe alone", async () => {
+test("a recently active unowned rollout is not stopped before the grace period", async () => {
   let probes = 0;
-  assert.equal(await codexObservedRuntimeActive({ running: true }, {
+  assert.equal(await codexObservedRuntimeActive({ running: true, lastActivityAtMs: 100 }, {
     turnId: "unowned-turn",
     rolloutPath: "C:\\unowned-rollout.jsonl",
     platform: "win32",
-    nowMs: 1,
+    nowMs: 1_000,
     probe: async () => { probes += 1; return snapshot([], []); },
   }), true);
   assert.equal(probes, 0);
+});
+
+test("a stale unowned rollout stops when no client process holds it", async () => {
+  assert.equal(await codexObservedRuntimeActive({ running: true, lastActivityAtMs: 100 }, {
+    turnId: "stale-unowned-turn",
+    rolloutPath: "C:\\stale-unowned-rollout.jsonl",
+    platform: "win32",
+    nowMs: 100_000,
+    probe: async () => snapshot([], []),
+  }), false);
+});
+
+test("a stale session-wide VSC marker is not presented as current client evidence", async () => {
+  const owner = await resolveCodexObservedExecutionOwner({
+    running: true,
+    activeVscodeTurnIds: ["resumed-turn"],
+  }, {
+    turnId: "resumed-turn",
+    rolloutPath: "C:\\resumed-rollout.jsonl",
+    platform: "win32",
+    nowMs: 100_000,
+    probe: async () => snapshot([], []),
+  });
+  assert.equal(owner, TASK_EXECUTION_OWNERS.EXTERNAL);
 });
 
 test("per-turn VSC evidence is preserved when a process probe is unavailable", async () => {

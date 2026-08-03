@@ -8,6 +8,7 @@ import {
 
 const OWNER_PROBE_CACHE_MS = 5_000;
 const OWNER_PROBE_TIMEOUT_MS = 5_000;
+const UNOWNED_ACTIVITY_GRACE_MS = 90_000;
 const ownerProbeCache = new Map();
 const ownerProbeInFlight = new Map();
 
@@ -250,9 +251,13 @@ export async function codexObservedRuntimeActive(activity = {}, {
   probe = readWindowsRolloutProcesses,
 } = {}) {
   if (!activity.running) return false;
-  if (!Object.values(TASK_EXECUTION_OWNERS).includes(capturedOwner)
-    || capturedOwner === TASK_EXECUTION_OWNERS.EXTERNAL) return true;
   if (platform !== "win32" || !rolloutPath) return true;
+  const hasCapturedOwner = Object.values(TASK_EXECUTION_OWNERS).includes(capturedOwner)
+    && capturedOwner !== TASK_EXECUTION_OWNERS.EXTERNAL;
+  const lastActivityAtMs = Number(activity.lastActivityAtMs);
+  if (!hasCapturedOwner
+    && Number.isFinite(lastActivityAtMs)
+    && nowMs - lastActivityAtMs <= UNOWNED_ACTIVITY_GRACE_MS) return true;
   const runtime = await observedRuntimeProbe({
     turnId,
     rolloutPath,
@@ -284,5 +289,10 @@ export async function resolveCodexObservedExecutionOwner(activity = {}, {
     nowMs,
     probe,
   });
-  return runtime.owner === TASK_EXECUTION_OWNERS.EXTERNAL ? direct : runtime.owner;
+  if (runtime.owner !== TASK_EXECUTION_OWNERS.EXTERNAL) return runtime.owner;
+  // The rollout session origin describes where the thread was created, not
+  // which client started a later resumed turn.  A successful process probe
+  // therefore outranks that old session-wide marker even when it finds no
+  // uniquely attributable client.
+  return runtime.known ? TASK_EXECUTION_OWNERS.EXTERNAL : direct;
 }

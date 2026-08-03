@@ -2039,7 +2039,7 @@ try {
     const executionOwner = normalizeTaskExecutionOwner(savedRun.executionOwner)
       ?? (savedRun.provider === "codex"
         ? observer
-          ? TASK_EXECUTION_OWNERS.VSCODE
+          ? TASK_EXECUTION_OWNERS.EXTERNAL
           : TASK_EXECUTION_OWNERS.HUB
         : null);
     taskRuns.add({
@@ -6530,6 +6530,13 @@ async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
   if (reconcilingCodexTerminalTurns.has(key)) return false;
   reconcilingCodexTerminalTurns.add(key);
   try {
+    if (terminal?.historical === true) {
+      const existingJournalTurn = await workLogUsageStore.getTurn(identity);
+      if (existingJournalTurn && existingJournalTurn.provisional !== true) {
+        codexTurnStarts.delete(key);
+        return true;
+      }
+    }
     const accountingThread = await codexAccountingThread(thread);
     const parentTurnId = accountingThread.isSubagent
       ? await codexSubagentParentTurnId(thread, accountingThread)
@@ -6832,6 +6839,7 @@ async function watchSelectedTask() {
       snapshot,
       existingRun: currentRun,
       dismissed: dismissedExternalTasks.has(task),
+      lastSeenTurnId: lastSeenTaskTurnIds.get(taskRunKey(task)),
     })) return;
     const run = await observedRun({
       ...task,

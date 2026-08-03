@@ -47,6 +47,16 @@ test("selected external task is observed automatically only while its turn is ac
   assert.equal(shouldAutoObserveTask({ task, snapshot: { active: true }, dismissed: true }), false);
   assert.equal(shouldAutoObserveTask({
     task,
+    snapshot: { active: true, turnId: "managed-turn" },
+    lastSeenTurnId: "managed-turn",
+  }), false);
+  assert.equal(shouldAutoObserveTask({
+    task,
+    snapshot: { active: true, turnId: "new-external-turn" },
+    lastSeenTurnId: "managed-turn",
+  }), true);
+  assert.equal(shouldAutoObserveTask({
+    task,
     selectedTask: { ...task, threadId: "thread-2" },
     snapshot: { active: true },
   }), false);
