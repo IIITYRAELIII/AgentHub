@@ -394,6 +394,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "list-checks",
       "x",
       "arrows-clockwise",
+      "corners-out",
     ]) {
       assert.match(page, new RegExp(`data-phosphor-icon="${icon}"`, "u"), icon);
     }
@@ -444,7 +445,10 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.doesNotMatch(hubClient, /location\.hash\s*=/u);
     assert.match(script, /document\.documentElement\.dataset\.surface = surface/u);
     assert.match(script, /telegram\?\.expand\(\)/u);
-    assert.doesNotMatch(script, /requestFullscreen/u);
+    assert.match(page, /data-telegram-fullscreen hidden/u);
+    assert.match(script, /telegramFullscreenButton\?\.addEventListener\("click"/u);
+    assert.match(script, /telegram\?\.requestFullscreen\?\.\(\)/u);
+    assert.match(script, /telegram\?\.exitFullscreen\?\.\(\)/u);
     assert.match(script, /headers\["If-None-Match"\]/u);
     assert.match(script, /response\.status === 304/u);
     assert.match(script, /closest\("\[data-work-log-collapse-turns\]"\)/u);

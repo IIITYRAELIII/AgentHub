@@ -72,6 +72,7 @@ const approvalsBox = document.querySelector("[data-approvals]");
 const queueBox = document.querySelector("[data-queue]");
 
 const settingsPanel = document.querySelector("[data-settings-panel]");
+const telegramFullscreenButton = document.querySelector("[data-telegram-fullscreen]");
 const breakdownToggle = document.querySelector("[data-token-breakdown-toggle]");
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
 const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
@@ -167,6 +168,17 @@ const compactSurfaceWidth = 860;
 function resolveSurface() {
   if (telegramMode && mobileTelegramPlatforms.has(telegramPlatform)) return "mobile";
   return window.innerWidth < compactSurfaceWidth ? "mobile" : "desktop";
+}
+
+function syncTelegramFullscreenButton() {
+  if (!telegramFullscreenButton) return;
+  const supported = telegramMode && typeof telegram?.requestFullscreen === "function";
+  telegramFullscreenButton.hidden = !supported;
+  if (!supported) return;
+  const fullscreen = telegram?.isFullscreen === true;
+  telegramFullscreenButton.setAttribute("aria-pressed", fullscreen ? "true" : "false");
+  telegramFullscreenButton.title = fullscreen ? "Выйти из полного режима" : "Развернуть Mini App";
+  telegramFullscreenButton.setAttribute("aria-label", telegramFullscreenButton.title);
 }
 
 let surface = resolveSurface();
@@ -516,6 +528,11 @@ function selectClaudeGrouping(value, { persist = false } = {}) {
 telegram?.ready();
 telegram?.expand();
 telegram?.disableVerticalSwipes?.();
+syncTelegramFullscreenButton();
+telegramFullscreenButton?.addEventListener("click", () => {
+  if (telegram?.isFullscreen === true) telegram?.exitFullscreen?.();
+  else telegram?.requestFullscreen?.();
+});
 applyTheme(savedTheme());
 applyBackground(savedBackground(root.dataset.theme));
 applyBreakdown(savedBreakdown());
@@ -949,7 +966,15 @@ function syncSurface() {
 
 window.addEventListener("resize", syncSurface);
 telegram?.onEvent?.("viewportChanged", syncSurface);
-telegram?.onEvent?.("fullscreenChanged", syncSurface);
+telegram?.onEvent?.("fullscreenChanged", () => {
+  syncSurface();
+  syncTelegramFullscreenButton();
+});
+telegram?.onEvent?.("fullscreenFailed", (event) => {
+  syncTelegramFullscreenButton();
+  const reason = String(event?.error ?? "UNSUPPORTED");
+  telegram?.showAlert?.(`Telegram не развернул Mini App: ${reason}`);
+});
 
 /* ============================================================ список задач */
 
