@@ -980,8 +980,10 @@ function shortModelLabel(value) {
 function modelTier(value) {
   const normalized = String(value ?? "").toLowerCase();
   if (!normalized) return null;
-  if (/mini|haiku|spark|nano|flash|lite/u.test(normalized)) return "light";
-  if (/opus|terra|sol|pro\b|ultra|max\b/u.test(normalized)) return "flagship";
+  /* Кодовые имена важнее номера версии: «GPT-5.6-Sol» — флагман по имени.
+     Лёгкие проверяются первыми, иначе версия перетянула бы их в верхний ранг. */
+  if (/luna|haiku|spark|nano|flash|lite|mini|5\.3/u.test(normalized)) return "light";
+  if (/sol|opus|pro\b|ultra|max\b|5\.[5-9]/u.test(normalized)) return "flagship";
   return "balanced";
 }
 
