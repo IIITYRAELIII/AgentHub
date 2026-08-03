@@ -16,6 +16,9 @@ import {
 } from "./task-runs.mjs";
 
 test("taskRunIsActive excludes terminal runs kept for final delivery", () => {
+  assert.equal(taskRunIsActive(null), false);
+  assert.equal(taskRunIsActive(undefined), false);
+  assert.equal(taskRunIsActive({}), true);
   assert.equal(taskRunIsActive({ status: "running" }), true);
   assert.equal(taskRunIsActive({ status: "finishing" }), true);
   assert.equal(taskRunIsActive({ status: "completed" }), false);

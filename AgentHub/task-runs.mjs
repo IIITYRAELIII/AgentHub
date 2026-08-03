@@ -70,6 +70,7 @@ export function createObservedTaskRun(value, snapshot = {}) {
 }
 
 export function taskRunIsActive(run) {
+  if (!run || typeof run !== "object") return false;
   const status = String(run?.status ?? "running").trim().toLowerCase();
   return status === "running" || status === "finishing";
 }

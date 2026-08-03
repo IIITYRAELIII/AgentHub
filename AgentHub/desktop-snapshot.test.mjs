@@ -365,6 +365,17 @@ test("desktopTaskSnapshot does not expose a retained completed run as active", (
   assert.equal(snapshot.run.status, "completed");
 });
 
+test("an inactive catalog entry without a run stays inactive", () => {
+  const { desktopTaskSnapshot, entry } = fixture({ run: null });
+  const snapshot = desktopTaskSnapshot({
+    ...entry,
+    running: false,
+    executionOwner: null,
+  });
+  assert.equal(snapshot.running, false);
+  assert.equal(snapshot.run, null);
+});
+
 test("desktopTaskSnapshot keeps a manual context compaction out of the live turn", () => {
   const { desktopTaskSnapshot, entry, state } = fixture();
   state.compaction = {

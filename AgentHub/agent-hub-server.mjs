@@ -6963,6 +6963,10 @@ async function auditRecentCodexTerminalTurns() {
 }
 
 const CODEX_COMPACTION_CLEANUP_RETRY_MS = 15_000;
+// Coupling cleanup to compaction is temporarily disabled: an App Server can
+// keep the rollout open and leave the compaction UI waiting. The independent
+// periodic sanitizer remains enabled and will continue to reclaim old images.
+const COMPACTION_TRIGGERED_IMAGE_CLEANUP_ENABLED = false;
 
 async function recycleCodexTransportForManualCompaction(threadId, rolloutPath, result) {
   const compaction = contextCompactions.get(threadId);
@@ -7017,7 +7021,10 @@ async function recycleCodexTransportForManualCompaction(threadId, rolloutPath, r
 function beginCodexCompactionCleanup(threadId, details = {}) {
   const key = String(threadId ?? "").trim();
   if (!key) return;
-  if (!config.components.codexContextCleanup) {
+  if (
+    !config.components.codexContextCleanup
+    || !COMPACTION_TRIGGERED_IMAGE_CLEANUP_ENABLED
+  ) {
     contextCompactions.complete(key, {
       turnId: details.turnId,
       itemId: details.itemId,
