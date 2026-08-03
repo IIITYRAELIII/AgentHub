@@ -815,16 +815,21 @@ test("mobile navigation backs out from image to chat and from chat to tasks", ()
   assert.match(android, /window\.AgentHub\.navigateBack/u);
 });
 
-test("annotation button clearly quotes selected agent text", () => {
+test("annotation actions preserve native selection and keep per-quote comments", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  assert.match(html, /data-action="annotate"[\s\S]*Цитировать выделенный текст ответа/u);
-  assert.match(html, /data-phosphor-icon="quotes"/u);
+  const android = fs.readFileSync(
+    require.resolve("../AndroidApp/app/src/main/java/app/agenthub/mobile/MainActivity.java"),
+    "utf8",
+  );
+  assert.doesNotMatch(html, /data-action="annotate"/u);
   assert.match(app, /showToast\("Выделите фрагмент ответа агента\."\)/u);
-  assert.match(html, /data-action="annotate"[\s\S]*aria-disabled="true"/u);
   assert.match(html, /data-annotation-context-menu[\s\S]*Цитировать выделение/u);
   assert.match(app, /function addAnnotation\(value\)/u);
+  assert.match(app, /data-annotation-comment-index/u);
+  assert.match(app, /pointer: coarse/u);
   assert.match(app, /document\.addEventListener\("contextmenu"[\s\S]*openAnnotationContextMenu/u);
+  assert.match(android, /MENU_ANNOTATE_SELECTION[\s\S]*"Цитировать"/u);
 });
 
 test("journal preserves recursive subagent trees in date and task groupings", () => {
