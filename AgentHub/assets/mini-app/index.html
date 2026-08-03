@@ -529,28 +529,6 @@
           <span class="server-state-dot" data-server-state-dot aria-hidden="true"></span>
         </header>
         <dl class="server-facts" data-server-facts></dl>
-        <div class="server-controls">
-          <label class="setting-switch">
-            <input type="checkbox" data-server-autostart>
-            <span class="switch-text">Автозапуск Agent Hub
-              <span class="switch-note" data-server-autostart-note>Проверяем…</span>
-            </span>
-            <span class="switch-track" aria-hidden="true"></span>
-          </label>
-          <button type="button" class="chip-button" data-action="hub-restart">
-            <svg data-phosphor-icon="arrows-clockwise" viewBox="0 0 256 256" aria-hidden="true">
-              <polyline points="168 96 216 96 216 48" fill="none" stroke="currentColor"
-                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-              <path d="M216,96,187.72,67.72A88,88,0,0,0,64,67" fill="none" stroke="currentColor"
-                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
-              <polyline points="88 160 40 160 40 208" fill="none" stroke="currentColor"
-                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-              <path d="M40,160l28.28,28.28A88,88,0,0,0,192,189" fill="none" stroke="currentColor"
-                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
-            </svg>
-            <span>Перезапустить</span>
-          </button>
-        </div>
 
       </section>
 
@@ -576,6 +554,28 @@
         </header>
         <div class="server-config-grid" data-server-config>
           <span class="setting-empty">Загрузка…</span>
+        </div>
+        <div class="server-controls">
+          <label class="setting-switch">
+            <input type="checkbox" data-server-autostart>
+            <span class="switch-text">Автозапуск Agent Hub
+              <span class="switch-note" data-server-autostart-note>Проверяем…</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <button type="button" class="chip-button" data-action="hub-restart">
+            <svg data-phosphor-icon="arrows-clockwise" viewBox="0 0 256 256" aria-hidden="true">
+              <polyline points="168 96 216 96 216 48" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+              <path d="M216,96,187.72,67.72A88,88,0,0,0,64,67" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
+              <polyline points="88 160 40 160 40 208" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+              <path d="M40,160l28.28,28.28A88,88,0,0,0,192,189" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
+            </svg>
+            <span>Перезапустить</span>
+          </button>
         </div>
         <div class="server-config-actions" data-server-config-actions>
           <button type="button" class="chip-button" data-server-config-save disabled>Сохранить</button>

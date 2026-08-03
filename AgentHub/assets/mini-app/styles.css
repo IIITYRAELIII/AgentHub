@@ -7973,12 +7973,12 @@ html[data-view="server"] .server-view {
   width: 1px;
 }
 
-/* Управление стоит рядом со статусом процесса — автозапуск и перезапуск
-   относятся к самому Hub, а не к его поведению. */
-.server-health-card .server-controls {
+/* Автозапуск и перезапуск лежат внизу карточки настроек, отделённые линией от
+   плиток: это тоже настройки Hub, только применяются сразу. */
+.server-card .server-controls {
   border-top: 1px solid var(--line);
-  margin-top: 1rem;
-  padding-top: 0.9rem;
+  margin-top: 0.9rem;
+  padding-top: 0.85rem;
 }
 
 .server-card .trusted-devices-card {
