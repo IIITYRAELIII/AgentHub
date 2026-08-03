@@ -2887,7 +2887,10 @@ function codexItemActivity(item, completed) {
   return null;
 }
 
-async function desktopServerSnapshot({ activeCount = taskRuns.values().length, restart = null } = {}) {
+async function desktopServerSnapshot({
+  activeCount = taskRuns.values().filter(taskRunIsActive).length,
+  restart = null,
+} = {}) {
   const restartState = restart ?? {
     pending: Boolean(restartRequest),
     waiting: restartRequest?.waitingForRuns === true,
@@ -3665,7 +3668,7 @@ async function desktopStatusDetails() {
     reasoning: CODEX_REASONING_LABELS[codexSelected ? codexReasoningEffort : claudeReasoningEffort],
     mode: CODEX_COLLABORATION_MODE_LABELS[codexSelected ? codexCollaborationMode : claudeCollaborationMode],
     limits,
-    activeCount: taskRuns.values().length,
+    activeCount: taskRuns.values().filter(taskRunIsActive).length,
     backgroundJobs: backgroundMediaJobs.size + backgroundSpeechJobs.size,
   };
 }
@@ -7487,7 +7490,11 @@ function approvalModeKeyboard() {
 // перезапуска бот подключается к тому же процессу. Ждать завершения нужно только
 // для Codex, чей App Server перезапускается вместе с ботом.
 function restartBlockingRuns() {
-  return taskRuns.values().filter((run) => !run.observer && run.provider === "codex");
+  return taskRuns.values().filter((run) => (
+    !run.observer
+    && run.provider === "codex"
+    && taskRunIsActive(run)
+  ));
 }
 
 function restartHasBlockingWork() {

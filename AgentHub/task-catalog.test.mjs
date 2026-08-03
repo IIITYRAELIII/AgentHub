@@ -58,6 +58,39 @@ test("mergeTaskCatalog ignores terminal runs when calculating activity", () => {
   assert.equal(entry.running, false);
 });
 
+test("fresh provider activity overrides a newer stale durable catalog row", () => {
+  const [entry] = mergeTaskCatalog([{
+    provider: "codex",
+    threadId: "thread-stale-running",
+    projectRoot: project.path,
+    projectName: project.name,
+    title: "Сохранённое название",
+    updatedAtMs: 2_000,
+    running: true,
+    executionOwner: TASK_EXECUTION_OWNERS.HUB,
+    turnId: "stale-turn",
+    startedAt: "2026-08-03T10:00:00.000Z",
+    lastActivityAtMs: 2_000,
+  }, {
+    provider: "codex",
+    threadId: "thread-stale-running",
+    projectRoot: project.path,
+    projectName: project.name,
+    title: "Старое имя из провайдера",
+    updatedAtMs: 1_000,
+    running: false,
+    executionOwner: null,
+    lastActivityAtMs: 1_500,
+  }]);
+
+  assert.equal(entry.title, "Сохранённое название");
+  assert.equal(entry.running, false);
+  assert.equal(entry.executionOwner, null);
+  assert.equal(entry.turnId, null);
+  assert.equal(entry.startedAt, null);
+  assert.equal(entry.lastActivityAtMs, 1_500);
+});
+
 test("pinned task titles are stable per provider and thread", () => {
   const titles = {};
   assert.equal(pinTaskTitle(titles, "codex", "thread-a", "  FB   Фаровон обмен1  "), "FB Фаровон обмен1");

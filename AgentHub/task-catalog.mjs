@@ -933,11 +933,24 @@ export function mergeTaskCatalog(entries, runs = []) {
       byTask.set(key, { ...entry });
       continue;
     }
-    if (entry.updatedAtMs > existing.updatedAtMs) {
-      byTask.set(key, { ...entry, model: entry.model ?? existing.model ?? null });
-    } else if (!existing.model && entry.model) {
-      existing.model = entry.model;
-    }
+    const merged = entry.updatedAtMs > existing.updatedAtMs
+      ? { ...entry, model: entry.model ?? existing.model ?? null }
+      : existing;
+    if (!merged.model && entry.model) merged.model = entry.model;
+
+    // Catalog entries are appended in increasing authority: the durable SQLite
+    // projection first, then a freshly discovered provider snapshot. Task
+    // metadata may still prefer the newest timestamp, but process activity must
+    // always follow the latest snapshot. Mixing these clocks made a stale
+    // persisted `running=true` survive every refresh and marked the full task
+    // catalog as active after an Agent Hub restart.
+    merged.running = entry.running === true;
+    merged.activityUnknown = entry.activityUnknown === true;
+    merged.executionOwner = merged.running ? entry.executionOwner ?? null : null;
+    merged.turnId = merged.running ? entry.turnId ?? null : null;
+    merged.startedAt = merged.running ? entry.startedAt ?? null : null;
+    if (entry.lastActivityAtMs != null) merged.lastActivityAtMs = entry.lastActivityAtMs;
+    byTask.set(key, merged);
   }
   for (const run of runs) {
     if (!run?.threadId || !taskRunIsActive(run)) continue;
