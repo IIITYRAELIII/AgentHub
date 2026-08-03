@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { copyFile, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
+import dns from "node:dns";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -261,6 +262,8 @@ import {
   ContextCompactionTracker,
   isContextCompactionItem,
 } from "./context-compaction-tracker.mjs";
+
+if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
 const config = await loadConfig();
 const serverStartedAt = new Date().toISOString();

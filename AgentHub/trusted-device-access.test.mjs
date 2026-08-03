@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { createTrustedDeviceManager, resolveTrustedDeviceUserId } from "./trusted-device-access.mjs";
+
+test("public browser pairing clears stale errors and submits a complete pasted code", () => {
+  const auth = readFileSync(new URL("./assets/mini-app/browser-device-auth.js", import.meta.url), "utf8");
+  assert.match(auth, /setStatus\(""\);/u);
+  assert.match(auth, /code\.value\.replace\(\/-\/gu, ""\)\.length === PAIRING_CODE_LENGTH/u);
+  assert.match(auth, /form\.requestSubmit\(\);/u);
+});
+
+test("Windows Hub prefers IPv4 for Worker calls when IPv6 is unavailable", () => {
+  const server = readFileSync(new URL("./agent-hub-server.mjs", import.meta.url), "utf8");
+  assert.match(server, /process\.platform === "win32"/u);
+  assert.match(server, /dns\.setDefaultResultOrder\("ipv4first"\)/u);
+});
 
 test("trusted device user resolution accepts the configured Set", () => {
   const allowed = new Set([42, 84]);

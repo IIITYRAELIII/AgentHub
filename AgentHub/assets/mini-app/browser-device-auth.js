@@ -18,6 +18,7 @@
   const DATABASE_NAME = "agent-hub-browser-device";
   const STORE_NAME = "credentials";
   const RECORD_KEY = "current";
+  const PAIRING_CODE_LENGTH = 20;
   const SESSION_REFRESH_MARGIN_MS = 60_000;
   const textEncoder = new TextEncoder();
   let accessToken = "";
@@ -25,6 +26,7 @@
   let credential = null;
   let authentication = null;
   let refreshTimer = null;
+  let autoSubmitTimer = null;
   let resolveReady;
 
   const ready = new Promise((resolve) => {
@@ -222,8 +224,8 @@
     event.preventDefault();
     const { name, code, submit } = elements();
     const deviceName = String(name?.value ?? "").trim();
-    const pairingCode = String(code?.value ?? "").trim();
-    if (!deviceName || !pairingCode) {
+    const pairingCode = String(code?.value ?? "").toUpperCase().replace(/[^A-Z2-7]/gu, "");
+    if (!deviceName || pairingCode.length !== PAIRING_CODE_LENGTH) {
       setStatus("Укажите название браузера и код сопряжения.", "error");
       return;
     }
@@ -277,10 +279,19 @@
   });
 
   async function start() {
-    const { form, code } = elements();
+    const { form, code, submit } = elements();
     form?.addEventListener("submit", pair);
     code?.addEventListener("input", () => {
       code.value = code.value.toUpperCase().replace(/[^A-Z2-7-]/gu, "").slice(0, 23);
+      setStatus("");
+      if (autoSubmitTimer != null) window.clearTimeout(autoSubmitTimer);
+      const complete = code.value.replace(/-/gu, "").length === PAIRING_CODE_LENGTH;
+      if (complete && form && !submit?.disabled) {
+        autoSubmitTimer = window.setTimeout(() => {
+          autoSubmitTimer = null;
+          if (!submit?.disabled) form.requestSubmit();
+        }, 0);
+      }
     });
     if (!window.isSecureContext || !crypto?.subtle || !window.indexedDB) {
       showPairing("Этот браузер не поддерживает безопасное хранилище ключей.");
@@ -312,6 +323,7 @@
   });
   window.addEventListener("pagehide", () => {
     if (refreshTimer != null) window.clearTimeout(refreshTimer);
+    if (autoSubmitTimer != null) window.clearTimeout(autoSubmitTimer);
   }, { once: true });
 
   void start();
