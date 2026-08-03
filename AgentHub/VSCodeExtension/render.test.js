@@ -692,7 +692,7 @@ test("mobile task list cannot widen the viewport", () => {
 test("narrow desktop measures the document viewport before host window width", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const resolver = app.match(
-    /function layoutViewportWidth\(\) \{[\s\S]*?\n\}\n\nfunction resolveSurface\(\) \{[\s\S]*?\n\}/u,
+    /function layoutViewportWidth\(\) \{[\s\S]*?\r?\n\}\r?\n\r?\nfunction resolveSurface\(\) \{[\s\S]*?\r?\n\}/u,
   )?.[0];
   assert.ok(resolver, "surface resolver is present");
   assert.doesNotMatch(resolver, /return window\.innerWidth < compactSurfaceWidth/u);
