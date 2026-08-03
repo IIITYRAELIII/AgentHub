@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import path from "node:path";
 import { open, stat } from "node:fs/promises";
 import { displayUserPrompt } from "./task-history.mjs";
+import { taskRunIsActive } from "./task-runs.mjs";
 
 export const CLAUDE_ACTIVE_FRESHNESS_MS = 30 * 60 * 1000;
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
@@ -939,7 +940,7 @@ export function mergeTaskCatalog(entries, runs = []) {
     }
   }
   for (const run of runs) {
-    if (!run?.threadId) continue;
+    if (!run?.threadId || !taskRunIsActive(run)) continue;
     const key = catalogTaskKey(run);
     const existing = byTask.get(key);
     if (existing) {

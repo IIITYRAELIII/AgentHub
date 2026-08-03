@@ -140,10 +140,12 @@ import {
   shouldDeliverObservedCompletion,
   TaskDismissalRegistry,
   TaskRunRegistry,
+  taskRunIsActive,
   taskRunKey,
   updateObservedResponse,
   updateTaskRunTitle,
 } from "./task-runs.mjs";
+import { recycleCodexCompactionTransport } from "./codex-compaction-transport.mjs";
 import {
   codexFinalTurnAnswer,
   codexTurnHasExplicitFinalAnswer,
@@ -514,6 +516,7 @@ let pendingServerConfiguration = {};
 let includeClaudeUsage = true;
 let codexRestarting = false;
 let codexTimeoutRestarting = false;
+let codexCompactionRecycleInFlight = null;
 let restartRequest = null;
 let processingUpdateId = null;
 let stateWriteQueue = Promise.resolve();
@@ -3764,7 +3767,7 @@ async function desktopCompactContext(params) {
   const target = await desktopMessageTarget(params);
   if (target.provider !== "codex") throw new Error("Свёртка контекста доступна только для Codex");
   const run = taskRuns.forTask(target);
-  if (run) throw new Error("Сначала завершите или остановите текущий ход");
+  if (taskRunIsActive(run)) throw new Error("Сначала завершите или остановите текущий ход");
   if (contextCompactions.isRunning(target.threadId)) {
     return { accepted: false, message: "Свёртка контекста уже выполняется" };
   }
@@ -4908,6 +4911,9 @@ async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton =
   if (run.provider !== "codex") {
     await startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton });
     return;
+  }
+  if (codexCompactionRecycleInFlight) {
+    await codexCompactionRecycleInFlight;
   }
   const items = typeof input === "string" ? [{ type: "text", text: input }] : input;
   run.skillsUsed = await resolvedExplicitSkillNames(input, run.projectRoot);
@@ -6955,6 +6961,56 @@ async function auditRecentCodexTerminalTurns() {
 
 const CODEX_COMPACTION_CLEANUP_RETRY_MS = 15_000;
 
+async function recycleCodexTransportForManualCompaction(threadId, rolloutPath, result) {
+  const compaction = contextCompactions.get(threadId);
+  if (
+    result?.reason !== "rollout-open"
+    || compaction?.origin !== "manual"
+    || codexCompactionRecycleInFlight
+  ) return null;
+
+  const activeRuns = taskRuns.values().filter((run) => (
+    run.provider === "codex"
+    && taskRunIsActive(run)
+    && !contextCompactions.isManualTurn(run.threadId, run.turnId)
+  ));
+  if (activeRuns.length) return null;
+
+  const catalog = await refreshTaskCatalog({ force: true });
+  const otherActiveCodexTask = catalog.some((entry) => (
+    entry.provider === "codex"
+    && entry.running
+    && String(entry.threadId) !== String(threadId)
+  ));
+  if (otherActiveCodexTask) return null;
+
+  codexCompactionRecycleInFlight = (async () => {
+    codexRestarting = true;
+    try {
+      const recycled = await recycleCodexCompactionTransport({
+        stop: stopCodexAppServerTree,
+        sanitize: () => codexRolloutContextSanitizer.runForRollout(rolloutPath),
+        start: startCodexAppServer,
+        initialize: () => initializeCodex({ attachSelectedThread: isCodex() }),
+      });
+      invalidateTaskCatalog();
+      if (recycled.error) {
+        console.error(
+          `Cannot recycle Codex app-server for manual compaction ${threadId}:`,
+          recycled.error.message,
+        );
+        queueMicrotask(() => void restartCodexAfterCrash());
+        return { ...result, applied: false, reason: "transport-recycle-failed" };
+      }
+      return recycled.result ?? result;
+    } finally {
+      codexRestarting = false;
+      codexCompactionRecycleInFlight = null;
+    }
+  })();
+  return codexCompactionRecycleInFlight;
+}
+
 function beginCodexCompactionCleanup(threadId, details = {}) {
   const key = String(threadId ?? "").trim();
   if (!key) return;
@@ -6997,9 +7053,16 @@ async function runCodexCompactionCleanup(threadId, state) {
       console.warn(`Cannot resolve compacted Codex rollout ${threadId}: ${error.message}`);
     }
   }
-  const result = rolloutPath
+  let result = rolloutPath
     ? await codexRolloutContextSanitizer.runForRollout(rolloutPath)
     : { applied: false, reason: "rollout-not-found" };
+  if (rolloutPath) {
+    result = await recycleCodexTransportForManualCompaction(
+      threadId,
+      rolloutPath,
+      result,
+    ) ?? result;
+  }
   if (result.applied || result.reason === "below-threshold") {
     contextCompactions.complete(threadId, {
       turnId: state.turnId,

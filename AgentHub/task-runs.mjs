@@ -69,6 +69,11 @@ export function createObservedTaskRun(value, snapshot = {}) {
   return run;
 }
 
+export function taskRunIsActive(run) {
+  const status = String(run?.status ?? "running").trim().toLowerCase();
+  return status === "running" || status === "finishing";
+}
+
 export class TaskRunRegistry {
   #byId = new Map();
   #byTask = new Map();

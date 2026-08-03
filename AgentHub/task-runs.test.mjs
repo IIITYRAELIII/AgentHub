@@ -9,10 +9,18 @@ import {
   serializableTaskRun,
   shouldAutoObserveTask,
   shouldDeliverObservedCompletion,
+  taskRunIsActive,
   taskRunKey,
   updateObservedResponse,
   updateTaskRunTitle,
 } from "./task-runs.mjs";
+
+test("taskRunIsActive excludes terminal runs kept for final delivery", () => {
+  assert.equal(taskRunIsActive({ status: "running" }), true);
+  assert.equal(taskRunIsActive({ status: "finishing" }), true);
+  assert.equal(taskRunIsActive({ status: "completed" }), false);
+  assert.equal(taskRunIsActive({ status: "failed" }), false);
+});
 
 test("task run factories initialize managed and observed lifecycle state", () => {
   const managed = createManagedTaskRun({ provider: "claude", threadId: "session-1" });

@@ -354,6 +354,17 @@ test("desktopTaskSnapshot exposes catalog start time without an observer run", (
   assert.equal(desktopTaskSnapshot(entry).startedAt, "2026-07-30T09:55:00.000Z");
 });
 
+test("desktopTaskSnapshot does not expose a retained completed run as active", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture();
+  state.run.status = "completed";
+  entry.running = false;
+
+  const snapshot = desktopTaskSnapshot(entry);
+
+  assert.equal(snapshot.running, false);
+  assert.equal(snapshot.run.status, "completed");
+});
+
 test("desktopTaskSnapshot keeps a manual context compaction out of the live turn", () => {
   const { desktopTaskSnapshot, entry, state } = fixture();
   state.compaction = {

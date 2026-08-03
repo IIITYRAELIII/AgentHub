@@ -38,6 +38,26 @@ import {
 
 const project = { name: "Основной", path: "C:\\Projects\\Main" };
 
+test("mergeTaskCatalog ignores terminal runs when calculating activity", () => {
+  const [entry] = mergeTaskCatalog([{
+    provider: "codex",
+    threadId: "thread-completed",
+    projectRoot: project.path,
+    projectName: project.name,
+    title: "Завершённая задача",
+    updatedAtMs: 1,
+    running: false,
+  }], [{
+    provider: "codex",
+    threadId: "thread-completed",
+    projectRoot: project.path,
+    status: "completed",
+    taskTitle: "Завершённая задача",
+  }]);
+
+  assert.equal(entry.running, false);
+});
+
 test("pinned task titles are stable per provider and thread", () => {
   const titles = {};
   assert.equal(pinTaskTitle(titles, "codex", "thread-a", "  FB   Фаровон обмен1  "), "FB Фаровон обмен1");

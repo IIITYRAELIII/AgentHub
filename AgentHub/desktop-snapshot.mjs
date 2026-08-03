@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { taskRunIsActive } from "./task-runs.mjs";
 
 export function createDesktopSnapshotFactory({
   clock,
@@ -171,7 +172,9 @@ export function createDesktopSnapshotFactory({
       title: entry.title,
       model: visibleRun?.model ?? entry.model ?? null,
       selected: tasks.entryIsSelected(entry, selection.selectedTask()),
-      running: manualCompactionObserver ? false : Boolean(visibleRun || entry.running),
+      running: manualCompactionObserver
+        ? false
+        : Boolean(taskRunIsActive(visibleRun) || entry.running),
       activityUnknown: entry.activityUnknown === true,
       executionOwner: visibleRun?.executionOwner ?? entry.executionOwner ?? null,
       runtime: visibleRun?.appServer ?? (entry.executionOwner
