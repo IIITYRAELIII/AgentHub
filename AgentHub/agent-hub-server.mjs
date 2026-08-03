@@ -4704,11 +4704,11 @@ async function taskExternalActivity(target) {
       const activity = await readCodexRolloutActivity(rolloutPath);
       const activeTurnId = selectExactActiveCodexTurnId(activity);
       return resolveCodexTaskActivity({ threadStatus, activity }, {
-          turnId: activeTurnId,
-          rolloutPath,
-          agentHubPid: codexTransport.pid,
-          capturedOwner: capturedCodexExecutionOwner(target.threadId, activeTurnId),
-        });
+        turnId: activeTurnId,
+        rolloutPath,
+        agentHubPid: codexTransport.pid,
+        capturedOwner: capturedCodexExecutionOwner(target.threadId, activeTurnId),
+      });
     }
     const snapshot = await readClaudeTaskSnapshot(target.threadId);
     return {
