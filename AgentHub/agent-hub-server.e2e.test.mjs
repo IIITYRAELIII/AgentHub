@@ -771,7 +771,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushMessage("/cancel");
   await telegram.waitForText("Запрошена остановка этой задачи", { after: mark });
   const restoredFinal = await telegram.waitForText("Ход остановлен тестом", { after: mark });
-  assert.match(restoredFinal.body.text, /📊 За задачу: 0 cr/);
+  assert.match(restoredFinal.body.text, /Кредиты за задачу: нет тарифа для gpt-e2e/);
   assert.match(restoredFinal.body.text, /^✅ Codex · /);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 1,
     "cancelling the selected parallel task only");
