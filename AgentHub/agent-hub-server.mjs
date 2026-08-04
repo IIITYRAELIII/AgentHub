@@ -8913,6 +8913,14 @@ desktopControlServer = new DesktopControlServer({
     : undefined,
 });
 await desktopControlServer.start();
+if (miniAppServer) {
+  try {
+    const address = await startMiniApp();
+    console.log(`Mini App ready at ${address.url}`);
+  } catch (error) {
+    console.error("Cannot start Mini App:", error.message);
+  }
+}
 await runCodexRolloutContextSanitizer({ reschedule: false });
 // Desktop control is deliberately published before provider recovery.  A
 // process exit while `initialize` is still pending must therefore leave the
@@ -8936,14 +8944,6 @@ if (config.telegramEnabled) {
     console.error("Cannot recover background jobs:", error.message);
     await sendMessage(`⚠️ Не удалось восстановить фоновые медиа-задачи: ${error.message}`).catch(() => {});
   });
-}
-if (miniAppServer) {
-  try {
-    const address = await startMiniApp();
-    console.log(`Mini App ready at ${address.url}`);
-  } catch (error) {
-    console.error("Cannot start Mini App:", error.message);
-  }
 }
 startRuntimeTimers();
 if (config.telegramEnabled) {
