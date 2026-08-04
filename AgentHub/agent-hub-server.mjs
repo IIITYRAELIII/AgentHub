@@ -286,6 +286,8 @@ import {
   ContextCompactionTracker,
   isContextCompactionItem,
 } from "./context-compaction-tracker.mjs";
+import { RunProgressPresentation } from "./run-progress-presentation.mjs";
+import { AgentHubStartupCoordinator } from "./agent-hub-startup-coordinator.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -1558,7 +1560,7 @@ async function sendRunLongMessage(run, text, {
   deliveryGroupId = randomUUID(),
   replaceProgressMessageIds = [],
 } = {}) {
-  const value = `${runProgressHeading(run, true)}\n\n${String(text)}`;
+  const value = `${runProgressPresentation.heading(run, true)}\n\n${String(text)}`;
   const speechId = mediaController.rememberSpeechText(speechText, forceSpeechButton);
   const diffCallbackData = taskViewCallbackData({
     action: "diff",
@@ -4071,9 +4073,27 @@ async function sendCollaborationModePicker() {
   });
 }
 
+const runProgressPresentation = new RunProgressPresentation({
+  telegramLimit: TELEGRAM_LIMIT,
+  claudeModelLabels: CLAUDE_MODEL_LABELS,
+  codexReasoningLabels: CODEX_REASONING_LABELS,
+  codexModelLabel,
+  taskExecutionRuntimeLabel,
+  formatProgressHeading,
+  formatProgressHeartbeat,
+  showProject: () => config.showProjectButton,
+  taskTitle: runTaskTitle,
+  projectName: (run) => runProject(run).name,
+  currentCodexModel: () => codexModel,
+  currentClaudeModel: () => claudeModel,
+  currentCodexReasoning: () => codexReasoningEffort,
+  currentClaudeReasoning: () => claudeReasoningEffort,
+  taskExecutionOwners: TASK_EXECUTION_OWNERS,
+});
+
 const taskProgress = new TaskProgressController({
   isCurrentRun: (run) => taskRuns.forTask(run) === run,
-  render: renderProgress,
+  render: (run, done) => runProgressPresentation.render(run, done),
   sendInitial: (run, text) => sendReliableRunMessage(
     run,
     text,
@@ -4237,54 +4257,6 @@ function noteRunActivity(run, value = Date.now()) {
 
 function progressHeartbeatState(run, now = Date.now()) {
   return taskProgress.heartbeatState(run, now, PROGRESS_STALLED_AFTER_MS);
-}
-
-function renderProgress(run, done = false) {
-  const heading = runProgressHeading(run, done);
-  const parts = [heading, run?.progressStage || "Выполняется…"];
-  if (done) return parts.join("\n\n").slice(0, TELEGRAM_LIMIT);
-  if (Number(run?.activeTurnCount) > 1) {
-    parts.push(`🔀 Активных ходов в этой задаче: ${Number(run.activeTurnCount)}`);
-  }
-  const heartbeat = formatProgressHeartbeat(run);
-  if (heartbeat) parts.push(heartbeat);
-  if (run?.progressReasoning.trim()) {
-    const reasoning = run.progressReasoning.trim();
-    parts.push(`💭 ${reasoning.length > 900 ? `…${reasoning.slice(-900)}` : reasoning}`);
-  }
-  if (run?.responseText.trim()) {
-    const answer = run.responseText.trim();
-    parts.push(`✍️ Ответ формируется:\n${answer.length > 2400 ? `…${answer.slice(-2400)}` : answer}`);
-  }
-  return parts.join("\n\n").slice(0, TELEGRAM_LIMIT);
-}
-
-function runProgressHeading(run, done = false) {
-  const fallbackModel = run?.provider === "claude"
-    ? CLAUDE_MODEL_LABELS[claudeModel]
-    : codexModelLabel(codexModel);
-  const fallbackReasoning = CODEX_REASONING_LABELS[
-    run?.provider === "claude" ? claudeReasoningEffort : codexReasoningEffort
-  ];
-  return formatProgressHeading({
-    done,
-    provider: run?.provider === "claude" ? "Claude Code" : "Codex",
-    model: run?.observer ? run.model || null : run?.model ?? fallbackModel,
-    reasoning: run?.observer
-      ? run.reasoning || "Подключённый ход"
-      : run?.reasoning ?? fallbackReasoning,
-    runtime: run?.appServer ?? (
-      run?.provider === "codex"
-        ? taskExecutionRuntimeLabel(run?.executionOwner ?? (
-          run?.observer ? TASK_EXECUTION_OWNERS.VSCODE : TASK_EXECUTION_OWNERS.HUB
-        ))
-        : run?.observer
-          ? "Внешний Claude CLI"
-          : taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.HUB)
-    ),
-    task: runTaskTitle(run),
-    project: config.showProjectButton ? runProject(run).name : null,
-  });
 }
 
 function scheduleProgressUpdate(run, delayMs = 1500) {
@@ -6489,77 +6461,44 @@ const runtimeLifecycle = new RuntimeLifecycleController({
 
 let agentHubStartPromise = null;
 
+const startupCoordinator = new AgentHubStartupCoordinator({
+  telegramEnabled: config.telegramEnabled,
+  // The control endpoint is intentionally available before provider recovery,
+  // so clients can show cached state while providers are still reconnecting.
+  startControlPlane: async () => {
+    desktopControlServer = new DesktopControlServer({
+      runtimeRoot: runtimeCommandRoot,
+      handler: handleDesktopControl,
+      protectSecret: process.env.AGENT_HUB_DISABLE_SECRET_ACL === "1"
+        ? async () => {}
+        : undefined,
+    });
+    await desktopControlServer.start();
+    await runtimeCommandServer.start();
+  },
+  startMiniApp: () => miniAppServer ? startMiniApp() : null,
+  sanitizeRollouts: () => runCodexRolloutContextSanitizer({ reschedule: false }),
+  initializeProvider,
+  providerIsRunning: () => codexTransport.running,
+  backfillProviderMetadata: () => codexProviderTasks.discoverTasks()
+    .then((threads) => backfillWorkLogPricingMetadata(threads)),
+  recoverRuns: recoverActiveRuns,
+  retryNotifications: retryPendingTurnEndNotifications,
+  restoreBackgroundJobs: () => backgroundJobs.restore(),
+  startTimers: startRuntimeTimers,
+  registerTelegramCommands: () => telegram("setMyCommands", { commands: BOT_COMMANDS }),
+  hasPendingRestart: () => Boolean(restartRequest),
+  finalizeRestart: finalizeRestartMessage,
+  markReady: () => instanceGuard.markReady(),
+  readyMessage: () => (
+    `Agent Hub ready; components: ${Object.entries(config.components).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "core"}; provider: ${providerTitle()}; project: ${activeProjectRoot}`
+  ),
+  pollTelegram,
+  warnUser: (message) => sendMessage(message).catch(() => {}),
+});
+
 async function startAgentHubOnce() {
-  // The control endpoint is intentionally available before provider recovery.
-  // Desktop clients can then show the cached task list and retry state while a
-  // slow sanitizer or temporarily unhealthy Codex App Server is recovering.
-  desktopControlServer = new DesktopControlServer({
-    runtimeRoot: runtimeCommandRoot,
-    handler: handleDesktopControl,
-    protectSecret: process.env.AGENT_HUB_DISABLE_SECRET_ACL === "1"
-      ? async () => {}
-      : undefined,
-  });
-  await desktopControlServer.start();
-  await runtimeCommandServer.start();
-  if (miniAppServer) {
-    try {
-      const address = await startMiniApp();
-      console.log(`Mini App ready at ${address.url}`);
-    } catch (error) {
-      console.error("Cannot start Mini App:", error.message);
-    }
-  }
-  await runCodexRolloutContextSanitizer({ reschedule: false });
-  // Desktop control is deliberately published before provider recovery.  A
-  // process exit while `initialize` is still pending must therefore leave the
-  // Hub alive: the transport exit handler schedules recovery and the client can
-  // retry through the already available local pipe.
-  await initializeProvider().catch((error) => {
-    console.error("Cannot initialize provider during startup:", error.message);
-  });
-  if (codexTransport.running) {
-    await codexProviderTasks.discoverTasks()
-      .then((threads) => backfillWorkLogPricingMetadata(threads))
-      .catch((error) => console.error("Cannot list Codex threads for credit backfill:", error.message));
-  }
-  if (config.telegramEnabled) {
-    await recoverActiveRuns().catch(async (error) => {
-      console.error("Cannot recover active tasks:", error.message);
-      await sendMessage(`⚠️ Не удалось восстановить активные задачи: ${error.message}`).catch(() => {});
-    });
-    await retryPendingTurnEndNotifications();
-    await backgroundJobs.restore().catch(async (error) => {
-      console.error("Cannot recover background jobs:", error.message);
-      await sendMessage(`⚠️ Не удалось восстановить фоновые медиа-задачи: ${error.message}`).catch(() => {});
-    });
-  }
-  startRuntimeTimers();
-  if (config.telegramEnabled) {
-    try {
-      await telegram("setMyCommands", {
-        commands: BOT_COMMANDS,
-      });
-    } catch (error) {
-      console.error("Cannot register Telegram commands:", error.message);
-    }
-  }
-  let restartFinalized = false;
-  if (restartRequest) {
-    restartFinalized = await finalizeRestartMessage().catch((error) => {
-      console.error("Cannot finalize bot restart:", error.message);
-      return false;
-    });
-  }
-  await instanceGuard.markReady();
-  console.log(
-    `Agent Hub ready; components: ${Object.entries(config.components).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "core"}; provider: ${providerTitle()}; project: ${activeProjectRoot}`,
-  );
-  if (config.telegramEnabled) {
-    await pollTelegram();
-  } else {
-    await new Promise(() => {});
-  }
+  return startupCoordinator.start();
 }
 
 export function startAgentHub() {

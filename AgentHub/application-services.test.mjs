@@ -21,4 +21,5 @@ import "./claude-event-service.test.mjs";
 import "./provider-catalog-services.test.mjs";
 import "./desktop-deferred-input-service.test.mjs";
 import "./desktop-settings-service.test.mjs";
-
+import "./run-progress-presentation.test.mjs";
+import "./agent-hub-startup-coordinator.test.mjs";
