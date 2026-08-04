@@ -875,6 +875,7 @@ test("message attachments keep timestamps, thumbnails and an explicit open actio
   assert.match(app, /\(!source && !item\.id\)/u);
   assert.match(client, /control\("open-attachment", \{ id \}\)/u);
   assert.match(client, /agentHub\.openAttachmentViewer/u);
+  assert.match(client, /value\.url = `\/api\/message-attachment\/\$\{encodeURIComponent\(id\)\}`/u);
   assert.doesNotMatch(client, /window\.open\(url, "_blank"/u);
 });
 

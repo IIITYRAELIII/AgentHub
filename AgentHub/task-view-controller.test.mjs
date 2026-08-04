@@ -227,6 +227,87 @@ test("rollout fallback keeps response annotations structured", () => {
   assert.doesNotMatch(exchange.prompt, /response-annotations|My request for Codex/iu);
 });
 
+test("official Codex history keeps multiple rollout images on one final assistant message", async () => {
+  const turnId = "019fc8f4-258f-72d3-9f37-02cb9a797790";
+  let recorded = null;
+  const view = controller({
+    ensureCodex: async () => {},
+    readCodexThread: async () => ({ thread: {
+      path: "C:/rollout.jsonl",
+      turns: [{
+        id: turnId,
+        status: "completed",
+        items: [
+          { type: "userMessage", content: [{ type: "text", text: "Покажи варианты" }] },
+          { type: "agentMessage", text: "Три варианта показаны", phase: "final_answer" },
+        ],
+      }],
+    } }),
+    readCodexRolloutActivity: async () => ({
+      activeTurnIds: [],
+      userMessages: { [turnId]: [{ text: "Покажи варианты" }] },
+      finalMessages: { [turnId]: "Три варианта показаны" },
+      generatedImageSources: {
+        [turnId]: [
+          { type: "generated-path", value: "C:/generated/one.png" },
+          { type: "generated-path", value: "C:/generated/two.png" },
+          { type: "view-path", value: "C:/viewed/three.png" },
+        ],
+      },
+    }),
+    readCodexSnapshot: async () => ({ active: false }),
+    attachmentImporter: async (sources) => sources.map((source, index) => ({
+      id: `assistant-${index + 1}.png`,
+      name: "Изображение",
+      type: "image/png",
+    })),
+    taskSyncStore: {
+      history: () => [{
+        id: turnId,
+        prompt: "Покажи варианты",
+        answer: "Промежуточный ответ",
+        active: true,
+        completed: false,
+        messages: [
+          { itemId: `${turnId}:user`, role: "user", text: "Покажи варианты" },
+          { itemId: `${turnId}:agent:live`, role: "agent", text: "Промежуточный ответ" },
+        ],
+      }],
+      recordHistory: (_task, history) => { recorded = structuredClone(history); },
+      save: async () => {},
+    },
+  });
+
+  const result = await view.readHistory({
+    provider: "codex",
+    threadId: "thread-images",
+    projectRoot: "C:/repo",
+    title: "Images",
+    chatId: 1,
+  });
+  const agents = result.history[0].messages.filter((message) => message.role === "agent");
+  assert.equal(agents.length, 1);
+  assert.equal(agents[0].text, "Три варианта показаны");
+  assert.deepEqual(agents[0].attachments.map((attachment) => attachment.id), [
+    "assistant-1.png",
+    "assistant-2.png",
+    "assistant-3.png",
+  ]);
+  assert.equal("attachmentSources" in agents[0], false);
+  assert.deepEqual(recorded, result.history);
+});
+
+test("rollout history keeps an image-only assistant result visible", () => {
+  const [exchange] = codexRolloutHistory({
+    generatedImageSources: {
+      "turn-image-only": [{ type: "generated-path", value: "C:/generated/image.png" }],
+    },
+  });
+  assert.equal(exchange.messages.at(-1).role, "agent");
+  assert.equal(exchange.messages.at(-1).text, "Изображение");
+  assert.equal(exchange.messages.at(-1).attachmentSources.length, 1);
+});
+
 test("rollout enriches an already completed cached turn with response annotations", async () => {
   const turnId = "019fc8c5-ed6c-72d3-9f37-02cb9a797790";
   const prompt = [

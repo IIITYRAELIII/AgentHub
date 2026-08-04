@@ -204,6 +204,46 @@ function decodedJsonString(value) {
   }
 }
 
+function viewImagePaths(entry) {
+  const payload = entry?.payload ?? {};
+  if (
+    entry?.type !== "response_item"
+    || !["custom_tool_call", "customToolCall"].includes(String(payload.type ?? ""))
+    || String(payload.name ?? "") !== "exec"
+  ) return [];
+  const input = String(payload.input ?? "");
+  const paths = [];
+  const pattern = /tools\.view_image\s*\(\s*\{[\s\S]{0,2000}?\bpath\s*:\s*("(?:\\.|[^"\\])*")/gu;
+  for (const match of input.matchAll(pattern)) {
+    try {
+      const value = String(JSON.parse(match[1]) ?? "").trim();
+      if (value) paths.push(value);
+    } catch {
+      // Tool input is data, not executable JavaScript.
+    }
+  }
+  return [...new Set(paths)];
+}
+
+function responseItemImageCount(entry) {
+  const payload = entry?.payload ?? {};
+  if (entry?.type !== "response_item" || ![
+    "custom_tool_call_output",
+    "customToolCallOutput",
+    "function_call_output",
+    "functionCallOutput",
+  ].includes(String(payload.type ?? ""))) return 0;
+  const blocks = Array.isArray(payload.output)
+    ? payload.output
+    : Array.isArray(payload.content)
+      ? payload.content
+      : [];
+  return blocks.filter((block) => (
+    ["image", "input_image", "output_image"].includes(String(block?.type ?? ""))
+      && String(block?.image_url ?? block?.url ?? "").startsWith("data:image/")
+  )).length;
+}
+
 function generatedImagePaths(entry) {
   const payload = entry?.payload ?? {};
   if (entry?.type === "event_msg" && payload.type === "image_generation_end") {
@@ -232,12 +272,16 @@ function generatedImagePaths(entry) {
   return [...new Set(paths)];
 }
 
-function rememberCodexGeneratedImagePaths(metadata, turnId, paths) {
+function rememberCodexImagePaths(metadata, turnId, paths, type = "generated-path") {
   if (!turnId || !paths.length) return;
   const current = metadata.generatedImageSources.get(turnId) ?? [];
-  const known = new Set(current.map((item) => item.value));
+  const known = new Set(current.map((item) => `${item.type}:${item.value}`));
   for (const value of paths) {
-    if (!known.has(value)) current.push({ type: "generated-path", value });
+    const key = `${type}:${value}`;
+    if (!known.has(key)) {
+      current.push({ type, value });
+      known.add(key);
+    }
   }
   metadata.generatedImageSources.set(turnId, current.slice(-8));
   while (metadata.generatedImageSources.size > 8) {
@@ -246,19 +290,59 @@ function rememberCodexGeneratedImagePaths(metadata, turnId, paths) {
 }
 
 function rememberCodexGeneratedImages(metadata, turnId, entry) {
-  rememberCodexGeneratedImagePaths(metadata, turnId, generatedImagePaths(entry));
+  rememberCodexImagePaths(metadata, turnId, generatedImagePaths(entry));
+}
+
+function rememberPendingViewImageCall(metadata, turnId, entry) {
+  const callId = String(entry?.payload?.call_id ?? "").trim();
+  const paths = viewImagePaths(entry);
+  if (!callId || !turnId || !paths.length) return;
+  metadata.pendingViewImageCalls.set(callId, { turnId, paths });
+  while (metadata.pendingViewImageCalls.size > 32) {
+    metadata.pendingViewImageCalls.delete(metadata.pendingViewImageCalls.keys().next().value);
+  }
+}
+
+function completePendingViewImageCall(metadata, turnId, entry) {
+  if (entry?.type !== "response_item" || ![
+    "custom_tool_call_output",
+    "customToolCallOutput",
+    "function_call_output",
+    "functionCallOutput",
+  ].includes(String(entry?.payload?.type ?? ""))) return;
+  const callId = String(entry?.payload?.call_id ?? "").trim();
+  if (!callId) return;
+  const pending = metadata.pendingViewImageCalls.get(callId);
+  if (!pending) return;
+  if (responseItemImageCount(entry) > 0) {
+    rememberCodexImagePaths(metadata, turnId || pending.turnId, pending.paths, "view-path");
+  }
+  metadata.pendingViewImageCalls.delete(callId);
 }
 
 function observeOversizedCodexLine(metadata, activeTurnIds, { head = "", tail = "" } = {}) {
   const sample = `${head}\n${tail}`;
-  if (!/"type"\s*:\s*"image_generation_end"/u.test(sample)) return;
-  const pathMatch = /"saved_path"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample);
-  const savedPath = decodedJsonString(pathMatch?.[1]);
-  if (!savedPath) return;
-  const turnMatch = /"turn_id"\s*:\s*"([^"\\]+)"/u.exec(sample);
-  const turnId = String(turnMatch?.[1] ?? "").trim()
-    || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
-  rememberCodexGeneratedImagePaths(metadata, turnId, [savedPath]);
+  if (/"type"\s*:\s*"image_generation_end"/u.test(sample)) {
+    const pathMatch = /"saved_path"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample);
+    const savedPath = decodedJsonString(pathMatch?.[1]);
+    const turnMatch = /"turn_id"\s*:\s*"([^"\\]+)"/u.exec(sample);
+    const turnId = String(turnMatch?.[1] ?? "").trim()
+      || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
+    if (savedPath) rememberCodexImagePaths(metadata, turnId, [savedPath]);
+  }
+  if (
+    /"type"\s*:\s*"(?:custom_tool_call_output|customToolCallOutput|function_call_output|functionCallOutput)"/u.test(sample)
+    && /"type"\s*:\s*"(?:input_image|output_image|image)"/u.test(sample)
+  ) {
+    const callId = decodedJsonString(/"call_id"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample)?.[1]);
+    const pending = metadata.pendingViewImageCalls.get(callId);
+    if (pending) {
+      const turnId = decodedJsonString(/"turn_id"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample)?.[1])
+        || pending.turnId;
+      rememberCodexImagePaths(metadata, turnId, pending.paths, "view-path");
+      metadata.pendingViewImageCalls.delete(callId);
+    }
+  }
 }
 
 function rememberPendingCodexUserMessage(metadata, entry, provisionalTurnId = "") {
@@ -337,6 +421,8 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
     || (entry?.type === "event_msg" && entry.payload?.type === "image_generation_end"
       && activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
   if (generatedImageTurnId) rememberCodexGeneratedImages(metadata, generatedImageTurnId, entry);
+  if (turnId) rememberPendingViewImageCall(metadata, turnId, entry);
+  completePendingViewImageCall(metadata, turnId, entry);
   const responseItemUserContent = entry?.type === "response_item"
     && entry.payload?.type === "message"
     && entry.payload?.role === "user"
@@ -451,6 +537,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     finalMessages: new Map(),
     userMessages: new Map(),
     generatedImageSources: new Map(),
+    pendingViewImageCalls: new Map(),
     pendingUserMessages: [],
     unscopedLatestMessage: "",
     startedAtMsByTurnId: new Map(),
@@ -598,6 +685,7 @@ export async function readCodexRolloutActivity(
     finalMessages: new Map(appendOnly ? cached.finalMessages ?? [] : []),
     userMessages: new Map(appendOnly ? cached.userMessages ?? [] : []),
     generatedImageSources: new Map(appendOnly ? cached.generatedImageSources ?? [] : []),
+    pendingViewImageCalls: new Map(appendOnly ? cached.pendingViewImageCalls ?? [] : []),
     pendingUserMessages: appendOnly
       ? (cached.pendingUserMessages ?? []).map((message) => ({ ...message }))
       : [],
@@ -696,6 +784,7 @@ export async function readCodexRolloutActivity(
     finalMessages: [...metadata.finalMessages],
     userMessages: [...metadata.userMessages],
     generatedImageSources: [...metadata.generatedImageSources],
+    pendingViewImageCalls: [...metadata.pendingViewImageCalls],
     pendingUserMessages: metadata.pendingUserMessages.map((message) => ({ ...message })),
     unscopedLatestMessage: metadata.unscopedLatestMessage,
     discardUntilNewline,

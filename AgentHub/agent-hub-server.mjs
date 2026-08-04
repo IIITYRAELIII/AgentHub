@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { copyFile, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import dns from "node:dns";
 import os from "node:os";
@@ -13,6 +13,7 @@ import {
   pathInsideOrSame,
   samePath,
 } from "./config.mjs";
+import { createCodexAssistantAttachmentImporter } from "./codex-assistant-attachments.mjs";
 import {
   buildClaudeArgs,
   buildClaudePrompt,
@@ -3887,66 +3888,21 @@ function trustedDeviceUserId(context) {
   return resolveTrustedDeviceUserId(config.allowedUserIds, context, localAndroidUserId);
 }
 
+let codexDesktopAttachmentImporter = null;
+
 async function importCodexDesktopAttachments(values) {
-  const temporaryRoot = path.resolve(os.tmpdir());
-  const generatedImageRoot = path.resolve(os.homedir(), ".codex", "generated_images");
-  const attachmentRoot = path.join(runtimeCommandRoot, "DesktopApp", "attachments");
-  const imported = [];
-  await mkdir(attachmentRoot, { recursive: true });
-  for (const item of Array.isArray(values) ? values.slice(0, 8) : []) {
-    if (item?.type === "data") {
-      const match = /^data:(image\/(?:png|jpeg|webp|gif|bmp));base64,([a-z0-9+/]+={0,2})$/iu
-        .exec(String(item.value ?? ""));
-      if (!match) continue;
-      const bytes = Buffer.from(match[2], "base64");
-      if (bytes.length <= 0 || bytes.length > 20 * 1024 * 1024) continue;
-      const extension = match[1].toLowerCase() === "image/jpeg"
-        ? ".jpg"
-        : `.${match[1].slice("image/".length).toLowerCase()}`;
-      const name = `codex-inline-${createHash("sha256").update(bytes).digest("hex")}${extension}`;
-      const target = path.join(attachmentRoot, name);
-      try {
-        await stat(target);
-      } catch {
-        await writeFile(target, bytes, { flag: "wx" }).catch((error) => {
-          if (error?.code !== "EEXIST") throw error;
-        });
-      }
-      imported.push(...desktopAttachmentDescriptors([target]));
-      continue;
-    }
-    const generated = item?.type === "generated-path";
-    if (!generated && item?.type !== "path") continue;
-    const source = path.resolve(String(item.value ?? ""));
-    const sourceName = path.basename(source);
-    if (generated) {
-      if (!pathInsideOrSame(source, generatedImageRoot)) continue;
-      if (!/^[^\\/:*?"<>|]+\.(?:png|jpe?g|webp|gif|bmp)$/iu.test(sourceName)) continue;
-    } else {
-      if (!pathInsideOrSame(source, temporaryRoot)) continue;
-      if (!/^codex-clipboard-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpe?g|webp|gif|bmp)$/iu.test(sourceName)) continue;
-    }
-    let sourceInfo;
-    try {
-      sourceInfo = await stat(source);
-    } catch {
-      continue;
-    }
-    if (!sourceInfo.isFile() || sourceInfo.size <= 0 || sourceInfo.size > 20 * 1024 * 1024) continue;
-    const name = generated
-      ? `codex-generated-${createHash("sha256").update(source).digest("hex")}${path.extname(sourceName).toLowerCase()}`
-      : sourceName;
-    const target = path.join(attachmentRoot, name);
-    let targetInfo = null;
-    try {
-      targetInfo = await stat(target);
-    } catch {
-      // The first history read imports the Desktop screenshot.
-    }
-    if (!targetInfo?.isFile() || targetInfo.size !== sourceInfo.size) await copyFile(source, target);
-    imported.push(...desktopAttachmentDescriptors([target]));
-  }
-  return imported;
+  codexDesktopAttachmentImporter ??= createCodexAssistantAttachmentImporter({
+    temporaryRoot: os.tmpdir(),
+    generatedImageRoot: path.resolve(os.homedir(), ".codex", "generated_images"),
+    attachmentRoot: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
+    viewImageRoots: [
+      os.homedir(),
+      runtimeCommandRoot,
+      config.projectRoot,
+      ...(config.projects ?? []).map((project) => project.path),
+    ],
+  });
+  return codexDesktopAttachmentImporter(values);
 }
 
 async function desktopAttachmentPathById(value) {
@@ -6796,6 +6752,7 @@ const taskViewController = new TaskViewController({
   readCodexThread,
   readCodexSnapshot: readCodexTaskSnapshot,
   readClaudeSnapshot: readClaudeTaskSnapshot,
+  attachmentImporter: importCodexDesktopAttachments,
   taskSyncStore,
   taskRuns,
   deleteTaskMessages: deleteTaskTelegramMessages,

@@ -209,6 +209,14 @@ function deliveryPatch(stateName) {
 
 function attachmentView(attachment) {
   const value = { ...attachment };
+  const id = String(value.id ?? "").trim();
+  const localSurface = !vscode
+    && !telegramInitData
+    && !window.AgentHubAndroid
+    && !window.AgentHubBrowserDevice;
+  if (localSurface && id && !value.missing && !String(value.url ?? "").trim()) {
+    value.url = `/api/message-attachment/${encodeURIComponent(id)}`;
+  }
   return value;
 }
 

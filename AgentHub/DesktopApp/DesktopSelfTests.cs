@@ -19,6 +19,9 @@ namespace AgentHubDesktop
             WorkspaceFileLinkAcceptsCanonicalTarget();
             WorkspaceFileLinkRejectsWebTarget();
             UserMessageDisclosureRequiresRealOverflow();
+            AssistantAttachmentsAreCollectedAndDeduplicated();
+            AssistantAttachmentPathIsConfinedToPrivateRoot();
+            AttachmentHistorySignatureChangesAfterHydration();
         }
 
         private static void StableMessageIdentitySurvivesRetry()
@@ -129,6 +132,73 @@ namespace AgentHubDesktop
             Require(
                 DesktopUserMessageDisclosure.HasOverflow(DesktopUserMessageDisclosure.CollapseHeight + 0.1),
                 "message disclosure missed real overflow");
+        }
+
+        private static void AssistantAttachmentsAreCollectedAndDeduplicated()
+        {
+            var shared = new Dictionary<string, object> { { "id", "abc.png" } };
+            var exchange = new Dictionary<string, object>
+            {
+                { "messages", new object[]
+                    {
+                        new Dictionary<string, object>
+                        {
+                            { "role", "user" },
+                            { "attachments", new object[] { new Dictionary<string, object> { { "id", "user.png" } } } }
+                        },
+                        new Dictionary<string, object>
+                        {
+                            { "role", "agent" },
+                            { "attachments", new object[] { shared, shared, new Dictionary<string, object> { { "id", "second.jpg" } } } }
+                        }
+                    }
+                }
+            };
+            var values = DesktopAttachmentPresentation.AssistantAttachments(exchange);
+            Require(values.Count == 2, "assistant image attachments were not deduplicated");
+            Require(AgentHubClient.Text(values[0], "id") == "abc.png", "assistant image order changed");
+        }
+
+        private static void AssistantAttachmentPathIsConfinedToPrivateRoot()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "agent-hub-attachment-self-test-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var file = Path.Combine(root, "safe.png");
+                File.WriteAllBytes(file, new byte[] { 1, 2, 3 });
+                Require(
+                    DesktopAttachmentPresentation.ResolvePath(root, new Dictionary<string, object> { { "id", "safe.png" } }) == file,
+                    "private attachment path was rejected");
+                Require(
+                    DesktopAttachmentPresentation.ResolvePath(root, new Dictionary<string, object> { { "id", "../outside.png" } }) == null,
+                    "attachment path escaped the private root");
+                Require(
+                    DesktopAttachmentPresentation.ResolvePath(root, new Dictionary<string, object> { { "id", "missing.png" } }) == null,
+                    "missing attachment path was accepted");
+            }
+            finally
+            {
+                Directory.Delete(root, true);
+            }
+        }
+
+        private static void AttachmentHistorySignatureChangesAfterHydration()
+        {
+            var exchange = new Dictionary<string, object>
+            {
+                { "id", "turn-1" },
+                { "answer", "done" },
+                { "messages", new object[] { new Dictionary<string, object> { { "role", "agent" } } } }
+            };
+            var history = new[] { exchange };
+            var before = DesktopAttachmentPresentation.HistorySignature(history);
+            ((Dictionary<string, object>)((object[])exchange["messages"])[0])["attachments"] = new object[]
+            {
+                new Dictionary<string, object> { { "id", "image.png" } }
+            };
+            var after = DesktopAttachmentPresentation.HistorySignature(history);
+            Require(before != after, "attachment hydration did not invalidate the render signature");
         }
 
         private static void Require(bool value, string message)

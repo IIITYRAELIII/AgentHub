@@ -762,6 +762,7 @@ namespace AgentHubDesktop
         {
             var run = item.Run ?? new Dictionary<string, object>();
             var signature = selectedKey + "|" + history.Count + "|" + historyBefore + "|"
+                + DesktopAttachmentPresentation.HistorySignature(history) + "|"
                 + item.Running + "|"
                 + AgentHubClient.Text(run, "turnId") + "|"
                 + AgentHubClient.Text(run, "stage") + "|"
@@ -781,10 +782,12 @@ namespace AgentHubDesktop
             {
                 var prompt = AgentHubClient.Text(exchange, "prompt");
                 var answer = AgentHubClient.Text(exchange, "answer");
+                var assistantAttachments = DesktopAttachmentPresentation.AssistantAttachments(exchange);
                 if (!String.IsNullOrWhiteSpace(prompt)) conversation.Children.Add(UserMessage(exchange));
-                if (!String.IsNullOrWhiteSpace(answer) && !HistoryAnswerIsCoveredByLiveRun(exchange, run, item.Running))
+                if ((!String.IsNullOrWhiteSpace(answer) || assistantAttachments.Count > 0)
+                    && !HistoryAnswerIsCoveredByLiveRun(exchange, run, item.Running))
                 {
-                    conversation.Children.Add(AssistantMessage(answer, item.Provider, false));
+                    conversation.Children.Add(AssistantMessage(answer, item.Provider, false, assistantAttachments));
                 }
             }
             if (item.Running)
@@ -929,9 +932,16 @@ namespace AgentHubDesktop
             return shell;
         }
 
-        private UIElement AssistantMessage(string text, string provider, bool live)
+        private UIElement AssistantMessage(
+            string text,
+            string provider,
+            bool live,
+            IList<Dictionary<string, object>> assistantAttachments)
         {
-            var body = SelectableMessage(text, provider);
+            var body = new StackPanel();
+            if (!String.IsNullOrWhiteSpace(text)) body.Children.Add(SelectableMessage(text, provider));
+            var attachmentStrip = AssistantAttachmentStrip(assistantAttachments);
+            if (attachmentStrip != null) body.Children.Add(attachmentStrip);
             var card = new Border
             {
                 Background = Theme.Solid(Theme.Panel),
@@ -975,6 +985,16 @@ namespace AgentHubDesktop
                 responseBlock.Margin = new Thickness(18, 12, 0, 0);
                 panel.Children.Add(responseBlock);
             }
+            var liveExchange = LiveRunExchange(run);
+            var liveAttachments = liveExchange == null
+                ? new List<Dictionary<string, object>>()
+                : DesktopAttachmentPresentation.AssistantAttachments(liveExchange);
+            var attachmentStrip = AssistantAttachmentStrip(liveAttachments);
+            if (attachmentStrip != null)
+            {
+                attachmentStrip.Margin = new Thickness(18, 12, 0, 0);
+                panel.Children.Add(attachmentStrip);
+            }
             var card = new Border
             {
                 Background = Theme.Solid("#101B28"),
@@ -986,6 +1006,115 @@ namespace AgentHubDesktop
                 Child = panel
             };
             return AccentCard(card, item.Provider, true);
+        }
+
+        private Dictionary<string, object> LiveRunExchange(Dictionary<string, object> run)
+        {
+            var runTurnId = AgentHubClient.Text(run, "turnId");
+            for (var index = history.Count - 1; index >= 0; index--)
+            {
+                var exchange = history[index];
+                if (AgentHubClient.Bool(exchange, "active")) return exchange;
+                if (!String.IsNullOrWhiteSpace(runTurnId)
+                    && String.Equals(AgentHubClient.Text(exchange, "id"), runTurnId, StringComparison.Ordinal))
+                {
+                    return exchange;
+                }
+            }
+            return null;
+        }
+
+        private FrameworkElement AssistantAttachmentStrip(IList<Dictionary<string, object>> values)
+        {
+            if (values == null || values.Count == 0) return null;
+            var panel = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };
+            foreach (var attachment in values)
+            {
+                var path = DesktopAttachmentPresentation.ResolvePath(attachmentRoot, attachment);
+                panel.Children.Add(AssistantAttachmentTile(path));
+            }
+            return panel;
+        }
+
+        private UIElement AssistantAttachmentTile(string path)
+        {
+            var image = new Image { Stretch = Stretch.UniformToFill };
+            var bitmap = LoadAttachmentBitmap(path, 360);
+            if (bitmap != null) image.Source = bitmap;
+            FrameworkElement content = bitmap == null
+                ? (FrameworkElement)Theme.Label("Изображение недоступно", 12, Theme.Solid(Theme.Muted), FontWeights.Normal)
+                : image;
+            if (content is TextBlock) ((TextBlock)content).TextAlignment = TextAlignment.Center;
+
+            var tile = new Button
+            {
+                Width = 176,
+                Height = 116,
+                Margin = new Thickness(0, 0, 9, 9),
+                Padding = new Thickness(0),
+                Background = Theme.Solid(Theme.PanelRaised),
+                BorderBrush = Theme.Solid(Theme.Border),
+                BorderThickness = new Thickness(1),
+                Cursor = bitmap == null ? Cursors.Arrow : Cursors.Hand,
+                IsEnabled = bitmap != null,
+                ToolTip = bitmap == null ? "Изображение недоступно" : "Открыть изображение",
+                Content = content
+            };
+            if (bitmap != null) tile.Click += delegate { ShowAttachmentViewer(path); };
+            return tile;
+        }
+
+        private static BitmapImage LoadAttachmentBitmap(string path, int decodePixelWidth)
+        {
+            if (String.IsNullOrWhiteSpace(path)) return null;
+            try
+            {
+                var bitmap = new BitmapImage();
+                bitmap.BeginInit();
+                bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.UriSource = new Uri(path, UriKind.Absolute);
+                if (decodePixelWidth > 0) bitmap.DecodePixelWidth = decodePixelWidth;
+                bitmap.EndInit();
+                bitmap.Freeze();
+                return bitmap;
+            }
+            catch { return null; }
+        }
+
+        private void ShowAttachmentViewer(string path)
+        {
+            var bitmap = LoadAttachmentBitmap(path, 0);
+            if (bitmap == null)
+            {
+                footer.Text = "Изображение недоступно";
+                return;
+            }
+            var image = new Image
+            {
+                Source = bitmap,
+                Stretch = Stretch.Uniform,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var window = new Window
+            {
+                Title = "Изображение",
+                Owner = this,
+                Width = Math.Min(1280, Math.Max(720, bitmap.PixelWidth + 48)),
+                Height = Math.Min(900, Math.Max(520, bitmap.PixelHeight + 72)),
+                MinWidth = 560,
+                MinHeight = 420,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Background = Theme.Solid(Theme.Ink),
+                Content = new ScrollViewer
+                {
+                    Content = image,
+                    HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                    Padding = new Thickness(18)
+                }
+            };
+            window.ShowDialog();
         }
 
         private UIElement AccentCard(Border card, string provider, bool glow)

@@ -850,6 +850,65 @@ test("Codex rollout activity retains imagegen output paths for the exact turn", 
   });
 });
 
+test("Codex rollout activity links a returned view_image to its local source", () => {
+  const turnId = "turn-view-image";
+  const callId = "call-view-image";
+  const source = "C:\\Users\\test\\Pictures\\preview.png";
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: callId,
+        input: `const result = await tools.view_image({path:${JSON.stringify(source)},detail:"original"}); image(result.image_url);`,
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      },
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call_output",
+        call_id: callId,
+        output: [{ type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      },
+    }),
+  ].join("\n"));
+
+  assert.deepEqual(result.generatedImageSources, {
+    [turnId]: [{ type: "view-path", value: source }],
+  });
+});
+
+test("view_image without returned image is not exposed as an assistant attachment", () => {
+  const turnId = "turn-view-failed";
+  const callId = "call-view-failed";
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: callId,
+        input: "const result = await tools.view_image({path:\"C:\\\\Temp\\\\missing.png\"}); image(result.image_url);",
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      },
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call_output",
+        call_id: callId,
+        output: [{ type: "input_text", text: "File not found" }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      },
+    }),
+  ].join("\n"));
+
+  assert.equal(result.generatedImageSources, undefined);
+});
+
 test("rollout reader recovers an oversized image_generation_end without loading its base64", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-image-rollout-"));
   const rolloutPath = path.join(directory, "rollout.jsonl");
@@ -880,6 +939,50 @@ test("rollout reader recovers an oversized image_generation_end without loading 
     assert.deepEqual(result.generatedImageSources, {
       [turnId]: [{ type: "generated-path", value: savedPath }],
     });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("rollout reader links an oversized view_image result without retaining its data URL", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-view-image-rollout-"));
+  const rolloutPath = path.join(directory, "rollout.jsonl");
+  try {
+    const turnId = "turn-viewed";
+    const callId = "call-viewed";
+    const source = "C:\\Users\\test\\Pictures\\preview.png";
+    await writeFile(rolloutPath, [
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: turnId } }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: callId,
+          input: `const result = await tools.view_image({path:${JSON.stringify(source)}}); image(result.image_url);`,
+          internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          call_id: callId,
+          output: [{ type: "input_image", image_url: `data:image/png;base64,${"a".repeat(16_384)}` }],
+          internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        },
+      }),
+    ].join("\n"), "utf8");
+
+    const result = await readCodexRolloutActivity(rolloutPath, {
+      freshnessMs: Number.POSITIVE_INFINITY,
+      maximumLineBytes: 256,
+      tailBytes: 32 * 1024,
+    });
+    assert.deepEqual(result.generatedImageSources, {
+      [turnId]: [{ type: "view-path", value: source }],
+    });
+    assert.doesNotMatch(JSON.stringify(result), /data:image/iu);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

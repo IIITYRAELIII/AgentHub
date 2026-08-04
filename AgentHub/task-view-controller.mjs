@@ -26,6 +26,68 @@ function mergeDurableHistory(cachedHistory, sourceHistory) {
   return merged;
 }
 
+function mergeAttachmentSources(currentMessages, rolloutMessages) {
+  const messages = Array.isArray(currentMessages)
+    ? currentMessages.map((message) => structuredClone(message))
+    : [];
+  let changed = false;
+  for (const rolloutMessage of Array.isArray(rolloutMessages) ? rolloutMessages : []) {
+    const sources = Array.isArray(rolloutMessage?.attachmentSources)
+      ? rolloutMessage.attachmentSources
+      : [];
+    if (rolloutMessage?.role !== "agent" || !sources.length) continue;
+    let targetIndex = messages.findIndex((message) => (
+      message?.role === "agent"
+      && String(message?.text ?? "").trim() === String(rolloutMessage.text ?? "").trim()
+    ));
+    if (targetIndex < 0) targetIndex = messages.findLastIndex((message) => message?.role === "agent");
+    if (targetIndex < 0) {
+      messages.push(structuredClone(rolloutMessage));
+      changed = true;
+      continue;
+    }
+    const target = messages[targetIndex];
+    const mergedSources = Array.isArray(target.attachmentSources)
+      ? target.attachmentSources.map((source) => ({ ...source }))
+      : [];
+    const known = new Set(mergedSources.map((source) => `${source.type}:${source.value}`));
+    for (const source of sources) {
+      const key = `${source?.type}:${source?.value}`;
+      if (!known.has(key)) {
+        mergedSources.push({ ...source });
+        known.add(key);
+        changed = true;
+      }
+    }
+    if (mergedSources.length) target.attachmentSources = mergedSources;
+  }
+  return changed ? messages : currentMessages;
+}
+
+async function materializeHistoryAttachments(history, importer) {
+  if (typeof importer !== "function") return;
+  await Promise.all((Array.isArray(history) ? history : []).flatMap((turn) => (
+    (Array.isArray(turn?.messages) ? turn.messages : []).map(async (message) => {
+      const sources = Array.isArray(message?.attachmentSources) ? message.attachmentSources : [];
+      if (!sources.length) return;
+      const imported = await importer(sources);
+      const attachments = Array.isArray(message.attachments)
+        ? message.attachments.map((attachment) => ({ ...attachment }))
+        : [];
+      const known = new Set(attachments.map((attachment) => String(attachment?.id ?? "")));
+      for (const attachment of Array.isArray(imported) ? imported : []) {
+        const id = String(attachment?.id ?? "");
+        if (id && !known.has(id)) {
+          attachments.push({ ...attachment });
+          known.add(id);
+        }
+      }
+      if (attachments.length) message.attachments = attachments;
+      delete message.attachmentSources;
+    })
+  )));
+}
+
 const CODEX_TURN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 export function codexRolloutHistory(activity = {}) {
@@ -38,6 +100,7 @@ export function codexRolloutHistory(activity = {}) {
     ...Object.keys(userMessages),
     ...Object.keys(latestMessages),
     ...Object.keys(finalMessages),
+    ...Object.keys(generatedImageSources),
   ])];
   return ids.flatMap((id) => {
     const users = (Array.isArray(userMessages[id]) ? userMessages[id] : [])
@@ -122,7 +185,12 @@ function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory) {
       merged.push(structuredClone(item));
       continue;
     }
-    const current = merged[index];
+    let current = merged[index];
+    const messagesWithImages = mergeAttachmentSources(current?.messages, item.messages);
+    if (messagesWithImages !== current?.messages) {
+      current = { ...current, messages: messagesWithImages };
+      merged[index] = current;
+    }
     if (item.completed && !current?.completed) {
       merged[index] = {
         ...current,
@@ -131,7 +199,7 @@ function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory) {
         status: "completed",
         active: false,
         completed: true,
-        messages: item.messages,
+        messages: mergeAttachmentSources(item.messages, current.messages),
         ...(item.promptAnnotations?.length
           ? {
             promptAnnotations: item.promptAnnotations.map((annotation) => ({ ...annotation })),
@@ -230,6 +298,7 @@ export class TaskViewController {
             rolloutPath: directRolloutPath,
           }, { threadResult: { thread: { id: binding.threadId, path: directRolloutPath } } });
           mergeActiveTaskHistory(history, snapshot);
+          await materializeHistoryAttachments(history, d.attachmentImporter);
           d.taskSyncStore.recordHistory(task, history, snapshot);
           await d.taskSyncStore.save();
           return { history, snapshot };
@@ -253,6 +322,7 @@ export class TaskViewController {
           observer: true,
         }, { threadResult: result });
         mergeActiveTaskHistory(history, snapshot);
+        await materializeHistoryAttachments(history, d.attachmentImporter);
         d.taskSyncStore.recordHistory(task, history, snapshot);
         await d.taskSyncStore.save();
         return { history, snapshot };
