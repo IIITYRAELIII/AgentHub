@@ -69,6 +69,7 @@ import {
   resolveCodexAccountingThread,
 } from "./codex-subagent-accounting.mjs";
 import { CodexRunFinalizer } from "./codex-run-finalizer.mjs";
+import { CodexContextMaintenanceService } from "./codex-context-maintenance-service.mjs";
 import { CodexUsageTracker } from "./codex-usage-tracker.mjs";
 import { randomStatusHeaderFileName } from "./status-header.mjs";
 import { TelegramClient } from "./telegram-client.mjs";
@@ -124,7 +125,6 @@ import {
   taskRunKey,
   updateTaskRunTitle,
 } from "./task-runs.mjs";
-import { recycleCodexCompactionTransport } from "./codex-compaction-transport.mjs";
 import {
   codexFinalTurnAnswer,
   codexTurnHasExplicitFinalAnswer,
@@ -550,7 +550,6 @@ let autoApprove = config.autoApproveOnStart;
 let includeClaudeUsage = true;
 let codexRestarting = false;
 let codexTimeoutRestarting = false;
-let codexCompactionRecycleInFlight = null;
 let restartRequest = null;
 let processingUpdateId = null;
 let stateWriteQueue = Promise.resolve();
@@ -721,6 +720,34 @@ const codexRunFinalizer = new CodexRunFinalizer({
   persistHistory: persistManagedRunHistory,
   projectTurn: (...args) => runJournal.projectTurn(...args),
   completeRun,
+});
+const codexContextMaintenance = new CodexContextMaintenanceService({
+  timers: runtimeTimers,
+  compactions: contextCompactions,
+  sanitizer: codexRolloutContextSanitizer,
+  contextCleanupEnabled: () => config.components.codexContextCleanup,
+  periodicCleanupEnabled: () => config.codexRolloutContext.enabled,
+  // Temporarily disabled: recycling an App Server immediately after compaction
+  // can leave the compaction UI waiting. Periodic sanitation remains enabled.
+  compactionTriggeredCleanupEnabled: false,
+  scanIntervalMs: () => config.codexRolloutContext.scanIntervalSeconds * 1_000,
+  isStopping: () => stopping,
+  transportRunning: () => codexTransport.running,
+  activeRuns: () => taskRuns.values(),
+  runIsActive: taskRunIsActive,
+  refreshTaskCatalog,
+  knownRolloutPath: knownCodexRolloutPath,
+  readThread: readCodexThread,
+  rememberRolloutPath: (threadId, rolloutPath) => (
+    setBoundedMapValue(codexRolloutPathsByThreadId, threadId, rolloutPath, 5_000)
+  ),
+  stopTransport: stopCodexAppServerTree,
+  startTransport: startCodexAppServer,
+  initializeTransport: initializeCodex,
+  providerIsSelected: isCodex,
+  setTransportRestarting: (value) => { codexRestarting = value; },
+  invalidateTaskCatalog,
+  restartTransportAfterCrash: restartCodexAfterCrash,
 });
 const backgroundJobStore = new PersistentBackgroundJobStore({
   directoryPath: BACKGROUND_JOBS_DIR,
@@ -898,7 +925,7 @@ const codexRecoveryService = new CodexRecoveryService({
 const codexTurnService = new CodexTurnService({
   sendRpc,
   sandboxMode: () => config.codexSandboxMode,
-  compactionRecycle: () => codexCompactionRecycleInFlight,
+  compactionRecycle: () => codexContextMaintenance.recycleInFlight,
   resolvedSkillNames: resolvedExplicitSkillNames,
   reindexRun: (run, previous) => taskRuns.reindex(run, previous),
   saveState,
@@ -944,7 +971,7 @@ const codexEventService = new CodexEventService({
   isCompactionItem: isContextCompactionItem,
   beginCompaction: (...args) => contextCompactions.begin(...args),
   getCompaction: (threadId) => contextCompactions.get(threadId),
-  beginCompactionCleanup: beginCodexCompactionCleanup,
+  beginCompactionCleanup: (...args) => codexContextMaintenance.beginCompactionCleanup(...args),
   setStage: setProgressStage,
   describeItem: describeCodexItem,
   itemActivity: codexItemActivity,
@@ -4966,162 +4993,6 @@ function scheduleCodexTerminalAudit(delayMs = SELECTED_TASK_WATCH_INTERVAL_MS) {
   }, Math.max(0, Number(delayMs) || 0));
 }
 
-const CODEX_COMPACTION_CLEANUP_RETRY_MS = 15_000;
-// Coupling cleanup to compaction is temporarily disabled: an App Server can
-// keep the rollout open and leave the compaction UI waiting. The independent
-// periodic sanitizer remains enabled and will continue to reclaim old images.
-const COMPACTION_TRIGGERED_IMAGE_CLEANUP_ENABLED = false;
-
-async function recycleCodexTransportForManualCompaction(threadId, rolloutPath, result) {
-  const compaction = contextCompactions.get(threadId);
-  if (
-    result?.reason !== "rollout-open"
-    || compaction?.origin !== "manual"
-    || codexCompactionRecycleInFlight
-  ) return null;
-
-  const activeRuns = taskRuns.values().filter((run) => (
-    run.provider === "codex"
-    && taskRunIsActive(run)
-    && !contextCompactions.isManualTurn(run.threadId, run.turnId)
-  ));
-  if (activeRuns.length) return null;
-
-  const catalog = await refreshTaskCatalog({ force: true });
-  const otherActiveCodexTask = catalog.some((entry) => (
-    entry.provider === "codex"
-    && entry.running
-    && String(entry.threadId) !== String(threadId)
-  ));
-  if (otherActiveCodexTask) return null;
-
-  codexCompactionRecycleInFlight = (async () => {
-    codexRestarting = true;
-    try {
-      const recycled = await recycleCodexCompactionTransport({
-        stop: stopCodexAppServerTree,
-        sanitize: () => codexRolloutContextSanitizer.runForRollout(rolloutPath),
-        start: startCodexAppServer,
-        initialize: () => initializeCodex({ attachSelectedThread: isCodex() }),
-      });
-      invalidateTaskCatalog();
-      if (recycled.error) {
-        console.error(
-          `Cannot recycle Codex app-server for manual compaction ${threadId}:`,
-          recycled.error.message,
-        );
-        queueMicrotask(() => void restartCodexAfterCrash());
-        return { ...result, applied: false, reason: "transport-recycle-failed" };
-      }
-      return recycled.result ?? result;
-    } finally {
-      codexRestarting = false;
-      codexCompactionRecycleInFlight = null;
-    }
-  })();
-  return codexCompactionRecycleInFlight;
-}
-
-function beginCodexCompactionCleanup(threadId, details = {}) {
-  const key = String(threadId ?? "").trim();
-  if (!key) return;
-  if (
-    !config.components.codexContextCleanup
-    || !COMPACTION_TRIGGERED_IMAGE_CLEANUP_ENABLED
-  ) {
-    contextCompactions.complete(key, {
-      turnId: details.turnId,
-      itemId: details.itemId,
-      completedAt: details.compactedAt,
-    });
-    return;
-  }
-  contextCompactions.beginCleanup(key, details);
-  scheduleCodexCompactionCleanup(key, {
-    turnId: details.turnId,
-    itemId: details.itemId,
-    startedAtMs: Date.now(),
-  });
-}
-
-function scheduleCodexCompactionCleanup(threadId, state, delayMs = 0) {
-  const key = String(threadId ?? "").trim();
-  if (!key || stopping) return;
-  runtimeTimers.scheduleInGroup("codex-compaction-cleanup", key, () => {
-    void runCodexCompactionCleanup(key, state);
-  }, Math.max(0, Number(delayMs) || 0), { unref: true });
-}
-
-async function runCodexCompactionCleanup(threadId, state) {
-  if (stopping || !config.components.codexContextCleanup) return;
-  let rolloutPath = await knownCodexRolloutPath(threadId);
-  if (!rolloutPath && codexTransport.running) {
-    try {
-      const result = await readCodexThread(threadId, { fresh: true, includeTurns: false });
-      rolloutPath = String(result.thread?.path ?? "").trim();
-      if (rolloutPath) setBoundedMapValue(codexRolloutPathsByThreadId, threadId, rolloutPath, 5_000);
-    } catch (error) {
-      console.warn(`Cannot resolve compacted Codex rollout ${threadId}: ${error.message}`);
-    }
-  }
-  let result = rolloutPath
-    ? await codexRolloutContextSanitizer.runForRollout(rolloutPath)
-    : { applied: false, reason: "rollout-not-found" };
-  if (rolloutPath) {
-    result = await recycleCodexTransportForManualCompaction(
-      threadId,
-      rolloutPath,
-      result,
-    ) ?? result;
-  }
-  if (result.applied || result.reason === "below-threshold") {
-    contextCompactions.complete(threadId, {
-      turnId: state.turnId,
-      itemId: state.itemId,
-    });
-    return;
-  }
-  const retryWindowMs = Math.max(
-    2 * 60_000,
-    config.codexRolloutContext.scanIntervalSeconds * 1_000,
-  );
-  if (Date.now() - state.startedAtMs < retryWindowMs) {
-    scheduleCodexCompactionCleanup(threadId, state, CODEX_COMPACTION_CLEANUP_RETRY_MS);
-    return;
-  }
-  console.warn(
-    `Codex compaction image cleanup timed out for ${threadId}: ${result.reason}. `
-      + "The periodic cleanup pass will retry it later.",
-  );
-}
-
-function scheduleCodexRolloutContextSanitizer(
-  delayMs = config.codexRolloutContext.scanIntervalSeconds * 1000,
-) {
-  if (!config.codexRolloutContext.enabled || stopping) return;
-  runtimeTimers.schedule("codex-rollout-context", () => {
-    void runCodexRolloutContextSanitizer();
-  }, Math.max(0, Number(delayMs) || 0), { unref: true });
-}
-
-async function runCodexRolloutContextSanitizer({ reschedule = true } = {}) {
-  if (!config.codexRolloutContext.enabled || stopping) return null;
-  try {
-    const result = await codexRolloutContextSanitizer.runOnce();
-    if (result.skipped) {
-      console.log(
-        `Codex rollout context sanitation deferred for ${result.skipped} open or changing file(s).`,
-      );
-    }
-    return result;
-  } catch (error) {
-    console.warn(`Cannot maintain Codex rollout context: ${error.message}`);
-    return null;
-  } finally {
-    if (reschedule) scheduleCodexRolloutContextSanitizer();
-  }
-}
-
 function scheduleRateLimitPoll(delayMs = 5 * 60_000) {
   if (stopping) return;
   runtimeTimers.schedule("rate-limit-poll", () => {
@@ -5966,7 +5837,7 @@ function stopRuntimeTimers() {
 }
 
 function startRuntimeTimers() {
-  scheduleCodexRolloutContextSanitizer();
+  codexContextMaintenance.schedulePeriodic();
   for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
   if (config.telegramEnabled) {
     scheduleDeliveryOutboxFlush(1_000);
@@ -6010,7 +5881,7 @@ const startupCoordinator = new AgentHubStartupCoordinator({
     await runtimeCommandServer.start();
   },
   startMiniApp: () => miniAppServer ? startMiniApp() : null,
-  sanitizeRollouts: () => runCodexRolloutContextSanitizer({ reschedule: false }),
+  sanitizeRollouts: () => codexContextMaintenance.runPeriodic({ reschedule: false }),
   initializeProvider,
   providerIsRunning: () => codexTransport.running,
   backfillProviderMetadata: () => codexProviderTasks.discoverTasks()

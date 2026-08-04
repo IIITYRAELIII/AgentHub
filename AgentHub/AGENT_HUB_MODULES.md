@@ -49,10 +49,11 @@
 | 34 | ✅ | Composition root сокращён с 8 158 до 6 252 строк. `RunProgressPresentation` владеет progress-представлением, `AgentHubStartupCoordinator` — порядком запуска, `TaskObservationService` — observed lifecycle, `RunJournalService` — последним сообщением и общей journal projection, `RuntimeTimerCoordinator` — именованными и keyed-таймерами. Наблюдаемый run сохраняет будущий `hubTaskId`. |
 | 35 | ✅ | Composition root сокращён до 6 123 строк. `TurnEndDeliveryService` владеет точной terminal projection, дедупликацией, повторной доставкой и ожиданием usage, а `CodexRunFinalizer` — аудитом старта, фиксацией расхода/skills/MCP, историей, журналом и завершением управляемого Codex-хода. |
 | 36 | ✅ | Composition root сокращён до 6 044 строк. `CodexUsageTracker` владеет bounded-картами накопительных token totals, per-turn usage и заполненности context window, а также совместимым восстановлением и сериализацией runtime-state. |
+| 37 | ✅ | Composition root сокращён до 5 915 строк. `CodexContextMaintenanceService` владеет lifecycle очистки после свёртки, повторными попытками, безопасным recycle Codex App Server и периодической санацией rollout. Нестабильная очистка, запускаемая событием свёртки, остаётся явно отключённой; независимый периодический проход сохранён. |
 
-После этапов 31–36 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
+После этапов 31–37 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и
-timer/terminal-delivery/token-state ownership больше не реализуются внутри `agent-hub-server.mjs`. Файл всё
+timer/terminal-delivery/token-state/context-maintenance ownership больше не реализуются внутри `agent-hub-server.mjs`. Файл всё
 ещё велик, но оставшееся разделение должно идти по новым прикладным владельцам,
 а не возвращать эти обязанности в composition root.
 

@@ -26,6 +26,10 @@ const codexEventSource = await readFile(
   new URL("./codex-event-service.mjs", import.meta.url),
   "utf8",
 );
+const codexContextMaintenanceSource = await readFile(
+  new URL("./codex-context-maintenance-service.mjs", import.meta.url),
+  "utf8",
+);
 
 function message(itemId, text) {
   return {
@@ -755,17 +759,18 @@ test("context compaction notifications identify the task that compacted", () => 
   );
 });
 
-test("Hub compaction completes only after its targeted image cleanup", () => {
+test("Hub compaction delegates targeted completion to its context maintenance owner", () => {
   assert.match(
     codexEventSource,
     /if \(d\.isCompactionItem\(params\.item\)\) \{\s*d\.beginCompactionCleanup/u,
   );
   assert.match(
-    serverSource,
-    /if \(result\.applied \|\| result\.reason === "below-threshold"\) \{\s*contextCompactions\.complete/u,
+    codexContextMaintenanceSource,
+    /if \(result\.applied \|\| result\.reason === "below-threshold"\) \{\s*this\.compactions\.complete/u,
   );
+  assert.match(serverSource, /codexContextMaintenance\.beginCompactionCleanup/u);
   assert.doesNotMatch(
     serverSource,
-    /if \(isContextCompactionItem\(params\.item\)\) \{\s*contextCompactions\.complete/u,
+    /contextCompactions\.complete/u,
   );
 });
