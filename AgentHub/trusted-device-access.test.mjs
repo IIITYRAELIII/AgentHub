@@ -11,6 +11,12 @@ test("public browser pairing clears stale errors and submits a complete pasted c
   assert.match(auth, /setStatus\(""\);/u);
   assert.match(auth, /code\.value\.replace\(\/-\/gu, ""\)\.length === PAIRING_CODE_LENGTH/u);
   assert.match(auth, /form\.requestSubmit\(\);/u);
+  assert.match(auth, /const REQUEST_TIMEOUT_MS = 15_000;/u);
+  assert.match(auth, /signal: controller\.signal/u);
+  assert.match(auth, /controller\.signal\.aborted/u);
+  assert.match(auth, /Сохраняем ключ в браузере/u);
+  assert.match(auth, /Создаём защищённую сессию/u);
+  assert.match(auth, /withTimeout\(\s*storeCredential\(credential\)/u);
 });
 
 test("Windows Hub prefers IPv4 for Worker calls when IPv6 is unavailable", () => {

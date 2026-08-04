@@ -20,6 +20,8 @@
   const RECORD_KEY = "current";
   const PAIRING_CODE_LENGTH = 20;
   const SESSION_REFRESH_MARGIN_MS = 60_000;
+  const REQUEST_TIMEOUT_MS = 15_000;
+  const STORAGE_TIMEOUT_MS = 10_000;
   const textEncoder = new TextEncoder();
   let accessToken = "";
   let sessionExpiresAt = 0;
@@ -39,6 +41,20 @@
     const value = new Uint8Array(bytes);
     for (let index = 0; index < value.length; index += 1) binary += String.fromCharCode(value[index]);
     return btoa(binary).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/gu, "");
+  }
+
+  async function withTimeout(promise, timeoutMs, message) {
+    let timer = null;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer != null) window.clearTimeout(timer);
+    }
   }
 
   function platformLabel() {
@@ -118,12 +134,25 @@
   }
 
   async function requestJson(pathname, body) {
-    const response = await fetch(pathname, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      cache: "no-store",
-    });
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(pathname, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error("Agent Hub не ответил за 15 секунд. Проверьте соединение и повторите попытку.");
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+    }
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(String(payload?.error ?? `Agent Hub: HTTP ${response.status}`));
     return payload;
@@ -141,13 +170,16 @@
     }, delay);
   }
 
-  async function authenticate(value) {
+  async function authenticate(value, reportProgress = null) {
+    reportProgress?.("Запрашиваем проверку ключа…");
     const challenge = await requestJson("/api/device/challenge", { deviceId: value.deviceId });
+    reportProgress?.("Подписываем проверку…");
     const signature = await crypto.subtle.sign(
       { name: "ECDSA", hash: "SHA-256" },
       value.privateKey,
       textEncoder.encode(sessionMessage(value.deviceId, challenge.challengeId, challenge.challenge)),
     );
+    reportProgress?.("Создаём защищённую сессию…");
     const session = await requestJson("/api/device/session", {
       deviceId: value.deviceId,
       challengeId: challenge.challengeId,
@@ -156,16 +188,17 @@
     accessToken = String(session.token ?? "");
     sessionExpiresAt = Number(session.expiresAt) || 0;
     if (!accessToken || sessionExpiresAt <= Date.now()) throw new Error("Agent Hub не создал сессию браузера");
+    reportProgress?.("Вход выполнен. Загружаем Agent Hub…");
     hidePairing();
     scheduleRefresh();
     resolveReady();
   }
 
-  async function ensureSession(force = false) {
+  async function ensureSession(force = false, reportProgress = null) {
     if (!force && accessToken && sessionExpiresAt - Date.now() > SESSION_REFRESH_MARGIN_MS) return;
     if (!credential) throw new Error("Браузер ещё не добавлен в доверенные устройства");
     if (!authentication) {
-      authentication = authenticate(credential).finally(() => {
+      authentication = authenticate(credential, reportProgress).finally(() => {
         authentication = null;
       });
     }
@@ -232,7 +265,7 @@
     if (submit) submit.disabled = true;
     if (name) name.disabled = true;
     if (code) code.disabled = true;
-    setStatus("Добавляем браузер…");
+    setStatus("Создаём ключ браузера…");
     try {
       const keys = await crypto.subtle.generateKey(
         { name: "ECDSA", namedCurve: "P-256" },
@@ -240,6 +273,7 @@
         ["sign", "verify"],
       );
       const publicKey = base64Url(await crypto.subtle.exportKey("spki", keys.publicKey));
+      setStatus("Проверяем код сопряжения…");
       const paired = await requestJson("/api/device/pair", {
         code: pairingCode,
         name: deviceName,
@@ -254,8 +288,13 @@
         createdAt: Date.now(),
       };
       if (!credential.deviceId) throw new Error("Agent Hub не вернул идентификатор устройства");
-      await storeCredential(credential);
-      await ensureSession(true);
+      setStatus("Сохраняем ключ в браузере…");
+      await withTimeout(
+        storeCredential(credential),
+        STORAGE_TIMEOUT_MS,
+        "Браузер не завершил сохранение ключа. Обновите страницу: если ключ сохранился, вход продолжится автоматически.",
+      );
+      await ensureSession(true, (message) => setStatus(message));
       window.location.reload();
     } catch (error) {
       setStatus(String(error?.message ?? error), "error");
@@ -299,13 +338,17 @@
     }
     showChecking();
     try {
-      credential = await storedCredential();
+      credential = await withTimeout(
+        storedCredential(),
+        STORAGE_TIMEOUT_MS,
+        "Браузер не смог прочитать сохранённый ключ за 10 секунд.",
+      );
       if (!credential?.deviceId || !credential?.privateKey) {
         credential = null;
         showPairing();
         return;
       }
-      await ensureSession(true);
+      await ensureSession(true, (message) => setStatus(message));
     } catch (error) {
       const message = String(error?.message ?? error);
       if (/not trusted|invalid device|не довер/iu.test(message)) {
