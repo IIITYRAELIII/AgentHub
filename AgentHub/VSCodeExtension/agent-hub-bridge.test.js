@@ -1,7 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { mkdir, mkdtemp, readFile, rename, rm, writeFile } = require("node:fs/promises");
+const { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
@@ -150,7 +150,7 @@ test("installed VS Code bridge follows the next runtime release without Reload W
 });
 
 test("VS Code bridge observes an atomic active-runtime replacement", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-watch-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-watch-")));
   const bridge = new AgentHubBridge({ runtimeRoot: root });
   let notifications = 0;
   try {
