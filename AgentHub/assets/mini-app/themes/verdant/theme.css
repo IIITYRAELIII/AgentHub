@@ -266,3 +266,211 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
     --hub-background-position: center, center, 70% 50%;
   }
 }
+
+/* На широком экране Verdant собирает Hub как полевой терминал из концепта:
+   две самостоятельные панели оставляют справа живую часть пейзажа. */
+@media (min-width: 1120px) {
+  html[data-theme="verdant"]:not([data-surface="mobile"]) {
+    --task-rail-width: clamp(260px, 19vw, 290px);
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .app-header {
+    padding-block: 0.38rem;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .app-header-inner {
+    max-width: none;
+    padding-inline: clamp(1rem, 1.7vw, 1.75rem);
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .brand {
+    gap: 0.7rem;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .brand-mark {
+    background: rgba(17, 58, 43, 0.56);
+    border-radius: 0;
+    box-shadow: 0 0 22px -9px rgba(105, 242, 151, 0.86);
+    height: 1.9rem;
+    width: 1.9rem;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .brand-text {
+    align-items: center;
+    display: flex;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .brand .eyebrow {
+    color: #bcebc9;
+    font-size: 0.85rem;
+    font-weight: 560;
+    letter-spacing: 0.015em;
+    text-transform: none;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .brand h1 {
+    display: none;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .view-switch {
+    align-self: stretch;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    gap: 0.4rem;
+    padding: 0;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .view-tab {
+    border-bottom: 1px solid transparent;
+    border-radius: 0;
+    font-size: 0.76rem;
+    padding-inline: 0.9rem;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .view-tab svg {
+    display: none;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .workspace {
+    gap: clamp(0.85rem, 1.35vw, 1.35rem);
+    grid-template-columns:
+      var(--task-rail-width)
+      minmax(580px, min(41vw, 700px));
+    justify-content: start;
+    margin: 0;
+    max-width: none;
+    padding: clamp(1.05rem, 1.8vw, 1.7rem);
+    padding-bottom: 0.55rem;
+    padding-right: 0;
+    width: 100%;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .task-rail,
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .chat {
+    border: 1px solid rgba(131, 237, 165, 0.28);
+    border-radius: 0;
+    box-shadow:
+      inset 0 1px 0 rgba(192, 255, 210, 0.06),
+      0 28px 70px -38px rgba(0, 0, 0, 0.96),
+      0 0 34px -25px rgba(105, 242, 151, 0.82);
+    overflow: hidden;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .task-rail {
+    background: linear-gradient(180deg, rgba(3, 23, 19, 0.9), rgba(1, 14, 12, 0.92));
+    position: relative;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .task-rail-head {
+    border: 0;
+    min-height: 2.35rem;
+    padding: 0;
+    position: absolute;
+    right: 1rem;
+    top: 0.8rem;
+    z-index: 2;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .task-rail-title {
+    display: none;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .task-new {
+    height: 2.35rem;
+    width: 2.35rem;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .task-search {
+    background: rgba(1, 13, 11, 0.72);
+    border-color: rgba(131, 237, 165, 0.18);
+    border-radius: 0;
+    margin: 0.8rem 3.85rem 0.8rem 1rem;
+    min-height: 2.35rem;
+    padding-inline: 0.72rem;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .task-list {
+    padding-inline: 0;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .task-item {
+    border: 0;
+    border-bottom: 1px solid rgba(131, 237, 165, 0.09);
+    border-radius: 0;
+    margin: 0;
+    min-height: 4.2rem;
+    padding: 0.72rem 1rem;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .task-item[data-selected] {
+    background: linear-gradient(90deg, rgba(93, 206, 132, 0.17), rgba(35, 91, 69, 0.08));
+    border-bottom-color: rgba(131, 237, 165, 0.15);
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .task-item[data-selected]::before {
+    border-radius: 0;
+    bottom: 0;
+    left: 0;
+    top: 0;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .chat {
+    backdrop-filter: blur(10px) saturate(108%);
+    -webkit-backdrop-filter: blur(10px) saturate(108%);
+    background: linear-gradient(180deg, rgba(2, 22, 18, 0.82), rgba(1, 15, 13, 0.88));
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .workspace:has(.chat-pane[data-dialog-settings-open]) {
+    grid-template-columns: var(--task-rail-width) minmax(760px, min(55vw, 900px));
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .chat-head {
+    background: rgba(2, 18, 15, 0.74);
+    min-height: 4rem;
+    padding: 0.72rem 1rem;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .chat-scroll {
+    padding: 1.1rem 1.15rem 0.85rem;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .chat-log {
+    gap: 0.95rem;
+    margin: 0;
+    max-width: none;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .msg {
+    max-width: min(40rem, 88%);
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .msg-agent {
+    background-color: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    padding-inline: 0;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .msg-user {
+    background-color: rgba(10, 37, 29, 0.9);
+    border-color: rgba(131, 237, 165, 0.18);
+    max-width: min(34rem, 72%);
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .composer {
+    background: rgba(2, 17, 14, 0.78);
+    padding: 0.72rem 1rem 0.85rem;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .composer-input {
+    background: rgba(5, 27, 22, 0.78);
+    border-radius: 0;
+  }
+
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .composer-send,
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .composer-attach,
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .composer-slash {
+    border-radius: 0;
+  }
+}
