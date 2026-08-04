@@ -9,7 +9,6 @@ if (!testScript.startsWith(prefix)) throw new Error("Не удалось про�
 const testFiles = testScript.slice(prefix.length).trim().split(/\s+/);
 const isolatedFile = "tts-worker-client.test.mjs";
 const sharedFiles = testFiles.filter((file) => file !== isolatedFile);
-const sharedConcurrency = process.platform === "win32" ? "1" : "4";
 if (sharedFiles.length === testFiles.length) throw new Error(`В общем наборе нет ${isolatedFile}.`);
 
 function run(command, args) {
@@ -31,5 +30,14 @@ const npmCommand = npmCli
     : { command: "npm", args: ["run", "pretest"] };
 
 await run(npmCommand.command, npmCommand.args);
-await run(process.execPath, ["--test", `--test-concurrency=${sharedConcurrency}`, ...sharedFiles]);
+if (process.platform === "win32") {
+  // Separate processes release SQLite and antivirus-observed temporary files
+  // before the next test module starts. A single process can retain a Windows
+  // file handle briefly even with test concurrency set to one.
+  for (const file of sharedFiles) {
+    await run(process.execPath, ["--test", "--test-concurrency=1", file]);
+  }
+} else {
+  await run(process.execPath, ["--test", "--test-concurrency=4", ...sharedFiles]);
+}
 await run(process.execPath, ["--test", "--test-concurrency=1", isolatedFile]);
