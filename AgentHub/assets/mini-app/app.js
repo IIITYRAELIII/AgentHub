@@ -262,7 +262,7 @@ if (themeSelect) {
 const groupings = new Set(["date", "week", "month", "task"]);
 const usageUnits = new Set(["$", "rub", "cr", "pte"]);
 const CREDITS_PER_USD = 25;
-const PTE_PER_CREDIT = 8_000;
+const PTE_PER_CREDIT = 16_000;
 const USAGE_RANGE_KEY = "agent-hub:usage-range:v1";
 const RANGE_SEQUENCE = ["6h", "24h", "7d", "30d", "all"];
 

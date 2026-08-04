@@ -376,7 +376,12 @@ test("general settings and current-dialog settings stay separate", () => {
   /* Формулы единиц занимают несколько строк, поэтому лежат в свёрнутой справке. */
   assert.match(html, /<details class="setting-note">\s*<summary>Как считается расход<\/summary>/u);
   assert.doesNotMatch(html, /<details class="setting-note" open>/u);
-  assert.match(html, /<b>cr<\/b> — официальные «кредиты» Codex, ПТЭ \/ 8000\./u);
+  assert.match(html, /<b>cr<\/b> — официальные «кредиты» Codex, ПТЭ \/ 16000\./u);
+  /* Порядок чипов повторяет порядок строк справки: ПТЭ → cr → $ → ₽. */
+  assert.match(
+    html,
+    /data-usage-unit="pte">ПТЭ<\/button>[\s\S]*?data-usage-unit="cr">cr<\/button>[\s\S]*?data-usage-unit="\$">\$<\/button>[\s\S]*?data-usage-unit="rub">₽<\/button>/u,
+  );
   assert.match(app, /`курс ЦБ РФ \$\{spacedNumber\(usdRubRate, 4\)\} за \$1/u);
   assert.match(app, /agent-hub-token-breakdown/u);
   assert.match(app, /agent-hub-group-claude/u);
@@ -385,7 +390,7 @@ test("general settings and current-dialog settings stay separate", () => {
   assert.match(html, /data-trusted-device-list/u);
   assert.match(app, /setTrustedDevices/u);
   assert.match(app, /const CREDITS_PER_USD = 25;/u);
-  assert.match(app, /const PTE_PER_CREDIT = 8_000;/u);
+  assert.match(app, /const PTE_PER_CREDIT = 16_000;/u);
   assert.match(app, /const dollars = value \/ CREDITS_PER_USD;/u);
   assert.match(app, /spacedNumber\(dollars, dollars < 1 \? 2 : 1\)/u);
   assert.match(app, /const rubles = \(value \/ CREDITS_PER_USD\) \* usdRubRate;/u);

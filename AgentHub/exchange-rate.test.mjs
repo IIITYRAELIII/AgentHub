@@ -32,7 +32,7 @@ test("CBR daily XML yields a per-dollar RUB rate", () => {
     sourceUrl: CBR_DAILY_RATES_URL,
   });
   assert.equal(CREDITS_PER_USD, 25);
-  assert.equal(PTE_PER_CREDIT, 8_000);
+  assert.equal(PTE_PER_CREDIT, 16_000);
 });
 
 test("USD/RUB rate store refreshes and persists the startup cache", async () => {
