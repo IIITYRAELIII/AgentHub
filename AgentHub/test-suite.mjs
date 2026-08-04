@@ -24,11 +24,17 @@ function run(command, args) {
 
 async function runWindowsTestFile(file) {
   const args = ["--test", "--test-concurrency=1", file];
-  try {
-    await run(process.execPath, args);
-  } catch (error) {
-    console.warn(`Повтор Windows test-file после временного файлового сбоя: ${file}`);
-    await run(process.execPath, args);
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await run(process.execPath, args);
+      return;
+    } catch (error) {
+      if (attempt === maxAttempts) throw error;
+      console.warn(
+        `Повтор Windows test-file после временного файлового сбоя (${attempt}/${maxAttempts - 1}): ${file}`,
+      );
+    }
   }
 }
 
