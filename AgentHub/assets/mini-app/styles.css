@@ -4813,6 +4813,71 @@ html[data-surface="mobile"] .chat-stop-bottom {
   margin: 0.4rem 0 0;
 }
 
+/* Свёрнутая справка по единицам: в закрытом виде занимает одну строку, чтобы
+   формулы не отодвигали остальные настройки. */
+.setting-note {
+  margin-top: 0.35rem;
+}
+
+.setting-note > summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.76rem;
+  list-style: none;
+  padding-left: 0.85rem;
+  position: relative;
+  width: fit-content;
+}
+
+.setting-note > summary::-webkit-details-marker {
+  display: none;
+}
+
+.setting-note > summary::before {
+  border-left: 0.3rem solid currentColor;
+  border-bottom: 0.22rem solid transparent;
+  border-top: 0.22rem solid transparent;
+  content: "";
+  left: 0.1rem;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  transition: transform 0.15s ease;
+}
+
+.setting-note[open] > summary::before {
+  transform: translateY(-50%) rotate(90deg);
+}
+
+.setting-note > summary:hover {
+  color: var(--accent);
+}
+
+.setting-note-body {
+  border-left: 1px solid var(--line);
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  font-size: 0.75rem;
+  gap: 0.4rem;
+  line-height: 1.4;
+  margin: 0.45rem 0 0 0.28rem;
+  padding-left: 0.6rem;
+}
+
+.setting-note-body p {
+  margin: 0;
+}
+
+.setting-note-body b {
+  color: var(--text-soft);
+  font-weight: 650;
+}
+
+.setting-note-aside {
+  color: var(--text-faint);
+}
+
 /* Кнопка панели: подпись прячется на телефоне, остаётся один значок. */
 .view-settings svg {
   height: 0.95rem;

@@ -3627,9 +3627,8 @@ const AgentHub = {
         ? new Date(`${usdRubEffectiveDate}T00:00:00`).toLocaleDateString("ru-RU")
         : "";
       exchangeRateHint.textContent = usdRubRate
-        ? `₽ — курс ЦБ РФ ${spacedNumber(usdRubRate, 4)} за $1${date ? ` на ${date}` : ""}; `
-          + "ПТЭ — приведённые токен-эквиваленты с учётом модели и Fast."
-        : "Курс ₽ пока недоступен; ПТЭ — приведённые токен-эквиваленты с учётом модели и Fast.";
+        ? `курс ЦБ РФ ${spacedNumber(usdRubRate, 4)} за $1${date ? ` на ${date}` : ""}.`
+        : "курс пока недоступен.";
     }
     refreshUsageUnits();
     renderUsageHistory();

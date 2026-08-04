@@ -747,9 +747,29 @@
               <button type="button" class="option-chip" data-usage-unit="cr">cr</button>
               <button type="button" class="option-chip" data-usage-unit="pte">ПТЭ</button>
             </div>
-            <p class="setting-hint" data-exchange-rate-hint>
-              ₽ — официальный курс ЦБ РФ; ПТЭ — приведённые токен-эквиваленты с учётом модели и Fast.
-            </p>
+            <details class="setting-note">
+              <summary>Как считается расход</summary>
+              <div class="setting-note-body">
+                <p>
+                  <b>ПТЭ</b> — приведённые токен-эквиваленты. За единицу принят входной токен
+                  флагманской модели (GPT-5.6-Sol и 5.5): вход × 1, кэшированный вход × 0,1,
+                  выход × 6, рассуждения × 6. У GPT-5.6-Terra и 5.4 коэффициенты вдвое ниже
+                  (0,5 / 0,05 / 3), у Luna — впятеро (0,2 / 0,02 / 1,2), у 5.4-mini —
+                  0,15 / 0,015 / 0,9, Spark бесплатен. Fast умножает результат на 2,5
+                  (5.5 и 5.6) или на 2 (5.4).
+                </p>
+                <p><b>cr</b> — официальные «кредиты» Codex, ПТЭ / 8000.</p>
+                <p>
+                  <b>$</b> — столько же токенов стоило бы по ключу API: например, если встроить
+                  Codex в коммерческий продукт. cr / 25.
+                </p>
+                <p><b>₽</b> — <span data-exchange-rate-hint>доллары по официальному курсу ЦБ РФ.</span></p>
+                <p class="setting-note-aside">
+                  У задач Claude базой служит цена API Anthropic за те же токены; в cr она
+                  переводится тем же курсом 25 cr = $1.
+                </p>
+              </div>
+            </details>
           </div>
         </div>
       </section>

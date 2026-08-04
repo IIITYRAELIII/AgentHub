@@ -373,6 +373,11 @@ test("general settings and current-dialog settings stay separate", () => {
   assert.match(html, /data-usage-unit="rub">₽<\/button>/u);
   assert.match(html, /data-usage-unit="pte"/u);
   assert.match(html, /data-exchange-rate-hint/u);
+  /* Формулы единиц занимают несколько строк, поэтому лежат в свёрнутой справке. */
+  assert.match(html, /<details class="setting-note">\s*<summary>Как считается расход<\/summary>/u);
+  assert.doesNotMatch(html, /<details class="setting-note" open>/u);
+  assert.match(html, /<b>cr<\/b> — официальные «кредиты» Codex, ПТЭ \/ 8000\./u);
+  assert.match(app, /`курс ЦБ РФ \$\{spacedNumber\(usdRubRate, 4\)\} за \$1/u);
   assert.match(app, /agent-hub-token-breakdown/u);
   assert.match(app, /agent-hub-group-claude/u);
   assert.match(app, /agent-hub-usage-unit/u);

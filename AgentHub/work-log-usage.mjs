@@ -248,14 +248,35 @@ function alignUsagePercent(text) {
   );
 }
 
-function highlightUsageUnits(text) {
+/* Показанный текст округлён до одного знака и сжат до kcr/Mcr, поэтому клиент не
+   может восстановить из него точное число при переходе в $, ₽ или ПТЭ. Точное
+   значение едет рядом в data-usage-credits. */
+function highlightUsageUnits(text, credits = Number.NaN) {
+  const exact = Number(credits);
+  const usageCredits = Number.isFinite(exact) && exact >= 0
+    ? ` data-usage-credits="${escapeHtmlAttribute(String(exact))}"`
+    : "";
   return String(text).replace(
     /(\d+(?:[  ]\d{3})*(?:,\d+)? (Gcr|Mcr|kcr|cr))/gu,
     (match, _value, unit) => {
       const level = unit === "cr" ? "kilo" : unit === "kcr" ? "mega" : "high";
-      return `<span data-${level}-usage>${match}</span>`;
+      return `<span data-${level}-usage${usageCredits}>${match}</span>`;
     },
   );
+}
+
+const BREAKDOWN_FIELD_BY_LABEL = new Map([
+  ["Вход", "input"],
+  ["Кэш", "cache"],
+  ["Выход", "output"],
+  ["Думы", "reasoning"],
+  ["ImageGen", "estimate"],
+]);
+
+function breakdownPartCredits(part, breakdown) {
+  const label = String(part).match(/^\s*([^:<]+):/u)?.[1]?.trim();
+  const field = label ? BREAKDOWN_FIELD_BY_LABEL.get(label) : null;
+  return field ? Number(breakdown?.[field] ?? 0) : Number.NaN;
 }
 
 function markUsageLabel(text) {
@@ -267,21 +288,25 @@ function markUsageLabel(text) {
 
 function formatTaskUsageDetails(creditBreakdown, dayCredits) {
   const [total, ...breakdown] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
-  const totalHtml = highlightUsageUnits(alignUsagePercent(markUsageLabel(total))).replace(
-    /(<span\b[^>]*data-(?:kilo|mega|high)-usage)/u,
-    `$1 data-usage-credits="${escapeHtmlAttribute(String(creditBreakdown.total))}"`,
+  const totalHtml = highlightUsageUnits(
+    alignUsagePercent(markUsageLabel(total)),
+    creditBreakdown.total,
   );
   return "<details data-task-usage-details>"
     + `<summary data-task-usage>${totalHtml}</summary>`
     + `<span data-task-usage-breakdown>${breakdown
-      .map((part) => `<span data-task-usage-part>${highlightUsageUnits(alignUsagePercent(part))}</span>`)
+      .map((part) => `<span data-task-usage-part>${
+        highlightUsageUnits(alignUsagePercent(part), breakdownPartCredits(part, creditBreakdown))
+      }</span>`)
       .join("")}</span></details>\n`;
 }
 
 function formatDayUsageBreakdown(creditBreakdown) {
   const [, ...breakdown] = formatWorkLogUsage(creditBreakdown).split("<br>");
   return `<span data-day-usage-breakdown>${breakdown
-    .map((part) => `<span data-day-usage-part>${highlightUsageUnits(alignUsagePercent(part))}</span>`)
+    .map((part) => `<span data-day-usage-part>${
+      highlightUsageUnits(alignUsagePercent(part), breakdownPartCredits(part, creditBreakdown))
+    }</span>`)
     .join("")}</span>`;
 }
 
@@ -381,9 +406,9 @@ function formatTurnEntry(
     ? "нет данных"
     : !breakdown.priced && recordTotal <= 0
       ? "нет тарифа"
-      : highlightUsageUnits(formatCredits(recordTotal));
+      : highlightUsageUnits(formatCredits(recordTotal), recordTotal);
   const credits = displayedTotal > 0
-    ? highlightUsageUnits(formatCredits(displayedTotal))
+    ? highlightUsageUnits(formatCredits(displayedTotal), displayedTotal)
     : ownCredits;
   const share = taskCredits > 0 && displayedTotal > 0
     ? `${Math.round(displayedTotal / taskCredits * 100)}%`
@@ -1322,10 +1347,7 @@ function projectDaySection(section, date, turns, recordsById, open, includeClaud
   const summary = dayCredits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
       + `<span data-day-usage><span data-usage-label>Итого</span> ${
-        highlightUsageUnits(formatCredits(dayCredits)).replace(
-          /^(<span\b)/u,
-          `$1 data-usage-credits="${escapeHtmlAttribute(String(dayCredits))}"`,
-        )
+        highlightUsageUnits(formatCredits(dayCredits), dayCredits)
       }</span>`
       + `${formatDayUsageBreakdown(dayBreakdown)}</span></summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
