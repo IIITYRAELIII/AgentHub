@@ -93,7 +93,15 @@ test("provider discovery and catalog merge have one application owner", async ()
 test("shared task mutations enter through one application command bus", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   assert.equal((source.match(/new ApplicationCommandBus\s*\(/g) ?? []).length, 1);
-  for (const command of ["task.create", "task.rename", "task.archive"]) {
+  for (const command of [
+    "task.select",
+    "task.create",
+    "task.rename",
+    "task.archive",
+    "settings.update",
+    "run.cancel",
+    "approval.resolve",
+  ]) {
     assert.equal(source.includes(`.register("${command}"`), true, command);
   }
   assert.equal(source.includes("clientId: `telegram:"), true);

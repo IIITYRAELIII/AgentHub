@@ -82,9 +82,9 @@ thread консервируется, создаёт handoff и передаёт 
 | A2 | ✅ | `RuntimeRestartController` с явным восстановлением старого процесса при неудачной замене. |
 | A3 | ✅ | `TaskSelectionStore` — единственный владелец provider/project/thread/title; обработчики используют атомарные команды и checkpoint rollback, изменения имеют revision. |
 | A4 | ✅ | `ProviderTaskCatalogBuilder` владеет параллельным discovery, durable fallback, изоляцией ошибок источников и merge с managed runs; `TaskCatalogService` владеет кэшем, revision и coalescing. Provider-specific transport остаётся до A6. |
-| A5 | 🟡 | `ApplicationCommandBus` уже объединяет task create/rename/archive для Telegram/Desktop/Mini App, требует `clientId`, явную цель и сериализует мутации между клиентами; selection, runs, approvals и settings ещё переводятся. Адресация предпочитает будущий `hubTaskId`, а provider thread ID остаётся compatibility ref. |
+| A5 | ✅ | `ApplicationCommandBus` объединяет selection, task create/rename/archive, settings, run cancel и approvals для Telegram/Desktop/Mini App; команды требуют `clientId`, task-мутации — явную цель, конфликтующие операции сериализуются между клиентами. Адресация предпочитает будущий `hubTaskId`, а provider thread ID остаётся compatibility ref. Запуск/steer/deferred input переходят вместе с `RunCoordinator` на A7. |
 | A6 | ⬜ | Общий `AgentProvider` port и адаптеры Codex/Claude. |
-| A7 | ⬜ | `RunCoordinator`: единая state machine запуска, наблюдения, отмены, recovery и terminal delivery. |
+| A7 | ⬜ | `RunCoordinator`: единая state machine запуска, steer/deferred input, наблюдения, recovery и terminal delivery; cancel уже входит через общий command bus A5. |
 | A8 | ⬜ | Выделить bootstrap в `agent-hub-main.mjs`; оставить composition root без бизнес-правил. |
 
 Каждый этап должен сохранять внешний протокол, получать отдельные contract-тесты

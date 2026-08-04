@@ -3169,23 +3169,37 @@ async function desktopSelectTask(params, context = null) {
   if (!['codex', 'claude'].includes(provider) || !selectedThreadId) {
     throw new Error("Укажите корректную задачу");
   }
-  const entry = taskCatalog.find((item) => item.provider === provider && item.threadId === selectedThreadId);
-  void refreshTaskCatalog().catch((error) => {
-    console.warn(`Cannot refresh task catalog after Desktop selection: ${error.message}`);
-  });
+  let entry = taskCatalog.find((item) => item.provider === provider && item.threadId === selectedThreadId);
+  if (!entry) {
+    entry = (await refreshTaskCatalog()).find((item) => (
+      item.provider === provider && item.threadId === selectedThreadId
+    ));
+  } else {
+    void refreshTaskCatalog().catch((error) => {
+      console.warn(`Cannot refresh task catalog after task selection: ${error.message}`);
+    });
+  }
   if (!entry) throw new Error("Задача не найдена в локальном каталоге");
-  await activateMessageBinding({
+  const activation = await activateMessageBinding({
     provider: entry.provider,
     projectRoot: entry.projectRoot,
     threadId: entry.threadId,
     taskTitle: entry.title,
   });
   markDesktopTaskRead(entry, context);
-  return desktopSnapshot({}, context);
+  return {
+    ...await desktopSnapshot({}, context),
+    selectionChanged: activation.changed,
+  };
 }
 
 async function desktopOpenTask(params, context = null) {
-  const snapshot = await desktopSelectTask(params, context);
+  const snapshot = await dispatchApplicationCommand(
+    "task.select",
+    params,
+    context,
+    { target: commandTaskTarget(params) },
+  );
   return {
     snapshot,
     history: await desktopTaskHistory({
@@ -3223,13 +3237,18 @@ async function desktopOpenTurn(params, context = null) {
   ) {
     throw new Error("Ход не относится к выбранной задаче");
   }
-  await activateMessageBinding({
-    provider: entry.provider,
-    projectRoot: entry.projectRoot,
-    threadId: entry.threadId,
-    taskTitle: entry.title,
-  });
-  markDesktopTaskRead(entry, context);
+  await dispatchApplicationCommand(
+    "task.select",
+    { taskTitle: entry.title },
+    context,
+    {
+      target: commandTaskTarget({
+        provider: entry.provider,
+        projectRoot: entry.projectRoot,
+        threadId: entry.threadId,
+      }),
+    },
+  );
   return {
     snapshot: await desktopSnapshot({}, context),
     history: await desktopTaskHistory({
@@ -3325,17 +3344,22 @@ function desktopAttachmentDescriptors(files) {
 async function desktopUpdateSetting(params) {
   const name = String(params.name ?? "").trim();
   const value = String(params.value ?? "").trim();
+  const taskScoped = ["model", "reasoning", "mode"].includes(name);
+  if (taskScoped && !catalogEntryIsSelected(params, selectedTask())) {
+    throw new Error("Настройка относится уже не к выбранной задаче; обновите карточку");
+  }
+  let changed = false;
   if (name === "provider") {
-    await switchProvider(value);
+    ({ changed } = await switchProvider(value));
   } else if (name === "model") {
     if (isCodex()) {
       if (threadId && contextCompactions.isRunning(threadId)) {
         throw new Error("Дождитесь завершения свёртки контекста перед сменой модели");
       }
-      switchCodexModel(value);
+      ({ changed } = switchCodexModel(value));
       await updateActiveCodexThreadSettings();
     } else {
-      switchModel(value);
+      ({ changed } = switchModel(value));
       await saveState();
     }
   } else if (name === "reasoning") {
@@ -3344,22 +3368,31 @@ async function desktopUpdateSetting(params) {
       if (threadId && contextCompactions.isRunning(threadId)) {
         throw new Error("Дождитесь завершения свёртки контекста перед сменой Reasoning");
       }
+      changed = codexReasoningEffort !== value;
       codexReasoningEffort = value;
       await updateActiveCodexThreadSettings();
     } else {
+      changed = claudeReasoningEffort !== value;
       claudeReasoningEffort = value;
       await saveState();
     }
   } else if (name === "mode") {
     if (!CODEX_COLLABORATION_MODES.includes(value)) throw new Error("Неизвестный режим работы");
-    if (isCodex()) codexCollaborationMode = value;
-    else claudeCollaborationMode = value;
+    if (isCodex()) {
+      changed = codexCollaborationMode !== value;
+      codexCollaborationMode = value;
+    } else {
+      changed = claudeCollaborationMode !== value;
+      claudeCollaborationMode = value;
+    }
     await saveState();
   } else if (name === "approvalMode") {
     if (value !== "auto" && value !== "manual") throw new Error("Неизвестный режим подтверждений");
+    changed = autoApprove !== (value === "auto");
     autoApprove = value === "auto";
   } else if (name === "includeClaudeUsage") {
     if (value !== "true" && value !== "false") throw new Error("Неизвестный режим учёта Claude");
+    changed = includeClaudeUsage !== (value === "true");
     includeClaudeUsage = value === "true";
     workLogUsageStore.setIncludeClaudeUsage(includeClaudeUsage);
     await workLogUsageStore.project(null, {
@@ -3370,11 +3403,14 @@ async function desktopUpdateSetting(params) {
   } else if (name === "project") {
     const index = PROJECTS.findIndex((project) => samePath(project.path, value));
     if (index < 0) throw new Error("Проект не найден");
-    await switchProject(index);
+    ({ changed } = await switchProject(index));
   } else {
     throw new Error("Неизвестная настройка Desktop-приложения");
   }
-  return desktopSnapshot({ refresh: true });
+  return {
+    ...await desktopSnapshot({ refresh: true }),
+    setting: { name, value, changed },
+  };
 }
 
 async function desktopRenameTask(params) {
@@ -3511,10 +3547,37 @@ async function desktopCancelRun(params) {
   const target = await desktopMessageTarget(params);
   const run = taskRuns.forTask(target);
   if (!run) return { accepted: false, message: "В выбранной задаче сейчас ничего не выполняется" };
+  if (run.observer) {
+    if (run.provider === "codex") {
+      try {
+        await interruptCodexRun(run);
+      } catch (error) {
+        console.warn(`Cannot interrupt observed Codex task ${run.threadId}:`, error.message);
+        const failure = await codexInterruptFailureResult(run, error);
+        setProgressStage(run, failure.message);
+        return {
+          ...failure,
+          message: `${failure.message}. Параллельный ход не будет запущен.`,
+        };
+      }
+    }
+    dismissedExternalTasks.add(run);
+    const stopRequested = run.provider === "codex";
+    await finishProgress(run, stopRequested
+      ? "Остановка запрошена; наблюдение отключено."
+      : "Наблюдение отключено; внешний ход продолжает работу.");
+    await completeRun(run);
+    return {
+      accepted: true,
+      message: stopRequested
+        ? "Запрошена остановка этой задачи. Пока внешний ход фактически активен, новые сообщения будут сохранены, а не запущены параллельно."
+        : "Отключил наблюдение. Внешний Claude продолжает работу; новые сообщения будут сохранены до его завершения.",
+    };
+  }
   if (run.provider === "codex") {
     try {
       await interruptCodexRun(run);
-      return { accepted: true, message: "Остановка Codex запрошена" };
+      return { accepted: true, message: "Запрошена остановка этой задачи." };
     } catch (error) {
       console.warn(`Cannot interrupt Codex task ${run.threadId}:`, error.message);
       return codexInterruptFailureResult(run, error);
@@ -3522,9 +3585,16 @@ async function desktopCancelRun(params) {
   }
   if (run.process || processIsAlive(run.pid)) {
     if (!await stopClaudeRunProcess(run)) throw new Error("Не удалось остановить дерево процессов Claude");
-    return { accepted: true, message: "Claude остановлен" };
+    setBoundedMapValue(cancelledManagedClaudeTasks, taskRunKey(run), Date.now(), 200);
+    await saveState();
+    return { accepted: true, message: "Запрошена остановка этой задачи." };
   }
-  return { accepted: false, message: "Внешний Claude нельзя остановить из Agent Hub Server" };
+  await finishProgress(run, "Наблюдение отключено; внешний Claude продолжает работу.");
+  await completeRun(run);
+  return {
+    accepted: false,
+    message: "Отключил наблюдение. Остановить внешний процесс Claude из этой сессии Agent Hub не может.",
+  };
 }
 
 async function desktopResolveApproval(params) {
@@ -3551,7 +3621,7 @@ function withDeferredInputAction(id, action, operation) {
   });
 }
 
-async function desktopDeferredInput(params) {
+async function desktopDeferredInput(params, context = null) {
   const id = String(params.id ?? "");
   const action = String(params.action ?? "");
   if (!id) throw new Error("Не указан идентификатор сообщения");
@@ -3651,7 +3721,7 @@ async function desktopDeferredInput(params) {
   };
   if (action === "force") {
     if (item.allowForce !== true) throw new Error("Принудительный запуск для этого сообщения не разрешён");
-    await activateMessageBinding(binding);
+    await selectTaskFromBinding(binding, commandClientContext(context, "desktop"));
     const outcome = await startTurn(
       item.input,
       item.temporaryFiles ?? [],
@@ -3683,8 +3753,12 @@ async function desktopDeferredInput(params) {
     return { accepted: true, message: "Сообщение принудительно запущено" };
   }
   if (action === "new") {
-    await activateMessageBinding(binding);
-    await createThread();
+    await selectTaskFromBinding(binding, commandClientContext(context, "desktop"));
+    await dispatchApplicationCommand(
+      "task.create",
+      { provider: binding.provider },
+      commandClientContext(context, "desktop"),
+    );
     const outcome = await startTurn(item.input, item.temporaryFiles ?? [], {
       forceSpeechButton: item.forceSpeechButton === true,
       persistentFiles: item.persistentFiles === true,
@@ -3986,6 +4060,12 @@ function commandTaskTarget(params) {
   };
 }
 
+function settingCommandTarget(params) {
+  const name = String(params?.name ?? "").trim();
+  if (!["model", "reasoning", "mode"].includes(name)) return null;
+  return commandTaskTarget({ ...selectedTask(), ...params });
+}
+
 function telegramMessageCommandContext(message) {
   return {
     source: "telegram",
@@ -4006,7 +4086,26 @@ function telegramCallbackCommandContext(callback) {
   };
 }
 
+function dispatchTelegramSetting(callback, name, value) {
+  const params = { name, value };
+  return dispatchApplicationCommand(
+    "settings.update",
+    params,
+    telegramCallbackCommandContext(callback),
+    { target: settingCommandTarget(params) },
+  );
+}
+
 const applicationCommandBus = new ApplicationCommandBus()
+  .register("task.select", {
+    mutating: true,
+    target: "required",
+    lane: "global",
+    handler: ({ payload, target, context }) => desktopSelectTask(
+      { ...payload, ...target },
+      context,
+    ),
+  })
   .register("task.create", {
     mutating: true,
     target: "none",
@@ -4024,6 +4123,26 @@ const applicationCommandBus = new ApplicationCommandBus()
     target: "required",
     lane: "global",
     handler: ({ payload, target }) => desktopArchiveTask({ ...payload, ...target }),
+  })
+  .register("settings.update", {
+    mutating: true,
+    target: "optional",
+    lane: "global",
+    handler: ({ payload, target }) => desktopUpdateSetting({ ...payload, ...target }),
+  })
+  .register("run.cancel", {
+    mutating: true,
+    target: "required",
+    lane: "target",
+    handler: ({ payload, target }) => desktopCancelRun({ ...payload, ...target }),
+  })
+  .register("approval.resolve", {
+    mutating: true,
+    target: "optional",
+    lane: "global",
+    handler: ({ payload }) => payload.callback
+      ? approvalController.handleCallback(payload.callback)
+      : desktopResolveApproval(payload),
   });
 
 function dispatchApplicationCommand(type, params, context, { target = null } = {}) {
@@ -4033,6 +4152,15 @@ function dispatchApplicationCommand(type, params, context, { target = null } = {
     target,
     context: commandClientContext(context, "agent-hub"),
   });
+}
+
+function selectTaskFromBinding(binding, context = {}) {
+  return dispatchApplicationCommand(
+    "task.select",
+    { taskTitle: binding?.taskTitle },
+    context,
+    { target: commandTaskTarget(binding) },
+  );
 }
 
 const {
@@ -4047,12 +4175,22 @@ const {
     search: desktopSearch,
     "open-task": desktopOpenTask,
     "open-turn": desktopOpenTurn,
-    "select-task": desktopSelectTask,
+    "select-task": (params, context) => dispatchApplicationCommand(
+      "task.select",
+      params,
+      commandClientContext(context, "desktop"),
+      { target: commandTaskTarget(params) },
+    ),
     "send-message": desktopMessageController.sendMessage,
     "new-task": (params, context) => dispatchApplicationCommand(
       "task.create", params, commandClientContext(context, "desktop"),
     ),
-    "update-setting": desktopUpdateSetting,
+    "update-setting": (params, context) => dispatchApplicationCommand(
+      "settings.update",
+      params,
+      commandClientContext(context, "desktop"),
+      { target: settingCommandTarget(params) },
+    ),
     "rename-task": (params, context) => dispatchApplicationCommand(
       "task.rename",
       params,
@@ -4066,8 +4204,17 @@ const {
       { target: commandTaskTarget(params) },
     ),
     "task-diff": desktopTaskDiff,
-    "cancel-run": desktopCancelRun,
-    "resolve-approval": desktopResolveApproval,
+    "cancel-run": (params, context) => dispatchApplicationCommand(
+      "run.cancel",
+      params,
+      commandClientContext(context, "desktop"),
+      { target: commandTaskTarget(params) },
+    ),
+    "resolve-approval": (params, context) => dispatchApplicationCommand(
+      "approval.resolve",
+      params,
+      commandClientContext(context, "desktop"),
+    ),
     "deferred-input": desktopDeferredInput,
     "status-details": desktopStatusDetails,
     "speak-last-answer": desktopSpeakLastAnswer,
@@ -4223,37 +4370,15 @@ async function switchProvider(target) {
   return { changed: true };
 }
 
-async function resumeThread(selectedThreadId, { notify = true } = {}) {
-  if (selectedThreadId === threadId) {
-    if (notify) await sendTaskAlreadySelectedNotification();
-    return true;
-  }
-  if (!isCodex()) {
-    selectionStore.setThread(selectedThreadId, {
-      provider: "claude",
-      title: `Сессия Claude · ${selectedThreadId.slice(0, 8)}`,
-    });
-    latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
-    await saveState();
-    if (notify) await sendMessage(`Выбрана сессия Claude: ${threadId}`);
-    return true;
-  }
-  rememberCodexTaskSettings();
-  const result = await sendRpc("thread/resume", {
+async function resumeThread(selectedThreadId, { notify = true, context = {} } = {}) {
+  const result = await selectTaskFromBinding({
+    provider: activeProvider,
+    projectRoot: activeProjectRoot,
     threadId: selectedThreadId,
-    ...codexThreadSandboxSettings(config.codexSandboxMode),
-  });
-  if (!isWorkspaceThread(result.thread ?? {})) {
-    throw new Error("задача относится к другой активной папке");
-  }
-  selectionStore.setThread(result.thread?.id ?? selectedThreadId, { provider: "codex" });
-  restoreCodexTaskSettings(threadId);
-  applyCodexThreadSettings(threadId, result);
-  selectionStore.setTitle(await resolveResumedCodexThreadTitle(threadId, result.thread));
-  latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
-  await saveState();
+  }, context);
   if (notify) {
-    await sendTaskSwitchNotification();
+    if (result.selectionChanged) await sendTaskSwitchNotification();
+    else await sendTaskAlreadySelectedNotification();
   }
   return true;
 }
@@ -7229,23 +7354,20 @@ async function dismissCallbackMenu(message) {
 
 async function selectCatalogTask(callback, entry) {
   const targetChatId = callback.message.chat.id;
-  const alreadySelected = catalogEntryIsSelected(entry, selectedTask());
   await telegram("answerCallbackQuery", {
     callback_query_id: callback.id,
-    text: alreadySelected ? "Эта задача уже выбрана" : "Переключаю задачу…",
+    text: "Переключаю задачу…",
   });
-  if (!alreadySelected) {
-    await activateMessageBinding({
-      provider: entry.provider,
-      projectRoot: entry.projectRoot,
-      threadId: entry.threadId,
-      taskTitle: entry.title,
-    });
-  }
+  const selected = await selectTaskFromBinding({
+    provider: entry.provider,
+    projectRoot: entry.projectRoot,
+    threadId: entry.threadId,
+    taskTitle: entry.title,
+  }, telegramCallbackCommandContext(callback));
   await Promise.all([
-    alreadySelected
-      ? sendTaskAlreadySelectedNotification({ targetChatId })
-      : sendTaskSwitchNotification({ targetChatId }),
+    selected.selectionChanged
+      ? sendTaskSwitchNotification({ targetChatId })
+      : sendTaskAlreadySelectedNotification({ targetChatId }),
     dismissCallbackMenu(callback.message),
   ]);
 }
@@ -7319,8 +7441,8 @@ async function dispatchTelegramCallback(callback, route) {
         return;
       }
       if (action === "show") {
-        const activated = await activateMessageBinding(binding);
-        if (activated.changed) {
+        const selected = await selectTaskFromBinding(binding, telegramCallbackCommandContext(callback));
+        if (selected.selectionChanged) {
           await sendTaskSwitchNotification({
             targetChatId: item.chatId,
             showLastMessage: false,
@@ -7344,7 +7466,7 @@ async function dispatchTelegramCallback(callback, route) {
 
       if (action === "force") {
         if (item.allowForce !== true) throw new Error("принудительный запуск для этого сообщения не разрешён");
-        await activateMessageBinding(binding);
+        await selectTaskFromBinding(binding, telegramCallbackCommandContext(callback));
         const outcome = await startTurn(
           item.input,
           item.temporaryFiles ?? [],
@@ -7376,8 +7498,12 @@ async function dispatchTelegramCallback(callback, route) {
         return;
       }
 
-      await activateMessageBinding(binding);
-      await createThread();
+      await selectTaskFromBinding(binding, telegramCallbackCommandContext(callback));
+      await dispatchApplicationCommand(
+        "task.create",
+        { provider: binding.provider },
+        telegramCallbackCommandContext(callback),
+      );
       const newTaskTitle = activeThreadTitle;
       const outcome = await startTurn(item.input, item.temporaryFiles ?? [], {
         forceSpeechButton: item.forceSpeechButton === true,
@@ -7483,7 +7609,7 @@ async function dispatchTelegramCallback(callback, route) {
     const count = taskViewAction?.count
       ?? Math.max(1, Math.min(Number(historyMatch.count) || 1, 50));
     try {
-      await activateMessageBinding(binding);
+      await selectTaskFromBinding(binding, telegramCallbackCommandContext(callback));
       if (completedOnly) {
         await showLastTaskMessage(binding, targetChatId, { count });
       } else {
@@ -7512,8 +7638,8 @@ async function dispatchTelegramCallback(callback, route) {
       text: "Открываю задачу…",
     });
     try {
-      const activated = await activateMessageBinding(binding);
-      if (activated.changed) {
+      const selected = await selectTaskFromBinding(binding, telegramCallbackCommandContext(callback));
+      if (selected.selectionChanged) {
         await sendTaskSwitchNotification({
           targetChatId,
           showLastMessage: false,
@@ -7527,7 +7653,7 @@ async function dispatchTelegramCallback(callback, route) {
     return;
   }
   if (route.kind === "approval-mode") {
-    autoApprove = route.mode === "auto";
+    await dispatchTelegramSetting(callback, "approvalMode", route.mode);
     await telegram("answerCallbackQuery", {
       callback_query_id: callback.id,
       text: autoApprove ? "Автоподтверждение включено" : "Ручной режим включён",
@@ -7542,19 +7668,21 @@ async function dispatchTelegramCallback(callback, route) {
   }
   if (route.kind === "project") {
     try {
-      const switched = await switchProject(route.index);
+      const project = PROJECTS[route.index];
+      if (!project) throw new Error("unknown project");
+      const result = await dispatchTelegramSetting(callback, "project", project.path);
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
-        text: switched.changed ? "Папка изменена" : "Эта папка уже активна",
+        text: result.setting.changed ? "Папка изменена" : "Эта папка уже активна",
       });
       await telegram("editMessageReplyMarkup", {
         chat_id: callback.message.chat.id,
         message_id: callback.message.message_id,
         reply_markup: { inline_keyboard: [] },
       });
-      if (switched.changed) {
+      if (result.setting.changed) {
         await sendMessage(
-          `Активная папка: ${switched.project.name}\n${switched.project.path}\nСоздан новый контекст ${providerTitle()}.`,
+          `Активная папка: ${project.name}\n${project.path}\nСоздан новый контекст ${providerTitle()}.`,
         );
       }
     } catch (error) {
@@ -7569,17 +7697,17 @@ async function dispatchTelegramCallback(callback, route) {
   }
   if (route.kind === "engine") {
     try {
-      const switched = await switchProvider(route.provider);
+      const result = await dispatchTelegramSetting(callback, "provider", route.provider);
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
-        text: switched.changed ? "Агент переключён" : "Этот агент уже активен",
+        text: result.setting.changed ? "Агент переключён" : "Этот агент уже активен",
       });
       await telegram("editMessageReplyMarkup", {
         chat_id: callback.message.chat.id,
         message_id: callback.message.message_id,
         reply_markup: { inline_keyboard: [] },
       });
-      if (switched.changed) {
+      if (result.setting.changed) {
         await sendMessage(`Активный агент: ${providerTitle()}\nПроект: ${activeProject().name}`);
       }
     } catch (error) {
@@ -7594,21 +7722,17 @@ async function dispatchTelegramCallback(callback, route) {
   }
   if (route.kind === "codex-model") {
     try {
-      if (threadId && contextCompactions.isRunning(threadId)) {
-        throw new Error("дождитесь завершения свёртки контекста");
-      }
-      const switched = switchCodexModel(route.model);
-      await updateActiveCodexThreadSettings();
+      const result = await dispatchTelegramSetting(callback, "model", route.model);
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
-        text: switched.changed ? "Codex model changed" : "This Codex model is already selected",
+        text: result.setting.changed ? "Codex model changed" : "This Codex model is already selected",
       });
       await telegram("editMessageReplyMarkup", {
         chat_id: callback.message.chat.id,
         message_id: callback.message.message_id,
         reply_markup: { inline_keyboard: [] },
       });
-      if (switched.changed) {
+      if (result.setting.changed) {
         await sendMessage(`Codex model: ${codexModelLabel(codexModel)}`);
       }
     } catch (error) {
@@ -7623,13 +7747,9 @@ async function dispatchTelegramCallback(callback, route) {
   }
   if (route.kind === "codex-reasoning") {
     const value = route.value;
-    const changed = value !== codexReasoningEffort;
+    let result;
     try {
-      if (threadId && contextCompactions.isRunning(threadId)) {
-        throw new Error("дождитесь завершения свёртки контекста");
-      }
-      codexReasoningEffort = value;
-      await updateActiveCodexThreadSettings();
+      result = await dispatchTelegramSetting(callback, "reasoning", value);
     } catch (error) {
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
@@ -7641,81 +7761,74 @@ async function dispatchTelegramCallback(callback, route) {
     }
     await telegram("answerCallbackQuery", {
       callback_query_id: callback.id,
-      text: changed ? "Reasoning изменён" : "Этот уровень уже выбран",
+      text: result.setting.changed ? "Reasoning изменён" : "Этот уровень уже выбран",
     });
     await telegram("editMessageReplyMarkup", {
       chat_id: callback.message.chat.id,
       message_id: callback.message.message_id,
       reply_markup: { inline_keyboard: [] },
     });
-    if (changed) await sendMessage(`Reasoning Codex: ${CODEX_REASONING_LABELS[codexReasoningEffort]}`);
+    if (result.setting.changed) await sendMessage(`Reasoning Codex: ${CODEX_REASONING_LABELS[codexReasoningEffort]}`);
     return;
   }
   if (route.kind === "codex-mode") {
     const value = route.value;
-    const changed = value !== codexCollaborationMode;
-    codexCollaborationMode = value;
-    await saveState();
+    const result = await dispatchTelegramSetting(callback, "mode", value);
     await telegram("answerCallbackQuery", {
       callback_query_id: callback.id,
-      text: changed ? "Режим Codex изменён" : "Этот режим уже выбран",
+      text: result.setting.changed ? "Режим Codex изменён" : "Этот режим уже выбран",
     });
     await telegram("editMessageReplyMarkup", {
       chat_id: callback.message.chat.id,
       message_id: callback.message.message_id,
       reply_markup: { inline_keyboard: [] },
     });
-    if (changed) await sendMessage(`Режим Codex: ${CODEX_COLLABORATION_MODE_LABELS[codexCollaborationMode]}`);
+    if (result.setting.changed) await sendMessage(`Режим Codex: ${CODEX_COLLABORATION_MODE_LABELS[codexCollaborationMode]}`);
     return;
   }
   if (route.kind === "claude-reasoning") {
     const value = route.value;
-    const changed = value !== claudeReasoningEffort;
-    claudeReasoningEffort = value;
-    await saveState();
+    const result = await dispatchTelegramSetting(callback, "reasoning", value);
     await telegram("answerCallbackQuery", {
       callback_query_id: callback.id,
-      text: changed ? "Reasoning изменён" : "Этот уровень уже выбран",
+      text: result.setting.changed ? "Reasoning изменён" : "Этот уровень уже выбран",
     });
     await telegram("editMessageReplyMarkup", {
       chat_id: callback.message.chat.id,
       message_id: callback.message.message_id,
       reply_markup: { inline_keyboard: [] },
     });
-    if (changed) await sendMessage(`Reasoning Claude Code: ${CODEX_REASONING_LABELS[claudeReasoningEffort]}`);
+    if (result.setting.changed) await sendMessage(`Reasoning Claude Code: ${CODEX_REASONING_LABELS[claudeReasoningEffort]}`);
     return;
   }
   if (route.kind === "claude-mode") {
     const value = route.value;
-    const changed = value !== claudeCollaborationMode;
-    claudeCollaborationMode = value;
-    await saveState();
+    const result = await dispatchTelegramSetting(callback, "mode", value);
     await telegram("answerCallbackQuery", {
       callback_query_id: callback.id,
-      text: changed ? "Режим Claude изменён" : "Этот режим уже выбран",
+      text: result.setting.changed ? "Режим Claude изменён" : "Этот режим уже выбран",
     });
     await telegram("editMessageReplyMarkup", {
       chat_id: callback.message.chat.id,
       message_id: callback.message.message_id,
       reply_markup: { inline_keyboard: [] },
     });
-    if (changed) await sendMessage(`Режим Claude Code: ${CODEX_COLLABORATION_MODE_LABELS[claudeCollaborationMode]}`);
+    if (result.setting.changed) await sendMessage(`Режим Claude Code: ${CODEX_COLLABORATION_MODE_LABELS[claudeCollaborationMode]}`);
     return;
   }
   if (route.kind === "claude-model") {
     try {
-      const switched = switchModel(route.model);
-      await saveState();
+      const result = await dispatchTelegramSetting(callback, "model", route.model);
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
-        text: switched.changed ? "Модель изменена" : "Эта модель уже выбрана",
+        text: result.setting.changed ? "Модель изменена" : "Эта модель уже выбрана",
       });
       await telegram("editMessageReplyMarkup", {
         chat_id: callback.message.chat.id,
         message_id: callback.message.message_id,
         reply_markup: { inline_keyboard: [] },
       });
-      if (switched.changed) {
+      if (result.setting.changed) {
         await sendMessage(`Модель Claude Code: ${CLAUDE_MODEL_LABELS[claudeModel]}`);
       }
     } catch (error) {
@@ -7827,7 +7940,12 @@ async function dispatchTelegramCallback(callback, route) {
     }
     return;
   }
-  if (route.kind !== "approval" || !await approvalController.handleCallback(callback)) {
+  const approvalHandled = route.kind === "approval" && await dispatchApplicationCommand(
+    "approval.resolve",
+    { callback },
+    telegramCallbackCommandContext(callback),
+  );
+  if (!approvalHandled) {
     await telegram("answerCallbackQuery", {
       callback_query_id: callback.id,
       text: "Эта кнопка устарела",
@@ -7911,7 +8029,9 @@ async function handleTelegramCommand(message, text) {
     if (!/^[0-9a-f-]+$/i.test(selectedThreadId)) {
       return sendMessage("Укажите корректный ID задачи или используйте /resume без параметров.");
     }
-    await resumeThread(selectedThreadId);
+    await resumeThread(selectedThreadId, {
+      context: telegramMessageCommandContext(message),
+    });
   } else if (text === "/rename") {
     await sendMessage("Укажите новое постоянное название: /rename Название задачи");
   } else if (text.startsWith("/rename ")) {
@@ -7948,65 +8068,17 @@ async function handleTelegramCommand(message, text) {
       },
     );
   } else if (text === "/cancel") {
-    const run = selectedRun();
-    if (!run) return sendMessage("В выбранной задаче сейчас ничего не выполняется.");
-    if (run.observer) {
-      let interruptError = null;
-      if (run.provider === "codex") {
-        try {
-          await interruptCodexRun(run);
-        } catch (error) {
-          interruptError = error;
-          console.warn(`Cannot interrupt observed Codex task ${run.threadId}:`, error.message);
-        }
-      }
-      if (run.provider === "codex" && interruptError) {
-        const failure = await codexInterruptFailureResult(run, interruptError);
-        setProgressStage(run, failure.message);
-        await sendRunMessage(
-          run,
-          `${failure.message}. Параллельный ход не будет запущен.`,
-        );
-        return;
-      }
-      dismissedExternalTasks.add(run);
-      const stopRequested = run.provider === "codex";
-      await finishProgress(run, stopRequested
-        ? "Остановка запрошена; наблюдение отключено."
-        : "Наблюдение отключено; внешний ход продолжает работу.");
-      await completeRun(run);
-      await sendRunMessage(run, stopRequested
-        ? "Запрошена остановка этой задачи. Пока внешний ход фактически активен, новые сообщения будут сохранены, а не запущены параллельно."
-        : "Отключил наблюдение. Внешний Claude продолжает работу; новые сообщения будут сохранены до его завершения.");
-      return;
-    }
-    if (run.provider === "codex") {
-      try {
-        await interruptCodexRun(run);
-      } catch (error) {
-        const failure = await codexInterruptFailureResult(run, error);
-        await sendRunMessage(run, failure.message);
-        return;
-      }
-    } else if (run.process || processIsAlive(run.pid)) {
-      if (!await stopClaudeRunProcess(run)) {
-        await sendRunMessage(run, "Не удалось остановить дерево процессов Claude; задача остаётся активной.");
-        return;
-      }
-      setBoundedMapValue(
-        cancelledManagedClaudeTasks,
-        taskRunKey(run),
-        Date.now(),
-        200,
-      );
-      await saveState();
-    } else {
-      await finishProgress(run, "Наблюдение отключено; внешний Claude продолжает работу.");
-      await completeRun(run);
-      await sendRunMessage(run, "Отключил наблюдение. Остановить внешний процесс Claude из этой сессии бот не может.");
-      return;
-    }
-    await sendRunMessage(run, "Запрошена остановка этой задачи.");
+    const target = selectedTask();
+    if (!target.threadId) return sendMessage("В выбранной задаче сейчас ничего не выполняется.");
+    const run = taskRuns.forTask(target);
+    const result = await dispatchApplicationCommand(
+      "run.cancel",
+      {},
+      telegramMessageCommandContext(message),
+      { target: commandTaskTarget(target) },
+    );
+    if (run) await sendRunMessage(run, result.message);
+    else await sendMessage(result.message);
   } else if (text.startsWith("/")) {
     await sendMessage("Неизвестная команда. Используйте /help.");
   } else {
