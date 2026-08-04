@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, stat, unlink } from "node:fs/promises";
+import { mkdir, readFile, unlink } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import dns from "node:dns";
 import path from "node:path";
@@ -121,15 +121,12 @@ import {
 } from "./progress-heartbeat.mjs";
 import {
   createManagedTaskRun,
-  createObservedTaskRun,
   serializableTaskRun,
   shouldAutoObserveTask,
-  shouldDeliverObservedCompletion,
   TaskDismissalRegistry,
   TaskRunRegistry,
   taskRunIsActive,
   taskRunKey,
-  updateObservedResponse,
   updateTaskRunTitle,
 } from "./task-runs.mjs";
 import { recycleCodexCompactionTransport } from "./codex-compaction-transport.mjs";
@@ -230,7 +227,7 @@ import { TelegramStatusController } from "./telegram-status-controller.mjs";
 import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "./codex-invocation.mjs";
 import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
 import { TaskProgressController } from "./task-progress-controller.mjs";
-import { TaskObserverController } from "./task-observer-controller.mjs";
+import { TaskObservationService } from "./task-observation-service.mjs";
 import {
   DeferredInputController,
   isRetryableDeferredLaunchError,
@@ -288,6 +285,8 @@ import {
 } from "./context-compaction-tracker.mjs";
 import { RunProgressPresentation } from "./run-progress-presentation.mjs";
 import { AgentHubStartupCoordinator } from "./agent-hub-startup-coordinator.mjs";
+import { RuntimeTimerCoordinator } from "./runtime-timer-coordinator.mjs";
+import { RunJournalService } from "./run-journal-service.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -501,6 +500,14 @@ const runtimeNotificationController = new RuntimeNotificationController({
   runProcess: captureProcess,
   stopProcess: (worker) => stopProcessTree(worker.pid),
 });
+const runJournal = new RunJournalService({
+  usageStore: workLogUsageStore,
+  findProject,
+  defaultProjectRoot: config.projectRoot,
+  projectionProjectRoots: globalWorkLogProjectRoots,
+  legacyLedgerFile: legacyWorkLogLedgerFile,
+  legacyWorkLogFile,
+});
 const runtimeCommandServer = new RuntimeCommandServer({
   runtimeRoot: runtimeCommandRoot,
   authorize: authorizeRuntimeCommand,
@@ -550,14 +557,8 @@ let restartRequest = null;
 let processingUpdateId = null;
 let stateWriteQueue = Promise.resolve();
 let bindingWriteQueue = Promise.resolve();
-let deliveryOutboxTimer = null;
-let deliveryOutboxTimerDueAt = 0;
-let selectedTaskWatchTimer = null;
 let selectedTaskWatchInFlight = false;
-let codexTerminalAuditTimer = null;
-let rateLimitPollTimer = null;
-let codexRolloutContextTimer = null;
-const codexCompactionCleanupTimers = new Map();
+const runtimeTimers = new RuntimeTimerCoordinator();
 const reconcilingCodexTerminalTurns = new Set();
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
 const COMPLETED_CODEX_TERMINAL_GRACE_MS = 10_000;
@@ -738,7 +739,6 @@ const queuedInputs = new Map();
 const desktopMessageReceipts = new MessageReceiptRegistry();
 const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
 await taskDiffs.load();
-const lastTaskMessages = new Map();
 const lastSeenTaskTurnIds = new Map();
 const statusMediaFileIds = new Map();
 const uiContextNonce = randomUUID();
@@ -1707,21 +1707,15 @@ function sendTaskAlreadySelectedNotification(options = {}) {
 }
 
 function rememberLastTaskMessage(run, text) {
-  const value = String(text ?? "").trim();
-  if (!run?.threadId || !value) return;
-  setBoundedMapValue(lastTaskMessages, taskRunKey(run), {
-    text: value,
-    updatedAt: new Date().toISOString(),
-    turnId: String(run.turnId ?? "").trim() || null,
-  }, 500);
+  return runJournal.rememberLastMessage(run, text);
 }
 
 function savedLastTaskMessage(task) {
-  return lastTaskMessages.get(taskRunKey(task))?.text ?? "";
+  return runJournal.lastMessage(task);
 }
 
 function savedLastTaskMessageRecord(task) {
-  return lastTaskMessages.get(taskRunKey(task)) ?? null;
+  return runJournal.lastMessageRecord(task);
 }
 
 function deferredTaskMessageAtMs(task) {
@@ -1845,48 +1839,7 @@ function changedFilesForRun(run) {
 }
 
 async function projectTurnUsageToWorkLog(completion, { title = "", body = "" } = {}) {
-  const workLogId = completion?.message?.workLogId;
-  const project = findProject(completion.projectRoot);
-  if (!project) throw new Error(`Cannot find journal project for ${completion.projectRoot}`);
-  const fields = {
-    provider: completion.provider,
-    threadId: completion.threadId,
-    turnId: completion.turnId,
-    usage: completion.usage,
-    usageReported: completion.usageReported,
-    estimatedCredits: completion.estimatedCredits,
-    estimateKind: completion.estimateKind,
-    model: completion.model,
-    serviceTier: completion.serviceTier,
-    taskThreadId: completion.taskThreadId,
-    parentThreadId: completion.parentThreadId,
-    parentTurnId: completion.parentTurnId,
-    aggregateOnly: completion.aggregateOnly,
-    provisional: completion.provisional,
-    taskTitle: completion.taskTitle,
-    title: title || (body ? conciseTurnTitle(body, completion.status) : ""),
-    body,
-    prompt: completion.prompt,
-    changedFiles: completion.changedFiles,
-    diff: completion.diff,
-    skillsUsed: completion.skillsUsed,
-    mcpCalls: completion.mcpCalls,
-    toolMetricsKnown: completion.toolMetricsKnown,
-    startedAt: completion.startedAt,
-    completedAt: completion.completedAt,
-    status: completion.status,
-    projectRoot: project.path,
-    projectionProjectRoots: globalWorkLogProjectRoots,
-  };
-  if (!workLogId) {
-    return workLogUsageStore.recordAutomaticAndProject({
-      ...fields,
-    });
-  }
-  return workLogUsageStore.recordAndProject({
-    ...fields,
-    workLogId,
-  });
+  return runJournal.projectTurn(completion, { title, body });
 }
 
 async function projectClaudeRunToWorkLog(run, {
@@ -2301,12 +2254,7 @@ try {
   }
   if (Number.isSafeInteger(saved.chatId)) chatId = saved.chatId;
   if (Number.isSafeInteger(saved.updateOffset) && saved.updateOffset >= 0) updateOffset = saved.updateOffset;
-  if (Array.isArray(saved.lastTaskMessages)) {
-    for (const entry of saved.lastTaskMessages) {
-      if (!Array.isArray(entry) || typeof entry[0] !== "string" || typeof entry[1]?.text !== "string") continue;
-      lastTaskMessages.set(entry[0], entry[1]);
-    }
-  }
+  runJournal.restoreLastMessages(saved.lastTaskMessages);
   if (Array.isArray(saved.lastSeenTaskTurnIds)) {
     for (const entry of saved.lastSeenTaskTurnIds.slice(-500)) {
       if (!Array.isArray(entry) || typeof entry[0] !== "string" || typeof entry[1] !== "string") continue;
@@ -2507,31 +2455,7 @@ try {
 workLogUsageStore.setIncludeClaudeUsage(includeClaudeUsage);
 
 async function initializeJournalProjection() {
-  const restoredTurnMessages = [
-    ...(Array.isArray(restoredTurnEndSnapshot.pending) ? restoredTurnEndSnapshot.pending : []),
-    ...(Array.isArray(restoredTurnEndSnapshot.completions)
-      ? restoredTurnEndSnapshot.completions.map((completion) => completion?.message)
-      : []),
-  ].filter(Boolean);
-  await workLogUsageStore.mergeTurnTexts(restoredTurnMessages).catch((error) => {
-    console.error("Cannot restore journal turn texts:", error.message);
-  });
-  let projectionReady = false;
-  try {
-    await workLogUsageStore.project(null, {
-      projectRoot: config.projectRoot,
-      projectionProjectRoots: globalWorkLogProjectRoots,
-    });
-    projectionReady = true;
-  } catch (error) {
-    console.error("Cannot refresh global journal usage:", error.message);
-  }
-  if (!projectionReady || !await stat(legacyWorkLogLedgerFile).then(() => true).catch((error) => {
-    if (error?.code === "ENOENT") return false;
-    throw error;
-  })) return;
-  const retirement = await workLogUsageStore.retireLegacyStorage({ workLogFile: legacyWorkLogFile });
-  console.log(`Retired ${retirement.removed.length} legacy journal file(s) after verified SQLite cutover`);
+  return runJournal.initialize(restoredTurnEndSnapshot);
 }
 
 // Journal repair is serialized by WorkLogUsageStore, but it is not a startup
@@ -4881,86 +4805,6 @@ function codexTurnSnapshot(turn, threadStatus = null) {
   };
 }
 
-async function observedRun(binding, targetChatId, snapshot, turnId = null) {
-  const executionOwner = binding.provider === "codex"
-    ? snapshot.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
-    : TASK_EXECUTION_OWNERS.EXTERNAL;
-  const run = createObservedTaskRun({
-    provider: binding.provider,
-    chatId: targetChatId,
-    projectRoot: binding.projectRoot,
-    projectName: findProject(binding.projectRoot)?.name ?? path.basename(binding.projectRoot),
-    threadId: binding.threadId,
-    turnId,
-    taskTitle: binding.taskTitle,
-    promptPreview: snapshot.prompt ?? snapshot.userMessages?.[0]?.text ?? "",
-    clientUserMessageId: snapshot.clientUserMessageId
-      ?? snapshot.userMessages?.[0]?.clientUserMessageId
-      ?? null,
-    userMessages: Array.isArray(snapshot.userMessages)
-      ? snapshot.userMessages.map((message) => ({ ...message }))
-      : [],
-    model: binding.provider === "codex" && snapshot.model
-      ? codexModelLabel(snapshot.model)
-      : null,
-    modelId: null,
-    reasoning: binding.provider === "codex" && snapshot.reasoningEffort
-      ? CODEX_REASONING_LABELS[snapshot.reasoningEffort] ?? snapshot.reasoningEffort
-      : "Подключённый ход",
-    reasoningId: null,
-    executionOwner,
-    activeTurnCount: Number(snapshot.activeTurnCount) || 1,
-    appServer: binding.provider === "codex"
-      ? taskExecutionRuntimeLabel(executionOwner)
-      : "Внешний Claude CLI",
-    collaborationMode: "default",
-  }, snapshot);
-  run.gitBaseline = await captureTaskGitBaseline(run.projectRoot, config.dataDir, run.id);
-  taskRuns.add(run);
-  invalidateTaskCatalog();
-  syncTaskRun(run, {
-    active: true,
-    stage: snapshot.stage,
-    answer: snapshot.answer,
-    activityAtMs: snapshot.activityAtMs ?? snapshot.modifiedAtMs ?? Date.now(),
-  });
-  return run;
-}
-
-function updateObservedRun(run, snapshot) {
-  const previousReasoning = run.progressReasoning;
-  const previousStage = run.progressStage;
-  const responseChanged = updateObservedResponse(run, snapshot?.answer);
-  agentProviders.call(run.provider, "applyObservedSnapshot", run, snapshot);
-  if (!run.promptPreview && snapshot?.prompt) run.promptPreview = String(snapshot.prompt);
-  if (Array.isArray(snapshot?.userMessages)) {
-    run.userMessages = snapshot.userMessages.map((message) => ({ ...message }));
-    const first = run.userMessages[0];
-    if (!run.promptPreview && first?.text) run.promptPreview = String(first.text);
-    if (!run.clientUserMessageId && first?.clientUserMessageId) {
-      run.clientUserMessageId = String(first.clientUserMessageId);
-    }
-  }
-  run.progressReasoning = String(snapshot?.reasoning ?? run.progressReasoning);
-  run.progressStage = String(snapshot?.stage ?? run.progressStage);
-  run.activeTurnCount = Math.max(1, Number(snapshot?.activeTurnCount) || 1);
-  const snapshotStartedAt = Date.parse(String(snapshot?.startedAt ?? ""));
-  const runStartedAt = Date.parse(String(run.startedAt ?? ""));
-  if (
-    Number.isFinite(snapshotStartedAt)
-    && (!Number.isFinite(runStartedAt) || snapshotStartedAt < runStartedAt)
-  ) {
-    run.startedAt = new Date(snapshotStartedAt).toISOString();
-  }
-  const activityAtMs = Number(snapshot?.activityAtMs ?? snapshot?.modifiedAtMs);
-  if (Number.isFinite(activityAtMs)) noteRunActivity(run, activityAtMs);
-  if (responseChanged || run.progressReasoning !== previousReasoning || run.progressStage !== previousStage) {
-    noteRunActivity(run);
-  }
-  scheduleProgressUpdate(run);
-  return responseChanged;
-}
-
 function applyCodexObservedSnapshot(run, snapshot) {
   if (!run.turnId && snapshot?.turnId) {
     run.turnId = snapshot.turnId;
@@ -4982,110 +4826,45 @@ async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false }
   return codexTaskSnapshots.read(run, { threadResult, fresh });
 }
 
-async function finishObservedRun(run, snapshot) {
-  if (taskRuns.forTask(run) !== run) return;
-  const completedTurnId = snapshot?.turnId ?? run.turnId;
-  if (await discardManualContextCompactionRun(run, completedTurnId)) return;
-  const tracker = snapshot?.tokenTracker ?? null;
-  updateObservedRun(run, snapshot);
-  const answer = String(snapshot?.answer ?? "").trim()
-    || savedLastTaskMessage(run)
-    || "Ход завершён без текстового ответа.";
-  const deliver = shouldDeliverObservedCompletion(
-    run,
-    answer,
-    savedLastTaskMessageRecord(run),
-  );
-  await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
-  await runCoordinator.completeObserved(run, {
-    snapshot,
-    answer,
-    deliver,
-    completedTurnId,
-    tracker,
-  });
-}
-
-// Незавершённый транскрипт после долгой тишины не доказывает ни завершение, ни
-// продолжение процесса. Снимаем live-наблюдение, но не выдаём частичный текст за
-// финальный ответ; следующий запуск в этом треде потребует явного подтверждения.
-async function finishUnknownObservedRun(run, snapshot) {
-  if (taskRuns.forTask(run) !== run) return;
-  const providerName = agentProviders.get(run.provider).name;
-  const activityAtMs = Number(snapshot?.activityAtMs);
-  const idleMinutes = Number.isFinite(activityAtMs)
-    ? Math.max(1, Math.round((Date.now() - activityAtMs) / 60_000))
-    : null;
-  const stage = idleMinutes
-    ? `Активность ${providerName} неизвестна: нет новых событий ${idleMinutes} мин.`
-    : `Активность ${providerName} неизвестна: новых событий нет.`;
-  updateObservedRun(run, { ...snapshot, stage });
-  await finishProgress(run, stage);
-  await completeRun(run);
-  console.log(`${providerName} activity became unknown for ${run.threadId}`);
-}
-
-const taskObserver = new TaskObserverController({
-  canObserve: (run) => Boolean(
-    run?.provider
-      && agentProviders.call(run.provider, "shouldObserveRun", run)
-      && taskRuns.forTask(run) === run,
-  ),
-  readSnapshot: (run) => agentProviders.call(run.provider, "readRunSnapshot", run),
-  pollDelay: (run) => run.observer === true
-    ? EXTERNAL_TASK_POLL_INTERVAL_MS
-    : MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS,
-  onUnknown: finishUnknownObservedRun,
-  onMissing: async (run) => {
-    setProgressStage(run, "Ожидаю данные текущего хода…");
-    if (markProgressHeartbeat(run, "waiting")) scheduleProgressUpdate(run);
-  },
-  onTurnChanged: async (run, turnId) => {
-    if (run.exactTurnObserver === true) {
-      throw new Error(`Exact Codex turn observer cannot move from ${run.turnId} to ${turnId}`);
-    }
-    const previousTurnId = run.turnId;
-    run.turnId = turnId;
-    taskRuns.reindex(run, { turnId: previousTurnId });
-  },
-  onCompleted: async (run, snapshot) => {
-    if (run.observer) await finishObservedRun(run, snapshot);
-    else await runCoordinator.completeManaged(run, { snapshot });
-  },
-  onActive: async (run, snapshot) => {
-    run.executionOwner = run.observer === true
-      ? snapshot.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
-      : TASK_EXECUTION_OWNERS.HUB;
-    agentProviders.call(run.provider, "applyActiveSnapshot", run, snapshot);
-    if (Number.isFinite(Number(snapshot.activityAtMs ?? snapshot.modifiedAtMs))) {
-      noteRunActivity(run, Number(snapshot.activityAtMs ?? snapshot.modifiedAtMs));
-    }
-    if (markProgressHeartbeat(run, progressHeartbeatState(run))) scheduleProgressUpdate(run);
-    if (run.observer) {
-      updateObservedRun(run, snapshot);
-    } else {
-      const answer = String(snapshot.answer ?? "").trim();
-      if (answer && answer !== run.responseText) {
-        run.responseText = answer;
-        noteRunActivity(run);
-      }
-      run.progressReasoning = String(snapshot.reasoning ?? run.progressReasoning);
-      run.progressStage = String(snapshot.stage ?? run.progressStage);
-      scheduleProgressUpdate(run);
-    }
-    syncTaskRun(run, {
-      active: true,
-      stage: snapshot.stage,
-      answer: snapshot.answer,
-      activityAtMs: snapshot.activityAtMs ?? snapshot.modifiedAtMs ?? Date.now(),
-    });
-  },
-  onError: async (run, error) => {
-    console.error(`Cannot observe ${run.provider} task ${run.threadId}:`, error.message);
-    setProgressStage(run, `Не удалось обновить ход: ${error.message}`);
-    if (markProgressHeartbeat(run, "error")) scheduleProgressUpdate(run);
-  },
+const taskObserver = new TaskObservationService({
+  providers: agentProviders,
+  taskRuns,
+  runCoordinator,
+  dataDir: config.dataDir,
+  findProject,
+  invalidateTaskCatalog,
+  syncTaskRun,
+  modelLabel: codexModelLabel,
+  reasoningLabels: CODEX_REASONING_LABELS,
+  noteRunActivity,
+  scheduleProgressUpdate,
+  setProgressStage,
+  markProgressHeartbeat,
+  progressHeartbeatState,
+  finishProgress,
+  completeRun,
+  discardManualContextCompactionRun,
+  savedLastTaskMessage,
+  savedLastTaskMessageRecord,
+  externalPollIntervalMs: EXTERNAL_TASK_POLL_INTERVAL_MS,
+  managedPollIntervalMs: MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS,
 });
+
+async function observedRun(binding, targetChatId, snapshot, turnId = null) {
+  return taskObserver.create(binding, targetChatId, snapshot, turnId);
+}
+
+function updateObservedRun(run, snapshot) {
+  return taskObserver.update(run, snapshot);
+}
+
+async function finishObservedRun(run, snapshot) {
+  return taskObserver.finish(run, snapshot);
+}
+
+async function finishUnknownObservedRun(run, snapshot) {
+  return taskObserver.finishUnknown(run, snapshot);
+}
 
 function scheduleObservedRun(run) {
   taskObserver.schedule(run);
@@ -5385,9 +5164,8 @@ async function readClaudeTaskActivity(target) {
 }
 
 function scheduleCodexTerminalAudit(delayMs = SELECTED_TASK_WATCH_INTERVAL_MS) {
-  if (codexTerminalAuditTimer || stopping) return;
-  codexTerminalAuditTimer = setTimeout(async () => {
-    codexTerminalAuditTimer = null;
+  if (stopping) return;
+  runtimeTimers.schedule("codex-terminal-audit", async () => {
     await auditRecentCodexTerminalTurns();
     scheduleCodexTerminalAudit();
   }, Math.max(0, Number(delayMs) || 0));
@@ -5473,13 +5251,10 @@ function beginCodexCompactionCleanup(threadId, details = {}) {
 
 function scheduleCodexCompactionCleanup(threadId, state, delayMs = 0) {
   const key = String(threadId ?? "").trim();
-  if (!key || stopping || codexCompactionCleanupTimers.has(key)) return;
-  const timer = setTimeout(() => {
-    codexCompactionCleanupTimers.delete(key);
+  if (!key || stopping) return;
+  runtimeTimers.scheduleInGroup("codex-compaction-cleanup", key, () => {
     void runCodexCompactionCleanup(key, state);
-  }, Math.max(0, Number(delayMs) || 0));
-  timer.unref?.();
-  codexCompactionCleanupTimers.set(key, timer);
+  }, Math.max(0, Number(delayMs) || 0), { unref: true });
 }
 
 async function runCodexCompactionCleanup(threadId, state) {
@@ -5528,12 +5303,10 @@ async function runCodexCompactionCleanup(threadId, state) {
 function scheduleCodexRolloutContextSanitizer(
   delayMs = config.codexRolloutContext.scanIntervalSeconds * 1000,
 ) {
-  if (!config.codexRolloutContext.enabled || codexRolloutContextTimer || stopping) return;
-  codexRolloutContextTimer = setTimeout(() => {
-    codexRolloutContextTimer = null;
+  if (!config.codexRolloutContext.enabled || stopping) return;
+  runtimeTimers.schedule("codex-rollout-context", () => {
     void runCodexRolloutContextSanitizer();
-  }, Math.max(0, Number(delayMs) || 0));
-  codexRolloutContextTimer.unref?.();
+  }, Math.max(0, Number(delayMs) || 0), { unref: true });
 }
 
 async function runCodexRolloutContextSanitizer({ reschedule = true } = {}) {
@@ -5555,9 +5328,8 @@ async function runCodexRolloutContextSanitizer({ reschedule = true } = {}) {
 }
 
 function scheduleRateLimitPoll(delayMs = 5 * 60_000) {
-  if (rateLimitPollTimer || stopping) return;
-  rateLimitPollTimer = setTimeout(() => {
-    rateLimitPollTimer = null;
+  if (stopping) return;
+  runtimeTimers.schedule("rate-limit-poll", () => {
     void pollRateLimits();
   }, Math.max(0, Number(delayMs) || 0));
 }
@@ -5590,9 +5362,8 @@ async function pollRateLimits() {
 }
 
 function scheduleSelectedTaskWatch(delayMs = SELECTED_TASK_WATCH_INTERVAL_MS) {
-  if (selectedTaskWatchTimer || stopping) return;
-  selectedTaskWatchTimer = setTimeout(() => {
-    selectedTaskWatchTimer = null;
+  if (stopping) return;
+  runtimeTimers.schedule("selected-task-watch", () => {
     void watchSelectedTask();
   }, delayMs);
 }
@@ -6311,18 +6082,9 @@ async function pollTelegram() {
 function scheduleDeliveryOutboxFlush(delayMs = config.deliveryRetryIntervalSeconds * 1000) {
   if (stopping) return;
   const delayValue = Math.max(0, Number(delayMs) || 0);
-  const dueAt = Date.now() + delayValue;
-  if (deliveryOutboxTimer) {
-    if (deliveryOutboxTimerDueAt <= dueAt) return;
-    clearTimeout(deliveryOutboxTimer);
-    deliveryOutboxTimer = null;
-  }
-  deliveryOutboxTimerDueAt = dueAt;
-  deliveryOutboxTimer = setTimeout(() => {
-    deliveryOutboxTimer = null;
-    deliveryOutboxTimerDueAt = 0;
+  runtimeTimers.schedule("delivery-outbox", () => {
     void flushDeliveryOutbox();
-  }, delayValue);
+  }, delayValue, { replaceIfEarlier: true });
 }
 
 async function flushDeliveryOutbox() {
@@ -6369,7 +6131,7 @@ function saveState() {
       ...bundle,
       submitting: false,
     })),
-    lastTaskMessages: [...lastTaskMessages.entries()].slice(-500),
+    lastTaskMessages: runJournal.lastMessageSnapshot(),
     lastSeenTaskTurnIds: [...lastSeenTaskTurnIds.entries()].slice(-500),
     threadTokenTotals: [...threadTokenTotals.entries()].slice(-500),
     turnTokenUsage: [...turnTokenUsage.entries()].slice(-200),
@@ -6401,29 +6163,7 @@ function delay(ms) {
 function stopRuntimeTimers() {
   stopTyping();
   contextCompactions.dispose();
-  if (codexRolloutContextTimer) {
-    clearTimeout(codexRolloutContextTimer);
-    codexRolloutContextTimer = null;
-  }
-  for (const timer of codexCompactionCleanupTimers.values()) clearTimeout(timer);
-  codexCompactionCleanupTimers.clear();
-  if (deliveryOutboxTimer) {
-    clearTimeout(deliveryOutboxTimer);
-    deliveryOutboxTimer = null;
-  }
-  deliveryOutboxTimerDueAt = 0;
-  if (selectedTaskWatchTimer) {
-    clearTimeout(selectedTaskWatchTimer);
-    selectedTaskWatchTimer = null;
-  }
-  if (codexTerminalAuditTimer) {
-    clearTimeout(codexTerminalAuditTimer);
-    codexTerminalAuditTimer = null;
-  }
-  if (rateLimitPollTimer) {
-    clearTimeout(rateLimitPollTimer);
-    rateLimitPollTimer = null;
-  }
+  runtimeTimers.clearAll();
   deferredInputController.stop();
   for (const run of taskRuns.values()) {
     taskProgress.pause(run);

@@ -103,9 +103,11 @@ test("provider operations resolve through one AgentProvider registry", async () 
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   const adapters = await readFile(path.join(ROOT, "provider-adapters.mjs"), "utf8");
   const coordinator = await readFile(path.join(ROOT, "run-coordinator.mjs"), "utf8");
-  const providerCallOwners = `${source}\n${coordinator}\n${adapters}`;
+  const observation = await readFile(path.join(ROOT, "task-observation-service.mjs"), "utf8");
+  const providerCallOwners = `${source}\n${coordinator}\n${adapters}\n${observation}`;
   assert.equal((source.match(/createAgentProviderRegistry\s*\(/g) ?? []).length, 1);
   assert.equal((adapters.match(/new AgentProviderRegistry\s*\(/g) ?? []).length, 1);
+  assert.equal((source.match(/new TaskObservationService\s*\(/g) ?? []).length, 1);
   assert.equal(source.includes("sources: agentProviders.catalogSources()"), true);
   for (const operation of [
     "createTask",
@@ -131,9 +133,9 @@ test("provider operations resolve through one AgentProvider registry", async () 
       operation,
     );
   }
-  const sharedObservedCompletion = source.slice(
-    source.indexOf("async function finishObservedRun"),
-    source.indexOf("async function finishUnknownObservedRun"),
+  const sharedObservedCompletion = observation.slice(
+    observation.indexOf("async finish(run, snapshot)"),
+    observation.indexOf("async finishUnknown(run, snapshot)"),
   );
   const sharedRecovery = source.slice(
     source.indexOf("async function recoverTaskRun"),
@@ -146,6 +148,7 @@ test("provider operations resolve through one AgentProvider registry", async () 
 
 test("run admission and provider terminal dispatch have one coordinator", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const observation = await readFile(path.join(ROOT, "task-observation-service.mjs"), "utf8");
   assert.equal((source.match(/new RunCoordinator\s*\(/g) ?? []).length, 1);
   const startTurn = source.slice(
     source.indexOf("async function startTurn"),
@@ -155,8 +158,24 @@ test("run admission and provider terminal dispatch have one coordinator", async 
   assert.doesNotMatch(startTurn, /externalActivity\.state|activeRepositoryConflict|beginRun\(/u);
   assert.equal(source.includes("start: (item) => runCoordinator.startDeferred(item)"), true);
   assert.equal(source.includes("runCoordinator.completeManaged("), true);
-  assert.equal(source.includes("runCoordinator.completeObserved("), true);
+  assert.equal(observation.includes("this.runCoordinator.completeObserved("), true);
   assert.equal(source.includes("runCoordinator.recoverProviderRun("), true);
+});
+
+test("journal projection and last-message state have one application owner", async () => {
+  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const journal = await readFile(path.join(ROOT, "run-journal-service.mjs"), "utf8");
+  assert.equal((source.match(/new RunJournalService\s*\(/g) ?? []).length, 1);
+  for (const operation of [
+    "recordAutomaticAndProject(",
+    "recordAndProject(",
+    "mergeTurnTexts(",
+    "retireLegacyStorage(",
+  ]) {
+    assert.equal(source.includes(operation), false, operation);
+    assert.equal(journal.includes(operation), true, operation);
+  }
+  assert.equal(source.includes("const lastTaskMessages = new Map()"), false);
 });
 
 test("shared task mutations enter through one application command bus", async () => {

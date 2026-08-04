@@ -46,13 +46,13 @@
 | 31 | ✅ | Provider adapters и lifecycle выделены в отдельные сервисы discovery/catalog, create, launch/steer/cancel, events, live snapshot, completion и recovery. Публичные порты сохраняют task reference/`hubTaskId` и допускают последовательную смену thread/session ID. |
 | 32 | ✅ | Desktop/Mini App используют отдельный application router, attachment/settings/deferred-input services, RPC read-model и точные task-scoped mutations поверх command bus/run coordinator. |
 | 33 | ✅ | Telegram command dispatch и callback-группы settings/task/input выделены из composition root; transport/controller wiring осталось в host. |
-| 34 | 🔄 | Composition root сокращён с 8 158 до 6 511 строк. Формирование progress-карточки принадлежит `RunProgressPresentation`, порядок control plane/provider recovery/readiness — `AgentHubStartupCoordinator`. В root остаются wiring/shutdown и общая journal/observer policy. |
+| 34 | ✅ | Composition root сокращён с 8 158 до 6 252 строк. `RunProgressPresentation` владеет progress-представлением, `AgentHubStartupCoordinator` — порядком запуска, `TaskObservationService` — observed lifecycle, `RunJournalService` — последним сообщением и общей journal projection, `RuntimeTimerCoordinator` — именованными и keyed-таймерами. Наблюдаемый run сохраняет будущий `hubTaskId`. |
 
-После этапов 31–33 provider adapters, Desktop/Mini App RPC и Telegram dispatch
-больше не реализуются внутри `agent-hub-server.mjs`. Composition root всё ещё
-слишком велик: около 6,5 тыс. строк, поскольку содержит общую journal/observer
-policy и timer wiring. Этап 34 должен продолжать вынос именно этих владельцев
-состояния с contract-тестами, а не механически разрезать файл.
+После этапов 31–34 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
+общая journal projection, observed lifecycle, progress presentation, startup и
+timer ownership больше не реализуются внутри `agent-hub-server.mjs`. Файл всё
+ещё велик, но оставшееся разделение должно идти по новым прикладным владельцам,
+а не возвращать эти обязанности в composition root.
 
 При следующих этапах нельзя делать provider thread ID постоянной идентичностью
 задачи. Будущая durable-модель использует `hubTaskId`, которому соответствуют
