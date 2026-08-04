@@ -120,13 +120,19 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   }
 });
 
-test("extension reloads its shell from the active runtime on demand", () => {
+test("extension keeps its shell synchronized with the active runtime", () => {
   const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
   assert.match(shared, /const ASSET_ROOT = \["assets", "mini-app"\]/u);
   assert.match(shared, /backgrounds: \[\.\.\.ASSET_ROOT, "backgrounds\.css"\]/u);
   assert.match(extension, /refreshPanelShellIfReleaseChanged/u);
   assert.match(extension, /agenthub:runtime-changed/u);
+  assert.match(extension, /startRuntimeMonitor\(\)/u);
+  assert.match(extension, /setInterval\(\(\) => \{\s*void this\.refreshPanelShellIfReleaseChanged\(\)/u);
+  assert.match(
+    extension,
+    /async refresh\(force = false\)[\s\S]*await this\.refreshPanelShellIfReleaseChanged\(\)/u,
+  );
   assert.match(extension, /runtimeUri,\s*\n\s*extensionUri: this\.context\.extensionUri/u);
   assert.doesNotMatch(shared, /media", "mini-app/u);
 });
