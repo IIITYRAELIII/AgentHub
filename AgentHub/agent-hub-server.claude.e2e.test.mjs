@@ -121,16 +121,18 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   }
 
   async function stopBot() {
-    if (bot && bot.exitCode == null) {
-      bot.kill("SIGTERM");
-      await Promise.race([
-        new Promise((resolve) => bot.once("exit", resolve)),
-        delay(2_000),
+    const stoppingBot = bot;
+    if (stoppingBot && stoppingBot.exitCode == null) {
+      stoppingBot.kill("SIGTERM");
+      const exited = await Promise.race([
+        new Promise((resolve) => stoppingBot.once("exit", () => resolve(true))),
+        delay(2_000).then(() => false),
       ]);
+      if (!exited && stoppingBot.exitCode == null) await stopPid(stoppingBot.pid);
     }
     try {
       const replacementPid = await readLockPid(lockPath);
-      if (replacementPid !== bot?.pid) await stopPid(replacementPid);
+      if (replacementPid !== stoppingBot?.pid) await stopPid(replacementPid);
     } catch {}
     bot = null;
   }

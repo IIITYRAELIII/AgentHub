@@ -66,8 +66,13 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   let bot = null;
   let stdout = "";
   let stderr = "";
+  let currentStdout = "";
+  let currentStderr = "";
 
   async function startBot() {
+    const pollingMark = telegram.calls.length;
+    currentStdout = "";
+    currentStderr = "";
     bot = spawn(process.execPath, [BOT_FILE], {
       cwd: AGENT_HUB_ROOT,
       env: {
@@ -82,24 +87,43 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     });
     bot.stdout.setEncoding("utf8");
     bot.stderr.setEncoding("utf8");
-    bot.stdout.on("data", (chunk) => { stdout += chunk; });
-    bot.stderr.on("data", (chunk) => { stderr += chunk; });
+    bot.stdout.on("data", (chunk) => { stdout += chunk; currentStdout += chunk; });
+    bot.stderr.on("data", (chunk) => { stderr += chunk; currentStderr += chunk; });
+    await waitForRestartPolling(pollingMark, "process startup");
     return bot;
   }
 
   async function stopBot() {
-    if (bot?.exitCode == null) {
-      bot.kill("SIGTERM");
-      await Promise.race([
-        new Promise((resolve) => bot.once("exit", resolve)),
-        delay(2_000),
+    const stoppingBot = bot;
+    if (stoppingBot && stoppingBot.exitCode == null) {
+      stoppingBot.kill("SIGTERM");
+      const exited = await Promise.race([
+        new Promise((resolve) => stoppingBot.once("exit", () => resolve(true))),
+        delay(2_000).then(() => false),
       ]);
+      if (!exited && stoppingBot.exitCode == null) await stopPid(stoppingBot.pid);
     }
     try {
       const replacementPid = await readLockPid(lockPath);
-      if (replacementPid !== bot?.pid) await stopPid(replacementPid);
+      if (replacementPid !== stoppingBot?.pid) await stopPid(replacementPid);
     } catch {}
     bot = null;
+  }
+
+  async function waitForRestartPolling(after, description = "restarted Telegram polling") {
+    try {
+      return await telegram.waitForCall("getUpdates", () => true, {
+        after,
+        timeoutMs: 15_000,
+      });
+    } catch (error) {
+      throw new Error(
+        `${error.message}\nStage: ${description}\nRestart exit: ${bot?.exitCode ?? "running"}`
+        + `\nrestart stdout:\n${currentStdout}\nrestart stderr:\n${currentStderr}`
+        + `\nlock:\n${await readFile(lockPath, "utf8").catch((readError) => readError.message)}`,
+        { cause: error },
+      );
+    }
   }
 
   async function findJournalTurn(predicate) {
@@ -289,16 +313,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     "a forwarded message must not start a turn before explicit bundle submission");
   const savedBundleId = savedBundleState.forwardBundles[0].id;
   await stopBot();
-  const restartPollingMark = telegram.calls.length;
   await startBot();
-  try {
-    await telegram.waitForCall("getUpdates", () => true, { after: restartPollingMark });
-  } catch (error) {
-    throw new Error(
-      `${error.message}\nRestart exit: ${bot?.exitCode ?? "running"}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
-      { cause: error },
-    );
-  }
   savedBundleState = await waitFor(async () => {
     const state = await readJson(statePath).catch(() => null);
     return state?.forwardBundles?.[0]?.id === savedBundleId ? state : null;

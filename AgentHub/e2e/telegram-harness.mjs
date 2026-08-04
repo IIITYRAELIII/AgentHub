@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import process from "node:process";
+import { processIsAlive, stopProcessTree } from "../claude-run-io.mjs";
 import { readRuntimeState } from "../runtime-state-store.mjs";
 
 // Общая обвязка E2E: поддельный Telegram Bot API и ожидания. Используется и
@@ -65,7 +66,16 @@ export async function readLockPid(filePath) {
 
 export async function stopPid(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return;
-  try { process.kill(pid, "SIGTERM"); } catch {}
+  const stopped = await Promise.race([
+    stopProcessTree(pid).catch(() => false),
+    delay(e2eTimeoutMs(2_000)).then(() => false),
+  ]);
+  if (!stopped && processIsAlive(pid)) {
+    try { process.kill(pid, "SIGTERM"); } catch {}
+  }
+  const deadline = Date.now() + e2eTimeoutMs(2_000);
+  while (Date.now() < deadline && processIsAlive(pid)) await delay(25);
+  if (processIsAlive(pid)) throw new Error(`Process ${pid} did not stop`);
 }
 
 export class FakeTelegramApi {

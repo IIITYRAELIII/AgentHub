@@ -316,22 +316,28 @@ test("desktop client survives App Server exit during delayed startup and shares 
   assert.equal(deferredSnapshot.deferredInputs.length, 1);
   assert.equal(deferredSnapshot.deferredInputs[0].provider, "codex");
   assert.equal(deferredSnapshot.deferredInputs[0].threadId, firstThreadId);
-  const [firstEdit, editedDeferred] = await Promise.all([
-    callDesktopControl("deferred-input", {
+  const completedEdits = [];
+  const firstEditPromise = callDesktopControl("deferred-input", {
       id: duplicate.id,
       action: "edit",
       text: "parallel duplicate, first edit",
-    }, { runtimeRoot }),
-    callDesktopControl("deferred-input", {
+    }, { runtimeRoot }).then((result) => {
+      completedEdits.push("parallel duplicate, first edit");
+      return result;
+    });
+  const editedDeferredPromise = callDesktopControl("deferred-input", {
       id: duplicate.id,
       action: "edit",
       text: "parallel duplicate, edited",
-    }, { runtimeRoot }),
-  ]);
+    }, { runtimeRoot }).then((result) => {
+      completedEdits.push("parallel duplicate, edited");
+      return result;
+    });
+  const [firstEdit, editedDeferred] = await Promise.all([firstEditPromise, editedDeferredPromise]);
   assert.equal(firstEdit.accepted, true);
   assert.equal(editedDeferred.accepted, true);
   assert.equal((await callDesktopControl("snapshot", {}, { runtimeRoot }))
-    .deferredInputs.find((item) => item.id === duplicate.id)?.text, "parallel duplicate, edited");
+    .deferredInputs.find((item) => item.id === duplicate.id)?.text, completedEdits.at(-1));
   const queuedOnce = await callDesktopControl("deferred-input", {
     id: duplicate.id,
     action: "queue",

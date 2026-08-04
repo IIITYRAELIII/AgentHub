@@ -90,6 +90,15 @@ test("provider discovery and catalog merge have one application owner", async ()
   assert.equal(/Promise\.allSettled\(\s*\[\s*listAllCodexThreads/u.test(source), false);
 });
 
+test("provider operations resolve through one AgentProvider registry", async () => {
+  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  assert.equal((source.match(/new AgentProviderRegistry\s*\(/g) ?? []).length, 1);
+  assert.equal(source.includes("sources: agentProviders.catalogSources()"), true);
+  for (const operation of ["createTask", "launchTurn", "cancelRun", "readTaskActivity", "readRunSnapshot"]) {
+    assert.equal(source.includes(`agentProviders.call(`) && source.includes(`"${operation}"`), true, operation);
+  }
+});
+
 test("shared task mutations enter through one application command bus", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   assert.equal((source.match(/new ApplicationCommandBus\s*\(/g) ?? []).length, 1);

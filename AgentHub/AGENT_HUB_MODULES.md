@@ -39,8 +39,9 @@
 | 24 | ✅ | Provider discovery и merge каталога вынесены в `provider-task-catalog-builder.mjs`: источники опрашиваются параллельно, проецируются в стабильном порядке, сбой одного провайдера сохраняет durable-каталог и второй источник, managed runs объединяются до общей финализации. |
 | 25 | ✅ | Основание общего command path вынесено в `application-command-bus.mjs`: task create/rename/archive из Telegram, Desktop и Mini App проходят один реестр, несут `clientId` и явную цель, а конфликтующие мутации сериализуются между клиентами. Bus уже предпочитает `hubTaskId`; перенос остальных команд остаётся этапом A5. |
 | 26 | ✅ | Через тот же `ApplicationCommandBus` проходят выбор задачи, task-scoped/global settings, отмена хода и approvals во всех клиентах. Поздняя настройка несёт точную task-ссылку и не может примениться к задаче, выбранной после отправки команды; запуск/steer/deferred input остаются границей будущего `RunCoordinator`. |
+| 27 | ✅ | Основание общего provider port вынесено в `agent-provider-registry.mjs`: адаптеры Codex/Claude обязательно реализуют discovery/projection, create, launch, cancel, external activity и live snapshot. Каталог, клиентские команды и observer обращаются к registry без выбора провайдера; completion/delivery/recovery завершаются в A6 отдельным срезом. |
 
-После этапа 26 `agent-hub-server.mjs` содержит около 8,4 тыс. строк. Это всё ещё
+После этапа 27 `agent-hub-server.mjs` содержит около 8,4 тыс. строк. Это всё ещё
 слишком много для удобного сопровождения: сервер остаётся точкой композиции и
 хранит прикладную политику провайдеров, доставки, восстановления, Desktop RPC,
 Telegram callback/command dispatch и startup provider recovery. Следующие

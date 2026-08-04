@@ -259,6 +259,7 @@ import { RuntimeLifecycleController } from "./runtime-lifecycle-controller.mjs";
 import { RuntimeResourceRegistry } from "./runtime-resource-registry.mjs";
 import { RuntimeRestartController } from "./runtime-restart-controller.mjs";
 import { ApplicationCommandBus } from "./application-command-bus.mjs";
+import { AgentProviderRegistry } from "./agent-provider-registry.mjs";
 import { ProviderTaskCatalogBuilder } from "./provider-task-catalog-builder.mjs";
 import { TaskCatalogService } from "./task-catalog-service.mjs";
 import { TaskSelectionStore } from "./task-selection-store.mjs";
@@ -742,24 +743,37 @@ const taskSyncStore = new LocalTaskSyncStore({
 });
 await taskSyncStore.load();
 await taskSyncStore.save();
+const agentProviders = new AgentProviderRegistry([
+  {
+    id: "codex",
+    name: "Codex",
+    discoverTasks: listAllCodexThreads,
+    projectTasks: buildCodexTaskCatalogEntries,
+    createTask: createCodexTask,
+    launchTurn: launchCodexTurn,
+    cancelRun: cancelCodexProviderRun,
+    readTaskActivity: readCodexTaskActivity,
+    readRunSnapshot: readCodexTaskSnapshot,
+  },
+  {
+    id: "claude",
+    name: "Claude",
+    discoverTasks: listClaudeSessionSnapshots,
+    projectTasks: buildClaudeTaskCatalogEntries,
+    createTask: createClaudeTask,
+    launchTurn: launchClaudeTurn,
+    cancelRun: cancelClaudeProviderRun,
+    readTaskActivity: readClaudeTaskActivity,
+    readRunSnapshot: (run, options) => readClaudeTaskSnapshot(run.threadId, options),
+  },
+]);
 // Runtime activity cannot be restored from a durable catalog row. Managed runs
 // are restored separately, while external activity is revalidated from rollout
 // files. Showing cached `running=true` here creates a full-catalog phantom state
 // while the first provider scan is still in progress or unavailable.
 const providerTaskCatalogBuilder = new ProviderTaskCatalogBuilder({
   durableEntries: () => catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
-  sources: [
-    {
-      name: "Codex",
-      discover: listAllCodexThreads,
-      toEntries: buildCodexTaskCatalogEntries,
-    },
-    {
-      name: "Claude",
-      discover: listClaudeSessionSnapshots,
-      toEntries: buildClaudeTaskCatalogEntries,
-    },
-  ],
+  sources: agentProviders.catalogSources(),
   managedRuns: () => taskRuns.values().map((run) => ({
     ...run,
     projectName: runProject(run).name,
@@ -2511,12 +2525,16 @@ async function attachCodexThread() {
 }
 
 async function createThread() {
-  if (!isCodex()) {
-    selectionStore.setThread(null, { provider: "claude", title: "Новая задача Claude" });
-    latestDiff = "";
-    await saveState();
-    return;
-  }
+  return agentProviders.call(activeProvider, "createTask");
+}
+
+async function createClaudeTask() {
+  selectionStore.setThread(null, { provider: "claude", title: "Новая задача Claude" });
+  latestDiff = "";
+  await saveState();
+}
+
+async function createCodexTask() {
   const result = await sendRpc("thread/start", {
     cwd: activeProjectRoot,
     ...codexThreadSandboxSettings(config.codexSandboxMode),
@@ -3547,52 +3565,70 @@ async function desktopCancelRun(params) {
   const target = await desktopMessageTarget(params);
   const run = taskRuns.forTask(target);
   if (!run) return { accepted: false, message: "В выбранной задаче сейчас ничего не выполняется" };
-  if (run.observer) {
-    if (run.provider === "codex") {
-      try {
-        await interruptCodexRun(run);
-      } catch (error) {
-        console.warn(`Cannot interrupt observed Codex task ${run.threadId}:`, error.message);
-        const failure = await codexInterruptFailureResult(run, error);
-        setProgressStage(run, failure.message);
-        return {
-          ...failure,
-          message: `${failure.message}. Параллельный ход не будет запущен.`,
-        };
-      }
+  const result = await agentProviders.call(run.provider, "cancelRun", run);
+  if (result.interruptFailed) {
+    if (run.observer) {
+      setProgressStage(run, result.message);
+      return {
+        ...result,
+        message: `${result.message}. Параллельный ход не будет запущен.`,
+      };
     }
+    return result;
+  }
+  if (run.observer) {
     dismissedExternalTasks.add(run);
-    const stopRequested = run.provider === "codex";
-    await finishProgress(run, stopRequested
+    await finishProgress(run, result.stopRequested
       ? "Остановка запрошена; наблюдение отключено."
       : "Наблюдение отключено; внешний ход продолжает работу.");
     await completeRun(run);
     return {
       accepted: true,
-      message: stopRequested
+      message: result.stopRequested
         ? "Запрошена остановка этой задачи. Пока внешний ход фактически активен, новые сообщения будут сохранены, а не запущены параллельно."
         : "Отключил наблюдение. Внешний Claude продолжает работу; новые сообщения будут сохранены до его завершения.",
     };
   }
-  if (run.provider === "codex") {
-    try {
-      await interruptCodexRun(run);
-      return { accepted: true, message: "Запрошена остановка этой задачи." };
-    } catch (error) {
-      console.warn(`Cannot interrupt Codex task ${run.threadId}:`, error.message);
-      return codexInterruptFailureResult(run, error);
-    }
+  if (!result.detach) return result;
+  await finishProgress(run, "Наблюдение отключено; внешний Claude продолжает работу.");
+  await completeRun(run);
+  return result;
+}
+
+async function cancelCodexProviderRun(run) {
+  try {
+    await interruptCodexRun(run);
+    return {
+      accepted: true,
+      stopRequested: true,
+      message: "Запрошена остановка этой задачи.",
+    };
+  } catch (error) {
+    console.warn(`Cannot interrupt Codex task ${run.threadId}:`, error.message);
+    return {
+      ...await codexInterruptFailureResult(run, error),
+      interruptFailed: true,
+      stopRequested: false,
+    };
   }
+}
+
+async function cancelClaudeProviderRun(run) {
+  if (run.observer) return { accepted: true, stopRequested: false };
   if (run.process || processIsAlive(run.pid)) {
     if (!await stopClaudeRunProcess(run)) throw new Error("Не удалось остановить дерево процессов Claude");
     setBoundedMapValue(cancelledManagedClaudeTasks, taskRunKey(run), Date.now(), 200);
     await saveState();
-    return { accepted: true, message: "Запрошена остановка этой задачи." };
+    return {
+      accepted: true,
+      stopRequested: true,
+      message: "Запрошена остановка этой задачи.",
+    };
   }
-  await finishProgress(run, "Наблюдение отключено; внешний Claude продолжает работу.");
-  await completeRun(run);
   return {
     accepted: false,
+    detach: true,
+    stopRequested: false,
     message: "Отключил наблюдение. Остановить внешний процесс Claude из этой сессии Agent Hub не может.",
   };
 }
@@ -4823,35 +4859,7 @@ async function readClaudeTaskSnapshot(sessionId, { includeHistory = false } = {}
 async function taskExternalActivity(target) {
   if (!target?.threadId) return { state: "inactive", executionOwner: null };
   try {
-    if (target.provider === "codex") {
-      let rolloutPath = await knownCodexRolloutPath(target.threadId);
-      let threadStatus = null;
-      if (!rolloutPath) {
-        if (!codexTransport.running) {
-          await startCodexAppServer();
-          await initializeCodex({ attachSelectedThread: false });
-        }
-        const result = await readCodexThread(target.threadId, {
-          fresh: true,
-          includeTurns: false,
-        });
-        rolloutPath = String(result.thread?.path ?? "").trim();
-        threadStatus = result.thread?.status;
-      }
-      const activity = await readCodexRolloutActivity(rolloutPath);
-      const activeTurnId = selectExactActiveCodexTurnId(activity);
-      return resolveCodexTaskActivity({ threadStatus, activity }, {
-        turnId: activeTurnId,
-        rolloutPath,
-        agentHubPid: codexTransport.pid,
-        capturedOwner: capturedCodexExecutionOwner(target.threadId, activeTurnId),
-      });
-    }
-    const snapshot = await readClaudeTaskSnapshot(target.threadId);
-    return {
-      state: snapshot?.activityUnknown ? "unknown" : snapshot?.active ? "active" : "inactive",
-      executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
-    };
+    return await agentProviders.call(target.provider, "readTaskActivity", target);
   } catch (error) {
     console.error(`Cannot check ${target.provider} task activity:`, error.message);
     return { state: "unknown", executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL };
@@ -4949,10 +4957,21 @@ async function deferConflictingInput(input, temporaryFiles, {
 }
 
 async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
-  if (run.provider !== "codex") {
-    await startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton });
-    return;
-  }
+  return agentProviders.call(
+    run.provider,
+    "launchTurn",
+    run,
+    input,
+    temporaryFiles,
+    { forceSpeechButton },
+  );
+}
+
+async function launchClaudeTurn(run, input, temporaryFiles, options = {}) {
+  return startClaudeTurn(run, input, temporaryFiles, options);
+}
+
+async function launchCodexTurn(run, input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
   if (codexCompactionRecycleInFlight) {
     await codexCompactionRecycleInFlight;
   }
@@ -6267,9 +6286,7 @@ const taskObserver = new TaskObserverController({
     (run?.observer || run?.provider === "codex")
       && taskRuns.forTask(run) === run,
   ),
-  readSnapshot: (run) => run.provider === "codex"
-    ? readCodexTaskSnapshot(run)
-    : readClaudeTaskSnapshot(run.threadId),
+  readSnapshot: (run) => agentProviders.call(run.provider, "readRunSnapshot", run),
   pollDelay: (run) => run.observer === true
     ? EXTERNAL_TASK_POLL_INTERVAL_MS
     : MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS,
@@ -6592,6 +6609,39 @@ async function auditRecentCodexTerminalTurns() {
   }
 }
 
+async function readCodexTaskActivity(target) {
+  let rolloutPath = await knownCodexRolloutPath(target.threadId);
+  let threadStatus = null;
+  if (!rolloutPath) {
+    if (!codexTransport.running) {
+      await startCodexAppServer();
+      await initializeCodex({ attachSelectedThread: false });
+    }
+    const result = await readCodexThread(target.threadId, {
+      fresh: true,
+      includeTurns: false,
+    });
+    rolloutPath = String(result.thread?.path ?? "").trim();
+    threadStatus = result.thread?.status;
+  }
+  const activity = await readCodexRolloutActivity(rolloutPath);
+  const activeTurnId = selectExactActiveCodexTurnId(activity);
+  return resolveCodexTaskActivity({ threadStatus, activity }, {
+    turnId: activeTurnId,
+    rolloutPath,
+    agentHubPid: codexTransport.pid,
+    capturedOwner: capturedCodexExecutionOwner(target.threadId, activeTurnId),
+  });
+}
+
+async function readClaudeTaskActivity(target) {
+  const snapshot = await readClaudeTaskSnapshot(target.threadId);
+  return {
+    state: snapshot?.activityUnknown ? "unknown" : snapshot?.active ? "active" : "inactive",
+    executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
+  };
+}
+
 function scheduleCodexTerminalAudit(delayMs = SELECTED_TASK_WATCH_INTERVAL_MS) {
   if (codexTerminalAuditTimer || stopping) return;
   codexTerminalAuditTimer = setTimeout(async () => {
@@ -6813,9 +6863,11 @@ async function watchSelectedTask() {
     if (!chatId || !task.threadId) return;
     const existingRun = taskRuns.forTask(task);
     if (existingRun) return;
-    const snapshot = task.provider === "codex"
-      ? await readCodexTaskSnapshot({ ...task, turnId: null, observer: true })
-      : await readClaudeTaskSnapshot(task.threadId);
+    const snapshot = await agentProviders.call(
+      task.provider,
+      "readRunSnapshot",
+      { ...task, turnId: null, observer: true },
+    );
     // Пока читался внешний snapshot, пользователь мог выбрать другую задачу или
     // Telegram мог уже запустить управляемый ход. Нельзя применять устаревший
     // результат ни к новой выбранной задаче, ни поверх начатого запуска.
@@ -6926,11 +6978,9 @@ async function recoverTaskRun(run) {
   let observerSnapshot = null;
   if (run.observer) {
     run.displayRequested = run.displayRequested === true;
-    observerSnapshot = run.provider === "codex" && codexTransport.running
-      ? await readCodexTaskSnapshot(run)
-      : run.provider === "claude"
-        ? await readClaudeTaskSnapshot(run.threadId)
-        : null;
+    observerSnapshot = run.provider === "codex" && !codexTransport.running
+      ? null
+      : await agentProviders.call(run.provider, "readRunSnapshot", run);
     const observerAction = resolveTaskRecoveryAction({ run, observerSnapshot });
     if (observerAction === TASK_RECOVERY_ACTIONS.OBSERVE) {
       updateObservedRun(run, observerSnapshot);
