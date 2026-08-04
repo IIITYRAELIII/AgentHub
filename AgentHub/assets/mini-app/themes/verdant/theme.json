@@ -1,0 +1,10 @@
+{
+  "id": "verdant",
+  "name": "Verdant",
+  "color": "#03110e",
+  "order": 140,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "verdant", "name": "Verdant", "asset": "verdant-ruins.png", "preload": true }
+  ]
+}

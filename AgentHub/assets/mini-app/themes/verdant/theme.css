@@ -1,0 +1,234 @@
+/* ========================================================= тема «Verdant» === */
+
+html[data-theme="verdant"] {
+  --display-weight: 620;
+  --display-spacing: -0.012em;
+  --title-weight: 565;
+  --label-spacing: 0.16em;
+
+  /* Точная почти промышленная геометрия отличает тему от мягких природных тем. */
+  --radius-lg: 6px;
+  --radius-md: 4px;
+  --radius-sm: 3px;
+  --radius-chip: 5px;
+  --rail-width: 2px;
+
+  --bg: #03110e;
+  --surface-1: rgba(8, 29, 24, 0.76);
+  --surface-2: rgba(15, 42, 34, 0.72);
+  --surface-3: rgba(29, 65, 50, 0.68);
+  --sunken: rgba(1, 10, 8, 0.82);
+
+  --line: rgba(126, 213, 157, 0.16);
+  --line-strong: rgba(132, 239, 169, 0.34);
+
+  --card-bg: linear-gradient(180deg, rgba(5, 24, 20, 0.94), rgba(2, 15, 13, 0.96));
+  --card-bg-open: linear-gradient(180deg, rgba(7, 31, 25, 0.96), rgba(2, 17, 14, 0.98));
+  --card-texture: none;
+  --card-border: rgba(120, 204, 150, 0.18);
+  --card-border-open: rgba(126, 239, 165, 0.44);
+  --card-shadow:
+    inset 0 1px 0 rgba(190, 255, 209, 0.035),
+    0 22px 46px -34px rgba(0, 0, 0, 0.98);
+
+  --plate-bg: linear-gradient(180deg, rgba(22, 56, 44, 0.78), rgba(3, 19, 15, 0.9));
+  --plate-texture: none;
+  --plate-shadow: inset 0 1px 0 rgba(193, 255, 211, 0.045);
+  --turn-shadow: 0 0 22px -17px rgba(95, 235, 145, 0.64);
+
+  --text: #e5f3e9;
+  --text-soft: #b8cebf;
+  --text-muted: #819b89;
+  --text-faint: #597163;
+
+  --accent: #83eda5;
+  --accent-soft: rgba(131, 237, 165, 0.13);
+  --accent-line: rgba(131, 237, 165, 0.42);
+  --accent-glow: 0 0 20px -9px rgba(105, 242, 151, 0.9);
+  --selection: rgba(106, 228, 145, 0.29);
+  --brand-gradient:
+    linear-gradient(145deg, rgba(131, 237, 165, 0.3), rgba(8, 53, 42, 0.8));
+  --brand-shadow: 0 0 24px -10px rgba(105, 242, 151, 0.86);
+
+  --provider-none: #789285;
+  --provider-codex: #83eda5;
+  --provider-claude: #d6c27b;
+  --ok: #78d69b;
+  --pending: #d3b96b;
+
+  --dot-input: #79cce0;
+  --dot-cache: #83eda5;
+  --dot-output: #d6c27b;
+  --dot-think: #a8a3dd;
+
+  --space-glow-a: rgba(77, 177, 136, 0.09);
+  --space-glow-b: rgba(35, 92, 76, 0.12);
+  --space-base: #03110e;
+  --space-star: transparent;
+  --star-opacity: 0;
+  --decor-opacity: 1;
+  --verdant-image: url("./verdant-ruins.png");
+}
+
+/* Башни остаются справа, а под рабочей областью лежит спокойная тёмная долина. */
+html[data-theme="verdant"] body::after {
+  background-color: #03110e;
+  background-image:
+    linear-gradient(90deg, rgba(1, 11, 9, 0.68), rgba(1, 12, 10, 0.4) 52%, rgba(1, 11, 9, 0.08) 78%),
+    linear-gradient(180deg, rgba(2, 13, 12, 0.04) 44%, rgba(1, 9, 7, 0.42)),
+    var(--verdant-image);
+  background-position: center, center, 68% 50%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  mask-image: none;
+  opacity: 1;
+}
+
+/* Один compositor-friendly импульс заменяет постоянный поток частиц. */
+@keyframes verdant-signal-sweep {
+  0%, 12% { transform: translate3d(0, -115%, 0); }
+  34%, 100% { transform: translate3d(0, 115%, 0); }
+}
+
+html[data-theme="verdant"] body::before {
+  animation: verdant-signal-sweep 18s cubic-bezier(0.32, 0, 0.18, 1) infinite;
+  background:
+    linear-gradient(180deg,
+      transparent 0 46%,
+      rgba(119, 244, 163, 0.035) 48%,
+      rgba(134, 255, 177, 0.22) 49.7%,
+      rgba(185, 255, 207, 0.48) 50%,
+      rgba(111, 237, 155, 0.12) 50.5%,
+      transparent 54%);
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.62;
+  will-change: transform;
+}
+
+html[data-theme="verdant"] .app-header {
+  backdrop-filter: blur(9px) saturate(112%);
+  -webkit-backdrop-filter: blur(9px) saturate(112%);
+  background: rgba(2, 16, 13, 0.82);
+  border-bottom-color: rgba(131, 237, 165, 0.2);
+}
+
+html[data-theme="verdant"] .app-header::after {
+  background: linear-gradient(90deg, transparent 4%, rgba(131, 237, 165, 0.72) 34%, rgba(131, 237, 165, 0.16) 68%, transparent 94%);
+}
+
+html[data-theme="verdant"] .brand-mark {
+  border-color: rgba(131, 237, 165, 0.48);
+  color: #a8f7bf;
+}
+
+/* Активная вкладка — сигнальная риска вместо привычной круглой плашки. */
+html[data-theme="verdant"] .view-tab[aria-pressed="true"] {
+  background: linear-gradient(180deg, transparent, rgba(131, 237, 165, 0.07));
+  border: 0;
+  border-bottom: 1px solid var(--accent);
+  border-radius: 0;
+  box-shadow: 0 8px 18px -13px rgba(131, 237, 165, 0.9);
+  padding: 0.32rem 0.75rem;
+}
+
+html[data-theme="verdant"] .task-rail {
+  backdrop-filter: blur(8px) saturate(108%);
+  -webkit-backdrop-filter: blur(8px) saturate(108%);
+  background:
+    linear-gradient(180deg, rgba(11, 35, 29, 0.76), rgba(2, 17, 14, 0.88));
+  border-right-color: rgba(131, 237, 165, 0.2);
+}
+
+html[data-theme="verdant"] .chat {
+  background: linear-gradient(90deg, rgba(1, 12, 10, 0.28), rgba(1, 12, 10, 0.1) 62%, transparent 88%);
+}
+
+html[data-theme="verdant"] .chat-head,
+html[data-theme="verdant"] .composer {
+  backdrop-filter: blur(7px) saturate(108%);
+  -webkit-backdrop-filter: blur(7px) saturate(108%);
+  background: rgba(2, 17, 14, 0.76);
+}
+
+html[data-theme="verdant"] .composer-input {
+  background: rgba(5, 27, 22, 0.92);
+  border-color: rgba(131, 237, 165, 0.3);
+}
+
+/* Длинный чат не создаёт отдельный blur-слой для каждого сообщения. */
+html[data-theme="verdant"] .msg,
+html[data-theme="verdant"] .msg-user {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html[data-theme="verdant"] .msg {
+  background-color: rgba(3, 20, 16, 0.94);
+}
+
+html[data-theme="verdant"] .msg-user {
+  background-color: rgba(5, 27, 21, 0.95);
+}
+
+html[data-theme="verdant"] .journal details[data-work-log-day-section],
+html[data-theme="verdant"] .journal details[data-work-log-turn-details] {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html[data-theme="verdant"] .journal details[data-work-log-day-section] {
+  background-color: rgba(2, 17, 14, 0.9);
+  background-image: none;
+}
+
+html[data-theme="verdant"] .journal details[data-work-log-turn-details] {
+  background-color: rgba(5, 27, 22, 0.88);
+  background-image: none;
+}
+
+html[data-theme="verdant"] .journal details[data-work-log-turn-details]:hover,
+html[data-theme="verdant"] .journal details[data-work-log-turn-details][open] {
+  background-color: rgba(8, 37, 29, 0.94);
+}
+
+html[data-theme="verdant"][data-surface="mobile"] body::after {
+  background-position: center, center, 76% 50%;
+}
+
+@media (max-width: 720px) {
+  html[data-theme="verdant"] body::after {
+    background-position: center, center, 76% 50%;
+  }
+
+  html[data-theme="verdant"] .task-rail,
+  html[data-theme="verdant"] .chat-head,
+  html[data-theme="verdant"] .composer {
+    background-color: rgba(2, 17, 14, 0.9);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="verdant"] body::before {
+    animation: none;
+    opacity: 0;
+    will-change: auto;
+  }
+}
+
+html[data-background-override="true"][data-background="verdant"] {
+  --verdant-image: url("./verdant-ruins.png");
+  --hub-background-color: #03110e;
+  --hub-background-image:
+    linear-gradient(90deg, rgba(1, 11, 9, 0.68), rgba(1, 12, 10, 0.4) 52%, rgba(1, 11, 9, 0.08) 78%),
+    linear-gradient(180deg, rgba(2, 13, 12, 0.04) 44%, rgba(1, 9, 7, 0.42)),
+    var(--verdant-image);
+  --hub-background-position: center, center, 68% 50%;
+}
+
+@media (max-width: 720px) {
+  html[data-background-override="true"][data-background="verdant"] {
+    --hub-background-position: center, center, 76% 50%;
+  }
+}
