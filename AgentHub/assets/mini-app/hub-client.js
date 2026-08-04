@@ -1196,10 +1196,22 @@ agentHub.on("task:new", ({ title, provider }) => runAction(async () => {
     ? provider
     : (lastSnapshot?.settings?.provider ?? "codex");
   let snapshot = await control("new-task", { provider: selectedProvider });
+  const created = (snapshot.tasks ?? []).find((task) => task.selected);
+  if (created) {
+    pendingSelectionId = taskId(created.provider, created.threadId);
+    rememberSelectedTaskId(pendingSelectionId);
+  }
   applySnapshot(snapshot);
-  if (title) {
-    snapshot = await control("rename-task", { ...exactSelectedTaskParams(), title });
-    applySnapshot(snapshot);
+  try {
+    if (title) {
+      snapshot = await control("rename-task", { ...exactSelectedTaskParams(), title });
+      applySnapshot(snapshot);
+    }
+  } finally {
+    pendingSelectionId = "";
+    agentHub.showSelectedTask();
+    const identity = taskIdentity(selectedTaskId);
+    if (identity) replaceRoute(`#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`);
   }
 }));
 

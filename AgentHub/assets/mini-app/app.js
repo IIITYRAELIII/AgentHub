@@ -1235,7 +1235,19 @@ function renderTasks() {
     return local || state.searchResults.has(task.id);
   });
   taskList.replaceChildren();
-  for (const task of visible) taskList.append(renderTaskItem(task));
+  const hasProject = visible.some((task) => String(task.project ?? "").trim());
+  if (!hasProject) {
+    for (const task of visible) taskList.append(renderTaskItem(task));
+  } else {
+    const groups = new Map();
+    for (const task of visible) {
+      const project = String(task.project ?? "").trim();
+      const key = project || "\u0000";
+      if (!groups.has(key)) groups.set(key, { project, tasks: [] });
+      groups.get(key).tasks.push(task);
+    }
+    for (const group of groups.values()) taskList.append(renderTaskProjectGroup(group));
+  }
 
   const hasTasks = state.tasks.length > 0;
   taskEmpty.hidden = hasTasks;
@@ -1247,6 +1259,20 @@ function renderTasks() {
   }
   taskCount.hidden = !hasTasks;
   taskCount.textContent = String(state.tasks.length);
+}
+
+function renderTaskProjectGroup({ project, tasks }) {
+  const list = el("ul", { class: "task-project-list" }, tasks.map(renderTaskItem));
+  return el("li", {
+    class: "task-project-group",
+    "data-project": project || null,
+  }, [
+    el("div", { class: "task-project-heading" }, [
+      el("span", { class: "task-project-name", text: project || "Без проекта" }),
+      el("span", { class: "task-project-count", text: String(tasks.length) }),
+    ]),
+    list,
+  ]);
 }
 
 function renderTaskItem(task) {
@@ -1538,7 +1564,9 @@ const EDGE_SWIPE_DISTANCE = 52;
 let swipeStart = null;
 
 function swipeIgnoredTarget(target) {
-  return Boolean(target?.closest?.("input, textarea, select, button, a, [contenteditable='true']"));
+  return Boolean(target?.closest?.(
+    "input, textarea, select, button, a, [contenteditable='true'], .markdown-table-scroll",
+  ));
 }
 
 document.addEventListener("touchstart", (event) => {
@@ -1571,10 +1599,12 @@ document.addEventListener("touchend", (event) => {
   const touch = event.changedTouches[0];
   const dx = touch.clientX - swipeStart.x;
   const dy = touch.clientY - swipeStart.y;
+  const fromLeftEdge = swipeStart.fromLeftEdge;
   swipeStart = null;
-  if (dx < EDGE_SWIPE_DISTANCE || Math.abs(dx) < Math.abs(dy) * 1.4) return;
+  if (!fromLeftEdge || dx < EDGE_SWIPE_DISTANCE || Math.abs(dx) < Math.abs(dy) * 1.4) return;
   navigateBack();
 }, { passive: true });
+document.addEventListener("touchcancel", () => { swipeStart = null; }, { passive: true });
 
 function captureChatAnchor() {
   const viewportTop = chatScroll.getBoundingClientRect().top;
@@ -3615,6 +3645,10 @@ const AgentHub = {
   openAttachmentViewer,
   showAttachmentViewer,
   closeAttachmentViewer,
+  showSelectedTask() {
+    setView("chat");
+    setPane("chat");
+  },
   addSelectedAnnotation() {
     return addAnnotation(selectedAgentText() || lastAnnotationSelection);
   },

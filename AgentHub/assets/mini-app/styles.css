@@ -2852,6 +2852,46 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   padding: 0 0.5rem 0.6rem;
 }
 
+.task-project-group {
+  list-style: none;
+  margin: 0 0 0.45rem;
+}
+
+.task-project-heading {
+  align-items: center;
+  color: var(--text-faint);
+  display: flex;
+  font-size: 0.64rem;
+  font-weight: 700;
+  gap: 0.45rem;
+  letter-spacing: var(--label-spacing);
+  padding: 0.35rem 0.6rem 0.22rem;
+  text-transform: uppercase;
+}
+
+.task-project-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-project-count {
+  background: var(--surface-2);
+  border-radius: var(--radius-chip);
+  flex: 0 0 auto;
+  font-family: var(--font-numeric);
+  font-size: 0.58rem;
+  letter-spacing: 0;
+  padding: 0.04rem 0.35rem;
+}
+
+.task-project-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
 .rail-empty {
   color: var(--text-faint);
   font-size: 0.78rem;

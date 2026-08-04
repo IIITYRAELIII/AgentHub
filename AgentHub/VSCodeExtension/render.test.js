@@ -1084,9 +1084,38 @@ test("left-edge swipe uses in-app back and prevents browser history navigation",
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   assert.match(app, /const EDGE_SWIPE_ZONE = 32;/u);
   assert.match(app, /fromLeftEdge: touch\.clientX <= EDGE_SWIPE_ZONE/u);
+  assert.match(app, /\.markdown-table-scroll/u);
   assert.match(app, /touchmove[\s\S]*swipeStart\?\.fromLeftEdge[\s\S]*event\.preventDefault\(\)/u);
-  assert.match(app, /dx < EDGE_SWIPE_DISTANCE[\s\S]*navigateBack\(\);/u);
+  assert.match(app, /if \(!fromLeftEdge \|\| dx < EDGE_SWIPE_DISTANCE[\s\S]*navigateBack\(\);/u);
   assert.match(app, /function navigateBack\(\) \{\s*saveDraft\(\);[\s\S]*root\.dataset\.view !== "chat"[\s\S]*setPane\("tasks"\)/u);
+});
+
+test("task list groups named projects and keeps unassigned tasks visible", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(app, /const hasProject = visible\.some/u);
+  assert.match(app, /function renderTaskProjectGroup\(/u);
+  assert.match(app, /text: project \|\| "Без проекта"/u);
+  assert.match(styles, /\.task-project-heading\s*\{/u);
+});
+
+test("new task becomes the selected chat before its title is applied", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /control\("new-task"[\s\S]*const created = \(snapshot\.tasks \?\? \[\]\)\.find\(\(task\) => task\.selected\)/u);
+  assert.match(client, /pendingSelectionId = taskId\(created\.provider, created\.threadId\)/u);
+  assert.match(client, /agentHub\.showSelectedTask\(\)/u);
+  assert.match(app, /showSelectedTask\(\) \{\s*setView\("chat"\);\s*setPane\("chat"\);/u);
+  assert.match(client, /replaceRoute\(`#\/chat\//u);
+});
+
+test("metropolis uses square pixel rain cells on mobile", () => {
+  const shader = fs.readFileSync(
+    require.resolve("../assets/mini-app/themes/metropolis/metropolis-glass.js"),
+    "utf8",
+  );
+  assert.match(shader, /cell:\s*\[0, 112\]/u);
+  assert.match(shader, /uCellPx > 0\.5[\s\S]*uv0 \* \(uViewport \/ uCellPx\)/u);
 });
 
 test("chat loads older pages from a button and a cancellable mobile pull gesture", () => {
