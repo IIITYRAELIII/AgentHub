@@ -32,13 +32,16 @@
 | 17 | ✅ | Серверная Desktop policy вынесена в `server-control-controller.mjs`: process/restart snapshot, автозапуск и накопление ожидающих рестарта безопасных настроек. |
 | 18 | ✅ | Постоянные очереди изображений, голоса и TTS вынесены в `background-job-controller.mjs`: раздельные лимиты, дедупликация, восстановление и сохранение незавершённой работы при остановке. |
 | 19 | ✅ | Shutdown composition вынесена в `runtime-lifecycle-controller.mjs`: однократный переход в stopping, остановка таймеров/управляемых ходов и независимое закрытие всех компонентов. |
+| 20 | ✅ | Runtime-ресурсы регистрируются один раз в `runtime-resource-registry.mjs` и одинаково проходят фазы `flush`, `suspend`, `finalize` при restart и shutdown. |
+| 21 | ✅ | Safe restart вынесен в `runtime-restart-controller.mjs`: ожидание offset/работ, запуск замены, восстановление предыдущего процесса и terminal finalize имеют один state machine. |
+| 22 | ✅ | Кэш каталога вынесен в `task-catalog-service.mjs`: стабильная ссылка, revision, TTL, invalidate и coalescing параллельных rebuild. Provider discovery пока остаётся следующим этапом A4. |
 
-После этапа 19 `agent-hub-server.mjs` содержит около 8,0 тыс. строк. Это всё ещё
+После этапа 22 `agent-hub-server.mjs` содержит около 8,3 тыс. строк. Это всё ещё
 слишком много для удобного сопровождения: сервер остаётся точкой композиции и
 хранит прикладную политику провайдеров, доставки, восстановления, Desktop RPC,
 Telegram callback/command dispatch и startup provider recovery. Следующие
-безопасные границы — завершение/восстановление Codex-run, restart workflow и
-startup provider recovery. Их следует переносить отдельными этапами с
+безопасные границы — `SelectionStore`, provider discovery/merge каталога,
+завершение/восстановление run и startup provider recovery. Их следует переносить отдельными этапами с
 contract-тестами, а не механически разрезать файл по размеру.
 
 ## Критерий завершения

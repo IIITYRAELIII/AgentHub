@@ -255,7 +255,9 @@ import { QuickTunnelController } from "./quick-tunnel.mjs";
 import { ensureLocalWebSecret } from "./local-web-auth.mjs";
 import { fitTaskHistoryPayload } from "./response-budget.mjs";
 import { RuntimeLifecycleController } from "./runtime-lifecycle-controller.mjs";
-import { settleNamedOperations } from "./lifecycle-coordinator.mjs";
+import { RuntimeResourceRegistry } from "./runtime-resource-registry.mjs";
+import { RuntimeRestartController } from "./runtime-restart-controller.mjs";
+import { TaskCatalogService } from "./task-catalog-service.mjs";
 import { createDesktopSnapshotFactory } from "./desktop-snapshot.mjs";
 import { createDesktopTaskHistoryFactory } from "./desktop-task-history.mjs";
 import { createDesktopControlRouter } from "./desktop-control-router.mjs";
@@ -713,9 +715,6 @@ const lastTaskMessages = new Map();
 const lastSeenTaskTurnIds = new Map();
 const statusMediaFileIds = new Map();
 const uiContextNonce = randomUUID();
-let taskCatalog = [];
-let taskCatalogRefreshedAt = 0;
-let taskCatalogRefreshInFlight = null;
 let synchronizedTaskTitleSignature = "";
 let taskTitlesSynchronizedAt = 0;
 let workLogPricingBackfillAttempted = false;
@@ -732,7 +731,12 @@ await taskSyncStore.save();
 // are restored separately, while external activity is revalidated from rollout
 // files. Showing cached `running=true` here creates a full-catalog phantom state
 // while the first provider scan is still in progress or unavailable.
-taskCatalog = catalogEntriesWithoutLiveActivity(taskSyncStore.catalog());
+const taskCatalogService = new TaskCatalogService({
+  initialEntries: catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
+  cacheMs: TASK_CATALOG_CACHE_MS,
+  build: buildTaskCatalog,
+});
+const taskCatalog = taskCatalogService.entries;
 
 let mediaController;
 const telegramClient = new TelegramClient({
@@ -883,7 +887,7 @@ const approvalController = new ApprovalController({
 });
 
 function invalidateTaskCatalog() {
-  taskCatalogRefreshedAt = 0;
+  taskCatalogService.invalidate();
 }
 
 function syncTaskRun(run, {
@@ -2777,27 +2781,27 @@ async function buildTaskCatalog() {
   } else {
     console.error("Cannot discover Claude tasks:", claudeResult.reason?.message ?? claudeResult.reason);
   }
-  taskCatalog = mergeTaskCatalog(entries, taskRuns.values().map((run) => ({
+  let nextCatalog = mergeTaskCatalog(entries, taskRuns.values().map((run) => ({
     ...run,
     projectName: runProject(run).name,
   })));
-  for (const entry of taskCatalog) {
+  for (const entry of nextCatalog) {
     entry.orderingActivityAtMs = taskOrderingActivityAtMs(entry, {
       run: taskRuns.forTask(entry),
       lastMessage: savedLastTaskMessageRecord(entry),
       userMessageAtMs: deferredTaskMessageAtMs(entry),
     });
   }
-  taskCatalog = statusTaskEntries(taskCatalog, taskCatalog.length);
+  nextCatalog = statusTaskEntries(nextCatalog, nextCatalog.length);
   if (pinnedTitlesChanged) await savePinnedTaskTitles();
   if (titleConfirmationsChanged) await saveState();
-  const nextTaskTitleSignature = taskCatalogTitleSignature(taskCatalog);
+  const nextTaskTitleSignature = taskCatalogTitleSignature(nextCatalog);
   const shouldSynchronizeTaskTitles = nextTaskTitleSignature !== synchronizedTaskTitleSignature
     || Date.now() - taskTitlesSynchronizedAt >= TASK_TITLE_RECONCILE_INTERVAL_MS;
   if (shouldSynchronizeTaskTitles) {
     for (const project of config.projects) {
       await workLogUsageStore.synchronizeTaskTitlesAndProject({
-        titles: taskCatalog
+        titles: nextCatalog
           .filter((entry) => samePath(entry.projectRoot, project.path))
           .map((entry) => ({
             provider: entry.provider,
@@ -2814,32 +2818,22 @@ async function buildTaskCatalog() {
   }
   let titleChanged = false;
   for (const run of taskRuns.values()) {
-    const entry = taskCatalog.find((item) => catalogEntryIsSelected(item, run));
+    const entry = nextCatalog.find((item) => catalogEntryIsSelected(item, run));
     if (entry) titleChanged = updateTaskRunTitle(run, entry.title) || titleChanged;
   }
-  const current = taskCatalog.find((entry) => catalogEntryIsSelected(entry, selectedTask()));
+  const current = nextCatalog.find((entry) => catalogEntryIsSelected(entry, selectedTask()));
   if (current?.title && current.title !== activeThreadTitle) {
     activeThreadTitle = current.title;
     titleChanged = true;
   }
-  taskSyncStore.recordCatalog(taskCatalog);
+  taskSyncStore.recordCatalog(nextCatalog);
   await taskSyncStore.save();
   if (titleChanged) await saveState();
-  taskCatalogRefreshedAt = Date.now();
-  return taskCatalog;
+  return nextCatalog;
 }
 
 async function refreshTaskCatalog({ force = false } = {}) {
-  if (!force && taskCatalog.length && Date.now() - taskCatalogRefreshedAt < TASK_CATALOG_CACHE_MS) {
-    return taskCatalog;
-  }
-  if (taskCatalogRefreshInFlight) return taskCatalogRefreshInFlight;
-  taskCatalogRefreshInFlight = buildTaskCatalog();
-  try {
-    return await taskCatalogRefreshInFlight;
-  } finally {
-    taskCatalogRefreshInFlight = null;
-  }
+  return taskCatalogService.refresh({ force });
 }
 
 async function sendThreadPicker({ editMessage = null, page = 0 } = {}) {
@@ -3009,7 +3003,7 @@ const {
   },
   catalog: {
     entries: () => taskCatalog,
-    refreshedAt: () => taskCatalogRefreshedAt,
+    refreshedAt: () => taskCatalogService.refreshedAt,
     refresh: refreshTaskCatalog,
     merge: mergeTaskCatalog,
   },
@@ -7063,17 +7057,8 @@ async function finalizeRestartMessage() {
   });
 }
 
-async function performRestart() {
-  if (stopping || !restartRequest) return;
-  if (updateOffset < Number(restartRequest.minimumUpdateOffset ?? 0)) return;
-  if (restartHasBlockingWork()) {
-    restartRequest.waitingForRuns = true;
-    return;
-  }
-  restartRequest.waitingForRuns = false;
-  await updateRestartMessage("🔄 Перезапускаю Agent Hub…").catch(() => {});
-  await saveState();
-  await settleNamedOperations([
+const runtimeResources = new RuntimeResourceRegistry({
+  flush: [
     { name: "state writes", run: () => stateWriteQueue },
     { name: "message binding writes", run: () => bindingWriteQueue },
     { name: "media writes", run: () => mediaController.waitForWrites() },
@@ -7081,13 +7066,8 @@ async function performRestart() {
     { name: "delivery outbox", run: () => deliveryOutbox.waitForWrites() },
     { name: "background jobs", run: () => backgroundJobStore.waitForWrites() },
     { name: "failed updates", run: () => failedUpdateStore.waitForWrites() },
-  ], {
-    logError: (name, error) => console.error(`Restart flush failed (${name}):`, error.message),
-  });
-  stopping = true;
-  stopRuntimeTimers();
-  mediaController.stop();
-  await settleNamedOperations([
+  ],
+  suspend: [
     { name: "Codex App Server", run: stopCodexAppServerTree },
     { name: "Mini App publisher", run: () => miniAppPublisher?.close() },
     { name: "direct gateway", run: () => directGatewayController?.close() },
@@ -7097,68 +7077,78 @@ async function performRestart() {
     { name: "Desktop control", run: () => desktopControlServer?.close() },
     { name: "runtime command", run: () => runtimeCommandServer.close() },
     { name: "instance lock", run: () => instanceGuard.release() },
-  ], {
-    logError: (name, error) => console.error(`Restart close failed (${name}):`, error.message),
-  });
-  const invocation = botReplacementInvocation({
-    botFile: path.join(import.meta.dirname, "agent-hub-server.mjs"),
-    agentHubRoot: AGENT_HUB_ROOT,
-  });
-  const launcher = String(
-    process.env.AGENT_HUB_LAUNCHER ?? "",
-  ).trim();
-  const fallbackInvocation = process.platform === "win32" && launcher
-    ? directWindowsLauncherInvocation({ launcher })
-    : null;
-  try {
-    const replacement = await launchReplacementAndWait({
+  ],
+  finalize: [
+    { name: "rate limit history", run: () => rateLimitHistoryStore.close() },
+    { name: "task sync store", run: () => taskSyncStore.close() },
+    { name: "task read-state store", run: () => taskReadStateStore.close() },
+    { name: "runtime state store", run: () => runtimeStateStore.close() },
+  ],
+});
+
+const runtimeRestart = new RuntimeRestartController({
+  getRequest: () => restartRequest,
+  updateOffset: () => updateOffset,
+  hasBlockingWork: restartHasBlockingWork,
+  setWaiting: (value) => { restartRequest.waitingForRuns = value; },
+  updateMessage: updateRestartMessage,
+  saveState,
+  resources: runtimeResources,
+  isStopping: () => stopping,
+  beginStopping: () => {
+    if (stopping) return false;
+    stopping = true;
+    return true;
+  },
+  stopTimers: stopRuntimeTimers,
+  stopMedia: () => mediaController.stop(),
+  launchReplacement: async () => {
+    const invocation = botReplacementInvocation({
+      botFile: path.join(import.meta.dirname, "agent-hub-server.mjs"),
+      agentHubRoot: AGENT_HUB_ROOT,
+    });
+    const launcher = String(process.env.AGENT_HUB_LAUNCHER ?? "").trim();
+    const fallbackInvocation = process.platform === "win32" && launcher
+      ? directWindowsLauncherInvocation({ launcher })
+      : null;
+    return launchReplacementAndWait({
       invocation,
       fallbackInvocation,
       lockFile: INSTANCE_LOCK_FILE,
     });
-    console.log(
-      `Replacement bot ready: PID ${replacement.lock.pid}; attempt ${replacement.attempt}`
-        + `${replacement.usedFallback ? " (direct launcher fallback)" : ""}.`,
-    );
-  } catch (error) {
-    console.error("Cannot start replacement bot:", error.message);
-    try {
-      await restorePreviousBotAfterFailedReplacement({
-        replacementError: error,
-        acquireLock: () => instanceGuard.acquire(),
-        startCommandServer: async () => {
-          await runtimeCommandServer.start();
-          await desktopControlServer?.start();
-          await startMiniApp();
-        },
-        setStopping: (value) => { stopping = value; },
-        restoreProvider: async () => {
-          if (isCodex() || taskRuns.values().some((run) => run.provider === "codex")) {
-            await startCodexAppServer();
-            await initializeCodex({ attachSelectedThread: isCodex() });
-          }
-        },
-        recoverRuns: recoverActiveRuns,
-        updateMessage: (message) => updateRestartMessage(message).catch(() => {}),
-        clearRestartRequest: () => { restartRequest = null; },
-        saveState,
-        startTimers: startRuntimeTimers,
-        markReady: () => instanceGuard.markReady(),
-      });
-      return;
-    } catch (restoreError) {
-      console.error("Cannot restore the previous bot after failed replacement:", restoreError.message);
-      process.exitCode = 1;
-    }
-  }
-  // Процессы Claude намеренно переживают перезапуск: новый бот подхватит их
-  // по сохранённому PID и файлу вывода.
-  // All listeners owned by the old process are already closed here. Keep one
-  // referenced handle until the replacement has finished its ready hand-off;
-  // an unref'ed exit timer lets Node end the pending top-level polling await
-  // naturally and can abort the hand-off on Windows.
-  await delay(500);
-  process.exit(0);
+  },
+  recoverPrevious: (error) => restorePreviousBotAfterFailedReplacement({
+    replacementError: error,
+    acquireLock: () => instanceGuard.acquire(),
+    startCommandServer: async () => {
+      await runtimeCommandServer.start();
+      await desktopControlServer?.start();
+      await startMiniApp();
+    },
+    setStopping: (value) => { stopping = value; },
+    restoreProvider: async () => {
+      if (isCodex() || taskRuns.values().some((run) => run.provider === "codex")) {
+        await startCodexAppServer();
+        await initializeCodex({ attachSelectedThread: isCodex() });
+      }
+    },
+    recoverRuns: recoverActiveRuns,
+    updateMessage: (message) => updateRestartMessage(message).catch(() => {}),
+    clearRestartRequest: () => { restartRequest = null; },
+    saveState,
+    startTimers: startRuntimeTimers,
+    markReady: () => instanceGuard.markReady(),
+  }),
+  finishSuccessfulReplacement: async () => {
+    // Detached Claude processes survive; the replacement reconnects by PID/output offset.
+    await delay(500);
+    process.exit(0);
+  },
+});
+
+async function performRestart() {
+  const result = await runtimeRestart.perform();
+  if (result.status === "failed") process.exitCode = 1;
 }
 
 async function restartBot() {
@@ -8199,30 +8189,7 @@ const runtimeLifecycle = new RuntimeLifecycleController({
     }
   },
   stopMedia: () => mediaController.stop(),
-  operations: () => [
-    { name: "Codex App Server", run: stopCodexAppServerTree },
-    { name: "Mini App publisher", run: () => miniAppPublisher?.close() },
-    { name: "direct gateway", run: () => directGatewayController?.close() },
-    { name: "quick tunnel", run: () => quickTunnelController?.close() },
-    { name: "public Mini App", run: () => publicMiniAppServer?.close() },
-    { name: "local Mini App", run: () => miniAppServer?.close() },
-    { name: "Desktop control", run: () => desktopControlServer?.close() },
-    { name: "runtime command", run: () => runtimeCommandServer.close() },
-    { name: "rate limit history", run: () => rateLimitHistoryStore.close() },
-    { name: "state writes", run: () => stateWriteQueue },
-    { name: "media writes", run: () => mediaController.waitForWrites() },
-    { name: "message binding writes", run: () => bindingWriteQueue },
-    { name: "task sync", run: () => taskSyncStore.save() },
-    { name: "delivery outbox", run: () => deliveryOutbox.waitForWrites() },
-    { name: "background jobs", run: () => backgroundJobStore.waitForWrites() },
-    { name: "failed updates", run: () => failedUpdateStore.waitForWrites() },
-    { name: "instance lock", run: () => instanceGuard.release() },
-  ],
-  afterClose: () => {
-    taskSyncStore.close();
-    taskReadStateStore.close();
-    runtimeStateStore.close();
-  },
+  resources: runtimeResources,
 });
 
 process.on("unhandledRejection", (error) => {

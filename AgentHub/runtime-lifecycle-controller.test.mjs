@@ -15,11 +15,11 @@ test("runtime lifecycle stops once and settles every named component", async () 
     stopTimers: () => events.push("timers"),
     stopManagedRuns: () => events.push("runs"),
     stopMedia: () => events.push("media"),
-    operations: () => [
-      { name: "one", run: async () => events.push("one") },
-      { name: "two", run: async () => events.push("two") },
-    ],
-    afterClose: () => events.push("closed"),
+    resources: {
+      flush: async () => events.push("flush"),
+      suspend: async () => events.push("suspend"),
+      finalize: async () => events.push("finalize"),
+    },
     logger: { log: (message) => events.push(message), error: () => {} },
   });
 
@@ -31,25 +31,28 @@ test("runtime lifecycle stops once and settles every named component", async () 
     "timers",
     "runs",
     "media",
-    "one",
-    "two",
-    "closed",
+    "flush",
+    "suspend",
+    "finalize",
   ]);
 });
 
-test("runtime lifecycle reports one failing component and still closes the rest", async () => {
-  const errors = [];
-  let closed = false;
+test("runtime lifecycle delegates all phases to the shared resource registry", async () => {
+  const phases = [];
   const controller = new RuntimeLifecycleController({
     beginStopping: () => true,
     stopTimers: () => {},
-    operations: () => [
-      { name: "broken", run: async () => { throw new Error("boom"); } },
-      { name: "healthy", run: async () => { closed = true; } },
-    ],
-    logger: { log() {}, error: (message, detail) => errors.push(`${message} ${detail}`) },
+    resources: {
+      flush: async (options) => phases.push(["flush", options.label]),
+      suspend: async (options) => phases.push(["suspend", options.label]),
+      finalize: async (options) => phases.push(["finalize", options.label]),
+    },
+    logger: { log() {}, error() {} },
   });
   assert.equal(await controller.shutdown("test"), true);
-  assert.equal(closed, true);
-  assert.deepEqual(errors, ["Shutdown failed (broken): boom"]);
+  assert.deepEqual(phases, [
+    ["flush", "Shutdown flush failed"],
+    ["suspend", "Shutdown close failed"],
+    ["finalize", "Shutdown finalize failed"],
+  ]);
 });

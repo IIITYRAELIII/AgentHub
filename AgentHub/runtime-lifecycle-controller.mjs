@@ -1,27 +1,21 @@
-import { settleNamedOperations } from "./lifecycle-coordinator.mjs";
-
 export class RuntimeLifecycleController {
   constructor({
     beginStopping,
     stopTimers,
     stopManagedRuns,
     stopMedia,
-    operations,
-    afterClose = () => {},
+    resources,
     logger = console,
-    settle = settleNamedOperations,
   } = {}) {
     if (typeof beginStopping !== "function") throw new TypeError("beginStopping is required");
     if (typeof stopTimers !== "function") throw new TypeError("stopTimers is required");
-    if (typeof operations !== "function") throw new TypeError("operations is required");
+    if (!resources) throw new TypeError("resources is required");
     this.beginStopping = beginStopping;
     this.stopTimers = stopTimers;
     this.stopManagedRuns = stopManagedRuns ?? (() => {});
     this.stopMedia = stopMedia ?? (() => {});
-    this.operations = operations;
-    this.afterClose = afterClose;
+    this.resources = resources;
     this.logger = logger;
-    this.settle = settle;
   }
 
   async shutdown(signal) {
@@ -30,10 +24,9 @@ export class RuntimeLifecycleController {
     this.stopTimers();
     this.stopManagedRuns();
     this.stopMedia();
-    await this.settle(this.operations(), {
-      logError: (name, error) => this.logger.error(`Shutdown failed (${name}):`, error.message),
-    });
-    await this.afterClose();
+    await this.resources.flush({ label: "Shutdown flush failed" });
+    await this.resources.suspend({ label: "Shutdown close failed" });
+    await this.resources.finalize({ label: "Shutdown finalize failed" });
     return true;
   }
 }
