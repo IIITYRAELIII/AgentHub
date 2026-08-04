@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -54,7 +54,7 @@ test("runtime notifications validate files and execute the release script", asyn
   assert.equal(calls.length, 2);
   assert.equal(path.basename(calls[0].args[0]), "send-message.mjs");
   assert.equal(path.basename(calls[1].args[0]), "send-images.mjs");
-  assert.equal(calls[0].options.cwd, project);
+  assert.equal(calls[0].options.cwd, await realpath(project));
   assert.equal(calls[0].options.env.CODEX_THREAD_ID, "current-thread");
   assert.equal(calls[0].options.env.TELEGRAM_BOT_TOKEN, undefined);
   assert.equal(calls[0].options.env.AGENT_HUB_DIRECT, "1");
