@@ -68,6 +68,8 @@ html[data-theme="verdant"] {
   --star-opacity: 0;
   --decor-opacity: 1;
   --verdant-image: url("./verdant-ruins.png");
+  --verdant-canopy-image: url("./verdant-canopy.png");
+  --verdant-sanctum-image: url("./verdant-sanctum.png");
 }
 
 /* Башни остаются справа, а под рабочей областью лежит спокойная тёмная долина. */
@@ -227,8 +229,40 @@ html[data-background-override="true"][data-background="verdant"] {
   --hub-background-position: center, center, 68% 50%;
 }
 
+html[data-background-override="true"][data-background="verdant-canopy"] {
+  --hub-background-color: #07110a;
+  --hub-background-image:
+    linear-gradient(90deg, rgba(1, 11, 7, 0.58), rgba(2, 13, 8, 0.24) 48%, rgba(2, 12, 7, 0.02) 72%),
+    linear-gradient(180deg, rgba(2, 11, 7, 0.02) 52%, rgba(1, 9, 5, 0.36)),
+    var(--verdant-canopy-image);
+  --hub-background-position: center, center, 62% 50%;
+}
+
+html[data-background-override="true"][data-background="verdant-sanctum"] {
+  --hub-background-color: #020b09;
+  --hub-background-image:
+    linear-gradient(90deg, rgba(1, 9, 8, 0.5), rgba(1, 10, 9, 0.18) 48%, rgba(1, 9, 8, 0.02) 72%),
+    linear-gradient(180deg, rgba(1, 9, 8, 0.02) 50%, rgba(0, 6, 5, 0.34)),
+    var(--verdant-sanctum-image);
+  --hub-background-position: center, center, 64% 50%;
+}
+
+/* Все три сцены принадлежат Verdant, поэтому сохраняют её сигнальный проход. */
+html[data-theme="verdant"][data-background-override="true"][data-background="verdant-canopy"] body::before,
+html[data-theme="verdant"][data-background-override="true"][data-background="verdant-sanctum"] body::before {
+  content: "" !important;
+}
+
 @media (max-width: 720px) {
   html[data-background-override="true"][data-background="verdant"] {
     --hub-background-position: center, center, 76% 50%;
+  }
+
+  html[data-background-override="true"][data-background="verdant-canopy"] {
+    --hub-background-position: center, center, 72% 50%;
+  }
+
+  html[data-background-override="true"][data-background="verdant-sanctum"] {
+    --hub-background-position: center, center, 70% 50%;
   }
 }

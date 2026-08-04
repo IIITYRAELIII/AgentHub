@@ -622,6 +622,29 @@ test("«Озеро» keeps one palette and three interchangeable scenes", () => 
   }
 });
 
+test("Verdant keeps its signal sweep across three environment scenes", () => {
+  const theme = THEME_REGISTRY.themes.find((item) => item.id === "verdant");
+  const styles = themeFile("verdant");
+  assert.deepEqual(
+    theme.backgrounds.map(({ id, asset }) => [id, asset]),
+    [
+      ["verdant", "verdant-ruins.png"],
+      ["verdant-canopy", "verdant-canopy.png"],
+      ["verdant-sanctum", "verdant-sanctum.png"],
+    ],
+  );
+  for (const background of ["verdant-canopy", "verdant-sanctum"]) {
+    assert.match(styles, new RegExp(`\\[data-background="${background}"\\] \\{`, "u"), background);
+    assert.match(
+      styles,
+      new RegExp(`\\[data-background="${background}"\\] body::before`, "u"),
+      `${background} signal sweep`,
+    );
+  }
+  assert.match(styles, /@keyframes verdant-signal-sweep/u);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/u);
+});
+
 test("VS Code resolves each self-contained theme resource without CSS overrides", () => {
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");

@@ -302,6 +302,15 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.equal(meadow.headers.get("content-type"), "image/png");
     assert.match(meadow.headers.get("cache-control"), /immutable/u);
     assert.ok((await meadow.arrayBuffer()).byteLength > 100_000);
+    /* Дополнительные сцены Verdant живут в том же пакете и публикуются
+       автоматически вместе с его манифестом. */
+    for (const name of ["verdant-canopy.png", "verdant-sanctum.png"]) {
+      const scene = await fetch(`${address.url}themes/verdant/${name}`);
+      assert.equal(scene.status, 200, name);
+      assert.equal(scene.headers.get("content-type"), "image/png", name);
+      assert.match(scene.headers.get("cache-control"), /immutable/u, name);
+      assert.ok((await scene.arrayBuffer()).byteLength > 100_000, name);
+    }
     /* Три кадра «Озера» — единственные JPEG среди фонов: фотография и две
        живописи в PNG весили бы впятеро больше при том же виде. */
     for (const name of [
@@ -321,6 +330,10 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.equal(backgrounds.status, 200);
     assert.match(backgrounds.headers.get("content-type"), /text\/css/u);
     assert.match(await backgrounds.text(), /\[data-background="lake-watercolor"\]/u);
+    const verdantStyles = await fetch(`${address.url}themes/verdant/theme.css`);
+    assert.equal(verdantStyles.status, 200);
+    assert.match(verdantStyles.headers.get("content-type"), /text\/css/u);
+    assert.match(await verdantStyles.text(), /\[data-background="verdant-sanctum"\]/u);
     const storm = await fetch(`${address.url}themes/stormglass/storm-sea.png`);
     assert.equal(storm.status, 200);
     assert.equal(storm.headers.get("content-type"), "image/png");
