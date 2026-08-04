@@ -3,6 +3,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createDesktopMessageController } from "./desktop-message-controller.mjs";
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
+import { RunCoordinator } from "./run-coordinator.mjs";
 
 const EXISTING_IMAGE = fileURLToPath(
   new URL("./assets/mini-app/themes/blackhole/blackhole-blue.png", import.meta.url),
@@ -16,29 +17,60 @@ function controller(overrides = {}) {
     taskTitle: "Task",
     chatId: 84,
   };
-  return createDesktopMessageController({
-    attachmentPaths: async () => [],
-    resolveTarget: async () => target,
-    receipts: new MessageReceiptRegistry(),
-    persistReceipts: async () => {},
-    snapshot: async () => ({ ok: true }),
-    taskRuns: { forTask: () => null },
-    taskExternalActivity: async () => ({ state: "inactive", executionOwner: null }),
-    readCodexThread: async () => ({ thread: { turns: [] } }),
-    deferConflictingInput: async () => ({ id: "deferred-1", item: { id: "deferred-1" } }),
-    scheduleQueuedInput: () => {},
-    sendRpc: async () => ({}),
-    setProgressStage: () => {},
-    noteRunActivity: () => {},
-    scheduleProgressUpdate: () => {},
-    activeRepositoryConflict: async () => null,
-    beginRun: async () => ({
+  const taskRuns = overrides.taskRuns ?? { forTask: () => null };
+  const readCodexThread = overrides.readCodexThread ?? (async () => ({ thread: { turns: [] } }));
+  const sendRpc = overrides.sendRpc ?? (async () => ({}));
+  const describeAttachments = overrides.describeAttachments
+    ?? ((files) => files.map((file) => ({ id: String(file) })));
+  const runCoordinator = overrides.runCoordinator ?? new RunCoordinator({
+    taskRuns,
+    providers: {
+      call: async (provider, operation, { run, target: runTarget, input, clientUserMessageId }) => {
+        if (operation !== "steerTurn") throw new Error(`unexpected provider operation: ${operation}`);
+        if (provider !== "codex") throw new Error("Отправка в текущий ход недоступна для выбранного агента");
+        let turnId = String(run?.turnId ?? "").trim();
+        if (!turnId) {
+          const result = await readCodexThread(runTarget.threadId, { fresh: true });
+          const active = (result.thread?.turns ?? []).filter((turn) => (
+            ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? ""))
+          ));
+          if (active.length !== 1) throw new Error("Текущий ход уже нельзя изменить");
+          turnId = String(active[0].id);
+        }
+        const result = await sendRpc("turn/steer", {
+          threadId: runTarget.threadId,
+          expectedTurnId: turnId,
+          input: typeof input === "string" ? [{ type: "text", text: input }] : input,
+          clientUserMessageId,
+        });
+        return { turnId: String(result?.turnId ?? turnId) };
+      },
+    },
+    externalActivity: overrides.taskExternalActivity
+      ?? (async () => ({ state: "inactive", executionOwner: null })),
+    repositoryConflict: overrides.activeRepositoryConflict ?? (async () => null),
+    deferInput: overrides.deferConflictingInput
+      ?? (async () => ({ id: "deferred-1", item: { id: "deferred-1" } })),
+    scheduleDeferred: overrides.scheduleQueuedInput ?? (() => {}),
+    hasDeferredBacklog: overrides.hasDeferredBacklog ?? (() => false),
+    setProgressStage: overrides.setProgressStage ?? (() => {}),
+    noteRunActivity: overrides.noteRunActivity ?? (() => {}),
+    scheduleProgressUpdate: overrides.scheduleProgressUpdate ?? (() => {}),
+    describeAttachments,
+    beginRun: overrides.beginRun ?? (async () => ({
       id: "run-1",
       threadId: target.threadId,
       turnId: "turn-1",
-    }),
-    launchTurn: async () => {},
-    ...overrides,
+    })),
+    launchTurn: overrides.launchTurn ?? (async () => {}),
+  });
+  return createDesktopMessageController({
+    attachmentPaths: overrides.attachmentPaths ?? (async () => []),
+    describeAttachments,
+    resolveTarget: overrides.resolveTarget ?? (async () => target),
+    receipts: overrides.receipts ?? new MessageReceiptRegistry(),
+    persistReceipts: overrides.persistReceipts ?? (async () => {}),
+    runCoordinator,
   });
 }
 

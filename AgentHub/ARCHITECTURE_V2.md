@@ -84,7 +84,7 @@ thread консервируется, создаёт handoff и передаёт 
 | A4 | ✅ | `ProviderTaskCatalogBuilder` владеет параллельным discovery, durable fallback, изоляцией ошибок источников и merge с managed runs; `TaskCatalogService` владеет кэшем, revision и coalescing. Provider-specific transport остаётся до A6. |
 | A5 | ✅ | `ApplicationCommandBus` объединяет selection, task create/rename/archive, settings, run cancel и approvals для Telegram/Desktop/Mini App; команды требуют `clientId`, task-мутации — явную цель, конфликтующие операции сериализуются между клиентами. Адресация предпочитает будущий `hubTaskId`, а provider thread ID остаётся compatibility ref. Запуск/steer/deferred input переходят вместе с `RunCoordinator` на A7. |
 | A6 | ✅ | `AgentProviderRegistry` задаёт обязательный port Codex/Claude для discovery/projection, create, launch, cancel, external activity, live/recovery snapshot, observed/managed completion, recovery и restart/shutdown policy. Общий task-run lifecycle больше не выбирает провайдера условными ветками. |
-| A7 | ⬜ | `RunCoordinator`: единая state machine запуска, steer/deferred input, наблюдения, recovery и terminal delivery; cancel уже входит через общий command bus A5. |
+| A7 | ✅ | `RunCoordinator` владеет admission state machine запуска, steer/deferred input и task-lane между Telegram/Desktop/Mini App; managed/observed completion и recovery входят через него в единый provider port. Lane предпочитает будущий `hubTaskId`, но разрешает новый provider-сеанс без ThreadID до первого события CLI. |
 | A8 | ⬜ | Выделить bootstrap в `agent-hub-main.mjs`; оставить composition root без бизнес-правил. |
 
 Каждый этап должен сохранять внешний протокол, получать отдельные contract-тесты

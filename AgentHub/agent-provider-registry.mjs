@@ -3,6 +3,7 @@ const REQUIRED_OPERATIONS = Object.freeze([
   "projectTasks",
   "createTask",
   "launchTurn",
+  "steerTurn",
   "cancelRun",
   "readTaskActivity",
   "readRunSnapshot",

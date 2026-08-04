@@ -92,11 +92,14 @@ test("provider discovery and catalog merge have one application owner", async ()
 
 test("provider operations resolve through one AgentProvider registry", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const coordinator = await readFile(path.join(ROOT, "run-coordinator.mjs"), "utf8");
+  const providerCallOwners = `${source}\n${coordinator}`;
   assert.equal((source.match(/new AgentProviderRegistry\s*\(/g) ?? []).length, 1);
   assert.equal(source.includes("sources: agentProviders.catalogSources()"), true);
   for (const operation of [
     "createTask",
     "launchTurn",
+    "steerTurn",
     "cancelRun",
     "readTaskActivity",
     "readRunSnapshot",
@@ -111,7 +114,11 @@ test("provider operations resolve through one AgentProvider registry", async () 
     "blocksRuntimeRestart",
     "stopManagedRunForShutdown",
   ]) {
-    assert.equal(source.includes(`agentProviders.call(`) && source.includes(`"${operation}"`), true, operation);
+    assert.equal(
+      providerCallOwners.includes(`.call(`) && providerCallOwners.includes(`"${operation}"`),
+      true,
+      operation,
+    );
   }
   const sharedObservedCompletion = source.slice(
     source.indexOf("async function finishObservedRun"),
@@ -124,6 +131,21 @@ test("provider operations resolve through one AgentProvider registry", async () 
   for (const sharedLifecycle of [sharedObservedCompletion, sharedRecovery]) {
     assert.doesNotMatch(sharedLifecycle, /provider\s*[!=]==?\s*["'](?:codex|claude)["']/u);
   }
+});
+
+test("run admission and provider terminal dispatch have one coordinator", async () => {
+  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  assert.equal((source.match(/new RunCoordinator\s*\(/g) ?? []).length, 1);
+  const startTurn = source.slice(
+    source.indexOf("async function startTurn"),
+    source.indexOf("async function cleanupDeferredFiles"),
+  );
+  assert.equal(startTurn.includes("runCoordinator.start("), true);
+  assert.doesNotMatch(startTurn, /externalActivity\.state|activeRepositoryConflict|beginRun\(/u);
+  assert.equal(source.includes("start: (item) => runCoordinator.startDeferred(item)"), true);
+  assert.equal(source.includes("runCoordinator.completeManaged("), true);
+  assert.equal(source.includes("runCoordinator.completeObserved("), true);
+  assert.equal(source.includes("runCoordinator.recoverProviderRun("), true);
 });
 
 test("shared task mutations enter through one application command bus", async () => {

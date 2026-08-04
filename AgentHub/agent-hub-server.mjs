@@ -259,6 +259,7 @@ import { RuntimeLifecycleController } from "./runtime-lifecycle-controller.mjs";
 import { RuntimeResourceRegistry } from "./runtime-resource-registry.mjs";
 import { RuntimeRestartController } from "./runtime-restart-controller.mjs";
 import { ApplicationCommandBus } from "./application-command-bus.mjs";
+import { RunCoordinator } from "./run-coordinator.mjs";
 import { AgentProviderRegistry } from "./agent-provider-registry.mjs";
 import { ProviderTaskCatalogBuilder } from "./provider-task-catalog-builder.mjs";
 import { TaskCatalogService } from "./task-catalog-service.mjs";
@@ -751,6 +752,7 @@ const agentProviders = new AgentProviderRegistry([
     projectTasks: buildCodexTaskCatalogEntries,
     createTask: createCodexTask,
     launchTurn: launchCodexTurn,
+    steerTurn: steerCodexTurn,
     cancelRun: cancelCodexProviderRun,
     readTaskActivity: readCodexTaskActivity,
     readRunSnapshot: readCodexTaskSnapshot,
@@ -772,6 +774,7 @@ const agentProviders = new AgentProviderRegistry([
     projectTasks: buildClaudeTaskCatalogEntries,
     createTask: createClaudeTask,
     launchTurn: launchClaudeTurn,
+    steerTurn: steerUnsupportedProviderTurn,
     cancelRun: cancelClaudeProviderRun,
     readTaskActivity: readClaudeTaskActivity,
     readRunSnapshot: (run, options) => readClaudeTaskSnapshot(run.threadId, options),
@@ -3549,7 +3552,7 @@ async function reconcileInactiveCodexRun(run) {
           : "Задача остановлена или неактивна.",
       };
       if (run.observer) await finishObservedRun(run, terminalSnapshot);
-      else await agentProviders.call(run.provider, "completeManagedRun", run, {
+      else await runCoordinator.completeManaged(run, {
         snapshot: terminalSnapshot,
       });
     }
@@ -3984,34 +3987,45 @@ async function desktopCompactContext(params) {
   }
 }
 
+const runCoordinator = new RunCoordinator({
+  taskRuns,
+  providers: agentProviders,
+  externalActivity: taskExternalActivity,
+  repositoryConflict: activeRepositoryConflict,
+  deferInput: deferConflictingInput,
+  beginRun,
+  launchTurn,
+  describeAttachments: desktopAttachmentDescriptors,
+  hasDeferredBacklog: (target) => {
+    const provider = String(target?.provider ?? "").toLowerCase();
+    const projectRoot = String(target?.projectRoot ?? "").toLowerCase();
+    const targetThreadId = String(target?.threadId ?? "").toLowerCase();
+    return [...pendingInputs.values(), ...queuedInputs.values()].some((item) =>
+      String(item?.provider ?? "").toLowerCase() === provider
+      && String(item?.projectRoot ?? "").toLowerCase() === projectRoot
+      && String(item?.threadId ?? "").toLowerCase() === targetThreadId);
+  },
+  scheduleDeferred: scheduleQueuedInput,
+  setProgressStage,
+  noteRunActivity,
+  scheduleProgressUpdate,
+  notifyInputStart: (target) => {
+    // Telegram typing is best-effort and deliberately not persisted. The
+    // regular progress card is owned by TaskProgressController after launch.
+    void telegram("sendChatAction", {
+      chat_id: target.chatId ?? chatId,
+      action: "typing",
+    }).catch(() => {});
+  },
+});
+
 const desktopMessageController = createDesktopMessageController({
   attachmentPaths: desktopAttachmentPaths,
   describeAttachments: desktopAttachmentDescriptors,
   resolveTarget: desktopMessageTarget,
   receipts: desktopMessageReceipts,
   persistReceipts: saveState,
-  snapshot: desktopSnapshot,
-  taskRuns,
-  taskExternalActivity,
-  readCodexThread,
-  deferConflictingInput,
-  hasDeferredBacklog: (target) => {
-    const provider = String(target?.provider ?? "").toLowerCase();
-    const projectRoot = String(target?.projectRoot ?? "").toLowerCase();
-    const threadId = String(target?.threadId ?? "").toLowerCase();
-    return [...pendingInputs.values(), ...queuedInputs.values()].some((item) =>
-      String(item?.provider ?? "").toLowerCase() === provider
-      && String(item?.projectRoot ?? "").toLowerCase() === projectRoot
-      && String(item?.threadId ?? "").toLowerCase() === threadId);
-  },
-  scheduleQueuedInput,
-  sendRpc,
-  setProgressStage,
-  noteRunActivity,
-  scheduleProgressUpdate,
-  activeRepositoryConflict,
-  beginRun,
-  launchTurn,
+  runCoordinator,
 });
 
 function trustedDeviceUserId(context) {
@@ -4990,6 +5004,37 @@ async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton =
   );
 }
 
+async function exactCodexTurnId(target, run) {
+  const registered = String(run?.turnId ?? "").trim();
+  if (registered) return registered;
+  const result = await readCodexThread(target.threadId, { fresh: true });
+  const active = (Array.isArray(result.thread?.turns) ? result.thread.turns : [])
+    .filter((turn) => ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? "")))
+    .map((turn) => String(turn.id ?? "").trim())
+    .filter(Boolean);
+  if (active.length === 1) return active[0];
+  if (active.length > 1) {
+    throw new Error("В задаче выполняется несколько ходов; выбрать ход для изменения нельзя");
+  }
+  return null;
+}
+
+async function steerCodexTurn({ run, target, input, clientUserMessageId }) {
+  const turnId = await exactCodexTurnId(target, run);
+  if (!turnId) throw new Error("Текущий ход уже нельзя изменить; сообщение осталось в очереди");
+  const result = await sendRpc("turn/steer", {
+    threadId: target.threadId,
+    expectedTurnId: turnId,
+    input: typeof input === "string" ? [{ type: "text", text: input }] : input,
+    clientUserMessageId,
+  });
+  return { turnId: String(result?.turnId ?? turnId) };
+}
+
+function steerUnsupportedProviderTurn() {
+  throw new Error("Отправка в текущий ход недоступна для выбранного агента");
+}
+
 async function launchClaudeTurn(run, input, temporaryFiles, options = {}) {
   return startClaudeTurn(run, input, temporaryFiles, options);
 }
@@ -5055,63 +5100,16 @@ async function startTurn(input, temporaryFiles = [], {
     taskTitle: activeThreadTitle,
     chatId,
   };
-  // Give Telegram immediate, non-persistent feedback while activity checks and
-  // App Server preflight run. The regular progress card follows after launch.
-  void telegram("sendChatAction", {
-    chat_id: target.chatId ?? chatId,
-    action: "typing",
-  }).catch(() => {});
-  const existingRun = taskRuns.forTask(target);
-  const [externalActivity, repositoryConflict] = existingRun
-    ? [{ state: "active", executionOwner: existingRun.executionOwner }, null]
-    : await Promise.all([
-      taskExternalActivity(target),
-      allowRepositoryConflict ? null : activeRepositoryConflict(target),
-    ]);
-  if (existingRun || externalActivity.state === "active"
-    || (externalActivity.state === "unknown" && !allowUnknownExternalActivity)) {
-    return deferConflictingInput(input, temporaryFiles, {
-      forceSpeechButton,
-      executionOwner: existingRun?.executionOwner
-        ?? externalActivity.executionOwner
-        ?? TASK_EXECUTION_OWNERS.EXTERNAL,
-      target,
-      allowForce: externalActivity.state === "unknown" && !existingRun,
-      conflictKind: externalActivity.state === "unknown" && !existingRun
-        ? "activity-unknown"
-        : "task-running",
-      persistentFiles,
-    });
-  }
-  if (repositoryConflict) {
-    return deferConflictingInput(input, temporaryFiles, {
-      forceSpeechButton,
-      executionOwner: repositoryConflict.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL,
-      target,
-      allowForce: true,
-      conflictKind: "repository",
-      conflictTask: repositoryConflict,
-      persistentFiles,
-    });
-  }
-  let run;
-  try {
-    run = await beginRun(input, target);
-  } catch (error) {
-    const concurrentRun = taskRuns.forTask(target);
-    if (error.message !== "this task is already running" || !concurrentRun) throw error;
-    return deferConflictingInput(input, temporaryFiles, {
-      forceSpeechButton,
-      executionOwner: concurrentRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
-      target,
-      persistentFiles,
-    });
-  }
-  run.messageAttachments = persistentFiles
-    ? desktopAttachmentDescriptors(temporaryFiles)
-    : [];
-  await launchTurn(run, input, persistentFiles ? [] : temporaryFiles, { forceSpeechButton });
-  return { started: true, runId: run.id };
+  const result = await runCoordinator.start(input, temporaryFiles, {
+    forceSpeechButton,
+    target,
+    allowRepositoryConflict,
+    allowUnknownExternalActivity,
+    persistentFiles,
+  });
+  if (!result?.run) return result;
+  const { run: _run, ...publicResult } = result;
+  return publicResult;
 }
 
 async function cleanupDeferredFiles(item) {
@@ -5227,32 +5225,9 @@ const deferredInputController = new DeferredInputController({
       || externalActivity.state !== "inactive"
       || await activeRepositoryConflict(target));
   },
-  start: async (item) => {
-    const target = {
-      provider: item.provider,
-      projectRoot: item.projectRoot,
-      threadId: item.threadId,
-      taskTitle: item.taskTitle,
-      chatId: item.chatId,
-      modelId: item.modelId,
-      reasoningId: item.reasoningId,
-      collaborationMode: item.collaborationMode,
-      clientUserMessageId: item.clientUserMessageId,
-      deferredInput: item,
-    };
-    const run = await beginRun(item.input, target);
-    // Telegram does not supply the Desktop client id.  Persist the exact
-    // managed run in the same state transaction before turn/start so a
-    // restart during that RPC can adopt it instead of dispatching the same
-    // queued input a second time.
-    run.messageAttachments = item.persistentFiles
-      ? desktopAttachmentDescriptors(item.temporaryFiles)
-      : [];
-    await launchTurn(run, item.input, item.persistentFiles ? [] : item.temporaryFiles ?? [], {
-      forceSpeechButton: item.forceSpeechButton === true,
-    });
-    return run;
-  },
+  // The queued item remains durable while RunCoordinator creates and persists
+  // the exact managed run before invoking the provider launch operation.
+  start: (item) => runCoordinator.startDeferred(item),
   onStateChange: updateDeferredDesktopReceipt,
   persist: () => saveState(),
   updateMessage: updateDeferredMessage,
@@ -5648,7 +5623,7 @@ async function completeManagedClaudeRun(run, {
 }
 
 async function finishClaudeRun(run, completion = {}) {
-  return agentProviders.call(run.provider, "completeManagedRun", run, completion);
+  return runCoordinator.completeManaged(run, completion);
 }
 
 // Отменить ход можно и после перезапуска бота, когда объекта процесса уже нет,
@@ -5829,7 +5804,7 @@ async function handleCodexMessage(message) {
       });
       return;
     }
-    await agentProviders.call(run.provider, "completeManagedRun", run, {
+    await runCoordinator.completeManaged(run, {
       eventTurn: params.turn,
       completedTurnId,
     });
@@ -6181,7 +6156,7 @@ async function finishObservedRun(run, snapshot) {
     savedLastTaskMessageRecord(run),
   );
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
-  await agentProviders.call(run.provider, "completeObservedRun", run, {
+  await runCoordinator.completeObserved(run, {
     snapshot,
     answer,
     deliver,
@@ -6374,7 +6349,7 @@ const taskObserver = new TaskObserverController({
   },
   onCompleted: async (run, snapshot) => {
     if (run.observer) await finishObservedRun(run, snapshot);
-    else await agentProviders.call(run.provider, "completeManagedRun", run, { snapshot });
+    else await runCoordinator.completeManaged(run, { snapshot });
   },
   onActive: async (run, snapshot) => {
     run.executionOwner = run.observer === true
@@ -7067,7 +7042,7 @@ async function recoverTaskRun(run) {
       return;
     }
   }
-  return agentProviders.call(run.provider, "recoverRun", run, { observerSnapshot });
+  return runCoordinator.recoverProviderRun(run, { observerSnapshot });
 }
 
 async function finishInterruptedLocalRun(run) {
