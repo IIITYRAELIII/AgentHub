@@ -70,6 +70,7 @@ html[data-theme="verdant"] {
   --verdant-image: url("./verdant-ruins.png");
   --verdant-canopy-image: url("./verdant-canopy.png");
   --verdant-sanctum-image: url("./verdant-sanctum.png");
+  --verdant-mark-image: url("./verdant-mark.png");
 }
 
 /* Башни остаются справа, а под рабочей областью лежит спокойная тёмная долина. */
@@ -110,9 +111,9 @@ html[data-theme="verdant"] body::before {
 }
 
 html[data-theme="verdant"] .app-header {
-  backdrop-filter: blur(9px) saturate(112%);
-  -webkit-backdrop-filter: blur(9px) saturate(112%);
-  background: rgba(2, 16, 13, 0.82);
+  backdrop-filter: blur(6px) saturate(110%);
+  -webkit-backdrop-filter: blur(6px) saturate(110%);
+  background: rgba(2, 16, 13, 0.68);
   border-bottom-color: rgba(131, 237, 165, 0.2);
 }
 
@@ -121,8 +122,22 @@ html[data-theme="verdant"] .app-header::after {
 }
 
 html[data-theme="verdant"] .brand-mark {
-  border-color: rgba(131, 237, 165, 0.48);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
   color: #a8f7bf;
+}
+
+html[data-theme="verdant"] .brand-mark svg {
+  display: none;
+}
+
+html[data-theme="verdant"] .brand-mark::before {
+  background: var(--verdant-mark-image) center / contain no-repeat;
+  content: "";
+  filter: drop-shadow(0 0 5px rgba(131, 237, 165, 0.48));
+  height: 1.65rem;
+  width: 1.65rem;
 }
 
 /* Активная вкладка — сигнальная риска вместо привычной круглой плашки. */
@@ -271,7 +286,7 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
    две самостоятельные панели оставляют справа живую часть пейзажа. */
 @media (min-width: 1120px) {
   html[data-theme="verdant"]:not([data-surface="mobile"]) {
-    --task-rail-width: clamp(260px, 19vw, 290px);
+    --task-rail-width: 19.2vw;
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .app-header {
@@ -288,9 +303,10 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .brand-mark {
-    background: rgba(17, 58, 43, 0.56);
+    background: transparent;
+    border: 0;
     border-radius: 0;
-    box-shadow: 0 0 22px -9px rgba(105, 242, 151, 0.86);
+    box-shadow: none;
     height: 1.9rem;
     width: 1.9rem;
   }
@@ -333,15 +349,15 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .workspace {
-    gap: clamp(0.85rem, 1.35vw, 1.35rem);
+    gap: clamp(1rem, 1.35vw, 2rem);
     grid-template-columns:
       var(--task-rail-width)
-      minmax(580px, min(41vw, 700px));
+      minmax(620px, 42vw);
     justify-content: start;
     margin: 0;
     max-width: none;
-    padding: clamp(1.05rem, 1.8vw, 1.7rem);
-    padding-bottom: 0.55rem;
+    padding: clamp(1.25rem, 1.65vw, 2.35rem);
+    padding-bottom: 0.8rem;
     padding-right: 0;
     width: 100%;
   }
@@ -379,7 +395,9 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .task-rail {
-    background: linear-gradient(180deg, rgba(3, 23, 19, 0.74), rgba(1, 14, 12, 0.82));
+    backdrop-filter: blur(5px) saturate(106%);
+    -webkit-backdrop-filter: blur(5px) saturate(106%);
+    background: linear-gradient(180deg, rgba(3, 23, 19, 0.58), rgba(1, 14, 12, 0.68));
     position: relative;
   }
 
@@ -388,8 +406,8 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
     min-height: 2.35rem;
     padding: 0;
     position: absolute;
-    right: 1rem;
-    top: 0.8rem;
+    right: 1.2rem;
+    top: 1rem;
     z-index: 2;
   }
 
@@ -403,10 +421,10 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .task-search {
-    background: rgba(1, 13, 11, 0.62);
+    background: rgba(1, 13, 11, 0.48);
     border-color: rgba(131, 237, 165, 0.18);
     border-radius: 0;
-    margin: 0.8rem 3.85rem 0.8rem 1rem;
+    margin: 1rem 4.15rem 0.9rem 1.2rem;
     min-height: 2.35rem;
     padding-inline: 0.72rem;
   }
@@ -420,8 +438,8 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
     border-bottom: 1px solid rgba(131, 237, 165, 0.09);
     border-radius: 0;
     margin: 0;
-    min-height: 4.2rem;
-    padding: 0.72rem 1rem;
+    min-height: 4.4rem;
+    padding: 0.78rem 1.2rem;
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .task-item[data-selected] {
@@ -437,23 +455,23 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .chat {
-    backdrop-filter: blur(8px) saturate(106%);
-    -webkit-backdrop-filter: blur(8px) saturate(106%);
-    background: linear-gradient(180deg, rgba(2, 22, 18, 0.68), rgba(1, 15, 13, 0.78));
+    backdrop-filter: blur(5px) saturate(105%);
+    -webkit-backdrop-filter: blur(5px) saturate(105%);
+    background: linear-gradient(180deg, rgba(2, 22, 18, 0.5), rgba(1, 15, 13, 0.62));
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .workspace:has(.chat-pane[data-dialog-settings-open]) {
-    grid-template-columns: var(--task-rail-width) minmax(760px, min(55vw, 900px));
+    grid-template-columns: var(--task-rail-width) minmax(760px, 55vw);
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .chat-head {
-    background: rgba(2, 18, 15, 0.62);
+    background: rgba(2, 18, 15, 0.46);
     min-height: 4rem;
-    padding: 0.72rem 1rem;
+    padding: 0.85rem 1.25rem;
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .chat-scroll {
-    padding: 1.1rem 1.15rem 0.85rem;
+    padding: 1.3rem 1.35rem 1rem;
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .chat-log {
@@ -474,18 +492,18 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .msg-user {
-    background-color: rgba(10, 37, 29, 0.82);
+    background-color: rgba(10, 37, 29, 0.62);
     border-color: rgba(131, 237, 165, 0.18);
     max-width: min(34rem, 72%);
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .composer {
-    background: rgba(2, 17, 14, 0.66);
-    padding: 0.72rem 1rem 0.85rem;
+    background: rgba(2, 17, 14, 0.5);
+    padding: 0.85rem 1.2rem 1rem;
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .composer-input {
-    background: rgba(5, 27, 22, 0.68);
+    background: rgba(5, 27, 22, 0.54);
     border-radius: 0;
   }
 

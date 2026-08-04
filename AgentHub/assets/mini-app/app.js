@@ -553,6 +553,236 @@ groupSelect.addEventListener("change", () => {
   if (journalHtml) renderJournal();
 });
 
+/* Нативное раскрытое меню select рисует операционная система, поэтому его
+   выделение не следует токенам темы. Обёртка сохраняет исходный select как
+   источник значения и событий, но показывает единый доступный listbox. */
+let themedSelectSequence = 0;
+let openThemedSelect = null;
+
+function themedSelectOptions(select) {
+  return [...select.options].map((option, index) => ({
+    disabled: option.disabled,
+    index,
+    label: option.label || option.textContent || option.value,
+    selected: option.selected,
+    value: option.value,
+  }));
+}
+
+function enhanceThemedSelect(select) {
+  if (!(select instanceof HTMLSelectElement) || select.multiple || select.dataset.themedSelectReady) return;
+  select.dataset.themedSelectReady = "true";
+  select.classList.add("themed-select-native");
+  select.setAttribute("aria-hidden", "true");
+  select.tabIndex = -1;
+
+  const shell = document.createElement("div");
+  shell.className = "themed-select";
+  const button = document.createElement("button");
+  button.className = "themed-select-button";
+  button.type = "button";
+  button.setAttribute("aria-haspopup", "listbox");
+  button.setAttribute("aria-expanded", "false");
+  button.setAttribute("aria-label", select.getAttribute("aria-label") || "Выбор значения");
+  const value = document.createElement("span");
+  value.className = "themed-select-value";
+  const chevron = document.createElement("span");
+  chevron.className = "themed-select-chevron";
+  chevron.setAttribute("aria-hidden", "true");
+  button.append(value, chevron);
+  select.before(shell);
+  shell.append(select, button);
+
+  const menu = document.createElement("div");
+  menu.className = "themed-select-menu";
+  menu.id = `themed-select-${++themedSelectSequence}`;
+  menu.hidden = true;
+  menu.setAttribute("role", "listbox");
+  menu.setAttribute("aria-label", button.getAttribute("aria-label"));
+  button.setAttribute("aria-controls", menu.id);
+  document.body.append(menu);
+
+  const state = { button, menu, select, shell, value };
+  select.__themedSelect = state;
+
+  const options = () => themedSelectOptions(select);
+  const enabledFrom = (start, direction) => {
+    const items = options();
+    if (!items.length) return -1;
+    let index = start;
+    for (let count = 0; count < items.length; count += 1) {
+      index = (index + direction + items.length) % items.length;
+      if (!items[index].disabled) return index;
+    }
+    return -1;
+  };
+  const focusOption = (index) => {
+    const option = menu.querySelector(`[data-option-index="${index}"]`);
+    option?.focus({ preventScroll: true });
+    if (!option) return;
+    menu.setAttribute("aria-activedescendant", option.id);
+    const optionTop = option.offsetTop;
+    const optionBottom = optionTop + option.offsetHeight;
+    if (optionTop < menu.scrollTop) menu.scrollTop = optionTop;
+    else if (optionBottom > menu.scrollTop + menu.clientHeight) {
+      menu.scrollTop = optionBottom - menu.clientHeight;
+    }
+  };
+  const positionMenu = () => {
+    if (menu.hidden) return;
+    const rect = button.getBoundingClientRect();
+    const margin = 8;
+    const below = window.innerHeight - rect.bottom - margin;
+    const above = rect.top - margin;
+    const maxHeight = Math.max(128, Math.min(320, Math.max(below, above)));
+    menu.style.left = `${Math.max(margin, Math.min(rect.left, window.innerWidth - rect.width - margin))}px`;
+    menu.style.width = `${rect.width}px`;
+    menu.style.maxHeight = `${maxHeight}px`;
+    menu.style.top = below >= Math.min(menu.scrollHeight, maxHeight) || below >= above
+      ? `${rect.bottom + 5}px`
+      : `${Math.max(margin, rect.top - Math.min(menu.scrollHeight, maxHeight) - 5)}px`;
+  };
+  const close = ({ restoreFocus = false } = {}) => {
+    if (menu.hidden) return;
+    menu.hidden = true;
+    menu.removeAttribute("aria-activedescendant");
+    shell.removeAttribute("data-open");
+    button.setAttribute("aria-expanded", "false");
+    if (openThemedSelect === state) openThemedSelect = null;
+    if (restoreFocus) button.focus();
+  };
+  const choose = (index) => {
+    const option = select.options[index];
+    if (!option || option.disabled) return;
+    select.selectedIndex = index;
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    close({ restoreFocus: true });
+  };
+  const render = () => {
+    const items = options();
+    menu.replaceChildren(...items.map((option) => {
+      const item = document.createElement("div");
+      item.className = "themed-select-option";
+      item.dataset.optionIndex = String(option.index);
+      item.dataset.value = option.value;
+      item.id = `${menu.id}-option-${option.index}`;
+      item.tabIndex = -1;
+      item.textContent = option.label;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(option.selected));
+      item.setAttribute("aria-disabled", String(option.disabled));
+      if (option.disabled) item.dataset.disabled = "true";
+      return item;
+    }));
+    const selected = items.find((option) => option.selected) ?? items[0];
+    value.textContent = selected?.label ?? "";
+    button.disabled = select.disabled;
+    if (!menu.hidden) positionMenu();
+  };
+  const open = () => {
+    if (button.disabled) return;
+    if (openThemedSelect && openThemedSelect !== state) {
+      openThemedSelect.menu.hidden = true;
+      openThemedSelect.shell.removeAttribute("data-open");
+      openThemedSelect.button.setAttribute("aria-expanded", "false");
+    }
+    render();
+    menu.hidden = false;
+    shell.dataset.open = "true";
+    button.setAttribute("aria-expanded", "true");
+    openThemedSelect = state;
+    positionMenu();
+    requestAnimationFrame(() => focusOption(Math.max(0, select.selectedIndex)));
+  };
+
+  button.addEventListener("click", () => (menu.hidden ? open() : close()));
+  button.addEventListener("keydown", (event) => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End", "Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    open();
+    const last = Math.max(0, select.options.length - 1);
+    const target = ["Enter", " "].includes(event.key) ? select.selectedIndex
+      : event.key === "Home" ? enabledFrom(last, 1)
+      : event.key === "End" ? enabledFrom(0, -1)
+        : enabledFrom(select.selectedIndex, event.key === "ArrowUp" ? -1 : 1);
+    requestAnimationFrame(() => focusOption(target));
+  });
+  menu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-option-index]");
+    if (option) choose(Number(option.dataset.optionIndex));
+  });
+  menu.addEventListener("keydown", (event) => {
+    const current = Number(document.activeElement?.dataset?.optionIndex ?? select.selectedIndex);
+    if (event.key === "Escape" || event.key === "Tab") {
+      close({ restoreFocus: event.key === "Escape" });
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      choose(current);
+      return;
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const last = Math.max(0, select.options.length - 1);
+    const target = event.key === "Home" ? enabledFrom(last, 1)
+      : event.key === "End" ? enabledFrom(0, -1)
+        : enabledFrom(current, event.key === "ArrowUp" ? -1 : 1);
+    focusOption(target);
+  });
+  select.addEventListener("change", render);
+  const selectObserver = new MutationObserver(render);
+  selectObserver.observe(select, { attributes: true, childList: true, subtree: true });
+  state.close = close;
+  state.destroy = () => {
+    close();
+    selectObserver.disconnect();
+    menu.remove();
+    delete select.__themedSelect;
+  };
+  state.position = positionMenu;
+  state.render = render;
+  render();
+}
+
+function enhanceThemedSelects(rootNode = document) {
+  if (rootNode instanceof HTMLSelectElement) enhanceThemedSelect(rootNode);
+  rootNode.querySelectorAll?.("select").forEach(enhanceThemedSelect);
+}
+
+function cleanupThemedSelects(rootNode) {
+  const selects = rootNode instanceof HTMLSelectElement
+    ? [rootNode]
+    : [...(rootNode.querySelectorAll?.("select[data-themed-select-ready]") ?? [])];
+  for (const select of selects) {
+    if (!select.isConnected) select.__themedSelect?.destroy();
+  }
+}
+
+enhanceThemedSelects();
+new MutationObserver((records) => {
+  for (const record of records) {
+    for (const node of record.removedNodes) {
+      if (node instanceof Element) cleanupThemedSelects(node);
+    }
+    for (const node of record.addedNodes) {
+      if (node instanceof Element) enhanceThemedSelects(node);
+    }
+  }
+}).observe(document.body, { childList: true, subtree: true });
+new MutationObserver(() => {
+  document.querySelectorAll("select[data-themed-select-ready]").forEach((select) => select.__themedSelect?.render());
+}).observe(root, { attributes: true, attributeFilter: ["data-theme", "data-background", "data-grouping"] });
+document.addEventListener("pointerdown", (event) => {
+  if (!openThemedSelect || openThemedSelect.shell.contains(event.target) || openThemedSelect.menu.contains(event.target)) return;
+  openThemedSelect.close();
+});
+window.addEventListener("resize", () => openThemedSelect?.position());
+window.addEventListener("scroll", (event) => {
+  if (event.target !== openThemedSelect?.menu) openThemedSelect?.position();
+}, true);
+
 /* --------------------------------------------------------- маленькие утилиты */
 
 function el(tag, props = {}, children = []) {

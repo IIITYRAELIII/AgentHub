@@ -650,15 +650,33 @@ test("Verdant turns the wide chat into two floating field-console panels", () =>
   /* На телефоне остаётся штатная навигация, а концептная композиция включается
      только там, где справа действительно помещается открытая сцена. */
   assert.match(styles, /@media \(min-width: 1120px\)/u);
-  assert.match(styles, /grid-template-columns:\s*\n\s*var\(--task-rail-width\)\s*\n\s*minmax\(580px, min\(41vw, 700px\)\)/u);
+  assert.match(styles, /--task-rail-width:\s*19\.2vw/u);
+  assert.match(styles, /grid-template-columns:\s*\n\s*var\(--task-rail-width\)\s*\n\s*minmax\(620px, 42vw\)/u);
   assert.match(styles, /\.task-rail,\s*\n[^{}]*\.chat \{/u);
   assert.match(styles, /border: 1px solid rgba\(131, 237, 165, 0\.28\)/u);
   assert.match(styles, /\.msg-agent \{\s*\n\s*background-color: transparent/u);
   assert.match(styles, /--verdant-corner-mark:\s*rgba\(156, 255, 190, 0\.7\)/u);
   assert.match(styles, /\.task-rail::after,\s*\n[^{}]*\.chat::after \{/u);
   assert.match(styles, /left top \/ 12px 1px no-repeat/u);
-  assert.match(styles, /background:\s*linear-gradient\(180deg, rgba\(2, 22, 18, 0\.68\), rgba\(1, 15, 13, 0\.78\)\)/u);
+  assert.match(styles, /background:\s*linear-gradient\(180deg, rgba\(2, 22, 18, 0\.5\), rgba\(1, 15, 13, 0\.62\)\)/u);
+  assert.match(styles, /--verdant-mark-image:\s*url\("\.\/verdant-mark\.png"\)/u);
+  assert.match(styles, /\.brand-mark::before \{[\s\S]*var\(--verdant-mark-image\)/u);
   assert.match(styles, /:not\(\[data-surface="mobile"\]\)/u);
+});
+
+test("select popups use the active theme instead of the operating-system menu", () => {
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(styles, /\.themed-select-menu \{[\s\S]*var\(--surface-1\)[\s\S]*var\(--accent\)/u);
+  assert.match(styles, /\.themed-select-option\[aria-selected="true"\] \{[\s\S]*var\(--accent-soft\)/u);
+  assert.match(app, /function enhanceThemedSelect\(select\)/u);
+  assert.match(app, /select\.dispatchEvent\(new Event\("change", \{ bubbles: true \}\)\)/u);
+  assert.match(app, /role", "listbox"/u);
+  assert.match(app, /select\.setAttribute\("aria-hidden", "true"\)/u);
+  assert.match(app, /state\.destroy = \(\) =>/u);
+  assert.match(app, /const optionTop = option\.offsetTop/u);
+  assert.match(app, /event\.target !== openThemedSelect\?\.menu/u);
+  assert.doesNotMatch(app, /scrollIntoView/u);
 });
 
 test("VS Code resolves each self-contained theme resource without CSS overrides", () => {

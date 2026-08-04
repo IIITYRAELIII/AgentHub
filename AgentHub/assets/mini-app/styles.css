@@ -2244,7 +2244,8 @@ html[data-surface="mobile"] .theme-picker {
   max-width: 100%;
 }
 
-html[data-surface="mobile"] .theme-picker select {
+html[data-surface="mobile"] .theme-picker select,
+html[data-surface="mobile"] .theme-picker .themed-select {
   max-width: min(6.6rem, 38vw);
   min-width: 0;
   width: 6.6rem;
@@ -2482,7 +2483,9 @@ html[data-surface="mobile"][data-grouping="task"]
   }
 
   html[data-surface="mobile"] .theme-picker select,
-  html[data-surface="mobile"] .group-picker select {
+  html[data-surface="mobile"] .group-picker select,
+  html[data-surface="mobile"] .theme-picker .themed-select,
+  html[data-surface="mobile"] .group-picker .themed-select {
     min-width: 0;
     width: 6.6rem;
   }
@@ -4605,6 +4608,162 @@ html[data-surface="mobile"] .chat-stop-bottom {
 .setting-field select option {
   background: var(--bg);
   color: var(--text);
+}
+
+/* Chromium передаёт раскрытую часть native select операционной системе, и та
+   подставляет системный синий highlight. Этот listbox остаётся обычным select
+   для данных и событий, но вся видимая часть теперь следует токенам темы. */
+.themed-select {
+  min-width: 0;
+  position: relative;
+}
+
+.themed-select-native {
+  display: none;
+}
+
+.themed-select-button {
+  align-items: center;
+  background: color-mix(in srgb, var(--surface-2) 86%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: 0.82rem;
+  gap: 0.7rem;
+  justify-content: space-between;
+  min-height: 2rem;
+  padding: 0.42rem 0.62rem;
+  text-align: left;
+  width: 100%;
+}
+
+.themed-select-button:hover,
+.themed-select[data-open] .themed-select-button {
+  background: color-mix(in srgb, var(--surface-3) 80%, transparent);
+  border-color: var(--accent-line);
+}
+
+.themed-select-button:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+  outline: none;
+}
+
+.themed-select-button:disabled {
+  cursor: default;
+  opacity: 0.52;
+}
+
+.themed-select-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.themed-select-chevron {
+  border-bottom: 1px solid var(--accent);
+  border-right: 1px solid var(--accent);
+  flex: 0 0 auto;
+  height: 0.38rem;
+  margin: -0.2rem 0.12rem 0 0;
+  transform: rotate(45deg);
+  transition: transform 0.16s ease, margin 0.16s ease;
+  width: 0.38rem;
+}
+
+.themed-select[data-open] .themed-select-chevron {
+  margin: 0.2rem 0.12rem 0 0;
+  transform: rotate(225deg);
+}
+
+.themed-select-menu {
+  backdrop-filter: blur(12px) saturate(112%);
+  -webkit-backdrop-filter: blur(12px) saturate(112%);
+  background: color-mix(in srgb, var(--surface-1) 94%, var(--bg));
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 8%, transparent),
+    0 18px 48px -22px rgba(0, 0, 0, 0.96),
+    0 0 28px -22px var(--accent);
+  color: var(--text);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0.3rem;
+  position: fixed;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+  z-index: 100;
+}
+
+.themed-select-menu[hidden] {
+  display: none;
+}
+
+.themed-select-option {
+  border: 1px solid transparent;
+  border-radius: max(1px, calc(var(--radius-sm) - 1px));
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 0.82rem;
+  line-height: 1.25;
+  min-height: 2rem;
+  overflow: hidden;
+  padding: 0.45rem 0.58rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.themed-select-option:hover,
+.themed-select-option:focus-visible {
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text);
+  outline: none;
+}
+
+.themed-select-option[aria-selected="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.themed-select-option[data-disabled="true"] {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.setting-field .themed-select {
+  width: 100%;
+}
+
+.setting-row > .themed-select {
+  justify-self: end;
+  max-width: 11rem;
+  width: 100%;
+}
+
+.theme-picker .themed-select,
+.group-picker .themed-select {
+  min-width: 7.3rem;
+}
+
+.group-picker .themed-select {
+  min-width: 7.8rem;
+}
+
+.theme-picker .themed-select-button,
+.group-picker .themed-select-button {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  font: inherit;
+  min-height: 1.65rem;
+  padding: 0.18rem 0.48rem 0.18rem 0.55rem;
 }
 
 .setting-hint {

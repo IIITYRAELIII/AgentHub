@@ -311,6 +311,13 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       assert.match(scene.headers.get("cache-control"), /immutable/u, name);
       assert.ok((await scene.arrayBuffer()).byteLength > 100_000, name);
     }
+    /* Эмблема вырезана из согласованного концепта и остаётся ресурсом самой
+       темы, поэтому сервер и Worker находят её без общего списка ассетов. */
+    const verdantMark = await fetch(`${address.url}themes/verdant/verdant-mark.png`);
+    assert.equal(verdantMark.status, 200);
+    assert.equal(verdantMark.headers.get("content-type"), "image/png");
+    assert.match(verdantMark.headers.get("cache-control"), /immutable/u);
+    assert.ok((await verdantMark.arrayBuffer()).byteLength > 100);
     /* Три кадра «Озера» — единственные JPEG среди фонов: фотография и две
        живописи в PNG весили бы впятеро больше при том же виде. */
     for (const name of [
