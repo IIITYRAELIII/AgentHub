@@ -506,7 +506,7 @@ test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", (
   assert.match(styles, /html\[data-theme="metropolis"\] body::after\s*\{[\s\S]*var\(--metropolis-image\)/u);
   assert.match(styles, /backdrop-filter:\s*blur\(6px\) saturate\(68%\) brightness\(0\.82\)/u);
   assert.match(glass, /vec4 rainLayer\(/u);
-  assert.match(glass, /float drop = smoothstep\(0\.03,\s*0\.02/u);
+  assert.match(glass, /float drop = 1\.0 - smoothstep\(0\.02,\s*0\.03/u);
   assert.match(glass, /float clearTrail = smoothstep\(-0\.05,\s*0\.05/u);
   assert.match(glass, /uViewport\.x \/ max\(uViewport\.y,\s*1\.0\)/u);
   assert.match(glass, /vec2 refraction = drop \* dropPosition/u);
@@ -1138,6 +1138,12 @@ test("metropolis uses square pixel rain cells on mobile", () => {
   );
   assert.match(shader, /cell:\s*\[0, 112\]/u);
   assert.match(shader, /uCellPx > 0\.5[\s\S]*uv0 \* \(uViewport \/ uCellPx\)/u);
+  assert.doesNotMatch(shader, /smoothstep\(0\.03, 0\.02/u);
+  assert.doesNotMatch(shader, /smoothstep\(0\.02, 0\.015/u);
+  assert.doesNotMatch(shader, /smoothstep\(0\.5, y/u);
+  assert.doesNotMatch(shader, /smoothstep\(0\.026, 0\.012/u);
+  assert.match(shader, /1\.0 - smoothstep\(0\.02, 0\.03, length\(dropPosition\)\)/u);
+  assert.match(shader, /1\.0 - smoothstep\(y, 0\.5, cellUv\.y\)/u);
 });
 
 test("chat loads older pages from a button and a cancellable mobile pull gesture", () => {

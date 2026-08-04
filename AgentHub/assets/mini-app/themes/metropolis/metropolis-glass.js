@@ -111,16 +111,20 @@
         : max((uViewport.x / max(uViewport.y, 1.0)) / gridAspect.x, 0.16);
       vec2 screenScale = vec2(screenCorrection, 1.0);
       vec2 dropPosition = (cellUv - vec2(x, y)) * screenScale;
-      float drop = smoothstep(0.03, 0.02, length(dropPosition));
+      /* GLSL leaves smoothstep undefined when edge0 >= edge1. Desktop drivers
+         often invert it anyway, while Android OpenGL ES may turn the same mask
+         into wide rectangular columns. Keep every edge pair ordered and invert
+         the result explicitly so both implementations draw the same rain. */
+      float drop = 1.0 - smoothstep(0.02, 0.03, length(dropPosition));
 
       vec2 trailPosition = (cellUv - vec2(x, time * 0.25)) * screenScale;
       trailPosition.y = (fract(trailPosition.y * 8.0) - 0.5) / 8.0;
-      float trail = smoothstep(0.02, 0.015, length(trailPosition));
+      float trail = 1.0 - smoothstep(0.015, 0.02, length(trailPosition));
 
       float clearTrail = smoothstep(-0.05, 0.05, dropPosition.y);
-      clearTrail *= smoothstep(0.5, y, cellUv.y);
+      clearTrail *= 1.0 - smoothstep(y, 0.5, cellUv.y);
       trail *= clearTrail;
-      clearTrail *= smoothstep(0.026, 0.012, abs(dropPosition.x));
+      clearTrail *= 1.0 - smoothstep(0.012, 0.026, abs(dropPosition.x));
 
       // Only the rounded head works as a strong lens. Refracting every trail
       // bead produces the metallic "strings of pearls" visible in the old
