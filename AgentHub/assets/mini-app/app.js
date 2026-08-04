@@ -1825,10 +1825,17 @@ chatScroll.addEventListener("touchend", () => {
 chatScroll.addEventListener("touchcancel", resetHistoryPull);
 
 function markdownLink(raw) {
-  const value = String(raw ?? "").trim();
+  const source = String(raw ?? "").trim();
+  const value = source.startsWith("<") && source.endsWith(">")
+    ? source.slice(1, -1).trim()
+    : source;
   const localPath = value.replace(/^\/(?=[A-Za-z]:[\\/])/u, "");
-  if (vscodeMode && /^[A-Za-z]:[\\/]/u.test(localPath)) {
-    return { href: "#", localPath };
+  if (/^[A-Za-z]:[\\/]/u.test(localPath) && (vscodeMode || surface === "desktop")) {
+    const editorPath = localPath.replaceAll("\\", "/");
+    return {
+      href: vscodeMode ? "#" : `vscode://file/${encodeURI(editorPath)}`,
+      localPath,
+    };
   }
   try {
     const url = new URL(value, window.location.href);

@@ -461,10 +461,38 @@ test("shared VS Code webview removes public browser pairing", () => {
   assert.match(shared, /\.replace\('<script src="\/browser-device-auth\.js" defer><\/script>', ""\)/u);
 });
 
-test("shared chat accepts canonical slash-prefixed Windows file links in VS Code", () => {
+test("shared chat accepts canonical and angle-wrapped Windows file links on desktop", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(app, /source\.startsWith\("<"\) && source\.endsWith\(">"\)/u);
+  assert.match(app, /source\.slice\(1, -1\)\.trim\(\)/u);
   assert.match(app, /replace\(\/\^\\\/\(\?=\[A-Za-z\]:\[\\\\\/\]\)\/u, ""\)/u);
-  assert.match(app, /return \{ href: "#", localPath \}/u);
+  assert.match(app, /vscodeMode \|\| surface === "desktop"/u);
+  assert.match(app, /href: vscodeMode \? "#" : `vscode:\/\/file\/\$\{encodeURI\(editorPath\)\}`/u);
+
+  const source = app.match(/function markdownLink\(raw\) \{[\s\S]*?\n\}/u)?.[0];
+  assert.ok(source);
+  const createMarkdownLink = new Function(
+    "vscodeMode",
+    "surface",
+    "window",
+    `${source}; return markdownLink;`,
+  );
+  const location = { href: "https://hub.example.test/chat" };
+  assert.deepEqual(
+    createMarkdownLink(true, "desktop", { location })("</D:/VSC_Tyrael/result image.png>"),
+    { href: "#", localPath: "D:/VSC_Tyrael/result image.png" },
+  );
+  assert.deepEqual(
+    createMarkdownLink(false, "desktop", { location })("<D:/VSC_Tyrael/result image.png>"),
+    {
+      href: "vscode://file/D:/VSC_Tyrael/result%20image.png",
+      localPath: "D:/VSC_Tyrael/result image.png",
+    },
+  );
+  assert.equal(
+    createMarkdownLink(false, "mobile", { location })("<D:/VSC_Tyrael/result.png>"),
+    null,
+  );
 });
 
 test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", () => {
