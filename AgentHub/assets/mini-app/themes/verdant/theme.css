@@ -348,6 +348,7 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .task-rail,
   html[data-theme="verdant"]:not([data-surface="mobile"]) .chat {
+    --verdant-corner-mark: rgba(156, 255, 190, 0.7);
     border: 1px solid rgba(131, 237, 165, 0.28);
     border-radius: 0;
     box-shadow:
@@ -357,8 +358,28 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
     overflow: hidden;
   }
 
+  /* Короткие угловые риски повторяют рамку полевой консоли из концепта,
+     не создавая ещё одного анимируемого или размытого слоя. */
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .task-rail::after,
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .chat::after {
+    background:
+      linear-gradient(90deg, var(--verdant-corner-mark), var(--verdant-corner-mark)) left top / 12px 1px no-repeat,
+      linear-gradient(180deg, var(--verdant-corner-mark), var(--verdant-corner-mark)) left top / 1px 12px no-repeat,
+      linear-gradient(270deg, var(--verdant-corner-mark), var(--verdant-corner-mark)) right top / 12px 1px no-repeat,
+      linear-gradient(180deg, var(--verdant-corner-mark), var(--verdant-corner-mark)) right top / 1px 12px no-repeat,
+      linear-gradient(90deg, var(--verdant-corner-mark), var(--verdant-corner-mark)) left bottom / 12px 1px no-repeat,
+      linear-gradient(0deg, var(--verdant-corner-mark), var(--verdant-corner-mark)) left bottom / 1px 12px no-repeat,
+      linear-gradient(270deg, var(--verdant-corner-mark), var(--verdant-corner-mark)) right bottom / 12px 1px no-repeat,
+      linear-gradient(0deg, var(--verdant-corner-mark), var(--verdant-corner-mark)) right bottom / 1px 12px no-repeat;
+    content: "";
+    inset: 5px;
+    pointer-events: none;
+    position: absolute;
+    z-index: 30;
+  }
+
   html[data-theme="verdant"]:not([data-surface="mobile"]) .task-rail {
-    background: linear-gradient(180deg, rgba(3, 23, 19, 0.9), rgba(1, 14, 12, 0.92));
+    background: linear-gradient(180deg, rgba(3, 23, 19, 0.74), rgba(1, 14, 12, 0.82));
     position: relative;
   }
 
@@ -382,7 +403,7 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .task-search {
-    background: rgba(1, 13, 11, 0.72);
+    background: rgba(1, 13, 11, 0.62);
     border-color: rgba(131, 237, 165, 0.18);
     border-radius: 0;
     margin: 0.8rem 3.85rem 0.8rem 1rem;
@@ -416,9 +437,9 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .chat {
-    backdrop-filter: blur(10px) saturate(108%);
-    -webkit-backdrop-filter: blur(10px) saturate(108%);
-    background: linear-gradient(180deg, rgba(2, 22, 18, 0.82), rgba(1, 15, 13, 0.88));
+    backdrop-filter: blur(8px) saturate(106%);
+    -webkit-backdrop-filter: blur(8px) saturate(106%);
+    background: linear-gradient(180deg, rgba(2, 22, 18, 0.68), rgba(1, 15, 13, 0.78));
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .workspace:has(.chat-pane[data-dialog-settings-open]) {
@@ -426,7 +447,7 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .chat-head {
-    background: rgba(2, 18, 15, 0.74);
+    background: rgba(2, 18, 15, 0.62);
     min-height: 4rem;
     padding: 0.72rem 1rem;
   }
@@ -453,18 +474,18 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .msg-user {
-    background-color: rgba(10, 37, 29, 0.9);
+    background-color: rgba(10, 37, 29, 0.82);
     border-color: rgba(131, 237, 165, 0.18);
     max-width: min(34rem, 72%);
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .composer {
-    background: rgba(2, 17, 14, 0.78);
+    background: rgba(2, 17, 14, 0.66);
     padding: 0.72rem 1rem 0.85rem;
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .composer-input {
-    background: rgba(5, 27, 22, 0.78);
+    background: rgba(5, 27, 22, 0.68);
     border-radius: 0;
   }
 

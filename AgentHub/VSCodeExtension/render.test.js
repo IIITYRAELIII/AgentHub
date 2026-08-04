@@ -651,8 +651,13 @@ test("Verdant turns the wide chat into two floating field-console panels", () =>
      только там, где справа действительно помещается открытая сцена. */
   assert.match(styles, /@media \(min-width: 1120px\)/u);
   assert.match(styles, /grid-template-columns:\s*\n\s*var\(--task-rail-width\)\s*\n\s*minmax\(580px, min\(41vw, 700px\)\)/u);
-  assert.match(styles, /\.task-rail,\s*\n[^{}]*\.chat \{\s*\n\s*border: 1px solid/u);
+  assert.match(styles, /\.task-rail,\s*\n[^{}]*\.chat \{/u);
+  assert.match(styles, /border: 1px solid rgba\(131, 237, 165, 0\.28\)/u);
   assert.match(styles, /\.msg-agent \{\s*\n\s*background-color: transparent/u);
+  assert.match(styles, /--verdant-corner-mark:\s*rgba\(156, 255, 190, 0\.7\)/u);
+  assert.match(styles, /\.task-rail::after,\s*\n[^{}]*\.chat::after \{/u);
+  assert.match(styles, /left top \/ 12px 1px no-repeat/u);
+  assert.match(styles, /background:\s*linear-gradient\(180deg, rgba\(2, 22, 18, 0\.68\), rgba\(1, 15, 13, 0\.78\)\)/u);
   assert.match(styles, /:not\(\[data-surface="mobile"\]\)/u);
 });
 
