@@ -383,6 +383,12 @@ test("general settings and current-dialog settings stay separate", () => {
   );
   assert.match(html, /<li>GPT-5\.5 и GPT-5\.6-Sol — База ×2;<\/li>/u);
   assert.match(html, /<li>GPT-5\.4-mini — База ×0,3;<\/li>/u);
+  /* fastModeCreditMultiplier не трогает 5.4-mini, поэтому подсказка называет
+     обе ставки Fast и исключение. */
+  assert.match(
+    html,
+    /режим Fast дополнительно увеличивает расход в 2,5 раза для GPT-5\.5 и всех\s+GPT-5\.6 и в 2 раза для GPT-5\.4; на GPT-5\.4-mini не влияет;/u,
+  );
   /* Порядок чипов повторяет порядок строк справки: ПТЭ → cr → $ → ₽. */
   assert.match(
     html,
