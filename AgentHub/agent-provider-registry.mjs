@@ -6,6 +6,16 @@ const REQUIRED_OPERATIONS = Object.freeze([
   "cancelRun",
   "readTaskActivity",
   "readRunSnapshot",
+  "completeObservedRun",
+  "completeManagedRun",
+  "recoverRun",
+  "readRecoverySnapshot",
+  "prepareRecovery",
+  "shouldObserveRun",
+  "applyObservedSnapshot",
+  "applyActiveSnapshot",
+  "blocksRuntimeRestart",
+  "stopManagedRunForShutdown",
 ]);
 
 function providerId(value) {

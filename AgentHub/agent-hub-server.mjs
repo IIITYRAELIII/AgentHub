@@ -754,6 +754,16 @@ const agentProviders = new AgentProviderRegistry([
     cancelRun: cancelCodexProviderRun,
     readTaskActivity: readCodexTaskActivity,
     readRunSnapshot: readCodexTaskSnapshot,
+    completeObservedRun: completeObservedCodexRun,
+    completeManagedRun: completeManagedCodexRun,
+    recoverRun: recoverCodexRun,
+    readRecoverySnapshot: readCodexRecoverySnapshot,
+    prepareRecovery: prepareCodexRecovery,
+    shouldObserveRun: () => true,
+    applyObservedSnapshot: applyCodexObservedSnapshot,
+    applyActiveSnapshot: applyCodexActiveSnapshot,
+    blocksRuntimeRestart: (run) => !run.observer && taskRunIsActive(run),
+    stopManagedRunForShutdown: (run) => run.process?.kill(),
   },
   {
     id: "claude",
@@ -765,6 +775,17 @@ const agentProviders = new AgentProviderRegistry([
     cancelRun: cancelClaudeProviderRun,
     readTaskActivity: readClaudeTaskActivity,
     readRunSnapshot: (run, options) => readClaudeTaskSnapshot(run.threadId, options),
+    completeObservedRun: completeObservedClaudeRun,
+    completeManagedRun: completeManagedClaudeRun,
+    recoverRun: recoverClaudeRun,
+    readRecoverySnapshot: (run) => readClaudeTaskSnapshot(run.threadId),
+    prepareRecovery: async () => {},
+    shouldObserveRun: (run) => run.observer === true,
+    applyObservedSnapshot: () => {},
+    applyActiveSnapshot: () => {},
+    blocksRuntimeRestart: () => false,
+    // Detached Claude workers deliberately survive a Hub replacement.
+    stopManagedRunForShutdown: () => {},
   },
 ]);
 // Runtime activity cannot be restored from a durable catalog row. Managed runs
@@ -3528,7 +3549,9 @@ async function reconcileInactiveCodexRun(run) {
           : "Задача остановлена или неактивна.",
       };
       if (run.observer) await finishObservedRun(run, terminalSnapshot);
-      else await finishManagedCodexSnapshot(run, terminalSnapshot);
+      else await agentProviders.call(run.provider, "completeManagedRun", run, {
+        snapshot: terminalSnapshot,
+      });
     }
   } catch (reconcileError) {
     console.error(`Cannot reconcile inactive Codex task ${run.threadId}:`, reconcileError.message);
@@ -5529,7 +5552,7 @@ function handleClaudeStreamEvent(run, parsed) {
   }
 }
 
-async function finishClaudeRun(run, {
+async function completeManagedClaudeRun(run, {
   spawnError = null,
   result,
   errorText = "",
@@ -5622,6 +5645,10 @@ async function finishClaudeRun(run, {
       description: "ошибка Claude",
     });
   }
+}
+
+async function finishClaudeRun(run, completion = {}) {
+  return agentProviders.call(run.provider, "completeManagedRun", run, completion);
 }
 
 // Отменить ход можно и после перезапуска бота, когда объекта процесса уже нет,
@@ -5802,25 +5829,9 @@ async function handleCodexMessage(message) {
       });
       return;
     }
-    run.status = "finishing";
-    const tracker = consumeTurnTokenTracker(completedTurnId);
-    const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
-    turnTemporaryFiles.delete(completedTurnId);
-    const forceSpeechButton = turnSpeechButtons.get(completedTurnId) ?? false;
-    turnSpeechButtons.delete(completedTurnId);
-    await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
-    const status = params.turn?.status ?? "completed";
-    const error = params.turn?.error?.message;
-    const answer = await completedCodexAnswer(run, completedTurnId, params.turn)
-      || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
-    await finishProgress(run, error || status === "failed" ? `Задача завершилась с ошибкой: ${error ?? status}` : "Задача завершена.");
-    await finalizeCodexRunDelivery(run, {
-      answer,
-      turnId: completedTurnId,
-      status,
-      tracker,
-      forceSpeechButton,
-      description: "финальный ответ Codex",
+    await agentProviders.call(run.provider, "completeManagedRun", run, {
+      eventTurn: params.turn,
+      completedTurnId,
     });
   }
 }
@@ -5956,10 +5967,7 @@ function updateObservedRun(run, snapshot) {
   const previousReasoning = run.progressReasoning;
   const previousStage = run.progressStage;
   const responseChanged = updateObservedResponse(run, snapshot?.answer);
-  if (run.provider === "codex" && !run.turnId && snapshot?.turnId) {
-    run.turnId = snapshot.turnId;
-    taskRuns.reindex(run);
-  }
+  agentProviders.call(run.provider, "applyObservedSnapshot", run, snapshot);
   if (!run.promptPreview && snapshot?.prompt) run.promptPreview = String(snapshot.prompt);
   if (Array.isArray(snapshot?.userMessages)) {
     run.userMessages = snapshot.userMessages.map((message) => ({ ...message }));
@@ -5972,13 +5980,6 @@ function updateObservedRun(run, snapshot) {
   run.progressReasoning = String(snapshot?.reasoning ?? run.progressReasoning);
   run.progressStage = String(snapshot?.stage ?? run.progressStage);
   run.activeTurnCount = Math.max(1, Number(snapshot?.activeTurnCount) || 1);
-  if (run.provider === "codex" && snapshot?.model) {
-    run.model = codexModelLabel(snapshot.model);
-  }
-  if (run.provider === "codex" && snapshot?.reasoningEffort) {
-    run.reasoning = CODEX_REASONING_LABELS[snapshot.reasoningEffort]
-      ?? snapshot.reasoningEffort;
-  }
   const snapshotStartedAt = Date.parse(String(snapshot?.startedAt ?? ""));
   const runStartedAt = Date.parse(String(run.startedAt ?? ""));
   if (
@@ -5994,6 +5995,23 @@ function updateObservedRun(run, snapshot) {
   }
   scheduleProgressUpdate(run);
   return responseChanged;
+}
+
+function applyCodexObservedSnapshot(run, snapshot) {
+  if (!run.turnId && snapshot?.turnId) {
+    run.turnId = snapshot.turnId;
+    taskRuns.reindex(run);
+  }
+  if (snapshot?.model) run.model = codexModelLabel(snapshot.model);
+  if (snapshot?.reasoningEffort) {
+    run.reasoning = CODEX_REASONING_LABELS[snapshot.reasoningEffort]
+      ?? snapshot.reasoningEffort;
+  }
+}
+
+function applyCodexActiveSnapshot(run, snapshot) {
+  run.appServer = taskExecutionRuntimeLabel(run.executionOwner);
+  run.activeTurnCount = Math.max(1, Number(snapshot?.activeTurnCount) || 1);
 }
 
 async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false } = {}) {
@@ -6152,9 +6170,7 @@ async function finishObservedRun(run, snapshot) {
   if (taskRuns.forTask(run) !== run) return;
   const completedTurnId = snapshot?.turnId ?? run.turnId;
   if (await discardManualContextCompactionRun(run, completedTurnId)) return;
-  let tracker = run.provider === "codex"
-    ? snapshot?.tokenTracker ?? consumeTurnTokenTracker(completedTurnId)
-    : null;
+  const tracker = snapshot?.tokenTracker ?? null;
   updateObservedRun(run, snapshot);
   const answer = String(snapshot?.answer ?? "").trim()
     || savedLastTaskMessage(run)
@@ -6165,95 +6181,113 @@ async function finishObservedRun(run, snapshot) {
     savedLastTaskMessageRecord(run),
   );
   await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
-  if (run.provider === "codex") {
-    if (run.executionOwner !== TASK_EXECUTION_OWNERS.HUB) {
-      const hooked = await waitForTurnEndCompletion({
-        provider: "codex",
-        threadId: run.threadId,
-        turnId: completedTurnId,
-      });
-      if (hooked?.usageReported || Number(hooked?.estimatedCredits) > 0) {
-        tracker = {
-          usage: hooked.usage,
-          reported: hooked.usageReported === true,
-          estimatedCredits: hooked.estimatedCredits,
-          estimateKind: hooked.estimateKind,
-          model: hooked.model,
-          serviceTier: hooked.serviceTier,
-          skillsUsed: hooked.skillsUsed,
-          mcpCalls: hooked.mcpCalls,
-          toolMetricsKnown: hooked.toolMetricsKnown,
+  await agentProviders.call(run.provider, "completeObservedRun", run, {
+    snapshot,
+    answer,
+    deliver,
+    completedTurnId,
+    tracker,
+  });
+}
+
+async function completeObservedCodexRun(run, {
+  snapshot,
+  answer,
+  deliver,
+  completedTurnId,
+  tracker,
+}) {
+  let resolvedTracker = tracker ?? consumeTurnTokenTracker(completedTurnId);
+  if (run.executionOwner !== TASK_EXECUTION_OWNERS.HUB) {
+    const hooked = await waitForTurnEndCompletion({
+      provider: "codex",
+      threadId: run.threadId,
+      turnId: completedTurnId,
+    });
+    if (hooked?.usageReported || Number(hooked?.estimatedCredits) > 0) {
+      resolvedTracker = {
+        usage: hooked.usage,
+        reported: hooked.usageReported === true,
+        estimatedCredits: hooked.estimatedCredits,
+        estimateKind: hooked.estimateKind,
+        model: hooked.model,
+        serviceTier: hooked.serviceTier,
+        skillsUsed: hooked.skillsUsed,
+        mcpCalls: hooked.mcpCalls,
+        toolMetricsKnown: hooked.toolMetricsKnown,
+      };
+    } else if (!resolvedTracker?.reported) {
+      try {
+        const result = await readCodexThread(run.threadId, {
+          fresh: true,
+          includeTurns: false,
+        });
+        const usageResult = await readCodexTurnUsage(
+          result.thread?.path,
+          completedTurnId,
+        );
+        resolvedTracker = {
+          usage: usageResult.usage,
+          reported: usageResult.reported === true,
+          imageGenerationCount: usageResult.imageGenerationCount,
+          estimatedCredits: usageResult.estimatedCredits,
+          estimateKind: usageResult.estimateKind,
+          model: usageResult.model,
+          serviceTier: usageResult.serviceTier,
+          skillsUsed: usageResult.skillsUsed,
+          mcpCalls: usageResult.mcpCalls,
+          toolMetricsKnown: usageResult.toolMetricsKnown,
         };
-      } else if (!tracker?.reported) {
-        try {
-          const result = await readCodexThread(run.threadId, {
-            fresh: true,
-            includeTurns: false,
-          });
-          const usageResult = await readCodexTurnUsage(
-            result.thread?.path,
-            completedTurnId,
-          );
-          tracker = {
-            usage: usageResult.usage,
-            reported: usageResult.reported === true,
-            imageGenerationCount: usageResult.imageGenerationCount,
-            estimatedCredits: usageResult.estimatedCredits,
-            estimateKind: usageResult.estimateKind,
-            model: usageResult.model,
-            serviceTier: usageResult.serviceTier,
-            skillsUsed: usageResult.skillsUsed,
-            mcpCalls: usageResult.mcpCalls,
-            toolMetricsKnown: usageResult.toolMetricsKnown,
-          };
-          applyCodexRolloutContext(run, usageResult);
-        } catch (error) {
-          console.error(`Cannot read fallback usage for Codex turn ${completedTurnId}:`, error.message);
-        }
+        applyCodexRolloutContext(run, usageResult);
+      } catch (error) {
+        console.error(`Cannot read fallback usage for Codex turn ${completedTurnId}:`, error.message);
       }
     }
-    await finalizeCodexRunDelivery(run, {
-      answer,
-      turnId: completedTurnId,
-      status: snapshot?.status ?? "completed",
-      tracker,
-      deliver,
-      silent: run.displayRequested !== true,
-      description: "финальный ответ наблюдаемого хода",
-    });
-  } else {
-    await projectClaudeRunToWorkLog(run, {
-      answer,
-      status: snapshot?.status ?? "completed",
-      snapshot,
-    }).catch((error) => {
-      console.error(`Cannot update journal for observed Claude turn ${run.turnId}:`, error.message);
-    });
-    await finalizeRunDelivery(run, {
-      answer,
-      deliver,
-      silent: run.displayRequested !== true,
-      description: "финальный ответ наблюдаемого хода",
-    });
   }
+  return finalizeCodexRunDelivery(run, {
+    answer,
+    turnId: completedTurnId,
+    status: snapshot?.status ?? "completed",
+    tracker: resolvedTracker,
+    deliver,
+    silent: run.displayRequested !== true,
+    description: "финальный ответ наблюдаемого хода",
+  });
+}
+
+async function completeObservedClaudeRun(run, { snapshot, answer, deliver }) {
+  await projectClaudeRunToWorkLog(run, {
+    answer,
+    status: snapshot?.status ?? "completed",
+    snapshot,
+  }).catch((error) => {
+    console.error(`Cannot update journal for observed Claude turn ${run.turnId}:`, error.message);
+  });
+  return finalizeRunDelivery(run, {
+    answer,
+    deliver,
+    silent: run.displayRequested !== true,
+    description: "финальный ответ наблюдаемого хода",
+  });
 }
 
 // Незавершённый транскрипт после долгой тишины не доказывает ни завершение, ни
 // продолжение процесса. Снимаем live-наблюдение, но не выдаём частичный текст за
 // финальный ответ; следующий запуск в этом треде потребует явного подтверждения.
-async function finishUnknownObservedClaudeRun(run, snapshot) {
+async function finishUnknownObservedRun(run, snapshot) {
   if (taskRuns.forTask(run) !== run) return;
+  const providerName = agentProviders.get(run.provider).name;
   const activityAtMs = Number(snapshot?.activityAtMs);
   const idleMinutes = Number.isFinite(activityAtMs)
     ? Math.max(1, Math.round((Date.now() - activityAtMs) / 60_000))
     : null;
   const stage = idleMinutes
-    ? `Активность Claude неизвестна: нет новых событий ${idleMinutes} мин.`
-    : "Активность Claude неизвестна: новых событий нет.";
+    ? `Активность ${providerName} неизвестна: нет новых событий ${idleMinutes} мин.`
+    : `Активность ${providerName} неизвестна: новых событий нет.`;
   updateObservedRun(run, { ...snapshot, stage });
   await finishProgress(run, stage);
   await completeRun(run);
-  console.log(`Claude activity became unknown for ${run.threadId}`);
+  console.log(`${providerName} activity became unknown for ${run.threadId}`);
 }
 
 async function finishManagedCodexSnapshot(run, snapshot) {
@@ -6281,16 +6315,51 @@ async function finishManagedCodexSnapshot(run, snapshot) {
   });
 }
 
+async function completeManagedCodexRun(run, {
+  snapshot = null,
+  eventTurn = null,
+  completedTurnId = eventTurn?.id ?? run?.turnId,
+} = {}) {
+  if (snapshot) return finishManagedCodexSnapshot(run, snapshot);
+  if (taskRuns.forTask(run) !== run || run.status !== "running") return;
+  run.status = "finishing";
+  const tracker = consumeTurnTokenTracker(completedTurnId);
+  const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
+  turnTemporaryFiles.delete(completedTurnId);
+  const forceSpeechButton = turnSpeechButtons.get(completedTurnId) ?? false;
+  turnSpeechButtons.delete(completedTurnId);
+  await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
+  const status = eventTurn?.status ?? "completed";
+  const error = eventTurn?.error?.message;
+  const answer = await completedCodexAnswer(run, completedTurnId, eventTurn)
+    || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
+  await finishProgress(
+    run,
+    error || status === "failed"
+      ? `Задача завершилась с ошибкой: ${error ?? status}`
+      : "Задача завершена.",
+  );
+  return finalizeCodexRunDelivery(run, {
+    answer,
+    turnId: completedTurnId,
+    status,
+    tracker,
+    forceSpeechButton,
+    description: "финальный ответ Codex",
+  });
+}
+
 const taskObserver = new TaskObserverController({
   canObserve: (run) => Boolean(
-    (run?.observer || run?.provider === "codex")
+    run?.provider
+      && agentProviders.call(run.provider, "shouldObserveRun", run)
       && taskRuns.forTask(run) === run,
   ),
   readSnapshot: (run) => agentProviders.call(run.provider, "readRunSnapshot", run),
   pollDelay: (run) => run.observer === true
     ? EXTERNAL_TASK_POLL_INTERVAL_MS
     : MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS,
-  onUnknown: finishUnknownObservedClaudeRun,
+  onUnknown: finishUnknownObservedRun,
   onMissing: async (run) => {
     setProgressStage(run, "Ожидаю данные текущего хода…");
     if (markProgressHeartbeat(run, "waiting")) scheduleProgressUpdate(run);
@@ -6305,16 +6374,13 @@ const taskObserver = new TaskObserverController({
   },
   onCompleted: async (run, snapshot) => {
     if (run.observer) await finishObservedRun(run, snapshot);
-    else await finishManagedCodexSnapshot(run, snapshot);
+    else await agentProviders.call(run.provider, "completeManagedRun", run, { snapshot });
   },
   onActive: async (run, snapshot) => {
     run.executionOwner = run.observer === true
       ? snapshot.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
       : TASK_EXECUTION_OWNERS.HUB;
-    if (run.provider === "codex") {
-      run.appServer = taskExecutionRuntimeLabel(run.executionOwner);
-      run.activeTurnCount = Math.max(1, Number(snapshot.activeTurnCount) || 1);
-    }
+    agentProviders.call(run.provider, "applyActiveSnapshot", run, snapshot);
     if (Number.isFinite(Number(snapshot.activityAtMs ?? snapshot.modifiedAtMs))) {
       noteRunActivity(run, Number(snapshot.activityAtMs ?? snapshot.modifiedAtMs));
     }
@@ -6978,9 +7044,7 @@ async function recoverTaskRun(run) {
   let observerSnapshot = null;
   if (run.observer) {
     run.displayRequested = run.displayRequested === true;
-    observerSnapshot = run.provider === "codex" && !codexTransport.running
-      ? null
-      : await agentProviders.call(run.provider, "readRunSnapshot", run);
+    observerSnapshot = await agentProviders.call(run.provider, "readRecoverySnapshot", run);
     const observerAction = resolveTaskRecoveryAction({ run, observerSnapshot });
     if (observerAction === TASK_RECOVERY_ACTIONS.OBSERVE) {
       updateObservedRun(run, observerSnapshot);
@@ -6999,32 +7063,56 @@ async function recoverTaskRun(run) {
       return;
     }
     if (observerAction === TASK_RECOVERY_ACTIONS.UNKNOWN_OBSERVED) {
-      await finishUnknownObservedClaudeRun(run, observerSnapshot);
+      await finishUnknownObservedRun(run, observerSnapshot);
       return;
     }
   }
+  return agentProviders.call(run.provider, "recoverRun", run, { observerSnapshot });
+}
+
+async function finishInterruptedLocalRun(run) {
+  const providerName = agentProviders.get(run.provider).name;
+  await finishProgress(run, "Локальный процесс прервался при перезапуске бота.");
+  await safelyDeliverRunMessage(
+    run,
+    () => sendRunMessage(
+      run,
+      `⚠️ Запуск ${providerName} был прерван. `
+        + `Контекст ${run.threadId ?? "не успел получить ID"} сохранён и доступен для продолжения.`,
+    ),
+    "уведомление о прерывании",
+  );
+  await completeRun(run);
+}
+
+async function recoverClaudeRun(run, { observerSnapshot = null } = {}) {
+  const action = resolveTaskRecoveryAction({ run, observerSnapshot });
+  if (action === TASK_RECOVERY_ACTIONS.ATTACH_CLAUDE) {
+    await attachClaudeRunAfterRestart(run);
+    return;
+  }
+  return finishInterruptedLocalRun(run);
+}
+
+async function readCodexRecoverySnapshot(run) {
+  if (!codexTransport.running) return null;
+  return readCodexTaskSnapshot(run);
+}
+
+async function prepareCodexRecovery(runs) {
+  if (!runs.length || codexTransport.running) return;
+  await startCodexAppServer();
+  await initializeCodex({ attachSelectedThread: isCodex() });
+}
+
+async function recoverCodexRun(run, { observerSnapshot = null } = {}) {
   const initialAction = resolveTaskRecoveryAction({
     run,
     observerSnapshot,
     codexAvailable: codexTransport.running,
   });
-  if (initialAction === TASK_RECOVERY_ACTIONS.ATTACH_CLAUDE) {
-    await attachClaudeRunAfterRestart(run);
-    return;
-  }
   if (initialAction === TASK_RECOVERY_ACTIONS.INTERRUPTED_LOCAL) {
-    await finishProgress(run, "Локальный процесс прервался при перезапуске бота.");
-    await safelyDeliverRunMessage(
-      run,
-      () => sendRunMessage(
-        run,
-        `⚠️ Запуск ${run.provider === "claude" ? "Claude" : "Codex"} был прерван. `
-          + `Контекст ${run.threadId ?? "не успел получить ID"} сохранён и доступен для продолжения.`,
-      ),
-      "уведомление о прерывании",
-    );
-    await completeRun(run);
-    return;
+    return finishInterruptedLocalRun(run);
   }
 
   const result = await readCodexThread(run.threadId, { fresh: true });
@@ -7106,9 +7194,14 @@ async function recoverTaskRun(run) {
 
 async function recoverActiveRuns({ provider = null } = {}) {
   const runs = taskRuns.values().filter((run) => !provider || run.provider === provider);
-  if (runs.some((run) => run.provider === "codex") && !codexTransport.running) {
-    await startCodexAppServer();
-    await initializeCodex({ attachSelectedThread: isCodex() });
+  const providerRuns = new Map();
+  for (const run of runs) {
+    const grouped = providerRuns.get(run.provider) ?? [];
+    grouped.push(run);
+    providerRuns.set(run.provider, grouped);
+  }
+  for (const [providerId, grouped] of providerRuns) {
+    await agentProviders.call(providerId, "prepareRecovery", grouped);
   }
   for (const run of runs) {
     try {
@@ -7187,9 +7280,7 @@ function approvalModeKeyboard() {
 // для Codex, чей App Server перезапускается вместе с ботом.
 function restartBlockingRuns() {
   return taskRuns.values().filter((run) => (
-    !run.observer
-    && run.provider === "codex"
-    && taskRunIsActive(run)
+    agentProviders.call(run.provider, "blocksRuntimeRestart", run)
   ));
 }
 
@@ -8353,10 +8444,9 @@ const runtimeLifecycle = new RuntimeLifecycleController({
     return true;
   },
   stopTimers: stopRuntimeTimers,
-  // Claude workers are detached and deliberately survive Hub replacement.
   stopManagedRuns: () => {
     for (const run of taskRuns.values()) {
-      if (run.provider === "codex") run.process?.kill();
+      agentProviders.call(run.provider, "stopManagedRunForShutdown", run);
     }
   },
   stopMedia: () => mediaController.stop(),

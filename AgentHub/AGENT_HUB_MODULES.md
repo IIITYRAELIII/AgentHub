@@ -40,13 +40,13 @@
 | 25 | ✅ | Основание общего command path вынесено в `application-command-bus.mjs`: task create/rename/archive из Telegram, Desktop и Mini App проходят один реестр, несут `clientId` и явную цель, а конфликтующие мутации сериализуются между клиентами. Bus уже предпочитает `hubTaskId`; перенос остальных команд остаётся этапом A5. |
 | 26 | ✅ | Через тот же `ApplicationCommandBus` проходят выбор задачи, task-scoped/global settings, отмена хода и approvals во всех клиентах. Поздняя настройка несёт точную task-ссылку и не может примениться к задаче, выбранной после отправки команды; запуск/steer/deferred input остаются границей будущего `RunCoordinator`. |
 | 27 | ✅ | Основание общего provider port вынесено в `agent-provider-registry.mjs`: адаптеры Codex/Claude обязательно реализуют discovery/projection, create, launch, cancel, external activity и live snapshot. Каталог, клиентские команды и observer обращаются к registry без выбора провайдера; completion/delivery/recovery завершаются в A6 отдельным срезом. |
+| 28 | ✅ | Provider port завершён: те же обязательные адаптеры владеют recovery snapshot/подготовкой, managed и observed completion, terminal delivery, reattach, применением live snapshot и политикой restart/shutdown. Общий lifecycle делегирует по provider ID и не связывает логическую задачу с единственным thread ID. |
 
-После этапа 27 `agent-hub-server.mjs` содержит около 8,4 тыс. строк. Это всё ещё
+После этапа 28 `agent-hub-server.mjs` содержит около 8,4 тыс. строк. Это всё ещё
 слишком много для удобного сопровождения: сервер остаётся точкой композиции и
-хранит прикладную политику провайдеров, доставки, восстановления, Desktop RPC,
-Telegram callback/command dispatch и startup provider recovery. Следующие
-безопасные границы — provider adapters, `RunCoordinator`,
-завершение/восстановление run и startup provider recovery. Их следует переносить отдельными этапами с
+хранит реализации provider adapters, Desktop RPC, Telegram callback/command
+dispatch и bootstrap. Следующие безопасные границы — `RunCoordinator` и
+`agent-hub-main.mjs`. Их следует переносить отдельными этапами с
 contract-тестами, а не механически разрезать файл по размеру.
 
 При следующих этапах нельзя делать provider thread ID постоянной идентичностью

@@ -94,8 +94,35 @@ test("provider operations resolve through one AgentProvider registry", async () 
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   assert.equal((source.match(/new AgentProviderRegistry\s*\(/g) ?? []).length, 1);
   assert.equal(source.includes("sources: agentProviders.catalogSources()"), true);
-  for (const operation of ["createTask", "launchTurn", "cancelRun", "readTaskActivity", "readRunSnapshot"]) {
+  for (const operation of [
+    "createTask",
+    "launchTurn",
+    "cancelRun",
+    "readTaskActivity",
+    "readRunSnapshot",
+    "completeObservedRun",
+    "completeManagedRun",
+    "recoverRun",
+    "readRecoverySnapshot",
+    "prepareRecovery",
+    "shouldObserveRun",
+    "applyObservedSnapshot",
+    "applyActiveSnapshot",
+    "blocksRuntimeRestart",
+    "stopManagedRunForShutdown",
+  ]) {
     assert.equal(source.includes(`agentProviders.call(`) && source.includes(`"${operation}"`), true, operation);
+  }
+  const sharedObservedCompletion = source.slice(
+    source.indexOf("async function finishObservedRun"),
+    source.indexOf("async function completeObservedCodexRun"),
+  );
+  const sharedRecovery = source.slice(
+    source.indexOf("async function recoverTaskRun"),
+    source.indexOf("async function finishInterruptedLocalRun"),
+  );
+  for (const sharedLifecycle of [sharedObservedCompletion, sharedRecovery]) {
+    assert.doesNotMatch(sharedLifecycle, /provider\s*[!=]==?\s*["'](?:codex|claude)["']/u);
   }
 });
 
