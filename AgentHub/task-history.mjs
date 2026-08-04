@@ -1,3 +1,5 @@
+import { codexSubagentActivity } from "./run-activity.mjs";
+
 function textContent(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -99,10 +101,8 @@ function activityFromCodexItem(item, index) {
     id, type: "compaction", label: "Контекст свёрнут", detail: "", status: "completed",
   };
   if (item?.type === "userMessage" || item?.type === "agentMessage") return null;
-  if (/agent|collab|subagent/iu.test(String(item?.type ?? ""))) return {
-    id, type: "subagent", label: "Субагент завершён",
-    detail: String(item.name ?? item.task ?? "").slice(0, 500), status: "completed",
-  };
+  const subagent = codexSubagentActivity(item, true);
+  if (subagent) return { id, ...subagent };
   return null;
 }
 

@@ -28,3 +28,25 @@ test("Codex item activity projects commands, tools and compaction", () => {
   assert.equal(codexItemActivity({ type: "unknown" }, false), null);
 });
 
+test("Codex item activity distinguishes real subagents from agent messages", () => {
+  assert.equal(codexItemActivity({ id: "msg", type: "agentMessage", text: "Обычный ответ" }, true), null);
+  assert.equal(codexItemActivity({ id: "other", type: "agenticReview" }, true), null);
+  assert.deepEqual(codexItemActivity({
+    id: "spawn",
+    type: "collabAgentToolCall",
+    tool: "spawnAgent",
+    status: "completed",
+    model: "gpt-5.6-terra",
+    reasoningEffort: "high",
+    receiverThreadIds: ["child-thread"],
+  }, true), {
+    id: "item:spawn",
+    status: "completed",
+    type: "subagent",
+    label: "Субагент запущен",
+    detail: "gpt-5.6-terra · high · child-thread",
+  });
+  assert.equal(codexItemActivity({
+    id: "started", type: "subAgentActivity", kind: "started", agentPath: "/root/check",
+  }, true).label, "Субагент начал работу");
+});

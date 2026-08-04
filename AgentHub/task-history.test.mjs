@@ -57,6 +57,22 @@ test("Codex history preserves a safe activity feed", () => {
   assert.equal(activities[3].status, "failed");
 });
 
+test("Codex history keeps only real subagent lifecycle events", () => {
+  const activities = codexTurnActivities({
+    items: [
+      { id: "message", type: "agentMessage", text: "Обычный ответ" },
+      { id: "spawn", type: "collabAgentToolCall", tool: "spawnAgent", status: "completed" },
+      { id: "started", type: "subAgentActivity", kind: "started", agentPath: "/root/check" },
+      { id: "done", type: "subAgentActivity", kind: "interrupted", agentPath: "/root/check" },
+    ],
+  });
+  assert.deepEqual(activities.map(({ label }) => label), [
+    "Субагент запущен",
+    "Субагент начал работу",
+    "Субагент остановлен",
+  ]);
+});
+
 test("completed Codex history shows only the final answer", () => {
   const [exchange] = codexThreadHistory([{
     id: "turn-1",

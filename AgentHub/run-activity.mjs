@@ -24,6 +24,52 @@ function codexItemFailed(item) {
     || Boolean(item?.error);
 }
 
+function collabAgentDetail(item) {
+  if (item?.type === "subAgentActivity") {
+    return [item.agentPath, item.agentThreadId].map((value) => String(value ?? "").trim()).filter(Boolean).join(" · ").slice(0, 500);
+  }
+  const receivers = Array.isArray(item?.receiverThreadIds)
+    ? item.receiverThreadIds.map((value) => String(value ?? "").trim()).filter(Boolean)
+    : [];
+  return [item?.model, item?.reasoningEffort, ...receivers].map((value) => String(value ?? "").trim()).filter(Boolean).join(" · ").slice(0, 500);
+}
+
+export function codexSubagentActivity(item, completed) {
+  if (item?.type === "subAgentActivity") {
+    const labels = {
+      started: "Субагент начал работу",
+      interacted: "Субагент взаимодействует",
+      interrupted: "Субагент остановлен",
+    };
+    const label = labels[String(item.kind ?? "")];
+    return label ? {
+      type: "subagent",
+      label,
+      detail: collabAgentDetail(item),
+      status: item.kind === "started" && !completed ? "running" : "completed",
+    } : null;
+  }
+  if (item?.type !== "collabAgentToolCall") return null;
+
+  const failed = item.status === "failed" || (completed && codexItemFailed(item));
+  const finished = completed || item.status === "completed" || failed;
+  const labels = {
+    spawnAgent: ["Запускается субагент", "Субагент запущен", "Запуск субагента не удался"],
+    sendInput: ["Отправляется сообщение субагенту", "Сообщение субагенту отправлено", "Сообщение субагенту не отправлено"],
+    resumeAgent: ["Возобновляется субагент", "Субагент возобновлён", "Субагент не возобновлён"],
+    wait: ["Ожидание субагентов", "Ожидание субагентов завершено", "Ожидание субагентов завершилось с ошибкой"],
+    closeAgent: ["Останавливается субагент", "Субагент остановлен", "Субагент не остановлен"],
+  };
+  const variants = labels[String(item.tool ?? "")];
+  if (!variants) return null;
+  return {
+    type: "subagent",
+    label: failed ? variants[2] : finished ? variants[1] : variants[0],
+    detail: collabAgentDetail(item),
+    status: failed ? "failed" : finished ? "completed" : "running",
+  };
+}
+
 export function codexItemActivity(item, completed) {
   if (!item || typeof item !== "object") return null;
   const itemId = String(item.id ?? item.itemId ?? "").trim();
@@ -81,14 +127,7 @@ export function codexItemActivity(item, completed) {
       label: completed ? "Контекст свёрнут" : "Сворачивается контекст",
     };
   }
-  if (/agent|collab|subagent/iu.test(String(item.type ?? ""))) {
-    return {
-      ...base,
-      type: "subagent",
-      label: completed ? "Субагент завершён" : "Работает субагент",
-      detail: String(item.name ?? item.task ?? "").slice(0, 500),
-    };
-  }
+  const subagent = codexSubagentActivity(item, completed);
+  if (subagent) return { ...base, ...subagent };
   return null;
 }
-
