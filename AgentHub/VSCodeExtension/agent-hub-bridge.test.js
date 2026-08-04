@@ -1,10 +1,11 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { mkdir, mkdtemp, readFile, rm, writeFile } = require("node:fs/promises");
+const { mkdir, mkdtemp, readFile, rename, rm, writeFile } = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const { setTimeout: delay } = require("node:timers/promises");
 
 const { AgentHubBridge, webviewHttpMessages } = require("./agent-hub-bridge.js");
 
@@ -144,6 +145,24 @@ test("installed VS Code bridge follows the next runtime release without Reload W
     assert.equal(await bridge.runtimeReleaseRoot(), secondRoot);
     assert.deepEqual(await bridge.control("snapshot"), { action: "snapshot", release: "second" });
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code bridge observes an atomic active-runtime replacement", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-watch-"));
+  const bridge = new AgentHubBridge({ runtimeRoot: root });
+  let notifications = 0;
+  try {
+    await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "first" }), "utf8");
+    const unsubscribe = bridge.subscribeRuntime(() => { notifications += 1; }, { pollMs: 50 });
+    await writeFile(path.join(root, "current.next.json"), JSON.stringify({ current: "second" }), "utf8");
+    await rename(path.join(root, "current.next.json"), path.join(root, "current.json"));
+    for (let attempt = 0; attempt < 20 && notifications === 0; attempt += 1) await delay(10);
+    unsubscribe();
+    assert.ok(notifications > 0);
+  } finally {
+    bridge.close();
     await rm(root, { recursive: true, force: true });
   }
 });

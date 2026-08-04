@@ -1,6 +1,7 @@
 "use strict";
 
 const { randomUUID } = require("node:crypto");
+const { watch } = require("node:fs");
 const { mkdir, readFile, stat, writeFile } = require("node:fs/promises");
 const { homedir } = require("node:os");
 const path = require("node:path");
@@ -177,6 +178,37 @@ class AgentHubBridge {
       this.journalCache = null;
       listener(event);
     });
+  }
+
+  subscribeRuntime(listener, { pollMs = 30_000 } = {}) {
+    if (this.moduleRoot) return () => {};
+    let watcher = null;
+    let disposed = false;
+    const notify = () => {
+      if (disposed) return;
+      try {
+        Promise.resolve(listener({ type: "runtime" })).catch(() => {});
+      } catch {
+        // Наблюдатель runtime не должен останавливать Extension Host.
+      }
+    };
+    try {
+      /* Наблюдаем каталог, потому что current.json публикуется атомарной
+         заменой файла и файловый watcher самого файла после rename устаревает. */
+      watcher = watch(this.runtimeRoot, { persistent: false }, (_event, filename) => {
+        if (!filename || String(filename).toLowerCase() === "current.json") notify();
+      });
+      watcher.on("error", () => {});
+    } catch {
+      // Резервная сверка ниже восстановит панель после появления runtime.
+    }
+    const timer = setInterval(notify, Math.max(50, Number(pollMs) || 30_000));
+    timer.unref?.();
+    return () => {
+      disposed = true;
+      watcher?.close();
+      clearInterval(timer);
+    };
   }
 
   async http({ method = "GET", path: requestPath = "", headers = {} }) {

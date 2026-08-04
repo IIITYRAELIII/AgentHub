@@ -127,8 +127,7 @@ test("extension keeps its shell synchronized with the active runtime", () => {
   assert.match(shared, /backgrounds: \[\.\.\.ASSET_ROOT, "backgrounds\.css"\]/u);
   assert.match(extension, /refreshPanelShellIfReleaseChanged/u);
   assert.match(extension, /agenthub:runtime-changed/u);
-  assert.match(extension, /startRuntimeMonitor\(\)/u);
-  assert.match(extension, /setInterval\(\(\) => \{\s*void this\.refreshPanelShellIfReleaseChanged\(\)/u);
+  assert.match(extension, /subscribeRuntime/u);
   assert.match(
     extension,
     /async refresh\(force = false\)[\s\S]*await this\.refreshPanelShellIfReleaseChanged\(\)/u,
@@ -625,11 +624,13 @@ test("«Озеро» keeps one palette and three interchangeable scenes", () => 
 
 test("VS Code resolves each self-contained theme resource without CSS overrides", () => {
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const reliquary = themeFile("reliquary");
   assert.match(shared, /themeResourceUrls = new Map/u);
   assert.match(shared, /vscode\.Uri\.file\(item\.file\)/u);
   assert.doesNotMatch(shared, /assetOverrides/u);
   assert.match(reliquary, /url\("\.\/ashen-reliquary\.png"\)/u);
+  assert.match(app, /root\.style\.setProperty\(`--\$\{background\}-image`, cssBackgroundUrl\(url\)\)/u);
 });
 
 test("turn header keeps its actions in the trailing columns", () => {

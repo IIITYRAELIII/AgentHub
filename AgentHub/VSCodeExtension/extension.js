@@ -38,9 +38,9 @@ class WorkLogViewProvider {
     this.view = null;
     this.panel = null;
     this.timer = null;
-    this.runtimeTimer = null;
     this.bridge = null;
     this.unsubscribeJournal = null;
+    this.unsubscribeRuntime = null;
     this.sharedPanel = false;
     this.panelRuntimeRoot = null;
     this.themes = new Set(["orbit"]);
@@ -77,7 +77,6 @@ class WorkLogViewProvider {
     if (this.panel) {
       this.panel.reveal(vscode.ViewColumn.Active, false);
       await this.refreshPanelShellIfReleaseChanged();
-      this.startRuntimeMonitor();
       this.scheduleRefresh(0, true);
       return;
     }
@@ -118,12 +117,9 @@ class WorkLogViewProvider {
     }, null, this.context.subscriptions);
     panel.onDidDispose(() => {
       if (this.panel === panel) this.panel = null;
-      if (this.runtimeTimer) clearInterval(this.runtimeTimer);
-      this.runtimeTimer = null;
       this.sharedPanel = false;
       this.panelRuntimeRoot = null;
     }, null, this.context.subscriptions);
-    this.startRuntimeMonitor();
     this.scheduleRefresh(0, true);
   }
 
@@ -132,6 +128,9 @@ class WorkLogViewProvider {
       this.bridge = new AgentHubBridge();
       this.unsubscribeJournal = await this.bridge.subscribeJournal(
         () => this.scheduleRefresh(0),
+      );
+      this.unsubscribeRuntime = this.bridge.subscribeRuntime(
+        () => this.refreshPanelShellIfReleaseChanged(),
       );
     }
     return this.bridge;
@@ -259,17 +258,6 @@ class WorkLogViewProvider {
     }, delay);
   }
 
-  startRuntimeMonitor() {
-    if (this.runtimeTimer || !this.panel) return;
-    /* Публикация атомарно меняет current.json и затем удаляет старые release.
-       Событие из WebView может потеряться во время перезапуска Hub, поэтому
-       открытая панель независимо сверяет свой immutable release с активным. */
-    this.runtimeTimer = setInterval(() => {
-      void this.refreshPanelShellIfReleaseChanged().catch(() => {});
-    }, 1_000);
-    this.runtimeTimer.unref?.();
-  }
-
   async refresh(force = false) {
     if (!this.panel) return;
     if (this.sharedPanel === "unavailable") return;
@@ -311,8 +299,8 @@ class WorkLogViewProvider {
 
   dispose() {
     if (this.timer) clearTimeout(this.timer);
-    if (this.runtimeTimer) clearInterval(this.runtimeTimer);
     this.unsubscribeJournal?.();
+    this.unsubscribeRuntime?.();
     this.bridge?.close();
   }
 }

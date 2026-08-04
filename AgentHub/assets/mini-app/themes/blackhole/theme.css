@@ -73,12 +73,12 @@ html[data-theme="blackhole"] {
    лежит под контентом (main имеет z-index: 1). Относительный путь одинаково
    разрешается браузером, Worker и панелью VS Code. */
 html[data-theme="blackhole"] {
-  --bh-image: url("./blackhole-blue.png");
+  --blackhole-image: url("./blackhole-blue.png");
 }
 
 html[data-theme="blackhole"] body::after {
   background-color: #000;
-  background-image: var(--bh-image);
+  background-image: var(--blackhole-image);
   background-position: 50% 42%;
   background-repeat: no-repeat;
   background-size: cover;
@@ -166,7 +166,7 @@ html[data-theme="blackhole"] body::before {
   opacity: 0.3;
 }
 
-html[data-background-override="true"][data-background="blackhole"] { --bh-image: url("./blackhole-blue.png"); --hub-background-color: #000; --hub-background-image: var(--bh-image); --hub-background-position: 50% 42%; }
+html[data-background-override="true"][data-background="blackhole"] { --blackhole-image: url("./blackhole-blue.png"); --hub-background-color: #000; --hub-background-image: var(--blackhole-image); --hub-background-position: 50% 42%; }
 html[data-background-override="true"][data-background="blackhole-disk"] { --hub-background-color: #000; --hub-background-image: var(--blackhole-disk-image, url("./blackhole-disk.jpg")); --hub-background-position: 56% 48%; }
 
 html[data-background-override="true"][data-background="orbit-limb"] body::before,
