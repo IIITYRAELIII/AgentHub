@@ -131,7 +131,7 @@ export function serverPageSnapshot({
         name: "Очистка контекста Codex",
         enabled: config?.components?.codexContextCleanup === true,
         note: config?.components?.codexContextCleanup === true
-          ? "Встроена в свёртку HUB; фоновый проход страхует отложенные rollout-файлы."
+          ? "Работает отдельным фоновым проходом; встраивание в свёртку временно отключено как нестабильное."
           : "Очистка дубликатов изображений отключена.",
       },
     ],

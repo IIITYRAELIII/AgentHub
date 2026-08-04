@@ -17,6 +17,7 @@ import {
 
 test("Agent Hub persists Codex and Claude limit snapshots every five minutes", async () => {
   const source = await readFile(new URL("./agent-hub-server.mjs", import.meta.url), "utf8");
+  const processCaptureSource = await readFile(new URL("./process-capture.mjs", import.meta.url), "utf8");
   assert.match(source, /function scheduleRateLimitPoll\(delayMs = 5 \* 60_000\)/u);
   assert.match(source, /new RateLimitHistoryStore\(/u);
   assert.match(source, /rateLimitHistoryStore\.record\(result, observedAt\)/u);
@@ -25,7 +26,11 @@ test("Agent Hub persists Codex and Claude limit snapshots every five minutes", a
   assert.match(source, /return rateLimitHistoryStore\.read\(/u);
   assert.match(source, /scheduleRateLimitPoll\(1_000\)/u);
   assert.match(source, /"--safe-mode", "--no-session-persistence"/u);
-  assert.match(source, /void stopProcessTree\(worker\.pid\)[\s\S]*?\.finally\(\(\) => finish\(\{ code: null, error: timeoutError \}\)\)/u);
+  assert.match(source, /stopProcess: \(worker\) => stopProcessTree\(worker\.pid\)/u);
+  assert.match(
+    processCaptureSource,
+    /Promise\.resolve\(stopProcess\(worker\)\)[\s\S]*?\.finally\(\(\) => finish\(\{ code: null, error: timeoutError \}\)\)/u,
+  );
 });
 
 test("all-time SQLite history samples before JSON parsing and preserves first and last", async () => {

@@ -25,12 +25,17 @@
 | 10 | ✅ | Desktop history: чтение, объединение активного хода, пагинация и транспортный byte-budget вынесены в `desktop-task-history.mjs`. |
 | 11 | ✅ | Desktop control router: ограничения Mini App, таблица команд и последовательная очередь мутаций вынесены в `desktop-control-router.mjs`. |
 | 12 | ✅ | Desktop message controller: точная адресация задачи, идемпотентные квитанции, steer/queue, конфликт внешнего хода и запуск нового хода вынесены в `desktop-message-controller.mjs`. |
+| 13 | ✅ | Ограниченный запуск внешних процессов вынесен в `process-capture.mjs`; модуль владеет тайм-аутом, остановкой процесса и byte-budget stdout/stderr. |
+| 14 | ✅ | Runtime-уведомления вынесены в `runtime-notification-controller.mjs`: allowlist чатов, разрешённые cwd/файлы, очищенное окружение и запуск release-копий `send-message`/`send-images`. |
+| 15 | ✅ | Codex lifecycle hooks вынесены в `codex-lifecycle-controller.mjs`: авторизация точного rollout, квитанции `turn-start`/`turn-complete`, baseline/diff, usage, журнал и финальная доставка. |
+| 16 | ✅ | Telegram status/settings policy вынесена в `telegram-status-controller.mjs` и `telegram-settings-menu.mjs`; контроллер статуса владеет минутным кэшем лимитов и деградацией каталога. |
 
-После этапа 12 `agent-hub-server.mjs` содержит около 7,4 тыс. строк. Это всё ещё
+После этапа 16 `agent-hub-server.mjs` содержит около 8,1 тыс. строк. Это всё ещё
 слишком много для удобного сопровождения: сервер остаётся точкой композиции и
-хранит прикладную политику провайдеров, доставки, восстановления, Telegram UI и
-фоновых задач. Следующие безопасные границы — lifecycle доставки Codex,
-runtime-команды и Telegram menu/status policy; их следует переносить отдельными
+хранит прикладную политику провайдеров, доставки, восстановления, Desktop RPC,
+Telegram callback/command dispatch и фоновых задач. Следующие безопасные
+границы — завершение/восстановление Codex-run, серверная Desktop policy,
+background jobs и startup/shutdown composition. Их следует переносить отдельными
 этапами с contract-тестами, а не механически разрезать файл по размеру.
 
 ## Критерий завершения

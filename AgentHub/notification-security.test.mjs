@@ -49,10 +49,12 @@ test("runtime caller environment replaces rather than combines AI session identi
   }, {
     CLAUDE_CODE_SESSION_ID: "current-claude",
     CLAUDECODE: "1",
+    TELEGRAM_BOT_TOKEN: "must-not-pass",
   });
   assert.equal(environment.PATH, "system");
   assert.equal(environment.CODEX_THREAD_ID, undefined);
   assert.equal(environment.CLAUDE_CODE_SESSION_ID, "current-claude");
   assert.equal(environment.CLAUDECODE, "1");
+  assert.equal(environment.TELEGRAM_BOT_TOKEN, undefined);
 });
 

@@ -61,8 +61,9 @@ export function cleanRuntimeCallerEnvironment(base = {}, caller = {}) {
   const result = { ...base };
   for (const name of CALLER_ENVIRONMENT_NAMES) delete result[name];
   for (const [name, value] of Object.entries(caller)) {
-    if (typeof value === "string") result[name] = value;
+    if (CALLER_ENVIRONMENT_NAMES.includes(name) && typeof value === "string") {
+      result[name] = value;
+    }
   }
   return result;
 }
-
