@@ -19,7 +19,7 @@
 | 4 | ✅ | `ClaudeRunController`: detached-процесс, файлы stdout/stderr, чтение и разбор `stream-json`, polling, завершение, отмена дерева и восстановление по PID/офсету. |
 | 5 | ✅ | Task lifecycle: фабрики managed/observed run находятся в `task-runs.mjs`; `TaskProgressController` владеет progress UI, `TaskObserverController` — snapshot polling, `DeferredInputController` — очередью сообщений, а `task-recovery.mjs` — решениями восстановления после рестарта. |
 | 6 | ✅ | Telegram controllers: `TelegramMessageController` маршрутизирует команды, reply и медиа; `TelegramCallbackController` и `telegram-callback-router.mjs` — callback-протокол; `ApprovalController` — подтверждения; `task-picker.mjs` и `TaskViewController` — выбор задач и историю. |
-| 7 | ✅ | `MediaController`: загрузка изображений и аудио, Whisper, хранилище кнопок озвучивания, TTS worker и отправка voice. Сохраняемые очереди фоновых заданий остаются общей политикой композиции. |
+| 7 | ✅ | `MediaController`: загрузка изображений и аудио, Whisper, хранилище кнопок озвучивания, TTS worker и отправка voice. |
 | 8 | ✅ | Базовая композиция: `TelegramPollingController` владеет Bot API polling; transports, controllers, storage и форматирование вынесены. |
 | 9 | ✅ | Desktop snapshot: формирование снимков контекста, хода, задачи и общего состояния вынесено в `desktop-snapshot.mjs` с явными зависимостями и отдельными contract-тестами. |
 | 10 | ✅ | Desktop history: чтение, объединение активного хода, пагинация и транспортный byte-budget вынесены в `desktop-task-history.mjs`. |
@@ -29,14 +29,17 @@
 | 14 | ✅ | Runtime-уведомления вынесены в `runtime-notification-controller.mjs`: allowlist чатов, разрешённые cwd/файлы, очищенное окружение и запуск release-копий `send-message`/`send-images`. |
 | 15 | ✅ | Codex lifecycle hooks вынесены в `codex-lifecycle-controller.mjs`: авторизация точного rollout, квитанции `turn-start`/`turn-complete`, baseline/diff, usage, журнал и финальная доставка. |
 | 16 | ✅ | Telegram status/settings policy вынесена в `telegram-status-controller.mjs` и `telegram-settings-menu.mjs`; контроллер статуса владеет минутным кэшем лимитов и деградацией каталога. |
+| 17 | ✅ | Серверная Desktop policy вынесена в `server-control-controller.mjs`: process/restart snapshot, автозапуск и накопление ожидающих рестарта безопасных настроек. |
+| 18 | ✅ | Постоянные очереди изображений, голоса и TTS вынесены в `background-job-controller.mjs`: раздельные лимиты, дедупликация, восстановление и сохранение незавершённой работы при остановке. |
+| 19 | ✅ | Shutdown composition вынесена в `runtime-lifecycle-controller.mjs`: однократный переход в stopping, остановка таймеров/управляемых ходов и независимое закрытие всех компонентов. |
 
-После этапа 16 `agent-hub-server.mjs` содержит около 8,1 тыс. строк. Это всё ещё
+После этапа 19 `agent-hub-server.mjs` содержит около 8,0 тыс. строк. Это всё ещё
 слишком много для удобного сопровождения: сервер остаётся точкой композиции и
 хранит прикладную политику провайдеров, доставки, восстановления, Desktop RPC,
-Telegram callback/command dispatch и фоновых задач. Следующие безопасные
-границы — завершение/восстановление Codex-run, серверная Desktop policy,
-background jobs и startup/shutdown composition. Их следует переносить отдельными
-этапами с contract-тестами, а не механически разрезать файл по размеру.
+Telegram callback/command dispatch и startup provider recovery. Следующие
+безопасные границы — завершение/восстановление Codex-run, restart workflow и
+startup provider recovery. Их следует переносить отдельными этапами с
+contract-тестами, а не механически разрезать файл по размеру.
 
 ## Критерий завершения
 

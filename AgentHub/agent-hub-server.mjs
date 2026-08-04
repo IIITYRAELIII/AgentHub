@@ -175,6 +175,7 @@ import { TrustedDeviceStore } from "./trusted-device-store.mjs";
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
 import { SingleInstanceGuard } from "./instance-lock.mjs";
 import { BackgroundJobQueue } from "./background-job-queue.mjs";
+import { PersistentBackgroundJobController } from "./background-job-controller.mjs";
 import { PersistentBackgroundJobStore } from "./background-job-store.mjs";
 import { FailedTelegramUpdateStore } from "./failed-update-store.mjs";
 import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "./claude-invocation.mjs";
@@ -253,18 +254,17 @@ import { DirectGatewayController, loadDirectGatewaySettings } from "./direct-gat
 import { QuickTunnelController } from "./quick-tunnel.mjs";
 import { ensureLocalWebSecret } from "./local-web-auth.mjs";
 import { fitTaskHistoryPayload } from "./response-budget.mjs";
+import { RuntimeLifecycleController } from "./runtime-lifecycle-controller.mjs";
 import { settleNamedOperations } from "./lifecycle-coordinator.mjs";
 import { createDesktopSnapshotFactory } from "./desktop-snapshot.mjs";
 import { createDesktopTaskHistoryFactory } from "./desktop-task-history.mjs";
 import { createDesktopControlRouter } from "./desktop-control-router.mjs";
 import { UsdRubRateStore } from "./exchange-rate.mjs";
+import { agentHubAutostartShortcut } from "./server-page.mjs";
 import {
-  agentHubAutostartShortcut,
-  readAgentHubAutostart,
-  serverPageSnapshot,
-  setAgentHubAutostart,
-} from "./server-page.mjs";
-import { updateServerConfiguration } from "./server-configuration.mjs";
+  defaultAutostartInstallScript,
+  ServerControlController,
+} from "./server-control-controller.mjs";
 import {
   ContextCompactionTracker,
   isContextCompactionItem,
@@ -512,7 +512,6 @@ let activeThreadTitle = "";
 let latestDiff = "";
 let stopping = false;
 let autoApprove = config.autoApproveOnStart;
-let pendingServerConfiguration = {};
 let includeClaudeUsage = true;
 let codexRestarting = false;
 let codexTimeoutRestarting = false;
@@ -676,16 +675,25 @@ const backgroundJobStore = new PersistentBackgroundJobStore({
 });
 const failedUpdateStore = new FailedTelegramUpdateStore({ directoryPath: FAILED_UPDATES_DIR });
 await failedUpdateStore.load();
-const scheduledBackgroundJobIds = new Set();
-const backgroundMediaJobs = new BackgroundJobQueue({
-  concurrency: 1,
-  maxJobs: MAX_BACKGROUND_MEDIA_JOBS,
-  onChange: handleBackgroundJobQueueChange,
-});
-const backgroundSpeechJobs = new BackgroundJobQueue({
-  concurrency: 1,
-  maxJobs: MAX_BACKGROUND_SPEECH_JOBS,
-  onChange: handleBackgroundJobQueueChange,
+const backgroundJobs = new PersistentBackgroundJobController({
+  store: backgroundJobStore,
+  maxMediaJobs: MAX_BACKGROUND_MEDIA_JOBS,
+  maxSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
+  isStopping: () => stopping,
+  onIdle: scheduleDeferredRestartIfReady,
+  sendMessage: (...args) => sendMessageTo(...args),
+  media: {
+    captureImage: (...args) => mediaController.captureImage(...args),
+    analyzeImage: (...args) => mediaController.analyzeImage(...args),
+    transcribeVoice: (...args) => mediaController.transcribeVoice(...args),
+    processSpeechRequest: (...args) => mediaController.processSpeechRequest(...args),
+  },
+  forwardBundles: {
+    imageDescriptor: (...args) => forwardBundleController.imageDescriptor(...args),
+    completeImage: (...args) => forwardBundleController.completeImage(...args),
+    failImage: (...args) => forwardBundleController.failImage(...args),
+    pendingImageJobs: () => forwardBundleController.pendingImageJobs(),
+  },
 });
 const interactiveJobs = new BackgroundJobQueue({
   concurrency: 2,
@@ -2953,76 +2961,24 @@ function codexItemActivity(item, completed) {
   return null;
 }
 
-async function desktopServerSnapshot({
-  activeCount = taskRuns.values().filter(taskRunIsActive).length,
-  restart = null,
-} = {}) {
-  const restartState = restart ?? {
+const serverControlController = new ServerControlController({
+  config,
+  startedAt: serverStartedAt,
+  instanceId: serverInstanceId,
+  releaseId: serverReleaseId,
+  shortcutPath: agentHubAutostartShortcutPath,
+  installScriptPath: defaultAutostartInstallScript(import.meta.dirname),
+  activeCount: () => taskRuns.values().filter(taskRunIsActive).length,
+  restartState: () => ({
     pending: Boolean(restartRequest),
     waiting: restartRequest?.waitingForRuns === true,
     blockingCount: restartRequest
-      ? restartBlockingRuns().length
-        + backgroundMediaJobs.size
-        + backgroundSpeechJobs.size
+      ? restartBlockingRuns().length + backgroundJobs.size
       : 0,
-  };
-  return serverPageSnapshot({
-    config,
-    pendingConfiguration: pendingServerConfiguration,
-    processId: process.pid,
-    startedAt: serverStartedAt,
-    instanceId: serverInstanceId,
-    releaseId: serverReleaseId,
-    activeCount,
-    restart: restartState,
-    autostart: await readAgentHubAutostart({ shortcutPath: agentHubAutostartShortcutPath }),
-  });
-}
-
-async function installAgentHubAutostart() {
-  const result = await spawnCapture(
-    "powershell.exe",
-    [
-      "-NoProfile",
-      "-ExecutionPolicy", "Bypass",
-      "-File", path.join(import.meta.dirname, "install-autostart.ps1"),
-    ],
-    {
-      cwd: config.projectRoot,
-      timeoutMs: 30_000,
-      maxOutputBytes: 128 * 1024,
-    },
-  );
-  if (result.code !== 0) {
-    throw new Error(result.stderr.trim() || result.error?.message || "Не удалось включить автозапуск Agent Hub");
-  }
-}
-
-async function desktopSetAutostart(params) {
-  if (typeof params?.enabled !== "boolean") throw new Error("Укажите состояние автозапуска");
-  const autostart = await setAgentHubAutostart(params.enabled, {
-    shortcutPath: agentHubAutostartShortcutPath,
-    installAutostart: installAgentHubAutostart,
-  });
-  return {
-    accepted: true,
-    message: autostart.enabled ? "Автозапуск Agent Hub включён" : "Автозапуск Agent Hub выключен",
-    snapshot: await desktopSnapshot(),
-  };
-}
-
-async function desktopUpdateServerConfiguration(params) {
-  const changed = await updateServerConfiguration({
-    configPath: config.configPath,
-    changes: params?.changes,
-  });
-  pendingServerConfiguration = { ...pendingServerConfiguration, ...changed };
-  return {
-    accepted: true,
-    message: "Конфигурация сохранена. Перезапустите Hub для применения.",
-    snapshot: await desktopSnapshot(),
-  };
-}
+  }),
+  desktopSnapshot: () => desktopSnapshot(),
+  spawnCapture,
+});
 
 const {
   desktopContextSnapshot,
@@ -3106,12 +3062,12 @@ const {
     request: () => restartRequest,
     blockingRuns: restartBlockingRuns,
     compactionCount: () => contextCompactions.runningCount(),
-    mediaJobCount: () => backgroundMediaJobs.size,
-    speechJobCount: () => backgroundSpeechJobs.size,
+    mediaJobCount: () => backgroundJobs.mediaSize,
+    speechJobCount: () => backgroundJobs.speechSize,
   },
   exchangeRates: usdRubRateStore,
   server: {
-    snapshot: desktopServerSnapshot,
+    snapshot: (...args) => serverControlController.snapshot(...args),
   },
   readState: {
     hasUnread: (answer) => taskHasUnreadAnswer(answer, taskReadStateStore.get(answer)),
@@ -3734,7 +3690,7 @@ async function desktopStatusDetails() {
     mode: CODEX_COLLABORATION_MODE_LABELS[codexSelected ? codexCollaborationMode : claudeCollaborationMode],
     limits,
     activeCount: taskRuns.values().filter(taskRunIsActive).length,
-    backgroundJobs: backgroundMediaJobs.size + backgroundSpeechJobs.size,
+    backgroundJobs: backgroundJobs.size,
   };
 }
 
@@ -3743,7 +3699,7 @@ async function desktopSpeakLastAnswer(params) {
   const message = savedLastTaskMessageRecord(target);
   const text = String(message?.text ?? "").trim();
   if (!text) throw new Error("У задачи ещё нет завершённого ответа");
-  const job = await enqueueBackgroundJob("speech", { chatId, text }, chatId, {
+  const job = await backgroundJobs.enqueue("speech", { chatId, text }, chatId, {
     dedupeKey: `desktop:${target.provider}:${target.threadId}:speech`,
   });
   if (!job) throw new Error(`Очередь озвучивания заполнена (${MAX_BACKGROUND_SPEECH_JOBS})`);
@@ -3754,8 +3710,7 @@ async function desktopRestartServer() {
   if (restartRequest) return { accepted: false, message: "Перезапуск уже запрошен" };
   const blockingRuns = restartBlockingRuns();
   const blockingWorkCount = blockingRuns.length
-    + backgroundMediaJobs.size
-    + backgroundSpeechJobs.size;
+    + backgroundJobs.size;
   restartRequest = {
     chatId,
     // Desktop control must acknowledge a persisted restart request before a
@@ -4050,8 +4005,8 @@ const {
     "status-details": desktopStatusDetails,
     "speak-last-answer": desktopSpeakLastAnswer,
     "restart-server": desktopRestartServer,
-    "set-autostart": desktopSetAutostart,
-    "update-server-configuration": desktopUpdateServerConfiguration,
+    "set-autostart": (params) => serverControlController.setAutostart(params),
+    "update-server-configuration": (params) => serverControlController.updateConfiguration(params),
     "compact-context": desktopCompactContext,
     "open-attachment": desktopOpenAttachment,
     "trusted-devices": desktopTrustedDevices,
@@ -7034,152 +6989,13 @@ function restartBlockingRuns() {
 
 function restartHasBlockingWork() {
   return restartBlockingRuns().length > 0
-    || backgroundMediaJobs.size > 0
-    || backgroundSpeechJobs.size > 0;
+    || backgroundJobs.size > 0;
 }
 
 function scheduleDeferredRestartIfReady() {
   if (restartRequest?.waitingForRuns && !restartHasBlockingWork() && !stopping) {
     setTimeout(() => void performRestart(), 0).unref?.();
   }
-}
-
-function handleBackgroundJobQueueChange({ size }) {
-  if (size === 0) scheduleDeferredRestartIfReady();
-}
-
-function backgroundJobQueue(kind) {
-  return kind === "speech" ? backgroundSpeechJobs : backgroundMediaJobs;
-}
-
-function persistedBackgroundJobCount(kind) {
-  if (kind === "speech") return backgroundJobStore.count("speech");
-  return backgroundJobStore.count("image")
-    + backgroundJobStore.count("voice")
-    + backgroundJobStore.count("forward-bundle-image");
-}
-
-async function executeBackgroundJob(item) {
-  if (item.kind === "forward-bundle-image") {
-    const descriptor = forwardBundleController.imageDescriptor(
-      item.payload.bundleId,
-      item.payload.messageId,
-    );
-    if (!descriptor) return;
-    try {
-      const imagePath = await mediaController.captureImage(descriptor);
-      await forwardBundleController.completeImage(
-        item.payload.bundleId,
-        item.payload.messageId,
-        imagePath,
-      );
-    } catch (error) {
-      await forwardBundleController.failImage(
-        item.payload.bundleId,
-        item.payload.messageId,
-        error,
-      );
-    }
-    return;
-  }
-  if (item.kind === "image") {
-    await mediaController.analyzeImage(item.payload.message, item.payload.target);
-    return;
-  }
-  if (item.kind === "voice") {
-    await mediaController.transcribeVoice(item.payload.message, item.payload.target);
-    return;
-  }
-  if (item.kind === "speech") {
-    await mediaController.processSpeechRequest(item.payload.chatId, item.payload.text);
-    return;
-  }
-  throw new Error(`unsupported background job kind: ${item.kind}`);
-}
-
-function scheduleBackgroundJob(item) {
-  if (scheduledBackgroundJobIds.has(item.id)) return true;
-  const queue = backgroundJobQueue(item.kind);
-  try {
-    const job = queue.enqueue(async () => {
-      try {
-        if (stopping) return;
-        await executeBackgroundJob(item);
-      } finally {
-        // A service stop may tear down App Server/TTS while the work is still
-        // running. Keep the durable record in that case so the next process can
-        // retry it instead of treating an interrupted attempt as completed.
-        if (!stopping) await backgroundJobStore.remove(item.id);
-        scheduledBackgroundJobIds.delete(item.id);
-      }
-    });
-    scheduledBackgroundJobIds.add(item.id);
-    void job.catch((error) => {
-      console.error(`Background ${item.kind} processing failed:`, error.message);
-    });
-    return true;
-  } catch (error) {
-    if (error?.code !== "QUEUE_FULL") throw error;
-    return false;
-  }
-}
-
-async function enqueueBackgroundJob(kind, payload, targetChatId, { dedupeKey = null } = {}) {
-  await backgroundJobStore.load();
-  const replayed = backgroundJobStore.findByDedupeKey(dedupeKey);
-  if (replayed) {
-    scheduleBackgroundJob(replayed);
-    return replayed;
-  }
-  const limit = kind === "speech" ? MAX_BACKGROUND_SPEECH_JOBS : MAX_BACKGROUND_MEDIA_JOBS;
-  if (persistedBackgroundJobCount(kind) >= limit) {
-    if (kind !== "speech") {
-      await sendMessageTo(
-        targetChatId,
-        `Очередь медиа переполнена (${MAX_BACKGROUND_MEDIA_JOBS}). Отправьте файл позже.`,
-      );
-    }
-    return null;
-  }
-  const item = await backgroundJobStore.enqueue({ kind, payload, dedupeKey });
-  if (!scheduleBackgroundJob(item)) {
-    console.warn(`Persistent background job ${item.id} is waiting for a free ${kind} queue slot.`);
-  }
-  return item;
-}
-
-async function restoreBackgroundJobs() {
-  await backgroundJobStore.load();
-  for (const pending of forwardBundleController.pendingImageJobs()) {
-    try {
-      const restored = await enqueueBackgroundJob(
-        "forward-bundle-image",
-        {
-          bundleId: pending.bundleId,
-          chatId: pending.chatId,
-          messageId: pending.messageId,
-        },
-        pending.chatId,
-        { dedupeKey: pending.dedupeKey },
-      );
-      if (!restored) {
-        await forwardBundleController.failImage(
-          pending.bundleId,
-          pending.messageId,
-          "очередь медиа переполнена при восстановлении",
-        );
-      }
-    } catch (error) {
-      await forwardBundleController.failImage(pending.bundleId, pending.messageId, error);
-    }
-  }
-  const count = backgroundJobStore.size;
-  if (!count) return;
-  let scheduled = 0;
-  for (const item of backgroundJobStore.values()) {
-    if (scheduleBackgroundJob(item)) scheduled += 1;
-  }
-  console.log(`Restored ${scheduled}/${count} persistent background job(s).`);
 }
 
 function restartMessageIsEditable(request = restartRequest) {
@@ -7354,8 +7170,7 @@ async function restartBot() {
   }
   const blockingRuns = restartBlockingRuns();
   const blockingWorkCount = blockingRuns.length
-    + backgroundMediaJobs.size
-    + backgroundSpeechJobs.size;
+    + backgroundJobs.size;
   const message = await sendMessage(blockingWorkCount
     ? `🔄 Перезапущу бота после завершения выполняющихся задач: ${blockingWorkCount}.`
     : "🔄 Перезапускаю Agent Hub…");
@@ -7569,7 +7384,7 @@ async function dispatchTelegramCallback(callback, route) {
       });
       return;
     }
-    const speechJob = await enqueueBackgroundJob("speech", {
+    const speechJob = await backgroundJobs.enqueue("speech", {
       chatId: callback.message.chat.id,
       text,
     }, callback.message.chat.id, { dedupeKey: `callback:${callback.id}:speech` });
@@ -7583,8 +7398,8 @@ async function dispatchTelegramCallback(callback, route) {
     }
     await telegram("answerCallbackQuery", {
       callback_query_id: callback.id,
-      text: backgroundSpeechJobs.pending
-        ? `Озвучивание поставлено в очередь: ${backgroundSpeechJobs.pending}`
+      text: backgroundJobs.speechPending
+        ? `Озвучивание поставлено в очередь: ${backgroundJobs.speechPending}`
         : "Готовлю голосовое сообщение…",
     });
     return;
@@ -8183,7 +7998,7 @@ const forwardBundleController = new TelegramForwardBundleController({
   }),
   save: saveState,
   startTurn,
-  enqueueImage: (payload, dedupeKey) => enqueueBackgroundJob(
+  enqueueImage: (payload, dedupeKey) => backgroundJobs.enqueue(
     "forward-bundle-image",
     payload,
     payload.chatId,
@@ -8203,7 +8018,7 @@ const telegramMessageController = new TelegramMessageController({
   notifyTaskSwitch: sendTaskSwitchNotification,
   selectedTurnTarget,
   bindIncomingMessage: bindIncomingTaskMessage,
-  enqueueMedia: enqueueBackgroundJob,
+  enqueueMedia: (...args) => backgroundJobs.enqueue(...args),
   commandHandlers: telegramCommandHandlers,
   handleBundleText: (message, text) => forwardBundleController.handleText(message, text),
   handleBundleMedia: (message, options) => forwardBundleController.handleImage(message, options),
@@ -8370,17 +8185,21 @@ function startRuntimeTimers() {
   scheduleRateLimitPoll(1_000);
 }
 
-async function shutdown(signal) {
-  if (stopping) return;
-  stopping = true;
-  console.log(`Stopping on ${signal}...`);
-  stopRuntimeTimers();
-  // Ходы Claude оставляем работать: следующий запуск бота подключится к ним заново.
-  for (const run of taskRuns.values()) {
-    if (run.provider === "codex") run.process?.kill();
-  }
-  mediaController.stop();
-  await settleNamedOperations([
+const runtimeLifecycle = new RuntimeLifecycleController({
+  beginStopping: () => {
+    if (stopping) return false;
+    stopping = true;
+    return true;
+  },
+  stopTimers: stopRuntimeTimers,
+  // Claude workers are detached and deliberately survive Hub replacement.
+  stopManagedRuns: () => {
+    for (const run of taskRuns.values()) {
+      if (run.provider === "codex") run.process?.kill();
+    }
+  },
+  stopMedia: () => mediaController.stop(),
+  operations: () => [
     { name: "Codex App Server", run: stopCodexAppServerTree },
     { name: "Mini App publisher", run: () => miniAppPublisher?.close() },
     { name: "direct gateway", run: () => directGatewayController?.close() },
@@ -8398,20 +8217,20 @@ async function shutdown(signal) {
     { name: "background jobs", run: () => backgroundJobStore.waitForWrites() },
     { name: "failed updates", run: () => failedUpdateStore.waitForWrites() },
     { name: "instance lock", run: () => instanceGuard.release() },
-  ], {
-    logError: (name, error) => console.error(`Shutdown failed (${name}):`, error.message),
-  });
-  taskSyncStore.close();
-  taskReadStateStore.close();
-  runtimeStateStore.close();
-}
+  ],
+  afterClose: () => {
+    taskSyncStore.close();
+    taskReadStateStore.close();
+    runtimeStateStore.close();
+  },
+});
 
 process.on("unhandledRejection", (error) => {
   console.error("Unhandled asynchronous error:", error);
 });
 
-process.on("SIGINT", () => void shutdown("SIGINT"));
-process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void runtimeLifecycle.shutdown("SIGINT"));
+process.on("SIGTERM", () => void runtimeLifecycle.shutdown("SIGTERM"));
 
 // The control endpoint is intentionally available before provider recovery.
 // Desktop clients can then show the cached task list and retry state while a
@@ -8452,7 +8271,7 @@ if (config.telegramEnabled) {
     await sendMessage(`⚠️ Не удалось восстановить активные задачи: ${error.message}`).catch(() => {});
   });
   await retryPendingTurnEndNotifications();
-  await restoreBackgroundJobs().catch(async (error) => {
+  await backgroundJobs.restore().catch(async (error) => {
     console.error("Cannot recover background jobs:", error.message);
     await sendMessage(`⚠️ Не удалось восстановить фоновые медиа-задачи: ${error.message}`).catch(() => {});
   });
