@@ -3841,9 +3841,7 @@ function currentLimitSeries(payload) {
     .map((series) => ({ ...series, point: series.points.at(-1) }));
   const pickCodex = (name) => {
     const matches = available.filter((series) => String(series.name).toLowerCase() === name);
-    return matches.find((series) => series.window === "secondary")
-      ?? matches.find((series) => series.window === "primary")
-      ?? matches.at(-1);
+    return matches.find((series) => series.window === "primary");
   };
   const claudeWeek = available.find((series) => series.id === "claude:week");
   return [

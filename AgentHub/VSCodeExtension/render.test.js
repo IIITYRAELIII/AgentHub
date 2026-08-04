@@ -1263,6 +1263,7 @@ test("current limits live in settings and statistics instead of the compact head
   assert.match(app, /function currentLimitSeries\(payload\)/u);
   assert.match(app, /pickCodex\("codex"\)/u);
   assert.match(app, /pickCodex\("spark"\)/u);
+  assert.match(app, /return matches\.find\(\(series\) => series\.window === "primary"\);/u);
   assert.match(app, /id === "claude:week"/u);
   assert.match(app, /journal\.querySelector\("\[data-work-log-rate-limits\]"\)\?\.remove\(\)/u);
 });

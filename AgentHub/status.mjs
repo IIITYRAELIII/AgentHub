@@ -63,7 +63,7 @@ export function formatCodexRateLimits(result, nowMs = Date.now()) {
   buckets.sort((left, right) => (left.limitId === "codex" ? -1 : right.limitId === "codex" ? 1 : 0));
   const lines = [];
   for (const bucket of buckets) {
-    const window = bucket.secondary ?? bucket.primary;
+    const window = bucket.primary;
     if (window) lines.push(`${codexLimitName(bucket)} - ${formatWindow(window, nowMs)}`);
     else lines.push(codexLimitName(bucket));
     if (bucket.rateLimitReachedType) lines.push(`Ограничение достигнуто: ${bucket.rateLimitReachedType}`);

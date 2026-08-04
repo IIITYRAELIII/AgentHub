@@ -13,7 +13,7 @@ import {
   statusHeaderFileName,
 } from "./status.mjs";
 
-test("formatCodexRateLimits shows one weekly line per limit", () => {
+test("formatCodexRateLimits always shows the primary window per limit", () => {
   const nowMs = new Date(2026, 6, 10, 15, 0).getTime();
   const result = {
     rateLimitsByLimitId: {
@@ -33,8 +33,8 @@ test("formatCodexRateLimits shows one weekly line per limit", () => {
   };
 
   assert.equal(formatCodexRateLimits(result, nowMs), [
-    "CODEX - 94.0% - 6 дн. 7 ч.",
-    "Spark - 100.0% - 7 дн.",
+    "CODEX - 100.0% - 5 ч.",
+    "Spark - 100.0% - 5 ч.",
     "Сбросов 0",
   ].join("\n"));
 });
