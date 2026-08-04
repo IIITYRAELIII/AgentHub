@@ -63,13 +63,15 @@ test("Codex history keeps only real subagent lifecycle events", () => {
       { id: "message", type: "agentMessage", text: "Обычный ответ" },
       { id: "spawn", type: "collabAgentToolCall", tool: "spawnAgent", status: "completed" },
       { id: "started", type: "subAgentActivity", kind: "started", agentPath: "/root/check" },
-      { id: "done", type: "subAgentActivity", kind: "interrupted", agentPath: "/root/check" },
+      { id: "done", type: "collabAgentToolCall", tool: "wait", status: "completed", agentsStates: {
+        child: { status: "completed", message: "Готово" },
+      } },
     ],
   });
   assert.deepEqual(activities.map(({ label }) => label), [
     "Субагент запущен",
     "Субагент начал работу",
-    "Субагент остановлен",
+    "Субагент завершил работу",
   ]);
 });
 

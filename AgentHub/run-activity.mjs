@@ -34,6 +34,17 @@ function collabAgentDetail(item) {
   return [item?.model, item?.reasoningEffort, ...receivers].map((value) => String(value ?? "").trim()).filter(Boolean).join(" · ").slice(0, 500);
 }
 
+function completedWaitLabel(item) {
+  const states = Object.values(item?.agentsStates ?? {}).map((state) => String(state?.status ?? ""));
+  if (!states.length) return "Ожидание субагентов завершено";
+  const completedCount = states.filter((status) => status === "completed").length;
+  if (completedCount === 1 && states.length === 1) return "Субагент завершил работу";
+  if (completedCount === states.length) return "Субагенты завершили работу";
+  if (states.some((status) => status === "errored")) return "Субагент завершился с ошибкой";
+  if (states.every((status) => ["interrupted", "shutdown", "notFound"].includes(status))) return "Субагенты остановлены";
+  return "Ожидание субагентов завершено";
+}
+
 export function codexSubagentActivity(item, completed) {
   if (item?.type === "subAgentActivity") {
     const labels = {
@@ -62,9 +73,10 @@ export function codexSubagentActivity(item, completed) {
   };
   const variants = labels[String(item.tool ?? "")];
   if (!variants) return null;
+  const completedLabel = item.tool === "wait" ? completedWaitLabel(item) : variants[1];
   return {
     type: "subagent",
-    label: failed ? variants[2] : finished ? variants[1] : variants[0],
+    label: failed ? variants[2] : finished ? completedLabel : variants[0],
     detail: collabAgentDetail(item),
     status: failed ? "failed" : finished ? "completed" : "running",
   };

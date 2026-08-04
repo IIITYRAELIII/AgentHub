@@ -49,4 +49,11 @@ test("Codex item activity distinguishes real subagents from agent messages", () 
   assert.equal(codexItemActivity({
     id: "started", type: "subAgentActivity", kind: "started", agentPath: "/root/check",
   }, true).label, "Субагент начал работу");
+  assert.equal(codexItemActivity({
+    id: "wait",
+    type: "collabAgentToolCall",
+    tool: "wait",
+    status: "completed",
+    agentsStates: { "child-thread": { status: "completed", message: "Готово" } },
+  }, true).label, "Субагент завершил работу");
 });
