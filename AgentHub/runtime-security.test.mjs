@@ -84,6 +84,8 @@ test("runtime launchers use the shared manifest verifier on every platform", asy
   const verifier = await readFile(path.join(import.meta.dirname, "runtime-manifest-verifier.mjs"), "utf8");
   assert.match(launcher, /runtime-manifest-verifier\.mjs/);
   assert.match(unixLauncher, /runtime-manifest-verifier\.mjs/);
+  assert.match(launcher, /agent-hub-main\.mjs/);
+  assert.match(unixLauncher, /agent-hub-main\.mjs/);
   assert.match(verifier, /createHash\("sha256"\)/);
   assert.doesNotMatch(launcher, /Get-FileHash/);
 });

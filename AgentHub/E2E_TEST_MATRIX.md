@@ -1,6 +1,6 @@
 # Матрица CLI-приёмки Agent Hub
 
-`npm run test:e2e` запускает настоящий `agent-hub-server.mjs` в изолированном временном каталоге. Вместо внешних сервисов используются локальные HTTP Telegram Bot API, Codex App Server и Claude CLI из `e2e`. Рабочие токены, `config.json`, пользовательские треды, папка `data` и производственные логи не читаются и не изменяются.
+`npm run test:e2e` запускает настоящий исполняемый entrypoint `agent-hub-main.mjs` с composition root `agent-hub-server.mjs` в изолированном временном каталоге. Вместо внешних сервисов используются локальные HTTP Telegram Bot API, Codex App Server и Claude CLI из `e2e`. Рабочие токены, `config.json`, пользовательские треды, папка `data` и производственные логи не читаются и не изменяются.
 
 ## Покрытые сценарии
 

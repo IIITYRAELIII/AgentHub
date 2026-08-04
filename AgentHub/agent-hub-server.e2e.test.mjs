@@ -18,7 +18,7 @@ import {
 } from "./e2e/telegram-harness.mjs";
 
 const AGENT_HUB_ROOT = path.resolve(import.meta.dirname);
-const BOT_FILE = path.join(AGENT_HUB_ROOT, "agent-hub-server.mjs");
+const BOT_FILE = path.join(AGENT_HUB_ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-codex-app-server.mjs");
 const FAKE_CLAUDE_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-claude-cli.mjs");
 const FAKE_TTS_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-tts-worker.mjs");

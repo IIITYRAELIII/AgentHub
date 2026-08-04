@@ -9,7 +9,7 @@ import { callDesktopControl } from "./desktop-control.mjs";
 import { delay, stopPid, waitFor } from "./e2e/telegram-harness.mjs";
 
 const ROOT = path.resolve(import.meta.dirname);
-const BOT_FILE = path.join(ROOT, "agent-hub-server.mjs");
+const BOT_FILE = path.join(ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(ROOT, "e2e", "fake-codex-app-server.mjs");
 
 test("core-only components start without Telegram and keep Web App disabled", { timeout: 20_000 }, async (t) => {

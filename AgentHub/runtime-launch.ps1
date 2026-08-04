@@ -24,7 +24,7 @@ if (-not $ReleaseRoot.StartsWith($ReleasePrefix, [StringComparison]::OrdinalIgno
 }
 & node (Join-Path $ReleaseRoot 'runtime-manifest-verifier.mjs') $ReleaseRoot $Current
 if ($LASTEXITCODE -ne 0) { throw 'Agent Hub runtime manifest verification failed' }
-$Server = Join-Path $ReleaseRoot 'agent-hub-server.mjs'
+$Server = Join-Path $ReleaseRoot 'agent-hub-main.mjs'
 if (-not (Test-Path -LiteralPath $Server)) {
     throw "Agent Hub runtime release is incomplete: $Server"
 }

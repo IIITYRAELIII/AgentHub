@@ -1,6 +1,6 @@
 # Декомпозиция agent-hub-server.mjs
 
-Цель — оставить в `agent-hub-server.mjs` сборку зависимостей, состояние верхнего уровня и запуск приложения. Протоколы, независимые сервисы и форматирование должны жить в тестируемых модулях. Перенос кода без явной границы ответственности не считается выполнением.
+Цель — оставить в `agent-hub-server.mjs` сборку зависимостей и состояние верхнего уровня, а исполняемый bootstrap держать в `agent-hub-main.mjs`. Протоколы, независимые сервисы и форматирование должны жить в тестируемых модулях. Перенос кода без явной границы ответственности не считается выполнением.
 
 ## Ограничения
 
@@ -42,13 +42,14 @@
 | 27 | ✅ | Основание общего provider port вынесено в `agent-provider-registry.mjs`: адаптеры Codex/Claude обязательно реализуют discovery/projection, create, launch, cancel, external activity и live snapshot. Каталог, клиентские команды и observer обращаются к registry без выбора провайдера; completion/delivery/recovery завершаются в A6 отдельным срезом. |
 | 28 | ✅ | Provider port завершён: те же обязательные адаптеры владеют recovery snapshot/подготовкой, managed и observed completion, terminal delivery, reattach, применением live snapshot и политикой restart/shutdown. Общий lifecycle делегирует по provider ID и не связывает логическую задачу с единственным thread ID. |
 | 29 | ✅ | `RunCoordinator` объединяет admission, launch, steer, pending/queued input и provider terminal/recovery dispatch. Telegram, Desktop и Mini App используют одну task-lane; Desktop-контроллер оставляет у себя только подготовку вложений и идемпотентные клиентские квитанции. Lane предпочитает `hubTaskId` и поддерживает новый Claude-сеанс до появления session ID. |
+| 30 | ✅ | Исполняемый bootstrap вынесен в `agent-hub-main.mjs`: process handlers, сигнал shutdown и запуск composition root имеют одну точку входа. `agent-hub-server.mjs` экспортирует idempotent `startAgentHub`/`shutdownAgentHub`, импорт больше не запускает сервер; runtime launchers, restart и process E2E используют новый main. |
 
-После этапа 29 `agent-hub-server.mjs` содержит около 8,5 тыс. строк. Это всё ещё
+После этапа 30 `agent-hub-server.mjs` содержит около 8,5 тыс. строк. Это всё ещё
 слишком много для удобного сопровождения: сервер остаётся точкой композиции и
 хранит реализации provider adapters, Desktop RPC, Telegram callback/command
-dispatch и bootstrap. Следующая безопасная граница — `agent-hub-main.mjs`:
-composition/bootstrap следует вынести отдельным этапом с contract-тестами, а не
-механически разрезать файл по размеру.
+dispatch. Bootstrap уже отделён; дальнейшее уменьшение должно выносить именно
+прикладные сервисы и provider adapters с contract-тестами, а не механически
+разрезать файл по размеру.
 
 При следующих этапах нельзя делать provider thread ID постоянной идентичностью
 задачи. Будущая durable-модель использует `hubTaskId`, которому соответствуют

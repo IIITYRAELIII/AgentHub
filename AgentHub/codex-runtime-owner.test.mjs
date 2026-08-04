@@ -64,7 +64,7 @@ test("captured turn owner wins over ambiguous rollout file holders", async () =>
 test("Agent Hub is excluded and ambiguous external clients stay EXT", () => {
   const processes = [
     { processId: 50, parentProcessId: 5, name: "codex.exe", commandLine: "codex.exe app-server --stdio" },
-    { processId: 5, parentProcessId: 1, name: "node.exe", commandLine: "node agent-hub-server.mjs" },
+    { processId: 5, parentProcessId: 1, name: "node.exe", commandLine: "node agent-hub-main.mjs" },
     { processId: 60, parentProcessId: 6, name: "codex.exe", commandLine: "codex.exe app-server" },
     { processId: 6, parentProcessId: 1, name: "Code.exe", commandLine: "Code.exe" },
   ];
@@ -76,6 +76,16 @@ test("Agent Hub is excluded and ambiguous external clients stay EXT", () => {
     { processId: 70, parentProcessId: 7, name: "codex.exe", commandLine: "codex.exe app-server" },
     { processId: 7, parentProcessId: 1, name: "ChatGPT.exe", commandLine: "ChatGPT.exe" },
   ])), TASK_EXECUTION_OWNERS.EXTERNAL);
+});
+
+test("hook caller ancestry recognizes current and legacy Agent Hub entrypoints", () => {
+  for (const entrypoint of ["agent-hub-main.mjs", "agent-hub-server.mjs"]) {
+    assert.equal(classifyCodexHookProcess(snapshot([90], [
+      { processId: 90, parentProcessId: 30, name: "node.exe", commandLine: "node codex-stop-hook-launcher.mjs" },
+      { processId: 30, parentProcessId: 11, name: "codex.exe", commandLine: "codex.exe app-server" },
+      { processId: 11, parentProcessId: 1, name: "node.exe", commandLine: `node ${entrypoint}` },
+    ])), TASK_EXECUTION_OWNERS.HUB);
+  }
 });
 
 test("rollout runtime state distinguishes a dead client from a live holder", async () => {

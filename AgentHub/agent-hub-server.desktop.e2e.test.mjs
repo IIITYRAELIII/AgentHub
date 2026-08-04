@@ -16,7 +16,7 @@ import {
 } from "./e2e/telegram-harness.mjs";
 
 const ROOT = path.resolve(import.meta.dirname);
-const BOT_FILE = path.join(ROOT, "agent-hub-server.mjs");
+const BOT_FILE = path.join(ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(ROOT, "e2e", "fake-codex-app-server.mjs");
 
 test("desktop client survives App Server exit during delayed startup and shares tasks", { timeout: 60_000 }, async (t) => {

@@ -10,7 +10,7 @@ Agent Hub остаётся одним локальным процессом. Д�
 Снимок на 2026-08-04:
 
 - 141 production-модуль и около 38,5 тыс. строк JavaScript;
-- `agent-hub-server.mjs` — около 8,3 тыс. строк, 96 импортов, 46 изменяемых
+- `agent-hub-server.mjs` — около 8,5 тыс. строк, 96 импортов, 46 изменяемых
   top-level переменных и примерно 270 функций;
 - циклических импортов нет;
 - основные дефекты возникают из-за скрытых зависимостей через module globals,
@@ -85,7 +85,7 @@ thread консервируется, создаёт handoff и передаёт 
 | A5 | ✅ | `ApplicationCommandBus` объединяет selection, task create/rename/archive, settings, run cancel и approvals для Telegram/Desktop/Mini App; команды требуют `clientId`, task-мутации — явную цель, конфликтующие операции сериализуются между клиентами. Адресация предпочитает будущий `hubTaskId`, а provider thread ID остаётся compatibility ref. Запуск/steer/deferred input переходят вместе с `RunCoordinator` на A7. |
 | A6 | ✅ | `AgentProviderRegistry` задаёт обязательный port Codex/Claude для discovery/projection, create, launch, cancel, external activity, live/recovery snapshot, observed/managed completion, recovery и restart/shutdown policy. Общий task-run lifecycle больше не выбирает провайдера условными ветками. |
 | A7 | ✅ | `RunCoordinator` владеет admission state machine запуска, steer/deferred input и task-lane между Telegram/Desktop/Mini App; managed/observed completion и recovery входят через него в единый provider port. Lane предпочитает будущий `hubTaskId`, но разрешает новый provider-сеанс без ThreadID до первого события CLI. |
-| A8 | ⬜ | Выделить bootstrap в `agent-hub-main.mjs`; оставить composition root без бизнес-правил. |
+| A8 | ✅ | Исполняемый bootstrap выделен в `agent-hub-main.mjs`: он единственный устанавливает process-level error/signal handlers и запускает composition root. `agent-hub-server.mjs` экспортирует idempotent start/shutdown API и больше не стартует процесс при импорте. Launcher, restart и E2E используют новый entrypoint; `bot.mjs` оставлен compatibility shim. |
 
 Каждый этап должен сохранять внешний протокол, получать отдельные contract-тесты
 и проходить полный process E2E. Массовое переписывание за один релиз запрещено:

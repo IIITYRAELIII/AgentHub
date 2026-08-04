@@ -7382,7 +7382,7 @@ const runtimeRestart = new RuntimeRestartController({
   stopMedia: () => mediaController.stop(),
   launchReplacement: async () => {
     const invocation = botReplacementInvocation({
-      botFile: path.join(import.meta.dirname, "agent-hub-server.mjs"),
+      botFile: path.join(import.meta.dirname, "agent-hub-main.mjs"),
       agentHubRoot: AGENT_HUB_ROOT,
     });
     const launcher = String(process.env.AGENT_HUB_LAUNCHER ?? "").trim();
@@ -8428,80 +8428,86 @@ const runtimeLifecycle = new RuntimeLifecycleController({
   resources: runtimeResources,
 });
 
-process.on("unhandledRejection", (error) => {
-  console.error("Unhandled asynchronous error:", error);
-});
+let agentHubStartPromise = null;
 
-process.on("SIGINT", () => void runtimeLifecycle.shutdown("SIGINT"));
-process.on("SIGTERM", () => void runtimeLifecycle.shutdown("SIGTERM"));
-
-// The control endpoint is intentionally available before provider recovery.
-// Desktop clients can then show the cached task list and retry state while a
-// slow sanitizer or temporarily unhealthy Codex App Server is recovering.
-desktopControlServer = new DesktopControlServer({
-  runtimeRoot: runtimeCommandRoot,
-  handler: handleDesktopControl,
-  protectSecret: process.env.AGENT_HUB_DISABLE_SECRET_ACL === "1"
-    ? async () => {}
-    : undefined,
-});
-await desktopControlServer.start();
-await runtimeCommandServer.start();
-if (miniAppServer) {
-  try {
-    const address = await startMiniApp();
-    console.log(`Mini App ready at ${address.url}`);
-  } catch (error) {
-    console.error("Cannot start Mini App:", error.message);
+async function startAgentHubOnce() {
+  // The control endpoint is intentionally available before provider recovery.
+  // Desktop clients can then show the cached task list and retry state while a
+  // slow sanitizer or temporarily unhealthy Codex App Server is recovering.
+  desktopControlServer = new DesktopControlServer({
+    runtimeRoot: runtimeCommandRoot,
+    handler: handleDesktopControl,
+    protectSecret: process.env.AGENT_HUB_DISABLE_SECRET_ACL === "1"
+      ? async () => {}
+      : undefined,
+  });
+  await desktopControlServer.start();
+  await runtimeCommandServer.start();
+  if (miniAppServer) {
+    try {
+      const address = await startMiniApp();
+      console.log(`Mini App ready at ${address.url}`);
+    } catch (error) {
+      console.error("Cannot start Mini App:", error.message);
+    }
   }
-}
-await runCodexRolloutContextSanitizer({ reschedule: false });
-// Desktop control is deliberately published before provider recovery.  A
-// process exit while `initialize` is still pending must therefore leave the
-// Hub alive: the transport exit handler schedules recovery and the client can
-// retry through the already available local pipe.
-await initializeProvider().catch((error) => {
-  console.error("Cannot initialize provider during startup:", error.message);
-});
-if (codexTransport.running) {
-  await listAllCodexThreads()
-    .then((threads) => backfillWorkLogPricingMetadata(threads))
-    .catch((error) => console.error("Cannot list Codex threads for credit backfill:", error.message));
-}
-if (config.telegramEnabled) {
-  await recoverActiveRuns().catch(async (error) => {
-    console.error("Cannot recover active tasks:", error.message);
-    await sendMessage(`⚠️ Не удалось восстановить активные задачи: ${error.message}`).catch(() => {});
+  await runCodexRolloutContextSanitizer({ reschedule: false });
+  // Desktop control is deliberately published before provider recovery.  A
+  // process exit while `initialize` is still pending must therefore leave the
+  // Hub alive: the transport exit handler schedules recovery and the client can
+  // retry through the already available local pipe.
+  await initializeProvider().catch((error) => {
+    console.error("Cannot initialize provider during startup:", error.message);
   });
-  await retryPendingTurnEndNotifications();
-  await backgroundJobs.restore().catch(async (error) => {
-    console.error("Cannot recover background jobs:", error.message);
-    await sendMessage(`⚠️ Не удалось восстановить фоновые медиа-задачи: ${error.message}`).catch(() => {});
-  });
-}
-startRuntimeTimers();
-if (config.telegramEnabled) {
-  try {
-    await telegram("setMyCommands", {
-      commands: BOT_COMMANDS,
+  if (codexTransport.running) {
+    await listAllCodexThreads()
+      .then((threads) => backfillWorkLogPricingMetadata(threads))
+      .catch((error) => console.error("Cannot list Codex threads for credit backfill:", error.message));
+  }
+  if (config.telegramEnabled) {
+    await recoverActiveRuns().catch(async (error) => {
+      console.error("Cannot recover active tasks:", error.message);
+      await sendMessage(`⚠️ Не удалось восстановить активные задачи: ${error.message}`).catch(() => {});
     });
-  } catch (error) {
-    console.error("Cannot register Telegram commands:", error.message);
+    await retryPendingTurnEndNotifications();
+    await backgroundJobs.restore().catch(async (error) => {
+      console.error("Cannot recover background jobs:", error.message);
+      await sendMessage(`⚠️ Не удалось восстановить фоновые медиа-задачи: ${error.message}`).catch(() => {});
+    });
+  }
+  startRuntimeTimers();
+  if (config.telegramEnabled) {
+    try {
+      await telegram("setMyCommands", {
+        commands: BOT_COMMANDS,
+      });
+    } catch (error) {
+      console.error("Cannot register Telegram commands:", error.message);
+    }
+  }
+  let restartFinalized = false;
+  if (restartRequest) {
+    restartFinalized = await finalizeRestartMessage().catch((error) => {
+      console.error("Cannot finalize bot restart:", error.message);
+      return false;
+    });
+  }
+  await instanceGuard.markReady();
+  console.log(
+    `Agent Hub ready; components: ${Object.entries(config.components).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "core"}; provider: ${providerTitle()}; project: ${activeProjectRoot}`,
+  );
+  if (config.telegramEnabled) {
+    await pollTelegram();
+  } else {
+    await new Promise(() => {});
   }
 }
-let restartFinalized = false;
-if (restartRequest) {
-  restartFinalized = await finalizeRestartMessage().catch((error) => {
-    console.error("Cannot finalize bot restart:", error.message);
-    return false;
-  });
+
+export function startAgentHub() {
+  agentHubStartPromise ??= startAgentHubOnce();
+  return agentHubStartPromise;
 }
-await instanceGuard.markReady();
-console.log(
-  `Agent Hub ready; components: ${Object.entries(config.components).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "core"}; provider: ${providerTitle()}; project: ${activeProjectRoot}`,
-);
-if (config.telegramEnabled) {
-  await pollTelegram();
-} else {
-  await new Promise(() => {});
+
+export function shutdownAgentHub(signal = "shutdown") {
+  return runtimeLifecycle.shutdown(signal);
 }

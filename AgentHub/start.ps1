@@ -7,4 +7,4 @@ if ((Test-Path -LiteralPath $RuntimeLauncher) -and (Test-Path -LiteralPath $Runt
     exit $LASTEXITCODE
 }
 Set-Location $AgentHubRoot
-node (Join-Path $PSScriptRoot 'agent-hub-server.mjs')
+node (Join-Path $PSScriptRoot 'agent-hub-main.mjs')

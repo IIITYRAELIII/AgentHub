@@ -40,7 +40,9 @@ export function classifyCodexHookProcess(snapshot) {
   if (names.some((name) => name === "chatgpt" || name.includes("openai") || name === "codex desktop")) {
     return TASK_EXECUTION_OWNERS.DESKTOP;
   }
-  if (commandLines.some((line) => line.includes("agent-hub-server.mjs"))) {
+  if (commandLines.some((line) => (
+    line.includes("agent-hub-main.mjs") || line.includes("agent-hub-server.mjs")
+  ))) {
     return TASK_EXECUTION_OWNERS.HUB;
   }
   if (names.includes("codex")) return TASK_EXECUTION_OWNERS.CLI;

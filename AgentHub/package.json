@@ -7,7 +7,7 @@
     "node": ">=22.5.0"
   },
   "scripts": {
-    "start": "node agent-hub-server.mjs",
+    "start": "node agent-hub-main.mjs",
     "send": "node send-message.mjs",
     "render-code": "python render-code-images.py",
     "send-images": "node send-images.mjs",

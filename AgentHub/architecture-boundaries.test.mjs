@@ -26,13 +26,22 @@ function relativeImports(source) {
 test("production modules never depend on the Agent Hub composition root", async () => {
   const offenders = [];
   for (const file of await productionModules()) {
-    if (path.basename(file) === "agent-hub-server.mjs") continue;
+    if (["agent-hub-server.mjs", "agent-hub-main.mjs"].includes(path.basename(file))) continue;
     const source = await readFile(file, "utf8");
     if (relativeImports(source).some((value) => value.endsWith("/agent-hub-server.mjs"))) {
       offenders.push(path.relative(ROOT, file));
     }
   }
   assert.deepEqual(offenders, []);
+});
+
+test("Agent Hub executable entrypoint contains bootstrap only", async () => {
+  const source = await readFile(path.join(ROOT, "agent-hub-main.mjs"), "utf8");
+  const imports = relativeImports(source);
+  assert.deepEqual(imports, ["./agent-hub-server.mjs"]);
+  assert.equal(source.includes("startAgentHub()"), true);
+  assert.equal(source.includes("shutdownAgentHub("), true);
+  assert.doesNotMatch(source, /TelegramClient|AgentProviderRegistry|TaskRunRegistry|loadConfig/u);
 });
 
 test("production module graph remains acyclic", async () => {
