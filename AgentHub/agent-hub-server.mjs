@@ -257,6 +257,7 @@ import { fitTaskHistoryPayload } from "./response-budget.mjs";
 import { RuntimeLifecycleController } from "./runtime-lifecycle-controller.mjs";
 import { RuntimeResourceRegistry } from "./runtime-resource-registry.mjs";
 import { RuntimeRestartController } from "./runtime-restart-controller.mjs";
+import { ApplicationCommandBus } from "./application-command-bus.mjs";
 import { ProviderTaskCatalogBuilder } from "./provider-task-catalog-builder.mjs";
 import { TaskCatalogService } from "./task-catalog-service.mjs";
 import { TaskSelectionStore } from "./task-selection-store.mjs";
@@ -3391,7 +3392,10 @@ async function desktopRenameTask(params) {
   if (catalogEntryIsSelected(target, selectedTask())) selectionStore.setTitle(pinnedTitle);
   await savePinnedTaskTitles();
   await saveState();
-  return desktopSnapshot({ refresh: true });
+  return {
+    ...await desktopSnapshot({ refresh: true }),
+    renamedTitle: pinnedTitle,
+  };
 }
 
 async function desktopArchiveTask(params) {
@@ -3406,10 +3410,11 @@ async function desktopArchiveTask(params) {
   invalidateTaskCatalog();
   delete codexTaskSettings[target.threadId];
   const isCurrent = catalogEntryIsSelected(target, selectedTask());
+  let nextThread = null;
   if (isCurrent) {
     selectionStore.setThread(null, { provider: "codex", title: "" });
     latestDiff = "";
-    const [nextThread] = (await listThreads()).filter((item) => item.id !== target.threadId);
+    [nextThread] = (await listThreads()).filter((item) => item.id !== target.threadId);
     if (nextThread) {
       selectionStore.setThread(nextThread.id, { provider: "codex", title: threadTitle(nextThread) });
       restoreCodexTaskSettings(threadId);
@@ -3422,7 +3427,11 @@ async function desktopArchiveTask(params) {
     archivedThread: archivedResult.thread ?? { id: target.threadId },
   };
   if (!result.archived) throw new Error("Задача не выбрана");
-  return desktopSnapshot({ refresh: true });
+  return {
+    ...await desktopSnapshot({ refresh: true }),
+    archivedThread: archivedResult.thread ?? { id: target.threadId },
+    nextThread,
+  };
 }
 
 async function desktopTaskDiff(params) {
@@ -4002,6 +4011,74 @@ async function desktopOpenAttachment(params, context) {
   };
 }
 
+function commandClientContext(context, fallbackClientId) {
+  const source = String(context?.source ?? "").trim();
+  const userId = String(context?.userId ?? "").trim();
+  return {
+    ...context,
+    clientId: String(context?.clientId ?? "").trim()
+      || [source || fallbackClientId, userId].filter(Boolean).join(":"),
+  };
+}
+
+function commandTaskTarget(params) {
+  return {
+    hubTaskId: String(params?.hubTaskId ?? "").trim() || null,
+    provider: String(params?.provider ?? "").trim() || null,
+    projectRoot: String(params?.projectRoot ?? "").trim() || null,
+    threadId: String(params?.threadId ?? "").trim() || null,
+  };
+}
+
+function telegramMessageCommandContext(message) {
+  return {
+    source: "telegram",
+    userId: message?.from?.id,
+    clientId: `telegram:${message?.chat?.id ?? "unknown"}`,
+    commandId: Number.isSafeInteger(message?.message_id)
+      ? `message:${message.chat.id}:${message.message_id}`
+      : null,
+  };
+}
+
+function telegramCallbackCommandContext(callback) {
+  return {
+    source: "telegram",
+    userId: callback?.from?.id,
+    clientId: `telegram:${callback?.message?.chat?.id ?? "unknown"}`,
+    commandId: callback?.id ? `callback:${callback.id}` : null,
+  };
+}
+
+const applicationCommandBus = new ApplicationCommandBus()
+  .register("task.create", {
+    mutating: true,
+    target: "none",
+    lane: "global",
+    handler: ({ payload, context }) => desktopNewTask(payload, context),
+  })
+  .register("task.rename", {
+    mutating: true,
+    target: "required",
+    lane: "global",
+    handler: ({ payload, target }) => desktopRenameTask({ ...payload, ...target }),
+  })
+  .register("task.archive", {
+    mutating: true,
+    target: "required",
+    lane: "global",
+    handler: ({ payload, target }) => desktopArchiveTask({ ...payload, ...target }),
+  });
+
+function dispatchApplicationCommand(type, params, context, { target = null } = {}) {
+  return applicationCommandBus.dispatch({
+    type,
+    payload: params,
+    target,
+    context: commandClientContext(context, "agent-hub"),
+  });
+}
+
 const {
   handleDesktopControl: dispatchDesktopControl,
   forgetDesktopControl,
@@ -4016,10 +4093,22 @@ const {
     "open-turn": desktopOpenTurn,
     "select-task": desktopSelectTask,
     "send-message": desktopMessageController.sendMessage,
-    "new-task": desktopNewTask,
+    "new-task": (params, context) => dispatchApplicationCommand(
+      "task.create", params, commandClientContext(context, "desktop"),
+    ),
     "update-setting": desktopUpdateSetting,
-    "rename-task": desktopRenameTask,
-    "archive-task": desktopArchiveTask,
+    "rename-task": (params, context) => dispatchApplicationCommand(
+      "task.rename",
+      params,
+      commandClientContext(context, "desktop"),
+      { target: commandTaskTarget(params) },
+    ),
+    "archive-task": (params, context) => dispatchApplicationCommand(
+      "task.archive",
+      params,
+      commandClientContext(context, "desktop"),
+      { target: commandTaskTarget(params) },
+    ),
     "task-diff": desktopTaskDiff,
     "cancel-run": desktopCancelRun,
     "resolve-approval": desktopResolveApproval,
@@ -4213,23 +4302,15 @@ async function resumeThread(selectedThreadId, { notify = true } = {}) {
   return true;
 }
 
-async function renameCurrentTask(title) {
+async function renameCurrentTask(title, context = {}) {
   if (!threadId) throw new Error("текущая задача не выбрана");
-  const pinnedTitle = pinTaskTitle(activeProvider, threadId, title);
-  if (!pinnedTitle) throw new Error("укажите непустое название после /rename");
-  if (isCodex()) {
-    await sendRpc("thread/name/set", { threadId, name: pinnedTitle });
-    expectTaskTitleConfirmation(activeProvider, threadId, pinnedTitle);
-    invalidateTaskCatalog();
-  }
-  selectionStore.setTitle(pinnedTitle);
-  const run = selectedRun();
-  if (run) updateTaskRunTitle(run, pinnedTitle);
-  const entry = taskCatalog.find((item) => catalogEntryIsSelected(item, selectedTask()));
-  if (entry) entry.title = pinnedTitle;
-  await savePinnedTaskTitles();
-  await saveState();
-  return pinnedTitle;
+  const result = await dispatchApplicationCommand(
+    "task.rename",
+    { title },
+    context,
+    { target: commandTaskTarget(selectedTask()) },
+  );
+  return result.renamedTitle;
 }
 
 async function activateMessageBinding(binding) {
@@ -4280,32 +4361,20 @@ async function activateMessageBinding(binding) {
   }
 }
 
-async function archiveCurrentThread() {
+async function archiveCurrentThread(context = {}) {
   const blockedReason = archiveBlockedReason();
   if (blockedReason) return { archived: false, reason: blockedReason };
-
-  const archivedThreadId = threadId;
-  const archivedResult = await sendRpc("thread/read", {
-    threadId: archivedThreadId,
-    includeTurns: false,
-  });
-  const archivedThread = archivedResult.thread ?? { id: archivedThreadId };
-  await sendRpc("thread/archive", { threadId: archivedThreadId });
-  invalidateTaskCatalog();
-  delete codexTaskSettings[archivedThreadId];
-  selectionStore.setThread(null, { provider: "codex", title: "" });
-  latestDiff = "";
-  await saveState();
-
-  const [nextThread] = (await listThreads()).filter((thread) => thread.id !== archivedThreadId);
-  if (nextThread) {
-    selectionStore.setThread(nextThread.id, { provider: "codex", title: threadTitle(nextThread) });
-    restoreCodexTaskSettings(threadId);
-    latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
-    await saveState();
-  }
-
-  return { archived: true, archivedThread, nextThread: nextThread ?? null };
+  const result = await dispatchApplicationCommand(
+    "task.archive",
+    {},
+    context,
+    { target: commandTaskTarget(selectedTask()) },
+  );
+  return {
+    archived: true,
+    archivedThread: result.archivedThread,
+    nextThread: result.nextThread ?? null,
+  };
 }
 
 function archiveBlockedReason() {
@@ -7737,7 +7806,11 @@ async function dispatchTelegramCallback(callback, route) {
   }
   if (route.kind === "thread-new") {
     try {
-      await createThread();
+      await dispatchApplicationCommand(
+        "task.create",
+        { provider: activeProvider },
+        telegramCallbackCommandContext(callback),
+      );
       await telegram("answerCallbackQuery", {
         callback_query_id: callback.id,
         text: "Новая задача создана",
@@ -7778,7 +7851,7 @@ async function dispatchTelegramCallback(callback, route) {
       text: "Архивирую задачу…",
     });
     try {
-      const result = await archiveCurrentThread();
+      const result = await archiveCurrentThread(telegramCallbackCommandContext(callback));
       if (!result.archived) {
         await sendMessageTo(callback.message.chat.id, "Архивация задачи стала недоступна. Обновите список задач.");
         return;
@@ -7861,7 +7934,11 @@ async function handleTelegramCommand(message, text) {
   } else if (text === "/projects" || text === "/folders" || text === "/folder") {
     await sendProjectPicker();
   } else if (text === "/new") {
-    await createThread();
+    await dispatchApplicationCommand(
+      "task.create",
+      { provider: activeProvider },
+      telegramMessageCommandContext(message),
+    );
     await sendMessage(`Создан новый контекст ${providerTitle()}.`);
   } else if (text === "/status") {
     const snapshot = currentStatusSnapshot(message.chat.id);
@@ -7882,13 +7959,16 @@ async function handleTelegramCommand(message, text) {
     await sendMessage("Укажите новое постоянное название: /rename Название задачи");
   } else if (text.startsWith("/rename ")) {
     try {
-      const title = await renameCurrentTask(text.slice("/rename ".length));
+      const title = await renameCurrentTask(
+        text.slice("/rename ".length),
+        telegramMessageCommandContext(message),
+      );
       await sendMessage(`✅ Название закреплено: «${title}». Автозаголовки Codex больше его не изменят.`);
     } catch (error) {
       await sendMessage(`Не удалось переименовать задачу: ${error.message}`);
     }
   } else if (text === "/archive") {
-    const result = await archiveCurrentThread();
+    const result = await archiveCurrentThread(telegramMessageCommandContext(message));
     if (!result.archived) {
       if (result.reason === "active-turn") return sendMessage("Сначала завершите или отмените текущую задачу.");
       if (result.reason === "unsupported") return sendMessage("Архивация доступна только для задач Codex.");
