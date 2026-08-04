@@ -258,6 +258,7 @@ import { RuntimeLifecycleController } from "./runtime-lifecycle-controller.mjs";
 import { RuntimeResourceRegistry } from "./runtime-resource-registry.mjs";
 import { RuntimeRestartController } from "./runtime-restart-controller.mjs";
 import { TaskCatalogService } from "./task-catalog-service.mjs";
+import { TaskSelectionStore } from "./task-selection-store.mjs";
 import { createDesktopSnapshotFactory } from "./desktop-snapshot.mjs";
 import { createDesktopTaskHistoryFactory } from "./desktop-task-history.mjs";
 import { createDesktopControlRouter } from "./desktop-control-router.mjs";
@@ -506,11 +507,22 @@ let desktopControlServer = null;
 let updateOffset = 0;
 let chatId = null;
 let activeProjectRoot = DEFAULT_PROJECT_ROOT;
-const threadIdsByProvider = { codex: null, claude: null };
 const pinnedTaskTitles = {};
 const pendingTaskTitleConfirmations = {};
 let threadId = null;
 let activeThreadTitle = "";
+const selectionStore = new TaskSelectionStore({
+  activeProvider,
+  activeProjectRoot,
+  threadId,
+  activeThreadTitle,
+});
+selectionStore.subscribe((selection) => {
+  activeProvider = selection.activeProvider;
+  activeProjectRoot = selection.activeProjectRoot;
+  threadId = selection.threadId;
+  activeThreadTitle = selection.activeThreadTitle;
+});
 let latestDiff = "";
 let stopping = false;
 let autoApprove = config.autoApproveOnStart;
@@ -1928,20 +1940,24 @@ try {
       }
     }
   }
+  const restoredSelection = selectionStore.snapshot();
   if (typeof saved.activeProjectRoot === "string") {
     const savedProject = findProject(saved.activeProjectRoot);
-    if (savedProject) activeProjectRoot = savedProject.path;
+    if (savedProject) restoredSelection.activeProjectRoot = savedProject.path;
   }
   const savedProvider = saved.activeProvider ?? saved.provider;
-  if (savedProvider === "codex" || savedProvider === "claude") activeProvider = savedProvider;
+  if (savedProvider === "codex" || savedProvider === "claude") restoredSelection.activeProvider = savedProvider;
   if (saved.threadIds && typeof saved.threadIds === "object") {
-    if (typeof saved.threadIds.codex === "string") threadIdsByProvider.codex = saved.threadIds.codex;
-    if (typeof saved.threadIds.claude === "string") threadIdsByProvider.claude = saved.threadIds.claude;
+    if (typeof saved.threadIds.codex === "string") restoredSelection.threadIds.codex = saved.threadIds.codex;
+    if (typeof saved.threadIds.claude === "string") restoredSelection.threadIds.claude = saved.threadIds.claude;
   } else if (typeof saved.threadId === "string" && typeof saved.provider === "string") {
-    threadIdsByProvider[saved.provider] = saved.threadId;
+    if (saved.provider === "codex" || saved.provider === "claude") {
+      restoredSelection.threadIds[saved.provider] = saved.threadId;
+    }
   }
-  threadId = threadIdsByProvider[activeProvider] ?? null;
-  if (typeof saved.activeThreadTitle === "string") activeThreadTitle = saved.activeThreadTitle;
+  restoredSelection.threadId = restoredSelection.threadIds[restoredSelection.activeProvider] ?? null;
+  if (typeof saved.activeThreadTitle === "string") restoredSelection.activeThreadTitle = saved.activeThreadTitle;
+  selectionStore.restore(restoredSelection);
   if (saved.pinnedTaskTitles && typeof saved.pinnedTaskTitles === "object") {
     for (const [key, value] of Object.entries(saved.pinnedTaskTitles)) {
       const title = String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
@@ -2445,7 +2461,7 @@ async function attachCodexThread() {
       if (!isWorkspaceThread(result.thread ?? {})) {
         throw new Error("saved thread belongs to another project");
       }
-      activeThreadTitle = await resolveResumedCodexThreadTitle(threadId, result.thread);
+      selectionStore.setTitle(await resolveResumedCodexThreadTitle(threadId, result.thread));
       applyCodexThreadSettings(threadId, result);
       await saveState();
       return true;
@@ -2460,7 +2476,7 @@ async function attachCodexThread() {
         console.error(`Keeping active task ${savedThreadId}; recovery will inspect its saved turn.`);
         return false;
       }
-      threadId = null;
+      selectionStore.setThread(null, { provider: "codex" });
     }
   }
   await createThread();
@@ -2469,8 +2485,7 @@ async function attachCodexThread() {
 
 async function createThread() {
   if (!isCodex()) {
-    threadId = null;
-    activeThreadTitle = "Новая задача Claude";
+    selectionStore.setThread(null, { provider: "claude", title: "Новая задача Claude" });
     latestDiff = "";
     await saveState();
     return;
@@ -2480,11 +2495,11 @@ async function createThread() {
     ...codexThreadSandboxSettings(config.codexSandboxMode),
     serviceName: "telegram_codex_bridge",
   });
-  threadId = result.thread.id;
+  selectionStore.setThread(result.thread.id, { provider: "codex" });
   invalidateTaskCatalog();
   restoreCodexTaskSettings(threadId, { inheritCurrent: true });
   await updateActiveCodexThreadSettings();
-  activeThreadTitle = await nameTelegramThread(threadId);
+  selectionStore.setTitle(await nameTelegramThread(threadId));
   latestDiff = "";
   await saveState();
 }
@@ -2823,7 +2838,7 @@ async function buildTaskCatalog() {
   }
   const current = nextCatalog.find((entry) => catalogEntryIsSelected(entry, selectedTask()));
   if (current?.title && current.title !== activeThreadTitle) {
-    activeThreadTitle = current.title;
+    selectionStore.setTitle(current.title);
     titleChanged = true;
   }
   taskSyncStore.recordCatalog(nextCatalog);
@@ -3357,7 +3372,7 @@ async function desktopRenameTask(params) {
   if (run) updateTaskRunTitle(run, pinnedTitle);
   const entry = taskCatalog.find((item) => catalogEntryIsSelected(item, target));
   if (entry) entry.title = pinnedTitle;
-  if (catalogEntryIsSelected(target, selectedTask())) activeThreadTitle = pinnedTitle;
+  if (catalogEntryIsSelected(target, selectedTask())) selectionStore.setTitle(pinnedTitle);
   await savePinnedTaskTitles();
   await saveState();
   return desktopSnapshot({ refresh: true });
@@ -3376,15 +3391,12 @@ async function desktopArchiveTask(params) {
   delete codexTaskSettings[target.threadId];
   const isCurrent = catalogEntryIsSelected(target, selectedTask());
   if (isCurrent) {
-    threadId = null;
-    threadIdsByProvider.codex = null;
+    selectionStore.setThread(null, { provider: "codex", title: "" });
     latestDiff = "";
     const [nextThread] = (await listThreads()).filter((item) => item.id !== target.threadId);
     if (nextThread) {
-      threadId = nextThread.id;
-      threadIdsByProvider.codex = threadId;
+      selectionStore.setThread(nextThread.id, { provider: "codex", title: threadTitle(nextThread) });
       restoreCodexTaskSettings(threadId);
-      activeThreadTitle = threadTitle(nextThread);
       latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
     }
   }
@@ -4103,22 +4115,15 @@ async function switchProject(index) {
   if (samePath(project.path, activeProjectRoot)) return { project, changed: false };
 
   rememberCodexTaskSettings();
-  const previous = {
-    activeProjectRoot,
-    threadId,
-    latestDiff,
-    threadIdsByProvider: { ...threadIdsByProvider },
-  };
-  activeProjectRoot = project.path;
-  threadId = null;
-  threadIdsByProvider.codex = null;
-  threadIdsByProvider.claude = null;
+  const previousSelection = selectionStore.snapshot();
+  const previousLatestDiff = latestDiff;
+  selectionStore.switchProject(project.path);
   latestDiff = "";
   try {
     await createThread();
   } catch (error) {
-    ({ activeProjectRoot, threadId, latestDiff } = previous);
-    Object.assign(threadIdsByProvider, previous.threadIdsByProvider);
+    selectionStore.restore(previousSelection);
+    latestDiff = previousLatestDiff;
     await saveState();
     throw error;
   }
@@ -4130,10 +4135,9 @@ async function switchProvider(target) {
   if (target === activeProvider) return { changed: false };
 
   rememberCodexTaskSettings();
-  const previous = { activeProvider, threadId, codexModel, codexReasoningEffort };
-  threadIdsByProvider[activeProvider] = threadId;
-  activeProvider = target;
-  threadId = threadIdsByProvider[target] ?? null;
+  const previousSelection = selectionStore.snapshot();
+  const previous = { codexModel, codexReasoningEffort };
+  selectionStore.switchProvider(target);
   if (target === "codex" && threadId) restoreCodexTaskSettings(threadId);
   latestDiff = "";
   try {
@@ -4148,8 +4152,8 @@ async function switchProvider(target) {
       await createThread();
     }
   } catch (error) {
-    threadIdsByProvider[target] = threadId;
-    ({ activeProvider, threadId, codexModel, codexReasoningEffort } = previous);
+    selectionStore.restore(previousSelection);
+    ({ codexModel, codexReasoningEffort } = previous);
     await saveState();
     throw error;
   }
@@ -4164,8 +4168,10 @@ async function resumeThread(selectedThreadId, { notify = true } = {}) {
     return true;
   }
   if (!isCodex()) {
-    threadId = selectedThreadId;
-    activeThreadTitle = `Сессия Claude · ${selectedThreadId.slice(0, 8)}`;
+    selectionStore.setThread(selectedThreadId, {
+      provider: "claude",
+      title: `Сессия Claude · ${selectedThreadId.slice(0, 8)}`,
+    });
     latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
     await saveState();
     if (notify) await sendMessage(`Выбрана сессия Claude: ${threadId}`);
@@ -4179,10 +4185,10 @@ async function resumeThread(selectedThreadId, { notify = true } = {}) {
   if (!isWorkspaceThread(result.thread ?? {})) {
     throw new Error("задача относится к другой активной папке");
   }
-  threadId = result.thread?.id ?? selectedThreadId;
+  selectionStore.setThread(result.thread?.id ?? selectedThreadId, { provider: "codex" });
   restoreCodexTaskSettings(threadId);
   applyCodexThreadSettings(threadId, result);
-  activeThreadTitle = await resolveResumedCodexThreadTitle(threadId, result.thread);
+  selectionStore.setTitle(await resolveResumedCodexThreadTitle(threadId, result.thread));
   latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
   await saveState();
   if (notify) {
@@ -4200,7 +4206,7 @@ async function renameCurrentTask(title) {
     expectTaskTitleConfirmation(activeProvider, threadId, pinnedTitle);
     invalidateTaskCatalog();
   }
-  activeThreadTitle = pinnedTitle;
+  selectionStore.setTitle(pinnedTitle);
   const run = selectedRun();
   if (run) updateTaskRunTitle(run, pinnedTitle);
   const entry = taskCatalog.find((item) => catalogEntryIsSelected(item, selectedTask()));
@@ -4222,27 +4228,25 @@ async function activateMessageBinding(binding) {
   if (alreadyActive) return { changed: false };
 
   rememberCodexTaskSettings();
+  const previousSelection = selectionStore.snapshot();
   const previous = {
-    activeProjectRoot,
-    activeProvider,
-    threadId,
     latestDiff,
-    activeThreadTitle,
     codexModel,
     codexReasoningEffort,
-    threadIdsByProvider: { ...threadIdsByProvider },
   };
-  activeProjectRoot = project.path;
-  activeProvider = binding.provider;
-  threadId = binding.threadId;
-  activeThreadTitle = binding.taskTitle?.trim() || `${binding.provider === "codex" ? "Codex" : "Claude"} · ${binding.threadId.slice(0, 8)}`;
-  threadIdsByProvider[activeProvider] = threadId;
+  selectionStore.selectTask({
+    activeProjectRoot: project.path,
+    activeProvider: binding.provider,
+    threadId: binding.threadId,
+    activeThreadTitle: binding.taskTitle?.trim()
+      || `${binding.provider === "codex" ? "Codex" : "Claude"} · ${binding.threadId.slice(0, 8)}`,
+  });
   if (isCodex()) {
     restoreCodexTaskSettings(threadId);
     // Desktop already selected this durable catalog entry. Avoid scanning a
     // potentially huge rollout only to rediscover the title the caller sent.
     if (!binding.taskTitle?.trim()) {
-      activeThreadTitle = await storedCodexThreadTitle(threadId, activeThreadTitle);
+      selectionStore.setTitle(await storedCodexThreadTitle(threadId, activeThreadTitle));
     }
   }
   latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
@@ -4253,16 +4257,8 @@ async function activateMessageBinding(binding) {
     await saveState();
     return { changed: true, activeTitle: activeThreadTitle };
   } catch (error) {
-    ({
-      activeProjectRoot,
-      activeProvider,
-      threadId,
-      latestDiff,
-      activeThreadTitle,
-      codexModel,
-      codexReasoningEffort,
-    } = previous);
-    Object.assign(threadIdsByProvider, previous.threadIdsByProvider);
+    selectionStore.restore(previousSelection);
+    ({ latestDiff, codexModel, codexReasoningEffort } = previous);
     await saveState();
     throw error;
   }
@@ -4281,17 +4277,14 @@ async function archiveCurrentThread() {
   await sendRpc("thread/archive", { threadId: archivedThreadId });
   invalidateTaskCatalog();
   delete codexTaskSettings[archivedThreadId];
-  threadId = null;
-  threadIdsByProvider.codex = null;
+  selectionStore.setThread(null, { provider: "codex", title: "" });
   latestDiff = "";
   await saveState();
 
   const [nextThread] = (await listThreads()).filter((thread) => thread.id !== archivedThreadId);
   if (nextThread) {
-    threadId = nextThread.id;
-    threadIdsByProvider.codex = threadId;
+    selectionStore.setThread(nextThread.id, { provider: "codex", title: threadTitle(nextThread) });
     restoreCodexTaskSettings(threadId);
-    activeThreadTitle = threadTitle(nextThread);
     latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
     await saveState();
   }
@@ -5290,9 +5283,10 @@ function handleClaudeStreamEvent(run, parsed) {
     }
     taskRuns.reindex(run, { threadId: previousThreadId });
     if (wasSelected) {
-      threadId = parsed.sessionId;
-      threadIdsByProvider.claude = parsed.sessionId;
-      activeThreadTitle = runTaskTitle(run);
+      selectionStore.setThread(parsed.sessionId, {
+        provider: "claude",
+        title: runTaskTitle(run),
+      });
     }
     for (const messageId of run.progressMessageIds) {
       void bindRunMessage(run, { message_id: messageId }).catch((error) => {
@@ -5385,9 +5379,10 @@ async function finishClaudeRun(run, {
       }
       taskRuns.reindex(run, { threadId: previousThreadId });
       if (wasSelected) {
-        threadId = result.session_id;
-        threadIdsByProvider.claude = result.session_id;
-        activeThreadTitle = run.taskTitle;
+        selectionStore.setThread(result.session_id, {
+          provider: "claude",
+          title: run.taskTitle,
+        });
       }
       await saveState();
     }
@@ -8073,13 +8068,14 @@ async function flushDeliveryOutbox() {
 
 function saveState() {
   rememberCodexTaskSettings();
-  threadIdsByProvider[activeProvider] = threadId;
+  selectionStore.rememberCurrentThread();
+  const selection = selectionStore.serialize();
   const snapshot = {
     chatId,
-    activeProjectRoot,
-    activeThreadTitle,
-    activeProvider,
-    threadIds: threadIdsByProvider,
+    activeProjectRoot: selection.activeProjectRoot,
+    activeThreadTitle: selection.activeThreadTitle,
+    activeProvider: selection.activeProvider,
+    threadIds: selection.threadIds,
     pinnedTaskTitles,
     pendingTaskTitleConfirmations,
     claudeModel,

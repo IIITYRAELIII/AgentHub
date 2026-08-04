@@ -58,15 +58,31 @@ Host: composition, startup, restart and shutdown only
 7. Runtime-ресурсы регистрируются один раз и проходят явные фазы:
    `flush → suspend → finalize`.
 
+### Будущая идентичность задачи
+
+Следующая версия модели данных вводит стабильный `hubTaskId` как первичный ключ
+логической задачи Agent Hub. Один `hubTaskId` может владеть несколькими
+последовательными Codex thread ID или Claude session ID. Завершённый provider
+thread консервируется, создаёт handoff и передаёт продолжение новому thread, но
+название, пользовательская история и идентичность задачи сохраняются.
+
+До отдельной миграции текущий provider thread ID остаётся compatibility key.
+Новые сервисы и публичные команды не должны закреплять предположение
+`taskId === threadId`: command bus адресует `hubTaskId`, provider ID является
+внешней ссылкой, а durable-модель должна разделять сущности `tasks` и
+`task_threads`. `TaskSelectionStore` считается переходной границей: при миграции
+меняется его внутреннее разрешение `hubTaskId → active provider thread`, а не
+обработчики всех клиентов.
+
 ## План миграции
 
 | Этап | Статус | Результат |
 |---:|:---:|---|
 | A1 | ✅ | Единый `RuntimeResourceRegistry` для restart и shutdown. |
 | A2 | ✅ | `RuntimeRestartController` с явным восстановлением старого процесса при неудачной замене. |
-| A3 | ⬜ | `SelectionStore`: убрать прямые изменения provider/project/thread из обработчиков. |
+| A3 | ✅ | `TaskSelectionStore` — единственный владелец provider/project/thread/title; обработчики используют атомарные команды и checkpoint rollback, изменения имеют revision. |
 | A4 | 🟡 | `TaskCatalogService` уже владеет кэшем, revision и coalescing; provider discovery/merge ещё переносится из composition root. |
-| A5 | ⬜ | Общий command bus для Telegram/Desktop/Mini App вместо трёх таблиц прикладных обработчиков. |
+| A5 | ⬜ | Общий command bus для Telegram/Desktop/Mini App вместо трёх таблиц прикладных обработчиков; адресация проектируется по будущему `hubTaskId`, а не по provider thread ID. |
 | A6 | ⬜ | Общий `AgentProvider` port и адаптеры Codex/Claude. |
 | A7 | ⬜ | `RunCoordinator`: единая state machine запуска, наблюдения, отмены, recovery и terminal delivery. |
 | A8 | ⬜ | Выделить bootstrap в `agent-hub-main.mjs`; оставить composition root без бизнес-правил. |

@@ -72,3 +72,14 @@ test("composition root uses one resource registry instead of ad-hoc settling", a
   assert.equal((source.match(/new RuntimeResourceRegistry\s*\(/g) ?? []).length, 1);
   assert.equal((source.match(/new RuntimeRestartController\s*\(/g) ?? []).length, 1);
 });
+
+test("composition root changes selected task only through TaskSelectionStore", async () => {
+  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  for (const field of ["activeProvider", "activeProjectRoot", "threadId", "activeThreadTitle"]) {
+    const directAssignments = [...source.matchAll(new RegExp(`^\\s*${field}\\s*=\\s*([^;]+);`, "gmu"))]
+      .map((match) => match[0].trim());
+    assert.deepEqual(directAssignments, [`${field} = selection.${field};`], field);
+  }
+  assert.equal(source.includes("threadIdsByProvider"), false);
+  assert.equal((source.match(/new TaskSelectionStore\s*\(/g) ?? []).length, 1);
+});
