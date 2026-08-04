@@ -68,13 +68,12 @@ import {
   CODEX_AUDIT_SOURCE_KINDS,
   resolveCodexAccountingThread,
 } from "./codex-subagent-accounting.mjs";
-import { routeCodexFinalDelivery } from "./codex-final-delivery.mjs";
+import { CodexRunFinalizer } from "./codex-run-finalizer.mjs";
 import { randomStatusHeaderFileName } from "./status-header.mjs";
 import { TelegramClient } from "./telegram-client.mjs";
 import {
   addTokenUsage,
   emptyTokenUsage,
-  formatTurnTokenUsage,
   normalizeTokenUsage,
   tokenUsageDelta,
 } from "./token-usage.mjs";
@@ -287,6 +286,10 @@ import { RunProgressPresentation } from "./run-progress-presentation.mjs";
 import { AgentHubStartupCoordinator } from "./agent-hub-startup-coordinator.mjs";
 import { RuntimeTimerCoordinator } from "./runtime-timer-coordinator.mjs";
 import { RunJournalService } from "./run-journal-service.mjs";
+import {
+  TurnEndDeliveryService,
+  fallbackTurnEndMessage,
+} from "./turn-end-delivery-service.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -493,7 +496,6 @@ if (bindingsMigration.imported || bindingsMigration.archived.length) {
   );
 }
 const turnEndNotifications = new TurnEndNotificationRegistry();
-const deliveringTurnEndKeys = new Set();
 const runtimeNotificationController = new RuntimeNotificationController({
   config,
   moduleRoot: import.meta.dirname,
@@ -700,6 +702,31 @@ const codexTerminalAudit = new CodexTerminalAudit({
 const turnTemporaryFiles = new Map();
 const turnSpeechButtons = new Map();
 const taskRuns = new TaskRunRegistry();
+const turnEndDelivery = new TurnEndDeliveryService({
+  notifications: turnEndNotifications,
+  taskRuns,
+  projectTurn: (...args) => runJournal.projectTurn(...args),
+  rememberLastMessage: (...args) => runJournal.rememberLastMessage(...args),
+  rememberSeenTurn: (task, turnId) => {
+    setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(task), turnId, 500);
+  },
+  saveState,
+});
+const codexRunFinalizer = new CodexRunFinalizer({
+  turnStarts: codexTurnStarts,
+  notifications: turnEndNotifications,
+  discardManualCompaction: discardManualContextCompactionRun,
+  finalizeRunDelivery,
+  refreshTaskDiff,
+  runTitle: runTaskTitle,
+  currentChatId: () => chatId,
+  defaultNotificationChatId,
+  changedFiles: changedFilesForRun,
+  saveState,
+  persistHistory: persistManagedRunHistory,
+  projectTurn: (...args) => runJournal.projectTurn(...args),
+  completeRun,
+});
 const backgroundJobStore = new PersistentBackgroundJobStore({
   directoryPath: BACKGROUND_JOBS_DIR,
   maxItems: MAX_BACKGROUND_MEDIA_JOBS + MAX_BACKGROUND_SPEECH_JOBS,
@@ -1783,14 +1810,6 @@ function consumeTurnTokenTracker(turnId) {
     : { usage: emptyTokenUsage(), reported: false };
 }
 
-function fallbackTurnEndMessage(status) {
-  if (status === "completed") return "Ход завершён.";
-  if (status === "aborted") return "Ход остановлен пользователем.";
-  if (status === "cancelled") return "Ход отменён.";
-  if (status === "failed") return "Ход завершился с ошибкой.";
-  return `Ход завершён со статусом ${status}.`;
-}
-
 function applyCodexRolloutContext(run, usageResult) {
   if (!run || !usageResult) return;
   if (usageResult.startedAt) run.startedAt = usageResult.startedAt;
@@ -1909,175 +1928,28 @@ async function finalizeCodexRunDelivery(run, {
   silent = false,
   description = "финальный ответ Codex",
 } = {}) {
-  if (await discardManualContextCompactionRun(run, completedTurnId)) return null;
-  if (!run || !completedTurnId) {
-    return finalizeRunDelivery(run, {
-      answer,
-      forceSpeechButton,
-      deliver,
-      silent,
-      description,
-    });
-  }
-  const startKey = turnEndKey({
-    provider: "codex",
-    threadId: run.threadId,
-    turnId: completedTurnId,
-  });
-  const turnStart = codexTurnStarts.get(startKey);
-  if (turnStart) {
-    run.gitBaseline = turnStart.gitBaseline ?? run.gitBaseline;
-    run.startedAt = turnStart.startedAt || run.startedAt;
-    run.promptPreview = turnStart.prompt || run.promptPreview;
-  }
-  await refreshTaskDiff(run).catch((error) => {
-    console.error(`Cannot capture changed files for turn ${completedTurnId}:`, error.message);
-  });
-  const existingCompletion = turnEndNotifications.get({
-    provider: "codex",
-    threadId: run.threadId,
-    turnId: completedTurnId,
-  });
-  const completion = turnEndNotifications.recordCompletion({
-    provider: "codex",
-    threadId: run.threadId,
-    turnId: completedTurnId,
-    projectRoot: run.projectRoot,
-    taskTitle: runTaskTitle(run),
-    chatId: run.chatId ?? chatId ?? defaultNotificationChatId(),
-    status,
-    usage: tracker.usage,
-    usageReported: tracker.reported === true,
-    imageGenerationCount: tracker.imageGenerationCount ?? 0,
-    estimatedCredits: tracker.estimatedCredits ?? 0,
-    estimateKind: tracker.estimateKind ?? "",
-    model: tracker.model ?? run.modelId ?? "",
-    serviceTier: tracker.serviceTier ?? run.serviceTier ?? "default",
-    startedAt: run.startedAt,
-    prompt: run.promptPreview,
-    finalAnswer: String(answer ?? "").trim(),
-    changedFiles: changedFilesForRun(run),
-    diff: run.latestDiff ?? "",
-    skillsUsed: tracker.toolMetricsKnown === true ? tracker.skillsUsed ?? [] : run.skillsUsed ?? [],
-    mcpCalls: tracker.toolMetricsKnown === true ? tracker.mcpCalls ?? [] : run.mcpCalls ?? [],
-    toolMetricsKnown: tracker.toolMetricsKnown === true || run.toolMetricsKnown === true,
-  });
-  codexTurnStarts.delete(startKey);
-  await saveState();
-  const resolvedTracker = completion
-    ? {
-      usage: completion.usage,
-      reported: completion.usageReported,
-      estimatedCredits: completion.estimatedCredits,
-      model: completion.model,
-      serviceTier: completion.serviceTier,
-    }
-    : tracker;
-  const shouldDeliver = deliver || Boolean(existingCompletion);
-  const message = [
+  return codexRunFinalizer.finalize(run, {
     answer,
-    formatTurnTokenUsage(resolvedTracker),
-  ].filter(Boolean).join("\n\n");
-  await persistManagedRunHistory(run, {
-    answer,
-    status,
-    active: false,
     turnId: completedTurnId,
+    status,
+    tracker,
+    forceSpeechButton,
+    deliver,
+    silent,
+    description,
   });
-  const delivery = await routeCodexFinalDelivery({
-    completion,
-    deliverStandard: async () => {
-      if (completion) {
-        await projectTurnUsageToWorkLog(completion, {
-          title: conciseTurnTitle(answer, status),
-          body: answer,
-        }).catch((error) => {
-          console.error(`Cannot update journal usage for turn ${completedTurnId}:`, error.message);
-        });
-      }
-      const result = await finalizeRunDelivery(run, {
-        answer,
-        message,
-        speechText: answer,
-        forceSpeechButton,
-        deliver: shouldDeliver,
-        silent,
-        complete: false,
-        description,
-      });
-      if (completion) {
-        turnEndNotifications.markDelivered(completion);
-        await saveState();
-      }
-      return result;
-    },
-  });
-  await completeRun(run);
-  return delivery.result;
 }
 
 async function deliverTurnEndNotification(completion) {
-  if (!completion) return false;
-  const key = turnEndKey(completion);
-  if (turnEndNotifications.hasDelivered(key) || deliveringTurnEndKeys.has(key)) return false;
-  deliveringTurnEndKeys.add(key);
-  try {
-    const notificationBody = completion.finalAnswer
-      || completion.message?.text
-      || fallbackTurnEndMessage(completion.status);
-    const notificationTitle = completion.message?.title
-      || conciseTurnTitle(notificationBody, completion.status);
-    const journal = await projectTurnUsageToWorkLog(completion, {
-      title: notificationTitle,
-      body: notificationBody,
-    });
-    if (!completion.aggregateOnly) {
-      rememberLastTaskMessage({
-        provider: completion.provider,
-        projectRoot: completion.projectRoot,
-        threadId: completion.threadId,
-        turnId: completion.turnId,
-      }, notificationBody);
-      if (completion.turnId) {
-        setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(completion), completion.turnId, 500);
-      }
-    }
-    if (journal?.projectionError) {
-      console.error(
-        `Journal projection deferred for turn ${completion.turnId}: ${journal.projectionError}`,
-      );
-    }
-    turnEndNotifications.markDelivered(key);
-    await saveState();
-    return true;
-  } finally {
-    deliveringTurnEndKeys.delete(key);
-  }
+  return turnEndDelivery.deliver(completion);
 }
 
 async function retryPendingTurnEndNotifications() {
-  for (const completion of turnEndNotifications.values()) {
-    const run = taskRuns.forEvent({
-      provider: completion.provider,
-      threadId: completion.threadId,
-      turnId: completion.turnId,
-      allowThreadFallback: true,
-    });
-    if (run && ["running", "finishing"].includes(run.status)) continue;
-    await deliverTurnEndNotification(completion).catch((error) => {
-      console.error(`Cannot deliver pending turn-end notification ${completion.turnId}:`, error.message);
-    });
-  }
+  return turnEndDelivery.retryPending();
 }
 
 async function waitForTurnEndCompletion(identity, timeoutMs = 2_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const completion = turnEndNotifications.get(identity);
-    if (completion?.usageReported || Number(completion?.estimatedCredits) > 0) return completion;
-    await delay(50);
-  }
-  return turnEndNotifications.get(identity);
+  return turnEndDelivery.waitForCompletion(identity, timeoutMs);
 }
 
 function rememberCodexTaskSettings(id = isCodex() ? threadId : null) {

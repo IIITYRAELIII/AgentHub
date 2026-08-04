@@ -91,6 +91,7 @@ thread консервируется, создаёт handoff и передаёт 
 | A10 | ✅ | Desktop и Mini App RPC разделены на application router, read-model и attachment/settings/deferred-input services; мутации проходят `ApplicationCommandBus` и `RunCoordinator` с явной задачей и `clientId`. |
 | A11 | ✅ | Telegram command/callback dispatch выделен из composition root: transport/controller wiring осталось в host, команды и callback actions находятся в самостоятельных тестируемых сервисах. |
 | A12 | ✅ | `agent-hub-server.mjs` сокращён до 6 252 строк. `TaskObservationService` владеет созданием, обновлением и terminal-policy наблюдаемых ходов; `RunJournalService` — bounded last-message state, общей projection и SQLite cutover; `RuntimeTimerCoordinator` — именованными дедлайнами и keyed cleanup-таймерами. `hubTaskId` сохраняется при подключении к внешнему ходу. |
+| A13 | ✅ | `agent-hub-server.mjs` сокращён до 6 123 строк. `TurnEndDeliveryService` стал единственным владельцем terminal projection/retry/usage wait, а `CodexRunFinalizer` — финального учёта управляемого Codex-хода, включая diff, usage, фактически использованные skills/MCP, историю и durable delivery. Границы принимают `hubTaskId`, не превращая provider thread ID в постоянный ключ задачи. |
 
 Каждый этап должен сохранять внешний протокол, получать отдельные contract-тесты
 и проходить полный process E2E. Массовое переписывание за один релиз запрещено:

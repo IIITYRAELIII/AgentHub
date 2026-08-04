@@ -178,6 +178,27 @@ test("journal projection and last-message state have one application owner", asy
   assert.equal(source.includes("const lastTaskMessages = new Map()"), false);
 });
 
+test("turn-end projection and retry policy have one delivery owner", async () => {
+  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const delivery = await readFile(path.join(ROOT, "turn-end-delivery-service.mjs"), "utf8");
+  assert.equal((source.match(/new TurnEndDeliveryService\s*\(/g) ?? []).length, 1);
+  assert.equal(source.includes("const deliveringTurnEndKeys = new Set()"), false);
+  assert.equal(delivery.includes("this.delivering = new Set()"), true);
+  assert.equal(delivery.includes("async retryPending()"), true);
+  assert.equal(delivery.includes("async waitForCompletion("), true);
+});
+
+test("Codex completion bookkeeping has one finalization owner", async () => {
+  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const finalizer = await readFile(path.join(ROOT, "codex-run-finalizer.mjs"), "utf8");
+  assert.equal((source.match(/new CodexRunFinalizer\s*\(/g) ?? []).length, 1);
+  assert.equal(source.includes("routeCodexFinalDelivery("), false);
+  assert.equal(finalizer.includes("routeCodexFinalDelivery"), true);
+  assert.equal(finalizer.includes("async finalize("), true);
+  assert.equal(finalizer.includes("this.notifications.recordCompletion("), true);
+  assert.equal(finalizer.includes("await this.completeRun(run)"), true);
+});
+
 test("shared task mutations enter through one application command bus", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   const commands = await readFile(path.join(ROOT, "application-command-service.mjs"), "utf8");

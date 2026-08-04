@@ -120,7 +120,11 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
       throw new Error(
         `${error.message}\nStage: ${description}\nRestart exit: ${bot?.exitCode ?? "running"}`
         + `\nrestart stdout:\n${currentStdout}\nrestart stderr:\n${currentStderr}`
-        + `\nlock:\n${await readFile(lockPath, "utf8").catch((readError) => readError.message)}`,
+        + `\nlock:\n${await readFile(lockPath, "utf8").catch((readError) => readError.message)}`
+        + `\njournal lock:\n${await readFile(
+          `${journalDatabaseFile}.lock${path.sep}owner.json`,
+          "utf8",
+        ).catch((readError) => readError.message)}`,
         { cause: error },
       );
     }
