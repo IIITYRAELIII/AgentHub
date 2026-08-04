@@ -69,14 +69,10 @@ import {
   resolveCodexAccountingThread,
 } from "./codex-subagent-accounting.mjs";
 import { CodexRunFinalizer } from "./codex-run-finalizer.mjs";
+import { CodexUsageTracker } from "./codex-usage-tracker.mjs";
 import { randomStatusHeaderFileName } from "./status-header.mjs";
 import { TelegramClient } from "./telegram-client.mjs";
-import {
-  addTokenUsage,
-  emptyTokenUsage,
-  normalizeTokenUsage,
-  tokenUsageDelta,
-} from "./token-usage.mjs";
+import { emptyTokenUsage } from "./token-usage.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
 import {
   forwardBundleAttachmentPaths,
@@ -570,9 +566,8 @@ const CLAUDE_OUTPUT_POLL_INTERVAL_MS = 250;
 const TASK_CATALOG_CACHE_MS = 1_500;
 const TASK_TITLE_RECONCILE_INTERVAL_MS = 5 * 60_000;
 const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
-const threadTokenTotals = new Map();
-const turnTokenUsage = new Map();
-const threadContextUsage = new Map();
+const codexUsageTracker = new CodexUsageTracker();
+const turnTokenUsage = codexUsageTracker.turns;
 const codexRolloutPathsByThreadId = new Map();
 const contextCompactions = new ContextCompactionTracker({
   cleanupTimeoutMs: Math.max(
@@ -1755,59 +1750,16 @@ function deferredTaskMessageAtMs(task) {
   return latest;
 }
 
-function threadContextKey(thread, turn) {
-  return `${String(thread ?? "").trim()}\0${String(turn ?? "").trim()}`;
-}
-
-function rememberThreadContextUsage(params) {
-  const contextWindow = Math.max(0, Number(params?.tokenUsage?.modelContextWindow) || 0);
-  const usedTokens = Math.max(0, Number(params?.tokenUsage?.last?.totalTokens) || 0);
-  const contextThreadId = String(params?.threadId ?? "").trim();
-  const contextTurnId = String(params?.turnId ?? "").trim();
-  if (!contextThreadId || !contextTurnId || !contextWindow) return;
-  setBoundedMapValue(threadContextUsage, threadContextKey(contextThreadId, contextTurnId), {
-    threadId: contextThreadId,
-    turnId: contextTurnId,
-    modelContextWindow: contextWindow,
-    usedTokens,
-    updatedAt: new Date().toISOString(),
-  }, 500);
-}
-
 function latestThreadContextUsage(contextThreadId, contextTurnId = "") {
-  const exact = contextTurnId
-    ? threadContextUsage.get(threadContextKey(contextThreadId, contextTurnId))
-    : null;
-  const latest = [...threadContextUsage.values()]
-    .filter((entry) => entry.threadId === contextThreadId)
-    .sort((left, right) => (
-      (Date.parse(right.updatedAt) || 0) - (Date.parse(left.updatedAt) || 0)
-    ))[0] ?? null;
-  if (!exact || !latest) return exact ?? latest;
-  return (Date.parse(exact.updatedAt) || 0) >= (Date.parse(latest.updatedAt) || 0)
-    ? exact
-    : latest;
+  return codexUsageTracker.latestContext(contextThreadId, contextTurnId);
 }
 
 function trackTurnTokenUsage(params) {
-  const current = normalizeTokenUsage(params.tokenUsage?.total);
-  const previous = threadTokenTotals.get(params.threadId);
-  setBoundedMapValue(threadTokenTotals, params.threadId, current, 500);
-  rememberThreadContextUsage(params);
-
-  const tracker = turnTokenUsage.get(params.turnId);
-  if (!tracker) return;
-  const delta = tokenUsageDelta(current, previous, params.tokenUsage?.last);
-  tracker.usage = addTokenUsage(tracker.usage, delta);
-  tracker.reported = true;
+  return codexUsageTracker.track(params);
 }
 
 function consumeTurnTokenTracker(turnId) {
-  const tracker = turnTokenUsage.get(turnId);
-  turnTokenUsage.delete(turnId);
-  return tracker
-    ? { usage: normalizeTokenUsage(tracker.usage), reported: tracker.reported === true }
-    : { usage: emptyTokenUsage(), reported: false };
+  return codexUsageTracker.consume(turnId);
 }
 
 function applyCodexRolloutContext(run, usageResult) {
@@ -2133,36 +2085,7 @@ try {
       lastSeenTaskTurnIds.set(entry[0], entry[1]);
     }
   }
-  if (Array.isArray(saved.threadTokenTotals)) {
-    for (const entry of saved.threadTokenTotals.slice(-500)) {
-      if (!Array.isArray(entry) || typeof entry[0] !== "string" || !entry[1]) continue;
-      threadTokenTotals.set(entry[0], normalizeTokenUsage(entry[1]));
-    }
-  }
-  if (Array.isArray(saved.turnTokenUsage)) {
-    for (const entry of saved.turnTokenUsage.slice(-200)) {
-      if (!Array.isArray(entry) || typeof entry[0] !== "string" || !entry[1]) continue;
-      turnTokenUsage.set(entry[0], {
-        usage: normalizeTokenUsage(entry[1].usage),
-        reported: entry[1].reported === true,
-      });
-    }
-  }
-  if (Array.isArray(saved.threadContextUsage)) {
-    for (const entry of saved.threadContextUsage.slice(-500)) {
-      if (!Array.isArray(entry) || typeof entry[0] !== "string" || !entry[1]) continue;
-      const modelContextWindow = Math.max(0, Number(entry[1].modelContextWindow) || 0);
-      const usedTokens = Math.max(0, Number(entry[1].usedTokens) || 0);
-      if (!modelContextWindow) continue;
-      threadContextUsage.set(entry[0], {
-        threadId: String(entry[1].threadId ?? ""),
-        turnId: String(entry[1].turnId ?? ""),
-        modelContextWindow,
-        usedTokens,
-        updatedAt: String(entry[1].updatedAt ?? ""),
-      });
-    }
-  }
+  codexUsageTracker.restore(saved);
   if (Array.isArray(saved.codexTurnStarts)) {
     for (const entry of saved.codexTurnStarts.slice(-500)) {
       if (!Array.isArray(entry) || typeof entry[0] !== "string" || !entry[1]) continue;
@@ -4025,7 +3948,7 @@ async function clearRunProgressMessages(run) {
 async function discardManualContextCompactionRun(run, turnId = run?.turnId) {
   if (!run || !contextCompactions.isManualTurn(run.threadId, turnId)) return false;
   const normalizedTurnId = String(turnId ?? "").trim();
-  turnTokenUsage.delete(normalizedTurnId);
+  codexUsageTracker.deleteTurn(normalizedTurnId);
   turnSpeechButtons.delete(normalizedTurnId);
   const temporaryFiles = turnTemporaryFiles.get(normalizedTurnId) ?? [];
   turnTemporaryFiles.delete(normalizedTurnId);
@@ -6005,9 +5928,7 @@ function saveState() {
     })),
     lastTaskMessages: runJournal.lastMessageSnapshot(),
     lastSeenTaskTurnIds: [...lastSeenTaskTurnIds.entries()].slice(-500),
-    threadTokenTotals: [...threadTokenTotals.entries()].slice(-500),
-    turnTokenUsage: [...turnTokenUsage.entries()].slice(-200),
-    threadContextUsage: [...threadContextUsage.entries()].slice(-500),
+    ...codexUsageTracker.snapshot(),
     codexTurnStarts: [...codexTurnStarts.entries()].slice(-500),
     codexHookReceipts,
     codexTerminalAudit: codexTerminalAudit.snapshot(),

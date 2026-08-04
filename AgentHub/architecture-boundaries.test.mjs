@@ -199,6 +199,18 @@ test("Codex completion bookkeeping has one finalization owner", async () => {
   assert.equal(finalizer.includes("await this.completeRun(run)"), true);
 });
 
+test("Codex token and context state have one bounded owner", async () => {
+  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const tracker = await readFile(path.join(ROOT, "codex-usage-tracker.mjs"), "utf8");
+  assert.equal((source.match(/new CodexUsageTracker\s*\(/g) ?? []).length, 1);
+  assert.equal(source.includes("const threadTokenTotals = new Map()"), false);
+  assert.equal(source.includes("const threadContextUsage = new Map()"), false);
+  assert.equal(tracker.includes("this.threadTotals = new Map()"), true);
+  assert.equal(tracker.includes("this.contexts = new Map()"), true);
+  assert.equal(tracker.includes("restore(snapshot = {})"), true);
+  assert.equal(tracker.includes("snapshot()"), true);
+});
+
 test("shared task mutations enter through one application command bus", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   const commands = await readFile(path.join(ROOT, "application-command-service.mjs"), "utf8");
