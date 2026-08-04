@@ -22,6 +22,16 @@ function run(command, args) {
   });
 }
 
+async function runWindowsTestFile(file) {
+  const args = ["--test", "--test-concurrency=1", file];
+  try {
+    await run(process.execPath, args);
+  } catch (error) {
+    console.warn(`Повтор Windows test-file после временного файлового сбоя: ${file}`);
+    await run(process.execPath, args);
+  }
+}
+
 const npmCli = String(process.env.npm_execpath ?? "").trim();
 const npmCommand = npmCli
   ? { command: process.execPath, args: [npmCli, "run", "pretest"] }
@@ -35,7 +45,7 @@ if (process.platform === "win32") {
   // before the next test module starts. A single process can retain a Windows
   // file handle briefly even with test concurrency set to one.
   for (const file of sharedFiles) {
-    await run(process.execPath, ["--test", "--test-concurrency=1", file]);
+    await runWindowsTestFile(file);
   }
 } else {
   await run(process.execPath, ["--test", "--test-concurrency=4", ...sharedFiles]);
