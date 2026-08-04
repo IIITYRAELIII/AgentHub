@@ -377,6 +377,12 @@ test("general settings and current-dialog settings stay separate", () => {
   assert.match(html, /<details class="setting-note">\s*<summary>Как считается расход<\/summary>/u);
   assert.doesNotMatch(html, /<details class="setting-note" open>/u);
   assert.match(html, /<b>cr<\/b> — официальные «кредиты» Codex, ПТЭ \/ 16000\./u);
+  assert.match(
+    html,
+    /База = входные токены \+\s+кэшированный вход × 0,1 \+ выходные токены × 6 \+ токены рассуждений × 6;/u,
+  );
+  assert.match(html, /<li>GPT-5\.5 и GPT-5\.6-Sol — База ×2;<\/li>/u);
+  assert.match(html, /<li>GPT-5\.4-mini — База ×0,3;<\/li>/u);
   /* Порядок чипов повторяет порядок строк справки: ПТЭ → cr → $ → ₽. */
   assert.match(
     html,

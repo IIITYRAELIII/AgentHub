@@ -4869,6 +4869,17 @@ html[data-surface="mobile"] .chat-stop-bottom {
   margin: 0;
 }
 
+/* Коэффициенты моделей идут строками без маркеров: список читается как таблица,
+   а не как перечисление действий. */
+.setting-note-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  list-style: none;
+  margin: -0.2rem 0 0;
+  padding: 0;
+}
+
 .setting-note-body b {
   color: var(--text-soft);
   font-weight: 650;
