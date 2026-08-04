@@ -92,7 +92,7 @@ test("rollout backfill replaces old ledger history, preserves newer records and 
           terminal: true,
           status: "completed",
           prompt: "Запрос",
-          finalAnswer: "Ответ",
+          finalAnswer: "Проблему нашли и исправили.\n\nПодробности проверки.",
           startedAt: "2026-07-25T09:00:00Z",
           completedAt: "2026-07-25T09:01:00Z",
           changedFiles: [],
@@ -143,6 +143,10 @@ test("rollout backfill replaces old ledger history, preserves newer records and 
     assert.equal(migration.report.removedRecords, 1);
     assert.equal(migration.report.preservedRecords, 2);
     assert.equal(migration.report.preservedNonCodexRecords, 1);
+    assert.equal(
+      migration.ledger.turns[`codex\u0000${ROOT_THREAD}\u0000${OLD_TURN}`].title,
+      "Проблему нашли и исправили",
+    );
     assert.equal(
       migration.ledger.turns[`codex\u0000${CHILD_THREAD}\u0000${CHILD_TURN}`].parentTurnId,
       OLD_TURN,

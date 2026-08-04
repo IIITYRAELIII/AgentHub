@@ -4139,7 +4139,7 @@ function explicitSkillCandidatesFromInput(input) {
       .map((item) => String(item.text ?? ""))
       .join("\n");
   return [...new Set(
-    [...text.matchAll(/(?:^|[\s([{])\$([A-Za-z][A-Za-z0-9_.:-]*)/gu)]
+    [...text.matchAll(/(?:^|[\s([{])\$([A-Za-z0-9][A-Za-z0-9_.:-]*)/gu)]
       .map((match) => match[1]),
   )];
 }

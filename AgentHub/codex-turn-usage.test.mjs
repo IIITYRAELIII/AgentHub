@@ -541,6 +541,38 @@ test("rollout scan recognizes a skill read through a JSON-escaped Windows path",
   assert.deepEqual(result.mcpCalls, []);
 });
 
+test("rollout scan records numeric and lazily routed skills without counting path mentions", () => {
+  const text = [
+    line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
+    line(response("turn-1", "message", {
+      role: "developer",
+      content: [{
+        type: "input_text",
+        text: "### Available skills\n- 1c-skills: Route 1C workflows\n- handoff: Save context\n",
+      }],
+    })),
+    line(response("turn-1", "message", {
+      role: "user",
+      content: [{ type: "input_text", text: "$1c-skills собери CF" }],
+    })),
+    line(response("turn-1", "custom_tool_call", {
+      name: "exec",
+      input: JSON.stringify({
+        command: String.raw`Get-Content -Raw D:\projects\Utilities\Import\1C_SKILLS\db-dump-cf\SKILL.md`,
+      }),
+    })),
+    line(response("turn-1", "custom_tool_call", {
+      name: "exec",
+      input: "apply_patch mentions C:/Users/me/.agents/skills/handoff/SKILL.md and "
+        + "D:/projects/Utilities/Import/1C_SKILLS/composing-1c-queries/SKILL.md",
+    })),
+    line({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-1" } }),
+  ].join("\n");
+
+  const result = codexTurnUsageFromJsonl(text, "turn-1");
+  assert.deepEqual(result.skillsUsed, ["1c-skills", "db-dump-cf"]);
+});
+
 test("rollout scan counts imagegen completed inside an exec orchestration call", () => {
   const text = [
     line({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),

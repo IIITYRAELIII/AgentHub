@@ -6,6 +6,7 @@ import { scanCodexHistoricalRollout } from "./codex-turn-usage.mjs";
 import { applyLedgerDelta } from "./incremental-ledger.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
 import { readJsonWithBackup } from "./state-store.mjs";
+import { conciseTurnTitle } from "./turn-title.mjs";
 import { WorkLogUsageStore, workLogTurnKey } from "./work-log-usage.mjs";
 
 const LOCAL_TIME_ZONE = "Asia/Yekaterinburg";
@@ -83,7 +84,7 @@ function importedStatus(turn) {
 }
 
 function importedTitle(turn) {
-  return importedStatus(turn) === "completed" ? "Ход завершён" : "Ход отменён";
+  return conciseTurnTitle(turn?.finalAnswer, importedStatus(turn));
 }
 
 function migrationTimestamp(now = new Date()) {

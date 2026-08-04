@@ -149,16 +149,31 @@ function availableSkillNames(value) {
   const heading = /^### Available skills\s*$/mu.exec(text);
   if (!heading) return [];
   const section = text.slice(heading.index + heading[0].length).split(/^###?\s/mu, 1)[0];
-  return [...section.matchAll(/^- ([A-Za-z][A-Za-z0-9_.:-]*):\s+\S/gmu)]
+  return [...section.matchAll(/^- ([A-Za-z0-9][A-Za-z0-9_.:-]*):\s+\S/gmu)]
     .map((match) => match[1]);
 }
 
 function explicitSkillNames(value, knownSkills) {
   const names = new Set();
-  for (const match of String(value ?? "").matchAll(/(?:^|[\s([{])\$([A-Za-z][A-Za-z0-9_.:-]*)/gu)) {
+  for (const match of String(value ?? "").matchAll(/(?:^|[\s([{])\$([A-Za-z0-9][A-Za-z0-9_.:-]*)/gu)) {
     if (knownSkills.has(match[1])) names.add(match[1]);
   }
   return [...names];
+}
+
+function trustedSkillCatalogPath(value) {
+  return /(?:^|\/)(?:skills|[^/]+_skills)(?:\/|$)/iu.test(value);
+}
+
+function explicitSkillFileRead(entry, source, matchIndex) {
+  const toolName = String(
+    entry?.payload?.name
+    ?? entry?.payload?.invocation?.tool
+    ?? "",
+  ).trim();
+  if (/^(?:read_file|read_text_file)$/iu.test(toolName)) return true;
+  const prefix = source.slice(Math.max(0, matchIndex - 512), matchIndex);
+  return /(?:\bGet-Content\b|\bcat\s+(?:-[A-Za-z]+\s+)*|\breadFile(?:Sync)?\s*\()/iu.test(prefix);
 }
 
 function skillReads(entry, knownSkills) {
@@ -180,7 +195,13 @@ function skillReads(entry, knownSkills) {
       const resolved = [...knownSkills].find((name) => (
         name === directoryName || name.endsWith(`:${directoryName}`)
       ));
-      if (resolved) names.add(resolved);
+      if (resolved && explicitSkillFileRead(entry, text, match.index)) {
+        names.add(resolved);
+      } else if (/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/u.test(directoryName)
+        && trustedSkillCatalogPath(text.slice(0, match.index + match[0].length))
+        && explicitSkillFileRead(entry, text, match.index)) {
+        names.add(directoryName);
+      }
     }
   }
   return [...names];
