@@ -5,7 +5,7 @@
   "order": 10,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "orbit", "name": "Орбита", "asset": "orbit-earth.png" },
+    { "id": "orbit", "name": "Картография", "asset": "orbit-cartography.jpg", "preload": true },
     { "id": "orbit-limb", "name": "Лимб", "asset": "orbit-limb.jpg" }
   ]
 }

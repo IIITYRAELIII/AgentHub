@@ -282,7 +282,7 @@ test("theme layers keep the background, effects and content in order", () => {
 test("theme motion is visible, distinct and keeps reduced-motion support", () => {
   const styles = allStyles();
   for (const [theme, animation] of [
-    ["orbit", "orbit-terminator"],
+    ["orbit", "orbit-tracking-pass"],
     ["nebula", "nebula-drift"],
     ["pulsar", "pulsar-beat"],
     ["blackhole", "blackhole-flicker"],
@@ -335,7 +335,7 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   );
   /* Пошаговые анимации давали видимую дёрганость, поэтому в живых слоях их
      быть не должно: единственный резкий ритм — «Пульсар», и он linear. */
-  const motionBlocks = styles.match(/animation:\s*(?:gothic-fire|magma-glow|orbit-terminator|nebula-drift|meadow-breathe|lake-shimmer|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
+  const motionBlocks = styles.match(/animation:\s*(?:gothic-fire|magma-glow|orbit-tracking-pass|nebula-drift|meadow-breathe|lake-shimmer|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
   assert.equal(motionBlocks.length, 8, "живой слой остаётся у восьми тем; «Rain», «Storm» и «Gothic» рисуют частицы");
   for (const block of motionBlocks) {
     assert.doesNotMatch(block, /steps\(/u, `движение должно быть плавным: ${block}`);
@@ -670,6 +670,28 @@ test("Verdant keeps its signal sweep across three environment scenes", () => {
     );
   }
   assert.match(styles, /@keyframes verdant-signal-sweep/u);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/u);
+});
+
+test("Orbit fills the viewport with one translucent cartography console", () => {
+  const theme = THEME_REGISTRY.themes.find((item) => item.id === "orbit");
+  const styles = themeFile("orbit");
+  assert.deepEqual(
+    theme.backgrounds.map(({ id, asset }) => [id, asset]),
+    [
+      ["orbit", "orbit-cartography.jpg"],
+      ["orbit-limb", "orbit-limb.jpg"],
+    ],
+  );
+  /* В отличие от Verdant чат занимает всю оставшуюся колонку, а свободная
+     картографическая сцена просвечивает внутри общей рабочей поверхности. */
+  assert.match(styles, /--content-width:\s*100vw/u);
+  assert.match(styles, /--task-rail-width:\s*clamp\(252px, 16vw, 304px\)/u);
+  assert.match(styles, /grid-template-columns:\s*var\(--task-rail-width\) minmax\(0, 1fr\)/u);
+  assert.match(styles, /\.chat \{[\s\S]*background:\s*rgb\(2 11 22 \/ 18%\)/u);
+  assert.match(styles, /\.chat-log \{[\s\S]*max-width:\s*min\(72%, 68rem\)/u);
+  assert.match(styles, /--orbit-mark-image:\s*url\("\.\/orbit-mark\.png"\)/u);
+  assert.match(styles, /\.brand-mark \{[\s\S]*var\(--orbit-mark-image\)/u);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/u);
 });
 

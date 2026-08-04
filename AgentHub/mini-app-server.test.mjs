@@ -292,11 +292,16 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.equal(nebulaImage.headers.get("content-type"), "image/png");
     assert.match(nebulaImage.headers.get("cache-control"), /immutable/u);
     assert.ok((await nebulaImage.arrayBuffer()).byteLength > 100_000);
-    const orbitImage = await fetch(`${address.url}themes/orbit/orbit-earth.png`);
+    const orbitImage = await fetch(`${address.url}themes/orbit/orbit-cartography.jpg`);
     assert.equal(orbitImage.status, 200);
-    assert.equal(orbitImage.headers.get("content-type"), "image/png");
+    assert.equal(orbitImage.headers.get("content-type"), "image/jpeg");
     assert.match(orbitImage.headers.get("cache-control"), /immutable/u);
     assert.ok((await orbitImage.arrayBuffer()).byteLength > 100_000);
+    const orbitMark = await fetch(`${address.url}themes/orbit/orbit-mark.png`);
+    assert.equal(orbitMark.status, 200);
+    assert.equal(orbitMark.headers.get("content-type"), "image/png");
+    assert.match(orbitMark.headers.get("cache-control"), /immutable/u);
+    assert.ok((await orbitMark.arrayBuffer()).byteLength > 1_000);
     const meadow = await fetch(`${address.url}themes/meadow/meadow-sun.png`);
     assert.equal(meadow.status, 200);
     assert.equal(meadow.headers.get("content-type"), "image/png");
@@ -546,7 +551,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(styles, /html\[data-theme="lake"\]/u);
     assert.match(styles, /url\("\/gothic-concrete\.png"\)/u);
     assert.match(styles, /url\("\/nebula-veil\.png"\)/u);
-    assert.match(styles, /url\("\/orbit-earth\.png"\)/u);
+    assert.match(styles, /url\("\/orbit-cartography\.jpg"\)/u);
+    assert.match(styles, /url\("\/orbit-mark\.png"\)/u);
     assert.match(styles, /html\[data-theme="graphite"\]/u);
     assert.match(styles, /html\[data-theme="reliquary"\]/u);
     assert.match(styles, /url\("\/ashen-reliquary\.png"\)/u);
