@@ -43,13 +43,16 @@
 | 28 | ✅ | Provider port завершён: те же обязательные адаптеры владеют recovery snapshot/подготовкой, managed и observed completion, terminal delivery, reattach, применением live snapshot и политикой restart/shutdown. Общий lifecycle делегирует по provider ID и не связывает логическую задачу с единственным thread ID. |
 | 29 | ✅ | `RunCoordinator` объединяет admission, launch, steer, pending/queued input и provider terminal/recovery dispatch. Telegram, Desktop и Mini App используют одну task-lane; Desktop-контроллер оставляет у себя только подготовку вложений и идемпотентные клиентские квитанции. Lane предпочитает `hubTaskId` и поддерживает новый Claude-сеанс до появления session ID. |
 | 30 | ✅ | Исполняемый bootstrap вынесен в `agent-hub-main.mjs`: process handlers, сигнал shutdown и запуск composition root имеют одну точку входа. `agent-hub-server.mjs` экспортирует idempotent `startAgentHub`/`shutdownAgentHub`, импорт больше не запускает сервер; runtime launchers, restart и process E2E используют новый main. |
+| 31 | ✅ | Provider adapters и lifecycle выделены в отдельные сервисы discovery/catalog, create, launch/steer/cancel, events, live snapshot, completion и recovery. Публичные порты сохраняют task reference/`hubTaskId` и допускают последовательную смену thread/session ID. |
+| 32 | ✅ | Desktop/Mini App используют отдельный application router, attachment/settings/deferred-input services, RPC read-model и точные task-scoped mutations поверх command bus/run coordinator. |
+| 33 | ✅ | Telegram command dispatch и callback-группы settings/task/input выделены из composition root; transport/controller wiring осталось в host. |
+| 34 | 🔄 | Composition root сокращён с 8 158 до примерно 6 570 строк. В нём остаются wiring/start/shutdown и часть общей journal/progress/observer policy; её дальнейший перенос выполняется отдельными проверяемыми срезами. |
 
-После этапа 30 `agent-hub-server.mjs` содержит около 8,5 тыс. строк. Это всё ещё
-слишком много для удобного сопровождения: сервер остаётся точкой композиции и
-хранит реализации provider adapters, Desktop RPC, Telegram callback/command
-dispatch. Bootstrap уже отделён; дальнейшее уменьшение должно выносить именно
-прикладные сервисы и provider adapters с contract-тестами, а не механически
-разрезать файл по размеру.
+После этапов 31–33 provider adapters, Desktop/Mini App RPC и Telegram dispatch
+больше не реализуются внутри `agent-hub-server.mjs`. Composition root всё ещё
+слишком велик: около 6,6 тыс. строк, поскольку содержит общую journal,
+progress/observer и часть startup policy. Этап 34 должен продолжать вынос именно
+этих владельцев состояния с contract-тестами, а не механически разрезать файл.
 
 При следующих этапах нельзя делать provider thread ID постоянной идентичностью
 задачи. Будущая durable-модель использует `hubTaskId`, которому соответствуют

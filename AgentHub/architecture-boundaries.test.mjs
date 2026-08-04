@@ -101,9 +101,11 @@ test("provider discovery and catalog merge have one application owner", async ()
 
 test("provider operations resolve through one AgentProvider registry", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const adapters = await readFile(path.join(ROOT, "provider-adapters.mjs"), "utf8");
   const coordinator = await readFile(path.join(ROOT, "run-coordinator.mjs"), "utf8");
-  const providerCallOwners = `${source}\n${coordinator}`;
-  assert.equal((source.match(/new AgentProviderRegistry\s*\(/g) ?? []).length, 1);
+  const providerCallOwners = `${source}\n${coordinator}\n${adapters}`;
+  assert.equal((source.match(/createAgentProviderRegistry\s*\(/g) ?? []).length, 1);
+  assert.equal((adapters.match(/new AgentProviderRegistry\s*\(/g) ?? []).length, 1);
   assert.equal(source.includes("sources: agentProviders.catalogSources()"), true);
   for (const operation of [
     "createTask",
@@ -131,7 +133,7 @@ test("provider operations resolve through one AgentProvider registry", async () 
   }
   const sharedObservedCompletion = source.slice(
     source.indexOf("async function finishObservedRun"),
-    source.indexOf("async function completeObservedCodexRun"),
+    source.indexOf("async function finishUnknownObservedRun"),
   );
   const sharedRecovery = source.slice(
     source.indexOf("async function recoverTaskRun"),
@@ -159,7 +161,9 @@ test("run admission and provider terminal dispatch have one coordinator", async 
 
 test("shared task mutations enter through one application command bus", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
-  assert.equal((source.match(/new ApplicationCommandBus\s*\(/g) ?? []).length, 1);
+  const commands = await readFile(path.join(ROOT, "application-command-service.mjs"), "utf8");
+  assert.equal((source.match(/createApplicationCommandService\s*\(/g) ?? []).length, 1);
+  assert.equal((commands.match(/new ApplicationCommandBus\s*\(/g) ?? []).length, 1);
   for (const command of [
     "task.select",
     "task.create",
@@ -169,7 +173,7 @@ test("shared task mutations enter through one application command bus", async ()
     "run.cancel",
     "approval.resolve",
   ]) {
-    assert.equal(source.includes(`.register("${command}"`), true, command);
+    assert.equal(commands.includes(`.register("${command}"`), true, command);
   }
   assert.equal(source.includes("clientId: `telegram:"), true);
 });

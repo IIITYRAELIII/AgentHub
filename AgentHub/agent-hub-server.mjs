@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, stat, unlink } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import dns from "node:dns";
-import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import {
@@ -13,13 +12,10 @@ import {
   pathInsideOrSame,
   samePath,
 } from "./config.mjs";
-import { createCodexAssistantAttachmentImporter } from "./codex-assistant-attachments.mjs";
 import {
   buildClaudeArgs,
   buildClaudePrompt,
-  claudeFailureMessage,
   claudeThinkingTokens,
-  formatClaudeUsage,
   parseClaudeLimits,
   resolveClaudeSessionCwd,
 } from "./claude.mjs";
@@ -35,7 +31,6 @@ import {
 } from "./claude-run-io.mjs";
 import { ClaudeRunController } from "./claude-run-controller.mjs";
 import {
-  buildCodexCollaborationMode,
   CODEX_COLLABORATION_MODE_LABELS,
   CODEX_COLLABORATION_MODES,
   CODEX_REASONING_EFFORTS,
@@ -44,7 +39,6 @@ import {
 } from "./codex-settings.mjs";
 import {
   codexThreadSandboxSettings,
-  codexTurnSandboxSettings,
 } from "./codex-sandbox.mjs";
 import {
   formatArchiveMessage,
@@ -72,7 +66,6 @@ import { resolveCodexJournalProject } from "./codex-journal-project.mjs";
 import { RateLimitHistoryStore } from "./rate-limit-history.mjs";
 import {
   CODEX_AUDIT_SOURCE_KINDS,
-  CODEX_TASK_SOURCE_KINDS,
   resolveCodexAccountingThread,
 } from "./codex-subagent-accounting.mjs";
 import { routeCodexFinalDelivery } from "./codex-final-delivery.mjs";
@@ -152,11 +145,6 @@ import {
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
 } from "./task-history.mjs";
-import {
-  activeTurnMissing,
-  interruptCodexTurnWithRecovery,
-  startCodexTurnWithRecovery,
-} from "./codex-recovery.mjs";
 import {
   codexThreadWaitingOnApproval,
   formatPermissionsApproval,
@@ -258,15 +246,36 @@ import { fitTaskHistoryPayload } from "./response-budget.mjs";
 import { RuntimeLifecycleController } from "./runtime-lifecycle-controller.mjs";
 import { RuntimeResourceRegistry } from "./runtime-resource-registry.mjs";
 import { RuntimeRestartController } from "./runtime-restart-controller.mjs";
-import { ApplicationCommandBus } from "./application-command-bus.mjs";
 import { RunCoordinator } from "./run-coordinator.mjs";
-import { AgentProviderRegistry } from "./agent-provider-registry.mjs";
+import { createAgentProviderRegistry } from "./provider-adapters.mjs";
+import { ClaudeProviderTaskService, CodexProviderTaskService } from "./provider-task-service.mjs";
+import { appendRunActivity, codexItemActivity } from "./run-activity.mjs";
+import {
+  commandClientContext,
+  commandTaskTarget,
+  createApplicationCommandService,
+} from "./application-command-service.mjs";
+import { DesktopAttachmentService } from "./desktop-attachment-service.mjs";
+import { TelegramSettingsCallbackService } from "./telegram-settings-callbacks.mjs";
+import { TelegramTaskCallbackService } from "./telegram-task-callbacks.mjs";
+import { TelegramInputCallbackService } from "./telegram-input-callbacks.mjs";
+import { ClaudeCompletionService, CodexCompletionService } from "./provider-completion-services.mjs";
+import { ClaudeRecoveryService, CodexRecoveryService } from "./provider-recovery-services.mjs";
+import { ClaudeTaskSnapshotService } from "./claude-task-snapshot-service.mjs";
+import { CodexTurnService, ProviderCancellationService, unsupportedProviderSteer } from "./provider-turn-services.mjs";
+import { TelegramCommandService } from "./telegram-command-service.mjs";
+import { CodexEventService } from "./codex-event-service.mjs";
+import { CodexTaskSnapshotService } from "./codex-task-snapshot-service.mjs";
+import { ClaudeEventService } from "./claude-event-service.mjs";
+import { ClaudeCatalogProjectionService, CodexCatalogProjectionService } from "./provider-catalog-services.mjs";
+import { DesktopDeferredInputService } from "./desktop-deferred-input-service.mjs";
+import { DesktopSettingsService } from "./desktop-settings-service.mjs";
 import { ProviderTaskCatalogBuilder } from "./provider-task-catalog-builder.mjs";
 import { TaskCatalogService } from "./task-catalog-service.mjs";
 import { TaskSelectionStore } from "./task-selection-store.mjs";
 import { createDesktopSnapshotFactory } from "./desktop-snapshot.mjs";
 import { createDesktopTaskHistoryFactory } from "./desktop-task-history.mjs";
-import { createDesktopControlRouter } from "./desktop-control-router.mjs";
+import { createDesktopApplicationRouter } from "./desktop-application-router.mjs";
 import { UsdRubRateStore } from "./exchange-rate.mjs";
 import { agentHubAutostartShortcut } from "./server-page.mjs";
 import {
@@ -724,7 +733,6 @@ const pendingInputs = new Map();
 const forwardBundles = new Map();
 const gitRepoRoots = new Map();
 const queuedInputs = new Map();
-const deferredInputActions = new Map();
 const desktopMessageReceipts = new MessageReceiptRegistry();
 const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
 await taskDiffs.load();
@@ -744,53 +752,266 @@ const taskSyncStore = new LocalTaskSyncStore({
 });
 await taskSyncStore.load();
 await taskSyncStore.save();
-const agentProviders = new AgentProviderRegistry([
-  {
-    id: "codex",
-    name: "Codex",
-    discoverTasks: listAllCodexThreads,
-    projectTasks: buildCodexTaskCatalogEntries,
-    createTask: createCodexTask,
-    launchTurn: launchCodexTurn,
-    steerTurn: steerCodexTurn,
-    cancelRun: cancelCodexProviderRun,
-    readTaskActivity: readCodexTaskActivity,
-    readRunSnapshot: readCodexTaskSnapshot,
-    completeObservedRun: completeObservedCodexRun,
-    completeManagedRun: completeManagedCodexRun,
-    recoverRun: recoverCodexRun,
-    readRecoverySnapshot: readCodexRecoverySnapshot,
-    prepareRecovery: prepareCodexRecovery,
-    shouldObserveRun: () => true,
-    applyObservedSnapshot: applyCodexObservedSnapshot,
-    applyActiveSnapshot: applyCodexActiveSnapshot,
-    blocksRuntimeRestart: (run) => !run.observer && taskRunIsActive(run),
-    stopManagedRunForShutdown: (run) => run.process?.kill(),
+const claudeTaskSnapshots = new ClaudeTaskSnapshotService({
+  readSession: readClaudeSessionSnapshot,
+  findProject,
+  taskRunKey,
+  activityAtMs: claudeSnapshotActivityAtMs,
+  activityState: claudeSnapshotActivityState,
+  saveState,
+  cancelledTasks: cancelledManagedClaudeTasks,
+  logError: (...args) => console.error(...args),
+});
+const claudeEventService = new ClaudeEventService({
+  isSelectedRun,
+  reindexRun: (run, previous) => taskRuns.reindex(run, previous),
+  setSelectedThread: (threadId, title) => selectionStore.setThread(threadId, {
+    provider: "claude",
+    title,
+  }),
+  runTitle: runTaskTitle,
+  bindRunMessage,
+  saveState,
+  noteActivity: noteRunActivity,
+  scheduleProgress: scheduleProgressUpdate,
+  appendReasoning: appendProgressReasoning,
+  setStage: setProgressStage,
+  appendActivity: appendRunActivity,
+  logError: (...args) => console.error(...args),
+});
+const codexTaskSnapshots = new CodexTaskSnapshotService({
+  knownRolloutPath: knownCodexRolloutPath,
+  readRolloutActivity: readCodexRolloutActivity,
+  rolloutTurnState: codexRolloutTurnState,
+  capturedOwner: capturedCodexExecutionOwner,
+  runtimeActive: codexObservedRuntimeActive,
+  resolveOwner: resolveCodexObservedExecutionOwner,
+  readThread: readCodexThread,
+  selectTurn: selectCodexTurn,
+  turnSnapshot: codexTurnSnapshot,
+  turnStartedAt: codexTurnStartedAt,
+  describeItem: describeCodexItem,
+  hubOwner: () => TASK_EXECUTION_OWNERS.HUB,
+  agentHubPid: () => codexTransport.pid,
+});
+const codexProviderTasks = new CodexProviderTaskService({
+  transportRunning: () => codexTransport.running,
+  startTransport: startCodexAppServer,
+  initialize: initializeCodex,
+  sendRpc,
+  selection: selectionStore,
+  activeProjectRoot: () => activeProjectRoot,
+  sandboxMode: () => config.codexSandboxMode,
+  invalidateCatalog: invalidateTaskCatalog,
+  restoreSettings: restoreCodexTaskSettings,
+  updateSettings: updateActiveCodexThreadSettings,
+  clearLatestDiff: () => { latestDiff = ""; },
+  saveState,
+});
+const claudeProviderTasks = new ClaudeProviderTaskService({
+  selection: selectionStore,
+  clearLatestDiff: () => { latestDiff = ""; },
+  saveState,
+});
+const codexCompletionService = new CodexCompletionService({
+  runForTask: (run) => taskRuns.forTask(run),
+  consumeTracker: consumeTurnTokenTracker,
+  waitForCompletion: waitForTurnEndCompletion,
+  readThread: readCodexThread,
+  readTurnUsage: readCodexTurnUsage,
+  applyRolloutContext: applyCodexRolloutContext,
+  finalizeDelivery: finalizeCodexRunDelivery,
+  finishProgress,
+  completedAnswer: completedCodexAnswer,
+  temporaryFiles: turnTemporaryFiles,
+  speechButtons: turnSpeechButtons,
+  logError: (...args) => console.error(...args),
+});
+const claudeCompletionService = new ClaudeCompletionService({
+  runForTask: (run) => taskRuns.forTask(run),
+  isSelectedRun,
+  reindexRun: (run, previous) => taskRuns.reindex(run, previous),
+  setSelectedThread: (sessionId, title) => selectionStore.setThread(sessionId, {
+    provider: "claude",
+    title,
+  }),
+  saveState,
+  finishProgress,
+  persistHistory: persistClaudeRunHistory,
+  projectWorkLog: projectClaudeRunToWorkLog,
+  finalizeDelivery: finalizeRunDelivery,
+  temporaryFiles: turnTemporaryFiles,
+  logError: (...args) => console.error(...args),
+});
+const claudeRecoveryService = new ClaudeRecoveryService({
+  attach: attachClaudeRunAfterRestart,
+  finishInterrupted: finishInterruptedLocalRun,
+});
+const codexRecoveryService = new CodexRecoveryService({
+  transportRunning: () => codexTransport.running,
+  readTaskSnapshot: readCodexTaskSnapshot,
+  startTransport: startCodexAppServer,
+  initialize: initializeCodex,
+  isCodex,
+  finishInterrupted: finishInterruptedLocalRun,
+  readThread: readCodexThread,
+  autoApprove: () => autoApprove,
+  restartRequested: () => Boolean(restartRequest),
+  finishProgress,
+  completeRun,
+  recoveredAnswer: recoveredCodexAnswer,
+  setProgressStage,
+  launchTurn,
+  reindexRun: (run, previous) => taskRuns.reindex(run, previous),
+  scheduleObservedRun,
+  startTyping: () => startTyping(),
+  saveState,
+  telegram: (...args) => telegram(...args),
+  consumeTracker: consumeTurnTokenTracker,
+  finalizeDelivery: finalizeCodexRunDelivery,
+  turnTokenUsage,
+});
+const codexTurnService = new CodexTurnService({
+  sendRpc,
+  sandboxMode: () => config.codexSandboxMode,
+  compactionRecycle: () => codexCompactionRecycleInFlight,
+  resolvedSkillNames: resolvedExplicitSkillNames,
+  reindexRun: (run, previous) => taskRuns.reindex(run, previous),
+  saveState,
+  startTyping: () => startTyping(),
+  scheduleObservedRun,
+  finishProgress,
+  completeRun,
+  readThread: readCodexThread,
+  speechButtons: turnSpeechButtons,
+  temporaryFiles: turnTemporaryFiles,
+  turnTokenUsage,
+});
+const providerCancellationService = new ProviderCancellationService({
+  interruptCodex: (run) => codexTurnService.interrupt(run),
+  runForTask: (run) => taskRuns.forTask(run),
+  completeRun,
+  readCodexSnapshot: readCodexTaskSnapshot,
+  finishObserved: finishObservedRun,
+  completeManaged: (run, options) => runCoordinator.completeManaged(run, options),
+  taskExternalActivity,
+  stopClaudeRun: stopClaudeRunProcess,
+  processIsAlive,
+  taskRunKey,
+  saveState,
+  cancelledClaudeTasks: cancelledManagedClaudeTasks,
+  logWarn: (...args) => console.warn(...args),
+  logError: (...args) => console.error(...args),
+});
+const codexEventService = new CodexEventService({
+  invalidateThreadRead: invalidateCodexThreadRead,
+  forEvent: (reference) => taskRuns.forEvent(reference),
+  reindexRun: (run, previous) => taskRuns.reindex(run, previous),
+  applyThreadSettings: applyCodexThreadSettings,
+  saveState,
+  trackTokenUsage: trackTurnTokenUsage,
+  taskKey: taskRunKey,
+  isSelectedRun,
+  setSelectedDiff: (value) => { latestDiff = value; },
+  appendActivity: appendRunActivity,
+  noteActivity: noteRunActivity,
+  scheduleProgress: scheduleProgressUpdate,
+  appendReasoning: appendProgressReasoning,
+  isCompactionItem: isContextCompactionItem,
+  beginCompaction: (...args) => contextCompactions.begin(...args),
+  getCompaction: (threadId) => contextCompactions.get(threadId),
+  beginCompactionCleanup: beginCodexCompactionCleanup,
+  setStage: setProgressStage,
+  describeItem: describeCodexItem,
+  itemActivity: codexItemActivity,
+  requestApproval,
+  formatCommandApproval,
+  formatFileApproval,
+  formatPermissionsApproval,
+  requestMcpElicitation,
+  discardManualCompaction: discardManualContextCompactionRun,
+  consumeTracker: consumeTurnTokenTracker,
+  finishObserved: finishObservedRun,
+  turnSnapshot: codexTurnSnapshot,
+  completeManaged: (run, completion) => runCoordinator.completeManaged(run, completion),
+  turnTokenUsage,
+  speechButtons: turnSpeechButtons,
+  temporaryFiles: turnTemporaryFiles,
+  taskDiffs,
+  logWarn: (...args) => console.warn(...args),
+  logError: (...args) => console.error(...args),
+});
+const codexCatalogProjection = new CodexCatalogProjectionService({
+  backfillPricing: backfillWorkLogPricingMetadata,
+  readTitleHistories: readCodexThreadTitleHistories,
+  findProject,
+  rememberRolloutPath: (threadId, rolloutPath) => (
+    setBoundedMapValue(codexRolloutPathsByThreadId, threadId, rolloutPath, 5_000)
+  ),
+  readActivity: readCodexRolloutActivity,
+  runForTask: (reference) => taskRuns.forTask(reference),
+  selectActiveTurnId: selectExactActiveCodexTurnId,
+  capturedOwner: capturedCodexExecutionOwner,
+  runtimeActive: codexObservedRuntimeActive,
+  agentHubPid: () => codexTransport.pid,
+  resolveOwner: resolveCodexObservedExecutionOwner,
+  hubOwner: TASK_EXECUTION_OWNERS.HUB,
+  catalogEntry: codexCatalogEntry,
+  modelLabel: codexModelLabel,
+  threadResponseTitle: codexThreadResponseTitle,
+  confirmationKey: catalogTaskKey,
+  expectedTitle: pendingTaskTitle,
+  clearExpectedTitle: (key) => { delete pendingTaskTitleConfirmations[key]; },
+  preferredTitle: preferredCodexTaskTitle,
+  pinnedTitle: pinnedTaskTitle,
+  setThreadName: (threadId, name) => sendRpc("thread/name/set", { threadId, name }),
+  reconcilePinnedTitle: (provider, threadId, title) => (
+    reconcilePinnedTaskTitle(pinnedTaskTitles, provider, threadId, title)
+  ),
+  savePinnedTitles: savePinnedTaskTitles,
+  saveState,
+});
+const claudeCatalogProjection = new ClaudeCatalogProjectionService({
+  audit: auditClaudeTranscriptSnapshots,
+  findProject,
+  applyManagedCancellation: (snapshot) => claudeTaskSnapshots.applyManagedCancellation(snapshot),
+  catalogEntry: claudeCatalogEntry,
+  logError: (...args) => console.error(...args),
+});
+
+const agentProviders = createAgentProviderRegistry({
+  taskRunIsActive,
+  codex: {
+    listAllCodexThreads: () => codexProviderTasks.discoverTasks(),
+    buildCodexTaskCatalogEntries: (threads) => codexCatalogProjection.project(threads),
+    createCodexTask: () => codexProviderTasks.createTask(),
+    launchCodexTurn: (...args) => codexTurnService.launch(...args),
+    steerCodexTurn: (...args) => codexTurnService.steer(...args),
+    cancelCodexProviderRun: (...args) => providerCancellationService.cancelCodex(...args),
+    readCodexTaskActivity,
+    readCodexTaskSnapshot,
+    completeObservedCodexRun: (...args) => codexCompletionService.completeObserved(...args),
+    completeManagedCodexRun: (...args) => codexCompletionService.completeManaged(...args),
+    recoverCodexRun: (...args) => codexRecoveryService.recover(...args),
+    readCodexRecoverySnapshot: (...args) => codexRecoveryService.readSnapshot(...args),
+    prepareCodexRecovery: (...args) => codexRecoveryService.prepare(...args),
+    applyCodexObservedSnapshot,
+    applyCodexActiveSnapshot,
   },
-  {
-    id: "claude",
-    name: "Claude",
-    discoverTasks: listClaudeSessionSnapshots,
-    projectTasks: buildClaudeTaskCatalogEntries,
-    createTask: createClaudeTask,
-    launchTurn: launchClaudeTurn,
-    steerTurn: steerUnsupportedProviderTurn,
-    cancelRun: cancelClaudeProviderRun,
-    readTaskActivity: readClaudeTaskActivity,
-    readRunSnapshot: (run, options) => readClaudeTaskSnapshot(run.threadId, options),
-    completeObservedRun: completeObservedClaudeRun,
-    completeManagedRun: completeManagedClaudeRun,
-    recoverRun: recoverClaudeRun,
-    readRecoverySnapshot: (run) => readClaudeTaskSnapshot(run.threadId),
-    prepareRecovery: async () => {},
-    shouldObserveRun: (run) => run.observer === true,
-    applyObservedSnapshot: () => {},
-    applyActiveSnapshot: () => {},
-    blocksRuntimeRestart: () => false,
-    // Detached Claude workers deliberately survive a Hub replacement.
-    stopManagedRunForShutdown: () => {},
+  claude: {
+    listClaudeSessionSnapshots,
+    buildClaudeTaskCatalogEntries: (snapshots) => claudeCatalogProjection.project(snapshots),
+    createClaudeTask: () => claudeProviderTasks.createTask(),
+    launchClaudeTurn: (...args) => startClaudeTurn(...args),
+    steerClaudeTurn: unsupportedProviderSteer,
+    cancelClaudeProviderRun: (...args) => providerCancellationService.cancelClaude(...args),
+    readClaudeTaskActivity,
+    readClaudeTaskSnapshot: (...args) => claudeTaskSnapshots.read(...args),
+    completeObservedClaudeRun: (...args) => claudeCompletionService.completeObserved(...args),
+    completeManagedClaudeRun: (...args) => claudeCompletionService.completeManaged(...args),
+    recoverClaudeRun: (...args) => claudeRecoveryService.recover(...args),
   },
-]);
+});
 // Runtime activity cannot be restored from a durable catalog row. Managed runs
 // are restored separately, while external activity is revalidated from rollout
 // files. Showing cached `running=true` here creates a full-catalog phantom state
@@ -843,6 +1064,19 @@ const telegram = (method, body) => {
 let quickTunnelController = null;
 let miniAppPublisher = null;
 let directGatewayController = null;
+const desktopAttachments = new DesktopAttachmentService({
+  runtimeCommandRoot,
+  projectRoot: config.projectRoot,
+  projectRoots: config.projects.map((project) => project.path),
+  workerEnabled: config.miniApp.worker.enabled,
+  publisher: () => miniAppPublisher,
+  trustedUserId: (context) => trustedDeviceUserId(context),
+});
+const desktopAttachmentPaths = (...args) => desktopAttachments.paths(...args);
+const isLegacyDesktopAttachmentFile = (...args) => desktopAttachments.isLegacyFile(...args);
+const desktopAttachmentDescriptors = (...args) => desktopAttachments.descriptors(...args);
+const importCodexDesktopAttachments = (...args) => desktopAttachments.importCodex(...args);
+const desktopOpenAttachment = (...args) => desktopAttachments.open(...args);
 
 async function configureTelegramMiniAppMenu(url, text) {
   if (!config.components.miniApp) return;
@@ -2270,36 +2504,41 @@ try {
 
 workLogUsageStore.setIncludeClaudeUsage(includeClaudeUsage);
 
-const restoredTurnMessages = [
-  ...(Array.isArray(restoredTurnEndSnapshot.pending) ? restoredTurnEndSnapshot.pending : []),
-  ...(Array.isArray(restoredTurnEndSnapshot.completions)
-    ? restoredTurnEndSnapshot.completions.map((completion) => completion?.message)
-    : []),
-].filter(Boolean);
-await workLogUsageStore.mergeTurnTexts(restoredTurnMessages).catch((error) => {
-  console.error("Cannot restore journal turn texts:", error.message);
+async function initializeJournalProjection() {
+  const restoredTurnMessages = [
+    ...(Array.isArray(restoredTurnEndSnapshot.pending) ? restoredTurnEndSnapshot.pending : []),
+    ...(Array.isArray(restoredTurnEndSnapshot.completions)
+      ? restoredTurnEndSnapshot.completions.map((completion) => completion?.message)
+      : []),
+  ].filter(Boolean);
+  await workLogUsageStore.mergeTurnTexts(restoredTurnMessages).catch((error) => {
+    console.error("Cannot restore journal turn texts:", error.message);
+  });
+  let projectionReady = false;
+  try {
+    await workLogUsageStore.project(null, {
+      projectRoot: config.projectRoot,
+      projectionProjectRoots: globalWorkLogProjectRoots,
+    });
+    projectionReady = true;
+  } catch (error) {
+    console.error("Cannot refresh global journal usage:", error.message);
+  }
+  if (!projectionReady || !await stat(legacyWorkLogLedgerFile).then(() => true).catch((error) => {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  })) return;
+  const retirement = await workLogUsageStore.retireLegacyStorage({ workLogFile: legacyWorkLogFile });
+  console.log(`Retired ${retirement.removed.length} legacy journal file(s) after verified SQLite cutover`);
+}
+
+// Journal repair is serialized by WorkLogUsageStore, but it is not a startup
+// prerequisite for control pipes or Telegram polling. Keeping it in the
+// background prevents a stale interprocess lock from making the whole Hub look
+// dead during a replacement hand-off.
+const journalStartupReady = initializeJournalProjection().catch((error) => {
+  console.error("Cannot initialize journal projection:", error.message);
 });
-let journalProjectionReady = false;
-try {
-  await workLogUsageStore.project(null, {
-    projectRoot: config.projectRoot,
-    projectionProjectRoots: globalWorkLogProjectRoots,
-  });
-  journalProjectionReady = true;
-} catch (error) {
-  console.error("Cannot refresh global journal usage:", error.message);
-}
-if (journalProjectionReady && await stat(legacyWorkLogLedgerFile).then(() => true).catch((error) => {
-  if (error?.code === "ENOENT") return false;
-  throw error;
-})) {
-  const retirement = await workLogUsageStore.retireLegacyStorage({
-    workLogFile: legacyWorkLogFile,
-  });
-  console.log(
-    `Retired ${retirement.removed.length} legacy journal file(s) after verified SQLite cutover`,
-  );
-}
 
 try {
   if (stateLoadFailed) {
@@ -2552,64 +2791,6 @@ async function createThread() {
   return agentProviders.call(activeProvider, "createTask");
 }
 
-async function createClaudeTask() {
-  selectionStore.setThread(null, { provider: "claude", title: "Новая задача Claude" });
-  latestDiff = "";
-  await saveState();
-}
-
-async function createCodexTask() {
-  const result = await sendRpc("thread/start", {
-    cwd: activeProjectRoot,
-    ...codexThreadSandboxSettings(config.codexSandboxMode),
-    serviceName: "telegram_codex_bridge",
-  });
-  selectionStore.setThread(result.thread.id, { provider: "codex" });
-  invalidateTaskCatalog();
-  restoreCodexTaskSettings(threadId, { inheritCurrent: true });
-  await updateActiveCodexThreadSettings();
-  selectionStore.setTitle(await nameTelegramThread(threadId));
-  latestDiff = "";
-  await saveState();
-}
-
-async function nameTelegramThread(id) {
-  const timestamp = new Date().toLocaleString("ru-RU", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  const title = `Telegram · ${timestamp}`;
-  await sendRpc("thread/name/set", { threadId: id, name: title });
-  return title;
-}
-
-async function listAllCodexThreads() {
-  if (!codexTransport.running) {
-    await startCodexAppServer();
-    await initializeCodex({ attachSelectedThread: false });
-  }
-  const threads = [];
-  let cursor = null;
-  const seenCursors = new Set();
-  do {
-    if (cursor && seenCursors.has(cursor)) break;
-    if (cursor) seenCursors.add(cursor);
-    const result = await sendRpc("thread/list", {
-      cursor,
-      limit: 100,
-      sortKey: "updated_at",
-      sortDirection: "desc",
-      sourceKinds: CODEX_TASK_SOURCE_KINDS,
-    });
-    threads.push(...(result.data ?? []));
-    cursor = result.nextCursor ?? null;
-  } while (cursor);
-  return threads;
-}
-
 async function listThreads() {
   if (!isCodex()) {
     return threadId ? [{
@@ -2619,7 +2800,7 @@ async function listThreads() {
       updatedAt: Math.floor(Date.now() / 1000),
     }] : [];
   }
-  return (await listAllCodexThreads())
+  return (await codexProviderTasks.discoverTasks())
     .filter(isWorkspaceThread)
     .slice(0, THREAD_LIST_LIMIT);
 }
@@ -2753,113 +2934,6 @@ async function auditClaudeTranscriptSnapshots(snapshots) {
   }
 }
 
-async function buildCodexTaskCatalogEntries(threads) {
-  const entries = [];
-  let pinnedTitlesChanged = false;
-  let titleConfirmationsChanged = false;
-  await backfillWorkLogPricingMetadata(threads);
-  const titleHistories = await readCodexThreadTitleHistories();
-  const batchSize = 16;
-  for (let start = 0; start < threads.length; start += batchSize) {
-    const batch = threads.slice(start, start + batchSize);
-    const values = await Promise.all(batch.map(async (thread) => {
-        const project = findProject(thread.cwd);
-        if (!project) return null;
-        if (thread.path) {
-          setBoundedMapValue(codexRolloutPathsByThreadId, String(thread.id), thread.path, 5_000);
-        }
-        const activity = await readCodexRolloutActivity(thread.path);
-        let rolloutRunning = activity.running;
-        const existingRun = taskRuns.forTask({
-          provider: "codex",
-          projectRoot: project.path,
-          threadId: thread.id,
-        });
-        const activeTurnId = existingRun?.turnId ?? selectExactActiveCodexTurnId(activity);
-        const capturedOwner = capturedCodexExecutionOwner(thread.id, activeTurnId);
-        if (rolloutRunning && activity.running && existingRun?.observer !== false) {
-          rolloutRunning = await codexObservedRuntimeActive(activity, {
-            turnId: activeTurnId,
-            rolloutPath: thread.path,
-            agentHubPid: codexTransport.pid,
-            capturedOwner,
-          });
-        }
-        const executionOwner = !rolloutRunning
-          ? null
-          : existingRun?.observer === false
-            ? TASK_EXECUTION_OWNERS.HUB
-            : await resolveCodexObservedExecutionOwner(activity, {
-              turnId: activeTurnId,
-              rolloutPath: thread.path,
-              agentHubPid: codexTransport.pid,
-              capturedOwner,
-            });
-        const activeStartedAtValues = activity.activeTurnIds
-          .map((turnId) => Number(activity.startedAtMsByTurnId?.[turnId]))
-          .filter(Number.isFinite);
-        const entry = codexCatalogEntry(thread, project, {
-          rolloutRunning,
-          executionOwner: rolloutRunning ? executionOwner : null,
-          model: activity.model ? codexModelLabel(activity.model) : existingRun?.model ?? null,
-          lastActivityAtMs: activity.lastActivityAtMs,
-          startedAtMs: activeStartedAtValues.length
-            ? Math.min(...activeStartedAtValues)
-            : null,
-        });
-        const titleHistory = titleHistories.get(thread.id)
-          ?? { currentTitle: "", recoverableTitle: "" };
-        const appServerTitle = codexThreadResponseTitle(thread);
-        const confirmationKey = catalogTaskKey(entry);
-        const expectedTitle = pendingTaskTitle(entry.provider, entry.threadId);
-        if (expectedTitle && titleHistory.currentTitle === expectedTitle) {
-          delete pendingTaskTitleConfirmations[confirmationKey];
-          titleConfirmationsChanged = true;
-        }
-        const discoveredTitle = preferredCodexTaskTitle(
-          appServerTitle,
-          titleHistory,
-          pinnedTaskTitle(entry.provider, entry.threadId),
-          pendingTaskTitle(entry.provider, entry.threadId),
-        );
-        if (discoveredTitle && appServerTitle !== discoveredTitle) {
-          await sendRpc("thread/name/set", { threadId: entry.threadId, name: discoveredTitle });
-        }
-        const resolvedTitle = reconcilePinnedTaskTitle(
-          pinnedTaskTitles,
-          entry.provider,
-          entry.threadId,
-          discoveredTitle,
-        );
-        pinnedTitlesChanged = resolvedTitle.changed || pinnedTitlesChanged;
-        entry.title = resolvedTitle.title || entry.title;
-        entry.titleAuthoritative = true;
-        return entry;
-    }));
-    entries.push(...values.filter(Boolean));
-  }
-  if (pinnedTitlesChanged) await savePinnedTaskTitles();
-  if (titleConfirmationsChanged) await saveState();
-  return entries;
-}
-
-async function buildClaudeTaskCatalogEntries(snapshots) {
-  await auditClaudeTranscriptSnapshots(snapshots).catch((error) => {
-    console.error("Cannot audit Claude journal transcripts:", error.message);
-  });
-  const entries = [];
-  for (const snapshot of snapshots) {
-    const project = snapshot.cwd ? findProject(snapshot.cwd) : null;
-    if (project && snapshot.sessionId) {
-      entries.push({
-        ...claudeCatalogEntry(applyManagedClaudeCancellation(snapshot), project),
-        titleAuthoritative: true,
-      });
-    }
-  }
-  return entries;
-}
-
 async function finalizeTaskCatalog(mergedEntries) {
   let nextCatalog = mergedEntries;
   for (const entry of nextCatalog) {
@@ -2934,100 +3008,6 @@ async function sendThreadPicker({ editMessage = null, page = 0 } = {}) {
   } else {
     await sendMessage(view.text, { reply_markup: view.replyMarkup });
   }
-}
-
-function appendRunActivity(run, activity = {}) {
-  if (!run) return;
-  if (!Array.isArray(run.activities)) run.activities = [];
-  const id = String(activity.id ?? "").trim()
-    || `${activity.type ?? "stage"}:${Date.now()}:${run.activities.length}`;
-  const normalized = {
-    id,
-    type: String(activity.type ?? "stage"),
-    label: String(activity.label ?? "Действие"),
-    detail: String(activity.detail ?? ""),
-    status: String(activity.status ?? "running"),
-    time: activity.time ?? new Date().toISOString(),
-  };
-  const existing = run.activities.findIndex((entry) => entry.id === id);
-  if (existing >= 0) run.activities[existing] = { ...run.activities[existing], ...normalized };
-  else run.activities.push(normalized);
-  run.activities = run.activities.slice(-100);
-}
-
-function codexItemFailed(item) {
-  const status = String(item?.status ?? "").toLowerCase();
-  return ["failed", "error", "declined", "rejected"].includes(status)
-    || (Number.isInteger(item?.exitCode) && item.exitCode !== 0)
-    || Boolean(item?.error);
-}
-
-function codexItemActivity(item, completed) {
-  if (!item || typeof item !== "object") return null;
-  const itemId = String(item.id ?? item.itemId ?? "").trim();
-  const base = {
-    id: `item:${itemId || `${item.type ?? "stage"}:${String(item.command ?? item.tool ?? "").slice(0, 80)}`}`,
-    status: completed ? "completed" : "running",
-  };
-  if (item.type === "commandExecution") {
-    const failed = completed && codexItemFailed(item);
-    return {
-      ...base,
-      type: "command",
-      label: failed ? "Команда завершилась с ошибкой" : completed ? "Команда выполнена" : "Выполняется команда",
-      detail: String(item.command ?? "").replace(/\s+/g, " ").slice(0, 500),
-      status: failed ? "failed" : base.status,
-    };
-  }
-  if (item.type === "fileChange") {
-    const failed = completed && codexItemFailed(item);
-    const paths = (item.changes ?? item.files ?? [])
-      .map((change) => String(change?.path ?? change ?? "").trim())
-      .filter(Boolean);
-    return {
-      ...base,
-      type: "file",
-      label: failed ? "Изменение файлов не выполнено" : completed ? "Файлы изменены" : "Изменяются файлы",
-      detail: paths.join(", ").slice(0, 500),
-      status: failed ? "failed" : base.status,
-    };
-  }
-  if (item.type === "mcpToolCall" || item.type === "dynamicToolCall") {
-    const tool = item.type === "mcpToolCall"
-      ? `${item.server ?? "MCP"}/${item.tool ?? ""}`
-      : String(item.tool ?? "Инструмент");
-    return {
-      ...base,
-      type: "tool",
-      label: completed ? "Инструмент завершён" : "Используется инструмент",
-      detail: tool,
-      status: item.error ? "failed" : base.status,
-    };
-  }
-  if (item.type === "webSearch") {
-    return {
-      ...base,
-      type: "tool",
-      label: completed ? "Поиск завершён" : "Поиск в интернете",
-      detail: String(item.query ?? "").slice(0, 500),
-    };
-  }
-  if (item.type === "contextCompaction") {
-    return {
-      ...base,
-      type: "compaction",
-      label: completed ? "Контекст свёрнут" : "Сворачивается контекст",
-    };
-  }
-  if (/agent|collab|subagent/iu.test(String(item.type ?? ""))) {
-    return {
-      ...base,
-      type: "subagent",
-      label: completed ? "Субагент завершён" : "Работает субагент",
-      detail: String(item.name ?? item.task ?? "").slice(0, 500),
-    };
-  }
-  return null;
 }
 
 const serverControlController = new ServerControlController({
@@ -3338,121 +3318,8 @@ async function desktopMessageTarget(params) {
   };
 }
 
-async function desktopAttachmentPaths(values) {
-  if (values == null) return [];
-  if (!Array.isArray(values) || values.length > 8) throw new Error("Можно приложить не более восьми изображений");
-  const allowedRoot = path.join(runtimeCommandRoot, "DesktopApp", "attachments");
-  const result = [];
-  for (const value of values) {
-    const file = path.resolve(String(value ?? ""));
-    if (!pathInsideOrSame(file, allowedRoot)) throw new Error("Изображение находится вне каталога Desktop-приложения");
-    if (!/\.(?:png|jpe?g|webp|gif|bmp)$/i.test(file)) throw new Error("Неподдерживаемый формат изображения");
-    const info = await stat(file);
-    if (!info.isFile() || info.size <= 0 || info.size > 20 * 1024 * 1024) {
-      throw new Error("Изображение отсутствует или превышает 20 МБ");
-    }
-    result.push(file);
-  }
-  return result;
-}
-
-const DESKTOP_ATTACHMENT_TYPES = new Map([
-  [".png", "image/png"],
-  [".jpg", "image/jpeg"],
-  [".jpeg", "image/jpeg"],
-  [".webp", "image/webp"],
-  [".gif", "image/gif"],
-  [".bmp", "image/bmp"],
-]);
-
-function isLegacyDesktopAttachmentFile(value) {
-  const file = path.resolve(String(value ?? ""));
-  const allowedRoot = path.join(runtimeCommandRoot, "DesktopApp", "attachments");
-  return pathInsideOrSame(file, allowedRoot)
-    && /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(file);
-}
-
-function desktopAttachmentDescriptors(files) {
-  return (Array.isArray(files) ? files : []).map((file) => {
-    const name = path.basename(path.resolve(String(file ?? "")));
-    return {
-      id: name,
-      name,
-      type: DESKTOP_ATTACHMENT_TYPES.get(path.extname(name).toLowerCase()) ?? "application/octet-stream",
-    };
-  });
-}
-
 async function desktopUpdateSetting(params) {
-  const name = String(params.name ?? "").trim();
-  const value = String(params.value ?? "").trim();
-  const taskScoped = ["model", "reasoning", "mode"].includes(name);
-  if (taskScoped && !catalogEntryIsSelected(params, selectedTask())) {
-    throw new Error("Настройка относится уже не к выбранной задаче; обновите карточку");
-  }
-  let changed = false;
-  if (name === "provider") {
-    ({ changed } = await switchProvider(value));
-  } else if (name === "model") {
-    if (isCodex()) {
-      if (threadId && contextCompactions.isRunning(threadId)) {
-        throw new Error("Дождитесь завершения свёртки контекста перед сменой модели");
-      }
-      ({ changed } = switchCodexModel(value));
-      await updateActiveCodexThreadSettings();
-    } else {
-      ({ changed } = switchModel(value));
-      await saveState();
-    }
-  } else if (name === "reasoning") {
-    if (!CODEX_REASONING_EFFORTS.includes(value)) throw new Error("Неизвестный уровень reasoning");
-    if (isCodex()) {
-      if (threadId && contextCompactions.isRunning(threadId)) {
-        throw new Error("Дождитесь завершения свёртки контекста перед сменой Reasoning");
-      }
-      changed = codexReasoningEffort !== value;
-      codexReasoningEffort = value;
-      await updateActiveCodexThreadSettings();
-    } else {
-      changed = claudeReasoningEffort !== value;
-      claudeReasoningEffort = value;
-      await saveState();
-    }
-  } else if (name === "mode") {
-    if (!CODEX_COLLABORATION_MODES.includes(value)) throw new Error("Неизвестный режим работы");
-    if (isCodex()) {
-      changed = codexCollaborationMode !== value;
-      codexCollaborationMode = value;
-    } else {
-      changed = claudeCollaborationMode !== value;
-      claudeCollaborationMode = value;
-    }
-    await saveState();
-  } else if (name === "approvalMode") {
-    if (value !== "auto" && value !== "manual") throw new Error("Неизвестный режим подтверждений");
-    changed = autoApprove !== (value === "auto");
-    autoApprove = value === "auto";
-  } else if (name === "includeClaudeUsage") {
-    if (value !== "true" && value !== "false") throw new Error("Неизвестный режим учёта Claude");
-    changed = includeClaudeUsage !== (value === "true");
-    includeClaudeUsage = value === "true";
-    workLogUsageStore.setIncludeClaudeUsage(includeClaudeUsage);
-    await workLogUsageStore.project(null, {
-      projectRoot: config.projectRoot,
-      projectionProjectRoots: globalWorkLogProjectRoots,
-    });
-    await saveState();
-  } else if (name === "project") {
-    const index = PROJECTS.findIndex((project) => samePath(project.path, value));
-    if (index < 0) throw new Error("Проект не найден");
-    ({ changed } = await switchProject(index));
-  } else {
-    throw new Error("Неизвестная настройка Desktop-приложения");
-  }
-  return {
-    ...await desktopSnapshot({ refresh: true }),
-    setting: { name, value, changed },
-  };
+  return desktopSettingsService.update(params);
 }
 
 async function desktopRenameTask(params) {
@@ -3520,73 +3387,6 @@ async function desktopTaskDiff(params) {
   return { text, empty: !text };
 }
 
-async function interruptCodexRun(run) {
-  return interruptCodexTurnWithRecovery({
-    threadId: run.threadId,
-    turnId: run.turnId,
-    interrupt: (interruptParams) => sendRpc("turn/interrupt", interruptParams),
-    resume: ({ threadId: resumeThreadId }) => sendRpc("thread/resume", {
-      threadId: resumeThreadId,
-      ...codexThreadSandboxSettings(config.codexSandboxMode),
-    }),
-  });
-}
-
-async function reconcileInactiveCodexRun(run) {
-  if (taskRuns.forTask(run) !== run) return true;
-  if (["finishing", "completed"].includes(run.status)) {
-    await completeRun(run);
-    return true;
-  }
-  try {
-    const snapshot = await readCodexTaskSnapshot(run, { fresh: true });
-    if (taskRuns.forTask(run) !== run) return true;
-    if (snapshot) {
-      const terminalSnapshot = {
-        ...snapshot,
-        active: false,
-        completed: true,
-        status: snapshot.completed ? snapshot.status : "interrupted",
-        stage: snapshot.completed
-          ? snapshot.stage ?? "Задача завершена."
-          : "Задача остановлена или неактивна.",
-      };
-      if (run.observer) await finishObservedRun(run, terminalSnapshot);
-      else await runCoordinator.completeManaged(run, {
-        snapshot: terminalSnapshot,
-      });
-    }
-  } catch (reconcileError) {
-    console.error(`Cannot reconcile inactive Codex task ${run.threadId}:`, reconcileError.message);
-  } finally {
-    if (taskRuns.forTask(run) === run) await completeRun(run);
-  }
-  return taskRuns.forTask(run) !== run;
-}
-
-async function codexInterruptFailureResult(run, error) {
-  const activity = await taskExternalActivity(run);
-  if (activity.state === "inactive") {
-    const reconciled = await reconcileInactiveCodexRun(run);
-    return {
-      accepted: reconciled,
-      message: reconciled
-        ? "Ход уже завершён или остановлен; состояние синхронизировано"
-        : "Ход уже завершён или остановлен; состояние обновляется",
-    };
-  }
-  if (run.observer || activeTurnMissing(error)) {
-    return {
-      accepted: false,
-      message: "Ход выполняется в другом окне Codex. Остановите его в том окне; наблюдение Agent Hub сохранено",
-    };
-  }
-  return {
-    accepted: false,
-    message: "Codex не подтвердил остановку. Наблюдение и блокировка задачи сохранены",
-  };
-}
-
 async function desktopCancelRun(params) {
   const target = await desktopMessageTarget(params);
   const run = taskRuns.forTask(target);
@@ -3621,44 +3421,6 @@ async function desktopCancelRun(params) {
   return result;
 }
 
-async function cancelCodexProviderRun(run) {
-  try {
-    await interruptCodexRun(run);
-    return {
-      accepted: true,
-      stopRequested: true,
-      message: "Запрошена остановка этой задачи.",
-    };
-  } catch (error) {
-    console.warn(`Cannot interrupt Codex task ${run.threadId}:`, error.message);
-    return {
-      ...await codexInterruptFailureResult(run, error),
-      interruptFailed: true,
-      stopRequested: false,
-    };
-  }
-}
-
-async function cancelClaudeProviderRun(run) {
-  if (run.observer) return { accepted: true, stopRequested: false };
-  if (run.process || processIsAlive(run.pid)) {
-    if (!await stopClaudeRunProcess(run)) throw new Error("Не удалось остановить дерево процессов Claude");
-    setBoundedMapValue(cancelledManagedClaudeTasks, taskRunKey(run), Date.now(), 200);
-    await saveState();
-    return {
-      accepted: true,
-      stopRequested: true,
-      message: "Запрошена остановка этой задачи.",
-    };
-  }
-  return {
-    accepted: false,
-    detach: true,
-    stopRequested: false,
-    message: "Отключил наблюдение. Остановить внешний процесс Claude из этой сессии Agent Hub не может.",
-  };
-}
-
 async function desktopResolveApproval(params) {
   return approvalController.resolveFromDesktop(
     String(params.key ?? ""),
@@ -3666,179 +3428,8 @@ async function desktopResolveApproval(params) {
   );
 }
 
-function withDeferredInputAction(id, action, operation) {
-  const key = String(id ?? "");
-  const existing = deferredInputActions.get(key);
-  if (existing) {
-    if (existing.action === action) return existing.promise;
-    return existing.promise
-      .catch(() => {})
-      .then(() => withDeferredInputAction(id, action, operation));
-  }
-  const promise = Promise.resolve().then(operation);
-  const entry = { action, promise };
-  deferredInputActions.set(key, entry);
-  return promise.finally(() => {
-    if (deferredInputActions.get(key) === entry) deferredInputActions.delete(key);
-  });
-}
-
 async function desktopDeferredInput(params, context = null) {
-  const id = String(params.id ?? "");
-  const action = String(params.action ?? "");
-  if (!id) throw new Error("Не указан идентификатор сообщения");
-  const actionKey = action === "edit"
-    ? `${action}\0${String(params.text ?? "").trim()}`
-    : action;
-  return withDeferredInputAction(id, actionKey, async () => {
-  const item = pendingInputs.get(id) ?? queuedInputs.get(id);
-  if (!item) {
-    const completed = action === "steer"
-      ? desktopMessageReceipts.findByResultId(id)?.result
-      : null;
-    if (completed?.steered === true) return completed;
-    throw new Error("Сохранённое сообщение уже обработано");
-  }
-  if (action === "edit") {
-    if (item.dispatchingAt || deferredInputController.isProcessing(id)) {
-      throw new Error("Сообщение уже отправляется и больше не может быть изменено");
-    }
-    const text = String(params.text ?? "").trim();
-    const annotations = deferredResponseAnnotations(item.input)?.annotations ?? [];
-    if (!text && !(item.temporaryFiles ?? []).length && !annotations.length) {
-      throw new Error("Введите сообщение или оставьте изображение либо аннотацию");
-    }
-    if (text.length > 100_000) throw new Error("Сообщение слишком длинное");
-    item.input = replaceDeferredInputText(item.input, text);
-    await saveState();
-    return { accepted: true, id, message: "Сообщение в очереди изменено" };
-  }
-  if (action === "steer") {
-    if (item.dispatchingAt || deferredInputController.isProcessing(id)) {
-      throw new Error("Сообщение уже отправляется; изменить текущий ход нельзя");
-    }
-    const destination = queuedInputs.has(id) ? "queued" : "pending";
-    deferredInputController.cancelSchedule(id);
-    pendingInputs.delete(id);
-    queuedInputs.delete(id);
-    item.manualAction = "steer";
-    pendingInputs.set(id, item);
-    await saveState();
-    try {
-      const result = await desktopMessageController.steerActiveInput({
-        input: item.input,
-        target: {
-          provider: item.provider,
-          projectRoot: item.projectRoot,
-          threadId: item.threadId,
-          taskTitle: item.taskTitle,
-        },
-        clientUserMessageId: item.clientUserMessageId,
-      });
-      pendingInputs.delete(id);
-      delete item.manualAction;
-      updateDeferredDesktopReceipt(item, "steered", result);
-      await saveState();
-      await updateDeferredMessage(item, "⚠️ Сообщение добавлено в текущий ход.");
-      deferredInputController.scheduleNextForTask(item);
-      return { accepted: true, ...result };
-    } catch (error) {
-      pendingInputs.delete(id);
-      delete item.manualAction;
-      (destination === "queued" ? queuedInputs : pendingInputs).set(id, item);
-      await saveState();
-      if (destination === "queued") scheduleQueuedInput(item, 500);
-      throw error;
-    }
-  }
-  if (action === "cancel") {
-    pendingInputs.delete(id);
-    queuedInputs.delete(id);
-    updateDeferredDesktopReceipt(item, "cancelled");
-    await cleanupDeferredFiles(item);
-    await saveState();
-    await updateDeferredMessage(item, "❌ Сохранённое сообщение отменено.");
-    deferredInputController.scheduleNextForTask(item);
-    return { accepted: true, message: "Сохранённое сообщение отменено" };
-  }
-  if (action === "queue") {
-    if (queuedInputs.has(id)) {
-      return { accepted: true, id, queued: true, message: "Сообщение уже находится в очереди" };
-    }
-    if (!pendingInputs.has(id)) throw new Error("Сохранённое сообщение уже обработано");
-    pendingInputs.delete(id);
-    queuedInputs.set(id, item);
-    updateDeferredDesktopReceipt(item, "queued");
-    await saveState();
-    await updateDeferredMessage(item, `⏳ Сообщение поставлено в очередь задачи «${item.taskTitle}».`);
-    scheduleQueuedInput(item, 500);
-    return { accepted: true, message: "Сообщение поставлено в очередь" };
-  }
-  if (!pendingInputs.has(id)) throw new Error("Сообщение уже находится в очереди");
-  const binding = {
-    provider: item.provider,
-    projectRoot: item.projectRoot,
-    threadId: item.threadId,
-    taskTitle: item.taskTitle,
-  };
-  if (action === "force") {
-    if (item.allowForce !== true) throw new Error("Принудительный запуск для этого сообщения не разрешён");
-    await selectTaskFromBinding(binding, commandClientContext(context, "desktop"));
-    const outcome = await startTurn(
-      item.input,
-      item.temporaryFiles ?? [],
-      {
-      forceSpeechButton: item.forceSpeechButton === true,
-      target: {
-        ...binding,
-        chatId: item.chatId,
-        modelId: item.modelId,
-        reasoningId: item.reasoningId,
-        collaborationMode: item.collaborationMode,
-        clientUserMessageId: item.clientUserMessageId,
-      },
-      allowRepositoryConflict: item.conflictKind === "repository",
-      allowUnknownExternalActivity: item.conflictKind === "activity-unknown",
-      persistentFiles: item.persistentFiles === true,
-      },
-    );
-    if (outcome?.deferred) throw new Error("Условие безопасного запуска всё ещё не выполнено");
-    const startedRun = taskRuns.forTask(binding);
-    if (startedRun && item.persistentFiles) {
-      startedRun.messageAttachments = desktopAttachmentDescriptors(item.temporaryFiles);
-    }
-    pendingInputs.delete(id);
-    updateDeferredDesktopReceipt(item, "started", startedRun);
-    await saveState();
-    await updateDeferredMessage(item, `⚠️ Сообщение отправлено в задачу «${item.taskTitle}».`);
-    deferredInputController.scheduleNextForTask(item);
-    return { accepted: true, message: "Сообщение принудительно запущено" };
-  }
-  if (action === "new") {
-    await selectTaskFromBinding(binding, commandClientContext(context, "desktop"));
-    await dispatchApplicationCommand(
-      "task.create",
-      { provider: binding.provider },
-      commandClientContext(context, "desktop"),
-    );
-    const outcome = await startTurn(item.input, item.temporaryFiles ?? [], {
-      forceSpeechButton: item.forceSpeechButton === true,
-      persistentFiles: item.persistentFiles === true,
-    });
-    if (outcome?.deferred) throw new Error("Новая задача неожиданно оказалась занята");
-    const startedRun = taskRuns.forTask(selectedTask());
-    if (startedRun && item.persistentFiles) {
-      startedRun.messageAttachments = desktopAttachmentDescriptors(item.temporaryFiles);
-    }
-    pendingInputs.delete(id);
-    updateDeferredDesktopReceipt(item, "started", startedRun);
-    await saveState();
-    await updateDeferredMessage(item, `🆕 Сообщение отправлено в новую задачу «${activeThreadTitle}».`);
-    deferredInputController.scheduleNextForTask(item);
-    return { accepted: true, message: "Сообщение отправлено в новую задачу", snapshot: await desktopSnapshot() };
-  }
-  throw new Error("Неизвестное действие с сохранённым сообщением");
-  });
+  return desktopDeferredInputService.handle(params, context);
 }
 
 async function desktopStatusDetails() {
@@ -4027,47 +3618,73 @@ const desktopMessageController = createDesktopMessageController({
   persistReceipts: saveState,
   runCoordinator,
 });
+const desktopDeferredInputService = new DesktopDeferredInputService({
+  pendingInputs,
+  queuedInputs,
+  findReceiptByResultId: (id) => desktopMessageReceipts.findByResultId(id),
+  isProcessing: (id) => deferredInputController.isProcessing(id),
+  cancelSchedule: (id) => deferredInputController.cancelSchedule(id),
+  steerActiveInput: (payload) => desktopMessageController.steerActiveInput(payload),
+  responseAnnotations: deferredResponseAnnotations,
+  replaceInputText: replaceDeferredInputText,
+  saveState,
+  updateReceipt: updateDeferredDesktopReceipt,
+  cleanupFiles: cleanupDeferredFiles,
+  updateMessage: updateDeferredMessage,
+  scheduleNext: (item) => deferredInputController.scheduleNextForTask(item),
+  scheduleQueued: scheduleQueuedInput,
+  selectTask: selectTaskFromBinding,
+  clientContext: commandClientContext,
+  startTurn,
+  runForTask: (target) => taskRuns.forTask(target),
+  describeAttachments: desktopAttachmentDescriptors,
+  selectedTask,
+  dispatchCommand: dispatchApplicationCommand,
+  activeTitle: () => activeThreadTitle,
+  snapshot: () => desktopSnapshot(),
+});
+const desktopSettingsService = new DesktopSettingsService({
+  isSelected: catalogEntryIsSelected,
+  selectedTask,
+  switchProvider,
+  isCodex,
+  threadId: () => threadId,
+  isCompacting: (value) => contextCompactions.isRunning(value),
+  switchCodexModel,
+  switchClaudeModel: switchModel,
+  updateCodexThreadSettings: updateActiveCodexThreadSettings,
+  saveState,
+  getCodexReasoning: () => codexReasoningEffort,
+  setCodexReasoning: (value) => { codexReasoningEffort = value; },
+  getClaudeReasoning: () => claudeReasoningEffort,
+  setClaudeReasoning: (value) => { claudeReasoningEffort = value; },
+  getCodexMode: () => codexCollaborationMode,
+  setCodexMode: (value) => { codexCollaborationMode = value; },
+  getClaudeMode: () => claudeCollaborationMode,
+  setClaudeMode: (value) => { claudeCollaborationMode = value; },
+  getAutoApprove: () => autoApprove,
+  setAutoApprove: (value) => { autoApprove = value; },
+  getIncludeClaudeUsage: () => includeClaudeUsage,
+  setIncludeClaudeUsage: (value) => {
+    includeClaudeUsage = value;
+    workLogUsageStore.setIncludeClaudeUsage(value);
+  },
+  projectUsage: () => workLogUsageStore.project(null, {
+    projectRoot: config.projectRoot,
+    projectionProjectRoots: globalWorkLogProjectRoots,
+  }),
+  findProjectIndex: (value) => PROJECTS.findIndex((project) => samePath(project.path, value)),
+  switchProject,
+  snapshot: (params) => desktopSnapshot(params),
+  reasoningEfforts: CODEX_REASONING_EFFORTS,
+  collaborationModes: CODEX_COLLABORATION_MODES,
+});
 
 function trustedDeviceUserId(context) {
   const localAndroidUserId = config.components.androidApp && !config.components.telegram
     ? "local"
     : "";
   return resolveTrustedDeviceUserId(config.allowedUserIds, context, localAndroidUserId);
-}
-
-let codexDesktopAttachmentImporter = null;
-
-async function importCodexDesktopAttachments(values) {
-  codexDesktopAttachmentImporter ??= createCodexAssistantAttachmentImporter({
-    temporaryRoot: os.tmpdir(),
-    generatedImageRoot: path.resolve(os.homedir(), ".codex", "generated_images"),
-    attachmentRoot: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
-    viewImageRoots: [
-      os.homedir(),
-      runtimeCommandRoot,
-      config.projectRoot,
-      ...(config.projects ?? []).map((project) => project.path),
-    ],
-  });
-  return codexDesktopAttachmentImporter(values);
-}
-
-async function desktopAttachmentPathById(value) {
-  const id = String(value ?? "").trim().toLowerCase();
-  if (!/^[a-z0-9-]{1,160}\.(?:png|jpe?g|webp|gif|bmp)$/u.test(id)) {
-    throw new Error("Некорректный идентификатор вложения");
-  }
-  const allowedRoot = path.join(runtimeCommandRoot, "DesktopApp", "attachments");
-  const target = path.join(allowedRoot, id);
-  const [resolved] = await desktopAttachmentPaths([target]);
-  return resolved;
-}
-
-function requireMiniAppPublisher() {
-  if (!miniAppPublisher || !config.miniApp.worker.enabled) {
-    throw new Error("Доверенные устройства доступны только при включённом Mini App Worker");
-  }
-  return miniAppPublisher;
 }
 
 async function desktopTrustedDevices(_params, context) {
@@ -4097,46 +3714,6 @@ async function desktopRevokeDevice(params, context) {
     publisher: miniAppPublisher,
     localStore: trustedDeviceStore,
   }).revoke(userId, deviceId);
-}
-
-async function desktopOpenAttachment(params, context) {
-  const id = String(params?.id ?? "").trim().toLowerCase();
-  const target = await desktopAttachmentPathById(id);
-  if (context?.source === "telegram-mini-app" && config.miniApp.worker.enabled) {
-    const userId = trustedDeviceUserId(context);
-    return requireMiniAppPublisher().publishAttachmentView(userId, target);
-  }
-  return {
-    id,
-    name: path.basename(target),
-    type: DESKTOP_ATTACHMENT_TYPES.get(path.extname(target).toLowerCase()) ?? "application/octet-stream",
-    url: `/api/message-attachment/${encodeURIComponent(id)}`,
-  };
-}
-
-function commandClientContext(context, fallbackClientId) {
-  const source = String(context?.source ?? "").trim();
-  const userId = String(context?.userId ?? "").trim();
-  return {
-    ...context,
-    clientId: String(context?.clientId ?? "").trim()
-      || [source || fallbackClientId, userId].filter(Boolean).join(":"),
-  };
-}
-
-function commandTaskTarget(params) {
-  return {
-    hubTaskId: String(params?.hubTaskId ?? "").trim() || null,
-    provider: String(params?.provider ?? "").trim() || null,
-    projectRoot: String(params?.projectRoot ?? "").trim() || null,
-    threadId: String(params?.threadId ?? "").trim() || null,
-  };
-}
-
-function settingCommandTarget(params) {
-  const name = String(params?.name ?? "").trim();
-  if (!["model", "reasoning", "mode"].includes(name)) return null;
-  return commandTaskTarget({ ...selectedTask(), ...params });
 }
 
 function telegramMessageCommandContext(message) {
@@ -4169,163 +3746,60 @@ function dispatchTelegramSetting(callback, name, value) {
   );
 }
 
-const applicationCommandBus = new ApplicationCommandBus()
-  .register("task.select", {
-    mutating: true,
-    target: "required",
-    lane: "global",
-    handler: ({ payload, target, context }) => desktopSelectTask(
-      { ...payload, ...target },
-      context,
-    ),
-  })
-  .register("task.create", {
-    mutating: true,
-    target: "none",
-    lane: "global",
-    handler: ({ payload, context }) => desktopNewTask(payload, context),
-  })
-  .register("task.rename", {
-    mutating: true,
-    target: "required",
-    lane: "global",
-    handler: ({ payload, target }) => desktopRenameTask({ ...payload, ...target }),
-  })
-  .register("task.archive", {
-    mutating: true,
-    target: "required",
-    lane: "global",
-    handler: ({ payload, target }) => desktopArchiveTask({ ...payload, ...target }),
-  })
-  .register("settings.update", {
-    mutating: true,
-    target: "optional",
-    lane: "global",
-    handler: ({ payload, target }) => desktopUpdateSetting({ ...payload, ...target }),
-  })
-  .register("run.cancel", {
-    mutating: true,
-    target: "required",
-    lane: "target",
-    handler: ({ payload, target }) => desktopCancelRun({ ...payload, ...target }),
-  })
-  .register("approval.resolve", {
-    mutating: true,
-    target: "optional",
-    lane: "global",
-    handler: ({ payload }) => payload.callback
+const applicationCommands = createApplicationCommandService({
+  selectedTask,
+  handlers: {
+    selectTask: desktopSelectTask,
+    createTask: desktopNewTask,
+    renameTask: desktopRenameTask,
+    archiveTask: desktopArchiveTask,
+    updateSetting: desktopUpdateSetting,
+    cancelRun: desktopCancelRun,
+    resolveApproval: (payload) => payload.callback
       ? approvalController.handleCallback(payload.callback)
       : desktopResolveApproval(payload),
-  });
+  },
+});
+
+function settingCommandTarget(params) {
+  return applicationCommands.settingTarget(params);
+}
 
 function dispatchApplicationCommand(type, params, context, { target = null } = {}) {
-  return applicationCommandBus.dispatch({
-    type,
-    payload: params,
-    target,
-    context: commandClientContext(context, "agent-hub"),
-  });
+  return applicationCommands.dispatch(type, params, context, { target });
 }
 
 function selectTaskFromBinding(binding, context = {}) {
-  return dispatchApplicationCommand(
-    "task.select",
-    { taskTitle: binding?.taskTitle },
-    context,
-    { target: commandTaskTarget(binding) },
-  );
+  return applicationCommands.selectTaskFromBinding(binding, context);
 }
 
 const {
   handleDesktopControl: dispatchDesktopControl,
   forgetDesktopControl,
-} = createDesktopControlRouter({
+} = createDesktopApplicationRouter({
   handlers: {
     snapshot: desktopSnapshot,
-    "task-history": desktopTaskHistory,
-    "rate-limit-history": desktopRateLimitHistory,
-    "usage-history": desktopUsageHistory,
+    taskHistory: desktopTaskHistory,
+    rateLimitHistory: desktopRateLimitHistory,
+    usageHistory: desktopUsageHistory,
     search: desktopSearch,
-    "open-task": desktopOpenTask,
-    "open-turn": desktopOpenTurn,
-    "select-task": (params, context) => dispatchApplicationCommand(
-      "task.select",
-      params,
-      commandClientContext(context, "desktop"),
-      { target: commandTaskTarget(params) },
-    ),
-    "send-message": desktopMessageController.sendMessage,
-    "new-task": (params, context) => dispatchApplicationCommand(
-      "task.create", params, commandClientContext(context, "desktop"),
-    ),
-    "update-setting": (params, context) => dispatchApplicationCommand(
-      "settings.update",
-      params,
-      commandClientContext(context, "desktop"),
-      { target: settingCommandTarget(params) },
-    ),
-    "rename-task": (params, context) => dispatchApplicationCommand(
-      "task.rename",
-      params,
-      commandClientContext(context, "desktop"),
-      { target: commandTaskTarget(params) },
-    ),
-    "archive-task": (params, context) => dispatchApplicationCommand(
-      "task.archive",
-      params,
-      commandClientContext(context, "desktop"),
-      { target: commandTaskTarget(params) },
-    ),
-    "task-diff": desktopTaskDiff,
-    "cancel-run": (params, context) => dispatchApplicationCommand(
-      "run.cancel",
-      params,
-      commandClientContext(context, "desktop"),
-      { target: commandTaskTarget(params) },
-    ),
-    "resolve-approval": (params, context) => dispatchApplicationCommand(
-      "approval.resolve",
-      params,
-      commandClientContext(context, "desktop"),
-    ),
-    "deferred-input": desktopDeferredInput,
-    "status-details": desktopStatusDetails,
-    "speak-last-answer": desktopSpeakLastAnswer,
-    "restart-server": desktopRestartServer,
-    "set-autostart": (params) => serverControlController.setAutostart(params),
-    "update-server-configuration": (params) => serverControlController.updateConfiguration(params),
-    "compact-context": desktopCompactContext,
-    "open-attachment": desktopOpenAttachment,
-    "trusted-devices": desktopTrustedDevices,
-    "create-device-pairing": desktopCreateDevicePairing,
-    "revoke-device": desktopRevokeDevice,
+    openTask: desktopOpenTask,
+    openTurn: desktopOpenTurn,
+    sendMessage: desktopMessageController.sendMessage,
+    taskDiff: desktopTaskDiff,
+    deferredInput: desktopDeferredInput,
+    statusDetails: desktopStatusDetails,
+    speakLastAnswer: desktopSpeakLastAnswer,
+    restartServer: desktopRestartServer,
+    setAutostart: (params) => serverControlController.setAutostart(params),
+    updateServerConfiguration: (params) => serverControlController.updateConfiguration(params),
+    compactContext: desktopCompactContext,
+    openAttachment: desktopOpenAttachment,
+    trustedDevices: desktopTrustedDevices,
+    createDevicePairing: desktopCreateDevicePairing,
+    revokeDevice: desktopRevokeDevice,
   },
-  mutationActions: [
-    "open-task",
-    "open-turn",
-    "select-task",
-    "send-message",
-    "new-task",
-    "update-setting",
-    "rename-task",
-    "archive-task",
-    "cancel-run",
-    "resolve-approval",
-    "deferred-input",
-    "restart-server",
-    "set-autostart",
-    "update-server-configuration",
-    "compact-context",
-    "create-device-pairing",
-    "revoke-device",
-  ],
-  miniAppLimits: {
-    source: "telegram-mini-app",
-    limit: 10,
-    maxAnswerChars: 75_000,
-    maxResponseBytes: 850_000,
-  },
-  desktopMaxResponseBytes: 3_500_000,
+  commands: applicationCommands,
   receiptFile: path.join(config.dataDir, "desktop-control-receipts.json"),
   reconcileMutation: reconcileDesktopMutation,
 });
@@ -4849,50 +4323,6 @@ async function completeRun(run) {
   }
 }
 
-// Единая точка чтения состояния сессии Claude: у неё нет живого App Server,
-// поэтому «активность» из транскрипта дополнительно проверяется на свежесть.
-// Брошенный незавершённый транскрипт помечается stale и не блокирует задачу.
-function applyManagedClaudeCancellation(snapshot) {
-  if (!snapshot?.sessionId || !snapshot.cwd) return snapshot;
-  const project = findProject(snapshot.cwd);
-  if (!project) return snapshot;
-  const key = taskRunKey({
-    provider: "claude",
-    projectRoot: project.path,
-    threadId: snapshot.sessionId,
-  });
-  const cancelledAtMs = cancelledManagedClaudeTasks.get(key);
-  if (!Number.isFinite(cancelledAtMs)) return snapshot;
-  const activityAtMs = claudeSnapshotActivityAtMs(snapshot);
-  if (Number.isFinite(activityAtMs) && activityAtMs > cancelledAtMs) {
-    cancelledManagedClaudeTasks.delete(key);
-    void saveState().catch((error) => {
-      console.error("Cannot persist cleared Claude cancellation marker:", error.message);
-    });
-    return snapshot;
-  }
-  return {
-    ...snapshot,
-    active: false,
-    completed: true,
-    cancelled: true,
-  };
-}
-
-async function readClaudeTaskSnapshot(sessionId, { includeHistory = false } = {}) {
-  const rawSnapshot = await readClaudeSessionSnapshot(sessionId, { includeHistory });
-  const snapshot = applyManagedClaudeCancellation(rawSnapshot);
-  if (!snapshot) return null;
-  const activityState = claudeSnapshotActivityState(snapshot);
-  return {
-    ...snapshot,
-    active: activityState === "active",
-    activityUnknown: activityState === "unknown",
-    stale: activityState === "unknown",
-    activityAtMs: claudeSnapshotActivityAtMs(snapshot),
-  };
-}
-
 async function taskExternalActivity(target) {
   if (!target?.threadId) return { state: "inactive", executionOwner: null };
   try {
@@ -5002,90 +4432,6 @@ async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton =
     temporaryFiles,
     { forceSpeechButton },
   );
-}
-
-async function exactCodexTurnId(target, run) {
-  const registered = String(run?.turnId ?? "").trim();
-  if (registered) return registered;
-  const result = await readCodexThread(target.threadId, { fresh: true });
-  const active = (Array.isArray(result.thread?.turns) ? result.thread.turns : [])
-    .filter((turn) => ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? "")))
-    .map((turn) => String(turn.id ?? "").trim())
-    .filter(Boolean);
-  if (active.length === 1) return active[0];
-  if (active.length > 1) {
-    throw new Error("В задаче выполняется несколько ходов; выбрать ход для изменения нельзя");
-  }
-  return null;
-}
-
-async function steerCodexTurn({ run, target, input, clientUserMessageId }) {
-  const turnId = await exactCodexTurnId(target, run);
-  if (!turnId) throw new Error("Текущий ход уже нельзя изменить; сообщение осталось в очереди");
-  const result = await sendRpc("turn/steer", {
-    threadId: target.threadId,
-    expectedTurnId: turnId,
-    input: typeof input === "string" ? [{ type: "text", text: input }] : input,
-    clientUserMessageId,
-  });
-  return { turnId: String(result?.turnId ?? turnId) };
-}
-
-function steerUnsupportedProviderTurn() {
-  throw new Error("Отправка в текущий ход недоступна для выбранного агента");
-}
-
-async function launchClaudeTurn(run, input, temporaryFiles, options = {}) {
-  return startClaudeTurn(run, input, temporaryFiles, options);
-}
-
-async function launchCodexTurn(run, input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
-  if (codexCompactionRecycleInFlight) {
-    await codexCompactionRecycleInFlight;
-  }
-  const items = typeof input === "string" ? [{ type: "text", text: input }] : input;
-  run.skillsUsed = await resolvedExplicitSkillNames(input, run.projectRoot);
-  run.mcpCalls = [];
-  run.toolMetricsKnown = true;
-  try {
-    const result = await startCodexTurnWithRecovery({
-      threadId: run.threadId,
-      startTurn: () => sendRpc("turn/start", {
-        threadId: run.threadId,
-        input: items,
-        clientUserMessageId: run.clientUserMessageId ?? undefined,
-        model: run.modelId,
-        effort: run.reasoningId,
-        collaborationMode: buildCodexCollaborationMode({
-          mode: run.collaborationMode,
-          model: run.modelId,
-          reasoningEffort: run.reasoningId,
-        }),
-        ...codexTurnSandboxSettings(config.codexSandboxMode, run.projectRoot),
-      }),
-      resume: (params) => sendRpc("thread/resume", {
-        ...params,
-        ...codexThreadSandboxSettings(config.codexSandboxMode),
-      }),
-      rollback: (params) => sendRpc("thread/rollback", params),
-    });
-    const previousTurnId = run.turnId;
-    run.turnId = result.turn.id;
-    taskRuns.reindex(run, { turnId: previousTurnId });
-    turnSpeechButtons.set(run.turnId, forceSpeechButton);
-    if (temporaryFiles.length) turnTemporaryFiles.set(run.turnId, temporaryFiles);
-    if (!turnTokenUsage.has(run.turnId)) {
-      setBoundedMapValue(turnTokenUsage, run.turnId, { usage: emptyTokenUsage(), reported: false }, 200);
-    }
-    await saveState();
-    startTyping();
-    scheduleObservedRun(run);
-  } catch (error) {
-    await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
-    await finishProgress(run, `Ошибка запуска: ${error.message}`);
-    await completeRun(run);
-    throw error;
-  }
 }
 
 async function startTurn(input, temporaryFiles = [], {
@@ -5419,7 +4765,7 @@ async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton =
   run.claudeForceSpeechButton = forceSpeechButton === true;
   let snapshot = null;
   if (run.threadId) {
-    snapshot = await readClaudeTaskSnapshot(run.threadId).catch((error) => {
+    snapshot = await claudeTaskSnapshots.read(run.threadId).catch((error) => {
       console.warn(`Cannot resolve Claude session directory ${run.threadId}:`, error.message);
       return null;
     });
@@ -5456,170 +4802,7 @@ async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton =
 }
 
 function handleClaudeStreamEvent(run, parsed) {
-  if (parsed.sessionId && parsed.sessionId !== run.threadId) {
-    const previousThreadId = run.threadId;
-    const wasSelected = isSelectedRun(run);
-    run.sessionId = parsed.sessionId;
-    run.threadId = parsed.sessionId;
-    if (!run.taskTitle || run.taskTitle === "Новая задача Claude") {
-      run.taskTitle = `Сессия Claude · ${parsed.sessionId.slice(0, 8)}`;
-    }
-    taskRuns.reindex(run, { threadId: previousThreadId });
-    if (wasSelected) {
-      selectionStore.setThread(parsed.sessionId, {
-        provider: "claude",
-        title: runTaskTitle(run),
-      });
-    }
-    for (const messageId of run.progressMessageIds) {
-      void bindRunMessage(run, { message_id: messageId }).catch((error) => {
-        console.error("Cannot bind Claude progress message:", error.message);
-      });
-    }
-    void saveState();
-  }
-  if (parsed.textDelta) {
-    run.responseText += parsed.textDelta;
-    noteRunActivity(run);
-    scheduleProgressUpdate(run);
-  }
-  // Claude Code headless не раскрывает текст мышления, поэтому показываем
-  // индикатор с оценкой числа «думательных» токенов. Если текст всё же придёт
-  // (в будущих версиях) — выводим и его в блок рассуждений.
-  if (parsed.thinkingDelta) appendProgressReasoning(run, parsed.thinkingDelta);
-  if (parsed.thinkingTokens != null) {
-    run.claudeThinkingPeak = Math.max(Number(run.claudeThinkingPeak ?? 0), parsed.thinkingTokens);
-    if (!run.responseText.trim()) {
-      setProgressStage(run, `🧠 Claude размышляет (~${parsed.thinkingTokens} токенов)…`);
-    }
-  }
-  if (parsed.event?.type === "system" && parsed.event?.subtype === "api_retry") {
-    const reason = parsed.event.error ? `: ${parsed.event.error}` : "";
-    setProgressStage(run, `Claude повторяет запрос (${parsed.event.attempt}/${parsed.event.max_retries})${reason}…`);
-  }
-  if (parsed.event?.type === "rate_limit_event" && parsed.event.rate_limit_info?.status === "rejected") {
-    const resetAt = Number(parsed.event.rate_limit_info.resetsAt);
-    const resetText = Number.isFinite(resetAt)
-      ? new Date(resetAt * 1000).toLocaleString("ru-RU")
-      : "неизвестно";
-    run.claudeFailureText = `Исчерпан лимит Claude. Сброс: ${resetText}.`;
-    setProgressStage(run, run.claudeFailureText);
-  }
-  if (parsed.event?.type === "assistant" && parsed.event.error) {
-    const messageText = parsed.event.message?.content
-      ?.filter((item) => item?.type === "text")
-      .map((item) => item.text)
-      .join("\n")
-      .trim();
-    if (messageText) run.claudeFailureText = messageText;
-  }
-  const streamEvent = parsed.event?.type === "stream_event" ? parsed.event.event : null;
-  if (streamEvent?.type === "content_block_start" && streamEvent.content_block?.type === "tool_use") {
-    const toolName = String(streamEvent.content_block.name ?? "");
-    setProgressStage(run, `Claude использует инструмент ${toolName}…`);
-    appendRunActivity(run, {
-      id: `claude-tool:${streamEvent.content_block.id ?? toolName}`,
-      type: "tool",
-      label: "Используется инструмент",
-      detail: toolName,
-      status: "running",
-    });
-  }
-}
-
-async function completeManagedClaudeRun(run, {
-  spawnError = null,
-  result,
-  errorText = "",
-  exitCode = null,
-} = {}) {
-  if (!run) return;
-  const turnId = run.turnId;
-  const files = turnTemporaryFiles.get(turnId) ?? run.claudeTemporaryFiles ?? [];
-  turnTemporaryFiles.delete(turnId);
-  run.claudeTemporaryFiles = [];
-  await Promise.all(files.map((file) => unlink(file).catch(() => {})));
-  const forceSpeechButton = run.claudeForceSpeechButton === true;
-
-  try {
-    if (spawnError) throw spawnError;
-    if (!result) {
-      throw new Error(
-        run.claudeFailureText
-          || errorText
-          || (exitCode === null
-            ? "Claude Code завершился, не вернув результат"
-            : `Claude Code завершился с кодом ${exitCode}`),
-      );
-    }
-    if (result.session_id) {
-      const previousThreadId = run.threadId;
-      const wasSelected = isSelectedRun(run);
-      run.threadId = result.session_id;
-      run.sessionId = result.session_id;
-      if (!run.taskTitle || run.taskTitle === "Новая задача Claude") {
-        run.taskTitle = `Сессия Claude · ${result.session_id.slice(0, 8)}`;
-      }
-      taskRuns.reindex(run, { threadId: previousThreadId });
-      if (wasSelected) {
-        selectionStore.setThread(result.session_id, {
-          provider: "claude",
-          title: run.taskTitle,
-        });
-      }
-      await saveState();
-    }
-    const failed = (exitCode !== null && exitCode !== 0) || result.is_error === true;
-    const answer = failed
-      ? claudeFailureMessage(result, {
-        streamFailureText: run.claudeFailureText,
-        errorText,
-        exitCode,
-      })
-      : String(result.result ?? "").trim() || "Задача завершена.";
-    if (failed) {
-      console.error(`Claude turn ${run.turnId ?? "unknown"} failed: ${answer}`);
-    }
-    await finishProgress(run, failed ? `Claude остановлен: ${answer}` : "Задача завершена.");
-    const response = failed ? `Ошибка Claude Code: ${answer}` : answer;
-    await persistClaudeRunHistory(run, {
-      answer: response,
-      status: failed ? "failed" : "completed",
-      active: false,
-    });
-    await projectClaudeRunToWorkLog(run, {
-      answer: response,
-      status: failed ? "failed" : "completed",
-      result,
-    }).catch((error) => {
-      console.error(`Cannot update journal for Claude turn ${run.turnId}:`, error.message);
-    });
-    await finalizeRunDelivery(run, {
-      answer: response,
-      message: `${response}\n\n${formatClaudeUsage(result)}`,
-      speechText: answer,
-      forceSpeechButton,
-      description: "финальный ответ Claude",
-    });
-  } catch (error) {
-    await finishProgress(run, `Claude остановлен: ${error.message}`);
-    const answer = `Ошибка Claude Code: ${error.message}`;
-    await persistClaudeRunHistory(run, {
-      answer,
-      status: "failed",
-      active: false,
-    });
-    await projectClaudeRunToWorkLog(run, {
-      answer,
-      status: "failed",
-    }).catch((journalError) => {
-      console.error(`Cannot update journal for failed Claude turn ${run.turnId}:`, journalError.message);
-    });
-    await finalizeRunDelivery(run, {
-      answer,
-      description: "ошибка Claude",
-    });
-  }
+  return claudeEventService.handle(run, parsed);
 }
 
 async function finishClaudeRun(run, completion = {}) {
@@ -5642,173 +4825,7 @@ async function attachClaudeRunAfterRestart(run) {
 }
 
 async function handleCodexMessage(message) {
-  const { method, params = {}, id } = message;
-  if (params.threadId) invalidateCodexThreadRead(params.threadId);
-  if (id !== undefined && method) {
-    console.error(`Codex server request received: ${method}`);
-  }
-  const eventTurnId = params.turn?.id ?? params.turnId ?? null;
-  let run = taskRuns.forEvent({
-    turnId: eventTurnId,
-    threadId: params.threadId,
-    provider: "codex",
-    allowThreadFallback: method === "turn/started",
-  });
-  if (method === "thread/settings/updated") {
-    applyCodexThreadSettings(params.threadId, params.threadSettings);
-    void saveState();
-  }
-  if (method === "turn/started") {
-    if (run && eventTurnId) {
-      const previous = { turnId: run.turnId, threadId: run.threadId };
-      run.turnId = eventTurnId;
-      run.threadId = params.threadId ?? run.threadId;
-      taskRuns.reindex(run, previous);
-    }
-    if (eventTurnId && !turnTokenUsage.has(eventTurnId)) {
-      setBoundedMapValue(turnTokenUsage, eventTurnId, { usage: emptyTokenUsage(), reported: false }, 200);
-    }
-    if (run && eventTurnId) void saveState();
-  }
-  if (method === "thread/tokenUsage/updated") {
-    trackTurnTokenUsage(params);
-    void saveState();
-  }
-  if (method === "turn/diff/updated" && run) {
-    run.latestDiff = params.diff ?? run.latestDiff;
-    taskDiffs.remember(taskRunKey(run), run.latestDiff);
-    if (isSelectedRun(run)) latestDiff = run.latestDiff;
-    appendRunActivity(run, {
-      id: `diff:${eventTurnId ?? run.turnId ?? run.id}`,
-      type: "file",
-      label: "Diff обновлён",
-      detail: String(params.diff ?? "").split(/\r?\n/u).filter(Boolean).slice(0, 3).join(" · ").slice(0, 500),
-      status: "completed",
-    });
-  }
-  if (method === "item/agentMessage/delta" && run) {
-    const delta = params.delta ?? "";
-    if (params.itemId) run.responseItemId = String(params.itemId);
-    run.responseText += delta;
-    if (delta) noteRunActivity(run);
-    scheduleProgressUpdate(run);
-  }
-  if ((method === "item/reasoning/summaryTextDelta" || method === "item/plan/delta") && run) {
-    appendProgressReasoning(run, params.delta);
-  }
-  if (method === "item/started") {
-    if (isContextCompactionItem(params.item)) {
-      contextCompactions.begin(params.threadId, {
-        origin: "automatic",
-        turnId: eventTurnId,
-        itemId: params.item?.id,
-        startedAt: params.startedAtMs,
-      });
-    }
-    if (run) {
-      setProgressStage(run, describeCodexItem(params.item, false));
-      const activity = codexItemActivity(params.item, false);
-      if (activity) appendRunActivity(run, activity);
-    }
-  }
-  if (method === "item/completed") {
-    if (isContextCompactionItem(params.item)) {
-      beginCodexCompactionCleanup(params.threadId, {
-        turnId: eventTurnId,
-        itemId: params.item?.id,
-        compactedAt: params.completedAtMs,
-      });
-    }
-    if (run) {
-      setProgressStage(run, describeCodexItem(params.item, true));
-      const activity = codexItemActivity(params.item, true);
-      if (activity) appendRunActivity(run, activity);
-      if (params.item?.type === "mcpToolCall") {
-        const call = {
-          id: String(params.item.id ?? "").trim(),
-          server: String(params.item.server ?? "").trim(),
-          tool: String(params.item.tool ?? "").trim(),
-          status: params.item.error ? "failed" : "completed",
-        };
-        const calls = new Map((run.mcpCalls ?? []).map((item) => [item.id, item]));
-        if (call.id) calls.set(call.id, call);
-        run.mcpCalls = [...calls.values()];
-        run.toolMetricsKnown = true;
-      }
-    }
-  }
-  if (method === "thread/compacted") {
-    const compactedThreadId = String(params.threadId ?? run?.threadId ?? "").trim();
-    const modernItemAlreadyHandled = Boolean(contextCompactions.get(compactedThreadId)?.itemId);
-    beginCodexCompactionCleanup(compactedThreadId, { turnId: eventTurnId });
-    if (run && !modernItemAlreadyHandled) appendRunActivity(run, {
-      id: `compaction:${eventTurnId ?? run.turnId ?? run.id}`,
-      type: "compaction",
-      label: "Контекст свёрнут",
-      status: "completed",
-    });
-  }
-
-  if (method === "item/commandExecution/requestApproval") {
-    appendRunActivity(run, {
-      id: `approval:${id}`,
-      type: "approval",
-      label: "Ожидается разрешение на команду",
-      detail: String(params.command ?? "").replace(/\s+/g, " ").slice(0, 500),
-      status: "waiting",
-    });
-    await requestApproval(id, "command", params, formatCommandApproval(params, run), run);
-  } else if (method === "item/fileChange/requestApproval") {
-    appendRunActivity(run, {
-      id: `approval:${id}`,
-      type: "approval",
-      label: "Ожидается разрешение на изменение файлов",
-      status: "waiting",
-    });
-    await requestApproval(id, "file", params, formatFileApproval(params), run);
-  } else if (method === "item/permissions/requestApproval") {
-    appendRunActivity(run, {
-      id: `approval:${id}`,
-      type: "approval",
-      label: "Ожидается разрешение",
-      detail: String(params.reason ?? "").slice(0, 500),
-      status: "waiting",
-    });
-    await requestApproval(id, "permissions", params, formatPermissionsApproval(params), run);
-  } else if (method === "mcpServer/elicitation/request") {
-    await requestMcpElicitation(id, params, run);
-  } else if (method === "turn/completed") {
-    if (!run) {
-      turnTokenUsage.delete(eventTurnId);
-      turnSpeechButtons.delete(eventTurnId);
-      const temporaryFiles = turnTemporaryFiles.get(eventTurnId) ?? [];
-      turnTemporaryFiles.delete(eventTurnId);
-      await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
-      console.warn(`Completed Codex turn ${eventTurnId ?? "unknown"} has no registered task run`);
-      return;
-    }
-    if (run.status !== "running") return;
-    const completedTurnId = eventTurnId ?? run.turnId;
-    if (await discardManualContextCompactionRun(run, completedTurnId)) return;
-    if (run.observer === true) {
-      const tracker = consumeTurnTokenTracker(completedTurnId);
-      turnSpeechButtons.delete(completedTurnId);
-      const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
-      turnTemporaryFiles.delete(completedTurnId);
-      await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
-      await finishObservedRun(run, {
-        ...codexTurnSnapshot(params.turn),
-        turnId: completedTurnId,
-        executionOwner: run.executionOwner,
-        tokenTracker: tracker,
-      });
-      return;
-    }
-    await runCoordinator.completeManaged(run, {
-      eventTurn: params.turn,
-      completedTurnId,
-    });
-  }
+  return codexEventService.handle(message);
 }
 
 async function completedCodexAnswer(run, completedTurnId, eventTurn = null) {
@@ -5990,155 +5007,7 @@ function applyCodexActiveSnapshot(run, snapshot) {
 }
 
 async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false } = {}) {
-  if (run.observer === true) {
-    const rolloutPath = String(
-      threadResult?.thread?.path
-      ?? run.rolloutPath
-      ?? await knownCodexRolloutPath(run.threadId, run.startedAt),
-    ).trim();
-    if (rolloutPath) {
-      run.rolloutPath = rolloutPath;
-      const exactTurnObserver = run.exactTurnObserver === true;
-      const activity = await readCodexRolloutActivity(
-        rolloutPath,
-        exactTurnObserver ? { freshnessMs: Number.POSITIVE_INFINITY } : {},
-      );
-      const state = codexRolloutTurnState(activity, run.turnId, {
-        exact: exactTurnObserver,
-        threadActive: activity.running,
-      });
-      const capturedOwner = capturedCodexExecutionOwner(run.threadId, state.turnId);
-      const runtimeActive = !state.active || await codexObservedRuntimeActive(activity, {
-        turnId: state.turnId,
-        rolloutPath,
-        agentHubPid: codexTransport.pid,
-        capturedOwner,
-      });
-      const interrupted = state.active && !runtimeActive;
-      const active = state.active && runtimeActive;
-      const executionOwner = await resolveCodexObservedExecutionOwner(activity, {
-        turnId: state.turnId,
-        rolloutPath,
-        agentHubPid: codexTransport.pid,
-        capturedOwner,
-      });
-      return {
-        answer: state.active ? state.latestAnswer : state.finalAnswer,
-        finalAnswer: state.finalAnswer,
-        reasoning: "",
-        prompt: state.userMessages[0]?.text ?? "",
-        clientUserMessageId: state.userMessages[0]?.clientUserMessageId ?? null,
-        userMessages: state.userMessages,
-        startedAt: state.startedAt,
-        completed: state.completed || interrupted,
-        active,
-        status: interrupted ? "interrupted" : state.completed ? "completed" : active ? "inProgress" : "stopped",
-        waitingOnApproval: false,
-        stage: active
-          ? "Выполняется следующий этап…"
-          : interrupted
-            ? "Задача прервана вместе с клиентом Codex."
-            : state.finalAnswer ? "Задача завершена." : "Задача остановлена или неактивна.",
-        turnId: state.turnId,
-        activeTurnCount: activity.activeTurnIds.length,
-        activityAtMs: Number(activity.activityAtMsByTurnId?.[state.turnId])
-          || activity.lastActivityAtMs,
-        model: activity.model,
-        reasoningEffort: activity.reasoningEffort,
-        executionOwner,
-      };
-    }
-  }
-  const result = threadResult ?? await readCodexThread(run.threadId, {
-    fresh,
-    includeTurns: false,
-  });
-  const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
-  const exactTurnObserver = run.exactTurnObserver === true;
-  const activity = await readCodexRolloutActivity(
-    result.thread?.path,
-    exactTurnObserver ? { freshnessMs: Number.POSITIVE_INFINITY } : {},
-  );
-  if (!turns.length) {
-    const threadActive = result.thread?.status?.type === "active";
-    const {
-      turnId,
-      active,
-      completed,
-      latestAnswer,
-      finalAnswer,
-      userMessages,
-      startedAt,
-    } = codexRolloutTurnState(activity, run.turnId, {
-      exact: exactTurnObserver,
-      threadActive,
-    });
-    return {
-      answer: active ? latestAnswer : finalAnswer,
-      finalAnswer,
-      reasoning: "",
-      prompt: userMessages[0]?.text ?? "",
-      clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,
-      userMessages,
-      startedAt,
-      completed,
-      active,
-      status: completed ? "completed" : active ? "inProgress" : "stopped",
-      waitingOnApproval: false,
-      stage: active
-        ? "Выполняется следующий этап…"
-        : finalAnswer ? "Задача завершена." : "Задача остановлена или неактивна.",
-      turnId,
-      activeTurnCount: activity.activeTurnIds.length,
-      activityAtMs: Number(activity.activityAtMsByTurnId?.[turnId])
-        || activity.lastActivityAtMs,
-      model: activity.model,
-      reasoningEffort: activity.reasoningEffort,
-      executionOwner: run?.observer === true
-        ? await resolveCodexObservedExecutionOwner(activity, {
-          turnId,
-          rolloutPath: result.thread?.path,
-          agentHubPid: codexTransport.pid,
-          capturedOwner: capturedCodexExecutionOwner(run.threadId, turnId),
-        })
-        : TASK_EXECUTION_OWNERS.HUB,
-    };
-  }
-  const turn = selectCodexTurn(turns, {
-    requestedTurnId: run.turnId,
-    rolloutActiveTurnIds: activity.activeTurnIds,
-    strictRequested: exactTurnObserver || run.observer !== true,
-  });
-  if (!turn) return null;
-  const snapshot = {
-    ...codexTurnSnapshot(turn, result.thread?.status),
-    turnId: turn.id,
-    activeTurnCount: activity.activeTurnIds.length || (turn?.status === "inProgress" ? 1 : 0),
-    activityAtMs: Number(activity.activityAtMsByTurnId?.[turn.id])
-      || activity.lastActivityAtMs,
-    model: activity.model,
-    reasoningEffort: activity.reasoningEffort,
-    startedAt: Number.isFinite(Number(activity.startedAtMsByTurnId?.[turn.id]))
-      ? new Date(Number(activity.startedAtMsByTurnId[turn.id])).toISOString()
-      : codexTurnStartedAt(turn),
-    executionOwner: run?.observer === true
-      ? await resolveCodexObservedExecutionOwner(activity, {
-        turnId: turn.id,
-        rolloutPath: result.thread?.path,
-        agentHubPid: codexTransport.pid,
-        capturedOwner: capturedCodexExecutionOwner(run.threadId, turn.id),
-      })
-      : TASK_EXECUTION_OWNERS.HUB,
-  };
-  if (!snapshot.active && activity.activeTurnIds.includes(turn.id)) {
-    return {
-      ...snapshot,
-      completed: false,
-      active: true,
-      stage: describeCodexItem(turn.items?.at(-1), false),
-    };
-  }
-  return snapshot;
+  return codexTaskSnapshots.read(run, { threadResult, fresh });
 }
 
 async function finishObservedRun(run, snapshot) {
@@ -6165,87 +5034,6 @@ async function finishObservedRun(run, snapshot) {
   });
 }
 
-async function completeObservedCodexRun(run, {
-  snapshot,
-  answer,
-  deliver,
-  completedTurnId,
-  tracker,
-}) {
-  let resolvedTracker = tracker ?? consumeTurnTokenTracker(completedTurnId);
-  if (run.executionOwner !== TASK_EXECUTION_OWNERS.HUB) {
-    const hooked = await waitForTurnEndCompletion({
-      provider: "codex",
-      threadId: run.threadId,
-      turnId: completedTurnId,
-    });
-    if (hooked?.usageReported || Number(hooked?.estimatedCredits) > 0) {
-      resolvedTracker = {
-        usage: hooked.usage,
-        reported: hooked.usageReported === true,
-        estimatedCredits: hooked.estimatedCredits,
-        estimateKind: hooked.estimateKind,
-        model: hooked.model,
-        serviceTier: hooked.serviceTier,
-        skillsUsed: hooked.skillsUsed,
-        mcpCalls: hooked.mcpCalls,
-        toolMetricsKnown: hooked.toolMetricsKnown,
-      };
-    } else if (!resolvedTracker?.reported) {
-      try {
-        const result = await readCodexThread(run.threadId, {
-          fresh: true,
-          includeTurns: false,
-        });
-        const usageResult = await readCodexTurnUsage(
-          result.thread?.path,
-          completedTurnId,
-        );
-        resolvedTracker = {
-          usage: usageResult.usage,
-          reported: usageResult.reported === true,
-          imageGenerationCount: usageResult.imageGenerationCount,
-          estimatedCredits: usageResult.estimatedCredits,
-          estimateKind: usageResult.estimateKind,
-          model: usageResult.model,
-          serviceTier: usageResult.serviceTier,
-          skillsUsed: usageResult.skillsUsed,
-          mcpCalls: usageResult.mcpCalls,
-          toolMetricsKnown: usageResult.toolMetricsKnown,
-        };
-        applyCodexRolloutContext(run, usageResult);
-      } catch (error) {
-        console.error(`Cannot read fallback usage for Codex turn ${completedTurnId}:`, error.message);
-      }
-    }
-  }
-  return finalizeCodexRunDelivery(run, {
-    answer,
-    turnId: completedTurnId,
-    status: snapshot?.status ?? "completed",
-    tracker: resolvedTracker,
-    deliver,
-    silent: run.displayRequested !== true,
-    description: "финальный ответ наблюдаемого хода",
-  });
-}
-
-async function completeObservedClaudeRun(run, { snapshot, answer, deliver }) {
-  await projectClaudeRunToWorkLog(run, {
-    answer,
-    status: snapshot?.status ?? "completed",
-    snapshot,
-  }).catch((error) => {
-    console.error(`Cannot update journal for observed Claude turn ${run.turnId}:`, error.message);
-  });
-  return finalizeRunDelivery(run, {
-    answer,
-    deliver,
-    silent: run.displayRequested !== true,
-    description: "финальный ответ наблюдаемого хода",
-  });
-}
-
 // Незавершённый транскрипт после долгой тишины не доказывает ни завершение, ни
 // продолжение процесса. Снимаем live-наблюдение, но не выдаём частичный текст за
 // финальный ответ; следующий запуск в этом треде потребует явного подтверждения.
@@ -6263,65 +5051,6 @@ async function finishUnknownObservedRun(run, snapshot) {
   await finishProgress(run, stage);
   await completeRun(run);
   console.log(`${providerName} activity became unknown for ${run.threadId}`);
-}
-
-async function finishManagedCodexSnapshot(run, snapshot) {
-  if (taskRuns.forTask(run) !== run || run.status !== "running") return;
-  run.status = "finishing";
-  const completedTurnId = run.turnId;
-  const tracker = consumeTurnTokenTracker(completedTurnId);
-  const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
-  turnTemporaryFiles.delete(completedTurnId);
-  const forceSpeechButton = turnSpeechButtons.get(completedTurnId) ?? false;
-  turnSpeechButtons.delete(completedTurnId);
-  await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
-  const answer = String(snapshot?.finalAnswer ?? "").trim()
-    || String(snapshot?.answer ?? "").trim()
-    || run.responseText.trim()
-    || "Ход завершён без текстового ответа.";
-  await finishProgress(run, snapshot?.stage ?? "Задача завершена.");
-  await finalizeCodexRunDelivery(run, {
-    answer,
-    turnId: completedTurnId,
-    status: snapshot?.status ?? "completed",
-    tracker,
-    forceSpeechButton,
-    description: "восстановленный финальный ответ Codex",
-  });
-}
-
-async function completeManagedCodexRun(run, {
-  snapshot = null,
-  eventTurn = null,
-  completedTurnId = eventTurn?.id ?? run?.turnId,
-} = {}) {
-  if (snapshot) return finishManagedCodexSnapshot(run, snapshot);
-  if (taskRuns.forTask(run) !== run || run.status !== "running") return;
-  run.status = "finishing";
-  const tracker = consumeTurnTokenTracker(completedTurnId);
-  const temporaryFiles = turnTemporaryFiles.get(completedTurnId) ?? [];
-  turnTemporaryFiles.delete(completedTurnId);
-  const forceSpeechButton = turnSpeechButtons.get(completedTurnId) ?? false;
-  turnSpeechButtons.delete(completedTurnId);
-  await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
-  const status = eventTurn?.status ?? "completed";
-  const error = eventTurn?.error?.message;
-  const answer = await completedCodexAnswer(run, completedTurnId, eventTurn)
-    || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
-  await finishProgress(
-    run,
-    error || status === "failed"
-      ? `Задача завершилась с ошибкой: ${error ?? status}`
-      : "Задача завершена.",
-  );
-  return finalizeCodexRunDelivery(run, {
-    answer,
-    turnId: completedTurnId,
-    status,
-    tracker,
-    forceSpeechButton,
-    description: "финальный ответ Codex",
-  });
 }
 
 const taskObserver = new TaskObserverController({
@@ -6676,7 +5405,7 @@ async function readCodexTaskActivity(target) {
 }
 
 async function readClaudeTaskActivity(target) {
-  const snapshot = await readClaudeTaskSnapshot(target.threadId);
+  const snapshot = await claudeTaskSnapshots.read(target.threadId);
   return {
     state: snapshot?.activityUnknown ? "unknown" : snapshot?.active ? "active" : "inactive",
     executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
@@ -6969,7 +5698,7 @@ const taskViewController = new TaskViewController({
   findCodexRolloutPath: knownCodexRolloutPath,
   readCodexThread,
   readCodexSnapshot: readCodexTaskSnapshot,
-  readClaudeSnapshot: readClaudeTaskSnapshot,
+  readClaudeSnapshot: (...args) => claudeTaskSnapshots.read(...args),
   attachmentImporter: importCodexDesktopAttachments,
   taskSyncStore,
   taskRuns,
@@ -7058,113 +5787,6 @@ async function finishInterruptedLocalRun(run) {
     "уведомление о прерывании",
   );
   await completeRun(run);
-}
-
-async function recoverClaudeRun(run, { observerSnapshot = null } = {}) {
-  const action = resolveTaskRecoveryAction({ run, observerSnapshot });
-  if (action === TASK_RECOVERY_ACTIONS.ATTACH_CLAUDE) {
-    await attachClaudeRunAfterRestart(run);
-    return;
-  }
-  return finishInterruptedLocalRun(run);
-}
-
-async function readCodexRecoverySnapshot(run) {
-  if (!codexTransport.running) return null;
-  return readCodexTaskSnapshot(run);
-}
-
-async function prepareCodexRecovery(runs) {
-  if (!runs.length || codexTransport.running) return;
-  await startCodexAppServer();
-  await initializeCodex({ attachSelectedThread: isCodex() });
-}
-
-async function recoverCodexRun(run, { observerSnapshot = null } = {}) {
-  const initialAction = resolveTaskRecoveryAction({
-    run,
-    observerSnapshot,
-    codexAvailable: codexTransport.running,
-  });
-  if (initialAction === TASK_RECOVERY_ACTIONS.INTERRUPTED_LOCAL) {
-    return finishInterruptedLocalRun(run);
-  }
-
-  const result = await readCodexThread(run.threadId, { fresh: true });
-  const turn = result.thread?.turns?.find((item) => item.id === run.turnId)
-    ?? result.thread?.turns?.at(-1);
-  const recoveryAction = resolveTaskRecoveryAction({
-    run,
-    codexAvailable: codexTransport.running,
-    codexTurn: turn,
-    waitingOnApproval: codexThreadWaitingOnApproval(result.thread?.status),
-    autoApprove,
-    restartRequested: Boolean(restartRequest),
-  });
-  if (recoveryAction === TASK_RECOVERY_ACTIONS.MISSING_CODEX_TURN) {
-    await finishProgress(run, "Не удалось найти сохранённый запуск.");
-    await completeRun(run);
-    return;
-  }
-  run.responseText = recoveredCodexAnswer(turn) || run.responseText;
-  if (recoveryAction === TASK_RECOVERY_ACTIONS.RETRY_LOST_APPROVAL) {
-    const originalPrompt = codexThreadHistory([turn]).at(-1)?.prompt
-      || run.promptPreview
-      || "текущую задачу";
-    run.responseText = "";
-    run.progressReasoning = "";
-    setProgressStage(run, "Восстанавливаю ход после потерянного запроса подтверждения…");
-    await launchTurn(
-      run,
-      "Продолжи текущую задачу с места остановки. Предыдущий ход завис на запросе подтверждения, "
-        + "который был потерян при переподключении App Server. Проверь уже выполненные действия и файлы, "
-        + `не повторяй завершённую работу. Исходный запрос:\n\n${originalPrompt}`,
-    );
-    return;
-  }
-  if (recoveryAction === TASK_RECOVERY_ACTIONS.ATTACH_CODEX) {
-    const previousTurnId = run.turnId;
-    run.turnId = turn.id;
-    taskRuns.reindex(run, { turnId: previousTurnId });
-    if (!turnTokenUsage.has(run.turnId)) {
-      setBoundedMapValue(turnTokenUsage, run.turnId, { usage: emptyTokenUsage(), reported: false }, 200);
-    }
-    setProgressStage(run, "Подключено к продолжающейся задаче.");
-    scheduleObservedRun(run);
-    startTyping();
-    await saveState();
-    return;
-  }
-
-  if (recoveryAction === TASK_RECOVERY_ACTIONS.DISMISS_RESTART_INTERRUPTION) {
-    while (run.progressUpdateInFlight) await delay(50);
-    for (const messageId of run.progressMessageIds) {
-      await telegram("deleteMessage", {
-        chat_id: run.chatId,
-        message_id: messageId,
-      }).catch(() => {});
-    }
-    run.progressMessageIds = [];
-    run.progressReasoning = "";
-    run.lastProgressText = "";
-    await completeRun(run);
-    return;
-  }
-
-  const answer = recoveredCodexAnswer(turn)
-    || run.responseText.trim()
-    || turn.error?.message
-    || `Сохранённый запуск завершён со статусом ${turn.status}.`;
-  const tracker = consumeTurnTokenTracker(run.turnId);
-  const recoveredAsCompleted = turn.status === "completed" || codexTurnHasExplicitFinalAnswer(turn);
-  await finishProgress(run, recoveredAsCompleted ? "Задача завершена." : `Задача остановлена: ${turn.status}.`);
-  await finalizeCodexRunDelivery(run, {
-    answer,
-    turnId: run.turnId,
-    status: turn.status ?? "completed",
-    tracker,
-    description: "восстановленный ответ",
-  });
 }
 
 async function recoverActiveRuns({ provider = null } = {}) {
@@ -7337,6 +5959,7 @@ async function finalizeRestartMessage() {
 
 const runtimeResources = new RuntimeResourceRegistry({
   flush: [
+    { name: "journal startup", run: () => journalStartupReady },
     { name: "state writes", run: () => stateWriteQueue },
     { name: "message binding writes", run: () => bindingWriteQueue },
     { name: "media writes", run: () => mediaController.waitForWrites() },
@@ -7357,6 +5980,7 @@ const runtimeResources = new RuntimeResourceRegistry({
     { name: "instance lock", run: () => instanceGuard.release() },
   ],
   finalize: [
+    { name: "work log usage", run: () => workLogUsageStore.close() },
     { name: "rate limit history", run: () => rateLimitHistoryStore.close() },
     { name: "task sync store", run: () => taskSyncStore.close() },
     { name: "task read-state store", run: () => taskReadStateStore.close() },
@@ -7468,594 +6092,96 @@ async function dismissCallbackMenu(message) {
   }).catch(() => {}));
 }
 
-async function selectCatalogTask(callback, entry) {
-  const targetChatId = callback.message.chat.id;
-  await telegram("answerCallbackQuery", {
-    callback_query_id: callback.id,
-    text: "Переключаю задачу…",
-  });
-  const selected = await selectTaskFromBinding({
-    provider: entry.provider,
-    projectRoot: entry.projectRoot,
-    threadId: entry.threadId,
-    taskTitle: entry.title,
-  }, telegramCallbackCommandContext(callback));
-  await Promise.all([
-    selected.selectionChanged
-      ? sendTaskSwitchNotification({ targetChatId })
-      : sendTaskAlreadySelectedNotification({ targetChatId }),
-    dismissCallbackMenu(callback.message),
-  ]);
-}
+const telegramSettingsCallbacks = new TelegramSettingsCallbackService({
+  telegram,
+  dispatchSetting: dispatchTelegramSetting,
+  sendMessage,
+  formatApprovalMode,
+  approvalModeKeyboard,
+  providerTitle,
+  activeProject,
+  activeProvider: () => activeProvider,
+  autoApprove: () => autoApprove,
+  codexModel: () => codexModel,
+  codexModelLabel,
+  codexReasoningEffort: () => codexReasoningEffort,
+  codexCollaborationMode: () => codexCollaborationMode,
+  claudeModel: () => claudeModel,
+  claudeReasoningEffort: () => claudeReasoningEffort,
+  claudeCollaborationMode: () => claudeCollaborationMode,
+  projects: PROJECTS,
+  reasoningLabels: CODEX_REASONING_LABELS,
+  collaborationModeLabels: CODEX_COLLABORATION_MODE_LABELS,
+  claudeModelLabels: CLAUDE_MODEL_LABELS,
+});
+
+const telegramTaskCallbacks = new TelegramTaskCallbackService({
+  telegram,
+  resolveTaskViewBinding,
+  runForTask: (binding) => taskRuns.forTask(binding),
+  refreshTaskDiff,
+  storedTaskDiff: (key) => taskDiffs.get(key),
+  taskRunKey,
+  sendLongMessage,
+  selectTaskFromBinding,
+  callbackContext: telegramCallbackCommandContext,
+  showLastTaskMessage,
+  showTaskMessage,
+  sendMessageTo,
+  sendTaskSwitchNotification,
+  sendTaskAlreadySelectedNotification,
+  scheduleInteractiveJob,
+  sendThreadPicker,
+  taskCatalog: () => taskCatalog,
+  refreshTaskCatalog,
+  dispatchApplicationCommand,
+  activeProvider: () => activeProvider,
+  sendMessage,
+  providerTitle,
+  archiveBlockedReason,
+  archiveCurrentThread,
+  sendArchiveMessage,
+  dismissCallbackMenu,
+  logError: (...args) => console.error(...args),
+});
+
+const telegramInputCallbacks = new TelegramInputCallbackService({
+  telegram,
+  sendMessageTo,
+  updateDeferredDesktopReceipt,
+  cleanupDeferredFiles,
+  saveState,
+  updateDeferredMessage,
+  scheduleNextForTask: (item) => deferredInputController.scheduleNextForTask(item),
+  selectTaskFromBinding,
+  callbackContext: telegramCallbackCommandContext,
+  showTaskMessage,
+  scheduleQueuedInput,
+  startTurn,
+  runForTask: (binding) => taskRuns.forTask(binding),
+  describeAttachments: desktopAttachmentDescriptors,
+  dispatchApplicationCommand,
+  activeThreadTitle: () => activeThreadTitle,
+  selectedTask,
+  speechText: (id) => mediaController.speechText(id),
+  forwardBundleController: {
+    bundleById: (...args) => forwardBundleController.bundleById(...args),
+    submit: (...args) => forwardBundleController.submit(...args),
+    undo: (...args) => forwardBundleController.undo(...args),
+    cancel: (...args) => forwardBundleController.cancel(...args),
+  },
+  pendingInputs,
+  queuedInputs,
+  backgroundJobs,
+  maxSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
+  sendTaskSwitchNotification,
+  logError: (...args) => console.error(...args),
+});
 
 async function dispatchTelegramCallback(callback, route) {
-  if (route.kind === "forward-bundle") {
-    if (!forwardBundleController.bundleById(route.id)) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Эта пачка уже обработана",
-        show_alert: true,
-      });
-      return;
-    }
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: route.action === "send"
-        ? "Отправляю пачку…"
-        : route.action === "undo" ? "Убираю последнее сообщение…" : "Отменяю сбор…",
-    });
-    try {
-      const result = route.action === "send"
-        ? await forwardBundleController.submit(route.id)
-        : route.action === "undo"
-          ? await forwardBundleController.undo(route.id)
-          : await forwardBundleController.cancel(route.id);
-      if (result.status === "missing") return;
-    } catch (error) {
-      console.error(`Cannot process forward bundle ${route.id}:`, error.message);
-      await sendMessageTo(
-        callback.message.chat.id,
-        `Не удалось обработать пачку сообщений: ${error.message}`,
-      );
-    }
-    return;
-  }
-
-  if (route.kind === "pending-input") {
-    const { action, id } = route;
-    const item = pendingInputs.get(id);
-    if (!item) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Сохранённое сообщение уже обработано",
-        show_alert: true,
-      });
-      return;
-    }
-    const binding = {
-      provider: item.provider,
-      projectRoot: item.projectRoot,
-      threadId: item.threadId,
-      taskTitle: item.taskTitle,
-    };
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: action === "new" ? "Создаю новую задачу…"
-        : action === "queue" ? "Ставлю сообщение в очередь…"
-          : action === "force" ? "Запускаю после явного подтверждения…"
-          : action === "show" ? "Показываю текущий ход…"
-            : "Сообщение отменено",
-    });
-    try {
-      if (action === "cancel") {
-        pendingInputs.delete(id);
-        updateDeferredDesktopReceipt(item, "cancelled");
-        await cleanupDeferredFiles(item);
-        await saveState();
-        await updateDeferredMessage(item, "❌ Сохранённое сообщение отменено.");
-        deferredInputController.scheduleNextForTask(item);
-        return;
-      }
-      if (action === "show") {
-        const selected = await selectTaskFromBinding(binding, telegramCallbackCommandContext(callback));
-        if (selected.selectionChanged) {
-          await sendTaskSwitchNotification({
-            targetChatId: item.chatId,
-            showLastMessage: false,
-          });
-        }
-        await showTaskMessage(binding, item.chatId);
-        return;
-      }
-      if (action === "queue") {
-        pendingInputs.delete(id);
-        queuedInputs.set(id, item);
-        updateDeferredDesktopReceipt(item, "queued");
-        await saveState();
-        await updateDeferredMessage(
-          item,
-          `⏳ Сообщение поставлено в очередь задачи «${item.taskTitle}» и будет отправлено после завершения текущего хода.`,
-        );
-        scheduleQueuedInput(item, 500);
-        return;
-      }
-
-      if (action === "force") {
-        if (item.allowForce !== true) throw new Error("принудительный запуск для этого сообщения не разрешён");
-        await selectTaskFromBinding(binding, telegramCallbackCommandContext(callback));
-        const outcome = await startTurn(
-          item.input,
-          item.temporaryFiles ?? [],
-          {
-          forceSpeechButton: item.forceSpeechButton === true,
-          target: {
-            ...binding,
-            chatId: item.chatId,
-            modelId: item.modelId,
-            reasoningId: item.reasoningId,
-            collaborationMode: item.collaborationMode,
-            clientUserMessageId: item.clientUserMessageId,
-          },
-          allowRepositoryConflict: item.conflictKind === "repository",
-          allowUnknownExternalActivity: item.conflictKind === "activity-unknown",
-          persistentFiles: item.persistentFiles === true,
-          },
-        );
-        if (outcome?.deferred) throw new Error("условие безопасного запуска всё ещё не выполнено");
-        const startedRun = taskRuns.forTask(binding);
-        if (startedRun && item.persistentFiles) {
-          startedRun.messageAttachments = desktopAttachmentDescriptors(item.temporaryFiles);
-        }
-        pendingInputs.delete(id);
-        updateDeferredDesktopReceipt(item, "started", startedRun);
-        await saveState();
-        await updateDeferredMessage(item, `⚠️ Сообщение отправлено в задачу «${item.taskTitle}» после явного подтверждения.`);
-        deferredInputController.scheduleNextForTask(item);
-        return;
-      }
-
-      await selectTaskFromBinding(binding, telegramCallbackCommandContext(callback));
-      await dispatchApplicationCommand(
-        "task.create",
-        { provider: binding.provider },
-        telegramCallbackCommandContext(callback),
-      );
-      const newTaskTitle = activeThreadTitle;
-      const outcome = await startTurn(item.input, item.temporaryFiles ?? [], {
-        forceSpeechButton: item.forceSpeechButton === true,
-        persistentFiles: item.persistentFiles === true,
-      });
-      if (outcome?.deferred) throw new Error("новая задача неожиданно оказалась занята");
-      const startedRun = taskRuns.forTask(selectedTask());
-      if (startedRun && item.persistentFiles) {
-        startedRun.messageAttachments = desktopAttachmentDescriptors(item.temporaryFiles);
-      }
-      pendingInputs.delete(id);
-      updateDeferredDesktopReceipt(item, "started", startedRun);
-      await saveState();
-      await updateDeferredMessage(item, `🆕 Сообщение отправлено в новую задачу «${newTaskTitle}».`);
-      deferredInputController.scheduleNextForTask(item);
-      await sendTaskSwitchNotification({ targetChatId: item.chatId });
-    } catch (error) {
-      console.error(`Cannot process pending input ${id}:`, error.message);
-      await sendMessageTo(item.chatId, `Не удалось обработать сохранённое сообщение: ${error.message}`);
-    }
-    return;
-  }
-
-  if (route.kind === "speech") {
-    const text = mediaController.speechText(route.id);
-    if (!text) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Текст ответа уже недоступен",
-        show_alert: true,
-      });
-      return;
-    }
-    const speechJob = await backgroundJobs.enqueue("speech", {
-      chatId: callback.message.chat.id,
-      text,
-    }, callback.message.chat.id, { dedupeKey: `callback:${callback.id}:speech` });
-    if (!speechJob) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: `Очередь озвучивания заполнена (${MAX_BACKGROUND_SPEECH_JOBS})`,
-        show_alert: true,
-      });
-      return;
-    }
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: backgroundJobs.speechPending
-        ? `Озвучивание поставлено в очередь: ${backgroundJobs.speechPending}`
-        : "Готовлю голосовое сообщение…",
-    });
-    return;
-  }
-  const taskViewAction = route.taskView;
-  const historyMatch = route.legacyHistory;
-  if (route.kind === "task-diff") {
-    const targetChatId = callback.message?.chat?.id;
-    const sourceMessageId = callback.message?.message_id;
-    const binding = await resolveTaskViewBinding(taskViewAction, targetChatId, sourceMessageId);
-    if (!binding) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Изменения этой задачи уже недоступны",
-        show_alert: true,
-      });
-      return;
-    }
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: "Загружаю изменения…",
-    });
-    scheduleInteractiveJob("Изменения", targetChatId, async () => {
-      const run = taskRuns.forTask(binding);
-      const diff = run
-        ? await refreshTaskDiff(run)
-        : taskDiffs.get(taskRunKey(binding)) ?? "";
-      await sendLongMessage(
-        diff || "В этой задаче изменений файлов нет.",
-        { maxParts: 8, targetChatId },
-      );
-    });
-    return;
-  }
-  if (route.kind === "task-history") {
-    const targetChatId = callback.message?.chat?.id;
-    const sourceMessageId = callback.message?.message_id;
-    const binding = await resolveTaskViewBinding(taskViewAction, targetChatId, sourceMessageId);
-    if (!binding) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "История этой задачи уже недоступна",
-        show_alert: true,
-      });
-      return;
-    }
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: "Загружаю предыдущие сообщения…",
-    });
-    const completedOnly = taskViewAction
-      ? taskViewAction.action === "history-last"
-      : historyMatch.scope === "l";
-    const count = taskViewAction?.count
-      ?? Math.max(1, Math.min(Number(historyMatch.count) || 1, 50));
-    try {
-      await selectTaskFromBinding(binding, telegramCallbackCommandContext(callback));
-      if (completedOnly) {
-        await showLastTaskMessage(binding, targetChatId, { count });
-      } else {
-        await showTaskMessage(binding, targetChatId, { count });
-      }
-    } catch (error) {
-      console.error("Cannot load task history:", error.message);
-      await sendMessageTo(targetChatId, `Не удалось загрузить историю задачи: ${error.message}`);
-    }
-    return;
-  }
-  if (route.kind === "task-view") {
-    const targetChatId = callback.message?.chat?.id;
-    const sourceMessageId = callback.message?.message_id;
-    const binding = await resolveTaskViewBinding(taskViewAction, targetChatId, sourceMessageId);
-    if (!binding) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Привязка задачи уже недоступна",
-        show_alert: true,
-      });
-      return;
-    }
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: "Открываю задачу…",
-    });
-    try {
-      const selected = await selectTaskFromBinding(binding, telegramCallbackCommandContext(callback));
-      if (selected.selectionChanged) {
-        await sendTaskSwitchNotification({
-          targetChatId,
-          showLastMessage: false,
-        });
-      }
-      await showTaskMessage(binding, targetChatId);
-    } catch (error) {
-      console.error("Cannot show bound task message:", error.message);
-      await sendMessageTo(targetChatId, `Не удалось показать сообщение задачи: ${error.message}`);
-    }
-    return;
-  }
-  if (route.kind === "approval-mode") {
-    await dispatchTelegramSetting(callback, "approvalMode", route.mode);
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: autoApprove ? "Автоподтверждение включено" : "Ручной режим включён",
-    });
-    await telegram("editMessageText", {
-      chat_id: callback.message.chat.id,
-      message_id: callback.message.message_id,
-      text: formatApprovalMode(),
-      reply_markup: approvalModeKeyboard(),
-    });
-    return;
-  }
-  if (route.kind === "project") {
-    try {
-      const project = PROJECTS[route.index];
-      if (!project) throw new Error("unknown project");
-      const result = await dispatchTelegramSetting(callback, "project", project.path);
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: result.setting.changed ? "Папка изменена" : "Эта папка уже активна",
-      });
-      await telegram("editMessageReplyMarkup", {
-        chat_id: callback.message.chat.id,
-        message_id: callback.message.message_id,
-        reply_markup: { inline_keyboard: [] },
-      });
-      if (result.setting.changed) {
-        await sendMessage(
-          `Активная папка: ${project.name}\n${project.path}\nСоздан новый контекст ${providerTitle()}.`,
-        );
-      }
-    } catch (error) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Не удалось сменить проект",
-        show_alert: true,
-      });
-      await sendMessage(`Ошибка смены папки: ${error.message}`);
-    }
-    return;
-  }
-  if (route.kind === "engine") {
-    try {
-      const result = await dispatchTelegramSetting(callback, "provider", route.provider);
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: result.setting.changed ? "Агент переключён" : "Этот агент уже активен",
-      });
-      await telegram("editMessageReplyMarkup", {
-        chat_id: callback.message.chat.id,
-        message_id: callback.message.message_id,
-        reply_markup: { inline_keyboard: [] },
-      });
-      if (result.setting.changed) {
-        await sendMessage(`Активный агент: ${providerTitle()}\nПроект: ${activeProject().name}`);
-      }
-    } catch (error) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Не удалось переключить агента",
-        show_alert: true,
-      });
-      await sendMessage(`Ошибка переключения агента: ${error.message}`);
-    }
-    return;
-  }
-  if (route.kind === "codex-model") {
-    try {
-      const result = await dispatchTelegramSetting(callback, "model", route.model);
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: result.setting.changed ? "Codex model changed" : "This Codex model is already selected",
-      });
-      await telegram("editMessageReplyMarkup", {
-        chat_id: callback.message.chat.id,
-        message_id: callback.message.message_id,
-        reply_markup: { inline_keyboard: [] },
-      });
-      if (result.setting.changed) {
-        await sendMessage(`Codex model: ${codexModelLabel(codexModel)}`);
-      }
-    } catch (error) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Cannot change Codex model",
-        show_alert: true,
-      });
-      await sendMessage(`Codex model switch error: ${error.message}`);
-    }
-    return;
-  }
-  if (route.kind === "codex-reasoning") {
-    const value = route.value;
-    let result;
-    try {
-      result = await dispatchTelegramSetting(callback, "reasoning", value);
-    } catch (error) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Не удалось изменить Reasoning",
-        show_alert: true,
-      });
-      await sendMessage(`Ошибка смены Reasoning Codex: ${error.message}`);
-      return;
-    }
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: result.setting.changed ? "Reasoning изменён" : "Этот уровень уже выбран",
-    });
-    await telegram("editMessageReplyMarkup", {
-      chat_id: callback.message.chat.id,
-      message_id: callback.message.message_id,
-      reply_markup: { inline_keyboard: [] },
-    });
-    if (result.setting.changed) await sendMessage(`Reasoning Codex: ${CODEX_REASONING_LABELS[codexReasoningEffort]}`);
-    return;
-  }
-  if (route.kind === "codex-mode") {
-    const value = route.value;
-    const result = await dispatchTelegramSetting(callback, "mode", value);
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: result.setting.changed ? "Режим Codex изменён" : "Этот режим уже выбран",
-    });
-    await telegram("editMessageReplyMarkup", {
-      chat_id: callback.message.chat.id,
-      message_id: callback.message.message_id,
-      reply_markup: { inline_keyboard: [] },
-    });
-    if (result.setting.changed) await sendMessage(`Режим Codex: ${CODEX_COLLABORATION_MODE_LABELS[codexCollaborationMode]}`);
-    return;
-  }
-  if (route.kind === "claude-reasoning") {
-    const value = route.value;
-    const result = await dispatchTelegramSetting(callback, "reasoning", value);
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: result.setting.changed ? "Reasoning изменён" : "Этот уровень уже выбран",
-    });
-    await telegram("editMessageReplyMarkup", {
-      chat_id: callback.message.chat.id,
-      message_id: callback.message.message_id,
-      reply_markup: { inline_keyboard: [] },
-    });
-    if (result.setting.changed) await sendMessage(`Reasoning Claude Code: ${CODEX_REASONING_LABELS[claudeReasoningEffort]}`);
-    return;
-  }
-  if (route.kind === "claude-mode") {
-    const value = route.value;
-    const result = await dispatchTelegramSetting(callback, "mode", value);
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: result.setting.changed ? "Режим Claude изменён" : "Этот режим уже выбран",
-    });
-    await telegram("editMessageReplyMarkup", {
-      chat_id: callback.message.chat.id,
-      message_id: callback.message.message_id,
-      reply_markup: { inline_keyboard: [] },
-    });
-    if (result.setting.changed) await sendMessage(`Режим Claude Code: ${CODEX_COLLABORATION_MODE_LABELS[claudeCollaborationMode]}`);
-    return;
-  }
-  if (route.kind === "claude-model") {
-    try {
-      const result = await dispatchTelegramSetting(callback, "model", route.model);
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: result.setting.changed ? "Модель изменена" : "Эта модель уже выбрана",
-      });
-      await telegram("editMessageReplyMarkup", {
-        chat_id: callback.message.chat.id,
-        message_id: callback.message.message_id,
-        reply_markup: { inline_keyboard: [] },
-      });
-      if (result.setting.changed) {
-        await sendMessage(`Модель Claude Code: ${CLAUDE_MODEL_LABELS[claudeModel]}`);
-      }
-    } catch (error) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Не удалось сменить модель",
-        show_alert: true,
-      });
-      await sendMessage(`Ошибка смены модели: ${error.message}`);
-    }
-    return;
-  }
-  if (route.kind === "task-page") {
-    await telegram("answerCallbackQuery", { callback_query_id: callback.id });
-    scheduleInteractiveJob("Страница списка задач", callback.message.chat.id, () => sendThreadPicker({
-        editMessage: callback.message,
-        page: route.page,
-      }));
-    return;
-  }
-  if (route.kind === "catalog-task") {
-    const catalogSelection = route.catalogTask;
-    let entry = taskCatalog.find((item) => (
-      item.provider === catalogSelection.provider && item.threadId === catalogSelection.threadId
-    ));
-    if (!entry) {
-      entry = (await refreshTaskCatalog()).find((item) => (
-        item.provider === catalogSelection.provider && item.threadId === catalogSelection.threadId
-      ));
-    }
-    if (!entry) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Задача больше не найдена",
-        show_alert: true,
-      });
-      return;
-    }
-    try {
-      await selectCatalogTask(callback, entry);
-    } catch (error) {
-      await sendMessageTo(callback.message.chat.id, `Ошибка выбора задачи: ${error.message}`);
-    }
-    return;
-  }
-  if (route.kind === "thread-new") {
-    try {
-      await dispatchApplicationCommand(
-        "task.create",
-        { provider: activeProvider },
-        telegramCallbackCommandContext(callback),
-      );
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Новая задача создана",
-      });
-      await telegram("editMessageReplyMarkup", {
-        chat_id: callback.message.chat.id,
-        message_id: callback.message.message_id,
-        reply_markup: { inline_keyboard: [] },
-      });
-      await sendMessage(`Создана новая задача ${providerTitle()} в текущем проекте.`);
-    } catch (error) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: "Не удалось создать задачу",
-        show_alert: true,
-      });
-      console.error("Cannot create thread:", error.message);
-    }
-    return;
-  }
-  if (route.kind === "thread-archive") {
-    const blockedReason = archiveBlockedReason();
-    if (blockedReason) {
-      const messages = {
-        "active-turn": "Сначала завершите или отмените текущую задачу",
-        unsupported: "Архивация доступна только для задач Codex",
-        "no-current": "Текущая задача не выбрана",
-      };
-      await telegram("answerCallbackQuery", {
-        callback_query_id: callback.id,
-        text: messages[blockedReason] ?? "Архивация недоступна",
-        show_alert: true,
-      });
-      return;
-    }
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: "Архивирую задачу…",
-    });
-    try {
-      const result = await archiveCurrentThread(telegramCallbackCommandContext(callback));
-      if (!result.archived) {
-        await sendMessageTo(callback.message.chat.id, "Архивация задачи стала недоступна. Обновите список задач.");
-        return;
-      }
-      const outcomes = await Promise.allSettled([
-        sendArchiveMessage(result, callback.message.chat.id),
-        sendThreadPicker({ editMessage: callback.message }),
-      ]);
-      const failures = outcomes.filter((outcome) => outcome.status === "rejected");
-      if (failures.length) {
-        throw new AggregateError(failures.map((failure) => failure.reason), "Не удалось полностью обновить меню архивации");
-      }
-    } catch (error) {
-      console.error("Cannot archive thread:", error.message);
-      await sendMessageTo(callback.message.chat.id, `Ошибка архивации задачи: ${error.message}`);
-    }
-    return;
-  }
+  if (await telegramSettingsCallbacks.handle(callback, route)) return;
+  if (await telegramTaskCallbacks.handle(callback, route)) return;
+  if (await telegramInputCallbacks.handle(callback, route)) return;
   const approvalHandled = route.kind === "approval" && await dispatchApplicationCommand(
     "approval.resolve",
     { callback },
@@ -8105,109 +6231,42 @@ function scheduleInteractiveJob(label, targetChatId, operation) {
   }
 }
 
-async function handleTelegramCommand(message, text) {
-  if (text === "/menu" || text === "/keyboard") {
-    await sendMessage("⌨️ Панель кнопок показана.", { reply_markup: BOT_MENU });
-  } else if (text === "/start" || text === "/help") {
-    await sendMessage(
-      `Бот подключён к Claude Code и Codex. Текущий агент: ${providerTitle()}. Отправьте текст, изображение или голосовое сообщение.\n\n` +
-        "/menu — показать панель кнопок\n/agent — переключить Claude Code/Codex\n/model — сменить модель\n/reasoning — мощь дум Codex/Claude\n/mode — режим Plan/Work Codex/Claude\n/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/rename — закрепить название текущей задачи\n/archive — архивировать текущую задачу\n/status — статус, текущая задача и лимиты\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
-      { reply_markup: BOT_MENU },
-    );
-  } else if (text === "/agent" || text === "/engine") {
-    await sendAgentPicker();
-  } else if (text === "/model") {
-    await sendModelPicker();
-  } else if (text === "/reasoning") {
-    await sendReasoningPicker();
-  } else if (text === "/mode") {
-    await sendCollaborationModePicker();
-  } else if (text === "/projects" || text === "/folders" || text === "/folder") {
-    await sendProjectPicker();
-  } else if (text === "/new") {
-    await dispatchApplicationCommand(
-      "task.create",
-      { provider: activeProvider },
-      telegramMessageCommandContext(message),
-    );
-    await sendMessage(`Создан новый контекст ${providerTitle()}.`);
-  } else if (text === "/status") {
-    const snapshot = currentStatusSnapshot(message.chat.id);
-    scheduleInteractiveJob("Статус", message.chat.id, () => sendStatus(snapshot));
-  } else if (text === "/approvals") {
-    await sendMessage(formatApprovalMode(), { reply_markup: approvalModeKeyboard() });
-  } else if (text === "/restart") {
-    await restartBot();
-  } else if (text === "/tasks" || text === "/resume") {
-    scheduleInteractiveJob("Список задач", message.chat.id, () => sendThreadPicker());
-  } else if (text.startsWith("/resume ")) {
-    const selectedThreadId = text.slice("/resume ".length).trim();
-    if (!/^[0-9a-f-]+$/i.test(selectedThreadId)) {
-      return sendMessage("Укажите корректный ID задачи или используйте /resume без параметров.");
-    }
-    await resumeThread(selectedThreadId, {
-      context: telegramMessageCommandContext(message),
-    });
-  } else if (text === "/rename") {
-    await sendMessage("Укажите новое постоянное название: /rename Название задачи");
-  } else if (text.startsWith("/rename ")) {
-    try {
-      const title = await renameCurrentTask(
-        text.slice("/rename ".length),
-        telegramMessageCommandContext(message),
-      );
-      await sendMessage(`✅ Название закреплено: «${title}». Автозаголовки Codex больше его не изменят.`);
-    } catch (error) {
-      await sendMessage(`Не удалось переименовать задачу: ${error.message}`);
-    }
-  } else if (text === "/archive") {
-    const result = await archiveCurrentThread(telegramMessageCommandContext(message));
-    if (!result.archived) {
-      if (result.reason === "active-turn") return sendMessage("Сначала завершите или отмените текущую задачу.");
-      if (result.reason === "unsupported") return sendMessage("Архивация доступна только для задач Codex.");
-      return sendMessage("Текущая задача не выбрана.");
-    }
-    await sendArchiveMessage(result);
-    await sendThreadPicker();
-  } else if (text === "/current" || text === "/thread") {
-    const snapshot = currentStatusSnapshot(message.chat.id);
-    scheduleInteractiveJob("Текущая задача", message.chat.id, () => sendStatus(snapshot));
-  } else if (text === "/diff") {
-    const target = selectedTask();
-    const run = taskRuns.forTask(target);
-    scheduleInteractiveJob(
-      "Изменения",
-      message.chat.id,
-      async () => {
-        const diff = run ? await refreshTaskDiff(run) : taskDiffs.get(taskRunKey(target)) ?? "";
-        await sendLongMessage(diff || "В выбранной задаче изменений файлов нет.", { maxParts: 8 });
-      },
-    );
-  } else if (text === "/cancel") {
-    const target = selectedTask();
-    if (!target.threadId) return sendMessage("В выбранной задаче сейчас ничего не выполняется.");
-    const run = taskRuns.forTask(target);
-    const result = await dispatchApplicationCommand(
-      "run.cancel",
-      {},
-      telegramMessageCommandContext(message),
-      { target: commandTaskTarget(target) },
-    );
-    if (run) await sendRunMessage(run, result.message);
-    else await sendMessage(result.message);
-  } else if (text.startsWith("/")) {
-    await sendMessage("Неизвестная команда. Используйте /help.");
-  } else {
-    await bindIncomingTaskMessage(message, text);
-    await startTurn(telegramPrompt(message, text));
-  }
-}
-
-const telegramCommandHandlers = Object.fromEntries([
-  "menu", "keyboard", "start", "help", "agent", "engine", "model", "reasoning", "mode",
-  "projects", "folders", "folder", "new", "status", "approvals", "restart", "tasks", "resume",
-  "rename", "archive", "current", "thread", "diff", "cancel",
-].map((command) => [command, ({ message, text }) => handleTelegramCommand(message, text)]));
+const telegramCommandService = new TelegramCommandService({
+  sendMessage,
+  providerTitle,
+  sendAgentPicker,
+  sendModelPicker,
+  sendReasoningPicker,
+  sendModePicker: sendCollaborationModePicker,
+  sendProjectPicker,
+  dispatchCommand: dispatchApplicationCommand,
+  messageContext: telegramMessageCommandContext,
+  activeProvider: () => activeProvider,
+  statusSnapshot: currentStatusSnapshot,
+  scheduleInteractiveJob,
+  sendStatus,
+  approvalModeText: formatApprovalMode,
+  approvalModeKeyboard,
+  restart: restartBot,
+  sendTaskPicker: sendThreadPicker,
+  resumeThread,
+  renameCurrentTask,
+  archiveCurrentTask: archiveCurrentThread,
+  sendArchiveMessage,
+  selectedTask,
+  runForTask: (target) => taskRuns.forTask(target),
+  refreshTaskDiff,
+  storedTaskDiff: (key) => taskDiffs.get(key) ?? "",
+  taskKey: taskRunKey,
+  sendLongMessage,
+  sendRunMessage,
+  bindIncomingMessage: bindIncomingTaskMessage,
+  startTurn,
+  prompt: telegramPrompt,
+  commandTaskTarget,
+  menu: BOT_MENU,
+});
+const telegramCommandHandlers = telegramCommandService.handlers();
 
 const forwardBundleController = new TelegramForwardBundleController({
   bundles: forwardBundles,
@@ -8460,7 +6519,7 @@ async function startAgentHubOnce() {
     console.error("Cannot initialize provider during startup:", error.message);
   });
   if (codexTransport.running) {
-    await listAllCodexThreads()
+    await codexProviderTasks.discoverTasks()
       .then((threads) => backfillWorkLogPricingMetadata(threads))
       .catch((error) => console.error("Cannot list Codex threads for credit backfill:", error.message));
   }

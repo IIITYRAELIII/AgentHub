@@ -10,8 +10,9 @@ Agent Hub остаётся одним локальным процессом. Д�
 Снимок на 2026-08-04:
 
 - 141 production-модуль и около 38,5 тыс. строк JavaScript;
-- `agent-hub-server.mjs` — около 8,5 тыс. строк, 96 импортов, 46 изменяемых
-  top-level переменных и примерно 270 функций;
+- `agent-hub-server.mjs` сокращён примерно с 8,5 до 6,6 тыс. строк; provider и
+  client policy уже вынесена, но общая journal/progress/startup policy пока
+  сохраняет значительную top-level связность;
 - циклических импортов нет;
 - основные дефекты возникают из-за скрытых зависимостей через module globals,
   нескольких конкурирующих представлений одной задачи и разного lifecycle для
@@ -86,6 +87,10 @@ thread консервируется, создаёт handoff и передаёт 
 | A6 | ✅ | `AgentProviderRegistry` задаёт обязательный port Codex/Claude для discovery/projection, create, launch, cancel, external activity, live/recovery snapshot, observed/managed completion, recovery и restart/shutdown policy. Общий task-run lifecycle больше не выбирает провайдера условными ветками. |
 | A7 | ✅ | `RunCoordinator` владеет admission state machine запуска, steer/deferred input и task-lane между Telegram/Desktop/Mini App; managed/observed completion и recovery входят через него в единый provider port. Lane предпочитает будущий `hubTaskId`, но разрешает новый provider-сеанс без ThreadID до первого события CLI. |
 | A8 | ✅ | Исполняемый bootstrap выделен в `agent-hub-main.mjs`: он единственный устанавливает process-level error/signal handlers и запускает composition root. `agent-hub-server.mjs` экспортирует idempotent start/shutdown API и больше не стартует процесс при импорте. Launcher, restart и E2E используют новый entrypoint; `bot.mjs` оставлен compatibility shim. |
+| A9 | ✅ | Provider adapters выделены из composition root: Codex и Claude имеют отдельные фабрики портов и сервисы catalog/task/turn/event/snapshot/completion/recovery. Интерфейсы принимают `hubTaskId`/task reference и не закрепляют один thread/session ID за логической задачей. |
+| A10 | ✅ | Desktop и Mini App RPC разделены на application router, read-model и attachment/settings/deferred-input services; мутации проходят `ApplicationCommandBus` и `RunCoordinator` с явной задачей и `clientId`. |
+| A11 | ✅ | Telegram command/callback dispatch выделен из composition root: transport/controller wiring осталось в host, команды и callback actions находятся в самостоятельных тестируемых сервисах. |
+| A12 | 🔄 | `agent-hub-server.mjs` сокращён примерно до 6,6 тыс. строк. Provider/client policy вынесена; до чистого composition root остаётся выделить общую journal, progress/observer и startup policy. |
 
 Каждый этап должен сохранять внешний протокол, получать отдельные contract-тесты
 и проходить полный process E2E. Массовое переписывание за один релиз запрещено:

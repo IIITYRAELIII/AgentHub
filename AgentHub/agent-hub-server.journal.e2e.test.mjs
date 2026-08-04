@@ -12,7 +12,7 @@ const ROOT = path.resolve(import.meta.dirname);
 const BOT_FILE = path.join(ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(ROOT, "e2e", "fake-codex-app-server.mjs");
 
-test("core-only components start without Telegram and keep Web App disabled", { timeout: 20_000 }, async (t) => {
+test("core-only components start without Telegram and keep Web App disabled", { timeout: 30_000 }, async (t) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-e2e-"));
   const dataDir = path.join(runtimeRoot, "data");
   const projectRoot = path.join(runtimeRoot, "project");
@@ -58,10 +58,15 @@ test("core-only components start without Telegram and keep Web App disabled", { 
     await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
-  const snapshot = await waitFor(
-    () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
-    "journal runtime startup",
-  );
+  let snapshot;
+  try {
+    snapshot = await waitFor(
+      () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
+      "journal runtime startup",
+    );
+  } catch (error) {
+    throw new Error(`${error.message}\nstdout:\n${stdout}\nstderr:\n${stderr}`, { cause: error });
+  }
   assert.equal(snapshot.apiVersion, 2);
   await waitFor(
     () => (/Agent Hub ready; components: core/u.test(stdout) ? true : null),

@@ -22,6 +22,10 @@ const serverSource = await readFile(
   new URL("./agent-hub-server.mjs", import.meta.url),
   "utf8",
 );
+const codexEventSource = await readFile(
+  new URL("./codex-event-service.mjs", import.meta.url),
+  "utf8",
+);
 
 function message(itemId, text) {
   return {
@@ -753,8 +757,8 @@ test("context compaction notifications identify the task that compacted", () => 
 
 test("Hub compaction completes only after its targeted image cleanup", () => {
   assert.match(
-    serverSource,
-    /if \(isContextCompactionItem\(params\.item\)\) \{\s*beginCodexCompactionCleanup/u,
+    codexEventSource,
+    /if \(d\.isCompactionItem\(params\.item\)\) \{\s*d\.beginCompactionCleanup/u,
   );
   assert.match(
     serverSource,
