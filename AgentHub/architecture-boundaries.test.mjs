@@ -231,6 +231,26 @@ test("Codex compaction and rollout sanitation have one maintenance owner", async
   assert.equal(maintenance.includes("this.recycleInFlight"), true);
 });
 
+test("Codex terminal reconciliation has one application owner", async () => {
+  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const reconciliation = await readFile(
+    path.join(ROOT, "codex-terminal-reconciliation-service.mjs"),
+    "utf8",
+  );
+  assert.equal((source.match(/new CodexTerminalReconciliationService\s*\(/g) ?? []).length, 1);
+  assert.equal(source.includes("const reconcilingCodexTerminalTurns = new Set()"), false);
+  assert.equal(reconciliation.includes("this.reconciling = new Set()"), true);
+  for (const operation of [
+    "hasDelivered(identity)",
+    "recordCompletion({",
+    "takePendingMessage(identity)",
+    "Accounted historical Codex turn",
+  ]) {
+    assert.equal(source.includes(operation), false, operation);
+    assert.equal(reconciliation.includes(operation), true, operation);
+  }
+});
+
 test("shared task mutations enter through one application command bus", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   const commands = await readFile(path.join(ROOT, "application-command-service.mjs"), "utf8");

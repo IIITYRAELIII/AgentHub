@@ -1,0 +1,299 @@
+import path from "node:path";
+
+import { turnEndKey } from "./turn-end-notifications.mjs";
+import { conciseTurnTitle } from "./turn-title.mjs";
+
+export class CodexTerminalReconciliationService {
+  constructor({
+    notifications,
+    turnStarts,
+    workLogStore,
+    accountingThread,
+    subagentParentTurnId,
+    readTurnUsage,
+    taskGitDiff,
+    dataDir,
+    changedFilesForRun,
+    projectTurn,
+    taskTitle,
+    defaultChatId,
+    fallbackMessage,
+    rememberLastMessage,
+    rememberSeenTurn,
+    saveState,
+    deliverNotification,
+    completedGraceMs = 10_000,
+    now = Date.now,
+    logger = console,
+  }) {
+    this.notifications = notifications;
+    this.turnStarts = turnStarts;
+    this.workLogStore = workLogStore;
+    this.accountingThread = accountingThread;
+    this.subagentParentTurnId = subagentParentTurnId;
+    this.readTurnUsage = readTurnUsage;
+    this.taskGitDiff = taskGitDiff;
+    this.dataDir = dataDir;
+    this.changedFilesForRun = changedFilesForRun;
+    this.projectTurn = projectTurn;
+    this.taskTitle = taskTitle;
+    this.defaultChatId = defaultChatId;
+    this.fallbackMessage = fallbackMessage;
+    this.rememberLastMessage = rememberLastMessage;
+    this.rememberSeenTurn = rememberSeenTurn;
+    this.saveState = saveState;
+    this.deliverNotification = deliverNotification;
+    this.completedGraceMs = completedGraceMs;
+    this.now = now;
+    this.logger = logger;
+    this.reconciling = new Set();
+  }
+
+  async reconcile(thread, project, terminal) {
+    const completedAtMs = Date.parse(String(terminal?.completedAt ?? ""));
+    if (terminal?.status === "completed"
+      && Number.isFinite(completedAtMs)
+      && this.now() - completedAtMs < this.completedGraceMs) return false;
+    const identity = {
+      provider: "codex",
+      threadId: String(thread.id),
+      turnId: String(terminal.turnId),
+    };
+    const key = turnEndKey(identity);
+    const subagentThread = Boolean(String(thread?.parentThreadId ?? "").trim());
+    const alreadyDelivered = this.notifications.hasDelivered(identity);
+    const pendingCompletion = this.notifications.get(identity);
+    if (!subagentThread
+      && pendingCompletion
+      && pendingCompletion.status !== "unknown"
+      && pendingCompletion.usageReported) return true;
+    if (this.reconciling.has(key)) return false;
+    this.reconciling.add(key);
+    try {
+      if (terminal?.historical === true) {
+        const existingJournalTurn = await this.workLogStore.getTurn(identity);
+        if (existingJournalTurn && existingJournalTurn.provisional !== true) {
+          this.turnStarts.delete(key);
+          return true;
+        }
+      }
+      const accountingThread = await this.accountingThread(thread);
+      const parentTurnId = accountingThread.isSubagent
+        ? await this.subagentParentTurnId(thread, accountingThread)
+        : "";
+      const usageResult = terminal?.usageResult
+        ?? await this.readTurnUsage(thread.path, identity.turnId);
+      const authoritativeStatus = terminal?.authoritative === true;
+      if (!usageResult.terminal && !authoritativeStatus) return false;
+      const resolvedStatus = usageResult.terminal
+        ? (usageResult.status || terminal.status)
+        : terminal.status;
+      const resolvedCompletedAt = usageResult.terminal
+        ? (usageResult.completedAt || terminal.completedAt)
+        : terminal.completedAt;
+      const provisional = authoritativeStatus && !usageResult.terminal;
+      const turnStart = this.turnStarts.get(key);
+      const baselineDiff = turnStart?.gitBaseline
+        ? await this.taskGitDiff(
+          turnStart.gitBaseline,
+          this.dataDir,
+          `terminal-audit-${identity.turnId}`,
+        ) ?? ""
+        : "";
+      const turnDiff = baselineDiff || usageResult.diff || "";
+      const changedFiles = [...new Set([
+        ...(usageResult.changedFiles ?? []).flatMap((file) => {
+          const absolute = path.resolve(String(file));
+          const relative = path.relative(project.path, absolute);
+          if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
+          return [relative.replaceAll(path.sep, "/")];
+        }),
+        ...this.changedFilesForRun({
+          projectRoot: project.path,
+          gitBaseline: turnStart?.gitBaseline,
+          latestDiff: turnDiff,
+        }),
+      ])];
+      if (accountingThread.isSubagent || terminal?.historical === true) {
+        await this.#projectHistorical({
+          identity,
+          thread,
+          project,
+          terminal,
+          usageResult,
+          accountingThread,
+          parentTurnId,
+          resolvedStatus,
+          resolvedCompletedAt,
+          provisional,
+          changedFiles,
+          turnDiff,
+        });
+        this.turnStarts.delete(key);
+        this.logger.log(
+          `Accounted historical Codex turn ${identity.turnId} to thread ${accountingThread.threadId}`,
+        );
+        return true;
+      }
+      if (alreadyDelivered) {
+        await this.#reconcileDelivered({
+          identity,
+          thread,
+          project,
+          usageResult,
+          resolvedStatus,
+          resolvedCompletedAt,
+          changedFiles,
+          turnDiff,
+        });
+        this.turnStarts.delete(key);
+        this.logger.log(`Reconciled delivered Codex terminal turn ${identity.turnId} (${resolvedStatus})`);
+        return true;
+      }
+      const completion = this.notifications.recordCompletion({
+        ...identity,
+        projectRoot: project.path,
+        taskTitle: await this.taskTitle({ ...identity, thread }),
+        chatId: this.defaultChatId(),
+        status: resolvedStatus,
+        provisional,
+        usage: usageResult.usage,
+        usageReported: usageResult.reported === true,
+        imageGenerationCount: usageResult.imageGenerationCount,
+        estimatedCredits: usageResult.estimatedCredits,
+        estimateKind: usageResult.estimateKind,
+        model: usageResult.model,
+        serviceTier: usageResult.serviceTier,
+        startedAt: usageResult.startedAt,
+        completedAt: resolvedCompletedAt,
+        prompt: usageResult.prompt,
+        finalAnswer: usageResult.finalAnswer,
+        changedFiles,
+        diff: turnDiff,
+        skillsUsed: usageResult.skillsUsed,
+        mcpCalls: usageResult.mcpCalls,
+        toolMetricsKnown: usageResult.toolMetricsKnown,
+      });
+      this.turnStarts.delete(key);
+      await this.saveState();
+      if (completion) {
+        await this.deliverNotification(completion);
+        this.logger.log(`Recovered unhooked Codex terminal turn ${identity.turnId} (${completion.status})`);
+      }
+      return true;
+    } catch (error) {
+      this.logger.error(`Cannot recover unhooked Codex turn ${identity.turnId}:`, error.message);
+      throw error;
+    } finally {
+      this.reconciling.delete(key);
+    }
+  }
+
+  async #projectHistorical({
+    identity,
+    project,
+    usageResult,
+    accountingThread,
+    parentTurnId,
+    resolvedStatus,
+    resolvedCompletedAt,
+    provisional,
+    changedFiles,
+    turnDiff,
+  }) {
+    const finalAnswer = String(usageResult.finalAnswer ?? "").trim();
+    const journal = await this.projectTurn({
+      ...identity,
+      taskThreadId: accountingThread.threadId,
+      parentThreadId: accountingThread.parentThreadId,
+      parentTurnId,
+      aggregateOnly: accountingThread.isSubagent,
+      projectRoot: project.path,
+      taskTitle: await this.taskTitle({
+        provider: "codex",
+        threadId: accountingThread.threadId,
+        thread: accountingThread.thread,
+      }),
+      status: resolvedStatus,
+      provisional,
+      usage: usageResult.usage,
+      usageReported: usageResult.reported === true,
+      estimatedCredits: usageResult.estimatedCredits,
+      estimateKind: usageResult.estimateKind,
+      model: usageResult.model,
+      serviceTier: usageResult.serviceTier,
+      startedAt: usageResult.startedAt,
+      completedAt: resolvedCompletedAt,
+      prompt: usageResult.prompt,
+      changedFiles,
+      diff: turnDiff,
+      skillsUsed: usageResult.skillsUsed,
+      mcpCalls: usageResult.mcpCalls,
+      toolMetricsKnown: usageResult.toolMetricsKnown,
+      message: null,
+    }, {
+      title: conciseTurnTitle(finalAnswer, resolvedStatus),
+      body: finalAnswer,
+    });
+    if (journal?.projectionError) {
+      this.logger.error(
+        `Journal historical projection deferred for turn ${identity.turnId}: ${journal.projectionError}`,
+      );
+    }
+  }
+
+  async #reconcileDelivered({
+    identity,
+    thread,
+    project,
+    usageResult,
+    resolvedStatus,
+    resolvedCompletedAt,
+    changedFiles,
+    turnDiff,
+  }) {
+    const registeredMessage = this.notifications.takePendingMessage(identity);
+    const journalTurn = await this.workLogStore.getTurn(identity);
+    const correctedBody = usageResult.finalAnswer
+      || registeredMessage?.text
+      || (journalTurn?.provisional ? this.fallbackMessage(resolvedStatus) : "");
+    const correctedTitle = correctedBody
+      ? registeredMessage?.title || conciseTurnTitle(correctedBody, resolvedStatus)
+      : "";
+    const journal = await this.projectTurn({
+      ...identity,
+      projectRoot: project.path,
+      taskTitle: await this.taskTitle({ ...identity, thread }),
+      status: resolvedStatus,
+      usage: usageResult.usage,
+      usageReported: usageResult.reported === true,
+      estimatedCredits: usageResult.estimatedCredits,
+      estimateKind: usageResult.estimateKind,
+      model: usageResult.model,
+      serviceTier: usageResult.serviceTier,
+      startedAt: usageResult.startedAt,
+      completedAt: resolvedCompletedAt,
+      prompt: usageResult.prompt,
+      changedFiles,
+      diff: turnDiff,
+      skillsUsed: usageResult.skillsUsed,
+      mcpCalls: usageResult.mcpCalls,
+      toolMetricsKnown: usageResult.toolMetricsKnown,
+      message: null,
+    }, {
+      title: correctedTitle,
+      body: correctedBody,
+    });
+    if (journal?.projectionError) {
+      this.logger.error(
+        `Journal correction deferred for turn ${identity.turnId}: ${journal.projectionError}`,
+      );
+    }
+    if (correctedBody) {
+      const task = { ...identity, projectRoot: project.path };
+      this.rememberLastMessage(task, correctedBody);
+      this.rememberSeenTurn(task, identity.turnId);
+    }
+    if (registeredMessage || correctedBody) await this.saveState();
+  }
+}

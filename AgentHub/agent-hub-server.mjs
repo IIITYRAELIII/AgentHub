@@ -61,6 +61,7 @@ import {
   scanCodexTurnPricingMetadata,
 } from "./codex-turn-usage.mjs";
 import { CodexTerminalAudit } from "./codex-terminal-audit.mjs";
+import { CodexTerminalReconciliationService } from "./codex-terminal-reconciliation-service.mjs";
 import { scanCodexHistoricalRolloutInWorker } from "./codex-historical-backfill.mjs";
 import { resolveCodexJournalProject } from "./codex-journal-project.mjs";
 import { RateLimitHistoryStore } from "./rate-limit-history.mjs";
@@ -556,9 +557,7 @@ let stateWriteQueue = Promise.resolve();
 let bindingWriteQueue = Promise.resolve();
 let selectedTaskWatchInFlight = false;
 const runtimeTimers = new RuntimeTimerCoordinator();
-const reconcilingCodexTerminalTurns = new Set();
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
-const COMPLETED_CODEX_TERMINAL_GRACE_MS = 10_000;
 const EXTERNAL_TASK_POLL_INTERVAL_MS = 1_500;
 const MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS = 5_000;
 const CLAUDE_OUTPUT_POLL_INTERVAL_MS = 250;
@@ -644,6 +643,27 @@ async function rememberAuditedCodexTurnStart(thread, project, turn) {
   }
 }
 
+const codexTerminalReconciliation = new CodexTerminalReconciliationService({
+  notifications: turnEndNotifications,
+  turnStarts: codexTurnStarts,
+  workLogStore: workLogUsageStore,
+  accountingThread: codexAccountingThread,
+  subagentParentTurnId: codexSubagentParentTurnId,
+  readTurnUsage: readCodexTurnUsage,
+  taskGitDiff,
+  dataDir: config.dataDir,
+  changedFilesForRun,
+  projectTurn: projectTurnUsageToWorkLog,
+  taskTitle: runtimeCommandTaskTitle,
+  defaultChatId: defaultNotificationChatId,
+  fallbackMessage: fallbackTurnEndMessage,
+  rememberLastMessage: rememberLastTaskMessage,
+  rememberSeenTurn: (task, turnId) => {
+    setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(task), turnId, 500);
+  },
+  saveState,
+  deliverNotification: deliverTurnEndNotification,
+});
 const codexTerminalAudit = new CodexTerminalAudit({
   listPage: (cursor, limit) => sendRpc("thread/list", {
     cursor,
@@ -687,7 +707,7 @@ const codexTerminalAudit = new CodexTerminalAudit({
       return parent ? findProject(parent.projectRoot) : null;
     },
   }),
-  reconcile: reconcileRecentCodexTerminalTurn,
+  reconcile: (...args) => codexTerminalReconciliation.reconcile(...args),
   discoverHistoricalThreads: () => discoverCodexRollouts(),
   discoverSupplementalThreads: () => discoverCodexSubagentRollouts(),
   scanHistoricalFile: scanCodexHistoricalRolloutInWorker,
@@ -4737,209 +4757,6 @@ async function codexSubagentParentTurnId(thread, accountingThread) {
     }
   }
   return "";
-}
-
-async function reconcileRecentCodexTerminalTurn(thread, project, terminal) {
-  const completedAtMs = Date.parse(String(terminal?.completedAt ?? ""));
-  if (terminal?.status === "completed"
-    && Number.isFinite(completedAtMs)
-    && Date.now() - completedAtMs < COMPLETED_CODEX_TERMINAL_GRACE_MS) return false;
-  const identity = {
-    provider: "codex",
-    threadId: String(thread.id),
-    turnId: String(terminal.turnId),
-  };
-  const key = turnEndKey(identity);
-  const subagentThread = Boolean(String(thread?.parentThreadId ?? "").trim());
-  const alreadyDelivered = turnEndNotifications.hasDelivered(identity);
-  const pendingCompletion = turnEndNotifications.get(identity);
-  if (!subagentThread
-    && pendingCompletion
-    && pendingCompletion.status !== "unknown"
-    && pendingCompletion.usageReported) return true;
-  if (reconcilingCodexTerminalTurns.has(key)) return false;
-  reconcilingCodexTerminalTurns.add(key);
-  try {
-    if (terminal?.historical === true) {
-      const existingJournalTurn = await workLogUsageStore.getTurn(identity);
-      if (existingJournalTurn && existingJournalTurn.provisional !== true) {
-        codexTurnStarts.delete(key);
-        return true;
-      }
-    }
-    const accountingThread = await codexAccountingThread(thread);
-    const parentTurnId = accountingThread.isSubagent
-      ? await codexSubagentParentTurnId(thread, accountingThread)
-      : "";
-    const usageResult = terminal?.usageResult
-      ?? await readCodexTurnUsage(thread.path, identity.turnId);
-    const authoritativeStatus = terminal?.authoritative === true;
-    if (!usageResult.terminal && !authoritativeStatus) return false;
-    const resolvedStatus = usageResult.terminal
-      ? (usageResult.status || terminal.status)
-      : terminal.status;
-    const resolvedCompletedAt = usageResult.terminal
-      ? (usageResult.completedAt || terminal.completedAt)
-      : terminal.completedAt;
-    const provisional = authoritativeStatus && !usageResult.terminal;
-    const turnStart = codexTurnStarts.get(key);
-    const baselineDiff = turnStart?.gitBaseline
-      ? await taskGitDiff(
-        turnStart.gitBaseline,
-        config.dataDir,
-        `terminal-audit-${identity.turnId}`,
-      ) ?? ""
-      : "";
-    const turnDiff = baselineDiff || usageResult.diff || "";
-    const changedFiles = [...new Set([
-      ...(usageResult.changedFiles ?? []).flatMap((file) => {
-        const absolute = path.resolve(String(file));
-        const relative = path.relative(project.path, absolute);
-        if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
-        return [relative.replaceAll(path.sep, "/")];
-      }),
-      ...changedFilesForRun({
-        projectRoot: project.path,
-        gitBaseline: turnStart?.gitBaseline,
-        latestDiff: turnDiff,
-      }),
-    ])];
-    if (accountingThread.isSubagent || terminal?.historical === true) {
-      const finalAnswer = String(usageResult.finalAnswer ?? "").trim();
-      const journal = await projectTurnUsageToWorkLog({
-        ...identity,
-        taskThreadId: accountingThread.threadId,
-        parentThreadId: accountingThread.parentThreadId,
-        parentTurnId,
-        aggregateOnly: accountingThread.isSubagent,
-        projectRoot: project.path,
-        taskTitle: await runtimeCommandTaskTitle({
-          provider: "codex",
-          threadId: accountingThread.threadId,
-          thread: accountingThread.thread,
-        }),
-        status: resolvedStatus,
-        provisional,
-        usage: usageResult.usage,
-        usageReported: usageResult.reported === true,
-        estimatedCredits: usageResult.estimatedCredits,
-        estimateKind: usageResult.estimateKind,
-        model: usageResult.model,
-        serviceTier: usageResult.serviceTier,
-        startedAt: usageResult.startedAt,
-        completedAt: resolvedCompletedAt,
-        prompt: usageResult.prompt,
-        changedFiles,
-        diff: turnDiff,
-        skillsUsed: usageResult.skillsUsed,
-        mcpCalls: usageResult.mcpCalls,
-        toolMetricsKnown: usageResult.toolMetricsKnown,
-        message: null,
-      }, {
-        title: conciseTurnTitle(finalAnswer, resolvedStatus),
-        body: finalAnswer,
-      });
-      if (journal?.projectionError) {
-        console.error(
-          `Journal historical projection deferred for turn ${identity.turnId}: ${journal.projectionError}`,
-        );
-      }
-      codexTurnStarts.delete(key);
-      console.log(
-        `Accounted historical Codex turn ${identity.turnId} to thread ${accountingThread.threadId}`,
-      );
-      return true;
-    }
-    if (alreadyDelivered) {
-      const registeredMessage = turnEndNotifications.takePendingMessage(identity);
-      const journalTurn = await workLogUsageStore.getTurn(identity);
-      const correctedBody = usageResult.finalAnswer
-        || registeredMessage?.text
-        || (journalTurn?.provisional ? fallbackTurnEndMessage(resolvedStatus) : "");
-      const correctedTitle = correctedBody
-        ? registeredMessage?.title || conciseTurnTitle(correctedBody, resolvedStatus)
-        : "";
-      const journal = await projectTurnUsageToWorkLog({
-        ...identity,
-        projectRoot: project.path,
-        taskTitle: await runtimeCommandTaskTitle({ ...identity, thread }),
-        status: resolvedStatus,
-        usage: usageResult.usage,
-        usageReported: usageResult.reported === true,
-        estimatedCredits: usageResult.estimatedCredits,
-        estimateKind: usageResult.estimateKind,
-        model: usageResult.model,
-        serviceTier: usageResult.serviceTier,
-        startedAt: usageResult.startedAt,
-        completedAt: resolvedCompletedAt,
-        prompt: usageResult.prompt,
-        changedFiles,
-        diff: turnDiff,
-        skillsUsed: usageResult.skillsUsed,
-        mcpCalls: usageResult.mcpCalls,
-        toolMetricsKnown: usageResult.toolMetricsKnown,
-        message: null,
-      }, {
-        title: correctedTitle,
-        body: correctedBody,
-      });
-      if (journal?.projectionError) {
-        console.error(
-          `Journal correction deferred for turn ${identity.turnId}: ${journal.projectionError}`,
-        );
-      }
-      if (correctedBody) {
-        rememberLastTaskMessage({
-          ...identity,
-          projectRoot: project.path,
-        }, correctedBody);
-        setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey({
-          ...identity,
-          projectRoot: project.path,
-        }), identity.turnId, 500);
-      }
-      codexTurnStarts.delete(key);
-      if (registeredMessage || correctedBody) await saveState();
-      console.log(`Reconciled delivered Codex terminal turn ${identity.turnId} (${resolvedStatus})`);
-      return true;
-    }
-    const completion = turnEndNotifications.recordCompletion({
-      ...identity,
-      projectRoot: project.path,
-      taskTitle: await runtimeCommandTaskTitle({ ...identity, thread }),
-      chatId: defaultNotificationChatId(),
-      status: resolvedStatus,
-      provisional,
-      usage: usageResult.usage,
-      usageReported: usageResult.reported === true,
-      imageGenerationCount: usageResult.imageGenerationCount,
-      estimatedCredits: usageResult.estimatedCredits,
-      estimateKind: usageResult.estimateKind,
-      model: usageResult.model,
-      serviceTier: usageResult.serviceTier,
-      startedAt: usageResult.startedAt,
-      completedAt: resolvedCompletedAt,
-      prompt: usageResult.prompt,
-      finalAnswer: usageResult.finalAnswer,
-      changedFiles,
-      diff: turnDiff,
-      skillsUsed: usageResult.skillsUsed,
-      mcpCalls: usageResult.mcpCalls,
-      toolMetricsKnown: usageResult.toolMetricsKnown,
-    });
-    codexTurnStarts.delete(key);
-    await saveState();
-    if (completion) {
-      await deliverTurnEndNotification(completion);
-      console.log(`Recovered unhooked Codex terminal turn ${identity.turnId} (${completion.status})`);
-    }
-    return true;
-  } catch (error) {
-    console.error(`Cannot recover unhooked Codex turn ${identity.turnId}:`, error.message);
-    throw error;
-  } finally {
-    reconcilingCodexTerminalTurns.delete(key);
-  }
 }
 
 async function auditRecentCodexTerminalTurns() {
