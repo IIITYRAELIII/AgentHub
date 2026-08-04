@@ -1143,7 +1143,8 @@ export class JournalStore extends DurableObject {
           }
           return json(this.#controlStatus(existing), 200);
         }
-        if (commands.length >= MAX_CONTROL_COMMANDS) {
+        const queuedCommands = commands.filter((item) => !["completed", "failed"].includes(item.status));
+        if (queuedCommands.length >= MAX_CONTROL_COMMANDS) {
           return json({ error: "control queue is full" }, 429);
         }
         const attachmentIds = attachmentIdsFromParams(command.action, command.params);

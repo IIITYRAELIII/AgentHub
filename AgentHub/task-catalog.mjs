@@ -939,14 +939,21 @@ export function mergeTaskCatalog(entries, runs = []) {
   for (const entry of entries) {
     const key = catalogTaskKey(entry);
     const existing = byTask.get(key);
+    const titleAuthoritative = entry.titleAuthoritative === true;
+    const normalizedEntry = { ...entry };
+    delete normalizedEntry.titleAuthoritative;
     if (!existing) {
-      byTask.set(key, { ...entry });
+      byTask.set(key, normalizedEntry);
       continue;
     }
     const merged = entry.updatedAtMs > existing.updatedAtMs
-      ? { ...entry, model: entry.model ?? existing.model ?? null }
+      ? { ...normalizedEntry, model: entry.model ?? existing.model ?? null }
       : existing;
     if (!merged.model && entry.model) merged.model = entry.model;
+    // A provider snapshot resolves the canonical title (including Hub pins and
+    // external renames). Its activity timestamp can legitimately be older than
+    // the durable read model, so title authority must not depend on that clock.
+    if (titleAuthoritative && entry.title) merged.title = entry.title;
 
     // Catalog entries are appended in increasing authority: the durable SQLite
     // projection first, then a freshly discovered provider snapshot. Task

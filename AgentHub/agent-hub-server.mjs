@@ -2694,6 +2694,7 @@ async function buildTaskCatalog() {
         );
         pinnedTitlesChanged = resolvedTitle.changed || pinnedTitlesChanged;
         entry.title = resolvedTitle.title || entry.title;
+        entry.titleAuthoritative = true;
         return entry;
       }));
       entries.push(...values.filter(Boolean));
@@ -2708,7 +2709,10 @@ async function buildTaskCatalog() {
     for (const snapshot of claudeResult.value) {
       const project = snapshot.cwd ? findProject(snapshot.cwd) : null;
       if (project && snapshot.sessionId) {
-        entries.push(claudeCatalogEntry(applyManagedClaudeCancellation(snapshot), project));
+        entries.push({
+          ...claudeCatalogEntry(applyManagedClaudeCancellation(snapshot), project),
+          titleAuthoritative: true,
+        });
       }
     }
   } else {

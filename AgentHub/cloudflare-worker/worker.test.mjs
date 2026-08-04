@@ -269,6 +269,37 @@ test("Worker relay authenticates, isolates, executes once, and returns results",
   assert.equal(await storage.get(`control:command:${id}`), undefined);
 });
 
+test("completed control receipts do not consume live queue capacity", async () => {
+  const workerModule = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new workerModule.JournalStore({ storage }, {});
+  const now = Date.now();
+  await storage.put(Object.fromEntries(Array.from({ length: 500 }, (_, index) => [
+    `control:command:completed-${index}`,
+    {
+      id: `completed-${index}`,
+      userId: "42",
+      status: "completed",
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: now + 60_000,
+    },
+  ])));
+
+  const response = await store.fetch(new Request("https://journal.internal/control/enqueue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: "018f6c86-3f34-7a31-8f27-16f5b96cce13",
+      userId: "42",
+      action: "rename-task",
+      params: { provider: "codex", threadId: "thread", title: "Новое название" },
+    }),
+  }));
+
+  assert.equal(response.status, 202);
+});
+
 test("Worker long poll wakes as soon as any client enqueues a command", async () => {
   const workerModule = await loadWorker();
   const storage = new MemoryStorage();

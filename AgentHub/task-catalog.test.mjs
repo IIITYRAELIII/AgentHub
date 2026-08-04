@@ -92,6 +92,31 @@ test("fresh provider activity overrides a newer stale durable catalog row", () =
   assert.equal(entry.lastActivityAtMs, 1_500);
 });
 
+test("an authoritative provider title overrides a newer durable read-model title", () => {
+  const [entry] = mergeTaskCatalog([{
+    provider: "codex",
+    threadId: "thread-renamed",
+    projectRoot: project.path,
+    projectName: project.name,
+    title: "Старое название",
+    updatedAtMs: 2_000,
+    running: false,
+  }, {
+    provider: "codex",
+    threadId: "thread-renamed",
+    projectRoot: project.path,
+    projectName: project.name,
+    title: "Новое название",
+    titleAuthoritative: true,
+    updatedAtMs: 1_000,
+    running: false,
+  }]);
+
+  assert.equal(entry.title, "Новое название");
+  assert.equal(Object.hasOwn(entry, "titleAuthoritative"), false);
+  assert.equal(entry.updatedAtMs, 2_000);
+});
+
 test("pinned task titles are stable per provider and thread", () => {
   const titles = {};
   assert.equal(pinTaskTitle(titles, "codex", "thread-a", "  FB   Фаровон обмен1  "), "FB Фаровон обмен1");
