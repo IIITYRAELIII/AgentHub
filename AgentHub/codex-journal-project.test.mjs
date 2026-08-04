@@ -54,6 +54,22 @@ test("a disappeared external rollout does not block journal audit", async () => 
   }), null);
 });
 
+test("a subagent with a stale local path inherits its parent project", async () => {
+  const resolved = await resolveCodexJournalProject({
+    cwd: "C:\\Users\\user\\Documents\\VSC_Tyrael",
+    parentThreadId: "parent-thread",
+    path: "child-rollout.jsonl",
+  }, {
+    findProject,
+    readSession: async () => ({ repositoryUrl: "" }),
+    resolveParentProject: async (parentThreadId) => (
+      parentThreadId === "parent-thread" ? project : null
+    ),
+  });
+
+  assert.equal(resolved, project);
+});
+
 test("local repository paths accept native and file URL forms", () => {
   assert.equal(
     localCodexRepositoryPath("D:\\VSC_Tyrael\\repo.git"),

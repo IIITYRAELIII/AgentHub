@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDesktopTaskHistoryFactory } from "./desktop-task-history.mjs";
+import {
+  createDesktopTaskHistoryFactory,
+  mergeDurableTaskHistory,
+} from "./desktop-task-history.mjs";
 import { mergeCompletedTaskHistory } from "./task-history.mjs";
 
 function fixture(overrides = {}) {
@@ -121,6 +124,26 @@ function fixture(overrides = {}) {
   });
   return { desktopTaskHistory, state, calls };
 }
+
+test("durable history merges equivalent synthetic final-answer copies", () => {
+  const history = mergeDurableTaskHistory([{
+    id: "turn-1",
+    messages: [{
+      itemId: "turn-1:rollout-agent:final",
+      role: "agent",
+      text: "Готово",
+    }],
+  }], [{
+    id: "turn-1",
+    messages: [
+      { itemId: "turn-1:agent:live", role: "agent", text: "Готово" },
+      { itemId: "turn-1:agent:final", role: "agent", text: "Готово" },
+    ],
+  }]);
+
+  assert.equal(history[0].messages.length, 1);
+  assert.equal(history[0].messages[0].text, "Готово");
+});
 
 test("desktop task history resolves selection and merges the active run", async () => {
   const { desktopTaskHistory, calls } = fixture();

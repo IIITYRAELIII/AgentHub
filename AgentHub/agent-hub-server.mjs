@@ -526,6 +526,7 @@ let deliveryOutboxTimer = null;
 let deliveryOutboxTimerDueAt = 0;
 let selectedTaskWatchTimer = null;
 let selectedTaskWatchInFlight = false;
+let codexTerminalAuditTimer = null;
 let rateLimitPollTimer = null;
 let codexRolloutContextTimer = null;
 const codexCompactionCleanupTimers = new Map();
@@ -654,6 +655,12 @@ const codexTerminalAudit = new CodexTerminalAudit({
   resolveProject: (thread) => resolveCodexJournalProject(thread, {
     findProject,
     readSession: readCodexRolloutSession,
+    resolveParentProject: (parentThreadId) => {
+      const parent = taskCatalog.find((entry) => (
+        entry.provider === "codex" && String(entry.threadId) === String(parentThreadId)
+      ));
+      return parent ? findProject(parent.projectRoot) : null;
+    },
   }),
   reconcile: reconcileRecentCodexTerminalTurn,
   discoverHistoricalThreads: () => discoverCodexRollouts(),
@@ -6964,6 +6971,15 @@ async function auditRecentCodexTerminalTurns() {
   }
 }
 
+function scheduleCodexTerminalAudit(delayMs = SELECTED_TASK_WATCH_INTERVAL_MS) {
+  if (codexTerminalAuditTimer || stopping) return;
+  codexTerminalAuditTimer = setTimeout(async () => {
+    codexTerminalAuditTimer = null;
+    await auditRecentCodexTerminalTurns();
+    scheduleCodexTerminalAudit();
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
 const CODEX_COMPACTION_CLEANUP_RETRY_MS = 15_000;
 // Coupling cleanup to compaction is temporarily disabled: an App Server can
 // keep the rollout open and leave the compaction UI waiting. The independent
@@ -7172,7 +7188,6 @@ async function watchSelectedTask() {
   if (selectedTaskWatchInFlight || stopping) return;
   selectedTaskWatchInFlight = true;
   try {
-    void auditRecentCodexTerminalTurns();
     const task = selectedTask();
     if (!chatId || !task.threadId) return;
     const existingRun = taskRuns.forTask(task);
@@ -8817,6 +8832,10 @@ function stopRuntimeTimers() {
     clearTimeout(selectedTaskWatchTimer);
     selectedTaskWatchTimer = null;
   }
+  if (codexTerminalAuditTimer) {
+    clearTimeout(codexTerminalAuditTimer);
+    codexTerminalAuditTimer = null;
+  }
   if (rateLimitPollTimer) {
     clearTimeout(rateLimitPollTimer);
     rateLimitPollTimer = null;
@@ -8836,6 +8855,7 @@ function startRuntimeTimers() {
     scheduleDeliveryOutboxFlush(1_000);
   }
   scheduleSelectedTaskWatch(500);
+  scheduleCodexTerminalAudit(500);
   scheduleRateLimitPoll(1_000);
 }
 

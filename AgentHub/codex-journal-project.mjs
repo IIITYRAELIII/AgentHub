@@ -26,6 +26,7 @@ export function localCodexRepositoryPath(value) {
 export async function resolveCodexJournalProject(thread, {
   findProject,
   readSession,
+  resolveParentProject,
 } = {}) {
   if (typeof findProject !== "function") {
     throw new Error("Codex journal project resolution requires findProject");
@@ -39,9 +40,14 @@ export async function resolveCodexJournalProject(thread, {
       const session = await readSession(thread.path);
       repositoryUrl = threadRepositoryUrl(session);
     } catch {
-      return null;
+      repositoryUrl = "";
     }
   }
   const repositoryPath = localCodexRepositoryPath(repositoryUrl);
-  return repositoryPath ? findProject(repositoryPath) : null;
+  const repositoryProject = repositoryPath ? findProject(repositoryPath) : null;
+  if (repositoryProject) return repositoryProject;
+
+  const parentThreadId = String(thread?.parentThreadId ?? "").trim();
+  if (!parentThreadId || typeof resolveParentProject !== "function") return null;
+  return await resolveParentProject(parentThreadId, thread) ?? null;
 }

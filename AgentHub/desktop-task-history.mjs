@@ -5,10 +5,21 @@ function mergeDurableMessages(hydratedMessages, durableMessages) {
   for (const durable of Array.isArray(durableMessages) ? durableMessages : []) {
     const itemId = String(durable?.itemId ?? "").trim();
     const clientId = String(durable?.clientUserMessageId ?? "").trim();
-    const index = values.findIndex((message) => (
+    let index = values.findIndex((message) => (
       (itemId && String(message?.itemId ?? "").trim() === itemId)
       || (clientId && String(message?.clientUserMessageId ?? "").trim() === clientId)
     ));
+    if (index < 0 && durable?.role === "agent") {
+      const text = String(durable?.text ?? "").trim();
+      const syntheticFinalId = /:(?:rollout-)?agent:(?:live|final)$/u.test(itemId);
+      if (text && syntheticFinalId) {
+        index = values.findIndex((message) => (
+          message?.role === "agent"
+          && String(message?.text ?? "").trim() === text
+          && /:(?:rollout-)?agent:(?:live|final)$/u.test(String(message?.itemId ?? ""))
+        ));
+      }
+    }
     if (index < 0) {
       values.push(structuredClone(durable));
       continue;
