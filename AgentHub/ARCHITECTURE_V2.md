@@ -81,7 +81,7 @@ thread консервируется, создаёт handoff и передаёт 
 | A1 | ✅ | Единый `RuntimeResourceRegistry` для restart и shutdown. |
 | A2 | ✅ | `RuntimeRestartController` с явным восстановлением старого процесса при неудачной замене. |
 | A3 | ✅ | `TaskSelectionStore` — единственный владелец provider/project/thread/title; обработчики используют атомарные команды и checkpoint rollback, изменения имеют revision. |
-| A4 | 🟡 | `TaskCatalogService` уже владеет кэшем, revision и coalescing; provider discovery/merge ещё переносится из composition root. |
+| A4 | ✅ | `ProviderTaskCatalogBuilder` владеет параллельным discovery, durable fallback, изоляцией ошибок источников и merge с managed runs; `TaskCatalogService` владеет кэшем, revision и coalescing. Provider-specific transport остаётся до A6. |
 | A5 | ⬜ | Общий command bus для Telegram/Desktop/Mini App вместо трёх таблиц прикладных обработчиков; адресация проектируется по будущему `hubTaskId`, а не по provider thread ID. |
 | A6 | ⬜ | Общий `AgentProvider` port и адаптеры Codex/Claude. |
 | A7 | ⬜ | `RunCoordinator`: единая state machine запуска, наблюдения, отмены, recovery и terminal delivery. |

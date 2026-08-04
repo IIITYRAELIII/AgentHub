@@ -257,6 +257,7 @@ import { fitTaskHistoryPayload } from "./response-budget.mjs";
 import { RuntimeLifecycleController } from "./runtime-lifecycle-controller.mjs";
 import { RuntimeResourceRegistry } from "./runtime-resource-registry.mjs";
 import { RuntimeRestartController } from "./runtime-restart-controller.mjs";
+import { ProviderTaskCatalogBuilder } from "./provider-task-catalog-builder.mjs";
 import { TaskCatalogService } from "./task-catalog-service.mjs";
 import { TaskSelectionStore } from "./task-selection-store.mjs";
 import { createDesktopSnapshotFactory } from "./desktop-snapshot.mjs";
@@ -743,10 +744,34 @@ await taskSyncStore.save();
 // are restored separately, while external activity is revalidated from rollout
 // files. Showing cached `running=true` here creates a full-catalog phantom state
 // while the first provider scan is still in progress or unavailable.
+const providerTaskCatalogBuilder = new ProviderTaskCatalogBuilder({
+  durableEntries: () => catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
+  sources: [
+    {
+      name: "Codex",
+      discover: listAllCodexThreads,
+      toEntries: buildCodexTaskCatalogEntries,
+    },
+    {
+      name: "Claude",
+      discover: listClaudeSessionSnapshots,
+      toEntries: buildClaudeTaskCatalogEntries,
+    },
+  ],
+  managedRuns: () => taskRuns.values().map((run) => ({
+    ...run,
+    projectName: runProject(run).name,
+  })),
+  merge: mergeTaskCatalog,
+  finalize: finalizeTaskCatalog,
+  onSourceError: ({ name, reason }) => {
+    console.error(`Cannot discover ${name} tasks:`, reason?.message ?? reason);
+  },
+});
 const taskCatalogService = new TaskCatalogService({
   initialEntries: catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
   cacheMs: TASK_CATALOG_CACHE_MS,
-  build: buildTaskCatalog,
+  build: () => providerTaskCatalogBuilder.build(),
 });
 const taskCatalog = taskCatalogService.entries;
 
@@ -2684,24 +2709,16 @@ async function auditClaudeTranscriptSnapshots(snapshots) {
   }
 }
 
-async function buildTaskCatalog() {
-  const [codexResult, claudeResult] = await Promise.allSettled([
-    listAllCodexThreads(),
-    listClaudeSessionSnapshots(),
-  ]);
-  // Keep the durable SQLite read model visible while live provider discovery
-  // is still running or returns only a partially repaired App Server catalog.
-  // Fresher live entries below replace their persisted counterparts by key.
-  const entries = catalogEntriesWithoutLiveActivity(taskSyncStore.catalog());
+async function buildCodexTaskCatalogEntries(threads) {
+  const entries = [];
   let pinnedTitlesChanged = false;
   let titleConfirmationsChanged = false;
-  if (codexResult.status === "fulfilled") {
-    await backfillWorkLogPricingMetadata(codexResult.value);
-    const titleHistories = await readCodexThreadTitleHistories();
-    const batchSize = 16;
-    for (let start = 0; start < codexResult.value.length; start += batchSize) {
-      const batch = codexResult.value.slice(start, start + batchSize);
-      const values = await Promise.all(batch.map(async (thread) => {
+  await backfillWorkLogPricingMetadata(threads);
+  const titleHistories = await readCodexThreadTitleHistories();
+  const batchSize = 16;
+  for (let start = 0; start < threads.length; start += batchSize) {
+    const batch = threads.slice(start, start + batchSize);
+    const values = await Promise.all(batch.map(async (thread) => {
         const project = findProject(thread.cwd);
         if (!project) return null;
         if (thread.path) {
@@ -2774,32 +2791,33 @@ async function buildTaskCatalog() {
         entry.title = resolvedTitle.title || entry.title;
         entry.titleAuthoritative = true;
         return entry;
-      }));
-      entries.push(...values.filter(Boolean));
-    }
-  } else {
-    console.error("Cannot discover Codex tasks:", codexResult.reason?.message ?? codexResult.reason);
+    }));
+    entries.push(...values.filter(Boolean));
   }
-  if (claudeResult.status === "fulfilled") {
-    await auditClaudeTranscriptSnapshots(claudeResult.value).catch((error) => {
-      console.error("Cannot audit Claude journal transcripts:", error.message);
-    });
-    for (const snapshot of claudeResult.value) {
-      const project = snapshot.cwd ? findProject(snapshot.cwd) : null;
-      if (project && snapshot.sessionId) {
-        entries.push({
-          ...claudeCatalogEntry(applyManagedClaudeCancellation(snapshot), project),
-          titleAuthoritative: true,
-        });
-      }
+  if (pinnedTitlesChanged) await savePinnedTaskTitles();
+  if (titleConfirmationsChanged) await saveState();
+  return entries;
+}
+
+async function buildClaudeTaskCatalogEntries(snapshots) {
+  await auditClaudeTranscriptSnapshots(snapshots).catch((error) => {
+    console.error("Cannot audit Claude journal transcripts:", error.message);
+  });
+  const entries = [];
+  for (const snapshot of snapshots) {
+    const project = snapshot.cwd ? findProject(snapshot.cwd) : null;
+    if (project && snapshot.sessionId) {
+      entries.push({
+        ...claudeCatalogEntry(applyManagedClaudeCancellation(snapshot), project),
+        titleAuthoritative: true,
+      });
     }
-  } else {
-    console.error("Cannot discover Claude tasks:", claudeResult.reason?.message ?? claudeResult.reason);
   }
-  let nextCatalog = mergeTaskCatalog(entries, taskRuns.values().map((run) => ({
-    ...run,
-    projectName: runProject(run).name,
-  })));
+  return entries;
+}
+
+async function finalizeTaskCatalog(mergedEntries) {
+  let nextCatalog = mergedEntries;
   for (const entry of nextCatalog) {
     entry.orderingActivityAtMs = taskOrderingActivityAtMs(entry, {
       run: taskRuns.forTask(entry),
@@ -2808,8 +2826,6 @@ async function buildTaskCatalog() {
     });
   }
   nextCatalog = statusTaskEntries(nextCatalog, nextCatalog.length);
-  if (pinnedTitlesChanged) await savePinnedTaskTitles();
-  if (titleConfirmationsChanged) await saveState();
   const nextTaskTitleSignature = taskCatalogTitleSignature(nextCatalog);
   const shouldSynchronizeTaskTitles = nextTaskTitleSignature !== synchronizedTaskTitleSignature
     || Date.now() - taskTitlesSynchronizedAt >= TASK_TITLE_RECONCILE_INTERVAL_MS;

@@ -36,12 +36,13 @@
 | 21 | ✅ | Safe restart вынесен в `runtime-restart-controller.mjs`: ожидание offset/работ, запуск замены, восстановление предыдущего процесса и terminal finalize имеют один state machine. |
 | 22 | ✅ | Кэш каталога вынесен в `task-catalog-service.mjs`: стабильная ссылка, revision, TTL, invalidate и coalescing параллельных rebuild. Provider discovery пока остаётся следующим этапом A4. |
 | 23 | ✅ | Выбранная задача вынесена в `task-selection-store.mjs`: provider, project, thread ID и title изменяются атомарно одним владельцем, поддерживают revision и checkpoint rollback; внешняя мутация полей и карты thread ID запрещена. |
+| 24 | ✅ | Provider discovery и merge каталога вынесены в `provider-task-catalog-builder.mjs`: источники опрашиваются параллельно, проецируются в стабильном порядке, сбой одного провайдера сохраняет durable-каталог и второй источник, managed runs объединяются до общей финализации. |
 
-После этапа 23 `agent-hub-server.mjs` содержит около 8,3 тыс. строк. Это всё ещё
+После этапа 24 `agent-hub-server.mjs` содержит около 8,3 тыс. строк. Это всё ещё
 слишком много для удобного сопровождения: сервер остаётся точкой композиции и
 хранит прикладную политику провайдеров, доставки, восстановления, Desktop RPC,
 Telegram callback/command dispatch и startup provider recovery. Следующие
-безопасные границы — provider discovery/merge каталога, общий command bus,
+безопасные границы — общий command bus, provider adapters,
 завершение/восстановление run и startup provider recovery. Их следует переносить отдельными этапами с
 contract-тестами, а не механически разрезать файл по размеру.
 

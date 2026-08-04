@@ -83,3 +83,9 @@ test("composition root changes selected task only through TaskSelectionStore", a
   assert.equal(source.includes("threadIdsByProvider"), false);
   assert.equal((source.match(/new TaskSelectionStore\s*\(/g) ?? []).length, 1);
 });
+
+test("provider discovery and catalog merge have one application owner", async () => {
+  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  assert.equal((source.match(/new ProviderTaskCatalogBuilder\s*\(/g) ?? []).length, 1);
+  assert.equal(/Promise\.allSettled\(\s*\[\s*listAllCodexThreads/u.test(source), false);
+});
