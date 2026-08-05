@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RuntimeTimerCoordinator } from "./runtime-timer-coordinator.mjs";
+import { RuntimeTimerCoordinator } from "./src/runtime/runtime-timer-coordinator.mjs";
 
 function fixture() {
   const scheduled = [];

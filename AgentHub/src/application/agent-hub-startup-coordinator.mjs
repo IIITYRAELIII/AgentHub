@@ -1,3 +1,4 @@
+// Sequences application startup while keeping provider and transport details injected.
 export class AgentHubStartupCoordinator {
   constructor({
     telegramEnabled,

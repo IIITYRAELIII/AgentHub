@@ -231,9 +231,9 @@ import { DirectGatewayController, loadDirectGatewaySettings } from "./direct-gat
 import { QuickTunnelController } from "./quick-tunnel.mjs";
 import { ensureLocalWebSecret } from "./local-web-auth.mjs";
 import { fitTaskHistoryPayload } from "./response-budget.mjs";
-import { RuntimeLifecycleController } from "./runtime-lifecycle-controller.mjs";
-import { RuntimeResourceRegistry } from "./runtime-resource-registry.mjs";
-import { RuntimeRestartController } from "./runtime-restart-controller.mjs";
+import { RuntimeLifecycleController } from "./src/runtime/runtime-lifecycle-controller.mjs";
+import { RuntimeResourceRegistry } from "./src/runtime/runtime-resource-registry.mjs";
+import { RuntimeRestartController } from "./src/runtime/runtime-restart-controller.mjs";
 import { RunCoordinator } from "./run-coordinator.mjs";
 import { createAgentProviderRegistry } from "./provider-adapters.mjs";
 import { ClaudeProviderTaskService, CodexProviderTaskService } from "./provider-task-service.mjs";
@@ -275,8 +275,8 @@ import {
   isContextCompactionItem,
 } from "./context-compaction-tracker.mjs";
 import { RunProgressPresentation } from "./run-progress-presentation.mjs";
-import { AgentHubStartupCoordinator } from "./agent-hub-startup-coordinator.mjs";
-import { RuntimeTimerCoordinator } from "./runtime-timer-coordinator.mjs";
+import { AgentHubStartupCoordinator } from "./src/application/agent-hub-startup-coordinator.mjs";
+import { RuntimeTimerCoordinator } from "./src/runtime/runtime-timer-coordinator.mjs";
 import { RunJournalService } from "./run-journal-service.mjs";
 import {
   TurnEndDeliveryService,

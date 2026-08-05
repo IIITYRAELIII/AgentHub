@@ -1,4 +1,4 @@
-import { settleNamedOperations } from "./lifecycle-coordinator.mjs";
+import { settleNamedOperations } from "../../lifecycle-coordinator.mjs";
 
 const PHASES = Object.freeze(["flush", "suspend", "finalize"]);
 

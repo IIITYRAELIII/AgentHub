@@ -1,3 +1,4 @@
+// Owns named and grouped timers for the Agent Hub process lifecycle.
 export class RuntimeTimerCoordinator {
   constructor({
     setTimeoutImpl = setTimeout,

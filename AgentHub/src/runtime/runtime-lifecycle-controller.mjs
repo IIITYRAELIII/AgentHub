@@ -1,3 +1,4 @@
+// Applies the same ordered lifecycle phases to shutdown and restart resources.
 export class RuntimeLifecycleController {
   constructor({
     beginStopping,

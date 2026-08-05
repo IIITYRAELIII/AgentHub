@@ -50,6 +50,7 @@ async function acquire(lockPath, {
   timeoutMs = 30_000,
   retryDelayMs = 25,
   staleMs = 60_000,
+  ownerlessStaleMs = Math.min(staleMs, 2_000),
   isProcessAlive = defaultProcessAlive,
   tokenFactory = randomUUID,
 } = {}) {
@@ -83,9 +84,12 @@ async function acquire(lockPath, {
       // mkdir followed by owner.json is necessarily a two-step protocol.  A
       // directory without an owner is therefore protected by its mtime grace
       // period; it must not be stolen while its creator is writing owner.json.
+      // The grace is intentionally shorter than the dead-owner threshold:
+      // recursive removal on Windows can remove owner.json and then leave the
+      // empty directory behind after a transient filesystem error.
       const canRecover = hasOwnerPid
         ? !isProcessAlive(owner.pid)
-        : ageMs >= staleMs;
+        : ageMs >= ownerlessStaleMs;
       if (canRecover) {
         await quarantineStaleLock(lockPath, owner?.token);
         continue;

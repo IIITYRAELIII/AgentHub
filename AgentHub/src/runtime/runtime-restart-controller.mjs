@@ -1,3 +1,4 @@
+// Coordinates one safe runtime replacement without owning process transport.
 export class RuntimeRestartController {
   constructor({
     getRequest,

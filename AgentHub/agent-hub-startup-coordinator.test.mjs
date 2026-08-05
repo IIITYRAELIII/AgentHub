@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AgentHubStartupCoordinator } from "./agent-hub-startup-coordinator.mjs";
+import { AgentHubStartupCoordinator } from "./src/application/agent-hub-startup-coordinator.mjs";
 
 function coordinator(overrides = {}) {
   const calls = [];

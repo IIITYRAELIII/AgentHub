@@ -72,6 +72,25 @@ test("interprocess lock does not steal a live owner", async () => {
   }
 });
 
+test("interprocess lock recovers a fresh ownerless directory before the main stale timeout", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-lock-ownerless-"));
+  const target = path.join(root, "ledger.json");
+  const lock = `${target}.lock`;
+  try {
+    await mkdir(lock);
+    let entered = false;
+    await withInterprocessLocks([target], async () => { entered = true; }, {
+      timeoutMs: 250,
+      retryDelayMs: 2,
+      staleMs: 60_000,
+      ownerlessStaleMs: 20,
+    });
+    assert.equal(entered, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("an old owner cannot remove a replacement lock", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-lock-replacement-"));
   const target = path.join(root, "ledger.json");

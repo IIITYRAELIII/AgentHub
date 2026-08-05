@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RuntimeLifecycleController } from "./runtime-lifecycle-controller.mjs";
+import { RuntimeLifecycleController } from "./src/runtime/runtime-lifecycle-controller.mjs";
 
 test("runtime lifecycle stops once and settles every named component", async () => {
   let stopping = false;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RuntimeRestartController } from "./runtime-restart-controller.mjs";
+import { RuntimeRestartController } from "./src/runtime/runtime-restart-controller.mjs";
 
 function createController(overrides = {}) {
   const events = [];

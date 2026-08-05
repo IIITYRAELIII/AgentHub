@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RuntimeResourceRegistry } from "./runtime-resource-registry.mjs";
+import { RuntimeResourceRegistry } from "./src/runtime/runtime-resource-registry.mjs";
 
 test("runtime resources execute only the requested lifecycle phase", async () => {
   const events = [];
