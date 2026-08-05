@@ -647,13 +647,13 @@ test("large Gothic scenes are decoded before replacing the visible background", 
   assert.match(client, /if \(loaded\) \{ commitBackground\(selected, persist\); return; \}/u);
 });
 
-test("«Озеро» keeps its after-rain composition and two painted scenes", () => {
+test("«Озеро» keeps after-rain, summer-evening and watercolor scenes", () => {
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "lake");
   const backgrounds = themeFile("lake");
   for (const [background, image] of [
     ["lake", "lake-after-rain.png"],
+    ["lake-summer", "lake-summer.jpg"],
     ["lake-watercolor", "lake-watercolor.jpg"],
-    ["lake-oil", "lake-oil.jpg"],
   ]) {
     assert.equal(theme.backgrounds.find((item) => item.id === background).asset, image, background);
     assert.match(
@@ -662,7 +662,11 @@ test("«Озеро» keeps its after-rain composition and two painted scenes", (
       background,
     );
   }
-  assert.deepEqual(theme.backgrounds.map((background) => background.id), ["lake", "lake-watercolor", "lake-oil"]);
+  assert.deepEqual(theme.backgrounds.map((background) => [background.id, background.name]), [
+    ["lake", "После дождя"],
+    ["lake-summer", "Летний вечер"],
+    ["lake-watercolor", "Акварель"],
+  ]);
   /* Блок фона специфичнее подмены из панели VS Code, поэтому путь к рисованным
      кадрам берётся через var с запасным значением, а не объявляется заново. */
   assert.match(backgrounds, /--lake-image:\s*url\("\.\/lake-after-rain\.png"\)/u);
@@ -672,7 +676,7 @@ test("«Озеро» keeps its after-rain composition and two painted scenes", (
   assert.match(backgrounds, /\.brand-mark\s*\{[\s\S]*var\(--lake-mark-image\)/u);
   assert.match(backgrounds, /\.toolbar \.view-settings\s*\{[\s\S]*border-radius:\s*5px/u);
   assert.match(backgrounds, /@keyframes lake-ripple/u);
-  for (const variable of ["--lake-watercolor-image", "--lake-oil-image"]) {
+  for (const variable of ["--lake-summer-image", "--lake-watercolor-image"]) {
     assert.match(backgrounds, new RegExp(`var\\(${variable},\\s*url\\(`, "u"), variable);
     assert.doesNotMatch(backgrounds, new RegExp(`${variable}:\\s*url\\(`, "u"), variable);
   }

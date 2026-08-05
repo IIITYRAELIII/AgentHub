@@ -407,8 +407,8 @@ html[data-theme="lake"] .journal details[data-work-log-turn-details][open] {
 }
 
 html[data-background-override="true"][data-background="lake"] { --hub-background-color: #06100c; --hub-background-image: linear-gradient(90deg, rgb(2 12 8 / 54%) 0%, rgb(2 12 8 / 27%) 31%, transparent 57%), linear-gradient(0deg, rgb(2 10 7 / 22%), transparent 38%), var(--lake-image, url("./lake-after-rain.png")); --hub-background-position: center, center, 61% 54%; }
+html[data-background-override="true"][data-background="lake-summer"] { --hub-background-color: #080d0b; --hub-background-image: linear-gradient(90deg, rgb(3 8 7 / 72%), rgb(3 8 7 / 38%) 32%, transparent 62%), linear-gradient(0deg, rgb(3 8 7 / 24%), transparent 36%), var(--lake-summer-image, url("./lake-summer.jpg")); --hub-background-position: center, center, 56% 64%; }
 html[data-background-override="true"][data-background="lake-watercolor"] { --hub-background-color: #0a0f0c; --hub-background-image: linear-gradient(90deg, rgb(4 10 8 / 72%), rgb(4 10 8 / 38%) 32%, transparent 62%), linear-gradient(0deg, rgb(4 10 8 / 24%), transparent 36%), var(--lake-watercolor-image, url("./lake-watercolor.jpg")); --hub-background-position: center, center, 56% 52%; }
-html[data-background-override="true"][data-background="lake-oil"] { --hub-background-color: #0a0e09; --hub-background-image: linear-gradient(90deg, rgb(5 9 6 / 70%), rgb(5 9 6 / 36%) 31%, transparent 61%), linear-gradient(0deg, rgb(5 9 6 / 24%), transparent 34%), var(--lake-oil-image, url("./lake-oil.jpg")); --hub-background-position: center, center, 56% 62%; }
 
 @media (max-width: 720px) {
   html[data-theme="lake"] body::after {
@@ -427,8 +427,8 @@ html[data-background-override="true"][data-background="lake-oil"] { --hub-backgr
   }
 
   html[data-background-override="true"][data-background="lake"] { --hub-background-image: linear-gradient(180deg, rgb(2 12 8 / 68%), rgb(2 12 8 / 46%) 35%, rgb(2 12 8 / 56%) 72%, rgb(2 10 7 / 72%)), var(--lake-image, url("./lake-after-rain.png")); --hub-background-position: center, 72% 55%; }
+  html[data-background-override="true"][data-background="lake-summer"] { --hub-background-image: linear-gradient(180deg, rgb(3 8 7 / 72%), rgb(3 8 7 / 48%) 32%, rgb(3 8 7 / 54%) 70%, rgb(3 8 7 / 74%)), var(--lake-summer-image, url("./lake-summer.jpg")); --hub-background-position: center, 72% 72%; }
   html[data-background-override="true"][data-background="lake-watercolor"] { --hub-background-image: linear-gradient(180deg, rgb(4 10 8 / 72%), rgb(4 10 8 / 48%) 32%, rgb(4 10 8 / 54%) 70%, rgb(4 10 8 / 74%)), var(--lake-watercolor-image, url("./lake-watercolor.jpg")); --hub-background-position: center, 72% 70%; }
-  html[data-background-override="true"][data-background="lake-oil"] { --hub-background-image: linear-gradient(180deg, rgb(5 9 6 / 68%), rgb(5 9 6 / 44%) 32%, rgb(5 9 6 / 50%) 70%, rgb(5 9 6 / 72%)), var(--lake-oil-image, url("./lake-oil.jpg")); --hub-background-position: center, 72% 68%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -6,7 +6,7 @@
   "styles": "theme.css",
   "backgrounds": [
     { "id": "lake", "name": "После дождя", "asset": "lake-after-rain.png", "preload": true },
-    { "id": "lake-watercolor", "name": "Озеро · акварель", "asset": "lake-watercolor.jpg" },
-    { "id": "lake-oil", "name": "Озеро · масло", "asset": "lake-oil.jpg" }
+    { "id": "lake-summer", "name": "Летний вечер", "asset": "lake-summer.jpg" },
+    { "id": "lake-watercolor", "name": "Акварель", "asset": "lake-watercolor.jpg" }
   ]
 }

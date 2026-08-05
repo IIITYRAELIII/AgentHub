@@ -323,10 +323,10 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.equal(verdantMark.headers.get("content-type"), "image/png");
     assert.match(verdantMark.headers.get("cache-control"), /immutable/u);
     assert.ok((await verdantMark.arrayBuffer()).byteLength > 100);
-    /* Три кадра «Озера» — единственные JPEG среди фонов: фотография и две
-       живописи в PNG весили бы впятеро больше при том же виде. */
+    /* Летний кадр и акварель «Озера» остаются JPEG: в PNG они весили бы
+       впятеро больше при том же виде. */
     for (const name of [
-      "lake-summer.jpg", "lake-watercolor.jpg", "lake-oil.jpg",
+      "lake-summer.jpg", "lake-watercolor.jpg",
       "gothic-tower.jpg", "gothic-harbor.jpg", "gothic-chapel.jpg", "gothic-keep.jpg",
       "gothic-minental-castle.jpg", "gothic-minental-fortress.jpg", "gothic-finkregh.jpg",
     ]) {
@@ -341,7 +341,10 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     const backgrounds = await fetch(`${address.url}themes/lake/theme.css`);
     assert.equal(backgrounds.status, 200);
     assert.match(backgrounds.headers.get("content-type"), /text\/css/u);
-    assert.match(await backgrounds.text(), /\[data-background="lake-watercolor"\]/u);
+    const lakeStyles = await backgrounds.text();
+    assert.match(lakeStyles, /\[data-background="lake-summer"\]/u);
+    assert.match(lakeStyles, /\[data-background="lake-watercolor"\]/u);
+    assert.doesNotMatch(lakeStyles, /lake-oil/u);
     const lakeAfterRain = await fetch(`${address.url}themes/lake/lake-after-rain.png`);
     assert.equal(lakeAfterRain.status, 200);
     assert.equal(lakeAfterRain.headers.get("content-type"), "image/png");
