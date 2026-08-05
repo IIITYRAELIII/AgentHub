@@ -196,6 +196,7 @@ import { TelegramCallbackController } from "./src/interfaces/telegram/telegram-c
 import { routeTelegramCallback } from "./src/interfaces/telegram/telegram-callback-router.mjs";
 import { TelegramTaskPickerService } from "./src/interfaces/telegram/task-picker.mjs";
 import { InteractiveJobService } from "./src/interfaces/telegram/interactive-job-service.mjs";
+import { RestartNotificationService } from "./src/interfaces/telegram/restart-notification-service.mjs";
 import { TaskViewController } from "./src/interfaces/telegram/task-view-controller.mjs";
 import { TelegramPollingController } from "./src/interfaces/telegram/telegram-polling-controller.mjs";
 import { TelegramSettingsMenu } from "./src/interfaces/telegram/telegram-settings-menu.mjs";
@@ -262,6 +263,7 @@ import { DesktopSystemService } from "./src/interfaces/desktop/desktop-system-se
 import { DeferredInputPresentationService } from "./src/interfaces/desktop/deferred-input-presentation-service.mjs";
 import { TaskCommandService } from "./src/application/task-command-service.mjs";
 import { TaskNavigationService } from "./src/application/task-navigation-service.mjs";
+import { ManagedRunHistoryService } from "./src/application/managed-run-history-service.mjs";
 import { RestartRequestService } from "./src/application/restart-request-service.mjs";
 import { createDesktopApplicationRouter } from "./src/interfaces/desktop/desktop-application-router.mjs";
 import { UsdRubRateStore } from "./exchange-rate.mjs";
@@ -1126,6 +1128,13 @@ const claudeCatalogProjection = new ClaudeCatalogProjectionService({
   applyManagedCancellation: (snapshot) => claudeTaskSnapshots.applyManagedCancellation(snapshot),
   catalogEntry: claudeCatalogEntry,
   logError: (...args) => console.error(...args),
+});
+const managedRunHistory = new ManagedRunHistoryService({
+  taskSyncStore,
+  mergeActiveHistory: mergeActiveTaskHistory,
+  hubExecutionOwner: TASK_EXECUTION_OWNERS.HUB,
+  nowIso: () => new Date().toISOString(),
+  nowMs: () => Date.now(),
 });
 
 const providerTaskActivity = new ProviderTaskActivityService({
@@ -3317,68 +3326,7 @@ const claudeRunController = new ClaudeRunController({
     : "Дочитываю прерванный ход Claude…"),
 });
 
-async function persistManagedRunHistory(run, {
-  answer = "",
-  status = "inProgress",
-  active = true,
-  turnId = run?.turnId,
-} = {}) {
-  if (!run?.threadId || !turnId) return;
-  try {
-    const history = taskSyncStore.history(run);
-    mergeActiveTaskHistory(history, {
-      active: true,
-      turnId,
-      prompt: run.promptPreview,
-      answer: run.responseText,
-      clientUserMessageId: run.clientUserMessageId,
-      userMessages: run.userMessages,
-      responseItemId: run.responseItemId,
-      activities: run.activities,
-      startedAt: run.startedAt,
-      attachments: run.messageAttachments ?? [],
-    });
-    const current = history.findLast((item) => String(item?.id ?? "") === String(turnId));
-    if (current) {
-      current.active = active;
-      current.completed = !active;
-      current.status = status;
-      current.answer = String(answer || run.responseText || "").trim();
-      current.activities = Array.isArray(run.activities) ? run.activities.map((item) => ({ ...item })) : [];
-      if (!active) current.completedAt = new Date().toISOString();
-      if (current.answer) {
-        const messages = Array.isArray(current.messages) ? current.messages : [];
-        const itemId = String(run.responseItemId ?? "").trim() || `${turnId}:agent:final`;
-        const existing = messages.find((message) => (
-          message.role === "agent" && String(message.itemId ?? "") === itemId
-        ));
-        if (existing) {
-          existing.text = current.answer;
-          existing.time = current.completedAt ?? existing.time;
-        } else {
-          messages.push({
-            itemId,
-            role: "agent",
-            text: current.answer,
-            ...(current.completedAt ? { time: current.completedAt } : {}),
-          });
-        }
-        current.messages = messages;
-      }
-    }
-    taskSyncStore.recordHistory(run, history, {
-      active,
-      turnId: active ? turnId : null,
-      activityAtMs: Date.now(),
-      stage: run.progressStage,
-      answer: String(answer || run.responseText || "").trim(),
-      executionOwner: active ? TASK_EXECUTION_OWNERS.HUB : null,
-    });
-    await taskSyncStore.save();
-  } catch (error) {
-    console.error(`Cannot persist managed task history ${run.threadId}:`, error.message);
-  }
-}
+function persistManagedRunHistory(...args) { return managedRunHistory.persist(...args); }
 
 function persistClaudeRunHistory(run, options = {}) {
   return persistManagedRunHistory(run, options);
@@ -3659,70 +3607,27 @@ function scheduleDeferredRestartIfReady() {
   }
 }
 
-function restartMessageIsEditable(request = restartRequest) {
-  return Number.isSafeInteger(request?.chatId) && Number.isSafeInteger(request?.messageId);
-}
-
-async function announceDesktopRestart(request, blockingWorkCount) {
-  if (!request || !Number.isSafeInteger(request.chatId)) return false;
-  try {
-    const message = await sendMessageTo(request.chatId, blockingWorkCount
-      ? `🔄 Agent Hub Server перезапустится после завершения выполняющихся задач: ${blockingWorkCount}.`
-      : "🔄 Перезапускаю Agent Hub Server…");
-    if (!Number.isSafeInteger(message?.message_id) || restartRequest !== request || stopping) return false;
-    request.messageId = message.message_id;
-    await saveState();
-    return true;
-  } catch (error) {
-    // A Telegram outage must not turn an already persisted Desktop request into
-    // a failed release. The replacement still records the restart in the UI.
-    console.warn(`Cannot announce Desktop restart: ${error.message}`);
-    return false;
-  }
-}
-
-async function updateRestartMessage(text, extra = {}) {
-  if (!restartMessageIsEditable()) return false;
-  await telegram("editMessageText", {
-    chat_id: restartRequest.chatId,
-    message_id: restartRequest.messageId,
-    text,
-    ...extra,
-  });
-  return true;
-}
-
-async function finalizeRestartMessage() {
-  if (!restartRequest) return false;
-  const request = restartRequest;
-  const text = formatRestartCompleteMessage({
+const restartNotifications = new RestartNotificationService({
+  getRequest: () => restartRequest,
+  setRequest: (value) => { restartRequest = value; },
+  isStopping: () => stopping,
+  sendMessage: sendMessageTo,
+  telegram,
+  saveState,
+  formatCompleteMessage: formatRestartCompleteMessage,
+  completeMessageState: () => ({
     provider: providerTitle(),
     task: activeThreadTitle || (threadId ? `${providerTitle()} · ${threadId.slice(0, 8)}` : "Не выбрана"),
     runningTasks: taskRuns.size,
-  });
-  if (!restartMessageIsEditable(request)) {
-    try {
-      if (Number.isSafeInteger(request.chatId)) {
-        await sendMessageTo(request.chatId, text, { parse_mode: "HTML", reply_markup: BOT_MENU });
-      }
-    } catch (error) {
-      console.error("Cannot send restart completion message:", error.message);
-    }
-    restartRequest = null;
-    await saveState();
-    return true;
-  }
-  return finalizeSuccessfulReplacement({
-    updateMessage: () => updateRestartMessage(text, { parse_mode: "HTML" }),
-    sendFallback: () => sendMessageTo(request.chatId, text, {
-      parse_mode: "HTML",
-      reply_markup: BOT_MENU,
-    }),
-    clearRestartRequest: () => { restartRequest = null; },
-    saveState,
-    logError: (message, error) => console.error(`${message}:`, error.message),
-  });
-}
+  }),
+  menu: BOT_MENU,
+  finalizeReplacement: finalizeSuccessfulReplacement,
+});
+
+function restartMessageIsEditable(...args) { return restartNotifications.editable(...args); }
+function announceDesktopRestart(...args) { return restartNotifications.announceDesktop(...args); }
+function updateRestartMessage(...args) { return restartNotifications.update(...args); }
+function finalizeRestartMessage(...args) { return restartNotifications.finalize(...args); }
 
 const runtimeResources = new RuntimeResourceRegistry({
   flush: [
@@ -3922,28 +3827,15 @@ const telegramInputCallbacks = new TelegramInputCallbackService({
   logError: (...args) => console.error(...args),
 });
 
-async function dispatchTelegramCallback(callback, route) {
-  if (await telegramSettingsCallbacks.handle(callback, route)) return;
-  if (await telegramTaskCallbacks.handle(callback, route)) return;
-  if (await telegramInputCallbacks.handle(callback, route)) return;
-  const approvalHandled = route.kind === "approval" && await dispatchApplicationCommand(
-    "approval.resolve",
-    { callback },
-    telegramCallbackCommandContext(callback),
-  );
-  if (!approvalHandled) {
-    await telegram("answerCallbackQuery", {
-      callback_query_id: callback.id,
-      text: "Эта кнопка устарела",
-      show_alert: true,
-    });
-  }
-}
-
 const telegramCallbackController = new TelegramCallbackController({
   currentContextToken: currentUiContextToken,
   telegram,
-  dispatch: dispatchTelegramCallback,
+  handlers: [telegramSettingsCallbacks, telegramTaskCallbacks, telegramInputCallbacks],
+  dispatchApproval: (callback) => dispatchApplicationCommand(
+    "approval.resolve",
+    { callback },
+    telegramCallbackCommandContext(callback),
+  ),
   routeCallback: (data, contextToken) => routeTelegramCallback(data, contextToken, parseApprovalCallback),
 });
 

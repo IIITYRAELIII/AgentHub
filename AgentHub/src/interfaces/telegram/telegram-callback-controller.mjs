@@ -1,11 +1,36 @@
 import { routeTelegramCallback } from "./telegram-callback-router.mjs";
 
 export class TelegramCallbackController {
-  constructor({ currentContextToken, telegram, dispatch, routeCallback = routeTelegramCallback }) {
+  constructor({
+    currentContextToken,
+    telegram,
+    dispatch = null,
+    handlers = [],
+    dispatchApproval = null,
+    routeCallback = routeTelegramCallback,
+  }) {
     this.currentContextToken = currentContextToken;
     this.telegram = telegram;
     this.dispatch = dispatch;
+    this.handlers = handlers;
+    this.dispatchApproval = dispatchApproval;
     this.routeCallback = routeCallback;
+  }
+
+  async dispatchRoute(callback, route) {
+    if (this.dispatch) return this.dispatch(callback, route);
+    for (const handler of this.handlers) {
+      if (await handler.handle(callback, route)) return true;
+    }
+    if (route.kind === "approval" && this.dispatchApproval) {
+      if (await this.dispatchApproval(callback)) return true;
+    }
+    await this.telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: "Эта кнопка устарела",
+      show_alert: true,
+    });
+    return false;
   }
 
   async handle(callback) {
@@ -18,6 +43,6 @@ export class TelegramCallbackController {
       });
       return;
     }
-    await this.dispatch({ ...callback, data: route.data }, route);
+    await this.dispatchRoute({ ...callback, data: route.data }, route);
   }
 }
