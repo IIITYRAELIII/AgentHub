@@ -782,8 +782,12 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   await telegram.waitForText(parallelPrompt, { after: mark });
   assert.equal((await readJson(statePath)).threadIds.codex, parallelThreadId,
     "show-message must select and display the second live task");
-  assert.equal((await readJson(statePath)).activeRuns.length, 2,
-    "switching views must not stop either task");
+  const runsAfterViewSwitch = (await readJson(statePath)).activeRuns;
+  assert.equal(runsAfterViewSwitch.length, 2,
+    "switching views must not stop either task"
+      + `\nruns=${JSON.stringify(runsAfterViewSwitch)}`
+      + `\nstdout tail=${stdout.slice(-8_000)}`
+      + `\nstderr tail=${stderr.slice(-8_000)}`);
 
   mark = telegram.calls.length;
   telegram.pushMessage("/cancel");

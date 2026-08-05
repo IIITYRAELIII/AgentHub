@@ -215,15 +215,19 @@ test("provider operations resolve through one AgentProvider registry", async () 
 
 test("run admission and provider terminal dispatch have one coordinator", async () => {
   const source = await compositionSource();
+  const admission = await readFile(
+    path.join(ROOT, "src", "composition", "run-admission-composition.mjs"),
+    "utf8",
+  );
   const observation = await readFile(path.join(ROOT, "src", "application", "task-observation-service.mjs"), "utf8");
   assert.equal((source.match(/new RunCoordinator\s*\(/g) ?? []).length, 1);
-  const startTurn = source.slice(
-    source.indexOf("async function startTurn"),
-    source.indexOf("async function cleanupDeferredFiles"),
+  const startTurn = admission.slice(
+    admission.indexOf("async function startTurn"),
+    admission.indexOf("async function cleanupDeferredFiles"),
   );
   assert.equal(startTurn.includes("runCoordinator.start("), true);
   assert.doesNotMatch(startTurn, /externalActivity\.state|activeRepositoryConflict|beginRun\(/u);
-  assert.equal(source.includes("start: (item) => runCoordinator.startDeferred(item)"), true);
+  assert.equal(admission.includes("start: (item) => runCoordinator.startDeferred(item)"), true);
   assert.equal(source.includes("runCoordinator.completeManaged("), true);
   assert.equal(observation.includes("this.runCoordinator.completeObserved("), true);
   const recovery = await readFile(path.join(ROOT, "src", "application", "run-recovery-coordinator.mjs"), "utf8");

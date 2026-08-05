@@ -104,6 +104,7 @@
 | 89 | ⏳ | Desktop read-model и системные операции получили отдельный верхнеуровневый wiring в `desktop-read-system-wiring-composition`. Snapshot, история, лимиты, поиск, trusted devices и speech связываются с уже выделенными владельцами без доступа к provider ID как постоянному ключу. |
 | 90 | ⏳ | Desktop application commands собраны в `desktop-command-wiring-composition`. Внутренние циклы navigation/settings разрешаются внутри factory, а наружу возвращаются готовые application commands и task actions; orchestrator больше не собирает их вручную. |
 | 91 | ⏳ | Desktop run input, repository conflict policy, deferred queue и RPC-router собраны в `desktop-run-router-wiring-composition`. Factory сохраняет явный target с будущим `hubTaskId`, а transport receipt и provider thread/session ID остаются техническими ссылками. Orchestrator сокращён до 2 467 строк. |
+| 92 | ⏳ | Run admission, durable deferred queue, разрешение явно названных skills, provider process helpers и IPC/runtime-command routing разделены на три bounded composition factories. Раннее восстановление Desktop receipts не зависит от позднего RunCoordinator; это закреплено полным restart/parallel-task E2E. Orchestrator сокращён до 2 326 строк, а provider thread/session ID остаётся внешней ссылкой будущей Hub-задачи. |
 
 После этапов 31–40 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и

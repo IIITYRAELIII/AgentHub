@@ -1,4 +1,3 @@
-import { unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import dns from "node:dns";
 import path from "node:path";
@@ -42,10 +41,6 @@ import {
 } from "../infrastructure/filesystem/task-git-diff.mjs";
 import { findRepositoryWriteConflict } from "../infrastructure/filesystem/repository-conflict.mjs";
 import {
-  deferredInputMatchesRun,
-  pendingInputKeyboard,
-} from "../domain/deferred-input.mjs";
-import {
   appendMessageBindings,
   findMessageBinding,
   readMessageBindings,
@@ -75,8 +70,6 @@ import { contextualCallback } from "../interfaces/telegram/callback-context.mjs"
 import { taskViewCallbackData } from "../interfaces/telegram/task-view-callback.mjs";
 import { PersistentDeliveryOutbox } from "../infrastructure/persistence/delivery-outbox.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
-import { captureProcess } from "../infrastructure/process/process-capture.mjs";
-import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "../providers/claude/claude-invocation.mjs";
 import {
   catalogEntryIsSelected,
   mergeTaskCatalog,
@@ -100,7 +93,6 @@ import {
   formatCommandApproval as presentCommandApproval,
   formatFileApproval as presentFileApproval,
 } from "../interfaces/telegram/approval-presentation.mjs";
-import { DeferredInputController } from "../application/deferred-input-controller.mjs";
 import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import {
   commandTaskTarget,
@@ -140,6 +132,9 @@ import { createProviderStartupComposition } from "./provider-startup-composition
 import { createJournalBackfillComposition } from "./journal-backfill-composition.mjs";
 import { createClaudeTranscriptAuditComposition } from "./claude-transcript-audit-composition.mjs";
 import { createTaskCatalogFinalizationComposition } from "./task-catalog-finalization-composition.mjs";
+import { createProviderProcessComposition } from "./provider-process-composition.mjs";
+import { createRunAdmissionComposition } from "./run-admission-composition.mjs";
+import { createRuntimeCommandRoutingComposition } from "./runtime-command-routing-composition.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -262,6 +257,9 @@ let stopping = false;
 let autoApprove = config.autoApproveOnStart;
 let restartRequest = null;
 let processingUpdateId = null;
+let runAdmissionComposition = null;
+let deferredInputController = null;
+let runtimeCommandRoutingComposition = null;
 const runtimeTimers = new RuntimeTimerCoordinator();
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
 const EXTERNAL_TASK_POLL_INTERVAL_MS = 1_500;
@@ -273,6 +271,14 @@ const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
 function defaultNotificationChatId() {
   return config.telegramEnabled ? resolveNotificationChatId(config, null) : null;
 }
+const {
+  resolveClaudeInvocation,
+  spawnCapture,
+} = createProviderProcessComposition({
+  config,
+  getProjectRoot: () => activeProjectRoot,
+  stopProcessTree,
+});
 const {
   taskRuns,
   dismissedExternalTasks,
@@ -1190,6 +1196,19 @@ const codexLifecycle = createCodexLifecycleComposition({
   },
 });
 const { runtime: codexRuntime, transport: codexTransport, controller: codexLifecycleController } = codexLifecycle;
+runtimeCommandRoutingComposition = createRuntimeCommandRoutingComposition({
+  pinnedTaskTitle,
+  codexThreadResponseTitle,
+  runTaskTitle,
+  getTaskCatalog: () => taskCatalog,
+  getActiveProvider: () => activeProvider,
+  getThreadId: () => threadId,
+  getActiveThreadTitle: () => activeThreadTitle,
+  threadTitle,
+  storedCodexThreadTitle,
+  runtimeNotificationController,
+  codexLifecycleController,
+});
 
 async function startCodexAppServer() {
   await codexLifecycle.start();
@@ -1745,227 +1764,67 @@ const {
   retainProgressMessageAfterEditError,
 });
 
-function explicitSkillCandidatesFromInput(input) {
-  const text = typeof input === "string"
-    ? input
-    : (Array.isArray(input) ? input : [])
-      .filter((item) => item?.type === "text")
-      .map((item) => String(item.text ?? ""))
-      .join("\n");
-  return [...new Set(
-    [...text.matchAll(/(?:^|[\s([{])\$([A-Za-z0-9][A-Za-z0-9_.:-]*)/gu)]
-      .map((match) => match[1]),
-  )];
-}
+runAdmissionComposition = createRunAdmissionComposition({
+  config,
+  samePath,
+  sendRpc,
+  contextCompactions,
+  codexUsageTracker,
+  turnSpeechButtons,
+  turnTemporaryFiles,
+  taskProgress,
+  managedRunLifecycle,
+  agentProviders,
+  taskRuns,
+  runCoordinator,
+  runConflictPolicy,
+  pendingInputs,
+  queuedInputs,
+  getSelectedTask: selectedTask,
+  getActiveThreadTitle: () => activeThreadTitle,
+  getChatId: () => chatId,
+  taskExecutionOwners: TASK_EXECUTION_OWNERS,
+  deferredInputPresentation,
+  sendMessageTo,
+  saveState,
+});
+deferredInputController = runAdmissionComposition.deferredInputController;
 
-async function resolvedExplicitSkillNames(input, cwd) {
-  const candidates = explicitSkillCandidatesFromInput(input);
-  if (!candidates.length) return [];
-  try {
-    const result = await sendRpc("skills/list", { cwds: [cwd] });
-    const available = new Set(
-      (result?.data ?? [])
-        .filter((entry) => samePath(entry?.cwd, cwd))
-        .flatMap((entry) => entry?.skills ?? [])
-        .filter((skill) => skill?.enabled !== false)
-        .map((skill) => String(skill?.name ?? "").trim())
-        .filter(Boolean),
-    );
-    return candidates.filter((name) => available.has(name));
-  } catch (error) {
-    console.warn(`Cannot resolve explicit skills for ${cwd}: ${error.message}`);
-    return [];
-  }
+function resolvedExplicitSkillNames(...args) {
+  return runAdmissionComposition.resolvedExplicitSkillNames(...args);
 }
-
-async function discardManualContextCompactionRun(run, turnId = run?.turnId) {
-  if (!run || !contextCompactions.isManualTurn(run.threadId, turnId)) return false;
-  const normalizedTurnId = String(turnId ?? "").trim();
-  codexUsageTracker.deleteTurn(normalizedTurnId);
-  turnSpeechButtons.delete(normalizedTurnId);
-  const temporaryFiles = turnTemporaryFiles.get(normalizedTurnId) ?? [];
-  turnTemporaryFiles.delete(normalizedTurnId);
-  await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
-  await taskProgress.clear(run);
-  await managedRunLifecycle.complete(run);
-  return true;
+function discardManualContextCompactionRun(...args) {
+  return runAdmissionComposition.discardManualContextCompactionRun(...args);
 }
-
-async function taskExternalActivity(target) {
-  if (!target?.threadId) return { state: "inactive", executionOwner: null };
-  try {
-    return await agentProviders.call(target.provider, "readTaskActivity", target);
-  } catch (error) {
-    console.error(`Cannot check ${target.provider} task activity:`, error.message);
-    return { state: "unknown", executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL };
-  }
+function taskExternalActivity(...args) {
+  return runAdmissionComposition.taskExternalActivity(...args);
 }
-
-async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
-  return agentProviders.call(
-    run.provider,
-    "launchTurn",
-    run,
-    input,
-    temporaryFiles,
-    { forceSpeechButton },
-  );
+function launchTurn(...args) { return runAdmissionComposition.launchTurn(...args); }
+function startTurn(...args) { return runAdmissionComposition.startTurn(...args); }
+function cleanupDeferredFiles(...args) {
+  return runAdmissionComposition.cleanupDeferredFiles(...args);
 }
-
-async function startTurn(input, temporaryFiles = [], {
-  forceSpeechButton = false,
-  target = null,
-  allowRepositoryConflict = false,
-  allowUnknownExternalActivity = false,
-  persistentFiles = false,
-} = {}) {
-  target ??= {
-    ...selectedTask(),
-    taskTitle: activeThreadTitle,
-    chatId,
-  };
-  const result = await runCoordinator.start(input, temporaryFiles, {
-    forceSpeechButton,
-    target,
-    allowRepositoryConflict,
-    allowUnknownExternalActivity,
-    persistentFiles,
-  });
-  if (!result?.run) return result;
-  const { run: _run, ...publicResult } = result;
-  return publicResult;
-}
-
-async function cleanupDeferredFiles(item) {
-  await Promise.all((item?.temporaryFiles ?? []).map((file) => unlink(file).catch(() => {})));
-}
-
 function updateDeferredMessage(...args) {
   return deferredInputPresentation.updateTelegramMessage(...args);
 }
-
 function updateDeferredDesktopReceipt(...args) {
   return deferredInputPresentation.updateDesktopReceipt(...args);
 }
-
-const deferredInputController = new DeferredInputController({
-  pendingInputs,
-  queuedInputs,
-  findStarted: async (item) => {
-    const run = taskRuns.forTask({
-      provider: item.provider,
-      projectRoot: item.projectRoot,
-      threadId: item.threadId,
-    });
-    return deferredInputMatchesRun(item, run) ? run : null;
-  },
-  isBlocked: async (item) => {
-  const target = {
-    provider: item.provider,
-    projectRoot: item.projectRoot,
-    threadId: item.threadId,
-    taskTitle: item.taskTitle,
-    chatId: item.chatId,
-    modelId: item.modelId,
-    reasoningId: item.reasoningId,
-    collaborationMode: item.collaborationMode,
-  };
-    const externalActivity = taskRuns.forTask(target)
-    ? { state: "active" }
-    : await taskExternalActivity(target);
-    return Boolean(taskRuns.forTask(target)
-      || externalActivity.state !== "inactive"
-      || await runConflictPolicy.check(target));
-  },
-  // The queued item remains durable while RunCoordinator creates and persists
-  // the exact managed run before invoking the provider launch operation.
-  start: (item) => runCoordinator.startDeferred(item),
-  onStateChange: updateDeferredDesktopReceipt,
-  persist: () => saveState(),
-  updateMessage: updateDeferredMessage,
-  pendingKeyboard: (item) => pendingInputKeyboard(item.id, { allowForce: item.allowForce === true }),
-  notifyReturned: (item) => sendMessageTo(
-    item.chatId,
-    "Сообщение не потеряно и возвращено в сохранённые после ошибки запуска.",
-  ),
-  expire: async (item) => {
-    await cleanupDeferredFiles(item);
-    await updateDeferredMessage(
-      item,
-      `⌛ Сохранённое сообщение для задачи «${item.taskTitle}» удалено: срок ожидания истёк.`,
-    );
-  },
-  maxAgeMs: config.deferredInputTtlHours * 60 * 60 * 1000,
-});
-
-function scheduleQueuedInput(item, delayMs = 2000) {
-  deferredInputController.schedule(item, delayMs);
+function scheduleQueuedInput(...args) {
+  return runAdmissionComposition.scheduleQueuedInput(...args);
 }
 
-async function processQueuedInput(id) {
-  return deferredInputController.process(id);
+function runtimeCommandTaskTitle(...args) {
+  return runtimeCommandRoutingComposition.taskTitle(...args);
 }
-
-function resolveClaudeInvocation() {
-  return resolveInstalledClaudeInvocation({
-    requested: config.claudeExecutable || "claude",
-    prefixArgs: config.claudeExecutableArgs,
-  });
+function authorizeRuntimeCommand(...args) {
+  return runtimeCommandRoutingComposition.authorize(...args);
 }
-
-function spawnCapture(command, args, options = {}) {
-  return captureProcess(command, args, {
-    cwd: activeProjectRoot,
-    stopProcess: (worker) => stopProcessTree(worker.pid),
-    ...options,
-  });
+function reconcileRuntimeCommand(...args) {
+  return runtimeCommandRoutingComposition.reconcile(...args);
 }
-
-function runtimeCommandTaskTitleFallback({
-  provider,
-  threadId: targetThreadId,
-  run = null,
-  thread = null,
-}) {
-  const pinnedTitle = pinnedTaskTitle(provider, targetThreadId);
-  if (pinnedTitle) return pinnedTitle;
-  const currentThreadTitle = provider === "codex" ? codexThreadResponseTitle(thread) : "";
-  if (currentThreadTitle) return currentThreadTitle;
-  if (run) return runTaskTitle(run);
-  const catalogTask = taskCatalog.find((task) => (
-    task.provider === provider && task.threadId === targetThreadId
-  ));
-  if (catalogTask?.title) return catalogTask.title;
-  if (activeProvider === provider && threadId === targetThreadId && activeThreadTitle) {
-    return activeThreadTitle;
-  }
-  if (thread) return threadTitle(thread);
-  return `${provider === "codex" ? "Codex" : "Claude"} · ${targetThreadId.slice(0, 8)}`;
-}
-
-async function runtimeCommandTaskTitle(options) {
-  const fallback = runtimeCommandTaskTitleFallback(options);
-  return options.provider === "codex"
-    ? storedCodexThreadTitle(options.threadId, fallback)
-    : fallback;
-}
-
-async function authorizeRuntimeCommand(request) {
-  return codexLifecycleController.authorize(request);
-}
-
-async function reconcileRuntimeCommand(request) {
-  return codexLifecycleController.reconcile(request);
-}
-
-async function handleRuntimeCommand(request) {
-  if (runtimeNotificationController.supports(request.command)) {
-    return runtimeNotificationController.handle(request);
-  }
-  if (codexLifecycleController.supports(request.command)) {
-    return codexLifecycleController.handle(request);
-  }
-  throw new Error(`Unsupported runtime command: ${request.command}`);
+function handleRuntimeCommand(...args) {
+  return runtimeCommandRoutingComposition.handle(...args);
 }
 async function refreshTaskDiff(run) {
   if (!run) return "";
