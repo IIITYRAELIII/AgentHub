@@ -100,11 +100,8 @@ import { contextualCallback } from "../interfaces/telegram/callback-context.mjs"
 import { taskViewCallbackData } from "../interfaces/telegram/task-view-callback.mjs";
 import { PersistentDeliveryOutbox } from "../infrastructure/persistence/delivery-outbox.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
-import { taskHasUnreadAnswer } from "../infrastructure/persistence/task-read-state-store.mjs";
 import { LocalTaskSyncStore } from "../infrastructure/persistence/task-sync-store.mjs";
 import { MessageReceiptRegistry } from "../infrastructure/persistence/message-receipts.mjs";
-import { createDesktopMessageController } from "../interfaces/desktop/desktop-message-controller.mjs";
-import { createTrustedDeviceManager, resolveTrustedDeviceUserId } from "../interfaces/web/trusted-device-access.mjs";
 import { unavailableLocalMcpOverrides } from "../infrastructure/process/local-mcp-preflight.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { BackgroundJobQueue } from "../runtime/background-job-queue.mjs";
@@ -133,7 +130,6 @@ import { conciseTurnTitle } from "../application/turn-title.mjs";
 import { DesktopControlServer } from "../../desktop-control.mjs";
 import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { TelegramTaskPickerService } from "../interfaces/telegram/task-picker.mjs";
-import { TelegramTaskActionService } from "../interfaces/telegram/telegram-task-action-service.mjs";
 import {
   approvalModeKeyboard as presentApprovalModeKeyboard,
   formatApprovalMode as presentApprovalMode,
@@ -148,23 +144,10 @@ import {
 } from "../application/deferred-input-controller.mjs";
 import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import { fitTaskHistoryPayload } from "../domain/response-budget.mjs";
-import { RunCoordinator } from "../application/run-coordinator.mjs";
 import {
   commandClientContext,
   commandTaskTarget,
-  createApplicationCommandService,
 } from "../application/application-command-service.mjs";
-import { DesktopDeferredInputService } from "../interfaces/desktop/desktop-deferred-input-service.mjs";
-import { DesktopSettingsService } from "../interfaces/desktop/desktop-settings-service.mjs";
-import { createDesktopSnapshotFactory } from "../interfaces/desktop/desktop-snapshot.mjs";
-import { createDesktopTaskHistoryFactory } from "../interfaces/desktop/desktop-task-history.mjs";
-import { DesktopTaskService } from "../interfaces/desktop/desktop-task-service.mjs";
-import { DesktopSystemService } from "../interfaces/desktop/desktop-system-service.mjs";
-import { DesktopReadModelService } from "../interfaces/desktop/desktop-read-model-service.mjs";
-import { TaskCommandService } from "../application/task-command-service.mjs";
-import { TaskNavigationService } from "../application/task-navigation-service.mjs";
-import { RestartRequestService } from "../application/restart-request-service.mjs";
-import { createDesktopApplicationRouter } from "../interfaces/desktop/desktop-application-router.mjs";
 import { agentHubAutostartShortcut } from "../interfaces/web/server-page.mjs";
 import {
   defaultAutostartInstallScript,
@@ -175,12 +158,10 @@ import {
   TurnEndDeliveryService,
 } from "../application/turn-end-delivery-service.mjs";
 import { DeferredInputStore } from "../application/deferred-input-store.mjs";
-import { DeferredInputService } from "../application/deferred-input-service.mjs";
 import {
   ManagedRunLifecycleService,
   runInputPreview,
 } from "../application/managed-run-lifecycle-service.mjs";
-import { RunConflictPolicy } from "../application/run-conflict-policy.mjs";
 import {
   createHubRuntimeSnapshot,
   HubRuntimeStateCoordinator,
@@ -201,6 +182,11 @@ import { createRunPresentationComposition } from "./run-presentation-composition
 import { createRunObservationComposition } from "./run-observation-composition.mjs";
 import { createTaskViewComposition } from "./task-view-composition.mjs";
 import { createRuntimeRestartComposition } from "./runtime-restart-composition.mjs";
+import { createDesktopReadComposition } from "./desktop-read-composition.mjs";
+import { createDesktopCommandComposition } from "./desktop-command-composition.mjs";
+import { createDesktopRunInputComposition } from "./desktop-run-input-composition.mjs";
+import { createDesktopSystemComposition } from "./desktop-system-composition.mjs";
+import { createDesktopRouterComposition } from "./desktop-router-composition.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -1663,12 +1649,63 @@ const serverControlController = new ServerControlController({
   spawnCapture,
 });
 
+let desktopCommands;
+const {
+  trustedDeviceUserId: resolveDesktopTrustedDeviceUserId,
+  desktopStatusDetails,
+  desktopRateLimitHistory,
+  desktopUsageHistory,
+  desktopSearch,
+  desktopTrustedDevices,
+  desktopCreateDevicePairing,
+  desktopRevokeDevice,
+  desktopSpeakLastAnswer,
+} = createDesktopSystemComposition({
+  config,
+  dependencies: {
+    activeProvider: () => activeProvider,
+    isCodex,
+    preferences: (provider) => agentPreferences.current(provider),
+    codexModelLabel,
+    claudeModelLabels: CLAUDE_MODEL_LABELS,
+    reasoningLabels: CODEX_REASONING_LABELS,
+    collaborationModeLabels: CODEX_COLLABORATION_MODE_LABELS,
+    formattedRateLimits: (provider) => rateLimitTelemetry.formatted(provider),
+    activeRunCount: () => taskRuns.values().filter(taskRunIsActive).length,
+    backgroundJobCount: () => backgroundJobs.size,
+    readRateLimitHistory: (params) => rateLimitHistoryStore.read(params),
+    readUsageHistory: (params) => workLogUsageStore.usageHistory(params),
+    refreshCatalog: refreshTaskCatalog,
+    searchTurns: (...args) => workLogUsageStore.searchTurns(...args),
+    projectRoots: () => PROJECTS.map((project) => project.path),
+    samePath,
+    miniAppPublisher: miniAppLifecycle.publisher,
+    trustedDeviceStore,
+    resolveTask: (...args) => desktopCommands.desktopSnapshotActions.messageTarget(...args),
+    lastTaskMessage: savedLastTaskMessageRecord,
+    enqueueSpeech: (target, text) => backgroundJobs.enqueue(
+      "speech",
+      { chatId, text },
+      chatId,
+      { dedupeKey: `desktop:${target.provider}:${target.threadId}:speech` },
+    ),
+    maxSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
+  },
+});
+
+function trustedDeviceUserId(context) {
+  return resolveDesktopTrustedDeviceUserId(context);
+}
+
 const {
   desktopContextSnapshot,
   desktopRunSnapshot,
   desktopTaskSnapshot,
-  desktopSnapshot: rawDesktopSnapshot,
-} = createDesktopSnapshotFactory({
+  desktopSnapshot,
+  desktopTaskHistory,
+  markDesktopTaskRead,
+} = createDesktopReadComposition({
+  snapshot: {
   clock: {
     nowMs: () => Date.now(),
     nowIso: () => new Date().toISOString(),
@@ -1746,23 +1783,16 @@ const {
   server: {
     snapshot: (...args) => serverControlController.snapshot(...args),
   },
-  readState: {
-    hasUnread: (answer) => taskHasUnreadAnswer(answer, taskReadStateStore.get(answer)),
-  },
   warn: (...args) => console.warn(...args),
-});
-
-const desktopReadModel = new DesktopReadModelService({
-  snapshot: rawDesktopSnapshot,
+  },
+  readModel: {
   readStateStore: taskReadStateStore,
   trustedDeviceUserId,
   hasAllowedUsers: () => Boolean(config.allowedUserIds.size),
   androidEnabled: () => Boolean(config.components.androidApp),
   lastTaskMessage: savedLastTaskMessageRecord,
-});
-const desktopSnapshot = (...args) => desktopReadModel.snapshot(...args);
-
-const desktopTaskHistory = createDesktopTaskHistoryFactory({
+  },
+  history: {
   selection: {
     activeProvider: () => activeProvider,
     threadId: () => threadId,
@@ -1793,316 +1823,286 @@ const desktopTaskHistory = createDesktopTaskHistoryFactory({
     fit: fitTaskHistoryPayload,
   },
   warn: (...args) => console.warn(...args),
-});
-
-const markDesktopTaskRead = (...args) => desktopReadModel.markTaskRead(...args);
-
-const desktopTaskService = new DesktopTaskService({
-  catalog: () => taskCatalog,
-  refreshCatalog: refreshTaskCatalog,
-  activateBinding: activateMessageBinding,
-  markRead: markDesktopTaskRead,
-  snapshot: desktopSnapshot,
-  taskHistory: desktopTaskHistory,
-  dispatchCommand: dispatchApplicationCommand,
-  commandTaskTarget,
-  readTurn: (identity) => workLogUsageStore.getTurn(identity),
-  samePath,
-  chatId: () => chatId,
-  warn: (...args) => console.warn(...args),
-});
-const desktopSelectTask = (...args) => desktopTaskService.select(...args);
-const desktopOpenTask = (...args) => desktopTaskService.openTask(...args);
-const desktopOpenTurn = (...args) => desktopTaskService.openTurn(...args);
-const desktopMessageTarget = (...args) => desktopTaskService.resolveTarget(...args);
-
-const desktopUpdateSetting = (...args) => desktopSettingsService.update(...args);
-
-const taskCommandService = new TaskCommandService({
-  resolveTarget: desktopMessageTarget,
-  pinTitle: pinTaskTitle,
-  renameCodexTask: (targetThreadId, title) => sendRpc("thread/name/set", {
-    threadId: targetThreadId,
-    name: title,
-  }),
-  expectTitleConfirmation: expectTaskTitleConfirmation,
-  invalidateCatalog: invalidateTaskCatalog,
-  runForTask: (target) => taskRuns.forTask(target),
-  updateRunTitle: updateTaskRunTitle,
-  catalogEntries: () => taskCatalog,
-  catalogEntryIsSelected,
-  selection: {
-    current: selectedTask,
-    setTitle: (title) => selectionStore.setTitle(title),
-    clearCodex: () => selectionStore.setThread(null, { provider: "codex", title: "" }),
-    selectCodex: (id, title) => selectionStore.setThread(id, { provider: "codex", title }),
   },
-  saveTitles: savePinnedTaskTitles,
-  saveState,
-  snapshot: desktopSnapshot,
-  readCodexTask: async (targetThreadId) => (await sendRpc("thread/read", {
-    threadId: targetThreadId,
-    includeTurns: false,
-  })).thread,
-  archiveCodexTask: (targetThreadId) => sendRpc("thread/archive", { threadId: targetThreadId }),
-  deleteCodexSettings: (targetThreadId) => taskMetadata.deleteCodexSettings(targetThreadId),
-  listCodexTasks: listThreads,
-  codexTaskTitle: threadTitle,
-  restoreCodexSettings: restoreCodexTaskSettings,
-  diffs: {
-    setLatest: (value) => { latestDiff = value; },
-    forTask: (target) => taskDiffs.get(taskRunKey(target)) ?? "",
-    refresh: refreshTaskDiff,
-  },
-  providerCancel: (run) => agentProviders.call(run.provider, "cancelRun", run),
-  progress: { setStage: (...args) => taskProgress.setStage(...args), finish: (...args) => taskProgress.finish(...args) },
-  dismissedExternalTasks,
-  completeRun: (run) => managedRunLifecycle.complete(run),
-  createTask: createThread,
-  activeProvider: () => activeProvider,
-  switchProvider,
 });
-const desktopRenameTask = (...args) => taskCommandService.rename(...args);
-const desktopArchiveTask = (...args) => taskCommandService.archive(...args);
-const desktopTaskDiff = (...args) => taskCommandService.diff(...args);
-const desktopCancelRun = (...args) => taskCommandService.cancel(...args);
 
 const desktopResolveApproval = (params) => approvalController.resolveFromDesktop(
   String(params.key ?? ""),
   String(params.decision ?? ""),
 );
-const desktopDeferredInput = (...args) => desktopDeferredInputService.handle(...args);
 
-const restartRequestService = new RestartRequestService({
-  getRequest: () => restartRequest,
-  setRequest: (value) => { restartRequest = value; },
-  blockingWorkCount: () => restartBlockingRuns().length + backgroundJobs.size,
-  currentChatId: () => chatId,
-  updateOffset: () => updateOffset,
-  processingUpdateId: () => processingUpdateId,
-  saveState,
-  announceDesktop: announceDesktopRestart,
-  sendTelegram: sendMessage,
-  performRestart,
+desktopCommands = createDesktopCommandComposition({
+  taskService: {
+    catalog: () => taskCatalog,
+    refreshCatalog: refreshTaskCatalog,
+    activateBinding: activateMessageBinding,
+    markRead: markDesktopTaskRead,
+    snapshot: desktopSnapshot,
+    taskHistory: desktopTaskHistory,
+    readTurn: (identity) => workLogUsageStore.getTurn(identity),
+    samePath,
+    chatId: () => chatId,
+    warn: (...args) => console.warn(...args),
+  },
+  taskCommands: {
+    pinTitle: pinTaskTitle,
+    renameCodexTask: (targetThreadId, title) => sendRpc("thread/name/set", {
+      threadId: targetThreadId,
+      name: title,
+    }),
+    expectTitleConfirmation: expectTaskTitleConfirmation,
+    invalidateCatalog: invalidateTaskCatalog,
+    runForTask: (target) => taskRuns.forTask(target),
+    updateRunTitle: updateTaskRunTitle,
+    catalogEntries: () => taskCatalog,
+    catalogEntryIsSelected,
+    selection: {
+      current: selectedTask,
+      setTitle: (title) => selectionStore.setTitle(title),
+      clearCodex: () => selectionStore.setThread(null, { provider: "codex", title: "" }),
+      selectCodex: (id, title) => selectionStore.setThread(id, { provider: "codex", title }),
+    },
+    saveTitles: savePinnedTaskTitles,
+    saveState,
+    snapshot: desktopSnapshot,
+    readCodexTask: async (targetThreadId) => (await sendRpc("thread/read", {
+      threadId: targetThreadId,
+      includeTurns: false,
+    })).thread,
+    archiveCodexTask: (targetThreadId) => sendRpc("thread/archive", { threadId: targetThreadId }),
+    deleteCodexSettings: (targetThreadId) => taskMetadata.deleteCodexSettings(targetThreadId),
+    listCodexTasks: listThreads,
+    codexTaskTitle: threadTitle,
+    restoreCodexSettings: restoreCodexTaskSettings,
+    diffs: {
+      setLatest: (value) => { latestDiff = value; },
+      forTask: (target) => taskDiffs.get(taskRunKey(target)) ?? "",
+      refresh: refreshTaskDiff,
+    },
+    providerCancel: (run) => agentProviders.call(run.provider, "cancelRun", run),
+    progress: {
+      setStage: (...args) => taskProgress.setStage(...args),
+      finish: (...args) => taskProgress.finish(...args),
+    },
+    dismissedExternalTasks,
+    completeRun: (run) => managedRunLifecycle.complete(run),
+    createTask: createThread,
+    activeProvider: () => activeProvider,
+    switchProvider,
+  },
+  restart: {
+    getRequest: () => restartRequest,
+    setRequest: (value) => { restartRequest = value; },
+    blockingWorkCount: () => restartBlockingRuns().length + backgroundJobs.size,
+    currentChatId: () => chatId,
+    updateOffset: () => updateOffset,
+    processingUpdateId: () => processingUpdateId,
+    saveState,
+    announceDesktop: announceDesktopRestart,
+    sendTelegram: sendMessage,
+    performRestart,
+  },
+  navigation: {
+    projects: PROJECTS,
+    samePath,
+    findProject,
+    selectionStore,
+    activeProjectRoot: () => activeProjectRoot,
+    activeProvider: () => activeProvider,
+    threadId: () => threadId,
+    activeTaskTitle: () => activeThreadTitle,
+    isCodex,
+    rememberCodexSettings: rememberCodexTaskSettings,
+    captureCodexPreferences: () => agentPreferences.captureCodex(),
+    restoreCodexPreferences: (value) => agentPreferences.restoreCodex(value),
+    restoreCodexThreadSettings: restoreCodexTaskSettings,
+    storedCodexThreadTitle,
+    selectedTask,
+    taskRunKey,
+    storedTaskDiff: (key) => taskDiffs.get(key),
+    latestDiff: () => latestDiff,
+    setLatestDiff: (value) => { latestDiff = value; },
+    createThread,
+    codexTransportRunning: () => codexTransport.running,
+    startCodex: startCodexAppServer,
+    initializeCodex,
+    attachCodexThread,
+    saveState,
+  },
+  settings: {
+    isSelected: catalogEntryIsSelected,
+    selectedTask,
+    switchProvider,
+    isCodex,
+    threadId: () => threadId,
+    isCompacting: (value) => contextCompactions.isRunning(value),
+    switchCodexModel,
+    switchClaudeModel: switchModel,
+    updateCodexThreadSettings: updateActiveCodexThreadSettings,
+    saveState,
+    getCodexReasoning: () => agentPreferences.codexReasoningEffort,
+    setCodexReasoning: (value) => agentPreferences.setCodexReasoning(value),
+    getClaudeReasoning: () => agentPreferences.claudeReasoningEffort,
+    setClaudeReasoning: (value) => agentPreferences.setClaudeReasoning(value),
+    getCodexMode: () => agentPreferences.codexCollaborationMode,
+    setCodexMode: (value) => agentPreferences.setCodexMode(value),
+    getClaudeMode: () => agentPreferences.claudeCollaborationMode,
+    setClaudeMode: (value) => agentPreferences.setClaudeMode(value),
+    getAutoApprove: () => autoApprove,
+    setAutoApprove: (value) => { autoApprove = value; },
+    getIncludeClaudeUsage: () => agentPreferences.includeClaudeUsage,
+    setIncludeClaudeUsage: (value) => {
+      agentPreferences.setIncludeClaudeUsage(value);
+      workLogUsageStore.setIncludeClaudeUsage(value);
+    },
+    projectUsage: () => workLogUsageStore.project(null, {
+      projectRoot: config.projectRoot,
+      projectionProjectRoots: globalWorkLogProjectRoots,
+    }),
+    findProjectIndex: (value) => PROJECTS.findIndex((project) => samePath(project.path, value)),
+    switchProject,
+    snapshot: (params) => desktopSnapshot(params),
+    reasoningEfforts: CODEX_REASONING_EFFORTS,
+    collaborationModes: CODEX_COLLABORATION_MODES,
+  },
+  application: {
+    selectedTask,
+    resolveApproval: (payload) => payload.callback
+      ? approvalController.handleCallback(payload.callback)
+      : desktopResolveApproval(payload),
+  },
+  telegramActions: {
+    selectedTask,
+    activeProvider: () => activeProvider,
+    activeProjectRoot: () => activeProjectRoot,
+    activeTaskTitle: () => activeThreadTitle,
+    currentThreadId: () => threadId,
+    preferencesSnapshot: () => agentPreferences.snapshot(),
+    selectedRun,
+    sendTaskSwitchNotification,
+    sendTaskAlreadySelectedNotification,
+    isCodex,
+    threadTitle,
+    formatArchiveMessage,
+    sendMessage: sendMessageTo,
+    showLastMessageReplyMarkup,
+    bindRunMessage,
+    telegram,
+  },
 });
-const desktopRestartServer = () => restartRequestService.fromDesktop();
 
-const desktopNewTask = (...args) => taskCommandService.create(...args);
+const {
+  applicationCommands,
+  restartRequestService,
+  taskNavigationService,
+  telegramTaskActions,
+  desktopSnapshotActions,
+  dispatchApplicationCommand,
+  settingCommandTarget,
+  selectTaskFromBinding,
+} = desktopCommands;
+const {
+  openTask: desktopOpenTask,
+  openTurn: desktopOpenTurn,
+  messageTarget: desktopMessageTarget,
+  taskDiff: desktopTaskDiff,
+  restartServer: desktopRestartServer,
+} = desktopSnapshotActions;
 
 const desktopCompactContext = async (params) => (
   codexContextMaintenance.startManual(await desktopMessageTarget(params))
 );
 
-const deferredInputService = new DeferredInputService({
-  store: deferredInputs,
-  maxItems: MAX_DEFERRED_INPUTS,
-  persist: saveState,
-  removeFiles: (files) => Promise.all(files.map((file) => unlink(file).catch(() => {}))),
-  notify: async (item, { executionOwner, conflictTask }) => {
-    const preview = runInputPreview(item.input);
-    const runtime = item.provider === "codex"
-      ? taskExecutionRuntimeLabel(executionOwner)
-      : executionOwner === TASK_EXECUTION_OWNERS.HUB
-        ? taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.HUB)
-        : "Внешний Claude CLI";
-    const conflictText = item.conflictKind === "repository"
-      ? `Задача «${conflictTask?.taskTitle ?? "Без названия"}» уже работает с тем же Git-репозиторием через ${runtime}. Параллельная запись может смешать изменения.`
-      : item.conflictKind === "activity-unknown"
-        ? "Claude оставил незавершённый транскрипт, но давно не записывал новые события. Нельзя надёжно определить, продолжает ли работать внешний процесс."
-        : `Выбранная задача уже выполняется через ${runtime}.`;
-    return sendMessageTo(
-      item.chatId,
-      `${conflictText} Новое сообщение сохранено и не потеряно.`
-        + `${preview ? `\n\n${preview.slice(0, 700)}` : ""}\n\nЧто сделать?`,
-      { reply_markup: pendingInputKeyboard(item.id, { allowForce: item.allowForce }) },
-    );
+const desktopRunInputs = createDesktopRunInputComposition({
+  deferredInput: {
+    store: deferredInputs,
+    maxItems: MAX_DEFERRED_INPUTS,
+    persist: saveState,
+    removeFiles: (files) => Promise.all(files.map((file) => unlink(file).catch(() => {}))),
+    notify: async (item, { executionOwner, conflictTask }) => {
+      const preview = runInputPreview(item.input);
+      const runtime = item.provider === "codex"
+        ? taskExecutionRuntimeLabel(executionOwner)
+        : executionOwner === TASK_EXECUTION_OWNERS.HUB
+          ? taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.HUB)
+          : "Внешний Claude CLI";
+      const conflictText = item.conflictKind === "repository"
+        ? `Задача «${conflictTask?.taskTitle ?? "Без названия"}» уже работает с тем же Git-репозиторием через ${runtime}. Параллельная запись может смешать изменения.`
+        : item.conflictKind === "activity-unknown"
+          ? "Claude оставил незавершённый транскрипт, но давно не записывал новые события. Нельзя надёжно определить, продолжает ли работать внешний процесс."
+          : `Выбранная задача уже выполняется через ${runtime}.`;
+      return sendMessageTo(
+        item.chatId,
+        `${conflictText} Новое сообщение сохранено и не потеряно.`
+          + `${preview ? `\n\n${preview.slice(0, 700)}` : ""}\n\nЧто сделать?`,
+        { reply_markup: pendingInputKeyboard(item.id, { allowForce: item.allowForce }) },
+      );
+    },
+  },
+  conflictPolicy: {
+    enabled: () => config.guardConcurrentRepositoryWrites,
+    resolveRepoRoots: resolveTaskGitRepoRoots,
+    taskCatalog: () => refreshTaskCatalog(),
+    activeRuns: () => taskRuns.values(),
+    findConflict: findRepositoryWriteConflict,
+  },
+  coordinator: {
+    taskRuns,
+    providers: agentProviders,
+    externalActivity: taskExternalActivity,
+    beginRun: (input, target) => managedRunLifecycle.begin(input, target),
+    launchTurn,
+    describeAttachments: desktopAttachmentDescriptors,
+    hasDeferredBacklog: (target) => deferredInputs.hasBacklog(target),
+    scheduleDeferred: scheduleQueuedInput,
+    setProgressStage: (...args) => taskProgress.setStage(...args),
+    noteRunActivity: (...args) => taskProgress.noteActivity(...args),
+    scheduleProgressUpdate: (...args) => taskProgress.schedule(...args),
+    notifyInputStart: (target) => {
+      void telegram("sendChatAction", {
+        chat_id: target.chatId ?? chatId,
+        action: "typing",
+      }).catch(() => {});
+    },
+  },
+  messageController: {
+    attachmentPaths: desktopAttachmentPaths,
+    describeAttachments: desktopAttachmentDescriptors,
+    resolveTarget: desktopMessageTarget,
+    receipts: desktopMessageReceipts,
+    persistReceipts: saveState,
+  },
+  desktopDeferredInput: {
+    pendingInputs,
+    queuedInputs,
+    findReceiptByResultId: (id) => desktopMessageReceipts.findByResultId(id),
+    isProcessing: (id) => deferredInputController.isProcessing(id),
+    cancelSchedule: (id) => deferredInputController.cancelSchedule(id),
+    responseAnnotations: deferredResponseAnnotations,
+    replaceInputText: replaceDeferredInputText,
+    saveState,
+    updateReceipt: updateDeferredDesktopReceipt,
+    cleanupFiles: cleanupDeferredFiles,
+    updateMessage: updateDeferredMessage,
+    scheduleNext: (item) => deferredInputController.scheduleNextForTask(item),
+    scheduleQueued: scheduleQueuedInput,
+    selectTask: selectTaskFromBinding,
+    clientContext: commandClientContext,
+    startTurn,
+    runForTask: (target) => taskRuns.forTask(target),
+    describeAttachments: desktopAttachmentDescriptors,
+    selectedTask,
+    dispatchCommand: dispatchApplicationCommand,
+    activeTitle: () => activeThreadTitle,
+    snapshot: () => desktopSnapshot(),
   },
 });
-
-const runConflictPolicy = new RunConflictPolicy({
-  enabled: () => config.guardConcurrentRepositoryWrites,
-  resolveRepoRoots: resolveTaskGitRepoRoots,
-  taskCatalog: () => refreshTaskCatalog(),
-  activeRuns: () => taskRuns.values(),
-  findConflict: findRepositoryWriteConflict,
-});
-
-const runCoordinator = new RunCoordinator({
-  taskRuns,
-  providers: agentProviders,
-  externalActivity: taskExternalActivity,
-  repositoryConflict: (target) => runConflictPolicy.check(target),
-  deferInput: (...args) => deferredInputService.defer(...args),
-  beginRun: (input, target) => managedRunLifecycle.begin(input, target),
-  launchTurn,
-  describeAttachments: desktopAttachmentDescriptors,
-  hasDeferredBacklog: (target) => deferredInputs.hasBacklog(target),
-  scheduleDeferred: scheduleQueuedInput,
-  setProgressStage: (...args) => taskProgress.setStage(...args),
-  noteRunActivity: (...args) => taskProgress.noteActivity(...args),
-  scheduleProgressUpdate: (...args) => taskProgress.schedule(...args),
-  notifyInputStart: (target) => {
-    // Telegram typing is best-effort and deliberately not persisted. The
-    // regular progress card is owned by TaskProgressController after launch.
-    void telegram("sendChatAction", {
-      chat_id: target.chatId ?? chatId,
-      action: "typing",
-    }).catch(() => {});
-  },
-});
-
-const desktopMessageController = createDesktopMessageController({
-  attachmentPaths: desktopAttachmentPaths,
-  describeAttachments: desktopAttachmentDescriptors,
-  resolveTarget: desktopMessageTarget,
-  receipts: desktopMessageReceipts,
-  persistReceipts: saveState,
+const {
+  runConflictPolicy,
   runCoordinator,
-});
-const desktopDeferredInputService = new DesktopDeferredInputService({
-  pendingInputs,
-  queuedInputs,
-  findReceiptByResultId: (id) => desktopMessageReceipts.findByResultId(id),
-  isProcessing: (id) => deferredInputController.isProcessing(id),
-  cancelSchedule: (id) => deferredInputController.cancelSchedule(id),
-  steerActiveInput: (payload) => desktopMessageController.steerActiveInput(payload),
-  responseAnnotations: deferredResponseAnnotations,
-  replaceInputText: replaceDeferredInputText,
-  saveState,
-  updateReceipt: updateDeferredDesktopReceipt,
-  cleanupFiles: cleanupDeferredFiles,
-  updateMessage: updateDeferredMessage,
-  scheduleNext: (item) => deferredInputController.scheduleNextForTask(item),
-  scheduleQueued: scheduleQueuedInput,
-  selectTask: selectTaskFromBinding,
-  clientContext: commandClientContext,
-  startTurn,
-  runForTask: (target) => taskRuns.forTask(target),
-  describeAttachments: desktopAttachmentDescriptors,
-  selectedTask,
-  dispatchCommand: dispatchApplicationCommand,
-  activeTitle: () => activeThreadTitle,
-  snapshot: () => desktopSnapshot(),
-});
-const taskNavigationService = new TaskNavigationService({
-  projects: PROJECTS,
-  samePath,
-  findProject,
-  selectionStore,
-  activeProjectRoot: () => activeProjectRoot,
-  activeProvider: () => activeProvider,
-  threadId: () => threadId,
-  activeTaskTitle: () => activeThreadTitle,
-  isCodex,
-  rememberCodexSettings: rememberCodexTaskSettings,
-  captureCodexPreferences: () => agentPreferences.captureCodex(),
-  restoreCodexPreferences: (value) => agentPreferences.restoreCodex(value),
-  restoreCodexThreadSettings: restoreCodexTaskSettings,
-  storedCodexThreadTitle,
-  selectedTask,
-  taskRunKey,
-  storedTaskDiff: (key) => taskDiffs.get(key),
-  latestDiff: () => latestDiff,
-  setLatestDiff: (value) => { latestDiff = value; },
-  createThread,
-  codexTransportRunning: () => codexTransport.running,
-  startCodex: startCodexAppServer,
-  initializeCodex,
-  attachCodexThread,
-  saveState,
-});
-const desktopSettingsService = new DesktopSettingsService({
-  isSelected: catalogEntryIsSelected,
-  selectedTask,
-  switchProvider,
-  isCodex,
-  threadId: () => threadId,
-  isCompacting: (value) => contextCompactions.isRunning(value),
-  switchCodexModel,
-  switchClaudeModel: switchModel,
-  updateCodexThreadSettings: updateActiveCodexThreadSettings,
-  saveState,
-  getCodexReasoning: () => agentPreferences.codexReasoningEffort,
-  setCodexReasoning: (value) => agentPreferences.setCodexReasoning(value),
-  getClaudeReasoning: () => agentPreferences.claudeReasoningEffort,
-  setClaudeReasoning: (value) => agentPreferences.setClaudeReasoning(value),
-  getCodexMode: () => agentPreferences.codexCollaborationMode,
-  setCodexMode: (value) => agentPreferences.setCodexMode(value),
-  getClaudeMode: () => agentPreferences.claudeCollaborationMode,
-  setClaudeMode: (value) => agentPreferences.setClaudeMode(value),
-  getAutoApprove: () => autoApprove,
-  setAutoApprove: (value) => { autoApprove = value; },
-  getIncludeClaudeUsage: () => agentPreferences.includeClaudeUsage,
-  setIncludeClaudeUsage: (value) => {
-    agentPreferences.setIncludeClaudeUsage(value);
-    workLogUsageStore.setIncludeClaudeUsage(value);
-  },
-  projectUsage: () => workLogUsageStore.project(null, {
-    projectRoot: config.projectRoot,
-    projectionProjectRoots: globalWorkLogProjectRoots,
-  }),
-  findProjectIndex: (value) => PROJECTS.findIndex((project) => samePath(project.path, value)),
-  switchProject,
-  snapshot: (params) => desktopSnapshot(params),
-  reasoningEfforts: CODEX_REASONING_EFFORTS,
-  collaborationModes: CODEX_COLLABORATION_MODES,
-});
-
-function trustedDeviceUserId(context) {
-  const localAndroidUserId = config.components.androidApp && !config.components.telegram
-    ? "local"
-    : "";
-  return resolveTrustedDeviceUserId(config.allowedUserIds, context, localAndroidUserId);
-}
-
-const desktopSystemService = new DesktopSystemService({
-  activeProvider: () => activeProvider,
-  isCodex,
-  preferences: (provider) => agentPreferences.current(provider),
-  codexModelLabel,
-  claudeModelLabels: CLAUDE_MODEL_LABELS,
-  reasoningLabels: CODEX_REASONING_LABELS,
-  collaborationModeLabels: CODEX_COLLABORATION_MODE_LABELS,
-  formattedRateLimits: (provider) => rateLimitTelemetry.formatted(provider),
-  activeRunCount: () => taskRuns.values().filter(taskRunIsActive).length,
-  backgroundJobCount: () => backgroundJobs.size,
-  readRateLimitHistory: (params) => rateLimitHistoryStore.read(params),
-  readUsageHistory: (params) => workLogUsageStore.usageHistory(params),
-  refreshCatalog: refreshTaskCatalog,
-  searchTurns: (...args) => workLogUsageStore.searchTurns(...args),
-  projectRoots: () => PROJECTS.map((project) => project.path),
-  samePath,
-  trustedDeviceManager: (context) => {
-    const userId = trustedDeviceUserId(context);
-    const manager = createTrustedDeviceManager({
-      workerEnabled: config.miniApp.worker.enabled,
-      publisher: miniAppLifecycle.publisher,
-      localStore: trustedDeviceStore,
-    });
-    return {
-      list: () => manager.list(userId),
-      createPairing: () => manager.createPairing(userId),
-      revoke: (deviceId) => manager.revoke(userId, deviceId),
-    };
-  },
-  resolveTask: desktopMessageTarget,
-  lastTaskMessage: savedLastTaskMessageRecord,
-  enqueueSpeech: (target, text) => backgroundJobs.enqueue(
-    "speech",
-    { chatId, text },
-    chatId,
-    { dedupeKey: `desktop:${target.provider}:${target.threadId}:speech` },
-  ),
-  maxSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
-});
-const desktopStatusDetails = (...args) => desktopSystemService.statusDetails(...args);
-const desktopRateLimitHistory = (...args) => desktopSystemService.rateLimitHistory(...args);
-const desktopUsageHistory = (...args) => desktopSystemService.usageHistory(...args);
-const desktopSearch = (...args) => desktopSystemService.search(...args);
-const desktopTrustedDevices = (...args) => desktopSystemService.trustedDevices(...args);
-const desktopCreateDevicePairing = (...args) => desktopSystemService.createDevicePairing(...args);
-const desktopRevokeDevice = (...args) => desktopSystemService.revokeDevice(...args);
-const desktopSpeakLastAnswer = (...args) => desktopSystemService.speakLastAnswer(...args);
+  desktopMessageController,
+  desktopDeferredInput,
+} = desktopRunInputs;
 
 function telegramMessageCommandContext(message) {
   return {
@@ -2134,59 +2134,11 @@ function dispatchTelegramSetting(callback, name, value) {
   );
 }
 
-const applicationCommands = createApplicationCommandService({
-  selectedTask,
-  handlers: {
-    selectTask: desktopSelectTask,
-    createTask: desktopNewTask,
-    renameTask: desktopRenameTask,
-    archiveTask: desktopArchiveTask,
-    updateSetting: desktopUpdateSetting,
-    cancelRun: desktopCancelRun,
-    resolveApproval: (payload) => payload.callback
-      ? approvalController.handleCallback(payload.callback)
-      : desktopResolveApproval(payload),
-  },
-});
-
-function settingCommandTarget(params) {
-  return applicationCommands.settingTarget(params);
-}
-
-function dispatchApplicationCommand(type, params, context, { target = null } = {}) {
-  return applicationCommands.dispatch(type, params, context, { target });
-}
-
-function selectTaskFromBinding(binding, context = {}) {
-  return applicationCommands.selectTaskFromBinding(binding, context);
-}
-
-const telegramTaskActions = new TelegramTaskActionService({
-  selectedTask,
-  activeProvider: () => activeProvider,
-  activeProjectRoot: () => activeProjectRoot,
-  activeTaskTitle: () => activeThreadTitle,
-  currentThreadId: () => threadId,
-  preferencesSnapshot: () => agentPreferences.snapshot(),
-  selectedRun,
-  selectTaskFromBinding,
-  sendTaskSwitchNotification,
-  sendTaskAlreadySelectedNotification,
-  dispatchCommand: dispatchApplicationCommand,
-  commandTaskTarget,
-  isCodex,
-  threadTitle,
-  formatArchiveMessage,
-  sendMessage: sendMessageTo,
-  showLastMessageReplyMarkup,
-  bindRunMessage,
-  telegram,
-});
-
 const {
   handleDesktopControl: dispatchDesktopControl,
   forgetDesktopControl,
-} = createDesktopApplicationRouter({
+  reconcileRemoteDesktopControl: dispatchRemoteDesktopReconciliation,
+} = createDesktopRouterComposition({
   handlers: {
     snapshot: desktopSnapshot,
     taskHistory: desktopTaskHistory,
@@ -2211,36 +2163,14 @@ const {
   },
   commands: applicationCommands,
   receiptFile: path.join(config.dataDir, "desktop-control-receipts.json"),
-  reconcileMutation: reconcileDesktopMutation,
 });
 
-async function handleDesktopControl(request) {
+function handleDesktopControl(request) {
   return dispatchDesktopControl(request);
 }
 
-async function reconcileRemoteDesktopControl({ action, params, context }) {
-  try {
-    // The Desktop router owns its own pre-effect receipt. Re-entering it with
-    // the same command id returns a completed cached result or invokes its
-    // action-specific reconciliation; it never repeats an uncertain effect.
-    return {
-      resolved: true,
-      result: await dispatchDesktopControl({ action, params, context }),
-    };
-  } catch (error) {
-    return { resolved: false, error: error.message };
-  }
-}
-
-async function reconcileDesktopMutation({ action }) {
-  // Most Desktop mutations ultimately call external providers or mutate a
-  // live App Server. They have no queryable transaction identifier. Repeating
-  // an effect after a crash would be worse than reporting its unknown outcome.
-  return {
-    resolved: false,
-    terminal: true,
-    error: `Outcome of interrupted ${action} command is unknown; it was not repeated`,
-  };
+function reconcileRemoteDesktopControl(request) {
+  return dispatchRemoteDesktopReconciliation(request);
 }
 
 async function sendProjectPicker() {
