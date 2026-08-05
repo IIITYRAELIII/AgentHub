@@ -53,7 +53,6 @@ import {
   resolveTaskGitRepoRoots,
   taskGitDiff,
 } from "../infrastructure/filesystem/task-git-diff.mjs";
-import { TaskDiffStore } from "../infrastructure/persistence/task-diff-store.mjs";
 import { findRepositoryWriteConflict } from "../infrastructure/filesystem/repository-conflict.mjs";
 import {
   deferredInputMatchesRun,
@@ -83,8 +82,6 @@ import {
 } from "../runtime/progress-heartbeat.mjs";
 import {
   serializableTaskRun,
-  TaskDismissalRegistry,
-  TaskRunRegistry,
   taskRunIsActive,
   taskRunKey,
   updateTaskRunTitle,
@@ -100,14 +97,8 @@ import { contextualCallback } from "../interfaces/telegram/callback-context.mjs"
 import { taskViewCallbackData } from "../interfaces/telegram/task-view-callback.mjs";
 import { PersistentDeliveryOutbox } from "../infrastructure/persistence/delivery-outbox.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
-import { LocalTaskSyncStore } from "../infrastructure/persistence/task-sync-store.mjs";
-import { MessageReceiptRegistry } from "../infrastructure/persistence/message-receipts.mjs";
 import { unavailableLocalMcpOverrides } from "../infrastructure/process/local-mcp-preflight.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
-import { BackgroundJobQueue } from "../runtime/background-job-queue.mjs";
-import { PersistentBackgroundJobController } from "../runtime/background-job-controller.mjs";
-import { PersistentBackgroundJobStore } from "../infrastructure/persistence/background-job-store.mjs";
-import { FailedTelegramUpdateStore } from "../infrastructure/persistence/failed-update-store.mjs";
 import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "../providers/claude/claude-invocation.mjs";
 import {
   catalogEntryIsSelected,
@@ -157,7 +148,6 @@ import { RuntimeTimerCoordinator } from "../runtime/runtime-timer-coordinator.mj
 import {
   TurnEndDeliveryService,
 } from "../application/turn-end-delivery-service.mjs";
-import { DeferredInputStore } from "../application/deferred-input-store.mjs";
 import {
   ManagedRunLifecycleService,
   runInputPreview,
@@ -187,6 +177,8 @@ import { createDesktopCommandComposition } from "./desktop-command-composition.m
 import { createDesktopRunInputComposition } from "./desktop-run-input-composition.mjs";
 import { createDesktopSystemComposition } from "./desktop-system-composition.mjs";
 import { createDesktopRouterComposition } from "./desktop-router-composition.mjs";
+import { createRuntimeDataComposition } from "./runtime-data-composition.mjs";
+import { createBackgroundWorkComposition } from "./background-work-composition.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -320,8 +312,30 @@ const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
 function defaultNotificationChatId() {
   return config.telegramEnabled ? resolveNotificationChatId(config, null) : null;
 }
-const taskRuns = new TaskRunRegistry();
-const lastSeenTaskTurnIds = new Map();
+const {
+  taskRuns,
+  dismissedExternalTasks,
+  deferredInputs,
+  pendingInputs,
+  queuedInputs,
+  taskDiffs,
+  taskSyncStore,
+  lastSeenTaskTurnIds,
+  turnTemporaryFiles,
+  turnSpeechButtons,
+  cancelledManagedClaudeTasks,
+  forwardBundles,
+  desktopMessageReceipts,
+  statusMediaFileIds,
+  claudeTranscriptAuditState,
+} = await createRuntimeDataComposition({
+  config,
+  projects: PROJECTS,
+  taskDiffsFile: TASK_DIFFS_FILE,
+  taskSyncFile: TASK_SYNC_FILE,
+  findProject,
+  canonicalizeProjectRoots,
+});
 const codexObservability = createCodexObservabilityComposition({
   config,
   sendRpc,
@@ -356,8 +370,6 @@ const {
   rememberRolloutPath: rememberCodexRolloutPath,
   terminalAudit: codexTerminalAudit,
 } = codexObservability;
-const turnTemporaryFiles = new Map();
-const turnSpeechButtons = new Map();
 const managedRunLifecycle = new ManagedRunLifecycleService({
   taskRuns,
   currentTarget: () => ({
@@ -470,16 +482,17 @@ const codexContextMaintenance = new CodexContextMaintenanceService({
   }),
   sandboxSettings: () => codexThreadSandboxSettings(config.codexSandboxMode),
 });
-const backgroundJobStore = new PersistentBackgroundJobStore({
-  directoryPath: BACKGROUND_JOBS_DIR,
-  maxItems: MAX_BACKGROUND_MEDIA_JOBS + MAX_BACKGROUND_SPEECH_JOBS,
-});
-const failedUpdateStore = new FailedTelegramUpdateStore({ directoryPath: FAILED_UPDATES_DIR });
-await failedUpdateStore.load();
-const backgroundJobs = new PersistentBackgroundJobController({
-  store: backgroundJobStore,
+const {
+  failedUpdateStore,
+  backgroundJobStore,
+  backgroundJobs,
+  interactiveJobs,
+} = await createBackgroundWorkComposition({
+  backgroundDirectory: BACKGROUND_JOBS_DIR,
+  failedUpdatesDirectory: FAILED_UPDATES_DIR,
   maxMediaJobs: MAX_BACKGROUND_MEDIA_JOBS,
   maxSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
+  maxInteractiveJobs: MAX_INTERACTIVE_JOBS,
   isStopping: () => stopping,
   onIdle: scheduleDeferredRestartIfReady,
   sendMessage: (...args) => sendMessageTo(...args),
@@ -496,32 +509,9 @@ const backgroundJobs = new PersistentBackgroundJobController({
     pendingImageJobs: () => forwardBundleController.pendingImageJobs(),
   },
 });
-const interactiveJobs = new BackgroundJobQueue({
-  concurrency: 2,
-  maxJobs: MAX_INTERACTIVE_JOBS,
-});
-const dismissedExternalTasks = new TaskDismissalRegistry();
-const cancelledManagedClaudeTasks = new Map();
-const deferredInputs = new DeferredInputStore();
-const pendingInputs = deferredInputs.pending;
-const forwardBundles = new Map();
-const queuedInputs = deferredInputs.queued;
-const desktopMessageReceipts = new MessageReceiptRegistry();
-const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
-await taskDiffs.load();
-const statusMediaFileIds = new Map();
 let synchronizedTaskTitleSignature = "";
 let taskTitlesSynchronizedAt = 0;
 let workLogPricingBackfillAttempted = false;
-const claudeTranscriptAuditState = new Map();
-const taskSyncStore = new LocalTaskSyncStore({
-  filePath: TASK_SYNC_FILE,
-  databaseFile: path.join(config.dataDir, "journal.sqlite"),
-  canonicalizeProjectRoot: (projectRoot) => findProject(projectRoot)?.path ?? projectRoot,
-  canonicalizeValue: (value) => canonicalizeProjectRoots(value, PROJECTS),
-});
-await taskSyncStore.load();
-await taskSyncStore.save();
 const {
   claudeTaskSnapshots,
   claudeEventService,
