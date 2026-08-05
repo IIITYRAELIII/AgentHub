@@ -48,7 +48,6 @@ import { telegramPrompt } from "../interfaces/telegram/telegram-message.mjs";
 import {
   forwardBundleAttachmentPaths,
   restoreForwardBundle,
-  TelegramForwardBundleController,
 } from "../interfaces/telegram/telegram-forward-bundle.mjs";
 import {
   captureTaskGitBaseline,
@@ -144,11 +143,7 @@ import { CodexLifecycleController } from "../providers/codex/codex-lifecycle-con
 import { conciseTurnTitle } from "../application/turn-title.mjs";
 import { DesktopControlServer } from "../../desktop-control.mjs";
 import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
-import { TelegramMessageController } from "../interfaces/telegram/telegram-message-controller.mjs";
-import { TelegramCallbackController } from "../interfaces/telegram/telegram-callback-controller.mjs";
-import { routeTelegramCallback } from "../interfaces/telegram/telegram-callback-router.mjs";
 import { TelegramTaskPickerService } from "../interfaces/telegram/task-picker.mjs";
-import { InteractiveJobService } from "../interfaces/telegram/interactive-job-service.mjs";
 import { RestartNotificationService } from "../interfaces/telegram/restart-notification-service.mjs";
 import { TelegramTaskActionService } from "../interfaces/telegram/telegram-task-action-service.mjs";
 import {
@@ -158,7 +153,6 @@ import {
   formatFileApproval as presentFileApproval,
 } from "../interfaces/telegram/approval-presentation.mjs";
 import { TaskViewController } from "../interfaces/telegram/task-view-controller.mjs";
-import { TelegramPollingController } from "../interfaces/telegram/telegram-polling-controller.mjs";
 import { TelegramDeliveryService } from "../interfaces/telegram/telegram-delivery-service.mjs";
 import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "../providers/codex/codex-invocation.mjs";
 import { CodexAppServerLifecycle } from "../providers/codex/codex-app-server-lifecycle.mjs";
@@ -179,10 +173,6 @@ import {
   commandTaskTarget,
   createApplicationCommandService,
 } from "../application/application-command-service.mjs";
-import { TelegramSettingsCallbackService } from "../interfaces/telegram/telegram-settings-callbacks.mjs";
-import { TelegramTaskCallbackService } from "../interfaces/telegram/telegram-task-callbacks.mjs";
-import { TelegramInputCallbackService } from "../interfaces/telegram/telegram-input-callbacks.mjs";
-import { TelegramCommandService } from "../interfaces/telegram/telegram-command-service.mjs";
 import { DesktopDeferredInputService } from "../interfaces/desktop/desktop-deferred-input-service.mjs";
 import { DesktopSettingsService } from "../interfaces/desktop/desktop-settings-service.mjs";
 import { createDesktopSnapshotFactory } from "../interfaces/desktop/desktop-snapshot.mjs";
@@ -227,6 +217,7 @@ import { createProviderOperationComposition } from "./provider-operation-composi
 import { createProviderCatalogComposition } from "./provider-catalog-composition.mjs";
 import { createRuntimeLifecycleComposition } from "./runtime-lifecycle-composition.mjs";
 import { createStateComposition } from "./state-composition.mjs";
+import { createTelegramControllerComposition } from "./telegram-controller-composition.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -3022,220 +3013,97 @@ async function restartBot() {
 
 function dismissCallbackMenu(...args) { return telegramTaskActions.dismissMenu(...args); }
 
-const telegramSettingsCallbacks = new TelegramSettingsCallbackService({
+const {
+  forwardBundleController,
+  pollTelegram,
+} = createTelegramControllerComposition({
   telegram,
-  dispatchSetting: dispatchTelegramSetting,
-  sendMessage,
-  formatApprovalMode,
-  approvalModeKeyboard,
-  providerTitle,
-  activeProject,
-  activeProvider: () => activeProvider,
-  autoApprove: () => autoApprove,
-  codexModel: () => agentPreferences.codexModel,
-  codexModelLabel,
-  codexReasoningEffort: () => agentPreferences.codexReasoningEffort,
-  codexCollaborationMode: () => agentPreferences.codexCollaborationMode,
-  claudeModel: () => agentPreferences.claudeModel,
-  claudeReasoningEffort: () => agentPreferences.claudeReasoningEffort,
-  claudeCollaborationMode: () => agentPreferences.claudeCollaborationMode,
+  config,
+  menuCommands: MENU_COMMANDS,
+  botMenu: BOT_MENU,
   projects: PROJECTS,
   reasoningLabels: CODEX_REASONING_LABELS,
   collaborationModeLabels: CODEX_COLLABORATION_MODE_LABELS,
   claudeModelLabels: CLAUDE_MODEL_LABELS,
-});
-
-const telegramTaskCallbacks = new TelegramTaskCallbackService({
-  telegram,
+  parseApprovalCallback,
+  dispatchTelegramSetting,
+  dispatchApplicationCommand,
+  telegramCallbackCommandContext,
+  telegramMessageCommandContext,
+  commandTaskTarget,
+  activeProject,
+  activeProvider: () => activeProvider,
+  autoApprove: () => autoApprove,
+  agentPreferences,
+  codexModelLabel,
+  providerTitle,
   resolveTaskViewBinding,
-  runForTask: (binding) => taskRuns.forTask(binding),
+  taskRuns,
   refreshTaskDiff,
-  storedTaskDiff: (key) => taskDiffs.get(key),
+  taskDiffs,
   taskRunKey,
-  sendLongMessage,
   selectTaskFromBinding,
-  callbackContext: telegramCallbackCommandContext,
   showLastTaskMessage,
   showTaskMessage,
+  sendMessage,
   sendMessageTo,
+  sendLongMessage,
   sendTaskSwitchNotification,
   sendTaskAlreadySelectedNotification,
-  scheduleInteractiveJob,
   sendThreadPicker,
-  taskCatalog: () => taskCatalog,
   refreshTaskCatalog,
-  dispatchApplicationCommand,
-  activeProvider: () => activeProvider,
-  sendMessage,
-  providerTitle,
+  taskCatalog: () => taskCatalog,
   archiveBlockedReason,
   archiveCurrentThread,
   sendArchiveMessage,
   dismissCallbackMenu,
-  logError: (...args) => console.error(...args),
-});
-
-const telegramInputCallbacks = new TelegramInputCallbackService({
-  telegram,
-  sendMessageTo,
   updateDeferredDesktopReceipt,
   cleanupDeferredFiles,
   saveState,
   updateDeferredMessage,
-  scheduleNextForTask: (item) => deferredInputController.scheduleNextForTask(item),
-  selectTaskFromBinding,
-  callbackContext: telegramCallbackCommandContext,
-  showTaskMessage,
+  deferredInputController,
   scheduleQueuedInput,
   startTurn,
-  runForTask: (binding) => taskRuns.forTask(binding),
-  describeAttachments: desktopAttachmentDescriptors,
-  dispatchApplicationCommand,
+  desktopAttachmentDescriptors,
   activeThreadTitle: () => activeThreadTitle,
   selectedTask,
-  speechText: (id) => mediaController.speechText(id),
-  forwardBundleController: {
-    bundleById: (...args) => forwardBundleController.bundleById(...args),
-    submit: (...args) => forwardBundleController.submit(...args),
-    undo: (...args) => forwardBundleController.undo(...args),
-    cancel: (...args) => forwardBundleController.cancel(...args),
-  },
+  mediaController,
   pendingInputs,
   queuedInputs,
   backgroundJobs,
   maxSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
-  sendTaskSwitchNotification,
-  logError: (...args) => console.error(...args),
-});
-
-const telegramCallbackController = new TelegramCallbackController({
-  currentContextToken: currentUiContextToken,
-  telegram,
-  handlers: [telegramSettingsCallbacks, telegramTaskCallbacks, telegramInputCallbacks],
-  dispatchApproval: (callback) => dispatchApplicationCommand(
-    "approval.resolve",
-    { callback },
-    telegramCallbackCommandContext(callback),
-  ),
-  routeCallback: (data, contextToken) => routeTelegramCallback(data, contextToken, parseApprovalCallback),
-});
-
-async function handleTelegramCallback(callback) {
-  return telegramCallbackController.handle(callback);
-}
-
-const interactiveJobService = new InteractiveJobService({
-  queue: interactiveJobs,
-  stopping: () => stopping,
-  sendMessage: sendMessageTo,
-});
-
-function scheduleInteractiveJob(...args) { return interactiveJobService.schedule(...args); }
-
-const telegramCommandService = new TelegramCommandService({
-  sendMessage,
-  providerTitle,
+  currentUiContextToken,
+  interactiveJobs,
+  isStopping: () => stopping,
   sendAgentPicker,
   sendModelPicker,
   sendReasoningPicker,
-  sendModePicker: sendCollaborationModePicker,
+  sendCollaborationModePicker,
   sendProjectPicker,
-  dispatchCommand: dispatchApplicationCommand,
-  messageContext: telegramMessageCommandContext,
-  activeProvider: () => activeProvider,
-  statusSnapshot: currentStatusSnapshot,
-  scheduleInteractiveJob,
+  currentStatusSnapshot,
   sendStatus,
-  approvalModeText: formatApprovalMode,
+  formatApprovalMode,
   approvalModeKeyboard,
-  restart: restartBot,
-  sendTaskPicker: sendThreadPicker,
+  restartBot,
   resumeThread,
   renameCurrentTask,
-  archiveCurrentTask: archiveCurrentThread,
-  sendArchiveMessage,
-  selectedTask,
-  runForTask: (target) => taskRuns.forTask(target),
-  refreshTaskDiff,
-  storedTaskDiff: (key) => taskDiffs.get(key) ?? "",
-  taskKey: taskRunKey,
-  sendLongMessage,
   sendRunMessage,
-  bindIncomingMessage: bindIncomingTaskMessage,
-  startTurn,
-  prompt: telegramPrompt,
-  commandTaskTarget,
-  menu: BOT_MENU,
-});
-const telegramCommandHandlers = telegramCommandService.handlers();
-
-const forwardBundleController = new TelegramForwardBundleController({
-  bundles: forwardBundles,
-  selectedTarget: selectedTurnTarget,
-  bindIncomingMessage: bindIncomingTaskMessage,
-  sendCard: (targetChatId, text, replyMarkup) => (
-    sendMessageTo(targetChatId, text, { reply_markup: replyMarkup })
-  ),
-  editCard: (targetChatId, messageId, text, replyMarkup) => telegram("editMessageText", {
-    chat_id: targetChatId,
-    message_id: messageId,
-    text,
-    reply_markup: replyMarkup,
-  }),
-  save: saveState,
-  startTurn,
-  enqueueImage: (payload, dedupeKey) => backgroundJobs.enqueue(
-    "forward-bundle-image",
-    payload,
-    payload.chatId,
-    { dedupeKey },
-  ),
-  removeFile: (file) => unlink(file).catch(() => {}),
-});
-
-const telegramMessageController = new TelegramMessageController({
-  config,
-  menuCommands: MENU_COMMANDS,
+  bindIncomingTaskMessage,
+  telegramPrompt,
+  forwardBundles,
+  selectedTurnTarget,
   setChatId: (value) => { chatId = value; },
   findReplyBinding: (targetChatId, messageId) => (
     findMessageBinding(config.dataDir, targetChatId, messageId)
   ),
-  activateBinding: activateMessageBinding,
-  notifyTaskSwitch: sendTaskSwitchNotification,
-  selectedTurnTarget,
-  bindIncomingMessage: bindIncomingTaskMessage,
-  enqueueMedia: (...args) => backgroundJobs.enqueue(...args),
-  commandHandlers: telegramCommandHandlers,
-  handleBundleText: (message, text) => forwardBundleController.handleText(message, text),
-  handleBundleMedia: (message, options) => forwardBundleController.handleImage(message, options),
-  handleText: (message, text) => startTurn(telegramPrompt(message, text)),
-  sendMessage,
-});
-
-async function handleTelegramMessage(message) {
-  return telegramMessageController.handle(message);
-}
-
-const telegramPollingController = new TelegramPollingController({
-  telegram,
-  config,
-  getOffset: () => updateOffset,
-  setOffset: (value) => { updateOffset = value; },
+  activateMessageBinding,
+  setUpdateOffset: (value) => { updateOffset = value; },
+  updateOffset: () => updateOffset,
   setProcessingUpdateId: (value) => { processingUpdateId = value; },
-  handleMessage: handleTelegramMessage,
-  handleCallback: handleTelegramCallback,
-  sendMessage: sendMessageTo,
-  saveState,
-  preserveFailedUpdate: (update, error) => failedUpdateStore.add(update, error),
-  afterUpdate: async () => {
-    if (restartRequest && !restartRequest.waitingForRuns && !stopping) await performRestart();
-  },
-  stopping: () => stopping,
+  failedUpdateStore,
+  restartReady: () => Boolean(restartRequest && !restartRequest.waitingForRuns && !stopping),
+  performRestart,
 });
-
-async function pollTelegram() {
-  return telegramPollingController.run();
-}
 
 function scheduleDeliveryOutboxFlush(delayMs = config.deliveryRetryIntervalSeconds * 1000) {
   if (stopping) return;
