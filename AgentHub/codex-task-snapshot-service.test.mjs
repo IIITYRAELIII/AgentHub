@@ -13,7 +13,8 @@ test("Codex snapshot service reports an exact rollout observer", async () => {
     capturedOwner: () => null, runtimeActive: async () => true, resolveOwner: async () => "vscode-app-server",
     readThread: async () => ({ thread: {} }), selectTurn: () => null, turnSnapshot: () => ({}),
     turnStartedAt: () => null, describeItem: () => "stage", hubOwner: () => "agent-hub",
-    agentHubPid: () => 42,
+    agentHubPid: () => 42, modelLabel: (value) => value, runtimeLabel: (value) => value,
+    delay: async () => {}, reasoningLabels: {}, logger: { warn() {} }, reindexRun: () => {},
   });
   const snapshot = await service.read({ observer: true, threadId: "thread-1", exactTurnObserver: true });
   assert.equal(snapshot.active, true);
@@ -21,3 +22,30 @@ test("Codex snapshot service reports an exact rollout observer", async () => {
   assert.equal(snapshot.executionOwner, "vscode-app-server");
 });
 
+test("Codex snapshot service reads a delayed final answer and applies runtime projection", async () => {
+  let reads = 0;
+  const service = new CodexTaskSnapshotService({
+    knownRolloutPath: async () => "", readRolloutActivity: async () => ({}), rolloutTurnState: () => ({}),
+    capturedOwner: () => null, runtimeActive: async () => true, resolveOwner: async () => "agent-hub",
+    readThread: async () => ({ thread: { turns: [{ id: "turn-1", status: "completed", items: reads++
+      ? [{ type: "agentMessage", text: "final", phase: "final_answer" }]
+      : [] }] } }),
+    selectTurn: () => null, turnSnapshot: () => ({}), turnStartedAt: () => null,
+    describeItem: () => "", hubOwner: () => "agent-hub", agentHubPid: () => 1,
+    modelLabel: (value) => `model:${value}`,
+    reasoningLabels: { high: "High" },
+    runtimeLabel: (value) => `runtime:${value}`,
+    delay: async () => {},
+    reindexRun: () => {},
+    logger: { warn() {} },
+  });
+  const run = { threadId: "thread-1", responseText: "partial", executionOwner: "agent-hub" };
+  assert.equal(await service.completedAnswer(run, "turn-1"), "final");
+  service.applyObserved(run, { turnId: "turn-1", model: "gpt", reasoningEffort: "high" });
+  service.applyActive(run, { activeTurnCount: 2 });
+  assert.equal(run.turnId, "turn-1");
+  assert.equal(run.model, "model:gpt");
+  assert.equal(run.reasoning, "High");
+  assert.equal(run.appServer, "runtime:agent-hub");
+  assert.equal(run.activeTurnCount, 2);
+});

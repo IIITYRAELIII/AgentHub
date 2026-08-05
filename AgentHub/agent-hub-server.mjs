@@ -112,11 +112,7 @@ import {
   taskRunKey,
   updateTaskRunTitle,
 } from "./src/domain/task-runs.mjs";
-import {
-  codexFinalTurnAnswer,
-  listClaudeSessionSnapshots,
-  readClaudeSessionSnapshot,
-} from "./last-message.mjs";
+import { listClaudeSessionSnapshots, readClaudeSessionSnapshot } from "./last-message.mjs";
 import {
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
@@ -197,6 +193,12 @@ import { routeTelegramCallback } from "./src/interfaces/telegram/telegram-callba
 import { TelegramTaskPickerService } from "./src/interfaces/telegram/task-picker.mjs";
 import { InteractiveJobService } from "./src/interfaces/telegram/interactive-job-service.mjs";
 import { RestartNotificationService } from "./src/interfaces/telegram/restart-notification-service.mjs";
+import {
+  approvalModeKeyboard as presentApprovalModeKeyboard,
+  formatApprovalMode as presentApprovalMode,
+  formatCommandApproval as presentCommandApproval,
+  formatFileApproval as presentFileApproval,
+} from "./src/interfaces/telegram/approval-presentation.mjs";
 import { TaskViewController } from "./src/interfaces/telegram/task-view-controller.mjs";
 import { TelegramPollingController } from "./src/interfaces/telegram/telegram-polling-controller.mjs";
 import { TelegramSettingsMenu } from "./src/interfaces/telegram/telegram-settings-menu.mjs";
@@ -944,6 +946,12 @@ const codexTaskSnapshots = new CodexTaskSnapshotService({
   describeItem: describeCodexItem,
   hubOwner: () => TASK_EXECUTION_OWNERS.HUB,
   agentHubPid: () => codexTransport.pid,
+  modelLabel: codexModelLabel,
+  reasoningLabels: CODEX_REASONING_LABELS,
+  runtimeLabel: taskExecutionRuntimeLabel,
+  delay,
+  reindexRun: (run) => taskRuns.reindex(run),
+  logger: console,
 });
 const codexProviderTasks = new CodexProviderTaskService({
   transportRunning: () => codexTransport.running,
@@ -3363,40 +3371,11 @@ async function handleCodexMessage(message) {
   return codexEventService.handle(message);
 }
 
-async function completedCodexAnswer(run, completedTurnId, eventTurn = null) {
-  let answer = codexFinalTurnAnswer(eventTurn);
-  if (answer) return answer;
-  for (const waitMs of [0, 100, 250, 500]) {
-    if (waitMs) await delay(waitMs);
-    try {
-      const result = await readCodexThread(run.threadId, { fresh: true });
-      const completedTurn = (result.thread?.turns ?? [])
-        .find((turn) => String(turn?.id ?? "") === String(completedTurnId ?? ""));
-      answer = codexFinalTurnAnswer(completedTurn);
-      if (answer) return answer;
-    } catch (readError) {
-      console.warn(`Cannot read completed Codex turn ${completedTurnId ?? "unknown"}: ${readError.message}`);
-    }
-  }
-  return run.responseText.trim();
-}
+function completedCodexAnswer(...args) { return codexTaskSnapshots.completedAnswer(...args); }
 
-function applyCodexObservedSnapshot(run, snapshot) {
-  if (!run.turnId && snapshot?.turnId) {
-    run.turnId = snapshot.turnId;
-    taskRuns.reindex(run);
-  }
-  if (snapshot?.model) run.model = codexModelLabel(snapshot.model);
-  if (snapshot?.reasoningEffort) {
-    run.reasoning = CODEX_REASONING_LABELS[snapshot.reasoningEffort]
-      ?? snapshot.reasoningEffort;
-  }
-}
+function applyCodexObservedSnapshot(...args) { return codexTaskSnapshots.applyObserved(...args); }
 
-function applyCodexActiveSnapshot(run, snapshot) {
-  run.appServer = taskExecutionRuntimeLabel(run.executionOwner);
-  run.activeTurnCount = Math.max(1, Number(snapshot?.activeTurnCount) || 1);
-}
+function applyCodexActiveSnapshot(...args) { return codexTaskSnapshots.applyActive(...args); }
 
 async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false } = {}) {
   return codexTaskSnapshots.read(run, { threadResult, fresh });
@@ -3550,41 +3529,22 @@ async function requestMcpElicitation(rpcId, params, run = null) {
 }
 
 function formatCommandApproval(params, run = null) {
-  const command = params.command ?? "(команда не указана)";
-  const cwd = params.cwd ?? run?.projectRoot ?? activeProjectRoot;
-  const reason = params.reason ? `\nПричина: ${params.reason}` : "";
-  return `Codex запрашивает запуск команды:\n\n${command}\n\nКаталог: ${cwd}${reason}`;
+  return presentCommandApproval(params, run, activeProjectRoot);
 }
 
-function formatFileApproval(params) {
-  const reason = params.reason ? `\nПричина: ${params.reason}` : "";
-  return `Codex запрашивает изменение файлов.${reason}\n\nИспользуйте /diff после выполнения для просмотра общего diff.`;
-}
-
-function formatDuration(minutes) {
-  if (minutes % 1440 === 0) return `${minutes / 1440} дн.`;
-  if (minutes % 60 === 0) return `${minutes / 60} ч.`;
-  return `${minutes} мин.`;
-}
+function formatFileApproval(params) { return presentFileApproval(params); }
 
 function formatApprovalMode() {
-  if (!isCodex()) {
-    return autoApprove
-      ? "⚠️ Claude Code: bypassPermissions включён до перезапуска. Все действия выполняются без проверки разрешений."
-      : `Claude Code: режим ${config.claudePermissionMode}. Для headless CLI отдельные запросы разрешений в Telegram недоступны.`;
-  }
-  return autoApprove
-    ? `⚡ Автоподтверждение включено${config.autoApproveOnStart ? " по умолчанию" : " до перезапуска бота"}. Команды и изменения файлов выполняются без запроса.`
-    : "🔐 Ручной режим. Команды и изменения файлов требуют подтверждения.";
+  return presentApprovalMode({
+    provider: activeProvider,
+    autoApprove,
+    autoApproveOnStart: config.autoApproveOnStart,
+    claudePermissionMode: config.claudePermissionMode,
+  });
 }
 
 function approvalModeKeyboard() {
-  return {
-    inline_keyboard: [[
-      { text: autoApprove ? "⚡ Авто: включено" : "⚡ Включить авто", callback_data: uiCallback("approval-mode:auto") },
-      { text: autoApprove ? "🔐 Вернуть ручной" : "🔐 Ручной: включён", callback_data: uiCallback("approval-mode:manual") },
-    ]],
-  };
+  return presentApprovalModeKeyboard({ autoApprove, callback: uiCallback });
 }
 
 // Ход Claude больше не привязан к жизни бота: его вывод пишется в файл, а после

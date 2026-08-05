@@ -81,7 +81,8 @@ export class CodexTaskSnapshotService {
     for (const name of [
       "knownRolloutPath", "readRolloutActivity", "rolloutTurnState", "capturedOwner",
       "runtimeActive", "resolveOwner", "readThread", "selectTurn", "turnSnapshot",
-      "turnStartedAt", "describeItem", "hubOwner", "agentHubPid",
+      "turnStartedAt", "describeItem", "hubOwner", "agentHubPid", "modelLabel",
+      "runtimeLabel", "delay", "reindexRun",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
   }
@@ -188,6 +189,43 @@ export class CodexTaskSnapshotService {
       return { ...snapshot, completed: false, active: true, stage: d.describeItem(turn.items?.at(-1), false) };
     }
     return snapshot;
+  }
+
+  async completedAnswer(run, completedTurnId, eventTurn = null) {
+    let answer = codexFinalTurnAnswer(eventTurn);
+    if (answer) return answer;
+    for (const waitMs of [0, 100, 250, 500]) {
+      if (waitMs) await this.#d.delay(waitMs);
+      try {
+        const result = await this.#d.readThread(run.threadId, { fresh: true });
+        const completedTurn = (result.thread?.turns ?? [])
+          .find((turn) => String(turn?.id ?? "") === String(completedTurnId ?? ""));
+        answer = codexFinalTurnAnswer(completedTurn);
+        if (answer) return answer;
+      } catch (error) {
+        this.#d.logger?.warn?.(
+          `Cannot read completed Codex turn ${completedTurnId ?? "unknown"}: ${error.message}`,
+        );
+      }
+    }
+    return String(run.responseText ?? "").trim();
+  }
+
+  applyObserved(run, snapshot) {
+    if (!run.turnId && snapshot?.turnId) {
+      run.turnId = snapshot.turnId;
+      this.#d.reindexRun(run);
+    }
+    if (snapshot?.model) run.model = this.#d.modelLabel(snapshot.model);
+    if (snapshot?.reasoningEffort) {
+      run.reasoning = this.#d.reasoningLabels?.[snapshot.reasoningEffort]
+        ?? snapshot.reasoningEffort;
+    }
+  }
+
+  applyActive(run, snapshot) {
+    run.appServer = this.#d.runtimeLabel(run.executionOwner);
+    run.activeTurnCount = Math.max(1, Number(snapshot?.activeTurnCount) || 1);
   }
 
   #rolloutSnapshot(state, activity, overrides) {
