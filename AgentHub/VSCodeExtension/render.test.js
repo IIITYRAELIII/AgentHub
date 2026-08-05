@@ -965,7 +965,8 @@ test("chat shows sent messages immediately and reconciles them by exact identity
   assert.match(client, /function promoteLiveCompletion\(taskIdValue, selected, incomingTurnId/u);
   assert.match(client, /completionOverlaysByTask\.set\(taskIdValue, overlays\)/u);
   assert.match(client, /completedConversationTurnVisible\(durableMessages/u);
-  assert.match(client, /chronologicalMessages\(visibleConversationMessages/u);
+  assert.match(client, /const visible = visibleConversationMessages\(result\.map\(normalizedUserMessage\)/u);
+  assert.match(client, /chronologicalMessages\(deduplicateConversationMessages\(visible\)\)/u);
   assert.match(client, /historicalAgentResponseVisible\(item\)/u);
   assert.match(client, /historyOrder:\s*\(historyStart \+ itemIndex\) \* 1_000 \+ messageIndex/u);
 });
