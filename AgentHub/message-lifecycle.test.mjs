@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import vm from "node:vm";
 import test from "node:test";
 
@@ -18,10 +18,12 @@ const miniAppSource = await readFile(
   new URL("./assets/mini-app/app.js", import.meta.url),
   "utf8",
 );
-const serverSource = await readFile(
-  new URL("./src/composition/agent-hub-composition.mjs", import.meta.url),
-  "utf8",
-);
+const compositionDirectory = new URL("./src/composition/", import.meta.url);
+const serverSource = (await Promise.all(
+  (await readdir(compositionDirectory))
+    .filter((name) => name.endsWith(".mjs"))
+    .map((name) => readFile(new URL(name, compositionDirectory), "utf8")),
+)).join("\n");
 const codexEventSource = await readFile(
   new URL("./src/providers/codex/codex-event-service.mjs", import.meta.url),
   "utf8",

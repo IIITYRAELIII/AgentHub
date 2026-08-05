@@ -348,6 +348,19 @@ test("composition root cannot grow while responsibilities are extracted", async 
   );
 });
 
+test("extracted composition factories remain bounded", async () => {
+  const directory = path.join(ROOT, "src", "composition");
+  const files = (await readdir(directory, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".mjs"))
+    .map((entry) => entry.name)
+    .filter((name) => name !== "agent-hub-composition.mjs");
+  for (const name of files) {
+    const source = await readFile(path.join(directory, name), "utf8");
+    const lines = source.split(/\r?\n/u).length - (source.endsWith("\n") ? 1 : 0);
+    assert.ok(lines <= 600, `${name} grew to ${lines} lines; maximum is 600`);
+  }
+});
+
 test("src modules obey the architectural dependency matrix", async () => {
   const inventory = await migrationInventory();
   const sourceRoot = path.join(ROOT, "src");

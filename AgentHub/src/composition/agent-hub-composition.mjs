@@ -95,7 +95,7 @@ import {
   taskRunKey,
   updateTaskRunTitle,
 } from "../domain/task-runs.mjs";
-import { listClaudeSessionSnapshots, readClaudeSessionSnapshot } from "../../last-message.mjs";
+import { readClaudeSessionSnapshot } from "../../last-message.mjs";
 import {
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
@@ -120,18 +120,8 @@ import { FailedTelegramUpdateStore } from "../infrastructure/persistence/failed-
 import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "../providers/claude/claude-invocation.mjs";
 import {
   catalogEntryIsSelected,
-  catalogEntriesWithoutLiveActivity,
-  catalogTaskKey,
-  claudeCatalogEntry,
-  claudeSnapshotActivityAtMs,
-  claudeSnapshotActivityState,
-  codexRolloutTurnState,
-  codexCatalogEntry,
   mergeTaskCatalog,
-  preferredCodexTaskTitle,
   readCodexRolloutActivity,
-  selectCodexTurn,
-  selectExactActiveCodexTurnId,
   statusTaskEntries,
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
@@ -182,7 +172,6 @@ import { CodexAppServerLifecycle } from "../providers/codex/codex-app-server-lif
 import { createCodexAssistantAttachmentImporter } from "../providers/codex/codex-assistant-attachments.mjs";
 import { TaskProgressController } from "../interfaces/telegram/task-progress-controller.mjs";
 import { TaskObservationService } from "../application/task-observation-service.mjs";
-import { ProviderTaskActivityService } from "../application/provider-task-activity-service.mjs";
 import { SelectedTaskWatchService } from "../application/selected-task-watch-service.mjs";
 import {
   DeferredInputController,
@@ -197,9 +186,6 @@ import { fitTaskHistoryPayload } from "../domain/response-budget.mjs";
 import { RuntimeResourceRegistry } from "../runtime/runtime-resource-registry.mjs";
 import { RuntimeRestartController } from "../runtime/runtime-restart-controller.mjs";
 import { RunCoordinator } from "../application/run-coordinator.mjs";
-import { createAgentProviderRegistry } from "../providers/provider-adapters.mjs";
-import { ClaudeProviderTaskService, CodexProviderTaskService } from "../providers/provider-task-service.mjs";
-import { appendRunActivity, codexItemActivity } from "../domain/run-activity.mjs";
 import {
   commandClientContext,
   commandTaskTarget,
@@ -209,24 +195,9 @@ import { DesktopAttachmentService } from "../interfaces/desktop/desktop-attachme
 import { TelegramSettingsCallbackService } from "../interfaces/telegram/telegram-settings-callbacks.mjs";
 import { TelegramTaskCallbackService } from "../interfaces/telegram/telegram-task-callbacks.mjs";
 import { TelegramInputCallbackService } from "../interfaces/telegram/telegram-input-callbacks.mjs";
-import { ClaudeCompletionService, CodexCompletionService } from "../providers/provider-completion-services.mjs";
-import { ClaudeRecoveryService, CodexRecoveryService } from "../providers/provider-recovery-services.mjs";
-import { ClaudeTaskSnapshotService } from "../providers/claude/claude-task-snapshot-service.mjs";
-import { CodexTurnService, ProviderCancellationService, unsupportedProviderSteer } from "../providers/provider-turn-services.mjs";
 import { TelegramCommandService } from "../interfaces/telegram/telegram-command-service.mjs";
-import { CodexEventService } from "../providers/codex/codex-event-service.mjs";
-import {
-  CodexTaskSnapshotService,
-  codexTurnSnapshot,
-  codexTurnStartedAt,
-  describeCodexItem, recoveredCodexAnswer,
-} from "../providers/codex/codex-task-snapshot-service.mjs";
-import { ClaudeEventService } from "../providers/claude/claude-event-service.mjs";
-import { ClaudeCatalogProjectionService, CodexCatalogProjectionService } from "../providers/provider-catalog-services.mjs";
 import { DesktopDeferredInputService } from "../interfaces/desktop/desktop-deferred-input-service.mjs";
 import { DesktopSettingsService } from "../interfaces/desktop/desktop-settings-service.mjs";
-import { ProviderTaskCatalogBuilder } from "../providers/provider-task-catalog-builder.mjs";
-import { TaskCatalogService } from "../application/task-catalog-service.mjs";
 import { createDesktopSnapshotFactory } from "../interfaces/desktop/desktop-snapshot.mjs";
 import { createDesktopTaskHistoryFactory } from "../interfaces/desktop/desktop-task-history.mjs";
 import { DesktopTaskService } from "../interfaces/desktop/desktop-task-service.mjs";
@@ -235,7 +206,6 @@ import { DesktopReadModelService } from "../interfaces/desktop/desktop-read-mode
 import { DeferredInputPresentationService } from "../interfaces/desktop/deferred-input-presentation-service.mjs";
 import { TaskCommandService } from "../application/task-command-service.mjs";
 import { TaskNavigationService } from "../application/task-navigation-service.mjs";
-import { ManagedRunHistoryService } from "../application/managed-run-history-service.mjs";
 import { RestartRequestService } from "../application/restart-request-service.mjs";
 import { createDesktopApplicationRouter } from "../interfaces/desktop/desktop-application-router.mjs";
 import { agentHubAutostartShortcut } from "../interfaces/web/server-page.mjs";
@@ -244,9 +214,6 @@ import {
   defaultAutostartInstallScript,
   ServerControlController,
 } from "../interfaces/web/server-control-controller.mjs";
-import {
-  isContextCompactionItem,
-} from "../providers/codex/context-compaction-tracker.mjs";
 import { RunProgressPresentation } from "../application/run-progress-presentation.mjs";
 import { RuntimeTimerCoordinator } from "../runtime/runtime-timer-coordinator.mjs";
 import {
@@ -269,6 +236,9 @@ import { TaskIdentityResolver } from "../application/task-identity-resolver.mjs"
 import { createHubStaticSettings } from "./hub-static-settings.mjs";
 import { createCodexObservabilityComposition } from "./codex-observability-composition.mjs";
 import { createHubInfrastructure } from "./infrastructure-composition.mjs";
+import { createProviderSnapshotComposition } from "./provider-snapshot-composition.mjs";
+import { createProviderOperationComposition } from "./provider-operation-composition.mjs";
+import { createProviderCatalogComposition } from "./provider-catalog-composition.mjs";
 import { createRuntimeLifecycleComposition } from "./runtime-lifecycle-composition.mjs";
 import { createStateComposition } from "./state-composition.mjs";
 
@@ -607,314 +577,152 @@ const taskSyncStore = new LocalTaskSyncStore({
 });
 await taskSyncStore.load();
 await taskSyncStore.save();
-const claudeTaskSnapshots = new ClaudeTaskSnapshotService({
-  readSession: readClaudeSessionSnapshot,
+const {
+  claudeTaskSnapshots,
+  claudeEventService,
+  codexTaskSnapshots,
+} = createProviderSnapshotComposition({
+  readClaudeSessionSnapshot,
   findProject,
-  taskRunKey,
-  activityAtMs: claudeSnapshotActivityAtMs,
-  activityState: claudeSnapshotActivityState,
   saveState,
-  cancelledTasks: cancelledManagedClaudeTasks,
-  logError: (...args) => console.error(...args),
-});
-const claudeEventService = new ClaudeEventService({
+  cancelledManagedClaudeTasks,
   isSelectedRun,
-  reindexRun: (run, previous) => taskRuns.reindex(run, previous),
-  setSelectedThread: (threadId, title) => selectionStore.setThread(threadId, {
-    provider: "claude",
-    title,
-  }),
-  runTitle: runTaskTitle,
+  taskRuns,
+  selectionStore,
+  runTaskTitle,
   bindRunMessage,
-  saveState,
-  noteActivity: (...args) => taskProgress.noteActivity(...args),
-  scheduleProgress: (...args) => taskProgress.schedule(...args),
-  appendReasoning: (...args) => taskProgress.appendReasoning(...args),
-  setStage: (...args) => taskProgress.setStage(...args),
-  appendActivity: appendRunActivity,
-  logError: (...args) => console.error(...args),
-});
-const codexTaskSnapshots = new CodexTaskSnapshotService({
-  knownRolloutPath: knownCodexRolloutPath,
-  readRolloutActivity: readCodexRolloutActivity,
-  rolloutTurnState: codexRolloutTurnState,
-  capturedOwner: capturedCodexExecutionOwner,
-  runtimeActive: codexObservedRuntimeActive,
-  resolveOwner: resolveCodexObservedExecutionOwner,
-  readThread: readCodexThread,
-  selectTurn: selectCodexTurn,
-  turnSnapshot: codexTurnSnapshot,
-  turnStartedAt: codexTurnStartedAt,
-  describeItem: describeCodexItem,
-  hubOwner: () => TASK_EXECUTION_OWNERS.HUB,
-  agentHubPid: () => codexTransport.pid,
-  modelLabel: codexModelLabel,
+  taskProgress: () => taskProgress,
+  knownCodexRolloutPath,
+  capturedCodexExecutionOwner,
+  readCodexThread,
+  codexTransportPid: () => codexTransport.pid,
+  codexModelLabel,
   reasoningLabels: CODEX_REASONING_LABELS,
-  runtimeLabel: taskExecutionRuntimeLabel,
   delay,
-  reindexRun: (run) => taskRuns.reindex(run),
-  logger: console,
 });
-const codexProviderTasks = new CodexProviderTaskService({
-  transportRunning: () => codexTransport.running,
-  startTransport: startCodexAppServer,
-  initialize: initializeCodex,
-  sendRpc,
-  selection: selectionStore,
-  activeProjectRoot: () => activeProjectRoot,
-  sandboxMode: () => config.codexSandboxMode,
-  invalidateCatalog: invalidateTaskCatalog,
-  restoreSettings: restoreCodexTaskSettings,
-  updateSettings: updateActiveCodexThreadSettings,
-  clearLatestDiff: () => { latestDiff = ""; },
+const {
+  codexProviderTasks,
+  claudeProviderTasks,
+  codexCompletionService,
+  claudeCompletionService,
+  claudeRecoveryService,
+  codexRecoveryService,
+  codexTurnService,
+  providerCancellationService,
+  codexEventService,
+} = createProviderOperationComposition({
+  taskRuns,
+  selectionStore,
   saveState,
-});
-const claudeProviderTasks = new ClaudeProviderTaskService({
-  selection: selectionStore,
-  clearLatestDiff: () => { latestDiff = ""; },
-  saveState,
-});
-const codexCompletionService = new CodexCompletionService({
-  runForTask: (run) => taskRuns.forTask(run),
-  consumeTracker: consumeTurnTokenTracker,
-  waitForCompletion: waitForTurnEndCompletion,
-  readThread: readCodexThread,
-  readTurnUsage: readCodexTurnUsage,
-  applyRolloutContext: applyCodexRolloutContext,
-  finalizeDelivery: finalizeCodexRunDelivery,
-  finishProgress: (...args) => taskProgress.finish(...args),
-  completedAnswer: completedCodexAnswer,
-  temporaryFiles: turnTemporaryFiles,
-  speechButtons: turnSpeechButtons,
-  logError: (...args) => console.error(...args),
-});
-const claudeCompletionService = new ClaudeCompletionService({
-  runForTask: (run) => taskRuns.forTask(run),
+  taskProgress: () => taskProgress,
+  taskObserver: () => taskObserver,
+  managedRunLifecycle,
+  runRecovery: () => runRecovery,
+  runCoordinator: () => runCoordinator,
+  turnTemporaryFiles,
+  turnSpeechButtons,
+  turnTokenUsage,
+  cancelledManagedClaudeTasks,
+  taskDiffs,
   isSelectedRun,
-  reindexRun: (run, previous) => taskRuns.reindex(run, previous),
-  setSelectedThread: (sessionId, title) => selectionStore.setThread(sessionId, {
-    provider: "claude",
-    title,
-  }),
-  saveState,
-  finishProgress: (...args) => taskProgress.finish(...args),
-  persistHistory: persistClaudeRunHistory,
-  projectWorkLog: projectClaudeRunToWorkLog,
-  finalizeDelivery: finalizeRunDelivery,
-  temporaryFiles: turnTemporaryFiles,
-  logError: (...args) => console.error(...args),
-});
-const claudeRecoveryService = new ClaudeRecoveryService({
-  attach: attachClaudeRunAfterRestart,
-  finishInterrupted: (...args) => runRecovery.finishInterrupted(...args),
-});
-const codexRecoveryService = new CodexRecoveryService({
-  transportRunning: () => codexTransport.running,
-  readTaskSnapshot: readCodexTaskSnapshot,
-  startTransport: startCodexAppServer,
-  initialize: initializeCodex,
+  codexTransportRunning: () => codexTransport.running,
+  startCodexTransport: startCodexAppServer,
+  initializeCodex,
+  sendRpc,
+  activeProjectRoot: () => activeProjectRoot,
+  codexSandboxMode: () => config.codexSandboxMode,
+  invalidateTaskCatalog,
+  restoreCodexTaskSettings,
+  updateActiveCodexThreadSettings,
+  clearLatestDiff: () => { latestDiff = ""; },
+  consumeTurnTokenTracker,
+  waitForTurnEndCompletion,
+  readCodexThread,
+  readCodexTurnUsage,
+  applyCodexRolloutContext,
+  finalizeCodexRunDelivery,
+  completedCodexAnswer,
+  persistClaudeRunHistory,
+  projectClaudeRunToWorkLog,
+  finalizeRunDelivery,
+  attachClaudeRunAfterRestart,
+  readCodexTaskSnapshot,
   isCodex,
-  finishInterrupted: (...args) => runRecovery.finishInterrupted(...args),
-  readThread: readCodexThread,
   autoApprove: () => autoApprove,
   restartRequested: () => Boolean(restartRequest),
-  finishProgress: (...args) => taskProgress.finish(...args),
-  completeRun: (run) => managedRunLifecycle.complete(run),
-  recoveredAnswer: recoveredCodexAnswer,
-  setProgressStage: (...args) => taskProgress.setStage(...args),
   launchTurn,
-  reindexRun: (run, previous) => taskRuns.reindex(run, previous),
-  scheduleObservedRun: (...args) => taskObserver.schedule(...args),
   startTyping: () => startTyping(),
-  saveState,
   telegram: (...args) => telegram(...args),
-  consumeTracker: consumeTurnTokenTracker,
-  finalizeDelivery: finalizeCodexRunDelivery,
-  turnTokenUsage,
-});
-const codexTurnService = new CodexTurnService({
-  sendRpc,
-  sandboxMode: () => config.codexSandboxMode,
-  compactionRecycle: () => codexContextMaintenance.recycleInFlight,
-  resolvedSkillNames: resolvedExplicitSkillNames,
-  reindexRun: (run, previous) => taskRuns.reindex(run, previous),
-  saveState,
-  startTyping: () => startTyping(),
-  scheduleObservedRun: (...args) => taskObserver.schedule(...args),
-  finishProgress: (...args) => taskProgress.finish(...args),
-  completeRun: (run) => managedRunLifecycle.complete(run),
-  readThread: readCodexThread,
-  speechButtons: turnSpeechButtons,
-  temporaryFiles: turnTemporaryFiles,
-  turnTokenUsage,
-});
-const providerCancellationService = new ProviderCancellationService({
-  interruptCodex: (run) => codexTurnService.interrupt(run),
-  runForTask: (run) => taskRuns.forTask(run),
-  completeRun: (run) => managedRunLifecycle.complete(run),
-  readCodexSnapshot: readCodexTaskSnapshot,
-  finishObserved: (...args) => taskObserver.finish(...args),
-  completeManaged: (run, options) => runCoordinator.completeManaged(run, options),
+  codexContextMaintenance,
+  contextCompactions,
+  resolvedExplicitSkillNames,
   taskExternalActivity,
-  stopClaudeRun: stopClaudeRunProcess,
+  stopClaudeRunProcess,
   processIsAlive,
-  taskRunKey,
-  saveState,
-  cancelledClaudeTasks: cancelledManagedClaudeTasks,
-  logWarn: (...args) => console.warn(...args),
-  logError: (...args) => console.error(...args),
-});
-const codexEventService = new CodexEventService({
-  invalidateThreadRead: invalidateCodexThreadRead,
-  forEvent: (reference) => taskRuns.forEvent(reference),
-  reindexRun: (run, previous) => taskRuns.reindex(run, previous),
-  applyThreadSettings: applyCodexThreadSettings,
-  saveState,
-  trackTokenUsage: trackTurnTokenUsage,
-  taskKey: taskRunKey,
-  isSelectedRun,
-  setSelectedDiff: (value) => { latestDiff = value; },
-  appendActivity: appendRunActivity,
-  noteActivity: (...args) => taskProgress.noteActivity(...args),
-  scheduleProgress: (...args) => taskProgress.schedule(...args),
-  appendReasoning: (...args) => taskProgress.appendReasoning(...args),
-  isCompactionItem: isContextCompactionItem,
-  beginCompaction: (...args) => contextCompactions.begin(...args),
-  getCompaction: (threadId) => contextCompactions.get(threadId),
-  beginCompactionCleanup: (...args) => codexContextMaintenance.beginCompactionCleanup(...args),
-  setStage: (...args) => taskProgress.setStage(...args),
-  describeItem: describeCodexItem,
-  itemActivity: codexItemActivity,
+  invalidateCodexThreadRead,
+  applyCodexThreadSettings,
+  trackTurnTokenUsage,
+  setLatestDiff: (value) => { latestDiff = value; },
   requestApproval,
   formatCommandApproval,
   formatFileApproval,
   formatPermissionsApproval,
   requestMcpElicitation,
-  discardManualCompaction: discardManualContextCompactionRun,
-  consumeTracker: consumeTurnTokenTracker,
-  finishObserved: (...args) => taskObserver.finish(...args),
-  turnSnapshot: codexTurnSnapshot,
-  completeManaged: (run, completion) => runCoordinator.completeManaged(run, completion),
-  turnTokenUsage,
-  speechButtons: turnSpeechButtons,
-  temporaryFiles: turnTemporaryFiles,
-  taskDiffs,
-  logWarn: (...args) => console.warn(...args),
-  logError: (...args) => console.error(...args),
+  discardManualContextCompactionRun,
 });
-const codexCatalogProjection = new CodexCatalogProjectionService({
-  backfillPricing: backfillWorkLogPricingMetadata,
-  readTitleHistories: readCodexThreadTitleHistories,
-  findProject,
-  rememberRolloutPath: rememberCodexRolloutPath,
-  readActivity: readCodexRolloutActivity,
-  runForTask: (reference) => taskRuns.forTask(reference),
-  selectActiveTurnId: selectExactActiveCodexTurnId,
-  capturedOwner: capturedCodexExecutionOwner,
-  runtimeActive: codexObservedRuntimeActive,
-  agentHubPid: () => codexTransport.pid,
-  resolveOwner: resolveCodexObservedExecutionOwner,
-  hubOwner: TASK_EXECUTION_OWNERS.HUB,
-  catalogEntry: codexCatalogEntry,
-  modelLabel: codexModelLabel,
-  threadResponseTitle: codexThreadResponseTitle,
-  confirmationKey: catalogTaskKey,
-  expectedTitle: pendingTaskTitle,
-  clearExpectedTitle: (key) => taskMetadata.clearExpectedTitle(key),
-  preferredTitle: preferredCodexTaskTitle,
-  pinnedTitle: pinnedTaskTitle,
-  setThreadName: (threadId, name) => sendRpc("thread/name/set", { threadId, name }),
-  reconcilePinnedTitle: (provider, threadId, title) => (
-    taskMetadata.reconcilePinnedTitle({ provider, threadId }, title)
-  ),
-  savePinnedTitles: savePinnedTaskTitles,
-  saveState,
-});
-const claudeCatalogProjection = new ClaudeCatalogProjectionService({
-  audit: auditClaudeTranscriptSnapshots,
-  findProject,
-  applyManagedCancellation: (snapshot) => claudeTaskSnapshots.applyManagedCancellation(snapshot),
-  catalogEntry: claudeCatalogEntry,
-  logError: (...args) => console.error(...args),
-});
-const managedRunHistory = new ManagedRunHistoryService({
+const {
+  managedRunHistory,
+  agentProviders,
+  taskCatalogService,
+  taskCatalog,
+} = createProviderCatalogComposition({
   taskSyncStore,
-  mergeActiveHistory: mergeActiveTaskHistory,
-  hubExecutionOwner: TASK_EXECUTION_OWNERS.HUB,
-  nowIso: () => new Date().toISOString(),
-  nowMs: () => Date.now(),
-});
-
-const providerTaskActivity = new ProviderTaskActivityService({
+  taskRuns,
+  taskCatalogCacheMs: TASK_CATALOG_CACHE_MS,
+  runProject,
+  finalizeTaskCatalog,
+  findProject,
+  saveState,
+  codexProviderTasks,
+  claudeProviderTasks,
+  codexCompletionService,
+  claudeCompletionService,
+  codexRecoveryService,
+  claudeRecoveryService,
+  codexTurnService,
+  providerCancellationService,
+  readCodexTaskSnapshot,
+  readCodexThread,
+  applyCodexObservedSnapshot,
+  applyCodexActiveSnapshot,
+  startClaudeTurn,
+  claudeTaskSnapshots,
+  backfillWorkLogPricingMetadata,
+  readCodexThreadTitleHistories,
+  rememberCodexRolloutPath,
+  capturedCodexExecutionOwner,
+  codexObservedRuntimeActive,
+  codexTransportPid: () => codexTransport.pid,
+  resolveCodexObservedExecutionOwner,
+  codexModelLabel,
+  codexThreadResponseTitle,
+  pendingTaskTitle,
+  clearExpectedTitle: (key) => taskMetadata.clearExpectedTitle(key),
+  pinnedTaskTitle,
+  reconcilePinnedTitle: (provider, providerTaskId, title) => (
+    taskMetadata.reconcilePinnedTitle({ provider, threadId: providerTaskId }, title)
+  ),
+  savePinnedTaskTitles,
+  sendRpc,
+  auditClaudeTranscriptSnapshots,
   knownCodexRolloutPath,
-  codexRunning: () => codexTransport.running,
-  codexPid: () => codexTransport.pid,
+  codexTransportRunning: () => codexTransport.running,
   ensureCodex: async () => {
     await startCodexAppServer();
     await initializeCodex({ attachSelectedThread: false });
   },
-  readCodexThread,
-  capturedCodexExecutionOwner,
-  claudeTaskSnapshots,
-  resolveActivity: resolveCodexTaskActivity,
+  resolveCodexTaskActivity,
 });
-
-const agentProviders = createAgentProviderRegistry({
-  taskRunIsActive,
-  codex: {
-    listAllCodexThreads: () => codexProviderTasks.discoverTasks(),
-    buildCodexTaskCatalogEntries: (threads) => codexCatalogProjection.project(threads),
-    createCodexTask: () => codexProviderTasks.createTask(),
-    launchCodexTurn: (...args) => codexTurnService.launch(...args),
-    steerCodexTurn: (...args) => codexTurnService.steer(...args),
-    cancelCodexProviderRun: (...args) => providerCancellationService.cancelCodex(...args),
-    readCodexTaskActivity: (target) => providerTaskActivity.readCodex(target),
-    readCodexTaskSnapshot,
-    completeObservedCodexRun: (...args) => codexCompletionService.completeObserved(...args),
-    completeManagedCodexRun: (...args) => codexCompletionService.completeManaged(...args),
-    recoverCodexRun: (...args) => codexRecoveryService.recover(...args),
-    readCodexRecoverySnapshot: (...args) => codexRecoveryService.readSnapshot(...args),
-    prepareCodexRecovery: (...args) => codexRecoveryService.prepare(...args),
-    applyCodexObservedSnapshot,
-    applyCodexActiveSnapshot,
-  },
-  claude: {
-    listClaudeSessionSnapshots,
-    buildClaudeTaskCatalogEntries: (snapshots) => claudeCatalogProjection.project(snapshots),
-    createClaudeTask: () => claudeProviderTasks.createTask(),
-    launchClaudeTurn: (...args) => startClaudeTurn(...args),
-    steerClaudeTurn: unsupportedProviderSteer,
-    cancelClaudeProviderRun: (...args) => providerCancellationService.cancelClaude(...args),
-    readClaudeTaskActivity: (target) => providerTaskActivity.readClaude(target),
-    readClaudeTaskSnapshot: (...args) => claudeTaskSnapshots.read(...args),
-    completeObservedClaudeRun: (...args) => claudeCompletionService.completeObserved(...args),
-    completeManagedClaudeRun: (...args) => claudeCompletionService.completeManaged(...args),
-    recoverClaudeRun: (...args) => claudeRecoveryService.recover(...args),
-  },
-});
-// Runtime activity cannot be restored from a durable catalog row. Managed runs
-// are restored separately, while external activity is revalidated from rollout
-// files. Showing cached `running=true` here creates a full-catalog phantom state
-// while the first provider scan is still in progress or unavailable.
-const providerTaskCatalogBuilder = new ProviderTaskCatalogBuilder({
-  durableEntries: () => catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
-  sources: agentProviders.catalogSources(),
-  managedRuns: () => taskRuns.values().map((run) => ({
-    ...run,
-    projectName: runProject(run).name,
-  })),
-  merge: mergeTaskCatalog,
-  finalize: finalizeTaskCatalog,
-  onSourceError: ({ name, reason }) => {
-    console.error(`Cannot discover ${name} tasks:`, reason?.message ?? reason);
-  },
-});
-const taskCatalogService = new TaskCatalogService({
-  initialEntries: catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
-  cacheMs: TASK_CATALOG_CACHE_MS,
-  build: () => providerTaskCatalogBuilder.build(),
-});
-const taskCatalog = taskCatalogService.entries;
 
 let mediaController;
 const telegramClient = new TelegramClient({
