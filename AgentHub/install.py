@@ -536,7 +536,10 @@ def main() -> int:
         install_voice(target_root)
     subprocess.run(["node", str(ROOT / "runtime-manager.mjs"), "deploy"], check=True)
     subprocess.run(["node", str(ROOT / "runtime-manager.mjs"), "activate"], check=True)
-    subprocess.run(["node", str(ROOT / "codex-hook-config.mjs"), "install"], check=True)
+    subprocess.run(
+        ["node", str(ROOT / "src" / "infrastructure" / "codex" / "codex-hook-config.mjs"), "install"],
+        check=True,
+    )
     if not args.skip_history and (fresh_install or args.rebuild_history):
         backfill_personal_history(project_root, target_root)
     if not args.skip_extension:
