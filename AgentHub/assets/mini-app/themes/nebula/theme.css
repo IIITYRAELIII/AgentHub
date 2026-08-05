@@ -157,3 +157,60 @@ html[data-background-override="true"][data-background="nebula-core"] body::befor
 
 @media (max-width: 720px) {html[data-background-override="true"][data-background="nebula-core"] { --hub-background-position: center, 62% 46%; }
 }
+
+/* ============================================ облик: снимок с выдержкой ===
+   Туманность снимают долгой выдержкой, и в кадре нет ни одной резкой грани.
+   Тема отказывается от рамок совсем: панели держатся на свете, а не на линии. */
+
+html[data-theme="nebula"] .brand-mark {
+  background: radial-gradient(circle at 50% 50%, rgba(240, 214, 255, .95) 0 12%, rgba(215, 155, 255, .45) 26%, rgba(80, 40, 130, .3) 55%, transparent 78%);
+  border: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 22px -4px rgba(215, 155, 255, .75);
+}
+
+html[data-theme="nebula"] .brand-mark svg { display: none; }
+
+/* Панели без рамок: край растворяется, вместо линии — дымка. */
+html[data-theme="nebula"] .task-rail,
+html[data-theme="nebula"] .chat {
+  border: 0;
+  border-radius: 26px;
+  box-shadow: 0 0 60px -24px rgba(215, 155, 255, .5), inset 0 0 60px -30px rgba(240, 214, 255, .35);
+}
+
+html[data-theme="nebula"] .task-rail { border-right: 0; }
+
+/* Выбранная задача не подчёркнута, а подсвечена изнутри. */
+html[data-theme="nebula"] .task-item {
+  border-radius: 18px;
+}
+
+html[data-theme="nebula"] .task-item[data-selected] {
+  background: radial-gradient(120% 140% at 0% 50%, rgba(215, 155, 255, .22), transparent 70%);
+  box-shadow: 0 0 26px -12px rgba(215, 155, 255, .8);
+}
+
+html[data-theme="nebula"] .task-item[data-selected]::before { opacity: 0; }
+
+html[data-theme="nebula"] .view-tab {
+  border-radius: 999px;
+}
+
+html[data-theme="nebula"] .view-tab[aria-pressed="true"] {
+  background: radial-gradient(120% 160% at 50% 120%, rgba(215, 155, 255, .3), transparent 72%);
+  box-shadow: 0 0 20px -8px rgba(215, 155, 255, .9);
+}
+
+html[data-theme="nebula"] .msg {
+  border: 0;
+  border-radius: 20px;
+  box-shadow: inset 0 0 40px -22px rgba(240, 214, 255, .5);
+}
+
+html[data-theme="nebula"] .option-chip,
+html[data-theme="nebula"] .composer,
+html[data-theme="nebula"] .composer input,
+html[data-theme="nebula"] .composer textarea {
+  border-radius: 999px;
+}

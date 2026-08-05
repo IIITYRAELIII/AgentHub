@@ -205,3 +205,70 @@ html[data-background-override="true"][data-background="magma-flow"] body::before
 @media (max-width: 720px) {html[data-background-override="true"][data-background="magma"] { --hub-background-position: center, center, 72% 56%; }
   html[data-background-override="true"][data-background="magma-flow"] { --hub-background-position: center, 70% 56%; }
 }
+
+/* ================================================= облик: раскалённый скол ===
+   Магма — это корка с трещинами, сквозь которые бьёт свет. Панели получают
+   скошенные углы, будто отколоты, свет идёт из разлома слева, а кнопки
+   выглядят клеймом: тяжёлые, с горячей кромкой. Знак — клин трещины. */
+
+html[data-theme="magma"] .brand-mark {
+  background: linear-gradient(150deg, rgba(255, 154, 92, .22), rgba(10, 6, 5, .85));
+  border: 1px solid rgba(226, 168, 128, .4);
+  border-radius: 0;
+  clip-path: polygon(0 0, 100% 0, 100% 72%, 72% 100%, 0 100%);
+}
+
+html[data-theme="magma"] .brand-mark svg { display: none; }
+
+html[data-theme="magma"] .brand-mark::before {
+  background: linear-gradient(180deg, #ffd9a8, #ff7a2f 55%, #b8300b);
+  clip-path: polygon(52% 0, 74% 38%, 58% 40%, 78% 100%, 30% 46%, 48% 44%, 30% 8%);
+  content: "";
+  filter: drop-shadow(0 0 6px rgba(255, 122, 47, .85));
+  height: 1.25rem;
+  width: 1rem;
+}
+
+/* Отколотый край: угол панели срезан, а из разлома идёт свет. */
+html[data-theme="magma"] .task-rail {
+  border-radius: 0;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 26px), calc(100% - 26px) 100%, 0 100%);
+  box-shadow: inset -1px 0 0 rgba(255, 154, 92, .3);
+}
+
+html[data-theme="magma"] .chat {
+  border-radius: 0;
+  clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 0 100%);
+}
+
+/* Выбранная задача светится изнутри разлома. */
+html[data-theme="magma"] .task-item {
+  border-radius: 0;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
+}
+
+html[data-theme="magma"] .task-item[data-selected] {
+  background: linear-gradient(90deg, rgba(255, 122, 47, .22), transparent 62%);
+}
+
+html[data-theme="magma"] .task-item[data-selected]::before {
+  background: linear-gradient(180deg, #ffd9a8, #ff7a2f);
+  box-shadow: 0 0 14px -2px rgba(255, 122, 47, .95);
+  width: 3px;
+}
+
+/* Кнопки-клейма: тяжёлая литера и горячая нижняя кромка. */
+html[data-theme="magma"] .view-tab,
+html[data-theme="magma"] .option-chip {
+  border-radius: 0;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+
+html[data-theme="magma"] .view-tab[aria-pressed="true"] {
+  background: linear-gradient(180deg, rgba(255, 122, 47, .16), rgba(184, 48, 11, .28));
+  box-shadow: inset 0 -2px 0 #ff7a2f, 0 0 18px -8px rgba(255, 122, 47, .9);
+}
+
+html[data-theme="magma"] .msg-agent { clip-path: polygon(0 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%); border-radius: 0; }
+html[data-theme="magma"] .msg-user { clip-path: polygon(0 0, 100% 0, 100% 100%, 12px 100%, 0 calc(100% - 12px)); border-radius: 0; }

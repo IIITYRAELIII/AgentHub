@@ -357,3 +357,112 @@ html[data-background-override="true"][data-background="gothic-finkregh"] body::b
   html[data-background-override="true"][data-background="gothic-minental-fortress"] { --hub-background-position: center, 76% 50%; }
   html[data-background-override="true"][data-background="gothic-finkregh"] { --hub-background-position: center, 78% 50%; }
 }
+
+/* ============================================== облик: страница рукописи ===
+   Готика перестаёт быть «тёмной темой с холодным акцентом». Панели становятся
+   разворотом манускрипта: прямой обрез, двойная рамка, капитель в служебных
+   подписях и стрельчатая арка вместо общего знака. */
+
+html[data-theme="gothic"] .brand-mark {
+  align-items: flex-end;
+  background: linear-gradient(180deg, rgba(143, 168, 200, .14), rgba(8, 10, 14, .66));
+  border: 1px solid rgba(143, 168, 200, .46);
+  border-radius: 44% 44% 2px 2px;
+  box-shadow: inset 0 0 0 1px rgba(230, 236, 245, .07);
+  padding-bottom: 0.28rem;
+}
+
+html[data-theme="gothic"] .brand-mark svg { display: none; }
+
+html[data-theme="gothic"] .brand-mark::before {
+  border: 1px solid currentColor;
+  border-bottom: 0;
+  border-radius: 50% 50% 0 0;
+  content: "";
+  height: 1.02rem;
+  opacity: .9;
+  width: 0.72rem;
+}
+
+/* Разворот: внешний обрез и внутренняя линовка вместо скруглённой карточки. */
+html[data-theme="gothic"] .task-rail,
+html[data-theme="gothic"] .chat {
+  border-radius: 0;
+  box-shadow:
+    inset 0 0 0 1px rgba(143, 168, 200, .22),
+    inset 0 0 0 4px transparent,
+    inset 0 0 0 5px rgba(143, 168, 200, .12);
+}
+
+/* Раздел выбирают риской на полях, а не пилюлей. */
+html[data-theme="gothic"] .view-tab {
+  border-radius: 0;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+
+html[data-theme="gothic"] .view-tab[aria-pressed="true"] {
+  background: none;
+  border-bottom: 1px solid var(--accent);
+  box-shadow: none;
+}
+
+html[data-theme="gothic"] .view-tab[aria-pressed="true"]::after {
+  background: var(--accent);
+  content: "";
+  height: 4px;
+  left: 50%;
+  position: absolute;
+  rotate: 45deg;
+  top: calc(100% + 1px);
+  translate: -50% 0;
+  width: 4px;
+}
+
+html[data-theme="gothic"] .view-tab { position: relative; }
+
+/* Строка описи: номер задачи не нужен, но нужна колонка полей слева. */
+html[data-theme="gothic"] .task-item {
+  border-radius: 0;
+  border-left: 1px solid transparent;
+  padding-left: 0.85rem;
+}
+
+html[data-theme="gothic"] .task-item[data-selected] {
+  border-left-color: var(--accent);
+}
+
+html[data-theme="gothic"] .task-agent,
+html[data-theme="gothic"] .eyebrow,
+html[data-theme="gothic"] .task-project-title {
+  font-variant-caps: small-caps;
+  letter-spacing: .08em;
+}
+
+/* Реплики — вклеенные листы: прямой край и тонкая тень от бумаги. */
+html[data-theme="gothic"] .msg {
+  border-radius: 0;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, .5), inset 0 0 0 1px rgba(143, 168, 200, .1);
+}
+
+html[data-theme="gothic"] .option-chip {
+  border-radius: 0;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+html[data-theme="gothic"] .composer,
+html[data-theme="gothic"] .composer input,
+html[data-theme="gothic"] .composer textarea,
+html[data-theme="gothic"] .composer button {
+  border-radius: 0;
+}
+
+/* Обрез разворота должен быть виден: первая проба почти сливалась с фоном. */
+html[data-theme="gothic"] .task-rail,
+html[data-theme="gothic"] .chat {
+  box-shadow:
+    inset 0 0 0 1px rgba(163, 186, 216, .38),
+    inset 0 0 0 4px transparent,
+    inset 0 0 0 5px rgba(163, 186, 216, .2);
+}

@@ -191,3 +191,66 @@ html[data-background-override="true"][data-background="blackhole-disk"] body::be
 
 @media (max-width: 720px) {html[data-background-override="true"][data-background="blackhole-disk"] { --hub-background-position: 60% 46%; }
 }
+
+/* ================================================ облик: горизонт событий ===
+   Всё в кадре закручено вокруг одной точки, поэтому и интерфейс переходит на
+   дуги: панель обрезана окружностью, выбранная задача помечена дугой, а знак —
+   кольцо с ярким краем. Заодно панель задач получает подложку: без неё рукав
+   галактики светил прямо под подписями и они падали до контраста 1,5 : 1. */
+
+html[data-theme="blackhole"] {
+  --surface-1: rgba(6, 10, 18, 0.72);
+  --surface-2: rgba(12, 18, 28, 0.78);
+}
+
+html[data-theme="blackhole"] .brand-mark {
+  background: conic-gradient(from 210deg, rgba(158, 203, 255, .9), rgba(158, 203, 255, .05) 45%, rgba(158, 203, 255, .05) 70%, rgba(158, 203, 255, .9));
+  border: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 18px -6px rgba(158, 203, 255, .9);
+  position: relative;
+}
+
+html[data-theme="blackhole"] .brand-mark svg { display: none; }
+
+html[data-theme="blackhole"] .brand-mark::before {
+  background: #04060a;
+  border-radius: 50%;
+  content: "";
+  height: 62%;
+  width: 62%;
+}
+
+/* Внешний край панелей уходит в дугу, внутренний остаётся прямым. */
+html[data-theme="blackhole"] .task-rail {
+  backdrop-filter: blur(10px) saturate(115%);
+  -webkit-backdrop-filter: blur(10px) saturate(115%);
+  border-radius: 0 74px 74px 0;
+  border-right: 1px solid rgba(158, 203, 255, .18);
+}
+
+html[data-theme="blackhole"] .chat {
+  border-radius: 74px 0 0 74px;
+}
+
+/* Задача на орбите: слева дуга, а не прямая риска. */
+html[data-theme="blackhole"] .task-item {
+  border-radius: 999px 12px 12px 999px;
+  padding-left: 1rem;
+}
+
+html[data-theme="blackhole"] .task-item[data-selected]::before {
+  border-radius: 999px;
+  height: 62%;
+  left: 5px;
+  top: 19%;
+  width: 3px;
+}
+
+html[data-theme="blackhole"] .view-tab,
+html[data-theme="blackhole"] .option-chip {
+  border-radius: 999px;
+}
+
+html[data-theme="blackhole"] .msg-agent { border-radius: 4px 22px 22px 22px; }
+html[data-theme="blackhole"] .msg-user { border-radius: 22px 4px 22px 22px; }
