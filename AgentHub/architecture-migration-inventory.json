@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "baseline": {
     "serverMaximumLines": 150,
-    "compositionMaximumLines": 2074,
+    "compositionMaximumLines": 1997,
     "rootProductionModules": 29
   },
   "publicRootModules": [

@@ -78,7 +78,6 @@ import {
   resolveCodexObservedExecutionOwner,
 } from "../providers/codex/codex-runtime-owner.mjs";
 import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
-import { TelegramTaskPickerService } from "../interfaces/telegram/task-picker.mjs";
 import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import {
   commandTaskTarget,
@@ -89,7 +88,6 @@ import {
   ServerControlController,
 } from "../interfaces/web/server-control-controller.mjs";
 import { RuntimeTimerCoordinator } from "../runtime/runtime-timer-coordinator.mjs";
-import { TaskIdentityResolver } from "../application/task-identity-resolver.mjs";
 import { createHubStaticSettings } from "./hub-static-settings.mjs";
 import { createCodexObservabilityComposition } from "./codex-observability-composition.mjs";
 import { createClientInterfaceComposition } from "./client-interface-composition.mjs";
@@ -105,8 +103,6 @@ import { createDesktopCommandWiring } from "./desktop-command-wiring-composition
 import { createDesktopRunRouterWiring } from "./desktop-run-router-wiring-composition.mjs";
 import { createRuntimeDataComposition } from "./runtime-data-composition.mjs";
 import { createBackgroundWorkComposition } from "./background-work-composition.mjs";
-import { createRuntimeStateRestorationComposition } from "./runtime-state-restoration-composition.mjs";
-import { runStartupMaintenance } from "./startup-maintenance-composition.mjs";
 import { createCodexLifecycleComposition } from "./codex-lifecycle-composition.mjs";
 import { createRunCompletionComposition } from "./run-completion-composition.mjs";
 import { createCodexContextMaintenanceComposition } from "./codex-context-maintenance-composition.mjs";
@@ -125,6 +121,9 @@ import { createCodexTaskSettingsComposition } from "./codex-task-settings-compos
 import { createProviderRuntimeWiring } from "./provider-runtime-wiring-composition.mjs";
 import { createTaskInteractionWiring } from "./task-interaction-wiring-composition.mjs";
 import { createRuntimeRestartWiring } from "./runtime-restart-wiring-composition.mjs";
+import { createTaskStateWiring } from "./task-state-wiring-composition.mjs";
+import { createRuntimeStateBootstrapWiring } from "./runtime-state-bootstrap-wiring-composition.mjs";
+import { createTelegramShellWiring } from "./telegram-shell-wiring-composition.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -254,6 +253,8 @@ let codexTaskSettingsComposition = null;
 let providerRuntimeWiring = null;
 let taskInteractionWiring = null;
 let runtimeRestartWiring = null;
+let taskStateWiring = null;
+let telegramShellWiring = null;
 const runtimeTimers = new RuntimeTimerCoordinator();
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
 const EXTERNAL_TASK_POLL_INTERVAL_MS = 1_500;
@@ -714,34 +715,23 @@ const {
   taskProgress: () => taskProgress,
 });
 
-function invalidateTaskCatalog() {
-  taskCatalogService.invalidate();
-}
-
-function syncTaskRun(run, {
-  active = run?.status === "running",
-  stage = run?.progressStage,
-  answer = run?.responseText,
-  activityAtMs = Date.parse(run?.lastMeaningfulProgressAt ?? run?.startedAt ?? "") || Date.now(),
-} = {}) {
-  if (!run?.provider || !run?.threadId) return;
-  const changed = taskSyncStore.recordSnapshot(run, {
-    active,
-    turnId: run.turnId,
-    model: run.model,
-    activityAtMs,
-    stage,
-    answer,
-    executionOwner: run.executionOwner,
-  }, {
-    executionOwner: run.executionOwner,
-  });
-  if (changed) {
-    void taskSyncStore.save().catch((error) => {
-      console.error("Cannot save local task sync:", error.message);
-    });
-  }
-}
+function invalidateTaskCatalog(...args) { return taskStateWiring.invalidateTaskCatalog(...args); }
+function syncTaskRun(...args) { return taskStateWiring.syncTaskRun(...args); }
+function persistTaskDiff(...args) { return taskStateWiring.persistTaskDiff(...args); }
+function findProject(...args) { return taskStateWiring.findProject(...args); }
+function activeProject(...args) { return taskStateWiring.activeProject(...args); }
+function selectedTask(...args) { return taskStateWiring.selectedTask(...args); }
+function selectedTurnTarget(...args) { return taskStateWiring.selectedTurnTarget(...args); }
+function currentUiContextToken(...args) { return taskStateWiring.currentUiContextToken(...args); }
+function uiCallback(...args) { return taskStateWiring.uiCallback(...args); }
+function selectedRun(...args) { return taskStateWiring.selectedRun(...args); }
+function isSelectedRun(...args) { return taskStateWiring.isSelectedRun(...args); }
+function runProject(...args) { return taskStateWiring.runProject(...args); }
+function runTaskTitle(...args) { return taskStateWiring.runTaskTitle(...args); }
+function pinnedTaskTitle(...args) { return taskStateWiring.pinnedTaskTitle(...args); }
+function pinTaskTitle(...args) { return taskStateWiring.pinTaskTitle(...args); }
+function pendingTaskTitle(...args) { return taskStateWiring.pendingTaskTitle(...args); }
+function expectTaskTitleConfirmation(...args) { return taskStateWiring.expectTaskTitleConfirmation(...args); }
 const {
   deliveryOutbox,
   scheduleDeliveryOutboxFlush,
@@ -761,49 +751,28 @@ const {
   },
 });
 
-const taskIdentity = new TaskIdentityResolver({
+taskStateWiring = createTaskStateWiring({
+  taskCatalogService,
+  taskSyncStore,
   selectionStore,
   projects: PROJECTS,
   findContainingProject,
-  catalogEntries: taskCatalog,
+  taskCatalog,
   catalogEntryIsSelected,
   taskRuns,
   taskMetadata,
-  preferences: agentPreferences,
+  agentPreferences,
   currentChatId: () => chatId,
   contextualCallback,
   samePath,
+  taskDiffs,
+  logger: console,
 });
-function findProject(...args) { return taskIdentity.findProject(...args); }
-function activeProject(...args) { return taskIdentity.activeProject(...args); }
-function selectedTask(...args) { return taskIdentity.selectedTask(...args); }
-function selectedTurnTarget(...args) { return taskIdentity.selectedTurnTarget(...args); }
-function currentUiContextToken(...args) { return taskIdentity.currentUiContextToken(...args); }
-function uiCallback(...args) { return taskIdentity.uiCallback(...args); }
-function selectedRun(...args) { return taskIdentity.selectedRun(...args); }
-function isSelectedRun(...args) { return taskIdentity.isSelectedRun(...args); }
-function runProject(...args) { return taskIdentity.runProject(...args); }
-function runTaskTitle(...args) { return taskIdentity.runTaskTitle(...args); }
-function pinnedTaskTitle(...args) { return taskIdentity.pinnedTaskTitle(...args); }
-function pinTaskTitle(...args) { return taskIdentity.pinTaskTitle(...args); }
-function pendingTaskTitle(...args) { return taskIdentity.pendingTaskTitle(...args); }
-function expectTaskTitleConfirmation(...args) {
-  return taskIdentity.expectTaskTitleConfirmation(...args);
-}
 
 function setBoundedMapValue(map, key, value, limit) {
   if (map.has(key)) map.delete(key);
   map.set(key, value);
   while (map.size > limit) map.delete(map.keys().next().value);
-}
-
-async function persistTaskDiff(key, value) {
-  taskDiffs.remember(key, value);
-  try {
-    await taskDiffs.set(key, value);
-  } catch (error) {
-    console.error("Cannot persist task diff:", error.message);
-  }
 }
 
 function runMessageBinding(...args) { return telegramDeliveryService.runMessageBinding(...args); }
@@ -927,93 +896,81 @@ function taskSwitchSettings(...args) {
 
 const {
   runtimeStateCoordinator,
-  stateLoadFailed,
-  restoredState: restoredRuntimeState,
-} = await createRuntimeStateRestorationComposition({
-  config,
-  projects: PROJECTS,
-  maximumDeferredInputs: MAX_DEFERRED_INPUTS,
-  runtimeStateStore,
-  canonicalizeProjectRoots,
-  restoreContext: {
-    selectionStore,
-    findProject,
-    taskMetadata,
-    preferences: agentPreferences,
-    statusMediaFileIds,
-    runJournal,
-    lastSeenTaskTurnIds,
-    codexUsageTracker,
-    codexTurnStarts,
-    codexTerminalAudit,
-    turnEndNotifications,
-    dismissedExternalTasks,
-    cancelledManagedClaudeTasks,
-    pendingInputs,
-    queuedInputs,
-    isLegacyDesktopAttachmentFile,
-    desktopMessageReceipts,
-    updateDeferredDesktopReceipt,
-    forwardBundles,
-    taskRuns,
+  journalStartupReady,
+} = await createRuntimeStateBootstrapWiring({
+  restoration: {
+    config,
+    projects: PROJECTS,
+    maximumDeferredInputs: MAX_DEFERRED_INPUTS,
+    runtimeStateStore,
+    canonicalizeProjectRoots,
+    restoreContext: {
+      selectionStore,
+      findProject,
+      taskMetadata,
+      preferences: agentPreferences,
+      statusMediaFileIds,
+      runJournal,
+      lastSeenTaskTurnIds,
+      codexUsageTracker,
+      codexTurnStarts,
+      codexTerminalAudit,
+      turnEndNotifications,
+      dismissedExternalTasks,
+      cancelledManagedClaudeTasks,
+      pendingInputs,
+      queuedInputs,
+      isLegacyDesktopAttachmentFile,
+      desktopMessageReceipts,
+      updateDeferredDesktopReceipt,
+      forwardBundles,
+      taskRuns,
+    },
+    snapshotContext: {
+      getChatId: () => chatId,
+      getUpdateOffset: () => updateOffset,
+      getRestartRequest: () => restartRequest,
+      getCodexHookReceipts: () => codexHookReceipts,
+      selectionStore,
+      taskMetadata,
+      preferences: agentPreferences,
+      taskRuns,
+      dismissedExternalTasks,
+      cancelledManagedClaudeTasks,
+      pendingInputs,
+      queuedInputs,
+      desktopMessageReceipts,
+      forwardBundles,
+      runJournal,
+      lastSeenTaskTurnIds,
+      codexUsageTracker,
+      codexTurnStarts,
+      codexTerminalAudit,
+      turnEndNotifications,
+      statusMediaFileIds,
+    },
   },
-  snapshotContext: {
-    getChatId: () => chatId,
-    getUpdateOffset: () => updateOffset,
-    getRestartRequest: () => restartRequest,
-    getCodexHookReceipts: () => codexHookReceipts,
-    selectionStore,
-    taskMetadata,
-    preferences: agentPreferences,
-    taskRuns,
-    dismissedExternalTasks,
-    cancelledManagedClaudeTasks,
-    pendingInputs,
-    queuedInputs,
-    desktopMessageReceipts,
-    forwardBundles,
-    runJournal,
-    lastSeenTaskTurnIds,
-    codexUsageTracker,
-    codexTurnStarts,
-    codexTerminalAudit,
-    turnEndNotifications,
-    statusMediaFileIds,
+  applyRestoredState: (restoredState) => {
+    chatId = restoredState.chatId;
+    updateOffset = restoredState.updateOffset;
+    restartRequest = restoredState.restartRequest;
+    replaceCodexHookReceipts(restoredState.codexHookReceipts);
+    if (activeProvider === "codex" && threadId) {
+      if (taskMetadata.codexSettings(threadId)) restoreCodexTaskSettings(threadId);
+      else rememberCodexTaskSettings(threadId);
+    }
+    return restoredState.restoredTurnEndSnapshot;
   },
+  initializeJournal: (restoredTurnEndSnapshot) => runJournal.initialize(restoredTurnEndSnapshot),
+  startupMaintenance: {
+    config,
+    taskRuns,
+    pinnedTaskTitlesFile: PINNED_TASK_TITLES_FILE,
+    taskMetadata,
+  },
+  logger: console,
 });
-let restoredTurnEndSnapshot = {};
-if (restoredRuntimeState) {
-  chatId = restoredRuntimeState.chatId;
-  updateOffset = restoredRuntimeState.updateOffset;
-  restartRequest = restoredRuntimeState.restartRequest;
-  replaceCodexHookReceipts(restoredRuntimeState.codexHookReceipts);
-  restoredTurnEndSnapshot = restoredRuntimeState.restoredTurnEndSnapshot;
-  if (activeProvider === "codex" && threadId) {
-    if (taskMetadata.codexSettings(threadId)) restoreCodexTaskSettings(threadId);
-    else rememberCodexTaskSettings(threadId);
-  }
-}
 workLogUsageStore.setIncludeClaudeUsage(agentPreferences.includeClaudeUsage);
-
-async function initializeJournalProjection() {
-  return runJournal.initialize(restoredTurnEndSnapshot);
-}
-
-// Journal repair is serialized by WorkLogUsageStore, but it is not a startup
-// prerequisite for control pipes or Telegram polling. Keeping it in the
-// background prevents a stale interprocess lock from making the whole Hub look
-// dead during a replacement hand-off.
-const journalStartupReady = initializeJournalProjection().catch((error) => {
-  console.error("Cannot initialize journal projection:", error.message);
-});
-
-await runStartupMaintenance({
-  config,
-  stateLoadFailed,
-  taskRuns,
-  pinnedTaskTitlesFile: PINNED_TASK_TITLES_FILE,
-  taskMetadata,
-});
 
 const codexLifecycle = createCodexLifecycleComposition({
   config,
@@ -1153,25 +1110,7 @@ async function refreshTaskCatalog({ force = false } = {}) {
   return taskCatalogService.refresh({ force });
 }
 
-const telegramTaskPicker = new TelegramTaskPickerService({
-  refreshCatalog: refreshTaskCatalog,
-  selectedTask,
-  pageSize: TASK_PICKER_PAGE_SIZE,
-  showProject: () => config.showProjectButton && config.showTaskProject,
-  providerTitle,
-  projectName: () => activeProject().name,
-  newTaskCallback: () => uiCallback("thread:new"),
-  archiveCallback: () => (isCodex() && threadId ? uiCallback("thread:archive") : null),
-  editMessage: (message, view) => telegram("editMessageText", {
-    chat_id: message.chat.id,
-    message_id: message.message_id,
-    text: view.text,
-    reply_markup: view.replyMarkup,
-  }),
-  sendMessage: (view) => sendMessage(view.text, { reply_markup: view.replyMarkup }),
-});
-
-function sendThreadPicker(...args) { return telegramTaskPicker.send(...args); }
+function sendThreadPicker(...args) { return telegramShellWiring.sendThreadPicker(...args); }
 
 const serverControlController = new ServerControlController({
   config,
@@ -1526,64 +1465,48 @@ function reconcileRemoteDesktopControl(request) {
   return dispatchRemoteDesktopReconciliation(request);
 }
 
-async function sendProjectPicker() {
-  return telegramSettingsMenu.projectsPicker({ activeProjectRoot });
-}
+function sendProjectPicker(...args) { return telegramShellWiring.sendProjectPicker(...args); }
+function sendAgentPicker(...args) { return telegramShellWiring.sendAgentPicker(...args); }
+function sendModelPicker(...args) { return telegramShellWiring.sendModelPicker(...args); }
+function switchCodexModel(...args) { return telegramShellWiring.switchCodexModel(...args); }
+function switchModel(...args) { return telegramShellWiring.switchModel(...args); }
+function resumeThread(...args) { return telegramShellWiring.resumeThread(...args); }
+function renameCurrentTask(...args) { return telegramShellWiring.renameCurrentTask(...args); }
+function archiveCurrentThread(...args) { return telegramShellWiring.archiveCurrentThread(...args); }
+function archiveBlockedReason(...args) { return telegramShellWiring.archiveBlockedReason(...args); }
+function sendArchiveMessage(...args) { return telegramShellWiring.sendArchiveMessage(...args); }
+function currentStatusSnapshot(...args) { return telegramShellWiring.currentStatusSnapshot(...args); }
+function sendStatus(snapshot = currentStatusSnapshot()) { return telegramShellWiring.sendStatus(snapshot); }
+function sendReasoningPicker(...args) { return telegramShellWiring.sendReasoningPicker(...args); }
+function sendCollaborationModePicker(...args) { return telegramShellWiring.sendCollaborationModePicker(...args); }
 
-async function sendAgentPicker() {
-  return telegramSettingsMenu.agentPicker({ provider: activeProvider });
-}
-
-async function sendModelPicker() {
-  return telegramSettingsMenu.modelPicker({
-    provider: activeProvider,
-    codexModel: agentPreferences.codexModel,
-    claudeModel: agentPreferences.claudeModel,
-    codexModelLabel: codexModelLabel(agentPreferences.codexModel),
-  });
-}
-
-function switchCodexModel(value) {
-  return agentPreferences.setCodexModel(value);
-}
-
-function switchModel(value) {
-  return agentPreferences.setClaudeModel(value);
-}
-
-function resumeThread(...args) { return telegramTaskActions.resume(...args); }
-
-function renameCurrentTask(...args) { return telegramTaskActions.rename(...args); }
-
-function archiveCurrentThread(...args) { return telegramTaskActions.archive(...args); }
-
-function archiveBlockedReason(...args) { return telegramTaskActions.archiveBlockedReason(...args); }
-
-function sendArchiveMessage(result, targetChatId = chatId) {
-  return telegramTaskActions.sendArchive(result, targetChatId);
-}
-
-function currentStatusSnapshot(targetChatId = chatId) {
-  return telegramTaskActions.statusSnapshot(targetChatId);
-}
-
-async function sendStatus(snapshot = currentStatusSnapshot()) {
-  return telegramStatusController.send(snapshot);
-}
-
-async function sendReasoningPicker() {
-  return telegramSettingsMenu.reasoningPicker({
-    provider: activeProvider,
-    value: agentPreferences.current(activeProvider).reasoningEffort,
-  });
-}
-
-async function sendCollaborationModePicker() {
-  return telegramSettingsMenu.collaborationModePicker({
-    provider: activeProvider,
-    value: agentPreferences.current(activeProvider).collaborationMode,
-  });
-}
+telegramShellWiring = createTelegramShellWiring({
+  taskPicker: {
+    refreshCatalog: refreshTaskCatalog,
+    selectedTask,
+    pageSize: TASK_PICKER_PAGE_SIZE,
+    showProject: () => config.showProjectButton && config.showTaskProject,
+    providerTitle,
+    projectName: () => activeProject().name,
+    newTaskCallback: () => uiCallback("thread:new"),
+    archiveCallback: () => (isCodex() && threadId ? uiCallback("thread:archive") : null),
+    editMessage: (message, view) => telegram("editMessageText", {
+      chat_id: message.chat.id,
+      message_id: message.message_id,
+      text: view.text,
+      reply_markup: view.replyMarkup,
+    }),
+    sendMessage: (view) => sendMessage(view.text, { reply_markup: view.replyMarkup }),
+  },
+  settingsMenu: telegramSettingsMenu,
+  taskActions: telegramTaskActions,
+  statusController: telegramStatusController,
+  activeProjectRoot: () => activeProjectRoot,
+  activeProvider: () => activeProvider,
+  agentPreferences,
+  codexModelLabel,
+  currentChatId: () => chatId,
+});
 
 const {
   telegramDeliveryService,
