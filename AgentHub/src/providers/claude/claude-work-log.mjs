@@ -3,13 +3,13 @@ import { copyFile, mkdir, readFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { findContainingProject } from "./config.mjs";
-import { applyLedgerDelta } from "./incremental-ledger.mjs";
-import { JournalDatabase } from "./journal-database.mjs";
-import { creditsFromUsd } from "./token-usage.mjs";
-import { readJsonWithBackup } from "./state-store.mjs";
-import { conciseTurnTitle } from "./turn-title.mjs";
-import { WorkLogUsageStore, workLogTurnKey } from "./work-log-usage.mjs";
+import { findContainingProject } from "../../../config.mjs";
+import { applyLedgerDelta } from "../../../incremental-ledger.mjs";
+import { JournalDatabase } from "../../../journal-database.mjs";
+import { creditsFromUsd } from "../../../token-usage.mjs";
+import { readJsonWithBackup } from "../../../state-store.mjs";
+import { conciseTurnTitle } from "../../../turn-title.mjs";
+import { WorkLogUsageStore, workLogTurnKey } from "../../../work-log-usage.mjs";
 
 function contentBlocks(message) {
   if (Array.isArray(message?.content)) return message.content;

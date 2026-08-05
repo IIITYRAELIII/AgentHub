@@ -6,7 +6,7 @@ import {
   codexThreadSandboxSettings,
   codexTurnSandboxSettings,
   normalizeCodexSandboxMode,
-} from "./codex-sandbox.mjs";
+} from "./src/providers/codex/codex-sandbox.mjs";
 
 test("Codex sandbox mode defaults to workspace-write and rejects unknown values", () => {
   assert.deepEqual(CODEX_SANDBOX_MODES, ["workspace-write", "danger-full-access"]);

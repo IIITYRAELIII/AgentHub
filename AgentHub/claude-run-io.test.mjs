@@ -17,7 +17,7 @@ import {
   removeClaudeRunOutput,
   spawnClaudeWorker,
   stopProcessTree,
-} from "./claude-run-io.mjs";
+} from "./src/providers/claude/claude-run-io.mjs";
 
 async function withTempDir(run) {
   const directory = await mkdtemp(path.join(tmpdir(), "claude-run-io-"));

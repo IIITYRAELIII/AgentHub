@@ -1,5 +1,5 @@
-import { CODEX_TASK_SOURCE_KINDS } from "../../codex-subagent-accounting.mjs";
-import { codexThreadSandboxSettings } from "../../codex-sandbox.mjs";
+import { CODEX_TASK_SOURCE_KINDS } from "./codex/codex-subagent-accounting.mjs";
+import { codexThreadSandboxSettings } from "./codex/codex-sandbox.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);

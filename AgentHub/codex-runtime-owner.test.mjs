@@ -9,7 +9,7 @@ import {
   detectCodexHookExecutionOwner,
   resolveCodexTaskActivity,
   resolveCodexObservedExecutionOwner,
-} from "./codex-runtime-owner.mjs";
+} from "./src/providers/codex/codex-runtime-owner.mjs";
 import { TASK_EXECUTION_OWNERS } from "./task-catalog.mjs";
 
 function snapshot(rootProcessIds, processes) {

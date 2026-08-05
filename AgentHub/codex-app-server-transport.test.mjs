@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
-import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
+import { CodexAppServerTransport } from "./src/providers/codex/codex-app-server-transport.mjs";
 
 function fakeChild({ pid = 321 } = {}) {
   const child = new EventEmitter();

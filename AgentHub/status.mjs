@@ -1,4 +1,4 @@
-import { parseClaudeLimits } from "./claude.mjs";
+import { parseClaudeLimits } from "./src/providers/claude/claude.mjs";
 import { rateLimitResetCreditSummary } from "./rate-limit-history.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 

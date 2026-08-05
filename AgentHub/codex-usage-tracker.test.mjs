@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CodexUsageTracker } from "./codex-usage-tracker.mjs";
+import { CodexUsageTracker } from "./src/providers/codex/codex-usage-tracker.mjs";
 
 function usage(totalTokens, {
   inputTokens = totalTokens,

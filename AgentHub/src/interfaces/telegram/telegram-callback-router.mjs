@@ -1,5 +1,4 @@
 import { resolveContextualCallback } from "../../../callback-context.mjs";
-import { parseApprovalCallback } from "../../../codex-approvals.mjs";
 import { parsePendingInputCallback } from "../../domain/deferred-input.mjs";
 import { parseForwardBundleCallback } from "../../../telegram-forward-bundle.mjs";
 import { parseTaskCatalogCallback } from "../../../task-catalog.mjs";
@@ -11,7 +10,7 @@ function match(pattern, value, names) {
   return Object.fromEntries(names.map((name, index) => [name, result[index + 1]]));
 }
 
-export function routeTelegramCallback(rawData, contextToken) {
+export function routeTelegramCallback(rawData, contextToken, parseApproval = () => null) {
   const contextual = resolveContextualCallback(rawData, contextToken);
   if (contextual.stale) return { kind: "stale", data: contextual.action };
   const data = contextual.action;
@@ -59,7 +58,7 @@ export function routeTelegramCallback(rawData, contextToken) {
   if (catalogTask) return { kind: "catalog-task", data, catalogTask };
   if (data === "thread:new") return { kind: "thread-new", data };
   if (data === "thread:archive") return { kind: "thread-archive", data };
-  const approval = parseApprovalCallback(data);
+  const approval = parseApproval(data);
   if (approval) return { kind: "approval", data, approval };
   return { kind: "unknown", data };
 }

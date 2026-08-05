@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ClaudeTaskSnapshotService } from "./claude-task-snapshot-service.mjs";
+import { ClaudeTaskSnapshotService } from "./src/providers/claude/claude-task-snapshot-service.mjs";
 
 test("Claude snapshot service clears an old cancellation after new activity", async () => {
   const cancelledTasks = new Map([["claude:session-1", 100]]);
@@ -35,4 +35,3 @@ test("Claude snapshot service masks a cancelled transcript without newer activit
   assert.equal(snapshot.cancelled, true);
   assert.equal(snapshot.active, false);
 });
-

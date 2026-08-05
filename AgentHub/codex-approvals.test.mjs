@@ -10,7 +10,7 @@ import {
   formatPermissionsApproval,
   mcpElicitationAutoResponse,
   parseApprovalCallback,
-} from "./codex-approvals.mjs";
+} from "./src/providers/codex/codex-approvals.mjs";
 
 test("approval callbacks use unique UUIDs and bind to the exact Telegram message", () => {
   const first = createApprovalKey();

@@ -5,7 +5,7 @@ import { loadConfig } from "./config.mjs";
 import {
   applyClaudeWorkLogBackfill,
   buildClaudeWorkLogBackfill,
-} from "./claude-work-log.mjs";
+} from "./src/providers/claude/claude-work-log.mjs";
 
 const apply = process.argv.includes("--apply");
 const config = await loadConfig();

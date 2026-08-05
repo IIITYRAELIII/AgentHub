@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { processIsAlive } from "./claude-run-io.mjs";
+import { processIsAlive } from "./src/providers/claude/claude-run-io.mjs";
 
 function quotedWindowsArgument(value) {
   return `"${String(value).replaceAll("\"", "\"\"")}\"`;

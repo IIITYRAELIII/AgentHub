@@ -6,8 +6,8 @@ import { createInterface } from "node:readline";
 
 import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
 import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "./codex-usage-estimate.mjs";
-import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "./token-usage.mjs";
-import { displayUserPrompt } from "./task-history.mjs";
+import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "../../../token-usage.mjs";
+import { displayUserPrompt } from "../../../task-history.mjs";
 
 const rolloutPathIndexPromises = new Map();
 

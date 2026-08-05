@@ -5,7 +5,7 @@ import test from "node:test";
 import {
   handleCodexTurnStartHook,
   validateTurnStartHookInput,
-} from "./codex-turn-start-hook.mjs";
+} from "./src/providers/codex/codex-turn-start-hook.mjs";
 
 const hookInput = {
   hook_event_name: "UserPromptSubmit",

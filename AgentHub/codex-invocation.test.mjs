@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { findVscodeCodexExecutable, resolveCodexExecutable } from "./codex-invocation.mjs";
+import { findVscodeCodexExecutable, resolveCodexExecutable } from "./src/providers/codex/codex-invocation.mjs";
 
 function directory(name) {
   return { name, isDirectory: () => true };

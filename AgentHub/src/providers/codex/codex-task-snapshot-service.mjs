@@ -1,6 +1,77 @@
+import {
+  codexFinalTurnAnswer,
+  codexTurnAnswer,
+  codexTurnHasExplicitFinalAnswer,
+} from "../../../last-message.mjs";
+import { codexThreadHistory } from "../../../task-history.mjs";
+import { codexThreadWaitingOnApproval } from "./codex-approvals.mjs";
+
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
   return value;
+}
+
+export function describeCodexItem(item, completed) {
+  if (!item || typeof item !== "object") return completed ? "Этап завершён." : "Выполняется следующий этап…";
+  const mark = completed ? "✓" : "⚙";
+  if (item.type === "commandExecution") {
+    const command = String(item.command ?? "команда").replace(/\s+/g, " ").slice(0, 180);
+    return `${mark} ${completed ? "Команда выполнена" : `Выполняется команда: ${command}`}`;
+  }
+  if (item.type === "fileChange") return `${mark} ${completed ? "Изменения файлов применены" : "Изменяются файлы…"}`;
+  if (item.type === "mcpToolCall") return `${mark} Инструмент ${item.server ?? "MCP"}/${item.tool ?? ""}${completed ? " завершён" : " выполняется…"}`;
+  if (item.type === "dynamicToolCall") return `${mark} Инструмент ${item.tool ?? ""}${completed ? " завершён" : " выполняется…"}`;
+  if (item.type === "webSearch") return `${mark} ${completed ? "Поиск завершён" : "Выполняется поиск…"}`;
+  if (item.type === "imageView") return `${mark} ${completed ? "Изображение изучено" : "Изучается изображение…"}`;
+  if (item.type === "reasoning") return completed ? "✓ Анализ завершён." : "Анализирую задачу…";
+  if (item.type === "plan") return completed ? "✓ План подготовлен." : "Составляю план…";
+  return completed ? "Этап завершён." : "Выполняется следующий этап…";
+}
+
+export function codexTurnStartedAt(turn) {
+  const value = turn?.startedAt ?? turn?.createdAt ?? null;
+  const numeric = Number(value);
+  const timestamp = Number.isFinite(numeric) && value !== null && value !== ""
+    ? (numeric < 1_000_000_000_000 ? numeric * 1_000 : numeric)
+    : Date.parse(String(value ?? ""));
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
+export function recoveredCodexAnswer(turn) {
+  return codexTurnAnswer(turn);
+}
+
+export function codexTurnSnapshot(turn, threadStatus = null) {
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  const lastItem = items.at(-1);
+  const answer = recoveredCodexAnswer(turn);
+  const hasExplicitFinalAnswer = codexTurnHasExplicitFinalAnswer(turn);
+  const waitingOnApproval = codexThreadWaitingOnApproval(threadStatus);
+  const exchange = codexThreadHistory([turn]).at(-1);
+  const userMessages = (exchange?.messages ?? [])
+    .filter((message) => message.role === "user")
+    .map((message) => ({ ...message }));
+  const prompt = exchange?.prompt ?? "";
+  return {
+    answer,
+    finalAnswer: codexFinalTurnAnswer(turn),
+    reasoning: "",
+    prompt,
+    clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,
+    userMessages,
+    startedAt: codexTurnStartedAt(turn),
+    completed: turn?.status !== "inProgress",
+    active: turn?.status === "inProgress",
+    status: turn?.status === "completed" ? "completed" : String(turn?.status ?? "stopped"),
+    waitingOnApproval,
+    stage: turn?.status === "inProgress"
+      ? waitingOnApproval
+        ? "🔐 Ожидается подтверждение разрешений."
+        : describeCodexItem(lastItem, false)
+      : turn?.status === "completed" || hasExplicitFinalAnswer
+        ? "Задача завершена."
+        : `Задача остановлена: ${turn?.status ?? "неизвестно"}.`,
+  };
 }
 
 export class CodexTaskSnapshotService {

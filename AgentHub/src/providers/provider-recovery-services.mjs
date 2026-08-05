@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { codexThreadWaitingOnApproval } from "../../codex-approvals.mjs";
+import { codexThreadWaitingOnApproval } from "./codex/codex-approvals.mjs";
 import { codexThreadHistory, codexTurnHasExplicitFinalAnswer } from "../../task-history.mjs";
 import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "../domain/task-recovery.mjs";
 import { emptyTokenUsage } from "../../token-usage.mjs";

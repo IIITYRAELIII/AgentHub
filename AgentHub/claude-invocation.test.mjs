@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { resolveClaudeInvocation } from "./claude-invocation.mjs";
+import { resolveClaudeInvocation } from "./src/providers/claude/claude-invocation.mjs";
 
 test("Claude invocation selects the newest installed VSCode package", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "telegram-claude-invocation-"));

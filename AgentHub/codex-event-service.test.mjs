@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodexEventService } from "./codex-event-service.mjs";
+import { CodexEventService } from "./src/providers/codex/codex-event-service.mjs";
 
 function createService(run, overrides = {}) {
   const noop = () => {};

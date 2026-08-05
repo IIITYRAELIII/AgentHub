@@ -18,7 +18,15 @@ export async function main() {
       ? "codex-stop-hook.mjs"
       : null;
   if (!moduleName) throw new Error(`Unsupported Codex hook event: ${value.hook_event_name}`);
-  const modulePath = path.join(runtimeRoot, "releases", pointer.current, moduleName);
+  const modulePath = path.join(
+    runtimeRoot,
+    "releases",
+    pointer.current,
+    "src",
+    "providers",
+    "codex",
+    moduleName,
+  );
   const hook = await import(pathToFileURL(modulePath).href);
   if (value.hook_event_name === "UserPromptSubmit") {
     await hook.handleCodexTurnStartHook(value);

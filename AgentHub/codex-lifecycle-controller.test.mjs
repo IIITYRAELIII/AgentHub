@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { CodexLifecycleController } from "./codex-lifecycle-controller.mjs";
+import { CodexLifecycleController } from "./src/providers/codex/codex-lifecycle-controller.mjs";
 import { TASK_EXECUTION_OWNERS } from "./task-catalog.mjs";
 
 async function fixture({ delivered = false, completion = { id: "completion" }, run = null } = {}) {

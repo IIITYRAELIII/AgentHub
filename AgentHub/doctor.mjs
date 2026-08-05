@@ -2,15 +2,15 @@ import { access } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { AGENT_HUB_ROOT, loadConfig, pathInsideOrSame } from "./config.mjs";
-import { resolveClaudeInvocation } from "./claude-invocation.mjs";
-import { resolveCodexExecutable } from "./codex-invocation.mjs";
+import { resolveClaudeInvocation } from "./src/providers/claude/claude-invocation.mjs";
+import { resolveCodexExecutable } from "./src/providers/codex/codex-invocation.mjs";
 import {
   probeCodexAppServer,
   probeTelegramConnectivity,
   requiresTelegramChecks,
 } from "./doctor-probes.mjs";
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
-import { codexStopHookStatus } from "./codex-hook-config.mjs";
+import { codexStopHookStatus } from "./src/infrastructure/codex/codex-hook-config.mjs";
 
 let failed = false;
 let config = null;

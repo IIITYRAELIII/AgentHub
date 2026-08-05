@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promise
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createCodexAssistantAttachmentImporter } from "./codex-assistant-attachments.mjs";
+import { createCodexAssistantAttachmentImporter } from "./src/providers/codex/codex-assistant-attachments.mjs";
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-assistant-images-"));

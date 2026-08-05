@@ -3,7 +3,6 @@ import {
   selectExactActiveCodexTurnId,
   TASK_EXECUTION_OWNERS,
 } from "../../task-catalog.mjs";
-import { resolveCodexTaskActivity } from "../../codex-runtime-owner.mjs";
 
 export class ProviderTaskActivityService {
   constructor({
@@ -16,7 +15,7 @@ export class ProviderTaskActivityService {
     claudeTaskSnapshots,
     readRolloutActivity = readCodexRolloutActivity,
     selectActiveTurnId = selectExactActiveCodexTurnId,
-    resolveActivity = resolveCodexTaskActivity,
+    resolveActivity,
   }) {
     this.knownCodexRolloutPath = knownCodexRolloutPath;
     this.codexRunning = codexRunning;

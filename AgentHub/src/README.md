@@ -30,6 +30,13 @@ queued input state; `RunRecoveryCoordinator` restores managed and observed runs;
 `RunConflictPolicy` owns the optional repository-write guard. None of these
 services derives logical identity from a single provider thread/session ID.
 
+Provider implementations are complete directory-owned slices. Codex process,
+transport, hooks, snapshots, accounting and terminal services live under
+`providers/codex`; Claude invocation, detached stream I/O, launch, snapshots and
+work-log accounting live under `providers/claude`. Application and interface
+modules receive provider-specific parsing/import functions through composition
+instead of importing concrete adapters across the dependency boundary.
+
 The enforced dependency direction is:
 
 - `domain` → `domain`;

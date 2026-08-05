@@ -5,7 +5,7 @@ import {
   CODEX_COLLABORATION_MODES,
   CODEX_REASONING_EFFORTS,
   resolveCodexThreadSettings,
-} from "./codex-settings.mjs";
+} from "./src/providers/codex/codex-settings.mjs";
 
 test("buildCodexCollaborationMode preserves selected model and reasoning", () => {
   assert.deepEqual(buildCodexCollaborationMode({

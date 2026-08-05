@@ -1,15 +1,15 @@
 import path from "node:path";
 import process from "node:process";
 
-import { displayUserPrompt } from "./task-history.mjs";
-import { captureTaskGitBaseline } from "./task-git-diff.mjs";
+import { displayUserPrompt } from "../../../task-history.mjs";
+import { captureTaskGitBaseline } from "../../../task-git-diff.mjs";
 import {
   enqueueRuntimeCommandThroughSpool,
   forwardRuntimeCommand,
   runtimeCommandUnavailable,
-} from "./runtime-command.mjs";
-import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
-import { isMainModule } from "./main-module.mjs";
+} from "../../../runtime-command.mjs";
+import { defaultRuntimeRoot, runtimeLayout } from "../../../runtime-layout.mjs";
+import { isMainModule } from "../../../main-module.mjs";
 import { detectCodexHookExecutionOwner } from "./codex-runtime-owner.mjs";
 
 async function readStdin() {

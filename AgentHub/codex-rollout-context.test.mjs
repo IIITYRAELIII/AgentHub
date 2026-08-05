@@ -9,7 +9,7 @@ import {
   CodexRolloutContextSanitizer,
   sanitizeCodexRolloutContext,
   windowsRolloutIdleState,
-} from "./codex-rollout-context.mjs";
+} from "./src/providers/codex/codex-rollout-context.mjs";
 
 function image(index) {
   return {

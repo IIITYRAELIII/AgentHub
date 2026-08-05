@@ -249,7 +249,7 @@ test("turn-end projection and retry policy have one delivery owner", async () =>
 
 test("Codex completion bookkeeping has one finalization owner", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
-  const finalizer = await readFile(path.join(ROOT, "codex-run-finalizer.mjs"), "utf8");
+  const finalizer = await readFile(path.join(ROOT, "src/providers/codex/codex-run-finalizer.mjs"), "utf8");
   assert.equal((source.match(/new CodexRunFinalizer\s*\(/g) ?? []).length, 1);
   assert.equal(source.includes("routeCodexFinalDelivery("), false);
   assert.equal(finalizer.includes("routeCodexFinalDelivery"), true);
@@ -260,7 +260,7 @@ test("Codex completion bookkeeping has one finalization owner", async () => {
 
 test("Codex token and context state have one bounded owner", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
-  const tracker = await readFile(path.join(ROOT, "codex-usage-tracker.mjs"), "utf8");
+  const tracker = await readFile(path.join(ROOT, "src/providers/codex/codex-usage-tracker.mjs"), "utf8");
   assert.equal((source.match(/new CodexUsageTracker\s*\(/g) ?? []).length, 1);
   assert.equal(source.includes("const threadTokenTotals = new Map()"), false);
   assert.equal(source.includes("const threadContextUsage = new Map()"), false);
@@ -273,7 +273,7 @@ test("Codex token and context state have one bounded owner", async () => {
 test("Codex compaction and rollout sanitation have one maintenance owner", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   const maintenance = await readFile(
-    path.join(ROOT, "codex-context-maintenance-service.mjs"),
+    path.join(ROOT, "src/providers/codex/codex-context-maintenance-service.mjs"),
     "utf8",
   );
   assert.equal((source.match(/new CodexContextMaintenanceService\s*\(/g) ?? []).length, 1);
@@ -293,7 +293,7 @@ test("Codex compaction and rollout sanitation have one maintenance owner", async
 test("Codex terminal reconciliation has one application owner", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   const reconciliation = await readFile(
-    path.join(ROOT, "codex-terminal-reconciliation-service.mjs"),
+    path.join(ROOT, "src/providers/codex/codex-terminal-reconciliation-service.mjs"),
     "utf8",
   );
   assert.equal((source.match(/new CodexTerminalReconciliationService\s*\(/g) ?? []).length, 1);

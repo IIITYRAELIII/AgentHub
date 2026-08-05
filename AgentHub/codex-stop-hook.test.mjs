@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 
-import { handleCodexStopHook, validateStopHookInput } from "./codex-stop-hook.mjs";
+import { handleCodexStopHook, validateStopHookInput } from "./src/providers/codex/codex-stop-hook.mjs";
 
 const hookInput = {
   hook_event_name: "Stop",

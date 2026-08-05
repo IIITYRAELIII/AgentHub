@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CodexContextMaintenanceService } from "./codex-context-maintenance-service.mjs";
+import { CodexContextMaintenanceService } from "./src/providers/codex/codex-context-maintenance-service.mjs";
 
 function harness(overrides = {}) {
   const calls = [];

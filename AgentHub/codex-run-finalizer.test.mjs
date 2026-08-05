@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CodexRunFinalizer } from "./codex-run-finalizer.mjs";
+import { CodexRunFinalizer } from "./src/providers/codex/codex-run-finalizer.mjs";
 import { turnEndKey } from "./turn-end-notifications.mjs";
 
 function fixture({ existingCompletion = null, discard = false } = {}) {

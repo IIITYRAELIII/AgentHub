@@ -1,5 +1,5 @@
 import path from "node:path";
-import { creditsFromUsd, formatCredits } from "./token-usage.mjs";
+import { creditsFromUsd, formatCredits } from "../../../token-usage.mjs";
 
 export const CLAUDE_PERMISSION_MODES = new Set([
   "default",

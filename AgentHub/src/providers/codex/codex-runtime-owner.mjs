@@ -4,7 +4,7 @@ import path from "node:path";
 import {
   codexObservedExecutionOwner,
   TASK_EXECUTION_OWNERS,
-} from "./task-catalog.mjs";
+} from "../../../task-catalog.mjs";
 
 const OWNER_PROBE_CACHE_MS = 5_000;
 const OWNER_PROBE_TIMEOUT_MS = 5_000;

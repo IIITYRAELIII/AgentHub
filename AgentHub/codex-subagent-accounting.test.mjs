@@ -8,7 +8,7 @@ import {
   isInheritedSubagentTurn,
   resolveCodexAccountingThread,
   uuidV7TimestampMs,
-} from "./codex-subagent-accounting.mjs";
+} from "./src/providers/codex/codex-subagent-accounting.mjs";
 
 test("Codex terminal audit includes every public subagent source kind", () => {
   assert.deepEqual(CODEX_AUDIT_SOURCE_KINDS, [

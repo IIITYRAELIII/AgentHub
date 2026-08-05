@@ -18,7 +18,7 @@ import {
   scanCodexTurnJsonl,
   scanCodexTurnJsonlIncrementally,
   scanCodexTurnPricingMetadata,
-} from "./codex-turn-usage.mjs";
+} from "./src/providers/codex/codex-turn-usage.mjs";
 
 function line(value) {
   return JSON.stringify(value);

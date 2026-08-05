@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { RateLimitTelemetryService } from "./src/application/rate-limit-telemetry-service.mjs";
+import { parseClaudeLimits } from "./src/providers/claude/claude.mjs";
 
 function fixture({
   codexRunning = true,
@@ -13,6 +14,7 @@ function fixture({
   const delayedCodex = new Promise((resolve) => { releaseCodex = resolve; });
   const service = new RateLimitTelemetryService({
     resolveClaudeInvocation: () => ({ command: "claude", prefixArgs: ["--flag"] }),
+    parseClaudeLimits,
     spawnCapture: async (command, args, options) => {
       events.push(["spawn", command, args, options]);
       return { code: 0, stdout: claudeOutput, stderr: "", error: null };

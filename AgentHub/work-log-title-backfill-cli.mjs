@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { resolveCodexExecutable } from "./codex-invocation.mjs";
+import { resolveCodexExecutable } from "./src/providers/codex/codex-invocation.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 import { writeTextAtomic } from "./state-store.mjs";

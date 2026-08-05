@@ -1,7 +1,7 @@
 import { unlink } from "node:fs/promises";
-import { buildCodexCollaborationMode } from "../../codex-settings.mjs";
-import { activeTurnMissing, interruptCodexTurnWithRecovery, startCodexTurnWithRecovery } from "../../codex-recovery.mjs";
-import { codexThreadSandboxSettings, codexTurnSandboxSettings } from "../../codex-sandbox.mjs";
+import { buildCodexCollaborationMode } from "./codex/codex-settings.mjs";
+import { activeTurnMissing, interruptCodexTurnWithRecovery, startCodexTurnWithRecovery } from "./codex/codex-recovery.mjs";
+import { codexThreadSandboxSettings, codexTurnSandboxSettings } from "./codex/codex-sandbox.mjs";
 import { emptyTokenUsage } from "../../token-usage.mjs";
 
 function requiredFunction(value, name) {

@@ -6,7 +6,7 @@ import {
   formatMcpElicitation,
   mcpElicitationAutoResponse,
   parseApprovalCallback,
-} from "./codex-approvals.mjs";
+} from "./src/providers/codex/codex-approvals.mjs";
 
 export class ApprovalController {
   constructor({

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CodexTerminalReconciliationService } from "./codex-terminal-reconciliation-service.mjs";
+import { CodexTerminalReconciliationService } from "./src/providers/codex/codex-terminal-reconciliation-service.mjs";
 
 function usage(overrides = {}) {
   return {

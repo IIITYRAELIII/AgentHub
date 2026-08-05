@@ -1,7 +1,6 @@
 import { stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createCodexAssistantAttachmentImporter } from "../../../codex-assistant-attachments.mjs";
 import { pathInsideOrSame } from "../../../config.mjs";
 
 const ATTACHMENT_TYPES = new Map([
@@ -21,6 +20,7 @@ export class DesktopAttachmentService {
   #workerEnabled;
   #publisher;
   #trustedUserId;
+  #assistantAttachmentImporterFactory;
   #importer = null;
 
   constructor(options = {}) {
@@ -30,6 +30,7 @@ export class DesktopAttachmentService {
     this.#workerEnabled = Boolean(options.workerEnabled);
     this.#publisher = typeof options.publisher === "function" ? options.publisher : () => null;
     this.#trustedUserId = typeof options.trustedUserId === "function" ? options.trustedUserId : () => "local";
+    this.#assistantAttachmentImporterFactory = options.assistantAttachmentImporterFactory;
   }
 
   async paths(values) {
@@ -70,7 +71,10 @@ export class DesktopAttachmentService {
   }
 
   async importCodex(values) {
-    this.#importer ??= createCodexAssistantAttachmentImporter({
+    if (typeof this.#assistantAttachmentImporterFactory !== "function") {
+      throw new Error("Импорт вложений Codex не настроен");
+    }
+    this.#importer ??= this.#assistantAttachmentImporterFactory({
       temporaryRoot: os.tmpdir(),
       generatedImageRoot: path.resolve(os.homedir(), ".codex", "generated_images"),
       attachmentRoot: this.#attachmentRoot,

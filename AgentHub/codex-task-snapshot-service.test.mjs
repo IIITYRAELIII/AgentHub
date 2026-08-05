@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodexTaskSnapshotService } from "./codex-task-snapshot-service.mjs";
+import { CodexTaskSnapshotService } from "./src/providers/codex/codex-task-snapshot-service.mjs";
 
 test("Codex snapshot service reports an exact rollout observer", async () => {
   const service = new CodexTaskSnapshotService({

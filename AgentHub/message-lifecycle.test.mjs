@@ -23,11 +23,11 @@ const serverSource = await readFile(
   "utf8",
 );
 const codexEventSource = await readFile(
-  new URL("./codex-event-service.mjs", import.meta.url),
+  new URL("./src/providers/codex/codex-event-service.mjs", import.meta.url),
   "utf8",
 );
 const codexContextMaintenanceSource = await readFile(
-  new URL("./codex-context-maintenance-service.mjs", import.meta.url),
+  new URL("./src/providers/codex/codex-context-maintenance-service.mjs", import.meta.url),
   "utf8",
 );
 

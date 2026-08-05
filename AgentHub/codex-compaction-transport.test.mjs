@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { recycleCodexCompactionTransport } from "./codex-compaction-transport.mjs";
+import { recycleCodexCompactionTransport } from "./src/providers/codex/codex-compaction-transport.mjs";
 
 test("manual compaction recycle stops, sanitizes and restores the App Server", async () => {
   const calls = [];

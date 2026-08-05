@@ -4,7 +4,7 @@ import { mkdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-import { stopProcessTree } from "./claude-run-io.mjs";
+import { stopProcessTree } from "./src/providers/claude/claude-run-io.mjs";
 import { AGENT_HUB_ROOT, loadConfig } from "./config.mjs";
 import { PersistentTtsWorkerClient } from "./tts-worker-client.mjs";
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { contextualCallback } from "./callback-context.mjs";
 import { routeTelegramCallback } from "./src/interfaces/telegram/telegram-callback-router.mjs";
+import { parseApprovalCallback } from "./src/providers/codex/codex-approvals.mjs";
 
 test("routes task, model and approval callback protocols", () => {
   assert.deepEqual(routeTelegramCallback("tasks-page:3", "abc"), {
@@ -14,7 +15,7 @@ test("routes task, model and approval callback protocols", () => {
     "codex-reasoning",
   );
   assert.equal(
-    routeTelegramCallback("a:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:once", "abc").kind,
+    routeTelegramCallback("a:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:once", "abc", parseApprovalCallback).kind,
     "approval",
   );
 });

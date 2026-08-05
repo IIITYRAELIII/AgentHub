@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { mkdir, readFile, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import dns from "node:dns";
@@ -12,33 +11,29 @@ import {
   pathInsideOrSame,
   samePath,
 } from "./config.mjs";
-import {
-  buildClaudeArgs,
-  buildClaudePrompt,
-  claudeThinkingTokens,
-  resolveClaudeSessionCwd,
-} from "./claude.mjs";
+import { parseClaudeLimits } from "./src/providers/claude/claude.mjs";
 import {
   claudeResultEstimatedCredits,
   claudeResultTokenUsage,
   scanClaudeHistoricalTranscriptFile,
-} from "./claude-work-log.mjs";
+} from "./src/providers/claude/claude-work-log.mjs";
 import {
   cleanupOrphanedClaudeRunOutputs,
   processIsAlive,
   stopProcessTree,
-} from "./claude-run-io.mjs";
-import { ClaudeRunController } from "./claude-run-controller.mjs";
+} from "./src/providers/claude/claude-run-io.mjs";
+import { ClaudeRunController } from "./src/providers/claude/claude-run-controller.mjs";
+import { ClaudeTurnLauncher } from "./src/providers/claude/claude-turn-launcher.mjs";
 import {
   CODEX_COLLABORATION_MODE_LABELS,
   CODEX_COLLABORATION_MODES,
   CODEX_REASONING_EFFORTS,
   CODEX_REASONING_LABELS,
   resolveCodexThreadSettings,
-} from "./codex-settings.mjs";
+} from "./src/providers/codex/codex-settings.mjs";
 import {
   codexThreadSandboxSettings,
-} from "./codex-sandbox.mjs";
+} from "./src/providers/codex/codex-sandbox.mjs";
 import {
   formatArchiveMessage,
   formatProgressHeading,
@@ -56,20 +51,17 @@ import {
   readCodexTurnUsage,
   scanCodexHistoricalRollout,
   scanCodexTurnPricingMetadata,
-} from "./codex-turn-usage.mjs";
-import { CodexTerminalAudit } from "./codex-terminal-audit.mjs";
-import { CodexTerminalReconciliationService } from "./codex-terminal-reconciliation-service.mjs";
-import { scanCodexHistoricalRolloutInWorker } from "./codex-historical-backfill.mjs";
-import { resolveCodexJournalProject } from "./codex-journal-project.mjs";
+} from "./src/providers/codex/codex-turn-usage.mjs";
+import { CodexTerminalAudit } from "./src/providers/codex/codex-terminal-audit.mjs";
+import { CodexTerminalReconciliationService } from "./src/providers/codex/codex-terminal-reconciliation-service.mjs";
+import { scanCodexHistoricalRolloutInWorker } from "./src/providers/codex/codex-historical-backfill.mjs";
+import { resolveCodexJournalProject } from "./src/providers/codex/codex-journal-project.mjs";
 import { RateLimitHistoryStore } from "./rate-limit-history.mjs";
 import { RateLimitTelemetryService } from "./src/application/rate-limit-telemetry-service.mjs";
-import {
-  CODEX_AUDIT_SOURCE_KINDS,
-  resolveCodexAccountingThread,
-} from "./codex-subagent-accounting.mjs";
-import { CodexRunFinalizer } from "./codex-run-finalizer.mjs";
-import { CodexContextMaintenanceService } from "./codex-context-maintenance-service.mjs";
-import { CodexUsageTracker } from "./codex-usage-tracker.mjs";
+import { CODEX_AUDIT_SOURCE_KINDS } from "./src/providers/codex/codex-subagent-accounting.mjs";
+import { CodexRunFinalizer } from "./src/providers/codex/codex-run-finalizer.mjs";
+import { CodexContextMaintenanceService } from "./src/providers/codex/codex-context-maintenance-service.mjs";
+import { CodexUsageTracker } from "./src/providers/codex/codex-usage-tracker.mjs";
 import { randomStatusHeaderFileName } from "./status-header.mjs";
 import { TelegramClient } from "./telegram-client.mjs";
 import { emptyTokenUsage } from "./token-usage.mjs";
@@ -124,20 +116,17 @@ import {
 } from "./src/domain/task-runs.mjs";
 import {
   codexFinalTurnAnswer,
-  codexTurnHasExplicitFinalAnswer,
-  codexTurnAnswer,
   listClaudeSessionSnapshots,
   readClaudeSessionSnapshot,
 } from "./last-message.mjs";
 import {
-  codexThreadHistory,
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
 } from "./task-history.mjs";
 import {
-  codexThreadWaitingOnApproval,
   formatPermissionsApproval,
-} from "./codex-approvals.mjs";
+  parseApprovalCallback,
+} from "./src/providers/codex/codex-approvals.mjs";
 import { contextualCallback } from "./callback-context.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
@@ -156,7 +145,7 @@ import { BackgroundJobQueue } from "./background-job-queue.mjs";
 import { PersistentBackgroundJobController } from "./background-job-controller.mjs";
 import { PersistentBackgroundJobStore } from "./background-job-store.mjs";
 import { FailedTelegramUpdateStore } from "./failed-update-store.mjs";
-import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "./claude-invocation.mjs";
+import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "./src/providers/claude/claude-invocation.mjs";
 import {
   catalogEntryIsSelected,
   catalogEntriesWithoutLiveActivity,
@@ -180,9 +169,10 @@ import {
 } from "./task-catalog.mjs";
 import {
   codexObservedRuntimeActive,
+  resolveCodexTaskActivity,
   resolveCodexObservedExecutionOwner,
-} from "./codex-runtime-owner.mjs";
-import { CodexRolloutContextSanitizer } from "./codex-rollout-context.mjs";
+} from "./src/providers/codex/codex-runtime-owner.mjs";
+import { CodexRolloutContextSanitizer } from "./src/providers/codex/codex-rollout-context.mjs";
 import {
   botReplacementInvocation,
   directWindowsLauncherInvocation,
@@ -195,7 +185,7 @@ import {
 import { RuntimeCommandServer } from "./runtime-command.mjs";
 import { RuntimeNotificationController } from "./runtime-notification-controller.mjs";
 import { captureProcess } from "./process-capture.mjs";
-import { CodexLifecycleController } from "./codex-lifecycle-controller.mjs";
+import { CodexLifecycleController } from "./src/providers/codex/codex-lifecycle-controller.mjs";
 import {
   TurnEndNotificationRegistry,
   turnEndKey,
@@ -207,13 +197,16 @@ import { MediaController } from "./media-controller.mjs";
 import { TelegramMessageController } from "./src/interfaces/telegram/telegram-message-controller.mjs";
 import { ApprovalController } from "./approval-controller.mjs";
 import { TelegramCallbackController } from "./src/interfaces/telegram/telegram-callback-controller.mjs";
+import { routeTelegramCallback } from "./src/interfaces/telegram/telegram-callback-router.mjs";
 import { buildTaskPicker } from "./task-picker.mjs";
 import { TaskViewController } from "./task-view-controller.mjs";
 import { TelegramPollingController } from "./src/interfaces/telegram/telegram-polling-controller.mjs";
 import { TelegramSettingsMenu } from "./src/interfaces/telegram/telegram-settings-menu.mjs";
 import { TelegramStatusController } from "./src/interfaces/telegram/telegram-status-controller.mjs";
-import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "./codex-invocation.mjs";
-import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
+import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "./src/providers/codex/codex-invocation.mjs";
+import { CodexAppServerLifecycle } from "./src/providers/codex/codex-app-server-lifecycle.mjs";
+import { CodexAccountingResolver } from "./src/providers/codex/codex-accounting-resolver.mjs";
+import { createCodexAssistantAttachmentImporter } from "./src/providers/codex/codex-assistant-attachments.mjs";
 import { TaskProgressController } from "./src/interfaces/telegram/task-progress-controller.mjs";
 import { TaskObservationService } from "./src/application/task-observation-service.mjs";
 import { ProviderTaskActivityService } from "./src/application/provider-task-activity-service.mjs";
@@ -247,12 +240,17 @@ import { TelegramTaskCallbackService } from "./src/interfaces/telegram/telegram-
 import { TelegramInputCallbackService } from "./src/interfaces/telegram/telegram-input-callbacks.mjs";
 import { ClaudeCompletionService, CodexCompletionService } from "./src/providers/provider-completion-services.mjs";
 import { ClaudeRecoveryService, CodexRecoveryService } from "./src/providers/provider-recovery-services.mjs";
-import { ClaudeTaskSnapshotService } from "./claude-task-snapshot-service.mjs";
+import { ClaudeTaskSnapshotService } from "./src/providers/claude/claude-task-snapshot-service.mjs";
 import { CodexTurnService, ProviderCancellationService, unsupportedProviderSteer } from "./src/providers/provider-turn-services.mjs";
 import { TelegramCommandService } from "./src/interfaces/telegram/telegram-command-service.mjs";
-import { CodexEventService } from "./codex-event-service.mjs";
-import { CodexTaskSnapshotService } from "./codex-task-snapshot-service.mjs";
-import { ClaudeEventService } from "./claude-event-service.mjs";
+import { CodexEventService } from "./src/providers/codex/codex-event-service.mjs";
+import {
+  CodexTaskSnapshotService,
+  codexTurnSnapshot,
+  codexTurnStartedAt,
+  describeCodexItem, recoveredCodexAnswer,
+} from "./src/providers/codex/codex-task-snapshot-service.mjs";
+import { ClaudeEventService } from "./src/providers/claude/claude-event-service.mjs";
 import { ClaudeCatalogProjectionService, CodexCatalogProjectionService } from "./src/providers/provider-catalog-services.mjs";
 import { DesktopDeferredInputService } from "./src/interfaces/desktop/desktop-deferred-input-service.mjs";
 import { DesktopSettingsService } from "./src/interfaces/desktop/desktop-settings-service.mjs";
@@ -271,7 +269,7 @@ import {
 import {
   ContextCompactionTracker,
   isContextCompactionItem,
-} from "./context-compaction-tracker.mjs";
+} from "./src/providers/codex/context-compaction-tracker.mjs";
 import { RunProgressPresentation } from "./src/application/run-progress-presentation.mjs";
 import { AgentHubStartupCoordinator } from "./src/application/agent-hub-startup-coordinator.mjs";
 import { RuntimeTimerCoordinator } from "./src/runtime/runtime-timer-coordinator.mjs";
@@ -563,8 +561,6 @@ const agentPreferences = new AgentPreferencesStore({
 let latestDiff = "";
 let stopping = false;
 let autoApprove = config.autoApproveOnStart;
-let codexRestarting = false;
-let codexTimeoutRestarting = false;
 let restartRequest = null;
 let processingUpdateId = null;
 let bindingWriteQueue = Promise.resolve();
@@ -587,7 +583,13 @@ const contextCompactions = new ContextCompactionTracker({
   onSettled: () => scheduleDeferredRestartIfReady(),
 });
 const codexTurnStarts = new Map();
-const codexAccountingThreadRoots = new Map();
+const codexAccounting = new CodexAccountingResolver({
+  readThread: (parentThreadId) => sendRpc("thread/read", { threadId: parentThreadId, includeTurns: false }),
+  findRollout: (parentThreadId) => findCodexRolloutPath(parentThreadId, ""),
+  readRolloutSession: readCodexRolloutSession,
+  readSubagentSpawn: readCodexSubagentSpawn,
+  scanHistoricalRollout: scanCodexHistoricalRollout,
+});
 let codexHookReceipts = { start: null, stop: null };
 
 function capturedCodexExecutionOwner(threadId, turnId) {
@@ -659,8 +661,8 @@ const codexTerminalReconciliation = new CodexTerminalReconciliationService({
   notifications: turnEndNotifications,
   turnStarts: codexTurnStarts,
   workLogStore: workLogUsageStore,
-  accountingThread: codexAccountingThread,
-  subagentParentTurnId: codexSubagentParentTurnId,
+  accountingThread: (thread) => codexAccounting.accountingThread(thread),
+  subagentParentTurnId: (thread, accountingThread) => codexAccounting.subagentParentTurnId(thread, accountingThread),
   readTurnUsage: readCodexTurnUsage,
   taskGitDiff,
   dataDir: config.dataDir,
@@ -824,7 +826,7 @@ const codexContextMaintenance = new CodexContextMaintenanceService({
   startTransport: startCodexAppServer,
   initializeTransport: initializeCodex,
   providerIsSelected: isCodex,
-  setTransportRestarting: (value) => { codexRestarting = value; },
+  setTransportRestarting: (value) => codexRuntime.setRestarting(value),
   invalidateTaskCatalog,
   restartTransportAfterCrash: restartCodexAfterCrash,
 });
@@ -1119,6 +1121,7 @@ const providerTaskActivity = new ProviderTaskActivityService({
   readCodexThread,
   capturedCodexExecutionOwner,
   claudeTaskSnapshots,
+  resolveActivity: resolveCodexTaskActivity,
 });
 
 const agentProviders = createAgentProviderRegistry({
@@ -1207,6 +1210,7 @@ let quickTunnelController = null;
 let miniAppPublisher = null;
 let directGatewayController = null;
 const desktopAttachments = new DesktopAttachmentService({
+  assistantAttachmentImporterFactory: createCodexAssistantAttachmentImporter,
   runtimeCommandRoot,
   projectRoot: config.projectRoot,
   projectRoots: config.projects.map((project) => project.path),
@@ -1304,6 +1308,7 @@ const telegramSettingsMenu = new TelegramSettingsMenu({
 });
 const rateLimitTelemetry = new RateLimitTelemetryService({
   resolveClaudeInvocation,
+  parseClaudeLimits,
   spawnCapture,
   readCodexRateLimits: () => sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 }),
   codexRunning: () => codexTransport.running,
@@ -2210,72 +2215,25 @@ try {
   if (error?.code !== "ENOENT") console.error("Cannot read pinned task titles:", error.message);
 }
 
-async function resolveCodexExecutable() {
-  return resolveInstalledCodexExecutable({ requested: config.codexExecutable });
-}
-
-async function spawnCodex(args) {
-  const command = await resolveCodexExecutable();
-  const mcp = await unavailableLocalMcpOverrides();
-  if (mcp.disabled.length > 0) {
-    const endpoints = mcp.disabled
-      .map((server) => `${server.name} (${server.host}:${server.port})`)
-      .join(", ");
-    console.log(`Local MCP unavailable; disabled for Agent Hub Server: ${endpoints}`);
-  }
-  console.error(`Starting Codex: ${command}`);
-  const child = spawn(command, [...config.codexExecutableArgs, ...mcp.args, ...args], {
-    cwd: activeProjectRoot,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
-  await new Promise((resolve, reject) => {
-    child.once("spawn", resolve);
-    child.once("error", reject);
-  });
-  return child;
-}
-
-async function handleCodexTransportExit({ detail }) {
-  if (stopping) return;
-  console.error(`Codex app-server stopped (${detail}).`);
-  const wasActive = isCodex();
-  const hadCodexRuns = taskRuns.values().some((run) => run.provider === "codex");
-  if (!wasActive && !hadCodexRuns) return;
-  for (const run of taskRuns.values().filter((item) => item.provider === "codex")) {
-    taskProgress.setStage(run, "Связь с Codex потеряна. Переподключаюсь…");
-  }
-  // `exit` is a confirmed transport loss, not a transient RPC failure.  Do
-  // not leave Desktop controls pointing at an already dead App Server for an
-  // arbitrary grace period: the restart routine itself keeps the retry
-  // backoff when spawning the replacement fails.
-  if (!codexRestarting) queueMicrotask(() => void restartCodexAfterCrash());
-}
-
-async function handleCodexTransportTimeout({ method, timeoutMs }) {
-  if (stopping || codexTimeoutRestarting || timeoutMs < CODEX_RPC_TIMEOUT_MS) return;
-  if (!["thread/read", "thread/list"].includes(method)) return;
-  const managedRunActive = taskRuns.values().some((run) => (
-    run.provider === "codex" && run.observer === false && run.status === "running"
-  ));
-  if (managedRunActive) return;
-  codexTimeoutRestarting = true;
-  console.error(`Codex app-server is unresponsive on ${method}; recycling the Hub-owned process.`);
-  try {
-    await stopCodexAppServerTree();
-  } finally {
-    codexTimeoutRestarting = false;
-  }
-}
-
-const codexTransport = new CodexAppServerTransport({
-  spawnProcess: spawnCodex,
+const codexRuntime = new CodexAppServerLifecycle({
+  resolveExecutable: () => resolveInstalledCodexExecutable({ requested: config.codexExecutable }),
+  unavailableMcpOverrides: unavailableLocalMcpOverrides,
+  executableArgs: config.codexExecutableArgs,
+  projectRoot: () => activeProjectRoot,
   stopProcessTree,
   onMessage: handleCodexMessage,
-  onExit: handleCodexTransportExit,
-  onTimeout: handleCodexTransportTimeout,
   rpcTimeoutMs: CODEX_RPC_TIMEOUT_MS,
+  isStopping: () => stopping,
+  providerSelected: isCodex,
+  activeRuns: () => taskRuns.values(),
+  setStage: (run, stage) => taskProgress.setStage(run, stage),
+  recoverRuns: () => runRecovery.recoverAll({ provider: "codex" }),
+  startTyping,
+  attachSelectedThread: attachCodexThread,
+  scheduleRetry: (operation, delayMs) => setTimeout(() => void operation(), delayMs),
+  logger: console,
 });
+const codexTransport = codexRuntime.transport;
 const codexLifecycleController = new CodexLifecycleController({
   config,
   ensureCodexTransport: async () => {
@@ -2305,34 +2263,15 @@ const codexLifecycleController = new CodexLifecycleController({
 });
 
 async function startCodexAppServer() {
-  await codexTransport.start();
+  await codexRuntime.start();
 }
 
 async function stopCodexAppServerTree() {
-  await codexTransport.stop();
+  await codexRuntime.stop();
 }
 
 async function restartCodexAfterCrash() {
-  const hasCodexRuns = taskRuns.values().some((run) => run.provider === "codex");
-  if (stopping || (!isCodex() && !hasCodexRuns) || codexRestarting) return;
-  codexRestarting = true;
-  try {
-    await startCodexAppServer();
-    await initializeCodex({ attachSelectedThread: isCodex() });
-    await runRecovery.recoverAll({ provider: "codex" });
-    if (taskRuns.size) startTyping();
-    for (const run of taskRuns.values().filter((item) => item.provider === "codex")) {
-      taskProgress.setStage(run, "Соединение с Codex восстановлено.");
-    }
-  } catch (error) {
-    console.error("Cannot restart Codex app-server:", error.message);
-    for (const run of taskRuns.values().filter((item) => item.provider === "codex")) {
-      taskProgress.setStage(run, `Codex пока недоступен: ${error.message}`);
-    }
-    if (!stopping && (isCodex() || hasCodexRuns)) setTimeout(() => void restartCodexAfterCrash(), 5000);
-  } finally {
-    codexRestarting = false;
-  }
+  return codexRuntime.restartAfterCrash();
 }
 
 function sendRpc(method, params = {}, { timeoutMs = CODEX_RPC_TIMEOUT_MS } = {}) {
@@ -2378,16 +2317,7 @@ async function initializeProvider() {
 }
 
 async function initializeCodex({ attachSelectedThread = true } = {}) {
-  const initialized = await codexTransport.initialize({
-    clientInfo: {
-      name: "telegram_codex_bridge",
-      title: "Telegram Codex Bridge",
-      version: "0.1.0",
-    },
-    capabilities: { experimentalApi: true },
-  });
-  if (initialized.newlyInitialized) sendNotification("initialized");
-  if (attachSelectedThread) await attachCodexThread();
+  return codexRuntime.initialize({ attachSelectedThread });
 }
 
 async function attachCodexThread() {
@@ -4150,53 +4080,7 @@ function persistClaudeRunHistory(run, options = {}) {
 }
 
 async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton = false } = {}) {
-  const turnId = randomUUID();
-  const prompt = buildClaudePrompt(input);
-  const contentItems = Array.isArray(input) ? input : [];
-  const additionalDirectories = contentItems
-    .filter((item) => item?.type === "localImage" && item.path)
-    .map((item) => path.dirname(item.path));
-  run.turnId = turnId;
-  taskRuns.reindex(run, { turnId: null });
-  if (temporaryFiles.length) turnTemporaryFiles.set(turnId, temporaryFiles);
-  run.claudeTemporaryFiles = [...temporaryFiles];
-  run.claudeForceSpeechButton = forceSpeechButton === true;
-  let snapshot = null;
-  if (run.threadId) {
-    snapshot = await claudeTaskSnapshots.read(run.threadId).catch((error) => {
-      console.warn(`Cannot resolve Claude session directory ${run.threadId}:`, error.message);
-      return null;
-    });
-  }
-  const sessionCwd = resolveClaudeSessionCwd(
-    run.projectRoot,
-    run.sessionCwd ?? snapshot?.sessionRoot ?? run.projectRoot,
-  );
-  run.sessionCwd = sessionCwd;
-  const planMode = run.collaborationMode === "plan";
-  const args = buildClaudeArgs({
-    prompt,
-    sessionId: run.threadId,
-    // Claude stores resumable sessions locally. If the catalog still has a
-    // task but its transcript disappeared, recreate that exact UUID instead
-    // of retrying --resume forever or replacing the task identity.
-    resumeSession: Boolean(snapshot?.sessionId),
-    model: run.modelId,
-    permissionMode: run.collaborationMode === "plan" ? "plan" : config.claudePermissionMode,
-    autoApprove: planMode ? false : autoApprove,
-    additionalDirectories,
-  });
-  await persistClaudeRunHistory(run);
-  const invocation = resolveClaudeInvocation();
-  await claudeRunController.start(run, {
-    command: invocation.command,
-    args: [...invocation.prefixArgs, ...args],
-    cwd: sessionCwd,
-    env: {
-      ...process.env,
-      MAX_THINKING_TOKENS: String(claudeThinkingTokens(run.reasoningId)),
-    },
-  });
+  return claudeTurnLauncher.start(run, input, temporaryFiles, { forceSpeechButton });
 }
 
 function handleClaudeStreamEvent(run, parsed) {
@@ -4244,69 +4128,6 @@ async function completedCodexAnswer(run, completedTurnId, eventTurn = null) {
   return run.responseText.trim();
 }
 
-function describeCodexItem(item, completed) {
-  if (!item || typeof item !== "object") return completed ? "Этап завершён." : "Выполняется следующий этап…";
-  const mark = completed ? "✓" : "⚙";
-  if (item.type === "commandExecution") {
-    const command = String(item.command ?? "команда").replace(/\s+/g, " ").slice(0, 180);
-    return `${mark} ${completed ? "Команда выполнена" : `Выполняется команда: ${command}`}`;
-  }
-  if (item.type === "fileChange") return `${mark} ${completed ? "Изменения файлов применены" : "Изменяются файлы…"}`;
-  if (item.type === "mcpToolCall") return `${mark} Инструмент ${item.server ?? "MCP"}/${item.tool ?? ""}${completed ? " завершён" : " выполняется…"}`;
-  if (item.type === "dynamicToolCall") return `${mark} Инструмент ${item.tool ?? ""}${completed ? " завершён" : " выполняется…"}`;
-  if (item.type === "webSearch") return `${mark} ${completed ? "Поиск завершён" : "Выполняется поиск…"}`;
-  if (item.type === "imageView") return `${mark} ${completed ? "Изображение изучено" : "Изучается изображение…"}`;
-  if (item.type === "reasoning") return completed ? "✓ Анализ завершён." : "Анализирую задачу…";
-  if (item.type === "plan") return completed ? "✓ План подготовлен." : "Составляю план…";
-  return completed ? "Этап завершён." : "Выполняется следующий этап…";
-}
-
-function recoveredCodexAnswer(turn) {
-  return codexTurnAnswer(turn);
-}
-
-function codexTurnStartedAt(turn) {
-  const value = turn?.startedAt ?? turn?.createdAt ?? null;
-  const numeric = Number(value);
-  const timestamp = Number.isFinite(numeric) && value !== null && value !== ""
-    ? (numeric < 1_000_000_000_000 ? numeric * 1_000 : numeric)
-    : Date.parse(String(value ?? ""));
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
-}
-
-function codexTurnSnapshot(turn, threadStatus = null) {
-  const items = Array.isArray(turn?.items) ? turn.items : [];
-  const lastItem = items.at(-1);
-  const answer = recoveredCodexAnswer(turn);
-  const hasExplicitFinalAnswer = codexTurnHasExplicitFinalAnswer(turn);
-  const waitingOnApproval = codexThreadWaitingOnApproval(threadStatus);
-  const exchange = codexThreadHistory([turn]).at(-1);
-  const userMessages = (exchange?.messages ?? [])
-    .filter((message) => message.role === "user")
-    .map((message) => ({ ...message }));
-  const prompt = exchange?.prompt ?? "";
-  return {
-    answer,
-    finalAnswer: codexFinalTurnAnswer(turn),
-    reasoning: "",
-    prompt,
-    clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,
-    userMessages,
-    startedAt: codexTurnStartedAt(turn),
-    completed: turn?.status !== "inProgress",
-    active: turn?.status === "inProgress",
-    status: turn?.status === "completed" ? "completed" : String(turn?.status ?? "stopped"),
-    waitingOnApproval,
-    stage: turn?.status === "inProgress"
-      ? waitingOnApproval
-        ? "🔐 Ожидается подтверждение разрешений."
-        : describeCodexItem(lastItem, false)
-      : turn?.status === "completed" || hasExplicitFinalAnswer
-        ? "Задача завершена."
-        : `Задача остановлена: ${turn?.status ?? "неизвестно"}.`,
-  };
-}
-
 function applyCodexObservedSnapshot(run, snapshot) {
   if (!run.turnId && snapshot?.turnId) {
     run.turnId = snapshot.turnId;
@@ -4351,6 +4172,17 @@ const taskObserver = new TaskObservationService({
   externalPollIntervalMs: EXTERNAL_TASK_POLL_INTERVAL_MS,
   managedPollIntervalMs: MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS,
 });
+const claudeTurnLauncher = new ClaudeTurnLauncher({
+  taskRuns,
+  turnTemporaryFiles,
+  taskSnapshots: claudeTaskSnapshots,
+  permissionMode: config.claudePermissionMode,
+  autoApprove: () => autoApprove,
+  persistHistory: persistClaudeRunHistory,
+  resolveInvocation: resolveClaudeInvocation,
+  runController: claudeRunController,
+  logWarning: (...args) => console.warn(...args),
+});
 
 const runRecovery = new RunRecoveryCoordinator({
   taskRuns,
@@ -4382,49 +4214,6 @@ const selectedTaskWatch = new SelectedTaskWatchService({
   scheduleObservedRun: (...args) => taskObserver.schedule(...args),
   saveState,
 });
-
-async function codexAccountingThread(thread) {
-  const targetThreadId = String(thread?.id ?? "").trim();
-  const cached = codexAccountingThreadRoots.get(targetThreadId);
-  if (cached) return cached;
-  const resolved = await resolveCodexAccountingThread(thread, {
-    readThread: async (parentThreadId) => {
-      try {
-        const response = await sendRpc("thread/read", {
-          threadId: parentThreadId,
-          includeTurns: false,
-        });
-        if (response?.thread?.id) return response.thread;
-      } catch {
-        // Archived threads may no longer be readable through the App Server.
-      }
-      const transcriptPath = await findCodexRolloutPath(parentThreadId, "");
-      if (!transcriptPath) return null;
-      return readCodexRolloutSession(transcriptPath);
-    },
-  });
-  if (resolved.isSubagent) {
-    setBoundedMapValue(codexAccountingThreadRoots, targetThreadId, resolved, 2_000);
-  }
-  return resolved;
-}
-
-async function codexSubagentParentTurnId(thread, accountingThread) {
-  const childThreadId = String(thread?.id ?? "").trim();
-  const parentThreadId = String(accountingThread?.parentThreadId ?? "").trim();
-  if (!childThreadId || !parentThreadId) return "";
-  const transcriptPath = await findCodexRolloutPath(parentThreadId, "");
-  if (!transcriptPath) return "";
-  const recent = await readCodexSubagentSpawn(transcriptPath, childThreadId).catch(() => null);
-  if (recent?.parentTurnId) return recent.parentTurnId;
-  const historical = await scanCodexHistoricalRollout(transcriptPath).catch(() => null);
-  for (const turn of historical?.turns ?? []) {
-    if ((turn.spawnedSubagents ?? []).some((spawned) => spawned.threadId === childThreadId)) {
-      return String(turn.turnId ?? "").trim();
-    }
-  }
-  return "";
-}
 
 async function auditRecentCodexTerminalTurns() {
   if (stopping || !codexTransport.running) return;
@@ -4873,6 +4662,7 @@ const telegramCallbackController = new TelegramCallbackController({
   currentContextToken: currentUiContextToken,
   telegram,
   dispatch: dispatchTelegramCallback,
+  routeCallback: (data, contextToken) => routeTelegramCallback(data, contextToken, parseApprovalCallback),
 });
 
 async function handleTelegramCallback(callback) {

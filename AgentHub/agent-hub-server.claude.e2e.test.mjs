@@ -13,7 +13,7 @@ import {
   CHAT_ID,
   waitFor,
 } from "./e2e/telegram-harness.mjs";
-import { processIsAlive } from "./claude-run-io.mjs";
+import { processIsAlive } from "./src/providers/claude/claude-run-io.mjs";
 import { callDesktopControl } from "./desktop-control.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
 import { readRuntimeState } from "./src/infrastructure/persistence/runtime-state-store.mjs";

@@ -1,4 +1,3 @@
-import { parseClaudeLimits } from "../../claude.mjs";
 import {
   formatClaudeRateLimits,
   formatCodexRateLimits,
@@ -7,6 +6,7 @@ import {
 export class RateLimitTelemetryService {
   constructor({
     resolveClaudeInvocation,
+    parseClaudeLimits,
     spawnCapture,
     readCodexRateLimits,
     codexRunning,
@@ -19,6 +19,7 @@ export class RateLimitTelemetryService {
     logger = console,
   }) {
     this.resolveClaudeInvocation = resolveClaudeInvocation;
+    this.parseClaudeLimits = parseClaudeLimits;
     this.spawnCapture = spawnCapture;
     this.readCodexRateLimits = readCodexRateLimits;
     this.codexRunning = codexRunning;
@@ -88,7 +89,7 @@ export class RateLimitTelemetryService {
       }));
     }
     jobs.push((async () => {
-      const limits = parseClaudeLimits(await this.readClaude());
+      const limits = this.parseClaudeLimits(await this.readClaude());
       if (!limits.length) throw new Error("Claude did not return recognizable limit data");
       await this.historyStore.record({ limits }, observedAt, "claude");
     })().catch((error) => {

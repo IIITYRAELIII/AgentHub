@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ClaudeRunController } from "./claude-run-controller.mjs";
+import { ClaudeRunController } from "./src/providers/claude/claude-run-controller.mjs";
 
 async function withTempDir(run) {
   const directory = await mkdtemp(path.join(tmpdir(), "claude-controller-"));

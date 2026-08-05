@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ClaudeEventService } from "./claude-event-service.mjs";
+import { ClaudeEventService } from "./src/providers/claude/claude-event-service.mjs";
 
 test("Claude event service binds the provider session without changing logical task identity", () => {
   const selected = [];
@@ -16,4 +16,3 @@ test("Claude event service binds the provider session without changing logical t
   assert.equal(run.threadId, "session-12345678");
   assert.deepEqual(selected, [["session-12345678", "Сессия Claude · session-"]]);
 });
-

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CodexTerminalAudit } from "./codex-terminal-audit.mjs";
+import { CodexTerminalAudit } from "./src/providers/codex/codex-terminal-audit.mjs";
 
 const project = { path: "D:\\workspace" };
 

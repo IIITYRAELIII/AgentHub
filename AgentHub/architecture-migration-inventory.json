@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "serverMaximumLines": 5138,
-    "rootProductionModules": 137
+    "serverMaximumLines": 4928,
+    "rootProductionModules": 101
   },
   "publicRootModules": [
     "agent-hub-main.mjs",
@@ -43,46 +43,8 @@
       "task-catalog.mjs",
       "token-usage.mjs"
     ],
-    "src/providers/codex": [
-      "codex-app-server-transport.mjs",
-      "codex-approvals.mjs",
-      "codex-assistant-attachments.mjs",
-      "codex-compaction-transport.mjs",
-      "codex-context-maintenance-service.mjs",
-      "codex-event-service.mjs",
-      "codex-final-delivery.mjs",
-      "codex-historical-backfill-worker.mjs",
-      "codex-historical-backfill.mjs",
-      "codex-hook-config.mjs",
-      "codex-invocation.mjs",
-      "codex-journal-project.mjs",
-      "codex-lifecycle-controller.mjs",
-      "codex-recovery.mjs",
-      "codex-rollout-context.mjs",
-      "codex-run-finalizer.mjs",
-      "codex-runtime-owner.mjs",
-      "codex-sandbox.mjs",
-      "codex-settings.mjs",
-      "codex-stop-hook.mjs",
-      "codex-subagent-accounting.mjs",
-      "codex-task-snapshot-service.mjs",
-      "codex-terminal-audit.mjs",
-      "codex-terminal-reconciliation-service.mjs",
-      "codex-turn-start-hook.mjs",
-      "codex-turn-usage.mjs",
-      "codex-usage-estimate.mjs",
-      "codex-usage-tracker.mjs",
-      "context-compaction-tracker.mjs"
-    ],
-    "src/providers/claude": [
-      "claude-event-service.mjs",
-      "claude-invocation.mjs",
-      "claude-run-controller.mjs",
-      "claude-run-io.mjs",
-      "claude-task-snapshot-service.mjs",
-      "claude-work-log.mjs",
-      "claude.mjs"
-    ],
+    "src/providers/codex": [],
+    "src/providers/claude": [],
     "src/interfaces/telegram": [
       "approval-controller.mjs",
       "callback-context.mjs",

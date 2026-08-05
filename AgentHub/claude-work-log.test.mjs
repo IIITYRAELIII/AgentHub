@@ -11,7 +11,7 @@ import {
   claudeResultTokenUsage,
   claudeTranscriptEstimatedCredits,
   scanClaudeHistoricalTranscript,
-} from "./claude-work-log.mjs";
+} from "./src/providers/claude/claude-work-log.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
 
 const line = (value) => JSON.stringify(value);

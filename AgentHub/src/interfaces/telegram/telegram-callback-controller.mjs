@@ -1,14 +1,15 @@
 import { routeTelegramCallback } from "./telegram-callback-router.mjs";
 
 export class TelegramCallbackController {
-  constructor({ currentContextToken, telegram, dispatch }) {
+  constructor({ currentContextToken, telegram, dispatch, routeCallback = routeTelegramCallback }) {
     this.currentContextToken = currentContextToken;
     this.telegram = telegram;
     this.dispatch = dispatch;
+    this.routeCallback = routeCallback;
   }
 
   async handle(callback) {
-    const route = routeTelegramCallback(callback.data, this.currentContextToken());
+    const route = this.routeCallback(callback.data, this.currentContextToken());
     if (route.kind === "stale") {
       await this.telegram("answerCallbackQuery", {
         callback_query_id: callback.id,

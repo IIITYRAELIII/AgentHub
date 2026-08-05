@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   ContextCompactionTracker,
   isContextCompactionItem,
-} from "./context-compaction-tracker.mjs";
+} from "./src/providers/codex/context-compaction-tracker.mjs";
 
 test("modern compaction item lifecycle completes a manual request without changing its id", () => {
   let now = Date.parse("2026-07-31T18:20:00.000Z");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { routeCodexFinalDelivery } from "./codex-final-delivery.mjs";
+import { routeCodexFinalDelivery } from "./src/providers/codex/codex-final-delivery.mjs";
 
 test("standard Codex final remains authoritative when legacy end-of-turn data exists", async () => {
   const calls = [];

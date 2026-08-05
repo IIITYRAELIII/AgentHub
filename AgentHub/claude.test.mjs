@@ -11,7 +11,7 @@ import {
   parseClaudeResult,
   parseClaudeStreamEvent,
   resolveClaudeSessionCwd,
-} from "./claude.mjs";
+} from "./src/providers/claude/claude.mjs";
 
 test("buildClaudeArgs creates a resumable safe invocation", () => {
   assert.deepEqual(buildClaudeArgs({

@@ -8,7 +8,7 @@ import {
   codexStopHookStatus,
   mergeCodexStopHookConfig,
   removeCodexStopHookConfig,
-} from "./codex-hook-config.mjs";
+} from "./src/infrastructure/codex/codex-hook-config.mjs";
 import { runtimeLayout } from "./runtime-layout.mjs";
 
 const options = {

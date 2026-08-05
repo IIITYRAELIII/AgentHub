@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { scanCodexHistoricalRolloutInWorker } from "./codex-historical-backfill.mjs";
+import { scanCodexHistoricalRolloutInWorker } from "./src/providers/codex/codex-historical-backfill.mjs";
 
 test("historical rollout worker scans one file and returns its native terminal turns", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-history-worker-"));

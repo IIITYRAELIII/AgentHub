@@ -1,5 +1,5 @@
 import { unlink } from "node:fs/promises";
-import { claudeFailureMessage, formatClaudeUsage } from "../../claude.mjs";
+import { claudeFailureMessage, formatClaudeUsage } from "./claude/claude.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../task-catalog.mjs";
 
 function requiredFunction(value, name) {

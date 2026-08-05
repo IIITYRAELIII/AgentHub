@@ -7,7 +7,7 @@ import {
   needsInterruptedTurnRollback,
   needsThreadResume,
   startCodexTurnWithRecovery,
-} from "./codex-recovery.mjs";
+} from "./src/providers/codex/codex-recovery.mjs";
 
 test("recognizes a turn broken while a custom tool call was pending", () => {
   assert.equal(needsInterruptedTurnRollback(

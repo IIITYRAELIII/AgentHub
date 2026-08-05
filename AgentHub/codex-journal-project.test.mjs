@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   localCodexRepositoryPath,
   resolveCodexJournalProject,
-} from "./codex-journal-project.mjs";
+} from "./src/providers/codex/codex-journal-project.mjs";
 
 const project = { path: "D:\\VSC_Tyrael" };
 
