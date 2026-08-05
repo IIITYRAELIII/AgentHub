@@ -4,7 +4,7 @@ import {
   normalizeTaskExecutionOwner,
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
-} from "../../../task-catalog.mjs";
+} from "../../domain/task-execution-owner.mjs";
 import { taskRunKey } from "../../domain/task-runs.mjs";
 import { normalizeTokenUsage } from "../../domain/token-usage.mjs";
 import { turnEndKey } from "../../application/turn-end-notifications.mjs";

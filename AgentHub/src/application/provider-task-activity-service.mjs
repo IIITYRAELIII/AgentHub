@@ -1,8 +1,8 @@
 import {
   readCodexRolloutActivity,
   selectExactActiveCodexTurnId,
-  TASK_EXECUTION_OWNERS,
 } from "../../task-catalog.mjs";
+import { TASK_EXECUTION_OWNERS } from "../domain/task-execution-owner.mjs";
 
 export class ProviderTaskActivityService {
   constructor({

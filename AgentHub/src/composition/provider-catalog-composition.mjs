@@ -9,15 +9,15 @@ import { ProviderTaskCatalogBuilder } from "../providers/provider-task-catalog-b
 import { unsupportedProviderSteer } from "../providers/provider-turn-services.mjs";
 import {
   catalogEntriesWithoutLiveActivity,
-  catalogTaskKey,
-  claudeCatalogEntry,
   codexCatalogEntry,
   mergeTaskCatalog,
   preferredCodexTaskTitle,
   readCodexRolloutActivity,
   selectExactActiveCodexTurnId,
-  TASK_EXECUTION_OWNERS,
 } from "../../task-catalog.mjs";
+import { catalogTaskKey } from "../domain/task-catalog-identity.mjs";
+import { TASK_EXECUTION_OWNERS } from "../domain/task-execution-owner.mjs";
+import { claudeCatalogEntry } from "../providers/claude/claude-task-activity.mjs";
 import { listClaudeSessionSnapshots } from "../providers/claude/claude-session-reader.mjs";
 
 export function createProviderCatalogComposition({

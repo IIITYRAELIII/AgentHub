@@ -9,7 +9,7 @@ import {
   normalizeTaskExecutionOwner,
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
-} from "../../task-catalog.mjs";
+} from "../domain/task-execution-owner.mjs";
 import { isRetryableDeferredLaunchError } from "../application/deferred-input-controller.mjs";
 import {
   createHubRuntimeSnapshot,

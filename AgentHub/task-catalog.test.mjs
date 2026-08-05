@@ -4,13 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
-  catalogEntryIsSelected,
   catalogEntriesWithoutLiveActivity,
-  claudeCatalogEntry,
-  claudeSnapshotActivityAtMs,
-  claudeSnapshotExecutionOwner,
-  claudeSnapshotActivityState,
-  claudeSnapshotIsActive,
   codexCatalogEntry,
   codexObservedExecutionOwner,
   codexThreadRunning,
@@ -20,22 +14,34 @@ import {
   preferredCodexTaskTitle,
   reconcilePinnedTaskTitle,
   codexRolloutTurnState,
-  parseTaskCatalogCallback,
   parseCodexRolloutActivity,
   parseCodexRolloutRunning,
   readCodexRolloutActivity,
   readCodexRolloutRunning,
-  runningTaskReplyMarkup,
   selectCodexTurn,
   selectExactActiveCodexTurnId,
-  statusTaskEntries,
+  taskOrderingActivityAtMs,
+  taskCatalogTitleSignature,
+} from "./task-catalog.mjs";
+import { catalogEntryIsSelected } from "./src/domain/task-catalog-identity.mjs";
+import {
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
   taskExecutionRuntimeShortLabel,
-  taskOrderingActivityAtMs,
-  taskCatalogTitleSignature,
+} from "./src/domain/task-execution-owner.mjs";
+import {
+  claudeCatalogEntry,
+  claudeSnapshotActivityAtMs,
+  claudeSnapshotActivityState,
+  claudeSnapshotExecutionOwner,
+  claudeSnapshotIsActive,
+} from "./src/providers/claude/claude-task-activity.mjs";
+import {
+  parseTaskCatalogCallback,
+  runningTaskReplyMarkup,
+  statusTaskEntries,
   taskCatalogCallback,
-} from "./task-catalog.mjs";
+} from "./src/interfaces/telegram/task-catalog-presentation.mjs";
 
 const project = { name: "Основной", path: "C:\\Projects\\Main" };
 

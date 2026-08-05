@@ -1,9 +1,11 @@
 import {
-  catalogEntryIsSelected,
   taskCatalogCallback,
+} from "./task-catalog-presentation.mjs";
+import { catalogEntryIsSelected } from "../../domain/task-catalog-identity.mjs";
+import {
   taskExecutionRunningEmoji,
   taskExecutionRuntimeShortLabel,
-} from "../../../task-catalog.mjs";
+} from "../../domain/task-execution-owner.mjs";
 
 export function taskPickerButtonText(entry, selectedTask, {
   showProject = false,

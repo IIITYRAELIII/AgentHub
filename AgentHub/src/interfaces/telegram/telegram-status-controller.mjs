@@ -4,10 +4,10 @@ import {
   formatStatusMessage,
 } from "./status.mjs";
 import {
-  catalogEntryIsSelected,
   mergeTaskCatalog,
-  runningTaskReplyMarkup,
 } from "../../../task-catalog.mjs";
+import { catalogEntryIsSelected } from "../../domain/task-catalog-identity.mjs";
+import { runningTaskReplyMarkup } from "./task-catalog-presentation.mjs";
 
 export class TelegramStatusController {
   #limitsCache = new Map();

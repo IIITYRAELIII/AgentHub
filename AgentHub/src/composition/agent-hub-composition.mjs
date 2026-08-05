@@ -65,13 +65,12 @@ import { contextualCallback } from "../interfaces/telegram/callback-context.mjs"
 import { taskViewCallbackData } from "../interfaces/telegram/task-view-callback.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
 import {
-  catalogEntryIsSelected,
   mergeTaskCatalog,
   readCodexRolloutActivity,
-  TASK_EXECUTION_OWNERS,
-  taskExecutionRuntimeLabel,
   taskOrderingActivityAtMs,
 } from "../../task-catalog.mjs";
+import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
+import { TASK_EXECUTION_OWNERS, taskExecutionRuntimeLabel } from "../domain/task-execution-owner.mjs";
 import {
   codexObservedRuntimeActive,
   resolveCodexTaskActivity,

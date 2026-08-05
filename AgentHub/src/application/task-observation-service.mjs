@@ -8,7 +8,7 @@ import {
 import {
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
-} from "../../task-catalog.mjs";
+} from "../domain/task-execution-owner.mjs";
 import { TaskObserverController } from "./task-observer-controller.mjs";
 
 export class TaskObservationService {

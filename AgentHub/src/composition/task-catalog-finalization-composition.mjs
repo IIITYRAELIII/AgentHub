@@ -1,10 +1,10 @@
 import { samePath } from "../infrastructure/filesystem/config.mjs";
 import {
-  catalogEntryIsSelected,
-  statusTaskEntries,
   taskCatalogTitleSignature,
   taskOrderingActivityAtMs,
 } from "../../task-catalog.mjs";
+import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
+import { statusTaskEntries } from "../interfaces/telegram/task-catalog-presentation.mjs";
 import { updateTaskRunTitle } from "../domain/task-runs.mjs";
 
 export function createTaskCatalogFinalizationComposition({

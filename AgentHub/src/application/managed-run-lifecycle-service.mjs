@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import { createManagedTaskRun, taskRunKey } from "../domain/task-runs.mjs";
-import { TASK_EXECUTION_OWNERS, taskExecutionRuntimeLabel } from "../../task-catalog.mjs";
+import { TASK_EXECUTION_OWNERS, taskExecutionRuntimeLabel } from "../domain/task-execution-owner.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);

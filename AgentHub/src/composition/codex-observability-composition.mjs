@@ -20,10 +20,12 @@ import {
 import { CodexUsageTracker } from "../providers/codex/codex-usage-tracker.mjs";
 import { ContextCompactionTracker } from "../providers/codex/context-compaction-tracker.mjs";
 import {
-  normalizeTaskExecutionOwner,
   readCodexRolloutActivity,
-  TASK_EXECUTION_OWNERS,
 } from "../../task-catalog.mjs";
+import {
+  normalizeTaskExecutionOwner,
+  TASK_EXECUTION_OWNERS,
+} from "../domain/task-execution-owner.mjs";
 
 function setBounded(map, key, value, limit) {
   if (!key) return;

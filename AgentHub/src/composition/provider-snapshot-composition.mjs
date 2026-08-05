@@ -13,14 +13,18 @@ import {
   describeCodexItem,
 } from "../providers/codex/codex-task-snapshot-service.mjs";
 import {
-  claudeSnapshotActivityAtMs,
-  claudeSnapshotActivityState,
   codexRolloutTurnState,
   readCodexRolloutActivity,
   selectCodexTurn,
+} from "../../task-catalog.mjs";
+import {
+  claudeSnapshotActivityAtMs,
+  claudeSnapshotActivityState,
+} from "../providers/claude/claude-task-activity.mjs";
+import {
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
-} from "../../task-catalog.mjs";
+} from "../domain/task-execution-owner.mjs";
 
 export function createProviderSnapshotComposition({
   readClaudeSessionSnapshot,

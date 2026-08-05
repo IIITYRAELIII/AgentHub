@@ -3,8 +3,36 @@ import path from "node:path";
 import { open, stat } from "node:fs/promises";
 import { displayUserPrompt } from "./src/application/task-history.mjs";
 import { taskRunIsActive } from "./src/domain/task-runs.mjs";
+import {
+  catalogEntryIsSelected,
+  catalogTaskKey,
+  normalizedCatalogPath,
+} from "./src/domain/task-catalog-identity.mjs";
+import { TASK_EXECUTION_OWNERS } from "./src/domain/task-execution-owner.mjs";
 
-export const CLAUDE_ACTIVE_FRESHNESS_MS = 30 * 60 * 1000;
+export { catalogEntryIsSelected, catalogTaskKey } from "./src/domain/task-catalog-identity.mjs";
+export {
+  normalizeTaskExecutionOwner,
+  TASK_EXECUTION_OWNERS,
+  taskExecutionRunningEmoji,
+  taskExecutionRuntimeLabel,
+  taskExecutionRuntimeShortLabel,
+} from "./src/domain/task-execution-owner.mjs";
+export {
+  CLAUDE_ACTIVE_FRESHNESS_MS,
+  claudeCatalogEntry,
+  claudeSnapshotActivityAtMs,
+  claudeSnapshotActivityState,
+  claudeSnapshotExecutionOwner,
+  claudeSnapshotIsActive,
+} from "./src/providers/claude/claude-task-activity.mjs";
+export {
+  parseTaskCatalogCallback,
+  runningTaskReplyMarkup,
+  statusTaskEntries,
+  taskCatalogCallback,
+} from "./src/interfaces/telegram/task-catalog-presentation.mjs";
+
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
 const CODEX_ROLLOUT_TAIL_BYTES = 64 * 1024 * 1024;
 const CODEX_ROLLOUT_LINE_BYTES = 4 * 1024 * 1024;
@@ -24,50 +52,6 @@ async function rolloutSuffix(filePath, size, maximumBytes = 256) {
   }
 }
 
-export const TASK_EXECUTION_OWNERS = Object.freeze({
-  HUB: "hub",
-  VSCODE: "vscode",
-  DESKTOP: "desktop",
-  CLI: "cli",
-  EXTERNAL: "external",
-});
-
-export function normalizeTaskExecutionOwner(owner) {
-  return owner === "telegram" ? TASK_EXECUTION_OWNERS.HUB : owner;
-}
-
-export function taskExecutionRuntimeLabel(owner) {
-  owner = normalizeTaskExecutionOwner(owner);
-  if (owner === TASK_EXECUTION_OWNERS.HUB) return "Agent Hub Server";
-  if (owner === TASK_EXECUTION_OWNERS.VSCODE) return "VSCode App Server";
-  if (owner === TASK_EXECUTION_OWNERS.DESKTOP) return "Codex Desktop App";
-  if (owner === TASK_EXECUTION_OWNERS.CLI) return "Codex CLI";
-  return "External Codex";
-}
-
-export function taskExecutionRuntimeShortLabel(owner) {
-  owner = normalizeTaskExecutionOwner(owner);
-  if (owner === TASK_EXECUTION_OWNERS.HUB) return "HUB";
-  if (owner === TASK_EXECUTION_OWNERS.VSCODE) return "VSC";
-  if (owner === TASK_EXECUTION_OWNERS.DESKTOP) return "APP";
-  if (owner === TASK_EXECUTION_OWNERS.CLI) return "CLI";
-  return "EXT";
-}
-
-export function taskExecutionRunningEmoji(owner, fallback = "🧵") {
-  owner = normalizeTaskExecutionOwner(owner);
-  return owner === TASK_EXECUTION_OWNERS.HUB ? "⚡" : fallback;
-}
-
-function normalizedPath(value) {
-  const resolved = path.resolve(String(value ?? ""));
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-}
-
-export function catalogTaskKey({ provider, threadId }) {
-  return `${String(provider ?? "").toLowerCase()}\0${String(threadId ?? "")}`;
-}
-
 export function taskCatalogTitleSignature(entries = []) {
   return JSON.stringify(
     (Array.isArray(entries) ? entries : [])
@@ -77,7 +61,7 @@ export function taskCatalogTitleSignature(entries = []) {
         const projectRoot = String(entry?.projectRoot ?? "").trim();
         const title = String(entry?.title ?? "").replace(/\s+/g, " ").trim();
         return provider && threadId && projectRoot && title
-          ? [[normalizedPath(projectRoot), provider, threadId, title]]
+          ? [[normalizedCatalogPath(projectRoot), provider, threadId, title]]
           : [];
       })
       .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
@@ -942,70 +926,6 @@ export function codexCatalogEntry(thread, project, {
   };
 }
 
-// Активность Claude видна только через JSONL-транскрипт, живого App Server нет.
-// Незавершённый транскрипт остаётся «активным» навсегда, поэтому единственный
-// признак выполняющегося хода — свежесть последней записи. Предикат общий для
-// каталога, наблюдения и проверки занятости перед отправкой сообщения.
-export function claudeSnapshotActivityAtMs(snapshot) {
-  const values = [
-    Number(snapshot?.modifiedAtMs ?? 0),
-    Date.parse(String(snapshot?.updatedAt ?? "")),
-  ].filter((value) => Number.isFinite(value) && value > 0);
-  return values.length ? Math.max(...values) : null;
-}
-
-export function claudeSnapshotIsActive(
-  snapshot,
-  { nowMs = Date.now(), freshnessMs = CLAUDE_ACTIVE_FRESHNESS_MS } = {},
-) {
-  if (!snapshot?.active) return false;
-  const activityAtMs = claudeSnapshotActivityAtMs(snapshot);
-  return activityAtMs != null && nowMs - activityAtMs <= freshnessMs;
-}
-
-export function claudeSnapshotActivityState(
-  snapshot,
-  { nowMs = Date.now(), freshnessMs = CLAUDE_ACTIVE_FRESHNESS_MS } = {},
-) {
-  if (!snapshot || snapshot.completed || snapshot.active !== true) return "inactive";
-  return claudeSnapshotIsActive(snapshot, { nowMs, freshnessMs }) ? "active" : "unknown";
-}
-
-export function claudeSnapshotExecutionOwner(snapshot) {
-  const entrypoint = String(snapshot?.entrypoint ?? "").trim().toLowerCase();
-  if (entrypoint.includes("vscode")) return TASK_EXECUTION_OWNERS.VSCODE;
-  if (entrypoint === "cli" || entrypoint.endsWith("-cli")) return TASK_EXECUTION_OWNERS.CLI;
-  return TASK_EXECUTION_OWNERS.EXTERNAL;
-}
-
-export function claudeCatalogEntry(snapshot, project, nowMs = Date.now()) {
-  const modifiedAtMs = Number(snapshot?.modifiedAtMs ?? 0);
-  const messageActivityAtMs = Date.parse(String(snapshot?.updatedAt ?? "")) || null;
-  const activityState = claudeSnapshotActivityState(snapshot, { nowMs });
-  const running = activityState === "active";
-  return {
-    provider: "claude",
-    threadId: String(snapshot.sessionId),
-    projectRoot: project.path,
-    projectName: project.name,
-    sessionCwd: snapshot.sessionRoot || snapshot.cwd
-      ? path.resolve(String(snapshot.sessionRoot || snapshot.cwd))
-      : null,
-    title: String(snapshot.catalogTitle ?? snapshot.title ?? `Claude · ${String(snapshot.sessionId).slice(0, 8)}`),
-    model: snapshot.model ?? null,
-    updatedAtMs: modifiedAtMs,
-    orderingActivityAtMs: messageActivityAtMs || modifiedAtMs || null,
-    messageActivityAtMs,
-    running,
-    activityUnknown: activityState === "unknown",
-    executionOwner: running ? claudeSnapshotExecutionOwner(snapshot) : null,
-    lastActivityAtMs: messageActivityAtMs || modifiedAtMs || null,
-    startedAt: running && Number.isFinite(Date.parse(String(snapshot?.startedAt ?? "")))
-      ? new Date(snapshot.startedAt).toISOString()
-      : null,
-  };
-}
-
 export function taskOrderingActivityAtMs(entry, {
   run = null,
   lastMessage = null,
@@ -1098,66 +1018,4 @@ export function mergeTaskCatalog(entries, runs = []) {
     || Number(right.orderingActivityAtMs ?? 0) - Number(left.orderingActivityAtMs ?? 0)
     || left.title.localeCompare(right.title, "ru")
   ));
-}
-
-export function catalogEntryIsSelected(entry, selected) {
-  return entry.provider === selected.provider
-    && entry.threadId === selected.threadId
-    && normalizedPath(entry.projectRoot) === normalizedPath(selected.projectRoot);
-}
-
-export function taskCatalogCallback(entry) {
-  const provider = entry.provider === "claude" ? "l" : "c";
-  return `task:${provider}:${entry.threadId}`;
-}
-
-function taskActivityAtMs(entry) {
-  const calculated = Number(entry?.orderingActivityAtMs);
-  return Number.isFinite(calculated) && calculated > 0
-    ? calculated
-    : taskOrderingActivityAtMs(entry);
-}
-
-export function statusTaskEntries(entries, limit = 4) {
-  const count = Math.max(0, Number(limit) || 0);
-  return [...entries]
-    .sort((left, right) => (
-      Number(right.running) - Number(left.running)
-      || taskActivityAtMs(right) - taskActivityAtMs(left)
-      || left.title.localeCompare(right.title, "ru")
-    ))
-    .slice(0, count);
-}
-
-export function runningTaskReplyMarkup(entries, selected = null, { showProject = false, limit = 4 } = {}) {
-  return {
-    inline_keyboard: statusTaskEntries(entries, limit)
-      .map((entry) => {
-        const isSelected = selected && catalogEntryIsSelected(entry, selected);
-        const runningEmoji = taskExecutionRunningEmoji(entry.executionOwner);
-        const runtimeEmoji = isSelected
-          && entry.running
-          && entry.executionOwner === TASK_EXECUTION_OWNERS.HUB
-          ? `${runningEmoji} `
-          : "";
-        return [{
-          text: (
-            `${isSelected ? "✅ ТЕКУЩАЯ" : entry.running ? runningEmoji : entry.activityUnknown ? "❔" : "🕘"} · `
-            + `${entry.running ? `${runtimeEmoji}${taskExecutionRuntimeShortLabel(entry.executionOwner)} · ` : ""}`
-            + `${entry.provider === "codex" ? "Codex" : "Claude"} · `
-            + `${showProject ? `${entry.projectName} · ` : ""}${entry.title}`
-          ).slice(0, 90),
-          callback_data: taskCatalogCallback(entry),
-        }];
-      }),
-  };
-}
-
-export function parseTaskCatalogCallback(value) {
-  const match = /^task:([cl]):([0-9a-f-]+)$/i.exec(String(value ?? ""));
-  if (!match) return null;
-  return {
-    provider: match[1].toLowerCase() === "l" ? "claude" : "codex",
-    threadId: match[2],
-  };
 }
