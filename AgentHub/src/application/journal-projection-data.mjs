@@ -172,4 +172,3 @@ export function buildLazyJournalPayload(markdown, {
     turns,
   };
 }
-
