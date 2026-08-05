@@ -268,8 +268,9 @@ def apply_rollout_image_cleanup_choice(config: dict, choice: str | None) -> dict
     return {**config, "components": components, "codexRolloutContext": settings}
 
 
-def request_safe_restart() -> None:
-    subprocess.run(["node", str(ROOT / "request-safe-restart.mjs")], check=True)
+def request_safe_restart() -> bool:
+    result = subprocess.run(["node", str(ROOT / "request-safe-restart.mjs")], check=False)
+    return result.returncode == 0
 
 
 def install_vscode_extension() -> Path | None:
@@ -329,23 +330,16 @@ def install_autostart() -> None:
     if sys.platform != "win32":
         return
     subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(ROOT / "install-autostart.ps1"),
-        ],
+        [str(runtime_root() / "AgentHub.RuntimeHost.exe"), "--install-autostart"],
         check=True,
     )
 
 
 def start_runtime(target_root: Path) -> None:
     if sys.platform == "win32":
-        launcher = target_root / "launch.vbs"
+        launcher = target_root / "AgentHub.RuntimeHost.exe"
         subprocess.Popen(
-            ["wscript.exe", "//B", "//Nologo", str(launcher)],
+            [str(launcher)],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -553,7 +547,9 @@ def main() -> int:
         start_runtime(target_root)
         print("Agent Hub runtime started.")
     elif not args.skip_restart:
-        request_safe_restart()
+        if not request_safe_restart():
+            start_runtime(target_root)
+            print("Running Agent Hub was unavailable; the installed RuntimeHost was started directly.")
     else:
         print("Configuration updated. Restart was skipped; the active runtime still uses the previous release.")
     legacy_config = ROOT / "config.json"

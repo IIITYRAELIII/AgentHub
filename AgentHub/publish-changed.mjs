@@ -57,6 +57,11 @@ export function classifyPublicationChanges(files) {
       plan.desktop = true;
       continue;
     }
+    if (relative.startsWith("RuntimeHost/")) {
+      plan.runtime = true;
+      plan.unitTests = true;
+      continue;
+    }
     if (relative.startsWith("VSCodeExtension/")) {
       plan.vscode = true;
       continue;

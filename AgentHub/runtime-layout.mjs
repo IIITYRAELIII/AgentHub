@@ -27,9 +27,9 @@ export function runtimeLayout(runtimeRoot = defaultRuntimeRoot()) {
     dataDir: path.join(root, "data"),
     currentFile: path.join(root, "current.json"),
     activationFile: path.join(root, "active.json"),
-    launcherFile: path.join(root, process.platform === "win32" ? "launch.vbs" : "launch.sh"),
-    legacyWindowsLauncherFile: path.join(root, "runtime-launch.vbs"),
-    powershellLauncherFile: path.join(root, "launch.ps1"),
+    launcherFile: path.join(root, process.platform === "win32" ? "AgentHub.RuntimeHost.exe" : "launch.sh"),
+    runtimeHostSourceHashFile: path.join(root, "AgentHub.RuntimeHost.source.sha256"),
+    runtimeHostBinaryHashFile: path.join(root, "AgentHub.RuntimeHost.exe.sha256"),
     codexHookLauncherFile: path.join(root, "codex-stop-hook-launcher.mjs"),
   };
 }

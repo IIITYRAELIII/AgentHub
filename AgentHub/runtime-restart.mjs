@@ -3,34 +3,15 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { processIsAlive } from "./src/providers/claude/claude-run-io.mjs";
 
-function quotedWindowsArgument(value) {
-  return `"${String(value).replaceAll("\"", "\"\"")}\"`;
-}
-
 function windowsLauncherCommand({ environment, launcher }) {
-  const powershell = environment.SystemRoot
-    ? path.join(environment.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-    : "powershell.exe";
-  const resolvedLauncher = path.resolve(launcher);
-  const visualBasic = path.extname(resolvedLauncher).toLowerCase() === ".vbs";
+  const configuredLauncher = path.resolve(launcher);
+  const resolvedLauncher = path.extname(configuredLauncher).toLowerCase() === ".exe"
+    ? configuredLauncher
+    : path.join(path.dirname(configuredLauncher), "AgentHub.RuntimeHost.exe");
   return {
-    powershell,
     resolvedLauncher,
-    command: visualBasic
-      ? path.join(environment.SystemRoot ?? "C:\\Windows", "System32", "wscript.exe")
-      : powershell,
-    args: visualBasic
-      ? ["//B", "//Nologo", resolvedLauncher]
-      : [
-        "-NoProfile",
-        "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        resolvedLauncher,
-      ],
+    command: resolvedLauncher,
+    args: [],
   };
 }
 
@@ -56,47 +37,15 @@ export function independentWindowsLauncherInvocation({
   environment = process.env,
   launcher,
 } = {}) {
-  const powershell = environment.SystemRoot
-    ? path.join(environment.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-    : "powershell.exe";
-  const resolvedLauncher = path.resolve(launcher);
-  const isVisualBasicLauncher = path.extname(resolvedLauncher).toLowerCase() === ".vbs";
-  const targetCommandLine = isVisualBasicLauncher
-    ? [
-      quotedWindowsArgument(path.join(environment.SystemRoot ?? "C:\\Windows", "System32", "wscript.exe")),
-      "//B",
-      "//Nologo",
-      quotedWindowsArgument(resolvedLauncher),
-    ].join(" ")
-    : [
-      quotedWindowsArgument(powershell),
-      "-NoProfile",
-      "-NonInteractive",
-      "-WindowStyle",
-      "Hidden",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      quotedWindowsArgument(resolvedLauncher),
-    ].join(" ");
+  const target = windowsLauncherCommand({ environment, launcher });
   return {
-    command: powershell,
-    args: [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
-        + "-Arguments @{CommandLine=$env:TELEGRAM_RUNTIME_TARGET_COMMAND}; "
-        + "if ($result.ReturnValue -ne 0) { throw ('Win32_Process.Create failed: ' + $result.ReturnValue) }",
-    ],
+    command: target.command,
+    args: ["--spawn-independent"],
     options: {
-      cwd: path.dirname(resolvedLauncher),
+      cwd: path.dirname(target.resolvedLauncher),
       stdio: "ignore",
       windowsHide: true,
-      env: {
-        ...environment,
-        TELEGRAM_RUNTIME_TARGET_COMMAND: targetCommandLine,
-      },
+      env: { ...environment },
     },
   };
 }

@@ -16,6 +16,7 @@ import process from "node:process";
 
 import { isMainModule } from "./main-module.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "./runtime-layout.mjs";
+import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "./runtime-host-builder.mjs";
 import { verifyRuntimeImportClosure } from "./runtime-manifest-verifier.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "./runtime-security.mjs";
@@ -23,13 +24,10 @@ import { protectRuntimeConfig, protectRuntimeDirectory } from "./runtime-securit
 const SOURCE_ROOT = path.resolve(import.meta.dirname);
 const TOP_LEVEL_FILES = new Set([
   "package.json",
-  "install-autostart.ps1",
   "codex-process-ancestry.ps1",
   "codex-rollout-processes.ps1",
   "requirements.txt",
   "requirements-tts.txt",
-  "runtime-launch.ps1",
-  "runtime-launch.vbs",
   "runtime-launch.sh",
   "start.ps1",
   "transcribe.py",
@@ -137,11 +135,18 @@ function stableRuntimeFiles(layout, releaseRoot) {
     executable: process.platform !== "win32",
   }];
   if (process.platform === "win32") {
-    files.push(
-      { source: path.join(releaseRoot, "runtime-launch.vbs"), target: layout.launcherFile },
-      { source: path.join(releaseRoot, "runtime-launch.vbs"), target: layout.legacyWindowsLauncherFile },
-      { source: path.join(releaseRoot, "runtime-launch.ps1"), target: layout.powershellLauncherFile },
-    );
+    files.push({
+      source: path.join(releaseRoot, "AgentHub.RuntimeHost.exe"),
+      target: layout.launcherFile,
+    });
+    files.push({
+      source: path.join(releaseRoot, "AgentHub.RuntimeHost.source.sha256"),
+      target: layout.runtimeHostSourceHashFile,
+    });
+    files.push({
+      source: path.join(releaseRoot, "AgentHub.RuntimeHost.exe.sha256"),
+      target: layout.runtimeHostBinaryHashFile,
+    });
   } else {
     files.push({
       source: path.join(releaseRoot, "runtime-launch.sh"),
@@ -222,6 +227,40 @@ export async function deployRuntime({
         force: false,
         errorOnExist: true,
       });
+    }
+    if (process.platform === "win32") {
+      const sourceHash = await runtimeHostSourceHash(sourceRoot);
+      const cachedHash = await readFile(layout.runtimeHostSourceHashFile, "utf8")
+        .then((value) => value.trim().toLowerCase(), () => "");
+      const cachedBinaryHash = await readFile(layout.runtimeHostBinaryHashFile, "utf8")
+        .then((value) => value.trim().toLowerCase(), () => "");
+      const actualCachedBinaryHash = await exists(layout.launcherFile)
+        ? await hashFile(layout.launcherFile)
+        : "";
+      const stagedHost = path.join(staging, "AgentHub.RuntimeHost.exe");
+      if (cachedHash === sourceHash
+        && cachedBinaryHash === actualCachedBinaryHash
+        && actualCachedBinaryHash) {
+        await cp(layout.launcherFile, stagedHost, { force: false, errorOnExist: true });
+      } else {
+        await buildWindowsRuntimeHost({ sourceRoot, outputFile: stagedHost });
+      }
+      await writeFile(
+        path.join(staging, "AgentHub.RuntimeHost.source.sha256"),
+        `${sourceHash}\n`,
+        "utf8",
+      );
+      await writeFile(
+        path.join(staging, "AgentHub.RuntimeHost.exe.sha256"),
+        `${await hashFile(stagedHost)}\n`,
+        "utf8",
+      );
+      names.push(
+        "AgentHub.RuntimeHost.exe",
+        "AgentHub.RuntimeHost.exe.sha256",
+        "AgentHub.RuntimeHost.source.sha256",
+      );
+      names.sort();
     }
     const manifest = {
       releaseId,

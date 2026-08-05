@@ -96,12 +96,18 @@ class RolloutImageCleanupChoiceTests(unittest.TestCase):
 class SafeRestartTests(unittest.TestCase):
     @mock.patch("AgentHub.install.subprocess.run")
     def test_restart_uses_the_authenticated_runtime_control_client(self, run: mock.Mock) -> None:
-        request_safe_restart()
+        run.return_value.returncode = 0
+        self.assertTrue(request_safe_restart())
 
         command = run.call_args.args[0]
         self.assertEqual("node", command[0])
         self.assertTrue(command[1].endswith("request-safe-restart.mjs"))
-        self.assertEqual(True, run.call_args.kwargs["check"])
+        self.assertEqual(False, run.call_args.kwargs["check"])
+
+    @mock.patch("AgentHub.install.subprocess.run")
+    def test_restart_reports_an_unavailable_runtime(self, run: mock.Mock) -> None:
+        run.return_value.returncode = 1
+        self.assertFalse(request_safe_restart())
 
 
 class PersonalHistoryBackfillTests(unittest.TestCase):

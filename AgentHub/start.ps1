@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $AgentHubRoot = $PSScriptRoot
-$RuntimeLauncher = Join-Path $env:LOCALAPPDATA 'AgentHub\launch.ps1'
+$RuntimeLauncher = Join-Path $env:LOCALAPPDATA 'AgentHub\AgentHub.RuntimeHost.exe'
 $RuntimeActive = Join-Path $env:LOCALAPPDATA 'AgentHub\active.json'
 if ((Test-Path -LiteralPath $RuntimeLauncher) -and (Test-Path -LiteralPath $RuntimeActive)) {
     & $RuntimeLauncher

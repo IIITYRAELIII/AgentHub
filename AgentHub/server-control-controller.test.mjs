@@ -9,7 +9,7 @@ function createController(overrides = {}) {
     instanceId: "instance",
     releaseId: "release",
     shortcutPath: "C:/Startup/Agent Hub.lnk",
-    installScriptPath: "C:/release/install-autostart.ps1",
+    installScriptPath: "C:/runtime/AgentHub.RuntimeHost.exe",
     processId: 42,
     activeCount: () => 3,
     restartState: () => ({ pending: true, waiting: true, blockingCount: 2 }),
@@ -48,8 +48,8 @@ test("server controller owns autostart installation and refreshed response", asy
     },
   });
   const result = await controller.setAutostart({ enabled: true });
-  assert.equal(invocation[0], "powershell.exe");
-  assert.deepEqual(invocation[1].slice(-2), ["-File", "C:/release/install-autostart.ps1"]);
+  assert.equal(invocation[0], "C:/runtime/AgentHub.RuntimeHost.exe");
+  assert.deepEqual(invocation[1], ["--install-autostart"]);
   assert.equal(invocation[2].cwd, "C:/work");
   assert.deepEqual(result.snapshot, { refreshed: true });
   assert.match(result.message, /включён/u);

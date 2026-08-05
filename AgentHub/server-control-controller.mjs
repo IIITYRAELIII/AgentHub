@@ -63,8 +63,8 @@ export class ServerControlController {
 
   async installAutostart() {
     const result = await this.spawnCapture(
-      "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", this.installScriptPath],
+      this.installScriptPath,
+      ["--install-autostart"],
       {
         cwd: this.config.projectRoot,
         timeoutMs: 30_000,
@@ -108,5 +108,6 @@ export class ServerControlController {
 }
 
 export function defaultAutostartInstallScript(moduleDirectory) {
-  return path.join(moduleDirectory, "install-autostart.ps1");
+  return String(process.env.AGENT_HUB_LAUNCHER ?? "").trim()
+    || path.resolve(moduleDirectory, "..", "..", "AgentHub.RuntimeHost.exe");
 }

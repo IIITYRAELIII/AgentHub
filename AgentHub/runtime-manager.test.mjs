@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -18,6 +18,9 @@ async function fixture() {
   const runtimeRoot = path.join(root, "runtime");
   await mkdir(path.join(sourceRoot, "assets"), { recursive: true });
   await mkdir(path.join(sourceRoot, "src", "application"), { recursive: true });
+  await cp(path.join(import.meta.dirname, "RuntimeHost"), path.join(sourceRoot, "RuntimeHost"), {
+    recursive: true,
+  });
   await writeFile(path.join(sourceRoot, "agent-hub-server.mjs"), "export const ready = true;\n", "utf8");
   await writeFile(path.join(sourceRoot, "helper.mjs"), "export const value = 1;\n", "utf8");
   await writeFile(path.join(sourceRoot, "helper.cjs"), "module.exports = { value: 1 };\n", "utf8");
@@ -33,15 +36,12 @@ async function fixture() {
     "utf8",
   );
   await writeFile(path.join(sourceRoot, "work-log.css"), "[data-work-log-table] { display: grid; }\n", "utf8");
-  await writeFile(path.join(sourceRoot, "runtime-launch.ps1"), "node agent-hub-server.mjs\n", "utf8");
-  await writeFile(path.join(sourceRoot, "runtime-launch.vbs"), "WScript.Quit 0\n", "utf8");
   await writeFile(path.join(sourceRoot, "runtime-launch.sh"), "#!/usr/bin/env sh\nexec node agent-hub-server.mjs\n", "utf8");
   await writeFile(
     path.join(sourceRoot, "codex-stop-hook-launcher.mjs"),
     "export const ready = true;\n",
     "utf8",
   );
-  await writeFile(path.join(sourceRoot, "install-autostart.ps1"), "Write-Output 'installed'\n", "utf8");
   await writeFile(path.join(sourceRoot, "start.ps1"), "node agent-hub-server.mjs\n", "utf8");
   await writeFile(path.join(sourceRoot, "package.json"), "{}\n", "utf8");
   await writeFile(path.join(sourceRoot, "config.json"), JSON.stringify({
@@ -65,11 +65,9 @@ test("deployRuntime publishes an atomic release without tests or local config", 
     /layered/u,
   );
   assert.match(await readFile(path.join(first.releaseRoot, "work-log.css"), "utf8"), /display: grid/);
-  assert.match(await readFile(path.join(first.releaseRoot, "install-autostart.ps1"), "utf8"), /installed/);
   if (process.platform === "win32") {
-    assert.match(await readFile(path.join(runtimeRoot, "launch.vbs"), "utf8"), /WScript/);
-    assert.match(await readFile(path.join(runtimeRoot, "runtime-launch.vbs"), "utf8"), /WScript/);
-    assert.match(await readFile(path.join(runtimeRoot, "launch.ps1"), "utf8"), /node agent-hub-server/);
+    assert.ok((await readFile(path.join(runtimeRoot, "AgentHub.RuntimeHost.exe"))).length > 0);
+    assert.ok((await readFile(path.join(first.releaseRoot, "AgentHub.RuntimeHost.exe"))).length > 0);
   }
   assert.match(
     await readFile(path.join(runtimeRoot, "codex-stop-hook-launcher.mjs"), "utf8"),
@@ -82,7 +80,13 @@ test("deployRuntime publishes an atomic release without tests or local config", 
   );
   await assert.rejects(readFile(path.join(first.releaseRoot, "config.json"), "utf8"), /ENOENT/);
 
+  const firstRuntimeHost = process.platform === "win32"
+    ? await readFile(path.join(runtimeRoot, "AgentHub.RuntimeHost.exe"))
+    : null;
   await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-2" });
+  if (firstRuntimeHost) {
+    assert.deepEqual(await readFile(path.join(runtimeRoot, "AgentHub.RuntimeHost.exe")), firstRuntimeHost);
+  }
   const pointer = JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8"));
   assert.deepEqual({ current: pointer.current, previous: pointer.previous }, {
     current: "release-2",
@@ -127,6 +131,18 @@ test("deployRuntime keeps a locked old release without failing the published poi
   assert.equal(pointer.previous, "release-2");
   assert.equal(warnings.length, 1);
   assert.match(await readFile(path.join(runtimeRoot, "releases", "release-1", "agent-hub-server.mjs"), "utf8"), /ready/);
+});
+
+test("deployRuntime recompiles a tampered cached RuntimeHost", async (t) => {
+  if (process.platform !== "win32") return t.skip("RuntimeHost is Windows-only");
+  const { sourceRoot, runtimeRoot } = await fixture();
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
+  const launcher = path.join(runtimeRoot, "AgentHub.RuntimeHost.exe");
+  await writeFile(launcher, "tampered\n", "utf8");
+
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-2" });
+
+  assert.notEqual((await readFile(launcher, "utf8")).trim(), "tampered");
 });
 
 test("deployRuntime does not publish a pointer before the stable launchers are ready", async () => {

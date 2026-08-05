@@ -20,9 +20,15 @@ test("runtimeLayout groups config, state and versioned releases", () => {
     path.resolve("C:\\Runtime", "codex-stop-hook-launcher.mjs"),
   );
   if (process.platform === "win32") {
-    assert.equal(layout.launcherFile, path.resolve("C:\\Runtime", "launch.vbs"));
-    assert.equal(layout.legacyWindowsLauncherFile, path.resolve("C:\\Runtime", "runtime-launch.vbs"));
-    assert.equal(layout.powershellLauncherFile, path.resolve("C:\\Runtime", "launch.ps1"));
+    assert.equal(layout.launcherFile, path.resolve("C:\\Runtime", "AgentHub.RuntimeHost.exe"));
+    assert.equal(
+      layout.runtimeHostSourceHashFile,
+      path.resolve("C:\\Runtime", "AgentHub.RuntimeHost.source.sha256"),
+    );
+    assert.equal(
+      layout.runtimeHostBinaryHashFile,
+      path.resolve("C:\\Runtime", "AgentHub.RuntimeHost.exe.sha256"),
+    );
   }
   assert.equal(runtimeReleaseDirectory(layout.root, "release-1"), path.resolve("C:\\Runtime", "releases", "release-1"));
   assert.throws(() => runtimeReleaseDirectory(layout.root, "../escape"), /unsupported characters/);

@@ -110,6 +110,19 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
       unknown: [],
     },
   );
+  assert.deepEqual(
+    classifyPublicationChanges(["AgentHub/RuntimeHost/AgentHub.RuntimeHost.cs"]),
+    {
+      runtime: true,
+      worker: false,
+      android: false,
+      desktop: false,
+      vscode: false,
+      unitTests: true,
+      fullTests: false,
+      unknown: [],
+    },
+  );
   assert.deepEqual(parseChangedArguments(["--from", "abc", "--skip-restart", "--full-tests"]), {
     from: "abc",
     skipRestart: true,
