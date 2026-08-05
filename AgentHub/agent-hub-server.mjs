@@ -148,7 +148,7 @@ import { RuntimeStateStore } from "./runtime-state-store.mjs";
 import { TaskReadStateStore, taskHasUnreadAnswer } from "./task-read-state-store.mjs";
 import { LocalTaskSyncStore } from "./task-sync-store.mjs";
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
-import { createDesktopMessageController } from "./desktop-message-controller.mjs";
+import { createDesktopMessageController } from "./src/interfaces/desktop/desktop-message-controller.mjs";
 import { createTrustedDeviceManager, resolveTrustedDeviceUserId } from "./trusted-device-access.mjs";
 import { TrustedDeviceStore } from "./trusted-device-store.mjs";
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
@@ -243,7 +243,7 @@ import {
   commandTaskTarget,
   createApplicationCommandService,
 } from "./application-command-service.mjs";
-import { DesktopAttachmentService } from "./desktop-attachment-service.mjs";
+import { DesktopAttachmentService } from "./src/interfaces/desktop/desktop-attachment-service.mjs";
 import { TelegramSettingsCallbackService } from "./telegram-settings-callbacks.mjs";
 import { TelegramTaskCallbackService } from "./telegram-task-callbacks.mjs";
 import { TelegramInputCallbackService } from "./telegram-input-callbacks.mjs";
@@ -256,14 +256,14 @@ import { CodexEventService } from "./codex-event-service.mjs";
 import { CodexTaskSnapshotService } from "./codex-task-snapshot-service.mjs";
 import { ClaudeEventService } from "./claude-event-service.mjs";
 import { ClaudeCatalogProjectionService, CodexCatalogProjectionService } from "./src/providers/provider-catalog-services.mjs";
-import { DesktopDeferredInputService } from "./desktop-deferred-input-service.mjs";
-import { DesktopSettingsService } from "./desktop-settings-service.mjs";
+import { DesktopDeferredInputService } from "./src/interfaces/desktop/desktop-deferred-input-service.mjs";
+import { DesktopSettingsService } from "./src/interfaces/desktop/desktop-settings-service.mjs";
 import { ProviderTaskCatalogBuilder } from "./src/providers/provider-task-catalog-builder.mjs";
 import { TaskCatalogService } from "./task-catalog-service.mjs";
 import { TaskSelectionStore } from "./task-selection-store.mjs";
-import { createDesktopSnapshotFactory } from "./desktop-snapshot.mjs";
-import { createDesktopTaskHistoryFactory } from "./desktop-task-history.mjs";
-import { createDesktopApplicationRouter } from "./desktop-application-router.mjs";
+import { createDesktopSnapshotFactory } from "./src/interfaces/desktop/desktop-snapshot.mjs";
+import { createDesktopTaskHistoryFactory } from "./src/interfaces/desktop/desktop-task-history.mjs";
+import { createDesktopApplicationRouter } from "./src/interfaces/desktop/desktop-application-router.mjs";
 import { UsdRubRateStore } from "./exchange-rate.mjs";
 import { agentHubAutostartShortcut } from "./server-page.mjs";
 import {

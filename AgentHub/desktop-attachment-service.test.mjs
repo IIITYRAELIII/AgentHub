@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { DesktopAttachmentService } from "./desktop-attachment-service.mjs";
+import { DesktopAttachmentService } from "./src/interfaces/desktop/desktop-attachment-service.mjs";
 
 test("Desktop attachment service validates, describes and opens local images", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-attachments-"));
@@ -48,4 +48,3 @@ test("Mini App attachment opening delegates to its authenticated publisher", asy
     await rm(root, { recursive: true, force: true });
   }
 });
-

@@ -12,7 +12,7 @@ import {
   signMiniAppControlRequest,
   signMiniAppSyncChunk,
 } from "./mini-app-publisher.mjs";
-import { createDesktopControlRouter } from "./desktop-control-router.mjs";
+import { createDesktopControlRouter } from "./src/interfaces/desktop/desktop-control-router.mjs";
 
 function memoryJournal(payload = {
   html: "<p>Журнал</p>",

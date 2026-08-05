@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createDesktopMessageController } from "./desktop-message-controller.mjs";
+import { createDesktopMessageController } from "./src/interfaces/desktop/desktop-message-controller.mjs";
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
 import { RunCoordinator } from "./run-coordinator.mjs";
 

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+// Builds the bounded Desktop/Mini App history read-model for one task.
 function mergeDurableMessages(hydratedMessages, durableMessages) {
   const values = structuredClone(Array.isArray(hydratedMessages) ? hydratedMessages : []);
   for (const durable of Array.isArray(durableMessages) ? durableMessages : []) {

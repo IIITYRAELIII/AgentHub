@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DesktopSettingsService } from "./desktop-settings-service.mjs";
+import { DesktopSettingsService } from "./src/interfaces/desktop/desktop-settings-service.mjs";
 
 test("Desktop settings service rejects a stale task-scoped mutation", async () => {
   const noop = () => {};
@@ -16,4 +16,3 @@ test("Desktop settings service rejects a stale task-scoped mutation", async () =
   });
   await assert.rejects(service.update({ name: "model", value: "gpt" }), /уже не к выбранной/u);
 });
-

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDesktopSnapshotFactory } from "./desktop-snapshot.mjs";
+import { createDesktopSnapshotFactory } from "./src/interfaces/desktop/desktop-snapshot.mjs";
 
 function fixture(overrides = {}) {
   const selected = {

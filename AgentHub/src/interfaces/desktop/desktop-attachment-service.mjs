@@ -1,8 +1,8 @@
 import { stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createCodexAssistantAttachmentImporter } from "./codex-assistant-attachments.mjs";
-import { pathInsideOrSame } from "./config.mjs";
+import { createCodexAssistantAttachmentImporter } from "../../../codex-assistant-attachments.mjs";
+import { pathInsideOrSame } from "../../../config.mjs";
 
 const ATTACHMENT_TYPES = new Map([
   [".png", "image/png"],
@@ -104,4 +104,3 @@ export class DesktopAttachmentService {
     };
   }
 }
-

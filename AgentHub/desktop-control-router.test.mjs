@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createDesktopControlRouter } from "./desktop-control-router.mjs";
+import { createDesktopControlRouter } from "./src/interfaces/desktop/desktop-control-router.mjs";
 
 test("desktop mutation reconciles a redelivery after a crash without repeating its effect", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-receipt-"));

@@ -1,3 +1,4 @@
+// Maps deferred-input UI actions to application commands for one exact task.
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
   return value;
@@ -167,4 +168,3 @@ export class DesktopDeferredInputService {
     };
   }
 }
-

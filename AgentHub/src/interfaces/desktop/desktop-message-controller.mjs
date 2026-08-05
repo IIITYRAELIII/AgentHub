@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   messageReceiptKey,
   messageRequestFingerprint,
-} from "./message-receipts.mjs";
+} from "../../../message-receipts.mjs";
 
 export function createDesktopMessageController({
   attachmentPaths,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDesktopApplicationRouter } from "./desktop-application-router.mjs";
+import { createDesktopApplicationRouter } from "./src/interfaces/desktop/desktop-application-router.mjs";
 
 function router(calls) {
   const handler = async (params) => ({ params });
@@ -43,4 +43,3 @@ test("Desktop application router enforces Mini App history limits", async () => 
   assert.equal(result.params.limit, 10);
   assert.equal(result.params.maxAnswerChars, 75_000);
 });
-

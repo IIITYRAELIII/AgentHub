@@ -1,3 +1,4 @@
+// Applies Desktop/Mini App settings through injected application operations.
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
   return value;
@@ -86,4 +87,3 @@ export class DesktopSettingsService {
     }
   }
 }
-

@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   createDesktopTaskHistoryFactory,
   mergeDurableTaskHistory,
-} from "./desktop-task-history.mjs";
+} from "./src/interfaces/desktop/desktop-task-history.mjs";
 import { mergeCompletedTaskHistory } from "./task-history.mjs";
 
 function fixture(overrides = {}) {

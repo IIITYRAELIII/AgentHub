@@ -1,4 +1,4 @@
-import { commandClientContext, commandTaskTarget } from "./application-command-service.mjs";
+import { commandClientContext, commandTaskTarget } from "../../../application-command-service.mjs";
 import { createDesktopControlRouter } from "./desktop-control-router.mjs";
 
 const MUTATION_ACTIONS = Object.freeze([
@@ -74,4 +74,3 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
     reconcileMutation,
   });
 }
-

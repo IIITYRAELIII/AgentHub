@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DesktopDeferredInputService } from "./desktop-deferred-input-service.mjs";
+import { DesktopDeferredInputService } from "./src/interfaces/desktop/desktop-deferred-input-service.mjs";
 
 function createService(item) {
   const pendingInputs = new Map([[item.id, item]]);
@@ -23,4 +23,3 @@ test("Desktop deferred input edit preserves its stable message id", async () => 
   assert.equal(result.id, "message-1");
   assert.equal(item.input, "new");
 });
-
