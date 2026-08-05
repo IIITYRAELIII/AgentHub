@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -16,10 +16,12 @@ import {
 } from "./src/infrastructure/persistence/rate-limit-history.mjs";
 
 test("Agent Hub persists Codex and Claude limit snapshots every five minutes", async () => {
-  const source = (await Promise.all([
-    "./src/composition/agent-hub-composition.mjs",
-    "./src/composition/infrastructure-composition.mjs",
-  ].map((file) => readFile(new URL(file, import.meta.url), "utf8")))).join("\n");
+  const compositionDirectory = new URL("./src/composition/", import.meta.url);
+  const source = (await Promise.all(
+    (await readdir(compositionDirectory))
+      .filter((name) => name.endsWith(".mjs"))
+      .map((name) => readFile(new URL(name, compositionDirectory), "utf8")),
+  )).join("\n");
   const telemetrySource = await readFile(
     new URL("./src/application/rate-limit-telemetry-service.mjs", import.meta.url),
     "utf8",

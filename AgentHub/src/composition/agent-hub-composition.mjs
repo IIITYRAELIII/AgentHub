@@ -41,11 +41,8 @@ import {
   readCodexTurnUsage,
   scanCodexTurnPricingMetadata,
 } from "../providers/codex/codex-turn-usage.mjs";
-import { RateLimitTelemetryService } from "../application/rate-limit-telemetry-service.mjs";
 import { CodexRunFinalizer } from "../providers/codex/codex-run-finalizer.mjs";
 import { CodexContextMaintenanceService } from "../providers/codex/codex-context-maintenance-service.mjs";
-import { randomStatusHeaderFileName } from "../interfaces/telegram/status-header.mjs";
-import { TelegramClient } from "../infrastructure/telegram/telegram-client.mjs";
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
 import { telegramPrompt } from "../interfaces/telegram/telegram-message.mjs";
 import {
@@ -147,9 +144,7 @@ import { CodexLifecycleController } from "../providers/codex/codex-lifecycle-con
 import { conciseTurnTitle } from "../application/turn-title.mjs";
 import { DesktopControlServer } from "../../desktop-control.mjs";
 import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
-import { MediaController } from "../interfaces/telegram/media-controller.mjs";
 import { TelegramMessageController } from "../interfaces/telegram/telegram-message-controller.mjs";
-import { ApprovalController } from "../interfaces/telegram/approval-controller.mjs";
 import { TelegramCallbackController } from "../interfaces/telegram/telegram-callback-controller.mjs";
 import { routeTelegramCallback } from "../interfaces/telegram/telegram-callback-router.mjs";
 import { TelegramTaskPickerService } from "../interfaces/telegram/task-picker.mjs";
@@ -164,12 +159,9 @@ import {
 } from "../interfaces/telegram/approval-presentation.mjs";
 import { TaskViewController } from "../interfaces/telegram/task-view-controller.mjs";
 import { TelegramPollingController } from "../interfaces/telegram/telegram-polling-controller.mjs";
-import { TelegramSettingsMenu } from "../interfaces/telegram/telegram-settings-menu.mjs";
-import { TelegramStatusController } from "../interfaces/telegram/telegram-status-controller.mjs";
 import { TelegramDeliveryService } from "../interfaces/telegram/telegram-delivery-service.mjs";
 import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "../providers/codex/codex-invocation.mjs";
 import { CodexAppServerLifecycle } from "../providers/codex/codex-app-server-lifecycle.mjs";
-import { createCodexAssistantAttachmentImporter } from "../providers/codex/codex-assistant-attachments.mjs";
 import { TaskProgressController } from "../interfaces/telegram/task-progress-controller.mjs";
 import { TaskObservationService } from "../application/task-observation-service.mjs";
 import { SelectedTaskWatchService } from "../application/selected-task-watch-service.mjs";
@@ -177,10 +169,6 @@ import {
   DeferredInputController,
   isRetryableDeferredLaunchError,
 } from "../application/deferred-input-controller.mjs";
-import { miniAppMenuButtonRequests } from "../interfaces/web/mini-app-server.mjs";
-import { MiniAppPublisher } from "../interfaces/web/mini-app-publisher.mjs";
-import { DirectGatewayController, loadDirectGatewaySettings } from "../interfaces/web/direct-gateway.mjs";
-import { QuickTunnelController } from "../infrastructure/network/quick-tunnel.mjs";
 import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import { fitTaskHistoryPayload } from "../domain/response-budget.mjs";
 import { RuntimeResourceRegistry } from "../runtime/runtime-resource-registry.mjs";
@@ -191,7 +179,6 @@ import {
   commandTaskTarget,
   createApplicationCommandService,
 } from "../application/application-command-service.mjs";
-import { DesktopAttachmentService } from "../interfaces/desktop/desktop-attachment-service.mjs";
 import { TelegramSettingsCallbackService } from "../interfaces/telegram/telegram-settings-callbacks.mjs";
 import { TelegramTaskCallbackService } from "../interfaces/telegram/telegram-task-callbacks.mjs";
 import { TelegramInputCallbackService } from "../interfaces/telegram/telegram-input-callbacks.mjs";
@@ -203,13 +190,11 @@ import { createDesktopTaskHistoryFactory } from "../interfaces/desktop/desktop-t
 import { DesktopTaskService } from "../interfaces/desktop/desktop-task-service.mjs";
 import { DesktopSystemService } from "../interfaces/desktop/desktop-system-service.mjs";
 import { DesktopReadModelService } from "../interfaces/desktop/desktop-read-model-service.mjs";
-import { DeferredInputPresentationService } from "../interfaces/desktop/deferred-input-presentation-service.mjs";
 import { TaskCommandService } from "../application/task-command-service.mjs";
 import { TaskNavigationService } from "../application/task-navigation-service.mjs";
 import { RestartRequestService } from "../application/restart-request-service.mjs";
 import { createDesktopApplicationRouter } from "../interfaces/desktop/desktop-application-router.mjs";
 import { agentHubAutostartShortcut } from "../interfaces/web/server-page.mjs";
-import { MiniAppLifecycleService } from "../interfaces/web/mini-app-lifecycle-service.mjs";
 import {
   defaultAutostartInstallScript,
   ServerControlController,
@@ -235,6 +220,7 @@ import {
 import { TaskIdentityResolver } from "../application/task-identity-resolver.mjs";
 import { createHubStaticSettings } from "./hub-static-settings.mjs";
 import { createCodexObservabilityComposition } from "./codex-observability-composition.mjs";
+import { createClientInterfaceComposition } from "./client-interface-composition.mjs";
 import { createHubInfrastructure } from "./infrastructure-composition.mjs";
 import { createProviderSnapshotComposition } from "./provider-snapshot-composition.mjs";
 import { createProviderOperationComposition } from "./provider-operation-composition.mjs";
@@ -724,78 +710,48 @@ const {
   resolveCodexTaskActivity,
 });
 
-let mediaController;
-const telegramClient = new TelegramClient({
-  token,
-  apiBaseUrl: config.telegramApiBaseUrl,
-  menu: BOT_MENU,
-  statusHeaderDirectory: STATUS_HEADER_DIR,
-  selectStatusHeader: randomStatusHeaderFileName,
-  getStatusFileId: (name) => statusMediaFileIds.get(name) ?? null,
-  rememberStatusFileId: async (name, fileId) => {
-    if (fileId) statusMediaFileIds.set(name, fileId);
-    else statusMediaFileIds.delete(name);
-    await saveState();
-  },
-  getDefaultChatId: () => chatId,
-  getDefaultProvider: () => activeProvider,
-  rememberSpeechText: (...args) => mediaController?.rememberSpeechText(...args) ?? null,
-  messageLimit: TELEGRAM_LIMIT,
-});
-const telegram = (method, body) => {
-  if (method !== "answerCallbackQuery") return telegramClient.request(method, body);
-  telegramClient.answerCallback(body, {
-    onError: (error) => console.warn(`Telegram callback acknowledgement failed: ${error.message}`),
-  });
-  return Promise.resolve(undefined);
-};
-const miniAppLifecycle = new MiniAppLifecycleService({
+const {
+  telegramClient,
+  telegram,
+  miniAppLifecycle,
+  desktopAttachments,
+  desktopAttachmentPaths,
+  isLegacyDesktopAttachmentFile,
+  desktopAttachmentDescriptors,
+  importCodexDesktopAttachments,
+  desktopOpenAttachment,
+  telegramMultipart,
+  sendStatusCard,
+  sendMessage,
+  sendMessageTo,
+  sendLongMessage,
+  startTyping,
+  stopTyping,
+  deferredInputPresentation,
+  telegramSettingsMenu,
+  rateLimitTelemetry,
+  telegramStatusController,
+  mediaController,
+  approvalController,
+} = await createClientInterfaceComposition({
   config,
-  localServer: miniAppServer,
-  publicServer: publicMiniAppServer,
+  token,
+  botMenu: BOT_MENU,
+  statusHeaderDirectory: STATUS_HEADER_DIR,
+  statusMediaFileIds,
+  saveState,
+  currentChatId: () => chatId,
+  currentProvider: () => activeProvider,
+  telegramLimit: TELEGRAM_LIMIT,
+  miniAppServer,
+  publicMiniAppServer,
   runtimeCommandRoot,
   journalDatabaseFile,
-  telegram,
-  menuButtonRequests: miniAppMenuButtonRequests,
-  loadGatewaySettings: loadDirectGatewaySettings,
-  DirectGatewayControllerClass: DirectGatewayController,
-  MiniAppPublisherClass: MiniAppPublisher,
-  QuickTunnelControllerClass: QuickTunnelController,
-  controlHandler: handleDesktopControl,
-  controlReconciler: reconcileRemoteDesktopControl,
-  forgetControl: (id) => forgetDesktopControl(id),
-});
-const desktopAttachments = new DesktopAttachmentService({
-  assistantAttachmentImporterFactory: createCodexAssistantAttachmentImporter,
-  runtimeCommandRoot,
-  projectRoot: config.projectRoot,
-  projectRoots: config.projects.map((project) => project.path),
-  workerEnabled: config.miniApp.worker.enabled,
-  publisher: () => miniAppLifecycle.publisher,
-  trustedUserId: (context) => trustedDeviceUserId(context),
-});
-const desktopAttachmentPaths = (...args) => desktopAttachments.paths(...args);
-const isLegacyDesktopAttachmentFile = (...args) => desktopAttachments.isLegacyFile(...args);
-const desktopAttachmentDescriptors = (...args) => desktopAttachments.descriptors(...args);
-const importCodexDesktopAttachments = (...args) => desktopAttachments.importCodex(...args);
-const desktopOpenAttachment = (...args) => desktopAttachments.open(...args);
-
-const telegramMultipart = (method, body, fileField, filePath) => (
-  telegramClient.multipart(method, body, fileField, filePath)
-);
-const sendStatusCard = (...args) => telegramClient.sendStatusCard(...args);
-const sendMessage = (...args) => telegramClient.sendMessage(...args);
-const sendMessageTo = (...args) => telegramClient.sendMessageTo(...args);
-const sendLongMessage = (...args) => telegramClient.sendLongMessage(...args);
-const startTyping = () => telegramClient.startTyping();
-const stopTyping = () => telegramClient.stopTyping();
-
-const deferredInputPresentation = new DeferredInputPresentationService({
-  telegram,
-  receipts: desktopMessageReceipts,
-  describeAttachments: desktopAttachmentDescriptors,
-});
-const telegramSettingsMenu = new TelegramSettingsMenu({
+  handleDesktopControl,
+  reconcileRemoteDesktopControl,
+  forgetDesktopControl: (id) => forgetDesktopControl(id),
+  trustedDeviceUserId,
+  desktopMessageReceipts,
   projects: PROJECTS,
   codexModels: CODEX_MODELS,
   claudeModels: CLAUDE_MODELS,
@@ -804,59 +760,33 @@ const telegramSettingsMenu = new TelegramSettingsMenu({
   reasoningLabels: CODEX_REASONING_LABELS,
   collaborationModes: CODEX_COLLABORATION_MODES,
   collaborationModeLabels: CODEX_COLLABORATION_MODE_LABELS,
-  callbackData: uiCallback,
-  sendMessage,
-});
-const rateLimitTelemetry = new RateLimitTelemetryService({
+  uiCallback,
   resolveClaudeInvocation,
   parseClaudeLimits,
   formatClaudeRateLimits,
   formatCodexRateLimits,
   spawnCapture,
-  readCodexRateLimits: () => sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 }),
-  codexRunning: () => codexTransport.running,
-  historyStore: rateLimitHistoryStore,
+  sendRpc,
+  codexTransportRunning: () => codexTransport.running,
+  rateLimitHistoryStore,
   workLogUsageStore,
-  timers: runtimeTimers,
+  runtimeTimers,
   isStopping: () => stopping,
-});
-const telegramStatusController = new TelegramStatusController({
-  config,
-  projects: PROJECTS,
   findProject,
   refreshTaskCatalog,
   currentTaskCatalog: () => taskCatalog,
   currentTaskRuns: () => taskRuns.values(),
-  readCodexRateLimits: () => rateLimitTelemetry.readCodex(),
-  readClaudeRateLimits: () => rateLimitTelemetry.readClaude(),
-  parseClaudeLimits,
   codexModelLabel,
-  claudeModelLabels: CLAUDE_MODEL_LABELS,
-  reasoningLabels: CODEX_REASONING_LABELS,
-  collaborationModeLabels: CODEX_COLLABORATION_MODE_LABELS,
-  sendStatusCard,
-});
-mediaController = new MediaController({
-  config,
-  token,
   agentHubRoot: AGENT_HUB_ROOT,
-  telegram,
-  sendMessage: sendMessageTo,
+  stopProcessTree,
   startTurn,
   activeProjectRoot: () => activeProjectRoot,
-  stopProcessTree,
-});
-await mediaController.load();
-const approvalController = new ApprovalController({
   approvalProtocol,
   autoApprove: () => autoApprove,
-  respond: respondRpc,
-  send: sendMessage,
-  sendForRun: sendRunMessage,
+  respondRpc,
+  sendRunMessage,
   runExists: (id) => taskRuns.values().some((run) => run.id === id),
-  setProgressStage: (...args) => taskProgress.setStage(...args),
-  telegram,
-  currentChatId: () => chatId,
+  taskProgress: () => taskProgress,
 });
 
 function invalidateTaskCatalog() {
