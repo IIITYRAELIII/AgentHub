@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodexTurnService, unsupportedProviderSteer } from "./provider-turn-services.mjs";
+import { CodexTurnService, unsupportedProviderSteer } from "./src/providers/provider-turn-services.mjs";
 
 test("Codex turn service steers one exact active turn", async () => {
   const calls = [];
@@ -27,4 +27,3 @@ test("Codex turn service steers one exact active turn", async () => {
   assert.equal(calls.at(-1).method, "turn/steer");
   assert.throws(() => unsupportedProviderSteer(), /недоступна/u);
 });
-

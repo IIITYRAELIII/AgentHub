@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ProviderTaskCatalogBuilder } from "./provider-task-catalog-builder.mjs";
+import { ProviderTaskCatalogBuilder } from "./src/providers/provider-task-catalog-builder.mjs";
 
 test("provider catalog discovers sources in parallel and projects them in stable order", async () => {
   const events = [];

@@ -1,6 +1,6 @@
 import { unlink } from "node:fs/promises";
-import { claudeFailureMessage, formatClaudeUsage } from "./claude.mjs";
-import { TASK_EXECUTION_OWNERS } from "./task-catalog.mjs";
+import { claudeFailureMessage, formatClaudeUsage } from "../../claude.mjs";
+import { TASK_EXECUTION_OWNERS } from "../../task-catalog.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);

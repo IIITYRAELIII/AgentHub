@@ -235,8 +235,8 @@ import { RuntimeLifecycleController } from "./src/runtime/runtime-lifecycle-cont
 import { RuntimeResourceRegistry } from "./src/runtime/runtime-resource-registry.mjs";
 import { RuntimeRestartController } from "./src/runtime/runtime-restart-controller.mjs";
 import { RunCoordinator } from "./run-coordinator.mjs";
-import { createAgentProviderRegistry } from "./provider-adapters.mjs";
-import { ClaudeProviderTaskService, CodexProviderTaskService } from "./provider-task-service.mjs";
+import { createAgentProviderRegistry } from "./src/providers/provider-adapters.mjs";
+import { ClaudeProviderTaskService, CodexProviderTaskService } from "./src/providers/provider-task-service.mjs";
 import { appendRunActivity, codexItemActivity } from "./run-activity.mjs";
 import {
   commandClientContext,
@@ -247,18 +247,18 @@ import { DesktopAttachmentService } from "./desktop-attachment-service.mjs";
 import { TelegramSettingsCallbackService } from "./telegram-settings-callbacks.mjs";
 import { TelegramTaskCallbackService } from "./telegram-task-callbacks.mjs";
 import { TelegramInputCallbackService } from "./telegram-input-callbacks.mjs";
-import { ClaudeCompletionService, CodexCompletionService } from "./provider-completion-services.mjs";
-import { ClaudeRecoveryService, CodexRecoveryService } from "./provider-recovery-services.mjs";
+import { ClaudeCompletionService, CodexCompletionService } from "./src/providers/provider-completion-services.mjs";
+import { ClaudeRecoveryService, CodexRecoveryService } from "./src/providers/provider-recovery-services.mjs";
 import { ClaudeTaskSnapshotService } from "./claude-task-snapshot-service.mjs";
-import { CodexTurnService, ProviderCancellationService, unsupportedProviderSteer } from "./provider-turn-services.mjs";
+import { CodexTurnService, ProviderCancellationService, unsupportedProviderSteer } from "./src/providers/provider-turn-services.mjs";
 import { TelegramCommandService } from "./telegram-command-service.mjs";
 import { CodexEventService } from "./codex-event-service.mjs";
 import { CodexTaskSnapshotService } from "./codex-task-snapshot-service.mjs";
 import { ClaudeEventService } from "./claude-event-service.mjs";
-import { ClaudeCatalogProjectionService, CodexCatalogProjectionService } from "./provider-catalog-services.mjs";
+import { ClaudeCatalogProjectionService, CodexCatalogProjectionService } from "./src/providers/provider-catalog-services.mjs";
 import { DesktopDeferredInputService } from "./desktop-deferred-input-service.mjs";
 import { DesktopSettingsService } from "./desktop-settings-service.mjs";
-import { ProviderTaskCatalogBuilder } from "./provider-task-catalog-builder.mjs";
+import { ProviderTaskCatalogBuilder } from "./src/providers/provider-task-catalog-builder.mjs";
 import { TaskCatalogService } from "./task-catalog-service.mjs";
 import { TaskSelectionStore } from "./task-selection-store.mjs";
 import { createDesktopSnapshotFactory } from "./desktop-snapshot.mjs";

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ClaudeCatalogProjectionService } from "./provider-catalog-services.mjs";
+import { ClaudeCatalogProjectionService } from "./src/providers/provider-catalog-services.mjs";
 
 test("Claude catalog projection keeps provider identity separate from hub task identity", async () => {
   const service = new ClaudeCatalogProjectionService({
@@ -16,4 +16,3 @@ test("Claude catalog projection keeps provider identity separate from hub task i
   assert.equal(entries[0].threadId, "session-1");
   assert.equal(entries[0].titleAuthoritative, true);
 });
-

@@ -55,6 +55,7 @@
 | 40 | ✅ | Composition root сокращён до 5 614 строк. `RateLimitTelemetryService` владеет безопасным Claude `/usage`, чтением Codex rate limits, форматированием текущего состояния и коалесцированным пятиминутным сохранением обеих серий в SQLite/work-log projection. |
 | 41 | ✅ | Начат постепенный переход к слоистому `src`: application services активности провайдеров, наблюдения выбранной задачи и телеметрии лимитов перенесены вместе с импортами и тестами. Новый `TaskMetadataStore` владеет bounded-состоянием названий и настроек задачи, поддерживает будущий `hubTaskId` и сокращает composition root до 5 572 строк. Корневые entrypoint и совместимые CLI-пути не меняются. |
 | 42 | ✅ | Runtime lifecycle получил физическую границу `src/runtime`: resource registry, shutdown lifecycle, safe restart и timer ownership перемещены одним срезом. Startup orchestration находится в `src/application`; все contract-тесты и production-импорты используют новые слои без compatibility shim и циклов. |
+| 43 | ✅ | Общая provider-граница перенесена в `src/providers`: обязательный port registry, фабрики Codex/Claude, catalog builder и сервисы task/turn/catalog/completion/recovery. Composition root только связывает их зависимости; provider adapters не импортируют host и не закрепляют логическую задачу за одним thread/session ID. |
 
 После этапов 31–40 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и

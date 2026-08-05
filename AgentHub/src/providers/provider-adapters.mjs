@@ -1,3 +1,4 @@
+// Binds Codex and Claude operation names to the common provider port.
 function requiredFunction(operations, name, provider) {
   const value = operations?.[name];
   if (typeof value !== "function") {

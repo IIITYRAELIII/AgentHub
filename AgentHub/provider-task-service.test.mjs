@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ClaudeProviderTaskService, CodexProviderTaskService } from "./provider-task-service.mjs";
+import { ClaudeProviderTaskService, CodexProviderTaskService } from "./src/providers/provider-task-service.mjs";
 
 test("Codex task service creates, names and discovers tasks through its port", async () => {
   const calls = [];
@@ -52,4 +52,3 @@ test("Claude task service creates an unbound logical task", async () => {
   assert.equal(state.diff, "");
   assert.equal(state.saved, true);
 });
-

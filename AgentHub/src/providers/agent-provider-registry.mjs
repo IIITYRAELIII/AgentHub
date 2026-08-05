@@ -1,3 +1,4 @@
+// Provider-independent port registry used by application services.
 const REQUIRED_OPERATIONS = Object.freeze([
   "discoverTasks",
   "projectTasks",

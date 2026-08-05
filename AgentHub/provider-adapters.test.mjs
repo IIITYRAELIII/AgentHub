@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AGENT_PROVIDER_REQUIRED_OPERATIONS, AgentProviderRegistry } from "./agent-provider-registry.mjs";
+import { AGENT_PROVIDER_REQUIRED_OPERATIONS, AgentProviderRegistry } from "./src/providers/agent-provider-registry.mjs";
 import {
   createAgentProviderRegistry,
   createClaudeProviderAdapter,
   createCodexProviderAdapter,
-} from "./provider-adapters.mjs";
+} from "./src/providers/provider-adapters.mjs";
 
 function operations(provider) {
   const names = provider === "codex"

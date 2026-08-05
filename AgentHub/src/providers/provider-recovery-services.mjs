@@ -1,8 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { codexThreadWaitingOnApproval } from "./codex-approvals.mjs";
-import { codexThreadHistory, codexTurnHasExplicitFinalAnswer } from "./task-history.mjs";
-import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "./task-recovery.mjs";
-import { emptyTokenUsage } from "./token-usage.mjs";
+import { codexThreadWaitingOnApproval } from "../../codex-approvals.mjs";
+import { codexThreadHistory, codexTurnHasExplicitFinalAnswer } from "../../task-history.mjs";
+import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "../../task-recovery.mjs";
+import { emptyTokenUsage } from "../../token-usage.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -134,4 +134,3 @@ export class CodexRecoveryService {
     });
   }
 }
-

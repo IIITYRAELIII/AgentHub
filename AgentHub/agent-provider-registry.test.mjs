@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   AGENT_PROVIDER_REQUIRED_OPERATIONS,
   AgentProviderRegistry,
-} from "./agent-provider-registry.mjs";
+} from "./src/providers/agent-provider-registry.mjs";
 
 function adapter(id, calls = []) {
   return Object.fromEntries([

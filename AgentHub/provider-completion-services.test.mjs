@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodexCompletionService } from "./provider-completion-services.mjs";
+import { CodexCompletionService } from "./src/providers/provider-completion-services.mjs";
 
 test("Codex completion restores missing model pricing before final delivery", async () => {
   const delivered = [];
@@ -24,4 +24,3 @@ test("Codex completion restores missing model pricing before final delivery", as
   assert.equal(delivered[0].tracker.model, "gpt-5.6-sol");
   assert.equal(delivered[0].tracker.serviceTier, "fast");
 });
-

@@ -101,7 +101,7 @@ test("provider discovery and catalog merge have one application owner", async ()
 
 test("provider operations resolve through one AgentProvider registry", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
-  const adapters = await readFile(path.join(ROOT, "provider-adapters.mjs"), "utf8");
+  const adapters = await readFile(path.join(ROOT, "src", "providers", "provider-adapters.mjs"), "utf8");
   const coordinator = await readFile(path.join(ROOT, "run-coordinator.mjs"), "utf8");
   const observation = await readFile(path.join(ROOT, "task-observation-service.mjs"), "utf8");
   const providerCallOwners = `${source}\n${coordinator}\n${adapters}\n${observation}`;

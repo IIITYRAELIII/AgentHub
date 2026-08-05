@@ -1,3 +1,4 @@
+// Merges isolated provider discovery results into one durable task catalog.
 function sourceName(source, index) {
   const name = String(source?.name ?? "").trim();
   return name || `provider-${index + 1}`;

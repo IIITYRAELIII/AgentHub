@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ClaudeRecoveryService, CodexRecoveryService } from "./provider-recovery-services.mjs";
+import { ClaudeRecoveryService, CodexRecoveryService } from "./src/providers/provider-recovery-services.mjs";
 
 test("Claude recovery reattaches only a live detached worker", async () => {
   const calls = [];

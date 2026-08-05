@@ -1,3 +1,4 @@
+// Projects provider-native task records into the shared Agent Hub catalog.
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
   return value;
@@ -114,4 +115,3 @@ export class ClaudeCatalogProjectionService {
     return entries;
   }
 }
-
