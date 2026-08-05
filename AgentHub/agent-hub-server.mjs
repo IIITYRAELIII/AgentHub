@@ -259,6 +259,7 @@ import { createDesktopTaskHistoryFactory } from "./src/interfaces/desktop/deskto
 import { DesktopTaskService } from "./src/interfaces/desktop/desktop-task-service.mjs";
 import { DesktopSystemService } from "./src/interfaces/desktop/desktop-system-service.mjs";
 import { TaskCommandService } from "./src/application/task-command-service.mjs";
+import { TaskNavigationService } from "./src/application/task-navigation-service.mjs";
 import { RestartRequestService } from "./src/application/restart-request-service.mjs";
 import { createDesktopApplicationRouter } from "./src/interfaces/desktop/desktop-application-router.mjs";
 import { UsdRubRateStore } from "./exchange-rate.mjs";
@@ -2617,6 +2618,33 @@ const desktopDeferredInputService = new DesktopDeferredInputService({
   activeTitle: () => activeThreadTitle,
   snapshot: () => desktopSnapshot(),
 });
+const taskNavigationService = new TaskNavigationService({
+  projects: PROJECTS,
+  samePath,
+  findProject,
+  selectionStore,
+  activeProjectRoot: () => activeProjectRoot,
+  activeProvider: () => activeProvider,
+  threadId: () => threadId,
+  activeTaskTitle: () => activeThreadTitle,
+  isCodex,
+  rememberCodexSettings: rememberCodexTaskSettings,
+  captureCodexPreferences: () => agentPreferences.captureCodex(),
+  restoreCodexPreferences: (value) => agentPreferences.restoreCodex(value),
+  restoreCodexThreadSettings: restoreCodexTaskSettings,
+  storedCodexThreadTitle,
+  selectedTask,
+  taskRunKey,
+  storedTaskDiff: (key) => taskDiffs.get(key),
+  latestDiff: () => latestDiff,
+  setLatestDiff: (value) => { latestDiff = value; },
+  createThread,
+  codexTransportRunning: () => codexTransport.running,
+  startCodex: startCodexAppServer,
+  initializeCodex,
+  attachCodexThread,
+  saveState,
+});
 const desktopSettingsService = new DesktopSettingsService({
   isSelected: catalogEntryIsSelected,
   selectedTask,
@@ -2852,58 +2880,9 @@ function switchModel(value) {
   return agentPreferences.setClaudeModel(value);
 }
 
-async function switchProject(index) {
-  const project = PROJECTS[index];
-  if (!project) throw new Error("unknown project");
-  if (samePath(project.path, activeProjectRoot)) return { project, changed: false };
+function switchProject(...args) { return taskNavigationService.switchProject(...args); }
 
-  rememberCodexTaskSettings();
-  const previousSelection = selectionStore.snapshot();
-  const previousLatestDiff = latestDiff;
-  selectionStore.switchProject(project.path);
-  latestDiff = "";
-  try {
-    await createThread();
-  } catch (error) {
-    selectionStore.restore(previousSelection);
-    latestDiff = previousLatestDiff;
-    await saveState();
-    throw error;
-  }
-  return { project, changed: true };
-}
-
-async function switchProvider(target) {
-  if (target !== "codex" && target !== "claude") throw new Error("unknown provider");
-  if (target === activeProvider) return { changed: false };
-
-  rememberCodexTaskSettings();
-  const previousSelection = selectionStore.snapshot();
-  const previous = agentPreferences.captureCodex();
-  selectionStore.switchProvider(target);
-  if (target === "codex" && threadId) restoreCodexTaskSettings(threadId);
-  latestDiff = "";
-  try {
-    if (isCodex()) {
-      if (!codexTransport.running) {
-        await startCodexAppServer();
-        await initializeCodex();
-      } else {
-        await attachCodexThread();
-      }
-    } else if (!threadId) {
-      await createThread();
-    }
-  } catch (error) {
-    selectionStore.restore(previousSelection);
-    agentPreferences.restoreCodex(previous);
-    await saveState();
-    throw error;
-  }
-  latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
-  await saveState();
-  return { changed: true };
-}
+function switchProvider(...args) { return taskNavigationService.switchProvider(...args); }
 
 async function resumeThread(selectedThreadId, { notify = true, context = {} } = {}) {
   const result = await selectTaskFromBinding({
@@ -2929,53 +2908,7 @@ async function renameCurrentTask(title, context = {}) {
   return result.renamedTitle;
 }
 
-async function activateMessageBinding(binding) {
-  const project = findProject(binding.projectRoot);
-  if (!project) throw new Error("проект привязанного сообщения больше не разрешён");
-  if (binding.provider !== "codex" && binding.provider !== "claude") {
-    throw new Error("неизвестный агент привязанного сообщения");
-  }
-  const alreadyActive = samePath(project.path, activeProjectRoot)
-    && binding.provider === activeProvider
-    && binding.threadId === threadId;
-  if (alreadyActive) return { changed: false };
-
-  rememberCodexTaskSettings();
-  const previousSelection = selectionStore.snapshot();
-  const previous = {
-    latestDiff,
-    preferences: agentPreferences.captureCodex(),
-  };
-  selectionStore.selectTask({
-    activeProjectRoot: project.path,
-    activeProvider: binding.provider,
-    threadId: binding.threadId,
-    activeThreadTitle: binding.taskTitle?.trim()
-      || `${binding.provider === "codex" ? "Codex" : "Claude"} · ${binding.threadId.slice(0, 8)}`,
-  });
-  if (isCodex()) {
-    restoreCodexTaskSettings(threadId);
-    // Desktop already selected this durable catalog entry. Avoid scanning a
-    // potentially huge rollout only to rediscover the title the caller sent.
-    if (!binding.taskTitle?.trim()) {
-      selectionStore.setTitle(await storedCodexThreadTitle(threadId, activeThreadTitle));
-    }
-  }
-  latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
-  try {
-    // Selecting/opening a chat changes only local UI state. Starting an
-    // unavailable App Server here makes a harmless task click wait for its
-    // full startup timeout. The first operation that needs Codex starts it.
-    await saveState();
-    return { changed: true, activeTitle: activeThreadTitle };
-  } catch (error) {
-    selectionStore.restore(previousSelection);
-    latestDiff = previous.latestDiff;
-    agentPreferences.restoreCodex(previous.preferences);
-    await saveState();
-    throw error;
-  }
-}
+function activateMessageBinding(...args) { return taskNavigationService.activate(...args); }
 
 async function archiveCurrentThread(context = {}) {
   const blockedReason = archiveBlockedReason();
