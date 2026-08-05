@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { TaskDiffStore } from "./task-diff-store.mjs";
+import { TaskDiffStore } from "./src/infrastructure/persistence/task-diff-store.mjs";
 
 test("task diffs survive restart and evict the oldest entry", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "telegram-task-diff-store-"));

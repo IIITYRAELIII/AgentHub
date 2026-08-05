@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { TrustedDeviceStore } from "./trusted-device-store.mjs";
+import { TrustedDeviceStore } from "./src/infrastructure/persistence/trusted-device-store.mjs";
 
 function message({ deviceId, challengeId, challenge }) {
   return ["agent-hub-device-session-v1", deviceId, challengeId, challenge].join("\n");

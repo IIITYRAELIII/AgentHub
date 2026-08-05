@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import process from "node:process";
 import test from "node:test";
 
-import { captureProcess } from "./process-capture.mjs";
+import { captureProcess } from "./src/infrastructure/process/process-capture.mjs";
 
 test("captureProcess returns bounded stdout and stderr", async () => {
   const result = await captureProcess(process.execPath, [
@@ -26,4 +26,3 @@ test("captureProcess times out and stops the child", async () => {
   assert.equal(result.code, null);
   assert.equal(result.error?.code, "ETIMEDOUT");
 });
-

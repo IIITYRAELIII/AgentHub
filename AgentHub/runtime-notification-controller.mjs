@@ -6,7 +6,7 @@ import {
   resolveAllowedNotificationCwd,
   resolveAllowedNotificationPath,
 } from "./notification-security.mjs";
-import { captureProcess } from "./process-capture.mjs";
+import { captureProcess } from "./src/infrastructure/process/process-capture.mjs";
 import {
   parseArguments as parseSendMessageArguments,
   resolveChatId as resolveNotificationChatId,
@@ -82,4 +82,3 @@ export class RuntimeNotificationController {
     return this.#spawn(script, request.args, requestCwd, request.environment);
   }
 }
-

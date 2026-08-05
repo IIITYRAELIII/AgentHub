@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { catalogTaskKey } from "./task-catalog.mjs";
+import { catalogTaskKey } from "../../../task-catalog.mjs";
 
 const FORMAT_VERSION = 1;
 const TASK_SCHEMA_VERSION = 2;

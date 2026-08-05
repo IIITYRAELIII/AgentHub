@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { TaskReadStateStore, taskHasUnreadAnswer } from "./task-read-state-store.mjs";
+import { TaskReadStateStore, taskHasUnreadAnswer } from "./src/infrastructure/persistence/task-read-state-store.mjs";
 
 test("read cursor is shared by account, not trusted device", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-read-state-"));

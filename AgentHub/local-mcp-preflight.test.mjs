@@ -8,7 +8,7 @@ import {
   isLoopbackMcpUrl,
   parseLocalHttpMcpServers,
   unavailableLocalMcpOverrides,
-} from "./local-mcp-preflight.mjs";
+} from "./src/infrastructure/process/local-mcp-preflight.mjs";
 
 test("local MCP parser selects enabled loopback HTTP servers only", () => {
   const result = parseLocalHttpMcpServers(`

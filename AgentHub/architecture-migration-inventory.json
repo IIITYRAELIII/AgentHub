@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "baseline": {
     "serverMaximumLines": 3930,
-    "rootProductionModules": 81
+    "rootProductionModules": 67
   },
   "publicRootModules": [
     "agent-hub-main.mjs",
@@ -60,23 +60,15 @@
       "runtime-restart.mjs"
     ],
     "src/infrastructure/persistence": [
-      "background-job-store.mjs",
       "delivery-outbox.mjs",
       "durable-command-receipts.mjs",
-      "failed-update-store.mjs",
       "incremental-ledger.mjs",
       "journal-database.mjs",
       "last-message.mjs",
       "message-receipts.mjs",
-      "publication-state.mjs",
       "rate-limit-history.mjs",
       "rate-limit-rollout-backfill.mjs",
-      "rotating-log.mjs",
       "state-store.mjs",
-      "task-diff-store.mjs",
-      "task-read-state-store.mjs",
-      "task-sync-store.mjs",
-      "trusted-device-store.mjs",
       "work-log-rollout-backfill.mjs",
       "work-log-title-backfill.mjs",
       "work-log-usage.mjs"
@@ -91,17 +83,10 @@
     "src/infrastructure/process": [
       "doctor-probes.mjs",
       "instance-lock.mjs",
-      "interprocess-lock.mjs",
-      "local-mcp-preflight.mjs",
       "main-module.mjs",
-      "process-capture.mjs",
-      "runtime-host-builder.mjs",
       "tts-worker-client.mjs"
     ],
-    "src/infrastructure/network": [
-      "exchange-rate.mjs",
-      "quick-tunnel.mjs"
-    ],
+    "src/infrastructure/network": [],
     "src/infrastructure/telegram": [
       "notification-security.mjs",
       "poll-retry.mjs",

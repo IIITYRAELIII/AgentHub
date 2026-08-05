@@ -75,7 +75,7 @@ import {
   resolveTaskGitRepoRoots,
   taskGitDiff,
 } from "./task-git-diff.mjs";
-import { TaskDiffStore } from "./task-diff-store.mjs";
+import { TaskDiffStore } from "./src/infrastructure/persistence/task-diff-store.mjs";
 import { findRepositoryWriteConflict } from "./repository-conflict.mjs";
 import {
   deferredInputMatchesRun,
@@ -122,21 +122,21 @@ const { formatPermissionsApproval, parseApprovalCallback } = approvalProtocol;
 import { contextualCallback } from "./src/interfaces/telegram/callback-context.mjs";
 import { taskViewCallbackData } from "./src/interfaces/telegram/task-view-callback.mjs";
 import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
-import { installRotatingConsole } from "./rotating-log.mjs";
+import { installRotatingConsole } from "./src/infrastructure/persistence/rotating-log.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 import { RuntimeStateStore } from "./src/infrastructure/persistence/runtime-state-store.mjs";
-import { TaskReadStateStore, taskHasUnreadAnswer } from "./task-read-state-store.mjs";
-import { LocalTaskSyncStore } from "./task-sync-store.mjs";
+import { TaskReadStateStore, taskHasUnreadAnswer } from "./src/infrastructure/persistence/task-read-state-store.mjs";
+import { LocalTaskSyncStore } from "./src/infrastructure/persistence/task-sync-store.mjs";
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
 import { createDesktopMessageController } from "./src/interfaces/desktop/desktop-message-controller.mjs";
 import { createTrustedDeviceManager, resolveTrustedDeviceUserId } from "./src/interfaces/web/trusted-device-access.mjs";
-import { TrustedDeviceStore } from "./trusted-device-store.mjs";
-import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
+import { TrustedDeviceStore } from "./src/infrastructure/persistence/trusted-device-store.mjs";
+import { unavailableLocalMcpOverrides } from "./src/infrastructure/process/local-mcp-preflight.mjs";
 import { SingleInstanceGuard } from "./instance-lock.mjs";
 import { BackgroundJobQueue } from "./background-job-queue.mjs";
 import { PersistentBackgroundJobController } from "./background-job-controller.mjs";
-import { PersistentBackgroundJobStore } from "./background-job-store.mjs";
-import { FailedTelegramUpdateStore } from "./failed-update-store.mjs";
+import { PersistentBackgroundJobStore } from "./src/infrastructure/persistence/background-job-store.mjs";
+import { FailedTelegramUpdateStore } from "./src/infrastructure/persistence/failed-update-store.mjs";
 import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "./src/providers/claude/claude-invocation.mjs";
 import {
   catalogEntryIsSelected,
@@ -176,7 +176,7 @@ import {
 } from "./restart-recovery.mjs";
 import { RuntimeCommandServer } from "./runtime-command.mjs";
 import { RuntimeNotificationController } from "./runtime-notification-controller.mjs";
-import { captureProcess } from "./process-capture.mjs";
+import { captureProcess } from "./src/infrastructure/process/process-capture.mjs";
 import { CodexLifecycleController } from "./src/providers/codex/codex-lifecycle-controller.mjs";
 import {
   TurnEndNotificationRegistry,
@@ -221,7 +221,7 @@ import { WorkLogUsageStore } from "./work-log-usage.mjs";
 import { miniAppMenuButtonRequests, MiniAppServer } from "./src/interfaces/web/mini-app-server.mjs";
 import { MiniAppPublisher } from "./src/interfaces/web/mini-app-publisher.mjs";
 import { DirectGatewayController, loadDirectGatewaySettings } from "./src/interfaces/web/direct-gateway.mjs";
-import { QuickTunnelController } from "./quick-tunnel.mjs";
+import { QuickTunnelController } from "./src/infrastructure/network/quick-tunnel.mjs";
 import { ensureLocalWebSecret } from "./src/interfaces/web/local-web-auth.mjs";
 import { fitTaskHistoryPayload } from "./response-budget.mjs";
 import { RuntimeLifecycleController } from "./src/runtime/runtime-lifecycle-controller.mjs";
@@ -270,7 +270,7 @@ import { TaskNavigationService } from "./src/application/task-navigation-service
 import { ManagedRunHistoryService } from "./src/application/managed-run-history-service.mjs";
 import { RestartRequestService } from "./src/application/restart-request-service.mjs";
 import { createDesktopApplicationRouter } from "./src/interfaces/desktop/desktop-application-router.mjs";
-import { UsdRubRateStore } from "./exchange-rate.mjs";
+import { UsdRubRateStore } from "./src/infrastructure/network/exchange-rate.mjs";
 import { agentHubAutostartShortcut } from "./src/interfaces/web/server-page.mjs";
 import { MiniAppLifecycleService } from "./src/interfaces/web/mini-app-lifecycle-service.mjs";
 import {

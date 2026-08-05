@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
-import { findQuickTunnelUrl, QuickTunnelController } from "./quick-tunnel.mjs";
+import { findQuickTunnelUrl, QuickTunnelController } from "./src/infrastructure/network/quick-tunnel.mjs";
 
 function fakeChild() {
   const child = new EventEmitter();

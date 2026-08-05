@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { appendRotatingLog } from "./rotating-log.mjs";
+import { appendRotatingLog } from "./src/infrastructure/persistence/rotating-log.mjs";
 
 test("appendRotatingLog bounds the current log and numbered backups", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-log-"));

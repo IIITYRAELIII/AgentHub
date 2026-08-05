@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { callDesktopControl } from "./desktop-control.mjs";
-import { currentRevision, writePublicationState } from "./publication-state.mjs";
+import { currentRevision, writePublicationState } from "./src/infrastructure/persistence/publication-state.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(ROOT, "..");

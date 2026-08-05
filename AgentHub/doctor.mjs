@@ -9,7 +9,7 @@ import {
   probeTelegramConnectivity,
   requiresTelegramChecks,
 } from "./doctor-probes.mjs";
-import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
+import { unavailableLocalMcpOverrides } from "./src/infrastructure/process/local-mcp-preflight.mjs";
 import { codexStopHookStatus } from "./src/infrastructure/codex/codex-hook-config.mjs";
 
 let failed = false;

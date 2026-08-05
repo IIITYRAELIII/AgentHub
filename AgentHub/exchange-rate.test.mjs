@@ -10,7 +10,7 @@ import {
   parseCbrDailyRatesXml,
   PTE_PER_CREDIT,
   UsdRubRateStore,
-} from "./exchange-rate.mjs";
+} from "./src/infrastructure/network/exchange-rate.mjs";
 
 const xml = `<?xml version="1.0" encoding="windows-1251"?>
 <ValCurs Date="30.07.2026" name="Foreign Currency Market">

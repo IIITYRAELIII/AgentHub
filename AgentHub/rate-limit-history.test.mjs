@@ -25,7 +25,7 @@ test("Agent Hub persists Codex and Claude limit snapshots every five minutes", a
     new URL("./src/interfaces/desktop/desktop-system-service.mjs", import.meta.url),
     "utf8",
   );
-  const processCaptureSource = await readFile(new URL("./process-capture.mjs", import.meta.url), "utf8");
+  const processCaptureSource = await readFile(new URL("./src/infrastructure/process/process-capture.mjs", import.meta.url), "utf8");
   assert.match(source, /new RateLimitTelemetryService\(/u);
   assert.match(source, /new RateLimitHistoryStore\(/u);
   assert.match(telemetrySource, /intervalMs = 5 \* 60_000/u);

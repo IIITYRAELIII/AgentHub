@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { buildWindowsRuntimeHost } from "./runtime-host-builder.mjs";
+import { buildWindowsRuntimeHost } from "./src/infrastructure/process/runtime-host-builder.mjs";
 import { verifyRuntimeManifest } from "./runtime-manifest-verifier.mjs";
 import {
   protectRuntimeConfig,

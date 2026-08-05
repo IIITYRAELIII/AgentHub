@@ -16,7 +16,7 @@ import process from "node:process";
 
 import { isMainModule } from "./main-module.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "./runtime-layout.mjs";
-import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "./runtime-host-builder.mjs";
+import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "./src/infrastructure/process/runtime-host-builder.mjs";
 import { verifyRuntimeImportClosure } from "./runtime-manifest-verifier.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "./runtime-security.mjs";

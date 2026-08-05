@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { PersistentBackgroundJobStore } from "./background-job-store.mjs";
+import { PersistentBackgroundJobStore } from "./src/infrastructure/persistence/background-job-store.mjs";
 
 test("background jobs survive a new store instance and retain order", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "telegram-background-jobs-"));

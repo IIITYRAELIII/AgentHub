@@ -3,7 +3,7 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { FailedTelegramUpdateStore } from "./failed-update-store.mjs";
+import { FailedTelegramUpdateStore } from "./src/infrastructure/persistence/failed-update-store.mjs";
 
 test("failed Telegram updates are durable and deduplicated", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "failed-telegram-updates-"));

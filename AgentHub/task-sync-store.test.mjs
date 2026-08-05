@@ -5,7 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { TASK_EXECUTION_OWNERS } from "./task-catalog.mjs";
-import { LocalTaskSyncStore } from "./task-sync-store.mjs";
+import { LocalTaskSyncStore } from "./src/infrastructure/persistence/task-sync-store.mjs";
 
 const task = {
   provider: "codex",

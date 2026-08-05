@@ -1,7 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { writeTextAtomic } from "./state-store.mjs";
+import { writeTextAtomic } from "../../../state-store.mjs";
 
 export const CBR_DAILY_RATES_URL = "https://www.cbr.ru/scripts/XML_daily.asp";
 export const CREDITS_PER_USD = 25;

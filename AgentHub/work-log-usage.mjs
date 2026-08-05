@@ -8,7 +8,7 @@ import {
 } from "./src/domain/codex-usage-estimate.mjs";
 import { isInheritedSubagentTurn } from "./src/providers/codex/codex-subagent-accounting.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
-import { withInterprocessLocks } from "./interprocess-lock.mjs";
+import { withInterprocessLocks } from "./src/infrastructure/process/interprocess-lock.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import {

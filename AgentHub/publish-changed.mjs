@@ -8,7 +8,7 @@ import {
   currentRevision,
   readPublicationState,
   writePublicationState,
-} from "./publication-state.mjs";
+} from "./src/infrastructure/persistence/publication-state.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(ROOT, "..");

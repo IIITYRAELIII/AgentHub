@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { withInterprocessLocks } from "./interprocess-lock.mjs";
+import { withInterprocessLocks } from "./src/infrastructure/process/interprocess-lock.mjs";
 
 test("interprocess lock recovers a stale dead owner", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-lock-stale-"));
