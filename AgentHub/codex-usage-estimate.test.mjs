@@ -5,7 +5,7 @@ import {
   estimateMissingCodexUsage,
   IMAGE_GENERATION_ESTIMATE_CREDITS,
   looksLikeImageGenerationPrompt,
-} from "./src/providers/codex/codex-usage-estimate.mjs";
+} from "./src/domain/codex-usage-estimate.mjs";
 
 test("image generation estimate recognizes direct Russian and English requests", () => {
   assert.equal(looksLikeImageGenerationPrompt("Нарисуй чёрную дыру — это будет фон журнала"), true);

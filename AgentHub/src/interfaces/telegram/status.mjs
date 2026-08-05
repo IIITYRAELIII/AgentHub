@@ -1,5 +1,4 @@
-import { parseClaudeLimits } from "./src/providers/claude/claude.mjs";
-import { rateLimitResetCreditSummary } from "./rate-limit-history.mjs";
+import { rateLimitResetCreditSummary } from "../../../rate-limit-history.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 
 function escapeTelegramHtml(value) {
@@ -98,8 +97,7 @@ function formatClaudeWindow(limit, nowMs) {
   return `${remaining.toFixed(1)}% - ${resetAt ? formatResetRemaining(resetAt, nowMs) : "неизвестно"}`;
 }
 
-export function formatClaudeRateLimits(text, nowMs = Date.now()) {
-  const limits = parseClaudeLimits(text);
+export function formatClaudeRateLimits(limits, nowMs = Date.now()) {
   if (!limits.length) return "Не удалось распознать данные о лимитах Claude.";
 
   const sharedLimits = limits.filter((item) => !item.model);

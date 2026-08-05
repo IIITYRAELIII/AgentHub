@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { directGatewayCaddyfile, loadDirectGatewaySettings } from "./direct-gateway.mjs";
+import { directGatewayCaddyfile, loadDirectGatewaySettings } from "./src/interfaces/web/direct-gateway.mjs";
 
 test("direct gateway settings keep the Hub backend on loopback", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-gateway-"));

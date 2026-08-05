@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { turnEndKey } from "../../../turn-end-notifications.mjs";
+import { turnEndKey } from "../../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../../../turn-title.mjs";
 
 export class CodexTerminalReconciliationService {

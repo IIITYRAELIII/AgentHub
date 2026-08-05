@@ -7,7 +7,7 @@ import {
   currentThreadBinding,
   resolveChatId,
 } from "./send-message.mjs";
-import { appendMessageBindings } from "./message-bindings.mjs";
+import { appendMessageBindings } from "./src/infrastructure/persistence/message-bindings.mjs";
 import { telegramBotApiUrl } from "./telegram-api.mjs";
 import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
 import { isMainModule } from "./main-module.mjs";

@@ -1,8 +1,8 @@
-import { resolveContextualCallback } from "../../../callback-context.mjs";
+import { resolveContextualCallback } from "./callback-context.mjs";
 import { parsePendingInputCallback } from "../../domain/deferred-input.mjs";
-import { parseForwardBundleCallback } from "../../../telegram-forward-bundle.mjs";
+import { parseForwardBundleCallback } from "./telegram-forward-bundle.mjs";
 import { parseTaskCatalogCallback } from "../../../task-catalog.mjs";
-import { parseTaskViewCallbackData } from "../../../task-view-callback.mjs";
+import { parseTaskViewCallbackData } from "./task-view-callback.mjs";
 
 function match(pattern, value, names) {
   const result = pattern.exec(value);

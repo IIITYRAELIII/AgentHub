@@ -3,6 +3,10 @@ import test from "node:test";
 
 import { RateLimitTelemetryService } from "./src/application/rate-limit-telemetry-service.mjs";
 import { parseClaudeLimits } from "./src/providers/claude/claude.mjs";
+import {
+  formatClaudeRateLimits,
+  formatCodexRateLimits,
+} from "./src/interfaces/telegram/status.mjs";
 
 function fixture({
   codexRunning = true,
@@ -15,6 +19,8 @@ function fixture({
   const service = new RateLimitTelemetryService({
     resolveClaudeInvocation: () => ({ command: "claude", prefixArgs: ["--flag"] }),
     parseClaudeLimits,
+    formatClaudeRateLimits,
+    formatCodexRateLimits,
     spawnCapture: async (command, args, options) => {
       events.push(["spawn", command, args, options]);
       return { code: 0, stdout: claudeOutput, stderr: "", error: null };

@@ -2,7 +2,7 @@ import {
   formatClaudeRateLimits,
   formatCodexRateLimits,
   formatStatusMessage,
-} from "../../../status.mjs";
+} from "./status.mjs";
 import {
   catalogEntryIsSelected,
   mergeTaskCatalog,
@@ -22,6 +22,7 @@ export class TelegramStatusController {
     currentTaskRuns,
     readCodexRateLimits,
     readClaudeRateLimits,
+    parseClaudeLimits,
     codexModelLabel,
     claudeModelLabels,
     reasoningLabels,
@@ -38,6 +39,7 @@ export class TelegramStatusController {
     this.currentTaskRuns = currentTaskRuns;
     this.readCodexRateLimits = readCodexRateLimits;
     this.readClaudeRateLimits = readClaudeRateLimits;
+    this.parseClaudeLimits = parseClaudeLimits;
     this.codexModelLabel = codexModelLabel;
     this.claudeModelLabels = claudeModelLabels;
     this.reasoningLabels = reasoningLabels;
@@ -54,7 +56,7 @@ export class TelegramStatusController {
     const request = (async () => {
       const value = provider === "codex"
         ? formatCodexRateLimits(await this.readCodexRateLimits())
-        : formatClaudeRateLimits(await this.readClaudeRateLimits());
+        : formatClaudeRateLimits(this.parseClaudeLimits(await this.readClaudeRateLimits()));
       this.#limitsCache.set(provider, { at: Date.now(), value });
       return value;
     })();

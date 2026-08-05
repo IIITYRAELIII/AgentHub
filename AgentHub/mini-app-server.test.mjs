@@ -11,8 +11,8 @@ import {
   MiniAppServer,
   PublicAuthAttemptLimiter,
   validateTelegramInitData,
-} from "./mini-app-server.mjs";
-import { buildLazyJournalPayload } from "./mini-app-journal-data.mjs";
+} from "./src/interfaces/web/mini-app-server.mjs";
+import { buildLazyJournalPayload } from "./src/interfaces/web/mini-app-journal-data.mjs";
 
 const LIMITS_HTML = '<div data-work-log-rate-limits data-sampled-at="2026-07-30T02:55:14.512Z">'
   + '<span data-rate-limit-caption>Лимиты</span>'

@@ -5,7 +5,7 @@ import {
   TURN_END_TITLE_LIMIT,
   TurnEndNotificationRegistry,
   turnEndKey,
-} from "./turn-end-notifications.mjs";
+} from "./src/application/turn-end-notifications.mjs";
 
 function message(overrides = {}) {
   return {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { TelegramStatusController } from "./src/interfaces/telegram/telegram-status-controller.mjs";
+import { parseClaudeLimits } from "./src/providers/claude/claude.mjs";
 
 function fixture({ catalogError = null, limitsError = null } = {}) {
   const catalog = [{
@@ -30,6 +31,7 @@ function fixture({ catalogError = null, limitsError = null } = {}) {
       return {};
     },
     readClaudeRateLimits: async () => "",
+    parseClaudeLimits,
     codexModelLabel: (value) => `Model ${value}`,
     claudeModelLabels: { opus: "Opus" },
     reasoningLabels: { high: "High" },

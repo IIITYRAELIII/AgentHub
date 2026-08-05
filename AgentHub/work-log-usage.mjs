@@ -5,7 +5,7 @@ import path from "node:path";
 import {
   estimateMissingCodexUsage,
   looksLikeImageGenerationPrompt,
-} from "./src/providers/codex/codex-usage-estimate.mjs";
+} from "./src/domain/codex-usage-estimate.mjs";
 import { isInheritedSubagentTurn } from "./src/providers/codex/codex-subagent-accounting.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 import { withInterprocessLocks } from "./interprocess-lock.mjs";

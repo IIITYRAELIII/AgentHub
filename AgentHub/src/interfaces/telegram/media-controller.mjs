@@ -3,10 +3,10 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { telegramBotApiUrl, telegramFileApiUrl } from "./telegram-api.mjs";
+import { telegramBotApiUrl, telegramFileApiUrl } from "../../../telegram-api.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
-import { writeTextAtomic } from "./state-store.mjs";
-import { PersistentTtsWorkerClient } from "./tts-worker-client.mjs";
+import { writeTextAtomic } from "../../../state-store.mjs";
+import { PersistentTtsWorkerClient } from "../../../tts-worker-client.mjs";
 
 const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
 const MAX_TRANSCRIPTION_OUTPUT_BYTES = 1024 * 1024;

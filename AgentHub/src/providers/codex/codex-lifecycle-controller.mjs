@@ -7,7 +7,7 @@ import {
 } from "../../../task-catalog.mjs";
 import { taskRunKey } from "../../domain/task-runs.mjs";
 import { normalizeTokenUsage } from "../../../token-usage.mjs";
-import { turnEndKey } from "../../../turn-end-notifications.mjs";
+import { turnEndKey } from "../../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../../../turn-title.mjs";
 
 const LIFECYCLE_COMMANDS = new Set(["turn-start", "turn-complete"]);

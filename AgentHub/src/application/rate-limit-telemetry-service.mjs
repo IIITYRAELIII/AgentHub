@@ -1,12 +1,9 @@
-import {
-  formatClaudeRateLimits,
-  formatCodexRateLimits,
-} from "../../status.mjs";
-
 export class RateLimitTelemetryService {
   constructor({
     resolveClaudeInvocation,
     parseClaudeLimits,
+    formatClaudeRateLimits,
+    formatCodexRateLimits,
     spawnCapture,
     readCodexRateLimits,
     codexRunning,
@@ -20,6 +17,8 @@ export class RateLimitTelemetryService {
   }) {
     this.resolveClaudeInvocation = resolveClaudeInvocation;
     this.parseClaudeLimits = parseClaudeLimits;
+    this.formatClaudeRateLimits = formatClaudeRateLimits;
+    this.formatCodexRateLimits = formatCodexRateLimits;
     this.spawnCapture = spawnCapture;
     this.readCodexRateLimits = readCodexRateLimits;
     this.codexRunning = codexRunning;
@@ -55,8 +54,8 @@ export class RateLimitTelemetryService {
 
   async formatted(provider) {
     return provider === "codex"
-      ? formatCodexRateLimits(await this.readCodex())
-      : formatClaudeRateLimits(await this.readClaude());
+      ? this.formatCodexRateLimits(await this.readCodex())
+      : this.formatClaudeRateLimits(this.parseClaudeLimits(await this.readClaude()));
   }
 
   schedule(delayMs = this.intervalMs) {
@@ -81,7 +80,7 @@ export class RateLimitTelemetryService {
     if (this.codexRunning()) {
       jobs.push((async () => {
         const result = await this.readCodex();
-        const summary = formatCodexRateLimits(result);
+        const summary = this.formatCodexRateLimits(result);
         await this.historyStore.record(result, observedAt);
         await this.workLogUsageStore.projectRateLimits(null, summary, observedAt);
       })().catch((error) => {

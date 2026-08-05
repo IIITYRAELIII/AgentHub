@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { createTrustedDeviceManager, resolveTrustedDeviceUserId } from "./trusted-device-access.mjs";
+import { createTrustedDeviceManager, resolveTrustedDeviceUserId } from "./src/interfaces/web/trusted-device-access.mjs";
 
 test("public browser pairing clears stale errors and submits a complete pasted code", () => {
   const auth = readFileSync(new URL("./assets/mini-app/browser-device-auth.js", import.meta.url), "utf8");

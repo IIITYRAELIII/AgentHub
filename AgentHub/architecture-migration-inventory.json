@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "serverMaximumLines": 4928,
-    "rootProductionModules": 101
+    "serverMaximumLines": 4815,
+    "rootProductionModules": 81
   },
   "publicRootModules": [
     "agent-hub-main.mjs",
@@ -45,31 +45,8 @@
     ],
     "src/providers/codex": [],
     "src/providers/claude": [],
-    "src/interfaces/telegram": [
-      "approval-controller.mjs",
-      "callback-context.mjs",
-      "media-controller.mjs",
-      "message-bindings.mjs",
-      "status-header.mjs",
-      "status.mjs",
-      "task-picker.mjs",
-      "task-view-callback.mjs",
-      "task-view-controller.mjs",
-      "telegram-forward-bundle.mjs",
-      "telegram-message.mjs",
-      "turn-end-notifications.mjs"
-    ],
-    "src/interfaces/web": [
-      "direct-gateway.mjs",
-      "local-web-auth.mjs",
-      "mini-app-journal-data.mjs",
-      "mini-app-publisher.mjs",
-      "mini-app-server.mjs",
-      "server-configuration.mjs",
-      "server-control-controller.mjs",
-      "server-page.mjs",
-      "trusted-device-access.mjs"
-    ],
+    "src/interfaces/telegram": [],
+    "src/interfaces/web": [],
     "src/runtime": [
       "background-job-controller.mjs",
       "background-job-queue.mjs",
@@ -118,6 +95,7 @@
       "local-mcp-preflight.mjs",
       "main-module.mjs",
       "process-capture.mjs",
+      "runtime-host-builder.mjs",
       "tts-worker-client.mjs"
     ],
     "src/infrastructure/network": [

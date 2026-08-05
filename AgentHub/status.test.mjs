@@ -11,7 +11,8 @@ import {
   formatTaskSwitchMessage,
   showLastMessageReplyMarkup,
   statusHeaderFileName,
-} from "./status.mjs";
+} from "./src/interfaces/telegram/status.mjs";
+import { parseClaudeLimits } from "./src/providers/claude/claude.mjs";
 
 test("formatCodexRateLimits always shows the primary window per limit", () => {
   const nowMs = new Date(2026, 6, 10, 15, 0).getTime();
@@ -71,7 +72,7 @@ test("formatClaudeRateLimits shows weekly, session, and model limits on separate
     "Current week (Sonnet): 10% used · resets Jul 17, 03:00pm",
   ].join("\n");
 
-  assert.equal(formatClaudeRateLimits(usage, nowMs), [
+  assert.equal(formatClaudeRateLimits(parseClaudeLimits(usage), nowMs), [
     "CLAUDE - 94.0% - 6 дн. 7 ч.",
     "Session - 100.0% - 5 ч.",
     "Sonnet - 90.0% - 7 дн.",
@@ -85,7 +86,7 @@ test("formatClaudeRateLimits inherits the weekly reset for an unused Fable limit
     "Current week (Fable): 0% used",
   ].join("\n");
 
-  assert.equal(formatClaudeRateLimits(usage, nowMs), [
+  assert.equal(formatClaudeRateLimits(parseClaudeLimits(usage), nowMs), [
     "CLAUDE - 94.0% - 6 дн. 7 ч.",
     "Fable - 100.0% - 6 дн. 7 ч.",
   ].join("\n"));

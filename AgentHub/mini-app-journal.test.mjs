@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildLazyJournalPayload } from "./mini-app-journal-data.mjs";
-import { extractWorkLogHtml } from "./mini-app-server.mjs";
+import { buildLazyJournalPayload } from "./src/interfaces/web/mini-app-journal-data.mjs";
+import { extractWorkLogHtml } from "./src/interfaces/web/mini-app-server.mjs";
 
 test("Mini App keeps the fresh rate-limit summary above projected days", () => {
   const html = extractWorkLogHtml([

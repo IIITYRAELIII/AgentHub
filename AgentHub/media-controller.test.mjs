@@ -8,7 +8,7 @@ import {
   MediaController,
   runBoundedProcess,
   telegramImageDescriptor,
-} from "./media-controller.mjs";
+} from "./src/interfaces/telegram/media-controller.mjs";
 
 function controller(dataDir, overrides = {}) {
   return new MediaController({

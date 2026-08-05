@@ -11,7 +11,7 @@ import {
   MiniAppPublisher,
   signMiniAppControlRequest,
   signMiniAppSyncChunk,
-} from "./mini-app-publisher.mjs";
+} from "./src/interfaces/web/mini-app-publisher.mjs";
 import { createDesktopControlRouter } from "./src/interfaces/desktop/desktop-control-router.mjs";
 
 function memoryJournal(payload = {

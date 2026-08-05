@@ -34,14 +34,12 @@ import {
 import {
   codexThreadSandboxSettings,
 } from "./src/providers/codex/codex-sandbox.mjs";
-import {
-  formatArchiveMessage,
-  formatProgressHeading,
-  formatRestartCompleteMessage,
-  formatTaskAlreadySelectedMessage,
-  formatTaskSwitchMessage,
+import * as telegramStatus from "./src/interfaces/telegram/status.mjs";
+const {
+  formatArchiveMessage, formatClaudeRateLimits, formatCodexRateLimits, formatProgressHeading,
+  formatRestartCompleteMessage, formatTaskAlreadySelectedMessage, formatTaskSwitchMessage,
   showLastMessageReplyMarkup,
-} from "./status.mjs";
+} = telegramStatus;
 import {
   discoverCodexRollouts,
   discoverCodexSubagentRollouts,
@@ -62,15 +60,15 @@ import { CODEX_AUDIT_SOURCE_KINDS } from "./src/providers/codex/codex-subagent-a
 import { CodexRunFinalizer } from "./src/providers/codex/codex-run-finalizer.mjs";
 import { CodexContextMaintenanceService } from "./src/providers/codex/codex-context-maintenance-service.mjs";
 import { CodexUsageTracker } from "./src/providers/codex/codex-usage-tracker.mjs";
-import { randomStatusHeaderFileName } from "./status-header.mjs";
+import { randomStatusHeaderFileName } from "./src/interfaces/telegram/status-header.mjs";
 import { TelegramClient } from "./telegram-client.mjs";
 import { emptyTokenUsage } from "./token-usage.mjs";
-import { telegramPrompt } from "./telegram-message.mjs";
+import { telegramPrompt } from "./src/interfaces/telegram/telegram-message.mjs";
 import {
   forwardBundleAttachmentPaths,
   restoreForwardBundle,
   TelegramForwardBundleController,
-} from "./telegram-forward-bundle.mjs";
+} from "./src/interfaces/telegram/telegram-forward-bundle.mjs";
 import {
   captureTaskGitBaseline,
   cleanupTaskGitIndexes,
@@ -93,7 +91,7 @@ import {
   migrateMessageBindings,
   readMessageBindings,
   removeMessageBindings,
-} from "./message-bindings.mjs";
+} from "./src/infrastructure/persistence/message-bindings.mjs";
 import {
   readCodexThreadTitleHistories,
   readCodexThreadTitleHistory,
@@ -123,12 +121,10 @@ import {
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
 } from "./task-history.mjs";
-import {
-  formatPermissionsApproval,
-  parseApprovalCallback,
-} from "./src/providers/codex/codex-approvals.mjs";
-import { contextualCallback } from "./callback-context.mjs";
-import { taskViewCallbackData } from "./task-view-callback.mjs";
+import * as approvalProtocol from "./src/providers/codex/codex-approvals.mjs";
+const { formatPermissionsApproval, parseApprovalCallback } = approvalProtocol;
+import { contextualCallback } from "./src/interfaces/telegram/callback-context.mjs";
+import { taskViewCallbackData } from "./src/interfaces/telegram/task-view-callback.mjs";
 import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { installRotatingConsole } from "./rotating-log.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
@@ -137,7 +133,7 @@ import { TaskReadStateStore, taskHasUnreadAnswer } from "./task-read-state-store
 import { LocalTaskSyncStore } from "./task-sync-store.mjs";
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
 import { createDesktopMessageController } from "./src/interfaces/desktop/desktop-message-controller.mjs";
-import { createTrustedDeviceManager, resolveTrustedDeviceUserId } from "./trusted-device-access.mjs";
+import { createTrustedDeviceManager, resolveTrustedDeviceUserId } from "./src/interfaces/web/trusted-device-access.mjs";
 import { TrustedDeviceStore } from "./trusted-device-store.mjs";
 import { unavailableLocalMcpOverrides } from "./local-mcp-preflight.mjs";
 import { SingleInstanceGuard } from "./instance-lock.mjs";
@@ -189,17 +185,17 @@ import { CodexLifecycleController } from "./src/providers/codex/codex-lifecycle-
 import {
   TurnEndNotificationRegistry,
   turnEndKey,
-} from "./turn-end-notifications.mjs";
+} from "./src/application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
 import { DesktopControlServer } from "./desktop-control.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
-import { MediaController } from "./media-controller.mjs";
+import { MediaController } from "./src/interfaces/telegram/media-controller.mjs";
 import { TelegramMessageController } from "./src/interfaces/telegram/telegram-message-controller.mjs";
-import { ApprovalController } from "./approval-controller.mjs";
+import { ApprovalController } from "./src/interfaces/telegram/approval-controller.mjs";
 import { TelegramCallbackController } from "./src/interfaces/telegram/telegram-callback-controller.mjs";
 import { routeTelegramCallback } from "./src/interfaces/telegram/telegram-callback-router.mjs";
-import { buildTaskPicker } from "./task-picker.mjs";
-import { TaskViewController } from "./task-view-controller.mjs";
+import { buildTaskPicker } from "./src/interfaces/telegram/task-picker.mjs";
+import { TaskViewController } from "./src/interfaces/telegram/task-view-controller.mjs";
 import { TelegramPollingController } from "./src/interfaces/telegram/telegram-polling-controller.mjs";
 import { TelegramSettingsMenu } from "./src/interfaces/telegram/telegram-settings-menu.mjs";
 import { TelegramStatusController } from "./src/interfaces/telegram/telegram-status-controller.mjs";
@@ -216,11 +212,11 @@ import {
   isRetryableDeferredLaunchError,
 } from "./src/application/deferred-input-controller.mjs";
 import { WorkLogUsageStore } from "./work-log-usage.mjs";
-import { miniAppMenuButtonRequests, MiniAppServer } from "./mini-app-server.mjs";
-import { MiniAppPublisher } from "./mini-app-publisher.mjs";
-import { DirectGatewayController, loadDirectGatewaySettings } from "./direct-gateway.mjs";
+import { miniAppMenuButtonRequests, MiniAppServer } from "./src/interfaces/web/mini-app-server.mjs";
+import { MiniAppPublisher } from "./src/interfaces/web/mini-app-publisher.mjs";
+import { DirectGatewayController, loadDirectGatewaySettings } from "./src/interfaces/web/direct-gateway.mjs";
 import { QuickTunnelController } from "./quick-tunnel.mjs";
-import { ensureLocalWebSecret } from "./local-web-auth.mjs";
+import { ensureLocalWebSecret } from "./src/interfaces/web/local-web-auth.mjs";
 import { fitTaskHistoryPayload } from "./response-budget.mjs";
 import { RuntimeLifecycleController } from "./src/runtime/runtime-lifecycle-controller.mjs";
 import { RuntimeResourceRegistry } from "./src/runtime/runtime-resource-registry.mjs";
@@ -259,13 +255,14 @@ import { TaskCatalogService } from "./task-catalog-service.mjs";
 import { TaskSelectionStore } from "./src/application/task-selection-store.mjs";
 import { createDesktopSnapshotFactory } from "./src/interfaces/desktop/desktop-snapshot.mjs";
 import { createDesktopTaskHistoryFactory } from "./src/interfaces/desktop/desktop-task-history.mjs";
+import { DesktopTaskService } from "./src/interfaces/desktop/desktop-task-service.mjs";
 import { createDesktopApplicationRouter } from "./src/interfaces/desktop/desktop-application-router.mjs";
 import { UsdRubRateStore } from "./exchange-rate.mjs";
-import { agentHubAutostartShortcut } from "./server-page.mjs";
+import { agentHubAutostartShortcut } from "./src/interfaces/web/server-page.mjs";
 import {
   defaultAutostartInstallScript,
   ServerControlController,
-} from "./server-control-controller.mjs";
+} from "./src/interfaces/web/server-control-controller.mjs";
 import {
   ContextCompactionTracker,
   isContextCompactionItem,
@@ -1309,6 +1306,8 @@ const telegramSettingsMenu = new TelegramSettingsMenu({
 const rateLimitTelemetry = new RateLimitTelemetryService({
   resolveClaudeInvocation,
   parseClaudeLimits,
+  formatClaudeRateLimits,
+  formatCodexRateLimits,
   spawnCapture,
   readCodexRateLimits: () => sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 }),
   codexRunning: () => codexTransport.running,
@@ -1326,6 +1325,7 @@ const telegramStatusController = new TelegramStatusController({
   currentTaskRuns: () => taskRuns.values(),
   readCodexRateLimits: () => rateLimitTelemetry.readCodex(),
   readClaudeRateLimits: () => rateLimitTelemetry.readClaude(),
+  parseClaudeLimits,
   codexModelLabel,
   claudeModelLabels: CLAUDE_MODEL_LABELS,
   reasoningLabels: CODEX_REASONING_LABELS,
@@ -1344,6 +1344,7 @@ mediaController = new MediaController({
 });
 await mediaController.load();
 const approvalController = new ApprovalController({
+  approvalProtocol,
   autoApprove: () => autoApprove,
   respond: respondRpc,
   send: sendMessage,
@@ -2745,138 +2746,24 @@ function markDesktopTaskRead(entry, context = null) {
   });
 }
 
-async function desktopSelectTask(params, context = null) {
-  const provider = String(params.provider ?? "").trim();
-  const selectedThreadId = String(params.threadId ?? "").trim();
-  if (!['codex', 'claude'].includes(provider) || !selectedThreadId) {
-    throw new Error("Укажите корректную задачу");
-  }
-  let entry = taskCatalog.find((item) => item.provider === provider && item.threadId === selectedThreadId);
-  if (!entry) {
-    entry = (await refreshTaskCatalog()).find((item) => (
-      item.provider === provider && item.threadId === selectedThreadId
-    ));
-  } else {
-    void refreshTaskCatalog().catch((error) => {
-      console.warn(`Cannot refresh task catalog after task selection: ${error.message}`);
-    });
-  }
-  if (!entry) throw new Error("Задача не найдена в локальном каталоге");
-  const activation = await activateMessageBinding({
-    provider: entry.provider,
-    projectRoot: entry.projectRoot,
-    threadId: entry.threadId,
-    taskTitle: entry.title,
-  });
-  markDesktopTaskRead(entry, context);
-  return {
-    ...await desktopSnapshot({}, context),
-    selectionChanged: activation.changed,
-  };
-}
-
-async function desktopOpenTask(params, context = null) {
-  const snapshot = await dispatchApplicationCommand(
-    "task.select",
-    params,
-    context,
-    { target: commandTaskTarget(params) },
-  );
-  return {
-    snapshot,
-    history: await desktopTaskHistory({
-      provider: params.provider,
-      threadId: params.threadId,
-      limit: params.limit,
-      maxAnswerChars: params.maxAnswerChars,
-    }),
-  };
-}
-
-async function desktopOpenTurn(params, context = null) {
-  const provider = String(params.provider ?? "").trim();
-  const taskThread = String(params.taskThreadId ?? "").trim();
-  const turnThread = String(params.turnThreadId ?? taskThread).trim();
-  const selectedTurnId = String(params.turnId ?? "").trim();
-  if (!["codex", "claude"].includes(provider) || !taskThread || !turnThread || !selectedTurnId) {
-    throw new Error("Укажите корректный ход");
-  }
-  const entry = taskCatalog.find((item) => item.provider === provider && item.threadId === taskThread);
-  void refreshTaskCatalog().catch((error) => {
-    console.warn(`Cannot refresh task catalog after Desktop turn open: ${error.message}`);
-  });
-  if (!entry) throw new Error("Задача не найдена в локальном каталоге");
-  const record = await workLogUsageStore.getTurn({
-    provider,
-    threadId: turnThread,
-    turnId: selectedTurnId,
-  });
-  if (!record) throw new Error("Ход не найден в журнале");
-  const recordedTaskThread = String(record.taskThreadId ?? record.threadId ?? "").trim();
-  if (
-    recordedTaskThread !== taskThread
-    || (record.projectRoot && !samePath(record.projectRoot, entry.projectRoot))
-  ) {
-    throw new Error("Ход не относится к выбранной задаче");
-  }
-  await dispatchApplicationCommand(
-    "task.select",
-    { taskTitle: entry.title },
-    context,
-    {
-      target: commandTaskTarget({
-        provider: entry.provider,
-        projectRoot: entry.projectRoot,
-        threadId: entry.threadId,
-      }),
-    },
-  );
-  return {
-    snapshot: await desktopSnapshot({}, context),
-    history: await desktopTaskHistory({
-      provider,
-      threadId: taskThread,
-      limit: params.limit,
-      maxAnswerChars: params.maxAnswerChars,
-    }),
-    focusedTurn: {
-      provider,
-      taskThreadId: taskThread,
-      turnThreadId: turnThread,
-      turnId: selectedTurnId,
-      title: String(record.title ?? ""),
-      prompt: String(record.prompt ?? ""),
-      answer: String(record.body ?? record.text ?? "").slice(
-        0,
-        Math.max(1_000, Math.min(Number(params.maxAnswerChars) || 200_000, 200_000)),
-      ),
-      status: String(record.status ?? ""),
-      startedAt: record.startedAt ?? null,
-      completedAt: record.completedAt ?? null,
-    },
-  };
-}
-
-async function desktopMessageTarget(params) {
-  const requestedProvider = String(params.provider ?? "").trim();
-  const requestedThreadId = String(params.threadId ?? "").trim();
-  if (!["codex", "claude"].includes(requestedProvider) || !requestedThreadId) {
-    throw new Error("Команда не содержит точный адрес задачи");
-  }
-  const catalog = await refreshTaskCatalog();
-  const entry = catalog.find((item) => (
-    item.provider === requestedProvider && item.threadId === requestedThreadId
-  ));
-  if (!entry) throw new Error("Задача сообщения больше не существует в локальном каталоге");
-  return {
-    provider: entry.provider,
-    projectRoot: entry.projectRoot,
-    sessionCwd: entry.sessionCwd ?? null,
-    threadId: entry.threadId,
-    taskTitle: entry.title,
-    chatId,
-  };
-}
+const desktopTaskService = new DesktopTaskService({
+  catalog: () => taskCatalog,
+  refreshCatalog: refreshTaskCatalog,
+  activateBinding: activateMessageBinding,
+  markRead: markDesktopTaskRead,
+  snapshot: desktopSnapshot,
+  taskHistory: desktopTaskHistory,
+  dispatchCommand: dispatchApplicationCommand,
+  commandTaskTarget,
+  readTurn: (identity) => workLogUsageStore.getTurn(identity),
+  samePath,
+  chatId: () => chatId,
+  warn: (...args) => console.warn(...args),
+});
+const desktopSelectTask = (...args) => desktopTaskService.select(...args);
+const desktopOpenTask = (...args) => desktopTaskService.openTask(...args);
+const desktopOpenTurn = (...args) => desktopTaskService.openTurn(...args);
+const desktopMessageTarget = (...args) => desktopTaskService.resolveTarget(...args);
 
 async function desktopUpdateSetting(params) {
   return desktopSettingsService.update(params);

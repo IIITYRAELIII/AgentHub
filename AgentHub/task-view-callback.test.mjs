@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   parseTaskViewCallbackData,
   taskViewCallbackData,
-} from "./task-view-callback.mjs";
+} from "./src/interfaces/telegram/task-view-callback.mjs";
 
 const THREAD_ID = "019f70ed-d8e8-7b21-bcd1-b6f57bcdf013";
 

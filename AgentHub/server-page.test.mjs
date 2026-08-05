@@ -6,7 +6,7 @@ import {
   readAgentHubAutostart,
   serverPageSnapshot,
   setAgentHubAutostart,
-} from "./server-page.mjs";
+} from "./src/interfaces/web/server-page.mjs";
 
 test("Agent Hub autostart uses only its own Windows Startup shortcut", () => {
   assert.equal(agentHubAutostartShortcut({ environment: { APPDATA: "C:/AppData" } }),

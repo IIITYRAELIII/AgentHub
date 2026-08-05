@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { telegramPrompt } from "./telegram-message.mjs";
+import { telegramPrompt } from "./src/interfaces/telegram/telegram-message.mjs";
 
 test("telegramPrompt preserves ordinary messages", () => {
   assert.equal(telegramPrompt({ text: "Продолжай" }), "Продолжай");

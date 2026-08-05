@@ -9,7 +9,7 @@ import {
   findMessageBinding,
   readMessageBindings,
   removeMessageBindings,
-} from "./message-bindings.mjs";
+} from "./src/infrastructure/persistence/message-bindings.mjs";
 
 test("message bindings persist and resolve by chat and message", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-bindings-"));

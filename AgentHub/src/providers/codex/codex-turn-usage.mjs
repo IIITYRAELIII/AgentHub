@@ -5,7 +5,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 
 import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
-import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "./codex-usage-estimate.mjs";
+import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "../../domain/codex-usage-estimate.mjs";
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "../../../token-usage.mjs";
 import { displayUserPrompt } from "../../../task-history.mjs";
 

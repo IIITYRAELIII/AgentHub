@@ -4,7 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { applyLedgerDelta } from "./incremental-ledger.mjs";
-import { buildLazyJournalPayload } from "./mini-app-journal-data.mjs";
+import { buildLazyJournalPayload } from "./src/interfaces/web/mini-app-journal-data.mjs";
 import { readJsonWithBackup } from "./state-store.mjs";
 
 const SCHEMA_VERSION = 2;

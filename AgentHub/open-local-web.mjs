@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
-import { localWebAccessUrl } from "./local-web-auth.mjs";
+import { localWebAccessUrl } from "./src/interfaces/web/local-web-auth.mjs";
 
 const runtimeRoot = path.resolve(process.env.AGENT_HUB_RUNTIME_ROOT ?? defaultRuntimeRoot());
 const secret = String(await readFile(path.join(runtimeRoot, "local-web.secret"), "utf8")).trim();

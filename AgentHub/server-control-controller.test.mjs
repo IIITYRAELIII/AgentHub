@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ServerControlController } from "./server-control-controller.mjs";
+import { ServerControlController } from "./src/interfaces/web/server-control-controller.mjs";
 
 function createController(overrides = {}) {
   return new ServerControlController({

@@ -9,7 +9,8 @@ The target layout is:
 - `application` — use cases and state owners coordinating domain and ports;
 - `domain` — provider-independent entities, value objects and invariants;
 - `providers/codex` and `providers/claude` — provider adapters;
-- `interfaces/telegram` and `interfaces/desktop` — client transports and controllers;
+- `interfaces/telegram`, `interfaces/desktop` and `interfaces/web` — client transports,
+  controllers and presentation;
 - `runtime` — process lifecycle, restart, timers and background jobs;
 - `infrastructure` — filesystem, SQLite, network and operating-system adapters.
 
@@ -36,6 +37,11 @@ transport, hooks, snapshots, accounting and terminal services live under
 work-log accounting live under `providers/claude`. Application and interface
 modules receive provider-specific parsing/import functions through composition
 instead of importing concrete adapters across the dependency boundary.
+
+Telegram presentation and approvals live under `interfaces/telegram`; durable
+Telegram message bindings live under `infrastructure/persistence`, and exact
+turn-end correlation lives under `application`. Web/Mini App authentication,
+publishing, HTTP serving and trusted-device access live under `interfaces/web`.
 
 The enforced dependency direction is:
 

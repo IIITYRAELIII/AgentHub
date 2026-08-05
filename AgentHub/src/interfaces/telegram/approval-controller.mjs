@@ -1,15 +1,6 @@
-import {
-  approvalCallbackData,
-  approvalMatchesTelegramMessage,
-  codexApprovalResponse,
-  createApprovalKey,
-  formatMcpElicitation,
-  mcpElicitationAutoResponse,
-  parseApprovalCallback,
-} from "./src/providers/codex/codex-approvals.mjs";
-
 export class ApprovalController {
   constructor({
+    approvalProtocol,
     autoApprove,
     respond,
     send,
@@ -19,6 +10,7 @@ export class ApprovalController {
     telegram,
     currentChatId,
   }) {
+    this.approvalProtocol = approvalProtocol;
     this.autoApprove = autoApprove;
     this.respond = respond;
     this.send = send;
@@ -31,6 +23,11 @@ export class ApprovalController {
   }
 
   async request(rpcId, kind, params, text, run = null) {
+    const {
+      approvalCallbackData,
+      codexApprovalResponse,
+      createApprovalKey,
+    } = this.approvalProtocol;
     if (this.autoApprove()) {
       this.respond(rpcId, codexApprovalResponse(kind, "once", params));
       return;
@@ -66,6 +63,12 @@ export class ApprovalController {
   }
 
   async requestMcp(rpcId, params, run = null) {
+    const {
+      approvalCallbackData,
+      createApprovalKey,
+      formatMcpElicitation,
+      mcpElicitationAutoResponse,
+    } = this.approvalProtocol;
     const acceptResponse = mcpElicitationAutoResponse(params);
     if (this.autoApprove() && acceptResponse) {
       this.respond(rpcId, acceptResponse);
@@ -108,6 +111,11 @@ export class ApprovalController {
   }
 
   async handleCallback(callback) {
+    const {
+      approvalMatchesTelegramMessage,
+      codexApprovalResponse,
+      parseApprovalCallback,
+    } = this.approvalProtocol;
     const parsed = parseApprovalCallback(callback.data);
     if (!parsed) return false;
     const { key, action } = parsed;
@@ -169,6 +177,7 @@ export class ApprovalController {
   }
 
   async resolveFromDesktop(key, action) {
+    const { codexApprovalResponse } = this.approvalProtocol;
     const approval = this.pending.get(String(key ?? ""));
     if (!approval) throw new Error("Запрос подтверждения уже закрыт");
     if (approval.runId && !this.runExists(approval.runId)) {

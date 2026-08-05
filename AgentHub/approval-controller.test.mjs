@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ApprovalController } from "./approval-controller.mjs";
+import { ApprovalController } from "./src/interfaces/telegram/approval-controller.mjs";
+import * as approvalProtocol from "./src/providers/codex/codex-approvals.mjs";
 
 function fixture({ auto = false } = {}) {
   const responses = [];
   const calls = [];
   const controller = new ApprovalController({
+    approvalProtocol,
     autoApprove: () => auto,
     respond: (id, value) => responses.push([id, value]),
     send: async (_text, extra) => {

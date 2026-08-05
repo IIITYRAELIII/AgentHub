@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { contextualCallback } from "./callback-context.mjs";
+import { contextualCallback } from "./src/interfaces/telegram/callback-context.mjs";
 import { routeTelegramCallback } from "./src/interfaces/telegram/telegram-callback-router.mjs";
 import { parseApprovalCallback } from "./src/providers/codex/codex-approvals.mjs";
 

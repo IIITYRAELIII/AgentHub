@@ -3,7 +3,7 @@ import {
   taskCatalogCallback,
   taskExecutionRunningEmoji,
   taskExecutionRuntimeShortLabel,
-} from "./task-catalog.mjs";
+} from "../../../task-catalog.mjs";
 
 export function taskPickerButtonText(entry, selectedTask, {
   showProject = false,

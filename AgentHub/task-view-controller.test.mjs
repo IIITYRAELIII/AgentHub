@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { codexRolloutHistory, TaskViewController } from "./task-view-controller.mjs";
+import { codexRolloutHistory, TaskViewController } from "./src/interfaces/telegram/task-view-controller.mjs";
 
 function controller(overrides = {}) {
   return new TaskViewController({

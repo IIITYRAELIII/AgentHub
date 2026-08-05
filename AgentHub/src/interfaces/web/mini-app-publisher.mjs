@@ -4,13 +4,13 @@ import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import path from "node:path";
 
-import { JournalDatabase } from "./journal-database.mjs";
+import { JournalDatabase } from "../../../journal-database.mjs";
 import {
   DurableCommandReceipts,
   DurableCommandRetryableError,
   commandFingerprint,
-} from "./durable-command-receipts.mjs";
-import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
+} from "../../../durable-command-receipts.mjs";
+import { PersistentDeliveryOutbox } from "../../../delivery-outbox.mjs";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const ATTACHMENT_TIMEOUT_MS = 60_000;

@@ -7,7 +7,7 @@ import {
   parseForwardBundleCallback,
   restoreForwardBundle,
   TelegramForwardBundleController,
-} from "./telegram-forward-bundle.mjs";
+} from "./src/interfaces/telegram/telegram-forward-bundle.mjs";
 
 const TARGET = {
   provider: "codex",

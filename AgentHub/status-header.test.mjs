@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   randomStatusHeaderFileName,
   statusHeaderGroup,
-} from "./status-header.mjs";
+} from "./src/interfaces/telegram/status-header.mjs";
 
 test("status header follows the selected provider when one agent is active", () => {
   assert.equal(statusHeaderGroup("codex", ["codex"]), "codex");

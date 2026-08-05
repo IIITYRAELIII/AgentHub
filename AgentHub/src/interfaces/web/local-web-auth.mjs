@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { protectRuntimeConfig } from "./runtime-security.mjs";
+import { protectRuntimeConfig } from "../../../runtime-security.mjs";
 
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{43,128}$/u;
 

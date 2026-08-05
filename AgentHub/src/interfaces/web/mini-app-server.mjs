@@ -10,12 +10,14 @@ import {
   extractRateLimitsHtml,
   publicJournalPayload,
 } from "./mini-app-journal-data.mjs";
-import { JournalDatabase } from "./journal-database.mjs";
+import { JournalDatabase } from "../../../journal-database.mjs";
 
 export { extractWorkLogHtml } from "./mini-app-journal-data.mjs";
 
 const require = createRequire(import.meta.url);
-const { loadThemeRegistry, renderThemeHtml } = require("./theme-registry.cjs");
+const { loadThemeRegistry, renderThemeHtml } = require("../../../theme-registry.cjs");
+
+const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "../../..");
 
 const CONTENT_TYPES = new Map([
   ["/", "text/html; charset=utf-8"],
@@ -341,10 +343,10 @@ export class MiniAppServer {
     localAccessSecret = "",
     controlHandler = null,
     deviceStore = null,
-    assetsDirectory = path.join(import.meta.dirname, "assets", "mini-app"),
+    assetsDirectory = path.join(AGENT_HUB_ROOT, "assets", "mini-app"),
     attachmentDirectory = null,
-    mobileUpdateDirectory = path.join(import.meta.dirname, "assets", "mobile"),
-    workLogCssFile = path.join(import.meta.dirname, "work-log.css"),
+    mobileUpdateDirectory = path.join(AGENT_HUB_ROOT, "assets", "mobile"),
+    workLogCssFile = path.join(AGENT_HUB_ROOT, "work-log.css"),
     journalDatabase = null,
     journalDatabaseFile = null,
   } = {}) {

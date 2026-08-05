@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTaskPicker, taskPickerButtonText } from "./task-picker.mjs";
+import { buildTaskPicker, taskPickerButtonText } from "./src/interfaces/telegram/task-picker.mjs";
 
 const task = {
   provider: "codex",

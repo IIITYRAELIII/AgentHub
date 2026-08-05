@@ -65,8 +65,10 @@
 
 ### SEC-001 — Medium — неограниченные запросы публичной авторизации
 
-- Расположение: `mini-app-server.mjs:401`, `mini-app-server.mjs:471`,
-  `mini-app-server.mjs:710`; `direct-gateway.mjs:105`.
+- Расположение: `src/interfaces/web/mini-app-server.mjs:401`,
+  `src/interfaces/web/mini-app-server.mjs:471`,
+  `src/interfaces/web/mini-app-server.mjs:710`;
+  `src/interfaces/web/direct-gateway.mjs:105`.
 - Свидетельство: endpoints сопряжения принимали ограниченное по размеру тело, но
   не имели частотного лимита; Node.js использовал длительные стандартные сетевые
   таймауты.
@@ -116,7 +118,7 @@
 
 ### SEC-002 — Low — официальный Telegram Web App JavaScript
 
-- Расположение: `mini-app-server.mjs:240`, CSP `script-src`.
+- Расположение: `src/interfaces/web/mini-app-server.mjs:240`, CSP `script-src`.
 - Свидетельство: CSP разрешает скрипт с `https://telegram.org`, необходимый Mini
   App. Сторонний JavaScript исполняется с полномочиями страницы.
 - Влияние: компрометация официальной раздачи Telegram затронет Telegram Mini App.
@@ -144,7 +146,8 @@
   публичными остаются статические ресурсы и `/health`.
 - CSP запрещает inline/eval, формы, объекты, base URI и фреймы; пользовательский
   запрос и ответ экранируются перед проекцией в HTML журнала.
-  Проверено в `mini-app-server.mjs:227-244` и `work-log-usage.mjs:351-353`.
+  Проверено в `src/interfaces/web/mini-app-server.mjs:227-244` и
+  `work-log-usage.mjs:351-353`.
 - Runtime-каталоги и секреты на Windows ограничиваются ACL текущего пользователя,
   SYSTEM и Administrators; исходные токены не попадают в Git.
 - Runtime release активируется только после проверки manifest, размеров и

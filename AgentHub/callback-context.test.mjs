@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { contextualCallback, resolveContextualCallback } from "./callback-context.mjs";
+import { contextualCallback, resolveContextualCallback } from "./src/interfaces/telegram/callback-context.mjs";
 
 const current = "0123456789ab";
 
