@@ -124,9 +124,11 @@ import { createRuntimeRestartWiring } from "./runtime-restart-wiring-composition
 import { createTaskStateWiring } from "./task-state-wiring-composition.mjs";
 import { createRuntimeStateBootstrapWiring } from "./runtime-state-bootstrap-wiring-composition.mjs";
 import { createTelegramShellWiring } from "./telegram-shell-wiring-composition.mjs";
+import { createAgentHubDeferredPorts } from "./agent-hub-deferred-ports.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
+const agentHubDeferred = createAgentHubDeferredPorts();
 const config = await loadConfig();
 const serverStartedAt = new Date().toISOString();
 const serverInstanceId = randomUUID();
@@ -204,10 +206,10 @@ const {
   instanceLockFile: INSTANCE_LOCK_FILE,
   exchangeRatesFile: EXCHANGE_RATES_FILE,
   handleDesktopControl,
-  findProject,
-  authorizeRuntimeCommand,
-  reconcileRuntimeCommand,
-  handleRuntimeCommand,
+  findProject: agentHubDeferred.api.findProject,
+  authorizeRuntimeCommand: agentHubDeferred.api.authorizeRuntimeCommand,
+  reconcileRuntimeCommand: agentHubDeferred.api.reconcileRuntimeCommand,
+  handleRuntimeCommand: agentHubDeferred.api.handleRuntimeCommand,
   stopProcessTree,
 });
 let activeProvider = config.provider === "codex" ? "codex" : "claude";
@@ -246,15 +248,128 @@ let stopping = false;
 let autoApprove = config.autoApproveOnStart;
 let restartRequest = null;
 let processingUpdateId = null;
-let runAdmissionComposition = null;
 let deferredInputController = null;
-let runtimeCommandRoutingComposition = null;
-let codexTaskSettingsComposition = null;
-let providerRuntimeWiring = null;
-let taskInteractionWiring = null;
-let runtimeRestartWiring = null;
-let taskStateWiring = null;
-let telegramShellWiring = null;
+const {
+  ports: {
+    runAdmission: runAdmissionPort,
+    runtimeCommand: runtimeCommandPort,
+    codexTaskSettings: codexTaskSettingsPort,
+    providerRuntime: providerRuntimePort,
+    taskInteraction: taskInteractionPort,
+    runtimeRestart: runtimeRestartPort,
+    taskState: taskStatePort,
+    telegramShell: telegramShellPort,
+    telegramDelivery: telegramDeliveryPort,
+    codexLifecycle: codexLifecyclePort,
+    providerStartup: providerStartupPort,
+  },
+  api: {
+  resolvedExplicitSkillNames,
+  discardManualContextCompactionRun,
+  taskExternalActivity,
+  launchTurn,
+  startTurn,
+  cleanupDeferredFiles,
+  scheduleQueuedInput,
+  runtimeCommandTaskTitle,
+  authorizeRuntimeCommand,
+  reconcileRuntimeCommand,
+  handleRuntimeCommand,
+  codexThreadResponseTitle,
+  storedCodexThreadTitle,
+  resolveResumedCodexThreadTitle,
+  updateActiveCodexThreadSettings,
+  taskSwitchSettings,
+  persistManagedRunHistory,
+  persistClaudeRunHistory,
+  startClaudeTurn,
+  stopClaudeRunProcess,
+  attachClaudeRunAfterRestart,
+  handleCodexMessage,
+  completedCodexAnswer,
+  applyCodexObservedSnapshot,
+  applyCodexActiveSnapshot,
+  readCodexTaskSnapshot,
+  scheduleCodexTerminalAudit,
+  readCachedHistory,
+  refreshHistory,
+  showTaskMessage,
+  showLastTaskMessage,
+  resolveTaskViewBinding,
+  requestApproval,
+  requestMcpElicitation,
+  formatCommandApproval,
+  formatFileApproval,
+  formatApprovalMode,
+  approvalModeKeyboard,
+  restartBlockingRuns,
+  restartHasBlockingWork,
+  scheduleDeferredRestartIfReady,
+  restartMessageIsEditable,
+  announceDesktopRestart,
+  updateRestartMessage,
+  finalizeRestartMessage,
+  performRestart,
+  restartBot,
+  invalidateTaskCatalog,
+  syncTaskRun,
+  persistTaskDiff,
+  findProject,
+  activeProject,
+  selectedTask,
+  selectedTurnTarget,
+  currentUiContextToken,
+  uiCallback,
+  selectedRun,
+  isSelectedRun,
+  runProject,
+  runTaskTitle,
+  pinnedTaskTitle,
+  pinTaskTitle,
+  pendingTaskTitle,
+  expectTaskTitleConfirmation,
+  sendThreadPicker,
+  sendProjectPicker,
+  sendAgentPicker,
+  sendModelPicker,
+  switchCodexModel,
+  switchModel,
+  resumeThread,
+  renameCurrentTask,
+  archiveCurrentThread,
+  archiveBlockedReason,
+  sendArchiveMessage,
+  currentStatusSnapshot,
+  sendReasoningPicker,
+  sendCollaborationModePicker,
+  runMessageBinding,
+  bindRunMessage,
+  sendRunMessage,
+  bindIncomingTaskMessage,
+  deleteTaskMessages: deleteTaskTelegramMessages,
+  sendTaskViewText,
+  sendReliableRunMessage,
+  sendRunLongMessage,
+  clearDeliveredProgressMessages,
+  safelyDeliverRunMessage,
+  finalizeRunDelivery,
+  startCodexAppServer,
+  stopCodexAppServerTree,
+  restartCodexAfterCrash,
+  sendRpc,
+  invalidateCodexThreadRead,
+  readCodexThread,
+  sendNotification,
+  respondRpc,
+  initializeCodex,
+  initializeProvider,
+  attachCodexThread,
+  createThread,
+  listThreads,
+  isWorkspaceThread,
+  threadTitle,
+  },
+} = agentHubDeferred;
 const runtimeTimers = new RuntimeTimerCoordinator();
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
 const EXTERNAL_TASK_POLL_INTERVAL_MS = 1_500;
@@ -616,7 +731,7 @@ const {
   },
   resolveCodexTaskActivity,
 });
-const providerStartup = createProviderStartupComposition({
+const providerStartup = providerStartupPort.bind(createProviderStartupComposition({
   config,
   threadListLimit: THREAD_LIST_LIMIT,
   selectionStore,
@@ -633,7 +748,7 @@ const providerStartup = createProviderStartupComposition({
   resolveResumedCodexThreadTitle,
   applyCodexThreadSettings,
   saveState,
-});
+}));
 
 const {
   telegramClient,
@@ -715,23 +830,6 @@ const {
   taskProgress: () => taskProgress,
 });
 
-function invalidateTaskCatalog(...args) { return taskStateWiring.invalidateTaskCatalog(...args); }
-function syncTaskRun(...args) { return taskStateWiring.syncTaskRun(...args); }
-function persistTaskDiff(...args) { return taskStateWiring.persistTaskDiff(...args); }
-function findProject(...args) { return taskStateWiring.findProject(...args); }
-function activeProject(...args) { return taskStateWiring.activeProject(...args); }
-function selectedTask(...args) { return taskStateWiring.selectedTask(...args); }
-function selectedTurnTarget(...args) { return taskStateWiring.selectedTurnTarget(...args); }
-function currentUiContextToken(...args) { return taskStateWiring.currentUiContextToken(...args); }
-function uiCallback(...args) { return taskStateWiring.uiCallback(...args); }
-function selectedRun(...args) { return taskStateWiring.selectedRun(...args); }
-function isSelectedRun(...args) { return taskStateWiring.isSelectedRun(...args); }
-function runProject(...args) { return taskStateWiring.runProject(...args); }
-function runTaskTitle(...args) { return taskStateWiring.runTaskTitle(...args); }
-function pinnedTaskTitle(...args) { return taskStateWiring.pinnedTaskTitle(...args); }
-function pinTaskTitle(...args) { return taskStateWiring.pinTaskTitle(...args); }
-function pendingTaskTitle(...args) { return taskStateWiring.pendingTaskTitle(...args); }
-function expectTaskTitleConfirmation(...args) { return taskStateWiring.expectTaskTitleConfirmation(...args); }
 const {
   deliveryOutbox,
   scheduleDeliveryOutboxFlush,
@@ -751,7 +849,7 @@ const {
   },
 });
 
-taskStateWiring = createTaskStateWiring({
+taskStatePort.bind(createTaskStateWiring({
   taskCatalogService,
   taskSyncStore,
   selectionStore,
@@ -767,7 +865,7 @@ taskStateWiring = createTaskStateWiring({
   samePath,
   taskDiffs,
   logger: console,
-});
+}));
 
 function setBoundedMapValue(map, key, value, limit) {
   if (map.has(key)) map.delete(key);
@@ -775,31 +873,8 @@ function setBoundedMapValue(map, key, value, limit) {
   while (map.size > limit) map.delete(map.keys().next().value);
 }
 
-function runMessageBinding(...args) { return telegramDeliveryService.runMessageBinding(...args); }
-function bindRunMessage(...args) { return telegramDeliveryService.bindRunMessage(...args); }
-function sendRunMessage(...args) { return telegramDeliveryService.sendRunMessage(...args); }
-function bindIncomingTaskMessage(...args) {
-  return telegramDeliveryService.bindIncomingTaskMessage(...args);
-}
-function deleteTaskTelegramMessages(...args) {
-  return telegramDeliveryService.deleteTaskMessages(...args);
-}
-
-function sendTaskViewText(...args) { return telegramDeliveryService.sendTaskViewText(...args); }
-function sendReliableRunMessage(...args) {
-  return telegramDeliveryService.sendReliableRunMessage(...args);
-}
-function sendRunLongMessage(...args) { return telegramDeliveryService.sendRunLongMessage(...args); }
-
-function clearDeliveredProgressMessages(...args) {
-  return telegramDeliveryService.clearDeliveredProgressMessages(...args);
-}
-function safelyDeliverRunMessage(...args) {
-  return telegramDeliveryService.safelyDeliverRunMessage(...args);
-}
-function finalizeRunDelivery(...args) { return telegramDeliveryService.finalizeRunDelivery(...args); }
 function sendTaskSelectionNotification(options = {}) {
-  return telegramDeliveryService.sendTaskSelectionNotification({ targetChatId: chatId, ...options });
+  return telegramDeliveryPort.api.sendTaskSelectionNotification({ targetChatId: chatId, ...options });
 }
 function sendTaskSwitchNotification(options = {}) { return sendTaskSelectionNotification(options); }
 function sendTaskAlreadySelectedNotification(options = {}) {
@@ -876,22 +951,6 @@ function restoreCodexTaskSettings(...args) {
 }
 function applyCodexThreadSettings(...args) {
   return agentPreferences.applyCodexThreadSettings(...args);
-}
-
-function codexThreadResponseTitle(...args) {
-  return codexTaskSettingsComposition.codexThreadResponseTitle(...args);
-}
-function storedCodexThreadTitle(...args) {
-  return codexTaskSettingsComposition.storedCodexThreadTitle(...args);
-}
-function resolveResumedCodexThreadTitle(...args) {
-  return codexTaskSettingsComposition.resolveResumedCodexThreadTitle(...args);
-}
-function updateActiveCodexThreadSettings(...args) {
-  return codexTaskSettingsComposition.updateActiveCodexThreadSettings(...args);
-}
-function taskSwitchSettings(...args) {
-  return codexTaskSettingsComposition.taskSwitchSettings(...args);
 }
 
 const {
@@ -1007,8 +1066,9 @@ const codexLifecycle = createCodexLifecycleComposition({
     deliverTurnEndNotification,
   },
 });
+codexLifecyclePort.bind(codexLifecycle);
 const { runtime: codexRuntime, transport: codexTransport, controller: codexLifecycleController } = codexLifecycle;
-codexTaskSettingsComposition = createCodexTaskSettingsComposition({
+codexTaskSettingsPort.bind(createCodexTaskSettingsComposition({
   pinnedTaskTitle,
   readCodexThreadTitleHistory,
   sendRpc,
@@ -1019,8 +1079,8 @@ codexTaskSettingsComposition = createCodexTaskSettingsComposition({
   saveState,
   codexModelLabel,
   reasoningLabels: CODEX_REASONING_LABELS,
-});
-runtimeCommandRoutingComposition = createRuntimeCommandRoutingComposition({
+}));
+runtimeCommandPort.bind(createRuntimeCommandRoutingComposition({
   pinnedTaskTitle,
   codexThreadResponseTitle,
   runTaskTitle,
@@ -1032,67 +1092,7 @@ runtimeCommandRoutingComposition = createRuntimeCommandRoutingComposition({
   storedCodexThreadTitle,
   runtimeNotificationController,
   codexLifecycleController,
-});
-
-async function startCodexAppServer() {
-  await codexLifecycle.start();
-}
-
-async function stopCodexAppServerTree() {
-  await codexLifecycle.stop();
-}
-
-async function restartCodexAfterCrash() {
-  return codexLifecycle.restartAfterCrash();
-}
-
-function sendRpc(method, params = {}, { timeoutMs = CODEX_RPC_TIMEOUT_MS } = {}) {
-  return codexLifecycle.sendRpc(method, params, { timeoutMs });
-}
-
-function invalidateCodexThreadRead(threadId) {
-  codexLifecycle.invalidateThreadRead(threadId);
-}
-
-function readCodexThread(threadId, options = {}) {
-  return codexLifecycle.readThread(threadId, options);
-}
-
-function sendNotification(method, params = {}) {
-  codexLifecycle.sendNotification(method, params);
-}
-
-function respondRpc(id, result) {
-  codexLifecycle.respondRpc(id, result);
-}
-
-async function initializeProvider() {
-  return providerStartup.initializeProvider();
-}
-
-async function initializeCodex({ attachSelectedThread = true } = {}) {
-  return codexLifecycle.initialize({ attachSelectedThread });
-}
-
-async function attachCodexThread() {
-  return providerStartup.attachCodexThread();
-}
-
-async function createThread() {
-  return providerStartup.createThread();
-}
-
-async function listThreads() {
-  return providerStartup.listThreads();
-}
-
-function isWorkspaceThread(thread) {
-  return providerStartup.isWorkspaceThread(thread);
-}
-
-function threadTitle(thread) {
-  return providerStartup.threadTitle(thread);
-}
+}));
 
 async function backfillWorkLogPricingMetadata(codexThreads) {
   return journalBackfill.backfill(codexThreads);
@@ -1109,8 +1109,6 @@ async function finalizeTaskCatalog(mergedEntries) {
 async function refreshTaskCatalog({ force = false } = {}) {
   return taskCatalogService.refresh({ force });
 }
-
-function sendThreadPicker(...args) { return telegramShellWiring.sendThreadPicker(...args); }
 
 const serverControlController = new ServerControlController({
   config,
@@ -1228,8 +1226,8 @@ const {
     readStateStore: taskReadStateStore,
     hasAllowedUsers: () => Boolean(config.allowedUserIds.size),
     androidEnabled: () => Boolean(config.components.androidApp),
-    readCachedHistory: (binding) => taskInteractionWiring.readCachedHistory(binding),
-    refreshHistory: (binding) => taskInteractionWiring.refreshHistory(binding),
+    readCachedHistory,
+    refreshHistory,
     attachmentImporter: importCodexDesktopAttachments,
     warn: (...args) => console.warn(...args),
   },
@@ -1465,22 +1463,11 @@ function reconcileRemoteDesktopControl(request) {
   return dispatchRemoteDesktopReconciliation(request);
 }
 
-function sendProjectPicker(...args) { return telegramShellWiring.sendProjectPicker(...args); }
-function sendAgentPicker(...args) { return telegramShellWiring.sendAgentPicker(...args); }
-function sendModelPicker(...args) { return telegramShellWiring.sendModelPicker(...args); }
-function switchCodexModel(...args) { return telegramShellWiring.switchCodexModel(...args); }
-function switchModel(...args) { return telegramShellWiring.switchModel(...args); }
-function resumeThread(...args) { return telegramShellWiring.resumeThread(...args); }
-function renameCurrentTask(...args) { return telegramShellWiring.renameCurrentTask(...args); }
-function archiveCurrentThread(...args) { return telegramShellWiring.archiveCurrentThread(...args); }
-function archiveBlockedReason(...args) { return telegramShellWiring.archiveBlockedReason(...args); }
-function sendArchiveMessage(...args) { return telegramShellWiring.sendArchiveMessage(...args); }
-function currentStatusSnapshot(...args) { return telegramShellWiring.currentStatusSnapshot(...args); }
-function sendStatus(snapshot = currentStatusSnapshot()) { return telegramShellWiring.sendStatus(snapshot); }
-function sendReasoningPicker(...args) { return telegramShellWiring.sendReasoningPicker(...args); }
-function sendCollaborationModePicker(...args) { return telegramShellWiring.sendCollaborationModePicker(...args); }
+function sendStatus(snapshot = currentStatusSnapshot()) {
+  return telegramShellPort.api.sendStatus(snapshot);
+}
 
-telegramShellWiring = createTelegramShellWiring({
+telegramShellPort.bind(createTelegramShellWiring({
   taskPicker: {
     refreshCatalog: refreshTaskCatalog,
     selectedTask,
@@ -1506,12 +1493,9 @@ telegramShellWiring = createTelegramShellWiring({
   agentPreferences,
   codexModelLabel,
   currentChatId: () => chatId,
-});
+}));
 
-const {
-  telegramDeliveryService,
-  taskProgress,
-} = createRunPresentationComposition({
+const runPresentationComposition = createRunPresentationComposition({
   telegramLimit: TELEGRAM_LIMIT,
   claudeModelLabels: CLAUDE_MODEL_LABELS,
   codexReasoningLabels: CODEX_REASONING_LABELS,
@@ -1554,8 +1538,13 @@ const {
   saveState,
   retainProgressMessageAfterEditError,
 });
+const {
+  telegramDeliveryService,
+  taskProgress,
+} = runPresentationComposition;
+telegramDeliveryPort.bind(telegramDeliveryService);
 
-runAdmissionComposition = createRunAdmissionComposition({
+const runAdmissionComposition = runAdmissionPort.bind(createRunAdmissionComposition({
   config,
   samePath,
   sendRpc,
@@ -1578,44 +1567,13 @@ runAdmissionComposition = createRunAdmissionComposition({
   deferredInputPresentation,
   sendMessageTo,
   saveState,
-});
+}));
 deferredInputController = runAdmissionComposition.deferredInputController;
-
-function resolvedExplicitSkillNames(...args) {
-  return runAdmissionComposition.resolvedExplicitSkillNames(...args);
-}
-function discardManualContextCompactionRun(...args) {
-  return runAdmissionComposition.discardManualContextCompactionRun(...args);
-}
-function taskExternalActivity(...args) {
-  return runAdmissionComposition.taskExternalActivity(...args);
-}
-function launchTurn(...args) { return runAdmissionComposition.launchTurn(...args); }
-function startTurn(...args) { return runAdmissionComposition.startTurn(...args); }
-function cleanupDeferredFiles(...args) {
-  return runAdmissionComposition.cleanupDeferredFiles(...args);
-}
 function updateDeferredMessage(...args) {
   return deferredInputPresentation.updateTelegramMessage(...args);
 }
 function updateDeferredDesktopReceipt(...args) {
   return deferredInputPresentation.updateDesktopReceipt(...args);
-}
-function scheduleQueuedInput(...args) {
-  return runAdmissionComposition.scheduleQueuedInput(...args);
-}
-
-function runtimeCommandTaskTitle(...args) {
-  return runtimeCommandRoutingComposition.taskTitle(...args);
-}
-function authorizeRuntimeCommand(...args) {
-  return runtimeCommandRoutingComposition.authorize(...args);
-}
-function reconcileRuntimeCommand(...args) {
-  return runtimeCommandRoutingComposition.reconcile(...args);
-}
-function handleRuntimeCommand(...args) {
-  return runtimeCommandRoutingComposition.handle(...args);
 }
 async function refreshTaskDiff(run) {
   if (!run) return "";
@@ -1626,19 +1584,7 @@ async function refreshTaskDiff(run) {
   return run.latestDiff ?? "";
 }
 
-function persistManagedRunHistory(...args) { return providerRuntimeWiring.persistManagedRunHistory(...args); }
-function persistClaudeRunHistory(...args) { return providerRuntimeWiring.persistClaudeRunHistory(...args); }
-function startClaudeTurn(...args) { return providerRuntimeWiring.startClaudeTurn(...args); }
-function stopClaudeRunProcess(...args) { return providerRuntimeWiring.stopClaudeRunProcess(...args); }
-function attachClaudeRunAfterRestart(...args) { return providerRuntimeWiring.attachClaudeRunAfterRestart(...args); }
-function handleCodexMessage(...args) { return providerRuntimeWiring.handleCodexMessage(...args); }
-function completedCodexAnswer(...args) { return providerRuntimeWiring.completedCodexAnswer(...args); }
-function applyCodexObservedSnapshot(...args) { return providerRuntimeWiring.applyCodexObservedSnapshot(...args); }
-function applyCodexActiveSnapshot(...args) { return providerRuntimeWiring.applyCodexActiveSnapshot(...args); }
-function readCodexTaskSnapshot(...args) { return providerRuntimeWiring.readCodexTaskSnapshot(...args); }
-function scheduleCodexTerminalAudit(...args) { return providerRuntimeWiring.scheduleCodexTerminalAudit(...args); }
-
-providerRuntimeWiring = createProviderRuntimeWiring({
+const providerRuntimeWiring = providerRuntimePort.bind(createProviderRuntimeWiring({
   observation: {
     dataDir: config.dataDir,
     claudeOutputPollIntervalMs: CLAUDE_OUTPUT_POLL_INTERVAL_MS,
@@ -1693,7 +1639,7 @@ providerRuntimeWiring = createProviderRuntimeWiring({
   runtimeTimers,
   selectedTaskWatchIntervalMs: SELECTED_TASK_WATCH_INTERVAL_MS,
   logger: console,
-});
+}));
 const {
   claudeRunController,
   taskObserver,
@@ -1723,17 +1669,7 @@ const {
   rateLimitTelemetry,
 });
 
-function showTaskMessage(...args) { return taskInteractionWiring.showTaskMessage(...args); }
-function showLastTaskMessage(...args) { return taskInteractionWiring.showLastTaskMessage(...args); }
-function resolveTaskViewBinding(...args) { return taskInteractionWiring.resolveTaskViewBinding(...args); }
-function requestApproval(...args) { return taskInteractionWiring.requestApproval(...args); }
-function requestMcpElicitation(...args) { return taskInteractionWiring.requestMcpElicitation(...args); }
-function formatCommandApproval(...args) { return taskInteractionWiring.formatCommandApproval(...args); }
-function formatFileApproval(...args) { return taskInteractionWiring.formatFileApproval(...args); }
-function formatApprovalMode(...args) { return taskInteractionWiring.formatApprovalMode(...args); }
-function approvalModeKeyboard(...args) { return taskInteractionWiring.approvalModeKeyboard(...args); }
-
-taskInteractionWiring = createTaskInteractionWiring({
+taskInteractionPort.bind(createTaskInteractionWiring({
   taskView: {
     ensureCodex: async () => {
       if (codexTransport.running) return;
@@ -1777,19 +1713,9 @@ taskInteractionWiring = createTaskInteractionWiring({
   claudePermissionMode: config.claudePermissionMode,
   activeProjectRoot: () => activeProjectRoot,
   uiCallback,
-});
+}));
 
-function restartBlockingRuns(...args) { return runtimeRestartWiring.restartBlockingRuns(...args); }
-function restartHasBlockingWork(...args) { return runtimeRestartWiring.restartHasBlockingWork(...args); }
-function scheduleDeferredRestartIfReady(...args) { return runtimeRestartWiring.scheduleDeferredRestartIfReady(...args); }
-function restartMessageIsEditable(...args) { return runtimeRestartWiring.restartMessageIsEditable(...args); }
-function announceDesktopRestart(...args) { return runtimeRestartWiring.announceDesktopRestart(...args); }
-function updateRestartMessage(...args) { return runtimeRestartWiring.updateRestartMessage(...args); }
-function finalizeRestartMessage(...args) { return runtimeRestartWiring.finalizeRestartMessage(...args); }
-function performRestart(...args) { return runtimeRestartWiring.performRestart(...args); }
-function restartBot(...args) { return runtimeRestartWiring.restartBot(...args); }
-
-runtimeRestartWiring = createRuntimeRestartWiring({
+const runtimeRestartWiring = runtimeRestartPort.bind(createRuntimeRestartWiring({
   taskRuns,
   agentProviders,
   backgroundJobs,
@@ -1847,7 +1773,7 @@ runtimeRestartWiring = createRuntimeRestartWiring({
     startRuntimeTimers,
     delay,
   },
-});
+}));
 const { runtimeResources } = runtimeRestartWiring;
 
 function dismissCallbackMenu(...args) { return telegramTaskActions.dismissMenu(...args); }

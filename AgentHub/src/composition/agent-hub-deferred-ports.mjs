@@ -1,0 +1,97 @@
+import { createDeferredCompositionPort } from "./deferred-composition-port.mjs";
+
+export function createAgentHubDeferredPorts() {
+  const runAdmission = createDeferredCompositionPort("run admission wiring", [
+    "resolvedExplicitSkillNames", "discardManualContextCompactionRun", "taskExternalActivity",
+    "launchTurn", "startTurn", "cleanupDeferredFiles", "scheduleQueuedInput",
+  ]);
+  const runtimeCommand = createDeferredCompositionPort("runtime command routing", [
+    "taskTitle", "authorize", "reconcile", "handle",
+  ]);
+  const codexTaskSettings = createDeferredCompositionPort("Codex task settings wiring", [
+    "codexThreadResponseTitle", "storedCodexThreadTitle", "resolveResumedCodexThreadTitle",
+    "updateActiveCodexThreadSettings", "taskSwitchSettings",
+  ]);
+  const providerRuntime = createDeferredCompositionPort("provider runtime wiring", [
+    "persistManagedRunHistory", "persistClaudeRunHistory", "startClaudeTurn",
+    "stopClaudeRunProcess", "attachClaudeRunAfterRestart", "handleCodexMessage",
+    "completedCodexAnswer", "applyCodexObservedSnapshot", "applyCodexActiveSnapshot",
+    "readCodexTaskSnapshot", "scheduleCodexTerminalAudit",
+  ]);
+  const taskInteraction = createDeferredCompositionPort("task interaction wiring", [
+    "readCachedHistory", "refreshHistory", "showTaskMessage", "showLastTaskMessage",
+    "resolveTaskViewBinding", "requestApproval", "requestMcpElicitation",
+    "formatCommandApproval", "formatFileApproval", "formatApprovalMode", "approvalModeKeyboard",
+  ]);
+  const runtimeRestart = createDeferredCompositionPort("runtime restart wiring", [
+    "restartBlockingRuns", "restartHasBlockingWork", "scheduleDeferredRestartIfReady",
+    "restartMessageIsEditable", "announceDesktopRestart", "updateRestartMessage",
+    "finalizeRestartMessage", "performRestart", "restartBot",
+  ]);
+  const taskState = createDeferredCompositionPort("task state wiring", [
+    "invalidateTaskCatalog", "syncTaskRun", "persistTaskDiff", "findProject", "activeProject",
+    "selectedTask", "selectedTurnTarget", "currentUiContextToken", "uiCallback", "selectedRun",
+    "isSelectedRun", "runProject", "runTaskTitle", "pinnedTaskTitle", "pinTaskTitle",
+    "pendingTaskTitle", "expectTaskTitleConfirmation",
+  ]);
+  const telegramShell = createDeferredCompositionPort("Telegram shell wiring", [
+    "sendThreadPicker", "sendProjectPicker", "sendAgentPicker", "sendModelPicker",
+    "switchCodexModel", "switchModel", "resumeThread", "renameCurrentTask",
+    "archiveCurrentThread", "archiveBlockedReason", "sendArchiveMessage",
+    "currentStatusSnapshot", "sendStatus", "sendReasoningPicker", "sendCollaborationModePicker",
+  ]);
+  const telegramDelivery = createDeferredCompositionPort("Telegram delivery wiring", [
+    "runMessageBinding", "bindRunMessage", "sendRunMessage", "bindIncomingTaskMessage",
+    "deleteTaskMessages", "sendTaskViewText", "sendReliableRunMessage", "sendRunLongMessage",
+    "clearDeliveredProgressMessages", "safelyDeliverRunMessage", "finalizeRunDelivery",
+    "sendTaskSelectionNotification",
+  ]);
+  const codexLifecycle = createDeferredCompositionPort("Codex lifecycle wiring", [
+    "start", "stop", "restartAfterCrash", "sendRpc", "invalidateThreadRead", "readThread",
+    "sendNotification", "respondRpc", "initialize",
+  ]);
+  const providerStartup = createDeferredCompositionPort("provider startup wiring", [
+    "initializeProvider", "attachCodexThread", "createThread", "listThreads",
+    "isWorkspaceThread", "threadTitle",
+  ]);
+
+  return {
+    ports: {
+      runAdmission,
+      runtimeCommand,
+      codexTaskSettings,
+      providerRuntime,
+      taskInteraction,
+      runtimeRestart,
+      taskState,
+      telegramShell,
+      telegramDelivery,
+      codexLifecycle,
+      providerStartup,
+    },
+    api: {
+      ...runAdmission.api,
+      runtimeCommandTaskTitle: runtimeCommand.api.taskTitle,
+      authorizeRuntimeCommand: runtimeCommand.api.authorize,
+      reconcileRuntimeCommand: runtimeCommand.api.reconcile,
+      handleRuntimeCommand: runtimeCommand.api.handle,
+      ...codexTaskSettings.api,
+      ...providerRuntime.api,
+      ...taskInteraction.api,
+      ...runtimeRestart.api,
+      ...taskState.api,
+      ...telegramShell.api,
+      ...telegramDelivery.api,
+      startCodexAppServer: codexLifecycle.api.start,
+      stopCodexAppServerTree: codexLifecycle.api.stop,
+      restartCodexAfterCrash: codexLifecycle.api.restartAfterCrash,
+      sendRpc: codexLifecycle.api.sendRpc,
+      invalidateCodexThreadRead: codexLifecycle.api.invalidateThreadRead,
+      readCodexThread: codexLifecycle.api.readThread,
+      sendNotification: codexLifecycle.api.sendNotification,
+      respondRpc: codexLifecycle.api.respondRpc,
+      initializeCodex: codexLifecycle.api.initialize,
+      ...providerStartup.api,
+    },
+  };
+}
