@@ -183,3 +183,74 @@ html[data-background-override="true"][data-background="meadow-goldenhour"] body:
 @media (max-width: 720px) {html[data-background-override="true"][data-background="meadow"] { --hub-background-position: center, 68% 76%; }
   html[data-background-override="true"][data-background="meadow-goldenhour"] { --hub-background-position: center, 76% 56%; }
 }
+
+/* ==================================================== облик: полевой атлас ===
+   «Луг» — это определитель растений: карточки становятся этикетками с
+   загнутым уголком, у каждой слева тонкий стебель, служебные подписи набраны
+   курсивом, как латинские названия в гербарии. Знак — лист. */
+
+html[data-theme="meadow"] .brand-mark {
+  background: linear-gradient(150deg, rgba(159, 211, 86, .3), rgba(7, 13, 8, .8));
+  border: 1px solid rgba(176, 214, 138, .4);
+  border-radius: 0 60% 0 60%;
+}
+
+html[data-theme="meadow"] .brand-mark svg { display: none; }
+
+html[data-theme="meadow"] .brand-mark::before {
+  background: linear-gradient(150deg, #d6f5a3, #6f9c33);
+  border-radius: 0 100% 0 100%;
+  box-shadow: inset -1px 1px 0 rgba(7, 13, 8, .45);
+  content: "";
+  height: 1.1rem;
+  width: 1.1rem;
+}
+
+/* Этикетка гербария: загнутый правый верхний угол и стебель слева. */
+html[data-theme="meadow"] .task-item {
+  border-radius: 3px;
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
+  padding-left: 0.9rem;
+  position: relative;
+}
+
+html[data-theme="meadow"] .task-item::after {
+  background: linear-gradient(180deg, transparent, rgba(176, 214, 138, .5), transparent);
+  content: "";
+  left: 6px;
+  position: absolute;
+  top: 18%;
+  width: 1px;
+  height: 64%;
+}
+
+html[data-theme="meadow"] .task-item[data-selected]::after {
+  background: linear-gradient(180deg, transparent, var(--accent), transparent);
+  width: 2px;
+}
+
+/* Подписи определителя: курсив вместо капители и разрядки. */
+html[data-theme="meadow"] .task-agent,
+html[data-theme="meadow"] .task-model,
+html[data-theme="meadow"] .chat-meta,
+html[data-theme="meadow"] .eyebrow {
+  font-style: italic;
+  letter-spacing: 0;
+}
+
+html[data-theme="meadow"] .task-rail,
+html[data-theme="meadow"] .chat {
+  border-radius: 3px;
+}
+
+html[data-theme="meadow"] .chat {
+  clip-path: polygon(0 0, calc(100% - 22px) 0, 100% 22px, 100% 100%, 0 100%);
+}
+
+html[data-theme="meadow"] .view-tab,
+html[data-theme="meadow"] .option-chip {
+  border-radius: 2px 10px 2px 10px;
+}
+
+html[data-theme="meadow"] .msg-agent { border-radius: 3px 3px 3px 14px; }
+html[data-theme="meadow"] .msg-user { border-radius: 3px 3px 14px 3px; }
