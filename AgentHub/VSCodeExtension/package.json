@@ -2,7 +2,7 @@
   "name": "agent-hub",
   "displayName": "Agent Hub",
   "description": "Agent Hub: задачи, чаты и автоматически обновляемый журнал работ.",
-  "version": "0.4.11",
+  "version": "0.4.12",
   "publisher": "agent-hub",
   "icon": "media/agent-hub-work-log.png",
   "license": "MIT",
