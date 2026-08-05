@@ -68,8 +68,8 @@ html[data-theme="stormglass"] {
   --space-base: #05090f;
   --space-star: transparent;
   --star-opacity: 0;
-  --stormglass-image: url("./storm-sea.png");
-  --stormglass-flash: url("./storm-flash.png");
+  --stormglass-image: url("./storm-sea.jpg");
+  --stormglass-flash: url("./storm-flash.jpg");
 }
 
 /* Фон отдаёт снимок как есть, а поверх идёт только гроза: стекло с каплями
@@ -131,4 +131,4 @@ html[data-theme="stormglass"] .journal details[data-work-log-turn-details] {
   background-image: none;
 }
 
-html[data-background-override="true"][data-background="stormglass"] { --stormglass-image: url("./storm-sea.png"); --hub-background-color: #05090f; --hub-background-image: linear-gradient(90deg, rgba(3, 7, 12, .45), rgba(3, 7, 12, .06) 52%), linear-gradient(180deg, rgba(3, 8, 14, .04) 46%, rgba(2, 6, 10, .3)), var(--stormglass-image); --hub-background-position: center, center, 62% 50%; }
+html[data-background-override="true"][data-background="stormglass"] { --stormglass-image: url("./storm-sea.jpg"); --hub-background-color: #05090f; --hub-background-image: linear-gradient(90deg, rgba(3, 7, 12, .45), rgba(3, 7, 12, .06) 52%), linear-gradient(180deg, rgba(3, 8, 14, .04) 46%, rgba(2, 6, 10, .3)), var(--stormglass-image); --hub-background-position: center, center, 62% 50%; }

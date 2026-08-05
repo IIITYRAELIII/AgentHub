@@ -67,9 +67,9 @@ html[data-theme="verdant"] {
   --space-star: transparent;
   --star-opacity: 0;
   --decor-opacity: 1;
-  --verdant-image: url("./verdant-ruins.png");
-  --verdant-canopy-image: url("./verdant-canopy.png");
-  --verdant-sanctum-image: url("./verdant-sanctum.png");
+  --verdant-image: url("./verdant-ruins.jpg");
+  --verdant-canopy-image: url("./verdant-canopy.jpg");
+  --verdant-sanctum-image: url("./verdant-sanctum.jpg");
   --verdant-mark-image: url("./verdant-mark.png");
 }
 
@@ -235,7 +235,7 @@ html[data-theme="verdant"][data-surface="mobile"] body::after {
 }
 
 html[data-background-override="true"][data-background="verdant"] {
-  --verdant-image: url("./verdant-ruins.png");
+  --verdant-image: url("./verdant-ruins.jpg");
   --hub-background-color: #03110e;
   --hub-background-image:
     linear-gradient(90deg, rgba(1, 11, 9, 0.68), rgba(1, 12, 10, 0.4) 52%, rgba(1, 11, 9, 0.08) 78%),

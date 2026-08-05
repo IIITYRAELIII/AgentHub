@@ -7,6 +7,6 @@
   "scripts": "storm-glass.js",
   "markup": "theme.html",
   "backgrounds": [
-    { "id": "stormglass", "name": "Storm", "asset": "storm-sea.png", "particles": "downpour" }
+    { "id": "stormglass", "name": "Storm", "asset": "storm-sea.jpg", "particles": "downpour" }
   ]
 }

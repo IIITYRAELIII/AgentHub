@@ -5,6 +5,6 @@
   "order": 130,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "reliquary", "name": "Пепельный архив", "asset": "ashen-reliquary.png" }
+    { "id": "reliquary", "name": "Пепельный архив", "asset": "ashen-reliquary.jpg" }
   ]
 }

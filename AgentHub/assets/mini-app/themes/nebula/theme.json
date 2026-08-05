@@ -5,7 +5,7 @@
   "order": 20,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "nebula", "name": "Туманность", "asset": "nebula-veil.png" },
+    { "id": "nebula", "name": "Туманность", "asset": "nebula-veil.jpg" },
     { "id": "nebula-core", "name": "Ядро", "asset": "nebula-core.jpg" }
   ]
 }

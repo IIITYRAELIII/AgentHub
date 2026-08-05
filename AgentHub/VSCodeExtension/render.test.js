@@ -554,7 +554,7 @@ test("Storm keeps the photo backdrop and adds only lightning", () => {
 
   /* Оживает сама сцена: вода дышит по маске горизонта, небо медленно плывёт,
      а разряд подсвечивает кадр вторым снимком той же сцены. */
-  assert.match(styles, /--stormglass-flash: url\("\.\/storm-flash\.png"\)/u);
+  assert.match(styles, /--stormglass-flash: url\("\.\/storm-flash\.jpg"\)/u);
   assert.match(storm, /uniform sampler2D uFlash/u);
   assert.match(storm, /uniform float uHorizon/u);
   assert.match(storm, /const HORIZON = 0\.6/u);
@@ -651,7 +651,7 @@ test("«Озеро» keeps after-rain, summer-evening and watercolor scenes", ()
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "lake");
   const backgrounds = themeFile("lake");
   for (const [background, image] of [
-    ["lake", "lake-after-rain.png"],
+    ["lake", "lake-after-rain.jpg"],
     ["lake-summer", "lake-summer.jpg"],
     ["lake-watercolor", "lake-watercolor.jpg"],
   ]) {
@@ -669,7 +669,7 @@ test("«Озеро» keeps after-rain, summer-evening and watercolor scenes", ()
   ]);
   /* Блок фона специфичнее подмены из панели VS Code, поэтому путь к рисованным
      кадрам берётся через var с запасным значением, а не объявляется заново. */
-  assert.match(backgrounds, /--lake-image:\s*url\("\.\/lake-after-rain\.png"\)/u);
+  assert.match(backgrounds, /--lake-image:\s*url\("\.\/lake-after-rain\.jpg"\)/u);
   assert.match(backgrounds, /--lake-corners-image:\s*url\("\.\/lake-corners\.png"\)/u);
   assert.match(backgrounds, /--lake-mark-image:\s*url\("\.\/lake-mark\.png"\)/u);
   assert.match(backgrounds, /--lake-settings-image:\s*url\("\.\/lake-settings\.png"\)/u);
@@ -688,9 +688,9 @@ test("Verdant keeps its signal sweep across three environment scenes", () => {
   assert.deepEqual(
     theme.backgrounds.map(({ id, asset }) => [id, asset]),
     [
-      ["verdant", "verdant-ruins.png"],
-      ["verdant-canopy", "verdant-canopy.png"],
-      ["verdant-sanctum", "verdant-sanctum.png"],
+      ["verdant", "verdant-ruins.jpg"],
+      ["verdant-canopy", "verdant-canopy.jpg"],
+      ["verdant-sanctum", "verdant-sanctum.jpg"],
     ],
   );
   for (const background of ["verdant-canopy", "verdant-sanctum"]) {
@@ -768,7 +768,7 @@ test("VS Code resolves each self-contained theme resource without CSS overrides"
   assert.match(shared, /themeResourceUrls = new Map/u);
   assert.match(shared, /vscode\.Uri\.file\(item\.file\)/u);
   assert.doesNotMatch(shared, /assetOverrides/u);
-  assert.match(reliquary, /url\("\.\/ashen-reliquary\.png"\)/u);
+  assert.match(reliquary, /url\("\.\/ashen-reliquary\.jpg"\)/u);
   assert.match(app, /root\.style\.setProperty\(`--\$\{background\}-image`, cssBackgroundUrl\(url\)\)/u);
 });
 

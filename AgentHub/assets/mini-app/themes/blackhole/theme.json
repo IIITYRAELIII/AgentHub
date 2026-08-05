@@ -5,7 +5,7 @@
   "order": 50,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "blackhole", "name": "BlackHole", "asset": "blackhole-blue.png" },
+    { "id": "blackhole", "name": "BlackHole", "asset": "blackhole-blue.jpg" },
     { "id": "blackhole-disk", "name": "Диск", "asset": "blackhole-disk.jpg" }
   ]
 }

@@ -5,7 +5,7 @@
   "order": 100,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "meadow", "name": "Луг", "asset": "meadow-sun.png" },
+    { "id": "meadow", "name": "Луг", "asset": "meadow-sun.jpg" },
     { "id": "meadow-goldenhour", "name": "Закат", "asset": "meadow-goldenhour.jpg" }
   ]
 }

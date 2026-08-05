@@ -69,7 +69,7 @@ html[data-theme="meadow"] {
 /* ======================================= «Луг»: солнце сквозь листву === */
 
 html[data-theme="meadow"] {
-  --meadow-image: url("./meadow-sun.png");
+  --meadow-image: url("./meadow-sun.jpg");
 }
 
 /* Цветущая часть луга внизу справа, поэтому низ не гасим — иначе от темы
@@ -157,7 +157,7 @@ html[data-theme="meadow"] .journal details[data-work-log-turn-details][open] {
   }
 }
 
-html[data-background-override="true"][data-background="meadow"] { --meadow-image: url("./meadow-sun.png"); --hub-background-color: #070d08; --hub-background-image: linear-gradient(90deg, rgba(4, 9, 5, .34), rgba(4, 9, 5, 0) 40%), var(--meadow-image); --hub-background-position: center, 62% 60%; }
+html[data-background-override="true"][data-background="meadow"] { --meadow-image: url("./meadow-sun.jpg"); --hub-background-color: #070d08; --hub-background-image: linear-gradient(90deg, rgba(4, 9, 5, .34), rgba(4, 9, 5, 0) 40%), var(--meadow-image); --hub-background-position: center, 62% 60%; }
 html[data-background-override="true"][data-background="meadow-goldenhour"] { --hub-background-color: #070d08; --hub-background-image: linear-gradient(90deg, rgba(4, 9, 5, .46), rgba(4, 9, 5, .06) 40%, rgba(4, 9, 5, 0) 60%), var(--meadow-goldenhour-image, url("./meadow-goldenhour.jpg")); --hub-background-position: center, 62% 54%; }
 
 html[data-background-override="true"][data-background="orbit-limb"] body::before,

@@ -73,7 +73,7 @@ html[data-theme="reliquary"] body {
 
 html[data-theme="reliquary"] body::after {
   background-color: #090807;
-  background-image: var(--reliquary-image, url("./ashen-reliquary.png"));
+  background-image: var(--reliquary-image, url("./ashen-reliquary.jpg"));
   background-position: var(--hub-background-position, 55% 50%);
   background-repeat: no-repeat;
   background-size: cover;
@@ -395,7 +395,7 @@ html[data-theme="reliquary"] .task-new-menu {
    предлагается другим темам и сохраняет тёмную область под колонкой задач. */
 html[data-theme="reliquary"][data-background="reliquary"] {
   --hub-background-color: #090807;
-  --hub-background-image: var(--reliquary-image, url("./ashen-reliquary.png"));
+  --hub-background-image: var(--reliquary-image, url("./ashen-reliquary.jpg"));
   --hub-background-position: 55% 50%;
 }
 

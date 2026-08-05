@@ -63,7 +63,7 @@ html[data-theme="metropolis"] {
   --space-base: #050b12;
   --space-star: transparent;
   --star-opacity: 0;
-  --metropolis-image: url("./metropolis-night.png");
+  --metropolis-image: url("./metropolis-night.jpg");
 }
 
 html[data-theme="stormglass"] .theme-atmosphere [data-metropolis-glass],
@@ -195,7 +195,7 @@ html[data-theme="metropolis"][data-surface="mobile"] body::after {
   }
 }
 
-html[data-background-override="true"][data-background="metropolis"] { --metropolis-image: url("./metropolis-night.png"); --hub-background-color: #050b12; --hub-background-image: linear-gradient(90deg, rgba(2, 7, 12, .5), rgba(2, 7, 12, .08) 62%), linear-gradient(180deg, rgba(3, 8, 14, .04) 48%, rgba(2, 6, 10, .42)), var(--metropolis-image); --hub-background-position: center, center, 62% 50%; }
+html[data-background-override="true"][data-background="metropolis"] { --metropolis-image: url("./metropolis-night.jpg"); --hub-background-color: #050b12; --hub-background-image: linear-gradient(90deg, rgba(2, 7, 12, .5), rgba(2, 7, 12, .08) 62%), linear-gradient(180deg, rgba(3, 8, 14, .04) 48%, rgba(2, 6, 10, .42)), var(--metropolis-image); --hub-background-position: center, center, 62% 50%; }
 html[data-background-override="true"][data-background="metropolis-towers"] { --hub-background-color: #050b12; --hub-background-image: linear-gradient(90deg, rgba(2, 7, 12, .5), rgba(2, 7, 12, .08) 44%, rgba(2, 7, 12, 0) 64%), var(--metropolis-towers-image, url("./metropolis-towers.jpg")); --hub-background-position: center, 60% 52%; }
 
 @media (max-width: 720px) {html[data-background-override="true"][data-background="metropolis"] { --hub-background-position: center, center, 68% 50%; }

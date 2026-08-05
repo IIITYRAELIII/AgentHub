@@ -68,7 +68,7 @@ html[data-theme="nebula"] {
 /* ============================== «Туманность»: облака и мягкие разделители === */
 
 html[data-theme="nebula"] {
-  --nebula-image: url("./nebula-veil.png");
+  --nebula-image: url("./nebula-veil.jpg");
 }
 
 /* Снимок заменил нарисованные пятна: рукава газа и звёздная россыпь дают ту
@@ -132,7 +132,7 @@ html[data-theme="nebula"] body::before {
   opacity: 0.3;
 }
 
-html[data-background-override="true"][data-background="nebula"] { --nebula-image: url("./nebula-veil.png"); --hub-background-color: #0b0616; --hub-background-image: radial-gradient(46% 34% at 78% 26%, rgba(120, 92, 255, .12), transparent 72%), var(--nebula-image); --hub-background-position: center, 60% 46%; }
+html[data-background-override="true"][data-background="nebula"] { --nebula-image: url("./nebula-veil.jpg"); --hub-background-color: #0b0616; --hub-background-image: radial-gradient(46% 34% at 78% 26%, rgba(120, 92, 255, .12), transparent 72%), var(--nebula-image); --hub-background-position: center, 60% 46%; }
 html[data-background-override="true"][data-background="nebula-core"] { --hub-background-color: #0a0614; --hub-background-image: linear-gradient(90deg, rgba(6, 4, 12, .32), rgba(6, 4, 12, 0) 44%), var(--nebula-core-image, url("./nebula-core.jpg")); --hub-background-position: center, 58% 48%; }
 
 html[data-background-override="true"][data-background="orbit-limb"] body::before,

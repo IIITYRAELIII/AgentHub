@@ -5,7 +5,7 @@
   "order": 40,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "gothic", "name": "Склеп", "asset": "gothic-concrete.png", "particles": "motes" },
+    { "id": "gothic", "name": "Склеп", "asset": "gothic-concrete.jpg", "particles": "motes" },
     { "id": "gothic-crypt", "name": "Крипта", "asset": "gothic-crypt.jpg", "particles": "motes" },
     { "id": "gothic-tower", "name": "Башня", "asset": "gothic-tower.jpg" },
     { "id": "gothic-harbor", "name": "Гавань", "asset": "gothic-harbor.jpg", "particles": "rain" },

@@ -72,7 +72,7 @@ html[data-theme="pulsar"] {
 /* ================================= «Пульсар»: сканлайны, скобки, импульс === */
 
 html[data-theme="pulsar"] {
-  --pulsar-image: url("./pulsar-beams.png");
+  --pulsar-image: url("./pulsar-beams.jpg");
 }
 
 /* Фон — рендер магнетара; сканлайны оставлены поверх него: это язык темы,
@@ -202,7 +202,7 @@ html[data-theme="pulsar"] body::before {
   opacity: 0.2;
 }
 
-html[data-background-override="true"][data-background="pulsar"] { --pulsar-image: url("./pulsar-beams.png"); --hub-background-color: #03151a; --hub-background-image: repeating-linear-gradient(0deg, rgba(60, 230, 212, .03) 0 1px, transparent 1px 4px), linear-gradient(180deg, rgba(2, 12, 16, 0) 44%, rgba(2, 10, 14, .4)), var(--pulsar-image); --hub-background-position: center, center, 50% 46%; --hub-background-repeat: repeat, no-repeat, no-repeat; --hub-background-size: auto, cover, cover; }
+html[data-background-override="true"][data-background="pulsar"] { --pulsar-image: url("./pulsar-beams.jpg"); --hub-background-color: #03151a; --hub-background-image: repeating-linear-gradient(0deg, rgba(60, 230, 212, .03) 0 1px, transparent 1px 4px), linear-gradient(180deg, rgba(2, 12, 16, 0) 44%, rgba(2, 10, 14, .4)), var(--pulsar-image); --hub-background-position: center, center, 50% 46%; --hub-background-repeat: repeat, no-repeat, no-repeat; --hub-background-size: auto, cover, cover; }
 html[data-background-override="true"][data-background="pulsar-beam"] { --hub-background-color: #02121a; --hub-background-image: repeating-linear-gradient(0deg, rgba(60, 230, 212, .03) 0 1px, transparent 1px 4px), linear-gradient(90deg, rgba(1, 8, 12, .3), rgba(1, 8, 12, 0) 42%), var(--pulsar-beam-image, url("./pulsar-beam.jpg")); --hub-background-position: center, center, 56% 48%; --hub-background-repeat: repeat, no-repeat, no-repeat; --hub-background-size: auto, cover, cover; }
 
 html[data-background-override="true"][data-background="orbit-limb"] body::before,

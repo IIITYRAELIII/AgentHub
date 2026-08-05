@@ -73,7 +73,7 @@ html[data-theme="magma"] {
 /* ================================ «Магма»: остывшая корка и живые трещины === */
 
 html[data-theme="magma"] {
-  --magma-image: url("./magma-crust.png");
+  --magma-image: url("./magma-crust.jpg");
 }
 
 /* Лава сама по себе яркая, поэтому затемняем её справа — там, где идут
@@ -179,7 +179,7 @@ html[data-theme="magma"] body::before {
   opacity: 0.42;
 }
 
-html[data-background-override="true"][data-background="magma"] { --magma-image: url("./magma-crust.png"); --hub-background-color: #0a0605; --hub-background-image: linear-gradient(180deg, rgba(8, 4, 3, 0) 62%, rgba(8, 4, 3, .55)), linear-gradient(90deg, rgba(8, 4, 3, 0) 34%, rgba(8, 4, 3, .46)), var(--magma-image); --hub-background-position: center, center, 58% 50%; }
+html[data-background-override="true"][data-background="magma"] { --magma-image: url("./magma-crust.jpg"); --hub-background-color: #0a0605; --hub-background-image: linear-gradient(180deg, rgba(8, 4, 3, 0) 62%, rgba(8, 4, 3, .55)), linear-gradient(90deg, rgba(8, 4, 3, 0) 34%, rgba(8, 4, 3, .46)), var(--magma-image); --hub-background-position: center, center, 58% 50%; }
 html[data-background-override="true"][data-background="magma-flow"] { --hub-background-color: #0a0605; --hub-background-image: linear-gradient(90deg, rgba(8, 4, 3, .64), rgba(8, 4, 3, .2) 34%, rgba(8, 4, 3, 0) 58%), var(--magma-flow-image, url("./magma-flow.jpg")); --hub-background-position: center, 58% 52%; }
 
 html[data-background-override="true"][data-background="orbit-limb"] body::before,

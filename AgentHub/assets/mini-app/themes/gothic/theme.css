@@ -101,7 +101,7 @@ html[data-theme="gothic"] {
 /* ======================= «Gothic»: крепость, руны, факелы и лунная сталь === */
 
 html[data-theme="gothic"] {
-  --gothic-image: url("./gothic-concrete.png");
+  --gothic-image: url("./gothic-concrete.jpg");
 }
 
 html[data-theme="gothic"] body::after {
@@ -249,7 +249,7 @@ html[data-theme="gothic"] body::before {
   opacity: 0.42;
 }
 
-html[data-background-override="true"][data-background="gothic"] { --gothic-image: url("./gothic-concrete.png"); --hub-background-color: #070604; --hub-background-image: linear-gradient(90deg, rgba(4, 4, 3, .18), transparent 34% 70%, rgba(4, 2, 1, .06)), linear-gradient(180deg, rgba(3, 3, 2, .04) 48%, rgba(3, 2, 1, .5)), radial-gradient(120% 94% at 50% 44%, transparent 38%, rgba(0, 0, 0, .42) 100%), var(--gothic-image); --hub-background-position: center, center, center, 50% 50%; }
+html[data-background-override="true"][data-background="gothic"] { --gothic-image: url("./gothic-concrete.jpg"); --hub-background-color: #070604; --hub-background-image: linear-gradient(90deg, rgba(4, 4, 3, .18), transparent 34% 70%, rgba(4, 2, 1, .06)), linear-gradient(180deg, rgba(3, 3, 2, .04) 48%, rgba(3, 2, 1, .5)), radial-gradient(120% 94% at 50% 44%, transparent 38%, rgba(0, 0, 0, .42) 100%), var(--gothic-image); --hub-background-position: center, center, center, 50% 50%; }
 html[data-background-override="true"][data-background="gothic-crypt"] { --hub-background-color: #070604; --hub-background-image: linear-gradient(90deg, rgba(4, 4, 3, .3), rgba(4, 4, 3, 0) 40%), var(--gothic-crypt-image, url("./gothic-crypt.jpg?v=913e132043c0")); --hub-background-position: center, 58% 50%; }
 
 /* Дополнительные ночные сцены «Gothic». Кадры уже сняты с тёмной левой третью, поэтому

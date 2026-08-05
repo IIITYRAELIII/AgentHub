@@ -5,8 +5,8 @@
   "order": 140,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "verdant", "name": "Штормовые руины", "asset": "verdant-ruins.png", "preload": true },
-    { "id": "verdant-canopy", "name": "Солнечная долина", "asset": "verdant-canopy.png", "preload": true },
-    { "id": "verdant-sanctum", "name": "Святилище", "asset": "verdant-sanctum.png", "preload": true }
+    { "id": "verdant", "name": "Штормовые руины", "asset": "verdant-ruins.jpg", "preload": true },
+    { "id": "verdant-canopy", "name": "Солнечная долина", "asset": "verdant-canopy.jpg", "preload": true },
+    { "id": "verdant-sanctum", "name": "Святилище", "asset": "verdant-sanctum.jpg", "preload": true }
   ]
 }

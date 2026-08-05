@@ -8,7 +8,7 @@
   "scripts": "metropolis-glass.js",
   "markup": "theme.html",
   "backgrounds": [
-    { "id": "metropolis", "name": "Мегаполис", "asset": "metropolis-night.png" },
+    { "id": "metropolis", "name": "Мегаполис", "asset": "metropolis-night.jpg" },
     { "id": "metropolis-towers", "name": "Башни", "asset": "metropolis-towers.jpg", "particles": "rain" }
   ]
 }
