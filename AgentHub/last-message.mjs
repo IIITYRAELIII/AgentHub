@@ -166,13 +166,17 @@ export function parseClaudeTranscript(text) {
   }
   // Claude VS Code writes last-prompt immediately after accepting the user
   // prompt. It marks queue bookkeeping, not the end of the assistant turn.
-  const completed = assistantEntries.some((entry) => entry.message?.stop_reason === "end_turn");
+  const failed = assistantEntries.some((entry) => entry?.isApiErrorMessage === true);
+  const completed = failed
+    || assistantEntries.some((entry) => entry.message?.stop_reason === "end_turn");
   const answer = answerParts.join("\n\n").trim();
   const reasoning = thinkingParts.at(-1)?.slice(-1500) ?? "";
   const transcriptTitle = claudeTranscriptTitle(entries);
   const cwdValues = entries.map((entry) => entry?.cwd).filter(Boolean);
-  const stage = completed
-    ? "Задача завершена."
+  const stage = failed
+    ? "Claude завершился с ошибкой."
+    : completed
+      ? "Задача завершена."
     : lastTool
       ? `Claude использует инструмент ${lastTool}…`
       : answer

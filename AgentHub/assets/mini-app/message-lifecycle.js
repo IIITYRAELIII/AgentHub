@@ -14,12 +14,13 @@ function identityKey(message, { withoutItem = false } = {}) {
 }
 
 function clientIdentityKey(message) {
-  const provider = String(message?.provider ?? "");
-  const threadId = String(message?.threadId ?? "");
   const clientUserMessageId = String(message?.clientUserMessageId ?? "");
   const role = String(message?.role ?? "");
-  if (!provider || !threadId || !clientUserMessageId || role !== "user") return "";
-  return `${provider}\0${threadId}\0${clientUserMessageId}\0${role}`;
+  if (!clientUserMessageId || role !== "user") return "";
+  // clientUserMessageId is the global idempotency key of one submission.
+  // Provider/thread can briefly differ while an optimistic card is rebound to
+  // the canonical task, but that must not create a second visible message.
+  return `${clientUserMessageId}\0${role}`;
 }
 
 function agentTurnKey(message) {
@@ -38,6 +39,7 @@ function agentTurnKey(message) {
 function deduplicateConversationMessages(messages) {
   const values = [];
   const seen = new Set();
+  const positions = new Map();
   const agentTurns = new Map();
   for (const message of Array.isArray(messages) ? messages : []) {
     const client = clientIdentityKey(message);
@@ -52,8 +54,39 @@ function deduplicateConversationMessages(messages) {
       keys.forEach((key) => seen.add(key));
       continue;
     }
-    if (keys.some((key) => seen.has(key))) continue;
-    keys.forEach((key) => seen.add(key));
+    const duplicateKey = keys.find((key) => seen.has(key));
+    if (duplicateKey) {
+      const position = positions.get(duplicateKey);
+      if (Number.isInteger(position) && message?.role === "user") {
+        const existing = values[position];
+        const delivery = String(message?.deliveryState ?? "").trim() ? message : existing;
+        values[position] = {
+          ...message,
+          ...existing,
+          clientUserMessageId: existing.clientUserMessageId || message.clientUserMessageId,
+          attachments: Array.isArray(message.attachments) && message.attachments.length
+            ? message.attachments
+            : existing.attachments ?? [],
+          responseAnnotations: Array.isArray(message.responseAnnotations)
+            && message.responseAnnotations.length
+            ? message.responseAnnotations
+            : existing.responseAnnotations,
+          responseAnnotationRequest: String(message.responseAnnotationRequest ?? "").trim()
+            ? message.responseAnnotationRequest
+            : existing.responseAnnotationRequest,
+          ...(delivery ? {
+            deliveryState: delivery.deliveryState,
+            delivery: delivery.delivery,
+            failed: delivery.failed,
+          } : {}),
+        };
+      }
+      continue;
+    }
+    keys.forEach((key) => {
+      seen.add(key);
+      positions.set(key, values.length);
+    });
     if (agentTurn) agentTurns.set(agentTurn, values.length);
     values.push(message);
   }

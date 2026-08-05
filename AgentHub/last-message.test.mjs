@@ -132,6 +132,32 @@ test("Claude VS Code last-prompt keeps the current turn active and identifies VS
   assert.equal(result.updatedAt, "2026-08-03T18:04:52.321Z");
 });
 
+test("Claude API error is terminal even without end_turn", () => {
+  const result = parseClaudeTranscript([
+    line({
+      type: "user",
+      timestamp: "2026-08-05T05:43:51.349Z",
+      message: { role: "user", content: "Продолжай" },
+    }),
+    line({
+      type: "assistant",
+      timestamp: "2026-08-05T05:43:52.748Z",
+      isApiErrorMessage: true,
+      error: "oauth_org_not_allowed",
+      message: {
+        role: "assistant",
+        stop_reason: "stop_sequence",
+        content: [{ type: "text", text: "Claude subscription access disabled" }],
+      },
+    }),
+  ].join("\n"));
+
+  assert.equal(result.completed, true);
+  assert.equal(result.active, false);
+  assert.equal(result.stage, "Claude завершился с ошибкой.");
+  assert.equal(result.answer, "Claude subscription access disabled");
+});
+
 test("parseClaudeTranscript uses only the latest user turn and detects completion", () => {
   const transcript = [
     line({ type: "user", message: { role: "user", content: "Первый вопрос" } }),

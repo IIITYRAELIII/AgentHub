@@ -103,6 +103,42 @@ test("message lifecycle removes a replayed server echo before optimistic reconci
   assert.deepEqual([...result.matchedIds], ["client-1"]);
 });
 
+test("accepted optimistic message and rebound server echo render as one card", () => {
+  const clientUserMessageId = "b40b178a-6f2d-4c1c-8922-558ab1070c06";
+  const server = {
+    provider: "codex",
+    threadId: "canonical-thread",
+    turnId: "turn-1",
+    itemId: "server-user-item",
+    clientUserMessageId,
+    role: "user",
+    text: "Одно сообщение",
+    time: "2026-08-05T06:00:11.049Z",
+  };
+  const optimistic = {
+    provider: "codex",
+    threadId: "temporary-thread-alias",
+    turnId: "turn-1",
+    itemId: "receipt-1",
+    clientUserMessageId,
+    role: "user",
+    text: "Одно сообщение",
+    deliveryState: "accepted",
+    delivery: "Принято",
+    failed: false,
+  };
+
+  const reconciled = lifecycle.reconcile([server], [optimistic]);
+  assert.equal(reconciled.matches.length, 1);
+  assert.equal(reconciled.matches[0].local, optimistic);
+
+  const visible = lifecycle.deduplicateConversationMessages([server, optimistic]);
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].clientUserMessageId, clientUserMessageId);
+  assert.equal(visible[0].deliveryState, "accepted");
+  assert.equal(visible[0].delivery, "Принято");
+});
+
 test("temporary server echo keeps optimistic response annotations until rollout confirms them", () => {
   const local = {
     ...message("client-quote", "Это не повторится больше?"),

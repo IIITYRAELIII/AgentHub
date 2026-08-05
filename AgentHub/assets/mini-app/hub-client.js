@@ -285,10 +285,13 @@ function reconciledMessages(taskIdValue) {
   }
   const confirmedMatchedIds = confirmedOutgoingMessageIds(durableMessages, outgoing);
   for (const clientUserMessageId of confirmedMatchedIds) pending.delete(clientUserMessageId);
-  return chronologicalMessages(visibleConversationMessages(result.map(normalizedUserMessage), {
+  const visible = visibleConversationMessages(result.map(normalizedUserMessage), {
     deferredClientUserMessageIds,
     liveProbe: liveProbeByTask.get(taskIdValue) ?? null,
-  }));
+  });
+  // Live snapshots, durable history and the optimistic receipt can arrive in
+  // either order. Re-run idempotent deduplication after all three were merged.
+  return chronologicalMessages(deduplicateConversationMessages(visible));
 }
 
 function receiptDeliveryPatch(receipt) {
