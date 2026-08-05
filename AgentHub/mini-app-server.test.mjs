@@ -342,6 +342,15 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.equal(backgrounds.status, 200);
     assert.match(backgrounds.headers.get("content-type"), /text\/css/u);
     assert.match(await backgrounds.text(), /\[data-background="lake-watercolor"\]/u);
+    const lakeAfterRain = await fetch(`${address.url}themes/lake/lake-after-rain.png`);
+    assert.equal(lakeAfterRain.status, 200);
+    assert.equal(lakeAfterRain.headers.get("content-type"), "image/png");
+    assert.match(lakeAfterRain.headers.get("cache-control"), /immutable/u);
+    assert.ok((await lakeAfterRain.arrayBuffer()).byteLength > 100_000);
+    const lakeCorners = await fetch(`${address.url}themes/lake/lake-corners.png`);
+    assert.equal(lakeCorners.status, 200);
+    assert.equal(lakeCorners.headers.get("content-type"), "image/png");
+    assert.match(lakeCorners.headers.get("cache-control"), /immutable/u);
     const verdantStyles = await fetch(`${address.url}themes/verdant/theme.css`);
     assert.equal(verdantStyles.status, 200);
     assert.match(verdantStyles.headers.get("content-type"), /text\/css/u);
@@ -547,7 +556,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(styles, /html\[data-theme="magma"\]/u);
     assert.match(styles, /url\("\/meadow-sun\.png"\)/u);
     assert.match(styles, /html\[data-theme="meadow"\]/u);
-    assert.match(styles, /url\("\/lake-summer\.jpg"\)/u);
+    assert.match(styles, /url\("\/lake-after-rain\.png"\)/u);
     assert.match(styles, /html\[data-theme="lake"\]/u);
     assert.match(styles, /url\("\/gothic-concrete\.png"\)/u);
     assert.match(styles, /url\("\/nebula-veil\.png"\)/u);

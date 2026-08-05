@@ -288,7 +288,7 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
     ["blackhole", "blackhole-flicker"],
     ["magma", "magma-glow"],
     ["meadow", "meadow-breathe"],
-    ["lake", "lake-shimmer"],
+    ["lake", "lake-sun-path"],
   ]) {
     assert.match(
       styles,
@@ -335,7 +335,7 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   );
   /* Пошаговые анимации давали видимую дёрганость, поэтому в живых слоях их
      быть не должно: единственный резкий ритм — «Пульсар», и он linear. */
-  const motionBlocks = styles.match(/animation:\s*(?:gothic-fire|magma-glow|orbit-tracking-pass|nebula-drift|meadow-breathe|lake-shimmer|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
+  const motionBlocks = styles.match(/animation:\s*(?:gothic-fire|magma-glow|orbit-tracking-pass|nebula-drift|meadow-breathe|lake-sun-path|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
   assert.equal(motionBlocks.length, 8, "живой слой остаётся у восьми тем; «Rain», «Storm» и «Gothic» рисуют частицы");
   for (const block of motionBlocks) {
     assert.doesNotMatch(block, /steps\(/u, `движение должно быть плавным: ${block}`);
@@ -647,11 +647,11 @@ test("large Gothic scenes are decoded before replacing the visible background", 
   assert.match(client, /if \(loaded\) \{ commitBackground\(selected, persist\); return; \}/u);
 });
 
-test("«Озеро» keeps one palette and three interchangeable scenes", () => {
+test("«Озеро» keeps its after-rain composition and two painted scenes", () => {
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "lake");
   const backgrounds = themeFile("lake");
   for (const [background, image] of [
-    ["lake", "lake-summer.jpg"],
+    ["lake", "lake-after-rain.png"],
     ["lake-watercolor", "lake-watercolor.jpg"],
     ["lake-oil", "lake-oil.jpg"],
   ]) {
@@ -665,7 +665,9 @@ test("«Озеро» keeps one palette and three interchangeable scenes", () => 
   assert.deepEqual(theme.backgrounds.map((background) => background.id), ["lake", "lake-watercolor", "lake-oil"]);
   /* Блок фона специфичнее подмены из панели VS Code, поэтому путь к рисованным
      кадрам берётся через var с запасным значением, а не объявляется заново. */
-  assert.match(backgrounds, /--lake-image:\s*url\("\.\/lake-summer\.jpg"\)/u);
+  assert.match(backgrounds, /--lake-image:\s*url\("\.\/lake-after-rain\.png"\)/u);
+  assert.match(backgrounds, /--lake-corners-image:\s*url\("\.\/lake-corners\.png"\)/u);
+  assert.match(backgrounds, /@keyframes lake-ripple/u);
   for (const variable of ["--lake-watercolor-image", "--lake-oil-image"]) {
     assert.match(backgrounds, new RegExp(`var\\(${variable},\\s*url\\(`, "u"), variable);
     assert.doesNotMatch(backgrounds, new RegExp(`${variable}:\\s*url\\(`, "u"), variable);
