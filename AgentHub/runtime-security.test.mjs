@@ -133,6 +133,11 @@ test("Windows production launch path contains no script-host or policy bypass", 
   assert.doesNotMatch(combined, /wscript\.exe/iu);
   assert.doesNotMatch(combined, /ExecutionPolicy\s+Bypass/iu);
   assert.doesNotMatch(combined, /WindowStyle\s+Hidden\s+-ExecutionPolicy/iu);
+  const runtimeHost = await readFile(
+    path.join(import.meta.dirname, "RuntimeHost", "AgentHub.RuntimeHost.cs"),
+    "utf8",
+  );
+  assert.match(runtimeHost, /InvokeMember\("Arguments"[\s\S]+String\.Empty/u);
 });
 
 test("Windows RuntimeHost verifies, launches and retires legacy scripts", async (t) => {
