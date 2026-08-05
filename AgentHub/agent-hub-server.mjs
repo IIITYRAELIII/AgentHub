@@ -16,7 +16,6 @@ import {
   buildClaudeArgs,
   buildClaudePrompt,
   claudeThinkingTokens,
-  parseClaudeLimits,
   resolveClaudeSessionCwd,
 } from "./claude.mjs";
 import {
@@ -42,8 +41,6 @@ import {
 } from "./codex-sandbox.mjs";
 import {
   formatArchiveMessage,
-  formatClaudeRateLimits,
-  formatCodexRateLimits,
   formatProgressHeading,
   formatRestartCompleteMessage,
   formatTaskAlreadySelectedMessage,
@@ -65,6 +62,7 @@ import { CodexTerminalReconciliationService } from "./codex-terminal-reconciliat
 import { scanCodexHistoricalRolloutInWorker } from "./codex-historical-backfill.mjs";
 import { resolveCodexJournalProject } from "./codex-journal-project.mjs";
 import { RateLimitHistoryStore } from "./rate-limit-history.mjs";
+import { RateLimitTelemetryService } from "./rate-limit-telemetry-service.mjs";
 import {
   CODEX_AUDIT_SOURCE_KINDS,
   resolveCodexAccountingThread,
@@ -1243,6 +1241,16 @@ const telegramSettingsMenu = new TelegramSettingsMenu({
   callbackData: uiCallback,
   sendMessage,
 });
+const rateLimitTelemetry = new RateLimitTelemetryService({
+  resolveClaudeInvocation,
+  spawnCapture,
+  readCodexRateLimits: () => sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 }),
+  codexRunning: () => codexTransport.running,
+  historyStore: rateLimitHistoryStore,
+  workLogUsageStore,
+  timers: runtimeTimers,
+  isStopping: () => stopping,
+});
 const telegramStatusController = new TelegramStatusController({
   config,
   projects: PROJECTS,
@@ -1250,8 +1258,8 @@ const telegramStatusController = new TelegramStatusController({
   refreshTaskCatalog,
   currentTaskCatalog: () => taskCatalog,
   currentTaskRuns: () => taskRuns.values(),
-  readCodexRateLimits: () => sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 }),
-  readClaudeRateLimits,
+  readCodexRateLimits: () => rateLimitTelemetry.readCodex(),
+  readClaudeRateLimits: () => rateLimitTelemetry.readClaude(),
   codexModelLabel,
   claudeModelLabels: CLAUDE_MODEL_LABELS,
   reasoningLabels: CODEX_REASONING_LABELS,
@@ -3213,15 +3221,13 @@ async function desktopDeferredInput(params, context = null) {
 }
 
 async function desktopStatusDetails() {
-  const codexSelected = isCodex();
   let limits;
   try {
-    limits = codexSelected
-      ? formatCodexRateLimits(await sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 }))
-      : formatClaudeRateLimits(await readClaudeRateLimits());
+    limits = await rateLimitTelemetry.formatted(activeProvider);
   } catch (error) {
     limits = `Не удалось получить: ${error.message}`;
   }
+  const codexSelected = isCodex();
   return {
     provider: activeProvider,
     model: codexSelected ? codexModelLabel(codexModel) : CLAUDE_MODEL_LABELS[claudeModel],
@@ -4806,40 +4812,6 @@ function scheduleCodexTerminalAudit(delayMs = SELECTED_TASK_WATCH_INTERVAL_MS) {
   }, Math.max(0, Number(delayMs) || 0));
 }
 
-function scheduleRateLimitPoll(delayMs = 5 * 60_000) {
-  if (stopping) return;
-  runtimeTimers.schedule("rate-limit-poll", () => {
-    void pollRateLimits();
-  }, Math.max(0, Number(delayMs) || 0));
-}
-
-async function pollRateLimits() {
-  const observedAt = new Date().toISOString();
-  const jobs = [];
-  if (codexTransport.running) {
-    jobs.push((async () => {
-      const result = await sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 });
-      const summary = formatCodexRateLimits(result);
-      await rateLimitHistoryStore.record(result, observedAt);
-      await workLogUsageStore.projectRateLimits(null, summary, observedAt);
-    })().catch((error) => {
-      console.error("Cannot poll Codex rate limits:", error.message);
-    }));
-  }
-  jobs.push((async () => {
-    const limits = parseClaudeLimits(await readClaudeRateLimits());
-    if (!limits.length) throw new Error("Claude did not return recognizable limit data");
-    await rateLimitHistoryStore.record({ limits }, observedAt, "claude");
-  })().catch((error) => {
-    console.error("Cannot poll Claude rate limits:", error.message);
-  }));
-  try {
-    await Promise.all(jobs);
-  } finally {
-    scheduleRateLimitPoll();
-  }
-}
-
 const taskViewController = new TaskViewController({
   ensureCodex: async () => {
     if (codexTransport.running) return;
@@ -4980,21 +4952,6 @@ function formatCommandApproval(params, run = null) {
 function formatFileApproval(params) {
   const reason = params.reason ? `\nПричина: ${params.reason}` : "";
   return `Codex запрашивает изменение файлов.${reason}\n\nИспользуйте /diff после выполнения для просмотра общего diff.`;
-}
-
-async function readClaudeRateLimits() {
-  const invocation = resolveClaudeInvocation();
-  const result = await spawnCapture(invocation.command, [
-    ...invocation.prefixArgs,
-    // A rate-limit probe needs neither workspace customizations nor tools.
-    // In particular, safe mode prevents project/user MCP servers from being
-    // spawned merely to render Claude's local /usage output.
-    "--safe-mode", "--no-session-persistence",
-    "--print", "--output-format", "text", "--permission-mode", "dontAsk", "/usage",
-  ], { timeoutMs: 15_000, maxOutputBytes: 64 * 1024 });
-  if (result.error) throw result.error;
-  if (result.code !== 0) throw new Error(result.stderr.trim() || `Claude Code завершился с кодом ${result.code}`);
-  return result.stdout;
 }
 
 function formatDuration(minutes) {
@@ -5586,7 +5543,7 @@ function startRuntimeTimers() {
   }
   selectedTaskWatch.schedule(500);
   scheduleCodexTerminalAudit(500);
-  scheduleRateLimitPoll(1_000);
+  rateLimitTelemetry.schedule(1_000);
 }
 
 const runtimeLifecycle = new RuntimeLifecycleController({

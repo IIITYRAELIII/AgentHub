@@ -17,15 +17,20 @@ import {
 
 test("Agent Hub persists Codex and Claude limit snapshots every five minutes", async () => {
   const source = await readFile(new URL("./agent-hub-server.mjs", import.meta.url), "utf8");
+  const telemetrySource = await readFile(
+    new URL("./rate-limit-telemetry-service.mjs", import.meta.url),
+    "utf8",
+  );
   const processCaptureSource = await readFile(new URL("./process-capture.mjs", import.meta.url), "utf8");
-  assert.match(source, /function scheduleRateLimitPoll\(delayMs = 5 \* 60_000\)/u);
+  assert.match(source, /new RateLimitTelemetryService\(/u);
   assert.match(source, /new RateLimitHistoryStore\(/u);
-  assert.match(source, /rateLimitHistoryStore\.record\(result, observedAt\)/u);
-  assert.match(source, /parseClaudeLimits\(await readClaudeRateLimits\(\)\)/u);
-  assert.match(source, /rateLimitHistoryStore\.record\(\{ limits \}, observedAt, "claude"\)/u);
+  assert.match(telemetrySource, /intervalMs = 5 \* 60_000/u);
+  assert.match(telemetrySource, /this\.historyStore\.record\(result, observedAt\)/u);
+  assert.match(telemetrySource, /parseClaudeLimits\(await this\.readClaude\(\)\)/u);
+  assert.match(telemetrySource, /this\.historyStore\.record\(\{ limits \}, observedAt, "claude"\)/u);
   assert.match(source, /return rateLimitHistoryStore\.read\(/u);
-  assert.match(source, /scheduleRateLimitPoll\(1_000\)/u);
-  assert.match(source, /"--safe-mode", "--no-session-persistence"/u);
+  assert.match(source, /rateLimitTelemetry\.schedule\(1_000\)/u);
+  assert.match(telemetrySource, /"--safe-mode", "--no-session-persistence"/u);
   assert.match(source, /stopProcess: \(worker\) => stopProcessTree\(worker\.pid\)/u);
   assert.match(
     processCaptureSource,

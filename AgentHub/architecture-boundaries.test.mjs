@@ -273,6 +273,21 @@ test("provider activity and selected external watch have explicit owners", async
   assert.equal(watch.includes("const currentRun = this.taskRuns.forTask(task)"), true);
 });
 
+test("rate-limit probing and periodic persistence have one telemetry owner", async () => {
+  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const telemetry = await readFile(
+    path.join(ROOT, "rate-limit-telemetry-service.mjs"),
+    "utf8",
+  );
+  assert.equal((source.match(/new RateLimitTelemetryService\s*\(/g) ?? []).length, 1);
+  assert.equal(source.includes("async function readClaudeRateLimits"), false);
+  assert.equal(source.includes("function scheduleRateLimitPoll"), false);
+  assert.equal(source.includes("async function pollRateLimits"), false);
+  assert.equal(telemetry.includes("async readClaude()"), true);
+  assert.equal(telemetry.includes("poll()"), true);
+  assert.equal(telemetry.includes("this.pollInFlight"), true);
+});
+
 test("shared task mutations enter through one application command bus", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   const commands = await readFile(path.join(ROOT, "application-command-service.mjs"), "utf8");

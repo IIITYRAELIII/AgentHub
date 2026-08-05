@@ -52,11 +52,12 @@
 | 37 | ✅ | Composition root сокращён до 5 915 строк. `CodexContextMaintenanceService` владеет lifecycle очистки после свёртки, повторными попытками, безопасным recycle Codex App Server и периодической санацией rollout. Нестабильная очистка, запускаемая событием свёртки, остаётся явно отключённой; независимый периодический проход сохранён. |
 | 38 | ✅ | Composition root сокращён до 5 732 строк. `CodexTerminalReconciliationService` владеет дедупликацией terminal-аудита, grace period, восстановлением пропущенных hook-событий, коррекцией provisional-записей и агрегацией исторических/субагентских ходов. |
 | 39 | ✅ | Composition root сокращён до 5 657 строк. `ProviderTaskActivityService` владеет определением внешней активности Codex/Claude, а `SelectedTaskWatchService` — периодическим наблюдением выбранной внешней задачи, дедупликацией запуска и повторной проверкой selection/run после асинхронного snapshot. |
+| 40 | ✅ | Composition root сокращён до 5 614 строк. `RateLimitTelemetryService` владеет безопасным Claude `/usage`, чтением Codex rate limits, форматированием текущего состояния и коалесцированным пятиминутным сохранением обеих серий в SQLite/work-log projection. |
 
-После этапов 31–39 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
+После этапов 31–40 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и
 timer/terminal-delivery/terminal-reconciliation/token-state/context-maintenance,
-provider activity и selected-task watch ownership больше не реализуются внутри
+provider activity, selected-task watch и rate-limit telemetry ownership больше не реализуются внутри
 `agent-hub-server.mjs`. Файл всё
 ещё велик, но оставшееся разделение должно идти по новым прикладным владельцам,
 а не возвращать эти обязанности в composition root.
