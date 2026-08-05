@@ -4748,6 +4748,12 @@ html[data-surface="mobile"] .chat-stop-bottom {
   justify-content: flex-end;
 }
 
+.bug-report-hint {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  margin: 0;
+}
+
 .bug-report-status {
   color: var(--text-muted);
   font-size: 0.75rem;

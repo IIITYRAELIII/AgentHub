@@ -2984,6 +2984,16 @@ bugReportFiles?.addEventListener("change", () => {
   void readBugReportFiles(bugReportFiles.files);
   bugReportFiles.value = "";
 });
+document.addEventListener("paste", (event) => {
+  if (bugReportForm?.hidden !== false || bugReportSending) return;
+  const screenshots = [...(event.clipboardData?.items ?? [])]
+    .filter((item) => item.kind === "file" && String(item.type).toLowerCase().startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+  if (screenshots.length === 0) return;
+  event.preventDefault();
+  void readBugReportFiles(screenshots);
+});
 bugReportScreenshots?.addEventListener("click", (event) => {
   const remove = event.target.closest("[data-bug-report-remove]");
   if (!remove || bugReportSending) return;

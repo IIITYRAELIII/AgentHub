@@ -1027,6 +1027,11 @@ test("background navigation is empty and settings expose the bug report flow", (
   assert.match(html, /<main class="background-view" data-background-view aria-label="Фон"><\/main>/u);
   assert.match(html, /data-bug-report-toggle[\s\S]*data-phosphor-icon="bug"[\s\S]*Сообщить о баге\./u);
   assert.match(html, /<input[^>]*multiple[^>]*data-bug-report-files/u);
+  assert.match(html, /Скриншот можно вставить из буфера: Ctrl\+V\./u);
+  assert.match(app, /document\.addEventListener\("paste"/u);
+  assert.match(app, /event\.clipboardData\?\.items/u);
+  assert.match(app, /item\.getAsFile\(\)/u);
+  assert.match(app, /void readBugReportFiles\(screenshots\)/u);
   assert.match(app, /emit\("bug-report:submit"/u);
   assert.match(client, /control\("submit-bug-report"/u);
 });
