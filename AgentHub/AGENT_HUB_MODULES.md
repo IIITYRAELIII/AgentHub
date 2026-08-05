@@ -101,6 +101,9 @@
 | 86 | ⏳ | Восстановление pricing metadata и оценок image generation вынесено в `journal-backfill-composition`. Однократность backfill теперь является внутренним состоянием владельца, а не флагом общего orchestrator; найденные записи по-прежнему проецируются во все настроенные журналы. |
 | 87 | ⏳ | Исторический аудит Claude transcript вынесен в `claude-transcript-audit-composition`. Ограниченный кэш версий transcript удалён из общего runtime data container и принадлежит аудитору; logical task identity не выводится из одного session ID. |
 | 88 | ⏳ | Расчёт активности, status projection, синхронизация названий с SQLite и обновление активных run titles собраны в `task-catalog-finalization-composition`. Подпись/таймер синхронизации принадлежат этому владельцу; provider thread ID остаётся только ссылкой записи. Orchestrator сокращён до 2 678 строк. |
+| 89 | ⏳ | Desktop read-model и системные операции получили отдельный верхнеуровневый wiring в `desktop-read-system-wiring-composition`. Snapshot, история, лимиты, поиск, trusted devices и speech связываются с уже выделенными владельцами без доступа к provider ID как постоянному ключу. |
+| 90 | ⏳ | Desktop application commands собраны в `desktop-command-wiring-composition`. Внутренние циклы navigation/settings разрешаются внутри factory, а наружу возвращаются готовые application commands и task actions; orchestrator больше не собирает их вручную. |
+| 91 | ⏳ | Desktop run input, repository conflict policy, deferred queue и RPC-router собраны в `desktop-run-router-wiring-composition`. Factory сохраняет явный target с будущим `hubTaskId`, а transport receipt и provider thread/session ID остаются техническими ссылками. Orchestrator сокращён до 2 467 строк. |
 
 После этапов 31–40 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и
