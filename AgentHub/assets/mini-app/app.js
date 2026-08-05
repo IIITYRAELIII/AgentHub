@@ -62,6 +62,12 @@ const composerSend = document.querySelector("[data-composer-send]");
 const annotationsBox = document.querySelector("[data-annotations]");
 const attachmentsBox = document.querySelector("[data-attachments]");
 const annotationContextMenu = document.querySelector("[data-annotation-context-menu]");
+// Theme panels may clip their children (for example Lake uses overflow:hidden
+// around the chat). Keep the fixed selection menu at the document level so it
+// can never be reduced to the narrow fragment left inside the chat boundary.
+if (annotationContextMenu?.parentElement !== document.body) {
+  document.body.append(annotationContextMenu);
+}
 const fileInput = document.querySelector("[data-file-input]");
 const slashMenu = document.querySelector("[data-slash-menu]");
 const slashButton = document.querySelector("[data-action='slash-menu']");
@@ -2769,9 +2775,13 @@ function openAnnotationContextMenu(event, quote) {
   pendingAnnotationQuote = quote;
   annotationContextMenu.hidden = false;
   const menuRect = annotationContextMenu.getBoundingClientRect();
-  const maxLeft = Math.max(8, window.innerWidth - menuRect.width - 8);
+  const chatRect = event.target.closest?.("[data-chat]")?.getBoundingClientRect();
+  const minLeft = Math.max(8, chatRect?.left ?? 8);
+  const viewportMaxLeft = window.innerWidth - menuRect.width - 8;
+  const chatMaxLeft = (chatRect?.right ?? window.innerWidth) - menuRect.width - 8;
+  const maxLeft = Math.max(minLeft, Math.min(viewportMaxLeft, chatMaxLeft));
   const maxTop = Math.max(8, window.innerHeight - menuRect.height - 8);
-  annotationContextMenu.style.left = `${Math.min(Math.max(8, event.clientX), maxLeft)}px`;
+  annotationContextMenu.style.left = `${Math.min(Math.max(minLeft, event.clientX), maxLeft)}px`;
   annotationContextMenu.style.top = `${Math.min(Math.max(8, event.clientY), maxTop)}px`;
 }
 
