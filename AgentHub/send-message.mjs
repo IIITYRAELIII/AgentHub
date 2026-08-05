@@ -3,17 +3,17 @@ import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { findContainingProject, loadConfig } from "./config.mjs";
-import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
+import { PersistentDeliveryOutbox } from "./src/infrastructure/persistence/delivery-outbox.mjs";
 import { appendMessageBindings } from "./src/infrastructure/persistence/message-bindings.mjs";
 import { taskViewCallbackData } from "./src/interfaces/telegram/task-view-callback.mjs";
-import { callTelegramJson, telegramBotApiUrl } from "./telegram-api.mjs";
-import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
-import { isMainModule } from "./main-module.mjs";
+import { callTelegramJson, telegramBotApiUrl } from "./src/infrastructure/telegram/telegram-api.mjs";
+import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./src/infrastructure/process/runtime-command.mjs";
+import { isMainModule } from "./src/infrastructure/process/main-module.mjs";
 import { readRuntimeState } from "./src/infrastructure/persistence/runtime-state-store.mjs";
 import {
   resolveAllowedNotificationChatId,
   resolveAllowedNotificationPath,
-} from "./notification-security.mjs";
+} from "./src/infrastructure/telegram/notification-security.mjs";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 const TELEGRAM_CAPTION_LIMIT = 1024;

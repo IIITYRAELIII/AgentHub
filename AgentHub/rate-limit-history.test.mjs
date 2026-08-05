@@ -13,7 +13,7 @@ import {
   RateLimitHistoryStore,
   rateLimitResetCreditSummary,
   readRateLimitHistory,
-} from "./rate-limit-history.mjs";
+} from "./src/infrastructure/persistence/rate-limit-history.mjs";
 
 test("Agent Hub persists Codex and Claude limit snapshots every five minutes", async () => {
   const source = await readFile(new URL("./agent-hub-server.mjs", import.meta.url), "utf8");

@@ -4,13 +4,13 @@ import { createConnection, createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { defaultRuntimeRoot } from "./runtime-layout.mjs";
-import { writeTextAtomic } from "./state-store.mjs";
+import { defaultRuntimeRoot } from "../../../runtime-layout.mjs";
+import { writeTextAtomic } from "../persistence/state-store.mjs";
 import {
   DurableCommandReceipts,
   DurableCommandRetryableError,
   commandFingerprint,
-} from "./durable-command-receipts.mjs";
+} from "../persistence/durable-command-receipts.mjs";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const ALLOWED_COMMANDS = new Set([

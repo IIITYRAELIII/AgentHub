@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
-import { PersistentTtsWorkerClient, runTtsWorkerRequest } from "./tts-worker-client.mjs";
+import { PersistentTtsWorkerClient, runTtsWorkerRequest } from "./src/infrastructure/process/tts-worker-client.mjs";
 
 function nodeWorker(source) {
   return () => spawn(process.execPath, ["-e", source], {

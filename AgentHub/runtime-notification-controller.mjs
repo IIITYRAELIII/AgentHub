@@ -5,7 +5,7 @@ import {
   cleanRuntimeCallerEnvironment,
   resolveAllowedNotificationCwd,
   resolveAllowedNotificationPath,
-} from "./notification-security.mjs";
+} from "./src/infrastructure/telegram/notification-security.mjs";
 import { captureProcess } from "./src/infrastructure/process/process-capture.mjs";
 import {
   parseArguments as parseSendMessageArguments,

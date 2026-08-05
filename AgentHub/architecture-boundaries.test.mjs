@@ -21,9 +21,9 @@ const LAYER_DEPENDENCIES = new Map([
   ["domain", new Set(["domain"])],
   ["ports", new Set(["domain", "ports"])],
   ["application", new Set(["application", "domain", "ports", "legacy-root"])],
-  ["providers", new Set(["application", "domain", "ports", "providers", "legacy-root"])],
-  ["interfaces", new Set(["application", "domain", "interfaces", "ports", "legacy-root"])],
-  ["runtime", new Set(["application", "domain", "ports", "runtime", "legacy-root"])],
+  ["providers", new Set(["application", "domain", "infrastructure", "ports", "providers", "legacy-root"])],
+  ["interfaces", new Set(["application", "domain", "infrastructure", "interfaces", "ports", "legacy-root"])],
+  ["runtime", new Set(["application", "domain", "infrastructure", "ports", "runtime", "legacy-root"])],
   ["infrastructure", new Set(["domain", "infrastructure", "ports", "legacy-root"])],
   ["composition", new Set([...SOURCE_LAYERS, "legacy-root", "public-root"])],
 ]);

@@ -14,7 +14,7 @@ import {
   runtimeCommandEnvironment,
   runtimeCommandSpoolDirectory,
   validateRuntimeCommand,
-} from "./runtime-command.mjs";
+} from "./src/infrastructure/process/runtime-command.mjs";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -243,7 +243,7 @@ test("runtime command spool reconciles a crash after a side effect without repla
 test("runtime command rejects when the server closes without a response", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-command-empty-"));
   const server = createServer((socket) => socket.destroy());
-  const endpoint = (await import("./runtime-command.mjs")).runtimeCommandEndpoint(runtimeRoot);
+  const endpoint = (await import("./src/infrastructure/process/runtime-command.mjs")).runtimeCommandEndpoint(runtimeRoot);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(endpoint, resolve);

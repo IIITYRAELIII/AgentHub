@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
-import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
+import { readJsonWithBackup, writeTextAtomic } from "./src/infrastructure/persistence/state-store.mjs";
 
 const CADDY_VERSION = "2.11.3";
 const CADDY_ARCHIVE_SHA256 = "94ba71226d30a07d8eca3f971e88222fafb13f8bc46f391ed01afd6780f9c030";

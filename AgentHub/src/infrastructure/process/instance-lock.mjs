@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { mkdir, open, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
-import { processIsAlive } from "./src/providers/claude/claude-run-io.mjs";
+import { processIsAlive } from "./process-liveness.mjs";
 
 function pipeName(dataDir) {
   const id = createHash("sha256").update(path.resolve(dataDir).toLowerCase()).digest("hex").slice(0, 24);

@@ -7,7 +7,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import path from "node:path";
-import { writeTextAtomic } from "../../../state-store.mjs";
+import { writeTextAtomic } from "./state-store.mjs";
 
 const SUPPORTED_KINDS = new Set(["image", "voice", "speech", "forward-bundle-image"]);
 

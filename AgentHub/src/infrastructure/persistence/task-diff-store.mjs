@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { writeTextAtomic } from "../../../state-store.mjs";
+import { writeTextAtomic } from "./state-store.mjs";
 
 export class TaskDiffStore {
   constructor({ filePath, limit = 100 }) {

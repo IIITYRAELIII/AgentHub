@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { withInterprocessLocks } from "./src/infrastructure/process/interprocess-lock.mjs";
+import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 
 function stableValue(value) {

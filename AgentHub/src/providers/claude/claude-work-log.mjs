@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { findContainingProject } from "../../../config.mjs";
-import { applyLedgerDelta } from "../../../incremental-ledger.mjs";
+import { applyLedgerDelta } from "../../infrastructure/persistence/incremental-ledger.mjs";
 import { JournalDatabase } from "../../../journal-database.mjs";
 import { creditsFromUsd } from "../../domain/token-usage.mjs";
-import { readJsonWithBackup } from "../../../state-store.mjs";
+import { readJsonWithBackup } from "../../infrastructure/persistence/state-store.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
 import { WorkLogUsageStore, workLogTurnKey } from "../../../work-log-usage.mjs";
 

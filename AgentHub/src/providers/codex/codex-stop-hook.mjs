@@ -7,8 +7,8 @@ import {
   enqueueRuntimeCommandThroughSpool,
   forwardRuntimeCommand,
   runtimeCommandUnavailable,
-} from "../../../runtime-command.mjs";
-import { isMainModule } from "../../../main-module.mjs";
+} from "../../infrastructure/process/runtime-command.mjs";
+import { isMainModule } from "../../infrastructure/process/main-module.mjs";
 
 async function readStdin() {
   const chunks = [];

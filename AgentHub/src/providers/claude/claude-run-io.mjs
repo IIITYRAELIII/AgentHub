@@ -2,6 +2,9 @@ import { mkdir, open, readFile, readlink, readdir, unlink } from "node:fs/promis
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { processIsAlive } from "../../infrastructure/process/process-liveness.mjs";
+
+export { processIsAlive };
 
 // Claude Code запускается отдельным CLI-процессом и раньше отдавал stream-json
 // в pipe: при перезапуске бота поток обрывался вместе с родителем и ход
@@ -147,18 +150,6 @@ export class ClaudeOutputReader {
       await handle.close();
     }
     return lines;
-  }
-}
-
-export function processIsAlive(pid, killImpl = process.kill) {
-  const value = Number(pid);
-  if (!Number.isInteger(value) || value <= 0) return false;
-  try {
-    killImpl(value, 0);
-    return true;
-  } catch (error) {
-    // EPERM означает чужой, но живой процесс.
-    return error?.code === "EPERM";
   }
 }
 

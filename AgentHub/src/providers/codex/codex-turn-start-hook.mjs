@@ -7,9 +7,9 @@ import {
   enqueueRuntimeCommandThroughSpool,
   forwardRuntimeCommand,
   runtimeCommandUnavailable,
-} from "../../../runtime-command.mjs";
+} from "../../infrastructure/process/runtime-command.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "../../../runtime-layout.mjs";
-import { isMainModule } from "../../../main-module.mjs";
+import { isMainModule } from "../../infrastructure/process/main-module.mjs";
 import { detectCodexHookExecutionOwner } from "./codex-runtime-owner.mjs";
 
 async function readStdin() {

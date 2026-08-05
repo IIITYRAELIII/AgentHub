@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { authorizeCodexLifecycle } from "./runtime-lifecycle-authorizer.mjs";
+import { authorizeCodexLifecycle } from "./src/providers/codex/codex-lifecycle-authorizer.mjs";
 
 const requestFor = (turnId) => ({
   command: "turn-complete",

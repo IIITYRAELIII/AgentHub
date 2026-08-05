@@ -1,5 +1,5 @@
-import { resolveAllowedNotificationCwd } from "../../../notification-security.mjs";
-import { authorizeCodexLifecycle } from "../../../runtime-lifecycle-authorizer.mjs";
+import { resolveAllowedNotificationCwd } from "../../infrastructure/telegram/notification-security.mjs";
+import { authorizeCodexLifecycle } from "./codex-lifecycle-authorizer.mjs";
 import {
   normalizeTaskExecutionOwner,
   TASK_EXECUTION_OWNERS,

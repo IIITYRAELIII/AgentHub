@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { callTelegramJson } from "./telegram-api.mjs";
+import { callTelegramJson } from "./src/infrastructure/telegram/telegram-api.mjs";
 import { stopProcessTree } from "./src/providers/claude/claude-run-io.mjs";
 
 export function requiresTelegramChecks(config) {

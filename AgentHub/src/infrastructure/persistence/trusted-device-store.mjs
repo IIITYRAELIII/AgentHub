@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, webcrypto } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import { readJsonWithBackup, writeTextAtomic } from "../../../state-store.mjs";
+import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
 
 const DEVICE_PAIRING_EXPIRY_MS = 10 * 60 * 1_000;
 const DEVICE_CHALLENGE_EXPIRY_MS = 2 * 60 * 1_000;

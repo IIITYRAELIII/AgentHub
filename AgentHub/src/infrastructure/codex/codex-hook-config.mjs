@@ -3,9 +3,9 @@ import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import { isMainModule } from "../../../main-module.mjs";
+import { isMainModule } from "../process/main-module.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "../../../runtime-layout.mjs";
-import { writeTextAtomic } from "../../../state-store.mjs";
+import { writeTextAtomic } from "../persistence/state-store.mjs";
 import { readRuntimeState } from "../persistence/runtime-state-store.mjs";
 
 const HOOK_FILE_NAME = "codex-stop-hook-launcher.mjs";

@@ -79,6 +79,9 @@
 | 64 | ⏳ | Network-срез B5 завершён: USD/RUB exchange-rate store и quick-tunnel process adapter находятся в `src/infrastructure/network`. В корне осталось 67 production-модулей. |
 | 65 | ⏳ | Семь application-сервисов и два чистых domain value/helper-модуля физически перенесены в `src/application` и `src/domain`. Все provider/interface imports направлены в целевой слой, корневой allowlist уменьшен до 58 production-модулей. |
 | 66 | ⏳ | В `src/runtime` перенесены background queue/controller, общий lifecycle settler, progress heartbeat и restart recovery. В корне осталось 53 production-модуля; provider-facing runtime command/lifecycle contracts пока не перемещаются через запрещённую зависимость, а будут развязаны отдельным портом. |
+| 67 | ⏳ | Dependency matrix уточнена для adapter-архитектуры: providers/interfaces/runtime могут использовать общий технический infrastructure, но domain/application остаются независимыми. В persistence перенесены atomic state, delivery outbox, durable command/message receipts, incremental ledger и rate-limit history; скрытые зависимости через legacy root удалены. В корне осталось 47 production-модулей. |
+| 68 | ⏳ | Telegram technical adapters (`telegram-api`, client, polling backoff и notification path security) собраны в `src/infrastructure/telegram`; интерфейсные и provider-модули используют явный технический путь. В корне осталось 43 production-модуля. |
+| 69 | ⏳ | Named-pipe runtime command переклассифицирован как process adapter, общий process liveness отделён от Claude, рядом размещены instance guard, main-module detection и TTS worker client. Restart launcher находится в `src/runtime`, Codex lifecycle authorization — рядом с Codex provider. В корне осталось 37 production-модулей. |
 
 После этапов 31–40 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и

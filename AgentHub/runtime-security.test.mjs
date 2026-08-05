@@ -126,7 +126,7 @@ test("Windows RuntimeHost fails closed for current '..' and path escapes", async
 });
 
 test("Windows production launch path contains no script-host or policy bypass", async () => {
-  const files = ["runtime-restart.mjs", "install.py", "start.ps1"];
+  const files = ["src/runtime/runtime-restart.mjs", "install.py", "start.ps1"];
   const combined = (await Promise.all(files.map((file) => (
     readFile(path.join(import.meta.dirname, file), "utf8")
   )))).join("\n");

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { readJsonWithBackup, writeTextAtomic } from "./state-store.mjs";
+import { readJsonWithBackup, writeTextAtomic } from "./src/infrastructure/persistence/state-store.mjs";
 
 test("writeTextAtomic replaces the file and removes its temporary file", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-state-"));

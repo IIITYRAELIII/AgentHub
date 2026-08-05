@@ -3,10 +3,10 @@ import { appendFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-import { isMainModule } from "./main-module.mjs";
+import { isMainModule } from "./src/infrastructure/process/main-module.mjs";
 import { activateRuntime } from "./runtime-manager.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
-import { independentWindowsLauncherInvocation } from "./runtime-restart.mjs";
+import { independentWindowsLauncherInvocation } from "./src/runtime/runtime-restart.mjs";
 
 export function runtimeStateIsIdle(value) {
   return Array.isArray(value?.activeRuns) && value.activeRuns.length === 0;

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { DurableCommandReceipts, commandFingerprint } from "./durable-command-receipts.mjs";
+import { DurableCommandReceipts, commandFingerprint } from "./src/infrastructure/persistence/durable-command-receipts.mjs";
 
 test("durable receipt reconciles a crash after the effect without repeating it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-durable-receipt-"));

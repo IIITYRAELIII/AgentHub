@@ -14,11 +14,11 @@ import {
 import path from "node:path";
 import process from "node:process";
 
-import { isMainModule } from "./main-module.mjs";
+import { isMainModule } from "./src/infrastructure/process/main-module.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "./runtime-layout.mjs";
 import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "./src/infrastructure/process/runtime-host-builder.mjs";
 import { verifyRuntimeImportClosure } from "./runtime-manifest-verifier.mjs";
-import { writeTextAtomic } from "./state-store.mjs";
+import { writeTextAtomic } from "./src/infrastructure/persistence/state-store.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "./runtime-security.mjs";
 
 const SOURCE_ROOT = path.resolve(import.meta.dirname);

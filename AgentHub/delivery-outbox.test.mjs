@@ -6,7 +6,7 @@ import test from "node:test";
 import {
   deliveryRetryDelay,
   PersistentDeliveryOutbox,
-} from "./delivery-outbox.mjs";
+} from "./src/infrastructure/persistence/delivery-outbox.mjs";
 
 test("deliveryRetryDelay uses bounded exponential backoff and Retry-After", () => {
   assert.equal(deliveryRetryDelay(1), 5_000);

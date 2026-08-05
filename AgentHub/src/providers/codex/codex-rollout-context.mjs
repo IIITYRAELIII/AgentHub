@@ -15,7 +15,7 @@ import path from "node:path";
 import process from "node:process";
 import readline from "node:readline";
 
-import { isMainModule } from "../../../main-module.mjs";
+import { isMainModule } from "../../infrastructure/process/main-module.mjs";
 import { readWindowsRolloutProcesses } from "./codex-runtime-owner.mjs";
 import { readCodexRolloutActivity } from "../../../task-catalog.mjs";
 

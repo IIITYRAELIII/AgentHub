@@ -3,9 +3,9 @@ import { mkdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { applyLedgerDelta } from "./incremental-ledger.mjs";
+import { applyLedgerDelta } from "./src/infrastructure/persistence/incremental-ledger.mjs";
 import { buildLazyJournalPayload } from "./src/interfaces/web/mini-app-journal-data.mjs";
-import { readJsonWithBackup } from "./state-store.mjs";
+import { readJsonWithBackup } from "./src/infrastructure/persistence/state-store.mjs";
 
 const SCHEMA_VERSION = 2;
 const LEDGER_VERSION = 8;

@@ -8,7 +8,7 @@ import {
   independentWindowsLauncherInvocation,
   launchReplacementAndWait,
   waitForReplacementLock,
-} from "./runtime-restart.mjs";
+} from "./src/runtime/runtime-restart.mjs";
 
 test("runtime restart follows the external launcher to the newest release", () => {
   const result = botReplacementInvocation({

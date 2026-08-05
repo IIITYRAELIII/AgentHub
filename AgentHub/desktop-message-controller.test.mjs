@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createDesktopMessageController } from "./src/interfaces/desktop/desktop-message-controller.mjs";
-import { MessageReceiptRegistry } from "./message-receipts.mjs";
+import { MessageReceiptRegistry } from "./src/infrastructure/persistence/message-receipts.mjs";
 import { RunCoordinator } from "./src/application/run-coordinator.mjs";
 
 const EXISTING_IMAGE = fileURLToPath(

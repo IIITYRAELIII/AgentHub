@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "baseline": {
     "serverMaximumLines": 3930,
-    "rootProductionModules": 53
+    "rootProductionModules": 37
   },
   "publicRootModules": [
     "agent-hub-main.mjs",
@@ -38,22 +38,13 @@
     "src/interfaces/telegram": [],
     "src/interfaces/web": [],
     "src/runtime": [
-      "runtime-command.mjs",
       "runtime-cutover.mjs",
-      "runtime-lifecycle-authorizer.mjs",
-      "runtime-notification-controller.mjs",
-      "runtime-restart.mjs"
+      "runtime-notification-controller.mjs"
     ],
     "src/infrastructure/persistence": [
-      "delivery-outbox.mjs",
-      "durable-command-receipts.mjs",
-      "incremental-ledger.mjs",
       "journal-database.mjs",
       "last-message.mjs",
-      "message-receipts.mjs",
-      "rate-limit-history.mjs",
       "rate-limit-rollout-backfill.mjs",
-      "state-store.mjs",
       "work-log-rollout-backfill.mjs",
       "work-log-title-backfill.mjs",
       "work-log-usage.mjs"
@@ -66,17 +57,9 @@
       "task-git-diff.mjs"
     ],
     "src/infrastructure/process": [
-      "doctor-probes.mjs",
-      "instance-lock.mjs",
-      "main-module.mjs",
-      "tts-worker-client.mjs"
+      "doctor-probes.mjs"
     ],
     "src/infrastructure/network": [],
-    "src/infrastructure/telegram": [
-      "notification-security.mjs",
-      "poll-retry.mjs",
-      "telegram-api.mjs",
-      "telegram-client.mjs"
-    ]
+    "src/infrastructure/telegram": []
   }
 }

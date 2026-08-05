@@ -5,7 +5,7 @@ import {
   messageReceiptKey,
   messageRequestFingerprint,
   MessageReceiptRegistry,
-} from "./message-receipts.mjs";
+} from "./src/infrastructure/persistence/message-receipts.mjs";
 
 const identity = {
   provider: "codex",

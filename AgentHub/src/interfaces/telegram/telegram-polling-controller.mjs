@@ -1,4 +1,4 @@
-import { shouldLogPollingFailure, telegramPollingRetryDelay } from "../../../poll-retry.mjs";
+import { shouldLogPollingFailure, telegramPollingRetryDelay } from "../../infrastructure/telegram/poll-retry.mjs";
 
 export class TelegramPollingController {
   constructor({

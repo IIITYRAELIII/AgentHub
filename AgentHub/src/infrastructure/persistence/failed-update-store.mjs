@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, rename } from "node:fs/promises";
 import path from "node:path";
-import { writeTextAtomic } from "../../../state-store.mjs";
+import { writeTextAtomic } from "./state-store.mjs";
 
 function validRecord(record) {
   return record

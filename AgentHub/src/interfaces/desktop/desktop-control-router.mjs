@@ -1,4 +1,4 @@
-import { DurableCommandReceipts, commandFingerprint } from "../../../durable-command-receipts.mjs";
+import { DurableCommandReceipts, commandFingerprint } from "../../infrastructure/persistence/durable-command-receipts.mjs";
 
 const DEFAULT_MINI_APP_LIMITS = Object.freeze({
   source: "telegram-mini-app",

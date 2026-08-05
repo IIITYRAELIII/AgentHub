@@ -48,9 +48,9 @@ The enforced dependency direction is:
 - `domain` → `domain`;
 - `ports` → `domain`, `ports`;
 - `application` → `domain`, `ports`, `application`;
-- `providers` → `domain`, `ports`, `application`, `providers`;
-- `interfaces` → `domain`, `ports`, `application`, `interfaces`;
-- `runtime` → `domain`, `ports`, `application`, `runtime`;
+- `providers` → `domain`, `ports`, `application`, `providers`, `infrastructure`;
+- `interfaces` → `domain`, `ports`, `application`, `interfaces`, `infrastructure`;
+- `runtime` → `domain`, `ports`, `application`, `runtime`, `infrastructure`;
 - `infrastructure` → `domain`, `ports`, `infrastructure`;
 - `composition` may bind every layer.
 
@@ -58,3 +58,10 @@ Temporary dependencies on frozen legacy root modules are allowed only while the
 module is listed in `architecture-migration-inventory.json`. The architecture
 test rejects every unregistered root module and every dependency that points in
 the opposite direction.
+
+`infrastructure` содержит только общие технические адаптеры: filesystem,
+SQLite, process и network. Поэтому внешние adapter-слои (`providers`,
+`interfaces`, `runtime`) могут использовать его напрямую. `domain` и
+`application` такой зависимости не имеют: прикладные сценарии получают внешние
+эффекты через порты и composition. Это явная зависимость от технической
+реализации, а не прежний скрытый обход через legacy root.

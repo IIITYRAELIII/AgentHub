@@ -1,4 +1,4 @@
-import { rateLimitResetCreditSummary } from "../../../rate-limit-history.mjs";
+import { rateLimitResetCreditSummary } from "../../infrastructure/persistence/rate-limit-history.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 
 function escapeTelegramHtml(value) {

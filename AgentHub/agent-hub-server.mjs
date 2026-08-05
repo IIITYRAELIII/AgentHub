@@ -54,14 +54,14 @@ import { CodexTerminalAudit } from "./src/providers/codex/codex-terminal-audit.m
 import { CodexTerminalReconciliationService } from "./src/providers/codex/codex-terminal-reconciliation-service.mjs";
 import { scanCodexHistoricalRolloutInWorker } from "./src/providers/codex/codex-historical-backfill.mjs";
 import { resolveCodexJournalProject } from "./src/providers/codex/codex-journal-project.mjs";
-import { RateLimitHistoryStore } from "./rate-limit-history.mjs";
+import { RateLimitHistoryStore } from "./src/infrastructure/persistence/rate-limit-history.mjs";
 import { RateLimitTelemetryService } from "./src/application/rate-limit-telemetry-service.mjs";
 import { CODEX_AUDIT_SOURCE_KINDS } from "./src/providers/codex/codex-subagent-accounting.mjs";
 import { CodexRunFinalizer } from "./src/providers/codex/codex-run-finalizer.mjs";
 import { CodexContextMaintenanceService } from "./src/providers/codex/codex-context-maintenance-service.mjs";
 import { CodexUsageTracker } from "./src/providers/codex/codex-usage-tracker.mjs";
 import { randomStatusHeaderFileName } from "./src/interfaces/telegram/status-header.mjs";
-import { TelegramClient } from "./telegram-client.mjs";
+import { TelegramClient } from "./src/infrastructure/telegram/telegram-client.mjs";
 import { emptyTokenUsage } from "./src/domain/token-usage.mjs";
 import { telegramPrompt } from "./src/interfaces/telegram/telegram-message.mjs";
 import {
@@ -121,18 +121,18 @@ import * as approvalProtocol from "./src/providers/codex/codex-approvals.mjs";
 const { formatPermissionsApproval, parseApprovalCallback } = approvalProtocol;
 import { contextualCallback } from "./src/interfaces/telegram/callback-context.mjs";
 import { taskViewCallbackData } from "./src/interfaces/telegram/task-view-callback.mjs";
-import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
+import { PersistentDeliveryOutbox } from "./src/infrastructure/persistence/delivery-outbox.mjs";
 import { installRotatingConsole } from "./src/infrastructure/persistence/rotating-log.mjs";
-import { writeTextAtomic } from "./state-store.mjs";
+import { writeTextAtomic } from "./src/infrastructure/persistence/state-store.mjs";
 import { RuntimeStateStore } from "./src/infrastructure/persistence/runtime-state-store.mjs";
 import { TaskReadStateStore, taskHasUnreadAnswer } from "./src/infrastructure/persistence/task-read-state-store.mjs";
 import { LocalTaskSyncStore } from "./src/infrastructure/persistence/task-sync-store.mjs";
-import { MessageReceiptRegistry } from "./message-receipts.mjs";
+import { MessageReceiptRegistry } from "./src/infrastructure/persistence/message-receipts.mjs";
 import { createDesktopMessageController } from "./src/interfaces/desktop/desktop-message-controller.mjs";
 import { createTrustedDeviceManager, resolveTrustedDeviceUserId } from "./src/interfaces/web/trusted-device-access.mjs";
 import { TrustedDeviceStore } from "./src/infrastructure/persistence/trusted-device-store.mjs";
 import { unavailableLocalMcpOverrides } from "./src/infrastructure/process/local-mcp-preflight.mjs";
-import { SingleInstanceGuard } from "./instance-lock.mjs";
+import { SingleInstanceGuard } from "./src/infrastructure/process/instance-lock.mjs";
 import { BackgroundJobQueue } from "./src/runtime/background-job-queue.mjs";
 import { PersistentBackgroundJobController } from "./src/runtime/background-job-controller.mjs";
 import { PersistentBackgroundJobStore } from "./src/infrastructure/persistence/background-job-store.mjs";
@@ -169,12 +169,12 @@ import {
   botReplacementInvocation,
   directWindowsLauncherInvocation,
   launchReplacementAndWait,
-} from "./runtime-restart.mjs";
+} from "./src/runtime/runtime-restart.mjs";
 import {
   finalizeSuccessfulReplacement,
   restorePreviousBotAfterFailedReplacement,
 } from "./src/runtime/restart-recovery.mjs";
-import { RuntimeCommandServer } from "./runtime-command.mjs";
+import { RuntimeCommandServer } from "./src/infrastructure/process/runtime-command.mjs";
 import { RuntimeNotificationController } from "./runtime-notification-controller.mjs";
 import { captureProcess } from "./src/infrastructure/process/process-capture.mjs";
 import { CodexLifecycleController } from "./src/providers/codex/codex-lifecycle-controller.mjs";

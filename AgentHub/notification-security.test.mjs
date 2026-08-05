@@ -8,7 +8,7 @@ import {
   cleanRuntimeCallerEnvironment,
   resolveAllowedNotificationChatId,
   resolveAllowedNotificationPath,
-} from "./notification-security.mjs";
+} from "./src/infrastructure/telegram/notification-security.mjs";
 
 test("notification recipients are restricted to configured users and chats", () => {
   const config = {

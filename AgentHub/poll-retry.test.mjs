@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   shouldLogPollingFailure,
   telegramPollingRetryDelay,
-} from "./poll-retry.mjs";
+} from "./src/infrastructure/telegram/poll-retry.mjs";
 
 test("Telegram polling retry uses a bounded exponential delay", () => {
   assert.deepEqual(

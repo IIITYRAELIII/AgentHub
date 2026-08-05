@@ -7,14 +7,14 @@ import {
   looksLikeImageGenerationPrompt,
 } from "./src/domain/codex-usage-estimate.mjs";
 import { isInheritedSubagentTurn } from "./src/providers/codex/codex-subagent-accounting.mjs";
-import { writeTextAtomic } from "./state-store.mjs";
+import { writeTextAtomic } from "./src/infrastructure/persistence/state-store.mjs";
 import { withInterprocessLocks } from "./src/infrastructure/process/interprocess-lock.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
 import { displayUserPrompt } from "./src/application/task-history.mjs";
 import {
   ledgerRecordChanges,
   ledgerRecordSnapshot,
-} from "./incremental-ledger.mjs";
+} from "./src/infrastructure/persistence/incremental-ledger.mjs";
 import {
   addCreditBreakdown,
   emptyCreditBreakdown,

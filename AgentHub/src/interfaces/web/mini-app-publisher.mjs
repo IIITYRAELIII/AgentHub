@@ -9,8 +9,8 @@ import {
   DurableCommandReceipts,
   DurableCommandRetryableError,
   commandFingerprint,
-} from "../../../durable-command-receipts.mjs";
-import { PersistentDeliveryOutbox } from "../../../delivery-outbox.mjs";
+} from "../../infrastructure/persistence/durable-command-receipts.mjs";
+import { PersistentDeliveryOutbox } from "../../infrastructure/persistence/delivery-outbox.mjs";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const ATTACHMENT_TIMEOUT_MS = 60_000;

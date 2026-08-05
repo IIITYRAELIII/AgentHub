@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { callTelegramJson, telegramBotApiUrl, telegramFileApiUrl } from "./telegram-api.mjs";
+import { callTelegramJson, telegramBotApiUrl, telegramFileApiUrl } from "./src/infrastructure/telegram/telegram-api.mjs";
 
 test("Telegram API URLs honor a custom base for JSON, media and downloads", () => {
   assert.equal(

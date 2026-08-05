@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TelegramClient } from "./telegram-client.mjs";
+import { TelegramClient } from "./src/infrastructure/telegram/telegram-client.mjs";
 
 function client(overrides = {}) {
   const requests = [];

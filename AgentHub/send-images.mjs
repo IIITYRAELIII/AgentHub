@@ -8,10 +8,10 @@ import {
   resolveChatId,
 } from "./send-message.mjs";
 import { appendMessageBindings } from "./src/infrastructure/persistence/message-bindings.mjs";
-import { telegramBotApiUrl } from "./telegram-api.mjs";
-import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
-import { isMainModule } from "./main-module.mjs";
-import { resolveAllowedNotificationPath } from "./notification-security.mjs";
+import { telegramBotApiUrl } from "./src/infrastructure/telegram/telegram-api.mjs";
+import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./src/infrastructure/process/runtime-command.mjs";
+import { isMainModule } from "./src/infrastructure/process/main-module.mjs";
+import { resolveAllowedNotificationPath } from "./src/infrastructure/telegram/notification-security.mjs";
 import { readRuntimeState } from "./src/infrastructure/persistence/runtime-state-store.mjs";
 
 const MAX_ALBUM_SIZE = 10;

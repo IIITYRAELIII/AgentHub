@@ -6,7 +6,7 @@ import {
   applyRateLimitRolloutBackfill,
   buildRateLimitRolloutBackfill,
 } from "./rate-limit-rollout-backfill.mjs";
-import { RateLimitHistoryStore } from "./rate-limit-history.mjs";
+import { RateLimitHistoryStore } from "./src/infrastructure/persistence/rate-limit-history.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 
 function option(name, fallback = "") {

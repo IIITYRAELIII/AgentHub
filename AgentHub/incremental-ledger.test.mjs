@@ -9,7 +9,7 @@ import {
   applyLedgerDelta,
   ledgerRecordChanges,
   ledgerRecordSnapshot,
-} from "./incremental-ledger.mjs";
+} from "./src/infrastructure/persistence/incremental-ledger.mjs";
 
 test("ledger delta persists only changed records and deletions", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-ledger-delta-"));

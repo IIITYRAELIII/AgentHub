@@ -6,7 +6,7 @@ import process from "node:process";
 
 import { stopProcessTree } from "./src/providers/claude/claude-run-io.mjs";
 import { AGENT_HUB_ROOT, loadConfig } from "./config.mjs";
-import { PersistentTtsWorkerClient } from "./tts-worker-client.mjs";
+import { PersistentTtsWorkerClient } from "./src/infrastructure/process/tts-worker-client.mjs";
 
 const config = await loadConfig();
 const text = process.argv.slice(2).join(" ").trim()

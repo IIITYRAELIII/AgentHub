@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { SingleInstanceGuard } from "./instance-lock.mjs";
+import { SingleInstanceGuard } from "./src/infrastructure/process/instance-lock.mjs";
 
 test("single-instance guard rejects a concurrent owner and releases cleanly", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "telegram-instance-lock-"));

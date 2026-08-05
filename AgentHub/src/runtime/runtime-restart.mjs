@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { processIsAlive } from "./src/providers/claude/claude-run-io.mjs";
+import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 
 function windowsLauncherCommand({ environment, launcher }) {
   const configuredLauncher = path.resolve(launcher);

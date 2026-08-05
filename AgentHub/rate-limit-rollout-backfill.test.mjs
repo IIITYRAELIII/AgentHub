@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { RateLimitHistoryStore, readRateLimitHistory } from "./rate-limit-history.mjs";
+import { RateLimitHistoryStore, readRateLimitHistory } from "./src/infrastructure/persistence/rate-limit-history.mjs";
 import {
   applyRateLimitRolloutBackfill,
   buildRateLimitRolloutBackfill,
