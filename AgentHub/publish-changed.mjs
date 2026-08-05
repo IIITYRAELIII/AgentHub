@@ -30,6 +30,7 @@ export function classifyPublicationChanges(files) {
     const file = rawFile.replaceAll("\\", "/");
     if (file === "CHANGELOG.md"
       || file === "AgentHub/config.example.json"
+      || file === "AgentHub/architecture-migration-inventory.json"
       || file.endsWith(".md")
       || file.startsWith(".team/")) continue;
     if (!file.startsWith("AgentHub/")) continue;

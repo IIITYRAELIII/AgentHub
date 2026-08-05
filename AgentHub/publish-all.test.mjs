@@ -79,6 +79,7 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
       "CHANGELOG.md",
       "1C_ACCESS/access.json",
       "AgentHub/config.example.json",
+      "AgentHub/architecture-migration-inventory.json",
       "AgentHub/assets/mini-app/app.js",
       "AgentHub/message-lifecycle.test.mjs",
     ]),
