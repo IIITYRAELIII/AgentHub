@@ -5,9 +5,11 @@ import { isInheritedSubagentTurn } from "./codex-subagent-accounting.mjs";
 import { scanCodexHistoricalRollout } from "./codex-turn-usage.mjs";
 import { applyLedgerDelta } from "../../infrastructure/persistence/incremental-ledger.mjs";
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
+import { WorkLogUsageRepository } from "../../infrastructure/persistence/work-log-usage-repository.mjs";
 import { readJsonWithBackup } from "../../infrastructure/persistence/state-store.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
-import { WorkLogUsageStore, workLogTurnKey } from "../../../work-log-usage.mjs";
+import { createWorkLogUsageStore } from "../../application/work-log-usage-store.mjs";
+import { workLogTurnKey } from "../../application/work-log-usage-projection.mjs";
 
 const LOCAL_TIME_ZONE = "Asia/Yekaterinburg";
 
@@ -322,7 +324,8 @@ export async function applyWorkLogRolloutBackfill({
         if (!/revision conflict/iu.test(String(error?.message ?? "")) || attempt === 2) throw error;
       }
     }
-    const store = new WorkLogUsageStore({
+    const store = createWorkLogUsageStore({
+      repositoryFactory: (options) => new WorkLogUsageRepository(options),
       ledgerFile: legacyLedgerFile,
       databaseFile,
       journalDatabase: database,

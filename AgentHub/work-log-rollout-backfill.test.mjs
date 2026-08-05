@@ -9,7 +9,15 @@ import {
   buildWorkLogRolloutBackfill,
 } from "./src/providers/codex/work-log-rollout-backfill.mjs";
 import { JournalDatabase } from "./src/infrastructure/persistence/journal-database.mjs";
-import { WorkLogUsageStore } from "./work-log-usage.mjs";
+import { createWorkLogUsageStore } from "./src/application/work-log-usage-store.mjs";
+import { WorkLogUsageRepository } from "./src/infrastructure/persistence/work-log-usage-repository.mjs";
+
+function WorkLogUsageStore(options) {
+  return createWorkLogUsageStore({
+    ...options,
+    repositoryFactory: (repositoryOptions) => new WorkLogUsageRepository(repositoryOptions),
+  });
+}
 
 const ROOT_THREAD = "019f1ec8-8de7-7aa3-92b6-045036561c8e";
 const CHILD_THREAD = "019f1ec9-8de7-7aa3-92b6-045036561c8e";

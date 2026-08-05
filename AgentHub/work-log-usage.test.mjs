@@ -13,12 +13,16 @@ import {
   restoreLegacyOutcomes,
   searchWorkLogRecords,
   workLogTurnKey,
-  WorkLogUsageStore as WorkLogUsageStoreClass,
-} from "./work-log-usage.mjs";
+} from "./src/application/work-log-usage-projection.mjs";
+import { createWorkLogUsageStore } from "./src/application/work-log-usage-store.mjs";
+import { WorkLogUsageRepository } from "./src/infrastructure/persistence/work-log-usage-repository.mjs";
 
 const openStores = new Set();
 function WorkLogUsageStore(options) {
-  const store = new WorkLogUsageStoreClass(options);
+  const store = createWorkLogUsageStore({
+    ...options,
+    repositoryFactory: (repositoryOptions) => new WorkLogUsageRepository(repositoryOptions),
+  });
   openStores.add(store);
   return store;
 }

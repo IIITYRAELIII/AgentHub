@@ -3,8 +3,9 @@ import { copyFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
+import { WorkLogUsageRepository } from "../../infrastructure/persistence/work-log-usage-repository.mjs";
 import { displayUserPrompt } from "../../application/task-history.mjs";
-import { WorkLogUsageStore } from "../../../work-log-usage.mjs";
+import { createWorkLogUsageStore } from "../../application/work-log-usage-store.mjs";
 
 export const GENERIC_WORK_LOG_TITLES = new Set(["Ход завершён", "Ход отменён"]);
 export const WORK_LOG_GENERATED_TITLE_LIMIT = 100;
@@ -201,7 +202,8 @@ export async function applyWorkLogTitleBackfill({
       : [...new Set(Object.values(result.ledger.turns)
         .map((record) => String(record?.projectRoot ?? "").trim()).filter(Boolean))];
     const resolvedProjectRoot = projectRoot || roots[0] || "";
-    const store = new WorkLogUsageStore({
+    const store = createWorkLogUsageStore({
+      repositoryFactory: (options) => new WorkLogUsageRepository(options),
       ledgerFile: legacyLedgerFile,
       databaseFile,
       journalDatabase: database,

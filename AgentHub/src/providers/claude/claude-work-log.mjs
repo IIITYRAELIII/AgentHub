@@ -6,10 +6,12 @@ import path from "node:path";
 import { findContainingProject } from "../../infrastructure/filesystem/config.mjs";
 import { applyLedgerDelta } from "../../infrastructure/persistence/incremental-ledger.mjs";
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
+import { WorkLogUsageRepository } from "../../infrastructure/persistence/work-log-usage-repository.mjs";
 import { creditsFromUsd } from "../../domain/token-usage.mjs";
 import { readJsonWithBackup } from "../../infrastructure/persistence/state-store.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
-import { WorkLogUsageStore, workLogTurnKey } from "../../../work-log-usage.mjs";
+import { createWorkLogUsageStore } from "../../application/work-log-usage-store.mjs";
+import { workLogTurnKey } from "../../application/work-log-usage-projection.mjs";
 
 function contentBlocks(message) {
   if (Array.isArray(message?.content)) return message.content;
@@ -586,7 +588,8 @@ export async function applyClaudeWorkLogBackfill({
       : [...new Set(Object.values(mergedLedger.turns)
         .map((record) => String(record?.projectRoot ?? "").trim()).filter(Boolean))];
     const resolvedProjectRoot = projectRoot || roots[0] || "";
-    const store = new WorkLogUsageStore({
+    const store = createWorkLogUsageStore({
+      repositoryFactory: (options) => new WorkLogUsageRepository(options),
       ledgerFile: legacyLedgerFile,
       databaseFile,
       journalDatabase: database,

@@ -359,9 +359,16 @@ test("task catalog provider and Telegram concerns have explicit owners", async (
 });
 
 test("work log projection and subagent identity have explicit owners", async () => {
-  const legacyStore = await readFile(path.join(ROOT, "work-log-usage.mjs"), "utf8");
   const projection = await readFile(
     path.join(ROOT, "src", "application", "work-log-usage-projection.mjs"),
+    "utf8",
+  );
+  const store = await readFile(
+    path.join(ROOT, "src", "application", "work-log-usage-store.mjs"),
+    "utf8",
+  );
+  const repository = await readFile(
+    path.join(ROOT, "src", "infrastructure", "persistence", "work-log-usage-repository.mjs"),
     "utf8",
   );
   const subagentIdentity = await readFile(
@@ -369,11 +376,11 @@ test("work log projection and subagent identity have explicit owners", async () 
     "utf8",
   );
 
-  assert.doesNotMatch(legacyStore, /^export function projectWorkLogUsage/mu);
-  assert.doesNotMatch(legacyStore, /^export function buildWorkLogUsageHistory/mu);
-  assert.match(legacyStore, /^export class WorkLogUsageStore/mu);
   assert.match(projection, /^export function projectWorkLogUsage/mu);
   assert.match(projection, /^export function buildWorkLogUsageHistory/mu);
+  assert.match(store, /^export function createWorkLogUsageStore/mu);
+  assert.match(store, /^export class WorkLogUsageStore/mu);
+  assert.match(repository, /^export class WorkLogUsageRepository/mu);
   assert.match(subagentIdentity, /^export function uuidV7TimestampMs/mu);
   assert.match(subagentIdentity, /^export function isInheritedSubagentTurn/mu);
 });

@@ -213,6 +213,30 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
   return { ledger: { version: 8, turns }, invalidRecords };
 }
 
+export function normalizePersistedWorkLog(value = {}, { defaultProjectRoot = "" } = {}) {
+  const normalized = normalizedLedger(value, { defaultProjectRoot });
+  const migrated = Number(value?.version ?? 0) !== normalized.ledger.version
+    || Object.entries(value?.turns ?? {}).some(
+      ([key, record]) => (
+        String(record?.prompt ?? "").trim() !== String(normalized.ledger.turns[key]?.prompt ?? "")
+        || normalizeProjectRoot(record?.projectRoot) !== normalized.ledger.turns[key]?.projectRoot
+        || normalizeEstimatedCredits(
+          record?.estimatedCredits
+            ?? (Number(value?.version ?? 0) < 6
+              ? Number(record?.estimatedUnits ?? 0) / 8_000
+              : 0),
+        ) !== normalized.ledger.turns[key]?.estimatedCredits
+        || String(record?.estimateKind ?? "").trim()
+          !== normalized.ledger.turns[key]?.estimateKind
+        || String(record?.model ?? "").trim().toLowerCase()
+          !== normalized.ledger.turns[key]?.model
+        || normalizeServiceTier(record?.serviceTier ?? record?.service_tier)
+          !== normalized.ledger.turns[key]?.serviceTier
+      ),
+    );
+  return { ...normalized, migrated };
+}
+
 export function formatWorkLogUsage(breakdown) {
   const telegramText = formatTaskCreditBreakdown(breakdown)
     .replace(/^📊\s*/, "")

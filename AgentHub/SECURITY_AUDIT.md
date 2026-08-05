@@ -147,7 +147,7 @@
 - CSP запрещает inline/eval, формы, объекты, base URI и фреймы; пользовательский
   запрос и ответ экранируются перед проекцией в HTML журнала.
   Проверено в `src/interfaces/web/mini-app-server.mjs:227-244` и
-  `work-log-usage.mjs:351-353`.
+  `src/application/work-log-usage-projection.mjs:431-433`.
 - Runtime-каталоги и секреты на Windows ограничиваются ACL текущего пользователя,
   SYSTEM и Administrators; исходные токены не попадают в Git.
 - Runtime release активируется только после проверки manifest, размеров и

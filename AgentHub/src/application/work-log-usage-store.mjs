@@ -1,201 +1,104 @@
 import crypto from "node:crypto";
-import { copyFile, mkdir, rm, stat } from "node:fs/promises";
-import path from "node:path";
 
-import { looksLikeImageGenerationPrompt } from "./src/domain/codex-usage-estimate.mjs";
-import { normalizeServiceTier } from "./src/domain/token-usage.mjs";
-import { writeTextAtomic } from "./src/infrastructure/persistence/state-store.mjs";
-import { withInterprocessLocks } from "./src/infrastructure/process/interprocess-lock.mjs";
-import { JournalDatabase } from "./src/infrastructure/persistence/journal-database.mjs";
-import { replaceJournalProjectionFromMarkdown } from "./src/application/journal-projection-service.mjs";
-import {
-  ledgerRecordChanges,
-  ledgerRecordSnapshot,
-} from "./src/infrastructure/persistence/incremental-ledger.mjs";
+import { looksLikeImageGenerationPrompt } from "../domain/codex-usage-estimate.mjs";
+import { normalizeServiceTier } from "../domain/token-usage.mjs";
+import { replaceJournalProjectionFromMarkdown } from "./journal-projection-service.mjs";
 import {
   buildWorkLogUsageHistory,
   incomingLedgerRecord,
   mergeLedgerRecord,
   normalizeEstimatedCredits,
-  normalizedLedger,
-  normalizeProjectRoot,
+  normalizePersistedWorkLog,
   normalizeWorkLogId,
+  normalizeProjectRoot,
   projectWorkLogRateLimits,
   projectWorkLogUsage,
   sameProjectRoot,
   searchWorkLogRecords,
   taskThreadId,
   workLogTurnKey,
-} from "./src/application/work-log-usage-projection.mjs";
+} from "./work-log-usage-projection.mjs";
 
-export {
-  applyWorkLogUsage,
-  buildWorkLogUsageHistory,
-  formatWorkLogUsage,
-  normalizeWorkLogId,
-  projectWorkLogRateLimits,
-  projectWorkLogUsage,
-  restoreLegacyOutcomes,
-  searchWorkLogRecords,
-  workLogTurnKey,
-} from "./src/application/work-log-usage-projection.mjs";
+export function createWorkLogUsageStore({
+  repositoryFactory,
+  ledgerFile,
+  databaseFile,
+  journalDatabase = null,
+  defaultProjectRoot = "",
+  includeClaudeUsage = true,
+  beforeProjectionWrite = null,
+} = {}) {
+  if (typeof repositoryFactory !== "function") {
+    throw new TypeError("createWorkLogUsageStore requires repositoryFactory");
+  }
+  const normalizedProjectRoot = normalizeProjectRoot(defaultProjectRoot);
+  const repository = repositoryFactory({
+    ledgerFile,
+    ...(databaseFile ? { databaseFile } : {}),
+    journalDatabase,
+    normalizePersisted: (persisted) => normalizePersistedWorkLog(persisted, {
+      defaultProjectRoot: normalizedProjectRoot,
+    }),
+  });
+  return new WorkLogUsageStore({
+    repository,
+    defaultProjectRoot: normalizedProjectRoot,
+    includeClaudeUsage,
+    beforeProjectionWrite,
+  });
+}
 
 export class WorkLogUsageStore {
-  #ledgerFile;
-  #databaseFile;
-  #database;
-  #quarantineFile;
+  #repository;
   #defaultProjectRoot;
-  #randomUUID;
-  #loaded = false;
-  #loadedRevision = -1;
-  #ledger = normalizedLedger().ledger;
-  #recordSnapshot = new Map();
-  #tail = Promise.resolve();
   #includeClaudeUsage = true;
   #beforeProjectionWrite;
 
   constructor({
-    ledgerFile,
-    databaseFile = path.join(path.dirname(path.resolve(ledgerFile)), "journal.sqlite"),
-    journalDatabase = null,
+    repository,
     defaultProjectRoot = "",
-    randomUUID = crypto.randomUUID,
     includeClaudeUsage = true,
     beforeProjectionWrite = null,
   } = {}) {
-    this.#ledgerFile = path.resolve(ledgerFile);
-    this.#databaseFile = path.resolve(databaseFile);
-    this.#database = journalDatabase ?? new JournalDatabase(this.#databaseFile);
-    this.#quarantineFile = `${this.#ledgerFile}.invalid-records.json`;
+    if (
+      !repository
+      || typeof repository.enqueue !== "function"
+      || typeof repository.save !== "function"
+      || typeof repository.payload !== "function"
+      || typeof repository.replaceProjection !== "function"
+    ) {
+      throw new TypeError("WorkLogUsageStore requires a persistence repository");
+    }
     this.#defaultProjectRoot = normalizeProjectRoot(defaultProjectRoot);
-    this.#randomUUID = randomUUID;
+    this.#repository = repository;
     this.#includeClaudeUsage = includeClaudeUsage !== false;
     this.#beforeProjectionWrite = typeof beforeProjectionWrite === "function"
       ? beforeProjectionWrite
       : null;
   }
 
+  get #ledger() {
+    return this.#repository.ledger;
+  }
+
   setIncludeClaudeUsage(value) {
     this.#includeClaudeUsage = value !== false;
   }
 
-  async #load() {
-    let imported = null;
-    let persisted = null;
-    try {
-      imported = await this.#database.importLegacyLedger(this.#ledgerFile);
-    } catch (error) {
-      persisted = await this.#database.loadLedger();
-      if (!Object.keys(persisted?.turns ?? {}).length) throw error;
-      console.error(
-        `Ignored unreadable retired work-log ledger ${this.#ledgerFile}; SQLite already contains the journal records: ${String(error?.message ?? error)}`,
-      );
-    }
-    const revision = await this.#database.currentRevision();
-    if (this.#loaded && revision === this.#loadedRevision) return;
-    persisted ??= await this.#database.loadLedger();
-    const normalized = normalizedLedger(persisted, {
-      defaultProjectRoot: this.#defaultProjectRoot,
-    });
-    this.#ledger = normalized.ledger;
-    this.#recordSnapshot = ledgerRecordSnapshot(this.#ledger.turns);
-    if (normalized.invalidRecords.length) {
-      await mkdir(path.dirname(this.#quarantineFile), { recursive: true });
-      await writeTextAtomic(
-        this.#quarantineFile,
-        `${JSON.stringify({
-          detectedAt: new Date().toISOString(),
-          source: imported?.imported ? this.#ledgerFile : this.#databaseFile,
-          records: normalized.invalidRecords,
-        }, null, 2)}\n`,
-      );
-      console.error(
-        `Quarantined ${normalized.invalidRecords.length} invalid work-log ledger record(s) in ${this.#quarantineFile}`,
-      );
-    }
-    this.#loaded = true;
-    this.#loadedRevision = revision;
-    const migrated = Number(persisted?.version ?? 0) !== this.#ledger.version
-      || Object.entries(persisted?.turns ?? {}).some(
-        ([key, record]) => (
-          String(record?.prompt ?? "").trim() !== String(this.#ledger.turns[key]?.prompt ?? "")
-          || normalizeProjectRoot(record?.projectRoot) !== this.#ledger.turns[key]?.projectRoot
-          || normalizeEstimatedCredits(
-            record?.estimatedCredits
-              ?? (Number(persisted?.version ?? 0) < 6
-                ? Number(record?.estimatedUnits ?? 0) / 8_000
-                : 0),
-          ) !== this.#ledger.turns[key]?.estimatedCredits
-          || String(record?.estimateKind ?? "").trim()
-            !== this.#ledger.turns[key]?.estimateKind
-          || String(record?.model ?? "").trim().toLowerCase()
-            !== this.#ledger.turns[key]?.model
-          || normalizeServiceTier(record?.serviceTier ?? record?.service_tier)
-            !== this.#ledger.turns[key]?.serviceTier
-        ),
-      );
-    if (migrated || normalized.invalidRecords.length) {
-      await this.#save({ forceCheckpoint: true });
-    }
-  }
-
-  async #save({ forceCheckpoint = false } = {}) {
-    const changes = ledgerRecordChanges(this.#ledger.turns, this.#recordSnapshot);
-    if (!forceCheckpoint && !changes.events.length) return;
-    if (forceCheckpoint) {
-      const result = await this.#database.replaceLedger(this.#ledger);
-      this.#loadedRevision = result.revision;
-    } else {
-      const upserts = changes.events
-        .filter((event) => event.op === "upsert")
-        .map((event) => event.record);
-      const deletions = changes.events
-        .filter((event) => event.op === "delete")
-        .map((event) => {
-          const [provider, threadId, turnId] = String(event.key).split("\0");
-          return { provider, threadId, turnId };
-        });
-      if (upserts.length) {
-        const result = await this.#database.upsertRecords(upserts);
-        this.#loadedRevision = result.revision;
-      }
-      if (deletions.length) {
-        const result = await this.#database.deleteRecords(deletions);
-        this.#loadedRevision = result.revision;
-      }
-    }
-    this.#recordSnapshot = changes.snapshot;
+  #save(options) {
+    return this.#repository.save(options);
   }
 
   #enqueueMutation(_workLogFile, operation) {
-    const queued = this.#tail.catch(() => {}).then(() => withInterprocessLocks(
-      [this.#databaseFile],
-      async () => {
-        await this.#load();
-        return operation();
-      },
-    ));
-    this.#tail = queued;
-    return queued;
+    return this.#repository.enqueue(operation);
   }
 
   #enqueueRead(operation) {
-    const queued = this.#tail.catch(() => {}).then(() => withInterprocessLocks(
-      [this.#databaseFile],
-      async () => {
-        // Legacy import and record normalization can write during the first
-        // logical read, so readers use the same cross-process lock as writers.
-        await this.#load();
-        return operation();
-      },
-    ));
-    this.#tail = queued;
-    return queued;
+    return this.#repository.enqueue(operation);
   }
 
   async #projectionSource() {
-    const current = await this.#database.payload();
+    const current = await this.#repository.payload();
     const rateLimits = String(current?.html ?? "").match(
       /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
     )?.[0] ?? "";
@@ -203,7 +106,7 @@ export class WorkLogUsageStore {
   }
 
   async #projectDatabase(selectedTurns) {
-    const current = await this.#database.payload();
+    const current = await this.#repository.payload();
     const source = await this.#projectionSource();
     const updated = this.#projectUsage(source, selectedTurns);
     const version = `sha256:${crypto.createHash("sha256").update(updated, "utf8").digest("hex")}`;
@@ -211,13 +114,12 @@ export class WorkLogUsageStore {
       return { projected: false, reason: "unchanged" };
     }
     await this.#beforeProjectionWrite?.({
-      databaseFile: this.#databaseFile,
+      databaseFile: this.#repository.databaseFile,
       current: current?.html ?? "",
       updated,
       attempt: 0,
     });
-    const result = await replaceJournalProjectionFromMarkdown(this.#database, updated, { version });
-    this.#loadedRevision = result.revision;
+    await replaceJournalProjectionFromMarkdown(this.#repository, updated, { version });
     return { projected: true };
   }
 
@@ -250,7 +152,6 @@ export class WorkLogUsageStore {
       if (updated) await this.#save();
       return { updated };
     });
-    this.#tail = operation;
     return operation;
   }
 
@@ -281,7 +182,7 @@ export class WorkLogUsageStore {
   }
 
   journalSnapshot() {
-    return this.#enqueueRead(async () => structuredClone(await this.#database.snapshot()));
+    return this.#enqueueRead(async () => structuredClone(await this.#repository.snapshot()));
   }
 
   missingPricingTurns({ provider = "codex" } = {}) {
@@ -349,7 +250,6 @@ export class WorkLogUsageStore {
       const projection = await this.#projectDatabase(selectedTurns);
       return { updated, projected: projection.projected };
     });
-    this.#tail = operation;
     return operation;
   }
 
@@ -386,7 +286,6 @@ export class WorkLogUsageStore {
       const projection = await this.#projectDatabase(selectedTurns);
       return { updated, projected: projection.projected };
     });
-    this.#tail = operation;
     return operation;
   }
 
@@ -423,7 +322,6 @@ export class WorkLogUsageStore {
       const projection = await this.#projectDatabase(selectedTurns);
       return { updated, projected: projection.projected };
     });
-    this.#tail = operation;
     return operation;
   }
 
@@ -455,13 +353,12 @@ export class WorkLogUsageStore {
       const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
       return this.#projectDatabase(selectedTurns);
     });
-    this.#tail = operation;
     return operation;
   }
 
   projectRateLimits(workLogFile, summary, sampledAt = "") {
     const operation = this.#enqueueMutation(workLogFile, async () => {
-      const current = await this.#database.payload();
+      const current = await this.#repository.payload();
       const updated = projectWorkLogRateLimits(
         String(current?.html ?? "") || "# Глобальный журнал работ\n",
         summary,
@@ -470,11 +367,9 @@ export class WorkLogUsageStore {
       if (updated === String(current?.html ?? "")) {
         return { projected: false, reason: "unchanged" };
       }
-      const result = await replaceJournalProjectionFromMarkdown(this.#database, updated);
-      this.#loadedRevision = result.revision;
+      await replaceJournalProjectionFromMarkdown(this.#repository, updated);
       return { projected: true };
     });
-    this.#tail = operation;
     return operation;
   }
 
@@ -576,7 +471,6 @@ export class WorkLogUsageStore {
         };
       }
     });
-    this.#tail = operation;
     return operation;
   }
 
@@ -710,7 +604,6 @@ export class WorkLogUsageStore {
         projected: projection.projected,
       };
     });
-    this.#tail = operation;
     return operation;
   }
 
@@ -740,85 +633,14 @@ export class WorkLogUsageStore {
         };
       }
     });
-    this.#tail = operation;
     return operation;
   }
 
-  retireLegacyStorage({
-    workLogFile = null,
-    backupRoot = path.join(path.dirname(this.#ledgerFile), "migrations"),
-    now = new Date(),
-  } = {}) {
-    const operation = this.#tail.catch(() => {}).then(() => withInterprocessLocks(
-      [this.#databaseFile],
-      async () => {
-        const imported = await this.#database.importLegacyLedger(this.#ledgerFile);
-        const verification = await this.#database.verifyLegacyLedger(this.#ledgerFile);
-        if (!verification.verified) {
-          const error = new Error(
-            `Legacy work-log storage does not match SQLite: ${JSON.stringify({
-              reason: verification.reason ?? "mismatch",
-              invalid: verification.invalid ?? 0,
-              missing: verification.missing?.length ?? 0,
-              mismatched: verification.mismatched?.length ?? 0,
-              extra: verification.extra?.length ?? 0,
-            })}`,
-          );
-          error.code = "WORK_LOG_LEGACY_VERIFICATION_FAILED";
-          error.verification = verification;
-          throw error;
-        }
-
-        const sources = [...new Set([
-          this.#ledgerFile,
-          `${this.#ledgerFile}.bak`,
-          `${this.#ledgerFile}.delta.jsonl`,
-          this.#quarantineFile,
-          workLogFile ? path.resolve(workLogFile) : null,
-        ].filter(Boolean))];
-        const existing = [];
-        for (const source of sources) {
-          try {
-            const info = await stat(source);
-            if (info.isFile()) existing.push({ source, size: info.size });
-          } catch (error) {
-            if (error?.code !== "ENOENT") throw error;
-          }
-        }
-
-        const timestamp = now.toISOString().replace(/[:.]/gu, "-");
-        const backupDirectory = path.join(path.resolve(backupRoot), `sqlite-cutover-${timestamp}`);
-        await mkdir(backupDirectory, { recursive: true });
-        const archived = [];
-        const usedNames = new Set();
-        for (const item of existing) {
-          const originalName = path.basename(item.source);
-          let backupName = originalName;
-          for (let suffix = 2; usedNames.has(backupName); suffix += 1) {
-            backupName = `${suffix}-${originalName}`;
-          }
-          usedNames.add(backupName);
-          const backupFile = path.join(backupDirectory, backupName);
-          await copyFile(item.source, backupFile);
-          archived.push({ ...item, backupFile });
-        }
-        for (const item of existing) await rm(item.source, { force: true });
-        return {
-          retired: true,
-          imported,
-          verification,
-          backupDirectory,
-          archived,
-          removed: existing.map((item) => item.source),
-        };
-      },
-    ));
-    this.#tail = operation;
-    return operation;
+  retireLegacyStorage(options = {}) {
+    return this.#repository.retireLegacyStorage(options);
   }
 
-  async close() {
-    await this.#tail.catch(() => {});
-    this.#database.close();
+  close() {
+    return this.#repository.close();
   }
 }

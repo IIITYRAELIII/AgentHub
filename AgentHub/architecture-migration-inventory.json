@@ -3,7 +3,7 @@
   "baseline": {
     "serverMaximumLines": 150,
     "compositionMaximumLines": 1911,
-    "rootProductionModules": 23
+    "rootProductionModules": 22
   },
   "publicRootModules": [
     "agent-hub-main.mjs",
@@ -37,9 +37,7 @@
     "src/interfaces/telegram": [],
     "src/interfaces/web": [],
     "src/runtime": [],
-    "src/infrastructure/persistence": [
-      "work-log-usage.mjs"
-    ],
+    "src/infrastructure/persistence": [],
     "src/infrastructure/filesystem": [],
     "src/infrastructure/process": [],
     "src/infrastructure/network": [],
