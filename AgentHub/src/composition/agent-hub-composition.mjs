@@ -128,21 +128,11 @@ import {
   resolveCodexTaskActivity,
   resolveCodexObservedExecutionOwner,
 } from "../providers/codex/codex-runtime-owner.mjs";
-import {
-  botReplacementInvocation,
-  directWindowsLauncherInvocation,
-  launchReplacementAndWait,
-} from "../runtime/runtime-restart.mjs";
-import {
-  finalizeSuccessfulReplacement,
-  restorePreviousBotAfterFailedReplacement,
-} from "../runtime/restart-recovery.mjs";
 import { CodexLifecycleController } from "../providers/codex/codex-lifecycle-controller.mjs";
 import { conciseTurnTitle } from "../application/turn-title.mjs";
 import { DesktopControlServer } from "../../desktop-control.mjs";
 import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { TelegramTaskPickerService } from "../interfaces/telegram/task-picker.mjs";
-import { RestartNotificationService } from "../interfaces/telegram/restart-notification-service.mjs";
 import { TelegramTaskActionService } from "../interfaces/telegram/telegram-task-action-service.mjs";
 import {
   approvalModeKeyboard as presentApprovalModeKeyboard,
@@ -150,7 +140,6 @@ import {
   formatCommandApproval as presentCommandApproval,
   formatFileApproval as presentFileApproval,
 } from "../interfaces/telegram/approval-presentation.mjs";
-import { TaskViewController } from "../interfaces/telegram/task-view-controller.mjs";
 import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "../providers/codex/codex-invocation.mjs";
 import { CodexAppServerLifecycle } from "../providers/codex/codex-app-server-lifecycle.mjs";
 import {
@@ -159,8 +148,6 @@ import {
 } from "../application/deferred-input-controller.mjs";
 import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import { fitTaskHistoryPayload } from "../domain/response-budget.mjs";
-import { RuntimeResourceRegistry } from "../runtime/runtime-resource-registry.mjs";
-import { RuntimeRestartController } from "../runtime/runtime-restart-controller.mjs";
 import { RunCoordinator } from "../application/run-coordinator.mjs";
 import {
   commandClientContext,
@@ -212,6 +199,8 @@ import { createStateComposition } from "./state-composition.mjs";
 import { createTelegramControllerComposition } from "./telegram-controller-composition.mjs";
 import { createRunPresentationComposition } from "./run-presentation-composition.mjs";
 import { createRunObservationComposition } from "./run-observation-composition.mjs";
+import { createTaskViewComposition } from "./task-view-composition.mjs";
+import { createRuntimeRestartComposition } from "./runtime-restart-composition.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -2714,7 +2703,7 @@ function scheduleCodexTerminalAudit(delayMs = SELECTED_TASK_WATCH_INTERVAL_MS) {
   }, Math.max(0, Number(delayMs) || 0));
 }
 
-const taskViewController = new TaskViewController({
+const taskViewController = createTaskViewComposition({
   ensureCodex: async () => {
     if (codexTransport.running) return;
     await startCodexAppServer();
@@ -2739,19 +2728,13 @@ const taskViewController = new TaskViewController({
     const catalogTitle = taskCatalog.find((entry) => catalogEntryIsSelected(entry, running))?.title;
     return selectedTitle || catalogTitle || binding.taskTitle;
   },
-  startProgressMessage: (...args) => taskProgress.start(...args),
-  createObservedRun: (...args) => taskObserver.create(...args),
-  scheduleObservedRun: (...args) => taskObserver.schedule(...args),
+  taskProgress,
+  taskObserver,
   findMessageBinding: (targetChatId, messageId) => (
     findMessageBinding(config.dataDir, targetChatId, messageId)
   ),
-  findCatalogEntry: async (identity) => {
-    let entry = taskCatalog.find((item) => taskViewController.identityMatches(item, identity));
-    if (!entry) {
-      entry = (await refreshTaskCatalog()).find((item) => taskViewController.identityMatches(item, identity));
-    }
-    return entry ?? null;
-  },
+  taskCatalog: () => taskCatalog,
+  refreshTaskCatalog,
   selectedTask,
   activeThreadTitle: () => activeThreadTitle,
   logger: console,
@@ -2816,118 +2799,67 @@ function scheduleDeferredRestartIfReady() {
   }
 }
 
-const restartNotifications = new RestartNotificationService({
-  getRequest: () => restartRequest,
-  setRequest: (value) => { restartRequest = value; },
+const {
+  restartNotifications,
+  runtimeResources,
+  runtimeRestart,
+} = createRuntimeRestartComposition({
+  getRestartRequest: () => restartRequest,
+  setRestartRequest: (value) => { restartRequest = value; },
   isStopping: () => stopping,
+  setStopping: (value) => { stopping = value; },
+  beginStopping: () => {
+    if (stopping) return false;
+    stopping = true;
+    return true;
+  },
   sendMessage: sendMessageTo,
   telegram,
   saveState,
-  formatCompleteMessage: formatRestartCompleteMessage,
+  formatRestartCompleteMessage,
   completeMessageState: () => ({
     provider: providerTitle(),
     task: activeThreadTitle || (threadId ? `${providerTitle()} · ${threadId.slice(0, 8)}` : "Не выбрана"),
     runningTasks: taskRuns.size,
   }),
-  menu: BOT_MENU,
-  finalizeReplacement: finalizeSuccessfulReplacement,
+  botMenu: BOT_MENU,
+  journalStartupReady,
+  runtimeStateCoordinator,
+  telegramDeliveryService,
+  mediaController,
+  taskSyncStore,
+  deliveryOutbox,
+  backgroundJobStore,
+  failedUpdateStore,
+  stopCodexAppServerTree,
+  miniAppLifecycle,
+  desktopControlServer: () => desktopControlServer,
+  runtimeCommandServer,
+  instanceGuard,
+  workLogUsageStore,
+  rateLimitHistoryStore,
+  taskReadStateStore,
+  runtimeStateStore,
+  updateOffset: () => updateOffset,
+  hasBlockingWork: restartHasBlockingWork,
+  setWaiting: (value) => { restartRequest.waitingForRuns = value; },
+  stopRuntimeTimers,
+  agentHubRoot: AGENT_HUB_ROOT,
+  instanceLockFile: INSTANCE_LOCK_FILE,
+  isCodex,
+  taskRuns,
+  startCodexAppServer,
+  initializeCodex,
+  runRecovery,
+  updateRestartMessage: (message) => restartNotifications.update(message),
+  startRuntimeTimers,
+  delay,
 });
 
 function restartMessageIsEditable(...args) { return restartNotifications.editable(...args); }
 function announceDesktopRestart(...args) { return restartNotifications.announceDesktop(...args); }
 function updateRestartMessage(...args) { return restartNotifications.update(...args); }
 function finalizeRestartMessage(...args) { return restartNotifications.finalize(...args); }
-
-const runtimeResources = new RuntimeResourceRegistry({
-  flush: [
-    { name: "journal startup", run: () => journalStartupReady },
-    { name: "state writes", run: () => runtimeStateCoordinator.flush() },
-    { name: "message binding writes", run: () => telegramDeliveryService.waitForBindingWrites() },
-    { name: "media writes", run: () => mediaController.waitForWrites() },
-    { name: "task sync", run: () => taskSyncStore.save() },
-    { name: "delivery outbox", run: () => deliveryOutbox.waitForWrites() },
-    { name: "background jobs", run: () => backgroundJobStore.waitForWrites() },
-    { name: "failed updates", run: () => failedUpdateStore.waitForWrites() },
-  ],
-  suspend: [
-    { name: "Codex App Server", run: stopCodexAppServerTree },
-    { name: "Mini App publisher", run: () => miniAppLifecycle.closePublisher() },
-    { name: "direct gateway", run: () => miniAppLifecycle.closeDirectGateway() },
-    { name: "quick tunnel", run: () => miniAppLifecycle.closeQuickTunnel() },
-    { name: "public Mini App", run: () => miniAppLifecycle.closePublicServer() },
-    { name: "local Mini App", run: () => miniAppLifecycle.closeLocalServer() },
-    { name: "Desktop control", run: () => desktopControlServer?.close() },
-    { name: "runtime command", run: () => runtimeCommandServer.close() },
-    { name: "instance lock", run: () => instanceGuard.release() },
-  ],
-  finalize: [
-    { name: "work log usage", run: () => workLogUsageStore.close() },
-    { name: "rate limit history", run: () => rateLimitHistoryStore.close() },
-    { name: "task sync store", run: () => taskSyncStore.close() },
-    { name: "task read-state store", run: () => taskReadStateStore.close() },
-    { name: "runtime state store", run: () => runtimeStateStore.close() },
-  ],
-});
-
-const runtimeRestart = new RuntimeRestartController({
-  getRequest: () => restartRequest,
-  updateOffset: () => updateOffset,
-  hasBlockingWork: restartHasBlockingWork,
-  setWaiting: (value) => { restartRequest.waitingForRuns = value; },
-  updateMessage: updateRestartMessage,
-  saveState,
-  resources: runtimeResources,
-  isStopping: () => stopping,
-  beginStopping: () => {
-    if (stopping) return false;
-    stopping = true;
-    return true;
-  },
-  stopTimers: stopRuntimeTimers,
-  stopMedia: () => mediaController.stop(),
-  launchReplacement: async () => {
-    const invocation = botReplacementInvocation({
-      botFile: path.join(AGENT_HUB_ROOT, "agent-hub-main.mjs"),
-      agentHubRoot: AGENT_HUB_ROOT,
-    });
-    const launcher = String(process.env.AGENT_HUB_LAUNCHER ?? "").trim();
-    const fallbackInvocation = process.platform === "win32" && launcher
-      ? directWindowsLauncherInvocation({ launcher })
-      : null;
-    return launchReplacementAndWait({
-      invocation,
-      fallbackInvocation,
-      lockFile: INSTANCE_LOCK_FILE,
-    });
-  },
-  recoverPrevious: (error) => restorePreviousBotAfterFailedReplacement({
-    replacementError: error,
-    acquireLock: () => instanceGuard.acquire(),
-    startCommandServer: async () => {
-      await runtimeCommandServer.start();
-      await desktopControlServer?.start();
-      await miniAppLifecycle.start();
-    },
-    setStopping: (value) => { stopping = value; },
-    restoreProvider: async () => {
-      if (isCodex() || taskRuns.values().some((run) => run.provider === "codex")) {
-        await startCodexAppServer();
-        await initializeCodex({ attachSelectedThread: isCodex() });
-      }
-    },
-    recoverRuns: (...args) => runRecovery.recoverAll(...args),
-    updateMessage: (message) => updateRestartMessage(message).catch(() => {}),
-    clearRestartRequest: () => { restartRequest = null; },
-    saveState,
-    startTimers: startRuntimeTimers,
-    markReady: () => instanceGuard.markReady(),
-  }),
-  finishSuccessfulReplacement: async () => {
-    // Detached Claude processes survive; the replacement reconnects by PID/output offset.
-    await delay(500);
-    process.exit(0);
-  },
-});
 
 async function performRestart() {
   const result = await runtimeRestart.perform();
