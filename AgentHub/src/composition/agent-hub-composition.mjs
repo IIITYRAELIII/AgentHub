@@ -37,24 +37,13 @@ const {
   showLastMessageReplyMarkup,
 } = telegramStatus;
 import {
-  discoverCodexRollouts,
-  discoverCodexSubagentRollouts,
   findCodexRolloutPath,
-  readCodexRolloutSession,
-  readCodexSubagentSpawn,
   readCodexTurnUsage,
-  scanCodexHistoricalRollout,
   scanCodexTurnPricingMetadata,
 } from "../providers/codex/codex-turn-usage.mjs";
-import { CodexTerminalAudit } from "../providers/codex/codex-terminal-audit.mjs";
-import { CodexTerminalReconciliationService } from "../providers/codex/codex-terminal-reconciliation-service.mjs";
-import { scanCodexHistoricalRolloutInWorker } from "../providers/codex/codex-historical-backfill.mjs";
-import { resolveCodexJournalProject } from "../providers/codex/codex-journal-project.mjs";
 import { RateLimitTelemetryService } from "../application/rate-limit-telemetry-service.mjs";
-import { CODEX_AUDIT_SOURCE_KINDS } from "../providers/codex/codex-subagent-accounting.mjs";
 import { CodexRunFinalizer } from "../providers/codex/codex-run-finalizer.mjs";
 import { CodexContextMaintenanceService } from "../providers/codex/codex-context-maintenance-service.mjs";
-import { CodexUsageTracker } from "../providers/codex/codex-usage-tracker.mjs";
 import { randomStatusHeaderFileName } from "../interfaces/telegram/status-header.mjs";
 import { TelegramClient } from "../infrastructure/telegram/telegram-client.mjs";
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
@@ -165,7 +154,6 @@ import {
   restorePreviousBotAfterFailedReplacement,
 } from "../runtime/restart-recovery.mjs";
 import { CodexLifecycleController } from "../providers/codex/codex-lifecycle-controller.mjs";
-import { turnEndKey } from "../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../application/turn-title.mjs";
 import { DesktopControlServer } from "../../desktop-control.mjs";
 import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
@@ -191,7 +179,6 @@ import { TelegramStatusController } from "../interfaces/telegram/telegram-status
 import { TelegramDeliveryService } from "../interfaces/telegram/telegram-delivery-service.mjs";
 import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "../providers/codex/codex-invocation.mjs";
 import { CodexAppServerLifecycle } from "../providers/codex/codex-app-server-lifecycle.mjs";
-import { CodexAccountingResolver } from "../providers/codex/codex-accounting-resolver.mjs";
 import { createCodexAssistantAttachmentImporter } from "../providers/codex/codex-assistant-attachments.mjs";
 import { TaskProgressController } from "../interfaces/telegram/task-progress-controller.mjs";
 import { TaskObservationService } from "../application/task-observation-service.mjs";
@@ -258,14 +245,12 @@ import {
   ServerControlController,
 } from "../interfaces/web/server-control-controller.mjs";
 import {
-  ContextCompactionTracker,
   isContextCompactionItem,
 } from "../providers/codex/context-compaction-tracker.mjs";
 import { RunProgressPresentation } from "../application/run-progress-presentation.mjs";
 import { RuntimeTimerCoordinator } from "../runtime/runtime-timer-coordinator.mjs";
 import {
   TurnEndDeliveryService,
-  fallbackTurnEndMessage,
 } from "../application/turn-end-delivery-service.mjs";
 import { DeferredInputStore } from "../application/deferred-input-store.mjs";
 import { DeferredInputService } from "../application/deferred-input-service.mjs";
@@ -282,6 +267,7 @@ import {
 } from "../application/hub-runtime-state-coordinator.mjs";
 import { TaskIdentityResolver } from "../application/task-identity-resolver.mjs";
 import { createHubStaticSettings } from "./hub-static-settings.mjs";
+import { createCodexObservabilityComposition } from "./codex-observability-composition.mjs";
 import { createHubInfrastructure } from "./infrastructure-composition.mjs";
 import { createRuntimeLifecycleComposition } from "./runtime-lifecycle-composition.mjs";
 import { createStateComposition } from "./state-composition.mjs";
@@ -416,164 +402,47 @@ const CLAUDE_OUTPUT_POLL_INTERVAL_MS = 250;
 const TASK_CATALOG_CACHE_MS = 1_500;
 const TASK_TITLE_RECONCILE_INTERVAL_MS = 5 * 60_000;
 const CODEX_RPC_TIMEOUT_MS = config.codexRpcTimeoutSeconds * 1000;
-const codexUsageTracker = new CodexUsageTracker();
-const turnTokenUsage = codexUsageTracker.turns;
-const codexRolloutPathsByThreadId = new Map();
-const contextCompactions = new ContextCompactionTracker({
-  cleanupTimeoutMs: Math.max(
-    2 * 60_000,
-    (config.codexRolloutContext.scanIntervalSeconds + 60) * 1_000,
-  ),
-  onSettled: () => scheduleDeferredRestartIfReady(),
-});
-const codexTurnStarts = new Map();
-const codexAccounting = new CodexAccountingResolver({
-  readThread: (parentThreadId) => sendRpc("thread/read", { threadId: parentThreadId, includeTurns: false }),
-  findRollout: (parentThreadId) => findCodexRolloutPath(parentThreadId, ""),
-  readRolloutSession: readCodexRolloutSession,
-  readSubagentSpawn: readCodexSubagentSpawn,
-  scanHistoricalRollout: scanCodexHistoricalRollout,
-});
-let codexHookReceipts = { start: null, stop: null };
-
-function capturedCodexExecutionOwner(threadId, turnId) {
-  const normalizedTurnId = String(turnId ?? "").trim();
-  if (!normalizedTurnId) return null;
-  const record = codexTurnStarts.get(turnEndKey({
-    provider: "codex",
-    threadId: String(threadId ?? "").trim(),
-    turnId: normalizedTurnId,
-  }));
-  const owner = normalizeTaskExecutionOwner(record?.executionOwner);
-  return Object.values(TASK_EXECUTION_OWNERS).includes(owner)
-      && owner !== TASK_EXECUTION_OWNERS.EXTERNAL
-    ? owner
-    : null;
-}
-
-async function knownCodexRolloutPath(threadId, startedAt = "") {
-  const key = String(threadId ?? "").trim();
-  const known = String(codexRolloutPathsByThreadId.get(key) ?? "").trim();
-  if (known) return known;
-  if (!String(startedAt ?? "").trim()) return "";
-  const discovered = await findCodexRolloutPath(key, startedAt);
-  if (discovered) setBoundedMapValue(codexRolloutPathsByThreadId, key, discovered, 5_000);
-  return discovered;
-}
-
 function defaultNotificationChatId() {
   return config.telegramEnabled ? resolveNotificationChatId(config, null) : null;
 }
-
-async function rememberAuditedCodexTurnStart(thread, project, turn) {
-  const identity = {
-    provider: "codex",
-    threadId: String(thread?.id ?? "").trim(),
-    turnId: String(turn?.turnId ?? "").trim(),
-  };
-  if (!identity.threadId || !identity.turnId) return;
-  const key = turnEndKey(identity);
-  const existing = codexTurnStarts.get(key);
-  if (existing?.gitBaseline) return;
-  const gitBaseline = await captureTaskGitBaseline(
-    project.path,
-    config.dataDir,
-    `terminal-audit-${identity.turnId}`,
-  );
-  const record = {
-    ...existing,
-    ...identity,
-    projectRoot: project.path,
-    startedAt: existing?.startedAt || String(turn?.startedAt ?? ""),
-    prompt: existing?.prompt || "",
-    gitBaseline: gitBaseline ?? existing?.gitBaseline ?? null,
-  };
-  setBoundedMapValue(codexTurnStarts, key, record, 500);
-  const run = taskRuns.forEvent({
-    ...identity,
-    allowThreadFallback: true,
-  });
-  if (run) {
-    run.turnId ||= identity.turnId;
-    run.startedAt = record.startedAt || run.startedAt;
-    run.gitBaseline = record.gitBaseline ?? run.gitBaseline;
-    taskRuns.reindex(run);
-  }
-}
-
-const codexTerminalReconciliation = new CodexTerminalReconciliationService({
-  notifications: turnEndNotifications,
-  turnStarts: codexTurnStarts,
-  workLogStore: workLogUsageStore,
-  accountingThread: (thread) => codexAccounting.accountingThread(thread),
-  subagentParentTurnId: (thread, accountingThread) => codexAccounting.subagentParentTurnId(thread, accountingThread),
-  readTurnUsage: readCodexTurnUsage,
-  taskGitDiff,
-  dataDir: config.dataDir,
+const taskRuns = new TaskRunRegistry();
+const lastSeenTaskTurnIds = new Map();
+const codexObservability = createCodexObservabilityComposition({
+  config,
+  sendRpc,
+  scheduleDeferredRestartIfReady,
+  taskRuns,
+  turnEndNotifications,
+  workLogUsageStore,
   changedFilesForRun,
-  projectTurn: projectTurnUsageToWorkLog,
-  taskTitle: runtimeCommandTaskTitle,
-  defaultChatId: defaultNotificationChatId,
-  fallbackMessage: fallbackTurnEndMessage,
-  rememberLastMessage: rememberLastTaskMessage,
-  rememberSeenTurn: (task, turnId) => {
-    setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(task), turnId, 500);
-  },
+  projectTurnUsageToWorkLog,
+  runtimeCommandTaskTitle,
+  rememberLastTaskMessage,
+  lastSeenTaskTurnIds,
   saveState,
-  deliverNotification: deliverTurnEndNotification,
+  deliverTurnEndNotification,
+  defaultNotificationChatId,
+  findProject,
+  resolveTaskByProviderRef: ({ provider, providerTaskId }) => taskCatalog.find((entry) => (
+    entry.provider === provider && String(entry.threadId) === String(providerTaskId)
+  )),
+  globalWorkLogProjectRoots,
+  isHistoricalBackfillIdle: () => taskRuns.size === 0 && !restartRequest,
 });
-const codexTerminalAudit = new CodexTerminalAudit({
-  listPage: (cursor, limit) => sendRpc("thread/list", {
-    cursor,
-    limit,
-    sortKey: "updated_at",
-    sortDirection: "desc",
-    sourceKinds: CODEX_AUDIT_SOURCE_KINDS,
-  }),
-  readThread: (threadId) => sendRpc("thread/read", {
-    threadId,
-    includeTurns: true,
-  }),
-  isTurnActive: async (thread, turnId) => {
-    const activity = await readCodexRolloutActivity(thread?.path);
-    return activity.activeTurnIds.includes(String(turnId));
-  },
-  onTurnStarted: rememberAuditedCodexTurnStart,
-  onTurnActive: async (thread, project, turnId) => {
-    const identity = {
-      provider: "codex",
-      threadId: String(thread?.id ?? ""),
-      turnId: String(turnId),
-    };
-    const result = await workLogUsageStore.retractProvisionalAndProject({
-      ...identity,
-      projectRoot: project.path,
-      projectionProjectRoots: globalWorkLogProjectRoots,
-    });
-    if (!result.retracted) return;
-    turnEndNotifications.retract(identity);
-    await saveState();
-    console.log(`Retracted premature Codex terminal turn ${identity.turnId}`);
-  },
-  resolveProject: (thread) => resolveCodexJournalProject(thread, {
-    findProject,
-    readSession: readCodexRolloutSession,
-    resolveParentProject: (parentThreadId) => {
-      const parent = taskCatalog.find((entry) => (
-        entry.provider === "codex" && String(entry.threadId) === String(parentThreadId)
-      ));
-      return parent ? findProject(parent.projectRoot) : null;
-    },
-  }),
-  reconcile: (...args) => codexTerminalReconciliation.reconcile(...args),
-  discoverHistoricalThreads: () => discoverCodexRollouts(),
-  discoverSupplementalThreads: () => discoverCodexSubagentRollouts(),
-  scanHistoricalFile: scanCodexHistoricalRolloutInWorker,
-  shouldRunHistoricalBackfill: () => taskRuns.size === 0 && !restartRequest,
-});
+const {
+  usageTracker: codexUsageTracker,
+  turnTokenUsage,
+  compactions: contextCompactions,
+  turnStarts: codexTurnStarts,
+  hookReceipts: codexHookReceipts,
+  replaceHookReceipts: replaceCodexHookReceipts,
+  capturedExecutionOwner: capturedCodexExecutionOwner,
+  knownRolloutPath: knownCodexRolloutPath,
+  rememberRolloutPath: rememberCodexRolloutPath,
+  terminalAudit: codexTerminalAudit,
+} = codexObservability;
 const turnTemporaryFiles = new Map();
 const turnSpeechButtons = new Map();
-const taskRuns = new TaskRunRegistry();
 const managedRunLifecycle = new ManagedRunLifecycleService({
   taskRuns,
   currentTarget: () => ({
@@ -663,9 +532,7 @@ const codexContextMaintenance = new CodexContextMaintenanceService({
   refreshTaskCatalog,
   knownRolloutPath: knownCodexRolloutPath,
   readThread: readCodexThread,
-  rememberRolloutPath: (threadId, rolloutPath) => (
-    setBoundedMapValue(codexRolloutPathsByThreadId, threadId, rolloutPath, 5_000)
-  ),
+  rememberRolloutPath: rememberCodexRolloutPath,
   stopTransport: stopCodexAppServerTree,
   startTransport: startCodexAppServer,
   initializeTransport: initializeCodex,
@@ -727,7 +594,6 @@ const queuedInputs = deferredInputs.queued;
 const desktopMessageReceipts = new MessageReceiptRegistry();
 const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
 await taskDiffs.load();
-const lastSeenTaskTurnIds = new Map();
 const statusMediaFileIds = new Map();
 let synchronizedTaskTitleSignature = "";
 let taskTitlesSynchronizedAt = 0;
@@ -940,9 +806,7 @@ const codexCatalogProjection = new CodexCatalogProjectionService({
   backfillPricing: backfillWorkLogPricingMetadata,
   readTitleHistories: readCodexThreadTitleHistories,
   findProject,
-  rememberRolloutPath: (threadId, rolloutPath) => (
-    setBoundedMapValue(codexRolloutPathsByThreadId, threadId, rolloutPath, 5_000)
-  ),
+  rememberRolloutPath: rememberCodexRolloutPath,
   readActivity: readCodexRolloutActivity,
   runForTask: (reference) => taskRuns.forTask(reference),
   selectActiveTurnId: selectExactActiveCodexTurnId,
@@ -1664,7 +1528,7 @@ if (restoredRuntimeState.value) {
   chatId = restoredRuntimeState.value.chatId;
   updateOffset = restoredRuntimeState.value.updateOffset;
   restartRequest = restoredRuntimeState.value.restartRequest;
-  codexHookReceipts = restoredRuntimeState.value.codexHookReceipts;
+  replaceCodexHookReceipts(restoredRuntimeState.value.codexHookReceipts);
   restoredTurnEndSnapshot = restoredRuntimeState.value.restoredTurnEndSnapshot;
   if (activeProvider === "codex" && threadId) {
     if (taskMetadata.codexSettings(threadId)) restoreCodexTaskSettings(threadId);
