@@ -45,6 +45,5 @@ export async function createRuntimeDataComposition({
     forwardBundles: new Map(),
     desktopMessageReceipts: new MessageReceiptRegistry(),
     statusMediaFileIds: new Map(),
-    claudeTranscriptAuditState: new Map(),
   };
 }

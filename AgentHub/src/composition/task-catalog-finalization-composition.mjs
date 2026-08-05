@@ -1,0 +1,77 @@
+import { samePath } from "../infrastructure/filesystem/config.mjs";
+import {
+  catalogEntryIsSelected,
+  statusTaskEntries,
+  taskCatalogTitleSignature,
+  taskOrderingActivityAtMs,
+} from "../../task-catalog.mjs";
+import { updateTaskRunTitle } from "../domain/task-runs.mjs";
+
+export function createTaskCatalogFinalizationComposition({
+  projects,
+  titleReconcileIntervalMs,
+  journalDatabaseFile,
+  projectionProjectRoots,
+  workLogUsageStore,
+  taskRuns,
+  savedLastTaskMessageRecord,
+  deferredTaskMessageAtMs,
+  selectedTask,
+  getActiveThreadTitle,
+  selectionStore,
+  taskSyncStore,
+  saveState,
+}) {
+  let synchronizedTitleSignature = "";
+  let titlesSynchronizedAt = 0;
+
+  async function finalize(mergedEntries) {
+    let nextCatalog = mergedEntries;
+    for (const entry of nextCatalog) {
+      entry.orderingActivityAtMs = taskOrderingActivityAtMs(entry, {
+        run: taskRuns.forTask(entry),
+        lastMessage: savedLastTaskMessageRecord(entry),
+        userMessageAtMs: deferredTaskMessageAtMs(entry),
+      });
+    }
+    nextCatalog = statusTaskEntries(nextCatalog, nextCatalog.length);
+    const nextTitleSignature = taskCatalogTitleSignature(nextCatalog);
+    const shouldSynchronizeTitles = nextTitleSignature !== synchronizedTitleSignature
+      || Date.now() - titlesSynchronizedAt >= titleReconcileIntervalMs;
+    if (shouldSynchronizeTitles) {
+      for (const project of projects) {
+        await workLogUsageStore.synchronizeTaskTitlesAndProject({
+          titles: nextCatalog
+            .filter((entry) => samePath(entry.projectRoot, project.path))
+            .map((entry) => ({
+              provider: entry.provider,
+              threadId: entry.threadId,
+              taskTitle: entry.title,
+            })),
+          projectRoot: project.path,
+          journalDatabaseFile,
+          projectionProjectRoots,
+        });
+      }
+      synchronizedTitleSignature = nextTitleSignature;
+      titlesSynchronizedAt = Date.now();
+    }
+
+    let titleChanged = false;
+    for (const run of taskRuns.values()) {
+      const entry = nextCatalog.find((item) => catalogEntryIsSelected(item, run));
+      if (entry) titleChanged = updateTaskRunTitle(run, entry.title) || titleChanged;
+    }
+    const current = nextCatalog.find((entry) => catalogEntryIsSelected(entry, selectedTask()));
+    if (current?.title && current.title !== getActiveThreadTitle()) {
+      selectionStore.setTitle(current.title);
+      titleChanged = true;
+    }
+    taskSyncStore.recordCatalog(nextCatalog);
+    await taskSyncStore.save();
+    if (titleChanged) await saveState();
+    return nextCatalog;
+  }
+
+  return { finalize };
+}

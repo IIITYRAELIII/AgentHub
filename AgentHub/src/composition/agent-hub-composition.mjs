@@ -31,9 +31,7 @@ const {
   showLastMessageReplyMarkup,
 } = telegramStatus;
 import {
-  findCodexRolloutPath,
   readCodexTurnUsage,
-  scanCodexTurnPricingMetadata,
 } from "../providers/codex/codex-turn-usage.mjs";
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
 import { telegramPrompt } from "../interfaces/telegram/telegram-message.mjs";
@@ -90,11 +88,9 @@ import {
   catalogEntryIsSelected,
   mergeTaskCatalog,
   readCodexRolloutActivity,
-  statusTaskEntries,
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
   taskOrderingActivityAtMs,
-  taskCatalogTitleSignature,
 } from "../../task-catalog.mjs";
 import {
   codexObservedRuntimeActive,
@@ -155,6 +151,9 @@ import { createCodexLifecycleComposition } from "./codex-lifecycle-composition.m
 import { createRunCompletionComposition } from "./run-completion-composition.mjs";
 import { createCodexContextMaintenanceComposition } from "./codex-context-maintenance-composition.mjs";
 import { createProviderStartupComposition } from "./provider-startup-composition.mjs";
+import { createJournalBackfillComposition } from "./journal-backfill-composition.mjs";
+import { createClaudeTranscriptAuditComposition } from "./claude-transcript-audit-composition.mjs";
+import { createTaskCatalogFinalizationComposition } from "./task-catalog-finalization-composition.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -303,7 +302,6 @@ const {
   forwardBundles,
   desktopMessageReceipts,
   statusMediaFileIds,
-  claudeTranscriptAuditState,
 } = await createRuntimeDataComposition({
   config,
   projects: PROJECTS,
@@ -449,9 +447,32 @@ const {
     pendingImageJobs: () => forwardBundleController.pendingImageJobs(),
   },
 });
-let synchronizedTaskTitleSignature = "";
-let taskTitlesSynchronizedAt = 0;
-let workLogPricingBackfillAttempted = false;
+const journalBackfill = createJournalBackfillComposition({
+  projects: PROJECTS,
+  workLogUsageStore,
+  projectionProjectRoots: globalWorkLogProjectRoots,
+});
+const claudeTranscriptAudit = createClaudeTranscriptAuditComposition({
+  projectRoot: config.projectRoot,
+  projectionProjectRoots: globalWorkLogProjectRoots,
+  findProject,
+  workLogUsageStore,
+});
+const taskCatalogFinalization = createTaskCatalogFinalizationComposition({
+  projects: PROJECTS,
+  titleReconcileIntervalMs: TASK_TITLE_RECONCILE_INTERVAL_MS,
+  journalDatabaseFile,
+  projectionProjectRoots: globalWorkLogProjectRoots,
+  workLogUsageStore,
+  taskRuns,
+  savedLastTaskMessageRecord,
+  deferredTaskMessageAtMs,
+  selectedTask,
+  getActiveThreadTitle: () => activeThreadTitle,
+  selectionStore,
+  taskSyncStore,
+  saveState,
+});
 const {
   claudeTaskSnapshots,
   claudeEventService,
@@ -1245,169 +1266,15 @@ function threadTitle(thread) {
 }
 
 async function backfillWorkLogPricingMetadata(codexThreads) {
-  if (workLogPricingBackfillAttempted) return;
-  workLogPricingBackfillAttempted = true;
-  try {
-    const missing = await workLogUsageStore.missingPricingTurns({ provider: "codex" });
-    const missingByThread = new Map();
-    for (const item of missing) {
-      const values = missingByThread.get(item.threadId) ?? [];
-      values.push(item);
-      missingByThread.set(item.threadId, values);
-    }
-    const threadsById = new Map(
-      (codexThreads ?? []).map((thread) => [String(thread.id), thread]),
-    );
-    const resolved = [];
-    for (const [missingThreadId, turns] of missingByThread) {
-      let rolloutPath = String(threadsById.get(missingThreadId)?.path ?? "").trim();
-      if (!rolloutPath) {
-        rolloutPath = await findCodexRolloutPath(missingThreadId, turns[0]?.startedAt);
-      }
-      if (!rolloutPath) continue;
-      const metadata = await scanCodexTurnPricingMetadata(
-        rolloutPath,
-        turns.map((item) => item.turnId),
-      );
-      for (const item of turns) {
-        const pricing = metadata.get(item.turnId);
-        if (pricing?.model) resolved.push({ ...item, ...pricing });
-      }
-    }
-    for (const project of config.projects) {
-      await workLogUsageStore.synchronizePricingMetadataAndProject({
-        items: resolved,
-        projectRoot: project.path,
-        projectionProjectRoots: globalWorkLogProjectRoots,
-      });
-    }
-    const missingImageEstimates = await workLogUsageStore
-      .missingImageGenerationEstimateTurns({ provider: "codex" });
-    const imageEstimates = [];
-    for (const item of missingImageEstimates) {
-      let rolloutPath = String(threadsById.get(item.threadId)?.path ?? "").trim();
-      if (!rolloutPath) {
-        rolloutPath = await findCodexRolloutPath(item.threadId, item.startedAt);
-      }
-      if (!rolloutPath) continue;
-      const usage = await readCodexTurnUsage(rolloutPath, item.turnId);
-      if (Number(usage?.estimatedCredits) > 0) {
-        imageEstimates.push({
-          ...item,
-          estimatedCredits: usage.estimatedCredits,
-          estimateKind: usage.estimateKind,
-        });
-      }
-    }
-    for (const project of config.projects) {
-      await workLogUsageStore.synchronizeUsageEstimatesAndProject({
-        items: imageEstimates,
-        projectRoot: project.path,
-        projectionProjectRoots: globalWorkLogProjectRoots,
-      });
-    }
-    if (resolved.length) {
-      console.log(`Backfilled credit pricing metadata for ${resolved.length} journal turn(s)`);
-    }
-    if (imageEstimates.length) {
-      console.log(`Backfilled image generation estimates for ${imageEstimates.length} journal turn(s)`);
-    }
-  } catch (error) {
-    console.error("Cannot backfill journal credit pricing metadata:", error.message);
-  }
+  return journalBackfill.backfill(codexThreads);
 }
 
 async function auditClaudeTranscriptSnapshots(snapshots) {
-  const records = [];
-  for (const snapshot of snapshots ?? []) {
-    const transcriptPath = String(snapshot?.transcriptPath ?? "").trim();
-    const sessionId = String(snapshot?.sessionId ?? "").trim();
-    const project = snapshot?.cwd ? findProject(snapshot.cwd) : null;
-    if (!transcriptPath || !sessionId || !project) continue;
-    const auditVersion = Number(snapshot.modifiedAtMs) || 0;
-    if (claudeTranscriptAuditState.get(transcriptPath) === auditVersion) continue;
-    const scan = await scanClaudeHistoricalTranscriptFile(transcriptPath);
-    const taskTitle = String(snapshot.title ?? scan.session?.title ?? "").trim();
-    for (const turn of scan.turns ?? []) {
-      records.push({
-        ...turn,
-        provider: "claude",
-        threadId: sessionId,
-        turnId: turn.turnId,
-        projectRoot: project.path,
-        taskTitle,
-        title: turn.body ? conciseTurnTitle(turn.body, turn.status) : turn.title,
-        taskThreadId: sessionId,
-        parentThreadId: "",
-        aggregateOnly: false,
-        provisional: false,
-        changedFiles: [],
-        diff: "",
-      });
-    }
-    claudeTranscriptAuditState.set(transcriptPath, auditVersion);
-    while (claudeTranscriptAuditState.size > 2_000) {
-      claudeTranscriptAuditState.delete(claudeTranscriptAuditState.keys().next().value);
-    }
-  }
-  if (!records.length) return;
-  const result = await workLogUsageStore.recordAutomaticBatchAndProject({
-    records,
-    projectRoot: config.projectRoot,
-    projectionProjectRoots: globalWorkLogProjectRoots,
-  });
-  if (result.recorded || result.updated) {
-    console.log(
-      `Audited Claude journal turns: ${result.recorded} added, ${result.updated} updated`,
-    );
-  }
+  return claudeTranscriptAudit.audit(snapshots);
 }
 
 async function finalizeTaskCatalog(mergedEntries) {
-  let nextCatalog = mergedEntries;
-  for (const entry of nextCatalog) {
-    entry.orderingActivityAtMs = taskOrderingActivityAtMs(entry, {
-      run: taskRuns.forTask(entry),
-      lastMessage: savedLastTaskMessageRecord(entry),
-      userMessageAtMs: deferredTaskMessageAtMs(entry),
-    });
-  }
-  nextCatalog = statusTaskEntries(nextCatalog, nextCatalog.length);
-  const nextTaskTitleSignature = taskCatalogTitleSignature(nextCatalog);
-  const shouldSynchronizeTaskTitles = nextTaskTitleSignature !== synchronizedTaskTitleSignature
-    || Date.now() - taskTitlesSynchronizedAt >= TASK_TITLE_RECONCILE_INTERVAL_MS;
-  if (shouldSynchronizeTaskTitles) {
-    for (const project of config.projects) {
-      await workLogUsageStore.synchronizeTaskTitlesAndProject({
-        titles: nextCatalog
-          .filter((entry) => samePath(entry.projectRoot, project.path))
-          .map((entry) => ({
-            provider: entry.provider,
-            threadId: entry.threadId,
-            taskTitle: entry.title,
-          })),
-        projectRoot: project.path,
-        journalDatabaseFile,
-        projectionProjectRoots: globalWorkLogProjectRoots,
-      });
-    }
-    synchronizedTaskTitleSignature = nextTaskTitleSignature;
-    taskTitlesSynchronizedAt = Date.now();
-  }
-  let titleChanged = false;
-  for (const run of taskRuns.values()) {
-    const entry = nextCatalog.find((item) => catalogEntryIsSelected(item, run));
-    if (entry) titleChanged = updateTaskRunTitle(run, entry.title) || titleChanged;
-  }
-  const current = nextCatalog.find((entry) => catalogEntryIsSelected(entry, selectedTask()));
-  if (current?.title && current.title !== activeThreadTitle) {
-    selectionStore.setTitle(current.title);
-    titleChanged = true;
-  }
-  taskSyncStore.recordCatalog(nextCatalog);
-  await taskSyncStore.save();
-  if (titleChanged) await saveState();
-  return nextCatalog;
+  return taskCatalogFinalization.finalize(mergedEntries);
 }
 
 async function refreshTaskCatalog({ force = false } = {}) {

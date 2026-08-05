@@ -98,6 +98,9 @@
 | 83 | ⏳ | Managed run completion, turn-end projection/delivery и Codex finalization собраны в `run-completion-composition`. Состояние хода остаётся в едином registry, а завершение, журнал, последнее сообщение и уведомление используют общие logical-task targets вместо provider ID как постоянного ключа. |
 | 84 | ⏳ | Периодическая санитарная обработка rollout, ручная свёртка и безопасный recycle Codex transport выделены в `codex-context-maintenance-composition`. Временное отключение compaction-triggered recycle сохранено явно; periodic sanitation продолжает работать через тот же сервис. |
 | 85 | ⏳ | Инициализация провайдера, восстановление выбранного Codex-треда, создание задачи и выдача списка тредов перенесены в `provider-startup-composition`. Выбранный provider ID остаётся заменяемой ссылкой внутри logical task; восстановление активного хода не удаляет ссылку при временной ошибке resume. Orchestrator сокращён до 2 811 строк. |
+| 86 | ⏳ | Восстановление pricing metadata и оценок image generation вынесено в `journal-backfill-composition`. Однократность backfill теперь является внутренним состоянием владельца, а не флагом общего orchestrator; найденные записи по-прежнему проецируются во все настроенные журналы. |
+| 87 | ⏳ | Исторический аудит Claude transcript вынесен в `claude-transcript-audit-composition`. Ограниченный кэш версий transcript удалён из общего runtime data container и принадлежит аудитору; logical task identity не выводится из одного session ID. |
+| 88 | ⏳ | Расчёт активности, status projection, синхронизация названий с SQLite и обновление активных run titles собраны в `task-catalog-finalization-composition`. Подпись/таймер синхронизации принадлежат этому владельцу; provider thread ID остаётся только ссылкой записи. Orchestrator сокращён до 2 678 строк. |
 
 После этапов 31–40 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и
