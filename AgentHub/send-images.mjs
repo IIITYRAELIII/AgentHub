@@ -12,7 +12,7 @@ import { telegramBotApiUrl } from "./telegram-api.mjs";
 import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
 import { isMainModule } from "./main-module.mjs";
 import { resolveAllowedNotificationPath } from "./notification-security.mjs";
-import { readRuntimeState } from "./runtime-state-store.mjs";
+import { readRuntimeState } from "./src/infrastructure/persistence/runtime-state-store.mjs";
 
 const MAX_ALBUM_SIZE = 10;
 

@@ -1,0 +1,81 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { AgentPreferencesStore } from "./src/application/agent-preferences-store.mjs";
+import { TaskMetadataStore } from "./src/application/task-metadata-store.mjs";
+import { TaskSelectionStore } from "./src/application/task-selection-store.mjs";
+
+function fixture() {
+  const selectionStore = new TaskSelectionStore({
+    activeProvider: "codex",
+    activeProjectRoot: "D:/Work",
+    threadId: "thread-1",
+  });
+  const taskMetadata = new TaskMetadataStore({
+    validReasoningEfforts: ["low", "high"],
+  });
+  const store = new AgentPreferencesStore({
+    selectionStore,
+    taskMetadata,
+    codexModels: ["sol", "terra"],
+    claudeModels: ["sonnet", "opus"],
+    reasoningEfforts: ["low", "high"],
+    collaborationModes: ["default", "plan"],
+    defaultCodexModel: "sol",
+    defaultCodexReasoningEffort: "high",
+    defaultCodexCollaborationMode: "default",
+    defaultClaudeModel: "sonnet",
+    defaultClaudeReasoningEffort: "high",
+    defaultClaudeCollaborationMode: "default",
+    normalizeCodexModel: (value) => ["sol", "terra"].includes(value) ? value : "sol",
+    resolveCodexThreadSettings: (payload, current) => ({
+      model: payload?.model ?? current.model,
+      reasoningEffort: payload?.reasoningEffort ?? current.reasoningEffort,
+    }),
+  });
+  return { selectionStore, taskMetadata, store };
+}
+
+test("agent preferences restore and validate both providers in one state owner", () => {
+  const { store } = fixture();
+  store.restore({
+    codexModel: "terra",
+    codexReasoningEffort: "low",
+    codexCollaborationMode: "plan",
+    claudeModel: "opus",
+    claudeReasoningEffort: "low",
+    claudeCollaborationMode: "plan",
+    includeClaudeUsage: false,
+  });
+  assert.deepEqual(store.snapshot(), {
+    codexModel: "terra",
+    codexReasoningEffort: "low",
+    codexCollaborationMode: "plan",
+    claudeModel: "opus",
+    claudeReasoningEffort: "low",
+    claudeCollaborationMode: "plan",
+    includeClaudeUsage: false,
+  });
+  assert.throws(() => store.setCodexModel("unknown"), /unknown Codex model/u);
+  assert.throws(() => store.setClaudeReasoning("ultra"), /unknown Claude reasoning effort/u);
+});
+
+test("task preferences follow the selected Codex thread without becoming task identity", () => {
+  const { selectionStore, taskMetadata, store } = fixture();
+  store.setCodexModel("terra");
+  store.setCodexReasoning("low");
+  store.rememberCodexTaskSettings();
+  selectionStore.setThread("thread-2", { provider: "codex" });
+  store.restoreCodexTaskSettings("thread-2");
+  assert.deepEqual(store.captureCodex(), {
+    model: "sol",
+    reasoningEffort: "high",
+    collaborationMode: "default",
+  });
+  store.applyCodexThreadSettings("thread-2", { model: "terra", reasoningEffort: "low" });
+  assert.equal(store.codexModel, "terra");
+  assert.deepEqual(taskMetadata.codexSettings("thread-1"), {
+    model: "terra",
+    reasoningEffort: "low",
+  });
+});

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TaskSelectionStore } from "./task-selection-store.mjs";
+import { TaskSelectionStore } from "./src/application/task-selection-store.mjs";
 
 test("selection store switches providers while preserving each thread", () => {
   const store = new TaskSelectionStore({

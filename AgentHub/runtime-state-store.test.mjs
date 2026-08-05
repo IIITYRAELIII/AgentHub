@@ -8,7 +8,7 @@ import {
   readRuntimeState,
   runtimeDatabasePath,
   RuntimeStateStore,
-} from "./runtime-state-store.mjs";
+} from "./src/infrastructure/persistence/runtime-state-store.mjs";
 
 test("runtime state migrates from JSON to SQLite and archives both legacy copies", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-runtime-state-"));

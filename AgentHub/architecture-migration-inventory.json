@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "serverMaximumLines": 5572,
-    "rootProductionModules": 149
+    "serverMaximumLines": 5360,
+    "rootProductionModules": 147
   },
   "publicRootModules": [
     "agent-hub-main.mjs",
@@ -39,7 +39,6 @@
       "task-catalog-service.mjs",
       "task-history.mjs",
       "task-observation-service.mjs",
-      "task-selection-store.mjs",
       "turn-end-delivery-service.mjs",
       "turn-title.mjs"
     ],
@@ -144,7 +143,6 @@
       "rate-limit-history.mjs",
       "rate-limit-rollout-backfill.mjs",
       "rotating-log.mjs",
-      "runtime-state-store.mjs",
       "state-store.mjs",
       "task-diff-store.mjs",
       "task-read-state-store.mjs",

@@ -2,7 +2,7 @@ import { copyFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { readJsonWithBackup } from "./state-store.mjs";
+import { readJsonWithBackup } from "../../../state-store.mjs";
 
 const BUSY_TIMEOUT_MS = 5_000;
 

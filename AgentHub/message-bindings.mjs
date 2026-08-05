@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { openRuntimeDatabase } from "./runtime-state-store.mjs";
+import { openRuntimeDatabase } from "./src/infrastructure/persistence/runtime-state-store.mjs";
 
 const MAX_BINDINGS = 500;
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;

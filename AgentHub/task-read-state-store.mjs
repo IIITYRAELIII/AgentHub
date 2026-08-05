@@ -1,4 +1,4 @@
-import { openRuntimeDatabase } from "./runtime-state-store.mjs";
+import { openRuntimeDatabase } from "./src/infrastructure/persistence/runtime-state-store.mjs";
 
 const ACCOUNT_ID_MAX_CHARS = 160;
 const THREAD_ID_MAX_CHARS = 200;

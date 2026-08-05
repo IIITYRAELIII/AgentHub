@@ -4,7 +4,7 @@ import http from "node:http";
 import path from "node:path";
 import process from "node:process";
 import { processIsAlive, stopProcessTree } from "../claude-run-io.mjs";
-import { readRuntimeState } from "../runtime-state-store.mjs";
+import { readRuntimeState } from "../src/infrastructure/persistence/runtime-state-store.mjs";
 
 // Общая обвязка E2E: поддельный Telegram Bot API и ожидания. Используется и
 // сценарием Codex, и матрицей параллельных задач Claude.

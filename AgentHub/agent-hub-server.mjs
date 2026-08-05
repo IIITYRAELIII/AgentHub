@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile, unlink } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import dns from "node:dns";
 import path from "node:path";
 import process from "node:process";
@@ -144,7 +144,7 @@ import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { PersistentDeliveryOutbox } from "./delivery-outbox.mjs";
 import { installRotatingConsole } from "./rotating-log.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
-import { RuntimeStateStore } from "./runtime-state-store.mjs";
+import { RuntimeStateStore } from "./src/infrastructure/persistence/runtime-state-store.mjs";
 import { TaskReadStateStore, taskHasUnreadAnswer } from "./task-read-state-store.mjs";
 import { LocalTaskSyncStore } from "./task-sync-store.mjs";
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
@@ -260,7 +260,7 @@ import { DesktopDeferredInputService } from "./src/interfaces/desktop/desktop-de
 import { DesktopSettingsService } from "./src/interfaces/desktop/desktop-settings-service.mjs";
 import { ProviderTaskCatalogBuilder } from "./src/providers/provider-task-catalog-builder.mjs";
 import { TaskCatalogService } from "./task-catalog-service.mjs";
-import { TaskSelectionStore } from "./task-selection-store.mjs";
+import { TaskSelectionStore } from "./src/application/task-selection-store.mjs";
 import { createDesktopSnapshotFactory } from "./src/interfaces/desktop/desktop-snapshot.mjs";
 import { createDesktopTaskHistoryFactory } from "./src/interfaces/desktop/desktop-task-history.mjs";
 import { createDesktopApplicationRouter } from "./src/interfaces/desktop/desktop-application-router.mjs";
@@ -282,7 +282,14 @@ import {
   TurnEndDeliveryService,
   fallbackTurnEndMessage,
 } from "./turn-end-delivery-service.mjs";
+import { AgentPreferencesStore } from "./src/application/agent-preferences-store.mjs";
+import {
+  createHubRuntimeSnapshot,
+  HubRuntimeStateCoordinator,
+  restoreHubRuntimeSnapshot,
+} from "./src/application/hub-runtime-state-coordinator.mjs";
 import { TaskMetadataStore } from "./src/application/task-metadata-store.mjs";
+import { TaskIdentityResolver } from "./src/application/task-identity-resolver.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -359,15 +366,8 @@ function providerTitle() {
 }
 const CLAUDE_MODELS = ["sonnet", "opus", "haiku"];
 const CLAUDE_MODEL_LABELS = { sonnet: "Sonnet", opus: "Opus", haiku: "Haiku" };
-let claudeModel = CLAUDE_MODELS.includes(config.claudeModel) ? config.claudeModel : "sonnet";
 // Claude использует те же уровни «мощи дум» и режимы Plan/Work, что и Codex,
 // но применяет их по-своему: мощь дум -> бюджет thinking-токенов, режим -> permission-mode.
-let claudeReasoningEffort = CODEX_REASONING_EFFORTS.includes(config.claudeReasoningEffort)
-  ? config.claudeReasoningEffort
-  : "high";
-let claudeCollaborationMode = CODEX_COLLABORATION_MODES.includes(config.claudeCollaborationMode)
-  ? config.claudeCollaborationMode
-  : "default";
 const CODEX_MODELS = config.codexModels;
 const CODEX_MODEL_VALUES = new Set(CODEX_MODELS.map((model) => model.value));
 function normalizeCodexModel(value) {
@@ -380,9 +380,6 @@ const defaultCodexModel = normalizeCodexModel(config.codexModel);
 const defaultCodexReasoningEffort = CODEX_REASONING_EFFORTS.includes(config.codexReasoningEffort)
   ? config.codexReasoningEffort
   : "high";
-let codexModel = defaultCodexModel;
-let codexReasoningEffort = defaultCodexReasoningEffort;
-let codexCollaborationMode = config.codexCollaborationMode;
 const taskMetadata = new TaskMetadataStore({
   validReasoningEfforts: CODEX_REASONING_EFFORTS,
 });
@@ -541,15 +538,29 @@ selectionStore.subscribe((selection) => {
   threadId = selection.threadId;
   activeThreadTitle = selection.activeThreadTitle;
 });
+const agentPreferences = new AgentPreferencesStore({
+  selectionStore,
+  taskMetadata,
+  codexModels: CODEX_MODELS.map((model) => model.value),
+  claudeModels: CLAUDE_MODELS,
+  reasoningEfforts: CODEX_REASONING_EFFORTS,
+  collaborationModes: CODEX_COLLABORATION_MODES,
+  defaultCodexModel,
+  defaultCodexReasoningEffort,
+  defaultCodexCollaborationMode: config.codexCollaborationMode,
+  defaultClaudeModel: config.claudeModel,
+  defaultClaudeReasoningEffort: config.claudeReasoningEffort,
+  defaultClaudeCollaborationMode: config.claudeCollaborationMode,
+  normalizeCodexModel,
+  resolveCodexThreadSettings,
+});
 let latestDiff = "";
 let stopping = false;
 let autoApprove = config.autoApproveOnStart;
-let includeClaudeUsage = true;
 let codexRestarting = false;
 let codexTimeoutRestarting = false;
 let restartRequest = null;
 let processingUpdateId = null;
-let stateWriteQueue = Promise.resolve();
 let bindingWriteQueue = Promise.resolve();
 const runtimeTimers = new RuntimeTimerCoordinator();
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
@@ -805,7 +816,6 @@ const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
 await taskDiffs.load();
 const lastSeenTaskTurnIds = new Map();
 const statusMediaFileIds = new Map();
-const uiContextNonce = randomUUID();
 let synchronizedTaskTitleSignature = "";
 let taskTitlesSynchronizedAt = 0;
 let workLogPricingBackfillAttempted = false;
@@ -1369,77 +1379,34 @@ const deliveryOutbox = new PersistentDeliveryOutbox({
 });
 await deliveryOutbox.load();
 
-function findProject(projectRoot) {
-  return findContainingProject(PROJECTS, projectRoot);
-}
-
-function activeProject() {
-  return findProject(activeProjectRoot) ?? PROJECTS[0];
-}
-
-function selectedTask() {
-  return { provider: activeProvider, projectRoot: activeProjectRoot, threadId };
-}
-
-function selectedTurnTarget(targetChatId = chatId) {
-  const selected = selectedTask();
-  const catalogEntry = taskCatalog.find((entry) => catalogEntryIsSelected(entry, selected));
-  return {
-    ...selected,
-    sessionCwd: catalogEntry?.sessionCwd ?? null,
-    taskTitle: activeThreadTitle,
-    chatId: targetChatId,
-    modelId: activeProvider === "codex" ? codexModel : claudeModel,
-    reasoningId: activeProvider === "codex" ? codexReasoningEffort : claudeReasoningEffort,
-    collaborationMode: activeProvider === "codex" ? codexCollaborationMode : claudeCollaborationMode,
-  };
-}
-
-function currentUiContextToken() {
-  return createHash("sha256")
-    .update(`${uiContextNonce}\0${activeProvider}\0${path.resolve(activeProjectRoot)}\0${threadId ?? ""}`)
-    .digest("hex")
-    .slice(0, 12);
-}
-
-function uiCallback(action) {
-  return contextualCallback(action, currentUiContextToken());
-}
-
-function selectedRun() {
-  return taskRuns.forTask(selectedTask());
-}
-
-function isSelectedRun(run) {
-  return Boolean(run)
-    && run.provider === activeProvider
-    && samePath(run.projectRoot, activeProjectRoot)
-    && String(run.threadId ?? "") === String(threadId ?? "");
-}
-
-function runProject(run) {
-  return findProject(run?.projectRoot) ?? { name: path.basename(run?.projectRoot ?? "") || "Проект" };
-}
-
-function runTaskTitle(run) {
-  return String(run?.taskTitle ?? "").trim()
-    || `${run?.provider === "claude" ? "Claude" : "Codex"} · ${String(run?.threadId ?? run?.id ?? "").slice(0, 8)}`;
-}
-
-function pinnedTaskTitle(provider, id) {
-  return taskMetadata.pinnedTitle({ provider, threadId: id });
-}
-
-function pinTaskTitle(provider, id, title) {
-  return taskMetadata.pinTitle({ provider, threadId: id }, title);
-}
-
-function pendingTaskTitle(provider, id) {
-  return taskMetadata.pendingTitle({ provider, threadId: id });
-}
-
-function expectTaskTitleConfirmation(provider, id, title) {
-  return taskMetadata.expectTitle({ provider, threadId: id }, title);
+const taskIdentity = new TaskIdentityResolver({
+  selectionStore,
+  projects: PROJECTS,
+  findContainingProject,
+  catalogEntries: taskCatalog,
+  catalogEntryIsSelected,
+  taskRuns,
+  taskMetadata,
+  preferences: agentPreferences,
+  currentChatId: () => chatId,
+  contextualCallback,
+  samePath,
+});
+function findProject(...args) { return taskIdentity.findProject(...args); }
+function activeProject(...args) { return taskIdentity.activeProject(...args); }
+function selectedTask(...args) { return taskIdentity.selectedTask(...args); }
+function selectedTurnTarget(...args) { return taskIdentity.selectedTurnTarget(...args); }
+function currentUiContextToken(...args) { return taskIdentity.currentUiContextToken(...args); }
+function uiCallback(...args) { return taskIdentity.uiCallback(...args); }
+function selectedRun(...args) { return taskIdentity.selectedRun(...args); }
+function isSelectedRun(...args) { return taskIdentity.isSelectedRun(...args); }
+function runProject(...args) { return taskIdentity.runProject(...args); }
+function runTaskTitle(...args) { return taskIdentity.runTaskTitle(...args); }
+function pinnedTaskTitle(...args) { return taskIdentity.pinnedTaskTitle(...args); }
+function pinTaskTitle(...args) { return taskIdentity.pinTaskTitle(...args); }
+function pendingTaskTitle(...args) { return taskIdentity.pendingTaskTitle(...args); }
+function expectTaskTitleConfirmation(...args) {
+  return taskIdentity.expectTaskTitleConfirmation(...args);
 }
 
 function setBoundedMapValue(map, key, value, limit) {
@@ -1958,40 +1925,14 @@ async function waitForTurnEndCompletion(identity, timeoutMs = 2_000) {
   return turnEndDelivery.waitForCompletion(identity, timeoutMs);
 }
 
-function rememberCodexTaskSettings(id = isCodex() ? threadId : null) {
-  if (!id) return;
-  taskMetadata.rememberCodexSettings(id, {
-    model: codexModel,
-    reasoningEffort: codexReasoningEffort,
-  });
+function rememberCodexTaskSettings(...args) {
+  return agentPreferences.rememberCodexTaskSettings(...args);
 }
-
-function restoreCodexTaskSettings(id, { inheritCurrent = false } = {}) {
-  if (!id) return;
-  const saved = taskMetadata.codexSettings(id);
-  const fallbackModel = inheritCurrent ? codexModel : defaultCodexModel;
-  const fallbackReasoning = inheritCurrent ? codexReasoningEffort : defaultCodexReasoningEffort;
-  codexModel = saved && typeof saved.model === "string" && saved.model.trim()
-    ? saved.model.trim()
-    : fallbackModel;
-  codexReasoningEffort = saved && CODEX_REASONING_EFFORTS.includes(saved.reasoningEffort)
-    ? saved.reasoningEffort
-    : fallbackReasoning;
-  rememberCodexTaskSettings(id);
+function restoreCodexTaskSettings(...args) {
+  return agentPreferences.restoreCodexTaskSettings(...args);
 }
-
-function applyCodexThreadSettings(id, payload) {
-  if (!id) return;
-  const current = taskMetadata.codexSettings(id) ?? {
-    model: codexModel,
-    reasoningEffort: codexReasoningEffort,
-  };
-  const resolved = resolveCodexThreadSettings(payload, current);
-  taskMetadata.rememberCodexSettings(id, resolved);
-  if (isCodex() && id === threadId) {
-    codexModel = resolved.model;
-    codexReasoningEffort = resolved.reasoningEffort;
-  }
+function applyCodexThreadSettings(...args) {
+  return agentPreferences.applyCodexThreadSettings(...args);
 }
 
 function codexThreadResponseTitle(thread) {
@@ -2043,8 +1984,8 @@ async function updateActiveCodexThreadSettings() {
   rememberCodexTaskSettings();
   await sendRpc("thread/settings/update", {
     threadId,
-    model: codexModel,
-    effort: codexReasoningEffort,
+    model: agentPreferences.codexModel,
+    effort: agentPreferences.codexReasoningEffort,
   });
   await saveState();
 }
@@ -2052,234 +1993,134 @@ async function updateActiveCodexThreadSettings() {
 function taskSwitchSettings() {
   if (!isCodex()) return {};
   return {
-    model: codexModelLabel(codexModel),
-    reasoning: CODEX_REASONING_LABELS[codexReasoningEffort],
+    model: codexModelLabel(agentPreferences.codexModel),
+    reasoning: CODEX_REASONING_LABELS[agentPreferences.codexReasoningEffort],
   };
 }
 
-let stateLoadFailed = false;
+function restorePersistedTaskRun(savedRun, restoredChatId) {
+  if (!savedRun || typeof savedRun !== "object"
+    || !["running", "finishing"].includes(savedRun.status)) return null;
+  const observer = savedRun.observer === true;
+  const executionOwner = normalizeTaskExecutionOwner(savedRun.executionOwner)
+    ?? (savedRun.provider === "codex"
+      ? observer
+        ? TASK_EXECUTION_OWNERS.EXTERNAL
+        : TASK_EXECUTION_OWNERS.HUB
+      : null);
+  return {
+    ...savedRun,
+    observer,
+    executionOwner,
+    appServer: savedRun.provider === "codex"
+      ? taskExecutionRuntimeLabel(executionOwner)
+      : savedRun.appServer,
+    status: "running",
+    chatId: Number.isSafeInteger(savedRun.chatId) ? savedRun.chatId : restoredChatId,
+    responseText: String(savedRun.responseText ?? ""),
+    observedInitialResponseText: typeof savedRun.observedInitialResponseText === "string"
+      ? savedRun.observedInitialResponseText
+      : String(savedRun.responseText ?? ""),
+    observedResponseChanged: savedRun.observedResponseChanged === true,
+    progressStage: String(savedRun.progressStage ?? "Восстановление задачи…"),
+    progressReasoning: String(savedRun.progressReasoning ?? ""),
+    lastMeaningfulProgressAt: String(
+      savedRun.lastMeaningfulProgressAt
+        ?? savedRun.progressHeartbeatAt
+        ?? savedRun.startedAt
+        ?? new Date().toISOString(),
+    ),
+    lastProgressText: String(savedRun.lastProgressText ?? ""),
+    progressMessageIds: Array.isArray(savedRun.progressMessageIds)
+      ? savedRun.progressMessageIds.filter(Number.isSafeInteger)
+      : Number.isSafeInteger(savedRun.progressMessageId)
+        ? [savedRun.progressMessageId]
+        : [],
+    progressStartTimer: null,
+    progressTimer: null,
+    progressUpdateInFlight: false,
+    progressUpdatePending: false,
+    process: null,
+  };
+}
+
+const deferredInputTtlMs = config.deferredInputTtlHours * 60 * 60 * 1000;
+const runtimeStateCoordinator = new HubRuntimeStateCoordinator({
+  store: runtimeStateStore,
+  canonicalize: (value) => canonicalizeProjectRoots(value, PROJECTS),
+  restoreSnapshot: (saved) => restoreHubRuntimeSnapshot(saved, {
+    selectionStore,
+    findProject,
+    taskMetadata,
+    preferences: agentPreferences,
+    statusMediaFileIds,
+    runJournal,
+    lastSeenTaskTurnIds,
+    codexUsageTracker,
+    codexTurnStarts,
+    codexTerminalAudit,
+    turnEndNotifications,
+    dismissedExternalTasks,
+    cancelledManagedClaudeTasks,
+    pendingInputs,
+    queuedInputs,
+    restoreDeferredInput,
+    deferredInputOptions: {
+      guardConcurrentRepositoryWrites: config.guardConcurrentRepositoryWrites,
+      persistentFile: isLegacyDesktopAttachmentFile,
+    },
+    isRetryableDeferredLaunchError,
+    desktopMessageReceipts,
+    updateDeferredDesktopReceipt,
+    forwardBundles,
+    restoreForwardBundle,
+    forwardBundleAttachmentPaths,
+    removeFiles: (files) => Promise.all(files.map((file) => unlink(file).catch(() => {}))),
+    deferredInputTtlMs,
+    maximumDeferredInputs: MAX_DEFERRED_INPUTS,
+    taskRuns,
+    restoreTaskRun: restorePersistedTaskRun,
+  }),
+  createSnapshot: () => createHubRuntimeSnapshot({
+    chatId,
+    selectionStore,
+    taskMetadata,
+    preferences: agentPreferences,
+    updateOffset,
+    taskRuns,
+    serializableTaskRun,
+    dismissedExternalTasks,
+    cancelledManagedClaudeTasks,
+    pendingInputs,
+    queuedInputs,
+    desktopMessageReceipts,
+    forwardBundles,
+    runJournal,
+    lastSeenTaskTurnIds,
+    codexUsageTracker,
+    codexTurnStarts,
+    codexHookReceipts,
+    codexTerminalAudit,
+    turnEndNotifications,
+    statusMediaFileIds,
+    restartRequest,
+  }),
+});
+const restoredRuntimeState = await runtimeStateCoordinator.restore();
+const stateLoadFailed = restoredRuntimeState.failed;
 let restoredTurnEndSnapshot = {};
-try {
-  const loadedState = await runtimeStateStore.load();
-  if (!loadedState.value) throw Object.assign(new Error("state file is missing"), { code: "ENOENT" });
-  if (loadedState.recovered) console.warn(`Recovered runtime state from ${loadedState.source}`);
-  if (loadedState.migrated) console.log(`Runtime state migrated to runtime.sqlite from ${loadedState.source}`);
-  const saved = canonicalizeProjectRoots(loadedState.value, PROJECTS);
-  if (Array.isArray(saved.statusMediaFileIds)) {
-    for (const [name, fileId] of saved.statusMediaFileIds.slice(-50)) {
-      if (typeof name === "string" && typeof fileId === "string" && fileId) {
-        statusMediaFileIds.set(name, fileId);
-      }
-    }
-  }
-  const restoredSelection = selectionStore.snapshot();
-  if (typeof saved.activeProjectRoot === "string") {
-    const savedProject = findProject(saved.activeProjectRoot);
-    if (savedProject) restoredSelection.activeProjectRoot = savedProject.path;
-  }
-  const savedProvider = saved.activeProvider ?? saved.provider;
-  if (savedProvider === "codex" || savedProvider === "claude") restoredSelection.activeProvider = savedProvider;
-  if (saved.threadIds && typeof saved.threadIds === "object") {
-    if (typeof saved.threadIds.codex === "string") restoredSelection.threadIds.codex = saved.threadIds.codex;
-    if (typeof saved.threadIds.claude === "string") restoredSelection.threadIds.claude = saved.threadIds.claude;
-  } else if (typeof saved.threadId === "string" && typeof saved.provider === "string") {
-    if (saved.provider === "codex" || saved.provider === "claude") {
-      restoredSelection.threadIds[saved.provider] = saved.threadId;
-    }
-  }
-  restoredSelection.threadId = restoredSelection.threadIds[restoredSelection.activeProvider] ?? null;
-  if (typeof saved.activeThreadTitle === "string") restoredSelection.activeThreadTitle = saved.activeThreadTitle;
-  selectionStore.restore(restoredSelection);
-  taskMetadata.restore(saved);
-  if (CLAUDE_MODELS.includes(saved.claudeModel)) claudeModel = saved.claudeModel;
-  if (typeof saved.codexModel === "string") codexModel = normalizeCodexModel(saved.codexModel);
-  if (CODEX_REASONING_EFFORTS.includes(saved.codexReasoningEffort)) {
-    codexReasoningEffort = saved.codexReasoningEffort;
-  }
-  if (CODEX_COLLABORATION_MODES.includes(saved.codexCollaborationMode)) {
-    codexCollaborationMode = saved.codexCollaborationMode;
-  }
-  if (CODEX_REASONING_EFFORTS.includes(saved.claudeReasoningEffort)) {
-    claudeReasoningEffort = saved.claudeReasoningEffort;
-  }
-  if (CODEX_COLLABORATION_MODES.includes(saved.claudeCollaborationMode)) {
-    claudeCollaborationMode = saved.claudeCollaborationMode;
-  }
-  if (typeof saved.includeClaudeUsage === "boolean") {
-    includeClaudeUsage = saved.includeClaudeUsage;
-  }
-  if (Number.isSafeInteger(saved.chatId)) chatId = saved.chatId;
-  if (Number.isSafeInteger(saved.updateOffset) && saved.updateOffset >= 0) updateOffset = saved.updateOffset;
-  runJournal.restoreLastMessages(saved.lastTaskMessages);
-  if (Array.isArray(saved.lastSeenTaskTurnIds)) {
-    for (const entry of saved.lastSeenTaskTurnIds.slice(-500)) {
-      if (!Array.isArray(entry) || typeof entry[0] !== "string" || typeof entry[1] !== "string") continue;
-      lastSeenTaskTurnIds.set(entry[0], entry[1]);
-    }
-  }
-  codexUsageTracker.restore(saved);
-  if (Array.isArray(saved.codexTurnStarts)) {
-    for (const entry of saved.codexTurnStarts.slice(-500)) {
-      if (!Array.isArray(entry) || typeof entry[0] !== "string" || !entry[1]) continue;
-      codexTurnStarts.set(entry[0], entry[1]);
-    }
-  }
-  if (saved.codexHookReceipts && typeof saved.codexHookReceipts === "object") {
-    codexHookReceipts = {
-      start: saved.codexHookReceipts.start ?? null,
-      stop: saved.codexHookReceipts.stop ?? null,
-    };
-  }
-  codexTerminalAudit.restore(saved.codexTerminalAudit);
-  restoredTurnEndSnapshot = saved.turnEndNotifications ?? {};
-  const restoredNotificationStats = turnEndNotifications.restore(restoredTurnEndSnapshot);
-  if (restoredNotificationStats.droppedLegacyPending || restoredNotificationStats.droppedStalePending) {
-    console.warn(
-      `Discarded deferred turn-end messages: legacy=${restoredNotificationStats.droppedLegacyPending}, stale=${restoredNotificationStats.droppedStalePending}`,
-    );
-  }
-  if (Array.isArray(saved.dismissedExternalTasks)) {
-    dismissedExternalTasks.restore(saved.dismissedExternalTasks);
-  }
-  for (const [key, cancelledAtMs] of Array.isArray(saved.cancelledManagedClaudeTasks)
-    ? saved.cancelledManagedClaudeTasks
-    : []) {
-    if (typeof key === "string" && Number.isFinite(Number(cancelledAtMs))) {
-      setBoundedMapValue(cancelledManagedClaudeTasks, key, Number(cancelledAtMs), 200);
-    }
-  }
-  for (const item of Array.isArray(saved.pendingInputs) ? saved.pendingInputs : []) {
-    const restored = restoreDeferredInput(item, {
-      guardConcurrentRepositoryWrites: config.guardConcurrentRepositoryWrites,
-      persistentFile: isLegacyDesktopAttachmentFile,
-    });
-    if (!restored) continue;
-    const destination = restored.destination === "pending"
-      && restored.item.lastError
-      && isRetryableDeferredLaunchError(new Error(restored.item.lastError))
-      ? "queued"
-      : restored.destination;
-    (destination === "queued" ? queuedInputs : pendingInputs)
-      .set(restored.item.id, restored.item);
-  }
-  for (const item of Array.isArray(saved.queuedInputs) ? saved.queuedInputs : []) {
-    const restored = restoreDeferredInput(item, {
-      guardConcurrentRepositoryWrites: config.guardConcurrentRepositoryWrites,
-      persistentFile: isLegacyDesktopAttachmentFile,
-    });
-    if (restored) queuedInputs.set(restored.item.id, restored.item);
-  }
-  desktopMessageReceipts.restore(saved.desktopMessageReceipts);
-  for (const item of pendingInputs.values()) updateDeferredDesktopReceipt(item, "pending");
-  for (const item of queuedInputs.values()) {
-    updateDeferredDesktopReceipt(item, item.dispatchingAt ? "dispatching" : "queued");
-  }
-  for (const value of Array.isArray(saved.forwardBundles) ? saved.forwardBundles : []) {
-    const restored = restoreForwardBundle(value, {
-      maxAgeMs: config.deferredInputTtlHours * 60 * 60 * 1000,
-    });
-    if (restored) forwardBundles.set(String(restored.chatId), restored);
-    else {
-      await Promise.all(forwardBundleAttachmentPaths(value).map((file) => unlink(file).catch(() => {})));
-    }
-  }
-  const restoredDeferred = [
-    ...[...pendingInputs.values()].map((item) => ({ collection: pendingInputs, item })),
-    ...[...queuedInputs.values()].map((item) => ({ collection: queuedInputs, item })),
-  ].sort((left, right) => (
-    (Date.parse(left.item.createdAt ?? "") || 0) - (Date.parse(right.item.createdAt ?? "") || 0)
-  ));
-  const deferredCutoff = Date.now() - config.deferredInputTtlHours * 60 * 60 * 1000;
-  for (let index = restoredDeferred.length - 1; index >= 0; index -= 1) {
-    const entry = restoredDeferred[index];
-    const createdAt = Date.parse(String(entry.item.createdAt ?? ""));
-    if (!Number.isFinite(createdAt) || createdAt >= deferredCutoff) continue;
-    entry.collection.delete(entry.item.id);
-    restoredDeferred.splice(index, 1);
-    await Promise.all((entry.item.temporaryFiles ?? []).map((file) => unlink(file).catch(() => {})));
-  }
-  while (restoredDeferred.length > MAX_DEFERRED_INPUTS) {
-    const oldest = restoredDeferred.shift();
-    oldest.collection.delete(oldest.item.id);
-    await Promise.all((oldest.item.temporaryFiles ?? []).map((file) => unlink(file).catch(() => {})));
-  }
-  if (saved.restartRequest && typeof saved.restartRequest === "object"
-    && Number.isSafeInteger(saved.restartRequest.chatId)
-    && (saved.restartRequest.messageId == null || Number.isSafeInteger(saved.restartRequest.messageId))) {
-    restartRequest = {
-      chatId: saved.restartRequest.chatId,
-      messageId: Number.isSafeInteger(saved.restartRequest.messageId)
-        ? saved.restartRequest.messageId
-        : null,
-      requestedAt: String(saved.restartRequest.requestedAt ?? ""),
-      waitingForRuns: saved.restartRequest.waitingForRuns === true,
-      minimumUpdateOffset: Number.isSafeInteger(saved.restartRequest.minimumUpdateOffset)
-        ? saved.restartRequest.minimumUpdateOffset
-        : 0,
-    };
-  }
-  const savedRuns = Array.isArray(saved.activeRuns)
-    ? saved.activeRuns
-    : saved.activeRun && typeof saved.activeRun === "object"
-      ? [saved.activeRun]
-      : [];
-  for (const savedRun of savedRuns) {
-    if (!savedRun || typeof savedRun !== "object"
-      || !["running", "finishing"].includes(savedRun.status)) continue;
-    const observer = savedRun.observer === true;
-    const executionOwner = normalizeTaskExecutionOwner(savedRun.executionOwner)
-      ?? (savedRun.provider === "codex"
-        ? observer
-          ? TASK_EXECUTION_OWNERS.EXTERNAL
-          : TASK_EXECUTION_OWNERS.HUB
-        : null);
-    taskRuns.add({
-      ...savedRun,
-      observer,
-      executionOwner,
-      appServer: savedRun.provider === "codex"
-        ? taskExecutionRuntimeLabel(executionOwner)
-        : savedRun.appServer,
-      status: "running",
-      chatId: Number.isSafeInteger(savedRun.chatId) ? savedRun.chatId : chatId,
-      responseText: String(savedRun.responseText ?? ""),
-      observedInitialResponseText: typeof savedRun.observedInitialResponseText === "string"
-        ? savedRun.observedInitialResponseText
-        : String(savedRun.responseText ?? ""),
-      observedResponseChanged: savedRun.observedResponseChanged === true,
-      progressStage: String(savedRun.progressStage ?? "Восстановление задачи…"),
-      progressReasoning: String(savedRun.progressReasoning ?? ""),
-      lastMeaningfulProgressAt: String(
-        savedRun.lastMeaningfulProgressAt
-          ?? savedRun.progressHeartbeatAt
-          ?? savedRun.startedAt
-          ?? new Date().toISOString(),
-      ),
-      lastProgressText: String(savedRun.lastProgressText ?? ""),
-      progressMessageIds: Array.isArray(savedRun.progressMessageIds)
-        ? savedRun.progressMessageIds.filter(Number.isSafeInteger)
-        : Number.isSafeInteger(savedRun.progressMessageId)
-          ? [savedRun.progressMessageId]
-          : [],
-      progressStartTimer: null,
-      progressTimer: null,
-      progressUpdateInFlight: false,
-      progressUpdatePending: false,
-      process: null,
-    });
-  }
+if (restoredRuntimeState.value) {
+  chatId = restoredRuntimeState.value.chatId;
+  updateOffset = restoredRuntimeState.value.updateOffset;
+  restartRequest = restoredRuntimeState.value.restartRequest;
+  codexHookReceipts = restoredRuntimeState.value.codexHookReceipts;
+  restoredTurnEndSnapshot = restoredRuntimeState.value.restoredTurnEndSnapshot;
   if (activeProvider === "codex" && threadId) {
     if (taskMetadata.codexSettings(threadId)) restoreCodexTaskSettings(threadId);
     else rememberCodexTaskSettings(threadId);
   }
-} catch (error) {
-  if (error?.code !== "ENOENT") {
-    stateLoadFailed = true;
-    console.error("Cannot read state:", error.message);
-  }
 }
-
-workLogUsageStore.setIncludeClaudeUsage(includeClaudeUsage);
+workLogUsageStore.setIncludeClaudeUsage(agentPreferences.includeClaudeUsage);
 
 async function initializeJournalProjection() {
   return runJournal.initialize(restoredTurnEndSnapshot);
@@ -2821,14 +2662,8 @@ const {
     current: () => ({
       activeProvider,
       activeProjectRoot,
-      codexModel,
-      claudeModel,
-      codexReasoningEffort,
-      claudeReasoningEffort,
-      codexCollaborationMode,
-      claudeCollaborationMode,
+      ...agentPreferences.snapshot(),
       autoApprove,
-      includeClaudeUsage,
       codexModels: CODEX_MODELS,
       codexModelLabel,
       claudeModels: CLAUDE_MODELS,
@@ -3188,11 +3023,12 @@ async function desktopStatusDetails() {
     limits = `Не удалось получить: ${error.message}`;
   }
   const codexSelected = isCodex();
+  const preferences = agentPreferences.current(activeProvider);
   return {
     provider: activeProvider,
-    model: codexSelected ? codexModelLabel(codexModel) : CLAUDE_MODEL_LABELS[claudeModel],
-    reasoning: CODEX_REASONING_LABELS[codexSelected ? codexReasoningEffort : claudeReasoningEffort],
-    mode: CODEX_COLLABORATION_MODE_LABELS[codexSelected ? codexCollaborationMode : claudeCollaborationMode],
+    model: codexSelected ? codexModelLabel(preferences.model) : CLAUDE_MODEL_LABELS[preferences.model],
+    reasoning: CODEX_REASONING_LABELS[preferences.reasoningEffort],
+    mode: CODEX_COLLABORATION_MODE_LABELS[preferences.collaborationMode],
     limits,
     activeCount: taskRuns.values().filter(taskRunIsActive).length,
     backgroundJobs: backgroundJobs.size,
@@ -3400,19 +3236,19 @@ const desktopSettingsService = new DesktopSettingsService({
   switchClaudeModel: switchModel,
   updateCodexThreadSettings: updateActiveCodexThreadSettings,
   saveState,
-  getCodexReasoning: () => codexReasoningEffort,
-  setCodexReasoning: (value) => { codexReasoningEffort = value; },
-  getClaudeReasoning: () => claudeReasoningEffort,
-  setClaudeReasoning: (value) => { claudeReasoningEffort = value; },
-  getCodexMode: () => codexCollaborationMode,
-  setCodexMode: (value) => { codexCollaborationMode = value; },
-  getClaudeMode: () => claudeCollaborationMode,
-  setClaudeMode: (value) => { claudeCollaborationMode = value; },
+  getCodexReasoning: () => agentPreferences.codexReasoningEffort,
+  setCodexReasoning: (value) => agentPreferences.setCodexReasoning(value),
+  getClaudeReasoning: () => agentPreferences.claudeReasoningEffort,
+  setClaudeReasoning: (value) => agentPreferences.setClaudeReasoning(value),
+  getCodexMode: () => agentPreferences.codexCollaborationMode,
+  setCodexMode: (value) => agentPreferences.setCodexMode(value),
+  getClaudeMode: () => agentPreferences.claudeCollaborationMode,
+  setClaudeMode: (value) => agentPreferences.setClaudeMode(value),
   getAutoApprove: () => autoApprove,
   setAutoApprove: (value) => { autoApprove = value; },
-  getIncludeClaudeUsage: () => includeClaudeUsage,
+  getIncludeClaudeUsage: () => agentPreferences.includeClaudeUsage,
   setIncludeClaudeUsage: (value) => {
-    includeClaudeUsage = value;
+    agentPreferences.setIncludeClaudeUsage(value);
     workLogUsageStore.setIncludeClaudeUsage(value);
   },
   projectUsage: () => workLogUsageStore.project(null, {
@@ -3590,24 +3426,18 @@ async function sendAgentPicker() {
 async function sendModelPicker() {
   return telegramSettingsMenu.modelPicker({
     provider: activeProvider,
-    codexModel,
-    claudeModel,
-    codexModelLabel: codexModelLabel(codexModel),
+    codexModel: agentPreferences.codexModel,
+    claudeModel: agentPreferences.claudeModel,
+    codexModelLabel: codexModelLabel(agentPreferences.codexModel),
   });
 }
 
 function switchCodexModel(value) {
-  if (!CODEX_MODEL_VALUES.has(value)) throw new Error("unknown Codex model");
-  if (value === codexModel) return { changed: false };
-  codexModel = value;
-  return { changed: true };
+  return agentPreferences.setCodexModel(value);
 }
 
 function switchModel(value) {
-  if (!CLAUDE_MODELS.includes(value)) throw new Error("unknown model");
-  if (value === claudeModel) return { changed: false };
-  claudeModel = value;
-  return { changed: true };
+  return agentPreferences.setClaudeModel(value);
 }
 
 async function switchProject(index) {
@@ -3637,7 +3467,7 @@ async function switchProvider(target) {
 
   rememberCodexTaskSettings();
   const previousSelection = selectionStore.snapshot();
-  const previous = { codexModel, codexReasoningEffort };
+  const previous = agentPreferences.captureCodex();
   selectionStore.switchProvider(target);
   if (target === "codex" && threadId) restoreCodexTaskSettings(threadId);
   latestDiff = "";
@@ -3654,7 +3484,7 @@ async function switchProvider(target) {
     }
   } catch (error) {
     selectionStore.restore(previousSelection);
-    ({ codexModel, codexReasoningEffort } = previous);
+    agentPreferences.restoreCodex(previous);
     await saveState();
     throw error;
   }
@@ -3702,8 +3532,7 @@ async function activateMessageBinding(binding) {
   const previousSelection = selectionStore.snapshot();
   const previous = {
     latestDiff,
-    codexModel,
-    codexReasoningEffort,
+    preferences: agentPreferences.captureCodex(),
   };
   selectionStore.selectTask({
     activeProjectRoot: project.path,
@@ -3729,7 +3558,8 @@ async function activateMessageBinding(binding) {
     return { changed: true, activeTitle: activeThreadTitle };
   } catch (error) {
     selectionStore.restore(previousSelection);
-    ({ latestDiff, codexModel, codexReasoningEffort } = previous);
+    latestDiff = previous.latestDiff;
+    agentPreferences.restoreCodex(previous.preferences);
     await saveState();
     throw error;
   }
@@ -3789,13 +3619,7 @@ function currentStatusSnapshot(targetChatId = chatId) {
     projectRoot: activeProjectRoot,
     threadId,
     taskTitle: activeThreadTitle,
-    codexModel,
-    codexReasoningEffort,
-    codexCollaborationMode,
-    claudeModel,
-    claudeReasoningEffort,
-    claudeCollaborationMode,
-    includeClaudeUsage,
+    ...agentPreferences.snapshot(),
   };
 }
 
@@ -3806,14 +3630,14 @@ async function sendStatus(snapshot = currentStatusSnapshot()) {
 async function sendReasoningPicker() {
   return telegramSettingsMenu.reasoningPicker({
     provider: activeProvider,
-    value: isCodex() ? codexReasoningEffort : claudeReasoningEffort,
+    value: agentPreferences.current(activeProvider).reasoningEffort,
   });
 }
 
 async function sendCollaborationModePicker() {
   return telegramSettingsMenu.collaborationModePicker({
     provider: activeProvider,
-    value: isCodex() ? codexCollaborationMode : claudeCollaborationMode,
+    value: agentPreferences.current(activeProvider).collaborationMode,
   });
 }
 
@@ -3828,10 +3652,10 @@ const runProgressPresentation = new RunProgressPresentation({
   showProject: () => config.showProjectButton,
   taskTitle: runTaskTitle,
   projectName: (run) => runProject(run).name,
-  currentCodexModel: () => codexModel,
-  currentClaudeModel: () => claudeModel,
-  currentCodexReasoning: () => codexReasoningEffort,
-  currentClaudeReasoning: () => claudeReasoningEffort,
+  currentCodexModel: () => agentPreferences.codexModel,
+  currentClaudeModel: () => agentPreferences.claudeModel,
+  currentCodexReasoning: () => agentPreferences.codexReasoningEffort,
+  currentClaudeReasoning: () => agentPreferences.claudeReasoningEffort,
   taskExecutionOwners: TASK_EXECUTION_OWNERS,
 });
 
@@ -3925,12 +3749,15 @@ async function beginRun(input, target = null) {
     ? taskMetadata.codexSettings(target) ?? {}
     : {};
   const modelId = target?.modelId ?? (provider === "codex"
-    ? savedCodexSettings.model ?? (targetThreadId === threadId ? codexModel : defaultCodexModel)
-    : claudeModel);
+    ? savedCodexSettings.model
+      ?? (targetThreadId === threadId ? agentPreferences.codexModel : agentPreferences.defaultCodexModel)
+    : agentPreferences.claudeModel);
   const reasoningId = target?.reasoningId ?? (provider === "codex"
     ? savedCodexSettings.reasoningEffort
-      ?? (targetThreadId === threadId ? codexReasoningEffort : defaultCodexReasoningEffort)
-    : claudeReasoningEffort);
+      ?? (targetThreadId === threadId
+        ? agentPreferences.codexReasoningEffort
+        : agentPreferences.defaultCodexReasoningEffort)
+    : agentPreferences.claudeReasoningEffort);
   const run = createManagedTaskRun({
     provider,
     chatId: target?.chatId ?? chatId,
@@ -3948,7 +3775,7 @@ async function beginRun(input, target = null) {
     executionOwner: TASK_EXECUTION_OWNERS.HUB,
     appServer: taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.HUB),
     collaborationMode: target?.collaborationMode
-      ?? (provider === "codex" ? codexCollaborationMode : claudeCollaborationMode),
+      ?? agentPreferences.current(provider).collaborationMode,
   });
   taskRuns.add(run);
   invalidateTaskCatalog();
@@ -5028,7 +4855,7 @@ async function finalizeRestartMessage() {
 const runtimeResources = new RuntimeResourceRegistry({
   flush: [
     { name: "journal startup", run: () => journalStartupReady },
-    { name: "state writes", run: () => stateWriteQueue },
+    { name: "state writes", run: () => runtimeStateCoordinator.flush() },
     { name: "message binding writes", run: () => bindingWriteQueue },
     { name: "media writes", run: () => mediaController.waitForWrites() },
     { name: "task sync", run: () => taskSyncStore.save() },
@@ -5170,13 +4997,13 @@ const telegramSettingsCallbacks = new TelegramSettingsCallbackService({
   activeProject,
   activeProvider: () => activeProvider,
   autoApprove: () => autoApprove,
-  codexModel: () => codexModel,
+  codexModel: () => agentPreferences.codexModel,
   codexModelLabel,
-  codexReasoningEffort: () => codexReasoningEffort,
-  codexCollaborationMode: () => codexCollaborationMode,
-  claudeModel: () => claudeModel,
-  claudeReasoningEffort: () => claudeReasoningEffort,
-  claudeCollaborationMode: () => claudeCollaborationMode,
+  codexReasoningEffort: () => agentPreferences.codexReasoningEffort,
+  codexCollaborationMode: () => agentPreferences.codexCollaborationMode,
+  claudeModel: () => agentPreferences.claudeModel,
+  claudeReasoningEffort: () => agentPreferences.claudeReasoningEffort,
+  claudeCollaborationMode: () => agentPreferences.claudeCollaborationMode,
   projects: PROJECTS,
   reasoningLabels: CODEX_REASONING_LABELS,
   collaborationModeLabels: CODEX_COLLABORATION_MODE_LABELS,
@@ -5428,46 +5255,7 @@ async function flushDeliveryOutbox() {
 function saveState() {
   rememberCodexTaskSettings();
   selectionStore.rememberCurrentThread();
-  const selection = selectionStore.serialize();
-  const snapshot = {
-    chatId,
-    activeProjectRoot: selection.activeProjectRoot,
-    activeThreadTitle: selection.activeThreadTitle,
-    activeProvider: selection.activeProvider,
-    threadIds: selection.threadIds,
-    ...taskMetadata.snapshot(),
-    claudeModel,
-    codexModel,
-    codexReasoningEffort,
-    codexCollaborationMode,
-    claudeReasoningEffort,
-    claudeCollaborationMode,
-    includeClaudeUsage,
-    updateOffset,
-    activeRuns: taskRuns.values().map(serializableTaskRun),
-    dismissedExternalTasks: dismissedExternalTasks.values(),
-    cancelledManagedClaudeTasks: [...cancelledManagedClaudeTasks.entries()],
-    pendingInputs: [...pendingInputs.values()],
-    queuedInputs: [...queuedInputs.values()],
-    desktopMessageReceipts: desktopMessageReceipts.snapshot(),
-    forwardBundles: [...forwardBundles.values()].map((bundle) => ({
-      ...bundle,
-      submitting: false,
-    })),
-    lastTaskMessages: runJournal.lastMessageSnapshot(),
-    lastSeenTaskTurnIds: [...lastSeenTaskTurnIds.entries()].slice(-500),
-    ...codexUsageTracker.snapshot(),
-    codexTurnStarts: [...codexTurnStarts.entries()].slice(-500),
-    codexHookReceipts,
-    codexTerminalAudit: codexTerminalAudit.snapshot(),
-    turnEndNotifications: turnEndNotifications.snapshot(),
-    statusMediaFileIds: [...statusMediaFileIds.entries()].slice(-50),
-    restartRequest,
-  };
-  stateWriteQueue = stateWriteQueue
-    .catch(() => {})
-    .then(() => runtimeStateStore.save(snapshot));
-  return stateWriteQueue;
+  return runtimeStateCoordinator.save();
 }
 
 function savePinnedTaskTitles() {

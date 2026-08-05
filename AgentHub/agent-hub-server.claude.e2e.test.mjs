@@ -16,7 +16,7 @@ import {
 import { processIsAlive } from "./claude-run-io.mjs";
 import { callDesktopControl } from "./desktop-control.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
-import { readRuntimeState } from "./runtime-state-store.mjs";
+import { readRuntimeState } from "./src/infrastructure/persistence/runtime-state-store.mjs";
 
 const AGENT_HUB_ROOT = path.resolve(import.meta.dirname);
 const BOT_FILE = path.join(AGENT_HUB_ROOT, "agent-hub-main.mjs");

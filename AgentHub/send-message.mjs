@@ -9,7 +9,7 @@ import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { callTelegramJson, telegramBotApiUrl } from "./telegram-api.mjs";
 import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./runtime-command.mjs";
 import { isMainModule } from "./main-module.mjs";
-import { readRuntimeState } from "./runtime-state-store.mjs";
+import { readRuntimeState } from "./src/infrastructure/persistence/runtime-state-store.mjs";
 import {
   resolveAllowedNotificationChatId,
   resolveAllowedNotificationPath,
