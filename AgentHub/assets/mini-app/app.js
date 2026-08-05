@@ -1490,15 +1490,16 @@ function renderContextUsage(task) {
 
 function buildSubtitleChips(task) {
   const parts = [
-    [task.agentLabel || providerLabels[task.provider] || null, null],
-    [task.modelLabel || null, modelTier(task.modelLabel)],
-    [task.reasoningLabel || null, null],
-    [task.modeLabel || null, null],
-    [task.runtimeLabel || null, null],
-    [task.project || null, null],
+    [task.agentLabel || providerLabels[task.provider] || null, null, "agent"],
+    [task.modelLabel || null, modelTier(task.modelLabel), "model"],
+    [task.reasoningLabel || null, null, "reasoning"],
+    [task.modeLabel || null, null, "mode"],
+    [task.runtimeLabel || null, null, "runtime"],
+    [task.project || null, null, "project"],
   ].filter(([part]) => part);
-  return parts.map(([part, tier], index) => el("span", {
+  return parts.map(([part, tier, kind], index) => el("span", {
     class: "chat-chip",
+    "data-kind": kind,
     "data-order": index,
     "data-model-tier": tier,
     text: part,

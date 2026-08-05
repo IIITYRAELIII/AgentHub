@@ -243,6 +243,18 @@ test("grouped Claude work keeps the latest turn visible and collapses previous t
   assert.doesNotMatch(app, /if \(list\) list\.replaceChildren\(\.\.\.entries\)/u);
 });
 
+test("chat header keeps runtime and project metadata hidden", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(path.join(MINI_APP_ROOT, "styles.css"), "utf8");
+  assert.match(app, /\[task\.runtimeLabel \|\| null, null, "runtime"\]/u);
+  assert.match(app, /\[task\.project \|\| null, null, "project"\]/u);
+  assert.match(app, /"data-kind": kind/u);
+  assert.match(
+    styles,
+    /\.chat-chip\[data-kind="runtime"\],\s*\.chat-chip\[data-kind="project"\]\s*\{\s*display:\s*none;/u,
+  );
+});
+
 /* фон BlackHole приходит из workspace через webview, поэтому его источник
    должен попадать в img-src — но ничего удалённого туда попасть не должно */
 test("panel allows the webview's own resources and data URIs, but no remote source", () => {

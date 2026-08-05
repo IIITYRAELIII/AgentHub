@@ -3202,6 +3202,11 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   position: relative;
 }
 
+.chat-chip[data-kind="runtime"],
+.chat-chip[data-kind="project"] {
+  display: none;
+}
+
 .chat-chip[data-order]:not([data-order="0"])::before {
   color: var(--text-faint);
   content: "·";
