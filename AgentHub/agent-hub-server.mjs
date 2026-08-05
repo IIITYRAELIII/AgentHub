@@ -193,6 +193,7 @@ import { routeTelegramCallback } from "./src/interfaces/telegram/telegram-callba
 import { TelegramTaskPickerService } from "./src/interfaces/telegram/task-picker.mjs";
 import { InteractiveJobService } from "./src/interfaces/telegram/interactive-job-service.mjs";
 import { RestartNotificationService } from "./src/interfaces/telegram/restart-notification-service.mjs";
+import { TelegramTaskActionService } from "./src/interfaces/telegram/telegram-task-action-service.mjs";
 import {
   approvalModeKeyboard as presentApprovalModeKeyboard,
   formatApprovalMode as presentApprovalMode,
@@ -2815,6 +2816,28 @@ function selectTaskFromBinding(binding, context = {}) {
   return applicationCommands.selectTaskFromBinding(binding, context);
 }
 
+const telegramTaskActions = new TelegramTaskActionService({
+  selectedTask,
+  activeProvider: () => activeProvider,
+  activeProjectRoot: () => activeProjectRoot,
+  activeTaskTitle: () => activeThreadTitle,
+  currentThreadId: () => threadId,
+  preferencesSnapshot: () => agentPreferences.snapshot(),
+  selectedRun,
+  selectTaskFromBinding,
+  sendTaskSwitchNotification,
+  sendTaskAlreadySelectedNotification,
+  dispatchCommand: dispatchApplicationCommand,
+  commandTaskTarget,
+  isCodex,
+  threadTitle,
+  formatArchiveMessage,
+  sendMessage: sendMessageTo,
+  showLastMessageReplyMarkup,
+  bindRunMessage,
+  telegram,
+});
+
 const {
   handleDesktopControl: dispatchDesktopControl,
   forgetDesktopControl,
@@ -2904,88 +2927,22 @@ function switchProject(...args) { return taskNavigationService.switchProject(...
 
 function switchProvider(...args) { return taskNavigationService.switchProvider(...args); }
 
-async function resumeThread(selectedThreadId, { notify = true, context = {} } = {}) {
-  const result = await selectTaskFromBinding({
-    provider: activeProvider,
-    projectRoot: activeProjectRoot,
-    threadId: selectedThreadId,
-  }, context);
-  if (notify) {
-    if (result.selectionChanged) await sendTaskSwitchNotification();
-    else await sendTaskAlreadySelectedNotification();
-  }
-  return true;
-}
+function resumeThread(...args) { return telegramTaskActions.resume(...args); }
 
-async function renameCurrentTask(title, context = {}) {
-  if (!threadId) throw new Error("текущая задача не выбрана");
-  const result = await dispatchApplicationCommand(
-    "task.rename",
-    { title },
-    context,
-    { target: commandTaskTarget(selectedTask()) },
-  );
-  return result.renamedTitle;
-}
+function renameCurrentTask(...args) { return telegramTaskActions.rename(...args); }
 
 function activateMessageBinding(...args) { return taskNavigationService.activate(...args); }
 
-async function archiveCurrentThread(context = {}) {
-  const blockedReason = archiveBlockedReason();
-  if (blockedReason) return { archived: false, reason: blockedReason };
-  const result = await dispatchApplicationCommand(
-    "task.archive",
-    {},
-    context,
-    { target: commandTaskTarget(selectedTask()) },
-  );
-  return {
-    archived: true,
-    archivedThread: result.archivedThread,
-    nextThread: result.nextThread ?? null,
-  };
-}
+function archiveCurrentThread(...args) { return telegramTaskActions.archive(...args); }
 
-function archiveBlockedReason() {
-  if (selectedRun()) return "active-turn";
-  if (!isCodex()) return "unsupported";
-  if (!threadId) return "no-current";
-  return null;
-}
+function archiveBlockedReason(...args) { return telegramTaskActions.archiveBlockedReason(...args); }
 
-function archiveMessage(result) {
-  return formatArchiveMessage({
-    archivedTask: threadTitle(result.archivedThread),
-    activeTask: result.nextThread ? threadTitle(result.nextThread) : null,
-  });
-}
-
-async function sendArchiveMessage(result, targetChatId = chatId) {
-  const task = result.nextThread ? {
-    ...selectedTask(),
-    chatId: targetChatId,
-    taskTitle: activeThreadTitle,
-  } : null;
-  const message = await sendMessageTo(targetChatId, archiveMessage(result), task
-    ? { reply_markup: showLastMessageReplyMarkup(task) }
-    : {});
-  if (task) {
-    await bindRunMessage(task, message).catch((error) => {
-      console.error("Cannot bind archive result message:", error.message);
-    });
-  }
-  return message;
+function sendArchiveMessage(result, targetChatId = chatId) {
+  return telegramTaskActions.sendArchive(result, targetChatId);
 }
 
 function currentStatusSnapshot(targetChatId = chatId) {
-  return {
-    chatId: targetChatId,
-    provider: activeProvider,
-    projectRoot: activeProjectRoot,
-    threadId,
-    taskTitle: activeThreadTitle,
-    ...agentPreferences.snapshot(),
-  };
+  return telegramTaskActions.statusSnapshot(targetChatId);
 }
 
 async function sendStatus(snapshot = currentStatusSnapshot()) {
@@ -3689,17 +3646,7 @@ async function restartBot() {
   await restartRequestService.fromTelegram();
 }
 
-async function dismissCallbackMenu(message) {
-  if (!message?.chat?.id || !message?.message_id) return;
-  await telegram("deleteMessage", {
-    chat_id: message.chat.id,
-    message_id: message.message_id,
-  }).catch(() => telegram("editMessageReplyMarkup", {
-    chat_id: message.chat.id,
-    message_id: message.message_id,
-    reply_markup: { inline_keyboard: [] },
-  }).catch(() => {}));
-}
+function dismissCallbackMenu(...args) { return telegramTaskActions.dismissMenu(...args); }
 
 const telegramSettingsCallbacks = new TelegramSettingsCallbackService({
   telegram,

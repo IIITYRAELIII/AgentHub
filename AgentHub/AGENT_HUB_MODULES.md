@@ -72,6 +72,7 @@
 | 57 | ⏳ | `DeferredInputPresentationService` стал единственным владельцем переходов UI/receipt для saved/queued/dispatching/started сообщений. `TelegramTaskPickerService` владеет presentation списка задач, `InteractiveJobService` — bounded-очередью тяжёлых команд просмотра. Host сокращён до 4 193 строк. |
 | 58 | ⏳ | `ManagedRunHistoryService` владеет слиянием активного/финального хода в локальную историю без дублей agent message. `RestartNotificationService` владеет announce/edit/fallback карточки безопасного перезапуска, а `TelegramCallbackController` — полной цепочкой typed callback handlers и stale fallback. Host сокращён до 4 085 строк. |
 | 59 | ⏳ | `CodexTaskSnapshotService` теперь владеет не только чтением snapshot, но и повторным дочитыванием финального ответа, reindex наблюдаемого turn и применением model/reasoning/runtime projection. Форматирование approval/mode вынесено в Telegram presentation. Вторых владельцев этих обязанностей в host больше нет; размер — 4 045 строк. |
+| 60 | ⏳ | `TelegramTaskActionService` владеет resume/rename/archive/status use cases, уведомлением результата и закрытием callback-menu. Telegram handlers больше не собирают эти операции из глобально выбранных полей; host впервые сокращён ниже 4 000 строк — до 3 992. |
 
 После этапов 31–40 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и
