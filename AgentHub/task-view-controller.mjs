@@ -7,7 +7,7 @@ import {
 } from "./task-history.mjs";
 import { readCodexRolloutActivity } from "./task-catalog.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
-import { updateTaskRunTitle } from "./task-runs.mjs";
+import { updateTaskRunTitle } from "./src/domain/task-runs.mjs";
 
 function mergeDurableHistory(cachedHistory, sourceHistory) {
   const merged = (Array.isArray(cachedHistory) ? cachedHistory : [])

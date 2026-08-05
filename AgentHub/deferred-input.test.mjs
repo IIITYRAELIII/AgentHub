@@ -6,7 +6,7 @@ import {
   deferredInputMatchesRun,
   deferredResponseAnnotations,
   replaceDeferredInputText,
-} from "./deferred-input.mjs";
+} from "./src/domain/deferred-input.mjs";
 
 test("a dispatching Telegram input reattaches to its exact restored run", () => {
   const item = {
@@ -56,7 +56,7 @@ import {
   parsePendingInputCallback,
   pendingInputKeyboard,
   restoreDeferredInput,
-} from "./deferred-input.mjs";
+} from "./src/domain/deferred-input.mjs";
 
 test("pendingInputKeyboard preserves every deferred-message action", () => {
   const id = "019f7152-726b-7b62-a595-62a3fccef0bf";

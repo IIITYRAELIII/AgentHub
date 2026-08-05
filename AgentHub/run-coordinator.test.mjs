@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RunCoordinator } from "./run-coordinator.mjs";
+import { RunCoordinator } from "./src/application/run-coordinator.mjs";
 
 function fixture(overrides = {}) {
   const calls = [];

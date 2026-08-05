@@ -60,6 +60,7 @@
 | 45 | ✅ | Telegram command/message/callback dispatch, callback parser, polling policy, status и settings presentation перенесены в `src/interfaces/telegram`. Корневой Bot API transport сохранён как стабильная инфраструктурная граница; interface-слой не владеет task/run state. |
 | 46 | ✅ | Зафиксированы точный inventory всех корневых production-модулей и их целевых слоёв, dependency matrix, верхняя граница composition root и runtime import-closure gate. Новые root-файлы, обратные зависимости слоёв и неполные релизы теперь отклоняются тестами до публикации. |
 | 47 | ✅ | Provider preferences, task identity и durable runtime snapshot получили отдельных владельцев `AgentPreferencesStore`, `TaskIdentityResolver` и `HubRuntimeStateCoordinator`. `TaskSelectionStore` перенесён в `src/application`, `RuntimeStateStore` — в `src/infrastructure/persistence`; host больше не реализует restore/save snapshot и сокращён до 5 360 строк. |
+| 48 | ✅ | Run lifecycle собран вокруг `RunCoordinator`: `ManagedRunLifecycleService` владеет регистрацией и завершением managed run, `DeferredInputStore/Service` — pending/queued state, `RunRecoveryCoordinator` — восстановлением, `RunConflictPolicy` — repository guard. Progress и observer state больше не имеют host-прокси; десять run-модулей перенесены в `src/application`, `src/domain` и `src/interfaces/telegram`, host сокращён до 5 138 строк. |
 
 После этапов 31–40 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и

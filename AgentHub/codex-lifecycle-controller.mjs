@@ -5,7 +5,7 @@ import {
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
 } from "./task-catalog.mjs";
-import { taskRunKey } from "./task-runs.mjs";
+import { taskRunKey } from "./src/domain/task-runs.mjs";
 import { normalizeTokenUsage } from "./token-usage.mjs";
 import { turnEndKey } from "./turn-end-notifications.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
@@ -271,4 +271,3 @@ export class CodexLifecycleController {
     throw new Error(`Unsupported Codex lifecycle command: ${request.command}`);
   }
 }
-

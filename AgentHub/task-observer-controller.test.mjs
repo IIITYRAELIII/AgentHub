@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TaskObserverController } from "./task-observer-controller.mjs";
+import { TaskObserverController } from "./src/application/task-observer-controller.mjs";
 
 function fixture({ snapshot = { active: true }, readSnapshot, canObserve } = {}) {
   const events = [];

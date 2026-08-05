@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   DeferredInputController,
   isRetryableDeferredLaunchError,
-} from "./deferred-input-controller.mjs";
+} from "./src/application/deferred-input-controller.mjs";
 
 function fixture(overrides = {}) {
   const pendingInputs = new Map();

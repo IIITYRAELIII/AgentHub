@@ -1,4 +1,4 @@
-import { codexSubagentActivity } from "./run-activity.mjs";
+import { codexSubagentActivity } from "./src/domain/run-activity.mjs";
 
 function textContent(content) {
   if (typeof content === "string") return content;

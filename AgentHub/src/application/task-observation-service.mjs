@@ -1,15 +1,15 @@
 import path from "node:path";
 
-import { captureTaskGitBaseline } from "./task-git-diff.mjs";
+import { captureTaskGitBaseline } from "../../task-git-diff.mjs";
 import {
   createObservedTaskRun,
   shouldDeliverObservedCompletion,
   updateObservedResponse,
-} from "./task-runs.mjs";
+} from "../domain/task-runs.mjs";
 import {
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
-} from "./task-catalog.mjs";
+} from "../../task-catalog.mjs";
 import { TaskObserverController } from "./task-observer-controller.mjs";
 
 export class TaskObservationService {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendRunActivity, codexItemActivity } from "./run-activity.mjs";
+import { appendRunActivity, codexItemActivity } from "./src/domain/run-activity.mjs";
 
 test("run activities update by stable id and remain bounded", () => {
   const run = { activities: [] };

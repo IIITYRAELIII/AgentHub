@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TaskObservationService } from "./task-observation-service.mjs";
+import { TaskObservationService } from "./src/application/task-observation-service.mjs";
 
 function fixture({ snapshot = null, now = 1_000_000 } = {}) {
   const events = [];

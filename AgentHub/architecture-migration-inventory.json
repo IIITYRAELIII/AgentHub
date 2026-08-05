@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "serverMaximumLines": 5360,
-    "rootProductionModules": 147
+    "serverMaximumLines": 5138,
+    "rootProductionModules": 137
   },
   "publicRootModules": [
     "agent-hub-main.mjs",
@@ -32,23 +32,15 @@
     "src/application": [
       "application-command-bus.mjs",
       "application-command-service.mjs",
-      "deferred-input-controller.mjs",
-      "run-coordinator.mjs",
       "run-journal-service.mjs",
-      "run-progress-presentation.mjs",
       "task-catalog-service.mjs",
       "task-history.mjs",
-      "task-observation-service.mjs",
       "turn-end-delivery-service.mjs",
       "turn-title.mjs"
     ],
     "src/domain": [
-      "deferred-input.mjs",
       "response-budget.mjs",
-      "run-activity.mjs",
       "task-catalog.mjs",
-      "task-recovery.mjs",
-      "task-runs.mjs",
       "token-usage.mjs"
     ],
     "src/providers/codex": [
@@ -98,9 +90,7 @@
       "message-bindings.mjs",
       "status-header.mjs",
       "status.mjs",
-      "task-observer-controller.mjs",
       "task-picker.mjs",
-      "task-progress-controller.mjs",
       "task-view-callback.mjs",
       "task-view-controller.mjs",
       "telegram-forward-bundle.mjs",

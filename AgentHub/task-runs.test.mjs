@@ -13,7 +13,7 @@ import {
   taskRunKey,
   updateObservedResponse,
   updateTaskRunTitle,
-} from "./task-runs.mjs";
+} from "./src/domain/task-runs.mjs";
 
 test("taskRunIsActive excludes terminal runs kept for final delivery", () => {
   assert.equal(taskRunIsActive(null), false);

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { taskRunKey } from "./task-runs.mjs";
+import { taskRunKey } from "./src/domain/task-runs.mjs";
 
 function normalizedPath(value) {
   const resolved = path.resolve(String(value ?? ""));

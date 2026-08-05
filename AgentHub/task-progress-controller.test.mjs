@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TaskProgressController } from "./task-progress-controller.mjs";
+import { TaskProgressController } from "./src/interfaces/telegram/task-progress-controller.mjs";
 
 function run(overrides = {}) {
   return {
@@ -53,6 +53,7 @@ test("TaskProgressController creates, updates and finishes one progress card", a
   await controller.finish(item, "Готово");
   assert.equal(item.status, "finishing");
   assert.deepEqual(item.progressMessageIds, []);
+  assert.deepEqual(item.finishedProgressMessageIds, [41]);
   assert.equal(item.progressReasoning, "");
   assert.equal(persists(), 3);
 });

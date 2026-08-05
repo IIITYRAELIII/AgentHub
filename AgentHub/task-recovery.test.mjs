@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS as A } from "./task-recovery.mjs";
+import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS as A } from "./src/domain/task-recovery.mjs";
 
 test("observer recovery distinguishes active, completed and unknown snapshots", () => {
   const run = { observer: true, provider: "codex" };

@@ -159,9 +159,10 @@ test("provider discovery and catalog merge have one application owner", async ()
 test("provider operations resolve through one AgentProvider registry", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   const adapters = await readFile(path.join(ROOT, "src", "providers", "provider-adapters.mjs"), "utf8");
-  const coordinator = await readFile(path.join(ROOT, "run-coordinator.mjs"), "utf8");
-  const observation = await readFile(path.join(ROOT, "task-observation-service.mjs"), "utf8");
-  const providerCallOwners = `${source}\n${coordinator}\n${adapters}\n${observation}`;
+  const coordinator = await readFile(path.join(ROOT, "src", "application", "run-coordinator.mjs"), "utf8");
+  const observation = await readFile(path.join(ROOT, "src", "application", "task-observation-service.mjs"), "utf8");
+  const recovery = await readFile(path.join(ROOT, "src", "application", "run-recovery-coordinator.mjs"), "utf8");
+  const providerCallOwners = `${source}\n${coordinator}\n${adapters}\n${observation}\n${recovery}`;
   assert.equal((source.match(/createAgentProviderRegistry\s*\(/g) ?? []).length, 1);
   assert.equal((adapters.match(/new AgentProviderRegistry\s*\(/g) ?? []).length, 1);
   assert.equal((source.match(/new TaskObservationService\s*\(/g) ?? []).length, 1);
@@ -194,9 +195,9 @@ test("provider operations resolve through one AgentProvider registry", async () 
     observation.indexOf("async finish(run, snapshot)"),
     observation.indexOf("async finishUnknown(run, snapshot)"),
   );
-  const sharedRecovery = source.slice(
-    source.indexOf("async function recoverTaskRun"),
-    source.indexOf("async function finishInterruptedLocalRun"),
+  const sharedRecovery = recovery.slice(
+    recovery.indexOf("async recover(run)"),
+    recovery.indexOf("async finishInterrupted(run)"),
   );
   for (const sharedLifecycle of [sharedObservedCompletion, sharedRecovery]) {
     assert.doesNotMatch(sharedLifecycle, /provider\s*[!=]==?\s*["'](?:codex|claude)["']/u);
@@ -205,7 +206,7 @@ test("provider operations resolve through one AgentProvider registry", async () 
 
 test("run admission and provider terminal dispatch have one coordinator", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
-  const observation = await readFile(path.join(ROOT, "task-observation-service.mjs"), "utf8");
+  const observation = await readFile(path.join(ROOT, "src", "application", "task-observation-service.mjs"), "utf8");
   assert.equal((source.match(/new RunCoordinator\s*\(/g) ?? []).length, 1);
   const startTurn = source.slice(
     source.indexOf("async function startTurn"),
@@ -216,7 +217,8 @@ test("run admission and provider terminal dispatch have one coordinator", async 
   assert.equal(source.includes("start: (item) => runCoordinator.startDeferred(item)"), true);
   assert.equal(source.includes("runCoordinator.completeManaged("), true);
   assert.equal(observation.includes("this.runCoordinator.completeObserved("), true);
-  assert.equal(source.includes("runCoordinator.recoverProviderRun("), true);
+  const recovery = await readFile(path.join(ROOT, "src", "application", "run-recovery-coordinator.mjs"), "utf8");
+  assert.equal(recovery.includes("d.runCoordinator.recoverProviderRun("), true);
 });
 
 test("journal projection and last-message state have one application owner", async () => {

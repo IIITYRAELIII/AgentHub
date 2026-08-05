@@ -1,4 +1,4 @@
-import { TASK_EXECUTION_OWNERS } from "./task-catalog.mjs";
+import { TASK_EXECUTION_OWNERS } from "../../task-catalog.mjs";
 
 export function activeTurnNotSteerable(error) {
   const details = `${String(error?.message ?? "")} ${JSON.stringify(error?.data ?? {})}`.toLowerCase();

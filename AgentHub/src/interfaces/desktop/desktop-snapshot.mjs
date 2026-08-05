@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { taskRunIsActive } from "../../../task-runs.mjs";
+import { taskRunIsActive } from "../../domain/task-runs.mjs";
 
 export function createDesktopSnapshotFactory({
   clock,

@@ -1,6 +1,6 @@
 import { resolveContextualCallback } from "../../../callback-context.mjs";
 import { parseApprovalCallback } from "../../../codex-approvals.mjs";
-import { parsePendingInputCallback } from "../../../deferred-input.mjs";
+import { parsePendingInputCallback } from "../../domain/deferred-input.mjs";
 import { parseForwardBundleCallback } from "../../../telegram-forward-bundle.mjs";
 import { parseTaskCatalogCallback } from "../../../task-catalog.mjs";
 import { parseTaskViewCallbackData } from "../../../task-view-callback.mjs";

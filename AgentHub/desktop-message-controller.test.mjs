@@ -3,10 +3,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createDesktopMessageController } from "./src/interfaces/desktop/desktop-message-controller.mjs";
 import { MessageReceiptRegistry } from "./message-receipts.mjs";
-import { RunCoordinator } from "./run-coordinator.mjs";
+import { RunCoordinator } from "./src/application/run-coordinator.mjs";
 
 const EXISTING_IMAGE = fileURLToPath(
-  new URL("./assets/mini-app/themes/blackhole/blackhole-blue.png", import.meta.url),
+  new URL("./assets/mini-app/themes/blackhole/blackhole-blue.jpg", import.meta.url),
 );
 
 function controller(overrides = {}) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RunProgressPresentation } from "./run-progress-presentation.mjs";
+import { RunProgressPresentation } from "./src/application/run-progress-presentation.mjs";
 
 function presentation(overrides = {}) {
   return new RunProgressPresentation({

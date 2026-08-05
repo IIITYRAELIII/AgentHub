@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 
-import { taskRunKey } from "./task-runs.mjs";
+import { taskRunKey } from "./src/domain/task-runs.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
 
 export class RunJournalService {

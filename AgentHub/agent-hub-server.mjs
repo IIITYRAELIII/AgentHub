@@ -94,7 +94,7 @@ import {
   pendingInputKeyboard,
   replaceDeferredInputText,
   restoreDeferredInput,
-} from "./deferred-input.mjs";
+} from "./src/domain/deferred-input.mjs";
 import {
   appendMessageBindings,
   findMessageBinding,
@@ -115,14 +115,13 @@ import {
   retainProgressMessageAfterEditError,
 } from "./progress-heartbeat.mjs";
 import {
-  createManagedTaskRun,
   serializableTaskRun,
   TaskDismissalRegistry,
   TaskRunRegistry,
   taskRunIsActive,
   taskRunKey,
   updateTaskRunTitle,
-} from "./task-runs.mjs";
+} from "./src/domain/task-runs.mjs";
 import {
   codexFinalTurnAnswer,
   codexTurnHasExplicitFinalAnswer,
@@ -215,15 +214,14 @@ import { TelegramSettingsMenu } from "./src/interfaces/telegram/telegram-setting
 import { TelegramStatusController } from "./src/interfaces/telegram/telegram-status-controller.mjs";
 import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "./codex-invocation.mjs";
 import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
-import { TaskProgressController } from "./task-progress-controller.mjs";
-import { TaskObservationService } from "./task-observation-service.mjs";
+import { TaskProgressController } from "./src/interfaces/telegram/task-progress-controller.mjs";
+import { TaskObservationService } from "./src/application/task-observation-service.mjs";
 import { ProviderTaskActivityService } from "./src/application/provider-task-activity-service.mjs";
 import { SelectedTaskWatchService } from "./src/application/selected-task-watch-service.mjs";
 import {
   DeferredInputController,
   isRetryableDeferredLaunchError,
-} from "./deferred-input-controller.mjs";
-import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "./task-recovery.mjs";
+} from "./src/application/deferred-input-controller.mjs";
 import { WorkLogUsageStore } from "./work-log-usage.mjs";
 import { miniAppMenuButtonRequests, MiniAppServer } from "./mini-app-server.mjs";
 import { MiniAppPublisher } from "./mini-app-publisher.mjs";
@@ -234,10 +232,10 @@ import { fitTaskHistoryPayload } from "./response-budget.mjs";
 import { RuntimeLifecycleController } from "./src/runtime/runtime-lifecycle-controller.mjs";
 import { RuntimeResourceRegistry } from "./src/runtime/runtime-resource-registry.mjs";
 import { RuntimeRestartController } from "./src/runtime/runtime-restart-controller.mjs";
-import { RunCoordinator } from "./run-coordinator.mjs";
+import { RunCoordinator } from "./src/application/run-coordinator.mjs";
 import { createAgentProviderRegistry } from "./src/providers/provider-adapters.mjs";
 import { ClaudeProviderTaskService, CodexProviderTaskService } from "./src/providers/provider-task-service.mjs";
-import { appendRunActivity, codexItemActivity } from "./run-activity.mjs";
+import { appendRunActivity, codexItemActivity } from "./src/domain/run-activity.mjs";
 import {
   commandClientContext,
   commandTaskTarget,
@@ -274,7 +272,7 @@ import {
   ContextCompactionTracker,
   isContextCompactionItem,
 } from "./context-compaction-tracker.mjs";
-import { RunProgressPresentation } from "./run-progress-presentation.mjs";
+import { RunProgressPresentation } from "./src/application/run-progress-presentation.mjs";
 import { AgentHubStartupCoordinator } from "./src/application/agent-hub-startup-coordinator.mjs";
 import { RuntimeTimerCoordinator } from "./src/runtime/runtime-timer-coordinator.mjs";
 import { RunJournalService } from "./run-journal-service.mjs";
@@ -283,6 +281,14 @@ import {
   fallbackTurnEndMessage,
 } from "./turn-end-delivery-service.mjs";
 import { AgentPreferencesStore } from "./src/application/agent-preferences-store.mjs";
+import { DeferredInputStore } from "./src/application/deferred-input-store.mjs";
+import { DeferredInputService } from "./src/application/deferred-input-service.mjs";
+import {
+  ManagedRunLifecycleService,
+  runInputPreview,
+} from "./src/application/managed-run-lifecycle-service.mjs";
+import { RunRecoveryCoordinator } from "./src/application/run-recovery-coordinator.mjs";
+import { RunConflictPolicy } from "./src/application/run-conflict-policy.mjs";
 import {
   createHubRuntimeSnapshot,
   HubRuntimeStateCoordinator,
@@ -722,6 +728,53 @@ const codexTerminalAudit = new CodexTerminalAudit({
 const turnTemporaryFiles = new Map();
 const turnSpeechButtons = new Map();
 const taskRuns = new TaskRunRegistry();
+const managedRunLifecycle = new ManagedRunLifecycleService({
+  taskRuns,
+  currentTarget: () => ({
+    provider: activeProvider,
+    projectRoot: activeProjectRoot,
+    threadId,
+    taskTitle: activeThreadTitle,
+    chatId,
+  }),
+  findProject,
+  codexSettings: (target) => taskMetadata.codexSettings(target),
+  currentPreferences: (provider) => ({
+    ...agentPreferences.current(provider),
+    defaultModel: provider === "codex"
+      ? agentPreferences.defaultCodexModel
+      : agentPreferences.claudeModel,
+    defaultReasoningEffort: provider === "codex"
+      ? agentPreferences.defaultCodexReasoningEffort
+      : agentPreferences.claudeReasoningEffort,
+  }),
+  modelLabel: codexModelLabel,
+  claudeModelLabels: CLAUDE_MODEL_LABELS,
+  reasoningLabels: CODEX_REASONING_LABELS,
+  clearClaudeCancellation: (key) => cancelledManagedClaudeTasks.delete(key),
+  captureGitBaseline: (projectRoot, runId) => (
+    captureTaskGitBaseline(projectRoot, config.dataDir, runId)
+  ),
+  persistTaskDiff,
+  syncRun: syncTaskRun,
+  invalidateCatalog: invalidateTaskCatalog,
+  saveState,
+  scheduleProgressStart: (run) => taskProgress.scheduleStart(run, config.progressStartDelayMs),
+  clearSelectedDiff: (run) => { if (isSelectedRun(run)) latestDiff = ""; },
+  clearApprovals: (run) => {
+    for (const [key, approval] of approvalController.pending) {
+      if (approval.runId === run.id) approvalController.pending.delete(key);
+    }
+  },
+  pauseObservation: (run) => taskObserver.pause(run),
+  pauseClaude: (run) => claudeRunController.pause(run),
+  stopTyping: () => stopTyping(),
+  afterCompletion: async () => {
+    if (restartRequest?.waitingForRuns && !restartHasBlockingWork() && !stopping) {
+      setTimeout(() => void performRestart(), 0);
+    }
+  },
+});
 const turnEndDelivery = new TurnEndDeliveryService({
   notifications: turnEndNotifications,
   taskRuns,
@@ -745,7 +798,7 @@ const codexRunFinalizer = new CodexRunFinalizer({
   saveState,
   persistHistory: persistManagedRunHistory,
   projectTurn: (...args) => runJournal.projectTurn(...args),
-  completeRun,
+  completeRun: (run) => managedRunLifecycle.complete(run),
 });
 const codexContextMaintenance = new CodexContextMaintenanceService({
   timers: runtimeTimers,
@@ -807,10 +860,10 @@ const interactiveJobs = new BackgroundJobQueue({
 });
 const dismissedExternalTasks = new TaskDismissalRegistry();
 const cancelledManagedClaudeTasks = new Map();
-const pendingInputs = new Map();
+const deferredInputs = new DeferredInputStore();
+const pendingInputs = deferredInputs.pending;
 const forwardBundles = new Map();
-const gitRepoRoots = new Map();
-const queuedInputs = new Map();
+const queuedInputs = deferredInputs.queued;
 const desktopMessageReceipts = new MessageReceiptRegistry();
 const taskDiffs = new TaskDiffStore({ filePath: TASK_DIFFS_FILE, limit: 100 });
 await taskDiffs.load();
@@ -848,10 +901,10 @@ const claudeEventService = new ClaudeEventService({
   runTitle: runTaskTitle,
   bindRunMessage,
   saveState,
-  noteActivity: noteRunActivity,
-  scheduleProgress: scheduleProgressUpdate,
-  appendReasoning: appendProgressReasoning,
-  setStage: setProgressStage,
+  noteActivity: (...args) => taskProgress.noteActivity(...args),
+  scheduleProgress: (...args) => taskProgress.schedule(...args),
+  appendReasoning: (...args) => taskProgress.appendReasoning(...args),
+  setStage: (...args) => taskProgress.setStage(...args),
   appendActivity: appendRunActivity,
   logError: (...args) => console.error(...args),
 });
@@ -897,7 +950,7 @@ const codexCompletionService = new CodexCompletionService({
   readTurnUsage: readCodexTurnUsage,
   applyRolloutContext: applyCodexRolloutContext,
   finalizeDelivery: finalizeCodexRunDelivery,
-  finishProgress,
+  finishProgress: (...args) => taskProgress.finish(...args),
   completedAnswer: completedCodexAnswer,
   temporaryFiles: turnTemporaryFiles,
   speechButtons: turnSpeechButtons,
@@ -912,7 +965,7 @@ const claudeCompletionService = new ClaudeCompletionService({
     title,
   }),
   saveState,
-  finishProgress,
+  finishProgress: (...args) => taskProgress.finish(...args),
   persistHistory: persistClaudeRunHistory,
   projectWorkLog: projectClaudeRunToWorkLog,
   finalizeDelivery: finalizeRunDelivery,
@@ -921,7 +974,7 @@ const claudeCompletionService = new ClaudeCompletionService({
 });
 const claudeRecoveryService = new ClaudeRecoveryService({
   attach: attachClaudeRunAfterRestart,
-  finishInterrupted: finishInterruptedLocalRun,
+  finishInterrupted: (...args) => runRecovery.finishInterrupted(...args),
 });
 const codexRecoveryService = new CodexRecoveryService({
   transportRunning: () => codexTransport.running,
@@ -929,17 +982,17 @@ const codexRecoveryService = new CodexRecoveryService({
   startTransport: startCodexAppServer,
   initialize: initializeCodex,
   isCodex,
-  finishInterrupted: finishInterruptedLocalRun,
+  finishInterrupted: (...args) => runRecovery.finishInterrupted(...args),
   readThread: readCodexThread,
   autoApprove: () => autoApprove,
   restartRequested: () => Boolean(restartRequest),
-  finishProgress,
-  completeRun,
+  finishProgress: (...args) => taskProgress.finish(...args),
+  completeRun: (run) => managedRunLifecycle.complete(run),
   recoveredAnswer: recoveredCodexAnswer,
-  setProgressStage,
+  setProgressStage: (...args) => taskProgress.setStage(...args),
   launchTurn,
   reindexRun: (run, previous) => taskRuns.reindex(run, previous),
-  scheduleObservedRun,
+  scheduleObservedRun: (...args) => taskObserver.schedule(...args),
   startTyping: () => startTyping(),
   saveState,
   telegram: (...args) => telegram(...args),
@@ -955,9 +1008,9 @@ const codexTurnService = new CodexTurnService({
   reindexRun: (run, previous) => taskRuns.reindex(run, previous),
   saveState,
   startTyping: () => startTyping(),
-  scheduleObservedRun,
-  finishProgress,
-  completeRun,
+  scheduleObservedRun: (...args) => taskObserver.schedule(...args),
+  finishProgress: (...args) => taskProgress.finish(...args),
+  completeRun: (run) => managedRunLifecycle.complete(run),
   readThread: readCodexThread,
   speechButtons: turnSpeechButtons,
   temporaryFiles: turnTemporaryFiles,
@@ -966,9 +1019,9 @@ const codexTurnService = new CodexTurnService({
 const providerCancellationService = new ProviderCancellationService({
   interruptCodex: (run) => codexTurnService.interrupt(run),
   runForTask: (run) => taskRuns.forTask(run),
-  completeRun,
+  completeRun: (run) => managedRunLifecycle.complete(run),
   readCodexSnapshot: readCodexTaskSnapshot,
-  finishObserved: finishObservedRun,
+  finishObserved: (...args) => taskObserver.finish(...args),
   completeManaged: (run, options) => runCoordinator.completeManaged(run, options),
   taskExternalActivity,
   stopClaudeRun: stopClaudeRunProcess,
@@ -990,14 +1043,14 @@ const codexEventService = new CodexEventService({
   isSelectedRun,
   setSelectedDiff: (value) => { latestDiff = value; },
   appendActivity: appendRunActivity,
-  noteActivity: noteRunActivity,
-  scheduleProgress: scheduleProgressUpdate,
-  appendReasoning: appendProgressReasoning,
+  noteActivity: (...args) => taskProgress.noteActivity(...args),
+  scheduleProgress: (...args) => taskProgress.schedule(...args),
+  appendReasoning: (...args) => taskProgress.appendReasoning(...args),
   isCompactionItem: isContextCompactionItem,
   beginCompaction: (...args) => contextCompactions.begin(...args),
   getCompaction: (threadId) => contextCompactions.get(threadId),
   beginCompactionCleanup: (...args) => codexContextMaintenance.beginCompactionCleanup(...args),
-  setStage: setProgressStage,
+  setStage: (...args) => taskProgress.setStage(...args),
   describeItem: describeCodexItem,
   itemActivity: codexItemActivity,
   requestApproval,
@@ -1007,7 +1060,7 @@ const codexEventService = new CodexEventService({
   requestMcpElicitation,
   discardManualCompaction: discardManualContextCompactionRun,
   consumeTracker: consumeTurnTokenTracker,
-  finishObserved: finishObservedRun,
+  finishObserved: (...args) => taskObserver.finish(...args),
   turnSnapshot: codexTurnSnapshot,
   completeManaged: (run, completion) => runCoordinator.completeManaged(run, completion),
   turnTokenUsage,
@@ -1291,7 +1344,7 @@ const approvalController = new ApprovalController({
   send: sendMessage,
   sendForRun: sendRunMessage,
   runExists: (id) => taskRuns.values().some((run) => run.id === id),
-  setProgressStage,
+  setProgressStage: (...args) => taskProgress.setStage(...args),
   telegram,
   currentChatId: () => chatId,
 });
@@ -1355,7 +1408,7 @@ const deliveryOutbox = new PersistentDeliveryOutbox({
         } else if (!run.progressMessageIds.includes(result.message_id)) {
           run.progressMessageIds.push(result.message_id);
           run.lastProgressText = String(item.body?.text ?? "");
-          scheduleProgressUpdate(run);
+          taskProgress.schedule(run);
           await saveState();
         }
       }
@@ -1710,7 +1763,7 @@ async function finalizeRunDelivery(run, {
       replaceProgressMessageIds: run.finishedProgressMessageIds ?? [],
     });
   }
-  if (complete) await completeRun(run);
+  if (complete) await managedRunLifecycle.complete(run);
   return deliveryResult;
 }
 
@@ -1762,13 +1815,7 @@ function savedLastTaskMessageRecord(task) {
 }
 
 function deferredTaskMessageAtMs(task) {
-  const key = taskRunKey(task);
-  let latest = 0;
-  for (const item of [...pendingInputs.values(), ...queuedInputs.values()]) {
-    if (taskRunKey(item) !== key) continue;
-    latest = Math.max(latest, Date.parse(String(item.createdAt ?? "")) || 0);
-  }
-  return latest;
+  return deferredInputs.latestActivityAt(task);
 }
 
 function latestThreadContextUsage(contextThreadId, contextTurnId = "") {
@@ -2196,7 +2243,7 @@ async function handleCodexTransportExit({ detail }) {
   const hadCodexRuns = taskRuns.values().some((run) => run.provider === "codex");
   if (!wasActive && !hadCodexRuns) return;
   for (const run of taskRuns.values().filter((item) => item.provider === "codex")) {
-    setProgressStage(run, "Связь с Codex потеряна. Переподключаюсь…");
+    taskProgress.setStage(run, "Связь с Codex потеряна. Переподключаюсь…");
   }
   // `exit` is a confirmed transport loss, not a transient RPC failure.  Do
   // not leave Desktop controls pointing at an already dead App Server for an
@@ -2272,15 +2319,15 @@ async function restartCodexAfterCrash() {
   try {
     await startCodexAppServer();
     await initializeCodex({ attachSelectedThread: isCodex() });
-    await recoverActiveRuns({ provider: "codex" });
+    await runRecovery.recoverAll({ provider: "codex" });
     if (taskRuns.size) startTyping();
     for (const run of taskRuns.values().filter((item) => item.provider === "codex")) {
-      setProgressStage(run, "Соединение с Codex восстановлено.");
+      taskProgress.setStage(run, "Соединение с Codex восстановлено.");
     }
   } catch (error) {
     console.error("Cannot restart Codex app-server:", error.message);
     for (const run of taskRuns.values().filter((item) => item.provider === "codex")) {
-      setProgressStage(run, `Codex пока недоступен: ${error.message}`);
+      taskProgress.setStage(run, `Codex пока недоступен: ${error.message}`);
     }
     if (!stopping && (isCodex() || hasCodexRuns)) setTimeout(() => void restartCodexAfterCrash(), 5000);
   } finally {
@@ -2678,7 +2725,7 @@ const {
   deferred: {
     pendingValues: () => [...pendingInputs.values()],
     queuedValues: () => [...queuedInputs.values()],
-    inputPreview,
+    inputPreview: runInputPreview,
     editableText: deferredEditableText,
     responseAnnotations: (input) => deferredResponseAnnotations(input)?.annotations ?? [],
     describeAttachments: desktopAttachmentDescriptors,
@@ -2977,7 +3024,7 @@ async function desktopCancelRun(params) {
   const result = await agentProviders.call(run.provider, "cancelRun", run);
   if (result.interruptFailed) {
     if (run.observer) {
-      setProgressStage(run, result.message);
+      taskProgress.setStage(run, result.message);
       return {
         ...result,
         message: `${result.message}. Параллельный ход не будет запущен.`,
@@ -2987,10 +3034,10 @@ async function desktopCancelRun(params) {
   }
   if (run.observer) {
     dismissedExternalTasks.add(run);
-    await finishProgress(run, result.stopRequested
+    await taskProgress.finish(run, result.stopRequested
       ? "Остановка запрошена; наблюдение отключено."
       : "Наблюдение отключено; внешний ход продолжает работу.");
-    await completeRun(run);
+    await managedRunLifecycle.complete(run);
     return {
       accepted: true,
       message: result.stopRequested
@@ -2999,8 +3046,8 @@ async function desktopCancelRun(params) {
     };
   }
   if (!result.detach) return result;
-  await finishProgress(run, "Наблюдение отключено; внешний Claude продолжает работу.");
-  await completeRun(run);
+  await taskProgress.finish(run, "Наблюдение отключено; внешний Claude продолжает работу.");
+  await managedRunLifecycle.complete(run);
   return result;
 }
 
@@ -3160,28 +3207,54 @@ async function desktopCompactContext(params) {
   }
 }
 
+const deferredInputService = new DeferredInputService({
+  store: deferredInputs,
+  maxItems: MAX_DEFERRED_INPUTS,
+  persist: saveState,
+  removeFiles: (files) => Promise.all(files.map((file) => unlink(file).catch(() => {}))),
+  notify: async (item, { executionOwner, conflictTask }) => {
+    const preview = runInputPreview(item.input);
+    const runtime = item.provider === "codex"
+      ? taskExecutionRuntimeLabel(executionOwner)
+      : executionOwner === TASK_EXECUTION_OWNERS.HUB
+        ? taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.HUB)
+        : "Внешний Claude CLI";
+    const conflictText = item.conflictKind === "repository"
+      ? `Задача «${conflictTask?.taskTitle ?? "Без названия"}» уже работает с тем же Git-репозиторием через ${runtime}. Параллельная запись может смешать изменения.`
+      : item.conflictKind === "activity-unknown"
+        ? "Claude оставил незавершённый транскрипт, но давно не записывал новые события. Нельзя надёжно определить, продолжает ли работать внешний процесс."
+        : `Выбранная задача уже выполняется через ${runtime}.`;
+    return sendMessageTo(
+      item.chatId,
+      `${conflictText} Новое сообщение сохранено и не потеряно.`
+        + `${preview ? `\n\n${preview.slice(0, 700)}` : ""}\n\nЧто сделать?`,
+      { reply_markup: pendingInputKeyboard(item.id, { allowForce: item.allowForce }) },
+    );
+  },
+});
+
+const runConflictPolicy = new RunConflictPolicy({
+  enabled: () => config.guardConcurrentRepositoryWrites,
+  resolveRepoRoots: resolveTaskGitRepoRoots,
+  taskCatalog: () => refreshTaskCatalog(),
+  activeRuns: () => taskRuns.values(),
+  findConflict: findRepositoryWriteConflict,
+});
+
 const runCoordinator = new RunCoordinator({
   taskRuns,
   providers: agentProviders,
   externalActivity: taskExternalActivity,
-  repositoryConflict: activeRepositoryConflict,
-  deferInput: deferConflictingInput,
-  beginRun,
+  repositoryConflict: (target) => runConflictPolicy.check(target),
+  deferInput: (...args) => deferredInputService.defer(...args),
+  beginRun: (input, target) => managedRunLifecycle.begin(input, target),
   launchTurn,
   describeAttachments: desktopAttachmentDescriptors,
-  hasDeferredBacklog: (target) => {
-    const provider = String(target?.provider ?? "").toLowerCase();
-    const projectRoot = String(target?.projectRoot ?? "").toLowerCase();
-    const targetThreadId = String(target?.threadId ?? "").toLowerCase();
-    return [...pendingInputs.values(), ...queuedInputs.values()].some((item) =>
-      String(item?.provider ?? "").toLowerCase() === provider
-      && String(item?.projectRoot ?? "").toLowerCase() === projectRoot
-      && String(item?.threadId ?? "").toLowerCase() === targetThreadId);
-  },
+  hasDeferredBacklog: (target) => deferredInputs.hasBacklog(target),
   scheduleDeferred: scheduleQueuedInput,
-  setProgressStage,
-  noteRunActivity,
-  scheduleProgressUpdate,
+  setProgressStage: (...args) => taskProgress.setStage(...args),
+  noteRunActivity: (...args) => taskProgress.noteActivity(...args),
+  scheduleProgressUpdate: (...args) => taskProgress.schedule(...args),
   notifyInputStart: (target) => {
     // Telegram typing is best-effort and deliberately not persisted. The
     // regular progress card is owned by TaskProgressController after launch.
@@ -3692,13 +3765,6 @@ const taskProgress = new TaskProgressController({
   retainAfterEditError: retainProgressMessageAfterEditError,
 });
 
-function inputPreview(input) {
-  const text = typeof input === "string"
-    ? input
-    : input?.filter((item) => item?.type === "text").map((item) => item.text).join("\n");
-  return String(text ?? "").trim();
-}
-
 function explicitSkillCandidatesFromInput(input) {
   const text = typeof input === "string"
     ? input
@@ -3732,71 +3798,6 @@ async function resolvedExplicitSkillNames(input, cwd) {
   }
 }
 
-async function beginRun(input, target = null) {
-  const provider = target?.provider ?? activeProvider;
-  const projectRoot = target?.projectRoot ?? activeProjectRoot;
-  const project = findProject(projectRoot);
-  const targetThreadId = target?.threadId ?? threadId;
-  const targetTaskTitle = target?.taskTitle ?? activeThreadTitle;
-  if (provider === "claude") {
-    cancelledManagedClaudeTasks.delete(taskRunKey({
-      provider,
-      projectRoot,
-      threadId: targetThreadId,
-    }));
-  }
-  const savedCodexSettings = provider === "codex"
-    ? taskMetadata.codexSettings(target) ?? {}
-    : {};
-  const modelId = target?.modelId ?? (provider === "codex"
-    ? savedCodexSettings.model
-      ?? (targetThreadId === threadId ? agentPreferences.codexModel : agentPreferences.defaultCodexModel)
-    : agentPreferences.claudeModel);
-  const reasoningId = target?.reasoningId ?? (provider === "codex"
-    ? savedCodexSettings.reasoningEffort
-      ?? (targetThreadId === threadId
-        ? agentPreferences.codexReasoningEffort
-        : agentPreferences.defaultCodexReasoningEffort)
-    : agentPreferences.claudeReasoningEffort);
-  const run = createManagedTaskRun({
-    provider,
-    chatId: target?.chatId ?? chatId,
-    projectRoot,
-    projectName: project?.name ?? path.basename(projectRoot),
-    sessionCwd: target?.sessionCwd ?? null,
-    threadId: targetThreadId,
-    taskTitle: targetTaskTitle,
-    promptPreview: inputPreview(input),
-    clientUserMessageId: String(target?.clientUserMessageId ?? "").trim() || null,
-    model: provider === "codex" ? codexModelLabel(modelId) : CLAUDE_MODEL_LABELS[modelId],
-    modelId,
-    reasoning: CODEX_REASONING_LABELS[reasoningId],
-    reasoningId,
-    executionOwner: TASK_EXECUTION_OWNERS.HUB,
-    appServer: taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.HUB),
-    collaborationMode: target?.collaborationMode
-      ?? agentPreferences.current(provider).collaborationMode,
-  });
-  taskRuns.add(run);
-  invalidateTaskCatalog();
-  await persistTaskDiff(taskRunKey(run), "");
-  if (isSelectedRun(run)) latestDiff = "";
-  run.gitBaseline = await captureTaskGitBaseline(run.projectRoot, config.dataDir, run.id);
-  syncTaskRun(run);
-  if (target?.deferredInput) target.deferredInput.dispatchingRunId = run.id;
-  await saveState();
-  taskProgress.scheduleStart(run, config.progressStartDelayMs);
-  return run;
-}
-
-async function startProgressMessage(run, { forceNew = false } = {}) {
-  return taskProgress.start(run, { forceNew });
-}
-
-async function clearRunProgressMessages(run) {
-  return taskProgress.clear(run);
-}
-
 async function discardManualContextCompactionRun(run, turnId = run?.turnId) {
   if (!run || !contextCompactions.isManualTurn(run.threadId, turnId)) return false;
   const normalizedTurnId = String(turnId ?? "").trim();
@@ -3805,65 +3806,9 @@ async function discardManualContextCompactionRun(run, turnId = run?.turnId) {
   const temporaryFiles = turnTemporaryFiles.get(normalizedTurnId) ?? [];
   turnTemporaryFiles.delete(normalizedTurnId);
   await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
-  await clearRunProgressMessages(run);
-  await completeRun(run);
+  await taskProgress.clear(run);
+  await managedRunLifecycle.complete(run);
   return true;
-}
-
-async function replaceRunProgressMessage(run) {
-  return taskProgress.replace(run);
-}
-
-function setProgressStage(run, stage) {
-  taskProgress.setStage(run, stage);
-}
-
-function appendProgressReasoning(run, delta) {
-  taskProgress.appendReasoning(run, delta);
-}
-
-function noteRunActivity(run, value = Date.now()) {
-  taskProgress.noteActivity(run, value);
-}
-
-function progressHeartbeatState(run, now = Date.now()) {
-  return taskProgress.heartbeatState(run, now, PROGRESS_STALLED_AFTER_MS);
-}
-
-function scheduleProgressUpdate(run, delayMs = 1500) {
-  taskProgress.schedule(run, delayMs);
-}
-
-async function flushProgressUpdate(run, done = false) {
-  return taskProgress.flush(run, done);
-}
-
-async function finishProgress(run, stage) {
-  const completedMessageIds = [...run?.progressMessageIds ?? []];
-  run.finishedProgressMessageIds = [...new Set([
-    ...(run.finishedProgressMessageIds ?? []),
-    ...completedMessageIds,
-  ])];
-  return taskProgress.finish(run, stage);
-}
-
-async function completeRun(run) {
-  if (!run) return;
-  for (const [key, approval] of approvalController.pending) {
-    if (approval.runId === run.id) approvalController.pending.delete(key);
-  }
-  taskObserver.pause(run);
-  claudeRunController.pause(run);
-  taskRuns.remove(run);
-  invalidateTaskCatalog();
-  run.status = "completed";
-  run.process = null;
-  syncTaskRun(run, { active: false });
-  if (!taskRuns.size) stopTyping();
-  await saveState();
-  if (restartRequest?.waitingForRuns && !restartHasBlockingWork() && !stopping) {
-    setTimeout(() => void performRestart(), 0);
-  }
 }
 
 async function taskExternalActivity(target) {
@@ -3874,96 +3819,6 @@ async function taskExternalActivity(target) {
     console.error(`Cannot check ${target.provider} task activity:`, error.message);
     return { state: "unknown", executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL };
   }
-}
-
-async function taskRepositoryRoots(projectRoot) {
-  const resolved = path.resolve(String(projectRoot ?? ""));
-  const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
-  if (gitRepoRoots.has(key)) return gitRepoRoots.get(key);
-  const repoRoots = await resolveTaskGitRepoRoots(projectRoot);
-  // Cache only successful discovery: a non-repository directory can become a
-  // repository later without requiring a bot restart.
-  if (repoRoots.length) gitRepoRoots.set(key, repoRoots);
-  return repoRoots;
-}
-
-async function activeRepositoryConflict(target) {
-  if (!config.guardConcurrentRepositoryWrites) return null;
-  const repoRoots = await taskRepositoryRoots(target.projectRoot);
-  if (!repoRoots.length) return null;
-  const catalog = await refreshTaskCatalog();
-  const candidates = [
-    ...taskRuns.values(),
-    ...catalog.filter((entry) => entry.running),
-  ];
-  const enriched = await Promise.all(candidates.map(async (candidate) => ({
-    ...candidate,
-    repoRoots: Array.isArray(candidate.gitBaseline?.repositories)
-      ? candidate.gitBaseline.repositories.map((repository) => repository.repoRoot)
-      : candidate.gitBaseline?.repoRoot
-        ? [candidate.gitBaseline.repoRoot]
-        : await taskRepositoryRoots(candidate.projectRoot),
-  })));
-  return findRepositoryWriteConflict(target, repoRoots, enriched);
-}
-
-async function deferConflictingInput(input, temporaryFiles, {
-  forceSpeechButton = false,
-  executionOwner = TASK_EXECUTION_OWNERS.EXTERNAL,
-  target = selectedTurnTarget(),
-  allowForce = false,
-  conflictKind = "task-running",
-  conflictTask = null,
-  clientUserMessageId = null,
-  destination = "pending",
-  notify = true,
-  persistentFiles = false,
-} = {}) {
-  if (pendingInputs.size + queuedInputs.size >= MAX_DEFERRED_INPUTS) {
-    await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
-    throw new Error("очередь сохранённых сообщений переполнена; сначала обработайте или отмените старые сообщения");
-  }
-  const item = {
-    id: randomUUID(),
-    chatId: target.chatId,
-    provider: target.provider,
-    projectRoot: target.projectRoot,
-    threadId: target.threadId,
-    taskTitle: target.taskTitle,
-    modelId: target.modelId,
-    reasoningId: target.reasoningId,
-    collaborationMode: target.collaborationMode,
-    input,
-    temporaryFiles,
-    persistentFiles: persistentFiles === true,
-    forceSpeechButton,
-    allowForce,
-    conflictKind,
-    clientUserMessageId: String(clientUserMessageId ?? "").trim() || null,
-    createdAt: new Date().toISOString(),
-  };
-  (destination === "queued" ? queuedInputs : pendingInputs).set(item.id, item);
-  await saveState();
-  if (notify) {
-    const preview = inputPreview(input);
-    const runtime = target.provider === "codex"
-      ? taskExecutionRuntimeLabel(executionOwner)
-      : executionOwner === TASK_EXECUTION_OWNERS.HUB
-        ? taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.HUB)
-        : "Внешний Claude CLI";
-    const conflictText = conflictKind === "repository"
-      ? `Задача «${conflictTask?.taskTitle ?? "Без названия"}» уже работает с тем же Git-репозиторием через ${runtime}. Параллельная запись может смешать изменения.`
-      : conflictKind === "activity-unknown"
-        ? "Claude оставил незавершённый транскрипт, но давно не записывал новые события. Нельзя надёжно определить, продолжает ли работать внешний процесс."
-        : `Выбранная задача уже выполняется через ${runtime}.`;
-    const message = await sendMessageTo(target.chatId,
-      `${conflictText} Новое сообщение сохранено и не потеряно.`
-        + `${preview ? `\n\n${preview.slice(0, 700)}` : ""}\n\nЧто сделать?`,
-      { reply_markup: pendingInputKeyboard(item.id, { allowForce }) });
-    item.messageId = message?.message_id ?? null;
-    await saveState();
-  }
-  return { deferred: true, id: item.id, item };
 }
 
 async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
@@ -4112,7 +3967,7 @@ const deferredInputController = new DeferredInputController({
     : await taskExternalActivity(target);
     return Boolean(taskRuns.forTask(target)
       || externalActivity.state !== "inactive"
-      || await activeRepositoryConflict(target));
+      || await runConflictPolicy.check(target));
   },
   // The queued item remains durable while RunCoordinator creates and persists
   // the exact managed run before invoking the provider launch operation.
@@ -4222,7 +4077,7 @@ const claudeRunController = new ClaudeRunController({
   onComplete: finishClaudeRun,
   onPersist: () => saveState(),
   onActive: () => startTyping(),
-  onReconnect: (run, alive) => setProgressStage(run, alive
+  onReconnect: (run, alive) => taskProgress.setStage(run, alive
     ? "Переподключился к выполняющемуся ходу Claude."
     : "Дочитываю прерванный ход Claude…"),
 });
@@ -4483,13 +4338,13 @@ const taskObserver = new TaskObservationService({
   syncTaskRun,
   modelLabel: codexModelLabel,
   reasoningLabels: CODEX_REASONING_LABELS,
-  noteRunActivity,
-  scheduleProgressUpdate,
-  setProgressStage,
+  noteRunActivity: (...args) => taskProgress.noteActivity(...args),
+  scheduleProgressUpdate: (...args) => taskProgress.schedule(...args),
+  setProgressStage: (...args) => taskProgress.setStage(...args),
   markProgressHeartbeat,
-  progressHeartbeatState,
-  finishProgress,
-  completeRun,
+  progressHeartbeatState: (run, now) => taskProgress.heartbeatState(run, now, PROGRESS_STALLED_AFTER_MS),
+  finishProgress: (...args) => taskProgress.finish(...args),
+  completeRun: (run) => managedRunLifecycle.complete(run),
   discardManualContextCompactionRun,
   savedLastTaskMessage,
   savedLastTaskMessageRecord,
@@ -4497,29 +4352,19 @@ const taskObserver = new TaskObservationService({
   managedPollIntervalMs: MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS,
 });
 
-async function observedRun(binding, targetChatId, snapshot, turnId = null) {
-  return taskObserver.create(binding, targetChatId, snapshot, turnId);
-}
-
-function updateObservedRun(run, snapshot) {
-  return taskObserver.update(run, snapshot);
-}
-
-async function finishObservedRun(run, snapshot) {
-  return taskObserver.finish(run, snapshot);
-}
-
-async function finishUnknownObservedRun(run, snapshot) {
-  return taskObserver.finishUnknown(run, snapshot);
-}
-
-function scheduleObservedRun(run) {
-  taskObserver.schedule(run);
-}
-
-async function pollObservedRun(run) {
-  return taskObserver.poll(run);
-}
+const runRecovery = new RunRecoveryCoordinator({
+  taskRuns,
+  providers: agentProviders,
+  runCoordinator,
+  observer: taskObserver,
+  progress: taskProgress,
+  startTyping,
+  saveState,
+  safeDeliver: safelyDeliverRunMessage,
+  sendRunMessage,
+  completeRun: (run) => managedRunLifecycle.complete(run),
+  logError: (...args) => console.error(...args.map((value) => value?.message ?? value)),
+});
 
 const selectedTaskWatch = new SelectedTaskWatchService({
   providers: agentProviders,
@@ -4533,8 +4378,8 @@ const selectedTaskWatch = new SelectedTaskWatchService({
   chatId: () => chatId,
   activeTaskTitle: () => activeThreadTitle,
   rememberLastTaskMessage,
-  createObservedRun: observedRun,
-  scheduleObservedRun,
+  createObservedRun: (...args) => taskObserver.create(...args),
+  scheduleObservedRun: (...args) => taskObserver.schedule(...args),
   saveState,
 });
 
@@ -4624,9 +4469,9 @@ const taskViewController = new TaskViewController({
     const catalogTitle = taskCatalog.find((entry) => catalogEntryIsSelected(entry, running))?.title;
     return selectedTitle || catalogTitle || binding.taskTitle;
   },
-  startProgressMessage,
-  createObservedRun: observedRun,
-  scheduleObservedRun,
+  startProgressMessage: (...args) => taskProgress.start(...args),
+  createObservedRun: (...args) => taskObserver.create(...args),
+  scheduleObservedRun: (...args) => taskObserver.schedule(...args),
   findMessageBinding: (targetChatId, messageId) => (
     findMessageBinding(config.dataDir, targetChatId, messageId)
   ),
@@ -4652,73 +4497,6 @@ async function showLastTaskMessage(binding, targetChatId, { count = 1 } = {}) {
 
 async function resolveTaskViewBinding(identity, targetChatId, sourceMessageId) {
   return taskViewController.resolveBinding(identity, targetChatId, sourceMessageId);
-}
-
-async function recoverTaskRun(run) {
-  let observerSnapshot = null;
-  if (run.observer) {
-    run.displayRequested = run.displayRequested === true;
-    observerSnapshot = await agentProviders.call(run.provider, "readRecoverySnapshot", run);
-    const observerAction = resolveTaskRecoveryAction({ run, observerSnapshot });
-    if (observerAction === TASK_RECOVERY_ACTIONS.OBSERVE) {
-      updateObservedRun(run, observerSnapshot);
-      if (run.displayRequested === true) {
-        await replaceRunProgressMessage(run);
-      } else {
-        await clearRunProgressMessages(run);
-      }
-      scheduleObservedRun(run);
-      if (run.displayRequested === true) startTyping();
-      await saveState();
-      return;
-    }
-    if (observerAction === TASK_RECOVERY_ACTIONS.FINISH_OBSERVED) {
-      await finishObservedRun(run, observerSnapshot);
-      return;
-    }
-    if (observerAction === TASK_RECOVERY_ACTIONS.UNKNOWN_OBSERVED) {
-      await finishUnknownObservedRun(run, observerSnapshot);
-      return;
-    }
-  }
-  return runCoordinator.recoverProviderRun(run, { observerSnapshot });
-}
-
-async function finishInterruptedLocalRun(run) {
-  const providerName = agentProviders.get(run.provider).name;
-  await finishProgress(run, "Локальный процесс прервался при перезапуске бота.");
-  await safelyDeliverRunMessage(
-    run,
-    () => sendRunMessage(
-      run,
-      `⚠️ Запуск ${providerName} был прерван. `
-        + `Контекст ${run.threadId ?? "не успел получить ID"} сохранён и доступен для продолжения.`,
-    ),
-    "уведомление о прерывании",
-  );
-  await completeRun(run);
-}
-
-async function recoverActiveRuns({ provider = null } = {}) {
-  const runs = taskRuns.values().filter((run) => !provider || run.provider === provider);
-  const providerRuns = new Map();
-  for (const run of runs) {
-    const grouped = providerRuns.get(run.provider) ?? [];
-    grouped.push(run);
-    providerRuns.set(run.provider, grouped);
-  }
-  for (const [providerId, grouped] of providerRuns) {
-    await agentProviders.call(providerId, "prepareRecovery", grouped);
-  }
-  for (const run of runs) {
-    try {
-      await recoverTaskRun(run);
-    } catch (error) {
-      console.error(`Cannot recover task ${run.id}:`, error.message);
-      await sendRunMessage(run, `⚠️ Не удалось восстановить задачу: ${error.message}`).catch(() => {});
-      await completeRun(run);
-    }
-  }
 }
 
 async function requestApproval(rpcId, kind, params, text, run = null) {
@@ -4929,7 +4707,7 @@ const runtimeRestart = new RuntimeRestartController({
         await initializeCodex({ attachSelectedThread: isCodex() });
       }
     },
-    recoverRuns: recoverActiveRuns,
+    recoverRuns: (...args) => runRecovery.recoverAll(...args),
     updateMessage: (message) => updateRestartMessage(message).catch(() => {}),
     clearRestartRequest: () => { restartRequest = null; },
     saveState,
@@ -5331,7 +5109,7 @@ const startupCoordinator = new AgentHubStartupCoordinator({
   providerIsRunning: () => codexTransport.running,
   backfillProviderMetadata: () => codexProviderTasks.discoverTasks()
     .then((threads) => backfillWorkLogPricingMetadata(threads)),
-  recoverRuns: recoverActiveRuns,
+  recoverRuns: (...args) => runRecovery.recoverAll(...args),
   retryNotifications: retryPendingTurnEndNotifications,
   restoreBackgroundJobs: () => backgroundJobs.restore(),
   startTimers: startRuntimeTimers,

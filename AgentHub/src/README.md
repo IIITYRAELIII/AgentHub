@@ -23,6 +23,13 @@ New application state must use stable task references and prefer `hubTaskId`.
 Provider thread/session IDs are external references and must not become the
 permanent identity of a logical task.
 
+Run orchestration is split by responsibility: `RunCoordinator` serializes one
+logical-task lane and dispatches provider operations; `ManagedRunLifecycleService`
+owns managed-run registration/finalization; `DeferredInputStore` owns pending and
+queued input state; `RunRecoveryCoordinator` restores managed and observed runs;
+`RunConflictPolicy` owns the optional repository-write guard. None of these
+services derives logical identity from a single provider thread/session ID.
+
 The enforced dependency direction is:
 
 - `domain` → `domain`;

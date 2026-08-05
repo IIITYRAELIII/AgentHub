@@ -154,6 +154,11 @@ export class TaskProgressController {
 
   async finish(run, stage) {
     if (!run) return;
+    const completedMessageIds = [...run.progressMessageIds ?? []];
+    run.finishedProgressMessageIds = [...new Set([
+      ...(run.finishedProgressMessageIds ?? []),
+      ...completedMessageIds,
+    ])];
     run.status = "finishing";
     this.cancelStart(run);
     this.cancelUpdate(run);
