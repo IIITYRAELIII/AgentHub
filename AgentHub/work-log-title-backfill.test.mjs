@@ -14,7 +14,7 @@ import {
   mergeGeneratedTitleCache,
   normalizeGeneratedTitle,
   titleGenerationPrompt,
-} from "./work-log-title-backfill.mjs";
+} from "./src/interfaces/cli/work-log-title-backfill.mjs";
 
 test("title backfill selects only generic historical titles", () => {
   const ledger = {

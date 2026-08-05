@@ -9,7 +9,7 @@ import {
   applyRateLimitRolloutBackfill,
   buildRateLimitRolloutBackfill,
   rateLimitRecordFromRolloutEvent,
-} from "./rate-limit-rollout-backfill.mjs";
+} from "./src/infrastructure/persistence/rate-limit-rollout-backfill.mjs";
 
 function event(timestamp, usedPercent, limitId = "codex", limitName = null) {
   return {

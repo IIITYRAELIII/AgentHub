@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { JournalDatabase } from "./journal-database.mjs";
-import { displayUserPrompt } from "./src/application/task-history.mjs";
-import { WorkLogUsageStore } from "./work-log-usage.mjs";
+import { JournalDatabase } from "../../../journal-database.mjs";
+import { displayUserPrompt } from "../../application/task-history.mjs";
+import { WorkLogUsageStore } from "../../../work-log-usage.mjs";
 
 export const GENERIC_WORK_LOG_TITLES = new Set(["Ход завершён", "Ход отменён"]);
 export const WORK_LOG_GENERATED_TITLE_LIMIT = 100;

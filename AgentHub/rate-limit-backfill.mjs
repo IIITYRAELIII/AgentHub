@@ -5,7 +5,7 @@ import path from "node:path";
 import {
   applyRateLimitRolloutBackfill,
   buildRateLimitRolloutBackfill,
-} from "./rate-limit-rollout-backfill.mjs";
+} from "./src/infrastructure/persistence/rate-limit-rollout-backfill.mjs";
 import { RateLimitHistoryStore } from "./src/infrastructure/persistence/rate-limit-history.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 

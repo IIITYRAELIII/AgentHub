@@ -16,7 +16,7 @@ import {
   mergeGeneratedTitleCache,
   readJsonOr,
   titleGenerationPrompt,
-} from "./work-log-title-backfill.mjs";
+} from "./src/interfaces/cli/work-log-title-backfill.mjs";
 
 function option(name, fallback = "") {
   const index = process.argv.indexOf(name);

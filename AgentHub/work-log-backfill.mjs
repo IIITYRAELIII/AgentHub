@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   applyWorkLogRolloutBackfill,
   buildWorkLogRolloutBackfill,
-} from "./work-log-rollout-backfill.mjs";
+} from "./src/providers/codex/work-log-rollout-backfill.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 
 function option(name, fallback = "") {

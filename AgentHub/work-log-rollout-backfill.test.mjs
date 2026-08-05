@@ -7,7 +7,7 @@ import test from "node:test";
 import {
   applyWorkLogRolloutBackfill,
   buildWorkLogRolloutBackfill,
-} from "./work-log-rollout-backfill.mjs";
+} from "./src/providers/codex/work-log-rollout-backfill.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
 import { WorkLogUsageStore } from "./work-log-usage.mjs";
 
