@@ -16,7 +16,6 @@ export function createStateComposition({
   defaultCodexModel,
   defaultCodexReasoningEffort,
   normalizeCodexModel,
-  onSelection,
 }) {
   const taskMetadata = new TaskMetadataStore({
     validReasoningEfforts: CODEX_REASONING_EFFORTS,
@@ -27,7 +26,6 @@ export function createStateComposition({
     threadId: null,
     activeThreadTitle: "",
   });
-  selectionStore.subscribe(onSelection);
   const agentPreferences = new AgentPreferencesStore({
     selectionStore,
     taskMetadata,

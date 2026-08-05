@@ -150,12 +150,14 @@ test("composition root uses one resource registry instead of ad-hoc settling", a
 
 test("composition root changes selected task only through TaskSelectionStore", async () => {
   const source = await compositionSource();
+  const rootSource = await readFile(COMPOSITION_ROOT, "utf8");
   for (const field of ["activeProvider", "activeProjectRoot", "threadId", "activeThreadTitle"]) {
-    const directAssignments = [...source.matchAll(new RegExp(`^\\s*${field}\\s*=\\s*([^;]+);`, "gmu"))]
-      .map((match) => match[0].trim());
-    assert.deepEqual(directAssignments, [`${field} = selection.${field};`], field);
+    assert.equal(new RegExp(`^\\s*(?:let|var)\\s+${field}\\b`, "mu").test(rootSource), false, field);
+    assert.equal(new RegExp(`^\\s*${field}\\s*=`, "mu").test(rootSource), false, field);
+    assert.equal(rootSource.includes(`selectionStore.${field}`), true, field);
   }
-  assert.equal(source.includes("threadIdsByProvider"), false);
+  assert.equal(/^let\s+/mu.test(rootSource), false, "composition root must not own mutable module state");
+  assert.equal(rootSource.includes("threadIdsByProvider"), false);
   assert.equal((source.match(/new TaskSelectionStore\s*\(/g) ?? []).length, 1);
 });
 

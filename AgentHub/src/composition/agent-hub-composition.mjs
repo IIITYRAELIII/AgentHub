@@ -125,6 +125,7 @@ import { createTaskStateWiring } from "./task-state-wiring-composition.mjs";
 import { createRuntimeStateBootstrapWiring } from "./runtime-state-bootstrap-wiring-composition.mjs";
 import { createTelegramShellWiring } from "./telegram-shell-wiring-composition.mjs";
 import { createAgentHubDeferredPorts } from "./agent-hub-deferred-ports.mjs";
+import { HubSessionState } from "../runtime/hub-session-state.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -212,43 +213,25 @@ const {
   handleRuntimeCommand: agentHubDeferred.api.handleRuntimeCommand,
   stopProcessTree,
 });
-let activeProvider = config.provider === "codex" ? "codex" : "claude";
-function isCodex() {
-  return activeProvider === "codex";
-}
-function providerTitle() {
-  return isCodex() ? "Codex" : "Claude Code";
-}
+const initialProvider = config.provider === "codex" ? "codex" : "claude";
 const token = config.token;
-let agentHubBootstrapComposition = null;
-
-let updateOffset = 0;
-let chatId = null;
-let activeProjectRoot = DEFAULT_PROJECT_ROOT;
-let threadId = null;
-let activeThreadTitle = "";
 const { taskMetadata, selectionStore, agentPreferences } = createStateComposition({
   config,
-  initialProvider: activeProvider,
-  initialProjectRoot: activeProjectRoot,
+  initialProvider,
+  initialProjectRoot: DEFAULT_PROJECT_ROOT,
   codexModels: CODEX_MODELS,
   claudeModels: CLAUDE_MODELS,
   defaultCodexModel,
   defaultCodexReasoningEffort,
   normalizeCodexModel,
-  onSelection: (selection) => {
-    activeProvider = selection.activeProvider;
-    activeProjectRoot = selection.activeProjectRoot;
-    threadId = selection.threadId;
-    activeThreadTitle = selection.activeThreadTitle;
-  },
 });
-let latestDiff = "";
-let stopping = false;
-let autoApprove = config.autoApproveOnStart;
-let restartRequest = null;
-let processingUpdateId = null;
-let deferredInputController = null;
+function selectedProvider() { return selectionStore.activeProvider; }
+function selectedProjectRoot() { return selectionStore.activeProjectRoot; }
+function selectedThreadId() { return selectionStore.threadId; }
+function selectedTaskTitle() { return selectionStore.activeThreadTitle; }
+function isCodex() { return selectedProvider() === "codex"; }
+function providerTitle() { return isCodex() ? "Codex" : "Claude Code"; }
+const hostState = new HubSessionState({ autoApprove: config.autoApproveOnStart });
 const {
   ports: {
     runAdmission: runAdmissionPort,
@@ -262,6 +245,9 @@ const {
     telegramDelivery: telegramDeliveryPort,
     codexLifecycle: codexLifecyclePort,
     providerStartup: providerStartupPort,
+    desktopCommands: desktopCommandsPort,
+    deferredInput: deferredInputPort,
+    bootstrap: bootstrapPort,
   },
   api: {
   resolvedExplicitSkillNames,
@@ -368,6 +354,11 @@ const {
   listThreads,
   isWorkspaceThread,
   threadTitle,
+  desktopMessageTarget: deferredDesktopMessageTarget,
+  isDeferredInputProcessing,
+  cancelDeferredInputSchedule,
+  scheduleNextDeferredInput,
+  desktopControlServer,
   },
 } = agentHubDeferred;
 const runtimeTimers = new RuntimeTimerCoordinator();
@@ -386,7 +377,7 @@ const {
   spawnCapture,
 } = createProviderProcessComposition({
   config,
-  getProjectRoot: () => activeProjectRoot,
+  getProjectRoot: selectedProjectRoot,
   stopProcessTree,
 });
 const {
@@ -442,7 +433,7 @@ const codexObservability = createCodexObservabilityComposition({
     entry.provider === provider && String(entry.threadId) === String(providerTaskId)
   )),
   globalWorkLogProjectRoots,
-  isHistoricalBackfillIdle: () => taskRuns.size === 0 && !restartRequest,
+  isHistoricalBackfillIdle: () => taskRuns.size === 0 && !hostState.restartRequest,
 });
 const {
   usageTracker: codexUsageTracker,
@@ -464,11 +455,11 @@ const {
   config,
   taskRuns,
   currentTarget: () => ({
-    provider: activeProvider,
-    projectRoot: activeProjectRoot,
-    threadId,
-    taskTitle: activeThreadTitle,
-    chatId,
+    provider: selectedProvider(),
+    projectRoot: selectedProjectRoot(),
+    threadId: selectedThreadId(),
+    taskTitle: selectedTaskTitle(),
+    chatId: hostState.chatId,
   }),
   findProject,
   taskMetadata,
@@ -482,7 +473,7 @@ const {
   invalidateTaskCatalog,
   saveState,
   scheduleProgressStart: (run) => taskProgress.scheduleStart(run, config.progressStartDelayMs),
-  clearSelectedDiff: (run) => { if (isSelectedRun(run)) latestDiff = ""; },
+  clearSelectedDiff: (run) => { if (isSelectedRun(run)) hostState.setLatestDiff(""); },
   clearApprovals: (run) => {
     for (const [key, approval] of approvalController.pending) {
       if (approval.runId === run.id) approvalController.pending.delete(key);
@@ -492,7 +483,7 @@ const {
   pauseClaude: (run) => claudeRunController.pause(run),
   stopTyping: () => stopTyping(),
   afterCompletion: async () => {
-    if (restartRequest?.waitingForRuns && !restartHasBlockingWork() && !stopping) {
+    if (hostState.restartRequest?.waitingForRuns && !restartHasBlockingWork() && !hostState.stopping) {
       setTimeout(() => void performRestart(), 0);
     }
   },
@@ -504,7 +495,7 @@ const {
   finalizeRunDelivery,
   refreshTaskDiff,
   runTaskTitle,
-  currentChatId: () => chatId,
+  currentChatId: () => hostState.chatId,
   defaultNotificationChatId,
   changedFilesForRun,
   persistManagedRunHistory,
@@ -514,7 +505,7 @@ const codexContextMaintenance = createCodexContextMaintenanceComposition({
   runtimeTimers,
   contextCompactions,
   sanitizer: codexRolloutContextSanitizer,
-  isStopping: () => stopping,
+  isStopping: () => hostState.stopping,
   transportRunning: () => codexTransport.running,
   activeRuns: () => taskRuns.values(),
   runIsActive: taskRunIsActive,
@@ -543,7 +534,7 @@ const {
   maxMediaJobs: MAX_BACKGROUND_MEDIA_JOBS,
   maxSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
   maxInteractiveJobs: MAX_INTERACTIVE_JOBS,
-  isStopping: () => stopping,
+  isStopping: () => hostState.stopping,
   onIdle: scheduleDeferredRestartIfReady,
   sendMessage: (...args) => sendMessageTo(...args),
   media: {
@@ -580,7 +571,7 @@ const taskCatalogFinalization = createTaskCatalogFinalizationComposition({
   savedLastTaskMessageRecord,
   deferredTaskMessageAtMs,
   selectedTask,
-  getActiveThreadTitle: () => activeThreadTitle,
+  getActiveThreadTitle: selectedTaskTitle,
   selectionStore,
   taskSyncStore,
   saveState,
@@ -637,12 +628,12 @@ const {
   startCodexTransport: startCodexAppServer,
   initializeCodex,
   sendRpc,
-  activeProjectRoot: () => activeProjectRoot,
+  activeProjectRoot: selectedProjectRoot,
   codexSandboxMode: () => config.codexSandboxMode,
   invalidateTaskCatalog,
   restoreCodexTaskSettings,
   updateActiveCodexThreadSettings,
-  clearLatestDiff: () => { latestDiff = ""; },
+  clearLatestDiff: () => hostState.setLatestDiff(""),
   consumeTurnTokenTracker,
   waitForTurnEndCompletion,
   readCodexThread,
@@ -656,8 +647,8 @@ const {
   attachClaudeRunAfterRestart,
   readCodexTaskSnapshot,
   isCodex,
-  autoApprove: () => autoApprove,
-  restartRequested: () => Boolean(restartRequest),
+  autoApprove: () => hostState.autoApprove,
+  restartRequested: () => Boolean(hostState.restartRequest),
   launchTurn,
   startTyping: () => startTyping(),
   telegram: (...args) => telegram(...args),
@@ -670,7 +661,7 @@ const {
   invalidateCodexThreadRead,
   applyCodexThreadSettings,
   trackTurnTokenUsage,
-  setLatestDiff: (value) => { latestDiff = value; },
+  setLatestDiff: (value) => hostState.setLatestDiff(value),
   requestApproval,
   formatCommandApproval,
   formatFileApproval,
@@ -738,9 +729,9 @@ const providerStartup = providerStartupPort.bind(createProviderStartupCompositio
   taskRuns,
   agentProviders,
   codexProviderTasks,
-  getProvider: () => activeProvider,
-  getProjectRoot: () => activeProjectRoot,
-  getThreadId: () => threadId,
+  getProvider: selectedProvider,
+  getProjectRoot: selectedProjectRoot,
+  getThreadId: selectedThreadId,
   isCodex,
   startCodex: startCodexAppServer,
   initializeCodex,
@@ -781,8 +772,8 @@ const {
   statusHeaderDirectory: STATUS_HEADER_DIR,
   statusMediaFileIds,
   saveState,
-  currentChatId: () => chatId,
-  currentProvider: () => activeProvider,
+  currentChatId: () => hostState.chatId,
+  currentProvider: selectedProvider,
   telegramLimit: TELEGRAM_LIMIT,
   miniAppServer,
   publicMiniAppServer,
@@ -812,7 +803,7 @@ const {
   rateLimitHistoryStore,
   workLogUsageStore,
   runtimeTimers,
-  isStopping: () => stopping,
+  isStopping: () => hostState.stopping,
   findProject,
   refreshTaskCatalog,
   currentTaskCatalog: () => taskCatalog,
@@ -821,9 +812,9 @@ const {
   agentHubRoot: AGENT_HUB_ROOT,
   stopProcessTree,
   startTurn,
-  activeProjectRoot: () => activeProjectRoot,
+  activeProjectRoot: selectedProjectRoot,
   approvalProtocol,
-  autoApprove: () => autoApprove,
+  autoApprove: () => hostState.autoApprove,
   respondRpc,
   sendRunMessage,
   runExists: (id) => taskRuns.values().some((run) => run.id === id),
@@ -837,7 +828,7 @@ const {
   directoryPath: DELIVERY_OUTBOX_DIR,
   retryIntervalMs: config.deliveryRetryIntervalSeconds * 1000,
   runtimeTimers,
-  isStopping: () => stopping,
+  isStopping: () => hostState.stopping,
   deliver: (method, body) => {
     if (method !== "sendPhotoFile") return telegram(method, body);
     const { photo_path: photoPath, ...telegramBody } = body;
@@ -860,7 +851,7 @@ taskStatePort.bind(createTaskStateWiring({
   taskRuns,
   taskMetadata,
   agentPreferences,
-  currentChatId: () => chatId,
+  currentChatId: () => hostState.chatId,
   contextualCallback,
   samePath,
   taskDiffs,
@@ -874,7 +865,7 @@ function setBoundedMapValue(map, key, value, limit) {
 }
 
 function sendTaskSelectionNotification(options = {}) {
-  return telegramDeliveryPort.api.sendTaskSelectionNotification({ targetChatId: chatId, ...options });
+  return telegramDeliveryPort.api.sendTaskSelectionNotification({ targetChatId: hostState.chatId, ...options });
 }
 function sendTaskSwitchNotification(options = {}) { return sendTaskSelectionNotification(options); }
 function sendTaskAlreadySelectedNotification(options = {}) {
@@ -986,9 +977,9 @@ const {
       taskRuns,
     },
     snapshotContext: {
-      getChatId: () => chatId,
-      getUpdateOffset: () => updateOffset,
-      getRestartRequest: () => restartRequest,
+      getChatId: () => hostState.chatId,
+      getUpdateOffset: () => hostState.updateOffset,
+      getRestartRequest: () => hostState.restartRequest,
       getCodexHookReceipts: () => codexHookReceipts,
       selectionStore,
       taskMetadata,
@@ -1010,13 +1001,12 @@ const {
     },
   },
   applyRestoredState: (restoredState) => {
-    chatId = restoredState.chatId;
-    updateOffset = restoredState.updateOffset;
-    restartRequest = restoredState.restartRequest;
+    hostState.restore(restoredState);
     replaceCodexHookReceipts(restoredState.codexHookReceipts);
-    if (activeProvider === "codex" && threadId) {
-      if (taskMetadata.codexSettings(threadId)) restoreCodexTaskSettings(threadId);
-      else rememberCodexTaskSettings(threadId);
+    const restoredThreadId = selectedThreadId();
+    if (isCodex() && restoredThreadId) {
+      if (taskMetadata.codexSettings(restoredThreadId)) restoreCodexTaskSettings(restoredThreadId);
+      else rememberCodexTaskSettings(restoredThreadId);
     }
     return restoredState.restoredTurnEndSnapshot;
   },
@@ -1035,10 +1025,10 @@ const codexLifecycle = createCodexLifecycleComposition({
   config,
   rpcTimeoutMs: CODEX_RPC_TIMEOUT_MS,
   runtimeDependencies: {
-    getActiveProjectRoot: () => activeProjectRoot,
+    getActiveProjectRoot: selectedProjectRoot,
     stopProcessTree,
     handleMessage: handleCodexMessage,
-    isStopping: () => stopping,
+    isStopping: () => hostState.stopping,
     providerSelected: isCodex,
     activeRuns: () => taskRuns.values(),
     setStage: (run, stage) => taskProgress.setStage(run, stage),
@@ -1073,7 +1063,7 @@ codexTaskSettingsPort.bind(createCodexTaskSettingsComposition({
   readCodexThreadTitleHistory,
   sendRpc,
   isCodex,
-  getThreadId: () => threadId,
+  getThreadId: selectedThreadId,
   contextCompactions,
   agentPreferences,
   saveState,
@@ -1085,9 +1075,9 @@ runtimeCommandPort.bind(createRuntimeCommandRoutingComposition({
   codexThreadResponseTitle,
   runTaskTitle,
   getTaskCatalog: () => taskCatalog,
-  getActiveProvider: () => activeProvider,
-  getThreadId: () => threadId,
-  getActiveThreadTitle: () => activeThreadTitle,
+  getActiveProvider: selectedProvider,
+  getThreadId: selectedThreadId,
+  getActiveThreadTitle: selectedTaskTitle,
   threadTitle,
   storedCodexThreadTitle,
   runtimeNotificationController,
@@ -1119,9 +1109,9 @@ const serverControlController = new ServerControlController({
   installScriptPath: defaultAutostartInstallScript(AGENT_HUB_ROOT),
   activeCount: () => taskRuns.values().filter(taskRunIsActive).length,
   restartState: () => ({
-    pending: Boolean(restartRequest),
-    waiting: restartRequest?.waitingForRuns === true,
-    blockingCount: restartRequest
+    pending: Boolean(hostState.restartRequest),
+    waiting: hostState.restartRequest?.waitingForRuns === true,
+    blockingCount: hostState.restartRequest
       ? restartBlockingRuns().length + backgroundJobs.size
       : 0,
   }),
@@ -1129,7 +1119,6 @@ const serverControlController = new ServerControlController({
   spawnCapture,
 });
 
-let desktopCommands;
 const {
   trustedDeviceUserId: resolveDesktopTrustedDeviceUserId,
   desktopStatusDetails,
@@ -1161,18 +1150,18 @@ const {
   projects: PROJECTS,
   maxSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
   state: {
-    activeProvider: () => activeProvider,
-    activeProjectRoot: () => activeProjectRoot,
-    activeThreadTitle: () => activeThreadTitle,
-    autoApprove: () => autoApprove,
-    chatId: () => chatId,
-    threadId: () => threadId,
+    activeProvider: selectedProvider,
+    activeProjectRoot: selectedProjectRoot,
+    activeThreadTitle: selectedTaskTitle,
+    autoApprove: () => hostState.autoApprove,
+    chatId: () => hostState.chatId,
+    threadId: selectedThreadId,
     isCodex,
-    hasThread: () => Boolean(threadId),
+    hasThread: () => Boolean(selectedThreadId()),
     selectedTask,
     selectedTurnTarget,
     activeProject,
-    restartRequest: () => restartRequest,
+    restartRequest: () => hostState.restartRequest,
   },
   services: {
     preferences: (provider) => agentPreferences.current(provider),
@@ -1188,12 +1177,12 @@ const {
     samePath,
     miniAppPublisher: miniAppLifecycle.publisher,
     trustedDeviceStore,
-    resolveTask: (...args) => desktopCommands.desktopSnapshotActions.messageTarget(...args),
+    resolveTask: deferredDesktopMessageTarget,
     lastTaskMessage: savedLastTaskMessageRecord,
     enqueueSpeech: (target, text) => backgroundJobs.enqueue(
       "speech",
-      { chatId, text },
-      chatId,
+      { chatId: hostState.chatId, text },
+      hostState.chatId,
       { dedupeKey: `desktop:${target.provider}:${target.threadId}:speech` },
     ),
     latestContextUsage: latestThreadContextUsage,
@@ -1237,26 +1226,26 @@ function trustedDeviceUserId(context) {
   return resolveDesktopTrustedDeviceUserId(context);
 }
 
-desktopCommands = createDesktopCommandWiring({
+const desktopCommands = createDesktopCommandWiring({
   models: {
     reasoningEfforts: CODEX_REASONING_EFFORTS,
     collaborationModes: CODEX_COLLABORATION_MODES,
   },
   projects: PROJECTS,
   state: {
-    activeProvider: () => activeProvider,
-    activeProjectRoot: () => activeProjectRoot,
-    activeTaskTitle: () => activeThreadTitle,
-    autoApprove: () => autoApprove,
-    setAutoApprove: (value) => { autoApprove = value; },
-    chatId: () => chatId,
-    threadId: () => threadId,
-    updateOffset: () => updateOffset,
-    processingUpdateId: () => processingUpdateId,
-    restartRequest: () => restartRequest,
-    setRestartRequest: (value) => { restartRequest = value; },
-    latestDiff: () => latestDiff,
-    setLatestDiff: (value) => { latestDiff = value; },
+    activeProvider: selectedProvider,
+    activeProjectRoot: selectedProjectRoot,
+    activeTaskTitle: selectedTaskTitle,
+    autoApprove: () => hostState.autoApprove,
+    setAutoApprove: (value) => hostState.setAutoApprove(value),
+    chatId: () => hostState.chatId,
+    threadId: selectedThreadId,
+    updateOffset: () => hostState.updateOffset,
+    processingUpdateId: () => hostState.processingUpdateId,
+    restartRequest: () => hostState.restartRequest,
+    setRestartRequest: (value) => hostState.setRestartRequest(value),
+    latestDiff: () => hostState.latestDiff,
+    setLatestDiff: (value) => hostState.setLatestDiff(value),
     isCodex,
     selectedTask,
   },
@@ -1289,7 +1278,7 @@ desktopCommands = createDesktopCommandWiring({
     codexTaskTitle: threadTitle,
     restoreCodexSettings: restoreCodexTaskSettings,
     diffs: {
-      setLatest: (value) => { latestDiff = value; },
+      setLatest: (value) => hostState.setLatestDiff(value),
       forTask: (target) => taskDiffs.get(taskRunKey(target)) ?? "",
       refresh: refreshTaskDiff,
     },
@@ -1370,6 +1359,7 @@ const {
   taskDiff: desktopTaskDiff,
   restartServer: desktopRestartServer,
 } = desktopSnapshotActions;
+desktopCommandsPort.bind({ messageTarget: desktopSnapshotActions.messageTarget });
 
 const {
   runConflictPolicy,
@@ -1387,9 +1377,9 @@ const {
     taskExecutionOwners: TASK_EXECUTION_OWNERS,
   },
   state: {
-    chatId: () => chatId,
+    chatId: () => hostState.chatId,
     selectedTask,
-    activeTaskTitle: () => activeThreadTitle,
+    activeTaskTitle: selectedTaskTitle,
   },
   services: {
     startManualCompaction: (target) => codexContextMaintenance.startManual(target),
@@ -1418,12 +1408,12 @@ const {
     pendingInputs,
     queuedInputs,
     findReceiptByResultId: (id) => desktopMessageReceipts.findByResultId(id),
-    isDeferredInputProcessing: (id) => deferredInputController.isProcessing(id),
-    cancelDeferredInputSchedule: (id) => deferredInputController.cancelSchedule(id),
+    isDeferredInputProcessing,
+    cancelDeferredInputSchedule,
     updateDeferredReceipt: updateDeferredDesktopReceipt,
     cleanupDeferredFiles,
     updateDeferredMessage,
-    scheduleNextDeferredInput: (item) => deferredInputController.scheduleNextForTask(item),
+    scheduleNextDeferredInput,
     scheduleQueuedInput,
     startTurn,
     runForTask: (target) => taskRuns.forTask(target),
@@ -1476,7 +1466,7 @@ telegramShellPort.bind(createTelegramShellWiring({
     providerTitle,
     projectName: () => activeProject().name,
     newTaskCallback: () => uiCallback("thread:new"),
-    archiveCallback: () => (isCodex() && threadId ? uiCallback("thread:archive") : null),
+    archiveCallback: () => (isCodex() && selectedThreadId() ? uiCallback("thread:archive") : null),
     editMessage: (message, view) => telegram("editMessageText", {
       chat_id: message.chat.id,
       message_id: message.message_id,
@@ -1488,11 +1478,11 @@ telegramShellPort.bind(createTelegramShellWiring({
   settingsMenu: telegramSettingsMenu,
   taskActions: telegramTaskActions,
   statusController: telegramStatusController,
-  activeProjectRoot: () => activeProjectRoot,
-  activeProvider: () => activeProvider,
+  activeProjectRoot: selectedProjectRoot,
+  activeProvider: selectedProvider,
   agentPreferences,
   codexModelLabel,
-  currentChatId: () => chatId,
+  currentChatId: () => hostState.chatId,
 }));
 
 const runPresentationComposition = createRunPresentationComposition({
@@ -1529,7 +1519,7 @@ const runPresentationComposition = createRunPresentationComposition({
   ),
   refreshTaskDiff,
   selectedTask,
-  activeTaskTitle: () => activeThreadTitle,
+  activeTaskTitle: selectedTaskTitle,
   activeProjectName: () => activeProject().name,
   taskSwitchSettings,
   showLastMessageReplyMarkup,
@@ -1561,14 +1551,15 @@ const runAdmissionComposition = runAdmissionPort.bind(createRunAdmissionComposit
   pendingInputs,
   queuedInputs,
   getSelectedTask: selectedTask,
-  getActiveThreadTitle: () => activeThreadTitle,
-  getChatId: () => chatId,
+  getActiveThreadTitle: selectedTaskTitle,
+  getChatId: () => hostState.chatId,
   taskExecutionOwners: TASK_EXECUTION_OWNERS,
   deferredInputPresentation,
   sendMessageTo,
   saveState,
 }));
-deferredInputController = runAdmissionComposition.deferredInputController;
+const deferredInputController = runAdmissionComposition.deferredInputController;
+deferredInputPort.bind(deferredInputController);
 function updateDeferredMessage(...args) {
   return deferredInputPresentation.updateTelegramMessage(...args);
 }
@@ -1580,7 +1571,7 @@ async function refreshTaskDiff(run) {
   const captured = await taskGitDiff(run.gitBaseline, config.dataDir, run.id);
   if (captured !== null) run.latestDiff = captured;
   await persistTaskDiff(taskRunKey(run), run.latestDiff ?? "");
-  if (isSelectedRun(run)) latestDiff = run.latestDiff ?? "";
+  if (isSelectedRun(run)) hostState.setLatestDiff(run.latestDiff ?? "");
   return run.latestDiff ?? "";
 }
 
@@ -1589,7 +1580,7 @@ const providerRuntimeWiring = providerRuntimePort.bind(createProviderRuntimeWiri
     dataDir: config.dataDir,
     claudeOutputPollIntervalMs: CLAUDE_OUTPUT_POLL_INTERVAL_MS,
     taskRuns,
-    isStopping: () => stopping,
+    isStopping: () => hostState.stopping,
     saveState,
     startTyping,
     taskProgress,
@@ -1612,7 +1603,7 @@ const providerRuntimeWiring = providerRuntimePort.bind(createProviderRuntimeWiri
     turnTemporaryFiles,
     claudeTaskSnapshots,
     claudePermissionMode: config.claudePermissionMode,
-    autoApprove: () => autoApprove,
+    autoApprove: () => hostState.autoApprove,
     resolveClaudeInvocation,
     logWarning: (...args) => console.warn(...args),
     safelyDeliverRunMessage,
@@ -1622,8 +1613,8 @@ const providerRuntimeWiring = providerRuntimePort.bind(createProviderRuntimeWiri
     runtimeTimers,
     selectedTaskWatchIntervalMs: SELECTED_TASK_WATCH_INTERVAL_MS,
     selectedTask,
-    chatId: () => chatId,
-    activeTaskTitle: () => activeThreadTitle,
+    chatId: () => hostState.chatId,
+    activeTaskTitle: selectedTaskTitle,
     rememberLastTaskMessage,
     logError: (...args) => console.error(...args.map((value) => value?.message ?? value)),
   },
@@ -1635,7 +1626,7 @@ const providerRuntimeWiring = providerRuntimePort.bind(createProviderRuntimeWiri
   codexTerminalAudit,
   codexTransport,
   saveState,
-  isStopping: () => stopping,
+  isStopping: () => hostState.stopping,
   runtimeTimers,
   selectedTaskWatchIntervalMs: SELECTED_TASK_WATCH_INTERVAL_MS,
   logger: console,
@@ -1691,7 +1682,7 @@ taskInteractionPort.bind(createTaskInteractionWiring({
     dismissedExternalTasks,
     saveState,
     resolveRunningTitle: (running, binding) => {
-      const selectedTitle = isSelectedRun(running) ? activeThreadTitle : null;
+      const selectedTitle = isSelectedRun(running) ? selectedTaskTitle() : null;
       const catalogTitle = taskCatalog.find((entry) => catalogEntryIsSelected(entry, running))?.title;
       return selectedTitle || catalogTitle || binding.taskTitle;
     },
@@ -1703,15 +1694,15 @@ taskInteractionPort.bind(createTaskInteractionWiring({
     taskCatalog: () => taskCatalog,
     refreshTaskCatalog,
     selectedTask,
-    activeThreadTitle: () => activeThreadTitle,
+    activeThreadTitle: selectedTaskTitle,
     logger: console,
   },
   approvalController,
-  activeProvider: () => activeProvider,
-  autoApprove: () => autoApprove,
+  activeProvider: selectedProvider,
+  autoApprove: () => hostState.autoApprove,
   autoApproveOnStart: config.autoApproveOnStart,
   claudePermissionMode: config.claudePermissionMode,
-  activeProjectRoot: () => activeProjectRoot,
+  activeProjectRoot: selectedProjectRoot,
   uiCallback,
 }));
 
@@ -1719,18 +1710,16 @@ const runtimeRestartWiring = runtimeRestartPort.bind(createRuntimeRestartWiring(
   taskRuns,
   agentProviders,
   backgroundJobs,
-  getRestartRequest: () => restartRequest,
-  isStopping: () => stopping,
+  getRestartRequest: () => hostState.restartRequest,
+  isStopping: () => hostState.stopping,
   restartRequestService,
   runtimeRestart: {
-    getRestartRequest: () => restartRequest,
-    setRestartRequest: (value) => { restartRequest = value; },
-    isStopping: () => stopping,
-    setStopping: (value) => { stopping = value; },
+    getRestartRequest: () => hostState.restartRequest,
+    setRestartRequest: (value) => hostState.setRestartRequest(value),
+    isStopping: () => hostState.stopping,
+    setStopping: (value) => hostState.setStopping(value),
     beginStopping: () => {
-      if (stopping) return false;
-      stopping = true;
-      return true;
+      return hostState.beginStopping();
     },
     sendMessage: sendMessageTo,
     telegram,
@@ -1738,7 +1727,7 @@ const runtimeRestartWiring = runtimeRestartPort.bind(createRuntimeRestartWiring(
     formatRestartCompleteMessage,
     completeMessageState: () => ({
       provider: providerTitle(),
-      task: activeThreadTitle || (threadId ? `${providerTitle()} · ${threadId.slice(0, 8)}` : "Не выбрана"),
+      task: selectedTaskTitle() || (selectedThreadId() ? `${providerTitle()} · ${selectedThreadId().slice(0, 8)}` : "Не выбрана"),
       runningTasks: taskRuns.size,
     }),
     botMenu: BOT_MENU,
@@ -1752,15 +1741,15 @@ const runtimeRestartWiring = runtimeRestartPort.bind(createRuntimeRestartWiring(
     failedUpdateStore,
     stopCodexAppServerTree,
     miniAppLifecycle,
-    desktopControlServer: () => agentHubBootstrapComposition?.desktopControlServer() ?? null,
+    desktopControlServer,
     runtimeCommandServer,
     instanceGuard,
     workLogUsageStore,
     rateLimitHistoryStore,
     taskReadStateStore,
     runtimeStateStore,
-    updateOffset: () => updateOffset,
-    setWaiting: (value) => { restartRequest.waitingForRuns = value; },
+    updateOffset: () => hostState.updateOffset,
+    setWaiting: (value) => hostState.setRestartWaiting(value),
     stopRuntimeTimers,
     agentHubRoot: AGENT_HUB_ROOT,
     instanceLockFile: INSTANCE_LOCK_FILE,
@@ -1797,8 +1786,8 @@ const {
   telegramMessageCommandContext,
   commandTaskTarget,
   activeProject,
-  activeProvider: () => activeProvider,
-  autoApprove: () => autoApprove,
+  activeProvider: selectedProvider,
+  autoApprove: () => hostState.autoApprove,
   agentPreferences,
   codexModelLabel,
   providerTitle,
@@ -1830,7 +1819,7 @@ const {
   scheduleQueuedInput,
   startTurn,
   desktopAttachmentDescriptors,
-  activeThreadTitle: () => activeThreadTitle,
+  activeThreadTitle: selectedTaskTitle,
   selectedTask,
   mediaController,
   pendingInputs,
@@ -1839,7 +1828,7 @@ const {
   maxSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
   currentUiContextToken,
   interactiveJobs,
-  isStopping: () => stopping,
+  isStopping: () => hostState.stopping,
   sendAgentPicker,
   sendModelPicker,
   sendReasoningPicker,
@@ -1857,16 +1846,16 @@ const {
   telegramPrompt,
   forwardBundles,
   selectedTurnTarget,
-  setChatId: (value) => { chatId = value; },
+  setChatId: (value) => hostState.setChatId(value),
   findReplyBinding: (targetChatId, messageId) => (
     findMessageBinding(config.dataDir, targetChatId, messageId)
   ),
   activateMessageBinding,
-  setUpdateOffset: (value) => { updateOffset = value; },
-  updateOffset: () => updateOffset,
-  setProcessingUpdateId: (value) => { processingUpdateId = value; },
+  setUpdateOffset: (value) => hostState.setUpdateOffset(value),
+  updateOffset: () => hostState.updateOffset,
+  setProcessingUpdateId: (value) => hostState.setProcessingUpdateId(value),
   failedUpdateStore,
-  restartReady: () => Boolean(restartRequest && !restartRequest.waitingForRuns && !stopping),
+  restartReady: () => Boolean(hostState.restartRequest && !hostState.restartRequest.waitingForRuns && !hostState.stopping),
   performRestart,
 });
 
@@ -1883,7 +1872,7 @@ function savePinnedTaskTitles() {
   );
 }
 
-agentHubBootstrapComposition = createAgentHubBootstrapComposition({
+const agentHubBootstrapComposition = createAgentHubBootstrapComposition({
   config,
   runtimeCommandRoot,
   handleDesktopControl,
@@ -1904,20 +1893,19 @@ agentHubBootstrapComposition = createAgentHubBootstrapComposition({
   restoreBackgroundJobs: () => backgroundJobs.restore(),
   startRuntimeTimers,
   registerTelegramCommands: () => telegram("setMyCommands", { commands: BOT_COMMANDS }),
-  hasPendingRestart: () => Boolean(restartRequest),
+  hasPendingRestart: () => Boolean(hostState.restartRequest),
   finalizeRestart: finalizeRestartMessage,
   markReady: () => instanceGuard.markReady(),
   readyMessage: () => (
-    `Agent Hub ready; components: ${Object.entries(config.components).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "core"}; provider: ${providerTitle()}; project: ${activeProjectRoot}`
+    `Agent Hub ready; components: ${Object.entries(config.components).filter(([, enabled]) => enabled).map(([name]) => name).join(", ") || "core"}; provider: ${providerTitle()}; project: ${selectedProjectRoot()}`
   ),
   pollTelegram,
   warnUser: (message) => sendMessage(message).catch(() => {}),
   beginStopping: () => {
-    if (stopping) return false;
-    stopping = true;
-    return true;
+    return hostState.beginStopping();
   },
 });
+bootstrapPort.bind(agentHubBootstrapComposition);
 const { startAgentHub, shutdownAgentHub } = agentHubBootstrapComposition;
 
 export { startAgentHub, shutdownAgentHub };

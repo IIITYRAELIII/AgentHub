@@ -54,6 +54,15 @@ export function createAgentHubDeferredPorts() {
     "initializeProvider", "attachCodexThread", "createThread", "listThreads",
     "isWorkspaceThread", "threadTitle",
   ]);
+  const desktopCommands = createDeferredCompositionPort("Desktop command wiring", [
+    "messageTarget",
+  ]);
+  const deferredInput = createDeferredCompositionPort("deferred input controller", [
+    "isProcessing", "cancelSchedule", "scheduleNextForTask",
+  ]);
+  const bootstrap = createDeferredCompositionPort("Agent Hub bootstrap", [
+    "desktopControlServer",
+  ]);
 
   return {
     ports: {
@@ -68,6 +77,9 @@ export function createAgentHubDeferredPorts() {
       telegramDelivery,
       codexLifecycle,
       providerStartup,
+      desktopCommands,
+      deferredInput,
+      bootstrap,
     },
     api: {
       ...runAdmission.api,
@@ -92,6 +104,11 @@ export function createAgentHubDeferredPorts() {
       respondRpc: codexLifecycle.api.respondRpc,
       initializeCodex: codexLifecycle.api.initialize,
       ...providerStartup.api,
+      desktopMessageTarget: desktopCommands.api.messageTarget,
+      isDeferredInputProcessing: deferredInput.api.isProcessing,
+      cancelDeferredInputSchedule: deferredInput.api.cancelSchedule,
+      scheduleNextDeferredInput: deferredInput.api.scheduleNextForTask,
+      desktopControlServer: bootstrap.api.desktopControlServer,
     },
   };
 }
