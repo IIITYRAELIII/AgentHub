@@ -431,7 +431,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
       provider: "codex",
       threadId: firstThreadId,
     }, { runtimeRoot }),
-    /вне каталога Desktop-приложения/,
+    /вне каталога вложений Agent Hub/,
   );
   const imageStart = await callDesktopControl("send-message", {
     text: "desktop image",
