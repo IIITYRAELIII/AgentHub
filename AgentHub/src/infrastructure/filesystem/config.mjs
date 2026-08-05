@@ -3,9 +3,12 @@ import { realpathSync } from "node:fs";
 import { isIP } from "node:net";
 import path from "node:path";
 import process from "node:process";
-import { CLAUDE_PERMISSION_MODES } from "./src/providers/claude/claude.mjs";
-import { CODEX_COLLABORATION_MODES, CODEX_REASONING_EFFORTS } from "./src/providers/codex/codex-settings.mjs";
-import { normalizeCodexSandboxMode } from "./src/providers/codex/codex-sandbox.mjs";
+import {
+  CLAUDE_PERMISSION_MODES,
+  CODEX_COLLABORATION_MODES,
+  CODEX_REASONING_EFFORTS,
+  normalizeCodexSandboxMode,
+} from "../../domain/agent-runtime-settings.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 
 export const AGENT_HUB_ROOT = path.resolve(import.meta.dirname);

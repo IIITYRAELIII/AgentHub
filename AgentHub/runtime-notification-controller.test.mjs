@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { RuntimeNotificationController } from "./runtime-notification-controller.mjs";
+import { RuntimeNotificationController } from "./src/runtime/runtime-notification-controller.mjs";
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "runtime-notification-controller-"));

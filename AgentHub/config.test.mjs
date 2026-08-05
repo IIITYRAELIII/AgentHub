@@ -14,7 +14,7 @@ import {
   repositoryWriteGuardEnabled,
   resolveConfigPath,
   samePath,
-} from "./config.mjs";
+} from "./src/infrastructure/filesystem/config.mjs";
 
 test("core-only components need neither Telegram credentials nor Web App", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-profile-"));

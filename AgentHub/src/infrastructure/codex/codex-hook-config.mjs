@@ -4,7 +4,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { isMainModule } from "../process/main-module.mjs";
-import { defaultRuntimeRoot, runtimeLayout } from "../../../runtime-layout.mjs";
+import { defaultRuntimeRoot, runtimeLayout } from "../filesystem/runtime-layout.mjs";
 import { writeTextAtomic } from "../persistence/state-store.mjs";
 import { readRuntimeState } from "../persistence/runtime-state-store.mjs";
 

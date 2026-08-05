@@ -1,5 +1,12 @@
-export const CODEX_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
-export const CODEX_COLLABORATION_MODES = ["default", "plan"];
+import {
+  CODEX_COLLABORATION_MODES,
+  CODEX_REASONING_EFFORTS,
+} from "../../domain/agent-runtime-settings.mjs";
+
+export {
+  CODEX_COLLABORATION_MODES,
+  CODEX_REASONING_EFFORTS,
+} from "../../domain/agent-runtime-settings.mjs";
 
 export const CODEX_REASONING_LABELS = {
   low: "Low",

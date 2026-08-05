@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { protectRuntimeConfig } from "../../../runtime-security.mjs";
+import { protectRuntimeConfig } from "../../infrastructure/filesystem/runtime-security.mjs";
 
 const BOOLEAN = "boolean";
 const INTEGER = "integer";

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { pathInsideOrSame } from "../../../config.mjs";
+import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 
 const IMAGE_TYPES = new Map([
   [".png", "image/png"],

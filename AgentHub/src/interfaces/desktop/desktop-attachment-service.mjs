@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { pathInsideOrSame } from "../../../config.mjs";
+import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 
 const ATTACHMENT_TYPES = new Map([
   [".png", "image/png"],

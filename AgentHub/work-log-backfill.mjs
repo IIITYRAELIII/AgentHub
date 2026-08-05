@@ -7,7 +7,7 @@ import {
   applyWorkLogRolloutBackfill,
   buildWorkLogRolloutBackfill,
 } from "./work-log-rollout-backfill.mjs";
-import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
+import { defaultRuntimeRoot, runtimeLayout } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 
 function option(name, fallback = "") {
   const index = process.argv.indexOf(name);

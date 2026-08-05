@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { findRepositoryWriteConflict } from "./repository-conflict.mjs";
+import { findRepositoryWriteConflict } from "./src/infrastructure/filesystem/repository-conflict.mjs";
 
 const target = {
   provider: "codex",

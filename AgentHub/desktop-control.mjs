@@ -15,8 +15,8 @@ import {
 import { createConnection, createServer } from "node:net";
 import path from "node:path";
 
-import { defaultRuntimeRoot } from "./runtime-layout.mjs";
-import { protectRuntimeConfig } from "./runtime-security.mjs";
+import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
+import { protectRuntimeConfig } from "./src/infrastructure/filesystem/runtime-security.mjs";
 
 const PROTOCOL_VERSION = 2;
 const MAX_REQUEST_BYTES = 512 * 1024;

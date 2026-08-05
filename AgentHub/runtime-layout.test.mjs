@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 
-import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "./runtime-layout.mjs";
+import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 
 test("defaultRuntimeRoot keeps Windows runtime outside the workspace", () => {
   assert.equal(

@@ -3,8 +3,9 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { processIsAlive } from "../../infrastructure/process/process-liveness.mjs";
+import { stopProcessTree } from "../../infrastructure/process/process-tree.mjs";
 
-export { processIsAlive };
+export { processIsAlive, stopProcessTree };
 
 // Claude Code запускается отдельным CLI-процессом и раньше отдавал stream-json
 // в pipe: при перезапуске бота поток обрывался вместе с родителем и ход
@@ -304,51 +305,3 @@ export async function readProcessFingerprint(pid, {
   return null;
 }
 
-export async function stopProcessTree(pid, {
-  platform = process.platform,
-  spawnImpl = spawn,
-  killImpl = process.kill,
-} = {}) {
-  const value = Number(pid);
-  if (!Number.isInteger(value) || value <= 0) return false;
-  if (platform !== "win32") {
-    try {
-      // Detached Claude является лидером своей группы процессов.
-      killImpl(-value, "SIGTERM");
-      return true;
-    } catch (error) {
-      return error?.code === "ESRCH";
-    }
-  }
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (valueToReturn) => {
-      if (settled) return;
-      settled = true;
-      resolve(valueToReturn);
-    };
-    const fallback = () => {
-      try {
-        killImpl(value, "SIGTERM");
-        finish(true);
-      } catch (error) {
-        finish(error?.code === "ESRCH");
-      }
-    };
-    let killer;
-    try {
-      killer = spawnImpl("taskkill.exe", ["/PID", String(value), "/T", "/F"], {
-        windowsHide: true,
-        stdio: "ignore",
-      });
-    } catch {
-      fallback();
-      return;
-    }
-    killer.once("error", fallback);
-    killer.once("exit", (code) => {
-      if (code === 0 || !processIsAlive(value, killImpl)) finish(true);
-      else fallback();
-    });
-  });
-}

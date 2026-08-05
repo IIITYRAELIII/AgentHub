@@ -13,7 +13,7 @@ import {
   protectRuntimeDirectory,
   runtimeDirectoryAclArguments,
   runtimeSecretAclArguments,
-} from "./runtime-security.mjs";
+} from "./src/infrastructure/filesystem/runtime-security.mjs";
 
 const execFile = promisify(execFileCallback);
 
@@ -85,7 +85,10 @@ test("runtime launchers verify the manifest on every platform", async () => {
     "utf8",
   );
   const unixLauncher = await readFile(path.join(import.meta.dirname, "runtime-launch.sh"), "utf8");
-  const verifier = await readFile(path.join(import.meta.dirname, "runtime-manifest-verifier.mjs"), "utf8");
+  const verifier = await readFile(
+    path.join(import.meta.dirname, "src", "infrastructure", "filesystem", "runtime-manifest-verifier.mjs"),
+    "utf8",
+  );
   assert.match(launcher, /VerifyManifest/);
   assert.match(unixLauncher, /runtime-manifest-verifier\.mjs/);
   assert.match(launcher, /agent-hub-main\.mjs/);

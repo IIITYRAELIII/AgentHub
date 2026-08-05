@@ -10,7 +10,7 @@ import {
   cleanupTaskGitIndexes,
   resolveTaskGitRepoRoots,
   taskGitDiff,
-} from "./task-git-diff.mjs";
+} from "./src/infrastructure/filesystem/task-git-diff.mjs";
 
 const execFileAsync = promisify(execFile);
 

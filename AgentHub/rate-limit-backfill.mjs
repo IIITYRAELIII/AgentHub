@@ -7,7 +7,7 @@ import {
   buildRateLimitRolloutBackfill,
 } from "./rate-limit-rollout-backfill.mjs";
 import { RateLimitHistoryStore } from "./src/infrastructure/persistence/rate-limit-history.mjs";
-import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
+import { defaultRuntimeRoot, runtimeLayout } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 
 function option(name, fallback = "") {
   const index = process.argv.indexOf(name);

@@ -1,13 +1,8 @@
 import path from "node:path";
+import { CLAUDE_PERMISSION_MODES } from "../../domain/agent-runtime-settings.mjs";
 import { creditsFromUsd, formatCredits } from "../../domain/token-usage.mjs";
 
-export const CLAUDE_PERMISSION_MODES = new Set([
-  "default",
-  "acceptEdits",
-  "plan",
-  "auto",
-  "dontAsk",
-]);
+export { CLAUDE_PERMISSION_MODES } from "../../domain/agent-runtime-settings.mjs";
 
 // Бюджет «расширенного мышления» Claude Code для каждого уровня «силы дум».
 // Значение передаётся процессу через переменную окружения MAX_THINKING_TOKENS
@@ -33,6 +28,9 @@ export function buildClaudePrompt(input) {
     if (item?.type === "text") return String(item.text ?? "");
     if (item?.type === "localImage" && item.path) {
       return `Проанализируй также изображение по абсолютному пути: ${path.resolve(item.path)}`;
+    }
+    if (item?.type === "localFile" && item.path) {
+      return `Приложенный файл доступен по абсолютному пути: ${path.resolve(item.path)}`;
     }
     throw new Error(`Claude does not support input item type: ${item?.type ?? "unknown"}`);
   }).filter(Boolean).join("\n\n");

@@ -4,7 +4,7 @@ import { createConnection, createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { defaultRuntimeRoot } from "../../../runtime-layout.mjs";
+import { defaultRuntimeRoot } from "../filesystem/runtime-layout.mjs";
 import { writeTextAtomic } from "../persistence/state-store.mjs";
 import {
   DurableCommandReceipts,

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "baseline": {
     "serverMaximumLines": 3930,
-    "rootProductionModules": 37
+    "rootProductionModules": 29
   },
   "publicRootModules": [
     "agent-hub-main.mjs",
@@ -37,10 +37,7 @@
     "src/providers/claude": [],
     "src/interfaces/telegram": [],
     "src/interfaces/web": [],
-    "src/runtime": [
-      "runtime-cutover.mjs",
-      "runtime-notification-controller.mjs"
-    ],
+    "src/runtime": [],
     "src/infrastructure/persistence": [
       "journal-database.mjs",
       "last-message.mjs",
@@ -49,16 +46,8 @@
       "work-log-title-backfill.mjs",
       "work-log-usage.mjs"
     ],
-    "src/infrastructure/filesystem": [
-      "config.mjs",
-      "repository-conflict.mjs",
-      "runtime-layout.mjs",
-      "runtime-security.mjs",
-      "task-git-diff.mjs"
-    ],
-    "src/infrastructure/process": [
-      "doctor-probes.mjs"
-    ],
+    "src/infrastructure/filesystem": [],
+    "src/infrastructure/process": [],
     "src/infrastructure/network": [],
     "src/infrastructure/telegram": []
   }

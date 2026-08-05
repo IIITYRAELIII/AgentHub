@@ -9,7 +9,7 @@ import {
   mergeCodexStopHookConfig,
   removeCodexStopHookConfig,
 } from "./src/infrastructure/codex/codex-hook-config.mjs";
-import { runtimeLayout } from "./runtime-layout.mjs";
+import { runtimeLayout } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 
 const options = {
   nodeExecutable: "C:\\Program Files\\nodejs\\node.exe",

@@ -1,6 +1,5 @@
 import path from "node:path";
 
-import { captureTaskGitBaseline } from "../../task-git-diff.mjs";
 import {
   createObservedTaskRun,
   shouldDeliverObservedCompletion,
@@ -35,7 +34,7 @@ export class TaskObservationService {
     savedLastTaskMessageRecord,
     externalPollIntervalMs,
     managedPollIntervalMs,
-    captureGitBaseline = captureTaskGitBaseline,
+    captureGitBaseline,
     now = Date.now,
     logger = console,
     setTimeoutImpl = setTimeout,
@@ -60,6 +59,9 @@ export class TaskObservationService {
     this.discardManualContextCompactionRun = discardManualContextCompactionRun;
     this.savedLastTaskMessage = savedLastTaskMessage;
     this.savedLastTaskMessageRecord = savedLastTaskMessageRecord;
+    if (typeof captureGitBaseline !== "function") {
+      throw new TypeError("captureGitBaseline is required");
+    }
     this.captureGitBaseline = captureGitBaseline;
     this.now = now;
     this.logger = logger;

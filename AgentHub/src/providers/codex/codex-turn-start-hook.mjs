@@ -2,13 +2,13 @@ import path from "node:path";
 import process from "node:process";
 
 import { displayUserPrompt } from "../../application/task-history.mjs";
-import { captureTaskGitBaseline } from "../../../task-git-diff.mjs";
+import { captureTaskGitBaseline } from "../../infrastructure/filesystem/task-git-diff.mjs";
 import {
   enqueueRuntimeCommandThroughSpool,
   forwardRuntimeCommand,
   runtimeCommandUnavailable,
 } from "../../infrastructure/process/runtime-command.mjs";
-import { defaultRuntimeRoot, runtimeLayout } from "../../../runtime-layout.mjs";
+import { defaultRuntimeRoot, runtimeLayout } from "../../infrastructure/filesystem/runtime-layout.mjs";
 import { isMainModule } from "../../infrastructure/process/main-module.mjs";
 import { detectCodexHookExecutionOwner } from "./codex-runtime-owner.mjs";
 

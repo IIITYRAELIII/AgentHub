@@ -7,7 +7,7 @@ import {
   probeCodexAppServer,
   probeTelegramConnectivity,
   requiresTelegramChecks,
-} from "./doctor-probes.mjs";
+} from "./src/infrastructure/process/doctor-probes.mjs";
 
 const FAKE_CODEX = path.join(import.meta.dirname, "e2e", "fake-codex-app-server.mjs");
 

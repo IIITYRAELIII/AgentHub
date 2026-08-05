@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { resolveCodexExecutable } from "./src/providers/codex/codex-invocation.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
-import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
+import { defaultRuntimeRoot, runtimeLayout } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import { writeTextAtomic } from "./src/infrastructure/persistence/state-store.mjs";
 import {
   applyWorkLogTitleBackfill,

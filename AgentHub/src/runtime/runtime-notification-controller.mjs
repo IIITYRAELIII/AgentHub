@@ -5,13 +5,13 @@ import {
   cleanRuntimeCallerEnvironment,
   resolveAllowedNotificationCwd,
   resolveAllowedNotificationPath,
-} from "./src/infrastructure/telegram/notification-security.mjs";
-import { captureProcess } from "./src/infrastructure/process/process-capture.mjs";
+} from "../infrastructure/telegram/notification-security.mjs";
+import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import {
-  parseArguments as parseSendMessageArguments,
-  resolveChatId as resolveNotificationChatId,
-} from "./send-message.mjs";
-import { parseArguments as parseSendImagesArguments } from "./send-images.mjs";
+  parseSendImagesArguments,
+  parseSendMessageArguments,
+} from "../infrastructure/telegram/notification-command-arguments.mjs";
+import { resolveAllowedNotificationChatId } from "../infrastructure/telegram/notification-security.mjs";
 
 const NOTIFICATION_COMMANDS = new Set(["send-message", "send-images"]);
 
@@ -65,7 +65,7 @@ export class RuntimeNotificationController {
     const options = messageCommand
       ? parseSendMessageArguments(request.args)
       : parseSendImagesArguments(request.args);
-    resolveNotificationChatId(this.config, options.chatId);
+    resolveAllowedNotificationChatId(this.config, options.chatId);
 
     if (messageCommand && options.messageFile) {
       await resolveAllowedNotificationPath(options.messageFile, {

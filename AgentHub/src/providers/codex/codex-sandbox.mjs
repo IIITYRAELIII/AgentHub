@@ -1,12 +1,9 @@
-export const CODEX_SANDBOX_MODES = ["workspace-write", "danger-full-access"];
+import { normalizeCodexSandboxMode } from "../../domain/agent-runtime-settings.mjs";
 
-export function normalizeCodexSandboxMode(value, { fallback = "workspace-write" } = {}) {
-  const mode = String(value ?? fallback).trim().toLowerCase();
-  if (!CODEX_SANDBOX_MODES.includes(mode)) {
-    throw new Error(`codexSandboxMode must be one of: ${CODEX_SANDBOX_MODES.join(", ")}`);
-  }
-  return mode;
-}
+export {
+  CODEX_SANDBOX_MODES,
+  normalizeCodexSandboxMode,
+} from "../../domain/agent-runtime-settings.mjs";
 
 export function codexThreadSandboxSettings(mode) {
   return {

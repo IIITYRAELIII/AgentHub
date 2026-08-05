@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
-import { defaultRuntimeRoot } from "./runtime-layout.mjs";
+import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import { localWebAccessUrl } from "./src/interfaces/web/local-web-auth.mjs";
 
 const runtimeRoot = path.resolve(process.env.AGENT_HUB_RUNTIME_ROOT ?? defaultRuntimeRoot());

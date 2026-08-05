@@ -3,7 +3,7 @@ import { copyFile, mkdir, readFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { findContainingProject } from "../../../config.mjs";
+import { findContainingProject } from "../../infrastructure/filesystem/config.mjs";
 import { applyLedgerDelta } from "../../infrastructure/persistence/incremental-ledger.mjs";
 import { JournalDatabase } from "../../../journal-database.mjs";
 import { creditsFromUsd } from "../../domain/token-usage.mjs";

@@ -10,18 +10,14 @@ import {
   loadConfig,
   pathInsideOrSame,
   samePath,
-} from "./config.mjs";
+} from "./src/infrastructure/filesystem/config.mjs";
 import { parseClaudeLimits } from "./src/providers/claude/claude.mjs";
 import {
   claudeResultEstimatedCredits,
   claudeResultTokenUsage,
   scanClaudeHistoricalTranscriptFile,
 } from "./src/providers/claude/claude-work-log.mjs";
-import {
-  cleanupOrphanedClaudeRunOutputs,
-  processIsAlive,
-  stopProcessTree,
-} from "./src/providers/claude/claude-run-io.mjs";
+import { cleanupOrphanedClaudeRunOutputs, processIsAlive, stopProcessTree } from "./src/providers/claude/claude-run-io.mjs";
 import { ClaudeRunController } from "./src/providers/claude/claude-run-controller.mjs";
 import { ClaudeTurnLauncher } from "./src/providers/claude/claude-turn-launcher.mjs";
 import {
@@ -74,9 +70,9 @@ import {
   cleanupTaskGitIndexes,
   resolveTaskGitRepoRoots,
   taskGitDiff,
-} from "./task-git-diff.mjs";
+} from "./src/infrastructure/filesystem/task-git-diff.mjs";
 import { TaskDiffStore } from "./src/infrastructure/persistence/task-diff-store.mjs";
-import { findRepositoryWriteConflict } from "./repository-conflict.mjs";
+import { findRepositoryWriteConflict } from "./src/infrastructure/filesystem/repository-conflict.mjs";
 import {
   deferredInputMatchesRun,
   deferredEditableText,
@@ -175,7 +171,7 @@ import {
   restorePreviousBotAfterFailedReplacement,
 } from "./src/runtime/restart-recovery.mjs";
 import { RuntimeCommandServer } from "./src/infrastructure/process/runtime-command.mjs";
-import { RuntimeNotificationController } from "./runtime-notification-controller.mjs";
+import { RuntimeNotificationController } from "./src/runtime/runtime-notification-controller.mjs";
 import { captureProcess } from "./src/infrastructure/process/process-capture.mjs";
 import { CodexLifecycleController } from "./src/providers/codex/codex-lifecycle-controller.mjs";
 import {
@@ -184,7 +180,7 @@ import {
 } from "./src/application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "./src/application/turn-title.mjs";
 import { DesktopControlServer } from "./desktop-control.mjs";
-import { defaultRuntimeRoot } from "./runtime-layout.mjs";
+import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import { MediaController } from "./src/interfaces/telegram/media-controller.mjs";
 import { TelegramMessageController } from "./src/interfaces/telegram/telegram-message-controller.mjs";
 import { ApprovalController } from "./src/interfaces/telegram/approval-controller.mjs";
@@ -3298,6 +3294,7 @@ const taskObserver = new TaskObservationService({
   savedLastTaskMessageRecord,
   externalPollIntervalMs: EXTERNAL_TASK_POLL_INTERVAL_MS,
   managedPollIntervalMs: MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS,
+  captureGitBaseline: captureTaskGitBaseline,
 });
 const claudeTurnLauncher = new ClaudeTurnLauncher({
   taskRuns,

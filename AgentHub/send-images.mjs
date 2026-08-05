@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { findContainingProject, loadConfig } from "./config.mjs";
+import { findContainingProject, loadConfig } from "./src/infrastructure/filesystem/config.mjs";
 import {
   currentCallerBinding,
   currentThreadBinding,
@@ -13,48 +13,9 @@ import { forwardRuntimeCommand, runtimeCommandUnavailable } from "./src/infrastr
 import { isMainModule } from "./src/infrastructure/process/main-module.mjs";
 import { resolveAllowedNotificationPath } from "./src/infrastructure/telegram/notification-security.mjs";
 import { readRuntimeState } from "./src/infrastructure/persistence/runtime-state-store.mjs";
+import { parseSendImagesArguments } from "./src/infrastructure/telegram/notification-command-arguments.mjs";
 
-const MAX_ALBUM_SIZE = 10;
-
-export function parseArguments(args) {
-  let chatId = null;
-  let silent = false;
-  let bindCurrent = false;
-  let bindActive = false;
-  let caption = "";
-  const files = [];
-
-  for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index];
-    if (argument === "--chat-id") {
-      if (index + 1 >= args.length) throw new Error("--chat-id requires a value");
-      chatId = args[++index];
-    } else if (argument === "--caption") {
-      if (index + 1 >= args.length) throw new Error("--caption requires a value");
-      caption = args[++index];
-    } else if (argument === "--silent") {
-      silent = true;
-    } else if (argument === "--bind-current") {
-      bindCurrent = true;
-    } else if (argument === "--bind-active") {
-      bindActive = true;
-    } else if (argument === "--help" || argument === "-h") {
-      return { help: true, chatId, silent, bindCurrent, bindActive, caption, files };
-    } else {
-      files.push(argument);
-    }
-  }
-
-  if (bindCurrent && bindActive) throw new Error("Use either --bind-current or --bind-active, not both");
-  if (!files.length && !args.includes("--help") && !args.includes("-h")) {
-    throw new Error("Specify at least one image");
-  }
-  if (files.length > MAX_ALBUM_SIZE) {
-    throw new Error(`Telegram albums contain at most ${MAX_ALBUM_SIZE} images`);
-  }
-
-  return { help: false, chatId, silent, bindCurrent, bindActive, caption, files };
-}
+export const parseArguments = parseSendImagesArguments;
 
 export function albumMedia(files, caption = "") {
   return files.map((file, index) => ({
@@ -123,7 +84,7 @@ async function sendAlbum(config, chatId, files, caption, silent) {
 }
 
 export async function main(args = process.argv.slice(2)) {
-  const options = parseArguments(args);
+  const options = parseSendImagesArguments(args);
   if (options.help) {
     console.log("Usage: node send-images.mjs [--chat-id <id>] [--silent]");
     console.log("       [--bind-current | --bind-active] [--caption <text>] <image> [image...]");

@@ -22,7 +22,7 @@ import {
   showMessageReplyMarkup,
   splitTelegramText,
 } from "./send-message.mjs";
-import { findContainingProject } from "./config.mjs";
+import { findContainingProject } from "./src/infrastructure/filesystem/config.mjs";
 
 test("parseArguments reads text and options", () => {
   assert.deepEqual(parseArguments(["--silent", "--chat-id", "123", "Готово"]), {

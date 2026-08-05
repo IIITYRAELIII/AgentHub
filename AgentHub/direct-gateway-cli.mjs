@@ -4,7 +4,7 @@ import { access, copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises
 import os from "node:os";
 import path from "node:path";
 
-import { defaultRuntimeRoot } from "./runtime-layout.mjs";
+import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import { readJsonWithBackup, writeTextAtomic } from "./src/infrastructure/persistence/state-store.mjs";
 
 const CADDY_VERSION = "2.11.3";
