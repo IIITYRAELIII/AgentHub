@@ -1,0 +1,129 @@
+# План завершения декомпозиции Agent Hub
+
+## Исходное состояние
+
+На 2026-08-05 уже выделены первые слои `src/application`, `src/providers`,
+`src/interfaces` и `src/runtime`, но физическое перемещение модулей опередило
+декомпозицию composition root:
+
+- `agent-hub-server.mjs` — 5 572 строки, 136 импортов и 244 top-level функции;
+- в корне Agent Hub остаётся 150 production-модулей `.mjs`;
+- внутри `src` находится только 35 production-модулей;
+- host всё ещё сам реализует восстановление состояния, Codex transport,
+  доставку сообщений, значительную часть run lifecycle и обработчиков клиентов.
+
+Следующие этапы считаются выполненными только при передаче ответственности
+отдельному владельцу состояния или use case. Простое перемещение файлов больше
+не является архитектурным этапом.
+
+## Целевой результат
+
+```text
+AgentHub/
+  agent-hub-main.mjs              # executable bootstrap
+  agent-hub-server.mjs            # совместимый start/shutdown facade
+  bin/                             # пользовательские CLI entrypoints
+  scripts/                         # publish, install, migration, doctor
+  src/
+    composition/                   # создание и связывание компонентов
+    domain/                        # Task, Run, identity, статусы и invariants
+    application/                   # команды, use cases и владельцы state
+    ports/                         # provider/client/storage/runtime contracts
+    providers/
+      codex/
+      claude/
+    interfaces/
+      telegram/
+      desktop/
+      web/
+    runtime/                       # process lifecycle и background jobs
+    infrastructure/
+      persistence/
+      filesystem/
+      process/
+      network/
+      telegram/
+      cloudflare/
+  test/
+    unit/                          # структура повторяет src
+    process/
+  e2e/
+  DesktopApp/
+  AndroidApp/
+```
+
+`agent-hub-server.mjs` должен содержать только совместимый публичный API и вызов
+composition factory. Целевой размер — не более 150 строк. Ни один composition
+module не должен становиться новым монолитом: ориентир — не более 600 строк и
+одна причина для изменения.
+
+В корне остаются только стабильные публичные entrypoint/compatibility-фасады и
+package-level файлы. Внутренний production-код и его тесты из корня уходят.
+
+## Правила зависимостей
+
+1. `domain` не зависит от application, provider, interface, runtime или
+   infrastructure.
+2. `application` зависит от `domain` и `ports`, но не от конкретных клиентов,
+   файловой системы, SQLite или процессов.
+3. `providers` и `interfaces` реализуют порты и не импортируют composition root.
+4. `infrastructure` реализует storage/process/network ports и не владеет
+   прикладными решениями.
+5. `runtime` управляет жизненным циклом уже созданных компонентов, но не создаёт
+   их самостоятельно.
+6. Только `composition` знает конкретные реализации всех слоёв.
+7. Все mutating-команды несут явные `hubTaskId`, `clientId` и message/request ID.
+   Provider thread/session ID остаётся внешней ссылкой; один `hubTaskId` сможет
+   последовательно владеть несколькими такими ссылками.
+8. Циклы, импорт host из внутренних модулей и новые root production-модули
+   запрещаются автоматической architecture-проверкой.
+
+## Крупные пакеты работ
+
+Пакеты выполняются целиком. После зелёных проверок работа без дополнительного
+согласования продолжается со следующим пакетом, пока нет реальной блокировки или
+конфликта с параллельными изменениями.
+
+| Пакет | Содержание | Измеримый результат |
+|---:|---|---|
+| B0 | Усилить architecture-тест: матрица разрешённых зависимостей, запрет новых внутренних файлов в корне, контроль размера host/composition и проверка import closure опубликованного runtime. Сформировать машинный inventory миграции. | Новые архитектурные нарушения не могут незаметно попасть в `main`. |
+| B1 | Выделить `HubStateCoordinator`, `AgentPreferencesStore`, `TaskIdentityResolver` и восстановление runtime-state. Перенести state/config/persistence contracts в `domain`, `application` и `ports`. | В host нет загрузки/слияния/сериализации task, selection, provider settings и runtime state. Ориентир host ≤ 4 700 строк. |
+| B2 | Объединить запуск, steer, deferred input, progress, managed/observed completion, recovery и conflict policy вокруг `RunCoordinator` и новых use-case services. Удалить host wrappers, которые только переадресуют provider lifecycle. | Один владелец состояния хода для всех клиентов и провайдеров. Ориентир host ≤ 3 300 строк. |
+| B3 | Разделить provider implementations на `providers/codex` и `providers/claude`; вынести из host Codex App Server lifecycle, Claude stream lifecycle, snapshot/event translation, accounting и terminal reconciliation wiring. | Provider-specific ветвления остаются только внутри adapters. Ориентир host ≤ 2 200 строк. |
+| B4 | Завершить interface-слои: перенести реализации Telegram handlers, Desktop RPC handlers, Mini App/Web API и delivery/presentation. Клиентские контроллеры вызывают одинаковые application commands с явной задачей. | В host нет Telegram/Desktop/Web handler bodies и форматирования сообщений. Ориентир host ≤ 1 200 строк. |
+| B5 | Разнести инфраструктуру по `persistence/filesystem/process/network/telegram/cloudflare`; перенести SQLite, журналы, lock/process helpers, exchange rates, Bot API и Worker adapters. CLI и release scripts переместить в `bin/scripts` с совместимыми фасадами там, где путь уже публичен. | В корне остаётся только документированный allowlist внешних точек входа. |
+| B6 | Ввести `createAgentHubComposition()` и отдельные composition factories для stores, providers, application, interfaces и runtime. `agent-hub-server.mjs` оставить start/shutdown facade, `agent-hub-main.mjs` — executable bootstrap. | Host ≤ 150 строк; каждый composition module ≤ 600 строк; startup/shutdown импортируются и тестируются без запуска процесса. |
+| B7 | Переместить unit/process tests в зеркальное дерево, удалить временные compatibility shims, обновить inventory/README/диаграмму и выполнить финальный аудит dead code и дублирующихся владельцев state. | Root production `.mjs` соответствует allowlist; полный runtime собирается только из нового дерева; старых внутренних путей нет. |
+
+Ориентиры по строкам нужны для обнаружения «переноса без декомпозиции», но не
+заменяют проверку ответственности. Пакет нельзя закрыть только потому, что файл
+стал короче: новый владелец обязан иметь контрактные тесты и явные зависимости.
+
+## Порядок работы внутри каждого пакета
+
+1. Зафиксировать текущие функции и state, принадлежащие переносимой обязанности.
+2. Сначала создать контракт владельца и regression-тесты существующего
+   поведения.
+3. Перенести всю обязанность одним связным изменением, а не по три функции.
+4. Удалить старые wrappers/state из host и проверить отсутствие второго
+   владельца поиском и architecture-тестом.
+5. Переместить связанные production-модули и тесты в целевые папки.
+6. Выполнить focused tests, затем `npm run test:all`, четыре process E2E,
+   extension tests, runtime publish/import smoke и `doctor`.
+7. Сделать отдельный тематический commit, push и безопасную публикацию. Если
+   активные ходы задерживают restart, публикация не считается неуспешной, но
+   ожидающий cutover явно фиксируется.
+
+## Критерий полного завершения
+
+- `agent-hub-server.mjs` не содержит прикладной логики и не превышает 150 строк;
+- нет module-global mutable state вне одного документированного владельца;
+- один и тот же use case вызывается Telegram, Desktop, Web/Android и VS Code
+  через общий application command path;
+- `hubTaskId` отделён от provider thread/session ID во всех новых публичных
+  контрактах;
+- dependency matrix, cycle check, root allowlist и staged-runtime import closure
+  проверяются автоматически;
+- все тесты, E2E, publish smoke, restart/recovery и `doctor` зелёные;
+- документация описывает фактическое дерево и фактических владельцев, а не
+  промежуточное состояние.

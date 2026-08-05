@@ -75,6 +75,11 @@ provider activity, selected-task watch, rate-limit telemetry и task metadata ow
 [`src/README.md`](src/README.md); перенос выполняется по одному проверяемому
 срезу, а не массовым изменением путей.
 
+Продолжение этапов 46+ ведётся крупными пакетами B0–B7 по единому плану
+[`ARCHITECTURE_COMPLETION_PLAN.md`](ARCHITECTURE_COMPLETION_PLAN.md). Он задаёт
+целевое дерево каталогов, dependency matrix, последовательность фактического
+извлечения логики из host и критерий `agent-hub-server.mjs` ≤ 150 строк.
+
 ## Критерий завершения
 
 Каждый этап закрывается только после полного `test:all`, повторных process E2E,
