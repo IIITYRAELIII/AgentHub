@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   BackgroundJobQueue,
   BackgroundJobQueueFullError,
-} from "./background-job-queue.mjs";
+} from "./src/runtime/background-job-queue.mjs";
 
 function deferred() {
   let resolve;

@@ -77,6 +77,8 @@
 | 62 | ⏳ | Первый связный срез B5 перенёс восемь внутренних persistence-адаптеров в `src/infrastructure/persistence`: background/failed jobs, task diff/read/sync, trusted devices, rotating log и publication state. Корневой allowlist уменьшен с 81 до 73 production-модулей; публичные publish entrypoints сохранили имена. |
 | 63 | ⏳ | В `src/infrastructure/process` перенесены межпроцессная блокировка, MCP preflight, bounded process capture и сборщик Windows RuntimeHost. Корневой allowlist уменьшен до 69 production-модулей; публичные doctor/runtime-manager entrypoints продолжают использовать те же команды. |
 | 64 | ⏳ | Network-срез B5 завершён: USD/RUB exchange-rate store и quick-tunnel process adapter находятся в `src/infrastructure/network`. В корне осталось 67 production-модулей. |
+| 65 | ⏳ | Семь application-сервисов и два чистых domain value/helper-модуля физически перенесены в `src/application` и `src/domain`. Все provider/interface imports направлены в целевой слой, корневой allowlist уменьшен до 58 production-модулей. |
+| 66 | ⏳ | В `src/runtime` перенесены background queue/controller, общий lifecycle settler, progress heartbeat и restart recovery. В корне осталось 53 production-модуля; provider-facing runtime command/lifecycle contracts пока не перемещаются через запрещённую зависимость, а будут развязаны отдельным портом. |
 
 После этапов 31–40 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и

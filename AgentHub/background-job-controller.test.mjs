@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PersistentBackgroundJobController } from "./background-job-controller.mjs";
+import { PersistentBackgroundJobController } from "./src/runtime/background-job-controller.mjs";
 
 class MemoryStore {
   constructor(items = []) {

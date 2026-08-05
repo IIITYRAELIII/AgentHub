@@ -6,7 +6,7 @@ import { scanCodexHistoricalRollout } from "./src/providers/codex/codex-turn-usa
 import { applyLedgerDelta } from "./incremental-ledger.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
 import { readJsonWithBackup } from "./state-store.mjs";
-import { conciseTurnTitle } from "./turn-title.mjs";
+import { conciseTurnTitle } from "./src/application/turn-title.mjs";
 import { WorkLogUsageStore, workLogTurnKey } from "./work-log-usage.mjs";
 
 const LOCAL_TIME_ZONE = "Asia/Yekaterinburg";

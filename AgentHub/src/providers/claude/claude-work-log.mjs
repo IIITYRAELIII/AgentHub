@@ -6,9 +6,9 @@ import path from "node:path";
 import { findContainingProject } from "../../../config.mjs";
 import { applyLedgerDelta } from "../../../incremental-ledger.mjs";
 import { JournalDatabase } from "../../../journal-database.mjs";
-import { creditsFromUsd } from "../../../token-usage.mjs";
+import { creditsFromUsd } from "../../domain/token-usage.mjs";
 import { readJsonWithBackup } from "../../../state-store.mjs";
-import { conciseTurnTitle } from "../../../turn-title.mjs";
+import { conciseTurnTitle } from "../../application/turn-title.mjs";
 import { WorkLogUsageStore, workLogTurnKey } from "../../../work-log-usage.mjs";
 
 function contentBlocks(message) {

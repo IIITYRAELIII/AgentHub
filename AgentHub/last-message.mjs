@@ -7,7 +7,7 @@ import {
   claudeTranscriptHistory,
   codexFinalTurnAnswer,
   codexTurnHasExplicitFinalAnswer,
-} from "./task-history.mjs";
+} from "./src/application/task-history.mjs";
 
 export { codexFinalTurnAnswer, codexTurnHasExplicitFinalAnswer };
 

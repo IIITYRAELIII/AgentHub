@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TaskCatalogService } from "./task-catalog-service.mjs";
+import { TaskCatalogService } from "./src/application/task-catalog-service.mjs";
 
 test("task catalog service preserves array identity and advances revision", async () => {
   let now = 100;

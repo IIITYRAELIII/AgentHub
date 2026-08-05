@@ -4,7 +4,7 @@ import {
   mergeActiveTaskHistory,
   responseAnnotationDetails,
   visibleTaskHistory,
-} from "../../../task-history.mjs";
+} from "../../application/task-history.mjs";
 import { readCodexRolloutActivity } from "../../../task-catalog.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { updateTaskRunTitle } from "../../domain/task-runs.mjs";

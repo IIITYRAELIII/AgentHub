@@ -4,7 +4,7 @@ import {
   commandClientContext,
   commandTaskTarget,
   createApplicationCommandService,
-} from "./application-command-service.mjs";
+} from "./src/application/application-command-service.mjs";
 
 function service(calls) {
   const handlers = Object.fromEntries([

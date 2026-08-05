@@ -5,7 +5,7 @@ import {
   markProgressHeartbeat,
   PROGRESS_HEARTBEAT_INTERVAL_MS,
   retainProgressMessageAfterEditError,
-} from "./progress-heartbeat.mjs";
+} from "./src/runtime/progress-heartbeat.mjs";
 
 test("progress heartbeat refreshes on state changes and then at a bounded interval", () => {
   const run = {};

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "baseline": {
     "serverMaximumLines": 3930,
-    "rootProductionModules": 67
+    "rootProductionModules": 53
   },
   "publicRootModules": [
     "agent-hub-main.mjs",
@@ -29,30 +29,15 @@
     "wrangler-runner.mjs"
   ],
   "migrationTargets": {
-    "src/application": [
-      "application-command-bus.mjs",
-      "application-command-service.mjs",
-      "run-journal-service.mjs",
-      "task-catalog-service.mjs",
-      "task-history.mjs",
-      "turn-end-delivery-service.mjs",
-      "turn-title.mjs"
-    ],
+    "src/application": [],
     "src/domain": [
-      "response-budget.mjs",
-      "task-catalog.mjs",
-      "token-usage.mjs"
+      "task-catalog.mjs"
     ],
     "src/providers/codex": [],
     "src/providers/claude": [],
     "src/interfaces/telegram": [],
     "src/interfaces/web": [],
     "src/runtime": [
-      "background-job-controller.mjs",
-      "background-job-queue.mjs",
-      "lifecycle-coordinator.mjs",
-      "progress-heartbeat.mjs",
-      "restart-recovery.mjs",
       "runtime-command.mjs",
       "runtime-cutover.mjs",
       "runtime-lifecycle-authorizer.mjs",

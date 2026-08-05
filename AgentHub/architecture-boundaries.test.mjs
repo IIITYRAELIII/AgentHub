@@ -223,7 +223,7 @@ test("run admission and provider terminal dispatch have one coordinator", async 
 
 test("journal projection and last-message state have one application owner", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
-  const journal = await readFile(path.join(ROOT, "run-journal-service.mjs"), "utf8");
+  const journal = await readFile(path.join(ROOT, "src/application/run-journal-service.mjs"), "utf8");
   assert.equal((source.match(/new RunJournalService\s*\(/g) ?? []).length, 1);
   for (const operation of [
     "recordAutomaticAndProject(",
@@ -239,7 +239,7 @@ test("journal projection and last-message state have one application owner", asy
 
 test("turn-end projection and retry policy have one delivery owner", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
-  const delivery = await readFile(path.join(ROOT, "turn-end-delivery-service.mjs"), "utf8");
+  const delivery = await readFile(path.join(ROOT, "src/application/turn-end-delivery-service.mjs"), "utf8");
   assert.equal((source.match(/new TurnEndDeliveryService\s*\(/g) ?? []).length, 1);
   assert.equal(source.includes("const deliveringTurnEndKeys = new Set()"), false);
   assert.equal(delivery.includes("this.delivering = new Set()"), true);
@@ -391,7 +391,7 @@ test("rate-limit probing and periodic persistence have one telemetry owner", asy
 
 test("shared task mutations enter through one application command bus", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
-  const commands = await readFile(path.join(ROOT, "application-command-service.mjs"), "utf8");
+  const commands = await readFile(path.join(ROOT, "src/application/application-command-service.mjs"), "utf8");
   assert.equal((source.match(/createApplicationCommandService\s*\(/g) ?? []).length, 1);
   assert.equal((commands.match(/new ApplicationCommandBus\s*\(/g) ?? []).length, 1);
   for (const command of [

@@ -1,4 +1,4 @@
-import { turnEndKey } from "./src/application/turn-end-notifications.mjs";
+import { turnEndKey } from "./turn-end-notifications.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
 
 export function fallbackTurnEndMessage(status) {

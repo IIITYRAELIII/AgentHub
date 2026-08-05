@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TurnEndDeliveryService, fallbackTurnEndMessage } from "./turn-end-delivery-service.mjs";
+import { TurnEndDeliveryService, fallbackTurnEndMessage } from "./src/application/turn-end-delivery-service.mjs";
 
 function fixture({ completions = [], activeRun = null, projectResult = null } = {}) {
   const events = [];

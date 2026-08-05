@@ -11,7 +11,7 @@ import {
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
   visibleTaskHistory,
-} from "./task-history.mjs";
+} from "./src/application/task-history.mjs";
 
 test("completed history overlay replaces a stale live answer immediately", () => {
   const history = [{

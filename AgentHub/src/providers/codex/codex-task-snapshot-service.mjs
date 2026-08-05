@@ -3,7 +3,7 @@ import {
   codexTurnAnswer,
   codexTurnHasExplicitFinalAnswer,
 } from "../../../last-message.mjs";
-import { codexThreadHistory } from "../../../task-history.mjs";
+import { codexThreadHistory } from "../../application/task-history.mjs";
 import { codexThreadWaitingOnApproval } from "./codex-approvals.mjs";
 
 function requiredFunction(value, name) {

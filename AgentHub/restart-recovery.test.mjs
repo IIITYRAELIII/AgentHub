@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   finalizeSuccessfulReplacement,
   restorePreviousBotAfterFailedReplacement,
-} from "./restart-recovery.mjs";
+} from "./src/runtime/restart-recovery.mjs";
 
 test("failed replacement restores the previous bot before marking it ready", async () => {
   const events = [];

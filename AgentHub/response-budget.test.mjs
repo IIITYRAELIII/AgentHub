@@ -5,7 +5,7 @@ import {
   fitTaskHistoryPayload,
   truncateUtf8,
   utf8ByteLength,
-} from "./response-budget.mjs";
+} from "./src/domain/response-budget.mjs";
 
 test("truncateUtf8 preserves valid Russian UTF-8", () => {
   const value = truncateUtf8("Привет 🌧️".repeat(1_000), 257);

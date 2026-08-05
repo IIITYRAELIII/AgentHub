@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RunJournalService } from "./run-journal-service.mjs";
+import { RunJournalService } from "./src/application/run-journal-service.mjs";
 
 function fixture({ statImpl = async () => ({}) } = {}) {
   const calls = [];

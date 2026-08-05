@@ -62,7 +62,7 @@ import { CodexContextMaintenanceService } from "./src/providers/codex/codex-cont
 import { CodexUsageTracker } from "./src/providers/codex/codex-usage-tracker.mjs";
 import { randomStatusHeaderFileName } from "./src/interfaces/telegram/status-header.mjs";
 import { TelegramClient } from "./telegram-client.mjs";
-import { emptyTokenUsage } from "./token-usage.mjs";
+import { emptyTokenUsage } from "./src/domain/token-usage.mjs";
 import { telegramPrompt } from "./src/interfaces/telegram/telegram-message.mjs";
 import {
   forwardBundleAttachmentPaths,
@@ -103,7 +103,7 @@ import {
   markProgressHeartbeat,
   PROGRESS_STALLED_AFTER_MS,
   retainProgressMessageAfterEditError,
-} from "./progress-heartbeat.mjs";
+} from "./src/runtime/progress-heartbeat.mjs";
 import {
   serializableTaskRun,
   TaskDismissalRegistry,
@@ -116,7 +116,7 @@ import { listClaudeSessionSnapshots, readClaudeSessionSnapshot } from "./last-me
 import {
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
-} from "./task-history.mjs";
+} from "./src/application/task-history.mjs";
 import * as approvalProtocol from "./src/providers/codex/codex-approvals.mjs";
 const { formatPermissionsApproval, parseApprovalCallback } = approvalProtocol;
 import { contextualCallback } from "./src/interfaces/telegram/callback-context.mjs";
@@ -133,8 +133,8 @@ import { createTrustedDeviceManager, resolveTrustedDeviceUserId } from "./src/in
 import { TrustedDeviceStore } from "./src/infrastructure/persistence/trusted-device-store.mjs";
 import { unavailableLocalMcpOverrides } from "./src/infrastructure/process/local-mcp-preflight.mjs";
 import { SingleInstanceGuard } from "./instance-lock.mjs";
-import { BackgroundJobQueue } from "./background-job-queue.mjs";
-import { PersistentBackgroundJobController } from "./background-job-controller.mjs";
+import { BackgroundJobQueue } from "./src/runtime/background-job-queue.mjs";
+import { PersistentBackgroundJobController } from "./src/runtime/background-job-controller.mjs";
 import { PersistentBackgroundJobStore } from "./src/infrastructure/persistence/background-job-store.mjs";
 import { FailedTelegramUpdateStore } from "./src/infrastructure/persistence/failed-update-store.mjs";
 import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "./src/providers/claude/claude-invocation.mjs";
@@ -173,7 +173,7 @@ import {
 import {
   finalizeSuccessfulReplacement,
   restorePreviousBotAfterFailedReplacement,
-} from "./restart-recovery.mjs";
+} from "./src/runtime/restart-recovery.mjs";
 import { RuntimeCommandServer } from "./runtime-command.mjs";
 import { RuntimeNotificationController } from "./runtime-notification-controller.mjs";
 import { captureProcess } from "./src/infrastructure/process/process-capture.mjs";
@@ -182,7 +182,7 @@ import {
   TurnEndNotificationRegistry,
   turnEndKey,
 } from "./src/application/turn-end-notifications.mjs";
-import { conciseTurnTitle } from "./turn-title.mjs";
+import { conciseTurnTitle } from "./src/application/turn-title.mjs";
 import { DesktopControlServer } from "./desktop-control.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import { MediaController } from "./src/interfaces/telegram/media-controller.mjs";
@@ -223,7 +223,7 @@ import { MiniAppPublisher } from "./src/interfaces/web/mini-app-publisher.mjs";
 import { DirectGatewayController, loadDirectGatewaySettings } from "./src/interfaces/web/direct-gateway.mjs";
 import { QuickTunnelController } from "./src/infrastructure/network/quick-tunnel.mjs";
 import { ensureLocalWebSecret } from "./src/interfaces/web/local-web-auth.mjs";
-import { fitTaskHistoryPayload } from "./response-budget.mjs";
+import { fitTaskHistoryPayload } from "./src/domain/response-budget.mjs";
 import { RuntimeLifecycleController } from "./src/runtime/runtime-lifecycle-controller.mjs";
 import { RuntimeResourceRegistry } from "./src/runtime/runtime-resource-registry.mjs";
 import { RuntimeRestartController } from "./src/runtime/runtime-restart-controller.mjs";
@@ -235,7 +235,7 @@ import {
   commandClientContext,
   commandTaskTarget,
   createApplicationCommandService,
-} from "./application-command-service.mjs";
+} from "./src/application/application-command-service.mjs";
 import { DesktopAttachmentService } from "./src/interfaces/desktop/desktop-attachment-service.mjs";
 import { TelegramSettingsCallbackService } from "./src/interfaces/telegram/telegram-settings-callbacks.mjs";
 import { TelegramTaskCallbackService } from "./src/interfaces/telegram/telegram-task-callbacks.mjs";
@@ -257,7 +257,7 @@ import { ClaudeCatalogProjectionService, CodexCatalogProjectionService } from ".
 import { DesktopDeferredInputService } from "./src/interfaces/desktop/desktop-deferred-input-service.mjs";
 import { DesktopSettingsService } from "./src/interfaces/desktop/desktop-settings-service.mjs";
 import { ProviderTaskCatalogBuilder } from "./src/providers/provider-task-catalog-builder.mjs";
-import { TaskCatalogService } from "./task-catalog-service.mjs";
+import { TaskCatalogService } from "./src/application/task-catalog-service.mjs";
 import { TaskSelectionStore } from "./src/application/task-selection-store.mjs";
 import { createDesktopSnapshotFactory } from "./src/interfaces/desktop/desktop-snapshot.mjs";
 import { createDesktopTaskHistoryFactory } from "./src/interfaces/desktop/desktop-task-history.mjs";
@@ -284,11 +284,11 @@ import {
 import { RunProgressPresentation } from "./src/application/run-progress-presentation.mjs";
 import { AgentHubStartupCoordinator } from "./src/application/agent-hub-startup-coordinator.mjs";
 import { RuntimeTimerCoordinator } from "./src/runtime/runtime-timer-coordinator.mjs";
-import { RunJournalService } from "./run-journal-service.mjs";
+import { RunJournalService } from "./src/application/run-journal-service.mjs";
 import {
   TurnEndDeliveryService,
   fallbackTurnEndMessage,
-} from "./turn-end-delivery-service.mjs";
+} from "./src/application/turn-end-delivery-service.mjs";
 import { AgentPreferencesStore } from "./src/application/agent-preferences-store.mjs";
 import { DeferredInputStore } from "./src/application/deferred-input-store.mjs";
 import { DeferredInputService } from "./src/application/deferred-input-service.mjs";

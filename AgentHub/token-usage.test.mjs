@@ -16,7 +16,7 @@ import {
   tokenUsageDelta,
   turnCreditBreakdown,
   turnCredits,
-} from "./token-usage.mjs";
+} from "./src/domain/token-usage.mjs";
 
 const SOL = "gpt-5.6-sol";
 

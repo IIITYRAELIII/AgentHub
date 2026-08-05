@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { conciseTurnTitle } from "./turn-title.mjs";
+import { conciseTurnTitle } from "./src/application/turn-title.mjs";
 
 test("turn title skips generic acknowledgements", () => {
   assert.equal(

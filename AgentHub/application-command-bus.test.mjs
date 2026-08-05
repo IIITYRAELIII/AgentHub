@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ApplicationCommandBus } from "./application-command-bus.mjs";
+import { ApplicationCommandBus } from "./src/application/application-command-bus.mjs";
 
 test("command bus requires a client and an explicit target when declared", async () => {
   const bus = new ApplicationCommandBus().register("task.rename", {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { settleNamedOperations } from "./lifecycle-coordinator.mjs";
+import { settleNamedOperations } from "./src/runtime/lifecycle-coordinator.mjs";
 
 test("lifecycle operations all run even when one close fails", async () => {
   const visited = [];

@@ -1,4 +1,4 @@
-import { TURN_END_TITLE_LIMIT } from "./src/application/turn-end-notifications.mjs";
+import { TURN_END_TITLE_LIMIT } from "./turn-end-notifications.mjs";
 
 const GENERIC_RESULT = /^(?:да|нет|готово|сделано|исправлено|выполнено|проверено|принято|понял|результат|итог|итоги|обновлено)[.!?:—\s-]*$/iu;
 const GENERIC_PREFIX = /^(?:готово|сделано|исправлено|выполнено|проверено|результат|итог|итоги|обновлено)[.!?:—\s-]+/iu;

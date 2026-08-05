@@ -4,7 +4,7 @@ import {
   createDesktopTaskHistoryFactory,
   mergeDurableTaskHistory,
 } from "./src/interfaces/desktop/desktop-task-history.mjs";
-import { mergeCompletedTaskHistory } from "./task-history.mjs";
+import { mergeCompletedTaskHistory } from "./src/application/task-history.mjs";
 
 function fixture(overrides = {}) {
   const calls = {

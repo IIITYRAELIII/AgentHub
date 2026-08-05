@@ -2,7 +2,7 @@ import { unlink } from "node:fs/promises";
 import { buildCodexCollaborationMode } from "./codex/codex-settings.mjs";
 import { activeTurnMissing, interruptCodexTurnWithRecovery, startCodexTurnWithRecovery } from "./codex/codex-recovery.mjs";
 import { codexThreadSandboxSettings, codexTurnSandboxSettings } from "./codex/codex-sandbox.mjs";
-import { emptyTokenUsage } from "../../token-usage.mjs";
+import { emptyTokenUsage } from "../domain/token-usage.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);

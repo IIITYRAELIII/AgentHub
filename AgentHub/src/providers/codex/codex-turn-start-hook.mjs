@@ -1,7 +1,7 @@
 import path from "node:path";
 import process from "node:process";
 
-import { displayUserPrompt } from "../../../task-history.mjs";
+import { displayUserPrompt } from "../../application/task-history.mjs";
 import { captureTaskGitBaseline } from "../../../task-git-diff.mjs";
 import {
   enqueueRuntimeCommandThroughSpool,

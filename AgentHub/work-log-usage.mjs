@@ -10,7 +10,7 @@ import { isInheritedSubagentTurn } from "./src/providers/codex/codex-subagent-ac
 import { writeTextAtomic } from "./state-store.mjs";
 import { withInterprocessLocks } from "./src/infrastructure/process/interprocess-lock.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
-import { displayUserPrompt } from "./task-history.mjs";
+import { displayUserPrompt } from "./src/application/task-history.mjs";
 import {
   ledgerRecordChanges,
   ledgerRecordSnapshot,
@@ -24,7 +24,7 @@ import {
   normalizeServiceTier,
   normalizeTokenUsage,
   turnCreditBreakdown,
-} from "./token-usage.mjs";
+} from "./src/domain/token-usage.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
