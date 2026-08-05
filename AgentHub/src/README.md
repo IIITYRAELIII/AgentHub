@@ -22,3 +22,19 @@ remain visible to the architecture checks.
 New application state must use stable task references and prefer `hubTaskId`.
 Provider thread/session IDs are external references and must not become the
 permanent identity of a logical task.
+
+The enforced dependency direction is:
+
+- `domain` → `domain`;
+- `ports` → `domain`, `ports`;
+- `application` → `domain`, `ports`, `application`;
+- `providers` → `domain`, `ports`, `application`, `providers`;
+- `interfaces` → `domain`, `ports`, `application`, `interfaces`;
+- `runtime` → `domain`, `ports`, `application`, `runtime`;
+- `infrastructure` → `domain`, `ports`, `infrastructure`;
+- `composition` may bind every layer.
+
+Temporary dependencies on frozen legacy root modules are allowed only while the
+module is listed in `architecture-migration-inventory.json`. The architecture
+test rejects every unregistered root module and every dependency that points in
+the opposite direction.

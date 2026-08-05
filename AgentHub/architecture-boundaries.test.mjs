@@ -3,8 +3,66 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
+import { relativeModuleSpecifiers } from "./src/infrastructure/filesystem/module-import-specifiers.mjs";
+
 const ROOT = import.meta.dirname;
 const IGNORED_DIRECTORIES = new Set(["node_modules", "build", "dist", ".wrangler"]);
+const SOURCE_LAYERS = new Set([
+  "application",
+  "composition",
+  "domain",
+  "infrastructure",
+  "interfaces",
+  "ports",
+  "providers",
+  "runtime",
+]);
+const LAYER_DEPENDENCIES = new Map([
+  ["domain", new Set(["domain"])],
+  ["ports", new Set(["domain", "ports"])],
+  ["application", new Set(["application", "domain", "ports", "legacy-root"])],
+  ["providers", new Set(["application", "domain", "ports", "providers", "legacy-root"])],
+  ["interfaces", new Set(["application", "domain", "interfaces", "ports", "legacy-root"])],
+  ["runtime", new Set(["application", "domain", "ports", "runtime", "legacy-root"])],
+  ["infrastructure", new Set(["domain", "infrastructure", "ports", "legacy-root"])],
+  ["composition", new Set([...SOURCE_LAYERS, "legacy-root", "public-root"])],
+]);
+
+async function migrationInventory() {
+  return JSON.parse(await readFile(path.join(ROOT, "architecture-migration-inventory.json"), "utf8"));
+}
+
+function inventoryModules(inventory) {
+  return Object.values(inventory.migrationTargets).flat();
+}
+
+async function rootProductionModuleNames() {
+  return (await readdir(ROOT, { withFileTypes: true }))
+    .filter((entry) => (
+      entry.isFile()
+      && entry.name.endsWith(".mjs")
+      && !entry.name.endsWith(".test.mjs")
+      && !entry.name.endsWith(".e2e.test.mjs")
+      && entry.name !== "syntax-check.mjs"
+    ))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+function sourceLayer(file) {
+  const relative = path.relative(path.join(ROOT, "src"), file);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+  return relative.split(path.sep)[0];
+}
+
+function dependencyLayer(target, inventory) {
+  const layer = sourceLayer(target);
+  if (layer) return layer;
+  if (path.dirname(target) !== ROOT) return null;
+  if (inventoryModules(inventory).includes(path.basename(target))) return "legacy-root";
+  if (inventory.publicRootModules.includes(path.basename(target))) return "public-root";
+  return null;
+}
 
 async function productionModules(directory = ROOT) {
   const result = [];
@@ -19,8 +77,7 @@ async function productionModules(directory = ROOT) {
 }
 
 function relativeImports(source) {
-  return [...source.matchAll(/(?:import[\s\S]*?from\s*|import\s*)["'](\.[^"']+)["']/g)]
-    .map((match) => match[1]);
+  return relativeModuleSpecifiers(source);
 }
 
 test("production modules never depend on the Agent Hub composition root", async () => {
@@ -249,6 +306,48 @@ test("Codex terminal reconciliation has one application owner", async () => {
     assert.equal(source.includes(operation), false, operation);
     assert.equal(reconciliation.includes(operation), true, operation);
   }
+});
+
+test("root production modules match the frozen migration inventory", async () => {
+  const inventory = await migrationInventory();
+  assert.equal(inventory.schemaVersion, 1);
+  const migration = inventoryModules(inventory);
+  const combined = [...inventory.publicRootModules, ...migration];
+  assert.equal(new Set(combined).size, combined.length, "migration inventory contains duplicate modules");
+  assert.equal(combined.length, inventory.baseline.rootProductionModules);
+  assert.deepEqual(await rootProductionModuleNames(), combined.toSorted());
+  for (const target of Object.keys(inventory.migrationTargets)) {
+    assert.match(target, /^src\/(?:application|domain|providers\/(?:codex|claude)|interfaces\/(?:telegram|desktop|web)|runtime|infrastructure\/(?:persistence|filesystem|process|network|telegram|cloudflare))$/u);
+  }
+});
+
+test("composition root cannot grow while responsibilities are extracted", async () => {
+  const inventory = await migrationInventory();
+  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const lines = source.split(/\r?\n/u).length - (source.endsWith("\n") ? 1 : 0);
+  assert.ok(
+    lines <= inventory.baseline.serverMaximumLines,
+    `agent-hub-server.mjs grew to ${lines} lines; maximum is ${inventory.baseline.serverMaximumLines}`,
+  );
+});
+
+test("src modules obey the architectural dependency matrix", async () => {
+  const inventory = await migrationInventory();
+  const sourceRoot = path.join(ROOT, "src");
+  const files = await productionModules(sourceRoot);
+  const violations = [];
+  for (const file of files) {
+    const owner = sourceLayer(file);
+    assert.equal(SOURCE_LAYERS.has(owner), true, `unknown source layer: ${path.relative(ROOT, file)}`);
+    for (const specifier of relativeImports(await readFile(file, "utf8"))) {
+      const target = path.normalize(path.resolve(path.dirname(file), specifier));
+      const dependency = dependencyLayer(target, inventory);
+      if (dependency && !LAYER_DEPENDENCIES.get(owner).has(dependency)) {
+        violations.push(`${path.relative(ROOT, file)} -> ${specifier} (${owner} -> ${dependency})`);
+      }
+    }
+  }
+  assert.deepEqual(violations, []);
 });
 
 test("provider activity and selected external watch have explicit owners", async () => {

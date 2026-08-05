@@ -2,6 +2,35 @@ import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
+import { relativeModuleSpecifiers } from "./src/infrastructure/filesystem/module-import-specifiers.mjs";
+
+const MODULE_FILE_PATTERN = /\.(?:cjs|mjs)$/iu;
+
+function normalizedRelative(value) {
+  return value.replaceAll("\\", "/").replace(/^\.\//u, "");
+}
+
+export async function verifyRuntimeImportClosure(releaseRoot, files) {
+  const included = new Set(files.map((entry) => normalizedRelative(entry.path ?? entry)));
+  const missing = [];
+  for (const importer of [...included].filter((entry) => MODULE_FILE_PATTERN.test(entry))) {
+    const source = await readFile(releasePath(releaseRoot, importer), "utf8");
+    for (const specifier of relativeModuleSpecifiers(source)) {
+      const target = normalizedRelative(path.posix.normalize(path.posix.join(
+        path.posix.dirname(importer),
+        specifier.replaceAll("\\", "/"),
+      )));
+      if (!included.has(target)) missing.push({ importer, specifier, target });
+    }
+  }
+  if (missing.length > 0) {
+    const details = missing
+      .map(({ importer, specifier }) => `${importer} -> ${specifier}`)
+      .join(", ");
+    throw new Error(`Agent Hub runtime has missing relative imports: ${details}`);
+  }
+}
+
 function releasePath(releaseRoot, relative) {
   if (path.isAbsolute(relative)) throw new Error(`Agent Hub runtime manifest contains an absolute path: ${relative}`);
   const root = path.resolve(releaseRoot);
@@ -19,6 +48,7 @@ export async function verifyRuntimeManifest(releaseRoot, releaseId) {
     throw new Error("Agent Hub runtime manifest does not match current.json");
   }
   if (!Array.isArray(manifest.files)) throw new Error("Agent Hub runtime manifest has no file list");
+  await verifyRuntimeImportClosure(releaseRoot, manifest.files);
   for (const entry of manifest.files) {
     const relative = String(entry?.path ?? "");
     const target = releasePath(releaseRoot, relative);

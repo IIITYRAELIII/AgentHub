@@ -92,6 +92,20 @@ test("deployRuntime publishes an atomic release without tests or local config", 
   await assert.rejects(readFile(path.join(runtimeRoot, "releases", "release-1", "agent-hub-server.mjs"), "utf8"), /ENOENT/);
 });
 
+test("deployRuntime rejects a release with a missing relative import before cutover", async () => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  await writeFile(
+    path.join(sourceRoot, "agent-hub-server.mjs"),
+    'import "./missing-runtime-module.mjs";\nexport const ready = true;\n',
+    "utf8",
+  );
+  await assert.rejects(
+    deployRuntime({ sourceRoot, runtimeRoot, releaseId: "broken-release" }),
+    /missing relative imports.*agent-hub-server\.mjs -> \.\/missing-runtime-module\.mjs/u,
+  );
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json"), "utf8"), /ENOENT/u);
+});
+
 test("deployRuntime keeps a locked old release without failing the published pointer", async () => {
   const { sourceRoot, runtimeRoot } = await fixture();
   await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });

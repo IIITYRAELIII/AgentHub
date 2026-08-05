@@ -16,6 +16,7 @@ import process from "node:process";
 
 import { isMainModule } from "./main-module.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "./runtime-layout.mjs";
+import { verifyRuntimeImportClosure } from "./runtime-manifest-verifier.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "./runtime-security.mjs";
 
@@ -228,6 +229,7 @@ export async function deployRuntime({
       sourceRoot: path.resolve(sourceRoot),
       files: await releaseManifest(staging, names),
     };
+    await verifyRuntimeImportClosure(staging, manifest.files);
     await writeFile(path.join(staging, "runtime-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     await rename(staging, releaseRoot);
     // Staging is created below the already protected releases directory, so

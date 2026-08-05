@@ -58,6 +58,7 @@
 | 43 | ✅ | Общая provider-граница перенесена в `src/providers`: обязательный port registry, фабрики Codex/Claude, catalog builder и сервисы task/turn/catalog/completion/recovery. Composition root только связывает их зависимости; provider adapters не импортируют host и не закрепляют логическую задачу за одним thread/session ID. |
 | 44 | ✅ | Desktop/VS Code/Mini App получили физическую interface-границу `src/interfaces/desktop`: RPC application/router policy, snapshot/history read-model, сообщения, вложения, настройки и deferred input. Корневой `desktop-control.mjs` остаётся стабильным IPC entrypoint для CLI и process-интеграций. |
 | 45 | ✅ | Telegram command/message/callback dispatch, callback parser, polling policy, status и settings presentation перенесены в `src/interfaces/telegram`. Корневой Bot API transport сохранён как стабильная инфраструктурная граница; interface-слой не владеет task/run state. |
+| 46 | ✅ | Зафиксированы точный inventory всех корневых production-модулей и их целевых слоёв, dependency matrix, верхняя граница composition root и runtime import-closure gate. Новые root-файлы, обратные зависимости слоёв и неполные релизы теперь отклоняются тестами до публикации. |
 
 После этапов 31–40 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и
