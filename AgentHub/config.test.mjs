@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  AGENT_HUB_ROOT,
   canonicalizeProjectRoots,
   findContainingProject,
   httpBaseUrl,
@@ -15,6 +16,10 @@ import {
   resolveConfigPath,
   samePath,
 } from "./src/infrastructure/filesystem/config.mjs";
+
+test("Agent Hub root remains independent from the config module location", () => {
+  assert.equal(AGENT_HUB_ROOT, path.resolve(import.meta.dirname));
+});
 
 test("core-only components need neither Telegram credentials nor Web App", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-profile-"));

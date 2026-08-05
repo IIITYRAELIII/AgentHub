@@ -19,7 +19,7 @@ const miniAppSource = await readFile(
   "utf8",
 );
 const serverSource = await readFile(
-  new URL("./agent-hub-server.mjs", import.meta.url),
+  new URL("./src/composition/agent-hub-composition.mjs", import.meta.url),
   "utf8",
 );
 const codexEventSource = await readFile(

@@ -6,6 +6,7 @@ import test from "node:test";
 import { relativeModuleSpecifiers } from "./src/infrastructure/filesystem/module-import-specifiers.mjs";
 
 const ROOT = import.meta.dirname;
+const COMPOSITION_ROOT = path.join(ROOT, "src", "composition", "agent-hub-composition.mjs");
 const IGNORED_DIRECTORIES = new Set(["node_modules", "build", "dist", ".wrangler"]);
 const SOURCE_LAYERS = new Set([
   "application",
@@ -27,6 +28,14 @@ const LAYER_DEPENDENCIES = new Map([
   ["infrastructure", new Set(["domain", "infrastructure", "ports", "legacy-root"])],
   ["composition", new Set([...SOURCE_LAYERS, "legacy-root", "public-root"])],
 ]);
+
+async function compositionSource() {
+  const directory = path.join(ROOT, "src", "composition");
+  const files = (await readdir(directory, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".mjs"))
+    .map((entry) => path.join(directory, entry.name));
+  return (await Promise.all(files.map((file) => readFile(file, "utf8")))).join("\n");
+}
 
 async function migrationInventory() {
   return JSON.parse(await readFile(path.join(ROOT, "architecture-migration-inventory.json"), "utf8"));
@@ -133,14 +142,14 @@ test("production module graph remains acyclic", async () => {
 });
 
 test("composition root uses one resource registry instead of ad-hoc settling", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   assert.equal(source.includes("settleNamedOperations"), false);
   assert.equal((source.match(/new RuntimeResourceRegistry\s*\(/g) ?? []).length, 1);
   assert.equal((source.match(/new RuntimeRestartController\s*\(/g) ?? []).length, 1);
 });
 
 test("composition root changes selected task only through TaskSelectionStore", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   for (const field of ["activeProvider", "activeProjectRoot", "threadId", "activeThreadTitle"]) {
     const directAssignments = [...source.matchAll(new RegExp(`^\\s*${field}\\s*=\\s*([^;]+);`, "gmu"))]
       .map((match) => match[0].trim());
@@ -151,13 +160,13 @@ test("composition root changes selected task only through TaskSelectionStore", a
 });
 
 test("provider discovery and catalog merge have one application owner", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   assert.equal((source.match(/new ProviderTaskCatalogBuilder\s*\(/g) ?? []).length, 1);
   assert.equal(/Promise\.allSettled\(\s*\[\s*listAllCodexThreads/u.test(source), false);
 });
 
 test("provider operations resolve through one AgentProvider registry", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   const adapters = await readFile(path.join(ROOT, "src", "providers", "provider-adapters.mjs"), "utf8");
   const coordinator = await readFile(path.join(ROOT, "src", "application", "run-coordinator.mjs"), "utf8");
   const observation = await readFile(path.join(ROOT, "src", "application", "task-observation-service.mjs"), "utf8");
@@ -205,7 +214,7 @@ test("provider operations resolve through one AgentProvider registry", async () 
 });
 
 test("run admission and provider terminal dispatch have one coordinator", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   const observation = await readFile(path.join(ROOT, "src", "application", "task-observation-service.mjs"), "utf8");
   assert.equal((source.match(/new RunCoordinator\s*\(/g) ?? []).length, 1);
   const startTurn = source.slice(
@@ -222,7 +231,7 @@ test("run admission and provider terminal dispatch have one coordinator", async 
 });
 
 test("journal projection and last-message state have one application owner", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   const journal = await readFile(path.join(ROOT, "src/application/run-journal-service.mjs"), "utf8");
   assert.equal((source.match(/new RunJournalService\s*\(/g) ?? []).length, 1);
   for (const operation of [
@@ -238,7 +247,7 @@ test("journal projection and last-message state have one application owner", asy
 });
 
 test("turn-end projection and retry policy have one delivery owner", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   const delivery = await readFile(path.join(ROOT, "src/application/turn-end-delivery-service.mjs"), "utf8");
   assert.equal((source.match(/new TurnEndDeliveryService\s*\(/g) ?? []).length, 1);
   assert.equal(source.includes("const deliveringTurnEndKeys = new Set()"), false);
@@ -248,7 +257,7 @@ test("turn-end projection and retry policy have one delivery owner", async () =>
 });
 
 test("Codex completion bookkeeping has one finalization owner", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   const finalizer = await readFile(path.join(ROOT, "src/providers/codex/codex-run-finalizer.mjs"), "utf8");
   assert.equal((source.match(/new CodexRunFinalizer\s*\(/g) ?? []).length, 1);
   assert.equal(source.includes("routeCodexFinalDelivery("), false);
@@ -259,7 +268,7 @@ test("Codex completion bookkeeping has one finalization owner", async () => {
 });
 
 test("Codex token and context state have one bounded owner", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   const tracker = await readFile(path.join(ROOT, "src/providers/codex/codex-usage-tracker.mjs"), "utf8");
   assert.equal((source.match(/new CodexUsageTracker\s*\(/g) ?? []).length, 1);
   assert.equal(source.includes("const threadTokenTotals = new Map()"), false);
@@ -271,7 +280,7 @@ test("Codex token and context state have one bounded owner", async () => {
 });
 
 test("Codex compaction and rollout sanitation have one maintenance owner", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   const maintenance = await readFile(
     path.join(ROOT, "src/providers/codex/codex-context-maintenance-service.mjs"),
     "utf8",
@@ -291,7 +300,7 @@ test("Codex compaction and rollout sanitation have one maintenance owner", async
 });
 
 test("Codex terminal reconciliation has one application owner", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   const reconciliation = await readFile(
     path.join(ROOT, "src/providers/codex/codex-terminal-reconciliation-service.mjs"),
     "utf8",
@@ -325,11 +334,17 @@ test("root production modules match the frozen migration inventory", async () =>
 
 test("composition root cannot grow while responsibilities are extracted", async () => {
   const inventory = await migrationInventory();
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
-  const lines = source.split(/\r?\n/u).length - (source.endsWith("\n") ? 1 : 0);
+  const facade = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await readFile(COMPOSITION_ROOT, "utf8");
+  const facadeLines = facade.split(/\r?\n/u).length - (facade.endsWith("\n") ? 1 : 0);
+  const compositionLines = source.split(/\r?\n/u).length - (source.endsWith("\n") ? 1 : 0);
   assert.ok(
-    lines <= inventory.baseline.serverMaximumLines,
-    `agent-hub-server.mjs grew to ${lines} lines; maximum is ${inventory.baseline.serverMaximumLines}`,
+    facadeLines <= inventory.baseline.serverMaximumLines,
+    `agent-hub-server.mjs grew to ${facadeLines} lines; maximum is ${inventory.baseline.serverMaximumLines}`,
+  );
+  assert.ok(
+    compositionLines <= inventory.baseline.compositionMaximumLines,
+    `agent-hub-composition.mjs grew to ${compositionLines} lines; maximum is ${inventory.baseline.compositionMaximumLines}`,
   );
 });
 
@@ -353,7 +368,7 @@ test("src modules obey the architectural dependency matrix", async () => {
 });
 
 test("provider activity and selected external watch have explicit owners", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   const activity = await readFile(
     path.join(ROOT, "src", "application", "provider-task-activity-service.mjs"),
     "utf8",
@@ -375,7 +390,7 @@ test("provider activity and selected external watch have explicit owners", async
 });
 
 test("rate-limit probing and periodic persistence have one telemetry owner", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   const telemetry = await readFile(
     path.join(ROOT, "src", "application", "rate-limit-telemetry-service.mjs"),
     "utf8",
@@ -390,7 +405,7 @@ test("rate-limit probing and periodic persistence have one telemetry owner", asy
 });
 
 test("shared task mutations enter through one application command bus", async () => {
-  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const source = await compositionSource();
   const commands = await readFile(path.join(ROOT, "src/application/application-command-service.mjs"), "utf8");
   assert.equal((source.match(/createApplicationCommandService\s*\(/g) ?? []).length, 1);
   assert.equal((commands.match(/new ApplicationCommandBus\s*\(/g) ?? []).length, 1);

@@ -11,7 +11,7 @@ import {
 } from "../../domain/agent-runtime-settings.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 
-export const AGENT_HUB_ROOT = path.resolve(import.meta.dirname);
+export const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "../../..");
 
 export async function resolveConfigPath({
   environment = process.env,

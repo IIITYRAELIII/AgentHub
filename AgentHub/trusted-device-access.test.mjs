@@ -20,7 +20,10 @@ test("public browser pairing clears stale errors and submits a complete pasted c
 });
 
 test("Windows Hub prefers IPv4 for Worker calls when IPv6 is unavailable", () => {
-  const server = readFileSync(new URL("./agent-hub-server.mjs", import.meta.url), "utf8");
+  const server = readFileSync(
+    new URL("./src/composition/agent-hub-composition.mjs", import.meta.url),
+    "utf8",
+  );
   assert.match(server, /process\.platform === "win32"/u);
   assert.match(server, /dns\.setDefaultResultOrder\("ipv4first"\)/u);
 });

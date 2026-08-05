@@ -1,6 +1,39 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createRuntimeLifecycleComposition } from "./src/composition/runtime-lifecycle-composition.mjs";
 import { RuntimeLifecycleController } from "./src/runtime/runtime-lifecycle-controller.mjs";
+
+test("runtime composition passes startup timers through its public contract", async () => {
+  const events = [];
+  const noOp = async () => {};
+  const lifecycle = createRuntimeLifecycleComposition({
+    telegramEnabled: true,
+    beginStopping: () => true,
+    stopRuntimeTimers() {},
+    stopManagedRuns() {},
+    stopMedia() {},
+    runtimeResources: {},
+    startControlPlane: noOp,
+    startMiniApp: noOp,
+    sanitizeRollouts: noOp,
+    initializeProvider: noOp,
+    providerIsRunning: () => false,
+    backfillProviderMetadata: noOp,
+    recoverRuns: noOp,
+    retryNotifications: noOp,
+    restoreBackgroundJobs: noOp,
+    startTimers: () => events.push("timers"),
+    registerTelegramCommands: noOp,
+    hasPendingRestart: () => false,
+    finalizeRestart: noOp,
+    markReady: () => events.push("ready"),
+    readyMessage: () => "ready",
+    pollTelegram: () => "polling",
+  });
+
+  assert.equal(await lifecycle.startAgentHub(), "polling");
+  assert.deepEqual(events, ["timers", "ready"]);
+});
 
 test("runtime lifecycle stops once and settles every named component", async () => {
   let stopping = false;
