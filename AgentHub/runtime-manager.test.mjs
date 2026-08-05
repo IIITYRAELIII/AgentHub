@@ -162,6 +162,48 @@ test("deployRuntime does not replace unchanged stable runtime files", async () =
   }
 });
 
+test("deployRuntime defers a locked stable launcher without blocking release cutover", async () => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
+  const stableHook = path.join(runtimeRoot, "codex-stop-hook-launcher.mjs");
+  const originalHook = await readFile(stableHook, "utf8");
+  await writeFile(
+    path.join(sourceRoot, "codex-stop-hook-launcher.mjs"),
+    "export const changed = true;\n",
+    "utf8",
+  );
+
+  const deferred = await deployRuntime({
+    sourceRoot,
+    runtimeRoot,
+    releaseId: "release-2",
+    commitStableFile: async (source, target) => {
+      if (path.resolve(target) === path.resolve(stableHook)) {
+        const error = new Error("locked stable launcher");
+        error.code = "EPERM";
+        throw error;
+      }
+      await cp(source, target, { force: true });
+    },
+  });
+
+  assert.equal(deferred.stableUpdateDeferred, true);
+  assert.equal(path.resolve(deferred.blockedStableTarget), path.resolve(stableHook));
+  assert.equal(await readFile(stableHook, "utf8"), originalHook);
+  assert.equal(
+    JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8")).current,
+    "release-2",
+  );
+
+  const applied = await deployRuntime({
+    sourceRoot,
+    runtimeRoot,
+    releaseId: "release-3",
+  });
+  assert.equal(applied.stableUpdateDeferred, false);
+  assert.match(await readFile(stableHook, "utf8"), /changed/u);
+});
+
 test("deployRuntime does not publish a pointer before the stable launchers are ready", async () => {
   const { sourceRoot, runtimeRoot } = await fixture();
   await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });

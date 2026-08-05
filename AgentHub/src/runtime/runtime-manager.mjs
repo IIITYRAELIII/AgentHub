@@ -163,7 +163,10 @@ function stableRuntimeFiles(layout, releaseRoot) {
   return files;
 }
 
-async function installStableRuntimeFiles(layout, releaseRoot, { beforeCommit } = {}) {
+async function installStableRuntimeFiles(layout, releaseRoot, {
+  beforeCommit,
+  commitFile = (source, target) => cp(source, target, { force: true }),
+} = {}) {
   const staging = path.join(layout.root, `.stable-runtime-${randomUUID()}`);
   const files = stableRuntimeFiles(layout, releaseRoot);
   await mkdir(staging, { recursive: true });
@@ -195,7 +198,18 @@ async function installStableRuntimeFiles(layout, releaseRoot, { beforeCommit } =
     try {
       for (const file of files) {
         if (!file.changed) continue;
-        await cp(file.staged, file.target, { force: true });
+        try {
+          await commitFile(file.staged, file.target);
+        } catch (error) {
+          if (!["EBUSY", "EPERM", "EACCES"].includes(error?.code)) throw error;
+          await rollback();
+          return {
+            rollback: async () => {},
+            cleanup,
+            deferred: true,
+            blockedTarget: file.target,
+          };
+        }
         if (file.executable) await chmod(file.target, 0o700);
         else await protectRuntimeConfig(file.target);
       }
@@ -203,7 +217,7 @@ async function installStableRuntimeFiles(layout, releaseRoot, { beforeCommit } =
       await rollback();
       throw error;
     }
-    return { rollback, cleanup };
+    return { rollback, cleanup, deferred: false, blockedTarget: null };
   } catch (error) {
     await cleanup();
     throw error;
@@ -217,6 +231,7 @@ export async function deployRuntime({
   removeRelease,
   onPruneWarning,
   beforeStableLauncherCommit,
+  commitStableFile,
   writePointer = atomicJson,
   protectPointer = protectRuntimeConfig,
 } = {}) {
@@ -296,6 +311,7 @@ export async function deployRuntime({
     const previousPointer = JSON.parse(priorPointerText ?? "{}");
     const stableFiles = await installStableRuntimeFiles(layout, releaseRoot, {
       beforeCommit: beforeStableLauncherCommit,
+      commitFile: commitStableFile,
     });
     const pointer = {
       current: releaseId,
@@ -322,7 +338,13 @@ export async function deployRuntime({
         await protectRuntimeConfig(path.join(layout.root, entry.name));
       }
     }
-    return { layout, releaseId, releaseRoot };
+    return {
+      layout,
+      releaseId,
+      releaseRoot,
+      stableUpdateDeferred: stableFiles.deferred,
+      blockedStableTarget: stableFiles.blockedTarget,
+    };
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     throw error;
@@ -489,6 +511,9 @@ export async function main(args = process.argv.slice(2)) {
     const result = await deployRuntime({ runtimeRoot });
     await prepareRuntimeConfig({ runtimeRoot });
     console.log(`Runtime release deployed: ${result.releaseId}`);
+    if (result.stableUpdateDeferred) {
+      console.warn(`Stable launcher update deferred while in use: ${result.blockedStableTarget}`);
+    }
   } else if (command === "activate") {
     const result = await activateRuntime({ runtimeRoot });
     console.log(`Runtime activated: ${result.releaseId}`);
