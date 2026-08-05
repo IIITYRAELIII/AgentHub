@@ -3,7 +3,7 @@ import path from "node:path";
 
 import {
   codexObservedExecutionOwner,
-} from "../../../task-catalog.mjs";
+} from "./codex-rollout-activity.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
 
 const OWNER_PROBE_CACHE_MS = 5_000;

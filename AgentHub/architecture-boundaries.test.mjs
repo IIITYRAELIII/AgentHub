@@ -326,9 +326,20 @@ test("Codex terminal reconciliation has one application owner", async () => {
 });
 
 test("task catalog provider and Telegram concerns have explicit owners", async () => {
-  const legacy = await readFile(path.join(ROOT, "task-catalog.mjs"), "utf8");
   const claude = await readFile(
     path.join(ROOT, "src", "providers", "claude", "claude-task-activity.mjs"),
+    "utf8",
+  );
+  const codex = await readFile(
+    path.join(ROOT, "src", "providers", "codex", "codex-rollout-activity.mjs"),
+    "utf8",
+  );
+  const titles = await readFile(
+    path.join(ROOT, "src", "domain", "task-catalog-titles.mjs"),
+    "utf8",
+  );
+  const projection = await readFile(
+    path.join(ROOT, "src", "application", "task-catalog-projection.mjs"),
     "utf8",
   );
   const presentation = await readFile(
@@ -339,10 +350,10 @@ test("task catalog provider and Telegram concerns have explicit owners", async (
     path.join(ROOT, "src", "domain", "task-execution-owner.mjs"),
     "utf8",
   );
-  assert.doesNotMatch(legacy, /^export function claudeSnapshotActivityAtMs/mu);
-  assert.doesNotMatch(legacy, /^export function runningTaskReplyMarkup/mu);
-  assert.doesNotMatch(legacy, /^export const TASK_EXECUTION_OWNERS/mu);
   assert.match(claude, /^export function claudeSnapshotActivityAtMs/mu);
+  assert.match(codex, /^export async function readCodexRolloutActivity/mu);
+  assert.match(titles, /^export function preferredCodexTaskTitle/mu);
+  assert.match(projection, /^export function mergeTaskCatalog/mu);
   assert.match(presentation, /^export function runningTaskReplyMarkup/mu);
   assert.match(executionOwner, /^export const TASK_EXECUTION_OWNERS/mu);
 });

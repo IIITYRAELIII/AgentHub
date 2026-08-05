@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { CodexLifecycleController } from "./src/providers/codex/codex-lifecycle-controller.mjs";
-import { TASK_EXECUTION_OWNERS } from "./task-catalog.mjs";
+import { TASK_EXECUTION_OWNERS } from "./src/domain/task-execution-owner.mjs";
 
 async function fixture({ delivered = false, completion = { id: "completion" }, run = null } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "codex-lifecycle-controller-"));
@@ -149,4 +149,3 @@ test("Codex lifecycle rejects mixed caller identities", async () => {
     result: "Codex turn-start will be recovered from its rollout.",
   });
 });
-

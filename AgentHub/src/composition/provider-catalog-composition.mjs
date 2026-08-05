@@ -8,13 +8,17 @@ import { createAgentProviderRegistry } from "../providers/provider-adapters.mjs"
 import { ProviderTaskCatalogBuilder } from "../providers/provider-task-catalog-builder.mjs";
 import { unsupportedProviderSteer } from "../providers/provider-turn-services.mjs";
 import {
+  mergeTaskCatalog,
+} from "../application/task-catalog-projection.mjs";
+import {
+  preferredCodexTaskTitle,
+} from "../domain/task-catalog-titles.mjs";
+import {
   catalogEntriesWithoutLiveActivity,
   codexCatalogEntry,
-  mergeTaskCatalog,
-  preferredCodexTaskTitle,
   readCodexRolloutActivity,
   selectExactActiveCodexTurnId,
-} from "../../task-catalog.mjs";
+} from "../providers/codex/codex-rollout-activity.mjs";
 import { catalogTaskKey } from "../domain/task-catalog-identity.mjs";
 import { TASK_EXECUTION_OWNERS } from "../domain/task-execution-owner.mjs";
 import { claudeCatalogEntry } from "../providers/claude/claude-task-activity.mjs";
@@ -116,6 +120,8 @@ export function createProviderCatalogComposition({
     readCodexThread,
     capturedCodexExecutionOwner,
     claudeTaskSnapshots,
+    readRolloutActivity: readCodexRolloutActivity,
+    selectActiveTurnId: selectExactActiveCodexTurnId,
     resolveActivity: resolveCodexTaskActivity,
   });
   const agentProviders = createAgentProviderRegistry({

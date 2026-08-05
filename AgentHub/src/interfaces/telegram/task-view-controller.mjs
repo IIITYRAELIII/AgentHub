@@ -5,7 +5,6 @@ import {
   responseAnnotationDetails,
   visibleTaskHistory,
 } from "../../application/task-history.mjs";
-import { readCodexRolloutActivity } from "../../../task-catalog.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { updateTaskRunTitle } from "../../domain/task-runs.mjs";
 
@@ -286,7 +285,7 @@ export class TaskViewController {
         const directRolloutPath = await d.findCodexRolloutPath?.(binding.threadId, "");
         if (directRolloutPath) {
           const cached = d.taskSyncStore.history(task);
-          const rolloutActivity = await (d.readCodexRolloutActivity ?? readCodexRolloutActivity)(
+          const rolloutActivity = await d.readCodexRolloutActivity(
             directRolloutPath,
             { freshnessMs: Number.POSITIVE_INFINITY },
           );
@@ -307,7 +306,7 @@ export class TaskViewController {
         const result = await d.readCodexThread(binding.threadId, { fresh: true });
         const cached = d.taskSyncStore.history(task);
         const rolloutActivity = result.thread?.path
-          ? await (d.readCodexRolloutActivity ?? readCodexRolloutActivity)(result.thread.path, {
+          ? await d.readCodexRolloutActivity(result.thread.path, {
             freshnessMs: Number.POSITIVE_INFINITY,
           })
           : null;

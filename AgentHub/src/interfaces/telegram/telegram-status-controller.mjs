@@ -5,7 +5,7 @@ import {
 } from "./status.mjs";
 import {
   mergeTaskCatalog,
-} from "../../../task-catalog.mjs";
+} from "../../application/task-catalog-projection.mjs";
 import { catalogEntryIsSelected } from "../../domain/task-catalog-identity.mjs";
 import { runningTaskReplyMarkup } from "./task-catalog-presentation.mjs";
 

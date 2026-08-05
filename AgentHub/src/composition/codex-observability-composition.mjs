@@ -21,7 +21,7 @@ import { CodexUsageTracker } from "../providers/codex/codex-usage-tracker.mjs";
 import { ContextCompactionTracker } from "../providers/codex/context-compaction-tracker.mjs";
 import {
   readCodexRolloutActivity,
-} from "../../task-catalog.mjs";
+} from "../providers/codex/codex-rollout-activity.mjs";
 import {
   normalizeTaskExecutionOwner,
   TASK_EXECUTION_OWNERS,

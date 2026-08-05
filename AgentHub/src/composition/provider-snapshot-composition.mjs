@@ -16,7 +16,7 @@ import {
   codexRolloutTurnState,
   readCodexRolloutActivity,
   selectCodexTurn,
-} from "../../task-catalog.mjs";
+} from "../providers/codex/codex-rollout-activity.mjs";
 import {
   claudeSnapshotActivityAtMs,
   claudeSnapshotActivityState,

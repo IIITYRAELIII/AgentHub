@@ -3,7 +3,7 @@
   "baseline": {
     "serverMaximumLines": 150,
     "compositionMaximumLines": 1911,
-    "rootProductionModules": 24
+    "rootProductionModules": 23
   },
   "publicRootModules": [
     "agent-hub-main.mjs",
@@ -31,9 +31,7 @@
   ],
   "migrationTargets": {
     "src/application": [],
-    "src/domain": [
-      "task-catalog.mjs"
-    ],
+    "src/domain": [],
     "src/providers/codex": [],
     "src/providers/claude": [],
     "src/interfaces/telegram": [],

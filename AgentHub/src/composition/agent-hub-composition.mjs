@@ -66,9 +66,9 @@ import { taskViewCallbackData } from "../interfaces/telegram/task-view-callback.
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
 import {
   mergeTaskCatalog,
-  readCodexRolloutActivity,
   taskOrderingActivityAtMs,
-} from "../../task-catalog.mjs";
+} from "../application/task-catalog-projection.mjs";
+import { readCodexRolloutActivity } from "../providers/codex/codex-rollout-activity.mjs";
 import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
 import { TASK_EXECUTION_OWNERS, taskExecutionRuntimeLabel } from "../domain/task-execution-owner.mjs";
 import {
@@ -1668,6 +1668,7 @@ taskInteractionPort.bind(createTaskInteractionWiring({
     },
     findCodexRolloutPath: knownCodexRolloutPath,
     readCodexThread,
+    readCodexRolloutActivity,
     readCodexSnapshot: readCodexTaskSnapshot,
     readClaudeSnapshot: (...args) => claudeTaskSnapshots.read(...args),
     attachmentImporter: importCodexDesktopAttachments,

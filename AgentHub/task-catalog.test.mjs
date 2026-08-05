@@ -8,11 +8,6 @@ import {
   codexCatalogEntry,
   codexObservedExecutionOwner,
   codexThreadRunning,
-  mergeTaskCatalog,
-  pinnedTaskTitle,
-  pinTaskTitle,
-  preferredCodexTaskTitle,
-  reconcilePinnedTaskTitle,
   codexRolloutTurnState,
   parseCodexRolloutActivity,
   parseCodexRolloutRunning,
@@ -20,9 +15,18 @@ import {
   readCodexRolloutRunning,
   selectCodexTurn,
   selectExactActiveCodexTurnId,
+} from "./src/providers/codex/codex-rollout-activity.mjs";
+import {
+  mergeTaskCatalog,
   taskOrderingActivityAtMs,
+} from "./src/application/task-catalog-projection.mjs";
+import {
+  pinnedTaskTitle,
+  pinTaskTitle,
+  preferredCodexTaskTitle,
+  reconcilePinnedTaskTitle,
   taskCatalogTitleSignature,
-} from "./task-catalog.mjs";
+} from "./src/domain/task-catalog-titles.mjs";
 import { catalogEntryIsSelected } from "./src/domain/task-catalog-identity.mjs";
 import {
   TASK_EXECUTION_OWNERS,

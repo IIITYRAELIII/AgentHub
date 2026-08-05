@@ -1,8 +1,8 @@
 import { samePath } from "../infrastructure/filesystem/config.mjs";
 import {
   taskCatalogTitleSignature,
-  taskOrderingActivityAtMs,
-} from "../../task-catalog.mjs";
+} from "../domain/task-catalog-titles.mjs";
+import { taskOrderingActivityAtMs } from "../application/task-catalog-projection.mjs";
 import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
 import { statusTaskEntries } from "../interfaces/telegram/task-catalog-presentation.mjs";
 import { updateTaskRunTitle } from "../domain/task-runs.mjs";

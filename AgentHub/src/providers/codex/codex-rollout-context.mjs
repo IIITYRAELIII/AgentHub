@@ -17,7 +17,7 @@ import readline from "node:readline";
 
 import { isMainModule } from "../../infrastructure/process/main-module.mjs";
 import { readWindowsRolloutProcesses } from "./codex-runtime-owner.mjs";
-import { readCodexRolloutActivity } from "../../../task-catalog.mjs";
+import { readCodexRolloutActivity } from "./codex-rollout-activity.mjs";
 
 const DEFAULT_KEEP_RECENT_IMAGES = 4;
 const DEFAULT_MIN_RECLAIM_BYTES = 1024 * 1024;

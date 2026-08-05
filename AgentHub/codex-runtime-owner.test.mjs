@@ -10,7 +10,7 @@ import {
   resolveCodexTaskActivity,
   resolveCodexObservedExecutionOwner,
 } from "./src/providers/codex/codex-runtime-owner.mjs";
-import { TASK_EXECUTION_OWNERS } from "./task-catalog.mjs";
+import { TASK_EXECUTION_OWNERS } from "./src/domain/task-execution-owner.mjs";
 
 function snapshot(rootProcessIds, processes) {
   return { rootProcessIds, processes };
