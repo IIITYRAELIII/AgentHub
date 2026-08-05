@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTaskPicker, taskPickerButtonText } from "./src/interfaces/telegram/task-picker.mjs";
+import {
+  buildTaskPicker,
+  taskPickerButtonText,
+  TelegramTaskPickerService,
+} from "./src/interfaces/telegram/task-picker.mjs";
 
 const task = {
   provider: "codex",
@@ -45,4 +49,23 @@ test("task picker paginates and keeps new/archive actions last", () => {
   assert.equal(view.page, 1);
   assert.equal(view.replyMarkup.inline_keyboard.at(-2)[0].callback_data, "new");
   assert.equal(view.replyMarkup.inline_keyboard.at(-1)[0].callback_data, "archive");
+});
+
+test("task picker service owns edit versus send presentation", async () => {
+  const events = [];
+  const service = new TelegramTaskPickerService({
+    refreshCatalog: async () => [task],
+    selectedTask: () => task,
+    pageSize: 8,
+    showProject: () => false,
+    providerTitle: () => "Codex",
+    projectName: () => "Repo",
+    newTaskCallback: () => "new",
+    archiveCallback: () => "archive",
+    editMessage: async (...args) => events.push(["edit", ...args]),
+    sendMessage: async (...args) => events.push(["send", ...args]),
+  });
+  await service.send({ editMessage: { message_id: 1 } });
+  await service.send();
+  assert.deepEqual(events.map(([kind]) => kind), ["edit", "send"]);
 });

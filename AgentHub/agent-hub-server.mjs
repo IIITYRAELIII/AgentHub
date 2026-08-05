@@ -194,7 +194,8 @@ import { TelegramMessageController } from "./src/interfaces/telegram/telegram-me
 import { ApprovalController } from "./src/interfaces/telegram/approval-controller.mjs";
 import { TelegramCallbackController } from "./src/interfaces/telegram/telegram-callback-controller.mjs";
 import { routeTelegramCallback } from "./src/interfaces/telegram/telegram-callback-router.mjs";
-import { buildTaskPicker } from "./src/interfaces/telegram/task-picker.mjs";
+import { TelegramTaskPickerService } from "./src/interfaces/telegram/task-picker.mjs";
+import { InteractiveJobService } from "./src/interfaces/telegram/interactive-job-service.mjs";
 import { TaskViewController } from "./src/interfaces/telegram/task-view-controller.mjs";
 import { TelegramPollingController } from "./src/interfaces/telegram/telegram-polling-controller.mjs";
 import { TelegramSettingsMenu } from "./src/interfaces/telegram/telegram-settings-menu.mjs";
@@ -258,6 +259,7 @@ import { createDesktopSnapshotFactory } from "./src/interfaces/desktop/desktop-s
 import { createDesktopTaskHistoryFactory } from "./src/interfaces/desktop/desktop-task-history.mjs";
 import { DesktopTaskService } from "./src/interfaces/desktop/desktop-task-service.mjs";
 import { DesktopSystemService } from "./src/interfaces/desktop/desktop-system-service.mjs";
+import { DeferredInputPresentationService } from "./src/interfaces/desktop/deferred-input-presentation-service.mjs";
 import { TaskCommandService } from "./src/application/task-command-service.mjs";
 import { TaskNavigationService } from "./src/application/task-navigation-service.mjs";
 import { RestartRequestService } from "./src/application/restart-request-service.mjs";
@@ -1310,6 +1312,12 @@ const sendMessageTo = (...args) => telegramClient.sendMessageTo(...args);
 const sendLongMessage = (...args) => telegramClient.sendLongMessage(...args);
 const startTyping = () => telegramClient.startTyping();
 const stopTyping = () => telegramClient.stopTyping();
+
+const deferredInputPresentation = new DeferredInputPresentationService({
+  telegram,
+  receipts: desktopMessageReceipts,
+  describeAttachments: desktopAttachmentDescriptors,
+});
 const telegramSettingsMenu = new TelegramSettingsMenu({
   projects: PROJECTS,
   codexModels: CODEX_MODELS,
@@ -2237,30 +2245,25 @@ async function refreshTaskCatalog({ force = false } = {}) {
   return taskCatalogService.refresh({ force });
 }
 
-async function sendThreadPicker({ editMessage = null, page = 0 } = {}) {
-  const catalog = await refreshTaskCatalog();
-  const view = buildTaskPicker({
-    catalog,
-    selectedTask: selectedTask(),
-    page,
-    pageSize: TASK_PICKER_PAGE_SIZE,
-    showProject: config.showProjectButton && config.showTaskProject,
-    providerTitle: providerTitle(),
-    projectName: activeProject().name,
-    newTaskCallback: uiCallback("thread:new"),
-    archiveCallback: isCodex() && threadId ? uiCallback("thread:archive") : null,
-  });
-  if (editMessage) {
-    await telegram("editMessageText", {
-      chat_id: editMessage.chat.id,
-      message_id: editMessage.message_id,
-      text: view.text,
-      reply_markup: view.replyMarkup,
-    });
-  } else {
-    await sendMessage(view.text, { reply_markup: view.replyMarkup });
-  }
-}
+const telegramTaskPicker = new TelegramTaskPickerService({
+  refreshCatalog: refreshTaskCatalog,
+  selectedTask,
+  pageSize: TASK_PICKER_PAGE_SIZE,
+  showProject: () => config.showProjectButton && config.showTaskProject,
+  providerTitle,
+  projectName: () => activeProject().name,
+  newTaskCallback: () => uiCallback("thread:new"),
+  archiveCallback: () => (isCodex() && threadId ? uiCallback("thread:archive") : null),
+  editMessage: (message, view) => telegram("editMessageText", {
+    chat_id: message.chat.id,
+    message_id: message.message_id,
+    text: view.text,
+    reply_markup: view.replyMarkup,
+  }),
+  sendMessage: (view) => sendMessage(view.text, { reply_markup: view.replyMarkup }),
+});
+
+function sendThreadPicker(...args) { return telegramTaskPicker.send(...args); }
 
 const serverControlController = new ServerControlController({
   config,
@@ -3164,84 +3167,12 @@ async function cleanupDeferredFiles(item) {
   await Promise.all((item?.temporaryFiles ?? []).map((file) => unlink(file).catch(() => {})));
 }
 
-async function updateDeferredMessage(item, text, replyMarkup = { inline_keyboard: [] }) {
-  if (!item?.messageId) return;
-  await telegram("editMessageText", {
-    chat_id: item.chatId,
-    message_id: item.messageId,
-    text,
-    reply_markup: replyMarkup,
-  }).catch(() => {});
+function updateDeferredMessage(...args) {
+  return deferredInputPresentation.updateTelegramMessage(...args);
 }
 
-function updateDeferredDesktopReceipt(item, state, started = null) {
-  const identity = {
-    provider: item?.provider,
-    threadId: item?.threadId,
-    clientUserMessageId: item?.clientUserMessageId,
-  };
-  if (!identity.clientUserMessageId) return false;
-  const base = {
-    id: item.id,
-    clientUserMessageId: item.clientUserMessageId,
-  };
-  if (state === "started") {
-    return desktopMessageReceipts.updateResult(identity, {
-      accepted: true,
-      deferred: false,
-      queued: false,
-      cancelled: false,
-      runId: started?.id ?? null,
-      threadId: started?.threadId ?? item.threadId,
-      turnId: started?.turnId ?? null,
-      clientUserMessageId: item.clientUserMessageId,
-      attachments: item.persistentFiles
-        ? desktopAttachmentDescriptors(item.temporaryFiles)
-        : [],
-    });
-  }
-  if (state === "steered") {
-    return desktopMessageReceipts.updateResult(identity, {
-      accepted: true,
-      deferred: false,
-      queued: false,
-      cancelled: false,
-      steered: true,
-      id: item.id,
-      runId: started?.runId ?? null,
-      threadId: started?.threadId ?? item.threadId,
-      turnId: started?.turnId ?? null,
-      clientUserMessageId: item.clientUserMessageId,
-      attachments: item.persistentFiles
-        ? desktopAttachmentDescriptors(item.temporaryFiles)
-        : [],
-    });
-  }
-  if (state === "cancelled") {
-    return desktopMessageReceipts.updateResult(identity, {
-      ...base,
-      accepted: false,
-      deferred: false,
-      cancelled: true,
-      message: "Сохранённое сообщение отменено.",
-    });
-  }
-  const queued = ["queued", "dispatching", "retrying"].includes(state);
-  return desktopMessageReceipts.updateResult(identity, {
-    ...base,
-    accepted: false,
-    deferred: true,
-    queued,
-    dispatching: state === "dispatching",
-    reason: state === "pending" ? "launch-failed" : item.conflictKind ?? "task-running",
-    message: state === "dispatching"
-      ? "Сообщение отправляется в задачу."
-      : state === "retrying"
-        ? "Запуск временно недоступен; сообщение остаётся первым в очереди."
-        : state === "pending"
-          ? "Не удалось запустить сообщение; требуется выбрать дальнейшее действие."
-          : "Сообщение поставлено в очередь и будет отправлено после текущего хода.",
-  });
+function updateDeferredDesktopReceipt(...args) {
+  return deferredInputPresentation.updateDesktopReceipt(...args);
 }
 
 const deferredInputController = new DeferredInputController({
@@ -4020,30 +3951,13 @@ async function handleTelegramCallback(callback) {
   return telegramCallbackController.handle(callback);
 }
 
-function scheduleInteractiveJob(label, targetChatId, operation) {
-  try {
-    const job = interactiveJobs.enqueue(async () => {
-      if (stopping) return;
-      await operation();
-    });
-    void job.catch(async (error) => {
-      console.error(`Interactive Telegram job ${label} failed:`, error.message);
-      if (!stopping && Number.isSafeInteger(targetChatId)) {
-        await sendMessageTo(targetChatId, `Не удалось выполнить «${label}»: ${error.message}`).catch(() => {});
-      }
-    });
-    return true;
-  } catch (error) {
-    console.warn(`Interactive Telegram queue rejected ${label}:`, error.message);
-    if (Number.isSafeInteger(targetChatId)) {
-      void sendMessageTo(
-        targetChatId,
-        `Слишком много команд просмотра. Повторите «${label}» немного позже.`,
-      ).catch(() => {});
-    }
-    return false;
-  }
-}
+const interactiveJobService = new InteractiveJobService({
+  queue: interactiveJobs,
+  stopping: () => stopping,
+  sendMessage: sendMessageTo,
+});
+
+function scheduleInteractiveJob(...args) { return interactiveJobService.schedule(...args); }
 
 const telegramCommandService = new TelegramCommandService({
   sendMessage,

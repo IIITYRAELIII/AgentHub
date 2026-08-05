@@ -69,6 +69,7 @@
 | 54 | ⏳ | `RestartRequestService` объединил одинаковую политику запросов перезапуска из Telegram и Desktop, а `DesktopSystemService` получил адресованную озвучку. В host больше нет Desktop handler bodies, кроме двух read-model composition adapters; размер — 4 647 строк. Оставшаяся Telegram presentation/composition — следующий срез B4. |
 | 55 | ⏳ | `TelegramDeliveryService` владеет привязками входящих/исходящих сообщений, очисткой карточек задачи, durable outbox-доставкой, длинными ответами, заменой progress-карточек и уведомлениями выбора. Composition root больше не реализует Telegram delivery policy и сокращён до 4 346 строк. |
 | 56 | ⏳ | `TaskNavigationService` владеет транзакционным переключением проекта, агента и выбранной задачи, включая rollback selection/preferences/diff. Открытие карточки меняет только локальную selection и не запускает provider; `hubTaskId` уже проходит через границу сервиса, а thread/session ID остаётся внешней ссылкой. Host сокращён до 4 279 строк. |
+| 57 | ⏳ | `DeferredInputPresentationService` стал единственным владельцем переходов UI/receipt для saved/queued/dispatching/started сообщений. `TelegramTaskPickerService` владеет presentation списка задач, `InteractiveJobService` — bounded-очередью тяжёлых команд просмотра. Host сокращён до 4 193 строк. |
 
 После этапов 31–40 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и

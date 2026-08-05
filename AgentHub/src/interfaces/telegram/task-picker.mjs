@@ -63,3 +63,48 @@ export function buildTaskPicker({
     pageCount,
   };
 }
+
+export class TelegramTaskPickerService {
+  constructor({
+    refreshCatalog,
+    selectedTask,
+    pageSize,
+    showProject,
+    providerTitle,
+    projectName,
+    newTaskCallback,
+    archiveCallback,
+    editMessage,
+    sendMessage,
+  }) {
+    Object.assign(this, {
+      refreshCatalog,
+      selectedTask,
+      pageSize,
+      showProject,
+      providerTitle,
+      projectName,
+      newTaskCallback,
+      archiveCallback,
+      editMessage,
+      sendMessage,
+    });
+  }
+
+  async send({ editMessage = null, page = 0 } = {}) {
+    const view = buildTaskPicker({
+      catalog: await this.refreshCatalog(),
+      selectedTask: this.selectedTask(),
+      page,
+      pageSize: this.pageSize,
+      showProject: this.showProject(),
+      providerTitle: this.providerTitle(),
+      projectName: this.projectName(),
+      newTaskCallback: this.newTaskCallback(),
+      archiveCallback: this.archiveCallback(),
+    });
+    if (editMessage) await this.editMessage(editMessage, view);
+    else await this.sendMessage(view);
+    return view;
+  }
+}
