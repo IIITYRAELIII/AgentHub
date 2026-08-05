@@ -1,4 +1,4 @@
-import { samePath } from "./config.mjs";
+import { samePath } from "../../../config.mjs";
 
 export class TelegramSettingsMenu {
   constructor({

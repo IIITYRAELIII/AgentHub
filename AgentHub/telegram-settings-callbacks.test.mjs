@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TelegramSettingsCallbackService } from "./telegram-settings-callbacks.mjs";
+import { TelegramSettingsCallbackService } from "./src/interfaces/telegram/telegram-settings-callbacks.mjs";
 
 function service(events, changed = true) {
   const getter = (value) => () => value;
@@ -45,4 +45,3 @@ test("settings callback service handles project and model routes", async () => {
 test("settings callback service declines unrelated routes", async () => {
   assert.equal(await service([]).handle(callback, { kind: "task-view" }), false);
 });
-

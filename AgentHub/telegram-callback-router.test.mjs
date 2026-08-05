@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { contextualCallback } from "./callback-context.mjs";
-import { routeTelegramCallback } from "./telegram-callback-router.mjs";
+import { routeTelegramCallback } from "./src/interfaces/telegram/telegram-callback-router.mjs";
 
 test("routes task, model and approval callback protocols", () => {
   assert.deepEqual(routeTelegramCallback("tasks-page:3", "abc"), {

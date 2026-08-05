@@ -1,3 +1,4 @@
+// Dispatches Telegram slash/menu commands into injected application operations.
 const COMMANDS = Object.freeze([
   "menu", "keyboard", "start", "help", "agent", "engine", "model", "reasoning", "mode",
   "projects", "folders", "folder", "new", "status", "approvals", "restart", "tasks", "resume",
@@ -123,4 +124,3 @@ export class TelegramCommandService {
     }
   }
 }
-

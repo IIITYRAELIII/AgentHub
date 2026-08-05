@@ -1,3 +1,4 @@
+// Routes one authorized Telegram update without owning application state.
 export class TelegramMessageController {
   constructor({
     config,

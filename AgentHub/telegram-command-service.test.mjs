@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TelegramCommandService } from "./telegram-command-service.mjs";
+import { TelegramCommandService } from "./src/interfaces/telegram/telegram-command-service.mjs";
 
 function service(overrides = {}) {
   const calls = [];
@@ -43,4 +43,3 @@ test("Telegram command service sends ordinary text through the task lane", async
   assert.deepEqual(bound, [[message, "hello"]]);
   assert.deepEqual(started, [["prompt:hello"]]);
 });
-

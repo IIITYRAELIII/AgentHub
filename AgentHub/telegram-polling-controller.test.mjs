@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TelegramPollingController } from "./telegram-polling-controller.mjs";
+import { TelegramPollingController } from "./src/interfaces/telegram/telegram-polling-controller.mjs";
 
 test("polling controller advances offset after a handled update", async () => {
   let offset = 0;

@@ -1,3 +1,4 @@
+// Handles settings-only callback routes after transport-level parsing.
 const ROUTE_KINDS = new Set([
   "approval-mode",
   "project",

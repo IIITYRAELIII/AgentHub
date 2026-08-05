@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TelegramStatusController } from "./telegram-status-controller.mjs";
+import { TelegramStatusController } from "./src/interfaces/telegram/telegram-status-controller.mjs";
 
 function fixture({ catalogError = null, limitsError = null } = {}) {
   const catalog = [{
@@ -73,4 +73,3 @@ test("Telegram status degrades when catalog and limits are unavailable", async (
   assert.match(sent[0][0], /Current task/);
   assert.match(sent[0][0], /limits offline/);
 });
-

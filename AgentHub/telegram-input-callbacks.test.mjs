@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TelegramInputCallbackService } from "./telegram-input-callbacks.mjs";
+import { TelegramInputCallbackService } from "./src/interfaces/telegram/telegram-input-callbacks.mjs";
 
 function service(events) {
   const noop = async () => {};

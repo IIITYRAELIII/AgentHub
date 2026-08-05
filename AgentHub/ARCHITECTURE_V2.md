@@ -101,6 +101,7 @@ thread консервируется, создаёт handoff и передаёт 
 | A20 | ✅ | Слой `src/runtime` получил единый registry ресурсов, контроллеры lifecycle/restart и координатор таймеров; startup coordinator размещён в `src/application`. Импорты и contract-тесты перенесены вместе с владельцами, runtime packager сохраняет вложенную структуру, а стабильные entrypoint/CLI остаются в корне. |
 | A21 | ✅ | Общий provider port физически выделен в `src/providers`: registry, фабрики адаптеров, catalog merge и сервисы task/turn/completion/recovery перенесены одним связным срезом. Application composition зависит от общего контракта, а provider thread/session ID остаются внешними ссылками, не идентичностью будущего `hubTaskId`. |
 | A22 | ✅ | Внутренний Desktop/VS Code/Mini App interface выделен в `src/interfaces/desktop`: application router, transport policy router, snapshot/history read-model, message, attachment, settings и deferred-input controllers. Стабильный IPC-модуль `desktop-control.mjs` оставлен в корне для CLI, publish/restart и внешней совместимости. |
+| A23 | ✅ | Внутренний Telegram interface выделен в `src/interfaces/telegram`: command/message/callback routing, polling policy, status и settings presentation. Низкоуровневый Bot API transport и compatibility CLI остаются на стабильных корневых путях; interface-модули зависят только от инъецированных application operations и общих парсеров. |
 
 Каждый этап должен сохранять внешний протокол, получать отдельные contract-тесты
 и проходить полный process E2E. Массовое переписывание за один релиз запрещено:

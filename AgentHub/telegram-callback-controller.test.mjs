@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { contextualCallback } from "./callback-context.mjs";
-import { TelegramCallbackController } from "./telegram-callback-controller.mjs";
+import { TelegramCallbackController } from "./src/interfaces/telegram/telegram-callback-controller.mjs";
 
 test("callback controller blocks stale UI before dispatch", async () => {
   const calls = [];

@@ -2,12 +2,12 @@ import {
   formatClaudeRateLimits,
   formatCodexRateLimits,
   formatStatusMessage,
-} from "./status.mjs";
+} from "../../../status.mjs";
 import {
   catalogEntryIsSelected,
   mergeTaskCatalog,
   runningTaskReplyMarkup,
-} from "./task-catalog.mjs";
+} from "../../../task-catalog.mjs";
 
 export class TelegramStatusController {
   #limitsCache = new Map();
@@ -145,4 +145,3 @@ export class TelegramStatusController {
     );
   }
 }
-

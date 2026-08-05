@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TelegramTaskCallbackService } from "./telegram-task-callbacks.mjs";
+import { TelegramTaskCallbackService } from "./src/interfaces/telegram/telegram-task-callbacks.mjs";
 
 function callbacks(events, entries = []) {
   const noop = async () => {};
@@ -54,4 +54,3 @@ test("task callback service reports a missing catalog task", async () => {
 test("task callback service declines settings routes", async () => {
   assert.equal(await callbacks([]).handle(callback, { kind: "codex-model" }), false);
 });
-

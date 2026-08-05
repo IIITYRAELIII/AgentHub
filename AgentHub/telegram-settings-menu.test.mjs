@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TelegramSettingsMenu } from "./telegram-settings-menu.mjs";
+import { TelegramSettingsMenu } from "./src/interfaces/telegram/telegram-settings-menu.mjs";
 
 function fixture() {
   const sent = [];

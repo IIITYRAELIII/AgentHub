@@ -1,3 +1,4 @@
+// Handles deferred input, forwarded bundles and speech callback routes.
 const ROUTE_KINDS = new Set(["forward-bundle", "pending-input", "speech"]);
 
 function requiredFunction(value, name) {

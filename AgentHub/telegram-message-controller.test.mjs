@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TelegramMessageController } from "./telegram-message-controller.mjs";
+import { TelegramMessageController } from "./src/interfaces/telegram/telegram-message-controller.mjs";
 
 function fixture(overrides = {}) {
   const events = [];

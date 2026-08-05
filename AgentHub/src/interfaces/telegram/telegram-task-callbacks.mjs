@@ -1,3 +1,4 @@
+// Handles task navigation and task-scoped callback routes.
 const ROUTE_KINDS = new Set([
   "task-diff", "task-history", "task-view", "task-page",
   "catalog-task", "thread-new", "thread-archive",
