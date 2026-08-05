@@ -270,3 +270,18 @@ html[data-background-override="true"][data-background="orbit-limb"] body::before
     content: none;
   }
 }
+
+/* Правое поле было 1 rem против 4,25 rem слева, и консоль выглядела сдвинутой
+   к краю. Вычитаем ширину зарезервированной полосы прокрутки, чтобы видимый
+   отступ справа совпал с левым, а не оказался на неё шире. */
+@media (min-width: 1120px) {
+  html:not([data-theme]):not([data-surface="mobile"]) .workspace,
+  html[data-theme="orbit"]:not([data-surface="mobile"]) .workspace {
+    padding-right: max(1rem, calc(4.25rem - (100vw - 100%)));
+  }
+
+  html:not([data-theme]):not([data-surface="mobile"]) .app-header-inner,
+  html[data-theme="orbit"]:not([data-surface="mobile"]) .app-header-inner {
+    padding-right: max(1.15rem, calc(4.25rem - (100vw - 100%)));
+  }
+}
