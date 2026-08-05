@@ -8,7 +8,6 @@ import {
   findContainingProject,
   AGENT_HUB_ROOT,
   loadConfig,
-  pathInsideOrSame,
   samePath,
 } from "../infrastructure/filesystem/config.mjs";
 import { parseClaudeLimits } from "../providers/claude/claude.mjs";
@@ -25,9 +24,6 @@ import {
   CODEX_REASONING_LABELS,
   resolveCodexThreadSettings,
 } from "../providers/codex/codex-settings.mjs";
-import {
-  codexThreadSandboxSettings,
-} from "../providers/codex/codex-sandbox.mjs";
 import * as telegramStatus from "../interfaces/telegram/status.mjs";
 const {
   formatArchiveMessage, formatClaudeRateLimits, formatCodexRateLimits, formatProgressHeading,
@@ -39,8 +35,6 @@ import {
   readCodexTurnUsage,
   scanCodexTurnPricingMetadata,
 } from "../providers/codex/codex-turn-usage.mjs";
-import { CodexRunFinalizer } from "../providers/codex/codex-run-finalizer.mjs";
-import { CodexContextMaintenanceService } from "../providers/codex/codex-context-maintenance-service.mjs";
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
 import { telegramPrompt } from "../interfaces/telegram/telegram-message.mjs";
 import {
@@ -131,10 +125,6 @@ import {
 } from "../interfaces/web/server-control-controller.mjs";
 import { RuntimeTimerCoordinator } from "../runtime/runtime-timer-coordinator.mjs";
 import {
-  TurnEndDeliveryService,
-} from "../application/turn-end-delivery-service.mjs";
-import {
-  ManagedRunLifecycleService,
   runInputPreview,
 } from "../application/managed-run-lifecycle-service.mjs";
 import { TaskIdentityResolver } from "../application/task-identity-resolver.mjs";
@@ -162,6 +152,9 @@ import { createBackgroundWorkComposition } from "./background-work-composition.m
 import { createRuntimeStateRestorationComposition } from "./runtime-state-restoration-composition.mjs";
 import { runStartupMaintenance } from "./startup-maintenance-composition.mjs";
 import { createCodexLifecycleComposition } from "./codex-lifecycle-composition.mjs";
+import { createRunCompletionComposition } from "./run-completion-composition.mjs";
+import { createCodexContextMaintenanceComposition } from "./codex-context-maintenance-composition.mjs";
+import { createProviderStartupComposition } from "./provider-startup-composition.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -353,7 +346,12 @@ const {
   rememberRolloutPath: rememberCodexRolloutPath,
   terminalAudit: codexTerminalAudit,
 } = codexObservability;
-const managedRunLifecycle = new ManagedRunLifecycleService({
+const {
+  managedRunLifecycle,
+  turnEndDelivery,
+  codexRunFinalizer,
+} = createRunCompletionComposition({
+  config,
   taskRuns,
   currentTarget: () => ({
     provider: activeProvider,
@@ -363,26 +361,15 @@ const managedRunLifecycle = new ManagedRunLifecycleService({
     chatId,
   }),
   findProject,
-  codexSettings: (target) => taskMetadata.codexSettings(target),
-  currentPreferences: (provider) => ({
-    ...agentPreferences.current(provider),
-    defaultModel: provider === "codex"
-      ? agentPreferences.defaultCodexModel
-      : agentPreferences.claudeModel,
-    defaultReasoningEffort: provider === "codex"
-      ? agentPreferences.defaultCodexReasoningEffort
-      : agentPreferences.claudeReasoningEffort,
-  }),
-  modelLabel: codexModelLabel,
+  taskMetadata,
+  agentPreferences,
+  codexModelLabel,
   claudeModelLabels: CLAUDE_MODEL_LABELS,
   reasoningLabels: CODEX_REASONING_LABELS,
-  clearClaudeCancellation: (key) => cancelledManagedClaudeTasks.delete(key),
-  captureGitBaseline: (projectRoot, runId) => (
-    captureTaskGitBaseline(projectRoot, config.dataDir, runId)
-  ),
+  cancelledManagedClaudeTasks,
   persistTaskDiff,
-  syncRun: syncTaskRun,
-  invalidateCatalog: invalidateTaskCatalog,
+  syncTaskRun,
+  invalidateTaskCatalog,
   saveState,
   scheduleProgressStart: (run) => taskProgress.scheduleStart(run, config.progressStartDelayMs),
   clearSelectedDiff: (run) => { if (isSelectedRun(run)) latestDiff = ""; },
@@ -399,42 +386,24 @@ const managedRunLifecycle = new ManagedRunLifecycleService({
       setTimeout(() => void performRestart(), 0);
     }
   },
-});
-const turnEndDelivery = new TurnEndDeliveryService({
-  notifications: turnEndNotifications,
-  taskRuns,
-  projectTurn: (...args) => runJournal.projectTurn(...args),
-  rememberLastMessage: (...args) => runJournal.rememberLastMessage(...args),
-  rememberSeenTurn: (task, turnId) => {
-    setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(task), turnId, 500);
-  },
-  saveState,
-});
-const codexRunFinalizer = new CodexRunFinalizer({
-  turnStarts: codexTurnStarts,
-  notifications: turnEndNotifications,
-  discardManualCompaction: discardManualContextCompactionRun,
+  turnEndNotifications,
+  runJournal,
+  lastSeenTaskTurnIds,
+  codexTurnStarts,
+  discardManualContextCompactionRun,
   finalizeRunDelivery,
   refreshTaskDiff,
-  runTitle: runTaskTitle,
+  runTaskTitle,
   currentChatId: () => chatId,
   defaultNotificationChatId,
-  changedFiles: changedFilesForRun,
-  saveState,
-  persistHistory: persistManagedRunHistory,
-  projectTurn: (...args) => runJournal.projectTurn(...args),
-  completeRun: (run) => managedRunLifecycle.complete(run),
+  changedFilesForRun,
+  persistManagedRunHistory,
 });
-const codexContextMaintenance = new CodexContextMaintenanceService({
-  timers: runtimeTimers,
-  compactions: contextCompactions,
+const codexContextMaintenance = createCodexContextMaintenanceComposition({
+  config,
+  runtimeTimers,
+  contextCompactions,
   sanitizer: codexRolloutContextSanitizer,
-  contextCleanupEnabled: () => config.components.codexContextCleanup,
-  periodicCleanupEnabled: () => config.codexRolloutContext.enabled,
-  // Temporarily disabled: recycling an App Server immediately after compaction
-  // can leave the compaction UI waiting. Periodic sanitation remains enabled.
-  compactionTriggeredCleanupEnabled: false,
-  scanIntervalMs: () => config.codexRolloutContext.scanIntervalSeconds * 1_000,
   isStopping: () => stopping,
   transportRunning: () => codexTransport.running,
   activeRuns: () => taskRuns.values(),
@@ -451,19 +420,7 @@ const codexContextMaintenance = new CodexContextMaintenanceService({
   invalidateTaskCatalog,
   restartTransportAfterCrash: restartCodexAfterCrash,
   runForTask: (target) => taskRuns.forTask(target),
-  ensureTransport: async () => {
-    if (codexTransport.running) return;
-    await startCodexAppServer();
-    await initializeCodex({ attachSelectedThread: false });
-  },
-  resumeThread: (targetThreadId, sandbox) => sendRpc("thread/resume", {
-    threadId: targetThreadId,
-    ...sandbox,
-  }),
-  startCompaction: (targetThreadId) => sendRpc("thread/compact/start", {
-    threadId: targetThreadId,
-  }),
-  sandboxSettings: () => codexThreadSandboxSettings(config.codexSandboxMode),
+  sendRpc,
 });
 const {
   failedUpdateStore,
@@ -640,6 +597,24 @@ const {
     await initializeCodex({ attachSelectedThread: false });
   },
   resolveCodexTaskActivity,
+});
+const providerStartup = createProviderStartupComposition({
+  config,
+  threadListLimit: THREAD_LIST_LIMIT,
+  selectionStore,
+  taskRuns,
+  agentProviders,
+  codexProviderTasks,
+  getProvider: () => activeProvider,
+  getProjectRoot: () => activeProjectRoot,
+  getThreadId: () => threadId,
+  isCodex,
+  startCodex: startCodexAppServer,
+  initializeCodex,
+  sendRpc,
+  resolveResumedCodexThreadTitle,
+  applyCodexThreadSettings,
+  saveState,
 });
 
 const {
@@ -1242,25 +1217,7 @@ function respondRpc(id, result) {
 }
 
 async function initializeProvider() {
-  if (!config.telegramEnabled) {
-    await startCodexAppServer();
-    await initializeCodex({ attachSelectedThread: false });
-    return;
-  }
-  if (!isCodex()) {
-    await startCodexAppServer();
-    await initializeCodex({ attachSelectedThread: false });
-    if (!threadId) await createThread();
-    return;
-  }
-  await startCodexAppServer();
-  // A saved selected task is only UI state at this point. Loading it here can
-  // make startup wait for the complete (and sometimes very large) thread
-  // before the local Desktop control pipe exists, so it is resumed lazily.
-  // A fresh Telegram Hub has no task to resume, however: create one before
-  // accepting updates so a first plain message always has a durable target.
-  await initializeCodex({ attachSelectedThread: false });
-  if (!threadId) await createThread();
+  return providerStartup.initializeProvider();
 }
 
 async function initializeCodex({ attachSelectedThread = true } = {}) {
@@ -1268,64 +1225,23 @@ async function initializeCodex({ attachSelectedThread = true } = {}) {
 }
 
 async function attachCodexThread() {
-  if (threadId) {
-    const savedThreadId = threadId;
-    try {
-      const result = await sendRpc("thread/resume", {
-        threadId,
-        ...codexThreadSandboxSettings(config.codexSandboxMode),
-      });
-      if (!isWorkspaceThread(result.thread ?? {})) {
-        throw new Error("saved thread belongs to another project");
-      }
-      selectionStore.setTitle(await resolveResumedCodexThreadTitle(threadId, result.thread));
-      applyCodexThreadSettings(threadId, result);
-      await saveState();
-      return true;
-    } catch (error) {
-      console.error("Cannot resume saved thread:", error.message);
-      const savedActiveRun = taskRuns.forTask({
-        provider: "codex",
-        projectRoot: activeProjectRoot,
-        threadId: savedThreadId,
-      });
-      if (savedActiveRun) {
-        console.error(`Keeping active task ${savedThreadId}; recovery will inspect its saved turn.`);
-        return false;
-      }
-      selectionStore.setThread(null, { provider: "codex" });
-    }
-  }
-  await createThread();
-  return true;
+  return providerStartup.attachCodexThread();
 }
 
 async function createThread() {
-  return agentProviders.call(activeProvider, "createTask");
+  return providerStartup.createThread();
 }
 
 async function listThreads() {
-  if (!isCodex()) {
-    return threadId ? [{
-      id: threadId,
-      cwd: activeProjectRoot,
-      name: "Текущая сессия Claude",
-      updatedAt: Math.floor(Date.now() / 1000),
-    }] : [];
-  }
-  return (await codexProviderTasks.discoverTasks())
-    .filter(isWorkspaceThread)
-    .slice(0, THREAD_LIST_LIMIT);
+  return providerStartup.listThreads();
 }
 
 function isWorkspaceThread(thread) {
-  if (!thread.cwd) return false;
-  return pathInsideOrSame(thread.cwd, activeProjectRoot);
+  return providerStartup.isWorkspaceThread(thread);
 }
 
 function threadTitle(thread) {
-  const title = thread.name?.trim() || thread.preview?.trim() || "Без названия";
-  return title.replace(/\s+/g, " ").slice(0, 60);
+  return providerStartup.threadTitle(thread);
 }
 
 async function backfillWorkLogPricingMetadata(codexThreads) {
