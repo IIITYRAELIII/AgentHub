@@ -667,6 +667,10 @@ test("«Озеро» keeps its after-rain composition and two painted scenes", (
      кадрам берётся через var с запасным значением, а не объявляется заново. */
   assert.match(backgrounds, /--lake-image:\s*url\("\.\/lake-after-rain\.png"\)/u);
   assert.match(backgrounds, /--lake-corners-image:\s*url\("\.\/lake-corners\.png"\)/u);
+  assert.match(backgrounds, /--lake-mark-image:\s*url\("\.\/lake-mark\.png"\)/u);
+  assert.match(backgrounds, /--lake-settings-image:\s*url\("\.\/lake-settings\.png"\)/u);
+  assert.match(backgrounds, /\.brand-mark\s*\{[\s\S]*var\(--lake-mark-image\)/u);
+  assert.match(backgrounds, /\.toolbar \.view-settings\s*\{[\s\S]*border-radius:\s*5px/u);
   assert.match(backgrounds, /@keyframes lake-ripple/u);
   for (const variable of ["--lake-watercolor-image", "--lake-oil-image"]) {
     assert.match(backgrounds, new RegExp(`var\\(${variable},\\s*url\\(`, "u"), variable);

@@ -351,6 +351,12 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.equal(lakeCorners.status, 200);
     assert.equal(lakeCorners.headers.get("content-type"), "image/png");
     assert.match(lakeCorners.headers.get("cache-control"), /immutable/u);
+    for (const asset of ["lake-mark.png", "lake-settings.png"]) {
+      const lakeChrome = await fetch(`${address.url}themes/lake/${asset}`);
+      assert.equal(lakeChrome.status, 200);
+      assert.equal(lakeChrome.headers.get("content-type"), "image/png");
+      assert.match(lakeChrome.headers.get("cache-control"), /immutable/u);
+    }
     const verdantStyles = await fetch(`${address.url}themes/verdant/theme.css`);
     assert.equal(verdantStyles.status, 200);
     assert.match(verdantStyles.headers.get("content-type"), /text\/css/u);
