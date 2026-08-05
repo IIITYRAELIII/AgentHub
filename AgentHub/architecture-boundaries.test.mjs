@@ -251,6 +251,28 @@ test("Codex terminal reconciliation has one application owner", async () => {
   }
 });
 
+test("provider activity and selected external watch have explicit owners", async () => {
+  const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
+  const activity = await readFile(
+    path.join(ROOT, "provider-task-activity-service.mjs"),
+    "utf8",
+  );
+  const watch = await readFile(
+    path.join(ROOT, "selected-task-watch-service.mjs"),
+    "utf8",
+  );
+  assert.equal((source.match(/new ProviderTaskActivityService\s*\(/g) ?? []).length, 1);
+  assert.equal((source.match(/new SelectedTaskWatchService\s*\(/g) ?? []).length, 1);
+  assert.equal(source.includes("async function readCodexTaskActivity"), false);
+  assert.equal(source.includes("async function readClaudeTaskActivity"), false);
+  assert.equal(source.includes("selectedTaskWatchInFlight"), false);
+  assert.equal(activity.includes("async readCodex(target)"), true);
+  assert.equal(activity.includes("async readClaude(target)"), true);
+  assert.equal(watch.includes("this.inFlight = false"), true);
+  assert.equal(watch.includes("const currentTask = this.selectedTask()"), true);
+  assert.equal(watch.includes("const currentRun = this.taskRuns.forTask(task)"), true);
+});
+
 test("shared task mutations enter through one application command bus", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   const commands = await readFile(path.join(ROOT, "application-command-service.mjs"), "utf8");

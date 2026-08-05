@@ -119,7 +119,6 @@ import {
 import {
   createManagedTaskRun,
   serializableTaskRun,
-  shouldAutoObserveTask,
   TaskDismissalRegistry,
   TaskRunRegistry,
   taskRunIsActive,
@@ -187,7 +186,6 @@ import {
 } from "./task-catalog.mjs";
 import {
   codexObservedRuntimeActive,
-  resolveCodexTaskActivity,
   resolveCodexObservedExecutionOwner,
 } from "./codex-runtime-owner.mjs";
 import { CodexRolloutContextSanitizer } from "./codex-rollout-context.mjs";
@@ -224,6 +222,8 @@ import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "./cod
 import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
 import { TaskProgressController } from "./task-progress-controller.mjs";
 import { TaskObservationService } from "./task-observation-service.mjs";
+import { ProviderTaskActivityService } from "./provider-task-activity-service.mjs";
+import { SelectedTaskWatchService } from "./selected-task-watch-service.mjs";
 import {
   DeferredInputController,
   isRetryableDeferredLaunchError,
@@ -555,7 +555,6 @@ let restartRequest = null;
 let processingUpdateId = null;
 let stateWriteQueue = Promise.resolve();
 let bindingWriteQueue = Promise.resolve();
-let selectedTaskWatchInFlight = false;
 const runtimeTimers = new RuntimeTimerCoordinator();
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
 const EXTERNAL_TASK_POLL_INTERVAL_MS = 1_500;
@@ -1050,6 +1049,19 @@ const claudeCatalogProjection = new ClaudeCatalogProjectionService({
   logError: (...args) => console.error(...args),
 });
 
+const providerTaskActivity = new ProviderTaskActivityService({
+  knownCodexRolloutPath,
+  codexRunning: () => codexTransport.running,
+  codexPid: () => codexTransport.pid,
+  ensureCodex: async () => {
+    await startCodexAppServer();
+    await initializeCodex({ attachSelectedThread: false });
+  },
+  readCodexThread,
+  capturedCodexExecutionOwner,
+  claudeTaskSnapshots,
+});
+
 const agentProviders = createAgentProviderRegistry({
   taskRunIsActive,
   codex: {
@@ -1059,7 +1071,7 @@ const agentProviders = createAgentProviderRegistry({
     launchCodexTurn: (...args) => codexTurnService.launch(...args),
     steerCodexTurn: (...args) => codexTurnService.steer(...args),
     cancelCodexProviderRun: (...args) => providerCancellationService.cancelCodex(...args),
-    readCodexTaskActivity,
+    readCodexTaskActivity: (target) => providerTaskActivity.readCodex(target),
     readCodexTaskSnapshot,
     completeObservedCodexRun: (...args) => codexCompletionService.completeObserved(...args),
     completeManagedCodexRun: (...args) => codexCompletionService.completeManaged(...args),
@@ -1076,7 +1088,7 @@ const agentProviders = createAgentProviderRegistry({
     launchClaudeTurn: (...args) => startClaudeTurn(...args),
     steerClaudeTurn: unsupportedProviderSteer,
     cancelClaudeProviderRun: (...args) => providerCancellationService.cancelClaude(...args),
-    readClaudeTaskActivity,
+    readClaudeTaskActivity: (target) => providerTaskActivity.readClaude(target),
     readClaudeTaskSnapshot: (...args) => claudeTaskSnapshots.read(...args),
     completeObservedClaudeRun: (...args) => claudeCompletionService.completeObserved(...args),
     completeManagedClaudeRun: (...args) => claudeCompletionService.completeManaged(...args),
@@ -4716,6 +4728,23 @@ async function pollObservedRun(run) {
   return taskObserver.poll(run);
 }
 
+const selectedTaskWatch = new SelectedTaskWatchService({
+  providers: agentProviders,
+  taskRuns,
+  dismissedTasks: dismissedExternalTasks,
+  lastSeenTurnIds: lastSeenTaskTurnIds,
+  timers: runtimeTimers,
+  intervalMs: SELECTED_TASK_WATCH_INTERVAL_MS,
+  isStopping: () => stopping,
+  selectedTask,
+  chatId: () => chatId,
+  activeTaskTitle: () => activeThreadTitle,
+  rememberLastTaskMessage,
+  createObservedRun: observedRun,
+  scheduleObservedRun,
+  saveState,
+});
+
 async function codexAccountingThread(thread) {
   const targetThreadId = String(thread?.id ?? "").trim();
   const cached = codexAccountingThreadRoots.get(targetThreadId);
@@ -4769,39 +4798,6 @@ async function auditRecentCodexTerminalTurns() {
   }
 }
 
-async function readCodexTaskActivity(target) {
-  let rolloutPath = await knownCodexRolloutPath(target.threadId);
-  let threadStatus = null;
-  if (!rolloutPath) {
-    if (!codexTransport.running) {
-      await startCodexAppServer();
-      await initializeCodex({ attachSelectedThread: false });
-    }
-    const result = await readCodexThread(target.threadId, {
-      fresh: true,
-      includeTurns: false,
-    });
-    rolloutPath = String(result.thread?.path ?? "").trim();
-    threadStatus = result.thread?.status;
-  }
-  const activity = await readCodexRolloutActivity(rolloutPath);
-  const activeTurnId = selectExactActiveCodexTurnId(activity);
-  return resolveCodexTaskActivity({ threadStatus, activity }, {
-    turnId: activeTurnId,
-    rolloutPath,
-    agentHubPid: codexTransport.pid,
-    capturedOwner: capturedCodexExecutionOwner(target.threadId, activeTurnId),
-  });
-}
-
-async function readClaudeTaskActivity(target) {
-  const snapshot = await claudeTaskSnapshots.read(target.threadId);
-  return {
-    state: snapshot?.activityUnknown ? "unknown" : snapshot?.active ? "active" : "inactive",
-    executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
-  };
-}
-
 function scheduleCodexTerminalAudit(delayMs = SELECTED_TASK_WATCH_INTERVAL_MS) {
   if (stopping) return;
   runtimeTimers.schedule("codex-terminal-audit", async () => {
@@ -4841,77 +4837,6 @@ async function pollRateLimits() {
     await Promise.all(jobs);
   } finally {
     scheduleRateLimitPoll();
-  }
-}
-
-function scheduleSelectedTaskWatch(delayMs = SELECTED_TASK_WATCH_INTERVAL_MS) {
-  if (stopping) return;
-  runtimeTimers.schedule("selected-task-watch", () => {
-    void watchSelectedTask();
-  }, delayMs);
-}
-
-async function watchSelectedTask() {
-  if (selectedTaskWatchInFlight || stopping) return;
-  selectedTaskWatchInFlight = true;
-  try {
-    const task = selectedTask();
-    if (!chatId || !task.threadId) return;
-    const existingRun = taskRuns.forTask(task);
-    if (existingRun) return;
-    const snapshot = await agentProviders.call(
-      task.provider,
-      "readRunSnapshot",
-      { ...task, turnId: null, observer: true },
-    );
-    // Пока читался внешний snapshot, пользователь мог выбрать другую задачу или
-    // Telegram мог уже запустить управляемый ход. Нельзя применять устаревший
-    // результат ни к новой выбранной задаче, ни поверх начатого запуска.
-    const currentTask = selectedTask();
-    const currentRun = taskRuns.forTask(task);
-    if (currentRun) return;
-    if (dismissedExternalTasks.has(task) && !snapshot?.active) {
-      dismissedExternalTasks.delete(task);
-      await saveState();
-    }
-    if (snapshot?.completed && snapshot.turnId) {
-      const key = taskRunKey(task);
-      const previousTurnId = lastSeenTaskTurnIds.get(key);
-      const turnChanged = previousTurnId !== snapshot.turnId;
-      if (turnChanged) setBoundedMapValue(lastSeenTaskTurnIds, key, snapshot.turnId, 500);
-      const answer = String(snapshot.answer ?? "").trim();
-      if (turnChanged && answer) {
-        const completedRun = {
-          ...task,
-          chatId,
-          taskTitle: activeThreadTitle,
-          turnId: snapshot.turnId,
-        };
-        rememberLastTaskMessage(completedRun, answer);
-      }
-      if (turnChanged) await saveState();
-    }
-    if (!shouldAutoObserveTask({
-      task,
-      selectedTask: currentTask,
-      snapshot,
-      existingRun: currentRun,
-      dismissed: dismissedExternalTasks.has(task),
-      lastSeenTurnId: lastSeenTaskTurnIds.get(taskRunKey(task)),
-    })) return;
-    const run = await observedRun({
-      ...task,
-      chatId,
-      taskTitle: activeThreadTitle,
-    }, chatId, snapshot, task.provider === "codex" ? snapshot.turnId : null);
-    scheduleObservedRun(run);
-    await saveState();
-    console.log(`Silently observing external ${task.provider} task ${task.threadId}`);
-  } catch (error) {
-    console.error("Cannot watch selected external task:", error.message);
-  } finally {
-    selectedTaskWatchInFlight = false;
-    scheduleSelectedTaskWatch();
   }
 }
 
@@ -5659,7 +5584,7 @@ function startRuntimeTimers() {
   if (config.telegramEnabled) {
     scheduleDeliveryOutboxFlush(1_000);
   }
-  scheduleSelectedTaskWatch(500);
+  selectedTaskWatch.schedule(500);
   scheduleCodexTerminalAudit(500);
   scheduleRateLimitPoll(1_000);
 }
