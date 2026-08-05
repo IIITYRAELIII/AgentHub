@@ -1,7 +1,7 @@
 import {
   shouldAutoObserveTask,
   taskRunKey,
-} from "./task-runs.mjs";
+} from "../../task-runs.mjs";
 
 function rememberBounded(map, key, value, limit) {
   if (map.has(key)) map.delete(key);

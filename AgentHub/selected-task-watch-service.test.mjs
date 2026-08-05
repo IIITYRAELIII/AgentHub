@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SelectedTaskWatchService } from "./selected-task-watch-service.mjs";
+import { SelectedTaskWatchService } from "./src/application/selected-task-watch-service.mjs";
 
 function fixture({ snapshot = { active: true, turnId: "turn-1" } } = {}) {
   const task = { hubTaskId: "hub-1", provider: "codex", threadId: "thread-1", projectRoot: "C:/work" };

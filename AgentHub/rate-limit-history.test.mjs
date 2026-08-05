@@ -18,7 +18,7 @@ import {
 test("Agent Hub persists Codex and Claude limit snapshots every five minutes", async () => {
   const source = await readFile(new URL("./agent-hub-server.mjs", import.meta.url), "utf8");
   const telemetrySource = await readFile(
-    new URL("./rate-limit-telemetry-service.mjs", import.meta.url),
+    new URL("./src/application/rate-limit-telemetry-service.mjs", import.meta.url),
     "utf8",
   );
   const processCaptureSource = await readFile(new URL("./process-capture.mjs", import.meta.url), "utf8");

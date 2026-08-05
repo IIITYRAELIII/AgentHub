@@ -23,3 +23,4 @@ import "./desktop-deferred-input-service.test.mjs";
 import "./desktop-settings-service.test.mjs";
 import "./run-progress-presentation.test.mjs";
 import "./agent-hub-startup-coordinator.test.mjs";
+import "./task-metadata-store.test.mjs";

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ProviderTaskActivityService } from "./provider-task-activity-service.mjs";
+import { ProviderTaskActivityService } from "./src/application/provider-task-activity-service.mjs";
 
 function fixture({ rolloutPath = "C:/rollout.jsonl", running = true, claudeSnapshot = null } = {}) {
   const events = [];

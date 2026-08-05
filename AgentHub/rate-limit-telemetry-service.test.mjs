@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RateLimitTelemetryService } from "./rate-limit-telemetry-service.mjs";
+import { RateLimitTelemetryService } from "./src/application/rate-limit-telemetry-service.mjs";
 
 function fixture({
   codexRunning = true,

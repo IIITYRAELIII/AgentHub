@@ -53,11 +53,12 @@
 | 38 | ✅ | Composition root сокращён до 5 732 строк. `CodexTerminalReconciliationService` владеет дедупликацией terminal-аудита, grace period, восстановлением пропущенных hook-событий, коррекцией provisional-записей и агрегацией исторических/субагентских ходов. |
 | 39 | ✅ | Composition root сокращён до 5 657 строк. `ProviderTaskActivityService` владеет определением внешней активности Codex/Claude, а `SelectedTaskWatchService` — периодическим наблюдением выбранной внешней задачи, дедупликацией запуска и повторной проверкой selection/run после асинхронного snapshot. |
 | 40 | ✅ | Composition root сокращён до 5 614 строк. `RateLimitTelemetryService` владеет безопасным Claude `/usage`, чтением Codex rate limits, форматированием текущего состояния и коалесцированным пятиминутным сохранением обеих серий в SQLite/work-log projection. |
+| 41 | ✅ | Начат постепенный переход к слоистому `src`: application services активности провайдеров, наблюдения выбранной задачи и телеметрии лимитов перенесены вместе с импортами и тестами. Новый `TaskMetadataStore` владеет bounded-состоянием названий и настроек задачи, поддерживает будущий `hubTaskId` и сокращает composition root до 5 572 строк. Корневые entrypoint и совместимые CLI-пути не меняются. |
 
 После этапов 31–40 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и
 timer/terminal-delivery/terminal-reconciliation/token-state/context-maintenance,
-provider activity, selected-task watch и rate-limit telemetry ownership больше не реализуются внутри
+provider activity, selected-task watch, rate-limit telemetry и task metadata ownership больше не реализуются внутри
 `agent-hub-server.mjs`. Файл всё
 ещё велик, но оставшееся разделение должно идти по новым прикладным владельцам,
 а не возвращать эти обязанности в composition root.
@@ -66,6 +67,9 @@ provider activity, selected-task watch и rate-limit telemetry ownership бол�
 задачи. Будущая durable-модель использует `hubTaskId`, которому соответствуют
 несколько последовательных Codex thread ID или Claude session ID; подробный
 переходный контракт зафиксирован в [ARCHITECTURE_V2.md](ARCHITECTURE_V2.md).
+Правила распределения внутренних модулей по слоям описаны в
+[`src/README.md`](src/README.md); перенос выполняется по одному проверяемому
+срезу, а не массовым изменением путей.
 
 ## Критерий завершения
 

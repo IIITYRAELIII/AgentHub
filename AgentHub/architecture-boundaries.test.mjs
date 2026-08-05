@@ -254,11 +254,11 @@ test("Codex terminal reconciliation has one application owner", async () => {
 test("provider activity and selected external watch have explicit owners", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   const activity = await readFile(
-    path.join(ROOT, "provider-task-activity-service.mjs"),
+    path.join(ROOT, "src", "application", "provider-task-activity-service.mjs"),
     "utf8",
   );
   const watch = await readFile(
-    path.join(ROOT, "selected-task-watch-service.mjs"),
+    path.join(ROOT, "src", "application", "selected-task-watch-service.mjs"),
     "utf8",
   );
   assert.equal((source.match(/new ProviderTaskActivityService\s*\(/g) ?? []).length, 1);
@@ -276,7 +276,7 @@ test("provider activity and selected external watch have explicit owners", async
 test("rate-limit probing and periodic persistence have one telemetry owner", async () => {
   const source = await readFile(path.join(ROOT, "agent-hub-server.mjs"), "utf8");
   const telemetry = await readFile(
-    path.join(ROOT, "rate-limit-telemetry-service.mjs"),
+    path.join(ROOT, "src", "application", "rate-limit-telemetry-service.mjs"),
     "utf8",
   );
   assert.equal((source.match(/new RateLimitTelemetryService\s*\(/g) ?? []).length, 1);

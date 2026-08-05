@@ -1,8 +1,8 @@
-import { parseClaudeLimits } from "./claude.mjs";
+import { parseClaudeLimits } from "../../claude.mjs";
 import {
   formatClaudeRateLimits,
   formatCodexRateLimits,
-} from "./status.mjs";
+} from "../../status.mjs";
 
 export class RateLimitTelemetryService {
   constructor({

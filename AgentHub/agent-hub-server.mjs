@@ -62,7 +62,7 @@ import { CodexTerminalReconciliationService } from "./codex-terminal-reconciliat
 import { scanCodexHistoricalRolloutInWorker } from "./codex-historical-backfill.mjs";
 import { resolveCodexJournalProject } from "./codex-journal-project.mjs";
 import { RateLimitHistoryStore } from "./rate-limit-history.mjs";
-import { RateLimitTelemetryService } from "./rate-limit-telemetry-service.mjs";
+import { RateLimitTelemetryService } from "./src/application/rate-limit-telemetry-service.mjs";
 import {
   CODEX_AUDIT_SOURCE_KINDS,
   resolveCodexAccountingThread,
@@ -168,10 +168,7 @@ import {
   codexRolloutTurnState,
   codexCatalogEntry,
   mergeTaskCatalog,
-  pinnedTaskTitle as readPinnedTaskTitle,
-  pinTaskTitle as writePinnedTaskTitle,
   preferredCodexTaskTitle,
-  reconcilePinnedTaskTitle,
   readCodexRolloutActivity,
   selectCodexTurn,
   selectExactActiveCodexTurnId,
@@ -220,8 +217,8 @@ import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "./cod
 import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
 import { TaskProgressController } from "./task-progress-controller.mjs";
 import { TaskObservationService } from "./task-observation-service.mjs";
-import { ProviderTaskActivityService } from "./provider-task-activity-service.mjs";
-import { SelectedTaskWatchService } from "./selected-task-watch-service.mjs";
+import { ProviderTaskActivityService } from "./src/application/provider-task-activity-service.mjs";
+import { SelectedTaskWatchService } from "./src/application/selected-task-watch-service.mjs";
 import {
   DeferredInputController,
   isRetryableDeferredLaunchError,
@@ -285,6 +282,7 @@ import {
   TurnEndDeliveryService,
   fallbackTurnEndMessage,
 } from "./turn-end-delivery-service.mjs";
+import { TaskMetadataStore } from "./src/application/task-metadata-store.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -385,7 +383,9 @@ const defaultCodexReasoningEffort = CODEX_REASONING_EFFORTS.includes(config.code
 let codexModel = defaultCodexModel;
 let codexReasoningEffort = defaultCodexReasoningEffort;
 let codexCollaborationMode = config.codexCollaborationMode;
-const codexTaskSettings = {};
+const taskMetadata = new TaskMetadataStore({
+  validReasoningEfforts: CODEX_REASONING_EFFORTS,
+});
 const PROJECTS = config.projects;
 const DEFAULT_PROJECT_ROOT = config.projectRoot;
 const STATE_FILE = config.stateFile;
@@ -527,8 +527,6 @@ let desktopControlServer = null;
 let updateOffset = 0;
 let chatId = null;
 let activeProjectRoot = DEFAULT_PROJECT_ROOT;
-const pinnedTaskTitles = {};
-const pendingTaskTitleConfirmations = {};
 let threadId = null;
 let activeThreadTitle = "";
 const selectionStore = new TaskSelectionStore({
@@ -1029,12 +1027,12 @@ const codexCatalogProjection = new CodexCatalogProjectionService({
   threadResponseTitle: codexThreadResponseTitle,
   confirmationKey: catalogTaskKey,
   expectedTitle: pendingTaskTitle,
-  clearExpectedTitle: (key) => { delete pendingTaskTitleConfirmations[key]; },
+  clearExpectedTitle: (key) => taskMetadata.clearExpectedTitle(key),
   preferredTitle: preferredCodexTaskTitle,
   pinnedTitle: pinnedTaskTitle,
   setThreadName: (threadId, name) => sendRpc("thread/name/set", { threadId, name }),
   reconcilePinnedTitle: (provider, threadId, title) => (
-    reconcilePinnedTaskTitle(pinnedTaskTitles, provider, threadId, title)
+    taskMetadata.reconcilePinnedTitle({ provider, threadId }, title)
   ),
   savePinnedTitles: savePinnedTaskTitles,
   saveState,
@@ -1429,24 +1427,19 @@ function runTaskTitle(run) {
 }
 
 function pinnedTaskTitle(provider, id) {
-  return readPinnedTaskTitle(pinnedTaskTitles, provider, id);
+  return taskMetadata.pinnedTitle({ provider, threadId: id });
 }
 
 function pinTaskTitle(provider, id, title) {
-  return writePinnedTaskTitle(pinnedTaskTitles, provider, id, title);
+  return taskMetadata.pinTitle({ provider, threadId: id }, title);
 }
 
 function pendingTaskTitle(provider, id) {
-  return String(pendingTaskTitleConfirmations[catalogTaskKey({ provider, threadId: id })] ?? "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 80);
+  return taskMetadata.pendingTitle({ provider, threadId: id });
 }
 
 function expectTaskTitleConfirmation(provider, id, title) {
-  const value = String(title ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
-  if (id && value) pendingTaskTitleConfirmations[catalogTaskKey({ provider, threadId: id })] = value;
-  return value;
+  return taskMetadata.expectTitle({ provider, threadId: id }, title);
 }
 
 function setBoundedMapValue(map, key, value, limit) {
@@ -1462,12 +1455,6 @@ async function persistTaskDiff(key, value) {
   } catch (error) {
     console.error("Cannot persist task diff:", error.message);
   }
-}
-
-function setBoundedObjectValue(object, key, value, limit) {
-  if (Object.hasOwn(object, key)) delete object[key];
-  object[key] = value;
-  while (Object.keys(object).length > limit) delete object[Object.keys(object)[0]];
 }
 
 function runMessageBinding(run, metadata = {}) {
@@ -1973,15 +1960,15 @@ async function waitForTurnEndCompletion(identity, timeoutMs = 2_000) {
 
 function rememberCodexTaskSettings(id = isCodex() ? threadId : null) {
   if (!id) return;
-  setBoundedObjectValue(codexTaskSettings, id, {
+  taskMetadata.rememberCodexSettings(id, {
     model: codexModel,
     reasoningEffort: codexReasoningEffort,
-  }, 500);
+  });
 }
 
 function restoreCodexTaskSettings(id, { inheritCurrent = false } = {}) {
   if (!id) return;
-  const saved = codexTaskSettings[id];
+  const saved = taskMetadata.codexSettings(id);
   const fallbackModel = inheritCurrent ? codexModel : defaultCodexModel;
   const fallbackReasoning = inheritCurrent ? codexReasoningEffort : defaultCodexReasoningEffort;
   codexModel = saved && typeof saved.model === "string" && saved.model.trim()
@@ -1995,12 +1982,12 @@ function restoreCodexTaskSettings(id, { inheritCurrent = false } = {}) {
 
 function applyCodexThreadSettings(id, payload) {
   if (!id) return;
-  const current = codexTaskSettings[id] ?? {
+  const current = taskMetadata.codexSettings(id) ?? {
     model: codexModel,
     reasoningEffort: codexReasoningEffort,
   };
   const resolved = resolveCodexThreadSettings(payload, current);
-  setBoundedObjectValue(codexTaskSettings, id, resolved, 500);
+  taskMetadata.rememberCodexSettings(id, resolved);
   if (isCodex() && id === threadId) {
     codexModel = resolved.model;
     codexReasoningEffort = resolved.reasoningEffort;
@@ -2103,33 +2090,11 @@ try {
   restoredSelection.threadId = restoredSelection.threadIds[restoredSelection.activeProvider] ?? null;
   if (typeof saved.activeThreadTitle === "string") restoredSelection.activeThreadTitle = saved.activeThreadTitle;
   selectionStore.restore(restoredSelection);
-  if (saved.pinnedTaskTitles && typeof saved.pinnedTaskTitles === "object") {
-    for (const [key, value] of Object.entries(saved.pinnedTaskTitles)) {
-      const title = String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
-      if (key.includes("\0") && title) pinnedTaskTitles[key] = title;
-    }
-  }
-  if (saved.pendingTaskTitleConfirmations && typeof saved.pendingTaskTitleConfirmations === "object") {
-    for (const [key, value] of Object.entries(saved.pendingTaskTitleConfirmations)) {
-      const title = String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
-      if (key.includes("\0") && title) pendingTaskTitleConfirmations[key] = title;
-    }
-  }
+  taskMetadata.restore(saved);
   if (CLAUDE_MODELS.includes(saved.claudeModel)) claudeModel = saved.claudeModel;
   if (typeof saved.codexModel === "string") codexModel = normalizeCodexModel(saved.codexModel);
   if (CODEX_REASONING_EFFORTS.includes(saved.codexReasoningEffort)) {
     codexReasoningEffort = saved.codexReasoningEffort;
-  }
-  if (saved.codexTaskSettings && typeof saved.codexTaskSettings === "object") {
-    for (const [savedThreadId, settings] of Object.entries(saved.codexTaskSettings).slice(-500)) {
-      if (!settings || typeof settings !== "object") continue;
-      if (typeof settings.model !== "string" || !settings.model.trim()) continue;
-      if (!CODEX_REASONING_EFFORTS.includes(settings.reasoningEffort)) continue;
-      setBoundedObjectValue(codexTaskSettings, savedThreadId, {
-        model: settings.model.trim(),
-        reasoningEffort: settings.reasoningEffort,
-      }, 500);
-    }
   }
   if (CODEX_COLLABORATION_MODES.includes(saved.codexCollaborationMode)) {
     codexCollaborationMode = saved.codexCollaborationMode;
@@ -2304,7 +2269,7 @@ try {
     });
   }
   if (activeProvider === "codex" && threadId) {
-    if (codexTaskSettings[threadId]) restoreCodexTaskSettings(threadId);
+    if (taskMetadata.codexSettings(threadId)) restoreCodexTaskSettings(threadId);
     else rememberCodexTaskSettings(threadId);
   }
 } catch (error) {
@@ -2352,12 +2317,7 @@ try {
 
 try {
   const savedPinnedTitles = JSON.parse(await readFile(PINNED_TASK_TITLES_FILE, "utf8"));
-  if (savedPinnedTitles && typeof savedPinnedTitles === "object") {
-    for (const [key, value] of Object.entries(savedPinnedTitles)) {
-      const title = String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
-      if (key.includes("\0") && title) pinnedTaskTitles[key] = title;
-    }
-  }
+  taskMetadata.restorePinnedTitles(savedPinnedTitles);
 } catch (error) {
   if (error?.code !== "ENOENT") console.error("Cannot read pinned task titles:", error.message);
 }
@@ -3142,7 +3102,7 @@ async function desktopArchiveTask(params) {
   });
   await sendRpc("thread/archive", { threadId: target.threadId });
   invalidateTaskCatalog();
-  delete codexTaskSettings[target.threadId];
+  taskMetadata.deleteCodexSettings(target.threadId);
   const isCurrent = catalogEntryIsSelected(target, selectedTask());
   let nextThread = null;
   if (isCurrent) {
@@ -3962,7 +3922,7 @@ async function beginRun(input, target = null) {
     }));
   }
   const savedCodexSettings = provider === "codex"
-    ? codexTaskSettings[targetThreadId] ?? {}
+    ? taskMetadata.codexSettings(target) ?? {}
     : {};
   const modelId = target?.modelId ?? (provider === "codex"
     ? savedCodexSettings.model ?? (targetThreadId === threadId ? codexModel : defaultCodexModel)
@@ -5475,12 +5435,10 @@ function saveState() {
     activeThreadTitle: selection.activeThreadTitle,
     activeProvider: selection.activeProvider,
     threadIds: selection.threadIds,
-    pinnedTaskTitles,
-    pendingTaskTitleConfirmations,
+    ...taskMetadata.snapshot(),
     claudeModel,
     codexModel,
     codexReasoningEffort,
-    codexTaskSettings,
     codexCollaborationMode,
     claudeReasoningEffort,
     claudeCollaborationMode,
@@ -5515,7 +5473,7 @@ function saveState() {
 function savePinnedTaskTitles() {
   return writeTextAtomic(
     PINNED_TASK_TITLES_FILE,
-    `${JSON.stringify(pinnedTaskTitles, null, 2)}\n`,
+    `${JSON.stringify(taskMetadata.pinnedTitlesSnapshot(), null, 2)}\n`,
   );
 }
 

@@ -2,8 +2,8 @@ import {
   readCodexRolloutActivity,
   selectExactActiveCodexTurnId,
   TASK_EXECUTION_OWNERS,
-} from "./task-catalog.mjs";
-import { resolveCodexTaskActivity } from "./codex-runtime-owner.mjs";
+} from "../../task-catalog.mjs";
+import { resolveCodexTaskActivity } from "../../codex-runtime-owner.mjs";
 
 export class ProviderTaskActivityService {
   constructor({
