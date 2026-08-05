@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -143,6 +143,23 @@ test("deployRuntime recompiles a tampered cached RuntimeHost", async (t) => {
   await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-2" });
 
   assert.notEqual((await readFile(launcher, "utf8")).trim(), "tampered");
+});
+
+test("deployRuntime does not replace unchanged stable runtime files", async () => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
+  const stableFiles = [path.join(runtimeRoot, "codex-stop-hook-launcher.mjs")];
+  if (process.platform === "win32") {
+    stableFiles.push(path.join(runtimeRoot, "AgentHub.RuntimeHost.exe"));
+  }
+  const preservedTime = new Date("2000-01-01T00:00:00.000Z");
+  for (const target of stableFiles) await utimes(target, preservedTime, preservedTime);
+
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-2" });
+
+  for (const target of stableFiles) {
+    assert.equal((await stat(target)).mtime.toISOString(), preservedTime.toISOString());
+  }
 });
 
 test("deployRuntime does not publish a pointer before the stable launchers are ready", async () => {

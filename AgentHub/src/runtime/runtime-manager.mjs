@@ -88,6 +88,13 @@ async function hashFile(target) {
   return createHash("sha256").update(await readFile(target)).digest("hex");
 }
 
+async function sameFileContents(left, right) {
+  const [leftInfo, rightInfo] = await Promise.all([stat(left), stat(right)]);
+  if (leftInfo.size !== rightInfo.size) return false;
+  const [leftContents, rightContents] = await Promise.all([readFile(left), readFile(right)]);
+  return leftContents.equals(rightContents);
+}
+
 async function releaseManifest(releaseRoot, names) {
   const files = [];
   async function visit(relative) {
@@ -163,6 +170,7 @@ async function installStableRuntimeFiles(layout, releaseRoot, { beforeCommit } =
   let settled = false;
   const rollback = async () => {
     await Promise.all(files.map(async (file) => {
+      if (!file.changed) return;
       if (file.existed) await cp(file.backup, file.target, { force: true }).catch(() => {});
       else await rm(file.target, { force: true }).catch(() => {});
     }));
@@ -178,11 +186,15 @@ async function installStableRuntimeFiles(layout, releaseRoot, { beforeCommit } =
       file.backup = path.join(staging, `old-${index}`);
       file.existed = await exists(file.target);
       await cp(file.source, file.staged, { force: false, errorOnExist: true });
-      if (file.existed) await cp(file.target, file.backup, { force: false, errorOnExist: true });
+      file.changed = !file.existed || !await sameFileContents(file.staged, file.target);
+      if (file.existed && file.changed) {
+        await cp(file.target, file.backup, { force: false, errorOnExist: true });
+      }
     }
     await beforeCommit?.();
     try {
       for (const file of files) {
+        if (!file.changed) continue;
         await cp(file.staged, file.target, { force: true });
         if (file.executable) await chmod(file.target, 0o700);
         else await protectRuntimeConfig(file.target);
