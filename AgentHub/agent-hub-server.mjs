@@ -199,6 +199,7 @@ import { TaskViewController } from "./src/interfaces/telegram/task-view-controll
 import { TelegramPollingController } from "./src/interfaces/telegram/telegram-polling-controller.mjs";
 import { TelegramSettingsMenu } from "./src/interfaces/telegram/telegram-settings-menu.mjs";
 import { TelegramStatusController } from "./src/interfaces/telegram/telegram-status-controller.mjs";
+import { TelegramDeliveryService } from "./src/interfaces/telegram/telegram-delivery-service.mjs";
 import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "./src/providers/codex/codex-invocation.mjs";
 import { CodexAppServerLifecycle } from "./src/providers/codex/codex-app-server-lifecycle.mjs";
 import { CodexAccountingResolver } from "./src/providers/codex/codex-accounting-resolver.mjs";
@@ -563,7 +564,7 @@ let stopping = false;
 let autoApprove = config.autoApproveOnStart;
 let restartRequest = null;
 let processingUpdateId = null;
-let bindingWriteQueue = Promise.resolve();
+let telegramDeliveryService = null;
 const runtimeTimers = new RuntimeTimerCoordinator();
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
 const EXTERNAL_TASK_POLL_INTERVAL_MS = 1_500;
@@ -1407,48 +1408,7 @@ const deliveryOutbox = new PersistentDeliveryOutbox({
     const { photo_path: photoPath, ...telegramBody } = body;
     return telegramMultipart("sendPhoto", telegramBody, "photo", photoPath);
   },
-  onDelivered: async (item, result) => {
-    if (!item.binding || !Number.isSafeInteger(result?.message_id)) return;
-    const {
-      replacesProgressMessageIds = [],
-      ...storedBinding
-    } = item.binding;
-    try {
-      bindingWriteQueue = bindingWriteQueue
-        .catch(() => {})
-        .then(() => appendMessageBindings(config.dataDir, [{
-          ...storedBinding,
-          messageId: result.message_id,
-        }]));
-      await bindingWriteQueue;
-      if (item.binding.kind === "progress") {
-        const run = taskRuns.forTask(item.binding);
-        if (!run || run.finalizing) {
-          await telegram("deleteMessage", {
-            chat_id: item.body?.chat_id ?? item.binding.chatId,
-            message_id: result.message_id,
-          }).catch(() => {});
-        } else if (!run.progressMessageIds.includes(result.message_id)) {
-          run.progressMessageIds.push(result.message_id);
-          run.lastProgressText = String(item.body?.text ?? "");
-          taskProgress.schedule(run);
-          await saveState();
-        }
-      }
-    } catch (error) {
-      console.error(`Cannot bind queued Telegram delivery ${item.id}:`, error.message);
-    }
-    if (Array.isArray(replacesProgressMessageIds) && replacesProgressMessageIds.length) {
-      try {
-        await clearDeliveredProgressMessages(
-          item.body?.chat_id ?? item.binding.chatId,
-          replacesProgressMessageIds,
-        );
-      } catch (error) {
-        console.error(`Cannot replace progress after Telegram delivery ${item.id}:`, error.message);
-      }
-    }
-  },
+  onDelivered: (item, result) => telegramDeliveryService.recordDeliveredOutbox(item, result),
   onPermanentFailure: async (item, error) => {
     console.error(`Quarantined permanent Telegram delivery ${item.id}:`, error.message);
   },
@@ -1500,327 +1460,34 @@ async function persistTaskDiff(key, value) {
   }
 }
 
-function runMessageBinding(run, metadata = {}) {
-  if (!run?.threadId || !Number.isSafeInteger(run.chatId)) return null;
-  return {
-    chatId: run.chatId,
-    provider: run.provider,
-    threadId: run.threadId,
-    projectRoot: run.projectRoot,
-    taskTitle: runTaskTitle(run),
-    createdAt: new Date().toISOString(),
-    ...metadata,
-  };
+function runMessageBinding(...args) { return telegramDeliveryService.runMessageBinding(...args); }
+function bindRunMessage(...args) { return telegramDeliveryService.bindRunMessage(...args); }
+function sendRunMessage(...args) { return telegramDeliveryService.sendRunMessage(...args); }
+function bindIncomingTaskMessage(...args) {
+  return telegramDeliveryService.bindIncomingTaskMessage(...args);
+}
+function deleteTaskTelegramMessages(...args) {
+  return telegramDeliveryService.deleteTaskMessages(...args);
 }
 
-async function bindRunMessage(run, message, metadata = {}) {
-  const binding = runMessageBinding(run, metadata);
-  if (!binding || !Number.isSafeInteger(message?.message_id)) return;
-  bindingWriteQueue = bindingWriteQueue
-    .catch(() => {})
-    .then(() => appendMessageBindings(config.dataDir, [{
-      ...binding,
-      messageId: message.message_id,
-    }]));
-  await bindingWriteQueue;
+function sendTaskViewText(...args) { return telegramDeliveryService.sendTaskViewText(...args); }
+function progressOutboxKey(...args) { return telegramDeliveryService.progressOutboxKey(...args); }
+function sendReliableRunMessage(...args) {
+  return telegramDeliveryService.sendReliableRunMessage(...args);
 }
+function sendRunLongMessage(...args) { return telegramDeliveryService.sendRunLongMessage(...args); }
 
-async function sendRunMessage(run, text, extra = {}, bindingMetadata = {}) {
-  const message = await sendMessageTo(run.chatId, text, extra);
-  await bindRunMessage(run, message, bindingMetadata).catch((error) => {
-    console.error("Cannot bind task message:", error.message);
-  });
-  return message;
+function clearDeliveredProgressMessages(...args) {
+  return telegramDeliveryService.clearDeliveredProgressMessages(...args);
 }
-
-function sameTaskBinding(binding, task, targetChatId = null) {
-  return binding?.provider === task?.provider
-    && String(binding?.threadId ?? "") === String(task?.threadId ?? "")
-    && samePath(binding?.projectRoot, task?.projectRoot)
-    && (targetChatId == null || binding.chatId === targetChatId);
+function safelyDeliverRunMessage(...args) {
+  return telegramDeliveryService.safelyDeliverRunMessage(...args);
 }
-
-async function bindIncomingTaskMessage(message, text, target = null) {
-  const task = target ?? selectedTask();
-  if (!task.threadId || !Number.isSafeInteger(message?.message_id)) return;
-  const binding = {
-    ...task,
-    chatId: message.chat.id,
-    messageId: message.message_id,
-    taskTitle: task.taskTitle ?? activeThreadTitle,
-    createdAt: new Date((Number(message.date) || Math.floor(Date.now() / 1000)) * 1000).toISOString(),
-    kind: "incoming-user",
-    role: "user",
-    text: String(text ?? "").trim(),
-  };
-  bindingWriteQueue = bindingWriteQueue
-    .catch(() => {})
-    .then(() => appendMessageBindings(config.dataDir, [binding]));
-  await bindingWriteQueue;
+function finalizeRunDelivery(...args) { return telegramDeliveryService.finalizeRunDelivery(...args); }
+function sendTaskSelectionNotification(options = {}) {
+  return telegramDeliveryService.sendTaskSelectionNotification({ targetChatId: chatId, ...options });
 }
-
-async function deleteTaskTelegramMessages(task, targetChatId) {
-  const bindings = await readMessageBindings(config.dataDir);
-  const protectedIds = new Set([...approvalController.pending.values()]
-    .filter((approval) => approval.chatId === targetChatId)
-    .map((approval) => approval.messageId)
-    .filter(Number.isSafeInteger));
-  const maximumAgeMs = 47 * 60 * 60 * 1000;
-  const now = Date.now();
-  const messageIds = [...new Set(bindings
-    .filter((binding) => sameTaskBinding(binding, task, targetChatId))
-    .filter((binding) => !protectedIds.has(binding.messageId))
-    .filter((binding) => {
-      const createdAt = Date.parse(String(binding.createdAt ?? ""));
-      return Number.isFinite(createdAt) && now - createdAt < maximumAgeMs;
-    })
-    .map((binding) => binding.messageId))]
-    .sort((left, right) => left - right);
-  if (!messageIds.length) return 0;
-
-  const removed = new Set();
-  for (let start = 0; start < messageIds.length; start += 100) {
-    const batch = messageIds.slice(start, start + 100);
-    try {
-      await telegram("deleteMessages", {
-        chat_id: targetChatId,
-        message_ids: batch,
-      });
-      batch.forEach((messageId) => removed.add(messageId));
-    } catch (batchError) {
-      console.warn(`Cannot batch-delete task messages: ${batchError.message}`);
-      for (const messageId of batch) {
-        try {
-          await telegram("deleteMessage", {
-            chat_id: targetChatId,
-            message_id: messageId,
-          });
-          removed.add(messageId);
-        } catch (error) {
-          console.warn(`Cannot delete Telegram message ${messageId}: ${error.message}`);
-        }
-      }
-    }
-  }
-  if (removed.size) {
-    bindingWriteQueue = bindingWriteQueue
-      .catch(() => {})
-      .then(() => removeMessageBindings(
-        config.dataDir,
-        (binding) => binding.chatId === targetChatId && removed.has(binding.messageId),
-      ));
-    await bindingWriteQueue;
-  }
-  const run = taskRuns.forTask(task);
-  if (run) {
-    run.progressMessageIds = run.progressMessageIds.filter((messageId) => !removed.has(messageId));
-    if (!run.progressMessageIds.length) run.lastProgressText = "";
-  }
-  return removed.size;
-}
-
-async function sendTaskViewText(run, heading, text, kind) {
-  const value = `${heading}\n\n${String(text ?? "").trim()}`;
-  for (let start = 0; start < value.length; start += TELEGRAM_LIMIT) {
-    await sendRunMessage(
-      run,
-      value.slice(start, start + TELEGRAM_LIMIT),
-      {},
-      { kind, role: kind === "task-view-user" ? "user" : "assistant" },
-    );
-  }
-}
-
-function progressOutboxKey(run) {
-  return `progress:${taskRunKey(run)}`;
-}
-
-async function sendReliableRunMessage(
-  run,
-  text,
-  extra = {},
-  bindingMetadata = {},
-  delivery = {},
-) {
-  const body = { chat_id: run.chatId, text: String(text), ...extra };
-  if (delivery.supersedeKey) {
-    await deliveryOutbox.discard({ supersedeKey: delivery.supersedeKey });
-  }
-  if (!delivery.forceQueue) {
-    try {
-      const message = await telegram("sendMessage", body);
-      await bindRunMessage(run, message, bindingMetadata).catch((error) => {
-        console.error("Cannot bind task message:", error.message);
-      });
-      return message;
-    } catch (error) {
-      if (error?.retryable !== true) throw error;
-      console.warn(`Telegram delivery will be queued: ${error.message}`);
-    }
-  }
-  const queued = await deliveryOutbox.enqueue({
-    method: "sendMessage",
-    body,
-    binding: runMessageBinding(run, bindingMetadata),
-    groupId: delivery.groupId ?? null,
-    sequence: delivery.sequence ?? 0,
-    supersedeKey: delivery.supersedeKey ?? null,
-  });
-  scheduleDeliveryOutboxFlush(0);
-  return { queued: true, outboxId: queued.id };
-}
-
-async function sendRunLongMessage(run, text, {
-  speechText = null,
-  forceSpeechButton = false,
-  reliable = false,
-  durable = false,
-  silent = false,
-  deliveryGroupId = randomUUID(),
-  replaceProgressMessageIds = [],
-} = {}) {
-  const value = `${runProgressPresentation.heading(run, true)}\n\n${String(text)}`;
-  const speechId = mediaController.rememberSpeechText(speechText, forceSpeechButton);
-  const diffCallbackData = taskViewCallbackData({
-    action: "diff",
-    provider: run.provider,
-    threadId: run.threadId,
-  }) ?? "task-diff";
-  let queued = durable;
-  let sequence = 0;
-  for (let start = 0; start < value.length; start += TELEGRAM_LIMIT) {
-    const isLast = start + TELEGRAM_LIMIT >= value.length;
-    const extra = {
-      ...(silent ? { disable_notification: true } : {}),
-      ...(isLast
-        ? {
-          reply_markup: {
-            inline_keyboard: [
-              ...(speechId
-                ? [[{ text: "🔊 Озвучить", callback_data: `speech:${speechId}` }]]
-                : []),
-              [{ text: "Изменения", callback_data: diffCallbackData }],
-            ],
-          },
-        }
-        : {}),
-    };
-    if (reliable) {
-      const result = await sendReliableRunMessage(
-        run,
-        value.slice(start, start + TELEGRAM_LIMIT),
-        extra,
-        isLast && replaceProgressMessageIds.length
-          ? { replacesProgressMessageIds: [...replaceProgressMessageIds] }
-          : {},
-        { forceQueue: queued, groupId: deliveryGroupId, sequence },
-      );
-      queued ||= result?.queued === true;
-    } else {
-      await sendRunMessage(run, value.slice(start, start + TELEGRAM_LIMIT), extra);
-    }
-    sequence += 1;
-  }
-  return { queued, groupId: deliveryGroupId, nextSequence: sequence };
-}
-
-async function clearDeliveredProgressMessages(targetChatId, values) {
-  const messageIds = [...new Set(values ?? [])]
-    .filter(Number.isSafeInteger);
-  if (!messageIds.length) return;
-  for (const messageId of messageIds) {
-    await telegram("deleteMessage", {
-      chat_id: targetChatId,
-      message_id: messageId,
-    }).catch((error) => {
-      console.warn(`Cannot remove completed progress message ${messageId}:`, error.message);
-    });
-  }
-  await removeMessageBindings(
-    config.dataDir,
-    (binding) => binding.chatId === targetChatId && messageIds.includes(binding.messageId),
-  ).catch((error) => {
-    console.warn("Cannot remove completed progress bindings:", error.message);
-  });
-}
-
-async function safelyDeliverRunMessage(run, delivery, description = "сообщение задачи") {
-  try {
-    return await delivery();
-  } catch (error) {
-    console.error(`Cannot deliver ${description} for task ${run?.threadId ?? run?.id ?? "unknown"}:`, error.message);
-    return null;
-  }
-}
-
-async function finalizeRunDelivery(run, {
-  answer,
-  message = answer,
-  speechText = answer,
-  forceSpeechButton = false,
-  deliver = true,
-  silent = false,
-  complete = true,
-  description = "финальный ответ",
-} = {}) {
-  run.finalizing = true;
-  await deliveryOutbox.discard({ supersedeKey: progressOutboxKey(run) }).catch((error) => {
-    console.error("Cannot discard stale progress delivery:", error.message);
-  });
-  rememberLastTaskMessage(run, answer);
-  if (run?.turnId) setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(run), run.turnId, 500);
-  await refreshTaskDiff(run).catch((error) => {
-    console.error(`Cannot refresh final diff for task ${run?.threadId ?? run?.id ?? "unknown"}:`, error.message);
-  });
-  let deliveryResult = null;
-  if (deliver) {
-    // A completed run must never disappear between remembering its answer and
-    // sending it to Telegram. Persist every final part in the outbox first;
-    // the run can then be closed safely even if Telegram is temporarily down.
-    deliveryResult = await sendRunLongMessage(run, message, {
-      speechText,
-      forceSpeechButton,
-      reliable: true,
-      durable: true,
-      silent,
-      replaceProgressMessageIds: run.finishedProgressMessageIds ?? [],
-    });
-  }
-  if (complete) await managedRunLifecycle.complete(run);
-  return deliveryResult;
-}
-
-async function sendTaskSelectionNotification({
-  targetChatId = chatId,
-  showLastMessage = true,
-  alreadySelected = false,
-} = {}) {
-  const task = {
-    ...selectedTask(),
-    chatId: targetChatId,
-    taskTitle: activeThreadTitle,
-  };
-  const extra = { parse_mode: "HTML" };
-  if (showLastMessage && task.threadId) extra.reply_markup = showLastMessageReplyMarkup(task);
-  const formatMessage = alreadySelected
-    ? formatTaskAlreadySelectedMessage
-    : formatTaskSwitchMessage;
-  const message = await sendMessageTo(targetChatId, formatMessage({
-    task: activeThreadTitle,
-    project: activeProject().name,
-    showProject: config.showProjectButton,
-    ...taskSwitchSettings(),
-  }), extra);
-  await bindRunMessage(task, message).catch((error) => {
-    console.error("Cannot bind task-switch message:", error.message);
-  });
-  return message;
-}
-
-function sendTaskSwitchNotification(options = {}) {
-  return sendTaskSelectionNotification(options);
-}
-
+function sendTaskSwitchNotification(options = {}) { return sendTaskSelectionNotification(options); }
 function sendTaskAlreadySelectedNotification(options = {}) {
   return sendTaskSelectionNotification({ ...options, alreadySelected: true });
 }
@@ -3404,6 +3071,46 @@ const runProgressPresentation = new RunProgressPresentation({
   taskExecutionOwners: TASK_EXECUTION_OWNERS,
 });
 
+telegramDeliveryService = new TelegramDeliveryService({
+  dataDir: config.dataDir,
+  messageLimit: TELEGRAM_LIMIT,
+  appendBindings: appendMessageBindings,
+  readBindings: readMessageBindings,
+  removeBindings: removeMessageBindings,
+  pendingApprovalMessageIds: (targetChatId) => [...approvalController.pending.values()]
+    .filter((approval) => approval.chatId === targetChatId)
+    .map((approval) => approval.messageId)
+    .filter(Number.isSafeInteger),
+  runTaskTitle,
+  samePath,
+  taskRuns,
+  telegram,
+  sendMessageTo,
+  deliveryOutbox,
+  scheduleDeliveryFlush: scheduleDeliveryOutboxFlush,
+  taskRunKey,
+  randomId: randomUUID,
+  progressHeading: (run, done) => runProgressPresentation.heading(run, done),
+  rememberSpeechText: (text, force) => mediaController.rememberSpeechText(text, force),
+  taskViewCallbackData,
+  completeRun: (run) => managedRunLifecycle.complete(run),
+  rememberLastMessage: (run, text) => runJournal.rememberLastMessage(run, text),
+  rememberLastSeenTurn: (run, turnId) => (
+    setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(run), turnId, 500)
+  ),
+  refreshTaskDiff,
+  selectedTask,
+  activeTaskTitle: () => activeThreadTitle,
+  activeProjectName: () => activeProject().name,
+  showProject: () => config.showProjectButton,
+  taskSwitchSettings,
+  showLastMessageReplyMarkup,
+  formatTaskSwitchMessage,
+  formatTaskAlreadySelectedMessage,
+  getProgressController: () => taskProgress,
+  saveState,
+});
+
 const taskProgress = new TaskProgressController({
   isCurrentRun: (run) => taskRuns.forTask(run) === run,
   render: (run, done) => runProgressPresentation.render(run, done),
@@ -3418,16 +3125,8 @@ const taskProgress = new TaskProgressController({
     chat_id: run.chatId,
     message_id: messageId,
   }),
-  removeBindings: async (run, messageIds) => {
-    const removed = new Set(messageIds);
-    bindingWriteQueue = bindingWriteQueue
-      .catch(() => {})
-      .then(() => removeMessageBindings(
-        config.dataDir,
-        (binding) => binding.chatId === run.chatId && removed.has(binding.messageId),
-      ));
-    await bindingWriteQueue;
-  },
+  removeBindings: (run, messageIds) => telegramDeliveryService
+    .removeStoredBindings(run.chatId, messageIds),
   editMessage: (run, messageId, text) => telegram("editMessageText", {
     chat_id: run.chatId,
     message_id: messageId,
@@ -4165,7 +3864,7 @@ const runtimeResources = new RuntimeResourceRegistry({
   flush: [
     { name: "journal startup", run: () => journalStartupReady },
     { name: "state writes", run: () => runtimeStateCoordinator.flush() },
-    { name: "message binding writes", run: () => bindingWriteQueue },
+    { name: "message binding writes", run: () => telegramDeliveryService.waitForBindingWrites() },
     { name: "media writes", run: () => mediaController.waitForWrites() },
     { name: "task sync", run: () => taskSyncStore.save() },
     { name: "delivery outbox", run: () => deliveryOutbox.waitForWrites() },
