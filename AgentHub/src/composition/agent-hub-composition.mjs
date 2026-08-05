@@ -1,4 +1,4 @@
-import { readFile, unlink } from "node:fs/promises";
+import { unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import dns from "node:dns";
 import path from "node:path";
@@ -17,7 +17,7 @@ import {
   claudeResultTokenUsage,
   scanClaudeHistoricalTranscriptFile,
 } from "../providers/claude/claude-work-log.mjs";
-import { cleanupOrphanedClaudeRunOutputs, processIsAlive, stopProcessTree } from "../providers/claude/claude-run-io.mjs";
+import { processIsAlive, stopProcessTree } from "../providers/claude/claude-run-io.mjs";
 import {
   CODEX_COLLABORATION_MODE_LABELS,
   CODEX_COLLABORATION_MODES,
@@ -44,12 +44,7 @@ import { CodexContextMaintenanceService } from "../providers/codex/codex-context
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
 import { telegramPrompt } from "../interfaces/telegram/telegram-message.mjs";
 import {
-  forwardBundleAttachmentPaths,
-  restoreForwardBundle,
-} from "../interfaces/telegram/telegram-forward-bundle.mjs";
-import {
   captureTaskGitBaseline,
-  cleanupTaskGitIndexes,
   resolveTaskGitRepoRoots,
   taskGitDiff,
 } from "../infrastructure/filesystem/task-git-diff.mjs";
@@ -60,7 +55,6 @@ import {
   deferredResponseAnnotations,
   pendingInputKeyboard,
   replaceDeferredInputText,
-  restoreDeferredInput,
 } from "../domain/deferred-input.mjs";
 import {
   appendMessageBindings,
@@ -81,7 +75,6 @@ import {
   retainProgressMessageAfterEditError,
 } from "../runtime/progress-heartbeat.mjs";
 import {
-  serializableTaskRun,
   taskRunIsActive,
   taskRunKey,
   updateTaskRunTitle,
@@ -97,7 +90,6 @@ import { contextualCallback } from "../interfaces/telegram/callback-context.mjs"
 import { taskViewCallbackData } from "../interfaces/telegram/task-view-callback.mjs";
 import { PersistentDeliveryOutbox } from "../infrastructure/persistence/delivery-outbox.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
-import { unavailableLocalMcpOverrides } from "../infrastructure/process/local-mcp-preflight.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { resolveClaudeInvocation as resolveInstalledClaudeInvocation } from "../providers/claude/claude-invocation.mjs";
 import {
@@ -107,7 +99,6 @@ import {
   statusTaskEntries,
   TASK_EXECUTION_OWNERS,
   taskExecutionRuntimeLabel,
-  normalizeTaskExecutionOwner,
   taskOrderingActivityAtMs,
   taskCatalogTitleSignature,
 } from "../../task-catalog.mjs";
@@ -116,7 +107,6 @@ import {
   resolveCodexTaskActivity,
   resolveCodexObservedExecutionOwner,
 } from "../providers/codex/codex-runtime-owner.mjs";
-import { CodexLifecycleController } from "../providers/codex/codex-lifecycle-controller.mjs";
 import { conciseTurnTitle } from "../application/turn-title.mjs";
 import { DesktopControlServer } from "../../desktop-control.mjs";
 import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
@@ -127,12 +117,7 @@ import {
   formatCommandApproval as presentCommandApproval,
   formatFileApproval as presentFileApproval,
 } from "../interfaces/telegram/approval-presentation.mjs";
-import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "../providers/codex/codex-invocation.mjs";
-import { CodexAppServerLifecycle } from "../providers/codex/codex-app-server-lifecycle.mjs";
-import {
-  DeferredInputController,
-  isRetryableDeferredLaunchError,
-} from "../application/deferred-input-controller.mjs";
+import { DeferredInputController } from "../application/deferred-input-controller.mjs";
 import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import { fitTaskHistoryPayload } from "../domain/response-budget.mjs";
 import {
@@ -152,11 +137,6 @@ import {
   ManagedRunLifecycleService,
   runInputPreview,
 } from "../application/managed-run-lifecycle-service.mjs";
-import {
-  createHubRuntimeSnapshot,
-  HubRuntimeStateCoordinator,
-  restoreHubRuntimeSnapshot,
-} from "../application/hub-runtime-state-coordinator.mjs";
 import { TaskIdentityResolver } from "../application/task-identity-resolver.mjs";
 import { createHubStaticSettings } from "./hub-static-settings.mjs";
 import { createCodexObservabilityComposition } from "./codex-observability-composition.mjs";
@@ -179,6 +159,9 @@ import { createDesktopSystemComposition } from "./desktop-system-composition.mjs
 import { createDesktopRouterComposition } from "./desktop-router-composition.mjs";
 import { createRuntimeDataComposition } from "./runtime-data-composition.mjs";
 import { createBackgroundWorkComposition } from "./background-work-composition.mjs";
+import { createRuntimeStateRestorationComposition } from "./runtime-state-restoration-composition.mjs";
+import { runStartupMaintenance } from "./startup-maintenance-composition.mjs";
+import { createCodexLifecycleComposition } from "./codex-lifecycle-composition.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -1099,57 +1082,17 @@ function taskSwitchSettings() {
   };
 }
 
-function restorePersistedTaskRun(savedRun, restoredChatId) {
-  if (!savedRun || typeof savedRun !== "object"
-    || !["running", "finishing"].includes(savedRun.status)) return null;
-  const observer = savedRun.observer === true;
-  const executionOwner = normalizeTaskExecutionOwner(savedRun.executionOwner)
-    ?? (savedRun.provider === "codex"
-      ? observer
-        ? TASK_EXECUTION_OWNERS.EXTERNAL
-        : TASK_EXECUTION_OWNERS.HUB
-      : null);
-  return {
-    ...savedRun,
-    observer,
-    executionOwner,
-    appServer: savedRun.provider === "codex"
-      ? taskExecutionRuntimeLabel(executionOwner)
-      : savedRun.appServer,
-    status: "running",
-    chatId: Number.isSafeInteger(savedRun.chatId) ? savedRun.chatId : restoredChatId,
-    responseText: String(savedRun.responseText ?? ""),
-    observedInitialResponseText: typeof savedRun.observedInitialResponseText === "string"
-      ? savedRun.observedInitialResponseText
-      : String(savedRun.responseText ?? ""),
-    observedResponseChanged: savedRun.observedResponseChanged === true,
-    progressStage: String(savedRun.progressStage ?? "Восстановление задачи…"),
-    progressReasoning: String(savedRun.progressReasoning ?? ""),
-    lastMeaningfulProgressAt: String(
-      savedRun.lastMeaningfulProgressAt
-        ?? savedRun.progressHeartbeatAt
-        ?? savedRun.startedAt
-        ?? new Date().toISOString(),
-    ),
-    lastProgressText: String(savedRun.lastProgressText ?? ""),
-    progressMessageIds: Array.isArray(savedRun.progressMessageIds)
-      ? savedRun.progressMessageIds.filter(Number.isSafeInteger)
-      : Number.isSafeInteger(savedRun.progressMessageId)
-        ? [savedRun.progressMessageId]
-        : [],
-    progressStartTimer: null,
-    progressTimer: null,
-    progressUpdateInFlight: false,
-    progressUpdatePending: false,
-    process: null,
-  };
-}
-
-const deferredInputTtlMs = config.deferredInputTtlHours * 60 * 60 * 1000;
-const runtimeStateCoordinator = new HubRuntimeStateCoordinator({
-  store: runtimeStateStore,
-  canonicalize: (value) => canonicalizeProjectRoots(value, PROJECTS),
-  restoreSnapshot: (saved) => restoreHubRuntimeSnapshot(saved, {
+const {
+  runtimeStateCoordinator,
+  stateLoadFailed,
+  restoredState: restoredRuntimeState,
+} = await createRuntimeStateRestorationComposition({
+  config,
+  projects: PROJECTS,
+  maximumDeferredInputs: MAX_DEFERRED_INPUTS,
+  runtimeStateStore,
+  canonicalizeProjectRoots,
+  restoreContext: {
     selectionStore,
     findProject,
     taskMetadata,
@@ -1165,31 +1108,21 @@ const runtimeStateCoordinator = new HubRuntimeStateCoordinator({
     cancelledManagedClaudeTasks,
     pendingInputs,
     queuedInputs,
-    restoreDeferredInput,
-    deferredInputOptions: {
-      guardConcurrentRepositoryWrites: config.guardConcurrentRepositoryWrites,
-      persistentFile: isLegacyDesktopAttachmentFile,
-    },
-    isRetryableDeferredLaunchError,
+    isLegacyDesktopAttachmentFile,
     desktopMessageReceipts,
     updateDeferredDesktopReceipt,
     forwardBundles,
-    restoreForwardBundle,
-    forwardBundleAttachmentPaths,
-    removeFiles: (files) => Promise.all(files.map((file) => unlink(file).catch(() => {}))),
-    deferredInputTtlMs,
-    maximumDeferredInputs: MAX_DEFERRED_INPUTS,
     taskRuns,
-    restoreTaskRun: restorePersistedTaskRun,
-  }),
-  createSnapshot: () => createHubRuntimeSnapshot({
-    chatId,
+  },
+  snapshotContext: {
+    getChatId: () => chatId,
+    getUpdateOffset: () => updateOffset,
+    getRestartRequest: () => restartRequest,
+    getCodexHookReceipts: () => codexHookReceipts,
     selectionStore,
     taskMetadata,
     preferences: agentPreferences,
-    updateOffset,
     taskRuns,
-    serializableTaskRun,
     dismissedExternalTasks,
     cancelledManagedClaudeTasks,
     pendingInputs,
@@ -1200,22 +1133,18 @@ const runtimeStateCoordinator = new HubRuntimeStateCoordinator({
     lastSeenTaskTurnIds,
     codexUsageTracker,
     codexTurnStarts,
-    codexHookReceipts,
     codexTerminalAudit,
     turnEndNotifications,
     statusMediaFileIds,
-    restartRequest,
-  }),
+  },
 });
-const restoredRuntimeState = await runtimeStateCoordinator.restore();
-const stateLoadFailed = restoredRuntimeState.failed;
 let restoredTurnEndSnapshot = {};
-if (restoredRuntimeState.value) {
-  chatId = restoredRuntimeState.value.chatId;
-  updateOffset = restoredRuntimeState.value.updateOffset;
-  restartRequest = restoredRuntimeState.value.restartRequest;
-  replaceCodexHookReceipts(restoredRuntimeState.value.codexHookReceipts);
-  restoredTurnEndSnapshot = restoredRuntimeState.value.restoredTurnEndSnapshot;
+if (restoredRuntimeState) {
+  chatId = restoredRuntimeState.chatId;
+  updateOffset = restoredRuntimeState.updateOffset;
+  restartRequest = restoredRuntimeState.restartRequest;
+  replaceCodexHookReceipts(restoredRuntimeState.codexHookReceipts);
+  restoredTurnEndSnapshot = restoredRuntimeState.restoredTurnEndSnapshot;
   if (activeProvider === "codex" && threadId) {
     if (taskMetadata.codexSettings(threadId)) restoreCodexTaskSettings(threadId);
     else rememberCodexTaskSettings(threadId);
@@ -1235,112 +1164,81 @@ const journalStartupReady = initializeJournalProjection().catch((error) => {
   console.error("Cannot initialize journal projection:", error.message);
 });
 
-try {
-  if (stateLoadFailed) {
-    console.warn("Skipping Claude run cleanup because runtime state could not be recovered.");
-  } else {
-    const activeClaudeRunPaths = taskRuns.values()
-      .filter((run) => run.provider === "claude" && !run.observer)
-      .flatMap((run) => [run.claudeOutputPath, run.claudeErrorPath])
-      .filter(Boolean);
-    const removed = await cleanupOrphanedClaudeRunOutputs(config.dataDir, activeClaudeRunPaths);
-    if (removed.length) console.log(`Removed ${removed.length} orphaned Claude run file(s).`);
-  }
-} catch (error) {
-  console.warn("Cannot clean orphaned Claude run files:", error.message);
-}
-
-try {
-  const removed = await cleanupTaskGitIndexes(config.dataDir);
-  if (removed) console.log(`Removed ${removed} orphaned task diff index(es).`);
-} catch (error) {
-  console.warn("Cannot clean orphaned task diff indexes:", error.message);
-}
-
-try {
-  const savedPinnedTitles = JSON.parse(await readFile(PINNED_TASK_TITLES_FILE, "utf8"));
-  taskMetadata.restorePinnedTitles(savedPinnedTitles);
-} catch (error) {
-  if (error?.code !== "ENOENT") console.error("Cannot read pinned task titles:", error.message);
-}
-
-const codexRuntime = new CodexAppServerLifecycle({
-  resolveExecutable: () => resolveInstalledCodexExecutable({ requested: config.codexExecutable }),
-  unavailableMcpOverrides: unavailableLocalMcpOverrides,
-  executableArgs: config.codexExecutableArgs,
-  projectRoot: () => activeProjectRoot,
-  stopProcessTree,
-  onMessage: handleCodexMessage,
-  rpcTimeoutMs: CODEX_RPC_TIMEOUT_MS,
-  isStopping: () => stopping,
-  providerSelected: isCodex,
-  activeRuns: () => taskRuns.values(),
-  setStage: (run, stage) => taskProgress.setStage(run, stage),
-  recoverRuns: () => runRecovery.recoverAll({ provider: "codex" }),
-  startTyping,
-  attachSelectedThread: attachCodexThread,
-  scheduleRetry: (operation, delayMs) => setTimeout(() => void operation(), delayMs),
-  logger: console,
-});
-const codexTransport = codexRuntime.transport;
-const codexLifecycleController = new CodexLifecycleController({
+await runStartupMaintenance({
   config,
-  ensureCodexTransport: async () => {
-    if (!codexTransport.running) {
-      await startCodexAppServer();
-      await initializeCodex({ attachSelectedThread: false });
-    }
-  },
-  readCodexThread,
-  readCodexRolloutActivity,
-  readCodexTurnUsage,
-  findProject,
-  codexTurnStarts,
-  setBoundedMapValue,
-  setHookReceipt: (kind, receipt) => { codexHookReceipts[kind] = receipt; },
+  stateLoadFailed,
   taskRuns,
-  saveState,
-  taskTitle: runtimeCommandTaskTitle,
-  taskGitDiff,
-  changedFilesForRun,
-  turnEndNotifications,
-  defaultNotificationChatId,
-  projectTurnUsageToWorkLog,
-  rememberLastTaskMessage,
-  lastSeenTaskTurnIds,
-  deliverTurnEndNotification,
+  pinnedTaskTitlesFile: PINNED_TASK_TITLES_FILE,
+  taskMetadata,
 });
+
+const codexLifecycle = createCodexLifecycleComposition({
+  config,
+  rpcTimeoutMs: CODEX_RPC_TIMEOUT_MS,
+  runtimeDependencies: {
+    getActiveProjectRoot: () => activeProjectRoot,
+    stopProcessTree,
+    handleMessage: handleCodexMessage,
+    isStopping: () => stopping,
+    providerSelected: isCodex,
+    activeRuns: () => taskRuns.values(),
+    setStage: (run, stage) => taskProgress.setStage(run, stage),
+    recoverRuns: () => runRecovery.recoverAll({ provider: "codex" }),
+    startTyping,
+    attachSelectedThread: attachCodexThread,
+  },
+  controllerDependencies: {
+    readCodexRolloutActivity,
+    readCodexTurnUsage,
+    findProject,
+    codexTurnStarts,
+    setBoundedMapValue,
+    setHookReceipt: (kind, receipt) => { codexHookReceipts[kind] = receipt; },
+    taskRuns,
+    saveState,
+    taskTitle: runtimeCommandTaskTitle,
+    taskGitDiff,
+    changedFilesForRun,
+    turnEndNotifications,
+    defaultNotificationChatId,
+    projectTurnUsageToWorkLog,
+    rememberLastTaskMessage,
+    lastSeenTaskTurnIds,
+    deliverTurnEndNotification,
+  },
+});
+const { runtime: codexRuntime, transport: codexTransport, controller: codexLifecycleController } = codexLifecycle;
 
 async function startCodexAppServer() {
-  await codexRuntime.start();
+  await codexLifecycle.start();
 }
 
 async function stopCodexAppServerTree() {
-  await codexRuntime.stop();
+  await codexLifecycle.stop();
 }
 
 async function restartCodexAfterCrash() {
-  return codexRuntime.restartAfterCrash();
+  return codexLifecycle.restartAfterCrash();
 }
 
 function sendRpc(method, params = {}, { timeoutMs = CODEX_RPC_TIMEOUT_MS } = {}) {
-  return codexTransport.request(method, params, { timeoutMs });
+  return codexLifecycle.sendRpc(method, params, { timeoutMs });
 }
 
 function invalidateCodexThreadRead(threadId) {
-  codexTransport.invalidateThreadRead(threadId);
+  codexLifecycle.invalidateThreadRead(threadId);
 }
 
 function readCodexThread(threadId, options = {}) {
-  return codexTransport.readThread(threadId, options);
+  return codexLifecycle.readThread(threadId, options);
 }
 
 function sendNotification(method, params = {}) {
-  codexTransport.notify(method, params);
+  codexLifecycle.sendNotification(method, params);
 }
 
 function respondRpc(id, result) {
-  codexTransport.respond(id, result);
+  codexLifecycle.respondRpc(id, result);
 }
 
 async function initializeProvider() {
@@ -1366,7 +1264,7 @@ async function initializeProvider() {
 }
 
 async function initializeCodex({ attachSelectedThread = true } = {}) {
-  return codexRuntime.initialize({ attachSelectedThread });
+  return codexLifecycle.initialize({ attachSelectedThread });
 }
 
 async function attachCodexThread() {
