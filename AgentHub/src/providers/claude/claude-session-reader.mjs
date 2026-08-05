@@ -3,13 +3,7 @@ import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import {
-  claudeTranscriptHistory,
-  codexFinalTurnAnswer,
-  codexTurnHasExplicitFinalAnswer,
-} from "./src/application/task-history.mjs";
-
-export { codexFinalTurnAnswer, codexTurnHasExplicitFinalAnswer };
+import { claudeTranscriptHistory } from "../../application/task-history.mjs";
 
 const MAX_TRANSCRIPT_TAIL = 4 * 1024 * 1024;
 const MAX_CATALOG_TRANSCRIPT_TAIL = 512 * 1024;
@@ -114,20 +108,6 @@ function latestClaudeTitle(entries, type, field) {
 function claudeTranscriptTitle(entries) {
   return latestClaudeTitle(entries, "custom-title", "customTitle")
     || latestClaudeTitle(entries, "ai-title", "aiTitle");
-}
-
-export function codexTurnAnswer(turn) {
-  return (turn?.items ?? [])
-    .filter((item) => item?.type === "agentMessage" && String(item.text ?? "").trim())
-    .map((item) => String(item.text).trim())
-    .join("\n\n")
-    .trim();
-}
-
-export function lastCompletedCodexAnswer(turns) {
-  const completed = (Array.isArray(turns) ? turns : [])
-    .findLast((turn) => turn?.status === "completed" && codexFinalTurnAnswer(turn));
-  return completed ? codexFinalTurnAnswer(completed) : "";
 }
 
 export function parseClaudeTranscript(text) {

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { JournalDatabase } from "./journal-database.mjs";
+import { JournalDatabase } from "./src/infrastructure/persistence/journal-database.mjs";
 import {
   applyWorkLogTitleBackfill,
   applyCachedTitles,

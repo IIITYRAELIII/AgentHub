@@ -16,7 +16,7 @@ import {
   extractRateLimitsHtml,
   publicJournalPayload,
 } from "./mini-app-journal-data.mjs";
-import { JournalDatabase } from "../../../journal-database.mjs";
+import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
 
 export { extractWorkLogHtml } from "./mini-app-journal-data.mjs";
 

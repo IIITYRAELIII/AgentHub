@@ -9,7 +9,8 @@ import {
 import { isInheritedSubagentTurn } from "./src/providers/codex/codex-subagent-accounting.mjs";
 import { writeTextAtomic } from "./src/infrastructure/persistence/state-store.mjs";
 import { withInterprocessLocks } from "./src/infrastructure/process/interprocess-lock.mjs";
-import { JournalDatabase } from "./journal-database.mjs";
+import { JournalDatabase } from "./src/infrastructure/persistence/journal-database.mjs";
+import { replaceJournalProjectionFromMarkdown } from "./src/application/journal-projection-service.mjs";
 import { displayUserPrompt } from "./src/application/task-history.mjs";
 import {
   ledgerRecordChanges,
@@ -1941,7 +1942,7 @@ export class WorkLogUsageStore {
       updated,
       attempt: 0,
     });
-    const result = await this.#database.replaceProjectionFromMarkdown(updated, { version });
+    const result = await replaceJournalProjectionFromMarkdown(this.#database, updated, { version });
     this.#loadedRevision = result.revision;
     return { projected: true };
   }
@@ -2195,7 +2196,7 @@ export class WorkLogUsageStore {
       if (updated === String(current?.html ?? "")) {
         return { projected: false, reason: "unchanged" };
       }
-      const result = await this.#database.replaceProjectionFromMarkdown(updated);
+      const result = await replaceJournalProjectionFromMarkdown(this.#database, updated);
       this.#loadedRevision = result.revision;
       return { projected: true };
     });

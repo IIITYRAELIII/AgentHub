@@ -1,8 +1,8 @@
 import {
   codexFinalTurnAnswer,
-  codexTurnAnswer,
   codexTurnHasExplicitFinalAnswer,
-} from "../../../last-message.mjs";
+} from "../../application/task-history.mjs";
+import { codexTurnAnswer } from "./codex-turn-answers.mjs";
 import { codexThreadHistory } from "../../application/task-history.mjs";
 import { codexThreadWaitingOnApproval } from "./codex-approvals.mjs";
 

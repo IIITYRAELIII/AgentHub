@@ -4,7 +4,7 @@ import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import path from "node:path";
 
-import { JournalDatabase } from "../../../journal-database.mjs";
+import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
 import {
   attachmentContentType,
   attachmentIsImage,

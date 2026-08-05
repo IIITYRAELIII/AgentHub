@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { findContainingProject } from "../../infrastructure/filesystem/config.mjs";
 import { applyLedgerDelta } from "../../infrastructure/persistence/incremental-ledger.mjs";
-import { JournalDatabase } from "../../../journal-database.mjs";
+import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
 import { creditsFromUsd } from "../../domain/token-usage.mjs";
 import { readJsonWithBackup } from "../../infrastructure/persistence/state-store.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";

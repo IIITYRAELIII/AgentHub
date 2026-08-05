@@ -6,7 +6,7 @@ import {
   scanClaudeHistoricalTranscriptFile,
 } from "../providers/claude/claude-work-log.mjs";
 import { conciseTurnTitle } from "../application/turn-title.mjs";
-import { readClaudeSessionSnapshot } from "../../last-message.mjs";
+import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
 
 export function createRunAccountingComposition({
   runJournal,

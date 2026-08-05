@@ -1,11 +1,10 @@
 import crypto from "node:crypto";
-import { mkdir, readFile, rename, stat } from "node:fs/promises";
+import { mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { applyLedgerDelta } from "./src/infrastructure/persistence/incremental-ledger.mjs";
-import { buildLazyJournalPayload } from "./src/interfaces/web/mini-app-journal-data.mjs";
-import { readJsonWithBackup } from "./src/infrastructure/persistence/state-store.mjs";
+import { applyLedgerDelta } from "./incremental-ledger.mjs";
+import { readJsonWithBackup } from "./state-store.mjs";
 
 const SCHEMA_VERSION = 2;
 const LEDGER_VERSION = 8;
@@ -685,30 +684,6 @@ export class JournalDatabase {
     const result = { projected: true, version, revision };
     this.#changed({ type: "projection", ...result });
     return result;
-  }
-
-  replaceProjectionFromMarkdown(markdown, options = {}) {
-    return this.replaceProjection(buildLazyJournalPayload(markdown), {
-      ...options,
-      version: options.version || sha256Version(markdown),
-    });
-  }
-
-  replaceProjectionFromHtml(html, options = {}) {
-    return this.replaceProjection(buildLazyJournalPayload(html), options);
-  }
-
-  async ensureFromFile(workLogFile) {
-    const target = path.resolve(workLogFile);
-    const [markdown, info] = await Promise.all([readFile(target, "utf8"), stat(target)]);
-    const version = sha256Version(markdown);
-    const current = await this.payload();
-    if (current?.version === version) return current;
-    await this.replaceProjectionFromMarkdown(markdown, {
-      updatedAt: info.mtime.toISOString(),
-      version,
-    });
-    return this.payload();
   }
 
   async payload() {

@@ -4,15 +4,19 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
-  codexFinalTurnAnswer,
-  codexTurnAnswer,
   claudeTranscriptCacheStats,
-  lastCompletedCodexAnswer,
   listClaudeSessionSnapshots,
   parseClaudeTranscript,
   readClaudeSessionSnapshot,
   resetClaudeTranscriptCache,
-} from "./last-message.mjs";
+} from "./src/providers/claude/claude-session-reader.mjs";
+import {
+  codexFinalTurnAnswer,
+} from "./src/application/task-history.mjs";
+import {
+  codexTurnAnswer,
+  lastCompletedCodexAnswer,
+} from "./src/providers/codex/codex-turn-answers.mjs";
 
 function line(value) {
   return JSON.stringify(value);

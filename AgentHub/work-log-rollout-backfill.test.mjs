@@ -8,7 +8,7 @@ import {
   applyWorkLogRolloutBackfill,
   buildWorkLogRolloutBackfill,
 } from "./src/providers/codex/work-log-rollout-backfill.mjs";
-import { JournalDatabase } from "./journal-database.mjs";
+import { JournalDatabase } from "./src/infrastructure/persistence/journal-database.mjs";
 import { WorkLogUsageStore } from "./work-log-usage.mjs";
 
 const ROOT_THREAD = "019f1ec8-8de7-7aa3-92b6-045036561c8e";

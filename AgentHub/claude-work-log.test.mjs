@@ -12,7 +12,7 @@ import {
   claudeTranscriptEstimatedCredits,
   scanClaudeHistoricalTranscript,
 } from "./src/providers/claude/claude-work-log.mjs";
-import { JournalDatabase } from "./journal-database.mjs";
+import { JournalDatabase } from "./src/infrastructure/persistence/journal-database.mjs";
 
 const line = (value) => JSON.stringify(value);
 

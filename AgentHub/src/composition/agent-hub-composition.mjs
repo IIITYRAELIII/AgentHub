@@ -58,7 +58,7 @@ import {
   taskRunKey,
   updateTaskRunTitle,
 } from "../domain/task-runs.mjs";
-import { readClaudeSessionSnapshot } from "../../last-message.mjs";
+import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
 import * as approvalProtocol from "../providers/codex/codex-approvals.mjs";
 const { formatPermissionsApproval, parseApprovalCallback } = approvalProtocol;
 import { contextualCallback } from "../interfaces/telegram/callback-context.mjs";

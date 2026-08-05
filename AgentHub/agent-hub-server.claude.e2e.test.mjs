@@ -15,7 +15,7 @@ import {
 } from "./e2e/telegram-harness.mjs";
 import { processIsAlive } from "./src/providers/claude/claude-run-io.mjs";
 import { callDesktopControl } from "./desktop-control.mjs";
-import { JournalDatabase } from "./journal-database.mjs";
+import { JournalDatabase } from "./src/infrastructure/persistence/journal-database.mjs";
 import { readRuntimeState } from "./src/infrastructure/persistence/runtime-state-store.mjs";
 
 const AGENT_HUB_ROOT = path.resolve(import.meta.dirname);

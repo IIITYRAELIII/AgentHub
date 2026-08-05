@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { JournalDatabase } from "./journal-database.mjs";
+import { JournalDatabase } from "./src/infrastructure/persistence/journal-database.mjs";
+import {
+  ensureJournalProjectionFromFile,
+  replaceJournalProjectionFromHtml,
+  replaceJournalProjectionFromMarkdown,
+} from "./src/application/journal-projection-service.mjs";
 
 function turn(id, text) {
   const reference = Buffer.from(JSON.stringify(["codex", "thread-1", id]), "utf8")
@@ -210,7 +215,7 @@ test("direct projection snapshot preserves lazy journal HTTP contract without a 
   const item = turn("turn-old", "Старый ход");
   const dates = ["01.07.2026", "02.07.2026", "03.07.2026", "04.07.2026", "05.07.2026", "06.07.2026"];
   try {
-    const change = await database.replaceProjectionFromMarkdown(
+    const change = await replaceJournalProjectionFromMarkdown(database,
       `# Журнал\n${dates.map((date) => day(date, item)).join("\n")}\n`,
       { updatedAt: "2026-08-01T12:00:00.000Z" },
     );
@@ -261,12 +266,12 @@ test("ensureFromFile remains a compatibility adapter and replaces stale fragment
   try {
     await writeFile(workLogFile, `# Журнал\n${dates.map((date) => day(date, oldTurn)).join("\n")}\n`, "utf8");
     const database = new JournalDatabase(databaseFile);
-    const initial = await database.ensureFromFile(workLogFile);
+    const initial = await ensureJournalProjectionFromFile(database, workLogFile);
     assert.match(initial.html, /data-lazy-day="01\.07\.2026"/u);
     assert.match(await database.fragment("turn", oldTurn.reference), /Старый ход body/u);
 
     await writeFile(workLogFile, `# Журнал\n${dates.map((date) => day(date, newTurn)).join("\n")}\n`, "utf8");
-    const updated = await database.ensureFromFile(workLogFile);
+    const updated = await ensureJournalProjectionFromFile(database, workLogFile);
     assert.notEqual(updated.version, initial.version);
     assert.equal(await database.fragment("turn", oldTurn.reference), null);
     assert.match(await database.fragment("turn", newTurn.reference), /Новый ход body/u);
@@ -283,7 +288,7 @@ test("corrupt SQLite journal is preserved before creating a clean store", async 
     await mkdir(path.dirname(databaseFile), { recursive: true });
     await writeFile(databaseFile, "not a sqlite database", "utf8");
     const database = new JournalDatabase(databaseFile);
-    await database.replaceProjectionFromHtml("<p>Проверка</p>");
+    await replaceJournalProjectionFromHtml(database, "<p>Проверка</p>");
     assert.match((await database.payload()).html, /Проверка/u);
     database.close();
     assert.ok((await readdir(path.dirname(databaseFile)))
@@ -302,10 +307,10 @@ test("compatibility adapter detects same-size updates with the same timestamp", 
   try {
     await writeFile(workLogFile, "# Журнал\nAAAA\n", "utf8");
     await utimes(workLogFile, fixedTime, fixedTime);
-    const first = await database.ensureFromFile(workLogFile);
+    const first = await ensureJournalProjectionFromFile(database, workLogFile);
     await writeFile(workLogFile, "# Журнал\nBBBB\n", "utf8");
     await utimes(workLogFile, fixedTime, fixedTime);
-    const second = await database.ensureFromFile(workLogFile);
+    const second = await ensureJournalProjectionFromFile(database, workLogFile);
     assert.notEqual(second.version, first.version);
     assert.match(second.html, /BBBB/u);
   } finally {

@@ -4,7 +4,7 @@ import path from "node:path";
 import { isInheritedSubagentTurn } from "./codex-subagent-accounting.mjs";
 import { scanCodexHistoricalRollout } from "./codex-turn-usage.mjs";
 import { applyLedgerDelta } from "../../infrastructure/persistence/incremental-ledger.mjs";
-import { JournalDatabase } from "../../../journal-database.mjs";
+import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
 import { readJsonWithBackup } from "../../infrastructure/persistence/state-store.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
 import { WorkLogUsageStore, workLogTurnKey } from "../../../work-log-usage.mjs";

@@ -18,7 +18,7 @@ import {
   selectExactActiveCodexTurnId,
   TASK_EXECUTION_OWNERS,
 } from "../../task-catalog.mjs";
-import { listClaudeSessionSnapshots } from "../../last-message.mjs";
+import { listClaudeSessionSnapshots } from "../providers/claude/claude-session-reader.mjs";
 
 export function createProviderCatalogComposition({
   taskSyncStore,

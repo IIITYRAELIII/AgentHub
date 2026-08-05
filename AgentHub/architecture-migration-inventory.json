@@ -3,7 +3,7 @@
   "baseline": {
     "serverMaximumLines": 150,
     "compositionMaximumLines": 1911,
-    "rootProductionModules": 26
+    "rootProductionModules": 24
   },
   "publicRootModules": [
     "agent-hub-main.mjs",
@@ -40,8 +40,6 @@
     "src/interfaces/web": [],
     "src/runtime": [],
     "src/infrastructure/persistence": [
-      "journal-database.mjs",
-      "last-message.mjs",
       "work-log-usage.mjs"
     ],
     "src/infrastructure/filesystem": [],

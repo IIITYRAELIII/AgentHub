@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { JournalDatabase } from "../../../journal-database.mjs";
+import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
 import { displayUserPrompt } from "../../application/task-history.mjs";
 import { WorkLogUsageStore } from "../../../work-log-usage.mjs";
 
