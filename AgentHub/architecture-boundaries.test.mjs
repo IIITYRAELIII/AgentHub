@@ -358,6 +358,26 @@ test("task catalog provider and Telegram concerns have explicit owners", async (
   assert.match(executionOwner, /^export const TASK_EXECUTION_OWNERS/mu);
 });
 
+test("work log projection and subagent identity have explicit owners", async () => {
+  const legacyStore = await readFile(path.join(ROOT, "work-log-usage.mjs"), "utf8");
+  const projection = await readFile(
+    path.join(ROOT, "src", "application", "work-log-usage-projection.mjs"),
+    "utf8",
+  );
+  const subagentIdentity = await readFile(
+    path.join(ROOT, "src", "domain", "subagent-turn-identity.mjs"),
+    "utf8",
+  );
+
+  assert.doesNotMatch(legacyStore, /^export function projectWorkLogUsage/mu);
+  assert.doesNotMatch(legacyStore, /^export function buildWorkLogUsageHistory/mu);
+  assert.match(legacyStore, /^export class WorkLogUsageStore/mu);
+  assert.match(projection, /^export function projectWorkLogUsage/mu);
+  assert.match(projection, /^export function buildWorkLogUsageHistory/mu);
+  assert.match(subagentIdentity, /^export function uuidV7TimestampMs/mu);
+  assert.match(subagentIdentity, /^export function isInheritedSubagentTurn/mu);
+});
+
 test("root production modules match the frozen migration inventory", async () => {
   const inventory = await migrationInventory();
   assert.equal(inventory.schemaVersion, 1);

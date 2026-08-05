@@ -835,4 +835,3 @@ export function codexCatalogEntry(thread, project, {
       : null,
   };
 }
-
