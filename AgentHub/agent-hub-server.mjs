@@ -263,6 +263,7 @@ import { createDesktopSnapshotFactory } from "./src/interfaces/desktop/desktop-s
 import { createDesktopTaskHistoryFactory } from "./src/interfaces/desktop/desktop-task-history.mjs";
 import { DesktopTaskService } from "./src/interfaces/desktop/desktop-task-service.mjs";
 import { DesktopSystemService } from "./src/interfaces/desktop/desktop-system-service.mjs";
+import { DesktopReadModelService } from "./src/interfaces/desktop/desktop-read-model-service.mjs";
 import { DeferredInputPresentationService } from "./src/interfaces/desktop/deferred-input-presentation-service.mjs";
 import { TaskCommandService } from "./src/application/task-command-service.mjs";
 import { TaskNavigationService } from "./src/application/task-navigation-service.mjs";
@@ -271,6 +272,7 @@ import { RestartRequestService } from "./src/application/restart-request-service
 import { createDesktopApplicationRouter } from "./src/interfaces/desktop/desktop-application-router.mjs";
 import { UsdRubRateStore } from "./exchange-rate.mjs";
 import { agentHubAutostartShortcut } from "./src/interfaces/web/server-page.mjs";
+import { MiniAppLifecycleService } from "./src/interfaces/web/mini-app-lifecycle-service.mjs";
 import {
   defaultAutostartInstallScript,
   ServerControlController,
@@ -1242,16 +1244,29 @@ const telegram = (method, body) => {
   });
   return Promise.resolve(undefined);
 };
-let quickTunnelController = null;
-let miniAppPublisher = null;
-let directGatewayController = null;
+const miniAppLifecycle = new MiniAppLifecycleService({
+  config,
+  localServer: miniAppServer,
+  publicServer: publicMiniAppServer,
+  runtimeCommandRoot,
+  journalDatabaseFile,
+  telegram,
+  menuButtonRequests: miniAppMenuButtonRequests,
+  loadGatewaySettings: loadDirectGatewaySettings,
+  DirectGatewayControllerClass: DirectGatewayController,
+  MiniAppPublisherClass: MiniAppPublisher,
+  QuickTunnelControllerClass: QuickTunnelController,
+  controlHandler: handleDesktopControl,
+  controlReconciler: reconcileRemoteDesktopControl,
+  forgetControl: (id) => forgetDesktopControl(id),
+});
 const desktopAttachments = new DesktopAttachmentService({
   assistantAttachmentImporterFactory: createCodexAssistantAttachmentImporter,
   runtimeCommandRoot,
   projectRoot: config.projectRoot,
   projectRoots: config.projects.map((project) => project.path),
   workerEnabled: config.miniApp.worker.enabled,
-  publisher: () => miniAppPublisher,
+  publisher: () => miniAppLifecycle.publisher,
   trustedUserId: (context) => trustedDeviceUserId(context),
 });
 const desktopAttachmentPaths = (...args) => desktopAttachments.paths(...args);
@@ -1260,67 +1275,6 @@ const desktopAttachmentDescriptors = (...args) => desktopAttachments.descriptors
 const importCodexDesktopAttachments = (...args) => desktopAttachments.importCodex(...args);
 const desktopOpenAttachment = (...args) => desktopAttachments.open(...args);
 
-async function configureTelegramMiniAppMenu(url, text) {
-  if (!config.components.miniApp) return;
-  await Promise.all(miniAppMenuButtonRequests({
-    url,
-    text,
-    chatIds: config.allowedUserIds,
-  }).map((body) => telegram("setChatMenuButton", body)));
-}
-
-async function startMiniApp() {
-  if (!miniAppServer) return null;
-  const address = await miniAppServer.start();
-  const directGateway = await loadDirectGatewaySettings(
-    path.join(runtimeCommandRoot, "gateway.json"),
-    { localUrl: address.url },
-  );
-  if (directGateway.enabled) {
-    directGatewayController ??= new DirectGatewayController(directGateway);
-    const publicUrl = await directGatewayController.start();
-    await configureTelegramMiniAppMenu(publicUrl, config.miniApp.worker.menuText);
-    console.log(`Direct Agent Hub gateway ready at ${publicUrl}`);
-  }
-  if (config.miniApp.worker.enabled) {
-    miniAppPublisher ??= new MiniAppPublisher({
-      journalDatabaseFile,
-      ...config.miniApp.worker,
-      controlHandler: handleDesktopControl,
-      controlReceiptFile: path.join(config.dataDir, "mini-app-control-receipts.json"),
-      controlReconciler: reconcileRemoteDesktopControl,
-      onControlResultDelivered: async ({ id }) => forgetDesktopControl(id),
-      attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
-      onPublished: async (url) => {
-        await configureTelegramMiniAppMenu(url, config.miniApp.worker.menuText);
-        console.log(`Agent Hub Worker ready at ${url}`);
-      },
-    });
-    await miniAppPublisher.start().catch((error) => {
-      console.warn(`Cannot publish Mini App journal yet: ${error.message}`);
-    });
-  }
-  if (!config.miniApp.quickTunnel.enabled) {
-    return directGateway.enabled ? { ...address, publicUrl: directGateway.publicUrl } : address;
-  }
-  const publicAddress = await publicMiniAppServer.start();
-  quickTunnelController ??= new QuickTunnelController({
-    executable: config.miniApp.quickTunnel.executable,
-    provider: config.miniApp.quickTunnel.provider,
-    mode: config.miniApp.quickTunnel.mode,
-    publicUrl: config.miniApp.quickTunnel.publicUrl,
-    tokenFile: config.miniApp.quickTunnel.tokenFile,
-    edgeBindAddress: config.miniApp.quickTunnel.edgeBindAddress,
-    controlPort: config.miniApp.quickTunnel.controlPort,
-    localUrl: publicAddress.url,
-    onUrl: async (url) => {
-      await configureTelegramMiniAppMenu(url, config.miniApp.quickTunnel.menuText);
-    },
-  });
-  const publicUrl = await quickTunnelController.start();
-  console.log(`Public Agent Hub Web App ready at ${publicUrl}`);
-  return { ...address, publicUrl };
-}
 const telegramMultipart = (method, body, fileField, filePath) => (
   telegramClient.multipart(method, body, fileField, filePath)
 );
@@ -2391,21 +2345,15 @@ const {
   warn: (...args) => console.warn(...args),
 });
 
-function desktopReadAccountId(context = null) {
-  const requested = String(context?.userId ?? "").trim();
-  if (requested) return trustedDeviceUserId(context);
-  if (config.allowedUserIds.size || config.components.androidApp) return trustedDeviceUserId(null);
-  return "local";
-}
-
-function desktopSnapshot(params = {}, context = null) {
-  return rawDesktopSnapshot({
-    ...(params ?? {}),
-    // Read state always belongs to the authenticated/local Hub account. A
-    // remote client cannot select another account through request parameters.
-    accountId: desktopReadAccountId(context),
-  });
-}
+const desktopReadModel = new DesktopReadModelService({
+  snapshot: rawDesktopSnapshot,
+  readStateStore: taskReadStateStore,
+  trustedDeviceUserId,
+  hasAllowedUsers: () => Boolean(config.allowedUserIds.size),
+  androidEnabled: () => Boolean(config.components.androidApp),
+  lastTaskMessage: savedLastTaskMessageRecord,
+});
+const desktopSnapshot = (...args) => desktopReadModel.snapshot(...args);
 
 const desktopTaskHistory = createDesktopTaskHistoryFactory({
   selection: {
@@ -2440,17 +2388,7 @@ const desktopTaskHistory = createDesktopTaskHistoryFactory({
   warn: (...args) => console.warn(...args),
 });
 
-function markDesktopTaskRead(entry, context = null) {
-  const lastMessage = savedLastTaskMessageRecord(entry);
-  if (!lastMessage?.updatedAt) return null;
-  return taskReadStateStore.markRead({
-    accountId: desktopReadAccountId(context),
-    provider: entry.provider,
-    threadId: entry.threadId,
-    answerAt: lastMessage.updatedAt,
-    answerTurnId: lastMessage.turnId,
-  });
-}
+const markDesktopTaskRead = (...args) => desktopReadModel.markTaskRead(...args);
 
 const desktopTaskService = new DesktopTaskService({
   catalog: () => taskCatalog,
@@ -2731,7 +2669,7 @@ const desktopSystemService = new DesktopSystemService({
     const userId = trustedDeviceUserId(context);
     const manager = createTrustedDeviceManager({
       workerEnabled: config.miniApp.worker.enabled,
-      publisher: miniAppPublisher,
+      publisher: miniAppLifecycle.publisher,
       localStore: trustedDeviceStore,
     });
     return {
@@ -3559,11 +3497,11 @@ const runtimeResources = new RuntimeResourceRegistry({
   ],
   suspend: [
     { name: "Codex App Server", run: stopCodexAppServerTree },
-    { name: "Mini App publisher", run: () => miniAppPublisher?.close() },
-    { name: "direct gateway", run: () => directGatewayController?.close() },
-    { name: "quick tunnel", run: () => quickTunnelController?.close() },
-    { name: "public Mini App", run: () => publicMiniAppServer?.close() },
-    { name: "local Mini App", run: () => miniAppServer?.close() },
+    { name: "Mini App publisher", run: () => miniAppLifecycle.closePublisher() },
+    { name: "direct gateway", run: () => miniAppLifecycle.closeDirectGateway() },
+    { name: "quick tunnel", run: () => miniAppLifecycle.closeQuickTunnel() },
+    { name: "public Mini App", run: () => miniAppLifecycle.closePublicServer() },
+    { name: "local Mini App", run: () => miniAppLifecycle.closeLocalServer() },
     { name: "Desktop control", run: () => desktopControlServer?.close() },
     { name: "runtime command", run: () => runtimeCommandServer.close() },
     { name: "instance lock", run: () => instanceGuard.release() },
@@ -3614,7 +3552,7 @@ const runtimeRestart = new RuntimeRestartController({
     startCommandServer: async () => {
       await runtimeCommandServer.start();
       await desktopControlServer?.start();
-      await startMiniApp();
+      await miniAppLifecycle.start();
     },
     setStopping: (value) => { stopping = value; },
     restoreProvider: async () => {
@@ -3957,7 +3895,7 @@ const startupCoordinator = new AgentHubStartupCoordinator({
     await desktopControlServer.start();
     await runtimeCommandServer.start();
   },
-  startMiniApp: () => miniAppServer ? startMiniApp() : null,
+  startMiniApp: () => miniAppLifecycle.start(),
   sanitizeRollouts: () => codexContextMaintenance.runPeriodic({ reschedule: false }),
   initializeProvider,
   providerIsRunning: () => codexTransport.running,

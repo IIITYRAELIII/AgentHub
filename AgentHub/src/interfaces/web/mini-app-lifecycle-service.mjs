@@ -1,0 +1,114 @@
+import path from "node:path";
+
+export class MiniAppLifecycleService {
+  constructor({
+    config,
+    localServer,
+    publicServer,
+    runtimeCommandRoot,
+    journalDatabaseFile,
+    telegram,
+    menuButtonRequests,
+    loadGatewaySettings,
+    DirectGatewayControllerClass,
+    MiniAppPublisherClass,
+    QuickTunnelControllerClass,
+    controlHandler,
+    controlReconciler,
+    forgetControl,
+    logger = console,
+  } = {}) {
+    if (!config) throw new TypeError("config is required");
+    Object.assign(this, {
+      config,
+      localServer,
+      publicServer,
+      runtimeCommandRoot,
+      journalDatabaseFile,
+      telegram,
+      menuButtonRequests,
+      loadGatewaySettings,
+      DirectGatewayControllerClass,
+      MiniAppPublisherClass,
+      QuickTunnelControllerClass,
+      controlHandler,
+      controlReconciler,
+      forgetControl,
+      logger,
+    });
+    this.publisher = null;
+    this.directGateway = null;
+    this.quickTunnel = null;
+  }
+
+  async configureMenu(url, text) {
+    if (!this.config.components.miniApp) return;
+    const requests = this.menuButtonRequests({
+      url,
+      text,
+      chatIds: this.config.allowedUserIds,
+    });
+    await Promise.all(requests.map((body) => this.telegram("setChatMenuButton", body)));
+  }
+
+  async start() {
+    if (!this.localServer) return null;
+    const address = await this.localServer.start();
+    const gatewaySettings = await this.loadGatewaySettings(
+      path.join(this.runtimeCommandRoot, "gateway.json"),
+      { localUrl: address.url },
+    );
+    if (gatewaySettings.enabled) {
+      this.directGateway ??= new this.DirectGatewayControllerClass(gatewaySettings);
+      const publicUrl = await this.directGateway.start();
+      await this.configureMenu(publicUrl, this.config.miniApp.worker.menuText);
+      this.logger.log(`Direct Agent Hub gateway ready at ${publicUrl}`);
+    }
+    if (this.config.miniApp.worker.enabled) {
+      this.publisher ??= new this.MiniAppPublisherClass({
+        journalDatabaseFile: this.journalDatabaseFile,
+        ...this.config.miniApp.worker,
+        controlHandler: this.controlHandler,
+        controlReceiptFile: path.join(this.config.dataDir, "mini-app-control-receipts.json"),
+        controlReconciler: this.controlReconciler,
+        onControlResultDelivered: async ({ id }) => this.forgetControl(id),
+        attachmentDirectory: path.join(this.runtimeCommandRoot, "DesktopApp", "attachments"),
+        onPublished: async (url) => {
+          await this.configureMenu(url, this.config.miniApp.worker.menuText);
+          this.logger.log(`Agent Hub Worker ready at ${url}`);
+        },
+      });
+      await this.publisher.start().catch((error) => {
+        this.logger.warn(`Cannot publish Mini App journal yet: ${error.message}`);
+      });
+    }
+    if (!this.config.miniApp.quickTunnel.enabled) {
+      return gatewaySettings.enabled
+        ? { ...address, publicUrl: gatewaySettings.publicUrl }
+        : address;
+    }
+    const publicAddress = await this.publicServer.start();
+    this.quickTunnel ??= new this.QuickTunnelControllerClass({
+      executable: this.config.miniApp.quickTunnel.executable,
+      provider: this.config.miniApp.quickTunnel.provider,
+      mode: this.config.miniApp.quickTunnel.mode,
+      publicUrl: this.config.miniApp.quickTunnel.publicUrl,
+      tokenFile: this.config.miniApp.quickTunnel.tokenFile,
+      edgeBindAddress: this.config.miniApp.quickTunnel.edgeBindAddress,
+      controlPort: this.config.miniApp.quickTunnel.controlPort,
+      localUrl: publicAddress.url,
+      onUrl: async (url) => {
+        await this.configureMenu(url, this.config.miniApp.quickTunnel.menuText);
+      },
+    });
+    const publicUrl = await this.quickTunnel.start();
+    this.logger.log(`Public Agent Hub Web App ready at ${publicUrl}`);
+    return { ...address, publicUrl };
+  }
+
+  closePublisher() { return this.publisher?.close(); }
+  closeDirectGateway() { return this.directGateway?.close(); }
+  closeQuickTunnel() { return this.quickTunnel?.close(); }
+  closePublicServer() { return this.publicServer?.close(); }
+  closeLocalServer() { return this.localServer?.close(); }
+}
