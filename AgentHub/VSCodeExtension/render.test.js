@@ -1019,6 +1019,18 @@ test("message attachments keep timestamps, previews and an explicit open action"
   assert.doesNotMatch(client, /window\.open\(url, "_blank"/u);
 });
 
+test("background navigation is empty and settings expose the bug report flow", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(html, /data-view-button="background"[\s\S]*?<span>Фон<\/span>/u);
+  assert.match(html, /<main class="background-view" data-background-view aria-label="Фон"><\/main>/u);
+  assert.match(html, /data-bug-report-toggle[\s\S]*data-phosphor-icon="bug"[\s\S]*Сообщить о баге\./u);
+  assert.match(html, /<input[^>]*multiple[^>]*data-bug-report-files/u);
+  assert.match(app, /emit\("bug-report:submit"/u);
+  assert.match(client, /control\("submit-bug-report"/u);
+});
+
 test("composer accepts documents and renders downloadable file cards", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");

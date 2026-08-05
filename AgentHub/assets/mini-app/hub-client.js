@@ -1056,6 +1056,18 @@ agentHub.on("devices:revoke", ({ deviceId }) => void runAction(async () => {
   agentHub.setTrustedDevices(await control("trusted-devices", {}));
 }));
 
+agentHub.on("bug-report:submit", ({ text, attachments, reportId }) => void (async () => {
+  try {
+    const paths = [];
+    for (const attachment of attachments ?? []) paths.push(await uploadAttachment(attachment));
+    const result = await control("submit-bug-report", { text, attachments: paths, reportId });
+    agentHub.completeBugReport(result);
+  } catch (error) {
+    if (isConnectionFailure(error)) recordTransientConnectionFailure();
+    agentHub.completeBugReport({ error: hubErrorMessage(error) });
+  }
+})());
+
 agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
   const identity = taskIdentity(id);
   const page = historyPageByTask.get(id);

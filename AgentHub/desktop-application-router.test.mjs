@@ -8,7 +8,7 @@ function router(calls) {
     "snapshot", "taskHistory", "rateLimitHistory", "usageHistory", "search",
     "openTask", "openTurn", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
-    "updateServerConfiguration", "compactContext", "openAttachment",
+    "updateServerConfiguration", "compactContext", "openAttachment", "submitBugReport",
     "trustedDevices", "createDevicePairing", "revokeDevice",
   ].map((name) => [name, handler]));
   return createDesktopApplicationRouter({

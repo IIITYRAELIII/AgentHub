@@ -10,6 +10,7 @@ import {
   attachmentIsImage,
   attachmentMetadataFromId,
   createAttachmentStorageName,
+  imageMatchesContentType,
   MAX_ATTACHMENT_BYTES,
   MAX_MESSAGE_ATTACHMENTS,
 } from "../../domain/attachment-files.mjs";
@@ -41,6 +42,7 @@ const CONTROL_ACTIONS = new Set([
   "open-turn",
   "select-task",
   "send-message",
+  "submit-bug-report",
   "new-task",
   "update-setting",
   "rename-task",
@@ -59,25 +61,6 @@ const CONTROL_ACTIONS = new Set([
   "revoke-device",
 ]);
 const gzipAsync = promisify(gzip);
-
-function imageMatchesContentType(body, contentType) {
-  const value = new Uint8Array(body);
-  if (contentType === "image/png") {
-    return value.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((item, index) => value[index] === item);
-  }
-  if (contentType === "image/jpeg") return value.length >= 3 && value[0] === 0xff && value[1] === 0xd8 && value[2] === 0xff;
-  if (contentType === "image/gif") {
-    const signature = Buffer.from(value.subarray(0, 6)).toString("ascii");
-    return signature === "GIF87a" || signature === "GIF89a";
-  }
-  if (contentType === "image/webp") {
-    return value.length >= 12
-      && Buffer.from(value.subarray(0, 4)).toString("ascii") === "RIFF"
-      && Buffer.from(value.subarray(8, 12)).toString("ascii") === "WEBP";
-  }
-  if (contentType === "image/bmp") return value.length >= 2 && value[0] === 0x42 && value[1] === 0x4d;
-  return false;
-}
 
 export function signMiniAppSync(body, secret, timestamp = Math.trunc(Date.now() / 1_000)) {
   const bodyHash = createHash("sha256").update(body).digest("hex");
@@ -406,7 +389,7 @@ export class MiniAppPublisher {
     if (
       (Object.hasOwn(params, "attachments") && !Array.isArray(attachments))
       || attachments.length > MAX_ATTACHMENTS_PER_COMMAND
-      || (attachments.length && action !== "send-message")
+      || (attachments.length && !["send-message", "submit-bug-report"].includes(action))
       || attachments.some((reference) => {
         const value = String(reference ?? "").toLowerCase();
         return !value.startsWith(REMOTE_ATTACHMENT_PREFIX)

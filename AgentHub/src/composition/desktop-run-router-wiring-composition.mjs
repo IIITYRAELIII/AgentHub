@@ -155,6 +155,7 @@ export function createDesktopRunRouterWiring({
       updateServerConfiguration: services.updateServerConfiguration,
       compactContext,
       openAttachment: desktop.openAttachment,
+      submitBugReport: desktop.submitBugReport,
       trustedDevices: desktop.trustedDevices,
       createDevicePairing: desktop.createDevicePairing,
       revokeDevice: desktop.revokeDevice,

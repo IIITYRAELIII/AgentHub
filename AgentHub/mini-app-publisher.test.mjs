@@ -395,7 +395,7 @@ test("Mini App publisher rejects remote attachments without invoking the handler
   }
 });
 
-test("Mini App publisher materializes a signed remote image inside the allowed attachment directory", async () => {
+test("Mini App publisher materializes a signed remote bug screenshot inside the allowed attachment directory", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-image-"));
   const secretFile = path.join(root, "sync.secret");
   const attachmentDirectory = path.join(root, "runtime", "DesktopApp", "attachments");
@@ -422,7 +422,7 @@ test("Mini App publisher materializes a signed remote image inside the allowed a
           commands: [{
             id: commandId,
             userId: "42",
-            action: "send-message",
+            action: "submit-bug-report",
             params: {
               text: "Посмотри",
               attachments: [`remote-attachment:${attachmentId}`],
@@ -454,6 +454,7 @@ test("Mini App publisher materializes a signed remote image inside the allowed a
   try {
     assert.equal(await publisher.pollControl(), 1);
     assert.equal(handled.length, 1);
+    assert.equal(handled[0].action, "submit-bug-report");
     const [localPath] = handled[0].params.attachments;
     assert.equal(path.dirname(localPath), attachmentDirectory);
     assert.match(path.basename(localPath), new RegExp(`^${commandId}-${attachmentId}--.+\\.png$`, "u"));

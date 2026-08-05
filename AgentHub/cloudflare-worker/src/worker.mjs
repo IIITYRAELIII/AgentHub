@@ -41,6 +41,7 @@ const CONTROL_ACTIONS = new Set([
   "open-turn",
   "select-task",
   "send-message",
+  "submit-bug-report",
   "new-task",
   "update-setting",
   "rename-task",
@@ -176,7 +177,7 @@ function attachmentIdFromReference(value) {
 function attachmentIdsFromParams(action, params) {
   if (!Object.hasOwn(params, "attachments") || params.attachments == null) return [];
   if (
-    action !== "send-message"
+    !["send-message", "submit-bug-report"].includes(action)
     || !Array.isArray(params.attachments)
     || params.attachments.length < 1
     || params.attachments.length > MAX_ATTACHMENTS_PER_COMMAND

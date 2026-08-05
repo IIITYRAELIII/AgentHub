@@ -4645,6 +4645,126 @@ html[data-surface="mobile"] .chat-stop-bottom {
   border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
 }
 
+.bug-report-toggle {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 0.6rem;
+  text-align: left;
+  width: 100%;
+}
+
+.bug-report-toggle:hover,
+.bug-report-toggle[aria-expanded="true"] {
+  color: var(--accent);
+}
+
+.bug-report-toggle svg {
+  flex: 0 0 auto;
+  height: 1.2rem;
+  width: 1.2rem;
+}
+
+.bug-report-form {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.bug-report-form[hidden] {
+  display: none;
+}
+
+.bug-report-field {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.bug-report-field textarea {
+  background: color-mix(in srgb, var(--surface-2) 86%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  min-height: 6.5rem;
+  padding: 0.58rem 0.65rem;
+  resize: vertical;
+  width: 100%;
+}
+
+.bug-report-field textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+  outline: none;
+}
+
+.bug-report-screenshots {
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.bug-report-screenshot {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.bug-report-screenshot img {
+  aspect-ratio: 16 / 10;
+  display: block;
+  object-fit: cover;
+  width: 100%;
+}
+
+.bug-report-screenshot > span {
+  color: var(--text-muted);
+  display: block;
+  font-size: 0.68rem;
+  overflow: hidden;
+  padding: 0.35rem 0.45rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bug-report-screenshot .attachment-remove {
+  position: absolute;
+  right: 0.25rem;
+  top: 0.25rem;
+}
+
+.bug-report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.bug-report-status {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  margin: 0;
+  min-height: 1.05rem;
+  overflow-wrap: anywhere;
+}
+
+.bug-report-status[data-state="error"] {
+  color: var(--danger, #ff7b7b);
+}
+
+.bug-report-status[data-state="success"] {
+  color: var(--accent);
+}
+
 /* Короткая настройка одной строкой: подпись слева, контрол справа. */
 .setting-row {
   align-items: center;
@@ -5856,6 +5976,32 @@ html[data-view="statistics"] .statistics-view {
   display: block;
 }
 
+/* ================================================================ Фон === */
+
+.background-view {
+  box-sizing: border-box;
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+html[data-view="background"] body {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+html[data-view="background"] .workspace,
+html[data-view="background"] .journal-view,
+html[data-view="background"] .statistics-view,
+html[data-view="background"] .server-view {
+  display: none;
+}
+
+html[data-view="background"] .background-view {
+  display: block;
+}
+
 .msg-annotations {
   display: grid;
   gap: 0.55rem;
@@ -5907,7 +6053,8 @@ html[data-view="statistics"] .statistics-view {
 
 html[data-view="server"] .workspace,
 html[data-view="server"] .journal-view,
-html[data-view="server"] .statistics-view {
+html[data-view="server"] .statistics-view,
+html[data-view="server"] .background-view {
   display: none;
 }
 

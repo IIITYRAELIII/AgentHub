@@ -10,6 +10,7 @@ import "./telegram-settings-callbacks.test.mjs";
 import "./telegram-task-callbacks.test.mjs";
 import "./telegram-input-callbacks.test.mjs";
 import "./desktop-application-router.test.mjs";
+import "./bug-report-repository.test.mjs";
 import "./provider-completion-services.test.mjs";
 import "./provider-recovery-services.test.mjs";
 import "./claude-task-snapshot-service.test.mjs";

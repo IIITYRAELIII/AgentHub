@@ -106,6 +106,17 @@
           </svg>
           <span>Статистика</span>
         </button>
+        <button type="button" class="view-tab" data-view-button="background" aria-pressed="false">
+          <svg data-phosphor-icon="image-square" viewBox="0 0 256 256" aria-hidden="true">
+            <rect x="32" y="32" width="192" height="192" rx="16" fill="none"
+              stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+              stroke-width="16"></rect>
+            <circle cx="92" cy="88" r="12" fill="currentColor"></circle>
+            <path d="M32 176l48-48 40 40 32-32 72 72" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
+          </svg>
+          <span>Фон</span>
+        </button>
         <button type="button" class="view-tab" data-view-button="server" aria-pressed="false">
           <svg data-phosphor-icon="hard-drives" viewBox="0 0 256 256" aria-hidden="true">
             <rect x="24" y="48" width="208" height="64" rx="12" fill="none" stroke="currentColor"
@@ -546,6 +557,8 @@
     </div>
   </main>
 
+  <main class="background-view" data-background-view aria-label="Фон"></main>
+
   <!-- ===================================================== Agent Hub Server === -->
   <main class="server-view" data-server-view>
     <div class="server-content">
@@ -681,6 +694,16 @@
       </svg>
       <span>Статистика</span>
     </button>
+    <button type="button" class="mobile-tab" data-mobile-button="background" aria-pressed="false">
+      <svg data-phosphor-icon="image-square" viewBox="0 0 256 256" aria-hidden="true">
+        <rect x="32" y="32" width="192" height="192" rx="16" fill="none"
+          stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+          stroke-width="16"></rect>
+        <path d="M32 176l48-48 40 40 32-32 72 72" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
+      </svg>
+      <span>Фон</span>
+    </button>
     <button type="button" class="mobile-tab" data-mobile-button="server" aria-pressed="false">
       <svg data-phosphor-icon="cpu" viewBox="0 0 256 256" aria-hidden="true">
         <rect x="64" y="64" width="128" height="128" rx="16" fill="none" stroke="currentColor"
@@ -802,6 +825,43 @@
             </span>
             <span class="switch-track" aria-hidden="true"></span>
           </label>
+        </div>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title">Обратная связь</h3>
+        <div class="settings-card bug-report-card">
+          <button type="button" class="bug-report-toggle" data-bug-report-toggle aria-expanded="false">
+            <svg data-phosphor-icon="bug" viewBox="0 0 256 256" aria-hidden="true">
+              <path d="M88 40l12 24M168 40l-12 24M48 104h32M176 104h32M48 152h32M176 152h32M72 200l24-24M184 200l-24-24"
+                fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                stroke-width="16"></path>
+              <rect x="80" y="64" width="96" height="120" rx="48" fill="none"
+                stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                stroke-width="16"></rect>
+              <line x1="128" y1="104" x2="128" y2="184" stroke="currentColor"
+                stroke-linecap="round" stroke-width="16"></line>
+            </svg>
+            <span>Сообщить о баге.</span>
+          </button>
+          <form class="bug-report-form" data-bug-report-form hidden>
+            <label class="bug-report-field">
+              <span class="setting-name">Что произошло</span>
+              <textarea data-bug-report-text rows="5" maxlength="20000"
+                placeholder="Опишите проблему и как её повторить"></textarea>
+            </label>
+            <div class="bug-report-screenshots" data-bug-report-screenshots hidden></div>
+            <input type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"
+              multiple data-bug-report-files hidden aria-hidden="true">
+            <div class="bug-report-actions">
+              <button type="button" class="chip-button ghost" data-bug-report-attach>
+                Добавить скриншоты
+              </button>
+              <button type="submit" class="chip-button primary" data-bug-report-submit>
+                Отправить отчёт
+              </button>
+            </div>
+            <p class="bug-report-status" data-bug-report-status role="status" aria-live="polite"></p>
+          </form>
         </div>
       </section>
       <div class="setting-status" data-status-slot hidden></div>

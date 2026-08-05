@@ -79,6 +79,14 @@ const approvalsBox = document.querySelector("[data-approvals]");
 const queueBox = document.querySelector("[data-queue]");
 
 const settingsPanel = document.querySelector("[data-settings-panel]");
+const bugReportToggle = document.querySelector("[data-bug-report-toggle]");
+const bugReportForm = document.querySelector("[data-bug-report-form]");
+const bugReportText = document.querySelector("[data-bug-report-text]");
+const bugReportFiles = document.querySelector("[data-bug-report-files]");
+const bugReportAttach = document.querySelector("[data-bug-report-attach]");
+const bugReportScreenshots = document.querySelector("[data-bug-report-screenshots]");
+const bugReportSubmit = document.querySelector("[data-bug-report-submit]");
+const bugReportStatus = document.querySelector("[data-bug-report-status]");
 const telegramFullscreenButton = document.querySelector("[data-telegram-fullscreen]");
 const breakdownToggle = document.querySelector("[data-token-breakdown-toggle]");
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
@@ -991,10 +999,10 @@ function currentTask() {
 /* =========================================================== роутер видов */
 
 const NAVIGATION_TAB_KEY = "agent-hub-navigation-tab-v1";
-const navigationTabs = new Set(["tasks", "chat", "journal", "statistics", "server"]);
+const navigationTabs = new Set(["tasks", "chat", "journal", "statistics", "background", "server"]);
 
 function currentNavigationTab() {
-  return ["journal", "statistics", "server"].includes(root.dataset.view)
+  return ["journal", "statistics", "background", "server"].includes(root.dataset.view)
     ? root.dataset.view
     : (root.dataset.pane === "chat" ? "chat" : "tasks");
 }
@@ -1114,7 +1122,7 @@ function populateBackgroundOptions(theme = root.dataset.theme) {
 }
 
 function setView(view, { persist = true, activate = true } = {}) {
-  const next = ["journal", "statistics", "server"].includes(view) ? view : "chat";
+  const next = ["journal", "statistics", "background", "server"].includes(view) ? view : "chat";
   root.dataset.view = next;
   for (const button of document.querySelectorAll("[data-view-button]")) {
     button.setAttribute("aria-pressed", String(button.dataset.viewButton === next));
@@ -1127,9 +1135,11 @@ function setView(view, { persist = true, activate = true } = {}) {
       ? "Log"
       : next === "statistics"
         ? "Stats"
-        : next === "server"
-          ? "Server"
-          : "Chat";
+        : next === "background"
+          ? "Фон"
+          : next === "server"
+            ? "Server"
+            : "Chat";
   }
   syncMobileNav();
   if (activate) activateView(next);
@@ -1143,7 +1153,7 @@ function setPane(pane, { persist = true } = {}) {
 }
 
 function syncMobileNav() {
-  const active = ["journal", "statistics", "server"].includes(root.dataset.view)
+  const active = ["journal", "statistics", "background", "server"].includes(root.dataset.view)
     ? root.dataset.view
     : (root.dataset.pane === "chat" ? "chat" : "tasks");
   for (const button of document.querySelectorAll("[data-mobile-button]")) {
@@ -1157,7 +1167,7 @@ for (const button of document.querySelectorAll("[data-view-button]")) {
 for (const button of document.querySelectorAll("[data-mobile-button]")) {
   button.addEventListener("click", () => {
     const target = button.dataset.mobileButton;
-    if (["journal", "statistics", "server"].includes(target)) { setView(target); return; }
+    if (["journal", "statistics", "background", "server"].includes(target)) { setView(target); return; }
     setView("chat");
     setPane(target === "chat" ? "chat" : "tasks");
   });
@@ -2854,6 +2864,7 @@ function saveDraft() {
 function prepareForRuntimeReload() {
   saveDraft();
   if ([...drafts.values()].some((draft) => (draft.attachments ?? []).length > 0)) return false;
+  if (bugReportAttachments.length > 0 || bugReportSending) return false;
   return persistDrafts();
 }
 
@@ -2895,6 +2906,105 @@ function openPanel() {
     panelScrim.classList.add("open");
   });
 }
+
+let bugReportAttachments = [];
+let bugReportSending = false;
+
+function setBugReportStatus(message = "", state = "") {
+  if (!bugReportStatus) return;
+  bugReportStatus.textContent = message;
+  if (state) bugReportStatus.dataset.state = state;
+  else delete bugReportStatus.dataset.state;
+}
+
+function setBugReportSending(value) {
+  bugReportSending = Boolean(value);
+  if (bugReportSubmit) bugReportSubmit.disabled = bugReportSending;
+  if (bugReportAttach) bugReportAttach.disabled = bugReportSending;
+  if (bugReportText) bugReportText.disabled = bugReportSending;
+  if (bugReportSubmit) bugReportSubmit.textContent = bugReportSending ? "Отправляем…" : "Отправить отчёт";
+}
+
+function renderBugReportAttachments() {
+  if (!bugReportScreenshots) return;
+  bugReportScreenshots.hidden = bugReportAttachments.length === 0;
+  bugReportScreenshots.replaceChildren(...bugReportAttachments.map((item, index) => (
+    el("div", { class: "bug-report-screenshot" }, [
+      el("img", { src: item.dataUrl, alt: item.name || `Скриншот ${index + 1}` }),
+      el("span", { text: item.name || `Скриншот ${index + 1}` }),
+      el("button", {
+        type: "button",
+        class: "attachment-remove",
+        "data-bug-report-remove": index,
+        title: "Удалить скриншот",
+        "aria-label": `Удалить ${item.name || `скриншот ${index + 1}`}`,
+        text: "×",
+      }),
+    ])
+  )));
+}
+
+async function readBugReportFiles(files) {
+  const selected = [...(files ?? [])].filter((file) => file && file.size > 0);
+  const room = Math.max(0, 8 - bugReportAttachments.length);
+  const supported = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"]);
+  const accepted = selected.slice(0, room).filter((file) => (
+    supported.has(String(file.type).toLowerCase()) && file.size <= 20 * 1024 * 1024
+  ));
+  const loaded = await Promise.all(accepted.map((file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      dataUrl: String(reader.result),
+    });
+    reader.onerror = () => reject(new Error(`Не удалось прочитать файл «${file.name}»`));
+    reader.readAsDataURL(file);
+  }))).catch((error) => {
+    setBugReportStatus(error.message, "error");
+    return [];
+  });
+  bugReportAttachments = [...bugReportAttachments, ...loaded].slice(0, 8);
+  renderBugReportAttachments();
+  if (selected.length > room) setBugReportStatus("Можно приложить не больше восьми скриншотов.", "error");
+  else if (accepted.length !== selected.length) {
+    setBugReportStatus("Поддерживаются изображения до 20 МБ: PNG, JPEG, WebP, GIF или BMP.", "error");
+  } else if (loaded.length) setBugReportStatus();
+}
+
+bugReportToggle?.addEventListener("click", () => {
+  const visible = bugReportForm?.hidden !== false;
+  if (bugReportForm) bugReportForm.hidden = !visible;
+  bugReportToggle.setAttribute("aria-expanded", String(visible));
+  if (visible) bugReportText?.focus();
+});
+bugReportAttach?.addEventListener("click", () => bugReportFiles?.click());
+bugReportFiles?.addEventListener("change", () => {
+  void readBugReportFiles(bugReportFiles.files);
+  bugReportFiles.value = "";
+});
+bugReportScreenshots?.addEventListener("click", (event) => {
+  const remove = event.target.closest("[data-bug-report-remove]");
+  if (!remove || bugReportSending) return;
+  bugReportAttachments.splice(Number(remove.dataset.bugReportRemove), 1);
+  renderBugReportAttachments();
+});
+bugReportForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = String(bugReportText?.value ?? "").trim();
+  if (!text && bugReportAttachments.length === 0) {
+    setBugReportStatus("Введите описание бага или приложите скриншот.", "error");
+    return;
+  }
+  setBugReportSending(true);
+  setBugReportStatus("Создаём отчёт и отправляем его в Git…", "pending");
+  emit("bug-report:submit", {
+    text,
+    attachments: bugReportAttachments.slice(),
+    reportId: crypto.randomUUID(),
+  });
+});
 
 trustedDeviceCreate?.addEventListener("click", () => emit("devices:create"));
 trustedDeviceList?.addEventListener("click", (event) => {
@@ -3574,6 +3684,19 @@ const AgentHub = {
   },
   completeSend(requestId, { accepted = false } = {}) {
     completeComposerSend(requestId, accepted);
+  },
+  completeBugReport(result = {}) {
+    setBugReportSending(false);
+    if (result.error) {
+      setBugReportStatus(String(result.error), "error");
+      return;
+    }
+    bugReportAttachments = [];
+    if (bugReportText) bugReportText.value = "";
+    renderBugReportAttachments();
+    const folder = String(result.folder ?? "").trim();
+    setBugReportStatus(folder ? `Отчёт отправлен: ${folder}` : "Отчёт отправлен.", "success");
+    showToast("Отчёт о баге отправлен");
   },
   /** Живой ход: { author, stage, reasoning, text } или null, чтобы скрыть. */
   setLive(taskId, live) {

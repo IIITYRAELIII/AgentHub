@@ -1,3 +1,5 @@
+import { unlink } from "node:fs/promises";
+
 import { RateLimitTelemetryService } from "../application/rate-limit-telemetry-service.mjs";
 import { createCodexAssistantAttachmentImporter } from "../providers/codex/codex-assistant-attachments.mjs";
 import { ApprovalController } from "../interfaces/telegram/approval-controller.mjs";
@@ -12,6 +14,7 @@ import { DirectGatewayController, loadDirectGatewaySettings } from "../interface
 import { MiniAppLifecycleService } from "../interfaces/web/mini-app-lifecycle-service.mjs";
 import { MiniAppPublisher } from "../interfaces/web/mini-app-publisher.mjs";
 import { miniAppMenuButtonRequests } from "../interfaces/web/mini-app-server.mjs";
+import { BugReportRepository } from "../infrastructure/filesystem/bug-report-repository.mjs";
 import { QuickTunnelController } from "../infrastructure/network/quick-tunnel.mjs";
 
 export async function createClientInterfaceComposition({
@@ -119,6 +122,24 @@ export async function createClientInterfaceComposition({
     publisher: () => miniAppLifecycle.publisher,
     trustedUserId: trustedDeviceUserId,
   });
+  const bugReports = new BugReportRepository({
+    agentHubRoot,
+    projectRoots: config.projects.map((project) => project.path),
+  });
+  const desktopSubmitBugReport = async (params, context) => {
+    const files = await desktopAttachments.paths(params?.attachments);
+    try {
+      const descriptors = desktopAttachments.descriptors(files);
+      return await bugReports.submit({
+        text: params?.text,
+        reportId: params?.reportId,
+        source: context?.source,
+        screenshots: files.map((file, index) => ({ file, type: descriptors[index]?.type })),
+      });
+    } finally {
+      await Promise.all(files.map((file) => unlink(file).catch(() => {})));
+    }
+  };
   const telegramMultipart = (method, body, fileField, filePath) => (
     telegramClient.multipart(method, body, fileField, filePath)
   );
@@ -206,6 +227,7 @@ export async function createClientInterfaceComposition({
     desktopAttachmentDescriptors: (...args) => desktopAttachments.descriptors(...args),
     importCodexDesktopAttachments: (...args) => desktopAttachments.importCodex(...args),
     desktopOpenAttachment: (...args) => desktopAttachments.open(...args),
+    desktopSubmitBugReport,
     telegramMultipart,
     sendStatusCard,
     sendMessage,

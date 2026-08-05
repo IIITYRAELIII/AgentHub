@@ -66,6 +66,28 @@ export function attachmentIsImage(value) {
   return String(type ?? "").toLowerCase().startsWith("image/");
 }
 
+export function imageMatchesContentType(body, contentType) {
+  const value = new Uint8Array(body);
+  if (contentType === "image/png") {
+    return value.length >= 8
+      && [137, 80, 78, 71, 13, 10, 26, 10].every((item, index) => value[index] === item);
+  }
+  if (contentType === "image/jpeg") {
+    return value.length >= 3 && value[0] === 0xff && value[1] === 0xd8 && value[2] === 0xff;
+  }
+  if (contentType === "image/gif") {
+    const signature = Buffer.from(value.subarray(0, 6)).toString("ascii");
+    return signature === "GIF87a" || signature === "GIF89a";
+  }
+  if (contentType === "image/webp") {
+    return value.length >= 12
+      && Buffer.from(value.subarray(0, 4)).toString("ascii") === "RIFF"
+      && Buffer.from(value.subarray(8, 12)).toString("ascii") === "WEBP";
+  }
+  if (contentType === "image/bmp") return value.length >= 2 && value[0] === 0x42 && value[1] === 0x4d;
+  return false;
+}
+
 export function createAttachmentStorageName(originalName, uniqueId = randomUUID()) {
   const prefix = String(uniqueId ?? "").trim().toLowerCase();
   if (!/^[a-z0-9-]{16,100}$/u.test(prefix)) throw new Error("Некорректный идентификатор вложения");

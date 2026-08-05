@@ -6,7 +6,7 @@ const MUTATION_ACTIONS = Object.freeze([
   "update-setting", "rename-task", "archive-task", "cancel-run",
   "resolve-approval", "deferred-input", "restart-server", "set-autostart",
   "update-server-configuration", "compact-context", "create-device-pairing",
-  "revoke-device",
+  "revoke-device", "submit-bug-report",
 ]);
 
 function requiredFunction(value, name) {
@@ -23,7 +23,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
     "openTask", "openTurn", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "compactContext", "openAttachment",
-    "trustedDevices", "createDevicePairing", "revokeDevice",
+    "submitBugReport", "trustedDevices", "createDevicePairing", "revokeDevice",
   ]) requiredFunction(handlers[name], name);
 
   const dispatch = (type, params, context, target) => commands.dispatch(
@@ -58,6 +58,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
       "update-server-configuration": handlers.updateServerConfiguration,
       "compact-context": handlers.compactContext,
       "open-attachment": handlers.openAttachment,
+      "submit-bug-report": handlers.submitBugReport,
       "trusted-devices": handlers.trustedDevices,
       "create-device-pairing": handlers.createDevicePairing,
       "revoke-device": handlers.revokeDevice,
