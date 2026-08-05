@@ -21,6 +21,10 @@ test("Agent Hub persists Codex and Claude limit snapshots every five minutes", a
     new URL("./src/application/rate-limit-telemetry-service.mjs", import.meta.url),
     "utf8",
   );
+  const desktopSystemSource = await readFile(
+    new URL("./src/interfaces/desktop/desktop-system-service.mjs", import.meta.url),
+    "utf8",
+  );
   const processCaptureSource = await readFile(new URL("./process-capture.mjs", import.meta.url), "utf8");
   assert.match(source, /new RateLimitTelemetryService\(/u);
   assert.match(source, /new RateLimitHistoryStore\(/u);
@@ -28,7 +32,8 @@ test("Agent Hub persists Codex and Claude limit snapshots every five minutes", a
   assert.match(telemetrySource, /this\.historyStore\.record\(result, observedAt\)/u);
   assert.match(telemetrySource, /parseClaudeLimits\(await this\.readClaude\(\)\)/u);
   assert.match(telemetrySource, /this\.historyStore\.record\(\{ limits \}, observedAt, "claude"\)/u);
-  assert.match(source, /return rateLimitHistoryStore\.read\(/u);
+  assert.match(source, /readRateLimitHistory: \(params\) => rateLimitHistoryStore\.read\(params\)/u);
+  assert.match(desktopSystemSource, /return this\.readRateLimitHistory\(\{/u);
   assert.match(source, /rateLimitTelemetry\.schedule\(1_000\)/u);
   assert.match(telemetrySource, /"--safe-mode", "--no-session-persistence"/u);
   assert.match(source, /stopProcess: \(worker\) => stopProcessTree\(worker\.pid\)/u);

@@ -256,6 +256,9 @@ import { TaskSelectionStore } from "./src/application/task-selection-store.mjs";
 import { createDesktopSnapshotFactory } from "./src/interfaces/desktop/desktop-snapshot.mjs";
 import { createDesktopTaskHistoryFactory } from "./src/interfaces/desktop/desktop-task-history.mjs";
 import { DesktopTaskService } from "./src/interfaces/desktop/desktop-task-service.mjs";
+import { DesktopSystemService } from "./src/interfaces/desktop/desktop-system-service.mjs";
+import { TaskCommandService } from "./src/application/task-command-service.mjs";
+import { RestartRequestService } from "./src/application/restart-request-service.mjs";
 import { createDesktopApplicationRouter } from "./src/interfaces/desktop/desktop-application-router.mjs";
 import { UsdRubRateStore } from "./exchange-rate.mjs";
 import { agentHubAutostartShortcut } from "./src/interfaces/web/server-page.mjs";
@@ -826,6 +829,20 @@ const codexContextMaintenance = new CodexContextMaintenanceService({
   setTransportRestarting: (value) => codexRuntime.setRestarting(value),
   invalidateTaskCatalog,
   restartTransportAfterCrash: restartCodexAfterCrash,
+  runForTask: (target) => taskRuns.forTask(target),
+  ensureTransport: async () => {
+    if (codexTransport.running) return;
+    await startCodexAppServer();
+    await initializeCodex({ attachSelectedThread: false });
+  },
+  resumeThread: (targetThreadId, sandbox) => sendRpc("thread/resume", {
+    threadId: targetThreadId,
+    ...sandbox,
+  }),
+  startCompaction: (targetThreadId) => sendRpc("thread/compact/start", {
+    threadId: targetThreadId,
+  }),
+  sandboxSettings: () => codexThreadSandboxSettings(config.codexSandboxMode),
 });
 const backgroundJobStore = new PersistentBackgroundJobStore({
   directoryPath: BACKGROUND_JOBS_DIR,
@@ -2765,264 +2782,82 @@ const desktopOpenTask = (...args) => desktopTaskService.openTask(...args);
 const desktopOpenTurn = (...args) => desktopTaskService.openTurn(...args);
 const desktopMessageTarget = (...args) => desktopTaskService.resolveTarget(...args);
 
-async function desktopUpdateSetting(params) {
-  return desktopSettingsService.update(params);
-}
+const desktopUpdateSetting = (...args) => desktopSettingsService.update(...args);
 
-async function desktopRenameTask(params) {
-  const target = await desktopMessageTarget(params);
-  const pinnedTitle = pinTaskTitle(target.provider, target.threadId, String(params.title ?? ""));
-  if (!pinnedTitle) throw new Error("Укажите непустое название");
-  if (target.provider === "codex") {
-    await sendRpc("thread/name/set", { threadId: target.threadId, name: pinnedTitle });
-    expectTaskTitleConfirmation(target.provider, target.threadId, pinnedTitle);
-    invalidateTaskCatalog();
-  }
-  const run = taskRuns.forTask(target);
-  if (run) updateTaskRunTitle(run, pinnedTitle);
-  const entry = taskCatalog.find((item) => catalogEntryIsSelected(item, target));
-  if (entry) entry.title = pinnedTitle;
-  if (catalogEntryIsSelected(target, selectedTask())) selectionStore.setTitle(pinnedTitle);
-  await savePinnedTaskTitles();
-  await saveState();
-  return {
-    ...await desktopSnapshot({ refresh: true }),
-    renamedTitle: pinnedTitle,
-  };
-}
-
-async function desktopArchiveTask(params) {
-  const target = await desktopMessageTarget(params);
-  if (target.provider !== "codex") throw new Error("Claude не поддерживает архивирование");
-  if (taskRuns.forTask(target)) throw new Error("Сначала остановите активный ход");
-  const archivedResult = await sendRpc("thread/read", {
-    threadId: target.threadId,
+const taskCommandService = new TaskCommandService({
+  resolveTarget: desktopMessageTarget,
+  pinTitle: pinTaskTitle,
+  renameCodexTask: (targetThreadId, title) => sendRpc("thread/name/set", {
+    threadId: targetThreadId,
+    name: title,
+  }),
+  expectTitleConfirmation: expectTaskTitleConfirmation,
+  invalidateCatalog: invalidateTaskCatalog,
+  runForTask: (target) => taskRuns.forTask(target),
+  updateRunTitle: updateTaskRunTitle,
+  catalogEntries: () => taskCatalog,
+  catalogEntryIsSelected,
+  selection: {
+    current: selectedTask,
+    setTitle: (title) => selectionStore.setTitle(title),
+    clearCodex: () => selectionStore.setThread(null, { provider: "codex", title: "" }),
+    selectCodex: (id, title) => selectionStore.setThread(id, { provider: "codex", title }),
+  },
+  saveTitles: savePinnedTaskTitles,
+  saveState,
+  snapshot: desktopSnapshot,
+  readCodexTask: async (targetThreadId) => (await sendRpc("thread/read", {
+    threadId: targetThreadId,
     includeTurns: false,
-  });
-  await sendRpc("thread/archive", { threadId: target.threadId });
-  invalidateTaskCatalog();
-  taskMetadata.deleteCodexSettings(target.threadId);
-  const isCurrent = catalogEntryIsSelected(target, selectedTask());
-  let nextThread = null;
-  if (isCurrent) {
-    selectionStore.setThread(null, { provider: "codex", title: "" });
-    latestDiff = "";
-    [nextThread] = (await listThreads()).filter((item) => item.id !== target.threadId);
-    if (nextThread) {
-      selectionStore.setThread(nextThread.id, { provider: "codex", title: threadTitle(nextThread) });
-      restoreCodexTaskSettings(threadId);
-      latestDiff = taskDiffs.get(taskRunKey(selectedTask())) ?? "";
-    }
-  }
-  await saveState();
-  const result = {
-    archived: true,
-    archivedThread: archivedResult.thread ?? { id: target.threadId },
-  };
-  if (!result.archived) throw new Error("Задача не выбрана");
-  return {
-    ...await desktopSnapshot({ refresh: true }),
-    archivedThread: archivedResult.thread ?? { id: target.threadId },
-    nextThread,
-  };
-}
+  })).thread,
+  archiveCodexTask: (targetThreadId) => sendRpc("thread/archive", { threadId: targetThreadId }),
+  deleteCodexSettings: (targetThreadId) => taskMetadata.deleteCodexSettings(targetThreadId),
+  listCodexTasks: listThreads,
+  codexTaskTitle: threadTitle,
+  restoreCodexSettings: restoreCodexTaskSettings,
+  diffs: {
+    setLatest: (value) => { latestDiff = value; },
+    forTask: (target) => taskDiffs.get(taskRunKey(target)) ?? "",
+    refresh: refreshTaskDiff,
+  },
+  providerCancel: (run) => agentProviders.call(run.provider, "cancelRun", run),
+  progress: { setStage: (...args) => taskProgress.setStage(...args), finish: (...args) => taskProgress.finish(...args) },
+  dismissedExternalTasks,
+  completeRun: (run) => managedRunLifecycle.complete(run),
+  createTask: createThread,
+  activeProvider: () => activeProvider,
+  switchProvider,
+});
+const desktopRenameTask = (...args) => taskCommandService.rename(...args);
+const desktopArchiveTask = (...args) => taskCommandService.archive(...args);
+const desktopTaskDiff = (...args) => taskCommandService.diff(...args);
+const desktopCancelRun = (...args) => taskCommandService.cancel(...args);
 
-async function desktopTaskDiff(params) {
-  const target = await desktopMessageTarget(params);
-  const run = taskRuns.forTask(target);
-  const text = run ? await refreshTaskDiff(run) : taskDiffs.get(taskRunKey(target)) ?? "";
-  return { text, empty: !text };
-}
+const desktopResolveApproval = (params) => approvalController.resolveFromDesktop(
+  String(params.key ?? ""),
+  String(params.decision ?? ""),
+);
+const desktopDeferredInput = (...args) => desktopDeferredInputService.handle(...args);
 
-async function desktopCancelRun(params) {
-  const target = await desktopMessageTarget(params);
-  const run = taskRuns.forTask(target);
-  if (!run) return { accepted: false, message: "В выбранной задаче сейчас ничего не выполняется" };
-  const result = await agentProviders.call(run.provider, "cancelRun", run);
-  if (result.interruptFailed) {
-    if (run.observer) {
-      taskProgress.setStage(run, result.message);
-      return {
-        ...result,
-        message: `${result.message}. Параллельный ход не будет запущен.`,
-      };
-    }
-    return result;
-  }
-  if (run.observer) {
-    dismissedExternalTasks.add(run);
-    await taskProgress.finish(run, result.stopRequested
-      ? "Остановка запрошена; наблюдение отключено."
-      : "Наблюдение отключено; внешний ход продолжает работу.");
-    await managedRunLifecycle.complete(run);
-    return {
-      accepted: true,
-      message: result.stopRequested
-        ? "Запрошена остановка этой задачи. Пока внешний ход фактически активен, новые сообщения будут сохранены, а не запущены параллельно."
-        : "Отключил наблюдение. Внешний Claude продолжает работу; новые сообщения будут сохранены до его завершения.",
-    };
-  }
-  if (!result.detach) return result;
-  await taskProgress.finish(run, "Наблюдение отключено; внешний Claude продолжает работу.");
-  await managedRunLifecycle.complete(run);
-  return result;
-}
+const restartRequestService = new RestartRequestService({
+  getRequest: () => restartRequest,
+  setRequest: (value) => { restartRequest = value; },
+  blockingWorkCount: () => restartBlockingRuns().length + backgroundJobs.size,
+  currentChatId: () => chatId,
+  updateOffset: () => updateOffset,
+  processingUpdateId: () => processingUpdateId,
+  saveState,
+  announceDesktop: announceDesktopRestart,
+  sendTelegram: sendMessage,
+  performRestart,
+});
+const desktopRestartServer = () => restartRequestService.fromDesktop();
 
-async function desktopResolveApproval(params) {
-  return approvalController.resolveFromDesktop(
-    String(params.key ?? ""),
-    String(params.decision ?? ""),
-  );
-}
+const desktopNewTask = (...args) => taskCommandService.create(...args);
 
-async function desktopDeferredInput(params, context = null) {
-  return desktopDeferredInputService.handle(params, context);
-}
-
-async function desktopStatusDetails() {
-  let limits;
-  try {
-    limits = await rateLimitTelemetry.formatted(activeProvider);
-  } catch (error) {
-    limits = `Не удалось получить: ${error.message}`;
-  }
-  const codexSelected = isCodex();
-  const preferences = agentPreferences.current(activeProvider);
-  return {
-    provider: activeProvider,
-    model: codexSelected ? codexModelLabel(preferences.model) : CLAUDE_MODEL_LABELS[preferences.model],
-    reasoning: CODEX_REASONING_LABELS[preferences.reasoningEffort],
-    mode: CODEX_COLLABORATION_MODE_LABELS[preferences.collaborationMode],
-    limits,
-    activeCount: taskRuns.values().filter(taskRunIsActive).length,
-    backgroundJobs: backgroundJobs.size,
-  };
-}
-
-async function desktopSpeakLastAnswer(params) {
-  const target = await desktopMessageTarget(params);
-  const message = savedLastTaskMessageRecord(target);
-  const text = String(message?.text ?? "").trim();
-  if (!text) throw new Error("У задачи ещё нет завершённого ответа");
-  const job = await backgroundJobs.enqueue("speech", { chatId, text }, chatId, {
-    dedupeKey: `desktop:${target.provider}:${target.threadId}:speech`,
-  });
-  if (!job) throw new Error(`Очередь озвучивания заполнена (${MAX_BACKGROUND_SPEECH_JOBS})`);
-  return { accepted: true, message: "Озвучивание будет отправлено в Telegram" };
-}
-
-async function desktopRestartServer() {
-  if (restartRequest) return { accepted: false, message: "Перезапуск уже запрошен" };
-  const blockingRuns = restartBlockingRuns();
-  const blockingWorkCount = blockingRuns.length
-    + backgroundJobs.size;
-  restartRequest = {
-    chatId,
-    // Desktop control must acknowledge a persisted restart request before a
-    // slow Telegram request or the replacement hand-off can close its pipe.
-    // The replacement will post the final card if this first announcement did
-    // not get a chance to finish.
-    messageId: null,
-    requestedAt: new Date().toISOString(),
-    waitingForRuns: blockingWorkCount > 0,
-    minimumUpdateOffset: updateOffset,
-  };
-  await saveState();
-  const request = restartRequest;
-  void announceDesktopRestart(request, blockingWorkCount);
-  if (!blockingWorkCount) setTimeout(() => void performRestart(), 0).unref();
-  return {
-    accepted: true,
-    waiting: blockingWorkCount > 0,
-    message: blockingWorkCount > 0 ? "Перезапуск ожидает завершения задач" : "Agent Hub Server перезапускается",
-  };
-}
-
-async function desktopNewTask(params) {
-  const provider = String(params.provider ?? activeProvider).trim();
-  if (!['codex', 'claude'].includes(provider)) throw new Error("Неизвестный агент");
-  if (provider !== activeProvider) await switchProvider(provider);
-  await createThread();
-  return desktopSnapshot({ refresh: true });
-}
-
-async function desktopRateLimitHistory(params) {
-  return rateLimitHistoryStore.read({
-    range: params.range,
-    maxPointsPerSeries: params.maxPointsPerSeries,
-  });
-}
-
-async function desktopUsageHistory(params) {
-  return workLogUsageStore.usageHistory({
-    range: params.range,
-    maxPoints: params.maxPoints,
-  });
-}
-
-async function desktopSearch(params) {
-  const query = String(params.query ?? "").trim().slice(0, 200);
-  if (query.length < 2) return { query, results: [] };
-  const catalog = await refreshTaskCatalog();
-  const results = await workLogUsageStore.searchTurns(query, {
-    limit: Math.min(Math.max(Number(params.limit) || 100, 1), 200),
-    perTask: 3,
-    projectRoots: PROJECTS.map((project) => project.path),
-  });
-  return {
-    query,
-    results: results.map((result) => {
-      const entry = catalog.find((candidate) => (
-        candidate.provider === result.provider
-        && candidate.threadId === result.threadId
-        && (!result.projectRoot || samePath(candidate.projectRoot, result.projectRoot))
-      ));
-      return {
-        id: entry ? `${entry.provider}:${entry.threadId}` : `${result.provider}:${result.threadId}`,
-        provider: result.provider,
-        threadId: result.threadId,
-        projectRoot: result.projectRoot,
-        title: entry?.title ?? result.taskTitle,
-        latestAt: result.latestAt,
-        matches: result.matches,
-      };
-    }),
-  };
-}
-
-async function desktopCompactContext(params) {
-  const target = await desktopMessageTarget(params);
-  if (target.provider !== "codex") throw new Error("Свёртка контекста доступна только для Codex");
-  const run = taskRuns.forTask(target);
-  if (taskRunIsActive(run)) throw new Error("Сначала завершите или остановите текущий ход");
-  if (contextCompactions.isRunning(target.threadId)) {
-    return { accepted: false, message: "Свёртка контекста уже выполняется" };
-  }
-  if (!codexTransport.running) {
-    await startCodexAppServer();
-    await initializeCodex({ attachSelectedThread: false });
-  }
-  const compaction = contextCompactions.begin(target.threadId, { origin: "manual" });
-  try {
-    // A thread discovered from rollout history is not necessarily loaded in
-    // this particular App Server process. Compacting an unloaded thread makes
-    // the real server answer `Thread not found`, even though it is present in
-    // the shared local catalog.
-    await sendRpc("thread/resume", {
-      threadId: target.threadId,
-      ...codexThreadSandboxSettings(config.codexSandboxMode),
-    });
-    await sendRpc("thread/compact/start", { threadId: target.threadId });
-    return {
-      accepted: true,
-      compactionId: compaction.id,
-      message: "Свёртка контекста запущена",
-    };
-  } catch (error) {
-    contextCompactions.fail(target.threadId, compaction.id);
-    throw error;
-  }
-}
+const desktopCompactContext = async (params) => (
+  codexContextMaintenance.startManual(await desktopMessageTarget(params))
+);
 
 const deferredInputService = new DeferredInputService({
   store: deferredInputs,
@@ -3159,34 +2994,54 @@ function trustedDeviceUserId(context) {
   return resolveTrustedDeviceUserId(config.allowedUserIds, context, localAndroidUserId);
 }
 
-async function desktopTrustedDevices(_params, context) {
-  const userId = trustedDeviceUserId(context);
-  return createTrustedDeviceManager({
-    workerEnabled: config.miniApp.worker.enabled,
-    publisher: miniAppPublisher,
-    localStore: trustedDeviceStore,
-  }).list(userId);
-}
-
-async function desktopCreateDevicePairing(_params, context) {
-  const userId = trustedDeviceUserId(context);
-  return createTrustedDeviceManager({
-    workerEnabled: config.miniApp.worker.enabled,
-    publisher: miniAppPublisher,
-    localStore: trustedDeviceStore,
-  }).createPairing(userId);
-}
-
-async function desktopRevokeDevice(params, context) {
-  const deviceId = String(params?.deviceId ?? "").trim().toLowerCase();
-  if (!/^[0-9a-f-]{36}$/u.test(deviceId)) throw new Error("Некорректный идентификатор устройства");
-  const userId = trustedDeviceUserId(context);
-  return createTrustedDeviceManager({
-    workerEnabled: config.miniApp.worker.enabled,
-    publisher: miniAppPublisher,
-    localStore: trustedDeviceStore,
-  }).revoke(userId, deviceId);
-}
+const desktopSystemService = new DesktopSystemService({
+  activeProvider: () => activeProvider,
+  isCodex,
+  preferences: (provider) => agentPreferences.current(provider),
+  codexModelLabel,
+  claudeModelLabels: CLAUDE_MODEL_LABELS,
+  reasoningLabels: CODEX_REASONING_LABELS,
+  collaborationModeLabels: CODEX_COLLABORATION_MODE_LABELS,
+  formattedRateLimits: (provider) => rateLimitTelemetry.formatted(provider),
+  activeRunCount: () => taskRuns.values().filter(taskRunIsActive).length,
+  backgroundJobCount: () => backgroundJobs.size,
+  readRateLimitHistory: (params) => rateLimitHistoryStore.read(params),
+  readUsageHistory: (params) => workLogUsageStore.usageHistory(params),
+  refreshCatalog: refreshTaskCatalog,
+  searchTurns: (...args) => workLogUsageStore.searchTurns(...args),
+  projectRoots: () => PROJECTS.map((project) => project.path),
+  samePath,
+  trustedDeviceManager: (context) => {
+    const userId = trustedDeviceUserId(context);
+    const manager = createTrustedDeviceManager({
+      workerEnabled: config.miniApp.worker.enabled,
+      publisher: miniAppPublisher,
+      localStore: trustedDeviceStore,
+    });
+    return {
+      list: () => manager.list(userId),
+      createPairing: () => manager.createPairing(userId),
+      revoke: (deviceId) => manager.revoke(userId, deviceId),
+    };
+  },
+  resolveTask: desktopMessageTarget,
+  lastTaskMessage: savedLastTaskMessageRecord,
+  enqueueSpeech: (target, text) => backgroundJobs.enqueue(
+    "speech",
+    { chatId, text },
+    chatId,
+    { dedupeKey: `desktop:${target.provider}:${target.threadId}:speech` },
+  ),
+  maxSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
+});
+const desktopStatusDetails = (...args) => desktopSystemService.statusDetails(...args);
+const desktopRateLimitHistory = (...args) => desktopSystemService.rateLimitHistory(...args);
+const desktopUsageHistory = (...args) => desktopSystemService.usageHistory(...args);
+const desktopSearch = (...args) => desktopSystemService.search(...args);
+const desktopTrustedDevices = (...args) => desktopSystemService.trustedDevices(...args);
+const desktopCreateDevicePairing = (...args) => desktopSystemService.createDevicePairing(...args);
+const desktopRevokeDevice = (...args) => desktopSystemService.revokeDevice(...args);
+const desktopSpeakLastAnswer = (...args) => desktopSystemService.speakLastAnswer(...args);
 
 function telegramMessageCommandContext(message) {
   return {
@@ -4403,30 +4258,7 @@ async function performRestart() {
 }
 
 async function restartBot() {
-  if (restartRequest) {
-    await sendMessage(restartRequest.waitingForRuns
-      ? "Перезапуск уже ожидает завершения выполняющихся задач."
-      : "Бот уже перезапускается.");
-    return;
-  }
-  const blockingRuns = restartBlockingRuns();
-  const blockingWorkCount = blockingRuns.length
-    + backgroundJobs.size;
-  const message = await sendMessage(blockingWorkCount
-    ? `🔄 Перезапущу бота после завершения выполняющихся задач: ${blockingWorkCount}.`
-    : "🔄 Перезапускаю Agent Hub…");
-  if (!message?.message_id) throw new Error("Telegram не вернул ID сообщения перезапуска");
-  restartRequest = {
-    chatId,
-    messageId: message.message_id,
-    requestedAt: new Date().toISOString(),
-    waitingForRuns: blockingWorkCount > 0,
-    minimumUpdateOffset: Number.isSafeInteger(processingUpdateId)
-      ? processingUpdateId + 1
-      : updateOffset,
-  };
-  await saveState();
-  if (!blockingWorkCount && processingUpdateId == null) await performRestart();
+  await restartRequestService.fromTelegram();
 }
 
 async function dismissCallbackMenu(message) {

@@ -32,6 +32,11 @@ export class CodexContextMaintenanceService {
     setTransportRestarting = () => {},
     invalidateTaskCatalog = () => {},
     restartTransportAfterCrash = async () => {},
+    runForTask = () => null,
+    ensureTransport = async () => {},
+    resumeThread = async () => {},
+    startCompaction = async () => {},
+    sandboxSettings = () => ({}),
     recycleTransport = recycleCodexCompactionTransport,
     now = Date.now,
     defer = queueMicrotask,
@@ -60,11 +65,42 @@ export class CodexContextMaintenanceService {
     this.setTransportRestarting = setTransportRestarting;
     this.invalidateTaskCatalog = invalidateTaskCatalog;
     this.restartTransportAfterCrash = restartTransportAfterCrash;
+    this.runForTask = runForTask;
+    this.ensureTransport = ensureTransport;
+    this.resumeThread = resumeThread;
+    this.startCompaction = startCompaction;
+    this.sandboxSettings = sandboxSettings;
     this.recycleTransport = recycleTransport;
     this.now = now;
     this.defer = defer;
     this.logger = logger;
     this.recycleInFlight = null;
+  }
+
+  async startManual(target) {
+    if (target?.provider !== "codex") throw new Error("Свёртка контекста доступна только для Codex");
+    const threadId = normalizedId(target.threadId);
+    if (!threadId) throw new Error("Укажите корректную задачу Codex");
+    if (this.runIsActive(this.runForTask(target))) {
+      throw new Error("Сначала завершите или остановите текущий ход");
+    }
+    if (this.compactions.isRunning(threadId)) {
+      return { accepted: false, message: "Свёртка контекста уже выполняется" };
+    }
+    await this.ensureTransport();
+    const compaction = this.compactions.begin(threadId, { origin: "manual" });
+    try {
+      await this.resumeThread(threadId, this.sandboxSettings());
+      await this.startCompaction(threadId);
+      return {
+        accepted: true,
+        compactionId: compaction.id,
+        message: "Свёртка контекста запущена",
+      };
+    } catch (error) {
+      this.compactions.fail(threadId, compaction.id);
+      throw error;
+    }
   }
 
   beginCompactionCleanup(threadId, details = {}) {

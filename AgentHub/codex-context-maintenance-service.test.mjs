@@ -20,6 +20,14 @@ function harness(overrides = {}) {
     },
     compactions: {
       get: (threadId) => entries.get(threadId) ?? null,
+      isRunning: (threadId) => entries.has(threadId),
+      begin: (threadId, details) => {
+        const value = { id: `compact-${threadId}`, ...details };
+        entries.set(threadId, value);
+        calls.push(["begin-manual", threadId, details]);
+        return value;
+      },
+      fail: (threadId, id) => calls.push(["fail", threadId, id]),
       complete: (threadId, details) => calls.push(["complete", threadId, details]),
       beginCleanup: (threadId, details) => calls.push(["begin", threadId, details]),
       isManualTurn: (threadId, turnId) => (
@@ -46,6 +54,25 @@ function harness(overrides = {}) {
   });
   return { service, calls, entries, scheduled };
 }
+
+test("manual compaction resumes a discovered thread before starting", async () => {
+  const { service, calls } = harness({
+    runForTask: () => null,
+    runIsActive: () => false,
+    ensureTransport: async () => calls.push(["transport"]),
+    resumeThread: async (...args) => calls.push(["resume", ...args]),
+    startCompaction: async (...args) => calls.push(["compact", ...args]),
+    sandboxSettings: () => ({ sandbox: "workspace-write" }),
+  });
+  const result = await service.startManual({ provider: "codex", threadId: "thread-1" });
+  assert.equal(result.accepted, true);
+  assert.deepEqual(calls, [
+    ["transport"],
+    ["begin-manual", "thread-1", { origin: "manual" }],
+    ["resume", "thread-1", { sandbox: "workspace-write" }],
+    ["compact", "thread-1"],
+  ]);
+});
 
 test("compaction-triggered cleanup stays disabled until the unstable feature is re-enabled", () => {
   const { service, calls, scheduled } = harness();
