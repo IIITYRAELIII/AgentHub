@@ -27,7 +27,6 @@ const {
 import {
   readCodexTurnUsage,
 } from "../providers/codex/codex-turn-usage.mjs";
-import { emptyTokenUsage } from "../domain/token-usage.mjs";
 import { telegramPrompt } from "../interfaces/telegram/telegram-message.mjs";
 import {
   captureTaskGitBaseline,
@@ -124,6 +123,7 @@ import { createTaskStateWiring } from "./task-state-wiring-composition.mjs";
 import { createRuntimeStateBootstrapWiring } from "./runtime-state-bootstrap-wiring-composition.mjs";
 import { createTelegramShellWiring } from "./telegram-shell-wiring-composition.mjs";
 import { createAgentHubDeferredPorts } from "./agent-hub-deferred-ports.mjs";
+import { createRuntimeFacadesComposition } from "./runtime-facades-composition.mjs";
 import { HubSessionState } from "../runtime/hub-session-state.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
@@ -247,6 +247,7 @@ const {
     desktopCommands: desktopCommandsPort,
     deferredInput: deferredInputPort,
     bootstrap: bootstrapPort,
+    runtimeFacades: runtimeFacadesPort,
   },
   api: {
   resolvedExplicitSkillNames,
@@ -358,6 +359,28 @@ const {
   cancelDeferredInputSchedule,
   scheduleNextDeferredInput,
   desktopControlServer,
+  setBoundedMapValue,
+  sendTaskSelectionNotification,
+  sendTaskSwitchNotification,
+  sendTaskAlreadySelectedNotification,
+  rememberLastTaskMessage,
+  savedLastTaskMessage,
+  savedLastTaskMessageRecord,
+  deferredTaskMessageAtMs,
+  latestThreadContextUsage,
+  trackTurnTokenUsage,
+  consumeTurnTokenTracker,
+  finalizeCodexRunDelivery,
+  deliverTurnEndNotification,
+  retryPendingTurnEndNotifications,
+  waitForTurnEndCompletion,
+  rememberCodexTaskSettings,
+  restoreCodexTaskSettings,
+  applyCodexThreadSettings,
+  backfillWorkLogPricingMetadata,
+  auditClaudeTranscriptSnapshots,
+  finalizeTaskCatalog,
+  refreshTaskCatalog,
   },
 } = agentHubDeferred;
 const runtimeTimers = new RuntimeTimerCoordinator();
@@ -857,91 +880,20 @@ taskStatePort.bind(createTaskStateWiring({
   logger: console,
 }));
 
-function setBoundedMapValue(map, key, value, limit) {
-  if (map.has(key)) map.delete(key);
-  map.set(key, value);
-  while (map.size > limit) map.delete(map.keys().next().value);
-}
-
-function sendTaskSelectionNotification(options = {}) {
-  return telegramDeliveryPort.api.sendTaskSelectionNotification({ targetChatId: hostState.chatId, ...options });
-}
-function sendTaskSwitchNotification(options = {}) { return sendTaskSelectionNotification(options); }
-function sendTaskAlreadySelectedNotification(options = {}) {
-  return sendTaskSelectionNotification({ ...options, alreadySelected: true });
-}
-
-function rememberLastTaskMessage(run, text) {
-  return runJournal.rememberLastMessage(run, text);
-}
-
-function savedLastTaskMessage(task) {
-  return runJournal.lastMessage(task);
-}
-
-function savedLastTaskMessageRecord(task) {
-  return runJournal.lastMessageRecord(task);
-}
-
-function deferredTaskMessageAtMs(task) {
-  return deferredInputs.latestActivityAt(task);
-}
-
-function latestThreadContextUsage(contextThreadId, contextTurnId = "") {
-  return codexUsageTracker.latestContext(contextThreadId, contextTurnId);
-}
-
-function trackTurnTokenUsage(params) {
-  return codexUsageTracker.track(params);
-}
-
-function consumeTurnTokenTracker(turnId) {
-  return codexUsageTracker.consume(turnId);
-}
-
-async function finalizeCodexRunDelivery(run, {
-  answer,
-  turnId: completedTurnId = run?.turnId,
-  status = "completed",
-  tracker = { usage: emptyTokenUsage(), reported: false },
-  forceSpeechButton = false,
-  deliver = true,
-  silent = false,
-  description = "финальный ответ Codex",
-} = {}) {
-  return codexRunFinalizer.finalize(run, {
-    answer,
-    turnId: completedTurnId,
-    status,
-    tracker,
-    forceSpeechButton,
-    deliver,
-    silent,
-    description,
-  });
-}
-
-async function deliverTurnEndNotification(completion) {
-  return turnEndDelivery.deliver(completion);
-}
-
-async function retryPendingTurnEndNotifications() {
-  return turnEndDelivery.retryPending();
-}
-
-async function waitForTurnEndCompletion(identity, timeoutMs = 2_000) {
-  return turnEndDelivery.waitForCompletion(identity, timeoutMs);
-}
-
-function rememberCodexTaskSettings(...args) {
-  return agentPreferences.rememberCodexTaskSettings(...args);
-}
-function restoreCodexTaskSettings(...args) {
-  return agentPreferences.restoreCodexTaskSettings(...args);
-}
-function applyCodexThreadSettings(...args) {
-  return agentPreferences.applyCodexThreadSettings(...args);
-}
+runtimeFacadesPort.bind(createRuntimeFacadesComposition({
+  sendTaskSelection: telegramDeliveryPort.api.sendTaskSelectionNotification,
+  currentChatId: () => hostState.chatId,
+  runJournal,
+  deferredInputs,
+  codexUsageTracker,
+  codexRunFinalizer,
+  turnEndDelivery,
+  agentPreferences,
+  journalBackfill,
+  claudeTranscriptAudit,
+  taskCatalogFinalization,
+  taskCatalogService,
+}));
 
 const {
   runtimeStateCoordinator,
@@ -1082,22 +1034,6 @@ runtimeCommandPort.bind(createRuntimeCommandRoutingComposition({
   runtimeNotificationController,
   codexLifecycleController,
 }));
-
-async function backfillWorkLogPricingMetadata(codexThreads) {
-  return journalBackfill.backfill(codexThreads);
-}
-
-async function auditClaudeTranscriptSnapshots(snapshots) {
-  return claudeTranscriptAudit.audit(snapshots);
-}
-
-async function finalizeTaskCatalog(mergedEntries) {
-  return taskCatalogFinalization.finalize(mergedEntries);
-}
-
-async function refreshTaskCatalog({ force = false } = {}) {
-  return taskCatalogService.refresh({ force });
-}
 
 const serverControlController = new ServerControlController({
   config,

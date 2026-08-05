@@ -117,6 +117,7 @@
 | 102 | ✅ | Корневой `task-catalog.mjs` удалён. Codex rollout/activity находится у Codex provider, правила названий — в domain, merge и activity ordering — в application, Telegram presentation — в interface. Application и interface получают provider-операции через composition ports; корневой production allowlist сокращён до 23 модулей. |
 | 103 | ⏳ | Чистая нормализация, поиск, история и проекция расхода выделены из `work-log-usage.mjs` в application-слой; UUIDv7 и правило унаследованных ходов субагентов принадлежат domain. Корневой файл сокращён с 2 550 до 824 строк и пока содержит только координатор persistence/SQLite/legacy-ledger; его отделение остаётся следующим срезом B5. |
 | 104 | ✅ | `WorkLogUsageRepository` владеет SQLite, межпроцессной сериализацией, legacy-import/quarantine и архивированием; `WorkLogUsageStore` координирует прикладные операции через внедрённый repository port. Корневой `work-log-usage.mjs` удалён, внутренние потребители перешли на слоистые импорты, а migration inventory опустел: в корне осталось 22 публичных entrypoint/CLI-модуля. |
+| 105 | ⏳ | Двадцать два hoisted callback-прокси для task message, token tracking, terminal delivery, Codex settings и catalog maintenance заменены единым проверяемым deferred port и `runtime-facades-composition`. Циклический порядок сборки теперь выражен явным bind-контрактом; orchestrator сокращён с 1 911 до 1 825 строк. |
 
 После этапов 31–40 provider adapters, Desktop/Mini App RPC, Telegram dispatch,
 общая journal projection, observed lifecycle, progress presentation, startup и

@@ -63,6 +63,16 @@ export function createAgentHubDeferredPorts() {
   const bootstrap = createDeferredCompositionPort("Agent Hub bootstrap", [
     "desktopControlServer",
   ]);
+  const runtimeFacades = createDeferredCompositionPort("runtime facades", [
+    "setBoundedMapValue", "sendTaskSelectionNotification", "sendTaskSwitchNotification",
+    "sendTaskAlreadySelectedNotification", "rememberLastTaskMessage", "savedLastTaskMessage",
+    "savedLastTaskMessageRecord", "deferredTaskMessageAtMs", "latestThreadContextUsage",
+    "trackTurnTokenUsage", "consumeTurnTokenTracker", "finalizeCodexRunDelivery",
+    "deliverTurnEndNotification", "retryPendingTurnEndNotifications", "waitForTurnEndCompletion",
+    "rememberCodexTaskSettings", "restoreCodexTaskSettings", "applyCodexThreadSettings",
+    "backfillWorkLogPricingMetadata", "auditClaudeTranscriptSnapshots", "finalizeTaskCatalog",
+    "refreshTaskCatalog",
+  ]);
 
   return {
     ports: {
@@ -80,6 +90,7 @@ export function createAgentHubDeferredPorts() {
       desktopCommands,
       deferredInput,
       bootstrap,
+      runtimeFacades,
     },
     api: {
       ...runAdmission.api,
@@ -109,6 +120,7 @@ export function createAgentHubDeferredPorts() {
       cancelDeferredInputSchedule: deferredInput.api.cancelSchedule,
       scheduleNextDeferredInput: deferredInput.api.scheduleNextForTask,
       desktopControlServer: bootstrap.api.desktopControlServer,
+      ...runtimeFacades.api,
     },
   };
 }
