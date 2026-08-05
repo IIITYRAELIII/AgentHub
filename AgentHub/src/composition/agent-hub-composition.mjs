@@ -68,7 +68,6 @@ import * as approvalProtocol from "../providers/codex/codex-approvals.mjs";
 const { formatPermissionsApproval, parseApprovalCallback } = approvalProtocol;
 import { contextualCallback } from "../interfaces/telegram/callback-context.mjs";
 import { taskViewCallbackData } from "../interfaces/telegram/task-view-callback.mjs";
-import { PersistentDeliveryOutbox } from "../infrastructure/persistence/delivery-outbox.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
 import {
   catalogEntryIsSelected,
@@ -84,7 +83,6 @@ import {
   resolveCodexObservedExecutionOwner,
 } from "../providers/codex/codex-runtime-owner.mjs";
 import { conciseTurnTitle } from "../application/turn-title.mjs";
-import { DesktopControlServer } from "../../desktop-control.mjs";
 import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { TelegramTaskPickerService } from "../interfaces/telegram/task-picker.mjs";
 import {
@@ -111,7 +109,6 @@ import { createHubInfrastructure } from "./infrastructure-composition.mjs";
 import { createProviderSnapshotComposition } from "./provider-snapshot-composition.mjs";
 import { createProviderOperationComposition } from "./provider-operation-composition.mjs";
 import { createProviderCatalogComposition } from "./provider-catalog-composition.mjs";
-import { createRuntimeLifecycleComposition } from "./runtime-lifecycle-composition.mjs";
 import { createStateComposition } from "./state-composition.mjs";
 import { createTelegramControllerComposition } from "./telegram-controller-composition.mjs";
 import { createRunPresentationComposition } from "./run-presentation-composition.mjs";
@@ -135,6 +132,9 @@ import { createTaskCatalogFinalizationComposition } from "./task-catalog-finaliz
 import { createProviderProcessComposition } from "./provider-process-composition.mjs";
 import { createRunAdmissionComposition } from "./run-admission-composition.mjs";
 import { createRuntimeCommandRoutingComposition } from "./runtime-command-routing-composition.mjs";
+import { createDeliveryOutboxComposition } from "./delivery-outbox-composition.mjs";
+import { createRuntimeTimersComposition, delay } from "./runtime-timers-composition.mjs";
+import { createAgentHubBootstrapComposition } from "./agent-hub-bootstrap-composition.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -229,7 +229,7 @@ function providerTitle() {
   return isCodex() ? "Codex" : "Claude Code";
 }
 const token = config.token;
-let desktopControlServer = null;
+let agentHubBootstrapComposition = null;
 
 let updateOffset = 0;
 let chatId = null;
@@ -737,8 +737,14 @@ function syncTaskRun(run, {
     });
   }
 }
-const deliveryOutbox = new PersistentDeliveryOutbox({
+const {
+  deliveryOutbox,
+  scheduleDeliveryOutboxFlush,
+} = await createDeliveryOutboxComposition({
   directoryPath: DELIVERY_OUTBOX_DIR,
+  retryIntervalMs: config.deliveryRetryIntervalSeconds * 1000,
+  runtimeTimers,
+  isStopping: () => stopping,
   deliver: (method, body) => {
     if (method !== "sendPhotoFile") return telegram(method, body);
     const { photo_path: photoPath, ...telegramBody } = body;
@@ -749,7 +755,6 @@ const deliveryOutbox = new PersistentDeliveryOutbox({
     console.error(`Quarantined permanent Telegram delivery ${item.id}:`, error.message);
   },
 });
-await deliveryOutbox.load();
 
 const taskIdentity = new TaskIdentityResolver({
   selectionStore,
@@ -1952,6 +1957,28 @@ function scheduleCodexTerminalAudit(delayMs = SELECTED_TASK_WATCH_INTERVAL_MS) {
   }, Math.max(0, Number(delayMs) || 0));
 }
 
+const {
+  stopRuntimeTimers,
+  startRuntimeTimers,
+} = createRuntimeTimersComposition({
+  telegramEnabled: config.telegramEnabled,
+  runtimeTimers,
+  stopTyping,
+  contextCompactions,
+  deferredInputController,
+  taskRuns,
+  taskProgress,
+  taskObserver,
+  claudeRunController,
+  codexContextMaintenance,
+  queuedInputs,
+  scheduleQueuedInput,
+  scheduleDeliveryOutboxFlush,
+  selectedTaskWatch,
+  scheduleCodexTerminalAudit,
+  rateLimitTelemetry,
+});
+
 const taskViewController = createTaskViewComposition({
   ensureCodex: async () => {
     if (codexTransport.running) return;
@@ -2082,7 +2109,7 @@ const {
   failedUpdateStore,
   stopCodexAppServerTree,
   miniAppLifecycle,
-  desktopControlServer: () => desktopControlServer,
+  desktopControlServer: () => agentHubBootstrapComposition?.desktopControlServer() ?? null,
   runtimeCommandServer,
   instanceGuard,
   workLogUsageStore,
@@ -2213,27 +2240,6 @@ const {
   performRestart,
 });
 
-function scheduleDeliveryOutboxFlush(delayMs = config.deliveryRetryIntervalSeconds * 1000) {
-  if (stopping) return;
-  const delayValue = Math.max(0, Number(delayMs) || 0);
-  runtimeTimers.schedule("delivery-outbox", () => {
-    void flushDeliveryOutbox();
-  }, delayValue, { replaceIfEarlier: true });
-}
-
-async function flushDeliveryOutbox() {
-  try {
-    const result = await deliveryOutbox.flush();
-    if (result.delivered) {
-      console.log(`Delivered ${result.delivered} queued Telegram message(s); remaining: ${result.remaining}.`);
-    }
-  } catch (error) {
-    console.error("Cannot flush Telegram delivery outbox:", error.message);
-  } finally {
-    scheduleDeliveryOutboxFlush();
-  }
-}
-
 function saveState() {
   rememberCodexTaskSettings();
   selectionStore.rememberCurrentThread();
@@ -2247,62 +2253,17 @@ function savePinnedTaskTitles() {
   );
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function stopRuntimeTimers() {
-  stopTyping();
-  contextCompactions.dispose();
-  runtimeTimers.clearAll();
-  deferredInputController.stop();
-  for (const run of taskRuns.values()) {
-    taskProgress.pause(run);
-    taskObserver.pause(run);
-    claudeRunController.pause(run);
-  }
-}
-
-function startRuntimeTimers() {
-  codexContextMaintenance.schedulePeriodic();
-  for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
-  if (config.telegramEnabled) {
-    scheduleDeliveryOutboxFlush(1_000);
-  }
-  selectedTaskWatch.schedule(500);
-  scheduleCodexTerminalAudit(500);
-  rateLimitTelemetry.schedule(1_000);
-}
-
-const { startAgentHub, shutdownAgentHub } = createRuntimeLifecycleComposition({
-  telegramEnabled: config.telegramEnabled,
-  beginStopping: () => {
-    if (stopping) return false;
-    stopping = true;
-    return true;
-  },
+agentHubBootstrapComposition = createAgentHubBootstrapComposition({
+  config,
+  runtimeCommandRoot,
+  handleDesktopControl,
+  runtimeCommandServer,
   stopRuntimeTimers,
-  stopManagedRuns: () => {
-    for (const run of taskRuns.values()) {
-      agentProviders.call(run.provider, "stopManagedRunForShutdown", run);
-    }
-  },
-  stopMedia: () => mediaController.stop(),
+  taskRuns,
+  agentProviders,
+  mediaController,
   runtimeResources,
-  // The control endpoint is intentionally available before provider recovery,
-  // so clients can show cached state while providers are still reconnecting.
-  startControlPlane: async () => {
-    desktopControlServer = new DesktopControlServer({
-      runtimeRoot: runtimeCommandRoot,
-      handler: handleDesktopControl,
-      protectSecret: process.env.AGENT_HUB_DISABLE_SECRET_ACL === "1"
-        ? async () => {}
-        : undefined,
-    });
-    await desktopControlServer.start();
-    await runtimeCommandServer.start();
-  },
-  startMiniApp: () => miniAppLifecycle.start(),
+  miniAppLifecycle,
   sanitizeRollouts: () => codexContextMaintenance.runPeriodic({ reschedule: false }),
   initializeProvider,
   providerIsRunning: () => codexTransport.running,
@@ -2311,7 +2272,7 @@ const { startAgentHub, shutdownAgentHub } = createRuntimeLifecycleComposition({
   recoverRuns: (...args) => runRecovery.recoverAll(...args),
   retryNotifications: retryPendingTurnEndNotifications,
   restoreBackgroundJobs: () => backgroundJobs.restore(),
-  startTimers: startRuntimeTimers,
+  startRuntimeTimers,
   registerTelegramCommands: () => telegram("setMyCommands", { commands: BOT_COMMANDS }),
   hasPendingRestart: () => Boolean(restartRequest),
   finalizeRestart: finalizeRestartMessage,
@@ -2321,6 +2282,12 @@ const { startAgentHub, shutdownAgentHub } = createRuntimeLifecycleComposition({
   ),
   pollTelegram,
   warnUser: (message) => sendMessage(message).catch(() => {}),
+  beginStopping: () => {
+    if (stopping) return false;
+    stopping = true;
+    return true;
+  },
 });
+const { startAgentHub, shutdownAgentHub } = agentHubBootstrapComposition;
 
 export { startAgentHub, shutdownAgentHub };
