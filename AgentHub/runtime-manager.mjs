@@ -49,7 +49,7 @@ async function atomicJson(target, value) {
 
 async function releaseFileNames(sourceRoot) {
   const entries = await readdir(sourceRoot, { withFileTypes: true });
-  return entries
+  const topLevel = entries
     .filter((entry) => (
       (entry.isFile() && (
         TOP_LEVEL_FILES.has(entry.name)
@@ -63,6 +63,27 @@ async function releaseFileNames(sourceRoot) {
     ))
     .map((entry) => entry.name)
     .sort();
+  const internal = [];
+  async function visitInternal(relative) {
+    const entries = await readdir(path.join(sourceRoot, relative), { withFileTypes: true });
+    for (const entry of entries) {
+      const child = path.join(relative, entry.name);
+      if (entry.isDirectory()) {
+        await visitInternal(child);
+      } else if (
+        (entry.name.endsWith(".mjs") || entry.name.endsWith(".cjs"))
+        && !entry.name.endsWith(".test.mjs")
+        && !entry.name.endsWith(".test.cjs")
+        && !entry.name.endsWith(".e2e.test.mjs")
+      ) {
+        internal.push(child);
+      }
+    }
+  }
+  if (entries.some((entry) => entry.isDirectory() && entry.name === "src")) {
+    await visitInternal("src");
+  }
+  return [...topLevel, ...internal].sort();
 }
 
 async function hashFile(target) {
@@ -193,7 +214,9 @@ export async function deployRuntime({
   try {
     const names = await releaseFileNames(sourceRoot);
     for (const name of names) {
-      await cp(path.join(sourceRoot, name), path.join(staging, name), {
+      const target = path.join(staging, name);
+      await mkdir(path.dirname(target), { recursive: true });
+      await cp(path.join(sourceRoot, name), target, {
         recursive: true,
         force: false,
         errorOnExist: true,
