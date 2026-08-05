@@ -26,19 +26,23 @@ function desktopPromptEnvelope(value) {
   if (!requestMatch || requestMatch.index <= headingMatch.index) return null;
 
   const filesBlock = source.slice(headingMatch[0].length, requestMatch.index);
-  const attachmentPaths = [...filesBlock.matchAll(/^##\s+[^:\r\n]+:\s*(.+?)\s*$/gmu)]
-    .map((match) => String(match[1] ?? "").trim())
-    .filter(Boolean);
+  const attachments = [...filesBlock.matchAll(/^##\s+([^:\r\n]+):\s*(.+?)\s*$/gmu)]
+    .map((match) => ({
+      name: String(match[1] ?? "").trim(),
+      path: String(match[2] ?? "").trim(),
+    }))
+    .filter((item) => item.path);
+  const attachmentPaths = attachments.map((item) => item.path);
   const text = source
     .slice(requestMatch.index + requestMatch[0].length)
     .replace(/<image\s+name=\[[^\]]+\]\s+path="[^"]+"\s*>/giu, "")
     .trim();
-  return { text, attachmentPaths };
+  return { text, attachments, attachmentPaths };
 }
 
 function codexAttachmentSources(content, envelope) {
-  if (envelope?.attachmentPaths.length) {
-    return envelope.attachmentPaths.map((value) => ({ type: "path", value }));
+  if (envelope?.attachments.length) {
+    return envelope.attachments.map((item) => ({ type: "path", value: item.path, name: item.name }));
   }
   return (Array.isArray(content) ? content : []).flatMap((item) => {
     if (item?.type === "localImage" && String(item.path ?? "").trim()) {
@@ -120,7 +124,8 @@ function codexTurnMessages(turn) {
       const envelope = desktopPromptEnvelope(rawText);
       const attachmentSources = codexAttachmentSources(item.content, envelope);
       const responseAnnotations = responseAnnotationDetails(rawText);
-      const text = displayUserPrompt(rawText) || (attachmentSources.length ? "Изображение" : "");
+      const text = displayUserPrompt(rawText)
+        || (attachmentSources.length ? (envelope ? "Вложение" : "Изображение") : "");
       return text ? [{
         itemId: messageItemId(turnId, "user", item, index),
         ...(String(item.clientId ?? "").trim()

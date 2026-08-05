@@ -1000,7 +1000,7 @@ test("dispatching deferred messages leave the queue and reappear in the active c
   assert.match(client, /item\.state !== "dispatching" && item\.state !== "steering"/u);
 });
 
-test("message attachments keep timestamps, thumbnails and an explicit open action", () => {
+test("message attachments keep timestamps, previews and an explicit open action", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
@@ -1010,13 +1010,26 @@ test("message attachments keep timestamps, thumbnails and an explicit open actio
   assert.match(app, /emit\("attachment:open",\s*\{\s*attachment:\s*item\s*\}\)/u);
   assert.match(extension, /decorateAttachmentUrls/u);
   assert.match(extension, /action === "open-attachment"/u);
-  assert.match(app, /Файл изображения недоступен/u);
+  assert.match(app, /Файл недоступен/u);
   assert.match(app, /disabled:\s*missing/u);
   assert.match(app, /\(!source && !item\.id\)/u);
   assert.match(client, /control\("open-attachment", \{ id \}\)/u);
   assert.match(client, /agentHub\.openAttachmentViewer/u);
   assert.match(client, /value\.url = `\/api\/message-attachment\/\$\{encodeURIComponent\(id\)\}`/u);
   assert.doesNotMatch(client, /window\.open\(url, "_blank"/u);
+});
+
+test("composer accepts documents and renders downloadable file cards", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(html, /data-file-input/u);
+  assert.doesNotMatch(html, /data-file-input[^>]*accept=["']image\/\*/u);
+  assert.match(app, /async function readAttachmentFiles\(files\)/u);
+  assert.match(app, /file\.size <= 20 \* 1024 \* 1024/u);
+  assert.match(app, /attachment-file-card/u);
+  assert.match(client, /X-Agent-Hub-File-Name/u);
+  assert.match(client, /link\.download = String\(access\?\.name \?\? attachment\?\.name/u);
 });
 
 test("mobile navigation backs out from image to chat and from chat to tasks", () => {

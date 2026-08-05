@@ -31,13 +31,6 @@ const DEVICE_ID_PATTERN = CONTROL_ID_PATTERN;
 const DEVICE_CODE_PATTERN = /^[A-Z2-7]{20}$/u;
 const DEVICE_PUBLIC_KEY_PATTERN = /^[A-Za-z0-9_-]{80,256}$/u;
 const DEVICE_SIGNATURE_PATTERN = /^[A-Za-z0-9_-]{86}$/u;
-const IMAGE_CONTENT_TYPES = new Map([
-  ["image/png", ".png"],
-  ["image/jpeg", ".jpg"],
-  ["image/webp", ".webp"],
-  ["image/gif", ".gif"],
-  ["image/bmp", ".bmp"],
-]);
 const CONTROL_ACTIONS = new Set([
   "snapshot",
   "task-history",
@@ -216,8 +209,37 @@ function imageMatchesContentType(bytes, contentType) {
   return false;
 }
 
-async function deterministicAttachmentId(userId, bodyHash) {
-  const value = await sha256(`${userId}\n${bodyHash}`);
+function attachmentContentType(value) {
+  const type = String(value ?? "").split(";", 1)[0].trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,127}$/u.test(type)
+    ? type
+    : "application/octet-stream";
+}
+
+function attachmentMatchesContentType(bytes, contentType) {
+  return !String(contentType).startsWith("image/") || imageMatchesContentType(bytes, contentType);
+}
+
+function attachmentFileName(value) {
+  let name = "attachment.bin";
+  try {
+    name = decodeURIComponent(String(value ?? "").trim()) || name;
+  } catch {
+    return name;
+  }
+  name = name.split(/[\\/]/u).at(-1).replace(/[\u0000-\u001f\u007f]/gu, " ").trim();
+  if (!name || name === "." || name === "..") return "attachment.bin";
+  const extensionMatch = /(\.[A-Za-z0-9]{1,16})$/u.exec(name);
+  const extension = extensionMatch?.[1] ?? "";
+  return name.length <= 180 ? name : `${name.slice(0, 180 - extension.length)}${extension}`;
+}
+
+function encodedAttachmentFileName(name) {
+  return encodeURIComponent(attachmentFileName(name));
+}
+
+async function deterministicAttachmentId(userId, bodyHash, name = "", contentType = "") {
+  const value = await sha256(`${userId}\n${bodyHash}\n${attachmentFileName(name)}\n${attachmentContentType(contentType)}`);
   const chars = value.slice(0, 32).split("");
   chars[12] = "5";
   chars[16] = ["8", "9", "a", "b"][Number.parseInt(chars[16], 16) % 4];
@@ -905,17 +927,17 @@ export class JournalStore extends DurableObject {
     if (request.method === "POST" && url.pathname === "/attachment/upload") {
       const userId = String(request.headers.get("X-Agent-Hub-User-Id") ?? "");
       const id = String(request.headers.get("X-Agent-Hub-Attachment-Id") ?? "").toLowerCase();
-      const contentType = String(request.headers.get("Content-Type") ?? "").toLowerCase();
+      const contentType = attachmentContentType(request.headers.get("Content-Type"));
+      const name = attachmentFileName(request.headers.get("X-Agent-Hub-File-Name"));
       const bodyHash = String(request.headers.get("X-Agent-Hub-Attachment-Hash") ?? "").toLowerCase();
       const body = await request.arrayBuffer();
       if (
         !userId
         || !CONTROL_ID_PATTERN.test(id)
-        || !IMAGE_CONTENT_TYPES.has(contentType)
         || !/^[a-f0-9]{64}$/u.test(bodyHash)
         || body.byteLength < 1
         || body.byteLength > MAX_ATTACHMENT_BYTES
-        || !imageMatchesContentType(body, contentType)
+        || !attachmentMatchesContentType(body, contentType)
         || await sha256(body) !== bodyHash
       ) {
         return json({ error: "invalid remote attachment" }, 400);
@@ -926,7 +948,12 @@ export class JournalStore extends DurableObject {
         const key = `control:attachment:${id}`;
         const existing = await storage.get(key);
         if (existing) {
-          if (existing.userId !== userId || existing.bodyHash !== bodyHash || existing.contentType !== contentType) {
+          if (
+            existing.userId !== userId
+            || existing.bodyHash !== bodyHash
+            || existing.contentType !== contentType
+            || existing.name !== name
+          ) {
             return json({ error: "remote attachment id conflict" }, 409);
           }
           return json({
@@ -952,7 +979,7 @@ export class JournalStore extends DurableObject {
           id,
           userId,
           contentType,
-          extension: IMAGE_CONTENT_TYPES.get(contentType),
+          name,
           bodyHash,
           size: body.byteLength,
           chunkCount: chunks.length,
@@ -978,17 +1005,17 @@ export class JournalStore extends DurableObject {
     if (request.method === "POST" && url.pathname === "/attachment/view-upload") {
       const userId = String(request.headers.get("X-Agent-Hub-User-Id") ?? "");
       const id = String(request.headers.get("X-Agent-Hub-Attachment-Id") ?? "").toLowerCase();
-      const contentType = String(request.headers.get("Content-Type") ?? "").toLowerCase();
+      const contentType = attachmentContentType(request.headers.get("Content-Type"));
+      const name = attachmentFileName(request.headers.get("X-Agent-Hub-File-Name"));
       const bodyHash = String(request.headers.get("X-Agent-Hub-Attachment-Hash") ?? "").toLowerCase();
       const body = await request.arrayBuffer();
       if (
         !userId
         || !CONTROL_ID_PATTERN.test(id)
-        || !IMAGE_CONTENT_TYPES.has(contentType)
         || !/^[a-f0-9]{64}$/u.test(bodyHash)
         || body.byteLength < 1
         || body.byteLength > MAX_ATTACHMENT_BYTES
-        || !imageMatchesContentType(body, contentType)
+        || !attachmentMatchesContentType(body, contentType)
         || await sha256(body) !== bodyHash
       ) {
         return json({ error: "invalid attachment view" }, 400);
@@ -1003,6 +1030,7 @@ export class JournalStore extends DurableObject {
             existing.userId !== userId
             || existing.bodyHash !== bodyHash
             || existing.contentType !== contentType
+            || existing.name !== name
             || existing.viewOnly !== true
           ) {
             return json({ error: "attachment view id conflict" }, 409);
@@ -1025,7 +1053,7 @@ export class JournalStore extends DurableObject {
           id,
           userId,
           contentType,
-          extension: IMAGE_CONTENT_TYPES.get(contentType),
+          name,
           bodyHash,
           size: body.byteLength,
           chunkCount: chunks.length,
@@ -1076,6 +1104,10 @@ export class JournalStore extends DurableObject {
           "Content-Type": manifest.contentType,
           "Content-Length": String(body.byteLength),
           "X-Content-Type-Options": "nosniff",
+          "X-Agent-Hub-File-Name": encodedAttachmentFileName(manifest.name),
+          ...(String(manifest.contentType).startsWith("image/")
+            ? {}
+            : { "Content-Disposition": `attachment; filename*=UTF-8''${encodedAttachmentFileName(manifest.name)}` }),
         },
       });
     }
@@ -1117,6 +1149,7 @@ export class JournalStore extends DurableObject {
           "Content-Length": String(body.byteLength),
           "X-Agent-Hub-Attachment-Hash": manifest.bodyHash,
           "X-Agent-Hub-Attachment-Id": manifest.id,
+          "X-Agent-Hub-File-Name": encodedAttachmentFileName(manifest.name),
         },
       });
     }
@@ -1524,18 +1557,15 @@ export default {
         return json({ error: error.message }, 401);
       }
       try {
-        const contentType = String(request.headers.get("Content-Type") ?? "")
-          .split(";", 1)[0]
-          .trim()
-          .toLowerCase();
-        if (!IMAGE_CONTENT_TYPES.has(contentType)) throw new Error("unsupported image content type");
+        const contentType = attachmentContentType(request.headers.get("Content-Type"));
+        const name = attachmentFileName(request.headers.get("X-Agent-Hub-File-Name"));
         const body = await readBoundedBinary(request, MAX_ATTACHMENT_BYTES, "remote attachment");
-        if (body.byteLength < 1 || !imageMatchesContentType(body, contentType)) {
-          throw new Error("image content does not match its type");
+        if (body.byteLength < 1 || !attachmentMatchesContentType(body, contentType)) {
+          throw new Error("attachment content does not match its type");
         }
         const bodyHash = await sha256(body);
         const requestedId = String(request.headers.get("X-Agent-Hub-Attachment-Id") ?? "").toLowerCase();
-        const id = requestedId || await deterministicAttachmentId(String(user.id), bodyHash);
+        const id = requestedId || await deterministicAttachmentId(String(user.id), bodyHash, name, contentType);
         if (!CONTROL_ID_PATTERN.test(id)) throw new Error("invalid remote attachment id");
         return store.fetch(new Request("https://journal.internal/attachment/upload", {
           method: "POST",
@@ -1544,6 +1574,7 @@ export default {
             "X-Agent-Hub-User-Id": String(user.id),
             "X-Agent-Hub-Attachment-Id": id,
             "X-Agent-Hub-Attachment-Hash": bodyHash,
+            "X-Agent-Hub-File-Name": encodedAttachmentFileName(name),
           },
           body,
         }));
@@ -1680,15 +1711,15 @@ export default {
         const body = await validateControlBinaryServiceRequest(request, env.SYNC_SECRET);
         const userId = String(request.headers.get("X-Agent-Hub-User-Id") ?? "");
         const id = String(request.headers.get("X-Agent-Hub-Attachment-Id") ?? "").toLowerCase();
-        const contentType = String(request.headers.get("Content-Type") ?? "").toLowerCase();
+        const contentType = attachmentContentType(request.headers.get("Content-Type"));
+        const name = attachmentFileName(request.headers.get("X-Agent-Hub-File-Name"));
         const bodyHash = String(request.headers.get("X-Agent-Hub-Attachment-Hash") ?? "").toLowerCase();
         if (
           !userId
           || !CONTROL_ID_PATTERN.test(id)
-          || !IMAGE_CONTENT_TYPES.has(contentType)
           || !/^[a-f0-9]{64}$/u.test(bodyHash)
           || await sha256(body) !== bodyHash
-          || !imageMatchesContentType(body, contentType)
+          || !attachmentMatchesContentType(body, contentType)
         ) {
           throw new Error("invalid attachment view metadata");
         }
@@ -1699,6 +1730,7 @@ export default {
             "X-Agent-Hub-User-Id": userId,
             "X-Agent-Hub-Attachment-Id": id,
             "X-Agent-Hub-Attachment-Hash": bodyHash,
+            "X-Agent-Hub-File-Name": encodedAttachmentFileName(name),
           },
           body,
         }));

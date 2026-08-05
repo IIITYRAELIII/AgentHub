@@ -2566,24 +2566,33 @@ function renderAttachmentStrip(items, { readOnly }) {
   const strip = el("div", { class: "attachment-strip" });
   items.forEach((item, index) => {
     const source = item.dataUrl || item.url || "";
+    const image = String(item.type ?? "").toLowerCase().startsWith("image/");
     const missing = readOnly && (item.missing || (!source && !item.id));
     const thumb = el(readOnly ? "button" : "div", {
-      class: `attachment${readOnly && !missing ? " attachment-open" : ""}${missing ? " attachment-missing" : ""}`,
+      class: `attachment${image ? " attachment-image" : " attachment-file"}${readOnly && !missing ? " attachment-open" : ""}${missing ? " attachment-missing" : ""}`,
       title: readOnly
-        ? (missing ? "Файл изображения недоступен" : "Открыть изображение")
+        ? (missing ? "Файл недоступен" : (image ? "Открыть изображение" : `Скачать ${item.name || "файл"}`))
         : item.name || "",
       ...(readOnly ? {
         type: "button",
         disabled: missing,
         "aria-label": missing
-          ? `${item.name || "Изображение"} недоступно`
-          : `Открыть ${item.name || "изображение"}`,
+          ? `${item.name || "Файл"} недоступен`
+          : `${image ? "Открыть" : "Скачать"} ${item.name || "вложение"}`,
       } : {}),
     }, missing
       ? [el("span", { class: "attachment-missing-label", text: "Файл недоступен" })]
-      : source
+      : image && source
         ? [el("img", { src: source, alt: item.name || "вложение", loading: "lazy" })]
-        : [el("span", { class: "attachment-load-label", text: "Открыть" })]);
+        : image
+          ? [el("span", { class: "attachment-load-label", text: "Открыть" })]
+          : [el("span", { class: "attachment-file-card" }, [
+            el("span", {
+              class: "attachment-file-type",
+              text: String(item.name ?? "").split(".").at(-1)?.slice(0, 5).toUpperCase() || "FILE",
+            }),
+            el("span", { class: "attachment-file-name", text: item.name || "Вложение" }),
+          ])]);
     if (readOnly && !missing) {
       thumb.addEventListener("click", () => emit("attachment:open", { attachment: item }));
     }
@@ -2606,33 +2615,46 @@ attachmentsBox.addEventListener("click", (event) => {
   saveDraft();
 });
 
-function readImageFiles(files) {
-  const images = [...files].filter((file) => file.type.startsWith("image/"));
-  if (images.length === 0) return;
+async function readAttachmentFiles(files) {
+  const selected = [...files].filter((file) => file && file.size > 0);
+  if (selected.length === 0) return;
   const limit = 8;
   const room = Math.max(0, limit - attachments.length);
-  for (const file of images.slice(0, room)) {
+  const accepted = selected.slice(0, room).filter((file) => file.size <= 20 * 1024 * 1024);
+  const oversized = selected.slice(0, room).length - accepted.length;
+  const loaded = await Promise.all(accepted.map((file) => new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => {
-      setAttachments([...attachments, { name: file.name, type: file.type, dataUrl: String(reader.result) }]);
-      saveDraft();
-    };
+    reader.onload = () => resolve({
+      name: file.name,
+      type: file.type || "application/octet-stream",
+      size: file.size,
+      dataUrl: String(reader.result),
+    });
+    reader.onerror = () => reject(new Error(`Не удалось прочитать файл «${file.name}»`));
     reader.readAsDataURL(file);
+  }))).catch((error) => {
+    showToast(error.message);
+    return [];
+  });
+  if (loaded.length) {
+    setAttachments([...attachments, ...loaded].slice(0, limit));
+    saveDraft();
   }
-  if (images.length > room) showToast(`Можно приложить не больше ${limit} изображений.`);
+  if (selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
+  else if (oversized) showToast("Размер одного файла не должен превышать 20 МБ.");
 }
 
 document.querySelector("[data-action='attach']").addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => {
-  readImageFiles(fileInput.files);
+  void readAttachmentFiles(fileInput.files);
   fileInput.value = "";
 });
 
 composerInput.addEventListener("paste", (event) => {
-  const items = [...(event.clipboardData?.items ?? [])].filter((item) => item.type.startsWith("image/"));
+  const items = [...(event.clipboardData?.items ?? [])].filter((item) => item.kind === "file");
   if (items.length === 0) return;
   event.preventDefault();
-  readImageFiles(items.map((item) => item.getAsFile()).filter(Boolean));
+  void readAttachmentFiles(items.map((item) => item.getAsFile()).filter(Boolean));
 });
 
 for (const dropTarget of [composer, chatScroll]) {
@@ -2646,7 +2668,7 @@ for (const dropTarget of [composer, chatScroll]) {
     if (!event.dataTransfer?.files?.length) return;
     event.preventDefault();
     composer.classList.remove("dropping");
-    readImageFiles(event.dataTransfer.files);
+    void readAttachmentFiles(event.dataTransfer.files);
   });
 }
 

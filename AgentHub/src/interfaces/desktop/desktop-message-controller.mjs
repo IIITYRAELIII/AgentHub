@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { messageInputWithAttachments } from "../../domain/attachment-files.mjs";
 import {
   messageReceiptKey,
   messageRequestFingerprint,
@@ -20,7 +21,7 @@ export function createDesktopMessageController({
   async function sendMessage(params) {
     const text = String(params.text ?? "").trim();
     const attachments = await attachmentPaths(params.attachments);
-    if (!text && !attachments.length) throw new Error("Введите сообщение или добавьте изображение");
+    if (!text && !attachments.length) throw new Error("Введите сообщение или добавьте файл");
     if (text.length > 100_000) throw new Error("Сообщение слишком длинное");
     const clientUserMessageId = String(
       params.clientUserMessageId ?? params.requestId ?? randomUUID(),
@@ -30,11 +31,9 @@ export function createDesktopMessageController({
     if (followUpMode && !["queue", "steer"].includes(followUpMode)) {
       throw new Error("Неизвестный режим следующего сообщения");
     }
+    const descriptors = attachments.length ? describeAttachments(attachments) : [];
     const input = attachments.length
-      ? [
-        { type: "text", text: text || "Проанализируй приложенное изображение." },
-        ...attachments.map((file) => ({ type: "localImage", path: file })),
-      ]
+      ? messageInputWithAttachments(text, attachments, descriptors)
       : text;
     const target = await resolveTarget(params);
     if (!target.threadId) throw new Error("Сначала выберите или создайте задачу");
@@ -68,7 +67,7 @@ export function createDesktopMessageController({
         followUpMode,
       });
       const { snapshot: _snapshot, ...storedResult } = result;
-      if (attachments.length) storedResult.attachments = describeAttachments(attachments);
+      if (attachments.length) storedResult.attachments = descriptors;
       receipts.remember(receiptIdentity, fingerprint, storedResult);
       await persistReceipts();
       return storedResult;

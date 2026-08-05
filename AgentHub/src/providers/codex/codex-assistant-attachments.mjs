@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { attachmentMetadataFromId } from "../../domain/attachment-files.mjs";
 import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 
 const IMAGE_TYPES = new Map([
@@ -16,11 +17,16 @@ const DATA_URL = /^data:(image\/(?:png|jpeg|webp|gif|bmp));base64,([a-z0-9+/]+={
 const IMAGE_FILE = /\.(?:png|jpe?g|webp|gif|bmp)$/iu;
 const CLIPBOARD_FILE = /^codex-clipboard-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpe?g|webp|gif|bmp)$/iu;
 
-function descriptor(id, extension, { missing = false, privateName = false } = {}) {
+function descriptor(id, extension, {
+  missing = false,
+  privateName = false,
+  displayName = "",
+  contentType = "",
+} = {}) {
   return {
     id,
-    name: privateName ? "Изображение" : id,
-    type: IMAGE_TYPES.get(extension) ?? "application/octet-stream",
+    name: displayName || (privateName ? "Изображение" : id),
+    type: contentType || IMAGE_TYPES.get(extension) || "application/octet-stream",
     ...(missing ? { missing: true } : {}),
   };
 }
@@ -70,6 +76,23 @@ export function createCodexAssistantAttachmentImporter({
       const source = path.resolve(String(item.value ?? ""));
       const sourceName = path.basename(source);
       const extension = path.extname(sourceName).toLowerCase();
+      const hubMetadata = clipboard && pathInsideOrSame(source, targetRoot)
+        ? attachmentMetadataFromId(sourceName)
+        : null;
+      if (hubMetadata) {
+        let sourceInfo = null;
+        try {
+          sourceInfo = await stat(source);
+        } catch {
+          // The descriptor below keeps history explicit when a retained file is missing.
+        }
+        imported.push(descriptor(sourceName, extension, {
+          displayName: String(item.name ?? "").trim() || hubMetadata.name,
+          contentType: hubMetadata.type,
+          missing: !sourceInfo?.isFile() || sourceInfo.size <= 0 || sourceInfo.size > maxBytes,
+        }));
+        continue;
+      }
       if (!IMAGE_FILE.test(sourceName)) continue;
       if (generated && !pathInsideOrSame(source, generatedRoot)) continue;
       if (viewed && !allowedViewRoots.some((root) => pathInsideOrSame(source, root))) continue;

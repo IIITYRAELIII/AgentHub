@@ -6,6 +6,14 @@ import path from "node:path";
 
 import { JournalDatabase } from "../../../journal-database.mjs";
 import {
+  attachmentContentType,
+  attachmentIsImage,
+  attachmentMetadataFromId,
+  createAttachmentStorageName,
+  MAX_ATTACHMENT_BYTES,
+  MAX_MESSAGE_ATTACHMENTS,
+} from "../../domain/attachment-files.mjs";
+import {
   DurableCommandReceipts,
   DurableCommandRetryableError,
   commandFingerprint,
@@ -21,17 +29,9 @@ const CONTROL_LONG_POLL_TIMEOUT_MS = 35_000;
 const CONTROL_LOOP_GAP_MS = 25;
 const MAX_CONTROL_RESULT_BYTES = 1024 * 1024;
 const MAX_CONTROL_ERROR_CHARS = 4_096;
-const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-const MAX_ATTACHMENTS_PER_COMMAND = 8;
+const MAX_ATTACHMENTS_PER_COMMAND = MAX_MESSAGE_ATTACHMENTS;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
 const CONTROL_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const IMAGE_CONTENT_TYPES = new Map([
-  ["image/png", ".png"],
-  ["image/jpeg", ".jpg"],
-  ["image/webp", ".webp"],
-  ["image/gif", ".gif"],
-  ["image/bmp", ".bmp"],
-]);
 const CONTROL_ACTIONS = new Set([
   "snapshot",
   "task-history",
@@ -334,12 +334,15 @@ export class MiniAppPublisher {
     if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
       throw new Error("Attachment is outside the configured storage");
     }
-    const contentType = [...IMAGE_CONTENT_TYPES.entries()]
-      .find(([, extension]) => extension === path.extname(target).toLowerCase())?.[0]
-      ?? (path.extname(target).toLowerCase() === ".jpeg" ? "image/jpeg" : "");
-    if (!contentType) throw new Error("Unsupported attachment format");
+    const metadata = attachmentMetadataFromId(path.basename(target));
+    if (!metadata) throw new Error("Unsupported attachment identifier");
+    const contentType = metadata.type;
     const body = await readFile(target);
-    if (body.length < 1 || body.length > MAX_ATTACHMENT_BYTES || !imageMatchesContentType(body, contentType)) {
+    if (
+      body.length < 1
+      || body.length > MAX_ATTACHMENT_BYTES
+      || (attachmentIsImage(contentType) && !imageMatchesContentType(body, contentType))
+    ) {
       throw new Error("Attachment is missing, damaged or too large");
     }
     const pathname = "/api/control/attachment/view/push";
@@ -357,6 +360,7 @@ export class MiniAppPublisher {
         "X-Agent-Hub-User-Id": String(userId),
         "X-Agent-Hub-Attachment-Id": id,
         "X-Agent-Hub-Attachment-Hash": bodyHash,
+        "X-Agent-Hub-File-Name": encodeURIComponent(metadata.name),
       },
       body,
       signal: AbortSignal.timeout(ATTACHMENT_TIMEOUT_MS),
@@ -367,7 +371,7 @@ export class MiniAppPublisher {
     const result = await response.json();
     return {
       id,
-      name: path.basename(target),
+      name: metadata.name,
       type: contentType,
       expiresAt: result.expiresAt,
     };
@@ -427,13 +431,26 @@ export class MiniAppPublisher {
       secret,
       { timeoutMs: ATTACHMENT_TIMEOUT_MS },
     );
-    const contentType = String(response.headers.get("Content-Type") ?? "").toLowerCase();
-    const extension = IMAGE_CONTENT_TYPES.get(contentType);
+    const encodedName = String(response.headers.get("X-Agent-Hub-File-Name") ?? "").trim();
+    const advertisedType = String(response.headers.get("Content-Type") ?? "").split(";", 1)[0].trim().toLowerCase();
+    const legacyImageExtension = new Map([
+      ["image/png", ".png"],
+      ["image/jpeg", ".jpg"],
+      ["image/webp", ".webp"],
+      ["image/gif", ".gif"],
+      ["image/bmp", ".bmp"],
+    ]).get(advertisedType) ?? "";
+    let originalName = `attachment${legacyImageExtension || ".bin"}`;
+    try {
+      if (encodedName) originalName = decodeURIComponent(encodedName);
+    } catch {
+      throw new Error("Mini App Worker returned invalid attachment metadata");
+    }
+    const contentType = attachmentContentType(originalName, response.headers.get("Content-Type"));
     const expectedHash = String(response.headers.get("X-Agent-Hub-Attachment-Hash") ?? "").toLowerCase();
     const advertisedLength = Number(response.headers.get("Content-Length"));
     if (
-      !extension
-      || !/^[a-f0-9]{64}$/u.test(expectedHash)
+      !/^[a-f0-9]{64}$/u.test(expectedHash)
       || (Number.isFinite(advertisedLength) && advertisedLength > MAX_ATTACHMENT_BYTES)
     ) {
       throw new Error("Mini App Worker returned invalid attachment metadata");
@@ -442,13 +459,16 @@ export class MiniAppPublisher {
     if (
       body.length < 1
       || body.length > MAX_ATTACHMENT_BYTES
-      || !imageMatchesContentType(body, contentType)
+      || (attachmentIsImage(contentType) && !imageMatchesContentType(body, contentType))
       || createHash("sha256").update(body).digest("hex") !== expectedHash
     ) {
       throw new Error("Mini App Worker returned a damaged attachment");
     }
     await mkdir(this.#attachmentDirectory, { recursive: true });
-    const target = path.join(this.#attachmentDirectory, `${command.id}-${id}${extension}`);
+    const target = path.join(
+      this.#attachmentDirectory,
+      createAttachmentStorageName(originalName, `${command.id}-${id}`),
+    );
     try {
       const existing = await readFile(target);
       if (createHash("sha256").update(existing).digest("hex") !== expectedHash) {

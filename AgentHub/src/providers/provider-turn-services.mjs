@@ -15,6 +15,11 @@ function rememberBounded(map, key, value, limit) {
   while (map.size > limit) map.delete(map.keys().next().value);
 }
 
+function codexInputItems(input) {
+  const values = typeof input === "string" ? [{ type: "text", text: input }] : input;
+  return (Array.isArray(values) ? values : []).filter((item) => item?.type !== "localFile");
+}
+
 export class CodexTurnService {
   #d;
 
@@ -31,7 +36,7 @@ export class CodexTurnService {
     const d = this.#d;
     const recycle = d.compactionRecycle();
     if (recycle) await recycle;
-    const items = typeof input === "string" ? [{ type: "text", text: input }] : input;
+    const items = codexInputItems(input);
     run.skillsUsed = await d.resolvedSkillNames(input, run.projectRoot);
     run.mcpCalls = [];
     run.toolMetricsKnown = true;
@@ -82,7 +87,7 @@ export class CodexTurnService {
     const result = await this.#d.sendRpc("turn/steer", {
       threadId: target.threadId,
       expectedTurnId: turnId,
-      input: typeof input === "string" ? [{ type: "text", text: input }] : input,
+      input: codexInputItems(input),
       clientUserMessageId,
     });
     return { turnId: String(result?.turnId ?? turnId) };

@@ -456,7 +456,7 @@ test("Mini App publisher materializes a signed remote image inside the allowed a
     assert.equal(handled.length, 1);
     const [localPath] = handled[0].params.attachments;
     assert.equal(path.dirname(localPath), attachmentDirectory);
-    assert.equal(path.basename(localPath), `${commandId}-${attachmentId}.png`);
+    assert.match(path.basename(localPath), new RegExp(`^${commandId}-${attachmentId}--.+\\.png$`, "u"));
     assert.deepEqual(await readFile(localPath), png);
     assert.deepEqual(JSON.parse(requests.at(-1).options.body), {
       id: commandId,

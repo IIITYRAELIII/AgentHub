@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createDesktopMessageController } from "./src/interfaces/desktop/desktop-message-controller.mjs";
@@ -306,6 +307,35 @@ test("desktop message controller keeps image originals as message data", async (
     { type: "text", text: "проверь скрин" },
     { type: "localImage", path: file },
   ]);
+});
+
+test("desktop message controller sends documents as named file references", async () => {
+  const file = path.resolve("README.md");
+  let launched = null;
+  const descriptors = [{
+    id: "document-id.pdf",
+    name: "Требования.pdf",
+    type: "application/pdf",
+    isImage: false,
+  }];
+  const messages = controller({
+    attachmentPaths: async () => [file],
+    describeAttachments: () => descriptors,
+    launchTurn: async (run, input, cleanupFiles) => {
+      launched = { run, input, cleanupFiles };
+    },
+  });
+
+  const result = await messages.sendMessage({
+    text: "проверь документ",
+    attachments: [file],
+    clientUserMessageId: "message-with-document",
+  });
+
+  assert.deepEqual(result.attachments, descriptors);
+  assert.match(launched.input[0].text, /## Требования\.pdf:/u);
+  assert.match(launched.input[0].text, /проверь документ/u);
+  assert.deepEqual(launched.input[1], { type: "localFile", path: file });
 });
 
 test("deferred Desktop images remain persistent and visible in the queue", async () => {

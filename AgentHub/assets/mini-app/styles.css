@@ -3967,6 +3967,10 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   cursor: zoom-in;
 }
 
+.attachment-file.attachment-open {
+  cursor: pointer;
+}
+
 .attachment-open:hover,
 .attachment-open:focus-visible {
   border-color: var(--accent-line);
@@ -4005,6 +4009,42 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   height: 3.4rem;
   object-fit: cover;
   width: 3.4rem;
+}
+
+.attachment-file-card {
+  align-items: center;
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  min-height: 3.4rem;
+  padding: 0.35rem 0.55rem;
+  width: min(14rem, 62vw);
+}
+
+.attachment-file-type {
+  align-items: center;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid var(--accent-line);
+  border-radius: 0.35rem;
+  color: var(--accent);
+  display: flex;
+  font-size: 0.58rem;
+  font-weight: 700;
+  height: 2.25rem;
+  justify-content: center;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  padding: 0.15rem;
+}
+
+.attachment-file-name {
+  color: var(--text);
+  font-size: 0.74rem;
+  line-height: 1.2;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .attachment .attachment-remove {

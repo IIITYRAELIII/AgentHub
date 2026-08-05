@@ -7,15 +7,29 @@ const { homedir } = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const WEBVIEW_HTTP_CHUNK_CHARS = 192 * 1024;
-const IMAGE_EXTENSIONS = new Map([
-  ["image/png", ".png"],
-  ["image/jpeg", ".jpg"],
-  ["image/webp", ".webp"],
-  ["image/gif", ".gif"],
-  ["image/bmp", ".bmp"],
-]);
+
+function attachmentStorageName(value) {
+  const cleanName = path.basename(String(value ?? "").replace(/[\u0000-\u001f\u007f]/gu, " ")).trim()
+    || "attachment.bin";
+  const extension = path.extname(cleanName);
+  const safeExtension = /^\.[A-Za-z0-9]{1,16}$/u.test(extension) ? extension.toLowerCase() : "";
+  let stem = safeExtension ? cleanName.slice(0, -extension.length) : cleanName;
+  let name = `${stem}${safeExtension}`;
+  while (stem.length > 1 && Buffer.from(name, "utf8").toString("base64url").length > 180) {
+    stem = stem.slice(0, -1);
+    name = `${stem}${safeExtension}`;
+  }
+  const encoded = Buffer.from(name, "utf8").toString("base64url");
+  return `${randomUUID().toLowerCase()}--${encoded}${safeExtension}`;
+}
+
+function safeAttachmentId(value) {
+  const name = String(value ?? "").trim();
+  return /^(?:[a-z0-9-]{16,100}--[A-Za-z0-9_-]{1,180}(?:\.[A-Za-z0-9]{1,16})?|[A-Za-z0-9][A-Za-z0-9._-]{0,239})$/u.test(name)
+    && !name.includes("..");
+}
 
 function jsonResponse(value, status = 200, headers = {}) {
   return {
@@ -139,13 +153,13 @@ class AgentHubBridge {
   }
 
   async attachmentPath(id) {
-    const name = String(id ?? "").trim().toLowerCase();
-    if (!/^[a-z0-9-]{1,160}\.(?:png|jpe?g|webp|gif|bmp)$/u.test(name)) {
+    const name = String(id ?? "").trim();
+    if (!safeAttachmentId(name)) {
       throw new Error("Некорректный идентификатор вложения");
     }
     const target = path.join(this.attachmentDirectory(), name);
     const info = await stat(target);
-    if (!info.isFile() || info.size < 1 || info.size > MAX_IMAGE_BYTES) {
+    if (!info.isFile() || info.size < 1 || info.size > MAX_ATTACHMENT_BYTES) {
       throw new Error("Вложение отсутствует или повреждено");
     }
     return target;
@@ -153,16 +167,14 @@ class AgentHubBridge {
 
   async uploadAttachment(params) {
     const match = String(params.dataUrl ?? "").match(/^data:([^;,]+);base64,(.+)$/u);
-    if (!match) throw new Error("Изображение имеет неподдерживаемый формат");
-    const extension = IMAGE_EXTENSIONS.get(match[1].toLowerCase());
-    if (!extension) throw new Error("Неподдерживаемый формат изображения");
+    if (!match) throw new Error("Файл имеет неподдерживаемый формат");
     const body = Buffer.from(match[2], "base64");
-    if (!body.length || body.length > MAX_IMAGE_BYTES) {
-      throw new Error("Изображение отсутствует или превышает 20 МБ");
+    if (!body.length || body.length > MAX_ATTACHMENT_BYTES) {
+      throw new Error("Файл отсутствует или превышает 20 МБ");
     }
     const directory = this.attachmentDirectory();
     await mkdir(directory, { recursive: true });
-    const target = path.join(directory, `${randomUUID()}${extension}`);
+    const target = path.join(directory, attachmentStorageName(params.name));
     await writeFile(target, body, { flag: "wx", mode: 0o600 });
     return target;
   }

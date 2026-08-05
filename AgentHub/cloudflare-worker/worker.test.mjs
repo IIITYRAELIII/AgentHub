@@ -683,7 +683,7 @@ test("Worker relay rejects unsupported actions, attachments, and unsigned servic
   assert.equal(response.status, 401);
 });
 
-test("Worker relay stores user-bound image uploads and serves them only to their command", async () => {
+test("Worker relay stores user-bound file uploads and serves them only to their command", async () => {
   const workerModule = await loadWorker();
   const storage = new MemoryStorage();
   const store = new workerModule.JournalStore({ storage }, {});
@@ -749,6 +749,20 @@ test("Worker relay stores user-bound image uploads and serves them only to their
   }), env);
   assert.equal(response.status, 413);
 
+  const documentBody = Buffer.from("проверить документ", "utf8");
+  response = await workerModule.default.fetch(new Request("https://hub.test/api/attachment", {
+    method: "POST",
+    headers: {
+      Authorization: authorization,
+      "Content-Type": "text/plain",
+      "X-Agent-Hub-File-Name": encodeURIComponent("требования.txt"),
+    },
+    body: documentBody,
+  }), env);
+  assert.equal(response.status, 201);
+  const uploadedDocument = await response.json();
+  assert.match(uploadedDocument.path, /^remote-attachment:[0-9a-f-]{36}$/u);
+
   const commandId = "018f6c86-3f34-7a31-8f27-16f5b96cce30";
   response = await workerModule.default.fetch(new Request("https://hub.test/api/control", {
     method: "POST",
@@ -756,7 +770,7 @@ test("Worker relay stores user-bound image uploads and serves them only to their
     body: JSON.stringify({
       id: commandId,
       action: "send-message",
-      params: { text: "Посмотри", attachments: [uploaded.path] },
+      params: { text: "Посмотри", attachments: [uploaded.path, uploadedDocument.path] },
     }),
   }), env);
   assert.equal(response.status, 202);
@@ -766,7 +780,7 @@ test("Worker relay stores user-bound image uploads and serves them only to their
     env,
   );
   const command = (await response.json()).commands[0];
-  assert.deepEqual(command.params.attachments, [uploaded.path]);
+  assert.deepEqual(command.params.attachments, [uploaded.path, uploadedDocument.path]);
 
   response = await workerModule.default.fetch(
     signedServiceRequest("https://hub.test/api/control/attachment/pull", {
@@ -779,6 +793,19 @@ test("Worker relay stores user-bound image uploads and serves them only to their
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("Content-Type"), "image/png");
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+
+  response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/control/attachment/pull", {
+      id: uploadedDocument.id,
+      userId: "42",
+      commandId,
+    }, syncSecret),
+    env,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Content-Type"), "text/plain");
+  assert.equal(decodeURIComponent(response.headers.get("X-Agent-Hub-File-Name")), "требования.txt");
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), documentBody);
 
   response = await workerModule.default.fetch(
     signedServiceRequest("https://hub.test/api/control/attachment/pull", {

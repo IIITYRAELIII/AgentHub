@@ -20,7 +20,7 @@ export class ClaudeTurnLauncher {
     const d = this.#d;
     const turnId = randomUUID();
     const additionalDirectories = (Array.isArray(input) ? input : [])
-      .filter((item) => item?.type === "localImage" && item.path)
+      .filter((item) => ["localImage", "localFile"].includes(item?.type) && item.path)
       .map((item) => path.dirname(item.path));
     run.turnId = turnId;
     d.taskRuns.reindex(run, { turnId: null });

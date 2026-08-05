@@ -13,6 +13,7 @@ import {
   validateTelegramInitData,
 } from "./src/interfaces/web/mini-app-server.mjs";
 import { buildLazyJournalPayload } from "./src/interfaces/web/mini-app-journal-data.mjs";
+import { createAttachmentStorageName } from "./src/domain/attachment-files.mjs";
 
 const LIMITS_HTML = '<div data-work-log-rate-limits data-sampled-at="2026-07-30T02:55:14.512Z">'
   + '<span data-rate-limit-caption>Лимиты</span>'
@@ -143,6 +144,14 @@ test("Mini App serves only safe persistent message attachment names", async () =
     assert.equal(image.status, 200);
     assert.equal(image.headers.get("content-type"), "image/png");
     assert.deepEqual(Buffer.from(await image.arrayBuffer()), body);
+    const documentId = createAttachmentStorageName("Требования.pdf", "01234567-89ab-cdef-0123-456789abcdef");
+    await writeFile(path.join(attachments, documentId), Buffer.from("document"));
+    const document = await fetch(`${address.url}api/message-attachment/${documentId}`);
+    assert.equal(document.status, 200);
+    assert.equal(document.headers.get("content-type"), "application/pdf");
+    assert.match(document.headers.get("content-disposition"), /attachment;/u);
+    assert.match(document.headers.get("content-disposition"), /filename\*=UTF-8''/u);
+    assert.equal(document.headers.get("x-content-type-options"), "nosniff");
     assert.equal(
       (await fetch(`${address.url}api/message-attachment/..%2Fsecret.png`)).status,
       404,
@@ -731,11 +740,19 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
     const uploaded = await upload.json();
     assert.equal(path.dirname(uploaded.path), attachmentDirectory);
     assert.deepEqual(await readFile(uploaded.path), imageBody);
-    assert.equal((await fetch(`${address.url}api/attachment`, {
+    const documentUpload = await fetch(`${address.url}api/attachment`, {
       method: "POST",
-      headers: { "Content-Type": "text/plain" },
-      body: "not an image",
-    })).status, 400);
+      headers: {
+        "Content-Type": "text/plain",
+        "X-Agent-Hub-File-Name": encodeURIComponent("заметки.txt"),
+      },
+      body: "plain text",
+    });
+    assert.equal(documentUpload.status, 201);
+    const uploadedDocument = await documentUpload.json();
+    assert.equal(uploadedDocument.attachment.name, "заметки.txt");
+    assert.equal(uploadedDocument.attachment.type, "text/plain");
+    assert.deepEqual(await readFile(uploadedDocument.path, "utf8"), "plain text");
   } finally {
     await server.close();
     await rm(directory, { recursive: true, force: true });

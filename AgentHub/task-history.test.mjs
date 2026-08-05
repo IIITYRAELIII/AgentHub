@@ -460,6 +460,29 @@ test("Codex Desktop screenshots are retained as private attachment references", 
   assert.deepEqual(exchange.messages[0].attachmentSources, [{
     type: "path",
     value: "C:/Temp/codex-clipboard-3bc5bb2d-38a9-4b34-9886-73b0b204c8d2.png",
+    name: "codex-clipboard-3bc5bb2d-38a9-4b34-9886-73b0b204c8d2.png",
+  }]);
+});
+
+test("Codex Desktop documents retain their display names after history reload", () => {
+  const [exchange] = codexThreadHistory([{
+    id: "turn-with-document",
+    status: "completed",
+    items: [{
+      type: "userMessage",
+      content: [{ type: "text", text: [
+        "# Files mentioned by the user:",
+        "## Требования.pdf: C:/AgentHub/attachments/document.pdf",
+        "## My request for Codex:",
+        "Проверь документ",
+      ].join("\n") }],
+    }],
+  }]);
+  assert.equal(exchange.prompt, "Проверь документ");
+  assert.deepEqual(exchange.messages[0].attachmentSources, [{
+    type: "path",
+    value: "C:/AgentHub/attachments/document.pdf",
+    name: "Требования.pdf",
   }]);
 });
 

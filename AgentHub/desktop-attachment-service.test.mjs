@@ -18,10 +18,36 @@ test("Desktop attachment service validates, describes and opens local images", a
       projectRoots: [root],
     });
     assert.deepEqual(await service.paths([file]), [file]);
-    assert.deepEqual(service.descriptors([file]), [{ id: "image-1.png", name: "image-1.png", type: "image/png" }]);
+    assert.deepEqual(service.descriptors([file]), [{
+      id: "image-1.png", name: "image-1.png", type: "image/png", isImage: true,
+    }]);
     assert.equal((await service.open({ id: "image-1.png" })).url, "/api/message-attachment/image-1.png");
     assert.equal(service.isLegacyFile(file), true);
     await assert.rejects(() => service.paths([path.join(root, "outside.png")]), /вне каталога/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Desktop attachment service accepts documents and preserves their names", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-attachments-"));
+  try {
+    const directory = path.join(root, "DesktopApp", "attachments");
+    await mkdir(directory, { recursive: true });
+    const file = path.join(directory, "0123456789abcdef--0J7RgtGH0ZHRgi5wZGY.pdf");
+    await writeFile(file, Buffer.from("PDF"));
+    const service = new DesktopAttachmentService({
+      runtimeCommandRoot: root,
+      projectRoot: root,
+      projectRoots: [root],
+    });
+    assert.deepEqual(service.descriptors([file]), [{
+      id: path.basename(file),
+      name: "Отчёт.pdf",
+      type: "application/pdf",
+      isImage: false,
+    }]);
+    assert.equal((await service.open({ id: path.basename(file) })).url, `/api/message-attachment/${path.basename(file)}`);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

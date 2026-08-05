@@ -7,6 +7,12 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 
 import {
+  attachmentContentType,
+  attachmentMetadataFromId,
+  createAttachmentStorageName,
+  MAX_ATTACHMENT_BYTES,
+} from "../../domain/attachment-files.mjs";
+import {
   extractRateLimitsHtml,
   publicJournalPayload,
 } from "./mini-app-journal-data.mjs";
@@ -41,20 +47,23 @@ const STATIC_FILES = new Map([
   ["/backgrounds.css", "backgrounds.css"],
 ]);
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
-const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_MOBILE_UPDATE_BYTES = 100 * 1024 * 1024;
 const MOBILE_UPDATE_FILE = "AgentHub-Mobile.apk";
 const MOBILE_UPDATE_MANIFEST = "update.json";
-const IMAGE_CONTENT_TYPES = new Map([
-  ["image/png", ".png"],
-  ["image/jpeg", ".jpg"],
-  ["image/webp", ".webp"],
-  ["image/gif", ".gif"],
-  ["image/bmp", ".bmp"],
-]);
-const IMAGE_EXTENSION_TYPES = new Map(
-  [...IMAGE_CONTENT_TYPES].map(([type, extension]) => [extension, type]),
-);
+
+function attachmentHeaderName(request) {
+  const value = String(request.headers["x-agent-hub-file-name"] ?? "").trim();
+  if (!value) return "attachment.bin";
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return "attachment.bin";
+  }
+}
+
+function downloadDisposition(name) {
+  return `attachment; filename*=UTF-8''${encodeURIComponent(String(name ?? "attachment"))}`;
+}
 
 async function readJsonBody(request, maxBytes = MAX_CONTROL_REQUEST_BYTES) {
   const chunks = [];
@@ -77,7 +86,7 @@ async function readBinaryBody(request, maxBytes = MAX_ATTACHMENT_BYTES) {
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > maxBytes) throw new Error("Изображение превышает 20 МБ");
+    if (size > maxBytes) throw new Error("Файл превышает 20 МБ");
     chunks.push(chunk);
   }
   if (!size) throw new Error("Пустое изображение");
@@ -626,21 +635,22 @@ export class MiniAppServer {
       }
       if (!await this.#authorize(request, response)) return;
       if (!this.#attachmentDirectory) {
-        json(response, 503, { error: "Загрузка изображений недоступна." }, method);
+        json(response, 503, { error: "Загрузка файлов недоступна." }, method);
         return;
       }
       try {
-        const contentType = String(request.headers["content-type"] ?? "")
-          .split(";", 1)[0]
-          .trim()
-          .toLowerCase();
-        const extension = IMAGE_CONTENT_TYPES.get(contentType);
-        if (!extension) throw new Error("Неподдерживаемый формат изображения");
+        const originalName = attachmentHeaderName(request);
+        const contentType = attachmentContentType(originalName, request.headers["content-type"]);
         const body = await readBinaryBody(request);
         await mkdir(this.#attachmentDirectory, { recursive: true });
-        const target = path.join(this.#attachmentDirectory, `${randomUUID()}${extension}`);
+        const id = createAttachmentStorageName(originalName, randomUUID());
+        const target = path.join(this.#attachmentDirectory, id);
         await writeFile(target, body, { flag: "wx", mode: 0o600 });
-        json(response, 201, { ok: true, path: target }, method);
+        json(response, 201, {
+          ok: true,
+          path: target,
+          attachment: { ...attachmentMetadataFromId(id), type: contentType },
+        }, method);
       } catch (error) {
         json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
       }
@@ -661,20 +671,20 @@ export class MiniAppServer {
         return;
       }
       try {
-        const name = decodeURIComponent(url.pathname.slice("/api/message-attachment/".length))
-          .trim()
-          .toLowerCase();
-        if (!/^[a-z0-9-]{1,160}\.(?:png|jpe?g|webp|gif|bmp)$/u.test(name)) {
-          throw new Error("Некорректный идентификатор вложения");
-        }
-        const target = path.join(this.#attachmentDirectory, name);
+        const id = decodeURIComponent(url.pathname.slice("/api/message-attachment/".length)).trim();
+        const metadata = attachmentMetadataFromId(id);
+        if (!metadata) throw new Error("Некорректный идентификатор вложения");
+        const target = path.join(this.#attachmentDirectory, id);
         const info = await stat(target);
         if (!info.isFile() || info.size < 1 || info.size > MAX_ATTACHMENT_BYTES) {
           throw new Error("Вложение отсутствует или повреждено");
         }
-        const type = IMAGE_EXTENSION_TYPES.get(path.extname(name)) ?? "application/octet-stream";
-        send(response, 200, type, await readFile(target), method, {
-          headers: { "Cache-Control": "private, max-age=300" },
+        send(response, 200, metadata.type, await readFile(target), method, {
+          headers: {
+            "Cache-Control": "private, max-age=300",
+            "X-Content-Type-Options": "nosniff",
+            ...(metadata.isImage ? {} : { "Content-Disposition": downloadDisposition(metadata.name) }),
+          },
         });
       } catch {
         json(response, 404, { error: "Вложение не найдено." }, method);

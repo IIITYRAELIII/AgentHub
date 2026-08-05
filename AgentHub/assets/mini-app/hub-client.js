@@ -970,7 +970,7 @@ function annotatedText(text, annotations) {
 
 function dataUrlBody(dataUrl) {
   const match = String(dataUrl ?? "").match(/^data:([^;,]+);base64,(.+)$/u);
-  if (!match) throw new Error("Изображение имеет неподдерживаемый формат");
+  if (!match) throw new Error("Файл имеет неподдерживаемый формат");
   const binary = atob(match[2]);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
@@ -980,24 +980,25 @@ function dataUrlBody(dataUrl) {
 async function uploadAttachment(attachment) {
   if (vscode) {
     return bridgeCall("upload-attachment", {
-      name: attachment.name ?? "image.png",
-      type: attachment.type ?? "image/png",
+      name: attachment.name ?? "attachment.bin",
+      type: attachment.type ?? "application/octet-stream",
       dataUrl: attachment.dataUrl,
     });
   }
   await localSessionReady;
-  const image = dataUrlBody(attachment.dataUrl);
+  const file = dataUrlBody(attachment.dataUrl);
   const response = await hubFetch("/api/attachment", {
     method: "POST",
     headers: {
       ...authorizationHeaders(),
-      "Content-Type": image.type,
+      "Content-Type": file.type,
+      "X-Agent-Hub-File-Name": encodeURIComponent(String(attachment.name ?? "attachment.bin")),
     },
-    body: image.body,
+    body: file.body,
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || !payload.path) {
-    throw new Error(String(payload.error ?? "Не удалось загрузить изображение"));
+    throw new Error(String(payload.error ?? "Не удалось загрузить файл"));
   }
   return payload.path;
 }
@@ -1354,11 +1355,18 @@ agentHub.on("attachment:open", ({ attachment }) => runAction(async () => {
     return;
   }
   const directDataUrl = String(attachment?.dataUrl ?? "").trim();
+  const image = String(attachment?.type ?? "").toLowerCase().startsWith("image/");
   if (directDataUrl) {
-    agentHub.openAttachmentViewer({ dataUrl: directDataUrl, name: attachment?.name });
+    if (image) agentHub.openAttachmentViewer({ dataUrl: directDataUrl, name: attachment?.name });
+    else {
+      const link = document.createElement("a");
+      link.href = directDataUrl;
+      link.download = String(attachment?.name ?? "attachment");
+      link.click();
+    }
     return;
   }
-  agentHub.openAttachmentViewer({ name: attachment?.name });
+  if (image) agentHub.openAttachmentViewer({ name: attachment?.name });
   try {
     const access = id
       ? await control("open-attachment", { id })
@@ -1373,6 +1381,16 @@ agentHub.on("attachment:open", ({ attachment }) => runAction(async () => {
     });
     if (!response.ok) throw new Error(`Файл вложения недоступен: HTTP ${response.status}`);
     const blob = await response.blob();
+    const resultType = String(access?.type ?? attachment?.type ?? blob.type ?? "").toLowerCase();
+    if (!resultType.startsWith("image/")) {
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = String(access?.name ?? attachment?.name ?? "attachment");
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+      return;
+    }
     const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result));
@@ -1381,7 +1399,7 @@ agentHub.on("attachment:open", ({ attachment }) => runAction(async () => {
     });
     agentHub.showAttachmentViewer({ dataUrl, name: access?.name ?? attachment?.name });
   } catch (error) {
-    agentHub.closeAttachmentViewer();
+    if (image) agentHub.closeAttachmentViewer();
     throw error;
   }
 }));
