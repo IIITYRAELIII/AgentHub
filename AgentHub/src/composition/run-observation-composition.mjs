@@ -1,0 +1,145 @@
+import { ClaudeRunController } from "../providers/claude/claude-run-controller.mjs";
+import { ClaudeTurnLauncher } from "../providers/claude/claude-turn-launcher.mjs";
+import { TaskObservationService } from "../application/task-observation-service.mjs";
+import { SelectedTaskWatchService } from "../application/selected-task-watch-service.mjs";
+import { RunRecoveryCoordinator } from "../application/run-recovery-coordinator.mjs";
+
+export function createRunObservationComposition({
+  dataDir,
+  claudeOutputPollIntervalMs,
+  taskRuns,
+  isStopping,
+  handleClaudeStreamEvent,
+  finishClaudeRun,
+  saveState,
+  startTyping,
+  taskProgress,
+  agentProviders,
+  runCoordinator,
+  findProject,
+  invalidateTaskCatalog,
+  syncTaskRun,
+  codexModelLabel,
+  reasoningLabels,
+  markProgressHeartbeat,
+  progressStalledAfterMs,
+  managedRunLifecycle,
+  discardManualContextCompactionRun,
+  savedLastTaskMessage,
+  savedLastTaskMessageRecord,
+  externalPollIntervalMs,
+  managedPollIntervalMs,
+  captureTaskGitBaseline,
+  turnTemporaryFiles,
+  claudeTaskSnapshots,
+  claudePermissionMode,
+  autoApprove,
+  persistClaudeRunHistory,
+  resolveClaudeInvocation,
+  logWarning,
+  safelyDeliverRunMessage,
+  sendRunMessage,
+  dismissedExternalTasks,
+  lastSeenTaskTurnIds,
+  runtimeTimers,
+  selectedTaskWatchIntervalMs,
+  selectedTask,
+  chatId,
+  activeTaskTitle,
+  rememberLastTaskMessage,
+  logError,
+}) {
+  const claudeRunController = new ClaudeRunController({
+    dataDir,
+    pollIntervalMs: claudeOutputPollIntervalMs,
+    isCurrentRun: (run) => taskRuns.forTask(run) === run,
+    isStopping,
+    onStreamEvent: handleClaudeStreamEvent,
+    onComplete: finishClaudeRun,
+    onPersist: saveState,
+    onActive: startTyping,
+    onReconnect: (run, alive) => taskProgress.setStage(run, alive
+      ? "Переподключился к выполняющемуся ходу Claude."
+      : "Дочитываю прерванный ход Claude…"),
+  });
+
+  const taskObserver = new TaskObservationService({
+    providers: agentProviders,
+    taskRuns,
+    runCoordinator,
+    dataDir,
+    findProject,
+    invalidateTaskCatalog,
+    syncTaskRun,
+    modelLabel: codexModelLabel,
+    reasoningLabels,
+    noteRunActivity: (...args) => taskProgress.noteActivity(...args),
+    scheduleProgressUpdate: (...args) => taskProgress.schedule(...args),
+    setProgressStage: (...args) => taskProgress.setStage(...args),
+    markProgressHeartbeat,
+    progressHeartbeatState: (run, now) => taskProgress.heartbeatState(
+      run,
+      now,
+      progressStalledAfterMs,
+    ),
+    finishProgress: (...args) => taskProgress.finish(...args),
+    completeRun: (run) => managedRunLifecycle.complete(run),
+    discardManualContextCompactionRun,
+    savedLastTaskMessage,
+    savedLastTaskMessageRecord,
+    externalPollIntervalMs,
+    managedPollIntervalMs,
+    captureGitBaseline: captureTaskGitBaseline,
+  });
+
+  const claudeTurnLauncher = new ClaudeTurnLauncher({
+    taskRuns,
+    turnTemporaryFiles,
+    taskSnapshots: claudeTaskSnapshots,
+    permissionMode: claudePermissionMode,
+    autoApprove,
+    persistHistory: persistClaudeRunHistory,
+    resolveInvocation: resolveClaudeInvocation,
+    runController: claudeRunController,
+    logWarning,
+  });
+
+  const runRecovery = new RunRecoveryCoordinator({
+    taskRuns,
+    providers: agentProviders,
+    runCoordinator,
+    observer: taskObserver,
+    progress: taskProgress,
+    startTyping,
+    saveState,
+    safeDeliver: safelyDeliverRunMessage,
+    sendRunMessage,
+    completeRun: (run) => managedRunLifecycle.complete(run),
+    logError,
+  });
+
+  const selectedTaskWatch = new SelectedTaskWatchService({
+    providers: agentProviders,
+    taskRuns,
+    dismissedTasks: dismissedExternalTasks,
+    lastSeenTurnIds: lastSeenTaskTurnIds,
+    timers: runtimeTimers,
+    intervalMs: selectedTaskWatchIntervalMs,
+    isStopping,
+    selectedTask,
+    chatId,
+    activeTaskTitle,
+    rememberLastTaskMessage,
+    createObservedRun: (...args) => taskObserver.create(...args),
+    scheduleObservedRun: (...args) => taskObserver.schedule(...args),
+    saveState,
+  });
+
+  return {
+    claudeRunController,
+    taskObserver,
+    claudeTurnLauncher,
+    runRecovery,
+    selectedTaskWatch,
+  };
+}

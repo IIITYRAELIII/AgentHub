@@ -18,8 +18,6 @@ import {
   scanClaudeHistoricalTranscriptFile,
 } from "../providers/claude/claude-work-log.mjs";
 import { cleanupOrphanedClaudeRunOutputs, processIsAlive, stopProcessTree } from "../providers/claude/claude-run-io.mjs";
-import { ClaudeRunController } from "../providers/claude/claude-run-controller.mjs";
-import { ClaudeTurnLauncher } from "../providers/claude/claude-turn-launcher.mjs";
 import {
   CODEX_COLLABORATION_MODE_LABELS,
   CODEX_COLLABORATION_MODES,
@@ -153,12 +151,8 @@ import {
   formatFileApproval as presentFileApproval,
 } from "../interfaces/telegram/approval-presentation.mjs";
 import { TaskViewController } from "../interfaces/telegram/task-view-controller.mjs";
-import { TelegramDeliveryService } from "../interfaces/telegram/telegram-delivery-service.mjs";
 import { resolveCodexExecutable as resolveInstalledCodexExecutable } from "../providers/codex/codex-invocation.mjs";
 import { CodexAppServerLifecycle } from "../providers/codex/codex-app-server-lifecycle.mjs";
-import { TaskProgressController } from "../interfaces/telegram/task-progress-controller.mjs";
-import { TaskObservationService } from "../application/task-observation-service.mjs";
-import { SelectedTaskWatchService } from "../application/selected-task-watch-service.mjs";
 import {
   DeferredInputController,
   isRetryableDeferredLaunchError,
@@ -189,7 +183,6 @@ import {
   defaultAutostartInstallScript,
   ServerControlController,
 } from "../interfaces/web/server-control-controller.mjs";
-import { RunProgressPresentation } from "../application/run-progress-presentation.mjs";
 import { RuntimeTimerCoordinator } from "../runtime/runtime-timer-coordinator.mjs";
 import {
   TurnEndDeliveryService,
@@ -200,7 +193,6 @@ import {
   ManagedRunLifecycleService,
   runInputPreview,
 } from "../application/managed-run-lifecycle-service.mjs";
-import { RunRecoveryCoordinator } from "../application/run-recovery-coordinator.mjs";
 import { RunConflictPolicy } from "../application/run-conflict-policy.mjs";
 import {
   createHubRuntimeSnapshot,
@@ -218,6 +210,8 @@ import { createProviderCatalogComposition } from "./provider-catalog-composition
 import { createRuntimeLifecycleComposition } from "./runtime-lifecycle-composition.mjs";
 import { createStateComposition } from "./state-composition.mjs";
 import { createTelegramControllerComposition } from "./telegram-controller-composition.mjs";
+import { createRunPresentationComposition } from "./run-presentation-composition.mjs";
+import { createRunObservationComposition } from "./run-observation-composition.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
@@ -340,7 +334,6 @@ let stopping = false;
 let autoApprove = config.autoApproveOnStart;
 let restartRequest = null;
 let processingUpdateId = null;
-let telegramDeliveryService = null;
 const runtimeTimers = new RuntimeTimerCoordinator();
 const SELECTED_TASK_WATCH_INTERVAL_MS = 2_000;
 const EXTERNAL_TASK_POLL_INTERVAL_MS = 1_500;
@@ -878,7 +871,6 @@ function deleteTaskTelegramMessages(...args) {
 }
 
 function sendTaskViewText(...args) { return telegramDeliveryService.sendTaskViewText(...args); }
-function progressOutboxKey(...args) { return telegramDeliveryService.progressOutboxKey(...args); }
 function sendReliableRunMessage(...args) {
   return telegramDeliveryService.sendReliableRunMessage(...args);
 }
@@ -2327,7 +2319,10 @@ async function sendCollaborationModePicker() {
   });
 }
 
-const runProgressPresentation = new RunProgressPresentation({
+const {
+  telegramDeliveryService,
+  taskProgress,
+} = createRunPresentationComposition({
   telegramLimit: TELEGRAM_LIMIT,
   claudeModelLabels: CLAUDE_MODEL_LABELS,
   codexReasoningLabels: CODEX_REASONING_LABELS,
@@ -2336,39 +2331,26 @@ const runProgressPresentation = new RunProgressPresentation({
   formatProgressHeading,
   formatProgressHeartbeat,
   showProject: () => config.showProjectButton,
-  taskTitle: runTaskTitle,
-  projectName: (run) => runProject(run).name,
-  currentCodexModel: () => agentPreferences.codexModel,
-  currentClaudeModel: () => agentPreferences.claudeModel,
-  currentCodexReasoning: () => agentPreferences.codexReasoningEffort,
-  currentClaudeReasoning: () => agentPreferences.claudeReasoningEffort,
-  taskExecutionOwners: TASK_EXECUTION_OWNERS,
-});
-
-telegramDeliveryService = new TelegramDeliveryService({
-  dataDir: config.dataDir,
-  messageLimit: TELEGRAM_LIMIT,
-  appendBindings: appendMessageBindings,
-  readBindings: readMessageBindings,
-  removeBindings: removeMessageBindings,
-  pendingApprovalMessageIds: (targetChatId) => [...approvalController.pending.values()]
-    .filter((approval) => approval.chatId === targetChatId)
-    .map((approval) => approval.messageId)
-    .filter(Number.isSafeInteger),
   runTaskTitle,
+  runProject,
+  agentPreferences,
+  taskExecutionOwners: TASK_EXECUTION_OWNERS,
+  dataDir: config.dataDir,
+  appendMessageBindings,
+  readMessageBindings,
+  removeMessageBindings,
+  approvalController,
   samePath,
   taskRuns,
   telegram,
   sendMessageTo,
   deliveryOutbox,
-  scheduleDeliveryFlush: scheduleDeliveryOutboxFlush,
+  scheduleDeliveryOutboxFlush,
   taskRunKey,
-  randomId: randomUUID,
-  progressHeading: (run, done) => runProgressPresentation.heading(run, done),
-  rememberSpeechText: (text, force) => mediaController.rememberSpeechText(text, force),
+  mediaController,
   taskViewCallbackData,
-  completeRun: (run) => managedRunLifecycle.complete(run),
-  rememberLastMessage: (run, text) => runJournal.rememberLastMessage(run, text),
+  managedRunLifecycle,
+  runJournal,
   rememberLastSeenTurn: (run, turnId) => (
     setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(run), turnId, 500)
   ),
@@ -2376,38 +2358,12 @@ telegramDeliveryService = new TelegramDeliveryService({
   selectedTask,
   activeTaskTitle: () => activeThreadTitle,
   activeProjectName: () => activeProject().name,
-  showProject: () => config.showProjectButton,
   taskSwitchSettings,
   showLastMessageReplyMarkup,
   formatTaskSwitchMessage,
   formatTaskAlreadySelectedMessage,
-  getProgressController: () => taskProgress,
   saveState,
-});
-
-const taskProgress = new TaskProgressController({
-  isCurrentRun: (run) => taskRuns.forTask(run) === run,
-  render: (run, done) => runProgressPresentation.render(run, done),
-  sendInitial: (run, text) => sendReliableRunMessage(
-    run,
-    text,
-    {},
-    { kind: "progress" },
-    { supersedeKey: progressOutboxKey(run) },
-  ),
-  deleteMessage: (run, messageId) => telegram("deleteMessage", {
-    chat_id: run.chatId,
-    message_id: messageId,
-  }),
-  removeBindings: (run, messageIds) => telegramDeliveryService
-    .removeStoredBindings(run.chatId, messageIds),
-  editMessage: (run, messageId, text) => telegram("editMessageText", {
-    chat_id: run.chatId,
-    message_id: messageId,
-    text,
-  }),
-  persist: () => saveState(),
-  retainAfterEditError: retainProgressMessageAfterEditError,
+  retainProgressMessageAfterEditError,
 });
 
 function explicitSkillCandidatesFromInput(input) {
@@ -2641,18 +2597,56 @@ async function refreshTaskDiff(run) {
   return run.latestDiff ?? "";
 }
 
-const claudeRunController = new ClaudeRunController({
+const {
+  claudeRunController,
+  taskObserver,
+  claudeTurnLauncher,
+  runRecovery,
+  selectedTaskWatch,
+} = createRunObservationComposition({
   dataDir: config.dataDir,
-  pollIntervalMs: CLAUDE_OUTPUT_POLL_INTERVAL_MS,
-  isCurrentRun: (run) => taskRuns.forTask(run) === run,
+  claudeOutputPollIntervalMs: CLAUDE_OUTPUT_POLL_INTERVAL_MS,
+  taskRuns,
   isStopping: () => stopping,
-  onStreamEvent: handleClaudeStreamEvent,
-  onComplete: finishClaudeRun,
-  onPersist: () => saveState(),
-  onActive: () => startTyping(),
-  onReconnect: (run, alive) => taskProgress.setStage(run, alive
-    ? "Переподключился к выполняющемуся ходу Claude."
-    : "Дочитываю прерванный ход Claude…"),
+  handleClaudeStreamEvent,
+  finishClaudeRun,
+  saveState,
+  startTyping,
+  taskProgress,
+  agentProviders,
+  runCoordinator,
+  findProject,
+  invalidateTaskCatalog,
+  syncTaskRun,
+  codexModelLabel,
+  reasoningLabels: CODEX_REASONING_LABELS,
+  markProgressHeartbeat,
+  progressStalledAfterMs: PROGRESS_STALLED_AFTER_MS,
+  managedRunLifecycle,
+  discardManualContextCompactionRun,
+  savedLastTaskMessage,
+  savedLastTaskMessageRecord,
+  externalPollIntervalMs: EXTERNAL_TASK_POLL_INTERVAL_MS,
+  managedPollIntervalMs: MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS,
+  captureTaskGitBaseline,
+  turnTemporaryFiles,
+  claudeTaskSnapshots,
+  claudePermissionMode: config.claudePermissionMode,
+  autoApprove: () => autoApprove,
+  persistClaudeRunHistory,
+  resolveClaudeInvocation,
+  logWarning: (...args) => console.warn(...args),
+  safelyDeliverRunMessage,
+  sendRunMessage,
+  dismissedExternalTasks,
+  lastSeenTaskTurnIds,
+  runtimeTimers,
+  selectedTaskWatchIntervalMs: SELECTED_TASK_WATCH_INTERVAL_MS,
+  selectedTask,
+  chatId: () => chatId,
+  activeTaskTitle: () => activeThreadTitle,
+  rememberLastTaskMessage,
+  logError: (...args) => console.error(...args.map((value) => value?.message ?? value)),
 });
 
 function persistManagedRunHistory(...args) { return managedRunHistory.persist(...args); }
@@ -2701,73 +2695,6 @@ function applyCodexActiveSnapshot(...args) { return codexTaskSnapshots.applyActi
 async function readCodexTaskSnapshot(run, { threadResult = null, fresh = false } = {}) {
   return codexTaskSnapshots.read(run, { threadResult, fresh });
 }
-
-const taskObserver = new TaskObservationService({
-  providers: agentProviders,
-  taskRuns,
-  runCoordinator,
-  dataDir: config.dataDir,
-  findProject,
-  invalidateTaskCatalog,
-  syncTaskRun,
-  modelLabel: codexModelLabel,
-  reasoningLabels: CODEX_REASONING_LABELS,
-  noteRunActivity: (...args) => taskProgress.noteActivity(...args),
-  scheduleProgressUpdate: (...args) => taskProgress.schedule(...args),
-  setProgressStage: (...args) => taskProgress.setStage(...args),
-  markProgressHeartbeat,
-  progressHeartbeatState: (run, now) => taskProgress.heartbeatState(run, now, PROGRESS_STALLED_AFTER_MS),
-  finishProgress: (...args) => taskProgress.finish(...args),
-  completeRun: (run) => managedRunLifecycle.complete(run),
-  discardManualContextCompactionRun,
-  savedLastTaskMessage,
-  savedLastTaskMessageRecord,
-  externalPollIntervalMs: EXTERNAL_TASK_POLL_INTERVAL_MS,
-  managedPollIntervalMs: MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS,
-  captureGitBaseline: captureTaskGitBaseline,
-});
-const claudeTurnLauncher = new ClaudeTurnLauncher({
-  taskRuns,
-  turnTemporaryFiles,
-  taskSnapshots: claudeTaskSnapshots,
-  permissionMode: config.claudePermissionMode,
-  autoApprove: () => autoApprove,
-  persistHistory: persistClaudeRunHistory,
-  resolveInvocation: resolveClaudeInvocation,
-  runController: claudeRunController,
-  logWarning: (...args) => console.warn(...args),
-});
-
-const runRecovery = new RunRecoveryCoordinator({
-  taskRuns,
-  providers: agentProviders,
-  runCoordinator,
-  observer: taskObserver,
-  progress: taskProgress,
-  startTyping,
-  saveState,
-  safeDeliver: safelyDeliverRunMessage,
-  sendRunMessage,
-  completeRun: (run) => managedRunLifecycle.complete(run),
-  logError: (...args) => console.error(...args.map((value) => value?.message ?? value)),
-});
-
-const selectedTaskWatch = new SelectedTaskWatchService({
-  providers: agentProviders,
-  taskRuns,
-  dismissedTasks: dismissedExternalTasks,
-  lastSeenTurnIds: lastSeenTaskTurnIds,
-  timers: runtimeTimers,
-  intervalMs: SELECTED_TASK_WATCH_INTERVAL_MS,
-  isStopping: () => stopping,
-  selectedTask,
-  chatId: () => chatId,
-  activeTaskTitle: () => activeThreadTitle,
-  rememberLastTaskMessage,
-  createObservedRun: (...args) => taskObserver.create(...args),
-  scheduleObservedRun: (...args) => taskObserver.schedule(...args),
-  saveState,
-});
 
 async function auditRecentCodexTerminalTurns() {
   if (stopping || !codexTransport.running) return;
