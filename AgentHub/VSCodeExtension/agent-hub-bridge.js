@@ -163,7 +163,9 @@ class AgentHubBridge {
   async control(action, params = {}) {
     if (action === "upload-attachment") return this.uploadAttachment(params);
     const { callDesktopControl } = await this.desktop();
-    return callDesktopControl(action, params);
+    return callDesktopControl(action, params, {
+      timeoutMs: action === "submit-bug-report" ? 180_000 : 10_000,
+    });
   }
 
   attachmentDirectory() {

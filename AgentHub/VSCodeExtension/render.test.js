@@ -1113,6 +1113,18 @@ test("background navigation is empty and settings expose the bug report flow", (
   assert.match(app, /void readBugReportFiles\(screenshots\)/u);
   assert.match(app, /emit\("bug-report:submit"/u);
   assert.match(client, /control\("submit-bug-report"/u);
+  assert.match(app, /if \(bugReportForm\) bugReportForm\.hidden = true/u);
+  assert.match(app, /bugReportToggle\?\.setAttribute\("aria-expanded", "false"\)/u);
+  assert.match(client, /action === "submit-bug-report" \? LONG_CONTROL_TIMEOUT_MS/u);
+});
+
+test("Codex file citations render as compact local links", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(app, /function codexFileCitation\(raw\)/u);
+  assert.match(app, /token\.startsWith\(":codex-file-citation\{"\)/u);
+  assert.match(app, /link\.dataset\.agentHubLocalLink = targetLink\.localPath/u);
+  assert.match(styles, /\.file-citation\s*\{/u);
 });
 
 test("composer accepts documents and renders downloadable file cards", () => {

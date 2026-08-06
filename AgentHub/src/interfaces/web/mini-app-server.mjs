@@ -335,6 +335,7 @@ export class MiniAppServer {
   #ownsJournalDatabase;
   #unsubscribeJournal = null;
   #localAccessSecret;
+  #localAccessSecretFile;
   #mobileUpdateDirectory;
   #port;
   #publicAuthAttempts = new PublicAuthAttemptLimiter();
@@ -350,6 +351,7 @@ export class MiniAppServer {
     allowedUserIds = new Set(),
     requireTelegramAuth = false,
     localAccessSecret = "",
+    localAccessSecretFile = null,
     controlHandler = null,
     deviceStore = null,
     assetsDirectory = path.join(AGENT_HUB_ROOT, "assets", "mini-app"),
@@ -365,6 +367,7 @@ export class MiniAppServer {
     this.#allowedUserIds = new Set(allowedUserIds);
     this.#requireTelegramAuth = requireTelegramAuth === true;
     this.#localAccessSecret = String(localAccessSecret);
+    this.#localAccessSecretFile = localAccessSecretFile ? path.resolve(localAccessSecretFile) : null;
     this.#controlHandler = typeof controlHandler === "function" ? controlHandler : null;
     this.#deviceStore = deviceStore;
     this.#assetsDirectory = path.resolve(assetsDirectory);
@@ -448,12 +451,26 @@ export class MiniAppServer {
     );
   }
 
+  async #refreshLocalAccessSecret() {
+    if (!this.#localAccessSecretFile) return this.#localAccessSecret;
+    try {
+      const candidate = String(await readFile(this.#localAccessSecretFile, "utf8")).trim();
+      if (/^[A-Za-z0-9_-]{43,128}$/u.test(candidate)) this.#localAccessSecret = candidate;
+    } catch {
+      // A transient read failure must not invalidate an already active local session.
+    }
+    return this.#localAccessSecret;
+  }
+
   async #authorize(request, response) {
     if (!this.#requestNeedsTelegramAuth(request)) {
       if (!this.#localAccessSecret) return { source: "local-mini-app" };
-      if (
-        validLocalSession(cookieValue(request, LOCAL_SESSION_COOKIE), this.#localAccessSecret)
-      ) {
+      const cookie = cookieValue(request, LOCAL_SESSION_COOKIE);
+      let localAccessSecret = this.#localAccessSecret;
+      if (!validLocalSession(cookie, localAccessSecret)) {
+        localAccessSecret = await this.#refreshLocalAccessSecret();
+      }
+      if (validLocalSession(cookie, localAccessSecret)) {
         return { source: "local-mini-app" };
       }
       json(response, 401, { error: "Откройте локальный Agent Hub через защищённый ярлык." });
@@ -537,13 +554,17 @@ export class MiniAppServer {
       }
       const authorization = String(request.headers.authorization ?? "");
       const supplied = authorization.startsWith("local ") ? authorization.slice(6).trim() : "";
-      if (!this.#localAccessSecret || !safeEqualText(supplied, this.#localAccessSecret)) {
+      let localAccessSecret = this.#localAccessSecret;
+      if (!localAccessSecret || !safeEqualText(supplied, localAccessSecret)) {
+        localAccessSecret = await this.#refreshLocalAccessSecret();
+      }
+      if (!localAccessSecret || !safeEqualText(supplied, localAccessSecret)) {
         json(response, 403, { error: "Локальная авторизация недействительна." }, method);
         return;
       }
       json(response, 200, { ok: true }, method, {
         headers: {
-          "Set-Cookie": `${LOCAL_SESSION_COOKIE}=${localSessionValue(this.#localAccessSecret)};`
+          "Set-Cookie": `${LOCAL_SESSION_COOKIE}=${localSessionValue(localAccessSecret)};`
             + ` Max-Age=${LOCAL_SESSION_MAX_AGE_SECONDS}; Path=/; HttpOnly; SameSite=Strict`,
         },
       });

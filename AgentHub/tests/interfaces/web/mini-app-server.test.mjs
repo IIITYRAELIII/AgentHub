@@ -924,6 +924,46 @@ test("local Mini App requires a protected session and rejects CSRF-shaped contro
   }
 });
 
+test("local Mini App reloads a rotated access secret without a server restart", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-local-secret-rotation-"));
+  const secretFile = path.join(directory, "local-web.secret");
+  const initialSecret = "a".repeat(43);
+  const rotatedSecret = "b".repeat(43);
+  await writeFile(secretFile, `${initialSecret}\n`, "utf8");
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    localAccessSecret: initialSecret,
+    localAccessSecretFile: secretFile,
+  });
+  try {
+    const address = await server.start();
+    await writeFile(secretFile, `${rotatedSecret}\n`, "utf8");
+    const session = await fetch(`${address.url}api/local-session`, {
+      method: "POST",
+      headers: {
+        Authorization: `local ${rotatedSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+    assert.equal(session.status, 200);
+    assert.match(String(session.headers.get("set-cookie") ?? ""), /^agent_hub_local=/u);
+    assert.equal((await fetch(`${address.url}api/local-session`, {
+      method: "POST",
+      headers: {
+        Authorization: `local ${initialSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    })).status, 403);
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Mini App serves old days and turn bodies through lazy endpoints", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mini-app-lazy-"));
   const days = Array.from({ length: 6 }, (_, index) => {

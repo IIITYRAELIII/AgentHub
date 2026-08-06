@@ -105,8 +105,8 @@ test("installed VS Code bridge resolves backend modules from the active runtime"
     await mkdir(releaseRoot, { recursive: true });
     await writeFile(path.join(root, "current.json"), JSON.stringify({ current: release }), "utf8");
     await writeFile(path.join(releaseRoot, "desktop-control.mjs"), [
-      "export async function callDesktopControl(action, params) {",
-      "  return { action, params, installedLayout: true };",
+      "export async function callDesktopControl(action, params, options) {",
+      "  return { action, params, options, installedLayout: true };",
       "}",
     ].join("\n"), "utf8");
     const bridge = new AgentHubBridge({
@@ -115,6 +115,13 @@ test("installed VS Code bridge resolves backend modules from the active runtime"
     assert.deepEqual(await bridge.control("snapshot", { sample: 1 }), {
       action: "snapshot",
       params: { sample: 1 },
+      options: { timeoutMs: 10_000 },
+      installedLayout: true,
+    });
+    assert.deepEqual(await bridge.control("submit-bug-report", { text: "bug" }), {
+      action: "submit-bug-report",
+      params: { text: "bug" },
+      options: { timeoutMs: 180_000 },
       installedLayout: true,
     });
   } finally {

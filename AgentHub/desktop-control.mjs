@@ -315,7 +315,13 @@ export class DesktopControlServer {
             }
             const request = validateDesktopControlRequest(parseProtocolLine(payload.toString("utf8")));
             socket.setTimeout(0);
-            const result = await this.#handler(request);
+            const result = await this.#handler({
+              ...request,
+              context: {
+                ...(request.context ?? {}),
+                source: request.context?.source ?? "desktop-control",
+              },
+            });
             const response = `${JSON.stringify({ ok: true, result: result ?? null })}\n`;
             if (Buffer.byteLength(response, "utf8") > MAX_RESPONSE_BYTES) {
               throw new Error("Desktop control response is too large");

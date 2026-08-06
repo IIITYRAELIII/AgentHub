@@ -2546,14 +2546,47 @@ function markdownLink(raw) {
   }
 }
 
+function codexFileCitation(raw) {
+  const token = String(raw ?? "");
+  const attributes = Object.fromEntries(
+    [...token.matchAll(/([\w-]+)="([^"]*)"/gu)]
+      .map((match) => [String(match[1]), String(match[2])]),
+  );
+  const path = String(attributes.path ?? "").trim();
+  if (!path) return null;
+  const name = path.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) || "Файл";
+  const location = [attributes.sheet, attributes.range].filter(Boolean).join(" · ");
+  return { path, label: location ? `${name} · ${location}` : name };
+}
+
 function appendInlineMarkdown(target, source) {
   const text = String(source ?? "");
-  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\([^)\n]+\))/gu;
+  const pattern = /(:codex-file-citation\{[^}\n]+\}|`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\([^)\n]+\))/gu;
   let cursor = 0;
   for (const match of text.matchAll(pattern)) {
     target.append(document.createTextNode(text.slice(cursor, match.index)));
     const token = match[0];
-    if (token.startsWith("`")) {
+    if (token.startsWith(":codex-file-citation{")) {
+      const citation = codexFileCitation(token);
+      const targetLink = markdownLink(citation?.path);
+      const attributes = {
+        class: "file-citation",
+        text: citation?.label ?? "Файл",
+        title: citation?.path ?? "",
+      };
+      if (targetLink) {
+        const link = el("a", {
+          ...attributes,
+          href: targetLink.href,
+          target: "_blank",
+          rel: "noopener noreferrer",
+        });
+        if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
+        target.append(link);
+      } else {
+        target.append(el("span", attributes));
+      }
+    } else if (token.startsWith("`")) {
       target.append(el("code", { text: token.slice(1, -1) }));
     } else if (token.startsWith("**")) {
       const strong = el("strong");
@@ -4391,8 +4424,9 @@ const AgentHub = {
     bugReportAttachments = [];
     if (bugReportText) bugReportText.value = "";
     renderBugReportAttachments();
-    const folder = String(result.folder ?? "").trim();
-    setBugReportStatus(folder ? `Отчёт отправлен: ${folder}` : "Отчёт отправлен.", "success");
+    setBugReportStatus();
+    if (bugReportForm) bugReportForm.hidden = true;
+    bugReportToggle?.setAttribute("aria-expanded", "false");
     showToast("Отчёт о баге отправлен");
   },
   /** Живой ход: { author, stage, reasoning, text } или null, чтобы скрыть. */

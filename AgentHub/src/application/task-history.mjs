@@ -15,6 +15,37 @@ function messageItemId(turnId, role, item, index) {
   return exact || `${String(turnId ?? "turn")}:${role}:${index}`;
 }
 
+function inlineImageAttachments(value) {
+  const source = String(value ?? "");
+  return [...source.matchAll(/<image\b([^>]*)>\s*(?:<\/image>)?/giu)]
+    .map((match) => {
+      const attributes = String(match[1] ?? "");
+      const pathMatch = attributes.match(/\bpath="([^"]+)"/iu);
+      const nameMatch = attributes.match(/\bname=\[([^\]]+)\]/iu);
+      return {
+        name: String(nameMatch?.[1] ?? "").trim(),
+        path: String(pathMatch?.[1] ?? "").trim(),
+      };
+    })
+    .filter((item) => item.path);
+}
+
+function stripInlineImageTags(value) {
+  return String(value ?? "")
+    .replace(/<image\b[^>]*>\s*(?:<\/image>)?/giu, "")
+    .trim();
+}
+
+function uniquePathAttachments(values) {
+  const known = new Set();
+  return values.filter((item) => {
+    const key = String(item?.path ?? "").trim().toLowerCase();
+    if (!key || known.has(key)) return false;
+    known.add(key);
+    return true;
+  });
+}
+
 function desktopPromptEnvelope(value) {
   const source = String(value ?? "").trim();
   const heading = /^# Files mentioned by the user:\s*$/im;
@@ -26,25 +57,27 @@ function desktopPromptEnvelope(value) {
   if (!requestMatch || requestMatch.index <= headingMatch.index) return null;
 
   const filesBlock = source.slice(headingMatch[0].length, requestMatch.index);
-  const attachments = [...filesBlock.matchAll(/^##\s+([^:\r\n]+):\s*(.+?)\s*$/gmu)]
+  const fileAttachments = [...filesBlock.matchAll(/^##\s+([^:\r\n]+):\s*(.+?)\s*$/gmu)]
     .map((match) => ({
       name: String(match[1] ?? "").trim(),
       path: String(match[2] ?? "").trim(),
     }))
     .filter((item) => item.path);
+  const requestText = source.slice(requestMatch.index + requestMatch[0].length);
+  const attachments = uniquePathAttachments([
+    ...fileAttachments,
+    ...inlineImageAttachments(requestText),
+  ]);
   const attachmentPaths = attachments.map((item) => item.path);
-  const text = source
-    .slice(requestMatch.index + requestMatch[0].length)
-    .replace(/<image\s+name=\[[^\]]+\]\s+path="[^"]+"\s*>/giu, "")
-    .trim();
+  const text = stripInlineImageTags(requestText);
   return { text, attachments, attachmentPaths };
 }
 
-function codexAttachmentSources(content, envelope) {
+function codexAttachmentSources(content, envelope, rawText = "") {
   if (envelope?.attachments.length) {
     return envelope.attachments.map((item) => ({ type: "path", value: item.path, name: item.name }));
   }
-  return (Array.isArray(content) ? content : []).flatMap((item) => {
+  const values = (Array.isArray(content) ? content : []).flatMap((item) => {
     if (item?.type === "localImage" && String(item.path ?? "").trim()) {
       return [{ type: "path", value: String(item.path).trim() }];
     }
@@ -56,6 +89,18 @@ function codexAttachmentSources(content, envelope) {
       return [{ type: "data", value: dataUrl }];
     }
     return [];
+  });
+  values.push(...inlineImageAttachments(rawText).map((item) => ({
+    type: "path",
+    value: item.path,
+    ...(item.name ? { name: item.name } : {}),
+  })));
+  const known = new Set();
+  return values.filter((item) => {
+    const key = `${item.type}\0${String(item.value ?? "").toLowerCase()}`;
+    if (known.has(key)) return false;
+    known.add(key);
+    return true;
   });
 }
 
@@ -122,7 +167,7 @@ function codexTurnMessages(turn) {
     if (item?.type === "userMessage") {
       const rawText = textContent(item.content);
       const envelope = desktopPromptEnvelope(rawText);
-      const attachmentSources = codexAttachmentSources(item.content, envelope);
+      const attachmentSources = codexAttachmentSources(item.content, envelope, rawText);
       const responseAnnotations = responseAnnotationDetails(rawText);
       const text = displayUserPrompt(rawText)
         || (attachmentSources.length ? (envelope ? "Вложение" : "Изображение") : "");
@@ -219,6 +264,7 @@ export function displayUserPrompt(value) {
   const telegramReplyAt = text.lastIndexOf(telegramReplyMarker);
   if (telegramReplyAt >= 0) text = text.slice(telegramReplyAt + telegramReplyMarker.length).trim();
   text = text
+    .replace(/<image\b[^>]*>\s*(?:<\/image>)?/giu, "")
     .replace(/<ide_[^>]+>[\s\S]*?<\/ide_[^>]+>/gi, "")
     .replace(/<environment_context>[\s\S]*?<\/environment_context>/gi, "")
     .trim();

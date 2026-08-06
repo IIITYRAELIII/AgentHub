@@ -73,6 +73,7 @@ export async function createHubInfrastructure({
       ...config.miniApp,
       ...serverOptions,
       localAccessSecret: localWebSecret,
+      localAccessSecretFile: path.join(runtimeCommandRoot, "local-web.secret"),
     })
     : null;
   const publicMiniAppServer = config.miniApp.enabled && config.miniApp.quickTunnel.enabled

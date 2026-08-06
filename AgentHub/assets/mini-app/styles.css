@@ -4655,6 +4655,23 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   text-underline-offset: 0.15em;
 }
 
+.file-citation {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  border-radius: var(--radius-chip);
+  color: var(--accent);
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 0.84em;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0.08rem 0.4rem;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
 .msg-body code,
 .msg-reasoning code {
   background: var(--surface-2);

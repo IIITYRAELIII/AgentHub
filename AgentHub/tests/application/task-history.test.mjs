@@ -464,6 +464,51 @@ test("Codex Desktop screenshots are retained as private attachment references", 
   }]);
 });
 
+test("standalone Codex image tags become attachments instead of visible service text", () => {
+  const [exchange] = codexThreadHistory([{
+    id: "turn-with-legacy-image-tag",
+    status: "completed",
+    items: [{
+      type: "userMessage",
+      content: [{ type: "text", text: [
+        "Проанализируй приложенное изображение.",
+        '<image name=[Image #1] path="C:/AgentHub/attachments/screenshot.png">',
+        "</image>",
+      ].join("\n") }],
+    }],
+  }]);
+  assert.equal(exchange.prompt, "Проанализируй приложенное изображение.");
+  assert.deepEqual(exchange.messages[0].attachmentSources, [{
+    type: "path",
+    value: "C:/AgentHub/attachments/screenshot.png",
+    name: "Image #1",
+  }]);
+});
+
+test("desktop prompt envelope deduplicates an image listed twice", () => {
+  const [exchange] = codexThreadHistory([{
+    id: "turn-with-duplicate-image-metadata",
+    status: "completed",
+    items: [{
+      type: "userMessage",
+      content: [{ type: "text", text: [
+        "# Files mentioned by the user:",
+        "## screenshot.png: C:/AgentHub/attachments/screenshot.png",
+        "## My request for Codex:",
+        "Проверь скрин",
+        '<image name=[Image #1] path="C:/AgentHub/attachments/screenshot.png">',
+        "</image>",
+      ].join("\n") }],
+    }],
+  }]);
+  assert.equal(exchange.prompt, "Проверь скрин");
+  assert.deepEqual(exchange.messages[0].attachmentSources, [{
+    type: "path",
+    value: "C:/AgentHub/attachments/screenshot.png",
+    name: "screenshot.png",
+  }]);
+});
+
 test("Codex Desktop documents retain their display names after history reload", () => {
   const [exchange] = codexThreadHistory([{
     id: "turn-with-document",

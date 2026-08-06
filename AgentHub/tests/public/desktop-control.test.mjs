@@ -57,7 +57,12 @@ test("desktop control exchanges authenticated RPC and rotates endpoint after res
   const server = new DesktopControlServer({
     runtimeRoot,
     protectSecret: async (file) => { protectedFiles.push(path.basename(file)); },
-    handler: async ({ action, params }) => ({ action, value: params.value, tasks: ["один", "два"] }),
+    handler: async ({ action, params, context }) => ({
+      action,
+      source: context?.source,
+      value: params.value,
+      tasks: ["один", "два"],
+    }),
   });
   try {
     const staleEndpointId = "f".repeat(64);
@@ -72,6 +77,7 @@ test("desktop control exchanges authenticated RPC and rotates endpoint after res
     assert.notEqual(firstEndpoint.endpointId, staleEndpointId);
     assert.deepEqual(await callDesktopControl("snapshot", { value: 42 }, { runtimeRoot }), {
       action: "snapshot",
+      source: "desktop-control",
       value: 42,
       tasks: ["один", "два"],
     });

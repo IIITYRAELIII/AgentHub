@@ -34,6 +34,8 @@ const HISTORY_ATTACHMENT_REFRESH_MS = 10_000;
 const HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS = 120_000;
 const REMOTE_RESULT_LONG_POLL_MS = 25_000;
 const REMOTE_RESULT_FALLBACK_POLL_MS = 600;
+const DEFAULT_CONTROL_TIMEOUT_MS = 45_000;
+const LONG_CONTROL_TIMEOUT_MS = 180_000;
 const HISTORY_CATCH_UP_TIMEOUT_MS = 120_000;
 const CONNECTION_OFFLINE_FAILURES = 3;
 const CONNECTION_OFFLINE_GRACE_MS = 6_000;
@@ -529,7 +531,7 @@ function bridgeCall(action, params = {}) {
     const timer = window.setTimeout(() => {
       pendingBridgeCalls.delete(id);
       reject(markConnectionFailure(new Error("Agent Hub в VS Code не ответил вовремя")));
-    }, 30_000);
+    }, action === "submit-bug-report" ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS);
     pendingBridgeCalls.set(id, { resolve, reject, timer });
     vscode.postMessage({ type: "agenthub:control", id, action, params });
   });
@@ -562,9 +564,9 @@ window.addEventListener("message", (event) => {
   }
 });
 
-async function waitRemoteResult(commandId) {
+async function waitRemoteResult(commandId, timeoutMs = DEFAULT_CONTROL_TIMEOUT_MS) {
   await localSessionReady;
-  const deadline = Date.now() + 45_000;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const response = await hubFetch(
       `/api/control/result?id=${encodeURIComponent(commandId)}&waitMs=${REMOTE_RESULT_LONG_POLL_MS}`,
@@ -607,7 +609,10 @@ async function control(action, params = {}) {
     throw new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`));
   }
   return payload.pending && payload.id
-    ? waitRemoteResult(payload.id)
+    ? waitRemoteResult(
+        payload.id,
+        action === "submit-bug-report" ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS,
+      )
     : payload.result;
 }
 
