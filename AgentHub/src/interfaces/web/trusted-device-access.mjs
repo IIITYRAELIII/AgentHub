@@ -15,11 +15,17 @@ export function resolveTrustedDeviceUserId(
 
 export function createTrustedDeviceManager({ workerEnabled = false, publisher = null, localStore } = {}) {
   if (workerEnabled) {
-    if (!publisher) throw new Error("Доверенные устройства недоступны без Mini App Worker publisher");
+    const currentPublisher = () => {
+      const activePublisher = typeof publisher === "function" ? publisher() : publisher;
+      if (!activePublisher) {
+        throw new Error("Доверенные устройства недоступны без Mini App Worker publisher");
+      }
+      return activePublisher;
+    };
     return {
-      list: (userId) => publisher.trustedDevices(userId),
-      createPairing: (userId) => publisher.createDevicePairing(userId),
-      revoke: (userId, deviceId) => publisher.revokeDevice(userId, deviceId),
+      list: (userId) => currentPublisher().trustedDevices(userId),
+      createPairing: (userId) => currentPublisher().createDevicePairing(userId),
+      revoke: (userId, deviceId) => currentPublisher().revokeDevice(userId, deviceId),
     };
   }
   if (!localStore) throw new Error("Локальное хранилище доверенных устройств недоступно");

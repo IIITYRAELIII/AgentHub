@@ -161,7 +161,7 @@ export function createDesktopShellComposition({
       searchTurns: (...args) => workLogUsageStore.searchTurns(...args),
       projectRoots: () => projects.map((project) => project.path),
       samePath,
-      miniAppPublisher: miniAppLifecycle.publisher,
+      miniAppPublisher: () => miniAppLifecycle.publisher,
       trustedDeviceStore: runtime.trustedDeviceStore,
       resolveTask: desktopCommandsPort.api.messageTarget,
       lastTaskMessage: runtime.savedLastTaskMessageRecord,

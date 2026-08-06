@@ -75,3 +75,26 @@ test("trusted device management follows the public Worker when it is enabled", a
     ["local-list", "local"],
   ]);
 });
+
+test("trusted device management resolves a Worker started after composition", async () => {
+  const calls = [];
+  let publisher = null;
+  const remote = createTrustedDeviceManager({
+    workerEnabled: true,
+    publisher: () => publisher,
+  });
+
+  assert.throws(
+    () => remote.list("42"),
+    /недоступны без Mini App Worker publisher/u,
+  );
+
+  publisher = {
+    trustedDevices: async (userId) => calls.push(["worker-list", userId]),
+    createDevicePairing: async () => {},
+    revokeDevice: async () => {},
+  };
+  await remote.list("42");
+
+  assert.deepEqual(calls, [["worker-list", "42"]]);
+});
