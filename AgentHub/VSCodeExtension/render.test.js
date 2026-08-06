@@ -1582,8 +1582,12 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   assert.match(app, /streamCount > 1 \? `Stream \$\{stream\.ordinal\}` : ""/u);
   // В широкой оболочке можно держать до четырёх потоков; mobile — один.
   assert.match(app, /const limit = surface === "mobile" \? 1 : 4;/u);
-  assert.match(app, /streams\.slice\(0, limit\)\.map\(\(stream\) => stream\.id\)/u);
+  assert.match(app, /function defaultOpenStreamIds\(streams, selectedStreamId, limit\)/u);
+  assert.match(app, /configuredOpenStreamWorkspaces/u);
   assert.match(app, /function toggleOpenStream\(workspaceId, streamId, streams\)/u);
+  const toggle = app.match(/function toggleOpenStream\([^)]*\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
+  assert.match(toggle, /persistOpenStreams\(\)/u);
+  assert.match(toggle, /renderStreamChatDeck\(\)/u);
   // Потоки можно свернуть независимо, не скрывая сам Workspace.
   assert.match(styles, /\.task-stream-group:not\(\[data-open\]\) \.task-stream-threads\s*\{\s*display: none;/su);
   assert.match(styles, /\.task-stream-heading\[aria-expanded="true"\]::before/u);

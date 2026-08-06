@@ -924,6 +924,7 @@ const state = {
   // selects a Thread; a wide shell may keep several Streams from the same
   // Workspace visible without making another device jump to that layout.
   openStreamsByWorkspace: new Map(),
+  configuredOpenStreamWorkspaces: new Set(),
   visibleStreamTaskIds: [],
 };
 
@@ -1012,28 +1013,83 @@ function workspaceKey(task) {
     || `legacy:${String(task?.project ?? "").trim() || "unassigned"}`;
 }
 
+const OPEN_STREAMS_STORAGE_VERSION = "agent-hub:workspace-open-streams:v1";
+let openStreamsRestored = false;
+
+function openStreamsStorageKey() {
+  return `${OPEN_STREAMS_STORAGE_VERSION}:${draftStorageSurface()}`;
+}
+
+function restoreOpenStreams() {
+  if (openStreamsRestored) return;
+  openStreamsRestored = true;
+  try {
+    const stored = JSON.parse(localStorage.getItem(openStreamsStorageKey()) ?? "[]");
+    if (!Array.isArray(stored)) return;
+    for (const entry of stored.slice(0, 100)) {
+      const workspaceId = String(entry?.workspaceId ?? "").trim();
+      const streamIds = [...new Set((Array.isArray(entry?.streamIds) ? entry.streamIds : [])
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean))].slice(-4);
+      if (!workspaceId || !streamIds.length) continue;
+      state.openStreamsByWorkspace.set(workspaceId, streamIds);
+      state.configuredOpenStreamWorkspaces.add(workspaceId);
+    }
+  } catch {
+    // Недоступный localStorage не мешает текущей вкладке хранить выбор в памяти.
+  }
+}
+
+function persistOpenStreams() {
+  try {
+    const stored = [...state.configuredOpenStreamWorkspaces].slice(-100).map((workspaceId) => ({
+      workspaceId,
+      streamIds: (state.openStreamsByWorkspace.get(workspaceId) ?? []).slice(-4),
+    }));
+    localStorage.setItem(openStreamsStorageKey(), JSON.stringify(stored));
+  } catch {
+    // Выбор остаётся действительным до закрытия вкладки.
+  }
+}
+
+function defaultOpenStreamIds(streams, selectedStreamId, limit) {
+  const defaults = streams.slice(0, limit).map((stream) => stream.id);
+  if (selectedStreamId && !defaults.includes(selectedStreamId)) {
+    if (defaults.length >= limit) defaults[defaults.length - 1] = selectedStreamId;
+    else defaults.push(selectedStreamId);
+  }
+  return defaults;
+}
+
 function reconcileOpenStreams(workspaceId, streams) {
+  restoreOpenStreams();
   const available = new Set(streams.map((stream) => stream.id));
   const selected = currentTask();
   const selectedInWorkspace = selected && workspaceKey(selected) === workspaceId
     ? streamKey(selected)
     : "";
   const previous = state.openStreamsByWorkspace.get(workspaceId) ?? [];
-  const next = previous.filter((streamId) => available.has(streamId));
-  if (selectedInWorkspace && !next.includes(selectedInWorkspace)) next.push(selectedInWorkspace);
   const limit = surface === "mobile" ? 1 : 4;
-  const normalized = next.slice(-limit);
-  if (!normalized.length && streams.length) {
-    const defaults = surface === "mobile"
-      ? [selectedInWorkspace || streams[0].id]
-      : streams.slice(0, limit).map((stream) => stream.id);
-    normalized.push(...defaults);
+  let normalized;
+  if (surface === "mobile") {
+    normalized = [selectedInWorkspace || previous.find((streamId) => available.has(streamId)) || streams[0]?.id]
+      .filter(Boolean);
+  } else if (!state.configuredOpenStreamWorkspaces.has(workspaceId)) {
+    // Каталог приходит частями. Пока пользователь сам не изменил раскладку,
+    // дополняем её новыми Streams до четырёх вместо фиксации первого пришедшего.
+    normalized = defaultOpenStreamIds(streams, selectedInWorkspace, limit);
+  } else {
+    const next = previous.filter((streamId) => available.has(streamId));
+    if (selectedInWorkspace && !next.includes(selectedInWorkspace)) next.push(selectedInWorkspace);
+    if (!next.length && streams.length) next.push(selectedInWorkspace || streams[0].id);
+    normalized = next.slice(-limit);
   }
   state.openStreamsByWorkspace.set(workspaceId, normalized);
   return new Set(normalized);
 }
 
 function toggleOpenStream(workspaceId, streamId, streams) {
+  restoreOpenStreams();
   if (surface === "mobile") {
     const stream = streams.find((value) => value.id === streamId);
     const target = stream?.tasks.find((task) => task.id === state.selectedId) ?? stream?.tasks[0];
@@ -1046,7 +1102,10 @@ function toggleOpenStream(workspaceId, streamId, streams) {
   if (!selected.includes(streamId)) next.push(streamId);
   if (!next.length) next.push(streamId);
   state.openStreamsByWorkspace.set(workspaceId, next.slice(-4));
+  state.configuredOpenStreamWorkspaces.add(workspaceId);
+  persistOpenStreams();
   renderTasks();
+  renderStreamChatDeck();
 }
 
 /* =========================================================== роутер видов */
