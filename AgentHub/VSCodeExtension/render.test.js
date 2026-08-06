@@ -720,10 +720,12 @@ test("BlackHole keeps three scenes around the selected Focus Deck", () => {
     );
   }
   /* У BlackHole активный Stream становится центром палубы, а первый соседний
-     уходит влево. Так композиция сохраняется при двух, трёх и четырёх чатах. */
+     уходит влево. Прямоугольная рамка не обрезает действия в верхнем углу. */
   assert.match(styles, /\.stream-chat-columns\[data-multi-stream\]\s*\{[\s\S]*display:\s*flex/u);
-  assert.match(styles, /> \.chat-pane\s*\{[\s\S]*clip-path:\s*polygon/u);
+  assert.match(styles, /> \.chat-pane\s*\{[^}]*border-radius:\s*0;/su);
+  assert.doesNotMatch(styles, /> \.chat-pane\s*\{[^}]*clip-path:/su);
   assert.match(styles, /\.stream-chat-preview:first-of-type\s*\{[\s\S]*order:\s*-1 !important/u);
+  assert.match(styles, /\.msg-user\s*\{[^}]*border-color:\s*rgb\(134 195 248 \/ 30%\)/su);
   assert.match(styles, /\.brand-mark svg\s*\{[\s\S]*display:\s*block/u);
   assert.match(styles, /@keyframes blackhole-lensing/u);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/u);
