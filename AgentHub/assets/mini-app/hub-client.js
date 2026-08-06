@@ -1321,9 +1321,11 @@ agentHub.on("stream:rename", ({ streamId, name }) => runAction(async () => apply
 agentHub.on("stream:move", ({ streamId, workspaceId }) => runAction(async () => applySnapshot(
   await control("move-stream", { streamId, workspaceId }),
 )));
-agentHub.on("stream:rebirth", ({ streamId, provider }) => runAction(async () => {
-  const snapshot = await control("new-task", {
-    provider: ["codex", "claude"].includes(provider) ? provider : (lastSnapshot?.settings?.provider ?? "codex"),
+agentHub.on("stream:rebirth", ({ streamId, provider, taskId: targetTaskId }) => runAction(async () => {
+  const identity = exactTaskParams(targetTaskId || selectedTaskId);
+  const snapshot = await control("rotate-stream", {
+    ...identity,
+    provider: ["codex", "claude"].includes(provider) ? provider : identity.provider,
     streamId,
   });
   const created = (snapshot.tasks ?? []).find((task) => task.selected && task.streamId === streamId);
@@ -1335,7 +1337,7 @@ agentHub.on("stream:rebirth", ({ streamId, provider }) => runAction(async () => 
   pendingSelectionId = "";
   if (created) replaceRoute(`#/chat/${encodeURIComponent(created.provider)}/${encodeURIComponent(created.threadId)}`);
   agentHub.showSelectedTask();
-  agentHub.toast("Создан новый Thread в текущем Stream");
+  agentHub.toast("Ротация завершена");
 }));
 agentHub.on("stream:new", ({ workspaceId, streamName }) => runAction(async () => {
   const provider = lastSnapshot?.settings?.provider ?? "codex";

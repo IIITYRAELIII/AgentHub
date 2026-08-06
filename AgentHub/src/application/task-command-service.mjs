@@ -29,6 +29,7 @@ export class TaskCommandService {
     switchProvider,
     workspaceCatalog,
     selectionStore,
+    rotateCodexThread,
   }) {
     Object.assign(this, {
       resolveTarget,
@@ -60,6 +61,7 @@ export class TaskCommandService {
       switchProvider,
       workspaceCatalog,
       selectionStore,
+      rotateCodexThread,
     });
   }
 
@@ -193,5 +195,46 @@ export class TaskCommandService {
     this.invalidateCatalog();
     await this.saveState();
     return this.snapshot({ refresh: true });
+  }
+
+  async rotate(params = {}) {
+    const target = await this.resolveTarget(params);
+    if (target.provider !== "codex") throw new Error("Ротация пока доступна только для Codex");
+    if (this.runForTask(target)) throw new Error("Сначала завершите или остановите текущий ход");
+    const binding = this.workspaceCatalog.thread({
+      provider: target.provider,
+      threadId: target.threadId,
+    });
+    const streamId = String(params.streamId ?? binding?.streamId ?? "").trim();
+    const stream = streamId ? this.workspaceCatalog.stream(streamId) : null;
+    if (!binding || !stream || binding.streamId !== stream.id) throw new Error("Stream не найден");
+    const workspace = this.workspaceCatalog.workspace(stream.workspaceId);
+    if (!workspace) throw new Error("Workspace не найден");
+
+    const rotated = await this.rotateCodexThread(target);
+    const threadId = String(rotated?.thread?.id ?? "").trim();
+    if (!threadId) throw new Error("Codex App Server не создал новый Thread");
+    this.workspaceCatalog.bindThread({
+      provider: "codex",
+      threadId,
+      streamId: stream.id,
+      projectRoot: binding.projectRoot || target.projectRoot,
+      source: "rebirth",
+    });
+    this.selectionStore.setThread(threadId, {
+      provider: "codex",
+      streamId: stream.id,
+      title: workspace.name,
+    });
+    this.invalidateCatalog();
+    await this.saveState();
+    return {
+      ...await this.snapshot({ refresh: true }),
+      rotation: {
+        sourceThreadId: target.threadId,
+        threadId,
+        streamId: stream.id,
+      },
+    };
   }
 }

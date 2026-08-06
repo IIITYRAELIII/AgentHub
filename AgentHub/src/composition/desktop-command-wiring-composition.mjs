@@ -61,6 +61,7 @@ export function createDesktopCommandWiring({
       dismissedExternalTasks: services.dismissedExternalTasks,
       completeRun: services.completeRun,
       createTask: services.createTask,
+      rotateCodexThread: (target) => services.codexContextMaintenance.rotate(target),
       workspaceCatalog: services.workspaceCatalog,
       selectionStore: services.selectionStore,
       activeProvider: state.activeProvider,

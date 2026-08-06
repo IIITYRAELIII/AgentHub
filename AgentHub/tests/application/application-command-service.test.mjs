@@ -8,7 +8,7 @@ import {
 
 function service(calls) {
   const handlers = Object.fromEntries([
-    "selectTask", "createTask", "renameTask", "archiveTask",
+    "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
   ].map((name) => [name, (...args) => { calls.push({ name, args }); return name; }]));
@@ -67,4 +67,15 @@ test("workspace and stream commands use the shared command path", async () => {
       args: [{ streamId: "stream-1", workspaceId: "workspace-2" }],
     },
   ]);
+});
+
+test("Stream rotation keeps an exact task-scoped command target", async () => {
+  const calls = [];
+  const commands = service(calls);
+  const target = commandTaskTarget({ streamId: "stream-1", provider: "codex", threadId: "thread-1" });
+  await commands.dispatch("stream.rotate", {}, { source: "desktop" }, { target });
+  assert.deepEqual(calls[0], {
+    name: "rotateStream",
+    args: [{ ...target }],
+  });
 });

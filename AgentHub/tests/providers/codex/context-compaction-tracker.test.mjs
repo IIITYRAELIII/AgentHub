@@ -100,3 +100,13 @@ test("both current and wire-format compaction item names are accepted", () => {
   assert.equal(isContextCompactionItem({ type: "context_compaction" }), true);
   assert.equal(isContextCompactionItem({ type: "agentMessage" }), false);
 });
+
+test("rotation can await the exact compaction without polling", async () => {
+  const tracker = new ContextCompactionTracker({ idFactory: () => "rotation-id" });
+  const started = tracker.begin("thread-rotation", { origin: "manual" });
+  const settlement = tracker.waitForSettlement("thread-rotation", started.id);
+  tracker.complete("thread-rotation", { itemId: "wire-item" });
+  assert.equal((await settlement)?.status, "completed");
+  assert.equal(await tracker.waitForSettlement("thread-rotation", "other-id"), null);
+  tracker.dispose();
+});

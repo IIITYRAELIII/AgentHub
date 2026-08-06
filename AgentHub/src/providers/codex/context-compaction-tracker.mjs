@@ -40,6 +40,7 @@ export class ContextCompactionTracker {
     this.onSettled = onSettled;
     this.entries = new Map();
     this.timers = new Map();
+    this.waiters = new Map();
   }
 
   get(threadId) {
@@ -59,6 +60,19 @@ export class ContextCompactionTracker {
 
   runningCount() {
     return [...this.entries.values()].filter((entry) => entry.status === "running").length;
+  }
+
+  waitForSettlement(threadId, expectedId = null) {
+    const key = normalizedThreadId(threadId);
+    if (!key) return Promise.resolve(null);
+    const current = this.entries.get(key) ?? null;
+    if (!current || (expectedId && current.id !== expectedId)) return Promise.resolve(null);
+    if (current.status !== "running") return Promise.resolve(current);
+    return new Promise((resolve) => {
+      const waiters = this.waiters.get(key) ?? [];
+      waiters.push({ expectedId, resolve });
+      this.waiters.set(key, waiters);
+    });
   }
 
   begin(threadId, {
@@ -159,6 +173,10 @@ export class ContextCompactionTracker {
   dispose() {
     for (const timer of this.timers.values()) this.clearTimer(timer);
     this.timers.clear();
+    for (const waiters of this.waiters.values()) {
+      for (const waiter of waiters) waiter.resolve(null);
+    }
+    this.waiters.clear();
   }
 
   store(key, value) {
@@ -195,6 +213,16 @@ export class ContextCompactionTracker {
   }
 
   notifySettled(threadId, record) {
+    const waiters = this.waiters.get(threadId) ?? [];
+    if (waiters.length) {
+      const remaining = [];
+      for (const waiter of waiters) {
+        if (!waiter.expectedId || !record || waiter.expectedId === record.id) waiter.resolve(record);
+        else remaining.push(waiter);
+      }
+      if (remaining.length) this.waiters.set(threadId, remaining);
+      else this.waiters.delete(threadId);
+    }
     try {
       this.onSettled({ threadId, record });
     } catch {

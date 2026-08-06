@@ -282,6 +282,7 @@ export function createDesktopShellComposition({
       dismissedExternalTasks,
       completeRun: (run) => managedRunLifecycle.complete(run),
       createTask: createThread,
+      codexContextMaintenance: runtime.codexContextMaintenance,
       workspaceCatalog: workspaceCatalogStore,
       workspaceCatalogService: workspaceCatalog,
       workspaceMutation,

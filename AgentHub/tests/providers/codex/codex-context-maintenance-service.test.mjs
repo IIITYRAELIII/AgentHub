@@ -30,6 +30,10 @@ function harness(overrides = {}) {
       fail: (threadId, id) => calls.push(["fail", threadId, id]),
       complete: (threadId, details) => calls.push(["complete", threadId, details]),
       beginCleanup: (threadId, details) => calls.push(["begin", threadId, details]),
+      waitForSettlement: async (threadId, id) => {
+        calls.push(["wait", threadId, id]);
+        return { id, status: "completed" };
+      },
       isManualTurn: (threadId, turnId) => (
         entries.get(threadId)?.origin === "manual"
         && entries.get(threadId)?.turnId === turnId
@@ -71,6 +75,32 @@ test("manual compaction resumes a discovered thread before starting", async () =
     ["begin-manual", "thread-1", { origin: "manual" }],
     ["resume", "thread-1", { sandbox: "workspace-write" }],
     ["compact", "thread-1"],
+  ]);
+});
+
+test("rotation compacts and forks the exact Codex thread", async () => {
+  const { service, calls } = harness({
+    runForTask: () => null,
+    runIsActive: () => false,
+    ensureTransport: async () => calls.push(["transport"]),
+    resumeThread: async (...args) => calls.push(["resume", ...args]),
+    startCompaction: async (...args) => calls.push(["compact", ...args]),
+    forkThread: async (threadId) => {
+      calls.push(["fork", threadId]);
+      return { thread: { id: "thread-2" } };
+    },
+  });
+  const result = await service.rotate({ provider: "codex", threadId: "thread-1" });
+  assert.equal(result.sourceThreadId, "thread-1");
+  assert.equal(result.thread.id, "thread-2");
+  assert.deepEqual(calls, [
+    ["transport"],
+    ["begin-manual", "thread-1", { origin: "manual" }],
+    ["resume", "thread-1", {}],
+    ["compact", "thread-1"],
+    ["wait", "thread-1", "compact-thread-1"],
+    ["transport"],
+    ["fork", "thread-1"],
   ]);
 });
 

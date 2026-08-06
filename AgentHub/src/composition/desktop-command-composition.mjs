@@ -44,6 +44,7 @@ export function createDesktopCommandComposition({
   const desktopTaskDiff = (...args) => taskCommandService.diff(...args);
   const desktopCancelRun = (...args) => taskCommandService.cancel(...args);
   const desktopNewTask = (...args) => taskCommandService.create(...args);
+  const desktopRotateStream = (...args) => taskCommandService.rotate(...args);
 
   const restartRequestService = new RestartRequestService(restart);
   const desktopRestartServer = () => restartRequestService.fromDesktop();
@@ -57,6 +58,7 @@ export function createDesktopCommandComposition({
     handlers: {
       selectTask: desktopSelectTask,
       createTask: desktopNewTask,
+      rotateStream: desktopRotateStream,
       renameTask: desktopRenameTask,
       archiveTask: desktopArchiveTask,
       updateSetting: desktopUpdateSetting,
@@ -100,6 +102,7 @@ export function createDesktopCommandComposition({
       taskDiff: desktopTaskDiff,
       cancelRun: desktopCancelRun,
       newTask: desktopNewTask,
+      rotateStream: desktopRotateStream,
       updateSetting: desktopUpdateSetting,
       restartServer: desktopRestartServer,
     },

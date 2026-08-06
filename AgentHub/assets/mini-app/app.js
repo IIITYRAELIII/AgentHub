@@ -923,6 +923,7 @@ const state = {
   // Workspace visible without making another device jump to that layout.
   openStreamsByWorkspace: new Map(),
   streamOrderByWorkspace: new Map(),
+  activeStreamByWorkspace: new Map(),
   configuredOpenStreamWorkspaces: new Set(),
   visibleStreamTaskIds: [],
 };
@@ -1033,9 +1034,11 @@ function restoreOpenStreams() {
       const order = [...new Set((Array.isArray(entry?.order) ? entry.order : [])
         .map((value) => String(value ?? "").trim())
         .filter(Boolean))];
+      const activeStreamId = String(entry?.activeStreamId ?? "").trim();
       if (!workspaceId) continue;
       state.openStreamsByWorkspace.set(workspaceId, streamIds);
       if (order.length) state.streamOrderByWorkspace.set(workspaceId, order);
+      if (activeStreamId) state.activeStreamByWorkspace.set(workspaceId, activeStreamId);
       state.configuredOpenStreamWorkspaces.add(workspaceId);
     }
   } catch {
@@ -1049,6 +1052,7 @@ function persistOpenStreams() {
       workspaceId,
       streamIds: (state.openStreamsByWorkspace.get(workspaceId) ?? []).slice(-4),
       order: state.streamOrderByWorkspace.get(workspaceId) ?? [],
+      activeStreamId: state.activeStreamByWorkspace.get(workspaceId) ?? "",
     }));
     localStorage.setItem(openStreamsStorageKey(), JSON.stringify(stored));
   } catch {
@@ -1461,6 +1465,15 @@ function workspaceLastActivity(tasks) {
 function representativeWorkspaceTask(tasks) {
   const selected = currentTask();
   if (selected && tasks.some((task) => task.id === selected.id)) return selected;
+  restoreOpenStreams();
+  const workspaceId = workspaceKey(tasks[0]);
+  const activeStreamId = state.activeStreamByWorkspace.get(workspaceId);
+  if (activeStreamId) {
+    const active = representativeStreamTask(
+      workspaceStreams(tasks).find((stream) => stream.id === activeStreamId),
+    );
+    if (active) return active;
+  }
   return [...tasks].sort((left, right) => (
     Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
   ))[0] ?? null;
@@ -2078,7 +2091,12 @@ function selectTaskFromUi(id) {
   saveDraft();
   state.selectedId = id;
   for (const task of state.tasks) task.selected = task.id === id;
+  const selected = currentTask();
+  if (selected) {
+    state.activeStreamByWorkspace.set(workspaceKey(selected), streamKey(selected));
+  }
   ensureTaskStreamVisible(currentTask());
+  persistOpenStreams();
   renderTasks();
   renderChat();
   setPane("chat");

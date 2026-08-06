@@ -36,6 +36,7 @@ export class CodexContextMaintenanceService {
     ensureTransport = async () => {},
     resumeThread = async () => {},
     startCompaction = async () => {},
+    forkThread = async () => null,
     sandboxSettings = () => ({}),
     recycleTransport = recycleCodexCompactionTransport,
     now = Date.now,
@@ -69,6 +70,7 @@ export class CodexContextMaintenanceService {
     this.ensureTransport = ensureTransport;
     this.resumeThread = resumeThread;
     this.startCompaction = startCompaction;
+    this.forkThread = forkThread;
     this.sandboxSettings = sandboxSettings;
     this.recycleTransport = recycleTransport;
     this.now = now;
@@ -101,6 +103,30 @@ export class CodexContextMaintenanceService {
       this.compactions.fail(threadId, compaction.id);
       throw error;
     }
+  }
+
+  async rotate(target) {
+    const sourceThreadId = normalizedId(target?.threadId);
+    const started = await this.startManual(target);
+    if (!started.accepted) throw new Error(started.message);
+    const settled = await this.compactions.waitForSettlement(sourceThreadId, started.compactionId);
+    if (settled?.status !== "completed") {
+      throw new Error(settled?.status === "timeout"
+        ? "Свёртка контекста не завершилась вовремя"
+        : "Свёртка контекста не завершилась");
+    }
+    await this.ensureTransport();
+    const result = await this.forkThread(sourceThreadId);
+    const threadId = normalizedId(result?.thread?.id);
+    if (!threadId || threadId === sourceThreadId) {
+      throw new Error("Codex App Server не создал новый Thread");
+    }
+    return {
+      accepted: true,
+      compactionId: started.compactionId,
+      sourceThreadId,
+      thread: result.thread,
+    };
   }
 
   beginCompactionCleanup(threadId, details = {}) {

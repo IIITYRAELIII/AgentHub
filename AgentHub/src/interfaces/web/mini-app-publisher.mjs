@@ -44,6 +44,7 @@ const CONTROL_ACTIONS = new Set([
   "send-message",
   "submit-bug-report",
   "new-task",
+  "rotate-stream",
   "update-setting",
   "rename-task",
   "archive-task",

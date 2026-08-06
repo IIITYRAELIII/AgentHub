@@ -47,6 +47,20 @@ test("Desktop application router creates a Workspace from an existing Stream", a
   assert.equal(calls[0][1].name, "New Workspace");
 });
 
+test("Desktop application router dispatches Stream rotation to the exact Thread", async () => {
+  const calls = [];
+  const control = router(calls);
+  await control.handleDesktopControl({
+    action: "rotate-stream",
+    params: { streamId: "stream-1", provider: "codex", threadId: "thread-1" },
+    context: { source: "desktop", userId: "7" },
+  });
+  assert.equal(calls[0][0], "stream.rotate");
+  assert.deepEqual(calls[0][3].target, {
+    streamId: "stream-1", provider: "codex", projectRoot: null, threadId: "thread-1",
+  });
+});
+
 test("Desktop application router enforces Mini App history limits", async () => {
   const control = router([]);
   const result = await control.handleDesktopControl({

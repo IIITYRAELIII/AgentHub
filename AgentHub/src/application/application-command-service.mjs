@@ -23,7 +23,7 @@ export function createApplicationCommandService({ handlers, selectedTask }) {
   if (!handlers || typeof handlers !== "object") throw new TypeError("command handlers are required");
   if (typeof selectedTask !== "function") throw new TypeError("selectedTask is required");
   const required = [
-    "selectTask", "createTask", "renameTask", "archiveTask",
+    "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
   ];
@@ -49,6 +49,12 @@ export function createApplicationCommandService({ handlers, selectedTask }) {
       target: "none",
       lane: "global",
       handler: ({ payload, context }) => handlers.createTask(payload, context),
+    })
+    .register("stream.rotate", {
+      mutating: true,
+      target: "required",
+      lane: "target",
+      handler: ({ payload, target }) => handlers.rotateStream({ ...payload, ...target }),
     })
     .register("task.rename", {
       mutating: true,
