@@ -30,6 +30,8 @@ let selectionSequence = 0;
 let selectionTail = Promise.resolve();
 let selectedHistoryRefreshAt = 0;
 const EXTERNAL_HISTORY_REFRESH_MS = 2_500;
+const HISTORY_ATTACHMENT_REFRESH_MS = 10_000;
+const HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS = 120_000;
 const REMOTE_RESULT_LONG_POLL_MS = 25_000;
 const REMOTE_RESULT_FALLBACK_POLL_MS = 600;
 const HISTORY_CATCH_UP_TIMEOUT_MS = 120_000;
@@ -38,6 +40,7 @@ const CONNECTION_OFFLINE_GRACE_MS = 6_000;
 const historyByTask = new Map();
 const historyPageByTask = new Map();
 const historyCatchUpDeadlines = new Map();
+const historyAttachmentSettleDeadlines = new Map();
 const visibleHistoryLoads = new Set();
 const outgoingByTask = new Map();
 const liveProbeByTask = new Map();
@@ -503,6 +506,20 @@ function updateHistoryCatchUp(taskIdValue, history, task) {
   if (!historyCatchUpDeadlines.has(taskIdValue)) {
     historyCatchUpDeadlines.set(taskIdValue, Date.now() + HISTORY_CATCH_UP_TIMEOUT_MS);
   }
+}
+
+function scheduleHistoryAttachmentSettle(taskIdValue) {
+  const id = String(taskIdValue ?? "").trim();
+  if (!id) return;
+  historyAttachmentSettleDeadlines.set(id, Date.now() + HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS);
+}
+
+function historyAttachmentsNeedSettling(taskIdValue) {
+  const now = Date.now();
+  for (const [id, deadline] of historyAttachmentSettleDeadlines) {
+    if (Number(deadline) <= now) historyAttachmentSettleDeadlines.delete(id);
+  }
+  return Number(historyAttachmentSettleDeadlines.get(taskIdValue)) > now;
 }
 
 function bridgeCall(action, params = {}) {
@@ -1653,10 +1670,15 @@ async function refresh({ reportError = false } = {}) {
     const sameSelection = previousSelected && currentSelected
       && previousSelected.provider === currentSelected.provider
       && previousSelected.threadId === currentSelected.threadId;
+    const currentSelectedId = currentSelected
+      ? taskId(currentSelected.provider, currentSelected.threadId, currentSelected.streamId)
+      : "";
     const answerChanged = sameSelection
       && String(previousSelected.lastAnswerAt ?? "") !== String(currentSelected.lastAnswerAt ?? "");
+    const turnCompleted = sameSelection && previousSelected.running && !currentSelected.running;
+    if (answerChanged || turnCompleted) scheduleHistoryAttachmentSettle(currentSelectedId);
     const selectedHistoryMissing = sameSelection
-      && !historyPageByTask.has(taskId(currentSelected.provider, currentSelected.threadId, currentSelected.streamId));
+      && !historyPageByTask.has(currentSelectedId);
     const externalLive = sameSelection
       && currentSelected.running
       && !["hub", "telegram"].includes(String(
@@ -1665,14 +1687,18 @@ async function refresh({ reportError = false } = {}) {
     const refreshExternalHistory = externalLive
       && Date.now() - selectedHistoryRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
     const refreshCaughtUpHistory = sameSelection
-      && historyNeedsCatchUp(taskId(currentSelected.provider, currentSelected.threadId, currentSelected.streamId))
+      && historyNeedsCatchUp(currentSelectedId)
       && Date.now() - selectedHistoryRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
+    const refreshSettlingAttachments = sameSelection
+      && historyAttachmentsNeedSettling(currentSelectedId)
+      && Date.now() - selectedHistoryRefreshAt >= HISTORY_ATTACHMENT_REFRESH_MS;
     if (sameSelection && (
       selectedHistoryMissing
-      || (previousSelected.running && !currentSelected.running)
+      || turnCompleted
       || answerChanged
       || refreshExternalHistory
       || refreshCaughtUpHistory
+      || refreshSettlingAttachments
     )) {
       selectedHistoryRefreshAt = Date.now();
       const history = await control("task-history", {
@@ -1681,7 +1707,7 @@ async function refresh({ reportError = false } = {}) {
         limit: 20,
         includeActive: false,
         knownVersion: historyPageByTask.get(
-          taskId(currentSelected.provider, currentSelected.threadId, currentSelected.streamId),
+          currentSelectedId,
         )?.version ?? "",
       });
       applyOpened({ snapshot: lastSnapshot, history }, {

@@ -966,6 +966,18 @@ test("chat refreshes selected external runs without rebuilding a second snapshot
   assert.match(refresh, /const answerChanged = sameSelection/u);
 });
 
+test("completed chat keeps probing briefly for late generated images", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const refresh = client.match(
+    /async function refresh\([^)]*\) \{(?<body>[\s\S]*?)\r?\n\}\r?\n\r?\nvoid runAction/u,
+  )?.groups?.body ?? "";
+  assert.match(client, /const HISTORY_ATTACHMENT_REFRESH_MS = 10_000/u);
+  assert.match(client, /const HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS = 120_000/u);
+  assert.match(client, /function scheduleHistoryAttachmentSettle\(taskIdValue\)/u);
+  assert.match(refresh, /if \(answerChanged \|\| turnCompleted\) scheduleHistoryAttachmentSettle\(currentSelectedId\)/u);
+  assert.match(refresh, /refreshSettlingAttachments[\s\S]*control\("task-history"/u);
+});
+
 test("background history refresh cannot switch the task or reorder a completed turn", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   assert.match(client, /selectTask = true/u);
