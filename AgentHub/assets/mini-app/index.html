@@ -354,11 +354,53 @@
           </article>
         </div>
 
+        <aside class="dialog-settings" data-dialog-settings hidden aria-label="Настройки диалога">
+          <header class="dialog-settings-head">
+            <h2>Настройки диалога</h2>
+          </header>
+          <div class="dialog-settings-body">
+            <section class="settings-section">
+              <h3 class="settings-section-title">Текущая задача</h3>
+              <div class="settings-card">
+                <div class="setting-row dialog-agent-row">
+                  <span class="setting-name">Агент</span>
+                  <strong class="dialog-agent" data-dialog-agent>—</strong>
+                </div>
+                <div class="setting-stack" data-setting="model">
+                  <span class="setting-name">Модель</span>
+                  <div class="setting-options" data-dialog-options="model"></div>
+                </div>
+                <div class="setting-stack" data-setting="reasoning">
+                  <span class="setting-name">Reasoning</span>
+                  <div class="setting-options" data-dialog-options="reasoning"></div>
+                </div>
+                <div class="setting-stack" data-setting="mode">
+                  <span class="setting-name">Режим</span>
+                  <div class="setting-options" data-dialog-options="mode"></div>
+                </div>
+                <div class="setting-stack" data-setting="project">
+                  <span class="setting-name">Проект</span>
+                  <div class="setting-options setting-options-column" data-dialog-options="project"></div>
+                </div>
+                <label class="setting-switch">
+                  <input type="checkbox" data-dialog-toggle="autoApprove">
+                  <span class="switch-text">Автоподтверждение</span>
+                  <span class="switch-track" aria-hidden="true"></span>
+                </label>
+              </div>
+            </section>
+          </div>
+        </aside>
+      </div>
+      </div>
+
         <!-- Запросы подтверждений (команды, файлы, разрешения). -->
         <div class="approvals" data-approvals hidden aria-label="Запросы подтверждения"></div>
 
         <!-- Сохранённые и поставленные в очередь сообщения. -->
         <div class="queue" data-queue hidden aria-label="Очередь сообщений"></div>
+
+        <div class="mobile-chat-actions" data-mobile-chat-actions hidden></div>
 
         <form class="composer" data-composer>
           <div class="annotations" data-annotations hidden aria-label="Аннотации к выделенному тексту"></div>
@@ -417,45 +459,6 @@
           </button>
         </div>
 
-        <aside class="dialog-settings" data-dialog-settings hidden aria-label="Настройки диалога">
-          <header class="dialog-settings-head">
-            <h2>Настройки диалога</h2>
-          </header>
-          <div class="dialog-settings-body">
-            <section class="settings-section">
-              <h3 class="settings-section-title">Текущая задача</h3>
-              <div class="settings-card">
-                <div class="setting-row dialog-agent-row">
-                  <span class="setting-name">Агент</span>
-                  <strong class="dialog-agent" data-dialog-agent>—</strong>
-                </div>
-                <div class="setting-stack" data-setting="model">
-                  <span class="setting-name">Модель</span>
-                  <div class="setting-options" data-dialog-options="model"></div>
-                </div>
-                <div class="setting-stack" data-setting="reasoning">
-                  <span class="setting-name">Reasoning</span>
-                  <div class="setting-options" data-dialog-options="reasoning"></div>
-                </div>
-                <div class="setting-stack" data-setting="mode">
-                  <span class="setting-name">Режим</span>
-                  <div class="setting-options" data-dialog-options="mode"></div>
-                </div>
-                <div class="setting-stack" data-setting="project">
-                  <span class="setting-name">Проект</span>
-                  <div class="setting-options setting-options-column" data-dialog-options="project"></div>
-                </div>
-                <label class="setting-switch">
-                  <input type="checkbox" data-dialog-toggle="autoApprove">
-                  <span class="switch-text">Автоподтверждение</span>
-                  <span class="switch-track" aria-hidden="true"></span>
-                </label>
-              </div>
-            </section>
-          </div>
-        </aside>
-      </div>
-      </div>
     </section>
   </div>
 

@@ -1583,14 +1583,17 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   // Один безымянный поток не показывает искусственный номер; несколько получают Stream N.
   assert.match(app, /function streamDisplayName\(stream, streamCount\)/u);
   assert.match(app, /streamCount > 1 \? `Stream \$\{stream\.ordinal\}` : "Stream"/u);
-  // В широкой оболочке можно держать до четырёх потоков; mobile — один.
-  assert.match(app, /const limit = surface === "mobile" \? 1 : 4;/u);
-  assert.match(app, /function defaultOpenStreamIds\(streams, selectedStreamId, limit\)/u);
+  // Обычный клик переключает единственную колонку; Ctrl+click держит до четырёх.
+  assert.match(app, /agent-hub:workspace-open-streams:v2/u);
+  assert.match(app, /normalized = \[selectedInWorkspace \|\| ordered\[0\]\?\.id\]\.filter\(Boolean\)/u);
   assert.match(app, /configuredOpenStreamWorkspaces/u);
-  assert.match(app, /function toggleOpenStream\(workspaceId, streamId, streams\)/u);
-  const toggle = app.match(/function toggleOpenStream\([^)]*\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
+  assert.match(app, /function toggleOpenStream\(workspaceId, streamId, streams, \{ additive = false \} = \{\}\)/u);
+  const toggleStart = app.indexOf("function toggleOpenStream(");
+  const toggleEnd = app.indexOf("/* =========================================================== роутер видов */", toggleStart);
+  const toggle = app.slice(toggleStart, toggleEnd);
   assert.match(toggle, /persistOpenStreams\(\)/u);
-  assert.match(toggle, /renderStreamChatDeck\(\)/u);
+  assert.match(toggle, /selectTaskFromUi\(target\.id\)/u);
+  assert.match(app, /additive: event\.ctrlKey \|\| event\.metaKey/u);
   // Слева остаются только Workspace; Streams живут в горизонтальной полосе.
   assert.match(app, /function renderTaskWorkspaceItem\(/u);
   assert.doesNotMatch(app, /class: "task-workspace-streams"/u);
@@ -1610,6 +1613,7 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   assert.doesNotMatch(tabs, /class: "task-status"/u);
   assert.match(styles, /@keyframes stream-running-wave/u);
   assert.match(styles, /@keyframes stream-answer-ready/u);
+  assert.doesNotMatch(styles, /\.stream-tab\[data-current\]\s*\{[\s\S]*?box-shadow/u);
 });
 
 test("wide shared shell opens up to four Workspace Streams as chat columns", () => {
@@ -1630,6 +1634,11 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   assert.match(client, /control\("task-history", \{/u);
   assert.match(styles, /\.stream-chat-columns\[data-multi-stream\]/u);
   assert.match(styles, /repeat\(var\(--stream-chat-count, 1\), minmax\(13rem, 1fr\)\)/u);
+  assert.match(styles, /\.stream-chat-columns\[data-multi-stream\] > \.chat-pane\[data-active-stream\]/u);
+  assert.match(app, /chatPane\.toggleAttribute\("data-active-stream", selectedIndex >= 0\)/u);
+  assert.match(index, /<\/aside>\s*<\/div>\s*<\/div>\s*<!-- Запросы подтверждений/u);
+  assert.match(index, /data-mobile-chat-actions/u);
+  assert.match(styles, /html\[data-surface="mobile"\] \.chat-head\s*\{\s*display: none;/su);
   assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-preview\s*\{\s*display: none;/su);
   assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-columns\s*\{[\s\S]*?display: grid;/u);
 });
@@ -1643,11 +1652,12 @@ test("VS Code stream refresh keeps composer focus and opens history at the botto
   const chatEnd = app.indexOf("function renderContextUsage", chatStart);
   const chat = app.slice(chatStart, chatEnd);
 
-  // Фоновое обновление удаляет только read-only previews и не переподключает
-  // chatPane, в котором находится сфокусированный composer.
+  // Фоновое обновление удаляет только read-only previews. Общий composer
+  // находится вне колонок и остаётся подключённым к DOM.
   assert.match(deck, /querySelectorAll\("\.stream-chat-preview"\)/u);
   assert.doesNotMatch(deck, /replaceChildren\(chatPane/u);
   assert.match(deck, /chatPane\.style\.order/u);
+  assert.match(app, /function syncChatActionsPlacement\(\)/u);
   // Колонки фиксируются до forceBottom, поэтому переносы строк уже учтены.
   assert.ok(chat.indexOf("renderStreamChatDeck();") < chat.indexOf("renderMessages({ forceBottom: true });"));
   assert.match(app, /requestAnimationFrame\(\(\) => \{ log\.scrollTop = log\.scrollHeight; \}\)/u);

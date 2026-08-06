@@ -39,6 +39,10 @@ const taskFilter = document.querySelector("[data-task-filter]");
 const taskNewPicker = document.querySelector("[data-task-new-picker]");
 
 const chatPane = document.querySelector("[data-chat-pane]");
+const chatHead = document.querySelector(".chat-head");
+const chatBack = document.querySelector(".chat-back");
+const chatActions = document.querySelector(".chat-actions");
+const mobileChatActions = document.querySelector("[data-mobile-chat-actions]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
 const streamChatColumns = document.querySelector("[data-stream-chat-columns]");
 const chatEmpty = document.querySelector("[data-chat-empty]");
@@ -1016,7 +1020,7 @@ function workspaceKey(task) {
     || `legacy:${String(task?.project ?? "").trim() || "unassigned"}`;
 }
 
-const OPEN_STREAMS_STORAGE_VERSION = "agent-hub:workspace-open-streams:v1";
+const OPEN_STREAMS_STORAGE_VERSION = "agent-hub:workspace-open-streams:v2";
 let openStreamsRestored = false;
 
 function openStreamsStorageKey() {
@@ -1060,15 +1064,6 @@ function persistOpenStreams() {
   }
 }
 
-function defaultOpenStreamIds(streams, selectedStreamId, limit) {
-  const defaults = streams.slice(0, limit).map((stream) => stream.id);
-  if (selectedStreamId && !defaults.includes(selectedStreamId)) {
-    if (defaults.length >= limit) defaults[defaults.length - 1] = selectedStreamId;
-    else defaults.push(selectedStreamId);
-  }
-  return defaults;
-}
-
 function orderedWorkspaceStreams(workspaceId, streams) {
   const available = new Map(streams.map((stream) => [stream.id, stream]));
   const stored = state.streamOrderByWorkspace.get(workspaceId) ?? [];
@@ -1089,55 +1084,58 @@ function reconcileOpenStreams(workspaceId, streams) {
     ? streamKey(selected)
     : "";
   const previous = state.openStreamsByWorkspace.get(workspaceId) ?? [];
-  const limit = surface === "mobile" ? 1 : 4;
   let normalized;
   if (surface === "mobile") {
     normalized = [selectedInWorkspace || previous.find((streamId) => available.has(streamId)) || streams[0]?.id]
       .filter(Boolean);
   } else if (!state.configuredOpenStreamWorkspaces.has(workspaceId)) {
-    // Каталог приходит частями. Пока пользователь сам не изменил раскладку,
-    // дополняем её новыми Streams до четырёх вместо фиксации первого пришедшего.
-    normalized = defaultOpenStreamIds(ordered, selectedInWorkspace, limit);
+    // Обычный режим показывает один Stream. Несколько колонок появляются
+    // только после явного Ctrl+click и сохраняются для этого клиента.
+    normalized = [selectedInWorkspace || ordered[0]?.id].filter(Boolean);
   } else {
-    normalized = previous.filter((streamId) => available.has(streamId)).slice(-limit);
+    normalized = previous.filter((streamId) => available.has(streamId)).slice(-4);
+    if (!normalized.length) normalized = [selectedInWorkspace || ordered[0]?.id].filter(Boolean);
   }
   state.openStreamsByWorkspace.set(workspaceId, normalized);
   return new Set(normalized);
 }
 
-function toggleOpenStream(workspaceId, streamId, streams) {
+function toggleOpenStream(workspaceId, streamId, streams, { additive = false } = {}) {
   restoreOpenStreams();
+  const stream = streams.find((value) => value.id === streamId);
+  const target = representativeStreamTask(stream);
+  if (!target) return;
   if (surface === "mobile") {
-    const stream = streams.find((value) => value.id === streamId);
-    const target = stream?.tasks.find((task) => task.id === state.selectedId) ?? stream?.tasks[0];
-    if (target) selectTaskFromUi(target.id);
+    state.openStreamsByWorkspace.set(workspaceId, [streamId]);
+    selectTaskFromUi(target.id);
     return;
   }
-  const selected = state.openStreamsByWorkspace.get(workspaceId) ?? [];
-  const available = new Set(streams.map((stream) => stream.id));
-  const next = selected.filter((id) => available.has(id) && id !== streamId);
-  if (!selected.includes(streamId)) {
-    if (next.length >= 4) {
+  const available = new Set(streams.map((value) => value.id));
+  const selected = (state.openStreamsByWorkspace.get(workspaceId) ?? [])
+    .filter((id) => available.has(id));
+  let next;
+  if (!additive) {
+    // Повторный обычный клик по уже видимой колонке только меняет адрес
+    // общего композера. Клик по скрытому Stream возвращает одиночный режим.
+    next = selected.includes(streamId) && selected.length > 1 ? selected : [streamId];
+  } else if (selected.includes(streamId)) {
+    next = selected.length > 1 ? selected.filter((id) => id !== streamId) : selected;
+  } else {
+    if (selected.length >= 4) {
       showToast("Одновременно можно открыть не больше четырёх Streams.");
       return;
     }
-    next.push(streamId);
+    next = [...selected, streamId];
   }
   state.openStreamsByWorkspace.set(workspaceId, next);
   state.configuredOpenStreamWorkspaces.add(workspaceId);
   persistOpenStreams();
-  renderTasks();
-  renderStreamTabs();
-  const selectedTask = currentTask();
-  if (selectedTask && streamKey(selectedTask) === streamId && !next.includes(streamId) && next.length) {
-    const nextStream = streams.find((stream) => stream.id === next[0]);
-    const target = representativeStreamTask(nextStream);
-    if (target) {
-      selectTaskFromUi(target.id);
-      return;
-    }
+  if (next.includes(streamId)) {
+    selectTaskFromUi(target.id);
+    return;
   }
-  renderStreamChatDeck();
+  const fallback = representativeStreamTask(streams.find((value) => value.id === next[0]));
+  if (fallback) selectTaskFromUi(fallback.id);
 }
 
 /* =========================================================== роутер видов */
@@ -1323,14 +1321,29 @@ function syncSurface() {
     surface = nextSurface;
     document.documentElement.dataset.surface = surface;
     syncComposerInputMode();
+    syncChatActionsPlacement();
     syncCollapseTurnButtons();
     // частиц на телефоне вдвое меньше, поэтому слой пересобирается
     particleLayer?.remove();
     particleLayer = null;
     syncParticleLayer(document.documentElement.dataset.background);
     if (state.tasks.length) renderTasks();
+    renderChat();
     if (journalRendered) prepareMobileControls();
   }
+}
+
+function syncChatActionsPlacement() {
+  if (!chatActions || !chatHead || !chatBack || !mobileChatActions) return;
+  if (surface === "mobile") {
+    if (chatBack.parentElement !== mobileChatActions) mobileChatActions.append(chatBack);
+    if (chatActions.parentElement !== mobileChatActions) mobileChatActions.append(chatActions);
+    mobileChatActions.hidden = !currentTask();
+    return;
+  }
+  if (chatBack.parentElement !== chatHead) chatHead.prepend(chatBack);
+  if (chatActions.parentElement !== chatHead) chatHead.append(chatActions);
+  mobileChatActions.hidden = true;
 }
 
 window.addEventListener("resize", syncSurface);
@@ -1567,7 +1580,7 @@ function renderStreamTabs() {
       "data-answer-ready": answerReady ? "" : null,
       draggable: surface === "mobile" ? null : "true",
       "aria-label": [streamName, agentLabel, task?.modelLabel, statusLabel].filter(Boolean).join(". "),
-      title: `${statusLabel ? `${statusLabel}. ` : ""}Нажмите, чтобы показать или скрыть. Перетащите, чтобы изменить порядок. ПКМ — переименовать.`,
+      title: `${statusLabel ? `${statusLabel}. ` : ""}Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. Перетащите, чтобы изменить порядок. ПКМ — переименовать.`,
     }, [
       el("span", { class: "stream-tab-card" }, [
         el("span", { class: "provider-dot", "data-provider": provider, "aria-hidden": "true" }),
@@ -1628,10 +1641,16 @@ function renderStreamChatPreview(task) {
     title: "Открыть этот Stream",
   }, [
     el("span", { class: "provider-dot", "data-provider": task.provider, "aria-hidden": "true" }),
-    el("span", { class: "stream-chat-preview-title", text: task.title || "Без названия" }),
-    task.running ? el("span", { class: "stream-chat-preview-live", text: "идёт" }) : null,
+    el("span", {
+      class: "stream-chat-preview-title",
+      text: task.streamDisplayName || "Stream",
+    }),
   ]);
   title.addEventListener("click", () => selectTaskFromUi(task.id));
+  preview.addEventListener("click", (event) => {
+    if (event.target.closest("a, button, input, textarea, select, summary")) return;
+    selectTaskFromUi(task.id);
+  });
   const log = el("div", { class: "stream-chat-preview-log" });
   if (!messages) {
     log.append(el("p", { class: "stream-chat-preview-empty", text: "Загрузка истории…" }));
@@ -1667,6 +1686,7 @@ function renderStreamChatDeck() {
   for (const preview of streamChatColumns.querySelectorAll(".stream-chat-preview")) preview.remove();
   chatPane.hidden = selectedIndex < 0;
   chatPane.style.order = String(Math.max(0, selectedIndex));
+  chatPane.toggleAttribute("data-active-stream", selectedIndex >= 0);
   shown.forEach((task, index) => {
     if (task.id === selected?.id) return;
     const preview = renderStreamChatPreview(task);
@@ -1832,7 +1852,9 @@ streamTabs?.addEventListener("click", (event) => {
   if (!tab) return;
   const workspaceId = String(tab.dataset.workspaceId ?? "");
   const streams = workspaceStreams(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
-  toggleOpenStream(workspaceId, String(tab.dataset.streamTabId ?? ""), streams);
+  toggleOpenStream(workspaceId, String(tab.dataset.streamTabId ?? ""), streams, {
+    additive: event.ctrlKey || event.metaKey,
+  });
 });
 
 streamTabs?.addEventListener("contextmenu", (event) => {
@@ -1918,6 +1940,7 @@ let activeChatId = null;
 function renderChat() {
   const task = currentTask();
   const hasTask = Boolean(task);
+  syncChatActionsPlacement();
   if (!hasTask) {
     chatEmpty.hidden = false;
     if (chatEmptyText) chatEmptyText.textContent = "Выберите Workspace слева, чтобы открыть его Streams.";
@@ -1934,7 +1957,8 @@ function renderChat() {
   }
   const taskChanged = activeChatId !== task.id;
 
-  chatTitle.textContent = task.title || "Без названия";
+  chatTitle.textContent = "";
+  chatTitle.hidden = true;
   chatProviderDot.dataset.provider = String(task.provider ?? "none");
   chatProviderDot.setAttribute("data-provider", String(task.provider ?? "none"));
   chatSubtitle.replaceChildren(...buildSubtitleChips(task));
