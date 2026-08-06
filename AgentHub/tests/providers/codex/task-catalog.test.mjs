@@ -822,6 +822,36 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
   assert.equal(stale.running, false);
 });
 
+test("Codex rollout activity retains local images on a steering message", () => {
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "one" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "user_message",
+        client_id: "steer-with-image",
+        message: "Посмотри скрин",
+        images: [],
+        local_images: ["C:\\AgentHub\\DesktopApp\\attachments\\screen.png"],
+      },
+    }),
+  ].join("\n"));
+
+  assert.deepEqual(result.userMessages.one, [{
+    itemId: "steer-with-image",
+    clientUserMessageId: "steer-with-image",
+    role: "user",
+    text: "Посмотри скрин",
+    attachmentSources: [{
+      type: "path",
+      value: "C:\\AgentHub\\DesktopApp\\attachments\\screen.png",
+    }],
+  }]);
+});
+
 test("Claude VS Code activity keeps its source and transcript message ordering", () => {
   const updatedAt = "2026-08-03T18:04:52.321Z";
   const entry = claudeCatalogEntry({

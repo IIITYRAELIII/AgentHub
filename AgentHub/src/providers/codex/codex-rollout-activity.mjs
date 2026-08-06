@@ -72,6 +72,7 @@ function rememberCodexTurnMessage(metadata, turnId, message) {
 function rememberCodexUserMessage(metadata, turnId, {
   clientUserMessageId = "",
   text = "",
+  attachmentSources = [],
 } = {}) {
   const value = displayUserPrompt(text);
   if (!turnId || !value) return;
@@ -83,11 +84,32 @@ function rememberCodexUserMessage(metadata, turnId, {
     ...(clientId ? { clientUserMessageId: clientId } : {}),
     role: "user",
     text: value,
+    ...(attachmentSources.length ? { attachmentSources: structuredClone(attachmentSources) } : {}),
   });
   metadata.userMessages.set(turnId, messages.slice(-20));
   while (metadata.userMessages.size > 8) {
     metadata.userMessages.delete(metadata.userMessages.keys().next().value);
   }
+}
+
+function codexUserMessageAttachmentSources(entry) {
+  if (entry?.type !== "event_msg" || entry.payload?.type !== "user_message") return [];
+  const values = [
+    ...(Array.isArray(entry.payload.local_images) ? entry.payload.local_images : [])
+      .map((value) => ({ type: "path", value: String(value ?? "").trim() })),
+    ...(Array.isArray(entry.payload.images) ? entry.payload.images : [])
+      .map((value) => {
+        const source = String(value ?? "").trim();
+        return { type: source.startsWith("data:image/") ? "data" : "path", value: source };
+      }),
+  ].filter((item) => item.value);
+  const known = new Set();
+  return values.filter((item) => {
+    const key = `${item.type}\0${item.value.toLowerCase()}`;
+    if (known.has(key)) return false;
+    known.add(key);
+    return true;
+  });
 }
 
 function decodedJsonString(value) {
@@ -247,6 +269,7 @@ function rememberPendingCodexUserMessage(metadata, entry, provisionalTurnId = ""
   metadata.pendingUserMessages.push({
     clientUserMessageId,
     text,
+    attachmentSources: codexUserMessageAttachmentSources(entry),
     provisionalTurnId,
   });
   metadata.pendingUserMessages = metadata.pendingUserMessages.slice(-20);
@@ -347,12 +370,14 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
     }
   }
   if (isUserMessage) {
+    const attachmentSources = codexUserMessageAttachmentSources(entry);
     const messageTurnId = turnId;
     if (messageTurnId) {
       const clientId = String(entry.payload?.client_id ?? "").trim();
       rememberCodexUserMessage(metadata, messageTurnId, {
         clientUserMessageId: clientId,
         text: entry.payload?.message,
+        attachmentSources,
       });
       if (clientId) metadata.vscodeTurnIds.add(messageTurnId);
       else metadata.vscodeTurnIds.delete(messageTurnId);
@@ -367,6 +392,7 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
         rememberCodexUserMessage(metadata, provisionalTurnId, {
           clientUserMessageId: clientId,
           text: entry.payload?.message,
+          attachmentSources,
         });
         if (clientId) metadata.vscodeTurnIds.add(provisionalTurnId);
       }
