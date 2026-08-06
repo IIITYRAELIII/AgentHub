@@ -55,7 +55,8 @@ export function createAgentHubDeferredPorts() {
     "isWorkspaceThread", "threadTitle",
   ]);
   const desktopCommands = createDeferredCompositionPort("Desktop command wiring", [
-    "messageTarget",
+    "messageTarget", "snapshot", "handleDesktopControl", "reconcileRemoteDesktopControl",
+    "forgetDesktopControl",
   ]);
   const deferredInput = createDeferredCompositionPort("deferred input controller", [
     "isProcessing", "cancelSchedule", "scheduleNextForTask",
@@ -116,6 +117,10 @@ export function createAgentHubDeferredPorts() {
       initializeCodex: codexLifecycle.api.initialize,
       ...providerStartup.api,
       desktopMessageTarget: desktopCommands.api.messageTarget,
+      desktopSnapshot: desktopCommands.api.snapshot,
+      handleDesktopControl: desktopCommands.api.handleDesktopControl,
+      reconcileRemoteDesktopControl: desktopCommands.api.reconcileRemoteDesktopControl,
+      forgetDesktopControl: desktopCommands.api.forgetDesktopControl,
       isDeferredInputProcessing: deferredInput.api.isProcessing,
       cancelDeferredInputSchedule: deferredInput.api.cancelSchedule,
       scheduleNextDeferredInput: deferredInput.api.scheduleNextForTask,

@@ -81,10 +81,6 @@ import {
   commandTaskTarget,
 } from "../application/application-command-service.mjs";
 import { agentHubAutostartShortcut } from "../interfaces/web/server-page.mjs";
-import {
-  defaultAutostartInstallScript,
-  ServerControlController,
-} from "../interfaces/web/server-control-controller.mjs";
 import { RuntimeTimerCoordinator } from "../runtime/runtime-timer-coordinator.mjs";
 import { createHubStaticSettings } from "./hub-static-settings.mjs";
 import { createCodexObservabilityComposition } from "./codex-observability-composition.mjs";
@@ -124,6 +120,7 @@ import { createRuntimeStateBootstrapWiring } from "./runtime-state-bootstrap-wir
 import { createTelegramShellWiring } from "./telegram-shell-wiring-composition.mjs";
 import { createAgentHubDeferredPorts } from "./agent-hub-deferred-ports.mjs";
 import { createRuntimeFacadesComposition } from "./runtime-facades-composition.mjs";
+import { createServerControlComposition } from "./server-control-composition.mjs";
 import { HubSessionState } from "../runtime/hub-session-state.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
@@ -205,7 +202,7 @@ const {
   stateBackupFile: STATE_BACKUP_FILE,
   instanceLockFile: INSTANCE_LOCK_FILE,
   exchangeRatesFile: EXCHANGE_RATES_FILE,
-  handleDesktopControl,
+  handleDesktopControl: agentHubDeferred.api.handleDesktopControl,
   findProject: agentHubDeferred.api.findProject,
   authorizeRuntimeCommand: agentHubDeferred.api.authorizeRuntimeCommand,
   reconcileRuntimeCommand: agentHubDeferred.api.reconcileRuntimeCommand,
@@ -355,6 +352,10 @@ const {
   isWorkspaceThread,
   threadTitle,
   desktopMessageTarget: deferredDesktopMessageTarget,
+  desktopSnapshot: deferredDesktopSnapshot,
+  handleDesktopControl: deferredHandleDesktopControl,
+  reconcileRemoteDesktopControl: deferredReconcileRemoteDesktopControl,
+  forgetDesktopControl: deferredForgetDesktopControl,
   isDeferredInputProcessing,
   cancelDeferredInputSchedule,
   scheduleNextDeferredInput,
@@ -801,9 +802,9 @@ const {
   publicMiniAppServer,
   runtimeCommandRoot,
   journalDatabaseFile,
-  handleDesktopControl,
-  reconcileRemoteDesktopControl,
-  forgetDesktopControl: (id) => forgetDesktopControl(id),
+  handleDesktopControl: deferredHandleDesktopControl,
+  reconcileRemoteDesktopControl: deferredReconcileRemoteDesktopControl,
+  forgetDesktopControl: deferredForgetDesktopControl,
   trustedDeviceUserId,
   desktopMessageReceipts,
   projects: PROJECTS,
@@ -1035,22 +1036,22 @@ runtimeCommandPort.bind(createRuntimeCommandRoutingComposition({
   codexLifecycleController,
 }));
 
-const serverControlController = new ServerControlController({
+const serverControlController = createServerControlComposition({
   config,
-  startedAt: serverStartedAt,
-  instanceId: serverInstanceId,
-  releaseId: serverReleaseId,
+  agentHubRoot: AGENT_HUB_ROOT,
+  serverStartedAt,
+  serverInstanceId,
+  serverReleaseId,
   shortcutPath: agentHubAutostartShortcutPath,
-  installScriptPath: defaultAutostartInstallScript(AGENT_HUB_ROOT),
-  activeCount: () => taskRuns.values().filter(taskRunIsActive).length,
-  restartState: () => ({
+  activeRunCount: () => taskRuns.values().filter(taskRunIsActive).length,
+  restartSnapshot: () => ({
     pending: Boolean(hostState.restartRequest),
     waiting: hostState.restartRequest?.waitingForRuns === true,
     blockingCount: hostState.restartRequest
       ? restartBlockingRuns().length + backgroundJobs.size
       : 0,
   }),
-  desktopSnapshot: () => desktopSnapshot(),
+  desktopSnapshot: deferredDesktopSnapshot,
   spawnCapture,
 });
 
@@ -1294,8 +1295,6 @@ const {
   taskDiff: desktopTaskDiff,
   restartServer: desktopRestartServer,
 } = desktopSnapshotActions;
-desktopCommandsPort.bind({ messageTarget: desktopSnapshotActions.messageTarget });
-
 const {
   runConflictPolicy,
   runCoordinator,
@@ -1303,7 +1302,7 @@ const {
   telegramCallbackCommandContext,
   dispatchTelegramSetting,
   handleDesktopControl: dispatchDesktopControl,
-  forgetDesktopControl,
+  forgetDesktopControl: forgetDesktopControlImpl,
   reconcileRemoteDesktopControl: dispatchRemoteDesktopReconciliation,
 } = createDesktopRunRouterWiring({
   config,
@@ -1379,14 +1378,13 @@ const {
     applicationCommands,
   },
 });
-
-function handleDesktopControl(request) {
-  return dispatchDesktopControl(request);
-}
-
-function reconcileRemoteDesktopControl(request) {
-  return dispatchRemoteDesktopReconciliation(request);
-}
+desktopCommandsPort.bind({
+  messageTarget: desktopSnapshotActions.messageTarget,
+  snapshot: desktopSnapshot,
+  handleDesktopControl: dispatchDesktopControl,
+  reconcileRemoteDesktopControl: dispatchRemoteDesktopReconciliation,
+  forgetDesktopControl: forgetDesktopControlImpl,
+});
 
 function sendStatus(snapshot = currentStatusSnapshot()) {
   return telegramShellPort.api.sendStatus(snapshot);
@@ -1811,7 +1809,7 @@ function savePinnedTaskTitles() {
 const agentHubBootstrapComposition = createAgentHubBootstrapComposition({
   config,
   runtimeCommandRoot,
-  handleDesktopControl,
+  handleDesktopControl: deferredHandleDesktopControl,
   runtimeCommandServer,
   stopRuntimeTimers,
   taskRuns,
