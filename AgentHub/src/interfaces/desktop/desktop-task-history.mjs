@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { displayUserPrompt } from "../../application/task-history.mjs";
 
 // Builds the bounded Desktop/Mini App history read-model for one task.
 function mergeDurableMessages(hydratedMessages, durableMessages) {
@@ -236,7 +237,7 @@ export function createDesktopTaskHistoryFactory({
       nextBefore: start > 0 ? start : null,
       items: page.map((item) => ({
         id: String(item.id ?? ""),
-        prompt: String(item.prompt ?? ""),
+        prompt: displayUserPrompt(item.prompt),
         promptAnnotations: (Array.isArray(item.promptAnnotations) ? item.promptAnnotations : [])
           .slice(0, 20)
           .map((annotation) => ({
@@ -253,8 +254,6 @@ export function createDesktopTaskHistoryFactory({
         activities: Array.isArray(item.activities) ? item.activities.slice(-100) : [],
         messages: (Array.isArray(item.messages) ? item.messages : []).flatMap((message) => {
           const role = String(message?.role ?? "");
-          const text = String(message?.text ?? "");
-          if (!["user", "agent"].includes(role) || !text) return [];
           const itemProvider = String(item.provider ?? provider);
           const itemThreadId = String(item.threadId ?? selectedThreadId);
           const receipt = role === "user"
@@ -271,13 +270,22 @@ export function createDesktopTaskHistoryFactory({
                 turnId: item.id,
               })
             : null;
+          const attachments = (message.attachments
+            ?? (role === "user" ? receipt?.result?.attachments ?? item.attachments ?? [] : []))
+            .map((attachment) => ({ ...attachment }));
+          const sourceText = String(message?.text ?? "");
+          const text = role === "user" ? displayUserPrompt(sourceText) : sourceText;
+          if (!["user", "agent"].includes(role) || (!text && !attachments.length)) return [];
+          const visibleText = text || (attachments.some((attachment) => (
+            String(attachment?.type ?? "").toLowerCase().startsWith("image/")
+          )) ? "Изображение" : "Вложение");
           return [{
             itemId: String(message.itemId ?? ""),
             ...(message.clientUserMessageId
               ? { clientUserMessageId: String(message.clientUserMessageId) }
               : {}),
             role,
-            text: role === "agent" ? text.slice(0, maxAnswerChars) : text,
+            text: role === "agent" ? visibleText.slice(0, maxAnswerChars) : visibleText,
             ...(role === "user" && Array.isArray(message.responseAnnotations)
               ? {
                 responseAnnotations: message.responseAnnotations.slice(0, 20).map((annotation) => ({
@@ -292,9 +300,7 @@ export function createDesktopTaskHistoryFactory({
               ?? receipt?.createdAt
               ?? (role === "user" ? item.startedAt : item.completedAt)
               ?? null,
-            attachments: (message.attachments
-              ?? (role === "user" ? receipt?.result?.attachments ?? item.attachments ?? [] : []))
-              .map((attachment) => ({ ...attachment })),
+            attachments,
           }];
         }),
       })),

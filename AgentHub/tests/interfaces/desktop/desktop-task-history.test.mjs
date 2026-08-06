@@ -331,6 +331,51 @@ test("desktop task history imports private screenshot references for the visible
   }]);
 });
 
+test("desktop task history hides Codex image transport tags but keeps the attachment", async () => {
+  const { desktopTaskHistory, state } = fixture({ run: null });
+  const imageTag = [
+    "Посмотри",
+    '<image name="[Image #1]" path="C:\\Temp\\screen.png">',
+    "</image>",
+  ].join("\n");
+  state.history[3].prompt = imageTag;
+  state.history[3].messages[0].text = imageTag;
+  state.history[3].messages[0].attachments = [{
+    id: "screen.png",
+    name: "screen.png",
+    type: "image/png",
+  }];
+  state.history[3].messages[1].text = "Пример <image path=\"public.png\"></image>";
+
+  const result = await desktopTaskHistory({ limit: 1 });
+
+  assert.equal(result.items[0].prompt, "Посмотри");
+  assert.equal(result.items[0].messages[0].text, "Посмотри");
+  assert.deepEqual(result.items[0].messages[0].attachments, [{
+    id: "screen.png",
+    name: "screen.png",
+    type: "image/png",
+  }]);
+  assert.equal(
+    result.items[0].messages[1].text,
+    'Пример <image path="public.png"></image>',
+  );
+});
+
+test("image-only durable messages keep a visible attachment label", async () => {
+  const { desktopTaskHistory, state } = fixture({ run: null });
+  state.history[3].messages[0].text = [
+    '<image name="[Image #1]" path="C:\\Temp\\screen.png">',
+    "</image>",
+  ].join("\n");
+  state.history[3].messages[0].attachments = [{ id: "screen.png", type: "image/png" }];
+
+  const result = await desktopTaskHistory({ limit: 1 });
+
+  assert.equal(result.items[0].messages[0].text, "Изображение");
+  assert.equal(result.items[0].messages[0].attachments.length, 1);
+});
+
 test("desktop task history imports generated images attached to an assistant message", async () => {
   const { desktopTaskHistory, state, calls } = fixture({ run: null });
   state.history[3].messages[1].attachmentSources = [{

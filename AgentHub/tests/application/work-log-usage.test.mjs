@@ -178,6 +178,46 @@ test("journal projection nests Stream rows under one Workspace", () => {
   assert.ok(projected.includes('data-usage-credits="9"'));
 });
 
+test("journal keeps a single Stream visible and owns usage detail at Workspace level", () => {
+  const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
+    only: {
+      provider: "codex",
+      threadId: "thread-only",
+      turnId: "turn-only",
+      taskTitle: "Only task",
+      title: "Готово",
+      estimatedCredits: 4,
+      completedAt: "2026-07-30T10:00:00.000Z",
+    },
+  }, {
+    workspaceResolver: () => ({
+      workspaceId: "workspace-only",
+      workspaceName: "Only Workspace",
+      workspaceKind: "user",
+      streamId: "stream-only",
+      streamOrdinal: 1,
+      streamName: null,
+      streamDisplayName: "",
+    }),
+  });
+  assert.match(
+    projected,
+    /<details data-work-log-stream data-work-log-stream-id="stream-only"[^>]* open>/u,
+  );
+  assert.match(projected, /data-work-log-stream-title>[^<]*<button[^>]*>Stream 1<\/button>/u);
+  assert.match(projected, /data-work-log-stream-usage>[\s\S]*?<span data-usage-label>Итого<\/span>/u);
+  assert.match(
+    projected,
+    /data-work-log-workspace-usage><details data-work-log-workspace-usage-details>/u,
+  );
+  const workspaceSummary = projected.match(
+    /<summary data-work-log-workspace-usage-summary>[\s\S]*?<\/summary>/u,
+  )?.[0] ?? "";
+  assert.match(workspaceSummary, /data-usage-credits="4"/u);
+  assert.doesNotMatch(workspaceSummary, /Итого|data-usage-label/u);
+  assert.doesNotMatch(projected, /data-task-usage-details/u);
+});
+
 test("seven-day usage matches journal calendar days and includes empty days", () => {
   const now = new Date(2026, 6, 30, 18, 0, 0, 0).getTime();
   const completedAt = (daysAgo, hour) => {

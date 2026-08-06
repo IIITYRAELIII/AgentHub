@@ -236,11 +236,15 @@ test("panel handles the duplicate collapse-turns button", () => {
 
 test("grouped Claude work keeps the latest turn visible and collapses previous turns", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const workLogStyles = fs.readFileSync(require.resolve("../work-log.css"), "utf8");
   assert.match(app, /function replaceCollapsedTurnList\(list, entries\)/u);
   assert.match(app, /data-work-log-previous-turns-closed/u);
   assert.match(app, /Показать предыдущие ходы/u);
   assert.match(app, /replaceCollapsedTurnList\(list, entries\)/u);
   assert.doesNotMatch(app, /if \(list\) list\.replaceChildren\(\.\.\.entries\)/u);
+  assert.match(styles, /details\[data-work-log-previous-turns\] \{[\s\S]*?display: block;/u);
+  assert.match(workLogStyles, /details\[data-work-log-previous-turns\] \{[\s\S]*?display: block;/u);
 });
 
 test("chat controls live in the shared composer without a chat header", () => {
@@ -877,11 +881,11 @@ test("journal visually separates Workspaces and Streams without Thread cards", (
   );
   assert.match(
     styles,
-    /\.journal header\[data-work-log-workspace-header\]\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*space-between;/su,
+    /\.journal header\[data-work-log-workspace-header\]\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*flex-start;/su,
   );
   assert.match(
     styles,
-    /\.journal div\[data-work-log-stream\] \+ div\[data-work-log-stream\]\s*\{[^}]*border-top:\s*1px solid var\(--line\);/su,
+    /\.journal details\[data-work-log-stream\] \+ details\[data-work-log-stream\]\s*\{[^}]*border-top:\s*1px solid var\(--line\);/su,
   );
   assert.match(styles, /\.journal div\[data-work-log-task-content\]:empty\s*\{[^}]*display:\s*none;/su);
 });

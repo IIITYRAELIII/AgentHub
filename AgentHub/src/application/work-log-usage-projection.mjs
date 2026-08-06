@@ -316,6 +316,29 @@ function formatTaskUsageDetails(creditBreakdown, dayCredits) {
       .join("")}</span></details>\n`;
 }
 
+function formatStreamUsage(creditBreakdown, dayCredits) {
+  const [total] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
+  return `<span data-work-log-stream-usage>${highlightUsageUnits(
+    alignUsagePercent(markUsageLabel(total)),
+    creditBreakdown.total,
+  )}</span>`;
+}
+
+function formatWorkspaceUsageDetails(creditBreakdown, dayCredits) {
+  const [total, ...breakdown] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
+  const totalHtml = highlightUsageUnits(
+    alignUsagePercent(total.replace(/^Итого\s+/u, "")),
+    creditBreakdown.total,
+  );
+  return "<details data-work-log-workspace-usage-details>"
+    + `<summary data-work-log-workspace-usage-summary>${totalHtml}</summary>`
+    + `<span data-work-log-workspace-usage-breakdown>${breakdown
+      .map((part) => `<span data-work-log-workspace-usage-part>${
+        highlightUsageUnits(alignUsagePercent(part), breakdownPartCredits(part, creditBreakdown))
+      }</span>`)
+      .join("")}</span></details>`;
+}
+
 function formatDayUsageBreakdown(creditBreakdown) {
   const [, ...breakdown] = formatWorkLogUsage(creditBreakdown).split("<br>");
   return `<span data-day-usage-breakdown>${breakdown
@@ -1433,7 +1456,8 @@ function formatWorkspaceRows(rows, dayCredits, workspaceResolver) {
         ));
       const streamHtml = orderedStreams
         .map((stream) => {
-          const label = stream.workspace.streamDisplayName;
+          const label = stream.workspace.streamDisplayName
+            || `Stream ${stream.workspace.streamOrdinal}`;
           const rowsByRecency = [...stream.rows].sort(
             (left, right) => right.latestCompletedAt - left.latestCompletedAt,
           );
@@ -1468,23 +1492,23 @@ function formatWorkspaceRows(rows, dayCredits, workspaceResolver) {
           const markers = [...new Set(stream.rows.flatMap((row) => row.ids))]
             .map((id) => `<span data-usage-id="${id}" hidden></span>`)
             .join("\n");
-          const usage = breakdown.total > 0 ? formatTaskUsageDetails(breakdown, dayCredits) : "";
-          const collapseTurns = records.length > 1
-            ? '<button type="button" data-work-log-collapse-turns>Свернуть ходы</button>'
-            : "";
+          const usage = breakdown.total > 0 ? formatStreamUsage(breakdown, dayCredits) : "";
           const rowHtml = replaceProjectedCells(
             representative.match.text,
-            `${usage}${markers}${collapseTurns}`,
+            markers,
             records,
             stream.workspace,
-            taskContent,
+            "",
           );
-          return `<div data-work-log-stream data-work-log-stream-id="${
+          return `<details data-work-log-stream data-work-log-stream-id="${
             escapeHtmlAttribute(stream.workspace.streamId)
-          }">${rowHtml}</div>`;
+          }"${identity ? ` data-work-log-provider="${escapeHtmlAttribute(identity.provider)}"` : ""}`
+            + ` open><summary data-work-log-stream-summary><span data-work-log-stream-title>${
+            taskContent
+          }</span>${usage}</summary><div data-work-log-stream-turns>${rowHtml}</div></details>`;
         }).join("\n");
-      const usage = orderedStreams.length > 1 && group.creditBreakdown.total > 0
-        ? formatTaskUsageDetails(group.creditBreakdown, dayCredits)
+      const usage = group.creditBreakdown.total > 0
+        ? formatWorkspaceUsageDetails(group.creditBreakdown, dayCredits)
         : "";
       const workspaceUsage = usage
         ? `<span data-work-log-workspace-usage>${usage}</span>`

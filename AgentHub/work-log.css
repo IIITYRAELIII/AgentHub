@@ -238,8 +238,7 @@ div[data-work-log-turn-children] > div[data-work-log-turn-entry]::before {
 
 details[data-work-log-previous-turns] {
   border-top: 1px solid rgba(127, 127, 127, 0.55);
-  display: flex;
-  flex-direction: column;
+  display: block;
 }
 
 div[data-work-log-no-previous-turns] {
@@ -250,7 +249,6 @@ div[data-work-log-no-previous-turns] {
 details[data-work-log-previous-turns] > summary {
   cursor: pointer;
   list-style: none;
-  order: 2;
   padding: 0.3em 0.45em;
 }
 
@@ -299,7 +297,6 @@ details[data-work-log-previous-turns][open] > summary [data-work-log-previous-tu
 }
 
 div[data-work-log-previous-turn-list] {
-  order: 1;
   padding: 0.35em;
 }
 
