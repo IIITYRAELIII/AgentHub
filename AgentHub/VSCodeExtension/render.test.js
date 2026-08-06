@@ -724,8 +724,12 @@ test("BlackHole keeps three scenes around the selected Focus Deck", () => {
   assert.match(styles, /\.stream-chat-columns\[data-multi-stream\]\s*\{[\s\S]*display:\s*flex/u);
   assert.match(styles, /> \.chat-pane\s*\{[^}]*border-radius:\s*0;/su);
   assert.doesNotMatch(styles, /> \.chat-pane\s*\{[^}]*clip-path:/su);
+  assert.match(
+    styles,
+    /\.stream-chat-columns > \.chat-pane\[data-active-stream\]\s*\{[^}]*background:\s*linear-gradient\(180deg, rgb\(0 4 10 \/ 90%\), rgb\(0 2 7 \/ 94%\)\)/su,
+  );
   assert.match(styles, /\.stream-chat-preview:first-of-type\s*\{[\s\S]*order:\s*-1 !important/u);
-  assert.match(styles, /\.msg-user\s*\{[^}]*border-color:\s*rgb\(134 195 248 \/ 30%\)/su);
+  assert.match(styles, /\.msg-user\s*\{[^}]*border:\s*1px solid rgb\(134 195 248 \/ 52%\)/su);
   assert.match(styles, /\.brand-mark svg\s*\{[\s\S]*display:\s*block/u);
   assert.match(styles, /@keyframes blackhole-lensing/u);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/u);
