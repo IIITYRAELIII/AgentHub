@@ -103,11 +103,19 @@ export function createRunAdmissionComposition({
     allowRepositoryConflict = false,
     allowUnknownExternalActivity = false,
     persistentFiles = false,
+    telegramDeliveryRequested = true,
   } = {}) {
     target ??= {
       ...getSelectedTask(),
       taskTitle: getActiveThreadTitle(),
       chatId: getChatId(),
+    };
+    target = {
+      ...target,
+      telegramDeliveryRequested: target.telegramDeliveryRequested
+        ?? telegramDeliveryRequested,
+      clientSource: target.clientSource
+        ?? (telegramDeliveryRequested ? "telegram" : "desktop"),
     };
     const result = await runCoordinator.start(input, temporaryFiles, {
       forceSpeechButton,
@@ -169,10 +177,12 @@ export function createRunAdmissionComposition({
     persist: () => saveState(),
     updateMessage: updateDeferredMessage,
     pendingKeyboard: (item) => pendingInputKeyboard(item.id, { allowForce: item.allowForce === true }),
-    notifyReturned: (item) => sendMessageTo(
-      item.chatId,
-      "Сообщение не потеряно и возвращено в сохранённые после ошибки запуска.",
-    ),
+    notifyReturned: (item) => item.telegramDeliveryRequested
+      ? sendMessageTo(
+        item.chatId,
+        "Сообщение не потеряно и возвращено в сохранённые после ошибки запуска.",
+      )
+      : Promise.resolve(null),
     expire: async (item) => {
       await cleanupDeferredFiles(item);
       await updateDeferredMessage(

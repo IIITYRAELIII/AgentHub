@@ -41,10 +41,15 @@ function fixture() {
 
 test("Desktop task service resolves streamId before provider references", async () => {
   const { service } = fixture();
-  const target = await service.resolveTarget({ streamId: "stream-1" });
+  const target = await service.resolveTarget(
+    { streamId: "stream-1" },
+    { source: "vscode-extension" },
+  );
   assert.equal(target.threadId, "thread-1");
   assert.equal(target.streamId, "stream-1");
   assert.equal(target.chatId, 101);
+  assert.equal(target.telegramDeliveryRequested, false);
+  assert.equal(target.clientSource, "vscode-extension");
 });
 
 test("Desktop task selection activates and marks one exact task", async () => {

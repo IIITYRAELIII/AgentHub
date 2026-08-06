@@ -67,6 +67,7 @@ export function createDesktopRunRouterWiring({
       noteRunActivity: services.noteRunActivity,
       scheduleProgressUpdate: services.scheduleProgressUpdate,
       notifyInputStart: (target) => {
+        if (target?.telegramDeliveryRequested === false) return;
         void services.telegram("sendChatAction", {
           chat_id: target.chatId ?? state.chatId(),
           action: "typing",

@@ -68,6 +68,8 @@ export class ManagedRunLifecycleService {
       executionOwner: TASK_EXECUTION_OWNERS.HUB,
       appServer: taskExecutionRuntimeLabel(TASK_EXECUTION_OWNERS.HUB),
       collaborationMode: target?.collaborationMode ?? preferences.collaborationMode,
+      telegramDeliveryRequested: target?.telegramDeliveryRequested !== false,
+      clientSource: String(target?.clientSource ?? "telegram").trim() || "telegram",
     });
     d.taskRuns.add(run);
     d.invalidateCatalog();
@@ -77,7 +79,7 @@ export class ManagedRunLifecycleService {
     d.syncRun(run);
     if (target?.deferredInput) target.deferredInput.dispatchingRunId = run.id;
     await d.saveState();
-    d.scheduleProgressStart(run);
+    if (run.displayRequested) d.scheduleProgressStart(run);
     return run;
   }
 

@@ -473,7 +473,8 @@ export class TaskViewController {
       const title = d.resolveRunningTitle(running, binding);
       if (updateTaskRunTitle(running, title)) await d.saveState();
       running.chatId = targetChatId;
-      if (running.observer) running.displayRequested = true;
+      running.displayRequested = true;
+      running.telegramDeliveryRequested = true;
       await d.startProgressMessage(running, { forceNew: true });
       return;
     }
@@ -485,6 +486,7 @@ export class TaskViewController {
         binding.provider === "codex" ? view.snapshot.turnId : null,
       );
       run.displayRequested = true;
+      run.telegramDeliveryRequested = true;
       await d.startProgressMessage(run, { forceNew: true });
       d.scheduleObservedRun(run);
       await d.saveState();

@@ -106,7 +106,7 @@ export class CodexAppServerLifecycle {
       await this.start();
       await this.initialize({ attachSelectedThread: d.providerSelected() });
       await d.recoverRuns();
-      if (d.activeRuns().length) d.startTyping();
+      if (d.activeRuns().some((run) => run.displayRequested === true)) d.startTyping();
       for (const run of runs) d.setStage(run, "Соединение с Codex восстановлено.");
     } catch (error) {
       d.logger.error("Cannot restart Codex app-server:", error.message);

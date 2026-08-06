@@ -37,12 +37,17 @@ function progressState({ stage, reasoning = "", displayRequested }) {
 }
 
 export function createManagedTaskRun(value) {
+  const telegramDeliveryRequested = value.telegramDeliveryRequested !== false;
   return {
     id: crypto.randomUUID(),
     turnId: null,
     sessionId: value.provider === "claude" ? value.threadId : null,
     ...value,
-    ...progressState({ stage: "Задача принята.", displayRequested: true }),
+    ...progressState({
+      stage: "Задача принята.",
+      displayRequested: telegramDeliveryRequested,
+    }),
+    telegramDeliveryRequested,
     observer: false,
   };
 }

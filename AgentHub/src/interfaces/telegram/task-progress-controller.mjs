@@ -41,7 +41,10 @@ export class TaskProgressController {
 
   async start(run, { forceNew = false } = {}) {
     if (!run || run.status !== "running" || (!forceNew && run.progressMessageIds.length)) return;
-    if (run.observer) run.displayRequested = true;
+    if (run.observer) {
+      run.displayRequested = true;
+      run.telegramDeliveryRequested = true;
+    }
     const text = this.render(run);
     const message = await this.sendInitial(run, text);
     if (!this.isCurrentRun(run) || run.status !== "running") {

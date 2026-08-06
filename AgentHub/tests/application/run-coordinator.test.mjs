@@ -118,10 +118,15 @@ test("RunCoordinator starts a durable queued item exactly once", async () => {
     persistentFiles: true,
     forceSpeechButton: true,
     clientUserMessageId: "message-1",
+    telegramDeliveryRequested: false,
+    clientSource: "desktop",
   };
   const result = await f.coordinator.startDeferred(item);
   assert.equal(result, f.run);
   assert.deepEqual(f.run.messageAttachments, [{ id: "queued.png" }]);
+  const beginTarget = f.calls.find(([name]) => name === "begin")[2];
+  assert.equal(beginTarget.telegramDeliveryRequested, false);
+  assert.equal(beginTarget.clientSource, "desktop");
   assert.deepEqual(f.calls.at(-1).slice(1), [f.run, "queued", [], { forceSpeechButton: true }]);
 });
 

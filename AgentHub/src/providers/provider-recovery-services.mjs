@@ -103,7 +103,7 @@ export class CodexRecoveryService {
       }
       d.setProgressStage(run, "Подключено к продолжающейся задаче.");
       d.scheduleObservedRun(run);
-      d.startTyping();
+      if (run.displayRequested) d.startTyping();
       await d.saveState();
       return;
     }

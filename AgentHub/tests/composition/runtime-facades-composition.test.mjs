@@ -52,6 +52,7 @@ test("runtime facades preserve stable callbacks across late composition binding"
   const finalized = facades.finalizeCodexRunDelivery({ turnId: "turn" }, { answer: "done" });
   assert.equal(finalized.options.turnId, "turn");
   assert.equal(finalized.options.status, "completed");
+  assert.equal(finalized.options.deliver, undefined);
   assert.deepEqual(finalized.options.tracker.usage, {
     inputTokens: 0,
     cachedInputTokens: 0,

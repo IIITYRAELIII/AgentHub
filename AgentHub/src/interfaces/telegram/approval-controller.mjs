@@ -42,6 +42,7 @@ export class ApprovalController {
       chatId: run?.chatId ?? this.currentChatId(),
     };
     this.pending.set(key, approval);
+    if (run?.telegramDeliveryRequested === false) return;
     const extra = {
       reply_markup: {
         inline_keyboard: [
@@ -86,6 +87,7 @@ export class ApprovalController {
       text: formatMcpElicitation(params),
     };
     this.pending.set(key, approval);
+    if (run?.telegramDeliveryRequested === false) return;
     const decisions = [];
     if (acceptResponse) {
       decisions.push([{ text: "✅ Принять", callback_data: approvalCallbackData(key, "once") }]);

@@ -58,7 +58,7 @@ export function createRuntimeFacadesComposition({
       status = "completed",
       tracker = { usage: emptyTokenUsage(), reported: false },
       forceSpeechButton = false,
-      deliver = true,
+      deliver,
       silent = false,
       description = "финальный ответ Codex",
     } = {}) {

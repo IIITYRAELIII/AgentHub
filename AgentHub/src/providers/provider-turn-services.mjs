@@ -71,7 +71,7 @@ export class CodexTurnService {
         rememberBounded(d.turnTokenUsage, run.turnId, { usage: emptyTokenUsage(), reported: false }, 200);
       }
       await d.saveState();
-      d.startTyping();
+      if (run.displayRequested) d.startTyping();
       d.scheduleObservedRun(run);
     } catch (error) {
       await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));

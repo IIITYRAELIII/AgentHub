@@ -48,7 +48,7 @@ export class CodexRunFinalizer {
     status = "completed",
     tracker = { usage: emptyTokenUsage(), reported: false },
     forceSpeechButton = false,
-    deliver = true,
+    deliver,
     silent = false,
     description = "финальный ответ Codex",
   } = {}) {
@@ -116,7 +116,7 @@ export class CodexRunFinalizer {
         serviceTier: completion.serviceTier,
       }
       : tracker;
-    const shouldDeliver = deliver || Boolean(existingCompletion);
+    const shouldDeliver = deliver ?? (run.telegramDeliveryRequested !== false);
     const message = [answer, this.formatUsage(resolvedTracker)].filter(Boolean).join("\n\n");
     await this.persistHistory(run, {
       answer,

@@ -55,3 +55,21 @@ test("managed run lifecycle completes and removes the same run", async () => {
   assert.equal(run.status, "completed");
   assert.deepEqual(events, ["approvals", "observer", "claude", "catalog", "sync-complete", "typing", "save", "after"]);
 });
+
+test("managed run lifecycle keeps a Desktop-started run out of Telegram", async () => {
+  const { service, events } = harness();
+  const run = await service.begin("hello", {
+    provider: "codex",
+    projectRoot: "D:/Work",
+    threadId: "thread-1",
+    taskTitle: "Task",
+    chatId: 7,
+    telegramDeliveryRequested: false,
+    clientSource: "desktop",
+  });
+
+  assert.equal(run.telegramDeliveryRequested, false);
+  assert.equal(run.displayRequested, false);
+  assert.equal(run.clientSource, "desktop");
+  assert.equal(events.includes("progress"), false);
+});

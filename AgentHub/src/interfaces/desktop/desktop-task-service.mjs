@@ -48,7 +48,7 @@ export class DesktopTaskService {
     return entries.find((entry) => entryMatchesReference(entry, reference)) ?? null;
   }
 
-  async resolveTarget(params) {
+  async resolveTarget(params, context = null) {
     const reference = normalizedTaskReference(params);
     const entries = await this.refreshCatalog();
     const entry = entries.find((candidate) => entryMatchesReference(candidate, reference));
@@ -61,6 +61,8 @@ export class DesktopTaskService {
       threadId: entry.threadId,
       taskTitle: entry.title,
       chatId: this.chatId(),
+      telegramDeliveryRequested: false,
+      clientSource: String(context?.source ?? "desktop").trim() || "desktop",
     };
   }
 

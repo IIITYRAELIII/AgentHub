@@ -412,6 +412,11 @@ test("desktop client survives App Server exit during delayed startup and shares 
     130,
     "newer real usage must replace the post-compaction context usage",
   );
+  assert.deepEqual(
+    telegram.calls.filter((call) => ["sendMessage", "sendPhoto", "editMessageText"].includes(call.method)),
+    [],
+    "Desktop-started progress, approvals and final answers must stay out of Telegram",
+  );
   const history = await waitFor(async () => {
     const result = await callDesktopControl("task-history", {
       provider: "codex",

@@ -48,3 +48,29 @@ test("deferred input service removes rejected attachments at its bounded capacit
   );
   assert.deepEqual(removed, ["temporary.png"]);
 });
+
+test("deferred Desktop input is persisted without a Telegram prompt", async () => {
+  const store = new DeferredInputStore();
+  let notifications = 0;
+  const service = new DeferredInputService({
+    store,
+    createId: () => "desktop-deferred",
+    persist: async () => {},
+    removeFiles: async () => {},
+    notify: async () => { notifications += 1; },
+  });
+
+  const result = await service.defer("message", [], {
+    target: {
+      provider: "codex",
+      threadId: "thread-1",
+      telegramDeliveryRequested: false,
+      clientSource: "desktop",
+    },
+  });
+
+  assert.equal(result.item.telegramDeliveryRequested, false);
+  assert.equal(result.item.clientSource, "desktop");
+  assert.equal(result.item.messageId, undefined);
+  assert.equal(notifications, 0);
+});

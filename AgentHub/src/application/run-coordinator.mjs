@@ -173,6 +173,8 @@ export class RunCoordinator {
       reasoningId: item.reasoningId,
       collaborationMode: item.collaborationMode,
       clientUserMessageId: item.clientUserMessageId,
+      telegramDeliveryRequested: item.telegramDeliveryRequested !== false,
+      clientSource: item.clientSource,
       deferredInput: item,
     };
     const run = await this.beginRun(item.input, target);

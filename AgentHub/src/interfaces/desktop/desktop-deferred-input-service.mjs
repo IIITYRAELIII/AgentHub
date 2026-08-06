@@ -130,6 +130,7 @@ export class DesktopDeferredInputService {
         allowRepositoryConflict: item.conflictKind === "repository",
         allowUnknownExternalActivity: item.conflictKind === "activity-unknown",
         persistentFiles: item.persistentFiles === true,
+        telegramDeliveryRequested: false,
       });
       if (outcome?.deferred) throw new Error("Условие безопасного запуска всё ещё не выполнено");
       const startedRun = d.runForTask(binding);
@@ -147,6 +148,7 @@ export class DesktopDeferredInputService {
       const outcome = await d.startTurn(item.input, item.temporaryFiles ?? [], {
         forceSpeechButton: item.forceSpeechButton === true,
         persistentFiles: item.persistentFiles === true,
+        telegramDeliveryRequested: false,
       });
       if (outcome?.deferred) throw new Error("Новая задача неожиданно оказалась занята");
       const startedRun = d.runForTask(d.selectedTask());

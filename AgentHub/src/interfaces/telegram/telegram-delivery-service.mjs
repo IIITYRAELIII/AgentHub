@@ -356,7 +356,7 @@ export class TelegramDeliveryService {
     message = answer,
     speechText = answer,
     forceSpeechButton = false,
-    deliver = true,
+    deliver,
     silent = false,
     complete = true,
   } = {}) {
@@ -370,7 +370,8 @@ export class TelegramDeliveryService {
       this.logger.error(`Cannot refresh final diff for task ${run?.threadId ?? run?.id ?? "unknown"}:`, error.message);
     });
     let deliveryResult = null;
-    if (deliver) {
+    const deliveryRequested = deliver ?? (run?.telegramDeliveryRequested !== false);
+    if (deliveryRequested) {
       deliveryResult = await this.sendRunLongMessage(run, message, {
         speechText,
         forceSpeechButton,

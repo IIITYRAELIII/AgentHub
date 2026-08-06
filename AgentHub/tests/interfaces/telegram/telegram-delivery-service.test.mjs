@@ -95,6 +95,17 @@ test("final delivery persists the answer and outbox parts before completing the 
   assert.equal(setup.run.finalizing, true);
 });
 
+test("final delivery for a non-Telegram run updates state without messaging Telegram", async () => {
+  const setup = service();
+  setup.run.telegramDeliveryRequested = false;
+  await setup.value.finalizeRunDelivery(setup.run, { answer: "done" });
+
+  const names = setup.events.map((event) => event[0]);
+  assert.equal(names.includes("enqueue"), false);
+  assert.ok(names.includes("remember"));
+  assert.ok(names.includes("complete"));
+});
+
 test("delivered progress is rebound to the exact active run", async () => {
   const setup = service();
   await setup.value.recordDeliveredOutbox({

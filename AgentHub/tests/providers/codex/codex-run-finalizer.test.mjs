@@ -84,11 +84,13 @@ test("CodexRunFinalizer adopts audited start data and completes one durable deli
   ]);
 });
 
-test("CodexRunFinalizer preserves delivery requested by an earlier completion", async () => {
+test("CodexRunFinalizer does not treat an audited completion as a Telegram request", async () => {
   const state = fixture({ existingCompletion: { turnId: "turn-1" } });
-  await state.finalizer.finalize(run(), { answer: "Final", deliver: false });
+  const value = run();
+  value.telegramDeliveryRequested = false;
+  await state.finalizer.finalize(value, { answer: "Final" });
   const final = state.events.find(([name]) => name === "final");
-  assert.equal(final[2].deliver, true);
+  assert.equal(final[2].deliver, false);
 });
 
 test("CodexRunFinalizer exits before side effects for a manual compaction turn", async () => {

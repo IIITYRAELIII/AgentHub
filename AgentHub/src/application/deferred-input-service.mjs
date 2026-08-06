@@ -57,11 +57,13 @@ export class DeferredInputService {
       allowForce,
       conflictKind,
       clientUserMessageId: String(clientUserMessageId ?? "").trim() || null,
+      telegramDeliveryRequested: target.telegramDeliveryRequested !== false,
+      clientSource: String(target.clientSource ?? "telegram").trim() || "telegram",
       createdAt: new Date(d.now()).toISOString(),
     };
     d.store.put(item, destination);
     await d.persist();
-    if (notify) {
+    if (notify && item.telegramDeliveryRequested) {
       const message = await d.notify(item, { executionOwner, conflictTask });
       item.messageId = message?.message_id ?? null;
       await d.persist();

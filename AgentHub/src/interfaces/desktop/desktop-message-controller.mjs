@@ -18,7 +18,7 @@ export function createDesktopMessageController({
   }
   const inflightReceipts = new Map();
 
-  async function sendMessage(params) {
+  async function sendMessage(params, context = null) {
     const text = String(params.text ?? "").trim();
     const attachments = await attachmentPaths(params.attachments);
     if (!text && !attachments.length) throw new Error("Введите сообщение или добавьте файл");
@@ -35,7 +35,7 @@ export function createDesktopMessageController({
     const input = attachments.length
       ? messageInputWithAttachments(text, attachments, descriptors)
       : text;
-    const target = await resolveTarget(params);
+    const target = await resolveTarget(params, context);
     if (!target.threadId) throw new Error("Сначала выберите или создайте задачу");
     const receiptIdentity = {
       provider: target.provider,

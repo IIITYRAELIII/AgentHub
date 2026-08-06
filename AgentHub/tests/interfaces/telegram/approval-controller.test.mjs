@@ -70,3 +70,17 @@ test("desktop sees and resolves the same pending approval", async () => {
   assert.equal(responses.length, 1);
   assert.ok(calls.some(([method]) => method === "editMessageReplyMarkup"));
 });
+
+test("approval for a Desktop-started run stays in HUB and does not message Telegram", async () => {
+  const { controller, calls } = fixture();
+  await controller.request(
+    "rpc",
+    "commandExecution",
+    { command: "echo ok" },
+    "Разрешить echo ok?",
+    { id: "run-1", telegramDeliveryRequested: false },
+  );
+
+  assert.equal(controller.snapshot().length, 1);
+  assert.equal(calls.length, 0);
+});
