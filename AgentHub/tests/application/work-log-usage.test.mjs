@@ -159,15 +159,23 @@ test("journal projection nests Stream rows under one Workspace", () => {
     main: { provider: "codex", threadId: "thread-main", turnId: "turn-main",
       taskTitle: "Agent HUB 1", title: "Первый", estimatedCredits: 2,
       completedAt: "2026-07-30T10:00:00.000Z" },
+    continuation: { provider: "codex", threadId: "thread-main-next", turnId: "turn-main-next",
+      taskTitle: "Agent HUB 2", title: "Продолжение", estimatedCredits: 4,
+      completedAt: "2026-07-30T10:10:00.000Z" },
     themes: { provider: "codex", threadId: "thread-themes", turnId: "turn-themes",
       taskTitle: "Themes", title: "Второй", estimatedCredits: 3,
       completedAt: "2026-07-30T10:20:00.000Z" },
   }, { workspaceResolver: resolver });
   assert.equal((projected.match(/<section data-work-log-workspace data-work-log-workspace-id="workspace-hub"/gu) ?? []).length, 1);
+  assert.equal((projected.match(/<div data-work-log-row/gu) ?? []).length, 2);
   assert.ok(projected.includes('data-work-log-stream-id="stream-main"'));
   assert.ok(projected.includes('data-work-log-stream-id="stream-themes"'));
   assert.ok(projected.includes("Agent HUB"));
-  assert.ok(projected.includes('data-usage-credits="5"'));
+  assert.ok(projected.includes("Stream 1"));
+  assert.ok(projected.includes("Themes"));
+  assert.ok(!projected.includes("Codex - Agent HUB 1"));
+  assert.ok(!projected.includes("Codex - Agent HUB 2"));
+  assert.ok(projected.includes('data-usage-credits="9"'));
 });
 
 test("seven-day usage matches journal calendar days and includes empty days", () => {

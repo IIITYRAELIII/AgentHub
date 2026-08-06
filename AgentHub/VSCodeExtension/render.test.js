@@ -821,6 +821,26 @@ test("journal width stays fixed while days and turns are expanded", () => {
   );
 });
 
+test("journal visually separates Workspaces and Streams without Thread cards", () => {
+  const styles = fs.readFileSync(
+    require.resolve("../assets/mini-app/styles.css"),
+    "utf8",
+  );
+  assert.match(
+    styles,
+    /\.journal section\[data-work-log-workspace\]\s*\{[^}]*border:\s*1px solid var\(--line\);[^}]*overflow:\s*hidden;/su,
+  );
+  assert.match(
+    styles,
+    /\.journal header\[data-work-log-workspace-header\]\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*space-between;/su,
+  );
+  assert.match(
+    styles,
+    /\.journal div\[data-work-log-stream\] \+ div\[data-work-log-stream\]\s*\{[^}]*border-top:\s*1px solid var\(--line\);/su,
+  );
+  assert.match(styles, /\.journal div\[data-work-log-task-content\]:empty\s*\{[^}]*display:\s*none;/su);
+});
+
 test("task-grouped journal pages large histories without per-row Metropolis blur", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const styles = themeFile("metropolis");

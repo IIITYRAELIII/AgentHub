@@ -816,6 +816,66 @@ main {
 
 /* ==================================================== задача и её ходы === */
 
+.journal section[data-work-log-workspace] {
+  background: color-mix(in srgb, var(--surface-1) 54%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--plate-shadow);
+  margin: 0.4rem 0 0.7rem;
+  overflow: hidden;
+}
+
+.journal section[data-work-log-workspace][data-work-log-workspace-kind="system"] {
+  border-style: dashed;
+}
+
+.journal header[data-work-log-workspace-header] {
+  align-items: center;
+  background: color-mix(in srgb, var(--surface-2) 68%, transparent);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  min-height: 2.4rem;
+  padding: 0.35rem 0.55rem;
+}
+
+.journal header[data-work-log-workspace-header] > strong {
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 0.88rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.journal span[data-work-log-workspace-usage] {
+  flex: 0 0 17.5rem;
+  min-width: 0;
+}
+
+.journal span[data-work-log-workspace-usage] details[data-task-usage-details],
+.journal span[data-work-log-workspace-usage] summary[data-task-usage] {
+  width: 100%;
+}
+
+.journal div[data-work-log-stream] + div[data-work-log-stream] {
+  border-top: 1px solid var(--line);
+}
+
+.journal div[data-work-log-stream] > div[data-work-log-row] {
+  padding: 0.15rem 0;
+}
+
+.journal div[data-work-log-task-content]:empty {
+  display: none;
+}
+
+.journal div[data-work-log-task-content]:empty + div[data-work-log-usage] {
+  margin-top: 0;
+}
+
 .journal div[data-work-log-table] {
   --work-log-task-card-width: 100%;
 }
@@ -2889,6 +2949,47 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   list-style: none;
   margin: 0;
   padding: 0;
+}
+
+html[data-surface="mobile"] .journal header[data-work-log-workspace-header] {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+html[data-surface="mobile"] .journal span[data-work-log-workspace-usage] {
+  flex-basis: auto;
+  width: 100%;
+}
+
+html[data-surface="mobile"]
+  .journal
+  span[data-work-log-workspace-usage]
+  details[data-task-usage-details] {
+  display: block;
+  width: 100%;
+}
+
+html[data-surface="mobile"]
+  .journal
+  span[data-work-log-workspace-usage]
+  summary[data-task-usage] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 8.6ch 5ch;
+  width: 100%;
+}
+
+html[data-surface="mobile"]
+  .journal
+  div[data-work-log-task-cell]:has(> div[data-work-log-task-content]:empty) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+html[data-surface="mobile"]
+  .journal
+  div[data-work-log-task-cell]:has(> div[data-work-log-task-content]:empty)
+  > div[data-work-log-usage] {
+  grid-column: 1;
 }
 
 .task-workspace-item {

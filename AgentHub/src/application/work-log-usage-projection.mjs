@@ -797,10 +797,10 @@ function workLogRowCells(row) {
   }));
 }
 
-function layoutContainer(content) {
+function layoutContainer(content, { workspaceHierarchy = false } = {}) {
   return [
     "<div data-work-log-table>",
-    '<div data-work-log-header><strong>Задача</strong><strong>Ходы</strong></div>',
+    `<div data-work-log-header><strong>${workspaceHierarchy ? "Поток" : "Задача"}</strong><strong>Ходы</strong></div>`,
     `<div data-work-log-body>${content}</div>`,
     "</div>",
   ].join("\n");
@@ -1353,7 +1353,13 @@ function ensureCanonicalRows(section, date, turns) {
   return updated;
 }
 
-function replaceProjectedCells(row, usageContent, records, workspace = null) {
+function replaceProjectedCells(
+  row,
+  usageContent,
+  records,
+  workspace = null,
+  taskContentOverride = null,
+) {
   const cells = workLogRowCells(row);
   if (cells.length < 2) return row;
   const turnCell = cells.find(
@@ -1371,9 +1377,11 @@ function replaceProjectedCells(row, usageContent, records, workspace = null) {
   const latest = [...records].sort(
     (left, right) => (Date.parse(left.completedAt) || 0) - (Date.parse(right.completedAt) || 0),
   ).at(-1);
-  const task = identity && latest?.taskTitle
-    ? taskCell({ ...identity, taskTitle: latest.taskTitle })
-    : taskCellContent(cells[0].text);
+  const task = taskContentOverride ?? (
+    identity && latest?.taskTitle
+      ? taskCell({ ...identity, taskTitle: latest.taskTitle })
+      : taskCellContent(cells[0].text)
+  );
   const attributes = identity
     ? ` data-work-log-provider="${escapeHtmlAttribute(identity.provider)}"`
       + ` data-work-log-thread-id="${escapeHtmlAttribute(identity.threadId)}"`
@@ -1417,29 +1425,77 @@ function formatWorkspaceRows(rows, dayCredits, workspaceResolver) {
         stream.rows.push(row);
         streams.set(streamKey, stream);
       }
-      const streamHtml = [...streams.values()]
+      const orderedStreams = [...streams.values()]
         .sort((left, right) => (
-          right.rows[0].latestCompletedAt - left.rows[0].latestCompletedAt
+          Math.max(...right.rows.map((row) => row.latestCompletedAt))
+            - Math.max(...left.rows.map((row) => row.latestCompletedAt))
           || left.workspace.streamOrdinal - right.workspace.streamOrdinal
-        ))
+        ));
+      const streamHtml = orderedStreams
         .map((stream) => {
           const label = stream.workspace.streamDisplayName;
-          const header = label
-            ? `<div data-work-log-stream-header>${escapeHtmlText(label)}</div>`
+          const rowsByRecency = [...stream.rows].sort(
+            (left, right) => right.latestCompletedAt - left.latestCompletedAt,
+          );
+          const representative = rowsByRecency[0];
+          const identity = representative.identity;
+          const taskContent = label
+            ? (identity
+              ? `<button type="button" data-open-task data-provider="${
+                escapeHtmlAttribute(identity.provider)
+              }" data-thread-id="${escapeHtmlAttribute(identity.threadId)}">${
+                escapeHtmlText(label)
+              }</button>`
+              : escapeHtmlText(label))
             : "";
+          const records = [];
+          const seenRecords = new Set();
+          for (const row of stream.rows) {
+            for (const record of row.recorded) {
+              const key = `${record.provider}\0${record.threadId}\0${record.turnId}`;
+              if (seenRecords.has(key)) continue;
+              seenRecords.add(key);
+              records.push(record);
+            }
+          }
+          records.sort(
+            (left, right) => (Date.parse(right.completedAt) || 0) - (Date.parse(left.completedAt) || 0),
+          );
+          const breakdown = stream.rows.reduce(
+            (total, row) => addCreditBreakdown(total, row.creditBreakdown),
+            emptyCreditBreakdown(),
+          );
+          const markers = [...new Set(stream.rows.flatMap((row) => row.ids))]
+            .map((id) => `<span data-usage-id="${id}" hidden></span>`)
+            .join("\n");
+          const usage = breakdown.total > 0 ? formatTaskUsageDetails(breakdown, dayCredits) : "";
+          const collapseTurns = records.length > 1
+            ? '<button type="button" data-work-log-collapse-turns>Свернуть ходы</button>'
+            : "";
+          const rowHtml = replaceProjectedCells(
+            representative.match.text,
+            `${usage}${markers}${collapseTurns}`,
+            records,
+            stream.workspace,
+            taskContent,
+          );
           return `<div data-work-log-stream data-work-log-stream-id="${
             escapeHtmlAttribute(stream.workspace.streamId)
-          }">${header}${stream.rows.map((row) => row.html).join("\n")}</div>`;
+          }">${rowHtml}</div>`;
         }).join("\n");
-      const usage = group.creditBreakdown.total > 0
+      const usage = orderedStreams.length > 1 && group.creditBreakdown.total > 0
         ? formatTaskUsageDetails(group.creditBreakdown, dayCredits)
+        : "";
+      const workspaceUsage = usage
+        ? `<span data-work-log-workspace-usage>${usage}</span>`
         : "";
       return `<section data-work-log-workspace data-work-log-workspace-id="${
         escapeHtmlAttribute(group.workspace.workspaceId)
-      }" data-work-log-workspace-kind="${escapeHtmlAttribute(group.workspace.workspaceKind)}">`
+      }" data-work-log-workspace-kind="${escapeHtmlAttribute(group.workspace.workspaceKind)}"`
+        + ` data-work-log-stream-count="${orderedStreams.length}">`
         + `<header data-work-log-workspace-header><strong>${
           escapeHtmlText(group.workspace.workspaceName)
-        }</strong><span data-work-log-workspace-usage>${usage}</span></header>`
+        }</strong>${workspaceUsage}</header>`
         + `<div data-work-log-workspace-streams>${streamHtml}</div></section>`;
     }).join("\n");
 }
@@ -1547,7 +1603,9 @@ function projectDaySection(
   return [
     `<details data-work-log-day-section${open ? " open" : ""}>`,
     summary,
-    layoutContainer(formatWorkspaceRows(renderedRows, dayCredits, workspaceResolver)),
+    layoutContainer(formatWorkspaceRows(renderedRows, dayCredits, workspaceResolver), {
+      workspaceHierarchy: typeof workspaceResolver === "function",
+    }),
     "</details>",
     "",
     "",
