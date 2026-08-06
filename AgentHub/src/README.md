@@ -54,6 +54,13 @@ The enforced dependency direction is:
 - `infrastructure` → `domain`, `ports`, `infrastructure`;
 - `composition` may bind every layer.
 
+Верхнеуровневая сборка проходит четырьмя явными фазами: provider/application,
+client/runtime, interaction shell и execution/bootstrap. Последняя фаза
+единолично собирает observation/recovery, Telegram runtime и start/shutdown;
+корневой orchestrator не создаёт эти компоненты повторно. Межфазовые ссылки,
+которые нужны до завершения сборки, проходят через однократно связываемые
+deferred ports, а не через изменяемый service locator.
+
 Temporary dependencies on frozen legacy root modules are allowed only while the
 module is listed in `architecture-migration-inventory.json`. The architecture
 test rejects every unregistered root module and every dependency that points in
