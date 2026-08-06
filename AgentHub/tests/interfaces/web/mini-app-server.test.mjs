@@ -267,7 +267,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(appSource, /data-dialog-settings-open/u);
     const clientSource = await (await fetch(`${address.url}hub-client.js`)).text();
     assert.match(clientSource, /agentHub\.setTaskDiff\(targetId/u);
-    assert.match(clientSource, /control\("new-task", \{ provider: selectedProvider \}\)/u);
+    assert.match(clientSource, /control\("new-task", \{[\s\S]*provider: selectedProvider,[\s\S]*workspaceName: title \|\| undefined,[\s\S]*\}\)/u);
     assert.doesNotMatch(clientSource, /agent: "provider"/u);
     assert.doesNotMatch(clientSource, /setStatus\(\{ rows: \[\{ name: "Diff"/u);
 
