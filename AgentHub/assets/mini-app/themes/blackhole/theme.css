@@ -1,256 +1,455 @@
-/* ====================================================== тема «BlackHole» === */
+/* ======================================= тема «BlackHole»: Focus Deck === */
 
 html[data-theme="blackhole"] {
-  --display-weight: 600;
-  --display-spacing: 0.02em;
-  --label-spacing: 0.2em;
+  --display-weight: 620;
+  --display-spacing: 0.012em;
+  --title-weight: 610;
+  --label-spacing: 0.12em;
 
-  --radius-lg: 20px;
-  --radius-md: 14px;
-  --radius-sm: 10px;
+  --radius-lg: 4px;
+  --radius-md: 3px;
+  --radius-sm: 2px;
+  --radius-chip: 3px;
   --rail-width: 2px;
 
-  --bg: #000000;
-  --surface-1: rgba(232, 238, 252, 0.026);
-  --surface-2: rgba(232, 238, 252, 0.05);
-  --surface-3: rgba(232, 238, 252, 0.085);
-  --sunken: rgba(0, 0, 0, 0.6);
+  --bg: #000;
+  --surface-1: rgb(2 6 12 / 72%);
+  --surface-2: rgb(7 14 24 / 72%);
+  --surface-3: rgb(11 23 38 / 76%);
+  --sunken: rgb(0 2 6 / 82%);
 
-  --line: rgba(226, 232, 244, 0.12);
-  --line-strong: rgba(226, 232, 244, 0.26);
-
-  --card-bg: linear-gradient(180deg, rgba(8, 10, 14, 0.9), rgba(0, 0, 0, 0.94));
-  --card-bg-open: linear-gradient(180deg, rgba(11, 14, 20, 0.92), rgba(0, 0, 0, 0.95));
-  --card-border: rgba(226, 236, 255, 0.14);
-  --card-border-open: rgba(122, 190, 255, 0.36);
+  --line: rgb(157 204 255 / 14%);
+  --line-strong: rgb(162 213 255 / 32%);
+  --card-bg: linear-gradient(180deg, rgb(5 11 19 / 76%), rgb(0 3 8 / 84%));
+  --card-bg-open: linear-gradient(180deg, rgb(8 17 29 / 84%), rgb(0 4 10 / 90%));
+  --card-texture: none;
+  --card-border: rgb(153 204 255 / 16%);
+  --card-border-open: rgb(103 190 255 / 48%);
   --card-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 0 42px -22px rgba(96, 176, 255, 0.6),
-    0 30px 60px -34px rgba(0, 0, 0, 1);
+    inset 0 1px 0 rgb(224 243 255 / 5%),
+    0 22px 54px -36px rgb(0 0 0 / 100%);
+  --plate-bg: linear-gradient(180deg, rgb(210 235 255 / 6%), rgb(0 4 10 / 26%));
+  --plate-shadow: inset 0 1px 0 rgb(232 247 255 / 6%);
+  --turn-shadow: 0 0 28px -20px rgb(75 174 255 / 82%);
 
-  --plate-bg: linear-gradient(180deg, rgba(226, 238, 255, 0.06), rgba(0, 0, 0, 0.35));
-  --plate-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  --turn-shadow: 0 0 26px -18px rgba(110, 186, 255, 0.9);
+  --text: #f1f6fb;
+  --text-soft: #becbd8;
+  --text-muted: #78899c;
+  --text-faint: #526477;
+  --accent: #58bfff;
+  --accent-soft: rgb(54 173 255 / 12%);
+  --accent-line: rgb(83 187 255 / 46%);
+  --accent-glow: 0 0 22px -8px rgb(71 180 255 / 90%);
+  --selection: rgb(65 174 255 / 28%);
+  --brand-gradient: linear-gradient(145deg, rgb(42 164 255 / 18%), rgb(4 14 27 / 8%));
+  --brand-shadow: 0 0 20px -8px rgb(72 183 255 / 95%);
 
-  --text: #f2f6fd;
-  --text-soft: #c0c9da;
-  --text-muted: #8a93a5;
-  --text-faint: #626b7c;
+  --provider-none: #718194;
+  --provider-codex: #69c7ff;
+  --provider-claude: #b8a6e8;
+  --ok: #77d0ff;
+  --pending: #8a96a5;
+  --dot-input: #58bfff;
+  --dot-cache: #94dcff;
+  --dot-output: #eaf7ff;
+  --dot-think: #bdaaf1;
 
-  --accent: #9ecbff;
-  --accent-soft: rgba(158, 203, 255, 0.12);
-  --accent-line: rgba(158, 203, 255, 0.42);
-  --accent-glow: 0 0 22px -8px rgba(140, 200, 255, 0.95);
-  --selection: rgba(110, 186, 255, 0.32);
-  --brand-gradient:
-    radial-gradient(circle at 50% 50%, #000 0 36%, rgba(150, 205, 255, 0.95) 44%,
-      rgba(70, 140, 255, 0.5) 64%, rgba(0, 0, 0, 0.92) 88%);
-  --brand-shadow: 0 0 26px -8px rgba(110, 186, 255, 0.95);
+  --space-glow-a: rgb(65 165 255 / 8%);
+  --space-glow-b: rgb(98 83 208 / 5%);
+  --space-base: #000;
+  --space-star: transparent;
+  --star-opacity: 0;
 
-  --provider-none: #7c8494;
-  --provider-codex: #9ecbff;
-  --provider-claude: #c9a6ff;
-
-  --ok: #a9d6ff;
-  --pending: #7c8494;
-
-  --dot-input: #9ecbff;
-  --dot-cache: #7ee3ff;
-  --dot-output: #eef4ff;
-  --dot-think: #c9a6ff;
-
-  --space-glow-a: rgba(70, 150, 255, 0.1);
-  --space-glow-b: rgba(120, 90, 220, 0.08);
-  --space-base: radial-gradient(120% 80% at 50% -6%, #04060c 0, #000 62%);
-  --space-star: rgba(240, 248, 255, 0.5);
-  --star-opacity: 0.32;
-}
-
-/* ============================ «BlackHole»: аккреционный диск и горизонт === */
-
-/* Фон — готовый рендер, а не рисунок из градиентов: закрученную плазму диска
-   и линзирование CSS воспроизвести не может. Слой закреплён во вьюпорте и
-   лежит под контентом (main имеет z-index: 1). Относительный путь одинаково
-   разрешается браузером, Worker и панелью VS Code. */
-html[data-theme="blackhole"] {
   --blackhole-image: url("./blackhole-blue.jpg");
 }
 
+/* Три сцены — самостоятельные растры. На них нет интерфейсных деталей, поэтому
+   они одинаково кадрируются в браузере, Worker и VS Code webview. */
 html[data-theme="blackhole"] body::after {
   background-color: #000;
   background-image: var(--blackhole-image);
-  background-position: 50% 42%;
+  background-position: 50% 51%;
   background-repeat: no-repeat;
   background-size: cover;
   inset: 0;
   mask-image: none;
-  opacity: 0.92;
+  opacity: 1;
 }
 
-/* звёздная пыль поверх готового рендера была бы лишней */
-/* сквозь панели видно диск: тёмное стекло вместо глухой заливки */
-html[data-theme="blackhole"] .app-header {
-  background: rgba(0, 0, 0, 0.62);
-}
-
-html[data-theme="blackhole"] .journal details[data-work-log-day-section] {
-  /* лёгкое размытие: сильное стирало бы фотонное кольцо под панелью */
-  backdrop-filter: blur(6px) saturate(130%);
-  -webkit-backdrop-filter: blur(6px) saturate(130%);
-  background-color: rgba(2, 4, 8, 0.54);
-  background-image: none;
-}
-
-html[data-theme="blackhole"] .journal details[data-work-log-day-section][open] {
-  background-color: rgba(2, 4, 8, 0.56);
-  background-image: none;
-}
-
-/* карточки ходов тоже стеклянные, иначе диск гаснет под сплошной заливкой */
-html[data-theme="blackhole"] .journal details[data-work-log-turn-details] {
-  background-color: rgba(6, 10, 16, 0.42);
-  background-image: none;
-}
-
-html[data-theme="blackhole"] .journal details[data-work-log-turn-details]:hover {
-  background-color: rgba(10, 16, 24, 0.55);
-}
-
-html[data-theme="blackhole"] .journal details[data-work-log-turn-details][open] {
-  background-color: rgba(6, 10, 16, 0.62);
-}
-
-html[data-theme="blackhole"] .app-header::after {
-  background: linear-gradient(90deg, transparent, rgba(150, 205, 255, 0.75), transparent);
-}
-
-html[data-theme="blackhole"] .brand-mark {
-  border-color: rgba(150, 205, 255, 0.5);
-  color: #cfe6ff;
-}
-
-html[data-theme="blackhole"] .journal details[data-work-log-day-section][open] {
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.07),
-    0 0 54px -20px rgba(96, 176, 255, 0.8),
-    0 30px 60px -34px rgba(0, 0, 0, 1);
-}
-
-html[data-theme="blackhole"] .journal details[data-work-log-turn-details][open] {
-  border-color: rgba(150, 205, 255, 0.44);
-  box-shadow: inset var(--rail-width) 0 0 #9ecbff, 0 0 30px -18px rgba(120, 190, 255, 1);
-}
-
-html[data-theme="blackhole"] .journal span[data-day-usage] {
-  border-color: rgba(150, 205, 255, 0.44);
-  box-shadow: var(--plate-shadow), 0 0 22px -10px rgba(120, 190, 255, 0.95);
-}
-
-/* «Чёрная дыра»: диск неровно светит — заметная, но неритмичная дрожь */
-@keyframes blackhole-flicker {
-  0%, 100% { opacity: 0.2; transform: scale(1.01); }
-  22% { opacity: 0.62; transform: scale(1.04); }
-  38% { opacity: 0.28; transform: scale(1.025); }
-  61% { opacity: 0.72; transform: scale(1.055); }
-  79% { opacity: 0.34; transform: scale(1.035); }
+@keyframes blackhole-lensing {
+  0%, 100% { opacity: 0.16; transform: scale(1.005); }
+  47% { opacity: 0.4; transform: scale(1.028); }
+  68% { opacity: 0.23; transform: scale(1.014); }
 }
 
 html[data-theme="blackhole"] body::before {
-  animation: blackhole-flicker 8s ease-in-out infinite;
+  animation: blackhole-lensing 26s ease-in-out infinite;
   background-image:
-    radial-gradient(44% 40% at 50% 48%, rgba(150, 205, 255, 0.3), rgba(70, 140, 255, 0.1) 52%, transparent 74%);
+    radial-gradient(32% 58% at 52% 51%, transparent 54%, rgb(75 176 255 / 19%) 60%, transparent 69%);
+  background-position: center;
   background-size: cover;
   content: "";
   mask-image: none;
   mix-blend-mode: screen;
-  opacity: 0.3;
+  opacity: 0.2;
 }
 
-html[data-background-override="true"][data-background="blackhole"] { --blackhole-image: url("./blackhole-blue.jpg"); --hub-background-color: #000; --hub-background-image: var(--blackhole-image); --hub-background-position: 50% 42%; }
-html[data-background-override="true"][data-background="blackhole-disk"] { --hub-background-color: #000; --hub-background-image: var(--blackhole-disk-image, url("./blackhole-disk.jpg")); --hub-background-position: 56% 48%; }
+html[data-theme="blackhole"] .app-header {
+  backdrop-filter: blur(8px) saturate(112%);
+  -webkit-backdrop-filter: blur(8px) saturate(112%);
+  background: rgb(0 3 8 / 74%);
+  border-bottom-color: rgb(126 193 255 / 16%);
+}
 
-html[data-background-override="true"][data-background="orbit-limb"] body::before,
-html[data-background-override="true"][data-background="nebula-core"] body::before,
-html[data-background-override="true"][data-background="pulsar-beam"] body::before,
-html[data-background-override="true"][data-background="blackhole-disk"] body::before,
-html[data-background-override="true"][data-background="magma-flow"] body::before,
-html[data-background-override="true"][data-background="meadow-goldenhour"] body::before {
+html[data-theme="blackhole"] .app-header::after {
+  background: linear-gradient(90deg, transparent 5%, rgb(82 184 255 / 34%) 50%, transparent 95%);
+}
+
+/* В выбранном концепте знак — штатный гранёный импульс Agent Hub, а не
+   прежнее CSS-кольцо. */
+html[data-theme="blackhole"] .brand-mark {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  color: #62c5ff;
+}
+
+html[data-theme="blackhole"] .brand-mark svg {
+  display: block;
+  filter: drop-shadow(0 0 5px rgb(74 184 255 / 56%));
+  height: 1.2rem;
+  width: 1.2rem;
+}
+
+html[data-theme="blackhole"] .view-switch {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
+html[data-theme="blackhole"] .view-tab {
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+}
+
+html[data-theme="blackhole"] .view-tab[aria-pressed="true"] {
+  background: linear-gradient(180deg, transparent 62%, rgb(69 175 255 / 9%));
+  border: 0;
+  border-bottom: 1px solid #58bfff;
+}
+
+html[data-theme="blackhole"] .toolbar .view-settings,
+html[data-theme="blackhole"] .chip-button,
+html[data-theme="blackhole"] .icon-button,
+html[data-theme="blackhole"] .composer-send,
+html[data-theme="blackhole"] .composer-input {
+  border-radius: 2px;
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-day-section],
+html[data-theme="blackhole"] .journal details[data-work-log-turn-details] {
+  backdrop-filter: blur(5px) saturate(108%);
+  -webkit-backdrop-filter: blur(5px) saturate(108%);
+  background-color: rgb(1 6 12 / 68%);
+  background-image: none;
+}
+
+html[data-theme="blackhole"] .journal details[data-work-log-day-section][open],
+html[data-theme="blackhole"] .journal details[data-work-log-turn-details][open] {
+  background-color: rgb(2 9 17 / 80%);
+}
+
+@media (min-width: 1120px) {
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) {
+    --task-rail-width: clamp(244px, 17vw, 304px);
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .app-header-inner {
+    max-width: none;
+    padding-inline: clamp(1rem, 1.35vw, 1.5rem);
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .workspace {
+    gap: clamp(0.55rem, 0.7vw, 0.82rem);
+    margin: 0;
+    max-width: none;
+    padding: clamp(0.72rem, 0.9vw, 1rem);
+    padding-bottom: 0.7rem;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .task-rail {
+    backdrop-filter: blur(6px) saturate(108%);
+    -webkit-backdrop-filter: blur(6px) saturate(108%);
+    background: linear-gradient(180deg, rgb(1 7 14 / 76%), rgb(0 3 8 / 82%));
+    border: 1px solid rgb(130 195 255 / 18%);
+    border-radius: 2px;
+    box-shadow: inset 0 1px 0 rgb(223 242 255 / 4%), 0 24px 54px -40px #000;
+    overflow: hidden;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .task-search {
+    background: rgb(0 4 9 / 72%);
+    border-color: rgb(124 192 255 / 16%);
+    border-radius: 2px;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .task-item {
+    border: 0;
+    border-bottom: 1px solid rgb(125 187 244 / 7%);
+    border-radius: 0;
+    margin: 0;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .task-item:hover {
+    background: linear-gradient(90deg, rgb(70 176 255 / 10%), transparent 84%);
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .task-item[data-selected] {
+    background: linear-gradient(90deg, rgb(59 166 246 / 18%), rgb(23 71 111 / 5%));
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .task-item[data-selected]::before {
+    border-radius: 0;
+    bottom: 0;
+    box-shadow: 0 0 12px rgb(73 183 255 / 82%);
+    left: 0;
+    top: 0;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .chat {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    gap: 0.5rem;
+  }
+
+  /* Streams становятся орбитальными узлами над палубой. Подписи остаются
+     настоящими кнопками: переключение, Ctrl+click и drag работают как раньше. */
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-tabs {
+    align-items: stretch;
+    background: rgb(0 3 8 / 48%);
+    border: 0;
+    gap: clamp(0.7rem, 1.5vw, 1.6rem);
+    min-height: 4.3rem;
+    overflow-x: auto;
+    padding: 0.25rem clamp(0.8rem, 1.4vw, 1.5rem);
+    position: relative;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-tabs::before {
+    background: linear-gradient(90deg, transparent, rgb(126 190 245 / 28%) 8%, rgb(126 190 245 / 28%) 92%, transparent);
+    content: "";
+    height: 1px;
+    left: 1.1rem;
+    pointer-events: none;
+    position: absolute;
+    right: 1.1rem;
+    top: 1.45rem;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-tab {
+    border: 0;
+    border-radius: 0;
+    flex: 1 0 10.5rem;
+    max-width: 20rem;
+    min-height: 3.7rem;
+    padding: 0;
+    width: auto;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-tab:hover,
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-tab:focus-visible,
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-tab[aria-pressed="true"] {
+    background: transparent;
+    border: 0;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-tab-card {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    gap: 0.48rem;
+    padding: 0.5rem 0.35rem 0.15rem;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-tab .provider-dot {
+    background: #050b12;
+    border: 2px solid #d8e4ee;
+    box-shadow: 0 0 0 4px rgb(0 4 10 / 88%);
+    height: 0.62rem;
+    margin-top: 0.42rem;
+    position: relative;
+    width: 0.62rem;
+    z-index: 1;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-tab[data-current] .provider-dot {
+    background: #72caff;
+    border-color: #b9e6ff;
+    box-shadow: 0 0 0 4px rgb(4 23 38 / 94%), 0 0 18px 4px rgb(58 173 255 / 78%);
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-tab:not([aria-pressed="true"]) .stream-tab-body {
+    opacity: 0.48;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-tab-body {
+    gap: 0.15rem;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-tab-title {
+    font-size: 0.72rem;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-tab-meta {
+    color: var(--text-faint);
+    font-size: 0.61rem;
+  }
+
+  /* Focus Deck: один боковой Stream уходит влево, остальные — вправо, а
+     выбранный всегда остаётся гравитационным центром композиции. */
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-chat-columns[data-multi-stream] {
+    display: flex;
+    gap: clamp(0.38rem, 0.55vw, 0.64rem);
+    overflow-x: auto;
+    padding: 0.1rem 0.18rem 0.2rem;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-chat-columns[data-multi-stream] > .chat-pane {
+    backdrop-filter: blur(5px) saturate(108%);
+    -webkit-backdrop-filter: blur(5px) saturate(108%);
+    background: linear-gradient(180deg, rgb(1 7 14 / 84%), rgb(0 3 8 / 90%));
+    border: 1px solid rgb(92 185 255 / 46%);
+    box-shadow:
+      inset 0 0 34px rgb(38 135 209 / 8%),
+      0 0 24px -13px rgb(50 167 255 / 75%);
+    clip-path: polygon(1.8% 0, 98.2% 0, 100% 50%, 98.2% 100%, 1.8% 100%, 0 50%);
+    flex: 2 1 0;
+    min-width: min(30rem, 40vw);
+    order: 0 !important;
+    z-index: 2;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-chat-preview {
+    backdrop-filter: blur(4px) saturate(104%);
+    -webkit-backdrop-filter: blur(4px) saturate(104%);
+    background: linear-gradient(180deg, rgb(1 6 12 / 70%), rgb(0 3 7 / 80%));
+    border: 1px solid rgb(128 190 245 / 17%);
+    border-radius: 1px;
+    cursor: pointer;
+    flex: 1 1 0;
+    min-width: 11.5rem;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-chat-preview:hover {
+    background: linear-gradient(180deg, rgb(4 13 23 / 78%), rgb(0 5 11 / 86%));
+    border-color: rgb(104 187 250 / 30%);
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-chat-preview:first-of-type {
+    order: -1 !important;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-chat-preview:not(:first-of-type) {
+    order: 1 !important;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-chat-columns[data-multi-stream] .chat-scroll {
+    padding-inline: clamp(1rem, 1.5vw, 1.45rem);
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .stream-chat-preview .chat-scroll {
+    padding-inline: clamp(0.8rem, 1vw, 1rem);
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .msg-agent,
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .msg-live {
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    padding-inline: 0;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .msg-user {
+    background: rgb(12 23 35 / 78%);
+    border-color: rgb(134 195 248 / 16%);
+    border-radius: 2px;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .composer {
+    align-self: center;
+    backdrop-filter: blur(5px) saturate(108%);
+    -webkit-backdrop-filter: blur(5px) saturate(108%);
+    background: rgb(0 5 11 / 84%);
+    border: 1px solid rgb(101 188 255 / 32%);
+    border-radius: 2px;
+    margin-bottom: 0.12rem;
+    padding: 0.55rem;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .chat:has(.stream-chat-preview:only-of-type) .composer {
+    margin-left: auto;
+    margin-right: 0.18rem;
+    width: calc(66.66% - 0.45rem);
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .chat:has(.stream-chat-preview:nth-of-type(2)):not(:has(.stream-chat-preview:nth-of-type(3))) .composer {
+    margin-inline: auto;
+    width: 50%;
+  }
+
+  html[data-theme="blackhole"]:not([data-surface="mobile"]) .chat:has(.stream-chat-preview:nth-of-type(3)) .composer {
+    margin-inline: auto;
+    width: 40%;
+  }
+}
+
+html[data-background-override="true"][data-background="blackhole-photon"] {
+  --hub-background-color: #000;
+  --hub-background-image: var(--blackhole-photon-image, url("./blackhole-photon.jpg"));
+  --hub-background-position: 50% 55%;
+}
+
+html[data-background-override="true"][data-background="blackhole-disk"] {
+  --hub-background-color: #000;
+  --hub-background-image: var(--blackhole-disk-image, url("./blackhole-disk.jpg"));
+  --hub-background-position: 50% 50%;
+}
+
+html[data-theme="blackhole"][data-background-override="true"] body::before {
+  animation-duration: 30s !important;
   background-position: center !important;
   background-repeat: no-repeat !important;
   background-size: cover !important;
   content: "" !important;
   mask-image: none !important;
   mix-blend-mode: screen !important;
-  opacity: 0.4 !important;
 }
 
-html[data-background-override="true"][data-background="blackhole-disk"] body::before {
-  animation: scene-glow 34s ease-in-out infinite !important;
-  background-image: radial-gradient(34% 22% at 62% 48%, rgba(158, 203, 255, 0.2), transparent 74%) !important;
+html[data-theme="blackhole"][data-background="blackhole-photon"] body::before {
+  background-image: radial-gradient(42% 22% at 49% 56%, rgb(92 184 255 / 13%), transparent 72%) !important;
 }
 
-@media (max-width: 720px) {html[data-background-override="true"][data-background="blackhole-disk"] { --hub-background-position: 60% 46%; }
+html[data-theme="blackhole"][data-background="blackhole-disk"] body::before {
+  background-image: radial-gradient(38% 34% at 86% 13%, rgb(255 181 121 / 13%), transparent 74%) !important;
 }
 
-/* ================================================ облик: горизонт событий ===
-   Всё в кадре закручено вокруг одной точки, поэтому и интерфейс переходит на
-   дуги: панель обрезана окружностью, выбранная задача помечена дугой, а знак —
-   кольцо с ярким краем. Заодно панель задач получает подложку: без неё рукав
-   галактики светил прямо под подписями и они падали до контраста 1,5 : 1. */
+@media (max-width: 1119px) {
+  html[data-theme="blackhole"] body::after {
+    background-position: 50% 50%;
+  }
 
-html[data-theme="blackhole"] {
-  --surface-1: rgba(6, 10, 18, 0.72);
-  --surface-2: rgba(12, 18, 28, 0.78);
+  html[data-theme="blackhole"] .task-rail,
+  html[data-theme="blackhole"] .chat,
+  html[data-theme="blackhole"] .stream-chat-preview {
+    background-color: rgb(0 5 11 / 78%);
+  }
 }
 
-html[data-theme="blackhole"] .brand-mark {
-  background: conic-gradient(from 210deg, rgba(158, 203, 255, .9), rgba(158, 203, 255, .05) 45%, rgba(158, 203, 255, .05) 70%, rgba(158, 203, 255, .9));
-  border: 0;
-  border-radius: 50%;
-  box-shadow: 0 0 18px -6px rgba(158, 203, 255, .9);
-  position: relative;
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="blackhole"] body::before {
+    animation: none !important;
+  }
 }
-
-html[data-theme="blackhole"] .brand-mark svg { display: none; }
-
-html[data-theme="blackhole"] .brand-mark::before {
-  background: #04060a;
-  border-radius: 50%;
-  content: "";
-  height: 62%;
-  width: 62%;
-}
-
-/* Внешний край панелей уходит в дугу, внутренний остаётся прямым. */
-html[data-theme="blackhole"] .task-rail {
-  backdrop-filter: blur(10px) saturate(115%);
-  -webkit-backdrop-filter: blur(10px) saturate(115%);
-  border-radius: 0 74px 74px 0;
-  border-right: 1px solid rgba(158, 203, 255, .18);
-}
-
-html[data-theme="blackhole"] .chat {
-  border-radius: 74px 0 0 74px;
-}
-
-/* Задача на орбите: слева дуга, а не прямая риска. */
-html[data-theme="blackhole"] .task-item {
-  border-radius: 999px 12px 12px 999px;
-  padding-left: 1rem;
-}
-
-html[data-theme="blackhole"] .task-item[data-selected]::before {
-  border-radius: 999px;
-  height: 62%;
-  left: 5px;
-  top: 19%;
-  width: 3px;
-}
-
-html[data-theme="blackhole"] .view-tab,
-html[data-theme="blackhole"] .option-chip {
-  border-radius: 999px;
-}
-
-html[data-theme="blackhole"] .msg-agent { border-radius: 4px 22px 22px 22px; }
-html[data-theme="blackhole"] .msg-user { border-radius: 22px 4px 22px 22px; }

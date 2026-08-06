@@ -297,7 +297,7 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
     ["orbit", "orbit-tracking-pass"],
     ["nebula", "nebula-drift"],
     ["pulsar", "pulsar-beat"],
-    ["blackhole", "blackhole-flicker"],
+    ["blackhole", "blackhole-lensing"],
     ["magma", "magma-glow"],
     ["meadow", "meadow-breathe"],
     ["lake", "lake-sun-path"],
@@ -347,7 +347,7 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   );
   /* Пошаговые анимации давали видимую дёрганость, поэтому в живых слоях их
      быть не должно: единственный резкий ритм — «Пульсар», и он linear. */
-  const motionBlocks = styles.match(/animation:\s*(?:gothic-fire|magma-glow|orbit-tracking-pass|nebula-drift|meadow-breathe|lake-sun-path|pulsar-beat|blackhole-flicker)[^;]*;/gu) ?? [];
+  const motionBlocks = styles.match(/animation:\s*(?:gothic-fire|magma-glow|orbit-tracking-pass|nebula-drift|meadow-breathe|lake-sun-path|pulsar-beat|blackhole-lensing)[^;]*;/gu) ?? [];
   assert.equal(motionBlocks.length, 8, "живой слой остаётся у восьми тем; «Rain», «Storm» и «Gothic» рисуют частицы");
   for (const block of motionBlocks) {
     assert.doesNotMatch(block, /steps\(/u, `движение должно быть плавным: ${block}`);
@@ -695,6 +695,38 @@ test("«Озеро» keeps after-rain, summer-evening and watercolor scenes", ()
     assert.match(backgrounds, new RegExp(`var\\(${variable},\\s*url\\(`, "u"), variable);
     assert.doesNotMatch(backgrounds, new RegExp(`${variable}:\\s*url\\(`, "u"), variable);
   }
+});
+
+test("BlackHole keeps three scenes around the selected Focus Deck", () => {
+  const theme = THEME_REGISTRY.themes.find((item) => item.id === "blackhole");
+  const styles = themeFile("blackhole");
+  assert.deepEqual(
+    theme.backgrounds.map(({ id, name, asset }) => [id, name, asset]),
+    [
+      ["blackhole", "Сингулярность", "blackhole-blue.jpg"],
+      ["blackhole-photon", "Фотонное кольцо", "blackhole-photon.jpg"],
+      ["blackhole-disk", "Аккреционный поток", "blackhole-disk.jpg"],
+    ],
+  );
+  assert.equal(theme.backgrounds[0].preload, true);
+  for (const [background, image] of [
+    ["blackhole-photon", "blackhole-photon.jpg"],
+    ["blackhole-disk", "blackhole-disk.jpg"],
+  ]) {
+    assert.match(
+      styles,
+      new RegExp(`\\[data-background="${background}"\\][\\s\\S]*?${image.replace(".", "\\.")}`, "u"),
+      background,
+    );
+  }
+  /* У BlackHole активный Stream становится центром палубы, а первый соседний
+     уходит влево. Так композиция сохраняется при двух, трёх и четырёх чатах. */
+  assert.match(styles, /\.stream-chat-columns\[data-multi-stream\]\s*\{[\s\S]*display:\s*flex/u);
+  assert.match(styles, /> \.chat-pane\s*\{[\s\S]*clip-path:\s*polygon/u);
+  assert.match(styles, /\.stream-chat-preview:first-of-type\s*\{[\s\S]*order:\s*-1 !important/u);
+  assert.match(styles, /\.brand-mark svg\s*\{[\s\S]*display:\s*block/u);
+  assert.match(styles, /@keyframes blackhole-lensing/u);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/u);
 });
 
 test("Verdant keeps its signal sweep across three environment scenes", () => {

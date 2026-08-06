@@ -5,7 +5,8 @@
   "order": 50,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "blackhole", "name": "BlackHole", "asset": "blackhole-blue.jpg" },
-    { "id": "blackhole-disk", "name": "Диск", "asset": "blackhole-disk.jpg" }
+    { "id": "blackhole", "name": "Сингулярность", "asset": "blackhole-blue.jpg", "preload": true },
+    { "id": "blackhole-photon", "name": "Фотонное кольцо", "asset": "blackhole-photon.jpg" },
+    { "id": "blackhole-disk", "name": "Аккреционный поток", "asset": "blackhole-disk.jpg" }
   ]
 }
