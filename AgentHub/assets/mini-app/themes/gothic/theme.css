@@ -467,14 +467,18 @@ html[data-theme="gothic"] .chat {
     inset 0 0 0 5px rgba(163, 186, 216, .2);
 }
 
-/* Знак: вытянутая маска Спящего с тремя парами боковых отростков. Упрощённая
-   морда с одной парой рогов в малом размере читалась как звериная голова. */
+/* Знак: точный силуэт маски Спящего, выделенный из официальной эмблемы Gothic.
+   Ручное упрощение искажало пропорции отростков, глазниц и нижней части. */
 html[data-theme="gothic"] {
-  --gothic-mark-image: url("./gothic-sleeper-mask.svg?v=ebd2ebe5f140");
+  --gothic-mark-image: url("./gothic-sleeper-mask.png?v=2adb8bee1bd8");
 }
 
 html[data-theme="gothic"] .brand-mark {
   align-items: center;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   padding-bottom: 0;
 }
 

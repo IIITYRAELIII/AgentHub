@@ -1553,12 +1553,11 @@ test("chart, tooltip and aria-summary use only the visible series", () => {
 
 test("Gothic wears the Sleeper mask in the header niche", () => {
   const styles = themeFile("gothic");
-  const mark = fs.readFileSync(path.join(MINI_APP_ROOT, "themes", "gothic", "gothic-sleeper-mask.svg"), "utf8");
-  assert.match(styles, /--gothic-mark-image:\s*url\("\.\/gothic-sleeper-mask\.svg\?v=[a-f0-9]{12}"\)/u);
+  const mark = fs.readFileSync(path.join(MINI_APP_ROOT, "themes", "gothic", "gothic-sleeper-mask.png"));
+  assert.match(styles, /--gothic-mark-image:\s*url\("\.\/gothic-sleeper-mask\.png\?v=[a-f0-9]{12}"\)/u);
+  assert.match(styles, /\.brand-mark \{[\s\S]*?background: none;[\s\S]*?border: 0;[\s\S]*?box-shadow: none;/u);
   assert.match(styles, /\.brand-mark::before[\s\S]*?background: var\(--gothic-mark-image\)/u);
-  /* Рога и маска остаются раздельными деталями, чтобы глазницы не резали силуэт. */
-  assert.equal((mark.match(/<path/gu) ?? []).length, 2);
-  assert.match(mark, /id="sleeper-horns"/u);
-  assert.match(mark, /id="sleeper-mask"/u);
-  assert.match(mark, /fill-rule="evenodd"/u);
+  assert.equal(mark.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  assert.equal(mark.readUInt32BE(16), 512);
+  assert.equal(mark.readUInt32BE(20), 512);
 });
