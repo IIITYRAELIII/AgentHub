@@ -1594,6 +1594,12 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   assert.match(styles, /\.task-workspace-item\[data-selected\]/u);
   assert.match(styles, /\.stream-tab\[aria-pressed="true"\]/u);
   assert.match(app, /state\.streamOrderByWorkspace\.set\(workspaceId, order\)/u);
+  // Верхняя полоса сохраняет содержимое прежней карточки Thread, а не только имя Stream.
+  assert.match(app, /class: "stream-tab-card"/u);
+  assert.match(app, /task\?\.threadTitle \|\| task\?\.title/u);
+  assert.match(app, /class: "task-agent task-model"/u);
+  assert.match(app, /class: "task-runtime"/u);
+  assert.match(styles, /\.stream-tab-card\s*\{/u);
 });
 
 test("wide shared shell opens up to four Workspace Streams as chat columns", () => {

@@ -1546,6 +1546,11 @@ function renderStreamTabs() {
   const open = new Set(state.openStreamsByWorkspace.get(workspaceId) ?? []);
   streamTabs.replaceChildren(...ordered.map((stream) => {
     const task = representativeStreamTask(stream);
+    const provider = String(task?.provider ?? "none");
+    const agentLabel = task?.agentLabel || providerLabels[provider] || "Агент";
+    const time = task?.running && task.startedAt
+      ? formatRunningDuration(task.startedAt)
+      : formatRelativeTime(task?.lastActivity);
     const button = el("button", {
       type: "button",
       class: "stream-tab",
@@ -1557,10 +1562,53 @@ function renderStreamTabs() {
       draggable: surface === "mobile" ? null : "true",
       title: "Нажмите, чтобы показать или скрыть. Перетащите, чтобы изменить порядок. ПКМ — переименовать.",
     }, [
-      stream.tasks.some((item) => item.unread)
-        ? el("span", { class: "task-unread", title: "Есть непрочитанные сообщения" })
-        : null,
-      el("span", { class: "stream-tab-label", text: streamDisplayName(stream, streams.length) }),
+      el("span", { class: "stream-tab-stream" }, [
+        el("span", { class: "stream-tab-label", text: streamDisplayName(stream, streams.length) }),
+        stream.tasks.some((item) => item.unread)
+          ? el("span", { class: "task-unread", title: "Есть непрочитанные сообщения" })
+          : null,
+      ]),
+      el("span", { class: "stream-tab-card" }, [
+        el("span", { class: "provider-dot", "data-provider": provider, "aria-hidden": "true" }),
+        el("span", { class: "stream-tab-body" }, [
+          el("span", { class: "stream-tab-title-row" }, [
+            el("span", {
+              class: "stream-tab-title",
+              text: task?.threadTitle || task?.title || "Без названия",
+            }),
+            el("span", {
+              class: "task-time",
+              text: time,
+              title: task?.lastActivity ? new Date(task.lastActivity).toLocaleString("ru-RU") : "",
+            }),
+          ]),
+          el("span", { class: "stream-tab-meta" }, [
+            el("span", { class: "task-agent", text: agentLabel }),
+            task?.modelLabel
+              ? el("span", {
+                class: "task-agent task-model",
+                "data-model-tier": modelTier(task.modelLabel),
+                text: shortModelLabel(task.modelLabel),
+                title: task.modelLabel,
+              })
+              : null,
+            task?.statusLabel
+              ? el("span", {
+                class: "task-status",
+                "data-status": task.status || "",
+                text: task.statusLabel,
+              })
+              : null,
+            task?.runtimeLabel
+              ? el("span", {
+                class: "task-runtime",
+                text: task.runtimeLabel,
+                title: task.runtimeTitle || task.runtimeLabel,
+              })
+              : null,
+          ]),
+        ]),
+      ]),
     ]);
     return button;
   }));
