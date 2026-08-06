@@ -16,6 +16,8 @@ test("interaction phase owns server, Desktop and run shell assembly", async () =
     assert.equal(owner.includes(factory), true, `${factory} is not owned by interaction phase`);
   }
   assert.equal(root.includes("createInteractionShellPhase"), true);
+  assert.match(root, /infrastructure:\s*\{[\s\S]*workspaceCatalogStore,[\s\S]*\},\s*provider: providerApplication/u);
+  assert.match(owner, /workspaceCatalogStore: infrastructure\.workspaceCatalogStore/u);
   assert.equal(owner.includes("desktopCommandsPort: ports.desktopCommands"), true);
   assert.equal(owner.includes("runShell: ports.runShell"), true);
 });

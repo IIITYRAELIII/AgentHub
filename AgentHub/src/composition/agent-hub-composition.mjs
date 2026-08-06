@@ -569,6 +569,7 @@ const interactionShell = createInteractionShellPhase({
   infrastructure: {
     trustedDeviceStore,
     workLogUsageStore,
+    workspaceCatalogStore,
     usdRubRateStore,
     taskReadStateStore,
     rateLimitHistoryStore,
@@ -583,7 +584,6 @@ const {
   taskProgress,
   runCoordinator,
 } = interactionShell;
-
 const executionBootstrap = createExecutionBootstrapPhase({
   config,
   root: AGENT_HUB_ROOT,
