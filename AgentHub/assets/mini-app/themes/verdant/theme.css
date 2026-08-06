@@ -464,6 +464,13 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
     grid-template-columns: var(--task-rail-width) minmax(760px, 55vw);
   }
 
+  /* Панель полевого терминала раскрывается на доступную ширину, когда рядом
+     открыт ещё один Stream; одиночный чат сохраняет концептную сцену справа. */
+  html[data-theme="verdant"]:not([data-surface="mobile"]) .workspace:has(.stream-chat-columns[data-multi-stream]) {
+    grid-template-columns: var(--task-rail-width) minmax(0, 1fr);
+    padding-right: clamp(1.25rem, 1.65vw, 2.35rem);
+  }
+
   html[data-theme="verdant"]:not([data-surface="mobile"]) .chat-head {
     background: rgba(2, 18, 15, 0.46);
     min-height: 4rem;

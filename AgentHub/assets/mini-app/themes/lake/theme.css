@@ -350,6 +350,14 @@ html[data-theme="lake"] .journal details[data-work-log-turn-details][open] {
     grid-template-columns: var(--task-rail-width) minmax(760px, 55vw);
   }
 
+  /* С появлением соседних Streams интерфейс становится главным содержимым:
+     рабочая область занимает остаток экрана, но фон с собаками остаётся виден
+     через полупрозрачные панели. */
+  html[data-theme="lake"]:not([data-surface="mobile"]) .workspace:has(.stream-chat-columns[data-multi-stream]) {
+    grid-template-columns: var(--task-rail-width) minmax(0, 1fr);
+    padding-right: clamp(0.85rem, 1.05vw, 1.2rem);
+  }
+
   html[data-theme="lake"]:not([data-surface="mobile"]) .chat-head {
     background: rgb(3 23 16 / 36%);
     min-height: 4rem;
