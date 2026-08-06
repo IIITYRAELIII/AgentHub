@@ -4,7 +4,7 @@ import { appendFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "no
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { JournalDatabase } from "./src/infrastructure/persistence/journal-database.mjs";
+import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
 import {
   CHAT_ID,
   delay,
@@ -15,9 +15,9 @@ import {
   stopPid,
   USER_ID,
   waitFor,
-} from "./e2e/telegram-harness.mjs";
+} from "../../e2e/telegram-harness.mjs";
 
-const AGENT_HUB_ROOT = path.resolve(import.meta.dirname);
+const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BOT_FILE = path.join(AGENT_HUB_ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-codex-app-server.mjs");
 const FAKE_CLAUDE_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-claude-cli.mjs");

@@ -1,7 +1,7 @@
 # Internal source layout
 
 `src` contains internal Agent Hub modules grouped by architectural role. Stable
-entrypoints, compatibility shims, release scripts and public CLI modules remain
+entrypoints, release scripts and public CLI modules remain
 at the `AgentHub` root so existing launchers and integrations do not change.
 
 The target layout is:

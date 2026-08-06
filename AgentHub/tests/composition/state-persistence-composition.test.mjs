@@ -4,7 +4,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { createStatePersistenceComposition } from "./src/composition/state-persistence-composition.mjs";
+import { createStatePersistenceComposition } from "../../src/composition/state-persistence-composition.mjs";
 
 test("state persistence snapshots provider settings and pinned titles", async () => {
   const calls = [];

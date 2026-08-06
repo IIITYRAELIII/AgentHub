@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createRunShellComposition } from "./src/composition/run-shell-composition.mjs";
+import { createRunShellComposition } from "../../src/composition/run-shell-composition.mjs";
 
 function bindingPort() {
   return {

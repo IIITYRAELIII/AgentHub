@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createDeferredCompositionPort } from "./src/composition/deferred-composition-port.mjs";
-import { createTelegramRuntimeComposition } from "./src/composition/telegram-runtime-composition.mjs";
+import { createDeferredCompositionPort } from "../../src/composition/deferred-composition-port.mjs";
+import { createTelegramRuntimeComposition } from "../../src/composition/telegram-runtime-composition.mjs";
 
 test("Telegram runtime binds shell before composing the controller", async () => {
   const calls = [];

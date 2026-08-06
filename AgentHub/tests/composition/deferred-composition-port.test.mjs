@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createDeferredCompositionPort } from "./src/composition/deferred-composition-port.mjs";
+import { createDeferredCompositionPort } from "../../src/composition/deferred-composition-port.mjs";
 
 test("deferred composition port exposes stable callbacks before binding", () => {
   const port = createDeferredCompositionPort("test wiring", ["read", "write", "read"]);

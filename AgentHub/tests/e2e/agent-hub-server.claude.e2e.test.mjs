@@ -12,13 +12,13 @@ import {
   USER_ID,
   CHAT_ID,
   waitFor,
-} from "./e2e/telegram-harness.mjs";
-import { processIsAlive } from "./src/providers/claude/claude-run-io.mjs";
-import { callDesktopControl } from "./desktop-control.mjs";
-import { JournalDatabase } from "./src/infrastructure/persistence/journal-database.mjs";
-import { readRuntimeState } from "./src/infrastructure/persistence/runtime-state-store.mjs";
+} from "../../e2e/telegram-harness.mjs";
+import { processIsAlive } from "../../src/providers/claude/claude-run-io.mjs";
+import { callDesktopControl } from "../../desktop-control.mjs";
+import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
+import { readRuntimeState } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 
-const AGENT_HUB_ROOT = path.resolve(import.meta.dirname);
+const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BOT_FILE = path.join(AGENT_HUB_ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-codex-app-server.mjs");
 const FAKE_CLAUDE_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-claude-cli.mjs");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createServerControlComposition } from "./src/composition/server-control-composition.mjs";
+import { createServerControlComposition } from "../../src/composition/server-control-composition.mjs";
 
 test("server control composition binds runtime metadata and deferred Desktop snapshot", async () => {
   const controller = createServerControlComposition({

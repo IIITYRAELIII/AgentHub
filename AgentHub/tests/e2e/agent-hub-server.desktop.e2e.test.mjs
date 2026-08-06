@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { callDesktopControl } from "./desktop-control.mjs";
+import { callDesktopControl } from "../../desktop-control.mjs";
 import {
   CHAT_ID,
   delay,
@@ -13,9 +13,9 @@ import {
   stopPid,
   USER_ID,
   waitFor,
-} from "./e2e/telegram-harness.mjs";
+} from "../../e2e/telegram-harness.mjs";
 
-const ROOT = path.resolve(import.meta.dirname);
+const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BOT_FILE = path.join(ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(ROOT, "e2e", "fake-codex-app-server.mjs");
 

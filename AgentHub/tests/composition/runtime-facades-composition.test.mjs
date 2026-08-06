@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createRuntimeFacadesComposition } from "./src/composition/runtime-facades-composition.mjs";
+import { createRuntimeFacadesComposition } from "../../src/composition/runtime-facades-composition.mjs";
 
 test("runtime facades preserve stable callbacks across late composition binding", async () => {
   const calls = [];

@@ -3,9 +3,9 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-import { relativeModuleSpecifiers } from "./src/infrastructure/filesystem/module-import-specifiers.mjs";
+import { relativeModuleSpecifiers } from "../../src/infrastructure/filesystem/module-import-specifiers.mjs";
 
-const ROOT = import.meta.dirname;
+const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const COMPOSITION_ROOT = path.join(ROOT, "src", "composition", "agent-hub-composition.mjs");
 const IGNORED_DIRECTORIES = new Set(["node_modules", "build", "dist", ".wrangler"]);
 const SOURCE_LAYERS = new Set([
