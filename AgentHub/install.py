@@ -288,10 +288,11 @@ def install_vscode_extension() -> Path | None:
     recover_interrupted_extension_swap(target, package)
     staging = extensions_root / f".{target.name}.staging-{uuid4().hex}"
     rollback = extensions_root / f".{target.name}.rollback-{uuid4().hex}"
-    removable_prefixes = (
-        f"{package['publisher']}.{package['name']}-",
-        "tyrael.work-log-view-",
-    )
+    # VS Code owns retirement of its previous Agent Hub versions.  A publisher
+    # running from a stale checkout must never delete a newer version that VS
+    # Code has already registered or loaded; doing so leaves extensions.json
+    # pointing at a directory without package.json until the next repair.
+    removable_prefixes = ("tyrael.work-log-view-",)
     try:
         shutil.copytree(
             source,

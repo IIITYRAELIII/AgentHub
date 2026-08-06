@@ -186,8 +186,10 @@ class SecureInstallationTests(unittest.TestCase):
             home = Path(temp) / "home"
             extensions = home / ".vscode" / "extensions"
             legacy = extensions / "tyrael.work-log-view-0.4.1"
+            newer_agent_hub = extensions / "test.agent-hub-2.0.0"
             unrelated = extensions / "example.unrelated-2.0.0"
             legacy.mkdir(parents=True)
+            newer_agent_hub.mkdir()
             unrelated.mkdir()
 
             with (
@@ -199,6 +201,7 @@ class SecureInstallationTests(unittest.TestCase):
             self.assertIsNotNone(target)
             self.assertTrue(target.is_dir())
             self.assertFalse(legacy.exists())
+            self.assertTrue(newer_agent_hub.exists())
             self.assertTrue(unrelated.exists())
 
     def test_extension_install_recovers_crash_after_target_was_moved_to_rollback(self) -> None:
