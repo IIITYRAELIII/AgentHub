@@ -3365,11 +3365,49 @@ function clipboardAttachmentFiles(clipboardData) {
   });
 }
 
+const PASTED_TEXT_ATTACHMENT_THRESHOLD = 8_000;
+
+function pastedTextLooksTabular(text, html = "") {
+  if (/<table\b/iu.test(String(html ?? ""))) return true;
+  const rows = String(text ?? "").split(/\r?\n/u).filter((row) => row.trim());
+  if (rows.length >= 2) {
+    const tabbedRows = rows.filter((row) => row.includes("\t"));
+    if (tabbedRows.length >= Math.min(rows.length, 3)) return true;
+  }
+  return rows.some((row, index) => (
+    index > 0
+    && rows[index - 1].includes("|")
+    && /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/u.test(row)
+  ));
+}
+
+function pastedTextShouldBeAttachment(text, html = "", currentLength = 0) {
+  const source = String(text ?? "");
+  if (!source) return false;
+  return source.length >= PASTED_TEXT_ATTACHMENT_THRESHOLD
+    || Math.max(0, Number(currentLength) || 0) + source.length > DRAFT_STORAGE_MAX_TEXT
+    || pastedTextLooksTabular(source, html);
+}
+
+function pastedTextFile(text) {
+  return new File([String(text ?? "")], "Вставленный текст.txt", {
+    type: "text/plain",
+    lastModified: Date.now(),
+  });
+}
+
 composerInput.addEventListener("paste", (event) => {
   const files = clipboardAttachmentFiles(event.clipboardData);
-  if (files.length === 0) return;
+  if (files.length > 0) {
+    event.preventDefault();
+    void readAttachmentFiles(files);
+    return;
+  }
+  const text = String(event.clipboardData?.getData("text/plain") ?? "");
+  const html = String(event.clipboardData?.getData("text/html") ?? "");
+  if (!pastedTextShouldBeAttachment(text, html, composerInput.value.length)) return;
   event.preventDefault();
-  void readAttachmentFiles(files);
+  void readAttachmentFiles([pastedTextFile(text)]);
 });
 
 for (const dropTarget of [composer, chatScroll]) {
