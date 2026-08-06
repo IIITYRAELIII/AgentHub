@@ -25,9 +25,9 @@ not an architectural stage. Internal modules must not import the composition
 root `agent-hub-server.mjs`. Prefer direct imports over barrel files so cycles
 remain visible to the architecture checks.
 
-New application state must use stable task references and prefer `hubTaskId`.
+New application state must use stable Stream references and prefer `streamId`.
 Provider thread/session IDs are external references and must not become the
-permanent identity of a logical task.
+permanent identity of a Stream.
 
 Run orchestration is split by responsibility: `RunCoordinator` serializes one
 logical-task lane and dispatches provider operations; `ManagedRunLifecycleService`

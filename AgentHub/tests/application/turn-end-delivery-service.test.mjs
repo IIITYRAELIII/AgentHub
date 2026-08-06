@@ -35,7 +35,7 @@ test("fallbackTurnEndMessage uses canonical terminal wording", () => {
 
 test("TurnEndDeliveryService projects and marks one exact completion", async () => {
   const completion = {
-    hubTaskId: "hub-1",
+    streamId: "stream-1",
     provider: "codex",
     projectRoot: "C:/workspace",
     threadId: "thread-1",
@@ -46,7 +46,7 @@ test("TurnEndDeliveryService projects and marks one exact completion", async () 
   const state = fixture();
   assert.equal(await state.service.deliver(completion), true);
   assert.deepEqual(state.events.map(([name]) => name), ["project", "message", "seen", "delivered", "save"]);
-  assert.equal(state.events[1][1].hubTaskId, "hub-1");
+  assert.equal(state.events[1][1].streamId, "stream-1");
   assert.equal(await state.service.deliver(completion), false);
 });
 

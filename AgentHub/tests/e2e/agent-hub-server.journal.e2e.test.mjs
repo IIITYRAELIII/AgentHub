@@ -67,7 +67,7 @@ test("core-only components start without Telegram and keep Web App disabled", { 
   } catch (error) {
     throw new Error(`${error.message}\nstdout:\n${stdout}\nstderr:\n${stderr}`, { cause: error });
   }
-  assert.equal(snapshot.apiVersion, 2);
+  assert.equal(snapshot.apiVersion, 3);
   await waitFor(
     () => (/Agent Hub ready; components: core/u.test(stdout) ? true : null),
     "journal runtime ready log",

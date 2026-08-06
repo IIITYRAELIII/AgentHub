@@ -25,6 +25,7 @@ test("selection store updates a complete task atomically with one revision", () 
   store.selectTask({
     activeProvider: "claude",
     activeProjectRoot: "C:/two",
+    streamId: "stream-2",
     threadId: "session",
     activeThreadTitle: "Work",
   });
@@ -33,6 +34,7 @@ test("selection store updates a complete task atomically with one revision", () 
   assert.deepEqual(store.serialize(), {
     activeProvider: "claude",
     activeProjectRoot: "C:/two",
+    streamId: "stream-2",
     threadId: "session",
     activeThreadTitle: "Work",
     threadIds: { codex: null, claude: "session" },
@@ -43,6 +45,7 @@ test("selection checkpoint restores project, provider, threads and title", () =>
   const store = new TaskSelectionStore({
     activeProvider: "codex",
     activeProjectRoot: "C:/one",
+    streamId: "stream-1",
     threadId: "thread-1",
     activeThreadTitle: "One",
   });
@@ -51,6 +54,7 @@ test("selection checkpoint restores project, provider, threads and title", () =>
   store.selectTask({
     activeProvider: "claude",
     activeProjectRoot: "C:/two",
+    streamId: "stream-2",
     threadId: "session-2",
     activeThreadTitle: "Two",
   });
@@ -58,6 +62,7 @@ test("selection checkpoint restores project, provider, threads and title", () =>
   assert.deepEqual(store.serialize(), {
     activeProvider: "codex",
     activeProjectRoot: "C:/one",
+    streamId: "stream-1",
     threadId: "thread-1",
     activeThreadTitle: "One",
     threadIds: { codex: "thread-1", claude: null },

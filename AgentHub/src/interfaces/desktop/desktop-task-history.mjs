@@ -129,6 +129,7 @@ export function createDesktopTaskHistoryFactory({
 
   return async function desktopTaskHistory(params) {
     const provider = String(params.provider ?? selection.activeProvider()).trim();
+    const selectedStreamId = String(params.streamId ?? "").trim();
     const selectedThreadId = String(params.threadId ?? selection.threadId() ?? "").trim();
     if (!["codex", "claude"].includes(provider) || !selectedThreadId) {
       throw new Error("Укажите корректную задачу");
@@ -141,35 +142,52 @@ export function createDesktopTaskHistoryFactory({
       ? catalog.entries()
       : await catalog.refresh();
     scheduleCatalogRefresh();
-    const entry = entries.find(
-      (item) => item.provider === provider && item.threadId === selectedThreadId,
-    );
+    const entry = entries.find((item) => (
+      (selectedStreamId && item.streamId === selectedStreamId)
+      || (!selectedStreamId && item.provider === provider && item.threadId === selectedThreadId)
+    ));
     if (!entry) throw new Error("Задача не найдена в локальном каталоге");
 
     const binding = {
+      ...((entry.streamId ?? selectedStreamId) ? { streamId: entry.streamId ?? selectedStreamId } : {}),
       provider: entry.provider,
       projectRoot: entry.projectRoot,
       threadId: entry.threadId,
       taskTitle: entry.title,
       chatId: selection.chatId(),
     };
-    const key = `${binding.provider}:${binding.threadId}`;
-    const cached = await historyReader.read(binding);
-    let history = hydratedHistories.get(key);
-    if (history) {
-      history = mergeDurableTaskHistory(
-        structuredClone(history),
-        await hydrateHistory(cached.history),
-      );
-      hydratedHistories.set(key, structuredClone(history));
-      scheduleRefresh(binding);
-    } else {
-      // A first open uses only durable history. Provider/rollout hydration is
-      // intentionally background work, otherwise one stalled App Server read
-      // turns every task click into a Desktop-control timeout.
-      history = await hydrateHistory(cached.history);
-      hydratedHistories.set(key, structuredClone(history));
-      scheduleRefresh(binding);
+    const streamThreads = binding.streamId && typeof catalog.threadsForStream === "function"
+      ? catalog.threadsForStream(binding.streamId)
+      : [];
+    const threadBindings = streamThreads.length ? streamThreads.map((thread) => ({
+      streamId: binding.streamId,
+      provider: thread.provider,
+      projectRoot: thread.projectRoot || binding.projectRoot,
+      threadId: thread.threadId,
+      taskTitle: binding.taskTitle,
+      chatId: binding.chatId,
+    })) : [binding];
+    let history = [];
+    for (const threadBinding of threadBindings) {
+      const key = `${threadBinding.provider}:${threadBinding.threadId}`;
+      const cached = await historyReader.read(threadBinding);
+      let threadHistory = hydratedHistories.get(key);
+      if (threadHistory) {
+        threadHistory = mergeDurableTaskHistory(
+          structuredClone(threadHistory),
+          await hydrateHistory(cached.history),
+        );
+      } else {
+        // First open uses durable history; provider hydration stays in background.
+        threadHistory = await hydrateHistory(cached.history);
+      }
+      hydratedHistories.set(key, structuredClone(threadHistory));
+      scheduleRefresh(threadBinding);
+      history.push(...threadHistory.map((item) => ({
+        ...item,
+        provider: threadBinding.provider,
+        threadId: threadBinding.threadId,
+      })));
     }
     const running = params.includeActive === false ? null : runs.forTask(binding);
     if (running) {
@@ -208,6 +226,7 @@ export function createDesktopTaskHistoryFactory({
     const start = Math.max(0, end - limit);
     const page = history.slice(start, end);
     const payload = {
+      ...(binding.streamId ? { streamId: binding.streamId } : {}),
       provider,
       threadId: selectedThreadId,
       title: entry.title,
@@ -236,17 +255,19 @@ export function createDesktopTaskHistoryFactory({
           const role = String(message?.role ?? "");
           const text = String(message?.text ?? "");
           if (!["user", "agent"].includes(role) || !text) return [];
+          const itemProvider = String(item.provider ?? provider);
+          const itemThreadId = String(item.threadId ?? selectedThreadId);
           const receipt = role === "user"
             ? (message.clientUserMessageId
               ? receipts.forMessage?.({
-                provider,
-                threadId: selectedThreadId,
+                provider: itemProvider,
+                threadId: itemThreadId,
                 clientUserMessageId: message.clientUserMessageId,
               })
               : null)
               ?? receipts.forTurn?.({
-                provider,
-                threadId: selectedThreadId,
+                provider: itemProvider,
+                threadId: itemThreadId,
                 turnId: item.id,
               })
             : null;
@@ -289,7 +310,13 @@ export function createDesktopTaskHistoryFactory({
       .digest("base64url")
       .slice(0, 22);
     if (params.knownVersion && String(params.knownVersion) === version) {
-      return { provider, threadId: selectedThreadId, notModified: true, version };
+      return {
+        ...(binding.streamId ? { streamId: binding.streamId } : {}),
+        provider,
+        threadId: selectedThreadId,
+        notModified: true,
+        version,
+      };
     }
     return { ...fitted, version };
   };

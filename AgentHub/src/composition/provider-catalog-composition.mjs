@@ -24,8 +24,24 @@ import { TASK_EXECUTION_OWNERS } from "../domain/task-execution-owner.mjs";
 import { claudeCatalogEntry } from "../providers/claude/claude-task-activity.mjs";
 import { listClaudeSessionSnapshots } from "../providers/claude/claude-session-reader.mjs";
 
+export function currentStreamEntries(entries) {
+  const byIdentity = new Map();
+  for (const entry of entries) {
+    const key = entry.streamId ? `stream:${entry.streamId}` : `${entry.provider}:${entry.threadId}`;
+    const previous = byIdentity.get(key);
+    if (!previous
+      || (entry.running === true && previous.running !== true)
+      || (entry.running === previous.running
+        && (Number(entry.threadPosition) || 1) > (Number(previous.threadPosition) || 1))) {
+      byIdentity.set(key, entry);
+    }
+  }
+  return [...byIdentity.values()];
+}
+
 export function createProviderCatalogComposition({
   taskSyncStore,
+  workspaceCatalogStore,
   taskRuns,
   taskCatalogCacheMs,
   runProject,
@@ -158,20 +174,27 @@ export function createProviderCatalogComposition({
     },
   });
   const providerTaskCatalogBuilder = new ProviderTaskCatalogBuilder({
-    durableEntries: () => catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
+    durableEntries: () => currentStreamEntries(workspaceCatalogStore.assignCatalogEntries(
+      catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
+    )),
     sources: agentProviders.catalogSources(),
     managedRuns: () => taskRuns.values().map((run) => ({
       ...run,
       projectName: runProject(run).name,
     })),
     merge: mergeTaskCatalog,
-    finalize: finalizeTaskCatalog,
+    finalize: (entries, context) => finalizeTaskCatalog(
+      currentStreamEntries(workspaceCatalogStore.assignCatalogEntries(entries)),
+      context,
+    ),
     onSourceError: ({ name, reason }) => {
       console.error(`Cannot discover ${name} tasks:`, reason?.message ?? reason);
     },
   });
   const taskCatalogService = new TaskCatalogService({
-    initialEntries: catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
+    initialEntries: currentStreamEntries(workspaceCatalogStore.assignCatalogEntries(
+      catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
+    )),
     cacheMs: taskCatalogCacheMs,
     build: () => providerTaskCatalogBuilder.build(),
   });

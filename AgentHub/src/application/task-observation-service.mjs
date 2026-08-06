@@ -109,7 +109,7 @@ export class TaskObservationService {
       ? snapshot.executionOwner ?? TASK_EXECUTION_OWNERS.EXTERNAL
       : TASK_EXECUTION_OWNERS.EXTERNAL;
     const run = createObservedTaskRun({
-      hubTaskId: binding.hubTaskId ?? null,
+      streamId: binding.streamId ?? null,
       provider: binding.provider,
       chatId: targetChatId,
       projectRoot: binding.projectRoot,

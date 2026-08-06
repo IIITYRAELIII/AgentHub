@@ -101,8 +101,8 @@ test("RunCoordinator serializes competing clients in one logical task lane", asy
     },
   });
   const [first, second] = await Promise.all([
-    f.coordinator.start("first", [], { target: { ...f.target, hubTaskId: "hub-1" } }),
-    f.coordinator.start("second", [], { target: { ...f.target, hubTaskId: "hub-1" } }),
+    f.coordinator.start("first", [], { target: { ...f.target, streamId: "stream-1" } }),
+    f.coordinator.start("second", [], { target: { ...f.target, streamId: "stream-1" } }),
   ]);
   assert.equal(first.started, true);
   assert.equal(second.deferred, true);

@@ -318,6 +318,12 @@ namespace AgentHubDesktop
     {
         public string Provider;
         public string ThreadId;
+        public string WorkspaceId;
+        public string WorkspaceName;
+        public string StreamId;
+        public string StreamName;
+        public string StreamDisplayName;
+        public int StreamOrdinal;
         public string ProjectRoot;
         public string Title;
         public string ProjectName;

@@ -38,6 +38,7 @@ const CONNECTION_OFFLINE_GRACE_MS = 6_000;
 const historyByTask = new Map();
 const historyPageByTask = new Map();
 const historyCatchUpDeadlines = new Map();
+const visibleHistoryLoads = new Set();
 const outgoingByTask = new Map();
 const liveProbeByTask = new Map();
 const liveUserMessagesByTask = new Map();
@@ -82,8 +83,13 @@ const runtimeShortLabels = Object.freeze({
   external: "EXT",
 });
 
-function taskId(provider, threadId) {
-  return `${String(provider)}:${String(threadId)}`;
+function taskId(provider, threadId, streamId = "") {
+  const stableStreamId = String(streamId ?? "").trim()
+    || String((lastSnapshot?.tasks ?? []).find((task) => (
+      String(task.provider) === String(provider)
+      && String(task.threadId) === String(threadId)
+    ))?.streamId ?? "").trim();
+  return stableStreamId || `${String(provider)}:${String(threadId)}`;
 }
 
 function readStoredServerIdentity() {
@@ -172,6 +178,15 @@ function rememberSelectedTaskId(id) {
 }
 
 function taskIdentity(id) {
+  const stableId = String(id ?? "").trim();
+  const task = (lastSnapshot?.tasks ?? []).find((candidate) => (
+    taskId(candidate.provider, candidate.threadId, candidate.streamId) === stableId
+  ));
+  if (task) return {
+    streamId: task.streamId ?? null,
+    provider: task.provider,
+    threadId: task.threadId,
+  };
   const separator = String(id ?? "").indexOf(":");
   if (separator < 1) return null;
   return {
@@ -580,7 +595,9 @@ async function control(action, params = {}) {
 }
 
 function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
-  const id = taskId(task.provider, task.threadId);
+  const id = taskId(task.provider, task.threadId, task.streamId);
+  const streamId = String(task.streamId ?? "").trim()
+    || `legacy:${String(task.provider ?? "").trim()}:${String(task.threadId ?? "").trim()}`;
   const answerAt = Date.parse(task.lastAnswerAt ?? "") || 0;
   const running = Boolean(task.running);
   const unknown = task.activityUnknown === true;
@@ -591,6 +608,16 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   return {
     id,
     title: task.title || "Без названия",
+    threadTitle: task.title || "Без названия",
+    workspaceId: task.workspaceId ?? null,
+    workspaceName: task.workspaceName ?? null,
+    workspaceKind: task.workspaceKind ?? null,
+    streamId,
+    streamName: task.streamName ?? null,
+    streamDisplayName: task.streamDisplayName ?? "",
+    streamOrdinal: Number(task.streamOrdinal) || 1,
+    threadPosition: Number(task.threadPosition) || 1,
+    threadId: task.threadId,
     provider: task.provider,
     agentLabel: task.provider === "claude" ? "Claude" : "Codex",
     modelLabel: task.run?.model ?? task.model ?? (serverSelected ? snapshot.selected?.model : ""),
@@ -676,10 +703,10 @@ function applySnapshot(snapshot) {
   );
   const serverSelected = (snapshot.tasks ?? []).find((task) => task.selected);
   const serverSelectedId = serverSelected
-    ? taskId(serverSelected.provider, serverSelected.threadId)
+    ? taskId(serverSelected.provider, serverSelected.threadId, serverSelected.streamId)
     : "";
   const availableTaskIds = new Set(
-    (snapshot.tasks ?? []).map((task) => taskId(task.provider, task.threadId)),
+    (snapshot.tasks ?? []).map((task) => taskId(task.provider, task.threadId, task.streamId)),
   );
   const pendingExists = pendingSelectionId && availableTaskIds.has(pendingSelectionId);
   const localExists = selectedTaskId && availableTaskIds.has(selectedTaskId);
@@ -1039,6 +1066,34 @@ agentHub.on("task:select", ({ id }) => {
   return selectionTail;
 });
 
+agentHub.on("workspace:visible-streams", ({ taskIds }) => void (async () => {
+  const ids = [...new Set((Array.isArray(taskIds) ? taskIds : [])
+    .map((id) => String(id ?? "").trim())
+    .filter(Boolean))];
+  await Promise.all(ids.map(async (id) => {
+    // История выбранного Thread уже загружается open-task. Остальные колонки
+    // подгружаются только после того, как пользователь открыл их Stream.
+    if (id === selectedTaskId || historyPageByTask.has(id) || visibleHistoryLoads.has(id)) return;
+    const identity = taskIdentity(id);
+    if (!identity) return;
+    visibleHistoryLoads.add(id);
+    try {
+      const history = await control("task-history", {
+        ...identity,
+        limit: 20,
+        includeActive: false,
+      });
+      applyOpened({ history }, { skipSnapshot: true, selectTask: false });
+    } catch (error) {
+      if (isConnectionFailure(error)) recordTransientConnectionFailure();
+      // Дополнительная read-only колонка не должна отвлекать toast-ошибкой.
+      // При следующем раскрытии Stream она безопасно запросит историю снова.
+    } finally {
+      visibleHistoryLoads.delete(id);
+    }
+  }));
+})());
+
 agentHub.on("devices:refresh", () => void runAction(async () => {
   agentHub.setTrustedDevices({ loading: true });
   const result = await control("trusted-devices", {});
@@ -1211,29 +1266,45 @@ agentHub.on("task:new", ({ title, provider }) => runAction(async () => {
   const selectedProvider = ["codex", "claude"].includes(provider)
     ? provider
     : (lastSnapshot?.settings?.provider ?? "codex");
-  let snapshot = await control("new-task", { provider: selectedProvider });
+  const snapshot = await control("new-task", {
+    provider: selectedProvider,
+    workspaceName: title || undefined,
+  });
   const created = (snapshot.tasks ?? []).find((task) => task.selected);
   if (created) {
-    pendingSelectionId = taskId(created.provider, created.threadId);
+    pendingSelectionId = taskId(created.provider, created.threadId, created.streamId);
     rememberSelectedTaskId(pendingSelectionId);
   }
   applySnapshot(snapshot);
-  try {
-    if (title) {
-      snapshot = await control("rename-task", { ...exactSelectedTaskParams(), title });
-      applySnapshot(snapshot);
-    }
-  } finally {
-    pendingSelectionId = "";
-    agentHub.showSelectedTask();
-    const identity = taskIdentity(selectedTaskId);
-    if (identity) replaceRoute(`#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`);
-  }
+  pendingSelectionId = "";
+  agentHub.showSelectedTask();
+  const identity = taskIdentity(selectedTaskId);
+  if (identity) replaceRoute(`#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`);
 }));
 
-agentHub.on("task:rename", ({ id, title }) => runAction(async () => applySnapshot(
-  await control("rename-task", { ...exactTaskParams(id || selectedTaskId), title }),
+agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
+  const targetId = id || selectedTaskId;
+  const identity = exactTaskParams(targetId);
+  const task = (lastSnapshot?.tasks ?? []).find((candidate) => (
+    taskId(candidate.provider, candidate.threadId, candidate.streamId) === targetId
+  ));
+  const action = task?.workspaceId ? "rename-workspace" : "rename-task";
+  const params = task?.workspaceId ? { workspaceId: task.workspaceId, name: title } : { ...identity, title };
+  applySnapshot(await control(action, params));
+}));
+agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () => applySnapshot(
+  await control("rename-workspace", { workspaceId, name }),
 )));
+agentHub.on("stream:rename", ({ streamId, name }) => runAction(async () => applySnapshot(
+  await control("rename-stream", { streamId, name }),
+)));
+agentHub.on("stream:move", ({ streamId, workspaceId }) => runAction(async () => applySnapshot(
+  await control("move-stream", { streamId, workspaceId }),
+)));
+agentHub.on("stream:new", ({ workspaceId, streamName }) => runAction(async () => {
+  const provider = lastSnapshot?.settings?.provider ?? "codex";
+  applySnapshot(await control("new-task", { provider, workspaceId, streamName }));
+}));
 agentHub.on("task:archive", () => runAction(async () => applySnapshot(
   await control("archive-task", exactSelectedTaskParams()),
 )));
@@ -1546,7 +1617,7 @@ async function refresh({ reportError = false } = {}) {
   try {
     const previousSelectedId = selectedTaskId;
     const previousSelected = (lastSnapshot?.tasks ?? []).find(
-      (task) => taskId(task.provider, task.threadId) === previousSelectedId,
+      (task) => taskId(task.provider, task.threadId, task.streamId) === previousSelectedId,
     );
     const snapshotResult = await control("snapshot", { knownVersion: lastSnapshot?.version ?? "" });
     const snapshot = snapshotResult?.notModified === true ? lastSnapshot : snapshotResult;
@@ -1558,7 +1629,7 @@ async function refresh({ reportError = false } = {}) {
     }
     if (!snapshot) return;
     const currentSelected = (snapshot.tasks ?? []).find(
-      (task) => taskId(task.provider, task.threadId) === selectedTaskId,
+      (task) => taskId(task.provider, task.threadId, task.streamId) === selectedTaskId,
     );
     const sameSelection = previousSelected && currentSelected
       && previousSelected.provider === currentSelected.provider
@@ -1566,7 +1637,7 @@ async function refresh({ reportError = false } = {}) {
     const answerChanged = sameSelection
       && String(previousSelected.lastAnswerAt ?? "") !== String(currentSelected.lastAnswerAt ?? "");
     const selectedHistoryMissing = sameSelection
-      && !historyPageByTask.has(taskId(currentSelected.provider, currentSelected.threadId));
+      && !historyPageByTask.has(taskId(currentSelected.provider, currentSelected.threadId, currentSelected.streamId));
     const externalLive = sameSelection
       && currentSelected.running
       && !["hub", "telegram"].includes(String(
@@ -1575,7 +1646,7 @@ async function refresh({ reportError = false } = {}) {
     const refreshExternalHistory = externalLive
       && Date.now() - selectedHistoryRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
     const refreshCaughtUpHistory = sameSelection
-      && historyNeedsCatchUp(taskId(currentSelected.provider, currentSelected.threadId))
+      && historyNeedsCatchUp(taskId(currentSelected.provider, currentSelected.threadId, currentSelected.streamId))
       && Date.now() - selectedHistoryRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
     if (sameSelection && (
       selectedHistoryMissing
@@ -1591,7 +1662,7 @@ async function refresh({ reportError = false } = {}) {
         limit: 20,
         includeActive: false,
         knownVersion: historyPageByTask.get(
-          taskId(currentSelected.provider, currentSelected.threadId),
+          taskId(currentSelected.provider, currentSelected.threadId, currentSelected.streamId),
         )?.version ?? "",
       });
       applyOpened({ snapshot: lastSnapshot, history }, {

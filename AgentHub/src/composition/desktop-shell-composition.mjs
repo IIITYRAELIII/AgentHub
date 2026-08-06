@@ -1,6 +1,7 @@
 import { createDesktopReadSystemWiring } from "./desktop-read-system-wiring-composition.mjs";
 import { createDesktopCommandWiring } from "./desktop-command-wiring-composition.mjs";
 import { createDesktopRunRouterWiring } from "./desktop-run-router-wiring-composition.mjs";
+import { WorkspaceCatalogService } from "../application/workspace-catalog-service.mjs";
 
 export function createDesktopShellComposition({
   config,
@@ -57,6 +58,7 @@ export function createDesktopShellComposition({
     rateLimitTelemetry,
     rateLimitHistoryStore,
     workLogUsageStore,
+    workspaceCatalogStore,
     taskReadStateStore,
     usdRubRateStore,
     pendingInputs,
@@ -158,6 +160,7 @@ export function createDesktopShellComposition({
       readRateLimitHistory: (params) => rateLimitHistoryStore.read(params),
       readUsageHistory: (params) => workLogUsageStore.usageHistory(params),
       refreshCatalog: refreshTaskCatalog,
+      threadsForStream: (streamId) => workspaceCatalogStore.threadsForStream(streamId),
       searchTurns: (...args) => workLogUsageStore.searchTurns(...args),
       projectRoots: () => projects.map((project) => project.path),
       samePath,
@@ -181,6 +184,7 @@ export function createDesktopShellComposition({
       executionRuntimeLabel: taskExecutionRuntimeLabel,
       orderingActivityAtMs: taskOrderingActivityAtMs,
       catalogEntries: getTaskCatalog,
+      workspaceHierarchy: () => workspaceCatalogStore.hierarchy(),
       catalogRefreshedAt: () => taskCatalogService.refreshedAt,
       mergeCatalog: mergeTaskCatalog,
       pendingValues: () => [...pendingInputs.values()],
@@ -205,6 +209,14 @@ export function createDesktopShellComposition({
       warn: (...args) => console.warn(...args),
     },
   });
+
+  const workspaceCatalog = new WorkspaceCatalogService({ store: workspaceCatalogStore });
+  const workspaceMutation = async (run) => {
+    run();
+    invalidateTaskCatalog();
+    await saveState();
+    return desktopReadSystem.desktopSnapshot({ refresh: true });
+  };
 
   const desktopCommands = createDesktopCommandWiring({
     models: {
@@ -270,6 +282,9 @@ export function createDesktopShellComposition({
       dismissedExternalTasks,
       completeRun: (run) => managedRunLifecycle.complete(run),
       createTask: createThread,
+      workspaceCatalog: workspaceCatalogStore,
+      workspaceCatalogService: workspaceCatalog,
+      workspaceMutation,
       blockingWorkCount: () => runtime.restartBlockingRuns().length + backgroundJobs.size,
       announceDesktopRestart,
       sendTelegram: sendMessage,

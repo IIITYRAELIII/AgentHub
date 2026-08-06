@@ -40,6 +40,7 @@ export class TaskIdentityResolver {
 
   selectedTask() {
     return {
+      streamId: this.selectionStore.streamId,
       provider: this.selectionStore.activeProvider,
       projectRoot: this.selectionStore.activeProjectRoot,
       threadId: this.selectionStore.threadId,
@@ -65,7 +66,7 @@ export class TaskIdentityResolver {
 
   currentUiContextToken() {
     return createHash("sha256")
-      .update(`${this.contextNonce}\0${this.selectionStore.activeProvider}\0${path.resolve(this.selectionStore.activeProjectRoot)}\0${this.selectionStore.threadId ?? ""}`)
+      .update(`${this.contextNonce}\0${this.selectionStore.streamId ?? ""}\0${this.selectionStore.activeProvider}\0${path.resolve(this.selectionStore.activeProjectRoot)}\0${this.selectionStore.threadId ?? ""}`)
       .digest("hex")
       .slice(0, 12);
   }
@@ -81,6 +82,7 @@ export class TaskIdentityResolver {
   isSelectedRun(run) {
     const selected = this.selectedTask();
     return Boolean(run)
+      && (!selected.streamId || !run.streamId || run.streamId === selected.streamId)
       && run.provider === selected.provider
       && this.samePath(run.projectRoot, selected.projectRoot)
       && String(run.threadId ?? "") === String(selected.threadId ?? "");

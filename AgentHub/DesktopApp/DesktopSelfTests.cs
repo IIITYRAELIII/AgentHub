@@ -22,6 +22,8 @@ namespace AgentHubDesktop
             AssistantAttachmentsAreCollectedAndDeduplicated();
             AssistantAttachmentPathIsConfinedToPrivateRoot();
             AttachmentHistorySignatureChangesAfterHydration();
+            WorkspacePresentationGroupsThreadsByWorkspaceAndStream();
+            WorkspacePresentationKeepsAtMostFourOpenStreams();
         }
 
         private static void StableMessageIdentitySurvivesRetry()
@@ -199,6 +201,52 @@ namespace AgentHubDesktop
             };
             var after = DesktopAttachmentPresentation.HistorySignature(history);
             Require(before != after, "attachment hydration did not invalidate the render signature");
+        }
+
+        private static void WorkspacePresentationGroupsThreadsByWorkspaceAndStream()
+        {
+            var first = new TaskItem
+            {
+                WorkspaceId = "workspace-a", WorkspaceName = "Agent HUB",
+                StreamId = "stream-1", StreamName = "Main", StreamOrdinal = 1,
+                Provider = "codex", ThreadId = "thread-1", Title = "Первый", OrderingActivityAtMs = 5
+            };
+            var secondThread = new TaskItem
+            {
+                WorkspaceId = "workspace-a", WorkspaceName = "Agent HUB",
+                StreamId = "stream-1", StreamName = "Main", StreamOrdinal = 1,
+                Provider = "claude", ThreadId = "thread-2", Title = "Второй", OrderingActivityAtMs = 8
+            };
+            var secondStream = new TaskItem
+            {
+                WorkspaceId = "workspace-a", WorkspaceName = "Agent HUB",
+                StreamId = "stream-2", StreamOrdinal = 2,
+                Provider = "codex", ThreadId = "thread-3", Title = "Themes", OrderingActivityAtMs = 9
+            };
+            var otherWorkspace = new TaskItem
+            {
+                WorkspaceId = "workspace-b", WorkspaceName = "Experiments",
+                StreamId = "stream-3", Provider = "codex", ThreadId = "thread-4", Title = "Probe", OrderingActivityAtMs = 1
+            };
+            var groups = DesktopWorkspacePresentation.Group(new[] { first, secondThread, secondStream, otherWorkspace });
+            Require(groups.Count == 2, "workspace groups were not created");
+            var agentHub = groups.Find(value => value.WorkspaceId == "workspace-a");
+            Require(agentHub != null && agentHub.Streams.Count == 2, "streams were not grouped under workspace");
+            var main = agentHub.Streams.Find(value => value.StreamId == "stream-1");
+            Require(main != null && main.Threads.Count == 2, "threads were not retained under their stream");
+            var numbered = agentHub.Streams.Find(value => value.StreamId == "stream-2");
+            Require(numbered != null && numbered.StreamLabel == "Stream 2", "unnamed second stream did not receive its ordinal label");
+        }
+
+        private static void WorkspacePresentationKeepsAtMostFourOpenStreams()
+        {
+            var streams = new List<string> { "one", "two", "three", "four" };
+            Require(!DesktopWorkspacePresentation.TryAddOpenStream(streams, "five"), "fifth stream bypassed the visible cap");
+            DesktopWorkspacePresentation.EnsureOpenStream(streams, "five");
+            Require(streams.Count == 4, "stream selector exceeded four entries");
+            Require(!streams.Contains("one") && streams[3] == "five", "least-recent stream was not replaced");
+            DesktopWorkspacePresentation.EnsureOpenStream(streams, "three");
+            Require(streams.Count == 4 && streams[3] == "three", "reselected stream was not promoted");
         }
 
         private static void Require(bool value, string message)

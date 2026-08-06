@@ -27,6 +27,8 @@ export class TaskCommandService {
     createTask,
     activeProvider,
     switchProvider,
+    workspaceCatalog,
+    selectionStore,
   }) {
     Object.assign(this, {
       resolveTarget,
@@ -56,6 +58,8 @@ export class TaskCommandService {
       createTask,
       activeProvider,
       switchProvider,
+      workspaceCatalog,
+      selectionStore,
     });
   }
 
@@ -146,8 +150,48 @@ export class TaskCommandService {
   async create(params = {}) {
     const provider = String(params.provider ?? this.activeProvider()).trim();
     if (!["codex", "claude"].includes(provider)) throw new Error("Неизвестный агент");
+    let workspace = null;
+    let stream = null;
+    if (params.streamId) {
+      stream = this.workspaceCatalog.stream(params.streamId);
+      if (!stream) throw new Error("Stream не найден");
+      workspace = this.workspaceCatalog.workspace(stream.workspaceId);
+    } else if (params.workspaceId) {
+      workspace = this.workspaceCatalog.workspace(params.workspaceId);
+      if (!workspace) throw new Error("Workspace не найден");
+    }
     if (provider !== this.activeProvider()) await this.switchProvider(provider);
-    await this.createTask();
+    const created = await this.createTask();
+    if (!stream && workspace) {
+      stream = this.workspaceCatalog.createStream({
+        workspaceId: workspace.id,
+        name: params.streamName,
+      });
+    } else if (!workspace) {
+      workspace = this.workspaceCatalog.createWorkspace({
+        name: String(params.workspaceName ?? created?.title ?? "New Workspace").trim(),
+      });
+      stream = this.workspaceCatalog.createStream({
+        workspaceId: workspace.id,
+        name: params.streamName,
+      });
+    }
+    if (created?.threadId) {
+      this.workspaceCatalog.bindThread({
+        provider: created.provider,
+        threadId: created.threadId,
+        streamId: stream.id,
+        projectRoot: created.projectRoot,
+        source: params.streamId ? "rebirth" : "created",
+      });
+    }
+    this.selectionStore.setThread(created?.threadId ?? null, {
+      provider,
+      streamId: stream.id,
+      title: workspace.name,
+    });
+    this.invalidateCatalog();
+    await this.saveState();
     return this.snapshot({ refresh: true });
   }
 }

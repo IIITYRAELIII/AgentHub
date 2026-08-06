@@ -144,6 +144,7 @@ export function createDesktopSnapshotFactory({
 
   function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false } = {}) {
     const task = {
+      streamId: entry.streamId ?? null,
       provider: entry.provider,
       projectRoot: entry.projectRoot,
       threadId: entry.threadId,
@@ -165,6 +166,14 @@ export function createDesktopSnapshotFactory({
       }),
     );
     return {
+      workspaceId: entry.workspaceId ?? null,
+      workspaceName: entry.workspaceName ?? null,
+      workspaceKind: entry.workspaceKind ?? null,
+      streamId: entry.streamId ?? null,
+      streamName: entry.streamName ?? null,
+      streamDisplayName: entry.streamDisplayName ?? "",
+      streamOrdinal: Number(entry.streamOrdinal) || 1,
+      threadPosition: Number(entry.threadPosition) || 1,
       provider: entry.provider,
       projectRoot: entry.projectRoot,
       projectName: entry.projectName ?? tasks.projectNameFor(entry.projectRoot),
@@ -223,6 +232,7 @@ export function createDesktopSnapshotFactory({
       }]);
     }
     const taskSnapshots = entries.map((entry) => desktopTaskSnapshot(entry, { accountId, compactSnapshot }));
+    const selectedTaskSnapshot = taskSnapshots.find((task) => task.selected) ?? null;
     const current = settings.current();
     const activeProvider = current.activeProvider;
     const activeCount = taskSnapshots.filter((item) => item.running).length;
@@ -241,9 +251,16 @@ export function createDesktopSnapshotFactory({
       })
       : null;
     const snapshot = {
-      apiVersion: 2,
+      apiVersion: 3,
+      workspaces: catalog.hierarchy?.() ?? [],
       selected: {
         ...selection.selectedTask(),
+        workspaceId: selectedTaskSnapshot?.workspaceId ?? null,
+        workspaceName: selectedTaskSnapshot?.workspaceName ?? null,
+        streamId: selectedTaskSnapshot?.streamId ?? null,
+        streamName: selectedTaskSnapshot?.streamName ?? null,
+        streamDisplayName: selectedTaskSnapshot?.streamDisplayName ?? "",
+        streamOrdinal: selectedTaskSnapshot?.streamOrdinal ?? 1,
         title: selection.activeThreadTitle(),
         projectName: selection.activeProject().name,
         model: activeProvider === "codex"

@@ -181,6 +181,40 @@ test("desktop task history resolves selection and merges the active run", async 
   assert.match(result.version, /^[A-Za-z0-9_-]{22}$/u);
 });
 
+test("desktop task history combines sequential provider Threads from one Stream", async () => {
+  const factory = createDesktopTaskHistoryFactory({
+    selection: {
+      activeProvider: () => "codex",
+      threadId: () => "thread-2",
+      chatId: () => 42,
+    },
+    catalog: {
+      entries: () => [{
+        streamId: "stream-1",
+        provider: "codex",
+        projectRoot: "D:/work",
+        threadId: "thread-2",
+        title: "Workspace",
+      }],
+      threadsForStream: () => [
+        { provider: "codex", threadId: "thread-1", projectRoot: "D:/work" },
+        { provider: "codex", threadId: "thread-2", projectRoot: "D:/work" },
+      ],
+    },
+    historyReader: {
+      read: async ({ threadId }) => ({
+        history: [{ id: `turn-${threadId}`, prompt: threadId, answer: `answer-${threadId}` }],
+      }),
+    },
+    runs: { forTask: () => null },
+    historyMerger: { mergeActive() {}, mergeCompleted() {} },
+    responseBudget: { fit: (payload) => payload },
+  });
+  const result = await factory({ streamId: "stream-1", provider: "codex", threadId: "thread-2" });
+  assert.equal(result.streamId, "stream-1");
+  assert.deepEqual(result.items.map((item) => item.id), ["turn-thread-1", "turn-thread-2"]);
+});
+
 test("desktop task history returns a compact marker for an unchanged completed page", async () => {
   const { desktopTaskHistory, calls } = fixture();
   const first = await desktopTaskHistory({ limit: 2, includeActive: false });

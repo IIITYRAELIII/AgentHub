@@ -61,6 +61,8 @@ export function createDesktopCommandWiring({
       dismissedExternalTasks: services.dismissedExternalTasks,
       completeRun: services.completeRun,
       createTask: services.createTask,
+      workspaceCatalog: services.workspaceCatalog,
+      selectionStore: services.selectionStore,
       activeProvider: state.activeProvider,
       switchProvider,
     },
@@ -140,6 +142,20 @@ export function createDesktopCommandWiring({
       resolveApproval: (payload) => payload.callback
         ? services.approvalController.handleCallback(payload.callback)
         : resolveDesktopApproval(payload),
+    },
+    workspaceActions: {
+      renameWorkspace: (params) => services.workspaceMutation(
+        () => services.workspaceCatalogService.renameWorkspace(params),
+      ),
+      mergeWorkspaces: (params) => services.workspaceMutation(
+        () => services.workspaceCatalogService.mergeWorkspaces(params),
+      ),
+      renameStream: (params) => services.workspaceMutation(
+        () => services.workspaceCatalogService.renameStream(params),
+      ),
+      moveStream: (params) => services.workspaceMutation(
+        () => services.workspaceCatalogService.moveStream(params),
+      ),
     },
     telegramActions: {
       selectedTask: state.selectedTask,

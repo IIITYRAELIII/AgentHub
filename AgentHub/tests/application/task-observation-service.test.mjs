@@ -59,10 +59,10 @@ function fixture({ snapshot = null, now = 1_000_000 } = {}) {
   return { service, events, completed, taskRuns, currentRun: () => currentRun };
 }
 
-test("TaskObservationService creates an observed run without losing logical hubTaskId", async () => {
+test("TaskObservationService creates an observed run without losing streamId", async () => {
   const state = fixture();
   const run = await state.service.create({
-    hubTaskId: "hub-task-42",
+    streamId: "stream-42",
     provider: "codex",
     projectRoot: "C:/workspace",
     threadId: "thread-1",
@@ -76,7 +76,7 @@ test("TaskObservationService creates an observed run without losing logical hubT
     activityAtMs: 123,
   }, "turn-1");
 
-  assert.equal(run.hubTaskId, "hub-task-42");
+  assert.equal(run.streamId, "stream-42");
   assert.equal(run.threadId, "thread-1");
   assert.equal(run.turnId, "turn-1");
   assert.equal(run.projectName, "Workspace");

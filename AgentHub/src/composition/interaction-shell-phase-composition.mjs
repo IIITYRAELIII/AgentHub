@@ -123,6 +123,7 @@ export function createInteractionShellPhase({
       rateLimitTelemetry: clients.rateLimitTelemetry,
       rateLimitHistoryStore: infrastructure.rateLimitHistoryStore,
       workLogUsageStore: infrastructure.workLogUsageStore,
+      workspaceCatalogStore: infrastructure.workspaceCatalogStore,
       taskReadStateStore: infrastructure.taskReadStateStore,
       usdRubRateStore: infrastructure.usdRubRateStore,
       pendingInputs: provider.pendingInputs,

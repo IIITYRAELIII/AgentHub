@@ -41,7 +41,7 @@ export class DeferredInputService {
     }
     const item = {
       id: d.createId(),
-      hubTaskId: String(target.hubTaskId ?? "").trim() || null,
+      streamId: String(target.streamId ?? "").trim() || null,
       chatId: target.chatId,
       provider: target.provider,
       projectRoot: target.projectRoot,

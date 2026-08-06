@@ -102,10 +102,10 @@ export class DesktopSystemService {
           && (!result.projectRoot || this.samePath(candidate.projectRoot, result.projectRoot))
         ));
         return {
-          id: entry?.hubTaskId ?? (entry
+          id: entry?.streamId ?? (entry
             ? `${entry.provider}:${entry.threadId}`
             : `${result.provider}:${result.threadId}`),
-          hubTaskId: entry?.hubTaskId ?? result.hubTaskId ?? null,
+          streamId: entry?.streamId ?? result.streamId ?? null,
           provider: result.provider,
           threadId: result.threadId,
           projectRoot: result.projectRoot,

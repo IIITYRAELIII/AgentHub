@@ -12,7 +12,7 @@ export function commandClientContext(context, fallbackClientId) {
 
 export function commandTaskTarget(params) {
   return {
-    hubTaskId: String(params?.hubTaskId ?? "").trim() || null,
+    streamId: String(params?.streamId ?? "").trim() || null,
     provider: String(params?.provider ?? "").trim() || null,
     projectRoot: String(params?.projectRoot ?? "").trim() || null,
     threadId: String(params?.threadId ?? "").trim() || null,
@@ -25,6 +25,7 @@ export function createApplicationCommandService({ handlers, selectedTask }) {
   const required = [
     "selectTask", "createTask", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
+    "renameWorkspace", "mergeWorkspaces", "renameStream", "moveStream",
   ];
   for (const name of required) {
     if (typeof handlers[name] !== "function") throw new TypeError(`${name} handler is required`);
@@ -78,6 +79,22 @@ export function createApplicationCommandService({ handlers, selectedTask }) {
       target: "optional",
       lane: "global",
       handler: ({ payload }) => handlers.resolveApproval(payload),
+    })
+    .register("workspace.rename", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.renameWorkspace(payload),
+    })
+    .register("workspace.merge", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.mergeWorkspaces(payload),
+    })
+    .register("stream.rename", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.renameStream(payload),
+    })
+    .register("stream.move", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.moveStream(payload),
     });
 
   const dispatch = (type, params, context, { target = null } = {}) => bus.dispatch({
@@ -100,4 +117,3 @@ export function createApplicationCommandService({ handlers, selectedTask }) {
     },
   });
 }
-

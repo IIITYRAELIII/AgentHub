@@ -67,6 +67,7 @@ export async function createProviderApplicationComposition({
     runJournal,
     turnEndNotifications,
     workLogUsageStore,
+    workspaceCatalogStore,
     codexRolloutContextSanitizer,
   } = infrastructure;
   const {
@@ -259,6 +260,7 @@ export async function createProviderApplicationComposition({
     isSelectedRun,
     taskRuns: runtimeData.taskRuns,
     selectionStore,
+    workspaceCatalogStore,
     runTaskTitle,
     bindRunMessage: api.bindRunMessage,
     taskProgress: late.taskProgress,
@@ -273,6 +275,7 @@ export async function createProviderApplicationComposition({
   const providerOperations = createProviderOperationComposition({
     taskRuns: runtimeData.taskRuns,
     selectionStore,
+    workspaceCatalogStore,
     saveState: api.saveState,
     taskProgress: late.taskProgress,
     taskObserver: late.taskObserver,
@@ -332,6 +335,7 @@ export async function createProviderApplicationComposition({
   });
   const providerCatalog = createProviderCatalogComposition({
     taskSyncStore: runtimeData.taskSyncStore,
+    workspaceCatalogStore,
     taskRuns: runtimeData.taskRuns,
     taskCatalogCacheMs,
     runProject: taskServices.runProject,
@@ -396,6 +400,7 @@ export async function createProviderApplicationComposition({
     ...providerProcess,
     ...accounting,
     ...runtimeData,
+    workspaceCatalogStore,
     codexObservability,
     codexUsageTracker: codexObservability.usageTracker,
     turnTokenUsage: codexObservability.turnTokenUsage,

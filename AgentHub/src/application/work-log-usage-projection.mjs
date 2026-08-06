@@ -1069,6 +1069,105 @@ export function taskThreadId(record) {
   return String(record?.taskThreadId ?? record?.threadId ?? "").trim();
 }
 
+/* Workspace/Stream is durable Hub metadata rather than a ledger field.  A
+   completed record must remain replayable from rollout alone, therefore the
+   projection asks the catalog for the current root Thread binding and never
+   persists a copied workspace id into record_json. */
+function workspaceResolutionForRecord(record, workspaceResolver) {
+  if (typeof workspaceResolver !== "function") return null;
+  const provider = String(record?.provider ?? "").trim().toLowerCase();
+  const threadId = taskThreadId(record);
+  if (!provider || !threadId) return null;
+  try {
+    const resolved = workspaceResolver({ provider, threadId });
+    if (!resolved?.workspaceId || !resolved?.streamId) return null;
+    return {
+      workspaceId: String(resolved.workspaceId),
+      workspaceName: String(resolved.workspaceName ?? "Experiments"),
+      workspaceKind: String(resolved.workspaceKind ?? "user"),
+      streamId: String(resolved.streamId),
+      streamName: resolved.streamName == null ? null : String(resolved.streamName),
+      streamOrdinal: Math.max(1, Number(resolved.streamOrdinal) || 1),
+      streamDisplayName: String(resolved.streamDisplayName ?? ""),
+    };
+  } catch {
+    // A deleted or still-unmigrated Thread must not prevent its historical
+    // journal entry from rendering.  It falls back to the legacy Thread row.
+    return null;
+  }
+}
+
+function workspaceResolutionForRecords(records, workspaceResolver) {
+  for (const record of records ?? []) {
+    const resolved = workspaceResolutionForRecord(record, workspaceResolver);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+function workspaceGroupKey(resolution, record) {
+  if (resolution?.workspaceId) return `workspace\0${resolution.workspaceId}`;
+  return `thread\0${String(record?.provider ?? "").toLowerCase()}\0${taskThreadId(record)}`;
+}
+
+function streamGroupKey(resolution, record) {
+  if (resolution?.streamId) return `stream\0${resolution.streamId}`;
+  return `thread\0${String(record?.provider ?? "").toLowerCase()}\0${taskThreadId(record)}`;
+}
+
+/* This is also used by usage history and search.  The default is Workspace
+   aggregation whenever a WorkspaceCatalogStore resolver is available; stream
+   detail remains explicit and does not require parsing rendered HTML. */
+export function groupWorkLogUsageByWorkspace(turns = {}, {
+  workspaceResolver = null,
+  includeClaudeUsage = true,
+} = {}) {
+  const workspaces = new Map();
+  for (const record of Object.values(turns ?? {})) {
+    if (!record || typeof record !== "object") continue;
+    if (!includeClaudeUsage && String(record.provider).toLowerCase() === "claude") continue;
+    const resolution = workspaceResolutionForRecord(record, workspaceResolver);
+    const workspaceKey = workspaceGroupKey(resolution, record);
+    const streamKey = streamGroupKey(resolution, record);
+    const workspace = workspaces.get(workspaceKey) ?? {
+      id: resolution?.workspaceId ?? null,
+      name: resolution?.workspaceName || String(record.taskTitle ?? "Без названия"),
+      kind: resolution?.workspaceKind ?? "legacy",
+      streams: new Map(),
+      creditBreakdown: emptyCreditBreakdown(),
+      latestCompletedAtMs: 0,
+    };
+    const stream = workspace.streams.get(streamKey) ?? {
+      id: resolution?.streamId ?? null,
+      name: resolution?.streamName ?? null,
+      ordinal: resolution?.streamOrdinal ?? 1,
+      displayName: resolution?.streamDisplayName ?? "",
+      records: [],
+      creditBreakdown: emptyCreditBreakdown(),
+      latestCompletedAtMs: 0,
+    };
+    const breakdown = recordCreditBreakdown(record);
+    const completedAtMs = Date.parse(record.completedAt ?? record.startedAt ?? "") || 0;
+    stream.records.push(record);
+    stream.creditBreakdown = addCreditBreakdown(stream.creditBreakdown, breakdown);
+    stream.latestCompletedAtMs = Math.max(stream.latestCompletedAtMs, completedAtMs);
+    workspace.streams.set(streamKey, stream);
+    workspace.creditBreakdown = addCreditBreakdown(workspace.creditBreakdown, breakdown);
+    workspace.latestCompletedAtMs = Math.max(workspace.latestCompletedAtMs, completedAtMs);
+    workspaces.set(workspaceKey, workspace);
+  }
+  return [...workspaces.values()]
+    .map((workspace) => ({
+      ...workspace,
+      credits: workspace.creditBreakdown.total,
+      streams: [...workspace.streams.values()]
+        .map((stream) => ({ ...stream, credits: stream.creditBreakdown.total }))
+        .sort((left, right) => right.latestCompletedAtMs - left.latestCompletedAtMs
+          || left.ordinal - right.ordinal),
+    }))
+    .sort((left, right) => right.latestCompletedAtMs - left.latestCompletedAtMs || left.name.localeCompare(right.name));
+}
+
 function normalizedSearchTerm(value) {
   return String(value ?? "")
     .normalize("NFKC")
@@ -1111,6 +1210,7 @@ export function searchWorkLogRecords(turns = {}, query, {
   limit = 60,
   perTask = 3,
   projectRoots = [],
+  workspaceResolver = null,
 } = {}) {
   const normalizedQuery = normalizedSearchTerm(query).slice(0, 200);
   const terms = normalizedQuery.split(" ").filter(Boolean);
@@ -1140,6 +1240,7 @@ export function searchWorkLogRecords(turns = {}, query, {
       ?? fields[0];
     const rootThreadId = taskThreadId(record);
     if (!rootThreadId) continue;
+    const workspace = workspaceResolutionForRecord(record, workspaceResolver);
     const key = `${record.provider}\0${rootThreadId}\0${normalizeProjectRoot(record.projectRoot)}`;
     const completedAtMs = Date.parse(record.completedAt ?? record.startedAt ?? "") || 0;
     const group = groups.get(key) ?? {
@@ -1147,6 +1248,11 @@ export function searchWorkLogRecords(turns = {}, query, {
       threadId: rootThreadId,
       projectRoot: normalizeProjectRoot(record.projectRoot),
       taskTitle: String(record.taskTitle ?? "").trim(),
+      workspaceId: workspace?.workspaceId ?? null,
+      workspaceName: workspace?.workspaceName ?? null,
+      streamId: workspace?.streamId ?? null,
+      streamName: workspace?.streamName ?? null,
+      streamDisplayName: workspace?.streamDisplayName ?? null,
       latestAt: "",
       latestAtMs: 0,
       matches: [],
@@ -1247,7 +1353,7 @@ function ensureCanonicalRows(section, date, turns) {
   return updated;
 }
 
-function replaceProjectedCells(row, usageContent, records) {
+function replaceProjectedCells(row, usageContent, records, workspace = null) {
   const cells = workLogRowCells(row);
   if (cells.length < 2) return row;
   const turnCell = cells.find(
@@ -1272,14 +1378,81 @@ function replaceProjectedCells(row, usageContent, records) {
     ? ` data-work-log-provider="${escapeHtmlAttribute(identity.provider)}"`
       + ` data-work-log-thread-id="${escapeHtmlAttribute(identity.threadId)}"`
     : "";
-  return `<div data-work-log-row${attributes}>\n`
+  const hierarchyAttributes = workspace
+    ? ` data-work-log-workspace-id="${escapeHtmlAttribute(workspace.workspaceId)}"`
+      + ` data-work-log-stream-id="${escapeHtmlAttribute(workspace.streamId)}"`
+    : "";
+  return `<div data-work-log-row${attributes}${hierarchyAttributes}>\n`
     + '<div data-work-log-task-cell>'
     + `<div data-work-log-task-content>${task}</div>`
     + `<div data-work-log-usage>${usageContent}</div></div>\n`
     + `<div data-work-log-turn-list>${turnList}</div>\n</div>`;
 }
 
-function projectDaySection(section, date, turns, recordsById, open, includeClaudeUsage) {
+function formatWorkspaceRows(rows, dayCredits, workspaceResolver) {
+  if (typeof workspaceResolver !== "function") return rows.map((row) => row.html).join("\n");
+  const groups = new Map();
+  for (const row of rows) {
+    const workspace = row.workspace ?? null;
+    const key = workspace?.workspaceId ?? `legacy:${row.sourceIndex}`;
+    const group = groups.get(key) ?? {
+      workspace,
+      rows: [],
+      creditBreakdown: emptyCreditBreakdown(),
+      latestCompletedAt: 0,
+    };
+    group.rows.push(row);
+    group.creditBreakdown = addCreditBreakdown(group.creditBreakdown, row.creditBreakdown);
+    group.latestCompletedAt = Math.max(group.latestCompletedAt, row.latestCompletedAt);
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .sort((left, right) => right.latestCompletedAt - left.latestCompletedAt)
+    .map((group) => {
+      if (!group.workspace) return group.rows.map((row) => row.html).join("\n");
+      const streams = new Map();
+      for (const row of group.rows) {
+        const streamKey = row.workspace.streamId;
+        const stream = streams.get(streamKey) ?? { workspace: row.workspace, rows: [] };
+        stream.rows.push(row);
+        streams.set(streamKey, stream);
+      }
+      const streamHtml = [...streams.values()]
+        .sort((left, right) => (
+          right.rows[0].latestCompletedAt - left.rows[0].latestCompletedAt
+          || left.workspace.streamOrdinal - right.workspace.streamOrdinal
+        ))
+        .map((stream) => {
+          const label = stream.workspace.streamDisplayName;
+          const header = label
+            ? `<div data-work-log-stream-header>${escapeHtmlText(label)}</div>`
+            : "";
+          return `<div data-work-log-stream data-work-log-stream-id="${
+            escapeHtmlAttribute(stream.workspace.streamId)
+          }">${header}${stream.rows.map((row) => row.html).join("\n")}</div>`;
+        }).join("\n");
+      const usage = group.creditBreakdown.total > 0
+        ? formatTaskUsageDetails(group.creditBreakdown, dayCredits)
+        : "";
+      return `<section data-work-log-workspace data-work-log-workspace-id="${
+        escapeHtmlAttribute(group.workspace.workspaceId)
+      }" data-work-log-workspace-kind="${escapeHtmlAttribute(group.workspace.workspaceKind)}">`
+        + `<header data-work-log-workspace-header><strong>${
+          escapeHtmlText(group.workspace.workspaceName)
+        }</strong><span data-work-log-workspace-usage>${usage}</span></header>`
+        + `<div data-work-log-workspace-streams>${streamHtml}</div></section>`;
+    }).join("\n");
+}
+
+function projectDaySection(
+  section,
+  date,
+  turns,
+  recordsById,
+  open,
+  includeClaudeUsage,
+  workspaceResolver,
+) {
   const canonicalSection = ensureCanonicalRows(section, date, turns);
   const claimedWorkLogIds = new Set(usageIds(canonicalSection));
   const rows = workLogTaskRows(canonicalSection)
@@ -1322,6 +1495,7 @@ function projectDaySection(section, date, turns, recordsById, open, includeClaud
           0,
         ),
         identity,
+        workspace: workspaceResolutionForRecords(recorded, workspaceResolver),
         hasLegacyOutcome: Boolean(legacyOutcome(turnCell?.text)),
       };
     });
@@ -1353,11 +1527,15 @@ function projectDaySection(section, date, turns, recordsById, open, includeClaud
       const collapseTurns = turnsContent.length > 1
         ? '<button type="button" data-work-log-collapse-turns>Свернуть ходы</button>'
         : "";
-      return replaceProjectedCells(
-        row.match.text,
-        `${visible}${markers}${collapseTurns}`,
-        turnsContent,
-      );
+      return {
+        ...row,
+        html: replaceProjectedCells(
+          row.match.text,
+          `${visible}${markers}${collapseTurns}`,
+          turnsContent,
+          row.workspace,
+        ),
+      };
     });
   const summary = dayCredits > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
@@ -1369,14 +1547,17 @@ function projectDaySection(section, date, turns, recordsById, open, includeClaud
   return [
     `<details data-work-log-day-section${open ? " open" : ""}>`,
     summary,
-    layoutContainer(renderedRows.join("\n")),
+    layoutContainer(formatWorkspaceRows(renderedRows, dayCredits, workspaceResolver)),
     "</details>",
     "",
     "",
   ].join("\n");
 }
 
-export function projectWorkLogUsage(workLogText, turns = {}, { includeClaudeUsage = true } = {}) {
+export function projectWorkLogUsage(workLogText, turns = {}, {
+  includeClaudeUsage = true,
+  workspaceResolver = null,
+} = {}) {
   let text = String(workLogText ?? "");
   const normalizedTurns = normalizedLedger({ version: 8, turns }).ledger.turns;
   const records = ledgerByWorkLogId(normalizedTurns);
@@ -1415,6 +1596,7 @@ export function projectWorkLogUsage(workLogText, turns = {}, { includeClaudeUsag
       records,
       dayStarts[index][1] === defaultOpenDate,
       includeClaudeUsage,
+      workspaceResolver,
     );
     projected = `${projected.slice(0, start)}${replacement}${projected.slice(end)}`;
   }
@@ -1672,16 +1854,24 @@ export function buildWorkLogUsageHistory(turns = {}, {
   now = Date.now(),
   maxPoints = 600,
   includeClaudeUsage = true,
+  workspaceResolver = null,
+  workspaceId = null,
+  streamId = null,
 } = {}) {
   const normalizedRange = range === "all" || Object.hasOwn(USAGE_HISTORY_RANGES, range)
     ? range
     : "24h";
   const toMs = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const requestedWorkspaceId = String(workspaceId ?? "").trim();
+  const requestedStreamId = String(streamId ?? "").trim();
   const records = Object.values(turns ?? {})
     .filter((record) => (
       includeClaudeUsage || String(record?.provider ?? "").toLowerCase() !== "claude"
     ))
     .map((record) => {
+      const workspace = workspaceResolutionForRecord(record, workspaceResolver);
+      if (requestedWorkspaceId && workspace?.workspaceId !== requestedWorkspaceId) return null;
+      if (requestedStreamId && workspace?.streamId !== requestedStreamId) return null;
       const completedMs = Date.parse(record?.completedAt ?? "");
       const breakdown = recordCreditBreakdown(record);
       const priced = !(
@@ -1693,7 +1883,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
         credits: Math.max(0, Number(breakdown.total) || 0),
         priced,
       };
-    }).filter((record) => Number.isFinite(record.completedMs) && record.completedMs <= toMs);
+    }).filter((record) => record && Number.isFinite(record.completedMs) && record.completedMs <= toMs);
   const earliest = records.length
     ? Math.min(...records.map((record) => record.completedMs))
     : toMs;
@@ -1774,6 +1964,8 @@ export function buildWorkLogUsageHistory(turns = {}, {
     axisTo: new Date(axisToMs).toISOString(),
     bucketMs,
     bucket: dayBuckets || groupedCalendarDays ? "day" : "fixed",
+    ...(requestedWorkspaceId ? { workspaceId: requestedWorkspaceId } : {}),
+    ...(requestedStreamId ? { streamId: requestedStreamId } : {}),
     totalCredits,
     unpricedCount,
     points,

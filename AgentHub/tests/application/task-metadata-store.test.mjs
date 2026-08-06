@@ -45,19 +45,19 @@ test("task metadata restores compatible state and validates Codex settings", () 
   assert.equal(store.codexSettings("invalid"), null);
 });
 
-test("hubTaskId keeps metadata while provider threads rotate", () => {
+test("streamId keeps metadata while provider threads rotate", () => {
   const store = new TaskMetadataStore({ validReasoningEfforts: ["high"] });
-  store.pinTitle({ hubTaskId: "task-1", provider: "codex", threadId: "old" }, "Work");
+  store.pinTitle({ streamId: "stream-1", provider: "codex", threadId: "old" }, "Work");
   store.rememberCodexSettings(
-    { hubTaskId: "task-1", threadId: "old" },
+    { streamId: "stream-1", threadId: "old" },
     { model: "gpt-5.6-sol", reasoningEffort: "high" },
   );
 
   assert.equal(
-    store.pinnedTitle({ hubTaskId: "task-1", provider: "codex", threadId: "new" }),
+    store.pinnedTitle({ streamId: "stream-1", provider: "codex", threadId: "new" }),
     "Work",
   );
-  assert.deepEqual(store.codexSettings({ hubTaskId: "task-1", threadId: "new" }), {
+  assert.deepEqual(store.codexSettings({ streamId: "stream-1", threadId: "new" }), {
     model: "gpt-5.6-sol",
     reasoningEffort: "high",
   });

@@ -6,16 +6,16 @@ function nonEmpty(value, label) {
 
 function normalizedTarget(target) {
   if (!target || typeof target !== "object") return null;
-  const hubTaskId = String(target.hubTaskId ?? "").trim() || null;
+  const streamId = String(target.streamId ?? "").trim() || null;
   const provider = String(target.provider ?? "").trim() || null;
   const projectRoot = String(target.projectRoot ?? "").trim() || null;
   const threadId = String(target.threadId ?? "").trim() || null;
-  if (!hubTaskId && !(provider && threadId)) return null;
-  return Object.freeze({ hubTaskId, provider, projectRoot, threadId });
+  if (!streamId && !(provider && threadId)) return null;
+  return Object.freeze({ streamId, provider, projectRoot, threadId });
 }
 
 function targetLane(target) {
-  if (target?.hubTaskId) return `task:${target.hubTaskId}`;
+  if (target?.streamId) return `stream:${target.streamId}`;
   return `provider:${target?.provider ?? ""}:${target?.projectRoot ?? ""}:${target?.threadId ?? ""}`;
 }
 

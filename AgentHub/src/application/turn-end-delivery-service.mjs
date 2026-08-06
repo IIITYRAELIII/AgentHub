@@ -50,7 +50,7 @@ export class TurnEndDeliveryService {
       });
       if (!completion.aggregateOnly) {
         this.rememberLastMessage({
-          hubTaskId: completion.hubTaskId ?? null,
+          streamId: completion.streamId ?? null,
           provider: completion.provider,
           projectRoot: completion.projectRoot,
           threadId: completion.threadId,

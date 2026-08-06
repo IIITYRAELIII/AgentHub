@@ -5,7 +5,9 @@ function normalizedProjectRoot(projectRoot) {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-export function taskRunKey({ provider, projectRoot, threadId }) {
+export function taskRunKey({ streamId, provider, projectRoot, threadId }) {
+  const normalizedStreamId = String(streamId ?? "").trim();
+  if (normalizedStreamId) return `stream\0${normalizedStreamId}`;
   const normalizedProvider = String(provider ?? "").trim().toLowerCase();
   const normalizedThreadId = String(threadId ?? "").trim();
   return `${normalizedProvider}\0${normalizedProjectRoot(projectRoot)}\0${normalizedThreadId}`;

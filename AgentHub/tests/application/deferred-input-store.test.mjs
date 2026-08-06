@@ -9,17 +9,17 @@ import {
 test("deferred input store owns pending and queued state by logical task", () => {
   const store = new DeferredInputStore();
   const first = {
-    id: "one", hubTaskId: "hub-1", provider: "codex", threadId: "old", createdAt: "2026-08-05T08:00:00.000Z",
+    id: "one", streamId: "stream-1", provider: "codex", threadId: "old", createdAt: "2026-08-05T08:00:00.000Z",
   };
   const second = {
-    id: "two", hubTaskId: "hub-1", provider: "codex", threadId: "new", createdAt: "2026-08-05T09:00:00.000Z",
+    id: "two", streamId: "stream-1", provider: "codex", threadId: "new", createdAt: "2026-08-05T09:00:00.000Z",
   };
   store.put(first, "pending");
   store.put(second, "queued");
 
   assert.equal(store.size, 2);
-  assert.equal(store.hasBacklog({ hubTaskId: "hub-1", threadId: "another" }), true);
-  assert.equal(store.latestActivityAt({ hubTaskId: "hub-1" }), Date.parse(second.createdAt));
+  assert.equal(store.hasBacklog({ streamId: "stream-1", threadId: "another" }), true);
+  assert.equal(store.latestActivityAt({ streamId: "stream-1" }), Date.parse(second.createdAt));
   assert.deepEqual(store.snapshot(), { pending: [first], queued: [second] });
 });
 

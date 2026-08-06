@@ -62,7 +62,7 @@ export class TelegramInputCallbackService {
       return true;
     }
     const binding = {
-      hubTaskId: item.hubTaskId ?? null,
+      streamId: item.streamId ?? null,
       provider: item.provider,
       projectRoot: item.projectRoot,
       threadId: item.threadId,

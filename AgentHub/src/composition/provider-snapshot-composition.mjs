@@ -34,6 +34,7 @@ export function createProviderSnapshotComposition({
   isSelectedRun,
   taskRuns,
   selectionStore,
+  workspaceCatalogStore,
   runTaskTitle,
   bindRunMessage,
   taskProgress,
@@ -58,10 +59,19 @@ export function createProviderSnapshotComposition({
   const claudeEventService = new ClaudeEventService({
     isSelectedRun,
     reindexRun: (run, previous) => taskRuns.reindex(run, previous),
-    setSelectedThread: (threadId, title) => selectionStore.setThread(threadId, {
-      provider: "claude",
-      title,
-    }),
+    setSelectedThread: (threadId, title) => {
+      const streamId = selectionStore.streamId;
+      selectionStore.setThread(threadId, { provider: "claude", streamId, title });
+      if (streamId && threadId && !workspaceCatalogStore.thread({ provider: "claude", threadId })) {
+        workspaceCatalogStore.bindThread({
+          provider: "claude",
+          threadId,
+          streamId,
+          projectRoot: selectionStore.activeProjectRoot,
+          source: "created",
+        });
+      }
+    },
     runTitle: runTaskTitle,
     bindRunMessage,
     saveState,

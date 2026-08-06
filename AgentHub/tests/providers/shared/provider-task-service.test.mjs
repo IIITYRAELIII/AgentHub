@@ -32,10 +32,11 @@ test("Codex task service creates, names and discovers tasks through its port", a
     saveState: async () => calls.push("save"),
     clock: () => new Date("2026-08-04T15:00:00Z"),
   });
-  await service.createTask();
+  const created = await service.createTask();
   assert.equal(state.threadId, "thread-1");
   assert.match(state.title, /^Telegram · /u);
   assert.equal(state.diff, "");
+  assert.equal(created.threadId, "thread-1");
   assert.deepEqual((await service.discoverTasks()).map((item) => item.id), ["one", "two"]);
   assert.ok(calls.includes("start"));
 });
@@ -47,8 +48,9 @@ test("Claude task service creates an unbound logical task", async () => {
     clearLatestDiff: () => { state.diff = ""; },
     saveState: async () => { state.saved = true; },
   });
-  await service.createTask();
+  const created = await service.createTask();
   assert.deepEqual(state.args, [null, { provider: "claude", title: "Новая задача Claude" }]);
   assert.equal(state.diff, "");
   assert.equal(state.saved, true);
+  assert.equal(created.threadId, null);
 });

@@ -9,6 +9,7 @@ function fixture() {
   const selectionStore = new TaskSelectionStore({
     activeProvider: "codex",
     activeProjectRoot: "D:/Work",
+    streamId: "stream-1",
     threadId: "thread-1",
     activeThreadTitle: "Task one",
   });
@@ -37,6 +38,7 @@ function fixture() {
 test("task identity resolves one selected target for every client", () => {
   const { resolver, run } = fixture();
   assert.deepEqual(resolver.selectedTurnTarget(), {
+    streamId: "stream-1",
     provider: "codex",
     projectRoot: "D:/Work",
     threadId: "thread-1",

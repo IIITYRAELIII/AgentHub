@@ -31,8 +31,12 @@ namespace AgentHubDesktop
         private readonly List<AnnotationDraft> annotations = new List<AnnotationDraft>();
         private readonly List<string> attachments = new List<string>();
         private readonly HashSet<string> expandedUserMessageIds = new HashSet<string>();
+        // Native Desktop keeps one conversation pane.  This list is the explicit
+        // multi-Stream selector for the currently selected Workspace (up to four).
+        private readonly List<string> openStreamIds = new List<string>();
 
         private readonly StackPanel taskCards = new StackPanel();
+        private readonly StackPanel streamTabs = new StackPanel { Orientation = Orientation.Horizontal };
         private readonly StackPanel conversation = new StackPanel();
         private readonly StackPanel annotationPanel = new StackPanel();
         private readonly StackPanel attachmentPanel = new StackPanel();
@@ -355,6 +359,10 @@ namespace AgentHubDesktop
             pageMeta.Margin = new Thickness(0, 5, 0, 0);
             titles.Children.Add(pageTitle);
             titles.Children.Add(pageMeta);
+            streamTabs.Margin = new Thickness(0, 10, 0, 0);
+            streamTabs.HorizontalAlignment = HorizontalAlignment.Left;
+            streamTabs.ToolTip = "Открытые Streams выбранного Workspace. Desktop показывает один Thread за раз; можно держать до четырёх Streams в быстром переключателе.";
+            titles.Children.Add(streamTabs);
             header.Children.Add(titles);
             var headerActions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             var diff = IconButton("\uE8A7", "Изменения задачи");
@@ -551,6 +559,12 @@ namespace AgentHubDesktop
                 {
                     Provider = AgentHubClient.Text(value, "provider"),
                     ThreadId = AgentHubClient.Text(value, "threadId"),
+                    WorkspaceId = AgentHubClient.Text(value, "workspaceId"),
+                    WorkspaceName = AgentHubClient.Text(value, "workspaceName"),
+                    StreamId = AgentHubClient.Text(value, "streamId"),
+                    StreamName = AgentHubClient.Text(value, "streamName"),
+                    StreamDisplayName = AgentHubClient.Text(value, "streamDisplayName"),
+                    StreamOrdinal = value.ContainsKey("streamOrdinal") ? Convert.ToInt32(value["streamOrdinal"]) : 1,
                     ProjectRoot = AgentHubClient.Text(value, "projectRoot"),
                     ProjectName = AgentHubClient.Text(value, "projectName"),
                     Title = AgentHubClient.Text(value, "title", "Без названия"),
@@ -564,14 +578,16 @@ namespace AgentHubDesktop
                     Run = AgentHubClient.Object(value, "run"),
                     Context = AgentHubClient.Object(value, "context")
                 };
-                var key = Key(item.Provider, item.ThreadId);
+                var key = Key(item.StreamId, item.Provider, item.ThreadId);
                 tasks[key] = item;
                 if (item.Selected) selected = item;
             }
             if (selected == null && previous != null) tasks.TryGetValue(previous, out selected);
             if (selected != null)
             {
-                var next = Key(selected.Provider, selected.ThreadId);
+                PruneOpenStreams(selected);
+                EnsureOpenStreamForTask(selected);
+                var next = Key(selected.StreamId, selected.Provider, selected.ThreadId);
                 if (next != selectedKey)
                 {
                     SaveDraft();
@@ -583,8 +599,10 @@ namespace AgentHubDesktop
                     RestoreDraft();
                     lastRenderSignature = null;
                 }
-                pageTitle.Text = selected.Title;
-                pageMeta.Text = ProviderName(selected.Provider) + "  ·  "
+                pageTitle.Text = DesktopWorkspacePresentation.WorkspaceLabel(selected);
+                var streamLabel = DesktopWorkspacePresentation.StreamLabel(selected, StreamsInWorkspace(selected));
+                pageMeta.Text = (streamLabel.Length == 0 ? selected.Title : streamLabel + "  ·  " + selected.Title) + "  ·  "
+                    + ProviderName(selected.Provider) + "  ·  "
                     + (String.IsNullOrWhiteSpace(selected.Runtime) ? "Ожидание" : selected.Runtime)
                     + (selected.Running ? "  ·  ход активен" : "  ·  готов");
                 RenderInspector(selected, snapshot);
@@ -592,26 +610,26 @@ namespace AgentHubDesktop
                 else RenderConversation(selected);
             }
             RenderTaskList();
+            RenderStreamTabs();
         }
 
         private void RenderTaskList()
         {
             var query = (search.Text ?? "").Trim();
             taskCards.Children.Clear();
-            var visible = tasks
-                .Where(delegate(KeyValuePair<string, TaskItem> pair)
-                {
-                    return query.Length == 0
-                        || pair.Value.Title.IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0
-                        || pair.Value.Provider.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
-                })
-                .OrderByDescending(delegate(KeyValuePair<string, TaskItem> pair) { return pair.Value.Running; })
-                .ThenByDescending(delegate(KeyValuePair<string, TaskItem> pair) { return pair.Value.OrderingActivityAtMs; })
-                .ThenBy(delegate(KeyValuePair<string, TaskItem> pair) { return pair.Value.Title; })
-                .ToList();
-
-            AddTaskSection("АКТИВНЫЕ", visible.Where(delegate(KeyValuePair<string, TaskItem> pair) { return pair.Value.Running; }).ToList());
-            AddTaskSection("НЕДАВНИЕ", visible.Where(delegate(KeyValuePair<string, TaskItem> pair) { return !pair.Value.Running; }).ToList());
+            var visible = tasks.Values.Where(delegate(TaskItem item)
+            {
+                return query.Length == 0
+                    || (item.Title ?? "").IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0
+                    || (item.WorkspaceName ?? "").IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0
+                    || (item.StreamDisplayName ?? "").IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0
+                    || (item.StreamName ?? "").IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0
+                    || (item.Provider ?? "").IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
+            }).ToList();
+            foreach (var workspace in DesktopWorkspacePresentation.Group(visible))
+            {
+                taskCards.Children.Add(WorkspaceCard(workspace));
+            }
             if (visible.Count == 0)
             {
                 var empty = Theme.Label("Ничего не найдено", 12, Theme.Solid(Theme.Dim), FontWeights.Normal);
@@ -620,13 +638,58 @@ namespace AgentHubDesktop
             }
         }
 
-        private void AddTaskSection(string title, List<KeyValuePair<string, TaskItem>> items)
+        private UIElement WorkspaceCard(DesktopWorkspaceGroup workspace)
         {
-            if (items.Count == 0) return;
-            var heading = Theme.Label(title + "  " + items.Count, 10, Theme.Solid(Theme.Dim), FontWeights.Bold);
-            heading.Margin = new Thickness(10, 12, 10, 6);
-            taskCards.Children.Add(heading);
-            foreach (var pair in items) taskCards.Children.Add(TaskCard(pair.Key, pair.Value));
+            var shell = new Border
+            {
+                Background = Theme.Solid(Theme.Panel),
+                BorderBrush = Theme.Solid(Theme.Border),
+                BorderThickness = new Thickness(1),
+                CornerRadius = Theme.Radius(12),
+                Margin = new Thickness(2, 10, 2, 2),
+                Padding = new Thickness(7, 7, 7, 8)
+            };
+            var body = new StackPanel();
+            var caption = Theme.Label(workspace.WorkspaceName, 12.5, Theme.Solid(Theme.Text), FontWeights.SemiBold);
+            caption.TextTrimming = TextTrimming.CharacterEllipsis;
+            caption.Margin = new Thickness(6, 2, 6, 6);
+            body.Children.Add(caption);
+            foreach (var stream in workspace.Streams) body.Children.Add(StreamCard(stream));
+            shell.Child = body;
+            return shell;
+        }
+
+        private UIElement StreamCard(DesktopStreamGroup stream)
+        {
+            var shell = new StackPanel { Margin = new Thickness(0, 2, 0, 3) };
+            var header = new Border
+            {
+                Background = Theme.Solid(Theme.PanelRaised),
+                BorderBrush = Theme.Solid(Theme.Border),
+                BorderThickness = new Thickness(1),
+                CornerRadius = Theme.Radius(8),
+                Padding = new Thickness(8, 6, 8, 6),
+                Cursor = Cursors.Hand
+            };
+            var row = new Grid();
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var label = stream.StreamLabel;
+            if (String.IsNullOrWhiteSpace(label)) label = "Основной Stream";
+            var text = Theme.Label(label, 11, Theme.Solid(Theme.Text), FontWeights.SemiBold);
+            text.TextTrimming = TextTrimming.CharacterEllipsis;
+            row.Children.Add(text);
+            var count = Theme.Label(stream.Threads.Count + (stream.Running ? "  ●" : ""), 10, stream.Running ? Theme.Solid(Theme.Good) : Theme.Solid(Theme.Dim), FontWeights.Normal);
+            Grid.SetColumn(count, 1);
+            row.Children.Add(count);
+            header.Child = row;
+            header.MouseLeftButtonUp += async delegate { await OpenStreamAsync(stream.StreamId); };
+            shell.Children.Add(header);
+            foreach (var item in stream.Threads)
+            {
+                shell.Children.Add(TaskCard(Key(item.StreamId, item.Provider, item.ThreadId), item));
+            }
+            return shell;
         }
 
         private UIElement TaskCard(string key, TaskItem item)
@@ -682,6 +745,104 @@ namespace AgentHubDesktop
             return border;
         }
 
+        private int StreamsInWorkspace(TaskItem item)
+        {
+            if (item == null) return 0;
+            var workspaceKey = DesktopWorkspacePresentation.WorkspaceKey(item);
+            return tasks.Values
+                .Where(value => String.Equals(DesktopWorkspacePresentation.WorkspaceKey(value), workspaceKey, StringComparison.Ordinal))
+                .Select(DesktopWorkspacePresentation.StreamKey)
+                .Distinct()
+                .Count();
+        }
+
+        private void PruneOpenStreams(TaskItem selected)
+        {
+            if (selected == null) return;
+            var workspaceKey = DesktopWorkspacePresentation.WorkspaceKey(selected);
+            for (var index = openStreamIds.Count - 1; index >= 0; index--)
+            {
+                var streamId = openStreamIds[index];
+                var exists = tasks.Values.Any(value =>
+                    String.Equals(DesktopWorkspacePresentation.WorkspaceKey(value), workspaceKey, StringComparison.Ordinal)
+                    && String.Equals(DesktopWorkspacePresentation.StreamKey(value), streamId, StringComparison.Ordinal));
+                if (!exists) openStreamIds.RemoveAt(index);
+            }
+        }
+
+        private void EnsureOpenStreamForTask(TaskItem item)
+        {
+            if (item == null) return;
+            var workspaceKey = DesktopWorkspacePresentation.WorkspaceKey(item);
+            var hasOtherWorkspace = openStreamIds.Any(streamId => tasks.Values.Any(value =>
+                String.Equals(DesktopWorkspacePresentation.StreamKey(value), streamId, StringComparison.Ordinal)
+                && !String.Equals(DesktopWorkspacePresentation.WorkspaceKey(value), workspaceKey, StringComparison.Ordinal)));
+            if (hasOtherWorkspace) openStreamIds.Clear();
+            DesktopWorkspacePresentation.EnsureOpenStream(openStreamIds, DesktopWorkspacePresentation.StreamKey(item));
+        }
+
+        private async Task OpenStreamAsync(string streamId)
+        {
+            var candidates = tasks.Values.Where(value => String.Equals(
+                DesktopWorkspacePresentation.StreamKey(value), streamId, StringComparison.Ordinal))
+                .OrderByDescending(value => value.Selected)
+                .ThenByDescending(value => value.Running)
+                .ThenByDescending(value => value.OrderingActivityAtMs)
+                .ToList();
+            if (candidates.Count == 0) return;
+            var item = candidates[0];
+            var replacesOldest = !openStreamIds.Contains(streamId)
+                && openStreamIds.Count >= DesktopWorkspacePresentation.MaximumOpenStreams;
+            DesktopWorkspacePresentation.EnsureOpenStream(openStreamIds, streamId);
+            if (replacesOldest)
+            {
+                footer.Text = "Открыто максимум 4 Streams: самый старый переключатель заменён.";
+            }
+            await SelectTaskAsync(Key(item.StreamId, item.Provider, item.ThreadId));
+        }
+
+        private void RenderStreamTabs()
+        {
+            streamTabs.Children.Clear();
+            if (selectedKey == null) return;
+            TaskItem selected;
+            if (!tasks.TryGetValue(selectedKey, out selected)) return;
+            var workspaceKey = DesktopWorkspacePresentation.WorkspaceKey(selected);
+            foreach (var streamId in openStreamIds)
+            {
+                var candidates = tasks.Values.Where(value =>
+                    String.Equals(DesktopWorkspacePresentation.WorkspaceKey(value), workspaceKey, StringComparison.Ordinal)
+                    && String.Equals(DesktopWorkspacePresentation.StreamKey(value), streamId, StringComparison.Ordinal))
+                    .OrderByDescending(value => value.Selected)
+                    .ThenByDescending(value => value.Running)
+                    .ThenByDescending(value => value.OrderingActivityAtMs)
+                    .ToList();
+                if (candidates.Count == 0) continue;
+                var item = candidates[0];
+                var active = String.Equals(DesktopWorkspacePresentation.StreamKey(selected), streamId, StringComparison.Ordinal);
+                var label = DesktopWorkspacePresentation.StreamLabel(item, StreamsInWorkspace(item));
+                if (String.IsNullOrWhiteSpace(label)) label = item.Title;
+                var tab = new Button
+                {
+                    Content = label,
+                    Tag = streamId,
+                    MaxWidth = 210,
+                    Padding = new Thickness(10, 5, 10, 5),
+                    Margin = new Thickness(0, 0, 6, 0),
+                    Foreground = Theme.Solid(active ? Theme.Text : Theme.Muted),
+                    Background = active ? Theme.Solid("#152638") : Theme.Solid(Theme.PanelRaised),
+                    BorderBrush = Theme.Solid(active ? Theme.Codex : Theme.Border),
+                    BorderThickness = new Thickness(1),
+                    Cursor = Cursors.Hand,
+                    ToolTip = "Переключить Stream"
+                };
+                Theme.Polish(tab, 8);
+                var selectedStreamId = streamId;
+                tab.Click += async delegate { await OpenStreamAsync(selectedStreamId); };
+                streamTabs.Children.Add(tab);
+            }
+        }
+
         private async Task SelectTaskAsync(string key)
         {
             if (switching || key == selectedKey) return;
@@ -696,6 +857,7 @@ namespace AgentHubDesktop
                 footer.Text = "Переключаю задачу…";
                 var snapshot = await client.CallAsync("select-task", new Dictionary<string, object>
                 {
+                    { "streamId", item.StreamId },
                     { "provider", item.Provider },
                     { "threadId", item.ThreadId }
                 });
@@ -720,6 +882,7 @@ namespace AgentHubDesktop
             {
                 var parameters = new Dictionary<string, object>
                 {
+                    { "streamId", item.StreamId },
                     { "provider", item.Provider },
                     { "threadId", item.ThreadId },
                     { "limit", 10 }
@@ -2011,6 +2174,7 @@ namespace AgentHubDesktop
             }
             return new Dictionary<string, object>
             {
+                { "streamId", item.StreamId },
                 { "provider", item.Provider },
                 { "threadId", item.ThreadId }
             };
@@ -2194,13 +2358,27 @@ namespace AgentHubDesktop
         {
             TaskItem item;
             if (!tasks.TryGetValue(selectedKey ?? "", out item)) return;
-            var title = PromptDialog.Show(this, "Название задачи", "Новое постоянное название", item.Title);
+            var currentName = String.IsNullOrWhiteSpace(item.WorkspaceName) ? item.Title : item.WorkspaceName;
+            var title = PromptDialog.Show(this, "Название Workspace", "Новое название Workspace", currentName);
             if (title == null) return;
             try
             {
-                var parameters = SelectedTaskParameters();
-                parameters["title"] = title;
-                var snapshot = await client.CallAsync("rename-task", parameters);
+                Dictionary<string, object> parameters;
+                string action;
+                if (!String.IsNullOrWhiteSpace(item.WorkspaceId))
+                {
+                    parameters = new Dictionary<string, object> {
+                        { "workspaceId", item.WorkspaceId }, { "name", title }
+                    };
+                    action = "rename-workspace";
+                }
+                else
+                {
+                    parameters = SelectedTaskParameters();
+                    parameters["title"] = title;
+                    action = "rename-task";
+                }
+                var snapshot = await client.CallAsync(action, parameters);
                 ApplySnapshot(snapshot);
                 footer.Text = "Название закреплено";
             }
@@ -2304,7 +2482,12 @@ namespace AgentHubDesktop
             window.ShowDialog();
         }
 
-        private static string Key(string provider, string threadId) { return provider + "\0" + threadId; }
+        private static string Key(string streamId, string provider, string threadId)
+        {
+            return !String.IsNullOrWhiteSpace(streamId)
+                ? "stream\0" + streamId + "\0" + provider + "\0" + threadId
+                : provider + "\0" + threadId;
+        }
         private static string ProviderName(string provider) { return provider == "claude" ? "Claude" : "Codex"; }
         private static string ShortRuntime(string value)
         {

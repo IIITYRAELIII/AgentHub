@@ -78,7 +78,7 @@ test("provider switch starts Codex only when provider work requires it", async (
 test("task activation changes local selection without starting a provider", async () => {
   const setup = fixture();
   const result = await setup.value.activate({
-    hubTaskId: "hub-1",
+    streamId: "stream-1",
     provider: "codex",
     projectRoot: "D:/two",
     threadId: "thread-2",

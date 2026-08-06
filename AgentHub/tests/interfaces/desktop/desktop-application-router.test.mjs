@@ -10,12 +10,13 @@ function router(calls) {
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "compactContext", "openAttachment", "submitBugReport",
     "trustedDevices", "createDevicePairing", "revokeDevice",
+    "renameWorkspace", "mergeWorkspaces", "renameStream", "moveStream",
   ].map((name) => [name, handler]));
   return createDesktopApplicationRouter({
     handlers,
     commands: {
       dispatch: async (...args) => { calls.push(args); return { accepted: true }; },
-      settingTarget: () => ({ hubTaskId: "hub-1" }),
+      settingTarget: () => ({ streamId: "stream-1" }),
     },
   });
 }
@@ -25,12 +26,12 @@ test("Desktop application router addresses mutations explicitly", async () => {
   const control = router(calls);
   await control.handleDesktopControl({
     action: "select-task",
-    params: { hubTaskId: "hub-1", provider: "codex", threadId: "thread-1" },
+    params: { streamId: "stream-1", provider: "codex", threadId: "thread-1" },
     context: { source: "desktop", userId: "7" },
   });
   assert.equal(calls[0][0], "task.select");
   assert.equal(calls[0][2].clientId, "desktop:7");
-  assert.equal(calls[0][3].target.hubTaskId, "hub-1");
+  assert.equal(calls[0][3].target.streamId, "stream-1");
 });
 
 test("Desktop application router enforces Mini App history limits", async () => {

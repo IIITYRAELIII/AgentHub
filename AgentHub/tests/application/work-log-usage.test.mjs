@@ -7,6 +7,7 @@ import test, { afterEach } from "node:test";
 import {
   applyWorkLogUsage,
   buildWorkLogUsageHistory,
+  groupWorkLogUsageByWorkspace,
   normalizeWorkLogId,
   projectWorkLogRateLimits,
   projectWorkLogUsage,
@@ -108,6 +109,65 @@ test("local usage history can exclude Claude from global totals", () => {
   });
   assert.equal(filtered.totalCredits, 5);
   assert.equal(filtered.points.reduce((sum, point) => sum + point.credits, 0), 5);
+});
+
+test("workspace usage aggregates sequential Threads and retains Stream detail", () => {
+  const resolver = ({ provider, threadId }) => ({
+    workspaceId: "workspace-hub",
+    workspaceName: "Agent HUB",
+    workspaceKind: "user",
+    streamId: threadId === "thread-themes" ? "stream-themes" : "stream-main",
+    streamOrdinal: threadId === "thread-themes" ? 2 : 1,
+    streamName: threadId === "thread-themes" ? "Themes" : null,
+    streamDisplayName: threadId === "thread-themes" ? "Themes" : "Stream 1",
+    provider,
+  });
+  const turns = {
+    first: { provider: "codex", threadId: "thread-main", turnId: "turn-1",
+      completedAt: "2026-07-30T10:00:00.000Z", estimatedCredits: 2 },
+    continuation: { provider: "codex", threadId: "thread-main-next", turnId: "turn-2",
+      completedAt: "2026-07-30T10:10:00.000Z", estimatedCredits: 3 },
+    themes: { provider: "codex", threadId: "thread-themes", turnId: "turn-3",
+      completedAt: "2026-07-30T10:20:00.000Z", estimatedCredits: 5 },
+  };
+  const grouped = groupWorkLogUsageByWorkspace(turns, { workspaceResolver: resolver });
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0].name, "Agent HUB");
+  assert.equal(grouped[0].credits, 10);
+  assert.equal(grouped[0].streams.length, 2);
+  assert.equal(grouped[0].streams.find((stream) => stream.id === "stream-main").credits, 5);
+  const history = buildWorkLogUsageHistory(turns, {
+    range: "6h",
+    now: Date.parse("2026-07-30T12:00:00.000Z"),
+    workspaceResolver: resolver,
+    streamId: "stream-main",
+  });
+  assert.equal(history.totalCredits, 5);
+});
+
+test("journal projection nests Stream rows under one Workspace", () => {
+  const resolver = ({ threadId }) => ({
+    workspaceId: "workspace-hub",
+    workspaceName: "Agent HUB",
+    workspaceKind: "user",
+    streamId: threadId === "thread-themes" ? "stream-themes" : "stream-main",
+    streamOrdinal: threadId === "thread-themes" ? 2 : 1,
+    streamName: threadId === "thread-themes" ? "Themes" : null,
+    streamDisplayName: threadId === "thread-themes" ? "Themes" : "Stream 1",
+  });
+  const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
+    main: { provider: "codex", threadId: "thread-main", turnId: "turn-main",
+      taskTitle: "Agent HUB 1", title: "Первый", estimatedCredits: 2,
+      completedAt: "2026-07-30T10:00:00.000Z" },
+    themes: { provider: "codex", threadId: "thread-themes", turnId: "turn-themes",
+      taskTitle: "Themes", title: "Второй", estimatedCredits: 3,
+      completedAt: "2026-07-30T10:20:00.000Z" },
+  }, { workspaceResolver: resolver });
+  assert.equal((projected.match(/<section data-work-log-workspace data-work-log-workspace-id="workspace-hub"/gu) ?? []).length, 1);
+  assert.ok(projected.includes('data-work-log-stream-id="stream-main"'));
+  assert.ok(projected.includes('data-work-log-stream-id="stream-themes"'));
+  assert.ok(projected.includes("Agent HUB"));
+  assert.ok(projected.includes('data-usage-credits="5"'));
 });
 
 test("seven-day usage matches journal calendar days and includes empty days", () => {

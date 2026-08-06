@@ -84,7 +84,7 @@ const localWebSecret = config.miniApp.enabled
 const {
   trustedDeviceStore,
   codexRolloutContextSanitizer,
-  workLogUsageStore,
+  workLogUsageStore, workspaceCatalogStore,
   miniAppServer,
   publicMiniAppServer,
   usdRubRateStore,
@@ -130,6 +130,7 @@ const { taskMetadata, selectionStore, agentPreferences } = createStateCompositio
 });
 function selectedProvider() { return selectionStore.activeProvider; }
 function selectedProjectRoot() { return selectionStore.activeProjectRoot; }
+function selectedStreamId() { return selectionStore.streamId; }
 function selectedThreadId() { return selectionStore.threadId; }
 function selectedTaskTitle() { return selectionStore.activeThreadTitle; }
 function isCodex() { return selectedProvider() === "codex"; }
@@ -265,7 +266,7 @@ const providerApplication = await createProviderApplicationComposition({
   infrastructure: {
     runJournal,
     turnEndNotifications,
-    workLogUsageStore,
+    workLogUsageStore, workspaceCatalogStore,
     codexRolloutContextSanitizer,
   },
   taskServices: {
@@ -442,7 +443,7 @@ const clientRuntime = await createClientRuntimeComposition({
     taskRuns,
     statusMediaFileIds,
     desktopMessageReceipts,
-    taskSyncStore,
+    taskSyncStore, workspaceCatalogStore,
     taskDiffs,
     deferredInputs,
     pendingInputs,

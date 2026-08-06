@@ -13,6 +13,7 @@ import { installRotatingConsole } from "../infrastructure/persistence/rotating-l
 import { RuntimeStateStore } from "../infrastructure/persistence/runtime-state-store.mjs";
 import { TaskReadStateStore } from "../infrastructure/persistence/task-read-state-store.mjs";
 import { TrustedDeviceStore } from "../infrastructure/persistence/trusted-device-store.mjs";
+import { WorkspaceCatalogStore } from "../infrastructure/persistence/workspace-catalog-store.mjs";
 import { WorkLogUsageRepository } from "../infrastructure/persistence/work-log-usage-repository.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
@@ -48,11 +49,16 @@ export async function createHubInfrastructure({
   const codexRolloutContextSanitizer = new CodexRolloutContextSanitizer({
     ...config.codexRolloutContext,
   });
+  const workspaceCatalogStore = new WorkspaceCatalogStore({
+    databaseFile: journalDatabaseFile,
+  });
+  await workspaceCatalogStore.load();
   const workLogUsageStore = createWorkLogUsageStore({
     repositoryFactory: (options) => new WorkLogUsageRepository(options),
     ledgerFile: legacyWorkLogLedgerFile,
     databaseFile: journalDatabaseFile,
     defaultProjectRoot: config.projectRoot,
+    workspaceCatalogStore,
   });
   const serverOptions = {
     botToken: config.token,
@@ -151,6 +157,7 @@ export async function createHubInfrastructure({
     trustedDeviceStore,
     codexRolloutContextSanitizer,
     workLogUsageStore,
+    workspaceCatalogStore,
     miniAppServer,
     publicMiniAppServer,
     usdRubRateStore,

@@ -64,6 +64,7 @@ export function createExecutionBootstrapPhase({
       scheduleCodexTerminalAudit: api.scheduleCodexTerminalAudit,
       rateLimitTelemetry: clients.rateLimitTelemetry,
       taskSyncStore: provider.taskSyncStore,
+      workspaceCatalogStore: provider.workspaceCatalogStore,
       dismissedExternalTasks: provider.dismissedExternalTasks,
       lastSeenTaskTurnIds: provider.lastSeenTaskTurnIds,
       turnTemporaryFiles: provider.turnTemporaryFiles,

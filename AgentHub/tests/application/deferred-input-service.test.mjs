@@ -15,19 +15,19 @@ test("deferred input service persists one addressed logical-task message", async
     persist: async () => events.push("persist"),
     removeFiles: async () => events.push("remove"),
     notify: async (item) => {
-      events.push(`notify:${item.hubTaskId}`);
+      events.push(`notify:${item.streamId}`);
       return { message_id: 77 };
     },
   });
   const result = await service.defer("message", ["image.png"], {
-    target: { hubTaskId: "hub-1", provider: "codex", threadId: "thread-1", taskTitle: "Task" },
+    target: { streamId: "stream-1", provider: "codex", threadId: "thread-1", taskTitle: "Task" },
     persistentFiles: true,
   });
 
   assert.equal(result.item.id, "deferred-1");
   assert.equal(result.item.messageId, 77);
   assert.equal(store.pending.get("deferred-1"), result.item);
-  assert.deepEqual(events, ["persist", "notify:hub-1", "persist"]);
+  assert.deepEqual(events, ["persist", "notify:stream-1", "persist"]);
 });
 
 test("deferred input service removes rejected attachments at its bounded capacity", async () => {

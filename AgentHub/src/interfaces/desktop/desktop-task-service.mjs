@@ -1,16 +1,16 @@
 function normalizedTaskReference(params = {}) {
-  const hubTaskId = String(params.hubTaskId ?? "").trim();
+  const streamId = String(params.streamId ?? "").trim();
   const provider = String(params.provider ?? "").trim();
   const threadId = String(params.threadId ?? params.taskThreadId ?? "").trim();
-  if (hubTaskId) return { hubTaskId, provider, threadId };
+  if (streamId) return { streamId, provider, threadId };
   if (!["codex", "claude"].includes(provider) || !threadId) {
     throw new Error("Укажите корректную задачу");
   }
-  return { hubTaskId: "", provider, threadId };
+  return { streamId: "", provider, threadId };
 }
 
 function entryMatchesReference(entry, reference) {
-  if (reference.hubTaskId) return String(entry?.hubTaskId ?? "") === reference.hubTaskId;
+  if (reference.streamId) return String(entry?.streamId ?? "") === reference.streamId;
   return entry?.provider === reference.provider && entry?.threadId === reference.threadId;
 }
 
@@ -54,7 +54,7 @@ export class DesktopTaskService {
     const entry = entries.find((candidate) => entryMatchesReference(candidate, reference));
     if (!entry) throw new Error("Задача сообщения больше не существует в локальном каталоге");
     return {
-      hubTaskId: entry.hubTaskId ?? null,
+      streamId: entry.streamId ?? null,
       provider: entry.provider,
       projectRoot: entry.projectRoot,
       sessionCwd: entry.sessionCwd ?? null,
@@ -75,7 +75,7 @@ export class DesktopTaskService {
     }
     if (!entry) throw new Error("Задача не найдена в локальном каталоге");
     const activation = await this.activateBinding({
-      hubTaskId: entry.hubTaskId ?? null,
+      streamId: entry.streamId ?? null,
       provider: entry.provider,
       projectRoot: entry.projectRoot,
       threadId: entry.threadId,
@@ -98,7 +98,7 @@ export class DesktopTaskService {
     return {
       snapshot,
       history: await this.taskHistory({
-        hubTaskId: params.hubTaskId,
+        streamId: params.streamId,
         provider: params.provider,
         threadId: params.threadId,
         limit: params.limit,
@@ -135,7 +135,7 @@ export class DesktopTaskService {
       context,
       {
         target: this.commandTaskTarget({
-          hubTaskId: entry.hubTaskId,
+          streamId: entry.streamId,
           provider: entry.provider,
           projectRoot: entry.projectRoot,
           threadId: entry.threadId,
@@ -145,7 +145,7 @@ export class DesktopTaskService {
     return {
       snapshot: await this.snapshot({}, context),
       history: await this.taskHistory({
-        hubTaskId: entry.hubTaskId,
+        streamId: entry.streamId,
         provider: entry.provider,
         threadId: taskThread,
         limit: params.limit,

@@ -4,7 +4,7 @@ import test from "node:test";
 import { SelectedTaskWatchService } from "../../src/application/selected-task-watch-service.mjs";
 
 function fixture({ snapshot = { active: true, turnId: "turn-1" } } = {}) {
-  const task = { hubTaskId: "hub-1", provider: "codex", threadId: "thread-1", projectRoot: "C:/work" };
+  const task = { streamId: "stream-1", provider: "codex", threadId: "thread-1", projectRoot: "C:/work" };
   let selected = task;
   let currentRun = null;
   const events = [];
@@ -44,7 +44,7 @@ function fixture({ snapshot = { active: true, turnId: "turn-1" } } = {}) {
     autoObserve: ({ task: captured, selectedTask: current }) => (
       captured.threadId === current.threadId && snapshot?.active === true
     ),
-    taskKey: (value) => value.hubTaskId,
+    taskKey: (value) => value.streamId,
     logger: {
       log: (...args) => events.push(["log", ...args]),
       error: (...args) => events.push(["error", ...args]),
@@ -76,7 +76,7 @@ test("SelectedTaskWatchService never applies a stale snapshot after task switch"
   const state = fixture();
   state.delaySnapshot();
   const watching = state.service.watch();
-  state.setSelected({ hubTaskId: "hub-2", provider: "codex", threadId: "thread-2" });
+  state.setSelected({ streamId: "stream-2", provider: "codex", threadId: "thread-2" });
   state.releaseSnapshot({ active: true, turnId: "turn-1" });
 
   assert.equal(await watching, false);
@@ -97,9 +97,9 @@ test("SelectedTaskWatchService never overlays a managed run started during snaps
 test("SelectedTaskWatchService records a new completed answer without observing it", async () => {
   const state = fixture({ snapshot: { completed: true, active: false, turnId: "turn-9", answer: "Final" } });
   assert.equal(await state.service.watch(), false);
-  assert.equal(state.lastSeen.get("hub-1"), "turn-9");
+  assert.equal(state.lastSeen.get("stream-1"), "turn-9");
   const remembered = state.events.find(([name]) => name === "remember");
-  assert.equal(remembered[1].hubTaskId, "hub-1");
+  assert.equal(remembered[1].streamId, "stream-1");
   assert.equal(remembered[1].taskTitle, "Selected title");
   assert.equal(remembered[2], "Final");
 });

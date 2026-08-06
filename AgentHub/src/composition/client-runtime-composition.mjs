@@ -81,6 +81,7 @@ export async function createClientRuntimeComposition({
     statusMediaFileIds,
     desktopMessageReceipts,
     taskSyncStore,
+    workspaceCatalogStore,
     taskDiffs,
     deferredInputs,
     pendingInputs,

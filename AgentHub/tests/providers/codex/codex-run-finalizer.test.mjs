@@ -40,7 +40,7 @@ function fixture({ existingCompletion = null, discard = false } = {}) {
 
 function run() {
   return {
-    hubTaskId: "hub-1",
+    streamId: "stream-1",
     provider: "codex",
     projectRoot: "C:/workspace",
     threadId: "thread-1",
@@ -76,7 +76,7 @@ test("CodexRunFinalizer adopts audited start data and completes one durable deli
   assert.equal(value.promptPreview, "original prompt");
   assert.equal(value.gitBaseline.id, "baseline");
   const recorded = state.events.find(([name]) => name === "record")[1];
-  assert.equal(recorded.hubTaskId, "hub-1");
+  assert.equal(recorded.streamId, "stream-1");
   assert.equal(recorded.chatId, 7);
   assert.deepEqual(recorded.changedFiles, ["file.mjs"]);
   assert.deepEqual(state.events.map(([name]) => name), [

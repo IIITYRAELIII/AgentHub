@@ -128,7 +128,7 @@ export class TaskNavigationService {
       preferences: this.captureCodexPreferences(),
     };
     this.selectionStore.selectTask({
-      hubTaskId: binding.hubTaskId ?? null,
+      streamId: binding.streamId ?? null,
       activeProjectRoot: project.path,
       activeProvider: binding.provider,
       threadId: binding.threadId,

@@ -17,6 +17,7 @@ export function createDesktopCommandComposition({
   settings,
   application,
   telegramActions,
+  workspaceActions,
 }) {
   let desktopSettingsService;
 
@@ -61,6 +62,10 @@ export function createDesktopCommandComposition({
       updateSetting: desktopUpdateSetting,
       cancelRun: desktopCancelRun,
       resolveApproval: application.resolveApproval,
+      renameWorkspace: workspaceActions.renameWorkspace,
+      mergeWorkspaces: workspaceActions.mergeWorkspaces,
+      renameStream: workspaceActions.renameStream,
+      moveStream: workspaceActions.moveStream,
     },
   });
 

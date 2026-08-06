@@ -60,8 +60,8 @@ export class RunCoordinator {
   }
 
   taskLane(target) {
-    const hubTaskId = String(target?.hubTaskId ?? "").trim();
-    if (hubTaskId) return `task:${hubTaskId}`;
+    const streamId = String(target?.streamId ?? "").trim();
+    if (streamId) return `stream:${streamId}`;
     return [
       "provider",
       String(target?.provider ?? "").trim().toLowerCase(),

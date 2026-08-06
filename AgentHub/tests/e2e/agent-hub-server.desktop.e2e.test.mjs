@@ -113,7 +113,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
     () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
     "desktop control startup",
   );
-  assert.equal(initial.apiVersion, 2);
+  assert.equal(initial.apiVersion, 3);
   assert.ok(Date.now() - startupStartedAt < 1_400, "Desktop control waited for Codex initialization");
   assert.equal(initial.tasks.length, 1);
   const firstThreadId = initial.selected.threadId;

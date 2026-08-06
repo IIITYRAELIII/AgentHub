@@ -19,7 +19,7 @@ function fixture() {
     readRateLimitHistory: async (params) => ({ params }),
     readUsageHistory: async (params) => ({ params }),
     refreshCatalog: async () => [{
-      hubTaskId: "hub-1", provider: "codex", threadId: "thread-1", projectRoot: "C:\\repo", title: "Task",
+      streamId: "stream-1", provider: "codex", threadId: "thread-1", projectRoot: "C:\\repo", title: "Task",
     }],
     searchTurns: async () => [{
       provider: "codex", threadId: "thread-1", projectRoot: "C:\\repo", taskTitle: "Old", matches: [],
@@ -58,8 +58,8 @@ test("Desktop system status composes provider settings and live counters", async
 test("Desktop search returns the stable Hub task identity", async () => {
   const { service } = fixture();
   const result = await service.search({ query: "task" });
-  assert.equal(result.results[0].id, "hub-1");
-  assert.equal(result.results[0].hubTaskId, "hub-1");
+  assert.equal(result.results[0].id, "stream-1");
+  assert.equal(result.results[0].streamId, "stream-1");
 });
 
 test("Desktop trusted-device mutations validate and delegate", async () => {
@@ -71,7 +71,7 @@ test("Desktop trusted-device mutations validate and delegate", async () => {
 
 test("Desktop speech addresses the selected task and enqueues one job", async () => {
   const { service, calls } = fixture();
-  const result = await service.speakLastAnswer({ hubTaskId: "hub-1" });
+  const result = await service.speakLastAnswer({ streamId: "stream-1" });
   assert.equal(result.accepted, true);
   assert.equal(calls.some((value) => Array.isArray(value) && value[0] === "speech"), true);
 });

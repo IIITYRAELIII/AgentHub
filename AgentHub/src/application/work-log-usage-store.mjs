@@ -26,6 +26,7 @@ export function createWorkLogUsageStore({
   journalDatabase = null,
   defaultProjectRoot = "",
   includeClaudeUsage = true,
+  workspaceCatalogStore = null,
   beforeProjectionWrite = null,
 } = {}) {
   if (typeof repositoryFactory !== "function") {
@@ -44,6 +45,7 @@ export function createWorkLogUsageStore({
     repository,
     defaultProjectRoot: normalizedProjectRoot,
     includeClaudeUsage,
+    workspaceCatalogStore,
     beforeProjectionWrite,
   });
 }
@@ -52,12 +54,14 @@ export class WorkLogUsageStore {
   #repository;
   #defaultProjectRoot;
   #includeClaudeUsage = true;
+  #workspaceCatalogStore;
   #beforeProjectionWrite;
 
   constructor({
     repository,
     defaultProjectRoot = "",
     includeClaudeUsage = true,
+    workspaceCatalogStore = null,
     beforeProjectionWrite = null,
   } = {}) {
     if (
@@ -72,6 +76,10 @@ export class WorkLogUsageStore {
     this.#defaultProjectRoot = normalizeProjectRoot(defaultProjectRoot);
     this.#repository = repository;
     this.#includeClaudeUsage = includeClaudeUsage !== false;
+    if (workspaceCatalogStore && typeof workspaceCatalogStore.resolveThread !== "function") {
+      throw new TypeError("workspaceCatalogStore must resolve provider threads");
+    }
+    this.#workspaceCatalogStore = workspaceCatalogStore;
     this.#beforeProjectionWrite = typeof beforeProjectionWrite === "function"
       ? beforeProjectionWrite
       : null;
@@ -164,7 +172,10 @@ export class WorkLogUsageStore {
 
   searchTurns(query, options = {}) {
     return this.#enqueueRead(async () => {
-      return structuredClone(searchWorkLogRecords(this.#ledger.turns, query, options));
+      return structuredClone(searchWorkLogRecords(this.#ledger.turns, query, {
+        ...options,
+        workspaceResolver: this.#workspaceResolver(),
+      }));
     });
   }
 
@@ -173,6 +184,7 @@ export class WorkLogUsageStore {
       return structuredClone(buildWorkLogUsageHistory(this.#ledger.turns, {
         includeClaudeUsage: this.#includeClaudeUsage,
         ...options,
+        workspaceResolver: this.#workspaceResolver(),
       }));
     });
   }
@@ -342,7 +354,14 @@ export class WorkLogUsageStore {
   #projectUsage(text, turns) {
     return projectWorkLogUsage(text, turns, {
       includeClaudeUsage: this.#includeClaudeUsage,
+      workspaceResolver: this.#workspaceResolver(),
     });
+  }
+
+  #workspaceResolver() {
+    return this.#workspaceCatalogStore
+      ? (reference) => this.#workspaceCatalogStore.resolveThread(reference)
+      : null;
   }
 
   project(workLogFile, {

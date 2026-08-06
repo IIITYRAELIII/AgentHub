@@ -3,8 +3,8 @@ function normalized(value) {
 }
 
 export function deferredInputTaskKey(value) {
-  const hubTaskId = String(value?.hubTaskId ?? "").trim();
-  if (hubTaskId) return `task:${hubTaskId}`;
+  const streamId = String(value?.streamId ?? "").trim();
+  if (streamId) return `stream:${streamId}`;
   return [
     "provider",
     normalized(value?.provider),

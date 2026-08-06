@@ -38,6 +38,15 @@ function fixture(overrides = {}) {
   };
   const entry = {
     ...selected,
+    streamId: "stream-1",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    workspaceKind: "user",
+    streamId: "stream-1",
+    streamName: null,
+    streamDisplayName: "",
+    streamOrdinal: 1,
+    threadPosition: 1,
     title: "Задача",
     running: true,
     activityUnknown: false,
@@ -314,6 +323,14 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
   const { desktopTaskSnapshot, entry } = fixture();
   const snapshot = desktopTaskSnapshot(entry);
   assert.deepEqual(Object.keys(snapshot), [
+    "workspaceId",
+    "workspaceName",
+    "workspaceKind",
+    "streamId",
+    "streamName",
+    "streamDisplayName",
+    "streamOrdinal",
+    "threadPosition",
     "provider",
     "projectRoot",
     "projectName",
@@ -336,6 +353,8 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
     "run",
   ]);
   assert.equal(snapshot.projectName, "Проект");
+  assert.equal(snapshot.streamId, "stream-1");
+  assert.equal(snapshot.workspaceName, "Agent HUB");
   assert.equal(snapshot.model, "gpt-test");
   assert.equal(snapshot.selected, true);
   assert.equal(snapshot.running, true);
@@ -433,12 +452,19 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
 
   const snapshot = await desktopSnapshot({ refresh: true });
   assert.deepEqual(state.refreshCalls, [{ force: true }]);
-  assert.equal(snapshot.apiVersion, 2);
+  assert.equal(snapshot.apiVersion, 3);
   assert.equal(snapshot.generatedAt, "2026-07-30T10:02:00.000Z");
   assert.deepEqual(snapshot.selected, {
     provider: "codex",
     projectRoot: "D:/work",
     threadId: "thread-1",
+    streamId: "stream-1",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-1",
+    streamName: null,
+    streamDisplayName: "",
+    streamOrdinal: 1,
     title: "Задача",
     projectName: "Проект",
     model: "GPT Test",

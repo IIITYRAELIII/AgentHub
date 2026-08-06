@@ -16,6 +16,7 @@ import { CodexTurnService, ProviderCancellationService } from "../providers/prov
 export function createProviderOperationComposition({
   taskRuns,
   selectionStore,
+  workspaceCatalogStore,
   saveState,
   taskProgress,
   taskObserver,
@@ -110,10 +111,19 @@ export function createProviderOperationComposition({
     runForTask: (run) => taskRuns.forTask(run),
     isSelectedRun,
     reindexRun: (run, previous) => taskRuns.reindex(run, previous),
-    setSelectedThread: (sessionId, title) => selectionStore.setThread(sessionId, {
-      provider: "claude",
-      title,
-    }),
+    setSelectedThread: (sessionId, title) => {
+      const streamId = selectionStore.streamId;
+      selectionStore.setThread(sessionId, { provider: "claude", streamId, title });
+      if (streamId && sessionId && !workspaceCatalogStore.thread({ provider: "claude", threadId: sessionId })) {
+        workspaceCatalogStore.bindThread({
+          provider: "claude",
+          threadId: sessionId,
+          streamId,
+          projectRoot: selectionStore.activeProjectRoot,
+          source: "created",
+        });
+      }
+    },
     saveState,
     finishProgress: (...args) => taskProgress().finish(...args),
     persistHistory: persistClaudeRunHistory,

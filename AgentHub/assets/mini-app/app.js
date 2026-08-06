@@ -39,6 +39,7 @@ const taskFilter = document.querySelector("[data-task-filter]");
 const taskNewPicker = document.querySelector("[data-task-new-picker]");
 
 const chatPane = document.querySelector("[data-chat-pane]");
+const streamChatColumns = document.querySelector("[data-stream-chat-columns]");
 const chatEmpty = document.querySelector("[data-chat-empty]");
 const chatScroll = document.querySelector("[data-chat-scroll]");
 const historyLoader = document.querySelector("[data-history-loader]");
@@ -919,6 +920,11 @@ const state = {
   searchQuery: "",
   searchResults: new Map(),
   searchLoading: false,
+  // This is presentation state, intentionally local to one client. The Hub
+  // selects a Thread; a wide shell may keep several Streams from the same
+  // Workspace visible without making another device jump to that layout.
+  openStreamsByWorkspace: new Map(),
+  visibleStreamTaskIds: [],
 };
 
 /* Черновики принадлежат конкретному клиенту и задаче. Вложение остаётся в
@@ -994,6 +1000,53 @@ function persistDrafts() {
 
 function currentTask() {
   return state.tasks.find((task) => task.id === state.selectedId) ?? null;
+}
+
+function streamKey(task) {
+  return String(task?.streamId ?? "").trim()
+    || `legacy:${String(task?.provider ?? "").trim()}:${String(task?.threadId ?? "").trim()}`;
+}
+
+function workspaceKey(task) {
+  return String(task?.workspaceId ?? "").trim()
+    || `legacy:${String(task?.project ?? "").trim() || "unassigned"}`;
+}
+
+function reconcileOpenStreams(workspaceId, streams) {
+  const available = new Set(streams.map((stream) => stream.id));
+  const selected = currentTask();
+  const selectedInWorkspace = selected && workspaceKey(selected) === workspaceId
+    ? streamKey(selected)
+    : "";
+  const previous = state.openStreamsByWorkspace.get(workspaceId) ?? [];
+  const next = previous.filter((streamId) => available.has(streamId));
+  if (selectedInWorkspace && !next.includes(selectedInWorkspace)) next.push(selectedInWorkspace);
+  const limit = surface === "mobile" ? 1 : 4;
+  const normalized = next.slice(-limit);
+  if (!normalized.length && streams.length) {
+    const defaults = surface === "mobile"
+      ? [selectedInWorkspace || streams[0].id]
+      : streams.slice(0, limit).map((stream) => stream.id);
+    normalized.push(...defaults);
+  }
+  state.openStreamsByWorkspace.set(workspaceId, normalized);
+  return new Set(normalized);
+}
+
+function toggleOpenStream(workspaceId, streamId, streams) {
+  if (surface === "mobile") {
+    const stream = streams.find((value) => value.id === streamId);
+    const target = stream?.tasks.find((task) => task.id === state.selectedId) ?? stream?.tasks[0];
+    if (target) selectTaskFromUi(target.id);
+    return;
+  }
+  const selected = state.openStreamsByWorkspace.get(workspaceId) ?? [];
+  const available = new Set(streams.map((stream) => stream.id));
+  const next = selected.filter((id) => available.has(id) && id !== streamId);
+  if (!selected.includes(streamId)) next.push(streamId);
+  if (!next.length) next.push(streamId);
+  state.openStreamsByWorkspace.set(workspaceId, next.slice(-4));
+  renderTasks();
 }
 
 /* =========================================================== роутер видов */
@@ -1184,6 +1237,7 @@ function syncSurface() {
     particleLayer?.remove();
     particleLayer = null;
     syncParticleLayer(document.documentElement.dataset.background);
+    if (state.tasks.length) renderTasks();
     if (journalRendered) prepareMobileControls();
   }
 }
@@ -1246,13 +1300,27 @@ function renderTasks() {
   const filter = (taskFilter.value ?? "").trim().toLowerCase();
   const visible = state.tasks.filter((task) => {
     if (!filter) return true;
-    const local = `${task.title ?? ""} ${task.project ?? ""} ${task.agentLabel ?? ""}`
+    const local = `${task.title ?? ""} ${task.threadTitle ?? ""} ${task.streamDisplayName ?? ""} ${task.project ?? ""} ${task.agentLabel ?? ""}`
       .toLowerCase().includes(filter);
     return local || state.searchResults.has(task.id);
   });
   taskList.replaceChildren();
+  const hasWorkspace = visible.some((task) => String(task.workspaceId ?? "").trim());
   const hasProject = visible.some((task) => String(task.project ?? "").trim());
-  if (!hasProject) {
+  if (hasWorkspace) {
+    const groups = new Map();
+    for (const task of visible) {
+      const key = workspaceKey(task);
+      if (!groups.has(key)) groups.set(key, {
+        id: key,
+        name: task.workspaceName || task.title || "Без названия",
+        kind: task.workspaceKind ?? "user",
+        tasks: [],
+      });
+      groups.get(key).tasks.push(task);
+    }
+    for (const group of groups.values()) taskList.append(renderTaskWorkspaceGroup(group));
+  } else if (!hasProject) {
     for (const task of visible) taskList.append(renderTaskItem(task));
   } else {
     const groups = new Map();
@@ -1277,6 +1345,189 @@ function renderTasks() {
   taskCount.textContent = String(state.tasks.length);
 }
 
+function workspaceStreams(tasks) {
+  const byStream = new Map();
+  for (const task of tasks) {
+    const streamId = streamKey(task);
+    if (!byStream.has(streamId)) byStream.set(streamId, {
+      id: streamId,
+      name: String(task.streamName ?? "").trim(),
+      ordinal: Math.max(1, Number(task.streamOrdinal) || 1),
+      tasks: [],
+    });
+    byStream.get(streamId).tasks.push(task);
+  }
+  return [...byStream.values()]
+    .sort((left, right) => (
+      left.ordinal - right.ordinal
+      || Math.max(...right.tasks.map((task) => Date.parse(task.lastActivity || 0) || 0))
+        - Math.max(...left.tasks.map((task) => Date.parse(task.lastActivity || 0) || 0))
+    ));
+}
+
+function renderTaskWorkspaceGroup({ id, name, kind, tasks }) {
+  const streams = workspaceStreams(tasks);
+  const openStreams = reconcileOpenStreams(id, streams);
+  const list = el("ul", { class: "task-workspace-streams" }, streams.map((stream) => (
+    renderTaskStreamGroup({
+      workspaceId: id,
+      stream,
+      streams,
+      streamCount: streams.length,
+      open: openStreams.has(stream.id),
+    })
+  )));
+  return el("li", {
+    class: "task-workspace-group",
+    "data-workspace-id": id,
+    "data-workspace-kind": kind,
+  }, [
+      el("div", {
+        class: "task-workspace-heading",
+        "data-workspace-heading": id,
+        "data-workspace-name": name,
+        title: "Двойной клик — переименовать Workspace",
+      }, [
+        el("span", { class: "task-workspace-name", text: name }),
+      streams.length > 1
+        ? el("span", { class: "task-workspace-count", text: String(streams.length), title: "Streams" })
+        : null,
+      kind !== "system"
+        ? el("button", {
+          class: "task-workspace-add-stream",
+          type: "button",
+          "data-add-stream-to": id,
+          title: "Добавить Stream",
+          text: "+",
+        })
+        : null,
+      ]),
+    list,
+  ]);
+}
+
+function streamDisplayName(stream, streamCount) {
+  if (stream.name) return stream.name;
+  return streamCount > 1 ? `Stream ${stream.ordinal}` : "";
+}
+
+function renderTaskStreamGroup({ workspaceId, stream, streams, streamCount, open }) {
+  const orderedTasks = [...stream.tasks].sort((left, right) => (
+    Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
+  ));
+  const label = streamDisplayName(stream, streamCount);
+  const header = label ? el("button", {
+    class: "task-stream-heading",
+    type: "button",
+    "data-stream-id": stream.id,
+    "data-workspace-id": workspaceId,
+    "aria-expanded": String(open),
+    "data-stream-name": stream.name ?? "",
+    title: "Двойной клик — переименовать Stream",
+    text: label,
+  }) : null;
+  return el("li", {
+    class: "task-stream-group",
+    "data-stream-id": stream.id,
+    "data-open": open ? "" : null,
+    draggable: "true",
+  }, [
+    header,
+    el("ul", { class: "task-stream-threads" }, orderedTasks.map((task) => (
+      renderTaskItem(task, { workspaceGrouped: true })
+    ))),
+  ]);
+}
+
+function representativeStreamTask(stream) {
+  return stream.tasks.find((task) => task.id === state.selectedId)
+    ?? [...stream.tasks].sort((left, right) => (
+      Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
+    ))[0]
+    ?? null;
+}
+
+function visibleWorkspaceStreamTasks() {
+  const selected = currentTask();
+  if (!selected) return [];
+  if (!String(selected.workspaceId ?? "").trim()) return [selected];
+  const workspaceId = workspaceKey(selected);
+  const streams = workspaceStreams(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
+  const open = reconcileOpenStreams(workspaceId, streams);
+  const visible = streams
+    .filter((stream) => open.has(stream.id))
+    .map(representativeStreamTask)
+    .filter(Boolean);
+  return visible.sort((left, right) => (
+    Number(right.id === selected.id) - Number(left.id === selected.id)
+  ));
+}
+
+function publishVisibleStreamTasks(tasks) {
+  const ids = tasks.map((task) => task.id);
+  if (sameData(ids, state.visibleStreamTaskIds)) return;
+  state.visibleStreamTaskIds = ids;
+  emit("workspace:visible-streams", { taskIds: ids });
+}
+
+function renderStreamChatPreview(task) {
+  const messages = state.messages.get(task.id);
+  const preview = el("article", {
+    class: "stream-chat-preview",
+    "data-stream-chat-task-id": task.id,
+  });
+  const title = el("button", {
+    type: "button",
+    class: "stream-chat-preview-head",
+    title: "Открыть этот Stream",
+  }, [
+    el("span", { class: "provider-dot", "data-provider": task.provider, "aria-hidden": "true" }),
+    el("span", { class: "stream-chat-preview-title", text: task.title || "Без названия" }),
+    task.running ? el("span", { class: "stream-chat-preview-live", text: "идёт" }) : null,
+  ]);
+  title.addEventListener("click", () => selectTaskFromUi(task.id));
+  const log = el("div", { class: "stream-chat-preview-log" });
+  if (!messages) {
+    log.append(el("p", { class: "stream-chat-preview-empty", text: "Загрузка истории…" }));
+  } else if (!messages.length) {
+    log.append(el("p", { class: "stream-chat-preview-empty", text: "История пуста." }));
+  } else {
+    for (const message of messages.slice(-20)) log.append(renderMessage(message, { readOnly: true }));
+  }
+  const live = state.live.get(task.id);
+  if (live && (live.text || live.reasoning || live.stage)) {
+    const liveNode = el("article", { class: "msg msg-live stream-chat-preview-live-card" }, [
+      el("div", { class: "msg-head" }, [
+        el("span", { class: "msg-author", text: live.author || task.agentLabel || "Агент" }),
+        el("span", { class: "msg-stage", text: live.stage || "" }),
+      ]),
+    ]);
+    if (live.reasoning) liveNode.append(el("div", { class: "msg-reasoning", text: live.reasoning }));
+    if (live.text) liveNode.append(el("div", { class: "msg-body", text: live.text }));
+    log.append(liveNode);
+  }
+  preview.append(title, log);
+  return preview;
+}
+
+function renderStreamChatDeck() {
+  if (!streamChatColumns) return;
+  const selected = currentTask();
+  const visible = visibleWorkspaceStreamTasks();
+  publishVisibleStreamTasks(visible);
+  const supplementary = surface === "mobile"
+    ? []
+    : visible.filter((task) => task.id !== selected?.id).slice(0, 3);
+  streamChatColumns.replaceChildren(chatPane, ...supplementary.map(renderStreamChatPreview));
+  streamChatColumns.toggleAttribute("data-multi-stream", supplementary.length > 0);
+  streamChatColumns.style.setProperty("--stream-chat-count", String(1 + supplementary.length));
+}
+
+function refreshSupplementaryStreamChat(taskId) {
+  if (taskId === state.selectedId || !state.visibleStreamTaskIds.includes(taskId)) return;
+  renderStreamChatDeck();
+}
+
 function renderTaskProjectGroup({ project, tasks }) {
   const list = el("ul", { class: "task-project-list" }, tasks.map(renderTaskItem));
   return el("li", {
@@ -1291,7 +1542,7 @@ function renderTaskProjectGroup({ project, tasks }) {
   ]);
 }
 
-function renderTaskItem(task) {
+function renderTaskItem(task, { workspaceGrouped = false } = {}) {
   const provider = String(task.provider ?? "none");
   const selected = task.id === state.selectedId;
 
@@ -1344,7 +1595,10 @@ function renderTaskItem(task) {
   });
 
   const titleRow = el("div", { class: "task-title-row" }, [
-    el("span", { class: "task-title", text: task.title || "Без названия" }),
+    el("span", {
+      class: "task-title",
+      text: workspaceGrouped ? task.threadTitle || task.title || "Без названия" : task.title || "Без названия",
+    }),
     time,
   ]);
 
@@ -1376,6 +1630,34 @@ function renderTaskItem(task) {
 }
 
 taskList.addEventListener("click", (event) => {
+  const addStream = event.target.closest("[data-add-stream-to]");
+  if (addStream) {
+    event.preventDefault();
+    event.stopPropagation();
+    const workspaceId = String(addStream.dataset.addStreamTo ?? "");
+    void askText({ title: "Название Stream (можно оставить пустым)" })
+      .then((streamName) => {
+        if (streamName != null) emit("stream:new", { workspaceId, streamName });
+      });
+    return;
+  }
+  const streamHeading = event.target.closest("[data-stream-id][data-workspace-id]");
+  if (streamHeading) {
+    event.preventDefault();
+    event.stopPropagation();
+    const workspaceId = String(streamHeading.dataset.workspaceId ?? "");
+    const streamId = String(streamHeading.dataset.streamId ?? "");
+    const workspaceTasks = state.tasks.filter((task) => workspaceKey(task) === workspaceId);
+    const streams = [...new Map(workspaceTasks.map((task) => [streamKey(task), task]))]
+      .map(([id, task]) => ({
+        id,
+        name: String(task.streamName ?? "").trim(),
+        ordinal: Math.max(1, Number(task.streamOrdinal) || 1),
+        tasks: workspaceTasks.filter((candidate) => streamKey(candidate) === id),
+      }));
+    toggleOpenStream(workspaceId, streamId, streams);
+    return;
+  }
   const searchTurn = event.target.closest("[data-search-turn]");
   if (searchTurn) {
     event.preventDefault();
@@ -1439,6 +1721,9 @@ function renderChat() {
   chatPane.hidden = !hasTask;
   if (!hasTask) {
     activeChatId = null;
+    streamChatColumns?.replaceChildren(chatPane);
+    streamChatColumns?.removeAttribute("data-multi-stream");
+    publishVisibleStreamTasks([]);
     setDialogSettingsOpen(false);
     return;
   }
@@ -1463,6 +1748,7 @@ function renderChat() {
   // Композер восстанавливаем только при реальной смене задачи, чтобы фоновые
   // обновления статуса не сбрасывали курсор и набранный текст.
   if (taskChanged) restoreDraft();
+  renderStreamChatDeck();
 }
 
 function renderContextUsage(task) {
@@ -1490,6 +1776,7 @@ function renderContextUsage(task) {
 
 function buildSubtitleChips(task) {
   const parts = [
+    [task.streamDisplayName || null, null, "stream"],
     [task.agentLabel || providerLabels[task.provider] || null, null, "agent"],
     [task.modelLabel || null, modelTier(task.modelLabel), "model"],
     [task.reasoningLabel || null, null, "reasoning"],
@@ -2099,7 +2386,7 @@ function activityFeedNode(activities) {
   ]);
 }
 
-function renderMessage(message) {
+function renderMessage(message, { readOnly = false } = {}) {
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
   const article = el("article", {
     class: `msg msg-${role}`,
@@ -2141,7 +2428,7 @@ function renderMessage(message) {
     article.append(renderAttachmentStrip(message.attachments, { readOnly: true }));
   }
 
-  if (role === "agent") {
+  if (role === "agent" && !readOnly) {
     const actions = el("div", { class: "msg-actions" }, [
       el("button", {
         type: "button", class: "msg-action", "data-action": "tts", "data-message-id": message.id ?? "",
@@ -2370,7 +2657,7 @@ const slashCommands = [
   { command: "/reasoning", label: "Настроить reasoning", run: openDialogSettings },
   { command: "/mode", label: "Выбрать режим", run: openDialogSettings },
   { command: "/projects", label: "Выбрать проект", run: openDialogSettings },
-  { command: "/rename", label: "Переименовать задачу", action: "task-rename" },
+  { command: "/rename", label: "Переименовать Workspace", action: "task-rename" },
   { command: "/status", label: "Статус и лимиты", action: "task-status" },
   { command: "/diff", label: "Изменения задачи", action: "task-diff" },
   { command: "/cancel", label: "Остановить ход", action: "task-stop" },
@@ -2980,6 +3267,46 @@ bugReportToggle?.addEventListener("click", () => {
   bugReportToggle.setAttribute("aria-expanded", String(visible));
   if (visible) bugReportText?.focus();
 });
+taskList.addEventListener("dblclick", (event) => {
+  const stream = event.target.closest("[data-stream-id][data-stream-name]");
+  if (stream) {
+    event.preventDefault();
+    const streamId = String(stream.dataset.streamId ?? "");
+    void askText({ title: "Новое название Stream", value: stream.dataset.streamName ?? "" })
+      .then((name) => {
+        if (name != null) emit("stream:rename", { streamId, name });
+      });
+    return;
+  }
+  const workspace = event.target.closest("[data-workspace-heading]");
+  if (!workspace) return;
+  event.preventDefault();
+  const workspaceId = String(workspace.dataset.workspaceHeading ?? "");
+  void askText({ title: "Новое название Workspace", value: workspace.dataset.workspaceName ?? "" })
+    .then((name) => {
+      if (name) emit("workspace:rename", { workspaceId, name });
+    });
+});
+let draggedStreamId = "";
+taskList.addEventListener("dragstart", (event) => {
+  const stream = event.target.closest(".task-stream-group[data-stream-id]");
+  draggedStreamId = String(stream?.dataset.streamId ?? "");
+  if (!draggedStreamId) event.preventDefault();
+  else event.dataTransfer?.setData("text/plain", draggedStreamId);
+});
+taskList.addEventListener("dragover", (event) => {
+  if (draggedStreamId && event.target.closest(".task-workspace-group[data-workspace-id]")) {
+    event.preventDefault();
+  }
+});
+taskList.addEventListener("drop", (event) => {
+  const workspace = event.target.closest(".task-workspace-group[data-workspace-id]");
+  const streamId = draggedStreamId || event.dataTransfer?.getData("text/plain") || "";
+  draggedStreamId = "";
+  if (!workspace || !streamId) return;
+  event.preventDefault();
+  emit("stream:move", { streamId, workspaceId: workspace.dataset.workspaceId });
+});
 bugReportAttach?.addEventListener("click", () => bugReportFiles?.click());
 bugReportFiles?.addEventListener("change", () => {
   void readBugReportFiles(bugReportFiles.files);
@@ -3480,7 +3807,7 @@ async function handleAction(action, trigger) {
       break;
     case "task-rename": {
       const task = currentTask();
-      const title = await askText({ title: "Новое название задачи", value: task?.title ?? "" });
+      const title = await askText({ title: "Новое название Workspace", value: task?.workspaceName ?? task?.title ?? "" });
       if (title != null && task) emit("task:rename", { id: task.id, title });
       break;
     }
@@ -3612,7 +3939,9 @@ const AgentHub = {
     state.tasks = nextTasks;
     state.selectedId = nextSelectedId;
     renderTasks();
-    if (selectionChanged || selectedTaskChanged) renderChat();
+    if (selectionChanged || selectedTaskChanged || nextTasks.some((task) => (
+      task.id !== nextSelectedId && state.visibleStreamTaskIds.includes(task.id)
+    ))) renderChat();
   },
   /** Точечное обновление задачи (статус, время, непрочитанное). */
   patchTask(id, patch) {
@@ -3623,6 +3952,7 @@ const AgentHub = {
     Object.assign(task, patch);
     renderTasks();
     if (id === state.selectedId) renderChat();
+    else if (state.visibleStreamTaskIds.includes(id)) renderStreamChatDeck();
   },
   /** Выбор задачи со стороны backend (например, смена из Telegram). */
   selectTask(id) {
@@ -3642,7 +3972,7 @@ const AgentHub = {
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
-    }
+    } else refreshSupplementaryStreamChat(taskId);
   },
   /** Раскрываемый diff выбранной задачи под её последним ответом. */
   setTaskDiff(taskId, text) {
@@ -3663,7 +3993,7 @@ const AgentHub = {
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
-    }
+    } else refreshSupplementaryStreamChat(taskId);
   },
   setHistoryPagination(taskId, pagination) {
     const next = {
@@ -3681,7 +4011,7 @@ const AgentHub = {
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
-    }
+    } else refreshSupplementaryStreamChat(taskId);
   },
   patchMessage(taskId, messageId, patch) {
     const list = state.messages.get(taskId) ?? [];
@@ -3691,7 +4021,7 @@ const AgentHub = {
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
-    }
+    } else refreshSupplementaryStreamChat(taskId);
   },
   completeSend(requestId, { accepted = false } = {}) {
     completeComposerSend(requestId, accepted);
@@ -3715,6 +4045,7 @@ const AgentHub = {
     if (sameData(state.live.get(taskId) ?? null, next)) return;
     state.live.set(taskId, next);
     if (taskId === state.selectedId) renderLive();
+    else refreshSupplementaryStreamChat(taskId);
   },
   setSearchResults(query, results) {
     if (String(query ?? "").trim() !== state.searchQuery) return;

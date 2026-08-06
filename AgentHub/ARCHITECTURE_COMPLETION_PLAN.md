@@ -26,7 +26,7 @@ AgentHub/
   scripts/                         # publish, install, migration, doctor
   src/
     composition/                   # создание и связывание компонентов
-    domain/                        # Task, Run, identity, статусы и invariants
+    domain/                        # Workspace, Stream, Thread, Turn, Run и invariants
     application/                   # команды, use cases и владельцы state
     ports/                         # provider/client/storage/runtime contracts
     providers/
@@ -72,8 +72,8 @@ package-level файлы. Внутренний production-код и его те�
 5. `runtime` управляет жизненным циклом уже созданных компонентов, но не создаёт
    их самостоятельно.
 6. Только `composition` знает конкретные реализации всех слоёв.
-7. Все mutating-команды несут явные `hubTaskId`, `clientId` и message/request ID.
-   Provider thread/session ID остаётся внешней ссылкой; один `hubTaskId` сможет
+7. Все mutating-команды несут явные `streamId`, `clientId` и message/request ID.
+   Provider thread/session ID остаётся внешней ссылкой; один `streamId` сможет
    последовательно владеть несколькими такими ссылками.
 8. Циклы, импорт host из внутренних модулей и новые root production-модули
    запрещаются автоматической architecture-проверкой.
@@ -120,7 +120,8 @@ package-level файлы. Внутренний production-код и его те�
 - нет module-global mutable state вне одного документированного владельца;
 - один и тот же use case вызывается Telegram, Desktop, Web/Android и VS Code
   через общий application command path;
-- `hubTaskId` отделён от provider thread/session ID во всех новых публичных
+- durable-модель использует `Workspace → Stream → Thread → Turn`;
+- `workspaceId` и `streamId` отделены от provider thread/session ID во всех публичных
   контрактах;
 - dependency matrix, cycle check, root allowlist и staged-runtime import closure
   проверяются автоматически;

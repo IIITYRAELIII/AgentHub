@@ -63,6 +63,13 @@ export function createTaskCatalogFinalizationComposition({
       if (entry) titleChanged = updateTaskRunTitle(run, entry.title) || titleChanged;
     }
     const current = nextCatalog.find((entry) => catalogEntryIsSelected(entry, selectedTask()));
+    if (current?.streamId && current.streamId !== selectionStore.streamId) {
+      selectionStore.setThread(current.threadId, {
+        provider: current.provider,
+        streamId: current.streamId,
+      });
+      titleChanged = true;
+    }
     if (current?.title && current.title !== getActiveThreadTitle()) {
       selectionStore.setTitle(current.title);
       titleChanged = true;

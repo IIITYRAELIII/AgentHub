@@ -99,6 +99,7 @@ export async function restoreHubRuntimeSnapshot(saved, context) {
     restoredSelection.threadIds[saved.provider] = saved.threadId;
   }
   restoredSelection.threadId = restoredSelection.threadIds[restoredSelection.activeProvider] ?? null;
+  restoredSelection.streamId = typeof saved.streamId === "string" ? saved.streamId : null;
   if (typeof saved.activeThreadTitle === "string") restoredSelection.activeThreadTitle = saved.activeThreadTitle;
   selectionStore.restore(restoredSelection);
   taskMetadata.restore(saved);
@@ -229,6 +230,7 @@ export function createHubRuntimeSnapshot(context) {
   return {
     chatId: context.chatId,
     activeProjectRoot: selection.activeProjectRoot,
+    streamId: selection.streamId,
     activeThreadTitle: selection.activeThreadTitle,
     activeProvider: selection.activeProvider,
     threadIds: selection.threadIds,

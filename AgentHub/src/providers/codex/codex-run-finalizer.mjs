@@ -84,7 +84,7 @@ export class CodexRunFinalizer {
     const existingCompletion = this.notifications.get(identity);
     const completion = this.notifications.recordCompletion({
       ...identity,
-      hubTaskId: run.hubTaskId ?? null,
+      streamId: run.streamId ?? null,
       projectRoot: run.projectRoot,
       taskTitle: this.runTitle(run),
       chatId: run.chatId ?? this.currentChatId() ?? this.defaultNotificationChatId(),

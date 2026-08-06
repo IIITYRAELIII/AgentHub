@@ -470,10 +470,13 @@ test("task list keeps active duration live and metadata badges readable", () => 
   assert.match(styles, /\.task-runtime\s*\{[^}]*margin-left:\s*auto;/su);
 });
 
-test("task rename targets the card that emitted the action", () => {
+test("rename targets the emitted Thread and upgrades to its Workspace when present", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   assert.match(client, /task:rename", \(\{ id, title \}\)/u);
-  assert.match(client, /rename-task", \{ \.\.\.exactTaskParams\(id \|\| selectedTaskId\), title \}/u);
+  assert.match(client, /const targetId = id \|\| selectedTaskId;/u);
+  assert.match(client, /taskId\(candidate\.provider, candidate\.threadId, candidate\.streamId\) === targetId/u);
+  assert.match(client, /task\?\.workspaceId \? "rename-workspace" : "rename-task"/u);
+  assert.match(client, /task\?\.workspaceId \? \{ workspaceId: task\.workspaceId, name: title \} : \{ \.\.\.identity, title \}/u);
 });
 
 test("clients resynchronize on a new Hub instance and reload only a new release", () => {
@@ -1196,11 +1199,12 @@ test("task list groups named projects and keeps unassigned tasks visible", () =>
   assert.match(styles, /\.task-project-heading\s*\{/u);
 });
 
-test("new task becomes the selected chat before its title is applied", () => {
+test("new Workspace Thread becomes the selected chat before its title is applied", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   assert.match(client, /control\("new-task"[\s\S]*const created = \(snapshot\.tasks \?\? \[\]\)\.find\(\(task\) => task\.selected\)/u);
-  assert.match(client, /pendingSelectionId = taskId\(created\.provider, created\.threadId\)/u);
+  assert.match(client, /workspaceName: title \|\| undefined/u);
+  assert.match(client, /pendingSelectionId = taskId\(created\.provider, created\.threadId, created\.streamId\)/u);
   assert.match(client, /agentHub\.showSelectedTask\(\)/u);
   assert.match(app, /showSelectedTask\(\) \{\s*setView\("chat"\);\s*setPane\("chat"\);/u);
   assert.match(client, /replaceRoute\(`#\/chat\//u);
@@ -1560,4 +1564,47 @@ test("Gothic wears the Sleeper mask in the header niche", () => {
   assert.equal(mark.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
   assert.equal(mark.readUInt32BE(16), 512);
   assert.equal(mark.readUInt32BE(20), 512);
+});
+
+test("shared shell groups threads under stable Workspace and Stream identities", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+
+  // Новый фронтенд работает только от канонического streamId.
+  assert.match(client, /const streamId = String\(task\.streamId \?\? ""\)\.trim\(\)/u);
+  const modelTask = client.match(/function modelTask\([^)]*\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
+  assert.match(modelTask, /streamId,/u);
+  assert.doesNotMatch(modelTask, new RegExp(["hub", "TaskId"].join(""), "u"));
+
+  // Один безымянный поток не показывает искусственный номер; несколько получают Stream N.
+  assert.match(app, /function streamDisplayName\(stream, streamCount\)/u);
+  assert.match(app, /streamCount > 1 \? `Stream \$\{stream\.ordinal\}` : ""/u);
+  // В широкой оболочке можно держать до четырёх потоков; mobile — один.
+  assert.match(app, /const limit = surface === "mobile" \? 1 : 4;/u);
+  assert.match(app, /streams\.slice\(0, limit\)\.map\(\(stream\) => stream\.id\)/u);
+  assert.match(app, /function toggleOpenStream\(workspaceId, streamId, streams\)/u);
+  // Потоки можно свернуть независимо, не скрывая сам Workspace.
+  assert.match(styles, /\.task-stream-group:not\(\[data-open\]\) \.task-stream-threads\s*\{\s*display: none;/su);
+  assert.match(styles, /\.task-stream-heading\[aria-expanded="true"\]::before/u);
+});
+
+test("wide shared shell opens up to four Workspace Streams as chat columns", () => {
+  const index = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+
+  assert.match(index, /data-stream-chat-columns/u);
+  assert.match(app, /function visibleWorkspaceStreamTasks\(\)/u);
+  assert.match(app, /visible\.filter\(\(task\) => task\.id !== selected\?\.id\)\.slice\(0, 3\)/u);
+  assert.match(app, /emit\("workspace:visible-streams", \{ taskIds: ids \}\)/u);
+  assert.match(app, /function renderStreamChatPreview\(task\)/u);
+  assert.match(app, /renderMessage\(message, \{ readOnly: true \}\)/u);
+  assert.match(app, /function renderMessage\(message, \{ readOnly = false \} = \{\}\)/u);
+  assert.match(client, /agentHub\.on\("workspace:visible-streams"/u);
+  assert.match(client, /control\("task-history", \{/u);
+  assert.match(styles, /\.stream-chat-columns\[data-multi-stream\]/u);
+  assert.match(styles, /repeat\(var\(--stream-chat-count, 1\), minmax\(13rem, 1fr\)\)/u);
+  assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-preview\s*\{\s*display: none;/su);
 });

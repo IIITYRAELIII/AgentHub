@@ -1,0 +1,58 @@
+function requiredStore(value) {
+  if (!value || typeof value.hierarchy !== "function") {
+    throw new TypeError("workspace catalog store is required");
+  }
+  return value;
+}
+
+export class WorkspaceCatalogService {
+  #store;
+
+  constructor({ store } = {}) {
+    this.#store = requiredStore(store);
+  }
+
+  hierarchy() {
+    return this.#store.hierarchy();
+  }
+
+  createWorkspace({ name, streamName = null } = {}) {
+    return this.#store.transaction(() => {
+      const workspace = this.#store.createWorkspace({ name });
+      const stream = this.#store.createStream({ workspaceId: workspace.id, name: streamName });
+      return { workspace, stream };
+    });
+  }
+
+  renameWorkspace({ workspaceId, name } = {}) {
+    return this.#store.renameWorkspace(workspaceId, name);
+  }
+
+  mergeWorkspaces({ sourceWorkspaceId, targetWorkspaceId } = {}) {
+    return this.#store.mergeWorkspaces(sourceWorkspaceId, targetWorkspaceId);
+  }
+
+  createStream({ workspaceId, name = null } = {}) {
+    return this.#store.createStream({ workspaceId, name });
+  }
+
+  renameStream({ streamId, name = null } = {}) {
+    return this.#store.renameStream(streamId, name);
+  }
+
+  moveStream({ streamId, workspaceId } = {}) {
+    return this.#store.moveStream(streamId, workspaceId);
+  }
+
+  bindThread({ streamId, provider, threadId, projectRoot = "", source = "rebirth" } = {}) {
+    return this.#store.bindThread({ streamId, provider, threadId, projectRoot, source });
+  }
+
+  currentThread({ streamId } = {}) {
+    return this.#store.activeThread(streamId);
+  }
+
+  resolveThread({ provider, threadId } = {}) {
+    return this.#store.resolveThread({ provider, threadId });
+  }
+}

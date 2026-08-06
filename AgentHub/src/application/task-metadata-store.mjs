@@ -10,9 +10,9 @@ function boundedSet(target, key, value, limit) {
   while (Object.keys(target).length > limit) delete target[Object.keys(target)[0]];
 }
 
-function legacyTaskKey(reference = {}) {
-  const hubTaskId = String(reference.hubTaskId ?? "").trim();
-  if (hubTaskId) return `hub\0${hubTaskId}`;
+function taskKey(reference = {}) {
+  const streamId = String(reference.streamId ?? "").trim();
+  if (streamId) return `stream\0${streamId}`;
   const provider = String(reference.provider ?? "").trim().toLowerCase();
   const threadId = String(reference.threadId ?? "").trim();
   return provider && threadId ? `${provider}\0${threadId}` : "";
@@ -20,8 +20,8 @@ function legacyTaskKey(reference = {}) {
 
 function codexSettingsKey(reference) {
   if (typeof reference === "string") return reference.trim();
-  const hubTaskId = String(reference?.hubTaskId ?? "").trim();
-  if (hubTaskId) return `hub\0${hubTaskId}`;
+  const streamId = String(reference?.streamId ?? "").trim();
+  if (streamId) return `stream\0${streamId}`;
   return String(reference?.threadId ?? "").trim();
 }
 
@@ -29,11 +29,11 @@ export class TaskMetadataStore {
   constructor({
     maximumEntries = 500,
     validReasoningEfforts = [],
-    taskKey = legacyTaskKey,
+    taskKey: taskKeyFactory = taskKey,
   } = {}) {
     this.maximumEntries = Math.max(1, Number(maximumEntries) || 500);
     this.validReasoningEfforts = new Set(validReasoningEfforts);
-    this.taskKey = taskKey;
+    this.taskKey = taskKeyFactory;
     this.pinnedTaskTitles = {};
     this.pendingTaskTitleConfirmations = {};
     this.codexTaskSettings = {};

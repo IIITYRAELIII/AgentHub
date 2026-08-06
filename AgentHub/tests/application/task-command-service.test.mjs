@@ -5,7 +5,7 @@ import { TaskCommandService } from "../../src/application/task-command-service.m
 
 function fixture({ run = null } = {}) {
   const events = [];
-  const target = { hubTaskId: "hub-1", provider: "codex", threadId: "thread-1" };
+  const target = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
   const current = { ...target };
   const service = new TaskCommandService({
     resolveTarget: async () => target,
@@ -16,7 +16,7 @@ function fixture({ run = null } = {}) {
     runForTask: () => run,
     updateRunTitle: () => events.push(["run-title"]),
     catalogEntries: () => [{ ...target, title: "Old" }],
-    catalogEntryIsSelected: (left, right) => left.hubTaskId === right.hubTaskId,
+    catalogEntryIsSelected: (left, right) => left.streamId === right.streamId,
     selection: {
       current: () => current,
       setTitle: (title) => events.push(["selection-title", title]),
@@ -41,9 +41,21 @@ function fixture({ run = null } = {}) {
     progress: { setStage() {}, async finish() {} },
     dismissedExternalTasks: { add() {} },
     completeRun: async () => {},
-    createTask: async () => events.push(["create"]),
+    createTask: async () => ({
+      provider: "codex", threadId: "thread-new", projectRoot: "D:/work", title: "New",
+    }),
     activeProvider: () => "codex",
     switchProvider: async () => {},
+    workspaceCatalog: {
+      workspace: (id) => id === "workspace-1" ? { id, name: "Existing" } : null,
+      stream: (id) => id === "stream-1" ? { id, workspaceId: "workspace-1" } : null,
+      createWorkspace: ({ name }) => ({ id: "workspace-new", name }),
+      createStream: ({ workspaceId, name }) => ({ id: "stream-new", workspaceId, name }),
+      bindThread: (value) => events.push(["bind", value]),
+    },
+    selectionStore: {
+      setThread: (...args) => events.push(["set-thread", ...args]),
+    },
   });
   return { service, events };
 }
@@ -67,4 +79,16 @@ test("task command service archives only an idle Codex task", async () => {
 test("task command service does not launch a parallel cancel path without a run", async () => {
   const { service } = fixture();
   assert.equal((await service.cancel({})).accepted, false);
+});
+
+test("task command service creates a Workspace and binds the provider Thread to its first Stream", async () => {
+  const { service, events } = fixture();
+  await service.create({ provider: "codex", workspaceName: "Architecture" });
+  const binding = events.find(([name]) => name === "bind")[1];
+  assert.equal(binding.streamId, "stream-new");
+  assert.equal(binding.threadId, "thread-new");
+  assert.deepEqual(events.find(([name]) => name === "set-thread").slice(1), [
+    "thread-new",
+    { provider: "codex", streamId: "stream-new", title: "Architecture" },
+  ]);
 });

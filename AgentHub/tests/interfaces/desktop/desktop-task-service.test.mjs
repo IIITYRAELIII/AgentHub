@@ -5,7 +5,7 @@ import { DesktopTaskService } from "../../../src/interfaces/desktop/desktop-task
 
 function fixture() {
   const entry = {
-    hubTaskId: "hub-1",
+    streamId: "stream-1",
     provider: "codex",
     projectRoot: "C:\\repo",
     threadId: "thread-1",
@@ -39,11 +39,11 @@ function fixture() {
   return { service, calls };
 }
 
-test("Desktop task service resolves the future hubTaskId before provider references", async () => {
+test("Desktop task service resolves streamId before provider references", async () => {
   const { service } = fixture();
-  const target = await service.resolveTarget({ hubTaskId: "hub-1" });
+  const target = await service.resolveTarget({ streamId: "stream-1" });
   assert.equal(target.threadId, "thread-1");
-  assert.equal(target.hubTaskId, "hub-1");
+  assert.equal(target.streamId, "stream-1");
   assert.equal(target.chatId, 101);
 });
 

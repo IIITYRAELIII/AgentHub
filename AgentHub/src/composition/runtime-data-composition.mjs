@@ -26,7 +26,6 @@ export async function createRuntimeDataComposition({
     canonicalizeProjectRoot: (projectRoot) => findProject(projectRoot)?.path ?? projectRoot,
     canonicalizeValue: (value) => canonicalizeProjectRoots(value, projects),
   });
-
   await Promise.all([taskDiffs.load(), taskSyncStore.load()]);
   await taskSyncStore.save();
 

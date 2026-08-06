@@ -55,7 +55,7 @@ test("target lanes serialize one task without blocking another", async () => {
   await Promise.all([first, second]);
 });
 
-test("hubTaskId is the preferred target lane over provider thread identity", async () => {
+test("streamId is the preferred target lane over provider thread identity", async () => {
   const events = [];
   let release;
   const bus = new ApplicationCommandBus().register("task.write", {
@@ -70,13 +70,13 @@ test("hubTaskId is the preferred target lane over provider thread identity", asy
   const oldThread = bus.dispatch({
     type: "task.write",
     payload: { id: "old-thread" },
-    target: { hubTaskId: "hub-1", provider: "codex", threadId: "thread-1" },
+    target: { streamId: "stream-1", provider: "codex", threadId: "thread-1" },
     context: { clientId: "desktop" },
   });
   const newThread = bus.dispatch({
     type: "task.write",
     payload: { id: "new-thread" },
-    target: { hubTaskId: "hub-1", provider: "codex", threadId: "thread-2" },
+    target: { streamId: "stream-1", provider: "codex", threadId: "thread-2" },
     context: { clientId: "telegram" },
   });
   await new Promise((resolve) => setImmediate(resolve));

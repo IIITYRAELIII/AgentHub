@@ -75,6 +75,7 @@ export function createDesktopReadSystemWiring({
       },
       catalog: {
         entries: services.catalogEntries,
+        hierarchy: services.workspaceHierarchy,
         refreshedAt: services.catalogRefreshedAt,
         refresh: services.refreshCatalog,
         merge: services.mergeCatalog,
@@ -147,6 +148,7 @@ export function createDesktopReadSystemWiring({
       catalog: {
         entries: services.catalogEntries,
         refresh: services.refreshCatalog,
+        threadsForStream: services.threadsForStream,
       },
       historyReader: {
         read: services.readCachedHistory,

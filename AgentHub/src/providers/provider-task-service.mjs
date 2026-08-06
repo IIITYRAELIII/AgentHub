@@ -52,9 +52,16 @@ export class CodexProviderTaskService {
     this.#invalidateCatalog();
     this.#restoreSettings(threadId, { inheritCurrent: true });
     await this.#updateSettings();
-    this.#selection.setTitle(await this.#nameTask(threadId));
+    const title = await this.#nameTask(threadId);
+    this.#selection.setTitle(title);
     this.#clearLatestDiff();
     await this.#saveState();
+    return {
+      provider: "codex",
+      threadId,
+      projectRoot: this.#activeProjectRoot(),
+      title,
+    };
   }
 
   async #nameTask(threadId) {
@@ -111,5 +118,11 @@ export class ClaudeProviderTaskService {
     this.#selection.setThread(null, { provider: "claude", title: "Новая задача Claude" });
     this.#clearLatestDiff();
     await this.#saveState();
+    return {
+      provider: "claude",
+      threadId: null,
+      projectRoot: "",
+      title: "Новая задача Claude",
+    };
   }
 }

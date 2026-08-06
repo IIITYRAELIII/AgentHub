@@ -2892,6 +2892,141 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   padding: 0;
 }
 
+.task-workspace-group {
+  background: color-mix(in srgb, var(--surface-1) 76%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: var(--radius-md);
+  list-style: none;
+  margin: 0 0 0.55rem;
+  overflow: hidden;
+}
+
+.task-workspace-group[data-workspace-kind="system"] {
+  border-style: dashed;
+}
+
+.task-workspace-heading {
+  align-items: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
+  display: flex;
+  gap: 0.5rem;
+  justify-content: space-between;
+  min-height: 2rem;
+  padding: 0.4rem 0.62rem;
+}
+
+.task-workspace-add-stream {
+  width: 1.45rem;
+  height: 1.45rem;
+  margin-left: auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.task-workspace-add-stream:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.task-stream-group[draggable="true"] {
+  cursor: grab;
+}
+
+.task-workspace-name {
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 680;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-workspace-count {
+  color: var(--text-faint);
+  flex: 0 0 auto;
+  font-family: var(--font-numeric);
+  font-size: 0.64rem;
+}
+
+.task-workspace-streams {
+  list-style: none;
+  margin: 0;
+  padding: 0.2rem;
+}
+
+.task-stream-group {
+  border-radius: calc(var(--radius-md) - 3px);
+  list-style: none;
+  overflow: hidden;
+}
+
+.task-stream-group + .task-stream-group {
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+}
+
+.task-stream-heading {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text-soft);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 650;
+  gap: 0.4rem;
+  min-height: 1.9rem;
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  width: 100%;
+}
+
+.task-stream-heading::before {
+  background: var(--text-faint);
+  content: "";
+  flex: 0 0 auto;
+  height: 0.58rem;
+  -webkit-mask: var(--ph-mask-caret-right) center / contain no-repeat;
+  mask: var(--ph-mask-caret-right) center / contain no-repeat;
+  transform: rotate(0deg);
+  transition: transform 0.16s ease, background 0.16s ease;
+  width: 0.58rem;
+}
+
+.task-stream-heading[aria-expanded="true"]::before {
+  background: var(--accent);
+  transform: rotate(90deg);
+}
+
+.task-stream-heading:hover,
+.task-stream-heading:focus-visible {
+  background: var(--accent-soft);
+  color: var(--accent);
+  outline: none;
+}
+
+.task-stream-threads {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.task-stream-group:not([data-open]) .task-stream-threads {
+  display: none;
+}
+
+.task-stream-threads .task-item:last-child {
+  margin-bottom: 0;
+}
+
+html[data-surface="mobile"] .task-stream-heading {
+  min-height: 2.2rem;
+}
+
 .rail-empty {
   color: var(--text-faint);
   font-size: 0.78rem;
@@ -3082,6 +3217,104 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   min-height: 0;
   min-width: 0;
   position: relative;
+}
+
+/* Wide surfaces can inspect several Streams from one Workspace at once. The
+   selected Stream keeps the original full chat and composer; neighbouring
+   columns are read-only snapshots that become selectable with one click. */
+.stream-chat-columns {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  width: 100%;
+}
+
+.stream-chat-columns[data-multi-stream] {
+  grid-template-columns: repeat(var(--stream-chat-count, 1), minmax(13rem, 1fr));
+  overflow-x: auto;
+}
+
+.stream-chat-columns > .chat-pane,
+.stream-chat-preview {
+  min-width: 0;
+}
+
+.stream-chat-preview {
+  background: color-mix(in srgb, var(--card-bg) 86%, transparent);
+  border-left: 1px solid var(--line);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.stream-chat-preview-head {
+  align-items: center;
+  background: color-mix(in srgb, var(--surface-1) 82%, transparent);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 0.45rem;
+  min-height: 3.9rem;
+  padding: 0.6rem 0.7rem;
+  text-align: left;
+}
+
+.stream-chat-preview-head:hover,
+.stream-chat-preview-head:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.stream-chat-preview-title {
+  font-family: var(--font-title);
+  font-size: 0.88rem;
+  font-weight: var(--title-weight);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stream-chat-preview-live {
+  color: var(--ok);
+  flex: 0 0 auto;
+  font-size: 0.66rem;
+}
+
+.stream-chat-preview-log {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding: 0.65rem;
+}
+
+.stream-chat-preview-log .msg {
+  font-size: 0.82rem;
+  margin-bottom: 0.5rem;
+  max-width: 100%;
+}
+
+.stream-chat-preview-log .msg-actions,
+.stream-chat-preview-log .activity-feed {
+  display: none;
+}
+
+.stream-chat-preview-empty {
+  color: var(--text-faint);
+  font-size: 0.8rem;
+  margin: 1rem 0;
+  text-align: center;
+}
+
+.stream-chat-preview-live-card {
+  border-color: var(--accent-line);
 }
 
 .chat-empty {
@@ -5770,6 +6003,15 @@ html[data-surface="mobile"] .task-rail,
 html[data-surface="mobile"] .chat {
   min-width: 0;
   width: 100%;
+}
+
+html[data-surface="mobile"] .stream-chat-columns {
+  display: block;
+  overflow: hidden;
+}
+
+html[data-surface="mobile"] .stream-chat-preview {
+  display: none;
 }
 
 /* Слово «Задачи» дублирует подписанную вкладку нижней навигации, поэтому в
