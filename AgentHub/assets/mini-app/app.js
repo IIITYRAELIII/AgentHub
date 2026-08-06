@@ -3624,6 +3624,7 @@ function setBugReportStatus(message = "", state = "") {
 
 function setBugReportSending(value) {
   bugReportSending = Boolean(value);
+  if (bugReportToggle) bugReportToggle.disabled = bugReportSending;
   if (bugReportSubmit) bugReportSubmit.disabled = bugReportSending;
   if (bugReportAttach) bugReportAttach.disabled = bugReportSending;
   if (bugReportText) bugReportText.disabled = bugReportSending;
@@ -3724,6 +3725,8 @@ bugReportForm?.addEventListener("submit", (event) => {
   }
   setBugReportSending(true);
   setBugReportStatus("Создаём отчёт и отправляем его в Git…", "pending");
+  if (bugReportForm) bugReportForm.hidden = true;
+  bugReportToggle?.setAttribute("aria-expanded", "false");
   emit("bug-report:submit", {
     text,
     attachments: bugReportAttachments.slice(),
@@ -4419,6 +4422,9 @@ const AgentHub = {
     setBugReportSending(false);
     if (result.error) {
       setBugReportStatus(String(result.error), "error");
+      if (bugReportForm) bugReportForm.hidden = false;
+      bugReportToggle?.setAttribute("aria-expanded", "true");
+      bugReportText?.focus();
       return;
     }
     bugReportAttachments = [];
