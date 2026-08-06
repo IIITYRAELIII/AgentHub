@@ -730,6 +730,13 @@ test("BlackHole keeps three scenes around the selected Focus Deck", () => {
   );
   assert.match(styles, /\.stream-chat-preview:first-of-type\s*\{[\s\S]*order:\s*-1 !important/u);
   assert.match(styles, /\.msg-user\s*\{[^}]*border:\s*1px solid rgb\(134 195 248 \/ 52%\)/su);
+  /* В одиночном чате панель ввода совпадает с границами ленты сообщений,
+     а правила Focus Deck ниже по каскаду по-прежнему сужают её до колонки. */
+  assert.match(
+    styles,
+    /\.composer\s*\{[^}]*width:\s*min\(54rem, calc\(100% - var\(--gutter-left\) - var\(--gutter-right\)\)\)/su,
+  );
+  assert.match(styles, /:has\(\.stream-chat-preview:nth-of-type\(3\)\) \.composer\s*\{[^}]*width:\s*40%/su);
   assert.match(styles, /\.brand-mark svg\s*\{[\s\S]*display:\s*block/u);
   assert.match(styles, /@keyframes blackhole-lensing/u);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/u);

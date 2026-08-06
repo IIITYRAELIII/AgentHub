@@ -395,6 +395,7 @@ html[data-theme="blackhole"] .journal details[data-work-log-turn-details][open] 
     border-radius: 2px;
     margin-bottom: 0.12rem;
     padding: 0.55rem;
+    width: min(54rem, calc(100% - var(--gutter-left) - var(--gutter-right)));
   }
 
   html[data-theme="blackhole"]:not([data-surface="mobile"]) .chat:has(.stream-chat-preview:only-of-type) .composer {
