@@ -58,6 +58,28 @@ async function rootProductionModuleNames() {
     .sort();
 }
 
+async function rootTestModuleNames() {
+  return (await readdir(ROOT, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".test.mjs"))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+async function testsOutsideMirroredTree(directory = ROOT) {
+  const result = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const absolute = path.join(directory, entry.name);
+    const relative = path.relative(ROOT, absolute);
+    if (entry.isDirectory()) {
+      if (relative === "tests" || IGNORED_DIRECTORIES.has(entry.name)) continue;
+      result.push(...await testsOutsideMirroredTree(absolute));
+    } else if (entry.name.endsWith(".test.mjs") || entry.name.endsWith(".e2e.test.mjs")) {
+      result.push(relative);
+    }
+  }
+  return result.toSorted();
+}
+
 function sourceLayer(file) {
   const relative = path.relative(path.join(ROOT, "src"), file);
   if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
@@ -110,6 +132,14 @@ test("Agent Hub executable entrypoint contains bootstrap only", async () => {
   assert.doesNotMatch(source, /TelegramClient|AgentProviderRegistry|TaskRunRegistry|loadConfig/u);
 });
 
+test("unit tests live under the mirrored tests tree instead of the package root", async () => {
+  const inventory = await migrationInventory();
+  const rootTests = await rootTestModuleNames();
+  assert.equal(rootTests.length, inventory.baseline.rootTestModules);
+  assert.deepEqual(rootTests, []);
+  assert.deepEqual(await testsOutsideMirroredTree(), []);
+});
+
 test("production module graph remains acyclic", async () => {
   const files = await productionModules();
   const known = new Set(files.map((file) => path.normalize(file)));
@@ -146,6 +176,32 @@ test("composition root uses one resource registry instead of ad-hoc settling", a
   assert.equal(source.includes("settleNamedOperations"), false);
   assert.equal((source.match(/new RuntimeResourceRegistry\s*\(/g) ?? []).length, 1);
   assert.equal((source.match(/new RuntimeRestartController\s*\(/g) ?? []).length, 1);
+});
+
+test("persistent mutable state has one composition owner per responsibility", async () => {
+  const source = await compositionSource();
+  const uniqueOwners = [
+    "TaskSelectionStore",
+    "TaskRunRegistry",
+    "DeferredInputStore",
+    "AgentPreferencesStore",
+    "TaskMetadataStore",
+    "RuntimeTimerCoordinator",
+    "HubRuntimeStateCoordinator",
+    "RunCoordinator",
+    "RunJournalService",
+    "RuntimeStateStore",
+    "TaskReadStateStore",
+    "TurnEndNotificationRegistry",
+    "RateLimitHistoryStore",
+    "TrustedDeviceStore",
+  ];
+  for (const owner of uniqueOwners) {
+    const count = (source.match(new RegExp(`new ${owner}\\s*\\(`, "gu")) ?? []).length;
+    assert.equal(count, 1, `${owner} must have exactly one composition owner`);
+  }
+  assert.equal((source.match(/createApplicationCommandService\s*\(/gu) ?? []).length, 1);
+  assert.equal((source.match(/new MiniAppServer\s*\(/gu) ?? []).length, 2);
 });
 
 test("composition root changes selected task only through TaskSelectionStore", async () => {

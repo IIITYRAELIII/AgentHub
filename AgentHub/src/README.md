@@ -4,6 +4,11 @@
 entrypoints, release scripts and public CLI modules remain
 at the `AgentHub` root so existing launchers and integrations do not change.
 
+Контрактные тесты зеркалируют эти границы в `../tests`: application, domain,
+providers, interfaces, infrastructure, runtime и composition. Автоматический
+runner рекурсивно находит тесты; новые `.test.mjs` вне этого дерева запрещены
+architecture-проверкой.
+
 The target layout is:
 
 - `application` — use cases and state owners coordinating domain and ports;

@@ -3,7 +3,8 @@
   "baseline": {
     "serverMaximumLines": 150,
     "compositionMaximumLines": 638,
-    "rootProductionModules": 21
+    "rootProductionModules": 21,
+    "rootTestModules": 0
   },
   "publicRootModules": [
     "agent-hub-main.mjs",
