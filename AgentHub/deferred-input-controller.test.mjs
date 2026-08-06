@@ -22,6 +22,7 @@ function fixture(overrides = {}) {
     updateMessage: async (...args) => updates.push(args),
     pendingKeyboard: () => ({ inline_keyboard: [[{ text: "retry" }]] }),
     notifyReturned: async (item) => notifications.push(item.id),
+    now: () => Date.parse("2026-07-30T09:00:00.000Z"),
     onStateChange: (item, state, detail) => transitions.push({
       id: item.id,
       state,
