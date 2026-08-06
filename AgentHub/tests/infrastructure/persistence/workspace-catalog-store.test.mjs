@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
@@ -72,15 +73,103 @@ test("moving a Thread creates a new Stream and removes its empty old Stream", as
   assert.equal(store.stream(stream.id), null);
 });
 
-test("catalog enrichment is idempotent and exposes Workspace and Stream IDs", async (t) => {
+test("catalog enrichment creates a named Workspace with one unnamed Stream", async (t) => {
   const store = await fixture(t);
   const input = [{ provider: "codex", threadId: "one", title: "Task" }];
   const first = store.assignCatalogEntries(input);
   const second = store.assignCatalogEntries(input);
   assert.deepEqual(first, second);
-  assert.equal(first[0].workspaceName, "Experiments");
+  assert.equal(first[0].workspaceName, "Task");
+  assert.equal(first[0].workspaceKind, "user");
+  assert.equal(first[0].streamName, null);
+  assert.equal(first[0].streamDisplayName, "");
   assert.match(first[0].streamId, /^id-\d+$/u);
-  assert.equal(store.hierarchy().find((item) => item.name === "Experiments").streams.length, 1);
+  assert.equal(store.hierarchy().find((item) => item.name === "Task").streams.length, 1);
+  assert.equal(store.hierarchy().find((item) => item.name === "Experiments").streams.length, 0);
+});
+
+test("catalog enrichment promotes old automatic Experiments bindings without changing Stream IDs", async (t) => {
+  const store = await fixture(t);
+  const automatic = store.assignUnknownThread({ provider: "codex", threadId: "one" });
+  const [promoted] = store.assignCatalogEntries([{ provider: "codex", threadId: "one", title: "Old task" }]);
+  assert.equal(promoted.workspaceName, "Old task");
+  assert.equal(promoted.workspaceKind, "user");
+  assert.equal(promoted.streamId, automatic.streamId);
+  assert.equal(store.hierarchy().find((item) => item.name === "Experiments").streams.length, 0);
+});
+
+test("catalog enrichment preserves explicit Experiments placement", async (t) => {
+  const store = await fixture(t);
+  const experiments = store.ensureExperiments();
+  const stream = store.createStream({ workspaceId: experiments.id, name: "Intentional" });
+  store.bindThread({ provider: "codex", threadId: "one", streamId: stream.id, source: "migration" });
+  const [resolved] = store.assignCatalogEntries([{ provider: "codex", threadId: "one", title: "Task" }]);
+  assert.equal(resolved.workspaceId, experiments.id);
+  assert.equal(resolved.streamName, "Intentional");
+});
+
+test("catalog enrichment keeps user Workspace names stable after discovery", async (t) => {
+  const store = await fixture(t);
+  const [first] = store.assignCatalogEntries([{ provider: "codex", threadId: "one", title: "Original" }]);
+  store.renameWorkspace(first.workspaceId, "Personal name");
+  const [second] = store.assignCatalogEntries([{ provider: "codex", threadId: "one", title: "Provider changed" }]);
+  assert.equal(second.workspaceName, "Personal name");
+});
+
+test("legacy task data survives the default one-Workspace-per-Thread upgrade", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-legacy-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const legacy = new DatabaseSync(databaseFile);
+  legacy.exec(`
+    CREATE TABLE task_read_model_tasks (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      project_root TEXT NOT NULL,
+      title TEXT NOT NULL,
+      PRIMARY KEY(provider, thread_id)
+    ) WITHOUT ROWID;
+    CREATE TABLE journal_records (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY(provider, thread_id, turn_id)
+    ) WITHOUT ROWID;
+  `);
+  legacy.prepare("INSERT INTO task_read_model_tasks VALUES (?, ?, ?, ?)")
+    .run("codex", "old-one", "D:/repo", "Old one");
+  legacy.prepare("INSERT INTO task_read_model_tasks VALUES (?, ?, ?, ?)")
+    .run("claude", "old-two", "D:/repo", "Old two");
+  legacy.prepare("INSERT INTO journal_records VALUES (?, ?, ?, ?)")
+    .run("codex", "old-one", "turn-1", '{"answer":"preserved"}');
+  legacy.close();
+
+  let id = 0;
+  const store = new WorkspaceCatalogStore({
+    databaseFile,
+    idFactory: () => `legacy-id-${++id}`,
+  });
+  await store.load();
+  const assigned = store.assignCatalogEntries([
+    { provider: "codex", threadId: "old-one", title: "Old one", projectRoot: "D:/repo" },
+    { provider: "claude", threadId: "old-two", title: "Old two", projectRoot: "D:/repo" },
+  ]);
+  assert.deepEqual(assigned.map((item) => [item.workspaceName, item.streamName]), [
+    ["Old one", null],
+    ["Old two", null],
+  ]);
+  assert.equal(store.hierarchy().filter((item) => item.kind === "user").length, 2);
+  store.close();
+
+  const verified = new DatabaseSync(databaseFile, { readOnly: true });
+  assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM task_read_model_tasks").get().count, 2);
+  assert.equal(
+    verified.prepare("SELECT record_json FROM journal_records WHERE turn_id = ?").get("turn-1").record_json,
+    '{"answer":"preserved"}',
+  );
+  verified.close();
+  await rm(directory, { recursive: true, force: true });
+  t.after(() => rm(directory, { recursive: true, force: true }));
 });
 
 test("merging Workspaces preserves Streams and compacts their ordinals", async (t) => {
