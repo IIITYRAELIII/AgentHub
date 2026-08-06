@@ -1553,7 +1553,10 @@ function renderStreamTabs() {
       class: "stream-tab",
       "data-stream-tab-id": stream.id,
       "data-workspace-id": workspaceId,
+      "data-workspace-name": task?.workspaceName ?? "",
       "data-stream-name": stream.name ?? "",
+      "data-stream-task-id": task?.id ?? "",
+      "data-stream-provider": provider,
       "aria-pressed": String(open.has(stream.id)),
       "data-current": task?.id === selected.id ? "" : null,
       "data-running": running ? "" : null,
@@ -1615,23 +1618,12 @@ function renderStreamChatPreview(task) {
     class: "stream-chat-preview",
     "data-stream-chat-task-id": task.id,
   });
-  const title = el("button", {
-    type: "button",
-    class: "stream-chat-preview-head",
-    title: "Открыть этот Stream",
-  }, [
-    el("span", { class: "provider-dot", "data-provider": task.provider, "aria-hidden": "true" }),
-    el("span", {
-      class: "stream-chat-preview-title",
-      text: task.streamDisplayName || "Stream",
-    }),
-  ]);
-  title.addEventListener("click", () => selectTaskFromUi(task.id));
   preview.addEventListener("click", (event) => {
     if (event.target.closest("a, button, input, textarea, select, summary")) return;
     selectTaskFromUi(task.id);
   });
-  const log = el("div", { class: "stream-chat-preview-log" });
+  const scroll = el("div", { class: "stream-chat-preview-log chat-scroll" });
+  const log = el("div", { class: "stream-chat-preview-messages chat-log" });
   if (!messages) {
     log.append(el("p", { class: "stream-chat-preview-empty", text: "Загрузка истории…" }));
   } else if (!messages.length) {
@@ -1651,8 +1643,9 @@ function renderStreamChatPreview(task) {
     if (live.text) liveNode.append(el("div", { class: "msg-body", text: live.text }));
     log.append(liveNode);
   }
-  preview.append(title, log);
-  window.requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
+  scroll.append(log);
+  preview.append(scroll);
+  window.requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
   return preview;
 }
 
@@ -1873,11 +1866,33 @@ function ensureStreamContextMenu() {
     const streamId = String(streamContextMenu.dataset.streamId ?? "");
     const kind = String(action.dataset.streamMenuAction ?? "");
     const currentName = String(streamContextMenu.dataset.streamName ?? "");
+    const workspaceId = String(streamContextMenu.dataset.workspaceId ?? "");
+    const workspaceName = String(streamContextMenu.dataset.workspaceName ?? "");
+    const taskId = String(streamContextMenu.dataset.taskId ?? "");
+    const provider = String(streamContextMenu.dataset.provider ?? "codex");
     closeStreamContextMenu();
     if (!streamId) return;
     if (kind === "rename") {
       const name = await askText({ title: "Новое название Stream", value: currentName });
       if (name != null) emit("stream:rename", { streamId, name });
+      return;
+    }
+    if (kind === "rename-workspace") {
+      const name = await askText({ title: "Новое название Workspace", value: workspaceName });
+      if (name != null && workspaceId) emit("workspace:rename", { workspaceId, name });
+      return;
+    }
+    if (kind === "replace-thread") {
+      emit("stream:rebirth", { streamId, provider, taskId });
+      return;
+    }
+    if (kind === "status") {
+      emit("status:open", { id: taskId });
+      openPanel();
+      return;
+    }
+    if (kind === "archive") {
+      if (taskId) emit("task:archive", { id: taskId });
       return;
     }
     if (kind === "move") {
@@ -1897,22 +1912,48 @@ function openStreamContextMenu(event, tab) {
   const streamId = String(tab.dataset.streamTabId ?? "");
   const workspaceId = String(tab.dataset.workspaceId ?? "");
   menu.dataset.streamId = streamId;
+  menu.dataset.workspaceId = workspaceId;
+  menu.dataset.workspaceName = String(tab.dataset.workspaceName ?? "");
   menu.dataset.streamName = String(tab.dataset.streamName ?? "");
+  menu.dataset.taskId = String(tab.dataset.streamTaskId ?? "");
+  menu.dataset.provider = String(tab.dataset.streamProvider ?? "codex");
   menu.replaceChildren(
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
       "data-stream-menu-action": "rename", text: "Переименовать Stream…",
     }),
-    el("span", { class: "stream-context-label", text: "Переместить в Workspace" }),
-    ...workspaceMenuOptions(workspaceId).map((workspace) => el("button", {
-      type: "button", role: "menuitem", class: "stream-context-action",
-      "data-stream-menu-action": "move", "data-workspace-id": workspace.id,
-      text: workspace.name,
-    })),
     el("button", {
-      type: "button", role: "menuitem", class: "stream-context-action stream-context-create",
-      "data-stream-menu-action": "create-workspace", text: "+ Новый Workspace…",
+      type: "button", role: "menuitem", class: "stream-context-action",
+      "data-stream-menu-action": "rename-workspace", text: "Переименовать Workspace…",
     }),
+    el("button", {
+      type: "button", role: "menuitem", class: "stream-context-action",
+      "data-stream-menu-action": "replace-thread", text: "Продолжить в новом Thread…",
+      disabled: tab.hasAttribute("data-running"),
+      title: tab.hasAttribute("data-running") ? "Сначала завершите текущий ход" : "",
+    }),
+    el("button", {
+      type: "button", role: "menuitem", class: "stream-context-action",
+      "data-stream-menu-action": "status", text: "Статус и лимиты",
+    }),
+    el("button", {
+      type: "button", role: "menuitem", class: "stream-context-action stream-context-danger",
+      "data-stream-menu-action": "archive", text: "В архив",
+    }),
+    el("details", { class: "stream-context-submenu" }, [
+      el("summary", { class: "stream-context-action", text: "Перенести в Workspace…" }),
+      el("div", { class: "stream-context-submenu-options" }, [
+        ...workspaceMenuOptions(workspaceId).map((workspace) => el("button", {
+          type: "button", role: "menuitem", class: "stream-context-action",
+          "data-stream-menu-action": "move", "data-workspace-id": workspace.id,
+          text: workspace.name,
+        })),
+        el("button", {
+          type: "button", role: "menuitem", class: "stream-context-action stream-context-create",
+          "data-stream-menu-action": "create-workspace", text: "+ Новый Workspace…",
+        }),
+      ]),
+    ]),
   );
   menu.hidden = false;
   const left = Math.max(8, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8));
@@ -1928,6 +1969,37 @@ streamTabs?.addEventListener("contextmenu", (event) => {
   event.preventDefault();
   openStreamContextMenu(event, tab);
 });
+
+let streamLongPress = null;
+let streamLongPressOrigin = null;
+
+function cancelStreamLongPress() {
+  if (streamLongPress) window.clearTimeout(streamLongPress);
+  streamLongPress = null;
+  streamLongPressOrigin = null;
+}
+
+streamTabs?.addEventListener("pointerdown", (event) => {
+  if (event.pointerType !== "touch") return;
+  const tab = event.target.closest("[data-stream-tab-id][data-stream-name]");
+  if (!tab) return;
+  cancelStreamLongPress();
+  streamLongPressOrigin = { x: event.clientX, y: event.clientY };
+  streamLongPress = window.setTimeout(() => {
+    suppressStreamTabClick = true;
+    openStreamContextMenu({ clientX: event.clientX, clientY: event.clientY }, tab);
+    cancelStreamLongPress();
+    window.setTimeout(() => { suppressStreamTabClick = false; }, 700);
+  }, 550);
+});
+streamTabs?.addEventListener("pointermove", (event) => {
+  if (!streamLongPressOrigin) return;
+  if (Math.hypot(event.clientX - streamLongPressOrigin.x, event.clientY - streamLongPressOrigin.y) > 8) {
+    cancelStreamLongPress();
+  }
+});
+streamTabs?.addEventListener("pointerup", cancelStreamLongPress);
+streamTabs?.addEventListener("pointercancel", cancelStreamLongPress);
 
 streamTabs?.addEventListener("keydown", (event) => {
   if (!(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) return;

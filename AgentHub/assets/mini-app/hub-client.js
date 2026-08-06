@@ -1304,12 +1304,28 @@ agentHub.on("stream:rename", ({ streamId, name }) => runAction(async () => apply
 agentHub.on("stream:move", ({ streamId, workspaceId }) => runAction(async () => applySnapshot(
   await control("move-stream", { streamId, workspaceId }),
 )));
+agentHub.on("stream:rebirth", ({ streamId, provider }) => runAction(async () => {
+  const snapshot = await control("new-task", {
+    provider: ["codex", "claude"].includes(provider) ? provider : (lastSnapshot?.settings?.provider ?? "codex"),
+    streamId,
+  });
+  const created = (snapshot.tasks ?? []).find((task) => task.selected && task.streamId === streamId);
+  if (created) {
+    pendingSelectionId = taskId(created.provider, created.threadId, created.streamId);
+    rememberSelectedTaskId(pendingSelectionId);
+  }
+  applySnapshot(snapshot);
+  pendingSelectionId = "";
+  if (created) replaceRoute(`#/chat/${encodeURIComponent(created.provider)}/${encodeURIComponent(created.threadId)}`);
+  agentHub.showSelectedTask();
+  agentHub.toast("Создан новый Thread в текущем Stream");
+}));
 agentHub.on("stream:new", ({ workspaceId, streamName }) => runAction(async () => {
   const provider = lastSnapshot?.settings?.provider ?? "codex";
   applySnapshot(await control("new-task", { provider, workspaceId, streamName }));
 }));
-agentHub.on("task:archive", () => runAction(async () => applySnapshot(
-  await control("archive-task", exactSelectedTaskParams()),
+agentHub.on("task:archive", ({ id } = {}) => runAction(async () => applySnapshot(
+  await control("archive-task", id ? exactTaskParams(id) : exactSelectedTaskParams()),
 )));
 agentHub.on("task:stop", () => runAction(async () => agentHub.toast(
   (await control("cancel-run", exactSelectedTaskParams()))?.message ?? "Остановка запрошена",

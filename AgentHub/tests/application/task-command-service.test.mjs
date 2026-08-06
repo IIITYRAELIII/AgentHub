@@ -92,3 +92,19 @@ test("task command service creates a Workspace and binds the provider Thread to 
     { provider: "codex", streamId: "stream-new", title: "Architecture" },
   ]);
 });
+
+test("task command service continues an existing Stream in a new provider Thread", async () => {
+  const { service, events } = fixture();
+  await service.create({ provider: "codex", streamId: "stream-1" });
+  assert.deepEqual(events.find(([name]) => name === "bind")[1], {
+    provider: "codex",
+    threadId: "thread-new",
+    streamId: "stream-1",
+    projectRoot: "D:/work",
+    source: "rebirth",
+  });
+  assert.deepEqual(events.find(([name]) => name === "set-thread").slice(1), [
+    "thread-new",
+    { provider: "codex", streamId: "stream-1", title: "Existing" },
+  ]);
+});

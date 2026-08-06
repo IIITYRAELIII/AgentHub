@@ -247,8 +247,8 @@ test("chat controls live in the shared composer without a chat header", () => {
   const index = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const styles = fs.readFileSync(path.join(MINI_APP_ROOT, "styles.css"), "utf8");
-  assert.doesNotMatch(index, /class="chat-head"|data-mobile-chat-actions/u);
-  assert.match(index, /<form class="composer"[\s\S]*?<div class="composer-main">[\s\S]*?<div class="chat-actions">/u);
+  assert.doesNotMatch(index, /class="chat-head"|data-mobile-chat-actions|class="chat-actions"|class="overflow"/u);
+  assert.match(index, /class="chat-overlay-actions"[\s\S]*?data-action="task-diff"[\s\S]*?data-action="task-settings"/u);
   assert.doesNotMatch(index, /data-chat-(?:title|subtitle|provider-dot|running)/u);
   assert.doesNotMatch(app, /buildSubtitleChips|chatProviderDot|chatSubtitle|chatTitle|chatRunning|syncChatActionsPlacement|mobileChatActions|chatHead/u);
   assert.match(styles, /\.chat-pane\s*\{[\s\S]*?grid-template-rows:\s*minmax\(0, 1fr\);/u);
@@ -1645,12 +1645,18 @@ test("Stream menu moves it to an existing or newly created Workspace", () => {
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
 
   assert.match(app, /function openStreamContextMenu\(event, tab\)/u);
-  assert.match(app, /text: "Переместить в Workspace"/u);
+  assert.match(app, /class: "stream-context-submenu"/u);
+  assert.match(app, /text: "Перенести в Workspace…"/u);
   assert.match(app, /emit\("stream:move", \{ streamId, workspaceId:/u);
   assert.match(app, /emit\("workspace:create-from-stream", \{ streamId, name \}\)/u);
+  assert.match(app, /text: "Продолжить в новом Thread…"/u);
+  assert.match(app, /emit\("stream:rebirth", \{ streamId, provider, taskId \}\)/u);
+  assert.match(app, /event\.pointerType !== "touch"/u);
   assert.match(app, /event\.key === "ContextMenu"/u);
   assert.match(client, /control\("create-workspace-from-stream", \{ streamId, name \}\)/u);
+  assert.match(client, /control\("new-task", \{[\s\S]*?streamId,/u);
   assert.match(styles, /\.stream-context-menu\s*\{/u);
+  assert.match(styles, /\.stream-context-submenu\s*\{/u);
   assert.match(styles, /\.stream-context-menu\s*\{[\s\S]*?background-color:\s*var\(--bg\);[\s\S]*?background-image:\s*var\(--card-bg-open\);/u);
 });
 
@@ -1676,7 +1682,10 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   assert.match(app, /chatPane\.toggleAttribute\("data-active-stream", selectedIndex >= 0\)/u);
   assert.match(index, /<\/aside>\s*<\/div>\s*<\/div>\s*<!-- Запросы подтверждений/u);
   assert.doesNotMatch(index, /data-mobile-chat-actions/u);
-  assert.match(styles, /html\[data-surface="mobile"\] \.chat-actions[\s\S]*?html\[data-surface="mobile"\] \.composer \.overflow-menu/u);
+  assert.doesNotMatch(index, /class="stream-chat-preview-head"/u);
+  assert.match(app, /class: "stream-chat-preview-log chat-scroll"/u);
+  assert.match(app, /class: "stream-chat-preview-messages chat-log"/u);
+  assert.match(styles, /\.chat-overlay-actions\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?right:/u);
   assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-preview\s*\{\s*display: none;/su);
   assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-columns\s*\{[\s\S]*?display: grid;/u);
 });
@@ -1698,7 +1707,7 @@ test("VS Code stream refresh keeps composer focus and opens history at the botto
   assert.doesNotMatch(app, /syncChatActionsPlacement/u);
   // Колонки фиксируются до forceBottom, поэтому переносы строк уже учтены.
   assert.ok(chat.indexOf("renderStreamChatDeck();") < chat.indexOf("renderMessages({ forceBottom: true });"));
-  assert.match(app, /requestAnimationFrame\(\(\) => \{ log\.scrollTop = log\.scrollHeight; \}\)/u);
+  assert.match(app, /requestAnimationFrame\(\(\) => \{ scroll\.scrollTop = scroll\.scrollHeight; \}\)/u);
 });
 
 test("hub status band sits in the flow instead of covering the stream row", () => {
