@@ -1928,9 +1928,11 @@ function openStreamContextMenu(event, tab) {
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
-      "data-stream-menu-action": "replace-thread", text: "Продолжить в новом Thread…",
+      "data-stream-menu-action": "replace-thread", text: "Ротация",
       disabled: tab.hasAttribute("data-running"),
-      title: tab.hasAttribute("data-running") ? "Сначала завершите текущий ход" : "",
+      title: tab.hasAttribute("data-running")
+        ? "Сначала завершите текущий ход"
+        : "Завершить текущий Thread и продолжить Stream в новом",
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",

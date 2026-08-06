@@ -1661,7 +1661,8 @@ test("Stream menu moves it to an existing or newly created Workspace", () => {
   assert.match(app, /text: "Перенести в Workspace…"/u);
   assert.match(app, /emit\("stream:move", \{ streamId, workspaceId:/u);
   assert.match(app, /emit\("workspace:create-from-stream", \{ streamId, name \}\)/u);
-  assert.match(app, /text: "Продолжить в новом Thread…"/u);
+  assert.match(app, /text: "Ротация"/u);
+  assert.match(app, /Завершить текущий Thread и продолжить Stream в новом/u);
   assert.match(app, /emit\("stream:rebirth", \{ streamId, provider, taskId \}\)/u);
   assert.match(app, /event\.pointerType !== "touch"/u);
   assert.match(app, /event\.key === "ContextMenu"/u);
