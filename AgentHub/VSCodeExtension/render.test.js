@@ -1598,6 +1598,14 @@ test("Gothic wears the Sleeper mask in the header niche", () => {
   assert.equal(mark.readUInt32BE(20), 512);
 });
 
+test("composer pastes arbitrary clipboard files and falls back to the files list", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(app, /function clipboardAttachmentFiles\(clipboardData\)/u);
+  assert.match(app, /clipboardData\?\.items/u);
+  assert.match(app, /clipboardData\?\.files/u);
+  assert.match(app, /void readAttachmentFiles\(files\)/u);
+});
+
 test("shared shell groups threads under stable Workspace and Stream identities", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
@@ -1723,15 +1731,16 @@ test("VS Code stream refresh keeps composer focus and opens history at the botto
   assert.match(app, /requestAnimationFrame\(\(\) => \{ scroll\.scrollTop = scroll\.scrollHeight; \}\)/u);
 });
 
-test("hub status band sits in the flow instead of covering the stream row", () => {
+test("hub status band lives inside the top toolbar instead of covering the stream row", () => {
   const html = fs.readFileSync(path.join(MINI_APP_ROOT, "index.html"), "utf8");
   const styles = fs.readFileSync(path.join(MINI_APP_ROOT, "styles.css"), "utf8");
-  /* Полоса объявлена сразу после шапки: фиксированная сверху она ложилась
-     на ряд Stream, появившийся под шапкой. */
-  const afterHeader = html.indexOf("</header>");
+  /* Полоса является частью верхней панели, поэтому не создаёт отдельную
+     строку над шапкой и не накрывает ряд Stream под ней. */
+  const toolbar = html.indexOf('class="toolbar"');
   const banner = html.indexOf("data-restart-banner");
-  const workspace = html.indexOf('class="workspace"');
-  assert.ok(afterHeader < banner && banner < workspace);
+  const settings = html.indexOf('data-panel-open="settings"');
+  assert.ok(toolbar < banner && banner < settings);
   assert.match(styles, /\.connection-banner \{[^}]*position: relative;/u);
   assert.doesNotMatch(styles, /\.connection-banner \{[^}]*position: fixed;/u);
+  assert.match(styles, /html\[data-surface="mobile"\] \.connection-banner \{[^}]*flex: 1 0 100%;/u);
 });

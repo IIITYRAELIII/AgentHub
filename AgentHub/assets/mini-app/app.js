@@ -3306,11 +3306,28 @@ fileInput.addEventListener("change", () => {
   fileInput.value = "";
 });
 
+function clipboardAttachmentFiles(clipboardData) {
+  const values = [
+    ...[...(clipboardData?.items ?? [])]
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter(Boolean),
+    ...[...(clipboardData?.files ?? [])],
+  ];
+  const known = new Set();
+  return values.filter((file) => {
+    const key = `${file.name}\0${file.size}\0${file.lastModified}\0${file.type}`;
+    if (known.has(key)) return false;
+    known.add(key);
+    return true;
+  });
+}
+
 composerInput.addEventListener("paste", (event) => {
-  const items = [...(event.clipboardData?.items ?? [])].filter((item) => item.kind === "file");
-  if (items.length === 0) return;
+  const files = clipboardAttachmentFiles(event.clipboardData);
+  if (files.length === 0) return;
   event.preventDefault();
-  void readAttachmentFiles(items.map((item) => item.getAsFile()).filter(Boolean));
+  void readAttachmentFiles(files);
 });
 
 for (const dropTarget of [composer, chatScroll]) {

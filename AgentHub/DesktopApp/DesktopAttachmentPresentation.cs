@@ -9,7 +9,7 @@ namespace AgentHubDesktop
     internal static class DesktopAttachmentPresentation
     {
         private static readonly Regex SafeId = new Regex(
-            @"^[a-z0-9-]{1,160}\.(?:png|jpe?g|webp|gif|bmp)$",
+            @"^[A-Za-z0-9][A-Za-z0-9._-]{0,239}$",
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
         public static List<Dictionary<string, object>> AssistantAttachments(Dictionary<string, object> exchange)
@@ -24,7 +24,7 @@ namespace AgentHubDesktop
                 {
                     var attachment = rawAttachment as Dictionary<string, object>;
                     if (attachment == null) continue;
-                    var id = AgentHubClient.Text(attachment, "id").Trim().ToLowerInvariant();
+                    var id = AgentHubClient.Text(attachment, "id").Trim();
                     if (!SafeId.IsMatch(id) || !known.Add(id)) continue;
                     result.Add(attachment);
                 }
@@ -35,8 +35,8 @@ namespace AgentHubDesktop
         public static string ResolvePath(string root, Dictionary<string, object> attachment)
         {
             if (attachment == null || AgentHubClient.Bool(attachment, "missing")) return null;
-            var id = AgentHubClient.Text(attachment, "id").Trim().ToLowerInvariant();
-            if (!SafeId.IsMatch(id)) return null;
+            var id = AgentHubClient.Text(attachment, "id").Trim();
+            if (!SafeId.IsMatch(id) || id.Contains("..")) return null;
             var resolvedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
                 + Path.DirectorySeparatorChar;
             var target = Path.GetFullPath(Path.Combine(resolvedRoot, id));

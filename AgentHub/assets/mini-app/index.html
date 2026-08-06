@@ -135,6 +135,8 @@
       </nav>
 
       <div class="toolbar">
+        <div class="connection-banner" data-restart-banner hidden role="status"
+          aria-live="polite"></div>
         <button class="refresh collapse-all" type="button" data-collapse-all title="Свернуть всё"
           data-journal-only>
           <span>Свернуть всё</span>
@@ -185,9 +187,6 @@
       </div>
     </div>
   </header>
-
-  <!-- Полоса состояния Hub идёт в потоке: фиксированная она накрывала ряд Stream. -->
-  <div class="connection-banner" data-restart-banner hidden role="status" aria-live="polite"></div>
 
   <!-- ============================== Рабочая область: список задач + чат === -->
   <div class="workspace" data-workspace>

@@ -404,20 +404,24 @@ h1 {
 }
 
 .connection-banner {
+  align-items: center;
   backdrop-filter: blur(14px);
   background: color-mix(in srgb, var(--surface-2) 92%, transparent);
   border: 1px solid var(--pending);
   border-radius: var(--radius-chip);
-  box-shadow: var(--shadow);
   color: var(--text);
-  flex: 0 0 auto;
+  display: inline-flex;
+  flex: 1 1 18rem;
   font-size: 0.78rem;
-  margin: 0.45rem auto 0;
-  max-width: min(42rem, calc(100vw - 2rem));
-  padding: 0.45rem 0.85rem;
+  justify-content: center;
+  margin: 0;
+  max-width: 42rem;
+  min-height: 2.25rem;
+  min-width: 0;
+  padding: 0.35rem 0.75rem;
   position: relative;
   text-align: center;
-  z-index: 120;
+  z-index: 1;
 }
 
 html[data-connection="offline"] .connection-banner {
@@ -2295,6 +2299,12 @@ html[data-surface="mobile"] .toolbar {
   gap: 0.4rem;
   justify-content: flex-end;
   min-width: 0;
+}
+
+html[data-surface="mobile"] .connection-banner {
+  flex: 1 0 100%;
+  max-width: none;
+  order: 2;
 }
 
 html[data-surface="mobile"] .theme-picker {

@@ -22,6 +22,7 @@ namespace AgentHubDesktop
             AssistantAttachmentsAreCollectedAndDeduplicated();
             AssistantAttachmentPathIsConfinedToPrivateRoot();
             AttachmentHistorySignatureChangesAfterHydration();
+            AttachmentStoragePreservesRdpFileName();
             WorkspacePresentationGroupsThreadsByWorkspaceAndStream();
             WorkspacePresentationKeepsAtMostFourOpenStreams();
         }
@@ -201,6 +202,36 @@ namespace AgentHubDesktop
             };
             var after = DesktopAttachmentPresentation.HistorySignature(history);
             Require(before != after, "attachment hydration did not invalidate the render signature");
+        }
+
+        private static void AttachmentStoragePreservesRdpFileName()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "agent-hub-file-import-" + Guid.NewGuid().ToString("N"));
+            var sourceRoot = Path.Combine(Path.GetTempPath(), "agent-hub-rdp-source-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            Directory.CreateDirectory(sourceRoot);
+            try
+            {
+                var source = Path.Combine(sourceRoot, "Отчёт обмена.json");
+                File.WriteAllText(source, "{}", new UTF8Encoding(false));
+                var imported = DesktopAttachmentStorage.Import(source, root);
+                Require(File.Exists(imported), "clipboard file was not copied into private attachment storage");
+                Require(
+                    DesktopAttachmentStorage.DisplayName(imported) == "Отчёт обмена.json",
+                    "original clipboard file name was not preserved");
+                Require(!DesktopAttachmentStorage.IsImage(imported), "document was classified as an image");
+                Require(
+                    DesktopAttachmentPresentation.ResolvePath(root, new Dictionary<string, object>
+                    {
+                        { "id", Path.GetFileName(imported) }
+                    }) == imported,
+                    "encoded attachment path was not resolved with its original case");
+            }
+            finally
+            {
+                Directory.Delete(root, true);
+                Directory.Delete(sourceRoot, true);
+            }
         }
 
         private static void WorkspacePresentationGroupsThreadsByWorkspaceAndStream()

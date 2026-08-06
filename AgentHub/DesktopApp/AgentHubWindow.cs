@@ -415,7 +415,7 @@ namespace AgentHubDesktop
             composer.BorderThickness = new Thickness(0);
             composer.FontSize = 14;
             composer.Padding = new Thickness(2, 5, 2, 5);
-            composer.ToolTip = "Сообщение · Ctrl+Enter — отправить · Ctrl+V — вставить скриншот";
+            composer.ToolTip = "Сообщение · Ctrl+Enter — отправить · Ctrl+V — вставить файл или скриншот";
             Grid.SetRow(composer, 2);
             composerGrid.Children.Add(composer);
 
@@ -2004,19 +2004,33 @@ namespace AgentHubDesktop
                 BeginSend();
                 return;
             }
-            if (args.Key == System.Windows.Input.Key.V && Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && Clipboard.ContainsImage())
+            if (args.Key == System.Windows.Input.Key.V && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
             {
-                args.Handled = true;
                 try
                 {
-                    Directory.CreateDirectory(attachmentRoot);
-                    var path = Path.Combine(attachmentRoot, Guid.NewGuid().ToString("N") + ".png");
-                    var encoder = new PngBitmapEncoder();
-                    encoder.Frames.Add(BitmapFrame.Create(Clipboard.GetImage()));
-                    using (var stream = File.Create(path)) encoder.Save(stream);
-                    AddAttachment(path);
+                    if (Clipboard.ContainsFileDropList())
+                    {
+                        var files = Clipboard.GetFileDropList().Cast<string>()
+                            .Where(File.Exists).Take(8 - attachments.Count).ToArray();
+                        if (files.Length > 0)
+                        {
+                            args.Handled = true;
+                            foreach (var file in files) AddAttachment(file);
+                            return;
+                        }
+                    }
+                    if (Clipboard.ContainsImage())
+                    {
+                        args.Handled = true;
+                        Directory.CreateDirectory(attachmentRoot);
+                        var path = Path.Combine(attachmentRoot, Guid.NewGuid().ToString("N") + ".png");
+                        var encoder = new PngBitmapEncoder();
+                        encoder.Frames.Add(BitmapFrame.Create(Clipboard.GetImage()));
+                        using (var stream = File.Create(path)) encoder.Save(stream);
+                        AddAttachment(path);
+                    }
                 }
-                catch (Exception error) { footer.Text = "Скриншот: " + error.Message; }
+                catch (Exception error) { footer.Text = "Буфер обмена: " + error.Message; }
             }
         }
 
@@ -2025,7 +2039,7 @@ namespace AgentHubDesktop
             if (!args.Data.GetDataPresent(DataFormats.FileDrop)) return;
             var files = args.Data.GetData(DataFormats.FileDrop) as string[];
             if (files == null) return;
-            foreach (var file in files.Where(IsImageFile).Take(8 - attachments.Count)) AddAttachment(file);
+            foreach (var file in files.Where(File.Exists).Take(8 - attachments.Count)) AddAttachment(file);
             args.Handled = true;
         }
 
@@ -2034,7 +2048,7 @@ namespace AgentHubDesktop
             var dialog = new Microsoft.Win32.OpenFileDialog
             {
                 Multiselect = true,
-                Filter = "Изображения|*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp"
+                Filter = "Все файлы|*.*"
             };
             if (dialog.ShowDialog(this) != true) return;
             foreach (var file in dialog.FileNames.Take(8 - attachments.Count)) AddAttachment(file);
@@ -2044,20 +2058,14 @@ namespace AgentHubDesktop
         {
             try
             {
-                if (!File.Exists(source) || !IsImageFile(source)) return;
-                Directory.CreateDirectory(attachmentRoot);
-                var fullSource = Path.GetFullPath(source);
-                var fullRoot = Path.GetFullPath(attachmentRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                var target = fullSource.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase)
-                    ? fullSource
-                    : Path.Combine(attachmentRoot, Guid.NewGuid().ToString("N") + Path.GetExtension(source).ToLowerInvariant());
-                if (!String.Equals(fullSource, target, StringComparison.OrdinalIgnoreCase)) File.Copy(fullSource, target, false);
+                if (attachments.Count >= 8) { footer.Text = "Можно приложить не больше восьми файлов"; return; }
+                var target = DesktopAttachmentStorage.Import(source, attachmentRoot);
                 if (!attachments.Contains(target, StringComparer.OrdinalIgnoreCase)) attachments.Add(target);
                 RenderAttachments();
                 ScheduleDraftSave();
-                footer.Text = "Изображение добавлено";
+                footer.Text = "Файл добавлен";
             }
-            catch (Exception error) { footer.Text = "Изображение: " + error.Message; }
+            catch (Exception error) { footer.Text = "Файл: " + error.Message; }
         }
 
         private void RenderAttachments()
@@ -2066,20 +2074,26 @@ namespace AgentHubDesktop
             foreach (var path in attachments.ToArray())
             {
                 if (!File.Exists(path)) { attachments.Remove(path); continue; }
-                var grid = new Grid { Width = 86, Height = 58, Margin = new Thickness(0, 0, 7, 0) };
-                var image = new Image { Stretch = Stretch.UniformToFill };
-                try
+                var imageFile = DesktopAttachmentStorage.IsImage(path);
+                var grid = new Grid { Width = imageFile ? 86 : 190, Height = 58, Margin = new Thickness(0, 0, 7, 0) };
+                FrameworkElement preview;
+                if (imageFile)
                 {
-                    var bitmap = new BitmapImage();
-                    bitmap.BeginInit();
-                    bitmap.CacheOption = BitmapCacheOption.OnLoad;
-                    bitmap.UriSource = new Uri(path);
-                    bitmap.DecodePixelWidth = 180;
-                    bitmap.EndInit();
-                    bitmap.Freeze();
-                    image.Source = bitmap;
+                    var image = new Image { Stretch = Stretch.UniformToFill };
+                    var bitmap = LoadAttachmentBitmap(path, 180);
+                    if (bitmap != null) image.Source = bitmap;
+                    preview = image;
                 }
-                catch { }
+                else
+                {
+                    var name = DesktopAttachmentStorage.DisplayName(path);
+                    var label = Theme.Label(name, 11.5, Theme.Solid(Theme.Text), FontWeights.Normal);
+                    label.TextTrimming = TextTrimming.CharacterEllipsis;
+                    label.ToolTip = name;
+                    label.Margin = new Thickness(10, 0, 26, 0);
+                    label.VerticalAlignment = VerticalAlignment.Center;
+                    preview = label;
+                }
                 var shell = new Border
                 {
                     Background = Theme.Solid(Theme.PanelRaised),
@@ -2087,7 +2101,7 @@ namespace AgentHubDesktop
                     BorderThickness = new Thickness(1),
                     CornerRadius = Theme.Radius(8),
                     ClipToBounds = true,
-                    Child = image
+                    Child = preview
                 };
                 grid.Children.Add(shell);
                 var remove = new Button
@@ -2495,12 +2509,6 @@ namespace AgentHubDesktop
             if (value.StartsWith("Agent Hub", StringComparison.OrdinalIgnoreCase)) return "HUB";
             if (value.StartsWith("Codex Desktop", StringComparison.OrdinalIgnoreCase)) return "APP";
             return value;
-        }
-        private static bool IsImageFile(string path)
-        {
-            var extension = Path.GetExtension(path ?? "").ToLowerInvariant();
-            return extension == ".png" || extension == ".jpg" || extension == ".jpeg"
-                || extension == ".webp" || extension == ".gif" || extension == ".bmp";
         }
         private static string TrimPreview(string value, int limit)
         {
