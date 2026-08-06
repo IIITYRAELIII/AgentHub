@@ -1121,7 +1121,8 @@ test("background navigation is empty and settings expose the bug report flow", (
   assert.match(client, /control\("submit-bug-report"/u);
   assert.match(app, /if \(bugReportForm\) bugReportForm\.hidden = true/u);
   assert.match(app, /bugReportToggle\?\.setAttribute\("aria-expanded", "false"\)/u);
-  assert.match(client, /action === "submit-bug-report" \? LONG_CONTROL_TIMEOUT_MS/u);
+  assert.match(client, /LONG_CONTROL_ACTIONS = new Set\(\["rotate-stream", "submit-bug-report"\]\)/u);
+  assert.match(client, /LONG_CONTROL_ACTIONS\.has\(action\) \? LONG_CONTROL_TIMEOUT_MS/u);
 });
 
 test("Codex file citations render as compact local links", () => {
