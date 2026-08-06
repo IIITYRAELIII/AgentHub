@@ -53,10 +53,6 @@ const historyLoadButton = document.querySelector("[data-history-load]");
 const historyLoadLabel = document.querySelector("[data-history-load-label]");
 const chatLog = document.querySelector("[data-chat-log]");
 const chatLive = document.querySelector("[data-chat-live]");
-const chatTitle = document.querySelector("[data-chat-title]");
-const chatSubtitle = document.querySelector("[data-chat-subtitle]");
-const chatProviderDot = document.querySelector("[data-chat-provider-dot]");
-const chatRunning = document.querySelector("[data-chat-running]");
 const chatStops = [...document.querySelectorAll("[data-chat-stop]")];
 const dialogSettings = document.querySelector("[data-dialog-settings]");
 const dialogSettingsToggle = document.querySelector("[data-dialog-settings-toggle]");
@@ -2057,13 +2053,7 @@ function renderChat() {
   }
   const taskChanged = activeChatId !== task.id;
 
-  chatTitle.textContent = "";
-  chatTitle.hidden = true;
-  chatProviderDot.dataset.provider = String(task.provider ?? "none");
-  chatProviderDot.setAttribute("data-provider", String(task.provider ?? "none"));
-  chatSubtitle.replaceChildren(...buildSubtitleChips(task));
   renderDialogSettings();
-  chatRunning.hidden = !task.running;
   for (const stop of chatStops) stop.hidden = !task.running;
   renderContextUsage(task);
   renderStreamTabs();
@@ -2104,25 +2094,6 @@ function renderContextUsage(task) {
     : `Контекст: ${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")}. Нажмите, чтобы свернуть.`;
   contextUsageButton.disabled = Boolean(task.running || context.compacting || context.usagePending);
   contextUsageButton.toggleAttribute("data-compacting", Boolean(context.compacting));
-}
-
-function buildSubtitleChips(task) {
-  const parts = [
-    [task.streamDisplayName || null, null, "stream"],
-    [task.agentLabel || providerLabels[task.provider] || null, null, "agent"],
-    [task.modelLabel || null, modelTier(task.modelLabel), "model"],
-    [task.reasoningLabel || null, null, "reasoning"],
-    [task.modeLabel || null, null, "mode"],
-    [task.runtimeLabel || null, null, "runtime"],
-    [task.project || null, null, "project"],
-  ].filter(([part]) => part);
-  return parts.map(([part, tier, kind], index) => el("span", {
-    class: "chat-chip",
-    "data-kind": kind,
-    "data-order": index,
-    "data-model-tier": tier,
-    text: part,
-  }));
 }
 
 function chatIsNearBottom() {

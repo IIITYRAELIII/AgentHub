@@ -3536,86 +3536,16 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   display: none;
 }
 
-.chat-head-main {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.chat-title-row {
-  align-items: center;
-  display: flex;
-  gap: 0.45rem;
-  min-width: 0;
-}
-
-.chat-title {
-  color: var(--text);
-  font-family: var(--font-title);
-  font-size: 0.98rem;
-  font-weight: var(--title-weight);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-live-badge {
-  align-items: center;
-  background: color-mix(in srgb, var(--ok) 16%, transparent);
-  border-radius: var(--radius-chip);
-  color: var(--ok);
-  display: inline-flex;
-  flex: 0 0 auto;
-  font-size: 0.66rem;
-  gap: 0.3rem;
-  padding: 0.1rem 0.45rem;
-  text-transform: uppercase;
-}
-
-.live-dot {
-  animation: pulse 2s ease-in-out infinite;
-  background: var(--ok);
-  border-radius: 50%;
-  height: 0.42rem;
-  width: 0.42rem;
-}
-
-.chat-subtitle {
-  align-items: center;
-  color: var(--text-muted);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem 0.55rem;
-  margin-top: 0.15rem;
-}
-
-.chat-chip {
-  font-size: 0.72rem;
-  position: relative;
-}
-
-.chat-chip[data-kind="runtime"],
-.chat-chip[data-kind="project"] {
-  display: none;
-}
-
-.chat-chip[data-order]:not([data-order="0"])::before {
-  color: var(--text-faint);
-  content: "·";
-  margin-right: 0.55rem;
-}
-
 /* Ранг модели читается насыщенностью, а не отдельным цветом: флагман берёт
    акцент активной темы, обычная модель — нейтральный текст, лёгкая гаснет.
    Так плашка остаётся уместной и в «Магме», и в «Озере», и в «Графите». */
-.task-model[data-model-tier],
-.chat-chip[data-model-tier] {
+.task-model[data-model-tier] {
   border: 1px solid transparent;
   border-radius: var(--radius-chip);
   padding: 0.02rem 0.4rem;
 }
 
-.task-model[data-model-tier="flagship"],
-.chat-chip[data-model-tier="flagship"] {
+.task-model[data-model-tier="flagship"] {
   background: var(--accent-soft);
   border-color: var(--accent-line);
   box-shadow: var(--accent-glow);
@@ -3623,15 +3553,13 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   font-weight: 620;
 }
 
-.task-model[data-model-tier="balanced"],
-.chat-chip[data-model-tier="balanced"] {
+.task-model[data-model-tier="balanced"] {
   background: color-mix(in srgb, var(--surface-2) 70%, transparent);
   border-color: var(--line);
   color: var(--text-soft);
 }
 
-.task-model[data-model-tier="light"],
-.chat-chip[data-model-tier="light"] {
+.task-model[data-model-tier="light"] {
   background: none;
   border-color: color-mix(in srgb, var(--line) 60%, transparent);
   border-style: dashed;
@@ -3643,6 +3571,7 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   display: flex;
   flex: 0 0 auto;
   gap: 0.4rem;
+  margin-left: auto;
 }
 
 [data-dialog-settings-toggle][aria-pressed="true"] {
@@ -6213,30 +6142,6 @@ html[data-surface="mobile"] .chat-back {
   align-self: center;
   display: inline-flex;
   flex: 0 0 auto;
-}
-
-/* Подзаголовок задачи (агент, модель, режим, проект) переносился на две
-   строки и растягивал шапку чата: на телефоне он идёт одной строкой с
-   обрезкой, полный состав виден в настройках хода. */
-/* Раскладка остаётся flex: разделители между признаками держатся на `gap`,
-   и с `display: block` они схлопывались вплотную к словам. */
-html[data-surface="mobile"] .chat-subtitle {
-  flex-wrap: nowrap;
-  overflow: hidden;
-}
-
-html[data-surface="mobile"] .chat-subtitle .chat-chip {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Оставляем три первых признака — агент, модель, уровень раздумий. Режим,
-   среда и проект иначе обрывались на середине слова; полный набор виден в
-   настройках хода. */
-html[data-surface="mobile"] .chat-subtitle .chat-chip:nth-child(n+4) {
-  display: none;
 }
 
 html[data-surface="mobile"] .chat-head {
