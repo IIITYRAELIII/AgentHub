@@ -193,7 +193,7 @@
     <aside class="task-rail" data-task-rail aria-label="Задачи">
       <div class="task-rail-head">
         <div class="task-rail-title">
-          <span>Задачи</span>
+          <span>Workspaces</span>
           <span class="task-count" data-task-count hidden></span>
         </div>
         <details class="task-new-picker" data-task-new-picker>
@@ -225,15 +225,16 @@
             stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
             stroke-width="16"></line>
         </svg>
-        <input type="search" data-task-filter placeholder="Поиск задачи" aria-label="Поиск задачи"
+        <input type="search" data-task-filter placeholder="Поиск Workspace" aria-label="Поиск Workspace"
           autocomplete="off">
       </div>
       <ul class="task-list" data-task-list></ul>
-      <p class="rail-empty" data-task-empty>Пока нет задач. Создайте новую задачу кнопкой «+».</p>
+      <p class="rail-empty" data-task-empty>Пока нет Workspaces. Создайте новый кнопкой «+».</p>
     </aside>
 
     <!-- Чат выбранной задачи. -->
     <section class="chat" data-chat aria-label="Диалог задачи">
+      <nav class="stream-tabs" data-stream-tabs aria-label="Потоки Workspace" hidden></nav>
       <div class="chat-empty" data-chat-empty>
         <span class="chat-empty-mark" aria-hidden="true">
           <svg data-phosphor-icon="chat-centered-text" viewBox="0 0 256 256">
@@ -246,7 +247,7 @@
               stroke-width="16"></path>
           </svg>
         </span>
-        <p>Выберите задачу слева или создайте новую, чтобы начать диалог.</p>
+        <p data-chat-empty-text>Выберите Workspace слева, чтобы открыть его Streams.</p>
       </div>
 
       <div class="stream-chat-columns" data-stream-chat-columns>

@@ -2892,51 +2892,40 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   padding: 0;
 }
 
-.task-workspace-group {
+.task-workspace-item {
+  align-items: center;
   background: color-mix(in srgb, var(--surface-1) 76%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
+  cursor: pointer;
+  display: flex;
+  gap: 0.55rem;
   list-style: none;
-  margin: 0 0 0.55rem;
+  margin: 0 0 0.28rem;
+  min-height: 2.55rem;
   overflow: hidden;
+  padding: 0.55rem 0.62rem;
+  transition: background 0.14s ease, border-color 0.14s ease;
 }
 
-.task-workspace-group[data-workspace-kind="system"] {
+.task-workspace-item[data-workspace-kind="system"] {
   border-style: dashed;
 }
 
-.task-workspace-heading {
-  align-items: center;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
-  display: flex;
-  gap: 0.5rem;
-  justify-content: space-between;
-  min-height: 2rem;
-  padding: 0.4rem 0.62rem;
+.task-workspace-item:hover,
+.task-workspace-item:focus-visible {
+  background: var(--surface-2);
+  outline: none;
 }
 
-.task-workspace-add-stream {
-  width: 1.45rem;
-  height: 1.45rem;
-  margin-left: auto;
-  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
-  border-radius: 50%;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.task-workspace-add-stream:hover {
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-.task-stream-group[draggable="true"] {
-  cursor: grab;
+.task-workspace-item[data-selected] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
 }
 
 .task-workspace-name {
   color: var(--text);
+  flex: 1 1 auto;
   font-size: 0.82rem;
   font-weight: 680;
   min-width: 0;
@@ -2945,86 +2934,11 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   white-space: nowrap;
 }
 
-.task-workspace-count {
+.task-workspace-time {
   color: var(--text-faint);
   flex: 0 0 auto;
   font-family: var(--font-numeric);
   font-size: 0.64rem;
-}
-
-.task-workspace-streams {
-  list-style: none;
-  margin: 0;
-  padding: 0.2rem;
-}
-
-.task-stream-group {
-  border-radius: calc(var(--radius-md) - 3px);
-  list-style: none;
-  overflow: hidden;
-}
-
-.task-stream-group + .task-stream-group {
-  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
-}
-
-.task-stream-heading {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  color: var(--text-soft);
-  cursor: pointer;
-  display: flex;
-  font: inherit;
-  font-size: 0.72rem;
-  font-weight: 650;
-  gap: 0.4rem;
-  min-height: 1.9rem;
-  padding: 0.35rem 0.5rem;
-  text-align: left;
-  width: 100%;
-}
-
-.task-stream-heading::before {
-  background: var(--text-faint);
-  content: "";
-  flex: 0 0 auto;
-  height: 0.58rem;
-  -webkit-mask: var(--ph-mask-caret-right) center / contain no-repeat;
-  mask: var(--ph-mask-caret-right) center / contain no-repeat;
-  transform: rotate(0deg);
-  transition: transform 0.16s ease, background 0.16s ease;
-  width: 0.58rem;
-}
-
-.task-stream-heading[aria-expanded="true"]::before {
-  background: var(--accent);
-  transform: rotate(90deg);
-}
-
-.task-stream-heading:hover,
-.task-stream-heading:focus-visible {
-  background: var(--accent-soft);
-  color: var(--accent);
-  outline: none;
-}
-
-.task-stream-threads {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.task-stream-group:not([data-open]) .task-stream-threads {
-  display: none;
-}
-
-.task-stream-threads .task-item:last-child {
-  margin-bottom: 0;
-}
-
-html[data-surface="mobile"] .task-stream-heading {
-  min-height: 2.2rem;
 }
 
 .rail-empty {
@@ -3214,9 +3128,73 @@ html[data-surface="mobile"] .task-stream-heading {
 
 .chat {
   display: flex;
+  flex-direction: column;
   min-height: 0;
   min-width: 0;
   position: relative;
+}
+
+.stream-tabs {
+  align-items: center;
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.35rem;
+  min-height: 2.45rem;
+  overflow-x: auto;
+  padding: 0.32rem 0.55rem;
+  scrollbar-width: thin;
+}
+
+.stream-tab {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 650;
+  gap: 0.38rem;
+  max-width: 15rem;
+  min-height: 1.72rem;
+  padding: 0.28rem 0.66rem;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.stream-tab:hover,
+.stream-tab:focus-visible {
+  background: var(--surface-2);
+  color: var(--text);
+  outline: none;
+}
+
+.stream-tab[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+
+.stream-tab[data-current] {
+  box-shadow: inset 0 -2px var(--accent);
+}
+
+.stream-tab[draggable="true"] {
+  cursor: grab;
+}
+
+.stream-tab[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.stream-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Wide surfaces can inspect several Streams from one Workspace at once. The

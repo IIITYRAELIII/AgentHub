@@ -39,8 +39,10 @@ const taskFilter = document.querySelector("[data-task-filter]");
 const taskNewPicker = document.querySelector("[data-task-new-picker]");
 
 const chatPane = document.querySelector("[data-chat-pane]");
+const streamTabs = document.querySelector("[data-stream-tabs]");
 const streamChatColumns = document.querySelector("[data-stream-chat-columns]");
 const chatEmpty = document.querySelector("[data-chat-empty]");
+const chatEmptyText = document.querySelector("[data-chat-empty-text]");
 const chatScroll = document.querySelector("[data-chat-scroll]");
 const historyLoader = document.querySelector("[data-history-loader]");
 const historyLoadButton = document.querySelector("[data-history-load]");
@@ -924,6 +926,7 @@ const state = {
   // selects a Thread; a wide shell may keep several Streams from the same
   // Workspace visible without making another device jump to that layout.
   openStreamsByWorkspace: new Map(),
+  streamOrderByWorkspace: new Map(),
   configuredOpenStreamWorkspaces: new Set(),
   visibleStreamTaskIds: [],
 };
@@ -1031,8 +1034,12 @@ function restoreOpenStreams() {
       const streamIds = [...new Set((Array.isArray(entry?.streamIds) ? entry.streamIds : [])
         .map((value) => String(value ?? "").trim())
         .filter(Boolean))].slice(-4);
-      if (!workspaceId || !streamIds.length) continue;
+      const order = [...new Set((Array.isArray(entry?.order) ? entry.order : [])
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean))];
+      if (!workspaceId) continue;
       state.openStreamsByWorkspace.set(workspaceId, streamIds);
+      if (order.length) state.streamOrderByWorkspace.set(workspaceId, order);
       state.configuredOpenStreamWorkspaces.add(workspaceId);
     }
   } catch {
@@ -1045,6 +1052,7 @@ function persistOpenStreams() {
     const stored = [...state.configuredOpenStreamWorkspaces].slice(-100).map((workspaceId) => ({
       workspaceId,
       streamIds: (state.openStreamsByWorkspace.get(workspaceId) ?? []).slice(-4),
+      order: state.streamOrderByWorkspace.get(workspaceId) ?? [],
     }));
     localStorage.setItem(openStreamsStorageKey(), JSON.stringify(stored));
   } catch {
@@ -1061,8 +1069,20 @@ function defaultOpenStreamIds(streams, selectedStreamId, limit) {
   return defaults;
 }
 
+function orderedWorkspaceStreams(workspaceId, streams) {
+  const available = new Map(streams.map((stream) => [stream.id, stream]));
+  const stored = state.streamOrderByWorkspace.get(workspaceId) ?? [];
+  const orderedIds = stored.filter((streamId) => available.has(streamId));
+  for (const stream of streams) {
+    if (!orderedIds.includes(stream.id)) orderedIds.push(stream.id);
+  }
+  state.streamOrderByWorkspace.set(workspaceId, orderedIds);
+  return orderedIds.map((streamId) => available.get(streamId));
+}
+
 function reconcileOpenStreams(workspaceId, streams) {
   restoreOpenStreams();
+  const ordered = orderedWorkspaceStreams(workspaceId, streams);
   const available = new Set(streams.map((stream) => stream.id));
   const selected = currentTask();
   const selectedInWorkspace = selected && workspaceKey(selected) === workspaceId
@@ -1077,12 +1097,9 @@ function reconcileOpenStreams(workspaceId, streams) {
   } else if (!state.configuredOpenStreamWorkspaces.has(workspaceId)) {
     // Каталог приходит частями. Пока пользователь сам не изменил раскладку,
     // дополняем её новыми Streams до четырёх вместо фиксации первого пришедшего.
-    normalized = defaultOpenStreamIds(streams, selectedInWorkspace, limit);
+    normalized = defaultOpenStreamIds(ordered, selectedInWorkspace, limit);
   } else {
-    const next = previous.filter((streamId) => available.has(streamId));
-    if (selectedInWorkspace && !next.includes(selectedInWorkspace)) next.push(selectedInWorkspace);
-    if (!next.length && streams.length) next.push(selectedInWorkspace || streams[0].id);
-    normalized = next.slice(-limit);
+    normalized = previous.filter((streamId) => available.has(streamId)).slice(-limit);
   }
   state.openStreamsByWorkspace.set(workspaceId, normalized);
   return new Set(normalized);
@@ -1099,12 +1116,27 @@ function toggleOpenStream(workspaceId, streamId, streams) {
   const selected = state.openStreamsByWorkspace.get(workspaceId) ?? [];
   const available = new Set(streams.map((stream) => stream.id));
   const next = selected.filter((id) => available.has(id) && id !== streamId);
-  if (!selected.includes(streamId)) next.push(streamId);
-  if (!next.length) next.push(streamId);
-  state.openStreamsByWorkspace.set(workspaceId, next.slice(-4));
+  if (!selected.includes(streamId)) {
+    if (next.length >= 4) {
+      showToast("Одновременно можно открыть не больше четырёх Streams.");
+      return;
+    }
+    next.push(streamId);
+  }
+  state.openStreamsByWorkspace.set(workspaceId, next);
   state.configuredOpenStreamWorkspaces.add(workspaceId);
   persistOpenStreams();
   renderTasks();
+  renderStreamTabs();
+  const selectedTask = currentTask();
+  if (selectedTask && streamKey(selectedTask) === streamId && !next.includes(streamId) && next.length) {
+    const nextStream = streams.find((stream) => stream.id === next[0]);
+    const target = representativeStreamTask(nextStream);
+    if (target) {
+      selectTaskFromUi(target.id);
+      return;
+    }
+  }
   renderStreamChatDeck();
 }
 
@@ -1364,6 +1396,7 @@ function renderTasks() {
     return local || state.searchResults.has(task.id);
   });
   taskList.replaceChildren();
+  let visibleCount = visible.length;
   const hasWorkspace = visible.some((task) => String(task.workspaceId ?? "").trim());
   const hasProject = visible.some((task) => String(task.project ?? "").trim());
   if (hasWorkspace) {
@@ -1378,7 +1411,8 @@ function renderTasks() {
       });
       groups.get(key).tasks.push(task);
     }
-    for (const group of groups.values()) taskList.append(renderTaskWorkspaceGroup(group));
+    visibleCount = groups.size;
+    for (const group of groups.values()) taskList.append(renderTaskWorkspaceItem(group));
   } else if (!hasProject) {
     for (const task of visible) taskList.append(renderTaskItem(task));
   } else {
@@ -1398,10 +1432,12 @@ function renderTasks() {
     taskEmpty.hidden = false;
     taskEmpty.textContent = "Ничего не найдено по запросу.";
   } else {
-    taskEmpty.textContent = "Пока нет задач. Создайте новую задачу кнопкой «+».";
+    taskEmpty.textContent = hasWorkspace
+      ? "Пока нет Workspaces. Создайте новый кнопкой «+»."
+      : "Пока нет задач. Создайте новую задачу кнопкой «+».";
   }
   taskCount.hidden = !hasTasks;
-  taskCount.textContent = String(state.tasks.length);
+  taskCount.textContent = String(visibleCount);
 }
 
 function workspaceStreams(tasks) {
@@ -1424,78 +1460,52 @@ function workspaceStreams(tasks) {
     ));
 }
 
-function renderTaskWorkspaceGroup({ id, name, kind, tasks }) {
-  const streams = workspaceStreams(tasks);
-  const openStreams = reconcileOpenStreams(id, streams);
-  const list = el("ul", { class: "task-workspace-streams" }, streams.map((stream) => (
-    renderTaskStreamGroup({
-      workspaceId: id,
-      stream,
-      streams,
-      streamCount: streams.length,
-      open: openStreams.has(stream.id),
-    })
-  )));
+function workspaceLastActivity(tasks) {
+  return tasks.reduce((latest, task) => {
+    const value = Date.parse(task.lastActivity || 0) || 0;
+    return value > latest ? value : latest;
+  }, 0);
+}
+
+function representativeWorkspaceTask(tasks) {
+  const selected = currentTask();
+  if (selected && tasks.some((task) => task.id === selected.id)) return selected;
+  return [...tasks].sort((left, right) => (
+    Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
+  ))[0] ?? null;
+}
+
+function renderTaskWorkspaceItem({ id, name, kind, tasks }) {
+  const selected = workspaceKey(currentTask()) === id;
+  const lastActivity = workspaceLastActivity(tasks);
+  const unread = tasks.some((task) => task.unread);
   return el("li", {
-    class: "task-workspace-group",
+    class: "task-workspace-item",
     "data-workspace-id": id,
     "data-workspace-kind": kind,
+    "data-workspace-select": id,
+    "data-workspace-heading": id,
+    "data-workspace-name": name,
+    "data-selected": selected ? "" : null,
+    "data-unread": unread ? "" : null,
+    role: "button",
+    tabindex: "0",
+    "aria-pressed": String(selected),
+    title: "Двойной клик — переименовать Workspace",
   }, [
-      el("div", {
-        class: "task-workspace-heading",
-        "data-workspace-heading": id,
-        "data-workspace-name": name,
-        title: "Двойной клик — переименовать Workspace",
-      }, [
-        el("span", { class: "task-workspace-name", text: name }),
-      streams.length > 1
-        ? el("span", { class: "task-workspace-count", text: String(streams.length), title: "Streams" })
-        : null,
-      kind !== "system"
-        ? el("button", {
-          class: "task-workspace-add-stream",
-          type: "button",
-          "data-add-stream-to": id,
-          title: "Добавить Stream",
-          text: "+",
-        })
-        : null,
-      ]),
-    list,
+    unread ? el("span", { class: "task-unread", title: "Есть непрочитанные сообщения" }) : null,
+    el("span", { class: "task-workspace-name", text: name }),
+    el("span", {
+      class: "task-workspace-time",
+      text: formatRelativeTime(lastActivity),
+      title: lastActivity ? new Date(lastActivity).toLocaleString("ru-RU") : "",
+    }),
   ]);
 }
 
 function streamDisplayName(stream, streamCount) {
   if (stream.name) return stream.name;
-  return streamCount > 1 ? `Stream ${stream.ordinal}` : "";
-}
-
-function renderTaskStreamGroup({ workspaceId, stream, streams, streamCount, open }) {
-  const orderedTasks = [...stream.tasks].sort((left, right) => (
-    Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
-  ));
-  const label = streamDisplayName(stream, streamCount);
-  const header = label ? el("button", {
-    class: "task-stream-heading",
-    type: "button",
-    "data-stream-id": stream.id,
-    "data-workspace-id": workspaceId,
-    "aria-expanded": String(open),
-    "data-stream-name": stream.name ?? "",
-    title: "Двойной клик — переименовать Stream",
-    text: label,
-  }) : null;
-  return el("li", {
-    class: "task-stream-group",
-    "data-stream-id": stream.id,
-    "data-open": open ? "" : null,
-    draggable: "true",
-  }, [
-    header,
-    el("ul", { class: "task-stream-threads" }, orderedTasks.map((task) => (
-      renderTaskItem(task, { workspaceGrouped: true })
-    ))),
-  ]);
+  return streamCount > 1 ? `Stream ${stream.ordinal}` : "Stream";
 }
 
 function representativeStreamTask(stream) {
@@ -1512,14 +1522,49 @@ function visibleWorkspaceStreamTasks() {
   if (!String(selected.workspaceId ?? "").trim()) return [selected];
   const workspaceId = workspaceKey(selected);
   const streams = workspaceStreams(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
-  const open = reconcileOpenStreams(workspaceId, streams);
-  const visible = streams
-    .filter((stream) => open.has(stream.id))
+  reconcileOpenStreams(workspaceId, streams);
+  const byId = new Map(streams.map((stream) => [stream.id, stream]));
+  return (state.openStreamsByWorkspace.get(workspaceId) ?? [])
+    .map((streamId) => byId.get(streamId))
+    .filter(Boolean)
     .map(representativeStreamTask)
     .filter(Boolean);
-  return visible.sort((left, right) => (
-    Number(right.id === selected.id) - Number(left.id === selected.id)
-  ));
+}
+
+function renderStreamTabs() {
+  if (!streamTabs) return;
+  const selected = currentTask();
+  if (!selected || !String(selected.workspaceId ?? "").trim()) {
+    streamTabs.hidden = true;
+    streamTabs.replaceChildren();
+    return;
+  }
+  const workspaceId = workspaceKey(selected);
+  const streams = workspaceStreams(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
+  reconcileOpenStreams(workspaceId, streams);
+  const ordered = orderedWorkspaceStreams(workspaceId, streams);
+  const open = new Set(state.openStreamsByWorkspace.get(workspaceId) ?? []);
+  streamTabs.replaceChildren(...ordered.map((stream) => {
+    const task = representativeStreamTask(stream);
+    const button = el("button", {
+      type: "button",
+      class: "stream-tab",
+      "data-stream-tab-id": stream.id,
+      "data-workspace-id": workspaceId,
+      "data-stream-name": stream.name ?? "",
+      "aria-pressed": String(open.has(stream.id)),
+      "data-current": task?.id === selected.id ? "" : null,
+      draggable: surface === "mobile" ? null : "true",
+      title: "Нажмите, чтобы показать или скрыть. Перетащите, чтобы изменить порядок. ПКМ — переименовать.",
+    }, [
+      stream.tasks.some((item) => item.unread)
+        ? el("span", { class: "task-unread", title: "Есть непрочитанные сообщения" })
+        : null,
+      el("span", { class: "stream-tab-label", text: streamDisplayName(stream, streams.length) }),
+    ]);
+    return button;
+  }));
+  streamTabs.hidden = ordered.length === 0;
 }
 
 function publishVisibleStreamTasks(tasks) {
@@ -1566,6 +1611,7 @@ function renderStreamChatPreview(task) {
     log.append(liveNode);
   }
   preview.append(title, log);
+  window.requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
   return preview;
 }
 
@@ -1574,12 +1620,23 @@ function renderStreamChatDeck() {
   const selected = currentTask();
   const visible = visibleWorkspaceStreamTasks();
   publishVisibleStreamTasks(visible);
-  const supplementary = surface === "mobile"
-    ? []
-    : visible.filter((task) => task.id !== selected?.id).slice(0, 3);
-  streamChatColumns.replaceChildren(chatPane, ...supplementary.map(renderStreamChatPreview));
-  streamChatColumns.toggleAttribute("data-multi-stream", supplementary.length > 0);
-  streamChatColumns.style.setProperty("--stream-chat-count", String(1 + supplementary.length));
+  const shown = surface === "mobile" ? visible.slice(0, 1) : visible.slice(0, 4);
+  const selectedIndex = shown.findIndex((task) => task.id === selected?.id);
+  for (const preview of streamChatColumns.querySelectorAll(".stream-chat-preview")) preview.remove();
+  chatPane.hidden = selectedIndex < 0;
+  chatPane.style.order = String(Math.max(0, selectedIndex));
+  shown.forEach((task, index) => {
+    if (task.id === selected?.id) return;
+    const preview = renderStreamChatPreview(task);
+    preview.style.order = String(index);
+    streamChatColumns.append(preview);
+  });
+  const hasVisible = shown.length > 0;
+  streamChatColumns.hidden = !hasVisible;
+  chatEmpty.hidden = hasVisible;
+  if (!hasVisible && chatEmptyText) chatEmptyText.textContent = "Выберите Stream в полосе сверху.";
+  streamChatColumns.toggleAttribute("data-multi-stream", shown.length > 1);
+  streamChatColumns.style.setProperty("--stream-chat-count", String(Math.max(1, shown.length)));
 }
 
 function refreshSupplementaryStreamChat(taskId) {
@@ -1689,55 +1746,20 @@ function renderTaskItem(task, { workspaceGrouped = false } = {}) {
 }
 
 taskList.addEventListener("click", (event) => {
-  const addStream = event.target.closest("[data-add-stream-to]");
-  if (addStream) {
-    event.preventDefault();
-    event.stopPropagation();
-    const workspaceId = String(addStream.dataset.addStreamTo ?? "");
-    void askText({ title: "Название Stream (можно оставить пустым)" })
-      .then((streamName) => {
-        if (streamName != null) emit("stream:new", { workspaceId, streamName });
-      });
-    return;
-  }
-  const streamHeading = event.target.closest("[data-stream-id][data-workspace-id]");
-  if (streamHeading) {
-    event.preventDefault();
-    event.stopPropagation();
-    const workspaceId = String(streamHeading.dataset.workspaceId ?? "");
-    const streamId = String(streamHeading.dataset.streamId ?? "");
-    const workspaceTasks = state.tasks.filter((task) => workspaceKey(task) === workspaceId);
-    const streams = [...new Map(workspaceTasks.map((task) => [streamKey(task), task]))]
-      .map(([id, task]) => ({
-        id,
-        name: String(task.streamName ?? "").trim(),
-        ordinal: Math.max(1, Number(task.streamOrdinal) || 1),
-        tasks: workspaceTasks.filter((candidate) => streamKey(candidate) === id),
-      }));
-    toggleOpenStream(workspaceId, streamId, streams);
-    return;
-  }
-  const searchTurn = event.target.closest("[data-search-turn]");
-  if (searchTurn) {
-    event.preventDefault();
-    event.stopPropagation();
-    emit("turn:open", {
-      provider: searchTurn.dataset.searchProvider,
-      taskThreadId: searchTurn.dataset.searchTaskThread,
-      turnThreadId: searchTurn.dataset.searchTurnThread,
-      turnId: searchTurn.dataset.searchTurn,
-    });
-    return;
-  }
-  const item = event.target.closest("[data-task-id]");
-  if (item) selectTaskFromUi(item.dataset.taskId);
+  const workspace = event.target.closest("[data-workspace-select]");
+  if (!workspace) return;
+  const workspaceId = String(workspace.dataset.workspaceSelect ?? "");
+  const target = representativeWorkspaceTask(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
+  if (target) selectTaskFromUi(target.id);
 });
 taskList.addEventListener("keydown", (event) => {
   if (!["Enter", " "].includes(event.key)) return;
-  const item = event.target.closest("[data-task-id]");
-  if (!item) return;
+  const workspace = event.target.closest("[data-workspace-select]");
+  if (!workspace) return;
   event.preventDefault();
-  selectTaskFromUi(item.dataset.taskId);
+  const workspaceId = String(workspace.dataset.workspaceSelect ?? "");
+  const target = representativeWorkspaceTask(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
+  if (target) selectTaskFromUi(target.id);
 });
 let taskSearchTimer = null;
 taskFilter.addEventListener("input", () => {
@@ -1758,11 +1780,89 @@ taskFilter.addEventListener("input", () => {
   }, 250);
 });
 
+let suppressStreamTabClick = false;
+streamTabs?.addEventListener("click", (event) => {
+  if (suppressStreamTabClick) {
+    suppressStreamTabClick = false;
+    return;
+  }
+  const tab = event.target.closest("[data-stream-tab-id][data-workspace-id]");
+  if (!tab) return;
+  const workspaceId = String(tab.dataset.workspaceId ?? "");
+  const streams = workspaceStreams(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
+  toggleOpenStream(workspaceId, String(tab.dataset.streamTabId ?? ""), streams);
+});
+
+streamTabs?.addEventListener("contextmenu", (event) => {
+  const tab = event.target.closest("[data-stream-tab-id][data-stream-name]");
+  if (!tab) return;
+  event.preventDefault();
+  const streamId = String(tab.dataset.streamTabId ?? "");
+  void askText({ title: "Новое название Stream", value: tab.dataset.streamName ?? "" })
+    .then((name) => {
+      if (name != null) emit("stream:rename", { streamId, name });
+    });
+});
+
+let draggedStreamId = "";
+streamTabs?.addEventListener("dragstart", (event) => {
+  const tab = event.target.closest("[data-stream-tab-id]");
+  draggedStreamId = String(tab?.dataset.streamTabId ?? "");
+  if (!draggedStreamId) event.preventDefault();
+  else event.dataTransfer?.setData("text/plain", draggedStreamId);
+});
+streamTabs?.addEventListener("dragover", (event) => {
+  if (!draggedStreamId || !event.target.closest("[data-stream-tab-id]")) return;
+  event.preventDefault();
+});
+streamTabs?.addEventListener("drop", (event) => {
+  const target = event.target.closest("[data-stream-tab-id][data-workspace-id]");
+  const streamId = draggedStreamId || event.dataTransfer?.getData("text/plain") || "";
+  draggedStreamId = "";
+  if (!target || !streamId) return;
+  event.preventDefault();
+  suppressStreamTabClick = true;
+  const workspaceId = String(target.dataset.workspaceId ?? "");
+  const targetId = String(target.dataset.streamTabId ?? "");
+  const streams = workspaceStreams(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
+  const order = orderedWorkspaceStreams(workspaceId, streams).map((stream) => stream.id)
+    .filter((id) => id !== streamId);
+  const targetIndex = order.indexOf(targetId);
+  const insertAfter = event.clientX > target.getBoundingClientRect().left + target.clientWidth / 2;
+  order.splice(Math.max(0, targetIndex + (insertAfter ? 1 : 0)), 0, streamId);
+  state.streamOrderByWorkspace.set(workspaceId, order);
+  const open = new Set(state.openStreamsByWorkspace.get(workspaceId) ?? []);
+  state.openStreamsByWorkspace.set(workspaceId, order.filter((id) => open.has(id)));
+  state.configuredOpenStreamWorkspaces.add(workspaceId);
+  persistOpenStreams();
+  renderStreamTabs();
+  renderStreamChatDeck();
+});
+streamTabs?.addEventListener("dragend", () => {
+  draggedStreamId = "";
+  window.setTimeout(() => { suppressStreamTabClick = false; }, 0);
+});
+
+function ensureTaskStreamVisible(task) {
+  if (!task || !String(task.workspaceId ?? "").trim()) return;
+  const workspaceId = workspaceKey(task);
+  const streams = workspaceStreams(state.tasks.filter((candidate) => workspaceKey(candidate) === workspaceId));
+  reconcileOpenStreams(workspaceId, streams);
+  const streamId = streamKey(task);
+  const open = state.openStreamsByWorkspace.get(workspaceId) ?? [];
+  if (open.includes(streamId)) return;
+  const next = surface === "mobile" ? [streamId] : [...open.slice(-3), streamId];
+  state.openStreamsByWorkspace.set(workspaceId, next);
+  state.configuredOpenStreamWorkspaces.add(workspaceId);
+  persistOpenStreams();
+}
+
 function selectTaskFromUi(id) {
   if (!id) return;
   saveDraft();
   state.selectedId = id;
   for (const task of state.tasks) task.selected = task.id === id;
+  ensureTaskStreamVisible(currentTask());
   renderTasks();
   renderChat();
   setPane("chat");
@@ -1776,11 +1876,15 @@ let activeChatId = null;
 function renderChat() {
   const task = currentTask();
   const hasTask = Boolean(task);
-  chatEmpty.hidden = hasTask;
-  chatPane.hidden = !hasTask;
   if (!hasTask) {
+    chatEmpty.hidden = false;
+    if (chatEmptyText) chatEmptyText.textContent = "Выберите Workspace слева, чтобы открыть его Streams.";
+    streamTabs.hidden = true;
+    streamTabs.replaceChildren();
+    chatPane.hidden = true;
     activeChatId = null;
     streamChatColumns?.replaceChildren(chatPane);
+    streamChatColumns.hidden = true;
     streamChatColumns?.removeAttribute("data-multi-stream");
     publishVisibleStreamTasks([]);
     setDialogSettingsOpen(false);
@@ -1796,6 +1900,10 @@ function renderChat() {
   chatRunning.hidden = !task.running;
   for (const stop of chatStops) stop.hidden = !task.running;
   renderContextUsage(task);
+  renderStreamTabs();
+  // Сначала закрепляем окончательную ширину и порядок колонок. Историю и её
+  // нижний якорь рисуем уже после layout, поэтому открытый чат не остаётся выше.
+  renderStreamChatDeck();
 
   if (taskChanged) {
     activeChatId = task.id;
@@ -1807,7 +1915,6 @@ function renderChat() {
   // Композер восстанавливаем только при реальной смене задачи, чтобы фоновые
   // обновления статуса не сбрасывали курсор и набранный текст.
   if (taskChanged) restoreDraft();
-  renderStreamChatDeck();
 }
 
 function renderContextUsage(task) {
@@ -3327,16 +3434,6 @@ bugReportToggle?.addEventListener("click", () => {
   if (visible) bugReportText?.focus();
 });
 taskList.addEventListener("dblclick", (event) => {
-  const stream = event.target.closest("[data-stream-id][data-stream-name]");
-  if (stream) {
-    event.preventDefault();
-    const streamId = String(stream.dataset.streamId ?? "");
-    void askText({ title: "Новое название Stream", value: stream.dataset.streamName ?? "" })
-      .then((name) => {
-        if (name != null) emit("stream:rename", { streamId, name });
-      });
-    return;
-  }
   const workspace = event.target.closest("[data-workspace-heading]");
   if (!workspace) return;
   event.preventDefault();
@@ -3345,26 +3442,6 @@ taskList.addEventListener("dblclick", (event) => {
     .then((name) => {
       if (name) emit("workspace:rename", { workspaceId, name });
     });
-});
-let draggedStreamId = "";
-taskList.addEventListener("dragstart", (event) => {
-  const stream = event.target.closest(".task-stream-group[data-stream-id]");
-  draggedStreamId = String(stream?.dataset.streamId ?? "");
-  if (!draggedStreamId) event.preventDefault();
-  else event.dataTransfer?.setData("text/plain", draggedStreamId);
-});
-taskList.addEventListener("dragover", (event) => {
-  if (draggedStreamId && event.target.closest(".task-workspace-group[data-workspace-id]")) {
-    event.preventDefault();
-  }
-});
-taskList.addEventListener("drop", (event) => {
-  const workspace = event.target.closest(".task-workspace-group[data-workspace-id]");
-  const streamId = draggedStreamId || event.dataTransfer?.getData("text/plain") || "";
-  draggedStreamId = "";
-  if (!workspace || !streamId) return;
-  event.preventDefault();
-  emit("stream:move", { streamId, workspaceId: workspace.dataset.workspaceId });
 });
 bugReportAttach?.addEventListener("click", () => bugReportFiles?.click());
 bugReportFiles?.addEventListener("change", () => {
@@ -3997,6 +4074,7 @@ const AgentHub = {
     if (selectionChanged && state.selectedId) saveDraft();
     state.tasks = nextTasks;
     state.selectedId = nextSelectedId;
+    if (selectionChanged) ensureTaskStreamVisible(currentTask());
     renderTasks();
     if (selectionChanged || selectedTaskChanged || nextTasks.some((task) => (
       task.id !== nextSelectedId && state.visibleStreamTaskIds.includes(task.id)
@@ -4019,6 +4097,7 @@ const AgentHub = {
     saveDraft();
     state.selectedId = id;
     for (const task of state.tasks) task.selected = task.id === id;
+    ensureTaskStreamVisible(currentTask());
     renderTasks();
     renderChat();
   },

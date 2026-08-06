@@ -1579,7 +1579,7 @@ test("shared shell groups threads under stable Workspace and Stream identities",
 
   // Один безымянный поток не показывает искусственный номер; несколько получают Stream N.
   assert.match(app, /function streamDisplayName\(stream, streamCount\)/u);
-  assert.match(app, /streamCount > 1 \? `Stream \$\{stream\.ordinal\}` : ""/u);
+  assert.match(app, /streamCount > 1 \? `Stream \$\{stream\.ordinal\}` : "Stream"/u);
   // В широкой оболочке можно держать до четырёх потоков; mobile — один.
   assert.match(app, /const limit = surface === "mobile" \? 1 : 4;/u);
   assert.match(app, /function defaultOpenStreamIds\(streams, selectedStreamId, limit\)/u);
@@ -1588,9 +1588,12 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   const toggle = app.match(/function toggleOpenStream\([^)]*\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
   assert.match(toggle, /persistOpenStreams\(\)/u);
   assert.match(toggle, /renderStreamChatDeck\(\)/u);
-  // Потоки можно свернуть независимо, не скрывая сам Workspace.
-  assert.match(styles, /\.task-stream-group:not\(\[data-open\]\) \.task-stream-threads\s*\{\s*display: none;/su);
-  assert.match(styles, /\.task-stream-heading\[aria-expanded="true"\]::before/u);
+  // Слева остаются только Workspace; Streams живут в горизонтальной полосе.
+  assert.match(app, /function renderTaskWorkspaceItem\(/u);
+  assert.doesNotMatch(app, /class: "task-workspace-streams"/u);
+  assert.match(styles, /\.task-workspace-item\[data-selected\]/u);
+  assert.match(styles, /\.stream-tab\[aria-pressed="true"\]/u);
+  assert.match(app, /state\.streamOrderByWorkspace\.set\(workspaceId, order\)/u);
 });
 
 test("wide shared shell opens up to four Workspace Streams as chat columns", () => {
@@ -1599,9 +1602,10 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
 
+  assert.match(index, /data-stream-tabs/u);
   assert.match(index, /data-stream-chat-columns/u);
   assert.match(app, /function visibleWorkspaceStreamTasks\(\)/u);
-  assert.match(app, /visible\.filter\(\(task\) => task\.id !== selected\?\.id\)\.slice\(0, 3\)/u);
+  assert.match(app, /const shown = surface === "mobile" \? visible\.slice\(0, 1\) : visible\.slice\(0, 4\)/u);
   assert.match(app, /emit\("workspace:visible-streams", \{ taskIds: ids \}\)/u);
   assert.match(app, /function renderStreamChatPreview\(task\)/u);
   assert.match(app, /renderMessage\(message, \{ readOnly: true \}\)/u);
@@ -1611,4 +1615,23 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   assert.match(styles, /\.stream-chat-columns\[data-multi-stream\]/u);
   assert.match(styles, /repeat\(var\(--stream-chat-count, 1\), minmax\(13rem, 1fr\)\)/u);
   assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-preview\s*\{\s*display: none;/su);
+});
+
+test("VS Code stream refresh keeps composer focus and opens history at the bottom", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const deckStart = app.indexOf("function renderStreamChatDeck()");
+  const deckEnd = app.indexOf("function refreshSupplementaryStreamChat", deckStart);
+  const deck = app.slice(deckStart, deckEnd);
+  const chatStart = app.indexOf("function renderChat()");
+  const chatEnd = app.indexOf("function renderContextUsage", chatStart);
+  const chat = app.slice(chatStart, chatEnd);
+
+  // Фоновое обновление удаляет только read-only previews и не переподключает
+  // chatPane, в котором находится сфокусированный composer.
+  assert.match(deck, /querySelectorAll\("\.stream-chat-preview"\)/u);
+  assert.doesNotMatch(deck, /replaceChildren\(chatPane/u);
+  assert.match(deck, /chatPane\.style\.order/u);
+  // Колонки фиксируются до forceBottom, поэтому переносы строк уже учтены.
+  assert.ok(chat.indexOf("renderStreamChatDeck();") < chat.indexOf("renderMessages({ forceBottom: true });"));
+  assert.match(app, /requestAnimationFrame\(\(\) => \{ log\.scrollTop = log\.scrollHeight; \}\)/u);
 });
