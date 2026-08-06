@@ -1554,7 +1554,7 @@ test("chart, tooltip and aria-summary use only the visible series", () => {
 test("Gothic wears the Sleeper mask in the header niche", () => {
   const styles = themeFile("gothic");
   const mark = fs.readFileSync(path.join(MINI_APP_ROOT, "themes", "gothic", "gothic-sleeper-mask.svg"), "utf8");
-  assert.match(styles, /--gothic-mark-image:\s*url\("\.\/gothic-sleeper-mask\.svg"\)/u);
+  assert.match(styles, /--gothic-mark-image:\s*url\("\.\/gothic-sleeper-mask\.svg\?v=[a-f0-9]{12}"\)/u);
   assert.match(styles, /\.brand-mark::before[\s\S]*?background: var\(--gothic-mark-image\)/u);
   /* Рога и маска остаются раздельными деталями, чтобы глазницы не резали силуэт. */
   assert.equal((mark.match(/<path/gu) ?? []).length, 2);

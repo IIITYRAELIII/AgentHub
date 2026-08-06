@@ -470,7 +470,7 @@ html[data-theme="gothic"] .chat {
 /* Знак: вытянутая маска Спящего с тремя парами боковых отростков. Упрощённая
    морда с одной парой рогов в малом размере читалась как звериная голова. */
 html[data-theme="gothic"] {
-  --gothic-mark-image: url("./gothic-sleeper-mask.svg");
+  --gothic-mark-image: url("./gothic-sleeper-mask.svg?v=ebd2ebe5f140");
 }
 
 html[data-theme="gothic"] .brand-mark {
