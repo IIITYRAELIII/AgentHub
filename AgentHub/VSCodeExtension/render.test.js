@@ -1570,6 +1570,9 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const tabsStart = app.indexOf("function renderStreamTabs()");
+  const tabsEnd = app.indexOf("function publishVisibleStreamTasks", tabsStart);
+  const tabs = app.slice(tabsStart, tabsEnd);
 
   // Новый фронтенд работает только от канонического streamId.
   assert.match(client, /const streamId = String\(task\.streamId \?\? ""\)\.trim\(\)/u);
@@ -1594,12 +1597,19 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   assert.match(styles, /\.task-workspace-item\[data-selected\]/u);
   assert.match(styles, /\.stream-tab\[aria-pressed="true"\]/u);
   assert.match(app, /state\.streamOrderByWorkspace\.set\(workspaceId, order\)/u);
-  // Верхняя полоса сохраняет содержимое прежней карточки Thread, а не только имя Stream.
-  assert.match(app, /class: "stream-tab-card"/u);
-  assert.match(app, /task\?\.threadTitle \|\| task\?\.title/u);
-  assert.match(app, /class: "task-agent task-model"/u);
-  assert.match(app, /class: "task-runtime"/u);
+  // Верхняя полоса показывает Stream и свойства текущего Thread, но не его
+  // сменяемое название: история Thread появится только в истории перерождений.
+  assert.match(tabs, /class: "stream-tab-card"/u);
+  assert.match(tabs, /text: streamName/u);
+  assert.doesNotMatch(tabs, /task\?\.threadTitle \|\| task\?\.title/u);
+  assert.match(tabs, /class: "task-agent task-model"/u);
+  assert.match(tabs, /class: "task-runtime"/u);
   assert.match(styles, /\.stream-tab-card\s*\{/u);
+  assert.match(tabs, /"data-running": running \? "" : null/u);
+  assert.match(tabs, /"data-answer-ready": answerReady \? "" : null/u);
+  assert.doesNotMatch(tabs, /class: "task-status"/u);
+  assert.match(styles, /@keyframes stream-running-wave/u);
+  assert.match(styles, /@keyframes stream-answer-ready/u);
 });
 
 test("wide shared shell opens up to four Workspace Streams as chat columns", () => {
@@ -1621,6 +1631,7 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   assert.match(styles, /\.stream-chat-columns\[data-multi-stream\]/u);
   assert.match(styles, /repeat\(var\(--stream-chat-count, 1\), minmax\(13rem, 1fr\)\)/u);
   assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-preview\s*\{\s*display: none;/su);
+  assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-columns\s*\{[\s\S]*?display: grid;/u);
 });
 
 test("VS Code stream refresh keeps composer focus and opens history at the bottom", () => {

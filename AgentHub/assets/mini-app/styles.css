@@ -3131,6 +3131,7 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+  overflow: hidden;
   position: relative;
 }
 
@@ -3141,9 +3142,9 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   display: flex;
   flex: 0 0 auto;
   gap: 0.35rem;
-  min-height: 5.35rem;
+  min-height: 3.7rem;
   overflow-x: auto;
-  padding: 0.32rem 0.55rem;
+  padding: 0.3rem 0.55rem;
   scrollbar-width: thin;
 }
 
@@ -3160,12 +3161,12 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   font: inherit;
   font-size: 0.74rem;
   font-weight: 650;
-  gap: 0.2rem;
-  min-height: 4.65rem;
-  padding: 0.28rem 0.42rem 0.4rem;
+  min-height: 3.05rem;
+  padding: 0.15rem;
+  position: relative;
   text-align: left;
   transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
-  width: 15rem;
+  width: 12rem;
 }
 
 .stream-tab:hover,
@@ -3193,23 +3194,6 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   cursor: grabbing;
 }
 
-.stream-tab-label {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.stream-tab-stream {
-  align-items: center;
-  color: var(--text-muted);
-  display: flex;
-  font-size: 0.66rem;
-  gap: 0.4rem;
-  min-width: 0;
-  padding: 0 0.18rem;
-}
-
 .stream-tab-card {
   align-items: flex-start;
   background: color-mix(in srgb, var(--surface-2) 68%, transparent);
@@ -3219,7 +3203,9 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   flex: 1 1 auto;
   gap: 0.5rem;
   min-width: 0;
-  padding: 0.45rem 0.5rem;
+  overflow: hidden;
+  padding: 0.42rem 0.5rem;
+  position: relative;
 }
 
 .stream-tab[aria-pressed="true"] .stream-tab-card {
@@ -3261,15 +3247,53 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   overflow: hidden;
 }
 
-.stream-tab-meta .task-status {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .stream-tab-meta .task-runtime {
   margin-left: auto;
+}
+
+/* Статус потока читается без текстовой плашки. Цвет всегда берётся из
+   активной темы: выполняющийся ход пробегает светом по рамке, непрочитанный
+   готовый ответ медленно дышит внешним свечением. */
+.stream-tab[data-running] .stream-tab-card::after {
+  animation: stream-running-wave 2.2s linear infinite;
+  background: linear-gradient(90deg, transparent 0%, var(--accent) 48%, transparent 100%);
+  border-radius: inherit;
+  content: "";
+  inset: -1px;
+  padding: 1.5px;
+  pointer-events: none;
+  position: absolute;
+  transform: translateX(-110%);
+  width: 72%;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+.stream-tab[data-answer-ready] .stream-tab-card {
+  animation: stream-answer-ready 3.6s ease-in-out infinite;
+  border-color: var(--accent-line);
+}
+
+@keyframes stream-running-wave {
+  to { transform: translateX(300%); }
+}
+
+@keyframes stream-answer-ready {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+  50% { box-shadow: 0 0 1.1rem 0.12rem color-mix(in srgb, var(--accent) 54%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stream-tab[data-running] .stream-tab-card::after {
+    animation: none;
+    transform: translateX(70%);
+  }
+
+  .stream-tab[data-answer-ready] .stream-tab-card {
+    animation: none;
+    box-shadow: 0 0 0.75rem color-mix(in srgb, var(--accent) 42%, transparent);
+  }
 }
 
 /* Wide surfaces can inspect several Streams from one Workspace at once. The
@@ -6059,8 +6083,20 @@ html[data-surface="mobile"] .chat {
 }
 
 html[data-surface="mobile"] .stream-chat-columns {
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
   overflow: hidden;
+}
+
+html[data-surface="mobile"] .stream-tabs {
+  min-height: 3.35rem;
+  padding: 0.22rem var(--gutter-right) 0.22rem var(--gutter-left);
+}
+
+html[data-surface="mobile"] .stream-tab {
+  min-height: 2.85rem;
+  width: min(11rem, 72vw);
 }
 
 html[data-surface="mobile"] .stream-chat-preview {

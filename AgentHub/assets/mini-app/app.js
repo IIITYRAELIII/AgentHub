@@ -1546,11 +1546,15 @@ function renderStreamTabs() {
   const open = new Set(state.openStreamsByWorkspace.get(workspaceId) ?? []);
   streamTabs.replaceChildren(...ordered.map((stream) => {
     const task = representativeStreamTask(stream);
+    const streamName = streamDisplayName(stream, streams.length);
     const provider = String(task?.provider ?? "none");
     const agentLabel = task?.agentLabel || providerLabels[provider] || "Агент";
+    const running = Boolean(task?.running);
+    const answerReady = Boolean(task?.unread && !running);
     const time = task?.running && task.startedAt
       ? formatRunningDuration(task.startedAt)
       : formatRelativeTime(task?.lastActivity);
+    const statusLabel = running ? "Ход выполняется" : answerReady ? "Ответ готов" : task?.statusLabel || "";
     const button = el("button", {
       type: "button",
       class: "stream-tab",
@@ -1559,22 +1563,19 @@ function renderStreamTabs() {
       "data-stream-name": stream.name ?? "",
       "aria-pressed": String(open.has(stream.id)),
       "data-current": task?.id === selected.id ? "" : null,
+      "data-running": running ? "" : null,
+      "data-answer-ready": answerReady ? "" : null,
       draggable: surface === "mobile" ? null : "true",
-      title: "Нажмите, чтобы показать или скрыть. Перетащите, чтобы изменить порядок. ПКМ — переименовать.",
+      "aria-label": [streamName, agentLabel, task?.modelLabel, statusLabel].filter(Boolean).join(". "),
+      title: `${statusLabel ? `${statusLabel}. ` : ""}Нажмите, чтобы показать или скрыть. Перетащите, чтобы изменить порядок. ПКМ — переименовать.`,
     }, [
-      el("span", { class: "stream-tab-stream" }, [
-        el("span", { class: "stream-tab-label", text: streamDisplayName(stream, streams.length) }),
-        stream.tasks.some((item) => item.unread)
-          ? el("span", { class: "task-unread", title: "Есть непрочитанные сообщения" })
-          : null,
-      ]),
       el("span", { class: "stream-tab-card" }, [
         el("span", { class: "provider-dot", "data-provider": provider, "aria-hidden": "true" }),
         el("span", { class: "stream-tab-body" }, [
           el("span", { class: "stream-tab-title-row" }, [
             el("span", {
               class: "stream-tab-title",
-              text: task?.threadTitle || task?.title || "Без названия",
+              text: streamName,
             }),
             el("span", {
               class: "task-time",
@@ -1590,13 +1591,6 @@ function renderStreamTabs() {
                 "data-model-tier": modelTier(task.modelLabel),
                 text: shortModelLabel(task.modelLabel),
                 title: task.modelLabel,
-              })
-              : null,
-            task?.statusLabel
-              ? el("span", {
-                class: "task-status",
-                "data-status": task.status || "",
-                text: task.statusLabel,
               })
               : null,
             task?.runtimeLabel
