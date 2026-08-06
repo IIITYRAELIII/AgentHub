@@ -459,7 +459,6 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "stop",
       "git-diff",
       "sliders-horizontal",
-      "dots-three",
       "paperclip",
       "paper-plane-right",
       "list-checks",
@@ -588,7 +587,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(styles, /--ph-mask-caret-double-up:/u);
     assert.match(
       styles,
-      /\.chat-actions > \.chip-button \{[\s\S]*?height: 2\.1rem;[\s\S]*?padding-block: 0;/u,
+      /\.chat-overlay-actions > \.chip-button \{[\s\S]*?height: 2\.1rem;[\s\S]*?padding-block: 0;/u,
     );
     assert.match(
       styles,
