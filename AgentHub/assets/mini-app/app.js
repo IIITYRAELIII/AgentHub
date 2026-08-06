@@ -2997,45 +2997,70 @@ function renderQueue() {
   queueBox.append(el("div", { class: "queue-head", text: counts }));
   for (const entry of queued) {
     const actions = [];
-    const steerAvailable = Boolean(currentTask()?.running && currentTask()?.provider === "codex");
-    actions.push(el("button", {
-      type: "button",
-      class: "queue-steer",
-      "data-action": "queue-steer",
-      "data-queue-id": entry.id,
-      title: steerAvailable
-        ? "Добавить это сообщение в текущий ход"
-        : "Доступно, пока эта задача выполняет ход Codex",
-      disabled: !steerAvailable,
-      text: "В текущий ход",
-    }));
-    actions.push(el("button", {
-      type: "button",
-      class: "queue-edit",
-      "data-action": "queue-edit",
-      "data-queue-id": entry.id,
-      title: "Изменить текст сообщения, не затрагивая изображения и аннотации",
-      text: "Изменить",
-    }));
-    if (entry.state === "pending") {
+    if (entry.optimistic) {
+      actions.push(el("span", { class: "queue-optimistic", text: "Ставится в очередь…" }));
+    } else {
+      const steerAvailable = Boolean(currentTask()?.running && currentTask()?.provider === "codex");
       actions.push(el("button", {
         type: "button",
-        class: "queue-accept",
-        "data-action": "queue-accept",
+        class: "queue-steer",
+        "data-action": "queue-steer",
         "data-queue-id": entry.id,
-        title: "Отправить после завершения текущего хода",
-        text: "После хода",
+        title: steerAvailable
+          ? "Добавить это сообщение в текущий ход"
+          : "Доступно, пока эта задача выполняет ход Codex",
+        disabled: !steerAvailable,
+        text: "В текущий ход",
+      }));
+      actions.push(el("button", {
+        type: "button",
+        class: "queue-edit",
+        "data-action": "queue-edit",
+        "data-queue-id": entry.id,
+        title: "Изменить текст сообщения, не затрагивая изображения и аннотации",
+        text: "Изменить",
+      }));
+      if (entry.state === "pending") {
+        actions.push(el("button", {
+          type: "button",
+          class: "queue-accept",
+          "data-action": "queue-accept",
+          "data-queue-id": entry.id,
+          title: "Отправить после завершения текущего хода",
+          text: "После хода",
+        }));
+      }
+      actions.push(el("button", {
+        type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
+        title: "Убрать отложенное сообщение", "aria-label": "Убрать отложенное сообщение", text: "×",
       }));
     }
-    actions.push(el("button", {
-      type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
-      title: "Убрать отложенное сообщение", "aria-label": "Убрать отложенное сообщение", text: "×",
-    }));
-    queueBox.append(el("div", { class: "queue-item", "data-queue-id": entry.id }, [
-      el("span", { class: "queue-text", text: entry.text || entry.preview || entry.summary || "Сообщение" }),
-      Array.isArray(entry.annotations) && entry.annotations.length
-        ? el("span", { class: "queue-annotations", text: `Аннотации: ${entry.annotations.length}` })
+    const entryAnnotations = Array.isArray(entry.annotations) ? entry.annotations : [];
+    const rawText = String(entry.text || entry.summary || "").trim();
+    const rawPreview = String(entry.preview || "").trim();
+    const annotationEnvelope = /(?:^#\s*Response annotations:|<response-annotations>)/iu;
+    const visibleText = rawText && !(entryAnnotations.length && annotationEnvelope.test(rawText))
+      ? rawText
+      : (!entryAnnotations.length && rawPreview ? rawPreview : "");
+    const content = el("div", { class: "queue-content" }, [
+      visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
+      entryAnnotations.length
+        ? el("div", { class: "queue-annotation-list" }, entryAnnotations.map((annotation, index) => {
+          const quote = String(annotation?.text ?? "").trim();
+          const comment = String(annotation?.annotation ?? "").trim();
+          return el("div", { class: "queue-annotation" }, [
+            el("span", { class: "queue-annotation-label", text: `Цитата ${index + 1}` }),
+            quote ? el("span", { class: "queue-annotation-quote", text: quote }) : null,
+            comment ? el("span", { class: "queue-annotation-comment", text: comment }) : null,
+          ]);
+        }))
         : null,
+      !visibleText && !entryAnnotations.length
+        ? el("div", { class: "queue-text", text: "Сообщение" })
+        : null,
+    ]);
+    queueBox.append(el("div", { class: "queue-item", "data-queue-id": entry.id }, [
+      content,
       Array.isArray(entry.attachments) && entry.attachments.length
         ? renderAttachmentStrip(entry.attachments, { readOnly: true })
         : null,

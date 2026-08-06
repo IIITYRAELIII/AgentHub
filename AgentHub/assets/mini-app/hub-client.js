@@ -51,6 +51,7 @@ const liveUserMessagesByTask = new Map();
 const liveCardsByTask = new Map();
 const completionOverlaysByTask = new Map();
 const queueActionsInFlight = new Set();
+const optimisticDeferredClientUserMessageIds = new Set();
 const requestedContextCompactions = new Set();
 const observedContextCompactions = new Map();
 let deferredClientUserMessageIds = new Set();
@@ -313,6 +314,45 @@ function reconciledMessages(taskIdValue) {
   // Live snapshots, durable history and the optimistic receipt can arrive in
   // either order. Re-run idempotent deduplication after all three were merged.
   return chronologicalMessages(deduplicateConversationMessages(visible));
+}
+
+function deferredEntriesForTask(snapshot, taskIdValue) {
+  return (snapshot?.deferredInputs ?? []).filter((item) => (
+    item.state !== "dispatching"
+    && item.state !== "steering"
+    && (!item.provider || taskId(item.provider, item.threadId) === taskIdValue)
+  ));
+}
+
+function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
+  const serverClientIds = new Set(serverEntries
+    .map((item) => String(item.clientUserMessageId ?? "").trim())
+    .filter(Boolean));
+  return [...outgoingMessages(taskIdValue).values()]
+    .filter((message) => (
+      optimisticDeferredClientUserMessageIds.has(message.clientUserMessageId)
+      && !serverClientIds.has(message.clientUserMessageId)
+    ))
+    .map((message) => ({
+      id: `local:${message.clientUserMessageId}`,
+      state: "queued",
+      clientUserMessageId: message.clientUserMessageId,
+      text: message.responseAnnotationRequest
+        || (message.responseAnnotations?.length ? "" : message.text),
+      annotations: message.responseAnnotations ?? [],
+      attachments: message.attachments ?? [],
+      createdAt: message.time,
+      optimistic: true,
+    }));
+}
+
+function renderTaskQueue(taskIdValue, snapshot = lastSnapshot) {
+  const serverEntries = deferredEntriesForTask(snapshot, taskIdValue)
+    .map((item) => ({ ...item, attachments: attachmentViews(item.attachments) }));
+  agentHub.setQueue(taskIdValue, [
+    ...serverEntries,
+    ...optimisticDeferredEntries(taskIdValue, serverEntries),
+  ]);
 }
 
 function receiptDeliveryPatch(receipt) {
@@ -718,12 +758,25 @@ function applySnapshot(snapshot) {
   agentHub.setServerStatus(snapshot.server ?? null);
   observeContextCompactions(snapshot.tasks);
   applyMessageReceipts(snapshot);
-  deferredClientUserMessageIds = new Set(
+  const serverDeferredClientUserMessageIds = new Set(
     (snapshot.deferredInputs ?? [])
       .filter((item) => item.state !== "dispatching")
       .map((item) => String(item.clientUserMessageId ?? "").trim())
       .filter(Boolean),
   );
+  const activeRunClientUserMessageIds = new Set((snapshot.tasks ?? [])
+    .map((task) => String(task.run?.clientUserMessageId ?? "").trim())
+    .filter(Boolean));
+  for (const clientUserMessageId of optimisticDeferredClientUserMessageIds) {
+    if (
+      serverDeferredClientUserMessageIds.has(clientUserMessageId)
+      || activeRunClientUserMessageIds.has(clientUserMessageId)
+    ) optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
+  }
+  deferredClientUserMessageIds = new Set([
+    ...serverDeferredClientUserMessageIds,
+    ...optimisticDeferredClientUserMessageIds,
+  ]);
   const serverSelected = (snapshot.tasks ?? []).find((task) => task.selected);
   const serverSelectedId = serverSelected
     ? taskId(serverSelected.provider, serverSelected.threadId, serverSelected.streamId)
@@ -795,12 +848,7 @@ function applySnapshot(snapshot) {
       ],
       }))
       : []);
-    agentHub.setQueue(selectedTaskId, (snapshot.deferredInputs ?? []).filter((item) =>
-      item.state !== "dispatching" && item.state !== "steering"
-      &&
-      (!item.provider || item.provider === selected.provider)
-      && (!item.threadId || item.threadId === selected.threadId))
-      .map((item) => ({ ...item, attachments: attachmentViews(item.attachments) })));
+    renderTaskQueue(selectedTaskId, snapshot);
   }
   const settings = snapshot.settings ?? {};
   agentHub.setOptions({
@@ -1227,7 +1275,15 @@ agentHub.on("message:send", (request) => {
     ...deliveryPatch("preparing"),
   };
   rememberOutgoing(request.taskId, optimistic);
-  renderTaskMessages(request.taskId);
+  const queuesOptimistically = request.followUpMode === "queue";
+  if (queuesOptimistically) {
+    optimisticDeferredClientUserMessageIds.add(request.requestId);
+    deferredClientUserMessageIds.add(request.requestId);
+    renderTaskQueue(request.taskId);
+    renderTaskMessages(request.taskId);
+  } else {
+    renderTaskMessages(request.taskId);
+  }
   return runAction(async () => {
     try {
       // Worker attachments are deleted after their command finishes. A retry
@@ -1252,6 +1308,9 @@ agentHub.on("message:send", (request) => {
       if (paths.length) params.attachments = paths;
       const result = await control("send-message", params);
       applySnapshot(result?.snapshot);
+      if (!result?.deferred) {
+        optimisticDeferredClientUserMessageIds.delete(request.requestId);
+      }
       agentHub.completeSend(request.requestId, {
         accepted: Boolean(result?.accepted || result?.deferred),
       });
@@ -1267,6 +1326,15 @@ agentHub.on("message:send", (request) => {
             ? deliveryPatch(result?.queued ? "queued" : "accepted")
             : deliveryPatch("rejected")),
       });
+      if (queuesOptimistically) {
+        deferredClientUserMessageIds = new Set([
+          ...deferredClientUserMessageIds,
+          ...(result?.deferred ? [request.requestId] : []),
+        ]);
+        if (!result?.deferred) deferredClientUserMessageIds.delete(request.requestId);
+        renderTaskQueue(request.taskId, result?.snapshot ?? lastSnapshot);
+        renderTaskMessages(request.taskId);
+      }
       agentHub.toast(result?.message ?? (result?.accepted ? "Сообщение принято" : "Сообщение сохранено"));
     } catch (error) {
       // A remote command may finish after its HTTP result is lost. Preserve
@@ -1274,6 +1342,11 @@ agentHub.on("message:send", (request) => {
       // through the exact server receipt instead of restoring a duplicate
       // draft and labelling an accepted turn as rejected.
       const rejected = messageSendDefinitelyRejected(error);
+      if (rejected) {
+        optimisticDeferredClientUserMessageIds.delete(request.requestId);
+        deferredClientUserMessageIds.delete(request.requestId);
+        renderTaskQueue(request.taskId);
+      }
       agentHub.completeSend(request.requestId, { accepted: !rejected });
       patchOutgoing(
         request.taskId,

@@ -4176,7 +4176,7 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 }
 
 .queue-item {
-  align-items: center;
+  align-items: flex-start;
   background: var(--surface-1);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -4186,18 +4186,56 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   padding: 0.35rem 0.5rem;
 }
 
+.queue-content {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
 .queue-text {
   color: var(--text-soft);
   font-size: 0.8rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
-.queue-annotations {
+.queue-annotation-list {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.queue-annotation {
+  border-left: 2px solid var(--accent-line);
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+  padding-left: 0.45rem;
+}
+
+.queue-annotation-label {
   color: var(--text-faint);
-  flex: 0 0 auto;
+  font-size: 0.62rem;
+  letter-spacing: var(--label-spacing);
+  text-transform: uppercase;
+}
+
+.queue-annotation-quote {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+
+.queue-annotation-comment {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.queue-optimistic {
+  color: var(--text-faint);
   font-size: 0.68rem;
+  white-space: nowrap;
 }
 
 .queue-actions {

@@ -1049,12 +1049,12 @@ test("chat sends with Enter on desktop and keeps Enter as a newline on phones", 
   assert.doesNotMatch(html, /Ctrl\+Enter/u);
 });
 
-test("chat shows sent messages immediately and reconciles them by exact identity", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  assert.match(
-    client,
-    /rememberOutgoing\(request\.taskId, optimistic\);\s*renderTaskMessages\(request\.taskId\);/u,
-  );
+  test("chat shows sent messages immediately and reconciles them by exact identity", () => {
+    const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+    assert.match(client, /rememberOutgoing\(request\.taskId, optimistic\);/u);
+    assert.match(client, /const queuesOptimistically = request\.followUpMode === "queue"/u);
+    assert.match(client, /optimisticDeferredClientUserMessageIds\.add\(request\.requestId\)/u);
+    assert.match(client, /renderTaskQueue\(request\.taskId\)/u);
   assert.match(client, /\.\.\.deliveryPatch\("preparing"\)/u);
   assert.match(client, /delivery: "Отправляется…"/u);
   assert.match(client, /clientUserMessageId: request\.requestId/u);
@@ -1082,14 +1082,16 @@ test("chat long-polls commands and skips unchanged history renders", () => {
   assert.match(app, /setMessagesPreservingScroll\(taskId, messages\) \{[\s\S]*sameData\(state\.messages\.get\(taskId\) \?\? \[\], next\)[\s\S]*return/u);
 });
 
-test("dispatching deferred messages leave the queue and reappear in the active conversation", () => {
+  test("dispatching deferred messages leave the queue and reappear in the active conversation", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   assert.match(app, /\.filter\(\(entry\) => entry\.state !== "dispatching" && entry\.state !== "steering"\)/u);
   assert.match(app, /Date\.parse\(left\.createdAt \|\| 0\)/u);
-  assert.match(client, /\.filter\(\(item\) =>\s*item\.state !== "dispatching" && item\.state !== "steering"/u);
-  assert.match(client, /deferred\.state === "dispatching" \|\| deferred\.state === "steering"\s*\?\s*"sending"/u);
-  assert.match(client, /item\.state !== "dispatching" && item\.state !== "steering"/u);
+    assert.match(
+      client,
+      /function deferredEntriesForTask[\s\S]*item\.state !== "dispatching"[\s\S]*item\.state !== "steering"/u,
+    );
+    assert.match(client, /deferred\.state === "dispatching" \|\| deferred\.state === "steering"\s*\?\s*"sending"/u);
 });
 
 test("message attachments keep timestamps, previews and an explicit open action", () => {
@@ -1403,12 +1405,15 @@ test("shared chat Markdown renders GFM tables responsively", () => {
   assert.match(styles, /\.markdown-table[\s\S]*border-collapse: collapse;/u);
 });
 
-test("queued messages own steering and editing while the composer always queues", () => {
+  test("queued messages own steering and editing while the composer always queues", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const lifecycle = fs.readFileSync(require.resolve("../assets/mini-app/message-lifecycle.js"), "utf8");
-  assert.match(app, /entry\.text \|\| entry\.preview \|\| entry\.summary/u);
+    assert.match(app, /const entryAnnotations = Array\.isArray\(entry\.annotations\)/u);
+    assert.match(app, /class: "queue-annotation-quote"/u);
+    assert.match(app, /class: "queue-annotation-comment"/u);
+    assert.match(app, /\(entryAnnotations\.length && annotationEnvelope\.test\(rawText\)\)/u);
   assert.match(app, /data-action": "queue-steer"/u);
   assert.match(app, /data-action": "queue-edit"/u);
   assert.match(app, /followUpMode: currentTask\(\)\?\.running \? "queue" : null/u);
@@ -1418,7 +1423,8 @@ test("queued messages own steering and editing while the composer always queues"
   assert.match(client, /control\("deferred-input", \{ id, action: "queue" \}\)/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "steer" \}\)/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "edit", text \}\)/u);
-  assert.match(client, /deferredClientUserMessageIds = new Set\(/u);
+    assert.match(client, /deferredClientUserMessageIds = new Set\(/u);
+    assert.match(client, /function optimisticDeferredEntries\(taskIdValue, serverEntries = \[\]\)/u);
   assert.match(
     lifecycle,
     /message\?\.role === "user"[\s\S]*deferredIds\.has\(String\(message\?\.clientUserMessageId/u,
