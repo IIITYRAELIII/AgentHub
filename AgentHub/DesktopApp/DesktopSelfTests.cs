@@ -16,6 +16,7 @@ namespace AgentHubDesktop
             EndpointValidationRejectsPipeInjection();
             ServerProofRejectsImpostor();
             ResponseWaitIsBounded();
+            LongRunningCommandsReceiveAnExtendedResponseWindow();
             WorkspaceFileLinkAcceptsCanonicalTarget();
             WorkspaceFileLinkRejectsWebTarget();
             UserMessageDisclosureRequiresRealOverflow();
@@ -25,6 +26,14 @@ namespace AgentHubDesktop
             AttachmentStoragePreservesRdpFileName();
             WorkspacePresentationGroupsThreadsByWorkspaceAndStream();
             WorkspacePresentationKeepsAtMostFourOpenStreams();
+        }
+
+        private static void LongRunningCommandsReceiveAnExtendedResponseWindow()
+        {
+            Require(AgentHubClient.ResponseTimeoutForAction("snapshot", 15000) == 15000,
+                "ordinary Desktop command timeout changed");
+            Require(AgentHubClient.ResponseTimeoutForAction("rotate-stream", 15000) == 180000,
+                "Stream rotation kept the short Desktop timeout");
         }
 
         private static void StableMessageIdentitySurvivesRetry()

@@ -36,6 +36,7 @@ const REMOTE_RESULT_LONG_POLL_MS = 25_000;
 const REMOTE_RESULT_FALLBACK_POLL_MS = 600;
 const DEFAULT_CONTROL_TIMEOUT_MS = 45_000;
 const LONG_CONTROL_TIMEOUT_MS = 180_000;
+const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report"]);
 const HISTORY_CATCH_UP_TIMEOUT_MS = 120_000;
 const CONNECTION_OFFLINE_FAILURES = 3;
 const CONNECTION_OFFLINE_GRACE_MS = 6_000;
@@ -531,7 +532,7 @@ function bridgeCall(action, params = {}) {
     const timer = window.setTimeout(() => {
       pendingBridgeCalls.delete(id);
       reject(markConnectionFailure(new Error("Agent Hub в VS Code не ответил вовремя")));
-    }, action === "submit-bug-report" ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS);
+    }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS);
     pendingBridgeCalls.set(id, { resolve, reject, timer });
     vscode.postMessage({ type: "agenthub:control", id, action, params });
   });
@@ -611,7 +612,7 @@ async function control(action, params = {}) {
   return payload.pending && payload.id
     ? waitRemoteResult(
         payload.id,
-        action === "submit-bug-report" ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS,
+        LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS,
       )
     : payload.result;
 }

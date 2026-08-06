@@ -1,7 +1,9 @@
 import { recycleCodexCompactionTransport } from "./codex-compaction-transport.mjs";
+import { readLatestCodexCompactionItem } from "./codex-compaction-rollout.mjs";
 
 const DEFAULT_CLEANUP_RETRY_MS = 15_000;
 const MINIMUM_CLEANUP_RETRY_WINDOW_MS = 2 * 60_000;
+const RAW_COMPACTION_EVENT_GRACE_MS = 1_000;
 
 function normalizedId(value) {
   return String(value ?? "").trim();
@@ -39,6 +41,7 @@ export class CodexContextMaintenanceService {
     startThread = async () => null,
     injectItems = async () => null,
     deleteThread = async () => null,
+    readCompactionItem = readLatestCodexCompactionItem,
     sandboxSettings = () => ({}),
     recycleTransport = recycleCodexCompactionTransport,
     now = Date.now,
@@ -75,6 +78,7 @@ export class CodexContextMaintenanceService {
     this.startThread = startThread;
     this.injectItems = injectItems;
     this.deleteThread = deleteThread;
+    this.readCompactionItem = readCompactionItem;
     this.sandboxSettings = sandboxSettings;
     this.recycleTransport = recycleTransport;
     this.now = now;
@@ -125,12 +129,19 @@ export class CodexContextMaintenanceService {
           ? "Свёртка контекста не завершилась вовремя"
           : "Свёртка контекста не завершилась");
       }
-      const compactionItem = await this.compactions.waitForRawItem(
+      const trackedCompaction = this.compactions.get(sourceThreadId);
+      const liveCompactionItem = await this.compactions.waitForRawItem(
         sourceThreadId,
         started.compactionId,
+        RAW_COMPACTION_EVENT_GRACE_MS,
       );
+      const rolloutPath = normalizedId(source?.thread?.path)
+        || normalizedId(await this.knownRolloutPath(sourceThreadId));
+      const compactionItem = liveCompactionItem ?? await this.readCompactionItem(rolloutPath, {
+        notBefore: trackedCompaction?.startedAt,
+      });
       if (!compactionItem) {
-        throw new Error("Codex App Server не передал результат свёртки для нового Thread");
+        throw new Error("Не удалось извлечь результат свёртки для нового Thread");
       }
       await this.ensureTransport();
       const sourceThread = source?.thread ?? {};

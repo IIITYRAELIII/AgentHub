@@ -124,6 +124,12 @@ test("installed VS Code bridge resolves backend modules from the active runtime"
       options: { timeoutMs: 180_000 },
       installedLayout: true,
     });
+    assert.deepEqual(await bridge.control("rotate-stream", { streamId: "stream-1" }), {
+      action: "rotate-stream",
+      params: { streamId: "stream-1" },
+      options: { timeoutMs: 180_000 },
+      installedLayout: true,
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

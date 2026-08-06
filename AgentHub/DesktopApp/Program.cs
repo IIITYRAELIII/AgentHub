@@ -138,6 +138,7 @@ namespace AgentHubDesktop
             Dictionary<string, object> parameters)
         {
             var requestMayHaveReachedServer = false;
+            var commandResponseTimeoutMs = ResponseTimeoutForAction(action, responseTimeoutMs);
             try
             {
                 if (!File.Exists(secretFile) || !File.Exists(endpointFile))
@@ -221,7 +222,7 @@ namespace AgentHubDesktop
                         await writer.WriteLineAsync(json.Serialize(request));
                         var line = await DesktopControlProtocol.WithTimeout(
                             reader.ReadLineAsync(),
-                            responseTimeoutMs,
+                            commandResponseTimeoutMs,
                             "Agent Hub Server не подтвердил запрос вовремя.");
                         if (String.IsNullOrWhiteSpace(line))
                         {
@@ -275,6 +276,14 @@ namespace AgentHubDesktop
                     false,
                     error);
             }
+        }
+
+        internal static int ResponseTimeoutForAction(string action, int defaultTimeoutMs)
+        {
+            return String.Equals(action, "rotate-stream", StringComparison.Ordinal)
+                || String.Equals(action, "submit-bug-report", StringComparison.Ordinal)
+                ? Math.Max(defaultTimeoutMs, 180000)
+                : defaultTimeoutMs;
         }
 
         public static string Text(IDictionary<string, object> value, string key, string fallback = "")

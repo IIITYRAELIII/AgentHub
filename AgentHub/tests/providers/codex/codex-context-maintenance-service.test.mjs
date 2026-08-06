@@ -117,7 +117,7 @@ test("rotation compacts into a clean Thread and injects only the raw compaction 
     ["resume", "thread-1", { sandbox: "danger-full-access" }],
     ["compact", "thread-1"],
     ["wait", "thread-1", "compact-thread-1"],
-    ["wait-raw", "thread-1", "compact-thread-1"],
+    ["wait-raw", "thread-1", "compact-thread-1", 1_000],
     ["transport"],
     ["start-thread", {
       cwd: "D:\\repo",
@@ -127,6 +127,49 @@ test("rotation compacts into a clean Thread and injects only the raw compaction 
     }],
     ["inject", "thread-2", [rawItem]],
     ["clear-raw", "thread-1", "compact-thread-1"],
+  ]);
+});
+
+test("rotation falls back to the exact rollout compaction when the raw event is absent", async () => {
+  const rawItem = { type: "compaction", encrypted_content: "rollout-summary" };
+  const { service, calls } = harness({
+    runForTask: () => null,
+    runIsActive: () => false,
+    ensureTransport: async () => calls.push(["transport"]),
+    resumeThread: async (...args) => calls.push(["resume", ...args]),
+    startCompaction: async (...args) => calls.push(["compact", ...args]),
+    readThread: async () => ({
+      thread: {
+        id: "thread-1",
+        path: "rollout.jsonl",
+        cwd: "D:\\repo",
+        modelProvider: "openai",
+      },
+    }),
+    readCompactionItem: async (...args) => {
+      calls.push(["read-compaction", ...args]);
+      return rawItem;
+    },
+    startThread: async () => ({ thread: { id: "thread-2" } }),
+    injectItems: async (...args) => calls.push(["inject", ...args]),
+  });
+  service.compactions.waitForRawItem = async (...args) => {
+    calls.push(["wait-raw", ...args]);
+    return null;
+  };
+
+  const result = await service.rotate({ provider: "codex", threadId: "thread-1" });
+
+  assert.equal(result.thread.id, "thread-2");
+  assert.deepEqual(calls.find(([name]) => name === "read-compaction"), [
+    "read-compaction",
+    "rollout.jsonl",
+    { notBefore: undefined },
+  ]);
+  assert.deepEqual(calls.find(([name]) => name === "inject"), [
+    "inject",
+    "thread-2",
+    [rawItem],
   ]);
 });
 
