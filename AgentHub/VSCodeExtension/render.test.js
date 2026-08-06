@@ -1629,6 +1629,7 @@ test("Stream menu moves it to an existing or newly created Workspace", () => {
   assert.match(app, /event\.key === "ContextMenu"/u);
   assert.match(client, /control\("create-workspace-from-stream", \{ streamId, name \}\)/u);
   assert.match(styles, /\.stream-context-menu\s*\{/u);
+  assert.match(styles, /\.stream-context-menu\s*\{[\s\S]*?background-color:\s*var\(--bg\);[\s\S]*?background-image:\s*var\(--card-bg-open\);/u);
 });
 
 test("wide shared shell opens up to four Workspace Streams as chat columns", () => {

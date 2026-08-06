@@ -3208,10 +3208,11 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
 }
 
 .stream-context-menu {
-  background: color-mix(in srgb, var(--card-bg-open) 96%, transparent);
+  background-color: var(--bg);
+  background-image: var(--card-bg-open);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-md);
-  box-shadow: var(--card-shadow);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 72%), var(--card-shadow);
   display: flex;
   flex-direction: column;
   gap: 0.16rem;
