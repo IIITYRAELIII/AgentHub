@@ -132,8 +132,26 @@ class AgentHubBridge {
   async journalStore() {
     if (this.journalDatabase) return this.journalDatabase;
     const root = await this.backendRoot();
-    this.journalDatabaseModule ??= import(pathToFileURL(
+    const moduleCandidates = [
+      path.join(root, "src", "infrastructure", "persistence", "journal-database.mjs"),
       path.join(root, "journal-database.mjs"),
+    ];
+    let modulePath = null;
+    for (const candidate of moduleCandidates) {
+      try {
+        if ((await stat(candidate)).isFile()) {
+          modulePath = candidate;
+          break;
+        }
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+    if (!modulePath) {
+      throw new Error("Модуль журнала отсутствует в активном runtime Agent Hub");
+    }
+    this.journalDatabaseModule ??= import(pathToFileURL(
+      modulePath,
     ).href);
     const { JournalDatabase } = await this.journalDatabaseModule;
     this.journalDatabase ??= new JournalDatabase(

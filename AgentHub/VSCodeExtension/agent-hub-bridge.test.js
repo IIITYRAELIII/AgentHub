@@ -122,6 +122,31 @@ test("installed VS Code bridge resolves backend modules from the active runtime"
   }
 });
 
+test("installed VS Code bridge resolves the journal from the decomposed runtime layout", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-journal-runtime-"));
+  let bridge;
+  try {
+    const release = "decomposed-release";
+    const releaseRoot = path.join(root, "releases", release);
+    const persistenceRoot = path.join(releaseRoot, "src", "infrastructure", "persistence");
+    await mkdir(persistenceRoot, { recursive: true });
+    await writeFile(path.join(root, "current.json"), JSON.stringify({ current: release }), "utf8");
+    await writeFile(path.join(persistenceRoot, "journal-database.mjs"), [
+      "export class JournalDatabase {",
+      "  constructor(file) { this.file = file; this.layout = 'decomposed'; }",
+      "  close() {}",
+      "}",
+    ].join("\n"), "utf8");
+    bridge = new AgentHubBridge({ runtimeRoot: root });
+    const journal = await bridge.journalStore();
+    assert.equal(journal.layout, "decomposed");
+    assert.equal(journal.file, path.join(root, "data", "journal.sqlite"));
+  } finally {
+    bridge?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("installed VS Code bridge follows the next runtime release without Reload Window", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-switch-"));
   async function writeRelease(name) {
