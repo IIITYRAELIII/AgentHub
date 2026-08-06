@@ -407,25 +407,22 @@ h1 {
   align-items: center;
   backdrop-filter: blur(14px);
   background: color-mix(in srgb, var(--surface-2) 92%, transparent);
-  border: 1px solid var(--pending);
+  border: 0;
   border-radius: var(--radius-chip);
   color: var(--text);
   display: inline-flex;
-  flex: 1 1 18rem;
+  flex: 0 1 auto;
   font-size: 0.78rem;
   justify-content: center;
-  margin: 0;
-  max-width: 42rem;
+  margin: 0 0 0 auto;
+  max-width: min(42rem, 100%);
   min-height: 2.25rem;
   min-width: 0;
   padding: 0.35rem 0.75rem;
   position: relative;
   text-align: center;
+  width: max-content;
   z-index: 1;
-}
-
-html[data-connection="offline"] .connection-banner {
-  border-color: #b95f65;
 }
 
 @keyframes pulse {
@@ -2302,8 +2299,8 @@ html[data-surface="mobile"] .toolbar {
 }
 
 html[data-surface="mobile"] .connection-banner {
-  flex: 1 0 100%;
-  max-width: none;
+  flex: 0 1 auto;
+  max-width: 100%;
   order: 2;
 }
 
@@ -3331,7 +3328,8 @@ html[data-surface="mobile"]
   overflow: auto;
   padding: 0.35rem;
   position: fixed;
-  width: max-content;
+  scrollbar-gutter: stable;
+  width: min(14rem, calc(100vw - 1rem));
   z-index: 90;
 }
 
@@ -3353,6 +3351,7 @@ html[data-surface="mobile"]
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
+  width: 100%;
 }
 
 .stream-context-action:hover,
@@ -3384,8 +3383,10 @@ html[data-surface="mobile"]
 
 .stream-context-submenu {
   border-top: 1px solid var(--line);
+  box-sizing: border-box;
   margin-top: 0.15rem;
   padding-top: 0.15rem;
+  width: 100%;
 }
 
 .stream-context-submenu > summary {

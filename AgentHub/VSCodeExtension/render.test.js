@@ -1603,6 +1603,7 @@ test("composer pastes arbitrary clipboard files and falls back to the files list
   assert.match(app, /function clipboardAttachmentFiles\(clipboardData\)/u);
   assert.match(app, /clipboardData\?\.items/u);
   assert.match(app, /clipboardData\?\.files/u);
+  assert.match(app, /const values = itemFiles\.length > 0 \? itemFiles :/u);
   assert.match(app, /void readAttachmentFiles\(files\)/u);
 });
 
@@ -1667,6 +1668,7 @@ test("Stream menu moves it to an existing or newly created Workspace", () => {
   assert.match(app, /function openStreamContextMenu\(event, tab\)/u);
   assert.match(app, /class: "stream-context-submenu"/u);
   assert.match(app, /text: "Перенести в Workspace…"/u);
+  assert.doesNotMatch(app, /text: "Статус и лимиты"/u);
   assert.match(app, /emit\("stream:move", \{ streamId, workspaceId:/u);
   assert.match(app, /emit\("workspace:create-from-stream", \{ streamId, name \}\)/u);
   assert.match(app, /text: "Ротация"/u);
@@ -1678,6 +1680,8 @@ test("Stream menu moves it to an existing or newly created Workspace", () => {
   assert.match(client, /control\("new-task", \{[\s\S]*?streamId,/u);
   assert.match(styles, /\.stream-context-menu\s*\{/u);
   assert.match(styles, /\.stream-context-submenu\s*\{/u);
+  assert.match(styles, /\.stream-context-menu\s*\{[\s\S]*?scrollbar-gutter:\s*stable;[\s\S]*?width:\s*min\(14rem,/u);
+  assert.match(styles, /\.stream-context-action\s*\{[\s\S]*?width:\s*100%;/u);
   assert.match(styles, /\.stream-context-menu\s*\{[\s\S]*?background-color:\s*var\(--bg\);[\s\S]*?background-image:\s*var\(--card-bg-open\);/u);
 });
 
@@ -1742,5 +1746,6 @@ test("hub status band lives inside the top toolbar instead of covering the strea
   assert.ok(toolbar < banner && banner < settings);
   assert.match(styles, /\.connection-banner \{[^}]*position: relative;/u);
   assert.doesNotMatch(styles, /\.connection-banner \{[^}]*position: fixed;/u);
-  assert.match(styles, /html\[data-surface="mobile"\] \.connection-banner \{[^}]*flex: 1 0 100%;/u);
+  assert.match(styles, /\.connection-banner \{[^}]*border: 0;[^}]*flex: 0 1 auto;[^}]*width: max-content;/u);
+  assert.match(styles, /html\[data-surface="mobile"\] \.connection-banner \{[^}]*flex: 0 1 auto;/u);
 });

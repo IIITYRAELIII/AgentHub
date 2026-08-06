@@ -1899,11 +1899,6 @@ function ensureStreamContextMenu() {
       emit("stream:rebirth", { streamId, provider, taskId });
       return;
     }
-    if (kind === "status") {
-      emit("status:open", { id: taskId });
-      openPanel();
-      return;
-    }
     if (kind === "archive") {
       if (taskId) emit("task:archive", { id: taskId });
       return;
@@ -1946,10 +1941,6 @@ function openStreamContextMenu(event, tab) {
       title: tab.hasAttribute("data-running")
         ? "Сначала завершите текущий ход"
         : "Завершить текущий Thread и продолжить Stream в новом",
-    }),
-    el("button", {
-      type: "button", role: "menuitem", class: "stream-context-action",
-      "data-stream-menu-action": "status", text: "Статус и лимиты",
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action stream-context-danger",
@@ -3325,13 +3316,13 @@ fileInput.addEventListener("change", () => {
 });
 
 function clipboardAttachmentFiles(clipboardData) {
-  const values = [
-    ...[...(clipboardData?.items ?? [])]
-      .filter((item) => item.kind === "file")
-      .map((item) => item.getAsFile())
-      .filter(Boolean),
-    ...[...(clipboardData?.files ?? [])],
-  ];
+  const itemFiles = [...(clipboardData?.items ?? [])]
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+  // Chromium часто представляет один и тот же файл одновременно в items и
+  // files. Второй список — резервный источник, а не ещё одна пачка вложений.
+  const values = itemFiles.length > 0 ? itemFiles : [...(clipboardData?.files ?? [])];
   const known = new Set();
   return values.filter((file) => {
     const key = `${file.name}\0${file.size}\0${file.lastModified}\0${file.type}`;
