@@ -20,7 +20,8 @@ export class CodexEventService {
       "invalidateThreadRead", "forEvent", "reindexRun", "applyThreadSettings", "saveState",
       "trackTokenUsage", "taskKey", "isSelectedRun", "setSelectedDiff", "appendActivity",
       "noteActivity", "scheduleProgress", "appendReasoning", "isCompactionItem",
-      "beginCompaction", "getCompaction", "beginCompactionCleanup", "setStage", "describeItem",
+      "beginCompaction", "getCompaction", "rememberRawCompactionItem",
+      "beginCompactionCleanup", "setStage", "describeItem",
       "itemActivity", "requestApproval", "formatCommandApproval", "formatFileApproval",
       "formatPermissionsApproval", "requestMcpElicitation", "discardManualCompaction",
       "consumeTracker", "finishObserved", "turnSnapshot", "completeManaged",
@@ -32,6 +33,12 @@ export class CodexEventService {
     const d = this.#d;
     const { method, params = {}, id } = message;
     if (params.threadId) d.invalidateThreadRead(params.threadId);
+    if (method === "rawResponseItem/completed") {
+      d.rememberRawCompactionItem(params.threadId, {
+        turnId: params.turnId,
+        item: params.item,
+      });
+    }
     if (id !== undefined && method) d.logError?.(`Codex server request received: ${method}`);
     const eventTurnId = params.turn?.id ?? params.turnId ?? null;
     const run = d.forEvent({

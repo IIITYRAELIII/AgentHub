@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   ContextCompactionTracker,
   isContextCompactionItem,
+  isRawCompactionItem,
 } from "../../../src/providers/codex/context-compaction-tracker.mjs";
 
 test("modern compaction item lifecycle completes a manual request without changing its id", () => {
@@ -99,6 +100,33 @@ test("both current and wire-format compaction item names are accepted", () => {
   assert.equal(isContextCompactionItem({ type: "contextCompaction" }), true);
   assert.equal(isContextCompactionItem({ type: "context_compaction" }), true);
   assert.equal(isContextCompactionItem({ type: "agentMessage" }), false);
+});
+
+test("raw compaction items are retained for a clean Thread transfer", async () => {
+  const tracker = new ContextCompactionTracker({ idFactory: () => "rotation-id" });
+  const started = tracker.begin("thread-rotation", {
+    origin: "manual",
+    captureRawItem: true,
+  });
+  const pending = tracker.waitForRawItem("thread-rotation", started.id);
+  const item = { type: "compaction", encrypted_content: "opaque" };
+  tracker.rememberRawItem("thread-rotation", { turnId: "turn-1", item });
+  assert.equal(await pending, item);
+  assert.equal(await tracker.waitForRawItem("thread-rotation", started.id), item);
+  assert.equal(tracker.clearRawItem("thread-rotation", started.id), true);
+  assert.equal(isRawCompactionItem(item), true);
+  assert.equal(isRawCompactionItem({ type: "message" }), false);
+  tracker.dispose();
+});
+
+test("raw compaction items are ignored outside rotation", () => {
+  const tracker = new ContextCompactionTracker({ idFactory: () => "manual-id" });
+  tracker.begin("thread-manual", { origin: "manual" });
+  assert.equal(tracker.rememberRawItem("thread-manual", {
+    item: { type: "compaction", encrypted_content: "opaque" },
+  }), null);
+  assert.equal(tracker.get("thread-manual").rawItem, undefined);
+  tracker.dispose();
 });
 
 test("rotation can await the exact compaction without polling", async () => {

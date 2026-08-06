@@ -34,6 +34,11 @@ function harness(overrides = {}) {
         calls.push(["wait", threadId, id]);
         return { id, status: "completed" };
       },
+      waitForRawItem: async (threadId, id) => {
+        calls.push(["wait-raw", threadId, id]);
+        return { type: "compaction", encrypted_content: "opaque" };
+      },
+      clearRawItem: (threadId, id) => calls.push(["clear-raw", threadId, id]),
       isManualTurn: (threadId, turnId) => (
         entries.get(threadId)?.origin === "manual"
         && entries.get(threadId)?.turnId === turnId
@@ -78,29 +83,50 @@ test("manual compaction resumes a discovered thread before starting", async () =
   ]);
 });
 
-test("rotation compacts and forks the exact Codex thread", async () => {
+test("rotation compacts into a clean Thread and injects only the raw compaction item", async () => {
+  const rawItem = { type: "compaction", encrypted_content: "opaque" };
   const { service, calls } = harness({
     runForTask: () => null,
     runIsActive: () => false,
     ensureTransport: async () => calls.push(["transport"]),
     resumeThread: async (...args) => calls.push(["resume", ...args]),
     startCompaction: async (...args) => calls.push(["compact", ...args]),
-    forkThread: async (threadId) => {
-      calls.push(["fork", threadId]);
+    readThread: async (...args) => {
+      calls.push(["read", ...args]);
+      return { thread: { id: "thread-1", cwd: "D:\\repo", modelProvider: "openai" } };
+    },
+    startThread: async (params) => {
+      calls.push(["start-thread", params]);
       return { thread: { id: "thread-2" } };
     },
+    injectItems: async (...args) => calls.push(["inject", ...args]),
+    sandboxSettings: () => ({ sandbox: "danger-full-access" }),
   });
+  service.compactions.waitForRawItem = async (...args) => {
+    calls.push(["wait-raw", ...args]);
+    return rawItem;
+  };
   const result = await service.rotate({ provider: "codex", threadId: "thread-1" });
   assert.equal(result.sourceThreadId, "thread-1");
   assert.equal(result.thread.id, "thread-2");
   assert.deepEqual(calls, [
     ["transport"],
-    ["begin-manual", "thread-1", { origin: "manual" }],
-    ["resume", "thread-1", {}],
+    ["read", "thread-1", { fresh: true, includeTurns: false }],
+    ["transport"],
+    ["begin-manual", "thread-1", { origin: "manual", captureRawItem: true }],
+    ["resume", "thread-1", { sandbox: "danger-full-access" }],
     ["compact", "thread-1"],
     ["wait", "thread-1", "compact-thread-1"],
+    ["wait-raw", "thread-1", "compact-thread-1"],
     ["transport"],
-    ["fork", "thread-1"],
+    ["start-thread", {
+      cwd: "D:\\repo",
+      modelProvider: "openai",
+      ephemeral: false,
+      sandbox: "danger-full-access",
+    }],
+    ["inject", "thread-2", [rawItem]],
+    ["clear-raw", "thread-1", "compact-thread-1"],
   ]);
 });
 

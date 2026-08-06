@@ -36,7 +36,9 @@ export class CodexContextMaintenanceService {
     ensureTransport = async () => {},
     resumeThread = async () => {},
     startCompaction = async () => {},
-    forkThread = async () => null,
+    startThread = async () => null,
+    injectItems = async () => null,
+    deleteThread = async () => null,
     sandboxSettings = () => ({}),
     recycleTransport = recycleCodexCompactionTransport,
     now = Date.now,
@@ -70,7 +72,9 @@ export class CodexContextMaintenanceService {
     this.ensureTransport = ensureTransport;
     this.resumeThread = resumeThread;
     this.startCompaction = startCompaction;
-    this.forkThread = forkThread;
+    this.startThread = startThread;
+    this.injectItems = injectItems;
+    this.deleteThread = deleteThread;
     this.sandboxSettings = sandboxSettings;
     this.recycleTransport = recycleTransport;
     this.now = now;
@@ -79,7 +83,7 @@ export class CodexContextMaintenanceService {
     this.recycleInFlight = null;
   }
 
-  async startManual(target) {
+  async startManual(target, { captureRawItem = false } = {}) {
     if (target?.provider !== "codex") throw new Error("Свёртка контекста доступна только для Codex");
     const threadId = normalizedId(target.threadId);
     if (!threadId) throw new Error("Укажите корректную задачу Codex");
@@ -90,7 +94,10 @@ export class CodexContextMaintenanceService {
       return { accepted: false, message: "Свёртка контекста уже выполняется" };
     }
     await this.ensureTransport();
-    const compaction = this.compactions.begin(threadId, { origin: "manual" });
+    const compaction = this.compactions.begin(threadId, {
+      origin: "manual",
+      ...(captureRawItem ? { captureRawItem: true } : {}),
+    });
     try {
       await this.resumeThread(threadId, this.sandboxSettings());
       await this.startCompaction(threadId);
@@ -107,26 +114,57 @@ export class CodexContextMaintenanceService {
 
   async rotate(target) {
     const sourceThreadId = normalizedId(target?.threadId);
-    const started = await this.startManual(target);
-    if (!started.accepted) throw new Error(started.message);
-    const settled = await this.compactions.waitForSettlement(sourceThreadId, started.compactionId);
-    if (settled?.status !== "completed") {
-      throw new Error(settled?.status === "timeout"
-        ? "Свёртка контекста не завершилась вовремя"
-        : "Свёртка контекста не завершилась");
-    }
     await this.ensureTransport();
-    const result = await this.forkThread(sourceThreadId);
-    const threadId = normalizedId(result?.thread?.id);
-    if (!threadId || threadId === sourceThreadId) {
-      throw new Error("Codex App Server не создал новый Thread");
+    const source = await this.readThread(sourceThreadId, { fresh: true, includeTurns: false });
+    const started = await this.startManual(target, { captureRawItem: true });
+    if (!started.accepted) throw new Error(started.message);
+    try {
+      const settled = await this.compactions.waitForSettlement(sourceThreadId, started.compactionId);
+      if (settled?.status !== "completed") {
+        throw new Error(settled?.status === "timeout"
+          ? "Свёртка контекста не завершилась вовремя"
+          : "Свёртка контекста не завершилась");
+      }
+      const compactionItem = await this.compactions.waitForRawItem(
+        sourceThreadId,
+        started.compactionId,
+      );
+      if (!compactionItem) {
+        throw new Error("Codex App Server не передал результат свёртки для нового Thread");
+      }
+      await this.ensureTransport();
+      const sourceThread = source?.thread ?? {};
+      const startParams = {
+        cwd: normalizedId(sourceThread.cwd ?? target?.sessionCwd ?? target?.projectRoot) || undefined,
+        model: normalizedId(target?.model) || undefined,
+        modelProvider: normalizedId(sourceThread.modelProvider) || undefined,
+        ephemeral: false,
+        ...this.sandboxSettings(),
+      };
+      const result = await this.startThread(Object.fromEntries(
+        Object.entries(startParams).filter(([, value]) => value !== undefined),
+      ));
+      const threadId = normalizedId(result?.thread?.id);
+      if (!threadId || threadId === sourceThreadId) {
+        throw new Error("Codex App Server не создал новый Thread");
+      }
+      try {
+        await this.injectItems(threadId, [compactionItem]);
+        return {
+          accepted: true,
+          compactionId: started.compactionId,
+          sourceThreadId,
+          thread: result.thread,
+        };
+      } catch (error) {
+        await this.deleteThread(threadId).catch(() => {});
+        throw new Error(`Не удалось передать свёрнутый контекст в новый Thread: ${error.message}`, {
+          cause: error,
+        });
+      }
+    } finally {
+      this.compactions.clearRawItem(sourceThreadId, started.compactionId);
     }
-    return {
-      accepted: true,
-      compactionId: started.compactionId,
-      sourceThreadId,
-      thread: result.thread,
-    };
   }
 
   beginCompactionCleanup(threadId, details = {}) {

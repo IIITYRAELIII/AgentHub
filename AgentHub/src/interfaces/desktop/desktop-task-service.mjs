@@ -60,6 +60,7 @@ export class DesktopTaskService {
       sessionCwd: entry.sessionCwd ?? null,
       threadId: entry.threadId,
       taskTitle: entry.title,
+      model: entry.model ?? null,
       chatId: this.chatId(),
       telegramDeliveryRequested: false,
       clientSource: String(context?.source ?? "desktop").trim() || "desktop",

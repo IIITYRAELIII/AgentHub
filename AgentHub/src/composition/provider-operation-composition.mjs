@@ -209,6 +209,7 @@ export function createProviderOperationComposition({
     isCompactionItem: isContextCompactionItem,
     beginCompaction: (...args) => contextCompactions.begin(...args),
     getCompaction: (providerTaskId) => contextCompactions.get(providerTaskId),
+    rememberRawCompactionItem: (...args) => contextCompactions.rememberRawItem(...args),
     beginCompactionCleanup: (...args) => codexContextMaintenance.beginCompactionCleanup(...args),
     setStage: (...args) => taskProgress().setStage(...args),
     describeItem: describeCodexItem,

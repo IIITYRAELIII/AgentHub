@@ -10,6 +10,7 @@ function createService(run, overrides = {}) {
     taskKey: () => "task", isSelectedRun: () => false, setSelectedDiff: noop,
     appendActivity: noop, noteActivity: noop, scheduleProgress: noop, appendReasoning: noop,
     isCompactionItem: () => false, beginCompaction: noop, getCompaction: () => null,
+    rememberRawCompactionItem: noop,
     beginCompactionCleanup: noop, setStage: noop, describeItem: () => "stage",
     itemActivity: () => null, requestApproval: async () => {}, formatCommandApproval: () => "",
     formatFileApproval: () => "", formatPermissionsApproval: () => "", requestMcpElicitation: async () => {},
@@ -38,3 +39,15 @@ test("Codex event service completes a managed run through the coordinator", asyn
   assert.equal(completed[0][1].completedTurnId, "turn-1");
 });
 
+test("Codex event service preserves the raw compaction item for rotation", async () => {
+  const captured = [];
+  const service = createService(null, {
+    rememberRawCompactionItem: (...args) => captured.push(args),
+  });
+  const item = { type: "compaction", encrypted_content: "opaque" };
+  await service.handle({
+    method: "rawResponseItem/completed",
+    params: { threadId: "thread-1", turnId: "turn-1", item },
+  });
+  assert.deepEqual(captured, [["thread-1", { turnId: "turn-1", item }]]);
+});

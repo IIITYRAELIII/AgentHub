@@ -60,11 +60,9 @@ export function createCodexContextMaintenanceComposition({
       ...sandbox,
     }),
     startCompaction: (threadId) => sendRpc("thread/compact/start", { threadId }),
-    forkThread: (threadId) => sendRpc("thread/fork", {
-      threadId,
-      deferGoalContinuation: true,
-      excludeTurns: true,
-    }),
+    startThread: (params) => sendRpc("thread/start", params),
+    injectItems: (threadId, items) => sendRpc("thread/inject_items", { threadId, items }),
+    deleteThread: (threadId) => sendRpc("thread/delete", { threadId }),
     sandboxSettings: () => codexThreadSandboxSettings(config.codexSandboxMode),
   });
 }
