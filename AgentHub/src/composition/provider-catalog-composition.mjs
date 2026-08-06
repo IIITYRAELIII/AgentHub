@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { ManagedRunHistoryService } from "../application/managed-run-history-service.mjs";
 import { ProviderTaskActivityService } from "../application/provider-task-activity-service.mjs";
 import { TaskCatalogService } from "../application/task-catalog-service.mjs";
@@ -37,6 +39,32 @@ export function currentStreamEntries(entries) {
     }
   }
   return [...byIdentity.values()];
+}
+
+export function currentWorkspaceThreadEntries(workspaceCatalogStore) {
+  const workspaces = workspaceCatalogStore?.hierarchy?.() ?? [];
+  return workspaces.flatMap((workspace) => (workspace.streams ?? []).flatMap((stream) => {
+    const thread = (stream.threads ?? []).at(-1);
+    if (!thread) return [];
+    return [{
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+      workspaceKind: workspace.kind,
+      streamId: stream.id,
+      streamName: stream.name ?? null,
+      streamDisplayName: stream.displayName ?? "",
+      streamOrdinal: Number(stream.ordinal) || 1,
+      threadPosition: Number(thread.position) || 1,
+      provider: thread.provider,
+      threadId: thread.threadId,
+      projectRoot: thread.projectRoot ?? "",
+      projectName: path.basename(thread.projectRoot ?? "") || "Проект",
+      title: workspace.name,
+      model: null,
+      updatedAtMs: 0,
+      running: false,
+    }];
+  }));
 }
 
 export function createProviderCatalogComposition({
@@ -175,7 +203,10 @@ export function createProviderCatalogComposition({
   });
   const providerTaskCatalogBuilder = new ProviderTaskCatalogBuilder({
     durableEntries: () => currentStreamEntries(workspaceCatalogStore.assignCatalogEntries(
-      catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
+      [
+        ...catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
+        ...currentWorkspaceThreadEntries(workspaceCatalogStore),
+      ],
     )),
     sources: agentProviders.catalogSources(),
     managedRuns: () => taskRuns.values().map((run) => ({
@@ -193,7 +224,10 @@ export function createProviderCatalogComposition({
   });
   const taskCatalogService = new TaskCatalogService({
     initialEntries: currentStreamEntries(workspaceCatalogStore.assignCatalogEntries(
-      catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
+      [
+        ...catalogEntriesWithoutLiveActivity(taskSyncStore.catalog()),
+        ...currentWorkspaceThreadEntries(workspaceCatalogStore),
+      ],
     )),
     cacheMs: taskCatalogCacheMs,
     build: () => providerTaskCatalogBuilder.build(),
