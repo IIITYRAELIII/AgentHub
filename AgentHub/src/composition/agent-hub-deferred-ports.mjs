@@ -74,6 +74,15 @@ export function createAgentHubDeferredPorts() {
     "backfillWorkLogPricingMetadata", "auditClaudeTranscriptSnapshots", "finalizeTaskCatalog",
     "refreshTaskCatalog",
   ]);
+  const statePersistence = createDeferredCompositionPort("state persistence", [
+    "saveState", "savePinnedTaskTitles",
+  ]);
+  const runShell = createDeferredCompositionPort("run shell", [
+    "refreshTaskDiff",
+  ]);
+  const deferredInputPresentation = createDeferredCompositionPort("deferred input presentation", [
+    "updateDeferredMessage", "updateDeferredDesktopReceipt",
+  ]);
 
   return {
     ports: {
@@ -92,6 +101,9 @@ export function createAgentHubDeferredPorts() {
       deferredInput,
       bootstrap,
       runtimeFacades,
+      statePersistence,
+      runShell,
+      deferredInputPresentation,
     },
     api: {
       ...runAdmission.api,
@@ -127,6 +139,9 @@ export function createAgentHubDeferredPorts() {
       scheduleNextDeferredInput: deferredInput.api.scheduleNextForTask,
       desktopControlServer: bootstrap.api.desktopControlServer,
       ...runtimeFacades.api,
+      ...statePersistence.api,
+      ...runShell.api,
+      ...deferredInputPresentation.api,
     },
   };
 }

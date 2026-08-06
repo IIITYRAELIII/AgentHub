@@ -463,6 +463,45 @@ test("runtime orchestration owns observation, timers, interaction and restart", 
   assert.equal(orchestration.includes("updateRestartMessage: (message)"), true);
 });
 
+test("run shell owns presentation, admission and diff persistence", async () => {
+  const root = await readFile(COMPOSITION_ROOT, "utf8");
+  const shell = await readFile(
+    path.join(ROOT, "src", "composition", "run-shell-composition.mjs"),
+    "utf8",
+  );
+  for (const factory of ["createRunPresentationComposition", "createRunAdmissionComposition"]) {
+    assert.equal(root.includes(factory), false, `${factory} leaked into the composition root`);
+    assert.equal(shell.includes(factory), true, `${factory} is not owned by the run shell`);
+  }
+  assert.equal(root.includes("const captured = await taskGitDiff("), false);
+  assert.equal(shell.includes("async function refreshTaskDiff(run)"), true);
+});
+
+test("Telegram runtime owns shell and controller assembly", async () => {
+  const root = await readFile(COMPOSITION_ROOT, "utf8");
+  const runtime = await readFile(
+    path.join(ROOT, "src", "composition", "telegram-runtime-composition.mjs"),
+    "utf8",
+  );
+  for (const factory of ["createTelegramShellWiring", "createTelegramControllerComposition"]) {
+    assert.equal(root.includes(factory), false, `${factory} leaked into the composition root`);
+    assert.equal(runtime.includes(factory), true, `${factory} is not owned by Telegram runtime`);
+  }
+  assert.equal(runtime.includes("ports.telegramShell.bind("), true);
+});
+
+test("state persistence has one bounded composition owner", async () => {
+  const root = await readFile(COMPOSITION_ROOT, "utf8");
+  const persistence = await readFile(
+    path.join(ROOT, "src", "composition", "state-persistence-composition.mjs"),
+    "utf8",
+  );
+  assert.equal(root.includes("function saveState()"), false);
+  assert.equal(root.includes("function savePinnedTaskTitles()"), false);
+  assert.equal(persistence.includes("selectionStore.rememberCurrentThread()"), true);
+  assert.equal(persistence.includes("taskMetadata.pinnedTitlesSnapshot()"), true);
+});
+
 test("src modules obey the architectural dependency matrix", async () => {
   const inventory = await migrationInventory();
   const sourceRoot = path.join(ROOT, "src");

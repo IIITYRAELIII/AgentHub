@@ -62,7 +62,6 @@ import * as approvalProtocol from "../providers/codex/codex-approvals.mjs";
 const { formatPermissionsApproval, parseApprovalCallback } = approvalProtocol;
 import { contextualCallback } from "../interfaces/telegram/callback-context.mjs";
 import { taskViewCallbackData } from "../interfaces/telegram/task-view-callback.mjs";
-import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
 import {
   mergeTaskCatalog,
   taskOrderingActivityAtMs,
@@ -90,8 +89,6 @@ import { createProviderSnapshotComposition } from "./provider-snapshot-compositi
 import { createProviderOperationComposition } from "./provider-operation-composition.mjs";
 import { createProviderCatalogComposition } from "./provider-catalog-composition.mjs";
 import { createStateComposition } from "./state-composition.mjs";
-import { createTelegramControllerComposition } from "./telegram-controller-composition.mjs";
-import { createRunPresentationComposition } from "./run-presentation-composition.mjs";
 import { createDesktopShellComposition } from "./desktop-shell-composition.mjs";
 import { createRuntimeDataComposition } from "./runtime-data-composition.mjs";
 import { createBackgroundWorkComposition } from "./background-work-composition.mjs";
@@ -103,7 +100,6 @@ import { createJournalBackfillComposition } from "./journal-backfill-composition
 import { createClaudeTranscriptAuditComposition } from "./claude-transcript-audit-composition.mjs";
 import { createTaskCatalogFinalizationComposition } from "./task-catalog-finalization-composition.mjs";
 import { createProviderProcessComposition } from "./provider-process-composition.mjs";
-import { createRunAdmissionComposition } from "./run-admission-composition.mjs";
 import { createRuntimeCommandRoutingComposition } from "./runtime-command-routing-composition.mjs";
 import { createDeliveryOutboxComposition } from "./delivery-outbox-composition.mjs";
 import { delay } from "./runtime-timers-composition.mjs";
@@ -113,10 +109,12 @@ import { createCodexTaskSettingsComposition } from "./codex-task-settings-compos
 import { createRuntimeOrchestrationComposition } from "./runtime-orchestration-composition.mjs";
 import { createTaskStateWiring } from "./task-state-wiring-composition.mjs";
 import { createRuntimeStateBootstrapWiring } from "./runtime-state-bootstrap-wiring-composition.mjs";
-import { createTelegramShellWiring } from "./telegram-shell-wiring-composition.mjs";
 import { createAgentHubDeferredPorts } from "./agent-hub-deferred-ports.mjs";
 import { createRuntimeFacadesComposition } from "./runtime-facades-composition.mjs";
 import { createServerControlComposition } from "./server-control-composition.mjs";
+import { createRunShellComposition } from "./run-shell-composition.mjs";
+import { createTelegramRuntimeComposition } from "./telegram-runtime-composition.mjs";
+import { createStatePersistenceComposition } from "./state-persistence-composition.mjs";
 import { HubSessionState } from "../runtime/hub-session-state.mjs";
 
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
@@ -241,6 +239,9 @@ const {
     deferredInput: deferredInputPort,
     bootstrap: bootstrapPort,
     runtimeFacades: runtimeFacadesPort,
+    statePersistence: statePersistencePort,
+    runShell: runShellPort,
+    deferredInputPresentation: deferredInputPresentationPort,
   },
   api: {
   resolvedExplicitSkillNames,
@@ -379,6 +380,11 @@ const {
   auditClaudeTranscriptSnapshots,
   finalizeTaskCatalog,
   refreshTaskCatalog,
+  saveState,
+  savePinnedTaskTitles,
+  refreshTaskDiff,
+  updateDeferredMessage,
+  updateDeferredDesktopReceipt,
   },
 } = agentHubDeferred;
 const runtimeTimers = new RuntimeTimerCoordinator();
@@ -840,6 +846,10 @@ const {
   runExists: (id) => taskRuns.values().some((run) => run.id === id),
   taskProgress: () => taskProgress,
 });
+deferredInputPresentationPort.bind({
+  updateDeferredMessage: (...args) => deferredInputPresentation.updateTelegramMessage(...args),
+  updateDeferredDesktopReceipt: (...args) => deferredInputPresentation.updateDesktopReceipt(...args),
+});
 
 const {
   deliveryOutbox,
@@ -968,6 +978,13 @@ const {
   },
   logger: console,
 });
+statePersistencePort.bind(createStatePersistenceComposition({
+  rememberProviderSettings: rememberCodexTaskSettings,
+  selectionStore,
+  runtimeStateCoordinator,
+  pinnedTaskTitlesFile: PINNED_TASK_TITLES_FILE,
+  taskMetadata,
+}));
 workLogUsageStore.setIncludeClaudeUsage(agentPreferences.includeClaudeUsage);
 
 const codexLifecycle = createCodexLifecycleComposition({
@@ -1208,127 +1225,91 @@ const {
   desktopCommandsPort,
 });
 
-function sendStatus(snapshot = currentStatusSnapshot()) {
-  return telegramShellPort.api.sendStatus(snapshot);
-}
-
-telegramShellPort.bind(createTelegramShellWiring({
-  taskPicker: {
-    refreshCatalog: refreshTaskCatalog,
-    selectedTask,
-    pageSize: TASK_PICKER_PAGE_SIZE,
-    showProject: () => config.showProjectButton && config.showTaskProject,
-    providerTitle,
-    projectName: () => activeProject().name,
-    newTaskCallback: () => uiCallback("thread:new"),
-    archiveCallback: () => (isCodex() && selectedThreadId() ? uiCallback("thread:archive") : null),
-    editMessage: (message, view) => telegram("editMessageText", {
-      chat_id: message.chat.id,
-      message_id: message.message_id,
-      text: view.text,
-      reply_markup: view.replyMarkup,
-    }),
-    sendMessage: (view) => sendMessage(view.text, { reply_markup: view.replyMarkup }),
-  },
-  settingsMenu: telegramSettingsMenu,
-  taskActions: telegramTaskActions,
-  statusController: telegramStatusController,
-  activeProjectRoot: selectedProjectRoot,
-  activeProvider: selectedProvider,
-  agentPreferences,
-  codexModelLabel,
-  currentChatId: () => hostState.chatId,
-}));
-
-const runPresentationComposition = createRunPresentationComposition({
-  telegramLimit: TELEGRAM_LIMIT,
-  claudeModelLabels: CLAUDE_MODEL_LABELS,
-  codexReasoningLabels: CODEX_REASONING_LABELS,
-  codexModelLabel,
-  taskExecutionRuntimeLabel,
-  formatProgressHeading,
-  formatProgressHeartbeat,
-  showProject: () => config.showProjectButton,
-  runTaskTitle,
-  runProject,
-  agentPreferences,
-  taskExecutionOwners: TASK_EXECUTION_OWNERS,
-  dataDir: config.dataDir,
-  appendMessageBindings,
-  readMessageBindings,
-  removeMessageBindings,
-  approvalController,
-  samePath,
-  taskRuns,
-  telegram,
-  sendMessageTo,
-  deliveryOutbox,
-  scheduleDeliveryOutboxFlush,
-  taskRunKey,
-  mediaController,
-  taskViewCallbackData,
-  managedRunLifecycle,
-  runJournal,
-  rememberLastSeenTurn: (run, turnId) => (
-    setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(run), turnId, 500)
-  ),
-  refreshTaskDiff,
-  selectedTask,
-  activeTaskTitle: selectedTaskTitle,
-  activeProjectName: () => activeProject().name,
-  taskSwitchSettings,
-  showLastMessageReplyMarkup,
-  formatTaskSwitchMessage,
-  formatTaskAlreadySelectedMessage,
-  saveState,
-  retainProgressMessageAfterEditError,
-});
 const {
   telegramDeliveryService,
   taskProgress,
-} = runPresentationComposition;
-telegramDeliveryPort.bind(telegramDeliveryService);
-
-const runAdmissionComposition = runAdmissionPort.bind(createRunAdmissionComposition({
-  config,
-  samePath,
-  sendRpc,
-  contextCompactions,
-  codexUsageTracker,
-  turnSpeechButtons,
-  turnTemporaryFiles,
-  taskProgress,
-  managedRunLifecycle,
-  agentProviders,
-  taskRuns,
-  runCoordinator,
-  runConflictPolicy,
-  pendingInputs,
-  queuedInputs,
-  getSelectedTask: selectedTask,
-  getActiveThreadTitle: selectedTaskTitle,
-  getChatId: () => hostState.chatId,
-  taskExecutionOwners: TASK_EXECUTION_OWNERS,
-  deferredInputPresentation,
-  sendMessageTo,
-  saveState,
-}));
-const deferredInputController = runAdmissionComposition.deferredInputController;
-deferredInputPort.bind(deferredInputController);
-function updateDeferredMessage(...args) {
-  return deferredInputPresentation.updateTelegramMessage(...args);
-}
-function updateDeferredDesktopReceipt(...args) {
-  return deferredInputPresentation.updateDesktopReceipt(...args);
-}
-async function refreshTaskDiff(run) {
-  if (!run) return "";
-  const captured = await taskGitDiff(run.gitBaseline, config.dataDir, run.id);
-  if (captured !== null) run.latestDiff = captured;
-  await persistTaskDiff(taskRunKey(run), run.latestDiff ?? "");
-  if (isSelectedRun(run)) hostState.setLatestDiff(run.latestDiff ?? "");
-  return run.latestDiff ?? "";
-}
+  deferredInputController,
+} = createRunShellComposition({
+  presentation: {
+    telegramLimit: TELEGRAM_LIMIT,
+    claudeModelLabels: CLAUDE_MODEL_LABELS,
+    codexReasoningLabels: CODEX_REASONING_LABELS,
+    codexModelLabel,
+    taskExecutionRuntimeLabel,
+    formatProgressHeading,
+    formatProgressHeartbeat,
+    showProject: () => config.showProjectButton,
+    runTaskTitle,
+    runProject,
+    agentPreferences,
+    taskExecutionOwners: TASK_EXECUTION_OWNERS,
+    dataDir: config.dataDir,
+    appendMessageBindings,
+    readMessageBindings,
+    removeMessageBindings,
+    approvalController,
+    samePath,
+    taskRuns,
+    telegram,
+    sendMessageTo,
+    deliveryOutbox,
+    scheduleDeliveryOutboxFlush,
+    taskRunKey,
+    mediaController,
+    taskViewCallbackData,
+    managedRunLifecycle,
+    runJournal,
+    rememberLastSeenTurn: (run, turnId) => (
+      setBoundedMapValue(lastSeenTaskTurnIds, taskRunKey(run), turnId, 500)
+    ),
+    selectedTask,
+    activeTaskTitle: selectedTaskTitle,
+    activeProjectName: () => activeProject().name,
+    taskSwitchSettings,
+    showLastMessageReplyMarkup,
+    formatTaskSwitchMessage,
+    formatTaskAlreadySelectedMessage,
+    saveState,
+    retainProgressMessageAfterEditError,
+  },
+  admission: {
+    config,
+    samePath,
+    sendRpc,
+    contextCompactions,
+    codexUsageTracker,
+    turnSpeechButtons,
+    turnTemporaryFiles,
+    managedRunLifecycle,
+    agentProviders,
+    taskRuns,
+    runCoordinator,
+    runConflictPolicy,
+    pendingInputs,
+    queuedInputs,
+    getSelectedTask: selectedTask,
+    getActiveThreadTitle: selectedTaskTitle,
+    getChatId: () => hostState.chatId,
+    taskExecutionOwners: TASK_EXECUTION_OWNERS,
+    deferredInputPresentation,
+    sendMessageTo,
+    saveState,
+  },
+  diff: {
+    capture: taskGitDiff,
+    dataDir: config.dataDir,
+    persist: persistTaskDiff,
+    taskKey: taskRunKey,
+    isSelected: isSelectedRun,
+    setSelected: (value) => hostState.setLatestDiff(value),
+  },
+  ports: {
+    runAdmission: runAdmissionPort,
+    telegramDelivery: telegramDeliveryPort,
+    deferredInput: deferredInputPort,
+    runShell: runShellPort,
+  },
+});
 
 const {
   claudeRunController,
@@ -1472,7 +1453,35 @@ function dismissCallbackMenu(...args) { return telegramTaskActions.dismissMenu(.
 const {
   forwardBundleController,
   pollTelegram,
-} = createTelegramControllerComposition({
+} = createTelegramRuntimeComposition({
+  shell: {
+    taskPicker: {
+      refreshCatalog: refreshTaskCatalog,
+      selectedTask,
+      pageSize: TASK_PICKER_PAGE_SIZE,
+      showProject: () => config.showProjectButton && config.showTaskProject,
+      providerTitle,
+      projectName: () => activeProject().name,
+      newTaskCallback: () => uiCallback("thread:new"),
+      archiveCallback: () => (isCodex() && selectedThreadId() ? uiCallback("thread:archive") : null),
+      editMessage: (message, view) => telegram("editMessageText", {
+        chat_id: message.chat.id,
+        message_id: message.message_id,
+        text: view.text,
+        reply_markup: view.replyMarkup,
+      }),
+      sendMessage: (view) => sendMessage(view.text, { reply_markup: view.replyMarkup }),
+    },
+    settingsMenu: telegramSettingsMenu,
+    taskActions: telegramTaskActions,
+    statusController: telegramStatusController,
+    activeProjectRoot: selectedProjectRoot,
+    activeProvider: selectedProvider,
+    agentPreferences,
+    codexModelLabel,
+    currentChatId: () => hostState.chatId,
+  },
+  controller: {
   telegram,
   config,
   menuCommands: MENU_COMMANDS,
@@ -1537,7 +1546,6 @@ const {
   sendCollaborationModePicker,
   sendProjectPicker,
   currentStatusSnapshot,
-  sendStatus,
   formatApprovalMode,
   approvalModeKeyboard,
   restartBot,
@@ -1559,20 +1567,9 @@ const {
   failedUpdateStore,
   restartReady: () => Boolean(hostState.restartRequest && !hostState.restartRequest.waitingForRuns && !hostState.stopping),
   performRestart,
+  },
+  ports: { telegramShell: telegramShellPort },
 });
-
-function saveState() {
-  rememberCodexTaskSettings();
-  selectionStore.rememberCurrentThread();
-  return runtimeStateCoordinator.save();
-}
-
-function savePinnedTaskTitles() {
-  return writeTextAtomic(
-    PINNED_TASK_TITLES_FILE,
-    `${JSON.stringify(taskMetadata.pinnedTitlesSnapshot(), null, 2)}\n`,
-  );
-}
 
 const agentHubBootstrapComposition = createAgentHubBootstrapComposition({
   config,
