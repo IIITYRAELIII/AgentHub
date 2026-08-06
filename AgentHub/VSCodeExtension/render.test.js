@@ -1550,3 +1550,13 @@ test("chart, tooltip and aria-summary use only the visible series", () => {
   // скрытие всех серий не ошибка: остаются оси и спокойная подсказка
   assert.match(app, /if \(!series\.length\) \{[\s\S]*class:\s*"limits-empty-plot"[\s\S]*"Все серии скрыты"/u);
 });
+
+test("Gothic wears the Sleeper mask in the header niche", () => {
+  const styles = themeFile("gothic");
+  const mark = fs.readFileSync(path.join(MINI_APP_ROOT, "themes", "gothic", "gothic-mark.svg"), "utf8");
+  assert.match(styles, /--gothic-mark-image:\s*url\("\.\/gothic-mark\.svg"\)/u);
+  assert.match(styles, /\.brand-mark::before[\s\S]*?background: var\(--gothic-mark-image\)/u);
+  /* Рога вынесены отдельным контуром, иначе evenodd режет дыры на висках. */
+  assert.equal((mark.match(/<path/gu) ?? []).length, 2);
+  assert.match(mark, /fill-rule="evenodd"/u);
+});

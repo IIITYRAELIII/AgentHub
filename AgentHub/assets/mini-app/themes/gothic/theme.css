@@ -466,3 +466,24 @@ html[data-theme="gothic"] .chat {
     inset 0 0 0 4px transparent,
     inset 0 0 0 5px rgba(163, 186, 216, .2);
 }
+
+/* Знак: маска Спящего в арочной нише. Прежняя вписанная арка повторяла форму
+   самой плашки и читалась как её обводка, а не как отдельный предмет. */
+html[data-theme="gothic"] {
+  --gothic-mark-image: url("./gothic-mark.svg");
+}
+
+html[data-theme="gothic"] .brand-mark {
+  align-items: center;
+  padding-bottom: 0;
+}
+
+html[data-theme="gothic"] .brand-mark::before {
+  background: var(--gothic-mark-image) center / contain no-repeat;
+  border: 0;
+  border-radius: 0;
+  filter: drop-shadow(0 0 4px rgba(143, 168, 200, .5));
+  height: 1.55rem;
+  opacity: 1;
+  width: 1.55rem;
+}
