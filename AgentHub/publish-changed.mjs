@@ -92,7 +92,11 @@ function focusedSteps(plan) {
       steps.push({
         label: "Тесты жизненного цикла сообщений",
         command: process.execPath,
-        args: ["--test", "message-lifecycle.test.mjs", "cloudflare-worker/worker.test.mjs"],
+        args: [
+          "--test",
+          "tests/composition/message-lifecycle.test.mjs",
+          "tests/interfaces/web/worker/worker.test.mjs",
+        ],
       });
     }
   }

@@ -169,10 +169,10 @@ test("selective publication can request the full Agent Hub test suite explicitly
 });
 
 test("selective publication records the exact published revision", async () => {
-  const labels = [];
+  const steps = [];
   let written = null;
   const result = await publishChanged(["--from", "base", "--skip-restart"], {
-    run: async (step) => labels.push(step.label),
+    run: async (step) => steps.push(step),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async (value) => { written = value; },
@@ -181,7 +181,7 @@ test("selective publication records the exact published revision", async () => {
   });
   assert.equal(result.revision, "head");
   assert.equal(written.revision, "head");
-  assert.deepEqual(labels, [
+  assert.deepEqual(steps.map((step) => step.label), [
     "Проверка синтаксиса Agent Hub",
     "Тесты жизненного цикла сообщений",
     "Тесты расширения VS Code",
@@ -189,6 +189,13 @@ test("selective publication records the exact published revision", async () => {
     "Сборка runtime-релиза",
     "Активация runtime-релиза",
   ]);
+  const lifecycle = steps.find((step) => step.label === "Тесты жизненного цикла сообщений");
+  assert.deepEqual(lifecycle.args, [
+    "--test",
+    "tests/composition/message-lifecycle.test.mjs",
+    "tests/interfaces/web/worker/worker.test.mjs",
+  ]);
+  for (const file of lifecycle.args.slice(1)) assert.equal(fs.existsSync(path.join(ROOT, file)), true);
 });
 
 test("Worker packages only a verified published Android artifact", () => {
