@@ -332,7 +332,17 @@ export class WorkspaceCatalogStore {
       SET workspace_id = ?, ordinal = ?, updated_at_ms = ? WHERE id = ?
     `).run(targetWorkspaceId, ordinal, this.#nowMs(), id);
     this.#compactOrdinals(stream.workspaceId);
+    this.#removeEmptyWorkspace(stream.workspaceId);
     return this.stream(id);
+  }
+
+  #removeEmptyWorkspace(workspaceId) {
+    const workspace = this.workspace(workspaceId);
+    if (!workspace || workspace.kind === "system") return;
+    const count = Number(this.#database.prepare(
+      "SELECT COUNT(*) AS count FROM hub_streams WHERE workspace_id = ?",
+    ).get(workspace.id)?.count ?? 0);
+    if (count === 0) this.#database.prepare("DELETE FROM hub_workspaces WHERE id = ?").run(workspace.id);
   }
 
   #compactOrdinals(workspaceId) {

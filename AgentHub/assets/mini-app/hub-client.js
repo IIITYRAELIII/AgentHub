@@ -1295,6 +1295,9 @@ agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
 agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () => applySnapshot(
   await control("rename-workspace", { workspaceId, name }),
 )));
+agentHub.on("workspace:create-from-stream", ({ streamId, name }) => runAction(async () => applySnapshot(
+  await control("create-workspace-from-stream", { streamId, name }),
+)));
 agentHub.on("stream:rename", ({ streamId, name }) => runAction(async () => applySnapshot(
   await control("rename-stream", { streamId, name }),
 )));

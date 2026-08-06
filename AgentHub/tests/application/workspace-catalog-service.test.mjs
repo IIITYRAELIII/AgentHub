@@ -32,6 +32,16 @@ test("createWorkspace creates its first Stream atomically", () => {
   ]);
 });
 
+test("createWorkspaceFromStream creates the destination and moves the existing Stream atomically", () => {
+  const { service, calls } = fixture();
+  const result = service.createWorkspaceFromStream({ streamId: "stream-old", name: "Destination" });
+  assert.equal(result.workspace.id, "workspace-1");
+  assert.deepEqual(calls, [
+    ["createWorkspace", { name: "Destination" }],
+    ["moveStream", "stream-old", "workspace-1"],
+  ]);
+});
+
 test("bindThread links a replacement provider Thread to an existing Stream", () => {
   const { service } = fixture();
   assert.deepEqual(service.bindThread({

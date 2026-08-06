@@ -7,7 +7,7 @@ const MUTATION_ACTIONS = Object.freeze([
   "resolve-approval", "deferred-input", "restart-server", "set-autostart",
   "update-server-configuration", "compact-context", "create-device-pairing",
   "revoke-device", "submit-bug-report",
-  "rename-workspace", "merge-workspaces", "rename-stream", "move-stream",
+  "rename-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream", "move-stream",
 ]);
 
 function requiredFunction(value, name) {
@@ -64,6 +64,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
       "create-device-pairing": handlers.createDevicePairing,
       "revoke-device": handlers.revokeDevice,
       "rename-workspace": (params, context) => dispatch("workspace.rename", params, context),
+      "create-workspace-from-stream": (params, context) => dispatch("workspace.create-from-stream", params, context),
       "merge-workspaces": (params, context) => dispatch("workspace.merge", params, context),
       "rename-stream": (params, context) => dispatch("stream.rename", params, context),
       "move-stream": (params, context) => dispatch("stream.move", params, context),

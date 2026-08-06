@@ -25,7 +25,7 @@ export function createApplicationCommandService({ handlers, selectedTask }) {
   const required = [
     "selectTask", "createTask", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
-    "renameWorkspace", "mergeWorkspaces", "renameStream", "moveStream",
+    "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
   ];
   for (const name of required) {
     if (typeof handlers[name] !== "function") throw new TypeError(`${name} handler is required`);
@@ -83,6 +83,10 @@ export function createApplicationCommandService({ handlers, selectedTask }) {
     .register("workspace.rename", {
       mutating: true, target: "none", lane: "global",
       handler: ({ payload }) => handlers.renameWorkspace(payload),
+    })
+    .register("workspace.create-from-stream", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.createWorkspaceFromStream(payload),
     })
     .register("workspace.merge", {
       mutating: true, target: "none", lane: "global",

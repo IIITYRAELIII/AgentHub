@@ -200,3 +200,16 @@ test("rebindThread can replace an automatic Experiments assignment during migrat
   assert.equal(rebound.streamId, stream.id);
   assert.equal(store.stream(automatic.streamId), null);
 });
+
+test("moving the last Stream removes its empty user Workspace but preserves Experiments", async (t) => {
+  const store = await fixture(t);
+  const source = store.createWorkspace({ name: "Source" });
+  const target = store.createWorkspace({ name: "Target" });
+  const sourceStream = store.createStream({ workspaceId: source.id });
+  const experiments = store.ensureExperiments();
+  const experimentStream = store.createStream({ workspaceId: experiments.id });
+  store.moveStream(sourceStream.id, target.id);
+  store.moveStream(experimentStream.id, target.id);
+  assert.equal(store.workspace(source.id), null);
+  assert.equal(store.workspace(experiments.id)?.name, "Experiments");
+});

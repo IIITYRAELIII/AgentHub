@@ -1613,7 +1613,24 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   assert.doesNotMatch(tabs, /class: "task-status"/u);
   assert.match(styles, /@keyframes stream-running-wave/u);
   assert.match(styles, /@keyframes stream-answer-ready/u);
+  assert.match(app, /const running = tasks\.some\(\(task\) => task\.running\)/u);
+  assert.match(app, /"data-running": running \? "" : null/u);
+  assert.match(styles, /\.task-workspace-item\[data-running\]::after/u);
   assert.doesNotMatch(styles, /\.stream-tab\[data-current\]\s*\{[\s\S]*?box-shadow/u);
+});
+
+test("Stream menu moves it to an existing or newly created Workspace", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+
+  assert.match(app, /function openStreamContextMenu\(event, tab\)/u);
+  assert.match(app, /text: "Переместить в Workspace"/u);
+  assert.match(app, /emit\("stream:move", \{ streamId, workspaceId:/u);
+  assert.match(app, /emit\("workspace:create-from-stream", \{ streamId, name \}\)/u);
+  assert.match(app, /event\.key === "ContextMenu"/u);
+  assert.match(client, /control\("create-workspace-from-stream", \{ streamId, name \}\)/u);
+  assert.match(styles, /\.stream-context-menu\s*\{/u);
 });
 
 test("wide shared shell opens up to four Workspace Streams as chat columns", () => {

@@ -2905,7 +2905,24 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   min-height: 2.55rem;
   overflow: hidden;
   padding: 0.55rem 0.62rem;
+  position: relative;
   transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.task-workspace-item[data-running]::after {
+  animation: stream-running-wave 2.2s linear infinite;
+  background: linear-gradient(90deg, transparent 0%, var(--accent) 48%, transparent 100%);
+  border-radius: inherit;
+  content: "";
+  inset: -1px;
+  padding: 1.5px;
+  pointer-events: none;
+  position: absolute;
+  transform: translateX(-110%);
+  width: 72%;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
 }
 
 .task-workspace-item[data-workspace-kind="system"] {
@@ -3190,6 +3207,61 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   cursor: grabbing;
 }
 
+.stream-context-menu {
+  background: color-mix(in srgb, var(--card-bg-open) 96%, transparent);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--card-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 0.16rem;
+  max-height: min(32rem, calc(100vh - 1rem));
+  min-width: 13.5rem;
+  overflow: auto;
+  padding: 0.35rem;
+  position: fixed;
+  width: max-content;
+  z-index: 90;
+}
+
+.stream-context-menu[hidden] {
+  display: none;
+}
+
+.stream-context-action {
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  max-width: 22rem;
+  overflow: hidden;
+  padding: 0.48rem 0.58rem;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stream-context-action:hover,
+.stream-context-action:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.stream-context-label {
+  border-top: 1px solid var(--line);
+  color: var(--text-faint);
+  font-size: 0.65rem;
+  margin-top: 0.15rem;
+  padding: 0.42rem 0.58rem 0.2rem;
+}
+
+.stream-context-create {
+  color: var(--accent);
+}
+
 .stream-tab-card {
   align-items: flex-start;
   background: color-mix(in srgb, var(--surface-2) 68%, transparent);
@@ -3281,6 +3353,7 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .task-workspace-item[data-running]::after,
   .stream-tab[data-running] .stream-tab-card::after {
     animation: none;
     transform: translateX(70%);

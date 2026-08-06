@@ -1492,6 +1492,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }) {
   const selected = workspaceKey(currentTask()) === id;
   const lastActivity = workspaceLastActivity(tasks);
   const unread = tasks.some((task) => task.unread);
+  const running = tasks.some((task) => task.running);
   return el("li", {
     class: "task-workspace-item",
     "data-workspace-id": id,
@@ -1501,6 +1502,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }) {
     "data-workspace-name": name,
     "data-selected": selected ? "" : null,
     "data-unread": unread ? "" : null,
+    "data-running": running ? "" : null,
     role: "button",
     tabindex: "0",
     "aria-pressed": String(selected),
@@ -1580,7 +1582,7 @@ function renderStreamTabs() {
       "data-answer-ready": answerReady ? "" : null,
       draggable: surface === "mobile" ? null : "true",
       "aria-label": [streamName, agentLabel, task?.modelLabel, statusLabel].filter(Boolean).join(". "),
-      title: `${statusLabel ? `${statusLabel}. ` : ""}Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. Перетащите, чтобы изменить порядок. ПКМ — переименовать.`,
+      title: `${statusLabel ? `${statusLabel}. ` : ""}Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. Перетащите, чтобы изменить порядок. ПКМ — управление Stream.`,
     }, [
       el("span", { class: "stream-tab-card" }, [
         el("span", { class: "provider-dot", "data-provider": provider, "aria-hidden": "true" }),
@@ -1857,16 +1859,114 @@ streamTabs?.addEventListener("click", (event) => {
   });
 });
 
+let streamContextMenu = null;
+
+function closeStreamContextMenu() {
+  if (!streamContextMenu) return;
+  streamContextMenu.hidden = true;
+  streamContextMenu.replaceChildren();
+}
+
+function workspaceMenuOptions(currentWorkspaceId) {
+  const workspaces = new Map();
+  for (const task of state.tasks) {
+    const workspaceId = String(task.workspaceId ?? "").trim();
+    if (!workspaceId || workspaceId === currentWorkspaceId || workspaces.has(workspaceId)) continue;
+    workspaces.set(workspaceId, String(task.workspaceName ?? task.title ?? "Без названия").trim() || "Без названия");
+  }
+  return [...workspaces].map(([id, name]) => ({ id, name }))
+    .sort((left, right) => left.name.localeCompare(right.name, "ru"));
+}
+
+function ensureStreamContextMenu() {
+  if (streamContextMenu) return streamContextMenu;
+  streamContextMenu = el("div", {
+    class: "stream-context-menu",
+    role: "menu",
+    "aria-label": "Управление Stream",
+    hidden: true,
+  });
+  document.body.append(streamContextMenu);
+  streamContextMenu.addEventListener("click", async (event) => {
+    const action = event.target.closest("[data-stream-menu-action]");
+    if (!action) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const streamId = String(streamContextMenu.dataset.streamId ?? "");
+    const kind = String(action.dataset.streamMenuAction ?? "");
+    const currentName = String(streamContextMenu.dataset.streamName ?? "");
+    closeStreamContextMenu();
+    if (!streamId) return;
+    if (kind === "rename") {
+      const name = await askText({ title: "Новое название Stream", value: currentName });
+      if (name != null) emit("stream:rename", { streamId, name });
+      return;
+    }
+    if (kind === "move") {
+      emit("stream:move", { streamId, workspaceId: String(action.dataset.workspaceId ?? "") });
+      return;
+    }
+    if (kind === "create-workspace") {
+      const name = await askText({ title: "Название нового Workspace" });
+      if (name) emit("workspace:create-from-stream", { streamId, name });
+    }
+  });
+  return streamContextMenu;
+}
+
+function openStreamContextMenu(event, tab) {
+  const menu = ensureStreamContextMenu();
+  const streamId = String(tab.dataset.streamTabId ?? "");
+  const workspaceId = String(tab.dataset.workspaceId ?? "");
+  menu.dataset.streamId = streamId;
+  menu.dataset.streamName = String(tab.dataset.streamName ?? "");
+  menu.replaceChildren(
+    el("button", {
+      type: "button", role: "menuitem", class: "stream-context-action",
+      "data-stream-menu-action": "rename", text: "Переименовать Stream…",
+    }),
+    el("span", { class: "stream-context-label", text: "Переместить в Workspace" }),
+    ...workspaceMenuOptions(workspaceId).map((workspace) => el("button", {
+      type: "button", role: "menuitem", class: "stream-context-action",
+      "data-stream-menu-action": "move", "data-workspace-id": workspace.id,
+      text: workspace.name,
+    })),
+    el("button", {
+      type: "button", role: "menuitem", class: "stream-context-action stream-context-create",
+      "data-stream-menu-action": "create-workspace", text: "+ Новый Workspace…",
+    }),
+  );
+  menu.hidden = false;
+  const left = Math.max(8, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8));
+  const top = Math.max(8, Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  menu.querySelector("button")?.focus();
+}
+
 streamTabs?.addEventListener("contextmenu", (event) => {
   const tab = event.target.closest("[data-stream-tab-id][data-stream-name]");
   if (!tab) return;
   event.preventDefault();
-  const streamId = String(tab.dataset.streamTabId ?? "");
-  void askText({ title: "Новое название Stream", value: tab.dataset.streamName ?? "" })
-    .then((name) => {
-      if (name != null) emit("stream:rename", { streamId, name });
-    });
+  openStreamContextMenu(event, tab);
 });
+
+streamTabs?.addEventListener("keydown", (event) => {
+  if (!(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) return;
+  const tab = event.target.closest("[data-stream-tab-id][data-stream-name]");
+  if (!tab) return;
+  event.preventDefault();
+  const rect = tab.getBoundingClientRect();
+  openStreamContextMenu({ clientX: rect.left + 12, clientY: rect.bottom - 4 }, tab);
+});
+
+document.addEventListener("click", (event) => {
+  if (streamContextMenu && !streamContextMenu.contains(event.target)) closeStreamContextMenu();
+});
+window.addEventListener("resize", closeStreamContextMenu);
+document.addEventListener("scroll", (event) => {
+  if (!streamContextMenu?.contains(event.target)) closeStreamContextMenu();
+}, true);
 
 let draggedStreamId = "";
 streamTabs?.addEventListener("dragstart", (event) => {

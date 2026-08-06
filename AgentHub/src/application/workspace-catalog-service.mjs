@@ -28,6 +28,14 @@ export class WorkspaceCatalogService {
     return this.#store.renameWorkspace(workspaceId, name);
   }
 
+  createWorkspaceFromStream({ streamId, name } = {}) {
+    return this.#store.transaction(() => {
+      const workspace = this.#store.createWorkspace({ name });
+      const stream = this.#store.moveStream(streamId, workspace.id);
+      return { workspace, stream };
+    });
+  }
+
   mergeWorkspaces({ sourceWorkspaceId, targetWorkspaceId } = {}) {
     return this.#store.mergeWorkspaces(sourceWorkspaceId, targetWorkspaceId);
   }
@@ -41,7 +49,7 @@ export class WorkspaceCatalogService {
   }
 
   moveStream({ streamId, workspaceId } = {}) {
-    return this.#store.moveStream(streamId, workspaceId);
+    return this.#store.transaction(() => this.#store.moveStream(streamId, workspaceId));
   }
 
   bindThread({ streamId, provider, threadId, projectRoot = "", source = "rebirth" } = {}) {

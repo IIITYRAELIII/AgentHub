@@ -147,6 +147,9 @@ export function createDesktopCommandWiring({
       renameWorkspace: (params) => services.workspaceMutation(
         () => services.workspaceCatalogService.renameWorkspace(params),
       ),
+      createWorkspaceFromStream: (params) => services.workspaceMutation(
+        () => services.workspaceCatalogService.createWorkspaceFromStream(params),
+      ),
       mergeWorkspaces: (params) => services.workspaceMutation(
         () => services.workspaceCatalogService.mergeWorkspaces(params),
       ),

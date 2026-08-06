@@ -10,7 +10,7 @@ function router(calls) {
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "compactContext", "openAttachment", "submitBugReport",
     "trustedDevices", "createDevicePairing", "revokeDevice",
-    "renameWorkspace", "mergeWorkspaces", "renameStream", "moveStream",
+    "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
   ].map((name) => [name, handler]));
   return createDesktopApplicationRouter({
     handlers,
@@ -32,6 +32,19 @@ test("Desktop application router addresses mutations explicitly", async () => {
   assert.equal(calls[0][0], "task.select");
   assert.equal(calls[0][2].clientId, "desktop:7");
   assert.equal(calls[0][3].target.streamId, "stream-1");
+});
+
+test("Desktop application router creates a Workspace from an existing Stream", async () => {
+  const calls = [];
+  const control = router(calls);
+  await control.handleDesktopControl({
+    action: "create-workspace-from-stream",
+    params: { streamId: "stream-1", name: "New Workspace" },
+    context: { source: "desktop", userId: "7" },
+  });
+  assert.equal(calls[0][0], "workspace.create-from-stream");
+  assert.equal(calls[0][1].streamId, "stream-1");
+  assert.equal(calls[0][1].name, "New Workspace");
 });
 
 test("Desktop application router enforces Mini App history limits", async () => {

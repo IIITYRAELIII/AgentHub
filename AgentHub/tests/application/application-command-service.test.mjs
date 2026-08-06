@@ -10,7 +10,7 @@ function service(calls) {
   const handlers = Object.fromEntries([
     "selectTask", "createTask", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
-    "renameWorkspace", "mergeWorkspaces", "renameStream", "moveStream",
+    "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
   ].map((name) => [name, (...args) => { calls.push({ name, args }); return name; }]));
   return createApplicationCommandService({
     handlers,
@@ -45,6 +45,10 @@ test("workspace and stream commands use the shared command path", async () => {
     workspaceId: "workspace-1",
     name: "Agent HUB",
   }, { source: "desktop", userId: "7" });
+  await commands.dispatch("workspace.create-from-stream", {
+    streamId: "stream-1",
+    name: "New Workspace",
+  }, { source: "desktop", userId: "7" });
   await commands.dispatch("stream.move", {
     streamId: "stream-1",
     workspaceId: "workspace-2",
@@ -53,6 +57,10 @@ test("workspace and stream commands use the shared command path", async () => {
     {
       name: "renameWorkspace",
       args: [{ workspaceId: "workspace-1", name: "Agent HUB" }],
+    },
+    {
+      name: "createWorkspaceFromStream",
+      args: [{ streamId: "stream-1", name: "New Workspace" }],
     },
     {
       name: "moveStream",
