@@ -427,6 +427,24 @@ test("extracted composition factories remain bounded", async () => {
   }
 });
 
+test("Desktop shell owns read, command and run-router assembly", async () => {
+  const root = await readFile(COMPOSITION_ROOT, "utf8");
+  const shell = await readFile(
+    path.join(ROOT, "src", "composition", "desktop-shell-composition.mjs"),
+    "utf8",
+  );
+  for (const factory of [
+    "createDesktopReadSystemWiring",
+    "createDesktopCommandWiring",
+    "createDesktopRunRouterWiring",
+  ]) {
+    assert.equal(root.includes(factory), false, `${factory} leaked into the composition root`);
+    assert.equal(shell.includes(factory), true, `${factory} is not owned by the Desktop shell`);
+  }
+  assert.equal((shell.match(/desktopCommandsPort\.bind\s*\(/gu) ?? []).length, 1);
+  assert.equal(shell.includes("trustedDeviceUserId: desktopReadSystem.trustedDeviceUserId"), true);
+});
+
 test("src modules obey the architectural dependency matrix", async () => {
   const inventory = await migrationInventory();
   const sourceRoot = path.join(ROOT, "src");
