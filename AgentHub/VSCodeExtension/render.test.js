@@ -243,14 +243,16 @@ test("grouped Claude work keeps the latest turn visible and collapses previous t
   assert.doesNotMatch(app, /if \(list\) list\.replaceChildren\(\.\.\.entries\)/u);
 });
 
-test("chat header contains controls without duplicated task metadata", () => {
+test("chat controls live in the shared composer without a chat header", () => {
   const index = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const styles = fs.readFileSync(path.join(MINI_APP_ROOT, "styles.css"), "utf8");
-  assert.match(index, /<header class="chat-head">[\s\S]*?<div class="chat-actions">/u);
+  assert.doesNotMatch(index, /class="chat-head"|data-mobile-chat-actions/u);
+  assert.match(index, /<form class="composer"[\s\S]*?<div class="composer-main">[\s\S]*?<div class="chat-actions">/u);
   assert.doesNotMatch(index, /data-chat-(?:title|subtitle|provider-dot|running)/u);
-  assert.doesNotMatch(app, /buildSubtitleChips|chatProviderDot|chatSubtitle|chatTitle|chatRunning/u);
-  assert.match(styles, /\.chat-actions\s*\{[\s\S]*?margin-left:\s*auto;/u);
+  assert.doesNotMatch(app, /buildSubtitleChips|chatProviderDot|chatSubtitle|chatTitle|chatRunning|syncChatActionsPlacement|mobileChatActions|chatHead/u);
+  assert.match(styles, /\.chat-pane\s*\{[\s\S]*?grid-template-rows:\s*minmax\(0, 1fr\);/u);
+  assert.match(styles, /\.chat-scroll\s*\{[\s\S]*?grid-row:\s*1;/u);
 });
 
 /* фон BlackHole приходит из workspace через webview, поэтому его источник
@@ -1653,8 +1655,8 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   assert.match(styles, /\.stream-chat-columns\[data-multi-stream\] > \.chat-pane\[data-active-stream\]/u);
   assert.match(app, /chatPane\.toggleAttribute\("data-active-stream", selectedIndex >= 0\)/u);
   assert.match(index, /<\/aside>\s*<\/div>\s*<\/div>\s*<!-- Запросы подтверждений/u);
-  assert.match(index, /data-mobile-chat-actions/u);
-  assert.match(styles, /html\[data-surface="mobile"\] \.chat-head\s*\{\s*display: none;/su);
+  assert.doesNotMatch(index, /data-mobile-chat-actions/u);
+  assert.match(styles, /html\[data-surface="mobile"\] \.chat-actions[\s\S]*?html\[data-surface="mobile"\] \.composer \.overflow-menu/u);
   assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-preview\s*\{\s*display: none;/su);
   assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-columns\s*\{[\s\S]*?display: grid;/u);
 });
@@ -1673,7 +1675,7 @@ test("VS Code stream refresh keeps composer focus and opens history at the botto
   assert.match(deck, /querySelectorAll\("\.stream-chat-preview"\)/u);
   assert.doesNotMatch(deck, /replaceChildren\(chatPane/u);
   assert.match(deck, /chatPane\.style\.order/u);
-  assert.match(app, /function syncChatActionsPlacement\(\)/u);
+  assert.doesNotMatch(app, /syncChatActionsPlacement/u);
   // Колонки фиксируются до forceBottom, поэтому переносы строк уже учтены.
   assert.ok(chat.indexOf("renderStreamChatDeck();") < chat.indexOf("renderMessages({ forceBottom: true });"));
   assert.match(app, /requestAnimationFrame\(\(\) => \{ log\.scrollTop = log\.scrollHeight; \}\)/u);

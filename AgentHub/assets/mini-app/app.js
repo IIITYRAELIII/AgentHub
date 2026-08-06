@@ -39,10 +39,6 @@ const taskFilter = document.querySelector("[data-task-filter]");
 const taskNewPicker = document.querySelector("[data-task-new-picker]");
 
 const chatPane = document.querySelector("[data-chat-pane]");
-const chatHead = document.querySelector(".chat-head");
-const chatBack = document.querySelector(".chat-back");
-const chatActions = document.querySelector(".chat-actions");
-const mobileChatActions = document.querySelector("[data-mobile-chat-actions]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
 const streamChatColumns = document.querySelector("[data-stream-chat-columns]");
 const chatEmpty = document.querySelector("[data-chat-empty]");
@@ -1317,7 +1313,6 @@ function syncSurface() {
     surface = nextSurface;
     document.documentElement.dataset.surface = surface;
     syncComposerInputMode();
-    syncChatActionsPlacement();
     syncCollapseTurnButtons();
     // частиц на телефоне вдвое меньше, поэтому слой пересобирается
     particleLayer?.remove();
@@ -1327,19 +1322,6 @@ function syncSurface() {
     renderChat();
     if (journalRendered) prepareMobileControls();
   }
-}
-
-function syncChatActionsPlacement() {
-  if (!chatActions || !chatHead || !chatBack || !mobileChatActions) return;
-  if (surface === "mobile") {
-    if (chatBack.parentElement !== mobileChatActions) mobileChatActions.append(chatBack);
-    if (chatActions.parentElement !== mobileChatActions) mobileChatActions.append(chatActions);
-    mobileChatActions.hidden = !currentTask();
-    return;
-  }
-  if (chatBack.parentElement !== chatHead) chatHead.prepend(chatBack);
-  if (chatActions.parentElement !== chatHead) chatHead.append(chatActions);
-  mobileChatActions.hidden = true;
 }
 
 window.addEventListener("resize", syncSurface);
@@ -2036,7 +2018,6 @@ let activeChatId = null;
 function renderChat() {
   const task = currentTask();
   const hasTask = Boolean(task);
-  syncChatActionsPlacement();
   if (!hasTask) {
     chatEmpty.hidden = false;
     if (chatEmptyText) chatEmptyText.textContent = "Выберите Workspace слева, чтобы открыть его Streams.";

@@ -3511,7 +3511,7 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   display: grid;
   flex: 1 1 auto;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
   width: 100%;
@@ -3519,18 +3519,6 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
 
 .chat-pane[data-dialog-settings-open] {
   grid-template-columns: minmax(0, 1fr) clamp(17rem, 28vw, 22rem);
-}
-
-.chat-head {
-  align-items: center;
-  background: color-mix(in srgb, var(--bg) 70%, transparent);
-  border-bottom: 1px solid var(--line);
-  display: flex;
-  gap: 0.55rem;
-  flex: 0 0 auto;
-  grid-column: 1 / -1;
-  grid-row: 1;
-  padding: 0.6rem var(--gutter-right) 0.6rem var(--gutter-left);
 }
 
 .chat-back {
@@ -3572,7 +3560,6 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   display: flex;
   flex: 0 0 auto;
   gap: 0.4rem;
-  margin-left: auto;
 }
 
 [data-dialog-settings-toggle][aria-pressed="true"] {
@@ -3642,7 +3629,7 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
 .chat-scroll {
   flex: 1 1 auto;
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 1;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior-y: contain;
@@ -3657,7 +3644,7 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   display: flex;
   flex-direction: column;
   grid-column: 2;
-  grid-row: 2;
+  grid-row: 1;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
@@ -4278,10 +4265,6 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   cursor: zoom-in;
 }
 
-.mobile-chat-actions {
-  display: none;
-}
-
 .attachment-file.attachment-open {
   cursor: pointer;
 }
@@ -4857,15 +4840,14 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   display: inline-flex;
 }
 
-.chat-stop-header {
-  display: none;
-}
-
-html[data-surface="mobile"] .chat-stop-header {
-  display: inline-flex;
-}
-
 html[data-surface="mobile"] .chat-stop-bottom {
+  height: 2.4rem;
+  justify-content: center;
+  padding: 0;
+  width: 2.4rem;
+}
+
+html[data-surface="mobile"] .chat-stop-bottom > span {
   display: none;
 }
 
@@ -6145,10 +6127,6 @@ html[data-surface="mobile"] .chat-back {
   flex: 0 0 auto;
 }
 
-html[data-surface="mobile"] .chat-head {
-  display: none;
-}
-
 /* у кнопок действий остаются только иконки: подписи занимали половину строки */
 html[data-surface="mobile"] .chat-actions .chip-button > span {
   display: none;
@@ -6163,24 +6141,7 @@ html[data-surface="mobile"] .chat-actions {
   gap: 0.3rem;
 }
 
-html[data-surface="mobile"] .mobile-chat-actions:not([hidden]) {
-  align-items: center;
-  border-top: 1px solid var(--line);
-  display: flex;
-  justify-content: flex-end;
-  min-height: 2.8rem;
-  padding: 0.35rem var(--gutter-right) 0.2rem var(--gutter-left);
-}
-
-html[data-surface="mobile"] .mobile-chat-actions .chat-stop-header {
-  display: none;
-}
-
-html[data-surface="mobile"] .mobile-chat-actions .chat-back {
-  margin-right: auto;
-}
-
-html[data-surface="mobile"] .mobile-chat-actions .overflow-menu {
+html[data-surface="mobile"] .composer .overflow-menu {
   bottom: calc(100% + 0.35rem);
   top: auto;
 }
@@ -6192,7 +6153,7 @@ html[data-surface="mobile"] .chat-pane[data-dialog-settings-open] {
 html[data-surface="mobile"] .dialog-settings {
   border-left: 0;
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 1;
   justify-self: end;
   max-width: 24rem;
   width: 100%;
@@ -6217,7 +6178,7 @@ html[data-surface="mobile"] .msg {
 html[data-surface="mobile"] .composer-main {
   align-items: center;
   display: grid;
-  grid-template-columns: auto auto auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto auto auto auto minmax(0, 1fr) auto auto auto;
 }
 
 html[data-surface="mobile"] .composer-input {
@@ -6229,6 +6190,9 @@ html[data-surface="mobile"] .composer-input {
 html[data-surface="mobile"] .composer-slash,
 html[data-surface="mobile"] .composer-attach,
 html[data-surface="mobile"] .context-usage,
+html[data-surface="mobile"] .chat-actions,
+html[data-surface="mobile"] .chat-back,
+html[data-surface="mobile"] .chat-stop-bottom,
 html[data-surface="mobile"] .composer-send {
   grid-row: 2;
 }

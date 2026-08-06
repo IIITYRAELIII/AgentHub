@@ -252,77 +252,6 @@
 
       <div class="stream-chat-columns" data-stream-chat-columns>
       <div class="chat-pane" data-chat-pane hidden>
-        <header class="chat-head">
-          <button type="button" class="icon-button chat-back" data-action="pane-tasks" title="К списку задач">
-            <svg data-phosphor-icon="caret-left" viewBox="0 0 256 256" aria-hidden="true">
-              <polyline points="160 208 80 128 160 48" fill="none" stroke="currentColor"
-                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-            </svg>
-          </button>
-          <div class="chat-actions">
-            <button type="button" class="chip-button danger chat-stop-header" data-action="task-stop" data-chat-stop hidden
-              title="Остановить ход">
-              <svg data-phosphor-icon="stop" viewBox="0 0 256 256" aria-hidden="true">
-                <rect x="48" y="48" width="160" height="160" rx="8" fill="none"
-                  stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
-                  stroke-width="16"></rect>
-              </svg>
-              <span>Стоп</span>
-            </button>
-            <button type="button" class="chip-button" data-action="task-diff" title="Изменения задачи">
-              <svg data-phosphor-icon="git-diff" viewBox="0 0 256 256" aria-hidden="true">
-                <path d="M200,168V110.63a16,16,0,0,0-4.69-11.32L144,48" fill="none"
-                  stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
-                  stroke-width="16"></path>
-                <polyline points="144 96 144 48 192 48" fill="none" stroke="currentColor"
-                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-                <path d="M56,88v57.37a16,16,0,0,0,4.69,11.32L112,208" fill="none"
-                  stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
-                  stroke-width="16"></path>
-                <polyline points="112 160 112 208 64 208" fill="none" stroke="currentColor"
-                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-                <circle cx="56" cy="64" r="24" fill="none" stroke="currentColor"
-                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
-                <circle cx="200" cy="192" r="24" fill="none" stroke="currentColor"
-                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
-              </svg>
-              <span>Diff</span>
-            </button>
-            <button type="button" class="icon-button" data-action="task-settings"
-              data-dialog-settings-toggle title="Настройки диалога" aria-pressed="false">
-              <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256"
-                aria-hidden="true">
-                <circle cx="104" cy="80" r="24" fill="none" stroke="currentColor"
-                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
-                <circle cx="168" cy="176" r="24" fill="none" stroke="currentColor"
-                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
-                <line x1="128" y1="80" x2="216" y2="80" fill="none" stroke="currentColor"
-                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-                <line x1="40" y1="80" x2="80" y2="80" fill="none" stroke="currentColor"
-                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-                <line x1="192" y1="176" x2="216" y2="176" fill="none" stroke="currentColor"
-                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-                <line x1="40" y1="176" x2="144" y2="176" fill="none" stroke="currentColor"
-                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-              </svg>
-            </button>
-            <details class="overflow" data-overflow>
-              <summary class="icon-button" title="Ещё" aria-label="Ещё действия">
-                <svg data-phosphor-icon="dots-three" viewBox="0 0 256 256" aria-hidden="true">
-                  <circle cx="128" cy="128" r="12" fill="currentColor"></circle>
-                  <circle cx="196" cy="128" r="12" fill="currentColor"></circle>
-                  <circle cx="60" cy="128" r="12" fill="currentColor"></circle>
-                </svg>
-              </summary>
-              <div class="overflow-menu" role="menu">
-                <button type="button" role="menuitem" data-action="task-rename">Переименовать Workspace…</button>
-                <button type="button" role="menuitem" data-action="task-status">Статус и лимиты</button>
-                <button type="button" role="menuitem" data-action="task-archive" class="danger">В архив</button>
-              </div>
-            </details>
-          </div>
-        </header>
-
         <div class="chat-scroll" data-chat-scroll>
           <div class="chat-history-loader" data-history-loader hidden>
             <button type="button" class="chat-history-load" data-history-load>
@@ -390,12 +319,16 @@
         <!-- Сохранённые и поставленные в очередь сообщения. -->
         <div class="queue" data-queue hidden aria-label="Очередь сообщений"></div>
 
-        <div class="mobile-chat-actions" data-mobile-chat-actions hidden></div>
-
         <form class="composer" data-composer>
           <div class="annotations" data-annotations hidden aria-label="Аннотации к выделенному тексту"></div>
           <div class="attachments" data-attachments hidden aria-label="Вложения"></div>
           <div class="composer-main">
+            <button type="button" class="icon-button chat-back" data-action="pane-tasks" title="К списку задач">
+              <svg data-phosphor-icon="caret-left" viewBox="0 0 256 256" aria-hidden="true">
+                <polyline points="160 208 80 128 160 48" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+              </svg>
+            </button>
             <button type="button" class="icon-button composer-slash" data-action="slash-menu"
               title="Команды" aria-label="Команды" aria-expanded="false">/</button>
             <div class="slash-menu" data-slash-menu hidden role="listbox" aria-label="Команды"></div>
@@ -417,6 +350,59 @@
               <span class="context-ring" data-context-ring aria-hidden="true"></span>
               <span data-context-label>0%</span>
             </button>
+            <div class="chat-actions">
+              <button type="button" class="chip-button" data-action="task-diff" title="Изменения задачи">
+                <svg data-phosphor-icon="git-diff" viewBox="0 0 256 256" aria-hidden="true">
+                  <path d="M200,168V110.63a16,16,0,0,0-4.69-11.32L144,48" fill="none"
+                    stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                    stroke-width="16"></path>
+                  <polyline points="144 96 144 48 192 48" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+                  <path d="M56,88v57.37a16,16,0,0,0,4.69,11.32L112,208" fill="none"
+                    stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                    stroke-width="16"></path>
+                  <polyline points="112 160 112 208 64 208" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+                  <circle cx="56" cy="64" r="24" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+                  <circle cx="200" cy="192" r="24" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+                </svg>
+                <span>Diff</span>
+              </button>
+              <button type="button" class="icon-button" data-action="task-settings"
+                data-dialog-settings-toggle title="Настройки диалога" aria-pressed="false">
+                <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256"
+                  aria-hidden="true">
+                  <circle cx="104" cy="80" r="24" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+                  <circle cx="168" cy="176" r="24" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+                  <line x1="128" y1="80" x2="216" y2="80" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+                  <line x1="40" y1="80" x2="80" y2="80" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+                  <line x1="192" y1="176" x2="216" y2="176" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+                  <line x1="40" y1="176" x2="144" y2="176" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+                </svg>
+              </button>
+              <details class="overflow" data-overflow>
+                <summary class="icon-button" title="Ещё" aria-label="Ещё действия">
+                  <svg data-phosphor-icon="dots-three" viewBox="0 0 256 256" aria-hidden="true">
+                    <circle cx="128" cy="128" r="12" fill="currentColor"></circle>
+                    <circle cx="196" cy="128" r="12" fill="currentColor"></circle>
+                    <circle cx="60" cy="128" r="12" fill="currentColor"></circle>
+                  </svg>
+                </summary>
+                <div class="overflow-menu" role="menu">
+                  <button type="button" role="menuitem" data-action="task-rename">Переименовать Workspace…</button>
+                  <button type="button" role="menuitem" data-action="task-status">Статус и лимиты</button>
+                  <button type="button" role="menuitem" data-action="task-archive" class="danger">В архив</button>
+                </div>
+              </details>
+            </div>
             <button type="button" class="chip-button danger chat-stop-bottom" data-action="task-stop"
               data-chat-stop hidden title="Остановить ход">
               <svg data-phosphor-icon="stop" viewBox="0 0 256 256" aria-hidden="true">
