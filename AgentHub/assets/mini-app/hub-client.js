@@ -70,6 +70,7 @@ const {
   isConnectionFailure,
   looksLikeConnectionFailure,
   markConnectionFailure,
+  mergeDeferredQueueEntries,
   mergeReconciledUserMessage,
   mergeLiveUserMessages,
   normalizedResponseAnnotations,
@@ -326,12 +327,12 @@ function deferredEntriesForTask(snapshot, taskIdValue) {
 
 function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
   const serverClientIds = new Set(serverEntries
-    .map((item) => String(item.clientUserMessageId ?? "").trim())
+    .map((item) => String(item.clientUserMessageId ?? item.clientMessageId ?? "").trim())
     .filter(Boolean));
   return [...outgoingMessages(taskIdValue).values()]
     .filter((message) => (
       optimisticDeferredClientUserMessageIds.has(message.clientUserMessageId)
-      && !serverClientIds.has(message.clientUserMessageId)
+      || serverClientIds.has(message.clientUserMessageId)
     ))
     .map((message) => ({
       id: `local:${message.clientUserMessageId}`,
@@ -342,17 +343,17 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
       annotations: message.responseAnnotations ?? [],
       attachments: message.attachments ?? [],
       createdAt: message.time,
-      optimistic: true,
+      optimistic: !serverClientIds.has(message.clientUserMessageId),
     }));
 }
 
 function renderTaskQueue(taskIdValue, snapshot = lastSnapshot) {
   const serverEntries = deferredEntriesForTask(snapshot, taskIdValue)
     .map((item) => ({ ...item, attachments: attachmentViews(item.attachments) }));
-  agentHub.setQueue(taskIdValue, [
-    ...serverEntries,
-    ...optimisticDeferredEntries(taskIdValue, serverEntries),
-  ]);
+  agentHub.setQueue(taskIdValue, mergeDeferredQueueEntries(
+    serverEntries,
+    optimisticDeferredEntries(taskIdValue, serverEntries),
+  ));
 }
 
 function receiptDeliveryPatch(receipt) {

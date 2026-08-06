@@ -550,6 +550,40 @@ test("unmatched optimistic messages keep chronological position", () => {
   ]);
 });
 
+test("deferred queue merges the server row with its optimistic client message", () => {
+  const merged = lifecycle.mergeDeferredQueueEntries([{
+    id: "queue-1",
+    state: "queued",
+    clientUserMessageId: "client-queue-1",
+    text: "",
+    annotations: [],
+    attachments: [],
+    createdAt: "2026-08-07T00:10:01.000Z",
+  }], [{
+    id: "local:client-queue-1",
+    state: "queued",
+    requestId: "client-queue-1",
+    text: "",
+    annotations: [{ text: "Цитата", annotation: "Комментарий" }],
+    attachments: [{ id: "screen.png", type: "image/png" }],
+    createdAt: "2026-08-07T00:10:00.000Z",
+    optimistic: true,
+  }]);
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].id, "queue-1");
+  assert.equal(merged[0].clientUserMessageId, "client-queue-1");
+  assert.equal(merged[0].state, "queued");
+  assert.equal(merged[0].optimistic, false);
+  assert.equal(merged[0].createdAt, "2026-08-07T00:10:01.000Z");
+  assert.equal(JSON.stringify(merged[0].annotations), JSON.stringify([
+    { text: "Цитата", annotation: "Комментарий" },
+  ]));
+  assert.equal(JSON.stringify(merged[0].attachments), JSON.stringify([
+    { id: "screen.png", type: "image/png" },
+  ]));
+});
+
 test("live user update enriches a durable duplicate with its attachment and time", () => {
   const merged = lifecycle.mergeLiveUserMessages([{
     id: "durable-user",

@@ -1409,15 +1409,15 @@ test("shared chat Markdown renders GFM tables responsively", () => {
   assert.match(styles, /\.markdown-table[\s\S]*border-collapse: collapse;/u);
 });
 
-  test("queued messages own steering and editing while the composer always queues", () => {
+test("queued messages own steering and editing while the composer always queues", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const lifecycle = fs.readFileSync(require.resolve("../assets/mini-app/message-lifecycle.js"), "utf8");
-    assert.match(app, /const entryAnnotations = Array\.isArray\(entry\.annotations\)/u);
-    assert.match(app, /class: "queue-annotation-quote"/u);
-    assert.match(app, /class: "queue-annotation-comment"/u);
-    assert.match(app, /\(entryAnnotations\.length && annotationEnvelope\.test\(rawText\)\)/u);
+  assert.match(app, /const entryAnnotations = Array\.isArray\(entry\.annotations\)/u);
+  assert.match(app, /class: "queue-annotation-quote"/u);
+  assert.match(app, /class: "queue-annotation-comment"/u);
+  assert.match(app, /\(entryAnnotations\.length && annotationEnvelope\.test\(rawText\)\)/u);
   assert.match(app, /data-action": "queue-steer"/u);
   assert.match(app, /data-action": "queue-edit"/u);
   assert.match(app, /followUpMode: currentTask\(\)\?\.running \? "queue" : null/u);
@@ -1427,8 +1427,10 @@ test("shared chat Markdown renders GFM tables responsively", () => {
   assert.match(client, /control\("deferred-input", \{ id, action: "queue" \}\)/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "steer" \}\)/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "edit", text \}\)/u);
-    assert.match(client, /deferredClientUserMessageIds = new Set\(/u);
-    assert.match(client, /function optimisticDeferredEntries\(taskIdValue, serverEntries = \[\]\)/u);
+  assert.match(client, /deferredClientUserMessageIds = new Set\(/u);
+  assert.match(client, /function optimisticDeferredEntries\(taskIdValue, serverEntries = \[\]\)/u);
+  assert.match(client, /mergeDeferredQueueEntries\(\s*serverEntries,/u);
+  assert.match(lifecycle, /function mergeDeferredQueueEntries\(serverEntries, clientEntries\)/u);
   assert.match(
     lifecycle,
     /message\?\.role === "user"[\s\S]*deferredIds\.has\(String\(message\?\.clientUserMessageId/u,

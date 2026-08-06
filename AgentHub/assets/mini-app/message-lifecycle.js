@@ -463,6 +463,73 @@ function mergeLiveUserMessages(messages, {
   return values;
 }
 
+function deferredClientMessageId(entry) {
+  return String(
+    entry?.clientUserMessageId
+      ?? entry?.clientMessageId
+      ?? entry?.requestId
+      ?? "",
+  ).trim();
+}
+
+function mergeDeferredQueueEntries(serverEntries, clientEntries) {
+  const values = [];
+  const positions = new Map();
+  const appendServer = (entry, index) => {
+    const clientUserMessageId = deferredClientMessageId(entry);
+    const key = clientUserMessageId
+      ? `client:${clientUserMessageId}`
+      : `server:${String(entry?.id ?? index)}`;
+    const position = positions.get(key);
+    const normalized = {
+      ...entry,
+      ...(clientUserMessageId ? { clientUserMessageId } : {}),
+      optimistic: false,
+    };
+    if (!Number.isInteger(position)) {
+      positions.set(key, values.length);
+      values.push(normalized);
+      return;
+    }
+    values[position] = { ...values[position], ...normalized };
+  };
+  (Array.isArray(serverEntries) ? serverEntries : []).forEach(appendServer);
+
+  for (const [index, entry] of (Array.isArray(clientEntries) ? clientEntries : []).entries()) {
+    const clientUserMessageId = deferredClientMessageId(entry);
+    const key = clientUserMessageId
+      ? `client:${clientUserMessageId}`
+      : `client-local:${String(entry?.id ?? index)}`;
+    const position = positions.get(key);
+    if (!Number.isInteger(position)) {
+      positions.set(key, values.length);
+      values.push({
+        ...entry,
+        ...(clientUserMessageId ? { clientUserMessageId } : {}),
+      });
+      continue;
+    }
+    const server = values[position];
+    const clientText = String(entry?.text ?? "").trim();
+    const serverText = String(server?.text ?? "").trim();
+    values[position] = {
+      ...entry,
+      ...server,
+      clientUserMessageId,
+      text: serverText ? server.text : (clientText ? entry.text : server.text),
+      annotations: Array.isArray(server.annotations) && server.annotations.length
+        ? server.annotations
+        : entry.annotations ?? [],
+      attachments: Array.isArray(server.attachments) && server.attachments.length
+        ? server.attachments
+        : entry.attachments ?? [],
+      createdAt: server.createdAt ?? entry.createdAt ?? null,
+      optimistic: false,
+    };
+  }
+  return values;
+}
+
 function chronologicalMessages(messages) {
   const decorated = (Array.isArray(messages) ? messages : [])
     .map((message, index) => ({
@@ -602,6 +669,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   historicalAgentResponseVisible,
   liveMessageMatch,
   markConnectionFailure,
+  mergeDeferredQueueEntries,
   mergeLiveUserMessages,
   normalizedResponseAnnotations,
   normalizedUserMessage,
