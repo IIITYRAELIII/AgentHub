@@ -1556,7 +1556,9 @@ test("Gothic wears the Sleeper mask in the header niche", () => {
   const mark = fs.readFileSync(path.join(MINI_APP_ROOT, "themes", "gothic", "gothic-mark.svg"), "utf8");
   assert.match(styles, /--gothic-mark-image:\s*url\("\.\/gothic-mark\.svg"\)/u);
   assert.match(styles, /\.brand-mark::before[\s\S]*?background: var\(--gothic-mark-image\)/u);
-  /* Рога вынесены отдельным контуром, иначе evenodd режет дыры на висках. */
+  /* Рога и маска остаются раздельными деталями, чтобы глазницы не резали силуэт. */
   assert.equal((mark.match(/<path/gu) ?? []).length, 2);
+  assert.match(mark, /id="sleeper-horns"/u);
+  assert.match(mark, /id="sleeper-mask"/u);
   assert.match(mark, /fill-rule="evenodd"/u);
 });
