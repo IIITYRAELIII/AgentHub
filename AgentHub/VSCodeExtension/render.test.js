@@ -1680,3 +1680,16 @@ test("VS Code stream refresh keeps composer focus and opens history at the botto
   assert.ok(chat.indexOf("renderStreamChatDeck();") < chat.indexOf("renderMessages({ forceBottom: true });"));
   assert.match(app, /requestAnimationFrame\(\(\) => \{ log\.scrollTop = log\.scrollHeight; \}\)/u);
 });
+
+test("hub status band sits in the flow instead of covering the stream row", () => {
+  const html = fs.readFileSync(path.join(MINI_APP_ROOT, "index.html"), "utf8");
+  const styles = fs.readFileSync(path.join(MINI_APP_ROOT, "styles.css"), "utf8");
+  /* Полоса объявлена сразу после шапки: фиксированная сверху она ложилась
+     на ряд Stream, появившийся под шапкой. */
+  const afterHeader = html.indexOf("</header>");
+  const banner = html.indexOf("data-restart-banner");
+  const workspace = html.indexOf('class="workspace"');
+  assert.ok(afterHeader < banner && banner < workspace);
+  assert.match(styles, /\.connection-banner \{[^}]*position: relative;/u);
+  assert.doesNotMatch(styles, /\.connection-banner \{[^}]*position: fixed;/u);
+});

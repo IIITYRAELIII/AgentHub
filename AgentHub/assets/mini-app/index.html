@@ -186,6 +186,9 @@
     </div>
   </header>
 
+  <!-- Полоса состояния Hub идёт в потоке: фиксированная она накрывала ряд Stream. -->
+  <div class="connection-banner" data-restart-banner hidden role="status" aria-live="polite"></div>
+
   <!-- ============================== Рабочая область: список задач + чат === -->
   <div class="workspace" data-workspace>
     <!-- Левая колонка задач. Элементы задач вставляет renderTasks() из app.js;
@@ -880,7 +883,6 @@
     </div>
   </div>
 
-  <div class="connection-banner" data-restart-banner hidden role="status" aria-live="polite"></div>
   <div class="toast" data-toast hidden role="status" aria-live="polite"></div>
 </body>
 </html>

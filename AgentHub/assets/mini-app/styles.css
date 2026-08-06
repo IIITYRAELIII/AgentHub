@@ -410,14 +410,13 @@ h1 {
   border-radius: var(--radius-chip);
   box-shadow: var(--shadow);
   color: var(--text);
+  flex: 0 0 auto;
   font-size: 0.78rem;
-  left: 50%;
+  margin: 0.45rem auto 0;
   max-width: min(42rem, calc(100vw - 2rem));
   padding: 0.45rem 0.85rem;
-  position: fixed;
+  position: relative;
   text-align: center;
-  top: 4.35rem;
-  transform: translateX(-50%);
   z-index: 120;
 }
 
