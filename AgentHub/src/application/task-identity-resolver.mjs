@@ -66,7 +66,7 @@ export class TaskIdentityResolver {
 
   currentUiContextToken() {
     return createHash("sha256")
-      .update(`${this.contextNonce}\0${this.selectionStore.streamId ?? ""}\0${this.selectionStore.activeProvider}\0${path.resolve(this.selectionStore.activeProjectRoot)}\0${this.selectionStore.threadId ?? ""}`)
+      .update(`${this.contextNonce}\0${this.selectionStore.activeProvider}\0${path.resolve(this.selectionStore.activeProjectRoot)}\0${this.selectionStore.threadId ?? ""}`)
       .digest("hex")
       .slice(0, 12);
   }

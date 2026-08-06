@@ -31,6 +31,32 @@ test("legacy task view uses its stored message binding", async () => {
   assert.equal(await view.resolveBinding(null, 9, 12), stored);
 });
 
+test("stored task view binding is enriched with its stable Stream", async () => {
+  const stored = {
+    provider: "codex",
+    threadId: "thread-1",
+    projectRoot: "C:/repo",
+    taskTitle: "Saved",
+  };
+  const view = controller({
+    findMessageBinding: async () => stored,
+    findCatalogEntry: async () => ({
+      ...stored,
+      streamId: "stream-1",
+      title: "Workspace",
+    }),
+  });
+
+  assert.deepEqual(await view.resolveBinding({
+    provider: "codex",
+    threadId: "thread-1",
+  }, 9, 12), {
+    ...stored,
+    streamId: "stream-1",
+    taskTitle: "Workspace",
+  });
+});
+
 test("cached task history does not wait for the provider", async () => {
   const cached = [{
     id: "turn-cached",

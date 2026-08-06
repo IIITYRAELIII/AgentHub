@@ -521,13 +521,25 @@ export class TaskViewController {
   async resolveBinding(identity, targetChatId, sourceMessageId) {
     const d = this.deps;
     const stored = await d.findMessageBinding(targetChatId, sourceMessageId);
-    if (!identity) return stored;
-    if (this.identityMatches(stored, identity)) return stored;
-    const entry = await d.findCatalogEntry(identity);
+    const reference = identity ?? stored;
+    const entry = reference ? await d.findCatalogEntry(reference) : null;
+    if (!identity && stored) return entry ? {
+      ...stored,
+      streamId: entry.streamId ?? stored.streamId ?? null,
+      projectRoot: entry.projectRoot ?? stored.projectRoot,
+      taskTitle: entry.title ?? stored.taskTitle,
+    } : stored;
+    if (this.identityMatches(stored, identity)) return entry ? {
+      ...stored,
+      streamId: entry.streamId ?? stored.streamId ?? null,
+      projectRoot: entry.projectRoot ?? stored.projectRoot,
+      taskTitle: entry.title ?? stored.taskTitle,
+    } : stored;
     if (entry) {
       return {
         chatId: targetChatId,
         messageId: sourceMessageId,
+        streamId: entry.streamId ?? null,
         provider: entry.provider,
         threadId: entry.threadId,
         projectRoot: entry.projectRoot,

@@ -1109,7 +1109,15 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushMessage("/projects");
   const projectPicker = await telegram.waitForText("Выберите проект:", { after: mark });
   telegram.pushCallback(callbackButton(projectPicker, "p:1").callback_data, projectPicker.result);
-  await telegram.waitForText("Активная папка: E2E-2", { after: mark });
+  await telegram.waitForText("Активная папка: E2E-2", { after: mark }).catch(async (error) => {
+    const failedState = await readJson(statePath).catch(() => null);
+    throw new Error(
+      `${error.message}\nstate=${JSON.stringify(failedState)}`
+        + `\nnonPollingCalls=${JSON.stringify(telegram.callsAfter(mark).filter((call) => call.method !== "getUpdates"))}`
+        + `\nstdout tail:\n${stdout.slice(-12_000)}\nstderr tail:\n${stderr.slice(-12_000)}`,
+      { cause: error },
+    );
+  });
   assert.equal(path.resolve((await readJson(statePath)).activeProjectRoot), path.resolve(secondProjectRoot));
   mark = telegram.calls.length;
   telegram.pushMessage("/new");

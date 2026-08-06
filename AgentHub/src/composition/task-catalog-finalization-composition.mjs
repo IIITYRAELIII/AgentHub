@@ -28,6 +28,7 @@ export function createTaskCatalogFinalizationComposition({
   async function finalize(mergedEntries) {
     let nextCatalog = mergedEntries;
     for (const entry of nextCatalog) {
+      taskRuns.bindStream?.(entry);
       entry.orderingActivityAtMs = taskOrderingActivityAtMs(entry, {
         run: taskRuns.forTask(entry),
         lastMessage: savedLastTaskMessageRecord(entry),

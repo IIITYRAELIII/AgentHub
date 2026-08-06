@@ -71,6 +71,11 @@ test("selected external task is observed automatically only while its turn is ac
     selectedTask: { ...task, threadId: "thread-2" },
     snapshot: { active: true },
   }), false);
+  assert.equal(shouldAutoObserveTask({
+    task: { ...task, streamId: "stream-1" },
+    selectedTask: { ...task, streamId: "stream-1", threadId: "thread-2" },
+    snapshot: { active: true },
+  }), false);
 });
 
 function run(overrides = {}) {
@@ -141,6 +146,29 @@ test("reindex follows a Claude session id assigned after startup", () => {
 
   assert.equal(registry.forTask({ ...provisional, threadId: null }), null);
   assert.equal(registry.forTask(provisional), provisional);
+});
+
+test("run registry promotes a provider-bound run to its stable Stream", () => {
+  const provisional = run({ id: "run-1", streamId: null, threadId: "thread-1" });
+  const registry = new TaskRunRegistry([provisional]);
+  registry.bindStream({ provider: "codex", threadId: "thread-1", streamId: "stream-1" });
+
+  assert.equal(provisional.streamId, "stream-1");
+  assert.equal(registry.forTask({ streamId: "stream-1" }), provisional);
+  assert.equal(registry.forTask({ provider: "codex", threadId: "thread-1" }), provisional);
+});
+
+test("stable Stream lookup lazily promotes a provisional provider-bound run", () => {
+  const provisional = run({ id: "run-1", streamId: null, threadId: "thread-1" });
+  const registry = new TaskRunRegistry([provisional]);
+
+  assert.equal(registry.forTask({
+    provider: "codex",
+    threadId: "thread-1",
+    streamId: "stream-1",
+  }), provisional);
+  assert.equal(provisional.streamId, "stream-1");
+  assert.equal(registry.forTask({ streamId: "stream-1" }), provisional);
 });
 
 test("removal clears stale indexes after a task binding changed", () => {

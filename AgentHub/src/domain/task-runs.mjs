@@ -111,6 +111,29 @@ export class TaskRunRegistry {
     return run;
   }
 
+  bindStream({ provider, threadId, streamId }) {
+    const normalizedStreamId = String(streamId ?? "").trim();
+    const normalizedProvider = String(provider ?? "").trim().toLowerCase();
+    const normalizedThreadId = String(threadId ?? "").trim();
+    if (!normalizedStreamId || !normalizedProvider || !normalizedThreadId) return null;
+    const matches = this.values().filter((run) => (
+      String(run.provider ?? "").trim().toLowerCase() === normalizedProvider
+      && String(run.threadId ?? "").trim() === normalizedThreadId
+    ));
+    if (matches.length !== 1) return null;
+    const [run] = matches;
+    if (String(run.streamId ?? "").trim() === normalizedStreamId) return run;
+    const previous = {
+      streamId: run.streamId,
+      provider: run.provider,
+      projectRoot: run.projectRoot,
+      threadId: run.threadId,
+      turnId: run.turnId,
+    };
+    run.streamId = normalizedStreamId;
+    return this.reindex(run, previous);
+  }
+
   remove(runOrId) {
     const run = typeof runOrId === "string" ? this.#byId.get(runOrId) : runOrId;
     if (!run) return null;
@@ -128,7 +151,18 @@ export class TaskRunRegistry {
   }
 
   forTask(task) {
-    return this.#byTask.get(taskRunKey(task)) ?? null;
+    const exact = this.#byTask.get(taskRunKey(task)) ?? null;
+    if (exact) return exact;
+
+    const normalizedProvider = String(task?.provider ?? "").trim().toLowerCase();
+    const normalizedThreadId = String(task?.threadId ?? "").trim();
+    if (!normalizedProvider || !normalizedThreadId) return null;
+    const matches = this.values().filter((run) => (
+      String(run.provider ?? "").trim().toLowerCase() === normalizedProvider
+      && String(run.threadId ?? "").trim() === normalizedThreadId
+    ));
+    if (matches.length !== 1) return null;
+    return String(task?.streamId ?? "").trim() ? this.bindStream(task) : matches[0];
   }
 
   forEvent({ turnId, threadId, provider = "codex", allowThreadFallback = false }) {
@@ -239,7 +273,8 @@ export function shouldAutoObserveTask({
     task?.provider
       && task?.projectRoot
       && task?.threadId
-      && taskRunKey(selectedTask) === taskRunKey(task)
+      && String(selectedTask?.provider ?? "") === String(task.provider)
+      && String(selectedTask?.threadId ?? "") === String(task.threadId)
       && snapshot?.active
       && (!snapshot?.turnId || String(snapshot.turnId) !== String(lastSeenTurnId ?? ""))
       && !existingRun

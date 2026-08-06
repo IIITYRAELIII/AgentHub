@@ -369,8 +369,22 @@ test("desktop client survives App Server exit during delayed startup and shares 
   }, { runtimeRoot });
   assert.equal(secondStart.accepted, true);
   const parallel = await callDesktopControl("snapshot", {}, { runtimeRoot });
-  assert.equal(parallel.activeCount, 2);
-  assert.equal(parallel.tasks.filter((item) => item.running).length, 2);
+  assert.equal(parallel.activeCount, 2, JSON.stringify({
+    secondSelected: secondTask.selected,
+    secondStart,
+    activeRuns: parallel.runs,
+  }));
+  assert.equal(
+    parallel.tasks.filter((item) => item.running).length,
+    2,
+    JSON.stringify(parallel.tasks.map((item) => ({
+      workspaceId: item.workspaceId,
+      streamId: item.streamId,
+      threadId: item.threadId,
+      selected: item.selected,
+      running: item.running,
+    }))),
+  );
 
   const selectedFirst = await callDesktopControl("select-task", {
     provider: "codex",

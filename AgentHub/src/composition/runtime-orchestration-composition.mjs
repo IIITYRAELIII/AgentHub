@@ -287,6 +287,7 @@ export function createRuntimeOrchestrationComposition({
       telegramDeliveryService,
       mediaController,
       taskSyncStore,
+      workspaceCatalogStore,
       deliveryOutbox,
       backgroundJobStore,
       failedUpdateStore,

@@ -233,6 +233,7 @@ export function createDesktopSnapshotFactory({
     }
     const taskSnapshots = entries.map((entry) => desktopTaskSnapshot(entry, { accountId, compactSnapshot }));
     const selectedTaskSnapshot = taskSnapshots.find((task) => task.selected) ?? null;
+    const selectedIdentity = selection.selectedTask();
     const current = settings.current();
     const activeProvider = current.activeProvider;
     const activeCount = taskSnapshots.filter((item) => item.running).length;
@@ -254,10 +255,10 @@ export function createDesktopSnapshotFactory({
       apiVersion: 3,
       workspaces: catalog.hierarchy?.() ?? [],
       selected: {
-        ...selection.selectedTask(),
-        workspaceId: selectedTaskSnapshot?.workspaceId ?? null,
+        ...selectedIdentity,
+        workspaceId: selectedTaskSnapshot?.workspaceId ?? selectedIdentity.workspaceId ?? null,
         workspaceName: selectedTaskSnapshot?.workspaceName ?? null,
-        streamId: selectedTaskSnapshot?.streamId ?? null,
+        streamId: selectedTaskSnapshot?.streamId ?? selectedIdentity.streamId ?? null,
         streamName: selectedTaskSnapshot?.streamName ?? null,
         streamDisplayName: selectedTaskSnapshot?.streamDisplayName ?? "",
         streamOrdinal: selectedTaskSnapshot?.streamOrdinal ?? 1,

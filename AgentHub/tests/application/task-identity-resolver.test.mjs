@@ -61,3 +61,11 @@ test("UI context changes with provider thread while title metadata stays explici
   selectionStore.setThread("thread-2", { provider: "codex", title: "Task two" });
   assert.notEqual(resolver.currentUiContextToken(), first);
 });
+
+test("stable Stream enrichment does not invalidate the current UI menu", () => {
+  const { resolver, selectionStore } = fixture();
+  selectionStore.setThread("thread-1", { provider: "codex", streamId: null });
+  const before = resolver.currentUiContextToken();
+  selectionStore.setThread("thread-1", { provider: "codex", streamId: "stream-enriched" });
+  assert.equal(resolver.currentUiContextToken(), before);
+});
