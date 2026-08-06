@@ -445,6 +445,24 @@ test("Desktop shell owns read, command and run-router assembly", async () => {
   assert.equal(shell.includes("trustedDeviceUserId: desktopReadSystem.trustedDeviceUserId"), true);
 });
 
+test("runtime orchestration owns observation, timers, interaction and restart", async () => {
+  const root = await readFile(COMPOSITION_ROOT, "utf8");
+  const orchestration = await readFile(
+    path.join(ROOT, "src", "composition", "runtime-orchestration-composition.mjs"),
+    "utf8",
+  );
+  for (const factory of [
+    "createProviderRuntimeWiring",
+    "createRuntimeTimersComposition",
+    "createTaskInteractionWiring",
+    "createRuntimeRestartWiring",
+  ]) {
+    assert.equal(root.includes(factory), false, `${factory} leaked into the composition root`);
+    assert.equal(orchestration.includes(factory), true, `${factory} is not owned by runtime orchestration`);
+  }
+  assert.equal(orchestration.includes("updateRestartMessage: (message)"), true);
+});
+
 test("src modules obey the architectural dependency matrix", async () => {
   const inventory = await migrationInventory();
   const sourceRoot = path.join(ROOT, "src");

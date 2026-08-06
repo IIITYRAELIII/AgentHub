@@ -106,13 +106,11 @@ import { createProviderProcessComposition } from "./provider-process-composition
 import { createRunAdmissionComposition } from "./run-admission-composition.mjs";
 import { createRuntimeCommandRoutingComposition } from "./runtime-command-routing-composition.mjs";
 import { createDeliveryOutboxComposition } from "./delivery-outbox-composition.mjs";
-import { createRuntimeTimersComposition, delay } from "./runtime-timers-composition.mjs";
+import { delay } from "./runtime-timers-composition.mjs";
 import { createAgentHubBootstrapComposition } from "./agent-hub-bootstrap-composition.mjs";
 import { createRunAccountingComposition } from "./run-accounting-composition.mjs";
 import { createCodexTaskSettingsComposition } from "./codex-task-settings-composition.mjs";
-import { createProviderRuntimeWiring } from "./provider-runtime-wiring-composition.mjs";
-import { createTaskInteractionWiring } from "./task-interaction-wiring-composition.mjs";
-import { createRuntimeRestartWiring } from "./runtime-restart-wiring-composition.mjs";
+import { createRuntimeOrchestrationComposition } from "./runtime-orchestration-composition.mjs";
 import { createTaskStateWiring } from "./task-state-wiring-composition.mjs";
 import { createRuntimeStateBootstrapWiring } from "./runtime-state-bootstrap-wiring-composition.mjs";
 import { createTelegramShellWiring } from "./telegram-shell-wiring-composition.mjs";
@@ -1332,196 +1330,142 @@ async function refreshTaskDiff(run) {
   return run.latestDiff ?? "";
 }
 
-const providerRuntimeWiring = providerRuntimePort.bind(createProviderRuntimeWiring({
-  observation: {
-    dataDir: config.dataDir,
+const {
+  claudeRunController,
+  taskObserver,
+  runRecovery,
+  stopRuntimeTimers,
+  startRuntimeTimers,
+  runtimeResources,
+} = createRuntimeOrchestrationComposition({
+  config,
+  constants: {
+    selectedTaskWatchIntervalMs: SELECTED_TASK_WATCH_INTERVAL_MS,
+    externalPollIntervalMs: EXTERNAL_TASK_POLL_INTERVAL_MS,
+    managedPollIntervalMs: MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS,
     claudeOutputPollIntervalMs: CLAUDE_OUTPUT_POLL_INTERVAL_MS,
-    taskRuns,
-    isStopping: () => hostState.stopping,
+    progressStalledAfterMs: PROGRESS_STALLED_AFTER_MS,
+    agentHubRoot: AGENT_HUB_ROOT,
+    instanceLockFile: INSTANCE_LOCK_FILE,
+    botMenu: BOT_MENU,
+  },
+  state: {
+    hostState,
+    selectedTask,
+    selectedTaskTitle,
+    selectedProjectRoot,
+    selectedThreadId,
+    isCodex,
+    providerTitle,
+    activeProvider: selectedProvider,
+    activeProjectRoot: selectedProjectRoot,
     saveState,
-    startTyping,
+  },
+  runtime: {
+    runtimeTimers,
+    taskRuns,
+    backgroundJobs,
     taskProgress,
-    agentProviders,
+    managedRunLifecycle,
     runCoordinator,
+    contextCompactions,
+    deferredInputController,
+    queuedInputs,
+    scheduleQueuedInput,
+    scheduleDeliveryOutboxFlush,
+    scheduleCodexTerminalAudit,
+    rateLimitTelemetry,
+    taskSyncStore,
+    dismissedExternalTasks,
+    lastSeenTaskTurnIds,
+    turnTemporaryFiles,
+    claudeTaskSnapshots,
+    codexTaskSnapshots,
+    managedRunHistory,
+    markProgressHeartbeat,
+    approvalController,
+    isSelectedRun,
+    delay,
+  },
+  provider: {
+    agentProviders,
+    claudeEventService,
+    codexEventService,
+    codexTerminalAudit,
+    codexTransport,
+    codexContextMaintenance,
+    discardManualContextCompactionRun,
+    resolveClaudeInvocation,
+    readCodexTaskSnapshot,
+    readCodexThread,
+    readCodexRolloutActivity,
+    knownCodexRolloutPath,
+    startCodexAppServer,
+    initializeCodex,
+    stopCodexAppServerTree,
+    importCodexDesktopAttachments,
+  },
+  tasks: {
+    runTaskTitle,
     findProject,
     invalidateTaskCatalog,
     syncTaskRun,
     codexModelLabel,
     reasoningLabels: CODEX_REASONING_LABELS,
-    markProgressHeartbeat,
-    progressStalledAfterMs: PROGRESS_STALLED_AFTER_MS,
-    managedRunLifecycle,
-    discardManualContextCompactionRun,
+    captureTaskGitBaseline,
     savedLastTaskMessage,
     savedLastTaskMessageRecord,
-    externalPollIntervalMs: EXTERNAL_TASK_POLL_INTERVAL_MS,
-    managedPollIntervalMs: MANAGED_TASK_FALLBACK_POLL_INTERVAL_MS,
-    captureTaskGitBaseline,
-    turnTemporaryFiles,
-    claudeTaskSnapshots,
-    claudePermissionMode: config.claudePermissionMode,
-    autoApprove: () => hostState.autoApprove,
-    resolveClaudeInvocation,
-    logWarning: (...args) => console.warn(...args),
+    rememberLastTaskMessage,
+    setBoundedMapValue,
+    taskRunKey,
+    taskCatalogEntries: () => taskCatalog,
+    catalogEntryIsSelected,
+    refreshTaskCatalog,
+  },
+  clients: {
+    startTyping,
+    stopTyping,
     safelyDeliverRunMessage,
     sendRunMessage,
-    dismissedExternalTasks,
-    lastSeenTaskTurnIds,
-    runtimeTimers,
-    selectedTaskWatchIntervalMs: SELECTED_TASK_WATCH_INTERVAL_MS,
-    selectedTask,
-    chatId: () => hostState.chatId,
-    activeTaskTitle: selectedTaskTitle,
-    rememberLastTaskMessage,
-    logError: (...args) => console.error(...args.map((value) => value?.message ?? value)),
-  },
-  managedRunHistory,
-  claudeEventService,
-  runCoordinator,
-  codexEventService,
-  codexTaskSnapshots,
-  codexTerminalAudit,
-  codexTransport,
-  saveState,
-  isStopping: () => hostState.stopping,
-  runtimeTimers,
-  selectedTaskWatchIntervalMs: SELECTED_TASK_WATCH_INTERVAL_MS,
-  logger: console,
-}));
-const {
-  claudeRunController,
-  taskObserver,
-  runRecovery,
-  selectedTaskWatch,
-} = providerRuntimeWiring;
-
-const {
-  stopRuntimeTimers,
-  startRuntimeTimers,
-} = createRuntimeTimersComposition({
-  telegramEnabled: config.telegramEnabled,
-  runtimeTimers,
-  stopTyping,
-  contextCompactions,
-  deferredInputController,
-  taskRuns,
-  taskProgress,
-  taskObserver,
-  claudeRunController,
-  codexContextMaintenance,
-  queuedInputs,
-  scheduleQueuedInput,
-  scheduleDeliveryOutboxFlush,
-  selectedTaskWatch,
-  scheduleCodexTerminalAudit,
-  rateLimitTelemetry,
-});
-
-taskInteractionPort.bind(createTaskInteractionWiring({
-  taskView: {
-    ensureCodex: async () => {
-      if (codexTransport.running) return;
-      await startCodexAppServer();
-      await initializeCodex({ attachSelectedThread: false });
-    },
-    findCodexRolloutPath: knownCodexRolloutPath,
-    readCodexThread,
-    readCodexRolloutActivity,
-    readCodexSnapshot: readCodexTaskSnapshot,
-    readClaudeSnapshot: (...args) => claudeTaskSnapshots.read(...args),
-    attachmentImporter: importCodexDesktopAttachments,
-    taskSyncStore,
-    taskRuns,
+    sendRunMessageText: sendRunMessage,
     deleteTaskMessages: deleteTaskTelegramMessages,
-    sendRunMessage,
     sendTaskViewText,
-    runTaskTitle,
-    savedLastTaskMessage,
-    dismissedExternalTasks,
-    saveState,
-    resolveRunningTitle: (running, binding) => {
-      const selectedTitle = isSelectedRun(running) ? selectedTaskTitle() : null;
-      const catalogTitle = taskCatalog.find((entry) => catalogEntryIsSelected(entry, running))?.title;
-      return selectedTitle || catalogTitle || binding.taskTitle;
-    },
-    taskProgress,
-    taskObserver,
     findMessageBinding: (targetChatId, messageId) => (
       findMessageBinding(config.dataDir, targetChatId, messageId)
     ),
-    taskCatalog: () => taskCatalog,
-    refreshTaskCatalog,
-    selectedTask,
-    activeThreadTitle: selectedTaskTitle,
-    logger: console,
-  },
-  approvalController,
-  activeProvider: selectedProvider,
-  autoApprove: () => hostState.autoApprove,
-  autoApproveOnStart: config.autoApproveOnStart,
-  claudePermissionMode: config.claudePermissionMode,
-  activeProjectRoot: selectedProjectRoot,
-  uiCallback,
-}));
-
-const runtimeRestartWiring = runtimeRestartPort.bind(createRuntimeRestartWiring({
-  taskRuns,
-  agentProviders,
-  backgroundJobs,
-  getRestartRequest: () => hostState.restartRequest,
-  isStopping: () => hostState.stopping,
-  restartRequestService,
-  runtimeRestart: {
-    getRestartRequest: () => hostState.restartRequest,
-    setRestartRequest: (value) => hostState.setRestartRequest(value),
-    isStopping: () => hostState.stopping,
-    setStopping: (value) => hostState.setStopping(value),
-    beginStopping: () => {
-      return hostState.beginStopping();
-    },
-    sendMessage: sendMessageTo,
+    sendMessageTo,
     telegram,
-    saveState,
     formatRestartCompleteMessage,
-    completeMessageState: () => ({
-      provider: providerTitle(),
-      task: selectedTaskTitle() || (selectedThreadId() ? `${providerTitle()} · ${selectedThreadId().slice(0, 8)}` : "Не выбрана"),
-      runningTasks: taskRuns.size,
-    }),
-    botMenu: BOT_MENU,
-    journalStartupReady,
+    uiCallback,
+  },
+  persistence: {
     runtimeStateCoordinator,
     telegramDeliveryService,
     mediaController,
-    taskSyncStore,
     deliveryOutbox,
     backgroundJobStore,
     failedUpdateStore,
-    stopCodexAppServerTree,
-    miniAppLifecycle,
-    desktopControlServer,
-    runtimeCommandServer,
     instanceGuard,
     workLogUsageStore,
     rateLimitHistoryStore,
     taskReadStateStore,
     runtimeStateStore,
-    updateOffset: () => hostState.updateOffset,
-    setWaiting: (value) => hostState.setRestartWaiting(value),
-    stopRuntimeTimers,
-    agentHubRoot: AGENT_HUB_ROOT,
-    instanceLockFile: INSTANCE_LOCK_FILE,
-    isCodex,
-    taskRuns,
-    startCodexAppServer,
-    initializeCodex,
-    runRecovery,
-    updateRestartMessage: (message) => runtimeRestartWiring.updateRestartMessage(message),
-    startRuntimeTimers,
-    delay,
   },
-}));
-const { runtimeResources } = runtimeRestartWiring;
+  lifecycle: {
+    restartRequestService,
+    miniAppLifecycle,
+    desktopControlServer,
+    runtimeCommandServer,
+    journalStartupReady,
+    announceDesktopRestart,
+    taskObserverLogger: console,
+  },
+  ports: {
+    providerRuntime: providerRuntimePort,
+    taskInteraction: taskInteractionPort,
+    runtimeRestart: runtimeRestartPort,
+  },
+});
 
 function dismissCallbackMenu(...args) { return telegramTaskActions.dismissMenu(...args); }
 
