@@ -1097,6 +1097,26 @@ main {
   display: none;
 }
 
+/* При включённом объединении потоки исчезают как уровень навигации. Пустая
+   первая колонка сохраняет выравнивание с заголовком Workspace, а все ходы
+   живут в одном общем списке и несут имя потока только в своём бейдже. */
+.journal div[data-work-log-workspace-turns] > div[data-work-log-row] {
+  display: grid;
+  grid-template-columns: 17.5rem minmax(0, 1fr);
+}
+
+.journal div[data-work-log-workspace-turns]
+  > div[data-work-log-row]
+  > div[data-work-log-task-cell] {
+  visibility: hidden;
+}
+
+.journal div[data-work-log-workspace-turns]
+  > div[data-work-log-row]
+  > div[data-work-log-turn-list] {
+  grid-column: 2;
+}
+
 .journal div[data-work-log-task-content]:empty {
   display: none;
 }
@@ -2646,6 +2666,22 @@ html[data-surface="mobile"] .journal span[data-work-log-workspace-usage-breakdow
 html[data-surface="mobile"] .journal div[data-work-log-row] {
   display: block;
   padding: 0.35rem 0 0.5rem;
+}
+
+html[data-surface="mobile"]
+  .journal
+  div[data-work-log-workspace-turns]
+  > div[data-work-log-row]
+  > div[data-work-log-task-cell] {
+  display: none;
+}
+
+html[data-surface="mobile"]
+  .journal
+  div[data-work-log-workspace-turns]
+  > div[data-work-log-row]
+  > div[data-work-log-turn-list] {
+  grid-column: auto;
 }
 
 html[data-surface="mobile"] .journal div[data-work-log-task-cell] {

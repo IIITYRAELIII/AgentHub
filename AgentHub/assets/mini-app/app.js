@@ -513,8 +513,12 @@ function savedStreamCollapse() {
 }
 
 function setStreamsCollapsed(collapsed, scope = journal) {
+  if (collapsed) {
+    flattenWorkspaceStreams(scope);
+    return;
+  }
   for (const stream of scope.querySelectorAll("details[data-work-log-stream]")) {
-    stream.open = !collapsed;
+    stream.open = true;
   }
 }
 
@@ -523,8 +527,17 @@ function applyStreamCollapse(value, { persist = false, update = false } = {}) {
   root.dataset.streamCollapse = collapseStreams ? "on" : "off";
   if (streamCollapseToggle) streamCollapseToggle.checked = collapseStreams;
   if (update) {
-    setStreamsCollapsed(collapseStreams);
-    persistOpenState();
+    if (journalHtml) {
+      const openState = journalRendered ? captureOpenState() : null;
+      if (openState) {
+        if (!collapseStreams) delete openState.streams;
+        groupingStates[grouping] = openState;
+      }
+      renderJournal();
+      queueMicrotask(persistOpenState);
+    } else {
+      setStreamsCollapsed(collapseStreams);
+    }
   }
   if (persist) {
     try {
@@ -6506,6 +6519,10 @@ function captureOpenState() {
     previous: [...journal.querySelectorAll("details[data-work-log-previous-turns][open]")]
       .map((item) => item.closest("[data-work-log-row]")?.dataset.workLogThreadId)
       .filter(Boolean),
+    workspacePrevious: [...journal.querySelectorAll(
+      "[data-work-log-workspace-turns] details[data-work-log-previous-turns][open]",
+    )].map((item) => item.closest("[data-work-log-workspace]")?.dataset.workLogWorkspaceId)
+      .filter(Boolean),
     taskUsage: [...journal.querySelectorAll("details[data-task-usage-details][open]")]
       .map((item) => item.closest("[data-work-log-row]")?.dataset.workLogThreadId)
       .filter(Boolean),
@@ -6621,6 +6638,12 @@ function restoreOpenState(openState) {
   for (const threadId of openState.previous) {
     journal.querySelector(
       `[data-work-log-thread-id="${selectorValue(threadId)}"] details[data-work-log-previous-turns]`,
+    )?.setAttribute("open", "");
+  }
+  for (const workspaceId of openState.workspacePrevious ?? []) {
+    journal.querySelector(
+      `[data-work-log-workspace-id="${selectorValue(workspaceId)}"] `
+      + "details[data-work-log-previous-turns]",
     )?.setAttribute("open", "");
   }
   for (const threadId of openState.taskUsage) {
@@ -6934,6 +6957,67 @@ function decorateLegacyStreamTurns(scope = journal) {
       badge.textContent = label;
       title.append(badge, heading);
     }
+  }
+}
+
+function flattenWorkspaceStreams(scope = journal) {
+  for (const workspace of scope.querySelectorAll("details[data-work-log-workspace]")) {
+    const streamContainer = workspace.querySelector(
+      ":scope > [data-work-log-workspace-streams]",
+    );
+    const streams = streamContainer
+      ? [...streamContainer.querySelectorAll(":scope > details[data-work-log-stream]")]
+      : [];
+    if (!streams.length) continue;
+
+    const previousWasOpen = streams.some((stream) => (
+      stream.querySelector("details[data-work-log-previous-turns][open]")
+    ));
+    const rows = streams.map((stream) => stream.querySelector(
+      ":scope > [data-work-log-stream-turns] > [data-work-log-row]",
+    )).filter(Boolean);
+    const aggregateRow = rows[0];
+    if (!aggregateRow) continue;
+
+    const entries = [];
+    const legacy = [];
+    const seen = new Set();
+    for (const row of rows) {
+      for (const entry of row.querySelectorAll(
+        ":scope > [data-work-log-turn-list] [data-work-log-turn-entry]",
+      )) {
+        if (!isRootTurnEntry(entry)) continue;
+        const key = [
+          entry.dataset.workLogTurnProvider,
+          entry.dataset.workLogTurnThreadId,
+          entry.dataset.workLogTurnId,
+        ].join("\u001f");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        entries.push(entry);
+      }
+      legacy.push(...row.querySelectorAll(
+        ":scope > [data-work-log-turn-list] [data-work-log-legacy-outcome]",
+      ));
+    }
+    entries.sort((left, right) => (
+      (Date.parse(right.dataset.workLogTurnCompletedAt ?? "") || 0)
+        - (Date.parse(left.dataset.workLogTurnCompletedAt ?? "") || 0)
+    ));
+
+    aggregateRow.removeAttribute("data-work-log-provider");
+    aggregateRow.removeAttribute("data-work-log-thread-id");
+    aggregateRow.removeAttribute("data-work-log-stream-id");
+    const turnList = aggregateRow.querySelector(":scope > [data-work-log-turn-list]");
+    if (!turnList) continue;
+    replaceCollapsedTurnList(turnList, entries);
+    const table = turnList.querySelector(":scope > [data-work-log-turn-table]");
+    if (legacy.length) table?.append(...legacy);
+    if (previousWasOpen) {
+      turnList.querySelector("details[data-work-log-previous-turns]")?.setAttribute("open", "");
+    }
+    streamContainer.dataset.workLogWorkspaceTurns = "";
+    streamContainer.replaceChildren(aggregateRow);
   }
 }
 
@@ -7679,8 +7763,8 @@ function applyJournalGrouping() {
   const saved = groupingStates[grouping];
   if (saved) {
     restoreOpenState(saved);
-    if (!Array.isArray(saved.streams)) setStreamsCollapsed(collapseStreams);
-  } else {
+  }
+  if (collapseStreams || !saved || !Array.isArray(saved.streams)) {
     setStreamsCollapsed(collapseStreams);
   }
   if (grouping === "task") {
