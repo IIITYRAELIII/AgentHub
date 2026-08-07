@@ -198,6 +198,7 @@ export function createTelegramControllerComposition({
     createCurrentTask,
     activeThreadTitle,
     selectedTask,
+    selectedTurnTarget,
     speechText: (id) => mediaController.speechText(id),
     forwardBundleController: {
       bundleById: (...args) => forwardBundleController.bundleById(...args),
