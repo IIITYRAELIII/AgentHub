@@ -55,6 +55,12 @@ test("Desktop system status composes provider settings and live counters", async
   });
 });
 
+test("Desktop usage history forwards an explicit provider filter", async () => {
+  const { service } = fixture();
+  const result = await service.usageHistory({ range: "30d", maxPoints: 600, provider: "codex" });
+  assert.deepEqual(result.params, { range: "30d", maxPoints: 600, provider: "codex" });
+});
+
 test("Desktop search returns the stable Hub task identity", async () => {
   const { service } = fixture();
   const result = await service.search({ query: "task" });

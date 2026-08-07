@@ -81,6 +81,7 @@ export class DesktopSystemService {
     return this.readUsageHistory({
       range: params.range,
       maxPoints: params.maxPoints,
+      provider: params.provider,
     });
   }
 

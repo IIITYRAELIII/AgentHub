@@ -318,6 +318,7 @@ const usageState = {
   error: "",
 };
 const COMPARISON_RANGE_KEY = "agent-hub:comparison-range:v1";
+const COMPARISON_SERIES_KEY = "agent-hub:comparison-series:v1";
 
 function savedComparisonRange() {
   try {
@@ -327,8 +328,17 @@ function savedComparisonRange() {
   }
 }
 
+function savedComparisonSeriesId() {
+  try {
+    return String(localStorage.getItem(COMPARISON_SERIES_KEY) || "codex:primary");
+  } catch {
+    return "codex:primary";
+  }
+}
+
 const comparisonState = {
   range: savedComparisonRange(),
+  seriesId: savedComparisonSeriesId(),
   status: "idle",
   payload: null,
   error: "",
@@ -4754,7 +4764,6 @@ function toggleSeriesVisibility(id) {
   else limitsState.hidden.add(id);
   persistHiddenSeries();
   renderLimits();
-  renderUsageComparison();
   const buttons = limitsLegend ? [...limitsLegend.querySelectorAll("[data-series-id]")] : [];
   buttons.find((button) => button.dataset.seriesId === id)?.focus();
 }
@@ -5737,6 +5746,7 @@ function comparisonPayloadStatus(payload) {
 
 function applyUsageComparison(payload) {
   const data = payload && typeof payload === "object" ? payload : null;
+  if (data?.seriesId && String(data.seriesId) !== comparisonState.seriesId) return;
   comparisonState.payload = data;
   if (data?.range) comparisonState.range = normalizeRange(data.range);
   comparisonState.status = comparisonPayloadStatus(data);
@@ -5756,14 +5766,30 @@ function requestUsageComparison(range, { force = false } = {}) {
   }
   const cached = comparisonState.payload
     && !comparisonState.payload.error
-    && normalizeRange(comparisonState.payload.range) === comparisonState.range;
+    && normalizeRange(comparisonState.payload.range) === comparisonState.range
+    && String(comparisonState.payload.seriesId ?? "") === comparisonState.seriesId;
   comparisonState.status = cached && !force
     ? comparisonPayloadStatus(comparisonState.payload)
     : "loading";
   comparisonState.error = "";
   renderComparisonRanges();
   renderUsageComparison();
-  emit("comparison:open", { range: comparisonState.range });
+  emit("comparison:open", {
+    range: comparisonState.range,
+    seriesId: comparisonState.seriesId,
+  });
+}
+
+function selectComparisonSeries(id) {
+  const seriesId = String(id ?? "");
+  if (!seriesId || seriesId === comparisonState.seriesId) return;
+  comparisonState.seriesId = seriesId;
+  try {
+    localStorage.setItem(COMPARISON_SERIES_KEY, seriesId);
+  } catch {
+    // Выбор останется активным до закрытия WebView.
+  }
+  requestUsageComparison(comparisonState.range, { force: true });
 }
 
 function renderComparisonRanges() {
@@ -5885,6 +5911,39 @@ function normalizeComparisonValues(values) {
   };
 }
 
+function comparisonLimitPrice(localValues, apiValues, buckets) {
+  const sample = (from, to) => {
+    let credits = 0;
+    let limitPoints = 0;
+    let count = 0;
+    for (let index = from; index < to; index += 1) {
+      const local = localValues[index];
+      const api = apiValues[index];
+      if (!(local > 0) || !Number.isFinite(api)) continue;
+      credits += local;
+      limitPoints += Math.max(0, api);
+      count += 1;
+    }
+    return credits > 0 && count > 0
+      ? { value: limitPoints / (credits / 1_000), credits, limitPoints, count }
+      : null;
+  };
+  const windowSize = clampNumber(Math.round(buckets.length / 10), 2, 5);
+  const values = buckets.map((_, index) => (
+    sample(Math.max(0, index - windowSize + 1), index + 1)?.value ?? null
+  ));
+  const midpoint = buckets.findIndex((bucket) => bucket.time >= (
+    buckets[0].time + (buckets.at(-1).time - buckets[0].time) / 2
+  ));
+  const split = midpoint > 0 ? midpoint : Math.ceil(buckets.length / 2);
+  const early = sample(0, split);
+  const late = sample(split, buckets.length);
+  const changePercent = early?.value > 0 && Number.isFinite(late?.value)
+    ? (late.value / early.value - 1) * 100
+    : null;
+  return { values, early, late, changePercent, windowSize };
+}
+
 function buildUsageComparisonModel(payload) {
   const extent = comparisonHistoryExtent(payload);
   if (!extent) return null;
@@ -5904,7 +5963,6 @@ function buildUsageComparisonModel(payload) {
         ...item,
         id,
         color: seriesColor(item, index),
-        hidden: limitsState.hidden.has(id),
         peak: normalized.peak,
         rawValues,
         values: normalized.values,
@@ -5916,24 +5974,38 @@ function buildUsageComparisonModel(payload) {
           : null,
       };
     });
-  const visibleSeries = allSeries.filter((series) => !series.hidden && series.peak > 0);
-  const aggregate = buckets.map((_, index) => {
-    const values = visibleSeries.map((series) => series.values[index]).filter(Number.isFinite);
-    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
-  });
+  const selectedSeries = allSeries.find((series) => series.id === comparisonState.seriesId)
+    ?? allSeries.find((series) => series.id === "codex:primary")
+    ?? allSeries[0]
+    ?? null;
+  if (selectedSeries && selectedSeries.id !== comparisonState.seriesId) {
+    comparisonState.seriesId = selectedSeries.id;
+    try {
+      localStorage.setItem(COMPARISON_SERIES_KEY, selectedSeries.id);
+    } catch {
+      // Выбор останется активным до закрытия WebView.
+    }
+  }
+  const visibleSeries = selectedSeries?.peak > 0 ? [selectedSeries] : [];
+  const aggregate = selectedSeries?.peak > 0 ? selectedSeries.values : buckets.map(() => null);
   const deviationValues = aggregate.map((value, index) => (
     Number.isFinite(value) ? Math.abs(local.values[index] - value) : null
   ));
+  const price = selectedSeries
+    ? comparisonLimitPrice(localRaw, selectedSeries.rawValues, buckets)
+    : comparisonLimitPrice([], [], buckets);
   return {
     extent,
     buckets,
     local,
     allSeries,
+    selectedSeries,
     visibleSeries,
     aggregate,
     deviationValues,
     correlation: pearsonCorrelation(local.values, aggregate),
     deviation: meanAbsoluteDeviation(local.values, aggregate),
+    price,
   };
 }
 
@@ -5967,6 +6039,9 @@ function correlationStrength(value) {
 }
 
 function comparisonTooltipText(info) {
+  if (info.kind === "cost") {
+    return `${info.name}. ${formatLimitsDateTime(info.at)}: ${formatComparisonNumber(info.raw, 2)} п.п./kcr`;
+  }
   const value = `${Math.round(info.value)}% пика`;
   const raw = info.kind === "local"
     ? formatUsageValue(info.raw)
@@ -5974,6 +6049,13 @@ function comparisonTooltipText(info) {
       ? `${formatComparisonNumber(info.raw, 1)} п.п.`
       : `+${formatComparisonNumber(info.raw, 1)} п.п.`;
   return `${info.name}. ${formatLimitsDateTime(info.at)}: ${value}, ${raw}`;
+}
+
+function comparisonPriceAxisMax(values) {
+  const maximum = Math.max(0, ...values.filter(Number.isFinite));
+  if (!(maximum > 0)) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(maximum));
+  return Math.ceil(maximum / magnitude * 2) / 2 * magnitude;
 }
 
 function showComparisonTooltip(info, fx, fy) {
@@ -6030,7 +6112,7 @@ function buildUsageComparisonChart(model) {
   const W = chartWidth(comparisonChart);
   const H = 260;
   const padL = 46;
-  const padR = 14;
+  const padR = 64;
   const padT = 14;
   const padB = 44;
   const plotW = W - padL - padR;
@@ -6038,6 +6120,8 @@ function buildUsageComparisonChart(model) {
   const span = Math.max(1, model.extent.to - model.extent.from);
   const xOf = (time) => padL + ((time - model.extent.from) / span) * plotW;
   const yOf = (value) => padT + (1 - clampNumber(value, 0, 100) / 100) * plotH;
+  const priceMax = comparisonPriceAxisMax(model.price.values);
+  const yOfPrice = (value) => padT + (1 - clampNumber(value, 0, priceMax) / priceMax) * plotH;
   const svg = svgEl("svg", {
     viewBox: `0 0 ${W} ${H}`,
     class: "limits-chart-svg comparison-chart-svg",
@@ -6054,6 +6138,21 @@ function buildUsageComparisonChart(model) {
       "text-anchor": "end",
     }, [`${value}%`]));
   }
+  for (const fraction of [0, 0.5, 1]) {
+    const value = priceMax * fraction;
+    svg.append(svgEl("text", {
+      x: W - padR + 7,
+      y: yOfPrice(value) + 3,
+      class: "limits-axis-label limits-axis-y comparison-cost-axis",
+      "text-anchor": "start",
+    }, [formatComparisonNumber(value, value < 10 ? 2 : 1)]));
+  }
+  svg.append(svgEl("text", {
+    x: W - 4,
+    y: padT - 3,
+    class: "limits-axis-label limits-axis-y comparison-cost-axis",
+    "text-anchor": "end",
+  }, ["п.п./kcr"]));
   const dayMs = 24 * 60 * 60_000;
   if (span > dayMs * 1.5) {
     const first = new Date(model.extent.from);
@@ -6117,13 +6216,24 @@ function buildUsageComparisonChart(model) {
     kind: "local",
     color: "var(--comparison-local)",
   });
+  const pricePath = comparisonPath(model.price.values, model.buckets, xOf, yOfPrice);
+  if (pricePath) {
+    svg.append(svgEl("path", { d: pricePath, class: "comparison-cost-line", fill: "none" }));
+    appendComparisonMarkers(svg, model.price.values, model.price.values, model, {
+      W, H, xOf, yOf: yOfPrice,
+    }, {
+      name: "Цена лимита",
+      kind: "cost",
+      color: "var(--comparison-cost)",
+    });
+  }
   if (!model.visibleSeries.length) {
     svg.append(svgEl("text", {
       x: padL + plotW / 2,
       y: padT + plotH / 2,
       class: "limits-empty-plot",
       "text-anchor": "middle",
-    }, [model.allSeries.some((series) => series.hidden) ? "Все API-серии скрыты" : "Нет изменений лимитов API"]));
+    }, ["Нет изменений выбранного лимита API"]));
   }
   const correlation = Number.isFinite(model.correlation)
     ? formatComparisonNumber(model.correlation, 2, true)
@@ -6132,6 +6242,10 @@ function buildUsageComparisonChart(model) {
     "aria-label",
     `Сопоставление локального и API-расхода. Корреляция ${correlation}; среднее отклонение ${
       Number.isFinite(model.deviation) ? `${formatComparisonNumber(model.deviation, 1)} процентного пункта` : "не рассчитано"
+    }; изменение цены ${
+      Number.isFinite(model.price.changePercent)
+        ? `${formatComparisonNumber(model.price.changePercent, 0, true)} процента`
+        : "не рассчитано"
     }.`,
   );
   comparisonChart.replaceChildren(svg);
@@ -6149,36 +6263,50 @@ function comparisonLegendItem(name, color, value, attrs = {}) {
   ]);
 }
 
+function comparisonPriceText(price) {
+  if (!Number.isFinite(price?.early?.value) || !Number.isFinite(price?.late?.value)) return "недостаточно данных";
+  const change = Number.isFinite(price.changePercent)
+    ? ` · ${formatComparisonNumber(price.changePercent, 0, true)}%`
+    : "";
+  return `${formatComparisonNumber(price.early.value, 2)} → ${formatComparisonNumber(price.late.value, 2)} п.п./kcr${change}`;
+}
+
 function renderComparisonLegend(model) {
   if (!comparisonLegend) return;
   const entries = [
     comparisonLegendItem("Локальный расход", "var(--comparison-local)", `пик ${formatUsageValue(model.local.peak)}`),
   ];
   for (const series of model.allSeries) {
+    const selected = series.id === model.selectedSeries?.id;
     const name = series.window ? `${series.name} · ${series.window}` : (series.name || series.id);
     const swatch = el("span", { class: "limits-legend-swatch", "aria-hidden": "true" });
     swatch.style.setProperty("--series-color", series.color);
-    const metrics = Number.isFinite(series.correlation)
+    const metrics = selected && Number.isFinite(series.correlation)
       ? `r ${formatComparisonNumber(series.correlation, 2, true)} · Δ ${formatComparisonNumber(series.deviation, 1)} п.п.`
-      : "нет изменений";
+      : selected ? "нет изменений" : "выбрать";
     const toggle = el("button", {
       type: "button",
-      class: `limits-legend-toggle${series.hidden ? " is-hidden" : ""}`,
-      "aria-pressed": String(!series.hidden),
-      "aria-label": `${series.hidden ? "Показать" : "Скрыть"} серию ${name}`,
+      class: `limits-legend-toggle${selected ? " is-selected" : " is-unselected"}`,
+      "aria-pressed": String(selected),
+      "aria-label": `${selected ? "Выбран" : "Выбрать"} лимит ${name}`,
       "data-series-id": series.id,
     }, [
       swatch,
       el("span", { class: "limits-legend-name", text: name }),
       el("span", { class: "limits-legend-value", text: metrics }),
     ]);
-    toggle.addEventListener("click", () => toggleSeriesVisibility(series.id));
+    toggle.addEventListener("click", () => selectComparisonSeries(series.id));
     entries.push(el("li", { class: "limits-legend-item" }, [toggle]));
   }
   entries.push(comparisonLegendItem(
     "Отклонение",
     "var(--comparison-deviation)",
     Number.isFinite(model.deviation) ? `${formatComparisonNumber(model.deviation, 1)} п.п.` : "—",
+  ));
+  entries.push(comparisonLegendItem(
+    "Цена лимита",
+    "var(--comparison-cost)",
+    comparisonPriceText(model.price),
   ));
   comparisonLegend.replaceChildren(...entries);
 }
@@ -6189,6 +6317,12 @@ function renderComparisonSummary(model) {
     ? formatComparisonNumber(model.correlation, 2, true)
     : "—";
   const deviation = Number.isFinite(model?.deviation) ? `${formatComparisonNumber(model.deviation, 1)} п.п.` : "—";
+  const priceChange = Number.isFinite(model?.price?.changePercent)
+    ? `${formatComparisonNumber(model.price.changePercent, 0, true)}%`
+    : "—";
+  const priceClass = model?.price?.changePercent > 0
+    ? " is-costlier"
+    : model?.price?.changePercent < 0 ? " is-cheaper" : "";
   comparisonSummary.hidden = false;
   comparisonSummary.replaceChildren(
     el("span", { class: "comparison-metric", title: `Корреляция: ${correlationStrength(model?.correlation)}` }, [
@@ -6198,6 +6332,13 @@ function renderComparisonSummary(model) {
     el("span", { class: "comparison-metric", title: "Среднее абсолютное отклонение нормализованных линий" }, [
       el("span", { text: "Δ" }),
       el("strong", { text: deviation }),
+    ]),
+    el("span", {
+      class: `comparison-metric${priceClass}`,
+      title: `Цена лимита, первая → вторая половина: ${comparisonPriceText(model?.price)}`,
+    }, [
+      el("span", { text: "Цена" }),
+      el("strong", { text: priceChange }),
     ]),
   );
 }

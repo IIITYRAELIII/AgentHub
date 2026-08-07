@@ -72,6 +72,7 @@
   --provider-claude: #e08a63;
   --comparison-local: #f3f7ff;
   --comparison-deviation: #f0b95b;
+  --comparison-cost: #d49cff;
 
   /* Геометрия Phosphor Icons Regular 2.1.1 для CSS-маркеров раскрытия. */
   --ph-mask-caret-right:
@@ -7322,6 +7323,26 @@ html[data-surface="mobile"] .server-config-grid {
   stroke-width: 1.6;
 }
 
+.comparison-cost-line {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--comparison-cost) 26%, transparent));
+  stroke: var(--comparison-cost);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.comparison-cost-axis {
+  fill: var(--comparison-cost);
+}
+
+.comparison-metric.is-costlier strong {
+  color: var(--pending);
+}
+
+.comparison-metric.is-cheaper strong {
+  color: var(--ok);
+}
+
 .comparison-point-local {
   stroke-width: 1.4;
 }
@@ -7338,6 +7359,21 @@ html[data-surface="mobile"] .server-config-grid {
   background: transparent;
   border-color: transparent;
   color: var(--text-soft);
+}
+
+.comparison-legend .limits-legend-toggle.is-selected {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.comparison-legend .limits-legend-toggle.is-unselected {
+  color: var(--text-faint);
+  opacity: 0.68;
+}
+
+.comparison-legend .limits-legend-toggle.is-unselected .limits-legend-swatch {
+  opacity: 0.55;
 }
 
 .comparison-note {

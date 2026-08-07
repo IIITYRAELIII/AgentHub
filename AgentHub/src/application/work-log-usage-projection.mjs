@@ -1936,6 +1936,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   now = Date.now(),
   maxPoints = 600,
   includeClaudeUsage = true,
+  provider = null,
   workspaceResolver = null,
   workspaceId = null,
   streamId = null,
@@ -1946,9 +1947,12 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const toMs = Number.isFinite(Number(now)) ? Number(now) : Date.now();
   const requestedWorkspaceId = String(workspaceId ?? "").trim();
   const requestedStreamId = String(streamId ?? "").trim();
+  const requestedProvider = String(provider ?? "").trim().toLowerCase();
   const records = Object.values(turns ?? {})
     .filter((record) => (
-      includeClaudeUsage || String(record?.provider ?? "").toLowerCase() !== "claude"
+      requestedProvider
+        ? String(record?.provider ?? "").trim().toLowerCase() === requestedProvider
+        : includeClaudeUsage || String(record?.provider ?? "").toLowerCase() !== "claude"
     ))
     .map((record) => {
       const workspace = workspaceResolutionForRecord(record, workspaceResolver);
@@ -2046,6 +2050,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
     axisTo: new Date(axisToMs).toISOString(),
     bucketMs,
     bucket: dayBuckets || groupedCalendarDays ? "day" : "fixed",
+    ...(requestedProvider ? { provider: requestedProvider } : {}),
     ...(requestedWorkspaceId ? { workspaceId: requestedWorkspaceId } : {}),
     ...(requestedStreamId ? { streamId: requestedStreamId } : {}),
     totalCredits,

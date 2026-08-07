@@ -1482,8 +1482,10 @@ agentHub.on("usage:open", ({ range }) => runAction(async () => {
     });
   }
 }));
-agentHub.on("comparison:open", ({ range }) => runAction(async () => {
+agentHub.on("comparison:open", ({ range, seriesId }) => runAction(async () => {
   const requestedRange = String(range || "24h");
+  const requestedSeriesId = String(seriesId || "codex:primary");
+  const provider = requestedSeriesId.startsWith("claude:") ? "claude" : "codex";
   const [limitsResult, usageResult] = await Promise.allSettled([
     control("rate-limit-history", {
       range: requestedRange,
@@ -1492,10 +1494,12 @@ agentHub.on("comparison:open", ({ range }) => runAction(async () => {
     control("usage-history", {
       range: requestedRange,
       maxPoints: 600,
+      provider,
     }),
   ]);
   agentHub.setUsageComparison({
     range: requestedRange,
+    seriesId: requestedSeriesId,
     limits: limitsResult.status === "fulfilled"
       ? limitsResult.value
       : { range: requestedRange, error: String(limitsResult.reason?.message ?? limitsResult.reason) },

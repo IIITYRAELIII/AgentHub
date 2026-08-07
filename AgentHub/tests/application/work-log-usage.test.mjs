@@ -111,6 +111,28 @@ test("local usage history can exclude Claude from global totals", () => {
   assert.equal(filtered.points.reduce((sum, point) => sum + point.credits, 0), 5);
 });
 
+test("local usage history can select one provider for limit-price comparison", () => {
+  const now = Date.parse("2026-07-30T12:00:00.000Z");
+  const turns = {
+    codex: {
+      provider: "codex",
+      completedAt: "2026-07-30T10:10:00.000Z",
+      estimatedCredits: 5,
+      estimateKind: "model",
+    },
+    claude: {
+      provider: "claude",
+      completedAt: "2026-07-30T10:20:00.000Z",
+      estimatedCredits: 7,
+      estimateKind: "model",
+    },
+  };
+  const codex = buildWorkLogUsageHistory(turns, { range: "6h", now, provider: "CODEX" });
+  assert.equal(codex.provider, "codex");
+  assert.equal(codex.totalCredits, 5);
+  assert.equal(codex.points.reduce((sum, point) => sum + point.credits, 0), 5);
+});
+
 test("workspace usage aggregates sequential Threads and retains Stream detail", () => {
   const resolver = ({ provider, threadId }) => ({
     workspaceId: "workspace-hub",
