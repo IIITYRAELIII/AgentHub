@@ -274,6 +274,9 @@ const deferredBackgroundAssets = new Set(themeCatalog.flatMap((theme) => (
   theme.backgrounds.filter((background) => background.preload).map((background) => background.id)
 )));
 const backgroundAssetLoads = new Map();
+const sessionBackgrounds = new Map();
+const LEGACY_BACKGROUND_STORAGE_KEY = "agent-hub-background";
+const backgroundStorageKey = (theme) => `${LEGACY_BACKGROUND_STORAGE_KEY}:${theme}`;
 let backgroundRequestId = 0;
 const themeAliases = Object.freeze(Object.fromEntries(themeCatalog.flatMap((theme) => (
   theme.aliases.map((alias) => [alias, theme.id])
@@ -477,12 +480,8 @@ function applyTheme(theme, { persist = false } = {}) {
       void preloadBackgroundAsset(background);
     }
   }
-  const previousBackground = document.documentElement.dataset.background;
   populateBackgroundOptions(selected);
-  if (previousBackground) {
-    const nextBackground = normalizeBackground(selected, previousBackground);
-    applyBackground(nextBackground, { persist: persist && nextBackground !== previousBackground });
-  }
+  applyBackground(savedBackground(selected));
   themeSelect.value = selected;
   themeColor.content = themes[selected];
   if (persist) {
@@ -642,7 +641,6 @@ telegramFullscreenButton?.addEventListener("click", () => {
   else telegram?.requestFullscreen?.();
 });
 applyTheme(savedTheme());
-applyBackground(savedBackground(root.dataset.theme));
 applyBreakdown(savedBreakdown());
 applyStreamCollapse(savedStreamCollapse());
 selectUsageUnit(savedUsageUnit());
@@ -1281,12 +1279,15 @@ function activateView(view) {
   if (view === "server") emit("devices:refresh");
 }
 
-function savedBackground(fallback) {
+function savedBackground(theme) {
+  const sessionBackground = sessionBackgrounds.get(theme);
+  if (sessionBackground) return normalizeBackground(theme, sessionBackground);
   try {
-    const value = localStorage.getItem("agent-hub-background");
-    return normalizeBackground(fallback, value);
+    const value = localStorage.getItem(backgroundStorageKey(theme))
+      ?? localStorage.getItem(LEGACY_BACKGROUND_STORAGE_KEY);
+    return normalizeBackground(theme, value);
   } catch {
-    return fallback;
+    return normalizeBackground(theme, theme);
   }
 }
 
@@ -1323,10 +1324,12 @@ function commitBackground(selected, persist) {
   root.dataset.backgroundOverride = String(selected !== root.dataset.theme);
   delete root.dataset.backgroundLoading;
   if (backgroundSelect) backgroundSelect.value = selected;
+  sessionBackgrounds.set(root.dataset.theme, selected);
   syncParticleLayer(selected);
   if (persist) {
     try {
-      localStorage.setItem("agent-hub-background", selected);
+      localStorage.setItem(backgroundStorageKey(root.dataset.theme), selected);
+      localStorage.setItem(LEGACY_BACKGROUND_STORAGE_KEY, selected);
     } catch {
       // Выбор останется активным до закрытия WebView.
     }

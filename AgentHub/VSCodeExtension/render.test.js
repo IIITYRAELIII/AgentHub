@@ -303,6 +303,14 @@ test("extension discovers theme assets from the active runtime catalog", () => {
   assert.doesNotMatch(shared, /--stormglass-image|stormGlass|ashen-reliquary/u);
 });
 
+test("background choice is remembered independently for every theme", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  assert.match(app, /const backgroundStorageKey = \(theme\) => `\$\{LEGACY_BACKGROUND_STORAGE_KEY\}:\$\{theme\}`/u);
+  assert.match(app, /applyTheme\(theme,[\s\S]*populateBackgroundOptions\(selected\);\s*applyBackground\(savedBackground\(selected\)\)/u);
+  assert.match(app, /sessionBackgrounds\.set\(root\.dataset\.theme, selected\)/u);
+  assert.match(app, /localStorage\.setItem\(backgroundStorageKey\(root\.dataset\.theme\), selected\)/u);
+});
+
 test("theme layers keep the background, effects and content in order", () => {
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),
