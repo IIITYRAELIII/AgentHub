@@ -6714,10 +6714,17 @@ function selectorValue(value) {
   return CSS.escape(String(value ?? ""));
 }
 
+function workLogDayKey(details) {
+  const heading = details?.querySelector("summary[data-work-log-day] strong");
+  return heading?.dataset.workLogDate
+    ?? plainDateText(heading?.textContent)
+    ?? String(details?.dataset.lazyDay ?? "").trim();
+}
+
 function captureOpenState() {
   return {
     days: [...journal.querySelectorAll("details[data-work-log-day-section][open]")]
-      .map((item) => item.querySelector("summary[data-work-log-day] strong")?.textContent.trim())
+      .map(workLogDayKey)
       .filter(Boolean),
     previous: [...journal.querySelectorAll("details[data-work-log-previous-turns][open]")]
       .map((item) => item.closest("[data-work-log-row]")?.dataset.workLogThreadId)
@@ -6749,8 +6756,7 @@ function captureOpenState() {
       .map((item) => item.closest("[data-work-log-turn-id]")?.dataset.workLogTurnId)
       .filter(Boolean),
     mobileDays: [...journal.querySelectorAll("[data-day-usage-table][data-mobile-expanded]")]
-      .map((item) => item.closest("details[data-work-log-day-section]")
-        ?.querySelector("summary[data-work-log-day] strong")?.textContent.trim())
+      .map((item) => workLogDayKey(item.closest("details[data-work-log-day-section]")))
       .filter(Boolean),
     mobileTasks: [...journal.querySelectorAll("[data-work-log-row][data-mobile-open]")]
       .map((item) => ({
@@ -6830,10 +6836,11 @@ function restoreOpenState(openState) {
   for (const details of journal.querySelectorAll("details[data-work-log-day-section]")) {
     details.open = false;
   }
-  const days = surface === "mobile" ? openState.days.slice(0, 1) : openState.days;
+  const restoredDays = openState.days.map(plainDateText).filter(Boolean);
+  const days = surface === "mobile" ? restoredDays.slice(0, 1) : restoredDays;
   for (const day of days) {
     for (const details of journal.querySelectorAll("details[data-work-log-day-section]")) {
-      if (details.querySelector("summary[data-work-log-day] strong")?.textContent.trim() === day) {
+      if (workLogDayKey(details) === day) {
         details.open = true;
       }
     }
@@ -6893,7 +6900,7 @@ function restoreOpenState(openState) {
   }
   for (const day of openState.mobileDays ?? []) {
     for (const details of journal.querySelectorAll("details[data-work-log-day-section]")) {
-      if (details.querySelector("summary[data-work-log-day] strong")?.textContent.trim() !== day) {
+      if (workLogDayKey(details) !== plainDateText(day)) {
         continue;
       }
       const table = details.querySelector("[data-day-usage-table]");
@@ -8122,6 +8129,11 @@ journal.addEventListener("click", (event) => {
 
 journal.addEventListener("toggle", (event) => {
   const opened = event.target;
+  if (opened.matches?.("details[data-work-log-day-section]")) {
+    const latestOpenState = captureOpenState();
+    desiredOpenState = latestOpenState;
+    groupingStates[grouping] = latestOpenState;
+  }
   if (surface === "mobile" && opened.matches?.("details[data-work-log-day-section][open]")) {
     for (const details of journal.querySelectorAll("details[data-work-log-day-section][open]")) {
       if (details !== opened) details.open = false;
