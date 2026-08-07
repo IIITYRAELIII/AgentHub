@@ -4215,20 +4215,35 @@ function serverConfigValue(key) {
 }
 
 function syncServerConfigDependencyVisibility() {
-  for (const row of serverConfig?.querySelectorAll("[data-server-config-visible-key]") ?? []) {
-    const expected = row.dataset.serverConfigVisibleValue === "true";
-    row.hidden = Boolean(serverConfigValue(row.dataset.serverConfigVisibleKey)) !== expected;
+  for (const row of serverConfig?.querySelectorAll("[data-server-config-visible-when]") ?? []) {
+    let conditions = [];
+    try {
+      conditions = JSON.parse(row.dataset.serverConfigVisibleWhen || "[]");
+    } catch {
+      conditions = [];
+    }
+    row.hidden = !conditions.every((condition) => (
+      Boolean(serverConfigValue(condition.key)) === Boolean(condition.value)
+    ));
   }
 }
 
 function renderServerConfigEntries(entries) {
-  const byKey = new Map(entries.map((entry) => [entry.key, entry]));
   return entries
     .filter((entry) => !entry.inlineFor)
-    .map((entry) => renderServerConfigEntry(entry, byKey));
+    .map((entry) => renderServerConfigEntry(entry));
 }
 
-function renderServerConfigEntry(entry = {}, entriesByKey = new Map()) {
+function prepareServerConfigRow(row, entry) {
+  if (entry.presentation === "line") row.classList.add("server-config-line");
+  const conditions = Array.isArray(entry.visibleWhenAll)
+    ? entry.visibleWhenAll
+    : entry.visibleWhen ? [entry.visibleWhen] : [];
+  if (conditions.length) row.dataset.serverConfigVisibleWhen = JSON.stringify(conditions);
+  return row;
+}
+
+function renderServerConfigEntry(entry = {}) {
   const pendingNote = entry.pending ? el("small", {
     class: "server-config-pending",
     text: "Применится после перезапуска",
@@ -4237,46 +4252,17 @@ function renderServerConfigEntry(entry = {}, entriesByKey = new Map()) {
   if (entry.type === "boolean") {
     const input = el("input", { type: "checkbox", checked: entry.value === true });
     input.addEventListener("change", () => noteServerConfigDraft(entry.key, input.checked));
-    const inlineEntry = entriesByKey.get(entry.inlineValueKey);
-    const inlineInput = inlineEntry ? el("input", {
-      class: "server-config-number",
-      type: "number",
-      value: inlineEntry.value ?? "",
-      min: inlineEntry.min,
-      max: inlineEntry.max,
-      step: 1,
-      "aria-label": inlineEntry.name ?? "Порог",
-    }) : null;
-    inlineInput?.addEventListener("input", () => noteServerConfigDraft(inlineEntry.key, inlineInput.value));
-    inlineInput?.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") saveServerConfigDrafts();
-    });
-    const sentence = inlineInput
-      ? el("span", { class: "switch-text" }, [
-        document.createTextNode(`${entry.name ?? ""} `),
-        inlineInput,
-        document.createTextNode(entry.suffix ?? ""),
-      ])
-      : el("span", { class: "switch-text", text: entry.name ?? "" });
     const row = el("label", {
       class: "server-config-row server-config-toggle",
       title: entry.hint || entry.name || "",
     }, [
-      sentence,
+      el("span", { class: "switch-text", text: entry.name ?? "" }),
       input,
       el("span", { class: "switch-track", "aria-hidden": true }),
-      hint,
+      entry.presentation === "line" ? null : hint,
       pendingNote,
-      inlineEntry?.pending ? el("small", {
-        class: "server-config-pending",
-        text: "Порог применится после перезапуска",
-      }) : null,
     ].filter(Boolean));
-    if (entry.visibleWhen) {
-      row.dataset.serverConfigVisibleKey = entry.visibleWhen.key;
-      row.dataset.serverConfigVisibleValue = String(entry.visibleWhen.value);
-    }
-    return row;
+    return prepareServerConfigRow(row, entry);
   }
   if (entry.type === "choice") {
     const input = el("select", {
@@ -4288,12 +4274,12 @@ function renderServerConfigEntry(entry = {}, entriesByKey = new Map()) {
       selected: choice.value === entry.value,
     })));
     input.addEventListener("change", () => noteServerConfigDraft(entry.key, input.value));
-    return el("div", { class: "server-config-row", title: entry.hint || entry.name || "" }, [
+    return prepareServerConfigRow(el("div", { class: "server-config-row", title: entry.hint || entry.name || "" }, [
       el("span", { text: entry.name ?? "" }),
       input,
       hint,
       pendingNote,
-    ].filter(Boolean));
+    ].filter(Boolean)), entry);
   }
   const input = el("input", {
     class: "server-config-number",
@@ -4308,7 +4294,7 @@ function renderServerConfigEntry(entry = {}, entriesByKey = new Map()) {
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveServerConfigDrafts();
   });
-  return el("div", { class: "server-config-row", title: entry.hint || entry.name || "" }, [
+  return prepareServerConfigRow(el("div", { class: "server-config-row", title: entry.hint || entry.name || "" }, [
     el("span", { text: entry.name ?? "" }),
     el("div", { class: "server-config-number-row" }, [
       input,
@@ -4316,7 +4302,7 @@ function renderServerConfigEntry(entry = {}, entriesByKey = new Map()) {
     ].filter(Boolean)),
     hint,
     pendingNote,
-  ].filter(Boolean));
+  ].filter(Boolean)), entry);
 }
 
 document.querySelector("[data-server-config-save]")

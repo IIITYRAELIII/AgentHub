@@ -17,38 +17,41 @@ export const SERVER_CONFIGURATION_FIELDS = Object.freeze([
   { key: "guardConcurrentRepositoryWrites", name: "Защита параллельной записи", hint: "Не даёт двум задачам писать в один репозиторий одновременно: вторая ждёт, пока первая закончит ход.", type: BOOLEAN },
   {
     key: "contextAutomation.autoCompactAfterTurn",
-    name: "Авто-свёртка ПОСЛЕ хода, если окно контекста заполнено >",
+    name: "Авто-свёртка после хода",
     hint: "Проверка выполняется после окончательного завершения хода; очередь Stream остаётся заблокированной до завершения обслуживания контекста.",
     type: BOOLEAN,
-    inlineValueKey: "contextAutomation.autoCompactThresholdPercent",
-    suffix: "%.",
+    presentation: "line",
   },
   {
     key: "contextAutomation.autoCompactThresholdPercent",
-    name: "Порог авто-свёртки",
+    name: "Если окно контекста заполнено >",
     type: INTEGER,
     min: 0,
     max: 100,
     unit: "%",
-    inlineFor: "contextAutomation.autoCompactAfterTurn",
+    presentation: "line",
+    visibleWhen: { key: "contextAutomation.autoCompactAfterTurn", value: true },
   },
   {
     key: "contextAutomation.autoRotateAfterCompaction",
-    name: "Авто-ротация после свёртки, если после свёртки окно контекста заполнено >",
+    name: "Авто-ротация после свёртки",
     hint: "Новый Thread получает готовый результат уже выполненной свёртки; повторная свёртка не запускается.",
     type: BOOLEAN,
-    inlineValueKey: "contextAutomation.autoRotateThresholdPercent",
-    suffix: "%.",
+    presentation: "line",
     visibleWhen: { key: "contextAutomation.autoCompactAfterTurn", value: true },
   },
   {
     key: "contextAutomation.autoRotateThresholdPercent",
-    name: "Порог авто-ротации",
+    name: "Если после свёртки окно контекста заполнено >",
     type: INTEGER,
     min: 0,
     max: 100,
     unit: "%",
-    inlineFor: "contextAutomation.autoRotateAfterCompaction",
+    presentation: "line",
+    visibleWhenAll: [
+      { key: "contextAutomation.autoCompactAfterTurn", value: true },
+      { key: "contextAutomation.autoRotateAfterCompaction", value: true },
+    ],
   },
   { key: "components.codexContextCleanup", name: "Очистка контекста Codex", hint: "Удаляет только дубликаты старых изображений из snapshots после свёртки и во время фоновых проходов; исходные сообщения не меняются.", type: BOOLEAN },
   { key: "codexRolloutContext.scanIntervalSeconds", name: "Интервал фоновой очистки", hint: "Как часто компонент повторно проверяет отложенные и остальные rollout-файлы Codex.", type: INTEGER, min: 1, max: 1440, unit: "мин", storageMultiplier: 60 },
@@ -145,6 +148,8 @@ export function serverConfigurationEntries(config, pending = {}) {
     if (field.inlineFor) entry.inlineFor = field.inlineFor;
     if (field.suffix) entry.suffix = field.suffix;
     if (field.visibleWhen) entry.visibleWhen = field.visibleWhen;
+    if (field.visibleWhenAll) entry.visibleWhenAll = field.visibleWhenAll;
+    if (field.presentation) entry.presentation = field.presentation;
     if (field.type === CHOICE) entry.choices = field.choices;
     return entry;
   });

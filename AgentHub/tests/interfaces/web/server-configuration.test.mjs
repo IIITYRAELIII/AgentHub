@@ -42,13 +42,27 @@ test("server configuration exposes only its editable non-secret fields", () => {
   assert.equal(cleanupInterval?.value, 30);
   assert.equal(cleanupInterval?.display, "30 мин");
   const autoCompact = entries.find((entry) => entry.key === "contextAutomation.autoCompactAfterTurn");
-  assert.equal(autoCompact?.name, "Авто-свёртка ПОСЛЕ хода, если окно контекста заполнено >");
-  assert.equal(autoCompact?.inlineValueKey, "contextAutomation.autoCompactThresholdPercent");
+  assert.equal(autoCompact?.name, "Авто-свёртка после хода");
+  assert.equal(autoCompact?.presentation, "line");
+  const autoCompactThreshold = entries.find((entry) => (
+    entry.key === "contextAutomation.autoCompactThresholdPercent"
+  ));
+  assert.deepEqual(autoCompactThreshold?.visibleWhen, {
+    key: "contextAutomation.autoCompactAfterTurn",
+    value: true,
+  });
   const autoRotate = entries.find((entry) => entry.key === "contextAutomation.autoRotateAfterCompaction");
   assert.deepEqual(autoRotate?.visibleWhen, {
     key: "contextAutomation.autoCompactAfterTurn",
     value: true,
   });
+  const autoRotateThreshold = entries.find((entry) => (
+    entry.key === "contextAutomation.autoRotateThresholdPercent"
+  ));
+  assert.deepEqual(autoRotateThreshold?.visibleWhenAll, [
+    { key: "contextAutomation.autoCompactAfterTurn", value: true },
+    { key: "contextAutomation.autoRotateAfterCompaction", value: true },
+  ]);
 });
 
 test("server configuration persists only validated whitelisted values", async (context) => {

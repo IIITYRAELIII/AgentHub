@@ -7007,6 +7007,29 @@ html[data-view="server"] .server-view {
   grid-column: 1 / -1;
 }
 
+/* Автоматическое обслуживание контекста — последовательность зависимых
+   параметров, а не набор самостоятельных плиток. Полноширинные строки не
+   меняют раскладку между телефоном, VS Code и Desktop. */
+.server-config-line {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 2.7rem;
+  padding: 0.5rem 0.15rem;
+}
+
+.server-config-line .server-config-number-row {
+  justify-self: end;
+}
+
+.server-config-line .server-config-pending {
+  grid-column: 1 / -1;
+}
+
 .server-config-number-row {
   align-items: center;
   display: flex;
