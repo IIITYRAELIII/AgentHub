@@ -5073,13 +5073,16 @@ function currentLimitSeries(payload) {
   const currentAccountKey = String(payload?.currentAccount?.key ?? "");
   const available = (Array.isArray(payload?.series) ? payload.series : [])
     .filter((series) => Array.isArray(series.points) && series.points.length)
-    .filter((series) => {
-      if (!currentAccountKey) return true;
+    .map((series) => {
       const provider = String(series.name ?? "").toLowerCase();
       const codex = provider === "codex" || provider === "spark";
-      return !codex || series.accountKey === currentAccountKey;
+      if (!codex || !currentAccountKey) return { ...series, point: series.points.at(-1) };
+      const point = series.points.findLast((item) => (
+        String(item?.accountKey ?? "") === currentAccountKey
+      )) ?? (series.accountKey === currentAccountKey ? series.points.at(-1) : null);
+      return point ? { ...series, point } : null;
     })
-    .map((series) => ({ ...series, point: series.points.at(-1) }));
+    .filter(Boolean);
   const pickCodex = (name) => {
     const matches = available.filter((series) => String(series.name).toLowerCase() === name);
     return matches.find((series) => series.window === "primary");
