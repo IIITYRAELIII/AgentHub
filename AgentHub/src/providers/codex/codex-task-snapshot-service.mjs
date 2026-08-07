@@ -28,13 +28,20 @@ export function describeCodexItem(item, completed) {
   return completed ? "Этап завершён." : "Выполняется следующий этап…";
 }
 
-export function codexTurnStartedAt(turn) {
-  const value = turn?.startedAt ?? turn?.createdAt ?? null;
+function codexTurnTimestamp(value) {
   const numeric = Number(value);
   const timestamp = Number.isFinite(numeric) && value !== null && value !== ""
     ? (numeric < 1_000_000_000_000 ? numeric * 1_000 : numeric)
     : Date.parse(String(value ?? ""));
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
+export function codexTurnStartedAt(turn) {
+  return codexTurnTimestamp(turn?.startedAt ?? turn?.createdAt ?? null);
+}
+
+export function codexTurnCompletedAt(turn) {
+  return codexTurnTimestamp(turn?.completedAt ?? turn?.lastActivityAt ?? null);
 }
 
 export function recoveredCodexAnswer(turn) {
@@ -60,6 +67,7 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
     clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,
     userMessages,
     startedAt: codexTurnStartedAt(turn),
+    completedAt: codexTurnCompletedAt(turn),
     completed: turn?.status !== "inProgress",
     active: turn?.status === "inProgress",
     status: turn?.status === "completed" ? "completed" : String(turn?.status ?? "stopped"),
@@ -166,8 +174,10 @@ export class CodexTaskSnapshotService {
       strictRequested: exact || run.observer !== true,
     });
     if (!turn) return null;
+    const turnSnapshot = d.turnSnapshot(turn, result.thread?.status);
+    const completedAtMs = Number(activity.completedAtMsByTurnId?.[turn.id]);
     const snapshot = {
-      ...d.turnSnapshot(turn, result.thread?.status),
+      ...turnSnapshot,
       turnId: turn.id,
       activeTurnCount: activity.activeTurnIds.length || (turn?.status === "inProgress" ? 1 : 0),
       activityAtMs: Number(activity.activityAtMsByTurnId?.[turn.id]) || activity.lastActivityAtMs,
@@ -176,6 +186,9 @@ export class CodexTaskSnapshotService {
       startedAt: Number.isFinite(Number(activity.startedAtMsByTurnId?.[turn.id]))
         ? new Date(Number(activity.startedAtMsByTurnId[turn.id])).toISOString()
         : d.turnStartedAt(turn),
+      completedAt: Number.isFinite(completedAtMs)
+        ? new Date(completedAtMs).toISOString()
+        : turnSnapshot.completedAt,
       executionOwner: run?.observer === true
         ? await d.resolveOwner(activity, {
           turnId: turn.id,
@@ -263,6 +276,7 @@ export class CodexTaskSnapshotService {
       clientUserMessageId: state.userMessages[0]?.clientUserMessageId ?? null,
       userMessages: state.userMessages,
       startedAt: state.startedAt,
+      completedAt: state.completedAt,
       completed: overrides.completed,
       active: overrides.active,
       status: overrides.status,

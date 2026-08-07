@@ -27,7 +27,7 @@ export class StreamContextMaintenanceService {
     logger = console,
   }) {
     if (!registry?.begin || !registry?.end) throw new TypeError("stream maintenance registry is required");
-    if (!provider?.start || !provider?.rotate || !provider?.rotateCompacted) {
+    if (!provider?.start || !provider?.probeContext || !provider?.rotate || !provider?.rotateCompacted) {
       throw new TypeError("Codex context maintenance provider is required");
     }
     Object.assign(this, {
@@ -89,10 +89,7 @@ export class StreamContextMaintenanceService {
           ? "Автосвёртка контекста не завершилась вовремя"
           : "Автосвёртка контекста не завершилась");
       }
-      const after = await this.waitForContextUpdate(run.threadId, {
-        after: before?.updatedAt ?? 0,
-        timeoutMs: 5_000,
-      });
+      const after = await this.#exactContextAfterCompaction(run, before);
       const afterPercent = contextUsagePercent(after);
       this.provider.compactions.annotate?.(run.threadId, started.compactionId, { afterPercent });
       if (!this.autoRotateEnabled() || afterPercent === null
@@ -134,10 +131,7 @@ export class StreamContextMaintenanceService {
       void this.provider.compactions.waitForSettlement(target.threadId, started.compactionId)
         .then(async (settled) => {
           if (settled?.status !== "completed") return;
-          const after = await this.waitForContextUpdate(target.threadId, {
-            after: before?.updatedAt ?? 0,
-            timeoutMs: 5_000,
-          });
+          const after = await this.#exactContextAfterCompaction(target, before);
           this.provider.compactions.annotate?.(target.threadId, started.compactionId, {
             afterPercent: contextUsagePercent(after),
           });
@@ -206,6 +200,26 @@ export class StreamContextMaintenanceService {
     this.invalidateCatalog();
     await this.saveState();
     return { ...source, streamId: stream.id, threadId, taskTitle: workspace.name };
+  }
+
+  async #exactContextAfterCompaction(target, before) {
+    const preliminary = await this.waitForContextUpdate(target.threadId, {
+      after: before?.updatedAt ?? 0,
+      timeoutMs: 5_000,
+    });
+    if (preliminary && preliminary.provisional !== true) return preliminary;
+    const probeStartedAt = Date.now() - 1;
+    try {
+      await this.provider.probeContext(target);
+      const measured = await this.waitForContextUpdate(target.threadId, {
+        after: probeStartedAt,
+        timeoutMs: 5_000,
+      });
+      return measured?.provisional === true ? null : measured;
+    } catch (error) {
+      this.logger.warn?.(`Cannot measure compacted context for ${target.threadId}: ${error.message}`);
+      return null;
+    }
   }
 
   #wakeQueue(target) {

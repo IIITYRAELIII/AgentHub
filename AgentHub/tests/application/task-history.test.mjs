@@ -12,6 +12,10 @@ import {
   mergeCompletedTaskHistory,
   visibleTaskHistory,
 } from "../../src/application/task-history.mjs";
+import {
+  CODEX_CONTEXT_PROBE_PROMPT,
+  CODEX_CONTEXT_PROBE_RESPONSE,
+} from "../../src/domain/codex-context-probe.mjs";
 
 test("completed history overlay replaces a stale live answer immediately", () => {
   const history = [{
@@ -57,6 +61,54 @@ test("completed history ignores a promptless compaction echo", () => {
 
   assert.equal(history.length, 1);
   assert.equal(history[0].id, "turn-user");
+});
+
+test("completed history overlay preserves the canonical completion time", () => {
+  const history = [{
+    id: "turn-1",
+    answer: "Финальный ответ",
+    completed: true,
+    completedAt: "2026-08-04T01:53:46.371Z",
+    messages: [{
+      itemId: "turn-1:agent:final",
+      role: "agent",
+      text: "Финальный ответ",
+      time: "2026-08-04T01:53:46.371Z",
+    }],
+  }];
+
+  mergeCompletedTaskHistory(history, {
+    turnId: "turn-1",
+    answer: "Финальный ответ",
+    completedAt: "2026-08-04T03:52:00.000Z",
+  });
+
+  assert.equal(history[0].completedAt, "2026-08-04T01:53:46.371Z");
+  assert.equal(history[0].messages[0].time, "2026-08-04T01:53:46.371Z");
+});
+
+test("Codex history hides the internal context probe exchange", () => {
+  const turn = {
+    id: "probe-turn",
+    status: "completed",
+    items: [
+      {
+        id: "probe-user",
+        type: "userMessage",
+        clientId: "agent-hub-context-probe:test",
+        content: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+      },
+      {
+        id: "probe-agent",
+        type: "agentMessage",
+        text: CODEX_CONTEXT_PROBE_RESPONSE,
+        phase: "final_answer",
+      },
+    ],
+  };
+
+  assert.deepEqual(codexThreadHistory([turn]), []);
+  assert.equal(codexFinalTurnAnswer(turn), "");
 });
 
 test("Codex history preserves a safe activity feed", () => {

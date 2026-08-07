@@ -3,6 +3,10 @@ import path from "node:path";
 import { open, stat } from "node:fs/promises";
 import { displayUserPrompt } from "../../application/task-history.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
+import {
+  isCodexContextProbeClientId,
+  isCodexContextProbeText,
+} from "../../domain/codex-context-probe.mjs";
 
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
 const CODEX_PROMPTLESS_TURN_GRACE_MS = 15 * 1000;
@@ -447,6 +451,59 @@ function codexActivity(
   };
 }
 
+function codexCompletedAtMsByTurnId(finalMessages, lastSeenAtByTurnId) {
+  const messages = finalMessages instanceof Map
+    ? finalMessages
+    : new Map(Object.entries(finalMessages ?? {}));
+  const timestamps = lastSeenAtByTurnId instanceof Map
+    ? lastSeenAtByTurnId
+    : new Map(lastSeenAtByTurnId ?? []);
+  return Object.fromEntries([...messages.keys()]
+    .filter((turnId) => Number.isFinite(timestamps.get(turnId)))
+    .map((turnId) => [turnId, timestamps.get(turnId)]));
+}
+
+function withoutCodexContextProbeTurns(activity) {
+  const hidden = new Set(Object.entries(activity.userMessages ?? {})
+    .filter(([, messages]) => (Array.isArray(messages) ? messages : []).some((message) => (
+      isCodexContextProbeClientId(message?.clientUserMessageId)
+      || isCodexContextProbeText(message?.text)
+    )))
+    .map(([turnId]) => turnId));
+  for (const [turnId, answer] of Object.entries(activity.finalMessages ?? {})) {
+    if (isCodexContextProbeText(answer)) hidden.add(turnId);
+  }
+  if (!hidden.size) return activity;
+  const withoutHiddenKeys = (value) => Object.fromEntries(
+    Object.entries(value ?? {}).filter(([turnId]) => !hidden.has(turnId)),
+  );
+  const activeTurnIds = (activity.activeTurnIds ?? []).filter((turnId) => !hidden.has(turnId));
+  const activeVscodeTurnIds = (activity.activeVscodeTurnIds ?? [])
+    .filter((turnId) => !hidden.has(turnId));
+  const knownTurnIds = [
+    ...Object.keys(activity.userMessages ?? {}),
+    ...Object.keys(activity.latestMessages ?? {}),
+    ...Object.keys(activity.finalMessages ?? {}),
+  ].filter((turnId) => !hidden.has(turnId));
+  return {
+    ...activity,
+    running: activeTurnIds.length > 0,
+    activeTurnIds,
+    activeVscodeTurnIds,
+    internalTurnIds: [...new Set([...(activity.internalTurnIds ?? []), ...hidden])],
+    activityAtMsByTurnId: withoutHiddenKeys(activity.activityAtMsByTurnId),
+    startedAtMsByTurnId: withoutHiddenKeys(activity.startedAtMsByTurnId),
+    completedAtMsByTurnId: withoutHiddenKeys(activity.completedAtMsByTurnId),
+    latestTurnId: hidden.has(String(activity.latestTurnId ?? "")) ? knownTurnIds.at(-1) ?? null : activity.latestTurnId,
+    latestMessages: withoutHiddenKeys(activity.latestMessages),
+    finalMessages: withoutHiddenKeys(activity.finalMessages),
+    userMessages: withoutHiddenKeys(activity.userMessages),
+    unscopedLatestMessage: isCodexContextProbeText(activity.unscopedLatestMessage)
+      ? null
+      : activity.unscopedLatestMessage,
+  };
+}
+
 function withoutStalePromptlessTurns(activity, userMessages, latestMessages, nowMs) {
   const messages = userMessages instanceof Map ? userMessages : new Map();
   const agentMessages = latestMessages instanceof Map ? latestMessages : new Map();
@@ -499,7 +556,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
       // Ignore incomplete or unrelated JSONL lines.
     }
   }
-  return {
+  return withoutCodexContextProbeTurns({
     ...codexActivity(activeTurnIds, lastSeenAtByTurnId, {
       ...options,
       vscodeTurnIds: metadata.vscodeTurnIds,
@@ -510,12 +567,13 @@ export function parseCodexRolloutActivity(text, options = {}) {
     latestTurnId: metadata.latestTurnId || null,
     latestMessages: Object.fromEntries(metadata.latestMessages),
     finalMessages: Object.fromEntries(metadata.finalMessages),
+    completedAtMsByTurnId: codexCompletedAtMsByTurnId(metadata.finalMessages, lastSeenAtByTurnId),
     userMessages: Object.fromEntries(metadata.userMessages),
     ...(metadata.generatedImageSources.size
       ? { generatedImageSources: Object.fromEntries(metadata.generatedImageSources) }
       : {}),
     unscopedLatestMessage: metadata.unscopedLatestMessage || null,
-  };
+  });
 }
 
 export function parseCodexRolloutRunning(text) {
@@ -533,13 +591,14 @@ export async function readCodexRolloutActivity(
 ) {
   const normalized = String(rolloutPath ?? "").trim();
   if (!normalized) {
-    return {
+    return withoutCodexContextProbeTurns({
       running: false,
       activeTurnIds: [],
       activeVscodeTurnIds: [],
       internalTurnIds: [],
       activityAtMsByTurnId: {},
       startedAtMsByTurnId: {},
+      completedAtMsByTurnId: {},
       lastActivityAtMs: null,
       model: null,
       reasoningEffort: null,
@@ -549,7 +608,7 @@ export async function readCodexRolloutActivity(
       userMessages: {},
       generatedImageSources: {},
       unscopedLatestMessage: null,
-    };
+    });
   }
   let info;
   try {
@@ -563,6 +622,7 @@ export async function readCodexRolloutActivity(
         internalTurnIds: [],
         activityAtMsByTurnId: {},
         startedAtMsByTurnId: {},
+        completedAtMsByTurnId: {},
         lastActivityAtMs: null,
         model: null,
         reasoningEffort: null,
@@ -578,13 +638,17 @@ export async function readCodexRolloutActivity(
   }
   if (nowMs - info.mtimeMs > freshnessMs) {
     const cached = codexActivityCache.get(normalized);
-    return {
+    return withoutCodexContextProbeTurns({
       running: false,
       activeTurnIds: [],
       activeVscodeTurnIds: [],
       internalTurnIds: [],
       activityAtMsByTurnId: {},
       startedAtMsByTurnId: {},
+      completedAtMsByTurnId: codexCompletedAtMsByTurnId(
+        cached?.finalMessages,
+        new Map(cached?.lastSeenAtByTurnId ?? []),
+      ),
       lastActivityAtMs: info.mtimeMs,
       model: cached?.model || null,
       reasoningEffort: cached?.reasoningEffort || null,
@@ -594,7 +658,7 @@ export async function readCodexRolloutActivity(
       userMessages: Object.fromEntries(cached?.userMessages ?? []),
       generatedImageSources: Object.fromEntries(cached?.generatedImageSources ?? []),
       unscopedLatestMessage: cached?.unscopedLatestMessage || null,
-    };
+    });
   }
   const cached = codexActivityCache.get(normalized);
   if (cached?.size === info.size && cached?.mtimeMs === info.mtimeMs) {
@@ -608,7 +672,7 @@ export async function readCodexRolloutActivity(
           startedAtMsByTurnId: new Map(cached.startedAtMsByTurnId ?? []),
         },
       );
-    return {
+    return withoutCodexContextProbeTurns({
       ...withoutStalePromptlessTurns(
         activity,
         new Map(cached.userMessages ?? []),
@@ -621,10 +685,14 @@ export async function readCodexRolloutActivity(
       latestTurnId: cached.latestTurnId || null,
       latestMessages: Object.fromEntries(cached.latestMessages ?? []),
       finalMessages: Object.fromEntries(cached.finalMessages ?? []),
+      completedAtMsByTurnId: codexCompletedAtMsByTurnId(
+        cached.finalMessages,
+        new Map(cached.lastSeenAtByTurnId ?? []),
+      ),
       userMessages: Object.fromEntries(cached.userMessages ?? []),
       generatedImageSources: Object.fromEntries(cached.generatedImageSources ?? []),
       unscopedLatestMessage: cached.unscopedLatestMessage || null,
-    };
+    });
   }
 
   const appendOnly = Boolean(
@@ -749,7 +817,7 @@ export async function readCodexRolloutActivity(
     suffix: await rolloutSuffix(normalized, info.size),
   });
   if (codexActivityCache.size > 200) codexActivityCache.delete(codexActivityCache.keys().next().value);
-  return {
+  return withoutCodexContextProbeTurns({
     ...withoutStalePromptlessTurns(
       activity,
       metadata.userMessages,
@@ -762,10 +830,11 @@ export async function readCodexRolloutActivity(
     latestTurnId: metadata.latestTurnId || null,
     latestMessages: Object.fromEntries(metadata.latestMessages),
     finalMessages: Object.fromEntries(metadata.finalMessages),
+    completedAtMsByTurnId: codexCompletedAtMsByTurnId(metadata.finalMessages, lastSeenAtByTurnId),
     userMessages: Object.fromEntries(metadata.userMessages),
     generatedImageSources: Object.fromEntries(metadata.generatedImageSources),
     unscopedLatestMessage: metadata.unscopedLatestMessage || null,
-  };
+  });
 }
 
 export async function readCodexRolloutRunning(rolloutPath, options = {}) {
@@ -852,6 +921,7 @@ export function codexRolloutTurnState(
     ? activity.userMessages[turnId].map((message) => ({ ...message }))
     : [];
   const startedAtMs = Number(activity.startedAtMsByTurnId?.[turnId]);
+  const completedAtMs = Number(activity.completedAtMsByTurnId?.[turnId]);
   return {
     turnId,
     active,
@@ -860,6 +930,7 @@ export function codexRolloutTurnState(
     finalAnswer,
     userMessages,
     startedAt: Number.isFinite(startedAtMs) ? new Date(startedAtMs).toISOString() : null,
+    completedAt: Number.isFinite(completedAtMs) ? new Date(completedAtMs).toISOString() : null,
   };
 }
 

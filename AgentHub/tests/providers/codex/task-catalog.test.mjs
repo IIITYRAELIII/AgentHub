@@ -17,6 +17,10 @@ import {
   selectExactActiveCodexTurnId,
 } from "../../../src/providers/codex/codex-rollout-activity.mjs";
 import {
+  CODEX_CONTEXT_PROBE_PROMPT,
+  CODEX_CONTEXT_PROBE_RESPONSE,
+} from "../../../src/domain/codex-context-probe.mjs";
+import {
   mergeTaskCatalog,
   taskOrderingActivityAtMs,
 } from "../../../src/application/task-catalog-projection.mjs";
@@ -374,6 +378,37 @@ test("Codex rollout activity identifies the current VSC turn by client id", () =
   }]);
 });
 
+test("Codex rollout activity hides the internal context probe turn", () => {
+  const entry = (timestamp, type, payload) => JSON.stringify({ timestamp, type, payload });
+  const result = parseCodexRolloutActivity([
+    entry("2026-08-08T10:00:00.000Z", "event_msg", {
+      type: "user_message",
+      client_id: "agent-hub-context-probe:test",
+      message: CODEX_CONTEXT_PROBE_PROMPT,
+    }),
+    entry("2026-08-08T10:00:00.100Z", "event_msg", {
+      type: "task_started",
+      turn_id: "probe-turn",
+    }),
+    entry("2026-08-08T10:00:00.200Z", "event_msg", {
+      type: "agent_message",
+      message: CODEX_CONTEXT_PROBE_RESPONSE,
+    }),
+    entry("2026-08-08T10:00:00.300Z", "event_msg", {
+      type: "task_complete",
+      turn_id: "probe-turn",
+      last_agent_message: CODEX_CONTEXT_PROBE_RESPONSE,
+    }),
+  ].join("\n"));
+
+  assert.equal(result.running, false);
+  assert.deepEqual(result.activeTurnIds, []);
+  assert.deepEqual(result.internalTurnIds, ["probe-turn"]);
+  assert.equal(result.latestTurnId, null);
+  assert.deepEqual(result.userMessages, {});
+  assert.deepEqual(result.finalMessages, {});
+});
+
 test("an unscoped user message is assigned to a new concurrent VSC turn", () => {
   const result = parseCodexRolloutActivity([
     JSON.stringify({
@@ -482,6 +517,7 @@ test("Codex rollout activity keeps another concurrent turn active after one is a
     activeVscodeTurnIds: [],
     activityAtMsByTurnId: {},
     startedAtMsByTurnId: {},
+    completedAtMsByTurnId: {},
     model: null,
     reasoningEffort: null,
     latestTurnId: "parallel",
@@ -529,6 +565,7 @@ test("Codex rollout activity ignores stale unmatched starts but keeps a fresh li
     startedAtMsByTurnId: {
       live: Date.parse("2026-07-17T19:29:00Z"),
     },
+    completedAtMsByTurnId: {},
     model: null,
     reasoningEffort: null,
     latestTurnId: "live",
@@ -596,6 +633,9 @@ test("an exact Codex observer completes its requested turn instead of following 
       "old-turn": Date.parse("2026-07-17T18:00:00Z"),
       "new-turn": Date.parse("2026-07-17T19:00:00Z"),
     },
+    completedAtMsByTurnId: {
+      "old-turn": Date.parse("2026-07-17T18:30:00Z"),
+    },
   };
   assert.deepEqual(codexRolloutTurnState(activity, "old-turn", {
     exact: true,
@@ -608,6 +648,7 @@ test("an exact Codex observer completes its requested turn instead of following 
     finalAnswer: "old turn finished",
     userMessages: [],
     startedAt: "2026-07-17T18:00:00.000Z",
+    completedAt: "2026-07-17T18:30:00.000Z",
   });
   assert.equal(codexRolloutTurnState(activity, "old-turn", {
     threadActive: true,
@@ -701,8 +742,8 @@ test("readCodexRolloutActivity preserves a JSONL line split across reads", async
 test("rollout activity exposes current and final messages without thread/read", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-message-"));
   const rollout = path.join(root, "rollout.jsonl");
-  const entry = (type, payload) => JSON.stringify({
-    timestamp: new Date().toISOString(),
+  const entry = (type, payload, timestamp = new Date().toISOString()) => JSON.stringify({
+    timestamp,
     type,
     payload,
   });
@@ -713,14 +754,16 @@ test("rollout activity exposes current and final messages without thread/read", 
   let activity = await readCodexRolloutActivity(rollout);
   assert.equal(activity.latestTurnId, "turn-1");
   assert.equal(activity.latestMessages["turn-1"], "Текущий этап");
+  const completedAt = "2026-08-04T10:09:00.000Z";
   await appendFile(rollout, `${entry("event_msg", {
     type: "task_complete",
     turn_id: "turn-1",
     last_agent_message: "Итог",
-  })}\n`, "utf8");
+  }, completedAt)}\n`, "utf8");
   activity = await readCodexRolloutActivity(rollout);
   assert.equal(activity.running, false);
   assert.equal(activity.finalMessages["turn-1"], "Итог");
+  assert.equal(activity.completedAtMsByTurnId["turn-1"], Date.parse(completedAt));
 });
 
 test("concurrent rollout messages stay attached to their response_item turn ids", () => {

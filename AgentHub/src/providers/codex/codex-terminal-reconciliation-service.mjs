@@ -291,7 +291,7 @@ export class CodexTerminalReconciliationService {
     }
     if (correctedBody) {
       const task = { ...identity, projectRoot: project.path };
-      this.rememberLastMessage(task, correctedBody);
+      this.rememberLastMessage(task, correctedBody, { updatedAt: resolvedCompletedAt });
       this.rememberSeenTurn(task, identity.turnId);
     }
     if (registeredMessage || correctedBody) await this.saveState();

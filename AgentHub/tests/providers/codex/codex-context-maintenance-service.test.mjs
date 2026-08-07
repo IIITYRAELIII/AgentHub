@@ -83,6 +83,39 @@ test("manual compaction resumes a discovered thread before starting", async () =
   ]);
 });
 
+test("context probe starts and settles in the exact compacted thread", async () => {
+  let now = 0;
+  let reads = 0;
+  const { service, calls } = harness({
+    ensureTransport: async () => calls.push(["transport"]),
+    startContextProbe: async (...args) => {
+      calls.push(["probe", ...args]);
+      return { turn: { id: "probe-turn" } };
+    },
+    readThread: async (...args) => {
+      calls.push(["read", ...args]);
+      reads += 1;
+      return {
+        thread: {
+          turns: [{ id: "probe-turn", status: reads === 1 ? "inProgress" : "completed" }],
+        },
+      };
+    },
+    now: () => now,
+    sleep: async (milliseconds) => { now += milliseconds; },
+  });
+
+  const result = await service.probeContext({ provider: "codex", threadId: "thread-compacted" });
+
+  assert.deepEqual(result, {
+    threadId: "thread-compacted",
+    turnId: "probe-turn",
+    status: "completed",
+  });
+  assert.deepEqual(calls[1], ["probe", "thread-compacted"]);
+  assert.equal(calls.filter(([name]) => name === "read").length, 2);
+});
+
 test("rotation compacts into a clean Thread and injects only the raw compaction item", async () => {
   const rawItem = { type: "compaction", encrypted_content: "opaque" };
   const { service, calls } = harness({

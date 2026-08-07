@@ -38,6 +38,7 @@ export class CodexContextMaintenanceService {
     ensureTransport = async () => {},
     resumeThread = async () => {},
     startCompaction = async () => {},
+    startContextProbe = async () => null,
     startThread = async () => null,
     injectItems = async () => null,
     deleteThread = async () => null,
@@ -45,6 +46,7 @@ export class CodexContextMaintenanceService {
     sandboxSettings = () => ({}),
     recycleTransport = recycleCodexCompactionTransport,
     now = Date.now,
+    sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     defer = queueMicrotask,
     logger = console,
   }) {
@@ -75,6 +77,7 @@ export class CodexContextMaintenanceService {
     this.ensureTransport = ensureTransport;
     this.resumeThread = resumeThread;
     this.startCompaction = startCompaction;
+    this.startContextProbe = startContextProbe;
     this.startThread = startThread;
     this.injectItems = injectItems;
     this.deleteThread = deleteThread;
@@ -82,6 +85,7 @@ export class CodexContextMaintenanceService {
     this.sandboxSettings = sandboxSettings;
     this.recycleTransport = recycleTransport;
     this.now = now;
+    this.sleep = sleep;
     this.defer = defer;
     this.logger = logger;
     this.recycleInFlight = null;
@@ -118,6 +122,27 @@ export class CodexContextMaintenanceService {
 
   startManual(target, options = {}) {
     return this.start(target, { ...options, origin: "manual" });
+  }
+
+  async probeContext(target, { timeoutMs = 60_000, pollMs = 100 } = {}) {
+    const threadId = normalizedId(target?.threadId);
+    if (!threadId) throw new Error("Укажите корректную задачу Codex");
+    await this.ensureTransport();
+    const result = await this.startContextProbe(threadId);
+    const turnId = normalizedId(result?.turn?.id ?? result?.turnId);
+    if (!turnId) throw new Error("Codex App Server не вернул Turn скрытого замера");
+    const deadline = this.now() + Math.max(1, Number(timeoutMs) || 60_000);
+    while (this.now() < deadline) {
+      const response = await this.readThread(threadId, { fresh: true, includeTurns: true });
+      const thread = response?.thread ?? response;
+      const turn = (Array.isArray(thread?.turns) ? thread.turns : [])
+        .find((candidate) => normalizedId(candidate?.id) === turnId);
+      if (turn && !["inProgress", "in_progress", "running"].includes(normalizedId(turn.status))) {
+        return { threadId, turnId, status: normalizedId(turn.status) || "completed" };
+      }
+      await this.sleep(Math.max(1, Number(pollMs) || 100));
+    }
+    throw new Error("Скрытый замер контекста не завершился вовремя");
   }
 
   async rotate(target) {

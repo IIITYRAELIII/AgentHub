@@ -1,4 +1,8 @@
 import { CodexContextMaintenanceService } from "../providers/codex/codex-context-maintenance-service.mjs";
+import {
+  CODEX_CONTEXT_PROBE_PROMPT,
+  codexContextProbeClientId,
+} from "../domain/codex-context-probe.mjs";
 import { codexThreadSandboxSettings } from "../providers/codex/codex-sandbox.mjs";
 
 export function createCodexContextMaintenanceComposition({
@@ -60,6 +64,11 @@ export function createCodexContextMaintenanceComposition({
       ...sandbox,
     }),
     startCompaction: (threadId) => sendRpc("thread/compact/start", { threadId }),
+    startContextProbe: (threadId) => sendRpc("turn/start", {
+      threadId,
+      input: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+      clientUserMessageId: codexContextProbeClientId(),
+    }),
     startThread: (params) => sendRpc("thread/start", params),
     injectItems: (threadId, items) => sendRpc("thread/inject_items", { threadId, items }),
     deleteThread: (threadId) => sendRpc("thread/delete", { threadId }),

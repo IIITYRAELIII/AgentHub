@@ -3,6 +3,11 @@ import { stat } from "node:fs/promises";
 import { taskRunKey } from "../domain/task-runs.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
 
+function normalizedIsoTimestamp(value) {
+  const timestamp = Date.parse(String(value ?? ""));
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
 export class RunJournalService {
   constructor({
     usageStore,
@@ -29,15 +34,27 @@ export class RunJournalService {
     this.lastTaskMessages = new Map();
   }
 
-  rememberLastMessage(run, text) {
+  rememberLastMessage(run, text, { updatedAt = null } = {}) {
     const value = String(text ?? "").trim();
     if (!run?.threadId || !value) return false;
     const key = taskRunKey(run);
+    const current = this.lastTaskMessages.get(key) ?? null;
+    const turnId = String(run.turnId ?? "").trim() || null;
+    const authoritativeUpdatedAt = normalizedIsoTimestamp(updatedAt);
+    const sameTurn = Boolean(turnId) && current?.turnId === turnId;
+    if (
+      current
+      && !sameTurn
+      && authoritativeUpdatedAt
+      && Date.parse(authoritativeUpdatedAt) < Date.parse(String(current.updatedAt ?? ""))
+    ) return false;
     this.lastTaskMessages.delete(key);
     this.lastTaskMessages.set(key, {
       text: value,
-      updatedAt: this.now().toISOString(),
-      turnId: String(run.turnId ?? "").trim() || null,
+      updatedAt: authoritativeUpdatedAt
+        || (sameTurn ? current.updatedAt : null)
+        || this.now().toISOString(),
+      turnId,
     });
     while (this.lastTaskMessages.size > this.messageLimit) {
       this.lastTaskMessages.delete(this.lastTaskMessages.keys().next().value);

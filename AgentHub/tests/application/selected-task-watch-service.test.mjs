@@ -96,13 +96,20 @@ test("SelectedTaskWatchService never overlays a managed run started during snaps
 });
 
 test("SelectedTaskWatchService records a new completed answer without observing it", async () => {
-  const state = fixture({ snapshot: { completed: true, active: false, turnId: "turn-9", answer: "Final" } });
+  const state = fixture({ snapshot: {
+    completed: true,
+    active: false,
+    turnId: "turn-9",
+    answer: "Final",
+    completedAt: "2026-08-04T10:09:00.000Z",
+  } });
   assert.equal(await state.service.watch(), false);
   assert.equal(state.lastSeen.get("stream-1"), "turn-9");
   const remembered = state.events.find(([name]) => name === "remember");
   assert.equal(remembered[1].streamId, "stream-1");
   assert.equal(remembered[1].taskTitle, "Selected title");
   assert.equal(remembered[2], "Final");
+  assert.deepEqual(remembered[3], { updatedAt: "2026-08-04T10:09:00.000Z" });
 });
 
 test("SelectedTaskWatchService clears a dismissal only after external activity ends", async () => {

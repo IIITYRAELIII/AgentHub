@@ -55,7 +55,7 @@ export class TurnEndDeliveryService {
           projectRoot: completion.projectRoot,
           threadId: completion.threadId,
           turnId: completion.turnId,
-        }, notificationBody);
+        }, notificationBody, { updatedAt: completion.completedAt });
         if (completion.turnId) this.rememberSeenTurn(completion, completion.turnId);
       }
       if (journal?.projectionError) {

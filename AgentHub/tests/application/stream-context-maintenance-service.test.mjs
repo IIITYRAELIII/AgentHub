@@ -13,6 +13,8 @@ function fixture({
   afterPercent = 18,
   rotate = true,
   externalCompacting = false,
+  preliminaryProvisional = false,
+  probePercent = afterPercent,
 } = {}) {
   const events = [];
   const registry = new StreamMaintenanceRegistry();
@@ -38,6 +40,10 @@ function fixture({
       return { accepted: true, compactionId: "compact-1" };
     },
     startManual: async () => ({ accepted: true, compactionId: "manual-1" }),
+    probeContext: async (...args) => {
+      events.push(["probe", ...args, registry.isActive(source)]);
+      return { threadId: source.threadId, turnId: "probe-1", status: "completed" };
+    },
     rotate: async () => ({ thread: { id: "thread-new" } }),
     rotateCompacted: async (...args) => {
       events.push(["rotate", ...args, registry.isActive(source)]);
@@ -70,11 +76,18 @@ function fixture({
       modelContextWindow: 100,
       updatedAt: "2026-08-07T10:00:00.000Z",
     }),
-    waitForContextUpdate: async () => ({
-      usedTokens: afterPercent,
-      modelContextWindow: 100,
-      updatedAt: "2026-08-07T10:01:00.000Z",
-    }),
+    waitForContextUpdate: async (...args) => {
+      const probeStarted = events.some(([name]) => name === "probe");
+      events.push(["usage", ...args]);
+      return {
+        usedTokens: probeStarted ? probePercent : afterPercent,
+        modelContextWindow: 100,
+        provisional: probeStarted ? false : preliminaryProvisional,
+        updatedAt: probeStarted
+          ? "2026-08-07T10:02:00.000Z"
+          : "2026-08-07T10:01:00.000Z",
+      };
+    },
     workspaceCatalog,
     selectionStore,
     deferredInputs,
@@ -126,6 +139,23 @@ test("post-turn automation compacts once and does not rotate below 20 percent", 
   assert.equal(state.events.filter(([name]) => name === "compact").length, 1);
   assert.equal(state.events.some(([name]) => name === "rotate"), false);
   assert.equal(state.events.some(([name]) => name === "discard"), true);
+  assert.equal(state.events.some(([name]) => name === "probe"), false);
+});
+
+test("post-turn automation probes once when compaction usage is provisional", async () => {
+  const state = fixture({
+    beforePercent: 86,
+    afterPercent: 55,
+    preliminaryProvisional: true,
+    probePercent: 7,
+    rotate: false,
+  });
+  state.service.reserveAfterTurn(state.source);
+  const result = await state.service.maintainAfterTurn(state.source);
+
+  assert.equal(Math.round(result.afterPercent), 7);
+  assert.equal(state.events.filter(([name]) => name === "probe").length, 1);
+  assert.equal(state.events.find(([name]) => name === "probe").at(-1), true);
 });
 
 test("rotation reuses the completed compaction and retargets the blocked queue", async () => {

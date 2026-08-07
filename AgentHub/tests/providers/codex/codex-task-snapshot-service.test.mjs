@@ -1,6 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodexTaskSnapshotService } from "../../../src/providers/codex/codex-task-snapshot-service.mjs";
+import {
+  CodexTaskSnapshotService,
+  codexTurnSnapshot,
+} from "../../../src/providers/codex/codex-task-snapshot-service.mjs";
+
+test("Codex turn snapshot preserves the actual completion time", () => {
+  const snapshot = codexTurnSnapshot({
+    id: "turn-1",
+    status: "completed",
+    startedAt: 1_722_768_000,
+    completedAt: "2026-08-04T10:09:00.000Z",
+    items: [{ type: "agentMessage", text: "Final", phase: "final_answer" }],
+  });
+
+  assert.equal(snapshot.completedAt, "2026-08-04T10:09:00.000Z");
+});
 
 test("Codex snapshot service reports an exact rollout observer", async () => {
   const service = new CodexTaskSnapshotService({

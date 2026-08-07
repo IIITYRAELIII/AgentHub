@@ -86,7 +86,7 @@ export function createRunPresentationComposition({
     rememberSpeechText: (text, force) => mediaController.rememberSpeechText(text, force),
     taskViewCallbackData,
     completeRun: (run) => managedRunLifecycle.complete(run),
-    rememberLastMessage: (run, text) => runJournal.rememberLastMessage(run, text),
+    rememberLastMessage: (...args) => runJournal.rememberLastMessage(...args),
     rememberLastSeenTurn,
     refreshTaskDiff,
     selectedTask,

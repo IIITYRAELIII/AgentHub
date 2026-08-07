@@ -138,7 +138,7 @@ export class SelectedTaskWatchService {
               chatId: current.chatId,
               taskTitle: current.taskTitle,
               turnId: snapshot.turnId,
-            }, answer);
+            }, answer, { updatedAt: snapshot.completedAt });
           }
         }
       }

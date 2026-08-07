@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 
+import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { scanCodexTerminalEventsFromOffset } from "./codex-turn-usage.mjs";
 
 const DEFAULT_PAGE_SIZE = 100;
@@ -324,11 +325,11 @@ export class CodexTerminalAudit {
     const canResume = prior?.path === transcriptPath && prior.offset <= info.size;
     const startOffset = canResume ? prior.offset : 0;
     const result = await this.scanFile(transcriptPath, { startOffset });
-    const terminals = canResume
+    const terminals = (canResume
       ? result.terminals
       : result.terminals.filter((terminal) => (
         timestampMs(terminal.completedAt) >= lowerBoundMs
-      ));
+      ))).filter((terminal) => !isCodexContextProbeTurn(terminal));
     const activityMs = this.now();
     if (result.nextOffset > startOffset) {
       const pending = this.pendingTurns.get(threadId);
@@ -338,11 +339,16 @@ export class CodexTerminalAudit {
         pending.nextStatusCheckMs = activityMs + this.statusIdleMs;
       }
     }
-    await this.#rememberActiveTurns(thread, project, result.activeTurns, {
-      lowerBoundMs,
-      canResume,
-      activityMs,
-    });
+    await this.#rememberActiveTurns(
+      thread,
+      project,
+      (result.activeTurns ?? []).filter((turn) => !isCodexContextProbeTurn(turn)),
+      {
+        lowerBoundMs,
+        canResume,
+        activityMs,
+      },
+    );
 
     let allHandled = true;
     for (const terminal of terminals) {
@@ -400,6 +406,10 @@ export class CodexTerminalAudit {
             continue;
           }
           const exactTurn = turns.get(turn.turnId);
+          if (isCodexContextProbeTurn(exactTurn)) {
+            this.#removePendingTurn(threadId, turn.turnId);
+            continue;
+          }
           const status = terminalTurnStatus(exactTurn?.status);
           if (!status) continue;
           const handled = await this.reconcile(fullThread, project, {
@@ -520,7 +530,9 @@ export class CodexTerminalAudit {
         this.historicalScanCache.set(cacheKey, historical);
       }
       const turns = Array.isArray(historical?.turns) ? historical.turns : [];
-      const terminalTurns = turns.filter((turn) => turn?.terminal === true);
+      const terminalTurns = turns.filter((turn) => (
+        turn?.terminal === true && !isCodexContextProbeTurn(turn)
+      ));
       while (item.terminalTurnIndex < terminalTurns.length) {
         if (!this.shouldRunHistoricalBackfill()) return changed;
         const turn = terminalTurns[item.terminalTurnIndex];
@@ -539,7 +551,9 @@ export class CodexTerminalAudit {
 
       const stale = this.now() - Number(info.mtimeMs || 0) >= this.historicalActiveStaleMs;
       if (stale) {
-        const staleTurns = turns.filter((turn) => turn?.terminal !== true && turn?.startedAt);
+        const staleTurns = turns.filter((turn) => (
+          turn?.terminal !== true && turn?.startedAt && !isCodexContextProbeTurn(turn)
+        ));
         while (item.staleTurnIndex < staleTurns.length) {
           if (!this.shouldRunHistoricalBackfill()) return changed;
           const turn = staleTurns[item.staleTurnIndex];
@@ -570,7 +584,9 @@ export class CodexTerminalAudit {
       initialActiveTurns: item.activeTurns,
     });
     let allHandled = true;
-    for (const terminal of result.terminals ?? []) {
+    const visibleTerminals = (result.terminals ?? [])
+      .filter((terminal) => !isCodexContextProbeTurn(terminal));
+    for (const terminal of visibleTerminals) {
       if (await this.reconcile(item.thread, project, {
         ...terminal,
         historical: true,
@@ -586,8 +602,9 @@ export class CodexTerminalAudit {
 
     item.offset = result.nextOffset;
     item.size = Number(info.size) || item.size;
-    item.activeTurns = result.activeTurns ?? [];
-    backfill.processedTurns += (result.terminals ?? []).length;
+    item.activeTurns = (result.activeTurns ?? [])
+      .filter((turn) => !isCodexContextProbeTurn(turn));
+    backfill.processedTurns += visibleTerminals.length;
     changed = true;
     if (item.offset >= info.size) {
       if (item.activeTurns.length) {

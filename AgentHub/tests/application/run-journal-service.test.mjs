@@ -40,6 +40,23 @@ test("RunJournalService owns bounded last-message state by task identity", () =>
   assert.equal(service.lastMessageSnapshot().length, 2);
 });
 
+test("RunJournalService preserves authoritative answer time during repeated observation", () => {
+  const { service } = fixture();
+  const task = { provider: "codex", projectRoot: "C:/workspace", threadId: "thread", turnId: "turn-1" };
+  service.rememberLastMessage(task, "Answer", { updatedAt: "2026-08-04T03:52:00.000Z" });
+
+  service.rememberLastMessage(task, "Answer");
+  assert.equal(service.lastMessageRecord(task).updatedAt, "2026-08-04T03:52:00.000Z");
+
+  service.rememberLastMessage(task, "Answer", { updatedAt: "2026-08-04T01:53:46.371Z" });
+  assert.equal(service.lastMessageRecord(task).updatedAt, "2026-08-04T01:53:46.371Z");
+
+  service.rememberLastMessage({ ...task, turnId: "older-turn" }, "Old answer", {
+    updatedAt: "2026-08-04T01:00:00.000Z",
+  });
+  assert.equal(service.lastMessageRecord(task).text, "Answer");
+});
+
 test("RunJournalService restores only valid bounded message records", () => {
   const { service } = fixture();
   const restored = service.restoreLastMessages([

@@ -1,4 +1,5 @@
 import { codexSubagentActivity } from "../domain/run-activity.mjs";
+import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 
 function textContent(content) {
   if (typeof content === "string") return content;
@@ -162,6 +163,7 @@ export function codexTurnActivities(turn) {
 }
 
 function codexTurnMessages(turn) {
+  if (isCodexContextProbeTurn(turn)) return [];
   const turnId = String(turn?.id ?? "").trim();
   return (Array.isArray(turn?.items) ? turn.items : []).flatMap((item, index) => {
     if (item?.type === "userMessage") {
@@ -274,6 +276,7 @@ export function displayUserPrompt(value) {
 }
 
 export function codexFinalTurnAnswer(turn) {
+  if (isCodexContextProbeTurn(turn)) return "";
   const messages = (turn?.items ?? [])
     .filter((item) => item?.type === "agentMessage" && String(item.text ?? "").trim());
   const explicitFinal = messages.findLast((item) => (
@@ -466,7 +469,7 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}) {
   current.status = "completed";
   current.answer = answer;
   const completedAt = normalizedTimestamp(completedTurn.completedAt ?? completedTurn.updatedAt);
-  if (completedAt) current.completedAt = completedAt;
+  if (completedAt && !normalizedTimestamp(current.completedAt)) current.completedAt = completedAt;
   const messages = Array.isArray(current.messages) ? current.messages : [];
   const agents = messages.filter((message) => message.role === "agent");
   const agent = agents.find((message) => String(message.itemId ?? "") === `${turnId}:agent:final`)
@@ -474,7 +477,7 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}) {
   if (agent) {
     agent.text = answer;
     agent.phase = "final";
-    if (completedAt) agent.time = completedAt;
+    if (completedAt && !normalizedTimestamp(agent.time)) agent.time = completedAt;
   } else {
     messages.push({
       itemId: `${turnId}:agent:final`,

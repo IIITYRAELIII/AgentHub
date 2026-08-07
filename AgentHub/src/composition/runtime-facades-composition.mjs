@@ -31,8 +31,8 @@ export function createRuntimeFacadesComposition({
     sendTaskAlreadySelectedNotification(options = {}) {
       return sendTaskSelectionNotification({ ...options, alreadySelected: true });
     },
-    rememberLastTaskMessage(run, text) {
-      return runJournal.rememberLastMessage(run, text);
+    rememberLastTaskMessage(run, text, options = {}) {
+      return runJournal.rememberLastMessage(run, text, options);
     },
     savedLastTaskMessage(task) {
       return runJournal.lastMessage(task);
