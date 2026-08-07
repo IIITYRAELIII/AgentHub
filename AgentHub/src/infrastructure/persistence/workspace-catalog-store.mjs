@@ -16,13 +16,6 @@ import {
 const SCHEMA_VERSION = 1;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 
-function catalogWorkspaceName(entry, identity) {
-  const title = String(entry?.workspaceName ?? entry?.title ?? entry?.threadTitle ?? "").trim();
-  if (title) return title.slice(0, 200);
-  const provider = identity.provider === "claude" ? "Claude" : identity.provider === "codex" ? "Codex" : identity.provider;
-  return `${provider} ${identity.threadId.slice(0, 24)}`.slice(0, 200);
-}
-
 function recoverableDatabaseError(error) {
   return /(?:file is not a database|database disk image is malformed|malformed database schema)/iu
     .test(String(error?.message ?? ""));
@@ -494,18 +487,10 @@ export class WorkspaceCatalogStore {
       const identity = normalizedThreadIdentity(entry);
       let resolved = this.resolveThread(identity);
       const experiments = this.ensureExperiments();
-      if (
-        resolved
-        && resolved.workspaceId === experiments.id
-        && resolved.thread.source === "discovered"
-      ) {
-        const workspace = this.createWorkspace({ name: catalogWorkspaceName(entry, identity) });
-        this.moveStream(resolved.streamId, workspace.id);
-        resolved = this.resolveThread(identity);
-      }
       if (!resolved) {
-        const workspace = this.createWorkspace({ name: catalogWorkspaceName(entry, identity) });
-        const stream = this.createStream({ workspaceId: workspace.id });
+        // Only an explicit Hub action may create or select a user Workspace.
+        // Provider-discovered Threads have no trustworthy placement metadata.
+        const stream = this.createStream({ workspaceId: experiments.id });
         this.bindThread({
           ...identity,
           streamId: stream.id,

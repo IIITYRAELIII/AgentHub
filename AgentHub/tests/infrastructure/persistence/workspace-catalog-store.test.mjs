@@ -73,29 +73,29 @@ test("moving a Thread creates a new Stream and removes its empty old Stream", as
   assert.equal(store.stream(stream.id), null);
 });
 
-test("catalog enrichment creates a named Workspace with one unnamed Stream", async (t) => {
+test("catalog discovery keeps unbound Threads in separate Experiments Streams", async (t) => {
   const store = await fixture(t);
   const input = [{ provider: "codex", threadId: "one", title: "Task" }];
   const first = store.assignCatalogEntries(input);
   const second = store.assignCatalogEntries(input);
   assert.deepEqual(first, second);
-  assert.equal(first[0].workspaceName, "Task");
-  assert.equal(first[0].workspaceKind, "user");
+  assert.equal(first[0].workspaceName, "Experiments");
+  assert.equal(first[0].workspaceKind, "system");
   assert.equal(first[0].streamName, null);
   assert.equal(first[0].streamDisplayName, "");
   assert.match(first[0].streamId, /^id-\d+$/u);
-  assert.equal(store.hierarchy().find((item) => item.name === "Task").streams.length, 1);
-  assert.equal(store.hierarchy().find((item) => item.name === "Experiments").streams.length, 0);
+  assert.equal(store.hierarchy().some((item) => item.name === "Task"), false);
+  assert.equal(store.hierarchy().find((item) => item.name === "Experiments").streams.length, 1);
 });
 
-test("catalog enrichment promotes old automatic Experiments bindings without changing Stream IDs", async (t) => {
+test("catalog enrichment preserves automatic Experiments bindings", async (t) => {
   const store = await fixture(t);
   const automatic = store.assignUnknownThread({ provider: "codex", threadId: "one" });
-  const [promoted] = store.assignCatalogEntries([{ provider: "codex", threadId: "one", title: "Old task" }]);
-  assert.equal(promoted.workspaceName, "Old task");
-  assert.equal(promoted.workspaceKind, "user");
-  assert.equal(promoted.streamId, automatic.streamId);
-  assert.equal(store.hierarchy().find((item) => item.name === "Experiments").streams.length, 0);
+  const [resolved] = store.assignCatalogEntries([{ provider: "codex", threadId: "one", title: "Old task" }]);
+  assert.equal(resolved.workspaceName, "Experiments");
+  assert.equal(resolved.workspaceKind, "system");
+  assert.equal(resolved.streamId, automatic.streamId);
+  assert.equal(store.hierarchy().find((item) => item.name === "Experiments").streams.length, 1);
 });
 
 test("catalog enrichment preserves explicit Experiments placement", async (t) => {
@@ -110,8 +110,10 @@ test("catalog enrichment preserves explicit Experiments placement", async (t) =>
 
 test("catalog enrichment keeps user Workspace names stable after discovery", async (t) => {
   const store = await fixture(t);
-  const [first] = store.assignCatalogEntries([{ provider: "codex", threadId: "one", title: "Original" }]);
-  store.renameWorkspace(first.workspaceId, "Personal name");
+  const workspace = store.createWorkspace({ name: "Original" });
+  const stream = store.createStream({ workspaceId: workspace.id });
+  store.bindThread({ provider: "codex", threadId: "one", streamId: stream.id, source: "created" });
+  store.renameWorkspace(workspace.id, "Personal name");
   const [second] = store.assignCatalogEntries([{ provider: "codex", threadId: "one", title: "Provider changed" }]);
   assert.equal(second.workspaceName, "Personal name");
 });
@@ -155,10 +157,11 @@ test("legacy task data survives the default one-Workspace-per-Thread upgrade", a
     { provider: "claude", threadId: "old-two", title: "Old two", projectRoot: "D:/repo" },
   ]);
   assert.deepEqual(assigned.map((item) => [item.workspaceName, item.streamName]), [
-    ["Old one", null],
-    ["Old two", null],
+    ["Experiments", null],
+    ["Experiments", null],
   ]);
-  assert.equal(store.hierarchy().filter((item) => item.kind === "user").length, 2);
+  assert.equal(store.hierarchy().filter((item) => item.kind === "user").length, 0);
+  assert.equal(store.hierarchy().find((item) => item.name === "Experiments").streams.length, 2);
   store.close();
 
   const verified = new DatabaseSync(databaseFile, { readOnly: true });
