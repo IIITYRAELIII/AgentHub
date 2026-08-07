@@ -199,11 +199,19 @@ test("panel starts in the theme the extension restored", () => {
   );
 });
 
-test("sidebar contains only the Agent Hub heading and open action", () => {
-  const html = sidebarHtml({});
-  assert.match(html, /<h2>Agent Hub<\/h2>/);
-  assert.match(html, /<button id="open" class="primary" type="button">Открыть<\/button>/);
-  assert.doesNotMatch(html, /Журнал работ|Открыть журнал|Обновить|data-theme-select|class="hint"/);
+test("sidebar uses one native launch row and the unified Agent Hub mark", () => {
+  const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
+  const html = sidebarHtml(
+    { cspSource: "vscode-webview://test" },
+    "vscode-webview-resource:/extension/media/agent-hub-mark.png",
+  );
+  assert.match(html, /<button id="open" class="launch" type="button" title="Открыть Agent Hub">/u);
+  assert.match(html, /<img class="mark" src="vscode-webview-resource:\/extension\/media\/agent-hub-mark\.png"/u);
+  assert.match(html, /<strong>Agent Hub<\/strong>[\s\S]*<span>Открыть в редакторе<\/span>/u);
+  assert.match(html, /img-src vscode-webview:\/\/test/u);
+  assert.doesNotMatch(html, /Локальный|Задачи, диалоги|class="card"|class="primary"|M12 2\.7 20 7\.2/u);
+  assert.match(extension, /vscode\.Uri\.joinPath\(this\.context\.extensionUri, "media", "agent-hub-mark\.png"\)/u);
+  assert.match(extension, /sidebarHtml\(view\.webview, markUri\)/u);
 });
 
 test("panel heading uses the journal path as its title", () => {

@@ -59,8 +59,14 @@ class WorkLogViewProvider {
 
   resolveWebviewView(view) {
     this.view = view;
-    view.webview.options = { enableScripts: true };
-    view.webview.html = sidebarHtml(view.webview);
+    view.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [this.context.extensionUri],
+    };
+    const markUri = view.webview.asWebviewUri(
+      vscode.Uri.joinPath(this.context.extensionUri, "media", "agent-hub-mark.png"),
+    );
+    view.webview.html = sidebarHtml(view.webview, markUri);
     view.webview.onDidReceiveMessage((message) => {
       if (message?.type === "open") void this.openPanel();
     }, null, this.context.subscriptions);
