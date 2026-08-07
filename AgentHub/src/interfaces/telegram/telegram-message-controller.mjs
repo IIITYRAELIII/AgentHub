@@ -72,7 +72,7 @@ export class TelegramMessageController {
         && await this.handleBundleMedia(message, { forwardedOnly: true })) return true;
       if (this.handleBundleMedia && await this.handleBundleMedia(message)) return true;
       const target = this.selectedTurnTarget(message.chat.id);
-      await this.bindIncomingMessage(message, message.caption?.trim() || "Изображение без подписи");
+      await this.bindIncomingMessage(message, message.caption?.trim() || "Изображение без подписи", target);
       await this.enqueueMedia("image", { message, target }, target.chatId, {
         dedupeKey: `message:${message.chat.id}:${message.message_id}:image`,
       });
@@ -80,7 +80,7 @@ export class TelegramMessageController {
     }
     if (message.voice || message.audio) {
       const target = this.selectedTurnTarget(message.chat.id);
-      await this.bindIncomingMessage(message, "Голосовое сообщение");
+      await this.bindIncomingMessage(message, "Голосовое сообщение", target);
       await this.enqueueMedia("voice", { message, target }, target.chatId, {
         dedupeKey: `message:${message.chat.id}:${message.message_id}:voice`,
       });
@@ -110,8 +110,9 @@ export class TelegramMessageController {
     const parsed = this.parseCommand(text);
     if (!parsed) {
       if (this.handleBundleText && await this.handleBundleText(message, text)) return;
-      await this.bindIncomingMessage(message, text);
-      await this.handleText(message, text);
+      const target = this.selectedTurnTarget(message.chat.id);
+      await this.bindIncomingMessage(message, text, target);
+      await this.handleText(message, text, target);
       return;
     }
     const handler = this.commandHandlers[parsed.command];

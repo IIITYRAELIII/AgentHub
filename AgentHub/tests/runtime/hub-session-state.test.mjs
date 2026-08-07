@@ -36,3 +36,26 @@ test("hub session state rejects restart mutation without a request", () => {
   state.restore({ updateOffset: -1 });
   assert.equal(state.updateOffset, 0);
 });
+
+test("hub session state keeps durable task selection per client", () => {
+  const state = new HubSessionState();
+  state.setClientTaskSelection("telegram:42", {
+    provider: "codex",
+    projectRoot: "D:/Work",
+    threadId: "telegram-thread",
+  });
+  state.setClientTaskSelection("desktop:one", {
+    provider: "codex",
+    projectRoot: "D:/Work",
+    threadId: "desktop-thread",
+  });
+
+  const read = state.clientTaskSelection("telegram:42");
+  read.threadId = "mutated-copy";
+  assert.equal(state.clientTaskSelection("telegram:42").threadId, "telegram-thread");
+
+  const restored = new HubSessionState();
+  restored.restore({ clientTaskSelections: state.clientTaskSelectionsSnapshot() });
+  assert.equal(restored.clientTaskSelection("telegram:42").threadId, "telegram-thread");
+  assert.equal(restored.clientTaskSelection("desktop:one").threadId, "desktop-thread");
+});

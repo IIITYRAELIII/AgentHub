@@ -72,6 +72,7 @@ test("runtime state restoration applies one canonical snapshot to all owners", a
     chatId: 42,
     updateOffset: 17,
     restartRequest: null,
+    clientTaskSelections: [],
     codexHookReceipts: { start: { id: 1 }, stop: null },
     restoredTurnEndSnapshot: {},
   });
@@ -104,6 +105,7 @@ test("runtime snapshot keeps task identity and provider preferences separate", (
   });
   const snapshot = createHubRuntimeSnapshot({
     chatId: 42,
+    getClientTaskSelections: () => [["telegram:42", { provider: "codex", threadId: "thread-telegram" }]],
     selectionStore,
     taskMetadata: { snapshot: () => ({ pinnedTaskTitles: {} }) },
     preferences: { snapshot: () => ({ codexModel: "sol" }) },
@@ -129,4 +131,8 @@ test("runtime snapshot keeps task identity and provider preferences separate", (
   assert.equal(snapshot.activeProvider, "codex");
   assert.equal(snapshot.threadIds.codex, "thread-1");
   assert.equal(snapshot.codexModel, "sol");
+  assert.deepEqual(snapshot.clientTaskSelections, [[
+    "telegram:42",
+    { provider: "codex", threadId: "thread-telegram" },
+  ]]);
 });

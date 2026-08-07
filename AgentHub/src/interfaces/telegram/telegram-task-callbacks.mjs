@@ -19,7 +19,7 @@ export class TelegramTaskCallbackService {
       "callbackContext", "showLastTaskMessage", "showTaskMessage", "sendMessageTo",
       "sendTaskSwitchNotification", "sendTaskAlreadySelectedNotification",
       "scheduleInteractiveJob", "sendThreadPicker",
-      "taskCatalog", "refreshTaskCatalog", "dispatchApplicationCommand", "activeProvider",
+      "taskCatalog", "refreshTaskCatalog", "createCurrentTask",
       "sendMessage", "providerTitle", "archiveBlockedReason", "archiveCurrentThread",
       "sendArchiveMessage", "dismissCallbackMenu",
     ]) requiredFunction(dependencies[name], name);
@@ -101,11 +101,7 @@ export class TelegramTaskCallbackService {
     }
     if (route.kind === "thread-new") {
       try {
-        await d.dispatchApplicationCommand(
-          "task.create",
-          { provider: d.activeProvider() },
-          d.callbackContext(callback),
-        );
+        await d.createCurrentTask(d.callbackContext(callback));
         await this.#answer(callback, "Новая задача создана");
         await this.#closeMenu(callback);
         await d.sendMessage(`Создана новая задача ${d.providerTitle()} в текущем проекте.`);

@@ -87,6 +87,7 @@ export class TelegramDeliveryService {
     if (!run?.threadId || !Number.isSafeInteger(run.chatId)) return null;
     return {
       chatId: run.chatId,
+      streamId: run.streamId ?? null,
       provider: run.provider,
       threadId: run.threadId,
       projectRoot: run.projectRoot,
@@ -389,11 +390,17 @@ export class TelegramDeliveryService {
     targetChatId,
     showLastMessage = true,
     alreadySelected = false,
+    selectedTask = null,
+    taskTitle = "",
+    projectName = "",
+    settings = null,
   } = {}) {
+    const selected = selectedTask ?? this.selectedTask();
+    const selectedTitle = String(taskTitle ?? "").trim() || this.activeTaskTitle();
     const task = {
-      ...this.selectedTask(),
+      ...selected,
       chatId: targetChatId,
-      taskTitle: this.activeTaskTitle(),
+      taskTitle: selectedTitle,
     };
     const extra = { parse_mode: "HTML" };
     if (showLastMessage && task.threadId) extra.reply_markup = this.showLastMessageReplyMarkup(task);
@@ -401,10 +408,10 @@ export class TelegramDeliveryService {
       ? this.formatTaskAlreadySelectedMessage
       : this.formatTaskSwitchMessage;
     const message = await this.sendMessageTo(targetChatId, formatMessage({
-      task: this.activeTaskTitle(),
-      project: this.activeProjectName(),
+      task: selectedTitle,
+      project: String(projectName ?? "").trim() || this.activeProjectName(),
       showProject: this.showProject(),
-      ...this.taskSwitchSettings(),
+      ...(settings ?? this.taskSwitchSettings()),
     }), extra);
     await this.bindRunMessage(task, message).catch((error) => {
       this.logger.error("Cannot bind task-switch message:", error.message);

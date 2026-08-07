@@ -16,13 +16,13 @@ export class TelegramCommandService {
   constructor(dependencies = {}) {
     for (const name of [
       "sendMessage", "providerTitle", "sendAgentPicker", "sendModelPicker",
-      "sendReasoningPicker", "sendModePicker", "sendProjectPicker", "dispatchCommand",
+      "sendReasoningPicker", "sendModePicker", "sendProjectPicker", "dispatchCommand", "createCurrentTask",
       "messageContext", "activeProvider", "statusSnapshot", "scheduleInteractiveJob",
       "sendStatus", "approvalModeText", "approvalModeKeyboard", "restart", "sendTaskPicker",
       "resumeThread", "renameCurrentTask", "archiveCurrentTask", "sendArchiveMessage",
       "selectedTask", "runForTask", "refreshTaskDiff", "storedTaskDiff", "taskKey",
       "sendLongMessage", "sendRunMessage", "bindIncomingMessage", "startTurn", "prompt",
-      "commandTaskTarget",
+      "commandTaskTarget", "selectedTurnTarget",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
   }
@@ -55,11 +55,7 @@ export class TelegramCommandService {
     } else if (text === "/projects" || text === "/folders" || text === "/folder") {
       await d.sendProjectPicker();
     } else if (text === "/new") {
-      await d.dispatchCommand(
-        "task.create",
-        { provider: d.activeProvider() },
-        d.messageContext(message),
-      );
+      await d.createCurrentTask(d.messageContext(message));
       await d.sendMessage(`Создан новый контекст ${d.providerTitle()}.`);
     } else if (text === "/status") {
       const snapshot = d.statusSnapshot(message.chat.id);
@@ -119,8 +115,9 @@ export class TelegramCommandService {
     } else if (text.startsWith("/")) {
       await d.sendMessage("Неизвестная команда. Используйте /help.");
     } else {
-      await d.bindIncomingMessage(message, text);
-      await d.startTurn(d.prompt(message, text));
+      const target = d.selectedTurnTarget(message.chat.id);
+      await d.bindIncomingMessage(message, text, target);
+      await d.startTurn(d.prompt(message, text), [], { target });
     }
   }
 }

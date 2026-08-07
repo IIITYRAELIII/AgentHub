@@ -20,6 +20,8 @@ function service(events) {
     runForTask: () => null,
     describeAttachments: () => [],
     dispatchApplicationCommand: noop,
+    createCurrentTask: noop,
+    selectedTurnTarget: (chatId) => ({ chatId, provider: "codex", threadId: "new-task" }),
     activeThreadTitle: () => "Task",
     selectedTask: () => ({}),
     speechText: () => null,

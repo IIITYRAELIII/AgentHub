@@ -52,6 +52,7 @@ export class ManagedRunLifecycleService {
         ?? (targetThreadId === current.threadId ? preferences.reasoningEffort : preferences.defaultReasoningEffort)
       : preferences.reasoningEffort);
     const run = createManagedTaskRun({
+      streamId: target?.streamId ?? current.streamId ?? null,
       provider,
       chatId: target?.chatId ?? current.chatId,
       projectRoot,

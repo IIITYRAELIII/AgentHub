@@ -2,6 +2,7 @@ import { createDesktopReadSystemWiring } from "./desktop-read-system-wiring-comp
 import { createDesktopCommandWiring } from "./desktop-command-wiring-composition.mjs";
 import { createDesktopRunRouterWiring } from "./desktop-run-router-wiring-composition.mjs";
 import { WorkspaceCatalogService } from "../application/workspace-catalog-service.mjs";
+import { ClientTaskSelectionService } from "../application/client-task-selection-service.mjs";
 
 export function createDesktopShellComposition({
   config,
@@ -218,6 +219,31 @@ export function createDesktopShellComposition({
     return desktopReadSystem.desktopSnapshot({ refresh: true });
   };
 
+  const telegramSelection = new ClientTaskSelectionService({
+    sessionState: hostState,
+    fallbackSelection: selectedTask,
+    fallbackTitle: selectedTaskTitle,
+    findProject,
+    catalogEntries: getTaskCatalog,
+    catalogEntryIsSelected,
+    preferences: agentPreferences,
+    samePath,
+    save: saveState,
+  });
+  const telegramSelectedTask = (...args) => telegramSelection.selectedTask(...args);
+  const telegramTaskTitle = (...args) => telegramSelection.title(...args);
+  const telegramSelectedTurnTarget = (...args) => telegramSelection.turnTarget(...args);
+  const telegramCurrentUiContextToken = (...args) => telegramSelection.currentUiContextToken(...args);
+  const telegramUiCallback = (...args) => telegramSelection.uiCallback(...args);
+  const selectTelegramTaskFromBinding = (...args) => telegramSelection.select(...args);
+  const clearTelegramTaskSelection = (...args) => telegramSelection.clear(...args);
+  const telegramSelectionNotificationOptions = (options = {}) => ({
+    ...options,
+    selectedTask: telegramSelectedTask(options.targetChatId),
+    taskTitle: telegramTaskTitle(options.targetChatId),
+    projectName: findProject(telegramSelectedTask(options.targetChatId).projectRoot)?.name ?? "",
+  });
+
   const desktopCommands = createDesktopCommandWiring({
     models: {
       reasoningEfforts: models.reasoningEfforts,
@@ -240,6 +266,7 @@ export function createDesktopShellComposition({
       setLatestDiff: (value) => hostState.setLatestDiff(value),
       isCodex,
       selectedTask,
+      telegramSelectedTask,
     },
     services: {
       catalogEntries: getTaskCatalog,
@@ -326,13 +353,23 @@ export function createDesktopShellComposition({
       approvalController,
       preferencesSnapshot: () => agentPreferences.snapshot(),
       selectedRun,
-      sendTaskSwitchNotification,
-      sendTaskAlreadySelectedNotification,
+      sendTaskSwitchNotification: (options) => sendTaskSwitchNotification(
+        telegramSelectionNotificationOptions(options),
+      ),
+      sendTaskAlreadySelectedNotification: (options) => sendTaskAlreadySelectedNotification(
+        telegramSelectionNotificationOptions(options),
+      ),
       formatArchiveMessage,
       sendMessage: sendMessageTo,
       showLastMessageReplyMarkup,
       bindRunMessage,
       telegram,
+      telegramTaskTitle,
+      telegramSelectedTurnTarget,
+      telegramCurrentUiContextToken,
+      telegramUiCallback,
+      selectTelegramTaskFromBinding,
+      clearTelegramTaskSelection,
     },
   });
 
@@ -343,6 +380,7 @@ export function createDesktopShellComposition({
     state: {
       chatId: () => hostState.chatId,
       selectedTask,
+      telegramSelectedTask,
       activeTaskTitle: selectedTaskTitle,
     },
     services: {

@@ -14,8 +14,8 @@ export class TelegramInputCallbackService {
       "telegram", "sendMessageTo", "updateDeferredDesktopReceipt", "cleanupDeferredFiles",
       "saveState", "updateDeferredMessage", "scheduleNextForTask", "selectTaskFromBinding",
       "callbackContext", "showTaskMessage", "scheduleQueuedInput", "startTurn", "runForTask",
-      "describeAttachments", "dispatchApplicationCommand", "activeThreadTitle", "selectedTask",
-      "speechText", "sendTaskSwitchNotification",
+      "describeAttachments", "createCurrentTask", "activeThreadTitle", "selectedTask",
+      "selectedTurnTarget", "speechText", "sendTaskSwitchNotification",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
   }
@@ -135,11 +135,12 @@ export class TelegramInputCallbackService {
         return true;
       }
       await d.selectTaskFromBinding(binding, d.callbackContext(callback));
-      await d.dispatchApplicationCommand("task.create", { provider: binding.provider }, d.callbackContext(callback));
+      await d.createCurrentTask(d.callbackContext(callback));
       const newTaskTitle = d.activeThreadTitle();
       const outcome = await d.startTurn(item.input, item.temporaryFiles ?? [], {
         forceSpeechButton: item.forceSpeechButton === true,
         persistentFiles: item.persistentFiles === true,
+        target: d.selectedTurnTarget(item.chatId),
       });
       if (outcome?.deferred) throw new Error("новая задача неожиданно оказалась занята");
       const startedRun = d.runForTask(d.selectedTask());

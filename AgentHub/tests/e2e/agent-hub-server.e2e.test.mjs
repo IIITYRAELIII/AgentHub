@@ -245,7 +245,13 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   mark = telegram.calls.length;
   telegram.pushCallback(selectFirst.callback_data, currentPickerCall.result);
   const switched = await telegram.waitForText("Текущая задача изменена", { after: mark });
-  assert.equal((await readJson(statePath)).threadIds.codex, firstThreadId);
+  const switchedState = await readJson(statePath);
+  assert.equal(switchedState.threadIds.codex, secondThreadId,
+    "Telegram selection must not replace the shared Desktop fallback");
+  assert.equal(
+    switchedState.clientTaskSelections.find(([clientId]) => clientId === `telegram:${CHAT_ID}`)?.[1]?.threadId,
+    firstThreadId,
+  );
   assert.equal(
     switched.body.reply_markup.inline_keyboard[0][0].callback_data,
     `task-view:s:c:${firstThreadId}`,
@@ -298,7 +304,12 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   mark = telegram.calls.length;
   telegram.pushMessage("/rename E2E основная");
   await telegram.waitForText("Название закреплено: «E2E основная»", { after: mark });
-  assert.equal((await readJson(statePath)).activeThreadTitle, "E2E основная");
+  const renamedState = await readJson(statePath);
+  assert.equal(renamedState.activeThreadTitle.startsWith("Telegram ·"), true);
+  assert.equal(
+    renamedState.clientTaskSelections.find(([clientId]) => clientId === `telegram:${CHAT_ID}`)?.[1]?.taskTitle,
+    "E2E основная",
+  );
 
   // Forwarded conversations stay in one durable draft until the user submits
   // the complete batch, including their own comments.
@@ -698,10 +709,10 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.equal(heldRun.observer, false, "Agent Hub run must persist as managed");
   assert.equal(heldRun.executionOwner, "hub", "Agent Hub run owner must survive progress polling");
   assert.equal(heldRun.appServer, "Agent Hub Server");
-  assert.equal(
-    Number((await readJson(codexStatePath)).requestCounts?.["thread/read"] ?? 0),
-    readsBeforeManagedFallback,
-    "a managed Agent Hub turn must use streamed events instead of polling every 1.5 seconds",
+  assert.ok(
+    Number((await readJson(codexStatePath)).requestCounts?.["thread/read"] ?? 0)
+      <= readsBeforeManagedFallback + 1,
+    "a managed Agent Hub turn must use streamed events; one read of another selected client task is allowed",
   );
 
   mark = telegram.calls.length;
@@ -769,19 +780,32 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const heldTaskButton = activeRows.flat().find((button) => button.callback_data === `task:c:${firstThreadId}`);
   telegram.pushCallback(heldTaskButton.callback_data, activePickerCall.result);
   const heldSwitch = await telegram.waitForText("Текущая задача изменена", { after: mark });
-  assert.equal((await readJson(statePath)).threadIds.codex, firstThreadId);
+  let scopedState = await readJson(statePath);
+  assert.equal(scopedState.threadIds.codex, parallelThreadId);
+  assert.equal(
+    scopedState.clientTaskSelections.find(([clientId]) => clientId === `telegram:${CHAT_ID}`)?.[1]?.threadId,
+    firstThreadId,
+  );
 
   mark = telegram.calls.length;
   telegram.pushCallback("show-last-message", heldSwitch.result);
   await telegram.waitForText("[hold] основной ход", { after: mark });
-  assert.equal((await readJson(statePath)).threadIds.codex, firstThreadId,
-    "show-last-message must select and display the first live task");
+  scopedState = await readJson(statePath);
+  assert.equal(
+    scopedState.clientTaskSelections.find(([clientId]) => clientId === `telegram:${CHAT_ID}`)?.[1]?.threadId,
+    firstThreadId,
+    "show-last-message must select and display the first live task",
+  );
 
   mark = telegram.calls.length;
   telegram.pushCallback("show-message", parallelProgress.result);
   await telegram.waitForText(parallelPrompt, { after: mark });
-  assert.equal((await readJson(statePath)).threadIds.codex, parallelThreadId,
-    "show-message must select and display the second live task");
+  scopedState = await readJson(statePath);
+  assert.equal(
+    scopedState.clientTaskSelections.find(([clientId]) => clientId === `telegram:${CHAT_ID}`)?.[1]?.threadId,
+    parallelThreadId,
+    "show-message must select and display the second live task",
+  );
   const runsAfterViewSwitch = (await readJson(statePath)).activeRuns;
   assert.equal(runsAfterViewSwitch.length, 2,
     "switching views must not stop either task"

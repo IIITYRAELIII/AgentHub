@@ -1,6 +1,9 @@
 export class TelegramTaskActionService {
   constructor({
     selectedTask,
+    selectedTurnTarget,
+    currentUiContextToken,
+    uiCallback,
     activeProvider,
     activeProjectRoot,
     activeTaskTitle,
@@ -8,6 +11,7 @@ export class TelegramTaskActionService {
     preferencesSnapshot,
     selectedRun,
     selectTaskFromBinding,
+    clearTaskSelection,
     sendTaskSwitchNotification,
     sendTaskAlreadySelectedNotification,
     dispatchCommand,
@@ -23,6 +27,9 @@ export class TelegramTaskActionService {
   }) {
     Object.assign(this, {
       selectedTask,
+      selectedTurnTarget,
+      currentUiContextToken,
+      uiCallback,
       activeProvider,
       activeProjectRoot,
       activeTaskTitle,
@@ -30,6 +37,7 @@ export class TelegramTaskActionService {
       preferencesSnapshot,
       selectedRun,
       selectTaskFromBinding,
+      clearTaskSelection,
       sendTaskSwitchNotification,
       sendTaskAlreadySelectedNotification,
       dispatchCommand,
@@ -58,6 +66,19 @@ export class TelegramTaskActionService {
     return true;
   }
 
+  async create(context = {}) {
+    const result = await this.dispatchCommand(
+      "task.create",
+      { provider: this.activeProvider() },
+      context,
+    );
+    if (!result?.createdTask || (!result.createdTask.threadId && result.createdTask.provider !== "claude")) {
+      throw new Error("новая задача не содержит Thread ID");
+    }
+    await this.selectTaskFromBinding(result.createdTask, context);
+    return result;
+  }
+
   async rename(title, context = {}) {
     if (!this.currentThreadId()) throw new Error("текущая задача не выбрана");
     const result = await this.dispatchCommand(
@@ -66,6 +87,10 @@ export class TelegramTaskActionService {
       context,
       { target: this.commandTaskTarget(this.selectedTask()) },
     );
+    await this.selectTaskFromBinding({
+      ...this.selectedTask(),
+      taskTitle: result.renamedTitle,
+    }, context);
     return result.renamedTitle;
   }
 
@@ -85,6 +110,16 @@ export class TelegramTaskActionService {
       context,
       { target: this.commandTaskTarget(this.selectedTask()) },
     );
+    if (result.nextThread?.id) {
+      await this.selectTaskFromBinding({
+        provider: "codex",
+        projectRoot: this.activeProjectRoot(),
+        threadId: result.nextThread.id,
+        taskTitle: this.threadTitle(result.nextThread),
+      }, context);
+    } else {
+      await this.clearTaskSelection(context);
+    }
     return {
       archived: true,
       archivedThread: result.archivedThread,

@@ -10,7 +10,7 @@ function harness() {
   const service = new ManagedRunLifecycleService({
     taskRuns,
     currentTarget: () => ({
-      provider: "codex", projectRoot: "D:/Work", threadId: "thread-1", taskTitle: "Task", chatId: 7,
+      provider: "codex", projectRoot: "D:/Work", streamId: "stream-1", threadId: "thread-1", taskTitle: "Task", chatId: 7,
     }),
     findProject: () => ({ name: "Work" }),
     codexSettings: () => ({}),
@@ -41,6 +41,7 @@ test("managed run lifecycle creates and persists one owned run", async () => {
 
   assert.equal(taskRuns.forTask(run), run);
   assert.equal(run.promptPreview, "hello");
+  assert.equal(run.streamId, "stream-1");
   assert.equal(run.model, "GPT");
   assert.deepEqual(events, ["catalog", "diff", "clear-diff", "sync-start", "save", "progress"]);
 });

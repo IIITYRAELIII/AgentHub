@@ -220,6 +220,7 @@ export async function restoreHubRuntimeSnapshot(saved, context) {
     chatId,
     updateOffset,
     restartRequest,
+    clientTaskSelections: Array.isArray(saved.clientTaskSelections) ? saved.clientTaskSelections : [],
     codexHookReceipts,
     restoredTurnEndSnapshot,
   };
@@ -229,6 +230,9 @@ export function createHubRuntimeSnapshot(context) {
   const selection = context.selectionStore.serialize();
   return {
     chatId: context.chatId,
+    clientTaskSelections: typeof context.getClientTaskSelections === "function"
+      ? context.getClientTaskSelections()
+      : [],
     activeProjectRoot: selection.activeProjectRoot,
     streamId: selection.streamId,
     activeThreadTitle: selection.activeThreadTitle,

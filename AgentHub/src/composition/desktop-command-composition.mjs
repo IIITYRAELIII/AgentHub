@@ -74,7 +74,7 @@ export function createDesktopCommandComposition({
 
   const telegramTaskActions = new TelegramTaskActionService({
     ...telegramActions,
-    selectTaskFromBinding,
+    selectTaskFromBinding: telegramActions.selectTaskFromBinding ?? selectTaskFromBinding,
     dispatchCommand: dispatchApplicationCommand,
     commandTaskTarget,
   });

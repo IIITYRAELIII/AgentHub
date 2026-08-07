@@ -15,6 +15,7 @@ function fixture(overrides = {}) {
     preferencesSnapshot: () => ({ codexModel: "gpt" }),
     selectedRun: () => null,
     selectTaskFromBinding: async () => ({ selectionChanged: true }),
+    clearTaskSelection: async () => events.push("clear"),
     sendTaskSwitchNotification: async () => events.push("switch"),
     sendTaskAlreadySelectedNotification: async () => events.push("current"),
     dispatchCommand: async (type) => type === "task.rename"
@@ -51,6 +52,31 @@ test("archive policy blocks a live task and addresses an idle task explicitly", 
   assert.equal(result.archived, true);
   await ready.value.sendArchive(result, 7);
   assert.ok(ready.events.includes("bind"));
+});
+
+test("create, rename and archive keep the Telegram client selection current", async () => {
+  const selected = [];
+  const setup = fixture({
+    selectTaskFromBinding: async (binding, context) => selected.push([binding, context]),
+    dispatchCommand: async (type) => {
+      if (type === "task.create") return {
+        createdTask: {
+          provider: "codex", projectRoot: "D:/repo", threadId: "thread-2", taskTitle: "New",
+        },
+      };
+      if (type === "task.rename") return { renamedTitle: "Renamed" };
+      return { archivedThread: { title: "Old" }, nextThread: { id: "thread-3", title: "Next" } };
+    },
+  });
+  const context = { clientId: "telegram:7" };
+  await setup.value.create(context);
+  await setup.value.rename("Renamed", context);
+  await setup.value.archive(context);
+  assert.deepEqual(selected.map(([binding]) => [binding.threadId, binding.taskTitle]), [
+    ["thread-2", "New"],
+    ["thread-1", "Renamed"],
+    ["thread-3", "Next"],
+  ]);
 });
 
 test("status snapshot and callback dismissal use current state only", async () => {

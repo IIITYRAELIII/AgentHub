@@ -30,6 +30,22 @@ test("callback controller sends a typed route to domain dispatch", async () => {
   assert.equal(routed.page, 2);
 });
 
+test("callback controller resolves context against the callback route", async () => {
+  let callbackData;
+  const controller = new TelegramCallbackController({
+    currentContextToken: (data) => {
+      callbackData = data;
+      return "aaaaaaaaaaaa";
+    },
+    telegram: async () => {},
+    dispatch: async () => {},
+  });
+
+  await controller.handle({ id: "1", data: contextualCallback("thread:new", "aaaaaaaaaaaa") });
+
+  assert.equal(callbackData, contextualCallback("thread:new", "aaaaaaaaaaaa"));
+});
+
 test("callback controller owns ordered handlers, approvals and stale fallback", async () => {
   const calls = [];
   const controller = new TelegramCallbackController({

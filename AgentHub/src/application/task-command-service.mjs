@@ -92,11 +92,11 @@ export class TaskCommandService {
     await this.archiveCodexTask(target.threadId);
     this.invalidateCatalog();
     this.deleteCodexSettings(target.threadId);
-    let nextThread = null;
+    const [nextThread = null] = (await this.listCodexTasks())
+      .filter((item) => item.id !== target.threadId);
     if (this.catalogEntryIsSelected(target, this.selection.current())) {
       this.selection.clearCodex();
       this.diffs.setLatest("");
-      [nextThread] = (await this.listCodexTasks()).filter((item) => item.id !== target.threadId);
       if (nextThread) {
         this.selection.selectCodex(nextThread.id, this.codexTaskTitle(nextThread));
         this.restoreCodexSettings(nextThread.id);
@@ -149,7 +149,7 @@ export class TaskCommandService {
     return result;
   }
 
-  async create(params = {}) {
+  async create(params = {}, context = {}) {
     const provider = String(params.provider ?? this.activeProvider()).trim();
     if (!["codex", "claude"].includes(provider)) throw new Error("Неизвестный агент");
     let workspace = null;
@@ -194,7 +194,15 @@ export class TaskCommandService {
     });
     this.invalidateCatalog();
     await this.saveState();
-    return this.snapshot({ refresh: true });
+    return {
+      ...await this.snapshot({ refresh: true }),
+      createdTask: {
+        ...created,
+        streamId: stream.id,
+        taskTitle: created?.title ?? workspace.name,
+      },
+      clientId: String(context?.clientId ?? "").trim() || null,
+    };
   }
 
   async rotate(params = {}) {

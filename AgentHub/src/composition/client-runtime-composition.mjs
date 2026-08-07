@@ -252,6 +252,7 @@ export async function createClientRuntimeComposition({
       },
       snapshotContext: {
         getChatId: () => hostState.chatId,
+        getClientTaskSelections: () => hostState.clientTaskSelectionsSnapshot(),
         getUpdateOffset: () => hostState.updateOffset,
         getRestartRequest: () => hostState.restartRequest,
         getCodexHookReceipts: () => codexHookReceipts,

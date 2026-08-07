@@ -24,6 +24,7 @@ function callbacks(events, entries = []) {
     taskCatalog: () => entries,
     refreshTaskCatalog: async () => entries,
     dispatchApplicationCommand: async () => ({}),
+    createCurrentTask: async () => ({}),
     activeProvider: () => "codex",
     sendMessage: noop,
     providerTitle: () => "Codex",

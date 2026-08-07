@@ -87,7 +87,10 @@ test("task command service does not launch a parallel cancel path without a run"
 
 test("task command service creates a Workspace and binds the provider Thread to its first Stream", async () => {
   const { service, events } = fixture();
-  await service.create({ provider: "codex", workspaceName: "Architecture" });
+  const result = await service.create(
+    { provider: "codex", workspaceName: "Architecture" },
+    { clientId: "telegram:7" },
+  );
   const binding = events.find(([name]) => name === "bind")[1];
   assert.equal(binding.streamId, "stream-new");
   assert.equal(binding.threadId, "thread-new");
@@ -95,6 +98,9 @@ test("task command service creates a Workspace and binds the provider Thread to 
     "thread-new",
     { provider: "codex", streamId: "stream-new", title: "Architecture" },
   ]);
+  assert.equal(result.createdTask.threadId, "thread-new");
+  assert.equal(result.createdTask.streamId, "stream-new");
+  assert.equal(result.clientId, "telegram:7");
 });
 
 test("task command service continues an existing Stream in a new provider Thread", async () => {

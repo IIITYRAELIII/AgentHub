@@ -34,7 +34,7 @@ export class TelegramCallbackController {
   }
 
   async handle(callback) {
-    const route = this.routeCallback(callback.data, this.currentContextToken());
+    const route = this.routeCallback(callback.data, this.currentContextToken(callback.data));
     if (route.kind === "stale") {
       await this.telegram("answerCallbackQuery", {
         callback_query_id: callback.id,

@@ -48,6 +48,33 @@ test("routes image before text and binds it to selected task", async () => {
   assert.deepEqual(events.slice(-2), [["bind", "Смотри"], ["media", "image"]]);
 });
 
+test("ordinary text uses the Telegram-selected target for binding and turn start", async () => {
+  const target = {
+    chatId: 9,
+    provider: "codex",
+    projectRoot: "D:/Work",
+    streamId: "stream-1",
+    threadId: "thread-1",
+  };
+  const calls = [];
+  const { controller } = fixture({
+    selectedTurnTarget: () => target,
+    bindIncomingMessage: async (_message, text, receivedTarget) => {
+      calls.push(["bind", text, receivedTarget]);
+    },
+    handleText: async (_message, text, receivedTarget) => {
+      calls.push(["text", text, receivedTarget]);
+    },
+  });
+
+  await controller.handle({ ...baseMessage, text: "Проверка маршрута" });
+
+  assert.deepEqual(calls, [
+    ["bind", "Проверка маршрута", target],
+    ["text", "Проверка маршрута", target],
+  ]);
+});
+
 test("forwarded image is collected before the ordinary media queue", async () => {
   const { controller, events } = fixture({
     handleBundleMedia: async (_message, options) => {

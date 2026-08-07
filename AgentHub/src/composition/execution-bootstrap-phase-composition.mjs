@@ -157,19 +157,31 @@ export function createExecutionBootstrapPhase({
   });
 
   const dismissCallbackMenu = (...args) => interaction.telegramTaskActions.dismissMenu(...args);
+  const telegramTasks = interaction.telegramTaskActions;
+  const telegramActiveProject = () => (
+    api.findProject(telegramTasks.activeProjectRoot()) ?? api.activeProject()
+  );
+  const telegramProviderTitle = () => (telegramTasks.isCodex() ? "Codex" : "Claude Code");
+  const telegramSelectionNotification = (alreadySelected, options = {}) => api.sendTaskSelectionNotification({
+    ...options,
+    alreadySelected,
+    selectedTask: telegramTasks.selectedTask(),
+    taskTitle: telegramTasks.activeTaskTitle(),
+    projectName: telegramActiveProject().name,
+  });
   const telegramRuntime = createTelegramRuntimeComposition({
     shell: {
       taskPicker: {
         refreshCatalog: api.refreshTaskCatalog,
-        selectedTask: api.selectedTask,
+        selectedTask: telegramTasks.selectedTask,
         pageSize: settings.taskPickerPageSize,
         showProject: () => config.showProjectButton && config.showTaskProject,
-        providerTitle: selection.providerTitle,
-        projectName: () => api.activeProject().name,
-        newTaskCallback: () => api.uiCallback("thread:new"),
+        providerTitle: telegramProviderTitle,
+        projectName: () => telegramActiveProject().name,
+        newTaskCallback: () => telegramTasks.uiCallback("thread:new"),
         archiveCallback: () => (
-          selection.isCodex() && selection.selectedThreadId()
-            ? api.uiCallback("thread:archive")
+          telegramTasks.isCodex() && telegramTasks.currentThreadId()
+            ? telegramTasks.uiCallback("thread:archive")
             : null
         ),
         editMessage: (message, view) => clients.telegram("editMessageText", {
@@ -183,8 +195,8 @@ export function createExecutionBootstrapPhase({
       settingsMenu: clients.telegramSettingsMenu,
       taskActions: interaction.telegramTaskActions,
       statusController: clients.telegramStatusController,
-      activeProjectRoot: selection.selectedProjectRoot,
-      activeProvider: selection.selectedProvider,
+      activeProjectRoot: telegramTasks.activeProjectRoot,
+      activeProvider: telegramTasks.activeProvider,
       agentPreferences: selection.agentPreferences,
       codexModelLabel: settings.codexModelLabel,
       currentChatId: () => selection.hostState.chatId,
@@ -204,31 +216,32 @@ export function createExecutionBootstrapPhase({
       telegramCallbackCommandContext: interaction.telegramCallbackCommandContext,
       telegramMessageCommandContext: interaction.telegramMessageCommandContext,
       commandTaskTarget,
-      activeProject: api.activeProject,
-      activeProvider: selection.selectedProvider,
+      activeProject: telegramActiveProject,
+      activeProvider: telegramTasks.activeProvider,
       autoApprove: () => selection.hostState.autoApprove,
       agentPreferences: selection.agentPreferences,
       codexModelLabel: settings.codexModelLabel,
-      providerTitle: selection.providerTitle,
+      providerTitle: telegramProviderTitle,
       resolveTaskViewBinding: api.resolveTaskViewBinding,
       taskRuns: provider.taskRuns,
       refreshTaskDiff: api.refreshTaskDiff,
       taskDiffs: provider.taskDiffs,
       taskRunKey,
-      selectTaskFromBinding: interaction.selectTaskFromBinding,
+      selectTaskFromBinding: telegramTasks.selectTaskFromBinding,
       showLastTaskMessage: api.showLastTaskMessage,
       showTaskMessage: api.showTaskMessage,
       sendMessage: clients.sendMessage,
       sendMessageTo: clients.sendMessageTo,
       sendLongMessage: clients.sendLongMessage,
-      sendTaskSwitchNotification: api.sendTaskSwitchNotification,
-      sendTaskAlreadySelectedNotification: api.sendTaskAlreadySelectedNotification,
+      sendTaskSwitchNotification: (options) => telegramSelectionNotification(false, options),
+      sendTaskAlreadySelectedNotification: (options) => telegramSelectionNotification(true, options),
       sendThreadPicker: api.sendThreadPicker,
       refreshTaskCatalog: api.refreshTaskCatalog,
       taskCatalog: () => provider.taskCatalog,
-      archiveBlockedReason: api.archiveBlockedReason,
-      archiveCurrentThread: api.archiveCurrentThread,
-      sendArchiveMessage: api.sendArchiveMessage,
+      archiveBlockedReason: () => telegramTasks.archiveBlockedReason(),
+      archiveCurrentThread: (context) => telegramTasks.archive(context),
+      createCurrentTask: (context) => telegramTasks.create(context),
+      sendArchiveMessage: (...args) => telegramTasks.sendArchive(...args),
       dismissCallbackMenu,
       updateDeferredDesktopReceipt: api.updateDeferredDesktopReceipt,
       cleanupDeferredFiles: api.cleanupDeferredFiles,
@@ -238,14 +251,19 @@ export function createExecutionBootstrapPhase({
       scheduleQueuedInput: api.scheduleQueuedInput,
       startTurn: api.startTurn,
       desktopAttachmentDescriptors: clients.desktopAttachmentDescriptors,
-      activeThreadTitle: selection.selectedTaskTitle,
-      selectedTask: api.selectedTask,
+      activeThreadTitle: telegramTasks.activeTaskTitle,
+      selectedTask: telegramTasks.selectedTask,
       mediaController: clients.mediaController,
       pendingInputs: provider.pendingInputs,
       queuedInputs: provider.queuedInputs,
       backgroundJobs: provider.backgroundJobs,
       maxSpeechJobs: settings.maxBackgroundSpeechJobs,
-      currentUiContextToken: api.currentUiContextToken,
+      currentUiContextToken: (callbackData = "") => (
+        /^(?:approval-mode:|p:\d+|engine:|codex-model:|codex-reasoning:|codex-mode:|claude-reasoning:|claude-mode:|model:)/
+          .test(String(callbackData))
+          ? api.currentUiContextToken()
+          : telegramTasks.currentUiContextToken()
+      ),
       interactiveJobs: provider.interactiveJobs,
       isStopping: () => selection.hostState.stopping,
       sendAgentPicker: api.sendAgentPicker,
@@ -253,22 +271,27 @@ export function createExecutionBootstrapPhase({
       sendReasoningPicker: api.sendReasoningPicker,
       sendCollaborationModePicker: api.sendCollaborationModePicker,
       sendProjectPicker: api.sendProjectPicker,
-      currentStatusSnapshot: api.currentStatusSnapshot,
+      currentStatusSnapshot: (targetChatId) => telegramTasks.statusSnapshot(
+        targetChatId ?? selection.hostState.chatId,
+      ),
       formatApprovalMode: api.formatApprovalMode,
       approvalModeKeyboard: api.approvalModeKeyboard,
       restartBot: api.restartBot,
-      resumeThread: api.resumeThread,
-      renameCurrentTask: api.renameCurrentTask,
+      resumeThread: (...args) => telegramTasks.resume(...args),
+      renameCurrentTask: (...args) => telegramTasks.rename(...args),
       sendRunMessage: api.sendRunMessage,
       bindIncomingTaskMessage: api.bindIncomingTaskMessage,
       telegramPrompt,
       forwardBundles: provider.forwardBundles,
-      selectedTurnTarget: api.selectedTurnTarget,
+      selectedTurnTarget: telegramTasks.selectedTurnTarget,
       setChatId: (value) => selection.hostState.setChatId(value),
       findReplyBinding: (targetChatId, messageId) => (
         findMessageBinding(config.dataDir, targetChatId, messageId)
       ),
-      activateMessageBinding: interaction.activateBinding,
+      activateMessageBinding: (binding) => telegramTasks.selectTaskFromBinding(binding, {
+        source: "telegram",
+        clientId: `telegram:${binding?.chatId ?? selection.hostState.chatId ?? "unknown"}`,
+      }),
       setUpdateOffset: (value) => selection.hostState.setUpdateOffset(value),
       updateOffset: () => selection.hostState.updateOffset,
       setProcessingUpdateId: (value) => selection.hostState.setProcessingUpdateId(value),
