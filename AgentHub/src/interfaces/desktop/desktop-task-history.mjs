@@ -101,10 +101,11 @@ export function createDesktopTaskHistoryFactory({
     return result;
   }
 
-  function scheduleRefresh(binding) {
-    if (typeof historyReader.refresh !== "function") return;
+  function scheduleRefresh(binding, { force = false } = {}) {
+    if (typeof historyReader.refresh !== "function") return null;
     const key = `${binding.provider}:${binding.threadId}`;
-    if (refreshes.has(key) || Date.now() - (refreshedAt.get(key) ?? 0) < refreshIntervalMs) return;
+    if (refreshes.has(key)) return refreshes.get(key);
+    if (!force && Date.now() - (refreshedAt.get(key) ?? 0) < refreshIntervalMs) return null;
     refreshedAt.set(key, Date.now());
     const operation = Promise.resolve()
       .then(async () => {
@@ -118,6 +119,7 @@ export function createDesktopTaskHistoryFactory({
       ))
       .finally(() => refreshes.delete(key));
     refreshes.set(key, operation);
+    return operation;
   }
 
   function scheduleCatalogRefresh() {
@@ -171,6 +173,9 @@ export function createDesktopTaskHistoryFactory({
     let history = [];
     for (const threadBinding of threadBindings) {
       const key = `${threadBinding.provider}:${threadBinding.threadId}`;
+      if (params.refreshSource === true) {
+        await scheduleRefresh(threadBinding, { force: true });
+      }
       const cached = await historyReader.read(threadBinding);
       let threadHistory = hydratedHistories.get(key);
       if (threadHistory) {

@@ -1057,6 +1057,13 @@ function applyOpened(result, {
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   renderTaskMessages(id, { preserveScroll });
+  if (selectTask && !result.focusedTurn) {
+    void settleOpenedTaskHistory(id, {
+      ...(history.streamId ? { streamId: history.streamId } : {}),
+      provider: history.provider,
+      threadId: history.threadId,
+    });
+  }
   const task = (result.snapshot ?? lastSnapshot)?.tasks?.find(
     (item) => item.provider === history.provider && item.threadId === history.threadId,
   );
@@ -1137,6 +1144,28 @@ agentHub.on("task:select", ({ id }) => {
   });
   return selectionTail;
 });
+
+async function settleOpenedTaskHistory(id, identity) {
+  try {
+    const history = await control("task-history", {
+      ...identity,
+      limit: 20,
+      includeActive: false,
+      refreshSource: true,
+      knownVersion: historyPageByTask.get(id)?.version ?? "",
+    });
+    if (selectedTaskId !== id || history?.notModified === true) return;
+    applyOpened({ history }, {
+      preserveScroll: true,
+      skipSnapshot: true,
+      selectTask: false,
+    });
+  } catch (error) {
+    if (isConnectionFailure(error)) recordTransientConnectionFailure();
+    // Быстрое открытие уже показало SQLite-кэш; страховочный refresh повторит
+    // чтение позже, поэтому отдельное пользовательское уведомление не нужно.
+  }
+}
 
 agentHub.on("workspace:visible-streams", ({ taskIds }) => void (async () => {
   const ids = [...new Set((Array.isArray(taskIds) ? taskIds : [])
@@ -1862,6 +1891,7 @@ async function refresh({ reportError = false } = {}) {
         threadId: currentSelected.threadId,
         limit: 20,
         includeActive: false,
+        refreshSource: turnCompleted || answerChanged,
         knownVersion: historyPageByTask.get(
           currentSelectedId,
         )?.version ?? "",

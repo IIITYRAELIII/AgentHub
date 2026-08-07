@@ -462,6 +462,31 @@ test("desktop task history preserves pagination, field limits and response budge
   assert.deepEqual(calls.fit, { maxBytes: 64 * 1_024 });
 });
 
+test("desktop task history can await provider hydration for a completed image response", async () => {
+  const { desktopTaskHistory, state, calls } = fixture({ run: null });
+  const providerHistory = structuredClone(state.history);
+  providerHistory[3].active = false;
+  providerHistory[3].completed = true;
+  providerHistory[3].status = "completed";
+  providerHistory[3].messages[1].attachmentSources = [{
+    type: "generated-path",
+    value: "C:/Users/test/.codex/generated_images/thread/generated.png",
+  }];
+  state.refresh = async () => ({ history: providerHistory });
+
+  const result = await desktopTaskHistory({
+    limit: 1,
+    includeActive: false,
+    refreshSource: true,
+  });
+
+  assert.equal(calls.refreshes, 1);
+  assert.deepEqual(result.items[0].messages[1].attachments, [{
+    id: "generated.png",
+    type: "image/png",
+  }]);
+});
+
 test("desktop task history returns the preceding page for a supplied cursor", async () => {
   const { desktopTaskHistory, state } = fixture({ run: null });
   state.history = Array.from({ length: 27 }, (_, index) => ({

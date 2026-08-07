@@ -1031,7 +1031,18 @@ test("completed chat keeps probing briefly for late generated images", () => {
   assert.match(client, /const HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS = 120_000/u);
   assert.match(client, /function scheduleHistoryAttachmentSettle\(taskIdValue\)/u);
   assert.match(refresh, /if \(answerChanged \|\| turnCompleted\) scheduleHistoryAttachmentSettle\(currentSelectedId\)/u);
+  assert.match(refresh, /refreshSource: turnCompleted \|\| answerChanged/u);
   assert.match(refresh, /refreshSettlingAttachments[\s\S]*control\("task-history"/u);
+});
+
+test("opening a task settles generated images without delaying the cached history", () => {
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  assert.match(client, /if \(selectTask && !result\.focusedTurn\)[\s\S]*void settleOpenedTaskHistory/u);
+  assert.match(
+    client,
+    /async function settleOpenedTaskHistory[\s\S]*control\("task-history", \{[\s\S]*refreshSource: true/u,
+  );
+  assert.match(client, /selectedTaskId !== id \|\| history\?\.notModified === true/u);
 });
 
 test("background history refresh cannot switch the task or reorder a completed turn", () => {
