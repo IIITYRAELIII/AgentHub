@@ -289,7 +289,7 @@ function reconcile(serverMessages, outgoingMessages) {
     const exact = identityKey(message);
     if (exact) exactOutgoing.set(exact, message);
     const turnRole = identityKey(message, { withoutItem: true });
-    if (!client && !exact && turnRole) {
+    if (turnRole) {
       const values = turnRoleOutgoing.get(turnRole) ?? [];
       values.push(message);
       turnRoleOutgoing.set(turnRole, values);
@@ -311,14 +311,21 @@ function reconcile(serverMessages, outgoingMessages) {
     const serverItemIdentity = identityKey(message);
     const client = clientOutgoing.get(serverClientIdentity);
     const exact = exactOutgoing.get(serverItemIdentity);
-    const fallbackValues = serverClientIdentity || serverItemIdentity
+    const rootMessage = isTurnRootUser(server, index);
+    const fallbackValues = client || exact
       ? []
-      : turnRoleOutgoing.get(identityKey(message, { withoutItem: true })) ?? [];
+      : (turnRoleOutgoing.get(identityKey(message, { withoutItem: true })) ?? [])
+        .filter((candidate) => !matchedIds.has(candidate.clientUserMessageId))
+        .filter((candidate) => (
+          rootMessage
+            ? candidate.turnUserSlot === "root"
+            : candidate.turnUserSlot !== "root"
+        ));
     // A new-turn optimistic message is bound to the exact turn before Codex
     // has finished materializing its user item. Some App Server revisions can
     // replace the supplied client id on that root item. The root position is
     // still unambiguous; steer messages never receive turnUserSlot="root".
-    const root = isTurnRootUser(server, index)
+    const root = rootMessage
       ? rootOutgoing.get(turnRootUserKey(message))
       : null;
     // A turn can contain several steering messages. A turn+role fallback is safe

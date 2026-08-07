@@ -5,6 +5,7 @@ import { displayUserPrompt } from "../../application/task-history.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
 
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
+const CODEX_PROMPTLESS_TURN_GRACE_MS = 15 * 1000;
 const CODEX_ROLLOUT_TAIL_BYTES = 64 * 1024 * 1024;
 const CODEX_ROLLOUT_LINE_BYTES = 4 * 1024 * 1024;
 const LEGACY_TURN_ID = "__legacy__";
@@ -446,6 +447,33 @@ function codexActivity(
   };
 }
 
+function withoutStalePromptlessTurns(activity, userMessages, latestMessages, nowMs) {
+  const messages = userMessages instanceof Map ? userMessages : new Map();
+  const agentMessages = latestMessages instanceof Map ? latestMessages : new Map();
+  const ignoredTurnIds = (activity.activeTurnIds ?? []).filter((turnId) => {
+    if ((messages.get(turnId) ?? []).length > 0) return false;
+    if (String(agentMessages.get(turnId) ?? "").trim()) return false;
+    const startedAtMs = Number(activity.startedAtMsByTurnId?.[turnId]);
+    const activityAtMs = Number(activity.activityAtMsByTurnId?.[turnId]);
+    return Number.isFinite(startedAtMs)
+      && Number.isFinite(nowMs)
+      && nowMs - startedAtMs >= CODEX_PROMPTLESS_TURN_GRACE_MS
+      && (!Number.isFinite(activityAtMs)
+        || nowMs - activityAtMs >= CODEX_PROMPTLESS_TURN_GRACE_MS);
+  });
+  if (!ignoredTurnIds.length) return { ...activity, internalTurnIds: [] };
+  const ignored = new Set(ignoredTurnIds);
+  const activeTurnIds = (activity.activeTurnIds ?? []).filter((turnId) => !ignored.has(turnId));
+  return {
+    ...activity,
+    running: activeTurnIds.length > 0,
+    activeTurnIds,
+    activeVscodeTurnIds: (activity.activeVscodeTurnIds ?? [])
+      .filter((turnId) => !ignored.has(turnId)),
+    internalTurnIds: ignoredTurnIds,
+  };
+}
+
 export function parseCodexRolloutActivity(text, options = {}) {
   const activeTurnIds = new Set();
   const lastSeenAtByTurnId = new Map();
@@ -509,6 +537,7 @@ export async function readCodexRolloutActivity(
       running: false,
       activeTurnIds: [],
       activeVscodeTurnIds: [],
+      internalTurnIds: [],
       activityAtMsByTurnId: {},
       startedAtMsByTurnId: {},
       lastActivityAtMs: null,
@@ -531,6 +560,7 @@ export async function readCodexRolloutActivity(
         running: false,
         activeTurnIds: [],
         activeVscodeTurnIds: [],
+        internalTurnIds: [],
         activityAtMsByTurnId: {},
         startedAtMsByTurnId: {},
         lastActivityAtMs: null,
@@ -552,6 +582,7 @@ export async function readCodexRolloutActivity(
       running: false,
       activeTurnIds: [],
       activeVscodeTurnIds: [],
+      internalTurnIds: [],
       activityAtMsByTurnId: {},
       startedAtMsByTurnId: {},
       lastActivityAtMs: info.mtimeMs,
@@ -567,8 +598,7 @@ export async function readCodexRolloutActivity(
   }
   const cached = codexActivityCache.get(normalized);
   if (cached?.size === info.size && cached?.mtimeMs === info.mtimeMs) {
-    return {
-      ...codexActivity(
+    const activity = codexActivity(
         new Set(cached.activeTurnIds),
         new Map(cached.lastSeenAtByTurnId),
         {
@@ -577,6 +607,13 @@ export async function readCodexRolloutActivity(
           vscodeTurnIds: new Set(cached.vscodeTurnIds ?? []),
           startedAtMsByTurnId: new Map(cached.startedAtMsByTurnId ?? []),
         },
+      );
+    return {
+      ...withoutStalePromptlessTurns(
+        activity,
+        new Map(cached.userMessages ?? []),
+        new Map(cached.latestMessages ?? []),
+        nowMs,
       ),
       lastActivityAtMs: info.mtimeMs,
       model: cached.model || null,
@@ -713,7 +750,12 @@ export async function readCodexRolloutActivity(
   });
   if (codexActivityCache.size > 200) codexActivityCache.delete(codexActivityCache.keys().next().value);
   return {
-    ...activity,
+    ...withoutStalePromptlessTurns(
+      activity,
+      metadata.userMessages,
+      metadata.latestMessages,
+      nowMs,
+    ),
     lastActivityAtMs: info.mtimeMs,
     model: metadata.model || null,
     reasoningEffort: metadata.reasoningEffort || null,
@@ -730,9 +772,15 @@ export async function readCodexRolloutRunning(rolloutPath, options = {}) {
   return (await readCodexRolloutActivity(rolloutPath, options)).running;
 }
 
-export function codexThreadRunning(thread, { rolloutRunning = false } = {}) {
+export function codexThreadRunning(
+  thread,
+  { rolloutRunning = false, ignoredTurnIds: ignoredIds = [] } = {},
+) {
+  const ignoredTurnIds = new Set(ignoredIds);
   return Boolean(rolloutRunning)
-    || (thread?.turns ?? []).some((turn) => turn?.status === "inProgress");
+    || (thread?.turns ?? []).some((turn) => (
+      turn?.status === "inProgress" && !ignoredTurnIds.has(String(turn?.id ?? ""))
+    ));
 }
 
 export function catalogEntriesWithoutLiveActivity(entries = []) {
@@ -839,6 +887,7 @@ export function codexCatalogEntry(thread, project, {
   model = null,
   lastActivityAtMs = null,
   startedAtMs = null,
+  ignoredTurnIds = [],
 } = {}) {
   const title = String(thread?.name ?? thread?.preview ?? "Без названия")
     .replace(/\s+/g, " ")
@@ -852,7 +901,7 @@ export function codexCatalogEntry(thread, project, {
     title: title || "Без названия",
     model,
     updatedAtMs: Number(thread.updatedAt ?? 0) * 1000,
-    running: codexThreadRunning(thread, { rolloutRunning }),
+    running: codexThreadRunning(thread, { rolloutRunning, ignoredTurnIds }),
     executionOwner,
     lastActivityAtMs,
     startedAt: startedAtMs !== null

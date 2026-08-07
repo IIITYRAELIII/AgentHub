@@ -55,6 +55,7 @@ export class CodexCatalogProjectionService {
           .filter(Number.isFinite);
         const entry = d.catalogEntry(thread, project, {
           rolloutRunning,
+          ignoredTurnIds: activity.internalTurnIds ?? [],
           executionOwner: rolloutRunning ? executionOwner : null,
           model: activity.model ? d.modelLabel(activity.model) : existingRun?.model ?? null,
           lastActivityAtMs: activity.lastActivityAtMs,

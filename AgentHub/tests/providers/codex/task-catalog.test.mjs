@@ -822,6 +822,56 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
   assert.equal(stale.running, false);
 });
 
+test("a stale promptless compaction turn is not exposed as a running task", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-promptless-turn-"));
+  const rolloutPath = path.join(directory, "rollout.jsonl");
+  const startedAt = "2026-08-07T16:35:26.304Z";
+  try {
+    await writeFile(rolloutPath, JSON.stringify({
+      timestamp: startedAt,
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "compaction-turn" },
+    }), "utf8");
+    const activity = await readCodexRolloutActivity(rolloutPath, {
+      nowMs: Date.parse(startedAt) + 20_000,
+      freshnessMs: Number.POSITIVE_INFINITY,
+    });
+    assert.equal(activity.running, false);
+    assert.deepEqual(activity.activeTurnIds, []);
+    assert.deepEqual(activity.internalTurnIds, ["compaction-turn"]);
+    assert.equal(codexThreadRunning({
+      turns: [{ id: "compaction-turn", status: "inProgress" }],
+    }, {
+      rolloutRunning: activity.running,
+      ignoredTurnIds: activity.internalTurnIds,
+    }), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a promptless turn remains visible during its short materialization grace period", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-promptless-grace-"));
+  const rolloutPath = path.join(directory, "rollout.jsonl");
+  const startedAt = "2026-08-07T16:35:26.304Z";
+  try {
+    await writeFile(rolloutPath, JSON.stringify({
+      timestamp: startedAt,
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "materializing-turn" },
+    }), "utf8");
+    const activity = await readCodexRolloutActivity(rolloutPath, {
+      nowMs: Date.parse(startedAt) + 5_000,
+      freshnessMs: Number.POSITIVE_INFINITY,
+    });
+    assert.equal(activity.running, true);
+    assert.deepEqual(activity.activeTurnIds, ["materializing-turn"]);
+    assert.deepEqual(activity.internalTurnIds, []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("an unscoped Hub message is not duplicated when its provisional turn is confirmed", () => {
   const result = parseCodexRolloutActivity([
     JSON.stringify({

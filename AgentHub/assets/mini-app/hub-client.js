@@ -380,10 +380,11 @@ function applyMessageReceipts(snapshot) {
       provider,
       threadId,
       turnId: String(receipt.turnId ?? ""),
-      itemId: receipt.id ?? clientUserMessageId,
+      itemId: receipt.steered === true ? clientUserMessageId : receipt.id ?? clientUserMessageId,
       time: receipt.createdAt ?? null,
       attachments: attachmentViews(receipt.attachments),
       ...(receipt.accepted && !receipt.steered ? { turnUserSlot: "root" } : {}),
+      ...(receipt.steered ? { turnUserSlot: "steer" } : {}),
       ...patch,
     });
   }
@@ -1649,7 +1650,20 @@ agentHub.on("queue:accept", ({ id }) => runAction(() => runQueueAction(id, async
   agentHub.toast(result?.message ?? "Сообщение будет отправлено после текущего хода");
 })));
 agentHub.on("queue:steer", ({ id }) => runAction(() => runQueueAction(id, async () => {
+  const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id);
   const result = await control("deferred-input", { id, action: "steer" });
+  const clientUserMessageId = String(deferred?.clientUserMessageId ?? "").trim();
+  if (clientUserMessageId) {
+    const deferredTaskId = taskId(deferred.provider, deferred.threadId);
+    optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
+    deferredClientUserMessageIds.delete(clientUserMessageId);
+    patchOutgoing(deferredTaskId, clientUserMessageId, {
+      turnId: String(result?.turnId ?? ""),
+      itemId: clientUserMessageId,
+      turnUserSlot: "steer",
+      ...deliveryPatch("accepted"),
+    });
+  }
   agentHub.toast(result?.message ?? "Сообщение добавлено в текущий ход");
 })));
 agentHub.on("queue:edit", ({ id, text }) => runAction(async () => {

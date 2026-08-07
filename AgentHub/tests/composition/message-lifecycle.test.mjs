@@ -141,6 +141,66 @@ test("accepted optimistic message and rebound server echo render as one card", (
   assert.equal(visible[0].delivery, "Принято");
 });
 
+test("a steered optimistic message binds to one unkeyed live echo in its turn", () => {
+  const optimistic = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "client-steer",
+    clientUserMessageId: "client-steer",
+    turnUserSlot: "steer",
+    role: "user",
+    text: "Пауза, расскажи результат",
+    deliveryState: "accepted",
+    delivery: "Принято",
+  };
+  const liveEcho = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "temporary-app-server-item",
+    role: "user",
+    text: "Пауза, расскажи результат",
+  };
+  const root = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "root-server-item",
+    clientUserMessageId: "root-client-id",
+    role: "user",
+    text: "Исходный запрос",
+  };
+  const result = lifecycle.reconcile([root, liveEcho], [optimistic]);
+  assert.equal(result.matches.length, 2);
+  assert.equal(result.matches[1].local, optimistic);
+  assert.deepEqual([...result.matchedIds], ["client-steer"]);
+});
+
+test("a steered optimistic message never binds to the root user item", () => {
+  const optimistic = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "client-steer",
+    clientUserMessageId: "client-steer",
+    turnUserSlot: "steer",
+    role: "user",
+    text: "Уточнение",
+  };
+  const root = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "root-server-item",
+    role: "user",
+    text: "Исходный запрос",
+  };
+  const result = lifecycle.reconcile([root], [optimistic]);
+  assert.equal(result.matches[0].local, null);
+  assert.deepEqual([...result.matchedIds], []);
+});
+
 test("temporary server echo keeps optimistic response annotations until rollout confirms them", () => {
   const local = {
     ...message("client-quote", "Это не повторится больше?"),
