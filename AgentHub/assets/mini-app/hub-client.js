@@ -752,6 +752,7 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
 }
 
 function contextPercent(value) {
+  if (value === null || value === undefined || value === "") return null;
   const percent = Number(value);
   return Number.isFinite(percent) ? Math.round(Math.max(0, Math.min(100, percent))) : null;
 }
@@ -824,14 +825,29 @@ function observeStreamRotations(previousTasks, tasks) {
   for (const task of tasks ?? []) {
     const streamId = String(task.streamId ?? "").trim();
     const previous = previousByStream.get(streamId);
-    if (!streamId || !previous || String(previous.threadId) === String(task.threadId)) continue;
-    rememberMaintenanceEvent(taskId(task.provider, task.threadId, streamId), {
-      id: `maintenance:rotation:${streamId}:${task.threadId}`,
+    if (!streamId) continue;
+    const stableTaskId = taskId(task.provider, task.threadId, streamId);
+    const eventId = `maintenance:rotation:${streamId}:${task.threadId}`;
+    const existingEvent = (maintenanceEventsByTask.get(stableTaskId) ?? [])
+      .find((event) => event.id === eventId);
+    const rotated = previous && String(previous.threadId) !== String(task.threadId);
+    if (!rotated && !existingEvent) continue;
+    const beforePercent = rotated
+      ? contextPercent(previous.context?.percent)
+      : contextPercent(existingEvent?.beforePercent);
+    const afterPercent = task.context?.usagePending
+      ? null
+      : contextPercent(task.context?.percent);
+    const visibleBeforePercent = beforePercent ?? "?";
+    const visibleAfterPercent = afterPercent ?? "?";
+    rememberMaintenanceEvent(stableTaskId, {
+      id: eventId,
       provider: task.provider,
       threadId: task.threadId,
-      itemId: `maintenance:rotation:${streamId}:${task.threadId}`,
-      text: "Ротация завершена успешно",
-      time: new Date().toISOString(),
+      itemId: eventId,
+      beforePercent,
+      text: `Ротация завершена успешно ${visibleBeforePercent}%>${visibleAfterPercent}%`,
+      time: existingEvent?.time ?? new Date().toISOString(),
     });
   }
 }

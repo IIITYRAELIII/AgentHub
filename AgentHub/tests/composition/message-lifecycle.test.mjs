@@ -929,6 +929,17 @@ test("context compaction start identifies the task and completion stays in chat"
   assert.match(hubClientSource, /rememberMaintenanceEvent\(stableTaskId/u);
 });
 
+test("rotation completion replaces pending context percentages in place", () => {
+  assert.match(hubClientSource, /eventId = `maintenance:rotation:\$\{streamId\}:\$\{task\.threadId\}`/u);
+  assert.match(hubClientSource, /beforePercent = rotated[\s\S]*previous\.context\?\.percent/u);
+  assert.match(hubClientSource, /afterPercent = task\.context\?\.usagePending[\s\S]*task\.context\?\.percent/u);
+  assert.match(
+    hubClientSource,
+    /text: `Ротация завершена успешно \$\{visibleBeforePercent\}%>\$\{visibleAfterPercent\}%`/u,
+  );
+  assert.match(hubClientSource, /time: existingEvent\?\.time \?\? new Date\(\)\.toISOString\(\)/u);
+});
+
 test("Hub compaction delegates targeted completion to its context maintenance owner", () => {
   assert.match(
     codexEventSource,
