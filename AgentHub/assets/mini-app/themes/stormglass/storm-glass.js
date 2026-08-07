@@ -100,6 +100,7 @@
   let imageSize = [1, 1];
   let ready = false;
   let initializing = false;
+  let initialization = 0;
   let frame = 0;
   let startedAt = 0;
   let width = 0;
@@ -319,6 +320,7 @@
   async function initialize() {
     if (initializing || ready || root.dataset.theme !== THEME) return;
     initializing = true;
+    const generation = ++initialization;
     try {
       context = canvas.getContext("webgl", {
         alpha: false,
@@ -357,6 +359,11 @@
         load("--stormglass-image"),
         load("--stormglass-flash"),
       ]);
+      if (
+        generation !== initialization
+        || context?.isContextLost?.()
+        || root.dataset.theme !== THEME
+      ) return;
       createTexture(sea, 0);
       createTexture(flash, 1);
       boltCanvas.width = Math.max(1, Math.round(window.innerWidth * 0.5));
@@ -394,6 +401,8 @@
 
   new MutationObserver(sync).observe(root, { attributes: true, attributeFilter: ["data-theme"] });
   window.addEventListener("resize", schedule, { passive: true });
+  window.addEventListener("focus", sync);
+  window.addEventListener("pageshow", sync);
   document.addEventListener("visibilitychange", sync);
   reducedMotion.addEventListener?.("change", () => {
     if (frame) window.cancelAnimationFrame(frame);
@@ -402,10 +411,17 @@
   });
   canvas.addEventListener("webglcontextlost", (event) => {
     event.preventDefault();
+    initialization += 1;
     ready = false;
+    initializing = false;
+    context = null;
+    program = null;
+    locations = null;
+    boltTexture = null;
     atmosphere.dataset.ready = "false";
     if (frame) window.cancelAnimationFrame(frame);
     frame = 0;
   });
+  canvas.addEventListener("webglcontextrestored", sync);
   sync();
 })();

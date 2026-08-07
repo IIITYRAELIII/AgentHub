@@ -6,6 +6,28 @@ const nativeFetch = window.fetch.bind(window);
 const pending = new Map();
 let sequence = 0;
 
+/* Retained VS Code WebViews can return from a hidden editor tab with their
+   infinite CSS animations left paused by Electron. Resume only animations
+   that already exist and are meant to repeat forever; reduced-motion rules
+   remove those animations entirely, so the accessibility preference remains
+   authoritative. */
+function resumeWebviewMotion() {
+  if (document.hidden) return;
+  for (const animation of document.getAnimations?.() ?? []) {
+    const iterations = animation.effect?.getTiming?.().iterations;
+    if (iterations !== Infinity || animation.playState === "running") continue;
+    try {
+      animation.play();
+    } catch {
+      // A detached effect disappears on the next render; it needs no recovery.
+    }
+  }
+}
+
+window.addEventListener("focus", resumeWebviewMotion);
+window.addEventListener("pageshow", resumeWebviewMotion);
+document.addEventListener("visibilitychange", resumeWebviewMotion);
+
 window.addEventListener("message", (event) => {
   const message = event.data;
   if (!["agenthub:http-start", "agenthub:http-chunk", "agenthub:http-result"].includes(message?.type)) {

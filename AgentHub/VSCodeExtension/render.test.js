@@ -140,6 +140,14 @@ test("extension keeps its shell synchronized with the active runtime", () => {
   assert.doesNotMatch(shared, /media", "mini-app/u);
 });
 
+test("VS Code resumes retained infinite theme animations on foreground", () => {
+  const bootstrap = fs.readFileSync(require.resolve("./vscode-bootstrap.js"), "utf8");
+  assert.match(bootstrap, /document\.getAnimations\?\.\(\)/u);
+  assert.match(bootstrap, /iterations !== Infinity/u);
+  assert.match(bootstrap, /window\.addEventListener\("focus", resumeWebviewMotion\)/u);
+  assert.match(bootstrap, /document\.addEventListener\("visibilitychange", resumeWebviewMotion\)/u);
+});
+
 test("missing bundled resources fail closed without workspace-derived fallback", () => {
   const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
   assert.match(extension, /this\.sharedPanel = "unavailable"/u);

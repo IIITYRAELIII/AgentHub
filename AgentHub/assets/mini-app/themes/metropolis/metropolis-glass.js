@@ -165,6 +165,7 @@
   let startedAt = 0;
   let ready = false;
   let initializing = false;
+  let initialization = 0;
   let locations = null;
 
   function cssUrl(value) {
@@ -303,6 +304,7 @@
   function initialize() {
     if (initializing || ready || !glassTheme()) return;
     initializing = true;
+    const generation = ++initialization;
     try {
       context = canvas.getContext("webgl", {
         alpha: false,
@@ -345,8 +347,12 @@
       if (!source) throw new Error(`${activeTheme} texture is unavailable`);
       const image = new Image();
       image.decoding = "async";
-      image.addEventListener("load", () => upload(image), { once: true });
+      image.addEventListener("load", () => {
+        if (generation !== initialization || context?.isContextLost?.()) return;
+        upload(image);
+      }, { once: true });
       image.addEventListener("error", () => {
+        if (generation !== initialization) return;
         atmosphere.dataset.ready = "false";
       }, { once: true });
       image.src = source;
@@ -360,16 +366,23 @@
 
   /* Смена темы внутри набора меняет снимок, поэтому текстуры переливаются
      заново, а не остаются от прошлой темы. */
-  function reset() {
+  function reset({ contextLost = false } = {}) {
+    initialization += 1;
     if (frame) window.cancelAnimationFrame(frame);
     frame = 0;
     ready = false;
-    if (context) {
+    initializing = false;
+    if (context && !contextLost) {
       if (texture) context.deleteTexture(texture);
       if (fogTexture) context.deleteTexture(fogTexture);
     }
     texture = null;
     fogTexture = null;
+    if (contextLost) {
+      context = null;
+      program = null;
+      locations = null;
+    }
   }
 
   /* Сцену выбирают отдельно от палитры, а под стеклом лежит именно снимок
@@ -397,6 +410,11 @@
     attributeFilter: ["data-theme", "data-background"],
   });
   window.addEventListener("resize", schedule, { passive: true });
+  /* VS Code keeps the webview alive while its editor tab is hidden. Depending
+     on Electron/GPU timing, visibilitychange alone may arrive after the frame
+     loop has already stopped, so foreground events explicitly revive it. */
+  window.addEventListener("focus", syncTheme);
+  window.addEventListener("pageshow", syncTheme);
   document.addEventListener("visibilitychange", syncTheme);
   reducedMotion.addEventListener?.("change", () => {
     if (frame) window.cancelAnimationFrame(frame);
@@ -405,10 +423,9 @@
   });
   canvas.addEventListener("webglcontextlost", (event) => {
     event.preventDefault();
-    ready = false;
+    reset({ contextLost: true });
     atmosphere.dataset.ready = "false";
-    if (frame) window.cancelAnimationFrame(frame);
-    frame = 0;
   });
+  canvas.addEventListener("webglcontextrestored", syncTheme);
   syncTheme();
 })();
