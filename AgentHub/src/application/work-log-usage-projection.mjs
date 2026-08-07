@@ -332,6 +332,22 @@ function formatWorkspaceUsage(creditBreakdown, dayCredits) {
   );
 }
 
+function formatCollapsedWorkspaceUsage(creditBreakdown, dayCredits) {
+  const [total, ...breakdown] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
+  const totalHtml = highlightUsageUnits(
+    alignUsagePercent(total.replace(/^Итого\s+/u, "")),
+    creditBreakdown.total,
+  );
+  return "<details data-task-usage-details data-work-log-workspace-usage-details "
+    + "data-work-log-collapsed-workspace-usage-details>"
+    + `<summary data-task-usage>${totalHtml}</summary>`
+    + `<span data-task-usage-breakdown>${breakdown
+      .map((part) => `<span data-task-usage-part>${
+        highlightUsageUnits(alignUsagePercent(part), breakdownPartCredits(part, creditBreakdown))
+      }</span>`)
+      .join("")}</span></details>`;
+}
+
 function formatDayUsageBreakdown(creditBreakdown) {
   const [, ...breakdown] = formatWorkLogUsage(creditBreakdown).split("<br>");
   return `<span data-day-usage-breakdown>${breakdown
@@ -1510,6 +1526,11 @@ function formatWorkspaceRows(rows, dayCredits, workspaceResolver) {
       const workspaceUsage = usage
         ? `<span data-work-log-workspace-usage>${usage}</span>`
         : "";
+      const collapsedWorkspaceUsage = group.creditBreakdown.total > 0
+        ? `<div data-work-log-collapsed-workspace-usage hidden>${
+          formatCollapsedWorkspaceUsage(group.creditBreakdown, dayCredits)
+        }</div>`
+        : "";
       return `<details data-work-log-workspace data-work-log-workspace-id="${
         escapeHtmlAttribute(group.workspace.workspaceId)
       }" data-work-log-workspace-kind="${escapeHtmlAttribute(group.workspace.workspaceKind)}"`
@@ -1517,6 +1538,7 @@ function formatWorkspaceRows(rows, dayCredits, workspaceResolver) {
         + `<summary data-work-log-workspace-header><strong>${
           escapeHtmlText(group.workspace.workspaceName)
         }</strong>${workspaceUsage}</summary>`
+        + `${collapsedWorkspaceUsage}`
         + `<div data-work-log-workspace-streams>${streamHtml}</div></details>`;
     }).join("\n");
 }

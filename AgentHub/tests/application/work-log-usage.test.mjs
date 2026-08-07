@@ -276,7 +276,13 @@ test("journal keeps one Stream expandable and owns its total at Workspace level"
   )?.[0] ?? "";
   assert.match(workspaceSummary, /data-usage-credits="4"/u);
   assert.doesNotMatch(workspaceSummary, /Итого|data-usage-label/u);
-  assert.doesNotMatch(projected, /data-task-usage-details/u);
+  const collapsedUsage = projected.match(
+    /<div data-work-log-collapsed-workspace-usage hidden>[\s\S]*?<\/div>/u,
+  )?.[0] ?? "";
+  assert.match(collapsedUsage, /data-work-log-collapsed-workspace-usage-details/u);
+  assert.match(collapsedUsage, /data-task-usage-breakdown/u);
+  assert.match(collapsedUsage, /data-usage-credits="4"/u);
+  assert.doesNotMatch(collapsedUsage, /Итого|data-usage-label/u);
 });
 
 test("seven-day usage matches journal calendar days and includes empty days", () => {

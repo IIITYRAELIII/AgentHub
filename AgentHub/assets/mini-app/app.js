@@ -7172,6 +7172,13 @@ function decorateLegacyStreamTurns(scope = journal) {
 
 function flattenWorkspaceStreams(scope = journal) {
   for (const workspace of scope.querySelectorAll("details[data-work-log-workspace]")) {
+    const workspaceHeader = workspace.querySelector(
+      ":scope > summary[data-work-log-workspace-header]",
+    );
+    const workspaceName = workspaceHeader?.querySelector("strong")?.textContent.trim() ?? "";
+    const collapsedUsage = workspace.querySelector(
+      ":scope > [data-work-log-collapsed-workspace-usage]",
+    );
     const streamContainer = workspace.querySelector(
       ":scope > [data-work-log-workspace-streams]",
     );
@@ -7218,6 +7225,16 @@ function flattenWorkspaceStreams(scope = journal) {
     aggregateRow.removeAttribute("data-work-log-provider");
     aggregateRow.removeAttribute("data-work-log-thread-id");
     aggregateRow.removeAttribute("data-work-log-stream-id");
+    const taskContent = aggregateRow.querySelector(
+      ":scope > [data-work-log-task-cell] > [data-work-log-task-content]",
+    );
+    if (taskContent) taskContent.textContent = workspaceName;
+    const usage = aggregateRow.querySelector(
+      ":scope > [data-work-log-task-cell] > [data-work-log-usage]",
+    );
+    if (usage) {
+      usage.replaceChildren(...(collapsedUsage ? [...collapsedUsage.childNodes] : []));
+    }
     const turnList = aggregateRow.querySelector(":scope > [data-work-log-turn-list]");
     if (!turnList) continue;
     replaceCollapsedTurnList(turnList, entries);
@@ -7226,6 +7243,8 @@ function flattenWorkspaceStreams(scope = journal) {
     if (previousWasOpen) {
       turnList.querySelector("details[data-work-log-previous-turns]")?.setAttribute("open", "");
     }
+    workspace.open = true;
+    workspace.dataset.workLogStreamsCollapsed = "";
     streamContainer.dataset.workLogWorkspaceTurns = "";
     streamContainer.replaceChildren(aggregateRow);
   }

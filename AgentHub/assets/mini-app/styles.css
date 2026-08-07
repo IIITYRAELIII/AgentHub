@@ -1097,9 +1097,14 @@ main {
   display: none;
 }
 
-/* При включённом объединении потоки исчезают как уровень навигации. Пустая
-   первая колонка сохраняет выравнивание с заголовком Workspace, а все ходы
-   живут в одном общем списке и несут имя потока только в своём бейдже. */
+/* При включённом объединении потоки исчезают как уровень навигации. Workspace
+   занимает прежнюю компактную колонку задачи, расход раскрывается под ним, а
+   справа остаются последний ход и кнопка догрузки остальных. */
+.journal details[data-work-log-workspace][data-work-log-streams-collapsed]
+  > summary[data-work-log-workspace-header] {
+  display: none;
+}
+
 .journal div[data-work-log-workspace-turns] > div[data-work-log-row] {
   display: grid;
   grid-template-columns: 17.5rem minmax(0, 1fr);
@@ -1108,7 +1113,7 @@ main {
 .journal div[data-work-log-workspace-turns]
   > div[data-work-log-row]
   > div[data-work-log-task-cell] {
-  visibility: hidden;
+  visibility: visible;
 }
 
 .journal div[data-work-log-workspace-turns]
@@ -2673,7 +2678,7 @@ html[data-surface="mobile"]
   div[data-work-log-workspace-turns]
   > div[data-work-log-row]
   > div[data-work-log-task-cell] {
-  display: none;
+  display: block;
 }
 
 html[data-surface="mobile"]
