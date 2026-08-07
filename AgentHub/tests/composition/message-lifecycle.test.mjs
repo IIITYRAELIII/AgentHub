@@ -927,17 +927,24 @@ test("context compaction start identifies the task and completion stays in chat"
   );
   assert.match(hubClientSource, /maintenanceEventStorageKey/u);
   assert.match(hubClientSource, /rememberMaintenanceEvent\(stableTaskId/u);
+  assert.match(
+    hubClientSource,
+    /afterPercent = previous\.afterPercent[\s\S]*storedMaintenancePercent\(existingEvent, 2\)[\s\S]*contextPercent\(compaction\.afterPercent\)/u,
+  );
 });
 
 test("rotation completion replaces pending context percentages in place", () => {
   assert.match(hubClientSource, /eventId = `maintenance:rotation:\$\{streamId\}:\$\{task\.threadId\}`/u);
-  assert.match(hubClientSource, /beforePercent = rotated[\s\S]*previous\.context\?\.percent/u);
-  assert.match(hubClientSource, /afterPercent = task\.context\?\.usagePending[\s\S]*task\.context\?\.percent/u);
+  assert.match(hubClientSource, /beforePercent = contextPercent\(existingEvent\?\.beforePercent\)[\s\S]*previous\.context\?\.percent/u);
   assert.match(
     hubClientSource,
     /text: `Ротация завершена успешно \$\{visibleBeforePercent\}%>\$\{visibleAfterPercent\}%`/u,
   );
   assert.match(hubClientSource, /time: existingEvent\?\.time \?\? new Date\(\)\.toISOString\(\)/u);
+  assert.match(
+    hubClientSource,
+    /afterPercent = contextPercent\(existingEvent\?\.afterPercent\)[\s\S]*storedMaintenancePercent\(existingEvent, 2\)[\s\S]*task\.context\?\.percent/u,
+  );
 });
 
 test("Hub compaction delegates targeted completion to its context maintenance owner", () => {

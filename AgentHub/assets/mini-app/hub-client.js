@@ -757,6 +757,11 @@ function contextPercent(value) {
   return Number.isFinite(percent) ? Math.round(Math.max(0, Math.min(100, percent))) : null;
 }
 
+function storedMaintenancePercent(event, position) {
+  const match = /(\?|\d+)%>(\?|\d+)%/u.exec(String(event?.text ?? ""));
+  return match?.[position] === "?" ? null : contextPercent(match?.[position]);
+}
+
 function compactionTaskTitle(task) {
   const workspaceName = String(task?.workspaceName ?? "").trim();
   const streamName = String(task?.streamName ?? "").trim()
@@ -773,13 +778,22 @@ function observeContextCompactions(tasks) {
     const compaction = context?.compaction;
     const compactionId = String(compaction?.id ?? "");
     if (!compactionId) continue;
+    const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
+    const eventId = `maintenance:compaction:${compactionId}`;
+    const existingEvent = (maintenanceEventsByTask.get(stableTaskId) ?? [])
+      .find((event) => event.id === eventId);
     const previous = observedContextCompactions.get(compactionId) ?? {};
     const previousStatus = previous.status;
     const status = String(compaction.status ?? "");
-    const beforePercent = contextPercent(compaction.beforePercent)
-      ?? previous.beforePercent
+    const beforePercent = previous.beforePercent
+      ?? contextPercent(existingEvent?.beforePercent)
+      ?? storedMaintenancePercent(existingEvent, 1)
+      ?? contextPercent(compaction.beforePercent)
       ?? (status === "running" ? contextPercent(context?.percent) : null);
-    const afterPercent = contextPercent(compaction.afterPercent)
+    const afterPercent = previous.afterPercent
+      ?? contextPercent(existingEvent?.afterPercent)
+      ?? storedMaintenancePercent(existingEvent, 2)
+      ?? contextPercent(compaction.afterPercent)
       ?? (!context?.usagePending && status === "completed" ? contextPercent(context?.percent) : null);
     const requested = requestedContextCompactions.has(compactionId);
     const eventAtMs = Date.parse(String(compaction.completedAt ?? compaction.startedAt ?? "")) || 0;
@@ -798,16 +812,17 @@ function observeContextCompactions(tasks) {
       requestedContextCompactions.delete(compactionId);
     }
     if (status === "completed") {
-      const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
       const visibleBeforePercent = beforePercent ?? "?";
       const visibleAfterPercent = afterPercent ?? "?";
       rememberMaintenanceEvent(stableTaskId, {
-        id: `maintenance:compaction:${compactionId}`,
+        id: eventId,
         provider: task.provider,
         threadId: task.threadId,
-        itemId: `maintenance:compaction:${compactionId}`,
+        itemId: eventId,
+        beforePercent,
+        afterPercent,
         text: `Свёртка завершена успешно ${visibleBeforePercent}%>${visibleAfterPercent}%`,
-        time: compaction.completedAt ?? new Date().toISOString(),
+        time: existingEvent?.time ?? compaction.completedAt ?? new Date().toISOString(),
       });
     }
     observedContextCompactions.delete(compactionId);
@@ -832,12 +847,12 @@ function observeStreamRotations(previousTasks, tasks) {
       .find((event) => event.id === eventId);
     const rotated = previous && String(previous.threadId) !== String(task.threadId);
     if (!rotated && !existingEvent) continue;
-    const beforePercent = rotated
-      ? contextPercent(previous.context?.percent)
-      : contextPercent(existingEvent?.beforePercent);
-    const afterPercent = task.context?.usagePending
-      ? null
-      : contextPercent(task.context?.percent);
+    const beforePercent = contextPercent(existingEvent?.beforePercent)
+      ?? storedMaintenancePercent(existingEvent, 1)
+      ?? (rotated ? contextPercent(previous.context?.percent) : null);
+    const afterPercent = contextPercent(existingEvent?.afterPercent)
+      ?? storedMaintenancePercent(existingEvent, 2)
+      ?? (task.context?.usagePending ? null : contextPercent(task.context?.percent));
     const visibleBeforePercent = beforePercent ?? "?";
     const visibleAfterPercent = afterPercent ?? "?";
     rememberMaintenanceEvent(stableTaskId, {
@@ -846,6 +861,7 @@ function observeStreamRotations(previousTasks, tasks) {
       threadId: task.threadId,
       itemId: eventId,
       beforePercent,
+      afterPercent,
       text: `Ротация завершена успешно ${visibleBeforePercent}%>${visibleAfterPercent}%`,
       time: existingEvent?.time ?? new Date().toISOString(),
     });
