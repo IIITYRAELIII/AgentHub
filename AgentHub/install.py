@@ -373,6 +373,55 @@ def backfill_personal_history(project_root: Path, target_root: Path) -> None:
     )
 
 
+def participant_github_login() -> str | None:
+    profile_tool = ROOT.parent / "AI_INFRA_SETUP" / "team_profile.py"
+    if not profile_tool.is_file():
+        return None
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(profile_tool),
+            "--utilities",
+            str(ROOT.parent),
+            "changelog-author",
+        ],
+        cwd=ROOT.parent,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    start = result.stdout.find("{")
+    if start < 0:
+        return None
+    try:
+        value = json.loads(result.stdout[start:])
+    except json.JSONDecodeError:
+        return None
+    login = str(value.get("github_login", "")).strip()
+    return login or None
+
+
+def backfill_team_rate_limit_accounts(target_root: Path, participant: str | None = None) -> None:
+    login = (participant or participant_github_login() or "").strip()
+    if not login:
+        print("Team rate-limit account migration skipped: participant profile is unavailable.")
+        return
+    subprocess.run(
+        [
+            "node",
+            str(ROOT / "src" / "interfaces" / "cli" / "rate-limit-account-backfill.mjs"),
+            "--database",
+            str(target_root / "data" / "journal.sqlite"),
+            "--participant",
+            login,
+        ],
+        check=True,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Configure Agent Hub")
     parser.add_argument(
@@ -446,6 +495,7 @@ def main() -> int:
         action="store_true",
         help="activate the new release without requesting a safe restart of a running Agent Hub",
     )
+    parser.add_argument("--participant-login", help=argparse.SUPPRESS)
     args = parser.parse_args()
     require_embedded_sqlite()
     if args.extension_only:
@@ -543,6 +593,7 @@ def main() -> int:
     )
     if not args.skip_history and (fresh_install or args.rebuild_history):
         backfill_personal_history(project_root, target_root)
+    backfill_team_rate_limit_accounts(target_root, args.participant_login)
     if not args.skip_extension:
         install_vscode_extension()
     if not args.skip_autostart:
