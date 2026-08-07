@@ -79,13 +79,14 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const runtimeRoot = path.join(root, "runtime", "releases", "current");
   const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "mini-app");
   const runtimeAssets = path.join(runtimeRoot, "assets", "mini-app");
-  const required = ["message-disclosure.js", "app.js", "message-lifecycle.js", "hub-client.js", "styles.css", "backgrounds.css"];
+  const required = ["message-disclosure.js", "app.js", "message-lifecycle.js", "hub-client.js", "styles.css", "backgrounds.css", "agent-hub-mark.png"];
   try {
     fs.mkdirSync(shadowAssets, { recursive: true });
     fs.mkdirSync(runtimeAssets, { recursive: true });
     fs.writeFileSync(path.join(shadowAssets, "index.html"), '<meta charset="utf-8">shadow<script src="/app.js" defer></script>');
     fs.writeFileSync(path.join(runtimeAssets, "index.html"), `<meta charset="utf-8">runtime
-      <link rel="stylesheet" href="/work-log.css"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/backgrounds.css">
+      <link rel="icon" href="/agent-hub-mark.png"><link rel="stylesheet" href="/work-log.css"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/backgrounds.css">
+      <img data-app-mark src="/agent-hub-mark.png" alt="">
       <!-- agent-hub-theme-styles --><select data-theme-select></select>
       <!-- agent-hub-theme-markup --><!-- agent-hub-theme-catalog -->
       <script src="/browser-device-auth.js" defer></script><script src="/message-disclosure.js" defer></script>
@@ -112,6 +113,8 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     });
     assert.match(result.html, /runtime/u);
     assert.doesNotMatch(result.html, /shadow/u);
+    assert.match(result.html, /vscode-webview-resource:.*agent-hub-mark\.png/u);
+    assert.doesNotMatch(result.html, /(?:href|src)="\/agent-hub-mark\.png"/u);
     assert.ok(result.roots.every((uri) => (
       uri.fsPath.startsWith(runtimeRoot) || uri.fsPath.startsWith(extensionRoot)
     )));
@@ -125,6 +128,7 @@ test("extension keeps its shell synchronized with the active runtime", () => {
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
   assert.match(shared, /const ASSET_ROOT = \["assets", "mini-app"\]/u);
   assert.match(shared, /backgrounds: \[\.\.\.ASSET_ROOT, "backgrounds\.css"\]/u);
+  assert.match(shared, /mark: \[\.\.\.ASSET_ROOT, "agent-hub-mark\.png"\]/u);
   assert.match(extension, /refreshPanelShellIfReleaseChanged/u);
   assert.match(extension, /agenthub:runtime-changed/u);
   assert.match(extension, /subscribeRuntime/u);
@@ -692,7 +696,6 @@ test("«Озеро» keeps after-rain, summer-evening and watercolor scenes", ()
   assert.match(backgrounds, /--lake-corners-image:\s*url\("\.\/lake-corners\.png"\)/u);
   assert.match(backgrounds, /--lake-mark-image:\s*url\("\.\/lake-mark\.png"\)/u);
   assert.match(backgrounds, /--lake-settings-image:\s*url\("\.\/lake-settings\.png"\)/u);
-  assert.match(backgrounds, /\.brand-mark\s*\{[\s\S]*var\(--lake-mark-image\)/u);
   assert.match(backgrounds, /\.toolbar \.view-settings\s*\{[\s\S]*border-radius:\s*5px/u);
   assert.match(backgrounds, /@keyframes lake-ripple/u);
   for (const variable of ["--lake-summer-image", "--lake-watercolor-image"]) {
@@ -741,7 +744,6 @@ test("BlackHole keeps three scenes around the selected Focus Deck", () => {
     /\.composer\s*\{[^}]*width:\s*min\(54rem, calc\(100% - var\(--gutter-left\) - var\(--gutter-right\)\)\)/su,
   );
   assert.match(styles, /:has\(\.stream-chat-preview:nth-of-type\(3\)\) \.composer\s*\{[^}]*width:\s*40%/su);
-  assert.match(styles, /\.brand-mark svg\s*\{[\s\S]*display:\s*block/u);
   assert.match(styles, /@keyframes blackhole-lensing/u);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/u);
 });
@@ -786,8 +788,6 @@ test("Orbit fills the viewport with one translucent cartography console", () => 
   assert.match(styles, /grid-template-columns:\s*var\(--task-rail-width\) minmax\(0, 1fr\)/u);
   assert.match(styles, /\.chat \{[\s\S]*background:\s*rgb\(2 11 22 \/ 18%\)/u);
   assert.match(styles, /\.chat-log \{[\s\S]*max-width:\s*min\(72%, 68rem\)/u);
-  assert.match(styles, /--orbit-mark-image:\s*url\("\.\/orbit-mark\.png"\)/u);
-  assert.match(styles, /\.brand-mark \{[\s\S]*var\(--orbit-mark-image\)/u);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/u);
 });
 
@@ -805,8 +805,6 @@ test("Verdant turns the wide chat into two floating field-console panels", () =>
   assert.match(styles, /\.task-rail::after,\s*\n[^{}]*\.chat::after \{/u);
   assert.match(styles, /left top \/ 12px 1px no-repeat/u);
   assert.match(styles, /background:\s*linear-gradient\(180deg, rgba\(2, 22, 18, 0\.5\), rgba\(1, 15, 13, 0\.62\)\)/u);
-  assert.match(styles, /--verdant-mark-image:\s*url\("\.\/verdant-mark\.png"\)/u);
-  assert.match(styles, /\.brand-mark::before \{[\s\S]*var\(--verdant-mark-image\)/u);
   assert.match(styles, /:not\(\[data-surface="mobile"\]\)/u);
 });
 
@@ -1732,15 +1730,33 @@ test("chart, tooltip and aria-summary use only the visible series", () => {
   assert.match(app, /if \(!series\.length\) \{[\s\S]*class:\s*"limits-empty-plot"[\s\S]*"Все серии скрыты"/u);
 });
 
-test("Gothic wears the Sleeper mask in the header niche", () => {
-  const styles = themeFile("gothic");
-  const mark = fs.readFileSync(path.join(MINI_APP_ROOT, "themes", "gothic", "gothic-sleeper-mask.png"));
-  assert.match(styles, /--gothic-mark-image:\s*url\("\.\/gothic-sleeper-mask\.png\?v=[a-f0-9]{12}"\)/u);
-  assert.match(styles, /\.brand-mark \{[\s\S]*?background: none;[\s\S]*?border: 0;[\s\S]*?box-shadow: none;/u);
-  assert.match(styles, /\.brand-mark::before[\s\S]*?background: var\(--gothic-mark-image\)/u);
+test("all themes keep the unified raster Agent Hub mark", () => {
+  const index = fs.readFileSync(path.join(MINI_APP_ROOT, "index.html"), "utf8");
+  const styles = fs.readFileSync(path.join(MINI_APP_ROOT, "styles.css"), "utf8");
+  const mark = fs.readFileSync(path.join(MINI_APP_ROOT, "agent-hub-mark.png"));
+  assert.match(index, /<img data-app-mark src="\/agent-hub-mark\.png"/u);
+  assert.doesNotMatch(index, /<svg data-app-mark/u);
+  assert.match(styles, /\.brand-mark\s*\{[\s\S]*background:\s*none !important;[\s\S]*border:\s*0 !important;/u);
+  assert.match(styles, /\.brand-mark\s*\{[\s\S]*clip-path:\s*none !important;[\s\S]*rotate:\s*0deg !important;/u);
+  assert.match(styles, /\.brand-mark::before,[\s\S]*content:\s*none !important;/u);
+  assert.match(styles, /\.brand-mark > img\s*\{[\s\S]*display:\s*block !important;/u);
   assert.equal(mark.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
-  assert.equal(mark.readUInt32BE(16), 512);
-  assert.equal(mark.readUInt32BE(20), 512);
+  assert.ok(mark.length > 20_000);
+});
+
+test("native shells package derivatives of the unified Agent Hub mark", () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
+  const desktopBuild = fs.readFileSync(path.resolve(__dirname, "..", "DesktopApp", "build.ps1"), "utf8");
+  const desktopIcon = fs.readFileSync(path.resolve(__dirname, "..", "DesktopApp", "AgentHub.ico"));
+  const androidManifest = fs.readFileSync(path.resolve(__dirname, "..", "AndroidApp", "app", "src", "main", "AndroidManifest.xml"), "utf8");
+  const androidIcon = fs.readFileSync(path.resolve(__dirname, "..", "AndroidApp", "app", "src", "main", "res", "drawable-nodpi", "ic_agent_hub.png"));
+  assert.equal(packageJson.icon, "media/agent-hub-mark.png");
+  assert.equal(packageJson.contributes.viewsContainers.activitybar[0].icon, "media/agent-hub-mark.png");
+  assert.match(desktopBuild, /win32icon:[^\r\n]*AgentHub\.ico/u);
+  assert.equal(desktopIcon.subarray(0, 4).toString("hex"), "00000100");
+  assert.match(androidManifest, /android:icon="@drawable\/ic_agent_hub"/u);
+  assert.match(androidManifest, /android:roundIcon="@drawable\/ic_agent_hub"/u);
+  assert.equal(androidIcon.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
 });
 
 test("composer pastes arbitrary clipboard files and falls back to the files list", () => {

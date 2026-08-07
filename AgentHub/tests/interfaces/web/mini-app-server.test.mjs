@@ -287,6 +287,13 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       assert.equal(response.status, 200, pathname || "/");
       assert.ok((await response.text()).length > 20);
     }
+    /* Фирменный знак относится к оболочке, а не к пакету темы: один immutable
+       PNG одинаково обслуживает Web, VS Code и экран доверия браузеру. */
+    const appMark = await fetch(`${address.url}agent-hub-mark.png`);
+    assert.equal(appMark.status, 200);
+    assert.equal(appMark.headers.get("content-type"), "image/png");
+    assert.match(appMark.headers.get("cache-control"), /immutable/u);
+    assert.ok((await appMark.arrayBuffer()).byteLength > 20_000);
     const blackHole = await fetch(`${address.url}themes/blackhole/blackhole-blue.jpg`);
     assert.equal(blackHole.status, 200);
     assert.equal(blackHole.headers.get("content-type"), "image/jpeg");
@@ -449,7 +456,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(page, />Туманность</u);
     assert.match(page, />Пульсар</u);
     assert.match(page, />Gothic</u);
-    assert.match(page, /<svg data-app-mark/u);
+    assert.match(page, /<img data-app-mark src="\/agent-hub-mark\.png"/u);
+    assert.match(page, /<link rel="icon" type="image\/png" href="\/agent-hub-mark\.png">/u);
     for (const icon of [
       "chats-circle",
       "notebook",

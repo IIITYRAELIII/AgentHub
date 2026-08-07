@@ -35,6 +35,7 @@ const CONTENT_TYPES = new Map([
   ["/styles.css", "text/css; charset=utf-8"],
   ["/backgrounds.css", "text/css; charset=utf-8"],
   ["/work-log.css", "text/css; charset=utf-8"],
+  ["/agent-hub-mark.png", "image/png"],
 ]);
 const STATIC_FILES = new Map([
   ["/", "index.html"],
@@ -45,7 +46,9 @@ const STATIC_FILES = new Map([
   ["/hub-client.js", "hub-client.js"],
   ["/styles.css", "styles.css"],
   ["/backgrounds.css", "backgrounds.css"],
+  ["/agent-hub-mark.png", "agent-hub-mark.png"],
 ]);
+const IMMUTABLE_STATIC_FILES = new Set(["/agent-hub-mark.png"]);
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
 const MAX_MOBILE_UPDATE_BYTES = 100 * 1024 * 1024;
 const MOBILE_UPDATE_FILE = "AgentHub-Mobile.apk";
@@ -428,7 +431,9 @@ export class MiniAppServer {
     const file = STATIC_FILES.get(pathname);
     if (!file) return null;
     const target = path.join(this.#assetsDirectory, file);
-    const body = await readFile(target, "utf8");
+    const body = IMMUTABLE_STATIC_FILES.has(pathname)
+      ? await readFile(target)
+      : await readFile(target, "utf8");
     return pathname === "/" ? renderThemeHtml(body, this.#themeRegistry) : body;
   }
 
@@ -436,7 +441,7 @@ export class MiniAppServer {
     const themeResource = this.#themeRegistry.resources.get(pathname);
     if (themeResource) return themeResource;
     const contentType = CONTENT_TYPES.get(pathname);
-    return contentType ? { contentType, immutable: false } : null;
+    return contentType ? { contentType, immutable: IMMUTABLE_STATIC_FILES.has(pathname) } : null;
   }
 
   #writeEvent(response, event, data) {

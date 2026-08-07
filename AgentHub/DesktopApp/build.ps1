@@ -19,6 +19,7 @@ $target = Join-Path $output "AgentHub.exe"
 
 & $compiler /nologo /target:winexe /optimize+ /platform:anycpu `
     "/out:$target" `
+    "/win32icon:$(Join-Path $root 'AgentHub.ico')" `
     "/win32manifest:$(Join-Path $root 'app.manifest')" `
     "/reference:$(Find-GacAssembly 'PresentationCore.dll')" `
     "/reference:$(Find-GacAssembly 'PresentationFramework.dll')" `

@@ -21,6 +21,7 @@ for (const file of [
   "hub-client.js",
   "styles.css",
   "backgrounds.css",
+  "agent-hub-mark.png",
 ]) {
   await copyFile(path.join(source, file), path.join(output, file));
 }
@@ -81,6 +82,7 @@ for (const file of [
   "message-lifecycle.js",
   "remote-command-idempotency.js",
   "hub-client.js",
+  "agent-hub-mark.png",
 ]) {
   const reference = `/${file}`;
   if (!index.includes(`"${reference}"`)) {
