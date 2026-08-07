@@ -961,4 +961,8 @@ test("Hub compaction delegates targeted completion to its context maintenance ow
     serverSource,
     /contextCompactions\.complete/u,
   );
+  assert.match(
+    serverSource,
+    /isMaintenanceActive: \(target\) => streamContextMaintenance\.isActive\(target\)/u,
+  );
 });

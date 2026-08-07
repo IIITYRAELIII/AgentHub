@@ -162,6 +162,30 @@ test("desktop client survives App Server exit during delayed startup and shares 
     autoCompacting.tasks.find((item) => item.threadId === firstThreadId)?.context?.compaction?.status,
     "running",
   );
+  const steerCountBeforeCompactionInput = Number(
+    (await readFile(codexStatePath, "utf8").then(JSON.parse)).requestCounts["turn/steer"] ?? 0,
+  );
+  const compactingInput = await callDesktopControl("send-message", {
+    text: "must wait for context maintenance",
+    provider: "codex",
+    threadId: firstThreadId,
+    clientUserMessageId: "desktop-message-during-compaction",
+    followUpMode: "steer",
+  }, { runtimeRoot });
+  assert.equal(compactingInput.accepted, false);
+  assert.equal(compactingInput.deferred, true);
+  assert.equal(compactingInput.queued, true);
+  assert.equal(compactingInput.reason, "context-maintenance");
+  assert.equal(
+    Number((await readFile(codexStatePath, "utf8").then(JSON.parse)).requestCounts["turn/steer"] ?? 0),
+    steerCountBeforeCompactionInput,
+    "input during compaction must not be steered into the compacting turn",
+  );
+  const cancelledCompactingInput = await callDesktopControl("deferred-input", {
+    id: compactingInput.id,
+    action: "cancel",
+  }, { runtimeRoot });
+  assert.equal(cancelledCompactingInput.accepted, true);
   await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     const context = snapshot.tasks.find((item) => item.threadId === firstThreadId)?.context;

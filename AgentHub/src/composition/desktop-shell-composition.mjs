@@ -402,7 +402,7 @@ export function createDesktopShellComposition({
       launchTurn,
       describeAttachments: desktopAttachmentDescriptors,
       hasDeferredBacklog: (target) => deferredInputs.hasBacklog(target),
-      isMaintenanceActive: (target) => streamMaintenance.isActive(target),
+      isMaintenanceActive: (target) => streamContextMaintenance.isActive(target),
       scheduleDeferred: scheduleQueuedInput,
       setProgressStage: (...args) => taskProgress.setStage(...args),
       noteRunActivity: (...args) => taskProgress.noteActivity(...args),

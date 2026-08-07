@@ -8,7 +8,12 @@ import {
 } from "../../src/application/stream-context-maintenance-service.mjs";
 import { StreamMaintenanceRegistry } from "../../src/application/stream-maintenance-registry.mjs";
 
-function fixture({ beforePercent = 80, afterPercent = 18, rotate = true } = {}) {
+function fixture({
+  beforePercent = 80,
+  afterPercent = 18,
+  rotate = true,
+  externalCompacting = false,
+} = {}) {
   const events = [];
   const registry = new StreamMaintenanceRegistry();
   const deferredInputs = new DeferredInputStore();
@@ -22,6 +27,7 @@ function fixture({ beforePercent = 80, afterPercent = 18, rotate = true } = {}) 
   };
   const provider = {
     compactions: {
+      isRunning: (threadId) => externalCompacting && threadId === source.threadId,
       waitForSettlement: async (...args) => {
         events.push(["settled", ...args, registry.isActive(source)]);
         return { status: "completed" };
@@ -86,6 +92,13 @@ function fixture({ beforePercent = 80, afterPercent = 18, rotate = true } = {}) 
 test("context usage percentage uses the current model window", () => {
   assert.equal(contextUsagePercent({ usedTokens: 75, modelContextWindow: 100 }), 75);
   assert.equal(contextUsagePercent({ usedTokens: 1, modelContextWindow: 0 }), null);
+});
+
+test("external Codex compaction blocks new input before Hub owns a reservation", () => {
+  const state = fixture({ externalCompacting: true });
+  assert.equal(state.registry.isActive(state.source), false);
+  assert.equal(state.service.isActive(state.source), true);
+  assert.equal(state.service.isActive({ ...state.source, provider: "claude" }), false);
 });
 
 test("post-turn automation ignores non-terminal observation cleanup", () => {

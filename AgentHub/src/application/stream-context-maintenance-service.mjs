@@ -50,7 +50,9 @@ export class StreamContextMaintenanceService {
   }
 
   isActive(target) {
-    return this.registry.isActive(target);
+    if (this.registry.isActive(target)) return true;
+    return normalized(target?.provider).toLowerCase() === "codex"
+      && this.provider.compactions?.isRunning?.(normalized(target?.threadId)) === true;
   }
 
   reserveAfterTurn(run) {
