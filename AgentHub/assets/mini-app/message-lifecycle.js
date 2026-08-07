@@ -103,9 +103,33 @@ function turnRootUserKey(message) {
 
 function isTurnRootUser(messages, index) {
   const message = messages[index];
+  const explicitSlot = String(message?.turnUserSlot ?? "").trim();
+  if (explicitSlot === "steer") return false;
   const key = turnRootUserKey(message);
   if (!key) return false;
   return !messages.slice(0, index).some((candidate) => turnRootUserKey(candidate) === key);
+}
+
+function liveTurnUserSlot(message, index, {
+  prompt = "",
+  clientUserMessageId = "",
+} = {}) {
+  const explicitSlot = String(message?.turnUserSlot ?? "").trim();
+  if (explicitSlot) return explicitSlot;
+  const messageClientId = String(message?.clientUserMessageId ?? "").trim();
+  const rootClientId = String(clientUserMessageId ?? "").trim();
+  if (messageClientId && rootClientId) {
+    return messageClientId === rootClientId ? "root" : "steer";
+  }
+  const rootPrompt = String(prompt ?? "").trim();
+  const messageText = String(message?.text ?? "").trim();
+  // An observed Codex snapshot can temporarily expose only the latest steer
+  // and omit its client_id. The run still retains the root prompt, so a
+  // different live prompt is enough to keep that sole item out of root-only
+  // reconciliation. This is classification only; text is never used as the
+  // identity that merges two cards.
+  if (rootPrompt && messageText && messageText !== rootPrompt) return "steer";
+  return index === 0 ? "root" : "steer";
 }
 
 function focusedTurnTaskThreadId(focusedTurn) {
@@ -414,6 +438,7 @@ function mergeLiveUserMessages(messages, {
       turnId,
       itemId: String(message.itemId ?? `live-user-${index}`),
       clientUserMessageId: String(message.clientUserMessageId ?? ""),
+      turnUserSlot: liveTurnUserSlot(message, index, { prompt, clientUserMessageId }),
       role: "user",
       author: "Вы",
       text,

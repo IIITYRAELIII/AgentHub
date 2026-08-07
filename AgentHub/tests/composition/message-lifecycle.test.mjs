@@ -201,6 +201,39 @@ test("a steered optimistic message never binds to the root user item", () => {
   assert.deepEqual([...result.matchedIds], []);
 });
 
+test("an accepted steer binds when a partial live snapshot exposes only its unkeyed echo", () => {
+  const clientUserMessageId = "client-steer";
+  const optimistic = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: clientUserMessageId,
+    clientUserMessageId,
+    turnUserSlot: "steer",
+    role: "user",
+    text: "Edge заблокирован политикой - чего?..",
+    deliveryState: "accepted",
+    delivery: "Принято",
+  };
+  const live = lifecycle.mergeLiveUserMessages([], {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    prompt: "ну делай",
+    clientUserMessageId: "root-client",
+    userMessages: [{
+      itemId: "temporary-app-server-item",
+      text: "Edge заблокирован политикой - чего?..",
+    }],
+  });
+
+  assert.equal(live.length, 1);
+  assert.equal(live[0].turnUserSlot, "steer");
+  const reconciled = lifecycle.reconcile(live, [optimistic]);
+  assert.equal(reconciled.matches[0].local, optimistic);
+  assert.deepEqual([...reconciled.matchedIds], [clientUserMessageId]);
+});
+
 test("temporary server echo keeps optimistic response annotations until rollout confirms them", () => {
   const local = {
     ...message("client-quote", "Это не повторится больше?"),
