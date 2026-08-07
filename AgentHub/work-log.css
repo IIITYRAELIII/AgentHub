@@ -345,6 +345,31 @@ div[data-work-log-turn-body-details] {
   padding: 0.3em 0.45em;
 }
 
+span[data-work-log-turn-title] {
+  align-items: center;
+  display: flex;
+  gap: 0.45em;
+}
+
+span[data-work-log-turn-stream] {
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  border-radius: 999px;
+  flex: 0 1 auto;
+  font-size: 0.78em;
+  max-width: 38%;
+  overflow: hidden;
+  padding: 0.1em 0.4em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+span[data-work-log-turn-heading] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 span[data-work-log-turn-title],
 div[data-work-log-turn-body-details] {
   border-left: 1px solid rgba(127, 127, 127, 0.45);

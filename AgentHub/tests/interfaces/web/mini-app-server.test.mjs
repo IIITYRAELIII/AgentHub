@@ -489,10 +489,10 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(script, /creditsLabel\.textContent = "Итого"/u);
     assert.match(script, /agent-hub-token-breakdown/u);
     assert.match(script, /function applyBreakdown/u);
-    assert.match(page, /data-stream-collapse-toggle/u);
-    assert.match(script, /agent-hub-collapse-streams/u);
-    assert.match(script, /function applyStreamCollapse/u);
-    assert.match(script, /details\[data-work-log-stream\]/u);
+    assert.doesNotMatch(page, /data-stream-collapse-toggle/u);
+    assert.doesNotMatch(script, /agent-hub-collapse-streams/u);
+    assert.doesNotMatch(script, /function applyStreamCollapse/u);
+    assert.doesNotMatch(script, /details\[data-work-log-stream\]/u);
     assert.match(script, /function taskProfile/u);
     assert.match(script, /\.workLogTaskProfile/u);
     assert.match(script, /Профиль задачи/u);
@@ -622,7 +622,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     );
     assert.match(styles, /url\("\/rainforest-night\.jpg"\)/u);
     assert.match(styles, /details\[data-work-log-task-group\]/u);
-    assert.match(styles, /details\[data-work-log-stream\]\[open\]/u);
+    assert.match(styles, /div\[data-work-log-workspace-turns\]/u);
     assert.match(styles, /summary\[data-work-log-workspace-usage-summary\]/u);
     assert.match(styles, /span\[data-work-log-workspace-usage-breakdown\]/u);
     assert.match(styles, /\[data-work-log-task-duration\]/u);

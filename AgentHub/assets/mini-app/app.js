@@ -88,7 +88,6 @@ const bugReportSubmit = document.querySelector("[data-bug-report-submit]");
 const bugReportStatus = document.querySelector("[data-bug-report-status]");
 const telegramFullscreenButton = document.querySelector("[data-telegram-fullscreen]");
 const breakdownToggle = document.querySelector("[data-token-breakdown-toggle]");
-const streamCollapseToggle = document.querySelector("[data-stream-collapse-toggle]");
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
 const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
 const exchangeRateHint = document.querySelector("[data-exchange-rate-hint]");
@@ -163,7 +162,6 @@ let usdRubRate = null;
 let usdRubEffectiveDate = "";
 let exchangeRatesInitialized = false;
 let groupClaudeTasks = false;
-let collapseStreams = false;
 const groupingStates = { date: null, week: null, month: null, task: null };
 const TASK_GROUP_TURN_PAGE_SIZE = 30;
 const taskGroupTurns = new WeakMap();
@@ -504,37 +502,6 @@ function applyBreakdown(value, { persist = false } = {}) {
   }
 }
 
-function savedStreamCollapse() {
-  try {
-    return localStorage.getItem("agent-hub-collapse-streams") === "on";
-  } catch {
-    return false;
-  }
-}
-
-function setStreamsCollapsed(collapsed, scope = journal) {
-  for (const details of scope.querySelectorAll("details[data-work-log-stream]")) {
-    details.open = !collapsed;
-  }
-}
-
-function applyStreamCollapse(value, { persist = false, update = false } = {}) {
-  collapseStreams = value === true;
-  root.dataset.streamCollapse = collapseStreams ? "on" : "off";
-  if (streamCollapseToggle) streamCollapseToggle.checked = collapseStreams;
-  if (update) {
-    setStreamsCollapsed(collapseStreams);
-    persistOpenState();
-  }
-  if (persist) {
-    try {
-      localStorage.setItem("agent-hub-collapse-streams", collapseStreams ? "on" : "off");
-    } catch {
-      // Настройка останется активной до закрытия WebView.
-    }
-  }
-}
-
 function savedGrouping() {
   try {
     const value = localStorage.getItem("agent-hub-grouping");
@@ -617,14 +584,10 @@ telegramFullscreenButton?.addEventListener("click", () => {
 applyTheme(savedTheme());
 applyBackground(savedBackground(root.dataset.theme));
 applyBreakdown(savedBreakdown());
-applyStreamCollapse(savedStreamCollapse());
 selectUsageUnit(savedUsageUnit());
 selectClaudeGrouping(savedClaudeGrouping());
 breakdownToggle?.addEventListener("change", () => {
   applyBreakdown(breakdownToggle.checked ? "on" : "off", { persist: true });
-});
-streamCollapseToggle?.addEventListener("change", () => {
-  applyStreamCollapse(streamCollapseToggle.checked, { persist: true, update: true });
 });
 claudeGroupToggle?.addEventListener("change", () => {
   selectClaudeGrouping(claudeGroupToggle.checked, { persist: true });
@@ -6441,12 +6404,6 @@ function captureOpenState() {
       "details[data-work-log-workspace-usage-details][open]",
     )].map((item) => item.closest("[data-work-log-workspace]")?.dataset.workLogWorkspaceId)
       .filter(Boolean),
-    streams: [...journal.querySelectorAll("details[data-work-log-stream][open]")]
-      .map((item) => ({
-        workspaceId: item.closest("[data-work-log-workspace]")?.dataset.workLogWorkspaceId,
-        streamId: item.dataset.workLogStreamId,
-      }))
-      .filter((item) => item.workspaceId && item.streamId),
     turns: [...journal.querySelectorAll("details[data-work-log-turn-details][open]")]
       .map((item) => item.closest("[data-work-log-turn-id]")?.dataset.workLogTurnId)
       .filter(Boolean),
@@ -6559,17 +6516,6 @@ function restoreOpenState(openState) {
       + "details[data-work-log-workspace-usage-details]",
     )?.setAttribute("open", "");
   }
-  if (Array.isArray(openState.streams)) {
-    for (const details of journal.querySelectorAll("details[data-work-log-stream]")) {
-      details.open = false;
-    }
-    for (const stream of openState.streams) {
-      journal.querySelector(
-        `[data-work-log-workspace-id="${selectorValue(stream.workspaceId)}"] `
-        + `details[data-work-log-stream-id="${selectorValue(stream.streamId)}"]`,
-      )?.setAttribute("open", "");
-    }
-  }
   for (const turnId of openState.turns) {
     journal.querySelector(
       `[data-work-log-turn-id="${selectorValue(turnId)}"] details[data-work-log-turn-details]`,
@@ -6659,7 +6605,6 @@ async function loadLazyDay(details) {
     syncCollapseTurnButtons(replacement);
     prepareMobileControls(journal);
     if (desiredOpenState) restoreOpenState(desiredOpenState);
-    if (collapseStreams) setStreamsCollapsed(true, replacement);
   })().catch((error) => {
     if (details.isConnected) {
       details.removeAttribute("aria-busy");
@@ -7547,7 +7492,6 @@ function applyJournalGrouping() {
   prepareMobileControls();
   const saved = groupingStates[grouping];
   if (saved) restoreOpenState(saved);
-  if (grouping === "date" && collapseStreams) setStreamsCollapsed(true);
   if (grouping === "task") {
     for (const details of journal.querySelectorAll(
       "details[data-work-log-task-group][open]",

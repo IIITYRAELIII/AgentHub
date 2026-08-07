@@ -870,7 +870,7 @@ test("journal width stays fixed while days and turns are expanded", () => {
   );
 });
 
-test("journal visually separates Workspaces and Streams without Thread cards", () => {
+test("journal renders Workspace turns without separate Stream sections", () => {
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),
     "utf8",
@@ -885,8 +885,10 @@ test("journal visually separates Workspaces and Streams without Thread cards", (
   );
   assert.match(
     styles,
-    /\.journal details\[data-work-log-stream\] \+ details\[data-work-log-stream\]\s*\{[^}]*border-top:\s*1px solid var\(--line\);/su,
+    /\.journal div\[data-work-log-workspace-turns\] > div\[data-work-log-row\]\s*\{[^}]*display:\s*block;/su,
   );
+  assert.match(styles, /\.journal span\[data-work-log-turn-stream\]\s*\{[^}]*border-radius:\s*999px;/su);
+  assert.doesNotMatch(styles, /data-work-log-stream-summary/u);
   assert.match(styles, /\.journal div\[data-work-log-task-content\]:empty\s*\{[^}]*display:\s*none;/su);
 });
 

@@ -919,116 +919,16 @@ main {
   text-align: right;
 }
 
-.journal details[data-work-log-stream] + details[data-work-log-stream] {
-  border-top: 1px solid var(--line);
-}
-
-.journal details[data-work-log-stream] {
-  --row-accent: var(--provider-none);
-}
-
-.journal details[data-work-log-stream][data-work-log-provider="codex"] {
-  --row-accent: var(--provider-codex);
-}
-
-.journal details[data-work-log-stream][data-work-log-provider="claude"] {
-  --row-accent: var(--provider-claude);
-}
-
-.journal details[data-work-log-stream][open] {
-  align-items: start;
-  display: grid;
-  grid-template-columns: 17.5rem minmax(0, 1fr);
-}
-
-.journal details[data-work-log-stream]:not([open]) > :not(summary) {
-  display: none !important;
-}
-
-.journal summary[data-work-log-stream-summary] {
-  align-self: start;
-  cursor: pointer;
-  display: grid;
-  gap: 0.32rem;
-  grid-column: 1;
-  list-style: none;
-  min-width: 0;
-  padding: 0.55rem;
-  position: sticky;
-  top: calc(var(--header-height) + 0.6rem);
-}
-
-.journal summary[data-work-log-stream-summary]::-webkit-details-marker {
-  display: none;
-}
-
-.journal summary[data-work-log-stream-summary]::marker {
-  content: "";
-}
-
-.journal span[data-work-log-stream-title] {
-  background-color: transparent;
-  background-image:
-    linear-gradient(115deg, color-mix(in srgb, var(--row-accent) 10%, transparent), transparent 46%),
-    var(--plate-texture),
-    var(--plate-bg);
-  border: 1px solid var(--line);
-  border-left: var(--rail-width) solid var(--row-accent);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--plate-shadow), -7px 0 18px -14px var(--row-accent);
-  color: var(--text);
-  font-family: var(--font-display);
-  font-weight: var(--title-weight);
-  line-height: 1.35;
-  overflow: hidden;
-  padding: 0.42rem 0.6rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.journal span[data-work-log-stream-title] a,
-.journal span[data-work-log-stream-title] [role="link"],
-.journal span[data-work-log-stream-title] button[data-open-task] {
-  background: transparent;
-  border: 0;
-  color: color-mix(in srgb, var(--row-accent) 45%, var(--text));
-  cursor: pointer;
-  display: block;
-  font: inherit;
-  overflow: hidden;
-  padding: 0;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  width: 100%;
-}
-
-.journal span[data-work-log-stream-usage] {
-  color: var(--text-muted);
-  column-gap: 0.4rem;
-  display: grid;
-  font-family: var(--font-numeric);
-  font-size: 0.75rem;
-  grid-template-columns: minmax(0, 1fr) 8.6ch 6ch;
-  padding: 0.24rem 0.55rem;
-}
-
-.journal span[data-work-log-stream-usage] > span {
-  justify-self: end;
-  text-align: right;
-}
-
-.journal div[data-work-log-stream-turns] {
-  grid-column: 2;
+.journal div[data-work-log-workspace-turns] {
   min-width: 0;
 }
 
-.journal div[data-work-log-stream-turns] > div[data-work-log-row] {
+.journal div[data-work-log-workspace-turns] > div[data-work-log-row] {
   display: block;
   padding: 0.15rem 0;
 }
 
-.journal div[data-work-log-stream-turns] div[data-work-log-task-cell] {
+.journal div[data-work-log-workspace-turns] div[data-work-log-task-cell] {
   display: none;
 }
 
@@ -1185,6 +1085,18 @@ main {
   flex-direction: column;
   gap: 0.35rem;
   overflow: visible;
+}
+
+.journal div[data-work-log-turn-entry] {
+  --row-accent: var(--provider-none);
+}
+
+.journal div[data-work-log-turn-entry][data-work-log-turn-provider="codex"] {
+  --row-accent: var(--provider-codex);
+}
+
+.journal div[data-work-log-turn-entry][data-work-log-turn-provider="claude"] {
+  --row-accent: var(--provider-claude);
 }
 
 .journal div[data-work-log-turn-table] > div[data-work-log-turn-entry],
@@ -1960,10 +1872,38 @@ html[data-grouping="task"]
 }
 
 .journal span[data-work-log-turn-title] {
+  align-items: center;
   border-left: 1px solid var(--line);
   color: var(--text);
+  display: flex;
   font-weight: var(--title-weight);
+  gap: 0.5rem;
+  min-width: 0;
   padding: 0.42rem 0.7rem;
+}
+
+.journal span[data-work-log-turn-stream] {
+  background: color-mix(in srgb, var(--row-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--row-accent) 35%, var(--line));
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--row-accent) 72%, var(--text));
+  flex: 0 1 auto;
+  font-family: var(--font-numeric);
+  font-size: 0.67rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  max-width: min(12rem, 38%);
+  overflow: hidden;
+  padding: 0.12rem 0.42rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.journal span[data-work-log-turn-heading] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Раскрытый ход: полоса «Длит. + Запрос» сверху, ответ на всю ширину снизу —
@@ -2337,10 +2277,6 @@ html[data-grouping="task"]
   .journal div[data-work-log-row] {
     grid-template-columns: 15rem minmax(0, 1fr);
   }
-
-  .journal details[data-work-log-stream][open] {
-    grid-template-columns: 15rem minmax(0, 1fr);
-  }
 }
 
 @media (max-width: 860px) {
@@ -2534,14 +2470,6 @@ html[data-surface="mobile"] .journal details[data-work-log-day-section] {
 
 html[data-surface="mobile"] .journal div[data-work-log-header] {
   display: none;
-}
-
-html[data-surface="mobile"] .journal details[data-work-log-stream][open] {
-  display: block;
-}
-
-html[data-surface="mobile"] .journal summary[data-work-log-stream-summary] {
-  position: static;
 }
 
 html[data-surface="mobile"] .journal span[data-work-log-workspace-usage-breakdown] {
