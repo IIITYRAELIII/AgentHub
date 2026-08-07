@@ -154,7 +154,7 @@ const {
   },
   api: {
   resolvedExplicitSkillNames,
-  discardManualContextCompactionRun,
+  discardContextCompactionRun,
   taskExternalActivity,
   launchTurn,
   startTurn,
@@ -291,7 +291,7 @@ const providerApplication = await createProviderApplicationComposition({
     saveState,
     deliverTurnEndNotification,
     persistManagedRunHistory,
-    discardManualContextCompactionRun,
+    discardContextCompactionRun,
     finalizeRunDelivery,
     restartHasBlockingWork,
     performRestart,

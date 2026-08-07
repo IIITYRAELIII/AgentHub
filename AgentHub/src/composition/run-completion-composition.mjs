@@ -37,7 +37,7 @@ export function createRunCompletionComposition({
   runJournal,
   lastSeenTaskTurnIds,
   codexTurnStarts,
-  discardManualContextCompactionRun,
+  discardContextCompactionRun,
   finalizeRunDelivery,
   refreshTaskDiff,
   runTaskTitle,
@@ -95,7 +95,7 @@ export function createRunCompletionComposition({
   const codexRunFinalizer = new CodexRunFinalizer({
     turnStarts: codexTurnStarts,
     notifications: turnEndNotifications,
-    discardManualCompaction: discardManualContextCompactionRun,
+    discardContextCompaction: discardContextCompactionRun,
     finalizeRunDelivery,
     refreshTaskDiff,
     runTitle: runTaskTitle,

@@ -83,7 +83,7 @@ export function createExecutionBootstrapPhase({
       codexTerminalAudit: provider.codexTerminalAudit,
       codexTransport: clients.codexTransport,
       codexContextMaintenance: provider.codexContextMaintenance,
-      discardManualContextCompactionRun: api.discardManualContextCompactionRun,
+      discardContextCompactionRun: api.discardContextCompactionRun,
       resolveClaudeInvocation: provider.resolveClaudeInvocation,
       readCodexTaskSnapshot: api.readCodexTaskSnapshot,
       readCodexThread: api.readCodexThread,

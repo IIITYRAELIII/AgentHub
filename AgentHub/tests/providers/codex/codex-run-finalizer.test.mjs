@@ -19,7 +19,7 @@ function fixture({ existingCompletion = null, discard = false } = {}) {
   const finalizer = new CodexRunFinalizer({
     turnStarts,
     notifications,
-    discardManualCompaction: async () => discard,
+    discardContextCompaction: async () => discard,
     finalizeRunDelivery: async (...args) => { events.push(["final", ...args]); return "sent"; },
     refreshTaskDiff: async (run) => { run.latestDiff ||= "diff"; events.push(["diff"]); },
     runTitle: () => "Task",

@@ -2,7 +2,7 @@ import { createDeferredCompositionPort } from "./deferred-composition-port.mjs";
 
 export function createAgentHubDeferredPorts() {
   const runAdmission = createDeferredCompositionPort("run admission wiring", [
-    "resolvedExplicitSkillNames", "discardManualContextCompactionRun", "taskExternalActivity",
+    "resolvedExplicitSkillNames", "discardContextCompactionRun", "taskExternalActivity",
     "launchTurn", "startTurn", "cleanupDeferredFiles", "scheduleQueuedInput",
   ]);
   const runtimeCommand = createDeferredCompositionPort("runtime command routing", [

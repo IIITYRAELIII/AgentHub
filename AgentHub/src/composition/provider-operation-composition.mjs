@@ -72,7 +72,7 @@ export function createProviderOperationComposition({
   formatFileApproval,
   formatPermissionsApproval,
   requestMcpElicitation,
-  discardManualContextCompactionRun,
+  discardContextCompactionRun,
 }) {
   const codexProviderTasks = new CodexProviderTaskService({
     transportRunning: codexTransportRunning,
@@ -220,7 +220,7 @@ export function createProviderOperationComposition({
     formatFileApproval,
     formatPermissionsApproval,
     requestMcpElicitation,
-    discardManualCompaction: discardManualContextCompactionRun,
+    discardContextCompaction: discardContextCompactionRun,
     consumeTracker: consumeTurnTokenTracker,
     finishObserved: (...args) => taskObserver().finish(...args),
     turnSnapshot: codexTurnSnapshot,

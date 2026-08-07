@@ -7,7 +7,7 @@ export class CodexRunFinalizer {
   constructor({
     turnStarts,
     notifications,
-    discardManualCompaction,
+    discardContextCompaction,
     finalizeRunDelivery,
     refreshTaskDiff,
     runTitle,
@@ -25,7 +25,7 @@ export class CodexRunFinalizer {
   }) {
     this.turnStarts = turnStarts;
     this.notifications = notifications;
-    this.discardManualCompaction = discardManualCompaction;
+    this.discardContextCompaction = discardContextCompaction;
     this.finalizeRunDelivery = finalizeRunDelivery;
     this.refreshTaskDiff = refreshTaskDiff;
     this.runTitle = runTitle;
@@ -52,7 +52,7 @@ export class CodexRunFinalizer {
     silent = false,
     description = "финальный ответ Codex",
   } = {}) {
-    if (await this.discardManualCompaction(run, completedTurnId)) return null;
+    if (await this.discardContextCompaction(run, completedTurnId)) return null;
     if (!run || !completedTurnId) {
       return this.finalizeRunDelivery(run, {
         answer,

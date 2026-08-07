@@ -175,7 +175,7 @@ export async function createProviderApplicationComposition({
     runJournal,
     lastSeenTaskTurnIds: runtimeData.lastSeenTaskTurnIds,
     codexTurnStarts: codexObservability.turnStarts,
-    discardManualContextCompactionRun: api.discardManualContextCompactionRun,
+    discardContextCompactionRun: api.discardContextCompactionRun,
     finalizeRunDelivery: api.finalizeRunDelivery,
     refreshTaskDiff: api.refreshTaskDiff,
     runTaskTitle,
@@ -356,7 +356,7 @@ export async function createProviderApplicationComposition({
     formatFileApproval: api.formatFileApproval,
     formatPermissionsApproval: late.formatPermissionsApproval,
     requestMcpElicitation: api.requestMcpElicitation,
-    discardManualContextCompactionRun: api.discardManualContextCompactionRun,
+    discardContextCompactionRun: api.discardContextCompactionRun,
   });
   const providerCatalog = createProviderCatalogComposition({
     taskSyncStore: runtimeData.taskSyncStore,

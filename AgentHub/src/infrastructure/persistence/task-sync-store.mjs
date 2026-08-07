@@ -36,9 +36,25 @@ function cleanResponseAnnotations(annotations) {
     .filter((annotation) => annotation.text || annotation.annotation);
 }
 
+function withoutPromptlessAnswerEchoes(history) {
+  const values = [];
+  for (const item of history) {
+    const previous = values.at(-1);
+    const hasUserMessage = item.messages.some((message) => message.role === "user");
+    const duplicateAnswer = Boolean(
+      item.completed
+      && previous?.completed
+      && item.answer
+      && item.answer === previous.answer
+    );
+    if (!item.prompt && !hasUserMessage && duplicateAnswer) continue;
+    values.push(item);
+  }
+  return values;
+}
+
 function cleanHistory(history, limit) {
-  return (Array.isArray(history) ? history : [])
-    .slice(-limit)
+  const cleaned = (Array.isArray(history) ? history : [])
     .map((item) => ({
       id: cleanText(item?.id, 100),
       prompt: cleanText(item?.prompt, 12_000),
@@ -87,6 +103,7 @@ function cleanHistory(history, limit) {
           }];
         }),
     }));
+  return withoutPromptlessAnswerEchoes(cleaned).slice(-limit);
 }
 
 function persistedTask(value = {}, canonicalizeProjectRoot = (projectRoot) => projectRoot) {

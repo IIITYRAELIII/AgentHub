@@ -42,7 +42,7 @@ function fixture({ snapshot = null, now = 1_000_000 } = {}) {
     progressHeartbeatState: () => "active",
     finishProgress: async (run, stage) => events.push(["finish-progress", run, stage]),
     completeRun: async (run) => { events.push(["complete", run]); currentRun = null; },
-    discardManualContextCompactionRun: async () => false,
+    discardContextCompactionRun: async () => false,
     savedLastTaskMessage: () => "",
     savedLastTaskMessageRecord: () => null,
     externalPollIntervalMs: 10,

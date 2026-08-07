@@ -18,6 +18,26 @@ function explicitSkillCandidatesFromInput(input) {
   )];
 }
 
+export function contextCompactionRunIsInternal(run, compaction, turnId = run?.turnId) {
+  const normalizedTurnId = String(turnId ?? "").trim();
+  if (
+    !run
+    || !normalizedTurnId
+    || String(compaction?.turnId ?? "").trim() !== normalizedTurnId
+  ) return false;
+  if (compaction?.origin === "manual") return true;
+  const hasUserInput = Boolean(
+    String(run.promptPreview ?? "").trim()
+    || String(run.clientUserMessageId ?? "").trim()
+    || (Array.isArray(run.userMessages) && run.userMessages.some((message) => (
+      String(message?.text ?? "").trim()
+      || (Array.isArray(message?.attachments) && message.attachments.length)
+    )))
+    || (Array.isArray(run.messageAttachments) && run.messageAttachments.length)
+  );
+  return !hasUserInput && !String(run.responseText ?? "").trim();
+}
+
 export function createRunAdmissionComposition({
   config,
   samePath,
@@ -64,8 +84,10 @@ export function createRunAdmissionComposition({
     }
   }
 
-  async function discardManualContextCompactionRun(run, turnId = run?.turnId) {
-    if (!run || !contextCompactions.isManualTurn(run.threadId, turnId)) return false;
+  async function discardContextCompactionRun(run, turnId = run?.turnId) {
+    if (!contextCompactionRunIsInternal(run, contextCompactions.get(run?.threadId), turnId)) {
+      return false;
+    }
     const normalizedTurnId = String(turnId ?? "").trim();
     codexUsageTracker.deleteTurn(normalizedTurnId);
     turnSpeechButtons.delete(normalizedTurnId);
@@ -206,7 +228,7 @@ export function createRunAdmissionComposition({
 
   return {
     resolvedExplicitSkillNames,
-    discardManualContextCompactionRun,
+    discardContextCompactionRun,
     taskExternalActivity,
     launchTurn,
     startTurn,

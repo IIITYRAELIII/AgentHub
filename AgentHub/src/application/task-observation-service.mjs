@@ -29,7 +29,7 @@ export class TaskObservationService {
     progressHeartbeatState,
     finishProgress,
     completeRun,
-    discardManualContextCompactionRun,
+    discardContextCompactionRun,
     savedLastTaskMessage,
     savedLastTaskMessageRecord,
     externalPollIntervalMs,
@@ -56,7 +56,7 @@ export class TaskObservationService {
     this.progressHeartbeatState = progressHeartbeatState;
     this.finishProgress = finishProgress;
     this.completeRun = completeRun;
-    this.discardManualContextCompactionRun = discardManualContextCompactionRun;
+    this.discardContextCompactionRun = discardContextCompactionRun;
     this.savedLastTaskMessage = savedLastTaskMessage;
     this.savedLastTaskMessageRecord = savedLastTaskMessageRecord;
     if (typeof captureGitBaseline !== "function") {
@@ -188,7 +188,7 @@ export class TaskObservationService {
   async finish(run, snapshot) {
     if (this.taskRuns.forTask(run) !== run) return;
     const completedTurnId = snapshot?.turnId ?? run.turnId;
-    if (await this.discardManualContextCompactionRun(run, completedTurnId)) return;
+    if (await this.discardContextCompactionRun(run, completedTurnId)) return;
     const tracker = snapshot?.tokenTracker ?? null;
     this.update(run, snapshot);
     const answer = String(snapshot?.answer ?? "").trim()

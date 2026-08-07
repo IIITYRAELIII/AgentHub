@@ -415,3 +415,29 @@ test("task sync evicts oldest completed cache entries but never active ones", as
   assert.equal(entries.some((entry) => entry.threadId === "completed-0"), false);
   assert.equal(entries.some((entry) => entry.threadId === "completed-1"), false);
 });
+
+test("task sync removes a promptless compaction echo of the previous answer", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  store.recordHistory(task, [{
+    id: "user-turn",
+    prompt: "Вопрос",
+    answer: "Готовый ответ",
+    status: "completed",
+    completed: true,
+    messages: [
+      { itemId: "user", role: "user", text: "Вопрос" },
+      { itemId: "answer", role: "agent", text: "Готовый ответ" },
+    ],
+  }, {
+    id: "compaction-turn",
+    prompt: "",
+    answer: "Готовый ответ",
+    status: "completed",
+    completed: true,
+    messages: [{ itemId: "echo", role: "agent", text: "Готовый ответ" }],
+  }]);
+
+  assert.deepEqual(store.history(task).map((turn) => turn.id), ["user-turn"]);
+});

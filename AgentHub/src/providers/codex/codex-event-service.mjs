@@ -37,7 +37,7 @@ export class CodexEventService {
       "beginCompaction", "getCompaction", "rememberRawCompactionItem",
       "beginCompactionCleanup", "setStage", "describeItem",
       "itemActivity", "requestApproval", "formatCommandApproval", "formatFileApproval",
-      "formatPermissionsApproval", "requestMcpElicitation", "discardManualCompaction",
+      "formatPermissionsApproval", "requestMcpElicitation", "discardContextCompaction",
       "consumeTracker", "finishObserved", "turnSnapshot", "completeManaged",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
@@ -187,7 +187,7 @@ export class CodexEventService {
       }
       if (run.status !== "running") return;
       const completedTurnId = eventTurnId ?? run.turnId;
-      if (await d.discardManualCompaction(run, completedTurnId)) return;
+      if (await d.discardContextCompaction(run, completedTurnId)) return;
       if (run.observer === true) {
         const tracker = d.consumeTracker(completedTurnId);
         d.speechButtons.delete(completedTurnId);

@@ -14,7 +14,7 @@ function createService(run, overrides = {}) {
     beginCompactionCleanup: noop, setStage: noop, describeItem: () => "stage",
     itemActivity: () => null, requestApproval: async () => {}, formatCommandApproval: () => "",
     formatFileApproval: () => "", formatPermissionsApproval: () => "", requestMcpElicitation: async () => {},
-    discardManualCompaction: async () => false, consumeTracker: () => null,
+    discardContextCompaction: async () => false, consumeTracker: () => null,
     finishObserved: async () => {}, turnSnapshot: () => ({}), completeManaged: async () => {},
     turnTokenUsage: new Map(), speechButtons: new Map(), temporaryFiles: new Map(),
     taskDiffs: { remember: noop }, ...overrides,
