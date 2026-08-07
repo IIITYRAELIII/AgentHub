@@ -1559,6 +1559,13 @@ test("statistics compares one independently selected limit and tracks its price"
   assert.match(app, /agent-hub:comparison-series:v1/u);
   assert.match(app, /function comparisonLimitPrice\(localValues, apiValues, buckets\)/u);
   assert.match(app, /function selectComparisonSeries\(id\)/u);
+  assert.match(app, /function comparisonSeriesPicker\(model\)/u);
+  assert.match(app, /"data-comparison-series-select": ""/u);
+  assert.match(app, /select\.addEventListener\("change", \(\) => selectComparisonSeries\(select\.value\)\)/u);
+  assert.match(
+    app,
+    /const entries = \[\s*comparisonSeriesPicker\(model\),\s*comparisonLegendItem\("Локальный расход"/u,
+  );
   assert.match(app, /seriesId: comparisonState\.seriesId/u);
   assert.match(app, /class: "comparison-deviation-line"/u);
   assert.match(app, /class: "comparison-cost-line"/u);
@@ -1587,6 +1594,8 @@ test("statistics compares one independently selected limit and tracks its price"
   assert.match(styles, /\.comparison-local-line\s*\{[^}]*stroke:\s*var\(--comparison-local\);/su);
   assert.match(styles, /\.comparison-deviation-line\s*\{[^}]*stroke:\s*var\(--comparison-deviation\);/su);
   assert.match(styles, /\.comparison-cost-line\s*\{[^}]*stroke:\s*var\(--comparison-cost\);/su);
+  assert.match(styles, /\.comparison-series-picker\s*\{[^}]*border-radius:\s*var\(--radius-chip\);/su);
+  assert.doesNotMatch(app, /class: `limits-legend-toggle\$\{selected/u);
 });
 
 test("local usage chart keeps its range and labels every calendar day", () => {

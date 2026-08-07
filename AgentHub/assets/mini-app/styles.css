@@ -7317,19 +7317,49 @@ html[data-surface="mobile"] .server-config-grid {
   color: var(--text-soft);
 }
 
-.comparison-legend .limits-legend-toggle.is-selected {
+.comparison-series-picker {
+  align-items: center;
   background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  gap: 0.35rem;
+  padding: 0.12rem 0.5rem 0.12rem 0.35rem;
+}
+
+.comparison-series-picker .themed-select {
+  min-width: min(12rem, 42vw);
+}
+
+.comparison-series-picker .themed-select-button {
+  background: transparent;
+  border-color: transparent;
+  border-radius: var(--radius-chip);
+  font-size: 0.74rem;
+  min-height: 1.55rem;
+  padding: 0.12rem 0.38rem;
+}
+
+.comparison-series-picker .themed-select-button:hover,
+.comparison-series-picker .themed-select[data-open] .themed-select-button {
+  background: var(--surface-3);
   border-color: var(--line-strong);
   color: var(--text);
 }
 
-.comparison-legend .limits-legend-toggle.is-unselected {
-  color: var(--text-faint);
-  opacity: 0.68;
+.comparison-series-picker > .limits-legend-value {
+  white-space: nowrap;
 }
 
-.comparison-legend .limits-legend-toggle.is-unselected .limits-legend-swatch {
-  opacity: 0.55;
+html[data-surface="mobile"] .comparison-series-picker {
+  max-width: 100%;
+}
+
+html[data-surface="mobile"] .comparison-series-picker .themed-select {
+  min-width: min(10rem, 48vw);
+}
+
+html[data-surface="mobile"] .comparison-series-picker > .limits-legend-value {
+  display: none;
 }
 
 .comparison-note {

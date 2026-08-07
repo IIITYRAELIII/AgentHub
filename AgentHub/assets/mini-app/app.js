@@ -6273,6 +6273,38 @@ function comparisonLegendItem(name, color, value, attrs = {}) {
   ]);
 }
 
+function comparisonSeriesName(series) {
+  return series?.window
+    ? `${series.name} · ${series.window}`
+    : String(series?.name || series?.id || "Лимит");
+}
+
+function comparisonSeriesPicker(model) {
+  const selected = model.selectedSeries;
+  const select = el("select", {
+    "aria-label": "Лимит для сопоставления",
+    "data-comparison-series-select": "",
+  });
+  select.append(...model.allSeries.map((series) => el("option", {
+    value: series.id,
+    text: comparisonSeriesName(series),
+    selected: series.id === selected?.id,
+  })));
+  select.addEventListener("change", () => selectComparisonSeries(select.value));
+  const swatch = el("span", { class: "limits-legend-swatch", "aria-hidden": "true" });
+  swatch.style.setProperty("--series-color", selected?.color || "var(--accent)");
+  const metrics = selected && Number.isFinite(selected.correlation)
+    ? `r ${formatComparisonNumber(selected.correlation, 2, true)} · Δ ${formatComparisonNumber(selected.deviation, 1)} п.п.`
+    : selected ? "нет изменений" : "нет данных";
+  const item = el("li", { class: "limits-legend-item comparison-series-picker" }, [
+    swatch,
+    select,
+    el("span", { class: "limits-legend-value", text: metrics }),
+  ]);
+  enhanceThemedSelect(select);
+  return item;
+}
+
 function comparisonPriceText(price) {
   if (!Number.isFinite(price?.early?.value) || !Number.isFinite(price?.late?.value)) return "недостаточно данных";
   const change = Number.isFinite(price.changePercent)
@@ -6284,30 +6316,9 @@ function comparisonPriceText(price) {
 function renderComparisonLegend(model) {
   if (!comparisonLegend) return;
   const entries = [
+    comparisonSeriesPicker(model),
     comparisonLegendItem("Локальный расход", "var(--comparison-local)", `пик ${formatUsageValue(model.local.peak)}`),
   ];
-  for (const series of model.allSeries) {
-    const selected = series.id === model.selectedSeries?.id;
-    const name = series.window ? `${series.name} · ${series.window}` : (series.name || series.id);
-    const swatch = el("span", { class: "limits-legend-swatch", "aria-hidden": "true" });
-    swatch.style.setProperty("--series-color", series.color);
-    const metrics = selected && Number.isFinite(series.correlation)
-      ? `r ${formatComparisonNumber(series.correlation, 2, true)} · Δ ${formatComparisonNumber(series.deviation, 1)} п.п.`
-      : selected ? "нет изменений" : "выбрать";
-    const toggle = el("button", {
-      type: "button",
-      class: `limits-legend-toggle${selected ? " is-selected" : " is-unselected"}`,
-      "aria-pressed": String(selected),
-      "aria-label": `${selected ? "Выбран" : "Выбрать"} лимит ${name}`,
-      "data-series-id": series.id,
-    }, [
-      swatch,
-      el("span", { class: "limits-legend-name", text: name }),
-      el("span", { class: "limits-legend-value", text: metrics }),
-    ]);
-    toggle.addEventListener("click", () => selectComparisonSeries(series.id));
-    entries.push(el("li", { class: "limits-legend-item" }, [toggle]));
-  }
   entries.push(comparisonLegendItem(
     "Отклонение",
     "var(--comparison-deviation)",

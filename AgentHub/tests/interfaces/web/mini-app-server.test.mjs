@@ -489,6 +489,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(script, /creditsLabel\.textContent = "Итого"/u);
     assert.match(script, /agent-hub-token-breakdown/u);
     assert.match(script, /function applyBreakdown/u);
+    assert.match(script, /function comparisonSeriesPicker/u);
+    assert.match(script, /data-comparison-series-select/u);
     assert.doesNotMatch(page, /data-stream-collapse-toggle/u);
     assert.match(page, /data-workspace-collapse-toggle/u);
     assert.match(page, /Сворачивать все ходы Workspace/u);
