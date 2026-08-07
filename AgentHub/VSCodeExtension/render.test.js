@@ -1537,6 +1537,33 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(styles, /\.current-limits-row\s*\{[^}]*overflow-x:\s*auto;/su);
 });
 
+test("statistics adds a line-only correlation chart for local and API usage", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(html, /id="comparison-chart-title">Корреляция расхода</u);
+  assert.match(html, /data-comparison-chart role="img"/u);
+  assert.match(html, /r — корреляция Пирсона,[\s\S]*?Δ — среднее абсолютное отклонение/u);
+  assert.match(app, /function pearsonCorrelation\(left, right\)/u);
+  assert.match(app, /function meanAbsoluteDeviation\(left, right\)/u);
+  assert.match(app, /function limitDeltasByBucket\(series, buckets\)/u);
+  assert.match(app, /emit\("comparison:open", \{ range: comparisonState\.range \}\)/u);
+  assert.match(app, /class: "comparison-deviation-line"/u);
+  assert.match(app, /class: "comparison-local-line"/u);
+  assert.match(app, /class: "limits-series-line comparison-api-line"/u);
+  const comparisonChart = app.slice(
+    app.indexOf("function buildUsageComparisonChart(model)"),
+    app.indexOf("function comparisonLegendItem", app.indexOf("function buildUsageComparisonChart(model)")),
+  );
+  assert.doesNotMatch(comparisonChart, /svgEl\("rect"/u);
+  assert.match(client, /agentHub\.on\("comparison:open"/u);
+  assert.match(client, /Promise\.allSettled\(\[/u);
+  assert.match(client, /agentHub\.setUsageComparison\(\{/u);
+  assert.match(styles, /\.comparison-local-line\s*\{[^}]*stroke:\s*var\(--comparison-local\);/su);
+  assert.match(styles, /\.comparison-deviation-line\s*\{[^}]*stroke:\s*var\(--comparison-deviation\);/su);
+});
+
 test("local usage chart keeps its range and labels every calendar day", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");

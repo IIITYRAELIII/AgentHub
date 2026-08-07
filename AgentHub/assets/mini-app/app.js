@@ -142,6 +142,17 @@ const usageChartWrap = document.querySelector("[data-usage-chart-wrap]");
 const usageChart = document.querySelector("[data-usage-chart]");
 const usageTooltip = document.querySelector("[data-usage-tooltip]");
 const usageNote = document.querySelector("[data-usage-note]");
+const comparisonRanges = document.querySelector("[data-comparison-ranges]");
+const comparisonSubtitle = document.querySelector("[data-comparison-subtitle]");
+const comparisonSummary = document.querySelector("[data-comparison-summary]");
+const comparisonLoading = document.querySelector("[data-comparison-loading]");
+const comparisonError = document.querySelector("[data-comparison-error]");
+const comparisonErrorText = document.querySelector("[data-comparison-error-text]");
+const comparisonEmpty = document.querySelector("[data-comparison-empty]");
+const comparisonChartWrap = document.querySelector("[data-comparison-chart-wrap]");
+const comparisonChart = document.querySelector("[data-comparison-chart]");
+const comparisonTooltip = document.querySelector("[data-comparison-tooltip]");
+const comparisonLegend = document.querySelector("[data-comparison-legend]");
 
 /* --------------------------------------------------------- Telegram / темы */
 
@@ -302,6 +313,22 @@ function savedUsageMode() {
 const usageState = {
   range: savedUsageRange(),
   mode: savedUsageMode(),
+  status: "idle",
+  payload: null,
+  error: "",
+};
+const COMPARISON_RANGE_KEY = "agent-hub:comparison-range:v1";
+
+function savedComparisonRange() {
+  try {
+    return normalizeRange(localStorage.getItem(COMPARISON_RANGE_KEY));
+  } catch {
+    return "24h";
+  }
+}
+
+const comparisonState = {
+  range: savedComparisonRange(),
   status: "idle",
   payload: null,
   error: "",
@@ -1205,6 +1232,7 @@ function activateView(view) {
   if (view === "statistics") {
     requestUsageHistory(usageState.range);
     requestLimits(limitsState.range);
+    requestUsageComparison(comparisonState.range);
   }
   if (view === "server") emit("devices:refresh");
 }
@@ -4602,6 +4630,10 @@ const AgentHub = {
   setUsageHistory(payload) {
     applyUsageHistory(payload);
   },
+  /** Сопоставление локального расхода с изменением лимитов API. */
+  setUsageComparison(payload) {
+    applyUsageComparison(payload);
+  },
   /** Официальные валютные курсы, полученные Agent Hub при запуске. */
   setExchangeRates(payload) {
     const rate = Number(payload?.usdRub);
@@ -4722,6 +4754,7 @@ function toggleSeriesVisibility(id) {
   else limitsState.hidden.add(id);
   persistHiddenSeries();
   renderLimits();
+  renderUsageComparison();
   const buttons = limitsLegend ? [...limitsLegend.querySelectorAll("[data-series-id]")] : [];
   buttons.find((button) => button.dataset.seriesId === id)?.focus();
 }
@@ -5689,6 +5722,523 @@ usageModes?.addEventListener("click", (event) => {
 });
 document.querySelector("[data-usage-retry]")?.addEventListener("click", () => {
   requestUsageHistory(usageState.range, { force: true });
+});
+
+/* --------------------------------------- сопоставление локального и API расхода */
+
+function comparisonPayloadStatus(payload) {
+  if (!payload || payload.error) return payload?.error ? "error" : "empty";
+  if (payload.limits?.error || payload.usage?.error) return "error";
+  return statusFromPayload(payload.limits) === "ready"
+    && statusFromUsagePayload(payload.usage) === "ready"
+    ? "ready"
+    : "empty";
+}
+
+function applyUsageComparison(payload) {
+  const data = payload && typeof payload === "object" ? payload : null;
+  comparisonState.payload = data;
+  if (data?.range) comparisonState.range = normalizeRange(data.range);
+  comparisonState.status = comparisonPayloadStatus(data);
+  comparisonState.error = String(
+    data?.error || data?.limits?.error || data?.usage?.error || "",
+  );
+  renderComparisonRanges();
+  renderUsageComparison();
+}
+
+function requestUsageComparison(range, { force = false } = {}) {
+  comparisonState.range = normalizeRange(range);
+  try {
+    localStorage.setItem(COMPARISON_RANGE_KEY, comparisonState.range);
+  } catch {
+    // Выбор останется активным до закрытия WebView.
+  }
+  const cached = comparisonState.payload
+    && !comparisonState.payload.error
+    && normalizeRange(comparisonState.payload.range) === comparisonState.range;
+  comparisonState.status = cached && !force
+    ? comparisonPayloadStatus(comparisonState.payload)
+    : "loading";
+  comparisonState.error = "";
+  renderComparisonRanges();
+  renderUsageComparison();
+  emit("comparison:open", { range: comparisonState.range });
+}
+
+function renderComparisonRanges() {
+  for (const button of comparisonRanges?.querySelectorAll("[data-range]") ?? []) {
+    const active = button.dataset.range === comparisonState.range;
+    button.setAttribute("aria-pressed", String(active));
+    button.toggleAttribute("data-active", active);
+  }
+}
+
+function comparisonHistoryExtent(payload) {
+  const limitTimes = (Array.isArray(payload?.limits?.series) ? payload.limits.series : [])
+    .flatMap((series) => Array.isArray(series.points) ? series.points : [])
+    .map((point) => Date.parse(point.at))
+    .filter(Number.isFinite);
+  const usageTimes = (Array.isArray(payload?.usage?.points) ? payload.usage.points : [])
+    .map((point) => Date.parse(point.at))
+    .filter(Number.isFinite);
+  const limitFrom = Date.parse(payload?.limits?.from ?? "");
+  const usageFrom = Date.parse(payload?.usage?.from ?? "");
+  const limitTo = Date.parse(payload?.limits?.to ?? "");
+  const usageTo = Date.parse(payload?.usage?.axisTo ?? payload?.usage?.to ?? "");
+  const starts = [limitFrom, usageFrom].filter(Number.isFinite);
+  const ends = [limitTo, usageTo].filter(Number.isFinite);
+  const from = starts.length
+    ? Math.max(...starts)
+    : Math.max(Math.min(...limitTimes), Math.min(...usageTimes));
+  const to = ends.length
+    ? Math.min(...ends)
+    : Math.min(Math.max(...limitTimes), Math.max(...usageTimes));
+  return Number.isFinite(from) && Number.isFinite(to) && to > from ? { from, to } : null;
+}
+
+function comparisonBuckets(payload, extent) {
+  const points = (Array.isArray(payload?.points) ? payload.points : [])
+    .map((point) => ({
+      at: point.at,
+      time: Date.parse(point.at),
+      credits: Math.max(0, Number(point.credits) || 0),
+    }))
+    .filter((point) => Number.isFinite(point.time))
+    .sort((left, right) => left.time - right.time);
+  const inferredStep = points.length > 1 ? points[1].time - points[0].time : Number.NaN;
+  const step = Math.max(1, Number(payload?.bucketMs) || inferredStep || 3_600_000);
+  return points.map((point, index) => {
+    const next = points[index + 1]?.time ?? point.time + step;
+    const start = Math.max(extent.from, point.time);
+    const end = Math.min(extent.to, Math.max(point.time + 1, next));
+    return {
+      ...point,
+      start,
+      end,
+      time: start + Math.max(1, end - start) / 2,
+    };
+  }).filter((point) => point.end > point.start);
+}
+
+function pearsonCorrelation(left, right) {
+  const pairs = left.map((value, index) => [value, right[index]])
+    .filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
+  if (pairs.length < 3) return null;
+  const meanX = pairs.reduce((sum, [x]) => sum + x, 0) / pairs.length;
+  const meanY = pairs.reduce((sum, [, y]) => sum + y, 0) / pairs.length;
+  let numerator = 0;
+  let squareX = 0;
+  let squareY = 0;
+  for (const [x, y] of pairs) {
+    const dx = x - meanX;
+    const dy = y - meanY;
+    numerator += dx * dy;
+    squareX += dx * dx;
+    squareY += dy * dy;
+  }
+  const denominator = Math.sqrt(squareX * squareY);
+  return denominator > 0 ? clampNumber(numerator / denominator, -1, 1) : null;
+}
+
+function meanAbsoluteDeviation(left, right) {
+  const values = left.map((value, index) => (
+    Number.isFinite(value) && Number.isFinite(right[index])
+      ? Math.abs(value - right[index])
+      : null
+  )).filter(Number.isFinite);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+function limitDeltasByBucket(series, buckets) {
+  const points = (Array.isArray(series?.points) ? series.points : [])
+    .map((point) => ({ time: Date.parse(point.at), used: Number(point.usedPercent) }))
+    .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.used))
+    .sort((left, right) => left.time - right.time);
+  if (points.length < 2) return buckets.map(() => null);
+  const values = buckets.map((bucket) => (
+    bucket.end > points[0].time && bucket.start < points.at(-1).time ? 0 : null
+  ));
+  let bucketIndex = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const current = points[index];
+    const delta = current.used - points[index - 1].used;
+    if (!(delta > 0)) continue;
+    while (bucketIndex < buckets.length && current.time >= buckets[bucketIndex].end) {
+      bucketIndex += 1;
+    }
+    const bucket = buckets[bucketIndex];
+    if (bucket && current.time >= bucket.start && current.time < bucket.end) {
+      values[bucketIndex] = (values[bucketIndex] ?? 0) + delta;
+    }
+  }
+  return values;
+}
+
+function normalizeComparisonValues(values) {
+  const peak = Math.max(0, ...values.filter(Number.isFinite));
+  return {
+    peak,
+    values: values.map((value) => (
+      Number.isFinite(value) ? (peak > 0 ? value / peak * 100 : 0) : null
+    )),
+  };
+}
+
+function buildUsageComparisonModel(payload) {
+  const extent = comparisonHistoryExtent(payload);
+  if (!extent) return null;
+  const buckets = comparisonBuckets(payload.usage, extent);
+  if (!buckets.length) return null;
+  const localRaw = buckets.map((bucket) => bucket.credits);
+  const local = normalizeComparisonValues(localRaw);
+  if (!(local.peak > 0)) return null;
+  const rawSeries = Array.isArray(payload?.limits?.series) ? payload.limits.series : [];
+  const allSeries = rawSeries
+    .filter((item) => Array.isArray(item.points) && item.points.length > 1)
+    .map((item, index) => {
+      const id = seriesId(item);
+      const rawValues = limitDeltasByBucket(item, buckets);
+      const normalized = normalizeComparisonValues(rawValues);
+      return {
+        ...item,
+        id,
+        color: seriesColor(item, index),
+        hidden: limitsState.hidden.has(id),
+        peak: normalized.peak,
+        rawValues,
+        values: normalized.values,
+        correlation: normalized.peak > 0
+          ? pearsonCorrelation(local.values, normalized.values)
+          : null,
+        deviation: normalized.peak > 0
+          ? meanAbsoluteDeviation(local.values, normalized.values)
+          : null,
+      };
+    });
+  const visibleSeries = allSeries.filter((series) => !series.hidden && series.peak > 0);
+  const aggregate = buckets.map((_, index) => {
+    const values = visibleSeries.map((series) => series.values[index]).filter(Number.isFinite);
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  });
+  const deviationValues = aggregate.map((value, index) => (
+    Number.isFinite(value) ? Math.abs(local.values[index] - value) : null
+  ));
+  return {
+    extent,
+    buckets,
+    local,
+    allSeries,
+    visibleSeries,
+    aggregate,
+    deviationValues,
+    correlation: pearsonCorrelation(local.values, aggregate),
+    deviation: meanAbsoluteDeviation(local.values, aggregate),
+  };
+}
+
+function comparisonPath(values, buckets, xOf, yOf) {
+  let path = "";
+  let continuing = false;
+  values.forEach((value, index) => {
+    if (!Number.isFinite(value)) {
+      continuing = false;
+      return;
+    }
+    path += `${continuing ? " L" : "M"}${xOf(buckets[index].time).toFixed(1)} ${yOf(value).toFixed(1)}`;
+    continuing = true;
+  });
+  return path;
+}
+
+function formatComparisonNumber(value, digits = 2, signed = false) {
+  return Number(value).toLocaleString("ru-RU", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+    signDisplay: signed ? "always" : "auto",
+  });
+}
+
+function correlationStrength(value) {
+  if (!Number.isFinite(value)) return "недостаточно данных";
+  const strength = Math.abs(value);
+  const label = strength >= 0.75 ? "сильная" : strength >= 0.5 ? "заметная" : strength >= 0.25 ? "слабая" : "почти отсутствует";
+  return value < 0 ? `${label}, обратная` : label;
+}
+
+function comparisonTooltipText(info) {
+  const value = `${Math.round(info.value)}% пика`;
+  const raw = info.kind === "local"
+    ? formatUsageValue(info.raw)
+    : info.kind === "deviation"
+      ? `${formatComparisonNumber(info.raw, 1)} п.п.`
+      : `+${formatComparisonNumber(info.raw, 1)} п.п.`;
+  return `${info.name}. ${formatLimitsDateTime(info.at)}: ${value}, ${raw}`;
+}
+
+function showComparisonTooltip(info, fx, fy) {
+  if (!comparisonTooltip) return;
+  comparisonTooltip.replaceChildren(
+    el("span", { class: "limits-tooltip-title", text: info.name }),
+    el("span", { class: "limits-tooltip-time", text: formatLimitsDateTime(info.at) }),
+    el("span", { class: "limits-tooltip-row", text: comparisonTooltipText(info).split(": ").at(-1) }),
+  );
+  comparisonTooltip.style.left = `${clampNumber(fx * 100, 0, 100)}%`;
+  comparisonTooltip.style.top = `${clampNumber(fy * 100, 0, 100)}%`;
+  comparisonTooltip.dataset.side = fx > 0.6 ? "left" : "right";
+  comparisonTooltip.hidden = false;
+}
+
+function hideComparisonTooltip() {
+  if (comparisonTooltip) comparisonTooltip.hidden = true;
+}
+
+function appendComparisonMarkers(svg, values, rawValues, model, chart, options) {
+  const points = values.map((value, index) => Number.isFinite(value) ? {
+    x: chart.xOf(model.buckets[index].time),
+    y: chart.yOf(value),
+    value,
+    raw: rawValues[index],
+    at: new Date(model.buckets[index].time).toISOString(),
+  } : null).filter(Boolean);
+  limitsMarkerPoints(points, 16).forEach((point) => {
+    const isLast = point === points.at(-1);
+    const info = { ...point, name: options.name, kind: options.kind };
+    const circle = svgEl("circle", {
+      cx: point.x,
+      cy: point.y,
+      r: isLast ? 3.8 : 2.5,
+      class: `limits-point comparison-point comparison-point-${options.kind}`,
+      fill: options.color,
+    });
+    const fx = point.x / chart.W;
+    const fy = point.y / chart.H;
+    circle.addEventListener("pointerenter", () => showComparisonTooltip(info, fx, fy));
+    circle.addEventListener("pointerleave", hideComparisonTooltip);
+    if (isLast) {
+      circle.setAttribute("tabindex", "0");
+      circle.setAttribute("role", "img");
+      circle.setAttribute("aria-label", comparisonTooltipText(info));
+      circle.addEventListener("focus", () => showComparisonTooltip(info, fx, fy));
+      circle.addEventListener("blur", hideComparisonTooltip);
+    }
+    svg.append(circle);
+  });
+}
+
+function buildUsageComparisonChart(model) {
+  const W = chartWidth(comparisonChart);
+  const H = 260;
+  const padL = 46;
+  const padR = 14;
+  const padT = 14;
+  const padB = 44;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const span = Math.max(1, model.extent.to - model.extent.from);
+  const xOf = (time) => padL + ((time - model.extent.from) / span) * plotW;
+  const yOf = (value) => padT + (1 - clampNumber(value, 0, 100) / 100) * plotH;
+  const svg = svgEl("svg", {
+    viewBox: `0 0 ${W} ${H}`,
+    class: "limits-chart-svg comparison-chart-svg",
+    preserveAspectRatio: "none",
+    "aria-hidden": "true",
+  });
+  for (const value of [0, 25, 50, 75, 100]) {
+    const y = yOf(value);
+    svg.append(svgEl("line", { x1: padL, y1: y, x2: W - padR, y2: y, class: "limits-grid-line" }));
+    svg.append(svgEl("text", {
+      x: padL - 6,
+      y: y + 3,
+      class: "limits-axis-label limits-axis-y",
+      "text-anchor": "end",
+    }, [`${value}%`]));
+  }
+  const dayMs = 24 * 60 * 60_000;
+  if (span > dayMs * 1.5) {
+    const first = new Date(model.extent.from);
+    first.setHours(0, 0, 0, 0);
+    const days = [];
+    for (let time = first.getTime(); time <= model.extent.to; time += dayMs) {
+      if (time >= model.extent.from) days.push(time);
+    }
+    const step = Math.max(1, Math.ceil(days.length / Math.max(1, Math.floor(plotW / 46))));
+    days.forEach((time, index) => {
+      if (index % step) return;
+      const x = xOf(time);
+      svg.append(svgEl("line", { x1: x, y1: padT, x2: x, y2: padT + plotH, class: "limits-grid-line limits-grid-day" }));
+      svg.append(svgEl("text", {
+        x, y: H - 20, class: "limits-axis-label limits-axis-x", "text-anchor": "middle",
+      }, [new Date(time).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })]));
+      svg.append(svgEl("text", {
+        x, y: H - 7, class: "limits-axis-label limits-axis-x usage-axis-weekday", "text-anchor": "middle",
+      }, [weekdayLabel(time)]));
+    });
+  } else {
+    for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+      const time = model.extent.from + span * fraction;
+      svg.append(svgEl("text", {
+        x: xOf(time),
+        y: H - 8,
+        class: "limits-axis-label limits-axis-x",
+        "text-anchor": fraction === 0 ? "start" : fraction === 1 ? "end" : "middle",
+      }, [formatAxisTime(time, span)]));
+    }
+  }
+  const deviationPath = comparisonPath(model.deviationValues, model.buckets, xOf, yOf);
+  if (deviationPath) svg.append(svgEl("path", {
+    d: deviationPath,
+    class: "comparison-deviation-line",
+    fill: "none",
+  }));
+  for (const series of model.visibleSeries) {
+    const path = comparisonPath(series.values, model.buckets, xOf, yOf);
+    if (!path) continue;
+    svg.append(svgEl("path", {
+      d: path,
+      class: "limits-series-line comparison-api-line",
+      fill: "none",
+      stroke: series.color,
+    }));
+    appendComparisonMarkers(svg, series.values, series.rawValues, model, {
+      W, H, xOf, yOf,
+    }, {
+      name: series.window ? `${series.name} · ${series.window}` : (series.name || series.id),
+      kind: "api",
+      color: series.color,
+    });
+  }
+  const localPath = comparisonPath(model.local.values, model.buckets, xOf, yOf);
+  svg.append(svgEl("path", { d: localPath, class: "comparison-local-line", fill: "none" }));
+  appendComparisonMarkers(svg, model.local.values, model.buckets.map((bucket) => bucket.credits), model, {
+    W, H, xOf, yOf,
+  }, {
+    name: "Локальный расход",
+    kind: "local",
+    color: "var(--comparison-local)",
+  });
+  if (!model.visibleSeries.length) {
+    svg.append(svgEl("text", {
+      x: padL + plotW / 2,
+      y: padT + plotH / 2,
+      class: "limits-empty-plot",
+      "text-anchor": "middle",
+    }, [model.allSeries.some((series) => series.hidden) ? "Все API-серии скрыты" : "Нет изменений лимитов API"]));
+  }
+  const correlation = Number.isFinite(model.correlation)
+    ? formatComparisonNumber(model.correlation, 2, true)
+    : "не рассчитана";
+  comparisonChart.setAttribute(
+    "aria-label",
+    `Сопоставление локального и API-расхода. Корреляция ${correlation}; среднее отклонение ${
+      Number.isFinite(model.deviation) ? `${formatComparisonNumber(model.deviation, 1)} процентного пункта` : "не рассчитано"
+    }.`,
+  );
+  comparisonChart.replaceChildren(svg);
+}
+
+function comparisonLegendItem(name, color, value, attrs = {}) {
+  const swatch = el("span", { class: "limits-legend-swatch", "aria-hidden": "true" });
+  swatch.style.setProperty("--series-color", color);
+  return el("li", { class: "limits-legend-item" }, [
+    el("span", { class: "limits-legend-toggle comparison-legend-static", ...attrs }, [
+      swatch,
+      el("span", { class: "limits-legend-name", text: name }),
+      value ? el("span", { class: "limits-legend-value", text: value }) : null,
+    ]),
+  ]);
+}
+
+function renderComparisonLegend(model) {
+  if (!comparisonLegend) return;
+  const entries = [
+    comparisonLegendItem("Локальный расход", "var(--comparison-local)", `пик ${formatUsageValue(model.local.peak)}`),
+  ];
+  for (const series of model.allSeries) {
+    const name = series.window ? `${series.name} · ${series.window}` : (series.name || series.id);
+    const swatch = el("span", { class: "limits-legend-swatch", "aria-hidden": "true" });
+    swatch.style.setProperty("--series-color", series.color);
+    const metrics = Number.isFinite(series.correlation)
+      ? `r ${formatComparisonNumber(series.correlation, 2, true)} · Δ ${formatComparisonNumber(series.deviation, 1)} п.п.`
+      : "нет изменений";
+    const toggle = el("button", {
+      type: "button",
+      class: `limits-legend-toggle${series.hidden ? " is-hidden" : ""}`,
+      "aria-pressed": String(!series.hidden),
+      "aria-label": `${series.hidden ? "Показать" : "Скрыть"} серию ${name}`,
+      "data-series-id": series.id,
+    }, [
+      swatch,
+      el("span", { class: "limits-legend-name", text: name }),
+      el("span", { class: "limits-legend-value", text: metrics }),
+    ]);
+    toggle.addEventListener("click", () => toggleSeriesVisibility(series.id));
+    entries.push(el("li", { class: "limits-legend-item" }, [toggle]));
+  }
+  entries.push(comparisonLegendItem(
+    "Отклонение",
+    "var(--comparison-deviation)",
+    Number.isFinite(model.deviation) ? `${formatComparisonNumber(model.deviation, 1)} п.п.` : "—",
+  ));
+  comparisonLegend.replaceChildren(...entries);
+}
+
+function renderComparisonSummary(model) {
+  if (!comparisonSummary) return;
+  const correlation = Number.isFinite(model?.correlation)
+    ? formatComparisonNumber(model.correlation, 2, true)
+    : "—";
+  const deviation = Number.isFinite(model?.deviation) ? `${formatComparisonNumber(model.deviation, 1)} п.п.` : "—";
+  comparisonSummary.hidden = false;
+  comparisonSummary.replaceChildren(
+    el("span", { class: "comparison-metric", title: `Корреляция: ${correlationStrength(model?.correlation)}` }, [
+      el("span", { text: "r" }),
+      el("strong", { text: correlation }),
+    ]),
+    el("span", { class: "comparison-metric", title: "Среднее абсолютное отклонение нормализованных линий" }, [
+      el("span", { text: "Δ" }),
+      el("strong", { text: deviation }),
+    ]),
+  );
+}
+
+function renderUsageComparison() {
+  if (!comparisonLoading) return;
+  const status = comparisonState.status;
+  comparisonLoading.hidden = status !== "loading";
+  comparisonError.hidden = status !== "error";
+  comparisonEmpty.hidden = status !== "empty";
+  comparisonChartWrap.hidden = status !== "ready";
+  hideComparisonTooltip();
+  if (comparisonSummary) comparisonSummary.hidden = status !== "ready";
+  if (status === "error") {
+    comparisonErrorText.textContent = comparisonState.error || "Не удалось сопоставить расход.";
+  }
+  const payload = comparisonState.payload;
+  const extent = payload && !payload.error ? comparisonHistoryExtent(payload) : null;
+  if (comparisonSubtitle) {
+    comparisonSubtitle.textContent = extent
+      ? `${RANGE_LABELS[comparisonState.range]} · ${formatLimitsDateTime(extent.from)} — ${formatLimitsDateTime(extent.to)}`
+      : RANGE_LABELS[comparisonState.range] ?? "";
+  }
+  if (status !== "ready") return;
+  const model = buildUsageComparisonModel(payload);
+  if (!model) {
+    comparisonState.status = "empty";
+    renderUsageComparison();
+    return;
+  }
+  buildUsageComparisonChart(model);
+  renderComparisonLegend(model);
+  renderComparisonSummary(model);
+}
+
+comparisonRanges?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-range]");
+  if (button) requestUsageComparison(button.dataset.range);
+});
+document.querySelector("[data-comparison-retry]")?.addEventListener("click", () => {
+  requestUsageComparison(comparisonState.range, { force: true });
 });
 
 /* ================================================================ ЖУРНАЛ */

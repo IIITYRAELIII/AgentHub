@@ -1482,6 +1482,28 @@ agentHub.on("usage:open", ({ range }) => runAction(async () => {
     });
   }
 }));
+agentHub.on("comparison:open", ({ range }) => runAction(async () => {
+  const requestedRange = String(range || "24h");
+  const [limitsResult, usageResult] = await Promise.allSettled([
+    control("rate-limit-history", {
+      range: requestedRange,
+      maxPointsPerSeries: 600,
+    }),
+    control("usage-history", {
+      range: requestedRange,
+      maxPoints: 600,
+    }),
+  ]);
+  agentHub.setUsageComparison({
+    range: requestedRange,
+    limits: limitsResult.status === "fulfilled"
+      ? limitsResult.value
+      : { range: requestedRange, error: String(limitsResult.reason?.message ?? limitsResult.reason) },
+    usage: usageResult.status === "fulfilled"
+      ? usageResult.value
+      : { range: requestedRange, error: String(usageResult.reason?.message ?? usageResult.reason) },
+  });
+}));
 agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
   const names = {
     model: "model",

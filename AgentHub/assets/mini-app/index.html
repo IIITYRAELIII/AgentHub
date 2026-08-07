@@ -524,6 +524,47 @@
           </div>
         </div>
       </section>
+      <section class="statistics-card" aria-labelledby="comparison-chart-title">
+        <header class="statistics-card-head comparison-card-head">
+          <div>
+            <h2 id="comparison-chart-title">Корреляция расхода</h2>
+            <p data-comparison-subtitle>Локальный расход и изменение лимитов API.</p>
+          </div>
+          <div class="comparison-summary" data-comparison-summary hidden aria-live="polite"></div>
+        </header>
+        <div class="limits-ranges" role="group" aria-label="Период сопоставления"
+          data-comparison-ranges>
+          <button type="button" class="limits-range" data-range="6h" aria-pressed="false">6&nbsp;ч</button>
+          <button type="button" class="limits-range" data-range="24h" aria-pressed="false">24&nbsp;ч</button>
+          <button type="button" class="limits-range" data-range="7d" aria-pressed="false">7&nbsp;д</button>
+          <button type="button" class="limits-range" data-range="30d" aria-pressed="false">30&nbsp;д</button>
+          <button type="button" class="limits-range" data-range="all" aria-pressed="false">Все</button>
+        </div>
+        <div class="limits-body">
+          <div class="limits-state limits-loading" data-comparison-loading hidden aria-live="polite">
+            <span class="limits-spinner" aria-hidden="true"></span>
+            <span>Сопоставляем локальный расход и лимиты…</span>
+          </div>
+          <div class="limits-state limits-error" data-comparison-error hidden role="alert">
+            <p data-comparison-error-text>Не удалось сопоставить расход.</p>
+            <button type="button" class="chip-button" data-comparison-retry>Повторить</button>
+          </div>
+          <div class="limits-state limits-empty" data-comparison-empty hidden>
+            <p>За выбранный период недостаточно совпадающих данных.</p>
+          </div>
+          <div class="limits-chart-wrap" data-comparison-chart-wrap hidden>
+            <figure class="limits-chart comparison-chart" data-comparison-chart role="img"
+              aria-label="График корреляции локального расхода и лимитов API"></figure>
+            <div class="limits-tooltip" data-comparison-tooltip hidden role="status"
+              aria-live="polite"></div>
+            <ul class="limits-legend comparison-legend" data-comparison-legend></ul>
+            <p class="statistics-note comparison-note">
+              Все линии приведены к собственному пику. r — корреляция Пирсона,
+              Δ — среднее абсолютное отклонение линий.
+            </p>
+          </div>
+        </div>
+      </section>
     </div>
   </main>
 

@@ -414,6 +414,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(page, /<option value="taiga">Rain<\/option>/u);
     assert.match(page, /data-panel-open="settings"/u);
     assert.match(page, /data-view-button="statistics"/u);
+    assert.match(page, /data-comparison-chart/u);
+    assert.match(page, /data-comparison-summary/u);
     assert.match(page, /data-usage-unit="pte"/u);
     assert.match(page, /data-toggle="includeClaudeUsage"/u);
     assert.match(page, /data-claude-group-toggle/u);
