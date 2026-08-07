@@ -568,6 +568,9 @@ test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", (
   assert.match(glass, /vec4 fogged = texture2D\(uFogImage,\s*imageUv\)/u);
   assert.match(glass, /function createFogTexture\(image\)/u);
   assert.match(glass, /filter: "blur\(4px\) saturate\(82%\) brightness\(88%\)"/u);
+  assert.match(glass, /webglcontextlost[\s\S]*reset\(\{ contextLost: true \}\)/u);
+  assert.match(glass, /webglcontextrestored[\s\S]*syncTheme/u);
+  assert.match(glass, /window\.addEventListener\("focus", syncTheme\)/u);
   assert.doesNotMatch(glass, /for \(int index = 0; index < 32/u);
   assert.doesNotMatch(glass, /condensation|glassHighlight/u);
   assert.match(glass, /prefers-reduced-motion: reduce/u);
@@ -600,6 +603,9 @@ test("Storm keeps the photo backdrop and adds only lightning", () => {
   assert.doesNotMatch(storm, /spawnDrop|dropPath|trackTrail|function lens\(/u);
   assert.doesNotMatch(styles, /stormglass-bolt|data-storm-strike/u);
   assert.match(storm, /prefers-reduced-motion: reduce/u);
+  assert.match(storm, /webglcontextlost[\s\S]*context = null/u);
+  assert.match(storm, /webglcontextrestored[\s\S]*sync/u);
+  assert.match(storm, /window\.addEventListener\("focus", sync\)/u);
 });
 
 test("Gothic theme uses medieval stone, moonlit steel and a torch-lit scene", () => {
@@ -1971,4 +1977,18 @@ test("hub status band lives inside the top toolbar instead of covering the strea
   assert.doesNotMatch(styles, /\.connection-banner \{[^}]*position: fixed;/u);
   assert.match(styles, /\.connection-banner \{[^}]*border: 0;[^}]*flex: 0 1 auto;[^}]*width: max-content;/u);
   assert.match(styles, /html\[data-surface="mobile"\] \.connection-banner \{[^}]*flex: 0 1 auto;/u);
+});
+
+test("«Ноль» keeps a flat monochrome ground without a single coloured token", () => {
+  const styles = themeFile("zero");
+  const manifest = JSON.parse(fs.readFileSync(path.join(MINI_APP_ROOT, "themes", "zero", "theme.json"), "utf8"));
+  /* Тема отличается от остальных отсутствием цвета: у каждого oklch-токена
+     насыщенность обязана быть нулевой, иначе смысл темы теряется. */
+  const chroma = [...styles.matchAll(/oklch\(\s*[\d.]+\s+([\d.]+)/gu)].map((match) => Number(match[1]));
+  assert.ok(chroma.length > 20);
+  assert.deepEqual([...new Set(chroma)], [0]);
+  assert.equal(manifest.backgrounds.length, 1);
+  assert.doesNotMatch(styles, /url\(/u);
+  const shadows = [...styles.matchAll(/box-shadow:\s*([^;}]+)/gu)].map((match) => match[1].trim());
+  assert.deepEqual([...new Set(shadows)], ["none"]);
 });

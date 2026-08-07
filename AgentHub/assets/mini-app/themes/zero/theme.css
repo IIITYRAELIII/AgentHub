@@ -1,0 +1,171 @@
+/* ============================================================ тема «Ноль» ===
+   Всё лишнее убрано: ни фотографии, ни свечений, ни теней, ни скруглений и ни
+   одного цветного пикселя. В палитре нулевая насыщенность, поэтому различия
+   держатся только на светлоте, а границы — на волосяных линиях. */
+
+html[data-theme="zero"] {
+  --display-weight: 600;
+  --display-spacing: -0.005em;
+  --title-weight: 560;
+  --label-spacing: 0.06em;
+
+  --radius-lg: 0px;
+  --radius-md: 0px;
+  --radius-sm: 0px;
+  --radius-chip: 0px;
+  --rail-width: 2px;
+
+  --bg: oklch(0.13 0 0);
+  --surface-1: oklch(0.13 0 0);
+  --surface-2: oklch(0.17 0 0);
+  --surface-3: oklch(0.2 0 0);
+  --sunken: oklch(0.11 0 0);
+
+  --line: oklch(0.26 0 0);
+  --line-strong: oklch(0.38 0 0);
+
+  --card-bg: linear-gradient(oklch(0.15 0 0), oklch(0.15 0 0));
+  --card-bg-open: linear-gradient(oklch(0.17 0 0), oklch(0.17 0 0));
+  --card-texture: none;
+  --card-border: oklch(0.26 0 0);
+  --card-border-open: oklch(0.38 0 0);
+  --card-shadow: none;
+
+  --plate-bg: linear-gradient(oklch(0.17 0 0), oklch(0.17 0 0));
+  --plate-texture: none;
+  --plate-shadow: none;
+  --turn-shadow: none;
+
+  --text: oklch(0.93 0 0);
+  --text-soft: oklch(0.82 0 0);
+  --text-muted: oklch(0.6 0 0);
+  --text-faint: oklch(0.53 0 0);
+
+  --accent: oklch(0.95 0 0);
+  --accent-soft: oklch(0.22 0 0);
+  --accent-line: oklch(0.5 0 0);
+  --accent-glow: none;
+  --selection: oklch(0.38 0 0);
+  --brand-gradient: none;
+  --brand-shadow: none;
+
+  /* Агентов различает светлота, а не цвет: Codex светлее, Claude темнее. */
+  --provider-none: oklch(0.5 0 0);
+  --provider-codex: oklch(0.86 0 0);
+  --provider-claude: oklch(0.62 0 0);
+
+  --ok: oklch(0.86 0 0);
+  --pending: oklch(0.66 0 0);
+
+  --dot-input: oklch(0.86 0 0);
+  --dot-cache: oklch(0.7 0 0);
+  --dot-output: oklch(0.55 0 0);
+  --dot-think: oklch(0.42 0 0);
+
+  --space-glow-a: transparent;
+  --space-glow-b: transparent;
+  --space-base: var(--bg);
+  --space-star: transparent;
+  --star-opacity: 0;
+  --decor-opacity: 0;
+}
+
+/* Фон ровный: ни градиента, ни картинки, ни атмосферного слоя. */
+html[data-theme="zero"] body {
+  background: var(--bg);
+}
+
+html[data-theme="zero"] body::before,
+html[data-theme="zero"] body::after {
+  content: none;
+}
+
+html[data-theme="zero"] .theme-atmosphere { display: none; }
+
+/* Панели не карточки, а области: разделены линией и воздухом. */
+html[data-theme="zero"] .task-rail,
+html[data-theme="zero"] .chat {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="zero"] .task-rail {
+  border-right: 1px solid var(--line);
+}
+
+html[data-theme="zero"] .app-header {
+  border-bottom: 1px solid var(--line);
+}
+
+/* Раздел выбирают подчёркиванием, а не заливкой. */
+html[data-theme="zero"] .view-tab {
+  background: none;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  box-shadow: none;
+}
+
+html[data-theme="zero"] .view-tab[aria-pressed="true"] {
+  background: none;
+  border-bottom-color: var(--accent);
+  box-shadow: none;
+  color: var(--accent);
+}
+
+/* Задача — строка, а не плитка: выбранную отмечает одна риска слева. */
+html[data-theme="zero"] .task-item {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="zero"] .task-item[data-selected] {
+  background: var(--surface-2);
+}
+
+html[data-theme="zero"] .task-item[data-selected]::before {
+  background: var(--accent);
+}
+
+html[data-theme="zero"] .task-agent,
+html[data-theme="zero"] .task-model {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 0;
+}
+
+/* Реплики без пузырей: своё отделено риской слева, чужое — ничем. */
+html[data-theme="zero"] .msg {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="zero"] .msg-agent {
+  background: none;
+}
+
+html[data-theme="zero"] .msg-user {
+  background: none;
+  border-left: 2px solid var(--line-strong);
+}
+
+html[data-theme="zero"] .option-chip,
+html[data-theme="zero"] .composer,
+html[data-theme="zero"] .composer input,
+html[data-theme="zero"] .composer textarea,
+html[data-theme="zero"] .composer button {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="zero"] .option-chip[aria-pressed="true"] {
+  background: var(--surface-2);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}

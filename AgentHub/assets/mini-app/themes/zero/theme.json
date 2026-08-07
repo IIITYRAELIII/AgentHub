@@ -1,0 +1,10 @@
+{
+  "id": "zero",
+  "name": "Ноль",
+  "color": "#0b0b0b",
+  "order": 125,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "zero", "name": "Ноль" }
+  ]
+}
