@@ -27,7 +27,14 @@ function codexContextProbeItemText(content) {
 }
 
 export function isCodexContextProbeTurn(turn) {
-  if (isCodexContextProbeText(turn?.prompt) || isCodexContextProbeText(turn?.finalAnswer)) return true;
+  if (turn?.contextProbe === true) return true;
+  if (isCodexContextProbeClientId(turn?.clientUserMessageId ?? turn?.clientId)) return true;
+  if ([turn?.prompt, turn?.finalAnswer, turn?.answer, turn?.text, turn?.message]
+    .some(isCodexContextProbeText)) return true;
+  if ((Array.isArray(turn?.userMessages) ? turn.userMessages : []).some((message) => (
+    isCodexContextProbeClientId(message?.clientUserMessageId ?? message?.clientId)
+    || isCodexContextProbeText(message?.text ?? message?.message)
+  ))) return true;
   return (Array.isArray(turn?.items) ? turn.items : []).some((item) => (
     item?.type === "userMessage"
     && (

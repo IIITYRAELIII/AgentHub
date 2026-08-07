@@ -5,6 +5,10 @@ import {
   mergeDurableTaskHistory,
 } from "../../../src/interfaces/desktop/desktop-task-history.mjs";
 import { mergeCompletedTaskHistory } from "../../../src/application/task-history.mjs";
+import {
+  CODEX_CONTEXT_PROBE_PROMPT,
+  CODEX_CONTEXT_PROBE_RESPONSE,
+} from "../../../src/domain/codex-context-probe.mjs";
 
 function fixture(overrides = {}) {
   const calls = {
@@ -179,6 +183,37 @@ test("desktop task history resolves selection and merges the active run", async 
   }]);
   assert.deepEqual(calls.fit, { maxBytes: 3_500_000 });
   assert.match(result.version, /^[A-Za-z0-9_-]{22}$/u);
+});
+
+test("desktop task history removes an already persisted context probe turn", async () => {
+  const { desktopTaskHistory } = fixture({
+    run: null,
+    history: [{
+      id: "real-turn",
+      prompt: "Рабочий запрос",
+      answer: "Рабочий ответ",
+      completed: true,
+      messages: [],
+    }, {
+      id: "probe-turn",
+      prompt: CODEX_CONTEXT_PROBE_PROMPT,
+      answer: "Рабочий ответ",
+      completed: true,
+      messages: [{
+        itemId: "probe-user",
+        role: "user",
+        text: CODEX_CONTEXT_PROBE_PROMPT,
+      }, {
+        itemId: "probe-answer",
+        role: "agent",
+        text: CODEX_CONTEXT_PROBE_RESPONSE,
+      }],
+    }],
+  });
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
+
+  assert.deepEqual(result.items.map((item) => item.id), ["real-turn"]);
 });
 
 test("desktop task history combines sequential provider Threads from one Stream", async () => {

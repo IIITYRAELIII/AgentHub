@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CodexTerminalReconciliationService } from "../../../src/providers/codex/codex-terminal-reconciliation-service.mjs";
+import { CODEX_CONTEXT_PROBE_PROMPT } from "../../../src/domain/codex-context-probe.mjs";
 
 function usage(overrides = {}) {
   return {
@@ -80,6 +81,20 @@ test("recent completed Codex turns keep their grace period before reconciliation
     completedAt: "2026-08-04T10:00:00.000Z",
   });
   assert.equal(result, false);
+  assert.deepEqual(completions, []);
+});
+
+test("terminal reconciliation ignores a context probe before any recovery", async () => {
+  const { service, calls, completions } = harness();
+  const result = await service.reconcile(thread, project, {
+    turnId: "probe-turn",
+    status: "completed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+    prompt: CODEX_CONTEXT_PROBE_PROMPT,
+  });
+
+  assert.equal(result, true);
+  assert.deepEqual(calls, []);
   assert.deepEqual(completions, []);
 });
 

@@ -4,6 +4,11 @@ import { Readable } from "node:stream";
 import test from "node:test";
 
 import {
+  CODEX_CONTEXT_PROBE_PROMPT,
+  CODEX_CONTEXT_PROBE_RESPONSE,
+} from "../../../src/domain/codex-context-probe.mjs";
+
+import {
   codexRecentTerminalTurnsFromJsonl,
   codexSubagentSpawnFromJsonl,
   codexTurnUsageFromJsonl,
@@ -855,6 +860,53 @@ test("terminal event scanner carries active turns across bounded chunks", async 
   });
   assert.deepEqual(second.activeTurns, []);
   assert.deepEqual(second.terminals.map((value) => value.turnId), ["turn-across-chunks"]);
+});
+
+test("terminal event scanner marks the real rollout shape of a context probe", async () => {
+  const turnId = "probe-turn";
+  const source = [
+    line({
+      timestamp: "2026-08-07T23:43:44.542Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: turnId },
+    }),
+    line({
+      timestamp: "2026-08-07T23:43:45.744Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      },
+    }),
+    line({
+      timestamp: "2026-08-07T23:43:51.644Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: CODEX_CONTEXT_PROBE_RESPONSE }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      },
+    }),
+    line({
+      timestamp: "2026-08-07T23:43:52.306Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: turnId },
+    }),
+  ].join("\n");
+
+  const result = await scanCodexTerminalEventsFromOffset("rollout.jsonl", {
+    createReadStreamImpl: () => Readable.from([source]),
+  });
+
+  assert.deepEqual(result.terminals, [{
+    turnId,
+    status: "completed",
+    completedAt: "2026-08-07T23:43:52.306Z",
+    contextProbe: true,
+  }]);
 });
 
 test("terminal event scanner preserves turns that started without a lifecycle terminal", async () => {

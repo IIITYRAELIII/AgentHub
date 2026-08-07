@@ -6,6 +6,10 @@ import { createInterface } from "node:readline";
 
 import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
 import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "../../domain/codex-usage-estimate.mjs";
+import {
+  isCodexContextProbeClientId,
+  isCodexContextProbeText,
+} from "../../domain/codex-context-probe.mjs";
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "../../domain/token-usage.mjs";
 import { displayUserPrompt } from "../../application/task-history.mjs";
 
@@ -487,6 +491,7 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
       turnId,
       startedAt: String(turn?.startedAt ?? ""),
       lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
+      ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
     }]] : [];
   }));
   const start = Math.max(0, Number(startOffset) || 0);
@@ -523,7 +528,18 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
       return;
     }
     const active = activeTurns.get(turnId);
-    if (active) active.lastActivityAt = timestamp;
+    if (active) {
+      active.lastActivityAt = timestamp;
+      const responseMessage = entry?.type === "response_item"
+        && entry?.payload?.type === "message"
+        ? messageText(entry.payload)
+        : "";
+      if (isCodexContextProbeClientId(entry?.payload?.client_id)
+        || isCodexContextProbeText(entry?.payload?.message)
+        || isCodexContextProbeText(responseMessage)) {
+        active.contextProbe = true;
+      }
+    }
     const status = lifecycleTerminalStatus(lifecycle);
     if (!status) return;
     activeTurns.delete(turnId);
@@ -531,6 +547,7 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
       turnId,
       status,
       completedAt: String(entry?.timestamp ?? ""),
+      ...(active?.contextProbe === true ? { contextProbe: true } : {}),
     });
   }
 

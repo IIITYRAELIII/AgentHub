@@ -2,6 +2,7 @@ import path from "node:path";
 
 import { turnEndKey } from "../../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
+import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 
 export class CodexTerminalReconciliationService {
   constructor({
@@ -50,6 +51,7 @@ export class CodexTerminalReconciliationService {
   }
 
   async reconcile(thread, project, terminal) {
+    if (isCodexContextProbeTurn(terminal)) return true;
     const completedAtMs = Date.parse(String(terminal?.completedAt ?? ""));
     if (terminal?.status === "completed"
       && Number.isFinite(completedAtMs)

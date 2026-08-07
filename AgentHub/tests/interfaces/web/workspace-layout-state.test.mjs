@@ -10,3 +10,9 @@ test("workspace layout persists open, ordered and active Streams per client", ()
   assert.match(appSource, /state\.activeStreamByWorkspace\.set\(workspaceKey\(selected\), streamKey\(selected\)\)/u);
   assert.match(appSource, /const activeStreamId = state\.activeStreamByWorkspace\.get\(workspaceId\);[\s\S]*representativeStreamTask/u);
 });
+
+test("moving the active Stream cannot make its previous Workspace unclickable", () => {
+  assert.match(appSource, /function representativeStreamTask\(stream\) \{\s*if \(!stream\) return null;/u);
+  assert.match(appSource, /if \(!activeStream\) \{\s*state\.activeStreamByWorkspace\.delete\(workspaceId\);\s*persistOpenStreams\(\);/u);
+  assert.match(appSource, /selectedTaskLocationChanged[\s\S]*ensureTaskStreamVisible\(current\)/u);
+});

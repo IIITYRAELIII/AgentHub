@@ -1581,9 +1581,12 @@ function representativeWorkspaceTask(tasks) {
   const workspaceId = workspaceKey(tasks[0]);
   const activeStreamId = state.activeStreamByWorkspace.get(workspaceId);
   if (activeStreamId) {
-    const active = representativeStreamTask(
-      workspaceStreams(tasks).find((stream) => stream.id === activeStreamId),
-    );
+    const activeStream = workspaceStreams(tasks).find((stream) => stream.id === activeStreamId);
+    if (!activeStream) {
+      state.activeStreamByWorkspace.delete(workspaceId);
+      persistOpenStreams();
+    }
+    const active = representativeStreamTask(activeStream);
     if (active) return active;
   }
   return [...tasks].sort((left, right) => (
@@ -1627,6 +1630,7 @@ function streamDisplayName(stream, streamCount) {
 }
 
 function representativeStreamTask(stream) {
+  if (!stream) return null;
   return stream.tasks.find((task) => task.id === state.selectedId)
     ?? [...stream.tasks].sort((left, right) => (
       Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
@@ -4627,11 +4631,20 @@ const AgentHub = {
     const selectionChanged = nextSelectedId !== state.selectedId;
     const tasksChanged = !sameData(state.tasks, nextTasks);
     const selectedTaskChanged = !sameData(previousSelectedTask, nextSelectedTask);
+    const selectedTaskLocationChanged = Boolean(previousSelectedTask && nextSelectedTask) && (
+      workspaceKey(previousSelectedTask) !== workspaceKey(nextSelectedTask)
+      || streamKey(previousSelectedTask) !== streamKey(nextSelectedTask)
+    );
     if (!tasksChanged && !selectionChanged) return;
     if (selectionChanged && state.selectedId) saveDraft();
     state.tasks = nextTasks;
     state.selectedId = nextSelectedId;
-    if (selectionChanged) ensureTaskStreamVisible(currentTask());
+    if (selectionChanged || selectedTaskLocationChanged) {
+      const current = currentTask();
+      if (current) state.activeStreamByWorkspace.set(workspaceKey(current), streamKey(current));
+      ensureTaskStreamVisible(current);
+      persistOpenStreams();
+    }
     renderTasks();
     if (selectionChanged || selectedTaskChanged || nextTasks.some((task) => (
       task.id !== nextSelectedId && state.visibleStreamTaskIds.includes(task.id)
@@ -4654,7 +4667,10 @@ const AgentHub = {
     saveDraft();
     state.selectedId = id;
     for (const task of state.tasks) task.selected = task.id === id;
-    ensureTaskStreamVisible(currentTask());
+    const selected = currentTask();
+    if (selected) state.activeStreamByWorkspace.set(workspaceKey(selected), streamKey(selected));
+    ensureTaskStreamVisible(selected);
+    persistOpenStreams();
     renderTasks();
     renderChat();
   },

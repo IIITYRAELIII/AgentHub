@@ -5,6 +5,7 @@ import {
 import { codexTurnAnswer } from "./codex-turn-answers.mjs";
 import { codexThreadHistory } from "../../application/task-history.mjs";
 import { codexThreadWaitingOnApproval } from "./codex-approvals.mjs";
+import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -138,7 +139,8 @@ export class CodexTaskSnapshotService {
     }
 
     const result = threadResult ?? await d.readThread(run.threadId, { fresh, includeTurns: false });
-    const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
+    const turns = (Array.isArray(result.thread?.turns) ? result.thread.turns : [])
+      .filter((turn) => !isCodexContextProbeTurn(turn));
     const exact = run.exactTurnObserver === true;
     const activity = await d.readRolloutActivity(
       result.thread?.path,

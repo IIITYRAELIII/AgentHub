@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { displayUserPrompt } from "../../application/task-history.mjs";
+import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 
 // Builds the bounded Desktop/Mini App history read-model for one task.
 function mergeDurableMessages(hydratedMessages, durableMessages) {
@@ -63,6 +64,13 @@ export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
     };
   }
   return values;
+}
+
+function visibleProviderHistory(provider, history) {
+  const values = Array.isArray(history) ? history : [];
+  return provider === "codex"
+    ? values.filter((turn) => !isCodexContextProbeTurn(turn))
+    : values;
 }
 
 export function createDesktopTaskHistoryFactory({
@@ -177,16 +185,18 @@ export function createDesktopTaskHistoryFactory({
         await scheduleRefresh(threadBinding, { force: true });
       }
       const cached = await historyReader.read(threadBinding);
+      const cachedHistory = visibleProviderHistory(threadBinding.provider, cached.history);
       let threadHistory = hydratedHistories.get(key);
       if (threadHistory) {
         threadHistory = mergeDurableTaskHistory(
-          structuredClone(threadHistory),
-          await hydrateHistory(cached.history),
+          structuredClone(visibleProviderHistory(threadBinding.provider, threadHistory)),
+          await hydrateHistory(cachedHistory),
         );
       } else {
         // First open uses durable history; provider hydration stays in background.
-        threadHistory = await hydrateHistory(cached.history);
+        threadHistory = await hydrateHistory(cachedHistory);
       }
+      threadHistory = visibleProviderHistory(threadBinding.provider, threadHistory);
       hydratedHistories.set(key, structuredClone(threadHistory));
       scheduleRefresh(threadBinding);
       history.push(...threadHistory.map((item) => ({
@@ -195,7 +205,13 @@ export function createDesktopTaskHistoryFactory({
         threadId: threadBinding.threadId,
       })));
     }
-    const running = params.includeActive === false ? null : runs.forTask(binding);
+    const candidateRun = params.includeActive === false ? null : runs.forTask(binding);
+    const running = binding.provider === "codex" && isCodexContextProbeTurn({
+      prompt: candidateRun?.promptPreview,
+      finalAnswer: candidateRun?.responseText,
+      clientUserMessageId: candidateRun?.clientUserMessageId,
+      userMessages: candidateRun?.userMessages,
+    }) ? null : candidateRun;
     if (running) {
       historyMerger.mergeActive(history, {
         active: true,
@@ -210,7 +226,12 @@ export function createDesktopTaskHistoryFactory({
       });
     } else {
       const completed = latestMessage(binding);
-      if (completed?.turnId && completed?.text) {
+      if (completed?.turnId && completed?.text && !(
+        binding.provider === "codex" && isCodexContextProbeTurn({
+          turnId: completed.turnId,
+          finalAnswer: completed.text,
+        })
+      )) {
         historyMerger.mergeCompleted(history, {
           turnId: completed.turnId,
           answer: completed.text,

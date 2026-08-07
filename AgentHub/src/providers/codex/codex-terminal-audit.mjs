@@ -12,8 +12,8 @@ const DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS = 24 * 60 * 60_000;
 const DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES = 32 * 1024 * 1024;
 const DEFAULT_HISTORICAL_ACTIVE_STALE_MS = 30 * 60_000;
 const DEFAULT_SUPPLEMENTAL_DISCOVERY_INTERVAL_MS = 30_000;
-const SNAPSHOT_VERSION = 9;
-const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, SNAPSHOT_VERSION]);
+const SNAPSHOT_VERSION = 10;
+const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, 9, SNAPSHOT_VERSION]);
 
 function timestampMs(value) {
   const numeric = Number(value);
@@ -78,6 +78,7 @@ function restoredPendingThread(value) {
       turnId,
       startedAt: String(turn?.startedAt ?? ""),
       lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
+      ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
     });
   }
   if (!turns.size) return null;
@@ -124,6 +125,7 @@ function restoredHistoricalSubagentBackfill(value) {
           turnId,
           startedAt: String(turn?.startedAt ?? ""),
           lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
+          ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
         }] : [];
       }) : [],
     });
@@ -214,7 +216,7 @@ export class CodexTerminalAudit {
     this.pendingTurns.clear();
     this.subagentBackfillPending = snapshotVersion === 4
       || (compatibleSnapshot && snapshot?.subagentBackfillPending === true);
-    this.historicalSubagentBackfill = [8, SNAPSHOT_VERSION].includes(snapshotVersion)
+    this.historicalSubagentBackfill = [8, 9, SNAPSHOT_VERSION].includes(snapshotVersion)
       ? restoredHistoricalSubagentBackfill(snapshot?.historicalSubagentBackfill)
       : emptyHistoricalSubagentBackfill(compatibleSnapshot);
     this.historicalScanCache.clear();
@@ -308,6 +310,7 @@ export class CodexTerminalAudit {
         turnId,
         startedAt: String(turn?.startedAt ?? ""),
         lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
+        ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
       });
     }
     pending.lastActivityMs = activityMs;

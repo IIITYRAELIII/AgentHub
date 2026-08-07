@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexEventService } from "../../../src/providers/codex/codex-event-service.mjs";
+import {
+  CODEX_CONTEXT_PROBE_PROMPT,
+  CODEX_CONTEXT_PROBE_RESPONSE,
+} from "../../../src/domain/codex-context-probe.mjs";
 
 function createService(run, overrides = {}) {
   const noop = () => {};
@@ -37,6 +41,60 @@ test("Codex event service completes a managed run through the coordinator", asyn
   await service.handle({ method: "turn/completed", params: { turn: { id: "turn-1" } } });
   assert.equal(completed.length, 1);
   assert.equal(completed[0][1].completedTurnId, "turn-1");
+});
+
+test("Codex event service never rebinds an existing run to a context probe", async () => {
+  const run = {
+    threadId: "thread-1",
+    turnId: "user-turn",
+    responseText: "",
+    status: "running",
+    observer: false,
+  };
+  const reindexed = [];
+  const completed = [];
+  const warnings = [];
+  const probeTurn = {
+    id: "probe-turn",
+    status: "inProgress",
+    items: [{
+      type: "userMessage",
+      clientId: "agent-hub-context-probe:probe-1",
+      content: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+    }],
+  };
+  const service = createService(run, {
+    forEvent: ({ turnId, threadId, allowThreadFallback }) => (
+      turnId === run.turnId || (allowThreadFallback && threadId === run.threadId) ? run : null
+    ),
+    reindexRun: (...args) => reindexed.push(args),
+    completeManaged: async (...args) => completed.push(args),
+    logWarn: (...args) => warnings.push(args),
+  });
+
+  await service.handle({
+    method: "turn/started",
+    params: { threadId: "thread-1", turn: probeTurn },
+  });
+  await service.handle({
+    method: "turn/completed",
+    params: {
+      threadId: "thread-1",
+      turn: {
+        ...probeTurn,
+        status: "completed",
+        items: [
+          ...probeTurn.items,
+          { type: "agentMessage", text: CODEX_CONTEXT_PROBE_RESPONSE },
+        ],
+      },
+    },
+  });
+
+  assert.equal(run.turnId, "user-turn");
+  assert.deepEqual(reindexed, []);
+  assert.deepEqual(completed, []);
+  assert.deepEqual(warnings, []);
 });
 
 test("Codex event service preserves the raw compaction item for rotation", async () => {

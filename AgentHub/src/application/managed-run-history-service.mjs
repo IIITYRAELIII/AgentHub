@@ -1,3 +1,5 @@
+import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
+
 export class ManagedRunHistoryService {
   constructor({ taskSyncStore, mergeActiveHistory, hubExecutionOwner, nowIso, nowMs, logger = console }) {
     this.taskSyncStore = taskSyncStore;
@@ -15,6 +17,12 @@ export class ManagedRunHistoryService {
     turnId = run?.turnId,
   } = {}) {
     if (!run?.threadId || !turnId) return;
+    if (run.provider === "codex" && isCodexContextProbeTurn({
+      prompt: run.promptPreview,
+      finalAnswer: answer || run.responseText,
+      clientUserMessageId: run.clientUserMessageId,
+      userMessages: run.userMessages,
+    })) return;
     try {
       const history = this.taskSyncStore.history(run);
       this.mergeActiveHistory(history, {

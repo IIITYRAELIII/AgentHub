@@ -1,5 +1,6 @@
 import { unlink } from "node:fs/promises";
 import { emptyTokenUsage } from "../../domain/token-usage.mjs";
+import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -55,12 +56,15 @@ export class CodexEventService {
     }
     if (id !== undefined && method) d.logError?.(`Codex server request received: ${method}`);
     const eventTurnId = params.turn?.id ?? params.turnId ?? null;
-    const run = d.forEvent({
-      turnId: eventTurnId,
-      threadId: params.threadId,
-      provider: "codex",
-      allowThreadFallback: method === "turn/started",
-    });
+    const contextProbe = isCodexContextProbeTurn(params.turn);
+    const run = contextProbe
+      ? null
+      : d.forEvent({
+        turnId: eventTurnId,
+        threadId: params.threadId,
+        provider: "codex",
+        allowThreadFallback: method === "turn/started",
+      });
     if (method === "thread/settings/updated") {
       d.applyThreadSettings(params.threadId, params.threadSettings);
       void d.saveState();
@@ -182,7 +186,9 @@ export class CodexEventService {
         const temporaryFiles = d.temporaryFiles.get(eventTurnId) ?? [];
         d.temporaryFiles.delete(eventTurnId);
         await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
-        d.logWarn?.(`Completed Codex turn ${eventTurnId ?? "unknown"} has no registered task run`);
+        if (!contextProbe) {
+          d.logWarn?.(`Completed Codex turn ${eventTurnId ?? "unknown"} has no registered task run`);
+        }
         return;
       }
       if (run.status !== "running") return;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ManagedRunHistoryService } from "../../src/application/managed-run-history-service.mjs";
+import { CODEX_CONTEXT_PROBE_PROMPT } from "../../src/domain/codex-context-probe.mjs";
 
 function fixture() {
   const history = [];
@@ -64,4 +65,19 @@ test("terminal history replaces the matching agent item without duplicating it",
   assert.equal(setup.history[0].messages[0].text, "final");
   assert.equal(setup.history[0].completedAt, "2026-08-05T12:00:00.000Z");
   assert.equal(setup.snapshots[0].snapshot.executionOwner, null);
+});
+
+test("managed run history never persists an internal context probe", async () => {
+  const setup = fixture();
+  await setup.service.persist({
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "probe-turn",
+    promptPreview: CODEX_CONTEXT_PROBE_PROMPT,
+    responseText: "stale previous answer",
+    userMessages: [{ text: CODEX_CONTEXT_PROBE_PROMPT }],
+  });
+
+  assert.deepEqual(setup.history, []);
+  assert.deepEqual(setup.snapshots, []);
 });
