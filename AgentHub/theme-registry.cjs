@@ -6,6 +6,7 @@ const path = require("node:path");
 const THEME_ID = /^[a-z][a-z0-9-]{0,63}$/u;
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 const PROTECTED_BRAND_REFERENCE = /(?:\.brand-mark\b|\[\s*data-app-mark\b|agent-hub-mark)/iu;
+const PROTECTED_SHELL_LAYOUT_OVERRIDE = /(?:\.app-header\b|\.workspace\b|\.stream-tabs\b)[^{]*\{[^}]*\b(?:margin-top|padding(?:-block|-top|-bottom)?|position|top|transform|translate)\s*:[^;}]*!important/isu;
 const CONTENT_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
   [".js", "text/javascript; charset=utf-8"],
@@ -64,6 +65,9 @@ function validateThemeResource(theme, directory, file) {
   const source = fs.readFileSync(path.join(directory, ...file.split("/")), "utf8");
   if (PROTECTED_BRAND_REFERENCE.test(source)) {
     fail(theme, `${file} references the shell-owned Agent Hub mark`);
+  }
+  if (extension === ".css" && PROTECTED_SHELL_LAYOUT_OVERRIDE.test(source)) {
+    fail(theme, `${file} overrides shell-owned top-panel geometry`);
   }
 }
 

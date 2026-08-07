@@ -116,6 +116,8 @@ test("local task sync preserves durable message metadata and attachments", async
     answer: "Вижу",
     status: "completed",
     completed: true,
+    promptAnnotations: [{ text: "Цитата из ответа", annotation: "Почему так?" }],
+    promptRequest: "Почему так?",
     startedAt: "2026-07-31T12:00:00.000Z",
     completedAt: "2026-07-31T12:01:00.000Z",
     attachments: [{ id: "screen.png", name: "screen.png", type: "image/png" }],
@@ -125,6 +127,8 @@ test("local task sync preserves durable message metadata and attachments", async
       clientUserMessageId: "client-1",
       role: "user",
       text: "Посмотри скриншот",
+      responseAnnotations: [{ text: "Цитата из ответа", annotation: "Почему так?" }],
+      responseAnnotationRequest: "Почему так?",
       time: "2026-07-31T12:00:00.000Z",
       attachments: [{ id: "screen.png", name: "screen.png", type: "image/png" }],
     }],
@@ -138,10 +142,80 @@ test("local task sync preserves durable message metadata and attachments", async
   assert.equal(entry.completedAt, "2026-07-31T12:01:00.000Z");
   assert.equal(entry.messages[0].clientUserMessageId, "client-1");
   assert.equal(entry.messages[0].time, "2026-07-31T12:00:00.000Z");
+  assert.deepEqual(entry.promptAnnotations, [
+    { text: "Цитата из ответа", annotation: "Почему так?" },
+  ]);
+  assert.equal(entry.promptRequest, "Почему так?");
+  assert.deepEqual(entry.messages[0].responseAnnotations, [
+    { text: "Цитата из ответа", annotation: "Почему так?" },
+  ]);
+  assert.equal(entry.messages[0].responseAnnotationRequest, "Почему так?");
   assert.deepEqual(entry.messages[0].attachments, [
     { id: "screen.png", name: "screen.png", type: "image/png" },
   ]);
   assert.equal(entry.activities[0].label, "Проверка");
+});
+
+test("local task sync migrates annotation columns in an existing SQLite cache", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "task-sync-annotation-schema-"));
+  const filePath = path.join(directory, "task-sync.json");
+  const databaseFile = path.join(directory, "journal.sqlite");
+  let store;
+  try {
+    const database = new DatabaseSync(databaseFile);
+    database.exec(`
+      CREATE TABLE task_read_model_turns (
+        provider TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        id TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        answer TEXT NOT NULL,
+        status TEXT NOT NULL,
+        active INTEGER NOT NULL,
+        completed INTEGER NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        attachments_json TEXT NOT NULL,
+        activities_json TEXT NOT NULL,
+        PRIMARY KEY (provider, thread_id, position)
+      ) WITHOUT ROWID;
+      CREATE TABLE task_read_model_messages (
+        provider TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        turn_position INTEGER NOT NULL,
+        position INTEGER NOT NULL,
+        item_id TEXT NOT NULL,
+        client_user_message_id TEXT,
+        role TEXT NOT NULL,
+        text TEXT NOT NULL,
+        phase TEXT,
+        time TEXT,
+        attachments_json TEXT NOT NULL,
+        PRIMARY KEY (provider, thread_id, turn_position, position)
+      ) WITHOUT ROWID;
+    `);
+    database.close();
+
+    store = new LocalTaskSyncStore({ filePath, databaseFile });
+    await store.load();
+    store.close();
+    store = null;
+
+    const migrated = new DatabaseSync(databaseFile, { readOnly: true });
+    const turnColumns = migrated.prepare("PRAGMA table_info(task_read_model_turns)")
+      .all().map((column) => column.name);
+    const messageColumns = migrated.prepare("PRAGMA table_info(task_read_model_messages)")
+      .all().map((column) => column.name);
+    migrated.close();
+    assert.ok(turnColumns.includes("prompt_annotations_json"));
+    assert.ok(turnColumns.includes("prompt_request"));
+    assert.ok(messageColumns.includes("response_annotations_json"));
+    assert.ok(messageColumns.includes("response_annotation_request"));
+  } finally {
+    store?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("local task sync canonicalizes persisted project roots on load", async () => {

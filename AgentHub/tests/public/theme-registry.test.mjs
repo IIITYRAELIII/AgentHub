@@ -111,3 +111,31 @@ test("theme registry rejects attempts to replace the shell-owned brand mark", as
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("theme registry keeps top-panel geometry under shell ownership", async () => {
+  const directory = await fixture(manifest);
+  try {
+    const stylesheet = path.join(directory, "themes", "aurora", "theme.css");
+    await writeFile(
+      stylesheet,
+      'html[data-theme="aurora"] .app-header { padding-block: 1rem !important; }',
+      "utf8",
+    );
+    assert.throws(
+      () => loadThemeRegistry(directory),
+      /theme aurora: theme\.css overrides shell-owned top-panel geometry/iu,
+    );
+
+    await writeFile(
+      stylesheet,
+      'html[data-theme="aurora"] .workspace { padding-top: 2rem !important; }',
+      "utf8",
+    );
+    assert.throws(
+      () => loadThemeRegistry(directory),
+      /theme aurora: theme\.css overrides shell-owned top-panel geometry/iu,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

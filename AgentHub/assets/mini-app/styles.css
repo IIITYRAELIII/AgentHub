@@ -240,9 +240,13 @@ a:hover {
   -webkit-backdrop-filter: blur(18px) saturate(150%);
   background: color-mix(in srgb, var(--bg) 82%, transparent);
   border-bottom: 1px solid var(--line);
-  padding: max(0.55rem, env(safe-area-inset-top)) 0 0.55rem;
-  position: sticky;
-  top: 0;
+  /* Положение верхней оболочки принадлежит Hub, а не теме: декоративный CSS
+     может менять материал панели, но не её высоту или привязку к краю. */
+  margin-top: 0 !important;
+  padding: max(0.55rem, env(safe-area-inset-top)) 0 0.55rem !important;
+  position: sticky !important;
+  top: 0 !important;
+  transform: none !important;
   z-index: 20;
 }
 
@@ -2902,6 +2906,13 @@ html[data-view="chat"] body {
   z-index: 2;
 }
 
+/* На desktop верхние границы списка Workspace и панели Streams всегда стоят
+   на одной линии. Темы сохраняют собственные ширины, фон, рамки и прозрачность. */
+html[data-view="chat"]:not([data-surface="mobile"]) body > .workspace {
+  padding-top: 0.72rem !important;
+  transform: none !important;
+}
+
 /* Несколько одновременно открытых Streams требуют больше места по горизонтали.
    Темы с узкой сценической композицией расширяют чат своим правилом, а общая
    оболочка немного ужимает список Workspace без потери его читаемости. */
@@ -3553,6 +3564,7 @@ html[data-surface="mobile"]
   overflow-x: auto;
   padding: 0.3rem 0.55rem;
   scrollbar-width: thin;
+  transform: none !important;
 }
 
 .stream-tab {

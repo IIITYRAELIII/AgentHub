@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { catalogTaskKey } from "../../domain/task-catalog-identity.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 2;
+const TASK_SCHEMA_VERSION = 3;
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
@@ -26,6 +26,16 @@ function cleanAttachments(attachments) {
     .filter((attachment) => attachment.id);
 }
 
+function cleanResponseAnnotations(annotations) {
+  return (Array.isArray(annotations) ? annotations : [])
+    .slice(0, 20)
+    .map((annotation) => ({
+      text: cleanText(annotation?.text ?? annotation?.quote, 4_000),
+      annotation: cleanText(annotation?.annotation ?? annotation?.comment, 4_000),
+    }))
+    .filter((annotation) => annotation.text || annotation.annotation);
+}
+
 function cleanHistory(history, limit) {
   return (Array.isArray(history) ? history : [])
     .slice(-limit)
@@ -36,6 +46,10 @@ function cleanHistory(history, limit) {
       status: cleanText(item?.status, 40),
       active: item?.active === true,
       completed: item?.completed === true,
+      promptAnnotations: cleanResponseAnnotations(item?.promptAnnotations),
+      ...(cleanText(item?.promptRequest, 12_000)
+        ? { promptRequest: cleanText(item.promptRequest, 12_000) }
+        : {}),
       ...(item?.startedAt ? { startedAt: cleanText(item.startedAt, 80) } : {}),
       ...(item?.completedAt ? { completedAt: cleanText(item.completedAt, 80) } : {}),
       attachments: cleanAttachments(item?.attachments),
@@ -65,6 +79,10 @@ function cleanHistory(history, limit) {
             text,
             ...(message?.phase ? { phase: cleanText(message.phase, 40) } : {}),
             ...(message?.time ? { time: cleanText(message.time, 80) } : {}),
+            responseAnnotations: cleanResponseAnnotations(message?.responseAnnotations),
+            ...(cleanText(message?.responseAnnotationRequest, 12_000)
+              ? { responseAnnotationRequest: cleanText(message.responseAnnotationRequest, 12_000) }
+              : {}),
             attachments: cleanAttachments(message?.attachments),
           }];
         }),
@@ -163,6 +181,8 @@ function configure(database) {
       completed INTEGER NOT NULL CHECK (completed IN (0, 1)),
       started_at TEXT,
       completed_at TEXT,
+      prompt_annotations_json TEXT NOT NULL DEFAULT '[]',
+      prompt_request TEXT NOT NULL DEFAULT '',
       attachments_json TEXT NOT NULL,
       activities_json TEXT NOT NULL,
       PRIMARY KEY (provider, thread_id, position),
@@ -182,6 +202,8 @@ function configure(database) {
       text TEXT NOT NULL,
       phase TEXT,
       time TEXT,
+      response_annotations_json TEXT NOT NULL DEFAULT '[]',
+      response_annotation_request TEXT NOT NULL DEFAULT '',
       attachments_json TEXT NOT NULL,
       PRIMARY KEY (provider, thread_id, turn_position, position),
       FOREIGN KEY (provider, thread_id, turn_position)
@@ -193,6 +215,24 @@ function configure(database) {
   ).all().map((column) => String(column.name)));
   if (!taskColumns.has("model")) {
     database.exec("ALTER TABLE task_read_model_tasks ADD COLUMN model TEXT");
+  }
+  const turnColumns = new Set(database.prepare(
+    "PRAGMA table_info(task_read_model_turns)",
+  ).all().map((column) => String(column.name)));
+  if (!turnColumns.has("prompt_annotations_json")) {
+    database.exec("ALTER TABLE task_read_model_turns ADD COLUMN prompt_annotations_json TEXT NOT NULL DEFAULT '[]'");
+  }
+  if (!turnColumns.has("prompt_request")) {
+    database.exec("ALTER TABLE task_read_model_turns ADD COLUMN prompt_request TEXT NOT NULL DEFAULT ''");
+  }
+  const messageColumns = new Set(database.prepare(
+    "PRAGMA table_info(task_read_model_messages)",
+  ).all().map((column) => String(column.name)));
+  if (!messageColumns.has("response_annotations_json")) {
+    database.exec("ALTER TABLE task_read_model_messages ADD COLUMN response_annotations_json TEXT NOT NULL DEFAULT '[]'");
+  }
+  if (!messageColumns.has("response_annotation_request")) {
+    database.exec("ALTER TABLE task_read_model_messages ADD COLUMN response_annotation_request TEXT NOT NULL DEFAULT ''");
   }
   database.prepare(`
     INSERT INTO task_read_model_meta (key, value) VALUES ('schema_version', ?)
@@ -302,6 +342,10 @@ export class LocalTaskSyncStore {
         text: String(row.text),
         ...(row.phase ? { phase: String(row.phase) } : {}),
         ...(row.time ? { time: String(row.time) } : {}),
+        responseAnnotations: parseJsonArray(row.response_annotations_json),
+        ...(row.response_annotation_request
+          ? { responseAnnotationRequest: String(row.response_annotation_request) }
+          : {}),
         attachments: parseJsonArray(row.attachments_json),
       });
       messagesByTurn.set(Number(row.turn_position), turnMessages);
@@ -319,6 +363,8 @@ export class LocalTaskSyncStore {
       completed: Number(row.completed) === 1,
       ...(row.started_at ? { startedAt: String(row.started_at) } : {}),
       ...(row.completed_at ? { completedAt: String(row.completed_at) } : {}),
+      promptAnnotations: parseJsonArray(row.prompt_annotations_json),
+      ...(row.prompt_request ? { promptRequest: String(row.prompt_request) } : {}),
       attachments: parseJsonArray(row.attachments_json),
       activities: parseJsonArray(row.activities_json),
       messages: messagesByTurn.get(Number(row.position)) ?? [],
@@ -421,14 +467,16 @@ export class LocalTaskSyncStore {
     const insertTurn = this.#database.prepare(`
       INSERT INTO task_read_model_turns (
         provider, thread_id, position, id, prompt, answer, status, active,
-        completed, started_at, completed_at, attachments_json, activities_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        completed, started_at, completed_at, prompt_annotations_json, prompt_request,
+        attachments_json, activities_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertMessage = this.#database.prepare(`
       INSERT INTO task_read_model_messages (
         provider, thread_id, turn_position, position, item_id,
-        client_user_message_id, role, text, phase, time, attachments_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        client_user_message_id, role, text, phase, time,
+        response_annotations_json, response_annotation_request, attachments_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     history.forEach((turn, turnPosition) => {
       insertTurn.run(
@@ -443,6 +491,8 @@ export class LocalTaskSyncStore {
         turn.completed ? 1 : 0,
         turn.startedAt ?? null,
         turn.completedAt ?? null,
+        JSON.stringify(turn.promptAnnotations),
+        turn.promptRequest ?? "",
         JSON.stringify(turn.attachments),
         JSON.stringify(turn.activities),
       );
@@ -458,6 +508,8 @@ export class LocalTaskSyncStore {
           message.text,
           message.phase ?? null,
           message.time ?? null,
+          JSON.stringify(message.responseAnnotations),
+          message.responseAnnotationRequest ?? "",
           JSON.stringify(message.attachments),
         );
       });
