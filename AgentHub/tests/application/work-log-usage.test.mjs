@@ -259,6 +259,25 @@ test("seven-day usage matches journal calendar days and includes empty days", ()
   assert.ok(history.points.every((point) => new Date(point.at).getHours() === 0));
 });
 
+test("fifteen-day usage includes today and the fourteen preceding calendar days", () => {
+  const now = new Date(2026, 7, 7, 18, 0, 0, 0).getTime();
+  const completedAt = (daysAgo) => {
+    const date = new Date(now);
+    date.setDate(date.getDate() - daysAgo);
+    date.setHours(9, 0, 0, 0);
+    return date.toISOString();
+  };
+  const history = buildWorkLogUsageHistory({
+    firstIncludedDay: { completedAt: completedAt(14), estimatedCredits: 3, estimateKind: "model" },
+    dayBeforeRange: { completedAt: completedAt(15), estimatedCredits: 7, estimateKind: "model" },
+    today: { completedAt: completedAt(0), estimatedCredits: 5, estimateKind: "model" },
+  }, { range: "15d", now });
+  assert.equal(history.range, "15d");
+  assert.equal(history.points.length, 15);
+  assert.equal(history.totalCredits, 8);
+  assert.deepEqual(history.points.map((point) => point.credits), [3, ...Array(13).fill(0), 5]);
+});
+
 test("day range covers the whole calendar day and keeps an axis to midnight", () => {
   const now = new Date(2026, 6, 30, 18, 36, 0, 0).getTime();
   const history = buildWorkLogUsageHistory({

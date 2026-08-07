@@ -560,3 +560,17 @@ test("missing rate limit history returns an empty payload", async () => {
   assert.deepEqual(history.series, []);
   assert.equal(history.from, null);
 });
+
+test("fifteen-day limit history starts at the first included local calendar day", async () => {
+  const nowMs = new Date(2026, 7, 7, 18, 30, 0, 0).getTime();
+  const expected = new Date(nowMs);
+  expected.setHours(0, 0, 0, 0);
+  expected.setDate(expected.getDate() - 14);
+  const history = await readRateLimitHistory(
+    path.join(os.tmpdir(), `missing-limit-history-15d-${Date.now()}.jsonl`),
+    { range: "15d", nowMs },
+  );
+  assert.equal(history.range, "15d");
+  assert.equal(history.from, expected.toISOString());
+  assert.equal(history.to, new Date(nowMs).toISOString());
+});

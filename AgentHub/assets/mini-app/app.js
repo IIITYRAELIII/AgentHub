@@ -290,7 +290,7 @@ const usageUnits = new Set(["$", "rub", "cr", "pte"]);
 const CREDITS_PER_USD = 25;
 const PTE_PER_CREDIT = 16_000;
 const USAGE_RANGE_KEY = "agent-hub:usage-range:v1";
-const RANGE_SEQUENCE = ["6h", "24h", "7d", "30d", "all"];
+const RANGE_SEQUENCE = ["6h", "24h", "7d", "15d", "30d", "all"];
 
 function savedUsageRange() {
   try {
@@ -343,7 +343,14 @@ const comparisonState = {
   payload: null,
   error: "",
 };
-const RANGE_LABELS = { "6h": "6 ч", "24h": "24 ч", "7d": "7 д", "30d": "30 д", all: "Всё время" };
+const RANGE_LABELS = {
+  "6h": "6 ч",
+  "24h": "24 ч",
+  "7d": "7 д",
+  "15d": "15 д",
+  "30d": "30 д",
+  all: "Всё время",
+};
 
 function savedTheme() {
   try {

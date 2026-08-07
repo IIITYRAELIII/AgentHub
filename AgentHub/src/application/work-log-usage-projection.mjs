@@ -1889,6 +1889,7 @@ const USAGE_HISTORY_RANGES = Object.freeze({
   "6h": { spanMs: 6 * 60 * 60 * 1_000, bucketMs: 15 * 60 * 1_000 },
   "24h": { calendarDays: 1, bucketMs: 30 * 60 * 1_000, wholeDay: true },
   "7d": { calendarDays: 7, bucketMs: 24 * 60 * 60 * 1_000, dayBuckets: true },
+  "15d": { calendarDays: 15, bucketMs: 24 * 60 * 60 * 1_000, dayBuckets: true },
   "30d": { calendarDays: 30, bucketMs: 24 * 60 * 60 * 1_000, dayBuckets: true },
 });
 

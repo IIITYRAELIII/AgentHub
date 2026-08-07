@@ -1522,10 +1522,11 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(html, /data-view-button="statistics"/u);
   assert.match(html, /data-usage-chart/u);
   assert.match(html, /data-limits-chart/u);
-  for (const range of ["6h", "24h", "7d", "30d", "all"]) {
+  for (const range of ["6h", "24h", "7d", "15d", "30d", "all"]) {
     assert.match(html, new RegExp(`data-range="${range}"`, "u"));
   }
-  assert.match(app, /const RANGE_SEQUENCE = \["6h", "24h", "7d", "30d", "all"\];/u);
+  assert.equal(html.match(/data-range="15d"/gu)?.length, 3);
+  assert.match(app, /const RANGE_SEQUENCE = \["6h", "24h", "7d", "15d", "30d", "all"\];/u);
   assert.match(html, /data-limits-credits/u);
   assert.match(app, /resetCredits/u);
   assert.match(app, /availableCount/u);

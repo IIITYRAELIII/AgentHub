@@ -11,6 +11,7 @@ const RANGE_MILLISECONDS = Object.freeze({
   "6h": 6 * 60 * 60_000,
   "24h": 24 * 60 * 60_000,
   "7d": 7 * 24 * 60 * 60_000,
+  "15d": 15 * 24 * 60 * 60_000,
   "30d": 30 * 24 * 60 * 60_000,
   all: null,
 });
@@ -80,6 +81,17 @@ function downsample(points, maximum) {
 export function normalizeRateLimitRange(value) {
   const range = String(value ?? "24h").trim().toLowerCase();
   return Object.hasOwn(RANGE_MILLISECONDS, range) ? range : "24h";
+}
+
+function rateLimitRangeStartMs(range, nowMs) {
+  if (range === "15d") {
+    const start = new Date(nowMs);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - 14);
+    return start.getTime();
+  }
+  const duration = RANGE_MILLISECONDS[range];
+  return duration == null ? null : nowMs - duration;
 }
 
 export function rateLimitResetCreditSummary(result, nowMs = Date.now()) {
@@ -197,8 +209,7 @@ export async function readRateLimitHistory(
   } = {},
 ) {
   const normalizedRange = normalizeRateLimitRange(range);
-  const duration = RANGE_MILLISECONDS[normalizedRange];
-  const fromMs = duration == null ? null : nowMs - duration;
+  const fromMs = rateLimitRangeStartMs(normalizedRange, nowMs);
   const maximum = Math.max(50, Math.min(1_200, Number(maxPointsPerSeries) || 600));
   const series = new Map();
   let resetCredits = { availableCount: null, nearestExpiresAt: null };
@@ -313,8 +324,7 @@ function historyFromRecords(records, {
   maxPointsPerSeries = 600,
 } = {}) {
   const normalizedRange = normalizeRateLimitRange(range);
-  const duration = RANGE_MILLISECONDS[normalizedRange];
-  const fromMs = duration == null ? null : nowMs - duration;
+  const fromMs = rateLimitRangeStartMs(normalizedRange, nowMs);
   const maximum = Math.max(50, Math.min(1_200, Number(maxPointsPerSeries) || 600));
   const series = new Map();
   let resetCredits = { availableCount: null, nearestExpiresAt: null };
@@ -643,8 +653,7 @@ export class RateLimitHistoryStore {
       const database = await this.#open();
       const normalizedRange = normalizeRateLimitRange(options.range);
       const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
-      const duration = RANGE_MILLISECONDS[normalizedRange];
-      const fromMs = duration == null ? null : nowMs - duration;
+      const fromMs = rateLimitRangeStartMs(normalizedRange, nowMs);
       const { latestCodex, rows } = await this.#retryBusy(() => {
         const maximum = Math.max(50, Math.min(1_200, Number(options.maxPointsPerSeries) || 600));
         const timeClause = fromMs == null
