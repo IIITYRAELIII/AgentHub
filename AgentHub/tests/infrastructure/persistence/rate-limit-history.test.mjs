@@ -63,7 +63,7 @@ test("Agent Hub persists Codex and Claude limit snapshots every five minutes", a
   );
 });
 
-test("SQLite rate-limit history keeps Codex accounts in separate series", async () => {
+test("SQLite rate-limit history keeps one series with account-tagged points", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limit-accounts-"));
   const databaseFile = path.join(directory, "journal.sqlite");
   const rawFile = path.join(directory, "rate-limits-raw.jsonl");
@@ -83,19 +83,18 @@ test("SQLite rate-limit history keeps Codex accounts in separate series", async 
       range: "24h",
       nowMs: Date.parse("2026-08-07T11:00:00.000Z"),
     });
-    assert.equal(history.series.length, 2);
+    assert.equal(history.series.length, 1);
+    assert.equal(history.series[0].id, "codex:primary");
     assert.deepEqual(
-      history.series.map((series) => ({
-        baseId: series.baseId,
-        accountLabel: series.accountLabel,
-        accountPlan: series.accountPlan,
-      })).sort((left, right) => left.accountLabel.localeCompare(right.accountLabel)),
+      history.series[0].points.map((point) => ({
+        accountLabel: point.accountLabel,
+        accountPlan: point.accountPlan,
+      })),
       [
-        { baseId: "codex:primary", accountLabel: "first@example.test", accountPlan: "pro" },
-        { baseId: "codex:primary", accountLabel: "second@example.test", accountPlan: "plus" },
+        { accountLabel: "first@example.test", accountPlan: "pro" },
+        { accountLabel: "second@example.test", accountPlan: "plus" },
       ],
     );
-    assert.equal(new Set(history.series.map((series) => series.id)).size, 2);
     assert.equal(history.currentAccount.label, "second@example.test");
     assert.deepEqual(history.accounts.map((account) => account.label), [
       "first@example.test",
@@ -124,6 +123,45 @@ test("SQLite rate-limit history keeps Codex accounts in separate series", async 
     const csv = await readFile(csvFile, "utf8");
     assert.match(csv, /^observedAt,provider,accountKey,accountLabel,accountPlan,/u);
     assert.match(csv, /first@example\.test/u);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("manual account event defines an exact activity boundary between snapshots", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limit-account-event-"));
+  const store = new RateLimitHistoryStore({
+    databaseFile: path.join(directory, "journal.sqlite"),
+    rawFile: path.join(directory, "rate-limits-raw.jsonl"),
+    csvFile: path.join(directory, "rate-limits.csv"),
+  });
+  const response = { rateLimits: { limitId: "codex", primary: { usedPercent: 20 } } };
+  try {
+    await store.record(response, "2026-07-07T15:00:00.000Z", "codex", {
+      account: { type: "chatgpt", email: "old@example.test", planType: "plus" },
+    });
+    await store.recordAccountEvent({
+      account: { type: "chatgpt", email: "new@example.test", planType: "pro" },
+    }, "2026-07-07T16:00:00.000Z", "user-backfill");
+    await store.record(response, "2026-07-07T16:30:00.000Z", "codex", {
+      account: { type: "chatgpt", email: "new@example.test", planType: "pro" },
+    });
+    const history = await store.read({
+      range: "24h",
+      nowMs: Date.parse("2026-07-07T17:00:00.000Z"),
+    });
+    const byLabel = new Map(history.accounts.map((account) => [account.label, account.key]));
+    assert.deepEqual(history.accountActivity, [
+      {
+        accountKey: byLabel.get("old@example.test"),
+        intervals: [{ from: "2026-07-07T15:00:00.000Z", to: "2026-07-07T16:00:00.000Z" }],
+      },
+      {
+        accountKey: byLabel.get("new@example.test"),
+        intervals: [{ from: "2026-07-07T16:00:00.000Z", to: "2026-07-07T17:00:00.000Z" }],
+      },
+    ]);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -172,7 +210,9 @@ test("SQLite rate-limit history migrates the pre-account snapshot table", async 
       nowMs: Date.parse("2026-08-07T11:00:00.000Z"),
     });
     assert.equal(history.series.some((series) => series.id === "codex:primary"), true);
-    assert.equal(history.series.some((series) => series.accountLabel === "first@example.test"), true);
+    assert.equal(history.series.some((series) => (
+      series.points.some((point) => point.accountLabel === "first@example.test")
+    )), true);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

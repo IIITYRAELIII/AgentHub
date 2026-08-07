@@ -429,26 +429,25 @@ function historyFromRecords(records, {
         const usedPercent = Number(window?.usedPercent);
         if (!Number.isFinite(usedPercent)) continue;
         const baseId = `${String(bucket?.limitId ?? bucket?.limitName ?? "codex")}:${windowName}`;
-        const id = account?.key ? `${baseId}@${account.key}` : baseId;
-        if (!series.has(id)) {
-          series.set(id, {
-            id,
+        if (!series.has(baseId)) {
+          series.set(baseId, {
+            id: baseId,
             baseId,
             name: limitName(bucket),
             window: windowName,
-            ...(account ? {
-              accountKey: account.key,
-              accountLabel: account.label,
-              accountPlan: account.planType,
-            } : {}),
             points: [],
           });
         }
-        series.get(id).points.push({
+        series.get(baseId).points.push({
           at: new Date(observedMs).toISOString(),
           usedPercent,
           remainingPercent: Math.max(0, 100 - usedPercent),
           resetsAt: isoFromEpochSeconds(window?.resetsAt),
+          ...(account ? {
+            accountKey: account.key,
+            accountLabel: account.label,
+            accountPlan: account.planType,
+          } : {}),
         });
       }
     }
@@ -555,6 +554,15 @@ function configureRateLimitDatabase(database) {
     CREATE TABLE IF NOT EXISTS rate_limit_store_meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS rate_limit_account_events (
+      observed_ms INTEGER PRIMARY KEY,
+      observed_at TEXT NOT NULL,
+      account_key TEXT NOT NULL,
+      account_label TEXT NOT NULL,
+      account_type TEXT NOT NULL,
+      account_plan TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual'
     ) WITHOUT ROWID;
   `);
   const schema = database.prepare(`
@@ -842,6 +850,37 @@ export class RateLimitHistoryStore {
     });
   }
 
+  recordAccountEvent(accountSource, observedAt, source = "manual") {
+    return this.#enqueue(async () => {
+      const database = await this.#open();
+      const account = accountSnapshot(accountSource);
+      const observedMs = Date.parse(observedAt);
+      if (!account) throw new Error("Codex account event requires a recognized account");
+      if (!Number.isFinite(observedMs)) throw new Error(`Invalid account event timestamp: ${observedAt}`);
+      const result = await this.#retryBusy(() => database.prepare(`
+        INSERT INTO rate_limit_account_events
+          (observed_ms, observed_at, account_key, account_label, account_type, account_plan, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(observed_ms) DO UPDATE SET
+          observed_at = excluded.observed_at,
+          account_key = excluded.account_key,
+          account_label = excluded.account_label,
+          account_type = excluded.account_type,
+          account_plan = excluded.account_plan,
+          source = excluded.source
+      `).run(
+        observedMs,
+        new Date(observedMs).toISOString(),
+        account.key,
+        account.label,
+        account.type,
+        account.planType,
+        String(source || "manual"),
+      ));
+      return { recorded: Number(result.changes) > 0, account };
+    });
+  }
+
   read(options = {}) {
     return this.#enqueue(async () => {
       const database = await this.#open();
@@ -896,37 +935,51 @@ export class RateLimitHistoryStore {
           account_plan, response_json FROM rate_limit_snapshots
         WHERE provider = 'codex' AND observed_ms <= ? ORDER BY observed_ms DESC, id DESC LIMIT 1
       `).get(nowMs);
-        const seed = fromMs == null ? null : database.prepare(`
-          SELECT id, observed_at, observed_ms, account_key, account_label,
-            account_type, account_plan
+        const accountTimeline = `
+          SELECT observed_at, observed_ms, account_key, account_label,
+            account_type, account_plan, 0 AS event_priority, id AS stable_order
           FROM rate_limit_snapshots
-          WHERE provider = 'codex' AND observed_ms <= ?
-          ORDER BY observed_ms DESC, id DESC LIMIT 1
+          WHERE provider = 'codex'
+          UNION ALL
+          SELECT observed_at, observed_ms, account_key, account_label,
+            account_type, account_plan, 1 AS event_priority, observed_ms AS stable_order
+          FROM rate_limit_account_events
+        `;
+        const seed = fromMs == null ? null : database.prepare(`
+          WITH timeline AS (${accountTimeline})
+          SELECT observed_at, observed_ms, account_key, account_label,
+            account_type, account_plan
+          FROM timeline
+          WHERE observed_ms <= ?
+          ORDER BY observed_ms DESC, event_priority DESC, stable_order DESC LIMIT 1
         `).get(fromMs);
         const transitions = database.prepare(`
-          WITH ordered AS (
-            SELECT id, observed_at, observed_ms, account_key, account_label,
-              account_type, account_plan,
-              LAG(account_key) OVER (ORDER BY observed_ms, id) AS previous_account_key
-            FROM rate_limit_snapshots
-            WHERE provider = 'codex' AND observed_ms <= ?
+          WITH timeline AS (${accountTimeline}), ordered AS (
+            SELECT observed_at, observed_ms, account_key, account_label,
+              account_type, account_plan, event_priority, stable_order,
+              LAG(account_key) OVER (
+                ORDER BY observed_ms, event_priority, stable_order
+              ) AS previous_account_key
+            FROM timeline
+            WHERE observed_ms <= ?
           )
-          SELECT id, observed_at, observed_ms, account_key, account_label,
+          SELECT observed_at, observed_ms, account_key, account_label,
             account_type, account_plan
           FROM ordered
           WHERE observed_ms > ? AND (
             previous_account_key IS NULL OR account_key <> previous_account_key
           )
-          ORDER BY observed_ms, id
+          ORDER BY observed_ms, event_priority, stable_order
         `).all(nowMs, fromMs == null ? -1 : fromMs);
         const knownAccounts = database.prepare(`
-          WITH ranked AS (
+          WITH timeline AS (${accountTimeline}), ranked AS (
             SELECT account_key, account_label, account_type, account_plan,
               ROW_NUMBER() OVER (
-                PARTITION BY account_key ORDER BY observed_ms DESC, id DESC
+                PARTITION BY account_key
+                ORDER BY observed_ms DESC, event_priority DESC, stable_order DESC
               ) AS account_sequence
-            FROM rate_limit_snapshots
-            WHERE provider = 'codex' AND account_key <> '' AND observed_ms <= ?
+            FROM timeline
+            WHERE account_key <> '' AND observed_ms <= ?
           )
           SELECT account_key, account_label, account_type, account_plan
           FROM ranked WHERE account_sequence = 1

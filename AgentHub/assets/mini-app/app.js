@@ -321,6 +321,7 @@ const usageState = {
 const COMPARISON_RANGE_KEY = "agent-hub:comparison-range:v1";
 const COMPARISON_SERIES_KEY = "agent-hub:comparison-series:v2";
 const STATISTICS_ACCOUNT_KEY = "agent-hub:statistics-account:v1";
+const ALL_STATISTICS_ACCOUNTS = "all";
 
 function savedComparisonRange() {
   try {
@@ -332,9 +333,11 @@ function savedComparisonRange() {
 
 function savedComparisonSeriesId() {
   try {
-    return String(localStorage.getItem(COMPARISON_SERIES_KEY) || "current:codex:primary");
+    return String(localStorage.getItem(COMPARISON_SERIES_KEY) || "codex:primary")
+      .replace(/^current:/u, "")
+      .split("@")[0];
   } catch {
-    return "current:codex:primary";
+    return "codex:primary";
   }
 }
 
@@ -4831,9 +4834,15 @@ function statisticsAccounts(payload = limitsState.payload) {
     if (key) accounts.set(key, { ...account, key });
   }
   for (const series of Array.isArray(payload?.series) ? payload.series : []) {
-    const key = String(series?.accountKey ?? "");
-    if (key && !accounts.has(key)) {
-      accounts.set(key, { key, label: String(series?.accountLabel ?? key), planType: String(series?.accountPlan ?? "") });
+    for (const point of Array.isArray(series?.points) ? series.points : []) {
+      const key = String(point?.accountKey ?? series?.accountKey ?? "");
+      if (key && !accounts.has(key)) {
+        accounts.set(key, {
+          key,
+          label: String(point?.accountLabel ?? series?.accountLabel ?? key),
+          planType: String(point?.accountPlan ?? series?.accountPlan ?? ""),
+        });
+      }
     }
   }
   return [...accounts.values()];
@@ -4842,6 +4851,7 @@ function statisticsAccounts(payload = limitsState.payload) {
 function resolvedStatisticsAccountKey(payload = limitsState.payload) {
   const accounts = statisticsAccounts(payload);
   const selected = String(statisticsAccountState.accountKey || "");
+  if (selected === ALL_STATISTICS_ACCOUNTS) return selected;
   if (accounts.some((account) => account.key === selected)) return selected;
   const current = String(payload?.currentAccount?.key ?? "");
   const resolved = accounts.some((account) => account.key === current)
@@ -4862,12 +4872,19 @@ function renderStatisticsAccountSelects(payload = limitsState.payload) {
   const accounts = statisticsAccounts(payload);
   const selected = resolvedStatisticsAccountKey(payload);
   for (const select of statisticsAccountSelects) {
-    select.replaceChildren(...accounts.map((account) => el("option", {
-      value: account.key,
-      text: account.label || account.key,
-      selected: account.key === selected,
-    })));
-    select.disabled = accounts.length < 2;
+    select.replaceChildren(
+      el("option", {
+        value: ALL_STATISTICS_ACCOUNTS,
+        text: "Все",
+        selected: selected === ALL_STATISTICS_ACCOUNTS,
+      }),
+      ...accounts.map((account) => el("option", {
+        value: account.key,
+        text: account.label || account.key,
+        selected: account.key === selected,
+      })),
+    );
+    select.disabled = accounts.length === 0;
     select.__themedSelect?.render();
   }
 }
@@ -4881,22 +4898,17 @@ function selectStatisticsAccount(accountKey) {
   } catch {
     // Выбор останется активным до закрытия WebView.
   }
-  const baseId = comparisonState.seriesId.split("@")[0];
-  const candidate = (Array.isArray(limitsState.payload?.series) ? limitsState.payload.series : [])
-    .find((series) => series.accountKey === key && (series.baseId || series.id) === baseId)
-    ?? (Array.isArray(limitsState.payload?.series) ? limitsState.payload.series : [])
-      .find((series) => series.accountKey === key && series.baseId === "codex:primary");
-  if (candidate) {
-    comparisonState.seriesId = seriesId(candidate);
-    try {
-      localStorage.setItem(COMPARISON_SERIES_KEY, comparisonState.seriesId);
-    } catch {
-      // Выбор останется активным до закрытия WebView.
-    }
-  }
   renderStatisticsAccountSelects();
   renderLimits();
   requestUsageComparison(comparisonState.range, { force: true });
+}
+
+function statisticsSeriesPoints(series, accountKey = resolvedStatisticsAccountKey()) {
+  const points = Array.isArray(series?.points) ? series.points : [];
+  if (!series?.baseId || accountKey === ALL_STATISTICS_ACCOUNTS) return points;
+  return points.filter((point) => (
+    String(point?.accountKey ?? series?.accountKey ?? "") === accountKey
+  ));
 }
 
 for (const select of statisticsAccountSelects) {
@@ -5202,7 +5214,7 @@ function renderLimits() {
 function buildLimitsChart(payload) {
   const accountKey = resolvedStatisticsAccountKey(payload);
   const rawSeries = (Array.isArray(payload?.series) ? payload.series : [])
-    .filter((item) => !item.accountKey || item.accountKey === accountKey);
+    .map((item) => ({ ...item, points: statisticsSeriesPoints(item, accountKey) }));
   /* Полный список доступных серий — с стабильным цветом (по индексу в полном
    * списке, поэтому скрытие серии не перекрашивает остальные). */
   const allSeries = rawSeries
@@ -6128,7 +6140,8 @@ function buildUsageComparisonModel(payload) {
   if (!(local.peak > 0)) return null;
   const accountKey = resolvedStatisticsAccountKey(payload?.limits);
   const rawSeries = (Array.isArray(payload?.limits?.series) ? payload.limits.series : [])
-    .filter((item) => item.accountKey === accountKey);
+    .filter((item) => item.baseId)
+    .map((item) => ({ ...item, points: statisticsSeriesPoints(item, accountKey) }));
   const allSeries = rawSeries
     .filter((item) => Array.isArray(item.points) && item.points.length > 1)
     .map((item, index) => {
@@ -6151,9 +6164,7 @@ function buildUsageComparisonModel(payload) {
       };
     });
   const selectedSeries = allSeries.find((series) => series.id === comparisonState.seriesId)
-    ?? allSeries.find((series) => (
-      series.baseId === "codex:primary" && series.accountKey === accountKey
-    ))
+    ?? allSeries.find((series) => series.baseId === "codex:primary")
     ?? allSeries[0]
     ?? null;
   if (selectedSeries && selectedSeries.id !== comparisonState.seriesId) {

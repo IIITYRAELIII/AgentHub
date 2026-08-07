@@ -1630,9 +1630,12 @@ test("statistics compares one independently selected limit and tracks its price"
   assert.match(client, /agentHub\.on\("comparison:open"/u);
   assert.match(client, /const activeIntervals = [\s\S]*?limits\?\.accountActivity/u);
   assert.match(client, /const provider = "codex"/u);
-  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", requestedRange, \{[\s\S]*?provider,[\s\S]*?activeIntervals[,}]/u);
+  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", requestedRange, \{[\s\S]*?provider,[\s\S]*?activeIntervals/u);
   assert.match(client, /agentHub\.setUsageComparison\(\{/u);
   assert.match(app, /data-statistics-account-select/u);
+  assert.match(app, /ALL_STATISTICS_ACCOUNTS = "all"/u);
+  assert.match(app, /text: "Все"/u);
+  assert.match(app, /function statisticsSeriesPoints/u);
   assert.match(app, /accountKey: resolvedStatisticsAccountKey\(\)/u);
   assert.match(styles, /\.comparison-local-line\s*\{[^}]*stroke:\s*var\(--comparison-local\);/su);
   assert.match(styles, /\.comparison-deviation-line\s*\{[^}]*stroke:\s*var\(--comparison-deviation\);/su);

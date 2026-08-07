@@ -1600,15 +1600,20 @@ agentHub.on("comparison:open", ({ range, seriesId, accountKey }) => runAction(as
     });
     return;
   }
-  const resolvedAccountKey = requestedAccountKey || String(limits?.currentAccount?.key ?? "");
-  const activeIntervals = (Array.isArray(limits?.accountActivity) ? limits.accountActivity : [])
-    .find((entry) => String(entry?.accountKey ?? "") === resolvedAccountKey)?.intervals ?? [];
+  const allAccounts = requestedAccountKey === "all";
+  const resolvedAccountKey = allAccounts
+    ? "all"
+    : requestedAccountKey || String(limits?.currentAccount?.key ?? "");
+  const activeIntervals = allAccounts
+    ? null
+    : (Array.isArray(limits?.accountActivity) ? limits.accountActivity : [])
+      .find((entry) => String(entry?.accountKey ?? "") === resolvedAccountKey)?.intervals ?? [];
   let usage;
   try {
     usage = await readHistoryWithRangeCompatibility("usage-history", requestedRange, {
       maxPoints: 600,
       provider,
-      activeIntervals,
+      ...(activeIntervals ? { activeIntervals } : {}),
     });
   } catch (error) {
     usage = { range: requestedRange, error: String(error?.message ?? error) };
