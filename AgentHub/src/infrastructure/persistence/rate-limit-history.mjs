@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFile, copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
@@ -31,6 +31,9 @@ function csvCell(value) {
 const CSV_COLUMNS = [
   "observedAt",
   "provider",
+  "accountKey",
+  "accountLabel",
+  "accountPlan",
   "limitId",
   "limitName",
   "window",
@@ -39,6 +42,52 @@ const CSV_COLUMNS = [
   "resetsAt",
   "reachedType",
 ];
+
+export function codexAccountDimension(value) {
+  const account = value?.account && typeof value.account === "object" ? value.account : value;
+  const type = String(account?.type ?? "").trim();
+  const email = String(account?.email ?? "").trim().toLowerCase();
+  const planType = String(account?.planType ?? "").trim();
+  if (type === "chatgpt" && email) {
+    return {
+      key: `chatgpt:${createHash("sha256").update(email).digest("hex")}`,
+      label: email,
+      type,
+      planType,
+    };
+  }
+  if (type === "apiKey") return { key: "api-key", label: "API key", type, planType };
+  if (type === "amazonBedrock") {
+    return { key: "amazon-bedrock", label: "Amazon Bedrock", type, planType };
+  }
+  return { key: "", label: "", type: "", planType: "" };
+}
+
+function storedAccountDimension(value) {
+  if (!value || typeof value !== "object") return codexAccountDimension(null);
+  const key = String(value.key ?? value.accountKey ?? "").trim();
+  if (!key) return codexAccountDimension(value);
+  return {
+    key,
+    label: String(value.label ?? value.accountLabel ?? "").trim(),
+    type: String(value.type ?? value.accountType ?? "").trim(),
+    planType: String(value.planType ?? value.accountPlan ?? "").trim(),
+  };
+}
+
+function accountRecordFields(value) {
+  const account = storedAccountDimension(value);
+  return account.key ? {
+    accountKey: account.key,
+    accountLabel: account.label,
+    accountPlan: account.planType,
+  } : {};
+}
+
+function accountSnapshot(value) {
+  const account = storedAccountDimension(value);
+  return account.key ? account : null;
+}
 
 function csvRows(rows, { header = false } = {}) {
   const lines = header ? [CSV_COLUMNS.join(",")] : [];
@@ -111,7 +160,7 @@ export function rateLimitResetCreditSummary(result, nowMs = Date.now()) {
   };
 }
 
-export function codexRateLimitRows(result, observedAt = new Date().toISOString()) {
+export function codexRateLimitRows(result, observedAt = new Date().toISOString(), account = null) {
   const rows = [];
   for (const bucket of limitBuckets(result)) {
     for (const [windowName, window] of [["primary", bucket.primary], ["secondary", bucket.secondary]]) {
@@ -120,6 +169,7 @@ export function codexRateLimitRows(result, observedAt = new Date().toISOString()
       rows.push({
         observedAt,
         provider: "codex",
+        ...accountRecordFields(account),
         limitId: String(bucket.limitId ?? bucket.limitName ?? "codex"),
         limitName: String(bucket.limitName ?? ""),
         window: windowName,
@@ -188,12 +238,14 @@ export async function appendRawRateLimitSnapshot(
   response,
   observedAt = new Date().toISOString(),
   provider = "codex",
+  account = null,
 ) {
   const resolved = path.resolve(filePath);
   await mkdir(path.dirname(resolved), { recursive: true });
   const record = {
     observedAt,
     provider: String(provider || "codex").toLowerCase(),
+    ...(accountSnapshot(account) ? { account: accountSnapshot(account) } : {}),
     response,
   };
   await appendFile(resolved, `${JSON.stringify(record)}\n`, "utf8");
@@ -214,6 +266,7 @@ export async function readRateLimitHistory(
   const series = new Map();
   let resetCredits = { availableCount: null, nearestExpiresAt: null };
   let latestCodexObservedAt = "";
+  let currentAccount = null;
 
   let input;
   try {
@@ -230,6 +283,7 @@ export async function readRateLimitHistory(
         to: new Date(nowMs).toISOString(),
         series: [],
         resetCredits,
+        currentAccount,
       };
     }
     throw error;
@@ -247,10 +301,12 @@ export async function readRateLimitHistory(
     const observedMs = Date.parse(record?.observedAt ?? "");
     if (!Number.isFinite(observedMs)) continue;
     const provider = String(record?.provider ?? "codex").toLowerCase();
+    const account = accountSnapshot(record?.account);
     if (provider === "codex"
       && (!latestCodexObservedAt || observedMs >= Date.parse(latestCodexObservedAt))) {
       latestCodexObservedAt = new Date(observedMs).toISOString();
       resetCredits = rateLimitResetCreditSummary(record?.response, nowMs);
+      currentAccount = account;
     }
     if ((fromMs != null && observedMs < fromMs) || observedMs > nowMs) continue;
     if (provider === "claude") {
@@ -280,12 +336,19 @@ export async function readRateLimitHistory(
       for (const [windowName, window] of [["primary", bucket?.primary], ["secondary", bucket?.secondary]]) {
         const usedPercent = Number(window?.usedPercent);
         if (!Number.isFinite(usedPercent)) continue;
-        const id = `${String(bucket?.limitId ?? bucket?.limitName ?? "codex")}:${windowName}`;
+        const baseId = `${String(bucket?.limitId ?? bucket?.limitName ?? "codex")}:${windowName}`;
+        const id = account?.key ? `${baseId}@${account.key}` : baseId;
         if (!series.has(id)) {
           series.set(id, {
             id,
+            baseId,
             name: limitName(bucket),
             window: windowName,
+            ...(account ? {
+              accountKey: account.key,
+              accountLabel: account.label,
+              accountPlan: account.planType,
+            } : {}),
             points: [],
           });
         }
@@ -315,6 +378,7 @@ export async function readRateLimitHistory(
         ),
       })),
     resetCredits,
+    currentAccount,
   };
 }
 
@@ -329,14 +393,17 @@ function historyFromRecords(records, {
   const series = new Map();
   let resetCredits = { availableCount: null, nearestExpiresAt: null };
   let latestCodexObservedMs = -Infinity;
+  let currentAccount = null;
 
   for (const record of records) {
     const observedMs = Date.parse(record?.observedAt ?? "");
     if (!Number.isFinite(observedMs)) continue;
     const provider = String(record?.provider ?? "codex").toLowerCase();
+    const account = accountSnapshot(record?.account);
     if (provider === "codex" && observedMs >= latestCodexObservedMs) {
       latestCodexObservedMs = observedMs;
       resetCredits = rateLimitResetCreditSummary(record?.response, nowMs);
+      currentAccount = account;
     }
     if ((fromMs != null && observedMs < fromMs) || observedMs > nowMs) continue;
     if (provider === "claude") {
@@ -361,9 +428,21 @@ function historyFromRecords(records, {
       for (const [windowName, window] of [["primary", bucket?.primary], ["secondary", bucket?.secondary]]) {
         const usedPercent = Number(window?.usedPercent);
         if (!Number.isFinite(usedPercent)) continue;
-        const id = `${String(bucket?.limitId ?? bucket?.limitName ?? "codex")}:${windowName}`;
+        const baseId = `${String(bucket?.limitId ?? bucket?.limitName ?? "codex")}:${windowName}`;
+        const id = account?.key ? `${baseId}@${account.key}` : baseId;
         if (!series.has(id)) {
-          series.set(id, { id, name: limitName(bucket), window: windowName, points: [] });
+          series.set(id, {
+            id,
+            baseId,
+            name: limitName(bucket),
+            window: windowName,
+            ...(account ? {
+              accountKey: account.key,
+              accountLabel: account.label,
+              accountPlan: account.planType,
+            } : {}),
+            points: [],
+          });
         }
         series.get(id).points.push({
           at: new Date(observedMs).toISOString(),
@@ -390,6 +469,7 @@ function historyFromRecords(records, {
         ),
       })),
     resetCredits,
+    currentAccount,
   };
 }
 
@@ -403,12 +483,14 @@ function configureRateLimitDatabase(database) {
       observed_at TEXT NOT NULL,
       observed_ms INTEGER NOT NULL,
       provider TEXT NOT NULL,
+      account_key TEXT NOT NULL DEFAULT '',
+      account_label TEXT NOT NULL DEFAULT '',
+      account_type TEXT NOT NULL DEFAULT '',
+      account_plan TEXT NOT NULL DEFAULT '',
       response_json TEXT NOT NULL,
       rows_json TEXT NOT NULL,
-      UNIQUE(provider, observed_at, response_json)
+      UNIQUE(provider, account_key, observed_at, response_json)
     );
-    CREATE INDEX IF NOT EXISTS rate_limit_snapshots_observed_idx
-      ON rate_limit_snapshots(observed_ms, provider);
     CREATE TABLE IF NOT EXISTS rate_limit_store_meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -417,7 +499,17 @@ function configureRateLimitDatabase(database) {
   const schema = database.prepare(`
     SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rate_limit_snapshots'
   `).get();
-  if (/UNIQUE\(provider,observed_at\)/u.test(String(schema?.sql ?? "").replaceAll(/\s+/gu, ""))) {
+  const columns = new Set(database.prepare("PRAGMA table_info(rate_limit_snapshots)")
+    .all().map((column) => String(column.name)));
+  const compactSchema = String(schema?.sql ?? "").replaceAll(/\s+/gu, "");
+  const currentAccountSchema = ["account_key", "account_label", "account_type", "account_plan"]
+    .every((column) => columns.has(column))
+    && /UNIQUE\(provider,account_key,observed_at,response_json\)/u.test(compactSchema);
+  if (!currentAccountSchema) {
+    const accountKey = columns.has("account_key") ? "account_key" : "''";
+    const accountLabel = columns.has("account_label") ? "account_label" : "''";
+    const accountType = columns.has("account_type") ? "account_type" : "''";
+    const accountPlan = columns.has("account_plan") ? "account_plan" : "''";
     database.exec(`
       BEGIN IMMEDIATE;
       CREATE TABLE rate_limit_snapshots_rebuilt (
@@ -425,21 +517,31 @@ function configureRateLimitDatabase(database) {
         observed_at TEXT NOT NULL,
         observed_ms INTEGER NOT NULL,
         provider TEXT NOT NULL,
+        account_key TEXT NOT NULL DEFAULT '',
+        account_label TEXT NOT NULL DEFAULT '',
+        account_type TEXT NOT NULL DEFAULT '',
+        account_plan TEXT NOT NULL DEFAULT '',
         response_json TEXT NOT NULL,
         rows_json TEXT NOT NULL,
-        UNIQUE(provider, observed_at, response_json)
+        UNIQUE(provider, account_key, observed_at, response_json)
       );
       INSERT OR IGNORE INTO rate_limit_snapshots_rebuilt
-        (id, observed_at, observed_ms, provider, response_json, rows_json)
-      SELECT id, observed_at, observed_ms, provider, response_json, rows_json
+        (id, observed_at, observed_ms, provider, account_key, account_label,
+         account_type, account_plan, response_json, rows_json)
+      SELECT id, observed_at, observed_ms, provider, ${accountKey}, ${accountLabel},
+        ${accountType}, ${accountPlan}, response_json, rows_json
       FROM rate_limit_snapshots;
       DROP TABLE rate_limit_snapshots;
       ALTER TABLE rate_limit_snapshots_rebuilt RENAME TO rate_limit_snapshots;
       CREATE INDEX rate_limit_snapshots_observed_idx
-        ON rate_limit_snapshots(observed_ms, provider);
+        ON rate_limit_snapshots(observed_ms, provider, account_key);
       COMMIT;
     `);
   }
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS rate_limit_snapshots_observed_idx
+      ON rate_limit_snapshots(observed_ms, provider, account_key);
+  `);
 }
 
 export class RateLimitHistoryStore {
@@ -511,8 +613,9 @@ export class RateLimitHistoryStore {
         }
         const insert = database.prepare(`
           INSERT OR IGNORE INTO rate_limit_snapshots
-            (observed_at, observed_ms, provider, response_json, rows_json)
-          VALUES (?, ?, ?, ?, ?)
+            (observed_at, observed_ms, provider, account_key, account_label,
+             account_type, account_plan, response_json, rows_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const line of source.split(/\r?\n/u).filter(Boolean)) {
           let record;
@@ -526,10 +629,21 @@ export class RateLimitHistoryStore {
           if (!Number.isFinite(observedMs)) continue;
           const provider = String(record?.provider ?? "codex").toLowerCase();
           const response = record?.response ?? {};
+          const account = accountSnapshot(record?.account);
           const rows = provider === "claude"
             ? claudeRateLimitRows(response?.limits, observedAt)
-            : codexRateLimitRows(response, observedAt);
-          insert.run(observedAt, observedMs, provider, JSON.stringify(response), JSON.stringify(rows));
+            : codexRateLimitRows(response, observedAt, account);
+          insert.run(
+            observedAt,
+            observedMs,
+            provider,
+            account?.key ?? "",
+            account?.label ?? "",
+            account?.type ?? "",
+            account?.planType ?? "",
+            JSON.stringify(response),
+            JSON.stringify(rows),
+          );
         }
         database.prepare(`
           INSERT INTO rate_limit_store_meta (key, value) VALUES ('legacy_imported', ?)
@@ -575,7 +689,8 @@ export class RateLimitHistoryStore {
           "SELECT value FROM rate_limit_store_meta WHERE key = 'export_generation'",
         ).get()?.value ?? "0");
         const snapshots = this.#database.prepare(`
-          SELECT observed_at, provider, response_json, rows_json
+          SELECT observed_at, provider, account_key, account_label, account_type,
+            account_plan, response_json, rows_json
           FROM rate_limit_snapshots ORDER BY observed_ms, id
         `).all();
         return { generation, snapshots };
@@ -583,6 +698,12 @@ export class RateLimitHistoryStore {
       const raw = snapshots.map((snapshot) => JSON.stringify({
         observedAt: snapshot.observed_at,
         provider: snapshot.provider,
+        ...(snapshot.account_key ? { account: {
+          key: snapshot.account_key,
+          label: snapshot.account_label,
+          type: snapshot.account_type,
+          planType: snapshot.account_plan,
+        } } : {}),
         response: JSON.parse(snapshot.response_json),
       }));
       const rows = snapshots.flatMap((snapshot) => JSON.parse(snapshot.rows_json));
@@ -614,23 +735,35 @@ export class RateLimitHistoryStore {
     return queued;
   }
 
-  record(response, observedAt = new Date().toISOString(), provider = "codex") {
+  record(response, observedAt = new Date().toISOString(), provider = "codex", accountSource = null) {
     return this.#enqueue(async () => {
       const database = await this.#open();
       const normalizedProvider = String(provider || "codex").toLowerCase();
+      const account = normalizedProvider === "codex" ? accountSnapshot(accountSource) : null;
       const observedMs = Date.parse(observedAt);
       if (!Number.isFinite(observedMs)) throw new Error(`Invalid rate-limit timestamp: ${observedAt}`);
       const rows = normalizedProvider === "claude"
         ? claudeRateLimitRows(response?.limits, observedAt)
-        : codexRateLimitRows(response, observedAt);
+        : codexRateLimitRows(response, observedAt, account);
       const result = await this.#retryBusy(() => {
         database.exec("BEGIN IMMEDIATE");
         try {
           const result = database.prepare(`
             INSERT OR IGNORE INTO rate_limit_snapshots
-              (observed_at, observed_ms, provider, response_json, rows_json)
-            VALUES (?, ?, ?, ?, ?)
-          `).run(observedAt, observedMs, normalizedProvider, JSON.stringify(response), JSON.stringify(rows));
+              (observed_at, observed_ms, provider, account_key, account_label,
+               account_type, account_plan, response_json, rows_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            observedAt,
+            observedMs,
+            normalizedProvider,
+            account?.key ?? "",
+            account?.label ?? "",
+            account?.type ?? "",
+            account?.planType ?? "",
+            JSON.stringify(response),
+            JSON.stringify(rows),
+          );
           if (Number(result.changes) > 0) {
             database.prepare(`
               INSERT INTO rate_limit_store_meta (key, value) VALUES ('export_generation', '1')
@@ -666,13 +799,16 @@ export class RateLimitHistoryStore {
         // keeps JSON parsing and response memory bounded even for range=all.
         const rows = database.prepare(`
           WITH filtered AS (
-            SELECT id, observed_at, observed_ms, provider, response_json
+            SELECT id, observed_at, observed_ms, provider, account_key, account_label,
+              account_type, account_plan, response_json
             FROM rate_limit_snapshots
             WHERE ${timeClause}
           ), numbered AS (
             SELECT *,
-              ROW_NUMBER() OVER (PARTITION BY provider ORDER BY observed_ms, id) AS sequence_number,
-              COUNT(*) OVER (PARTITION BY provider) AS total_count
+              ROW_NUMBER() OVER (
+                PARTITION BY provider, account_key ORDER BY observed_ms, id
+              ) AS sequence_number,
+              COUNT(*) OVER (PARTITION BY provider, account_key) AS total_count
             FROM filtered
           ), bucketed AS (
             SELECT *, CASE
@@ -683,18 +819,20 @@ export class RateLimitHistoryStore {
           ), representatives AS (
             SELECT *,
               ROW_NUMBER() OVER (
-                PARTITION BY provider, sample_bucket
+                PARTITION BY provider, account_key, sample_bucket
                 ORDER BY observed_ms, id
               ) AS bucket_sequence
             FROM bucketed
           )
-          SELECT id, observed_at, provider, response_json
+          SELECT id, observed_at, provider, account_key, account_label, account_type,
+            account_plan, response_json
           FROM representatives
           WHERE bucket_sequence = 1
           ORDER BY observed_ms, id
         `).all(...timeParameters, maximum, maximum);
         const latestCodex = database.prepare(`
-        SELECT id, observed_at, provider, response_json FROM rate_limit_snapshots
+        SELECT id, observed_at, provider, account_key, account_label, account_type,
+          account_plan, response_json FROM rate_limit_snapshots
         WHERE provider = 'codex' AND observed_ms <= ? ORDER BY observed_ms DESC, id DESC LIMIT 1
       `).get(nowMs);
         return { latestCodex, rows };
@@ -703,6 +841,12 @@ export class RateLimitHistoryStore {
       return historyFromRecords(rows.map((row) => ({
         observedAt: row.observed_at,
         provider: row.provider,
+        account: row.account_key ? {
+          key: row.account_key,
+          label: row.account_label,
+          type: row.account_type,
+          planType: row.account_plan,
+        } : null,
         response: JSON.parse(row.response_json),
       })), { ...options, range: normalizedRange, nowMs });
     });

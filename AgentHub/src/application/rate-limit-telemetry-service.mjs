@@ -5,6 +5,7 @@ export class RateLimitTelemetryService {
     formatClaudeRateLimits,
     formatCodexRateLimits,
     spawnCapture,
+    readCodexAccount,
     readCodexRateLimits,
     codexRunning,
     historyStore,
@@ -20,6 +21,7 @@ export class RateLimitTelemetryService {
     this.formatClaudeRateLimits = formatClaudeRateLimits;
     this.formatCodexRateLimits = formatCodexRateLimits;
     this.spawnCapture = spawnCapture;
+    this.readCodexAccount = readCodexAccount ?? (async () => null);
     this.readCodexRateLimits = readCodexRateLimits;
     this.codexRunning = codexRunning;
     this.historyStore = historyStore;
@@ -34,6 +36,10 @@ export class RateLimitTelemetryService {
 
   readCodex() {
     return this.readCodexRateLimits();
+  }
+
+  readAccount() {
+    return this.readCodexAccount();
   }
 
   async readClaude() {
@@ -79,9 +85,13 @@ export class RateLimitTelemetryService {
     const jobs = [];
     if (this.codexRunning()) {
       jobs.push((async () => {
-        const result = await this.readCodex();
+        const accountPromise = this.readAccount().catch((error) => {
+          this.logger.error("Cannot identify Codex account:", error.message);
+          return null;
+        });
+        const [account, result] = await Promise.all([accountPromise, this.readCodex()]);
         const summary = this.formatCodexRateLimits(result);
-        await this.historyStore.record(result, observedAt);
+        await this.historyStore.record(result, observedAt, "codex", account);
         await this.workLogUsageStore.projectRateLimits(null, summary, observedAt);
       })().catch((error) => {
         this.logger.error("Cannot poll Codex rate limits:", error.message);

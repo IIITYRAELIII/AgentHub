@@ -9,11 +9,26 @@ import {
   appendRateLimitRows,
   appendRawRateLimitSnapshot,
   claudeRateLimitRows,
+  codexAccountDimension,
   codexRateLimitRows,
   RateLimitHistoryStore,
   rateLimitResetCreditSummary,
   readRateLimitHistory,
 } from "../../../src/infrastructure/persistence/rate-limit-history.mjs";
+
+test("Codex account dimension uses a stable opaque key and a readable label", () => {
+  const account = codexAccountDimension({
+    account: { type: "chatgpt", email: "First@Example.Test", planType: "pro" },
+  });
+  assert.match(account.key, /^chatgpt:[0-9a-f]{64}$/u);
+  assert.equal(account.key.includes("first@example.test"), false);
+  assert.deepEqual({ ...account, key: "<opaque>" }, {
+    key: "<opaque>",
+    label: "first@example.test",
+    type: "chatgpt",
+    planType: "pro",
+  });
+});
 
 test("Agent Hub persists Codex and Claude limit snapshots every five minutes", async () => {
   const compositionDirectory = new URL("../../../src/composition/", import.meta.url);
@@ -34,7 +49,7 @@ test("Agent Hub persists Codex and Claude limit snapshots every five minutes", a
   assert.match(source, /new RateLimitTelemetryService\(/u);
   assert.match(source, /new RateLimitHistoryStore\(/u);
   assert.match(telemetrySource, /intervalMs = 5 \* 60_000/u);
-  assert.match(telemetrySource, /this\.historyStore\.record\(result, observedAt\)/u);
+  assert.match(telemetrySource, /this\.historyStore\.record\(result, observedAt, "codex", account\)/u);
   assert.match(telemetrySource, /parseClaudeLimits\(await this\.readClaude\(\)\)/u);
   assert.match(telemetrySource, /this\.historyStore\.record\(\{ limits \}, observedAt, "claude"\)/u);
   assert.match(source, /readRateLimitHistory: \(params\) => rateLimitHistoryStore\.read\(params\)/u);
@@ -46,6 +61,99 @@ test("Agent Hub persists Codex and Claude limit snapshots every five minutes", a
     processCaptureSource,
     /Promise\.resolve\(stopProcess\(worker\)\)[\s\S]*?\.finally\(\(\) => finish\(\{ code: null, error: timeoutError \}\)\)/u,
   );
+});
+
+test("SQLite rate-limit history keeps Codex accounts in separate series", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limit-accounts-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const rawFile = path.join(directory, "rate-limits-raw.jsonl");
+  const csvFile = path.join(directory, "rate-limits.csv");
+  const store = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+  const response = {
+    rateLimits: { limitId: "codex", primary: { usedPercent: 20 } },
+  };
+  try {
+    await store.record(response, "2026-08-07T10:00:00.000Z", "codex", {
+      account: { type: "chatgpt", email: "first@example.test", planType: "pro" },
+    });
+    await store.record(response, "2026-08-07T10:05:00.000Z", "codex", {
+      account: { type: "chatgpt", email: "second@example.test", planType: "plus" },
+    });
+    const history = await store.read({
+      range: "24h",
+      nowMs: Date.parse("2026-08-07T11:00:00.000Z"),
+    });
+    assert.equal(history.series.length, 2);
+    assert.deepEqual(
+      history.series.map((series) => ({
+        baseId: series.baseId,
+        accountLabel: series.accountLabel,
+        accountPlan: series.accountPlan,
+      })).sort((left, right) => left.accountLabel.localeCompare(right.accountLabel)),
+      [
+        { baseId: "codex:primary", accountLabel: "first@example.test", accountPlan: "pro" },
+        { baseId: "codex:primary", accountLabel: "second@example.test", accountPlan: "plus" },
+      ],
+    );
+    assert.equal(new Set(history.series.map((series) => series.id)).size, 2);
+    assert.equal(history.currentAccount.label, "second@example.test");
+    await store.rebuildCompatibilityExports();
+    const csv = await readFile(csvFile, "utf8");
+    assert.match(csv, /^observedAt,provider,accountKey,accountLabel,accountPlan,/u);
+    assert.match(csv, /first@example\.test/u);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("SQLite rate-limit history migrates the pre-account snapshot table", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-limit-account-migration-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const rawFile = path.join(directory, "rate-limits-raw.jsonl");
+  const csvFile = path.join(directory, "rate-limits.csv");
+  const database = new DatabaseSync(databaseFile);
+  database.exec(`
+    CREATE TABLE rate_limit_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      observed_at TEXT NOT NULL,
+      observed_ms INTEGER NOT NULL,
+      provider TEXT NOT NULL,
+      response_json TEXT NOT NULL,
+      rows_json TEXT NOT NULL,
+      UNIQUE(provider, observed_at, response_json)
+    );
+  `);
+  database.prepare(`
+    INSERT INTO rate_limit_snapshots
+      (observed_at, observed_ms, provider, response_json, rows_json)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    "2026-08-07T09:00:00.000Z",
+    Date.parse("2026-08-07T09:00:00.000Z"),
+    "codex",
+    JSON.stringify({ rateLimits: { limitId: "codex", primary: { usedPercent: 10 } } }),
+    "[]",
+  );
+  database.close();
+  const store = new RateLimitHistoryStore({ databaseFile, rawFile, csvFile });
+  try {
+    await store.record(
+      { rateLimits: { limitId: "codex", primary: { usedPercent: 15 } } },
+      "2026-08-07T10:00:00.000Z",
+      "codex",
+      { account: { type: "chatgpt", email: "first@example.test", planType: "pro" } },
+    );
+    const history = await store.read({
+      range: "24h",
+      nowMs: Date.parse("2026-08-07T11:00:00.000Z"),
+    });
+    assert.equal(history.series.some((series) => series.id === "codex:primary"), true);
+    assert.equal(history.series.some((series) => series.accountLabel === "first@example.test"), true);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("all-time SQLite history samples before JSON parsing and preserves first and last", async () => {

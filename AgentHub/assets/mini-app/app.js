@@ -318,7 +318,7 @@ const usageState = {
   error: "",
 };
 const COMPARISON_RANGE_KEY = "agent-hub:comparison-range:v1";
-const COMPARISON_SERIES_KEY = "agent-hub:comparison-series:v1";
+const COMPARISON_SERIES_KEY = "agent-hub:comparison-series:v2";
 
 function savedComparisonRange() {
   try {
@@ -330,9 +330,9 @@ function savedComparisonRange() {
 
 function savedComparisonSeriesId() {
   try {
-    return String(localStorage.getItem(COMPARISON_SERIES_KEY) || "codex:primary");
+    return String(localStorage.getItem(COMPARISON_SERIES_KEY) || "current:codex:primary");
   } catch {
-    return "codex:primary";
+    return "current:codex:primary";
   }
 }
 
@@ -4834,6 +4834,11 @@ function svgEl(tag, attrs = {}, children = []) {
 }
 
 function seriesColor(series, index) {
+  if (series?.accountKey) {
+    const hash = [...String(series.accountKey)]
+      .reduce((value, character) => ((value * 31) + character.codePointAt(0)) >>> 0, 0);
+    return SERIES_PALETTE[hash % SERIES_PALETTE.length];
+  }
   const key = `${series?.id ?? ""} ${series?.name ?? ""}`.toLowerCase();
   if (key.includes("codex")) return "var(--provider-codex)";
   if (key.includes("claude")) return "var(--provider-claude)";
@@ -4948,8 +4953,15 @@ function formatResetCountdown(point) {
 }
 
 function currentLimitSeries(payload) {
+  const currentAccountKey = String(payload?.currentAccount?.key ?? "");
   const available = (Array.isArray(payload?.series) ? payload.series : [])
     .filter((series) => Array.isArray(series.points) && series.points.length)
+    .filter((series) => {
+      if (!currentAccountKey) return true;
+      const provider = String(series.name ?? "").toLowerCase();
+      const codex = provider === "codex" || provider === "spark";
+      return !codex || series.accountKey === currentAccountKey;
+    })
     .map((series) => ({ ...series, point: series.points.at(-1) }));
   const pickCodex = (name) => {
     const matches = available.filter((series) => String(series.name).toLowerCase() === name);
@@ -5213,7 +5225,9 @@ function buildLimitsChart(payload) {
         fill: item.color,
       });
       const info = {
-        name: item.name || item.id || "",
+        name: item.accountLabel
+          ? `${item.accountLabel} · ${item.name || item.baseId || item.id || ""}`
+          : item.name || item.id || "",
         window: item.window || "",
         at: point.raw.at,
         used: point.raw.usedPercent,
@@ -5249,7 +5263,10 @@ function buildLimitsChart(payload) {
       .map((item) => {
         const last = item.points[item.points.length - 1];
         const used = last ? Math.round(Number(last.usedPercent) || 0) : 0;
-        return `${item.name || item.id}: ${used}%`;
+        const name = item.accountLabel
+          ? `${item.accountLabel} · ${item.name || item.baseId || item.id}`
+          : item.name || item.id;
+        return `${name}: ${used}%`;
       })
       .join("; ")
     : "все серии скрыты";
@@ -5266,7 +5283,9 @@ function renderLimitsLegend(series) {
   limitsLegend.replaceChildren(...series.map((item) => {
     const last = item.points[item.points.length - 1];
     const used = last ? Math.round(Number(last.usedPercent) || 0) : null;
-    const name = item.name || item.id || "";
+    const name = item.accountLabel
+      ? `${item.accountLabel} · ${item.name || item.baseId || item.id || ""}`
+      : item.name || item.id || "";
     const swatch = el("span", { class: "limits-legend-swatch", "aria-hidden": "true" });
     swatch.style.setProperty("--series-color", item.color);
     const toggle = el("button", {
@@ -6018,7 +6037,11 @@ function buildUsageComparisonModel(payload) {
           : null,
       };
     });
+  const currentAccountKey = String(payload?.limits?.currentAccount?.key ?? "");
   const selectedSeries = allSeries.find((series) => series.id === comparisonState.seriesId)
+    ?? allSeries.find((series) => (
+      series.baseId === "codex:primary" && series.accountKey === currentAccountKey
+    ))
     ?? allSeries.find((series) => series.id === "codex:primary")
     ?? allSeries[0]
     ?? null;
@@ -6246,7 +6269,7 @@ function buildUsageComparisonChart(model) {
     appendComparisonMarkers(svg, series.values, series.rawValues, model, {
       W, H, xOf, yOf,
     }, {
-      name: series.window ? `${series.name} · ${series.window}` : (series.name || series.id),
+      name: comparisonSeriesName(series),
       kind: "api",
       color: series.color,
     });
@@ -6308,9 +6331,10 @@ function comparisonLegendItem(name, color, value, attrs = {}) {
 }
 
 function comparisonSeriesName(series) {
-  return series?.window
+  const limit = series?.window
     ? `${series.name} · ${series.window}`
     : String(series?.name || series?.id || "Лимит");
+  return series?.accountLabel ? `${series.accountLabel} · ${limit}` : limit;
 }
 
 function comparisonSeriesPicker(model) {

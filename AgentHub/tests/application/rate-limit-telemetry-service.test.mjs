@@ -25,6 +25,10 @@ function fixture({
       events.push(["spawn", command, args, options]);
       return { code: 0, stdout: claudeOutput, stderr: "", error: null };
     },
+    readCodexAccount: async () => {
+      events.push(["read-account"]);
+      return { account: { type: "chatgpt", email: "first@example.test", planType: "pro" } };
+    },
     readCodexRateLimits: async () => {
       events.push(["read-codex"]);
       if (delayCodex) return delayedCodex;
@@ -71,6 +75,10 @@ test("RateLimitTelemetryService records Codex and Claude snapshots in one cycle"
   assert.equal(records.length, 2);
   assert.equal(records.every((record) => record[2] === "2026-08-05T00:00:00.000Z"), true);
   assert.equal(records.some((record) => record[3] === "claude"), true);
+  const codex = records.find((record) => record[3] === "codex");
+  assert.deepEqual(codex[4], {
+    account: { type: "chatgpt", email: "first@example.test", planType: "pro" },
+  });
   assert.equal(state.events.filter(([name]) => name === "project").length, 1);
   assert.equal(state.events.at(-1)[0], "schedule");
 });
@@ -80,6 +88,7 @@ test("RateLimitTelemetryService skips Codex when its transport is down", async (
   await state.service.poll();
 
   assert.equal(state.events.some(([name]) => name === "read-codex"), false);
+  assert.equal(state.events.some(([name]) => name === "read-account"), false);
   assert.equal(state.events.filter(([name]) => name === "record").length, 1);
 });
 
