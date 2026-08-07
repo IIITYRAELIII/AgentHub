@@ -35,6 +35,7 @@ export class CodexCompletionService {
   }
 
   async completeObserved(run, { snapshot, answer, deliver, completedTurnId, tracker }) {
+    run.status = "finishing";
     let resolvedTracker = tracker ?? this.#d.consumeTracker(completedTurnId);
     if (run.executionOwner !== TASK_EXECUTION_OWNERS.HUB) {
       const hooked = await this.#d.waitForCompletion({

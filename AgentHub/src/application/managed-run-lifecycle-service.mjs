@@ -24,7 +24,7 @@ export class ManagedRunLifecycleService {
       "modelLabel", "captureGitBaseline", "persistTaskDiff", "syncRun",
       "invalidateCatalog", "saveState", "scheduleProgressStart", "clearSelectedDiff",
       "clearApprovals", "pauseObservation", "pauseClaude", "stopTyping",
-      "afterCompletion",
+      "beforeCompletion", "afterCompletion",
     ]) requiredFunction(dependencies[name], name);
     if (!dependencies.taskRuns?.add || !dependencies.taskRuns?.remove) {
       throw new TypeError("taskRuns registry is required");
@@ -87,6 +87,7 @@ export class ManagedRunLifecycleService {
   async complete(run) {
     if (!run) return;
     const d = this.#d;
+    await d.beforeCompletion(run);
     d.clearApprovals(run);
     d.pauseObservation(run);
     d.pauseClaude(run);

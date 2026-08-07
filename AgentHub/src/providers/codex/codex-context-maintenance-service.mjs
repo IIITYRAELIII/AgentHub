@@ -87,7 +87,7 @@ export class CodexContextMaintenanceService {
     this.recycleInFlight = null;
   }
 
-  async startManual(target, { captureRawItem = false } = {}) {
+  async start(target, { captureRawItem = false, origin = "manual" } = {}) {
     if (target?.provider !== "codex") throw new Error("Свёртка контекста доступна только для Codex");
     const threadId = normalizedId(target.threadId);
     if (!threadId) throw new Error("Укажите корректную задачу Codex");
@@ -99,7 +99,7 @@ export class CodexContextMaintenanceService {
     }
     await this.ensureTransport();
     const compaction = this.compactions.begin(threadId, {
-      origin: "manual",
+      origin: origin === "automatic" ? "automatic" : "manual",
       ...(captureRawItem ? { captureRawItem: true } : {}),
     });
     try {
@@ -116,6 +116,10 @@ export class CodexContextMaintenanceService {
     }
   }
 
+  startManual(target, options = {}) {
+    return this.start(target, { ...options, origin: "manual" });
+  }
+
   async rotate(target) {
     const sourceThreadId = normalizedId(target?.threadId);
     await this.ensureTransport();
@@ -129,22 +133,43 @@ export class CodexContextMaintenanceService {
           ? "Свёртка контекста не завершилась вовремя"
           : "Свёртка контекста не завершилась");
       }
-      const trackedCompaction = this.compactions.get(sourceThreadId);
+      return await this.rotateCompacted(target, {
+        compactionId: started.compactionId,
+        source,
+        settlement: settled,
+      });
+    } catch (error) {
+      this.compactions.clearRawItem(sourceThreadId, started.compactionId);
+      throw error;
+    }
+  }
+
+  async rotateCompacted(target, { compactionId, source = null, settlement = null } = {}) {
+    const sourceThreadId = normalizedId(target?.threadId);
+    const expectedId = normalizedId(compactionId);
+    if (!sourceThreadId || !expectedId) throw new Error("Не указана завершённая свёртка контекста");
+    const trackedCompaction = this.compactions.get(sourceThreadId);
+    const completed = settlement?.status === "completed"
+      || (trackedCompaction?.id === expectedId && trackedCompaction.status === "completed");
+    if (!completed) {
+      throw new Error("Свёртка контекста ещё не завершена");
+    }
+    try {
+      const resolvedSource = source
+        ?? await this.readThread(sourceThreadId, { fresh: true, includeTurns: false });
       const liveCompactionItem = await this.compactions.waitForRawItem(
         sourceThreadId,
-        started.compactionId,
+        expectedId,
         RAW_COMPACTION_EVENT_GRACE_MS,
       );
-      const rolloutPath = normalizedId(source?.thread?.path)
+      const rolloutPath = normalizedId(resolvedSource?.thread?.path)
         || normalizedId(await this.knownRolloutPath(sourceThreadId));
       const compactionItem = liveCompactionItem ?? await this.readCompactionItem(rolloutPath, {
         notBefore: trackedCompaction?.startedAt,
       });
-      if (!compactionItem) {
-        throw new Error("Не удалось извлечь результат свёртки для нового Thread");
-      }
+      if (!compactionItem) throw new Error("Не удалось извлечь результат свёртки для нового Thread");
       await this.ensureTransport();
-      const sourceThread = source?.thread ?? {};
+      const sourceThread = resolvedSource?.thread ?? {};
       const startParams = {
         cwd: normalizedId(sourceThread.cwd ?? target?.sessionCwd ?? target?.projectRoot) || undefined,
         model: normalizedId(target?.model) || undefined,
@@ -163,7 +188,7 @@ export class CodexContextMaintenanceService {
         await this.injectItems(threadId, [compactionItem]);
         return {
           accepted: true,
-          compactionId: started.compactionId,
+          compactionId: expectedId,
           sourceThreadId,
           thread: result.thread,
         };
@@ -174,8 +199,12 @@ export class CodexContextMaintenanceService {
         });
       }
     } finally {
-      this.compactions.clearRawItem(sourceThreadId, started.compactionId);
+      this.compactions.clearRawItem(sourceThreadId, expectedId);
     }
+  }
+
+  discardCompactionTransfer(threadId, compactionId) {
+    return this.compactions.clearRawItem(threadId, compactionId);
   }
 
   beginCompactionCleanup(threadId, details = {}) {

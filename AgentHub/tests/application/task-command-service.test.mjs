@@ -44,7 +44,10 @@ function fixture({ run = null } = {}) {
     createTask: async () => ({
       provider: "codex", threadId: "thread-new", projectRoot: "D:/work", title: "New",
     }),
-    rotateCodexThread: async () => ({ thread: { id: "thread-rotated" } }),
+    rotateStream: async (...args) => {
+      events.push(["rotate", ...args]);
+      return { thread: { id: "thread-rotated" } };
+    },
     activeProvider: () => "codex",
     switchProvider: async () => {},
     workspaceCatalog: {
@@ -122,17 +125,7 @@ test("task command service continues an existing Stream in a new provider Thread
 test("task command service rotates inside the same Stream after context transfer", async () => {
   const { service, events } = fixture();
   const result = await service.rotate({ streamId: "stream-1" });
-  assert.deepEqual(events.find(([name]) => name === "bind")[1], {
-    provider: "codex",
-    threadId: "thread-rotated",
-    streamId: "stream-1",
-    projectRoot: "D:/work",
-    source: "rebirth",
-  });
-  assert.deepEqual(events.find(([name]) => name === "set-thread").slice(1), [
-    "thread-rotated",
-    { provider: "codex", streamId: "stream-1", title: "Existing" },
-  ]);
+  assert.equal(events.find(([name]) => name === "rotate")[1].streamId, "stream-1");
   assert.equal(result.rotation.sourceThreadId, "thread-1");
   assert.equal(result.rotation.threadId, "thread-rotated");
 });

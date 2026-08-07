@@ -27,6 +27,7 @@ export class RunCoordinator {
     describeAttachments = () => [],
     notifyInputStart = () => {},
     hasDeferredBacklog = () => false,
+    isMaintenanceActive = () => false,
     scheduleDeferred = () => {},
     setProgressStage = () => {},
     noteRunActivity = () => {},
@@ -53,6 +54,7 @@ export class RunCoordinator {
     this.describeAttachments = describeAttachments;
     this.notifyInputStart = notifyInputStart;
     this.hasDeferredBacklog = hasDeferredBacklog;
+    this.isMaintenanceActive = isMaintenanceActive;
     this.scheduleDeferred = scheduleDeferred;
     this.setProgressStage = setProgressStage;
     this.noteRunActivity = noteRunActivity;
@@ -98,6 +100,15 @@ export class RunCoordinator {
       throw new Error("run target requires provider");
     }
     this.notifyInputStart(target);
+    if (this.isMaintenanceActive(target)) {
+      return this.deferInput(input, temporaryFiles, {
+        forceSpeechButton,
+        executionOwner: TASK_EXECUTION_OWNERS.HUB,
+        target,
+        conflictKind: "context-maintenance",
+        persistentFiles,
+      });
+    }
     const existingRun = this.taskRuns.forTask(target);
     const [externalActivity, repositoryConflict] = existingRun
       ? [{ state: "active", executionOwner: existingRun.executionOwner }, null]
@@ -165,6 +176,7 @@ export class RunCoordinator {
   async startDeferredUnlocked(item) {
     const target = {
       provider: item.provider,
+      streamId: item.streamId,
       projectRoot: item.projectRoot,
       threadId: item.threadId,
       taskTitle: item.taskTitle,
@@ -217,6 +229,8 @@ export class RunCoordinator {
       reason,
       message: reason === "steer-unavailable"
         ? "Текущий ход уже нельзя изменить; сообщение сохранено в очереди."
+        : reason === "context-maintenance"
+          ? "Сообщение поставлено в очередь до завершения свёртки или ротации контекста."
         : "Сообщение поставлено в очередь и будет отправлено после текущего хода.",
     };
   }
@@ -291,6 +305,14 @@ export class RunCoordinator {
     clientUserMessageId,
     followUpMode = "",
   }) {
+    if (this.isMaintenanceActive(target)) {
+      return this.queue(input, attachments, {
+        target,
+        executionOwner: TASK_EXECUTION_OWNERS.HUB,
+        clientUserMessageId,
+        reason: "context-maintenance",
+      });
+    }
     const existingRun = this.taskRuns.forTask(target);
     const externalActivity = existingRun
       ? { state: "active", executionOwner: existingRun.executionOwner }

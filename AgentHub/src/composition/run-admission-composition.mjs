@@ -32,6 +32,7 @@ export function createRunAdmissionComposition({
   taskRuns,
   runCoordinator,
   runConflictPolicy,
+  streamMaintenance,
   pendingInputs,
   queuedInputs,
   getSelectedTask,
@@ -154,6 +155,7 @@ export function createRunAdmissionComposition({
     },
     isBlocked: async (item) => {
       const target = {
+        streamId: item.streamId,
         provider: item.provider,
         projectRoot: item.projectRoot,
         threadId: item.threadId,
@@ -166,7 +168,8 @@ export function createRunAdmissionComposition({
       const externalActivity = taskRuns.forTask(target)
         ? { state: "active" }
         : await taskExternalActivity(target);
-      return Boolean(taskRuns.forTask(target)
+      return Boolean(streamMaintenance.isActive(target)
+        || taskRuns.forTask(target)
         || externalActivity.state !== "inactive"
         || await runConflictPolicy.check(target));
     },

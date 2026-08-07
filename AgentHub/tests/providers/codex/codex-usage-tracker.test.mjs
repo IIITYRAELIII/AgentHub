@@ -48,6 +48,26 @@ test("CodexUsageTracker returns the newest context for a thread", () => {
   assert.equal(tracker.latestContext("thread-1", "turn-2").usedTokens, 220);
 });
 
+test("CodexUsageTracker waits for the post-compaction context measurement", async () => {
+  const times = [new Date("2026-08-04T10:00:00.000Z"), new Date("2026-08-04T10:01:00.000Z")];
+  const tracker = new CodexUsageTracker({ now: () => times.shift() });
+  tracker.rememberContext({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    tokenUsage: { last: usage(800), modelContextWindow: 1_000 },
+  });
+  const pending = tracker.waitForContextUpdate("thread-1", {
+    after: "2026-08-04T10:00:00.000Z",
+    timeoutMs: 100,
+  });
+  tracker.rememberContext({
+    threadId: "thread-1",
+    turnId: "compact-1",
+    tokenUsage: { last: usage(180), modelContextWindow: 1_000 },
+  });
+  assert.equal((await pending)?.usedTokens, 180);
+});
+
 test("CodexUsageTracker restores bounded compatible state", () => {
   const tracker = new CodexUsageTracker({ totalLimit: 1, turnLimit: 1, contextLimit: 1 });
   tracker.restore({

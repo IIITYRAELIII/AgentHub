@@ -29,7 +29,7 @@ export class TaskCommandService {
     switchProvider,
     workspaceCatalog,
     selectionStore,
-    rotateCodexThread,
+    rotateStream,
   }) {
     Object.assign(this, {
       resolveTarget,
@@ -61,7 +61,7 @@ export class TaskCommandService {
       switchProvider,
       workspaceCatalog,
       selectionStore,
-      rotateCodexThread,
+      rotateStream,
     });
   }
 
@@ -219,23 +219,9 @@ export class TaskCommandService {
     const workspace = this.workspaceCatalog.workspace(stream.workspaceId);
     if (!workspace) throw new Error("Workspace не найден");
 
-    const rotated = await this.rotateCodexThread(target);
+    const rotated = await this.rotateStream({ ...target, streamId: stream.id });
     const threadId = String(rotated?.thread?.id ?? "").trim();
     if (!threadId) throw new Error("Codex App Server не создал новый Thread");
-    this.workspaceCatalog.bindThread({
-      provider: "codex",
-      threadId,
-      streamId: stream.id,
-      projectRoot: binding.projectRoot || target.projectRoot,
-      source: "rebirth",
-    });
-    this.selectionStore.setThread(threadId, {
-      provider: "codex",
-      streamId: stream.id,
-      title: workspace.name,
-    });
-    this.invalidateCatalog();
-    await this.saveState();
     return {
       ...await this.snapshot({ refresh: true }),
       rotation: {

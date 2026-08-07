@@ -54,6 +54,39 @@ function nonNegativeInteger(value, fallback, name) {
   return number;
 }
 
+function integerInRange(value, fallback, name, min, max) {
+  const number = Number(value ?? fallback);
+  if (!Number.isSafeInteger(number) || number < min || number > max) {
+    throw new Error(`${name} must be an integer from ${min} to ${max}`);
+  }
+  return number;
+}
+
+function contextAutomationSettings(value) {
+  const raw = value ?? {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("contextAutomation must be an object");
+  }
+  return {
+    autoCompactAfterTurn: raw.autoCompactAfterTurn === true,
+    autoCompactThresholdPercent: integerInRange(
+      raw.autoCompactThresholdPercent,
+      75,
+      "contextAutomation.autoCompactThresholdPercent",
+      0,
+      100,
+    ),
+    autoRotateAfterCompaction: raw.autoRotateAfterCompaction === true,
+    autoRotateThresholdPercent: integerInRange(
+      raw.autoRotateThresholdPercent,
+      20,
+      "contextAutomation.autoRotateThresholdPercent",
+      0,
+      100,
+    ),
+  };
+}
+
 function stringArray(value, name) {
   if (value == null) return [];
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
@@ -577,6 +610,7 @@ export async function loadConfig() {
     codexRolloutContext: codexRolloutContextSettings(raw.codexRolloutContext, {
       enabled: components.codexContextCleanup,
     }),
+    contextAutomation: contextAutomationSettings(raw.contextAutomation),
     claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
     claudeExecutableArgs: stringArray(raw.claudeExecutableArgs, "claudeExecutableArgs"),
     claudeModel: String(process.env.CLAUDE_MODEL ?? raw.claudeModel ?? "").trim(),

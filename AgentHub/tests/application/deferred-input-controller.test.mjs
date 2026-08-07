@@ -159,6 +159,25 @@ test("DeferredInputController preserves FIFO order inside one task", async () =>
   assert.deepEqual(started, ["old", "new"]);
 });
 
+test("DeferredInputController preserves FIFO by Stream across Thread rotation", async () => {
+  const started = [];
+  const state = fixture({ start: async (item) => started.push(item.id) });
+  state.queuedInputs.set("old", {
+    id: "old", streamId: "stream-1", threadId: "thread-old",
+    createdAt: "2026-07-30T08:00:00.000Z",
+  });
+  state.queuedInputs.set("new", {
+    id: "new", streamId: "stream-1", threadId: "thread-new",
+    createdAt: "2026-07-30T08:01:00.000Z",
+  });
+
+  await state.controller.process("new");
+  assert.deepEqual(started, []);
+  await state.controller.process("old");
+  await state.controller.process("new");
+  assert.deepEqual(started, ["old", "new"]);
+});
+
 test("DeferredInputController does not pass an older pending input in the same task", async () => {
   const started = [];
   const state = fixture({ start: async (item) => started.push(item.id) });

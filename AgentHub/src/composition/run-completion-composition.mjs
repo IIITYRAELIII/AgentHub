@@ -31,6 +31,7 @@ export function createRunCompletionComposition({
   pauseObservation,
   pauseClaude,
   stopTyping,
+  beforeCompletion,
   afterCompletion,
   turnEndNotifications,
   runJournal,
@@ -76,6 +77,7 @@ export function createRunCompletionComposition({
     pauseObservation,
     pauseClaude,
     stopTyping,
+    beforeCompletion,
     afterCompletion,
   });
 

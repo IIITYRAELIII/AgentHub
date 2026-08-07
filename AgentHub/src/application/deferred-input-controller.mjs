@@ -155,6 +155,8 @@ export class DeferredInputController {
   }
 
   taskKey(item) {
+    const streamId = String(item?.streamId ?? "").trim();
+    if (streamId) return `stream:${streamId}`;
     return [
       String(item?.provider ?? "").toLowerCase(),
       String(item?.projectRoot ?? "").toLowerCase(),

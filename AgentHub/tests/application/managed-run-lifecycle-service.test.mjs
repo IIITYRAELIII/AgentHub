@@ -30,6 +30,7 @@ function harness() {
     pauseObservation: () => events.push("observer"),
     pauseClaude: () => events.push("claude"),
     stopTyping: () => events.push("typing"),
+    beforeCompletion: async () => events.push("before"),
     afterCompletion: async () => events.push("after"),
   });
   return { service, taskRuns, events };
@@ -54,7 +55,7 @@ test("managed run lifecycle completes and removes the same run", async () => {
 
   assert.equal(taskRuns.size, 0);
   assert.equal(run.status, "completed");
-  assert.deepEqual(events, ["approvals", "observer", "claude", "catalog", "sync-complete", "typing", "save", "after"]);
+  assert.deepEqual(events, ["before", "approvals", "observer", "claude", "catalog", "sync-complete", "typing", "save", "after"]);
 });
 
 test("managed run lifecycle keeps a Desktop-started run out of Telegram", async () => {

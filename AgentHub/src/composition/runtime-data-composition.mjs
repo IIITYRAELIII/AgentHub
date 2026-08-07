@@ -1,5 +1,6 @@
 import path from "node:path";
 import { DeferredInputStore } from "../application/deferred-input-store.mjs";
+import { StreamMaintenanceRegistry } from "../application/stream-maintenance-registry.mjs";
 import {
   TaskDismissalRegistry,
   TaskRunRegistry,
@@ -19,6 +20,7 @@ export async function createRuntimeDataComposition({
   const taskRuns = new TaskRunRegistry();
   const dismissedExternalTasks = new TaskDismissalRegistry();
   const deferredInputs = new DeferredInputStore();
+  const streamMaintenance = new StreamMaintenanceRegistry();
   const taskDiffs = new TaskDiffStore({ filePath: taskDiffsFile, limit: 100 });
   const taskSyncStore = new LocalTaskSyncStore({
     filePath: taskSyncFile,
@@ -33,6 +35,7 @@ export async function createRuntimeDataComposition({
     taskRuns,
     dismissedExternalTasks,
     deferredInputs,
+    streamMaintenance,
     pendingInputs: deferredInputs.pending,
     queuedInputs: deferredInputs.queued,
     taskDiffs,

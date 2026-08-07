@@ -66,6 +66,19 @@ test("RunCoordinator defers an active task without creating a second run", async
   assert.equal(f.calls[1][3].conflictKind, "task-running");
 });
 
+test("RunCoordinator queues directly into a Stream under context maintenance", async () => {
+  const f = fixture({ isMaintenanceActive: () => true });
+  const result = await f.coordinator.submitClientInput({
+    input: "next",
+    target: { ...f.target, streamId: "stream-1" },
+    clientUserMessageId: "message-next",
+  });
+  assert.equal(result.deferred, true);
+  assert.equal(result.queued, true);
+  assert.equal(result.reason, "context-maintenance");
+  assert.equal(f.calls.some(([name]) => name === "begin"), false);
+});
+
 test("RunCoordinator preserves unknown external activity for explicit action", async () => {
   const f = fixture({
     externalActivity: async () => ({ state: "unknown", executionOwner: "external" }),

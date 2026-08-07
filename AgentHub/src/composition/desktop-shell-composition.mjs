@@ -81,6 +81,8 @@ export function createDesktopShellComposition({
     startTurn,
     launchTurn,
     runTaskTitle,
+    streamContextMaintenance,
+    streamMaintenance,
   } = runtime;
   const {
     agentProviders,
@@ -309,7 +311,7 @@ export function createDesktopShellComposition({
       dismissedExternalTasks,
       completeRun: (run) => managedRunLifecycle.complete(run),
       createTask: createThread,
-      codexContextMaintenance: runtime.codexContextMaintenance,
+      streamContextMaintenance,
       workspaceCatalog: workspaceCatalogStore,
       workspaceCatalogService: workspaceCatalog,
       workspaceMutation,
@@ -384,7 +386,7 @@ export function createDesktopShellComposition({
       activeTaskTitle: selectedTaskTitle,
     },
     services: {
-      startManualCompaction: (target) => runtime.codexContextMaintenance.startManual(target),
+      startManualCompaction: (target) => streamContextMaintenance.compact(target),
       deferredInputs,
       saveState,
       executionRuntimeLabel: taskExecutionRuntimeLabel,
@@ -400,6 +402,7 @@ export function createDesktopShellComposition({
       launchTurn,
       describeAttachments: desktopAttachmentDescriptors,
       hasDeferredBacklog: (target) => deferredInputs.hasBacklog(target),
+      isMaintenanceActive: (target) => streamMaintenance.isActive(target),
       scheduleDeferred: scheduleQueuedInput,
       setProgressStage: (...args) => taskProgress.setStage(...args),
       noteRunActivity: (...args) => taskProgress.noteActivity(...args),

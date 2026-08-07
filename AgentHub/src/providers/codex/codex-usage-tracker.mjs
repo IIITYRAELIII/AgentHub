@@ -24,6 +24,7 @@ export class CodexUsageTracker {
     this.threadTotals = new Map();
     this.turns = new Map();
     this.contexts = new Map();
+    this.contextWaiters = new Map();
   }
 
   rememberContext(params) {
@@ -32,13 +33,26 @@ export class CodexUsageTracker {
     const threadId = String(params?.threadId ?? "").trim();
     const turnId = String(params?.turnId ?? "").trim();
     if (!threadId || !turnId || !modelContextWindow) return false;
-    setBoundedMapValue(this.contexts, contextKey(threadId, turnId), {
+    const context = {
       threadId,
       turnId,
       modelContextWindow,
       usedTokens,
       updatedAt: this.now().toISOString(),
-    }, this.contextLimit);
+    };
+    setBoundedMapValue(this.contexts, contextKey(threadId, turnId), context, this.contextLimit);
+    const waiters = this.contextWaiters.get(threadId) ?? [];
+    if (waiters.length) {
+      const remaining = [];
+      for (const waiter of waiters) {
+        if ((Date.parse(context.updatedAt) || 0) > waiter.afterMs) {
+          clearTimeout(waiter.timer);
+          waiter.resolve(context);
+        } else remaining.push(waiter);
+      }
+      if (remaining.length) this.contextWaiters.set(threadId, remaining);
+      else this.contextWaiters.delete(threadId);
+    }
     return true;
   }
 
@@ -57,6 +71,30 @@ export class CodexUsageTracker {
     return (Date.parse(exact.updatedAt) || 0) >= (Date.parse(latest.updatedAt) || 0)
       ? exact
       : latest;
+  }
+
+  waitForContextUpdate(threadId, { after = 0, timeoutMs = 5_000 } = {}) {
+    const key = String(threadId ?? "").trim();
+    if (!key) return Promise.resolve(null);
+    const afterMs = Number.isFinite(Number(after))
+      ? Number(after)
+      : Date.parse(String(after ?? "")) || 0;
+    const current = this.latestContext(key);
+    if (current && (Date.parse(current.updatedAt) || 0) > afterMs) return Promise.resolve(current);
+    return new Promise((resolve) => {
+      const waiter = { afterMs, resolve, timer: null };
+      waiter.timer = setTimeout(() => {
+        const currentWaiters = this.contextWaiters.get(key) ?? [];
+        const remaining = currentWaiters.filter((candidate) => candidate !== waiter);
+        if (remaining.length) this.contextWaiters.set(key, remaining);
+        else this.contextWaiters.delete(key);
+        resolve(null);
+      }, Math.max(1, Number(timeoutMs) || 5_000));
+      waiter.timer.unref?.();
+      const waiters = this.contextWaiters.get(key) ?? [];
+      waiters.push(waiter);
+      this.contextWaiters.set(key, waiters);
+    });
   }
 
   track(params) {
@@ -88,9 +126,16 @@ export class CodexUsageTracker {
   }
 
   restore(snapshot = {}) {
+    for (const waiters of this.contextWaiters.values()) {
+      for (const waiter of waiters) {
+        clearTimeout(waiter.timer);
+        waiter.resolve(null);
+      }
+    }
     this.threadTotals.clear();
     this.turns.clear();
     this.contexts.clear();
+    this.contextWaiters.clear();
     for (const entry of Array.isArray(snapshot.threadTokenTotals)
       ? snapshot.threadTokenTotals.slice(-this.totalLimit)
       : []) {

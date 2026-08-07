@@ -48,6 +48,47 @@ test("core-only components need neither Telegram credentials nor Web App", async
       maxFilesPerPass: 8,
     });
     assert.equal(config.codexSandboxMode, "workspace-write");
+    assert.deepEqual(config.contextAutomation, {
+      autoCompactAfterTurn: false,
+      autoCompactThresholdPercent: 75,
+      autoRotateAfterCompaction: false,
+      autoRotateThresholdPercent: 20,
+    });
+  } finally {
+    if (previous == null) delete process.env.AGENT_HUB_CONFIG;
+    else process.env.AGENT_HUB_CONFIG = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("context automation validates and loads post-turn thresholds", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-context-automation-"));
+  const configFile = path.join(root, "config.json");
+  const previous = process.env.AGENT_HUB_CONFIG;
+  try {
+    process.env.AGENT_HUB_CONFIG = configFile;
+    await writeFile(configFile, JSON.stringify({
+      components: { telegram: false, miniApp: false, androidApp: false },
+      projectRoot: root,
+      contextAutomation: {
+        autoCompactAfterTurn: true,
+        autoCompactThresholdPercent: 76,
+        autoRotateAfterCompaction: true,
+        autoRotateThresholdPercent: 21,
+      },
+    }), "utf8");
+    assert.deepEqual((await loadConfig()).contextAutomation, {
+      autoCompactAfterTurn: true,
+      autoCompactThresholdPercent: 76,
+      autoRotateAfterCompaction: true,
+      autoRotateThresholdPercent: 21,
+    });
+    await writeFile(configFile, JSON.stringify({
+      components: { telegram: false, miniApp: false, androidApp: false },
+      projectRoot: root,
+      contextAutomation: { autoCompactThresholdPercent: 101 },
+    }), "utf8");
+    await assert.rejects(loadConfig(), /contextAutomation\.autoCompactThresholdPercent/u);
   } finally {
     if (previous == null) delete process.env.AGENT_HUB_CONFIG;
     else process.env.AGENT_HUB_CONFIG = previous;

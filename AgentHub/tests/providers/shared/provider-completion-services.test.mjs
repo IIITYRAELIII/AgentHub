@@ -24,3 +24,33 @@ test("Codex completion restores missing model pricing before final delivery", as
   assert.equal(delivered[0].tracker.model, "gpt-5.6-sol");
   assert.equal(delivered[0].tracker.serviceTier, "fast");
 });
+
+test("observed Codex completion marks a real terminal transition", async () => {
+  const run = {
+    threadId: "thread-observed",
+    turnId: "turn-observed",
+    status: "running",
+    executionOwner: "hub",
+  };
+  const service = new CodexCompletionService({
+    runForTask: () => run,
+    consumeTracker: () => ({ usage: {}, reported: false, model: "gpt-5.6-sol" }),
+    waitForCompletion: async () => null,
+    readThread: async () => ({ thread: {} }),
+    readTurnUsage: async () => null,
+    applyRolloutContext: () => {},
+    finalizeDelivery: async () => {},
+    finishProgress: async () => {},
+    completedAnswer: async () => "Done",
+    temporaryFiles: new Map(),
+    speechButtons: new Map(),
+  });
+  await service.completeObserved(run, {
+    snapshot: { status: "completed" },
+    answer: "Done",
+    deliver: false,
+    completedTurnId: run.turnId,
+    tracker: { usage: {}, reported: false, model: "gpt-5.6-sol" },
+  });
+  assert.equal(run.status, "finishing");
+});

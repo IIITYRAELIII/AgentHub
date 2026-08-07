@@ -157,6 +157,8 @@ export function createInteractionShellPhase({
       taskMetadata: selection.taskMetadata,
       refreshTaskDiff: api.refreshTaskDiff,
       codexContextMaintenance: provider.codexContextMaintenance,
+      streamContextMaintenance: provider.streamContextMaintenance,
+      streamMaintenance: provider.streamMaintenance,
     },
     provider: {
       agentProviders: provider.agentProviders,
@@ -268,6 +270,7 @@ export function createInteractionShellPhase({
       taskRuns: provider.taskRuns,
       runCoordinator: desktopShell.runCoordinator,
       runConflictPolicy: desktopShell.runConflictPolicy,
+      streamMaintenance: provider.streamMaintenance,
       pendingInputs: provider.pendingInputs,
       queuedInputs: provider.queuedInputs,
       getSelectedTask: api.selectedTask,

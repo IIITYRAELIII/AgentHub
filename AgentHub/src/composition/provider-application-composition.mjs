@@ -1,4 +1,5 @@
 import { taskRunIsActive } from "../domain/task-runs.mjs";
+import { StreamContextMaintenanceService } from "../application/stream-context-maintenance-service.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
 import { readCodexTurnUsage } from "../providers/codex/codex-turn-usage.mjs";
@@ -161,9 +162,13 @@ export async function createProviderApplicationComposition({
     pauseObservation: (run) => late.taskObserver().pause(run),
     pauseClaude: (run) => late.claudeRunController().pause(run),
     stopTyping: () => late.stopTyping(),
-    afterCompletion: async () => {
+    beforeCompletion: async (run) => {
+      streamContextMaintenance.reserveAfterTurn(run);
+    },
+    afterCompletion: async (run) => {
+      const maintenance = streamContextMaintenance.maintainAfterTurn(run);
       if (hostState.restartRequest?.waitingForRuns && !api.restartHasBlockingWork() && !hostState.stopping) {
-        setTimeout(() => void api.performRestart(), 0);
+        void maintenance.finally(() => api.scheduleDeferredRestartIfReady());
       }
     },
     turnEndNotifications,
@@ -202,6 +207,24 @@ export async function createProviderApplicationComposition({
     restartTransportAfterCrash: api.restartCodexAfterCrash,
     runForTask: (target) => runtimeData.taskRuns.forTask(target),
     sendRpc: api.sendRpc,
+  });
+  const streamContextMaintenance = new StreamContextMaintenanceService({
+    registry: runtimeData.streamMaintenance,
+    provider: codexContextMaintenance,
+    latestContextUsage: (threadId) => codexObservability.usageTracker.latestContext(threadId),
+    waitForContextUpdate: (threadId, options) => (
+      codexObservability.usageTracker.waitForContextUpdate(threadId, options)
+    ),
+    workspaceCatalog: workspaceCatalogStore,
+    selectionStore,
+    deferredInputs: runtimeData.deferredInputs,
+    invalidateCatalog: invalidateTaskCatalog,
+    saveState: api.saveState,
+    scheduleDeferred: (item, delayMs) => late.runCoordinator().scheduleDeferred(item, delayMs),
+    autoCompactEnabled: () => config.contextAutomation.autoCompactAfterTurn,
+    autoCompactThreshold: () => config.contextAutomation.autoCompactThresholdPercent,
+    autoRotateEnabled: () => config.contextAutomation.autoRotateAfterCompaction,
+    autoRotateThreshold: () => config.contextAutomation.autoRotateThresholdPercent,
   });
 
   const backgroundWork = await createBackgroundWorkComposition({
@@ -317,6 +340,7 @@ export async function createProviderApplicationComposition({
     startTyping: () => late.startTyping(),
     telegram: (...args) => late.telegram(...args),
     codexContextMaintenance,
+    streamContextMaintenance,
     contextCompactions: codexObservability.compactions,
     resolvedExplicitSkillNames: api.resolvedExplicitSkillNames,
     taskExternalActivity: api.taskExternalActivity,
@@ -414,6 +438,7 @@ export async function createProviderApplicationComposition({
     codexTerminalAudit: codexObservability.terminalAudit,
     ...completion,
     codexContextMaintenance,
+    streamContextMaintenance,
     ...backgroundWork,
     journalBackfill,
     claudeTranscriptAudit,

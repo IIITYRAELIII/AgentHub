@@ -50,6 +50,12 @@
     "scanIntervalSeconds": 1800,
     "maxFilesPerPass": 8
   },
+  "contextAutomation": {
+    "autoCompactAfterTurn": false,
+    "autoCompactThresholdPercent": 75,
+    "autoRotateAfterCompaction": false,
+    "autoRotateThresholdPercent": 20
+  },
   "codexModels": [
     {
       "value": "gpt-5.5",

@@ -4119,9 +4119,10 @@ function renderServerStatus(payload = {}) {
   if (serverConfigDrafts.size && serverConfig.childElementCount) return;
   serverConfig.replaceChildren(...[
     renderAutostartEntry(autostart),
-    ...(entries.length ? entries.map(renderServerConfigEntry)
+    ...(entries.length ? renderServerConfigEntries(entries)
       : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]),
   ]);
+  syncServerConfigDependencyVisibility();
   syncServerConfigActions();
 }
 
@@ -4185,6 +4186,7 @@ function syncServerConfigActions() {
 
 function noteServerConfigDraft(key, value) {
   serverConfigDrafts.set(key, value);
+  syncServerConfigDependencyVisibility();
   syncServerConfigActions();
 }
 
@@ -4207,7 +4209,26 @@ function discardServerConfigDrafts() {
   syncServerConfigActions();
 }
 
-function renderServerConfigEntry(entry = {}) {
+function serverConfigValue(key) {
+  if (serverConfigDrafts.has(key)) return serverConfigDrafts.get(key);
+  return (lastServerPayload?.configuration ?? []).find((entry) => entry.key === key)?.value;
+}
+
+function syncServerConfigDependencyVisibility() {
+  for (const row of serverConfig?.querySelectorAll("[data-server-config-visible-key]") ?? []) {
+    const expected = row.dataset.serverConfigVisibleValue === "true";
+    row.hidden = Boolean(serverConfigValue(row.dataset.serverConfigVisibleKey)) !== expected;
+  }
+}
+
+function renderServerConfigEntries(entries) {
+  const byKey = new Map(entries.map((entry) => [entry.key, entry]));
+  return entries
+    .filter((entry) => !entry.inlineFor)
+    .map((entry) => renderServerConfigEntry(entry, byKey));
+}
+
+function renderServerConfigEntry(entry = {}, entriesByKey = new Map()) {
   const pendingNote = entry.pending ? el("small", {
     class: "server-config-pending",
     text: "Применится после перезапуска",
@@ -4216,16 +4237,46 @@ function renderServerConfigEntry(entry = {}) {
   if (entry.type === "boolean") {
     const input = el("input", { type: "checkbox", checked: entry.value === true });
     input.addEventListener("change", () => noteServerConfigDraft(entry.key, input.checked));
-    return el("label", {
+    const inlineEntry = entriesByKey.get(entry.inlineValueKey);
+    const inlineInput = inlineEntry ? el("input", {
+      class: "server-config-number",
+      type: "number",
+      value: inlineEntry.value ?? "",
+      min: inlineEntry.min,
+      max: inlineEntry.max,
+      step: 1,
+      "aria-label": inlineEntry.name ?? "Порог",
+    }) : null;
+    inlineInput?.addEventListener("input", () => noteServerConfigDraft(inlineEntry.key, inlineInput.value));
+    inlineInput?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") saveServerConfigDrafts();
+    });
+    const sentence = inlineInput
+      ? el("span", { class: "switch-text" }, [
+        document.createTextNode(`${entry.name ?? ""} `),
+        inlineInput,
+        document.createTextNode(entry.suffix ?? ""),
+      ])
+      : el("span", { class: "switch-text", text: entry.name ?? "" });
+    const row = el("label", {
       class: "server-config-row server-config-toggle",
       title: entry.hint || entry.name || "",
     }, [
-      el("span", { class: "switch-text", text: entry.name ?? "" }),
+      sentence,
       input,
       el("span", { class: "switch-track", "aria-hidden": true }),
       hint,
       pendingNote,
+      inlineEntry?.pending ? el("small", {
+        class: "server-config-pending",
+        text: "Порог применится после перезапуска",
+      }) : null,
     ].filter(Boolean));
+    if (entry.visibleWhen) {
+      row.dataset.serverConfigVisibleKey = entry.visibleWhen.key;
+      row.dataset.serverConfigVisibleValue = String(entry.visibleWhen.value);
+    }
+    return row;
   }
   if (entry.type === "choice") {
     const input = el("select", {
