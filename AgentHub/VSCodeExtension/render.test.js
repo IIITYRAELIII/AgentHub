@@ -923,6 +923,21 @@ test("compact desktop header wraps before it can create horizontal overflow", ()
   );
 });
 
+test("desktop themes share one shell-owned top-panel anchor", () => {
+  const styles = fs.readFileSync(
+    require.resolve("../assets/mini-app/styles.css"),
+    "utf8",
+  );
+  assert.match(
+    styles,
+    /\.app-header\s*\{[^}]*padding:[^;]+!important;[^}]*position:\s*sticky\s*!important;[^}]*top:\s*0\s*!important;/su,
+  );
+  assert.match(
+    styles,
+    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) body > \.workspace\s*\{[^}]*padding-top:\s*0\.72rem\s*!important;/su,
+  );
+});
+
 test("mobile task list cannot widen the viewport", () => {
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),
