@@ -78,22 +78,6 @@ html[data-theme="orbit"] body::before {
   width: 12px;
 }
 
-/* В концепте используется собственный навигационный знак темы. */
-html:not([data-theme]) .brand-mark,
-html[data-theme="orbit"] .brand-mark {
-  background: var(--orbit-mark-image) center / 100% 100% no-repeat;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  height: 2rem;
-  width: 2rem;
-}
-
-html:not([data-theme]) .brand-mark svg,
-html[data-theme="orbit"] .brand-mark svg {
-  display: none;
-}
-
 html:not([data-theme]) .app-header,
 html[data-theme="orbit"] .app-header {
   backdrop-filter: none;

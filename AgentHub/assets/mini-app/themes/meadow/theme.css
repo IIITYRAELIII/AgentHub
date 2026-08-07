@@ -187,24 +187,7 @@ html[data-background-override="true"][data-background="meadow-goldenhour"] body:
 /* ==================================================== облик: полевой атлас ===
    «Луг» — это определитель растений: карточки становятся этикетками с
    загнутым уголком, у каждой слева тонкий стебель, служебные подписи набраны
-   курсивом, как латинские названия в гербарии. Знак — лист. */
-
-html[data-theme="meadow"] .brand-mark {
-  background: linear-gradient(150deg, rgba(159, 211, 86, .3), rgba(7, 13, 8, .8));
-  border: 1px solid rgba(176, 214, 138, .4);
-  border-radius: 0 60% 0 60%;
-}
-
-html[data-theme="meadow"] .brand-mark svg { display: none; }
-
-html[data-theme="meadow"] .brand-mark::before {
-  background: linear-gradient(150deg, #d6f5a3, #6f9c33);
-  border-radius: 0 100% 0 100%;
-  box-shadow: inset -1px 1px 0 rgba(7, 13, 8, .45);
-  content: "";
-  height: 1.1rem;
-  width: 1.1rem;
-}
+   курсивом, как латинские названия в гербарии. */
 
 /* Этикетка гербария: загнутый правый верхний угол и стебель слева. */
 html[data-theme="meadow"] .task-item {

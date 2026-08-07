@@ -76,3 +76,38 @@ test("theme registry rejects a manifest that escapes its package", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("theme registry rejects attempts to replace the shell-owned brand mark", async () => {
+  const directory = await fixture(manifest);
+  try {
+    const theme = path.join(directory, "themes", "aurora");
+    const stylesheet = path.join(theme, "theme.css");
+    const script = path.join(theme, "effect.js");
+    const markup = path.join(theme, "theme.html");
+    await writeFile(
+      stylesheet,
+      'html[data-theme="aurora"] .brand-mark { filter: hue-rotate(90deg); }',
+      "utf8",
+    );
+    assert.throws(
+      () => loadThemeRegistry(directory),
+      /theme aurora: theme\.css references the shell-owned Agent Hub mark/iu,
+    );
+
+    await writeFile(stylesheet, 'html[data-theme="aurora"]{}', "utf8");
+    await writeFile(script, 'document.querySelector("[data-app-mark]")?.remove();', "utf8");
+    assert.throws(
+      () => loadThemeRegistry(directory),
+      /theme aurora: effect\.js references the shell-owned Agent Hub mark/iu,
+    );
+
+    await writeFile(script, 'document.documentElement.dataset.effect = "aurora";', "utf8");
+    await writeFile(markup, '<img src="agent-hub-mark.png">', "utf8");
+    assert.throws(
+      () => loadThemeRegistry(directory),
+      /theme aurora: theme\.html references the shell-owned Agent Hub mark/iu,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

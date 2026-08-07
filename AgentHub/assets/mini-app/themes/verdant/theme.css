@@ -121,25 +121,6 @@ html[data-theme="verdant"] .app-header::after {
   background: linear-gradient(90deg, transparent 4%, rgba(131, 237, 165, 0.72) 34%, rgba(131, 237, 165, 0.16) 68%, transparent 94%);
 }
 
-html[data-theme="verdant"] .brand-mark {
-  background: transparent;
-  border-color: transparent;
-  box-shadow: none;
-  color: #a8f7bf;
-}
-
-html[data-theme="verdant"] .brand-mark svg {
-  display: none;
-}
-
-html[data-theme="verdant"] .brand-mark::before {
-  background: var(--verdant-mark-image) center / contain no-repeat;
-  content: "";
-  filter: drop-shadow(0 0 5px rgba(131, 237, 165, 0.48));
-  height: 1.65rem;
-  width: 1.65rem;
-}
-
 /* Активная вкладка — сигнальная риска вместо привычной круглой плашки. */
 html[data-theme="verdant"] .view-tab[aria-pressed="true"] {
   background: linear-gradient(180deg, transparent, rgba(131, 237, 165, 0.07));
@@ -300,15 +281,6 @@ html[data-theme="verdant"][data-background-override="true"][data-background="ver
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .brand {
     gap: 0.7rem;
-  }
-
-  html[data-theme="verdant"]:not([data-surface="mobile"]) .brand-mark {
-    background: transparent;
-    border: 0;
-    border-radius: 0;
-    box-shadow: none;
-    height: 1.9rem;
-    width: 1.9rem;
   }
 
   html[data-theme="verdant"]:not([data-surface="mobile"]) .brand-text {

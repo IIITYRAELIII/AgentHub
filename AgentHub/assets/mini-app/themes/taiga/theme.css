@@ -183,27 +183,7 @@ html[data-background-override="true"][data-background="taiga-rainfall"] { --hub-
 /* ============================================== облик: запотевшее стекло ===
    Тема называется Rain, и смотрят на неё сквозь мокрое окно: у панелей есть
    верхняя блик-кромка и подтёк снизу, у карточек — сдвинутая книзу тень,
-   а знак — капля. Резких границ нет, зато есть влага. */
-
-html[data-theme="taiga"] .brand-mark {
-  background: linear-gradient(160deg, rgba(206, 240, 232, .5), rgba(126, 191, 174, .18) 55%, rgba(6, 10, 13, .5));
-  border: 1px solid rgba(152, 194, 186, .35);
-  border-radius: 52% 52% 52% 6px;
-  box-shadow: inset 0 2px 6px -3px rgba(232, 255, 248, .8);
-  rotate: -45deg;
-}
-
-html[data-theme="taiga"] .brand-mark svg { display: none; }
-
-html[data-theme="taiga"] .brand-mark::before {
-  background: rgba(232, 255, 248, .85);
-  border-radius: 50%;
-  content: "";
-  height: 0.3rem;
-  margin: -0.5rem 0 0 -0.45rem;
-  opacity: .8;
-  width: 0.3rem;
-}
+   резких границ нет, зато есть влага. */
 
 /* Стекло: блик по верхней кромке и стекающая тень по нижней. */
 html[data-theme="taiga"] .task-rail,

@@ -119,19 +119,6 @@ html[data-theme="lake"] .view-switch {
   padding: 0;
 }
 
-html[data-theme="lake"] .brand-mark {
-  background: var(--lake-mark-image) center / contain no-repeat;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  height: 1.9rem;
-  width: 1.9rem;
-}
-
-html[data-theme="lake"] .brand-mark svg {
-  display: none;
-}
-
 html[data-theme="lake"] .brand .eyebrow {
   color: var(--text-soft);
   font-size: 0.76rem;

@@ -103,14 +103,6 @@ html[data-theme="graphite"] .app-header::after {
   content: none;
 }
 
-html[data-theme="graphite"] .brand-mark {
-  border-color: oklch(0.32 0.005 260);
-  box-shadow: none;
-  color: oklch(0.78 0.01 260);
-  height: 2.5rem;
-  width: 2.5rem;
-}
-
 html[data-theme="graphite"] .theme-picker,
 html[data-theme="graphite"] .group-picker,
 html[data-theme="graphite"] .connection {

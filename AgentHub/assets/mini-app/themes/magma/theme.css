@@ -209,25 +209,7 @@ html[data-background-override="true"][data-background="magma-flow"] body::before
 /* ================================================= облик: раскалённый скол ===
    Магма — это корка с трещинами, сквозь которые бьёт свет. Панели получают
    скошенные углы, будто отколоты, свет идёт из разлома слева, а кнопки
-   выглядят клеймом: тяжёлые, с горячей кромкой. Знак — клин трещины. */
-
-html[data-theme="magma"] .brand-mark {
-  background: linear-gradient(150deg, rgba(255, 154, 92, .22), rgba(10, 6, 5, .85));
-  border: 1px solid rgba(226, 168, 128, .4);
-  border-radius: 0;
-  clip-path: polygon(0 0, 100% 0, 100% 72%, 72% 100%, 0 100%);
-}
-
-html[data-theme="magma"] .brand-mark svg { display: none; }
-
-html[data-theme="magma"] .brand-mark::before {
-  background: linear-gradient(180deg, #ffd9a8, #ff7a2f 55%, #b8300b);
-  clip-path: polygon(52% 0, 74% 38%, 58% 40%, 78% 100%, 30% 46%, 48% 44%, 30% 8%);
-  content: "";
-  filter: drop-shadow(0 0 6px rgba(255, 122, 47, .85));
-  height: 1.25rem;
-  width: 1rem;
-}
+   выглядят клеймом: тяжёлые, с горячей кромкой. */
 
 /* Отколотый край: угол панели срезан, а из разлома идёт свет. */
 html[data-theme="magma"] .task-rail {

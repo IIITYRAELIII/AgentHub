@@ -162,15 +162,6 @@ html[data-background-override="true"][data-background="nebula-core"] body::befor
    Туманность снимают долгой выдержкой, и в кадре нет ни одной резкой грани.
    Тема отказывается от рамок совсем: панели держатся на свете, а не на линии. */
 
-html[data-theme="nebula"] .brand-mark {
-  background: radial-gradient(circle at 50% 50%, rgba(240, 214, 255, .95) 0 12%, rgba(215, 155, 255, .45) 26%, rgba(80, 40, 130, .3) 55%, transparent 78%);
-  border: 0;
-  border-radius: 50%;
-  box-shadow: 0 0 22px -4px rgba(215, 155, 255, .75);
-}
-
-html[data-theme="nebula"] .brand-mark svg { display: none; }
-
 /* Панели без рамок: край растворяется, вместо линии — дымка. */
 html[data-theme="nebula"] .task-rail,
 html[data-theme="nebula"] .chat {

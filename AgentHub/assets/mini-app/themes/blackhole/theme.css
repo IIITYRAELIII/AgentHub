@@ -105,23 +105,6 @@ html[data-theme="blackhole"] .app-header::after {
   background: linear-gradient(90deg, transparent 5%, rgb(82 184 255 / 34%) 50%, transparent 95%);
 }
 
-/* В выбранном концепте знак — штатный гранёный импульс Agent Hub, а не
-   прежнее CSS-кольцо. */
-html[data-theme="blackhole"] .brand-mark {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  color: #62c5ff;
-}
-
-html[data-theme="blackhole"] .brand-mark svg {
-  display: block;
-  filter: drop-shadow(0 0 5px rgb(74 184 255 / 56%));
-  height: 1.2rem;
-  width: 1.2rem;
-}
-
 html[data-theme="blackhole"] .view-switch {
   background: transparent;
   border: 0;

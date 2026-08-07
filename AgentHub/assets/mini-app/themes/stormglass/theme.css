@@ -135,26 +135,7 @@ html[data-background-override="true"][data-background="stormglass"] { --stormgla
 
 /* ==================================================== облик: иллюминатор ===
    Storm смотрят из рубки в шторм. Панель — не карточка, а обечайка
-   иллюминатора: толстая рамка, скруглённые углы, задрайки вместо кнопок.
-   Знак — маяк с проблеском. */
-
-html[data-theme="stormglass"] .brand-mark {
-  background: linear-gradient(180deg, rgba(142, 199, 226, .16), rgba(5, 9, 15, .8));
-  border: 2px solid rgba(142, 199, 226, .45);
-  border-radius: 50%;
-  box-shadow: inset 0 0 0 2px rgba(5, 9, 15, .9), 0 0 16px -8px rgba(142, 199, 226, .9);
-}
-
-html[data-theme="stormglass"] .brand-mark svg { display: none; }
-
-html[data-theme="stormglass"] .brand-mark::before {
-  background: linear-gradient(180deg, #f2fbff, #8ec7e2 42%, rgba(142, 199, 226, .25));
-  clip-path: polygon(38% 0, 62% 0, 74% 100%, 26% 100%);
-  content: "";
-  filter: drop-shadow(0 -3px 7px rgba(226, 246, 255, .9));
-  height: 1.1rem;
-  width: 0.85rem;
-}
+   иллюминатора: толстая рамка, скруглённые углы, задрайки вместо кнопок. */
 
 /* Обечайка: толстая рамка и внутренний поясок, как у литого стекла. */
 html[data-theme="stormglass"] .task-rail,

@@ -114,7 +114,6 @@ html[data-theme="reliquary"] .app-header::after {
   opacity: 0.72;
 }
 
-html[data-theme="reliquary"] .brand-mark,
 html[data-theme="reliquary"] .icon-button,
 html[data-theme="reliquary"] .chip-button,
 html[data-theme="reliquary"] .refresh,
@@ -122,11 +121,6 @@ html[data-theme="reliquary"] .view-switch,
 html[data-theme="reliquary"] .task-search,
 html[data-theme="reliquary"] .composer-main {
   box-shadow: inset 0 0 0 1px rgba(232, 223, 207, 0.025), inset 0 -1px 0 rgba(0, 0, 0, 0.78);
-}
-
-html[data-theme="reliquary"] .brand-mark {
-  border-color: rgba(155, 120, 69, 0.62);
-  color: #b99865;
 }
 
 html[data-theme="reliquary"] .eyebrow {
@@ -405,25 +399,7 @@ html[data-theme="reliquary"][data-background="reliquary"] {
 /* ================================================= облик: архивная опись ===
    Пепельный архив — это хранилище с бирками: у карточек срезан левый верхний
    угол, как у ярлыка с отверстием, разделители пунктирные, шифры набраны
-   моноширинным. Знак — оттиск печати. */
-
-html[data-theme="reliquary"] .brand-mark {
-  background: radial-gradient(circle at 50% 50%, rgba(199, 101, 62, .3), rgba(9, 8, 7, .9) 72%);
-  border: 2px solid rgba(199, 101, 62, .55);
-  border-radius: 50%;
-}
-
-html[data-theme="reliquary"] .brand-mark svg { display: none; }
-
-html[data-theme="reliquary"] .brand-mark::before {
-  border: 1px solid currentColor;
-  border-radius: 50%;
-  box-shadow: inset 0 0 0 2px rgba(9, 8, 7, .9), inset 0 0 0 3px currentColor;
-  content: "";
-  height: 1.05rem;
-  opacity: .85;
-  width: 1.05rem;
-}
+   моноширинным. */
 
 /* Ярлык: срезанный левый верхний угол и пунктир вместо сплошной линии. */
 html[data-theme="reliquary"] .task-item {
