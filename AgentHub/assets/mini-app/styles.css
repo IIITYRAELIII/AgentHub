@@ -820,7 +820,7 @@ main {
 
 /* ==================================================== задача и её ходы === */
 
-.journal section[data-work-log-workspace] {
+.journal details[data-work-log-workspace] {
   background: color-mix(in srgb, var(--surface-1) 54%, transparent);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -829,23 +829,53 @@ main {
   overflow: hidden;
 }
 
-.journal section[data-work-log-workspace][data-work-log-workspace-kind="system"] {
+.journal details[data-work-log-workspace][data-work-log-workspace-kind="system"] {
   border-style: dashed;
 }
 
-.journal header[data-work-log-workspace-header] {
+.journal details[data-work-log-workspace]:not([open]) > :not(summary) {
+  display: none !important;
+}
+
+.journal summary[data-work-log-workspace-header] {
   align-items: center;
   background: color-mix(in srgb, var(--surface-2) 68%, transparent);
-  border-bottom: 1px solid var(--line);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem 0.7rem;
-  justify-content: flex-start;
+  cursor: pointer;
+  display: grid;
+  gap: 0.35rem;
+  grid-template-columns: 1rem 17.5rem minmax(0, 1fr);
+  list-style: none;
   min-height: 2.4rem;
   padding: 0.35rem 0.55rem;
 }
 
-.journal header[data-work-log-workspace-header] > strong {
+.journal details[data-work-log-workspace][open] > summary[data-work-log-workspace-header] {
+  border-bottom: 1px solid var(--line);
+}
+
+.journal summary[data-work-log-workspace-header]::-webkit-details-marker {
+  display: none;
+}
+
+.journal summary[data-work-log-workspace-header]::marker {
+  content: "";
+}
+
+.journal summary[data-work-log-workspace-header]::before {
+  color: var(--text-faint);
+  content: "›";
+  font-family: var(--font-display);
+  font-size: 1rem;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform 0.14s ease;
+}
+
+.journal details[data-work-log-workspace][open] > summary[data-work-log-workspace-header]::before {
+  transform: rotate(90deg);
+}
+
+.journal summary[data-work-log-workspace-header] > strong {
   color: var(--text);
   font-family: var(--font-display);
   font-size: 0.88rem;
@@ -856,8 +886,21 @@ main {
 }
 
 .journal span[data-work-log-workspace-usage] {
-  flex: 0 1 auto;
+  align-items: baseline;
+  color: var(--text-muted);
+  display: inline-grid;
+  font-family: var(--font-numeric);
+  font-size: 0.75rem;
+  gap: 0.4rem;
+  grid-template-columns: 8.6ch 6ch;
+  justify-self: start;
   min-width: 0;
+  padding: 0.18rem 0.35rem;
+}
+
+.journal span[data-work-log-workspace-usage] > span {
+  justify-self: end;
+  text-align: right;
 }
 
 .journal details[data-work-log-workspace-usage-details] {
@@ -919,35 +962,107 @@ main {
   text-align: right;
 }
 
-.journal div[data-work-log-workspace-turns] {
-  min-width: 0;
+.journal details[data-work-log-stream] + details[data-work-log-stream] {
+  border-top: 1px solid var(--line);
 }
 
-.journal div[data-work-log-workspace-turns] > div[data-work-log-row] {
-  display: block;
-  padding: 0.15rem 0;
+.journal details[data-work-log-stream] {
+  --row-accent: var(--provider-none);
 }
 
-.journal div[data-work-log-workspace-turns] div[data-work-log-task-cell] {
-  display: none;
+.journal details[data-work-log-stream][data-work-log-provider="codex"] {
+  --row-accent: var(--provider-codex);
 }
 
-/* Переходный слой для HTML, который мог сохранить ещё работающий Runtime.
-   Старые Stream-секции становятся прозрачными контейнерами: название переносит
-   app.js в компактную метку хода, а отдельная белая плашка больше не рисуется. */
+.journal details[data-work-log-stream][data-work-log-provider="claude"] {
+  --row-accent: var(--provider-claude);
+}
+
 .journal details[data-work-log-stream][open] {
-  display: contents;
+  align-items: start;
+  display: grid;
+  grid-template-columns: 17.5rem minmax(0, 1fr);
 }
 
-.journal details[data-work-log-stream]:not([open]) {
-  display: none;
-}
-
-.journal summary[data-work-log-stream-summary] {
+.journal details[data-work-log-stream]:not([open]) > :not(summary) {
   display: none !important;
 }
 
+.journal summary[data-work-log-stream-summary] {
+  align-self: start;
+  cursor: pointer;
+  display: grid;
+  gap: 0.32rem;
+  grid-column: 1;
+  list-style: none;
+  min-width: 0;
+  padding: 0.55rem;
+  position: sticky;
+  top: calc(var(--header-height) + 0.6rem);
+}
+
+.journal summary[data-work-log-stream-summary]::-webkit-details-marker {
+  display: none;
+}
+
+.journal summary[data-work-log-stream-summary]::marker {
+  content: "";
+}
+
+.journal span[data-work-log-stream-title] {
+  background-color: transparent;
+  background-image:
+    linear-gradient(115deg, color-mix(in srgb, var(--row-accent) 10%, transparent), transparent 46%),
+    var(--plate-texture),
+    var(--plate-bg);
+  border: 1px solid var(--line);
+  border-left: var(--rail-width) solid var(--row-accent);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--plate-shadow), -7px 0 18px -14px var(--row-accent);
+  color: var(--text);
+  font-family: var(--font-display);
+  font-weight: var(--title-weight);
+  line-height: 1.35;
+  overflow: hidden;
+  padding: 0.42rem 0.6rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.journal span[data-work-log-stream-title] a,
+.journal span[data-work-log-stream-title] [role="link"],
+.journal span[data-work-log-stream-title] button[data-open-task] {
+  background: transparent;
+  border: 0;
+  color: color-mix(in srgb, var(--row-accent) 45%, var(--text));
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  overflow: hidden;
+  padding: 0;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.journal span[data-work-log-stream-usage] {
+  color: var(--text-muted);
+  column-gap: 0.4rem;
+  display: grid;
+  font-family: var(--font-numeric);
+  font-size: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) 8.6ch 6ch;
+  padding: 0.24rem 0.55rem;
+}
+
+.journal span[data-work-log-stream-usage] > span {
+  justify-self: end;
+  text-align: right;
+}
+
 .journal div[data-work-log-stream-turns] {
+  grid-column: 2;
   min-width: 0;
 }
 
@@ -3102,15 +3217,21 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   padding: 0;
 }
 
-html[data-surface="mobile"] .journal header[data-work-log-workspace-header] {
-  align-items: stretch;
-  flex-direction: column;
+html[data-surface="mobile"] .journal summary[data-work-log-workspace-header] {
   gap: 0.35rem;
+  grid-template-columns: 1rem minmax(0, 1fr) auto;
 }
 
 html[data-surface="mobile"] .journal span[data-work-log-workspace-usage] {
-  flex-basis: auto;
-  width: 100%;
+  width: auto;
+}
+
+html[data-surface="mobile"] .journal details[data-work-log-stream][open] {
+  display: block;
+}
+
+html[data-surface="mobile"] .journal summary[data-work-log-stream-summary] {
+  position: static;
 }
 
 html[data-surface="mobile"]

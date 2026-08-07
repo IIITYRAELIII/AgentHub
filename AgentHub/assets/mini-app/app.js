@@ -512,14 +512,14 @@ function savedWorkspaceCollapse() {
   }
 }
 
-function setWorkspaceTurnsCollapsed(collapsed, scope = journal) {
-  for (const turns of scope.querySelectorAll("[data-work-log-workspace-turns]")) {
-    turns.hidden = collapsed;
+function setWorkspaceGroupsCollapsed(collapsed, scope = journal) {
+  for (const workspace of scope.querySelectorAll("details[data-work-log-workspace]")) {
+    workspace.open = !collapsed;
   }
-  // Совместимость с журналом, спроецированным предыдущей версией Runtime:
-  // старые Stream-секции скрываются целиком, но заголовок Workspace остаётся.
-  for (const stream of scope.querySelectorAll("details[data-work-log-stream]")) {
-    stream.open = !collapsed;
+  if (!collapsed) {
+    for (const stream of scope.querySelectorAll("details[data-work-log-stream]")) {
+      stream.open = true;
+    }
   }
 }
 
@@ -527,7 +527,10 @@ function applyWorkspaceCollapse(value, { persist = false, update = false } = {})
   collapseWorkspaceTurns = value === true;
   root.dataset.workspaceCollapse = collapseWorkspaceTurns ? "on" : "off";
   if (workspaceCollapseToggle) workspaceCollapseToggle.checked = collapseWorkspaceTurns;
-  if (update) setWorkspaceTurnsCollapsed(collapseWorkspaceTurns);
+  if (update) {
+    setWorkspaceGroupsCollapsed(collapseWorkspaceTurns);
+    persistOpenState();
+  }
   if (persist) {
     try {
       // Сохраняем прежний ключ: выбор пользователя не сбрасывается после обновления.
@@ -6455,6 +6458,15 @@ function captureOpenState() {
       "details[data-work-log-workspace-usage-details][open]",
     )].map((item) => item.closest("[data-work-log-workspace]")?.dataset.workLogWorkspaceId)
       .filter(Boolean),
+    workspaces: [...journal.querySelectorAll("details[data-work-log-workspace][open]")]
+      .map((item) => item.dataset.workLogWorkspaceId)
+      .filter(Boolean),
+    streams: [...journal.querySelectorAll("details[data-work-log-stream][open]")]
+      .map((item) => ({
+        workspaceId: item.closest("[data-work-log-workspace]")?.dataset.workLogWorkspaceId,
+        streamId: item.dataset.workLogStreamId,
+      }))
+      .filter((item) => item.workspaceId && item.streamId),
     turns: [...journal.querySelectorAll("details[data-work-log-turn-details][open]")]
       .map((item) => item.closest("[data-work-log-turn-id]")?.dataset.workLogTurnId)
       .filter(Boolean),
@@ -6567,6 +6579,27 @@ function restoreOpenState(openState) {
       + "details[data-work-log-workspace-usage-details]",
     )?.setAttribute("open", "");
   }
+  if (Array.isArray(openState.workspaces)) {
+    for (const details of journal.querySelectorAll("details[data-work-log-workspace]")) {
+      details.open = false;
+    }
+    for (const workspaceId of openState.workspaces) {
+      journal.querySelector(
+        `details[data-work-log-workspace-id="${selectorValue(workspaceId)}"]`,
+      )?.setAttribute("open", "");
+    }
+  }
+  if (Array.isArray(openState.streams)) {
+    for (const details of journal.querySelectorAll("details[data-work-log-stream]")) {
+      details.open = false;
+    }
+    for (const stream of openState.streams) {
+      journal.querySelector(
+        `[data-work-log-workspace-id="${selectorValue(stream.workspaceId)}"] `
+        + `details[data-work-log-stream-id="${selectorValue(stream.streamId)}"]`,
+      )?.setAttribute("open", "");
+    }
+  }
   for (const turnId of openState.turns) {
     journal.querySelector(
       `[data-work-log-turn-id="${selectorValue(turnId)}"] details[data-work-log-turn-details]`,
@@ -6657,7 +6690,7 @@ async function loadLazyDay(details) {
     syncCollapseTurnButtons(replacement);
     prepareMobileControls(journal);
     if (desiredOpenState) restoreOpenState(desiredOpenState);
-    setWorkspaceTurnsCollapsed(collapseWorkspaceTurns, replacement);
+    setWorkspaceGroupsCollapsed(collapseWorkspaceTurns, replacement);
   })().catch((error) => {
     if (details.isConnected) {
       details.removeAttribute("aria-busy");
@@ -7563,8 +7596,12 @@ function applyJournalGrouping() {
   syncCollapseTurnButtons();
   prepareMobileControls();
   const saved = groupingStates[grouping];
-  if (saved) restoreOpenState(saved);
-  setWorkspaceTurnsCollapsed(collapseWorkspaceTurns);
+  if (saved) {
+    restoreOpenState(saved);
+    if (!Array.isArray(saved.workspaces)) setWorkspaceGroupsCollapsed(collapseWorkspaceTurns);
+  } else {
+    setWorkspaceGroupsCollapsed(collapseWorkspaceTurns);
+  }
   if (grouping === "task") {
     for (const details of journal.querySelectorAll(
       "details[data-work-log-task-group][open]",

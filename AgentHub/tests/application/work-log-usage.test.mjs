@@ -167,7 +167,7 @@ test("workspace usage aggregates sequential Threads and retains Stream detail", 
   assert.equal(history.totalCredits, 5);
 });
 
-test("journal projection assigns all Stream turns directly to one Workspace", () => {
+test("journal projection groups all Stream turns under one expandable Workspace", () => {
   const resolver = ({ threadId }) => ({
     workspaceId: "workspace-hub",
     workspaceName: "Agent HUB",
@@ -188,19 +188,28 @@ test("journal projection assigns all Stream turns directly to one Workspace", ()
       taskTitle: "Themes", title: "Второй", estimatedCredits: 3,
       completedAt: "2026-07-30T10:20:00.000Z" },
   }, { workspaceResolver: resolver });
-  assert.equal((projected.match(/<section data-work-log-workspace data-work-log-workspace-id="workspace-hub"/gu) ?? []).length, 1);
-  assert.equal((projected.match(/<div data-work-log-row/gu) ?? []).length, 1);
-  assert.ok(projected.includes("data-work-log-workspace-turns"));
-  assert.ok(!projected.includes("data-work-log-stream"));
+  assert.equal((projected.match(/<details data-work-log-workspace data-work-log-workspace-id="workspace-hub"/gu) ?? []).length, 1);
+  assert.equal((projected.match(/<details data-work-log-stream /gu) ?? []).length, 2);
+  assert.equal((projected.match(/<div data-work-log-row/gu) ?? []).length, 2);
+  assert.ok(projected.includes("data-work-log-workspace-streams"));
+  assert.ok(projected.includes("data-work-log-stream-turns"));
   assert.ok(projected.includes("Agent HUB"));
   assert.equal((projected.match(/data-work-log-turn-stream>Stream 1<\/span>/gu) ?? []).length, 2);
   assert.equal((projected.match(/data-work-log-turn-stream>Themes<\/span>/gu) ?? []).length, 1);
   assert.ok(!projected.includes("Codex - Agent HUB 1"));
   assert.ok(!projected.includes("Codex - Agent HUB 2"));
+  assert.match(
+    projected,
+    /data-open-task data-provider="codex" data-thread-id="thread-main-next">Stream 1/u,
+  );
+  assert.match(
+    projected,
+    /data-work-log-turn-provider="codex" data-work-log-turn-thread-id="thread-main"[\s\S]*?data-open-turn/u,
+  );
   assert.ok(projected.includes('data-usage-credits="9"'));
 });
 
-test("journal folds a single Stream into Workspace turns and owns usage at Workspace level", () => {
+test("journal keeps one Stream expandable and owns its total at Workspace level", () => {
   const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
     only: {
       provider: "codex",
@@ -222,15 +231,17 @@ test("journal folds a single Stream into Workspace turns and owns usage at Works
       streamDisplayName: "",
     }),
   });
-  assert.match(projected, /<div data-work-log-workspace-turns>/u);
+  assert.match(projected, /<details data-work-log-workspace[^>]* open>/u);
+  assert.match(projected, /<summary data-work-log-workspace-header>/u);
+  assert.match(projected, /<details data-work-log-stream[^>]* open>/u);
+  assert.match(projected, /<summary data-work-log-stream-summary>/u);
   assert.match(projected, /data-work-log-turn-stream>Stream 1<\/span>/u);
-  assert.doesNotMatch(projected, /data-work-log-stream/u);
   assert.match(
     projected,
-    /data-work-log-workspace-usage><details data-work-log-workspace-usage-details>/u,
+    /data-work-log-workspace-usage>[\s\S]*?data-usage-credits="4"/u,
   );
   const workspaceSummary = projected.match(
-    /<summary data-work-log-workspace-usage-summary>[\s\S]*?<\/summary>/u,
+    /<summary data-work-log-workspace-header>[\s\S]*?<\/summary>/u,
   )?.[0] ?? "";
   assert.match(workspaceSummary, /data-usage-credits="4"/u);
   assert.doesNotMatch(workspaceSummary, /Итого|data-usage-label/u);

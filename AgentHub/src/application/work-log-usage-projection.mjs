@@ -316,19 +316,20 @@ function formatTaskUsageDetails(creditBreakdown, dayCredits) {
       .join("")}</span></details>\n`;
 }
 
-function formatWorkspaceUsageDetails(creditBreakdown, dayCredits) {
-  const [total, ...breakdown] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
-  const totalHtml = highlightUsageUnits(
+function formatStreamUsage(creditBreakdown, dayCredits) {
+  const [total] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
+  return `<span data-work-log-stream-usage>${highlightUsageUnits(
+    alignUsagePercent(markUsageLabel(total)),
+    creditBreakdown.total,
+  )}</span>`;
+}
+
+function formatWorkspaceUsage(creditBreakdown, dayCredits) {
+  const [total] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
+  return highlightUsageUnits(
     alignUsagePercent(total.replace(/^Итого\s+/u, "")),
     creditBreakdown.total,
   );
-  return "<details data-work-log-workspace-usage-details>"
-    + `<summary data-work-log-workspace-usage-summary>${totalHtml}</summary>`
-    + `<span data-work-log-workspace-usage-breakdown>${breakdown
-      .map((part) => `<span data-work-log-workspace-usage-part>${
-        highlightUsageUnits(alignUsagePercent(part), breakdownPartCredits(part, creditBreakdown))
-      }</span>`)
-      .join("")}</span></details>`;
 }
 
 function formatDayUsageBreakdown(creditBreakdown) {
@@ -820,7 +821,7 @@ function workLogRowCells(row) {
 function layoutContainer(content, { workspaceHierarchy = false } = {}) {
   return [
     "<div data-work-log-table>",
-    `<div data-work-log-header><strong>${workspaceHierarchy ? "Поток" : "Задача"}</strong><strong>Ходы</strong></div>`,
+    `<div data-work-log-header><strong>${workspaceHierarchy ? "Workspace" : "Задача"}</strong><strong>Ходы</strong></div>`,
     `<div data-work-log-body>${content}</div>`,
     "</div>",
   ].join("\n");
@@ -1379,7 +1380,6 @@ function replaceProjectedCells(
   records,
   workspace = null,
   taskContentOverride = null,
-  { workspaceOnly = false } = {},
 ) {
   const cells = workLogRowCells(row);
   if (cells.length < 2) return row;
@@ -1403,7 +1403,7 @@ function replaceProjectedCells(
       ? taskCell({ ...identity, taskTitle: latest.taskTitle })
       : taskCellContent(cells[0].text)
   );
-  const attributes = identity && !workspaceOnly
+  const attributes = identity
     ? ` data-work-log-provider="${escapeHtmlAttribute(identity.provider)}"`
       + ` data-work-log-thread-id="${escapeHtmlAttribute(identity.threadId)}"`
     : "";
@@ -1441,49 +1441,83 @@ function formatWorkspaceRows(rows, dayCredits, workspaceResolver) {
     .sort((left, right) => right.latestCompletedAt - left.latestCompletedAt)
     .map((group) => {
       if (!group.workspace) return group.rows.map((row) => row.html).join("\n");
-      const rowsByRecency = [...group.rows].sort(
-        (left, right) => right.latestCompletedAt - left.latestCompletedAt,
-      );
-      const representative = rowsByRecency[0];
-      const records = [];
-      const seenRecords = new Set();
-      for (const row of rowsByRecency) {
-        const streamDisplayName = row.workspace.streamDisplayName
-          || `Stream ${row.workspace.streamOrdinal}`;
-        for (const record of row.recorded) {
-          const key = `${record.provider}\0${record.threadId}\0${record.turnId}`;
-          if (seenRecords.has(key)) continue;
-          seenRecords.add(key);
-          records.push({ ...record, workLogStreamDisplayName: streamDisplayName });
-        }
+      const streams = new Map();
+      for (const row of group.rows) {
+        const streamKey = row.workspace.streamId;
+        const stream = streams.get(streamKey) ?? { workspace: row.workspace, rows: [] };
+        stream.rows.push(row);
+        streams.set(streamKey, stream);
       }
-      records.sort(
-        (left, right) => (Date.parse(right.completedAt) || 0) - (Date.parse(left.completedAt) || 0),
-      );
-      const markers = [...new Set(group.rows.flatMap((row) => row.ids))]
-        .map((id) => `<span data-usage-id="${id}" hidden></span>`)
-        .join("\n");
-      const rowHtml = replaceProjectedCells(
-        representative.match.text,
-        markers,
-        records,
-        { ...group.workspace, streamId: null },
-        "",
-        { workspaceOnly: true },
-      );
+      const orderedStreams = [...streams.values()].sort((left, right) => (
+        Math.max(...right.rows.map((row) => row.latestCompletedAt))
+          - Math.max(...left.rows.map((row) => row.latestCompletedAt))
+        || left.workspace.streamOrdinal - right.workspace.streamOrdinal
+      ));
+      const streamHtml = orderedStreams.map((stream) => {
+        const label = stream.workspace.streamDisplayName
+          || `Stream ${stream.workspace.streamOrdinal}`;
+        const rowsByRecency = [...stream.rows].sort(
+          (left, right) => right.latestCompletedAt - left.latestCompletedAt,
+        );
+        const representative = rowsByRecency[0];
+        const identity = representative.identity;
+        const taskContent = identity
+          ? `<button type="button" data-open-task data-provider="${
+            escapeHtmlAttribute(identity.provider)
+          }" data-thread-id="${escapeHtmlAttribute(identity.threadId)}">${
+            escapeHtmlText(label)
+          }</button>`
+          : escapeHtmlText(label);
+        const records = [];
+        const seenRecords = new Set();
+        for (const row of rowsByRecency) {
+          for (const record of row.recorded) {
+            const key = `${record.provider}\0${record.threadId}\0${record.turnId}`;
+            if (seenRecords.has(key)) continue;
+            seenRecords.add(key);
+            records.push({ ...record, workLogStreamDisplayName: label });
+          }
+        }
+        records.sort(
+          (left, right) => (Date.parse(right.completedAt) || 0) - (Date.parse(left.completedAt) || 0),
+        );
+        const breakdown = stream.rows.reduce(
+          (total, row) => addCreditBreakdown(total, row.creditBreakdown),
+          emptyCreditBreakdown(),
+        );
+        const markers = [...new Set(stream.rows.flatMap((row) => row.ids))]
+          .map((id) => `<span data-usage-id="${id}" hidden></span>`)
+          .join("\n");
+        const streamUsage = breakdown.total > 0 ? formatStreamUsage(breakdown, dayCredits) : "";
+        const rowHtml = replaceProjectedCells(
+          representative.match.text,
+          markers,
+          records,
+          stream.workspace,
+          "",
+        );
+        return `<details data-work-log-stream data-work-log-stream-id="${
+          escapeHtmlAttribute(stream.workspace.streamId)
+        }"${identity ? ` data-work-log-provider="${escapeHtmlAttribute(identity.provider)}"` : ""}`
+          + ` open><summary data-work-log-stream-summary><span data-work-log-stream-title>${
+            taskContent
+          }</span>${streamUsage}</summary>`
+          + `<div data-work-log-stream-turns>${rowHtml}</div></details>`;
+      }).join("\n");
       const usage = group.creditBreakdown.total > 0
-        ? formatWorkspaceUsageDetails(group.creditBreakdown, dayCredits)
+        ? formatWorkspaceUsage(group.creditBreakdown, dayCredits)
         : "";
       const workspaceUsage = usage
         ? `<span data-work-log-workspace-usage>${usage}</span>`
         : "";
-      return `<section data-work-log-workspace data-work-log-workspace-id="${
+      return `<details data-work-log-workspace data-work-log-workspace-id="${
         escapeHtmlAttribute(group.workspace.workspaceId)
       }" data-work-log-workspace-kind="${escapeHtmlAttribute(group.workspace.workspaceKind)}"`
-        + `><header data-work-log-workspace-header><strong>${
+        + ` data-work-log-stream-count="${orderedStreams.length}" open>`
+        + `<summary data-work-log-workspace-header><strong>${
           escapeHtmlText(group.workspace.workspaceName)
-        }</strong>${workspaceUsage}</header>`
-        + `<div data-work-log-workspace-turns>${rowHtml}</div></section>`;
+        }</strong>${workspaceUsage}</summary>`
+        + `<div data-work-log-workspace-streams>${streamHtml}</div></details>`;
     }).join("\n");
 }
 

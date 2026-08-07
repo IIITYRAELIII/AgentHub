@@ -493,9 +493,12 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(script, /data-comparison-series-select/u);
     assert.doesNotMatch(page, /data-stream-collapse-toggle/u);
     assert.match(page, /data-workspace-collapse-toggle/u);
-    assert.match(page, /Сворачивать все ходы Workspace/u);
+    assert.match(page, /Сворачивать все Workspace/u);
     assert.match(script, /agent-hub-collapse-streams/u);
     assert.match(script, /function applyWorkspaceCollapse/u);
+    assert.match(script, /function setWorkspaceGroupsCollapsed/u);
+    assert.match(script, /details\[data-work-log-workspace\]\[open\]/u);
+    assert.match(script, /details\[data-work-log-stream\]\[open\]/u);
     assert.match(script, /function decorateLegacyStreamTurns/u);
     assert.doesNotMatch(script, /function applyStreamCollapse/u);
     assert.match(script, /function taskProfile/u);
@@ -627,9 +630,10 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     );
     assert.match(styles, /url\("\/rainforest-night\.jpg"\)/u);
     assert.match(styles, /details\[data-work-log-task-group\]/u);
-    assert.match(styles, /div\[data-work-log-workspace-turns\]/u);
-    assert.match(styles, /summary\[data-work-log-workspace-usage-summary\]/u);
-    assert.match(styles, /span\[data-work-log-workspace-usage-breakdown\]/u);
+    assert.match(styles, /summary\[data-work-log-workspace-header\]/u);
+    assert.match(styles, /grid-template-columns: 1rem 17\.5rem minmax\(0, 1fr\)/u);
+    assert.match(styles, /summary\[data-work-log-stream-summary\]/u);
+    assert.match(styles, /span\[data-work-log-stream-title\] button\[data-open-task\]/u);
     assert.match(styles, /\[data-work-log-task-duration\]/u);
     assert.match(styles, /\[data-work-log-task-credits\]/u);
     assert.match(styles, /\[data-work-log-task-profile\]/u);
