@@ -253,6 +253,63 @@ test("rollout fallback keeps response annotations structured", () => {
   assert.doesNotMatch(exchange.prompt, /response-annotations|My request for Codex/iu);
 });
 
+test("rollout history replaces a stale inherited answer after Thread rotation", async () => {
+  const turnId = "019fdbb2-0304-7d32-a5bc-76fb3ff9c0d3";
+  let recorded = null;
+  const view = controller({
+    ensureCodex: async () => {},
+    readCodexThread: async () => ({ thread: {
+      path: "C:/rotated-rollout.jsonl",
+      turns: [{
+        id: turnId,
+        status: "completed",
+        items: [
+          { type: "userMessage", content: [{ type: "text", text: "Проведи аудит Hub" }] },
+          { type: "agentMessage", text: "Старый ответ про VPN", phase: "final_answer" },
+        ],
+      }],
+    } }),
+    readCodexRolloutActivity: async () => ({
+      activeTurnIds: [],
+      userMessages: { [turnId]: [{ text: "Проведи аудит Hub" }] },
+      latestMessages: { [turnId]: "Аудит Hub остановлен после анализа архитектуры" },
+      finalMessages: {},
+    }),
+    readCodexSnapshot: async () => ({ active: false }),
+    taskSyncStore: {
+      history: () => [{
+        id: turnId,
+        prompt: "Проведи аудит Hub",
+        answer: "Старый ответ про VPN",
+        status: "completed",
+        active: false,
+        completed: true,
+        messages: [
+          { itemId: `${turnId}:user`, role: "user", text: "Проведи аудит Hub" },
+          { itemId: `${turnId}:agent`, role: "agent", text: "Старый ответ про VPN" },
+        ],
+      }],
+      recordHistory: (_task, history) => { recorded = structuredClone(history); },
+      save: async () => {},
+    },
+  });
+
+  const result = await view.readHistory({
+    provider: "codex",
+    threadId: "rotated-thread",
+    projectRoot: "C:/repo",
+    title: "DevOps",
+    chatId: 1,
+  });
+
+  assert.equal(result.history[0].answer, "Аудит Hub остановлен после анализа архитектуры");
+  assert.equal(result.history[0].status, "stopped");
+  assert.equal(result.history[0].completed, false);
+  assert.equal(result.history[0].messages.filter((message) => message.role === "agent").length, 1);
+  assert.equal(result.history[0].messages.at(-1).text, "Аудит Hub остановлен после анализа архитектуры");
+  assert.deepEqual(recorded, result.history);
+});
+
 test("official Codex history keeps multiple rollout images on one final assistant message", async () => {
   const turnId = "019fc8f4-258f-72d3-9f37-02cb9a797790";
   let recorded = null;

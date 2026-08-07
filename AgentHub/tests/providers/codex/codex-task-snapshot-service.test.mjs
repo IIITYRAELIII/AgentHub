@@ -49,3 +49,37 @@ test("Codex snapshot service reads a delayed final answer and applies runtime pr
   assert.equal(run.appServer, "runtime:agent-hub");
   assert.equal(run.activeTurnCount, 2);
 });
+
+test("Codex snapshot service prefers the exact rollout answer for an interrupted rotated turn", async () => {
+  let threadReads = 0;
+  const service = new CodexTaskSnapshotService({
+    knownRolloutPath: async () => "rotated-rollout.jsonl",
+    readRolloutActivity: async () => ({
+      finalMessages: {},
+      latestMessages: { "turn-rotated": "Аудит остановлен после анализа архитектуры" },
+    }),
+    rolloutTurnState: () => ({}), capturedOwner: () => null,
+    runtimeActive: async () => true, resolveOwner: async () => "agent-hub",
+    readThread: async () => {
+      threadReads += 1;
+      return { thread: { turns: [{
+        id: "turn-rotated",
+        status: "completed",
+        items: [{ type: "agentMessage", text: "Старый ответ про VPN", phase: "final_answer" }],
+      }] } };
+    },
+    selectTurn: () => null, turnSnapshot: () => ({}), turnStartedAt: () => null,
+    describeItem: () => "", hubOwner: () => "agent-hub", agentHubPid: () => 1,
+    modelLabel: (value) => value, reasoningLabels: {}, runtimeLabel: (value) => value,
+    delay: async () => {}, reindexRun: () => {}, logger: { warn() {} },
+  });
+
+  const answer = await service.completedAnswer(
+    { threadId: "thread-rotated", responseText: "" },
+    "turn-rotated",
+    { id: "turn-rotated", status: "interrupted", items: [] },
+  );
+
+  assert.equal(answer, "Аудит остановлен после анализа архитектуры");
+  assert.equal(threadReads, 0);
+});

@@ -192,14 +192,40 @@ export class CodexTaskSnapshotService {
   }
 
   async completedAnswer(run, completedTurnId, eventTurn = null) {
-    let answer = codexFinalTurnAnswer(eventTurn);
+    const turnId = String(completedTurnId ?? "").trim();
+    const eventStatus = String(eventTurn?.status ?? "").trim().toLowerCase();
+    const interrupted = eventStatus && eventStatus !== "completed";
+    let rolloutPath = "";
+    const rolloutAnswer = async ({ includeLatest = false } = {}) => {
+      try {
+        rolloutPath ||= await this.#d.knownRolloutPath(run.threadId);
+        if (!rolloutPath) return "";
+        const activity = await this.#d.readRolloutActivity(rolloutPath);
+        return String(
+          activity?.finalMessages?.[turnId]
+          || (includeLatest ? activity?.latestMessages?.[turnId] : "")
+          || "",
+        ).trim();
+      } catch (error) {
+        this.#d.logger?.warn?.(
+          `Cannot read Codex rollout answer ${turnId || "unknown"}: ${error.message}`,
+        );
+        return "";
+      }
+    };
+
+    let answer = await rolloutAnswer({ includeLatest: interrupted });
+    if (answer) return answer;
+    answer = codexFinalTurnAnswer(eventTurn);
     if (answer) return answer;
     for (const waitMs of [0, 100, 250, 500]) {
       if (waitMs) await this.#d.delay(waitMs);
       try {
+        answer = await rolloutAnswer({ includeLatest: interrupted });
+        if (answer) return answer;
         const result = await this.#d.readThread(run.threadId, { fresh: true });
         const completedTurn = (result.thread?.turns ?? [])
-          .find((turn) => String(turn?.id ?? "") === String(completedTurnId ?? ""));
+          .find((turn) => String(turn?.id ?? "") === turnId);
         answer = codexFinalTurnAnswer(completedTurn);
         if (answer) return answer;
       } catch (error) {
@@ -208,7 +234,7 @@ export class CodexTaskSnapshotService {
         );
       }
     }
-    return String(run.responseText ?? "").trim();
+    return String((await rolloutAnswer({ includeLatest: true })) || run.responseText || "").trim();
   }
 
   applyObserved(run, snapshot) {

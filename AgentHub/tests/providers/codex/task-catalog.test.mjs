@@ -822,6 +822,25 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
   assert.equal(stale.running, false);
 });
 
+test("an unscoped Hub message is not duplicated when its provisional turn is confirmed", () => {
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "one" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "user_message", message: "Проведи аудит" },
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: { type: "reasoning", turn_id: "one" },
+    }),
+  ].join("\n"));
+
+  assert.deepEqual(result.userMessages.one?.map((message) => message.text), ["Проведи аудит"]);
+});
+
 test("Codex rollout activity retains local images on a steering message", () => {
   const result = parseCodexRolloutActivity([
     JSON.stringify({

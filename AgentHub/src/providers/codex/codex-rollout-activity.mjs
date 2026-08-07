@@ -279,6 +279,7 @@ function assignPendingCodexUserMessages(metadata, turnId) {
   if (!turnId || !metadata.pendingUserMessages.length) return;
   for (const message of metadata.pendingUserMessages) {
     const previousTurnId = String(message.provisionalTurnId ?? "");
+    if (previousTurnId === turnId) continue;
     if (previousTurnId && previousTurnId !== turnId) {
       const previousMessages = (metadata.userMessages.get(previousTurnId) ?? [])
         .filter((item) => (

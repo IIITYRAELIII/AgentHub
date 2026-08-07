@@ -63,6 +63,63 @@ function mergeAttachmentSources(currentMessages, rolloutMessages) {
   return changed ? messages : currentMessages;
 }
 
+function mergeMessageAttachments(target, source) {
+  const merged = { ...target };
+  for (const field of ["attachments", "attachmentSources"]) {
+    const values = Array.isArray(target?.[field])
+      ? target[field].map((item) => ({ ...item }))
+      : [];
+    const keyFor = field === "attachments"
+      ? (item) => String(item?.id ?? item?.path ?? item?.name ?? "")
+      : (item) => `${item?.type}:${item?.value}`;
+    const known = new Set(values.map(keyFor));
+    for (const item of Array.isArray(source?.[field]) ? source[field] : []) {
+      const key = keyFor(item);
+      if (!key || known.has(key)) continue;
+      values.push({ ...item });
+      known.add(key);
+    }
+    if (values.length) merged[field] = values;
+  }
+  return merged;
+}
+
+function mergeAuthoritativeRolloutTurn(current, rollout) {
+  const currentMessages = Array.isArray(current?.messages) ? current.messages : [];
+  const rolloutMessages = Array.isArray(rollout?.messages) ? rollout.messages : [];
+  const rolloutUsers = rolloutMessages.filter((message) => message?.role === "user");
+  const rolloutAgents = rolloutMessages.filter((message) => message?.role === "agent");
+  const currentUsers = currentMessages.filter((message) => message?.role === "user");
+  const currentAgents = currentMessages.filter((message) => message?.role === "agent");
+  const hasActualRolloutUser = rolloutUsers.some((message) => (
+    !String(message?.itemId ?? "").endsWith(":rollout-user:placeholder")
+  ));
+  const users = hasActualRolloutUser
+    ? rolloutUsers.map((message, index) => mergeMessageAttachments(message, currentUsers[index]))
+    : currentUsers.map((message) => structuredClone(message));
+  const agents = rolloutAgents.length
+    ? rolloutAgents.map((message, index) => mergeMessageAttachments(
+      message,
+      currentAgents[index] ?? currentAgents.at(-1),
+    ))
+    : currentAgents.map((message) => structuredClone(message));
+  return {
+    ...current,
+    ...(hasActualRolloutUser && rollout.prompt ? { prompt: rollout.prompt } : {}),
+    ...(rollout.answer ? { answer: rollout.answer } : {}),
+    status: rollout.status || current?.status,
+    active: Boolean(rollout.active),
+    completed: Boolean(rollout.completed),
+    messages: [...users, ...agents],
+    ...(rollout.promptAnnotations?.length
+      ? {
+        promptAnnotations: rollout.promptAnnotations.map((annotation) => ({ ...annotation })),
+        promptRequest: rollout.promptRequest ?? "",
+      }
+      : {}),
+  };
+}
+
 async function materializeHistoryAttachments(history, importer) {
   if (typeof importer !== "function") return;
   await Promise.all((Array.isArray(history) ? history : []).flatMap((turn) => (
@@ -185,6 +242,14 @@ function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory) {
       continue;
     }
     let current = merged[index];
+    const hasAuthoritativeContent = Boolean(
+      item.answer
+      || item.messages?.some((message) => message?.role === "agent"),
+    );
+    if (hasAuthoritativeContent) {
+      current = mergeAuthoritativeRolloutTurn(current, item);
+      merged[index] = current;
+    }
     const messagesWithImages = mergeAttachmentSources(current?.messages, item.messages);
     if (messagesWithImages !== current?.messages) {
       current = { ...current, messages: messagesWithImages };
