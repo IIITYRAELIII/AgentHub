@@ -821,6 +821,9 @@ test("returning to a busy task keeps live and deferred states separate", () => {
 
 test("context compaction notifications identify the task that compacted", () => {
   assert.match(hubClientSource, /function compactionTaskTitle\(task\)/u);
+  assert.match(hubClientSource, /workspaceName = String\(task\?\.workspaceName/u);
+  assert.match(hubClientSource, /streamName = String\(task\?\.streamName/u);
+  assert.match(hubClientSource, /return `\$\{workspaceName\} - \$\{streamName\}`/u);
   assert.match(
     hubClientSource,
     /Началась автосвёртка контекста · \$\{compactionTaskTitle\(task\)\}/u,

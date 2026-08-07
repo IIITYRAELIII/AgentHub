@@ -709,6 +709,12 @@ function compactionContextLabel(context) {
 }
 
 function compactionTaskTitle(task) {
+  const workspaceName = String(task?.workspaceName ?? "").trim();
+  const streamName = String(task?.streamName ?? "").trim()
+    || (String(task?.streamId ?? "").trim() ? "Stream 1" : "");
+  if (workspaceName && streamName) return `${workspaceName} - ${streamName}`;
+  if (workspaceName) return workspaceName;
+  if (streamName) return streamName;
   return String(task?.title ?? "").trim() || "Без названия";
 }
 
