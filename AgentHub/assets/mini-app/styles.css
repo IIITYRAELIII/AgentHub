@@ -6534,6 +6534,9 @@ html[data-surface="mobile"] .chat-back {
 
 html[data-surface="mobile"] .chat-overlay-actions {
   right: var(--gutter-right);
+  /* Панель настроек занимает ту же grid-ячейку. Кнопка остаётся поверх неё,
+     чтобы повторный тап тем же переключателем закрывал панель. */
+  z-index: 21;
 }
 
 html[data-surface="mobile"] .chat-pane[data-dialog-settings-open] {
