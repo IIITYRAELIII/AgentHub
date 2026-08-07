@@ -484,6 +484,20 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(script, /agent-hub-theme/u);
     assert.match(script, /function readThemeCatalog/u);
     assert.match(script, /themeCatalog\.map\(\(theme\) => \[theme\.id, theme\.color\]\)/u);
+    assert.match(
+      script,
+      /SERVER_CONFIG_LEFT_KEYS[\s\S]*?"autoApproveOnStart"[\s\S]*?"codexSandboxMode"[\s\S]*?"guardConcurrentRepositoryWrites"/u,
+    );
+    assert.match(
+      script,
+      /SERVER_CONFIG_RIGHT_KEYS[\s\S]*?"contextAutomation\.autoCompactAfterTurn"[\s\S]*?"contextAutomation\.autoRotateAfterCompaction"[\s\S]*?"components\.codexContextCleanup"/u,
+    );
+    assert.match(
+      script,
+      /SERVER_CONFIG_ADVANCED_COLUMNS[\s\S]*?"codexRolloutContext\.scanIntervalSeconds", "codexRpcTimeoutSeconds"[\s\S]*?"deferredInputTtlHours", "progressStartDelayMs"[\s\S]*?"deliveryRetryIntervalSeconds", "logMaxFiles"/u,
+    );
+    assert.match(script, /Странные константы, трогать не рекомендую/u);
+    assert.match(script, /server-config-switch-control[\s\S]*?switch-track[\s\S]*?switch-text/u);
     assert.match(script, /background\.particles/u);
     assert.match(page, /"id":"metropolis","name":"Мегаполис","color":"#050b12"/u);
     assert.match(page, /"aliases":\["taiga-drops"\]/u);
@@ -603,6 +617,9 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(styles, /url\("\/orbit-mark\.png"\)/u);
     assert.match(styles, /html\[data-theme="graphite"\]/u);
     assert.match(styles, /html\[data-theme="reliquary"\]/u);
+    assert.match(styles, /\.server-config-primary\s*\{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/u);
+    assert.match(styles, /\.server-config-advanced-grid\s*\{[\s\S]*?grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/u);
+    assert.match(styles, /html\[data-surface="mobile"\] \.server-config-primary,[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/u);
     assert.match(styles, /url\("\/ashen-reliquary\.jpg"\)/u);
     assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?html\[data-theme="reliquary"\] body::before/u);
     assert.match(styles, /--ph-mask-caret-right:/u);

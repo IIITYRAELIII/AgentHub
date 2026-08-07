@@ -87,8 +87,12 @@ test("server page snapshot excludes secrets and absolute filesystem paths", () =
     { id: "telegram", name: "Telegram Bot", enabled: true },
     { id: "telegram-mini-app", name: "Telegram Mini App", enabled: true },
     { id: "android-app", name: "Android App", enabled: true },
-    { id: "codex-context-cleanup", name: "Очистка контекста Codex", enabled: true },
+    { id: "codex-context-cleanup", name: "Очистка контекста Codex", enabled: false },
   ]);
+  assert.equal(
+    snapshot.components.find((component) => component.id === "codex-context-cleanup")?.note,
+    "ПОКА НЕДОСТУПНО — в процессе переосмысления.",
+  );
   assert.equal(snapshot.components.some((component) => component.id === "worker"), false);
 });
 

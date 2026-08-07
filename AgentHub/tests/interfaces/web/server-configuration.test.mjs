@@ -28,9 +28,10 @@ test("server configuration exposes only its editable non-secret fields", () => {
   assert.equal(entries.length, 14);
   assert.equal(JSON.stringify(entries).includes("secret"), false);
   assert.deepEqual(entries.find((entry) => entry.key === "logMaxFiles"), {
-    key: "logMaxFiles", name: "Хранение журналов", type: "integer", value: 7,
-    hint: "Сколько файлов журнала Hub держит, прежде чем удалять самые старые.",
+    key: "logMaxFiles", name: "Хранение диагностических логов", type: "integer", value: 7,
+    hint: "Сколько архивных файлов обычных событий и ошибок хранит Hub. Самые старые удаляются автоматически.",
     display: "7 файлов", unit: "файлов", min: 1, max: 100, pending: true,
+    presentation: "advanced",
   });
   const sandboxMode = entries.find((entry) => entry.key === "codexSandboxMode");
   assert.equal(sandboxMode?.display, "Только рабочая папка");
@@ -43,7 +44,8 @@ test("server configuration exposes only its editable non-secret fields", () => {
   assert.equal(cleanupInterval?.display, "30 мин");
   const autoCompact = entries.find((entry) => entry.key === "contextAutomation.autoCompactAfterTurn");
   assert.equal(autoCompact?.name, "Авто-свёртка после хода");
-  assert.equal(autoCompact?.presentation, "line");
+  assert.equal(autoCompact?.presentation, "automation");
+  assert.equal(autoCompact?.inlineValueKey, "contextAutomation.autoCompactThresholdPercent");
   const autoCompactThreshold = entries.find((entry) => (
     entry.key === "contextAutomation.autoCompactThresholdPercent"
   ));
@@ -51,18 +53,34 @@ test("server configuration exposes only its editable non-secret fields", () => {
     key: "contextAutomation.autoCompactAfterTurn",
     value: true,
   });
+  assert.equal(autoCompactThreshold?.inlineFor, "contextAutomation.autoCompactAfterTurn");
   const autoRotate = entries.find((entry) => entry.key === "contextAutomation.autoRotateAfterCompaction");
-  assert.deepEqual(autoRotate?.visibleWhen, {
-    key: "contextAutomation.autoCompactAfterTurn",
-    value: true,
-  });
+  assert.equal(autoRotate?.presentation, "automation");
+  assert.equal(autoRotate?.inlineValueKey, "contextAutomation.autoRotateThresholdPercent");
   const autoRotateThreshold = entries.find((entry) => (
     entry.key === "contextAutomation.autoRotateThresholdPercent"
   ));
-  assert.deepEqual(autoRotateThreshold?.visibleWhenAll, [
-    { key: "contextAutomation.autoCompactAfterTurn", value: true },
-    { key: "contextAutomation.autoRotateAfterCompaction", value: true },
-  ]);
+  assert.deepEqual(autoRotateThreshold?.visibleWhen, {
+    key: "contextAutomation.autoRotateAfterCompaction",
+    value: true,
+  });
+  assert.equal(autoRotateThreshold?.inlineFor, "contextAutomation.autoRotateAfterCompaction");
+  assert.deepEqual(
+    entries.find((entry) => entry.key === "components.codexContextCleanup"),
+    {
+      key: "components.codexContextCleanup",
+      name: "Очистка контекста Codex",
+      hint: "ПОКА НЕДОСТУПНО — в процессе переосмысления.",
+      type: "boolean",
+      value: false,
+      display: "Выключено",
+      unit: "",
+      min: null,
+      max: null,
+      pending: false,
+      disabled: true,
+    },
+  );
 });
 
 test("server configuration persists only validated whitelisted values", async (context) => {
@@ -74,7 +92,6 @@ test("server configuration persists only validated whitelisted values", async (c
     configPath,
     changes: {
       autoApproveOnStart: true,
-      "components.codexContextCleanup": true,
       "codexRolloutContext.scanIntervalSeconds": 45,
       "contextAutomation.autoCompactAfterTurn": true,
       "contextAutomation.autoCompactThresholdPercent": 75,
@@ -88,7 +105,6 @@ test("server configuration persists only validated whitelisted values", async (c
   });
   assert.deepEqual(result, {
     autoApproveOnStart: true,
-    "components.codexContextCleanup": true,
     "codexRolloutContext.scanIntervalSeconds": 2700,
     "contextAutomation.autoCompactAfterTurn": true,
     "contextAutomation.autoCompactThresholdPercent": 75,
@@ -100,7 +116,7 @@ test("server configuration persists only validated whitelisted values", async (c
   const saved = JSON.parse(await readFile(configPath, "utf8"));
   assert.equal(saved.telegramBotToken, "secret");
   assert.equal(saved.unrelated, 1);
-  assert.deepEqual(saved.components, { codexContextCleanup: true });
+  assert.deepEqual(saved.components, { codexContextCleanup: false });
   assert.deepEqual(saved.codexRolloutContext, { scanIntervalSeconds: 2700 });
   assert.deepEqual(saved.contextAutomation, {
     autoCompactAfterTurn: true,
@@ -117,6 +133,10 @@ test("server configuration persists only validated whitelisted values", async (c
   await assert.rejects(
     updateServerConfiguration({ configPath, changes: { codexSandboxMode: "unelevated" }, environment: {}, protectConfig: async () => {} }),
     /допустимых/u,
+  );
+  await assert.rejects(
+    updateServerConfiguration({ configPath, changes: { "components.codexContextCleanup": true }, environment: {}, protectConfig: async () => {} }),
+    /временно недоступна/u,
   );
   await assert.rejects(
     updateServerConfiguration({ configPath, changes: { codexRpcTimeoutSeconds: 40 }, environment: { CODEX_RPC_TIMEOUT_SECONDS: "30" }, protectConfig: async () => {} }),

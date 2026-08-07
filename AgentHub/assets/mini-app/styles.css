@@ -7076,24 +7076,29 @@ html[data-view="server"] .server-view {
   width: 1rem;
 }
 
-.server-component-grid,
-.server-config-grid {
+.server-component-grid {
   display: grid;
   gap: 0.6rem;
   grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
 }
 
-/* Поле ввода занимает всю ширину плитки: с отдельной кнопкой «Сохранить» рядом
-   оно сжималось до трёх символов. */
-.server-config-number-row {
-  align-items: center;
+.server-config-grid {
   display: flex;
-  gap: 0.4rem;
+  flex-direction: column;
+  gap: 0.95rem;
 }
 
-.server-config-number {
+.server-config-primary {
+  display: grid;
+  gap: clamp(0.85rem, 2vw, 1.35rem);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.server-config-column,
+.server-config-advanced-column {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
-  width: 100%;
 }
 
 .server-config-actions {
@@ -7114,8 +7119,7 @@ html[data-view="server"] .server-view {
   opacity: 0.45;
 }
 
-.server-component,
-.server-config-row {
+.server-component {
   background: color-mix(in srgb, var(--surface-2) 72%, transparent);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -7123,6 +7127,23 @@ html[data-view="server"] .server-view {
   gap: 0.22rem;
   min-width: 0;
   padding: 0.65rem 0.72rem;
+}
+
+.server-config-row {
+  align-items: start;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 0.28rem 0.75rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 4.05rem;
+  min-width: 0;
+  padding: 0.72rem 0.15rem;
+}
+
+.server-config-copy {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
 }
 
 /* Меню всплывает поверх выделенного текста, поэтому подложка должна быть
@@ -7160,12 +7181,21 @@ html[data-view="server"] .server-view {
   outline: 0;
 }
 
-.server-config-toggle {
+.server-config-switch-control {
+  align-items: center;
   cursor: pointer;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: grid;
+  gap: 0.62rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 0;
 }
 
-.server-config-toggle .switch-track {
+.server-config-switch-control .switch-track {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.server-config-switch-control .switch-text {
   grid-column: 2;
   grid-row: 1;
 }
@@ -7188,31 +7218,48 @@ html[data-view="server"] .server-view {
   outline-offset: 2px;
 }
 
+.server-config-toggle input:disabled ~ .switch-track {
+  background: color-mix(in srgb, var(--surface-3) 58%, transparent);
+  border-color: color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.server-config-toggle input:disabled ~ .switch-track::after {
+  background: var(--text-faint);
+}
+
+.server-config-row.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.server-config-row.is-disabled .server-config-switch-control {
+  cursor: not-allowed;
+}
+
 .server-config-toggle .server-config-pending {
   grid-column: 1 / -1;
 }
 
-/* Автоматическое обслуживание контекста — последовательность зависимых
-   параметров, а не набор самостоятельных плиток. Полноширинные строки не
-   меняют раскладку между телефоном, VS Code и Desktop. */
-.server-config-line {
+.server-config-automation {
   align-items: center;
-  background: transparent;
-  border: 0;
   border-bottom: 1px solid var(--line);
-  border-radius: 0;
-  grid-column: 1 / -1;
   grid-template-columns: minmax(0, 1fr) auto;
-  min-height: 2.7rem;
-  padding: 0.5rem 0.15rem;
 }
 
-.server-config-line .server-config-number-row {
-  justify-self: end;
+.server-config-inline-value {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 23rem;
 }
 
-.server-config-line .server-config-pending {
-  grid-column: 1 / -1;
+.server-config-inline-label {
+  color: var(--text-muted) !important;
+  font-size: 0.72rem !important;
+  line-height: 1.3;
+  max-width: 15rem;
+  text-align: right;
 }
 
 .server-config-number-row {
@@ -7233,6 +7280,10 @@ html[data-view="server"] .server-view {
   width: 4.9rem;
 }
 
+.server-config-row > .server-config-number {
+  width: min(11rem, 100%);
+}
+
 .server-config-number:focus-visible {
   border-color: var(--accent-line);
   outline: 2px solid var(--accent-soft);
@@ -7249,7 +7300,8 @@ html[data-view="server"] .server-view {
 }
 
 .server-component-name,
-.server-config-row span {
+.server-config-name,
+.server-config-switch-control .switch-text {
   color: var(--text-soft);
   font-size: 0.82rem;
 }
@@ -7281,18 +7333,50 @@ html[data-view="server"] .server-view {
   margin-top: 0.12rem;
 }
 
-.server-config-toggle .server-config-hint {
+.server-config-toggle > .server-config-hint {
   grid-column: 1 / -1;
+  margin-left: 2.97rem;
 }
 
 /* Состояние показывает дорожка тумблера; нативный флажок под названием был
    вторым индикатором того же значения. */
-.server-config-toggle > input[type="checkbox"] {
+.server-config-switch-control > input[type="checkbox"] {
   height: 1px;
   opacity: 0;
   pointer-events: none;
   position: absolute;
   width: 1px;
+}
+
+.server-config-advanced {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: clip;
+}
+
+.server-config-advanced-summary {
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.72rem 0.85rem;
+}
+
+.server-config-advanced-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.server-config-advanced-grid {
+  display: grid;
+  gap: 0 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 0 0.7rem 0.65rem;
+}
+
+.server-config-advanced-column .server-config-row:last-child {
+  border-bottom: 0;
 }
 
 /* Автозапуск и перезапуск лежат внизу карточки настроек, отделённые линией от
@@ -7338,13 +7422,41 @@ html[data-surface="mobile"] .server-facts {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-html[data-surface="mobile"] .server-component-grid,
-html[data-surface="mobile"] .server-config-grid {
+html[data-surface="mobile"] .server-component-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-html[data-surface="mobile"] .server-config-grid {
+html[data-surface="mobile"] .server-config-primary,
+html[data-surface="mobile"] .server-config-advanced-grid {
   grid-template-columns: minmax(0, 1fr);
+}
+
+html[data-surface="mobile"] .server-config-advanced-grid {
+  gap: 0;
+}
+
+html[data-surface="mobile"] .server-config-advanced-column .server-config-row:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+html[data-surface="mobile"] .server-config-advanced-column:last-child .server-config-row:last-child {
+  border-bottom: 0;
+}
+
+html[data-surface="mobile"] .server-config-automation {
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+html[data-surface="mobile"] .server-config-inline-value {
+  justify-content: flex-start;
+  max-width: none;
+  padding-left: 2.97rem;
+}
+
+html[data-surface="mobile"] .server-config-inline-label {
+  max-width: none;
+  text-align: left;
 }
 
 /* Статистика занимает всю ширину: графики читаются тем лучше, чем шире

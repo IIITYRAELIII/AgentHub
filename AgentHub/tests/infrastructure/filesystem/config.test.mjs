@@ -121,7 +121,7 @@ test("Codex sandbox mode is configurable but only accepts App Server policies", 
   }
 });
 
-test("rollout image cleanup requires explicit opt-in and keeps configured interval", async () => {
+test("rollout image cleanup stays disabled while keeping its configured interval", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-cleanup-"));
   const configFile = path.join(root, "config.json");
   const previous = process.env.AGENT_HUB_CONFIG;
@@ -136,8 +136,8 @@ test("rollout image cleanup requires explicit opt-in and keeps configured interv
     }), "utf8");
     process.env.AGENT_HUB_CONFIG = configFile;
     const config = await loadConfig();
-    assert.equal(config.codexRolloutContext.enabled, true);
-    assert.equal(config.components.codexContextCleanup, true);
+    assert.equal(config.codexRolloutContext.enabled, false);
+    assert.equal(config.components.codexContextCleanup, false);
     assert.equal(config.codexRolloutContext.scanIntervalSeconds, 1200);
   } finally {
     if (previous == null) delete process.env.AGENT_HUB_CONFIG;
@@ -146,7 +146,7 @@ test("rollout image cleanup requires explicit opt-in and keeps configured interv
   }
 });
 
-test("Codex context cleanup is controlled by the dedicated component", async () => {
+test("Codex context cleanup ignores a stale enabled component value", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-component-"));
   const configFile = path.join(root, "config.json");
   const previous = process.env.AGENT_HUB_CONFIG;
@@ -162,8 +162,8 @@ test("Codex context cleanup is controlled by the dedicated component", async () 
     }), "utf8");
     process.env.AGENT_HUB_CONFIG = configFile;
     const config = await loadConfig();
-    assert.equal(config.components.codexContextCleanup, true);
-    assert.equal(config.codexRolloutContext.enabled, true);
+    assert.equal(config.components.codexContextCleanup, false);
+    assert.equal(config.codexRolloutContext.enabled, false);
     assert.equal(config.codexRolloutContext.scanIntervalSeconds, 30 * 60);
   } finally {
     if (previous == null) delete process.env.AGENT_HUB_CONFIG;

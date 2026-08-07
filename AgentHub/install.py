@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-COMPONENTS = ("telegram", "mini-app", "android-app", "codex-context-cleanup")
+COMPONENTS = ("telegram", "mini-app", "android-app")
 LEGACY_PROFILE_COMPONENTS = {
     "full": {"telegram": True, "miniApp": True, "androidApp": True, "codexContextCleanup": False},
     "telegram": {"telegram": True, "miniApp": False, "androidApp": False, "codexContextCleanup": False},
@@ -67,7 +67,6 @@ def resolve_components(
         "telegram": "telegram",
         "mini-app": "miniApp",
         "android-app": "androidApp",
-        "codex-context-cleanup": "codexContextCleanup",
     }
     for name in enabled:
         components[component_names[name]] = True
@@ -77,6 +76,9 @@ def resolve_components(
         raise ValueError("mini-app requires telegram; disable mini-app before disabling telegram")
     if components["miniApp"]:
         components["telegram"] = True
+    # Очистка rollout временно недоступна: обновление нормализует старое
+    # локальное opt-in и не оставляет скрыто работающий компонент.
+    components["codexContextCleanup"] = False
     return components
 
 
@@ -256,16 +258,16 @@ def read_existing_config(config_file: Path) -> dict:
 
 
 def apply_rollout_image_cleanup_choice(config: dict, choice: str | None) -> dict:
-    if choice is None:
-        return config
     current = config.get("codexRolloutContext")
     settings = dict(current) if isinstance(current, dict) else {}
-    enabled = choice == "enabled"
-    settings["enabled"] = enabled
-    settings.setdefault("scanIntervalSeconds", 30 * 60)
     components = dict(config.get("components") or {})
-    components["codexContextCleanup"] = enabled
-    return {**config, "components": components, "codexRolloutContext": settings}
+    components["codexContextCleanup"] = False
+    result = {**config, "components": components}
+    if settings or choice is not None:
+        settings["enabled"] = False
+        settings.setdefault("scanIntervalSeconds", 30 * 60)
+        result["codexRolloutContext"] = settings
+    return result
 
 
 def request_safe_restart() -> bool:
@@ -485,10 +487,7 @@ def main() -> int:
     parser.add_argument(
         "--rollout-image-cleanup",
         choices=("enabled", "disabled"),
-        help=(
-            "record the explicit local choice for periodic duplicate-image "
-            "cleanup in idle Codex rollout snapshots"
-        ),
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--skip-restart",

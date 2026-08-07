@@ -129,10 +129,8 @@ export function serverPageSnapshot({
       {
         id: "codex-context-cleanup",
         name: "Очистка контекста Codex",
-        enabled: config?.components?.codexContextCleanup === true,
-        note: config?.components?.codexContextCleanup === true
-          ? "Работает отдельным фоновым проходом; встраивание в свёртку временно отключено как нестабильное."
-          : "Очистка дубликатов изображений отключена.",
+        enabled: false,
+        note: "ПОКА НЕДОСТУПНО — в процессе переосмысления.",
       },
     ],
     configuration: serverConfigurationEntries(config, pendingConfiguration),

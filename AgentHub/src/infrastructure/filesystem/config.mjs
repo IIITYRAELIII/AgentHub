@@ -511,6 +511,10 @@ export async function loadConfig() {
         : raw.components.codexContextCleanup === true,
     };
   }
+  /* Санация rollout временно переосмысливается. Старое локальное opt-in
+     остаётся читаемым для совместимости, но ни одна установка не должна
+     запускать компонент до его повторного явного выпуска. */
+  components.codexContextCleanup = false;
   if (components.miniApp && !components.telegram) {
     throw new Error("miniApp component requires telegram component");
   }
@@ -608,7 +612,7 @@ export async function loadConfig() {
     codexSandboxMode,
     codexModels: loadCodexModels(raw),
     codexRolloutContext: codexRolloutContextSettings(raw.codexRolloutContext, {
-      enabled: components.codexContextCleanup,
+      enabled: false,
     }),
     contextAutomation: contextAutomationSettings(raw.contextAutomation),
     claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),

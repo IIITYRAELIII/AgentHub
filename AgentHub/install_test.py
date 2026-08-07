@@ -50,25 +50,25 @@ class RolloutImageCleanupChoiceTests(unittest.TestCase):
 
         result = apply_rollout_image_cleanup_choice(config, None)
 
-        self.assertIs(result, config)
+        self.assertFalse(result["components"]["codexContextCleanup"])
         self.assertNotIn("codexRolloutContext", result)
 
-    def test_enabled_choice_records_default_interval(self) -> None:
+    def test_enabled_legacy_choice_is_forced_off(self) -> None:
         result = apply_rollout_image_cleanup_choice({}, "enabled")
 
         self.assertEqual(
             result["codexRolloutContext"],
-            {"enabled": True, "scanIntervalSeconds": 1800},
+            {"enabled": False, "scanIntervalSeconds": 1800},
         )
-        self.assertTrue(result["components"]["codexContextCleanup"])
+        self.assertFalse(result["components"]["codexContextCleanup"])
 
-    def test_legacy_cleanup_choice_migrates_to_the_component(self) -> None:
+    def test_legacy_cleanup_choice_is_normalized_off(self) -> None:
         result = resolve_components(
             {"profile": "journal", "codexRolloutContext": {"enabled": True}},
             fresh_install=False,
         )
 
-        self.assertTrue(result["codexContextCleanup"])
+        self.assertFalse(result["codexContextCleanup"])
 
     def test_disabled_choice_preserves_existing_tuning(self) -> None:
         result = apply_rollout_image_cleanup_choice(

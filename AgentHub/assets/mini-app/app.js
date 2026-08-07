@@ -4108,6 +4108,23 @@ function serverFact(name, value) {
 }
 
 let lastServerPayload = null;
+let serverAdvancedOpen = false;
+
+const SERVER_CONFIG_LEFT_KEYS = Object.freeze([
+  "autoApproveOnStart",
+  "codexSandboxMode",
+  "guardConcurrentRepositoryWrites",
+]);
+const SERVER_CONFIG_RIGHT_KEYS = Object.freeze([
+  "contextAutomation.autoCompactAfterTurn",
+  "contextAutomation.autoRotateAfterCompaction",
+  "components.codexContextCleanup",
+]);
+const SERVER_CONFIG_ADVANCED_COLUMNS = Object.freeze([
+  Object.freeze(["codexRolloutContext.scanIntervalSeconds", "codexRpcTimeoutSeconds"]),
+  Object.freeze(["deferredInputTtlHours", "progressStartDelayMs"]),
+  Object.freeze(["deliveryRetryIntervalSeconds", "logMaxFiles"]),
+]);
 
 function renderServerStatus(payload = {}) {
   if (!serverState || !serverFacts || !serverComponents || !serverConfig) return;
@@ -4147,11 +4164,9 @@ function renderServerStatus(payload = {}) {
   const entries = Array.isArray(payload.configuration) ? payload.configuration : [];
   /* Пока правки не сохранены, снапшот не должен затирать введённые значения. */
   if (serverConfigDrafts.size && serverConfig.childElementCount) return;
-  serverConfig.replaceChildren(...[
-    renderAutostartEntry(autostart),
-    ...(entries.length ? renderServerConfigEntries(entries)
-      : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]),
-  ]);
+  serverConfig.replaceChildren(...(entries.length
+    ? renderServerConfigLayout(autostart, entries)
+    : [el("span", { class: "setting-empty", text: "Конфигурация недоступна" })]));
   syncServerConfigDependencyVisibility();
   syncServerConfigActions();
 }
@@ -4173,13 +4188,17 @@ function renderAutostartEntry(autostart = {}) {
     "data-server-autostart": "",
   });
   input.addEventListener("change", () => noteServerConfigDraft(AUTOSTART_KEY, input.checked));
-  return el("label", {
-    class: "server-config-row server-config-toggle",
-    title: hint,
-  }, [
-    el("span", { class: "switch-text", text: "Автозапуск Agent Hub" }),
+  const switchControl = el("label", { class: "server-config-switch-control" }, [
     input,
     el("span", { class: "switch-track", "aria-hidden": true }),
+    el("span", { class: "switch-text", text: "Автозапуск Agent Hub" }),
+  ]);
+  return el("div", {
+    class: `server-config-row server-config-toggle${supported ? "" : " is-disabled"}`,
+    title: hint,
+    "aria-disabled": supported ? null : "true",
+  }, [
+    switchControl,
     el("small", { class: "server-config-hint", text: hint }),
   ]);
 }
@@ -4258,59 +4277,57 @@ function syncServerConfigDependencyVisibility() {
   }
 }
 
-function renderServerConfigEntries(entries) {
-  return entries
-    .filter((entry) => !entry.inlineFor)
-    .map((entry) => renderServerConfigEntry(entry));
-}
-
-function prepareServerConfigRow(row, entry) {
-  if (entry.presentation === "line") row.classList.add("server-config-line");
+function prepareServerConfigVisibility(node, entry) {
   const conditions = Array.isArray(entry.visibleWhenAll)
     ? entry.visibleWhenAll
     : entry.visibleWhen ? [entry.visibleWhen] : [];
-  if (conditions.length) row.dataset.serverConfigVisibleWhen = JSON.stringify(conditions);
-  return row;
+  if (conditions.length) node.dataset.serverConfigVisibleWhen = JSON.stringify(conditions);
+  return node;
 }
 
-function renderServerConfigEntry(entry = {}) {
-  const pendingNote = entry.pending ? el("small", {
-    class: "server-config-pending",
-    text: "Применится после перезапуска",
-  }) : null;
-  const hint = entry.hint ? el("small", { class: "server-config-hint", text: entry.hint }) : null;
-  if (entry.type === "boolean") {
-    const input = el("input", { type: "checkbox", checked: entry.value === true });
-    input.addEventListener("change", () => noteServerConfigDraft(entry.key, input.checked));
-    const row = el("label", {
-      class: "server-config-row server-config-toggle",
-      title: entry.hint || entry.name || "",
-    }, [
-      el("span", { class: "switch-text", text: entry.name ?? "" }),
-      input,
-      el("span", { class: "switch-track", "aria-hidden": true }),
-      entry.presentation === "line" ? null : hint,
-      pendingNote,
-    ].filter(Boolean));
-    return prepareServerConfigRow(row, entry);
-  }
-  if (entry.type === "choice") {
-    const input = el("select", {
-      class: "server-config-number",
-      "aria-label": entry.name ?? "Параметр конфигурации",
-    }, (Array.isArray(entry.choices) ? entry.choices : []).map((choice) => el("option", {
-      value: choice.value ?? "",
-      text: choice.label ?? choice.value ?? "",
-      selected: choice.value === entry.value,
-    })));
-    input.addEventListener("change", () => noteServerConfigDraft(entry.key, input.value));
-    return prepareServerConfigRow(el("div", { class: "server-config-row", title: entry.hint || entry.name || "" }, [
-      el("span", { text: entry.name ?? "" }),
-      input,
-      hint,
-      pendingNote,
-    ].filter(Boolean)), entry);
-  }
+function renderServerConfigLayout(autostart, entries) {
+  const byKey = new Map(entries.map((entry) => [entry.key, entry]));
+  const renderKey = (key) => {
+    const entry = byKey.get(key);
+    if (!entry) return null;
+    const inlineEntry = entry.inlineValueKey ? byKey.get(entry.inlineValueKey) : null;
+    return renderServerConfigEntry(entry, { inlineEntry });
+  };
+  const primary = el("div", { class: "server-config-primary" }, [
+    el("div", { class: "server-config-column" }, [
+      renderAutostartEntry(autostart),
+      ...SERVER_CONFIG_LEFT_KEYS.map(renderKey),
+    ].filter(Boolean)),
+    el("div", { class: "server-config-column" }, SERVER_CONFIG_RIGHT_KEYS.map(renderKey).filter(Boolean)),
+  ]);
+  const advanced = el("details", {
+    class: "server-config-advanced",
+    open: serverAdvancedOpen,
+  }, [
+    el("summary", {
+      class: "server-config-advanced-summary",
+      text: "Странные константы, трогать не рекомендую",
+    }),
+    el("div", { class: "server-config-advanced-grid" }, SERVER_CONFIG_ADVANCED_COLUMNS.map((keys) => (
+      el("div", { class: "server-config-advanced-column" }, keys.map(renderKey).filter(Boolean))
+    ))),
+  ]);
+  advanced.addEventListener("toggle", () => {
+    serverAdvancedOpen = advanced.open;
+  });
+  return [primary, advanced];
+}
+
+function renderServerConfigCopy(entry, { showHint = true } = {}) {
+  return el("div", { class: "server-config-copy" }, [
+    el("span", { class: "server-config-name", text: entry.name ?? "" }),
+    showHint && entry.hint
+      ? el("small", { class: "server-config-hint", text: entry.hint })
+      : null,
+  ].filter(Boolean));
+}
+
+function renderServerConfigNumberControl(entry, { inline = false } = {}) {
   const input = el("input", {
     class: "server-config-number",
     type: "number",
@@ -4318,19 +4335,85 @@ function renderServerConfigEntry(entry = {}) {
     min: entry.min,
     max: entry.max,
     step: 1,
+    disabled: entry.disabled === true,
     "aria-label": entry.name ?? "Параметр конфигурации",
   });
   input.addEventListener("input", () => noteServerConfigDraft(entry.key, input.value));
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveServerConfigDrafts();
   });
-  return prepareServerConfigRow(el("div", { class: "server-config-row", title: entry.hint || entry.name || "" }, [
-    el("span", { text: entry.name ?? "" }),
-    el("div", { class: "server-config-number-row" }, [
+  const control = el("div", {
+    class: `server-config-number-row${inline ? " server-config-inline-value" : ""}`,
+  }, [
+    inline ? el("span", { class: "server-config-inline-label", text: entry.name ?? "" }) : null,
+    input,
+    entry.unit ? el("small", { class: "server-config-unit", text: entry.unit }) : null,
+  ].filter(Boolean));
+  return prepareServerConfigVisibility(control, entry);
+}
+
+function renderServerConfigEntry(entry = {}, { inlineEntry = null } = {}) {
+  const pendingNote = entry.pending ? el("small", {
+    class: "server-config-pending",
+    text: "Применится после перезапуска",
+  }) : null;
+  const hint = entry.hint ? el("small", { class: "server-config-hint", text: entry.hint }) : null;
+  if (entry.type === "boolean") {
+    const input = el("input", {
+      type: "checkbox",
+      checked: entry.value === true,
+      disabled: entry.disabled === true,
+      "aria-label": entry.name ?? "Переключатель конфигурации",
+    });
+    input.addEventListener("change", () => noteServerConfigDraft(entry.key, input.checked));
+    const switchControl = el("label", { class: "server-config-switch-control" }, [
       input,
-      entry.unit ? el("small", { class: "server-config-unit", text: entry.unit }) : null,
-    ].filter(Boolean)),
-    hint,
+      el("span", { class: "switch-track", "aria-hidden": true }),
+      el("span", { class: "switch-text", text: entry.name ?? "" }),
+    ]);
+    const row = el("div", {
+      class: [
+        "server-config-row",
+        "server-config-toggle",
+        entry.presentation === "automation" ? "server-config-automation" : "",
+        entry.disabled ? "is-disabled" : "",
+      ].filter(Boolean).join(" "),
+      title: entry.hint || entry.name || "",
+      "aria-disabled": entry.disabled ? "true" : null,
+    }, [
+      switchControl,
+      entry.presentation === "automation" ? null : hint,
+      inlineEntry ? renderServerConfigNumberControl(inlineEntry, { inline: true }) : null,
+      pendingNote,
+    ].filter(Boolean));
+    return prepareServerConfigVisibility(row, entry);
+  }
+  if (entry.type === "choice") {
+    const input = el("select", {
+      class: "server-config-number",
+      "aria-label": entry.name ?? "Параметр конфигурации",
+      disabled: entry.disabled === true,
+    }, (Array.isArray(entry.choices) ? entry.choices : []).map((choice) => el("option", {
+      value: choice.value ?? "",
+      text: choice.label ?? choice.value ?? "",
+      selected: choice.value === entry.value,
+    })));
+    input.addEventListener("change", () => noteServerConfigDraft(entry.key, input.value));
+    return prepareServerConfigVisibility(el("div", {
+      class: `server-config-row${entry.disabled ? " is-disabled" : ""}`,
+      title: entry.hint || entry.name || "",
+    }, [
+      renderServerConfigCopy(entry),
+      input,
+      pendingNote,
+    ].filter(Boolean)), entry);
+  }
+  return prepareServerConfigVisibility(el("div", {
+    class: `server-config-row${entry.disabled ? " is-disabled" : ""}`,
+    title: entry.hint || entry.name || "",
+  }, [
+    renderServerConfigCopy(entry),
+    renderServerConfigNumberControl(entry),
     pendingNote,
   ].filter(Boolean)), entry);
 }

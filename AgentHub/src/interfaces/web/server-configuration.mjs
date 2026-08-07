@@ -18,47 +18,54 @@ export const SERVER_CONFIGURATION_FIELDS = Object.freeze([
   {
     key: "contextAutomation.autoCompactAfterTurn",
     name: "Авто-свёртка после хода",
-    hint: "Проверка выполняется после окончательного завершения хода; очередь Stream остаётся заблокированной до завершения обслуживания контекста.",
+    hint: "«Свёртка» — процесс сжатия контекста, удаления устаревшей информации и сокращения описания выполненных действий с целью уменьшения расхода токенов и ускорения работы модели. Типовая процедура. Предположительно бесплатная.",
     type: BOOLEAN,
-    presentation: "line",
+    presentation: "automation",
+    inlineValueKey: "contextAutomation.autoCompactThresholdPercent",
   },
   {
     key: "contextAutomation.autoCompactThresholdPercent",
-    name: "Если окно контекста заполнено >",
+    name: "если окно контекста заполнено более чем на:",
     type: INTEGER,
     min: 0,
     max: 100,
     unit: "%",
-    presentation: "line",
+    presentation: "inline",
+    inlineFor: "contextAutomation.autoCompactAfterTurn",
     visibleWhen: { key: "contextAutomation.autoCompactAfterTurn", value: true },
   },
   {
     key: "contextAutomation.autoRotateAfterCompaction",
     name: "Авто-ротация после свёртки",
-    hint: "Новый Thread получает готовый результат уже выполненной свёртки; повторная свёртка не запускается.",
+    hint: "«Ротация» — процесс переноса свёрнутого контекста в новый чистый Thread агента. Stream (диалог или задача) при этом сохраняется, визуально ничего не меняется.",
     type: BOOLEAN,
-    presentation: "line",
-    visibleWhen: { key: "contextAutomation.autoCompactAfterTurn", value: true },
+    presentation: "automation",
+    inlineValueKey: "contextAutomation.autoRotateThresholdPercent",
   },
   {
     key: "contextAutomation.autoRotateThresholdPercent",
-    name: "Если после свёртки окно контекста заполнено >",
+    name: "если после свёртки окно контекста заполнено более чем на:",
     type: INTEGER,
     min: 0,
     max: 100,
     unit: "%",
-    presentation: "line",
-    visibleWhenAll: [
-      { key: "contextAutomation.autoCompactAfterTurn", value: true },
-      { key: "contextAutomation.autoRotateAfterCompaction", value: true },
-    ],
+    presentation: "inline",
+    inlineFor: "contextAutomation.autoRotateAfterCompaction",
+    visibleWhen: { key: "contextAutomation.autoRotateAfterCompaction", value: true },
   },
-  { key: "components.codexContextCleanup", name: "Очистка контекста Codex", hint: "Удаляет только дубликаты старых изображений из snapshots после свёртки и во время фоновых проходов; исходные сообщения не меняются.", type: BOOLEAN },
-  { key: "codexRolloutContext.scanIntervalSeconds", name: "Интервал фоновой очистки", hint: "Как часто компонент повторно проверяет отложенные и остальные rollout-файлы Codex.", type: INTEGER, min: 1, max: 1440, unit: "мин", storageMultiplier: 60 },
+  {
+    key: "components.codexContextCleanup",
+    name: "Очистка контекста Codex",
+    hint: "ПОКА НЕДОСТУПНО — в процессе переосмысления.",
+    type: BOOLEAN,
+    disabled: true,
+    forcedValue: false,
+  },
+  { key: "codexRolloutContext.scanIntervalSeconds", name: "Интервал фоновой очистки", hint: "Как часто компонент повторно проверяет отложенные и остальные rollout-файлы Codex.", type: INTEGER, min: 1, max: 1440, unit: "мин", storageMultiplier: 60, presentation: "advanced" },
   {
     key: "codexSandboxMode",
     name: "Политика доступа Codex",
-    hint: "Только рабочая папка ограничивает запись проектом и отключает сеть. Полный доступ снимает это ограничение; Windows-режим unelevated настраивается отдельно в ~/.codex/config.toml.",
+    hint: "«Только рабочая папка» ограничивает запись проектом и отключает сеть. «Полный доступ» снимает это ограничение.",
     type: CHOICE,
     choices: [
       { value: "workspace-write", label: "Только рабочая папка" },
@@ -66,11 +73,11 @@ export const SERVER_CONFIGURATION_FIELDS = Object.freeze([
     ],
     environment: "CODEX_SANDBOX_MODE",
   },
-  { key: "codexRpcTimeoutSeconds", name: "Тайм-аут ответа Codex", hint: "Сколько Hub ждёт ответа Codex на один вызов, прежде чем считать ход зависшим.", type: INTEGER, min: 1, max: 3600, unit: "с", environment: "CODEX_RPC_TIMEOUT_SECONDS" },
-  { key: "deferredInputTtlHours", name: "Хранение очереди входящих", hint: "Сколько ждёт сообщение, отправленное занятому агенту, прежде чем его отбросят.", type: INTEGER, min: 1, max: 8760, unit: "ч" },
-  { key: "progressStartDelayMs", name: "Задержка индикатора работы", hint: "Через сколько после начала хода появляется индикатор. Больше — меньше мельканий на коротких ходах.", type: INTEGER, min: 1, max: 60000, unit: "мс" },
-  { key: "deliveryRetryIntervalSeconds", name: "Интервал повторной доставки", hint: "Пауза перед повтором, если сообщение или уведомление не удалось доставить.", type: INTEGER, min: 1, max: 3600, unit: "с" },
-  { key: "logMaxFiles", name: "Хранение журналов", hint: "Сколько файлов журнала Hub держит, прежде чем удалять самые старые.", type: INTEGER, min: 1, max: 100, unit: "файлов" },
+  { key: "codexRpcTimeoutSeconds", name: "Тайм-аут ответа Codex", hint: "Сколько Hub ждёт ответа Codex на один вызов, прежде чем считать ход зависшим.", type: INTEGER, min: 1, max: 3600, unit: "с", environment: "CODEX_RPC_TIMEOUT_SECONDS", presentation: "advanced" },
+  { key: "deferredInputTtlHours", name: "Хранение очереди входящих", hint: "Сколько ждёт сообщение, отправленное занятому агенту, прежде чем его отбросят.", type: INTEGER, min: 1, max: 8760, unit: "ч", presentation: "advanced" },
+  { key: "progressStartDelayMs", name: "Задержка индикатора работы", hint: "Через сколько после начала хода появляется индикатор. Больше — меньше мельканий на коротких ходах.", type: INTEGER, min: 1, max: 60000, unit: "мс", presentation: "advanced" },
+  { key: "deliveryRetryIntervalSeconds", name: "Интервал повторной доставки", hint: "Пауза перед повтором, если сообщение или уведомление не удалось доставить.", type: INTEGER, min: 1, max: 3600, unit: "с", presentation: "advanced" },
+  { key: "logMaxFiles", name: "Хранение диагностических логов", hint: "Сколько архивных файлов обычных событий и ошибок хранит Hub. Самые старые удаляются автоматически.", type: INTEGER, min: 1, max: 100, unit: "файлов", presentation: "advanced" },
 ]);
 
 const FIELDS_BY_KEY = new Map(SERVER_CONFIGURATION_FIELDS.map((field) => [field.key, field]));
@@ -129,7 +136,9 @@ function displayValue(field, value) {
 /** Projects the safe editable subset for every client surface. */
 export function serverConfigurationEntries(config, pending = {}) {
   return SERVER_CONFIGURATION_FIELDS.map((field) => {
-    const configured = getAtPath(config, field.key);
+    const configured = Object.hasOwn(field, "forcedValue")
+      ? field.forcedValue
+      : getAtPath(config, field.key);
     const hasPending = Object.hasOwn(pending, field.key);
     const value = inputValue(field, hasPending ? pending[field.key] : configured);
     const entry = {
@@ -150,6 +159,7 @@ export function serverConfigurationEntries(config, pending = {}) {
     if (field.visibleWhen) entry.visibleWhen = field.visibleWhen;
     if (field.visibleWhenAll) entry.visibleWhenAll = field.visibleWhenAll;
     if (field.presentation) entry.presentation = field.presentation;
+    if (field.disabled) entry.disabled = true;
     if (field.type === CHOICE) entry.choices = field.choices;
     return entry;
   });
@@ -174,6 +184,7 @@ export async function updateServerConfiguration({
   for (const [key, value] of entries) {
     const field = FIELDS_BY_KEY.get(key);
     if (!field) throw new Error("Этот параметр нельзя менять из интерфейса Hub");
+    if (field.disabled) throw new Error(`«${field.name}» временно недоступна`);
     if (field.environment && String(environment[field.environment] ?? "").trim()) {
       throw new Error(`«${field.name}» задан через ${field.environment}; измените переменную окружения`);
     }
