@@ -65,8 +65,9 @@ export const SERVER_CONFIGURATION_FIELDS = Object.freeze([
   {
     key: "codexSandboxMode",
     name: "Политика доступа Codex",
-    hint: "«Только рабочая папка» ограничивает запись проектом и отключает сеть. «Полный доступ» снимает это ограничение.",
+    hint: "Включено — полный доступ. Выключено — только рабочая папка: запись ограничена проектом, сеть отключена.",
     type: CHOICE,
+    presentation: "access-toggle",
     choices: [
       { value: "workspace-write", label: "Только рабочая папка" },
       { value: "danger-full-access", label: "Полный доступ" },

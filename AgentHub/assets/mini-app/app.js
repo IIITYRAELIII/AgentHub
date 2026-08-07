@@ -4358,14 +4358,20 @@ function renderServerConfigEntry(entry = {}, { inlineEntry = null } = {}) {
     text: "Применится после перезапуска",
   }) : null;
   const hint = entry.hint ? el("small", { class: "server-config-hint", text: entry.hint }) : null;
-  if (entry.type === "boolean") {
+  const accessModeToggle = entry.type === "choice" && entry.presentation === "access-toggle";
+  if (entry.type === "boolean" || accessModeToggle) {
     const input = el("input", {
       type: "checkbox",
-      checked: entry.value === true,
+      checked: accessModeToggle ? entry.value === "danger-full-access" : entry.value === true,
       disabled: entry.disabled === true,
       "aria-label": entry.name ?? "Переключатель конфигурации",
     });
-    input.addEventListener("change", () => noteServerConfigDraft(entry.key, input.checked));
+    input.addEventListener("change", () => noteServerConfigDraft(
+      entry.key,
+      accessModeToggle
+        ? input.checked ? "danger-full-access" : "workspace-write"
+        : input.checked,
+    ));
     const switchControl = el("label", { class: "server-config-switch-control" }, [
       input,
       el("span", { class: "switch-track", "aria-hidden": true }),

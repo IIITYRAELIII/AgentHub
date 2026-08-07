@@ -35,6 +35,11 @@ test("server configuration exposes only its editable non-secret fields", () => {
   });
   const sandboxMode = entries.find((entry) => entry.key === "codexSandboxMode");
   assert.equal(sandboxMode?.display, "Только рабочая папка");
+  assert.equal(sandboxMode?.presentation, "access-toggle");
+  assert.equal(
+    sandboxMode?.hint,
+    "Включено — полный доступ. Выключено — только рабочая папка: запись ограничена проектом, сеть отключена.",
+  );
   assert.deepEqual(sandboxMode?.choices, [
     { value: "workspace-write", label: "Только рабочая папка" },
     { value: "danger-full-access", label: "Полный доступ" },
