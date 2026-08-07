@@ -271,6 +271,8 @@ test("desktopContextSnapshot marks a completed compaction until fresh usage arri
   assert.equal(desktopContextSnapshot("thread-1").usagePending, true);
   state.usage.updatedAt = "2026-07-30T10:01:32.000Z";
   assert.equal(desktopContextSnapshot("thread-1").usagePending, false);
+  state.usage.provisional = true;
+  assert.equal(desktopContextSnapshot("thread-1").usagePending, true);
 });
 
 test("desktopRunSnapshot preserves run fields and nested context", () => {

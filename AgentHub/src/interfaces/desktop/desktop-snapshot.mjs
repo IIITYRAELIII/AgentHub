@@ -63,9 +63,11 @@ export function createDesktopSnapshotFactory({
       updatedAt: usage?.updatedAt ?? null,
       compacting: context.isCompacting(String(thread ?? "")),
       compaction,
-      usagePending: compaction?.status === "completed"
+      usagePending: usage?.provisional === true || (
+        compaction?.status === "completed"
         && compactionStartedAtMs > 0
-        && usageUpdatedAtMs < compactionStartedAtMs,
+        && usageUpdatedAtMs < compactionStartedAtMs
+      ),
     };
   }
 

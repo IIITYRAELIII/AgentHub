@@ -27,7 +27,7 @@ export class CodexUsageTracker {
     this.contextWaiters = new Map();
   }
 
-  rememberContext(params) {
+  rememberContext(params, { provisional = false } = {}) {
     const modelContextWindow = Math.max(0, Number(params?.tokenUsage?.modelContextWindow) || 0);
     const usedTokens = Math.max(0, Number(params?.tokenUsage?.last?.totalTokens) || 0);
     const threadId = String(params?.threadId ?? "").trim();
@@ -38,6 +38,7 @@ export class CodexUsageTracker {
       turnId,
       modelContextWindow,
       usedTokens,
+      provisional: provisional === true,
       updatedAt: this.now().toISOString(),
     };
     setBoundedMapValue(this.contexts, contextKey(threadId, turnId), context, this.contextLimit);
@@ -97,13 +98,13 @@ export class CodexUsageTracker {
     });
   }
 
-  track(params) {
+  track(params, { provisionalContext = false } = {}) {
     const current = normalizeTokenUsage(params?.tokenUsage?.total);
     const threadId = String(params?.threadId ?? "").trim();
     const turnId = String(params?.turnId ?? "").trim();
     const previous = this.threadTotals.get(threadId);
     if (threadId) setBoundedMapValue(this.threadTotals, threadId, current, this.totalLimit);
-    this.rememberContext(params);
+    this.rememberContext(params, { provisional: provisionalContext });
     const tracker = this.turns.get(turnId);
     if (!tracker) return null;
     const delta = tokenUsageDelta(current, previous, params?.tokenUsage?.last);
@@ -163,6 +164,7 @@ export class CodexUsageTracker {
         turnId: String(entry[1].turnId ?? ""),
         modelContextWindow,
         usedTokens,
+        provisional: entry[1].provisional === true,
         updatedAt: String(entry[1].updatedAt ?? ""),
       });
     }

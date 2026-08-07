@@ -12,6 +12,20 @@ function rememberBounded(map, key, value, limit) {
   while (map.size > limit) map.delete(map.keys().next().value);
 }
 
+function isCompactionOnlyContextMeasurement(params, compaction) {
+  const turnId = String(params?.turnId ?? "").trim();
+  const compactionTurnId = String(compaction?.turnId ?? "").trim();
+  if (!turnId || !compactionTurnId || turnId !== compactionTurnId) return false;
+  const last = params?.tokenUsage?.last ?? {};
+  const billableTokens = [
+    last.inputTokens,
+    last.cachedInputTokens,
+    last.outputTokens,
+    last.reasoningOutputTokens,
+  ].reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
+  return Math.max(0, Number(last.totalTokens) || 0) > 0 && billableTokens === 0;
+}
+
 export class CodexEventService {
   #d;
 
@@ -64,7 +78,14 @@ export class CodexEventService {
       if (run && eventTurnId) void d.saveState();
     }
     if (method === "thread/tokenUsage/updated") {
-      d.trackTokenUsage(params);
+      const compaction = d.getCompaction(params.threadId);
+      d.trackTokenUsage(params, {
+        // A standalone compaction reports an intermediate token count with no
+        // billable input/output. It still belongs in turn accounting, but it
+        // is not the compacted prompt size. The first ordinary model turn is
+        // the first exact post-compaction context measurement.
+        provisionalContext: isCompactionOnlyContextMeasurement(params, compaction),
+      });
       void d.saveState();
     }
     if (method === "turn/diff/updated" && run) {

@@ -46,8 +46,8 @@ export function createRuntimeFacadesComposition({
     latestThreadContextUsage(contextThreadId, contextTurnId = "") {
       return codexUsageTracker.latestContext(contextThreadId, contextTurnId);
     },
-    trackTurnTokenUsage(params) {
-      return codexUsageTracker.track(params);
+    trackTurnTokenUsage(params, options = {}) {
+      return codexUsageTracker.track(params, options);
     },
     consumeTurnTokenTracker(turnId) {
       return codexUsageTracker.consume(turnId);

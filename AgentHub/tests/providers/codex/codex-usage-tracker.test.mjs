@@ -68,6 +68,34 @@ test("CodexUsageTracker waits for the post-compaction context measurement", asyn
   assert.equal((await pending)?.usedTokens, 180);
 });
 
+test("CodexUsageTracker marks compaction-only context as provisional", () => {
+  const times = [
+    new Date("2026-08-04T10:00:00.000Z"),
+    new Date("2026-08-04T10:01:00.000Z"),
+  ];
+  const tracker = new CodexUsageTracker({ now: () => times.shift() });
+  tracker.turns.set("compact-1", { usage: usage(0), reported: false });
+  tracker.rememberContext({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    tokenUsage: { last: usage(800), modelContextWindow: 1_000 },
+  });
+
+  tracker.track({
+    threadId: "thread-1",
+    turnId: "compact-1",
+    tokenUsage: {
+      total: usage(900),
+      last: usage(180, { inputTokens: 0 }),
+      modelContextWindow: 1_000,
+    },
+  }, { provisionalContext: true });
+
+  assert.equal(tracker.latestContext("thread-1").usedTokens, 180);
+  assert.equal(tracker.latestContext("thread-1").provisional, true);
+  assert.equal(tracker.consume("compact-1").reported, true);
+});
+
 test("CodexUsageTracker restores bounded compatible state", () => {
   const tracker = new CodexUsageTracker({ totalLimit: 1, turnLimit: 1, contextLimit: 1 });
   tracker.restore({
@@ -80,6 +108,7 @@ test("CodexUsageTracker restores bounded compatible state", () => {
         turnId: "turn",
         modelContextWindow: 10,
         usedTokens: 4,
+        provisional: false,
         updatedAt: "2026-08-04T10:00:00.000Z",
       }],
     ],
@@ -92,6 +121,7 @@ test("CodexUsageTracker restores bounded compatible state", () => {
       turnId: "turn",
       modelContextWindow: 10,
       usedTokens: 4,
+      provisional: false,
       updatedAt: "2026-08-04T10:00:00.000Z",
     }]],
   });

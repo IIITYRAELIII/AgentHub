@@ -51,3 +51,49 @@ test("Codex event service preserves the raw compaction item for rotation", async
   });
   assert.deepEqual(captured, [["thread-1", { turnId: "turn-1", item }]]);
 });
+
+test("Codex event service does not treat compaction-only usage as prompt context", async () => {
+  const captured = [];
+  const service = createService(null, {
+    getCompaction: () => ({ turnId: "compact-1", status: "completed" }),
+    trackTokenUsage: (...args) => captured.push(args),
+  });
+  const params = {
+    threadId: "thread-1",
+    turnId: "compact-1",
+    tokenUsage: {
+      modelContextWindow: 258_400,
+      last: {
+        totalTokens: 158_033,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+      },
+    },
+  };
+
+  await service.handle({ method: "thread/tokenUsage/updated", params });
+
+  assert.deepEqual(captured, [[params, { provisionalContext: true }]]);
+});
+
+test("Codex event service accepts the first real post-compaction context measurement", async () => {
+  const captured = [];
+  const service = createService(null, {
+    getCompaction: () => ({ turnId: "compact-1", status: "completed" }),
+    trackTokenUsage: (...args) => captured.push(args),
+  });
+  const params = {
+    threadId: "thread-1",
+    turnId: "turn-2",
+    tokenUsage: {
+      modelContextWindow: 258_400,
+      last: { totalTokens: 81_978, inputTokens: 81_000, outputTokens: 978 },
+    },
+  };
+
+  await service.handle({ method: "thread/tokenUsage/updated", params });
+
+  assert.deepEqual(captured, [[params, { provisionalContext: false }]]);
+});
