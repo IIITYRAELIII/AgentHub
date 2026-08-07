@@ -870,7 +870,7 @@ test("journal width stays fixed while days and turns are expanded", () => {
   );
 });
 
-test("journal renders Workspace turns without separate Stream sections", () => {
+test("journal keeps Workspace and Stream groups expandable", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),
@@ -878,20 +878,21 @@ test("journal renders Workspace turns without separate Stream sections", () => {
   );
   assert.match(
     styles,
-    /\.journal section\[data-work-log-workspace\]\s*\{[^}]*border:\s*1px solid var\(--line\);[^}]*overflow:\s*hidden;/su,
+    /\.journal details\[data-work-log-workspace\]\s*\{[^}]*border:\s*1px solid var\(--line\);[^}]*overflow:\s*hidden;/su,
   );
   assert.match(
     styles,
-    /\.journal header\[data-work-log-workspace-header\]\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*flex-start;/su,
+    /\.journal summary\[data-work-log-workspace-header\]\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*1rem 17\.5rem minmax\(0, 1fr\);/su,
   );
   assert.match(
     styles,
-    /\.journal div\[data-work-log-workspace-turns\] > div\[data-work-log-row\]\s*\{[^}]*display:\s*block;/su,
+    /\.journal details\[data-work-log-stream\]\[open\]\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*17\.5rem minmax\(0, 1fr\);/su,
   );
   assert.match(styles, /\.journal span\[data-work-log-turn-stream\]\s*\{[^}]*border-radius:\s*999px;/su);
-  assert.match(styles, /\.journal summary\[data-work-log-stream-summary\]\s*\{[^}]*display:\s*none !important;/su);
+  assert.match(styles, /\.journal summary\[data-work-log-stream-summary\]\s*\{[^}]*cursor:\s*pointer;[^}]*display:\s*grid;/su);
   assert.match(app, /function decorateLegacyStreamTurns\(scope = journal\)/u);
   assert.match(app, /function applyWorkspaceCollapse\(value,/u);
+  assert.match(app, /function setWorkspaceGroupsCollapsed\(collapsed,/u);
   assert.match(app, /agent-hub-collapse-streams/u);
   assert.match(styles, /\.journal div\[data-work-log-task-content\]:empty\s*\{[^}]*display:\s*none;/su);
 });
