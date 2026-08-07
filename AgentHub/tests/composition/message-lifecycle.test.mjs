@@ -923,7 +923,7 @@ test("context compaction start identifies the task and completion stays in chat"
   );
   assert.match(
     hubClientSource,
-    /text: `Свёртка завершена успешно \$\{beforePercent\}%>\$\{afterPercent\}%`/u,
+    /visibleBeforePercent = beforePercent \?\? "\?";[\s\S]*visibleAfterPercent = afterPercent \?\? "\?";[\s\S]*text: `Свёртка завершена успешно \$\{visibleBeforePercent\}%>\$\{visibleAfterPercent\}%`/u,
   );
   assert.match(hubClientSource, /maintenanceEventStorageKey/u);
   assert.match(hubClientSource, /rememberMaintenanceEvent\(stableTaskId/u);

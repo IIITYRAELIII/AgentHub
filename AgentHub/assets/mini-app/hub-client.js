@@ -796,14 +796,16 @@ function observeContextCompactions(tasks) {
       }
       requestedContextCompactions.delete(compactionId);
     }
-    if (status === "completed" && beforePercent !== null && afterPercent !== null) {
+    if (status === "completed") {
       const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
+      const visibleBeforePercent = beforePercent ?? "?";
+      const visibleAfterPercent = afterPercent ?? "?";
       rememberMaintenanceEvent(stableTaskId, {
         id: `maintenance:compaction:${compactionId}`,
         provider: task.provider,
         threadId: task.threadId,
         itemId: `maintenance:compaction:${compactionId}`,
-        text: `Свёртка завершена успешно ${beforePercent}%>${afterPercent}%`,
+        text: `Свёртка завершена успешно ${visibleBeforePercent}%>${visibleAfterPercent}%`,
         time: compaction.completedAt ?? new Date().toISOString(),
       });
     }
