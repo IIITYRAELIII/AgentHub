@@ -70,6 +70,9 @@ test("an automatic compaction is visible from start through completion", () => {
   assert.equal(settled.length, 1);
   assert.equal(settled[0].threadId, "thread-2");
   assert.equal(settled[0].record.status, "completed");
+  tracker.annotate("thread-2", started.id, { beforePercent: 86.4, afterPercent: 18.2 });
+  assert.equal(tracker.get("thread-2").beforePercent, 86.4);
+  assert.equal(tracker.get("thread-2").afterPercent, 18.2);
   tracker.dispose();
 });
 

@@ -11,6 +11,7 @@ const vscode = window.__agentHubVscode ?? (typeof window.acquireVsCodeApi === "f
 const pendingBridgeCalls = new Map();
 const selectedTaskKey = "agent-hub:selected-task:v1";
 const serverIdentityKey = "agent-hub:server-identity:v1";
+const maintenanceEventStorageKey = "agent-hub:maintenance-events:v1";
 let bridgeSequence = 0;
 let lastSnapshot = null;
 let observedServerIdentity = readStoredServerIdentity();
@@ -54,6 +55,7 @@ const queueActionsInFlight = new Set();
 const optimisticDeferredClientUserMessageIds = new Set();
 const requestedContextCompactions = new Set();
 const observedContextCompactions = new Map();
+const maintenanceEventsByTask = readMaintenanceEvents();
 let deferredClientUserMessageIds = new Set();
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const {
@@ -185,6 +187,50 @@ function rememberSelectedTaskId(id) {
   return selectedTaskId;
 }
 
+function readMaintenanceEvents() {
+  const values = new Map();
+  try {
+    const stored = JSON.parse(localStorage.getItem(maintenanceEventStorageKey) || "[]");
+    for (const entry of Array.isArray(stored) ? stored : []) {
+      const task = String(entry?.taskId ?? "").trim();
+      const id = String(entry?.message?.id ?? "").trim();
+      if (!task || !id) continue;
+      const events = values.get(task) ?? [];
+      events.push(entry.message);
+      values.set(task, events.slice(-50));
+    }
+  } catch {
+    // Недоступный localStorage не мешает событиям оставаться в текущей сессии.
+  }
+  return values;
+}
+
+function persistMaintenanceEvents() {
+  try {
+    const stored = [...maintenanceEventsByTask].flatMap(([taskIdValue, messages]) => (
+      messages.map((message) => ({ taskId: taskIdValue, message }))
+    )).sort((left, right) => Date.parse(left.message.time ?? "") - Date.parse(right.message.time ?? ""))
+      .slice(-200);
+    localStorage.setItem(maintenanceEventStorageKey, JSON.stringify(stored));
+  } catch {
+    // События всё равно остаются в памяти текущего клиента.
+  }
+}
+
+function rememberMaintenanceEvent(taskIdValue, message) {
+  const stableTaskId = String(taskIdValue ?? "").trim();
+  const eventId = String(message?.id ?? "").trim();
+  if (!stableTaskId || !eventId) return;
+  const events = maintenanceEventsByTask.get(stableTaskId) ?? [];
+  const index = events.findIndex((entry) => entry.id === eventId);
+  const value = { ...message, role: "system", kind: "maintenance" };
+  if (index >= 0 && JSON.stringify(events[index]) === JSON.stringify(value)) return;
+  if (index >= 0) events[index] = value;
+  else events.push(value);
+  maintenanceEventsByTask.set(stableTaskId, events.slice(-50));
+  persistMaintenanceEvents();
+}
+
 function taskIdentity(id) {
   const stableId = String(id ?? "").trim();
   const task = (lastSnapshot?.tasks ?? []).find((candidate) => (
@@ -288,8 +334,9 @@ function reconciledMessages(taskIdValue) {
   }
   const overlayMessages = [...(completionOverlaysByTask.get(taskIdValue)?.values() ?? [])]
     .flatMap((overlay) => overlay.messages);
+  const maintenanceMessages = maintenanceEventsByTask.get(taskIdValue) ?? [];
   const serverMessages = deduplicateConversationMessages(mergeLiveUserMessages(
-    [...durableMessages, ...overlayMessages],
+    [...durableMessages, ...overlayMessages, ...maintenanceMessages],
     liveUserMessagesByTask.get(taskIdValue) ?? {},
   ));
   const pending = outgoingMessages(taskIdValue);
@@ -704,9 +751,9 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   };
 }
 
-function compactionContextLabel(context) {
-  if (context?.usagePending) return "объём обновляется";
-  return `контекст ${Math.round(Math.max(0, Math.min(100, Number(context?.percent) || 0)))}%`;
+function contextPercent(value) {
+  const percent = Number(value);
+  return Number.isFinite(percent) ? Math.round(Math.max(0, Math.min(100, percent))) : null;
 }
 
 function compactionTaskTitle(task) {
@@ -725,8 +772,14 @@ function observeContextCompactions(tasks) {
     const compaction = context?.compaction;
     const compactionId = String(compaction?.id ?? "");
     if (!compactionId) continue;
-    const previousStatus = observedContextCompactions.get(compactionId);
+    const previous = observedContextCompactions.get(compactionId) ?? {};
+    const previousStatus = previous.status;
     const status = String(compaction.status ?? "");
+    const beforePercent = contextPercent(compaction.beforePercent)
+      ?? previous.beforePercent
+      ?? (status === "running" ? contextPercent(context?.percent) : null);
+    const afterPercent = contextPercent(compaction.afterPercent)
+      ?? (!context?.usagePending && status === "completed" ? contextPercent(context?.percent) : null);
     const requested = requestedContextCompactions.has(compactionId);
     const eventAtMs = Date.parse(String(compaction.completedAt ?? compaction.startedAt ?? "")) || 0;
     const recent = eventAtMs > 0 && Date.now() - eventAtMs < 90_000;
@@ -736,12 +789,6 @@ function observeContextCompactions(tasks) {
       && recent) {
       agentHub.toast(`Началась автосвёртка контекста · ${compactionTaskTitle(task)}`);
     } else if (status === "completed" && previousStatus !== "completed") {
-      if (requested || (compaction.origin === "automatic" && recent)) {
-        const completionLabel = compaction.origin === "automatic"
-          ? "Автосвёртка контекста завершена"
-          : "Свёртка контекста завершена";
-        agentHub.toast(`${completionLabel} · ${compactionTaskTitle(task)} · ${compactionContextLabel(context)}`);
-      }
       requestedContextCompactions.delete(compactionId);
     } else if (status === "timeout" && previousStatus !== "timeout") {
       if (requested || (compaction.origin === "automatic" && recent)) {
@@ -749,11 +796,41 @@ function observeContextCompactions(tasks) {
       }
       requestedContextCompactions.delete(compactionId);
     }
+    if (status === "completed" && beforePercent !== null && afterPercent !== null) {
+      const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
+      rememberMaintenanceEvent(stableTaskId, {
+        id: `maintenance:compaction:${compactionId}`,
+        provider: task.provider,
+        threadId: task.threadId,
+        itemId: `maintenance:compaction:${compactionId}`,
+        text: `Свёртка завершена успешно ${beforePercent}%>${afterPercent}%`,
+        time: compaction.completedAt ?? new Date().toISOString(),
+      });
+    }
     observedContextCompactions.delete(compactionId);
-    observedContextCompactions.set(compactionId, status);
+    observedContextCompactions.set(compactionId, { status, beforePercent, afterPercent });
     while (observedContextCompactions.size > 100) {
       observedContextCompactions.delete(observedContextCompactions.keys().next().value);
     }
+  }
+}
+
+function observeStreamRotations(previousTasks, tasks) {
+  const previousByStream = new Map((previousTasks ?? []).flatMap((task) => (
+    task.streamId ? [[String(task.streamId), task]] : []
+  )));
+  for (const task of tasks ?? []) {
+    const streamId = String(task.streamId ?? "").trim();
+    const previous = previousByStream.get(streamId);
+    if (!streamId || !previous || String(previous.threadId) === String(task.threadId)) continue;
+    rememberMaintenanceEvent(taskId(task.provider, task.threadId, streamId), {
+      id: `maintenance:rotation:${streamId}:${task.threadId}`,
+      provider: task.provider,
+      threadId: task.threadId,
+      itemId: `maintenance:rotation:${streamId}:${task.threadId}`,
+      text: "Ротация завершена успешно",
+      time: new Date().toISOString(),
+    });
   }
 }
 
@@ -761,10 +838,12 @@ function applySnapshot(snapshot) {
   if (!snapshot) return;
   if (observeServerIdentity(snapshot)) return;
   resetConnectionFailures();
+  const previousTasks = lastSnapshot?.tasks ?? [];
   lastSnapshot = snapshot;
   agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
   agentHub.setServerStatus(snapshot.server ?? null);
   observeContextCompactions(snapshot.tasks);
+  observeStreamRotations(previousTasks, snapshot.tasks);
   applyMessageReceipts(snapshot);
   const serverDeferredClientUserMessageIds = new Set(
     (snapshot.deferredInputs ?? [])
@@ -1453,7 +1532,6 @@ agentHub.on("stream:rebirth", ({ streamId, provider, taskId: targetTaskId }) => 
   pendingSelectionId = "";
   if (created) replaceRoute(`#/chat/${encodeURIComponent(created.provider)}/${encodeURIComponent(created.threadId)}`);
   agentHub.showSelectedTask();
-  agentHub.toast("Ротация завершена");
 }));
 agentHub.on("stream:new", ({ workspaceId, streamName }) => runAction(async () => {
   const provider = lastSnapshot?.settings?.provider ?? "codex";

@@ -2900,8 +2900,9 @@ function activityFeedNode(activities) {
 
 function renderMessage(message, { readOnly = false } = {}) {
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
+  const maintenance = role === "system" && message.kind === "maintenance";
   const article = el("article", {
-    class: `msg msg-${role}`,
+    class: `msg msg-${role}${maintenance ? " msg-maintenance" : ""}`,
     "data-role": role,
     "data-message-id": message.id ?? "",
     "data-delivery-state": message.deliveryState ?? "",
@@ -2932,7 +2933,8 @@ function renderMessage(message, { readOnly = false } = {}) {
   // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
   if (!renderResponseAnnotations(body, message)) renderMarkdown(body, message.text ?? "");
 
-  article.append(head, body);
+  if (maintenance) article.append(body);
+  else article.append(head, body);
   const activity = activityFeedNode(message.activities);
   if (activity) article.append(activity);
 

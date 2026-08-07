@@ -56,6 +56,20 @@ export class ContextCompactionTracker {
     return this.get(threadId)?.status === "running";
   }
 
+  annotate(threadId, expectedId, details = {}) {
+    const key = normalizedThreadId(threadId);
+    const existing = this.entries.get(key);
+    if (!existing || (expectedId && existing.id !== expectedId)) return null;
+    const record = { ...existing };
+    for (const name of ["beforePercent", "afterPercent"]) {
+      const value = Number(details[name]);
+      if (Number.isFinite(value)) record[name] = Math.max(0, Math.min(100, value));
+    }
+    if (details.rotated !== undefined) record.rotated = details.rotated === true;
+    this.store(key, record);
+    return record;
+  }
+
   isManualTurn(threadId, turnId) {
     const record = this.get(threadId);
     return record?.origin === "manual"

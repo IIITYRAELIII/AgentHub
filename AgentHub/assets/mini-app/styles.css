@@ -4415,6 +4415,18 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   padding: 0.22rem 0.75rem;
 }
 
+.msg-maintenance .msg-body {
+  text-align: center;
+}
+
+.msg-maintenance .msg-body > :first-child {
+  margin-top: 0;
+}
+
+.msg-maintenance .msg-body > :last-child {
+  margin-bottom: 0;
+}
+
 .msg-head {
   align-items: baseline;
   color: var(--text-muted);

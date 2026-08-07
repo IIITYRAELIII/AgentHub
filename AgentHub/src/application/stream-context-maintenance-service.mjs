@@ -77,6 +77,7 @@ export class StreamContextMaintenanceService {
       });
       if (!started.accepted) return { compacted: false, reason: started.message };
       compactionId = started.compactionId;
+      this.provider.compactions.annotate?.(run.threadId, compactionId, { beforePercent });
       const settled = await this.provider.compactions.waitForSettlement(
         run.threadId,
         started.compactionId,
@@ -91,6 +92,7 @@ export class StreamContextMaintenanceService {
         timeoutMs: 5_000,
       });
       const afterPercent = contextUsagePercent(after);
+      this.provider.compactions.annotate?.(run.threadId, started.compactionId, { afterPercent });
       if (!this.autoRotateEnabled() || afterPercent === null
         || afterPercent <= Number(this.autoRotateThreshold())) {
         this.provider.discardCompactionTransfer(run.threadId, started.compactionId);
@@ -101,6 +103,7 @@ export class StreamContextMaintenanceService {
         compactionId: started.compactionId,
         settlement: settled,
       });
+      this.provider.compactions.annotate?.(run.threadId, started.compactionId, { rotated: true });
       compactionId = null;
       queueTarget = await this.#bindRotation(run, rotated);
       return { compacted: true, rotated: true, beforePercent, afterPercent, ...rotated };
@@ -118,12 +121,28 @@ export class StreamContextMaintenanceService {
     const reservation = this.registry.begin(target, "manual-compaction");
     if (!reservation) throw new Error("Для этого Stream уже выполняется обслуживание контекста");
     try {
+      const before = this.latestContextUsage(target.threadId);
+      const beforePercent = contextUsagePercent(before);
       const started = await this.provider.startManual(target);
       if (!started.accepted) {
         this.registry.end(reservation);
         return started;
       }
+      this.provider.compactions.annotate?.(target.threadId, started.compactionId, { beforePercent });
       void this.provider.compactions.waitForSettlement(target.threadId, started.compactionId)
+        .then(async (settled) => {
+          if (settled?.status !== "completed") return;
+          const after = await this.waitForContextUpdate(target.threadId, {
+            after: before?.updatedAt ?? 0,
+            timeoutMs: 5_000,
+          });
+          this.provider.compactions.annotate?.(target.threadId, started.compactionId, {
+            afterPercent: contextUsagePercent(after),
+          });
+        })
+        .catch((error) => this.logger.warn?.(
+          `Cannot record manual context compaction result for ${target.threadId}: ${error.message}`,
+        ))
         .finally(() => {
           this.registry.end(reservation);
           this.#wakeQueue(target);

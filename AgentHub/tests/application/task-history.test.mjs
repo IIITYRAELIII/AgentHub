@@ -41,6 +41,24 @@ test("completed history overlay replaces a stale live answer immediately", () =>
   assert.equal(history[0].messages[0].phase, "final");
 });
 
+test("completed history ignores a promptless compaction echo", () => {
+  const history = [{
+    id: "turn-user",
+    prompt: "Вопрос",
+    answer: "Готово",
+    completed: true,
+    messages: [{ role: "agent", text: "Готово" }],
+  }];
+
+  mergeCompletedTaskHistory(history, {
+    turnId: "turn-compaction",
+    answer: "Готово",
+  });
+
+  assert.equal(history.length, 1);
+  assert.equal(history[0].id, "turn-user");
+});
+
 test("Codex history preserves a safe activity feed", () => {
   const activities = codexTurnActivities({
     items: [

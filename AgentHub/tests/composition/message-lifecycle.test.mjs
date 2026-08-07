@@ -912,7 +912,7 @@ test("returning to a busy task keeps live and deferred states separate", () => {
   assert.deepEqual(visible, [activeUser]);
 });
 
-test("context compaction notifications identify the task that compacted", () => {
+test("context compaction start identifies the task and completion stays in chat", () => {
   assert.match(hubClientSource, /function compactionTaskTitle\(task\)/u);
   assert.match(hubClientSource, /workspaceName = String\(task\?\.workspaceName/u);
   assert.match(hubClientSource, /streamName = String\(task\?\.streamName/u);
@@ -923,8 +923,10 @@ test("context compaction notifications identify the task that compacted", () => 
   );
   assert.match(
     hubClientSource,
-    /\$\{completionLabel\} · \$\{compactionTaskTitle\(task\)\} · \$\{compactionContextLabel\(context\)\}/u,
+    /text: `Свёртка завершена успешно \$\{beforePercent\}%>\$\{afterPercent\}%`/u,
   );
+  assert.match(hubClientSource, /maintenanceEventStorageKey/u);
+  assert.match(hubClientSource, /rememberMaintenanceEvent\(stableTaskId/u);
 });
 
 test("Hub compaction delegates targeted completion to its context maintenance owner", () => {

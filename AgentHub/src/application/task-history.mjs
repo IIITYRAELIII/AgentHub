@@ -453,6 +453,10 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}) {
     }
   }
   if (!current) {
+    const previousAnswer = String(values.findLast((item) => item?.completed !== false)?.answer ?? "").trim();
+    if (previousAnswer === answer) return values;
+  }
+  if (!current) {
     current = { id: turnId, prompt: "", answer: "", messages: [] };
     values.push(current);
   }
