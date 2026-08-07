@@ -943,6 +943,11 @@ test("journal keeps Workspace and Stream groups expandable", () => {
   assert.match(app, /taskContent\.textContent = workspaceName/u);
   assert.match(app, /usage\.replaceChildren/u);
   assert.match(app, /workspace\.dataset\.workLogStreamsCollapsed/u);
+  assert.match(
+    styles,
+    /data-work-log-workspace-turns[\s\S]*?data-work-log-task-cell[\s\S]*?position:\s*static;[\s\S]*?top:\s*auto;/u,
+  );
+  assert.match(styles, /span\[data-work-log-duration-summary\][\s\S]*?grid-column:\s*1 \/ -1;/u);
   assert.match(styles, /\.journal div\[data-work-log-task-content\]:empty\s*\{[^}]*display:\s*none;/su);
 });
 

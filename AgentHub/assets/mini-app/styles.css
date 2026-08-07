@@ -838,6 +838,12 @@ main {
   box-shadow: var(--plate-shadow), var(--accent-glow);
   color: var(--text-soft);
   font-weight: 600;
+  gap: 0.3rem;
+}
+
+.journal span[data-work-log-day-duration] {
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 /* ==================================================== задача и её ходы === */
@@ -1113,6 +1119,8 @@ main {
 .journal div[data-work-log-workspace-turns]
   > div[data-work-log-row]
   > div[data-work-log-task-cell] {
+  position: static;
+  top: auto;
   visibility: visible;
 }
 
@@ -1258,6 +1266,30 @@ main {
 .journal span[data-task-usage-part] > span {
   justify-self: end;
   text-align: right;
+}
+
+.journal summary[data-task-usage] > span[data-work-log-duration-summary] {
+  align-items: baseline;
+  column-gap: 0.4rem;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) 6ch;
+  width: 100%;
+}
+
+.journal span[data-work-log-duration-summary] > span {
+  justify-self: end;
+  text-align: right;
+}
+
+.journal span[data-work-log-duration] {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.journal span[data-work-log-duration-percent] {
+  color: var(--text-faint);
+  white-space: nowrap;
 }
 
 .journal span[data-task-usage-part] + span[data-task-usage-part] {

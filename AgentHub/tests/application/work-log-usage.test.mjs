@@ -249,6 +249,7 @@ test("journal keeps one Stream expandable and owns its total at Workspace level"
       taskTitle: "Only task",
       title: "Готово",
       estimatedCredits: 4,
+      startedAt: "2026-07-30T09:00:00.000Z",
       completedAt: "2026-07-30T10:00:00.000Z",
     },
   }, {
@@ -276,13 +277,65 @@ test("journal keeps one Stream expandable and owns its total at Workspace level"
   )?.[0] ?? "";
   assert.match(workspaceSummary, /data-usage-credits="4"/u);
   assert.doesNotMatch(workspaceSummary, /Итого|data-usage-label/u);
+  assert.doesNotMatch(workspaceSummary, /data-work-log-duration/u);
   const collapsedUsage = projected.match(
     /<div data-work-log-collapsed-workspace-usage hidden>[\s\S]*?<\/div>/u,
   )?.[0] ?? "";
   assert.match(collapsedUsage, /data-work-log-collapsed-workspace-usage-details/u);
   assert.match(collapsedUsage, /data-task-usage-breakdown/u);
   assert.match(collapsedUsage, /data-usage-credits="4"/u);
+  assert.match(
+    collapsedUsage,
+    /data-work-log-duration-summary data-work-log-duration-seconds="3600">[\s\S]*?1 ч 0 мин[\s\S]*?data-work-log-duration-percent>\(100%\)/u,
+  );
   assert.doesNotMatch(collapsedUsage, /Итого|data-usage-label/u);
+  assert.match(
+    projected,
+    /data-work-log-day-duration data-work-log-duration-seconds="3600">· 1 ч 0 мин/u,
+  );
+});
+
+test("collapsed Workspace totals show elapsed time as a share of the day", () => {
+  const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
+    short: {
+      provider: "codex",
+      threadId: "thread-short",
+      turnId: "turn-short",
+      estimatedCredits: 1,
+      startedAt: "2026-07-30T09:00:00.000Z",
+      completedAt: "2026-07-30T10:00:00.000Z",
+    },
+    long: {
+      provider: "codex",
+      threadId: "thread-long",
+      turnId: "turn-long",
+      estimatedCredits: 3,
+      startedAt: "2026-07-30T10:00:00.000Z",
+      completedAt: "2026-07-30T13:00:00.000Z",
+    },
+  }, {
+    workspaceResolver: ({ threadId }) => ({
+      workspaceId: threadId === "thread-short" ? "workspace-short" : "workspace-long",
+      workspaceName: threadId === "thread-short" ? "Short" : "Long",
+      workspaceKind: "user",
+      streamId: threadId,
+      streamOrdinal: 1,
+      streamName: null,
+      streamDisplayName: "Stream 1",
+    }),
+  });
+  assert.match(
+    projected,
+    /data-work-log-workspace-id="workspace-short"[\s\S]*?data-work-log-duration-seconds="3600"[\s\S]*?data-work-log-duration-percent>\(25%\)/u,
+  );
+  assert.match(
+    projected,
+    /data-work-log-workspace-id="workspace-long"[\s\S]*?data-work-log-duration-seconds="10800"[\s\S]*?data-work-log-duration-percent>\(75%\)/u,
+  );
+  assert.match(
+    projected,
+    /data-work-log-day-duration data-work-log-duration-seconds="14400">· 4 ч 0 мин/u,
+  );
 });
 
 test("seven-day usage matches journal calendar days and includes empty days", () => {
@@ -563,6 +616,10 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.match(
     projected,
     /data-day-usage><span data-usage-label>Итого<\/span> <span data-kilo-usage data-usage-credits="[^"]+">0,0 cr<\/span>/,
+  );
+  assert.match(
+    projected,
+    /data-work-log-day-duration data-work-log-duration-seconds="210">· 4 мин<\/span>/,
   );
   assert.doesNotMatch(projected, /За день:/);
   assert.match(

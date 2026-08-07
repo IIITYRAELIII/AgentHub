@@ -332,7 +332,12 @@ function formatWorkspaceUsage(creditBreakdown, dayCredits) {
   );
 }
 
-function formatCollapsedWorkspaceUsage(creditBreakdown, dayCredits) {
+function formatCollapsedWorkspaceUsage(
+  creditBreakdown,
+  dayCredits,
+  elapsedSeconds,
+  dayElapsedSeconds,
+) {
   const [total, ...breakdown] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
   const totalHtml = highlightUsageUnits(
     alignUsagePercent(total.replace(/^Итого\s+/u, "")),
@@ -340,7 +345,9 @@ function formatCollapsedWorkspaceUsage(creditBreakdown, dayCredits) {
   );
   return "<details data-task-usage-details data-work-log-workspace-usage-details "
     + "data-work-log-collapsed-workspace-usage-details>"
-    + `<summary data-task-usage>${totalHtml}</summary>`
+    + `<summary data-task-usage>${totalHtml}${
+      formatDurationShare(elapsedSeconds, dayElapsedSeconds)
+    }</summary>`
     + `<span data-task-usage-breakdown>${breakdown
       .map((part) => `<span data-task-usage-part>${
         highlightUsageUnits(alignUsagePercent(part), breakdownPartCredits(part, creditBreakdown))
@@ -384,6 +391,31 @@ function durationSeconds(startedValue, completedValue) {
     return null;
   }
   return Math.max(0, Math.round((completedAt.getTime() - startedAt.getTime()) / 1000));
+}
+
+function recordsDurationSeconds(records) {
+  return records.reduce(
+    (total, record) => total + (durationSeconds(record?.startedAt, record?.completedAt) ?? 0),
+    0,
+  );
+}
+
+function formatSummaryDuration(totalSeconds) {
+  const seconds = Math.max(0, Number(totalSeconds) || 0);
+  const totalMinutes = seconds > 0 ? Math.max(1, Math.round(seconds / 60)) : 0;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours ? `${hours} ч ${minutes} мин` : `${minutes} мин`;
+}
+
+function formatDurationShare(totalSeconds, dayTotalSeconds) {
+  const seconds = Math.max(0, Number(totalSeconds) || 0);
+  if (seconds <= 0) return "";
+  const daySeconds = Math.max(0, Number(dayTotalSeconds) || 0);
+  const percent = daySeconds > 0 ? Math.round(seconds / daySeconds * 100) : 0;
+  return `<span data-work-log-duration-summary data-work-log-duration-seconds="${seconds}">`
+    + `<span data-work-log-duration>${formatSummaryDuration(seconds)}</span>`
+    + ` <span data-work-log-duration-percent>(${percent}%)</span></span>`;
 }
 
 function formatDuration(startedValue, completedValue) {
@@ -1436,7 +1468,7 @@ function replaceProjectedCells(
     + `<div data-work-log-turn-list>${turnList}</div>\n</div>`;
 }
 
-function formatWorkspaceRows(rows, dayCredits, workspaceResolver) {
+function formatWorkspaceRows(rows, dayCredits, dayElapsedSeconds, workspaceResolver) {
   if (typeof workspaceResolver !== "function") return rows.map((row) => row.html).join("\n");
   const groups = new Map();
   for (const row of rows) {
@@ -1446,10 +1478,12 @@ function formatWorkspaceRows(rows, dayCredits, workspaceResolver) {
       workspace,
       rows: [],
       creditBreakdown: emptyCreditBreakdown(),
+      elapsedSeconds: 0,
       latestCompletedAt: 0,
     };
     group.rows.push(row);
     group.creditBreakdown = addCreditBreakdown(group.creditBreakdown, row.creditBreakdown);
+    group.elapsedSeconds += row.elapsedSeconds;
     group.latestCompletedAt = Math.max(group.latestCompletedAt, row.latestCompletedAt);
     groups.set(key, group);
   }
@@ -1526,9 +1560,14 @@ function formatWorkspaceRows(rows, dayCredits, workspaceResolver) {
       const workspaceUsage = usage
         ? `<span data-work-log-workspace-usage>${usage}</span>`
         : "";
-      const collapsedWorkspaceUsage = group.creditBreakdown.total > 0
+      const collapsedWorkspaceUsage = group.creditBreakdown.total > 0 || group.elapsedSeconds > 0
         ? `<div data-work-log-collapsed-workspace-usage hidden>${
-          formatCollapsedWorkspaceUsage(group.creditBreakdown, dayCredits)
+          formatCollapsedWorkspaceUsage(
+            group.creditBreakdown,
+            dayCredits,
+            group.elapsedSeconds,
+            dayElapsedSeconds,
+          )
         }</div>`
         : "";
       return `<details data-work-log-workspace data-work-log-workspace-id="${
@@ -1589,6 +1628,7 @@ function projectDaySection(
         recorded,
         creditBreakdown,
         credits: creditBreakdown.total,
+        elapsedSeconds: recordsDurationSeconds(recorded),
         latestCompletedAt: recorded.reduce(
           (latest, record) => Math.max(latest, Date.parse(record.completedAt) || 0),
           0,
@@ -1606,6 +1646,10 @@ function projectDaySection(
     emptyCreditBreakdown(),
   );
   const dayCredits = dayBreakdown.total;
+  const dayElapsedSeconds = trackedRows.reduce(
+    (total, row) => total + row.elapsedSeconds,
+    0,
+  );
 
   const renderedRows = [...rows]
     .sort((left, right) => (
@@ -1636,17 +1680,28 @@ function projectDaySection(
         ),
       };
     });
-  const summary = dayCredits > 0
+  const dayDuration = dayElapsedSeconds > 0
+    ? `<span data-work-log-day-duration data-work-log-duration-seconds="${
+      dayElapsedSeconds
+    }">${dayCredits > 0 ? "· " : ""}${formatSummaryDuration(dayElapsedSeconds)}</span>`
+    : "";
+  const summary = dayCredits > 0 || dayElapsedSeconds > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
       + `<span data-day-usage><span data-usage-label>Итого</span> ${
-        highlightUsageUnits(formatCredits(dayCredits), dayCredits)
+        dayCredits > 0 ? highlightUsageUnits(formatCredits(dayCredits), dayCredits) : ""
+      }${dayDuration ? ` ${dayDuration}` : ""
       }</span>`
-      + `${formatDayUsageBreakdown(dayBreakdown)}</span></summary>`
+      + `${dayCredits > 0 ? formatDayUsageBreakdown(dayBreakdown) : ""}</span></summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
   return [
     `<details data-work-log-day-section${open ? " open" : ""}>`,
     summary,
-    layoutContainer(formatWorkspaceRows(renderedRows, dayCredits, workspaceResolver), {
+    layoutContainer(formatWorkspaceRows(
+      renderedRows,
+      dayCredits,
+      dayElapsedSeconds,
+      workspaceResolver,
+    ), {
       workspaceHierarchy: typeof workspaceResolver === "function",
     }),
     "</details>",
