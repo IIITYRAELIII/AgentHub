@@ -617,6 +617,10 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     );
     assert.match(
       styles,
+      /html\[data-surface="mobile"\]\[data-theme\] \.dialog-settings \{[\s\S]*?backdrop-filter: none;[\s\S]*?background: var\(--bg\);/u,
+    );
+    assert.match(
+      styles,
       /\.composer-main > \.chip-button \{[\s\S]*?height: 2\.4rem;[\s\S]*?padding-block: 0;/u,
     );
     assert.doesNotMatch(styles, /content:\s*"[▶▼▸▾⌃]"/u);

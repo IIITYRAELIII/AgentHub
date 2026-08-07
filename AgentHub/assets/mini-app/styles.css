@@ -6543,7 +6543,10 @@ html[data-surface="mobile"] .chat-pane[data-dialog-settings-open] {
   grid-template-columns: minmax(0, 1fr);
 }
 
-html[data-surface="mobile"] .dialog-settings {
+html[data-surface="mobile"][data-theme] .dialog-settings {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: var(--bg);
   border-left: 0;
   grid-column: 1;
   grid-row: 1;
