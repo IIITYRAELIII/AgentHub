@@ -1938,6 +1938,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   workspaceResolver = null,
   workspaceId = null,
   streamId = null,
+  activeIntervals = null,
 } = {}) {
   const normalizedRange = range === "all" || Object.hasOwn(USAGE_HISTORY_RANGES, range)
     ? range
@@ -1946,6 +1947,17 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const requestedWorkspaceId = String(workspaceId ?? "").trim();
   const requestedStreamId = String(streamId ?? "").trim();
   const requestedProvider = String(provider ?? "").trim().toLowerCase();
+  const filterByActiveIntervals = Array.isArray(activeIntervals);
+  const intervals = (filterByActiveIntervals ? activeIntervals : [])
+    .map((interval) => ({
+      from: Date.parse(interval?.from ?? ""),
+      to: Date.parse(interval?.to ?? ""),
+    }))
+    .filter((interval) => Number.isFinite(interval.from) && Number.isFinite(interval.to) && interval.to > interval.from)
+    .sort((left, right) => left.from - right.from);
+  const insideActiveInterval = (completedMs) => !filterByActiveIntervals || intervals.some((interval) => (
+    completedMs >= interval.from && completedMs < interval.to
+  ));
   const records = Object.values(turns ?? {})
     .filter((record) => (
       requestedProvider
@@ -1967,7 +1979,12 @@ export function buildWorkLogUsageHistory(turns = {}, {
         credits: Math.max(0, Number(breakdown.total) || 0),
         priced,
       };
-    }).filter((record) => record && Number.isFinite(record.completedMs) && record.completedMs <= toMs);
+    }).filter((record) => (
+      record
+      && Number.isFinite(record.completedMs)
+      && record.completedMs <= toMs
+      && insideActiveInterval(record.completedMs)
+    ));
   const earliest = records.length
     ? Math.min(...records.map((record) => record.completedMs))
     : toMs;

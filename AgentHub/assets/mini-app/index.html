@@ -488,6 +488,10 @@
             <h2 id="limits-chart-title">Лимиты API</h2>
             <p class="limits-subtitle" data-limits-subtitle></p>
           </div>
+          <label class="statistics-account-control">
+            <span>Аккаунт</span>
+            <select data-statistics-account-select aria-label="Аккаунт статистики"></select>
+          </label>
         </header>
         <div class="limits-ranges" role="group" aria-label="Период истории" data-limits-ranges>
           <button type="button" class="limits-range" data-range="6h" aria-pressed="false">6&nbsp;ч</button>
@@ -525,7 +529,13 @@
             <h2 id="comparison-chart-title">Корреляция расхода</h2>
             <p data-comparison-subtitle>Локальный расход и изменение лимитов API.</p>
           </div>
-          <div class="comparison-summary" data-comparison-summary hidden aria-live="polite"></div>
+          <div class="comparison-head-controls">
+            <label class="statistics-account-control">
+              <span>Аккаунт</span>
+              <select data-statistics-account-select aria-label="Аккаунт статистики"></select>
+            </label>
+            <div class="comparison-summary" data-comparison-summary hidden aria-live="polite"></div>
+          </div>
         </header>
         <div class="limits-ranges" role="group" aria-label="Период сопоставления"
           data-comparison-ranges>
@@ -555,7 +565,7 @@
               aria-live="polite"></div>
             <ul class="limits-legend comparison-legend" data-comparison-legend></ul>
             <p class="statistics-note comparison-note">
-              Локальный расход учитывает только провайдера выбранного лимита.
+              Локальный расход учитывает только ходы, завершённые в интервалах активности выбранного аккаунта.
               Линии расхода приведены к собственному пику. r — корреляция Пирсона,
               Δ — среднее абсолютное отклонение, цена — расход лимита в п.п. на 1 kcr.
               Изменение цены сравнивает первую и вторую половины периода.

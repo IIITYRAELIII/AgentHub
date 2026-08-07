@@ -153,6 +153,7 @@ const comparisonChartWrap = document.querySelector("[data-comparison-chart-wrap]
 const comparisonChart = document.querySelector("[data-comparison-chart]");
 const comparisonTooltip = document.querySelector("[data-comparison-tooltip]");
 const comparisonLegend = document.querySelector("[data-comparison-legend]");
+const statisticsAccountSelects = [...document.querySelectorAll("[data-statistics-account-select]")];
 
 /* --------------------------------------------------------- Telegram / темы */
 
@@ -319,6 +320,7 @@ const usageState = {
 };
 const COMPARISON_RANGE_KEY = "agent-hub:comparison-range:v1";
 const COMPARISON_SERIES_KEY = "agent-hub:comparison-series:v2";
+const STATISTICS_ACCOUNT_KEY = "agent-hub:statistics-account:v1";
 
 function savedComparisonRange() {
   try {
@@ -342,6 +344,15 @@ const comparisonState = {
   status: "idle",
   payload: null,
   error: "",
+};
+const statisticsAccountState = {
+  accountKey: (() => {
+    try {
+      return String(localStorage.getItem(STATISTICS_ACCOUNT_KEY) || "");
+    } catch {
+      return "";
+    }
+  })(),
 };
 const RANGE_LABELS = {
   "6h": "6 ч",
@@ -4812,6 +4823,86 @@ const limitsState = {
   hidden: loadHiddenSeries(),
 };
 
+function statisticsAccounts(payload = limitsState.payload) {
+  const source = Array.isArray(payload?.accounts) ? payload.accounts : [];
+  const accounts = new Map();
+  for (const account of source) {
+    const key = String(account?.key ?? "");
+    if (key) accounts.set(key, { ...account, key });
+  }
+  for (const series of Array.isArray(payload?.series) ? payload.series : []) {
+    const key = String(series?.accountKey ?? "");
+    if (key && !accounts.has(key)) {
+      accounts.set(key, { key, label: String(series?.accountLabel ?? key), planType: String(series?.accountPlan ?? "") });
+    }
+  }
+  return [...accounts.values()];
+}
+
+function resolvedStatisticsAccountKey(payload = limitsState.payload) {
+  const accounts = statisticsAccounts(payload);
+  const selected = String(statisticsAccountState.accountKey || "");
+  if (accounts.some((account) => account.key === selected)) return selected;
+  const current = String(payload?.currentAccount?.key ?? "");
+  const resolved = accounts.some((account) => account.key === current)
+    ? current
+    : String(accounts[0]?.key ?? "");
+  statisticsAccountState.accountKey = resolved;
+  if (resolved) {
+    try {
+      localStorage.setItem(STATISTICS_ACCOUNT_KEY, resolved);
+    } catch {
+      // Выбор останется активным до закрытия WebView.
+    }
+  }
+  return resolved;
+}
+
+function renderStatisticsAccountSelects(payload = limitsState.payload) {
+  const accounts = statisticsAccounts(payload);
+  const selected = resolvedStatisticsAccountKey(payload);
+  for (const select of statisticsAccountSelects) {
+    select.replaceChildren(...accounts.map((account) => el("option", {
+      value: account.key,
+      text: account.label || account.key,
+      selected: account.key === selected,
+    })));
+    select.disabled = accounts.length < 2;
+    select.__themedSelect?.render();
+  }
+}
+
+function selectStatisticsAccount(accountKey) {
+  const key = String(accountKey ?? "");
+  if (!key || key === resolvedStatisticsAccountKey()) return;
+  statisticsAccountState.accountKey = key;
+  try {
+    localStorage.setItem(STATISTICS_ACCOUNT_KEY, key);
+  } catch {
+    // Выбор останется активным до закрытия WebView.
+  }
+  const baseId = comparisonState.seriesId.split("@")[0];
+  const candidate = (Array.isArray(limitsState.payload?.series) ? limitsState.payload.series : [])
+    .find((series) => series.accountKey === key && (series.baseId || series.id) === baseId)
+    ?? (Array.isArray(limitsState.payload?.series) ? limitsState.payload.series : [])
+      .find((series) => series.accountKey === key && series.baseId === "codex:primary");
+  if (candidate) {
+    comparisonState.seriesId = seriesId(candidate);
+    try {
+      localStorage.setItem(COMPARISON_SERIES_KEY, comparisonState.seriesId);
+    } catch {
+      // Выбор останется активным до закрытия WebView.
+    }
+  }
+  renderStatisticsAccountSelects();
+  renderLimits();
+  requestUsageComparison(comparisonState.range, { force: true });
+}
+
+for (const select of statisticsAccountSelects) {
+  select.addEventListener("change", () => selectStatisticsAccount(select.value));
+}
+
 /* Переключает видимость серии по её id. Работает только по кэшу: без запроса к
  * backend и без смены выбранного диапазона. Фокус возвращается на ту же кнопку
  * легенды после перерисовки. */
@@ -4916,6 +5007,7 @@ function applyRateLimitHistory(payload) {
   limitsState.error = data?.error ? String(data.error) : "";
   if (data?.range) limitsState.range = normalizeRange(data.range);
   limitsState.status = statusFromPayload(data);
+  renderStatisticsAccountSelects(data);
   renderCurrentLimits();
   if (root.dataset.view === "statistics") {
     renderLimitsRanges();
@@ -5108,7 +5200,9 @@ function renderLimits() {
 /* Собирает SVG-график и возвращает нормализованные серии (с цветом и текущим
  * значением) для легенды. */
 function buildLimitsChart(payload) {
-  const rawSeries = Array.isArray(payload?.series) ? payload.series : [];
+  const accountKey = resolvedStatisticsAccountKey(payload);
+  const rawSeries = (Array.isArray(payload?.series) ? payload.series : [])
+    .filter((item) => !item.accountKey || item.accountKey === accountKey);
   /* Полный список доступных серий — с стабильным цветом (по индексу в полном
    * списке, поэтому скрытие серии не перекрашивает остальные). */
   const allSeries = rawSeries
@@ -5823,12 +5917,14 @@ function comparisonPayloadStatus(payload) {
 function applyUsageComparison(payload) {
   const data = payload && typeof payload === "object" ? payload : null;
   if (data?.seriesId && String(data.seriesId) !== comparisonState.seriesId) return;
+  if (data?.accountKey && String(data.accountKey) !== resolvedStatisticsAccountKey(data?.limits)) return;
   comparisonState.payload = data;
   if (data?.range) comparisonState.range = normalizeRange(data.range);
   comparisonState.status = comparisonPayloadStatus(data);
   comparisonState.error = String(
     data?.error || data?.limits?.error || data?.usage?.error || "",
   );
+  renderStatisticsAccountSelects(data?.limits);
   renderComparisonRanges();
   renderUsageComparison();
 }
@@ -5843,7 +5939,8 @@ function requestUsageComparison(range, { force = false } = {}) {
   const cached = comparisonState.payload
     && !comparisonState.payload.error
     && normalizeRange(comparisonState.payload.range) === comparisonState.range
-    && String(comparisonState.payload.seriesId ?? "") === comparisonState.seriesId;
+    && String(comparisonState.payload.seriesId ?? "") === comparisonState.seriesId
+    && String(comparisonState.payload.accountKey ?? "") === resolvedStatisticsAccountKey();
   comparisonState.status = cached && !force
     ? comparisonPayloadStatus(comparisonState.payload)
     : "loading";
@@ -5853,6 +5950,7 @@ function requestUsageComparison(range, { force = false } = {}) {
   emit("comparison:open", {
     range: comparisonState.range,
     seriesId: comparisonState.seriesId,
+    accountKey: resolvedStatisticsAccountKey(),
   });
 }
 
@@ -6028,7 +6126,9 @@ function buildUsageComparisonModel(payload) {
   const localRaw = buckets.map((bucket) => bucket.credits);
   const local = normalizeComparisonValues(localRaw);
   if (!(local.peak > 0)) return null;
-  const rawSeries = Array.isArray(payload?.limits?.series) ? payload.limits.series : [];
+  const accountKey = resolvedStatisticsAccountKey(payload?.limits);
+  const rawSeries = (Array.isArray(payload?.limits?.series) ? payload.limits.series : [])
+    .filter((item) => item.accountKey === accountKey);
   const allSeries = rawSeries
     .filter((item) => Array.isArray(item.points) && item.points.length > 1)
     .map((item, index) => {
@@ -6050,12 +6150,10 @@ function buildUsageComparisonModel(payload) {
           : null,
       };
     });
-  const currentAccountKey = String(payload?.limits?.currentAccount?.key ?? "");
   const selectedSeries = allSeries.find((series) => series.id === comparisonState.seriesId)
     ?? allSeries.find((series) => (
-      series.baseId === "codex:primary" && series.accountKey === currentAccountKey
+      series.baseId === "codex:primary" && series.accountKey === accountKey
     ))
-    ?? allSeries.find((series) => series.id === "codex:primary")
     ?? allSeries[0]
     ?? null;
   if (selectedSeries && selectedSeries.id !== comparisonState.seriesId) {
@@ -6344,10 +6442,9 @@ function comparisonLegendItem(name, color, value, attrs = {}) {
 }
 
 function comparisonSeriesName(series) {
-  const limit = series?.window
+  return series?.window
     ? `${series.name} · ${series.window}`
     : String(series?.name || series?.id || "Лимит");
-  return series?.accountLabel ? `${series.accountLabel} · ${limit}` : limit;
 }
 
 function comparisonSeriesPicker(model) {

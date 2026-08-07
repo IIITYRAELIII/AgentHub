@@ -133,6 +133,37 @@ test("local usage history can select one provider for limit-price comparison", (
   assert.equal(codex.points.reduce((sum, point) => sum + point.credits, 0), 5);
 });
 
+test("local usage history matches turn completion to exact account activity intervals", () => {
+  const turns = Object.fromEntries([
+    ["before", "2026-07-30T10:09:59.999Z", 1],
+    ["at-start", "2026-07-30T10:10:00.000Z", 2],
+    ["inside", "2026-07-30T10:19:59.999Z", 3],
+    ["at-end", "2026-07-30T10:20:00.000Z", 4],
+    ["second", "2026-07-30T11:05:00.000Z", 5],
+  ].map(([key, completedAt, estimatedCredits]) => [key, {
+    provider: "codex",
+    completedAt,
+    estimatedCredits,
+    estimateKind: "model",
+  }]));
+  const history = buildWorkLogUsageHistory(turns, {
+    range: "6h",
+    now: Date.parse("2026-07-30T12:00:00.000Z"),
+    provider: "codex",
+    activeIntervals: [
+      { from: "2026-07-30T10:10:00.000Z", to: "2026-07-30T10:20:00.000Z" },
+      { from: "2026-07-30T11:00:00.000Z", to: "2026-07-30T11:10:00.000Z" },
+    ],
+  });
+  assert.equal(history.totalCredits, 10);
+  assert.equal(history.points.reduce((sum, point) => sum + point.credits, 0), 10);
+  assert.equal(buildWorkLogUsageHistory(turns, {
+    range: "6h",
+    now: Date.parse("2026-07-30T12:00:00.000Z"),
+    activeIntervals: [],
+  }).totalCredits, 0);
+});
+
 test("workspace usage aggregates sequential Threads and retains Stream detail", () => {
   const resolver = ({ provider, threadId }) => ({
     workspaceId: "workspace-hub",

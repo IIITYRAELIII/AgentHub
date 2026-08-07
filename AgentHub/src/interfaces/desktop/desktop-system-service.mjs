@@ -82,6 +82,7 @@ export class DesktopSystemService {
       range: params.range,
       maxPoints: params.maxPoints,
       provider: params.provider,
+      ...(Array.isArray(params.activeIntervals) ? { activeIntervals: params.activeIntervals } : {}),
     });
   }
 

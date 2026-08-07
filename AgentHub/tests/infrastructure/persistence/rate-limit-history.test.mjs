@@ -97,6 +97,29 @@ test("SQLite rate-limit history keeps Codex accounts in separate series", async 
     );
     assert.equal(new Set(history.series.map((series) => series.id)).size, 2);
     assert.equal(history.currentAccount.label, "second@example.test");
+    assert.deepEqual(history.accounts.map((account) => account.label), [
+      "first@example.test",
+      "second@example.test",
+    ]);
+    assert.deepEqual(history.accountActivity.map((entry) => ({
+      accountKey: entry.accountKey,
+      intervals: entry.intervals,
+    })), [
+      {
+        accountKey: history.accounts[0].key,
+        intervals: [{
+          from: "2026-08-07T10:00:00.000Z",
+          to: "2026-08-07T10:05:00.000Z",
+        }],
+      },
+      {
+        accountKey: history.accounts[1].key,
+        intervals: [{
+          from: "2026-08-07T10:05:00.000Z",
+          to: "2026-08-07T11:00:00.000Z",
+        }],
+      },
+    ]);
     await store.rebuildCompatibilityExports();
     const csv = await readFile(csvFile, "utf8");
     assert.match(csv, /^observedAt,provider,accountKey,accountLabel,accountPlan,/u);

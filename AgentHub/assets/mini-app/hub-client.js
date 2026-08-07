@@ -1515,6 +1515,18 @@ function trimHistoryToFifteenDays(payload) {
     result.bucketMs = 24 * 60 * 60_000;
     result.axisTo = result.to;
   }
+  if (Array.isArray(payload.accountActivity)) {
+    result.accountActivity = payload.accountActivity.map((entry) => ({
+      ...entry,
+      intervals: (Array.isArray(entry?.intervals) ? entry.intervals : []).flatMap((interval) => {
+        const intervalFrom = Math.max(fromMs, Date.parse(interval?.from ?? ""));
+        const intervalTo = Math.min(endMs, Date.parse(interval?.to ?? ""));
+        return Number.isFinite(intervalFrom) && Number.isFinite(intervalTo) && intervalTo > intervalFrom
+          ? [{ from: new Date(intervalFrom).toISOString(), to: new Date(intervalTo).toISOString() }]
+          : [];
+      }),
+    }));
+  }
   return result;
 }
 
@@ -1568,28 +1580,45 @@ agentHub.on("usage:open", ({ range }) => runAction(async () => {
     });
   }
 }));
-agentHub.on("comparison:open", ({ range, seriesId }) => runAction(async () => {
+agentHub.on("comparison:open", ({ range, seriesId, accountKey }) => runAction(async () => {
   const requestedRange = String(range || "24h");
   const requestedSeriesId = String(seriesId || "codex:primary");
-  const provider = requestedSeriesId.startsWith("claude:") ? "claude" : "codex";
-  const [limitsResult, usageResult] = await Promise.allSettled([
-    readHistoryWithRangeCompatibility("rate-limit-history", requestedRange, {
+  const requestedAccountKey = String(accountKey || "");
+  const provider = "codex";
+  let limits;
+  try {
+    limits = await readHistoryWithRangeCompatibility("rate-limit-history", requestedRange, {
       maxPointsPerSeries: 600,
-    }),
-    readHistoryWithRangeCompatibility("usage-history", requestedRange, {
+    });
+  } catch (error) {
+    agentHub.setUsageComparison({
+      range: requestedRange,
+      seriesId: requestedSeriesId,
+      accountKey: requestedAccountKey,
+      limits: { range: requestedRange, error: String(error?.message ?? error) },
+      usage: { range: requestedRange, error: "История лимитов недоступна." },
+    });
+    return;
+  }
+  const resolvedAccountKey = requestedAccountKey || String(limits?.currentAccount?.key ?? "");
+  const activeIntervals = (Array.isArray(limits?.accountActivity) ? limits.accountActivity : [])
+    .find((entry) => String(entry?.accountKey ?? "") === resolvedAccountKey)?.intervals ?? [];
+  let usage;
+  try {
+    usage = await readHistoryWithRangeCompatibility("usage-history", requestedRange, {
       maxPoints: 600,
       provider,
-    }),
-  ]);
+      activeIntervals,
+    });
+  } catch (error) {
+    usage = { range: requestedRange, error: String(error?.message ?? error) };
+  }
   agentHub.setUsageComparison({
     range: requestedRange,
     seriesId: requestedSeriesId,
-    limits: limitsResult.status === "fulfilled"
-      ? limitsResult.value
-      : { range: requestedRange, error: String(limitsResult.reason?.message ?? limitsResult.reason) },
-    usage: usageResult.status === "fulfilled"
-      ? usageResult.value
-      : { range: requestedRange, error: String(usageResult.reason?.message ?? usageResult.reason) },
+    accountKey: resolvedAccountKey,
+    limits,
+    usage,
   });
 }));
 agentHub.on("selection:set", ({ key, value }) => runAction(async () => {

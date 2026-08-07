@@ -1596,7 +1596,8 @@ test("statistics compares one independently selected limit and tracks its price"
   assert.match(app, /function meanAbsoluteDeviation\(left, right\)/u);
   assert.match(app, /function limitDeltasByBucket\(series, buckets\)/u);
   assert.match(app, /agent-hub:comparison-series:v2/u);
-  assert.match(app, /series\?\.accountLabel \? `\$\{series\.accountLabel\} · \$\{limit\}` : limit/u);
+  assert.match(html, /(data-statistics-account-select[\s\S]*?){2}/u);
+  assert.match(app, /function selectStatisticsAccount\(accountKey\)/u);
   assert.match(app, /function comparisonLimitPrice\(localValues, apiValues, buckets\)/u);
   assert.match(app, /function selectComparisonSeries\(id\)/u);
   assert.match(app, /function comparisonSeriesPicker\(model\)/u);
@@ -1627,10 +1628,12 @@ test("statistics compares one independently selected limit and tracks its price"
   );
   assert.doesNotMatch(comparisonChart, /svgEl\("rect"/u);
   assert.match(client, /agentHub\.on\("comparison:open"/u);
-  assert.match(client, /Promise\.allSettled\(\[/u);
-  assert.match(client, /provider = requestedSeriesId\.startsWith\("claude:"\) \? "claude" : "codex"/u);
-  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", requestedRange, \{[\s\S]*?provider,/u);
+  assert.match(client, /const activeIntervals = [\s\S]*?limits\?\.accountActivity/u);
+  assert.match(client, /const provider = "codex"/u);
+  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", requestedRange, \{[\s\S]*?provider,[\s\S]*?activeIntervals:/u);
   assert.match(client, /agentHub\.setUsageComparison\(\{/u);
+  assert.match(app, /data-statistics-account-select/u);
+  assert.match(app, /accountKey: resolvedStatisticsAccountKey\(\)/u);
   assert.match(styles, /\.comparison-local-line\s*\{[^}]*stroke:\s*var\(--comparison-local\);/su);
   assert.match(styles, /\.comparison-deviation-line\s*\{[^}]*stroke:\s*var\(--comparison-deviation\);/su);
   assert.match(styles, /\.comparison-cost-line\s*\{[^}]*stroke:\s*var\(--comparison-cost\);/su);

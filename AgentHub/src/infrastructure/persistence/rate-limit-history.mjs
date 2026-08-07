@@ -473,6 +473,67 @@ function historyFromRecords(records, {
   };
 }
 
+export function accountActivityFromSnapshots(snapshots = [], {
+  fromMs = null,
+  toMs = Date.now(),
+} = {}) {
+  const lowerBound = Number.isFinite(Number(fromMs)) ? Number(fromMs) : -Infinity;
+  const upperBound = Number.isFinite(Number(toMs)) ? Number(toMs) : Date.now();
+  const ordered = snapshots
+    .map((snapshot) => ({
+      atMs: Number.isFinite(Number(snapshot?.observedMs))
+        ? Number(snapshot.observedMs)
+        : Date.parse(snapshot?.observedAt ?? ""),
+      account: accountSnapshot(snapshot?.account),
+    }))
+    .filter((snapshot) => Number.isFinite(snapshot.atMs) && snapshot.atMs <= upperBound)
+    .sort((left, right) => left.atMs - right.atMs);
+  const accounts = new Map();
+  const activity = new Map();
+  let active = null;
+  let activeFrom = null;
+
+  const closeActive = (atMs) => {
+    if (!active || activeFrom == null) return;
+    const from = Math.max(activeFrom, lowerBound);
+    const to = Math.min(atMs, upperBound);
+    if (to > from) {
+      if (!activity.has(active.key)) activity.set(active.key, []);
+      activity.get(active.key).push({
+        from: new Date(from).toISOString(),
+        to: new Date(to).toISOString(),
+      });
+    }
+  };
+
+  for (const snapshot of ordered) {
+    const nextKey = snapshot.account?.key ?? "";
+    const activeKey = active?.key ?? "";
+    if (nextKey === activeKey) {
+      if (snapshot.account) accounts.set(snapshot.account.key, snapshot.account);
+      continue;
+    }
+    closeActive(snapshot.atMs);
+    active = snapshot.account;
+    activeFrom = snapshot.atMs;
+    if (active) accounts.set(active.key, active);
+  }
+  closeActive(upperBound);
+
+  return {
+    accounts: [...accounts.values()].map((account) => ({
+      key: account.key,
+      label: account.label,
+      type: account.type,
+      planType: account.planType,
+    })),
+    activity: [...activity.entries()].map(([accountKey, intervals]) => ({
+      accountKey,
+      intervals,
+    })),
+  };
+}
+
 function configureRateLimitDatabase(database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
@@ -787,7 +848,7 @@ export class RateLimitHistoryStore {
       const normalizedRange = normalizeRateLimitRange(options.range);
       const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
       const fromMs = rateLimitRangeStartMs(normalizedRange, nowMs);
-      const { latestCodex, rows } = await this.#retryBusy(() => {
+      const { latestCodex, rows, activityRows, knownAccounts } = await this.#retryBusy(() => {
         const maximum = Math.max(50, Math.min(1_200, Number(options.maxPointsPerSeries) || 600));
         const timeClause = fromMs == null
           ? "observed_ms <= ?"
@@ -835,10 +896,51 @@ export class RateLimitHistoryStore {
           account_plan, response_json FROM rate_limit_snapshots
         WHERE provider = 'codex' AND observed_ms <= ? ORDER BY observed_ms DESC, id DESC LIMIT 1
       `).get(nowMs);
-        return { latestCodex, rows };
+        const seed = fromMs == null ? null : database.prepare(`
+          SELECT id, observed_at, observed_ms, account_key, account_label,
+            account_type, account_plan
+          FROM rate_limit_snapshots
+          WHERE provider = 'codex' AND observed_ms <= ?
+          ORDER BY observed_ms DESC, id DESC LIMIT 1
+        `).get(fromMs);
+        const transitions = database.prepare(`
+          WITH ordered AS (
+            SELECT id, observed_at, observed_ms, account_key, account_label,
+              account_type, account_plan,
+              LAG(account_key) OVER (ORDER BY observed_ms, id) AS previous_account_key
+            FROM rate_limit_snapshots
+            WHERE provider = 'codex' AND observed_ms <= ?
+          )
+          SELECT id, observed_at, observed_ms, account_key, account_label,
+            account_type, account_plan
+          FROM ordered
+          WHERE observed_ms > ? AND (
+            previous_account_key IS NULL OR account_key <> previous_account_key
+          )
+          ORDER BY observed_ms, id
+        `).all(nowMs, fromMs == null ? -1 : fromMs);
+        const knownAccounts = database.prepare(`
+          WITH ranked AS (
+            SELECT account_key, account_label, account_type, account_plan,
+              ROW_NUMBER() OVER (
+                PARTITION BY account_key ORDER BY observed_ms DESC, id DESC
+              ) AS account_sequence
+            FROM rate_limit_snapshots
+            WHERE provider = 'codex' AND account_key <> '' AND observed_ms <= ?
+          )
+          SELECT account_key, account_label, account_type, account_plan
+          FROM ranked WHERE account_sequence = 1
+          ORDER BY account_label, account_key
+        `).all(nowMs);
+        return {
+          latestCodex,
+          rows,
+          activityRows: seed ? [seed, ...transitions] : transitions,
+          knownAccounts,
+        };
       });
       if (latestCodex && !rows.some((row) => row.id === latestCodex.id)) rows.unshift(latestCodex);
-      return historyFromRecords(rows.map((row) => ({
+      const history = historyFromRecords(rows.map((row) => ({
         observedAt: row.observed_at,
         provider: row.provider,
         account: row.account_key ? {
@@ -849,6 +951,26 @@ export class RateLimitHistoryStore {
         } : null,
         response: JSON.parse(row.response_json),
       })), { ...options, range: normalizedRange, nowMs });
+      const accountActivity = accountActivityFromSnapshots(activityRows.map((row) => ({
+        observedAt: row.observed_at,
+        observedMs: row.observed_ms,
+        account: row.account_key ? {
+          key: row.account_key,
+          label: row.account_label,
+          type: row.account_type,
+          planType: row.account_plan,
+        } : null,
+      })), { fromMs, toMs: nowMs });
+      return {
+        ...history,
+        accounts: knownAccounts.map((row) => ({
+          key: row.account_key,
+          label: row.account_label,
+          type: row.account_type,
+          planType: row.account_plan,
+        })),
+        accountActivity: accountActivity.activity,
+      };
     });
   }
 
