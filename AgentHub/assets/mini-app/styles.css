@@ -3831,6 +3831,143 @@ html[data-surface="mobile"]
   border-color: var(--accent-line);
 }
 
+/* Верхняя desktop-оболочка едина для всех тем. Палитра по-прежнему приходит
+   из тематических токенов, но форма шапки, навигации, Workspace и Streams не
+   превращается в капсулы, орбитальные узлы или отдельную сценическую панель. */
+@media (min-width: 860px) {
+  html:not([data-surface="mobile"]) .app-header {
+    backdrop-filter: blur(18px) saturate(150%) !important;
+    -webkit-backdrop-filter: blur(18px) saturate(150%) !important;
+    background: color-mix(in srgb, var(--bg) 82%, transparent) !important;
+    border: 0 !important;
+    border-bottom: 1px solid var(--line) !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+
+  html:not([data-surface="mobile"]) .app-header::after {
+    background: linear-gradient(90deg, transparent, var(--accent-line), transparent) !important;
+    box-shadow: none !important;
+    height: 1px !important;
+    opacity: 0.7 !important;
+  }
+
+  html:not([data-surface="mobile"]) .app-header-inner {
+    gap: 1rem !important;
+    margin: 0 !important;
+    max-width: none !important;
+    padding-left: clamp(1rem, 4vw, 4.25rem) !important;
+    padding-right: clamp(1rem, 2vw, 1.25rem) !important;
+    width: 100% !important;
+  }
+
+  html:not([data-surface="mobile"]) .view-switch {
+    background: var(--surface-1) !important;
+    border: 1px solid var(--line) !important;
+    border-radius: 4px !important;
+    box-shadow: none !important;
+    gap: 0.15rem !important;
+    padding: 0.18rem !important;
+  }
+
+  html:not([data-surface="mobile"]) .view-tab {
+    background: transparent !important;
+    border: 1px solid transparent !important;
+    border-radius: 3px !important;
+    box-shadow: none !important;
+    min-height: 2rem !important;
+    padding: 0.32rem 0.75rem !important;
+    transform: none !important;
+  }
+
+  html:not([data-surface="mobile"]) .view-tab::before,
+  html:not([data-surface="mobile"]) .view-tab::after {
+    content: none !important;
+  }
+
+  html:not([data-surface="mobile"]) .view-tab[aria-pressed="true"] {
+    background: var(--accent-soft) !important;
+    border: 1px solid var(--accent-line) !important;
+    box-shadow: none !important;
+    color: var(--accent) !important;
+    padding: 0.32rem 0.75rem !important;
+  }
+
+  html:not([data-surface="mobile"]) .toolbar .view-settings {
+    background: var(--surface-2) !important;
+    border: 1px solid var(--line) !important;
+    border-radius: 3px !important;
+    box-shadow: none !important;
+    min-height: 2rem !important;
+    padding: 0.3rem 0.75rem 0.3rem 0.6rem !important;
+    transform: none !important;
+  }
+
+  html[data-view="chat"]:not([data-surface="mobile"]) .task-rail,
+  html[data-view="chat"]:not([data-surface="mobile"]) .chat {
+    border: 1px solid var(--line) !important;
+    border-radius: 4px !important;
+  }
+
+  html[data-view="chat"]:not([data-surface="mobile"]) .chat {
+    gap: 0 !important;
+  }
+
+  html[data-view="chat"]:not([data-surface="mobile"]) .stream-tabs {
+    align-items: stretch !important;
+    background: color-mix(in srgb, var(--surface-1) 88%, transparent) !important;
+    border: 0 !important;
+    border-bottom: 1px solid var(--line) !important;
+    border-radius: 0 !important;
+    gap: 0.35rem !important;
+    min-height: 3.7rem !important;
+    padding: 0.3rem 0.55rem !important;
+  }
+
+  html[data-view="chat"]:not([data-surface="mobile"]) .stream-tabs::before {
+    content: none !important;
+  }
+
+  html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab {
+    background: transparent !important;
+    border: 1px solid transparent !important;
+    border-radius: 3px !important;
+    box-shadow: none !important;
+    flex: 0 0 auto !important;
+    max-width: 12rem !important;
+    min-height: 3.05rem !important;
+    padding: 0.15rem !important;
+    transform: none !important;
+    width: 12rem !important;
+  }
+
+  html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab:hover,
+  html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab:focus-visible {
+    background: var(--surface-2) !important;
+    border-color: transparent !important;
+  }
+
+  html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab[aria-pressed="true"] {
+    background: var(--accent-soft) !important;
+    border-color: var(--accent-line) !important;
+    color: var(--text) !important;
+  }
+
+  html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab-card {
+    background: color-mix(in srgb, var(--surface-2) 68%, transparent) !important;
+    border: 1px solid color-mix(in srgb, var(--line) 74%, transparent) !important;
+    border-radius: 3px !important;
+    box-shadow: none !important;
+    gap: 0.5rem !important;
+    padding: 0.42rem 0.5rem !important;
+  }
+
+  html[data-view="chat"]:not([data-surface="mobile"])
+    .stream-tab[aria-pressed="true"] .stream-tab-card {
+    border-color: var(--accent-line) !important;
+  }
+}
+
 @keyframes stream-running-wave {
   to { transform: translateX(300%); }
 }

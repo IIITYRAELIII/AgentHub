@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -135,7 +135,50 @@ test("theme registry keeps top-panel geometry under shell ownership", async () =
       () => loadThemeRegistry(directory),
       /theme aurora: theme\.css overrides shell-owned top-panel geometry/iu,
     );
+
+    await writeFile(
+      stylesheet,
+      'html[data-theme="aurora"] .view-tab { border-radius: 999px !important; }',
+      "utf8",
+    );
+    assert.throws(
+      () => loadThemeRegistry(directory),
+      /theme aurora: theme\.css overrides shell-owned top-panel geometry/iu,
+    );
+
+    await writeFile(
+      stylesheet,
+      'html[data-theme="aurora"] .stream-tab-card { border: 0 !important; }',
+      "utf8",
+    );
+    assert.throws(
+      () => loadThemeRegistry(directory),
+      /theme aurora: theme\.css overrides shell-owned top-panel geometry/iu,
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("desktop shell owns the shared header and Stream control shapes", async () => {
+  const styles = await readFile(
+    new URL("../../assets/mini-app/styles.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    styles,
+    /html:not\(\[data-surface="mobile"\]\) \.app-header-inner\s*\{[^}]*max-width:\s*none\s*!important;[^}]*padding-left:[^;]+!important;[^}]*width:\s*100%\s*!important;/su,
+  );
+  assert.match(
+    styles,
+    /html:not\(\[data-surface="mobile"\]\) \.view-tab\s*\{[^}]*border-radius:\s*3px\s*!important;/su,
+  );
+  assert.match(
+    styles,
+    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) \.stream-tab-card\s*\{[^}]*border-radius:\s*3px\s*!important;/su,
+  );
+  assert.match(
+    styles,
+    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) \.task-rail,[\s\S]*?\.chat\s*\{[^}]*border:\s*1px solid var\(--line\)\s*!important;[^}]*border-radius:\s*4px\s*!important;/u,
+  );
 });
