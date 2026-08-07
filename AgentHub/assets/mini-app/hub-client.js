@@ -1444,16 +1444,67 @@ agentHub.on("status:open", () => runAction(async () => {
   }));
   agentHub.setStatus({ rows });
 }));
+
+function trimHistoryToFifteenDays(payload) {
+  if (!payload || typeof payload !== "object" || payload.error) return payload;
+  const toMs = Date.parse(payload.to ?? "");
+  const endMs = Number.isFinite(toMs) ? toMs : Date.now();
+  const start = new Date(endMs);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - 14);
+  const fromMs = start.getTime();
+  const keepPoint = (point) => {
+    const at = Date.parse(point?.at ?? "");
+    return Number.isFinite(at) && at >= fromMs && at <= endMs;
+  };
+  const result = {
+    ...payload,
+    range: "15d",
+    from: new Date(fromMs).toISOString(),
+    to: new Date(endMs).toISOString(),
+  };
+  if (Array.isArray(payload.series)) {
+    result.series = payload.series.map((series) => ({
+      ...series,
+      points: Array.isArray(series.points) ? series.points.filter(keepPoint) : [],
+    }));
+  }
+  if (Array.isArray(payload.points)) {
+    result.points = payload.points.filter(keepPoint);
+    result.totalCredits = result.points.reduce(
+      (total, point) => total + Math.max(0, Number(point?.credits) || 0),
+      0,
+    );
+    result.bucket = "day";
+    result.bucketMs = 24 * 60 * 60_000;
+    result.axisTo = result.to;
+  }
+  return result;
+}
+
+async function readHistoryWithRangeCompatibility(action, range, params = {}) {
+  const requestedRange = String(range || "24h");
+  let payload = await control(action, { ...params, range: requestedRange });
+  if (requestedRange !== "15d" || payload?.range === "15d") return payload;
+  // Runtime до поддержки 15d нормализует неизвестный диапазон в 24h.
+  // Берём уже поддерживаемые 30d и оставляем 15 календарных дней включая сегодня.
+  payload = await control(action, { ...params, range: "30d" });
+  return trimHistoryToFifteenDays(payload);
+}
+
 async function refreshRateLimitHistory(range = rateLimitRefreshRange, { reportError = false } = {}) {
   const requestedRange = String(range || "24h");
   rateLimitRefreshRange = requestedRange;
   if (rateLimitRefreshInFlight) return;
   rateLimitRefreshInFlight = true;
   try {
-    agentHub.setRateLimitHistory(await control("rate-limit-history", {
-      range: requestedRange,
+    agentHub.setRateLimitHistory(await readHistoryWithRangeCompatibility(
+      "rate-limit-history",
+      requestedRange,
+      {
       maxPointsPerSeries: 600,
-    }));
+      },
+    ));
   } catch (error) {
     agentHub.setRateLimitHistory({
       range: requestedRange,
@@ -1471,8 +1522,7 @@ agentHub.on("limits:open", ({ range }) => runAction(
 ));
 agentHub.on("usage:open", ({ range }) => runAction(async () => {
   try {
-    agentHub.setUsageHistory(await control("usage-history", {
-      range,
+    agentHub.setUsageHistory(await readHistoryWithRangeCompatibility("usage-history", range, {
       maxPoints: 600,
     }));
   } catch (error) {
@@ -1487,12 +1537,10 @@ agentHub.on("comparison:open", ({ range, seriesId }) => runAction(async () => {
   const requestedSeriesId = String(seriesId || "codex:primary");
   const provider = requestedSeriesId.startsWith("claude:") ? "claude" : "codex";
   const [limitsResult, usageResult] = await Promise.allSettled([
-    control("rate-limit-history", {
-      range: requestedRange,
+    readHistoryWithRangeCompatibility("rate-limit-history", requestedRange, {
       maxPointsPerSeries: 600,
     }),
-    control("usage-history", {
-      range: requestedRange,
+    readHistoryWithRangeCompatibility("usage-history", requestedRange, {
       maxPoints: 600,
       provider,
     }),

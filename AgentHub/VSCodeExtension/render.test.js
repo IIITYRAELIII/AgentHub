@@ -871,6 +871,7 @@ test("journal width stays fixed while days and turns are expanded", () => {
 });
 
 test("journal renders Workspace turns without separate Stream sections", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),
     "utf8",
@@ -888,7 +889,10 @@ test("journal renders Workspace turns without separate Stream sections", () => {
     /\.journal div\[data-work-log-workspace-turns\] > div\[data-work-log-row\]\s*\{[^}]*display:\s*block;/su,
   );
   assert.match(styles, /\.journal span\[data-work-log-turn-stream\]\s*\{[^}]*border-radius:\s*999px;/su);
-  assert.doesNotMatch(styles, /data-work-log-stream-summary/u);
+  assert.match(styles, /\.journal summary\[data-work-log-stream-summary\]\s*\{[^}]*display:\s*none !important;/su);
+  assert.match(app, /function decorateLegacyStreamTurns\(scope = journal\)/u);
+  assert.match(app, /function applyWorkspaceCollapse\(value,/u);
+  assert.match(app, /agent-hub-collapse-streams/u);
   assert.match(styles, /\.journal div\[data-work-log-task-content\]:empty\s*\{[^}]*display:\s*none;/su);
 });
 
@@ -1535,7 +1539,8 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(app, /nearestExpiresAt/u);
   assert.match(app, /emit\("usage:open", \{ range: usageState\.range \}\)/u);
   assert.match(app, /function formatUsageValue\(credits, unit = usageUnit\)/u);
-  assert.match(client, /control\("usage-history", \{\s*range,\s*maxPoints: 600,/u);
+  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", range, \{\s*maxPoints: 600,/u);
+  assert.match(client, /function trimHistoryToFifteenDays\(payload\)/u);
   assert.match(styles, /\.current-limits-row\s*\{[^}]*flex-wrap:\s*nowrap;/su);
   assert.match(styles, /\.current-limits-row\s*\{[^}]*overflow-x:\s*auto;/su);
 });
@@ -1577,7 +1582,7 @@ test("statistics compares one independently selected limit and tracks its price"
   assert.match(client, /agentHub\.on\("comparison:open"/u);
   assert.match(client, /Promise\.allSettled\(\[/u);
   assert.match(client, /provider = requestedSeriesId\.startsWith\("claude:"\) \? "claude" : "codex"/u);
-  assert.match(client, /control\("usage-history", \{[\s\S]*?provider,/u);
+  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", requestedRange, \{[\s\S]*?provider,/u);
   assert.match(client, /agentHub\.setUsageComparison\(\{/u);
   assert.match(styles, /\.comparison-local-line\s*\{[^}]*stroke:\s*var\(--comparison-local\);/su);
   assert.match(styles, /\.comparison-deviation-line\s*\{[^}]*stroke:\s*var\(--comparison-deviation\);/su);
@@ -1600,7 +1605,8 @@ test("history dialog requests periods via limits:open and renders via setRateLim
   assert.match(app, /setRateLimitHistory\(payload\) \{\s*applyRateLimitHistory\(payload\);/u);
   assert.match(app, /emit\("limits:open", \{ range: limitsState\.range \}\)/u);
   assert.match(client, /agentHub\.on\("limits:open", \(\{ range \}\) =>/u);
-  assert.match(client, /control\("rate-limit-history", \{\s*range: requestedRange,\s*maxPointsPerSeries: 600,/u);
+  assert.match(client, /readHistoryWithRangeCompatibility\([\s\S]*?"rate-limit-history",[\s\S]*?requestedRange,[\s\S]*?maxPointsPerSeries: 600,/u);
+  assert.match(client, /payload = await control\(action, \{ \.\.\.params, range: "30d" \}\)/u);
   assert.match(client, /agentHub\.setRateLimitHistory\(\{/u);
   assert.match(client, /window\.setInterval\(\(\) => \{[\s\S]*refreshRateLimitHistory\(\);[\s\S]*5 \* 60_000/u);
   // клавиши − и + шагают по последовательности периодов

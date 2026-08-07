@@ -88,6 +88,7 @@ const bugReportSubmit = document.querySelector("[data-bug-report-submit]");
 const bugReportStatus = document.querySelector("[data-bug-report-status]");
 const telegramFullscreenButton = document.querySelector("[data-telegram-fullscreen]");
 const breakdownToggle = document.querySelector("[data-token-breakdown-toggle]");
+const workspaceCollapseToggle = document.querySelector("[data-workspace-collapse-toggle]");
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
 const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
 const exchangeRateHint = document.querySelector("[data-exchange-rate-hint]");
@@ -162,6 +163,7 @@ let usdRubRate = null;
 let usdRubEffectiveDate = "";
 let exchangeRatesInitialized = false;
 let groupClaudeTasks = false;
+let collapseWorkspaceTurns = false;
 const groupingStates = { date: null, week: null, month: null, task: null };
 const TASK_GROUP_TURN_PAGE_SIZE = 30;
 const taskGroupTurns = new WeakMap();
@@ -502,6 +504,40 @@ function applyBreakdown(value, { persist = false } = {}) {
   }
 }
 
+function savedWorkspaceCollapse() {
+  try {
+    return localStorage.getItem("agent-hub-collapse-streams") === "on";
+  } catch {
+    return false;
+  }
+}
+
+function setWorkspaceTurnsCollapsed(collapsed, scope = journal) {
+  for (const turns of scope.querySelectorAll("[data-work-log-workspace-turns]")) {
+    turns.hidden = collapsed;
+  }
+  // Совместимость с журналом, спроецированным предыдущей версией Runtime:
+  // старые Stream-секции скрываются целиком, но заголовок Workspace остаётся.
+  for (const stream of scope.querySelectorAll("details[data-work-log-stream]")) {
+    stream.open = !collapsed;
+  }
+}
+
+function applyWorkspaceCollapse(value, { persist = false, update = false } = {}) {
+  collapseWorkspaceTurns = value === true;
+  root.dataset.workspaceCollapse = collapseWorkspaceTurns ? "on" : "off";
+  if (workspaceCollapseToggle) workspaceCollapseToggle.checked = collapseWorkspaceTurns;
+  if (update) setWorkspaceTurnsCollapsed(collapseWorkspaceTurns);
+  if (persist) {
+    try {
+      // Сохраняем прежний ключ: выбор пользователя не сбрасывается после обновления.
+      localStorage.setItem("agent-hub-collapse-streams", collapseWorkspaceTurns ? "on" : "off");
+    } catch {
+      // Настройка останется активной до закрытия WebView.
+    }
+  }
+}
+
 function savedGrouping() {
   try {
     const value = localStorage.getItem("agent-hub-grouping");
@@ -584,10 +620,14 @@ telegramFullscreenButton?.addEventListener("click", () => {
 applyTheme(savedTheme());
 applyBackground(savedBackground(root.dataset.theme));
 applyBreakdown(savedBreakdown());
+applyWorkspaceCollapse(savedWorkspaceCollapse());
 selectUsageUnit(savedUsageUnit());
 selectClaudeGrouping(savedClaudeGrouping());
 breakdownToggle?.addEventListener("change", () => {
   applyBreakdown(breakdownToggle.checked ? "on" : "off", { persist: true });
+});
+workspaceCollapseToggle?.addEventListener("change", () => {
+  applyWorkspaceCollapse(workspaceCollapseToggle.checked, { persist: true, update: true });
 });
 claudeGroupToggle?.addEventListener("change", () => {
   selectClaudeGrouping(claudeGroupToggle.checked, { persist: true });
@@ -6599,12 +6639,14 @@ async function loadLazyDay(details) {
     replacement.open = true;
     details.replaceWith(replacement);
     decorateDayHeadings(replacement);
+    decorateLegacyStreamTurns(replacement);
     groupClaudeRowsInDay(replacement);
     refreshUsageUnits(replacement);
     disableLocalLinks(replacement);
     syncCollapseTurnButtons(replacement);
     prepareMobileControls(journal);
     if (desiredOpenState) restoreOpenState(desiredOpenState);
+    setWorkspaceTurnsCollapsed(collapseWorkspaceTurns, replacement);
   })().catch((error) => {
     if (details.isConnected) {
       details.removeAttribute("aria-busy");
@@ -6750,6 +6792,24 @@ function decorateDayHeadings(scope = journal) {
     const plain = formatJournalDate(date);
     heading.dataset.workLogDate = plain;
     heading.textContent = `${plain} ${weekdays[date.getUTCDay()]}`;
+  }
+}
+
+function decorateLegacyStreamTurns(scope = journal) {
+  for (const stream of scope.querySelectorAll("details[data-work-log-stream]")) {
+    const label = stream.querySelector("[data-work-log-stream-title]")?.textContent
+      ?.replace(/\s+/gu, " ").trim();
+    if (!label) continue;
+    for (const title of stream.querySelectorAll("[data-work-log-turn-title]")) {
+      if (title.querySelector("[data-work-log-turn-stream]")) continue;
+      const heading = document.createElement("span");
+      heading.dataset.workLogTurnHeading = "";
+      heading.append(...title.childNodes);
+      const badge = document.createElement("span");
+      badge.dataset.workLogTurnStream = "";
+      badge.textContent = label;
+      title.append(badge, heading);
+    }
   }
 }
 
@@ -7477,6 +7537,7 @@ async function hydrateAllLazyDays() {
 
 function applyJournalGrouping() {
   decorateDayHeadings(journal);
+  decorateLegacyStreamTurns(journal);
   if (grouping === "date") {
     for (const day of journal.querySelectorAll("details[data-work-log-day-section]")) {
       groupClaudeRowsInDay(day);
@@ -7492,6 +7553,7 @@ function applyJournalGrouping() {
   prepareMobileControls();
   const saved = groupingStates[grouping];
   if (saved) restoreOpenState(saved);
+  setWorkspaceTurnsCollapsed(collapseWorkspaceTurns);
   if (grouping === "task") {
     for (const details of journal.querySelectorAll(
       "details[data-work-log-task-group][open]",

@@ -932,6 +932,34 @@ main {
   display: none;
 }
 
+/* Переходный слой для HTML, который мог сохранить ещё работающий Runtime.
+   Старые Stream-секции становятся прозрачными контейнерами: название переносит
+   app.js в компактную метку хода, а отдельная белая плашка больше не рисуется. */
+.journal details[data-work-log-stream][open] {
+  display: contents;
+}
+
+.journal details[data-work-log-stream]:not([open]) {
+  display: none;
+}
+
+.journal summary[data-work-log-stream-summary] {
+  display: none !important;
+}
+
+.journal div[data-work-log-stream-turns] {
+  min-width: 0;
+}
+
+.journal div[data-work-log-stream-turns] > div[data-work-log-row] {
+  display: block;
+  padding: 0.15rem 0;
+}
+
+.journal div[data-work-log-stream-turns] div[data-work-log-task-cell] {
+  display: none;
+}
+
 .journal div[data-work-log-task-content]:empty {
   display: none;
 }

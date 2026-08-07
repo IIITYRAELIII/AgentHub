@@ -490,9 +490,12 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(script, /agent-hub-token-breakdown/u);
     assert.match(script, /function applyBreakdown/u);
     assert.doesNotMatch(page, /data-stream-collapse-toggle/u);
-    assert.doesNotMatch(script, /agent-hub-collapse-streams/u);
+    assert.match(page, /data-workspace-collapse-toggle/u);
+    assert.match(page, /Сворачивать все ходы Workspace/u);
+    assert.match(script, /agent-hub-collapse-streams/u);
+    assert.match(script, /function applyWorkspaceCollapse/u);
+    assert.match(script, /function decorateLegacyStreamTurns/u);
     assert.doesNotMatch(script, /function applyStreamCollapse/u);
-    assert.doesNotMatch(script, /details\[data-work-log-stream\]/u);
     assert.match(script, /function taskProfile/u);
     assert.match(script, /\.workLogTaskProfile/u);
     assert.match(script, /Профиль задачи/u);
