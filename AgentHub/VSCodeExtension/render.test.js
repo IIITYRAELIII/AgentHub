@@ -1567,7 +1567,8 @@ test("statistics compares one independently selected limit and tracks its price"
   assert.match(app, /function pearsonCorrelation\(left, right\)/u);
   assert.match(app, /function meanAbsoluteDeviation\(left, right\)/u);
   assert.match(app, /function limitDeltasByBucket\(series, buckets\)/u);
-  assert.match(app, /agent-hub:comparison-series:v1/u);
+  assert.match(app, /agent-hub:comparison-series:v2/u);
+  assert.match(app, /series\?\.accountLabel \? `\$\{series\.accountLabel\} · \$\{limit\}` : limit/u);
   assert.match(app, /function comparisonLimitPrice\(localValues, apiValues, buckets\)/u);
   assert.match(app, /function selectComparisonSeries\(id\)/u);
   assert.match(app, /function comparisonSeriesPicker\(model\)/u);
