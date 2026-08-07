@@ -890,9 +890,10 @@ test("journal keeps Workspace and Stream groups expandable", () => {
   );
   assert.match(styles, /\.journal span\[data-work-log-turn-stream\]\s*\{[^}]*border-radius:\s*999px;/su);
   assert.match(styles, /\.journal summary\[data-work-log-stream-summary\]\s*\{[^}]*cursor:\s*pointer;[^}]*display:\s*grid;/su);
+  assert.match(app, /function upgradeLegacyWorkspaceGroups\(scope = journal\)/u);
   assert.match(app, /function decorateLegacyStreamTurns\(scope = journal\)/u);
-  assert.match(app, /function applyWorkspaceCollapse\(value,/u);
-  assert.match(app, /function setWorkspaceGroupsCollapsed\(collapsed,/u);
+  assert.match(app, /function applyStreamCollapse\(value,/u);
+  assert.match(app, /function setStreamsCollapsed\(collapsed,/u);
   assert.match(app, /agent-hub-collapse-streams/u);
   assert.match(styles, /\.journal div\[data-work-log-task-content\]:empty\s*\{[^}]*display:\s*none;/su);
 });
