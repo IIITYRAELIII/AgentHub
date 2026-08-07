@@ -595,7 +595,7 @@ test("provider activity and selected external watch have explicit owners", async
   assert.equal(activity.includes("async readCodex(target)"), true);
   assert.equal(activity.includes("async readClaude(target)"), true);
   assert.equal(watch.includes("this.inFlight = false"), true);
-  assert.equal(watch.includes("const currentTask = this.selectedTask()"), true);
+  assert.equal(watch.includes("const current = this.#candidates()"), true);
   assert.equal(watch.includes("const currentRun = this.taskRuns.forTask(task)"), true);
 });
 

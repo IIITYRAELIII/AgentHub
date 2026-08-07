@@ -1116,7 +1116,14 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushMessage("/agent");
   const agentPicker = await telegram.waitForText("Выберите агента:", { after: mark });
   telegram.pushCallback(callbackButton(agentPicker, "engine:claude").callback_data, agentPicker.result);
-  await telegram.waitForText("Активный агент: Claude Code", { after: mark });
+  await telegram.waitForText("Активный агент: Claude Code", { after: mark }).catch(async (error) => {
+    throw new Error(
+      `${error.message}\nstate=${JSON.stringify(await readJson(statePath).catch(() => null))}`
+        + `\nnonPollingCalls=${JSON.stringify(telegram.callsAfter(mark).filter((call) => call.method !== "getUpdates"))}`
+        + `\nstdout tail:\n${stdout.slice(-12_000)}\nstderr tail:\n${stderr.slice(-12_000)}`,
+      { cause: error },
+    );
+  });
   assert.equal((await readJson(statePath)).activeProvider, "claude");
   mark = telegram.calls.length;
   telegram.pushMessage("проверка Claude");

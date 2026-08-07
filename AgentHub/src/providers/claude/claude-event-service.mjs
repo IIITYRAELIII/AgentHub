@@ -9,7 +9,7 @@ export class ClaudeEventService {
   constructor(dependencies = {}) {
     for (const name of [
       "isSelectedRun", "reindexRun", "setSelectedThread", "runTitle", "bindRunMessage",
-      "saveState", "noteActivity", "scheduleProgress", "appendReasoning", "setStage",
+      "retargetClientSelection", "saveState", "noteActivity", "scheduleProgress", "appendReasoning", "setStage",
       "appendActivity",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
@@ -26,6 +26,7 @@ export class ClaudeEventService {
         run.taskTitle = `Сессия Claude · ${parsed.sessionId.slice(0, 8)}`;
       }
       d.reindexRun(run, { threadId: previousThreadId });
+      d.retargetClientSelection(run, parsed.sessionId, d.runTitle(run));
       if (wasSelected) d.setSelectedThread(parsed.sessionId, d.runTitle(run));
       for (const messageId of run.progressMessageIds) {
         void d.bindRunMessage(run, { message_id: messageId }).catch((error) => {

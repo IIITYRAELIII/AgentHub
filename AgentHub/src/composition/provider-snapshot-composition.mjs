@@ -33,6 +33,7 @@ export function createProviderSnapshotComposition({
   cancelledManagedClaudeTasks,
   isSelectedRun,
   taskRuns,
+  hostState,
   selectionStore,
   workspaceCatalogStore,
   runTaskTitle,
@@ -71,6 +72,21 @@ export function createProviderSnapshotComposition({
           source: "created",
         });
       }
+    },
+    retargetClientSelection: (run, threadId, title) => {
+      if (run?.clientSource !== "telegram" || !Number.isSafeInteger(run?.chatId)) return;
+      const clientId = `telegram:${run.chatId}`;
+      const current = hostState.clientTaskSelection(clientId);
+      if (!current
+        || current.provider !== "claude"
+        || current.threadId
+        || (current.streamId && run.streamId && current.streamId !== run.streamId)) return;
+      hostState.setClientTaskSelection(clientId, {
+        ...current,
+        streamId: run.streamId ?? current.streamId ?? null,
+        threadId,
+        taskTitle: title,
+      });
     },
     runTitle: runTaskTitle,
     bindRunMessage,

@@ -218,6 +218,7 @@ export function createExecutionBootstrapPhase({
       commandTaskTarget,
       activeProject: telegramActiveProject,
       activeProvider: telegramTasks.activeProvider,
+      clearTaskSelection: telegramTasks.clearTaskSelection,
       autoApprove: () => selection.hostState.autoApprove,
       agentPreferences: selection.agentPreferences,
       codexModelLabel: settings.codexModelLabel,

@@ -9,6 +9,14 @@ function rememberBounded(map, key, value, limit) {
   while (map.size > limit) map.delete(map.keys().next().value);
 }
 
+function taskIdentity(task) {
+  return [
+    String(task?.provider ?? "").trim(),
+    String(task?.projectRoot ?? "").trim().toLowerCase(),
+    String(task?.threadId ?? "").trim(),
+  ].join("\0");
+}
+
 export class SelectedTaskWatchService {
   constructor({
     providers,
@@ -19,6 +27,7 @@ export class SelectedTaskWatchService {
     intervalMs,
     isStopping,
     selectedTask,
+    selectedTasks = null,
     chatId,
     activeTaskTitle,
     rememberLastTaskMessage,
@@ -37,6 +46,7 @@ export class SelectedTaskWatchService {
     this.intervalMs = intervalMs;
     this.isStopping = isStopping;
     this.selectedTask = selectedTask;
+    this.selectedTasks = selectedTasks;
     this.chatId = chatId;
     this.activeTaskTitle = activeTaskTitle;
     this.rememberLastTaskMessage = rememberLastTaskMessage;
@@ -47,6 +57,32 @@ export class SelectedTaskWatchService {
     this.taskKey = taskKey;
     this.logger = logger;
     this.inFlight = false;
+    this.cursor = 0;
+  }
+
+  #candidates() {
+    const supplied = typeof this.selectedTasks === "function"
+      ? this.selectedTasks()
+      : [{
+        clientId: "global",
+        task: this.selectedTask(),
+        chatId: this.chatId(),
+        taskTitle: this.activeTaskTitle(),
+      }];
+    const unique = new Map();
+    for (const candidate of Array.isArray(supplied) ? supplied : []) {
+      const task = candidate?.task;
+      const identity = taskIdentity(task);
+      if (!task?.threadId || !identity || unique.has(identity)) continue;
+      unique.set(identity, {
+        clientId: String(candidate?.clientId ?? "").trim() || "global",
+        task,
+        chatId: candidate?.chatId ?? null,
+        taskTitle: String(candidate?.taskTitle ?? "").trim(),
+        identity,
+      });
+    }
+    return [...unique.values()];
   }
 
   schedule(delayMs = this.intervalMs) {
@@ -60,9 +96,13 @@ export class SelectedTaskWatchService {
     if (this.inFlight || this.isStopping()) return false;
     this.inFlight = true;
     try {
-      const task = this.selectedTask();
-      const targetChatId = this.chatId();
-      if (!targetChatId || !task.threadId || this.taskRuns.forTask(task)) return false;
+      const candidates = this.#candidates().filter(({ task, chatId: targetChatId }) => (
+        targetChatId && !this.taskRuns.forTask(task)
+      ));
+      if (!candidates.length) return false;
+      const candidate = candidates[this.cursor % candidates.length];
+      this.cursor = (this.cursor + 1) % Math.max(1, candidates.length);
+      const { task } = candidate;
 
       const snapshot = await this.providers.call(
         task.provider,
@@ -73,7 +113,9 @@ export class SelectedTaskWatchService {
       // Snapshot belongs to the task captured above. Re-read selection and run
       // state before applying it: another client may have switched task or
       // started a managed run while provider I/O was pending.
-      const currentTask = this.selectedTask();
+      const current = this.#candidates().find(({ identity }) => identity === candidate.identity);
+      if (!current) return false;
+      const currentTask = current.task;
       const currentRun = this.taskRuns.forTask(task);
       if (currentRun) return false;
 
@@ -93,8 +135,8 @@ export class SelectedTaskWatchService {
           if (answer) {
             this.rememberLastTaskMessage({
               ...task,
-              chatId: targetChatId,
-              taskTitle: this.activeTaskTitle(),
+              chatId: current.chatId,
+              taskTitle: current.taskTitle,
               turnId: snapshot.turnId,
             }, answer);
           }
@@ -113,9 +155,9 @@ export class SelectedTaskWatchService {
 
       const run = await this.createObservedRun({
         ...task,
-        chatId: targetChatId,
-        taskTitle: this.activeTaskTitle(),
-      }, targetChatId, snapshot, task.provider === "codex" ? snapshot.turnId : null);
+        chatId: current.chatId,
+        taskTitle: current.taskTitle,
+      }, current.chatId, snapshot, task.provider === "codex" ? snapshot.turnId : null);
       this.scheduleObservedRun(run);
       await this.saveState();
       this.logger.log(`Silently observing external ${task.provider} task ${task.threadId}`);

@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { SelectedTaskWatchService } from "../../src/application/selected-task-watch-service.mjs";
 
-function fixture({ snapshot = { active: true, turnId: "turn-1" } } = {}) {
+function fixture({ snapshot = { active: true, turnId: "turn-1" }, selectedTasks = null } = {}) {
   const task = { streamId: "stream-1", provider: "codex", threadId: "thread-1", projectRoot: "C:/work" };
   let selected = task;
   let currentRun = null;
@@ -32,6 +32,7 @@ function fixture({ snapshot = { active: true, turnId: "turn-1" } } = {}) {
     intervalMs: 50,
     isStopping: () => false,
     selectedTask: () => selected,
+    selectedTasks: selectedTasks ? () => selectedTasks() : null,
     chatId: () => 7,
     activeTaskTitle: () => "Selected title",
     rememberLastTaskMessage: (...args) => events.push(["remember", ...args]),
@@ -110,4 +111,69 @@ test("SelectedTaskWatchService clears a dismissal only after external activity e
   await state.service.watch();
   assert.equal(state.dismissed.has("thread-1"), false);
   assert.equal(state.events.some(([name]) => name === "save"), true);
+});
+
+test("SelectedTaskWatchService observes a client selection that differs from the global task", async () => {
+  const clientTask = {
+    streamId: "client-stream",
+    provider: "codex",
+    threadId: "client-thread",
+    projectRoot: "C:/client",
+  };
+  const state = fixture({
+    selectedTasks: () => [{
+      clientId: "telegram:42",
+      task: clientTask,
+      chatId: 42,
+      taskTitle: "Client task",
+    }],
+  });
+
+  assert.equal(await state.service.watch(), true);
+  const created = state.events.find(([name]) => name === "create");
+  assert.equal(created[1].threadId, "client-thread");
+  assert.equal(created[1].taskTitle, "Client task");
+  assert.equal(created[2], 42);
+});
+
+test("SelectedTaskWatchService deduplicates one task selected by multiple clients", async () => {
+  const sharedTask = {
+    streamId: "shared-stream",
+    provider: "codex",
+    threadId: "shared-thread",
+    projectRoot: "C:/shared",
+  };
+  const state = fixture({
+    selectedTasks: () => [
+      { clientId: "telegram:42", task: sharedTask, chatId: 42, taskTitle: "Shared" },
+      { clientId: "global", task: { ...sharedTask }, chatId: 42, taskTitle: "Shared" },
+    ],
+  });
+
+  assert.equal(await state.service.watch(), true);
+  assert.equal(state.events.filter(([name]) => name === "snapshot").length, 1);
+  assert.equal(state.events.filter(([name]) => name === "create").length, 1);
+});
+
+test("SelectedTaskWatchService drops a client snapshot after that client switches task", async () => {
+  const first = {
+    streamId: "first-stream",
+    provider: "codex",
+    threadId: "first-thread",
+    projectRoot: "C:/work",
+  };
+  let clientSelections = [{ clientId: "telegram:42", task: first, chatId: 42, taskTitle: "First" }];
+  const state = fixture({ selectedTasks: () => clientSelections });
+  state.delaySnapshot();
+  const watching = state.service.watch();
+  clientSelections = [{
+    clientId: "telegram:42",
+    task: { ...first, streamId: "second-stream", threadId: "second-thread" },
+    chatId: 42,
+    taskTitle: "Second",
+  }];
+  state.releaseSnapshot({ active: true, turnId: "turn-1" });
+
+  assert.equal(await watching, false);
+  assert.equal(state.events.some(([name]) => name === "create"), false);
 });

@@ -282,6 +282,7 @@ export async function createProviderApplicationComposition({
     cancelledManagedClaudeTasks: runtimeData.cancelledManagedClaudeTasks,
     isSelectedRun,
     taskRuns: runtimeData.taskRuns,
+    hostState,
     selectionStore,
     workspaceCatalogStore,
     runTaskTitle,

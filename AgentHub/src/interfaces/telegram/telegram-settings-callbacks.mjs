@@ -23,6 +23,7 @@ export class TelegramSettingsCallbackService {
     for (const name of [
       "telegram", "dispatchSetting", "sendMessage", "formatApprovalMode",
       "approvalModeKeyboard", "providerTitle", "activeProject", "activeProvider",
+      "clearTaskSelection", "callbackContext",
       "autoApprove", "codexModel", "codexModelLabel", "codexReasoningEffort",
       "codexCollaborationMode", "claudeModel", "claudeReasoningEffort",
       "claudeCollaborationMode",
@@ -52,6 +53,7 @@ export class TelegramSettingsCallbackService {
         const project = d.projects[route.index];
         if (!project) throw new Error("unknown project");
         const result = await d.dispatchSetting(callback, "project", project.path);
+        if (result.setting.changed) await d.clearTaskSelection(d.callbackContext(callback));
         await d.telegram("answerCallbackQuery", {
           callback_query_id: callback.id,
           text: result.setting.changed ? "Папка изменена" : "Эта папка уже активна",
@@ -73,6 +75,7 @@ export class TelegramSettingsCallbackService {
     if (route.kind === "engine") {
       try {
         const result = await d.dispatchSetting(callback, "provider", route.provider);
+        if (result.setting.changed) await d.clearTaskSelection(d.callbackContext(callback));
         await d.telegram("answerCallbackQuery", {
           callback_query_id: callback.id,
           text: result.setting.changed ? "Агент переключён" : "Этот агент уже активен",

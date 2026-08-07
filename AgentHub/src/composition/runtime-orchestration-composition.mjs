@@ -129,6 +129,26 @@ export function createRuntimeOrchestrationComposition({
     taskObserverLogger,
   } = lifecycle;
 
+  const selectedTaskCandidates = () => {
+    const candidates = hostState.clientTaskSelectionsSnapshot().map(([clientId, binding]) => {
+      const telegramMatch = /^telegram:(-?\d+)$/.exec(String(clientId));
+      const { taskTitle, ...task } = binding;
+      return {
+        clientId,
+        task,
+        taskTitle,
+        chatId: telegramMatch ? Number(telegramMatch[1]) : hostState.chatId,
+      };
+    });
+    candidates.push({
+      clientId: "global",
+      task: selectedTask(),
+      taskTitle: selectedTaskTitle(),
+      chatId: hostState.chatId,
+    });
+    return candidates;
+  };
+
   const providerRuntimeWiring = ports.providerRuntime.bind(createProviderRuntimeWiring({
     observation: {
       dataDir: config.dataDir,
@@ -167,6 +187,7 @@ export function createRuntimeOrchestrationComposition({
       runtimeTimers,
       selectedTaskWatchIntervalMs,
       selectedTask,
+      selectedTasks: selectedTaskCandidates,
       chatId: () => hostState.chatId,
       activeTaskTitle: selectedTaskTitle,
       rememberLastTaskMessage,

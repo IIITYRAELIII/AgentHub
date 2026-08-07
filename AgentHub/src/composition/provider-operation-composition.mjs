@@ -90,6 +90,7 @@ export function createProviderOperationComposition({
   });
   const claudeProviderTasks = new ClaudeProviderTaskService({
     selection: selectionStore,
+    activeProjectRoot,
     clearLatestDiff,
     saveState,
   });

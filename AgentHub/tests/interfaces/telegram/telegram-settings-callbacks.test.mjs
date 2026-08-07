@@ -16,6 +16,8 @@ function service(events, changed = true) {
     providerTitle: () => "Codex",
     activeProject: () => ({ name: "Workspace" }),
     activeProvider: getter("codex"),
+    clearTaskSelection: async (context) => events.push({ cleared: context }),
+    callbackContext: () => ({ clientId: "telegram:1" }),
     autoApprove: getter(true),
     codexModel: getter("sol"),
     codexModelLabel: (value) => value.toUpperCase(),
@@ -39,6 +41,7 @@ test("settings callback service handles project and model routes", async () => {
   assert.equal(await callbacks.handle(callback, { kind: "project", index: 0 }), true);
   assert.equal(await callbacks.handle(callback, { kind: "codex-model", model: "sol" }), true);
   assert.ok(events.some((event) => event.name === "project" && event.value === "D:/workspace"));
+  assert.ok(events.some((event) => event.cleared?.clientId === "telegram:1"));
   assert.ok(events.some((event) => event.text === "Codex model: SOL"));
 });
 

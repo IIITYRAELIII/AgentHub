@@ -104,12 +104,14 @@ export class CodexProviderTaskService {
 
 export class ClaudeProviderTaskService {
   #selection;
+  #activeProjectRoot;
   #clearLatestDiff;
   #saveState;
 
   constructor(options = {}) {
     this.#selection = options.selection;
     if (!this.#selection?.setThread) throw new TypeError("selection store is required");
+    this.#activeProjectRoot = requiredFunction(options.activeProjectRoot, "activeProjectRoot");
     this.#clearLatestDiff = requiredFunction(options.clearLatestDiff, "clearLatestDiff");
     this.#saveState = requiredFunction(options.saveState, "saveState");
   }
@@ -121,7 +123,7 @@ export class ClaudeProviderTaskService {
     return {
       provider: "claude",
       threadId: null,
-      projectRoot: "",
+      projectRoot: this.#activeProjectRoot(),
       title: "Новая задача Claude",
     };
   }

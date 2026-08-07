@@ -45,6 +45,7 @@ test("Claude task service creates an unbound logical task", async () => {
   const state = { args: null, diff: "old", saved: false };
   const service = new ClaudeProviderTaskService({
     selection: { setThread: (...args) => { state.args = args; } },
+    activeProjectRoot: () => "D:/workspace",
     clearLatestDiff: () => { state.diff = ""; },
     saveState: async () => { state.saved = true; },
   });
@@ -53,4 +54,5 @@ test("Claude task service creates an unbound logical task", async () => {
   assert.equal(state.diff, "");
   assert.equal(state.saved, true);
   assert.equal(created.threadId, null);
+  assert.equal(created.projectRoot, "D:/workspace");
 });

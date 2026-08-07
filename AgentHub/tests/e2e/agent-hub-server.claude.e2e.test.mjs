@@ -145,6 +145,15 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
     return readRuntimeState(dataDir);
   }
 
+  async function telegramSelectedThread(provider = "claude") {
+    const state = await runtimeState();
+    return state.clientTaskSelections
+      ?.find(([clientId]) => clientId === `telegram:${CHAT_ID}`)?.[1]?.provider === provider
+      ? state.clientTaskSelections
+        .find(([clientId]) => clientId === `telegram:${CHAT_ID}`)?.[1]?.threadId
+      : null;
+  }
+
   async function releaseHold(name) {
     await writeFile(path.join(holdDirectory, name), "release", "utf8");
   }
@@ -231,7 +240,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   assert.ok(nestedTaskButton, "nested Claude session must be present in the task catalog");
   assert.match(nestedTaskButton.text, /Переименованная задача Claude/);
   telegram.pushCallback(nestedTaskButton.callback_data, nestedPicker.result);
-  await waitFor(async () => (await runtimeState()).threadIds.claude === nestedSessionId,
+  await waitFor(async () => await telegramSelectedThread() === nestedSessionId,
     "select nested Claude session");
   mark = telegram.calls.length;
   const nestedPrompt = "Продолжить вложенную задачу";
@@ -320,10 +329,17 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
 
   mark = telegram.calls.length;
   telegram.pushCallback(newTaskButton.callback_data, deferred.result);
-  await telegram.waitForVisibleText(`Claude выполняет: ${secondPrompt}`, {
-    after: mark,
-    timeoutMs: 15_000,
-  });
+  try {
+    await telegram.waitForVisibleText(`Claude выполняет: ${secondPrompt}`, {
+      after: mark,
+      timeoutMs: 15_000,
+    });
+  } catch (error) {
+    throw new Error(
+      `${error.message}\nstate:\n${JSON.stringify(await runtimeState().catch(() => null), null, 2)}`
+      + `\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+    );
+  }
   const parallelRuns = await waitFor(async () => {
     const runs = await activeRuns();
     return runs.length === 2 && runs.every((run) => run.threadId) ? runs : null;
@@ -333,7 +349,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   assert.equal(new Set(parallelRuns.map((run) => run.claudeOutputPath)).size, 2,
     "parallel Claude tasks must not share an output file");
   await rememberClaudePids();
-  const secondThreadId = (await runtimeState()).threadIds.claude;
+  const secondThreadId = await telegramSelectedThread();
   assert.equal(secondThreadId, parallelRuns.find((run) => run.promptPreview.includes("beta"))?.threadId);
 
   // Переключение между двумя живыми задачами и «глазки» на первой.
@@ -355,7 +371,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   mark = telegram.calls.length;
   telegram.pushCallback(firstTaskButton.callback_data, picker.result);
   const switched = await telegram.waitForText("Текущая задача", { after: mark, timeoutMs: 15_000 });
-  await waitFor(async () => (await runtimeState()).threadIds.claude === firstRun.threadId,
+  await waitFor(async () => await telegramSelectedThread() === firstRun.threadId,
     "switch to the first live Claude task");
 
   mark = telegram.calls.length;
@@ -505,7 +521,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   mark = telegram.calls.length;
   telegram.pushCallback(staleButton.callback_data, stalePicker.result);
   await telegram.waitForText("Текущая задача", { after: mark, timeoutMs: 15_000 });
-  await waitFor(async () => (await runtimeState()).threadIds.claude === staleSessionId,
+  await waitFor(async () => await telegramSelectedThread() === staleSessionId,
     "switch to the abandoned Claude session", 15_000);
 
   mark = telegram.calls.length;
