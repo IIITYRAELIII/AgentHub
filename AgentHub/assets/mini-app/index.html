@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/work-log.css">
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/backgrounds.css">
+  <link rel="stylesheet" href="/stream-status.css">
   <!-- agent-hub-theme-styles -->
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <script src="/browser-device-auth.js" defer></script>
@@ -19,6 +20,7 @@
   <!-- agent-hub-theme-scripts -->
   <script src="/message-lifecycle.js" defer></script>
   <script src="/hub-client.js" defer></script>
+  <script src="/stream-status-visibility.mjs" type="module"></script>
 </head>
 <body>
   <section class="browser-auth" data-browser-auth hidden aria-labelledby="browser-auth-title">
@@ -820,6 +822,10 @@
               <option value="impulse">Импульс</option>
               <option value="scanner">Сканер</option>
               <option value="energy">Энергия</option>
+              <option value="breath">Дыхание</option>
+              <option value="thread">Нить</option>
+              <option value="sediment">Осадок</option>
+              <option value="echo">Эхо</option>
               <option value="off">Выключено</option>
             </select>
           </label>

@@ -1,0 +1,187 @@
+/* Дополнительные эффекты активности Stream и готовности ответа.
+
+   Отдельная таблица, а не врезка в общий styles.css: набор эффектов растёт
+   независимо от оболочки, и держать их рядом дешевле для правок. Все состояния
+   строятся на --accent, поэтому работают в любой теме. */
+
+/* ============================================================== Дыхание ===
+   Ни полосы, ни точки: карточка едва заметно светлеет и гаснет. Замечается
+   боковым зрением и не мешает читать соседние строки. */
+:root[data-stream-status-effect="breath"] .task-workspace-item[data-running]::after,
+:root[data-stream-status-effect="breath"] .stream-tab[data-running] .stream-tab-card::after,
+:root[data-stream-status-effect="breath"]
+  .task-workspace-item[data-unread]:not([data-running])::after,
+:root[data-stream-status-effect="breath"] .stream-tab[data-answer-ready] .stream-tab-card::after {
+  background: var(--accent);
+  border-radius: inherit;
+  content: "";
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+:root[data-stream-status-effect="breath"] .task-workspace-item[data-running]::after,
+:root[data-stream-status-effect="breath"] .stream-tab[data-running] .stream-tab-card::after {
+  animation: stream-breath 3.5s ease-in-out infinite;
+}
+
+/* Готовность — один глубокий вдох и остановка на светлом. */
+:root[data-stream-status-effect="breath"]
+  .task-workspace-item[data-unread]:not([data-running])::after,
+:root[data-stream-status-effect="breath"] .stream-tab[data-answer-ready] .stream-tab-card::after {
+  animation: stream-breath-ready 1.1s ease-out forwards;
+}
+
+@keyframes stream-breath {
+  0%, 100% { opacity: 0.015; }
+  50% { opacity: 0.075; }
+}
+
+@keyframes stream-breath-ready {
+  0% { opacity: 0.02; }
+  55% { opacity: 0.18; }
+  100% { opacity: 0.1; }
+}
+
+/* ================================================================= Нить ===
+   По левой кромке наматывается тонкая нить, а готовность сматывает её в узел:
+   начало и конец работы связаны одной формой. */
+:root[data-stream-status-effect="thread"] .task-workspace-item[data-running]::after,
+:root[data-stream-status-effect="thread"] .stream-tab[data-running] .stream-tab-card::after,
+:root[data-stream-status-effect="thread"]
+  .task-workspace-item[data-unread]:not([data-running])::after,
+:root[data-stream-status-effect="thread"] .stream-tab[data-answer-ready] .stream-tab-card::after {
+  background: linear-gradient(180deg, transparent, var(--accent) 30%, var(--accent) 70%, transparent);
+  content: "";
+  inset: 0 auto 0 0;
+  pointer-events: none;
+  position: absolute;
+  width: 2px;
+}
+
+:root[data-stream-status-effect="thread"] .task-workspace-item[data-running]::after,
+:root[data-stream-status-effect="thread"] .stream-tab[data-running] .stream-tab-card::after {
+  animation: stream-thread-wind 2.9s ease-in-out infinite;
+  transform-origin: top center;
+}
+
+:root[data-stream-status-effect="thread"]
+  .task-workspace-item[data-unread]:not([data-running])::after,
+:root[data-stream-status-effect="thread"] .stream-tab[data-answer-ready] .stream-tab-card::after {
+  background: var(--accent);
+  inset: 34% auto 34% 0;
+  width: 3px;
+}
+
+@keyframes stream-thread-wind {
+  0% { transform: scaleY(0.05); }
+  55% { transform: scaleY(1); }
+  100% { transform: scaleY(0.05); }
+}
+
+/* ============================================================== Осадок ===
+   Заливка растёт снизу вверх, пока идёт ход, и остаётся полной у готового
+   ответа: карточка сама показывает, что работа была длинной. */
+:root[data-stream-status-effect="sediment"] .task-workspace-item[data-running]::after,
+:root[data-stream-status-effect="sediment"] .stream-tab[data-running] .stream-tab-card::after,
+:root[data-stream-status-effect="sediment"]
+  .task-workspace-item[data-unread]:not([data-running])::after,
+:root[data-stream-status-effect="sediment"] .stream-tab[data-answer-ready] .stream-tab-card::after {
+  background: linear-gradient(0deg, var(--accent), transparent);
+  border-radius: inherit;
+  content: "";
+  inset: 0;
+  opacity: 0.16;
+  pointer-events: none;
+  position: absolute;
+  transform-origin: bottom center;
+}
+
+:root[data-stream-status-effect="sediment"] .task-workspace-item[data-running]::after,
+:root[data-stream-status-effect="sediment"] .stream-tab[data-running] .stream-tab-card::after {
+  animation: stream-sediment-rise 4.2s ease-in-out infinite;
+}
+
+:root[data-stream-status-effect="sediment"]
+  .task-workspace-item[data-unread]:not([data-running])::after,
+:root[data-stream-status-effect="sediment"] .stream-tab[data-answer-ready] .stream-tab-card::after {
+  opacity: 0.22;
+  transform: scaleY(1);
+}
+
+@keyframes stream-sediment-rise {
+  0% { transform: scaleY(0.08); }
+  70% { transform: scaleY(0.9); }
+  100% { transform: scaleY(0.08); }
+}
+
+/* ================================================================ Эхо ===
+   Во время хода не движется ничего, только точка. Кольцо расходится ровно
+   тогда, когда появился ответ: движение означает новость, а не занятость. */
+:root[data-stream-status-effect="echo"] .task-workspace-item[data-running]::after,
+:root[data-stream-status-effect="echo"] .stream-tab[data-running] .stream-tab-card::after {
+  background: var(--accent);
+  border-radius: 50%;
+  content: "";
+  height: 6px;
+  inset: auto 0.5rem 0.5rem auto;
+  pointer-events: none;
+  position: absolute;
+  width: 6px;
+}
+
+:root[data-stream-status-effect="echo"]
+  .task-workspace-item[data-unread]:not([data-running])::after,
+:root[data-stream-status-effect="echo"] .stream-tab[data-answer-ready] .stream-tab-card::after {
+  animation: stream-echo-ring 1.15s ease-out 2;
+  border: 1px solid var(--accent);
+  border-radius: inherit;
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+@keyframes stream-echo-ring {
+  0% { opacity: 0.85; transform: scale(0.97); }
+  100% { opacity: 0; transform: scale(1.06); }
+}
+
+/* Карточки вне окна не анимируются: при двух десятках идущих потоков это
+   снимает всю фоновую отрисовку, не меняя вида видимой части списка. */
+.task-workspace-item[data-stream-offscreen]::before,
+.task-workspace-item[data-stream-offscreen]::after,
+.stream-tab[data-stream-offscreen] .stream-tab-card::before,
+.stream-tab[data-stream-offscreen] .stream-tab-card::after {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-stream-status-effect="breath"] .task-workspace-item[data-running]::after,
+  :root[data-stream-status-effect="breath"] .stream-tab[data-running] .stream-tab-card::after,
+  :root[data-stream-status-effect="thread"] .task-workspace-item[data-running]::after,
+  :root[data-stream-status-effect="thread"] .stream-tab[data-running] .stream-tab-card::after,
+  :root[data-stream-status-effect="sediment"] .task-workspace-item[data-running]::after,
+  :root[data-stream-status-effect="sediment"] .stream-tab[data-running] .stream-tab-card::after,
+  :root[data-stream-status-effect="echo"]
+    .task-workspace-item[data-unread]:not([data-running])::after,
+  :root[data-stream-status-effect="echo"] .stream-tab[data-answer-ready] .stream-tab-card::after {
+    animation: none;
+  }
+
+  :root[data-stream-status-effect="breath"] .task-workspace-item[data-running]::after,
+  :root[data-stream-status-effect="breath"] .stream-tab[data-running] .stream-tab-card::after {
+    opacity: 0.06;
+  }
+
+  :root[data-stream-status-effect="thread"] .task-workspace-item[data-running]::after,
+  :root[data-stream-status-effect="thread"] .stream-tab[data-running] .stream-tab-card::after {
+    transform: scaleY(1);
+  }
+
+  :root[data-stream-status-effect="sediment"] .task-workspace-item[data-running]::after,
+  :root[data-stream-status-effect="sediment"] .stream-tab[data-running] .stream-tab-card::after {
+    transform: scaleY(0.55);
+  }
+}

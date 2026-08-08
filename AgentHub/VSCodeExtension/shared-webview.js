@@ -13,6 +13,8 @@ const RUNTIME_ASSETS = {
   client: [...ASSET_ROOT, "hub-client.js"],
   styles: [...ASSET_ROOT, "styles.css"],
   backgrounds: [...ASSET_ROOT, "backgrounds.css"],
+  streamStatus: [...ASSET_ROOT, "stream-status.css"],
+  streamStatusVisibility: [...ASSET_ROOT, "stream-status-visibility.mjs"],
   mark: [...ASSET_ROOT, "agent-hub-mark.png"],
   workLogStyles: ["work-log.css"],
 };
@@ -40,7 +42,7 @@ async function resolveSharedAssets({ runtimeUri, extensionUri }) {
     assets.bootstrap = null;
   }
   for (const required of [
-    "index", "disclosure", "app", "lifecycle", "client", "styles", "backgrounds",
+    "index", "disclosure", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
     "mark", "workLogStyles", "bootstrap",
   ]) {
     if (!assets[required]) throw new Error(`Не найден ресурс Agent Hub: ${required}`);
@@ -81,6 +83,11 @@ async function sharedWebviewHtml(webview, locations) {
     .replace('href="/work-log.css"', `href="${resource(webview, assets.workLogStyles)}"`)
     .replace('href="/styles.css"', `href="${resource(webview, assets.styles)}"`)
     .replace('href="/backgrounds.css"', `href="${resource(webview, assets.backgrounds)}"`)
+    .replace('href="/stream-status.css"', `href="${resource(webview, assets.streamStatus)}"`)
+    .replace(
+      '<script src="/stream-status-visibility.mjs" type="module"></script>',
+      `<script src="${resource(webview, assets.streamStatusVisibility)}" type="module"></script>`,
+    )
     .replaceAll('href="/agent-hub-mark.png"', `href="${resource(webview, assets.mark)}"`)
     .replaceAll('src="/agent-hub-mark.png"', `src="${resource(webview, assets.mark)}"`)
     .replace(/<script src="https:\/\/telegram\.org\/[^>]+><\/script>\s*/iu, "")

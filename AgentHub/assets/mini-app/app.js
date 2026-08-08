@@ -565,7 +565,12 @@ function applyStreamStatusStyle(value, { persist = false } = {}) {
   }
 }
 
-const STREAM_STATUS_EFFECTS = new Set(["calm", "impulse", "scanner", "energy", "off"]);
+const STREAM_STATUS_EFFECTS = new Set([
+  "calm", "impulse", "scanner", "energy",
+  /* Наборы из stream-status.css: дыхание, нить, осадок и эхо. */
+  "breath", "thread", "sediment", "echo",
+  "off",
+]);
 
 function savedStreamStatusEffect() {
   try {
@@ -5443,6 +5448,7 @@ function weeklyBurnRatePoints(series, {
     return {
       ...point,
       durationMs,
+      cycleAgeMs: Math.max(0, point.atMs - (point.resetMs - durationMs)),
       targetRate,
       actualRate,
       deviationRate,
@@ -6038,15 +6044,31 @@ function renderLimitsSpeedSummary(series) {
     .filter((item) => !item.hidden)
     .map((item) => ({
       item,
+      latest: item.ratePoints?.at(-1),
       point: item.ratePoints?.findLast((point) => Number.isFinite(point.actualRate)),
     }))
-    .filter(({ point }) => point);
+    .filter(({ latest, point }) => latest || point);
   if (!items.length) {
     limitsSpeedSummary.hidden = true;
     limitsSpeedSummary.replaceChildren();
     return;
   }
-  const cards = items.map(({ item, point }) => {
+  const cards = items.map(({ item, latest, point }) => {
+    const name = [item.name || item.baseId || item.id, item.window].filter(Boolean).join(" · ");
+    const fullWindow = burnRatePolicyForRange(limitsState.range).minimumSpanMs;
+    const waiting = !limitsState.speedFullWindow
+      && Number.isFinite(latest?.cycleAgeMs)
+      && latest.cycleAgeMs < fullWindow;
+    if (waiting) {
+      return el("section", { class: "limits-speed-summary-card is-waiting" }, [
+        el("span", { class: "limits-speed-summary-name", text: name }),
+        el("div", { class: "limits-speed-summary-rates" }, [
+          el("span", { text: "После сброса ещё не накоплен полный интервал скорости." }),
+        ]),
+        el("strong", { class: "limits-speed-summary-status", text: "Ожидание данных" }),
+      ]);
+    }
+    if (!point) return null;
     const actualPeriod = formatLimitRateForPeriod(point.actualRate);
     const targetPeriod = formatLimitRateForPeriod(point.targetRate);
     const periodSuffix = burnRatePeriodSuffix();
@@ -6057,7 +6079,6 @@ function renderLimitsSpeedSummary(series) {
         ? `Чтобы лимита хватило, снизьте темп в ${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(ratio)} раза`
         : "Лимит уже исчерпан"
       : "Текущий темп укладывается в допустимый";
-    const name = [item.name || item.baseId || item.id, item.window].filter(Boolean).join(" · ");
     return el("section", {
       class: `limits-speed-summary-card ${overTarget ? "is-over-target" : "is-safe"}`,
     }, [
@@ -6068,7 +6089,7 @@ function renderLimitsSpeedSummary(series) {
       ]),
       el("strong", { class: "limits-speed-summary-status", text: status }),
     ]);
-  });
+  }).filter(Boolean);
   limitsSpeedSummary.hidden = false;
   limitsSpeedSummary.replaceChildren(...cards);
 }

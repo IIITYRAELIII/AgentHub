@@ -21,6 +21,8 @@ for (const file of [
   "hub-client.js",
   "styles.css",
   "backgrounds.css",
+  "stream-status.css",
+  "stream-status-visibility.mjs",
   "agent-hub-mark.png",
 ]) {
   await copyFile(path.join(source, file), path.join(output, file));

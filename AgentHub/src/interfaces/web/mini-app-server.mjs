@@ -34,6 +34,8 @@ const CONTENT_TYPES = new Map([
   ["/hub-client.js", "text/javascript; charset=utf-8"],
   ["/styles.css", "text/css; charset=utf-8"],
   ["/backgrounds.css", "text/css; charset=utf-8"],
+  ["/stream-status.css", "text/css; charset=utf-8"],
+  ["/stream-status-visibility.mjs", "text/javascript; charset=utf-8"],
   ["/work-log.css", "text/css; charset=utf-8"],
   ["/agent-hub-mark.png", "image/png"],
 ]);
@@ -46,6 +48,8 @@ const STATIC_FILES = new Map([
   ["/hub-client.js", "hub-client.js"],
   ["/styles.css", "styles.css"],
   ["/backgrounds.css", "backgrounds.css"],
+  ["/stream-status.css", "stream-status.css"],
+  ["/stream-status-visibility.mjs", "stream-status-visibility.mjs"],
   ["/agent-hub-mark.png", "agent-hub-mark.png"],
 ]);
 const IMMUTABLE_STATIC_FILES = new Set(["/agent-hub-mark.png"]);
