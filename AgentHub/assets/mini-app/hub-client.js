@@ -29,7 +29,8 @@ let connectionOfflineTimer = null;
 let pendingSelectionId = "";
 let selectionSequence = 0;
 let selectionTail = Promise.resolve();
-let selectedHistoryRefreshAt = 0;
+const historyRefreshAtByTask = new Map();
+let visibleStreamTaskIds = new Set();
 const EXTERNAL_HISTORY_REFRESH_MS = 2_500;
 const HISTORY_ATTACHMENT_REFRESH_MS = 10_000;
 const HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS = 120_000;
@@ -955,9 +956,12 @@ function applySnapshot(snapshot) {
     (task) => taskId(task.provider, task.threadId) === effectiveSelectedId,
   );
   rememberSelectedTaskId(effectiveSelectedId);
+  for (const task of snapshot.tasks ?? []) {
+    const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
+    agentHub.setLive(stableTaskId, updateLiveMessage(stableTaskId, task));
+    agentHub.setRunning(stableTaskId, Boolean(task.run || task.running));
+  }
   if (selected) {
-    agentHub.setLive(selectedTaskId, updateLiveMessage(selectedTaskId, selected));
-    agentHub.setRunning(selectedTaskId, Boolean(selected.run || selected.running));
     agentHub.setApprovals(selectedTaskId, effectiveSelectedId === serverSelectedId
       ? (snapshot.pendingApprovals ?? []).map((approval) => ({
       id: approval.key ?? approval.id,
@@ -1291,6 +1295,7 @@ agentHub.on("workspace:visible-streams", ({ taskIds }) => void (async () => {
   const ids = [...new Set((Array.isArray(taskIds) ? taskIds : [])
     .map((id) => String(id ?? "").trim())
     .filter(Boolean))];
+  visibleStreamTaskIds = new Set(ids);
   await Promise.all(ids.map(async (id) => {
     // История выбранного Thread уже загружается open-task. Остальные колонки
     // подгружаются только после того, как пользователь открыл их Stream.
@@ -1998,14 +2003,62 @@ async function openRoute() {
   return true;
 }
 
+function snapshotTask(snapshot, id) {
+  return (snapshot?.tasks ?? []).find((task) => (
+    taskId(task.provider, task.threadId, task.streamId) === id
+  )) ?? null;
+}
+
+async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
+  const visibleIds = new Set(visibleStreamTaskIds);
+  if (selectedTaskId) visibleIds.add(selectedTaskId);
+  await Promise.all([...visibleIds].map(async (id) => {
+    if (visibleHistoryLoads.has(id)) return;
+    const previousTask = snapshotTask(previousSnapshot, id);
+    const currentTask = snapshotTask(snapshot, id);
+    if (!currentTask) return;
+    const sameTask = previousTask
+      && previousTask.provider === currentTask.provider
+      && previousTask.threadId === currentTask.threadId;
+    const answerChanged = sameTask
+      && String(previousTask.lastAnswerAt ?? "") !== String(currentTask.lastAnswerAt ?? "");
+    const turnCompleted = Boolean(sameTask && previousTask.running && !currentTask.running);
+    if (answerChanged || turnCompleted) scheduleHistoryAttachmentSettle(id);
+    const historyMissing = Boolean(previousTask) && !historyPageByTask.has(id);
+    const externalLive = currentTask.running && !["hub", "telegram"].includes(String(
+      currentTask.run?.executionOwner ?? currentTask.executionOwner ?? "",
+    ));
+    const lastRefreshAt = Number(historyRefreshAtByTask.get(id)) || 0;
+    const refreshExternalHistory = externalLive
+      && Date.now() - lastRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
+    const refreshCaughtUpHistory = historyNeedsCatchUp(id)
+      && Date.now() - lastRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
+    const refreshSettlingAttachments = historyAttachmentsNeedSettling(id)
+      && Date.now() - lastRefreshAt >= HISTORY_ATTACHMENT_REFRESH_MS;
+    if (!historyMissing && !turnCompleted && !answerChanged
+      && !refreshExternalHistory && !refreshCaughtUpHistory && !refreshSettlingAttachments) return;
+    historyRefreshAtByTask.set(id, Date.now());
+    const history = await control("task-history", {
+      provider: currentTask.provider,
+      threadId: currentTask.threadId,
+      limit: 20,
+      includeActive: false,
+      refreshSource: turnCompleted || answerChanged,
+      knownVersion: historyPageByTask.get(id)?.version ?? "",
+    });
+    applyOpened({ snapshot: lastSnapshot, history }, {
+      preserveScroll: true,
+      skipSnapshot: true,
+      selectTask: false,
+    });
+  }));
+}
+
 async function refresh({ reportError = false } = {}) {
   if (refreshing) return;
   refreshing = true;
   try {
-    const previousSelectedId = selectedTaskId;
-    const previousSelected = (lastSnapshot?.tasks ?? []).find(
-      (task) => taskId(task.provider, task.threadId, task.streamId) === previousSelectedId,
-    );
+    const previousSnapshot = lastSnapshot;
     const snapshotResult = await control("snapshot", { knownVersion: lastSnapshot?.version ?? "" });
     const snapshot = snapshotResult?.notModified === true ? lastSnapshot : snapshotResult;
     if (snapshotResult?.notModified === true) {
@@ -2015,59 +2068,7 @@ async function refresh({ reportError = false } = {}) {
       applySnapshot(snapshot);
     }
     if (!snapshot) return;
-    const currentSelected = (snapshot.tasks ?? []).find(
-      (task) => taskId(task.provider, task.threadId, task.streamId) === selectedTaskId,
-    );
-    const sameSelection = previousSelected && currentSelected
-      && previousSelected.provider === currentSelected.provider
-      && previousSelected.threadId === currentSelected.threadId;
-    const currentSelectedId = currentSelected
-      ? taskId(currentSelected.provider, currentSelected.threadId, currentSelected.streamId)
-      : "";
-    const answerChanged = sameSelection
-      && String(previousSelected.lastAnswerAt ?? "") !== String(currentSelected.lastAnswerAt ?? "");
-    const turnCompleted = sameSelection && previousSelected.running && !currentSelected.running;
-    if (answerChanged || turnCompleted) scheduleHistoryAttachmentSettle(currentSelectedId);
-    const selectedHistoryMissing = sameSelection
-      && !historyPageByTask.has(currentSelectedId);
-    const externalLive = sameSelection
-      && currentSelected.running
-      && !["hub", "telegram"].includes(String(
-        currentSelected.run?.executionOwner ?? currentSelected.executionOwner ?? "",
-      ));
-    const refreshExternalHistory = externalLive
-      && Date.now() - selectedHistoryRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
-    const refreshCaughtUpHistory = sameSelection
-      && historyNeedsCatchUp(currentSelectedId)
-      && Date.now() - selectedHistoryRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
-    const refreshSettlingAttachments = sameSelection
-      && historyAttachmentsNeedSettling(currentSelectedId)
-      && Date.now() - selectedHistoryRefreshAt >= HISTORY_ATTACHMENT_REFRESH_MS;
-    if (sameSelection && (
-      selectedHistoryMissing
-      || turnCompleted
-      || answerChanged
-      || refreshExternalHistory
-      || refreshCaughtUpHistory
-      || refreshSettlingAttachments
-    )) {
-      selectedHistoryRefreshAt = Date.now();
-      const history = await control("task-history", {
-        provider: currentSelected.provider,
-        threadId: currentSelected.threadId,
-        limit: 20,
-        includeActive: false,
-        refreshSource: turnCompleted || answerChanged,
-        knownVersion: historyPageByTask.get(
-          currentSelectedId,
-        )?.version ?? "",
-      });
-      applyOpened({ snapshot: lastSnapshot, history }, {
-        preserveScroll: true,
-        skipSnapshot: true,
-        selectTask: false,
-      });
-    }
+    await refreshVisibleTaskHistories(previousSnapshot, snapshot);
     applySnapshotConnection(snapshot);
   } catch (error) {
     recordTransientConnectionFailure();
@@ -2076,7 +2077,7 @@ async function refresh({ reportError = false } = {}) {
     refreshing = false;
     const active = Boolean(lastSnapshot?.tasks?.some(
       (task) => task.running || task.context?.compacting,
-    )) || historyNeedsCatchUp(selectedTaskId);
+    )) || [...visibleStreamTaskIds].some(historyNeedsCatchUp) || historyNeedsCatchUp(selectedTaskId);
     refreshTimer = window.setTimeout(refresh, active ? 1_200 : 5_000);
   }
 }

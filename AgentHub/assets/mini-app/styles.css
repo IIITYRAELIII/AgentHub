@@ -4083,8 +4083,7 @@ html[data-surface="mobile"]
   overscroll-behavior-y: contain;
 }
 
-.stream-chat-preview-log .msg-actions,
-.stream-chat-preview-log .activity-feed {
+.stream-chat-preview-log .msg-actions {
   display: none;
 }
 

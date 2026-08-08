@@ -1078,17 +1078,19 @@ test("history refresh keeps a reader anchored and keeps the final answer at the 
   assert.match(app, /window\.requestAnimationFrame\(\(\) => \{\s*apply\(\);\s*window\.requestAnimationFrame\(apply\);/u);
 });
 
-test("chat refreshes selected external runs without rebuilding a second snapshot", () => {
+test("chat refreshes every visible external run without rebuilding a second snapshot", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   const refresh = client.match(
     /async function refresh\([^)]*\) \{(?<body>[\s\S]*?)\r?\n\}\r?\n\r?\nvoid runAction/u,
   )?.groups?.body ?? "";
   assert.match(client, /const EXTERNAL_HISTORY_REFRESH_MS = 2_500/u);
-  assert.match(refresh, /const externalLive = sameSelection[\s\S]*currentSelected\.running[\s\S]*executionOwner/u);
-  assert.match(refresh, /refreshExternalHistory[\s\S]*control\("task-history"[\s\S]*skipSnapshot: true/u);
-  assert.match(refresh, /includeActive: false[\s\S]*knownVersion: historyPageByTask/u);
+  assert.match(client, /let visibleStreamTaskIds = new Set\(\)/u);
+  assert.match(client, /async function refreshVisibleTaskHistories[\s\S]*Promise\.all\(\[\.\.\.visibleIds\]/u);
+  assert.match(client, /const externalLive = currentTask\.running[\s\S]*executionOwner/u);
+  assert.match(client, /refreshExternalHistory[\s\S]*control\("task-history"[\s\S]*skipSnapshot: true/u);
+  assert.match(client, /includeActive: false[\s\S]*knownVersion: historyPageByTask/u);
+  assert.match(refresh, /await refreshVisibleTaskHistories\(previousSnapshot, snapshot\)/u);
   assert.doesNotMatch(refresh, /control\("open-task"/u);
-  assert.match(refresh, /const answerChanged = sameSelection/u);
 });
 
 test("completed chat keeps probing briefly for late generated images", () => {
@@ -1099,9 +1101,9 @@ test("completed chat keeps probing briefly for late generated images", () => {
   assert.match(client, /const HISTORY_ATTACHMENT_REFRESH_MS = 10_000/u);
   assert.match(client, /const HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS = 120_000/u);
   assert.match(client, /function scheduleHistoryAttachmentSettle\(taskIdValue\)/u);
-  assert.match(refresh, /if \(answerChanged \|\| turnCompleted\) scheduleHistoryAttachmentSettle\(currentSelectedId\)/u);
-  assert.match(refresh, /refreshSource: turnCompleted \|\| answerChanged/u);
-  assert.match(refresh, /refreshSettlingAttachments[\s\S]*control\("task-history"/u);
+  assert.match(client, /if \(answerChanged \|\| turnCompleted\) scheduleHistoryAttachmentSettle\(id\)/u);
+  assert.match(client, /refreshSource: turnCompleted \|\| answerChanged/u);
+  assert.match(client, /refreshSettlingAttachments[\s\S]*control\("task-history"/u);
 });
 
 test("opening a task settles generated images without delaying the cached history", () => {
@@ -1437,7 +1439,7 @@ test("chat keeps an active response only in the live card after task switching",
   assert.match(client, /liveProbe: liveProbeByTask\.get\(taskIdValue\) \?\? null/u);
   assert.match(client, /text: response/u);
   assert.match(app, /function liveTextAfterMessages\(live\) \{\s*return normalizedMessageText\(live\?\.text\);\s*\}/u);
-  assert.match(app, /!normalizedMessageText\(live\.stage\)/u);
+  assert.match(app, /function liveCardHasContent\(live\)[\s\S]*normalizedMessageText\(live\.stage\)/u);
   assert.match(
     app,
     /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ preserveTop: true \}\);\s*renderLive\(\);/u,
@@ -1482,9 +1484,9 @@ test("live reasoning renders Markdown separately from the response", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   assert.match(html, /data-live-reasoning/u);
   assert.match(html, /data-live-body/u);
-  assert.match(app, /const reasoning = chatLive\.querySelector\("\[data-live-reasoning\]"\);/u);
+  assert.match(app, /const reasoning = node\.querySelector\("\[data-live-reasoning\]"\);/u);
   assert.match(app, /renderMarkdown\(reasoning, live\.reasoning \|\| ""\);/u);
-  assert.match(app, /const body = chatLive\.querySelector\("\[data-live-body\]"\);/u);
+  assert.match(app, /const body = node\.querySelector\("\[data-live-body\]"\);/u);
   assert.match(app, /renderMarkdown\(body, visibleText\);/u);
 });
 
@@ -1558,8 +1560,8 @@ test("composer restores definite rejection but keeps an ambiguous delivery singl
 
 test("chat retries an initial history load after the connection recovers", () => {
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  assert.match(client, /selectedHistoryMissing/u);
-  assert.match(client, /selectedHistoryMissing[\s\S]*control\("open-task"/u);
+  assert.match(client, /const historyMissing = Boolean\(previousTask\) && !historyPageByTask\.has\(id\)/u);
+  assert.match(client, /historyMissing[\s\S]*control\("task-history"/u);
 });
 
 test("one transient control failure does not mark the whole Hub offline", () => {
@@ -1955,8 +1957,14 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   assert.match(app, /emit\("workspace:visible-streams", \{ taskIds: ids \}\)/u);
   assert.match(app, /function renderStreamChatPreview\(task\)/u);
   assert.match(app, /renderMessage\(message, \{ readOnly: true \}\)/u);
+  assert.match(app, /populateLiveCard\(liveNode, live, task\.agentLabel \|\| "Агент"\)/u);
+  assert.match(app, /function populateLiveCard\(node, live, fallbackAuthor = "Агент"\)/u);
+  assert.match(app, /renderMarkdown\(reasoning, live\.reasoning \|\| ""\)/u);
+  assert.match(app, /renderMarkdown\(body, visibleText\)/u);
   assert.match(app, /function renderMessage\(message, \{ readOnly = false \} = \{\}\)/u);
   assert.match(client, /agentHub\.on\("workspace:visible-streams"/u);
+  assert.match(client, /visibleStreamTaskIds = new Set\(ids\)/u);
+  assert.match(client, /for \(const task of snapshot\.tasks \?\? \[\]\) \{[\s\S]*agentHub\.setLive\(stableTaskId/u);
   assert.match(client, /control\("task-history", \{/u);
   assert.match(styles, /\.stream-chat-columns\[data-multi-stream\]/u);
   assert.match(styles, /repeat\(var\(--stream-chat-count, 1\), minmax\(13rem, 1fr\)\)/u);
@@ -1968,6 +1976,7 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   assert.match(app, /class: "stream-chat-preview-log chat-scroll"/u);
   assert.match(app, /class: "stream-chat-preview-messages chat-log"/u);
   assert.match(styles, /\.chat-overlay-actions\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?right:/u);
+  assert.doesNotMatch(styles, /\.stream-chat-preview-log \.activity-feed\s*\{[\s\S]*?display:\s*none;/u);
   assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-preview\s*\{\s*display: none;/su);
   assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-columns\s*\{[\s\S]*?display: grid;/u);
 });

@@ -1764,15 +1764,20 @@ function renderStreamChatPreview(task) {
     for (const message of messages.slice(-20)) log.append(renderMessage(message, { readOnly: true }));
   }
   const live = state.live.get(task.id);
-  if (live && (live.text || live.reasoning || live.stage)) {
+  if (liveCardHasContent(live)) {
     const liveNode = el("article", { class: "msg msg-live stream-chat-preview-live-card" }, [
       el("div", { class: "msg-head" }, [
-        el("span", { class: "msg-author", text: live.author || task.agentLabel || "Агент" }),
-        el("span", { class: "msg-stage", text: live.stage || "" }),
+        el("span", { class: "msg-author", "data-live-author": "" }),
+        el("span", { class: "msg-stage", "data-live-stage": "" }),
+      ]),
+      el("div", { class: "msg-reasoning", "data-live-reasoning": "", hidden: true }),
+      el("div", { class: "msg-body", "data-live-body": "" }),
+      el("details", { class: "activity-feed", "data-activity-feed": "", hidden: true }, [
+        el("summary", { "data-activity-summary": "", text: "Действия хода" }),
+        el("div", { class: "activity-list", "data-activity-list": "" }),
       ]),
     ]);
-    if (live.reasoning) liveNode.append(el("div", { class: "msg-reasoning", text: live.reasoning }));
-    if (live.text) liveNode.append(el("div", { class: "msg-body", text: live.text }));
+    populateLiveCard(liveNode, live, task.agentLabel || "Агент");
     log.append(liveNode);
   }
   scroll.append(log);
@@ -3016,49 +3021,56 @@ function liveTextAfterMessages(live) {
   return normalizedMessageText(live?.text);
 }
 
+function liveCardHasContent(live) {
+  return Boolean(live && (
+    liveTextAfterMessages(live)
+    || normalizedMessageText(live.reasoning)
+    || normalizedMessageText(live.stage)
+  ));
+}
+
+function populateLiveCard(node, live, fallbackAuthor = "Агент") {
+  if (!node || !liveCardHasContent(live)) return false;
+  const visibleText = liveTextAfterMessages(live);
+  node.querySelector("[data-live-author]").textContent = live.author || fallbackAuthor;
+  node.querySelector("[data-live-stage]").textContent = live.stage || "";
+  const reasoning = node.querySelector("[data-live-reasoning]");
+  renderMarkdown(reasoning, live.reasoning || "");
+  reasoning.hidden = !live.reasoning;
+  const body = node.querySelector("[data-live-body]");
+  renderMarkdown(body, visibleText);
+  body.hidden = !visibleText;
+  const activityFeed = node.querySelector("[data-activity-feed]");
+  const activities = Array.isArray(live.activities) ? live.activities : [];
+  activityFeed.hidden = activities.length === 0;
+  node.querySelector("[data-activity-summary]").textContent = `Действия хода (${activities.length})`;
+  node.querySelector("[data-activity-list]").replaceChildren(...activities.map((activity) => el("div", {
+    class: "activity-item",
+    "data-type": activity.type ?? "stage",
+    "data-status": activity.status ?? "",
+  }, [
+    el("span", { class: "activity-marker", "aria-hidden": "true" }),
+    el("span", { class: "activity-time", text: activity.time
+      ? new Date(activity.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      : "" }),
+    el("span", { class: "activity-label", text: activity.label ?? "Действие" }),
+    activity.detail ? el("span", { class: "activity-detail", text: activity.detail }) : null,
+  ])));
+  return true;
+}
+
 function renderLive() {
   // Решение о прилипающей прокрутке принимаем до изменения высоты live-блока.
   // Иначе большой очередной фрагмент уже отодвинет низ дальше порога.
   const stickToBottom = chatIsNearBottom();
   const live = state.live.get(state.selectedId);
-  const visibleText = liveTextAfterMessages(live);
-  if (!live || (
-    !visibleText
-    && !normalizedMessageText(live.reasoning)
-    && !normalizedMessageText(live.stage)
-  )) {
+  if (!liveCardHasContent(live)) {
     chatLive.hidden = true;
     if (stickToBottom) pinChatToBottom();
     return;
   }
   chatLive.hidden = false;
-  chatLive.querySelector("[data-live-author]").textContent = live.author || "Агент";
-  chatLive.querySelector("[data-live-stage]").textContent = live.stage || "";
-  const reasoning = chatLive.querySelector("[data-live-reasoning]");
-  renderMarkdown(reasoning, live.reasoning || "");
-  reasoning.hidden = !live.reasoning;
-  const body = chatLive.querySelector("[data-live-body]");
-  renderMarkdown(body, visibleText);
-  body.hidden = !visibleText;
-  const activityFeed = chatLive.querySelector("[data-activity-feed]");
-  const activities = Array.isArray(live.activities) ? live.activities : [];
-  activityFeed.hidden = activities.length === 0;
-  if (activities.length) {
-    chatLive.querySelector("[data-activity-summary]").textContent = `Действия хода (${activities.length})`;
-    const list = chatLive.querySelector("[data-activity-list]");
-    list.replaceChildren(...activities.map((activity) => el("div", {
-      class: "activity-item",
-      "data-type": activity.type ?? "stage",
-      "data-status": activity.status ?? "",
-    }, [
-      el("span", { class: "activity-marker", "aria-hidden": "true" }),
-      el("span", { class: "activity-time", text: activity.time
-        ? new Date(activity.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-        : "" }),
-      el("span", { class: "activity-label", text: activity.label ?? "Действие" }),
-      activity.detail ? el("span", { class: "activity-detail", text: activity.detail }) : null,
-    ])));
-  }
+  populateLiveCard(chatLive, live);
   if (stickToBottom) pinChatToBottom();
 }
 
