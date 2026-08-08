@@ -70,10 +70,16 @@ class MemoryStorage {
     for (const item of Array.isArray(key) ? key : [key]) this.values.delete(item);
   }
 
-  async list({ prefix = "" } = {}) {
-    return new Map([...this.values].filter(([key]) => key.startsWith(prefix)).sort(([left], [right]) => (
-      left.localeCompare(right)
-    )));
+  async list({ prefix = "", start = "", startAfter = "", end = "", limit = Number.POSITIVE_INFINITY } = {}) {
+    return new Map([...this.values]
+      .filter(([key]) => (
+        key.startsWith(prefix)
+        && (!start || key >= start)
+        && (!startAfter || key > startAfter)
+        && (!end || key < end)
+      ))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .slice(0, limit));
   }
 
   async transaction(callback) {
@@ -267,6 +273,40 @@ test("Worker relay authenticates, isolates, executes once, and returns results",
   ), env);
   assert.equal(response.status, 404);
   assert.equal(await storage.get(`control:command:${id}`), undefined);
+});
+
+test("Worker serves the latest pushed snapshot without creating a control command", async () => {
+  const workerModule = await loadWorker();
+  const storage = new MemoryStorage();
+  const store = new workerModule.JournalStore({ storage }, {});
+  const botToken = "123456:test-token";
+  const syncSecret = "p".repeat(64);
+  const env = {
+    TELEGRAM_BOT_TOKEN: botToken,
+    ALLOWED_USER_IDS: "42",
+    SYNC_SECRET: syncSecret,
+    JOURNAL: { getByName: () => store },
+    ASSETS: { fetch: async () => new Response("asset") },
+  };
+  const snapshot = { apiVersion: 3, tasks: [], version: "snapshot-v1" };
+
+  let response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/snapshot/push", { userId: "42", snapshot }, syncSecret),
+    env,
+  );
+  assert.equal(response.status, 200);
+
+  response = await workerModule.default.fetch(new Request("https://hub.test/api/snapshot", {
+    headers: { Authorization: `tma ${telegramInitData(botToken, 42)}` },
+  }), env);
+  assert.deepEqual(await response.json(), snapshot);
+
+  response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/snapshot?knownVersion=snapshot-v1&waitMs=0",
+    { headers: { Authorization: `tma ${telegramInitData(botToken, 42)}` } },
+  ), env);
+  assert.deepEqual(await response.json(), { notModified: true, version: "snapshot-v1" });
+  assert.equal([...storage.values.keys()].some((key) => key.startsWith("control:command:")), false);
 });
 
 test("completed control receipts do not consume live queue capacity", async () => {
@@ -578,8 +618,13 @@ test("Worker relay retries an abandoned running command with the same id", async
   assert.deepEqual((await response.json()).commands, []);
 
   const abandoned = await storage.get(`control:command:${id}`);
+  await storage.delete(abandoned.availabilityKey);
   abandoned.leaseExpiresAt = Date.now() - 1;
-  await storage.put(`control:command:${id}`, abandoned);
+  abandoned.availabilityKey = `control:available:${String(abandoned.leaseExpiresAt).padStart(16, "0")}:${id}`;
+  await storage.put({
+    [`control:command:${id}`]: abandoned,
+    [abandoned.availabilityKey]: { id },
+  });
   response = await pull();
   assert.equal((await response.json()).commands[0].id, id);
   assert.equal((await storage.get(`control:command:${id}`)).deliveryAttempt, 2);

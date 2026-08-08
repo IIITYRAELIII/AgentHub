@@ -120,6 +120,47 @@ test("Mini App publisher reuses the sync id for an identical journal retry", asy
   assert.notEqual(changed.syncId, first.syncId);
 });
 
+test("Mini App publisher pushes a client snapshot only when its version changes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-snapshot-publisher-"));
+  const secretFile = path.join(root, "sync.secret");
+  const secret = "q".repeat(64);
+  await writeFile(secretFile, secret);
+  const requests = [];
+  const versions = [];
+  const publisher = new MiniAppPublisher({
+    dataDirectory: root,
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    snapshotUserIds: ["42"],
+    controlHandler: async ({ action, params, context }) => {
+      assert.equal(action, "snapshot");
+      assert.equal(context.userId, "42");
+      versions.push(params.knownVersion);
+      return params.knownVersion === "snapshot-v1"
+        ? { notModified: true, version: "snapshot-v1" }
+        : { apiVersion: 3, tasks: [], version: "snapshot-v1" };
+    },
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return Response.json({ ok: true });
+    },
+  });
+  try {
+    assert.equal(await publisher.syncSnapshots(), true);
+    assert.equal(await publisher.syncSnapshots(), false);
+    assert.deepEqual(versions, ["", "snapshot-v1"]);
+    assert.equal(requests.length, 1);
+    assert.equal(new URL(requests[0].url).pathname, "/api/snapshot/push");
+    assert.deepEqual(JSON.parse(requests[0].options.body), {
+      userId: "42",
+      snapshot: { apiVersion: 3, tasks: [], version: "snapshot-v1" },
+    });
+  } finally {
+    await publisher.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Mini App publisher manages trusted devices through signed service requests", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-device-publisher-"));
   const secretFile = path.join(root, "sync.secret");

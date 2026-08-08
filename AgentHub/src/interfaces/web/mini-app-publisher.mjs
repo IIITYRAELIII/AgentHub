@@ -28,6 +28,7 @@ const DEFAULT_CONTROL_POLL_MS = 2_000;
 const CONTROL_LONG_POLL_MS = 25_000;
 const CONTROL_LONG_POLL_TIMEOUT_MS = 35_000;
 const CONTROL_LOOP_GAP_MS = 25;
+const DEFAULT_SNAPSHOT_REFRESH_MS = 5_000;
 const MAX_CONTROL_RESULT_BYTES = 1024 * 1024;
 const MAX_CONTROL_ERROR_CHARS = 4_096;
 const MAX_ATTACHMENTS_PER_COMMAND = MAX_MESSAGE_ATTACHMENTS;
@@ -141,11 +142,16 @@ export class MiniAppPublisher {
   #fetch;
   #onPublished;
   #controlHandler;
+  #snapshotUserIds;
+  #snapshotRefreshMs;
+  #snapshotVersions = new Map();
   #controlPollMs;
   #controlBatchSize;
   #attachmentDirectory;
   #unsubscribeJournal = null;
   #refreshTimer = null;
+  #snapshotRefreshTimer = null;
+  #snapshotDebounceTimer = null;
   #controlTimer = null;
   #controlDelayResolve = null;
   #controlLoop = null;
@@ -154,6 +160,7 @@ export class MiniAppPublisher {
   #retryTimer = null;
   #debounceTimer = null;
   #syncing = null;
+  #snapshotSyncing = null;
   #controlPolling = null;
   #controlReceipts;
   #controlResultOutbox;
@@ -162,6 +169,7 @@ export class MiniAppPublisher {
   #afterControlEffect;
   #onControlResultDelivered;
   #pending = false;
+  #snapshotPending = false;
   #published = false;
   #closed = false;
 
@@ -176,6 +184,8 @@ export class MiniAppPublisher {
     fetchImpl = globalThis.fetch,
     onPublished = null,
     controlHandler = null,
+    snapshotUserIds = [],
+    snapshotRefreshSeconds = DEFAULT_SNAPSHOT_REFRESH_MS / 1_000,
     controlPollSeconds = DEFAULT_CONTROL_POLL_MS / 1_000,
     controlBatchSize = 10,
     attachmentDirectory = null,
@@ -195,6 +205,13 @@ export class MiniAppPublisher {
     this.#fetch = fetchImpl;
     this.#onPublished = onPublished;
     this.#controlHandler = typeof controlHandler === "function" ? controlHandler : null;
+    this.#snapshotUserIds = [...new Set([...snapshotUserIds]
+      .map((value) => String(value).trim())
+      .filter(Boolean))];
+    this.#snapshotRefreshMs = Math.max(
+      1_000,
+      Number(snapshotRefreshSeconds) * 1_000 || DEFAULT_SNAPSHOT_REFRESH_MS,
+    );
     this.#controlPollMs = Math.max(500, Number(controlPollSeconds) * 1_000 || DEFAULT_CONTROL_POLL_MS);
     this.#controlBatchSize = Math.min(20, Math.max(1, Math.trunc(Number(controlBatchSize) || 10)));
     this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
@@ -249,7 +266,7 @@ export class MiniAppPublisher {
     if (this.#closed || this.#retryTimer) return;
     this.#retryTimer = setTimeout(() => {
       this.#retryTimer = null;
-      void this.sync().catch(() => {});
+      void Promise.allSettled([this.sync(), this.syncSnapshots()]);
     }, this.#retryMs);
     this.#retryTimer.unref?.();
   }
@@ -259,6 +276,13 @@ export class MiniAppPublisher {
     clearTimeout(this.#debounceTimer);
     this.#debounceTimer = setTimeout(() => void this.sync().catch(() => {}), 250);
     this.#debounceTimer.unref?.();
+  }
+
+  #scheduleSnapshotChange() {
+    if (this.#closed || !this.#snapshotUserIds.length) return;
+    clearTimeout(this.#snapshotDebounceTimer);
+    this.#snapshotDebounceTimer = setTimeout(() => void this.syncSnapshots().catch(() => {}), 250);
+    this.#snapshotDebounceTimer.unref?.();
   }
 
   async #signedControlFetch(pathname, payload, secret, {
@@ -535,6 +559,7 @@ export class MiniAppPublisher {
             effect: async () => {
               const result = await this.#controlHandler({ action: command.action, params: command.params, context });
               await this.#afterControlEffect?.(result, command);
+              this.#scheduleSnapshotChange();
               return result;
             },
             reconcile: this.#controlReconciler
@@ -672,17 +697,65 @@ export class MiniAppPublisher {
     }
   }
 
+  async syncSnapshots() {
+    if (this.#closed || !this.#controlHandler || !this.#snapshotUserIds.length) return false;
+    if (this.#snapshotSyncing) {
+      this.#snapshotPending = true;
+      return this.#snapshotSyncing;
+    }
+    this.#snapshotSyncing = (async () => {
+      const secret = await this.#secret();
+      let changed = false;
+      for (const userId of this.#snapshotUserIds) {
+        const snapshot = await this.#controlHandler({
+          action: "snapshot",
+          params: { knownVersion: this.#snapshotVersions.get(userId) ?? "" },
+          context: { source: "telegram-mini-app", userId },
+        });
+        if (snapshot?.notModified === true) continue;
+        if (!snapshot || typeof snapshot !== "object" || !String(snapshot.version ?? "")) {
+          throw new Error("Agent Hub returned an invalid client snapshot");
+        }
+        await this.#signedControlRequest("/api/snapshot/push", { userId, snapshot }, secret);
+        this.#snapshotVersions.set(userId, String(snapshot.version));
+        changed = true;
+      }
+      return changed;
+    })();
+    try {
+      return await this.#snapshotSyncing;
+    } catch (error) {
+      this.#scheduleRetry();
+      throw error;
+    } finally {
+      this.#snapshotSyncing = null;
+      if (this.#snapshotPending) {
+        this.#snapshotPending = false;
+        this.#scheduleSnapshotChange();
+      }
+    }
+  }
+
   async start() {
     if (!this.#journalDatabase) {
       throw new Error("Mini App journalDatabase or journalDatabaseFile is required");
     }
-    this.#unsubscribeJournal = this.#journalDatabase.subscribe(() => this.#scheduleChange());
+    this.#unsubscribeJournal = this.#journalDatabase.subscribe(() => {
+      this.#scheduleChange();
+      this.#scheduleSnapshotChange();
+    });
     this.#refreshTimer = setInterval(() => void this.sync().catch(() => {}), this.#refreshMs);
     this.#refreshTimer.unref?.();
+    this.#snapshotRefreshTimer = setInterval(
+      () => void this.syncSnapshots().catch(() => {}),
+      this.#snapshotRefreshMs,
+    );
+    this.#snapshotRefreshTimer.unref?.();
     if (this.#controlHandler) {
       this.#controlLoop = this.#runControlLoop();
     }
-    return this.sync();
+    const [published] = await Promise.all([this.sync(), this.syncSnapshots()]);
+    return published;
   }
 
   async close() {
@@ -690,13 +763,16 @@ export class MiniAppPublisher {
     this.#unsubscribeJournal?.();
     this.#unsubscribeJournal = null;
     clearTimeout(this.#debounceTimer);
+    clearTimeout(this.#snapshotDebounceTimer);
     clearTimeout(this.#retryTimer);
     clearInterval(this.#refreshTimer);
+    clearInterval(this.#snapshotRefreshTimer);
     clearTimeout(this.#controlTimer);
     this.#controlDelayResolve?.();
     this.#controlDelayResolve = null;
     this.#controlAbortController?.abort();
     await this.#syncing?.catch(() => {});
+    await this.#snapshotSyncing?.catch(() => {});
     await this.#controlLoop?.catch(() => {});
     await this.#controlPolling?.catch(() => {});
     if (this.#ownsJournalDatabase) this.#journalDatabase.close();

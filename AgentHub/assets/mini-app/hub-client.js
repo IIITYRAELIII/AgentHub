@@ -729,9 +729,27 @@ async function waitRemoteResult(commandId, timeoutMs = DEFAULT_CONTROL_TIMEOUT_M
   );
 }
 
+async function readSnapshot(params = {}) {
+  await localSessionReady;
+  const query = new URLSearchParams({
+    knownVersion: String(params?.knownVersion ?? ""),
+    waitMs: String(REMOTE_RESULT_LONG_POLL_MS),
+  });
+  const response = await hubFetch(`/api/snapshot?${query}`, {
+    headers: authorizationHeaders(),
+    cache: "no-store",
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`));
+  }
+  return payload;
+}
+
 async function control(action, params = {}) {
   const bridged = bridgeCall(action, params);
   if (bridged) return bridged;
+  if (action === "snapshot") return readSnapshot(params);
   await localSessionReady;
   const response = await hubFetch("/api/control", {
     method: "POST",

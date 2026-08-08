@@ -69,6 +69,7 @@ export class MiniAppLifecycleService {
         journalDatabaseFile: this.journalDatabaseFile,
         ...this.config.miniApp.worker,
         controlHandler: this.controlHandler,
+        snapshotUserIds: [...this.config.allowedUserIds],
         controlReceiptFile: path.join(this.config.dataDir, "mini-app-control-receipts.json"),
         controlReconciler: this.controlReconciler,
         onControlResultDelivered: async ({ id }) => this.forgetControl(id),

@@ -13,6 +13,12 @@ const MAX_CONTROL_COMMANDS = 500;
 const CONTROL_EXPIRY_MS = 30 * 60 * 1_000;
 const CONTROL_LEASE_MS = 30 * 1_000;
 const MAX_CONTROL_WAIT_MS = 25 * 1_000;
+const CONTROL_INDEX_VERSION = 1;
+const CONTROL_INDEX_VERSION_KEY = "control:index-version";
+const CONTROL_ACTIVE_COUNT_KEY = "control:active-count";
+const CONTROL_AVAILABLE_PREFIX = "control:available:";
+const CONTROL_EXPIRY_PREFIX = "control:expiry:";
+const CLIENT_SNAPSHOT_PREFIX = "client:snapshot:";
 const CONTROL_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const SYNC_STAGING_EXPIRY_MS = 30 * 60 * 1_000;
 const STORAGE_DELETE_BATCH_SIZE = 128;
@@ -467,6 +473,34 @@ function normalizedDeviceName(value) {
   return name;
 }
 
+function orderedTimestamp(value) {
+  return String(Math.max(0, Math.trunc(Number(value) || 0))).padStart(16, "0");
+}
+
+function timedControlKey(prefix, timestamp, id) {
+  return `${prefix}${orderedTimestamp(timestamp)}:${id}`;
+}
+
+function timedControlRangeEnd(prefix, timestamp) {
+  return `${prefix}${orderedTimestamp(Number(timestamp) + 1)}`;
+}
+
+function controlCommandKey(id) {
+  return `control:command:${id}`;
+}
+
+function controlAvailableKey(command, availableAt = command.createdAt) {
+  return timedControlKey(CONTROL_AVAILABLE_PREFIX, availableAt, command.id);
+}
+
+function controlExpiryKey(command) {
+  return timedControlKey(CONTROL_EXPIRY_PREFIX, command.expiresAt, command.id);
+}
+
+function clientSnapshotKey(userId) {
+  return `${CLIENT_SNAPSHOT_PREFIX}${String(userId)}`;
+}
+
 function deviceSessionMessage({ deviceId, challengeId, challenge }) {
   return ["agent-hub-device-session-v1", deviceId, challengeId, challenge].join("\n");
 }
@@ -493,8 +527,17 @@ async function deleteStorageKeys(storage, keys) {
   }
 }
 
+async function putStorageEntries(storage, entries) {
+  const uniqueEntries = [...new Map(entries.filter(([key]) => Boolean(key))).entries()];
+  for (let offset = 0; offset < uniqueEntries.length; offset += STORAGE_DELETE_BATCH_SIZE) {
+    await storage.put(Object.fromEntries(uniqueEntries.slice(offset, offset + STORAGE_DELETE_BATCH_SIZE)));
+  }
+}
+
 export class JournalStore extends DurableObject {
   #cachedPayload = null;
+  #snapshotCache = new Map();
+  #snapshotWaiters = new Map();
   #controlResultWaiters = new Map();
   #controlWaiters = new Set();
 
@@ -543,6 +586,78 @@ export class JournalStore extends DurableObject {
 
   #wakeControlResultWaiters(id) {
     for (const settle of [...(this.#controlResultWaiters.get(id) ?? [])]) settle();
+  }
+
+  #snapshotWaiter(userId, waitMs) {
+    let waiters = this.#snapshotWaiters.get(userId);
+    if (!waiters) {
+      waiters = new Set();
+      this.#snapshotWaiters.set(userId, waiters);
+    }
+    let timer = null;
+    let settled = false;
+    let settle = null;
+    const promise = new Promise((resolve) => {
+      settle = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        waiters.delete(settle);
+        if (!waiters.size) this.#snapshotWaiters.delete(userId);
+        resolve();
+      };
+      waiters.add(settle);
+      timer = setTimeout(settle, waitMs);
+    });
+    return { promise, cancel: () => settle() };
+  }
+
+  #wakeSnapshotWaiters(userId) {
+    for (const settle of [...(this.#snapshotWaiters.get(userId) ?? [])]) settle();
+  }
+
+  async #storedSnapshot(userId) {
+    if (this.#snapshotCache.has(userId)) return this.#snapshotCache.get(userId);
+    const snapshot = await this.ctx.storage.get(clientSnapshotKey(userId));
+    if (snapshot) this.#snapshotCache.set(userId, snapshot);
+    return snapshot ?? null;
+  }
+
+  async #pushSnapshot(payload) {
+    const userId = String(payload?.userId ?? "").trim();
+    const snapshot = payload?.snapshot;
+    if (!userId || !snapshot || typeof snapshot !== "object" || !String(snapshot.version ?? "")) {
+      throw new Error("invalid client snapshot");
+    }
+    await this.ctx.storage.put(clientSnapshotKey(userId), snapshot);
+    this.#snapshotCache.set(userId, snapshot);
+    this.#wakeSnapshotWaiters(userId);
+    return { ok: true, version: String(snapshot.version) };
+  }
+
+  async #readSnapshot(payload) {
+    const token = String(payload?.token ?? "").trim();
+    const userId = token
+      ? String((await this.#resolveDeviceSession({ token })).id)
+      : String(payload?.userId ?? "").trim();
+    if (!userId) throw new Error("invalid snapshot user");
+    const knownVersion = String(payload?.knownVersion ?? "").slice(0, 128);
+    const waitMs = Math.min(MAX_CONTROL_WAIT_MS, Math.max(0, Number(payload?.waitMs) || 0));
+    const waiter = knownVersion && waitMs > 0 ? this.#snapshotWaiter(userId, waitMs) : null;
+    try {
+      let snapshot = await this.#storedSnapshot(userId);
+      if (!snapshot) throw new Error("Снимок Agent Hub ещё не опубликован.");
+      if (knownVersion === String(snapshot.version) && waiter) {
+        await waiter.promise;
+        snapshot = await this.#storedSnapshot(userId);
+      }
+      if (knownVersion && knownVersion === String(snapshot?.version ?? "")) {
+        return { notModified: true, version: knownVersion };
+      }
+      return snapshot;
+    } finally {
+      waiter?.cancel();
+    }
   }
 
   #publicDevice(record) {
@@ -721,17 +836,59 @@ export class JournalStore extends DurableObject {
     return { device: this.#publicDevice(record) };
   }
 
-  async #controlCommands(storage = this.ctx.storage) {
-    return [...(await storage.list({ prefix: "control:command:" })).values()];
+  async #ensureControlIndex(storage = this.ctx.storage, now = Date.now()) {
+    if (Number(await storage.get(CONTROL_INDEX_VERSION_KEY)) === CONTROL_INDEX_VERSION) return;
+    const legacy = await storage.list({ prefix: "control:command:" });
+    const writes = [[CONTROL_INDEX_VERSION_KEY, CONTROL_INDEX_VERSION]];
+    const deletes = [];
+    let activeCount = 0;
+    for (const [key, command] of legacy) {
+      if (!command?.id || Number(command.expiresAt ?? 0) <= now) {
+        deletes.push(key);
+        continue;
+      }
+      command.expiryKey = controlExpiryKey(command);
+      writes.push([command.expiryKey, { id: command.id }]);
+      if (!["completed", "failed"].includes(command.status)) {
+        activeCount += 1;
+        const availableAt = command.status === "running"
+          ? Math.max(now, Number(command.leaseExpiresAt ?? 0))
+          : now;
+        command.availabilityKey = controlAvailableKey(command, availableAt);
+        writes.push([command.availabilityKey, { id: command.id }]);
+      } else {
+        delete command.availabilityKey;
+      }
+      writes.push([key, command]);
+    }
+    writes.push([CONTROL_ACTIVE_COUNT_KEY, activeCount]);
+    await putStorageEntries(storage, writes);
+    if (deletes.length) await deleteStorageKeys(storage, deletes);
   }
 
-  async #cleanupControlCommands(now = Date.now(), storage = this.ctx.storage) {
-    const commands = await this.#controlCommands(storage);
-    const expiredKeys = commands
-      .filter((command) => Number(command?.expiresAt ?? 0) <= now)
-      .map((command) => `control:command:${command.id}`);
-    if (expiredKeys.length) await storage.delete(expiredKeys);
-    return commands.filter((command) => Number(command?.expiresAt ?? 0) > now);
+  async #cleanupExpiredControlCommands(now = Date.now(), storage = this.ctx.storage) {
+    await this.#ensureControlIndex(storage, now);
+    const markers = await storage.list({
+      prefix: CONTROL_EXPIRY_PREFIX,
+      end: timedControlRangeEnd(CONTROL_EXPIRY_PREFIX, now),
+      limit: STORAGE_DELETE_BATCH_SIZE,
+    });
+    if (!markers.size) return 0;
+    const markerEntries = [...markers];
+    const keys = markerEntries.map(([, value]) => controlCommandKey(String(value?.id ?? "")));
+    const commands = await storage.get(keys);
+    const deletes = markerEntries.map(([key]) => key);
+    let activeCount = Number(await storage.get(CONTROL_ACTIVE_COUNT_KEY)) || 0;
+    for (const [index, key] of keys.entries()) {
+      const command = commands.get(key);
+      const markerKey = markerEntries[index][0];
+      if (!command || command.expiryKey !== markerKey) continue;
+      deletes.push(key, command.availabilityKey);
+      if (!["completed", "failed"].includes(command.status)) activeCount = Math.max(0, activeCount - 1);
+    }
+    await deleteStorageKeys(storage, deletes);
+    await storage.put(CONTROL_ACTIVE_COUNT_KEY, activeCount);
+    return markers.size;
   }
 
   async #attachmentManifests(storage = this.ctx.storage) {
@@ -761,22 +918,41 @@ export class JournalStore extends DurableObject {
   async #claimControlCommands(limit) {
     const now = Date.now();
     return this.ctx.storage.transaction(async (storage) => {
-      const commands = (await this.#cleanupControlCommands(now, storage))
-        .filter((command) => (
-          command.status === "pending"
-          || (command.status === "running" && Number(command.leaseExpiresAt ?? 0) <= now)
-        ))
-        .sort((left, right) => left.createdAt - right.createdAt)
-        .slice(0, limit);
-      if (commands.length) {
-        await storage.put(Object.fromEntries(commands.map((command) => {
-          command.status = "running";
-          command.updatedAt = now;
-          command.leaseExpiresAt = now + CONTROL_LEASE_MS;
-          command.deliveryAttempt = Math.max(0, Number(command.deliveryAttempt) || 0) + 1;
-          return [`control:command:${command.id}`, command];
-        })));
+      await this.#cleanupExpiredControlCommands(now, storage);
+      const markers = await storage.list({
+        prefix: CONTROL_AVAILABLE_PREFIX,
+        end: timedControlRangeEnd(CONTROL_AVAILABLE_PREFIX, now),
+        limit: Math.max(20, limit * 2),
+      });
+      const markerEntries = [...markers];
+      const keys = markerEntries.map(([, value]) => controlCommandKey(String(value?.id ?? "")));
+      const stored = keys.length ? await storage.get(keys) : new Map();
+      const commands = [];
+      const writes = [];
+      const deletes = [];
+      for (const [index, [markerKey]] of markerEntries.entries()) {
+        const key = keys[index];
+        const command = stored.get(key);
+        if (!command || command.availabilityKey !== markerKey) {
+          deletes.push(markerKey);
+          continue;
+        }
+        if (["completed", "failed"].includes(command.status) || Number(command.expiresAt ?? 0) <= now) {
+          deletes.push(markerKey);
+          continue;
+        }
+        if (commands.length >= limit) break;
+        command.status = "running";
+        command.updatedAt = now;
+        command.leaseExpiresAt = now + CONTROL_LEASE_MS;
+        command.deliveryAttempt = Math.max(0, Number(command.deliveryAttempt) || 0) + 1;
+        deletes.push(markerKey);
+        command.availabilityKey = controlAvailableKey(command, command.leaseExpiresAt);
+        writes.push([key, command], [command.availabilityKey, { id: command.id }]);
+        commands.push(command);
       }
+      if (writes.length) await putStorageEntries(storage, writes);
+      if (deletes.length) await deleteStorageKeys(storage, deletes);
       return commands.map((command) => ({
         id: command.id,
         userId: command.userId,
@@ -813,7 +989,7 @@ export class JournalStore extends DurableObject {
     return nextExpiry;
   }
 
-  async #scheduleSyncCleanupAlarm(expiresAt) {
+  async #scheduleCleanupAlarm(expiresAt) {
     if (!Number.isFinite(expiresAt)) return;
     const currentAlarm = await this.ctx.storage.getAlarm();
     if (currentAlarm === null || expiresAt < currentAlarm) {
@@ -821,8 +997,19 @@ export class JournalStore extends DurableObject {
     }
   }
 
+  async #nextControlExpiry(storage = this.ctx.storage) {
+    const markers = await storage.list({ prefix: CONTROL_EXPIRY_PREFIX, limit: 1 });
+    const key = markers.keys().next().value;
+    if (!key) return Number.POSITIVE_INFINITY;
+    const expiresAt = Number(String(key).slice(CONTROL_EXPIRY_PREFIX.length, CONTROL_EXPIRY_PREFIX.length + 16));
+    return Number.isFinite(expiresAt) ? expiresAt : Number.POSITIVE_INFINITY;
+  }
+
   async alarm() {
-    const nextExpiry = await this.#cleanupSyncStaging();
+    const nextSyncExpiry = await this.#cleanupSyncStaging();
+    await this.ctx.storage.transaction((storage) => this.#cleanupExpiredControlCommands(Date.now(), storage));
+    const nextControlExpiry = await this.#nextControlExpiry();
+    const nextExpiry = Math.min(nextSyncExpiry, nextControlExpiry);
     if (Number.isFinite(nextExpiry)) await this.ctx.storage.setAlarm(nextExpiry);
     else await this.ctx.storage.deleteAlarm();
   }
@@ -876,6 +1063,20 @@ export class JournalStore extends DurableObject {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/snapshot/push") {
+      try {
+        return json(await this.#pushSnapshot(await request.json()));
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/snapshot/read") {
+      try {
+        return json(await this.#readSnapshot(await request.json()));
+      } catch (error) {
+        return json({ error: error.message }, /not published/iu.test(error.message) ? 503 : 401);
+      }
+    }
     if (request.method === "POST" && url.pathname === "/device/pairing/create") {
       try {
         return json(await this.#createDevicePairing(await request.json()));
@@ -1165,11 +1366,12 @@ export class JournalStore extends DurableObject {
       }
       if (!userId) return json({ error: "invalid control user" }, 400);
       const now = Date.now();
-      const key = `control:command:${command.id}`;
+      const key = controlCommandKey(command.id);
+      const attachmentIds = attachmentIdsFromParams(command.action, command.params);
       const requestHash = await sha256(`${command.action}\n${stableStringify(command.params)}`);
       const response = await this.ctx.storage.transaction(async (storage) => {
-        const commands = await this.#cleanupControlCommands(now, storage);
-        await this.#cleanupAttachments(now, storage);
+        await this.#cleanupExpiredControlCommands(now, storage);
+        if (attachmentIds.length) await this.#cleanupAttachments(now, storage);
         const existing = await storage.get(key);
         if (existing) {
           if (existing.userId !== userId || existing.requestHash !== requestHash) {
@@ -1177,11 +1379,10 @@ export class JournalStore extends DurableObject {
           }
           return json(this.#controlStatus(existing), 200);
         }
-        const queuedCommands = commands.filter((item) => !["completed", "failed"].includes(item.status));
-        if (queuedCommands.length >= MAX_CONTROL_COMMANDS) {
+        const activeCount = Number(await storage.get(CONTROL_ACTIVE_COUNT_KEY)) || 0;
+        if (activeCount >= MAX_CONTROL_COMMANDS) {
           return json({ error: "control queue is full" }, 429);
         }
-        const attachmentIds = attachmentIdsFromParams(command.action, command.params);
         const attachmentManifests = [];
         for (const attachmentId of attachmentIds) {
           const manifest = await storage.get(`control:attachment:${attachmentId}`);
@@ -1200,8 +1401,13 @@ export class JournalStore extends DurableObject {
           updatedAt: now,
           expiresAt: now + CONTROL_EXPIRY_MS,
         };
+        record.availabilityKey = controlAvailableKey(record, now);
+        record.expiryKey = controlExpiryKey(record);
         await storage.put({
           [key]: record,
+          [record.availabilityKey]: { id: record.id },
+          [record.expiryKey]: { id: record.id },
+          [CONTROL_ACTIVE_COUNT_KEY]: activeCount + 1,
           ...Object.fromEntries(attachmentManifests.map((manifest) => {
             manifest.commandIds = [...new Set([...(manifest.commandIds ?? []), command.id])];
             manifest.expiresAt = Math.max(manifest.expiresAt, record.expiresAt);
@@ -1210,7 +1416,10 @@ export class JournalStore extends DurableObject {
         });
         return json(this.#controlStatus(record), 202);
       });
-      if (response.status === 202) this.#wakeControlWaiters();
+      if (response.status === 202) {
+        this.#wakeControlWaiters();
+        await this.#scheduleCleanupAlarm(now + CONTROL_EXPIRY_MS);
+      }
       return response;
     }
     if (request.method === "GET" && url.pathname === "/control/status") {
@@ -1220,13 +1429,25 @@ export class JournalStore extends DurableObject {
       const waitMs = Math.min(MAX_CONTROL_WAIT_MS, Math.max(0, Number(url.searchParams.get("waitMs")) || 0));
       const waiter = waitMs > 0 ? this.#controlResultWaiter(id, waitMs) : null;
       try {
-        await this.#cleanupControlCommands();
-        let command = await this.ctx.storage.get(`control:command:${id}`);
+        await this.#cleanupExpiredControlCommands();
+        let command = await this.ctx.storage.get(controlCommandKey(id));
         if (!command || command.userId !== userId) return json({ error: "control command not found" }, 404);
+        if (Number(command.expiresAt ?? 0) <= Date.now()) {
+          await this.ctx.storage.transaction(async (storage) => {
+            const current = await storage.get(controlCommandKey(id));
+            if (!current || Number(current.expiresAt ?? 0) > Date.now()) return;
+            const activeCount = Number(await storage.get(CONTROL_ACTIVE_COUNT_KEY)) || 0;
+            await deleteStorageKeys(storage, [controlCommandKey(id), current.availabilityKey, current.expiryKey]);
+            if (!["completed", "failed"].includes(current.status)) {
+              await storage.put(CONTROL_ACTIVE_COUNT_KEY, Math.max(0, activeCount - 1));
+            }
+          });
+          return json({ error: "control command not found" }, 404);
+        }
         if (["pending", "running"].includes(command.status) && waiter) {
           await waiter.promise;
-          await this.#cleanupControlCommands();
-          command = await this.ctx.storage.get(`control:command:${id}`);
+          await this.#cleanupExpiredControlCommands();
+          command = await this.ctx.storage.get(controlCommandKey(id));
           if (!command || command.userId !== userId) return json({ error: "control command not found" }, 404);
         }
         return json({ ...this.#controlStatus(command), longPoll: waitMs > 0 });
@@ -1257,8 +1478,9 @@ export class JournalStore extends DurableObject {
       if (!CONTROL_ID_PATTERN.test(id) || !userId || typeof payload?.ok !== "boolean") {
         return json({ error: "invalid control result" }, 400);
       }
-      const key = `control:command:${id}`;
+      const key = controlCommandKey(id);
       const response = await this.ctx.storage.transaction(async (storage) => {
+        await this.#ensureControlIndex(storage);
         const command = await storage.get(key);
         if (!command || command.userId !== userId) return json({ error: "control command not found" }, 404);
         if (command.status === "completed" || command.status === "failed") {
@@ -1268,8 +1490,12 @@ export class JournalStore extends DurableObject {
         const now = Date.now();
         command.status = payload.ok ? "completed" : "failed";
         command.updatedAt = now;
+        const previousAvailabilityKey = command.availabilityKey;
+        const previousExpiryKey = command.expiryKey;
         command.expiresAt = now + CONTROL_EXPIRY_MS;
         delete command.leaseExpiresAt;
+        delete command.availabilityKey;
+        command.expiryKey = controlExpiryKey(command);
         if (payload.ok) {
           command.result = payload.result ?? null;
           delete command.error;
@@ -1277,7 +1503,16 @@ export class JournalStore extends DurableObject {
           command.error = String(payload.error ?? "Agent Hub control action failed").slice(0, MAX_CONTROL_ERROR_CHARS);
           delete command.result;
         }
-        await storage.put(key, command);
+        const activeCount = Math.max(0, (Number(await storage.get(CONTROL_ACTIVE_COUNT_KEY)) || 0) - 1);
+        await deleteStorageKeys(storage, [
+          previousAvailabilityKey,
+          previousExpiryKey === command.expiryKey ? null : previousExpiryKey,
+        ]);
+        await storage.put({
+          [key]: command,
+          [command.expiryKey]: { id: command.id },
+          [CONTROL_ACTIVE_COUNT_KEY]: activeCount,
+        });
         for (const attachmentId of command.attachmentIds ?? []) {
           const attachmentKey = `control:attachment:${attachmentId}`;
           const manifest = await storage.get(attachmentKey);
@@ -1288,7 +1523,10 @@ export class JournalStore extends DurableObject {
         }
         return json(this.#controlStatus(command));
       });
-      if (response.ok) this.#wakeControlResultWaiters(id);
+      if (response.ok) {
+        this.#wakeControlResultWaiters(id);
+        await this.#scheduleCleanupAlarm(Date.now() + CONTROL_EXPIRY_MS);
+      }
       return response;
     }
     if (request.method === "POST" && url.pathname === "/sync") {
@@ -1307,7 +1545,7 @@ export class JournalStore extends DurableObject {
     if (request.method === "POST" && url.pathname === "/sync-chunk") {
       const now = Date.now();
       const nextExpiry = await this.#cleanupSyncStaging(now);
-      await this.#scheduleSyncCleanupAlarm(nextExpiry);
+      await this.#scheduleCleanupAlarm(nextExpiry);
       const syncId = String(request.headers.get("X-Agent-Hub-Sync-Id") ?? "");
       const index = Number(request.headers.get("X-Agent-Hub-Chunk-Index"));
       const count = Number(request.headers.get("X-Agent-Hub-Chunk-Count"));
@@ -1339,7 +1577,7 @@ export class JournalStore extends DurableObject {
         },
         [chunkKey]: await request.arrayBuffer(),
       });
-      await this.#scheduleSyncCleanupAlarm(expiresAt);
+      await this.#scheduleCleanupAlarm(expiresAt);
       const chunkKeys = Array.from({ length: count }, (_, chunkIndex) => `chunk:${syncId}:${chunkIndex}`);
       const chunks = await this.ctx.storage.get(chunkKeys);
       if (chunks.size !== count) return json({ ok: true, complete: false }, 202);
@@ -1510,6 +1748,27 @@ export default {
         return json({ error: error.message }, 401);
       }
     }
+    if (url.pathname === "/api/snapshot/push") {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      let body;
+      try {
+        body = await validateControlServiceRequest(request, env.SYNC_SECRET);
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+      try {
+        const payload = parseJson(body, "snapshot publish request");
+        const userId = String(payload?.userId ?? "").trim();
+        if (!allowedUserIds(env.ALLOWED_USER_IDS).has(userId)) throw new Error("user is not allowed");
+        return store.fetch(new Request("https://journal.internal/snapshot/push", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }));
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
     if (["/api/device/pairing", "/api/device/list", "/api/device/revoke"].includes(url.pathname)) {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
       let body;
@@ -1548,6 +1807,35 @@ export default {
       } catch (error) {
         return json({ error: error.message }, 400);
       }
+    }
+    if (url.pathname === "/api/snapshot") {
+      if (!["GET", "HEAD"].includes(request.method)) return json({ error: "Method Not Allowed" }, 405);
+      const authorization = String(request.headers.get("Authorization") ?? "");
+      let identity;
+      try {
+        if (authorization.startsWith("tma ")) {
+          identity = { userId: String((await telegramUser(request, env)).id) };
+        } else if (authorization.startsWith("device ")) {
+          identity = { token: authorization.slice(7).trim() };
+        } else {
+          throw new Error("Откройте Agent Hub из Telegram или приложения.");
+        }
+      } catch (error) {
+        return json({ error: error.message }, 401);
+      }
+      const knownVersion = String(url.searchParams.get("knownVersion") ?? "").slice(0, 128);
+      const waitMs = Number(url.searchParams.get("waitMs") ?? 0);
+      if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > MAX_CONTROL_WAIT_MS) {
+        return json({ error: "invalid snapshot wait" }, 400);
+      }
+      const response = await store.fetch(new Request("https://journal.internal/snapshot/read", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...identity, knownVersion, waitMs }),
+      }));
+      return request.method === "HEAD"
+        ? new Response(null, { status: response.status, headers: response.headers })
+        : response;
     }
     if (url.pathname === "/api/attachment") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);

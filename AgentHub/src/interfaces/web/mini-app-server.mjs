@@ -613,6 +613,34 @@ export class MiniAppServer {
       }
       return;
     }
+    if (url.pathname === "/api/snapshot") {
+      if (!["GET", "HEAD"].includes(method)) {
+        response.writeHead(405, {
+          Allow: "GET, HEAD",
+          ...responseHeaders("text/plain; charset=utf-8"),
+        });
+        response.end("Method Not Allowed\n");
+        return;
+      }
+      const authorization = await this.#authorize(request, response);
+      if (!authorization) return;
+      if (!this.#controlHandler) {
+        json(response, 503, { error: "Снимок Agent Hub недоступен." }, method);
+        return;
+      }
+      try {
+        const knownVersion = String(url.searchParams.get("knownVersion") ?? "").slice(0, 128);
+        const result = await this.#controlHandler({
+          action: "snapshot",
+          params: { knownVersion },
+          context: authorization,
+        });
+        json(response, 200, result, method);
+      } catch (error) {
+        json(response, 400, { error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
     if (url.pathname === "/api/control") {
       if (method !== "POST") {
         response.writeHead(405, {

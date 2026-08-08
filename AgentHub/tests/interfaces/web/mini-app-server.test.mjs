@@ -755,11 +755,21 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
       ok: true,
       result: { generatedAt: "now" },
     });
-    assert.deepEqual(calls, [{
-      action: "snapshot",
-      params: { refresh: true },
-      context: { source: "local-mini-app" },
-    }]);
+    const snapshot = await fetch(`${address.url}api/snapshot?knownVersion=version-1`);
+    assert.equal(snapshot.status, 200);
+    assert.deepEqual(await snapshot.json(), { generatedAt: "now" });
+    assert.deepEqual(calls, [
+      {
+        action: "snapshot",
+        params: { refresh: true },
+        context: { source: "local-mini-app" },
+      },
+      {
+        action: "snapshot",
+        params: { knownVersion: "version-1" },
+        context: { source: "local-mini-app" },
+      },
+    ]);
 
     const externalHeaders = {
       "CF-Connecting-IP": "203.0.113.10",
