@@ -91,6 +91,7 @@ const breakdownToggle = document.querySelector("[data-token-breakdown-toggle]");
 const streamCollapseToggle = document.querySelector("[data-stream-collapse-toggle]");
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
 const streamStatusFillToggle = document.querySelector("[data-stream-status-fill-toggle]");
+const streamStatusEffectSelect = document.querySelector("[data-stream-status-effect-select]");
 const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
 const exchangeRateHint = document.querySelector("[data-exchange-rate-hint]");
 const panelScrim = document.querySelector("[data-panel-scrim]");
@@ -561,6 +562,30 @@ function applyStreamStatusStyle(value, { persist = false } = {}) {
   }
 }
 
+const STREAM_STATUS_EFFECTS = new Set(["calm", "impulse", "scanner", "energy", "off"]);
+
+function savedStreamStatusEffect() {
+  try {
+    const value = localStorage.getItem("agent-hub-stream-status-effect");
+    return STREAM_STATUS_EFFECTS.has(value) ? value : "impulse";
+  } catch {
+    return "impulse";
+  }
+}
+
+function applyStreamStatusEffect(value, { persist = false } = {}) {
+  const effect = STREAM_STATUS_EFFECTS.has(value) ? value : "impulse";
+  root.dataset.streamStatusEffect = effect;
+  if (streamStatusEffectSelect) streamStatusEffectSelect.value = effect;
+  if (persist) {
+    try {
+      localStorage.setItem("agent-hub-stream-status-effect", effect);
+    } catch {
+      // Настройка останется активной до закрытия WebView.
+    }
+  }
+}
+
 function savedStreamCollapse() {
   try {
     return localStorage.getItem("agent-hub-collapse-streams") === "on";
@@ -687,6 +712,7 @@ telegramFullscreenButton?.addEventListener("click", () => {
 applyTheme(savedTheme());
 applyBreakdown(savedBreakdown());
 applyStreamStatusStyle(savedStreamStatusStyle());
+applyStreamStatusEffect(savedStreamStatusEffect());
 applyStreamCollapse(savedStreamCollapse());
 selectUsageUnit(savedUsageUnit());
 selectClaudeGrouping(savedClaudeGrouping());
@@ -695,6 +721,9 @@ breakdownToggle?.addEventListener("change", () => {
 });
 streamStatusFillToggle?.addEventListener("change", () => {
   applyStreamStatusStyle(streamStatusFillToggle.checked ? "fill" : "edge", { persist: true });
+});
+streamStatusEffectSelect?.addEventListener("change", () => {
+  applyStreamStatusEffect(streamStatusEffectSelect.value, { persist: true });
 });
 streamCollapseToggle?.addEventListener("change", () => {
   applyStreamCollapse(streamCollapseToggle.checked, { persist: true, update: true });

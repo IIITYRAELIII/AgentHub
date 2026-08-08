@@ -251,6 +251,10 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(shellSource, /data-action="task-new" data-provider="claude"/u);
     assert.match(shellSource, /data-status-slot/u);
     assert.match(shellSource, /data-browser-auth/u);
+    assert.match(shellSource, /data-stream-status-effect-select/u);
+    for (const effect of ["calm", "impulse", "scanner", "energy", "off"]) {
+      assert.match(shellSource, new RegExp(`<option value="${effect}">`, "u"));
+    }
     assert.match(shellSource, /src="\/browser-device-auth\.js"/u);
     const browserAuthSource = await (await fetch(`${address.url}browser-device-auth.js`)).text();
     assert.match(browserAuthSource, /indexedDB\.open\(DATABASE_NAME, 1\)/u);
@@ -264,6 +268,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(appSource, /class: "task-diff"/u);
     assert.match(appSource, /emit\("task:new", \{ title, provider \}\)/u);
     assert.match(appSource, /data-dialog-settings-open/u);
+    assert.match(appSource, /agent-hub-stream-status-effect/u);
+    assert.match(appSource, /root\.dataset\.streamStatusEffect = effect/u);
     const clientSource = await (await fetch(`${address.url}hub-client.js`)).text();
     assert.match(clientSource, /agentHub\.setTaskDiff\(targetId/u);
     assert.match(clientSource, /control\("new-task", \{[\s\S]*provider: selectedProvider,[\s\S]*workspaceName: title \|\| undefined,[\s\S]*\}\)/u);

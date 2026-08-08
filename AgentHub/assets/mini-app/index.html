@@ -804,10 +804,20 @@
             <span class="setting-name">Фон</span>
             <select data-background-select aria-label="Фон интерфейса"></select>
           </label>
+          <label class="setting-row setting-field">
+            <span class="setting-name">Эффект Stream</span>
+            <select data-stream-status-effect-select aria-label="Эффект активности и готового ответа Stream">
+              <option value="calm">Спокойный</option>
+              <option value="impulse">Импульс</option>
+              <option value="scanner">Сканер</option>
+              <option value="energy">Энергия</option>
+              <option value="off">Выключено</option>
+            </select>
+          </label>
           <label class="setting-switch">
             <input type="checkbox" data-stream-status-fill-toggle>
             <span class="switch-text">Подсвечивать плашки Stream целиком
-              <span class="switch-note">У активных и завершённых ходов свет проходит внутри плашки вместо границы.</span>
+              <span class="switch-note">Выбранный эффект использует всю поверхность плашки вместо одной границы.</span>
             </span>
             <span class="switch-track" aria-hidden="true"></span>
           </label>
