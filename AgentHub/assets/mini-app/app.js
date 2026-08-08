@@ -1679,11 +1679,20 @@ function representativeWorkspaceTask(tasks) {
   ))[0] ?? null;
 }
 
+function streamMaintenanceKind(task) {
+  /* Ротация меняет тред, свёртка сжимает историю: на карточке это два разных
+     состояния, и оба видны без анимации. */
+  const reason = String(task?.maintenance?.reason ?? "");
+  if (["manual-rotation", "automatic-rotation"].includes(reason)) return "rotation";
+  return String(task?.context?.compaction?.status ?? "") === "running" ? "compaction" : "";
+}
+
 function renderTaskWorkspaceItem({ id, name, kind, tasks }) {
   const selected = workspaceKey(currentTask()) === id;
   const lastActivity = workspaceLastActivity(tasks);
   const unread = tasks.some((task) => task.unread);
   const running = tasks.some((task) => task.running);
+  const maintenance = tasks.map(streamMaintenanceKind).find(Boolean) ?? "";
   return el("li", {
     class: "task-workspace-item",
     "data-workspace-id": id,
@@ -1694,6 +1703,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }) {
     "data-selected": selected ? "" : null,
     "data-unread": unread ? "" : null,
     "data-running": running ? "" : null,
+    "data-maintenance": maintenance || null,
     role: "button",
     tabindex: "0",
     "aria-pressed": String(selected),
@@ -1774,6 +1784,7 @@ function renderStreamTabs() {
       "data-current": task?.id === selected.id ? "" : null,
       "data-running": running ? "" : null,
       "data-answer-ready": answerReady ? "" : null,
+      "data-maintenance": streamMaintenanceKind(task) || null,
       draggable: surface === "mobile" ? null : "true",
       "aria-label": [streamName, agentLabel, task?.modelLabel, statusLabel].filter(Boolean).join(". "),
       title: `${statusLabel ? `${statusLabel}. ` : ""}Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. Перетащите, чтобы изменить порядок. ПКМ — управление Stream.`,
@@ -4294,7 +4305,7 @@ let serverAutostartState = {};
 function renderAutostartEntry(autostart = {}) {
   const supported = autostart.supported !== false;
   const hint = supported
-    ? "Hub стартует вместе с входом в Windows."
+    ? ""
     : "Управление автозапуском доступно только в Windows.";
   const input = el("input", {
     type: "checkbox",
@@ -4310,12 +4321,12 @@ function renderAutostartEntry(autostart = {}) {
   ]);
   return el("div", {
     class: `server-config-row server-config-toggle${supported ? "" : " is-disabled"}`,
-    title: hint,
+    title: hint || "Автозапуск Agent Hub",
     "aria-disabled": supported ? null : "true",
   }, [
     switchControl,
-    el("small", { class: "server-config-hint", text: hint }),
-  ]);
+    hint ? el("small", { class: "server-config-hint", text: hint }) : null,
+  ].filter(Boolean));
 }
 
 /* Настройки применяются одной кнопкой: у каждой плитки своя кнопка «Сохранить»
@@ -4413,7 +4424,10 @@ function renderServerConfigLayout(autostart, entries) {
       renderAutostartEntry(autostart),
       ...SERVER_CONFIG_LEFT_KEYS.map(renderKey),
     ].filter(Boolean)),
-    el("div", { class: "server-config-column" }, SERVER_CONFIG_RIGHT_KEYS.map(renderKey).filter(Boolean)),
+    el("div", { class: "server-config-column" }, [
+      el("h3", { class: "server-config-column-title", text: "Оптимизация Codex" }),
+      ...SERVER_CONFIG_RIGHT_KEYS.map(renderKey),
+    ].filter(Boolean)),
   ]);
   const advanced = el("details", {
     class: "server-config-advanced",

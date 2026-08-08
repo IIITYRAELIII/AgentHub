@@ -185,3 +185,23 @@
     transform: scaleY(0.55);
   }
 }
+
+/* ============================== Свёртка и ротация контекста на карточке ===
+   Оба состояния статичные: ни одной анимации, только контур. Это надёжно
+   читается при любом выбранном эффекте, потому что эффекты занимают
+   псевдоэлементы, а контур — свойство самой карточки. */
+.task-workspace-item[data-maintenance],
+.stream-tab[data-maintenance] .stream-tab-card {
+  outline-offset: -3px;
+}
+
+.task-workspace-item[data-maintenance="compaction"],
+.stream-tab[data-maintenance="compaction"] .stream-tab-card {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 52%, transparent);
+}
+
+/* Ротация заметнее: она меняет тред, а не только сжимает историю. */
+.task-workspace-item[data-maintenance="rotation"],
+.stream-tab[data-maintenance="rotation"] .stream-tab-card {
+  outline: 2px double color-mix(in srgb, var(--accent) 78%, transparent);
+}
