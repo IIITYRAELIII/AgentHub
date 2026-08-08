@@ -258,6 +258,69 @@ test("journal projection groups all Stream turns under one expandable Workspace"
   assert.ok(projected.includes('data-usage-credits="9"'));
 });
 
+test("journal assigns an unknown root Thread to Experiments instead of a fake group", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-workspace-fallback-"));
+  try {
+    const ledgerFile = path.join(root, "data", "work-log-usage.json");
+    const assigned = [];
+    let resolution = null;
+    const workspaceCatalogStore = {
+      resolveThread: ({ threadId }) => (
+        resolution?.threadId === threadId ? resolution : null
+      ),
+      assignUnknownThread: (reference, options) => {
+        assigned.push({ reference, options });
+        resolution = {
+          ...reference,
+          workspaceId: "workspace-experiments",
+          workspaceName: "Experiments",
+          workspaceKind: "system",
+          streamId: "stream-experiments",
+          streamOrdinal: 1,
+          streamName: null,
+          streamDisplayName: "Stream 1",
+        };
+        return resolution;
+      },
+    };
+    const store = new WorkLogUsageStore({
+      ledgerFile,
+      defaultProjectRoot: root,
+      workspaceCatalogStore,
+    });
+    await store.recordAutomaticBatchAndProject({
+      records: [{
+        provider: "codex",
+        threadId: "child-thread",
+        taskThreadId: "root-thread",
+        parentThreadId: "root-thread",
+        turnId: "child-turn",
+        projectRoot: root,
+        taskTitle: "Root task",
+        title: "Child result",
+        completedAt: "2026-08-08T10:00:00.000Z",
+        estimatedCredits: 1,
+      }],
+      projectRoot: root,
+    });
+
+    assert.deepEqual(assigned, [{
+      reference: {
+        provider: "codex",
+        threadId: "root-thread",
+        projectRoot: root,
+      },
+      options: { source: "discovered" },
+    }]);
+    const projected = await projectedJournal(store);
+    assert.match(projected, /<strong>Experiments<\/strong>/u);
+    assert.doesNotMatch(projected, /Без воркспейса/u);
+    assert.doesNotMatch(projected, /data-thread-id="child-thread">Stream/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("journal keeps one Stream expandable and owns its total at Workspace level", () => {
   const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
     only: {
@@ -304,7 +367,7 @@ test("journal keeps one Stream expandable and owns its total at Workspace level"
   assert.match(collapsedUsage, /data-usage-credits="4"/u);
   assert.match(
     collapsedUsage,
-    /data-work-log-duration-summary data-work-log-duration-seconds="3600">[\s\S]*?1 ч 0 мин[\s\S]*?data-work-log-duration-percent>\(100%\)/u,
+    /data-work-log-duration-summary data-work-log-duration-seconds="3600"><span data-work-log-duration-percent>\(100%\)<\/span> <span data-work-log-duration>1 ч 0 мин<\/span><\/span><span data-kilo-usage[^>]*data-usage-credits="4"[^>]*>4 cr<\/span> <span data-usage-percent>\(100%\)<\/span>/u,
   );
   assert.doesNotMatch(collapsedUsage, /Итого|data-usage-label/u);
   assert.match(

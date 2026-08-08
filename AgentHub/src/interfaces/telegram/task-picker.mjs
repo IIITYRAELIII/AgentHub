@@ -2,6 +2,7 @@ import {
   taskCatalogCallback,
 } from "./task-catalog-presentation.mjs";
 import { catalogEntryIsSelected } from "../../domain/task-catalog-identity.mjs";
+import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import {
   taskExecutionRunningEmoji,
   taskExecutionRuntimeShortLabel,
@@ -17,7 +18,7 @@ export function taskPickerButtonText(entry, selectedTask, {
   const runtime = entry.running ? `${taskExecutionRuntimeShortLabel(entry.executionOwner)} · ` : "";
   const provider = entry.provider === "codex" ? "Codex" : "Claude";
   const project = showProject ? `${entry.projectName} · ` : "";
-  return `${selected}${running}${runtime}${provider} · ${project}${entry.title}`.slice(0, 90);
+  return `${selected}${running}${runtime}${provider} · ${project}${taskDisplayTitle(entry)}`.slice(0, 90);
 }
 
 export function buildTaskPicker({

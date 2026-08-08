@@ -6,6 +6,7 @@ export function createRuntimeRestartWiring({
   taskRuns,
   agentProviders,
   backgroundJobs,
+  streamMaintenance,
   getRestartRequest,
   isStopping,
   restartRequestService,
@@ -20,7 +21,13 @@ export function createRuntimeRestartWiring({
   }
 
   function restartHasBlockingWork() {
-    return restartBlockingRuns().length > 0 || backgroundJobs.size > 0;
+    return restartBlockingWorkCount() > 0;
+  }
+
+  function restartBlockingWorkCount() {
+    return restartBlockingRuns().length
+      + backgroundJobs.size
+      + streamMaintenance.activeCount();
   }
 
   async function performRestart() {
@@ -44,6 +51,7 @@ export function createRuntimeRestartWiring({
   return {
     ...composition,
     restartBlockingRuns,
+    restartBlockingWorkCount,
     restartHasBlockingWork,
     scheduleDeferredRestartIfReady,
     performRestart,

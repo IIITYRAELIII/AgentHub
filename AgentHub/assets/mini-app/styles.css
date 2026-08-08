@@ -1282,6 +1282,29 @@ main {
   width: 100%;
 }
 
+/* Сводка свёрнутого Workspace всегда занимает одну строку: слева доля времени
+   и длительность, справа расход и его доля от расхода дня. */
+.journal details[data-work-log-collapsed-workspace-usage-details]
+  > summary[data-task-usage] {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.journal details[data-work-log-collapsed-workspace-usage-details]
+  > summary[data-task-usage]
+  > span[data-work-log-duration-summary] {
+  display: contents;
+}
+
+.journal details[data-work-log-collapsed-workspace-usage-details]
+  > summary[data-task-usage]
+  span[data-work-log-duration-percent],
+.journal details[data-work-log-collapsed-workspace-usage-details]
+  > summary[data-task-usage]
+  span[data-work-log-duration] {
+  justify-self: start;
+  text-align: left;
+}
+
 .journal span[data-work-log-duration-summary] > span {
   justify-self: end;
   text-align: right;
@@ -3360,6 +3383,14 @@ html[data-surface="mobile"]
 
 html[data-surface="mobile"]
   .journal
+  span[data-work-log-workspace-usage]
+  details[data-work-log-collapsed-workspace-usage-details]
+  > summary[data-task-usage] {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+html[data-surface="mobile"]
+  .journal
   div[data-work-log-task-cell]:has(> div[data-work-log-task-content]:empty) {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -3416,6 +3447,11 @@ html[data-surface="mobile"]
 
 .task-workspace-item[data-selected] {
   background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.task-workspace-item[data-unread]:not([data-running]) {
+  animation: stream-answer-ready 3.6s ease-in-out infinite;
   border-color: var(--accent-line);
 }
 
@@ -3873,6 +3909,42 @@ html[data-surface="mobile"]
   border-color: var(--accent-line);
 }
 
+/* Альтернативный режим сохраняет времена штатных индикаторов, но переносит
+   бегущий свет и пульсацию с границы внутрь всей плашки. */
+:root[data-stream-status-style="fill"] .task-workspace-item[data-running]::after,
+:root[data-stream-status-style="fill"] .stream-tab[data-running] .stream-tab-card::after {
+  inset: 0;
+  opacity: 0.18;
+  padding: 0;
+  -webkit-mask: none;
+  -webkit-mask-composite: initial;
+  mask: none;
+  mask-composite: initial;
+}
+
+:root[data-stream-status-style="fill"] .task-workspace-item > *,
+:root[data-stream-status-style="fill"] .stream-tab-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+:root[data-stream-status-style="fill"] .task-workspace-item[data-unread]:not([data-running]),
+:root[data-stream-status-style="fill"] .stream-tab[data-answer-ready] .stream-tab-card {
+  animation: none;
+}
+
+:root[data-stream-status-style="fill"] .task-workspace-item[data-unread]:not([data-running])::before,
+:root[data-stream-status-style="fill"] .stream-tab[data-answer-ready] .stream-tab-card::before {
+  animation: stream-answer-ready-fill 3.6s ease-in-out infinite;
+  background: var(--accent);
+  border-radius: inherit;
+  content: "";
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
 /* Верхняя desktop-оболочка едина для всех тем. Палитра по-прежнему приходит
    из тематических токенов, но форма шапки, навигации, Workspace и Streams не
    превращается в капсулы, орбитальные узлы или отдельную сценическую панель. */
@@ -4019,6 +4091,11 @@ html[data-surface="mobile"]
   50% { box-shadow: 0 0 1.1rem 0.12rem color-mix(in srgb, var(--accent) 54%, transparent); }
 }
 
+@keyframes stream-answer-ready-fill {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 0.16; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .task-workspace-item[data-running]::after,
   .stream-tab[data-running] .stream-tab-card::after {
@@ -4029,6 +4106,26 @@ html[data-surface="mobile"]
   .stream-tab[data-answer-ready] .stream-tab-card {
     animation: none;
     box-shadow: 0 0 0.75rem color-mix(in srgb, var(--accent) 42%, transparent);
+  }
+
+  .task-workspace-item[data-unread]:not([data-running]) {
+    animation: none;
+    box-shadow: 0 0 0.75rem color-mix(in srgb, var(--accent) 42%, transparent);
+  }
+
+  :root[data-stream-status-style="fill"]
+    .task-workspace-item[data-unread]:not([data-running])::before,
+  :root[data-stream-status-style="fill"]
+    .stream-tab[data-answer-ready] .stream-tab-card::before {
+    animation: none;
+    opacity: 0.14;
+  }
+
+  :root[data-stream-status-style="fill"]
+    .task-workspace-item[data-unread]:not([data-running]),
+  :root[data-stream-status-style="fill"]
+    .stream-tab[data-answer-ready] .stream-tab-card {
+    box-shadow: none;
   }
 }
 
@@ -4081,6 +4178,10 @@ html[data-surface="mobile"]
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior-y: contain;
+}
+
+.stream-chat-preview-log .msg-actions {
+  display: none;
 }
 
 .stream-chat-preview-empty {
@@ -4415,66 +4516,6 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   padding: 0.22rem 0.75rem;
 }
 
-/* Свет по чату при завершении обслуживания контекста. Полоса идёт акцентным
-   цветом темы, поэтому эффект одинаково уместен на всех четырнадцати. Ротация
-   заметнее свёртки: она меняет тред, а не только сжимает историю. */
-.chat[data-context-flash]::after {
-  animation: context-flash-sweep 1.1s ease-out;
-  background: linear-gradient(
-    180deg,
-    transparent 0%,
-    color-mix(in srgb, var(--accent) 22%, transparent) 42%,
-    color-mix(in srgb, var(--accent) 34%, transparent) 50%,
-    color-mix(in srgb, var(--accent) 22%, transparent) 58%,
-    transparent 100%
-  );
-  content: "";
-  inset: 0;
-  pointer-events: none;
-  position: absolute;
-  z-index: 40;
-}
-
-.chat[data-context-flash="rotation"]::after {
-  animation-duration: 1.6s;
-  background: linear-gradient(
-    180deg,
-    transparent 0%,
-    color-mix(in srgb, var(--accent) 38%, transparent) 40%,
-    color-mix(in srgb, var(--accent) 62%, transparent) 50%,
-    color-mix(in srgb, var(--accent) 38%, transparent) 60%,
-    transparent 100%
-  );
-  box-shadow: inset 0 0 60px -30px var(--accent);
-}
-
-@keyframes context-flash-sweep {
-  from { opacity: 0; transform: translateY(-100%); }
-  12% { opacity: 1; }
-  88% { opacity: 1; }
-  to { opacity: 0; transform: translateY(100%); }
-}
-
-/* Без анимации остаётся один тихий проблеск по всей панели. */
-@media (prefers-reduced-motion: reduce) {
-  .chat[data-context-flash]::after {
-    animation: context-flash-fade 900ms ease-out;
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    transform: none;
-  }
-
-  .chat[data-context-flash="rotation"]::after {
-    animation-duration: 1.3s;
-    background: color-mix(in srgb, var(--accent) 20%, transparent);
-  }
-
-  @keyframes context-flash-fade {
-    from { opacity: 0; }
-    30% { opacity: 1; }
-    to { opacity: 0; }
-  }
-}
-
 .msg-maintenance .msg-body {
   text-align: center;
 }
@@ -4566,6 +4607,35 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 
 .msg-agent .msg-body {
   user-select: text;
+}
+
+.msg-actions {
+  display: flex;
+  gap: 0.3rem;
+  justify-content: flex-end;
+  margin-top: 0.35rem;
+}
+
+.msg-action {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  cursor: pointer;
+  display: inline-flex;
+  height: 1.7rem;
+  justify-content: center;
+  width: 1.7rem;
+}
+
+.msg-action svg {
+  height: 1rem;
+  width: 1rem;
+}
+
+.msg-action:hover {
+  color: var(--accent);
 }
 
 /* Diff относится к последнему ответу, но получает всю ширину ленты и

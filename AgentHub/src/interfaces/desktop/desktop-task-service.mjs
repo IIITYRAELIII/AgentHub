@@ -1,3 +1,5 @@
+import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
+
 function normalizedTaskReference(params = {}) {
   const streamId = String(params.streamId ?? "").trim();
   const provider = String(params.provider ?? "").trim();
@@ -59,7 +61,7 @@ export class DesktopTaskService {
       projectRoot: entry.projectRoot,
       sessionCwd: entry.sessionCwd ?? null,
       threadId: entry.threadId,
-      taskTitle: entry.title,
+      taskTitle: taskDisplayTitle(entry),
       model: entry.model ?? null,
       chatId: this.chatId(),
       telegramDeliveryRequested: false,
@@ -82,7 +84,7 @@ export class DesktopTaskService {
       provider: entry.provider,
       projectRoot: entry.projectRoot,
       threadId: entry.threadId,
-      taskTitle: entry.title,
+      taskTitle: taskDisplayTitle(entry),
     });
     this.markRead(entry, context);
     return {
@@ -134,7 +136,7 @@ export class DesktopTaskService {
     }
     await this.dispatchCommand(
       "task.select",
-      { taskTitle: entry.title },
+      { taskTitle: taskDisplayTitle(entry) },
       context,
       {
         target: this.commandTaskTarget({

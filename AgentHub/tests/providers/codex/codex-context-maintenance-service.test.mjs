@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CodexContextMaintenanceService } from "../../../src/providers/codex/codex-context-maintenance-service.mjs";
+import { CODEX_CONTEXT_PROBE_PROMPT } from "../../../src/domain/codex-context-probe.mjs";
 
 function harness(overrides = {}) {
   const calls = [];
@@ -73,19 +74,20 @@ test("manual compaction resumes a discovered thread before starting", async () =
     startCompaction: async (...args) => calls.push(["compact", ...args]),
     sandboxSettings: () => ({ sandbox: "workspace-write" }),
   });
-  const result = await service.startManual({ provider: "codex", threadId: "thread-1" });
+  const result = await service.startManual(
+    { provider: "codex", threadId: "thread-1" },
+    { beforePercent: 80 },
+  );
   assert.equal(result.accepted, true);
   assert.deepEqual(calls, [
     ["transport"],
-    ["begin-manual", "thread-1", { origin: "manual" }],
+    ["begin-manual", "thread-1", { origin: "manual", beforePercent: 80 }],
     ["resume", "thread-1", { sandbox: "workspace-write" }],
     ["compact", "thread-1"],
   ]);
 });
 
-test("context probe starts and settles in the exact compacted thread", async () => {
-  let now = 0;
-  let reads = 0;
+test("context probe returns only after its prompt materializes", async () => {
   const { service, calls } = harness({
     ensureTransport: async () => calls.push(["transport"]),
     startContextProbe: async (...args) => {
@@ -94,15 +96,12 @@ test("context probe starts and settles in the exact compacted thread", async () 
     },
     readThread: async (...args) => {
       calls.push(["read", ...args]);
-      reads += 1;
       return {
         thread: {
-          turns: [{ id: "probe-turn", status: reads === 1 ? "inProgress" : "completed" }],
+          turns: [{ id: "probe-turn", status: "inProgress", prompt: CODEX_CONTEXT_PROBE_PROMPT }],
         },
       };
     },
-    now: () => now,
-    sleep: async (milliseconds) => { now += milliseconds; },
   });
 
   const result = await service.probeContext({ provider: "codex", threadId: "thread-compacted" });
@@ -110,10 +109,64 @@ test("context probe starts and settles in the exact compacted thread", async () 
   assert.deepEqual(result, {
     threadId: "thread-compacted",
     turnId: "probe-turn",
-    status: "completed",
+    status: "started",
   });
   assert.deepEqual(calls[1], ["probe", "thread-compacted"]);
-  assert.equal(calls.filter(([name]) => name === "read").length, 2);
+  assert.deepEqual(calls[2], ["read", "thread-compacted", { fresh: true, includeTurns: true }]);
+});
+
+test("context probe interrupts one empty start and retries once", async () => {
+  let attempt = 0;
+  const { service, calls } = harness({
+    ensureTransport: async () => calls.push(["transport"]),
+    startContextProbe: async (...args) => {
+      attempt += 1;
+      calls.push(["probe", ...args, attempt]);
+      return { turn: { id: `probe-${attempt}` } };
+    },
+    readThread: async (...args) => {
+      calls.push(["read", ...args, attempt]);
+      return {
+        thread: {
+          turns: attempt === 1
+            ? [{ id: "probe-1", status: "completed" }]
+            : [{ id: "probe-2", status: "inProgress", prompt: CODEX_CONTEXT_PROBE_PROMPT }],
+        },
+      };
+    },
+    interruptContextProbe: async (...args) => calls.push(["interrupt", ...args]),
+    sleep: async (...args) => calls.push(["sleep", ...args]),
+  });
+
+  const result = await service.probeContext({ provider: "codex", threadId: "thread-compacted" });
+
+  assert.equal(result.turnId, "probe-2");
+  assert.equal(calls.filter(([name]) => name === "probe").length, 2);
+  assert.deepEqual(calls.find(([name]) => name === "interrupt"), [
+    "interrupt",
+    "thread-compacted",
+    "probe-1",
+  ]);
+  assert.deepEqual(calls.find(([name]) => name === "sleep"), ["sleep", 250]);
+});
+
+test("context probe fails after two empty starts without an unbounded loop", async () => {
+  let attempt = 0;
+  const { service, calls } = harness({
+    startContextProbe: async () => ({ turn: { id: `probe-${++attempt}` } }),
+    readThread: async () => ({
+      thread: { turns: [{ id: `probe-${attempt}`, status: "completed" }] },
+    }),
+    interruptContextProbe: async (...args) => calls.push(["interrupt", ...args]),
+    sleep: async () => {},
+  });
+
+  await assert.rejects(
+    service.probeContext({ provider: "codex", threadId: "thread-compacted" }),
+    /дважды принял скрытый замер без фактического запуска/u,
+  );
+  assert.equal(attempt, 2);
+  assert.equal(calls.filter(([name]) => name === "interrupt").length, 2);
 });
 
 test("rotation compacts into a clean Thread and injects only the raw compaction item", async () => {
@@ -203,6 +256,57 @@ test("rotation falls back to the exact rollout compaction when the raw event is 
     "inject",
     "thread-2",
     [rawItem],
+  ]);
+});
+
+test("deferred rotation injects the compaction and the complete finished turn", async () => {
+  const compactionItem = { type: "compaction", encrypted_content: "summary" };
+  const turnItems = [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "Запрос" }] },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "Ответ" }] },
+  ];
+  const { service, calls, entries } = harness({
+    ensureTransport: async () => calls.push(["transport"]),
+    readThread: async () => ({
+      thread: {
+        id: "thread-1",
+        path: "rollout.jsonl",
+        cwd: "D:\\repo",
+        modelProvider: "openai",
+      },
+    }),
+    readTurnResponseItems: async (...args) => {
+      calls.push(["read-turn", ...args]);
+      return turnItems;
+    },
+    startThread: async () => ({ thread: { id: "thread-2" } }),
+    injectItems: async (...args) => calls.push(["inject", ...args]),
+  });
+  service.compactions.waitForRawItem = async () => compactionItem;
+  entries.set("thread-1", {
+    id: "compact-1",
+    origin: "automatic",
+    status: "completed",
+    startedAt: "2026-08-08T10:00:00.000Z",
+  });
+
+  const result = await service.rotateCompacted({ provider: "codex", threadId: "thread-1" }, {
+    compactionId: "compact-1",
+    settlement: entries.get("thread-1"),
+    includeTurnId: "turn-1",
+  });
+
+  assert.equal(result.transferredTurnId, "turn-1");
+  assert.equal(result.transferredItemCount, 2);
+  assert.deepEqual(calls.find(([name]) => name === "read-turn"), [
+    "read-turn",
+    "rollout.jsonl",
+    "turn-1",
+  ]);
+  assert.deepEqual(calls.find(([name]) => name === "inject"), [
+    "inject",
+    "thread-2",
+    [compactionItem, ...turnItems],
   ]);
 });
 

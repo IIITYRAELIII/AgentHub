@@ -1058,7 +1058,18 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     "selecting a task must not deliver the full final of its background external turn");
   await waitFor(async () => (await readJson(statePath)).lastTaskMessages
     .some(([, message]) => String(message?.text ?? "").includes("Короткий внешний VSCode-ход завершён")),
-  "suppressed external final in task history", 8_000);
+  "suppressed external final in task history", 8_000).catch(async (error) => {
+    const [hubState, codexState] = await Promise.all([
+      readJson(statePath).catch(() => null),
+      readJson(codexStatePath).catch(() => null),
+    ]);
+    throw new Error(
+      `${error.message}; activeRuns=${JSON.stringify(hubState?.activeRuns)}`
+      + `; lastTaskMessages=${JSON.stringify(hubState?.lastTaskMessages)}`
+      + `; codexThreads=${JSON.stringify(codexState?.threads)}`,
+      { cause: error },
+    );
+  });
 
   mark = telegram.calls.length;
   telegram.pushMessage("/rename __E2E_EXTERNAL_UNCHANGED__");

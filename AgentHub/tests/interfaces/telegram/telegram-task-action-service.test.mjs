@@ -65,7 +65,16 @@ test("create, rename and archive keep the Telegram client selection current", as
         },
       };
       if (type === "task.rename") return { renamedTitle: "Renamed" };
-      return { archivedThread: { title: "Old" }, nextThread: { id: "thread-3", title: "Next" } };
+      return {
+        archivedThread: { title: "Old" },
+        nextThread: { id: "thread-3", title: "Next" },
+        tasks: [{
+          threadId: "thread-3",
+          workspaceName: "Agent HUB",
+          streamName: "Themes",
+          title: "Next",
+        }],
+      };
     },
   });
   const context = { clientId: "telegram:7" };
@@ -75,7 +84,7 @@ test("create, rename and archive keep the Telegram client selection current", as
   assert.deepEqual(selected.map(([binding]) => [binding.threadId, binding.taskTitle]), [
     ["thread-2", "New"],
     ["thread-1", "Renamed"],
-    ["thread-3", "Next"],
+    ["thread-3", "Agent HUB - Themes"],
   ]);
 });
 

@@ -24,6 +24,7 @@ export class StreamMaintenanceRegistry {
       reason: String(reason ?? "context-maintenance").trim() || "context-maintenance",
       streamId: String(target?.streamId ?? "").trim() || null,
       threadId: String(target?.threadId ?? "").trim() || null,
+      startedAt: new Date().toISOString(),
     };
     this.#entries.set(key, entry);
     return entry;
@@ -39,7 +40,25 @@ export class StreamMaintenanceRegistry {
     return this.#entries.has(streamMaintenanceKey(target));
   }
 
+  activeCount() {
+    return this.#entries.size;
+  }
+
   entry(target) {
     return this.#entries.get(streamMaintenanceKey(target)) ?? null;
+  }
+
+  update(targetOrEntry, details = {}) {
+    const key = String(targetOrEntry?.key ?? "").trim()
+      || streamMaintenanceKey(targetOrEntry);
+    const current = this.#entries.get(key);
+    if (!current) return null;
+    const reason = String(details.reason ?? "").trim();
+    const entry = {
+      ...current,
+      ...(reason ? { reason } : {}),
+    };
+    this.#entries.set(key, entry);
+    return entry;
   }
 }

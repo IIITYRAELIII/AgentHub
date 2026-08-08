@@ -7,6 +7,7 @@ import {
   mergeTaskCatalog,
 } from "../../application/task-catalog-projection.mjs";
 import { catalogEntryIsSelected } from "../../domain/task-catalog-identity.mjs";
+import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { runningTaskReplyMarkup } from "./task-catalog-presentation.mjs";
 
 export class TelegramStatusController {
@@ -93,7 +94,7 @@ export class TelegramStatusController {
     let task = "Не выбрана";
     if (snapshot.threadId) {
       const current = catalog.find((entry) => catalogEntryIsSelected(entry, selected));
-      task = current?.title || snapshot.taskTitle
+      task = current ? taskDisplayTitle(current) : snapshot.taskTitle
         || `${codexSelected ? "Codex" : "Claude"} · ${snapshot.threadId.slice(0, 8)}`;
     }
 
@@ -111,7 +112,7 @@ export class TelegramStatusController {
 
     const runningTasks = catalog
       .filter((entry) => entry.running)
-      .map((entry) => `${entry.provider === "codex" ? "Codex" : "Claude"} · ${entry.projectName} · ${entry.title}`);
+      .map((entry) => `${entry.provider === "codex" ? "Codex" : "Claude"} · ${entry.projectName} · ${taskDisplayTitle(entry)}`);
     const runningProviders = [...new Set(catalog
       .filter((entry) => entry.running)
       .map((entry) => entry.provider))];

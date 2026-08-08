@@ -13,9 +13,13 @@ test("stream maintenance follows the Stream while its Thread rotates", () => {
 
   const entry = registry.begin(source, "automatic-compaction");
   assert.ok(entry);
+  assert.equal(registry.activeCount(), 1);
   assert.equal(registry.isActive(target), true);
   assert.equal(registry.begin(target), null);
+  assert.equal(registry.update(entry, { reason: "automatic-rotation" }).reason, "automatic-rotation");
+  assert.equal(registry.entry(target).reason, "automatic-rotation");
   assert.equal(registry.end(entry), true);
+  assert.equal(registry.activeCount(), 0);
   assert.equal(registry.isActive(source), false);
 });
 

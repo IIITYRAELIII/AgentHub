@@ -9,6 +9,8 @@ function fixture({ catalogError = null, limitsError = null } = {}) {
     provider: "codex",
     projectRoot: "C:\\repo",
     projectName: "Repo",
+    workspaceName: "Agent HUB",
+    streamName: "Stream 2",
     threadId: "thread-1",
     title: "Current task",
     running: true,
@@ -59,7 +61,7 @@ test("Telegram status renders the selected live task and caches limits", async (
 
   assert.equal(limitsReads(), 1);
   assert.equal(sent.length, 2);
-  assert.match(sent[0][0], /Current task/);
+  assert.match(sent[0][0], /Agent HUB - Stream 2/);
   assert.equal(sent[0][2][0], "codex");
   assert.deepEqual(sent[0][3], { targetChatId: 101, provider: "codex" });
 });
@@ -72,6 +74,6 @@ test("Telegram status degrades when catalog and limits are unavailable", async (
   await controller.send(snapshot);
 
   assert.equal(sent.length, 1);
-  assert.match(sent[0][0], /Current task/);
+  assert.match(sent[0][0], /Agent HUB - Stream 2/);
   assert.match(sent[0][0], /limits offline/);
 });

@@ -11,9 +11,11 @@ function createService(run, overrides = {}) {
   return new CodexEventService({
     invalidateThreadRead: noop, forEvent: () => run, reindexRun: noop,
     applyThreadSettings: noop, saveState: async () => {}, trackTokenUsage: noop,
+    completeTurn: noop,
     taskKey: () => "task", isSelectedRun: () => false, setSelectedDiff: noop,
     appendActivity: noop, noteActivity: noop, scheduleProgress: noop, appendReasoning: noop,
-    isCompactionItem: () => false, beginCompaction: noop, getCompaction: () => null,
+    isCompactionItem: () => false, contextUsage: () => null,
+    beginCompaction: noop, getCompaction: () => null,
     rememberRawCompactionItem: noop,
     beginCompactionCleanup: noop, setStage: noop, describeItem: () => "stage",
     itemActivity: () => null, requestApproval: async () => {}, formatCommandApproval: () => "",
@@ -53,6 +55,7 @@ test("Codex event service never rebinds an existing run to a context probe", asy
   };
   const reindexed = [];
   const completed = [];
+  const contextCompletions = [];
   const warnings = [];
   const probeTurn = {
     id: "probe-turn",
@@ -69,6 +72,7 @@ test("Codex event service never rebinds an existing run to a context probe", asy
     ),
     reindexRun: (...args) => reindexed.push(args),
     completeManaged: async (...args) => completed.push(args),
+    completeTurn: (...args) => contextCompletions.push(args),
     logWarn: (...args) => warnings.push(args),
   });
 
@@ -94,6 +98,7 @@ test("Codex event service never rebinds an existing run to a context probe", asy
   assert.equal(run.turnId, "user-turn");
   assert.deepEqual(reindexed, []);
   assert.deepEqual(completed, []);
+  assert.deepEqual(contextCompletions, [["probe-turn", "completed"]]);
   assert.deepEqual(warnings, []);
 });
 
@@ -108,6 +113,24 @@ test("Codex event service preserves the raw compaction item for rotation", async
     params: { threadId: "thread-1", turnId: "turn-1", item },
   });
   assert.deepEqual(captured, [["thread-1", { turnId: "turn-1", item }]]);
+});
+
+test("Codex event service captures context usage when compaction starts", async () => {
+  const captured = [];
+  const service = createService(null, {
+    isCompactionItem: (item) => item?.type === "contextCompaction",
+    contextUsage: () => ({ usedTokens: 800, modelContextWindow: 1_000 }),
+    beginCompaction: (...args) => captured.push(args),
+  });
+  await service.handle({
+    method: "item/started",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: { id: "compact-1", type: "contextCompaction" },
+    },
+  });
+  assert.equal(captured[0][1].beforePercent, 80);
 });
 
 test("Codex event service does not treat compaction-only usage as prompt context", async () => {

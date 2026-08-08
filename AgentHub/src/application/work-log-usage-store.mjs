@@ -76,8 +76,11 @@ export class WorkLogUsageStore {
     this.#defaultProjectRoot = normalizeProjectRoot(defaultProjectRoot);
     this.#repository = repository;
     this.#includeClaudeUsage = includeClaudeUsage !== false;
-    if (workspaceCatalogStore && typeof workspaceCatalogStore.resolveThread !== "function") {
-      throw new TypeError("workspaceCatalogStore must resolve provider threads");
+    if (workspaceCatalogStore && (
+      typeof workspaceCatalogStore.resolveThread !== "function"
+      || typeof workspaceCatalogStore.assignUnknownThread !== "function"
+    )) {
+      throw new TypeError("workspaceCatalogStore must resolve and assign provider threads");
     }
     this.#workspaceCatalogStore = workspaceCatalogStore;
     this.#beforeProjectionWrite = typeof beforeProjectionWrite === "function"
@@ -361,6 +364,7 @@ export class WorkLogUsageStore {
   #workspaceResolver() {
     return this.#workspaceCatalogStore
       ? (reference) => this.#workspaceCatalogStore.resolveThread(reference)
+        ?? this.#workspaceCatalogStore.assignUnknownThread(reference, { source: "discovered" })
       : null;
   }
 

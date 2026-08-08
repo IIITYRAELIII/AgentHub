@@ -1,3 +1,5 @@
+import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
+
 export class TelegramTaskActionService {
   constructor({
     selectedTask,
@@ -104,18 +106,25 @@ export class TelegramTaskActionService {
   async archive(context = {}) {
     const blockedReason = this.archiveBlockedReason();
     if (blockedReason) return { archived: false, reason: blockedReason };
+    const archivedTaskTitle = this.activeTaskTitle();
     const result = await this.dispatchCommand(
       "task.archive",
       {},
       context,
       { target: this.commandTaskTarget(this.selectedTask()) },
     );
+    const nextEntry = result.nextThread?.id
+      ? (result.tasks ?? []).find((entry) => entry.threadId === result.nextThread.id)
+      : null;
+    const nextTaskTitle = result.nextThread
+      ? taskDisplayTitle(nextEntry, this.threadTitle(result.nextThread))
+      : null;
     if (result.nextThread?.id) {
       await this.selectTaskFromBinding({
         provider: "codex",
         projectRoot: this.activeProjectRoot(),
         threadId: result.nextThread.id,
-        taskTitle: this.threadTitle(result.nextThread),
+        taskTitle: nextTaskTitle,
       }, context);
     } else {
       await this.clearTaskSelection(context);
@@ -123,7 +132,9 @@ export class TelegramTaskActionService {
     return {
       archived: true,
       archivedThread: result.archivedThread,
+      archivedTaskTitle,
       nextThread: result.nextThread ?? null,
+      nextTaskTitle,
     };
   }
 
@@ -134,8 +145,8 @@ export class TelegramTaskActionService {
       taskTitle: this.activeTaskTitle(),
     } : null;
     const message = await this.sendMessage(targetChatId, this.formatArchiveMessage({
-      archivedTask: this.threadTitle(result.archivedThread),
-      activeTask: result.nextThread ? this.threadTitle(result.nextThread) : null,
+      archivedTask: result.archivedTaskTitle || this.threadTitle(result.archivedThread),
+      activeTask: result.nextTaskTitle,
     }), task ? { reply_markup: this.showLastMessageReplyMarkup(task) } : {});
     if (task) {
       await this.bindRunMessage(task, message).catch((error) => {

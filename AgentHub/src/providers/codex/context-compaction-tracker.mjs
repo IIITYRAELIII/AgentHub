@@ -15,6 +15,12 @@ function normalizedTimestamp(value, fallback) {
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : fallback;
 }
 
+function boundedPercent(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const percent = Number(value);
+  return Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
+}
+
 export function isContextCompactionItem(item) {
   return ["contextCompaction", "context_compaction"].includes(String(item?.type ?? ""));
 }
@@ -62,8 +68,12 @@ export class ContextCompactionTracker {
     if (!existing || (expectedId && existing.id !== expectedId)) return null;
     const record = { ...existing };
     for (const name of ["beforePercent", "afterPercent"]) {
-      const value = Number(details[name]);
-      if (Number.isFinite(value)) record[name] = Math.max(0, Math.min(100, value));
+      const value = boundedPercent(details[name]);
+      if (value !== null) record[name] = value;
+    }
+    const measurementStatus = String(details.measurementStatus ?? "").trim();
+    if (["running", "completed", "failed"].includes(measurementStatus)) {
+      record.measurementStatus = measurementStatus;
     }
     if (details.rotated !== undefined) record.rotated = details.rotated === true;
     this.store(key, record);
@@ -150,17 +160,22 @@ export class ContextCompactionTracker {
     itemId = null,
     startedAt = null,
     captureRawItem = false,
+    beforePercent = null,
   } = {}) {
     const key = normalizedThreadId(threadId);
     if (!key) return null;
     const now = new Date(this.clock()).toISOString();
     const existing = this.entries.get(key);
+    const initialBeforePercent = boundedPercent(beforePercent);
     const record = existing?.status === "running"
       ? {
         ...existing,
         turnId: String(turnId ?? existing.turnId ?? "").trim() || null,
         itemId: String(itemId ?? existing.itemId ?? "").trim() || null,
         captureRawItem: Boolean(existing.captureRawItem || captureRawItem),
+        ...(initialBeforePercent !== null
+          ? { beforePercent: initialBeforePercent }
+          : {}),
       }
       : {
         id: String(itemId ?? "").trim() || this.idFactory(),
@@ -170,6 +185,9 @@ export class ContextCompactionTracker {
         turnId: String(turnId ?? "").trim() || null,
         itemId: String(itemId ?? "").trim() || null,
         captureRawItem: Boolean(captureRawItem),
+        ...(initialBeforePercent !== null
+          ? { beforePercent: initialBeforePercent }
+          : {}),
         startedAt: normalizedTimestamp(startedAt, now),
         completedAt: null,
       };
@@ -237,8 +255,14 @@ export class ContextCompactionTracker {
     const existing = this.entries.get(key);
     if (!existing || (expectedId && existing.id !== expectedId)) return false;
     this.cancelTimeout(key);
-    this.entries.delete(key);
-    this.notifySettled(key, null);
+    const record = {
+      ...existing,
+      status: "failed",
+      stage: "failed",
+      completedAt: new Date(this.clock()).toISOString(),
+    };
+    this.store(key, record);
+    this.notifySettled(key, record);
     return true;
   }
 

@@ -90,6 +90,7 @@ const telegramFullscreenButton = document.querySelector("[data-telegram-fullscre
 const breakdownToggle = document.querySelector("[data-token-breakdown-toggle]");
 const streamCollapseToggle = document.querySelector("[data-stream-collapse-toggle]");
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
+const streamStatusFillToggle = document.querySelector("[data-stream-status-fill-toggle]");
 const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
 const exchangeRateHint = document.querySelector("[data-exchange-rate-hint]");
 const panelScrim = document.querySelector("[data-panel-scrim]");
@@ -536,6 +537,30 @@ function applyBreakdown(value, { persist = false } = {}) {
   }
 }
 
+function savedStreamStatusStyle() {
+  try {
+    const value = localStorage.getItem("agent-hub-stream-status-style")
+      ?? localStorage.getItem("agent-hub-context-flash-style");
+    return value === "fill" ? "fill" : "edge";
+  } catch {
+    return "edge";
+  }
+}
+
+function applyStreamStatusStyle(value, { persist = false } = {}) {
+  const style = value === "fill" ? "fill" : "edge";
+  root.dataset.streamStatusStyle = style;
+  if (streamStatusFillToggle) streamStatusFillToggle.checked = style === "fill";
+  if (persist) {
+    try {
+      localStorage.setItem("agent-hub-stream-status-style", style);
+      localStorage.removeItem("agent-hub-context-flash-style");
+    } catch {
+      // Настройка останется активной до закрытия WebView.
+    }
+  }
+}
+
 function savedStreamCollapse() {
   try {
     return localStorage.getItem("agent-hub-collapse-streams") === "on";
@@ -661,11 +686,15 @@ telegramFullscreenButton?.addEventListener("click", () => {
 });
 applyTheme(savedTheme());
 applyBreakdown(savedBreakdown());
+applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamCollapse(savedStreamCollapse());
 selectUsageUnit(savedUsageUnit());
 selectClaudeGrouping(savedClaudeGrouping());
 breakdownToggle?.addEventListener("change", () => {
   applyBreakdown(breakdownToggle.checked ? "on" : "off", { persist: true });
+});
+streamStatusFillToggle?.addEventListener("change", () => {
+  applyStreamStatusStyle(streamStatusFillToggle.checked ? "fill" : "edge", { persist: true });
 });
 streamCollapseToggle?.addEventListener("change", () => {
   applyStreamCollapse(streamCollapseToggle.checked, { persist: true, update: true });
@@ -1633,7 +1662,6 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }) {
     "aria-pressed": String(selected),
     title: "Двойной клик — переименовать Workspace",
   }, [
-    unread ? el("span", { class: "task-unread", title: "Есть непрочитанные сообщения" }) : null,
     el("span", { class: "task-workspace-name", text: name }),
     el("span", {
       class: "task-workspace-time",
@@ -1901,7 +1929,7 @@ function renderTaskItem(task, { workspaceGrouped = false } = {}) {
   const titleRow = el("div", { class: "task-title-row" }, [
     el("span", {
       class: "task-title",
-      text: workspaceGrouped ? task.threadTitle || task.title || "Без названия" : task.title || "Без названия",
+      text: task.displayTitle || task.title || "Без названия",
     }),
     time,
   ]);
@@ -2970,6 +2998,25 @@ function renderMessage(message, { readOnly = false } = {}) {
     article.append(renderAttachmentStrip(message.attachments, { readOnly: true }));
   }
 
+  if (role === "agent" && !readOnly) {
+    const actions = el("div", { class: "msg-actions" }, [
+      el("button", {
+        type: "button", class: "msg-action", "data-action": "tts", "data-message-id": message.id ?? "",
+        title: "Озвучить ответ", "aria-label": "Озвучить ответ",
+        html: '<svg data-phosphor-icon="speaker-high" viewBox="0 0 256 256" aria-hidden="true">'
+          + '<path d="M80,168H32a8,8,0,0,1-8-8V96a8,8,0,0,1,8-8H80l72-56V224Z"'
+          + ' fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"'
+          + ' stroke-width="16"></path>'
+          + '<line x1="80" y1="88" x2="80" y2="168" fill="none" stroke="currentColor"'
+          + ' stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>'
+          + '<path d="M192,106.85a32,32,0,0,1,0,42.3" fill="none" stroke="currentColor"'
+          + ' stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>'
+          + '<path d="M221.67,80a72,72,0,0,1,0,96" fill="none" stroke="currentColor"'
+          + ' stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path></svg>',
+      }),
+    ]);
+    article.append(actions);
+  }
   return article;
 }
 
@@ -4592,6 +4639,9 @@ async function handleAction(action, trigger) {
       if (text != null) emit("queue:edit", { taskId, id: entry.id, text });
       break;
     }
+    case "tts":
+      emit("tts:play", { taskId, messageId: trigger.dataset.messageId });
+      break;
     case "hub-restart":
       emit("hub:restart", {});
       break;
@@ -7431,13 +7481,19 @@ function restoreOpenState(openState) {
     )?.setAttribute("open", "");
   }
   if (Array.isArray(openState.workspaces)) {
-    for (const details of journal.querySelectorAll("details[data-work-log-workspace]")) {
-      details.open = false;
-    }
-    for (const workspaceId of openState.workspaces) {
-      journal.querySelector(
-        `details[data-work-log-workspace-id="${selectorValue(workspaceId)}"]`,
-      )?.setAttribute("open", "");
+    if (collapseStreams) {
+      for (const details of journal.querySelectorAll("details[data-work-log-workspace]")) {
+        details.open = true;
+      }
+    } else {
+      for (const details of journal.querySelectorAll("details[data-work-log-workspace]")) {
+        details.open = false;
+      }
+      for (const workspaceId of openState.workspaces) {
+        journal.querySelector(
+          `details[data-work-log-workspace-id="${selectorValue(workspaceId)}"]`,
+        )?.setAttribute("open", "");
+      }
     }
   }
   if (Array.isArray(openState.streams)) {

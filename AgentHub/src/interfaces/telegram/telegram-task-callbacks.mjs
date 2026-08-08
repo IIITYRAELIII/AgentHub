@@ -1,4 +1,6 @@
 // Handles task navigation and task-scoped callback routes.
+import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
+
 const ROUTE_KINDS = new Set([
   "task-diff", "task-history", "task-view", "task-page",
   "catalog-task", "thread-new", "thread-archive",
@@ -151,7 +153,7 @@ export class TelegramTaskCallbackService {
       provider: entry.provider,
       projectRoot: entry.projectRoot,
       threadId: entry.threadId,
-      taskTitle: entry.title,
+      taskTitle: taskDisplayTitle(entry),
     }, d.callbackContext(callback));
     await Promise.all([
       selected.selectionChanged

@@ -57,6 +57,7 @@ export function createExecutionBootstrapPhase({
       managedRunLifecycle: provider.managedRunLifecycle,
       runCoordinator: interaction.runCoordinator,
       contextCompactions: provider.contextCompactions,
+      streamMaintenance: provider.streamMaintenance,
       deferredInputController: interaction.deferredInputController,
       queuedInputs: provider.queuedInputs,
       scheduleQueuedInput: api.scheduleQueuedInput,

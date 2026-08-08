@@ -76,6 +76,28 @@ test("an automatic compaction is visible from start through completion", () => {
   tracker.dispose();
 });
 
+test("an unavailable measurement never becomes a fabricated zero", () => {
+  const tracker = new ContextCompactionTracker({ idFactory: () => "measurement-id" });
+  const started = tracker.begin("thread-measurement", { beforePercent: null });
+  assert.equal(started.beforePercent, undefined);
+  tracker.complete("thread-measurement");
+  tracker.annotate("thread-measurement", started.id, {
+    beforePercent: 80,
+    afterPercent: null,
+    measurementStatus: "failed",
+  });
+  assert.equal(tracker.get("thread-measurement").beforePercent, 80);
+  assert.equal(tracker.get("thread-measurement").afterPercent, undefined);
+  assert.equal(tracker.get("thread-measurement").measurementStatus, "failed");
+  tracker.annotate("thread-measurement", started.id, {
+    afterPercent: 0,
+    measurementStatus: "completed",
+  });
+  assert.equal(tracker.get("thread-measurement").afterPercent, 0);
+  assert.equal(tracker.get("thread-measurement").measurementStatus, "completed");
+  tracker.dispose();
+});
+
 test("a missing completion becomes a bounded timeout instead of staying active forever", () => {
   let callback = null;
   let now = Date.parse("2026-07-31T18:20:00.000Z");
@@ -96,6 +118,31 @@ test("a missing completion becomes a bounded timeout instead of staying active f
   assert.equal(tracker.get("thread-3").status, "timeout");
   assert.equal(tracker.isRunning("thread-3"), false);
   assert.equal(settled[0].record.status, "timeout");
+  tracker.dispose();
+});
+
+test("a failed compaction remains visible after it stops running", async () => {
+  let now = Date.parse("2026-08-08T12:50:36.000Z");
+  const settled = [];
+  const tracker = new ContextCompactionTracker({
+    clock: () => now,
+    idFactory: () => "failed-id",
+    onSettled: (event) => settled.push(event),
+  });
+  const started = tracker.begin("thread-failed", {
+    origin: "automatic",
+    beforePercent: 78,
+  });
+  const settlement = tracker.waitForSettlement("thread-failed", started.id);
+  now += 16_000;
+
+  assert.equal(tracker.fail("thread-failed", started.id), true);
+  assert.equal(tracker.isRunning("thread-failed"), false);
+  assert.equal(tracker.get("thread-failed").status, "failed");
+  assert.equal(tracker.get("thread-failed").beforePercent, 78);
+  assert.equal(tracker.get("thread-failed").completedAt, "2026-08-08T12:50:52.000Z");
+  assert.equal((await settlement)?.status, "failed");
+  assert.equal(settled[0].record.status, "failed");
   tracker.dispose();
 });
 

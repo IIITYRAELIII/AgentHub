@@ -270,9 +270,11 @@ test("desktop client survives App Server exit during delayed startup and shares 
   assert.notEqual(replacementCodexPid, firstCodexPid);
   await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
-    const context = snapshot.tasks.find((item) => item.threadId === firstThreadId)?.context;
+    const task = snapshot.tasks.find((item) => item.threadId === firstThreadId);
+    const context = task?.context;
     return context?.compaction?.id === compactedAfterDisconnect.compactionId
       && context.compaction.status === "completed"
+      && !task.maintenance
       ? snapshot
       : null;
   }, "desktop context compaction after reconnect", 5_000);
@@ -422,7 +424,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
   }, { runtimeRoot });
   assert.equal(renamedSecond.selected.threadId, firstThreadId);
   assert.equal(
-    renamedSecond.tasks.find((item) => item.threadId === secondThreadId)?.title,
+    renamedSecond.tasks.find((item) => item.threadId === secondThreadId)?.threadTitle,
     "Desktop second exact",
   );
 
@@ -493,7 +495,10 @@ test("desktop client survives App Server exit during delayed startup and shares 
     provider: "codex",
     threadId: firstThreadId,
   }, { runtimeRoot });
-  assert.equal(renamed.selected.title, "Desktop renamed");
+  assert.equal(
+    renamed.tasks.find((item) => item.threadId === firstThreadId)?.threadTitle,
+    "Desktop renamed",
+  );
   const diff = await callDesktopControl("task-diff", {
     provider: "codex",
     threadId: firstThreadId,

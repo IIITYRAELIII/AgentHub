@@ -255,6 +255,7 @@ function createTurnAccumulator(turnId) {
   let started = false;
   let terminal = false;
   let finalAnswerIndex = -1;
+  let terminalAnswerSeen = false;
   let finalTokenIndex = -1;
   let finalAnswer = "";
   let startedAt = "";
@@ -306,6 +307,11 @@ function createTurnAccumulator(turnId) {
         terminal = true;
         completedAt ||= String(entry?.timestamp ?? "");
         status = lifecycleTerminalStatus(lifecycle);
+        const terminalAnswer = String(entry.payload?.last_agent_message ?? "").trim();
+        if (terminalAnswer && !finalAnswer) {
+          finalAnswer = terminalAnswer;
+          terminalAnswerSeen = true;
+        }
       }
     }
     if (lifecycle === "patch_apply_end" && lifecycleTurnId === requestedTurnId) {
@@ -396,9 +402,11 @@ function createTurnAccumulator(turnId) {
       reported,
       started,
       terminal,
-      finalAnswerSeen: finalAnswerIndex >= 0,
+      finalAnswerSeen: finalAnswerIndex >= 0 || terminalAnswerSeen,
       finalAnswer,
-      finalTokenSeen: finalAnswerIndex < 0 ? reported : finalTokenIndex > finalAnswerIndex,
+      finalTokenSeen: terminalAnswerSeen || finalAnswerIndex < 0
+        ? reported
+        : finalTokenIndex > finalAnswerIndex,
       startedAt,
       completedAt,
       prompt,

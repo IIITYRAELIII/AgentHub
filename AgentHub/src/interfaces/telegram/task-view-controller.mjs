@@ -6,6 +6,7 @@ import {
   visibleTaskHistory,
 } from "../../application/task-history.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
+import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { updateTaskRunTitle } from "../../domain/task-runs.mjs";
 
 function mergeDurableHistory(cachedHistory, sourceHistory) {
@@ -594,13 +595,13 @@ export class TaskViewController {
       ...stored,
       streamId: entry.streamId ?? stored.streamId ?? null,
       projectRoot: entry.projectRoot ?? stored.projectRoot,
-      taskTitle: entry.title ?? stored.taskTitle,
+      taskTitle: taskDisplayTitle(entry, stored.taskTitle),
     } : stored;
     if (this.identityMatches(stored, identity)) return entry ? {
       ...stored,
       streamId: entry.streamId ?? stored.streamId ?? null,
       projectRoot: entry.projectRoot ?? stored.projectRoot,
-      taskTitle: entry.title ?? stored.taskTitle,
+      taskTitle: taskDisplayTitle(entry, stored.taskTitle),
     } : stored;
     if (entry) {
       return {
@@ -610,7 +611,7 @@ export class TaskViewController {
         provider: entry.provider,
         threadId: entry.threadId,
         projectRoot: entry.projectRoot,
-        taskTitle: entry.title,
+        taskTitle: taskDisplayTitle(entry),
         createdAt: new Date().toISOString(),
       };
     }

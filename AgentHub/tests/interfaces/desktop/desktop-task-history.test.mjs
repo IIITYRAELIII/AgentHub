@@ -19,6 +19,8 @@ function fixture(overrides = {}) {
     refreshes: 0,
   };
   const entries = [{
+    workspaceName: "Agent HUB",
+    streamName: "Themes",
     provider: "codex",
     projectRoot: "D:/work",
     threadId: "thread-1",
@@ -157,7 +159,7 @@ test("desktop task history resolves selection and merges the active run", async 
     provider: "codex",
     projectRoot: "D:/work",
     threadId: "thread-1",
-    taskTitle: "Задача",
+    taskTitle: "Agent HUB - Themes",
     chatId: 42,
   });
   assert.deepEqual(calls.merged, {
@@ -172,6 +174,7 @@ test("desktop task history resolves selection and merges the active run", async 
     attachments: [{ id: "live.png", name: "live.png", type: "image/png" }],
   });
   assert.equal(result.total, 5);
+  assert.equal(result.title, "Agent HUB - Themes");
   assert.equal(result.start, 3);
   assert.equal(result.end, 5);
   assert.equal(result.nextBefore, 3);

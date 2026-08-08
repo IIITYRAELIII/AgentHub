@@ -320,10 +320,14 @@ function formatStreamUsage(creditBreakdown, dayCredits, elapsedSeconds, dayElaps
   const [total] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
   /* Расход и время стоят в одной строке справа от названия Stream: раньше итог
      занимал отдельную строку под ним, а времени в строке не было вовсе. */
-  return `<span data-work-log-stream-usage>${highlightUsageUnits(
+  /* Время прижато влево, расход — вправо: слева читают «сколько это заняло»,
+     справа «сколько это стоило». */
+  return `<span data-work-log-stream-usage>${
+    formatDurationShare(elapsedSeconds, dayElapsedSeconds)
+  }<span data-work-log-stream-credits>${highlightUsageUnits(
     alignUsagePercent(total.replace(/^Итого\s+/u, "")),
     creditBreakdown.total,
-  )}${formatDurationShare(elapsedSeconds, dayElapsedSeconds)}</span>`;
+  )}</span></span>`;
 }
 
 function formatWorkspaceUsage(creditBreakdown, dayCredits) {
@@ -347,8 +351,8 @@ function formatCollapsedWorkspaceUsage(
   );
   return "<details data-task-usage-details data-work-log-workspace-usage-details "
     + "data-work-log-collapsed-workspace-usage-details>"
-    + `<summary data-task-usage>${totalHtml}${
-      formatDurationShare(elapsedSeconds, dayElapsedSeconds)
+    + `<summary data-task-usage>${formatDurationShare(elapsedSeconds, dayElapsedSeconds)}${
+      totalHtml
     }</summary>`
     + `<span data-task-usage-breakdown>${breakdown
       .map((part) => `<span data-task-usage-part>${
@@ -415,9 +419,11 @@ function formatDurationShare(totalSeconds, dayTotalSeconds) {
   if (seconds <= 0) return "";
   const daySeconds = Math.max(0, Number(dayTotalSeconds) || 0);
   const percent = daySeconds > 0 ? Math.round(seconds / daySeconds * 100) : 0;
+  /* Сначала доля, затем само время: так числа в колонке времени выровнены по
+     одинаковому началу, а длинное «8 ч 20 мин» не сдвигает процент. */
   return `<span data-work-log-duration-summary data-work-log-duration-seconds="${seconds}">`
-    + `<span data-work-log-duration>${formatSummaryDuration(seconds)}</span>`
-    + ` <span data-work-log-duration-percent>(${percent}%)</span></span>`;
+    + `<span data-work-log-duration-percent>(${percent}%)</span>`
+    + ` <span data-work-log-duration>${formatSummaryDuration(seconds)}</span></span>`;
 }
 
 function formatDuration(startedValue, completedValue) {
@@ -1150,7 +1156,11 @@ function workspaceResolutionForRecord(record, workspaceResolver) {
   const threadId = taskThreadId(record);
   if (!provider || !threadId) return null;
   try {
-    const resolved = workspaceResolver({ provider, threadId });
+    const resolved = workspaceResolver({
+      provider,
+      threadId,
+      projectRoot: normalizeProjectRoot(record?.projectRoot),
+    });
     if (!resolved?.workspaceId || !resolved?.streamId) return null;
     return {
       workspaceId: String(resolved.workspaceId),
@@ -1492,21 +1502,7 @@ function formatWorkspaceRows(rows, dayCredits, dayElapsedSeconds, workspaceResol
   return [...groups.values()]
     .sort((left, right) => right.latestCompletedAt - left.latestCompletedAt)
     .map((group) => {
-      if (!group.workspace) {
-        const usage = group.creditBreakdown.total > 0
-          ? `<span data-work-log-workspace-usage>${
-            formatWorkspaceUsage(group.creditBreakdown, dayCredits)
-          }</span>`
-          : "";
-        return '<details data-work-log-workspace data-work-log-workspace-id=""'
-          + ' data-work-log-workspace-kind="unassigned"'
-          + ` data-work-log-stream-count="${group.rows.length}" open>`
-          + '<summary data-work-log-workspace-header><strong>Без воркспейса</strong>'
-          + `${usage}</summary>`
-          + `<div data-work-log-workspace-streams>${
-            group.rows.map((row) => row.html).join("\n")
-          }</div></details>`;
-      }
+      if (!group.workspace) return group.rows.map((row) => row.html).join("\n");
       const streams = new Map();
       for (const row of group.rows) {
         const streamKey = row.workspace.streamId;

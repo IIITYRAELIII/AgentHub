@@ -1,5 +1,9 @@
 import { recycleCodexCompactionTransport } from "./codex-compaction-transport.mjs";
-import { readLatestCodexCompactionItem } from "./codex-compaction-rollout.mjs";
+import {
+  readCodexTurnResponseItems,
+  readLatestCodexCompactionItem,
+} from "./codex-compaction-rollout.mjs";
+import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 
 const DEFAULT_CLEANUP_RETRY_MS = 15_000;
 const MINIMUM_CLEANUP_RETRY_WINDOW_MS = 2 * 60_000;
@@ -39,10 +43,12 @@ export class CodexContextMaintenanceService {
     resumeThread = async () => {},
     startCompaction = async () => {},
     startContextProbe = async () => null,
+    interruptContextProbe = async () => null,
     startThread = async () => null,
     injectItems = async () => null,
     deleteThread = async () => null,
     readCompactionItem = readLatestCodexCompactionItem,
+    readTurnResponseItems = readCodexTurnResponseItems,
     sandboxSettings = () => ({}),
     recycleTransport = recycleCodexCompactionTransport,
     now = Date.now,
@@ -78,10 +84,12 @@ export class CodexContextMaintenanceService {
     this.resumeThread = resumeThread;
     this.startCompaction = startCompaction;
     this.startContextProbe = startContextProbe;
+    this.interruptContextProbe = interruptContextProbe;
     this.startThread = startThread;
     this.injectItems = injectItems;
     this.deleteThread = deleteThread;
     this.readCompactionItem = readCompactionItem;
+    this.readTurnResponseItems = readTurnResponseItems;
     this.sandboxSettings = sandboxSettings;
     this.recycleTransport = recycleTransport;
     this.now = now;
@@ -91,7 +99,11 @@ export class CodexContextMaintenanceService {
     this.recycleInFlight = null;
   }
 
-  async start(target, { captureRawItem = false, origin = "manual" } = {}) {
+  async start(target, {
+    captureRawItem = false,
+    origin = "manual",
+    beforePercent = null,
+  } = {}) {
     if (target?.provider !== "codex") throw new Error("Свёртка контекста доступна только для Codex");
     const threadId = normalizedId(target.threadId);
     if (!threadId) throw new Error("Укажите корректную задачу Codex");
@@ -105,6 +117,10 @@ export class CodexContextMaintenanceService {
     const compaction = this.compactions.begin(threadId, {
       origin: origin === "automatic" ? "automatic" : "manual",
       ...(captureRawItem ? { captureRawItem: true } : {}),
+      ...(beforePercent !== null && beforePercent !== undefined && beforePercent !== ""
+        && Number.isFinite(Number(beforePercent))
+        ? { beforePercent: Number(beforePercent) }
+        : {}),
     });
     try {
       await this.resumeThread(threadId, this.sandboxSettings());
@@ -124,25 +140,45 @@ export class CodexContextMaintenanceService {
     return this.start(target, { ...options, origin: "manual" });
   }
 
-  async probeContext(target, { timeoutMs = 60_000, pollMs = 100 } = {}) {
+  async probeContext(target, {
+    materializationTimeoutMs = 10_000,
+    pollMs = 100,
+    retryDelayMs = 250,
+  } = {}) {
     const threadId = normalizedId(target?.threadId);
     if (!threadId) throw new Error("Укажите корректную задачу Codex");
     await this.ensureTransport();
-    const result = await this.startContextProbe(threadId);
-    const turnId = normalizedId(result?.turn?.id ?? result?.turnId);
-    if (!turnId) throw new Error("Codex App Server не вернул Turn скрытого замера");
-    const deadline = this.now() + Math.max(1, Number(timeoutMs) || 60_000);
-    while (this.now() < deadline) {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const result = await this.startContextProbe(threadId);
+      const turnId = normalizedId(result?.turn?.id ?? result?.turnId);
+      if (!turnId) throw new Error("Codex App Server не вернул Turn скрытого замера");
+      if (await this.#probeMaterialized(threadId, turnId, {
+        timeoutMs: materializationTimeoutMs,
+        pollMs,
+      })) return { threadId, turnId, status: "started" };
+      try {
+        await this.interruptContextProbe(threadId, turnId);
+      } catch (error) {
+        this.logger.warn?.(`Cannot interrupt empty context probe ${turnId}: ${error.message}`);
+      }
+      if (attempt < 2) await this.sleep(Math.max(1, Number(retryDelayMs) || 250));
+    }
+    throw new Error("Codex App Server дважды принял скрытый замер без фактического запуска");
+  }
+
+  async #probeMaterialized(threadId, turnId, { timeoutMs, pollMs }) {
+    const deadline = this.now() + Math.max(1, Number(timeoutMs) || 10_000);
+    while (true) {
       const response = await this.readThread(threadId, { fresh: true, includeTurns: true });
       const thread = response?.thread ?? response;
       const turn = (Array.isArray(thread?.turns) ? thread.turns : [])
         .find((candidate) => normalizedId(candidate?.id) === turnId);
-      if (turn && !["inProgress", "in_progress", "running"].includes(normalizedId(turn.status))) {
-        return { threadId, turnId, status: normalizedId(turn.status) || "completed" };
-      }
+      if (turn && isCodexContextProbeTurn(turn)) return true;
+      const status = normalizedId(turn?.status);
+      if (turn && status && !["inProgress", "in_progress", "running"].includes(status)) return false;
+      if (this.now() >= deadline) return false;
       await this.sleep(Math.max(1, Number(pollMs) || 100));
     }
-    throw new Error("Скрытый замер контекста не завершился вовремя");
   }
 
   async rotate(target) {
@@ -169,7 +205,12 @@ export class CodexContextMaintenanceService {
     }
   }
 
-  async rotateCompacted(target, { compactionId, source = null, settlement = null } = {}) {
+  async rotateCompacted(target, {
+    compactionId,
+    source = null,
+    settlement = null,
+    includeTurnId = null,
+  } = {}) {
     const sourceThreadId = normalizedId(target?.threadId);
     const expectedId = normalizedId(compactionId);
     if (!sourceThreadId || !expectedId) throw new Error("Не указана завершённая свёртка контекста");
@@ -193,6 +234,13 @@ export class CodexContextMaintenanceService {
         notBefore: trackedCompaction?.startedAt,
       });
       if (!compactionItem) throw new Error("Не удалось извлечь результат свёртки для нового Thread");
+      const transferredTurnId = normalizedId(includeTurnId);
+      const turnItems = transferredTurnId
+        ? await this.readTurnResponseItems(rolloutPath, transferredTurnId)
+        : [];
+      if (transferredTurnId && !turnItems.length) {
+        throw new Error("Не удалось извлечь завершённый ход для нового Thread");
+      }
       await this.ensureTransport();
       const sourceThread = resolvedSource?.thread ?? {};
       const startParams = {
@@ -210,11 +258,15 @@ export class CodexContextMaintenanceService {
         throw new Error("Codex App Server не создал новый Thread");
       }
       try {
-        await this.injectItems(threadId, [compactionItem]);
+        await this.injectItems(threadId, [compactionItem, ...turnItems]);
         return {
           accepted: true,
           compactionId: expectedId,
           sourceThreadId,
+          ...(transferredTurnId ? {
+            transferredTurnId,
+            transferredItemCount: turnItems.length,
+          } : {}),
           thread: result.thread,
         };
       } catch (error) {

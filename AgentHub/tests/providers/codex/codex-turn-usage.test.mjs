@@ -99,6 +99,25 @@ test("Codex rollout usage sums every model response and sees the final token eve
   });
 });
 
+test("Codex rollout usage accepts the terminal last agent message", () => {
+  const text = [
+    line({ timestamp: "2026-08-08T10:00:00Z", type: "event_msg", payload: {
+      type: "task_started", turn_id: "turn-terminal-answer",
+    } }),
+    line(token(50, 40, 5, 1)),
+    line({ timestamp: "2026-08-08T10:01:00Z", type: "event_msg", payload: {
+      type: "task_complete",
+      turn_id: "turn-terminal-answer",
+      last_agent_message: "Точный итог из terminal event",
+    } }),
+  ].join("\n");
+
+  const result = codexTurnUsageFromJsonl(text, "turn-terminal-answer");
+  assert.equal(result.finalAnswerSeen, true);
+  assert.equal(result.finalAnswer, "Точный итог из terminal event");
+  assert.equal(result.finalTokenSeen, true);
+});
+
 test("historical rollout scan extracts all turns in one streaming pass", async () => {
   const first = "019f1ec8-8de7-7aa3-92b6-045036561c8e";
   const second = "019f1ec9-8de7-7aa3-92b6-045036561c8e";

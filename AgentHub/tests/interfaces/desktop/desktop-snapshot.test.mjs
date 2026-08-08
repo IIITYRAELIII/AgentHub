@@ -76,6 +76,7 @@ function fixture(overrides = {}) {
     queued: [],
     receipts: [],
     restartRequest: null,
+    maintenance: null,
     ...overrides,
   };
   const factory = createDesktopSnapshotFactory({
@@ -89,6 +90,9 @@ function fixture(overrides = {}) {
       compactionFor: (threadId) => (
         threadId === "thread-1" ? state.compaction : undefined
       ),
+    },
+    maintenance: {
+      entryFor: () => state.maintenance,
     },
     runs: {
       forTask: (task) => (task.threadId === "thread-1" ? state.run : null),
@@ -198,12 +202,12 @@ test("desktopContextSnapshot preserves the context JSON contract", () => {
   assert.deepEqual(desktopContextSnapshot("thread-1"), {
     usedTokens: 0,
     modelContextWindow: 0,
-    percent: 0,
+    percent: null,
     turnId: null,
     updatedAt: null,
     compacting: true,
     compaction: { id: "compact-1", status: "running" },
-    usagePending: false,
+    usagePending: true,
   });
   state.compaction = null;
   assert.equal(desktopContextSnapshot("thread-1"), null);
@@ -223,6 +227,15 @@ test("desktop task snapshot carries server-side unread state for the account", (
 test("desktop task snapshot exposes a persisted model without a live run", () => {
   const { desktopTaskSnapshot, entry } = fixture({ run: null });
   assert.equal(desktopTaskSnapshot({ ...entry, model: "Sol" }).model, "Sol");
+});
+
+test("desktop task snapshot exposes active Stream maintenance", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture({ run: null });
+  state.maintenance = {
+    reason: "manual-rotation",
+    startedAt: "2026-08-08T10:00:00.000Z",
+  };
+  assert.deepEqual(desktopTaskSnapshot(entry).maintenance, state.maintenance);
 });
 
 test("desktop snapshot exposes bounded delivery receipts for client reconciliation", async () => {
@@ -338,6 +351,8 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
     "projectName",
     "threadId",
     "title",
+    "displayTitle",
+    "threadTitle",
     "model",
     "selected",
     "running",
@@ -351,12 +366,15 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
     "lastAnswerAt",
     "lastAnswerTurnId",
     "unread",
+    "maintenance",
     "context",
     "run",
   ]);
   assert.equal(snapshot.projectName, "Проект");
   assert.equal(snapshot.streamId, "stream-1");
   assert.equal(snapshot.workspaceName, "Agent HUB");
+  assert.equal(snapshot.title, "Agent HUB - Stream 1");
+  assert.equal(snapshot.threadTitle, "Задача");
   assert.equal(snapshot.model, "gpt-test");
   assert.equal(snapshot.selected, true);
   assert.equal(snapshot.running, true);
@@ -467,7 +485,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     streamName: null,
     streamDisplayName: "",
     streamOrdinal: 1,
-    title: "Задача",
+    title: "Agent HUB - Stream 1",
     projectName: "Проект",
     model: "GPT Test",
     reasoning: "High",
@@ -498,7 +516,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       state: "pending",
       provider: "codex",
       threadId: "thread-1",
-      taskTitle: "Задача",
+      taskTitle: "Agent HUB - Stream 1",
       clientUserMessageId: "client-2",
       text: "Ожидает",
       annotations: [],
@@ -513,7 +531,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       state: "queued",
       provider: "codex",
       threadId: "thread-1",
-      taskTitle: "Задача",
+      taskTitle: "Agent HUB - Stream 1",
       clientUserMessageId: null,
       text: "В очереди",
       annotations: [],
@@ -528,7 +546,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
       state: "dispatching",
       provider: "codex",
       threadId: "thread-1",
-      taskTitle: "Задача",
+      taskTitle: "Agent HUB - Stream 1",
       clientUserMessageId: null,
       text: "Уже отправляется",
       annotations: [],

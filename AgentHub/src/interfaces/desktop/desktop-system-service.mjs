@@ -1,3 +1,5 @@
+import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
+
 export class DesktopSystemService {
   constructor({
     activeProvider,
@@ -112,7 +114,7 @@ export class DesktopSystemService {
           provider: result.provider,
           threadId: result.threadId,
           projectRoot: result.projectRoot,
-          title: entry?.title ?? result.taskTitle,
+          title: taskDisplayTitle(entry ?? result, result.taskTitle),
           latestAt: result.latestAt,
           matches: result.matches,
         };

@@ -79,7 +79,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const runtimeRoot = path.join(root, "runtime", "releases", "current");
   const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "mini-app");
   const runtimeAssets = path.join(runtimeRoot, "assets", "mini-app");
-  const required = ["message-disclosure.js", "app.js", "message-lifecycle.js", "hub-client.js", "context-flash.mjs", "styles.css", "backgrounds.css", "agent-hub-mark.png"];
+  const required = ["message-disclosure.js", "app.js", "message-lifecycle.js", "hub-client.js", "styles.css", "backgrounds.css", "agent-hub-mark.png"];
   try {
     fs.mkdirSync(shadowAssets, { recursive: true });
     fs.mkdirSync(runtimeAssets, { recursive: true });
@@ -938,8 +938,9 @@ test("journal keeps Workspace and Stream groups expandable", () => {
   );
   assert.match(
     styles,
-    /data-work-log-streams-collapsed[\s\S]*summary\[data-work-log-workspace-header\][\s\S]*display:\s*none;/u,
+    /data-work-log-streams-collapsed\]\[open\][\s\S]*summary\[data-work-log-workspace-header\][\s\S]*display:\s*none;/u,
   );
+  assert.match(app, /if \(collapseStreams\) \{[\s\S]*details\.open = true;/u);
   assert.match(app, /taskContent\.textContent = workspaceName/u);
   assert.match(app, /usage\.replaceChildren/u);
   assert.match(app, /workspace\.dataset\.workLogStreamsCollapsed/u);
@@ -948,6 +949,10 @@ test("journal keeps Workspace and Stream groups expandable", () => {
     /data-work-log-workspace-turns[\s\S]*?data-work-log-task-cell[\s\S]*?position:\s*static;[\s\S]*?top:\s*auto;/u,
   );
   assert.match(styles, /span\[data-work-log-duration-summary\][\s\S]*?grid-column:\s*1 \/ -1;/u);
+  assert.match(
+    styles,
+    /details\[data-work-log-collapsed-workspace-usage-details\][\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\) auto auto;[\s\S]*?> span\[data-work-log-duration-summary\][\s\S]*?display:\s*contents;/u,
+  );
   assert.match(styles, /\.journal div\[data-work-log-task-content\]:empty\s*\{[^}]*display:\s*none;/su);
 });
 
@@ -1467,9 +1472,14 @@ test("manual context compaction reports completion and stays on the fast refresh
   assert.match(client, /requestedContextCompactions/u);
   assert.match(client, /Свёртка завершена успешно/u);
   assert.match(client, /Началась автосвёртка контекста/u);
+  assert.match(client, /Свёртка контекста…/u);
+  assert.match(client, /Автосвёртка контекста…/u);
+  assert.match(client, /Замер контекста…/u);
+  assert.match(client, /Ротация контекста…/u);
+  assert.match(client, /activeMaintenanceByTask/u);
   assert.match(client, /rememberMaintenanceEvent/u);
   assert.match(client, /Ротация завершена успешно/u);
-  assert.match(client, /task\.running \|\| task\.context\?\.compacting/u);
+  assert.match(client, /task\.running \|\| task\.context\?\.compacting \|\| task\.maintenance/u);
   assert.match(app, /message\.kind === "maintenance"/u);
   assert.match(styles, /\.msg-maintenance \.msg-body/u);
   assert.match(app, /context\.compacting \? "↻" : context\.usagePending \? "…"/u);
@@ -1477,6 +1487,20 @@ test("manual context compaction reports completion and stays on the fast refresh
   assert.match(app, /Удаляются дубликаты изображений/u);
   assert.match(app, /toggleAttribute\("data-compacting"/u);
   assert.match(styles, /context-compaction-spin/u);
+});
+
+test("Stream status effects can fill the whole plaque", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(html, /data-stream-status-fill-toggle/u);
+  assert.match(app, /agent-hub-stream-status-style/u);
+  assert.match(app, /root\.dataset\.streamStatusStyle = style/u);
+  assert.match(styles, /data-stream-status-style="fill"[\s\S]*stream-tab\[data-running\]/u);
+  assert.match(styles, /stream-answer-ready-fill 3\.6s ease-in-out infinite/u);
+  assert.match(styles, /50% \{ opacity: 0\.16; \}/u);
+  assert.match(styles, /data-stream-status-style="fill"[\s\S]*opacity: 0\.18;/u);
+  assert.doesNotMatch(styles, /data-context-flash-style="fill"/u);
 });
 
 test("live reasoning renders Markdown separately from the response", () => {
@@ -1931,6 +1955,8 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   assert.match(app, /const running = tasks\.some\(\(task\) => task\.running\)/u);
   assert.match(app, /"data-running": running \? "" : null/u);
   assert.match(styles, /\.task-workspace-item\[data-running\]::after/u);
+  assert.match(styles, /\.task-workspace-item\[data-unread\]:not\(\[data-running\]\)/u);
+  assert.doesNotMatch(app, /class: "task-unread", title: "Есть непрочитанные сообщения"/u);
   assert.doesNotMatch(styles, /\.stream-tab\[data-current\]\s*\{[\s\S]*?box-shadow/u);
 });
 

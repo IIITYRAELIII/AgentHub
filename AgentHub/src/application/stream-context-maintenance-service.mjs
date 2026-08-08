@@ -5,7 +5,7 @@ function normalized(value) {
 export function contextUsagePercent(context) {
   const used = Math.max(0, Number(context?.usedTokens) || 0);
   const window = Math.max(0, Number(context?.modelContextWindow) || 0);
-  return window ? (used / window) * 100 : null;
+  return window ? Math.round((used / window) * 100_000_000) / 1_000_000 : null;
 }
 
 export class StreamContextMaintenanceService {
@@ -14,6 +14,7 @@ export class StreamContextMaintenanceService {
     provider,
     latestContextUsage,
     waitForContextUpdate,
+    waitForTurnCompletion,
     workspaceCatalog,
     selectionStore,
     deferredInputs,
@@ -35,6 +36,7 @@ export class StreamContextMaintenanceService {
       provider,
       latestContextUsage,
       waitForContextUpdate,
+      waitForTurnCompletion,
       workspaceCatalog,
       selectionStore,
       deferredInputs,
@@ -56,18 +58,65 @@ export class StreamContextMaintenanceService {
   }
 
   reserveAfterTurn(run) {
-    if (run?.provider !== "codex" || run?.status !== "finishing" || !this.autoCompactEnabled()) {
+    if (run?.provider !== "codex" || run?.status !== "finishing") {
       return false;
     }
+    const completedTurnCompaction = this.#completedTurnCompaction(run);
+    if (this.autoRotateEnabled() && completedTurnCompaction) {
+      if (["running", "completed", "failed"].includes(
+        completedTurnCompaction.measurementStatus,
+      )) return false;
+      return Boolean(this.registry.begin(run, "automatic-post-turn-rotation"));
+    }
+    if (!this.autoCompactEnabled()) return false;
     return Boolean(this.registry.begin(run, "automatic-post-turn"));
   }
 
   async maintainAfterTurn(run) {
     const reservation = this.registry.entry(run);
-    if (reservation?.reason !== "automatic-post-turn") return null;
+    if (!["automatic-post-turn", "automatic-post-turn-rotation"].includes(reservation?.reason)) {
+      return null;
+    }
     let queueTarget = run;
     let compactionId = null;
     try {
+      if (reservation.reason === "automatic-post-turn-rotation") {
+        const compaction = this.#completedTurnCompaction(run);
+        if (!compaction) throw new Error("Завершённая свёртка текущего хода больше недоступна");
+        compactionId = compaction.id;
+        const after = await this.#contextAfterObservedCompaction(run, compaction);
+        const afterPercent = contextUsagePercent(after);
+        this.provider.compactions.annotate?.(run.threadId, compaction.id, {
+          afterPercent,
+          measurementStatus: afterPercent === null ? "failed" : "completed",
+        });
+        if (afterPercent === null || afterPercent <= Number(this.autoRotateThreshold())) {
+          this.provider.discardCompactionTransfer(run.threadId, compaction.id);
+          compactionId = null;
+          return {
+            compacted: true,
+            rotated: false,
+            deferredRotation: true,
+            afterPercent,
+          };
+        }
+        this.registry.update?.(reservation, { reason: "automatic-rotation" });
+        const rotated = await this.provider.rotateCompacted(run, {
+          compactionId: compaction.id,
+          settlement: compaction,
+          includeTurnId: run.turnId,
+        });
+        this.provider.compactions.annotate?.(run.threadId, compaction.id, { rotated: true });
+        compactionId = null;
+        queueTarget = await this.#bindRotation(run, rotated);
+        return {
+          compacted: true,
+          rotated: true,
+          deferredRotation: true,
+          afterPercent,
+          ...rotated,
+        };
+      }
       const before = this.latestContextUsage(run.threadId);
       const beforePercent = contextUsagePercent(before);
       if (beforePercent === null || beforePercent <= Number(this.autoCompactThreshold())) {
@@ -76,6 +125,7 @@ export class StreamContextMaintenanceService {
       const started = await this.provider.start(run, {
         captureRawItem: true,
         origin: "automatic",
+        beforePercent,
       });
       if (!started.accepted) return { compacted: false, reason: started.message };
       compactionId = started.compactionId;
@@ -89,15 +139,19 @@ export class StreamContextMaintenanceService {
           ? "Автосвёртка контекста не завершилась вовремя"
           : "Автосвёртка контекста не завершилась");
       }
-      const after = await this.#exactContextAfterCompaction(run, before);
+      const after = await this.#exactContextAfterCompaction(run, before, started.compactionId);
       const afterPercent = contextUsagePercent(after);
-      this.provider.compactions.annotate?.(run.threadId, started.compactionId, { afterPercent });
+      this.provider.compactions.annotate?.(run.threadId, started.compactionId, {
+        afterPercent,
+        measurementStatus: afterPercent === null ? "failed" : "completed",
+      });
       if (!this.autoRotateEnabled() || afterPercent === null
         || afterPercent <= Number(this.autoRotateThreshold())) {
         this.provider.discardCompactionTransfer(run.threadId, started.compactionId);
         compactionId = null;
         return { compacted: true, rotated: false, beforePercent, afterPercent };
       }
+      this.registry.update?.(reservation, { reason: "automatic-rotation" });
       const rotated = await this.provider.rotateCompacted(run, {
         compactionId: started.compactionId,
         settlement: settled,
@@ -122,7 +176,7 @@ export class StreamContextMaintenanceService {
     try {
       const before = this.latestContextUsage(target.threadId);
       const beforePercent = contextUsagePercent(before);
-      const started = await this.provider.startManual(target);
+      const started = await this.provider.startManual(target, { beforePercent });
       if (!started.accepted) {
         this.registry.end(reservation);
         return started;
@@ -131,9 +185,15 @@ export class StreamContextMaintenanceService {
       void this.provider.compactions.waitForSettlement(target.threadId, started.compactionId)
         .then(async (settled) => {
           if (settled?.status !== "completed") return;
-          const after = await this.#exactContextAfterCompaction(target, before);
+          const after = await this.#exactContextAfterCompaction(
+            target,
+            before,
+            started.compactionId,
+          );
+          const afterPercent = contextUsagePercent(after);
           this.provider.compactions.annotate?.(target.threadId, started.compactionId, {
-            afterPercent: contextUsagePercent(after),
+            afterPercent,
+            measurementStatus: afterPercent === null ? "failed" : "completed",
           });
         })
         .catch((error) => this.logger.warn?.(
@@ -202,7 +262,10 @@ export class StreamContextMaintenanceService {
     return { ...source, streamId: stream.id, threadId, taskTitle: workspace.name };
   }
 
-  async #exactContextAfterCompaction(target, before) {
+  async #exactContextAfterCompaction(target, before, compactionId) {
+    this.provider.compactions.annotate?.(target.threadId, compactionId, {
+      measurementStatus: "running",
+    });
     const preliminary = await this.waitForContextUpdate(target.threadId, {
       after: before?.updatedAt ?? 0,
       timeoutMs: 5_000,
@@ -210,16 +273,49 @@ export class StreamContextMaintenanceService {
     if (preliminary && preliminary.provisional !== true) return preliminary;
     const probeStartedAt = Date.now() - 1;
     try {
-      await this.provider.probeContext(target);
-      const measured = await this.waitForContextUpdate(target.threadId, {
-        after: probeStartedAt,
-        timeoutMs: 5_000,
-      });
-      return measured?.provisional === true ? null : measured;
+      const probe = await this.provider.probeContext(target);
+      const [measured, completion] = await Promise.all([
+        this.waitForContextUpdate(target.threadId, {
+          after: probeStartedAt,
+          turnId: probe?.turnId,
+          timeoutMs: 60_000,
+        }),
+        this.waitForTurnCompletion(probe?.turnId, { timeoutMs: 60_000 }),
+      ]);
+      if (!completion) throw new Error("Скрытый замер контекста не завершился вовремя");
+      if (completion.status !== "completed") {
+        throw new Error(`Скрытый замер контекста завершился со статусом ${completion.status}`);
+      }
+      return measured?.provisional === true || Number(measured?.usedTokens) <= 0
+        ? null
+        : measured;
     } catch (error) {
       this.logger.warn?.(`Cannot measure compacted context for ${target.threadId}: ${error.message}`);
       return null;
     }
+  }
+
+  #completedTurnCompaction(run) {
+    const compaction = this.provider.compactions?.get?.(normalized(run?.threadId));
+    if (
+      compaction?.origin !== "automatic"
+      || compaction.status !== "completed"
+      || compaction.rotated === true
+      || normalized(compaction.turnId) !== normalized(run?.turnId)
+    ) return null;
+    return compaction;
+  }
+
+  async #contextAfterObservedCompaction(target, compaction) {
+    const current = this.latestContextUsage(target.threadId);
+    const contextUpdatedAt = Date.parse(String(current?.updatedAt ?? ""));
+    const compactedAt = Date.parse(String(compaction?.completedAt ?? ""));
+    if (
+      current?.provisional !== true
+      && Number.isFinite(contextUpdatedAt)
+      && (!Number.isFinite(compactedAt) || contextUpdatedAt >= compactedAt)
+    ) return current;
+    return this.#exactContextAfterCompaction(target, current, compaction.id);
   }
 
   #wakeQueue(target) {

@@ -27,15 +27,21 @@ function isCompactionOnlyContextMeasurement(params, compaction) {
   return Math.max(0, Number(last.totalTokens) || 0) > 0 && billableTokens === 0;
 }
 
+function contextUsagePercent(context) {
+  const usedTokens = Math.max(0, Number(context?.usedTokens) || 0);
+  const windowTokens = Math.max(0, Number(context?.modelContextWindow) || 0);
+  return windowTokens ? (usedTokens / windowTokens) * 100 : null;
+}
+
 export class CodexEventService {
   #d;
 
   constructor(dependencies = {}) {
     for (const name of [
       "invalidateThreadRead", "forEvent", "reindexRun", "applyThreadSettings", "saveState",
-      "trackTokenUsage", "taskKey", "isSelectedRun", "setSelectedDiff", "appendActivity",
+      "trackTokenUsage", "completeTurn", "taskKey", "isSelectedRun", "setSelectedDiff", "appendActivity",
       "noteActivity", "scheduleProgress", "appendReasoning", "isCompactionItem",
-      "beginCompaction", "getCompaction", "rememberRawCompactionItem",
+      "contextUsage", "beginCompaction", "getCompaction", "rememberRawCompactionItem",
       "beginCompactionCleanup", "setStage", "describeItem",
       "itemActivity", "requestApproval", "formatCommandApproval", "formatFileApproval",
       "formatPermissionsApproval", "requestMcpElicitation", "discardContextCompaction",
@@ -117,7 +123,11 @@ export class CodexEventService {
     if (method === "item/started") {
       if (d.isCompactionItem(params.item)) {
         d.beginCompaction(params.threadId, {
-          origin: "automatic", turnId: eventTurnId, itemId: params.item?.id, startedAt: params.startedAtMs,
+          origin: "automatic",
+          turnId: eventTurnId,
+          itemId: params.item?.id,
+          startedAt: params.startedAtMs,
+          beforePercent: contextUsagePercent(d.contextUsage(params.threadId)),
         });
       }
       if (run) {
@@ -180,6 +190,7 @@ export class CodexEventService {
     } else if (method === "mcpServer/elicitation/request") {
       await d.requestMcpElicitation(id, params, run);
     } else if (method === "turn/completed") {
+      d.completeTurn(eventTurnId, params.turn?.status);
       if (!run) {
         d.turnTokenUsage.delete(eventTurnId);
         d.speechButtons.delete(eventTurnId);

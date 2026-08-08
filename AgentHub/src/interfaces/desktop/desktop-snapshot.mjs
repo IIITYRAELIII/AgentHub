@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 
 export function createDesktopSnapshotFactory({
@@ -14,6 +15,7 @@ export function createDesktopSnapshotFactory({
   approvals,
   restart,
   exchangeRates,
+  maintenance = {},
   server = {},
   readState = null,
   warn,
@@ -47,6 +49,14 @@ export function createDesktopSnapshotFactory({
     });
   }
 
+  function deferredTaskTitle(item) {
+    const entry = catalog.entries().find((candidate) => (
+      (item.streamId && candidate.streamId === item.streamId)
+      || (candidate.provider === item.provider && candidate.threadId === item.threadId)
+    ));
+    return taskDisplayTitle(entry, item.taskTitle);
+  }
+
   function desktopContextSnapshot(thread, turn = "") {
     const usage = context.latestUsage(thread, turn);
     const compaction = context.compactionFor(String(thread ?? "")) ?? null;
@@ -58,12 +68,12 @@ export function createDesktopSnapshotFactory({
     return {
       usedTokens,
       modelContextWindow: windowTokens,
-      percent: windowTokens ? Math.min(100, (usedTokens / windowTokens) * 100) : 0,
+      percent: windowTokens ? Math.min(100, (usedTokens / windowTokens) * 100) : null,
       turnId: usage?.turnId ?? compaction?.turnId ?? null,
       updatedAt: usage?.updatedAt ?? null,
       compacting: context.isCompacting(String(thread ?? "")),
       compaction,
-      usagePending: usage?.provisional === true || (
+      usagePending: !usage || usage?.provisional === true || (
         compaction?.status === "completed"
         && compactionStartedAtMs > 0
         && usageUpdatedAtMs < compactionStartedAtMs
@@ -145,6 +155,7 @@ export function createDesktopSnapshotFactory({
   }
 
   function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false } = {}) {
+    const displayTitle = taskDisplayTitle(entry);
     const task = {
       streamId: entry.streamId ?? null,
       provider: entry.provider,
@@ -180,7 +191,9 @@ export function createDesktopSnapshotFactory({
       projectRoot: entry.projectRoot,
       projectName: entry.projectName ?? tasks.projectNameFor(entry.projectRoot),
       threadId: entry.threadId,
-      title: entry.title,
+      title: displayTitle,
+      displayTitle,
+      threadTitle: entry.title,
       model: visibleRun?.model ?? entry.model ?? null,
       selected: tasks.entryIsSelected(entry, selection.selectedTask()),
       running: manualCompactionObserver
@@ -202,6 +215,7 @@ export function createDesktopSnapshotFactory({
       lastAnswerAt: lastMessage?.updatedAt ?? null,
       lastAnswerTurnId: lastMessage?.turnId ?? null,
       unread,
+      maintenance: maintenance.entryFor?.(task) ?? null,
       context,
       run: desktopRunSnapshot(visibleRun),
     };
@@ -264,7 +278,8 @@ export function createDesktopSnapshotFactory({
         streamName: selectedTaskSnapshot?.streamName ?? null,
         streamDisplayName: selectedTaskSnapshot?.streamDisplayName ?? "",
         streamOrdinal: selectedTaskSnapshot?.streamOrdinal ?? 1,
-        title: selection.activeThreadTitle(),
+        title: selectedTaskSnapshot?.displayTitle
+          ?? taskDisplayTitle(selectedTaskSnapshot, selection.activeThreadTitle()),
         projectName: selection.activeProject().name,
         model: activeProvider === "codex"
           ? current.codexModelLabel(current.codexModel)
@@ -319,7 +334,7 @@ export function createDesktopSnapshotFactory({
           state: item.manualAction === "steer" ? "steering" : "pending",
           provider: item.provider,
           threadId: item.threadId,
-          taskTitle: item.taskTitle,
+          taskTitle: deferredTaskTitle(item),
           clientUserMessageId: item.clientUserMessageId ?? null,
           text: deferred.editableText?.(item.input) ?? deferred.inputPreview(item.input),
           annotations: deferred.responseAnnotations?.(item.input) ?? [],
@@ -336,7 +351,7 @@ export function createDesktopSnapshotFactory({
           state: item.dispatchingAt ? "dispatching" : "queued",
           provider: item.provider,
           threadId: item.threadId,
-          taskTitle: item.taskTitle,
+          taskTitle: deferredTaskTitle(item),
           clientUserMessageId: item.clientUserMessageId ?? null,
           text: deferred.editableText?.(item.input) ?? deferred.inputPreview(item.input),
           annotations: deferred.responseAnnotations?.(item.input) ?? [],

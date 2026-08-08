@@ -43,6 +43,8 @@ test("stored task view binding is enriched with its stable Stream", async () => 
     findCatalogEntry: async () => ({
       ...stored,
       streamId: "stream-1",
+      workspaceName: "Agent HUB",
+      streamName: "Themes",
       title: "Workspace",
     }),
   });
@@ -53,7 +55,7 @@ test("stored task view binding is enriched with its stable Stream", async () => 
   }, 9, 12), {
     ...stored,
     streamId: "stream-1",
-    taskTitle: "Workspace",
+    taskTitle: "Agent HUB - Themes",
   });
 });
 

@@ -11,6 +11,8 @@ const task = {
   threadId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   projectRoot: "C:/repo",
   projectName: "Repo",
+  workspaceName: "Agent HUB",
+  streamName: "Themes",
   title: "Задача",
   running: true,
   executionOwner: "vscode",
@@ -18,7 +20,7 @@ const task = {
 
 test("task picker marks selected running task and optional project", () => {
   const text = taskPickerButtonText(task, task, { showProject: true });
-  assert.match(text, /^✓ ⏳ VSC · Codex · Repo · Задача$/);
+  assert.match(text, /^✓ ⏳ VSC · Codex · Repo · Agent HUB - Themes$/);
 });
 
 test("task picker distinguishes a running Agent Hub task", () => {
@@ -26,7 +28,7 @@ test("task picker distinguishes a running Agent Hub task", () => {
     ...task,
     executionOwner: "telegram",
   }, null);
-  assert.equal(text, "⚡ HUB · Codex · Задача");
+  assert.equal(text, "⚡ HUB · Codex · Agent HUB - Themes");
 });
 
 test("task picker paginates and keeps new/archive actions last", () => {

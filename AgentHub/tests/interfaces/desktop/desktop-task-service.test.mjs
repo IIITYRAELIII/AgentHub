@@ -6,6 +6,8 @@ import { DesktopTaskService } from "../../../src/interfaces/desktop/desktop-task
 function fixture() {
   const entry = {
     streamId: "stream-1",
+    workspaceName: "Agent HUB",
+    streamName: "Themes",
     provider: "codex",
     projectRoot: "C:\\repo",
     threadId: "thread-1",
@@ -50,6 +52,7 @@ test("Desktop task service resolves streamId before provider references", async 
   assert.equal(target.chatId, 101);
   assert.equal(target.telegramDeliveryRequested, false);
   assert.equal(target.clientSource, "vscode-extension");
+  assert.equal(target.taskTitle, "Agent HUB - Themes");
 });
 
 test("Desktop task selection activates and marks one exact task", async () => {
@@ -57,6 +60,7 @@ test("Desktop task selection activates and marks one exact task", async () => {
   const result = await service.select({ provider: "codex", threadId: "thread-1" });
   assert.equal(result.selectionChanged, true);
   assert.equal(calls[0][0], "activate");
+  assert.equal(calls[0][1].taskTitle, "Agent HUB - Themes");
   assert.equal(calls[1][0], "read");
 });
 

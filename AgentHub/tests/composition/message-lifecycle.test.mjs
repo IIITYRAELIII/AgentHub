@@ -913,14 +913,16 @@ test("returning to a busy task keeps live and deferred states separate", () => {
 });
 
 test("context compaction start identifies the task and completion stays in chat", () => {
-  assert.match(hubClientSource, /function compactionTaskTitle\(task\)/u);
+  assert.match(hubClientSource, /function taskDisplayTitle\(task\)/u);
+  assert.match(hubClientSource, /displayTitle = String\(task\?\.displayTitle/u);
   assert.match(hubClientSource, /workspaceName = String\(task\?\.workspaceName/u);
   assert.match(hubClientSource, /streamName = String\(task\?\.streamName/u);
   assert.match(hubClientSource, /return `\$\{workspaceName\} - \$\{streamName\}`/u);
   assert.match(
     hubClientSource,
-    /Началась автосвёртка контекста · \$\{compactionTaskTitle\(task\)\}/u,
+    /Началась автосвёртка контекста · \$\{taskDisplayTitle\(task\)\}/u,
   );
+  assert.doesNotMatch(miniAppSource, /task\.threadTitle \|\| task\.title/u);
   assert.match(
     hubClientSource,
     /visibleBeforePercent = beforePercent \?\? "\?";[\s\S]*visibleAfterPercent = afterPercent \?\? "\?";[\s\S]*text: `Свёртка завершена успешно \$\{visibleBeforePercent\}%>\$\{visibleAfterPercent\}%`/u,
@@ -929,7 +931,13 @@ test("context compaction start identifies the task and completion stays in chat"
   assert.match(hubClientSource, /rememberMaintenanceEvent\(stableTaskId/u);
   assert.match(
     hubClientSource,
-    /afterPercent = previous\.afterPercent[\s\S]*storedMaintenancePercent\(existingEvent, 2\)[\s\S]*contextPercent\(compaction\.afterPercent\)/u,
+    /invalidZeroAfter[\s\S]*id\.startsWith\("maintenance:compaction:"\)[\s\S]*replace\(\/>0%\$\/u, ">\?%"\)/u,
+  );
+  assert.match(hubClientSource, /position === 2 && percent === 0 \? null : percent/u);
+  assert.match(hubClientSource, /explicitAfterPercent = contextPercent\(compaction\.afterPercent\) \|\| null/u);
+  assert.match(
+    hubClientSource,
+    /explicitAfterPercent = contextPercent\(compaction\.afterPercent\)[\s\S]*measurementStatus === "completed"[\s\S]*\? explicitAfterPercent[\s\S]*previous\.afterPercent[\s\S]*storedMaintenancePercent\(existingEvent, 2\)[\s\S]*explicitAfterPercent/u,
   );
 });
 
@@ -965,4 +973,10 @@ test("Hub compaction delegates targeted completion to its context maintenance ow
     serverSource,
     /isMaintenanceActive: \(target\) => streamContextMaintenance\.isActive\(target\)/u,
   );
+});
+
+test("failed context compaction remains as a centered maintenance message", () => {
+  assert.match(hubClientSource, /\["failed", "timeout"\]\.includes\(status\)/u);
+  assert.match(hubClientSource, /"Автосвёртка контекста не завершилась"/u);
+  assert.match(hubClientSource, /"Свёртка контекста не завершилась"/u);
 });

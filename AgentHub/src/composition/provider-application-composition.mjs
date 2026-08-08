@@ -167,7 +167,7 @@ export async function createProviderApplicationComposition({
     },
     afterCompletion: async (run) => {
       const maintenance = streamContextMaintenance.maintainAfterTurn(run);
-      if (hostState.restartRequest?.waitingForRuns && !api.restartHasBlockingWork() && !hostState.stopping) {
+      if (hostState.restartRequest?.waitingForRuns && !hostState.stopping) {
         void maintenance.finally(() => api.scheduleDeferredRestartIfReady());
       }
     },
@@ -211,9 +211,12 @@ export async function createProviderApplicationComposition({
   const streamContextMaintenance = new StreamContextMaintenanceService({
     registry: runtimeData.streamMaintenance,
     provider: codexContextMaintenance,
-    latestContextUsage: (threadId) => codexObservability.usageTracker.latestContext(threadId),
+    latestContextUsage: (threadId) => codexObservability.usageTracker.latestExactContext(threadId),
     waitForContextUpdate: (threadId, options) => (
       codexObservability.usageTracker.waitForContextUpdate(threadId, options)
+    ),
+    waitForTurnCompletion: (turnId, options) => (
+      codexObservability.usageTracker.waitForTurnCompletion(turnId, options)
     ),
     workspaceCatalog: workspaceCatalogStore,
     selectionStore,
@@ -350,6 +353,10 @@ export async function createProviderApplicationComposition({
     invalidateCodexThreadRead: api.invalidateCodexThreadRead,
     applyCodexThreadSettings: api.applyCodexThreadSettings,
     trackTurnTokenUsage: api.trackTurnTokenUsage,
+    latestContextUsage: (threadId) => codexObservability.usageTracker.latestExactContext(threadId),
+    completeContextTurn: (turnId, status) => (
+      codexObservability.usageTracker.markTurnCompleted(turnId, status)
+    ),
     setLatestDiff: (value) => hostState.setLatestDiff(value),
     requestApproval: api.requestApproval,
     formatCommandApproval: api.formatCommandApproval,

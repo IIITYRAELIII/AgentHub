@@ -507,6 +507,10 @@ test("runtime orchestration owns observation, timers, interaction and restart", 
     path.join(ROOT, "src", "composition", "runtime-orchestration-composition.mjs"),
     "utf8",
   );
+  const restartWiring = await readFile(
+    path.join(ROOT, "src", "composition", "runtime-restart-wiring-composition.mjs"),
+    "utf8",
+  );
   for (const factory of [
     "createProviderRuntimeWiring",
     "createRuntimeTimersComposition",
@@ -517,6 +521,8 @@ test("runtime orchestration owns observation, timers, interaction and restart", 
     assert.equal(orchestration.includes(factory), true, `${factory} is not owned by runtime orchestration`);
   }
   assert.equal(orchestration.includes("updateRestartMessage: (message)"), true);
+  assert.match(orchestration, /streamMaintenance,/u);
+  assert.match(restartWiring, /streamMaintenance\.activeCount\(\)/u);
 });
 
 test("run shell owns presentation, admission and diff persistence", async () => {

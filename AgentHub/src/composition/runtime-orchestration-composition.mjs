@@ -2,6 +2,7 @@ import { createProviderRuntimeWiring } from "./provider-runtime-wiring-compositi
 import { createRuntimeTimersComposition } from "./runtime-timers-composition.mjs";
 import { createTaskInteractionWiring } from "./task-interaction-wiring-composition.mjs";
 import { createRuntimeRestartWiring } from "./runtime-restart-wiring-composition.mjs";
+import { taskDisplayTitle } from "../domain/task-display-title.mjs";
 
 export function createRuntimeOrchestrationComposition({
   config,
@@ -45,6 +46,7 @@ export function createRuntimeOrchestrationComposition({
     managedRunLifecycle,
     runCoordinator,
     contextCompactions,
+    streamMaintenance,
     deferredInputController,
     queuedInputs,
     scheduleQueuedInput,
@@ -256,9 +258,12 @@ export function createRuntimeOrchestrationComposition({
       dismissedExternalTasks,
       saveState,
       resolveRunningTitle: (running, binding) => {
-        const selectedTitle = runtime.isSelectedRun(running) ? selectedTaskTitle() : null;
-        const catalogTitle = taskCatalogEntries()
-          .find((entry) => catalogEntryIsSelected(entry, running))?.title;
+        const entry = taskCatalogEntries()
+          .find((candidate) => catalogEntryIsSelected(candidate, running));
+        const catalogTitle = entry ? taskDisplayTitle(entry) : null;
+        const selectedTitle = runtime.isSelectedRun(running)
+          ? taskDisplayTitle(entry, selectedTaskTitle())
+          : null;
         return selectedTitle || catalogTitle || binding.taskTitle;
       },
       taskProgress,
@@ -283,6 +288,7 @@ export function createRuntimeOrchestrationComposition({
     taskRuns,
     agentProviders,
     backgroundJobs,
+    streamMaintenance,
     getRestartRequest: () => hostState.restartRequest,
     isStopping: () => hostState.stopping,
     restartRequestService,
@@ -296,12 +302,21 @@ export function createRuntimeOrchestrationComposition({
       telegram,
       saveState,
       formatRestartCompleteMessage,
-      completeMessageState: () => ({
-        provider: providerTitle(),
-        task: selectedTaskTitle()
-          || (selectedThreadId() ? `${providerTitle()} · ${selectedThreadId().slice(0, 8)}` : "Не выбрана"),
-        runningTasks: taskRuns.size,
-      }),
+      completeMessageState: () => {
+        const selected = selectedTask();
+        const current = taskCatalogEntries()
+          .find((entry) => catalogEntryIsSelected(entry, selected));
+        const workspaceBinding = current ?? workspaceCatalogStore.resolveThread?.(selected);
+        return {
+          provider: providerTitle(),
+          task: taskDisplayTitle(
+            workspaceBinding,
+            selectedTaskTitle()
+              || (selectedThreadId() ? `${providerTitle()} · ${selectedThreadId().slice(0, 8)}` : "Не выбрана"),
+          ),
+          runningTasks: taskRuns.size,
+        };
+      },
       botMenu,
       journalStartupReady,
       runtimeStateCoordinator,

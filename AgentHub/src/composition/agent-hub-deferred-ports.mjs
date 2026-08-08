@@ -24,7 +24,7 @@ export function createAgentHubDeferredPorts() {
     "formatCommandApproval", "formatFileApproval", "formatApprovalMode", "approvalModeKeyboard",
   ]);
   const runtimeRestart = createDeferredCompositionPort("runtime restart wiring", [
-    "restartBlockingRuns", "restartHasBlockingWork", "scheduleDeferredRestartIfReady",
+    "restartBlockingRuns", "restartBlockingWorkCount", "restartHasBlockingWork", "scheduleDeferredRestartIfReady",
     "restartMessageIsEditable", "announceDesktopRestart", "updateRestartMessage",
     "finalizeRestartMessage", "performRestart", "restartBot",
   ]);

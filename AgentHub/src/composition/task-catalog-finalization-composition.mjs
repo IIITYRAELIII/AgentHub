@@ -5,6 +5,7 @@ import {
 import { taskOrderingActivityAtMs } from "../application/task-catalog-projection.mjs";
 import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
 import { statusTaskEntries } from "../interfaces/telegram/task-catalog-presentation.mjs";
+import { taskDisplayTitle } from "../domain/task-display-title.mjs";
 import { updateTaskRunTitle } from "../domain/task-runs.mjs";
 
 export function createTaskCatalogFinalizationComposition({
@@ -28,6 +29,7 @@ export function createTaskCatalogFinalizationComposition({
   async function finalize(mergedEntries) {
     let nextCatalog = mergedEntries;
     for (const entry of nextCatalog) {
+      entry.displayTitle = taskDisplayTitle(entry);
       taskRuns.bindStream?.(entry);
       entry.orderingActivityAtMs = taskOrderingActivityAtMs(entry, {
         run: taskRuns.forTask(entry),
@@ -61,7 +63,7 @@ export function createTaskCatalogFinalizationComposition({
     let titleChanged = false;
     for (const run of taskRuns.values()) {
       const entry = nextCatalog.find((item) => catalogEntryIsSelected(item, run));
-      if (entry) titleChanged = updateTaskRunTitle(run, entry.title) || titleChanged;
+      if (entry) titleChanged = updateTaskRunTitle(run, entry.displayTitle) || titleChanged;
     }
     const current = nextCatalog.find((entry) => catalogEntryIsSelected(entry, selectedTask()));
     if (current?.streamId && current.streamId !== selectionStore.streamId) {
@@ -71,8 +73,8 @@ export function createTaskCatalogFinalizationComposition({
       });
       titleChanged = true;
     }
-    if (current?.title && current.title !== getActiveThreadTitle()) {
-      selectionStore.setTitle(current.title);
+    if (current?.displayTitle && current.displayTitle !== getActiveThreadTitle()) {
+      selectionStore.setTitle(current.displayTitle);
       titleChanged = true;
     }
     taskSyncStore.recordCatalog(nextCatalog);

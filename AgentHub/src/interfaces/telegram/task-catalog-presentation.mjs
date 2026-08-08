@@ -1,4 +1,5 @@
 import { catalogEntryIsSelected } from "../../domain/task-catalog-identity.mjs";
+import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import {
   TASK_EXECUTION_OWNERS,
   taskExecutionRunningEmoji,
@@ -24,7 +25,7 @@ export function statusTaskEntries(entries, limit = 4) {
     .sort((left, right) => (
       Number(right.running) - Number(left.running)
       || taskActivityAtMs(right) - taskActivityAtMs(left)
-      || left.title.localeCompare(right.title, "ru")
+      || taskDisplayTitle(left).localeCompare(taskDisplayTitle(right), "ru")
     ))
     .slice(0, count);
 }
@@ -45,7 +46,7 @@ export function runningTaskReplyMarkup(entries, selected = null, { showProject =
             `${isSelected ? "✅ ТЕКУЩАЯ" : entry.running ? runningEmoji : entry.activityUnknown ? "❔" : "🕘"} · `
             + `${entry.running ? `${runtimeEmoji}${taskExecutionRuntimeShortLabel(entry.executionOwner)} · ` : ""}`
             + `${entry.provider === "codex" ? "Codex" : "Claude"} · `
-            + `${showProject ? `${entry.projectName} · ` : ""}${entry.title}`
+            + `${showProject ? `${entry.projectName} · ` : ""}${taskDisplayTitle(entry)}`
           ).slice(0, 90),
           callback_data: taskCatalogCallback(entry),
         }];

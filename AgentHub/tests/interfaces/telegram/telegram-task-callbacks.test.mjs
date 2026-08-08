@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { TelegramTaskCallbackService } from "../../../src/interfaces/telegram/telegram-task-callbacks.mjs";
 
-function callbacks(events, entries = []) {
+function callbacks(events, entries = [], overrides = {}) {
   const noop = async () => {};
   return new TelegramTaskCallbackService({
     telegram: async (method, body) => events.push({ method, body }),
@@ -32,6 +32,7 @@ function callbacks(events, entries = []) {
     archiveCurrentThread: async () => ({ archived: true }),
     sendArchiveMessage: noop,
     dismissCallbackMenu: noop,
+    ...overrides,
   });
 }
 
@@ -50,6 +51,29 @@ test("task callback service reports a missing catalog task", async () => {
     catalogTask: { provider: "codex", threadId: "missing" },
   });
   assert.ok(events.some((event) => event.body?.text === "Задача больше не найдена" && event.body.show_alert));
+});
+
+test("task callback service selects a Workspace and Stream title", async () => {
+  const events = [];
+  const selected = [];
+  const entry = {
+    provider: "codex",
+    threadId: "thread-1",
+    projectRoot: "C:/repo",
+    workspaceName: "Agent HUB",
+    streamName: "Themes",
+    title: "Internal Thread title",
+  };
+  await callbacks(events, [entry], {
+    selectTaskFromBinding: async (binding) => {
+      selected.push(binding);
+      return { selectionChanged: true };
+    },
+  }).handle(callback, {
+    kind: "catalog-task",
+    catalogTask: { provider: "codex", threadId: "thread-1" },
+  });
+  assert.equal(selected[0].taskTitle, "Agent HUB - Themes");
 });
 
 test("task callback service declines settings routes", async () => {

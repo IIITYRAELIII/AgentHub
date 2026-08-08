@@ -339,7 +339,13 @@ function startUnchangedExternalTurn(thread) {
 
 function resumeInterruptedTurns() {
   for (const thread of state.threads) {
-    for (const turn of thread.turns.filter((item) => item.status === "inProgress" && item.prompt.includes("[crash-once]"))) {
+    for (const turn of thread.turns.filter((item) => (
+      item.status === "inProgress"
+      && (
+        item.prompt.includes("[crash-once]")
+        || item.prompt === "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1"
+      )
+    ))) {
       schedule(() => finishTurn(thread, turn, { answer: `Восстановлено: ${turn.prompt}` }), 250);
     }
   }

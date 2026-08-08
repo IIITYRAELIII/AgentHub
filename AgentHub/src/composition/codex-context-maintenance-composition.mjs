@@ -69,6 +69,10 @@ export function createCodexContextMaintenanceComposition({
       input: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
       clientUserMessageId: codexContextProbeClientId(),
     }),
+    interruptContextProbe: (threadId, turnId) => sendRpc("turn/interrupt", {
+      threadId,
+      turnId,
+    }),
     startThread: (params) => sendRpc("thread/start", params),
     injectItems: (threadId, items) => sendRpc("thread/inject_items", { threadId, items }),
     deleteThread: (threadId) => sendRpc("thread/delete", { threadId }),

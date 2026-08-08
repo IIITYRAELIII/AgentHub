@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { displayUserPrompt } from "../../application/task-history.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
+import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 
 // Builds the bounded Desktop/Mini App history read-model for one task.
 function mergeDurableMessages(hydratedMessages, durableMessages) {
@@ -164,7 +165,7 @@ export function createDesktopTaskHistoryFactory({
       provider: entry.provider,
       projectRoot: entry.projectRoot,
       threadId: entry.threadId,
-      taskTitle: entry.title,
+      taskTitle: taskDisplayTitle(entry),
       chatId: selection.chatId(),
     };
     const streamThreads = binding.streamId && typeof catalog.threadsForStream === "function"
@@ -256,7 +257,7 @@ export function createDesktopTaskHistoryFactory({
       ...(binding.streamId ? { streamId: binding.streamId } : {}),
       provider,
       threadId: selectedThreadId,
-      title: entry.title,
+      title: taskDisplayTitle(entry),
       total,
       start,
       end,

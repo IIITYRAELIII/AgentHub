@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { Readable } from "node:stream";
 import test from "node:test";
 
 import {
+  codexTurnResponseItemsFromJsonl,
+  readCodexTurnResponseItems,
   latestCodexCompactionItemFromJsonl,
   readLatestCodexCompactionItem,
 } from "../../../src/providers/codex/codex-compaction-rollout.mjs";
@@ -49,4 +52,48 @@ test("rollout compaction reader uses the bounded tail", async () => {
 
   assert.deepEqual(result, expected);
   assert.deepEqual(calls, [["rollout.jsonl", { maxBytes: 1234 }]]);
+});
+
+test("turn transfer keeps every raw response item without old turn attribution", async () => {
+  const item = (turnId, type, fields = {}) => line({
+    type: "response_item",
+    payload: {
+      type,
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      ...fields,
+    },
+  });
+  const text = [
+    item("turn-other", "message", { role: "user", content: [] }),
+    item("turn-1", "message", {
+      role: "user",
+      content: [{ type: "input_text", text: "Сделай" }],
+    }),
+    item("turn-1", "function_call", { name: "shell", call_id: "call-1" }),
+    item("turn-1", "function_call_output", { call_id: "call-1", output: "готово" }),
+    item("turn-1", "compaction", { encrypted_content: "already-transferred" }),
+    item("turn-1", "message", {
+      role: "assistant",
+      content: [{ type: "output_text", text: "Готово" }],
+    }),
+  ].join("\n");
+
+  const expected = [
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Сделай" }],
+    },
+    { type: "function_call", name: "shell", call_id: "call-1" },
+    { type: "function_call_output", call_id: "call-1", output: "готово" },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Готово" }],
+    },
+  ];
+  assert.deepEqual(codexTurnResponseItemsFromJsonl(text, "turn-1"), expected);
+  assert.deepEqual(await readCodexTurnResponseItems("rollout.jsonl", "turn-1", {
+    createReadStreamImpl: () => Readable.from(text.split("\n").map((value) => `${value}\n`)),
+  }), expected);
 });

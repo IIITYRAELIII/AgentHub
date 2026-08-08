@@ -19,7 +19,6 @@
   <!-- agent-hub-theme-scripts -->
   <script src="/message-lifecycle.js" defer></script>
   <script src="/hub-client.js" defer></script>
-  <script src="/context-flash.mjs" type="module"></script>
 </head>
 <body>
   <section class="browser-auth" data-browser-auth hidden aria-labelledby="browser-auth-title">
@@ -804,6 +803,13 @@
           <label class="setting-row setting-field">
             <span class="setting-name">Фон</span>
             <select data-background-select aria-label="Фон интерфейса"></select>
+          </label>
+          <label class="setting-switch">
+            <input type="checkbox" data-stream-status-fill-toggle>
+            <span class="switch-text">Подсвечивать плашки Stream целиком
+              <span class="switch-note">У активных и завершённых ходов свет проходит внутри плашки вместо границы.</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
           </label>
           <label class="setting-row setting-field">
             <span class="setting-name">Группировка</span>

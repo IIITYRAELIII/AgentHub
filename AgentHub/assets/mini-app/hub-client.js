@@ -57,6 +57,7 @@ const optimisticDeferredClientUserMessageIds = new Set();
 const requestedContextCompactions = new Set();
 const observedContextCompactions = new Map();
 const maintenanceEventsByTask = readMaintenanceEvents();
+const activeMaintenanceByTask = new Map();
 let deferredClientUserMessageIds = new Set();
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const {
@@ -197,7 +198,19 @@ function readMaintenanceEvents() {
       const id = String(entry?.message?.id ?? "").trim();
       if (!task || !id) continue;
       const events = values.get(task) ?? [];
-      events.push(entry.message);
+      const match = /(\?|\d+)%>(\?|\d+)%/u.exec(String(entry.message?.text ?? ""));
+      const explicitAfter = entry.message?.afterPercent;
+      const invalidZeroAfter = id.startsWith("maintenance:compaction:") && (
+        (explicitAfter !== null && explicitAfter !== undefined && explicitAfter !== ""
+          && Number(explicitAfter) === 0)
+        || ((explicitAfter === null || explicitAfter === undefined || explicitAfter === "")
+          && match?.[2] === "0")
+      );
+      events.push(invalidZeroAfter ? {
+        ...entry.message,
+        afterPercent: null,
+        text: String(entry.message?.text ?? "").replace(/>0%$/u, ">?%"),
+      } : entry.message);
       values.set(task, events.slice(-50));
     }
   } catch {
@@ -221,15 +234,16 @@ function persistMaintenanceEvents() {
 function rememberMaintenanceEvent(taskIdValue, message) {
   const stableTaskId = String(taskIdValue ?? "").trim();
   const eventId = String(message?.id ?? "").trim();
-  if (!stableTaskId || !eventId) return;
+  if (!stableTaskId || !eventId) return false;
   const events = maintenanceEventsByTask.get(stableTaskId) ?? [];
   const index = events.findIndex((entry) => entry.id === eventId);
   const value = { ...message, role: "system", kind: "maintenance" };
-  if (index >= 0 && JSON.stringify(events[index]) === JSON.stringify(value)) return;
+  if (index >= 0 && JSON.stringify(events[index]) === JSON.stringify(value)) return false;
   if (index >= 0) events[index] = value;
   else events.push(value);
   maintenanceEventsByTask.set(stableTaskId, events.slice(-50));
   persistMaintenanceEvents();
+  return true;
 }
 
 function taskIdentity(id) {
@@ -336,8 +350,14 @@ function reconciledMessages(taskIdValue) {
   const overlayMessages = [...(completionOverlaysByTask.get(taskIdValue)?.values() ?? [])]
     .flatMap((overlay) => overlay.messages);
   const maintenanceMessages = maintenanceEventsByTask.get(taskIdValue) ?? [];
+  const activeMaintenance = activeMaintenanceByTask.get(taskIdValue);
   const serverMessages = deduplicateConversationMessages(mergeLiveUserMessages(
-    [...durableMessages, ...overlayMessages, ...maintenanceMessages],
+    [
+      ...durableMessages,
+      ...overlayMessages,
+      ...maintenanceMessages,
+      ...(activeMaintenance ? [activeMaintenance] : []),
+    ],
     liveUserMessagesByTask.get(taskIdValue) ?? {},
   ));
   const pending = outgoingMessages(taskIdValue);
@@ -720,8 +740,9 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   const runtimeTitle = task.run?.runtime ?? task.runtime ?? "";
   return {
     id,
-    title: task.title || "Без названия",
-    threadTitle: task.title || "Без названия",
+    title: task.displayTitle || task.title || "Без названия",
+    displayTitle: task.displayTitle || task.title || "Без названия",
+    threadTitle: task.threadTitle || task.title || "Без названия",
     workspaceId: task.workspaceId ?? null,
     workspaceName: task.workspaceName ?? null,
     workspaceKind: task.workspaceKind ?? null,
@@ -748,6 +769,7 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     unread: !running && unread,
     running,
     selected: id === effectiveSelectedId,
+    maintenance: task.maintenance ?? null,
     context: task.run?.context ?? task.context ?? null,
   };
 }
@@ -760,10 +782,13 @@ function contextPercent(value) {
 
 function storedMaintenancePercent(event, position) {
   const match = /(\?|\d+)%>(\?|\d+)%/u.exec(String(event?.text ?? ""));
-  return match?.[position] === "?" ? null : contextPercent(match?.[position]);
+  const percent = match?.[position] === "?" ? null : contextPercent(match?.[position]);
+  return position === 2 && percent === 0 ? null : percent;
 }
 
-function compactionTaskTitle(task) {
+function taskDisplayTitle(task) {
+  const displayTitle = String(task?.displayTitle ?? "").trim();
+  if (displayTitle) return displayTitle;
   const workspaceName = String(task?.workspaceName ?? "").trim();
   const streamName = String(task?.streamName ?? "").trim()
     || (String(task?.streamId ?? "").trim() ? "Stream 1" : "");
@@ -773,7 +798,73 @@ function compactionTaskTitle(task) {
   return String(task?.title ?? "").trim() || "Без названия";
 }
 
+function activeMaintenanceMessage(task) {
+  const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
+  const maintenanceReason = String(task.maintenance?.reason ?? "");
+  if (["manual-rotation", "automatic-rotation"].includes(maintenanceReason)) {
+    return {
+      id: `maintenance:rotation:${stableTaskId}:active`,
+      provider: task.provider,
+      threadId: task.threadId,
+      itemId: `maintenance:rotation:${stableTaskId}:active`,
+      role: "system",
+      kind: "maintenance",
+      text: "Ротация контекста…",
+      time: task.maintenance?.startedAt ?? null,
+    };
+  }
+  const compaction = task.context?.compaction;
+  const compactionId = String(compaction?.id ?? "");
+  if (!compactionId) return null;
+  const status = String(compaction.status ?? "");
+  const measurementStatus = String(compaction.measurementStatus ?? "");
+  let text = "";
+  if (status === "running") {
+    text = compaction.origin === "automatic"
+      ? "Автосвёртка контекста…"
+      : "Свёртка контекста…";
+  } else if (status === "completed" && (
+    measurementStatus === "running"
+    || (!measurementStatus && task.context?.usagePending)
+  )) {
+    text = "Замер контекста…";
+  }
+  if (!text) return null;
+  return {
+    id: `maintenance:compaction:${compactionId}:active`,
+    provider: task.provider,
+    threadId: task.threadId,
+    itemId: `maintenance:compaction:${compactionId}:active`,
+    role: "system",
+    kind: "maintenance",
+    text,
+    time: compaction.startedAt ?? null,
+  };
+}
+
+function syncActiveMaintenanceMessages(tasks) {
+  const changed = new Set();
+  const currentTaskIds = new Set();
+  for (const task of tasks ?? []) {
+    const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
+    currentTaskIds.add(stableTaskId);
+    const previous = activeMaintenanceByTask.get(stableTaskId) ?? null;
+    const next = activeMaintenanceMessage(task);
+    if (JSON.stringify(previous) === JSON.stringify(next)) continue;
+    if (next) activeMaintenanceByTask.set(stableTaskId, next);
+    else activeMaintenanceByTask.delete(stableTaskId);
+    changed.add(stableTaskId);
+  }
+  for (const stableTaskId of activeMaintenanceByTask.keys()) {
+    if (currentTaskIds.has(stableTaskId)) continue;
+    activeMaintenanceByTask.delete(stableTaskId);
+    changed.add(stableTaskId);
+  }
+  return changed;
+}
+
 function observeContextCompactions(tasks) {
+  const changed = new Set();
   for (const task of tasks ?? []) {
     const context = task.context;
     const compaction = context?.compaction;
@@ -786,16 +877,21 @@ function observeContextCompactions(tasks) {
     const previous = observedContextCompactions.get(compactionId) ?? {};
     const previousStatus = previous.status;
     const status = String(compaction.status ?? "");
-    const beforePercent = previous.beforePercent
+    const measurementStatus = String(compaction.measurementStatus ?? "");
+    const beforePercent = contextPercent(compaction.beforePercent)
+      ?? previous.beforePercent
       ?? contextPercent(existingEvent?.beforePercent)
       ?? storedMaintenancePercent(existingEvent, 1)
-      ?? contextPercent(compaction.beforePercent)
       ?? (status === "running" ? contextPercent(context?.percent) : null);
-    const afterPercent = previous.afterPercent
-      ?? contextPercent(existingEvent?.afterPercent)
-      ?? storedMaintenancePercent(existingEvent, 2)
-      ?? contextPercent(compaction.afterPercent)
-      ?? (!context?.usagePending && status === "completed" ? contextPercent(context?.percent) : null);
+    const explicitAfterPercent = contextPercent(compaction.afterPercent) || null;
+    const afterPercent = ["running", "failed"].includes(measurementStatus)
+      ? null
+      : measurementStatus === "completed"
+        ? explicitAfterPercent
+        : previous.afterPercent
+          ?? contextPercent(existingEvent?.afterPercent)
+          ?? storedMaintenancePercent(existingEvent, 2)
+          ?? explicitAfterPercent;
     const requested = requestedContextCompactions.has(compactionId);
     const eventAtMs = Date.parse(String(compaction.completedAt ?? compaction.startedAt ?? "")) || 0;
     const recent = eventAtMs > 0 && Date.now() - eventAtMs < 90_000;
@@ -803,19 +899,36 @@ function observeContextCompactions(tasks) {
       && previousStatus !== "running"
       && compaction.origin === "automatic"
       && recent) {
-      agentHub.toast(`Началась автосвёртка контекста · ${compactionTaskTitle(task)}`);
+      agentHub.toast(`Началась автосвёртка контекста · ${taskDisplayTitle(task)}`);
     } else if (status === "completed" && previousStatus !== "completed") {
       requestedContextCompactions.delete(compactionId);
     } else if (status === "timeout" && previousStatus !== "timeout") {
       if (requested || (compaction.origin === "automatic" && recent)) {
-        agentHub.toast(`Не удалось подтвердить завершение свёртки контекста · ${compactionTaskTitle(task)}`);
+        agentHub.toast(`Не удалось подтвердить завершение свёртки контекста · ${taskDisplayTitle(task)}`);
       }
       requestedContextCompactions.delete(compactionId);
     }
-    if (status === "completed") {
+    if (["failed", "timeout"].includes(status)) {
+      const automatic = compaction.origin === "automatic";
+      if (rememberMaintenanceEvent(stableTaskId, {
+        id: eventId,
+        provider: task.provider,
+        threadId: task.threadId,
+        itemId: eventId,
+        beforePercent,
+        afterPercent: null,
+        text: automatic
+          ? "Автосвёртка контекста не завершилась"
+          : "Свёртка контекста не завершилась",
+        time: existingEvent?.time ?? compaction.completedAt ?? new Date().toISOString(),
+      })) changed.add(stableTaskId);
+    }
+    const measurementPending = measurementStatus === "running"
+      || (!measurementStatus && context?.usagePending);
+    if (status === "completed" && !measurementPending) {
       const visibleBeforePercent = beforePercent ?? "?";
       const visibleAfterPercent = afterPercent ?? "?";
-      rememberMaintenanceEvent(stableTaskId, {
+      if (rememberMaintenanceEvent(stableTaskId, {
         id: eventId,
         provider: task.provider,
         threadId: task.threadId,
@@ -824,17 +937,24 @@ function observeContextCompactions(tasks) {
         afterPercent,
         text: `Свёртка завершена успешно ${visibleBeforePercent}%>${visibleAfterPercent}%`,
         time: existingEvent?.time ?? compaction.completedAt ?? new Date().toISOString(),
-      });
+      })) changed.add(stableTaskId);
     }
     observedContextCompactions.delete(compactionId);
-    observedContextCompactions.set(compactionId, { status, beforePercent, afterPercent });
+    observedContextCompactions.set(compactionId, {
+      status,
+      measurementStatus,
+      beforePercent,
+      afterPercent,
+    });
     while (observedContextCompactions.size > 100) {
       observedContextCompactions.delete(observedContextCompactions.keys().next().value);
     }
   }
+  return changed;
 }
 
 function observeStreamRotations(previousTasks, tasks) {
+  const changed = new Set();
   const previousByStream = new Map((previousTasks ?? []).flatMap((task) => (
     task.streamId ? [[String(task.streamId), task]] : []
   )));
@@ -856,7 +976,7 @@ function observeStreamRotations(previousTasks, tasks) {
       ?? (task.context?.usagePending ? null : contextPercent(task.context?.percent));
     const visibleBeforePercent = beforePercent ?? "?";
     const visibleAfterPercent = afterPercent ?? "?";
-    rememberMaintenanceEvent(stableTaskId, {
+    if (rememberMaintenanceEvent(stableTaskId, {
       id: eventId,
       provider: task.provider,
       threadId: task.threadId,
@@ -865,8 +985,9 @@ function observeStreamRotations(previousTasks, tasks) {
       afterPercent,
       text: `Ротация завершена успешно ${visibleBeforePercent}%>${visibleAfterPercent}%`,
       time: existingEvent?.time ?? new Date().toISOString(),
-    });
+    })) changed.add(stableTaskId);
   }
+  return changed;
 }
 
 function applySnapshot(snapshot) {
@@ -877,8 +998,11 @@ function applySnapshot(snapshot) {
   lastSnapshot = snapshot;
   agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
   agentHub.setServerStatus(snapshot.server ?? null);
-  observeContextCompactions(snapshot.tasks);
-  observeStreamRotations(previousTasks, snapshot.tasks);
+  const maintenanceChanged = new Set([
+    ...observeContextCompactions(snapshot.tasks),
+    ...observeStreamRotations(previousTasks, snapshot.tasks),
+    ...syncActiveMaintenanceMessages(snapshot.tasks),
+  ]);
   applyMessageReceipts(snapshot);
   const serverDeferredClientUserMessageIds = new Set(
     (snapshot.deferredInputs ?? [])
@@ -917,6 +1041,9 @@ function applySnapshot(snapshot) {
     .map((task) => modelTask(task, snapshot, effectiveSelectedId, serverSelectedId))
     .sort((left, right) => Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0));
   agentHub.setTasks(tasks);
+  if (maintenanceChanged.has(effectiveSelectedId)) {
+    renderTaskMessages(effectiveSelectedId, { preserveScroll: true });
+  }
   for (const deferred of snapshot.deferredInputs ?? []) {
     const clientUserMessageId = String(deferred.clientUserMessageId ?? "");
     if (!clientUserMessageId) continue;
@@ -1825,6 +1952,7 @@ agentHub.on("queue:edit", ({ id, text }) => runAction(async () => {
   applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Сообщение в очереди изменено");
 }));
+agentHub.on("tts:play", () => runAction(() => control("speak-last-answer", exactSelectedTaskParams())));
 agentHub.on("attachment:open", ({ attachment }) => runAction(async () => {
   const id = String(attachment?.id ?? "").trim();
   if (vscode && id) {
@@ -2078,7 +2206,7 @@ async function refresh({ reportError = false } = {}) {
   } finally {
     refreshing = false;
     const active = Boolean(lastSnapshot?.tasks?.some(
-      (task) => task.running || task.context?.compacting,
+      (task) => task.running || task.context?.compacting || task.maintenance,
     )) || [...visibleStreamTaskIds].some(historyNeedsCatchUp) || historyNeedsCatchUp(selectedTaskId);
     refreshTimer = window.setTimeout(refresh, active ? 1_200 : 5_000);
   }

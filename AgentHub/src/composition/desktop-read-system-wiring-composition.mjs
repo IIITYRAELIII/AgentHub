@@ -59,6 +59,9 @@ export function createDesktopReadSystemWiring({
         isCompacting: services.isCompacting,
         compactionFor: services.compactionFor,
       },
+      maintenance: {
+        entryFor: services.maintenanceFor,
+      },
       runs: {
         forTask: services.runForTask,
         titleFor: services.runTitle,
