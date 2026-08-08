@@ -1114,6 +1114,9 @@ function applySnapshot(snapshot) {
     agentHub.setLive(stableTaskId, updateLiveMessage(stableTaskId, task));
     agentHub.setRunning(stableTaskId, Boolean(task.run || task.running));
   }
+  for (const task of snapshot.tasks ?? []) {
+    renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);
+  }
   if (selected) {
     agentHub.setApprovals(selectedTaskId, effectiveSelectedId === serverSelectedId
       ? (snapshot.pendingApprovals ?? []).map((approval) => ({
@@ -1126,7 +1129,6 @@ function applySnapshot(snapshot) {
       ],
       }))
       : []);
-    renderTaskQueue(selectedTaskId, snapshot);
   }
   const settings = snapshot.settings ?? {};
   agentHub.setOptions({
@@ -1934,14 +1936,14 @@ agentHub.on("queue:remove", ({ id }) => runAction(async () => {
   applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Отложенное сообщение удалено");
 }));
-async function runQueueAction(id, operation) {
+async function runQueueAction(id, taskIdValue, operation) {
   const key = String(id ?? "").trim();
   if (!key || queueActionsInFlight.has(key)) return null;
   queueActionsInFlight.add(key);
-  if (selectedTaskId) {
+  if (taskIdValue) {
     const visible = (lastSnapshot?.deferredInputs ?? []).filter((item) => item.id !== key);
-    agentHub.setQueue(selectedTaskId, visible.filter((item) => (
-      (!item.provider || taskId(item.provider, item.threadId) === selectedTaskId)
+    agentHub.setQueue(taskIdValue, visible.filter((item) => (
+      (!item.provider || taskId(item.provider, item.threadId, item.streamId) === taskIdValue)
     )));
   }
   try {
@@ -1952,11 +1954,11 @@ async function runQueueAction(id, operation) {
   }
 }
 
-agentHub.on("queue:accept", ({ id }) => runAction(() => runQueueAction(id, async () => {
+agentHub.on("queue:accept", ({ id, taskId: taskIdValue }) => runAction(() => runQueueAction(id, taskIdValue, async () => {
   const result = await control("deferred-input", { id, action: "queue" });
   agentHub.toast(result?.message ?? "Сообщение будет отправлено после текущего хода");
 })));
-agentHub.on("queue:steer", ({ id }) => runAction(() => runQueueAction(id, async () => {
+agentHub.on("queue:steer", ({ id, taskId: taskIdValue }) => runAction(() => runQueueAction(id, taskIdValue, async () => {
   const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id);
   const result = await control("deferred-input", { id, action: "steer" });
   const clientUserMessageId = String(deferred?.clientUserMessageId ?? "").trim();

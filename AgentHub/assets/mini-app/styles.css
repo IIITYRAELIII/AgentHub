@@ -4370,6 +4370,49 @@ html[data-surface="mobile"]
   border-color: var(--accent-line);
 }
 
+.chat-scroll-down {
+  align-items: center;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--surface-3) 88%, transparent);
+  border: 1px solid var(--accent-line);
+  border-radius: 50%;
+  bottom: 0.85rem;
+  box-shadow: 0 0.55rem 1.4rem rgb(0 0 0 / 0.38);
+  color: var(--text-soft);
+  cursor: pointer;
+  display: grid;
+  height: 2.65rem;
+  justify-content: center;
+  position: absolute;
+  right: max(0.75rem, var(--gutter-right));
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+  width: 2.65rem;
+  z-index: 9;
+}
+
+.chat-scroll-down[hidden] {
+  display: none;
+}
+
+.chat-scroll-down:hover,
+.chat-scroll-down:focus-visible {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-3));
+  border-color: var(--accent);
+  color: var(--text);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.chat-scroll-down svg {
+  height: 1.15rem;
+  width: 1.15rem;
+}
+
+.stream-chat-preview > .chat-scroll-down {
+  right: 0.75rem;
+}
+
 .chat-empty {
   align-items: center;
   color: var(--text-faint);
@@ -4876,8 +4919,7 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 
 /* ---- подтверждения и очередь ---- */
 
-.approvals,
-.queue {
+.approvals {
   border-top: 1px solid var(--line);
   display: flex;
   flex-direction: column;
@@ -4919,7 +4961,18 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 }
 
 .queue {
+  display: flex;
+  flex-direction: column;
   gap: 0.35rem;
+  margin: 0.7rem auto 0;
+  max-width: 54rem;
+  overflow: visible;
+  padding: 0;
+  width: 100%;
+}
+
+.stream-chat-preview .queue {
+  max-width: none;
 }
 
 .queue-head {
@@ -4935,9 +4988,23 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
   justify-content: space-between;
+  max-width: min(46rem, 88%);
   padding: 0.35rem 0.5rem;
+  width: fit-content;
+}
+
+.chat-scroll .queue-item,
+.stream-chat-preview .queue-item {
+  align-self: flex-end;
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.stream-chat-preview .queue-item {
+  max-width: 94%;
 }
 
 .queue-content {
@@ -4997,6 +5064,9 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   display: inline-flex;
   flex: 0 0 auto;
   gap: 0.25rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .queue-accept,

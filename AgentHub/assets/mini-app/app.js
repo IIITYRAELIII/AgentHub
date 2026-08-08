@@ -44,6 +44,7 @@ const streamChatColumns = document.querySelector("[data-stream-chat-columns]");
 const chatEmpty = document.querySelector("[data-chat-empty]");
 const chatEmptyText = document.querySelector("[data-chat-empty-text]");
 const chatScroll = document.querySelector("[data-chat-scroll]");
+const chatScrollDown = document.querySelector("[data-chat-scroll-down]");
 const historyLoader = document.querySelector("[data-history-loader]");
 const historyLoadButton = document.querySelector("[data-history-load]");
 const historyLoadLabel = document.querySelector("[data-history-load-label]");
@@ -1836,6 +1837,59 @@ function publishVisibleStreamTasks(tasks) {
   emit("workspace:visible-streams", { taskIds: ids });
 }
 
+const CHAT_BOTTOM_THRESHOLD_PX = 120;
+
+function scrollContainerIsNearBottom(scroll) {
+  return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < CHAT_BOTTOM_THRESHOLD_PX;
+}
+
+function syncChatScrollDownButton(scroll, button) {
+  if (!scroll || !button) return;
+  button.hidden = scrollContainerIsNearBottom(scroll);
+}
+
+function bindChatScrollDown(scroll, button) {
+  if (!scroll || !button) return;
+  const sync = () => syncChatScrollDownButton(scroll, button);
+  scroll.addEventListener("scroll", sync, { passive: true });
+  button.addEventListener("click", () => {
+    scroll.scrollTo({
+      top: scroll.scrollHeight,
+      behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
+  });
+  window.requestAnimationFrame(sync);
+}
+
+function createChatScrollDownButton(scroll) {
+  const button = el("button", {
+    type: "button",
+    class: "chat-scroll-down",
+    hidden: true,
+    title: "Прокрутить чат вниз",
+    "aria-label": "Прокрутить чат вниз",
+  }, [
+    el("svg", {
+      "data-phosphor-icon": "caret-down",
+      viewBox: "0 0 256 256",
+      "aria-hidden": "true",
+    }, [
+      el("polyline", {
+        points: "208 96 128 176 48 96",
+        fill: "none",
+        stroke: "currentColor",
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+        "stroke-width": "20",
+      }),
+    ]),
+  ]);
+  bindChatScrollDown(scroll, button);
+  return button;
+}
+
+bindChatScrollDown(chatScroll, chatScrollDown);
+
 function renderStreamChatPreview(task) {
   const messages = state.messages.get(task.id);
   const preview = el("article", {
@@ -1872,9 +1926,20 @@ function renderStreamChatPreview(task) {
     populateLiveCard(liveNode, live, task.agentLabel || "Агент");
     log.append(liveNode);
   }
+  const queue = el("div", {
+    class: "queue stream-chat-preview-queue",
+    hidden: true,
+    "aria-label": "Очередь сообщений",
+  });
+  renderQueueForTask(task.id, queue);
+  if (!queue.hidden) log.append(queue);
   scroll.append(log);
-  preview.append(scroll);
-  window.requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
+  const scrollDown = createChatScrollDownButton(scroll);
+  preview.append(scroll, scrollDown);
+  window.requestAnimationFrame(() => {
+    scroll.scrollTop = scroll.scrollHeight;
+    syncChatScrollDownButton(scroll, scrollDown);
+  });
   return preview;
 }
 
@@ -1887,6 +1952,7 @@ function renderStreamChatDeck() {
   const selectedIndex = shown.findIndex((task) => task.id === selected?.id);
   for (const preview of streamChatColumns.querySelectorAll(".stream-chat-preview")) preview.remove();
   chatPane.hidden = selectedIndex < 0;
+  chatPane.dataset.streamChatTaskId = selected?.id ?? "";
   chatPane.style.order = String(Math.max(0, selectedIndex));
   chatPane.toggleAttribute("data-active-stream", selectedIndex >= 0);
   shown.forEach((task, index) => {
@@ -2377,11 +2443,14 @@ function renderContextUsage(task) {
 }
 
 function chatIsNearBottom() {
-  return chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 120;
+  return scrollContainerIsNearBottom(chatScroll);
 }
 
 function pinChatToBottom() {
-  const apply = () => { chatScroll.scrollTop = chatScroll.scrollHeight; };
+  const apply = () => {
+    chatScroll.scrollTop = chatScroll.scrollHeight;
+    syncChatScrollDownButton(chatScroll, chatScrollDown);
+  };
   apply();
   // Финальная карточка нередко приходит одновременно с удалением live-блока.
   // Два кадра дают браузеру завершить оба reflow, прежде чем фиксировать низ.
@@ -2617,6 +2686,7 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
     }));
     if (anchor) restoreChatAnchor(anchor);
     else if (stickToBottom) pinChatToBottom();
+    else window.requestAnimationFrame(() => syncChatScrollDownButton(chatScroll, chatScrollDown));
     return;
   }
   let lastAgentIndex = -1;
@@ -2641,6 +2711,7 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
   scheduleUserMessageDisclosureSync();
   if (anchor) restoreChatAnchor(anchor);
   else if (stickToBottom) pinChatToBottom();
+  else window.requestAnimationFrame(() => syncChatScrollDownButton(chatScroll, chatScrollDown));
 }
 
 function taskDiffSummary(text) {
@@ -3140,17 +3211,13 @@ function renderLive() {
   if (!liveCardHasContent(live)) {
     chatLive.hidden = true;
     if (stickToBottom) pinChatToBottom();
+    else window.requestAnimationFrame(() => syncChatScrollDownButton(chatScroll, chatScrollDown));
     return;
   }
   chatLive.hidden = false;
   populateLiveCard(chatLive, live);
   if (stickToBottom) pinChatToBottom();
-}
-
-function scrollChatToBottom() {
-  // Не перематываем, если пользователь листает историю вверх.
-  const nearBottom = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 120;
-  if (nearBottom) chatScroll.scrollTop = chatScroll.scrollHeight;
+  else window.requestAnimationFrame(() => syncChatScrollDownButton(chatScroll, chatScrollDown));
 }
 
 /* =================================================== подтверждения / очередь */
@@ -3181,8 +3248,8 @@ function renderApprovals() {
   }
 }
 
-function renderQueue() {
-  const queued = (state.queue.get(state.selectedId) ?? [])
+function renderQueueForTask(taskId, container) {
+  const queued = (state.queue.get(taskId) ?? [])
     .filter((entry) => entry.state !== "dispatching" && entry.state !== "steering")
     .slice()
     .sort((left, right) => {
@@ -3191,8 +3258,8 @@ function renderQueue() {
       return (Number.isFinite(leftAt) ? leftAt : Number.POSITIVE_INFINITY)
         - (Number.isFinite(rightAt) ? rightAt : Number.POSITIVE_INFINITY);
     });
-  queueBox.replaceChildren();
-  queueBox.hidden = queued.length === 0;
+  container.replaceChildren();
+  container.hidden = queued.length === 0;
   if (queued.length === 0) return;
   const pendingCount = queued.filter((entry) => entry.state === "pending").length;
   const queuedCount = queued.length - pendingCount;
@@ -3200,13 +3267,14 @@ function renderQueue() {
     pendingCount ? `Требуют решения: ${pendingCount}` : "",
     queuedCount ? `В очереди: ${queuedCount}` : "",
   ].filter(Boolean).join(" · ");
-  queueBox.append(el("div", { class: "queue-head", text: counts }));
+  container.append(el("div", { class: "queue-head", text: counts }));
+  const task = state.tasks.find((entry) => entry.id === taskId);
   for (const entry of queued) {
     const actions = [];
     if (entry.optimistic) {
       actions.push(el("span", { class: "queue-optimistic", text: "Ставится в очередь…" }));
     } else {
-      const steerAvailable = Boolean(currentTask()?.running && currentTask()?.provider === "codex");
+      const steerAvailable = Boolean(task?.running && task?.provider === "codex");
       actions.push(el("button", {
         type: "button",
         class: "queue-steer",
@@ -3265,7 +3333,7 @@ function renderQueue() {
         ? el("div", { class: "queue-text", text: "Сообщение" })
         : null,
     ]);
-    queueBox.append(el("div", { class: "queue-item", "data-queue-id": entry.id }, [
+    container.append(el("div", { class: "queue-item", "data-queue-id": entry.id }, [
       content,
       Array.isArray(entry.attachments) && entry.attachments.length
         ? renderAttachmentStrip(entry.attachments, { readOnly: true })
@@ -3273,6 +3341,11 @@ function renderQueue() {
       el("span", { class: "queue-actions" }, actions),
     ]));
   }
+}
+
+function renderQueue() {
+  renderQueueForTask(state.selectedId, queueBox);
+  window.requestAnimationFrame(() => syncChatScrollDownButton(chatScroll, chatScrollDown));
 }
 
 /* ============================================================== композер */
@@ -4611,7 +4684,8 @@ document.addEventListener("click", (event) => {
 });
 
 async function handleAction(action, trigger) {
-  const taskId = state.selectedId;
+  const taskId = trigger.closest("[data-stream-chat-task-id]")?.dataset.streamChatTaskId
+    || state.selectedId;
   switch (action) {
     case "task-new": {
       const provider = ["codex", "claude"].includes(trigger?.dataset?.provider)
@@ -4904,6 +4978,7 @@ const AgentHub = {
     if (sameData(state.queue.get(taskId) ?? [], next)) return;
     state.queue.set(taskId, next);
     if (taskId === state.selectedId) renderQueue();
+    else refreshSupplementaryStreamChat(taskId);
   },
   /** Списки вариантов для селекторов: { model, reasoning, mode, project }.
    *  Значение — строка или { value, label }. */

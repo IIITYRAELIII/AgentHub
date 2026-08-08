@@ -307,7 +307,15 @@
               <div class="activity-list" data-activity-list></div>
             </details>
           </article>
+          <div class="queue" data-queue hidden aria-label="Очередь сообщений"></div>
         </div>
+        <button type="button" class="chat-scroll-down" data-chat-scroll-down hidden
+          title="Прокрутить чат вниз" aria-label="Прокрутить чат вниз">
+          <svg data-phosphor-icon="caret-down" viewBox="0 0 256 256" aria-hidden="true">
+            <polyline points="208 96 128 176 48 96" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="20"></polyline>
+          </svg>
+        </button>
 
         <aside class="dialog-settings" data-dialog-settings hidden aria-label="Настройки диалога">
           <header class="dialog-settings-head">
@@ -351,9 +359,6 @@
 
         <!-- Запросы подтверждений (команды, файлы, разрешения). -->
         <div class="approvals" data-approvals hidden aria-label="Запросы подтверждения"></div>
-
-        <!-- Сохранённые и поставленные в очередь сообщения. -->
-        <div class="queue" data-queue hidden aria-label="Очередь сообщений"></div>
 
         <form class="composer" data-composer>
           <div class="annotations" data-annotations hidden aria-label="Аннотации к выделенному тексту"></div>
