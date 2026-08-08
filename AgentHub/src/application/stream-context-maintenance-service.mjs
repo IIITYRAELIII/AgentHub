@@ -63,7 +63,7 @@ export class StreamContextMaintenanceService {
     }
     const completedTurnCompaction = this.#completedTurnCompaction(run);
     if (this.autoRotateEnabled() && completedTurnCompaction) {
-      if (["running", "completed", "failed"].includes(
+      if (["running", "failed"].includes(
         completedTurnCompaction.measurementStatus,
       )) return false;
       return Boolean(this.registry.begin(run, "automatic-post-turn-rotation"));
@@ -84,12 +84,16 @@ export class StreamContextMaintenanceService {
         const compaction = this.#completedTurnCompaction(run);
         if (!compaction) throw new Error("Завершённая свёртка текущего хода больше недоступна");
         compactionId = compaction.id;
-        const after = await this.#contextAfterObservedCompaction(run, compaction);
-        const afterPercent = contextUsagePercent(after);
-        this.provider.compactions.annotate?.(run.threadId, compaction.id, {
-          afterPercent,
-          measurementStatus: afterPercent === null ? "failed" : "completed",
-        });
+        const measuredAfterPercent = Number(compaction.afterPercent);
+        const afterPercent = compaction.measurementStatus === "completed"
+          && Number.isFinite(measuredAfterPercent)
+          ? Math.max(0, Math.min(100, measuredAfterPercent))
+          : null;
+        if (afterPercent === null) {
+          this.provider.compactions.annotate?.(run.threadId, compaction.id, {
+            measurementStatus: "failed",
+          });
+        }
         if (afterPercent === null || afterPercent <= Number(this.autoRotateThreshold())) {
           this.provider.discardCompactionTransfer(run.threadId, compaction.id);
           compactionId = null;
@@ -304,18 +308,6 @@ export class StreamContextMaintenanceService {
       || normalized(compaction.turnId) !== normalized(run?.turnId)
     ) return null;
     return compaction;
-  }
-
-  async #contextAfterObservedCompaction(target, compaction) {
-    const current = this.latestContextUsage(target.threadId);
-    const contextUpdatedAt = Date.parse(String(current?.updatedAt ?? ""));
-    const compactedAt = Date.parse(String(compaction?.completedAt ?? ""));
-    if (
-      current?.provisional !== true
-      && Number.isFinite(contextUpdatedAt)
-      && (!Number.isFinite(compactedAt) || contextUpdatedAt >= compactedAt)
-    ) return current;
-    return this.#exactContextAfterCompaction(target, current, compaction.id);
   }
 
   #wakeQueue(target) {

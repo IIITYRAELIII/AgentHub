@@ -18,6 +18,7 @@ function fixture({
   probeFails = false,
   autoCompact = true,
   observedCompaction = false,
+  observedAfterPercent = null,
   observedMeasurementStatus = "",
 } = {}) {
   const events = [];
@@ -38,6 +39,10 @@ function fixture({
     status: "completed",
     turnId: source.turnId,
     completedAt: "2026-08-07T09:59:00.000Z",
+    ...(observedAfterPercent !== null ? {
+      afterPercent: observedAfterPercent,
+      measurementStatus: "completed",
+    } : {}),
     ...(observedMeasurementStatus ? { measurementStatus: observedMeasurementStatus } : {}),
   } : null;
   const provider = {
@@ -265,7 +270,12 @@ test("rotation reuses the completed compaction and retargets the blocked queue",
 });
 
 test("a mid-turn compaction rotates only after completion and transfers that whole turn", async () => {
-  const state = fixture({ beforePercent: 28, observedCompaction: true, autoCompact: false });
+  const state = fixture({
+    beforePercent: 31,
+    observedCompaction: true,
+    observedAfterPercent: 28,
+    autoCompact: false,
+  });
 
   assert.equal(state.service.reserveAfterTurn(state.source), true);
   const result = await state.service.maintainAfterTurn(state.source);
@@ -282,6 +292,8 @@ test("a mid-turn compaction rotates only after completion and transfers that who
       status: "completed",
       turnId: "turn-1",
       completedAt: "2026-08-07T09:59:00.000Z",
+      afterPercent: 28,
+      measurementStatus: "completed",
     },
     includeTurnId: "turn-1",
   });
@@ -290,7 +302,12 @@ test("a mid-turn compaction rotates only after completion and transfers that who
 });
 
 test("a mid-turn compaction does not rotate when the finished turn stays at the boundary", async () => {
-  const state = fixture({ beforePercent: 20, observedCompaction: true, autoCompact: false });
+  const state = fixture({
+    beforePercent: 31,
+    observedCompaction: true,
+    observedAfterPercent: 20,
+    autoCompact: false,
+  });
 
   state.service.reserveAfterTurn(state.source);
   const result = await state.service.maintainAfterTurn(state.source);
@@ -301,12 +318,22 @@ test("a mid-turn compaction does not rotate when the finished turn stays at the 
   assert.equal(state.events.some(([name]) => name === "discard"), true);
 });
 
-test("an already measured mid-turn compaction is not measured again", () => {
+test("rotation uses the compaction-end context instead of the final turn context", async () => {
   const state = fixture({
+    beforePercent: 31,
     observedCompaction: true,
-    observedMeasurementStatus: "completed",
+    observedAfterPercent: 9,
+    autoCompact: false,
   });
 
-  assert.equal(state.service.reserveAfterTurn(state.source), false);
+  assert.equal(state.service.reserveAfterTurn(state.source), true);
+  const result = await state.service.maintainAfterTurn(state.source);
+
+  assert.equal(result.rotated, false);
+  assert.equal(result.afterPercent, 9);
+  assert.equal(state.events.some(([name]) => name === "usage"), false);
+  assert.equal(state.events.some(([name]) => name === "probe"), false);
+  assert.equal(state.events.some(([name]) => name === "rotate"), false);
+  assert.equal(state.events.some(([name]) => name === "discard"), true);
   assert.equal(state.registry.isActive(state.source), false);
 });

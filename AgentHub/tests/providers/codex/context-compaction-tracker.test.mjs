@@ -76,6 +76,54 @@ test("an automatic compaction is visible from start through completion", () => {
   tracker.dispose();
 });
 
+test("the first exact context after an automatic compaction is immutable", () => {
+  let now = Date.parse("2026-08-08T19:58:35.000Z");
+  const tracker = new ContextCompactionTracker({
+    clock: () => now,
+    idFactory: () => "mid-turn-id",
+  });
+  tracker.begin("thread-mid-turn", {
+    origin: "automatic",
+    turnId: "turn-long",
+    beforePercent: 87.1,
+  });
+  now += 1_000;
+  tracker.complete("thread-mid-turn", {
+    turnId: "turn-long",
+    completedAt: now,
+  });
+
+  assert.equal(tracker.observeContext({
+    threadId: "thread-mid-turn",
+    turnId: "turn-long",
+    usedTokens: 23_068,
+    modelContextWindow: 258_400,
+    provisional: true,
+    updatedAt: new Date(now + 1).toISOString(),
+  }), null);
+  const measured = tracker.observeContext({
+    threadId: "thread-mid-turn",
+    turnId: "turn-long",
+    usedTokens: 25_247,
+    modelContextWindow: 258_400,
+    provisional: false,
+    updatedAt: new Date(now + 2).toISOString(),
+  });
+  assert.equal(measured.afterPercent, 9.770511);
+  assert.equal(measured.measurementStatus, "completed");
+
+  assert.equal(tracker.observeContext({
+    threadId: "thread-mid-turn",
+    turnId: "turn-long",
+    usedTokens: 79_389,
+    modelContextWindow: 258_400,
+    provisional: false,
+    updatedAt: new Date(now + 399_000).toISOString(),
+  }), null);
+  assert.equal(tracker.get("thread-mid-turn").afterPercent, 9.770511);
+  tracker.dispose();
+});
+
 test("an unavailable measurement never becomes a fabricated zero", () => {
   const tracker = new ContextCompactionTracker({ idFactory: () => "measurement-id" });
   const started = tracker.begin("thread-measurement", { beforePercent: null });

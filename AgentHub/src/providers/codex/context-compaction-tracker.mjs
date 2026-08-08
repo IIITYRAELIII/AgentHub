@@ -162,16 +162,23 @@ export class ContextCompactionTracker {
     const threadId = normalizedThreadId(context?.threadId);
     const turnId = normalizedThreadId(context?.turnId);
     const record = this.get(threadId);
-    if (
-      !record
-      || record.status !== "completed"
-      || record.measurementStatus !== "running"
-      || context?.provisional === true
-      || !normalizedProbeTurnIds(record.probeTurnIds).includes(turnId)
-    ) return null;
+    if (!record || context?.provisional === true) return null;
     const usedTokens = Math.max(0, Number(context?.usedTokens) || 0);
     const modelContextWindow = Math.max(0, Number(context?.modelContextWindow) || 0);
     if (!modelContextWindow || !usedTokens) return null;
+    const probeMeasurement = record.status === "completed"
+      && record.measurementStatus === "running"
+      && normalizedProbeTurnIds(record.probeTurnIds).includes(turnId);
+    const compactedAt = Date.parse(String(record.compactedAt ?? record.completedAt ?? ""));
+    const contextUpdatedAt = Date.parse(String(context?.updatedAt ?? ""));
+    const immediateAutomaticMeasurement = record.origin === "automatic"
+      && !record.measurementStatus
+      && ["running", "completed"].includes(record.status)
+      && turnId === normalizedThreadId(record.turnId)
+      && Number.isFinite(compactedAt)
+      && Number.isFinite(contextUpdatedAt)
+      && contextUpdatedAt >= compactedAt;
+    if (!probeMeasurement && !immediateAutomaticMeasurement) return null;
     return this.annotate(threadId, record.id, {
       afterPercent: Math.round((usedTokens / modelContextWindow) * 100_000_000) / 1_000_000,
       measurementStatus: "completed",
