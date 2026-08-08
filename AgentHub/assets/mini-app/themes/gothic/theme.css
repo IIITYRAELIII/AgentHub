@@ -1,115 +1,89 @@
 /* ========================================================= тема «Gothic» === */
 
 html[data-theme="gothic"] {
-  /* Оригинальная тема мрачного средневекового RPG: сырой камень, старое
-     железо, холодное золото и живой огонь. Системные антиквы сохраняют
-     кириллицу и не требуют внешнего шрифта. */
-  --font-body: "Constantia", "Palatino Linotype", "Book Antiqua", Georgia, "Times New Roman", serif;
-  --font-display: "Palatino Linotype", "Book Antiqua", "Constantia", Georgia, serif;
-  --font-title: "Felix Titling", "Perpetua Titling MT", "Palatino Linotype", Georgia, serif;
-  --font-numeric: "Palatino Linotype", "Book Antiqua", Georgia, serif;
-  --display-weight: 700;
-  --display-spacing: 0.045em;
+  /* Храм Спящего: чёрное железо, базальт, вытертая кожа и редкие метки
+     красной охрой. Системные антиквы сохраняют кириллицу без web-font. */
+  --font-body: "Palatino Linotype", "Book Antiqua", Georgia, "Times New Roman", serif;
+  --font-display: "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --font-title: "Perpetua Titling MT", "Felix Titling", "Palatino Linotype", Georgia, serif;
+  --font-numeric: "Constantia", "Palatino Linotype", Georgia, serif;
+  --display-weight: 650;
+  --display-spacing: 0.035em;
   --display-transform: uppercase;
-  --display-shadow:
-    0 2px 1px #030405,
-    0 -1px 0 rgba(214, 232, 255, 0.18),
-    0 0 18px rgba(108, 148, 200, 0.2);
+  --display-shadow: 0 2px 1px #030201, 0 -1px 0 rgb(231 205 170 / 12%), 0 0 14px rgb(114 52 34 / 16%);
   --title-weight: 600;
-  --label-spacing: 0.18em;
+  --label-spacing: 0.15em;
 
-  --radius-lg: 5px;
-  --radius-md: 4px;
-  --radius-sm: 2px;
-  --radius-chip: 2px;
-  --rail-width: 3px;
+  --radius-lg: 2px;
+  --radius-md: 1px;
+  --radius-sm: 1px;
+  --radius-chip: 1px;
+  --rail-width: 2px;
 
-  --bg: #07080b;
-  --surface-1: rgba(186, 204, 228, 0.035);
-  --surface-2: rgba(186, 204, 228, 0.065);
-  --surface-3: rgba(186, 204, 228, 0.105);
-  --sunken: rgba(2, 3, 5, 0.58);
+  --bg: #100d0b;
+  --surface-1: rgb(17 15 13 / 84%);
+  --surface-2: rgb(35 29 24 / 84%);
+  --surface-3: rgb(56 44 35 / 78%);
+  --sunken: rgb(4 3 3 / 78%);
+  --line: rgb(139 113 82 / 32%);
+  --line-strong: rgb(171 134 92 / 55%);
 
-  --line: rgba(126, 150, 184, 0.2);
-  --line-strong: rgba(146, 172, 208, 0.38);
-
-  --card-bg:
-    linear-gradient(176deg, rgba(34, 39, 50, 0.94), rgba(15, 17, 22, 0.96) 56%, rgba(8, 9, 12, 0.98));
-  --card-bg-open:
-    linear-gradient(176deg, rgba(41, 47, 60, 0.95), rgba(19, 22, 29, 0.97) 56%, rgba(9, 10, 13, 0.99));
+  --card-bg: linear-gradient(178deg, rgb(35 29 24 / 96%), rgb(15 13 11 / 98%) 58%, rgb(7 6 5 / 99%));
+  --card-bg-open: linear-gradient(178deg, rgb(45 36 29 / 97%), rgb(19 16 13 / 99%) 58%, rgb(8 7 6 / 99%));
   --card-texture:
-    linear-gradient(92deg, transparent 0 48%, rgba(206, 222, 244, 0.022) 49% 50%, transparent 51%),
-    radial-gradient(44% 54% at 18% 16%, rgba(204, 220, 244, 0.055), transparent 72%),
-    radial-gradient(36% 46% at 82% 76%, rgba(0, 0, 0, 0.44), transparent 76%);
-  --card-border: rgba(122, 146, 180, 0.28);
-  --card-border-open: rgba(154, 184, 224, 0.52);
+    linear-gradient(92deg, transparent 0 48%, rgb(226 196 154 / 1.8%) 49% 50%, transparent 51%),
+    radial-gradient(44% 54% at 18% 16%, rgb(212 180 135 / 4.5%), transparent 72%),
+    radial-gradient(36% 46% at 82% 76%, rgb(0 0 0 / 52%), transparent 76%);
+  --card-border: rgb(125 96 68 / 42%);
+  --card-border-open: rgb(164 116 78 / 70%);
   --card-shadow:
-    inset 0 1px 0 rgba(206, 224, 248, 0.09),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.86),
-    inset 0 0 28px rgba(0, 0, 0, 0.2),
-    0 24px 46px -30px rgba(0, 0, 0, 0.95);
-
-  --plate-bg: linear-gradient(176deg, rgba(40, 46, 59, 0.95), rgba(18, 21, 27, 0.98) 58%, rgba(10, 11, 15, 0.99));
+    inset 0 1px 0 rgb(225 193 148 / 7%),
+    inset 0 -1px 0 rgb(0 0 0 / 86%),
+    inset 0 0 28px rgb(0 0 0 / 28%),
+    0 20px 38px -28px #000;
+  --plate-bg: linear-gradient(178deg, rgb(39 31 25 / 96%), rgb(17 14 12 / 98%) 58%, rgb(8 7 6 / 99%));
   --plate-texture:
-    linear-gradient(90deg, rgba(200, 218, 242, 0.025), transparent 18% 82%, rgba(0, 0, 0, 0.18)),
-    radial-gradient(52% 60% at 22% 24%, rgba(198, 216, 242, 0.05), transparent 74%),
-    radial-gradient(46% 54% at 82% 78%, rgba(0, 0, 0, 0.38), transparent 76%);
-  --plate-shadow:
-    inset 0 1px 0 rgba(204, 222, 246, 0.1),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.82);
-  --turn-shadow: 0 12px 26px -18px rgba(0, 0, 0, 1);
+    linear-gradient(90deg, rgb(217 184 139 / 2%), transparent 18% 82%, rgb(0 0 0 / 22%)),
+    radial-gradient(52% 60% at 22% 24%, rgb(204 169 122 / 4%), transparent 74%),
+    radial-gradient(46% 54% at 82% 78%, rgb(0 0 0 / 46%), transparent 76%);
+  --plate-shadow: inset 0 1px 0 rgb(216 182 134 / 8%), inset 0 -1px 0 rgb(0 0 0 / 82%);
+  --turn-shadow: 0 12px 26px -18px #000;
 
-  --text: #e6ecf5;
-  --text-soft: #b6c1d1;
-  --text-muted: #8a94a5;
-  --text-faint: #666f7e;
+  --text: #ded1bd;
+  --text-soft: #b9a990;
+  --text-muted: #8d7e69;
+  --text-faint: #685e50;
+  --accent: #a65c42;
+  --accent-soft: rgb(133 56 37 / 22%);
+  --accent-line: rgb(165 79 53 / 68%);
+  --accent-glow: 0 0 18px -9px rgb(176 73 44 / 72%);
+  --selection: rgb(150 68 44 / 34%);
+  --brand-gradient: radial-gradient(68% 72% at 32% 24%, rgb(185 111 70 / 18%), transparent 70%), linear-gradient(176deg, #493127, #19120f 68%, #080605);
+  --brand-shadow: inset 0 1px 0 rgb(224 186 139 / 12%), inset 0 -8px 14px rgb(0 0 0 / 48%), 0 0 22px -10px rgb(169 76 46 / 82%);
 
-  /* Ночь, туман и луна: холодная сталь вместо прежнего золота. Тёплый огонь
-     остаётся только на самих кадрах — факелы, свечи, окна башни. */
-  --accent: #8fa8c8;
-  --accent-soft: rgba(143, 168, 200, 0.12);
-  --accent-line: rgba(143, 168, 200, 0.5);
-  --accent-glow: 0 0 20px -8px rgba(150, 180, 220, 0.76);
-  --selection: rgba(143, 168, 200, 0.28);
-  --brand-gradient:
-    radial-gradient(68% 72% at 32% 24%, rgba(186, 212, 246, 0.2), transparent 70%),
-    linear-gradient(176deg, #2f3a4b, #111419 68%, #06070a);
-  --brand-shadow:
-    inset 0 1px 0 rgba(198, 220, 248, 0.16),
-    inset 0 -8px 14px rgba(0, 0, 0, 0.48),
-    0 0 22px -10px rgba(126, 166, 214, 0.9);
-
-  --provider-none: #6d7889;
-  --provider-codex: #b6c6da;
-  --provider-claude: #c88956;
-
-  --ok: #86b09a;
-  --pending: #c9a061;
-
-  --dot-input: #9fb6cf;
-  --dot-cache: #8d9aab;
-  --dot-output: #8fa8c8;
-  --dot-think: #9a91b4;
-
-  --space-glow-a: rgba(126, 166, 214, 0.08);
-  --space-glow-b: rgba(60, 78, 100, 0.09);
-  --space-base: linear-gradient(176deg, #12151c 0, #0a0c10 24rem, var(--bg) 100%);
+  --provider-none: #766a5a;
+  --provider-codex: #c8b89e;
+  --provider-claude: #b66f4a;
+  --ok: #8b9c6a;
+  --pending: #c08a4d;
+  --dot-input: #b9a88c;
+  --dot-cache: #827666;
+  --dot-output: #a65c42;
+  --dot-think: #8f746c;
+  --space-glow-a: rgb(155 72 45 / 7%);
+  --space-glow-b: rgb(91 67 44 / 8%);
+  --space-base: linear-gradient(176deg, #1b1511 0, #0d0a08 24rem, var(--bg) 100%);
   --space-star: transparent;
   --star-opacity: 0;
-}
-
-/* ======================= «Gothic»: крепость, руны, факелы и лунная сталь === */
-
-html[data-theme="gothic"] {
   --gothic-image: url("./gothic-concrete.jpg");
 }
 
 html[data-theme="gothic"] body::after {
-  background-color: #070604;
+  background-color: #080604;
   background-image:
-    linear-gradient(90deg, rgba(4, 4, 3, 0.18), transparent 34% 70%, rgba(4, 2, 1, 0.06)),
-    linear-gradient(180deg, rgba(3, 3, 2, 0.04) 48%, rgba(3, 2, 1, 0.5)),
-    radial-gradient(120% 94% at 50% 44%, transparent 38%, rgba(0, 0, 0, 0.42) 100%),
+    linear-gradient(90deg, rgb(5 4 3 / 28%), transparent 32% 72%, rgb(5 2 1 / 8%)),
+    linear-gradient(180deg, rgb(4 3 2 / 8%) 42%, rgb(3 2 1 / 56%)),
+    radial-gradient(120% 94% at 50% 44%, transparent 34%, rgb(0 0 0 / 48%) 100%),
     var(--gothic-image);
   background-position: center, center, center, 50% 50%;
   background-repeat: no-repeat;
@@ -119,47 +93,30 @@ html[data-theme="gothic"] body::after {
   opacity: 1;
 }
 
-html[data-theme="gothic"] .app-header {
-  background:
-    linear-gradient(90deg, rgba(120, 152, 196, 0.06), transparent 28% 70%, rgba(150, 180, 220, 0.07)),
-    linear-gradient(176deg, rgba(23, 27, 35, 0.96), rgba(9, 10, 13, 0.9));
-  border-bottom-color: var(--accent-line);
-  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.72), 0 10px 30px -24px rgba(110, 150, 200, 0.5);
-}
-
-html[data-theme="gothic"] .app-header::after {
-  background:
-    linear-gradient(90deg, transparent, rgba(150, 178, 214, 0.74) 24% 76%, transparent);
-  opacity: 0.62;
-}
-
-html[data-theme="gothic"] .eyebrow {
-  color: #8fa3bf;
+html[data-theme="gothic"] .eyebrow,
+html[data-theme="gothic"] .task-project-heading,
+html[data-theme="gothic"] .task-rail-title {
+  color: #9f8068;
   font-family: var(--font-title);
-  font-size: 0.66rem;
+  font-variant-caps: small-caps;
+  letter-spacing: 0.12em;
   text-shadow: 0 1px 0 #000;
 }
 
 html[data-theme="gothic"] .journal details[data-work-log-day-section]::before {
-  background:
-    linear-gradient(135deg, rgba(154, 184, 224, 0.5) 0 1px, transparent 1px) left top / 1rem 1rem no-repeat,
-    linear-gradient(225deg, rgba(154, 184, 224, 0.5) 0 1px, transparent 1px) right top / 1rem 1rem no-repeat,
-    linear-gradient(45deg, rgba(154, 184, 224, 0.34) 0 1px, transparent 1px) left bottom / 1rem 1rem no-repeat,
-    linear-gradient(315deg, rgba(154, 184, 224, 0.34) 0 1px, transparent 1px) right bottom / 1rem 1rem no-repeat;
-  border: 1px solid rgba(146, 172, 208, 0.1);
-  border-radius: 1px;
+  border: 1px solid rgb(154 109 73 / 18%);
+  border-radius: 0;
   content: "";
   inset: 3px;
   pointer-events: none;
   position: absolute;
 }
 
-/* Мелкая каменная пыль не спорит с текстом и скрывает цифровую гладкость. */
 html[data-theme="gothic"] .journal details[data-work-log-day-section]::after {
   background-image:
-    radial-gradient(circle, rgba(210, 226, 246, 0.026) 0 0.5px, transparent 0.9px),
-    radial-gradient(circle, rgba(0, 0, 0, 0.28) 0 0.5px, transparent 0.9px),
-    radial-gradient(circle, rgba(143, 168, 200, 0.018) 0 0.5px, transparent 0.9px);
+    radial-gradient(circle, rgb(224 194 151 / 2.2%) 0 0.5px, transparent 0.9px),
+    radial-gradient(circle, rgb(0 0 0 / 28%) 0 0.5px, transparent 0.9px),
+    radial-gradient(circle, rgb(165 89 55 / 1.8%) 0 0.5px, transparent 0.9px);
   background-position: 0 0, 3px 5px, 8px 2px;
   background-size: 7px 7px, 11px 11px, 17px 17px;
   border-radius: inherit;
@@ -170,58 +127,26 @@ html[data-theme="gothic"] .journal details[data-work-log-day-section]::after {
 }
 
 html[data-theme="gothic"] .journal summary[data-work-log-day] > strong {
-  color: #e8eef7;
-  text-shadow: 0 1px 0 #000, 0 0 14px rgba(143, 168, 200, 0.16);
-}
-
-html[data-theme="gothic"] .journal span[data-work-log-turn-title],
-html[data-theme="gothic"] .journal div[data-work-log-task-content] a,
-html[data-theme="gothic"] .journal div[data-work-log-task-content] [role="link"] {
-  font-family: var(--font-display);
-  letter-spacing: 0.012em;
-  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.9);
-}
-
-html[data-theme="gothic"] .journal div[data-work-log-task-cell] > div[data-work-log-task-content] {
-  font-size: 1.01rem;
+  color: #e2d4bf;
+  text-shadow: 0 1px 0 #000, 0 0 14px rgb(158 72 45 / 14%);
 }
 
 html[data-theme="gothic"] .journal details[data-work-log-turn-details] {
-  background-image:
-    var(--plate-texture),
-    linear-gradient(176deg, rgba(35, 40, 51, 0.9), rgba(14, 16, 21, 0.96));
+  background-image: var(--plate-texture), linear-gradient(176deg, rgb(34 27 22 / 92%), rgb(13 11 9 / 97%));
 }
 
 html[data-theme="gothic"] .journal details[data-work-log-turn-details][open] {
-  box-shadow:
-    inset var(--rail-width) 0 0 var(--accent),
-    inset 0 1px 0 rgba(206, 224, 248, 0.12),
-    0 0 28px -20px rgba(120, 160, 210, 0.72),
-    var(--turn-shadow);
+  box-shadow: inset var(--rail-width) 0 0 var(--accent), inset 0 1px 0 rgb(222 188 141 / 10%), 0 0 28px -20px rgb(168 72 43 / 68%), var(--turn-shadow);
 }
 
-html[data-theme="gothic"] .journal details[data-work-log-previous-turns] > summary {
-  border-style: solid;
-}
-
-html[data-theme="gothic"] .connection-dot {
-  box-shadow:
-    0 0 0 0.2rem color-mix(in srgb, var(--pending) 22%, transparent),
-    0 0 12px rgba(120, 160, 210, 0.35);
-}
-
-/* Холодный акцент не превращает журнал в синее полотно: подложка едва видна. */
 html[data-theme="gothic"] .journal span[data-kilo-usage],
 html[data-theme="gothic"] .journal span[data-mega-usage],
 html[data-theme="gothic"] .journal span[data-high-usage] {
-  background: rgba(143, 168, 200, 0.055);
-  box-shadow: inset 0 0 0 1px rgba(143, 168, 200, 0.12);
+  background: rgb(154 68 43 / 6%);
+  box-shadow: inset 0 0 0 1px rgb(154 68 43 / 14%);
 }
 
-/* «Gothic»: неровное мерцание факела.
-   Сама пыль теперь рисуется отдельными элементами (.motes), поэтому здесь
-   остаётся только блик: он не сходит с места и лишь меняет силу — ключи
-   расставлены с разным шагом, чтобы огонь не «дышал» метрономом. */
+/* Неровный источник света остаётся привязан к сцене, а не к интерфейсу. */
 @keyframes gothic-fire {
   0%, 100% { filter: brightness(0.94); opacity: 0.32; }
   13% { filter: brightness(1.14); opacity: 0.56; }
@@ -233,8 +158,7 @@ html[data-theme="gothic"] .journal span[data-high-usage] {
 
 html[data-theme="gothic"] body::before {
   animation: gothic-fire 7s ease-in-out infinite;
-  background-image:
-    radial-gradient(46% 78% at 88% 52%, rgba(238, 164, 58, 0.38), rgba(164, 80, 20, 0.12) 46%, transparent 74%);
+  background-image: radial-gradient(46% 78% at 88% 52%, rgb(238 164 58 / 38%), rgb(164 80 20 / 12%) 46%, transparent 74%);
   background-position: 88% 52%;
   background-repeat: no-repeat;
   background-size: cover;
@@ -244,22 +168,16 @@ html[data-theme="gothic"] body::before {
   opacity: 0.42;
 }
 
-html[data-background-override="true"][data-background="gothic"] { --gothic-image: url("./gothic-concrete.jpg"); --hub-background-color: #070604; --hub-background-image: linear-gradient(90deg, rgba(4, 4, 3, .18), transparent 34% 70%, rgba(4, 2, 1, .06)), linear-gradient(180deg, rgba(3, 3, 2, .04) 48%, rgba(3, 2, 1, .5)), radial-gradient(120% 94% at 50% 44%, transparent 38%, rgba(0, 0, 0, .42) 100%), var(--gothic-image); --hub-background-position: center, center, center, 50% 50%; }
-html[data-background-override="true"][data-background="gothic-crypt"] { --hub-background-color: #070604; --hub-background-image: linear-gradient(90deg, rgba(4, 4, 3, .3), rgba(4, 4, 3, 0) 40%), var(--gothic-crypt-image, url("./gothic-crypt.jpg?v=913e132043c0")); --hub-background-position: center, 58% 50%; }
+html[data-background-override="true"][data-background="gothic"] { --gothic-image: url("./gothic-concrete.jpg"); --hub-background-color: #070604; --hub-background-image: linear-gradient(90deg, rgb(4 4 3 / 26%), transparent 34% 70%, rgb(4 2 1 / 8%)), linear-gradient(180deg, rgb(3 3 2 / 5%) 48%, rgb(3 2 1 / 52%)), radial-gradient(120% 94% at 50% 44%, transparent 38%, rgb(0 0 0 / 46%) 100%), var(--gothic-image); --hub-background-position: center, center, center, 50% 50%; }
+html[data-background-override="true"][data-background="gothic-crypt"] { --hub-background-color: #070604; --hub-background-image: linear-gradient(90deg, rgb(4 4 3 / 34%), rgb(4 4 3 / 0%) 40%), var(--gothic-crypt-image, url("./gothic-crypt.jpg?v=913e132043c0")); --hub-background-position: center, 58% 50%; }
+html[data-background-override="true"][data-background="gothic-tower"] { --hub-background-color: #070a0e; --hub-background-image: linear-gradient(90deg, rgb(4 6 10 / 50%), rgb(4 6 10 / 12%) 38%, rgb(4 6 10 / 0%) 62%), var(--gothic-tower-image, url("./gothic-tower.jpg?v=9fe3303fe558")); --hub-background-position: center, 58% 46%; }
+html[data-background-override="true"][data-background="gothic-harbor"] { --hub-background-color: #06080d; --hub-background-image: linear-gradient(90deg, rgb(3 5 9 / 48%), rgb(3 5 9 / 10%) 40%, rgb(3 5 9 / 0%) 64%), var(--gothic-harbor-image, url("./gothic-harbor.jpg?v=5695c8f9d3db")); --hub-background-position: center, 62% 52%; }
+html[data-background-override="true"][data-background="gothic-chapel"] { --hub-background-color: #080706; --hub-background-image: linear-gradient(90deg, rgb(5 4 3 / 42%), rgb(5 4 3 / 8%) 36%, rgb(5 4 3 / 0%) 60%), var(--gothic-chapel-image, url("./gothic-chapel.jpg?v=eb55ca4ce5f6")); --hub-background-position: center, 60% 50%; }
+html[data-background-override="true"][data-background="gothic-keep"] { --hub-background-color: #070709; --hub-background-image: linear-gradient(90deg, rgb(5 5 7 / 46%), rgb(5 5 7 / 10%) 38%, rgb(5 5 7 / 0%) 62%), var(--gothic-keep-image, url("./gothic-keep.jpg?v=93babdd33bcf")); --hub-background-position: center, 58% 54%; }
+html[data-background-override="true"][data-background="gothic-minental-castle"] { --hub-background-color: #05090d; --hub-background-image: linear-gradient(90deg, rgb(3 6 10 / 42%), rgb(3 6 10 / 8%) 40%, rgb(3 6 10 / 0%) 64%), var(--gothic-minental-castle-image, url("./gothic-minental-castle.jpg?v=f75d937eca90")); --hub-background-position: center, 58% 50%; }
+html[data-background-override="true"][data-background="gothic-minental-fortress"] { --hub-background-color: #05090d; --hub-background-image: linear-gradient(90deg, rgb(3 6 10 / 38%), rgb(3 6 10 / 7%) 40%, rgb(3 6 10 / 0%) 64%), var(--gothic-minental-fortress-image, url("./gothic-minental-fortress.jpg?v=a298113485c7")); --hub-background-position: center, 50% 50%; }
+html[data-background-override="true"][data-background="gothic-finkregh"] { --hub-background-color: #03080c; --hub-background-image: linear-gradient(90deg, rgb(2 6 10 / 18%), rgb(2 6 10 / 4%) 34%, rgb(2 6 10 / 0%) 60%), var(--gothic-finkregh-image, url("./gothic-finkregh.jpg?v=3e54b1cb7aed")); --hub-background-position: center, 50% 50%; }
 
-/* Дополнительные ночные сцены «Gothic». Кадры уже сняты с тёмной левой третью, поэтому
-   гасить её приходится заметно слабее, чем светлое «Озеро». */
-html[data-background-override="true"][data-background="gothic-tower"] { --hub-background-color: #070a0e; --hub-background-image: linear-gradient(90deg, rgba(4, 6, 10, .5), rgba(4, 6, 10, .12) 38%, rgba(4, 6, 10, 0) 62%), var(--gothic-tower-image, url("./gothic-tower.jpg?v=9fe3303fe558")); --hub-background-position: center, 58% 46%; }
-html[data-background-override="true"][data-background="gothic-harbor"] { --hub-background-color: #06080d; --hub-background-image: linear-gradient(90deg, rgba(3, 5, 9, .48), rgba(3, 5, 9, .1) 40%, rgba(3, 5, 9, 0) 64%), var(--gothic-harbor-image, url("./gothic-harbor.jpg?v=5695c8f9d3db")); --hub-background-position: center, 62% 52%; }
-html[data-background-override="true"][data-background="gothic-chapel"] { --hub-background-color: #080706; --hub-background-image: linear-gradient(90deg, rgba(5, 4, 3, .42), rgba(5, 4, 3, .08) 36%, rgba(5, 4, 3, 0) 60%), var(--gothic-chapel-image, url("./gothic-chapel.jpg?v=eb55ca4ce5f6")); --hub-background-position: center, 60% 50%; }
-html[data-background-override="true"][data-background="gothic-keep"] { --hub-background-color: #070709; --hub-background-image: linear-gradient(90deg, rgba(5, 5, 7, .46), rgba(5, 5, 7, .1) 38%, rgba(5, 5, 7, 0) 62%), var(--gothic-keep-image, url("./gothic-keep.jpg?v=93babdd33bcf")); --hub-background-position: center, 58% 54%; }
-html[data-background-override="true"][data-background="gothic-minental-castle"] { --hub-background-color: #05090d; --hub-background-image: linear-gradient(90deg, rgba(3, 6, 10, .42), rgba(3, 6, 10, .08) 40%, rgba(3, 6, 10, 0) 64%), var(--gothic-minental-castle-image, url("./gothic-minental-castle.jpg?v=f75d937eca90")); --hub-background-position: center, 58% 50%; }
-html[data-background-override="true"][data-background="gothic-minental-fortress"] { --hub-background-color: #05090d; --hub-background-image: linear-gradient(90deg, rgba(3, 6, 10, .38), rgba(3, 6, 10, .07) 40%, rgba(3, 6, 10, 0) 64%), var(--gothic-minental-fortress-image, url("./gothic-minental-fortress.jpg?v=a298113485c7")); --hub-background-position: center, 50% 50%; }
-html[data-background-override="true"][data-background="gothic-finkregh"] { --hub-background-color: #03080c; --hub-background-image: linear-gradient(90deg, rgba(2, 6, 10, .18), rgba(2, 6, 10, .04) 34%, rgba(2, 6, 10, 0) 60%), var(--gothic-finkregh-image, url("./gothic-finkregh.jpg?v=3e54b1cb7aed")); --hub-background-position: center, 50% 50%; }
-
-/* Эффект сцены. Общий слой над фоном для чужих сцен выключен, поэтому каждая
-   готическая сцена включает его обратно и держит свой источник света:
-   туман тянет вбок, огонь дышит на месте. */
 @keyframes gothic-scene-fog {
   0%, 100% { opacity: 0.34; transform: translate3d(-2%, 0.5%, 0) scale(1.02); }
   50% { opacity: 0.62; transform: translate3d(3%, -0.5%, 0) scale(1.06); }
@@ -281,150 +199,71 @@ html[data-background-override="true"][data-background^="gothic-"] body::before {
   mix-blend-mode: screen !important;
 }
 
-/* Башня: туман ползёт вдоль склона, в окнах дышит огонь. */
-html[data-background-override="true"][data-background="gothic-tower"] body::before {
-  animation: gothic-scene-fog 24s ease-in-out infinite !important;
-  background-image:
-    radial-gradient(60% 42% at 34% 62%, rgba(150, 176, 208, 0.2), transparent 74%),
-    radial-gradient(16% 12% at 72% 22%, rgba(255, 176, 88, 0.34), transparent 72%) !important;
-  opacity: 0.5 !important;
+html[data-background-override="true"][data-background="gothic-tower"] body::before { animation: gothic-scene-fog 24s ease-in-out infinite !important; background-image: radial-gradient(60% 42% at 34% 62%, rgb(150 176 208 / 20%), transparent 74%), radial-gradient(16% 12% at 72% 22%, rgb(255 176 88 / 34%), transparent 72%) !important; opacity: 0.5 !important; }
+html[data-background-override="true"][data-background="gothic-harbor"] body::before { animation: gothic-scene-fog 30s ease-in-out infinite !important; background-image: radial-gradient(14% 20% at 65% 12%, rgb(198 222 255 / 30%), transparent 70%), radial-gradient(54% 30% at 30% 66%, rgb(140 168 204 / 18%), transparent 76%) !important; opacity: 0.46 !important; }
+html[data-background-override="true"][data-background="gothic-chapel"] body::before { animation: gothic-scene-glow 9s ease-in-out infinite !important; background-image: radial-gradient(30% 34% at 76% 52%, rgb(255 186 104 / 34%), rgb(190 116 44 / 12%) 52%, transparent 78%) !important; opacity: 0.44 !important; }
+html[data-background-override="true"][data-background="gothic-keep"] body::before { animation: gothic-scene-fog 34s ease-in-out infinite !important; background-image: radial-gradient(70% 34% at 40% 74%, rgb(146 164 190 / 22%), transparent 78%), radial-gradient(20% 16% at 78% 34%, rgb(255 166 84 / 16%), transparent 74%) !important; opacity: 0.5 !important; }
+html[data-background-override="true"][data-background="gothic-minental-castle"] body::before { animation: gothic-scene-fog 32s ease-in-out infinite !important; background-image: radial-gradient(68% 34% at 34% 72%, rgb(142 168 198 / 20%), transparent 78%), radial-gradient(18% 14% at 78% 46%, rgb(255 168 82 / 18%), transparent 74%) !important; opacity: 0.48 !important; }
+html[data-background-override="true"][data-background="gothic-minental-fortress"] body::before { animation: gothic-scene-fog 34s ease-in-out infinite !important; background-image: radial-gradient(62% 34% at 28% 68%, rgb(124 151 184 / 18%), transparent 80%), radial-gradient(22% 16% at 70% 43%, rgb(255 164 74 / 14%), transparent 76%) !important; opacity: 0.44 !important; }
+html[data-background-override="true"][data-background="gothic-finkregh"] body::before { animation: gothic-scene-fog 28s ease-in-out infinite !important; background-image: radial-gradient(58% 28% at 42% 76%, rgb(116 178 222 / 18%), transparent 78%), radial-gradient(34% 30% at 66% 34%, rgb(130 196 236 / 20%), transparent 76%) !important; opacity: 0.44 !important; }
+
+/* Знамя Старого лагеря занимает свободную нижнюю часть описи. Это отдельный
+   растровый предмет, а не CSS-рисунок; строки остаются над ним читаемыми. */
+html[data-theme="gothic"] .task-list {
+  background-image: linear-gradient(rgb(10 8 7 / 18%), rgb(10 8 7 / 18%)), url("./gothic-old-camp-banner.png");
+  background-position: center, center calc(100% - 0.8rem);
+  background-repeat: no-repeat;
+  background-size: auto, min(76%, 13rem) auto;
 }
 
-/* Гавань: луна над крепостью и дымка над водой. */
-html[data-background-override="true"][data-background="gothic-harbor"] body::before {
-  animation: gothic-scene-fog 30s ease-in-out infinite !important;
-  background-image:
-    radial-gradient(14% 20% at 65% 12%, rgba(198, 222, 255, 0.3), transparent 70%),
-    radial-gradient(54% 30% at 30% 66%, rgba(140, 168, 204, 0.18), transparent 76%) !important;
-  opacity: 0.46 !important;
+html[data-theme="gothic"] .task-workspace-item,
+html[data-theme="gothic"] .task-search,
+html[data-theme="gothic"] .stream-chat-preview,
+html[data-theme="gothic"] .dialog-settings,
+html[data-theme="gothic"] .composer {
+  background-color: rgb(11 10 8 / 88%);
+  background-image: var(--plate-texture);
 }
 
-/* Часовня: свечи у алтаря горят неровно, поэтому свет дышит рывками. */
-html[data-background-override="true"][data-background="gothic-chapel"] body::before {
-  animation: gothic-scene-glow 9s ease-in-out infinite !important;
-  background-image:
-    radial-gradient(30% 34% at 76% 52%, rgba(255, 186, 104, 0.34), rgba(190, 116, 44, 0.12) 52%, transparent 78%) !important;
-  opacity: 0.44 !important;
+html[data-theme="gothic"] .task-workspace-item {
+  border-bottom: 1px solid rgb(123 98 70 / 24%);
 }
 
-/* Крепость: низовой туман идёт по долине, костры на стене едва теплятся. */
-html[data-background-override="true"][data-background="gothic-keep"] body::before {
-  animation: gothic-scene-fog 34s ease-in-out infinite !important;
-  background-image:
-    radial-gradient(70% 34% at 40% 74%, rgba(146, 164, 190, 0.22), transparent 78%),
-    radial-gradient(20% 16% at 78% 34%, rgba(255, 166, 84, 0.16), transparent 74%) !important;
-  opacity: 0.5 !important;
+html[data-theme="gothic"] .task-workspace-item[data-selected] {
+  background-color: rgb(53 31 23 / 90%);
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 0 24px rgb(112 45 27 / 18%);
 }
 
-/* Монастырь: туман лежит в разрушенном внешнем кольце, огни держат ворота. */
-html[data-background-override="true"][data-background="gothic-minental-castle"] body::before {
-  animation: gothic-scene-fog 32s ease-in-out infinite !important;
-  background-image:
-    radial-gradient(68% 34% at 34% 72%, rgba(142, 168, 198, 0.2), transparent 78%),
-    radial-gradient(18% 14% at 78% 46%, rgba(255, 168, 82, 0.18), transparent 74%) !important;
-  opacity: 0.48 !important;
+html[data-theme="gothic"] .chat-pane,
+html[data-theme="gothic"] .stream-chat-preview {
+  background: rgb(7 6 5 / 46%);
 }
 
-/* Замок Миненталя: лунный туман отделяет широкую крепость от тёмной долины. */
-html[data-background-override="true"][data-background="gothic-minental-fortress"] body::before {
-  animation: gothic-scene-fog 34s ease-in-out infinite !important;
-  background-image:
-    radial-gradient(62% 34% at 28% 68%, rgba(124, 151, 184, 0.18), transparent 80%),
-    radial-gradient(22% 16% at 70% 43%, rgba(255, 164, 74, 0.14), transparent 76%) !important;
-  opacity: 0.44 !important;
+html[data-theme="gothic"] .stream-chat-preview-log {
+  background: transparent;
 }
 
-/* Финкрегх: холодная дымка ползёт по льду, глубина пещеры медленно светлеет. */
-html[data-background-override="true"][data-background="gothic-finkregh"] body::before {
-  animation: gothic-scene-fog 28s ease-in-out infinite !important;
-  background-image:
-    radial-gradient(58% 28% at 42% 76%, rgba(116, 178, 222, 0.18), transparent 78%),
-    radial-gradient(34% 30% at 66% 34%, rgba(130, 196, 236, 0.2), transparent 76%) !important;
-  opacity: 0.44 !important;
-}
-
-@media (max-width: 720px) {html[data-background-override="true"][data-background="gothic-crypt"] { --hub-background-position: center, 72% 50%; }
-  html[data-background-override="true"][data-background="gothic-tower"] { --hub-background-position: center, 74% 42%; }
-  html[data-background-override="true"][data-background="gothic-harbor"] { --hub-background-position: center, 78% 52%; }
-  html[data-background-override="true"][data-background="gothic-chapel"] { --hub-background-position: center, 74% 50%; }
-  html[data-background-override="true"][data-background="gothic-keep"] { --hub-background-position: center, 76% 46%; }
-  html[data-background-override="true"][data-background="gothic-minental-castle"] { --hub-background-position: center, 76% 50%; }
-  html[data-background-override="true"][data-background="gothic-minental-fortress"] { --hub-background-position: center, 76% 50%; }
-  html[data-background-override="true"][data-background="gothic-finkregh"] { --hub-background-position: center, 78% 50%; }
-}
-
-/* ============================================== облик: страница рукописи ===
-   Готика перестаёт быть «тёмной темой с холодным акцентом». Панели становятся
-   разворотом манускрипта: прямой обрез, двойная рамка и капитель в служебных
-   подписях. */
-
-/* Разворот: внешний обрез и внутренняя линовка вместо скруглённой карточки. */
-html[data-theme="gothic"] .task-rail,
-html[data-theme="gothic"] .chat {
-  border-radius: 0;
-  box-shadow:
-    inset 0 0 0 1px rgba(143, 168, 200, .22),
-    inset 0 0 0 4px transparent,
-    inset 0 0 0 5px rgba(143, 168, 200, .12);
-}
-
-/* Раздел выбирают риской на полях, а не пилюлей. */
-html[data-theme="gothic"] .view-tab {
-  border-radius: 0;
-  letter-spacing: .09em;
-  text-transform: uppercase;
-}
-
-html[data-theme="gothic"] .view-tab[aria-pressed="true"] {
-  background: none;
-  border-bottom: 1px solid var(--accent);
-  box-shadow: none;
-}
-
-html[data-theme="gothic"] .view-tab[aria-pressed="true"]::after {
-  background: var(--accent);
-  content: "";
-  height: 4px;
-  left: 50%;
-  position: absolute;
-  rotate: 45deg;
-  top: calc(100% + 1px);
-  translate: -50% 0;
-  width: 4px;
-}
-
-html[data-theme="gothic"] .view-tab { position: relative; }
-
-/* Строка описи: номер задачи не нужен, но нужна колонка полей слева. */
-html[data-theme="gothic"] .task-item {
-  border-radius: 0;
-  border-left: 1px solid transparent;
-  padding-left: 0.85rem;
-}
-
-html[data-theme="gothic"] .task-item[data-selected] {
-  border-left-color: var(--accent);
-}
-
-html[data-theme="gothic"] .task-agent,
-html[data-theme="gothic"] .eyebrow,
-html[data-theme="gothic"] .task-project-title {
-  font-variant-caps: small-caps;
-  letter-spacing: .08em;
-}
-
-/* Реплики — вклеенные листы: прямой край и тонкая тень от бумаги. */
 html[data-theme="gothic"] .msg {
+  backdrop-filter: blur(4px) saturate(90%);
+  -webkit-backdrop-filter: blur(4px) saturate(90%);
+  background-color: rgb(13 11 9 / 93%);
+  background-image: var(--card-texture);
   border-radius: 0;
-  box-shadow: 0 1px 0 rgba(0, 0, 0, .5), inset 0 0 0 1px rgba(143, 168, 200, .1);
+  box-shadow: inset 0 0 0 1px rgb(206 166 113 / 5%), 0 8px 18px -14px #000;
 }
 
-html[data-theme="gothic"] .option-chip {
-  border-radius: 0;
-  letter-spacing: .06em;
-  text-transform: uppercase;
+html[data-theme="gothic"] .msg-user {
+  background-color: rgb(47 27 21 / 94%);
+  background-image: linear-gradient(90deg, rgb(145 61 40 / 8%), transparent), var(--card-texture);
+  border-color: rgb(166 83 57 / 64%);
 }
 
+html[data-theme="gothic"] .msg-live {
+  border-style: solid;
+  box-shadow: inset 2px 0 0 var(--accent), 0 8px 18px -14px #000;
+}
+
+html[data-theme="gothic"] .option-chip,
 html[data-theme="gothic"] .composer,
 html[data-theme="gothic"] .composer input,
 html[data-theme="gothic"] .composer textarea,
@@ -432,11 +271,33 @@ html[data-theme="gothic"] .composer button {
   border-radius: 0;
 }
 
-/* Обрез разворота должен быть виден: первая проба почти сливалась с фоном. */
-html[data-theme="gothic"] .task-rail,
-html[data-theme="gothic"] .chat {
-  box-shadow:
-    inset 0 0 0 1px rgba(163, 186, 216, .38),
-    inset 0 0 0 4px transparent,
-    inset 0 0 0 5px rgba(163, 186, 216, .2);
+html[data-theme="gothic"] .composer-input {
+  background: rgb(5 4 3 / 86%);
+  border-color: rgb(137 103 72 / 52%);
+}
+
+html[data-theme="gothic"] .composer-send,
+html[data-theme="gothic"] .chip-button.primary {
+  background: linear-gradient(180deg, #52291f, #29140f);
+  border-color: #8f4c37;
+  color: #ddc6aa;
+}
+
+@media (max-width: 720px) {
+  html[data-background-override="true"][data-background="gothic-crypt"] { --hub-background-position: center, 72% 50%; }
+  html[data-background-override="true"][data-background="gothic-tower"] { --hub-background-position: center, 74% 42%; }
+  html[data-background-override="true"][data-background="gothic-harbor"] { --hub-background-position: center, 78% 52%; }
+  html[data-background-override="true"][data-background="gothic-chapel"] { --hub-background-position: center, 74% 50%; }
+  html[data-background-override="true"][data-background="gothic-keep"] { --hub-background-position: center, 76% 46%; }
+  html[data-background-override="true"][data-background="gothic-minental-castle"] { --hub-background-position: center, 76% 50%; }
+  html[data-background-override="true"][data-background="gothic-minental-fortress"] { --hub-background-position: center, 76% 50%; }
+  html[data-background-override="true"][data-background="gothic-finkregh"] { --hub-background-position: center, 78% 50%; }
+  html[data-theme="gothic"] .task-list { background-image: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="gothic"] body::before,
+  html[data-background-override="true"][data-background^="gothic-"] body::before {
+    animation: none !important;
+  }
 }

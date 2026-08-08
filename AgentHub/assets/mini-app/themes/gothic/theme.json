@@ -1,7 +1,7 @@
 {
   "id": "gothic",
   "name": "Gothic",
-  "color": "#060708",
+  "color": "#100d0b",
   "order": 40,
   "styles": "theme.css",
   "backgrounds": [

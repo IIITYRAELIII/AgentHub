@@ -624,22 +624,16 @@ test("Storm keeps the photo backdrop and adds only lightning", () => {
   assert.match(storm, /window\.addEventListener\("focus", sync\)/u);
 });
 
-test("Gothic theme uses medieval stone, moonlit steel and a torch-lit scene", () => {
-  const styles = themeFile("gothic");
-  /* Палитра ушла из золота в холодную сталь: тёплый свет остался только на
-     самих кадрах — факел склепа, свечи часовни, окна башни. */
-  assert.match(
-    styles,
-    /html\[data-theme="gothic"\]\s*\{[\s\S]*--accent:\s*#8fa8c8;[\s\S]*--space-star:\s*transparent;/u,
-  );
-  assert.match(
-    styles,
-    /html\[data-theme="gothic"\] body::after\s*\{[\s\S]*var\(--gothic-image\);[\s\S]*background-size:\s*cover;/u,
-  );
-  assert.match(
-    styles,
-    /html\[data-theme="gothic"\] body::before\s*\{[\s\S]*rgba\(238,\s*164,\s*58,\s*0\.38\)/u,
-  );
+test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette", () => {
+  const theme = THEME_REGISTRY.themes.find((item) => item.id === "gothic");
+  const banner = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-old-camp-banner.png"));
+  /* Знамя — самостоятельный ресурс пакета темы. Это проверяет фактическую
+     доступность во Worker и webview вместо снимка конкретных CSS-деклараций. */
+  assert.equal(theme.color, "#100d0b");
+  assert.ok(banner);
+  assert.equal(banner.contentType, "image/png");
+  assert.equal(banner.immutable, true);
+  assert.ok(fs.statSync(banner.file).size > 100_000);
 });
 
 test("«Gothic» offers nine night scenes, each with its own light", () => {
