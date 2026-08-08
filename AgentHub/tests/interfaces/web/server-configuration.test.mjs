@@ -127,7 +127,7 @@ test("server configuration persists only validated whitelisted values", async (c
     autoCompactAfterTurn: true,
     autoCompactThresholdPercent: 75,
     autoRotateAfterCompaction: true,
-    autoRotateThresholdPercent: 20,
+    autoRotateThresholdPercent: 30,
   });
   assert.equal(saved.codexSandboxMode, "danger-full-access");
   assert.equal(saved.logMaxFiles, 8);
