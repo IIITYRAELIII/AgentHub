@@ -72,21 +72,23 @@ html[data-theme="pulsar"] {
 /* ================================= «Пульсар»: сканлайны, скобки, импульс === */
 
 html[data-theme="pulsar"] {
-  --pulsar-image: url("./pulsar-beams.jpg");
+  --pulsar-image: url("./pulsar-dead-star.png");
+  --pulsar-effect:
+    radial-gradient(24% 38% at 82% 47%, transparent 58%, rgba(112, 255, 247, 0.2) 64%, transparent 72%),
+    radial-gradient(6% 9% at 82% 47%, rgba(205, 255, 252, 0.34), rgba(60, 230, 212, 0.08) 48%, transparent 76%);
 }
 
-/* Фон — рендер магнетара; сканлайны оставлены поверх него: это язык темы,
-   и в отличие от «Тайги» здесь под ними ровный космос, а не силуэты,
-   которые сеткой было бы жалко стирать. */
+/* Фон — наблюдательная палуба у мёртвой звезды. Сетка остаётся только внутри
+   приборных панелей: в открытой сцене она спорила бы с кольцом и магнитосферой. */
 html[data-theme="pulsar"] body::after {
   background-color: #03151a;
   background-image:
-    repeating-linear-gradient(0deg, rgba(60, 230, 212, 0.03) 0 1px, transparent 1px 4px),
-    linear-gradient(180deg, rgba(2, 12, 16, 0) 44%, rgba(2, 10, 14, 0.4)),
+    linear-gradient(90deg, rgba(1, 9, 12, 0.22), rgba(1, 9, 12, 0) 52%),
+    linear-gradient(180deg, rgba(2, 12, 16, 0) 52%, rgba(1, 7, 10, 0.32)),
     var(--pulsar-image);
-  background-position: center, center, 50% 46%;
-  background-repeat: repeat, no-repeat, no-repeat;
-  background-size: auto, cover, cover;
+  background-position: center, center, center;
+  background-repeat: no-repeat;
+  background-size: cover;
   inset: 0;
   mask-image: none;
   opacity: 1;
@@ -124,9 +126,9 @@ html[data-theme="pulsar"] .journal details[data-work-log-turn-details][open] {
   background-color: rgba(3, 16, 20, 0.52);
 }
 
-/* оба магнетара сидят по краям кадра — на узком экране держим левый */
+/* На узком экране удерживаем светлый край звезды, не уводя его под композер. */
 @media (max-width: 720px) {html[data-theme="pulsar"] body::after {
-    background-position: center, center, 24% 52%;
+    background-position: center, center, 72% 50%;
   }
 
   html[data-theme="pulsar"] .journal details[data-work-log-day-section] {
@@ -182,32 +184,31 @@ html[data-theme="pulsar"] .eyebrow {
   opacity: 0.72;
 }
 
-/* «Пульсар»: собственно пульс — единственный быстрый ритм в наборе */
+/* Редкая двойная вспышка возникает в самой звезде, а не в центре экрана. */
 @keyframes pulsar-beat {
-  0%, 100% { opacity: 0.16; }
-  6% { opacity: 0.78; }
-  18% { opacity: 0.2; }
-  24% { opacity: 0.44; }
-  40% { opacity: 0.16; }
+  0%, 100% { opacity: 0.08; }
+  2.5% { opacity: 0.72; }
+  5% { opacity: 0.12; }
+  8% { opacity: 0.42; }
+  12%, 94% { opacity: 0.08; }
 }
 
 html[data-theme="pulsar"] body::before {
-  animation: pulsar-beat 3.4s linear infinite;
-  background-image:
-    radial-gradient(52% 46% at 50% 46%, rgba(120, 255, 240, 0.34), rgba(60, 230, 212, 0.1) 46%, transparent 72%);
+  animation: pulsar-beat 8.6s linear infinite;
+  background-image: var(--pulsar-effect);
   background-size: cover;
   content: "";
   mask-image: none;
   mix-blend-mode: screen;
-  opacity: 0.2;
+  opacity: 0.08;
 }
 
-html[data-background-override="true"][data-background="pulsar"] { --pulsar-image: url("./pulsar-beams.jpg"); --hub-background-color: #03151a; --hub-background-image: repeating-linear-gradient(0deg, rgba(60, 230, 212, .03) 0 1px, transparent 1px 4px), linear-gradient(180deg, rgba(2, 12, 16, 0) 44%, rgba(2, 10, 14, .4)), var(--pulsar-image); --hub-background-position: center, center, 50% 46%; --hub-background-repeat: repeat, no-repeat, no-repeat; --hub-background-size: auto, cover, cover; }
-html[data-background-override="true"][data-background="pulsar-beam"] { --hub-background-color: #02121a; --hub-background-image: repeating-linear-gradient(0deg, rgba(60, 230, 212, .03) 0 1px, transparent 1px 4px), linear-gradient(90deg, rgba(1, 8, 12, .3), rgba(1, 8, 12, 0) 42%), var(--pulsar-beam-image, url("./pulsar-beam.jpg")); --hub-background-position: center, center, 56% 48%; --hub-background-repeat: repeat, no-repeat, no-repeat; --hub-background-size: auto, cover, cover; }
+html[data-background-override="true"][data-background="pulsar"] { --pulsar-image: url("./pulsar-dead-star.png"); --hub-background-color: #02090c; --hub-background-image: linear-gradient(90deg, rgba(1, 9, 12, .22), rgba(1, 9, 12, 0) 52%), linear-gradient(180deg, transparent 52%, rgba(1, 7, 10, .32)), var(--pulsar-image); --hub-background-position: center; --hub-background-repeat: no-repeat; --hub-background-size: cover; --pulsar-effect: radial-gradient(24% 38% at 82% 47%, transparent 58%, rgba(112, 255, 247, .2) 64%, transparent 72%), radial-gradient(6% 9% at 82% 47%, rgba(205, 255, 252, .34), rgba(60, 230, 212, .08) 48%, transparent 76%); }
+html[data-background-override="true"][data-background="pulsar-twins"] { --hub-background-color: #03151a; --hub-background-image: linear-gradient(180deg, rgba(2, 12, 16, 0) 44%, rgba(2, 10, 14, .4)), url("./pulsar-beams.jpg"); --hub-background-position: center, 50% 46%; --hub-background-repeat: no-repeat; --hub-background-size: cover; --pulsar-effect: radial-gradient(8% 12% at 21.5% 69%, rgba(150, 255, 248, .3), transparent 72%), radial-gradient(7% 10% at 87% 84%, rgba(110, 248, 239, .24), transparent 72%); }
+html[data-background-override="true"][data-background="pulsar-beam"] { --hub-background-color: #02121a; --hub-background-image: linear-gradient(90deg, rgba(1, 8, 12, .3), rgba(1, 8, 12, 0) 42%), url("./pulsar-beam.jpg"); --hub-background-position: center, 56% 48%; --hub-background-repeat: no-repeat; --hub-background-size: cover; --pulsar-effect: radial-gradient(18% 24% at 60% 47%, rgba(126, 255, 247, .32), rgba(60, 230, 212, .08) 48%, transparent 74%); }
 
 html[data-background-override="true"][data-background="orbit-limb"] body::before,
 html[data-background-override="true"][data-background="nebula-core"] body::before,
-html[data-background-override="true"][data-background="pulsar-beam"] body::before,
 html[data-background-override="true"][data-background="blackhole-disk"] body::before,
 html[data-background-override="true"][data-background="magma-flow"] body::before,
 html[data-background-override="true"][data-background="meadow-goldenhour"] body::before {
@@ -220,13 +221,9 @@ html[data-background-override="true"][data-background="meadow-goldenhour"] body:
   opacity: 0.4 !important;
 }
 
-html[data-background-override="true"][data-background="pulsar-beam"] body::before {
-  animation: scene-glow 6s ease-in-out infinite !important;
-  background-image: radial-gradient(24% 26% at 60% 46%, rgba(60, 230, 212, 0.3), transparent 72%) !important;
-}
-
-@media (max-width: 720px) {html[data-background-override="true"][data-background="pulsar"] { --hub-background-position: center, center, 24% 52%; }
-  html[data-background-override="true"][data-background="pulsar-beam"] { --hub-background-position: center, center, 62% 46%; }
+@media (max-width: 720px) {html[data-background-override="true"][data-background="pulsar"] { --hub-background-position: 72% 50%; }
+  html[data-background-override="true"][data-background="pulsar-twins"] { --hub-background-position: center, 24% 52%; }
+  html[data-background-override="true"][data-background="pulsar-beam"] { --hub-background-position: center, 62% 46%; }
 }
 
 /* ================================================= облик: осциллограф ===
@@ -240,6 +237,38 @@ html[data-theme="pulsar"] .chat {
     repeating-linear-gradient(90deg, rgba(74, 226, 214, .05) 0 1px, transparent 1px 28px),
     repeating-linear-gradient(0deg, rgba(74, 226, 214, .04) 0 1px, transparent 1px 28px);
   border-radius: 3px;
+}
+
+/* До трёх Stream приборная дека оставляет звезду открытой справа. С четвёртой
+   панелью рабочая область возвращается к полной ширине. */
+@media (min-width: 1380px) {
+  html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace,
+  html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace:has(.stream-chat-columns[data-multi-stream]) {
+    margin-left: clamp(1rem, 4vw, 4.25rem);
+    margin-right: 0;
+    max-width: min(92rem, 72vw);
+  }
+
+  html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace:has(.stream-chat-columns > :nth-child(4)),
+  html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace:has(.chat-pane[data-dialog-settings-open]) {
+    max-width: calc(100vw - clamp(2rem, 8vw, 8.5rem));
+  }
+
+  html[data-theme="pulsar"]:not([data-surface="mobile"]) .stream-chat-columns[data-multi-stream] {
+    gap: clamp(0.3rem, 0.45vw, 0.52rem);
+  }
+
+  html[data-theme="pulsar"]:not([data-surface="mobile"]) .stream-chat-columns[data-multi-stream] > .chat-pane {
+    background: linear-gradient(180deg, rgba(2, 18, 22, 0.86), rgba(1, 10, 14, 0.9));
+    border-left: 1px solid rgba(74, 226, 214, 0.24);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="pulsar"] body::before {
+    animation: none;
+    opacity: 0.14;
+  }
 }
 
 /* Приборные подписи: одинаковая ширина знака, чтобы числа не прыгали. */

@@ -5,7 +5,8 @@
   "order": 30,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "pulsar", "name": "Пульсар", "asset": "pulsar-beams.jpg" },
+    { "id": "pulsar", "name": "Мёртвая звезда", "asset": "pulsar-dead-star.png", "preload": true },
+    { "id": "pulsar-twins", "name": "Двойной маяк", "asset": "pulsar-beams.jpg" },
     { "id": "pulsar-beam", "name": "Луч", "asset": "pulsar-beam.jpg" }
   ]
 }
