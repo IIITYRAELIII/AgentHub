@@ -1016,12 +1016,16 @@ main {
   display: none !important;
 }
 
+/* Название Stream, его расход и время стоят в одну строку: имя слева, числа
+   прижаты вправо. Раньше итог уходил на вторую строку под названием. */
 .journal summary[data-work-log-stream-summary] {
+  align-items: center;
   align-self: start;
+  column-gap: 0.5rem;
   cursor: pointer;
   display: grid;
-  gap: 0.32rem;
   grid-column: 1;
+  grid-template-columns: minmax(0, 1fr) auto;
   list-style: none;
   min-width: 0;
   padding: 0.55rem;
@@ -1075,17 +1079,18 @@ main {
 }
 
 .journal span[data-work-log-stream-usage] {
+  align-items: center;
   color: var(--text-muted);
-  column-gap: 0.4rem;
-  display: grid;
+  column-gap: 0.45rem;
+  display: inline-flex;
+  flex-wrap: nowrap;
   font-family: var(--font-numeric);
   font-size: 0.75rem;
-  grid-template-columns: minmax(0, 1fr) 8.6ch 6ch;
-  padding: 0.24rem 0.55rem;
+  padding: 0;
+  white-space: nowrap;
 }
 
 .journal span[data-work-log-stream-usage] > span {
-  justify-self: end;
   text-align: right;
 }
 

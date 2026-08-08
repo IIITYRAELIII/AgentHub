@@ -316,12 +316,14 @@ function formatTaskUsageDetails(creditBreakdown, dayCredits) {
       .join("")}</span></details>\n`;
 }
 
-function formatStreamUsage(creditBreakdown, dayCredits) {
+function formatStreamUsage(creditBreakdown, dayCredits, elapsedSeconds, dayElapsedSeconds) {
   const [total] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
+  /* Расход и время стоят в одной строке справа от названия Stream: раньше итог
+     занимал отдельную строку под ним, а времени в строке не было вовсе. */
   return `<span data-work-log-stream-usage>${highlightUsageUnits(
-    alignUsagePercent(markUsageLabel(total)),
+    alignUsagePercent(total.replace(/^Итого\s+/u, "")),
     creditBreakdown.total,
-  )}</span>`;
+  )}${formatDurationShare(elapsedSeconds, dayElapsedSeconds)}</span>`;
 }
 
 function formatWorkspaceUsage(creditBreakdown, dayCredits) {
@@ -1490,7 +1492,21 @@ function formatWorkspaceRows(rows, dayCredits, dayElapsedSeconds, workspaceResol
   return [...groups.values()]
     .sort((left, right) => right.latestCompletedAt - left.latestCompletedAt)
     .map((group) => {
-      if (!group.workspace) return group.rows.map((row) => row.html).join("\n");
+      if (!group.workspace) {
+        const usage = group.creditBreakdown.total > 0
+          ? `<span data-work-log-workspace-usage>${
+            formatWorkspaceUsage(group.creditBreakdown, dayCredits)
+          }</span>`
+          : "";
+        return '<details data-work-log-workspace data-work-log-workspace-id=""'
+          + ' data-work-log-workspace-kind="unassigned"'
+          + ` data-work-log-stream-count="${group.rows.length}" open>`
+          + '<summary data-work-log-workspace-header><strong>Без воркспейса</strong>'
+          + `${usage}</summary>`
+          + `<div data-work-log-workspace-streams>${
+            group.rows.map((row) => row.html).join("\n")
+          }</div></details>`;
+      }
       const streams = new Map();
       for (const row of group.rows) {
         const streamKey = row.workspace.streamId;
@@ -1538,7 +1554,13 @@ function formatWorkspaceRows(rows, dayCredits, dayElapsedSeconds, workspaceResol
         const markers = [...new Set(stream.rows.flatMap((row) => row.ids))]
           .map((id) => `<span data-usage-id="${id}" hidden></span>`)
           .join("\n");
-        const streamUsage = breakdown.total > 0 ? formatStreamUsage(breakdown, dayCredits) : "";
+        const streamElapsedSeconds = stream.rows.reduce(
+          (total, row) => total + (Number(row.elapsedSeconds) || 0),
+          0,
+        );
+        const streamUsage = breakdown.total > 0 || streamElapsedSeconds > 0
+          ? formatStreamUsage(breakdown, dayCredits, streamElapsedSeconds, dayElapsedSeconds)
+          : "";
         const rowHtml = replaceProjectedCells(
           representative.match.text,
           markers,
