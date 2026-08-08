@@ -7813,6 +7813,20 @@ html[data-surface="mobile"] .server-config-inline-label {
   stroke-width: 1.5;
 }
 
+.limits-burn-normal-line {
+  opacity: 0.9;
+  stroke: var(--pending, #e8bd69);
+  stroke-dasharray: 2 4;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+}
+
+.limits-burn-normal-label {
+  fill: var(--pending, #e8bd69);
+  font-family: var(--font-numeric);
+  font-size: 8px;
+}
+
 .limits-burn-actual-guide {
   opacity: 0.32;
   stroke-linecap: round;

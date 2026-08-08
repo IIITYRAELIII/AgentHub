@@ -27,6 +27,15 @@ function pathFor(points) {
   return context.result;
 }
 
+function calculateForRange(series, range) {
+  const context = { series, range };
+  vm.runInNewContext(
+    `${policy}\nglobalThis.result = weeklyBurnRatePoints(series, burnRatePolicyForRange(range));`,
+    context,
+  );
+  return JSON.parse(JSON.stringify(context.result));
+}
+
 test("weekly burn rate compares rolling usage with the remaining safe pace", () => {
   const reset = "2026-08-08T00:00:00.000Z";
   const points = calculate({
@@ -80,12 +89,58 @@ test("weekly burn rate waits for an almost complete 24-hour window", () => {
   assert.ok(Number.isFinite(points[2].actualRate));
 });
 
+for (const range of ["6h", "24h"]) {
+  test(`${range} speed uses the latest hour instead of waiting for a day`, () => {
+    const reset = "2026-08-08T00:00:00.000Z";
+    const points = calculateForRange({
+      id: "codex:secondary",
+      window: "secondary",
+      points: [
+        { at: "2026-08-01T00:00:00.000Z", usedPercent: 10, resetsAt: reset },
+        { at: "2026-08-01T00:50:00.000Z", usedPercent: 11, resetsAt: reset },
+      ],
+    }, range);
+
+    assert.ok(Number.isFinite(points[1].actualRate));
+    assert.equal(points[1].cycleIndex, 0);
+  });
+}
+
 test("speed chart starts a new path at every weekly reset", () => {
   assert.equal(pathFor([
-    { x: 1, y: 2, resetMs: 100_000 },
-    { x: 3, y: 4, resetMs: 120_000 },
-    { x: 5, y: 6, resetMs: 900_000 },
+    { x: 1, y: 2, cycleIndex: 0 },
+    { x: 3, y: 4, cycleIndex: 0 },
+    { x: 5, y: 6, cycleIndex: 1 },
   ]), "M1.0 2.0 L3.0 4.0 M5.0 6.0");
+});
+
+test("a moving reset forecast does not fragment one monotonic cycle", () => {
+  const points = calculate({
+    id: "codex:secondary",
+    window: "secondary",
+    points: [
+      { at: "2026-08-01T00:00:00.000Z", usedPercent: 10, resetsAt: "2026-08-08T00:00:00.000Z" },
+      { at: "2026-08-01T23:30:00.000Z", usedPercent: 25, resetsAt: "2026-08-08T03:00:00.000Z" },
+    ],
+  });
+
+  assert.equal(points[0].cycleIndex, 0);
+  assert.equal(points[1].cycleIndex, 0);
+  assert.ok(Number.isFinite(points[1].actualRate));
+});
+
+test("daily speed tolerates sparse snapshots around the 24-hour baseline", () => {
+  const reset = "2026-08-08T00:00:00.000Z";
+  const points = calculate({
+    id: "codex:secondary",
+    window: "secondary",
+    points: [
+      { at: "2026-08-01T00:00:00.000Z", usedPercent: 10, resetsAt: reset },
+      { at: "2026-08-02T06:00:00.000Z", usedPercent: 30, resetsAt: reset },
+    ],
+  });
+
+  assert.ok(Number.isFinite(points[1].actualRate));
 });
 
 test("weekly burn rate never carries a negative delta across a reset", () => {

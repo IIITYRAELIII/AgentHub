@@ -4967,7 +4967,13 @@ function renderLimitsModes() {
   for (const button of limitsModes.querySelectorAll("[data-limits-mode]")) {
     button.setAttribute("aria-pressed", String(button.dataset.limitsMode === limitsState.mode));
   }
-  if (limitsSpeedNote) limitsSpeedNote.hidden = limitsState.mode !== "speed";
+  if (limitsSpeedNote) {
+    const hourly = burnRatePolicyForRange(limitsState.range).unit === "hour";
+    limitsSpeedNote.hidden = limitsState.mode !== "speed";
+    limitsSpeedNote.textContent = hourly
+      ? "Фактическая скорость считается по последнему часу. Пунктир показывает допустимый темп по остатку и времени до сброса. Горизонтальная линия — ровный расход 100% за неделю, или 0,6% в час."
+      : "Фактическая скорость считается по последним 24 часам. Пунктир показывает допустимый темп по остатку и времени до сброса. Горизонтальная линия — ровный расход 100% за неделю, или 14,3% в сутки.";
+  }
 }
 
 function statisticsAccounts(payload = limitsState.payload) {
@@ -5197,11 +5203,27 @@ function parseClaudeResetAt(value, nowMs = Date.now()) {
 
 const WEEK_MILLISECONDS = 7 * 24 * 60 * 60_000;
 const BURN_RATE_ROLLING_WINDOW_MS = 24 * 60 * 60_000;
+const BURN_RATE_HOURLY_WINDOW_MS = 60 * 60_000;
 // Процент лимита приходит целым числом. На коротком отрезке один новый процент
 // превращался в огромный ложный пик, поэтому 24-часовой темп показываем только
 // после накопления почти полного окна (с часовым допуском для редких снимков).
 const BURN_RATE_MINIMUM_SPAN_MS = 23 * 60 * 60_000;
+const BURN_RATE_HOURLY_MINIMUM_SPAN_MS = 45 * 60_000;
 const BURN_RATE_CHART_MAX = 400;
+
+function burnRatePolicyForRange(range) {
+  return ["6h", "24h"].includes(String(range))
+    ? {
+      rollingWindowMs: BURN_RATE_HOURLY_WINDOW_MS,
+      minimumSpanMs: BURN_RATE_HOURLY_MINIMUM_SPAN_MS,
+      unit: "hour",
+    }
+    : {
+      rollingWindowMs: BURN_RATE_ROLLING_WINDOW_MS,
+      minimumSpanMs: BURN_RATE_MINIMUM_SPAN_MS,
+      unit: "day",
+    };
+}
 
 function weeklyLimitDurationMs(series) {
   const explicitDurations = (Array.isArray(series?.points) ? series.points : [])
@@ -5231,9 +5253,9 @@ function limitPointResetMs(point) {
 }
 
 function sameWeeklyLimitCycle(left, right) {
-  return Number.isFinite(left?.resetMs)
-    && Number.isFinite(right?.resetMs)
-    && Math.abs(left.resetMs - right.resetMs) <= 60_000;
+  return Number.isInteger(left?.cycleIndex)
+    && Number.isInteger(right?.cycleIndex)
+    && left.cycleIndex === right.cycleIndex;
 }
 
 function limitsSpeedPath(points) {
@@ -5248,6 +5270,7 @@ function limitsSpeedPath(points) {
 function weeklyBurnRatePoints(series, {
   rollingWindowMs = BURN_RATE_ROLLING_WINDOW_MS,
   minimumSpanMs = BURN_RATE_MINIMUM_SPAN_MS,
+  maximumLookbackMs = rollingWindowMs * 1.5,
 } = {}) {
   const durationMs = weeklyLimitDurationMs(series);
   if (!durationMs) return [];
@@ -5270,15 +5293,28 @@ function weeklyBurnRatePoints(series, {
     ))
     .sort((left, right) => left.atMs - right.atMs);
 
+  let cycleIndex = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    if (index > 0 && points[index].usedPercent < points[index - 1].usedPercent) cycleIndex += 1;
+    points[index].cycleIndex = cycleIndex;
+  }
+
   return points.map((point, index) => {
     const remainingMs = point.resetMs - point.atMs;
     const targetRate = Math.max(0, point.remainingPercent) / remainingMs * WEEK_MILLISECONDS;
     let baseline = null;
+    let baselineDistance = Number.POSITIVE_INFINITY;
     for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
       const candidate = points[cursor];
-      if (point.atMs - candidate.atMs > rollingWindowMs) break;
+      const candidateSpanMs = point.atMs - candidate.atMs;
+      if (candidateSpanMs > maximumLookbackMs) break;
       if (!sameWeeklyLimitCycle(point, candidate)) continue;
-      baseline = candidate;
+      if (candidateSpanMs < minimumSpanMs || point.usedPercent < candidate.usedPercent) continue;
+      const distance = Math.abs(candidateSpanMs - rollingWindowMs);
+      if (distance < baselineDistance) {
+        baseline = candidate;
+        baselineDistance = distance;
+      }
     }
     const spanMs = baseline ? point.atMs - baseline.atMs : 0;
     const usedDelta = baseline ? point.usedPercent - baseline.usedPercent : Number.NaN;
@@ -5661,7 +5697,7 @@ function buildLimitsSpeedChart(payload) {
         id,
         color: seriesColor(item, index),
         hidden: limitsState.hidden.has(id),
-        ratePoints: weeklyBurnRatePoints(item),
+        ratePoints: weeklyBurnRatePoints(item, burnRatePolicyForRange(limitsState.range)),
       };
     })
     .filter((item) => item.ratePoints.length > 0);
@@ -5707,6 +5743,23 @@ function buildLimitsSpeedChart(payload) {
     y: padT + 9,
     class: "limits-axis-label limits-speed-unit",
   }, ["% / нед."]));
+
+  const normalRateY = yOf(100);
+  svg.append(svgEl("line", {
+    x1: padL,
+    y1: normalRateY,
+    x2: W - padR,
+    y2: normalRateY,
+    class: "limits-burn-normal-line",
+  }));
+  svg.append(svgEl("text", {
+    x: W - padR,
+    y: normalRateY - 6,
+    class: "limits-burn-normal-label",
+    "text-anchor": "end",
+  }, [burnRatePolicyForRange(limitsState.range).unit === "hour"
+    ? "Ровный темп · 0,6%/час"
+    : "Ровный темп · 14,3%/сутки"]));
 
   const span = tMax - tMin;
   const dayMs = 24 * 60 * 60_000;
@@ -5843,12 +5896,17 @@ function buildLimitsSpeedChart(payload) {
   return allSeries;
 }
 
-function formatDailyLimitRate(weeklyRate) {
-  const dailyRate = Math.max(0, Number(weeklyRate) || 0) / 7;
+function formatLimitRateForPeriod(weeklyRate, range = limitsState.range) {
+  const hourly = burnRatePolicyForRange(range).unit === "hour";
+  const periodRate = Math.max(0, Number(weeklyRate) || 0) / (hourly ? 7 * 24 : 7);
   return new Intl.NumberFormat("ru-RU", {
-    maximumFractionDigits: dailyRate < 10 ? 1 : 0,
-    minimumFractionDigits: dailyRate > 0 && dailyRate < 10 ? 1 : 0,
-  }).format(dailyRate);
+    maximumFractionDigits: periodRate < 10 ? 1 : 0,
+    minimumFractionDigits: periodRate > 0 && periodRate < 10 ? 1 : 0,
+  }).format(periodRate);
+}
+
+function burnRatePeriodSuffix(range = limitsState.range) {
+  return burnRatePolicyForRange(range).unit === "hour" ? "%/час" : "%/сутки";
 }
 
 function renderLimitsSpeedSummary(series) {
@@ -5871,8 +5929,9 @@ function renderLimitsSpeedSummary(series) {
     return;
   }
   const cards = items.map(({ item, point }) => {
-    const actualDaily = formatDailyLimitRate(point.actualRate);
-    const targetDaily = formatDailyLimitRate(point.targetRate);
+    const actualPeriod = formatLimitRateForPeriod(point.actualRate);
+    const targetPeriod = formatLimitRateForPeriod(point.targetRate);
+    const periodSuffix = burnRatePeriodSuffix();
     const ratio = point.targetRate > 0 ? point.actualRate / point.targetRate : Number.POSITIVE_INFINITY;
     const overTarget = point.overTarget;
     const status = overTarget
@@ -5886,8 +5945,8 @@ function renderLimitsSpeedSummary(series) {
     }, [
       el("span", { class: "limits-speed-summary-name", text: name }),
       el("div", { class: "limits-speed-summary-rates" }, [
-        el("span", {}, ["Сейчас ", el("strong", { text: `${actualDaily}%/сутки` })]),
-        el("span", {}, ["Допустимо ", el("strong", { text: `${targetDaily}%/сутки` })]),
+        el("span", {}, ["Сейчас ", el("strong", { text: `${actualPeriod}${periodSuffix}` })]),
+        el("span", {}, ["Допустимо ", el("strong", { text: `${targetPeriod}${periodSuffix}` })]),
       ]),
       el("strong", { class: "limits-speed-summary-status", text: status }),
     ]);
@@ -5969,14 +6028,15 @@ function limitsTooltipText(info) {
   if (info.mode === "speed") {
     const actual = Math.round(Number(info.actualRate) || 0);
     const target = Math.round(Number(info.targetRate) || 0);
-    const actualDaily = formatDailyLimitRate(info.actualRate);
-    const targetDaily = formatDailyLimitRate(info.targetRate);
+    const actualPeriod = formatLimitRateForPeriod(info.actualRate);
+    const targetPeriod = formatLimitRateForPeriod(info.targetRate);
+    const periodSuffix = burnRatePeriodSuffix();
     const deviation = actual - target;
     const status = deviation > 0
       ? `выше допустимой на ${deviation}%`
       : `запас ${Math.abs(deviation)}%`;
     const name = info.window ? `${info.name} · ${info.window}` : info.name;
-    return `${name}. ${time}: ${actualDaily}% лимита в сутки (${actual}% в неделю), допустимо ${targetDaily}% в сутки (${target}% в неделю), ${status}`;
+    return `${name}. ${time}: ${actualPeriod}${periodSuffix} (${actual}% в неделю), допустимо ${targetPeriod}${periodSuffix} (${target}% в неделю), ${status}`;
   }
   const used = Math.round(Number(info.used) || 0);
   const remaining = info.remaining == null
@@ -5991,13 +6051,14 @@ function showLimitsTooltip(info, fx, fy) {
   if (info.mode === "speed") {
     const actual = Math.round(Number(info.actualRate) || 0);
     const target = Math.round(Number(info.targetRate) || 0);
-    const actualDaily = formatDailyLimitRate(info.actualRate);
-    const targetDaily = formatDailyLimitRate(info.targetRate);
+    const actualPeriod = formatLimitRateForPeriod(info.actualRate);
+    const targetPeriod = formatLimitRateForPeriod(info.targetRate);
+    const periodSuffix = burnRatePeriodSuffix();
     const deviation = actual - target;
     limitsTooltip.replaceChildren(
       el("span", { class: "limits-tooltip-title", text: info.window ? `${info.name} · ${info.window}` : info.name }),
       el("span", { class: "limits-tooltip-time", text: formatLimitsDateTime(info.at) }),
-      el("span", { class: "limits-tooltip-row", text: `Сейчас ${actualDaily}%/сутки · допустимо ${targetDaily}%/сутки` }),
+      el("span", { class: "limits-tooltip-row", text: `Сейчас ${actualPeriod}${periodSuffix} · допустимо ${targetPeriod}${periodSuffix}` }),
       el("span", { class: "limits-tooltip-row", text: `${actual}%/нед. · допустимо ${target}%/нед.` }),
       el("span", {
         class: `limits-tooltip-row limits-speed-deviation${deviation > 0 ? " is-over-target" : " is-safe"}`,
