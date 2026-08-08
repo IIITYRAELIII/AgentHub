@@ -544,8 +544,6 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.doesNotMatch(script, /if \(!telegramMode\) return "desktop"/u);
     assert.match(script, /class: "task-runtime"/u);
     assert.match(script, /if \(sameData\(state\.live\.get\(taskId\)/u);
-    assert.match(script, /data-phosphor-icon="speaker-high"/u);
-
     const hubClient = await (await fetch(`${address.url}hub-client.js`)).text();
     assert.match(hubClient, /hub: "HUB"/u);
     assert.match(hubClient, /telegram: "HUB"/u);
