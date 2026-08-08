@@ -508,6 +508,13 @@
           <button type="button" class="limits-range" data-range="30d" aria-pressed="false">30&nbsp;д</button>
           <button type="button" class="limits-range" data-range="all" aria-pressed="false">Все</button>
         </div>
+        <label class="setting-switch limits-speed-window-setting" data-limits-speed-window-setting hidden>
+          <input type="checkbox" data-limits-speed-full-window checked>
+          <span class="switch-text">Ждать полный интервал для скорости
+            <span class="switch-note">Отключите, чтобы показывать предварительный темп сразу после сброса лимита.</span>
+          </span>
+          <span class="switch-track" aria-hidden="true"></span>
+        </label>
         <div class="limits-body" data-limits-body>
           <div class="limits-state limits-loading" data-limits-loading hidden aria-live="polite">
             <span class="limits-spinner" aria-hidden="true"></span>

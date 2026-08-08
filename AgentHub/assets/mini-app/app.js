@@ -132,6 +132,8 @@ const limitsTooltip = document.querySelector("[data-limits-tooltip]");
 const limitsLegend = document.querySelector("[data-limits-legend]");
 const limitsSpeedSummary = document.querySelector("[data-limits-speed-summary]");
 const limitsSpeedNote = document.querySelector("[data-limits-speed-note]");
+const limitsSpeedWindowSetting = document.querySelector("[data-limits-speed-window-setting]");
+const limitsSpeedFullWindow = document.querySelector("[data-limits-speed-full-window]");
 const limitsCredits = document.querySelector("[data-limits-credits]");
 const currentLimitsSlots = [...document.querySelectorAll("[data-current-limits]")];
 const usageRanges = document.querySelector("[data-usage-ranges]");
@@ -5016,12 +5018,21 @@ const SERIES_PALETTE = [
  * несовместимом изменении формата, чтобы восстановление пережило перезапуск. */
 const LIMITS_HIDDEN_KEY = "agent-hub-limits-hidden-v1";
 const LIMITS_MODE_KEY = "agent-hub-limits-mode-v1";
+const LIMITS_SPEED_FULL_WINDOW_KEY = "agent-hub-limits-speed-full-window-v1";
 
 function loadLimitsMode() {
   try {
     return localStorage.getItem(LIMITS_MODE_KEY) === "speed" ? "speed" : "usage";
   } catch {
     return "usage";
+  }
+}
+
+function loadLimitsSpeedFullWindow() {
+  try {
+    return localStorage.getItem(LIMITS_SPEED_FULL_WINDOW_KEY) !== "false";
+  } catch {
+    return true;
   }
 }
 
@@ -5064,6 +5075,7 @@ const limitsState = {
   payload: null,
   error: "",
   hidden: loadHiddenSeries(),
+  speedFullWindow: loadLimitsSpeedFullWindow(),
 };
 
 function selectLimitsMode(mode) {
@@ -5087,10 +5099,15 @@ function renderLimitsModes() {
   if (limitsSpeedNote) {
     const hourly = burnRatePolicyForRange(limitsState.range).unit === "hour";
     limitsSpeedNote.hidden = limitsState.mode !== "speed";
-    limitsSpeedNote.textContent = hourly
-      ? "Фактическая скорость считается по последнему часу. Пунктир показывает допустимый темп по остатку и времени до сброса. Горизонтальная линия — ровный расход 100% за неделю, или 0,6% в час."
-      : "Фактическая скорость считается по последним 24 часам. Пунктир показывает допустимый темп по остатку и времени до сброса. Горизонтальная линия — ровный расход 100% за неделю, или 14,3% в сутки.";
+    const calculation = limitsState.speedFullWindow
+      ? hourly
+        ? "Фактическая скорость появляется после накопления почти полного часа."
+        : "Фактическая скорость появляется после накопления почти полных суток."
+      : "Предварительная скорость считается по доступной истории сразу после второго замера и в начале цикла может резко меняться.";
+    limitsSpeedNote.textContent = `${calculation} Пунктир показывает допустимый темп по остатку и времени до сброса. Горизонтальная линия — ровный расход 100% за неделю, или ${hourly ? "0,6% в час" : "14,3% в сутки"}.`;
   }
+  if (limitsSpeedWindowSetting) limitsSpeedWindowSetting.hidden = limitsState.mode !== "speed";
+  if (limitsSpeedFullWindow) limitsSpeedFullWindow.checked = limitsState.speedFullWindow;
 }
 
 function statisticsAccounts(payload = limitsState.payload) {
@@ -5342,6 +5359,11 @@ function burnRatePolicyForRange(range) {
     };
 }
 
+function selectedBurnRatePolicyForRange(range) {
+  const policy = burnRatePolicyForRange(range);
+  return limitsState.speedFullWindow ? policy : { ...policy, minimumSpanMs: 0 };
+}
+
 function weeklyLimitDurationMs(series) {
   const explicitDurations = (Array.isArray(series?.points) ? series.points : [])
     .map((point) => Number(point?.windowDurationMins) * 60_000)
@@ -5435,7 +5457,7 @@ function weeklyBurnRatePoints(series, {
     }
     const spanMs = baseline ? point.atMs - baseline.atMs : 0;
     const usedDelta = baseline ? point.usedPercent - baseline.usedPercent : Number.NaN;
-    const actualRate = spanMs >= minimumSpanMs && usedDelta >= 0
+    const actualRate = spanMs > 0 && spanMs >= minimumSpanMs && usedDelta >= 0
       ? usedDelta / spanMs * WEEK_MILLISECONDS
       : null;
     const deviationRate = Number.isFinite(actualRate) ? actualRate - targetRate : null;
@@ -5814,7 +5836,7 @@ function buildLimitsSpeedChart(payload) {
         id,
         color: seriesColor(item, index),
         hidden: limitsState.hidden.has(id),
-        ratePoints: weeklyBurnRatePoints(item, burnRatePolicyForRange(limitsState.range)),
+        ratePoints: weeklyBurnRatePoints(item, selectedBurnRatePolicyForRange(limitsState.range)),
       };
     })
     .filter((item) => item.ratePoints.length > 0);
@@ -6219,6 +6241,17 @@ limitsRanges?.addEventListener("click", (event) => {
 limitsModes?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-limits-mode]");
   if (button) selectLimitsMode(button.dataset.limitsMode);
+});
+
+limitsSpeedFullWindow?.addEventListener("change", () => {
+  limitsState.speedFullWindow = limitsSpeedFullWindow.checked;
+  try {
+    localStorage.setItem(LIMITS_SPEED_FULL_WINDOW_KEY, String(limitsState.speedFullWindow));
+  } catch {
+    // Настройка останется активной до закрытия WebView.
+  }
+  renderLimitsModes();
+  renderLimits();
 });
 
 document.querySelector("[data-limits-retry]")?.addEventListener("click", () => {

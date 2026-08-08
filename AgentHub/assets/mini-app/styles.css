@@ -8037,6 +8037,14 @@ html[data-surface="mobile"] .server-config-inline-label {
   margin-bottom: 1rem;
 }
 
+.limits-speed-window-setting {
+  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  margin: -0.3rem 0 1rem;
+  padding: 0.62rem 0.72rem;
+}
+
 .statistics-card .limits-chart-wrap {
   position: relative;
 }
