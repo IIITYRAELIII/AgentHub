@@ -7407,6 +7407,18 @@ html[data-view="server"] .server-view {
   grid-column: 2;
 }
 
+.server-config-column-title {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-soft);
+  display: flex;
+  font-size: 0.82rem;
+  font-weight: 650;
+  margin: 0;
+  min-height: 4.05rem;
+  padding: 0.72rem 0.15rem;
+}
+
 .server-config-advanced-column {
   display: flex;
   flex-direction: column;
@@ -8149,6 +8161,14 @@ html[data-surface="mobile"] .server-config-inline-label {
 
 .limits-speed-summary-card.is-over-target {
   border-left-color: var(--danger, #ff7f8d);
+}
+
+.limits-speed-summary-card.is-waiting {
+  border-left-color: var(--pending, #e8bd69);
+}
+
+.limits-speed-summary-card.is-waiting .limits-speed-summary-status {
+  color: var(--pending, #e8bd69);
 }
 
 .limits-speed-summary-name {

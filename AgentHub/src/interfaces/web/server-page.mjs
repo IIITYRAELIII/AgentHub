@@ -68,6 +68,8 @@ export function serverPageSnapshot({
   const webAppEnabled = config?.miniApp?.enabled === true
     || config?.components?.miniApp === true
     || config?.components?.androidApp === true;
+  const contextOptimizationEnabled = config?.contextAutomation?.autoCompactAfterTurn === true
+    || config?.contextAutomation?.autoRotateAfterCompaction === true;
 
   return {
     process: {
@@ -127,10 +129,10 @@ export function serverPageSnapshot({
           : "Android-приложение отключено.",
       },
       {
-        id: "codex-context-cleanup",
-        name: "Очистка контекста Codex",
-        enabled: false,
-        note: "ПОКА НЕДОСТУПНО — в процессе переосмысления.",
+        id: "codex-context-optimization",
+        name: "Оптимизация Codex",
+        enabled: contextOptimizationEnabled,
+        note: "Автосвёртка, авторотация и очистка контекста Codex.",
       },
     ],
     configuration: serverConfigurationEntries(config, pendingConfiguration),

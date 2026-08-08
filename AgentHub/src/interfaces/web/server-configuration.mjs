@@ -64,8 +64,8 @@ export const SERVER_CONFIGURATION_FIELDS = Object.freeze([
   { key: "codexRolloutContext.scanIntervalSeconds", name: "Интервал фоновой очистки", hint: "Как часто компонент повторно проверяет отложенные и остальные rollout-файлы Codex.", type: INTEGER, min: 1, max: 1440, unit: "мин", storageMultiplier: 60, presentation: "advanced" },
   {
     key: "codexSandboxMode",
-    name: "Политика доступа Codex",
-    hint: "Включено — полный доступ. Выключено — только рабочая папка: запись ограничена проектом, сеть отключена.",
+    name: "Полный доступ Codex",
+    hint: "Выключено — только рабочая папка: запись ограничена проектом, сеть отключена.",
     type: CHOICE,
     presentation: "access-toggle",
     choices: [

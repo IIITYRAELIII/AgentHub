@@ -54,6 +54,7 @@ test("server page snapshot excludes secrets and absolute filesystem paths", () =
       miniApp: { enabled: true, worker: { enabled: true } },
       autoApproveOnStart: true,
       guardConcurrentRepositoryWrites: true,
+      contextAutomation: { autoCompactAfterTurn: true, autoRotateAfterCompaction: true },
       codexRolloutContext: { enabled: true, scanIntervalSeconds: 1800 },
       codexRpcTimeoutSeconds: 30,
       deferredInputTtlHours: 168,
@@ -87,11 +88,11 @@ test("server page snapshot excludes secrets and absolute filesystem paths", () =
     { id: "telegram", name: "Telegram Bot", enabled: true },
     { id: "telegram-mini-app", name: "Telegram Mini App", enabled: true },
     { id: "android-app", name: "Android App", enabled: true },
-    { id: "codex-context-cleanup", name: "Очистка контекста Codex", enabled: false },
+    { id: "codex-context-optimization", name: "Оптимизация Codex", enabled: true },
   ]);
   assert.equal(
-    snapshot.components.find((component) => component.id === "codex-context-cleanup")?.note,
-    "ПОКА НЕДОСТУПНО — в процессе переосмысления.",
+    snapshot.components.find((component) => component.id === "codex-context-optimization")?.note,
+    "Автосвёртка, авторотация и очистка контекста Codex.",
   );
   assert.equal(snapshot.components.some((component) => component.id === "worker"), false);
 });

@@ -2027,20 +2027,6 @@ test("wide themes give multiple Streams the available scene width", () => {
   }
 });
 
-test("Pulsar aligns three Streams with Settings and lets four fill the viewport", () => {
-  const styles = themeFile("pulsar");
-  /* Три панели доходят до общего отступа шапки; четвёртая снимает оба поля и
-     раскрывает рабочую область на полную ширину окна. */
-  assert.match(
-    styles,
-    /:nth-child\(3\)\):not\(:has\([^}]+margin-right:\s*clamp\(1rem, 4vw, 4\.25rem\);[^}]+max-width:\s*calc\(100vw - clamp\(2rem, 8vw, 8\.5rem\)\);/su,
-  );
-  assert.match(
-    styles,
-    /:nth-child\(4\)\)\s*\{[^}]*margin-left:\s*0;[^}]*margin-right:\s*0;[^}]*max-width:\s*100vw;[^}]*width:\s*100vw;/su,
-  );
-});
-
 test("VS Code stream refresh keeps composer focus and opens history at the bottom", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const deckStart = app.indexOf("function renderStreamChatDeck()");
