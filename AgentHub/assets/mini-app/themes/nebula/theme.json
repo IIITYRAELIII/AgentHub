@@ -1,11 +1,11 @@
 {
   "id": "nebula",
   "name": "Туманность",
-  "color": "#0f0819",
+  "color": "#060b0c",
   "order": 20,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "nebula", "name": "Туманность", "asset": "nebula-veil.jpg" },
-    { "id": "nebula-core", "name": "Ядро", "asset": "nebula-core.jpg" }
+    { "id": "nebula", "name": "Спектральная вуаль", "asset": "nebula-veil.jpg" },
+    { "id": "nebula-core", "name": "Звёздные ясли", "asset": "nebula-core.jpg" }
   ]
 }

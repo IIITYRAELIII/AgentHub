@@ -1,84 +1,73 @@
-/* ===================================================== тема «Туманность» === */
+/* ======================================= тема «Туманность»: спектрограф === */
 
 html[data-theme="nebula"] {
-  --display-weight: 560;
-  --display-spacing: 0.005em;
-  --title-weight: 520;
-  --label-spacing: 0.2em;
+  --display-weight: 580;
+  --display-spacing: 0.012em;
+  --title-weight: 570;
+  --label-spacing: 0.13em;
 
-  --radius-lg: 26px;
-  --radius-md: 19px;
-  --radius-sm: 15px;
-  --rail-width: 3px;
+  --radius-lg: 7px;
+  --radius-md: 5px;
+  --radius-sm: 4px;
+  --radius-chip: 3px;
+  --rail-width: 2px;
 
-  --bg: #0f0819;
-  --surface-1: rgba(255, 240, 255, 0.035);
-  --surface-2: rgba(255, 236, 255, 0.062);
-  --surface-3: rgba(255, 228, 255, 0.1);
-  --sunken: rgba(24, 6, 38, 0.42);
+  --bg: #060b0c;
+  --surface-1: rgb(8 17 18 / 78%);
+  --surface-2: rgb(13 28 28 / 72%);
+  --surface-3: rgb(23 43 41 / 72%);
+  --sunken: rgb(2 8 9 / 62%);
 
-  --line: rgba(214, 168, 255, 0.11);
-  --line-strong: rgba(224, 186, 255, 0.2);
+  --line: rgb(121 161 153 / 18%);
+  --line-strong: rgb(144 189 178 / 34%);
+  --card-bg: linear-gradient(150deg, rgb(13 25 25 / 88%), rgb(5 12 13 / 92%));
+  --card-bg-open: linear-gradient(150deg, rgb(18 34 32 / 92%), rgb(6 14 15 / 94%));
+  --card-border: rgb(124 163 155 / 20%);
+  --card-border-open: rgb(219 166 92 / 44%);
+  --card-shadow: inset 0 1px 0 rgb(213 239 229 / 4%), 0 18px 34px -28px rgb(0 0 0 / 95%);
+  --plate-bg: linear-gradient(90deg, rgb(19 34 32 / 74%), rgb(7 15 16 / 72%));
+  --plate-shadow: inset 0 1px 0 rgb(213 239 229 / 4%);
+  --turn-shadow: 0 12px 24px -22px rgb(0 0 0 / 95%);
 
-  --card-bg: linear-gradient(158deg, rgba(126, 62, 186, 0.22), rgba(38, 14, 64, 0.5) 58%, rgba(20, 8, 36, 0.55));
-  --card-bg-open: linear-gradient(158deg, rgba(146, 74, 208, 0.28), rgba(44, 16, 74, 0.55) 58%, rgba(24, 9, 42, 0.6));
-  --card-border: rgba(214, 168, 255, 0.1);
-  --card-border-open: rgba(224, 186, 255, 0.2);
-  --card-shadow:
-    inset 0 1px 0 rgba(255, 236, 255, 0.09),
-    0 26px 60px -34px rgba(140, 60, 220, 0.75),
-    0 0 60px -30px rgba(255, 130, 220, 0.4);
+  --text: #e8eeea;
+  --text-soft: #bbc8c2;
+  --text-muted: #879b94;
+  --text-faint: #5d746d;
 
-  --plate-bg: linear-gradient(150deg, rgba(255, 232, 255, 0.075), rgba(255, 220, 255, 0.03));
-  --plate-shadow: inset 0 1px 0 rgba(255, 236, 255, 0.12), 0 8px 22px -18px rgba(160, 70, 230, 0.9);
-  --turn-shadow: 0 10px 26px -22px rgba(150, 70, 220, 0.9);
+  --accent: #e0a85d;
+  --accent-soft: rgb(224 168 93 / 13%);
+  --accent-line: rgb(224 168 93 / 48%);
+  --accent-glow: 0 0 18px -10px rgb(224 168 93 / 78%);
+  --selection: rgb(224 168 93 / 30%);
+  --brand-gradient: linear-gradient(145deg, rgb(31 63 59 / 82%), rgb(7 18 19 / 94%));
+  --brand-shadow: 0 12px 24px -18px rgb(224 168 93 / 48%);
 
-  --text: #f6ecff;
-  --text-soft: #d8c6ea;
-  --text-muted: #ac98be;
-  --text-faint: #837093;
+  --provider-codex: #8cc7bb;
+  --provider-claude: #d7aa78;
+  --ok: #8cc7a8;
+  --pending: #e0a85d;
 
-  --accent: #d79bff;
-  --accent-soft: rgba(215, 155, 255, 0.16);
-  --accent-line: rgba(215, 155, 255, 0.42);
-  --accent-glow: 0 0 26px -8px rgba(215, 155, 255, 0.95);
-  --selection: rgba(215, 155, 255, 0.32);
-  --brand-gradient: radial-gradient(circle at 32% 26%, rgba(255, 190, 245, 0.45), transparent 58%),
-    linear-gradient(150deg, rgba(196, 106, 255, 0.4), rgba(72, 96, 255, 0.3));
-  --brand-shadow: 0 10px 26px -12px rgba(200, 110, 255, 0.9);
+  --dot-input: #87bbb2;
+  --dot-cache: #91c5a8;
+  --dot-output: #e0a85d;
+  --dot-think: #c7d3cc;
 
-  --provider-codex: #8fb8ff;
-  --provider-claude: #ff9ec4;
-
-  --ok: #7ff0c8;
-  --pending: #ffc98a;
-
-  --dot-input: #8fb8ff;
-  --dot-cache: #7ff0c8;
-  --dot-output: #ffc98a;
-  --dot-think: #e79bff;
-
-  --space-glow-a: rgba(196, 74, 255, 0.3);
-  --space-glow-b: rgba(60, 118, 255, 0.24);
-  --space-base: linear-gradient(180deg, #1b0d2c 0, var(--bg) 38rem);
-  --space-star: rgba(240, 212, 255, 0.5);
-  --star-opacity: 0.5;
-}
-
-/* ============================== «Туманность»: облака и мягкие разделители === */
-
-html[data-theme="nebula"] {
+  --space-glow-a: rgb(39 100 91 / 20%);
+  --space-glow-b: rgb(174 116 52 / 12%);
+  --space-base: #060b0c;
+  --space-star: rgb(196 220 211 / 42%);
+  --star-opacity: 0.24;
   --nebula-image: url("./nebula-veil.jpg");
 }
 
-/* Снимок заменил нарисованные пятна: рукава газа и звёздная россыпь дают ту
-   же глубину без blur, который раньше съедал детали. */
+/* Телескопический кадр остаётся резким. Читаемость создаёт материал самих
+   панелей, а не сплошная тёмная вуаль поверх изображения. */
 html[data-theme="nebula"] body::after {
-  background-color: #0b0616;
+  background-color: #050a0b;
   background-image:
-    radial-gradient(46% 34% at 78% 26%, rgba(120, 92, 255, 0.12), transparent 72%),
+    radial-gradient(80% 72% at 52% 54%, transparent 46%, rgb(2 7 8 / 24%) 100%),
     var(--nebula-image);
-  background-position: center, 60% 46%;
+  background-position: center, center;
   background-repeat: no-repeat;
   background-size: cover;
   inset: 0;
@@ -86,122 +75,172 @@ html[data-theme="nebula"] body::after {
   opacity: 1;
 }
 
-html[data-theme="nebula"] .journal details[data-work-log-day-section] {
-  backdrop-filter: blur(10px) saturate(140%);
-  -webkit-backdrop-filter: blur(10px) saturate(140%);
-}
-
-html[data-theme="nebula"] .journal div[data-work-log-body] > div[data-work-log-row] {
-  border-bottom-color: transparent;
-  border-image: linear-gradient(90deg, transparent, var(--line-strong) 22%, var(--line-strong) 78%, transparent) 1;
-}
-
-html[data-theme="nebula"] .journal span[data-work-log-turn-title],
-html[data-theme="nebula"] .journal summary[data-task-usage],
-html[data-theme="nebula"] .journal span[data-task-usage-breakdown] {
-  border-color: transparent;
-}
-
-html[data-theme="nebula"] .journal details[data-work-log-turn-details] {
-  border-color: transparent;
-  box-shadow: var(--turn-shadow);
-}
-
-html[data-theme="nebula"] .journal details[data-work-log-turn-details]:hover {
-  border-color: var(--line-strong);
-}
-
-html[data-theme="nebula"] .journal summary[data-work-log-day] > strong {
-  text-shadow: 0 0 22px rgba(215, 155, 255, 0.55);
-}
-
-/* «Туманность»: газ дышит — самый медленный эффект во всём наборе */
-@keyframes nebula-drift {
-  0%, 100% { background-position: 62% 42%; opacity: 0.22; transform: scale(1.02); }
-  50% { background-position: 78% 34%; opacity: 0.72; transform: scale(1.08); }
+/* Одна едва заметная спектральная плоскость: только opacity и transform, без
+   анимации blur и background-position. */
+@keyframes nebula-spectrum-breathe {
+  0%, 100% { opacity: 0.12; transform: scale(1.01); }
+  50% { opacity: 0.28; transform: scale(1.025); }
 }
 
 html[data-theme="nebula"] body::before {
-  animation: nebula-drift 30s ease-in-out infinite;
+  animation: nebula-spectrum-breathe 24s ease-in-out infinite;
   background-image:
-    radial-gradient(70% 56% at 72% 38%, rgba(198, 150, 255, 0.32), rgba(120, 92, 255, 0.12) 48%, transparent 76%);
+    linear-gradient(90deg, transparent 0 14%, rgb(224 168 93 / 10%) 14.08%, transparent 14.18% 72%, rgb(116 187 173 / 9%) 72.08%, transparent 72.18%),
+    repeating-linear-gradient(90deg, transparent 0 10rem, rgb(156 202 191 / 3%) 10rem calc(10rem + 1px));
+  background-position: center;
   background-size: cover;
   content: "";
-  mask-image: none;
+  inset: -2%;
+  mask-image: linear-gradient(180deg, transparent 2%, black 18%, black 86%, transparent 100%);
   mix-blend-mode: screen;
-  opacity: 0.3;
+  pointer-events: none;
+  position: fixed;
+  transform-origin: 58% 42%;
+  z-index: 1;
 }
 
-html[data-background-override="true"][data-background="nebula"] { --nebula-image: url("./nebula-veil.jpg"); --hub-background-color: #0b0616; --hub-background-image: radial-gradient(46% 34% at 78% 26%, rgba(120, 92, 255, .12), transparent 72%), var(--nebula-image); --hub-background-position: center, 60% 46%; }
-html[data-background-override="true"][data-background="nebula-core"] { --hub-background-color: #0a0614; --hub-background-image: linear-gradient(90deg, rgba(6, 4, 12, .32), rgba(6, 4, 12, 0) 44%), var(--nebula-core-image, url("./nebula-core.jpg")); --hub-background-position: center, 58% 48%; }
-
-html[data-background-override="true"][data-background="orbit-limb"] body::before,
-html[data-background-override="true"][data-background="nebula-core"] body::before,
-html[data-background-override="true"][data-background="pulsar-beam"] body::before,
-html[data-background-override="true"][data-background="blackhole-disk"] body::before,
-html[data-background-override="true"][data-background="magma-flow"] body::before,
-html[data-background-override="true"][data-background="meadow-goldenhour"] body::before {
-  background-position: center !important;
-  background-repeat: no-repeat !important;
-  background-size: cover !important;
-  content: "" !important;
-  mask-image: none !important;
-  mix-blend-mode: screen !important;
-  opacity: 0.4 !important;
-}
-
-html[data-background-override="true"][data-background="nebula-core"] body::before {
-  animation: scene-glow 26s ease-in-out infinite !important;
-  background-image: radial-gradient(40% 34% at 58% 42%, rgba(196, 130, 255, 0.26), transparent 74%) !important;
-}
-
-@media (max-width: 720px) {html[data-background-override="true"][data-background="nebula-core"] { --hub-background-position: center, 62% 46%; }
-}
-
-/* ============================================ облик: снимок с выдержкой ===
-   Туманность снимают долгой выдержкой, и в кадре нет ни одной резкой грани.
-   Тема отказывается от рамок совсем: панели держатся на свете, а не на линии. */
-
-/* Панели без рамок: край растворяется, вместо линии — дымка. */
+/* Плоские приборные панели вместо прежних округлых фиолетовых облаков. */
 html[data-theme="nebula"] .task-rail,
 html[data-theme="nebula"] .chat {
-  border: 0;
-  border-radius: 26px;
-  box-shadow: 0 0 60px -24px rgba(215, 155, 255, .5), inset 0 0 60px -30px rgba(240, 214, 255, .35);
+  backdrop-filter: blur(5px) saturate(108%);
+  -webkit-backdrop-filter: blur(5px) saturate(108%);
+  background: rgb(4 11 12 / 52%);
+  border-color: rgb(131 177 167 / 20%);
+  box-shadow: inset 0 1px 0 rgb(219 240 232 / 3%), 0 20px 46px -34px rgb(0 0 0 / 94%);
 }
 
-html[data-theme="nebula"] .task-rail { border-right: 0; }
-
-/* Выбранная задача не подчёркнута, а подсвечена изнутри. */
 html[data-theme="nebula"] .task-item {
-  border-radius: 18px;
+  border-radius: 2px;
 }
 
 html[data-theme="nebula"] .task-item[data-selected] {
-  background: radial-gradient(120% 140% at 0% 50%, rgba(215, 155, 255, .22), transparent 70%);
-  box-shadow: 0 0 26px -12px rgba(215, 155, 255, .8);
+  background: linear-gradient(90deg, rgb(224 168 93 / 17%), rgb(20 44 41 / 18%) 62%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
-html[data-theme="nebula"] .task-item[data-selected]::before { opacity: 0; }
-
-html[data-theme="nebula"] .view-tab {
-  border-radius: 999px;
+html[data-theme="nebula"] .task-item[data-selected]::before {
+  background: var(--accent);
+  box-shadow: 0 0 12px rgb(224 168 93 / 70%);
 }
 
-html[data-theme="nebula"] .view-tab[aria-pressed="true"] {
-  background: radial-gradient(120% 160% at 50% 120%, rgba(215, 155, 255, .3), transparent 72%);
-  box-shadow: 0 0 20px -8px rgba(215, 155, 255, .9);
-}
-
+/* Сообщения выглядят как спектральные карточки: сторона рамки показывает
+   автора, а короткие риски наверху напоминают шкалу прибора. */
 html[data-theme="nebula"] .msg {
-  border: 0;
-  border-radius: 20px;
-  box-shadow: inset 0 0 40px -22px rgba(240, 214, 255, .5);
+  backdrop-filter: blur(7px) saturate(108%);
+  -webkit-backdrop-filter: blur(7px) saturate(108%);
+  background-color: rgb(5 13 14 / 88%);
+  background-image:
+    repeating-linear-gradient(90deg, rgb(145 188 178 / 13%) 0 1px, transparent 1px 8px),
+    linear-gradient(150deg, rgb(22 39 37 / 54%), transparent 54%);
+  background-position: 0 0, 0 0;
+  background-repeat: no-repeat;
+  background-size: 3.2rem 1px, 100% 100%;
+  border-color: rgb(126 169 159 / 24%);
+  border-left-width: 2px;
+  border-radius: 3px;
+  box-shadow: 0 16px 28px -26px rgb(0 0 0 / 96%);
 }
 
-html[data-theme="nebula"] .option-chip,
+html[data-theme="nebula"] .msg-user {
+  background-color: rgb(13 19 17 / 90%);
+  background-image:
+    repeating-linear-gradient(90deg, rgb(224 168 93 / 20%) 0 1px, transparent 1px 8px),
+    linear-gradient(150deg, rgb(96 65 30 / 20%), transparent 58%);
+  background-position: 100% 0, 0 0;
+  border-color: rgb(224 168 93 / 42%);
+  border-left-width: 1px;
+  border-right-width: 2px;
+}
+
+html[data-theme="nebula"] .msg-system {
+  background: rgb(4 10 11 / 70%);
+  border: 1px solid rgb(126 169 159 / 14%);
+  border-radius: 2px;
+}
+
+html[data-theme="nebula"] .msg-live {
+  border-color: rgb(224 168 93 / 48%);
+  border-style: solid;
+}
+
 html[data-theme="nebula"] .composer,
-html[data-theme="nebula"] .composer input,
-html[data-theme="nebula"] .composer textarea {
-  border-radius: 999px;
+html[data-theme="nebula"] .composer-input,
+html[data-theme="nebula"] .option-chip,
+html[data-theme="nebula"] select,
+html[data-theme="nebula"] input,
+html[data-theme="nebula"] textarea {
+  border-radius: 3px;
+}
+
+html[data-theme="nebula"] .composer {
+  background: rgb(4 11 12 / 76%);
+  border-top-color: rgb(126 169 159 / 20%);
+}
+
+html[data-theme="nebula"] .composer-input {
+  background: rgb(2 8 9 / 78%);
+  border-color: rgb(126 169 159 / 24%);
+}
+
+html[data-theme="nebula"] .journal details[data-work-log-day-section] {
+  backdrop-filter: blur(6px) saturate(108%);
+  -webkit-backdrop-filter: blur(6px) saturate(108%);
+}
+
+html[data-theme="nebula"] .journal div[data-work-log-body] > div[data-work-log-row] {
+  border-bottom-color: rgb(126 169 159 / 12%);
+}
+
+html[data-theme="nebula"] .journal details[data-work-log-turn-details] {
+  border-color: rgb(126 169 159 / 16%);
+  box-shadow: none;
+}
+
+html[data-theme="nebula"] .journal details[data-work-log-turn-details]:hover {
+  border-color: var(--accent-line);
+}
+
+html[data-theme="nebula"] .journal summary[data-work-log-day] > strong {
+  color: var(--text);
+  text-shadow: none;
+}
+
+html[data-background-override="true"][data-background="nebula"] {
+  --nebula-image: url("./nebula-veil.jpg");
+  --hub-background-color: #050a0b;
+  --hub-background-image:
+    radial-gradient(80% 72% at 52% 54%, transparent 46%, rgb(2 7 8 / 24%) 100%),
+    var(--nebula-image);
+  --hub-background-position: center, center;
+}
+
+html[data-background-override="true"][data-background="nebula-core"] {
+  --hub-background-color: #050907;
+  --hub-background-image:
+    radial-gradient(88% 78% at 54% 48%, transparent 42%, rgb(2 7 7 / 28%) 100%),
+    var(--nebula-core-image, url("./nebula-core.jpg"));
+  --hub-background-position: center, center;
+}
+
+@media (max-width: 720px) {
+  html[data-theme="nebula"] {
+    --surface-1: rgb(6 14 15 / 88%);
+    --surface-2: rgb(11 24 24 / 84%);
+  }
+
+  html[data-theme="nebula"] body::after {
+    background-position: center, 62% center;
+  }
+
+  html[data-background-override="true"][data-background="nebula-core"] {
+    --hub-background-position: center, 58% center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="nebula"] body::before {
+    animation: none;
+    opacity: 0.16;
+    transform: none;
+  }
 }
