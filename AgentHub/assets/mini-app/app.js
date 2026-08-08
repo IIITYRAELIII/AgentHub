@@ -118,6 +118,7 @@ const attachmentViewerLoading = document.querySelector("[data-attachment-viewer-
 const attachmentViewerClose = document.querySelector("[data-attachment-viewer-close]");
 
 const limitsRanges = document.querySelector("[data-limits-ranges]");
+const limitsModes = document.querySelector("[data-limits-modes]");
 const limitsSubtitle = document.querySelector("[data-limits-subtitle]");
 const limitsLoading = document.querySelector("[data-limits-loading]");
 const limitsError = document.querySelector("[data-limits-error]");
@@ -127,6 +128,7 @@ const limitsChartWrap = document.querySelector("[data-limits-chart-wrap]");
 const limitsChart = document.querySelector("[data-limits-chart]");
 const limitsTooltip = document.querySelector("[data-limits-tooltip]");
 const limitsLegend = document.querySelector("[data-limits-legend]");
+const limitsSpeedNote = document.querySelector("[data-limits-speed-note]");
 const limitsCredits = document.querySelector("[data-limits-credits]");
 const currentLimitsSlots = [...document.querySelectorAll("[data-current-limits]")];
 const usageRanges = document.querySelector("[data-usage-ranges]");
@@ -4895,6 +4897,15 @@ const SERIES_PALETTE = [
 /* Стабильный versioned-ключ для скрытых серий графика. Меняется только при
  * несовместимом изменении формата, чтобы восстановление пережило перезапуск. */
 const LIMITS_HIDDEN_KEY = "agent-hub-limits-hidden-v1";
+const LIMITS_MODE_KEY = "agent-hub-limits-mode-v1";
+
+function loadLimitsMode() {
+  try {
+    return localStorage.getItem(LIMITS_MODE_KEY) === "speed" ? "speed" : "usage";
+  } catch {
+    return "usage";
+  }
+}
 
 /* Читаем набор скрытых серий из localStorage. Неизвестные (новые) серии в набор
  * не попадают, поэтому по умолчанию видимы. */
@@ -4930,11 +4941,33 @@ function seriesId(series) {
 
 const limitsState = {
   range: "24h",
+  mode: loadLimitsMode(),
   status: "idle", // idle | loading | ready | empty | error
   payload: null,
   error: "",
   hidden: loadHiddenSeries(),
 };
+
+function selectLimitsMode(mode) {
+  const next = mode === "speed" ? "speed" : "usage";
+  if (limitsState.mode === next) return;
+  limitsState.mode = next;
+  try {
+    localStorage.setItem(LIMITS_MODE_KEY, next);
+  } catch {
+    // Режим останется активным до закрытия WebView.
+  }
+  renderLimitsModes();
+  renderLimits();
+}
+
+function renderLimitsModes() {
+  if (!limitsModes) return;
+  for (const button of limitsModes.querySelectorAll("[data-limits-mode]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.limitsMode === limitsState.mode));
+  }
+  if (limitsSpeedNote) limitsSpeedNote.hidden = limitsState.mode !== "speed";
+}
 
 function statisticsAccounts(payload = limitsState.payload) {
   const source = Array.isArray(payload?.accounts) ? payload.accounts : [];
@@ -5161,6 +5194,90 @@ function parseClaudeResetAt(value, nowMs = Date.now()) {
   return reset.getTime();
 }
 
+const WEEK_MILLISECONDS = 7 * 24 * 60 * 60_000;
+const BURN_RATE_ROLLING_WINDOW_MS = 24 * 60 * 60_000;
+const BURN_RATE_MINIMUM_SPAN_MS = 60 * 60_000;
+const BURN_RATE_CHART_MAX = 400;
+
+function weeklyLimitDurationMs(series) {
+  const explicitDurations = (Array.isArray(series?.points) ? series.points : [])
+    .map((point) => Number(point?.windowDurationMins) * 60_000)
+    .filter((duration) => Number.isFinite(duration) && duration > 0);
+  if (explicitDurations.length) {
+    return explicitDurations.find((duration) => duration >= 6 * 24 * 60 * 60_000) ?? null;
+  }
+  const id = String(series?.id ?? series?.baseId ?? "").toLowerCase();
+  const windowName = String(series?.window ?? "").toLowerCase();
+  if (windowName === "week" || id.startsWith("claude:model:") || windowName === "secondary") {
+    return WEEK_MILLISECONDS;
+  }
+  const hasLongReset = (Array.isArray(series?.points) ? series.points : []).some((point) => {
+    const atMs = Date.parse(point?.at ?? "");
+    const resetMs = Date.parse(point?.resetsAt ?? "");
+    return Number.isFinite(atMs) && Number.isFinite(resetMs) && resetMs - atMs > 24 * 60 * 60_000;
+  });
+  return hasLongReset ? WEEK_MILLISECONDS : null;
+}
+
+function limitPointResetMs(point) {
+  const isoReset = Date.parse(point?.resetsAt ?? "");
+  if (Number.isFinite(isoReset)) return isoReset;
+  const atMs = Date.parse(point?.at ?? "");
+  return parseClaudeResetAt(point?.resetsText, Number.isFinite(atMs) ? atMs : Date.now());
+}
+
+function weeklyBurnRatePoints(series, {
+  rollingWindowMs = BURN_RATE_ROLLING_WINDOW_MS,
+  minimumSpanMs = BURN_RATE_MINIMUM_SPAN_MS,
+} = {}) {
+  const durationMs = weeklyLimitDurationMs(series);
+  if (!durationMs) return [];
+  const points = (Array.isArray(series?.points) ? series.points : [])
+    .map((point) => ({
+      raw: point,
+      atMs: Date.parse(point?.at ?? ""),
+      resetMs: limitPointResetMs(point),
+      usedPercent: Number(point?.usedPercent),
+      remainingPercent: point?.remainingPercent == null
+        ? Math.max(0, 100 - Number(point?.usedPercent || 0))
+        : Number(point.remainingPercent),
+    }))
+    .filter((point) => (
+      Number.isFinite(point.atMs)
+      && Number.isFinite(point.resetMs)
+      && Number.isFinite(point.usedPercent)
+      && Number.isFinite(point.remainingPercent)
+      && point.resetMs > point.atMs
+    ))
+    .sort((left, right) => left.atMs - right.atMs);
+
+  return points.map((point, index) => {
+    const remainingMs = point.resetMs - point.atMs;
+    const targetRate = Math.max(0, point.remainingPercent) / remainingMs * WEEK_MILLISECONDS;
+    let baseline = null;
+    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+      const candidate = points[cursor];
+      if (point.atMs - candidate.atMs > rollingWindowMs) break;
+      if (Math.abs(point.resetMs - candidate.resetMs) > 60_000) continue;
+      baseline = candidate;
+    }
+    const spanMs = baseline ? point.atMs - baseline.atMs : 0;
+    const usedDelta = baseline ? point.usedPercent - baseline.usedPercent : Number.NaN;
+    const actualRate = spanMs >= minimumSpanMs && usedDelta >= 0
+      ? usedDelta / spanMs * WEEK_MILLISECONDS
+      : null;
+    const deviationRate = Number.isFinite(actualRate) ? actualRate - targetRate : null;
+    return {
+      ...point,
+      durationMs,
+      targetRate,
+      actualRate,
+      deviationRate,
+      overTarget: Number.isFinite(deviationRate) ? deviationRate > 0 : false,
+    };
+  });
+}
+
 function formatResetCountdown(point) {
   const isoReset = Date.parse(point?.resetsAt ?? "");
   const resetMs = Number.isFinite(isoReset)
@@ -5301,7 +5418,8 @@ function renderLimitsSubtitle() {
     if (from && to) period = `${from} — ${to}`;
     else if (to) period = `по ${to}`;
   }
-  limitsSubtitle.textContent = period ? `${label} · ${period}` : label;
+  const mode = limitsState.mode === "speed" ? "Скорость недельного расхода" : "Расход лимита";
+  limitsSubtitle.textContent = [mode, label, period].filter(Boolean).join(" · ");
 }
 
 function renderLimits() {
@@ -5319,12 +5437,14 @@ function renderLimits() {
     renderLimitsLegend(series);
     renderLimitsCredits(limitsState.payload);
   }
+  renderLimitsModes();
   renderLimitsSubtitle();
 }
 
 /* Собирает SVG-график и возвращает нормализованные серии (с цветом и текущим
  * значением) для легенды. */
 function buildLimitsChart(payload) {
+  if (limitsState.mode === "speed") return buildLimitsSpeedChart(payload);
   const accountKey = resolvedStatisticsAccountKey(payload);
   const rawSeries = (Array.isArray(payload?.series) ? payload.series : [])
     .map((item) => ({ ...item, points: statisticsSeriesPoints(item, accountKey) }));
@@ -5507,6 +5627,205 @@ function buildLimitsChart(payload) {
   return allSeries;
 }
 
+function buildLimitsSpeedChart(payload) {
+  const accountKey = resolvedStatisticsAccountKey(payload);
+  const rawSeries = (Array.isArray(payload?.series) ? payload.series : [])
+    .map((item) => ({ ...item, points: statisticsSeriesPoints(item, accountKey) }));
+  const allSeries = rawSeries
+    .filter((item) => Array.isArray(item.points) && item.points.length > 0)
+    .filter((item) => weeklyLimitDurationMs(item))
+    .map((item, index) => {
+      const id = seriesId(item);
+      return {
+        ...item,
+        id,
+        color: seriesColor(item, index),
+        hidden: limitsState.hidden.has(id),
+        ratePoints: weeklyBurnRatePoints(item),
+      };
+    })
+    .filter((item) => item.ratePoints.length > 0);
+  const series = allSeries.filter((item) => !item.hidden);
+  const times = series.flatMap((item) => item.ratePoints.map((point) => point.atMs));
+  let tMin = payload?.from ? Date.parse(payload.from) : Number.NaN;
+  let tMax = payload?.to ? Date.parse(payload.to) : Number.NaN;
+  if (!Number.isFinite(tMin)) tMin = times.length ? Math.min(...times) : 0;
+  if (!Number.isFinite(tMax)) tMax = times.length ? Math.max(...times) : tMin + 1;
+  if (tMax <= tMin) tMax = tMin + 1;
+
+  const W = chartWidth(limitsChart);
+  const H = 260;
+  const padL = 48;
+  const padR = 14;
+  const padT = 14;
+  const padB = 44;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const xOf = (time) => padL + ((time - tMin) / (tMax - tMin)) * plotW;
+  const yOf = (rate) => (
+    padT + (1 - clampNumber(Number(rate) || 0, 0, BURN_RATE_CHART_MAX) / BURN_RATE_CHART_MAX) * plotH
+  );
+  const svg = svgEl("svg", {
+    viewBox: `0 0 ${W} ${H}`,
+    class: "limits-chart-svg limits-speed-chart-svg",
+    preserveAspectRatio: "none",
+    "aria-hidden": "true",
+  });
+
+  for (const value of [0, 100, 200, 300, 400]) {
+    const y = yOf(value);
+    svg.append(svgEl("line", { x1: padL, y1: y, x2: W - padR, y2: y, class: "limits-grid-line" }));
+    svg.append(svgEl("text", {
+      x: padL - 6,
+      y: y + 3,
+      class: "limits-axis-label limits-axis-y",
+      "text-anchor": "end",
+    }, [value === BURN_RATE_CHART_MAX ? `${value}+` : String(value)]));
+  }
+  svg.append(svgEl("text", {
+    x: padL,
+    y: padT + 9,
+    class: "limits-axis-label limits-speed-unit",
+  }, ["% / нед."]));
+
+  const span = tMax - tMin;
+  const dayMs = 24 * 60 * 60_000;
+  if (span > dayMs * 1.5) {
+    const first = new Date(tMin);
+    first.setHours(0, 0, 0, 0);
+    const days = [];
+    for (let time = first.getTime(); time <= tMax; time += dayMs) {
+      if (time >= tMin) days.push(time);
+    }
+    const step = Math.max(1, Math.ceil(days.length / Math.floor(plotW / 46)));
+    days.forEach((time, index) => {
+      if (index % step) return;
+      const x = xOf(time);
+      svg.append(svgEl("line", {
+        x1: x, y1: padT, x2: x, y2: padT + plotH, class: "limits-grid-line limits-grid-day",
+      }));
+      svg.append(svgEl("text", {
+        x,
+        y: H - 20,
+        class: "limits-axis-label limits-axis-x",
+        "text-anchor": "middle",
+      }, [new Date(time).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })]));
+      svg.append(svgEl("text", {
+        x,
+        y: H - 7,
+        class: "limits-axis-label limits-axis-x usage-axis-weekday",
+        "text-anchor": "middle",
+      }, [weekdayLabel(time)]));
+    });
+  } else {
+    for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+      const time = tMin + span * fraction;
+      svg.append(svgEl("text", {
+        x: xOf(time),
+        y: H - 8,
+        class: "limits-axis-label limits-axis-x",
+        "text-anchor": fraction === 0 ? "start" : fraction === 1 ? "end" : "middle",
+      }, [formatAxisTime(time, span)]));
+    }
+  }
+
+  for (const item of series) {
+    const targetPoints = item.ratePoints.map((point) => ({
+      ...point,
+      x: xOf(point.atMs),
+      y: yOf(point.targetRate),
+    }));
+    if (targetPoints.length) {
+      svg.append(svgEl("path", {
+        d: targetPoints
+          .map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
+          .join(" "),
+        class: "limits-burn-target-line",
+        fill: "none",
+        stroke: item.color,
+      }));
+    }
+    const actualPoints = item.ratePoints
+      .filter((point) => Number.isFinite(point.actualRate))
+      .map((point) => ({ ...point, x: xOf(point.atMs), y: yOf(point.actualRate) }));
+    if (!actualPoints.length) continue;
+    svg.append(svgEl("path", {
+      d: actualPoints
+        .map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
+        .join(" "),
+      class: "limits-burn-actual-guide",
+      fill: "none",
+      stroke: item.color,
+    }));
+    for (let index = 1; index < actualPoints.length; index += 1) {
+      const left = actualPoints[index - 1];
+      const right = actualPoints[index];
+      svg.append(svgEl("line", {
+        x1: left.x,
+        y1: left.y,
+        x2: right.x,
+        y2: right.y,
+        class: `limits-burn-rate-segment ${right.overTarget ? "is-over-target" : "is-safe"}`,
+      }));
+    }
+    const markerPoints = limitsMarkerPoints(actualPoints);
+    markerPoints.forEach((point) => {
+      const isLast = point === actualPoints.at(-1);
+      const circle = svgEl("circle", {
+        cx: point.x,
+        cy: point.y,
+        r: isLast ? 4 : 2.8,
+        class: `limits-point limits-speed-point ${point.overTarget ? "is-over-target" : "is-safe"}${
+          isLast ? " limits-point-current" : ""
+        }`,
+      });
+      const info = {
+        mode: "speed",
+        name: item.accountLabel
+          ? `${item.accountLabel} · ${item.name || item.baseId || item.id || ""}`
+          : item.name || item.id || "",
+        window: item.window || "",
+        at: point.raw.at,
+        actualRate: point.actualRate,
+        targetRate: point.targetRate,
+        deviationRate: point.deviationRate,
+      };
+      const fx = point.x / W;
+      const fy = point.y / H;
+      circle.addEventListener("pointerenter", () => showLimitsTooltip(info, fx, fy));
+      circle.addEventListener("pointerleave", hideLimitsTooltip);
+      if (isLast) {
+        circle.setAttribute("tabindex", "0");
+        circle.setAttribute("role", "img");
+        circle.setAttribute("aria-label", limitsTooltipText(info));
+        circle.addEventListener("focus", () => showLimitsTooltip(info, fx, fy));
+        circle.addEventListener("blur", hideLimitsTooltip);
+      }
+      svg.append(circle);
+    });
+  }
+
+  if (!series.length) {
+    svg.append(svgEl("text", {
+      x: padL + plotW / 2,
+      y: padT + plotH / 2,
+      class: "limits-empty-plot",
+      "text-anchor": "middle",
+    }, [allSeries.length ? "Все недельные серии скрыты" : "Нет данных недельных лимитов"]));
+  }
+  const summary = series.length
+    ? series.map((item) => {
+      const last = item.ratePoints.findLast((point) => Number.isFinite(point.actualRate));
+      return last
+        ? `${item.name || item.id}: ${Math.round(last.actualRate)}% в неделю, допустимо ${Math.round(last.targetRate)}%`
+        : `${item.name || item.id}: недостаточно истории для фактической скорости`;
+    }).join("; ")
+    : allSeries.length ? "все недельные серии скрыты" : "нет недельных лимитов";
+  limitsChart.setAttribute("aria-label", `Скорость расхода недельных лимитов. ${summary}.`);
+  limitsChart.replaceChildren(svg);
+  return allSeries;
+}
+
 /* Легенда показывает все доступные серии, включая скрытые. Каждая запись —
  * настоящая кнопка-переключатель (aria-pressed = «серия видима»), скрытая серия
  * приглушена и перечёркнута через класс is-hidden. */
@@ -5515,6 +5834,9 @@ function renderLimitsLegend(series) {
   limitsLegend.replaceChildren(...series.map((item) => {
     const last = item.points[item.points.length - 1];
     const used = last ? Math.round(Number(last.usedPercent) || 0) : null;
+    const rate = limitsState.mode === "speed"
+      ? item.ratePoints?.findLast((point) => Number.isFinite(point.actualRate))
+      : null;
     const name = item.accountLabel
       ? `${item.accountLabel} · ${item.name || item.baseId || item.id || ""}`
       : item.name || item.id || "";
@@ -5530,7 +5852,15 @@ function renderLimitsLegend(series) {
       swatch,
       el("span", { class: "limits-legend-name", text: name }),
       item.window ? el("span", { class: "limits-legend-window", text: item.window }) : null,
-      used != null ? el("span", { class: "limits-legend-value", text: `Расход ${used}%` }) : null,
+      rate
+        ? el("span", {
+          class: `limits-legend-value limits-speed-value${rate.overTarget ? " is-over-target" : " is-safe"}`,
+          text: `${Math.round(rate.actualRate)} / ${Math.round(rate.targetRate)}%`,
+          title: "Фактическая / допустимая скорость в неделю",
+        })
+        : limitsState.mode === "speed"
+          ? el("span", { class: "limits-legend-value", text: "Недостаточно истории" })
+          : used != null ? el("span", { class: "limits-legend-value", text: `Расход ${used}%` }) : null,
     ]);
     toggle.addEventListener("click", () => toggleSeriesVisibility(item.id));
     return el("li", { class: "limits-legend-item" }, [toggle]);
@@ -5566,6 +5896,16 @@ function renderLimitsCredits(payload) {
 
 function limitsTooltipText(info) {
   const time = formatLimitsDateTime(info.at);
+  if (info.mode === "speed") {
+    const actual = Math.round(Number(info.actualRate) || 0);
+    const target = Math.round(Number(info.targetRate) || 0);
+    const deviation = actual - target;
+    const status = deviation > 0
+      ? `выше допустимой на ${deviation}%`
+      : `запас ${Math.abs(deviation)}%`;
+    const name = info.window ? `${info.name} · ${info.window}` : info.name;
+    return `${name}. ${time}: скорость ${actual}% лимита в неделю, допустимо ${target}%, ${status}`;
+  }
   const used = Math.round(Number(info.used) || 0);
   const remaining = info.remaining == null
     ? Math.max(0, 100 - used)
@@ -5576,6 +5916,27 @@ function limitsTooltipText(info) {
 
 function showLimitsTooltip(info, fx, fy) {
   if (!limitsTooltip) return;
+  if (info.mode === "speed") {
+    const actual = Math.round(Number(info.actualRate) || 0);
+    const target = Math.round(Number(info.targetRate) || 0);
+    const deviation = actual - target;
+    limitsTooltip.replaceChildren(
+      el("span", { class: "limits-tooltip-title", text: info.window ? `${info.name} · ${info.window}` : info.name }),
+      el("span", { class: "limits-tooltip-time", text: formatLimitsDateTime(info.at) }),
+      el("span", { class: "limits-tooltip-row", text: `Фактически ${actual}%/нед. · допустимо ${target}%/нед.` }),
+      el("span", {
+        class: `limits-tooltip-row limits-speed-deviation${deviation > 0 ? " is-over-target" : " is-safe"}`,
+        text: deviation > 0
+          ? `Перерасход скорости +${deviation}%`
+          : `Запас скорости ${Math.abs(deviation)}%`,
+      }),
+    );
+    limitsTooltip.style.left = `${clampNumber(fx * 100, 0, 100)}%`;
+    limitsTooltip.style.top = `${clampNumber(fy * 100, 0, 100)}%`;
+    limitsTooltip.dataset.side = fx > 0.6 ? "left" : "right";
+    limitsTooltip.hidden = false;
+    return;
+  }
   const used = Math.round(Number(info.used) || 0);
   const remaining = info.remaining == null
     ? Math.max(0, 100 - used)
@@ -5600,6 +5961,11 @@ limitsRanges?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-range]");
   if (!button) return;
   requestLimits(button.dataset.range);
+});
+
+limitsModes?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-limits-mode]");
+  if (button) selectLimitsMode(button.dataset.limitsMode);
 });
 
 document.querySelector("[data-limits-retry]")?.addEventListener("click", () => {

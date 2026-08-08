@@ -7707,6 +7707,44 @@ html[data-surface="mobile"] .server-config-inline-label {
   margin: 0.32rem 0 0;
 }
 
+.limits-head-controls {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.limits-mode-switch {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 0.14rem;
+}
+
+.limits-mode-switch button {
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-chip);
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.28rem 0.62rem;
+  white-space: nowrap;
+}
+
+.limits-mode-switch button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.limits-mode-switch button:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+
 .statistics-total {
   color: var(--accent);
   font-family: var(--font-numeric);
@@ -7765,6 +7803,63 @@ html[data-surface="mobile"] .server-config-inline-label {
 .usage-dot {
   fill: var(--accent);
   opacity: 0.85;
+}
+
+.limits-burn-target-line {
+  opacity: 0.62;
+  stroke-dasharray: 5 5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.limits-burn-actual-guide {
+  opacity: 0.32;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 4.6;
+}
+
+.limits-burn-rate-segment {
+  stroke-linecap: round;
+  stroke-width: 2.8;
+}
+
+.limits-burn-rate-segment.is-over-target {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--danger, #ff7f8d) 45%, transparent));
+  stroke: var(--danger, #ff7f8d);
+}
+
+.limits-burn-rate-segment.is-safe {
+  stroke: var(--ok);
+}
+
+.limits-speed-point {
+  fill: var(--ok);
+}
+
+.limits-speed-point.is-over-target {
+  fill: var(--danger, #ff7f8d);
+}
+
+.limits-speed-unit {
+  fill: var(--text-muted);
+  font-size: 8px;
+}
+
+.limits-speed-value.is-over-target,
+.limits-speed-deviation.is-over-target {
+  color: var(--danger, #ff7f8d);
+}
+
+.limits-speed-value.is-safe,
+.limits-speed-deviation.is-safe {
+  color: var(--ok);
+}
+
+.limits-speed-note {
+  line-height: 1.45;
+  margin-top: 0;
 }
 
 .comparison-card-head {
@@ -8057,6 +8152,14 @@ html[data-surface="mobile"] .comparison-summary {
 
 html[data-surface="mobile"] .comparison-head-controls {
   align-items: stretch;
+}
+
+html[data-surface="mobile"] .limits-head-controls {
+  align-items: stretch;
+}
+
+html[data-surface="mobile"] .limits-mode-switch {
+  align-self: flex-start;
 }
 
 html[data-surface="mobile"] .statistics-account-control {

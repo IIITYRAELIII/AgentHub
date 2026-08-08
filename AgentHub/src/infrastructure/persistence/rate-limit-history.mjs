@@ -356,6 +356,7 @@ export async function readRateLimitHistory(
           at: new Date(observedMs).toISOString(),
           usedPercent,
           remainingPercent: Math.max(0, 100 - usedPercent),
+          windowDurationMins: Number(window?.windowDurationMins) || null,
           resetsAt: isoFromEpochSeconds(window?.resetsAt),
         });
       }
@@ -442,6 +443,7 @@ function historyFromRecords(records, {
           at: new Date(observedMs).toISOString(),
           usedPercent,
           remainingPercent: Math.max(0, 100 - usedPercent),
+          windowDurationMins: Number(window?.windowDurationMins) || null,
           resetsAt: isoFromEpochSeconds(window?.resetsAt),
           ...(account ? {
             accountKey: account.key,

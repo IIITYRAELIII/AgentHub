@@ -1612,6 +1612,9 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(html, /data-view-button="statistics"/u);
   assert.match(html, /data-usage-chart/u);
   assert.match(html, /data-limits-chart/u);
+  assert.match(html, /data-limits-mode="usage"/u);
+  assert.match(html, /data-limits-mode="speed"/u);
+  assert.match(html, /data-limits-speed-note/u);
   for (const range of ["6h", "24h", "7d", "15d", "30d", "all"]) {
     assert.match(html, new RegExp(`data-range="${range}"`, "u"));
   }
@@ -1623,6 +1626,12 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(app, /nearestExpiresAt/u);
   assert.match(app, /emit\("usage:open", \{ range: usageState\.range \}\)/u);
   assert.match(app, /function formatUsageValue\(credits, unit = usageUnit\)/u);
+  assert.match(app, /const LIMITS_MODE_KEY = "agent-hub-limits-mode-v1";/u);
+  assert.match(app, /function weeklyBurnRatePoints\(series,/u);
+  assert.match(app, /Math\.max\(0, point\.remainingPercent\) \/ remainingMs \* WEEK_MILLISECONDS/u);
+  assert.match(app, /class: `limits-burn-rate-segment \$\{right\.overTarget/u);
+  assert.match(styles, /\.limits-burn-rate-segment\.is-over-target\s*\{[^}]*stroke:\s*var\(--danger/su);
+  assert.match(styles, /\.limits-burn-rate-segment\.is-safe\s*\{[^}]*stroke:\s*var\(--ok\);/su);
   assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", range, \{\s*maxPoints: 600,/u);
   assert.match(client, /function trimHistoryToFifteenDays\(payload\)/u);
   assert.match(styles, /\.current-limits-row\s*\{[^}]*flex-wrap:\s*nowrap;/su);

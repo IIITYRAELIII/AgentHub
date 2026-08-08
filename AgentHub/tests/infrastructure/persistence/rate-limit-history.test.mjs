@@ -689,7 +689,11 @@ test("rate limit history combines Codex and Claude series without losing Codex c
     rateLimitsByLimitId: {
       codex: {
         limitId: "codex",
-        primary: { usedPercent: 48, resetsAt: Date.parse("2026-07-31T12:00:00.000Z") / 1000 },
+        primary: {
+          usedPercent: 48,
+          windowDurationMins: 10080,
+          resetsAt: Date.parse("2026-07-31T12:00:00.000Z") / 1000,
+        },
       },
     },
     rateLimitResetCredits: { availableCount: 1 },
@@ -715,6 +719,10 @@ test("rate limit history combines Codex and Claude series without losing Codex c
   assert.equal(
     history.series.find((item) => item.id === "codex:primary").points.at(-1).resetsAt,
     "2026-07-31T12:00:00.000Z",
+  );
+  assert.equal(
+    history.series.find((item) => item.id === "codex:primary").points.at(-1).windowDurationMins,
+    10080,
   );
   assert.equal(
     history.series.find((item) => item.id === "claude:week").points.at(-1).resetsText,
