@@ -239,7 +239,7 @@ html[data-theme="pulsar"] .chat {
   border-radius: 3px;
 }
 
-/* Один-два Stream сохраняют открытую сцену справа. Три доходят до вертикали
+/* Один Stream сохраняет открытую сцену справа. Два-три доходят до вертикали
    кнопки «Настройки», а четыре используют весь viewport без боковых полей. */
 @media (min-width: 1380px) {
   html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace,
@@ -249,7 +249,7 @@ html[data-theme="pulsar"] .chat {
     max-width: min(92rem, 72vw);
   }
 
-  html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace:has(.stream-chat-columns > :nth-child(3)):not(:has(.stream-chat-columns > :nth-child(4))),
+  html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace:has(.stream-chat-columns > :nth-child(2)):not(:has(.stream-chat-columns > :nth-child(4))),
   html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace:has(.chat-pane[data-dialog-settings-open]) {
     margin-left: clamp(1rem, 4vw, 4.25rem);
     margin-right: clamp(1rem, 4vw, 4.25rem);
