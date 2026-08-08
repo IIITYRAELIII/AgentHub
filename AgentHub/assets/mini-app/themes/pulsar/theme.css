@@ -239,8 +239,8 @@ html[data-theme="pulsar"] .chat {
   border-radius: 3px;
 }
 
-/* До трёх Stream приборная дека оставляет звезду открытой справа. С четвёртой
-   панелью рабочая область возвращается к полной ширине. */
+/* Один-два Stream сохраняют открытую сцену справа. Три доходят до вертикали
+   кнопки «Настройки», а четыре используют весь viewport без боковых полей. */
 @media (min-width: 1380px) {
   html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace,
   html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace:has(.stream-chat-columns[data-multi-stream]) {
@@ -249,9 +249,18 @@ html[data-theme="pulsar"] .chat {
     max-width: min(92rem, 72vw);
   }
 
-  html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace:has(.stream-chat-columns > :nth-child(4)),
+  html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace:has(.stream-chat-columns > :nth-child(3)):not(:has(.stream-chat-columns > :nth-child(4))),
   html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace:has(.chat-pane[data-dialog-settings-open]) {
+    margin-left: clamp(1rem, 4vw, 4.25rem);
+    margin-right: clamp(1rem, 4vw, 4.25rem);
     max-width: calc(100vw - clamp(2rem, 8vw, 8.5rem));
+  }
+
+  html[data-theme="pulsar"]:not([data-surface="mobile"]) .workspace:has(.stream-chat-columns > :nth-child(4)) {
+    margin-left: 0;
+    margin-right: 0;
+    max-width: 100vw;
+    width: 100vw;
   }
 
   html[data-theme="pulsar"]:not([data-surface="mobile"]) .stream-chat-columns[data-multi-stream] {
