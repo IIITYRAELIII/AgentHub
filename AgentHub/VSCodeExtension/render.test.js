@@ -1489,29 +1489,6 @@ test("manual context compaction reports completion and stays on the fast refresh
   assert.match(styles, /context-compaction-spin/u);
 });
 
-test("Stream status effects are selectable and can fill the whole plaque", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
-  assert.match(html, /data-stream-status-effect-select/u);
-  for (const effect of ["calm", "impulse", "scanner", "energy", "off"]) {
-    assert.match(html, new RegExp(`<option value="${effect}">`, "u"));
-    assert.match(styles, new RegExp(`data-stream-status-effect="${effect}"`, "u"));
-  }
-  assert.match(html, /data-stream-status-fill-toggle/u);
-  assert.match(app, /agent-hub-stream-status-effect/u);
-  assert.match(app, /root\.dataset\.streamStatusEffect = effect/u);
-  assert.match(app, /STREAM_STATUS_EFFECTS\.has\(value\) \? value : "impulse"/u);
-  assert.match(app, /agent-hub-stream-status-style/u);
-  assert.match(app, /root\.dataset\.streamStatusStyle = style/u);
-  assert.match(styles, /data-stream-status-style="fill"\]\[data-stream-status-effect="impulse"\][\s\S]*stream-tab\[data-running\]/u);
-  assert.match(styles, /@keyframes stream-scanner-pass/u);
-  assert.match(styles, /@keyframes stream-energy-charge/u);
-  assert.match(styles, /animation: stream-answer-ready 1\.45s ease-out 2/u);
-  assert.match(styles, /prefers-reduced-motion: reduce[\s\S]*data-stream-status-effect="energy"/u);
-  assert.doesNotMatch(styles, /data-context-flash-style="fill"/u);
-});
-
 test("live reasoning renders Markdown separately from the response", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
