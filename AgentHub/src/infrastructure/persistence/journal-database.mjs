@@ -187,11 +187,31 @@ function writeProjection(database, payload, {
   updatedAt = new Date().toISOString(),
   version = "",
 } = {}) {
-  database.exec("DELETE FROM journal_days; DELETE FROM journal_turns;");
-  const insertDay = database.prepare("INSERT INTO journal_days (date, html) VALUES (?, ?)");
-  for (const [date, html] of Object.entries(payload.days ?? {})) insertDay.run(date, html);
+  const html = String(payload.html ?? "");
+  const days = payload.days ?? {};
+  const turns = payload.turns ?? {};
+  /* Ленивая оболочка не несёт содержимого: фрагмент дня уже лежит в базе.
+     Если проекция пришла без замены для такого дня, стирать его нельзя —
+     иначе день откроется пустым и клиент зациклится на его догрузке. */
+  const preserved = new Set(
+    [...html.matchAll(/data-lazy-day="([^"]+)"/giu)]
+      .map((match) => match[1])
+      .filter((date) => !Object.hasOwn(days, date)),
+  );
+  if (preserved.size) {
+    const keep = [...preserved].map(() => "?").join(", ");
+    database.prepare(`DELETE FROM journal_days WHERE date NOT IN (${keep})`).run(...preserved);
+    const dropTurn = database.prepare("DELETE FROM journal_turns WHERE id = ?");
+    for (const id of Object.keys(turns)) dropTurn.run(id);
+  } else {
+    database.exec("DELETE FROM journal_days; DELETE FROM journal_turns;");
+  }
+  const insertDay = database.prepare(
+    "INSERT INTO journal_days (date, html) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET html = excluded.html",
+  );
+  for (const [date, dayHtml] of Object.entries(days)) insertDay.run(date, dayHtml);
   const insertTurn = database.prepare("INSERT INTO journal_turns (id, html) VALUES (?, ?)");
-  for (const [id, html] of Object.entries(payload.turns ?? {})) insertTurn.run(id, html);
+  for (const [id, turnHtml] of Object.entries(turns)) insertTurn.run(id, turnHtml);
   const resolvedVersion = String(version || projectionVersion(payload));
   database.prepare(`
     INSERT INTO journal_meta (id, schema_version, source_version, updated_at, html)

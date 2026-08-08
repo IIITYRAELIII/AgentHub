@@ -161,6 +161,13 @@ export function buildLazyJournalPayload(markdown, {
       initialSections.push(section.html);
       continue;
     }
+    /* Раздел уже свёрнут до оболочки: его содержимое лежит в базе, и повторная
+       проекция обязана оставить оболочку как есть. Иначе фрагмент дня будет
+       перезаписан пустой оболочкой и день перестанет открываться. */
+    if (section.html.includes("data-lazy-day")) {
+      initialSections.push(section.html);
+      continue;
+    }
     const shallow = shallowDaySection(section.html);
     initialSections.push(lazyDayShell(section));
     days[section.date] = shallow.html;

@@ -83,3 +83,21 @@ test("Mini App lazy turn references stay unique across tasks and providers", () 
   assert.match(payload.turns[references[0]], /Ответ same-turn/u);
   assert.match(payload.turns[references[1]], /Ответ same-turn/u);
 });
+
+test("повторная проекция не превращает свёрнутый день в пустую оболочку", () => {
+  const day = (date, title) => `<details data-work-log-day-section><summary data-work-log-day>`
+    + `<strong>${date}</strong></summary><div data-work-log-row>${title}</div></details>`;
+  const markdown = `# Глобальный журнал работ
+${day("08.08.2026", "Свежий")}
+${day("01.07.2026", "Старый")}
+`;
+  const first = buildLazyJournalPayload(markdown, { eagerDayCount: 1 });
+  assert.match(first.days["01.07.2026"], /data-work-log-row/u);
+
+  /* Запись лимитов проецирует уже свёрнутую разметку заново. Старый день в ней
+     представлен оболочкой, и вернуть его в days нельзя: содержимое живёт в базе,
+     а пустая оболочка перезаписала бы фрагмент и день перестал бы открываться. */
+  const again = buildLazyJournalPayload(first.html, { eagerDayCount: 1 });
+  assert.equal(Object.hasOwn(again.days, "01.07.2026"), false);
+  assert.match(again.html, /data-lazy-day="01\.07\.2026"/u);
+});
