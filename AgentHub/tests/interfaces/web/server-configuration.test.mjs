@@ -101,7 +101,7 @@ test("server configuration persists only validated whitelisted values", async (c
       "contextAutomation.autoCompactAfterTurn": true,
       "contextAutomation.autoCompactThresholdPercent": 75,
       "contextAutomation.autoRotateAfterCompaction": true,
-      "contextAutomation.autoRotateThresholdPercent": 20,
+      "contextAutomation.autoRotateThresholdPercent": 30,
       codexSandboxMode: "danger-full-access",
       logMaxFiles: "8",
     },
@@ -114,7 +114,7 @@ test("server configuration persists only validated whitelisted values", async (c
     "contextAutomation.autoCompactAfterTurn": true,
     "contextAutomation.autoCompactThresholdPercent": 75,
     "contextAutomation.autoRotateAfterCompaction": true,
-    "contextAutomation.autoRotateThresholdPercent": 20,
+    "contextAutomation.autoRotateThresholdPercent": 30,
     codexSandboxMode: "danger-full-access",
     logMaxFiles: 8,
   });
