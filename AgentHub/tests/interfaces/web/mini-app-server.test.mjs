@@ -1174,3 +1174,23 @@ test("Android update manifest and APK are served from one bounded runtime artifa
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("Mini App отдаёт модуль подсветки завершённого обслуживания контекста", async () => {
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}context-flash.mjs`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type"), /javascript/u);
+    const source = await response.text();
+    /* Эффект относится к завершению, а не к запуску: подсвечиваем обе фразы. */
+    assert.match(source, /Ротация завершена успешно/u);
+    assert.match(source, /Свёртка завершена успешно/u);
+  } finally {
+    await server.close();
+  }
+});

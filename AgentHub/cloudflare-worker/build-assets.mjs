@@ -19,6 +19,7 @@ for (const file of [
   "app.js",
   "message-lifecycle.js",
   "hub-client.js",
+  "context-flash.mjs",
   "styles.css",
   "backgrounds.css",
   "agent-hub-mark.png",

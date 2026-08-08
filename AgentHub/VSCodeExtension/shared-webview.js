@@ -11,6 +11,7 @@ const RUNTIME_ASSETS = {
   app: [...ASSET_ROOT, "app.js"],
   lifecycle: [...ASSET_ROOT, "message-lifecycle.js"],
   client: [...ASSET_ROOT, "hub-client.js"],
+  contextFlash: [...ASSET_ROOT, "context-flash.mjs"],
   styles: [...ASSET_ROOT, "styles.css"],
   backgrounds: [...ASSET_ROOT, "backgrounds.css"],
   mark: [...ASSET_ROOT, "agent-hub-mark.png"],
@@ -40,7 +41,7 @@ async function resolveSharedAssets({ runtimeUri, extensionUri }) {
     assets.bootstrap = null;
   }
   for (const required of [
-    "index", "disclosure", "app", "lifecycle", "client", "styles", "backgrounds",
+    "index", "disclosure", "app", "lifecycle", "client", "contextFlash", "styles", "backgrounds",
     "mark", "workLogStyles", "bootstrap",
   ]) {
     if (!assets[required]) throw new Error(`Не найден ресурс Agent Hub: ${required}`);
@@ -93,7 +94,8 @@ async function sharedWebviewHtml(webview, locations) {
         + `<script src="${resource(webview, assets.app)}" defer></script>`,
     )
     .replace('<script src="/message-lifecycle.js" defer></script>', `<script src="${resource(webview, assets.lifecycle)}" defer></script>`)
-    .replace('<script src="/hub-client.js" defer></script>', `<script src="${resource(webview, assets.client)}" defer></script>`);
+    .replace('<script src="/hub-client.js" defer></script>', `<script src="${resource(webview, assets.client)}" defer></script>`)
+    .replace('<script src="/context-flash.mjs" type="module"></script>', `<script src="${resource(webview, assets.contextFlash)}" type="module"></script>`);
   return {
     html,
     roots: [...Object.values(assets).filter(Boolean), ...[...themeRegistry.resources.values()].map((item) => vscode.Uri.file(item.file))],
