@@ -1685,10 +1685,11 @@ async function refreshRateLimitHistory(range = rateLimitRefreshRange, { reportEr
 agentHub.on("limits:open", ({ range }) => runAction(
   () => refreshRateLimitHistory(range, { reportError: true }),
 ));
-agentHub.on("usage:open", ({ range }) => runAction(async () => {
+agentHub.on("usage:open", ({ range, turnTimeMode }) => runAction(async () => {
   try {
     agentHub.setUsageHistory(await readHistoryWithRangeCompatibility("usage-history", range, {
       maxPoints: 600,
+      turnTimeMode,
     }));
   } catch (error) {
     agentHub.setUsageHistory({
@@ -1697,7 +1698,7 @@ agentHub.on("usage:open", ({ range }) => runAction(async () => {
     });
   }
 }));
-agentHub.on("comparison:open", ({ range, seriesId, accountKey }) => runAction(async () => {
+agentHub.on("comparison:open", ({ range, seriesId, accountKey, turnTimeMode }) => runAction(async () => {
   const requestedRange = String(range || "24h");
   const requestedSeriesId = String(seriesId || "codex:primary");
   const requestedAccountKey = String(accountKey || "");
@@ -1730,6 +1731,7 @@ agentHub.on("comparison:open", ({ range, seriesId, accountKey }) => runAction(as
     usage = await readHistoryWithRangeCompatibility("usage-history", requestedRange, {
       maxPoints: 600,
       provider,
+      turnTimeMode,
       ...(activeIntervals ? { activeIntervals } : {}),
     });
   } catch (error) {
@@ -1739,6 +1741,7 @@ agentHub.on("comparison:open", ({ range, seriesId, accountKey }) => runAction(as
     range: requestedRange,
     seriesId: requestedSeriesId,
     accountKey: resolvedAccountKey,
+    turnTimeMode,
     limits,
     usage,
   });

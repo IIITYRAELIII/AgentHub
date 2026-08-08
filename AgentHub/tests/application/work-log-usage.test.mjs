@@ -85,6 +85,24 @@ test("local usage history buckets priced ledger turns and reports unpriced ones"
   assert.equal(history.points.reduce((sum, point) => sum + point.credits, 0), 5);
 });
 
+test("local usage history can anchor a turn at its start, middle, or end", () => {
+  const turns = {
+    one: {
+      startedAt: "2026-07-30T10:10:00.000Z",
+      completedAt: "2026-07-30T11:10:00.000Z",
+      estimatedCredits: 6,
+      estimateKind: "model",
+    },
+  };
+  const options = { range: "6h", now: Date.parse("2026-07-30T12:00:00.000Z") };
+  const creditedAt = (mode) => buildWorkLogUsageHistory(turns, {
+    ...options, turnTimeMode: mode,
+  }).points.find((point) => point.credits > 0)?.at;
+  assert.equal(creditedAt("start"), "2026-07-30T10:00:00.000Z");
+  assert.equal(creditedAt("middle"), "2026-07-30T10:30:00.000Z");
+  assert.equal(creditedAt("end"), "2026-07-30T11:00:00.000Z");
+});
+
 test("local usage history can exclude Claude from global totals", () => {
   const now = Date.parse("2026-07-30T12:00:00.000Z");
   const turns = {

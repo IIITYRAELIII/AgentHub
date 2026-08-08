@@ -8155,6 +8155,10 @@ html[data-surface="mobile"] .comparison-series-picker > .limits-legend-value {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.turn-time-options {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .compact-options > button {
   justify-content: center;
 }

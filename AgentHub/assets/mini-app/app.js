@@ -157,6 +157,7 @@ const comparisonChart = document.querySelector("[data-comparison-chart]");
 const comparisonTooltip = document.querySelector("[data-comparison-tooltip]");
 const comparisonLegend = document.querySelector("[data-comparison-legend]");
 const statisticsAccountSelects = [...document.querySelectorAll("[data-statistics-account-select]")];
+const turnTimeModeButtons = [...document.querySelectorAll("[data-turn-time-mode]")];
 
 /* --------------------------------------------------------- Telegram / темы */
 
@@ -327,7 +328,22 @@ const usageState = {
 const COMPARISON_RANGE_KEY = "agent-hub:comparison-range:v1";
 const COMPARISON_SERIES_KEY = "agent-hub:comparison-series:v2";
 const STATISTICS_ACCOUNT_KEY = "agent-hub:statistics-account:v1";
+const TURN_TIME_MODE_KEY = "agent-hub:turn-time-mode:v1";
 const ALL_STATISTICS_ACCOUNTS = "all";
+
+function normalizeTurnTimeMode(value) {
+  return ["start", "middle", "end"].includes(String(value)) ? String(value) : "end";
+}
+
+function savedTurnTimeMode() {
+  try {
+    return normalizeTurnTimeMode(localStorage.getItem(TURN_TIME_MODE_KEY));
+  } catch {
+    return "end";
+  }
+}
+
+let turnTimeMode = savedTurnTimeMode();
 
 function savedComparisonRange() {
   try {
@@ -4017,8 +4033,35 @@ panelScrim.addEventListener("click", closePanel);
 
 function renderOptions() {
   renderDialogSettings();
+  renderTurnTimeModeOptions();
   for (const toggle of settingsPanel.querySelectorAll("[data-toggle]")) {
     toggle.checked = Boolean(state.selection[toggle.dataset.toggle]);
+  }
+}
+
+function renderTurnTimeModeOptions() {
+  for (const button of turnTimeModeButtons) {
+    const active = button.dataset.turnTimeMode === turnTimeMode;
+    button.setAttribute("aria-pressed", String(active));
+    button.toggleAttribute("data-active", active);
+  }
+}
+
+function selectTurnTimeMode(value) {
+  const next = normalizeTurnTimeMode(value);
+  if (next === turnTimeMode) return;
+  turnTimeMode = next;
+  try {
+    localStorage.setItem(TURN_TIME_MODE_KEY, turnTimeMode);
+  } catch {
+    // Выбор останется активным до закрытия WebView.
+  }
+  usageState.payload = null;
+  comparisonState.payload = null;
+  renderTurnTimeModeOptions();
+  if (root.dataset.view === "statistics") {
+    requestUsageHistory(usageState.range, { force: true });
+    requestUsageComparison(comparisonState.range, { force: true });
   }
 }
 
@@ -4078,6 +4121,11 @@ settingsPanel.addEventListener("change", (event) => {
   const key = toggle.dataset.toggle;
   state.selection[key] = toggle.checked;
   emit("selection:set", { key, value: toggle.checked });
+});
+
+settingsPanel.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-turn-time-mode]");
+  if (button) selectTurnTimeMode(button.dataset.turnTimeMode);
 });
 
 function renderStatus() {
@@ -6186,6 +6234,7 @@ function statusFromUsagePayload(payload) {
 
 function applyUsageHistory(payload) {
   const data = payload && typeof payload === "object" ? payload : null;
+  if (data?.turnTimeMode && normalizeTurnTimeMode(data.turnTimeMode) !== turnTimeMode) return;
   usageState.payload = data;
   usageState.error = data?.error ? String(data.error) : "";
   if (data?.range) usageState.range = normalizeRange(data.range);
@@ -6203,12 +6252,13 @@ function requestUsageHistory(range, { force = false } = {}) {
   }
   const cached = usageState.payload
     && !usageState.payload.error
-    && normalizeRange(usageState.payload.range) === usageState.range;
+    && normalizeRange(usageState.payload.range) === usageState.range
+    && normalizeTurnTimeMode(usageState.payload.turnTimeMode) === turnTimeMode;
   usageState.status = cached && !force ? statusFromUsagePayload(usageState.payload) : "loading";
   usageState.error = "";
   renderUsageRanges();
   renderUsageHistory();
-  emit("usage:open", { range: usageState.range });
+  emit("usage:open", { range: usageState.range, turnTimeMode });
 }
 
 function renderUsageRanges() {
@@ -6533,6 +6583,7 @@ function comparisonPayloadStatus(payload) {
 
 function applyUsageComparison(payload) {
   const data = payload && typeof payload === "object" ? payload : null;
+  if (data?.turnTimeMode && normalizeTurnTimeMode(data.turnTimeMode) !== turnTimeMode) return;
   if (data?.seriesId && String(data.seriesId) !== comparisonState.seriesId) return;
   if (data?.accountKey && String(data.accountKey) !== resolvedStatisticsAccountKey(data?.limits)) return;
   comparisonState.payload = data;
@@ -6557,7 +6608,8 @@ function requestUsageComparison(range, { force = false } = {}) {
     && !comparisonState.payload.error
     && normalizeRange(comparisonState.payload.range) === comparisonState.range
     && String(comparisonState.payload.seriesId ?? "") === comparisonState.seriesId
-    && String(comparisonState.payload.accountKey ?? "") === resolvedStatisticsAccountKey();
+    && String(comparisonState.payload.accountKey ?? "") === resolvedStatisticsAccountKey()
+    && normalizeTurnTimeMode(comparisonState.payload.turnTimeMode) === turnTimeMode;
   comparisonState.status = cached && !force
     ? comparisonPayloadStatus(comparisonState.payload)
     : "loading";
@@ -6568,6 +6620,7 @@ function requestUsageComparison(range, { force = false } = {}) {
     range: comparisonState.range,
     seriesId: comparisonState.seriesId,
     accountKey: resolvedStatisticsAccountKey(),
+    turnTimeMode,
   });
 }
 

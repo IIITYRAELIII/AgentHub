@@ -1989,6 +1989,21 @@ const USAGE_HISTORY_RANGES = Object.freeze({
   "30d": { calendarDays: 30, bucketMs: 24 * 60 * 60 * 1_000, dayBuckets: true },
 });
 
+function normalizedTurnTimeMode(value) {
+  return ["start", "middle", "end"].includes(String(value)) ? String(value) : "end";
+}
+
+function turnUsageTimeMs(record, mode) {
+  const completedMs = Date.parse(record?.completedAt ?? "");
+  const startedMs = Date.parse(record?.startedAt ?? "");
+  if (!Number.isFinite(completedMs)) return Number.NaN;
+  if (mode === "start" && Number.isFinite(startedMs)) return Math.min(startedMs, completedMs);
+  if (mode === "middle" && Number.isFinite(startedMs)) {
+    return Math.round((Math.min(startedMs, completedMs) + completedMs) / 2);
+  }
+  return completedMs;
+}
+
 function localDayStart(value, dayOffset = 0) {
   const date = new Date(value);
   date.setHours(0, 0, 0, 0);
@@ -2038,6 +2053,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   workspaceId = null,
   streamId = null,
   activeIntervals = null,
+  turnTimeMode = "end",
 } = {}) {
   const normalizedRange = range === "all" || Object.hasOwn(USAGE_HISTORY_RANGES, range)
     ? range
@@ -2046,6 +2062,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const requestedWorkspaceId = String(workspaceId ?? "").trim();
   const requestedStreamId = String(streamId ?? "").trim();
   const requestedProvider = String(provider ?? "").trim().toLowerCase();
+  const normalizedTimeMode = normalizedTurnTimeMode(turnTimeMode);
   const filterByActiveIntervals = Array.isArray(activeIntervals);
   const intervals = (filterByActiveIntervals ? activeIntervals : [])
     .map((interval) => ({
@@ -2054,8 +2071,8 @@ export function buildWorkLogUsageHistory(turns = {}, {
     }))
     .filter((interval) => Number.isFinite(interval.from) && Number.isFinite(interval.to) && interval.to > interval.from)
     .sort((left, right) => left.from - right.from);
-  const insideActiveInterval = (completedMs) => !filterByActiveIntervals || intervals.some((interval) => (
-    completedMs >= interval.from && completedMs < interval.to
+  const insideActiveInterval = (pointMs) => !filterByActiveIntervals || intervals.some((interval) => (
+    pointMs >= interval.from && pointMs < interval.to
   ));
   const records = Object.values(turns ?? {})
     .filter((record) => (
@@ -2067,25 +2084,25 @@ export function buildWorkLogUsageHistory(turns = {}, {
       const workspace = workspaceResolutionForRecord(record, workspaceResolver);
       if (requestedWorkspaceId && workspace?.workspaceId !== requestedWorkspaceId) return null;
       if (requestedStreamId && workspace?.streamId !== requestedStreamId) return null;
-      const completedMs = Date.parse(record?.completedAt ?? "");
+      const pointMs = turnUsageTimeMs(record, normalizedTimeMode);
       const breakdown = recordCreditBreakdown(record);
       const priced = !(
         (record?.usageReported === false && breakdown.total <= 0)
         || (!breakdown.priced && breakdown.total <= 0)
       );
       return {
-        completedMs,
+        pointMs,
         credits: Math.max(0, Number(breakdown.total) || 0),
         priced,
       };
     }).filter((record) => (
       record
-      && Number.isFinite(record.completedMs)
-      && record.completedMs <= toMs
-      && insideActiveInterval(record.completedMs)
+      && Number.isFinite(record.pointMs)
+      && record.pointMs <= toMs
+      && insideActiveInterval(record.pointMs)
     ));
   const earliest = records.length
-    ? Math.min(...records.map((record) => record.completedMs))
+    ? Math.min(...records.map((record) => record.pointMs))
     : toMs;
   const configured = USAGE_HISTORY_RANGES[normalizedRange];
   const calendarDays = Number(configured?.calendarDays) || 0;
@@ -2112,7 +2129,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   let totalCredits = 0;
   let unpricedCount = 0;
   for (const record of records) {
-    if (record.completedMs < rawFromMs) continue;
+    if (record.pointMs < rawFromMs) continue;
     if (!record.priced) {
       unpricedCount += 1;
       continue;
@@ -2120,18 +2137,18 @@ export function buildWorkLogUsageHistory(turns = {}, {
     totalCredits += record.credits;
     if (record.credits <= 0) continue;
     const bucket = dayBuckets
-      ? localDayStart(record.completedMs)
+      ? localDayStart(record.pointMs)
       : groupedCalendarDays
         ? (() => {
           const firstOrdinal = localDayOrdinal(fromMs);
           const lastOrdinal = localDayOrdinal(toMs);
           const groupDays = Math.max(1, Math.ceil((lastOrdinal - firstOrdinal + 1) / pointLimit));
-          const ordinal = localDayOrdinal(record.completedMs);
+          const ordinal = localDayOrdinal(record.pointMs);
           return localMsFromDayOrdinal(
             firstOrdinal + Math.floor((ordinal - firstOrdinal) / groupDays) * groupDays,
           );
         })()
-      : Math.floor(record.completedMs / bucketMs) * bucketMs;
+      : Math.floor(record.pointMs / bucketMs) * bucketMs;
     buckets.set(bucket, (buckets.get(bucket) ?? 0) + record.credits);
   }
   /* Внутри суток точки идут сплошной сеткой, включая пустые: линия расхода
@@ -2164,6 +2181,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
     axisTo: new Date(axisToMs).toISOString(),
     bucketMs,
     bucket: dayBuckets || groupedCalendarDays ? "day" : "fixed",
+    turnTimeMode: normalizedTimeMode,
     ...(requestedProvider ? { provider: requestedProvider } : {}),
     ...(requestedWorkspaceId ? { workspaceId: requestedWorkspaceId } : {}),
     ...(requestedStreamId ? { streamId: requestedStreamId } : {}),

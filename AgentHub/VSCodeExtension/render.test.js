@@ -1633,7 +1633,7 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(app, /resetCredits/u);
   assert.match(app, /availableCount/u);
   assert.match(app, /nearestExpiresAt/u);
-  assert.match(app, /emit\("usage:open", \{ range: usageState\.range \}\)/u);
+  assert.match(app, /emit\("usage:open", \{ range: usageState\.range, turnTimeMode \}\)/u);
   assert.match(app, /function formatUsageValue\(credits, unit = usageUnit\)/u);
   assert.match(app, /const LIMITS_MODE_KEY = "agent-hub-limits-mode-v1";/u);
   assert.match(app, /function weeklyBurnRatePoints\(series,/u);
@@ -1641,10 +1641,25 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(app, /class: `limits-burn-rate-segment \$\{right\.overTarget/u);
   assert.match(styles, /\.limits-burn-rate-segment\.is-over-target\s*\{[^}]*stroke:\s*var\(--danger/su);
   assert.match(styles, /\.limits-burn-rate-segment\.is-safe\s*\{[^}]*stroke:\s*var\(--ok\);/su);
-  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", range, \{\s*maxPoints: 600,/u);
+  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", range, \{\s*maxPoints: 600,\s*turnTimeMode,/u);
   assert.match(client, /function trimHistoryToFifteenDays\(payload\)/u);
   assert.match(styles, /\.current-limits-row\s*\{[^}]*flex-wrap:\s*nowrap;/su);
   assert.match(styles, /\.current-limits-row\s*\{[^}]*overflow-x:\s*auto;/su);
+});
+
+test("settings choose one turn timestamp for every local usage chart", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  for (const mode of ["start", "middle", "end"]) {
+    assert.match(html, new RegExp(`data-turn-time-mode="${mode}"`, "u"));
+  }
+  assert.match(app, /TURN_TIME_MODE_KEY = "agent-hub:turn-time-mode:v1"/u);
+  assert.match(app, /requestUsageHistory\(usageState\.range, \{ force: true \}\)/u);
+  assert.match(app, /requestUsageComparison\(comparisonState\.range, \{ force: true \}\)/u);
+  assert.match(client, /agentHub\.on\("comparison:open", \(\{ range, seriesId, accountKey, turnTimeMode \}\)/u);
+  assert.match(styles, /\.turn-time-options\s*\{[^}]*repeat\(3,/su);
 });
 
 test("statistics compares one independently selected limit and tracks its price", () => {
