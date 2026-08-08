@@ -16,11 +16,18 @@ function contextKey(threadId, turnId) {
 }
 
 export class CodexUsageTracker {
-  constructor({ totalLimit = 500, turnLimit = 200, contextLimit = 500, now = () => new Date() } = {}) {
+  constructor({
+    totalLimit = 500,
+    turnLimit = 200,
+    contextLimit = 500,
+    now = () => new Date(),
+    onContext = () => {},
+  } = {}) {
     this.totalLimit = totalLimit;
     this.turnLimit = turnLimit;
     this.contextLimit = contextLimit;
     this.now = now;
+    this.onContext = onContext;
     this.threadTotals = new Map();
     this.turns = new Map();
     this.contexts = new Map();
@@ -44,6 +51,11 @@ export class CodexUsageTracker {
       updatedAt: this.now().toISOString(),
     };
     setBoundedMapValue(this.contexts, contextKey(threadId, turnId), context, this.contextLimit);
+    try {
+      this.onContext(context);
+    } catch {
+      // Context accounting must not fail because an optional observer did.
+    }
     const waiters = this.contextWaiters.get(threadId) ?? [];
     if (waiters.length) {
       const remaining = [];

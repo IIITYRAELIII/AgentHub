@@ -40,6 +40,7 @@ function harness(overrides = {}) {
         return { type: "compaction", encrypted_content: "opaque" };
       },
       clearRawItem: (threadId, id) => calls.push(["clear-raw", threadId, id]),
+      annotate: (threadId, id, details) => calls.push(["annotate", threadId, id, details]),
       isManualTurn: (threadId, turnId) => (
         entries.get(threadId)?.origin === "manual"
         && entries.get(threadId)?.turnId === turnId
@@ -104,7 +105,10 @@ test("context probe returns only after its prompt materializes", async () => {
     },
   });
 
-  const result = await service.probeContext({ provider: "codex", threadId: "thread-compacted" });
+  const result = await service.probeContext(
+    { provider: "codex", threadId: "thread-compacted" },
+    { compactionId: "compaction-id" },
+  );
 
   assert.deepEqual(result, {
     threadId: "thread-compacted",
@@ -112,7 +116,17 @@ test("context probe returns only after its prompt materializes", async () => {
     status: "started",
   });
   assert.deepEqual(calls[1], ["probe", "thread-compacted"]);
-  assert.deepEqual(calls[2], ["read", "thread-compacted", { fresh: true, includeTurns: true }]);
+  assert.deepEqual(calls.find(([name]) => name === "annotate"), [
+    "annotate",
+    "thread-compacted",
+    "compaction-id",
+    { probeTurnId: "probe-turn" },
+  ]);
+  assert.deepEqual(calls.find(([name]) => name === "read"), [
+    "read",
+    "thread-compacted",
+    { fresh: true, includeTurns: true },
+  ]);
 });
 
 test("context probe interrupts one empty start and retries once", async () => {

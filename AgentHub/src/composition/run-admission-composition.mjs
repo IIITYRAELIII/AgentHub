@@ -20,11 +20,16 @@ function explicitSkillCandidatesFromInput(input) {
 
 export function contextCompactionRunIsInternal(run, compaction, turnId = run?.turnId) {
   const normalizedTurnId = String(turnId ?? "").trim();
+  const compactionTurnId = String(compaction?.turnId ?? "").trim();
+  const probeTurnIds = (Array.isArray(compaction?.probeTurnIds) ? compaction.probeTurnIds : [])
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean);
   if (
     !run
     || !normalizedTurnId
-    || String(compaction?.turnId ?? "").trim() !== normalizedTurnId
+    || (compactionTurnId !== normalizedTurnId && !probeTurnIds.includes(normalizedTurnId))
   ) return false;
+  if (probeTurnIds.includes(normalizedTurnId)) return true;
   if (compaction?.origin === "manual") return true;
   const hasUserInput = Boolean(
     String(run.promptPreview ?? "").trim()

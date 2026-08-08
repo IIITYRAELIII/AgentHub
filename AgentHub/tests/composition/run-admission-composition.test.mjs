@@ -37,3 +37,16 @@ test("manual compaction is internal even if its observer inherited stale text", 
     turnId: "compact-turn",
   }), true);
 });
+
+test("a restored context probe remains internal after process restart", () => {
+  assert.equal(contextCompactionRunIsInternal({
+    turnId: "probe-turn",
+    promptPreview: "",
+    responseText: "Ход завершён без текстового ответа.",
+    userMessages: [],
+  }, {
+    origin: "automatic",
+    turnId: "compaction-turn",
+    probeTurnIds: ["probe-turn"],
+  }), true);
+});

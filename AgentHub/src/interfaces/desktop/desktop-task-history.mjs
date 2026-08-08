@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { displayUserPrompt } from "../../application/task-history.mjs";
+import {
+  displayUserPrompt,
+  isEmptyTurnCompletionPlaceholder,
+} from "../../application/task-history.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 
@@ -70,7 +73,9 @@ export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
 function visibleProviderHistory(provider, history) {
   const values = Array.isArray(history) ? history : [];
   return provider === "codex"
-    ? values.filter((turn) => !isCodexContextProbeTurn(turn))
+    ? values.filter((turn) => (
+      !isCodexContextProbeTurn(turn) && !isEmptyTurnCompletionPlaceholder(turn)
+    ))
     : values;
 }
 
@@ -238,6 +243,10 @@ export function createDesktopTaskHistoryFactory({
         binding.provider === "codex" && isCodexContextProbeTurn({
           turnId: completed.turnId,
           finalAnswer: completed.text,
+        })
+      ) && !(
+        binding.provider === "codex" && isEmptyTurnCompletionPlaceholder({
+          answer: completed.text,
         })
       ) && (matchingTurnVisible || !unrelatedActiveTurnVisible)) {
         historyMerger.mergeCompleted(history, {

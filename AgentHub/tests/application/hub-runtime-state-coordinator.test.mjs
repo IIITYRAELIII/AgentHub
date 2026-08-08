@@ -23,6 +23,7 @@ function restorationFixture() {
     runJournal: { restoreLastMessages: (value) => { restored.messages = value; } },
     lastSeenTaskTurnIds: new Map(),
     codexUsageTracker: { restore: (value) => { restored.usage = value; } },
+    contextCompactions: { restore: (value) => { restored.compactions = value; } },
     codexTurnStarts: new Map(),
     codexTerminalAudit: { restore: (value) => { restored.audit = value; } },
     turnEndNotifications: { restore: () => ({ droppedLegacyPending: 0, droppedStalePending: 0 }) },
@@ -48,7 +49,7 @@ function restorationFixture() {
 }
 
 test("runtime state restoration applies one canonical snapshot to all owners", async () => {
-  const { context } = restorationFixture();
+  const { context, restored } = restorationFixture();
   const result = await restoreHubRuntimeSnapshot({
     activeProvider: "codex",
     activeProjectRoot: "D:/Work",
@@ -62,12 +63,17 @@ test("runtime state restoration applies one canonical snapshot to all owners", a
     activeRuns: [{ id: "run-1", status: "running" }],
     codexHookReceipts: { start: { id: 1 } },
     turnEndNotifications: {},
+    contextCompactions: [["thread-1", { id: "compaction-1", status: "completed" }]],
   }, context);
   assert.equal(context.selectionStore.activeProvider, "codex");
   assert.equal(context.selectionStore.threadId, "thread-1");
   assert.equal(context.pendingInputs.has("pending-1"), true);
   assert.equal(context.queuedInputs.has("queued-1"), true);
   assert.equal(context.taskRuns.values.length, 1);
+  assert.deepEqual(restored.compactions, [[
+    "thread-1",
+    { id: "compaction-1", status: "completed" },
+  ]]);
   assert.deepEqual(result, {
     chatId: 42,
     updateOffset: 17,
@@ -120,6 +126,7 @@ test("runtime snapshot keeps task identity and provider preferences separate", (
     forwardBundles: new Map(),
     runJournal: { lastMessageSnapshot: () => [] },
     lastSeenTaskTurnIds: new Map(),
+    contextCompactions: { snapshot: () => [["thread-1", { id: "compaction-1" }]] },
     codexUsageTracker: { snapshot: () => ({ turnTokenUsage: [] }) },
     codexTurnStarts: new Map(),
     codexHookReceipts: {},
@@ -131,6 +138,7 @@ test("runtime snapshot keeps task identity and provider preferences separate", (
   assert.equal(snapshot.activeProvider, "codex");
   assert.equal(snapshot.threadIds.codex, "thread-1");
   assert.equal(snapshot.codexModel, "sol");
+  assert.deepEqual(snapshot.contextCompactions, [["thread-1", { id: "compaction-1" }]]);
   assert.deepEqual(snapshot.clientTaskSelections, [[
     "telegram:42",
     { provider: "codex", threadId: "thread-telegram" },

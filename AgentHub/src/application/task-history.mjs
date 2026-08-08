@@ -1,6 +1,24 @@
 import { codexSubagentActivity } from "../domain/run-activity.mjs";
 import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 
+export const EMPTY_TURN_COMPLETION_TEXT = "Ход завершён без текстового ответа.";
+
+export function isEmptyTurnCompletionPlaceholder(turn = {}) {
+  const prompt = String(turn.prompt ?? turn.promptPreview ?? "").trim();
+  const answer = String(turn.answer ?? turn.finalAnswer ?? turn.text ?? "").trim();
+  const userMessages = [
+    ...(Array.isArray(turn.userMessages) ? turn.userMessages : []),
+    ...(Array.isArray(turn.messages)
+      ? turn.messages.filter((message) => message?.role === "user")
+      : []),
+  ];
+  const hasUserMessage = userMessages.some((message) => (
+    String(message?.text ?? "").trim()
+    || (Array.isArray(message?.attachments) && message.attachments.length)
+  ));
+  return !prompt && !hasUserMessage && answer === EMPTY_TURN_COMPLETION_TEXT;
+}
+
 function textContent(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";

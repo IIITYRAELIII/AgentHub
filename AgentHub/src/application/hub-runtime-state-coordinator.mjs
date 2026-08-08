@@ -54,6 +54,7 @@ export async function restoreHubRuntimeSnapshot(saved, context) {
     runJournal,
     lastSeenTaskTurnIds,
     codexUsageTracker,
+    contextCompactions,
     codexTurnStarts,
     codexTerminalAudit,
     turnEndNotifications,
@@ -117,6 +118,7 @@ export async function restoreHubRuntimeSnapshot(saved, context) {
       }
     }
   }
+  contextCompactions.restore(saved.contextCompactions);
   codexUsageTracker.restore(saved);
   if (Array.isArray(saved.codexTurnStarts)) {
     for (const entry of saved.codexTurnStarts.slice(-500)) {
@@ -253,6 +255,7 @@ export function createHubRuntimeSnapshot(context) {
     })),
     lastTaskMessages: context.runJournal.lastMessageSnapshot(),
     lastSeenTaskTurnIds: [...context.lastSeenTaskTurnIds.entries()].slice(-500),
+    contextCompactions: context.contextCompactions.snapshot(),
     ...context.codexUsageTracker.snapshot(),
     codexTurnStarts: [...context.codexTurnStarts.entries()].slice(-500),
     codexHookReceipts: context.codexHookReceipts,

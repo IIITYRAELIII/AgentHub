@@ -219,6 +219,47 @@ test("desktop task history removes an already persisted context probe turn", asy
   assert.deepEqual(result.items.map((item) => item.id), ["real-turn"]);
 });
 
+test("desktop task history hides an empty maintenance completion after restart", async () => {
+  const { state } = fixture({ run: null });
+  state.history = [{
+    id: "real-turn",
+    prompt: "Рабочий запрос",
+    answer: "Рабочий ответ",
+    completed: true,
+    messages: [],
+  }, {
+    id: "empty-maintenance-turn",
+    prompt: "",
+    answer: "Ход завершён без текстового ответа.",
+    completed: true,
+    messages: [{ role: "agent", text: "Ход завершён без текстового ответа." }],
+  }];
+  const factory = createDesktopTaskHistoryFactory({
+    selection: {
+      activeProvider: () => state.activeProvider,
+      threadId: () => state.threadId,
+      chatId: () => state.chatId,
+    },
+    catalog: { entries: () => state.entries },
+    historyReader: { read: async () => ({ history: structuredClone(state.history) }) },
+    runs: { forTask: () => null },
+    latestMessage: () => ({
+      turnId: "empty-maintenance-turn",
+      text: "Ход завершён без текстового ответа.",
+      updatedAt: "2026-08-08T19:28:32.000Z",
+    }),
+    historyMerger: {
+      mergeActive() {},
+      mergeCompleted: mergeCompletedTaskHistory,
+    },
+    responseBudget: { fit: (payload) => payload },
+  });
+
+  const result = await factory({ includeActive: false, limit: 10 });
+
+  assert.deepEqual(result.items.map((item) => item.id), ["real-turn"]);
+});
+
 test("desktop task history combines sequential provider Threads from one Stream", async () => {
   const factory = createDesktopTaskHistoryFactory({
     selection: {

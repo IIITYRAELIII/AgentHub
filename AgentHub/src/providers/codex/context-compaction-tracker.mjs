@@ -21,6 +21,43 @@ function boundedPercent(value) {
   return Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
 }
 
+function normalizedProbeTurnIds(value) {
+  return [...new Set((Array.isArray(value) ? value : [])
+    .map(normalizedThreadId)
+    .filter(Boolean))].slice(-4);
+}
+
+function persistedCompaction(record) {
+  if (!record || typeof record !== "object") return null;
+  const id = normalizedThreadId(record.id);
+  if (!id) return null;
+  const status = ["running", "completed", "failed", "timeout"].includes(String(record.status))
+    ? String(record.status)
+    : "completed";
+  const value = {
+    id,
+    origin: record.origin === "manual" ? "manual" : "automatic",
+    status,
+    stage: normalizedThreadId(record.stage) || status,
+    turnId: normalizedThreadId(record.turnId) || null,
+    itemId: normalizedThreadId(record.itemId) || null,
+    captureRawItem: record.captureRawItem === true,
+    startedAt: normalizedThreadId(record.startedAt) || null,
+    compactedAt: normalizedThreadId(record.compactedAt) || null,
+    completedAt: normalizedThreadId(record.completedAt) || null,
+    probeTurnIds: normalizedProbeTurnIds(record.probeTurnIds),
+  };
+  for (const name of ["beforePercent", "afterPercent"]) {
+    const percent = boundedPercent(record[name]);
+    if (percent !== null) value[name] = percent;
+  }
+  if (["running", "completed", "failed"].includes(String(record.measurementStatus))) {
+    value.measurementStatus = String(record.measurementStatus);
+  }
+  if (record.rotated !== undefined) value.rotated = record.rotated === true;
+  return value;
+}
+
 export function isContextCompactionItem(item) {
   return ["contextCompaction", "context_compaction"].includes(String(item?.type ?? ""));
 }
@@ -39,6 +76,7 @@ export class ContextCompactionTracker {
     setTimer = setTimeout,
     clearTimer = clearTimeout,
     onSettled = () => {},
+    onChanged = () => {},
   } = {}) {
     this.clock = clock;
     this.idFactory = idFactory;
@@ -48,6 +86,7 @@ export class ContextCompactionTracker {
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
     this.onSettled = onSettled;
+    this.onChanged = onChanged;
     this.entries = new Map();
     this.timers = new Map();
     this.waiters = new Map();
@@ -76,6 +115,13 @@ export class ContextCompactionTracker {
       record.measurementStatus = measurementStatus;
     }
     if (details.rotated !== undefined) record.rotated = details.rotated === true;
+    const probeTurnId = normalizedThreadId(details.probeTurnId);
+    if (probeTurnId) {
+      record.probeTurnIds = normalizedProbeTurnIds([
+        ...(record.probeTurnIds ?? []),
+        probeTurnId,
+      ]);
+    }
     this.store(key, record);
     return record;
   }
@@ -89,6 +135,47 @@ export class ContextCompactionTracker {
 
   runningCount() {
     return [...this.entries.values()].filter((entry) => entry.status === "running").length;
+  }
+
+  snapshot() {
+    return [...this.entries.entries()].flatMap(([threadId, record]) => {
+      const persisted = persistedCompaction(record);
+      return persisted ? [[threadId, persisted]] : [];
+    }).slice(-this.maxEntries);
+  }
+
+  restore(snapshot = []) {
+    for (const timer of this.timers.values()) this.clearTimer(timer);
+    this.timers.clear();
+    this.entries.clear();
+    for (const entry of (Array.isArray(snapshot) ? snapshot : []).slice(-this.maxEntries)) {
+      if (!Array.isArray(entry)) continue;
+      const threadId = normalizedThreadId(entry[0]);
+      const record = persistedCompaction(entry[1]);
+      if (!threadId || !record) continue;
+      this.entries.set(threadId, record);
+      if (record.status === "running") this.scheduleTimeout(threadId, record.id);
+    }
+  }
+
+  observeContext(context) {
+    const threadId = normalizedThreadId(context?.threadId);
+    const turnId = normalizedThreadId(context?.turnId);
+    const record = this.get(threadId);
+    if (
+      !record
+      || record.status !== "completed"
+      || record.measurementStatus !== "running"
+      || context?.provisional === true
+      || !normalizedProbeTurnIds(record.probeTurnIds).includes(turnId)
+    ) return null;
+    const usedTokens = Math.max(0, Number(context?.usedTokens) || 0);
+    const modelContextWindow = Math.max(0, Number(context?.modelContextWindow) || 0);
+    if (!modelContextWindow || !usedTokens) return null;
+    return this.annotate(threadId, record.id, {
+      afterPercent: Math.round((usedTokens / modelContextWindow) * 100_000_000) / 1_000_000,
+      measurementStatus: "completed",
+    });
   }
 
   waitForSettlement(threadId, expectedId = null) {
@@ -289,6 +376,11 @@ export class ContextCompactionTracker {
       const oldest = this.entries.keys().next().value;
       this.cancelTimeout(oldest);
       this.entries.delete(oldest);
+    }
+    try {
+      this.onChanged({ threadId: key, record: value });
+    } catch {
+      // Runtime persistence must not break context maintenance.
     }
   }
 

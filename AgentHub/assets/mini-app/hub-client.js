@@ -1978,7 +1978,6 @@ agentHub.on("queue:edit", ({ id, text }) => runAction(async () => {
   applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Сообщение в очереди изменено");
 }));
-agentHub.on("tts:play", () => runAction(() => control("speak-last-answer", exactSelectedTaskParams())));
 agentHub.on("attachment:open", ({ attachment }) => runAction(async () => {
   const id = String(attachment?.id ?? "").trim();
   if (vscode && id) {

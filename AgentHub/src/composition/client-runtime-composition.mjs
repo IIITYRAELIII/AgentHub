@@ -91,6 +91,7 @@ export async function createClientRuntimeComposition({
     cancelledManagedClaudeTasks,
     lastSeenTaskTurnIds,
     codexUsageTracker,
+    contextCompactions,
     codexTurnStarts,
     codexTerminalAudit,
     codexHookReceipts,
@@ -237,6 +238,7 @@ export async function createClientRuntimeComposition({
         runJournal,
         lastSeenTaskTurnIds,
         codexUsageTracker,
+        contextCompactions,
         codexTurnStarts,
         codexTerminalAudit,
         turnEndNotifications,
@@ -269,6 +271,7 @@ export async function createClientRuntimeComposition({
         runJournal,
         lastSeenTaskTurnIds,
         codexUsageTracker,
+        contextCompactions,
         codexTurnStarts,
         codexTerminalAudit,
         turnEndNotifications,
@@ -301,6 +304,9 @@ export async function createClientRuntimeComposition({
     pinnedTaskTitlesFile,
     taskMetadata,
   }));
+  for (const context of codexUsageTracker.contexts.values()) {
+    contextCompactions.observeContext(context);
+  }
   workLogUsageStore.setIncludeClaudeUsage(agentPreferences.includeClaudeUsage);
 
   const codexLifecycle = createCodexLifecycleComposition({

@@ -54,7 +54,6 @@ export function createCodexObservabilityComposition({
   globalWorkLogProjectRoots,
   isHistoricalBackfillIdle,
 }) {
-  const usageTracker = new CodexUsageTracker();
   const rolloutPathsByProviderTaskId = new Map();
   const compactions = new ContextCompactionTracker({
     cleanupTimeoutMs: Math.max(
@@ -62,6 +61,18 @@ export function createCodexObservabilityComposition({
       (config.codexRolloutContext.scanIntervalSeconds + 60) * 1_000,
     ),
     onSettled: scheduleDeferredRestartIfReady,
+    onChanged: () => {
+      try {
+        Promise.resolve(saveState()).catch((error) => (
+          console.warn(`Cannot persist context compaction state: ${error.message}`)
+        ));
+      } catch (error) {
+        console.warn(`Cannot persist context compaction state: ${error.message}`);
+      }
+    },
+  });
+  const usageTracker = new CodexUsageTracker({
+    onContext: (context) => compactions.observeContext(context),
   });
   const turnStarts = new Map();
   const accounting = new CodexAccountingResolver({

@@ -188,3 +188,42 @@ test("rotation can await the exact compaction without polling", async () => {
   assert.equal(await tracker.waitForSettlement("thread-rotation", "other-id"), null);
   tracker.dispose();
 });
+
+test("an exact probe restores a compaction result after process restart", () => {
+  const changes = [];
+  const original = new ContextCompactionTracker({
+    idFactory: () => "restart-id",
+    onChanged: (event) => changes.push(event),
+  });
+  const started = original.begin("thread-restart", {
+    origin: "automatic",
+    beforePercent: 89,
+    captureRawItem: true,
+  });
+  original.complete("thread-restart", { turnId: "compaction-turn" });
+  original.annotate("thread-restart", started.id, {
+    measurementStatus: "running",
+    probeTurnId: "probe-turn",
+  });
+
+  const snapshot = original.snapshot();
+  assert.equal(changes.length, 3);
+  assert.deepEqual(snapshot[0][1].probeTurnIds, ["probe-turn"]);
+  assert.equal(snapshot[0][1].rawItem, undefined);
+
+  const restored = new ContextCompactionTracker();
+  restored.restore(snapshot);
+  const result = restored.observeContext({
+    threadId: "thread-restart",
+    turnId: "probe-turn",
+    usedTokens: 41_838,
+    modelContextWindow: 258_400,
+    provisional: false,
+  });
+
+  assert.equal(result.measurementStatus, "completed");
+  assert.equal(result.beforePercent, 89);
+  assert.equal(result.afterPercent, 16.191176);
+  original.dispose();
+  restored.dispose();
+});

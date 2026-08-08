@@ -33,7 +33,11 @@ test("CodexUsageTracker accumulates one turn from thread-total deltas", () => {
 
 test("CodexUsageTracker returns the newest context for a thread", () => {
   const times = [new Date("2026-08-04T10:00:00.000Z"), new Date("2026-08-04T10:01:00.000Z")];
-  const tracker = new CodexUsageTracker({ now: () => times.shift() });
+  const observed = [];
+  const tracker = new CodexUsageTracker({
+    now: () => times.shift(),
+    onContext: (context) => observed.push(context),
+  });
   tracker.rememberContext({
     threadId: "thread-1",
     turnId: "turn-1",
@@ -46,6 +50,7 @@ test("CodexUsageTracker returns the newest context for a thread", () => {
   });
   assert.equal(tracker.latestContext("thread-1", "turn-1").turnId, "turn-2");
   assert.equal(tracker.latestContext("thread-1", "turn-2").usedTokens, 220);
+  assert.deepEqual(observed.map((context) => context.turnId), ["turn-1", "turn-2"]);
 });
 
 test("CodexUsageTracker waits for the post-compaction context measurement", async () => {

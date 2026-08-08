@@ -273,7 +273,7 @@ export class StreamContextMaintenanceService {
     if (preliminary && preliminary.provisional !== true) return preliminary;
     const probeStartedAt = Date.now() - 1;
     try {
-      const probe = await this.provider.probeContext(target);
+      const probe = await this.provider.probeContext(target, { compactionId });
       const [measured, completion] = await Promise.all([
         this.waitForContextUpdate(target.threadId, {
           after: probeStartedAt,

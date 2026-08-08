@@ -144,6 +144,7 @@ export class CodexContextMaintenanceService {
     materializationTimeoutMs = 10_000,
     pollMs = 100,
     retryDelayMs = 250,
+    compactionId = null,
   } = {}) {
     const threadId = normalizedId(target?.threadId);
     if (!threadId) throw new Error("Укажите корректную задачу Codex");
@@ -152,6 +153,9 @@ export class CodexContextMaintenanceService {
       const result = await this.startContextProbe(threadId);
       const turnId = normalizedId(result?.turn?.id ?? result?.turnId);
       if (!turnId) throw new Error("Codex App Server не вернул Turn скрытого замера");
+      if (normalizedId(compactionId)) {
+        this.compactions.annotate?.(threadId, normalizedId(compactionId), { probeTurnId: turnId });
+      }
       if (await this.#probeMaterialized(threadId, turnId, {
         timeoutMs: materializationTimeoutMs,
         pollMs,

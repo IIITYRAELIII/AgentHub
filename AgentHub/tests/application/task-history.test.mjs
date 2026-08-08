@@ -7,6 +7,7 @@ import {
   codexThreadHistory,
   codexTurnActivities,
   displayUserPrompt,
+  isEmptyTurnCompletionPlaceholder,
   responseAnnotationDetails,
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
@@ -61,6 +62,18 @@ test("completed history ignores a promptless compaction echo", () => {
 
   assert.equal(history.length, 1);
   assert.equal(history[0].id, "turn-user");
+});
+
+test("empty completion placeholder is recognized only without user input", () => {
+  assert.equal(isEmptyTurnCompletionPlaceholder({
+    prompt: "",
+    answer: "Ход завершён без текстового ответа.",
+    messages: [{ role: "agent", text: "Ход завершён без текстового ответа." }],
+  }), true);
+  assert.equal(isEmptyTurnCompletionPlaceholder({
+    prompt: "Рабочий запрос",
+    answer: "Ход завершён без текстового ответа.",
+  }), false);
 });
 
 test("completed history overlay preserves the canonical completion time", () => {

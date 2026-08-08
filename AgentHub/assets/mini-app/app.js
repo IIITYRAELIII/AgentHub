@@ -3029,25 +3029,6 @@ function renderMessage(message, { readOnly = false } = {}) {
     article.append(renderAttachmentStrip(message.attachments, { readOnly: true }));
   }
 
-  if (role === "agent" && !readOnly) {
-    const actions = el("div", { class: "msg-actions" }, [
-      el("button", {
-        type: "button", class: "msg-action", "data-action": "tts", "data-message-id": message.id ?? "",
-        title: "Озвучить ответ", "aria-label": "Озвучить ответ",
-        html: '<svg data-phosphor-icon="speaker-high" viewBox="0 0 256 256" aria-hidden="true">'
-          + '<path d="M80,168H32a8,8,0,0,1-8-8V96a8,8,0,0,1,8-8H80l72-56V224Z"'
-          + ' fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"'
-          + ' stroke-width="16"></path>'
-          + '<line x1="80" y1="88" x2="80" y2="168" fill="none" stroke="currentColor"'
-          + ' stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>'
-          + '<path d="M192,106.85a32,32,0,0,1,0,42.3" fill="none" stroke="currentColor"'
-          + ' stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>'
-          + '<path d="M221.67,80a72,72,0,0,1,0,96" fill="none" stroke="currentColor"'
-          + ' stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path></svg>',
-      }),
-    ]);
-    article.append(actions);
-  }
   return article;
 }
 
@@ -4670,9 +4651,6 @@ async function handleAction(action, trigger) {
       if (text != null) emit("queue:edit", { taskId, id: entry.id, text });
       break;
     }
-    case "tts":
-      emit("tts:play", { taskId, messageId: trigger.dataset.messageId });
-      break;
     case "hub-restart":
       emit("hub:restart", {});
       break;
