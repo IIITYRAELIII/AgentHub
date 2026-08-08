@@ -227,12 +227,19 @@ export function createDesktopTaskHistoryFactory({
       });
     } else {
       const completed = latestMessage(binding);
+      const completedTurnId = String(completed?.turnId ?? "").trim();
+      const matchingTurnVisible = completedTurnId && history.some((item) => (
+        String(item?.id ?? "").trim() === completedTurnId
+      ));
+      const unrelatedActiveTurnVisible = history.some((item) => (
+        item?.active === true && String(item?.id ?? "").trim() !== completedTurnId
+      ));
       if (completed?.turnId && completed?.text && !(
         binding.provider === "codex" && isCodexContextProbeTurn({
           turnId: completed.turnId,
           finalAnswer: completed.text,
         })
-      )) {
+      ) && (matchingTurnVisible || !unrelatedActiveTurnVisible)) {
         historyMerger.mergeCompleted(history, {
           turnId: completed.turnId,
           answer: completed.text,

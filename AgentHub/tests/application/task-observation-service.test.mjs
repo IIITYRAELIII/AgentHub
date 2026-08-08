@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { TaskObservationService } from "../../src/application/task-observation-service.mjs";
 
-function fixture({ snapshot = null, now = 1_000_000 } = {}) {
+function fixture({ snapshot = null, now = 1_000_000, savedRecord = null } = {}) {
   const events = [];
   let currentRun = null;
   const providers = {
@@ -43,8 +43,8 @@ function fixture({ snapshot = null, now = 1_000_000 } = {}) {
     finishProgress: async (run, stage) => events.push(["finish-progress", run, stage]),
     completeRun: async (run) => { events.push(["complete", run]); currentRun = null; },
     discardContextCompactionRun: async () => false,
-    savedLastTaskMessage: () => "",
-    savedLastTaskMessageRecord: () => null,
+    savedLastTaskMessage: () => savedRecord?.text ?? "",
+    savedLastTaskMessageRecord: () => savedRecord,
     externalPollIntervalMs: 10,
     managedPollIntervalMs: 20,
     captureGitBaseline: async (...args) => ({ args }),
@@ -132,6 +132,32 @@ test("TaskObservationService completes an explicitly displayed observed run", as
   assert.equal(state.completed[0][0], "observed");
   assert.equal(state.completed[0][2].answer, "Final");
   assert.equal(state.completed[0][2].deliver, true);
+});
+
+test("TaskObservationService never reuses an older turn answer for an empty maintenance turn", async () => {
+  const state = fixture({
+    savedRecord: {
+      turnId: "previous-turn",
+      text: "Релиз завершён",
+      updatedAt: "2026-08-08T14:21:46.000Z",
+    },
+  });
+  const run = await state.service.create({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread-1",
+    taskTitle: "Task",
+  }, 7, {}, "maintenance-turn");
+
+  await state.service.finish(run, {
+    turnId: "maintenance-turn",
+    completed: true,
+    answer: "",
+    stage: "Done",
+  });
+
+  assert.equal(state.completed[0][2].answer, "Ход завершён без текстового ответа.");
+  assert.equal(state.completed[0][2].deliver, false);
 });
 
 test("TaskObservationService closes stale activity without delivering a partial answer", async () => {

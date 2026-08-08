@@ -505,6 +505,39 @@ test("deferred outgoing messages stay only in the deferred queue", () => {
   assert.deepEqual(visible, []);
 });
 
+test("internal context probe messages never reach the rendered conversation", () => {
+  const visible = lifecycle.visibleConversationMessages([
+    {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "probe-turn",
+      itemId: "probe-user",
+      clientUserMessageId: "agent-hub-context-probe:probe-1",
+      role: "user",
+      text: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
+    },
+    {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "probe-turn",
+      itemId: "probe-agent",
+      role: "agent",
+      text: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
+    },
+    {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "ordinary-turn",
+      itemId: "ordinary-user",
+      clientUserMessageId: "client-ordinary",
+      role: "user",
+      text: "Обычный запрос",
+    },
+  ]);
+
+  assert.deepEqual(visible.map((message) => message.turnId), ["ordinary-turn"]);
+});
+
 test("active agent response is rendered only by the live card after task switching", () => {
   const user = message("client-live", "Текущий вопрос");
   const agent = {

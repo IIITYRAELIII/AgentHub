@@ -385,6 +385,30 @@ function liveMessageMatch(messages, probe) {
   return turnMatches.length === 1 ? turnMatches[0] : null;
 }
 
+const CONTEXT_PROBE_CLIENT_ID_PREFIX = "agent-hub-context-probe:";
+const CONTEXT_PROBE_PROMPT = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
+const CONTEXT_PROBE_RESPONSE = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
+
+function contextProbeMessage(message) {
+  const clientId = String(message?.clientUserMessageId ?? message?.clientId ?? "").trim();
+  const text = String(message?.text ?? "").trim();
+  return clientId.startsWith(CONTEXT_PROBE_CLIENT_ID_PREFIX)
+    || text === CONTEXT_PROBE_PROMPT
+    || text === CONTEXT_PROBE_RESPONSE;
+}
+
+function withoutContextProbeMessages(messages) {
+  const values = Array.isArray(messages) ? messages : [];
+  const hiddenTurns = new Set(values
+    .filter(contextProbeMessage)
+    .map((message) => String(message?.turnId ?? "").trim())
+    .filter(Boolean));
+  return values.filter((message) => !(
+    contextProbeMessage(message)
+    || hiddenTurns.has(String(message?.turnId ?? "").trim())
+  ));
+}
+
 function visibleConversationMessages(messages, {
   deferredClientUserMessageIds = [],
   liveProbe = null,
@@ -393,7 +417,7 @@ function visibleConversationMessages(messages, {
     Array.from(deferredClientUserMessageIds ?? [], (value) => String(value ?? "").trim())
       .filter(Boolean),
   );
-  const visible = (Array.isArray(messages) ? messages : []).filter((message) => !(
+  const visible = withoutContextProbeMessages(messages).filter((message) => !(
     message?.role === "user"
     && deferredIds.has(String(message?.clientUserMessageId ?? "").trim())
   ));

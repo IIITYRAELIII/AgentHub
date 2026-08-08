@@ -238,6 +238,39 @@ test("desktop task snapshot exposes active Stream maintenance", () => {
   assert.deepEqual(desktopTaskSnapshot(entry).maintenance, state.maintenance);
 });
 
+test("desktop task snapshot hides an internal context probe run", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture();
+  state.run.clientUserMessageId = "agent-hub-context-probe:probe-1";
+  state.run.promptPreview = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
+  state.run.userMessages = [{
+    clientUserMessageId: state.run.clientUserMessageId,
+    text: state.run.promptPreview,
+  }];
+
+  const snapshot = desktopTaskSnapshot(entry);
+
+  assert.equal(snapshot.run, null);
+  assert.equal(snapshot.running, false);
+});
+
+test("desktop task snapshot hides a standalone automatic compaction observer", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture();
+  state.compaction = {
+    id: "compact-1",
+    origin: "automatic",
+    status: "completed",
+    turnId: state.run.turnId,
+  };
+  state.run.promptPreview = "";
+  state.run.userMessages = [];
+  state.run.responseText = "";
+
+  const snapshot = desktopTaskSnapshot(entry);
+
+  assert.equal(snapshot.run, null);
+  assert.equal(snapshot.running, false);
+});
+
 test("desktop snapshot exposes bounded delivery receipts for client reconciliation", async () => {
   const { desktopSnapshot, state } = fixture();
   state.receipts = [{

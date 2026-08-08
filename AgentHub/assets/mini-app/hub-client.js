@@ -60,6 +60,9 @@ const maintenanceEventsByTask = readMaintenanceEvents();
 const activeMaintenanceByTask = new Map();
 let deferredClientUserMessageIds = new Set();
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
+const CONTEXT_PROBE_CLIENT_ID_PREFIX = "agent-hub-context-probe:";
+const CONTEXT_PROBE_PROMPT = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
+const CONTEXT_PROBE_RESPONSE = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
 const {
   activeStageLabel,
   chronologicalMessages,
@@ -522,6 +525,25 @@ function renderTaskMessages(taskIdValue, { preserveScroll = false } = {}) {
   else agentHub.setMessages(taskIdValue, messages);
 }
 
+function internalContextProbeRun(run) {
+  if (!run) return false;
+  const messages = Array.isArray(run.userMessages) ? run.userMessages : [];
+  const clientIds = [run.clientUserMessageId, ...messages.map((message) => (
+    message?.clientUserMessageId ?? message?.clientId
+  ))].map((value) => String(value ?? "").trim());
+  if (clientIds.some((value) => value.startsWith(CONTEXT_PROBE_CLIENT_ID_PREFIX))) return true;
+  const texts = [run.prompt, run.response, ...messages.map((message) => message?.text)]
+    .map((value) => String(value ?? "").trim());
+  return texts.some((value) => value === CONTEXT_PROBE_PROMPT || value === CONTEXT_PROBE_RESPONSE);
+}
+
+function clearInternalContextProbe(taskIdValue) {
+  const cardRemoved = liveCardsByTask.delete(taskIdValue);
+  const probeRemoved = liveProbeByTask.delete(taskIdValue);
+  const usersRemoved = liveUserMessagesByTask.delete(taskIdValue);
+  if (cardRemoved || probeRemoved || usersRemoved) renderTaskMessages(taskIdValue);
+}
+
 function syncHistoryPagination(taskIdValue) {
   const page = historyPageByTask.get(taskIdValue);
   agentHub.setHistoryPagination(taskIdValue, {
@@ -532,6 +554,10 @@ function syncHistoryPagination(taskIdValue) {
 
 function updateLiveMessage(taskIdValue, selected) {
   const run = selected?.run;
+  if (internalContextProbeRun(run)) {
+    clearInternalContextProbe(taskIdValue);
+    return null;
+  }
   const promoted = promoteLiveCompletion(taskIdValue, selected, run?.turnId);
   if (!run) {
     const removed = liveProbeByTask.delete(taskIdValue);

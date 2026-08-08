@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 
@@ -138,20 +139,35 @@ export function createDesktopSnapshotFactory({
   }
 
   // `thread/compact/start` may wake a previously resumed Codex thread long
-  // enough for the external-task watcher to manufacture an observer.  That
-  // observer is not a user turn: it carries the same turn id as the manual
-  // context compaction and otherwise becomes a misleading "stopped task"
-  // card in the client.  A real turn cannot coexist with a manual compaction
-  // (the control route rejects it), so keep this lifecycle visible only via
-  // `context.compaction`, never as a run.
-  function isManualCompactionObserver(run, context) {
+  // enough for the external-task watcher to manufacture an observer. That
+  // observer is not a user turn when it belongs to a manual compaction or a
+  // standalone automatic compaction with no prompt or answer. A real turn can
+  // contain an automatic compaction, so keep it visible when user content is
+  // present and hide only the maintenance-only observer.
+  function isCompactionOnlyObserver(run, context) {
     const compaction = context?.compaction;
     if (
       run?.observer !== true
-      || compaction?.origin !== "manual"
       || !String(compaction?.turnId ?? "").trim()
     ) return false;
-    return String(run.turnId ?? "").trim() === String(compaction.turnId).trim();
+    if (String(run.turnId ?? "").trim() !== String(compaction.turnId).trim()) return false;
+    if (compaction.origin === "manual") return true;
+    return !String(run.promptPreview ?? "").trim()
+      && !(Array.isArray(run.userMessages) && run.userMessages.some((message) => (
+        String(message?.text ?? "").trim()
+      )))
+      && !String(run.responseText ?? "").trim();
+  }
+
+  function isInternalMaintenanceObserver(run, context) {
+    if (!run) return false;
+    return isCompactionOnlyObserver(run, context)
+      || (run.provider === "codex" && isCodexContextProbeTurn({
+        prompt: run.promptPreview,
+        finalAnswer: run.responseText,
+        clientUserMessageId: run.clientUserMessageId,
+        userMessages: run.userMessages,
+      }));
   }
 
   function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false } = {}) {
@@ -164,8 +180,8 @@ export function createDesktopSnapshotFactory({
     };
     const run = runs.forTask(task);
     const context = desktopContextSnapshot(entry.threadId, run?.turnId);
-    const manualCompactionObserver = isManualCompactionObserver(run, context);
-    const visibleRun = manualCompactionObserver ? null : run;
+    const internalMaintenanceObserver = isInternalMaintenanceObserver(run, context);
+    const visibleRun = internalMaintenanceObserver ? null : run;
     const lastMessage = tasks.savedLastMessage(task);
     const unread = Boolean(
       accountId
@@ -196,7 +212,7 @@ export function createDesktopSnapshotFactory({
       threadTitle: entry.title,
       model: visibleRun?.model ?? entry.model ?? null,
       selected: tasks.entryIsSelected(entry, selection.selectedTask()),
-      running: manualCompactionObserver
+      running: internalMaintenanceObserver
         ? false
         : Boolean(taskRunIsActive(visibleRun) || entry.running),
       activityUnknown: entry.activityUnknown === true,

@@ -30,7 +30,6 @@ export class TaskObservationService {
     finishProgress,
     completeRun,
     discardContextCompactionRun,
-    savedLastTaskMessage,
     savedLastTaskMessageRecord,
     externalPollIntervalMs,
     managedPollIntervalMs,
@@ -57,7 +56,6 @@ export class TaskObservationService {
     this.finishProgress = finishProgress;
     this.completeRun = completeRun;
     this.discardContextCompactionRun = discardContextCompactionRun;
-    this.savedLastTaskMessage = savedLastTaskMessage;
     this.savedLastTaskMessageRecord = savedLastTaskMessageRecord;
     if (typeof captureGitBaseline !== "function") {
       throw new TypeError("captureGitBaseline is required");
@@ -191,13 +189,19 @@ export class TaskObservationService {
     if (await this.discardContextCompactionRun(run, completedTurnId)) return;
     const tracker = snapshot?.tokenTracker ?? null;
     this.update(run, snapshot);
+    const savedRecord = this.savedLastTaskMessageRecord(run);
+    const exactCompletedTurnId = String(completedTurnId ?? "").trim();
+    const savedAnswer = exactCompletedTurnId
+      && String(savedRecord?.turnId ?? "").trim() === exactCompletedTurnId
+      ? String(savedRecord?.text ?? "").trim()
+      : "";
     const answer = String(snapshot?.answer ?? "").trim()
-      || this.savedLastTaskMessage(run)
+      || savedAnswer
       || "Ход завершён без текстового ответа.";
     const deliver = shouldDeliverObservedCompletion(
       run,
       answer,
-      this.savedLastTaskMessageRecord(run),
+      savedRecord,
     );
     await this.finishProgress(run, snapshot?.stage ?? "Задача завершена.");
     await this.runCoordinator.completeObserved(run, {
