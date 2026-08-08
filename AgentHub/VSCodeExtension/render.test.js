@@ -1615,6 +1615,9 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(html, /data-limits-mode="usage"/u);
   assert.match(html, /data-limits-mode="speed"/u);
   assert.match(html, /data-limits-speed-note/u);
+  assert.match(html, /data-limits-speed-summary/u);
+  assert.match(app, /function limitsSpeedPath\(/u);
+  assert.match(app, /снизьте темп/u);
   for (const range of ["6h", "24h", "7d", "15d", "30d", "all"]) {
     assert.match(html, new RegExp(`data-range="${range}"`, "u"));
   }

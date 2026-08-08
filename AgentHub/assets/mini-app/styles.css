@@ -7862,6 +7862,60 @@ html[data-surface="mobile"] .server-config-inline-label {
   margin-top: 0;
 }
 
+.limits-speed-summary {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+}
+
+.limits-speed-summary-card {
+  background: color-mix(in srgb, var(--surface-2) 86%, transparent);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ok);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 0.38rem;
+  padding: 0.75rem 0.85rem;
+}
+
+.limits-speed-summary-card.is-over-target {
+  border-left-color: var(--danger, #ff7f8d);
+}
+
+.limits-speed-summary-name {
+  color: var(--text-faint);
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.limits-speed-summary-rates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1rem;
+}
+
+.limits-speed-summary-rates span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.limits-speed-summary-rates strong {
+  color: var(--text);
+  font-family: var(--font-numeric);
+  font-variant-numeric: tabular-nums;
+}
+
+.limits-speed-summary-status {
+  color: var(--ok);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.limits-speed-summary-card.is-over-target .limits-speed-summary-status {
+  color: var(--danger, #ff7f8d);
+}
+
 .comparison-card-head {
   align-items: center;
 }

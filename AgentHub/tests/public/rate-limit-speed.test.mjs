@@ -18,6 +18,15 @@ function calculate(series, options = {}) {
   return JSON.parse(JSON.stringify(context.result));
 }
 
+function pathFor(points) {
+  const context = { points };
+  vm.runInNewContext(
+    `${policy}\nglobalThis.result = limitsSpeedPath(points);`,
+    context,
+  );
+  return context.result;
+}
+
 test("weekly burn rate compares rolling usage with the remaining safe pace", () => {
   const reset = "2026-08-08T00:00:00.000Z";
   const points = calculate({
@@ -53,6 +62,30 @@ test("weekly burn rate marks a pace below the dynamic allowance as safe", () => 
   const expectedTarget = 95 / (points[1].resetMs - points[1].atMs) * (7 * 24 * 60 * 60_000);
   assert.ok(Math.abs(points[1].targetRate - expectedTarget) < 1e-9);
   assert.equal(points[1].overTarget, false);
+});
+
+test("weekly burn rate waits for an almost complete 24-hour window", () => {
+  const reset = "2026-08-08T00:00:00.000Z";
+  const points = calculate({
+    id: "codex:secondary",
+    window: "secondary",
+    points: [
+      { at: "2026-08-01T00:00:00.000Z", usedPercent: 0, resetsAt: reset },
+      { at: "2026-08-01T06:00:00.000Z", usedPercent: 8, resetsAt: reset },
+      { at: "2026-08-01T23:30:00.000Z", usedPercent: 20, resetsAt: reset },
+    ],
+  });
+
+  assert.equal(points[1].actualRate, null);
+  assert.ok(Number.isFinite(points[2].actualRate));
+});
+
+test("speed chart starts a new path at every weekly reset", () => {
+  assert.equal(pathFor([
+    { x: 1, y: 2, resetMs: 100_000 },
+    { x: 3, y: 4, resetMs: 120_000 },
+    { x: 5, y: 6, resetMs: 900_000 },
+  ]), "M1.0 2.0 L3.0 4.0 M5.0 6.0");
 });
 
 test("weekly burn rate never carries a negative delta across a reset", () => {

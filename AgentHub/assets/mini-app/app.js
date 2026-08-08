@@ -128,6 +128,7 @@ const limitsChartWrap = document.querySelector("[data-limits-chart-wrap]");
 const limitsChart = document.querySelector("[data-limits-chart]");
 const limitsTooltip = document.querySelector("[data-limits-tooltip]");
 const limitsLegend = document.querySelector("[data-limits-legend]");
+const limitsSpeedSummary = document.querySelector("[data-limits-speed-summary]");
 const limitsSpeedNote = document.querySelector("[data-limits-speed-note]");
 const limitsCredits = document.querySelector("[data-limits-credits]");
 const currentLimitsSlots = [...document.querySelectorAll("[data-current-limits]")];
@@ -5196,7 +5197,10 @@ function parseClaudeResetAt(value, nowMs = Date.now()) {
 
 const WEEK_MILLISECONDS = 7 * 24 * 60 * 60_000;
 const BURN_RATE_ROLLING_WINDOW_MS = 24 * 60 * 60_000;
-const BURN_RATE_MINIMUM_SPAN_MS = 60 * 60_000;
+// Процент лимита приходит целым числом. На коротком отрезке один новый процент
+// превращался в огромный ложный пик, поэтому 24-часовой темп показываем только
+// после накопления почти полного окна (с часовым допуском для редких снимков).
+const BURN_RATE_MINIMUM_SPAN_MS = 23 * 60 * 60_000;
 const BURN_RATE_CHART_MAX = 400;
 
 function weeklyLimitDurationMs(series) {
@@ -5224,6 +5228,21 @@ function limitPointResetMs(point) {
   if (Number.isFinite(isoReset)) return isoReset;
   const atMs = Date.parse(point?.at ?? "");
   return parseClaudeResetAt(point?.resetsText, Number.isFinite(atMs) ? atMs : Date.now());
+}
+
+function sameWeeklyLimitCycle(left, right) {
+  return Number.isFinite(left?.resetMs)
+    && Number.isFinite(right?.resetMs)
+    && Math.abs(left.resetMs - right.resetMs) <= 60_000;
+}
+
+function limitsSpeedPath(points) {
+  return points
+    .map((point, index) => {
+      const continues = index > 0 && sameWeeklyLimitCycle(points[index - 1], point);
+      return `${continues ? "L" : "M"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
+    })
+    .join(" ");
 }
 
 function weeklyBurnRatePoints(series, {
@@ -5258,7 +5277,7 @@ function weeklyBurnRatePoints(series, {
     for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
       const candidate = points[cursor];
       if (point.atMs - candidate.atMs > rollingWindowMs) break;
-      if (Math.abs(point.resetMs - candidate.resetMs) > 60_000) continue;
+      if (!sameWeeklyLimitCycle(point, candidate)) continue;
       baseline = candidate;
     }
     const spanMs = baseline ? point.atMs - baseline.atMs : 0;
@@ -5435,6 +5454,7 @@ function renderLimits() {
   if (status === "ready") {
     const series = buildLimitsChart(limitsState.payload);
     renderLimitsLegend(series);
+    renderLimitsSpeedSummary(series);
     renderLimitsCredits(limitsState.payload);
   }
   renderLimitsModes();
@@ -5737,9 +5757,7 @@ function buildLimitsSpeedChart(payload) {
     }));
     if (targetPoints.length) {
       svg.append(svgEl("path", {
-        d: targetPoints
-          .map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
-          .join(" "),
+        d: limitsSpeedPath(targetPoints),
         class: "limits-burn-target-line",
         fill: "none",
         stroke: item.color,
@@ -5750,9 +5768,7 @@ function buildLimitsSpeedChart(payload) {
       .map((point) => ({ ...point, x: xOf(point.atMs), y: yOf(point.actualRate) }));
     if (!actualPoints.length) continue;
     svg.append(svgEl("path", {
-      d: actualPoints
-        .map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
-        .join(" "),
+      d: limitsSpeedPath(actualPoints),
       class: "limits-burn-actual-guide",
       fill: "none",
       stroke: item.color,
@@ -5760,6 +5776,7 @@ function buildLimitsSpeedChart(payload) {
     for (let index = 1; index < actualPoints.length; index += 1) {
       const left = actualPoints[index - 1];
       const right = actualPoints[index];
+      if (!sameWeeklyLimitCycle(left, right)) continue;
       svg.append(svgEl("line", {
         x1: left.x,
         y1: left.y,
@@ -5826,6 +5843,59 @@ function buildLimitsSpeedChart(payload) {
   return allSeries;
 }
 
+function formatDailyLimitRate(weeklyRate) {
+  const dailyRate = Math.max(0, Number(weeklyRate) || 0) / 7;
+  return new Intl.NumberFormat("ru-RU", {
+    maximumFractionDigits: dailyRate < 10 ? 1 : 0,
+    minimumFractionDigits: dailyRate > 0 && dailyRate < 10 ? 1 : 0,
+  }).format(dailyRate);
+}
+
+function renderLimitsSpeedSummary(series) {
+  if (!limitsSpeedSummary) return;
+  if (limitsState.mode !== "speed") {
+    limitsSpeedSummary.hidden = true;
+    limitsSpeedSummary.replaceChildren();
+    return;
+  }
+  const items = (Array.isArray(series) ? series : [])
+    .filter((item) => !item.hidden)
+    .map((item) => ({
+      item,
+      point: item.ratePoints?.findLast((point) => Number.isFinite(point.actualRate)),
+    }))
+    .filter(({ point }) => point);
+  if (!items.length) {
+    limitsSpeedSummary.hidden = true;
+    limitsSpeedSummary.replaceChildren();
+    return;
+  }
+  const cards = items.map(({ item, point }) => {
+    const actualDaily = formatDailyLimitRate(point.actualRate);
+    const targetDaily = formatDailyLimitRate(point.targetRate);
+    const ratio = point.targetRate > 0 ? point.actualRate / point.targetRate : Number.POSITIVE_INFINITY;
+    const overTarget = point.overTarget;
+    const status = overTarget
+      ? Number.isFinite(ratio)
+        ? `Чтобы лимита хватило, снизьте темп в ${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(ratio)} раза`
+        : "Лимит уже исчерпан"
+      : "Текущий темп укладывается в допустимый";
+    const name = [item.name || item.baseId || item.id, item.window].filter(Boolean).join(" · ");
+    return el("section", {
+      class: `limits-speed-summary-card ${overTarget ? "is-over-target" : "is-safe"}`,
+    }, [
+      el("span", { class: "limits-speed-summary-name", text: name }),
+      el("div", { class: "limits-speed-summary-rates" }, [
+        el("span", {}, ["Сейчас ", el("strong", { text: `${actualDaily}%/сутки` })]),
+        el("span", {}, ["Допустимо ", el("strong", { text: `${targetDaily}%/сутки` })]),
+      ]),
+      el("strong", { class: "limits-speed-summary-status", text: status }),
+    ]);
+  });
+  limitsSpeedSummary.hidden = false;
+  limitsSpeedSummary.replaceChildren(...cards);
+}
+
 /* Легенда показывает все доступные серии, включая скрытые. Каждая запись —
  * настоящая кнопка-переключатель (aria-pressed = «серия видима»), скрытая серия
  * приглушена и перечёркнута через класс is-hidden. */
@@ -5855,7 +5925,7 @@ function renderLimitsLegend(series) {
       rate
         ? el("span", {
           class: `limits-legend-value limits-speed-value${rate.overTarget ? " is-over-target" : " is-safe"}`,
-          text: `${Math.round(rate.actualRate)} / ${Math.round(rate.targetRate)}%`,
+          text: `${Math.round(rate.actualRate)}% / ${Math.round(rate.targetRate)}% в неделю`,
           title: "Фактическая / допустимая скорость в неделю",
         })
         : limitsState.mode === "speed"
@@ -5899,12 +5969,14 @@ function limitsTooltipText(info) {
   if (info.mode === "speed") {
     const actual = Math.round(Number(info.actualRate) || 0);
     const target = Math.round(Number(info.targetRate) || 0);
+    const actualDaily = formatDailyLimitRate(info.actualRate);
+    const targetDaily = formatDailyLimitRate(info.targetRate);
     const deviation = actual - target;
     const status = deviation > 0
       ? `выше допустимой на ${deviation}%`
       : `запас ${Math.abs(deviation)}%`;
     const name = info.window ? `${info.name} · ${info.window}` : info.name;
-    return `${name}. ${time}: скорость ${actual}% лимита в неделю, допустимо ${target}%, ${status}`;
+    return `${name}. ${time}: ${actualDaily}% лимита в сутки (${actual}% в неделю), допустимо ${targetDaily}% в сутки (${target}% в неделю), ${status}`;
   }
   const used = Math.round(Number(info.used) || 0);
   const remaining = info.remaining == null
@@ -5919,11 +5991,14 @@ function showLimitsTooltip(info, fx, fy) {
   if (info.mode === "speed") {
     const actual = Math.round(Number(info.actualRate) || 0);
     const target = Math.round(Number(info.targetRate) || 0);
+    const actualDaily = formatDailyLimitRate(info.actualRate);
+    const targetDaily = formatDailyLimitRate(info.targetRate);
     const deviation = actual - target;
     limitsTooltip.replaceChildren(
       el("span", { class: "limits-tooltip-title", text: info.window ? `${info.name} · ${info.window}` : info.name }),
       el("span", { class: "limits-tooltip-time", text: formatLimitsDateTime(info.at) }),
-      el("span", { class: "limits-tooltip-row", text: `Фактически ${actual}%/нед. · допустимо ${target}%/нед.` }),
+      el("span", { class: "limits-tooltip-row", text: `Сейчас ${actualDaily}%/сутки · допустимо ${targetDaily}%/сутки` }),
+      el("span", { class: "limits-tooltip-row", text: `${actual}%/нед. · допустимо ${target}%/нед.` }),
       el("span", {
         class: `limits-tooltip-row limits-speed-deviation${deviation > 0 ? " is-over-target" : " is-safe"}`,
         text: deviation > 0
