@@ -85,6 +85,33 @@ test("local usage history buckets priced ledger turns and reports unpriced ones"
   assert.equal(history.points.reduce((sum, point) => sum + point.credits, 0), 5);
 });
 
+test("local usage history derives credit intensity from exact turn duration", () => {
+  const now = Date.parse("2026-07-30T12:00:00.000Z");
+  const history = buildWorkLogUsageHistory({
+    first: {
+      startedAt: "2026-07-30T10:00:00.000Z",
+      completedAt: "2026-07-30T10:10:00.000Z",
+      estimatedCredits: 120,
+    },
+    second: {
+      startedAt: "2026-07-30T10:20:00.000Z",
+      completedAt: "2026-07-30T10:25:00.000Z",
+      estimatedCredits: 40,
+    },
+    untimed: {
+      completedAt: "2026-07-30T11:00:00.000Z",
+      estimatedCredits: 1.1,
+    },
+  }, { range: "6h", now });
+
+  assert.equal(history.totalCredits, 161.1);
+  assert.equal(history.totalTimedCredits, 160);
+  assert.equal(history.totalDurationSeconds, 900);
+  assert.equal(history.untimedCreditCount, 1);
+  assert.equal(history.points.reduce((sum, point) => sum + point.timedCredits, 0), 160);
+  assert.equal(history.points.reduce((sum, point) => sum + point.durationSeconds, 0), 900);
+});
+
 test("local usage history can anchor a turn at its start, middle, or end", () => {
   const turns = {
     one: {

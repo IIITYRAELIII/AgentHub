@@ -4,6 +4,7 @@ import {
   isEmptyTurnCompletionPlaceholder,
 } from "../../application/task-history.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
+import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 
 // Builds the bounded Desktop/Mini App history read-model for one task.
@@ -74,7 +75,9 @@ function visibleProviderHistory(provider, history) {
   const values = Array.isArray(history) ? history : [];
   return provider === "codex"
     ? values.filter((turn) => (
-      !isCodexContextProbeTurn(turn) && !isEmptyTurnCompletionPlaceholder(turn)
+      !isCodexContextProbeTurn(turn)
+      && !isCodexAutoCompactionTurnId(turn?.id)
+      && !isEmptyTurnCompletionPlaceholder(turn)
     ))
     : values;
 }

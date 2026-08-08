@@ -214,6 +214,37 @@ test("rollout history represents a final image-only turn", () => {
   assert.equal(exchange.completed, true);
 });
 
+test("rollout history hides Codex auto-compaction transfer turns", () => {
+  const history = codexRolloutHistory({
+    latestMessages: {
+      "auto-compact-0": "Полный цикл commentary предыдущего хода",
+    },
+  });
+
+  assert.deepEqual(history, []);
+});
+
+test("cached task history hides stale Codex auto-compaction turns", async () => {
+  const view = controller({
+    taskSyncStore: {
+      history: () => [
+        { id: "real-turn", prompt: "Запрос", answer: "Ответ", completed: true },
+        { id: "auto-compact-0", prompt: "Сообщение с вложением", answer: "Commentary" },
+      ],
+      snapshot: () => null,
+    },
+  });
+
+  const result = await view.readHistory({
+    provider: "codex",
+    projectRoot: "D:/work",
+    threadId: "thread-rotated",
+    chatId: 1,
+  }, { cachedOnly: true });
+
+  assert.deepEqual(result.history.map((item) => item.id), ["real-turn"]);
+});
+
 test("rollout history attaches generated images to the final assistant message", () => {
   const [exchange] = codexRolloutHistory({
     userMessages: { "turn-image": [{ text: "Нарисуй фон" }] },

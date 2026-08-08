@@ -1,86 +1,80 @@
-/* =========================================================== тема «Rain» === */
+/* ====================================== Rain: ночное убежище в лесу === */
 
 html[data-theme="taiga"] {
-  --display-weight: 600;
-  --display-spacing: -0.005em;
-  --title-weight: 545;
-  --label-spacing: 0.18em;
+  --display-weight: 610;
+  --display-spacing: -0.008em;
+  --title-weight: 560;
+  --label-spacing: 0.14em;
 
-  --radius-lg: 18px;
-  --radius-md: 12px;
-  --radius-sm: 9px;
+  --radius-lg: 8px;
+  --radius-md: 5px;
+  --radius-sm: 4px;
   --radius-chip: 999px;
   --rail-width: 2px;
 
-  --bg: #060a0d;
-  --surface-1: rgba(200, 226, 220, 0.028);
-  --surface-2: rgba(200, 226, 220, 0.05);
-  --surface-3: rgba(200, 226, 220, 0.088);
-  --sunken: rgba(2, 6, 8, 0.5);
+  --bg: #05090a;
+  --surface-1: rgba(6, 11, 12, 0.72);
+  --surface-2: rgba(14, 22, 22, 0.72);
+  --surface-3: rgba(148, 174, 165, 0.1);
+  --sunken: rgba(2, 5, 6, 0.74);
 
-  --line: rgba(152, 194, 186, 0.13);
-  --line-strong: rgba(152, 194, 186, 0.26);
+  --line: rgba(177, 203, 197, 0.13);
+  --line-strong: rgba(188, 216, 209, 0.3);
 
-  /* карточки лежат на фотографии, поэтому базовая заливка полупрозрачная */
-  --card-bg: linear-gradient(180deg, rgba(9, 16, 17, 0.44), rgba(4, 8, 10, 0.52));
-  --card-bg-open: linear-gradient(180deg, rgba(9, 16, 17, 0.5), rgba(4, 8, 10, 0.58));
+  --card-bg: rgba(4, 9, 10, 0.78);
+  --card-bg-open: rgba(5, 11, 12, 0.88);
   --card-texture: none;
-  --card-border: rgba(152, 198, 188, 0.16);
-  --card-border-open: rgba(126, 191, 174, 0.4);
+  --card-border: rgba(181, 205, 199, 0.17);
+  --card-border-open: rgba(170, 207, 194, 0.38);
   --card-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.045),
-    0 24px 56px -34px rgba(0, 0, 0, 0.95);
+    inset 0 1px 0 rgba(225, 241, 237, 0.05),
+    0 18px 42px -32px rgba(0, 0, 0, 0.96);
 
-  --plate-bg: linear-gradient(180deg, rgba(202, 228, 220, 0.07), rgba(4, 9, 10, 0.28));
-  --plate-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055);
-  --turn-shadow: 0 0 28px -20px rgba(126, 191, 174, 0.85);
+  --plate-bg: rgba(14, 23, 22, 0.58);
+  --plate-shadow: inset 0 1px 0 rgba(221, 239, 234, 0.07);
+  --turn-shadow: 0 18px 34px -28px rgba(0, 0, 0, 0.95);
 
-  --text: #e4eeec;
-  --text-soft: #b4c5c1;
-  --text-muted: #859794;
-  --text-faint: #637270;
+  --text: #e7efed;
+  --text-soft: #bccbc7;
+  --text-muted: #879995;
+  --text-faint: #64736f;
 
-  /* мшисто-бирюзовый: голубой уже занят «Орбитой» и «Чёрной дырой» */
-  --accent: #7ebfae;
-  --accent-soft: rgba(126, 191, 174, 0.13);
-  --accent-line: rgba(126, 191, 174, 0.4);
-  --accent-glow: 0 0 22px -10px rgba(126, 191, 174, 0.9);
-  --selection: rgba(126, 191, 174, 0.3);
-  --brand-gradient: linear-gradient(150deg, rgba(150, 185, 205, 0.3), rgba(70, 110, 95, 0.28));
-  --brand-shadow: 0 0 24px -10px rgba(126, 191, 174, 0.85);
+  --accent: #9bbdad;
+  --accent-soft: rgba(113, 151, 130, 0.16);
+  --accent-line: rgba(155, 189, 173, 0.42);
+  --accent-glow: 0 0 20px -12px rgba(176, 211, 198, 0.8);
+  --selection: rgba(139, 177, 158, 0.3);
+  --brand-gradient: linear-gradient(150deg, rgba(142, 174, 164, 0.22), rgba(40, 70, 58, 0.24));
+  --brand-shadow: 0 0 20px -12px rgba(168, 207, 192, 0.74);
 
-  --provider-none: #77878a;
-  --provider-codex: #8fc4e0;
-  --provider-claude: #e0a468;
-  --ok: #8fd0b8;
-  --pending: #d9a866;
+  --provider-none: #768480;
+  --provider-codex: #9fbfc8;
+  --provider-claude: #d2a26f;
+  --ok: #9dcab7;
+  --pending: #d2a46d;
 
-  --dot-input: #8fc4e0;
-  --dot-cache: #7ebfae;
-  --dot-output: #d9a866;
-  --dot-think: #9c9cc4;
+  --dot-input: #9fbfc8;
+  --dot-cache: #9bbdad;
+  --dot-output: #d2a46d;
+  --dot-think: #a5a7bd;
 
-  --space-glow-a: rgba(109, 155, 183, 0.08);
-  --space-glow-b: rgba(71, 112, 108, 0.08);
-  --space-base: #070c12;
+  --space-glow-a: rgba(158, 190, 182, 0.07);
+  --space-glow-b: rgba(76, 108, 94, 0.08);
+  --space-base: #05090a;
   --space-star: transparent;
   --star-opacity: 0;
+  --taiga-image: url("./rain-shelter.png");
 }
 
-html[data-theme="taiga"] {
-  --taiga-image: url("./rainforest-night.jpg");
-}
-
-/* Затемнение минимальное и только там, где оно работает на текст: слева, где
-   идёт колонка задач, и к низу, где список длиннее кадра. Сам лес не глушим —
-   контраст добирается подложками карточек. */
+/* Сцена остаётся ярче в центре и справа, а рабочая зона получает только
+   локальное затемнение. Дождь поверх кадра создаёт общий слой particles. */
 html[data-theme="taiga"] body::after {
-  background-color: #060a0d;
+  background-color: #05090a;
   background-image:
-    linear-gradient(90deg, rgba(4, 8, 10, 0.34), rgba(4, 8, 10, 0.04) 68%),
-    linear-gradient(180deg, rgba(4, 8, 10, 0) 46%, rgba(3, 6, 8, 0.34)),
+    linear-gradient(90deg, rgba(2, 5, 6, 0.42), rgba(2, 5, 6, 0.08) 48%, rgba(2, 5, 6, 0.18)),
+    linear-gradient(180deg, rgba(2, 5, 6, 0.08), transparent 44%, rgba(2, 5, 6, 0.3)),
     var(--taiga-image);
-  background-position: center, center, 68% 36%;
+  background-position: center;
   background-repeat: no-repeat;
   background-size: cover;
   inset: 0;
@@ -88,139 +82,226 @@ html[data-theme="taiga"] body::after {
   opacity: 1;
 }
 
-/* Стекло держим тонким, иначе лес под панелями пропадает. Размытие тоже
-   умеренное: сильный blur не столько затемняет, сколько стирает силуэты
-   деревьев — ровно то, ради чего фотография и взята. */
-html[data-theme="taiga"] .app-header {
-  backdrop-filter: blur(12px) saturate(112%);
-  -webkit-backdrop-filter: blur(12px) saturate(112%);
+/* Медленное дыхание лунной дымки — единственный дополнительный эффект темы.
+   Он меняет только transform и opacity и не запускает перерисовку панелей. */
+html[data-theme="taiga"] body::before {
+  animation: taiga-mist-breathe 16s ease-in-out infinite alternate;
   background:
-    radial-gradient(70% 150% at 92% 0, rgba(124, 184, 172, 0.12), transparent 64%),
-    rgba(4, 9, 11, 0.52);
+    radial-gradient(44% 34% at 66% 18%, rgba(205, 226, 222, 0.12), transparent 72%),
+    linear-gradient(105deg, transparent 38%, rgba(151, 181, 174, 0.055) 55%, transparent 72%);
+  content: "";
+  inset: -3% -2%;
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 0.46;
+  pointer-events: none;
+  transform: translate3d(-0.5%, 0, 0) scale(1.015);
+}
+
+@keyframes taiga-mist-breathe {
+  to {
+    opacity: 0.62;
+    transform: translate3d(0.7%, -0.35%, 0) scale(1.025);
+  }
+}
+
+/* Шапка и верхние панели сохраняют общую геометрию Hub; тема меняет только
+   материал и палитру. */
+html[data-theme="taiga"] .app-header {
+  backdrop-filter: blur(14px) saturate(108%);
+  -webkit-backdrop-filter: blur(14px) saturate(108%);
+  background:
+    linear-gradient(90deg, rgba(3, 7, 8, 0.94), rgba(6, 12, 13, 0.82) 62%, rgba(3, 7, 8, 0.92));
 }
 
 html[data-theme="taiga"] .app-header::after {
-  background: linear-gradient(90deg, transparent, rgba(126, 191, 174, 0.58), transparent);
+  background: linear-gradient(90deg, transparent, rgba(184, 210, 203, 0.42), transparent);
 }
 
-html[data-theme="taiga"] .journal details[data-work-log-day-section] {
-  backdrop-filter: blur(5px) saturate(114%);
-  -webkit-backdrop-filter: blur(5px) saturate(114%);
-  background-color: rgba(4, 9, 11, 0.4);
-  background-image: none;
-}
-
-html[data-theme="taiga"] .journal details[data-work-log-day-section][open] {
-  background-color: rgba(4, 9, 11, 0.44);
-}
-
-html[data-theme="taiga"] .journal details[data-work-log-turn-details] {
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
-  background-color: rgba(6, 12, 14, 0.3);
-  background-image: none;
-}
-
-html[data-theme="taiga"] .journal details[data-work-log-turn-details]:hover {
-  background-color: rgba(10, 19, 21, 0.44);
-}
-
-html[data-theme="taiga"] .journal details[data-work-log-turn-details][open] {
-  background-color: rgba(6, 12, 14, 0.5);
-}
-
-/* Слой темы остаётся только для дымки над кронами: сам дождь теперь отдельными
-   каплями, поэтому здесь нет ни плиток, ни движения. */
-html[data-theme="taiga"] body::before {
-  animation: none;
-  background-image:
-    radial-gradient(64% 38% at 62% 24%, rgba(206, 232, 226, 0.16), transparent 74%);
-  background-repeat: no-repeat;
-  background-size: cover;
-  content: "";
-  inset: 0;
-  mask-image: none;
-  mix-blend-mode: screen;
-  opacity: 0.5;
-  transform: none;
-}
-
-html[data-theme="taiga"][data-surface="mobile"] body::after {
-  background-position: center, center, 74% 28%;
-}
-
-/* На узком экране кадр обрезан до самых светлых участков (луна, тропа),
-   поэтому подложки здесь плотнее десктопных. */
-html[data-theme="taiga"][data-surface="mobile"] .journal details[data-work-log-day-section] {
-  background-color: rgba(4, 9, 11, 0.54);
-}
-
-html[data-theme="taiga"][data-surface="mobile"] .journal details[data-work-log-turn-details] {
-  background-color: rgba(6, 12, 14, 0.44);
-}
-
-/* Узкие панели используют тот же компактный порог, что resolveSurface(). */
-@media (max-width: 720px) {html[data-theme="taiga"] body::after {
-    background-position: center, center, 74% 28%;
-  }
-
-  html[data-theme="taiga"] .journal details[data-work-log-day-section] {
-    background-color: rgba(4, 9, 11, 0.54);
-  }
-
-  html[data-theme="taiga"] .journal details[data-work-log-turn-details] {
-    background-color: rgba(6, 12, 14, 0.44);
-  }
-}
-
-html[data-background-override="true"][data-background="taiga"] { --taiga-image: url("./rainforest-night.jpg"); --hub-background-color: #060a0d; --hub-background-image: linear-gradient(90deg, rgba(4, 8, 10, .34), rgba(4, 8, 10, .04) 68%), linear-gradient(180deg, rgba(4, 8, 10, 0) 46%, rgba(3, 6, 8, .34)), var(--taiga-image); --hub-background-position: center, center, 68% 36%; }
-html[data-background-override="true"][data-background="taiga-rainfall"] { --hub-background-color: #060a0d; --hub-background-image: linear-gradient(90deg, rgba(4, 8, 10, .48), rgba(4, 8, 10, .08) 42%, rgba(4, 8, 10, 0) 62%), var(--taiga-rainfall-image, url("./taiga-rainfall.jpg")); --hub-background-position: center, 60% 48%; }
-
-@media (max-width: 720px) {html[data-background-override="true"][data-background="taiga"] { --hub-background-position: center, center, 74% 28%; }
-  html[data-background-override="true"][data-background="taiga-rainfall"] { --hub-background-position: center, 72% 44%; }
-}
-
-/* ============================================== облик: запотевшее стекло ===
-   Тема называется Rain, и смотрят на неё сквозь мокрое окно: у панелей есть
-   верхняя блик-кромка и подтёк снизу, у карточек — сдвинутая книзу тень,
-   резких границ нет, зато есть влага. */
-
-/* Стекло: блик по верхней кромке и стекающая тень по нижней. */
-html[data-theme="taiga"] .task-rail,
-html[data-theme="taiga"] .chat {
-  backdrop-filter: blur(9px) saturate(112%);
-  -webkit-backdrop-filter: blur(9px) saturate(112%);
-  border-radius: 4px 4px 18px 18px;
+/* Слева — почти сухая матовая панель убежища. В рабочей области панели
+   остаются отдельными дымчатыми стёклами, между которыми виден лес. */
+html[data-theme="taiga"] .task-rail {
+  backdrop-filter: blur(16px) saturate(90%);
+  -webkit-backdrop-filter: blur(16px) saturate(90%);
+  background:
+    linear-gradient(90deg, rgba(9, 13, 13, 0.97), rgba(6, 10, 11, 0.9)),
+    var(--surface-1);
+  border-color: rgba(186, 207, 201, 0.18);
   box-shadow:
-    inset 0 1px 0 rgba(226, 252, 245, .28),
-    inset 0 -26px 32px -30px rgba(6, 12, 14, .95),
-    0 22px 40px -34px rgba(0, 0, 0, .9);
+    inset -1px 0 rgba(222, 237, 233, 0.045),
+    14px 0 34px -30px rgba(0, 0, 0, 0.98);
 }
 
-/* Карточка задачи — капля на стекле: тень смещена вниз, край снизу мягче. */
+html[data-theme="taiga"] .chat {
+  background: rgba(2, 6, 7, 0.12);
+}
+
+html[data-theme="taiga"] .stream-chat-columns {
+  background: transparent;
+}
+
+html[data-theme="taiga"] .stream-chat-columns[data-multi-stream] {
+  gap: 0.42rem;
+  padding: 0.42rem;
+}
+
+html[data-theme="taiga"] .chat-pane,
+html[data-theme="taiga"] .stream-chat-preview {
+  backdrop-filter: blur(9px) saturate(104%);
+  -webkit-backdrop-filter: blur(9px) saturate(104%);
+  background: rgba(3, 8, 9, 0.7);
+  border: 1px solid rgba(176, 204, 197, 0.17);
+  border-radius: 4px;
+  box-shadow:
+    inset 0 1px 0 rgba(224, 240, 236, 0.12),
+    inset 0 -24px 34px -34px rgba(0, 0, 0, 0.96),
+    0 22px 48px -38px rgba(0, 0, 0, 0.98);
+}
+
+html[data-theme="taiga"] .stream-chat-preview {
+  border-left-color: rgba(176, 204, 197, 0.17);
+}
+
+html[data-theme="taiga"] .stream-chat-columns[data-multi-stream] > .chat-pane[data-active-stream] {
+  background: rgba(5, 12, 12, 0.78);
+  box-shadow:
+    inset 0 0 0 1px rgba(155, 189, 173, 0.28),
+    inset 0 1px 0 rgba(232, 245, 241, 0.2),
+    0 18px 44px -34px rgba(0, 0, 0, 0.98);
+}
+
 html[data-theme="taiga"] .task-item {
-  border-radius: 6px 6px 14px 14px;
+  background: rgba(12, 18, 18, 0.34);
+  border-color: transparent;
+  border-radius: 4px;
+  box-shadow: inset 0 -1px rgba(180, 201, 195, 0.055);
+}
+
+html[data-theme="taiga"] .task-item:hover {
+  background: rgba(19, 29, 27, 0.58);
+  border-color: rgba(155, 189, 173, 0.16);
 }
 
 html[data-theme="taiga"] .task-item[data-selected] {
-  box-shadow: inset 0 1px 0 rgba(226, 252, 245, .22), 0 8px 16px -14px rgba(0, 0, 0, .9);
-}
-
-html[data-theme="taiga"] .view-tab {
-  border-radius: 4px 4px 12px 12px;
-}
-
-html[data-theme="taiga"] .view-tab[aria-pressed="true"] {
-  box-shadow: inset 0 1px 0 rgba(226, 252, 245, .3);
+  background: rgba(26, 42, 36, 0.68);
+  border-color: rgba(155, 189, 173, 0.38);
+  box-shadow:
+    inset 2px 0 rgba(177, 207, 196, 0.68),
+    inset 0 1px rgba(229, 241, 237, 0.07);
 }
 
 html[data-theme="taiga"] .msg {
-  border-radius: 5px 5px 16px 16px;
-  box-shadow: inset 0 1px 0 rgba(226, 252, 245, .16);
+  backdrop-filter: blur(8px) saturate(104%);
+  -webkit-backdrop-filter: blur(8px) saturate(104%);
+  background: rgba(3, 8, 9, 0.78);
+  border-color: rgba(182, 207, 201, 0.17);
+  border-radius: 4px;
+  box-shadow:
+    inset 0 1px rgba(227, 241, 237, 0.055),
+    0 16px 30px -26px rgba(0, 0, 0, 0.96);
 }
 
-html[data-theme="taiga"] .option-chip,
-html[data-theme="taiga"] .composer input,
-html[data-theme="taiga"] .composer textarea {
-  border-radius: 4px 4px 12px 12px;
+html[data-theme="taiga"] .msg-agent,
+html[data-theme="taiga"] .msg-live {
+  background: rgba(2, 7, 8, 0.82);
+}
+
+html[data-theme="taiga"] .msg-user {
+  background:
+    linear-gradient(rgba(83, 117, 98, 0.2), rgba(46, 75, 60, 0.13)),
+    rgba(5, 11, 10, 0.86);
+  border-color: rgba(155, 189, 173, 0.4);
+}
+
+html[data-theme="taiga"] .composer {
+  backdrop-filter: blur(16px) saturate(104%);
+  -webkit-backdrop-filter: blur(16px) saturate(104%);
+  background: rgba(3, 8, 9, 0.9);
+  border-color: rgba(177, 203, 197, 0.2);
+  box-shadow: inset 0 1px rgba(224, 239, 235, 0.07);
+}
+
+html[data-theme="taiga"] .composer-input {
+  background: rgba(1, 5, 6, 0.56);
+  border-color: rgba(177, 203, 197, 0.18);
+  border-radius: 4px;
+}
+
+html[data-theme="taiga"] .journal details[data-work-log-day-section] {
+  backdrop-filter: blur(7px) saturate(104%);
+  -webkit-backdrop-filter: blur(7px) saturate(104%);
+  background-color: rgba(3, 8, 9, 0.72);
+  background-image: none;
+  border-radius: 4px;
+}
+
+html[data-theme="taiga"] .journal details[data-work-log-turn-details] {
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  background-color: rgba(4, 10, 10, 0.58);
+  background-image: none;
+  border-radius: 4px;
+}
+
+html[data-theme="taiga"] .journal details[data-work-log-turn-details]:hover,
+html[data-theme="taiga"] .journal details[data-work-log-turn-details][open] {
+  background-color: rgba(8, 16, 15, 0.76);
+}
+
+/* Реестр фонов подменяет эти переменные в браузере, Worker и VS Code. */
+html[data-background-override="true"][data-background="taiga"] {
+  --taiga-image: url("./rain-shelter.png");
+  --hub-background-color: #05090a;
+  --hub-background-image:
+    linear-gradient(90deg, rgba(2, 5, 6, 0.42), rgba(2, 5, 6, 0.08) 48%, rgba(2, 5, 6, 0.18)),
+    linear-gradient(180deg, rgba(2, 5, 6, 0.08), transparent 44%, rgba(2, 5, 6, 0.3)),
+    var(--taiga-image);
+  --hub-background-position: center;
+}
+
+html[data-background-override="true"][data-background="taiga-corridor"] {
+  --hub-background-color: #040809;
+  --hub-background-image:
+    linear-gradient(90deg, rgba(2, 5, 6, 0.3), rgba(2, 5, 6, 0.02) 52%, rgba(2, 5, 6, 0.24)),
+    linear-gradient(180deg, rgba(2, 5, 6, 0.08), transparent 46%, rgba(2, 5, 6, 0.28)),
+    url("./rain-corridor.png");
+  --hub-background-position: center;
+}
+
+html[data-background-override="true"][data-background="taiga-lantern"] {
+  --hub-background-color: #040808;
+  --hub-background-image:
+    linear-gradient(90deg, rgba(2, 5, 6, 0.32), rgba(2, 5, 6, 0.03) 52%, rgba(2, 5, 6, 0.24)),
+    linear-gradient(180deg, rgba(2, 5, 6, 0.06), transparent 48%, rgba(2, 5, 6, 0.25)),
+    url("./rain-lantern.png");
+  --hub-background-position: center;
+}
+
+@media (max-width: 720px) {
+  html[data-theme="taiga"] body::after {
+    background-position: 61% center;
+  }
+
+  html[data-theme="taiga"] .chat-pane,
+  html[data-theme="taiga"] .stream-chat-preview,
+  html[data-theme="taiga"] .msg {
+    background-color: rgba(3, 8, 9, 0.86);
+  }
+
+  html[data-background-override="true"][data-background="taiga"] {
+    --hub-background-position: 61% center;
+  }
+
+  html[data-background-override="true"][data-background="taiga-corridor"],
+  html[data-background-override="true"][data-background="taiga-lantern"] {
+    --hub-background-position: 52% center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="taiga"] body::before {
+    animation: none;
+    opacity: 0.54;
+    transform: none;
+  }
 }

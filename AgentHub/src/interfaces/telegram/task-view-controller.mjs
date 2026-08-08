@@ -6,6 +6,7 @@ import {
   visibleTaskHistory,
 } from "../../application/task-history.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
+import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { updateTaskRunTitle } from "../../domain/task-runs.mjs";
 
@@ -160,6 +161,7 @@ export function codexRolloutHistory(activity = {}) {
     ...Object.keys(generatedImageSources),
   ])];
   return ids.flatMap((id) => {
+    if (isCodexAutoCompactionTurnId(id)) return [];
     const users = (Array.isArray(userMessages[id]) ? userMessages[id] : [])
       .filter((message) => String(message?.text ?? "").trim())
       .map((message, index) => {
@@ -232,7 +234,8 @@ export function codexRolloutHistory(activity = {}) {
 }
 
 function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory) {
-  const merged = mergeDurableHistory(cachedHistory, sourceHistory);
+  const merged = mergeDurableHistory(cachedHistory, sourceHistory)
+    .filter((item) => !isCodexAutoCompactionTurnId(item?.id));
   const positions = new Map(merged.map((item, index) => [String(item?.id ?? ""), index]));
   for (const item of Array.isArray(rolloutHistory) ? rolloutHistory : []) {
     const id = String(item?.id ?? "");
@@ -342,6 +345,9 @@ export class TaskViewController {
     if (cachedOnly) {
       return {
         history: d.taskSyncStore.history(task)
+          .filter((item) => (
+            binding.provider !== "codex" || !isCodexAutoCompactionTurnId(item?.id)
+          ))
           .filter((item) => !completedOnly || item.completed),
         snapshot: completedOnly ? null : d.taskSyncStore.snapshot(task),
       };
@@ -445,6 +451,9 @@ export class TaskViewController {
       return { history, snapshot: completedOnly ? null : snapshot };
     } catch (error) {
       const history = d.taskSyncStore.history(task)
+        .filter((item) => (
+          binding.provider !== "codex" || !isCodexAutoCompactionTurnId(item?.id)
+        ))
         .filter((item) => !completedOnly || item.completed);
       if (!history.length) throw error;
       d.logger.warn(`Using cached local history for ${binding.provider} task ${binding.threadId}:`, error.message);

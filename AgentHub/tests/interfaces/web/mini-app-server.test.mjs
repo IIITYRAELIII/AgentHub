@@ -663,7 +663,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       styles,
       /summary\[data-task-usage\] > \[data-usage-label\] \{[\s\S]*?font-size: 0\.64rem;[\s\S]*?letter-spacing: var\(--label-spacing\);[\s\S]*?text-transform: var\(--label-transform\);/u,
     );
-    assert.match(styles, /url\("\/rainforest-night\.jpg"\)/u);
+    assert.match(styles, /url\("\/rain-shelter\.png"\)/u);
     assert.match(styles, /details\[data-work-log-task-group\]/u);
     assert.match(styles, /summary\[data-work-log-workspace-header\]/u);
     assert.match(styles, /grid-template-columns: 1rem 17\.5rem minmax\(0, 1fr\)/u);

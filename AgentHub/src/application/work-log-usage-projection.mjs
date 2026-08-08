@@ -4,6 +4,7 @@ import {
   estimateMissingCodexUsage,
   looksLikeImageGenerationPrompt,
 } from "../domain/codex-usage-estimate.mjs";
+import { isCodexAutoCompactionTurnId } from "../domain/codex-internal-turn.mjs";
 import { isInheritedSubagentTurn } from "../domain/subagent-turn-identity.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import {
@@ -81,7 +82,7 @@ function normalizedMcpCalls(value) {
 
 function isLegacyEmptyAutoCompactRecord(record, { provider, turnId, status, usageReported }) {
   if (provider !== "codex"
-    || !/^auto-compact-/u.test(turnId)
+    || !isCodexAutoCompactionTurnId(turnId)
     || status !== "aborted"
     || usageReported
     || normalizeEstimatedCredits(record?.estimatedCredits) > 0) {
@@ -2000,6 +2001,18 @@ function turnUsageTimeMs(record, mode) {
   return completedMs;
 }
 
+function usageHistoryBucket(value = {}) {
+  return {
+    credits: Math.max(0, Number(value?.credits) || 0),
+    timedCredits: Math.max(0, Number(value?.timedCredits) || 0),
+    durationSeconds: Math.max(0, Number(value?.durationSeconds) || 0),
+  };
+}
+
+function usageHistoryPoint(at, value) {
+  return { at: new Date(at).toISOString(), ...usageHistoryBucket(value) };
+}
+
 function localDayStart(value, dayOffset = 0) {
   const date = new Date(value);
   date.setHours(0, 0, 0, 0);
@@ -2011,10 +2024,7 @@ function calendarDayPoints(fromMs, toMs, buckets) {
   if (!buckets.size) return [];
   const points = [];
   for (let cursor = fromMs; cursor <= toMs;) {
-    points.push({
-      at: new Date(cursor).toISOString(),
-      credits: buckets.get(cursor) ?? 0,
-    });
+    points.push(usageHistoryPoint(cursor, buckets.get(cursor)));
     const next = new Date(cursor);
     next.setDate(next.getDate() + 1);
     cursor = next.getTime();
@@ -2090,6 +2100,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
         pointMs,
         credits: Math.max(0, Number(breakdown.total) || 0),
         priced,
+        durationSeconds: durationSeconds(record?.startedAt, record?.completedAt),
       };
     }).filter((record) => (
       record
@@ -2123,15 +2134,12 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const axisToMs = configured?.wholeDay ? localDayStart(toMs, 1) : toMs;
   const buckets = new Map();
   let totalCredits = 0;
+  let totalTimedCredits = 0;
+  let totalDurationSeconds = 0;
+  let untimedCreditCount = 0;
   let unpricedCount = 0;
   for (const record of records) {
     if (record.pointMs < rawFromMs) continue;
-    if (!record.priced) {
-      unpricedCount += 1;
-      continue;
-    }
-    totalCredits += record.credits;
-    if (record.credits <= 0) continue;
     const bucket = dayBuckets
       ? localDayStart(record.pointMs)
       : groupedCalendarDays
@@ -2144,8 +2152,25 @@ export function buildWorkLogUsageHistory(turns = {}, {
             firstOrdinal + Math.floor((ordinal - firstOrdinal) / groupDays) * groupDays,
           );
         })()
-      : Math.floor(record.pointMs / bucketMs) * bucketMs;
-    buckets.set(bucket, (buckets.get(bucket) ?? 0) + record.credits);
+        : Math.floor(record.pointMs / bucketMs) * bucketMs;
+    const bucketValue = usageHistoryBucket(buckets.get(bucket));
+    if (!record.priced) {
+      unpricedCount += 1;
+    } else {
+      totalCredits += record.credits;
+      bucketValue.credits += record.credits;
+      if (record.credits > 0) {
+        if (Number.isFinite(record.durationSeconds) && record.durationSeconds > 0) {
+          totalTimedCredits += record.credits;
+          bucketValue.timedCredits += record.credits;
+          totalDurationSeconds += record.durationSeconds;
+          bucketValue.durationSeconds += record.durationSeconds;
+        } else {
+          untimedCreditCount += 1;
+        }
+      }
+    }
+    buckets.set(bucket, bucketValue);
   }
   /* Внутри суток точки идут сплошной сеткой, включая пустые: линия расхода
      не должна перепрыгивать через часы, когда ничего не считалось. */
@@ -2159,14 +2184,14 @@ export function buildWorkLogUsageHistory(turns = {}, {
         const filled = [];
         for (let ordinal = firstOrdinal; ordinal <= lastOrdinal; ordinal += groupDays) {
           const at = localMsFromDayOrdinal(ordinal);
-          filled.push({ at: new Date(at).toISOString(), credits: buckets.get(at) ?? 0 });
+          filled.push(usageHistoryPoint(at, buckets.get(at)));
         }
         return filled;
       })()
     : (() => {
       const filled = [];
       for (let cursor = fromMs; cursor <= Math.min(toMs, axisToMs); cursor += bucketMs) {
-        filled.push({ at: new Date(cursor).toISOString(), credits: buckets.get(cursor) ?? 0 });
+        filled.push(usageHistoryPoint(cursor, buckets.get(cursor)));
       }
       return filled.slice(-pointLimit);
     })();
@@ -2182,6 +2207,9 @@ export function buildWorkLogUsageHistory(turns = {}, {
     ...(requestedWorkspaceId ? { workspaceId: requestedWorkspaceId } : {}),
     ...(requestedStreamId ? { streamId: requestedStreamId } : {}),
     totalCredits,
+    totalTimedCredits,
+    totalDurationSeconds,
+    untimedCreditCount,
     unpricedCount,
     points,
   };

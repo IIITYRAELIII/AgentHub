@@ -260,6 +260,27 @@ test("desktop task history hides an empty maintenance completion after restart",
   assert.deepEqual(result.items.map((item) => item.id), ["real-turn"]);
 });
 
+test("desktop task history hides a stale auto-compaction transfer after rotation", async () => {
+  const { desktopTaskHistory, state } = fixture({ run: null });
+  state.history = [{
+    id: "real-turn",
+    prompt: "Рабочий запрос",
+    answer: "Финальный ответ",
+    completed: true,
+    messages: [],
+  }, {
+    id: "auto-compact-0",
+    prompt: "Сообщение с вложением",
+    answer: "Полный цикл commentary предыдущего хода",
+    completed: false,
+    messages: [{ role: "agent", text: "Полный цикл commentary предыдущего хода" }],
+  }];
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
+
+  assert.deepEqual(result.items.map((item) => item.id), ["real-turn"]);
+});
+
 test("desktop task history combines sequential provider Threads from one Stream", async () => {
   const factory = createDesktopTaskHistoryFactory({
     selection: {

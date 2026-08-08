@@ -316,7 +316,8 @@ const USAGE_MODE_KEY = "agent-hub:usage-mode:v1";
 
 function savedUsageMode() {
   try {
-    return localStorage.getItem(USAGE_MODE_KEY) === "rate" ? "rate" : "total";
+    const mode = localStorage.getItem(USAGE_MODE_KEY);
+    return ["rate", "intensity"].includes(mode) ? mode : "total";
   } catch {
     return "total";
   }
@@ -6414,6 +6415,11 @@ function formatUsageRate(credits, hours) {
   return `${formatUsageValue(perHour)}/ч`;
 }
 
+function formatUsageIntensity(credits, durationSeconds) {
+  const perMinute = durationSeconds > 0 ? credits / durationSeconds * 60 : 0;
+  return `${formatUsageValue(perMinute)}/мин`;
+}
+
 function showUsageTooltip(point, fx, fy, daily = false, hours = 0) {
   if (!usageTooltip) return;
   usageTooltip.replaceChildren(
@@ -6422,7 +6428,9 @@ function showUsageTooltip(point, fx, fy, daily = false, hours = 0) {
       class: "limits-tooltip-row",
       text: usageState.mode === "rate"
         ? formatUsageRate(point.credits, hours)
-        : formatUsageValue(point.credits),
+        : usageState.mode === "intensity"
+          ? formatUsageIntensity(point.timedCredits, point.durationSeconds)
+          : formatUsageValue(point.credits),
     }),
   );
   usageTooltip.style.left = `${clampNumber(fx * 100, 0, 100)}%`;
@@ -6454,12 +6462,24 @@ function buildUsageChart(payload) {
       at: point.at,
       time: Date.parse(point.at),
       credits: Math.max(0, Number(point.credits) || 0),
+      timedCredits: Math.max(0, Number(point.timedCredits) || 0),
+      durationSeconds: Math.max(0, Number(point.durationSeconds) || 0),
     }))
     .filter((point) => Number.isFinite(point.time));
   const daily = payload?.bucket === "day";
   const rate = usageState.mode === "rate";
+  const intensity = usageState.mode === "intensity";
   const hours = usageBucketHours(payload);
-  const valueOf = (point) => (rate ? point.credits / Math.max(hours, 0.0001) : point.credits);
+  const valueOf = (point) => (
+    rate
+      ? point.credits / Math.max(hours, 0.0001)
+      : intensity
+        ? point.timedCredits / Math.max(point.durationSeconds, 0.0001) * 60
+        : point.credits
+  );
+  const formatValue = (value) => (
+    rate ? `${formatUsageValue(value)}/ч` : intensity ? `${formatUsageValue(value)}/мин` : formatUsageValue(value)
+  );
   // весь период влезает в карточку: горизонтальная прокрутка графику не нужна
   const W = chartWidth(usageChart);
   const H = 260;
@@ -6492,7 +6512,7 @@ function buildUsageChart(payload) {
       y: y + 3,
       class: "limits-axis-label limits-axis-y",
       "text-anchor": "end",
-    }, [rate ? `${formatUsageValue(value)}/ч` : formatUsageValue(value)]));
+    }, [formatValue(value)]));
   }
 
   if (daily) {
@@ -6515,7 +6535,11 @@ function buildUsageChart(payload) {
         tabindex: 0,
         role: "img",
         "aria-label": `${formatLimitsDateTime(point.at)}: ${
-          rate ? formatUsageRate(point.credits, hours) : formatUsageValue(point.credits)
+          rate
+            ? formatUsageRate(point.credits, hours)
+            : intensity
+              ? formatUsageIntensity(point.timedCredits, point.durationSeconds)
+              : formatUsageValue(point.credits)
         }`,
       });
       const fx = (x + barWidth / 2) / W;
@@ -6579,7 +6603,7 @@ function buildUsageChart(payload) {
       }, [new Date(tick).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })]));
     }
     for (const point of points) {
-      if (point.credits <= 0) continue;
+      if (valueOf(point) <= 0) continue;
       const cx = xOf(point.time);
       const cy = yOf(valueOf(point));
       const dot = svgEl("circle", { cx, cy, r: 2.6, class: "usage-dot" });
@@ -6595,7 +6619,9 @@ function buildUsageChart(payload) {
     "aria-label",
     rate
       ? `Скорость расхода за ${formatUsagePeriod(payload)}.`
-      : `Локальный расход: ${formatUsageValue(payload.totalCredits)} за ${formatUsagePeriod(payload)}.`,
+      : intensity
+        ? `Скорость поглощения расхода за ${formatUsagePeriod(payload)}.`
+        : `Локальный расход: ${formatUsageValue(payload.totalCredits)} за ${formatUsagePeriod(payload)}.`,
   );
   svg.style.width = "100%";
   usageChart.replaceChildren(svg);
@@ -6614,7 +6640,14 @@ function renderUsageHistory() {
   }
   const payload = usageState.payload;
   const rate = usageState.mode === "rate";
-  if (usageTitle) usageTitle.textContent = rate ? "Скорость расхода" : "Локальный расход";
+  const intensity = usageState.mode === "intensity";
+  if (usageTitle) {
+    usageTitle.textContent = rate
+      ? "Скорость расхода"
+      : intensity
+        ? "Скорость поглощения"
+        : "Локальный расход";
+  }
   for (const button of usageModes?.querySelectorAll("[data-usage-mode]") ?? []) {
     const active = button.dataset.usageMode === usageState.mode;
     button.setAttribute("aria-pressed", String(active));
@@ -6628,14 +6661,26 @@ function renderUsageHistory() {
   usageTotal.textContent = payload && !payload.error
     ? (rate
       ? formatUsageRate(Number(payload.totalCredits) || 0, usagePeriodHours(payload))
-      : formatUsageValue(payload.totalCredits))
+      : intensity
+        ? formatUsageIntensity(
+          Number(payload.totalTimedCredits) || 0,
+          Number(payload.totalDurationSeconds) || 0,
+        )
+        : formatUsageValue(payload.totalCredits))
     : "";
   if (status === "ready") {
     buildUsageChart(payload);
-    const unpriced = Math.max(0, Number(payload.unpricedCount) || 0);
-    usageNote.textContent = unpriced
-      ? `Без тарифа и вне суммы: ${unpriced}.`
-      : "Все показанные ходы тарифицированы.";
+    if (intensity) {
+      const untimed = Math.max(0, Number(payload.untimedCreditCount) || 0);
+      usageNote.textContent = untimed
+        ? `Расход делится на фактическое время хода. Без длительности и вне скорости: ${untimed}.`
+        : "Расход делится на суммарное фактическое время тарифицированных ходов.";
+    } else {
+      const unpriced = Math.max(0, Number(payload.unpricedCount) || 0);
+      usageNote.textContent = unpriced
+        ? `Без тарифа и вне суммы: ${unpriced}.`
+        : "Все показанные ходы тарифицированы.";
+    }
   }
 }
 
@@ -6643,12 +6688,14 @@ usageRanges?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-range]");
   if (button) requestUsageHistory(button.dataset.range);
 });
-/* Расход и скорость считаются из одних данных, поэтому переключение режима
-   ничего не запрашивает — просто перерисовывает карточку. */
+/* Расход, календарная скорость и интенсивность хода считаются из одних данных,
+   поэтому переключение режима ничего не запрашивает — просто перерисовывает карточку. */
 usageModes?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-usage-mode]");
   if (!button) return;
-  usageState.mode = button.dataset.usageMode === "rate" ? "rate" : "total";
+  usageState.mode = ["rate", "intensity"].includes(button.dataset.usageMode)
+    ? button.dataset.usageMode
+    : "total";
   try {
     localStorage.setItem(USAGE_MODE_KEY, usageState.mode);
   } catch {
