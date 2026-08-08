@@ -4083,10 +4083,6 @@ html[data-surface="mobile"]
   overscroll-behavior-y: contain;
 }
 
-.stream-chat-preview-log .msg-actions {
-  display: none;
-}
-
 .stream-chat-preview-empty {
   color: var(--text-faint);
   font-size: 0.8rem;
@@ -4570,35 +4566,6 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 
 .msg-agent .msg-body {
   user-select: text;
-}
-
-.msg-actions {
-  display: flex;
-  gap: 0.3rem;
-  justify-content: flex-end;
-  margin-top: 0.35rem;
-}
-
-.msg-action {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-sm);
-  color: var(--text-faint);
-  cursor: pointer;
-  display: inline-flex;
-  height: 1.7rem;
-  justify-content: center;
-  width: 1.7rem;
-}
-
-.msg-action svg {
-  height: 1rem;
-  width: 1rem;
-}
-
-.msg-action:hover {
-  color: var(--accent);
 }
 
 /* Diff относится к последнему ответу, но получает всю ширину ленты и
