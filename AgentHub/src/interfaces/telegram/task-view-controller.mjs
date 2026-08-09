@@ -388,7 +388,7 @@ export class TaskViewController {
             observer: true,
             rolloutPath: directRolloutPath,
           }, { threadResult: { thread: { id: binding.threadId, path: directRolloutPath } } });
-          mergeActiveTaskHistory(history, snapshot);
+          mergeActiveTaskHistory(history, { ...snapshot, provider: "codex" });
           await materializeHistoryAttachments(history, d.attachmentImporter);
           d.taskSyncStore.recordHistory(task, history, snapshot);
           await d.taskSyncStore.save();
@@ -412,7 +412,7 @@ export class TaskViewController {
           turnId: null,
           observer: true,
         }, { threadResult: result });
-        mergeActiveTaskHistory(history, snapshot);
+        mergeActiveTaskHistory(history, { ...snapshot, provider: "codex" });
         await materializeHistoryAttachments(history, d.attachmentImporter);
         d.taskSyncStore.recordHistory(task, history, snapshot);
         await d.taskSyncStore.save();
@@ -425,6 +425,7 @@ export class TaskViewController {
       if (running) {
         mergeActiveTaskHistory(history, {
           active: true,
+          provider: "claude",
           turnId: running.turnId ?? running.id,
           prompt: running.promptPreview,
           answer: running.responseText,
@@ -492,6 +493,7 @@ export class TaskViewController {
     if (running) {
       mergeActiveTaskHistory(history, {
         active: true,
+        provider: binding.provider,
         turnId: running.turnId ?? running.id,
         prompt: running.promptPreview,
         answer: running.responseText,

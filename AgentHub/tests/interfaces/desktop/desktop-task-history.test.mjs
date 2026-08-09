@@ -156,6 +156,35 @@ test("durable history merges equivalent synthetic final-answer copies", () => {
   assert.equal(history[0].messages[0].text, "Готово");
 });
 
+test("provider hydration repairs stale durable turn and message times", () => {
+  const history = mergeDurableTaskHistory([{
+    id: "turn-new",
+    startedAt: "2026-08-09T20:02:33.000Z",
+    completedAt: "2026-08-09T20:03:14.000Z",
+    messages: [{
+      itemId: "client-new",
+      role: "user",
+      text: "Новый запрос",
+      time: "2026-08-09T20:02:33.000Z",
+    }],
+  }], [{
+    id: "turn-new",
+    startedAt: "2026-08-09T19:29:18.000Z",
+    completedAt: "2026-08-09T20:03:14.000Z",
+    messages: [{
+      itemId: "client-new",
+      role: "user",
+      text: "Новый запрос",
+      time: "2026-08-09T19:29:18.000Z",
+      attachments: [{ id: "screen.png", type: "image/png" }],
+    }],
+  }]);
+
+  assert.equal(history[0].startedAt, "2026-08-09T20:02:33.000Z");
+  assert.equal(history[0].messages[0].time, "2026-08-09T20:02:33.000Z");
+  assert.deepEqual(history[0].messages[0].attachments, [{ id: "screen.png", type: "image/png" }]);
+});
+
 test("desktop task history resolves selection and merges the active run", async () => {
   const { desktopTaskHistory, calls } = fixture();
   const result = await desktopTaskHistory({ limit: 2 });
@@ -169,6 +198,7 @@ test("desktop task history resolves selection and merges the active run", async 
   });
   assert.deepEqual(calls.merged, {
     active: true,
+    provider: "codex",
     turnId: "turn-live",
     prompt: "Текущий вопрос",
     answer: "Текущий ответ",

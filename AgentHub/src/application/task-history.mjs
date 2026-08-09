@@ -568,7 +568,7 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
   let current = turnId
     ? values.findLast((item) => String(item?.id ?? "") === turnId)
     : values.findLast((item) => item?.active === true);
-  if (!current && turnId) {
+  if (!current && turnId && activeTurn.provider === "claude") {
     const activeItems = values.filter((item) => item?.active === true);
     if (activeItems.length === 1) {
       current = activeItems[0];

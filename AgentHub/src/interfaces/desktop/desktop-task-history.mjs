@@ -36,6 +36,7 @@ function mergeDurableMessages(hydratedMessages, durableMessages) {
     values[index] = {
       ...current,
       ...structuredClone(durable),
+      time: current.time ?? durable?.time ?? null,
       attachments: Array.isArray(durable?.attachments) && durable.attachments.length
         ? structuredClone(durable.attachments)
         : current.attachments,
@@ -62,6 +63,8 @@ export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
     values[index] = {
       ...current,
       ...structuredClone(durable),
+      startedAt: current.startedAt ?? durable?.startedAt ?? null,
+      completedAt: current.completedAt ?? durable?.completedAt ?? null,
       messages: mergeDurableMessages(current.messages, durable?.messages),
       activities: Array.isArray(durable?.activities) && durable.activities.length
         ? structuredClone(durable.activities)
@@ -227,6 +230,7 @@ export function createDesktopTaskHistoryFactory({
     if (running) {
       historyMerger.mergeActive(history, {
         active: true,
+        provider: running.provider ?? binding.provider,
         turnId: running.turnId ?? running.id,
         prompt: running.promptPreview,
         answer: running.responseText,

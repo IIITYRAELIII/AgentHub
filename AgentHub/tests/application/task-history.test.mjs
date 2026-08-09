@@ -757,6 +757,7 @@ test("one active Claude transcript turn adopts the managed run id", () => {
 
   mergeActiveTaskHistory(history, {
     active: true,
+    provider: "claude",
     turnId: "managed-run-id",
     prompt: "Один запрос",
     answer: "Продолжение ответа",
@@ -765,4 +766,36 @@ test("one active Claude transcript turn adopts the managed run id", () => {
   assert.equal(history.length, 1);
   assert.equal(history[0].id, "managed-run-id");
   assert.equal(history[0].answer, "Продолжение ответа");
+});
+
+test("a new active Codex turn never adopts an older interrupted turn", () => {
+  const history = [{
+    id: "019fe800-410a-7a20-b3c8-cbbf78ae63af",
+    prompt: "Старый запрос",
+    answer: "",
+    status: "inProgress",
+    active: true,
+    completed: false,
+    startedAt: "2026-08-09T19:29:18.000Z",
+    messages: [{
+      itemId: "old-user",
+      role: "user",
+      text: "Старый запрос",
+      time: "2026-08-09T19:29:18.000Z",
+    }],
+  }];
+
+  mergeActiveTaskHistory(history, {
+    active: true,
+    provider: "codex",
+    turnId: "019fe81e-b0d7-7f91-8dc9-c473b8e2c9b2",
+    prompt: "Новый запрос",
+    startedAt: "2026-08-09T20:02:33.000Z",
+  });
+
+  assert.equal(history.length, 2);
+  assert.equal(history[0].id, "019fe800-410a-7a20-b3c8-cbbf78ae63af");
+  assert.equal(history[0].startedAt, "2026-08-09T19:29:18.000Z");
+  assert.equal(history[1].id, "019fe81e-b0d7-7f91-8dc9-c473b8e2c9b2");
+  assert.equal(history[1].startedAt, "2026-08-09T20:02:33.000Z");
 });
