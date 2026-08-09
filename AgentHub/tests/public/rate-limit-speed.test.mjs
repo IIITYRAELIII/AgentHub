@@ -27,6 +27,24 @@ function pathFor(points) {
   return context.result;
 }
 
+function finitePoints(points) {
+  const context = { points };
+  vm.runInNewContext(
+    `${policy}\nglobalThis.result = limitsFiniteSpeedPoints(points);`,
+    context,
+  );
+  return JSON.parse(JSON.stringify(context.result));
+}
+
+function waitsForData(speedFullWindow, latest, range) {
+  const context = { speedFullWindow, latest, range };
+  vm.runInNewContext(
+    `${policy}\nglobalThis.result = shouldWaitForBurnRateData(speedFullWindow, latest, range);`,
+    context,
+  );
+  return context.result;
+}
+
 function calculateForRange(series, range) {
   const context = { series, range };
   vm.runInNewContext(
@@ -50,6 +68,7 @@ test("weekly burn rate compares rolling usage with the remaining safe pace", () 
 
   assert.equal(points[0].actualRate, null);
   assert.equal(points[1].actualRate, 175);
+  assert.equal(points[1].sampleSpanMs, 24 * 60 * 60_000);
   assert.equal(points[1].targetRate, 87.5);
   assert.equal(points[1].overTarget, true);
   assert.equal(points[2].actualRate, 175);
@@ -112,6 +131,23 @@ test("speed chart starts a new path at every weekly reset", () => {
     { x: 3, y: 4, cycleIndex: 0 },
     { x: 5, y: 6, cycleIndex: 1 },
   ]), "M1.0 2.0 L3.0 4.0 M5.0 6.0");
+});
+
+test("missing speed samples break the actual-rate path", () => {
+  const points = finitePoints([
+    { actualRate: 160, cycleIndex: 0 },
+    { actualRate: null, cycleIndex: 0 },
+    { actualRate: 0, cycleIndex: 0 },
+  ]).map((point, index) => ({ ...point, x: index + 1, y: index + 2 }));
+
+  assert.equal(pathFor(points), "M1.0 2.0 M2.0 3.0");
+});
+
+test("full-window setting alone enables waiting for speed data", () => {
+  const latest = { cycleAgeMs: 30 * 60_000 };
+  assert.equal(waitsForData(true, latest, "24h"), true);
+  assert.equal(waitsForData(false, latest, "24h"), false);
+  assert.equal(waitsForData(true, { cycleAgeMs: 50 * 60_000 }, "24h"), false);
 });
 
 test("a moving reset forecast does not fragment one monotonic cycle", () => {

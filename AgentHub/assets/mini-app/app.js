@@ -5656,13 +5656,41 @@ function sameWeeklyLimitCycle(left, right) {
     && left.cycleIndex === right.cycleIndex;
 }
 
+function sameLimitsSpeedSegment(left, right) {
+  const hasPathSegments = Number.isInteger(left?.pathSegmentIndex)
+    && Number.isInteger(right?.pathSegmentIndex);
+  return sameWeeklyLimitCycle(left, right)
+    && (!hasPathSegments || left.pathSegmentIndex === right.pathSegmentIndex);
+}
+
 function limitsSpeedPath(points) {
   return points
     .map((point, index) => {
-      const continues = index > 0 && sameWeeklyLimitCycle(points[index - 1], point);
+      const continues = index > 0 && sameLimitsSpeedSegment(points[index - 1], point);
       return `${continues ? "L" : "M"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
     })
     .join(" ");
+}
+
+function limitsFiniteSpeedPoints(points) {
+  let pathSegmentIndex = 0;
+  let previousWasFinite = false;
+  return (Array.isArray(points) ? points : []).flatMap((point) => {
+    if (!Number.isFinite(point?.actualRate)) {
+      previousWasFinite = false;
+      return [];
+    }
+    if (!previousWasFinite) pathSegmentIndex += 1;
+    previousWasFinite = true;
+    return [{ ...point, pathSegmentIndex }];
+  });
+}
+
+function shouldWaitForBurnRateData(speedFullWindow, latest, range) {
+  const fullWindow = burnRatePolicyForRange(range).minimumSpanMs;
+  return Boolean(speedFullWindow)
+    && Number.isFinite(latest?.cycleAgeMs)
+    && latest.cycleAgeMs < fullWindow;
 }
 
 function weeklyBurnRatePoints(series, {
@@ -5724,6 +5752,7 @@ function weeklyBurnRatePoints(series, {
       ...point,
       durationMs,
       cycleAgeMs: Math.max(0, point.atMs - (point.resetMs - durationMs)),
+      sampleSpanMs: spanMs,
       targetRate,
       actualRate,
       deviationRate,
@@ -6215,8 +6244,7 @@ function buildLimitsSpeedChart(payload) {
         stroke: item.color,
       }));
     }
-    const actualPoints = item.ratePoints
-      .filter((point) => Number.isFinite(point.actualRate))
+    const actualPoints = limitsFiniteSpeedPoints(item.ratePoints)
       .map((point) => ({ ...point, x: xOf(point.atMs), y: yOf(point.actualRate) }));
     if (!actualPoints.length) continue;
     svg.append(svgEl("path", {
@@ -6228,7 +6256,7 @@ function buildLimitsSpeedChart(payload) {
     for (let index = 1; index < actualPoints.length; index += 1) {
       const left = actualPoints[index - 1];
       const right = actualPoints[index];
-      if (!sameWeeklyLimitCycle(left, right)) continue;
+      if (!sameLimitsSpeedSegment(left, right)) continue;
       svg.append(svgEl("line", {
         x1: left.x,
         y1: left.y,
@@ -6308,6 +6336,14 @@ function burnRatePeriodSuffix(range = limitsState.range) {
   return burnRatePolicyForRange(range).unit === "hour" ? "%/час" : "%/сутки";
 }
 
+function formatBurnRateSampleSpan(spanMs) {
+  const totalMinutes = Math.max(1, Math.round(Number(spanMs) / 60_000));
+  if (!Number.isFinite(totalMinutes)) return "";
+  if (totalMinutes < 120) return `${totalMinutes} мин.`;
+  const hours = totalMinutes / 60;
+  return `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(hours)} ч`;
+}
+
 function renderLimitsSpeedSummary(series) {
   if (!limitsSpeedSummary) return;
   if (limitsState.mode !== "speed") {
@@ -6330,10 +6366,11 @@ function renderLimitsSpeedSummary(series) {
   }
   const cards = items.map(({ item, latest, point }) => {
     const name = [item.name || item.baseId || item.id, item.window].filter(Boolean).join(" · ");
-    const fullWindow = burnRatePolicyForRange(limitsState.range).minimumSpanMs;
-    const waiting = !limitsState.speedFullWindow
-      && Number.isFinite(latest?.cycleAgeMs)
-      && latest.cycleAgeMs < fullWindow;
+    const waiting = shouldWaitForBurnRateData(
+      limitsState.speedFullWindow,
+      latest,
+      limitsState.range,
+    );
     if (waiting) {
       return el("section", { class: "limits-speed-summary-card is-waiting" }, [
         el("span", { class: "limits-speed-summary-name", text: name }),
@@ -6361,6 +6398,9 @@ function renderLimitsSpeedSummary(series) {
       el("div", { class: "limits-speed-summary-rates" }, [
         el("span", {}, ["Сейчас ", el("strong", { text: `${actualPeriod}${periodSuffix}` })]),
         el("span", {}, ["Допустимо ", el("strong", { text: `${targetPeriod}${periodSuffix}` })]),
+        el("span", {}, ["Интервал расчёта ", el("strong", {
+          text: formatBurnRateSampleSpan(point.sampleSpanMs),
+        })]),
       ]),
       el("strong", { class: "limits-speed-summary-status", text: status }),
     ]);
