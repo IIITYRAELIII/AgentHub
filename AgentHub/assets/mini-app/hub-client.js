@@ -827,6 +827,64 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   };
 }
 
+function emptyStreamModels(snapshot, effectiveSelectedId) {
+  const realStreamIds = new Set((snapshot.tasks ?? []).map((task) => String(task.streamId ?? "").trim()));
+  const defaults = snapshot.settings ?? {};
+  const projects = defaults.projects ?? [];
+  const modelsByProvider = defaults.modelOptionsByProvider ?? {};
+  const drafts = [];
+  for (const workspace of snapshot.workspaces ?? []) {
+    for (const stream of workspace.streams ?? []) {
+      if ((stream.threads ?? []).length || realStreamIds.has(String(stream.id))) continue;
+      const settings = {
+        provider: stream.settings?.provider ?? defaults.provider ?? "codex",
+        model: stream.settings?.model ?? defaults.model ?? "",
+        reasoning: stream.settings?.reasoning ?? defaults.reasoning ?? "",
+        mode: stream.settings?.mode ?? defaults.mode ?? "",
+        project: stream.settings?.project
+          ?? projects.find((project) => project.selected)?.path
+          ?? projects[0]?.path
+          ?? "",
+        autoApprove: typeof stream.settings?.autoApprove === "boolean"
+          ? stream.settings.autoApprove
+          : defaults.approvalMode === "auto",
+      };
+      const model = (modelsByProvider[settings.provider] ?? [])
+        .find((option) => option.value === settings.model);
+      drafts.push({
+        id: String(stream.id),
+        title: workspace.name || "Без названия",
+        displayTitle: workspace.name || "Без названия",
+        threadTitle: "Thread будет создан при отправке",
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        workspaceKind: workspace.kind,
+        streamId: stream.id,
+        streamName: stream.name,
+        streamDisplayName: stream.displayName,
+        streamOrdinal: stream.ordinal,
+        threadPosition: 0,
+        threadId: null,
+        provider: settings.provider,
+        agentLabel: settings.provider === "claude" ? "Claude" : "Codex",
+        modelLabel: model?.label ?? settings.model,
+        reasoningLabel: settings.reasoning,
+        modeLabel: settings.mode,
+        project: projects.find((project) => project.path === settings.project)?.name ?? "",
+        status: "draft",
+        statusLabel: "Настройка",
+        lastActivity: stream.updatedAtMs ? new Date(stream.updatedAtMs).toISOString() : null,
+        unread: false,
+        running: false,
+        selected: String(stream.id) === effectiveSelectedId,
+        draftStream: true,
+        streamSettings: settings,
+      });
+    }
+  }
+  return drafts;
+}
+
 function contextPercent(value) {
   if (value === null || value === undefined || value === "") return null;
   const percent = Number(value);
@@ -1095,9 +1153,13 @@ function applySnapshot(snapshot) {
   const serverSelectedId = serverSelected
     ? taskId(serverSelected.provider, serverSelected.threadId, serverSelected.streamId)
     : "";
-  const availableTaskIds = new Set(
-    (snapshot.tasks ?? []).map((task) => taskId(task.provider, task.threadId, task.streamId)),
-  );
+  const emptyStreamIds = (snapshot.workspaces ?? []).flatMap((workspace) => (
+    (workspace.streams ?? []).filter((stream) => !(stream.threads ?? []).length).map((stream) => String(stream.id))
+  ));
+  const availableTaskIds = new Set([
+    ...(snapshot.tasks ?? []).map((task) => taskId(task.provider, task.threadId, task.streamId)),
+    ...emptyStreamIds,
+  ]);
   const pendingExists = pendingSelectionId && availableTaskIds.has(pendingSelectionId);
   const localExists = selectedTaskId && availableTaskIds.has(selectedTaskId);
   const effectiveSelectedId = pendingExists
@@ -1105,10 +1167,12 @@ function applySnapshot(snapshot) {
     : localExists
       ? selectedTaskId
       : serverSelectedId;
-  const tasks = (snapshot.tasks ?? [])
-    .map((task) => modelTask(task, snapshot, effectiveSelectedId, serverSelectedId))
-    .sort((left, right) => Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0));
+  const tasks = [
+    ...(snapshot.tasks ?? []).map((task) => modelTask(task, snapshot, effectiveSelectedId, serverSelectedId)),
+    ...emptyStreamModels(snapshot, effectiveSelectedId),
+  ].sort((left, right) => Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0));
   agentHub.setTasks(tasks);
+  for (const task of tasks.filter((candidate) => candidate.draftStream)) agentHub.setMessages(task.id, []);
   if (maintenanceChanged.has(effectiveSelectedId)) {
     renderTaskMessages(effectiveSelectedId, { preserveScroll: true });
   }
@@ -1178,7 +1242,9 @@ function applySnapshot(snapshot) {
   }
   const settings = snapshot.settings ?? {};
   agentHub.setOptions({
+    provider: [{ value: "codex", label: "Codex" }, { value: "claude", label: "Claude" }],
     model: settings.models ?? [],
+    modelOptionsByProvider: settings.modelOptionsByProvider ?? {},
     reasoning: settings.reasoningOptions ?? [],
     mode: settings.modeOptions ?? [],
     project: (settings.projects ?? []).map((project) => ({
@@ -1186,7 +1252,9 @@ function applySnapshot(snapshot) {
       label: project.name,
     })),
   });
-  agentHub.setSelection({
+  const selectedDraft = tasks.find((task) => task.id === effectiveSelectedId && task.draftStream);
+  agentHub.setSelection(selectedDraft?.streamSettings ?? {
+    provider: settings.provider,
     model: settings.model,
     reasoning: settings.reasoning,
     mode: settings.mode,
@@ -1451,7 +1519,15 @@ function replaceRoute(hash) {
 
 agentHub.on("task:select", ({ id }) => {
   const identity = taskIdentity(id);
-  if (!identity) return null;
+  if (!identity) {
+    const draft = emptyStreamModels(lastSnapshot ?? {}, id).find((task) => task.id === id);
+    if (!draft) return null;
+    pendingSelectionId = id;
+    rememberSelectedTaskId(id);
+    replaceRoute(`#/chat/stream/${encodeURIComponent(id)}`);
+    agentHub.selectTask(id);
+    return null;
+  }
   const sequence = ++selectionSequence;
   pendingSelectionId = id;
   rememberSelectedTaskId(id);
@@ -1608,7 +1684,7 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
 
 agentHub.on("message:send", (request) => {
   const optimisticId = `local:${request.requestId}`;
-  const identity = taskIdentity(request.taskId);
+  let identity = taskIdentity(request.taskId);
   const previousAttempt = outgoingMessages(request.taskId).get(request.requestId);
   const visibleText = String(request.text ?? "").trim()
     || ((request.annotations ?? []).length
@@ -1616,7 +1692,7 @@ agentHub.on("message:send", (request) => {
       : "Изображение");
   const optimistic = {
     id: optimisticId,
-    provider: identity?.provider ?? "",
+    provider: identity?.provider ?? request.settings?.provider ?? "",
     threadId: identity?.threadId ?? "",
     turnId: "",
     itemId: request.requestId,
@@ -1643,6 +1719,27 @@ agentHub.on("message:send", (request) => {
   }
   return runAction(async () => {
     try {
+      if (request.draftStream) {
+        const createdSnapshot = await control("new-task", {
+          streamId: request.streamId,
+          provider: request.settings?.provider,
+          settings: request.settings,
+        });
+        const created = createdSnapshot?.createdTask;
+        if (!created?.provider) throw new Error("Агент не подготовил Thread");
+        identity = {
+          streamId: created.streamId ?? request.streamId,
+          provider: created.provider,
+          threadId: created.threadId,
+        };
+        pendingSelectionId = request.taskId;
+        rememberSelectedTaskId(request.taskId);
+        applySnapshot(createdSnapshot);
+        pendingSelectionId = "";
+        if (identity.threadId) {
+          replaceRoute(`#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`);
+        }
+      }
       // Worker attachments are deleted after their command finishes. A retry
       // must upload the image again instead of reusing an expired reference.
       const paths = reusableAttachmentPaths(
@@ -1665,6 +1762,10 @@ agentHub.on("message:send", (request) => {
       if (paths.length) params.attachments = paths;
       const result = await control("send-message", params);
       applySnapshot(result?.snapshot);
+      if (!identity?.threadId && result?.threadId) {
+        identity = { ...identity, threadId: result.threadId };
+        replaceRoute(`#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`);
+      }
       if (!result?.deferred) {
         optimisticDeferredClientUserMessageIds.delete(request.requestId);
       }
@@ -1820,8 +1921,32 @@ agentHub.on("stream:rebirth", ({ streamId, provider, taskId: targetTaskId }) => 
   agentHub.showSelectedTask();
 }));
 agentHub.on("stream:new", ({ workspaceId, streamName }) => runAction(async () => {
-  const provider = lastSnapshot?.settings?.provider ?? "codex";
-  applySnapshot(await control("new-task", { provider, workspaceId, streamName }));
+  const settings = lastSnapshot?.settings ?? {};
+  const result = await control("create-stream", {
+    workspaceId,
+    name: streamName,
+    settings: {
+      provider: settings.provider ?? "codex",
+      model: settings.model ?? "",
+      reasoning: settings.reasoning ?? "",
+      mode: settings.mode ?? "",
+      project: (settings.projects ?? []).find((project) => project.selected)?.path ?? "",
+      autoApprove: settings.approvalMode === "auto",
+    },
+  });
+  const streamId = String(result?.createdStream?.id ?? "");
+  if (!streamId) throw new Error("Agent Hub не создал Stream");
+  pendingSelectionId = streamId;
+  rememberSelectedTaskId(streamId);
+  applySnapshot(result);
+  pendingSelectionId = "";
+  replaceRoute(`#/chat/stream/${encodeURIComponent(streamId)}`);
+  agentHub.selectTask(streamId);
+  agentHub.showSelectedTask();
+  agentHub.openDialogSettings();
+}));
+agentHub.on("stream:settings-save", ({ streamId, settings }) => runAction(async () => {
+  applySnapshot(await control("update-stream-settings", { streamId, settings }));
 }));
 agentHub.on("task:archive", ({ id } = {}) => runAction(async () => applySnapshot(
   await control("archive-task", id ? exactTaskParams(id) : exactSelectedTaskParams()),
@@ -2264,6 +2389,16 @@ document.addEventListener("click", (event) => {
 async function openRoute() {
   const parts = location.hash.split("/").slice(1).map(decodeURIComponent);
   if (parts[0] !== "chat" || !parts[1] || !parts[2]) return false;
+  if (parts[1] === "stream") {
+    const streamId = parts[2];
+    if (!emptyStreamModels(lastSnapshot ?? {}, streamId).some((task) => task.id === streamId)) return false;
+    pendingSelectionId = streamId;
+    rememberSelectedTaskId(streamId);
+    applySnapshot(lastSnapshot);
+    pendingSelectionId = "";
+    agentHub.selectTask(streamId);
+    return true;
+  }
   if (parts[3] === "turn" && parts[4] && parts[5]) {
     applyOpened(await control("open-turn", {
       provider: parts[1],

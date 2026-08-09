@@ -50,9 +50,20 @@ function fixture({ run = null } = {}) {
     },
     activeProvider: () => "codex",
     switchProvider: async () => {},
+    prepareTaskCreation: async (value) => events.push(["prepare", value]),
     workspaceCatalog: {
       workspace: (id) => id === "workspace-1" ? { id, name: "Existing" } : null,
-      stream: (id) => id === "stream-1" ? { id, workspaceId: "workspace-1" } : null,
+      stream: (id) => id === "stream-1" ? {
+        id,
+        workspaceId: "workspace-1",
+        settings: {
+          provider: "codex",
+          model: "gpt-5",
+          reasoning: "high",
+          project: "D:/later",
+          autoApprove: false,
+        },
+      } : null,
       createWorkspace: ({ name }) => ({ id: "workspace-new", name }),
       createStream: ({ workspaceId, name }) => ({ id: "stream-new", workspaceId, name }),
       bindThread: (value) => events.push(["bind", value]),
@@ -120,6 +131,15 @@ test("task command service continues an existing Stream in a new provider Thread
     "thread-new",
     { provider: "codex", streamId: "stream-1", title: "Existing" },
   ]);
+  assert.deepEqual(events.find(([name]) => name === "prepare")[1], {
+    provider: "codex",
+    model: "gpt-5",
+    reasoning: "high",
+    project: "D:/later",
+    autoApprove: false,
+    streamId: "stream-1",
+    title: "Existing",
+  });
 });
 
 test("task command service rotates inside the same Stream after context transfer", async () => {

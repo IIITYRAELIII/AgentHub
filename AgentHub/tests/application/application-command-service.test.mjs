@@ -10,7 +10,8 @@ function service(calls) {
   const handlers = Object.fromEntries([
     "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
-    "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
+    "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
+    "renameStream", "updateStreamSettings", "moveStream",
   ].map((name) => [name, (...args) => { calls.push({ name, args }); return name; }]));
   return createApplicationCommandService({
     handlers,
@@ -49,6 +50,14 @@ test("workspace and stream commands use the shared command path", async () => {
     streamId: "stream-1",
     name: "New Workspace",
   }, { source: "desktop", userId: "7" });
+  await commands.dispatch("stream.create", {
+    workspaceId: "workspace-1",
+    settings: { provider: "codex" },
+  }, { source: "desktop", userId: "7" });
+  await commands.dispatch("stream.settings.update", {
+    streamId: "stream-1",
+    settings: { model: "gpt-5" },
+  }, { source: "desktop", userId: "7" });
   await commands.dispatch("stream.move", {
     streamId: "stream-1",
     workspaceId: "workspace-2",
@@ -61,6 +70,14 @@ test("workspace and stream commands use the shared command path", async () => {
     {
       name: "createWorkspaceFromStream",
       args: [{ streamId: "stream-1", name: "New Workspace" }],
+    },
+    {
+      name: "createStream",
+      args: [{ workspaceId: "workspace-1", settings: { provider: "codex" } }],
+    },
+    {
+      name: "updateStreamSettings",
+      args: [{ streamId: "stream-1", settings: { model: "gpt-5" } }],
     },
     {
       name: "moveStream",

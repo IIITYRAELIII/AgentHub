@@ -219,11 +219,50 @@ export function createDesktopShellComposition({
   });
 
   const workspaceCatalog = new WorkspaceCatalogService({ store: workspaceCatalogStore });
-  const workspaceMutation = async (run) => {
-    run();
+  const workspaceMutation = async (run, { resultKey = "" } = {}) => {
+    const result = run();
     invalidateTaskCatalog();
     await saveState();
-    return desktopReadSystem.desktopSnapshot({ refresh: true });
+    const snapshot = await desktopReadSystem.desktopSnapshot({ refresh: true });
+    return resultKey ? { ...snapshot, [resultKey]: result } : snapshot;
+  };
+
+  const prepareTaskCreation = async ({
+    provider: targetProvider,
+    project,
+    model,
+    reasoning,
+    mode,
+    autoApprove: targetAutoApprove,
+    streamId = null,
+    title = "",
+  } = {}) => {
+    const normalizedProvider = targetProvider === "claude" ? "claude" : "codex";
+    const selectedProject = project
+      ? projects.find((candidate) => samePath(candidate.path, project))
+      : findProject(selectedProjectRoot());
+    if (!selectedProject) throw new Error("Проект не найден");
+    selectionStore.selectTask({
+      activeProjectRoot: selectedProject.path,
+      activeProvider: normalizedProvider,
+      threadId: null,
+      streamId,
+      activeThreadTitle: String(title ?? "").trim(),
+    });
+    if (model) {
+      if (normalizedProvider === "codex") agentPreferences.setCodexModel(model);
+      else agentPreferences.setClaudeModel(model);
+    }
+    if (reasoning) {
+      if (normalizedProvider === "codex") agentPreferences.setCodexReasoning(reasoning);
+      else agentPreferences.setClaudeReasoning(reasoning);
+    }
+    if (mode) {
+      if (normalizedProvider === "codex") agentPreferences.setCodexMode(mode);
+      else agentPreferences.setClaudeMode(mode);
+    }
+    if (typeof targetAutoApprove === "boolean") hostState.setAutoApprove(targetAutoApprove);
+    await saveState();
   };
 
   const telegramSelection = new ClientTaskSelectionService({
@@ -318,6 +357,7 @@ export function createDesktopShellComposition({
       dismissedExternalTasks,
       completeRun: (run) => managedRunLifecycle.complete(run),
       createTask: createThread,
+      prepareTaskCreation,
       streamContextMaintenance,
       workspaceCatalog: workspaceCatalogStore,
       workspaceCatalogService: workspaceCatalog,

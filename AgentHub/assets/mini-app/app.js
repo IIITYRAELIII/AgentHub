@@ -66,7 +66,6 @@ const chatLive = document.querySelector("[data-chat-live]");
 const chatStops = [...document.querySelectorAll("[data-chat-stop]")];
 const dialogSettings = document.querySelector("[data-dialog-settings]");
 const dialogSettingsToggle = document.querySelector("[data-dialog-settings-toggle]");
-const dialogAgent = document.querySelector("[data-dialog-agent]");
 
 const composer = document.querySelector("[data-composer]");
 const composerGrow = document.querySelector("[data-composer-grow]");
@@ -1123,7 +1122,14 @@ const state = {
   live: new Map(),       // taskId -> live | null
   approvals: new Map(),  // taskId -> approval[]
   queue: new Map(),      // taskId -> queued[]
-  options: { model: [], reasoning: [], mode: [], project: [] },
+  options: {
+    provider: [{ value: "codex", label: "Codex" }, { value: "claude", label: "Claude" }],
+    model: [],
+    modelOptionsByProvider: {},
+    reasoning: [],
+    mode: [],
+    project: [],
+  },
   selection: {},
   status: null,
   connection: "",
@@ -1782,7 +1788,7 @@ function renderStreamTabs() {
   reconcileOpenStreams(workspaceId, streams);
   const ordered = orderedWorkspaceStreams(workspaceId, streams);
   const open = new Set(state.openStreamsByWorkspace.get(workspaceId) ?? []);
-  streamTabs.replaceChildren(...ordered.map((stream) => {
+  const tabs = ordered.map((stream) => {
     const task = representativeStreamTask(stream);
     const streamName = streamDisplayName(stream, streams.length);
     const provider = String(task?.provider ?? "none");
@@ -1847,8 +1853,20 @@ function renderStreamTabs() {
       ]),
     ]);
     return button;
-  }));
-  streamTabs.hidden = ordered.length === 0;
+  });
+  tabs.push(el("button", {
+    type: "button",
+    class: "stream-tab stream-tab-create",
+    "data-action": "stream-create",
+    "data-workspace-id": workspaceId,
+    title: "Создать Stream и настроить будущий чат",
+    "aria-label": "Создать Stream",
+  }, [el("span", { class: "stream-tab-card" }, [
+    el("span", { class: "stream-tab-create-mark", text: "+" }),
+    el("span", { class: "stream-tab-create-label", text: "Новый Stream" }),
+  ])]));
+  streamTabs.replaceChildren(...tabs);
+  streamTabs.hidden = false;
 }
 
 function publishVisibleStreamTasks(tasks) {
@@ -3791,6 +3809,9 @@ function submitComposer() {
     annotations,
     attachments,
     followUpMode: currentTask()?.running ? "queue" : null,
+    draftStream: currentTask()?.draftStream === true,
+    streamId: currentTask()?.streamId ?? null,
+    settings: currentTask()?.draftStream ? { ...currentTask().streamSettings } : null,
   });
   updateSendState();
   saveDraft();
@@ -4211,6 +4232,10 @@ function restoreDraft() {
 /* ============================================= панель настроек и селекторы */
 
 function setDialogSettingsOpen(open) {
+  const task = currentTask();
+  if (!open && task?.draftStream) {
+    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
+  }
   const visible = Boolean(open && currentTask());
   dialogSettings.hidden = !visible;
   chatPane.toggleAttribute("data-dialog-settings-open", visible);
@@ -4518,8 +4543,18 @@ function selectTurnTimeMode(value) {
 
 function renderDialogSettings() {
   const task = currentTask();
-  dialogAgent.textContent = task?.agentLabel || providerLabels[task?.provider] || "—";
-  for (const [group, values] of Object.entries(state.options)) {
+  const selection = task?.draftStream ? task.streamSettings : state.selection;
+  const effectiveProvider = task?.draftStream ? selection?.provider : task?.provider;
+  const optionGroups = {
+    provider: task?.draftStream
+      ? state.options.provider
+      : [{ value: task?.provider ?? "", label: task?.agentLabel || providerLabels[task?.provider] || "—" }],
+    model: state.options.modelOptionsByProvider?.[effectiveProvider] ?? state.options.model,
+    reasoning: state.options.reasoning,
+    mode: state.options.mode,
+    project: state.options.project,
+  };
+  for (const [group, values] of Object.entries(optionGroups)) {
     const container = dialogSettings.querySelector(`[data-dialog-options='${group}']`);
     if (!container) continue;
     container.replaceChildren();
@@ -4530,7 +4565,7 @@ function renderDialogSettings() {
     for (const option of values) {
       const value = typeof option === "string" ? option : option.value;
       const label = typeof option === "string" ? option : (option.label ?? option.value);
-      const active = state.selection[group] === value;
+      const active = selection?.[group] === value;
       container.append(el("button", {
         type: "button",
         class: "option-chip",
@@ -4538,13 +4573,14 @@ function renderDialogSettings() {
         "data-select-value": value,
         "aria-pressed": String(active),
         "data-active": active ? "" : null,
+        disabled: group === "provider" && !task?.draftStream,
         text: label,
       }));
     }
   }
   for (const toggle of dialogSettings.querySelectorAll("[data-dialog-toggle]")) {
     const key = toggle.dataset.dialogToggle;
-    toggle.checked = Boolean(state.selection[key]);
+    toggle.checked = Boolean(selection?.[key]);
   }
 }
 
@@ -4553,17 +4589,37 @@ dialogSettings.addEventListener("click", (event) => {
   if (!chip) return;
   const group = chip.dataset.selectGroup;
   const value = chip.dataset.selectValue;
-  state.selection[group] = value;
+  const task = currentTask();
+  if (task?.draftStream) {
+    task.streamSettings[group] = value;
+    if (group === "provider") {
+      task.provider = value;
+      task.agentLabel = providerLabels[value] ?? value;
+      const models = state.options.modelOptionsByProvider?.[value] ?? [];
+      if (!models.some((option) => option.value === task.streamSettings.model)) {
+        task.streamSettings.model = models[0]?.value ?? "";
+      }
+    }
+    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
+  } else {
+    state.selection[group] = value;
+    emit("selection:set", { key: group, value });
+  }
   renderOptions();
-  emit("selection:set", { key: group, value });
 });
 
 dialogSettings.addEventListener("change", (event) => {
   const toggle = event.target.closest("[data-dialog-toggle]");
   if (!toggle) return;
   const key = toggle.dataset.dialogToggle;
-  state.selection[key] = toggle.checked;
-  emit("selection:set", { key, value: toggle.checked });
+  const task = currentTask();
+  if (task?.draftStream) {
+    task.streamSettings[key] = toggle.checked;
+    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
+  } else {
+    state.selection[key] = toggle.checked;
+    emit("selection:set", { key, value: toggle.checked });
+  }
 });
 
 settingsPanel.addEventListener("change", (event) => {
@@ -4998,6 +5054,9 @@ async function handleAction(action, trigger) {
       if (title != null) emit("task:new", { title, provider });
       break;
     }
+    case "stream-create":
+      emit("stream:new", { workspaceId: trigger.dataset.workspaceId });
+      break;
     case "task-settings":
       toggleDialogSettings();
       break;
@@ -5176,6 +5235,7 @@ const AgentHub = {
     state.workspaces = Array.isArray(workspaces) ? workspaces.slice() : [];
     state.workspaceColumnOrder = Array.isArray(columnOrder) ? columnOrder.slice() : [];
   },
+  openDialogSettings,
   /** Точечное обновление задачи (статус, время, непрочитанное). */
   patchTask(id, patch) {
     const task = state.tasks.find((item) => item.id === id);

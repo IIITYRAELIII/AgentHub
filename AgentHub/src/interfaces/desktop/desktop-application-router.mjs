@@ -2,12 +2,13 @@ import { commandClientContext, commandTaskTarget } from "../../application/appli
 import { createDesktopControlRouter } from "./desktop-control-router.mjs";
 
 const MUTATION_ACTIONS = Object.freeze([
-  "open-task", "open-turn", "select-task", "send-message", "new-task", "rotate-stream",
+  "open-task", "open-turn", "select-task", "send-message", "new-task", "rotate-stream", "create-stream",
   "update-setting", "rename-task", "archive-task", "cancel-run",
   "resolve-approval", "deferred-input", "restart-server", "set-autostart",
   "update-server-configuration", "compact-context", "create-device-pairing",
   "revoke-device", "submit-bug-report",
-  "rename-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream", "move-stream",
+  "rename-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream",
+  "update-stream-settings", "move-stream",
   "board-task-create", "board-task-move", "board-task-complete", "board-task-remove",
   "board-task-retry-triage", "board-task-start", "board-column-move", "board-column-comment",
   "board-workspace-move",
@@ -73,7 +74,9 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
       "rename-workspace": (params, context) => dispatch("workspace.rename", params, context),
       "create-workspace-from-stream": (params, context) => dispatch("workspace.create-from-stream", params, context),
       "merge-workspaces": (params, context) => dispatch("workspace.merge", params, context),
+      "create-stream": (params, context) => dispatch("stream.create", params, context),
       "rename-stream": (params, context) => dispatch("stream.rename", params, context),
+      "update-stream-settings": (params, context) => dispatch("stream.settings.update", params, context),
       "move-stream": (params, context) => dispatch("stream.move", params, context),
       "board-task-create": handlers.boardTaskCreate,
       "board-task-move": handlers.boardTaskMove,

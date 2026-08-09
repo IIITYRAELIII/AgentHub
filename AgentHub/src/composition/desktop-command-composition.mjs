@@ -67,7 +67,9 @@ export function createDesktopCommandComposition({
       renameWorkspace: workspaceActions.renameWorkspace,
       createWorkspaceFromStream: workspaceActions.createWorkspaceFromStream,
       mergeWorkspaces: workspaceActions.mergeWorkspaces,
+      createStream: workspaceActions.createStream,
       renameStream: workspaceActions.renameStream,
+      updateStreamSettings: workspaceActions.updateStreamSettings,
       moveStream: workspaceActions.moveStream,
     },
   });

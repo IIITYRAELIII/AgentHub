@@ -30,6 +30,7 @@ export class TaskCommandService {
     workspaceCatalog,
     selectionStore,
     rotateStream,
+    prepareTaskCreation,
   }) {
     Object.assign(this, {
       resolveTarget,
@@ -62,6 +63,7 @@ export class TaskCommandService {
       workspaceCatalog,
       selectionStore,
       rotateStream,
+      prepareTaskCreation,
     });
   }
 
@@ -150,8 +152,6 @@ export class TaskCommandService {
   }
 
   async create(params = {}, context = {}) {
-    const provider = String(params.provider ?? this.activeProvider()).trim();
-    if (!["codex", "claude"].includes(provider)) throw new Error("Неизвестный агент");
     let workspace = null;
     let stream = null;
     if (params.streamId) {
@@ -162,7 +162,24 @@ export class TaskCommandService {
       workspace = this.workspaceCatalog.workspace(params.workspaceId);
       if (!workspace) throw new Error("Workspace не найден");
     }
+    if (stream && params.settings && typeof this.workspaceCatalog.updateStreamSettings === "function") {
+      stream = this.workspaceCatalog.updateStreamSettings(stream.id, params.settings);
+    }
+    const streamSettings = {
+      ...(stream?.settings ?? {}),
+      ...(params.settings && typeof params.settings === "object" ? params.settings : {}),
+    };
+    const provider = String(params.provider ?? streamSettings.provider ?? this.activeProvider()).trim();
+    if (!["codex", "claude"].includes(provider)) throw new Error("Неизвестный агент");
     if (provider !== this.activeProvider()) await this.switchProvider(provider);
+    if (typeof this.prepareTaskCreation === "function") {
+      await this.prepareTaskCreation({
+        ...streamSettings,
+        provider,
+        streamId: stream?.id ?? null,
+        title: workspace?.name ?? "",
+      });
+    }
     const created = await this.createTask();
     if (!stream && workspace) {
       stream = this.workspaceCatalog.createStream({

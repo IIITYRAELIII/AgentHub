@@ -337,6 +337,13 @@ export function createDesktopSnapshotFactory({
             value,
             label: current.claudeModelLabels[value],
           })),
+        modelOptionsByProvider: {
+          codex: current.codexModels.map((model) => ({ value: model.value, label: model.label })),
+          claude: current.claudeModels.map((value) => ({
+            value,
+            label: current.claudeModelLabels[value],
+          })),
+        },
         reasoningOptions: current.reasoningEfforts.map((value) => ({
           value,
           label: current.reasoningLabels[value],

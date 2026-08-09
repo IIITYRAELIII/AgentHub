@@ -41,6 +41,24 @@ test("Workspace comment is a persisted catalog property", async (t) => {
   assert.equal(store.hierarchy().find((item) => item.id === workspace.id).comment, "Дашборд и интеграции");
 });
 
+test("an empty Stream persists the settings for its future Thread", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({
+    workspaceId: workspace.id,
+    settings: { provider: "codex", model: "gpt-5", project: "D:/later" },
+  });
+  assert.deepEqual(stream.settings, { provider: "codex", model: "gpt-5", project: "D:/later" });
+  const updated = store.updateStreamSettings(stream.id, {
+    provider: "claude", model: "sonnet", autoApprove: false,
+  });
+  assert.deepEqual(updated.settings, { provider: "claude", model: "sonnet", autoApprove: false });
+  assert.deepEqual(
+    store.hierarchy().find((item) => item.id === workspace.id).streams[0].settings,
+    updated.settings,
+  );
+});
+
 test("legacy Workspace catalog gains the comment property without losing data", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-legacy-comment-"));
   const databaseFile = path.join(directory, "journal.sqlite");

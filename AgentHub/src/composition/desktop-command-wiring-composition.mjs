@@ -67,6 +67,7 @@ export function createDesktopCommandWiring({
       selectionStore: services.selectionStore,
       activeProvider: state.activeProvider,
       switchProvider,
+      prepareTaskCreation: services.prepareTaskCreation,
     },
     restart: {
       getRequest: state.restartRequest,
@@ -155,8 +156,15 @@ export function createDesktopCommandWiring({
       mergeWorkspaces: (params) => services.workspaceMutation(
         () => services.workspaceCatalogService.mergeWorkspaces(params),
       ),
+      createStream: (params) => services.workspaceMutation(
+        () => services.workspaceCatalogService.createStream(params),
+        { resultKey: "createdStream" },
+      ),
       renameStream: (params) => services.workspaceMutation(
         () => services.workspaceCatalogService.renameStream(params),
+      ),
+      updateStreamSettings: (params) => services.workspaceMutation(
+        () => services.workspaceCatalogService.updateStreamSettings(params),
       ),
       moveStream: (params) => services.workspaceMutation(
         () => services.workspaceCatalogService.moveStream(params),

@@ -13,6 +13,7 @@ function fixture() {
     renameWorkspace: (...args) => calls.push(["renameWorkspace", ...args]),
     mergeWorkspaces: (...args) => calls.push(["mergeWorkspaces", ...args]),
     renameStream: (...args) => calls.push(["renameStream", ...args]),
+    updateStreamSettings: (...args) => (calls.push(["updateStreamSettings", ...args]), { settings: args[1] }),
     moveStream: (...args) => calls.push(["moveStream", ...args]),
     bindThread: (value) => (calls.push(["bindThread", value]), value),
     activeThread: (streamId) => ({ streamId }),
@@ -50,4 +51,15 @@ test("bindThread links a replacement provider Thread to an existing Stream", () 
     streamId: "stream-1", provider: "codex", threadId: "thread-2",
     projectRoot: "", source: "rebirth",
   });
+});
+
+test("Stream settings are stored independently from its future Thread", () => {
+  const { service, calls } = fixture();
+  const settings = { provider: "claude", model: "sonnet", project: "D:/later" };
+  service.createStream({ workspaceId: "workspace-1", name: "Draft", settings });
+  assert.deepEqual(service.updateStreamSettings({ streamId: "stream-1", settings }), { settings });
+  assert.deepEqual(calls.slice(-2), [
+    ["createStream", { workspaceId: "workspace-1", name: "Draft", settings }],
+    ["updateStreamSettings", "stream-1", settings],
+  ]);
 });

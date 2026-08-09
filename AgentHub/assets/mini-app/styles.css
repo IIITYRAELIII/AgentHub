@@ -4390,6 +4390,32 @@ html[data-surface="mobile"]
   border-color: var(--accent-line);
 }
 
+.stream-tab-create {
+  opacity: 0.58;
+}
+
+.stream-tab-create .stream-tab-card {
+  align-items: center;
+  border-style: dashed;
+  justify-content: center;
+}
+
+.stream-tab-create:hover,
+.stream-tab-create:focus-visible {
+  opacity: 1;
+}
+
+.stream-tab-create-mark {
+  color: var(--accent);
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.stream-tab-create-label {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
 .stream-tab-body {
   display: flex;
   flex: 1 1 auto;

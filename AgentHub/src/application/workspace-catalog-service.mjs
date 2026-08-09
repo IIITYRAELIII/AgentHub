@@ -40,12 +40,16 @@ export class WorkspaceCatalogService {
     return this.#store.mergeWorkspaces(sourceWorkspaceId, targetWorkspaceId);
   }
 
-  createStream({ workspaceId, name = null } = {}) {
-    return this.#store.createStream({ workspaceId, name });
+  createStream({ workspaceId, name = null, settings = {} } = {}) {
+    return this.#store.createStream({ workspaceId, name, settings });
   }
 
   renameStream({ streamId, name = null } = {}) {
     return this.#store.renameStream(streamId, name);
+  }
+
+  updateStreamSettings({ streamId, settings = {} } = {}) {
+    return this.#store.updateStreamSettings(streamId, settings);
   }
 
   moveStream({ streamId, workspaceId } = {}) {

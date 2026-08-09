@@ -13,7 +13,7 @@ import {
   streamDisplayName,
 } from "../../domain/workspace-stream-identity.mjs";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 
 function recoverableDatabaseError(error) {
@@ -48,6 +48,7 @@ function configure(database) {
       workspace_id TEXT NOT NULL,
       ordinal INTEGER NOT NULL CHECK (ordinal > 0),
       name TEXT,
+      settings_json TEXT NOT NULL DEFAULT '{}',
       created_at_ms INTEGER NOT NULL,
       updated_at_ms INTEGER NOT NULL,
       archived_at_ms INTEGER,
@@ -78,6 +79,10 @@ function configure(database) {
   if (!workspaceColumns.some((column) => column.name === "comment")) {
     database.exec("ALTER TABLE hub_workspaces ADD COLUMN comment TEXT NOT NULL DEFAULT ''");
   }
+  const streamColumns = database.prepare("PRAGMA table_info(hub_streams)").all();
+  if (!streamColumns.some((column) => column.name === "settings_json")) {
+    database.exec("ALTER TABLE hub_streams ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'");
+  }
 }
 
 function workspaceFromRow(row) {
@@ -100,6 +105,8 @@ function streamFromRow(row, streamCount = 0) {
   if (!row) return null;
   const name = row.name ? String(row.name) : null;
   const ordinal = Number(row.ordinal) || 1;
+  let settings = {};
+  try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { settings = {}; }
   return {
     id: String(row.id),
     workspaceId: String(row.workspace_id),
@@ -109,6 +116,7 @@ function streamFromRow(row, streamCount = 0) {
     createdAtMs: Number(row.created_at_ms) || 0,
     updatedAtMs: Number(row.updated_at_ms) || 0,
     archivedAtMs: row.archived_at_ms == null ? null : Number(row.archived_at_ms),
+    settings,
   };
 }
 
@@ -297,7 +305,9 @@ export class WorkspaceCatalogStore {
     ).get(key));
   }
 
-  createStream({ id = this.#idFactory(), workspaceId, name = null, ordinal = null } = {}) {
+  createStream({
+    id = this.#idFactory(), workspaceId, name = null, ordinal = null, settings = {},
+  } = {}) {
     const streamId = safeIdentifier(id, "stream id");
     const targetWorkspaceId = safeIdentifier(workspaceId, "workspace id");
     if (!this.workspace(targetWorkspaceId)) throw new Error(`workspace not found: ${targetWorkspaceId}`);
@@ -311,9 +321,17 @@ export class WorkspaceCatalogStore {
     const nowMs = this.#nowMs();
     this.#database.prepare(`
       INSERT INTO hub_streams
-        (id, workspace_id, ordinal, name, created_at_ms, updated_at_ms, archived_at_ms)
-      VALUES (?, ?, ?, ?, ?, ?, NULL)
-    `).run(streamId, targetWorkspaceId, nextOrdinal, normalizedStreamName(name), nowMs, nowMs);
+        (id, workspace_id, ordinal, name, settings_json, created_at_ms, updated_at_ms, archived_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+    `).run(
+      streamId,
+      targetWorkspaceId,
+      nextOrdinal,
+      normalizedStreamName(name),
+      JSON.stringify(settings ?? {}),
+      nowMs,
+      nowMs,
+    );
     return this.stream(streamId);
   }
 
@@ -334,6 +352,15 @@ export class WorkspaceCatalogStore {
     this.#database.prepare(`
       UPDATE hub_streams SET name = ?, updated_at_ms = ? WHERE id = ?
     `).run(normalizedStreamName(name), this.#nowMs(), id);
+    return this.stream(id);
+  }
+
+  updateStreamSettings(streamId, settings = {}) {
+    const id = safeIdentifier(streamId, "stream id");
+    if (!this.stream(id)) throw new Error(`stream not found: ${id}`);
+    this.#database.prepare(`
+      UPDATE hub_streams SET settings_json = ?, updated_at_ms = ? WHERE id = ?
+    `).run(JSON.stringify(settings ?? {}), this.#nowMs(), id);
     return this.stream(id);
   }
 
