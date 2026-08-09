@@ -571,7 +571,7 @@ html[data-theme="gothic"] .chip-button.primary {
   html[data-theme="gothic"]:not([data-surface="mobile"]) body > .workspace {
     grid-template-columns: var(--task-rail-width) clamp(640px, 43vw, 1080px);
     justify-content: start;
-    padding: 0 0 0.65rem;
+    padding: 0;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"])

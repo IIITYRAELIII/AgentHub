@@ -214,5 +214,9 @@ test("desktop shell owns the shared header and Stream control shapes", async () 
   assert.match(gothic, /\.app-header::before\s*\{[^}]*left:\s*16\.5rem;/u);
   assert.match(gothic, /body > \.workspace\s*\{[^}]*column-gap:\s*0;/u);
   assert.match(gothic, /body > \.workspace\s*\{[^}]*margin-top:\s*-10px;/u);
+  assert.match(
+    gothic,
+    /@media \(min-width: 1120px\) \{[\s\S]*?body > \.workspace\s*\{[^}]*padding:\s*0;/u,
+  );
   assert.match(gothic, /--shell-tab-active-border:\s*1px solid rgb\(105 100 90 \/ 62%\);/u);
 });
