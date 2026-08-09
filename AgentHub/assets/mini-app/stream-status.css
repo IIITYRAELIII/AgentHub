@@ -205,3 +205,113 @@
 .stream-tab[data-maintenance="rotation"] .stream-tab-card {
   outline: 2px double color-mix(in srgb, var(--accent) 78%, transparent);
 }
+
+/* ========================= «Подсвечивать панели Stream целиком» для новых ===
+   Переключатель заливки меняет носитель эффекта: вместо кромки или точки тот
+   же эффект занимает всю поверхность карточки. Формулы движения не меняются —
+   меняются только геометрия слоя и его плотность. */
+
+/* Дыхание и осадок уже занимают всю поверхность: в заливке они просто плотнее. */
+:root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
+  .task-workspace-item[data-running]::after,
+:root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
+  .stream-tab[data-running] .stream-tab-card::after {
+  animation-name: stream-breath-fill;
+}
+
+:root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
+  .task-workspace-item[data-unread]:not([data-running])::after,
+:root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
+  .stream-tab[data-answer-ready] .stream-tab-card::after {
+  animation-name: stream-breath-ready-fill;
+}
+
+@keyframes stream-breath-fill {
+  0%, 100% { opacity: 0.04; }
+  50% { opacity: 0.16; }
+}
+
+@keyframes stream-breath-ready-fill {
+  0% { opacity: 0.05; }
+  55% { opacity: 0.3; }
+  100% { opacity: 0.19; }
+}
+
+:root[data-stream-status-style="fill"][data-stream-status-effect="sediment"]
+  .task-workspace-item[data-running]::after,
+:root[data-stream-status-style="fill"][data-stream-status-effect="sediment"]
+  .stream-tab[data-running] .stream-tab-card::after {
+  opacity: 0.3;
+}
+
+:root[data-stream-status-style="fill"][data-stream-status-effect="sediment"]
+  .task-workspace-item[data-unread]:not([data-running])::after,
+:root[data-stream-status-style="fill"][data-stream-status-effect="sediment"]
+  .stream-tab[data-answer-ready] .stream-tab-card::after {
+  opacity: 0.38;
+}
+
+/* Нить в заливке разворачивается в занавес: та же анимация по вертикали, но
+   уже на всю ширину карточки. */
+:root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
+  .task-workspace-item[data-running]::after,
+:root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
+  .stream-tab[data-running] .stream-tab-card::after,
+:root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
+  .task-workspace-item[data-unread]:not([data-running])::after,
+:root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
+  .stream-tab[data-answer-ready] .stream-tab-card::after {
+  background: linear-gradient(180deg, transparent, var(--accent) 40%, var(--accent) 60%, transparent);
+  border-radius: inherit;
+  inset: 0;
+  opacity: 0.16;
+  width: auto;
+}
+
+:root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
+  .task-workspace-item[data-unread]:not([data-running])::after,
+:root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
+  .stream-tab[data-answer-ready] .stream-tab-card::after {
+  background: var(--accent);
+  opacity: 0.2;
+}
+
+/* Эхо в заливке: во время хода панель едва подсвечена ровным светом вместо
+   точки, а готовность даёт вспышку по всей поверхности вместо кольца. */
+:root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
+  .task-workspace-item[data-running]::after,
+:root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
+  .stream-tab[data-running] .stream-tab-card::after {
+  background: var(--accent);
+  border-radius: inherit;
+  height: auto;
+  inset: 0;
+  opacity: 0.07;
+  width: auto;
+}
+
+:root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
+  .task-workspace-item[data-unread]:not([data-running])::after,
+:root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
+  .stream-tab[data-answer-ready] .stream-tab-card::after {
+  animation: stream-echo-fill 1.15s ease-out 2;
+  background: var(--accent);
+  border: 0;
+  border-radius: inherit;
+  inset: 0;
+}
+
+@keyframes stream-echo-fill {
+  0% { opacity: 0.28; }
+  100% { opacity: 0.06; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
+    .task-workspace-item[data-unread]:not([data-running])::after,
+  :root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
+    .stream-tab[data-answer-ready] .stream-tab-card::after {
+    animation: none;
+    opacity: 0.14;
+  }
+}
