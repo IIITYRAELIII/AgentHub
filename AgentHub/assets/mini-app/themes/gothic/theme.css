@@ -172,19 +172,13 @@ html[data-theme="gothic"] .task-rail-title {
     --shell-header-background:
       linear-gradient(rgb(5 6 6 / 58%), rgb(5 6 6 / 58%)),
       var(--gothic-iron-texture) center / 24rem 24rem;
-    --shell-header-frame-border: 3px solid rgb(55 53 48 / 96%);
-    --shell-header-frame-filter: none;
-    --shell-header-frame-image: none;
+    --shell-header-frame-border: 10px solid transparent;
+    --shell-header-frame-filter: brightness(1.12) contrast(1.1) saturate(0.76);
+    --shell-header-frame-image: var(--gothic-forged-frame-matte) 9% / 10px 10px 0 10px stretch;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header::before {
-    background-image: var(--gothic-header-rivet), var(--gothic-header-rivet);
-    background-origin: border-box;
-    background-position: 12px 11px, right 12px top 11px;
-    background-repeat: no-repeat;
-    background-size: 8px 8px;
     border-bottom-width: 0;
-    box-shadow: inset 0 1px 0 rgb(216 187 145 / 7%), inset -1px 0 0 rgb(0 0 0 / 84%);
     left: 16.5rem;
   }
 
@@ -204,16 +198,10 @@ html[data-theme="gothic"] .task-rail-title {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::before {
-    background-image: var(--gothic-header-rivet), var(--gothic-header-rivet);
-    background-origin: border-box;
-    background-position: 12px 11px, right 0 top 11px;
-    background-repeat: no-repeat;
-    background-size: 8px 8px;
-    border: 3px solid rgb(55 53 48 / 96%);
+    border: 10px solid transparent;
     border-bottom-width: 0;
-    border-image: none;
+    border-image: var(--gothic-forged-frame-matte) 9% / 10px 10px 0 10px stretch;
     box-sizing: border-box;
-    box-shadow: inset 0 1px 0 rgb(216 187 145 / 7%), inset -1px 0 0 rgb(0 0 0 / 84%);
     content: "";
     filter: brightness(1.12) contrast(1.1) saturate(0.76);
     inset: 0;
@@ -488,7 +476,7 @@ html[data-theme="gothic"] .chip-button.primary {
   html[data-theme="gothic"]:not([data-surface="mobile"]) body > .workspace {
     column-gap: 0;
     margin-inline: 0;
-    margin-top: -10px;
+    margin-top: 0;
     max-width: none;
     padding-inline: 0;
     width: 100%;
