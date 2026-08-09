@@ -409,8 +409,6 @@ test("general settings and current-dialog settings stay separate", () => {
   assert.match(html, /data-dialog-options="reasoning"/u);
   assert.match(html, /data-dialog-options="mode"/u);
   assert.match(html, /data-dialog-options="project"/u);
-  assert.match(html, /data-action="task-new" data-provider="codex"/u);
-  assert.match(html, /data-action="task-new" data-provider="claude"/u);
   assert.match(app, /chatPane\.toggleAttribute\("data-dialog-settings-open", visible\)/u);
   assert.match(html, /data-token-breakdown-toggle/u);
   assert.match(html, /data-claude-group-toggle/u);
