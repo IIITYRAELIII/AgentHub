@@ -1946,7 +1946,7 @@ function renderStreamChatPreview(task) {
   } else if (!messages.length) {
     log.append(el("p", { class: "stream-chat-preview-empty", text: "История пуста." }));
   } else {
-    for (const message of messages.slice(-20)) log.append(renderMessage(message, { readOnly: true }));
+    for (const message of messages.slice(-20)) log.append(renderMessage(message, { readOnly: true, task }));
   }
   const live = state.live.get(task.id);
   if (liveCardHasContent(live)) {
@@ -1963,7 +1963,7 @@ function renderStreamChatPreview(task) {
       ]),
       el("div", { class: "msg-body", "data-live-body": "" }),
     ]);
-    populateLiveCard(liveNode, live, task.agentLabel || "Агент");
+    populateLiveCard(liveNode, live, task.agentLabel || "Агент", task);
     log.append(liveNode);
   }
   const queue = el("div", {
@@ -2974,19 +2974,93 @@ chatScroll.addEventListener("touchend", () => {
 
 chatScroll.addEventListener("touchcancel", resetHistoryPull);
 
-function markdownLink(raw) {
+const knownBareFileExtensions = new Set([
+  "bsl", "c", "cfe", "cf", "cmd", "cpp", "cs", "csproj", "css", "docx", "epf", "erf",
+  "go", "h", "html", "ini", "java", "jpeg", "jpg", "js", "json", "jsx", "md", "mjs",
+  "pdf", "php", "png", "ps1", "py", "rb", "rs", "sh", "sql", "svg", "toml", "ts", "tsx",
+  "txt", "xml", "yaml", "yml",
+]);
+
+function currentFileLinkContext(task = currentTask()) {
+  return {
+    projectRoot: String(task?.projectRoot ?? "").trim(),
+    basePath: String(task?.sessionCwd ?? task?.projectRoot ?? "").trim(),
+  };
+}
+
+function normalizeWindowsPath(raw) {
+  const source = String(raw ?? "").trim()
+    .replace(/^\/(?=[A-Za-z]:[\\/])/u, "")
+    .replaceAll("\\", "/");
+  const match = source.match(/^([A-Za-z]):\/(.*)$/u);
+  if (!match) return "";
+  const segments = [];
+  for (const segment of match[2].split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (!segments.length) return "";
+      segments.pop();
+    } else {
+      segments.push(segment);
+    }
+  }
+  return `${match[1].toUpperCase()}:/${segments.join("/")}`;
+}
+
+function fileReferenceParts(raw) {
   const source = String(raw ?? "").trim();
   const value = source.startsWith("<") && source.endsWith(">")
     ? source.slice(1, -1).trim()
     : source;
-  const localPath = value.replace(/^\/(?=[A-Za-z]:[\\/])/u, "");
-  if (/^[A-Za-z]:[\\/]/u.test(localPath) && (vscodeMode || surface === "desktop")) {
-    const editorPath = localPath.replaceAll("\\", "/");
-    return {
-      href: vscodeMode ? "#" : `vscode://file/${encodeURI(editorPath)}`,
-      localPath,
-    };
+  if (!value || /^(?:https?|vscode):/iu.test(value)) return null;
+  const match = value.match(/^(?<file>.+?)(?::(?<line>[1-9][0-9]*))?(?::(?<column>[1-9][0-9]*))?$/u);
+  const file = String(match?.groups?.file ?? "").trim();
+  const absolute = /^\/?[A-Za-z]:[\\/]/u.test(file);
+  const name = file.replaceAll("\\", "/").split("/").at(-1) ?? "";
+  const extension = name.match(/\.([^./\\\s:]+)$/u)?.[1]?.toLowerCase() ?? "";
+  if (!file || (!absolute && !file.includes("/") && !file.includes("\\")
+    && !knownBareFileExtensions.has(extension))) return null;
+  return {
+    file,
+    line: Number(match?.groups?.line) || 0,
+    column: Number(match?.groups?.column) || 0,
+  };
+}
+
+function desktopFileLink(raw, fileContext = currentFileLinkContext()) {
+  if (!(vscodeMode || surface === "desktop")) return null;
+  const reference = fileReferenceParts(raw);
+  if (!reference) return null;
+  const root = normalizeWindowsPath(fileContext?.projectRoot);
+  const base = normalizeWindowsPath(fileContext?.basePath) || root;
+  const absolute = /^\/?[A-Za-z]:[\\/]/u.test(reference.file);
+  const editorPath = normalizeWindowsPath(absolute
+    ? reference.file
+    : `${base}/${reference.file}`);
+  if (!editorPath) return null;
+  if (root) {
+    const normalizedRoot = root.toLowerCase();
+    const normalizedEditorPath = editorPath.toLowerCase();
+    if (normalizedEditorPath !== normalizedRoot
+      && !normalizedEditorPath.startsWith(`${normalizedRoot}/`)) return null;
   }
+  const location = reference.line
+    ? `:${reference.line}${reference.column ? `:${reference.column}` : ""}`
+    : "";
+  const localPath = `${editorPath}${location}`;
+  return {
+    href: vscodeMode ? "#" : `vscode://file/${encodeURI(localPath)}`,
+    localPath,
+  };
+}
+
+function markdownLink(raw, fileContext = currentFileLinkContext()) {
+  const source = String(raw ?? "").trim();
+  const value = source.startsWith("<") && source.endsWith(">")
+    ? source.slice(1, -1).trim()
+    : source;
+  const localLink = desktopFileLink(value, fileContext);
+  if (localLink) return localLink;
   try {
     const url = new URL(value, window.location.href);
     return ["http:", "https:"].includes(url.protocol) ? { href: url.href } : null;
@@ -3008,7 +3082,7 @@ function codexFileCitation(raw) {
   return { path, label: location ? `${name} · ${location}` : name };
 }
 
-function appendInlineMarkdown(target, source) {
+function appendInlineMarkdown(target, source, fileContext = currentFileLinkContext()) {
   const text = String(source ?? "");
   const pattern = /(:codex-file-citation\{[^}\n]+\}|`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\([^)\n]+\))/gu;
   let cursor = 0;
@@ -3017,7 +3091,7 @@ function appendInlineMarkdown(target, source) {
     const token = match[0];
     if (token.startsWith(":codex-file-citation{")) {
       const citation = codexFileCitation(token);
-      const targetLink = markdownLink(citation?.path);
+      const targetLink = markdownLink(citation?.path, fileContext);
       const attributes = {
         class: "file-citation",
         text: citation?.label ?? "Файл",
@@ -3036,18 +3110,33 @@ function appendInlineMarkdown(target, source) {
         target.append(el("span", attributes));
       }
     } else if (token.startsWith("`")) {
-      target.append(el("code", { text: token.slice(1, -1) }));
+      const value = token.slice(1, -1);
+      const targetLink = desktopFileLink(value, fileContext);
+      const code = el("code", { text: value });
+      if (targetLink) {
+        const link = el("a", {
+          class: "inline-file-link",
+          href: targetLink.href,
+          target: "_blank",
+          rel: "noopener noreferrer",
+          title: targetLink.localPath,
+        }, [code]);
+        link.dataset.agentHubLocalLink = targetLink.localPath;
+        target.append(link);
+      } else {
+        target.append(code);
+      }
     } else if (token.startsWith("**")) {
       const strong = el("strong");
-      appendInlineMarkdown(strong, token.slice(2, -2));
+      appendInlineMarkdown(strong, token.slice(2, -2), fileContext);
       target.append(strong);
     } else if (token.startsWith("*")) {
       const emphasis = el("em");
-      appendInlineMarkdown(emphasis, token.slice(1, -1));
+      appendInlineMarkdown(emphasis, token.slice(1, -1), fileContext);
       target.append(emphasis);
     } else {
       const parts = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/u);
-      const targetLink = markdownLink(parts?.[2]);
+      const targetLink = markdownLink(parts?.[2], fileContext);
       if (targetLink) {
         const link = el("a", {
           href: targetLink.href,
@@ -3115,12 +3204,12 @@ function markdownTableAt(lines, index) {
   return { headers, alignments, rows, nextIndex };
 }
 
-function renderMarkdownTable(table) {
+function renderMarkdownTable(table, fileContext) {
   const head = el("tr");
   table.headers.forEach((value, index) => {
     const cell = el("th", { scope: "col" });
     cell.style.textAlign = table.alignments[index];
-    appendInlineMarkdown(cell, value);
+    appendInlineMarkdown(cell, value, fileContext);
     head.append(cell);
   });
   const body = el("tbody");
@@ -3129,7 +3218,7 @@ function renderMarkdownTable(table) {
     values.forEach((value, index) => {
       const cell = el("td");
       cell.style.textAlign = table.alignments[index];
-      appendInlineMarkdown(cell, value);
+      appendInlineMarkdown(cell, value, fileContext);
       row.append(cell);
     });
     body.append(row);
@@ -3139,7 +3228,7 @@ function renderMarkdownTable(table) {
   ]);
 }
 
-function renderMarkdown(target, source) {
+function renderMarkdown(target, source, fileContext = currentFileLinkContext()) {
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
   let index = 0;
@@ -3163,14 +3252,14 @@ function renderMarkdown(target, source) {
     const heading = line.match(/^\s*(#{1,6})\s+(.+)$/u);
     if (heading) {
       const node = document.createElement(`h${heading[1].length}`);
-      appendInlineMarkdown(node, heading[2]);
+      appendInlineMarkdown(node, heading[2], fileContext);
       target.append(node);
       index += 1;
       continue;
     }
     const table = markdownTableAt(lines, index);
     if (table) {
-      target.append(renderMarkdownTable(table));
+      target.append(renderMarkdownTable(table, fileContext));
       index = table.nextIndex;
       continue;
     }
@@ -3182,7 +3271,7 @@ function renderMarkdown(target, source) {
         const item = lines[index].match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
         if (!item || Boolean(item[2]) !== ordered) break;
         const entry = el("li");
-        appendInlineMarkdown(entry, item[3]);
+        appendInlineMarkdown(entry, item[3], fileContext);
         node.append(entry);
         index += 1;
       }
@@ -3193,7 +3282,7 @@ function renderMarkdown(target, source) {
       const quote = el("blockquote");
       while (index < lines.length && /^\s*>\s?/u.test(lines[index])) {
         if (quote.childNodes.length) quote.append(document.createElement("br"));
-        appendInlineMarkdown(quote, lines[index].replace(/^\s*>\s?/u, ""));
+        appendInlineMarkdown(quote, lines[index].replace(/^\s*>\s?/u, ""), fileContext);
         index += 1;
       }
       target.append(quote);
@@ -3209,7 +3298,7 @@ function renderMarkdown(target, source) {
     const node = el("p");
     paragraph.forEach((part, lineIndex) => {
       if (lineIndex) node.append(document.createElement("br"));
-      appendInlineMarkdown(node, part);
+      appendInlineMarkdown(node, part, fileContext);
     });
     target.append(node);
   }
@@ -3296,7 +3385,7 @@ function turnTraceNode(groups) {
   ]);
 }
 
-function renderMessage(message, { readOnly = false } = {}) {
+function renderMessage(message, { readOnly = false, task = currentTask() } = {}) {
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
   const maintenance = role === "system" && message.kind === "maintenance";
   const article = el("article", {
@@ -3329,7 +3418,9 @@ function renderMessage(message, { readOnly = false } = {}) {
     ...(role === "user" ? { "data-user-message-disclosure": "" } : {}),
   });
   // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
-  if (!renderResponseAnnotations(body, message)) renderMarkdown(body, message.text ?? "");
+  if (!renderResponseAnnotations(body, message)) {
+    renderMarkdown(body, message.text ?? "", currentFileLinkContext(task));
+  }
 
   if (maintenance) article.append(body);
   else article.append(head);
@@ -3406,7 +3497,7 @@ function liveCardHasContent(live) {
   ));
 }
 
-function populateLiveCard(node, live, fallbackAuthor = "Агент") {
+function populateLiveCard(node, live, fallbackAuthor = "Агент", task = currentTask()) {
   if (!node || !liveCardHasContent(live)) return false;
   const visibleText = liveTextAfterMessages(live);
   node.querySelector("[data-live-author]").textContent = live.author || fallbackAuthor;
@@ -3417,7 +3508,8 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент") {
   const reasoning = node.querySelector("[data-live-reasoning]");
   const groups = visibleTurnTraceGroups(live.activityGroups);
   const standaloneReasoning = groups.length ? "" : live.reasoning || "";
-  renderMarkdown(reasoning, standaloneReasoning);
+  const fileContext = currentFileLinkContext(task);
+  renderMarkdown(reasoning, standaloneReasoning, fileContext);
   reasoning.hidden = !standaloneReasoning;
   const liveTrace = node.querySelector("[data-live-trace]");
   const openGroupIds = new Set(Array.from(
@@ -3430,7 +3522,7 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент") {
   })] : []));
   liveTrace.hidden = groups.length === 0;
   const body = node.querySelector("[data-live-body]");
-  renderMarkdown(body, visibleText);
+  renderMarkdown(body, visibleText, fileContext);
   body.hidden = !visibleText;
   const activityFeed = node.querySelector("[data-activity-feed]");
   const activities = Array.isArray(live.activities) ? live.activities : [];

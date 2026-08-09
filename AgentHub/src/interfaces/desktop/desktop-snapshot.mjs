@@ -212,6 +212,7 @@ export function createDesktopSnapshotFactory({
       threadPosition: Number(entry.threadPosition) || 1,
       provider: entry.provider,
       projectRoot: entry.projectRoot,
+      sessionCwd: entry.sessionCwd ?? null,
       projectName: entry.projectName ?? tasks.projectNameFor(entry.projectRoot),
       threadId: entry.threadId,
       title: displayTitle,

@@ -6233,6 +6233,18 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   text-underline-offset: 0.15em;
 }
 
+.msg-body .inline-file-link,
+.msg-reasoning .inline-file-link {
+  text-decoration: none;
+}
+
+.msg-body .inline-file-link code,
+.msg-reasoning .inline-file-link code {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  color: var(--accent);
+  cursor: pointer;
+}
+
 .file-citation {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);

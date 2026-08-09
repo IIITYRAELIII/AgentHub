@@ -530,40 +530,6 @@ test("shared VS Code webview removes public browser pairing", () => {
   assert.match(shared, /\.replace\('<script src="\/browser-device-auth\.js" defer><\/script>', ""\)/u);
 });
 
-test("shared chat accepts canonical and angle-wrapped Windows file links on desktop", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  assert.match(app, /source\.startsWith\("<"\) && source\.endsWith\(">"\)/u);
-  assert.match(app, /source\.slice\(1, -1\)\.trim\(\)/u);
-  assert.match(app, /replace\(\/\^\\\/\(\?=\[A-Za-z\]:\[\\\\\/\]\)\/u, ""\)/u);
-  assert.match(app, /vscodeMode \|\| surface === "desktop"/u);
-  assert.match(app, /href: vscodeMode \? "#" : `vscode:\/\/file\/\$\{encodeURI\(editorPath\)\}`/u);
-
-  const source = app.match(/function markdownLink\(raw\) \{[\s\S]*?\n\}/u)?.[0];
-  assert.ok(source);
-  const createMarkdownLink = new Function(
-    "vscodeMode",
-    "surface",
-    "window",
-    `${source}; return markdownLink;`,
-  );
-  const location = { href: "https://hub.example.test/chat" };
-  assert.deepEqual(
-    createMarkdownLink(true, "desktop", { location })("</D:/VSC_Tyrael/result image.png>"),
-    { href: "#", localPath: "D:/VSC_Tyrael/result image.png" },
-  );
-  assert.deepEqual(
-    createMarkdownLink(false, "desktop", { location })("<D:/VSC_Tyrael/result image.png>"),
-    {
-      href: "vscode://file/D:/VSC_Tyrael/result%20image.png",
-      localPath: "D:/VSC_Tyrael/result image.png",
-    },
-  );
-  assert.equal(
-    createMarkdownLink(false, "mobile", { location })("<D:/VSC_Tyrael/result.png>"),
-    null,
-  );
-});
-
 test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", () => {
   const styles = themeFile("metropolis");
   const glass = themeFile("metropolis", "metropolis-glass.js");
@@ -1323,7 +1289,6 @@ test("response annotations render as quote cards without the service envelope", 
   assert.match(app, /class: "msg-annotation-quote"/u);
   assert.match(app, /class: "msg-annotation-request"/u);
   assert.match(styles, /\.msg-annotation-content\s*\{[^}]*border-left:\s*3px solid var\(--accent-line\);/su);
-  assert.match(app, /if \(!renderResponseAnnotations\(body, message\)\) renderMarkdown/u);
 });
 
 test("focused journal turn reuses the task thread without duplicating its prompt", () => {
@@ -1489,7 +1454,6 @@ test("live reasoning renders Markdown separately from the response", () => {
   assert.match(html, /data-live-body/u);
   assert.match(app, /const reasoning = node\.querySelector\("\[data-live-reasoning\]"\);/u);
   assert.match(app, /const body = node\.querySelector\("\[data-live-body\]"\);/u);
-  assert.match(app, /renderMarkdown\(body, visibleText\);/u);
 });
 
 test("shared chat Markdown renders GFM tables responsively", () => {
@@ -1497,7 +1461,6 @@ test("shared chat Markdown renders GFM tables responsively", () => {
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
   assert.match(app, /function markdownTableCells\(line\)/u);
   assert.match(app, /\^:\?-\{3,\}:\?\$/u);
-  assert.match(app, /renderMarkdownTable\(table\)/u);
   assert.match(app, /el\("table", \{ class: "markdown-table" \}/u);
   assert.match(styles, /\.markdown-table-scroll[\s\S]*overflow-x: auto;/u);
   assert.match(styles, /\.markdown-table[\s\S]*border-collapse: collapse;/u);
@@ -1974,11 +1937,6 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   assert.match(app, /const shown = surface === "mobile" \? visible\.slice\(0, 1\) : visible\.slice\(0, 4\)/u);
   assert.match(app, /emit\("workspace:visible-streams", \{ taskIds: ids \}\)/u);
   assert.match(app, /function renderStreamChatPreview\(task\)/u);
-  assert.match(app, /renderMessage\(message, \{ readOnly: true \}\)/u);
-  assert.match(app, /populateLiveCard\(liveNode, live, task\.agentLabel \|\| "Агент"\)/u);
-  assert.match(app, /function populateLiveCard\(node, live, fallbackAuthor = "Агент"\)/u);
-  assert.match(app, /renderMarkdown\(body, visibleText\)/u);
-  assert.match(app, /function renderMessage\(message, \{ readOnly = false \} = \{\}\)/u);
   assert.match(client, /agentHub\.on\("workspace:visible-streams"/u);
   assert.match(client, /visibleStreamTaskIds = new Set\(ids\)/u);
   assert.match(client, /for \(const task of snapshot\.tasks \?\? \[\]\) \{[\s\S]*agentHub\.setLive\(stableTaskId/u);

@@ -20,6 +20,16 @@ function relativeSegments(value) {
     .filter((part) => part && part !== ".");
 }
 
+function editorFileTarget(value) {
+  const decoded = decodeURIComponent(String(value ?? "").trim());
+  const match = decoded.match(/^(?<file>.+?)(?::(?<line>[1-9][0-9]*))?(?::(?<column>[1-9][0-9]*))?$/u);
+  return {
+    file: String(match?.groups?.file ?? decoded),
+    line: Number(match?.groups?.line) || 0,
+    column: Number(match?.groups?.column) || 0,
+  };
+}
+
 async function firstExisting(candidates) {
   for (const candidate of candidates) {
     try {
@@ -283,12 +293,12 @@ class WorkLogViewProvider {
       await vscode.env.openExternal(vscode.Uri.parse(href));
       return;
     }
-    const decoded = decodeURIComponent(href);
-    const absolute = /^[A-Za-z]:[\\/]/u.test(decoded);
+    const fileTarget = editorFileTarget(href);
+    const absolute = /^[A-Za-z]:[\\/]/u.test(fileTarget.file);
     const target = absolute
       ? await firstExisting(this.workspaceFolders().flatMap((folder) => {
         const root = path.resolve(folder.uri.fsPath);
-        const candidate = path.resolve(decoded);
+        const candidate = path.resolve(fileTarget.file);
         const relative = path.relative(root, candidate);
         return relative && !relative.startsWith("..") && !path.isAbsolute(relative)
           ? [vscode.Uri.file(candidate)]
@@ -297,10 +307,20 @@ class WorkLogViewProvider {
       : await firstExisting(
         this.workspaceFolders().map((folder) => vscode.Uri.joinPath(
           folder.uri,
-          ...relativeSegments(decoded),
+          ...relativeSegments(fileTarget.file),
         )),
       );
-    if (target) await vscode.commands.executeCommand("vscode.open", target);
+    if (target) {
+      const options = fileTarget.line ? {
+        selection: new vscode.Range(
+          Math.max(0, fileTarget.line - 1),
+          Math.max(0, fileTarget.column - 1),
+          Math.max(0, fileTarget.line - 1),
+          Math.max(0, fileTarget.column - 1),
+        ),
+      } : undefined;
+      await vscode.commands.executeCommand("vscode.open", target, options);
+    }
   }
 
   dispose() {

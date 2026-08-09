@@ -49,6 +49,7 @@ function fixture(overrides = {}) {
     streamDisplayName: "",
     streamOrdinal: 1,
     threadPosition: 1,
+    sessionCwd: "D:/work/repository",
     title: "Задача",
     running: true,
     activityUnknown: false,
@@ -404,6 +405,7 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
     "threadPosition",
     "provider",
     "projectRoot",
+    "sessionCwd",
     "projectName",
     "threadId",
     "title",
@@ -427,6 +429,7 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
     "run",
   ]);
   assert.equal(snapshot.projectName, "Проект");
+  assert.equal(snapshot.sessionCwd, "D:/work/repository");
   assert.equal(snapshot.streamId, "stream-1");
   assert.equal(snapshot.workspaceName, "Agent HUB");
   assert.equal(snapshot.title, "Agent HUB - Stream 1");
