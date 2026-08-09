@@ -9,8 +9,13 @@
     return Number(scrollHeight) > Number(collapseHeight);
   }
 
+  function liveActivityDisclosureOpen({ open = false, wasHidden = false, visible = false } = {}) {
+    return Boolean(visible && !wasHidden && open);
+  }
+
   window.AgentHubMessageDisclosure = Object.freeze({
     USER_MESSAGE_COLLAPSE_HEIGHT_PX,
     hasCollapsedOverflow,
+    liveActivityDisclosureOpen,
   });
 })();

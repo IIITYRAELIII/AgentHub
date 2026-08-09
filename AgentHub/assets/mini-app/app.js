@@ -17,7 +17,11 @@
 /* ------------------------------------------------------------- ссылки DOM */
 
 const root = document.documentElement;
-const { USER_MESSAGE_COLLAPSE_HEIGHT_PX, hasCollapsedOverflow } = window.AgentHubMessageDisclosure;
+const {
+  USER_MESSAGE_COLLAPSE_HEIGHT_PX,
+  hasCollapsedOverflow,
+  liveActivityDisclosureOpen,
+} = window.AgentHubMessageDisclosure;
 const expandedUserMessageIds = new Set();
 let messageDisclosureFrame = 0;
 const journal = document.querySelector("[data-journal]");
@@ -3276,7 +3280,13 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент") {
   body.hidden = !visibleText;
   const activityFeed = node.querySelector("[data-activity-feed]");
   const activities = Array.isArray(live.activities) ? live.activities : [];
-  activityFeed.hidden = groups.length > 0 || activities.length === 0;
+  const activityFeedVisible = groups.length === 0 && activities.length > 0;
+  activityFeed.open = liveActivityDisclosureOpen({
+    open: activityFeed.open,
+    wasHidden: activityFeed.hidden,
+    visible: activityFeedVisible,
+  });
+  activityFeed.hidden = !activityFeedVisible;
   node.querySelector("[data-activity-summary]").textContent = `Выполненные действия (${activities.length})`;
   node.querySelector("[data-activity-list]").replaceChildren(...activities.map((activity) => el("div", {
     class: "activity-item",

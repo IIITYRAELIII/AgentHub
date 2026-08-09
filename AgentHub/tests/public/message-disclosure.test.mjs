@@ -17,6 +17,13 @@ test("user message disclosure appears only for real visual overflow", async () =
   assert.equal(hasCollapsedOverflow(height + 1), true);
 });
 
+test("live activity disclosure starts closed and preserves only a manual opening", async () => {
+  const { liveActivityDisclosureOpen } = await disclosureApi();
+  assert.equal(liveActivityDisclosureOpen({ open: true, wasHidden: true, visible: true }), false);
+  assert.equal(liveActivityDisclosureOpen({ open: true, wasHidden: false, visible: true }), true);
+  assert.equal(liveActivityDisclosureOpen({ open: true, wasHidden: false, visible: false }), false);
+});
+
 test("shared shell keeps full text and limits only the rendered user-message body", async () => {
   const app = await readFile(new URL("../../assets/mini-app/app.js", import.meta.url), "utf8");
   const styles = await readFile(new URL("../../assets/mini-app/styles.css", import.meta.url), "utf8");
