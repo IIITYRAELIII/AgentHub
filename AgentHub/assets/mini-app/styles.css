@@ -5640,7 +5640,6 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 .queue-accept,
 .queue-steer,
 .queue-edit,
-.queue-move,
 .queue-pause {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   border: 1px solid var(--accent-line);
@@ -5655,7 +5654,6 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 .queue-accept:hover,
 .queue-steer:hover,
 .queue-edit:hover,
-.queue-move:hover,
 .queue-pause:hover {
   color: var(--text);
 }

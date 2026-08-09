@@ -234,6 +234,41 @@ test("an accepted steer binds when a partial live snapshot exposes only its unke
   assert.deepEqual([...reconciled.matchedIds], [clientUserMessageId]);
 });
 
+test("a partial unkeyed steer neither replaces the root nor inherits its attachments", () => {
+  const rootAttachment = { id: "root.png", name: "root.png", type: "image/png" };
+  const root = {
+    ...message("root-client", "Исходный запрос"),
+    itemId: "root-item",
+    turnUserSlot: "root",
+    attachments: [rootAttachment],
+  };
+  const snapshot = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    prompt: "Исходный запрос",
+    clientUserMessageId: "root-client",
+    attachments: [rootAttachment],
+    userMessages: [{
+      itemId: "temporary-steer-item",
+      text: "Уточнение в текущий ход",
+    }],
+  };
+
+  const merged = lifecycle.mergeLiveUserMessages([root], snapshot);
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0].text, "Исходный запрос");
+  assert.deepEqual(JSON.parse(JSON.stringify(merged[0].attachments)), [rootAttachment]);
+  assert.equal(merged[1].text, "Уточнение в текущий ход");
+  assert.equal(merged[1].turnUserSlot, "steer");
+  assert.deepEqual(JSON.parse(JSON.stringify(merged[1].attachments)), []);
+
+  const partialOnly = lifecycle.mergeLiveUserMessages([], snapshot);
+  assert.equal(partialOnly.length, 1);
+  assert.equal(partialOnly[0].turnUserSlot, "steer");
+  assert.deepEqual(JSON.parse(JSON.stringify(partialOnly[0].attachments)), []);
+});
+
 test("temporary server echo keeps optimistic response annotations until rollout confirms them", () => {
   const local = {
     ...message("client-quote", "Это не повторится больше?"),

@@ -3445,14 +3445,6 @@ function renderQueueForTask(taskId, container) {
       }));
       if (["queued", "paused"].includes(entry.state)) {
         actions.push(el("button", {
-          type: "button", class: "queue-move", "data-action": "queue-move-up", "data-queue-id": entry.id,
-          title: "Поднять сообщение в очереди", "aria-label": "Поднять сообщение в очереди", text: "↑",
-        }));
-        actions.push(el("button", {
-          type: "button", class: "queue-move", "data-action": "queue-move-down", "data-queue-id": entry.id,
-          title: "Опустить сообщение в очереди", "aria-label": "Опустить сообщение в очереди", text: "↓",
-        }));
-        actions.push(el("button", {
           type: "button",
           class: "queue-pause",
           "data-action": entry.state === "paused" ? "queue-resume" : "queue-pause",
@@ -4929,12 +4921,6 @@ async function handleAction(action, trigger) {
       if (text != null) emit("queue:edit", { taskId, id: entry.id, text });
       break;
     }
-    case "queue-move-up":
-      emit("queue:move", { taskId, id: trigger.dataset.queueId, direction: "up" });
-      break;
-    case "queue-move-down":
-      emit("queue:move", { taskId, id: trigger.dataset.queueId, direction: "down" });
-      break;
     case "queue-pause":
       emit("queue:pause", { taskId, id: trigger.dataset.queueId });
       break;

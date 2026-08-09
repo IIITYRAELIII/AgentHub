@@ -455,6 +455,7 @@ function mergeLiveUserMessages(messages, {
   for (const [index, message] of live.entries()) {
     const text = String(message?.text ?? "").trim();
     if (!provider || !threadId || !turnId || !text) continue;
+    const turnUserSlot = liveTurnUserSlot(message, index, { prompt, clientUserMessageId });
     const candidate = {
       id: `${provider}:${threadId}:${turnId}:${message.itemId || `live-user-${index}`}:user`,
       provider,
@@ -462,7 +463,7 @@ function mergeLiveUserMessages(messages, {
       turnId,
       itemId: String(message.itemId ?? `live-user-${index}`),
       clientUserMessageId: String(message.clientUserMessageId ?? ""),
-      turnUserSlot: liveTurnUserSlot(message, index, { prompt, clientUserMessageId }),
+      turnUserSlot,
       role: "user",
       author: "Вы",
       text,
@@ -473,7 +474,7 @@ function mergeLiveUserMessages(messages, {
       time: message.time ?? time ?? null,
       attachments: Array.isArray(message.attachments) && message.attachments.length
         ? message.attachments.map((attachment) => ({ ...attachment }))
-        : index === 0
+        : turnUserSlot === "root"
           ? attachments.map((attachment) => ({ ...attachment }))
           : [],
     };
@@ -488,15 +489,10 @@ function mergeLiveUserMessages(messages, {
     const duplicateIndex = values.findIndex((existing) => (
       (clientKey && clientIdentityKey(existing) === clientKey)
       || (itemKey && identityKey(existing) === itemKey)
-      || (
-        !clientKey
-        && existing?.role === "user"
-        && String(existing?.provider ?? "") === provider
-        && String(existing?.threadId ?? "") === threadId
-        && String(existing?.turnId ?? "") === turnId
-      )
     ));
-    const fallbackDuplicateIndex = duplicateIndex < 0 && index === 0 && sameTurnUsers.length > 0
+    const fallbackDuplicateIndex = duplicateIndex < 0
+      && turnUserSlot === "root"
+      && sameTurnUsers.length > 0
       ? values.indexOf(sameTurnUsers[0])
       : duplicateIndex;
     if (fallbackDuplicateIndex < 0) {
