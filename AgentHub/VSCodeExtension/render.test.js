@@ -1018,7 +1018,7 @@ test("desktop themes share one shell-owned top-panel anchor", () => {
   );
   assert.match(
     styles,
-    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) body > \.workspace\s*\{[^}]*padding-top:\s*0\.72rem\s*!important;/su,
+    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) body > \.workspace\s*\{[^}]*padding-top:\s*var\(--shell-workspace-padding-top,\s*0\.72rem\)\s*!important;/su,
   );
 });
 
