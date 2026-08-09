@@ -17,6 +17,7 @@ function progressState({ stage, reasoning = "", displayRequested }) {
   const now = new Date().toISOString();
   return {
     responseText: "",
+    responseItems: [],
     status: "running",
     startedAt: now,
     progressMessageIds: [],

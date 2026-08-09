@@ -1,6 +1,12 @@
 import { unlink } from "node:fs/promises";
 import { emptyTokenUsage } from "../../domain/token-usage.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
+import {
+  appendCodexAgentMessageDelta,
+  completeCodexAgentMessage,
+  hydrateCodexAgentMessages,
+  startCodexAgentMessage,
+} from "./codex-agent-message-reducer.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -112,8 +118,12 @@ export class CodexEventService {
     }
     if (method === "item/agentMessage/delta" && run) {
       const delta = params.delta ?? "";
-      if (params.itemId) run.responseItemId = String(params.itemId);
-      run.responseText += delta;
+      appendCodexAgentMessageDelta(run, {
+        turnId: eventTurnId,
+        itemId: params.itemId,
+        delta,
+        hydrationReplay: params.agentHubHydrationReplay === true,
+      });
       if (delta) d.noteActivity(run);
       d.scheduleProgress(run);
     }
@@ -131,6 +141,7 @@ export class CodexEventService {
         });
       }
       if (run) {
+        startCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
         d.setStage(run, d.describeItem(params.item, false));
         const activity = d.itemActivity(params.item, false);
         if (activity) d.appendActivity(run, activity);
@@ -143,6 +154,7 @@ export class CodexEventService {
         });
       }
       if (run) {
+        completeCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
         d.setStage(run, d.describeItem(params.item, true));
         const activity = d.itemActivity(params.item, true);
         if (activity) d.appendActivity(run, activity);
@@ -190,6 +202,7 @@ export class CodexEventService {
     } else if (method === "mcpServer/elicitation/request") {
       await d.requestMcpElicitation(id, params, run);
     } else if (method === "turn/completed") {
+      if (run) hydrateCodexAgentMessages(run, params.turn?.items, { turnId: eventTurnId });
       d.completeTurn(eventTurnId, params.turn?.status);
       if (!run) {
         d.turnTokenUsage.delete(eventTurnId);

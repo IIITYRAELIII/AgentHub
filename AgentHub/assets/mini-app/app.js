@@ -1843,28 +1843,21 @@ function publishVisibleStreamTasks(tasks) {
   emit("workspace:visible-streams", { taskIds: ids });
 }
 
-const CHAT_BOTTOM_THRESHOLD_PX = 120;
+const { ChatScrollController, shouldLoadOlderPage } = window.AgentHubChatScroll;
+const chatScrollControllers = new WeakMap();
 
 function scrollContainerIsNearBottom(scroll) {
-  return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < CHAT_BOTTOM_THRESHOLD_PX;
+  return chatScrollControllers.get(scroll)?.isNearBottom() ?? true;
 }
 
 function syncChatScrollDownButton(scroll, button) {
   if (!scroll || !button) return;
-  button.hidden = scrollContainerIsNearBottom(scroll);
+  chatScrollControllers.get(scroll)?.sync();
 }
 
 function bindChatScrollDown(scroll, button) {
-  if (!scroll || !button) return;
-  const sync = () => syncChatScrollDownButton(scroll, button);
-  scroll.addEventListener("scroll", sync, { passive: true });
-  button.addEventListener("click", () => {
-    scroll.scrollTo({
-      top: scroll.scrollHeight,
-      behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-    });
-  });
-  window.requestAnimationFrame(sync);
+  if (!scroll || !button || chatScrollControllers.has(scroll)) return;
+  chatScrollControllers.set(scroll, new ChatScrollController(scroll, button));
 }
 
 function createChatScrollDownButton(scroll) {
@@ -1943,8 +1936,7 @@ function renderStreamChatPreview(task) {
   const scrollDown = createChatScrollDownButton(scroll);
   preview.append(scroll, scrollDown);
   window.requestAnimationFrame(() => {
-    scroll.scrollTop = scroll.scrollHeight;
-    syncChatScrollDownButton(scroll, scrollDown);
+    chatScrollControllers.get(scroll)?.pinNow();
   });
   return preview;
 }
@@ -2453,9 +2445,9 @@ function chatIsNearBottom() {
 }
 
 function pinChatToBottom() {
+  const controller = chatScrollControllers.get(chatScroll);
   const apply = () => {
-    chatScroll.scrollTop = chatScroll.scrollHeight;
-    syncChatScrollDownButton(chatScroll, chatScrollDown);
+    controller?.pinNow();
   };
   apply();
   // Финальная карточка нередко приходит одновременно с удалением live-блока.
@@ -2674,7 +2666,9 @@ function scheduleUserMessageDisclosureSync() {
 window.addEventListener("resize", scheduleUserMessageDisclosureSync, { passive: true });
 
 function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
-  const stickToBottom = forceBottom || chatIsNearBottom();
+  const scrollController = chatScrollControllers.get(chatScroll);
+  const scrollSnapshot = scrollController?.capture();
+  const stickToBottom = forceBottom || scrollSnapshot?.pinned || chatIsNearBottom();
   // Обновление истории после финального ответа использует preserveTop. У низа
   // якорь первого видимого сообщения оставлял зазор после новой карточки.
   // Якорь нужен только читателю, который уже ушёл выше по истории.
@@ -2692,7 +2686,8 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
     }));
     if (anchor) restoreChatAnchor(anchor);
     else if (stickToBottom) pinChatToBottom();
-    else window.requestAnimationFrame(() => syncChatScrollDownButton(chatScroll, chatScrollDown));
+    else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
+    scheduleUnderfilledHistoryLoad();
     return;
   }
   let lastAgentIndex = -1;
@@ -2717,7 +2712,8 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
   scheduleUserMessageDisclosureSync();
   if (anchor) restoreChatAnchor(anchor);
   else if (stickToBottom) pinChatToBottom();
-  else window.requestAnimationFrame(() => syncChatScrollDownButton(chatScroll, chatScrollDown));
+  else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
+  scheduleUnderfilledHistoryLoad();
 }
 
 function taskDiffSummary(text) {
@@ -2766,6 +2762,17 @@ function requestOlderHistory() {
   const pagination = currentHistoryPagination();
   if (!state.selectedId || !pagination.hasOlder || pagination.loading) return;
   emit("history:load-older", { taskId: state.selectedId });
+}
+
+let historyUnderfillFrame = 0;
+
+function scheduleUnderfilledHistoryLoad() {
+  if (historyUnderfillFrame) return;
+  historyUnderfillFrame = window.requestAnimationFrame(() => {
+    historyUnderfillFrame = 0;
+    const pagination = currentHistoryPagination();
+    if (shouldLoadOlderPage(chatScroll, pagination)) requestOlderHistory();
+  });
 }
 
 historyLoadButton.addEventListener("click", requestOlderHistory);
@@ -3212,18 +3219,22 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент") {
 function renderLive() {
   // Решение о прилипающей прокрутке принимаем до изменения высоты live-блока.
   // Иначе большой очередной фрагмент уже отодвинет низ дальше порога.
-  const stickToBottom = chatIsNearBottom();
+  const scrollController = chatScrollControllers.get(chatScroll);
+  const scrollSnapshot = scrollController?.capture();
+  const stickToBottom = scrollSnapshot?.pinned || chatIsNearBottom();
   const live = state.live.get(state.selectedId);
   if (!liveCardHasContent(live)) {
     chatLive.hidden = true;
     if (stickToBottom) pinChatToBottom();
-    else window.requestAnimationFrame(() => syncChatScrollDownButton(chatScroll, chatScrollDown));
+    else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
+    scheduleUnderfilledHistoryLoad();
     return;
   }
   chatLive.hidden = false;
   populateLiveCard(chatLive, live);
   if (stickToBottom) pinChatToBottom();
-  else window.requestAnimationFrame(() => syncChatScrollDownButton(chatScroll, chatScrollDown));
+  else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
+  scheduleUnderfilledHistoryLoad();
 }
 
 /* =================================================== подтверждения / очередь */

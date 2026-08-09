@@ -27,13 +27,32 @@ function createService(run, overrides = {}) {
   });
 }
 
-test("Codex event service appends answer deltas to the exact run", async () => {
+test("Codex event service reduces answer deltas into the exact item", async () => {
   const run = { responseText: "", status: "running" };
   let scheduled = false;
   const service = createService(run, { scheduleProgress: () => { scheduled = true; } });
-  await service.handle({ method: "item/agentMessage/delta", params: { turnId: "t1", delta: "Ответ" } });
+  await service.handle({
+    method: "item/agentMessage/delta",
+    params: { turnId: "t1", itemId: "answer-1", delta: "Ответ" },
+  });
   assert.equal(run.responseText, "Ответ");
+  assert.equal(run.responseItemId, "answer-1");
+  assert.equal(run.responseItems[0].text, "Ответ");
   assert.equal(scheduled, true);
+});
+
+test("Codex event service applies canonical completed agent messages", async () => {
+  const run = { responseText: "Черновик", status: "running" };
+  const service = createService(run);
+  await service.handle({
+    method: "item/completed",
+    params: {
+      turnId: "t1",
+      item: { id: "answer-1", type: "agentMessage", phase: "final_answer", text: "Готово" },
+    },
+  });
+  assert.equal(run.responseText, "Готово");
+  assert.equal(run.responseItems[0].status, "completed");
 });
 
 test("Codex event service completes a managed run through the coordinator", async () => {

@@ -41,8 +41,11 @@ export function createCodexLifecycleComposition({
     return runtime.restartAfterCrash();
   }
 
-  function sendRpc(method, params = {}, { timeoutMs = rpcTimeoutMs } = {}) {
-    return transport.request(method, params, { timeoutMs });
+  function sendRpc(method, params = {}, options = {}) {
+    return transport.request(method, params, {
+      ...options,
+      timeoutMs: options.timeoutMs ?? rpcTimeoutMs,
+    });
   }
 
   function invalidateThreadRead(threadId) {

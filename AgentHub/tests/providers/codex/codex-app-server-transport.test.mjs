@@ -159,24 +159,24 @@ test("CodexAppServerTransport times out requests and rejects them on exit", asyn
 test("CodexAppServerTransport deduplicates, caches and invalidates thread reads", async () => {
   const { child, transport } = await startedTransport({ threadReadCacheMs: 10_000 });
   const firstWrite = nextWrittenJson(child.stdin);
-  const first = transport.readThread("thread-1");
-  const duplicate = transport.readThread("thread-1");
+  const first = transport.readThread("thread-1", { includeTurns: false });
+  const duplicate = transport.readThread("thread-1", { includeTurns: false });
   const request = await firstWrite;
   child.stdout.write(`${JSON.stringify({ id: request.id, result: { thread: { id: "thread-1" } } })}\n`);
   assert.deepEqual(await first, { thread: { id: "thread-1" } });
   assert.deepEqual(await duplicate, { thread: { id: "thread-1" } });
 
-  assert.deepEqual(await transport.readThread("thread-1"), { thread: { id: "thread-1" } });
+  assert.deepEqual(await transport.readThread("thread-1", { includeTurns: false }), { thread: { id: "thread-1" } });
   transport.invalidateThreadRead("thread-1");
   const secondWrite = nextWrittenJson(child.stdin);
-  const refreshed = transport.readThread("thread-1");
+  const refreshed = transport.readThread("thread-1", { includeTurns: false });
   const secondRequest = await secondWrite;
   assert.notEqual(secondRequest.id, request.id);
   child.stdout.write(`${JSON.stringify({ id: secondRequest.id, result: { thread: { id: "thread-1", fresh: true } } })}\n`);
   assert.equal((await refreshed).thread.fresh, true);
 });
 
-test("CodexAppServerTransport keeps lightweight metadata separate from full history", async () => {
+test("CodexAppServerTransport builds bounded full history from cursor pages", async () => {
   const { child, transport } = await startedTransport({ threadReadCacheMs: 10_000 });
   const metadataWrite = nextWrittenJson(child.stdin);
   const metadata = transport.readThread("thread-1", { includeTurns: false });
@@ -186,11 +186,121 @@ test("CodexAppServerTransport keeps lightweight metadata separate from full hist
   await metadata;
 
   const fullWrite = nextWrittenJson(child.stdin);
-  const full = transport.readThread("thread-1");
+  const full = transport.readThread("thread-1", { turnLimit: 2, turnPageSize: 1 });
   const fullRequest = await fullWrite;
-  assert.equal(fullRequest.params.includeTurns, true);
-  child.stdout.write(`${JSON.stringify({ id: fullRequest.id, result: { thread: { id: "thread-1", turns: [] } } })}\n`);
-  await full;
+  assert.deepEqual(fullRequest.params, { threadId: "thread-1", includeTurns: false });
+  let turnsWrite = nextWrittenJson(child.stdin);
+  child.stdout.write(`${JSON.stringify({ id: fullRequest.id, result: { thread: { id: "thread-1" } } })}\n`);
+  let turnsRequest = await turnsWrite;
+  assert.equal(turnsRequest.method, "thread/turns/list");
+  assert.equal(turnsRequest.params.itemsView, "full");
+  child.stdout.write(`${JSON.stringify({
+    id: turnsRequest.id,
+    result: { data: [{ id: "turn-2" }], nextCursor: "older", backwardsCursor: "newer" },
+  })}\n`);
+  turnsWrite = nextWrittenJson(child.stdin);
+  turnsRequest = await turnsWrite;
+  assert.equal(turnsRequest.params.cursor, "older");
+  child.stdout.write(`${JSON.stringify({
+    id: turnsRequest.id,
+    result: { data: [{ id: "turn-1" }], nextCursor: null, backwardsCursor: "turn-2" },
+  })}\n`);
+  assert.deepEqual((await full).thread.turns.map((turn) => turn.id), ["turn-1", "turn-2"]);
+});
+
+test("CodexAppServerTransport dispatches critical RPC before queued background work", async () => {
+  const { child, transport } = await startedTransport({
+    maxConcurrentRequests: 1,
+    maxBackgroundRequests: 1,
+  });
+  let written = nextWrittenJson(child.stdin);
+  const first = transport.request("thread/list", { limit: 1 });
+  const firstRequest = await written;
+  const second = transport.request("thread/read", { threadId: "thread-1", includeTurns: false });
+  written = nextWrittenJson(child.stdin);
+  const critical = transport.request("turn/interrupt", { threadId: "thread-1", turnId: "turn-1" });
+  const criticalRequest = await written;
+  assert.equal(criticalRequest.method, "turn/interrupt");
+  child.stdout.write(`${JSON.stringify({ id: criticalRequest.id, result: {} })}\n`);
+  written = nextWrittenJson(child.stdin);
+  child.stdout.write(`${JSON.stringify({ id: firstRequest.id, result: {} })}\n`);
+  const secondRequest = await written;
+  assert.equal(secondRequest.method, "thread/read");
+  child.stdout.write(`${JSON.stringify({ id: secondRequest.id, result: {} })}\n`);
+  await Promise.all([first, second, critical]);
+});
+
+test("CodexAppServerTransport includes queue wait in the RPC timeout", async () => {
+  const timeouts = [];
+  const { child, transport } = await startedTransport({
+    maxConcurrentRequests: 1,
+    maxBackgroundRequests: 1,
+    onTimeout: (event) => timeouts.push(event),
+  });
+  const first = transport.request("thread/list", { limit: 1 }, { timeoutMs: 5_000 });
+  await assert.rejects(
+    transport.request("thread/read", { threadId: "thread-1" }, { timeoutMs: 10 }),
+    /timed out after 10 ms/u,
+  );
+  assert.equal(timeouts.at(-1)?.method, "thread/read");
+  child.emit("exit", 1, null);
+  await assert.rejects(first, /stopped/u);
+});
+
+test("CodexAppServerTransport applies a thread snapshot before buffered live events", async () => {
+  const applied = [];
+  const { child, transport } = await startedTransport({
+    onMessage: (message) => applied.push(`event:${message.params.delta}`),
+  });
+  const written = nextWrittenJson(child.stdin);
+  const hydrated = transport.readThread("thread-1", {
+    fresh: true,
+    includeTurns: false,
+    applySnapshot: async () => applied.push("snapshot"),
+  });
+  const request = await written;
+  child.stdout.write(`${JSON.stringify({
+    method: "item/agentMessage/delta",
+    params: { threadId: "thread-1", turnId: "turn-1", itemId: "answer-1", delta: "Гото" },
+  })}\n`);
+  child.stdout.write(`${JSON.stringify({
+    method: "item/agentMessage/delta",
+    params: { threadId: "thread-1", turnId: "turn-1", itemId: "answer-1", delta: "во" },
+  })}\n`);
+  child.stdout.write(`${JSON.stringify({ id: request.id, result: { thread: { id: "thread-1" } } })}\n`);
+  await hydrated;
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(applied, ["snapshot", "event:Готово"]);
+});
+
+test("CodexAppServerTransport drops hydrated deltas superseded by item completion", async () => {
+  const messages = [];
+  const { child, transport } = await startedTransport({ onMessage: (message) => messages.push(message) });
+  const written = nextWrittenJson(child.stdin);
+  const hydrated = transport.readThread("thread-1", {
+    fresh: true,
+    includeTurns: false,
+    applySnapshot: async () => {},
+  });
+  const request = await written;
+  child.stdout.write(`${JSON.stringify({
+    method: "item/agentMessage/delta",
+    params: { threadId: "thread-1", turnId: "turn-1", itemId: "answer-1", delta: "Готово" },
+  })}\n`);
+  child.stdout.write(`${JSON.stringify({
+    method: "item/completed",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: { id: "answer-1", type: "agentMessage", text: "Готово" },
+    },
+  })}\n`);
+  child.stdout.write(`${JSON.stringify({ id: request.id, result: { thread: { id: "thread-1" } } })}\n`);
+  await hydrated;
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(messages.map((message) => message.method), ["item/completed"]);
 });
 
 test("CodexAppServerTransport owns notifications, responses and process-tree stop", async () => {

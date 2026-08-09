@@ -108,7 +108,7 @@ export class CodexTurnService {
   async #exactTurnId(target, run) {
     const registered = String(run?.turnId ?? "").trim();
     if (registered) return registered;
-    const result = await this.#d.readThread(target.threadId, { fresh: true });
+    const result = await this.#d.readThread(target.threadId, { fresh: true, priority: "interactive" });
     const active = (Array.isArray(result.thread?.turns) ? result.thread.turns : [])
       .filter((turn) => ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? "")))
       .map((turn) => String(turn.id ?? "").trim())

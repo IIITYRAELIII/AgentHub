@@ -58,7 +58,7 @@ export class CodexAppServerLifecycle {
   async #handleTimeout({ method, timeoutMs }) {
     const d = this.#d;
     if (d.isStopping() || this.#timeoutRestarting || timeoutMs < d.rpcTimeoutMs) return;
-    if (!["thread/read", "thread/list"].includes(method)) return;
+    if (!["thread/read", "thread/list", "thread/turns/list"].includes(method)) return;
     const managedRunActive = d.activeRuns().some((run) => (
       run.provider === "codex" && run.observer === false && run.status === "running"
     ));

@@ -3,6 +3,95 @@ import { createInterface } from "node:readline";
 const DEFAULT_RPC_TIMEOUT_MS = 60_000;
 const DEFAULT_THREAD_READ_CACHE_MS = 250;
 const DEFAULT_THREAD_READ_CACHE_LIMIT = 200;
+const DEFAULT_MAX_CONCURRENT_REQUESTS = 6;
+const DEFAULT_MAX_BACKGROUND_REQUESTS = 2;
+const DEFAULT_MAX_CRITICAL_REQUESTS = 2;
+const DEFAULT_THREAD_TURN_LIMIT = 200;
+const DEFAULT_THREAD_TURN_PAGE_SIZE = 50;
+const REQUEST_PRIORITIES = Object.freeze(["critical", "interactive", "background"]);
+const CRITICAL_METHODS = new Set([
+  "initialize",
+  "thread/start",
+  "thread/resume",
+  "turn/start",
+  "turn/steer",
+  "turn/interrupt",
+]);
+const BACKGROUND_METHODS = new Set([
+  "thread/list",
+  "thread/read",
+  "thread/turns/list",
+  "skills/list",
+  "account/read",
+  "account/rateLimits/read",
+  "account/usage/read",
+]);
+
+function requestPriority(method, requested = null) {
+  const explicit = String(requested ?? "").trim();
+  if (explicit) {
+    if (!REQUEST_PRIORITIES.includes(explicit)) throw new Error(`Unknown Codex RPC priority: ${explicit}`);
+    return explicit;
+  }
+  if (CRITICAL_METHODS.has(method)) return "critical";
+  if (BACKGROUND_METHODS.has(method)) return "background";
+  return "interactive";
+}
+
+function positiveInteger(value, fallback) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : fallback;
+}
+
+function hydrationMessageKey(message) {
+  const params = message?.params ?? {};
+  const turnId = String(params.turnId ?? params.turn?.id ?? "").trim();
+  const itemId = String(params.itemId ?? params.item?.id ?? "").trim();
+  return turnId && itemId ? `${turnId}\0${itemId}` : "";
+}
+
+function coalesceHydrationMessages(messages) {
+  const completed = new Set();
+  for (const message of messages) {
+    if (message?.method === "item/completed") {
+      const key = hydrationMessageKey(message);
+      if (key) completed.add(key);
+    }
+    if (message?.method === "turn/completed") {
+      const turnId = String(message.params?.turn?.id ?? message.params?.turnId ?? "").trim();
+      for (const item of Array.isArray(message.params?.turn?.items) ? message.params.turn.items : []) {
+        const itemId = String(item?.id ?? "").trim();
+        if (turnId && itemId) completed.add(`${turnId}\0${itemId}`);
+      }
+    }
+  }
+  const deltas = new Map();
+  const replay = [];
+  for (const message of messages) {
+    if (message?.method !== "item/agentMessage/delta") {
+      replay.push(message);
+      continue;
+    }
+    const key = hydrationMessageKey(message);
+    if (key && completed.has(key)) continue;
+    const existing = key ? deltas.get(key) : null;
+    if (existing) {
+      existing.params.delta += String(message.params?.delta ?? "");
+      continue;
+    }
+    const buffered = {
+      ...message,
+      params: {
+        ...message.params,
+        delta: String(message.params?.delta ?? ""),
+        agentHubHydrationReplay: true,
+      },
+    };
+    replay.push(buffered);
+    if (key) deltas.set(key, buffered);
+  }
+  return replay;
+}
 
 export class CodexAppServerTransport {
   constructor({
@@ -17,6 +106,9 @@ export class CodexAppServerTransport {
     rpcTimeoutMs = DEFAULT_RPC_TIMEOUT_MS,
     threadReadCacheMs = DEFAULT_THREAD_READ_CACHE_MS,
     threadReadCacheLimit = DEFAULT_THREAD_READ_CACHE_LIMIT,
+    maxConcurrentRequests = DEFAULT_MAX_CONCURRENT_REQUESTS,
+    maxBackgroundRequests = DEFAULT_MAX_BACKGROUND_REQUESTS,
+    maxCriticalRequests = DEFAULT_MAX_CRITICAL_REQUESTS,
     createInterfaceImpl = createInterface,
   }) {
     if (typeof spawnProcess !== "function") throw new TypeError("spawnProcess is required");
@@ -31,13 +123,20 @@ export class CodexAppServerTransport {
     this.rpcTimeoutMs = rpcTimeoutMs;
     this.threadReadCacheMs = threadReadCacheMs;
     this.threadReadCacheLimit = threadReadCacheLimit;
+    this.maxConcurrentRequests = positiveInteger(maxConcurrentRequests, DEFAULT_MAX_CONCURRENT_REQUESTS);
+    this.maxBackgroundRequests = positiveInteger(maxBackgroundRequests, DEFAULT_MAX_BACKGROUND_REQUESTS);
+    this.maxCriticalRequests = positiveInteger(maxCriticalRequests, DEFAULT_MAX_CRITICAL_REQUESTS);
     this.createInterfaceImpl = createInterfaceImpl;
     this.child = null;
     this.startPromise = null;
     this.lines = null;
     this.requestSequence = 1;
     this.pending = new Map();
+    this.requestQueues = Object.fromEntries(REQUEST_PRIORITIES.map((priority) => [priority, []]));
+    this.activeRequests = Object.fromEntries(REQUEST_PRIORITIES.map((priority) => [priority, 0]));
+    this.interactiveDispatchStreak = 0;
     this.threadReadCache = new Map();
+    this.threadHydrations = new Map();
     this.initialization = null;
   }
 
@@ -97,27 +196,102 @@ export class CodexAppServerTransport {
     await this.stopProcessTree(child.pid).catch(() => child.kill());
   }
 
-  request(method, params = {}, { timeoutMs = this.rpcTimeoutMs } = {}) {
+  request(method, params = {}, { timeoutMs = this.rpcTimeoutMs, priority = null } = {}) {
     if (!this.child) return Promise.reject(new Error("Codex App Server is not running"));
     const id = this.requestSequence++;
-    const promise = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (!this.pending.delete(id)) return;
-        const error = new Error(`Codex RPC ${method} timed out after ${timeoutMs} ms`);
-        reject(error);
-        Promise.resolve(this.onTimeout?.({ id, method, params, timeoutMs, error }))
-          .catch(this.onMessageError);
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer, method });
+    const normalizedPriority = requestPriority(method, priority);
+    return new Promise((resolve, reject) => {
+      const request = {
+        id,
+        method,
+        params,
+        priority: normalizedPriority,
+        timeoutMs: positiveInteger(timeoutMs, this.rpcTimeoutMs),
+        resolve,
+        reject,
+        timer: null,
+      };
+      request.timer = setTimeout(() => this.#expireRequest(request), request.timeoutMs);
+      this.requestQueues[normalizedPriority].push(request);
+      this.#drainRequestQueue();
     });
-    try {
-      this.#write({ method, id, params });
-    } catch (error) {
-      clearTimeout(this.pending.get(id)?.timer);
-      this.pending.delete(id);
-      return Promise.reject(error);
+  }
+
+  #expireRequest(request) {
+    const pending = this.pending.get(request.id);
+    if (pending) {
+      this.pending.delete(request.id);
+      this.#releaseRequest(pending);
+    } else {
+      const queue = this.requestQueues[request.priority];
+      const index = queue.findIndex((queued) => queued.id === request.id);
+      if (index < 0) return;
+      queue.splice(index, 1);
     }
-    return promise;
+    const error = new Error(`Codex RPC ${request.method} timed out after ${request.timeoutMs} ms`);
+    request.reject(error);
+    Promise.resolve(this.onTimeout?.({
+      id: request.id,
+      method: request.method,
+      params: request.params,
+      timeoutMs: request.timeoutMs,
+      error,
+    })).catch(this.onMessageError);
+  }
+
+  #drainRequestQueue() {
+    if (!this.child) return;
+    while (true) {
+      const request = this.#nextQueuedRequest();
+      if (!request) return;
+      this.#dispatchRequest(request);
+    }
+  }
+
+  #nextQueuedRequest() {
+    const totalActive = REQUEST_PRIORITIES.reduce(
+      (sum, priority) => sum + this.activeRequests[priority],
+      0,
+    );
+    if (this.requestQueues.critical.length
+      && this.activeRequests.critical < this.maxCriticalRequests) {
+      return this.requestQueues.critical.shift();
+    }
+    if (totalActive >= this.maxConcurrentRequests) return null;
+    const backgroundAvailable = this.requestQueues.background.length
+      && this.activeRequests.background < this.maxBackgroundRequests;
+    if (this.requestQueues.interactive.length
+      && (!backgroundAvailable || this.interactiveDispatchStreak < 4)) {
+      this.interactiveDispatchStreak += 1;
+      return this.requestQueues.interactive.shift();
+    }
+    if (backgroundAvailable) {
+      this.interactiveDispatchStreak = 0;
+      return this.requestQueues.background.shift();
+    }
+    if (this.requestQueues.interactive.length) {
+      this.interactiveDispatchStreak += 1;
+      return this.requestQueues.interactive.shift();
+    }
+    return null;
+  }
+
+  #dispatchRequest(request) {
+    this.pending.set(request.id, request);
+    this.activeRequests[request.priority] += 1;
+    try {
+      this.#write({ method: request.method, id: request.id, params: request.params });
+    } catch (error) {
+      this.pending.delete(request.id);
+      this.#releaseRequest(request);
+      request.reject(error);
+    }
+  }
+
+  #releaseRequest(request) {
+    clearTimeout(request.timer);
+    this.activeRequests[request.priority] = Math.max(0, this.activeRequests[request.priority] - 1);
+    this.#drainRequestQueue();
   }
 
   notify(method, params = {}) {
@@ -152,20 +326,43 @@ export class CodexAppServerTransport {
   invalidateThreadRead(threadId) {
     const key = String(threadId ?? "").trim();
     if (!key) return;
-    this.threadReadCache.delete(`${key}\0full`);
-    this.threadReadCache.delete(`${key}\0metadata`);
+    for (const cachedKey of this.threadReadCache.keys()) {
+      if (cachedKey.startsWith(`${key}\0`)) this.threadReadCache.delete(cachedKey);
+    }
   }
 
-  async readThread(threadId, { fresh = false, includeTurns = true } = {}) {
+  async readThread(threadId, {
+    fresh = false,
+    includeTurns = true,
+    applySnapshot = null,
+    priority = "background",
+    turnLimit = DEFAULT_THREAD_TURN_LIMIT,
+    turnPageSize = DEFAULT_THREAD_TURN_PAGE_SIZE,
+    turnItemsView = "full",
+  } = {}) {
     const threadKey = String(threadId ?? "").trim();
     if (!threadKey) throw new Error("Codex thread id is missing");
-    const key = `${threadKey}\0${includeTurns ? "full" : "metadata"}`;
+    if (applySnapshot !== null && typeof applySnapshot !== "function") {
+      throw new TypeError("applySnapshot must be a function");
+    }
+    if (applySnapshot) return this.#readThreadHydrated(threadKey, {
+      fresh, includeTurns, applySnapshot, priority, turnLimit, turnPageSize, turnItemsView,
+    });
+    const key = `${threadKey}\0${includeTurns
+      ? `full:${turnLimit}:${turnPageSize}:${turnItemsView}`
+      : "metadata"}`;
     const cached = this.threadReadCache.get(key);
     if (cached?.promise) return cached.promise;
     if (!fresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
 
     const entry = { value: null, expiresAt: 0, promise: null };
-    entry.promise = this.request("thread/read", { threadId: threadKey, includeTurns });
+    entry.promise = this.#readThreadValue(threadKey, {
+      includeTurns,
+      priority,
+      turnLimit,
+      turnPageSize,
+      turnItemsView,
+    });
     this.threadReadCache.set(key, entry);
     try {
       entry.value = await entry.promise;
@@ -178,6 +375,109 @@ export class CodexAppServerTransport {
     } catch (error) {
       if (this.threadReadCache.get(key) === entry) this.threadReadCache.delete(key);
       throw error;
+    }
+  }
+
+  async #readThreadValue(threadId, {
+    includeTurns,
+    priority,
+    turnLimit,
+    turnPageSize,
+    turnItemsView,
+  }) {
+    const result = await this.request("thread/read", {
+      threadId,
+      includeTurns: false,
+    }, { priority });
+    if (!includeTurns) return result;
+    const page = await this.readRecentThreadTurns(threadId, {
+      limit: turnLimit,
+      pageSize: turnPageSize,
+      itemsView: turnItemsView,
+      priority,
+    });
+    return {
+      ...result,
+      thread: {
+        ...result.thread,
+        turns: page.turns,
+        turnsNextCursor: page.nextCursor,
+      },
+    };
+  }
+
+  async listThreadTurns(threadId, {
+    cursor = null,
+    limit = DEFAULT_THREAD_TURN_PAGE_SIZE,
+    sortDirection = "desc",
+    itemsView = "full",
+    priority = "background",
+  } = {}) {
+    const threadKey = String(threadId ?? "").trim();
+    if (!threadKey) throw new Error("Codex thread id is missing");
+    return this.request("thread/turns/list", {
+      threadId: threadKey,
+      ...(cursor ? { cursor: String(cursor) } : {}),
+      limit: positiveInteger(limit, DEFAULT_THREAD_TURN_PAGE_SIZE),
+      sortDirection,
+      itemsView,
+    }, { priority });
+  }
+
+  async readRecentThreadTurns(threadId, {
+    limit = DEFAULT_THREAD_TURN_LIMIT,
+    pageSize = DEFAULT_THREAD_TURN_PAGE_SIZE,
+    itemsView = "full",
+    priority = "background",
+  } = {}) {
+    const maximum = positiveInteger(limit, DEFAULT_THREAD_TURN_LIMIT);
+    const size = Math.min(maximum, positiveInteger(pageSize, DEFAULT_THREAD_TURN_PAGE_SIZE));
+    const turns = [];
+    const ids = new Set();
+    const cursors = new Set();
+    let cursor = null;
+    let nextCursor = null;
+    let backwardsCursor = null;
+    while (turns.length < maximum) {
+      const page = await this.listThreadTurns(threadId, {
+        cursor,
+        limit: Math.min(size, maximum - turns.length),
+        sortDirection: "desc",
+        itemsView,
+        priority,
+      });
+      for (const turn of Array.isArray(page?.data) ? page.data : []) {
+        const id = String(turn?.id ?? "").trim();
+        if (!id || ids.has(id)) continue;
+        ids.add(id);
+        turns.push(turn);
+      }
+      nextCursor = String(page?.nextCursor ?? "").trim() || null;
+      backwardsCursor ||= String(page?.backwardsCursor ?? "").trim() || null;
+      if (!nextCursor || turns.length >= maximum) break;
+      if (cursors.has(nextCursor)) {
+        throw new Error(`Codex thread/turns/list repeated cursor ${nextCursor}`);
+      }
+      cursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    return { turns: turns.reverse(), nextCursor, backwardsCursor };
+  }
+
+  async #readThreadHydrated(threadId, options) {
+    const { applySnapshot, ...readOptions } = options;
+    if (this.threadHydrations.has(threadId)) {
+      throw new Error(`Codex thread ${threadId} is already being hydrated`);
+    }
+    const hydration = { messages: [] };
+    this.threadHydrations.set(threadId, hydration);
+    try {
+      const result = await this.readThread(threadId, readOptions);
+      await applySnapshot(result);
+      return result;
+    } finally {
+      if (this.threadHydrations.get(threadId) === hydration) this.threadHydrations.delete(threadId);
+      for (const message of coalesceHydrationMessages(hydration.messages)) this.#dispatchMessage(message);
     }
   }
 
@@ -202,7 +502,7 @@ export class CodexAppServerTransport {
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
-      clearTimeout(pending.timer);
+      this.#releaseRequest(pending);
       if (message.error) {
         const error = new Error(message.error.message ?? JSON.stringify(message.error));
         if (message.error.code !== undefined) error.code = message.error.code;
@@ -212,6 +512,16 @@ export class CodexAppServerTransport {
       } else pending.resolve(message.result);
       return;
     }
+    const threadId = String(message.params?.threadId ?? "").trim();
+    const hydration = threadId ? this.threadHydrations.get(threadId) : null;
+    if (hydration) {
+      hydration.messages.push(message);
+      return;
+    }
+    this.#dispatchMessage(message);
+  }
+
+  #dispatchMessage(message) {
     Promise.resolve()
       .then(() => this.onMessage?.(message))
       .catch(this.onMessageError);
@@ -226,7 +536,17 @@ export class CodexAppServerTransport {
       pending.reject(error);
     }
     this.pending.clear();
+    for (const priority of REQUEST_PRIORITIES) {
+      for (const queued of this.requestQueues[priority]) {
+        clearTimeout(queued.timer);
+        queued.reject(error);
+      }
+      this.requestQueues[priority] = [];
+      this.activeRequests[priority] = 0;
+    }
+    this.interactiveDispatchStreak = 0;
     this.threadReadCache.clear();
+    this.threadHydrations.clear();
     this.initialization = null;
     this.lines?.close?.();
     this.lines = null;

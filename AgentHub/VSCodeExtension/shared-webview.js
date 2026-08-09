@@ -8,6 +8,7 @@ const ASSET_ROOT = ["assets", "mini-app"];
 const RUNTIME_ASSETS = {
   index: [...ASSET_ROOT, "index.html"],
   disclosure: [...ASSET_ROOT, "message-disclosure.js"],
+  chatScroll: [...ASSET_ROOT, "chat-scroll-controller.js"],
   app: [...ASSET_ROOT, "app.js"],
   lifecycle: [...ASSET_ROOT, "message-lifecycle.js"],
   client: [...ASSET_ROOT, "hub-client.js"],
@@ -42,7 +43,7 @@ async function resolveSharedAssets({ runtimeUri, extensionUri }) {
     assets.bootstrap = null;
   }
   for (const required of [
-    "index", "disclosure", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
+    "index", "disclosure", "chatScroll", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
     "mark", "workLogStyles", "bootstrap",
   ]) {
     if (!assets[required]) throw new Error(`Не найден ресурс Agent Hub: ${required}`);
@@ -93,10 +94,12 @@ async function sharedWebviewHtml(webview, locations) {
     .replace(/<script src="https:\/\/telegram\.org\/[^>]+><\/script>\s*/iu, "")
     .replace('<script src="/browser-device-auth.js" defer></script>', "")
     .replace('<script src="/message-disclosure.js" defer></script>', "")
+    .replace('<script src="/chat-scroll-controller.js" defer></script>', "")
     .replace(
       '<script src="/app.js" defer></script>',
       `<script src="${resource(webview, assets.bootstrap)}" defer></script>`
         + `<script src="${resource(webview, assets.disclosure)}" defer></script>`
+        + `<script src="${resource(webview, assets.chatScroll)}" defer></script>`
         + `<script src="${resource(webview, assets.app)}" defer></script>`,
     )
     .replace('<script src="/message-lifecycle.js" defer></script>', `<script src="${resource(webview, assets.lifecycle)}" defer></script>`)

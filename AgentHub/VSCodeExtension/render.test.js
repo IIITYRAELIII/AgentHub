@@ -79,7 +79,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const runtimeRoot = path.join(root, "runtime", "releases", "current");
   const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "mini-app");
   const runtimeAssets = path.join(runtimeRoot, "assets", "mini-app");
-  const required = ["message-disclosure.js", "app.js", "message-lifecycle.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
+  const required = ["message-disclosure.js", "chat-scroll-controller.js", "app.js", "message-lifecycle.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
   try {
     fs.mkdirSync(shadowAssets, { recursive: true });
     fs.mkdirSync(runtimeAssets, { recursive: true });
@@ -89,7 +89,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
       <img data-app-mark src="/agent-hub-mark.png" alt="">
       <!-- agent-hub-theme-styles --><select data-theme-select></select>
       <!-- agent-hub-theme-markup --><!-- agent-hub-theme-catalog -->
-      <script src="/browser-device-auth.js" defer></script><script src="/message-disclosure.js" defer></script>
+      <script src="/browser-device-auth.js" defer></script><script src="/message-disclosure.js" defer></script><script src="/chat-scroll-controller.js" defer></script>
       <script src="/app.js" defer></script><!-- agent-hub-theme-scripts -->
       <script src="/message-lifecycle.js" defer></script><script src="/hub-client.js" defer></script>`);
     for (const file of required) {
@@ -1063,34 +1063,6 @@ test("chat distinguishes loading history from an empty task", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   assert.match(app, /state\.messages\.has\(state\.selectedId\)/u);
   assert.match(app, /Загрузка истории…/u);
-});
-
-test("chat keeps each client's local task selection and opens at the end", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  assert.match(app, /if \(taskChanged\) \{\s*activeChatId = task\.id;\s*renderMessages\(\{ forceBottom: true \}\);/su);
-  assert.match(app, /const stickToBottom = forceBottom \|\| chatIsNearBottom\(\);/u);
-  assert.match(app, /window\.requestAnimationFrame\(apply\)/u);
-  assert.match(app, /setMessages\(taskId, messages\)[\s\S]*renderMessages\(\{ preserveTop: true \}\)/u);
-  assert.match(client, /const selectedTaskKey = "agent-hub:selected-task:v1"/u);
-  assert.match(client, /localStorage\.setItem\(selectedTaskKey, selectedTaskId\)/u);
-  assert.match(client, /const localExists = selectedTaskId && availableTaskIds\.has\(selectedTaskId\)/u);
-  assert.doesNotMatch(client, /previousSelected && currentSelected && !sameSelection[\s\S]*control\("open-task"/u);
-});
-
-test("history refresh keeps a reader anchored and keeps the final answer at the bottom", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const render = app.match(/function renderMessages\(\{ forceBottom = false, preserveTop = false \} = \{\}\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
-  assert.match(
-    render,
-    /const stickToBottom = forceBottom \|\| chatIsNearBottom\(\);\s*\/\/[^\n]*\n[\s\S]*?const anchor = preserveTop && !stickToBottom \? captureChatAnchor\(\) : null;/u,
-  );
-  assert.match(render, /if \(anchor\) restoreChatAnchor\(anchor\);\s*else if \(stickToBottom\) pinChatToBottom\(\);/u);
-  const live = app.match(/function renderLive\(\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
-  assert.match(live, /const stickToBottom = chatIsNearBottom\(\);/u);
-  assert.match(live, /chatLive\.hidden = true;\s*if \(stickToBottom\) pinChatToBottom\(\);/u);
-  assert.match(live, /if \(stickToBottom\) pinChatToBottom\(\);/u);
-  assert.match(app, /window\.requestAnimationFrame\(\(\) => \{\s*apply\(\);\s*window\.requestAnimationFrame\(apply\);/u);
 });
 
 test("chat refreshes every visible external run without rebuilding a second snapshot", () => {

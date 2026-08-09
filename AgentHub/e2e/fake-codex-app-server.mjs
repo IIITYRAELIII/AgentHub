@@ -415,6 +415,21 @@ function handleRequest(message) {
     reply(id, { thread: publicThread(thread, params.includeTurns !== false) });
     return;
   }
+  if (method === "thread/turns/list") {
+    const thread = threadById(params.threadId);
+    if (!thread) return send({ id, error: { message: `thread not found: ${params.threadId}` } });
+    const limit = Math.max(1, Number(params.limit) || 50);
+    const offset = Math.max(0, Number(String(params.cursor ?? "").replace(/^turns:/u, "")) || 0);
+    const ordered = params.sortDirection === "asc" ? thread.turns : [...thread.turns].reverse();
+    const data = ordered.slice(offset, offset + limit).map((turn) => structuredClone(turn));
+    const nextOffset = offset + data.length;
+    reply(id, {
+      data,
+      nextCursor: nextOffset < ordered.length ? `turns:${nextOffset}` : null,
+      backwardsCursor: offset > 0 ? `turns:${Math.max(0, offset - limit)}` : null,
+    });
+    return;
+  }
   if (method === "thread/name/set") {
     const thread = threadById(params.threadId);
     if (thread) {

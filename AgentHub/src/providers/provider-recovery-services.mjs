@@ -3,6 +3,7 @@ import { codexThreadWaitingOnApproval } from "./codex/codex-approvals.mjs";
 import { codexThreadHistory, codexTurnHasExplicitFinalAnswer } from "../application/task-history.mjs";
 import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "../domain/task-recovery.mjs";
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
+import { hydrateCodexAgentMessages } from "./codex/codex-agent-message-reducer.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -65,8 +66,21 @@ export class CodexRecoveryService {
     });
     if (initialAction === TASK_RECOVERY_ACTIONS.INTERRUPTED_LOCAL) return d.finishInterrupted(run);
 
-    const result = await d.readThread(run.threadId, { fresh: true });
+    let recoveryResult;
+    await d.readThread(run.threadId, {
+      fresh: true,
+      priority: "interactive",
+      applySnapshot: async (snapshot) => {
+        recoveryResult = await this.#recoverFromThread(run, snapshot);
+      },
+    });
+    return recoveryResult;
+  }
+
+  async #recoverFromThread(run, result) {
+    const d = this.#d;
     const turn = result.thread?.turns?.find((item) => item.id === run.turnId) ?? result.thread?.turns?.at(-1);
+    hydrateCodexAgentMessages(run, turn?.items, { turnId: turn?.id });
     const recoveryAction = resolveTaskRecoveryAction({
       run,
       codexAvailable: d.transportRunning(),
