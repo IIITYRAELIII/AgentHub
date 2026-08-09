@@ -18,6 +18,7 @@
     { "id": "gothic-keep", "name": "Крепость", "asset": "gothic-keep.jpg" },
     { "id": "gothic-minental-castle", "name": "Монастырь", "asset": "gothic-minental-castle.jpg", "preload": true },
     { "id": "gothic-minental-fortress", "name": "Замок Миненталя", "asset": "gothic-minental-fortress.jpg", "preload": true },
-    { "id": "gothic-finkregh", "name": "Финкрегх", "asset": "gothic-finkregh.jpg", "preload": true }
+    { "id": "gothic-finkregh", "name": "Финкрегх", "asset": "gothic-finkregh.jpg", "preload": true },
+    { "id": "gothic-xardas-tower", "name": "Башня Ксардаса", "asset": "gothic-xardas-tower.webp", "preload": true }
   ]
 }

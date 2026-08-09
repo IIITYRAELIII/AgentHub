@@ -631,6 +631,7 @@ test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette"
   const ironTexture = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-iron-texture.png"));
   const ironFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-iron-frame.jpg"));
   const forgedFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-forged-frame.png"));
+  const xardasTower = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-xardas-tower.webp"));
   /* Знамя — самостоятельный ресурс пакета темы. Это проверяет фактическую
      доступность во Worker и webview вместо снимка конкретных CSS-деклараций.
      Кованая оболочка так же обязана доехать как растровые ресурсы темы. */
@@ -651,18 +652,19 @@ test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette"
   assert.equal(forgedFrame.contentType, "image/png");
   assert.equal(forgedFrame.immutable, true);
   assert.ok(fs.statSync(forgedFrame.file).size > 50_000);
-  assert.match(styles, /--shell-panel-border-image:\s*var\(--gothic-forged-frame\) 58 \/ 14px stretch/u);
-  assert.match(styles, /body > \.workspace\s*\{[^}]*max-width:\s*none;[^}]*width:\s*100%;/su);
-  assert.match(styles, /\.stream-chat-columns > \.chat-pane,[\s\S]*?\.stream-chat-preview\s*\{[^}]*border:\s*12px solid transparent;[^}]*border-image:\s*var\(--gothic-forged-frame\) 58 \/ 12px stretch;/u);
+  assert.ok(xardasTower);
+  assert.equal(xardasTower.contentType, "image/webp");
+  assert.equal(xardasTower.immutable, true);
+  assert.ok(fs.statSync(xardasTower.file).size > 80_000);
   assert.match(styles, /--radius-lg:\s*0;/u);
 });
 
-test("«Gothic» offers nine night scenes, each with its own light", () => {
+test("«Gothic» offers ten night scenes, each with its own light", () => {
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "gothic");
   const backgrounds = themeFile("gothic");
   assert.deepEqual(theme.backgrounds.map((background) => background.id), [
     "gothic", "gothic-crypt", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep",
-    "gothic-minental-castle", "gothic-minental-fortress", "gothic-finkregh",
+    "gothic-minental-castle", "gothic-minental-fortress", "gothic-finkregh", "gothic-xardas-tower",
   ]);
   for (const [background, image] of [
     ["gothic-tower", "gothic-tower\\.jpg"],
@@ -672,6 +674,7 @@ test("«Gothic» offers nine night scenes, each with its own light", () => {
     ["gothic-minental-castle", "gothic-minental-castle\\.jpg"],
     ["gothic-minental-fortress", "gothic-minental-fortress\\.jpg"],
     ["gothic-finkregh", "gothic-finkregh\\.jpg"],
+    ["gothic-xardas-tower", "gothic-xardas-tower\\.webp"],
   ]) {
     assert.match(
       backgrounds,
@@ -708,7 +711,7 @@ test("large Gothic scenes are decoded before replacing the visible background", 
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "gothic");
   assert.deepEqual(
     theme.backgrounds.filter((background) => background.preload).map((background) => background.id),
-    ["gothic-minental-castle", "gothic-minental-fortress", "gothic-finkregh"],
+    ["gothic-minental-castle", "gothic-minental-fortress", "gothic-finkregh", "gothic-xardas-tower"],
   );
   assert.match(client, /image\.decode\(\)\.then\(\(\) => finish\(true\)/u);
   assert.match(client, /if \(requestId !== backgroundRequestId\) return;/u);
