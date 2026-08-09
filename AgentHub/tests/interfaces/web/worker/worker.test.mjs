@@ -472,6 +472,12 @@ test("Worker prevents stale Mini App shells and caches versioned assets", async 
   );
   assert.equal(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
 
+  response = await workerModule.default.fetch(
+    new Request("https://hub.test/app.123456789abc.js"),
+    env,
+  );
+  assert.equal(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+
   response = await workerModule.default.fetch(new Request("https://hub.test/app.js"), env);
   assert.equal(response.headers.get("Cache-Control"), "no-cache");
 });

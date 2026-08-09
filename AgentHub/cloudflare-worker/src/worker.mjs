@@ -1661,7 +1661,8 @@ export class JournalStore extends DurableObject {
 function secureStaticResponse(response, request) {
   const headers = new Headers(response.headers);
   const contentType = String(headers.get("Content-Type") ?? "").toLowerCase();
-  const versioned = new URL(request.url).searchParams.has("v");
+  const url = new URL(request.url);
+  const versioned = url.searchParams.has("v") || /\.[a-f0-9]{12}\.[^/]+$/iu.test(url.pathname);
   if (contentType.includes("text/html")) {
     headers.set("Cache-Control", "no-store");
   } else if (versioned) {

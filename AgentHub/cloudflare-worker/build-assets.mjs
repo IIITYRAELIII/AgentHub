@@ -98,7 +98,10 @@ for (const file of [
     .update(await readFile(path.join(output, file)))
     .digest("hex")
     .slice(0, 12);
-  index = index.replaceAll(`"${reference}"`, `"${reference}?v=${revision}"`);
+  const extension = path.extname(file);
+  const versionedFile = `${file.slice(0, -extension.length)}.${revision}${extension}`;
+  await copyFile(path.join(output, file), path.join(output, versionedFile));
+  index = index.replaceAll(`"${reference}"`, `"/${versionedFile}"`);
 }
 
 await writeFile(indexFile, index, "utf8");
