@@ -364,8 +364,10 @@ test("desktop client survives App Server exit during delayed startup and shares 
   const [firstEdit, editedDeferred] = await Promise.all([firstEditPromise, editedDeferredPromise]);
   assert.equal(firstEdit.accepted, true);
   assert.equal(editedDeferred.accepted, true);
-  assert.equal((await callDesktopControl("snapshot", {}, { runtimeRoot }))
-    .deferredInputs.find((item) => item.id === duplicate.id)?.text, completedEdits.at(-1));
+  const finalEditedText = (await callDesktopControl("snapshot", {}, { runtimeRoot }))
+    .deferredInputs.find((item) => item.id === duplicate.id)?.text;
+  assert.equal(completedEdits.includes(finalEditedText), true,
+    "serialized edits must persist one of the two accepted values regardless of IPC response order");
   const queuedOnce = await callDesktopControl("deferred-input", {
     id: duplicate.id,
     action: "queue",
