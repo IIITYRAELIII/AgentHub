@@ -172,9 +172,9 @@ html[data-theme="gothic"] .task-rail-title {
     --shell-header-background:
       linear-gradient(rgb(5 6 6 / 58%), rgb(5 6 6 / 58%)),
       var(--gothic-iron-texture) center / 24rem 24rem;
-    --shell-header-frame-border: 10px solid transparent;
-    --shell-header-frame-filter: brightness(1.12) contrast(1.1) saturate(0.76);
-    --shell-header-frame-image: var(--gothic-forged-frame-matte) 9% / 10px 10px 0 10px stretch;
+    --shell-header-frame-border: 6px solid transparent;
+    --shell-header-frame-filter: brightness(1.16) contrast(1.08) saturate(0.78);
+    --shell-header-frame-image: var(--gothic-iron-frame) 5% / 6px 6px 0 6px stretch;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header::before {
@@ -198,9 +198,9 @@ html[data-theme="gothic"] .task-rail-title {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::before {
-    border: 10px solid transparent;
+    border: 6px solid transparent;
     border-bottom-width: 0;
-    border-image: var(--gothic-forged-frame-matte) 9% / 10px 10px 0 10px stretch;
+    border-image: var(--gothic-iron-frame) 5% / 6px 6px 0 6px stretch;
     box-sizing: border-box;
     content: "";
     filter: brightness(1.12) contrast(1.1) saturate(0.76);
