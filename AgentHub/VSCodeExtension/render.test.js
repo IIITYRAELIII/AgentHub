@@ -865,7 +865,6 @@ test("select popups use the active theme instead of the operating-system menu", 
   assert.match(app, /state\.destroy = \(\) =>/u);
   assert.match(app, /const optionTop = option\.offsetTop/u);
   assert.match(app, /event\.target !== openThemedSelect\?\.menu/u);
-  assert.doesNotMatch(app, /scrollIntoView/u);
 });
 
 test("VS Code resolves each self-contained theme resource without CSS overrides", () => {
@@ -1512,7 +1511,6 @@ test("queued messages own steering and editing while the composer always queues"
   assert.match(app, /followUpMode: currentTask\(\)\?\.running \? "queue" : null/u);
   assert.doesNotMatch(app, /followUpModeButton|renderFollowUpMode|Изменить ход/u);
   assert.doesNotMatch(html, /data-follow-up-mode/u);
-  assert.match(app, /text: "После хода"/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "queue" \}\)/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "steer" \}\)/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "edit", text \}\)/u);

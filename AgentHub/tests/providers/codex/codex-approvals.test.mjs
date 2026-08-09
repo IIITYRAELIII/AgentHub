@@ -5,9 +5,11 @@ import {
   approvalMatchesTelegramMessage,
   codexApprovalResponse,
   codexThreadWaitingOnApproval,
+  codexToolUserInputResponse,
   createApprovalKey,
   formatMcpElicitation,
   formatPermissionsApproval,
+  formatToolRequestUserInput,
   mcpElicitationAutoResponse,
   parseApprovalCallback,
 } from "../../../src/providers/codex/codex-approvals.mjs";
@@ -23,6 +25,18 @@ test("approval callbacks use unique UUIDs and bind to the exact Telegram message
   const approval = { chatId: 10, messageId: 20 };
   assert.equal(approvalMatchesTelegramMessage(approval, { message: { chat: { id: 10 }, message_id: 20 } }), true);
   assert.equal(approvalMatchesTelegramMessage(approval, { message: { chat: { id: 10 }, message_id: 21 } }), false);
+});
+
+test("structured Codex user input preserves question ids and answer arrays", () => {
+  const params = {
+    isBlocking: true,
+    questions: [{ id: "scope", header: "Объём", question: "Что менять?", options: null }],
+  };
+  assert.deepEqual(codexToolUserInputResponse(params, { scope: "Только клиент" }), {
+    answers: { scope: { answers: ["Только клиент"] } },
+  });
+  assert.match(formatToolRequestUserInput(params), /Что менять/);
+  assert.throws(() => codexToolUserInputResponse(params, {}), /Ответьте на вопрос/);
 });
 
 test("permission approvals grant exactly the requested profile", () => {

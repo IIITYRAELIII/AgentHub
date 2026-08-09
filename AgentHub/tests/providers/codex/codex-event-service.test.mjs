@@ -20,6 +20,8 @@ function createService(run, overrides = {}) {
     beginCompactionCleanup: noop, setStage: noop, describeItem: () => "stage",
     itemActivity: () => null, requestApproval: async () => {}, formatCommandApproval: () => "",
     formatFileApproval: () => "", formatPermissionsApproval: () => "", requestMcpElicitation: async () => {},
+    requestUserInput: async () => {}, reduceLiveItemEvent: () => null,
+    startLiveItem: () => null, completeLiveItem: () => null,
     discardContextCompaction: async () => false, consumeTracker: () => null,
     finishObserved: async () => {}, turnSnapshot: () => ({}), completeManaged: async () => {},
     turnTokenUsage: new Map(), speechButtons: new Map(), temporaryFiles: new Map(),
@@ -39,6 +41,26 @@ test("Codex event service reduces answer deltas into the exact item", async () =
   assert.equal(run.responseItemId, "answer-1");
   assert.equal(run.responseItems[0].text, "Ответ");
   assert.equal(scheduled, true);
+});
+
+test("Codex event service forwards structured user input requests", async () => {
+  const run = { status: "running" };
+  const requests = [];
+  const activities = [];
+  const service = createService(run, {
+    requestUserInput: (...args) => requests.push(args),
+    appendActivity: (_run, activity) => activities.push(activity),
+  });
+  const params = {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "input-1",
+    questions: [{ id: "choice", question: "Как продолжить?" }],
+    isBlocking: true,
+  };
+  await service.handle({ id: 17, method: "item/tool/requestUserInput", params });
+  assert.deepEqual(requests, [[17, params, run]]);
+  assert.equal(activities.at(-1).status, "waiting");
 });
 
 test("Codex event service applies canonical completed agent messages", async () => {

@@ -4,6 +4,11 @@ import { ClaudeEventService } from "../providers/claude/claude-event-service.mjs
 import { isContextCompactionItem } from "../providers/codex/context-compaction-tracker.mjs";
 import { CodexEventService } from "../providers/codex/codex-event-service.mjs";
 import {
+  completeCodexLiveItem,
+  reduceCodexLiveItemEvent,
+  startCodexLiveItem,
+} from "../providers/codex/codex-live-item-reducer.mjs";
+import {
   codexTurnSnapshot,
   describeCodexItem,
   recoveredCodexAnswer,
@@ -74,6 +79,7 @@ export function createProviderOperationComposition({
   formatFileApproval,
   formatPermissionsApproval,
   requestMcpElicitation,
+  requestUserInput,
   discardContextCompactionRun,
 }) {
   const codexProviderTasks = new CodexProviderTaskService({
@@ -224,6 +230,10 @@ export function createProviderOperationComposition({
     formatFileApproval,
     formatPermissionsApproval,
     requestMcpElicitation,
+    requestUserInput,
+    reduceLiveItemEvent: reduceCodexLiveItemEvent,
+    startLiveItem: startCodexLiveItem,
+    completeLiveItem: completeCodexLiveItem,
     discardContextCompaction: discardContextCompactionRun,
     consumeTracker: consumeTurnTokenTracker,
     finishObserved: (...args) => taskObserver().finish(...args),

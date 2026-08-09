@@ -91,11 +91,13 @@ export function codexItemActivity(item, completed) {
   };
   if (item.type === "commandExecution") {
     const failed = completed && codexItemFailed(item);
+    const command = String(item.command ?? "").replace(/\s+/g, " ").slice(0, 500);
+    const output = String(item.aggregatedOutput ?? "").trim().slice(-4_000);
     return {
       ...base,
       type: "command",
       label: failed ? "Команда завершилась с ошибкой" : completed ? "Команда выполнена" : "Выполняется команда",
-      detail: String(item.command ?? "").replace(/\s+/g, " ").slice(0, 500),
+      detail: [command, output].filter(Boolean).join("\n"),
       status: failed ? "failed" : base.status,
     };
   }

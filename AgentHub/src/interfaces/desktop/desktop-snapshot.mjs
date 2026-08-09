@@ -359,6 +359,8 @@ export function createDesktopSnapshotFactory({
           preview: deferred.inputPreview(item.input),
           allowForce: item.allowForce === true,
           conflictKind: item.conflictKind ?? null,
+          lastError: item.lastError ?? null,
+          attempts: Number(item.attempts) || 0,
           createdAt: item.createdAt ?? null,
           attachments: item.persistentFiles
             ? (deferred.describeAttachments?.(item.temporaryFiles) ?? [])
@@ -366,7 +368,7 @@ export function createDesktopSnapshotFactory({
         })),
         ...deferred.queuedValues().map((item) => ({
           id: item.id,
-          state: item.dispatchingAt ? "dispatching" : "queued",
+          state: item.dispatchingAt ? "dispatching" : item.paused === true ? "paused" : "queued",
           provider: item.provider,
           threadId: item.threadId,
           taskTitle: deferredTaskTitle(item),
@@ -376,6 +378,9 @@ export function createDesktopSnapshotFactory({
           preview: deferred.inputPreview(item.input),
           allowForce: false,
           conflictKind: item.conflictKind ?? null,
+          lastError: item.lastError ?? null,
+          attempts: Number(item.attempts) || 0,
+          queueOrder: Number.isFinite(Number(item.queueOrder)) ? Number(item.queueOrder) : null,
           createdAt: item.createdAt ?? null,
           attachments: item.persistentFiles
             ? (deferred.describeAttachments?.(item.temporaryFiles) ?? [])

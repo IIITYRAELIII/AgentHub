@@ -2,6 +2,7 @@
   "use strict";
 
   const DEFAULT_BOTTOM_THRESHOLD_PX = 24;
+  const DEFAULT_TOP_THRESHOLD_PX = 64;
   const DEFAULT_ANIMATION_DURATION_MS = 260;
 
   function distanceFromBottom(scroll) {
@@ -21,6 +22,8 @@
       this.button = button ?? null;
       this.threshold = Number(options.thresholdPx) || DEFAULT_BOTTOM_THRESHOLD_PX;
       this.duration = Number(options.animationDurationMs) || DEFAULT_ANIMATION_DURATION_MS;
+      this.topThreshold = Number(options.topThresholdPx) || DEFAULT_TOP_THRESHOLD_PX;
+      this.onNearTop = typeof options.onNearTop === "function" ? options.onNearTop : null;
       this.requestFrame = options.requestAnimationFrame ?? window.requestAnimationFrame.bind(window);
       this.cancelFrame = options.cancelAnimationFrame ?? window.cancelAnimationFrame.bind(window);
       this.reducedMotion = options.reducedMotion ?? (() => (
@@ -31,6 +34,8 @@
       this.animationGeneration = 0;
       this.pinned = this.isNearBottom();
       this.lastDistance = distanceFromBottom(scroll);
+      this.lastScrollHeight = Number(scroll.scrollHeight) || 0;
+      this.nearTopPending = false;
       this.listeners = [];
       this.bind(scroll, "scroll", () => this.handleScroll(), { passive: true });
       for (const type of ["wheel", "touchstart", "pointerdown"]) {
@@ -46,6 +51,7 @@
         ? new this.ResizeObserver(() => this.handleResize())
         : null;
       this.resizeObserver?.observe(scroll);
+      if (scroll.firstElementChild) this.resizeObserver?.observe(scroll.firstElementChild);
       this.requestFrame(() => this.sync());
     }
 
@@ -70,6 +76,19 @@
       if (nearBottom) this.pinned = true;
       this.lastDistance = distanceFromBottom(this.scroll);
       if (this.button) this.button.hidden = nearBottom;
+      this.maybeLoadOlder();
+    }
+
+    setWorking(value) {
+      this.button?.toggleAttribute?.("data-working", Boolean(value));
+    }
+
+    maybeLoadOlder() {
+      if (!this.onNearTop || this.nearTopPending || Number(this.scroll.scrollTop) > this.topThreshold) return;
+      this.nearTopPending = true;
+      Promise.resolve(this.onNearTop()).catch(() => {}).finally(() => {
+        this.nearTopPending = false;
+      });
     }
 
     noteUserIntent() {
@@ -85,8 +104,13 @@
     }
 
     handleResize() {
+      const nextHeight = Number(this.scroll.scrollHeight) || 0;
       if (this.pinned) this.pinNow();
-      else this.sync();
+      else if (nextHeight !== this.lastScrollHeight) {
+        this.scroll.scrollTop = Math.max(0, nextHeight - this.scroll.clientHeight - this.lastDistance);
+        this.sync();
+      } else this.sync();
+      this.lastScrollHeight = nextHeight;
     }
 
     pinNow() {
@@ -94,6 +118,7 @@
       if (this.animationFrame) this.cancelFrame(this.animationFrame);
       this.animationFrame = 0;
       this.scroll.scrollTop = this.scroll.scrollHeight;
+      this.lastScrollHeight = Number(this.scroll.scrollHeight) || 0;
       this.pinned = true;
       this.sync();
     }
@@ -110,6 +135,7 @@
         );
       }
       this.pinned = false;
+      this.lastScrollHeight = Number(this.scroll.scrollHeight) || 0;
       this.sync();
     }
 
@@ -153,6 +179,7 @@
   window.AgentHubChatScroll = Object.freeze({
     ChatScrollController,
     DEFAULT_BOTTOM_THRESHOLD_PX,
+    DEFAULT_TOP_THRESHOLD_PX,
     distanceFromBottom,
     shouldLoadOlderPage,
   });

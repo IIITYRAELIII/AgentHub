@@ -363,6 +363,7 @@ export async function createProviderApplicationComposition({
     formatFileApproval: api.formatFileApproval,
     formatPermissionsApproval: late.formatPermissionsApproval,
     requestMcpElicitation: api.requestMcpElicitation,
+    requestUserInput: api.requestUserInput,
     discardContextCompactionRun: api.discardContextCompactionRun,
   });
   const providerCatalog = createProviderCatalogComposition({

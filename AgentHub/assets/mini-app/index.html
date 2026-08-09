@@ -332,7 +332,12 @@
             <polyline points="208 96 128 176 48 96" fill="none" stroke="currentColor"
               stroke-linecap="round" stroke-linejoin="round" stroke-width="20"></polyline>
           </svg>
+          <span class="chat-scroll-working" aria-hidden="true"><i></i><i></i><i></i></span>
         </button>
+        <nav class="chat-message-nav" data-chat-message-nav hidden aria-label="Навигация по сообщениям пользователя">
+          <button type="button" data-chat-message-prev title="Предыдущее ваше сообщение" aria-label="Предыдущее ваше сообщение">↑</button>
+          <button type="button" data-chat-message-next title="Следующее ваше сообщение" aria-label="Следующее ваше сообщение">↓</button>
+        </nav>
 
         <aside class="dialog-settings" data-dialog-settings hidden aria-label="Настройки диалога">
           <header class="dialog-settings-head">

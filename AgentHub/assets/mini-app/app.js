@@ -45,6 +45,9 @@ const chatEmpty = document.querySelector("[data-chat-empty]");
 const chatEmptyText = document.querySelector("[data-chat-empty-text]");
 const chatScroll = document.querySelector("[data-chat-scroll]");
 const chatScrollDown = document.querySelector("[data-chat-scroll-down]");
+const chatMessageNav = document.querySelector("[data-chat-message-nav]");
+const chatMessagePrev = document.querySelector("[data-chat-message-prev]");
+const chatMessageNext = document.querySelector("[data-chat-message-next]");
 const historyLoader = document.querySelector("[data-history-loader]");
 const historyLoadButton = document.querySelector("[data-history-load]");
 const historyLoadLabel = document.querySelector("[data-history-load-label]");
@@ -1859,10 +1862,12 @@ function syncChatScrollDownButton(scroll, button) {
 
 function bindChatScrollDown(scroll, button) {
   if (!scroll || !button || chatScrollControllers.has(scroll)) return;
-  chatScrollControllers.set(scroll, new ChatScrollController(scroll, button));
+  chatScrollControllers.set(scroll, new ChatScrollController(scroll, button, {
+    onNearTop: scroll === chatScroll ? () => requestOlderHistory() : null,
+  }));
 }
 
-function createChatScrollDownButton(scroll) {
+function createChatScrollDownButton(scroll, task = null) {
   const button = el("button", {
     type: "button",
     class: "chat-scroll-down",
@@ -1884,8 +1889,12 @@ function createChatScrollDownButton(scroll) {
         "stroke-width": "20",
       }),
     ]),
+    el("span", { class: "chat-scroll-working", "aria-hidden": "true" }, [
+      el("i"), el("i"), el("i"),
+    ]),
   ]);
   bindChatScrollDown(scroll, button);
+  chatScrollControllers.get(scroll)?.setWorking(task?.running === true);
   return button;
 }
 
@@ -1935,7 +1944,7 @@ function renderStreamChatPreview(task) {
   renderQueueForTask(task.id, queue);
   if (!queue.hidden) log.append(queue);
   scroll.append(log);
-  const scrollDown = createChatScrollDownButton(scroll);
+  const scrollDown = createChatScrollDownButton(scroll, task);
   preview.append(scroll, scrollDown);
   window.requestAnimationFrame(() => {
     chatScrollControllers.get(scroll)?.pinNow();
@@ -2690,6 +2699,7 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
     else if (stickToBottom) pinChatToBottom();
     else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
     scheduleUnderfilledHistoryLoad();
+    syncUserMessageNavigation();
     return;
   }
   let lastAgentIndex = -1;
@@ -2716,7 +2726,34 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
   else if (stickToBottom) pinChatToBottom();
   else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
   scheduleUnderfilledHistoryLoad();
+  syncUserMessageNavigation();
 }
+
+function userMessageNodes() {
+  return [...chatLog.querySelectorAll(".msg[data-role='user']")];
+}
+
+function syncUserMessageNavigation() {
+  if (!chatMessageNav) return;
+  chatMessageNav.hidden = userMessageNodes().length < 2;
+}
+
+function navigateUserMessage(direction) {
+  const messages = userMessageNodes();
+  if (!messages.length) return;
+  const viewportTop = chatScroll.getBoundingClientRect().top;
+  const positions = messages.map((message) => ({
+    message,
+    top: message.getBoundingClientRect().top - viewportTop,
+  }));
+  const target = direction < 0
+    ? positions.filter((item) => item.top < -8).at(-1) ?? positions[0]
+    : positions.find((item) => item.top > 8) ?? positions.at(-1);
+  target?.message.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+chatMessagePrev?.addEventListener("click", () => navigateUserMessage(-1));
+chatMessageNext?.addEventListener("click", () => navigateUserMessage(1));
 
 function taskDiffSummary(text) {
   const lines = String(text ?? "").split(/\r?\n/u);
@@ -3246,14 +3283,52 @@ function renderApprovals() {
   approvalsBox.replaceChildren();
   approvalsBox.hidden = approvals.length === 0;
   for (const approval of approvals) {
+    const questions = Array.isArray(approval.questions) ? approval.questions : [];
     const options = Array.isArray(approval.options) && approval.options.length > 0
       ? approval.options
       : [{ id: "approve", label: "Разрешить", kind: "primary" }, { id: "deny", label: "Отклонить" }];
+    const questionFields = questions.map((question, index) => {
+      const questionId = String(question.id ?? `question-${index}`);
+      const choices = Array.isArray(question.options) ? question.options : [];
+      const field = el("fieldset", {
+        class: "approval-question",
+        "data-approval-question": questionId,
+        "data-question-kind": choices.length ? "options" : "text",
+      }, [
+        el("legend", { text: question.header || `Вопрос ${index + 1}` }),
+        el("div", { class: "approval-question-text", text: question.question || "" }),
+      ]);
+      if (choices.length) {
+        field.append(...choices.map((choice, choiceIndex) => el("label", { class: "approval-choice" }, [
+          el("input", {
+            type: "radio",
+            name: `approval-${approval.id}-${questionId}`,
+            value: choice.label,
+            checked: choiceIndex === 0,
+          }),
+          el("span", {}, [
+            el("strong", { text: choice.label }),
+            choice.description ? el("small", { text: choice.description }) : null,
+          ]),
+        ])));
+      }
+      if (!choices.length || question.isOther) {
+        field.append(el("input", {
+          class: "approval-input",
+          type: question.isSecret ? "password" : "text",
+          "data-approval-other": "",
+          placeholder: choices.length ? "Другой ответ" : "Ваш ответ",
+          autocomplete: question.isSecret ? "off" : "on",
+        }));
+      }
+      return field;
+    });
     approvalsBox.append(el("div", { class: "approval", "data-approval-id": approval.id }, [
       el("div", { class: "approval-head" }, [
         el("span", { class: "approval-kind", text: approval.kind || "Подтверждение" }),
       ]),
       el("div", { class: "approval-text", text: approval.text || "" }),
+      ...questionFields,
       el("div", { class: "approval-actions" }, options.map((option) =>
         el("button", {
           type: "button",
@@ -3262,7 +3337,13 @@ function renderApprovals() {
           "data-approval-id": approval.id,
           "data-decision": option.id,
           text: option.label,
-        }))),
+        })).concat(questions.length ? [el("button", {
+          type: "button",
+          class: "chip-button primary",
+          "data-action": "approval-submit",
+          "data-approval-id": approval.id,
+          text: "Ответить",
+        })] : [])),
     ]));
   }
 }
@@ -3272,6 +3353,11 @@ function renderQueueForTask(taskId, container) {
     .filter((entry) => entry.state !== "dispatching" && entry.state !== "steering")
     .slice()
     .sort((left, right) => {
+      const leftOrder = Number(left.queueOrder);
+      const rightOrder = Number(right.queueOrder);
+      if (Number.isFinite(leftOrder) && Number.isFinite(rightOrder) && leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
       const leftAt = Date.parse(left.createdAt || 0);
       const rightAt = Date.parse(right.createdAt || 0);
       return (Number.isFinite(leftAt) ? leftAt : Number.POSITIVE_INFINITY)
@@ -3281,10 +3367,12 @@ function renderQueueForTask(taskId, container) {
   container.hidden = queued.length === 0;
   if (queued.length === 0) return;
   const pendingCount = queued.filter((entry) => entry.state === "pending").length;
-  const queuedCount = queued.length - pendingCount;
+  const pausedCount = queued.filter((entry) => entry.state === "paused").length;
+  const queuedCount = queued.length - pendingCount - pausedCount;
   const counts = [
     pendingCount ? `Требуют решения: ${pendingCount}` : "",
     queuedCount ? `В очереди: ${queuedCount}` : "",
+    pausedCount ? `На паузе: ${pausedCount}` : "",
   ].filter(Boolean).join(" · ");
   container.append(el("div", { class: "queue-head", text: counts }));
   const task = state.tasks.find((entry) => entry.id === taskId);
@@ -3313,14 +3401,31 @@ function renderQueueForTask(taskId, container) {
         title: "Изменить текст сообщения, не затрагивая изображения и аннотации",
         text: "Изменить",
       }));
+      if (["queued", "paused"].includes(entry.state)) {
+        actions.push(el("button", {
+          type: "button", class: "queue-move", "data-action": "queue-move-up", "data-queue-id": entry.id,
+          title: "Поднять сообщение в очереди", "aria-label": "Поднять сообщение в очереди", text: "↑",
+        }));
+        actions.push(el("button", {
+          type: "button", class: "queue-move", "data-action": "queue-move-down", "data-queue-id": entry.id,
+          title: "Опустить сообщение в очереди", "aria-label": "Опустить сообщение в очереди", text: "↓",
+        }));
+        actions.push(el("button", {
+          type: "button",
+          class: "queue-pause",
+          "data-action": entry.state === "paused" ? "queue-resume" : "queue-pause",
+          "data-queue-id": entry.id,
+          text: entry.state === "paused" ? "Продолжить" : "Пауза",
+        }));
+      }
       if (entry.state === "pending") {
         actions.push(el("button", {
           type: "button",
           class: "queue-accept",
-          "data-action": "queue-accept",
+          "data-action": entry.lastError ? "queue-retry" : "queue-accept",
           "data-queue-id": entry.id,
           title: "Отправить после завершения текущего хода",
-          text: "После хода",
+          text: entry.lastError ? "Повторить" : "После хода",
         }));
       }
       actions.push(el("button", {
@@ -3337,6 +3442,7 @@ function renderQueueForTask(taskId, container) {
       : (!entryAnnotations.length && rawPreview ? rawPreview : "");
     const content = el("div", { class: "queue-content" }, [
       visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
+      entry.lastError ? el("div", { class: "queue-error", text: entry.lastError }) : null,
       entryAnnotations.length
         ? el("div", { class: "queue-annotation-list" }, entryAnnotations.map((annotation, index) => {
           const quote = String(annotation?.text ?? "").trim();
@@ -4744,6 +4850,23 @@ async function handleAction(action, trigger) {
         decision: trigger.dataset.decision,
       });
       break;
+    case "approval-submit": {
+      const approval = trigger.closest("[data-approval-id]");
+      const answers = {};
+      for (const field of approval?.querySelectorAll("[data-approval-question]") ?? []) {
+        const id = field.dataset.approvalQuestion;
+        const selected = field.querySelector("input[type='radio']:checked")?.value ?? "";
+        const other = field.querySelector("[data-approval-other]")?.value?.trim() ?? "";
+        answers[id] = [other || selected].filter(Boolean);
+      }
+      emit("approval:respond", {
+        taskId,
+        id: trigger.dataset.approvalId,
+        decision: "submit",
+        answers,
+      });
+      break;
+    }
     case "queue-remove":
       emit("queue:remove", { taskId, id: trigger.dataset.queueId });
       break;
@@ -4764,6 +4887,21 @@ async function handleAction(action, trigger) {
       if (text != null) emit("queue:edit", { taskId, id: entry.id, text });
       break;
     }
+    case "queue-move-up":
+      emit("queue:move", { taskId, id: trigger.dataset.queueId, direction: "up" });
+      break;
+    case "queue-move-down":
+      emit("queue:move", { taskId, id: trigger.dataset.queueId, direction: "down" });
+      break;
+    case "queue-pause":
+      emit("queue:pause", { taskId, id: trigger.dataset.queueId });
+      break;
+    case "queue-resume":
+      emit("queue:resume", { taskId, id: trigger.dataset.queueId });
+      break;
+    case "queue-retry":
+      emit("queue:retry", { taskId, id: trigger.dataset.queueId });
+      break;
     case "hub-restart":
       emit("hub:restart", {});
       break;
@@ -4985,6 +5123,7 @@ const AgentHub = {
   /** running=true подсвечивает индикатор и показывает «Стоп». */
   setRunning(taskId, running) {
     this.patchTask(taskId, { running: Boolean(running) });
+    if (taskId === state.selectedId) chatScrollControllers.get(chatScroll)?.setWorking(Boolean(running));
   },
   setApprovals(taskId, approvals) {
     const next = Array.isArray(approvals) ? approvals : [];

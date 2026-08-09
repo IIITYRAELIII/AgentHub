@@ -71,7 +71,7 @@ export class DeferredInputController {
 
   async process(id) {
     const item = this.queuedInputs.get(id);
-    if (!item || this.processing.has(id)) return;
+    if (!item || item.paused === true || this.processing.has(id)) return;
     const oldest = this.oldestForTask(item, { includePending: true });
     if (oldest?.id !== id) {
       if (!this.pendingInputs.has(oldest?.id)) this.schedule(item);
@@ -173,8 +173,12 @@ export class DeferredInputController {
       : this.queuedInputs.values();
     for (const candidate of candidates) {
       if (this.taskKey(candidate) !== key) continue;
+      if (candidate.paused === true) continue;
+      const order = Number(candidate.queueOrder);
       const parsed = Date.parse(String(candidate.createdAt ?? ""));
-      const candidateAt = Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+      const candidateAt = Number.isFinite(order)
+        ? order
+        : Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
       if (!oldest || candidateAt < oldestAt) {
         oldest = candidate;
         oldestAt = candidateAt;

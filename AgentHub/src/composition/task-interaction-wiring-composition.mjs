@@ -36,6 +36,9 @@ export function createTaskInteractionWiring({
     requestMcpElicitation: (rpcId, params, run = null) => (
       approvalController.requestMcp(rpcId, params, run)
     ),
+    requestUserInput: (rpcId, params, run = null) => (
+      approvalController.requestUserInput(rpcId, params, run)
+    ),
     formatCommandApproval: (params, run = null) => (
       presentCommandApproval(params, run, activeProjectRoot())
     ),

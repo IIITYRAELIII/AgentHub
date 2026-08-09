@@ -114,6 +114,38 @@ export function formatMcpElicitation(params = {}) {
   return parts.join("\n\n").slice(0, 3500);
 }
 
+export function formatToolRequestUserInput(params = {}) {
+  const questions = Array.isArray(params.questions) ? params.questions : [];
+  const rows = questions.map((question, index) => {
+    const header = String(question?.header ?? `Вопрос ${index + 1}`).trim();
+    const prompt = String(question?.question ?? "").trim();
+    const options = (question?.options ?? [])
+      .map((option) => String(option?.label ?? "").trim())
+      .filter(Boolean);
+    return [`${index + 1}. ${header}`, prompt, options.length ? `Варианты: ${options.join(" · ")}` : ""]
+      .filter(Boolean)
+      .join("\n");
+  });
+  return ["Codex ожидает ваш ответ, чтобы продолжить ход.", ...rows].join("\n\n").slice(0, 3500);
+}
+
+export function codexToolUserInputResponse(params = {}, submitted = {}) {
+  const questions = Array.isArray(params.questions) ? params.questions : [];
+  const source = submitted && typeof submitted === "object" ? submitted : {};
+  const answers = {};
+  for (const question of questions) {
+    const id = String(question?.id ?? "").trim();
+    if (!id) continue;
+    const raw = Array.isArray(source[id]) ? source[id] : [source[id]];
+    const values = raw.map((value) => String(value ?? "").trim()).filter(Boolean);
+    if (!values.length && params.isBlocking !== false) {
+      throw new Error(`Ответьте на вопрос «${question.header || question.question || id}»`);
+    }
+    answers[id] = { answers: values };
+  }
+  return { answers };
+}
+
 export function codexThreadWaitingOnApproval(status) {
   return status?.type === "active"
     && Array.isArray(status.activeFlags)

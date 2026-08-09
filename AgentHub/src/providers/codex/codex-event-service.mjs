@@ -51,6 +51,7 @@ export class CodexEventService {
       "beginCompactionCleanup", "setStage", "describeItem",
       "itemActivity", "requestApproval", "formatCommandApproval", "formatFileApproval",
       "formatPermissionsApproval", "requestMcpElicitation", "discardContextCompaction",
+      "requestUserInput", "reduceLiveItemEvent", "startLiveItem", "completeLiveItem",
       "consumeTracker", "finishObserved", "turnSnapshot", "completeManaged",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
@@ -79,6 +80,12 @@ export class CodexEventService {
       });
     if (method === "thread/settings/updated") {
       d.applyThreadSettings(params.threadId, params.threadSettings);
+      void d.saveState();
+    }
+    if (method === "thread/status/changed" && run) {
+      run.threadStatus = params.status ?? null;
+      const flags = Array.isArray(params.status?.activeFlags) ? params.status.activeFlags : [];
+      if (flags.includes("waitingOnApproval")) d.setStage(run, "Ожидается ответ пользователя…");
       void d.saveState();
     }
     if (method === "turn/started") {
@@ -130,6 +137,14 @@ export class CodexEventService {
     if ((method === "item/reasoning/summaryTextDelta" || method === "item/plan/delta") && run) {
       d.appendReasoning(run, params.delta);
     }
+    if (run) {
+      const liveActivity = d.reduceLiveItemEvent(run, method, params);
+      if (liveActivity) {
+        d.appendActivity(run, liveActivity);
+        d.noteActivity(run);
+        d.scheduleProgress(run);
+      }
+    }
     if (method === "item/started") {
       if (d.isCompactionItem(params.item)) {
         d.beginCompaction(params.threadId, {
@@ -142,6 +157,7 @@ export class CodexEventService {
       }
       if (run) {
         startCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
+        d.startLiveItem(run, params.item);
         d.setStage(run, d.describeItem(params.item, false));
         const activity = d.itemActivity(params.item, false);
         if (activity) d.appendActivity(run, activity);
@@ -155,6 +171,7 @@ export class CodexEventService {
       }
       if (run) {
         completeCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
+        d.completeLiveItem(run, params.item);
         d.setStage(run, d.describeItem(params.item, true));
         const activity = d.itemActivity(params.item, true);
         if (activity) d.appendActivity(run, activity);
@@ -201,6 +218,14 @@ export class CodexEventService {
       await d.requestApproval(id, "permissions", params, d.formatPermissionsApproval(params), run);
     } else if (method === "mcpServer/elicitation/request") {
       await d.requestMcpElicitation(id, params, run);
+    } else if (method === "item/tool/requestUserInput") {
+      d.appendActivity(run, {
+        id: `input:${id}`,
+        type: "approval",
+        label: "Codex ожидает ответ пользователя",
+        status: "waiting",
+      });
+      await d.requestUserInput(id, params, run);
     } else if (method === "turn/completed") {
       if (run) hydrateCodexAgentMessages(run, params.turn?.items, { turnId: eventTurnId });
       d.completeTurn(eventTurnId, params.turn?.status);

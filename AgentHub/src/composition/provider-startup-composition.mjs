@@ -1,5 +1,6 @@
 import { pathInsideOrSame } from "../infrastructure/filesystem/config.mjs";
 import { codexThreadSandboxSettings } from "../providers/codex/codex-sandbox.mjs";
+import { reconcileCodexThreadSubscriptions } from "../providers/codex/codex-thread-subscriptions.mjs";
 
 export function createProviderStartupComposition({
   config,
@@ -54,6 +55,11 @@ export function createProviderStartupComposition({
         selectionStore.setTitle(await resolveResumedCodexThreadTitle(threadId, result.thread));
         applyCodexThreadSettings(threadId, result);
         await saveState();
+        void reconcileCodexThreadSubscriptions({
+          sendRpc,
+          selectedThreadId: threadId,
+          activeRuns: taskRuns.values(),
+        }).catch((error) => logger.warn?.("Cannot reconcile Codex thread subscriptions:", error.message));
         return true;
       } catch (error) {
         logger.error("Cannot resume saved thread:", error.message);

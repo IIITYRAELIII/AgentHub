@@ -13,6 +13,7 @@ export function createDesktopCommandWiring({
   const resolveDesktopApproval = (params) => services.approvalController.resolveFromDesktop(
     String(params.key ?? ""),
     String(params.decision ?? ""),
+    params,
   );
 
   commands = createDesktopCommandComposition({

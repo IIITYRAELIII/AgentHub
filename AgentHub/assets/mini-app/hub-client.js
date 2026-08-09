@@ -1147,10 +1147,14 @@ function applySnapshot(snapshot) {
       id: approval.key ?? approval.id,
       kind: approval.kind ?? "Подтверждение",
       text: approval.text ?? approval.preview ?? approval.reason ?? "",
-      options: [
-        { id: "accept", label: "Разрешить", kind: "primary" },
-        { id: "decline", label: "Отклонить", kind: "danger" },
-      ],
+      questions: Array.isArray(approval.questions) ? approval.questions : null,
+      options: approval.kind === "user-input"
+        ? [{ id: "decline", label: "Отменить", kind: "danger" }]
+        : [
+          ...(approval.canAccept === false ? [] : [{ id: "once", label: "Разрешить", kind: "primary" }]),
+          ...(approval.canAllowSession === false ? [] : [{ id: "session", label: "На сессию" }]),
+          { id: "decline", label: "Отклонить", kind: "danger" },
+        ],
       }))
       : []);
   }
@@ -1775,9 +1779,20 @@ agentHub.on("stream:new", ({ workspaceId, streamName }) => runAction(async () =>
 agentHub.on("task:archive", ({ id } = {}) => runAction(async () => applySnapshot(
   await control("archive-task", id ? exactTaskParams(id) : exactSelectedTaskParams()),
 )));
-agentHub.on("task:stop", () => runAction(async () => agentHub.toast(
-  (await control("cancel-run", exactSelectedTaskParams()))?.message ?? "Остановка запрошена",
-)));
+agentHub.on("task:stop", ({ id } = {}) => runAction(async () => {
+  const targetId = id || selectedTaskId;
+  const target = targetId ? exactTaskParams(targetId) : exactSelectedTaskParams();
+  const result = await control("cancel-run", target);
+  const queued = (lastSnapshot?.deferredInputs ?? []).filter((item) => (
+    item.state === "queued"
+    && taskId(item.provider, item.threadId, item.streamId) === targetId
+  ));
+  await Promise.all(queued.map((item) => control("deferred-input", { id: item.id, action: "pause" })));
+  applySnapshot(await control("snapshot"));
+  agentHub.toast(queued.length
+    ? `${result?.message ?? "Остановка запрошена"}. Очередь приостановлена.`
+    : result?.message ?? "Остановка запрошена");
+}));
 agentHub.on("task:diff", ({ id }) => runAction(async () => {
   const targetId = id || selectedTaskId;
   const identity = taskIdentity(targetId);
@@ -1962,8 +1977,8 @@ agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
     void loadJournal({ force: true });
   }
 }));
-agentHub.on("approval:respond", ({ id, decision }) => runAction(
-  () => control("resolve-approval", { key: id, decision }),
+agentHub.on("approval:respond", ({ id, decision, answers }) => runAction(
+  () => control("resolve-approval", { key: id, decision, ...(answers ? { answers } : {}) }),
 ));
 agentHub.on("queue:remove", ({ id }) => runAction(async () => {
   const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id);
@@ -2021,6 +2036,26 @@ agentHub.on("queue:edit", ({ id, text }) => runAction(async () => {
   applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Сообщение в очереди изменено");
 }));
+for (const [event, action, fallback] of [
+  ["queue:pause", "pause", "Сообщение приостановлено"],
+  ["queue:resume", "resume", "Очередь возобновлена"],
+  ["queue:retry", "retry", "Повтор сообщения запланирован"],
+]) {
+  agentHub.on(event, ({ id, taskId: taskIdValue }) => runAction(() => runQueueAction(
+    id,
+    taskIdValue,
+    async () => {
+      const result = await control("deferred-input", { id, action });
+      agentHub.toast(result?.message ?? fallback);
+      return result;
+    },
+  )));
+}
+agentHub.on("queue:move", ({ id, direction, taskId: taskIdValue }) => runAction(() => runQueueAction(
+  id,
+  taskIdValue,
+  async () => control("deferred-input", { id, action: "move", direction }),
+)));
 agentHub.on("attachment:open", ({ attachment }) => runAction(async () => {
   const id = String(attachment?.id ?? "").trim();
   if (vscode && id) {

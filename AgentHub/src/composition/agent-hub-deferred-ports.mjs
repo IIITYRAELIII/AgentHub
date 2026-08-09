@@ -20,7 +20,7 @@ export function createAgentHubDeferredPorts() {
   ]);
   const taskInteraction = createDeferredCompositionPort("task interaction wiring", [
     "readCachedHistory", "refreshHistory", "showTaskMessage", "showLastTaskMessage",
-    "resolveTaskViewBinding", "requestApproval", "requestMcpElicitation",
+    "resolveTaskViewBinding", "requestApproval", "requestMcpElicitation", "requestUserInput",
     "formatCommandApproval", "formatFileApproval", "formatApprovalMode", "approvalModeKeyboard",
   ]);
   const runtimeRestart = createDeferredCompositionPort("runtime restart wiring", [

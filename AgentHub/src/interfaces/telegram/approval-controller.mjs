@@ -112,6 +112,32 @@ export class ApprovalController {
     }
   }
 
+  async requestUserInput(rpcId, params, run = null) {
+    const { createApprovalKey, formatToolRequestUserInput } = this.approvalProtocol;
+    const key = createApprovalKey();
+    const approval = {
+      rpcId,
+      kind: "user-input",
+      params,
+      questions: Array.isArray(params?.questions) ? params.questions : [],
+      runId: run?.id ?? null,
+      chatId: run?.chatId ?? this.currentChatId(),
+      text: formatToolRequestUserInput(params),
+    };
+    this.pending.set(key, approval);
+    if (run?.telegramDeliveryRequested === false) return;
+    try {
+      const text = `${approval.text}\n\nОтветьте в Agent Hub: этот запрос требует структурированного ввода.`;
+      const message = run
+        ? await this.sendForRun(run, text, {}, { kind: "approval" })
+        : await this.send(text);
+      approval.messageId = message?.message_id ?? null;
+    } catch (error) {
+      this.pending.delete(key);
+      throw error;
+    }
+  }
+
   async handleCallback(callback) {
     const {
       approvalMatchesTelegramMessage,
@@ -175,19 +201,41 @@ export class ApprovalController {
       text: String(approval.text ?? "Требуется подтверждение"),
       canAllowSession: approval.kind !== "mcp-elicitation",
       canAccept: approval.kind !== "mcp-elicitation" || Boolean(approval.acceptResponse),
+      questions: approval.kind === "user-input"
+        ? approval.questions.map((question) => ({
+          id: String(question?.id ?? ""),
+          header: String(question?.header ?? ""),
+          question: String(question?.question ?? ""),
+          isOther: question?.isOther === true,
+          isSecret: question?.isSecret === true,
+          options: Array.isArray(question?.options)
+            ? question.options.map((option) => ({
+              label: String(option?.label ?? ""),
+              description: String(option?.description ?? ""),
+            }))
+            : null,
+        }))
+        : null,
     }));
   }
 
-  async resolveFromDesktop(key, action) {
-    const { codexApprovalResponse } = this.approvalProtocol;
+  async resolveFromDesktop(key, action, submitted = {}) {
+    const { codexApprovalResponse, codexToolUserInputResponse } = this.approvalProtocol;
     const approval = this.pending.get(String(key ?? ""));
     if (!approval) throw new Error("Запрос подтверждения уже закрыт");
     if (approval.runId && !this.runExists(approval.runId)) {
       this.pending.delete(key);
       throw new Error("Запрос больше не относится к активному ходу");
     }
-    if (!["once", "session", "decline"].includes(action)) throw new Error("Неизвестное решение подтверждения");
-    const response = approval.kind === "mcp-elicitation"
+    const allowedActions = approval.kind === "user-input"
+      ? ["submit", "decline"]
+      : ["once", "session", "decline"];
+    if (!allowedActions.includes(action)) throw new Error("Неизвестное решение подтверждения");
+    const response = approval.kind === "user-input"
+      ? action === "decline"
+        ? codexToolUserInputResponse({ ...approval.params, isBlocking: false }, {})
+        : codexToolUserInputResponse(approval.params, submitted.answers)
+      : approval.kind === "mcp-elicitation"
       ? action === "decline" ? { action: "decline" } : approval.acceptResponse
       : codexApprovalResponse(approval.kind, action, approval.params);
     if (!response) throw new Error("Для этой формы нужен явный ввод данных");
@@ -201,8 +249,9 @@ export class ApprovalController {
       }).catch(() => {});
     }
     return {
-      decision: action === "once" ? "allowed"
-        : action === "session" ? "session" : "declined",
+      decision: action === "submit" ? "submitted"
+        : action === "once" ? "allowed"
+          : action === "session" ? "session" : "declined",
     };
   }
 }

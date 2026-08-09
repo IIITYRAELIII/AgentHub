@@ -89,3 +89,31 @@ test("chat history requests another page only while older messages can fill the 
     loading: false,
   }), false);
 });
+
+test("chat scroll controller requests history near the top and exposes working state", async () => {
+  const { ChatScrollController } = await scrollApi();
+  const scroll = Object.assign(new FakeTarget(), {
+    scrollHeight: 1_000,
+    clientHeight: 200,
+    scrollTop: 40,
+  });
+  const button = Object.assign(new FakeTarget(), {
+    hidden: false,
+    attributes: new Set(),
+    toggleAttribute(name, enabled) {
+      if (enabled) this.attributes.add(name);
+      else this.attributes.delete(name);
+    },
+  });
+  let requests = 0;
+  const controller = new ChatScrollController(scroll, button, {
+    onNearTop: () => { requests += 1; },
+    requestAnimationFrame: (callback) => { callback(0); return 1; },
+    cancelAnimationFrame: () => {},
+    ResizeObserver: null,
+  });
+  await Promise.resolve();
+  assert.equal(requests, 1);
+  controller.setWorking(true);
+  assert.equal(button.attributes.has("data-working"), true);
+});

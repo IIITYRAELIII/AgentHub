@@ -93,6 +93,17 @@ test("DeferredInputController returns a failed launch to pending without losing 
   assert.match(state.updates[0][1], /сохранено/);
 });
 
+test("DeferredInputController skips paused messages and honors queue order", async () => {
+  const started = [];
+  const state = fixture({ start: async (item) => started.push(item.id) });
+  state.queuedInputs.set("paused", { id: "paused", taskTitle: "Task", paused: true, queueOrder: 0 });
+  state.queuedInputs.set("next", { id: "next", taskTitle: "Task", queueOrder: 1 });
+  await state.controller.process("paused");
+  await state.controller.process("next");
+  assert.deepEqual(started, ["next"]);
+  assert.equal(state.queuedInputs.has("paused"), true);
+});
+
 test("DeferredInputController retries a transient app-server failure without losing FIFO", async () => {
   let attempts = 0;
   const state = fixture({

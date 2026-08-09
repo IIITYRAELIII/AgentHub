@@ -84,3 +84,22 @@ test("approval for a Desktop-started run stays in HUB and does not message Teleg
   assert.equal(controller.snapshot().length, 1);
   assert.equal(calls.length, 0);
 });
+
+test("structured user input waits even in auto mode and resolves from Desktop", async () => {
+  const { controller, responses, calls } = fixture({ auto: true });
+  await controller.requestUserInput("rpc-input", {
+    isBlocking: true,
+    questions: [{ id: "choice", header: "Выбор", question: "Как продолжить?", options: null }],
+  }, { id: "run-1", telegramDeliveryRequested: false });
+  const [pending] = controller.snapshot();
+  assert.equal(pending.kind, "user-input");
+  assert.equal(pending.questions[0].id, "choice");
+  assert.equal(calls.length, 0);
+  const result = await controller.resolveFromDesktop(pending.key, "submit", {
+    answers: { choice: ["Продолжить"] },
+  });
+  assert.equal(result.decision, "submitted");
+  assert.deepEqual(responses, [["rpc-input", {
+    answers: { choice: { answers: ["Продолжить"] } },
+  }]]);
+});

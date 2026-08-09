@@ -22,7 +22,9 @@ export class DesktopDeferredInputService {
     const id = String(params.id ?? "");
     const action = String(params.action ?? "");
     if (!id) throw new Error("Не указан идентификатор сообщения");
-    const actionKey = action === "edit" ? `${action}\0${String(params.text ?? "").trim()}` : action;
+    const actionKey = action === "edit"
+      ? `${action}\0${String(params.text ?? "").trim()}`
+      : action === "move" ? `${action}\0${String(params.direction ?? "")}` : action;
     return this.#withAction(id, actionKey, () => this.#execute(id, action, params, context));
   }
 
@@ -61,6 +63,43 @@ export class DesktopDeferredInputService {
       item.input = d.replaceInputText(item.input, text);
       await d.saveState();
       return { accepted: true, id, message: "Сообщение в очереди изменено" };
+    }
+    if (action === "move") {
+      if (!d.queuedInputs.has(id) || item.dispatchingAt || d.isProcessing(id)) {
+        throw new Error("Можно переставлять только ожидающие сообщения очереди");
+      }
+      const direction = String(params.direction ?? "");
+      if (!["up", "down"].includes(direction)) throw new Error("Неизвестное направление перемещения");
+      const siblings = [...d.queuedInputs.values()]
+        .filter((candidate) => this.#bindingKey(candidate) === this.#bindingKey(item))
+        .sort((left, right) => {
+          const leftOrder = Number.isFinite(Number(left.queueOrder)) ? Number(left.queueOrder) : Date.parse(left.createdAt || 0);
+          const rightOrder = Number.isFinite(Number(right.queueOrder)) ? Number(right.queueOrder) : Date.parse(right.createdAt || 0);
+          return leftOrder - rightOrder;
+        });
+      const index = siblings.findIndex((candidate) => candidate.id === id);
+      const nextIndex = direction === "up" ? index - 1 : index + 1;
+      if (index >= 0 && nextIndex >= 0 && nextIndex < siblings.length) {
+        [siblings[index], siblings[nextIndex]] = [siblings[nextIndex], siblings[index]];
+        siblings.forEach((candidate, order) => { candidate.queueOrder = order; });
+        await d.saveState();
+      }
+      return { accepted: true, id, message: "Порядок очереди изменён" };
+    }
+    if (action === "pause") {
+      if (!d.queuedInputs.has(id)) throw new Error("Сообщение не находится в очереди");
+      d.cancelSchedule(id);
+      item.paused = true;
+      delete item.dispatchingAt;
+      await d.saveState();
+      return { accepted: true, id, message: "Сообщение в очереди приостановлено" };
+    }
+    if (action === "resume") {
+      if (!d.queuedInputs.has(id)) throw new Error("Сообщение не находится в очереди");
+      delete item.paused;
+      await d.saveState();
+      d.scheduleQueued(item, 0);
+      return { accepted: true, id, message: "Очередь возобновлена" };
     }
     if (action === "steer") {
       if (item.dispatchingAt || d.isProcessing(id)) {
@@ -105,10 +144,12 @@ export class DesktopDeferredInputService {
       d.scheduleNext(item);
       return { accepted: true, message: "Сохранённое сообщение отменено" };
     }
-    if (action === "queue") {
+    if (action === "queue" || action === "retry") {
       if (d.queuedInputs.has(id)) return { accepted: true, id, queued: true, message: "Сообщение уже находится в очереди" };
       if (!d.pendingInputs.has(id)) throw new Error("Сохранённое сообщение уже обработано");
       d.pendingInputs.delete(id);
+      delete item.paused;
+      delete item.lastError;
       d.queuedInputs.set(id, item);
       d.updateReceipt(item, "queued");
       await d.saveState();
@@ -168,5 +209,14 @@ export class DesktopDeferredInputService {
       provider: item.provider, projectRoot: item.projectRoot,
       threadId: item.threadId, taskTitle: item.taskTitle,
     };
+  }
+
+  #bindingKey(item) {
+    const streamId = String(item.streamId ?? "").trim().toLowerCase();
+    if (streamId) return `stream\0${streamId}`;
+    const binding = this.#binding(item);
+    return [binding.provider, binding.projectRoot, binding.threadId]
+      .map((value) => String(value ?? "").trim().toLowerCase())
+      .join("\0");
   }
 }
