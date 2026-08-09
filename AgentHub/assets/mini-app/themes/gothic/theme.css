@@ -227,15 +227,31 @@ html[data-theme="gothic"] .task-rail-title {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::after {
-    bottom: 0;
+    bottom: 6px;
     right: -6px;
-    top: 0;
+    top: 6px;
   }
 
   html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) .chat::before {
-    bottom: 0;
+    bottom: 6px;
     left: 0;
-    top: 0;
+    top: 6px;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header-inner::after {
+    background-color: #080909;
+    background-image: var(--gothic-header-rail-repeat), var(--gothic-header-rail-repeat);
+    background-position: center top, center bottom;
+    background-repeat: no-repeat;
+    background-size: auto 6px;
+    bottom: -6px;
+    content: "";
+    height: 12px;
+    left: calc(16.5rem - 6px);
+    pointer-events: none;
+    position: absolute;
+    width: 12px;
+    z-index: 6;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand > * {
