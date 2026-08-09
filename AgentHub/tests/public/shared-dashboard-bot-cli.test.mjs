@@ -65,11 +65,11 @@ test("webhook CLI reads credentials from files and configures Telegram without r
   assert.deepEqual(JSON.parse(requests[0].options.body), {
     url: result.webhookUrl,
     secret_token: webhookSecret,
-    allowed_updates: ["message"],
+    allowed_updates: ["message", "callback_query"],
     drop_pending_updates: false,
   });
   assert.match(requests[1].url, /\/setMyCommands$/u);
-  assert.equal(JSON.parse(requests[1].options.body).commands.length, 3);
+  assert.equal(JSON.parse(requests[1].options.body).commands.length, 6);
   assert.equal(JSON.stringify(result).includes(token), false);
   assert.equal(JSON.stringify(result).includes(webhookSecret), false);
 });

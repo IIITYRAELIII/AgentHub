@@ -1,4 +1,5 @@
 import { unlink } from "node:fs/promises";
+import path from "node:path";
 
 import { RateLimitTelemetryService } from "../application/rate-limit-telemetry-service.mjs";
 import { createCodexAssistantAttachmentImporter } from "../providers/codex/codex-assistant-attachments.mjs";
@@ -101,6 +102,7 @@ export async function createClientInterfaceComposition({
   const sharedDashboardBotClient = config.sharedDashboardBot?.enabled
     ? new SharedDashboardBotClient({
       ...config.sharedDashboardBot,
+      attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
       handler: handleDesktopControl,
     })
     : null;

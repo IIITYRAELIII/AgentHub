@@ -24,6 +24,9 @@ const DASHBOARD_BOT_PAIRING_EXPIRY_MS = 10 * 60 * 1_000;
 const DASHBOARD_BOT_COMMAND_EXPIRY_MS = 30 * 24 * 60 * 60 * 1_000;
 const DASHBOARD_BOT_PAIRING_CODE_PATTERN = /^[A-Z2-9]{8}$/u;
 const DASHBOARD_BOT_HUB_NAME_MAX_CHARS = 80;
+const DASHBOARD_BOT_BUNDLE_CALLBACK_PATTERN = /^forward-bundle:(send|undo|cancel):([0-9a-f-]{36})$/iu;
+const DASHBOARD_BOT_BUNDLE_MAX_ITEMS = 100;
+const DASHBOARD_BOT_BUNDLE_MAX_CHARS = 50_000;
 const SYNC_STAGING_EXPIRY_MS = 30 * 60 * 1_000;
 const STORAGE_DELETE_BATCH_SIZE = 128;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
@@ -188,7 +191,7 @@ function attachmentIdFromReference(value) {
 function attachmentIdsFromParams(action, params) {
   if (!Object.hasOwn(params, "attachments") || params.attachments == null) return [];
   if (
-    !["send-message", "submit-bug-report"].includes(action)
+    !["send-message", "submit-bug-report", "board-task-ingest"].includes(action)
     || !Array.isArray(params.attachments)
     || params.attachments.length < 1
     || params.attachments.length > MAX_ATTACHMENTS_PER_COMMAND
@@ -421,13 +424,107 @@ function json(payload, status = 200) {
   });
 }
 
-function dashboardBotTelegramReply(chatId, text) {
-  return json({
-    method: "sendMessage",
-    chat_id: chatId,
-    text,
-    disable_web_page_preview: true,
+async function dashboardBotTelegramRequest(env, method, body = {}) {
+  const token = String(env.DASHBOARD_BOT_TOKEN ?? "").trim();
+  if (!/^\d+:[A-Za-z0-9_-]{20,}$/u.test(token)) throw new Error("dashboard bot token is not configured");
+  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok !== true) {
+    throw new Error(`Telegram ${method} failed: ${String(payload?.description ?? `HTTP ${response.status}`).slice(0, 300)}`);
+  }
+  return payload.result;
+}
+
+async function dashboardBotTelegramFile(env, image) {
+  const token = String(env.DASHBOARD_BOT_TOKEN ?? "").trim();
+  const file = await dashboardBotTelegramRequest(env, "getFile", { file_id: image.fileId });
+  const filePath = String(file?.file_path ?? "").trim();
+  if (!filePath || Number(file?.file_size ?? image.fileSize ?? 0) > MAX_ATTACHMENT_BYTES) {
+    throw new Error("Telegram returned an invalid or oversized image");
+  }
+  const response = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`);
+  if (!response.ok) throw new Error(`Telegram file download failed: HTTP ${response.status}`);
+  const body = await readBoundedBinary(response, MAX_ATTACHMENT_BYTES, "dashboard bot image");
+  const contentType = attachmentContentType(image.contentType ?? response.headers.get("Content-Type"));
+  if (!attachmentMatchesContentType(body, contentType)) throw new Error("Telegram returned a damaged image");
+  return {
+    body,
+    contentType,
+    name: attachmentFileName(image.fileName ?? filePath.split("/").at(-1)),
+    bodyHash: await sha256(body),
+  };
+}
+
+async function uploadDashboardBotImages(env, hubStore, userId, images) {
+  const references = [];
+  for (const image of images) {
+    const downloaded = await dashboardBotTelegramFile(env, image);
+    const id = crypto.randomUUID().toLowerCase();
+    const response = await hubStore.fetch(new Request("https://journal.internal/attachment/upload", {
+      method: "POST",
+      headers: {
+        "Content-Type": downloaded.contentType,
+        "Content-Length": String(downloaded.body.byteLength),
+        "X-Agent-Hub-User-Id": String(userId),
+        "X-Agent-Hub-Attachment-Id": id,
+        "X-Agent-Hub-Attachment-Hash": downloaded.bodyHash,
+        "X-Agent-Hub-File-Name": encodedAttachmentFileName(downloaded.name),
+      },
+      body: downloaded.body,
+    }));
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !attachmentIdFromReference(payload?.path)) {
+      throw new Error(`Agent Hub rejected an image: ${String(payload?.error ?? `HTTP ${response.status}`).slice(0, 300)}`);
+    }
+    references.push(payload.path);
+  }
+  return references;
+}
+
+async function updateDashboardBotCard(env, registryStore, card) {
+  if (!card) return null;
+  const body = {
+    chat_id: card.chatId,
+    text: card.text,
+    disable_web_page_preview: true,
+    reply_markup: card.replyMarkup,
+  };
+  if (card.mode === "edit" && Number.isSafeInteger(card.messageId)) {
+    body.message_id = card.messageId;
+    try {
+      return await dashboardBotTelegramRequest(env, "editMessageText", body);
+    } catch (error) {
+      if (/message is not modified/iu.test(error.message)) return null;
+      throw error;
+    }
+  }
+  let sent;
+  try {
+    sent = await dashboardBotTelegramRequest(env, "sendMessage", body);
+  } catch (error) {
+    await registryStore.fetch(new Request("https://journal.internal/dashboard-bot/card", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: card.userId, id: card.bundleId, failed: true }),
+    }));
+    throw error;
+  }
+  if (Number.isSafeInteger(sent?.message_id)) {
+    const storedResponse = await registryStore.fetch(new Request("https://journal.internal/dashboard-bot/card", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: card.userId, id: card.bundleId, messageId: sent.message_id }),
+    }));
+    const stored = await storedResponse.json().catch(() => ({}));
+    if (stored.card && stored.card.text !== card.text) {
+      await updateDashboardBotCard(env, registryStore, stored.card);
+    }
+  }
+  return sent;
 }
 
 export async function validateControlBinaryServiceRequest(request, secret, {
@@ -497,6 +594,172 @@ function dashboardBotUserKey(userId) {
 
 function dashboardBotPairingKey(codeHash) {
   return `dashboard-bot:pairing:${codeHash}`;
+}
+
+function dashboardBotBundleKey(userId) {
+  return `dashboard-bot:bundle:${userId}`;
+}
+
+function dashboardBotNonEmpty(value) {
+  const text = String(value ?? "").trim();
+  return text || null;
+}
+
+function dashboardBotUserLabel(user) {
+  const fullName = [dashboardBotNonEmpty(user?.first_name), dashboardBotNonEmpty(user?.last_name)]
+    .filter(Boolean)
+    .join(" ");
+  if (fullName) return fullName;
+  if (dashboardBotNonEmpty(user?.username)) return `@${user.username}`;
+  return "неизвестный пользователь";
+}
+
+function dashboardBotChatLabel(chat) {
+  return dashboardBotNonEmpty(chat?.title)
+    ?? (dashboardBotNonEmpty(chat?.username) ? `@${chat.username}` : null)
+    ?? "неизвестный чат";
+}
+
+function dashboardBotForwardSourceFromOrigin(origin, forwardingUserId) {
+  if (!isPlainObject(origin)) return null;
+  if (origin.type === "user") {
+    return {
+      type: "user",
+      label: String(origin.sender_user?.id ?? "") === String(forwardingUserId ?? "")
+        ? "Вы (переслано)"
+        : dashboardBotUserLabel(origin.sender_user),
+    };
+  }
+  if (origin.type === "hidden_user") {
+    return {
+      type: "hidden-user",
+      label: dashboardBotNonEmpty(origin.sender_user_name) ?? "источник скрыт",
+    };
+  }
+  if (origin.type === "chat") {
+    return {
+      type: "chat",
+      label: [dashboardBotChatLabel(origin.sender_chat), dashboardBotNonEmpty(origin.author_signature)]
+        .filter(Boolean)
+        .join(" · "),
+    };
+  }
+  if (origin.type === "channel") {
+    return {
+      type: "channel",
+      label: [dashboardBotChatLabel(origin.chat), dashboardBotNonEmpty(origin.author_signature)]
+        .filter(Boolean)
+        .join(" · "),
+    };
+  }
+  return { type: dashboardBotNonEmpty(origin.type) ?? "unknown", label: "источник скрыт" };
+}
+
+export function dashboardBotForwardedMessageSource(message) {
+  const modern = dashboardBotForwardSourceFromOrigin(message?.forward_origin, message?.from?.id);
+  if (modern) return modern;
+  if (message?.forward_from) {
+    return {
+      type: "user",
+      label: String(message.forward_from.id ?? "") === String(message?.from?.id ?? "")
+        ? "Вы (переслано)"
+        : dashboardBotUserLabel(message.forward_from),
+    };
+  }
+  if (message?.forward_from_chat) {
+    return {
+      type: "chat",
+      label: [
+        dashboardBotChatLabel(message.forward_from_chat),
+        dashboardBotNonEmpty(message.forward_signature),
+      ].filter(Boolean).join(" · "),
+    };
+  }
+  if (dashboardBotNonEmpty(message?.forward_sender_name)) {
+    return { type: "hidden-user", label: dashboardBotNonEmpty(message.forward_sender_name) };
+  }
+  if (message?.forward_date != null || message?.is_automatic_forward === true) {
+    return { type: "unknown", label: "источник скрыт" };
+  }
+  return null;
+}
+
+function dashboardBotImageDescriptor(message) {
+  const photo = Array.isArray(message?.photo) ? message.photo.at(-1) : null;
+  if (dashboardBotNonEmpty(photo?.file_id)) {
+    return {
+      type: "image",
+      fileId: String(photo.file_id),
+      fileSize: Math.max(0, Number(photo.file_size) || 0),
+      fileName: `telegram-${message.message_id}.jpg`,
+      contentType: "image/jpeg",
+    };
+  }
+  const document = message?.document;
+  if (
+    dashboardBotNonEmpty(document?.file_id)
+    && String(document?.mime_type ?? "").toLowerCase().startsWith("image/")
+  ) {
+    return {
+      type: "image",
+      fileId: String(document.file_id),
+      fileSize: Math.max(0, Number(document.file_size) || 0),
+      fileName: attachmentFileName(document.file_name ?? `telegram-${message.message_id}.bin`),
+      contentType: attachmentContentType(document.mime_type),
+    };
+  }
+  return null;
+}
+
+function dashboardBotBundleCallbackData(action, id) {
+  return `forward-bundle:${action}:${id}`;
+}
+
+function dashboardBotBundleKeyboard(bundle) {
+  return {
+    inline_keyboard: [
+      [{ text: "✅ Отправить пачку", callback_data: dashboardBotBundleCallbackData("send", bundle.id) }],
+      [
+        { text: "↩️ Убрать последнее", callback_data: dashboardBotBundleCallbackData("undo", bundle.id) },
+        { text: "🗑 Отменить", callback_data: dashboardBotBundleCallbackData("cancel", bundle.id) },
+      ],
+    ],
+  };
+}
+
+function dashboardBotBundleCardText(bundle, warning = "") {
+  const forwards = bundle.items.filter((item) => item.kind === "forward").length;
+  const comments = bundle.items.length - forwards;
+  const images = bundle.items.reduce((count, item) => count + (item.images?.length ?? 0), 0);
+  return [
+    "📥 Собираю пачку для Dashboard",
+    "",
+    `Сообщений: ${bundle.items.length} · переслано: ${forwards} · ваших: ${comments} · изображений: ${images}`,
+    "Добавляйте следующие сообщения и свои комментарии, затем нажмите «Отправить пачку».",
+    warning ? `⚠️ ${warning}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+function dashboardBotBundlePrompt(bundle) {
+  let imageNumber = 0;
+  const blocks = bundle.items.map((item, index) => {
+    const heading = item.kind === "forward"
+      ? `Переслано · ${dashboardBotNonEmpty(item.source?.label) ?? "источник скрыт"}`
+      : "Вы";
+    const lines = [`--- Сообщение ${index + 1} · ${heading} ---`];
+    if (dashboardBotNonEmpty(item.text)) lines.push(String(item.text).trim());
+    for (const _image of item.images ?? []) {
+      imageNumber += 1;
+      lines.push(`[Изображение ${imageNumber} приложено следом за этим сообщением]`);
+    }
+    return lines.join("\n");
+  });
+  return [
+    "Ниже пакет сообщений, собранный пользователем в Telegram.",
+    "Сохраняй порядок и авторов. Пересланные реплики — контекст третьих лиц; не путай их с прямыми комментариями пользователя, отмеченными «Вы».",
+    "",
+    ...blocks,
+  ].join("\n");
 }
 
 function normalizedDeviceCode(value) {
@@ -774,7 +1037,193 @@ export class JournalStore extends DurableObject {
     return { reply: "Привязка удалена. Новые сообщения больше не попадут в Dashboard." };
   }
 
+  async #dashboardBotLinkedHub(message) {
+    const userId = String(message.from.id);
+    const hubId = String(await this.ctx.storage.get(dashboardBotUserKey(userId)) ?? "");
+    if (!CONTROL_ID_PATTERN.test(hubId)) {
+      return { error: "Сначала привяжите Agent Hub командой /link КОД." };
+    }
+    const hub = await this.ctx.storage.get(dashboardBotHubKey(hubId));
+    if (!hub || String(hub.userId) !== userId) {
+      return { error: "Привязка Agent Hub устарела. Создайте новый код и повторите /link КОД." };
+    }
+    return { userId, hubId, hub };
+  }
+
+  #dashboardBotBundleCard(bundle, { warning = "", finalText = "" } = {}) {
+    const messageId = Number.isSafeInteger(bundle.cardMessageId) ? bundle.cardMessageId : null;
+    return {
+      mode: messageId ? "edit" : "send",
+      userId: bundle.userId,
+      bundleId: bundle.id,
+      chatId: bundle.chatId,
+      messageId,
+      text: finalText || dashboardBotBundleCardText(bundle, warning),
+      replyMarkup: finalText ? { inline_keyboard: [] } : dashboardBotBundleKeyboard(bundle),
+    };
+  }
+
+  async #dashboardBotAppendBundle(update, message, linked, { source, image }) {
+    const key = dashboardBotBundleKey(linked.userId);
+    let bundle = await this.ctx.storage.get(key);
+    if (!bundle && !source) return null;
+    if (!bundle) {
+      const now = Date.now();
+      bundle = {
+        id: crypto.randomUUID().toLowerCase(),
+        userId: linked.userId,
+        hubId: linked.hubId,
+        chatId: message.chat.id,
+        cardMessageId: null,
+        cardPending: false,
+        items: [],
+        createdAt: now,
+        updatedAt: now,
+        submitting: false,
+      };
+    }
+    if (bundle.hubId !== linked.hubId || bundle.chatId !== message.chat.id) {
+      await this.ctx.storage.delete(key);
+      return { reply: "Открытая пачка относилась к другой привязке и была отменена. Перешлите сообщения ещё раз." };
+    }
+    if (bundle.submitting) return { reply: "Пачка уже отправляется. Дождитесь подтверждения." };
+    if (bundle.items.some((item) => item.messageId === message.message_id)) {
+      if (Number.isSafeInteger(bundle.cardMessageId)) return { card: this.#dashboardBotBundleCard(bundle) };
+      if (bundle.cardPending) return { ignored: true };
+      bundle.cardPending = true;
+      await this.ctx.storage.put(key, bundle);
+      return { card: this.#dashboardBotBundleCard(bundle) };
+    }
+    const text = String(message.text ?? message.caption ?? "").trim();
+    const totalChars = bundle.items.reduce((sum, item) => sum + String(item.text ?? "").length, 0);
+    const totalImages = bundle.items.reduce((sum, item) => sum + (item.images?.length ?? 0), 0);
+    if (
+      bundle.items.length >= DASHBOARD_BOT_BUNDLE_MAX_ITEMS
+      || totalChars + text.length > DASHBOARD_BOT_BUNDLE_MAX_CHARS
+      || totalImages + (image ? 1 : 0) > MAX_ATTACHMENTS_PER_COMMAND
+    ) {
+      return { card: this.#dashboardBotBundleCard(bundle, {
+        warning: "Лимит пачки достигнут (до 100 сообщений и 8 изображений). Отправьте её или отмените.",
+      }) };
+    }
+    bundle.items.push({
+      updateId: update.update_id,
+      messageId: message.message_id,
+      replyToMessageId: Number.isSafeInteger(message.reply_to_message?.message_id)
+        ? message.reply_to_message.message_id
+        : null,
+      kind: source ? "forward" : "comment",
+      source,
+      text,
+      images: image ? [image] : [],
+      createdAt: Number(message.date) > 0 ? Number(message.date) * 1_000 : Date.now(),
+    });
+    bundle.updatedAt = Date.now();
+    let card = null;
+    if (Number.isSafeInteger(bundle.cardMessageId)) card = this.#dashboardBotBundleCard(bundle);
+    else if (!bundle.cardPending) {
+      bundle.cardPending = true;
+      card = this.#dashboardBotBundleCard(bundle);
+    }
+    await this.ctx.storage.put(key, bundle);
+    return card ? { card } : { ignored: true };
+  }
+
+  async #dashboardBotSubmitBundle(userId, expectedId = "") {
+    const key = dashboardBotBundleKey(userId);
+    const bundle = await this.ctx.storage.get(key);
+    if (!bundle || (expectedId && bundle.id !== expectedId) || bundle.submitting) {
+      return { reply: "Открытая пачка не найдена." };
+    }
+    bundle.submitting = true;
+    bundle.updatedAt = Date.now();
+    await this.ctx.storage.put(key, bundle);
+    const telegramImages = bundle.items.flatMap((item) => item.images ?? []);
+    const command = {
+      id: crypto.randomUUID().toLowerCase(),
+      action: "board-task-ingest",
+      params: {
+        text: dashboardBotBundlePrompt(bundle),
+        sourceKey: `shared-dashboard:${bundle.id}`,
+        sourceDetails: {
+          bundleId: bundle.id,
+          chatId: bundle.chatId,
+          userId: Number(bundle.userId),
+          messageCount: bundle.items.length,
+          imageCount: telegramImages.length,
+          items: bundle.items.map((item) => ({
+            updateId: item.updateId,
+            messageId: item.messageId,
+            replyToMessageId: item.replyToMessageId,
+            kind: item.kind,
+            source: item.source,
+            imageCount: item.images?.length ?? 0,
+          })),
+        },
+      },
+      userId: bundle.userId,
+    };
+    return {
+      hubId: bundle.hubId,
+      command,
+      telegramImages,
+      submittedBundle: { userId: bundle.userId, id: bundle.id },
+      card: this.#dashboardBotBundleCard(bundle, { finalText: `⏳ Отправляю пачку из ${bundle.items.length} сообщений…` }),
+    };
+  }
+
+  async #dashboardBotBundleCallback(update) {
+    const query = update.callback_query;
+    const match = DASHBOARD_BOT_BUNDLE_CALLBACK_PATTERN.exec(String(query?.data ?? ""));
+    if (
+      !match
+      || !Number.isSafeInteger(query?.from?.id)
+      || query.from.is_bot === true
+      || query.message?.chat?.type !== "private"
+    ) {
+      return { ignored: true };
+    }
+    const linked = await this.#dashboardBotLinkedHub({ from: query.from });
+    if (linked.error) return { callbackQueryId: query.id, callbackText: linked.error };
+    const userId = linked.userId;
+    const action = match[1].toLowerCase();
+    const id = match[2].toLowerCase();
+    if (action === "send") {
+      return { callbackQueryId: query.id, ...await this.#dashboardBotSubmitBundle(userId, id) };
+    }
+    const key = dashboardBotBundleKey(userId);
+    const bundle = await this.ctx.storage.get(key);
+    if (!bundle || bundle.id !== id || bundle.submitting) {
+      return { callbackQueryId: query.id, callbackText: "Пачка уже закрыта." };
+    }
+    if (action === "cancel") {
+      await this.ctx.storage.delete(key);
+      return {
+        callbackQueryId: query.id,
+        callbackText: "Пачка отменена.",
+        card: this.#dashboardBotBundleCard(bundle, { finalText: "❌ Сбор пачки отменён." }),
+      };
+    }
+    bundle.items.pop();
+    if (!bundle.items.length) {
+      await this.ctx.storage.delete(key);
+      return {
+        callbackQueryId: query.id,
+        callbackText: "Последнее сообщение убрано.",
+        card: this.#dashboardBotBundleCard(bundle, { finalText: "❌ Пачка опустела и была отменена." }),
+      };
+    }
+    bundle.updatedAt = Date.now();
+    await this.ctx.storage.put(key, bundle);
+    return {
+      callbackQueryId: query.id,
+      callbackText: "Последнее сообщение убрано.",
+      card: this.#dashboardBotBundleCard(bundle),
+    };
+  }
+
   async #routeDashboardBotUpdate(update) {
+    if (update?.callback_query) return this.#dashboardBotBundleCallback(update);
     const message = update?.message;
     if (
       !Number.isSafeInteger(update?.update_id)
@@ -791,24 +1240,43 @@ export class JournalStore extends DurableObject {
       return { reply: "Это общий бот Dashboard. В Agent Hub создайте код привязки и отправьте /link КОД." };
     }
     if (/^\/help(?:@\w+)?(?:\s|$)/iu.test(text)) {
-      return { reply: "Сначала отправьте /link КОД. После привязки любой обычный текст создаёт карточку в Backlog; /unlink удаляет привязку." };
+      return { reply: "Перешлите сообщения и изображения: бот соберёт их в одну пачку. Ваши сообщения до отправки станут уточнениями. Завершите пачку кнопкой «Отправить пачку» или командой /done; /undo убирает последнее, /cancel отменяет пачку." };
     }
     const link = text.match(/^\/link(?:@\w+)?\s+(.+)$/iu);
     if (link) return this.#linkDashboardBotHub(message, link[1]);
     if (/^\/unlink(?:@\w+)?(?:\s|$)/iu.test(text)) return this.#unlinkDashboardBotHub(message);
+    const linked = await this.#dashboardBotLinkedHub(message);
+    if (linked.error) return { reply: linked.error };
+    const openBundle = await this.ctx.storage.get(dashboardBotBundleKey(linked.userId));
+    if (/^\/(?:done|send)(?:@\w+)?(?:\s|$)/iu.test(text)) {
+      return this.#dashboardBotSubmitBundle(linked.userId);
+    }
+    if (/^\/cancel(?:@\w+)?(?:\s|$)/iu.test(text)) {
+      if (!openBundle || openBundle.submitting) return { reply: "Открытая пачка не найдена." };
+      await this.ctx.storage.delete(dashboardBotBundleKey(linked.userId));
+      return { card: this.#dashboardBotBundleCard(openBundle, { finalText: "❌ Сбор пачки отменён." }) };
+    }
+    if (/^\/undo(?:@\w+)?(?:\s|$)/iu.test(text)) {
+      if (!openBundle || openBundle.submitting) return { reply: "Открытая пачка не найдена." };
+      openBundle.items.pop();
+      if (!openBundle.items.length) {
+        await this.ctx.storage.delete(dashboardBotBundleKey(linked.userId));
+        return { card: this.#dashboardBotBundleCard(openBundle, { finalText: "❌ Пачка опустела и была отменена." }) };
+      }
+      openBundle.updatedAt = Date.now();
+      await this.ctx.storage.put(dashboardBotBundleKey(linked.userId), openBundle);
+      return { card: this.#dashboardBotBundleCard(openBundle) };
+    }
+    const source = dashboardBotForwardedMessageSource(message);
+    const image = dashboardBotImageDescriptor(message);
+    if (source || openBundle) {
+      if (!text && !image) return { reply: "В пачку можно добавить текст или изображение." };
+      return this.#dashboardBotAppendBundle(update, message, linked, { source, image });
+    }
     const task = text.match(/^\/task(?:@\w+)?\s+(.+)$/iu);
     const taskText = String(task?.[1] ?? text).trim();
-    if (!taskText) return { reply: "Пока поддерживаются текстовые сообщения и подписи к пересылкам." };
+    if (!taskText) return { reply: "Отправьте текст или начните пачку пересланным сообщением." };
     if (taskText.startsWith("/")) return { reply: "Неизвестная команда. Используйте /help." };
-    const userId = String(message.from.id);
-    const hubId = String(await this.ctx.storage.get(dashboardBotUserKey(userId)) ?? "");
-    if (!CONTROL_ID_PATTERN.test(hubId)) {
-      return { reply: "Сначала привяжите Agent Hub командой /link КОД." };
-    }
-    const hub = await this.ctx.storage.get(dashboardBotHubKey(hubId));
-    if (!hub || String(hub.userId) !== userId) {
-      return { reply: "Привязка Agent Hub устарела. Создайте новый код и повторите /link КОД." };
-    }
     const command = {
       id: crypto.randomUUID().toLowerCase(),
       action: "board-task-ingest",
@@ -819,15 +1287,56 @@ export class JournalStore extends DurableObject {
           updateId: update.update_id,
           chatId: message.chat.id,
           messageId: message.message_id,
-          userId: message.from.id,
+          userId: Number(linked.userId),
         },
       },
-      userId,
+      userId: linked.userId,
     };
     return {
-      hubId,
+      hubId: linked.hubId,
       command,
       reply: "Принято в Backlog. Карточка появится, когда ваш Agent Hub подключится.",
+    };
+  }
+
+  async #setDashboardBotBundleCard(payload) {
+    const userId = String(payload?.userId ?? "");
+    const id = String(payload?.id ?? "").toLowerCase();
+    const key = dashboardBotBundleKey(userId);
+    const bundle = await this.ctx.storage.get(key);
+    if (!bundle || bundle.id !== id) return { ok: false };
+    if (payload?.failed === true) {
+      bundle.cardPending = false;
+      await this.ctx.storage.put(key, bundle);
+      return { ok: true };
+    }
+    const messageId = Number(payload?.messageId);
+    if (!Number.isSafeInteger(messageId)) return { ok: false };
+    bundle.cardMessageId = messageId;
+    bundle.cardPending = false;
+    bundle.updatedAt = Date.now();
+    await this.ctx.storage.put(key, bundle);
+    return { ok: true, card: this.#dashboardBotBundleCard(bundle) };
+  }
+
+  async #finalizeDashboardBotBundle(payload) {
+    const userId = String(payload?.userId ?? "");
+    const id = String(payload?.id ?? "").toLowerCase();
+    const key = dashboardBotBundleKey(userId);
+    const bundle = await this.ctx.storage.get(key);
+    if (!bundle || bundle.id !== id) return { ok: false };
+    if (payload?.submitted === true) {
+      await this.ctx.storage.delete(key);
+      return { ok: true };
+    }
+    bundle.submitting = false;
+    bundle.updatedAt = Date.now();
+    await this.ctx.storage.put(key, bundle);
+    return {
+      ok: true,
+      card: this.#dashboardBotBundleCard(bundle, {
+        warning: String(payload?.error ?? "Пачка временно не отправлена. Попробуйте ещё раз.").slice(0, 300),
+      }),
     };
   }
 
@@ -1288,7 +1797,11 @@ export class JournalStore extends DurableObject {
     }
     if (
       request.method === "POST"
-      && ["/api/dashboard-bot/pull", "/api/dashboard-bot/result"].includes(url.pathname)
+      && [
+        "/api/dashboard-bot/pull",
+        "/api/dashboard-bot/result",
+        "/api/dashboard-bot/attachment/pull",
+      ].includes(url.pathname)
     ) {
       try {
         return json(await this.#authenticateDashboardBotHub(request));
@@ -1304,6 +1817,12 @@ export class JournalStore extends DurableObject {
       } catch (error) {
         return json({ error: error.message }, 400);
       }
+    }
+    if (request.method === "POST" && url.pathname === "/dashboard-bot/card") {
+      return json(await this.#setDashboardBotBundleCard(await request.json()));
+    }
+    if (request.method === "POST" && url.pathname === "/dashboard-bot/finalize") {
+      return json(await this.#finalizeDashboardBotBundle(await request.json()));
     }
     if (request.method === "POST" && url.pathname === "/snapshot/push") {
       try {
@@ -2001,28 +2520,99 @@ export default {
       }));
       const routed = await routedResponse.json();
       if (!routedResponse.ok) return json(routed, routedResponse.status);
+      if (routed.callbackQueryId) {
+        await dashboardBotTelegramRequest(env, "answerCallbackQuery", {
+          callback_query_id: routed.callbackQueryId,
+          text: routed.callbackText || undefined,
+        });
+      }
+      if (routed.card) await updateDashboardBotCard(env, store, routed.card);
       if (routed.command && routed.hubId) {
         const hubStore = env.JOURNAL.getByName(`dashboard-bot:${routed.hubId}`);
+        let command = routed.command;
+        try {
+          if (Array.isArray(routed.telegramImages) && routed.telegramImages.length) {
+            command = {
+              ...command,
+              params: {
+                ...command.params,
+                attachments: await uploadDashboardBotImages(
+                  env,
+                  hubStore,
+                  command.userId,
+                  routed.telegramImages,
+                ),
+              },
+            };
+          }
+        } catch (error) {
+          if (routed.submittedBundle) {
+            const resetResponse = await store.fetch(new Request("https://journal.internal/dashboard-bot/finalize", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ...routed.submittedBundle, submitted: false, error: error.message }),
+            }));
+            const reset = await resetResponse.json().catch(() => ({}));
+            if (reset.card) await updateDashboardBotCard(env, store, reset.card);
+          }
+          return json({ error: error.message }, 502);
+        }
         const enqueueResponse = await hubStore.fetch(new Request("https://journal.internal/control/enqueue", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "X-Agent-Hub-Control-Expiry-Ms": String(DASHBOARD_BOT_COMMAND_EXPIRY_MS),
           },
-          body: JSON.stringify(routed.command),
+          body: JSON.stringify(command),
         }));
         if (!enqueueResponse.ok) {
           const error = await enqueueResponse.json().catch(() => ({}));
-          return dashboardBotTelegramReply(
-            update?.message?.chat?.id,
-            `Agent Hub временно не принял сообщение: ${String(error?.error ?? "очередь недоступна").slice(0, 300)}`,
-          );
+          const message = `Agent Hub временно не принял сообщение: ${String(error?.error ?? "очередь недоступна").slice(0, 300)}`;
+          if (routed.submittedBundle) {
+            const resetResponse = await store.fetch(new Request("https://journal.internal/dashboard-bot/finalize", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ...routed.submittedBundle, submitted: false, error: message }),
+            }));
+            const reset = await resetResponse.json().catch(() => ({}));
+            if (reset.card) await updateDashboardBotCard(env, store, reset.card);
+          } else {
+            await dashboardBotTelegramRequest(env, "sendMessage", {
+              chat_id: update?.message?.chat?.id,
+              text: message,
+            });
+          }
+          return json({ error: message }, 503);
+        }
+        if (routed.submittedBundle) {
+          await store.fetch(new Request("https://journal.internal/dashboard-bot/finalize", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...routed.submittedBundle, submitted: true }),
+          }));
+          await updateDashboardBotCard(env, store, {
+            ...routed.card,
+            mode: "edit",
+            text: `✅ Пачка из ${routed.command.params.sourceDetails.messageCount} сообщений принята в Backlog.`,
+            replyMarkup: { inline_keyboard: [] },
+          });
         }
       }
-      if (!routed.reply) return json({ ok: true, ignored: routed.ignored === true });
-      return dashboardBotTelegramReply(update?.message?.chat?.id, routed.reply);
+      if (routed.reply) {
+        const chatId = update?.message?.chat?.id ?? update?.callback_query?.message?.chat?.id;
+        if (chatId) await dashboardBotTelegramRequest(env, "sendMessage", {
+          chat_id: chatId,
+          text: routed.reply,
+          disable_web_page_preview: true,
+        });
+      }
+      return json({ ok: true, ignored: routed.ignored === true });
     }
-    if (["/api/dashboard-bot/pull", "/api/dashboard-bot/result"].includes(url.pathname)) {
+    if ([
+      "/api/dashboard-bot/pull",
+      "/api/dashboard-bot/result",
+      "/api/dashboard-bot/attachment/pull",
+    ].includes(url.pathname)) {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
       const authenticated = await store.fetch(new Request(`https://journal.internal${url.pathname}`, request));
       if (!authenticated.ok) return authenticated;
@@ -2034,6 +2624,22 @@ export default {
         return json({ error: error.message }, 400);
       }
       const hubStore = env.JOURNAL.getByName(`dashboard-bot:${identity.hubId}`);
+      if (url.pathname.endsWith("/attachment/pull")) {
+        const id = String(payload?.id ?? "").toLowerCase();
+        const commandId = String(payload?.commandId ?? "").toLowerCase();
+        if (
+          !CONTROL_ID_PATTERN.test(id)
+          || !CONTROL_ID_PATTERN.test(commandId)
+          || String(payload?.userId ?? "") !== identity.userId
+        ) {
+          return json({ error: "invalid dashboard bot attachment request" }, 400);
+        }
+        return hubStore.fetch(new Request("https://journal.internal/attachment/pull", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, commandId, userId: identity.userId }),
+        }));
+      }
       if (url.pathname.endsWith("/pull")) {
         const limit = Number(payload?.limit ?? 10);
         const waitMs = Number(payload?.waitMs ?? 0);

@@ -1,12 +1,23 @@
-import { createHash, createHmac } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { createHash, createHmac, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+import {
+  attachmentContentType,
+  attachmentIsImage,
+  createAttachmentStorageName,
+  imageMatchesContentType,
+  MAX_ATTACHMENT_BYTES,
+  MAX_MESSAGE_ATTACHMENTS,
+} from "../../domain/attachment-files.mjs";
 
 const DEFAULT_POLL_WAIT_MS = 25_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 35_000;
 const DEFAULT_RETRY_MS = 5_000;
 const COMMAND_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const HUB_ID_PATTERN = COMMAND_ID_PATTERN;
+const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
+const ATTACHMENT_TIMEOUT_MS = 60_000;
 
 export function signSharedDashboardBotRequest({
   body,
@@ -26,6 +37,7 @@ export class SharedDashboardBotClient {
   #hubId;
   #hubName;
   #secretFile;
+  #attachmentDirectory;
   #handler;
   #fetch;
   #logger;
@@ -41,6 +53,7 @@ export class SharedDashboardBotClient {
     hubId,
     hubName = "Agent Hub",
     secretFile,
+    attachmentDirectory,
     handler,
     fetchImpl = globalThis.fetch,
     retrySeconds = DEFAULT_RETRY_MS / 1_000,
@@ -50,6 +63,7 @@ export class SharedDashboardBotClient {
     this.#hubId = String(hubId ?? "").trim().toLowerCase();
     this.#hubName = String(hubName ?? "Agent Hub").trim().slice(0, 80) || "Agent Hub";
     this.#secretFile = path.resolve(String(secretFile ?? ""));
+    this.#attachmentDirectory = attachmentDirectory ? path.resolve(String(attachmentDirectory)) : null;
     this.#handler = handler;
     this.#fetch = fetchImpl;
     this.#logger = logger;
@@ -83,7 +97,7 @@ export class SharedDashboardBotClient {
     return payload;
   }
 
-  async #signedRequest(pathname, payload, { signal = null } = {}) {
+  async #signedFetch(pathname, payload, { signal = null, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
     const secret = await this.#secret();
     const body = JSON.stringify(payload);
     const { timestamp, signature } = signSharedDashboardBotRequest({ body, secret, pathname });
@@ -97,9 +111,14 @@ export class SharedDashboardBotClient {
       },
       body,
       signal: signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS)])
-        : AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS),
+        ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs),
     });
+    return response;
+  }
+
+  async #signedRequest(pathname, payload, options = {}) {
+    const response = await this.#signedFetch(pathname, payload, options);
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       const error = new Error(`Shared Dashboard bot request ${pathname} failed: ${result?.error ?? `HTTP ${response.status}`}`);
@@ -121,11 +140,101 @@ export class SharedDashboardBotClient {
       || typeof params !== "object"
       || Array.isArray(params)
       || !String(params.text ?? "").trim()
-      || !/^shared-dashboard:\d+$/u.test(String(params.sourceKey ?? ""))
+      || !/^shared-dashboard:(?:\d+|[0-9a-f-]{36})$/iu.test(String(params.sourceKey ?? ""))
     ) {
       throw new Error("Shared Dashboard bot returned an invalid command");
     }
+    const attachments = params.attachments ?? [];
+    if (
+      (Object.hasOwn(params, "attachments") && !Array.isArray(attachments))
+      || attachments.length > MAX_MESSAGE_ATTACHMENTS
+      || attachments.some((reference) => {
+        const value = String(reference ?? "").toLowerCase();
+        return !value.startsWith(REMOTE_ATTACHMENT_PREFIX)
+          || !COMMAND_ID_PATTERN.test(value.slice(REMOTE_ATTACHMENT_PREFIX.length));
+      })
+    ) {
+      throw new Error("Shared Dashboard bot returned invalid attachments");
+    }
     return { id, userId, action: "board-task-ingest", params };
+  }
+
+  async #downloadRemoteAttachment(reference, command) {
+    if (!this.#attachmentDirectory) throw new Error("Shared Dashboard bot attachment storage is not configured");
+    const id = String(reference).toLowerCase().slice(REMOTE_ATTACHMENT_PREFIX.length);
+    const response = await this.#signedFetch("/api/dashboard-bot/attachment/pull", {
+      id,
+      userId: command.userId,
+      commandId: command.id,
+    }, { timeoutMs: ATTACHMENT_TIMEOUT_MS });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(`Shared Dashboard bot attachment download failed: ${payload?.error ?? `HTTP ${response.status}`}`);
+    }
+    const encodedName = String(response.headers.get("X-Agent-Hub-File-Name") ?? "").trim();
+    let originalName = "attachment.bin";
+    try {
+      if (encodedName) originalName = decodeURIComponent(encodedName);
+    } catch {
+      throw new Error("Shared Dashboard bot returned invalid attachment metadata");
+    }
+    const contentType = attachmentContentType(originalName, response.headers.get("Content-Type"));
+    const expectedHash = String(response.headers.get("X-Agent-Hub-Attachment-Hash") ?? "").toLowerCase();
+    const advertisedLength = Number(response.headers.get("Content-Length"));
+    if (
+      !/^[a-f0-9]{64}$/u.test(expectedHash)
+      || (Number.isFinite(advertisedLength) && advertisedLength > MAX_ATTACHMENT_BYTES)
+    ) {
+      throw new Error("Shared Dashboard bot returned invalid attachment metadata");
+    }
+    const body = Buffer.from(await response.arrayBuffer());
+    if (
+      body.length < 1
+      || body.length > MAX_ATTACHMENT_BYTES
+      || (attachmentIsImage(contentType) && !imageMatchesContentType(body, contentType))
+      || createHash("sha256").update(body).digest("hex") !== expectedHash
+    ) {
+      throw new Error("Shared Dashboard bot returned a damaged attachment");
+    }
+    await mkdir(this.#attachmentDirectory, { recursive: true });
+    const target = path.join(
+      this.#attachmentDirectory,
+      createAttachmentStorageName(originalName, `${command.id}-${id}`),
+    );
+    try {
+      const existing = await readFile(target);
+      if (createHash("sha256").update(existing).digest("hex") !== expectedHash) {
+        throw new Error("Local attachment id conflict");
+      }
+      return target;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    const temporary = path.join(this.#attachmentDirectory, `.${id}-${randomUUID()}.tmp`);
+    try {
+      await writeFile(temporary, body, { flag: "wx", mode: 0o600 });
+      await rename(temporary, target);
+    } finally {
+      await unlink(temporary).catch((error) => {
+        if (error?.code !== "ENOENT") throw error;
+      });
+    }
+    return target;
+  }
+
+  async #prepareCommand(command) {
+    const references = command.params.attachments ?? [];
+    if (!references.length) return command;
+    const attachments = [];
+    try {
+      for (const reference of references) {
+        attachments.push(await this.#downloadRemoteAttachment(reference, command));
+      }
+    } catch (error) {
+      await Promise.all(attachments.map((file) => unlink(file).catch(() => {})));
+      throw error;
+    }
+    return { ...command, params: { ...command.params, attachments } };
   }
 
   async poll() {
@@ -143,7 +252,7 @@ export class SharedDashboardBotClient {
         let command;
         let outcome;
         try {
-          command = this.#validateCommand(rawCommand);
+          command = await this.#prepareCommand(this.#validateCommand(rawCommand));
           const result = await this.#handler({
             action: command.action,
             params: command.params,

@@ -3,13 +3,14 @@ import test from "node:test";
 
 import { DesktopTaskBoardController } from "../../../src/interfaces/desktop/desktop-task-board-controller.mjs";
 
-function fixture({ activeThread = null } = {}) {
+function fixture({ activeThread = null, sourceDetails = undefined } = {}) {
   const calls = [];
   const task = {
     id: "board-1",
     rawText: "Исправить Task dashboard",
     correctedText: "",
     workspaceId: "workspace-1",
+    sourceDetails,
   };
   const controller = new DesktopTaskBoardController({
     taskBoard: {
@@ -71,6 +72,20 @@ test("shared Telegram bot ingestion preserves its source and refreshes the dashb
   assert.deepEqual(calls[1], ["snapshot", { refresh: true }]);
 });
 
+test("shared Telegram bot persists downloaded images with the dashboard Task", async () => {
+  const { controller, calls } = fixture();
+  await controller.ingest({
+    text: "Проверить скриншот",
+    sourceKey: "shared-dashboard:bundle",
+    sourceDetails: { imageCount: 1 },
+    attachments: ["D:/runtime/attachments/screenshot.jpg"],
+  });
+  assert.deepEqual(calls[0][1].sourceDetails, {
+    imageCount: 1,
+    attachments: ["D:/runtime/attachments/screenshot.jpg"],
+  });
+});
+
 test("dashboard persists column reordering", async () => {
   const { controller, calls } = fixture();
   await controller.moveColumn({ columnId: "notes", beforeColumnId: "workspace:workspace-1" });
@@ -100,11 +115,13 @@ test("dashboard updates Notes and Workspace comments", async () => {
 test("starting a Task in an existing Stream selects it and sends the Task text", async () => {
   const { controller, calls } = fixture({
     activeThread: { provider: "codex", threadId: "thread-1", projectRoot: "D:/work" },
+    sourceDetails: { attachments: ["D:/runtime/attachments/screenshot.jpg"] },
   });
   await controller.start({ id: "board-1", workspaceId: "workspace-1", streamId: "stream-1" });
   assert.equal(calls[0][1], "task.select");
   assert.equal(calls[1][0], "message");
   assert.equal(calls[1][1].text, "Исправить Task dashboard");
+  assert.deepEqual(calls[1][1].attachments, ["D:/runtime/attachments/screenshot.jpg"]);
   assert.deepEqual(calls[2], ["started", {
     id: "board-1", workspaceId: "workspace-1", streamId: "stream-1",
   }]);

@@ -40,12 +40,15 @@ export async function configureSharedDashboardBotWebhook({
   await telegram("setWebhook", {
     url: webhookUrl,
     secret_token: webhookSecret,
-    allowed_updates: ["message"],
+    allowed_updates: ["message", "callback_query"],
     drop_pending_updates: false,
   });
   await telegram("setMyCommands", {
     commands: [
       { command: "link", description: "Привязать свой Agent Hub" },
+      { command: "done", description: "Отправить собранную пачку" },
+      { command: "undo", description: "Убрать последнее сообщение" },
+      { command: "cancel", description: "Отменить текущую пачку" },
       { command: "unlink", description: "Удалить привязку" },
       { command: "help", description: "Как пользоваться ботом" },
     ],

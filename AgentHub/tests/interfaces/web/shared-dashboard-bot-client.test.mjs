@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -90,4 +90,54 @@ test("shared Dashboard bot request signature is stable for an explicit timestamp
       .update(`1700000000\nPOST\n/api/dashboard-bot/pull\n${createHash("sha256").update("{}").digest("hex")}`)
       .digest("hex"),
   });
+});
+
+test("shared Dashboard bot downloads command images before creating the Task", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-image-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const image = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  const attachmentId = "018f6c86-3f34-7a31-8f27-16f5b96cce62";
+  const command = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce63",
+    userId: "42",
+    action: "board-task-ingest",
+    params: {
+      text: "Проверить скриншот",
+      sourceKey: "shared-dashboard:018f6c86-3f34-7a31-8f27-16f5b96cce64",
+      sourceDetails: { imageCount: 1 },
+      attachments: [`remote-attachment:${attachmentId}`],
+    },
+  };
+  const handled = [];
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce65",
+    secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+      if (url.endsWith("/api/dashboard-bot/attachment/pull")) {
+        return new Response(image, {
+          headers: {
+            "Content-Type": "image/jpeg",
+            "Content-Length": String(image.length),
+            "X-Agent-Hub-Attachment-Hash": createHash("sha256").update(image).digest("hex"),
+            "X-Agent-Hub-File-Name": encodeURIComponent("screenshot.jpg"),
+          },
+        });
+      }
+      if (url.endsWith("/api/dashboard-bot/result")) return Response.json({ ok: true });
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    },
+    handler: async (request) => {
+      handled.push(request);
+      return { taskId: "task-image" };
+    },
+  });
+
+  assert.equal(await client.poll(), 1);
+  assert.equal(handled[0].params.attachments.length, 1);
+  assert.deepEqual(await readFile(handled[0].params.attachments[0]), image);
 });

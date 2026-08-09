@@ -23,11 +23,14 @@ export class DesktopTaskBoardController {
   }
 
   async ingest(params) {
+    const attachments = Array.isArray(params.attachments) ? params.attachments : [];
     const task = this.taskBoard.create({
       text: params.text,
       source: "telegram",
       sourceKey: params.sourceKey,
-      sourceDetails: params.sourceDetails,
+      sourceDetails: attachments.length
+        ? { ...(params.sourceDetails ?? {}), attachments }
+        : params.sourceDetails,
     });
     await this.snapshot({ refresh: true });
     return { taskId: task.id, rawText: task.rawText };
@@ -108,6 +111,7 @@ export class DesktopTaskBoardController {
     }
     await this.sendMessage({
       text: taskDisplayText(task),
+      attachments: Array.isArray(task.sourceDetails?.attachments) ? task.sourceDetails.attachments : [],
       streamId: target.streamId,
       provider: target.provider,
       threadId: target.threadId,

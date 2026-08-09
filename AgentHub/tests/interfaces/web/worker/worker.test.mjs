@@ -766,7 +766,7 @@ test("Worker relay rejects unsupported actions, attachments, and unsigned servic
   assert.equal(response.status, 401);
 });
 
-test("shared Dashboard bot pairs one Telegram user and queues Tasks only for that Hub", async () => {
+test("shared Dashboard bot pairs one Telegram user and queues Tasks only for that Hub", async (context) => {
   const workerModule = await loadWorker();
   const { namespace, stores } = durableNamespace(workerModule);
   const webhookSecret = "w".repeat(64);
@@ -774,7 +774,15 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   const otherHubId = "018f6c86-3f34-7a31-8f27-16f5b96cce51";
   const hubSecret = "h".repeat(64);
   const otherSecret = "o".repeat(64);
+  const telegramCalls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    telegramCalls.push({ url: String(url), body: JSON.parse(options.body) });
+    return Response.json({ ok: true, result: { message_id: 700 } });
+  };
+  context.after(() => { globalThis.fetch = originalFetch; });
   const env = {
+    DASHBOARD_BOT_TOKEN: `123456:${"A".repeat(30)}`,
     DASHBOARD_BOT_WEBHOOK_SECRET: webhookSecret,
     JOURNAL: namespace,
     ASSETS: { fetch: async () => new Response("asset") },
@@ -817,7 +825,8 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
     },
   });
   assert.equal(response.status, 200);
-  assert.match((await response.json()).text, /Hub Алисы/u);
+  assert.equal((await response.json()).ok, true);
+  assert.match(telegramCalls.at(-1).body.text, /Hub Алисы/u);
 
   response = await webhook({
     update_id: 101,
@@ -830,7 +839,8 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
     },
   });
   assert.equal(response.status, 200);
-  assert.match((await response.json()).text, /Backlog/u);
+  assert.equal((await response.json()).ok, true);
+  assert.match(telegramCalls.at(-1).body.text, /Backlog/u);
 
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",
@@ -877,6 +887,171 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
     { "X-Agent-Hub-Dashboard-Id": hubId },
   ), env);
   assert.equal(response.status, 401);
+});
+
+test("shared Dashboard bot bundles forwards and user replies until explicit send", async (context) => {
+  const workerModule = await loadWorker();
+  const { namespace } = durableNamespace(workerModule);
+  const webhookSecret = "w".repeat(64);
+  const hubId = "018f6c86-3f34-7a31-8f27-16f5b96cce52";
+  const hubSecret = "h".repeat(64);
+  const telegramCalls = [];
+  let sentMessageId = 800;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    if (String(url).includes("/file/bot")) {
+      return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+        headers: { "Content-Type": "image/jpeg", "Content-Length": "4" },
+      });
+    }
+    const method = String(url).split("/").at(-1);
+    const body = JSON.parse(options.body);
+    telegramCalls.push({ method, body });
+    if (method === "getFile") {
+      return Response.json({ ok: true, result: { file_path: "photos/example.jpg", file_size: 4 } });
+    }
+    return Response.json({
+      ok: true,
+      result: method === "sendMessage" ? { message_id: sentMessageId++ } : true,
+    });
+  };
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const env = {
+    DASHBOARD_BOT_TOKEN: `123456:${"B".repeat(30)}`,
+    DASHBOARD_BOT_WEBHOOK_SECRET: webhookSecret,
+    JOURNAL: namespace,
+    ASSETS: { fetch: async () => new Response("asset") },
+  };
+  const webhook = (update) => workerModule.default.fetch(new Request(
+    "https://hub.test/api/dashboard-bot/webhook",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Bot-Api-Secret-Token": webhookSecret,
+      },
+      body: JSON.stringify(update),
+    },
+  ), env);
+  let response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/dashboard-bot/register",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hubId, name: "Командный Hub", secret: hubSecret }),
+    },
+  ), env);
+  const pairing = await response.json();
+  await webhook({
+    update_id: 200,
+    message: {
+      message_id: 1,
+      date: 1_786_200_000,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      text: `/link ${pairing.code}`,
+    },
+  });
+  await webhook({
+    update_id: 201,
+    message: {
+      message_id: 2,
+      date: 1_786_200_001,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      forward_origin: { type: "hidden_user", sender_user_name: "Заказчик" },
+      photo: [{ file_id: "photo-small" }, { file_id: "photo-large", file_size: 4 }],
+      caption: "Фильтр сбрасывается после обновления",
+    },
+  });
+  const bundleCard = telegramCalls.find((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text));
+  const sendCallback = bundleCard.body.reply_markup.inline_keyboard[0][0].callback_data;
+  const undoCallback = bundleCard.body.reply_markup.inline_keyboard[1][0].callback_data;
+  assert.match(sendCallback, /^forward-bundle:send:[0-9a-f-]{36}$/u);
+
+  await webhook({
+    update_id: 202,
+    message: {
+      message_id: 3,
+      date: 1_786_200_002,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      reply_to_message: { message_id: 2 },
+      text: "Воспроизводится только в мобильном виде",
+    },
+  });
+  assert.match(telegramCalls.at(-1).body.text, /ваших: 1/u);
+
+  await webhook({
+    update_id: 203,
+    message: {
+      message_id: 4,
+      date: 1_786_200_003,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      text: "Это уточнение нужно вынести в следующую задачу",
+    },
+  });
+  assert.match(telegramCalls.at(-1).body.text, /Сообщений: 3/u);
+  await webhook({
+    update_id: 204,
+    callback_query: {
+      id: "callback-undo",
+      from: { id: 42, first_name: "Алиса" },
+      message: { message_id: 801, chat: { id: 42, type: "private" } },
+      data: undoCallback,
+    },
+  });
+  assert.match(telegramCalls.at(-1).body.text, /Сообщений: 2/u);
+
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  assert.deepEqual((await response.json()).commands, []);
+
+  response = await webhook({
+    update_id: 205,
+    callback_query: {
+      id: "callback-1",
+      from: { id: 42, first_name: "Алиса" },
+      message: { message_id: bundleCard.body.message_id ?? 801, chat: { id: 42, type: "private" } },
+      data: sendCallback,
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.ok(telegramCalls.some((call) => call.method === "answerCallbackQuery"));
+
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  const [command] = (await response.json()).commands;
+  assert.equal(command.action, "board-task-ingest");
+  assert.match(command.params.attachments[0], /^remote-attachment:[0-9a-f-]{36}$/u);
+  assert.match(command.params.text, /Переслано · Заказчик/u);
+  assert.match(command.params.text, /Изображение 1 приложено/u);
+  assert.match(command.params.text, /--- Сообщение 2 · Вы ---\nВоспроизводится/u);
+  assert.equal(command.params.sourceDetails.messageCount, 2);
+  assert.match(command.params.sourceKey, /^shared-dashboard:[0-9a-f-]{36}$/u);
+
+  await webhook({
+    update_id: 206,
+    message: {
+      message_id: 5,
+      date: 1_786_200_006,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      forward_origin: { type: "hidden_user", sender_user_name: "Другой автор" },
+      text: "Это уже отдельная задача",
+    },
+  });
+  const latestCard = telegramCalls.filter((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text)).at(-1);
+  assert.notEqual(latestCard.body.reply_markup.inline_keyboard[0][0].callback_data, sendCallback);
 });
 
 test("Worker relay stores user-bound file uploads and serves them only to their command", async () => {
