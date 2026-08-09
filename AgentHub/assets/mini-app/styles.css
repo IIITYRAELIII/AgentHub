@@ -3827,11 +3827,36 @@ html[data-view="dashboard"] .task-board-view {
   font-size: 0.72rem;
 }
 
+/* Поля брали оформление у браузера и оставались серыми в любой теме. Токены
+   те же, что у остальных полей оболочки, поэтому диалог следует за темой. */
 .workspace-card-fields input,
 .workspace-card-fields textarea {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
   min-width: 0;
   padding: 0.55rem 0.65rem;
+  transition: border-color 0.14s ease, background 0.14s ease;
   width: 100%;
+}
+
+.workspace-card-fields input::placeholder,
+.workspace-card-fields textarea::placeholder {
+  color: var(--text-faint);
+}
+
+.workspace-card-fields input:hover,
+.workspace-card-fields textarea:hover {
+  border-color: var(--line-strong);
+}
+
+.workspace-card-fields input:focus,
+.workspace-card-fields textarea:focus {
+  border-color: var(--accent-line);
+  box-shadow: var(--accent-glow);
+  outline: none;
 }
 
 .workspace-card-fields textarea {
