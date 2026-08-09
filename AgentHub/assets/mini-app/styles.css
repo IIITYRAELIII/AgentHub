@@ -290,13 +290,13 @@ a:hover {
   flex: 0 0 auto;
   clip-path: none !important;
   filter: none !important;
-  height: 2.3rem !important;
+  height: var(--shell-brand-mark-size, 2.3rem) !important;
   justify-content: center;
   overflow: visible !important;
   padding: 0 !important;
   rotate: 0deg !important;
   transform: none !important;
-  width: 2.3rem !important;
+  width: var(--shell-brand-mark-size, 2.3rem) !important;
 }
 
 .brand-mark::before,
@@ -4925,31 +4925,6 @@ html[data-surface="mobile"]
   0%, 70%, 100% { opacity: 0.35; transform: translateY(0); }
   35% { opacity: 1; transform: translateY(-0.15rem); }
 }
-
-.chat-message-nav {
-  background: color-mix(in srgb, var(--surface-3) 90%, transparent);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-chip);
-  bottom: 5.4rem;
-  display: grid;
-  overflow: hidden;
-  position: absolute;
-  right: max(0.8rem, var(--gutter-right));
-  z-index: 8;
-}
-
-.chat-message-nav[hidden] { display: none; }
-.chat-message-nav button {
-  background: transparent;
-  border: 0;
-  color: var(--text-muted);
-  cursor: pointer;
-  font: inherit;
-  height: 1.8rem;
-  width: 2.2rem;
-}
-.chat-message-nav button + button { border-top: 1px solid var(--line); }
-.chat-message-nav button:hover { color: var(--text); }
 
 .stream-chat-preview > .chat-scroll-down {
   right: 0.75rem;

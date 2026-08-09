@@ -10,7 +10,7 @@ html[data-theme="gothic"] {
   --display-weight: 650;
   --display-spacing: 0.035em;
   --display-transform: uppercase;
-  --display-shadow: 0 2px 1px #030201, 0 -1px 0 rgb(231 205 170 / 12%), 0 0 14px rgb(114 52 34 / 16%);
+  --display-shadow: 0 1px 1px #020303, 0 -1px 0 rgb(225 220 207 / 8%);
   --title-weight: 600;
   --label-spacing: 0.15em;
 
@@ -20,44 +20,44 @@ html[data-theme="gothic"] {
   --radius-chip: 0;
   --rail-width: 2px;
 
-  --bg: #100d0b;
-  --surface-1: rgb(10 9 8 / 97%);
-  --surface-2: rgb(21 18 15 / 97%);
-  --surface-3: rgb(38 31 25 / 94%);
-  --sunken: rgb(3 3 2 / 92%);
-  --line: rgb(142 116 84 / 42%);
-  --line-strong: rgb(176 138 95 / 66%);
+  --bg: #090a0a;
+  --surface-1: rgb(9 10 10 / 97%);
+  --surface-2: rgb(17 18 18 / 97%);
+  --surface-3: rgb(29 29 27 / 94%);
+  --sunken: rgb(3 4 4 / 94%);
+  --line: rgb(116 111 101 / 42%);
+  --line-strong: rgb(148 140 125 / 62%);
 
   --gothic-iron-texture: var(--gothic-iron-texture-asset, url("./gothic-iron-texture.png"));
   --gothic-iron-frame: var(--gothic-iron-frame-asset, url("./gothic-iron-frame.jpg"));
   --gothic-forged-frame: var(--gothic-forged-frame-asset, url("./gothic-forged-frame.png"));
   --gothic-forged-frame-matte: var(--gothic-forged-frame-matte-asset, url("./gothic-forged-frame-matte.png"));
-  --card-bg: rgb(12 11 9 / 92%);
-  --card-bg-open: rgb(20 17 14 / 96%);
+  --card-bg: rgb(10 11 11 / 94%);
+  --card-bg-open: rgb(17 18 18 / 96%);
   --card-texture: var(--gothic-iron-texture);
-  --card-border: rgb(125 96 68 / 42%);
-  --card-border-open: rgb(164 116 78 / 70%);
+  --card-border: rgb(111 105 95 / 40%);
+  --card-border-open: rgb(132 91 72 / 68%);
   --card-shadow:
     inset 0 1px 0 rgb(225 193 148 / 7%),
     inset 0 -1px 0 rgb(0 0 0 / 86%),
     inset 0 0 28px rgb(0 0 0 / 28%),
     0 20px 38px -28px #000;
-  --plate-bg: rgb(15 13 11 / 94%);
+  --plate-bg: rgb(12 13 13 / 95%);
   --plate-texture: var(--gothic-iron-texture);
   --plate-shadow: inset 0 1px 0 rgb(216 182 134 / 8%), inset 0 -1px 0 rgb(0 0 0 / 82%);
   --turn-shadow: 0 12px 26px -18px #000;
 
-  --text: #c5b9a5;
-  --text-soft: #a99b87;
-  --text-muted: #817461;
-  --text-faint: #62584b;
-  --accent: #91533d;
-  --accent-soft: rgb(101 44 32 / 28%);
-  --accent-line: rgb(133 67 48 / 68%);
-  --accent-glow: 0 0 18px -9px rgb(176 73 44 / 72%);
-  --selection: rgb(150 68 44 / 34%);
-  --brand-gradient: radial-gradient(68% 72% at 32% 24%, rgb(185 111 70 / 18%), transparent 70%), linear-gradient(176deg, #493127, #19120f 68%, #080605);
-  --brand-shadow: inset 0 1px 0 rgb(224 186 139 / 12%), inset 0 -8px 14px rgb(0 0 0 / 48%), 0 0 22px -10px rgb(169 76 46 / 82%);
+  --text: #beb9ae;
+  --text-soft: #9e998f;
+  --text-muted: #74716a;
+  --text-faint: #575650;
+  --accent: #865044;
+  --accent-soft: rgb(91 42 34 / 24%);
+  --accent-line: rgb(118 58 46 / 72%);
+  --accent-glow: none;
+  --selection: rgb(126 58 45 / 30%);
+  --brand-gradient: linear-gradient(180deg, #151616, #080909);
+  --brand-shadow: inset 0 1px 0 rgb(222 217 204 / 5%), inset 0 -8px 14px rgb(0 0 0 / 52%);
 
   --provider-none: #766a5a;
   --provider-codex: #c8b89e;
@@ -68,9 +68,9 @@ html[data-theme="gothic"] {
   --dot-cache: #827666;
   --dot-output: #a65c42;
   --dot-think: #8f746c;
-  --space-glow-a: rgb(155 72 45 / 7%);
-  --space-glow-b: rgb(91 67 44 / 8%);
-  --space-base: linear-gradient(176deg, #1b1511 0, #0d0a08 24rem, var(--bg) 100%);
+  --space-glow-a: rgb(120 62 47 / 4%);
+  --space-glow-b: rgb(87 85 78 / 5%);
+  --space-base: linear-gradient(176deg, #111313 0, #090a0a 24rem, var(--bg) 100%);
   --space-star: transparent;
   --star-opacity: 0;
   --gothic-image: url("./gothic-concrete.jpg");
@@ -78,39 +78,44 @@ html[data-theme="gothic"] {
   /* Материалы shell задаются токенами: общая таблица сохраняет единую
      геометрию верхних панелей, а тема меняет только их фактуру и рамку. */
   --shell-header-background:
-    var(--gothic-iron-frame) center / 100% 100% no-repeat,
-    #090806 var(--gothic-iron-texture) center / 22rem 22rem;
-  --shell-header-border: 1px solid #5e4b37;
-  --shell-header-shadow: inset 0 0 0 1px #15110d, inset 0 -4px 0 #050403;
+    var(--gothic-forged-frame-matte) center / 100% 100% no-repeat,
+    #080909;
+  --shell-brand-mark-size: 2.55rem;
+  --shell-header-border: 1px solid #3f3e39;
+  --shell-header-shadow: inset 0 0 0 1px #111212, inset 0 -4px 0 #030404;
   --shell-header-rule: none;
   --shell-control-background:
-    var(--gothic-iron-frame) center / 100% 100% no-repeat,
-    #0a0908 var(--gothic-iron-texture) center / 18rem 18rem;
-  --shell-control-border: 1px solid rgb(126 101 73 / 52%);
-  --shell-control-shadow: inset 0 1px 0 rgb(220 187 142 / 5%), inset 0 -1px 0 #030201;
+    linear-gradient(rgb(7 8 8 / 86%), rgb(7 8 8 / 86%)),
+    var(--gothic-iron-texture) center / 18rem 18rem;
+  --shell-control-border: 1px solid rgb(106 102 94 / 54%);
+  --shell-control-shadow: inset 0 1px 0 rgb(220 216 204 / 4%), inset 0 -1px 0 #020303;
   --shell-tab-background: transparent;
-  --shell-tab-active-background: #411f17 var(--gothic-iron-texture) center / 20rem 20rem;
+  --shell-tab-active-background:
+    linear-gradient(rgb(30 17 15 / 84%), rgb(15 13 12 / 92%)),
+    var(--gothic-iron-texture) center / 20rem 20rem;
   --shell-tab-active-border: 1px solid var(--accent-line);
   --shell-panel-border: 13px solid transparent;
   --shell-panel-border-image: var(--gothic-forged-frame-matte) 9% / 13px stretch;
-  --shell-stream-tabs-background: #080706 var(--gothic-iron-texture) center / 24rem 24rem;
+  --shell-stream-tabs-background:
+    linear-gradient(rgb(7 8 8 / 82%), rgb(7 8 8 / 82%)),
+    var(--gothic-iron-texture) center / 24rem 24rem;
   --shell-stream-tabs-border: 8px solid transparent;
   --shell-stream-tabs-border-bottom: 1px solid transparent;
   --shell-stream-tabs-border-image: var(--gothic-forged-frame-matte) 9% / 8px stretch;
   --shell-stream-tab-background: transparent;
   --shell-stream-tab-border: 0;
-  --shell-stream-tab-hover-background: #17130f var(--gothic-iron-texture) center / 18rem 18rem;
-  --shell-stream-tab-active-background: #351c15 var(--gothic-iron-texture) center / 18rem 18rem;
-  --shell-stream-card-background: #0c0a09 var(--gothic-iron-texture) center / 18rem 18rem;
+  --shell-stream-tab-hover-background: #121313 var(--gothic-iron-texture) center / 18rem 18rem;
+  --shell-stream-tab-active-background: #251714 var(--gothic-iron-texture) center / 18rem 18rem;
+  --shell-stream-card-background: #0a0b0b var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-stream-card-border: 4px solid transparent;
   --shell-stream-card-border-image: var(--gothic-forged-frame-matte) 9% / 4px stretch;
 }
 
 html[data-theme="gothic"] body::after {
-  background-color: #080604;
+  background-color: #070909;
   background-image:
-    linear-gradient(90deg, rgb(5 4 3 / 28%), transparent 32% 72%, rgb(5 2 1 / 8%)),
-    linear-gradient(180deg, rgb(4 3 2 / 8%) 42%, rgb(3 2 1 / 56%)),
+    linear-gradient(90deg, rgb(4 5 5 / 28%), transparent 32% 72%, rgb(4 4 4 / 8%)),
+    linear-gradient(180deg, rgb(4 5 5 / 8%) 42%, rgb(2 3 3 / 56%)),
     radial-gradient(120% 94% at 50% 44%, transparent 34%, rgb(0 0 0 / 48%) 100%),
     var(--gothic-image);
   background-position: center, center, center, 50% 50%;
@@ -124,11 +129,45 @@ html[data-theme="gothic"] body::after {
 html[data-theme="gothic"] .eyebrow,
 html[data-theme="gothic"] .task-project-heading,
 html[data-theme="gothic"] .task-rail-title {
-  color: #9f8068;
+  color: #a8a195;
   font-family: var(--font-title);
   font-variant-caps: small-caps;
   letter-spacing: 0.12em;
   text-shadow: 0 1px 0 #000;
+}
+
+@media (min-width: 860px) {
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand {
+    align-self: stretch;
+    background:
+      linear-gradient(rgb(6 7 7 / 78%), rgb(6 7 7 / 78%)),
+      var(--gothic-iron-texture) center / 20rem 20rem;
+    border: 7px solid transparent;
+    border-image: var(--gothic-forged-frame-matte) 9% / 7px stretch;
+    flex: 0 0 var(--task-rail-width);
+    gap: 2.7rem;
+    margin-left: calc(clamp(1rem, 4vw, 4.25rem) * -1);
+    padding: 0.08rem 0.9rem 0.08rem 0.7rem;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand .eyebrow {
+    color: #aaa397;
+    text-shadow: 0 1px 0 #000;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand h1 {
+    color: #c4bdaf;
+    text-shadow: 0 1px 0 #000;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .view-settings {
+    color: #918d84;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab[aria-pressed="true"] {
+    color: #c2b9ac !important;
+  }
 }
 
 html[data-theme="gothic"] .journal details[data-work-log-day-section]::before {
@@ -239,8 +278,11 @@ html[data-background-override="true"][data-background="gothic-xardas-tower"] bod
 
 /* Железная подложка повторяется на всю высоту описи. */
 html[data-theme="gothic"] .task-list {
-  background-color: rgb(8 7 6 / 96%);
-  background-image: var(--gothic-iron-texture);
+  background-color: rgb(8 9 9 / 96%);
+  background-image:
+    linear-gradient(#0a0b0b, #0a0b0b),
+    var(--gothic-iron-texture);
+  background-blend-mode: color, normal;
   background-position: left top;
   background-repeat: repeat;
   background-size: 24rem 24rem;
@@ -253,11 +295,11 @@ html[data-theme="gothic"] .task-search,
 html[data-theme="gothic"] .stream-chat-preview,
 html[data-theme="gothic"] .dialog-settings,
 html[data-theme="gothic"] .composer {
-  background-color: rgb(9 8 7 / 88%);
+  background-color: rgb(9 10 10 / 90%);
   background-image:
-    linear-gradient(rgb(0 0 0 / 58%), rgb(0 0 0 / 58%)),
+    linear-gradient(rgb(7 8 8 / 70%), rgb(7 8 8 / 70%)),
     var(--gothic-iron-texture);
-  background-blend-mode: normal;
+  background-blend-mode: color, normal;
   background-size: 24rem 24rem;
 }
 
@@ -274,7 +316,7 @@ html[data-theme="gothic"] .task-workspace-item[data-selected] {
 
 html[data-theme="gothic"] .chat-pane,
 html[data-theme="gothic"] .stream-chat-preview {
-  background-color: rgb(7 6 5 / 54%);
+  background-color: rgb(7 8 8 / 58%);
 }
 
 html[data-theme="gothic"] .stream-chat-preview-log {
@@ -284,11 +326,11 @@ html[data-theme="gothic"] .stream-chat-preview-log {
 html[data-theme="gothic"] .msg {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  background-color: rgb(10 9 8 / 97%);
+  background-color: rgb(9 10 10 / 97%);
   background-image:
-    linear-gradient(rgb(0 0 0 / 56%), rgb(0 0 0 / 56%)),
+    linear-gradient(rgb(7 8 8 / 68%), rgb(7 8 8 / 68%)),
     var(--gothic-iron-texture);
-  background-blend-mode: normal;
+  background-blend-mode: color, normal;
   background-size: 22rem 22rem;
   border: 2px solid transparent;
   border-image: var(--gothic-iron-frame) 34 / 2px stretch;
@@ -325,16 +367,16 @@ html[data-theme="gothic"] .composer button {
 }
 
 html[data-theme="gothic"] .composer-input {
-  background: rgb(5 4 3 / 86%);
-  border-color: rgb(137 103 72 / 52%);
+  background: rgb(5 6 6 / 88%);
+  border-color: rgb(105 100 91 / 54%);
 }
 
 html[data-theme="gothic"] .composer-send,
 html[data-theme="gothic"] .chip-button.primary {
-  background: #321a14;
+  background: #241613;
   background-image: var(--gothic-iron-texture);
-  border-color: #8f4c37;
-  color: #ddc6aa;
+  border-color: #764438;
+  color: #c7bcb0;
 }
 
 /* Крупные поверхности снова обрамлены кованым железом. Матовая версия рамки
@@ -351,11 +393,11 @@ html[data-theme="gothic"] .chip-button.primary {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .chat {
-    background-color: rgb(7 6 5 / 97%);
+    background-color: rgb(7 8 8 / 97%);
     background-image:
-      linear-gradient(rgb(0 0 0 / 62%), rgb(0 0 0 / 62%)),
+      linear-gradient(rgb(8 9 9 / 74%), rgb(8 9 9 / 74%)),
       var(--gothic-iron-texture);
-    background-blend-mode: normal;
+    background-blend-mode: color, normal;
     background-size: 28rem 28rem;
     box-shadow: inset 0 0 0 1px rgb(218 184 137 / 7%), inset 0 0 2rem rgb(0 0 0 / 48%);
   }
@@ -374,11 +416,11 @@ html[data-theme="gothic"] .chip-button.primary {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-chat-columns > .chat-pane,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-chat-preview {
-    background-color: rgb(7 6 5 / 94%);
+    background-color: rgb(7 8 8 / 94%);
     background-image:
-      linear-gradient(rgb(0 0 0 / 62%), rgb(0 0 0 / 62%)),
+      linear-gradient(rgb(8 9 9 / 74%), rgb(8 9 9 / 74%)),
       var(--gothic-iron-texture);
-    background-blend-mode: normal;
+    background-blend-mode: color, normal;
     border: 9px solid transparent;
     border-image: var(--gothic-forged-frame-matte) 9% / 9px stretch;
     box-shadow: inset 0 0 0 1px rgb(220 184 132 / 7%), inset 0 0 2.2rem rgb(0 0 0 / 52%);
@@ -398,13 +440,13 @@ html[data-theme="gothic"] .chip-button.primary {
   html[data-theme="gothic"]:not([data-surface="mobile"]) .composer-input,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .icon-button,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .chip-button {
-    background-color: rgb(8 7 6 / 92%);
+    background-color: rgb(8 9 9 / 92%);
     background-image:
-      linear-gradient(rgb(0 0 0 / 58%), rgb(0 0 0 / 58%)),
+      linear-gradient(rgb(8 9 9 / 72%), rgb(8 9 9 / 72%)),
       var(--gothic-iron-texture);
-    background-blend-mode: normal;
+    background-blend-mode: color, normal;
     background-size: 18rem 18rem;
-    border-color: rgb(126 101 73 / 48%);
+    border-color: rgb(106 101 92 / 48%);
     border-radius: 0;
   }
 
