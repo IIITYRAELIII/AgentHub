@@ -28,7 +28,7 @@ test("Spark correction and confident Workspace suggestion place a Task automatic
     confidence: 0.94,
     reason: "Упомянут Agent Hub",
   }));
-  const created = service.create({ text: "исправить дашборд агент хаб" });
+  const created = service.create({ text: "исправить дашборд агент хаб", source: "telegram" });
   await service.waitForTriage();
   const task = service.task(created.id);
   assert.equal(task.correctedText, "Исправить дашборд Agent Hub");
@@ -44,7 +44,7 @@ test("uncertain Spark suggestion leaves a Task in the backlog", async (t) => {
     confidence: 0.31,
     reason: "Не хватает контекста",
   }));
-  const created = service.create({ text: "чтото проверить" });
+  const created = service.create({ text: "чтото проверить", source: "telegram" });
   await service.waitForTriage();
   const task = service.task(created.id);
   assert.equal(task.bucket, "backlog");
@@ -64,6 +64,8 @@ test("disabled Spark leaves new Tasks idle and clears recovered triage", () => {
       list: () => [],
       move: () => null,
       markStarted: () => null,
+      orderedWorkspaceIds: (ids) => ids,
+      moveWorkspace: () => null,
       disablePendingTriage: () => { disabled += 1; },
     },
     workspaceCatalog: { hierarchy: () => [] },
@@ -75,4 +77,13 @@ test("disabled Spark leaves new Tasks idle and clears recovered triage", () => {
   assert.equal(created[0].triageStatus, "disabled");
   assert.equal(service.autoPlaceConfidence, 0);
   assert.equal(disabled, 1);
+});
+
+test("manual dashboard creation never starts Spark triage", async (t) => {
+  let classifyCalls = 0;
+  const service = await fixture(t, async () => { classifyCalls += 1; return {}; });
+  const task = service.create({ text: "Создано вручную", source: "hub" });
+  await service.waitForTriage();
+  assert.equal(task.triageStatus, "disabled");
+  assert.equal(classifyCalls, 0);
 });

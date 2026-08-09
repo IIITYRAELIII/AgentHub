@@ -30,10 +30,16 @@ function configure(database) {
       triage_confidence REAL,
       triage_reason TEXT,
       triage_error TEXT,
+      board_order INTEGER NOT NULL DEFAULT 0,
       created_at_ms INTEGER NOT NULL,
       updated_at_ms INTEGER NOT NULL,
       started_at_ms INTEGER,
       completed_at_ms INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS hub_board_workspace_order (
+      workspace_id TEXT PRIMARY KEY,
+      position INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS hub_board_tasks_location_idx
       ON hub_board_tasks(status, bucket, workspace_id, updated_at_ms DESC);
@@ -45,6 +51,61 @@ function configure(database) {
       updated_at_ms INTEGER NOT NULL
     );
   `);
+  const taskColumns = database.prepare("PRAGMA table_info(hub_board_tasks)").all();
+  if (!taskColumns.some((column) => column.name === "board_order")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN board_order INTEGER NOT NULL DEFAULT 0");
+  }
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS hub_board_tasks_board_order_idx
+      ON hub_board_tasks(status, bucket, workspace_id, board_order);
+  `);
+}
+
+function taskLocationRows(database, bucket, workspaceId = null) {
+  return database.prepare(`
+    SELECT id FROM hub_board_tasks
+    WHERE status != 'done' AND bucket = ?
+      AND ((? IS NULL AND workspace_id IS NULL) OR workspace_id = ?)
+    ORDER BY board_order, created_at_ms, id
+  `).all(bucket, workspaceId, workspaceId);
+}
+
+function writeTaskOrder(database, bucket, workspaceId, ids) {
+  const update = database.prepare(`
+    UPDATE hub_board_tasks SET board_order = ?
+    WHERE id = ? AND bucket = ?
+      AND ((? IS NULL AND workspace_id IS NULL) OR workspace_id = ?)
+  `);
+  ids.forEach((id, position) => update.run(position, id, bucket, workspaceId, workspaceId));
+}
+
+function normalizedWorkspaceIds(workspaceIds) {
+  return [...new Set((workspaceIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean))];
+}
+
+function ensureWorkspaceOrder(database, workspaceIds, timestamp) {
+  const ids = normalizedWorkspaceIds(workspaceIds);
+  const rows = database.prepare(`
+    SELECT workspace_id, position FROM hub_board_workspace_order
+    ORDER BY position, workspace_id
+  `).all();
+  const known = new Map(rows.map((row) => [row.workspace_id, Number(row.position)]));
+  let position = rows.reduce((maximum, row) => Math.max(maximum, Number(row.position)), -1) + 1;
+  const insert = database.prepare(`
+    INSERT INTO hub_board_workspace_order (workspace_id, position, updated_at_ms)
+    VALUES (?, ?, ?)
+    ON CONFLICT(workspace_id) DO NOTHING
+  `);
+  for (const id of ids) {
+    if (known.has(id)) continue;
+    insert.run(id, position, timestamp);
+    known.set(id, position);
+    position += 1;
+  }
+  const originalPosition = new Map(ids.map((id, index) => [id, index]));
+  return ids.sort((left, right) => (
+    known.get(left) - known.get(right) || originalPosition.get(left) - originalPosition.get(right)
+  ));
 }
 
 function parseJson(value) {
@@ -79,6 +140,7 @@ function taskFromRow(row) {
     updatedAt: new Date(Number(row.updated_at_ms)).toISOString(),
     startedAt: row.started_at_ms == null ? null : new Date(Number(row.started_at_ms)).toISOString(),
     completedAt: row.completed_at_ms == null ? null : new Date(Number(row.completed_at_ms)).toISOString(),
+    boardOrder: Number(row.board_order) || 0,
   };
 }
 
@@ -115,10 +177,12 @@ export class TaskBoardStore {
       }
       const timestamp = this.now();
       const id = String(this.idFactory());
+      const boardOrder = taskLocationRows(database, "backlog").length;
       database.prepare(`
         INSERT INTO hub_board_tasks (
-          id, raw_text, source, source_key, source_json, triage_status, created_at_ms, updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          id, raw_text, source, source_key, source_json, triage_status,
+          board_order, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         rawText,
@@ -126,6 +190,7 @@ export class TaskBoardStore {
         normalizedSourceKey,
         JSON.stringify(sourceDetails ?? {}),
         initialTriageStatus,
+        boardOrder,
         timestamp,
         timestamp,
       );
@@ -146,7 +211,7 @@ export class TaskBoardStore {
       SELECT * FROM hub_board_tasks
       ${includeDone ? "" : "WHERE status != 'done'"}
       ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'started' THEN 1 ELSE 2 END,
-        updated_at_ms DESC, id
+        bucket, workspace_id, board_order, created_at_ms, id
     `).all().map(taskFromRow));
   }
 
@@ -240,22 +305,76 @@ export class TaskBoardStore {
     });
   }
 
-  move(id, { bucket, workspaceId = null } = {}) {
+  move(id, { bucket, workspaceId = null, beforeId = null } = {}) {
     const normalizedBucket = normalizedTaskBucket(bucket);
     const normalizedWorkspaceId = normalizedBucket === "workspace"
       ? String(workspaceId ?? "").trim()
       : null;
     if (normalizedBucket === "workspace" && !normalizedWorkspaceId) throw new Error("Выберите Workspace");
     return this.#withDatabase((database) => {
-      database.prepare(`
-        UPDATE hub_board_tasks
-        SET bucket = ?, workspace_id = ?, stream_id = NULL,
-          placement_source = 'manual', updated_at_ms = ?
-        WHERE id = ?
-      `).run(normalizedBucket, normalizedWorkspaceId, this.now(), String(id));
-      const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id)));
-      if (!task) throw new Error("Task не найден");
-      return task;
+      const taskId = String(id ?? "").trim();
+      const current = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
+      if (!current) throw new Error("Задача не найдена");
+      const oldBucket = current.bucket;
+      const oldWorkspaceId = current.workspace_id ?? null;
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        database.prepare(`
+          UPDATE hub_board_tasks
+          SET bucket = ?, workspace_id = ?, stream_id = NULL,
+            placement_source = 'manual', updated_at_ms = ?
+          WHERE id = ?
+        `).run(normalizedBucket, normalizedWorkspaceId, this.now(), taskId);
+        const targetIds = taskLocationRows(database, normalizedBucket, normalizedWorkspaceId)
+          .map((row) => row.id)
+          .filter((candidateId) => candidateId !== taskId);
+        const normalizedBeforeId = String(beforeId ?? "").trim();
+        const targetIndex = normalizedBeforeId ? targetIds.indexOf(normalizedBeforeId) : -1;
+        targetIds.splice(targetIndex < 0 ? targetIds.length : targetIndex, 0, taskId);
+        if (oldBucket !== normalizedBucket || oldWorkspaceId !== normalizedWorkspaceId) {
+          writeTaskOrder(
+            database,
+            oldBucket,
+            oldWorkspaceId,
+            taskLocationRows(database, oldBucket, oldWorkspaceId).map((row) => row.id),
+          );
+        }
+        writeTaskOrder(database, normalizedBucket, normalizedWorkspaceId, targetIds);
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+      return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+    });
+  }
+
+  orderedWorkspaceIds(workspaceIds) {
+    return this.#withDatabase((database) => ensureWorkspaceOrder(database, workspaceIds, this.now()));
+  }
+
+  moveWorkspace(workspaceIds, { workspaceId, beforeWorkspaceId = null } = {}) {
+    const taskWorkspaceId = String(workspaceId ?? "").trim();
+    const targetWorkspaceId = String(beforeWorkspaceId ?? "").trim() || null;
+    return this.#withDatabase((database) => {
+      const ordered = ensureWorkspaceOrder(database, workspaceIds, this.now());
+      if (!ordered.includes(taskWorkspaceId)) throw new Error("Workspace не найден");
+      const reordered = ordered.filter((id) => id !== taskWorkspaceId);
+      const targetIndex = targetWorkspaceId ? reordered.indexOf(targetWorkspaceId) : -1;
+      reordered.splice(targetIndex < 0 ? reordered.length : targetIndex, 0, taskWorkspaceId);
+      const update = database.prepare(`
+        UPDATE hub_board_workspace_order SET position = ?, updated_at_ms = ? WHERE workspace_id = ?
+      `);
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const timestamp = this.now();
+        reordered.forEach((id, position) => update.run(position, timestamp, id));
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+      return reordered;
     });
   }
 

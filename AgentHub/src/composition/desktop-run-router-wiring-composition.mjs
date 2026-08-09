@@ -176,6 +176,7 @@ export function createDesktopRunRouterWiring({
       boardTaskRemove: (params) => taskBoardController.remove(params),
       boardTaskRetryTriage: (params) => taskBoardController.retryTriage(params),
       boardTaskStart: (params, context) => taskBoardController.start(params, context),
+      boardWorkspaceMove: (params) => taskBoardController.moveWorkspace(params),
     },
     commands: desktop.applicationCommands,
     receiptFile: path.join(config.dataDir, "desktop-control-receipts.json"),

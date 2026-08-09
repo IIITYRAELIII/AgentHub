@@ -44,7 +44,7 @@ export function createHubStaticSettings(config, agentHubRoot) {
     keyboard: [
       [{ text: `${agentIcon} Агент` }, { text: "🎛 Модель" }, ...(config.showProjectButton ? [{ text: "📁 Проект" }] : [])],
       [{ text: "🧠 Мощь дум" }, { text: "🛠 Plan/Work" }],
-      [{ text: "📥 Task" }, { text: "📋 Задачи" }, { text: "ℹ️ Статус" }, { text: "🔐 Доступ" }],
+      [{ text: "📥 Задача" }, { text: "📋 Задачи" }, { text: "ℹ️ Статус" }, { text: "🔐 Доступ" }],
       [{ text: "⛔ Стоп" }, { text: "❓ Помощь" }, { text: "🔄 Рестарт" }],
     ],
     resize_keyboard: true,
@@ -57,7 +57,7 @@ export function createHubStaticSettings(config, agentHubRoot) {
     ["🧠 Сила дум", "/reasoning"], ["🛠 Plan/Work", "/mode"],
     ["📁 Папка", "/projects"], ["📁 Проект", "/projects"],
     ["🆕 Новая", "/new"], ["🆕 Новая задача", "/new"],
-    ["📥 Task", "/task"],
+    ["📥 Задача", "/task"],
     ["📋 Задачи", "/tasks"], ["🎯 Текущая", "/current"],
     ["🧵 Поток", "/thread"], ["🧵 Поток Codex", "/thread"],
     ["ℹ️ Статус", "/status"], ["📝 Изменения", "/diff"],

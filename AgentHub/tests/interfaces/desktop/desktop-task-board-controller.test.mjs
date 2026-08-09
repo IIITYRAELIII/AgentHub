@@ -14,6 +14,9 @@ function fixture({ activeThread = null } = {}) {
   const controller = new DesktopTaskBoardController({
     taskBoard: {
       task: () => task,
+      create: (value) => { calls.push(["create", value]); return { id: "board-created" }; },
+      move: (value) => calls.push(["move", value]),
+      moveWorkspace: (value) => calls.push(["move-workspace", value]),
       markStarted: (value) => calls.push(["started", value]),
     },
     workspaceCatalog: {
@@ -37,6 +40,23 @@ function fixture({ activeThread = null } = {}) {
   });
   return { controller, calls };
 }
+
+test("dashboard creation adds a manual task directly to its Workspace", async () => {
+  const { controller, calls } = fixture();
+  await controller.create({ text: "Новая задача", workspaceId: "workspace-1" });
+  assert.deepEqual(calls[0], ["create", { text: "Новая задача", source: "hub" }]);
+  assert.deepEqual(calls[1], ["move", {
+    id: "board-created", bucket: "workspace", workspaceId: "workspace-1",
+  }]);
+});
+
+test("dashboard persists Workspace reordering", async () => {
+  const { controller, calls } = fixture();
+  await controller.moveWorkspace({ workspaceId: "workspace-2", beforeWorkspaceId: "workspace-1" });
+  assert.deepEqual(calls[0], ["move-workspace", {
+    workspaceId: "workspace-2", beforeWorkspaceId: "workspace-1",
+  }]);
+});
 
 test("starting a Task in an existing Stream selects it and sends the Task text", async () => {
   const { controller, calls } = fixture({

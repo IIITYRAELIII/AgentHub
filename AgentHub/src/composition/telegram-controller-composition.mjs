@@ -276,7 +276,7 @@ export function createTelegramControllerComposition({
     const value = String(argument ?? "").trim();
     if (value.toLowerCase() === "off") {
       taskBoard.setCaptureEnabled(message.chat.id, false);
-      await sendMessage("Режим Task выключен. Обычные сообщения снова отправляются в текущий диалог.");
+      await sendMessage("Режим задач выключен. Обычные сообщения снова отправляются в текущий диалог.");
       return;
     }
     if (value) {
@@ -286,11 +286,11 @@ export function createTelegramControllerComposition({
         sourceKey: `telegram:${message.chat.id}:${message.message_id}`,
         sourceDetails: { chatId: message.chat.id, messageId: message.message_id, userId: message.from?.id },
       });
-      await sendMessage(`Task добавлен в бэклог: ${task.rawText.slice(0, 300)}`);
+      await sendMessage(`Задача добавлена в бэклог: ${task.rawText.slice(0, 300)}`);
       return;
     }
     taskBoard.setCaptureEnabled(message.chat.id, true);
-    await sendMessage("Режим Task включён. Все обычные текстовые сообщения попадут в бэклог. Чтобы выйти: /task off");
+    await sendMessage("Режим задач включён. Все обычные текстовые сообщения попадут в бэклог. Чтобы выйти: /task off");
   };
   const telegramMessageController = new TelegramMessageController({
     config,
@@ -311,7 +311,7 @@ export function createTelegramControllerComposition({
         sourceKey: `telegram:${message.chat.id}:${message.message_id}`,
         sourceDetails: { chatId: message.chat.id, messageId: message.message_id, userId: message.from?.id },
       });
-      await sendMessage(`Task добавлен в бэклог: ${task.rawText.slice(0, 300)}`);
+      await sendMessage(`Задача добавлена в бэклог: ${task.rawText.slice(0, 300)}`);
       return true;
     },
     handleBundleText: (message, text) => forwardBundleController.handleText(message, text),

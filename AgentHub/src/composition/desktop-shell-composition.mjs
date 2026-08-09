@@ -191,6 +191,7 @@ export function createDesktopShellComposition({
       catalogEntries: getTaskCatalog,
       workspaceHierarchy: () => workspaceCatalogStore.hierarchy(),
       taskBoardSnapshot: () => taskBoard.snapshot(),
+      taskBoardWorkspaces: () => taskBoard.workspaces(),
       catalogRefreshedAt: () => taskCatalogService.refreshedAt,
       mergeCatalog: mergeTaskCatalog,
       pendingValues: () => [...pendingInputs.values()],

@@ -3,8 +3,6 @@
 (() => {
   const board = document.querySelector("[data-task-board]");
   const columns = document.querySelector("[data-task-board-columns]");
-  const createForm = document.querySelector("[data-task-board-create]");
-  const createInput = document.querySelector("[data-task-board-input]");
   const workspacePanel = document.querySelector("[data-workspace-task-panel]");
   const workspacePanelList = document.querySelector("[data-workspace-task-list]");
   const workspacePanelTitle = document.querySelector("[data-workspace-task-title]");
@@ -16,12 +14,16 @@
   const startProvider = document.querySelector("[data-task-start-provider]");
   if (!board || !columns) return;
 
+  const TASK_MIME = "application/x-agent-hub-board-task";
+  const WORKSPACE_MIME = "application/x-agent-hub-board-workspace";
+
   const state = {
     tasks: [],
     workspaces: [],
     selectedWorkspaceId: null,
     provider: "codex",
     startingTaskId: null,
+    creatingWorkspaceId: null,
   };
 
   function node(tag, attributes = {}, children = []) {
@@ -52,20 +54,25 @@
     return task.bucket;
   }
 
-  function moveTask(task, destination) {
+  function moveTask(task, destination, beforeId = null) {
     if (destination === "backlog" || destination === "notes") {
-      emit("move", { id: task.id, bucket: destination });
+      emit("move", { id: task.id, bucket: destination, beforeId });
       return;
     }
     if (destination.startsWith("workspace:")) {
-      emit("move", { id: task.id, bucket: "workspace", workspaceId: destination.slice(10) });
+      emit("move", {
+        id: task.id,
+        bucket: "workspace",
+        workspaceId: destination.slice(10),
+        beforeId,
+      });
     }
   }
 
   function destinationSelect(task) {
     const select = node("select", {
       class: "board-task-destination",
-      "aria-label": "Колонка Task",
+      "aria-label": "Колонка задачи",
       onchange: (event) => moveTask(task, event.currentTarget.value),
     });
     select.append(node("option", { value: "backlog", text: "Бэклог" }));
@@ -75,30 +82,6 @@
     select.append(node("option", { value: "notes", text: "Заметки" }));
     select.value = destinationValue(task);
     return select;
-  }
-
-  function triageBadge(task) {
-    const status = task.triageStatus;
-    if (status === "running" || status === "pending") {
-      return node("span", { class: "board-task-ai is-pending", text: "Spark разбирает…" });
-    }
-    if (status === "failed") {
-      return node("button", {
-        type: "button",
-        class: "board-task-ai is-failed",
-        text: "Spark: повторить",
-        onclick: () => emit("retry-triage", { id: task.id }),
-      });
-    }
-    if (status === "completed") {
-      const confidence = Math.round((Number(task.triageConfidence) || 0) * 100);
-      return node("span", {
-        class: "board-task-ai",
-        text: `${task.category === "note" ? "Заметка" : "Task"} · ${confidence}%`,
-        title: task.triageReason || "Разобрано Codex Spark",
-      });
-    }
-    return null;
   }
 
   function openStart(task) {
@@ -146,14 +129,32 @@
       draggable: compact ? null : "true",
       "data-board-task-id": task.id,
       ondragstart: (event) => {
+        event.dataTransfer.setData(TASK_MIME, task.id);
         event.dataTransfer.setData("text/plain", task.id);
         event.dataTransfer.effectAllowed = "move";
       },
     });
-    const badge = triageBadge(task);
+    if (!compact) {
+      card.addEventListener("dragover", (event) => {
+        if (!Array.from(event.dataTransfer.types).includes(TASK_MIME)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        card.classList.add("is-dragover");
+      });
+      card.addEventListener("dragleave", () => card.classList.remove("is-dragover"));
+      card.addEventListener("drop", (event) => {
+        const draggedId = event.dataTransfer.getData(TASK_MIME) || event.dataTransfer.getData("text/plain");
+        if (!draggedId || draggedId === task.id) return;
+        const draggedTask = state.tasks.find((item) => item.id === draggedId);
+        if (!draggedTask) return;
+        event.preventDefault();
+        event.stopPropagation();
+        card.classList.remove("is-dragover");
+        moveTask(draggedTask, destinationValue(task), task.id);
+      });
+    }
     const heading = node("div", { class: "board-task-card-head" }, [
       node("span", { class: "board-task-source", text: task.source === "telegram" ? "Telegram" : "Hub" }),
-      ...(badge ? [badge] : []),
     ]);
     const text = node("p", { class: "board-task-text", text: task.text });
     const actions = node("div", { class: "board-task-actions" });
@@ -172,7 +173,7 @@
       actions.append(node("button", {
         type: "button", class: "board-task-remove", text: "Удалить",
         onclick: () => {
-          if (window.confirm("Удалить Task без возможности восстановления?")) emit("remove", { id: task.id });
+          if (window.confirm("Удалить задачу без возможности восстановления?")) emit("remove", { id: task.id });
         },
       }));
     }
@@ -187,12 +188,49 @@
     return card;
   }
 
-  function renderColumn({ id, title, subtitle, tasks, accent = "" }) {
+  function renderCreateForm(workspace) {
+    const input = node("textarea", {
+      rows: "3",
+      maxlength: "20000",
+      placeholder: "Что нужно сделать?",
+      "aria-label": `Новая задача в ${workspace.name}`,
+    });
+    const form = node("form", {
+      class: "task-board-inline-create",
+      onsubmit: (event) => {
+        event.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+        state.creatingWorkspaceId = null;
+        emit("create", { text, workspaceId: workspace.id });
+        renderBoard();
+      },
+    }, [
+      input,
+      node("div", { class: "task-board-inline-actions" }, [
+        node("button", { type: "submit", class: "board-task-primary", text: "Добавить" }),
+        node("button", {
+          type: "button",
+          class: "board-task-quiet",
+          text: "Отмена",
+          onclick: () => { state.creatingWorkspaceId = null; renderBoard(); },
+        }),
+      ]),
+    ]);
+    window.requestAnimationFrame(() => input.focus());
+    return form;
+  }
+
+  function renderColumn({ id, title, subtitle, tasks, accent = "", workspace = null, appendWorkspaces = false }) {
     const column = node("section", {
-      class: `task-board-column ${accent}`,
+      class: `task-board-column ${accent}${workspace ? " is-workspace" : ""}`,
       "data-board-destination": id,
+      "data-board-workspace-id": workspace?.id,
     });
     column.addEventListener("dragover", (event) => {
+      const types = Array.from(event.dataTransfer.types);
+      const workspaceDrag = types.includes(WORKSPACE_MIME);
+      if (workspaceDrag && !workspace && !appendWorkspaces) return;
       event.preventDefault();
       column.classList.add("is-dragover");
     });
@@ -200,22 +238,56 @@
     column.addEventListener("drop", (event) => {
       event.preventDefault();
       column.classList.remove("is-dragover");
-      const task = state.tasks.find((item) => item.id === event.dataTransfer.getData("text/plain"));
+      const workspaceId = event.dataTransfer.getData(WORKSPACE_MIME);
+      if (workspaceId) {
+        if (workspaceId !== workspace?.id) {
+          emit("move-workspace", { workspaceId, beforeWorkspaceId: workspace?.id ?? null });
+        }
+        return;
+      }
+      const taskId = event.dataTransfer.getData(TASK_MIME) || event.dataTransfer.getData("text/plain");
+      const task = state.tasks.find((item) => item.id === taskId);
       if (task) moveTask(task, id);
     });
+    const controls = node("div", { class: "task-board-column-controls" }, [
+      ...(workspace ? [node("button", {
+        type: "button",
+        class: "task-board-create-button",
+        text: "Создать",
+        onclick: () => { state.creatingWorkspaceId = workspace.id; renderBoard(); },
+      })] : []),
+      node("span", { class: "task-board-count", text: String(tasks.length) }),
+      ...(workspace ? [node("button", {
+        type: "button",
+        class: "task-board-workspace-handle",
+        draggable: "true",
+        title: "Перетащить Workspace",
+        "aria-label": `Перетащить Workspace ${workspace.name}`,
+        text: "↔",
+        ondragstart: (event) => {
+          event.dataTransfer.setData(WORKSPACE_MIME, workspace.id);
+          event.dataTransfer.effectAllowed = "move";
+        },
+      })] : []),
+    ]);
     column.append(node("header", { class: "task-board-column-head" }, [
       node("div", {}, [node("h2", { text: title }), node("p", { text: subtitle })]),
-      node("span", { class: "task-board-count", text: String(tasks.length) }),
+      controls,
     ]));
     const list = node("div", { class: "task-board-column-list" });
-    if (!tasks.length) list.append(node("p", { class: "task-board-empty", text: "Перетащите Task сюда" }));
-    else for (const task of tasks) list.append(taskCard(task));
+    if (workspace && state.creatingWorkspaceId === workspace.id) list.append(renderCreateForm(workspace));
+    if (!tasks.length && state.creatingWorkspaceId !== workspace?.id) {
+      list.append(node("p", { class: "task-board-empty", text: "Перетащите задачу сюда" }));
+    } else {
+      for (const task of tasks) list.append(taskCard(task));
+    }
     column.append(list);
     return column;
   }
 
   function renderBoard() {
     const openTasks = state.tasks.filter((task) => task.status !== "done");
+    columns.style.setProperty("--board-column-count", String(state.workspaces.length + 2));
     columns.replaceChildren(renderColumn({
       id: "backlog", title: "Бэклог", subtitle: "Неразобранные входящие",
       tasks: openTasks.filter((task) => task.bucket === "backlog"), accent: "is-backlog",
@@ -226,11 +298,12 @@
         title: workspace.name,
         subtitle: `${(workspace.streams ?? []).length} Streams`,
         tasks: openTasks.filter((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
+        workspace,
       }));
     }
     columns.append(renderColumn({
       id: "notes", title: "Заметки", subtitle: "Игры, фильмы, сериалы и идеи",
-      tasks: openTasks.filter((task) => task.bucket === "notes"), accent: "is-notes",
+      tasks: openTasks.filter((task) => task.bucket === "notes"), accent: "is-notes", appendWorkspaces: true,
     }));
   }
 
@@ -241,22 +314,15 @@
       : [];
     workspacePanel.hidden = !workspace;
     if (!workspace) return;
-    workspacePanelTitle.textContent = `Task · ${workspace.name}`;
+    workspacePanelTitle.textContent = `Задачи · ${workspace.name}`;
     workspacePanelList.replaceChildren();
     if (!tasks.length) {
-      workspacePanelList.append(node("p", { class: "workspace-task-empty", text: "Нет назначенных Task" }));
+      workspacePanelList.append(node("p", { class: "workspace-task-empty", text: "Нет назначенных задач" }));
       return;
     }
     for (const task of tasks.slice(0, 6)) workspacePanelList.append(taskCard(task, { compact: true }));
   }
 
-  createForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const text = createInput.value.trim();
-    if (!text) return;
-    emit("create", { text });
-    createInput.value = "";
-  });
   document.querySelector("[data-task-start-close]")?.addEventListener("click", closeStart);
   startModal.addEventListener("cancel", (event) => { event.preventDefault(); closeStart(); });
   startNewForm.addEventListener("submit", (event) => {

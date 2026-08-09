@@ -64,6 +64,7 @@ export function createDesktopReadSystemWiring({
       },
       board: {
         snapshot: services.taskBoardSnapshot,
+        workspaces: services.taskBoardWorkspaces,
       },
       runs: {
         forTask: services.runForTask,

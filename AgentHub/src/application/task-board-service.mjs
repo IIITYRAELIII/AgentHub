@@ -14,7 +14,9 @@ export class TaskBoardService {
     autoPlaceConfidence = 0.82,
     logger = console,
   } = {}) {
-    for (const name of ["create", "task", "list", "move", "markStarted"]) requiredMethod(store, name);
+    for (const name of [
+      "create", "task", "list", "move", "markStarted", "orderedWorkspaceIds", "moveWorkspace",
+    ]) requiredMethod(store, name);
     if (typeof workspaceCatalog?.hierarchy !== "function") throw new TypeError("workspaceCatalog is required");
     this.store = store;
     this.workspaceCatalog = workspaceCatalog;
@@ -28,7 +30,7 @@ export class TaskBoardService {
 
   task(id) {
     const task = this.store.task(id);
-    if (!task) throw new Error("Task не найден");
+    if (!task) throw new Error("Задача не найдена");
     return task;
   }
 
@@ -39,22 +41,36 @@ export class TaskBoardService {
     }));
   }
 
+  workspaces() {
+    const workspaces = this.workspaceCatalog.hierarchy();
+    const order = this.store.orderedWorkspaceIds(workspaces.map((workspace) => workspace.id));
+    const position = new Map(order.map((id, index) => [id, index]));
+    return workspaces.slice().sort((left, right) => position.get(left.id) - position.get(right.id));
+  }
+
   create(payload = {}) {
     const task = this.store.create({
       ...payload,
       text: normalizedTaskText(payload.text),
-      triageStatus: this.classify ? "pending" : "disabled",
+      triageStatus: this.classify && payload.source === "telegram" ? "pending" : "disabled",
     });
     if (task.triageStatus === "pending") this.scheduleTriage(task.id);
     return task;
   }
 
-  move({ id, bucket, workspaceId = null } = {}) {
+  move({ id, bucket, workspaceId = null, beforeId = null } = {}) {
     const normalizedBucket = normalizedTaskBucket(bucket);
     if (normalizedBucket === "workspace" && !this.workspaceCatalog.workspace(workspaceId)) {
       throw new Error("Workspace не найден");
     }
-    return this.store.move(id, { bucket: normalizedBucket, workspaceId });
+    return this.store.move(id, { bucket: normalizedBucket, workspaceId, beforeId });
+  }
+
+  moveWorkspace({ workspaceId, beforeWorkspaceId = null } = {}) {
+    const ids = this.workspaceCatalog.hierarchy().map((workspace) => workspace.id);
+    if (!ids.includes(String(workspaceId ?? "").trim())) throw new Error("Workspace не найден");
+    if (beforeWorkspaceId && !ids.includes(String(beforeWorkspaceId).trim())) throw new Error("Workspace не найден");
+    return this.store.moveWorkspace(ids, { workspaceId, beforeWorkspaceId });
   }
 
   complete({ id } = {}) {
@@ -62,7 +78,7 @@ export class TaskBoardService {
   }
 
   remove({ id } = {}) {
-    if (!this.store.remove(id)) throw new Error("Task не найден");
+    if (!this.store.remove(id)) throw new Error("Задача не найдена");
     return true;
   }
 
@@ -81,7 +97,7 @@ export class TaskBoardService {
   }
 
   retryTriage({ id } = {}) {
-    if (!this.classify) throw new Error("Разбор Task через Spark выключен");
+    if (!this.classify) throw new Error("Авторазбор задач выключен");
     this.task(id);
     this.store.retryTriage(id);
     this.scheduleTriage(id);

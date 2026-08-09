@@ -286,7 +286,7 @@ export function createDesktopSnapshotFactory({
       : null;
     const snapshot = {
       apiVersion: 3,
-      workspaces: catalog.hierarchy?.() ?? [],
+      workspaces: board.workspaces?.() ?? catalog.hierarchy?.() ?? [],
       boardTasks: board.snapshot?.() ?? [],
       selected: {
         ...selectedIdentity,

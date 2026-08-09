@@ -96,6 +96,7 @@ function fixture(overrides = {}) {
     },
     board: {
       snapshot: () => [{ id: "board-task-1", text: "Проверить дашборд" }],
+      workspaces: () => [{ id: "workspace-2", name: "Second" }, { id: "workspace-1", name: "First" }],
     },
     runs: {
       forTask: (task) => (task.threadId === "thread-1" ? state.run : null),
@@ -231,6 +232,7 @@ test("desktop snapshot exposes Task board state", async () => {
   const { desktopSnapshot } = fixture();
   const snapshot = await desktopSnapshot();
   assert.deepEqual(snapshot.boardTasks, [{ id: "board-task-1", text: "Проверить дашборд" }]);
+  assert.deepEqual(snapshot.workspaces.map((workspace) => workspace.id), ["workspace-2", "workspace-1"]);
 });
 
 test("desktop task snapshot exposes a persisted model without a live run", () => {

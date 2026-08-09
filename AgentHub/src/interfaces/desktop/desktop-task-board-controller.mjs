@@ -15,11 +15,19 @@ export class DesktopTaskBoardController {
   }
 
   create(params) {
-    return this.#mutate(() => this.taskBoard.create({ text: params.text, source: "hub" }));
+    return this.#mutate(() => {
+      if (!this.workspaceCatalog.workspace(params.workspaceId)) throw new Error("Workspace не найден");
+      const task = this.taskBoard.create({ text: params.text, source: "hub" });
+      this.taskBoard.move({ id: task.id, bucket: "workspace", workspaceId: params.workspaceId });
+    });
   }
 
   move(params) {
     return this.#mutate(() => this.taskBoard.move(params));
+  }
+
+  moveWorkspace(params) {
+    return this.#mutate(() => this.taskBoard.moveWorkspace(params));
   }
 
   complete(params) {
@@ -38,7 +46,7 @@ export class DesktopTaskBoardController {
     const task = this.taskBoard.task(params.id);
     const workspaceId = String(params.workspaceId ?? task.workspaceId ?? "").trim();
     const workspace = this.workspaceCatalog.workspace(workspaceId);
-    if (!workspace) throw new Error("Сначала перенесите Task в Workspace");
+    if (!workspace) throw new Error("Сначала перенесите задачу в Workspace");
     const requestedStreamId = String(params.streamId ?? "").trim();
     let target;
     if (requestedStreamId) {

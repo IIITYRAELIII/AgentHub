@@ -1474,10 +1474,8 @@ function setView(view, { persist = true, activate = true } = {}) {
   }
   const title = document.querySelector("[data-view-title]");
   if (title) {
-    /* Заголовок раздела короче и одинаковой длины на латинице; вкладки
-       переключателя остаются русскими. */
     title.textContent = next === "dashboard"
-      ? "Tasks"
+      ? "Дашборд"
       : next === "journal"
       ? "Log"
       : next === "statistics"

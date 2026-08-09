@@ -1738,6 +1738,7 @@ document.addEventListener("agenthub:board-action", (event) => runAction(async ()
     remove: "board-task-remove",
     "retry-triage": "board-task-retry-triage",
     start: "board-task-start",
+    "move-workspace": "board-workspace-move",
   };
   const action = actions[detail.type];
   if (!action) return;

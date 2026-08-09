@@ -51,3 +51,34 @@ test("manual Task placement is not overwritten by a late Spark result", async (t
   assert.equal(triaged.workspaceId, "workspace-manual");
   assert.equal(triaged.placementSource, "manual");
 });
+
+test("Task card order persists within and between columns", async (t) => {
+  const store = await fixture(t);
+  const first = store.create({ text: "Первая" });
+  const second = store.create({ text: "Вторая" });
+  const third = store.create({ text: "Третья" });
+  for (const task of [first, second, third]) {
+    store.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  }
+  store.move(third.id, {
+    bucket: "workspace", workspaceId: "workspace-1", beforeId: first.id,
+  });
+  store.move(second.id, { bucket: "notes" });
+
+  const reopened = new TaskBoardStore({ databaseFile: store.databaseFile });
+  const tasks = reopened.list({ includeDone: false });
+  assert.deepEqual(
+    tasks.filter((task) => task.workspaceId === "workspace-1").map((task) => task.id),
+    [third.id, first.id],
+  );
+  assert.deepEqual(tasks.filter((task) => task.bucket === "notes").map((task) => task.id), [second.id]);
+});
+
+test("Workspace order persists after reordering", async (t) => {
+  const store = await fixture(t);
+  assert.deepEqual(store.orderedWorkspaceIds(["one", "two", "three"]), ["one", "two", "three"]);
+  store.moveWorkspace(["one", "two", "three"], { workspaceId: "three", beforeWorkspaceId: "one" });
+
+  const reopened = new TaskBoardStore({ databaseFile: store.databaseFile });
+  assert.deepEqual(reopened.orderedWorkspaceIds(["one", "two", "three"]), ["three", "one", "two"]);
+});
