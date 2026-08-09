@@ -633,6 +633,7 @@ test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette"
   const ironTexture = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-iron-texture.png"));
   const ironFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-iron-frame.jpg"));
   const forgedFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-forged-frame.png"));
+  const matteForgedFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-forged-frame-matte.png"));
   const xardasTower = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-xardas-tower.webp"));
   /* Знамя — самостоятельный ресурс пакета темы. Это проверяет фактическую
      доступность во Worker и webview вместо снимка конкретных CSS-деклараций.
@@ -654,6 +655,10 @@ test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette"
   assert.equal(forgedFrame.contentType, "image/png");
   assert.equal(forgedFrame.immutable, true);
   assert.ok(fs.statSync(forgedFrame.file).size > 50_000);
+  assert.ok(matteForgedFrame);
+  assert.equal(matteForgedFrame.contentType, "image/png");
+  assert.equal(matteForgedFrame.immutable, true);
+  assert.ok(fs.statSync(matteForgedFrame.file).size > 50_000);
   assert.ok(xardasTower);
   assert.equal(xardasTower.contentType, "image/webp");
   assert.equal(xardasTower.immutable, true);

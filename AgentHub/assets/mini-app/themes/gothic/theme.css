@@ -31,6 +31,7 @@ html[data-theme="gothic"] {
   --gothic-iron-texture: var(--gothic-iron-texture-asset, url("./gothic-iron-texture.png"));
   --gothic-iron-frame: var(--gothic-iron-frame-asset, url("./gothic-iron-frame.jpg"));
   --gothic-forged-frame: var(--gothic-forged-frame-asset, url("./gothic-forged-frame.png"));
+  --gothic-forged-frame-matte: var(--gothic-forged-frame-matte-asset, url("./gothic-forged-frame-matte.png"));
   --card-bg: rgb(12 11 9 / 92%);
   --card-bg-open: rgb(20 17 14 / 96%);
   --card-texture: var(--gothic-iron-texture);
@@ -90,19 +91,19 @@ html[data-theme="gothic"] {
   --shell-tab-background: transparent;
   --shell-tab-active-background: #411f17 var(--gothic-iron-texture) center / 20rem 20rem;
   --shell-tab-active-border: 1px solid var(--accent-line);
-  --shell-panel-border: 1px solid rgb(112 91 67 / 46%);
-  --shell-panel-border-image: none;
+  --shell-panel-border: 13px solid transparent;
+  --shell-panel-border-image: var(--gothic-forged-frame-matte) 9% / 13px stretch;
   --shell-stream-tabs-background: #080706 var(--gothic-iron-texture) center / 24rem 24rem;
-  --shell-stream-tabs-border: 0;
-  --shell-stream-tabs-border-bottom: 1px solid rgb(112 91 67 / 46%);
-  --shell-stream-tabs-border-image: none;
+  --shell-stream-tabs-border: 8px solid transparent;
+  --shell-stream-tabs-border-bottom: 1px solid transparent;
+  --shell-stream-tabs-border-image: var(--gothic-forged-frame-matte) 9% / 8px stretch;
   --shell-stream-tab-background: transparent;
   --shell-stream-tab-border: 0;
   --shell-stream-tab-hover-background: #17130f var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-stream-tab-active-background: #351c15 var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-stream-card-background: #0c0a09 var(--gothic-iron-texture) center / 18rem 18rem;
-  --shell-stream-card-border: 1px solid rgb(112 91 67 / 46%);
-  --shell-stream-card-border-image: none;
+  --shell-stream-card-border: 4px solid transparent;
+  --shell-stream-card-border-image: var(--gothic-forged-frame-matte) 9% / 4px stretch;
 }
 
 html[data-theme="gothic"] body::after {
@@ -336,8 +337,8 @@ html[data-theme="gothic"] .chip-button.primary {
   color: #ddc6aa;
 }
 
-/* Крупные поверхности разделены тонкой железной линией без повторяющихся
-   декоративных стоек между Workspace и чатом. */
+/* Крупные поверхности снова обрамлены кованым железом. Матовая версия рамки
+   сохраняет углы и заклёпки, но не содержит центральных крестов и засветов. */
 @media (min-width: 860px) {
   html[data-theme="gothic"]:not([data-surface="mobile"]) {
     --task-rail-width: clamp(248px, 20vw, 284px);
@@ -378,8 +379,8 @@ html[data-theme="gothic"] .chip-button.primary {
       linear-gradient(rgb(0 0 0 / 62%), rgb(0 0 0 / 62%)),
       var(--gothic-iron-texture);
     background-blend-mode: normal;
-    border: 1px solid rgb(112 91 67 / 46%);
-    border-image: none;
+    border: 9px solid transparent;
+    border-image: var(--gothic-forged-frame-matte) 9% / 9px stretch;
     box-shadow: inset 0 0 0 1px rgb(220 184 132 / 7%), inset 0 0 2.2rem rgb(0 0 0 / 52%);
   }
 
@@ -388,8 +389,8 @@ html[data-theme="gothic"] .chip-button.primary {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .composer {
-    border: 1px solid rgb(112 91 67 / 46%);
-    border-image: none;
+    border: 8px solid transparent;
+    border-image: var(--gothic-forged-frame-matte) 9% / 8px stretch;
     padding: 0.35rem 0.45rem max(0.35rem, env(safe-area-inset-bottom));
   }
 
