@@ -211,6 +211,33 @@ html[data-theme="gothic"] .task-rail-title {
     z-index: 0;
   }
 
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::after,
+  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) .chat::before {
+    border: 0;
+    border-right: 6px solid transparent;
+    border-image: var(--gothic-iron-frame) 5% / 0 6px 0 0 stretch;
+    box-sizing: border-box;
+    content: "";
+    filter: brightness(1.16) contrast(1.08) saturate(0.78);
+    pointer-events: none;
+    position: absolute;
+    transform: scaleX(-1);
+    width: 6px;
+    z-index: 4;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::after {
+    bottom: 0;
+    right: -6px;
+    top: 0;
+  }
+
+  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) .chat::before {
+    bottom: 0;
+    left: 0;
+    top: 0;
+  }
+
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand > * {
     position: relative;
     z-index: 1;
