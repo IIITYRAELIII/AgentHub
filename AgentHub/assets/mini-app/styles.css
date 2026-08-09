@@ -3456,6 +3456,8 @@ html[data-view="dashboard"] .task-board-view {
   display: flex;
   flex-direction: column;
   height: calc(100dvh - var(--app-header-h, 4.2rem));
+  margin-inline: 0;
+  max-width: none;
   overflow: hidden;
 }
 
@@ -6228,6 +6230,81 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   color: var(--text-muted);
   cursor: pointer;
   font-size: 0.74rem;
+}
+
+.turn-trace {
+  border-top: 1px solid var(--line);
+  margin-top: 0.7rem;
+  padding-top: 0.45rem;
+}
+
+.turn-trace > summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.74rem;
+  list-style: none;
+}
+
+.turn-trace > summary::-webkit-details-marker {
+  display: none;
+}
+
+.turn-trace > summary::before {
+  color: var(--accent);
+  content: "›";
+  display: inline-block;
+  margin-right: 0.38rem;
+  transform: rotate(0deg);
+  transition: transform 0.14s ease;
+}
+
+.turn-trace[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.turn-trace-groups {
+  border-left: 1px solid var(--accent-line);
+  display: grid;
+  gap: 0.8rem;
+  margin: 0.6rem 0 0 0.18rem;
+  padding-left: 0.8rem;
+}
+
+.turn-trace-block {
+  display: grid;
+  gap: 0.42rem;
+  min-width: 0;
+}
+
+.turn-trace-reasoning {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.48;
+  overflow-wrap: anywhere;
+}
+
+.turn-trace-reasoning > :first-child {
+  margin-top: 0;
+}
+
+.turn-trace-reasoning > :last-child {
+  margin-bottom: 0;
+}
+
+.turn-trace-activities {
+  background: color-mix(in srgb, var(--surface-1) 54%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 0.42rem 0.52rem 0.5rem;
+}
+
+.turn-trace-activities-title {
+  color: var(--text-faint);
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+
+.turn-trace-activities .activity-list {
+  margin-top: 0.35rem;
 }
 
 .activity-list {
