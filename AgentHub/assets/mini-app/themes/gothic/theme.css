@@ -88,6 +88,7 @@ html[data-theme="gothic"] {
   --shell-header-frame-image: var(--gothic-forged-frame-matte) 8% / 6px stretch;
   --shell-header-gap: 0.75rem;
   --shell-header-height: 4.75rem;
+  --shell-header-padding-right: 2rem;
   --shell-header-padding: 0;
   --shell-header-shadow: none;
   --shell-header-rule: none;
@@ -117,9 +118,12 @@ html[data-theme="gothic"] {
   --shell-stream-tabs-background:
     linear-gradient(rgb(7 8 8 / 82%), rgb(7 8 8 / 82%)),
     var(--gothic-iron-texture) center / 24rem 24rem;
-  --shell-stream-tabs-border: 8px solid transparent;
+  --shell-stream-tabs-border: 4px solid transparent;
   --shell-stream-tabs-border-bottom: 1px solid transparent;
-  --shell-stream-tabs-border-image: var(--gothic-forged-frame-matte) 9% / 8px stretch;
+  --shell-stream-tabs-border-image: var(--gothic-forged-frame-matte) 8% / 4px stretch;
+  --shell-stream-tabs-margin-top: -13px;
+  --shell-stream-tabs-min-height: 3.45rem;
+  --shell-stream-tabs-padding: 0 0.55rem 0.2rem;
   --shell-stream-tab-background: transparent;
   --shell-stream-tab-border: 0;
   --shell-stream-tab-hover-background: #121313 var(--gothic-iron-texture) center / 18rem 18rem;

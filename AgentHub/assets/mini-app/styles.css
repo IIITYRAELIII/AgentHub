@@ -4651,8 +4651,8 @@ html[data-surface="mobile"]
     height: 100% !important;
     margin: 0 !important;
     max-width: none !important;
-    padding-left: clamp(1rem, 4vw, 4.25rem) !important;
-    padding-right: clamp(1rem, 4vw, 4.25rem) !important;
+    padding-left: var(--shell-header-padding-left, clamp(1rem, 4vw, 4.25rem)) !important;
+    padding-right: var(--shell-header-padding-right, clamp(1rem, 4vw, 4.25rem)) !important;
     width: 100% !important;
   }
 
@@ -4722,8 +4722,9 @@ html[data-surface="mobile"]
     border-image: var(--shell-stream-tabs-border-image, none) !important;
     border-radius: 0 !important;
     gap: 0.35rem !important;
-    min-height: 3.7rem !important;
-    padding: 0.3rem 0.55rem !important;
+    margin-top: var(--shell-stream-tabs-margin-top, 0) !important;
+    min-height: var(--shell-stream-tabs-min-height, 3.7rem) !important;
+    padding: var(--shell-stream-tabs-padding, 0.3rem 0.55rem) !important;
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tabs::before {

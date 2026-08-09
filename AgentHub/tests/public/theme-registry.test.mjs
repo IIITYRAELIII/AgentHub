@@ -171,7 +171,7 @@ test("desktop shell owns the shared header and Stream control shapes", async () 
   );
   assert.match(
     styles,
-    /html:not\(\[data-surface="mobile"\]\) \.app-header-inner\s*\{[^}]*max-width:\s*none\s*!important;[^}]*padding-left:\s*clamp\(1rem, 4vw, 4\.25rem\)\s*!important;[^}]*padding-right:\s*clamp\(1rem, 4vw, 4\.25rem\)\s*!important;[^}]*width:\s*100%\s*!important;/su,
+    /html:not\(\[data-surface="mobile"\]\) \.app-header-inner\s*\{[^}]*max-width:\s*none\s*!important;[^}]*padding-left:\s*var\(--shell-header-padding-left, clamp\(1rem, 4vw, 4\.25rem\)\)\s*!important;[^}]*padding-right:\s*var\(--shell-header-padding-right, clamp\(1rem, 4vw, 4\.25rem\)\)\s*!important;[^}]*width:\s*100%\s*!important;/su,
   );
   assert.match(
     styles,
