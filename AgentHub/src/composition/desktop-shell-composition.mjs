@@ -431,6 +431,8 @@ export function createDesktopShellComposition({
       runForTask: (target) => taskRuns.forTask(target),
       setAutostart: (params) => serverControlController.setAutostart(params),
       updateServerConfiguration: (params) => serverControlController.updateConfiguration(params),
+      taskBoard,
+      workspaceCatalog: workspaceCatalogStore,
     },
     desktop: {
       snapshot: desktopReadSystem.desktopSnapshot,

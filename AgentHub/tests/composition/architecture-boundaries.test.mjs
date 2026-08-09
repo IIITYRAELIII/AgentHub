@@ -497,6 +497,11 @@ test("Desktop shell owns read, command and run-router assembly", async () => {
     assert.equal(root.includes(factory), false, `${factory} leaked into the composition root`);
     assert.equal(shell.includes(factory), true, `${factory} is not owned by the Desktop shell`);
   }
+  const runRouterStart = shell.indexOf("const desktopRunRouter = createDesktopRunRouterWiring");
+  const runRouterServicesEnd = shell.indexOf("\n    desktop: {", runRouterStart);
+  const runRouterServices = shell.slice(runRouterStart, runRouterServicesEnd);
+  assert.match(runRouterServices, /\n      taskBoard,/u);
+  assert.match(runRouterServices, /\n      workspaceCatalog: workspaceCatalogStore,/u);
   assert.equal((shell.match(/desktopCommandsPort\.bind\s*\(/gu) ?? []).length, 1);
   assert.equal(shell.includes("trustedDeviceUserId: desktopReadSystem.trustedDeviceUserId"), true);
 });

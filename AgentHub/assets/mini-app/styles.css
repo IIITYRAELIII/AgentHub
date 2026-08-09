@@ -3538,10 +3538,17 @@ html[data-view="dashboard"] .task-board-view {
 .task-board-column-head {
   align-items: start;
   border-bottom: 1px solid var(--line);
+  box-sizing: border-box;
   display: flex;
   gap: 0.6rem;
+  height: 6.5rem;
   justify-content: space-between;
+  overflow: hidden;
   padding: 0.75rem;
+}
+
+.task-board-column-head > div:first-child {
+  min-width: 0;
 }
 
 .task-board-column-controls,
